@@ -110,6 +110,7 @@ const {
   instanceLockFile: INSTANCE_LOCK_FILE,
   exchangeRatesFile: EXCHANGE_RATES_FILE,
   handleDesktopControl: agentHubDeferred.api.handleDesktopControl,
+  forgetDesktopControl: agentHubDeferred.api.forgetDesktopControl,
   findProject: agentHubDeferred.api.findProject,
   authorizeRuntimeCommand: agentHubDeferred.api.authorizeRuntimeCommand,
   reconcileRuntimeCommand: agentHubDeferred.api.reconcileRuntimeCommand,

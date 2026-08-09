@@ -13,6 +13,7 @@ import { DesktopAttachmentService } from "../interfaces/desktop/desktop-attachme
 import { DirectGatewayController, loadDirectGatewaySettings } from "../interfaces/web/direct-gateway.mjs";
 import { MiniAppLifecycleService } from "../interfaces/web/mini-app-lifecycle-service.mjs";
 import { MiniAppPublisher } from "../interfaces/web/mini-app-publisher.mjs";
+import { SharedDashboardBotClient } from "../interfaces/web/shared-dashboard-bot-client.mjs";
 import { miniAppMenuButtonRequests } from "../interfaces/web/mini-app-server.mjs";
 import { BugReportRepository } from "../infrastructure/filesystem/bug-report-repository.mjs";
 import { QuickTunnelController } from "../infrastructure/network/quick-tunnel.mjs";
@@ -97,6 +98,12 @@ export async function createClientInterfaceComposition({
     });
     return Promise.resolve(undefined);
   };
+  const sharedDashboardBotClient = config.sharedDashboardBot?.enabled
+    ? new SharedDashboardBotClient({
+      ...config.sharedDashboardBot,
+      handler: handleDesktopControl,
+    })
+    : null;
   const miniAppLifecycle = new MiniAppLifecycleService({
     config,
     localServer: miniAppServer,
@@ -112,6 +119,7 @@ export async function createClientInterfaceComposition({
     controlHandler: handleDesktopControl,
     controlReconciler: reconcileRemoteDesktopControl,
     forgetControl: forgetDesktopControl,
+    sharedDashboardBotClient,
   });
   const desktopAttachments = new DesktopAttachmentService({
     assistantAttachmentImporterFactory: createCodexAssistantAttachmentImporter,
@@ -222,6 +230,7 @@ export async function createClientInterfaceComposition({
     telegramClient,
     telegram,
     miniAppLifecycle,
+    sharedDashboardBotClient,
     desktopAttachments,
     desktopAttachmentPaths: (...args) => desktopAttachments.paths(...args),
     isLegacyDesktopAttachmentFile: (...args) => desktopAttachments.isLegacyFile(...args),

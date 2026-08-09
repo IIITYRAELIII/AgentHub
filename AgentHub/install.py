@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 import tempfile
@@ -15,11 +16,11 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent
-COMPONENTS = ("telegram", "mini-app", "android-app")
+COMPONENTS = ("telegram", "mini-app", "android-app", "shared-dashboard-bot")
 LEGACY_PROFILE_COMPONENTS = {
-    "full": {"telegram": True, "miniApp": True, "androidApp": True, "codexContextCleanup": False},
-    "telegram": {"telegram": True, "miniApp": False, "androidApp": False, "codexContextCleanup": False},
-    "journal": {"telegram": False, "miniApp": False, "androidApp": False, "codexContextCleanup": False},
+    "full": {"telegram": True, "miniApp": True, "androidApp": True, "sharedDashboardBot": False, "codexContextCleanup": False},
+    "telegram": {"telegram": True, "miniApp": False, "androidApp": False, "sharedDashboardBot": False, "codexContextCleanup": False},
+    "journal": {"telegram": False, "miniApp": False, "androidApp": False, "sharedDashboardBot": False, "codexContextCleanup": False},
 }
 SWAP_TOKEN_PATTERN = re.compile(r"[0-9a-f]{32}\Z")
 
@@ -39,6 +40,7 @@ def resolve_components(
             "telegram": raw_components.get("telegram") is True,
             "miniApp": raw_components.get("miniApp") is True,
             "androidApp": raw_components.get("androidApp") is True,
+            "sharedDashboardBot": raw_components.get("sharedDashboardBot") is True,
             "codexContextCleanup": (
                 raw_components.get("codexContextCleanup") is True
                 if "codexContextCleanup" in raw_components
@@ -56,6 +58,7 @@ def resolve_components(
                 "telegram": False,
                 "miniApp": False,
                 "androidApp": False,
+                "sharedDashboardBot": False,
                 "codexContextCleanup": False,
             }
         else:
@@ -67,6 +70,7 @@ def resolve_components(
         "telegram": "telegram",
         "mini-app": "miniApp",
         "android-app": "androidApp",
+        "shared-dashboard-bot": "sharedDashboardBot",
     }
     for name in enabled:
         components[component_names[name]] = True
@@ -204,6 +208,29 @@ def atomic_private_json(config_file: Path, value: dict) -> None:
         temporary = None
         if os.name != "nt":
             os.chmod(config_file, 0o600)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def atomic_private_text(target: Path, value: str) -> None:
+    """Replace a small secret file without exposing a partially written value."""
+    temporary: Path | None = None
+    try:
+        descriptor, raw_temporary = tempfile.mkstemp(
+            prefix=f".{target.name}.", suffix=".tmp", dir=target.parent
+        )
+        temporary = Path(raw_temporary)
+        os.chmod(temporary, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
+            stream.write(value.rstrip("\n"))
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, target)
+        temporary = None
+        if os.name != "nt":
+            os.chmod(target, 0o600)
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
@@ -551,6 +578,21 @@ def main() -> int:
         existing_mini_app.pop("enabled", None)
     remembered_users = existing.get("allowedUserIds", [])
     remembered_chats = existing.get("allowedChatIds", remembered_users)
+    existing_shared_bot = existing.get("sharedDashboardBot")
+    if not isinstance(existing_shared_bot, dict):
+        existing_shared_bot = {}
+    shared_bot = dict(existing_shared_bot)
+    if components["sharedDashboardBot"]:
+        shared_bot.setdefault("publicUrl", "https://hub.darksanctuary.ru")
+        shared_bot.setdefault("hubId", str(uuid4()))
+        shared_bot.setdefault("hubName", f"Agent Hub — {project_root.name}")
+        shared_bot.setdefault("secretFile", "shared-dashboard-bot.secret")
+        shared_bot.setdefault("retrySeconds", 5)
+        shared_secret_file = (target_root / str(shared_bot["secretFile"])).resolve()
+        if not shared_secret_file.is_relative_to(target_root.resolve()):
+            raise RuntimeError("Shared Dashboard bot secret file must stay inside the Agent Hub runtime")
+        if not shared_secret_file.exists():
+            atomic_private_text(shared_secret_file, secrets.token_urlsafe(48))
     config = {
         **existing,
         "components": components,
@@ -562,6 +604,7 @@ def main() -> int:
         "claudePermissionMode": "acceptEdits",
         "projectRoot": str(project_root),
         "miniApp": existing_mini_app,
+        "sharedDashboardBot": shared_bot,
         "voiceEnabled": bool(existing.get("voiceEnabled")) or args.with_voice or args.install_voice,
         "whisperModel": "small",
         "ttsEnabled": bool(existing.get("ttsEnabled")) or args.with_voice or args.install_voice,
@@ -612,6 +655,8 @@ def main() -> int:
         print(f"Removed legacy workspace config: {legacy_config}")
     enabled_components = [name for name, enabled in components.items() if enabled]
     print(f"Agent Hub components: {', '.join(enabled_components) if enabled_components else 'core'}")
+    if components["sharedDashboardBot"]:
+        print("Pair the shared Dashboard bot: npm run dashboard-bot:pair")
     print("Reload the VS Code window after first extension installation.")
     print("Run: npm run doctor")
     return 0

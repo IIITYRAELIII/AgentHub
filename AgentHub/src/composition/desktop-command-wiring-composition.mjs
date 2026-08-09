@@ -1,5 +1,57 @@
 import { createDesktopCommandComposition } from "./desktop-command-composition.mjs";
 
+export function createWorkspaceActions(services) {
+  return {
+    renameWorkspace: (params) => services.workspaceMutation(
+      () => services.workspaceCatalogService.renameWorkspace(params),
+    ),
+    createWorkspace: (params) => services.workspaceMutation(
+      () => services.workspaceCatalogService.createWorkspace(params),
+      { resultKey: "createdWorkspace" },
+    ),
+    createWorkspaceFromStream: (params) => services.workspaceMutation(
+      () => {
+        const sourceWorkspaceId = services.workspaceCatalog.stream(params?.streamId)?.workspaceId;
+        const result = services.workspaceCatalogService.createWorkspaceFromStream(params);
+        if (sourceWorkspaceId && !services.workspaceCatalog.workspace(sourceWorkspaceId)) {
+          services.taskBoard.reassignWorkspace(sourceWorkspaceId, result.workspace.id);
+        }
+        return result;
+      },
+    ),
+    mergeWorkspaces: (params) => services.workspaceMutation(
+      () => {
+        const result = services.workspaceCatalogService.mergeWorkspaces(params);
+        services.taskBoard.reassignWorkspace(
+          params?.sourceWorkspaceId,
+          params?.targetWorkspaceId,
+        );
+        return result;
+      },
+    ),
+    createStream: (params) => services.workspaceMutation(
+      () => services.workspaceCatalogService.createStream(params),
+      { resultKey: "createdStream" },
+    ),
+    renameStream: (params) => services.workspaceMutation(
+      () => services.workspaceCatalogService.renameStream(params),
+    ),
+    updateStreamSettings: (params) => services.workspaceMutation(
+      () => services.workspaceCatalogService.updateStreamSettings(params),
+    ),
+    moveStream: (params) => services.workspaceMutation(
+      () => {
+        const sourceWorkspaceId = services.workspaceCatalog.stream(params?.streamId)?.workspaceId;
+        const result = services.workspaceCatalogService.moveStream(params);
+        if (sourceWorkspaceId && !services.workspaceCatalog.workspace(sourceWorkspaceId)) {
+          services.taskBoard.reassignWorkspace(sourceWorkspaceId, params?.workspaceId);
+        }
+        return result;
+      },
+    ),
+  };
+}
+
 export function createDesktopCommandWiring({
   models,
   projects,
@@ -146,34 +198,7 @@ export function createDesktopCommandWiring({
         ? services.approvalController.handleCallback(payload.callback)
         : resolveDesktopApproval(payload),
     },
-    workspaceActions: {
-      renameWorkspace: (params) => services.workspaceMutation(
-        () => services.workspaceCatalogService.renameWorkspace(params),
-      ),
-      createWorkspace: (params) => services.workspaceMutation(
-        () => services.workspaceCatalogService.createWorkspace(params),
-        { resultKey: "createdWorkspace" },
-      ),
-      createWorkspaceFromStream: (params) => services.workspaceMutation(
-        () => services.workspaceCatalogService.createWorkspaceFromStream(params),
-      ),
-      mergeWorkspaces: (params) => services.workspaceMutation(
-        () => services.workspaceCatalogService.mergeWorkspaces(params),
-      ),
-      createStream: (params) => services.workspaceMutation(
-        () => services.workspaceCatalogService.createStream(params),
-        { resultKey: "createdStream" },
-      ),
-      renameStream: (params) => services.workspaceMutation(
-        () => services.workspaceCatalogService.renameStream(params),
-      ),
-      updateStreamSettings: (params) => services.workspaceMutation(
-        () => services.workspaceCatalogService.updateStreamSettings(params),
-      ),
-      moveStream: (params) => services.workspaceMutation(
-        () => services.workspaceCatalogService.moveStream(params),
-      ),
-    },
+    workspaceActions: createWorkspaceActions(services),
     telegramActions: {
       selectedTask: state.telegramSelectedTask ?? state.selectedTask,
       activeProvider: () => (state.telegramSelectedTask ?? state.selectedTask)().provider,

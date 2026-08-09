@@ -363,6 +363,33 @@ export class TaskBoardStore {
     });
   }
 
+  reassignWorkspace(sourceWorkspaceId, targetWorkspaceId) {
+    const sourceId = String(sourceWorkspaceId ?? "").trim();
+    const targetId = String(targetWorkspaceId ?? "").trim();
+    if (!sourceId || !targetId) throw new Error("Workspace не найден");
+    if (sourceId === targetId) return 0;
+    return this.#withDatabase((database) => {
+      const sourceIds = taskLocationRows(database, "workspace", sourceId).map((row) => row.id);
+      const targetIds = taskLocationRows(database, "workspace", targetId).map((row) => row.id);
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        const result = database.prepare(`
+          UPDATE hub_board_tasks
+          SET workspace_id = ?, updated_at_ms = ?
+          WHERE workspace_id = ?
+        `).run(targetId, this.now(), sourceId);
+        writeTaskOrder(database, "workspace", targetId, [...targetIds, ...sourceIds]);
+        database.prepare("DELETE FROM hub_board_column_order WHERE column_id = ?").run(sourceId);
+        database.prepare("DELETE FROM hub_board_workspace_order WHERE workspace_id = ?").run(sourceId);
+        database.exec("COMMIT");
+        return Number(result.changes);
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
+    });
+  }
+
   orderedColumnIds(workspaceIds) {
     return this.#withDatabase((database) => ensureColumnOrder(database, workspaceIds, this.now()));
   }

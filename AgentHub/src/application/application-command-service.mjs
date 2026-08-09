@@ -19,9 +19,8 @@ export function commandTaskTarget(params) {
   };
 }
 
-export function createApplicationCommandService({ handlers, selectedTask }) {
+export function createApplicationCommandService({ handlers }) {
   if (!handlers || typeof handlers !== "object") throw new TypeError("command handlers are required");
-  if (typeof selectedTask !== "function") throw new TypeError("selectedTask is required");
   const required = [
     "selectTask", "createTask", "rotateStream", "renameTask", "archiveTask",
     "updateSetting", "cancelRun", "resolveApproval",
@@ -34,8 +33,12 @@ export function createApplicationCommandService({ handlers, selectedTask }) {
 
   const settingTarget = (params) => {
     const name = String(params?.name ?? "").trim();
-    if (!["model", "reasoning", "mode"].includes(name)) return null;
-    return commandTaskTarget({ ...selectedTask(), ...params });
+    if (!["provider", "project", "model", "reasoning", "mode"].includes(name)) return null;
+    const target = commandTaskTarget(params);
+    if (!target.provider || !target.threadId) {
+      throw new Error(`${name} setting requires an exact task identity`);
+    }
+    return target;
   };
 
   const bus = new ApplicationCommandBus()

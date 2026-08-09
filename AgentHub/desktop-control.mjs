@@ -228,15 +228,22 @@ function protocolError(socket, error) {
 export class DesktopControlServer {
   #runtimeRoot;
   #handler;
+  #onResultDelivered;
   #server = null;
   #secret = null;
   #descriptor = null;
   #protectSecret;
   #sockets = new Set();
 
-  constructor({ runtimeRoot = defaultRuntimeRoot(), handler, protectSecret = protectRuntimeConfig }) {
+  constructor({
+    runtimeRoot = defaultRuntimeRoot(),
+    handler,
+    onResultDelivered = null,
+    protectSecret = protectRuntimeConfig,
+  }) {
     this.#runtimeRoot = runtimeRoot;
     this.#handler = handler;
+    this.#onResultDelivered = typeof onResultDelivered === "function" ? onResultDelivered : null;
     this.#protectSecret = protectSecret;
   }
 
@@ -250,6 +257,7 @@ export class DesktopControlServer {
       let processing = false;
       let clientNonce = "";
       let challenge = "";
+      let handledCommandId = "";
       this.#sockets.add(socket);
       socket.setEncoding("utf8");
       socket.setTimeout(HANDSHAKE_TIMEOUT_MS, () => {
@@ -288,6 +296,26 @@ export class DesktopControlServer {
               })}\n`);
               return;
             }
+            if (state === "result") {
+              const acknowledgedId = String(message.commandId ?? "").trim();
+              if (message.type !== "result-ack" || acknowledgedId !== handledCommandId) {
+                throw new Error("Invalid Desktop control result acknowledgement");
+              }
+              let retired = false;
+              try {
+                retired = await this.#onResultDelivered({ id: handledCommandId }) === true;
+              } catch {
+                retired = false;
+              }
+              state = "handled";
+              socket.setTimeout(0);
+              socket.end(`${JSON.stringify({
+                type: "result-retired",
+                commandId: handledCommandId,
+                retired,
+              })}\n`);
+              return;
+            }
             if (state !== "request" || message.type !== "request") {
               throw new Error("Invalid Desktop control protocol state");
             }
@@ -320,6 +348,7 @@ export class DesktopControlServer {
               throw new Error("Desktop control client authentication failed");
             }
             const request = validateDesktopControlRequest(parseProtocolLine(payload.toString("utf8")));
+            handledCommandId = request.commandId ?? "";
             socket.setTimeout(0);
             const result = await this.#handler({
               ...request,
@@ -329,11 +358,25 @@ export class DesktopControlServer {
                 commandId: request.commandId ?? null,
               },
             });
-            const response = `${JSON.stringify({ ok: true, result: result ?? null })}\n`;
+            const acknowledgementRequired = Boolean(handledCommandId && this.#onResultDelivered);
+            const response = `${JSON.stringify({
+              ok: true,
+              result: result ?? null,
+              ...(acknowledgementRequired ? {
+                ackRequired: true,
+                commandId: handledCommandId,
+              } : {}),
+            })}\n`;
             if (Buffer.byteLength(response, "utf8") > MAX_RESPONSE_BYTES) {
               throw new Error("Desktop control response is too large");
             }
-            socket.end(response);
+            if (acknowledgementRequired) {
+              state = "result";
+              socket.setTimeout(HANDSHAKE_TIMEOUT_MS, () => socket.destroy());
+              socket.write(response);
+            } else {
+              socket.end(response);
+            }
           } catch (error) {
             state = "handled";
             protocolError(socket, error);
@@ -419,6 +462,7 @@ async function callDesktopControlOnce(action, params, {
     let response = "";
     let settled = false;
     let state = "challenge";
+    let deliveredResult;
     const finish = (operation, value) => {
       if (settled) return;
       settled = true;
@@ -484,16 +528,31 @@ async function callDesktopControlOnce(action, params, {
           })}\n`);
           return;
         }
+        if (state === "retirement") {
+          if (value.type !== "result-retired" || String(value.commandId ?? "") !== commandId) {
+            throw new Error("Invalid Desktop control result retirement confirmation");
+          }
+          finish(resolve, deliveredResult);
+          return;
+        }
         if (state !== "response") {
           throw new Error("Invalid Desktop control response state");
         }
         if (!value.ok) finish(reject, new Error(value.error || "Desktop control request failed"));
-        else finish(resolve, value.result);
+        else if (value.ackRequired === true && String(value.commandId ?? "") === commandId) {
+          deliveredResult = value.result;
+          state = "retirement";
+          socket.write(`${JSON.stringify({ type: "result-ack", commandId })}\n`);
+        } else finish(resolve, value.result);
       } catch (error) {
         finish(reject, error);
       }
     });
     socket.on("error", (error) => {
+      if (state === "retirement") {
+        finish(resolve, deliveredResult);
+        return;
+      }
       if (error && typeof error === "object") {
         Object.defineProperty(error, "desktopControlRequestMayHaveReachedServer", {
           configurable: true,
@@ -505,6 +564,10 @@ async function callDesktopControlOnce(action, params, {
     });
     socket.on("close", () => {
       if (settled) return;
+      if (state === "retirement") {
+        finish(resolve, deliveredResult);
+        return;
+      }
       const error = new Error("Desktop control connection closed without a response");
       error.code = "ECONNRESET";
       Object.defineProperty(error, "desktopControlRequestMayHaveReachedServer", {

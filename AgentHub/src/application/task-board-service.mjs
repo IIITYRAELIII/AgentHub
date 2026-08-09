@@ -16,7 +16,7 @@ export class TaskBoardService {
   } = {}) {
     for (const name of [
       "create", "task", "list", "move", "markStarted", "orderedColumnIds", "moveColumn",
-      "notesComment", "setNotesComment",
+      "notesComment", "setNotesComment", "reassignWorkspace",
     ]) requiredMethod(store, name);
     if (typeof workspaceCatalog?.hierarchy !== "function") throw new TypeError("workspaceCatalog is required");
     this.store = store;
@@ -74,6 +74,10 @@ export class TaskBoardService {
       throw new Error("Workspace не найден");
     }
     return this.store.move(id, { bucket: normalizedBucket, workspaceId, beforeId });
+  }
+
+  reassignWorkspace(sourceWorkspaceId, targetWorkspaceId) {
+    return this.store.reassignWorkspace(sourceWorkspaceId, targetWorkspaceId);
   }
 
   moveColumn({ columnId, beforeColumnId = null } = {}) {

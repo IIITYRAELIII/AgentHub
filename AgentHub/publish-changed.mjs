@@ -4,6 +4,7 @@ import path from "node:path";
 import { callDesktopControl } from "./desktop-control.mjs";
 import { npmStep, publicationSteps, runStep } from "./publish-all.mjs";
 import {
+  assertCleanPublicationTree,
   changedFiles,
   currentRevision,
   readPublicationState,
@@ -151,7 +152,7 @@ export async function publishChanged(args = process.argv.slice(2), {
 
 const invokedFile = process.argv[1] ? path.resolve(process.argv[1]) : "";
 if (invokedFile === fileURLToPath(import.meta.url)) {
-  publishChanged().catch((error) => {
+  assertCleanPublicationTree({ cwd: REPOSITORY_ROOT }).then(() => publishChanged()).catch((error) => {
     console.error(`\nПубликация остановлена: ${error.message}`);
     process.exitCode = 1;
   });

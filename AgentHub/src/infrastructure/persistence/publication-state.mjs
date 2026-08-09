@@ -47,3 +47,19 @@ export async function changedFiles(fromRevision, { cwd } = {}) {
   const output = await gitOutput(["diff", "--name-only", "--diff-filter=ACMRTUXB", `${fromRevision}..HEAD`], { cwd });
   return output ? output.split(/\r?\n/u).filter(Boolean) : [];
 }
+
+export function parseWorkingTreeStatus(output) {
+  return String(output ?? "")
+    .split(/\r?\n/u)
+    .map((line) => line.trimEnd())
+    .filter(Boolean);
+}
+
+export async function assertCleanPublicationTree({ cwd, status = gitOutput } = {}) {
+  const output = await status(["status", "--porcelain=v1", "--untracked-files=all", "--", "AgentHub"], { cwd });
+  const changes = parseWorkingTreeStatus(output);
+  if (changes.length) {
+    throw new Error(`Публикация из dirty working tree запрещена: ${changes.join(", ")}`);
+  }
+  return true;
+}

@@ -48,13 +48,17 @@ export class CodexProviderTaskService {
     });
     const threadId = String(result?.thread?.id ?? "").trim();
     if (!threadId) throw new Error("Codex did not return a thread id");
-    this.#selection.setThread(threadId, { provider: "codex" });
+    this.#selection.setThread(threadId, {
+      provider: "codex",
+      streamId: this.#selection.streamId,
+    });
+    this.#clearLatestDiff();
+    await this.#saveState();
     this.#invalidateCatalog();
     this.#restoreSettings(threadId, { inheritCurrent: true });
     await this.#updateSettings();
     const title = await this.#nameTask(threadId);
     this.#selection.setTitle(title);
-    this.#clearLatestDiff();
     await this.#saveState();
     return {
       provider: "codex",

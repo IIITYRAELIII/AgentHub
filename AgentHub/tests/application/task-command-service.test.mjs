@@ -3,10 +3,17 @@ import test from "node:test";
 
 import { TaskCommandService } from "../../src/application/task-command-service.mjs";
 
-function fixture({ run = null } = {}) {
+function fixture({ run = null, createTask = null } = {}) {
   const events = [];
   const target = { streamId: "stream-1", provider: "codex", threadId: "thread-1" };
   const current = { ...target };
+  const selected = {
+    activeProvider: "codex",
+    activeProjectRoot: "D:/work",
+    streamId: "stream-1",
+    threadId: "thread-1",
+    activeThreadTitle: "Existing",
+  };
   const service = new TaskCommandService({
     resolveTarget: async () => target,
     pinTitle: (_provider, _thread, title) => title.trim(),
@@ -41,16 +48,25 @@ function fixture({ run = null } = {}) {
     progress: { setStage() {}, async finish() {} },
     dismissedExternalTasks: { add() {} },
     completeRun: async () => {},
-    createTask: async () => ({
-      provider: "codex", threadId: "thread-new", projectRoot: "D:/work", title: "New",
-    }),
+    createTask: createTask
+      ? () => createTask(selected)
+      : async () => ({
+          provider: "codex", threadId: "thread-new", projectRoot: "D:/work", title: "New",
+        }),
     rotateStream: async (...args) => {
       events.push(["rotate", ...args]);
       return { thread: { id: "thread-rotated" } };
     },
     activeProvider: () => "codex",
     switchProvider: async () => {},
-    prepareTaskCreation: async (value) => events.push(["prepare", value]),
+    prepareTaskCreation: async (value) => {
+      selected.activeProvider = value.provider;
+      selected.activeProjectRoot = value.project ?? selected.activeProjectRoot;
+      selected.streamId = value.streamId;
+      selected.threadId = null;
+      selected.activeThreadTitle = value.title;
+      events.push(["prepare", value]);
+    },
     workspaceCatalog: {
       workspace: (id) => id === "workspace-1" ? { id, name: "Existing" } : null,
       stream: (id) => id === "stream-1" ? {
@@ -66,13 +82,25 @@ function fixture({ run = null } = {}) {
       } : null,
       createWorkspace: ({ name }) => ({ id: "workspace-new", name }),
       createStream: ({ workspaceId, name }) => ({ id: "stream-new", workspaceId, name }),
+      renameWorkspace: (id, name) => ({ id, name }),
       bindThread: (value) => events.push(["bind", value]),
       thread: (value) => value?.provider === "codex" && value?.threadId === "thread-1"
         ? { provider: "codex", threadId: "thread-1", streamId: "stream-1", projectRoot: "D:/work" }
         : null,
     },
     selectionStore: {
-      setThread: (...args) => events.push(["set-thread", ...args]),
+      get activeProvider() { return selected.activeProvider; },
+      get activeProjectRoot() { return selected.activeProjectRoot; },
+      get streamId() { return selected.streamId; },
+      get threadId() { return selected.threadId; },
+      get activeThreadTitle() { return selected.activeThreadTitle; },
+      setThread: (threadId, options) => {
+        selected.activeProvider = options.provider;
+        selected.streamId = options.streamId;
+        selected.threadId = threadId;
+        selected.activeThreadTitle = options.title;
+        events.push(["set-thread", threadId, options]);
+      },
     },
   });
   return { service, events };
@@ -115,6 +143,20 @@ test("task command service creates a Workspace and binds the provider Thread to 
   assert.equal(result.createdTask.threadId, "thread-new");
   assert.equal(result.createdTask.streamId, "stream-new");
   assert.equal(result.clientId, "telegram:7");
+  assert.equal(events.find(([name]) => name === "prepare")[1].streamId, "stream-new");
+});
+
+test("task command service recovers a persisted provider Thread after post-create failure", async () => {
+  const { service, events } = fixture({
+    createTask: async (selected) => {
+      selected.threadId = "thread-recovered";
+      selected.activeThreadTitle = "Recovered";
+      throw new Error("naming failed");
+    },
+  });
+  const result = await service.create({ provider: "codex", workspaceName: "Architecture" });
+  assert.equal(result.createdTask.threadId, "thread-recovered");
+  assert.equal(events.find(([name]) => name === "bind")[1].threadId, "thread-recovered");
 });
 
 test("task command service continues an existing Stream in a new provider Thread", async () => {

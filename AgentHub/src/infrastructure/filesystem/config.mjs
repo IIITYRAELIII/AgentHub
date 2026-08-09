@@ -12,6 +12,7 @@ import {
 import { defaultRuntimeRoot, runtimeLayout } from "./runtime-layout.mjs";
 
 export const AGENT_HUB_ROOT = path.resolve(import.meta.dirname, "../../..");
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 
 export async function resolveConfigPath({
   environment = process.env,
@@ -101,6 +102,44 @@ function taskBoardSettings(value) {
     triageModel: String(source.triageModel ?? "gpt-5.3-codex-spark").trim()
       || "gpt-5.3-codex-spark",
     autoPlaceConfidence: confidence,
+  };
+}
+
+function sharedDashboardBotSettings(value, { enabled = false, configDirectory = process.cwd() } = {}) {
+  const raw = value ?? {};
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("sharedDashboardBot must be an object");
+  }
+  if (!enabled) {
+    return {
+      enabled: false,
+      publicUrl: null,
+      hubId: null,
+      hubName: "Agent Hub",
+      secretFile: null,
+      retrySeconds: 5,
+    };
+  }
+  const publicUrl = httpBaseUrl(raw.publicUrl, "sharedDashboardBot.publicUrl");
+  const parsed = new URL(publicUrl);
+  if (parsed.protocol !== "https:") {
+    throw new Error("sharedDashboardBot.publicUrl must use HTTPS");
+  }
+  if (parsed.search || parsed.hash || parsed.pathname !== "/") {
+    throw new Error("sharedDashboardBot.publicUrl must be an origin without path, query or hash");
+  }
+  const hubId = String(raw.hubId ?? "").trim().toLowerCase();
+  if (!UUID_PATTERN.test(hubId)) throw new Error("sharedDashboardBot.hubId must be a UUID");
+  const rawSecretFile = String(raw.secretFile ?? "").trim();
+  if (!rawSecretFile) throw new Error("sharedDashboardBot.secretFile is required");
+  const hubName = String(raw.hubName ?? "Agent Hub").trim().slice(0, 80) || "Agent Hub";
+  return {
+    enabled: true,
+    publicUrl,
+    hubId,
+    hubName,
+    secretFile: path.resolve(configDirectory, rawSecretFile),
+    retrySeconds: positiveInteger(raw.retrySeconds, 5, "sharedDashboardBot.retrySeconds"),
   };
 }
 
@@ -508,6 +547,7 @@ export async function loadConfig() {
       telegram: migratedProfile !== "journal",
       miniApp: migratedProfile === "full",
       androidApp: migratedProfile === "full",
+      sharedDashboardBot: false,
       codexContextCleanup: raw.codexRolloutContext?.enabled === true,
     };
   } else {
@@ -515,7 +555,7 @@ export async function loadConfig() {
       throw new Error("components must be an object");
     }
     for (const name of Object.keys(raw.components)) {
-      if (!["telegram", "miniApp", "androidApp", "codexContextCleanup"].includes(name)) {
+      if (!["telegram", "miniApp", "androidApp", "sharedDashboardBot", "codexContextCleanup"].includes(name)) {
         throw new Error(`unknown component: ${name}`);
       }
     }
@@ -523,6 +563,7 @@ export async function loadConfig() {
       telegram: raw.components.telegram === true,
       miniApp: raw.components.miniApp === true,
       androidApp: raw.components.androidApp === true,
+      sharedDashboardBot: raw.components.sharedDashboardBot === true,
       codexContextCleanup: raw.components.codexContextCleanup == null
         ? raw.codexRolloutContext?.enabled === true
         : raw.components.codexContextCleanup === true,
@@ -633,6 +674,10 @@ export async function loadConfig() {
     }),
     contextAutomation: contextAutomationSettings(raw.contextAutomation),
     taskBoard: taskBoardSettings(raw.taskBoard),
+    sharedDashboardBot: sharedDashboardBotSettings(raw.sharedDashboardBot, {
+      enabled: components.sharedDashboardBot,
+      configDirectory,
+    }),
     claudeExecutable: String(process.env.CLAUDE_EXECUTABLE ?? raw.claudeExecutable ?? "claude").trim(),
     claudeExecutableArgs: stringArray(raw.claudeExecutableArgs, "claudeExecutableArgs"),
     claudeModel: String(process.env.CLAUDE_MODEL ?? raw.claudeModel ?? "").trim(),

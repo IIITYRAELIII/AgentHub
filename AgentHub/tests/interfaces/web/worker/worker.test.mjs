@@ -114,7 +114,7 @@ function telegramInitData(botToken, userId, authDate = Math.trunc(Date.now() / 1
   return values.toString();
 }
 
-function signedServiceRequest(url, payload, secret) {
+function signedServiceRequest(url, payload, secret, headers = {}) {
   const body = JSON.stringify(payload);
   const timestamp = Math.trunc(Date.now() / 1_000);
   const pathname = new URL(url).pathname;
@@ -125,12 +125,28 @@ function signedServiceRequest(url, payload, secret) {
   return new Request(url, {
     method: "POST",
     headers: {
+      ...headers,
       "Content-Type": "application/json",
       "X-Agent-Hub-Timestamp": String(timestamp),
       "X-Agent-Hub-Signature": signature,
     },
     body,
   });
+}
+
+function durableNamespace(workerModule) {
+  const stores = new Map();
+  return {
+    stores,
+    namespace: {
+      getByName(name) {
+        if (!stores.has(name)) {
+          stores.set(name, new workerModule.JournalStore({ storage: new MemoryStorage() }, {}));
+        }
+        return stores.get(name);
+      },
+    },
+  };
 }
 
 function signedBinaryServiceRequest(url, body, secret, headers = {}) {
@@ -747,6 +763,119 @@ test("Worker relay rejects unsupported actions, attachments, and unsigned servic
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ limit: 10 }),
   }), env);
+  assert.equal(response.status, 401);
+});
+
+test("shared Dashboard bot pairs one Telegram user and queues Tasks only for that Hub", async () => {
+  const workerModule = await loadWorker();
+  const { namespace, stores } = durableNamespace(workerModule);
+  const webhookSecret = "w".repeat(64);
+  const hubId = "018f6c86-3f34-7a31-8f27-16f5b96cce50";
+  const otherHubId = "018f6c86-3f34-7a31-8f27-16f5b96cce51";
+  const hubSecret = "h".repeat(64);
+  const otherSecret = "o".repeat(64);
+  const env = {
+    DASHBOARD_BOT_WEBHOOK_SECRET: webhookSecret,
+    JOURNAL: namespace,
+    ASSETS: { fetch: async () => new Response("asset") },
+  };
+  const register = async (id, name, secret) => workerModule.default.fetch(new Request(
+    "https://hub.test/api/dashboard-bot/register",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ hubId: id, name, secret }),
+    },
+  ), env);
+  const webhook = async (update) => workerModule.default.fetch(new Request(
+    "https://hub.test/api/dashboard-bot/webhook",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Telegram-Bot-Api-Secret-Token": webhookSecret,
+      },
+      body: JSON.stringify(update),
+    },
+  ), env);
+
+  let response = await register(hubId, "Hub Алисы", hubSecret);
+  assert.equal(response.status, 200);
+  const pairing = await response.json();
+  assert.match(pairing.code, /^[A-Z2-9]{4}-[A-Z2-9]{4}$/u);
+  response = await register(otherHubId, "Hub Боба", otherSecret);
+  assert.equal(response.status, 200);
+
+  response = await webhook({
+    update_id: 100,
+    message: {
+      message_id: 1,
+      date: 1_786_200_000,
+      chat: { id: 42, type: "private" },
+      from: { id: 42, first_name: "Алиса" },
+      text: `/link ${pairing.code}`,
+    },
+  });
+  assert.equal(response.status, 200);
+  assert.match((await response.json()).text, /Hub Алисы/u);
+
+  response = await webhook({
+    update_id: 101,
+    message: {
+      message_id: 2,
+      date: 1_786_200_001,
+      chat: { id: 42, type: "private" },
+      from: { id: 42, first_name: "Алиса" },
+      text: "Исправить фильтр на дашборде",
+    },
+  });
+  assert.equal(response.status, 200);
+  assert.match((await response.json()).text, /Backlog/u);
+
+  response = await workerModule.default.fetch(signedServiceRequest(
+    "https://hub.test/api/dashboard-bot/pull",
+    { limit: 10, waitMs: 0 },
+    hubSecret,
+    { "X-Agent-Hub-Dashboard-Id": hubId },
+  ), env);
+  assert.equal(response.status, 200);
+  const [command] = (await response.json()).commands;
+  assert.equal(command.action, "board-task-ingest");
+  assert.equal(command.userId, "42");
+  assert.deepEqual(command.params, {
+    text: "Исправить фильтр на дашборде",
+    sourceKey: "shared-dashboard:101",
+    sourceDetails: {
+      updateId: 101,
+      chatId: 42,
+      messageId: 2,
+      userId: 42,
+    },
+  });
+
+  response = await workerModule.default.fetch(signedServiceRequest(
+    "https://hub.test/api/dashboard-bot/pull",
+    { limit: 10, waitMs: 0 },
+    otherSecret,
+    { "X-Agent-Hub-Dashboard-Id": otherHubId },
+  ), env);
+  assert.equal(response.status, 409);
+
+  response = await workerModule.default.fetch(signedServiceRequest(
+    "https://hub.test/api/dashboard-bot/result",
+    { id: command.id, userId: "42", ok: true, result: { taskId: "task-1" } },
+    hubSecret,
+    { "X-Agent-Hub-Dashboard-Id": hubId },
+  ), env);
+  assert.equal(response.status, 200);
+  assert.ok(stores.has(`dashboard-bot:${hubId}`));
+
+  response = await workerModule.default.fetch(signedServiceRequest(
+    "https://hub.test/api/dashboard-bot/pull",
+    { limit: 10, waitMs: 0 },
+    "x".repeat(64),
+    { "X-Agent-Hub-Dashboard-Id": hubId },
+  ), env);
   assert.equal(response.status, 401);
 });
 

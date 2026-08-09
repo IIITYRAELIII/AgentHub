@@ -39,6 +39,7 @@ export async function createHubInfrastructure({
   instanceLockFile,
   exchangeRatesFile,
   handleDesktopControl,
+  forgetDesktopControl,
   findProject,
   authorizeRuntimeCommand,
   reconcileRuntimeCommand,
@@ -85,6 +86,7 @@ export async function createHubInfrastructure({
     allowedUserIds: config.allowedUserIds,
     deviceStore: trustedDeviceStore,
     controlHandler: handleDesktopControl,
+    onControlResultDelivered: ({ id }) => forgetDesktopControl(id),
     attachmentDirectory: path.join(runtimeCommandRoot, "DesktopApp", "attachments"),
     journalDatabaseFile,
   };

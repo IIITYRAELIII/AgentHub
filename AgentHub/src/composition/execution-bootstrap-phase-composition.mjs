@@ -1,4 +1,8 @@
+import path from "node:path";
+
+import { DurableApplicationCommandDispatcher } from "../application/durable-application-command-dispatcher.mjs";
 import { findMessageBinding } from "../infrastructure/persistence/message-bindings.mjs";
+import { DurableCommandReceipts } from "../infrastructure/persistence/durable-command-receipts.mjs";
 import { formatRestartCompleteMessage } from "../interfaces/telegram/status.mjs";
 import { telegramPrompt } from "../interfaces/telegram/telegram-message.mjs";
 import { commandTaskTarget } from "../application/application-command-service.mjs";
@@ -163,6 +167,12 @@ export function createExecutionBootstrapPhase({
     api.findProject(telegramTasks.activeProjectRoot()) ?? api.activeProject()
   );
   const telegramProviderTitle = () => (telegramTasks.isCodex() ? "Codex" : "Claude Code");
+  const telegramApplicationCommands = new DurableApplicationCommandDispatcher({
+    receipts: new DurableCommandReceipts({
+      file: path.join(config.dataDir, "telegram-application-command-receipts.json"),
+    }),
+    dispatch: interaction.dispatchApplicationCommand,
+  });
   const telegramSelectionNotification = (alreadySelected, options = {}) => api.sendTaskSelectionNotification({
     ...options,
     alreadySelected,
@@ -213,13 +223,13 @@ export function createExecutionBootstrapPhase({
       claudeModelLabels: settings.claudeModelLabels,
       parseApprovalCallback: settings.parseApprovalCallback,
       dispatchTelegramSetting: interaction.dispatchTelegramSetting,
-      dispatchApplicationCommand: interaction.dispatchApplicationCommand,
+      dispatchApplicationCommand: (...args) => telegramApplicationCommands.dispatch(...args),
+      acknowledgeApplicationCommands: (update) => telegramApplicationCommands.acknowledgeUpdate(update),
       telegramCallbackCommandContext: interaction.telegramCallbackCommandContext,
       telegramMessageCommandContext: interaction.telegramMessageCommandContext,
       commandTaskTarget,
       activeProject: telegramActiveProject,
       activeProvider: telegramTasks.activeProvider,
-      clearTaskSelection: telegramTasks.clearTaskSelection,
       autoApprove: () => selection.hostState.autoApprove,
       agentPreferences: selection.agentPreferences,
       codexModelLabel: settings.codexModelLabel,
@@ -313,6 +323,7 @@ export function createExecutionBootstrapPhase({
     config,
     runtimeCommandRoot,
     handleDesktopControl: api.handleDesktopControl,
+    forgetDesktopControl: api.forgetDesktopControl,
     runtimeCommandServer: infrastructure.runtimeCommandServer,
     stopRuntimeTimers: runtime.stopRuntimeTimers,
     taskRuns: provider.taskRuns,

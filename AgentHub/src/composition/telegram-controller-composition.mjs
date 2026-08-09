@@ -22,12 +22,12 @@ export function createTelegramControllerComposition({
   parseApprovalCallback,
   dispatchTelegramSetting,
   dispatchApplicationCommand,
+  acknowledgeApplicationCommands,
   telegramCallbackCommandContext,
   telegramMessageCommandContext,
   commandTaskTarget,
   activeProject,
   activeProvider,
-  clearTaskSelection,
   autoApprove,
   agentPreferences,
   codexModelLabel,
@@ -139,7 +139,7 @@ export function createTelegramControllerComposition({
     providerTitle,
     activeProject,
     activeProvider,
-    clearTaskSelection,
+    selectTaskFromBinding,
     callbackContext: telegramCallbackCommandContext,
     autoApprove,
     codexModel: () => agentPreferences.codexModel,
@@ -335,7 +335,8 @@ export function createTelegramControllerComposition({
     sendMessage: sendMessageTo,
     saveState,
     preserveFailedUpdate: (update, error) => failedUpdateStore.add(update, error),
-    afterUpdate: async () => {
+    afterUpdate: async (update) => {
+      await acknowledgeApplicationCommands(update);
       if (restartReady()) await performRestart();
     },
     stopping: isStopping,

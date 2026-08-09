@@ -4,6 +4,35 @@ function telegramClientId(chatId) {
   return Number.isSafeInteger(chatId) ? `telegram:${chatId}` : "telegram:unknown";
 }
 
+export function retargetTelegramClientSelections(sessionState, {
+  provider,
+  sourceThreadId,
+  threadId,
+  streamId = null,
+  projectRoot = null,
+  taskTitle = "",
+} = {}) {
+  const normalizedProvider = String(provider ?? "").trim();
+  const normalizedSourceThreadId = String(sourceThreadId ?? "").trim();
+  const normalizedThreadId = String(threadId ?? "").trim();
+  if (!normalizedProvider || !normalizedSourceThreadId || !normalizedThreadId) return 0;
+  let changed = 0;
+  for (const [clientId, binding] of sessionState.clientTaskSelectionsSnapshot()) {
+    if (!/^telegram:-?\d+$/u.test(clientId)
+      || binding?.provider !== normalizedProvider
+      || binding?.threadId !== normalizedSourceThreadId) continue;
+    sessionState.setClientTaskSelection(clientId, {
+      ...binding,
+      streamId: String(streamId ?? binding.streamId ?? "").trim() || null,
+      projectRoot: String(projectRoot ?? binding.projectRoot ?? "").trim() || null,
+      threadId: normalizedThreadId,
+      taskTitle: String(taskTitle ?? "").trim() || String(binding.taskTitle ?? "").trim(),
+    });
+    changed += 1;
+  }
+  return changed;
+}
+
 export class ClientTaskSelectionService {
   constructor({
     sessionState,

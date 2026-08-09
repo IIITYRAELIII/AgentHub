@@ -81,7 +81,7 @@ export class TelegramPollingController {
       throw error;
     }
     this.setProcessingUpdateId(null);
-    await this.afterUpdate();
+    await this.afterUpdate(update);
     const completedAt = this.now();
     const totalMs = completedAt - startedAt;
     if (totalMs >= this.slowUpdateThresholdMs) {

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -41,5 +41,23 @@ test("runtime state updates one durable SQLite row", async (context) => {
   store.save({ sequence: 2, activeRuns: [] });
   assert.deepEqual(await readRuntimeState(dataDir), { sequence: 2, activeRuns: [] });
   store.close();
+});
+
+test("corrupt runtime SQLite is preserved and replaced with a writable store", async (context) => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "agent-hub-runtime-corrupt-"));
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const databaseFile = runtimeDatabasePath(dataDir);
+  await writeFile(databaseFile, "not a sqlite database", "utf8");
+
+  const store = new RuntimeStateStore({ dataDir });
+  const loaded = await store.load();
+  assert.equal(loaded.value, null);
+  assert.equal(loaded.recovered, true);
+  store.save({ sequence: 1 });
+  assert.deepEqual(store.read(), { sequence: 1 });
+  store.close();
+
+  assert.ok((await readdir(dataDir)).some((name) => name.startsWith("runtime.sqlite.corrupt-")));
+  assert.deepEqual(await readRuntimeState(dataDir), { sequence: 1 });
 });
 

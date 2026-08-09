@@ -202,6 +202,7 @@ export async function restoreHubRuntimeSnapshot(saved, context) {
           : null,
         requestedAt: String(saved.restartRequest.requestedAt ?? ""),
         waitingForRuns: saved.restartRequest.waitingForRuns === true,
+        notifyTelegram: saved.restartRequest.notifyTelegram === true,
         minimumUpdateOffset: Number.isSafeInteger(saved.restartRequest.minimumUpdateOffset)
           ? saved.restartRequest.minimumUpdateOffset
           : 0,

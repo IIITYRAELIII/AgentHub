@@ -6,6 +6,7 @@ export function createAgentHubBootstrapComposition({
   config,
   runtimeCommandRoot,
   handleDesktopControl,
+  forgetDesktopControl,
   runtimeCommandServer,
   stopRuntimeTimers,
   taskRuns,
@@ -49,6 +50,7 @@ export function createAgentHubBootstrapComposition({
       desktopControlServer = createDesktopControlServer({
         runtimeRoot: runtimeCommandRoot,
         handler: handleDesktopControl,
+        onResultDelivered: ({ id }) => forgetDesktopControl(id),
         protectSecret: process.env.AGENT_HUB_DISABLE_SECRET_ACL === "1"
           ? async () => {}
           : undefined,

@@ -14,7 +14,7 @@ function fixture({ activeThread = null } = {}) {
   const controller = new DesktopTaskBoardController({
     taskBoard: {
       task: () => task,
-      create: (value) => { calls.push(["create", value]); return { id: "board-created" }; },
+      create: (value) => { calls.push(["create", value]); return { id: "board-created", rawText: value.text }; },
       move: (value) => calls.push(["move", value]),
       moveColumn: (value) => calls.push(["move-column", value]),
       setNotesComment: (value) => calls.push(["notes-comment", value]),
@@ -38,7 +38,7 @@ function fixture({ activeThread = null } = {}) {
       };
     },
     sendMessage: async (params) => calls.push(["message", params]),
-    snapshot: async () => ({ boardTasks: [] }),
+    snapshot: async (value) => { calls.push(["snapshot", value]); return { boardTasks: [] }; },
   });
   return { controller, calls };
 }
@@ -50,6 +50,25 @@ test("dashboard creation adds a manual task directly to its Workspace", async ()
   assert.deepEqual(calls[1], ["move", {
     id: "board-created", bucket: "workspace", workspaceId: "workspace-1",
   }]);
+});
+
+test("shared Telegram bot ingestion preserves its source and refreshes the dashboard", async () => {
+  const { controller, calls } = fixture();
+  assert.deepEqual(await controller.ingest({
+    text: "Проверить общий бот",
+    sourceKey: "shared-dashboard:123",
+    sourceDetails: { chatId: "42", messageId: "7" },
+  }), {
+    taskId: "board-created",
+    rawText: "Проверить общий бот",
+  });
+  assert.deepEqual(calls[0], ["create", {
+    text: "Проверить общий бот",
+    source: "telegram",
+    sourceKey: "shared-dashboard:123",
+    sourceDetails: { chatId: "42", messageId: "7" },
+  }]);
+  assert.deepEqual(calls[1], ["snapshot", { refresh: true }]);
 });
 
 test("dashboard persists column reordering", async () => {
@@ -72,8 +91,10 @@ test("dashboard updates Notes and Workspace comments", async () => {
   const { controller, calls } = fixture();
   await controller.updateColumnComment({ columnId: "notes", comment: "Фильмы" });
   await controller.updateColumnComment({ columnId: "workspace:workspace-1", comment: "Разработка" });
-  assert.deepEqual(calls[0], ["notes-comment", { columnId: "notes", comment: "Фильмы" }]);
-  assert.deepEqual(calls[1], ["workspace-comment", "workspace-1", "Разработка"]);
+  assert.deepEqual(calls.filter(([name]) => name !== "snapshot"), [
+    ["notes-comment", { columnId: "notes", comment: "Фильмы" }],
+    ["workspace-comment", "workspace-1", "Разработка"],
+  ]);
 });
 
 test("starting a Task in an existing Stream selects it and sends the Task text", async () => {

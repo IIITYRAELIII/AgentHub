@@ -113,6 +113,14 @@ export function serverPageSnapshot({
           : "Бот отключён.",
       },
       {
+        id: "shared-dashboard-bot",
+        name: "Общий бот дашборда",
+        enabled: config?.components?.sharedDashboardBot === true,
+        note: config?.components?.sharedDashboardBot === true
+          ? "Принимает карточки через общего командного Telegram-бота."
+          : "Общий бот дашборда отключён.",
+      },
+      {
         id: "telegram-mini-app",
         name: "Telegram Mini App",
         enabled: config?.components?.miniApp === true,

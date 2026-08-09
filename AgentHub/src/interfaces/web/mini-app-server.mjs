@@ -57,6 +57,7 @@ const STATIC_FILES = new Map([
 const IMMUTABLE_STATIC_FILES = new Set(["/agent-hub-mark.png"]);
 const MAX_CONTROL_REQUEST_BYTES = 512 * 1024;
 const MAX_MOBILE_UPDATE_BYTES = 100 * 1024 * 1024;
+const CONTROL_COMMAND_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,199}$/;
 const MOBILE_UPDATE_FILE = "AgentHub-Mobile.apk";
 const MOBILE_UPDATE_MANIFEST = "update.json";
 
@@ -335,6 +336,7 @@ export class MiniAppServer {
   #botToken;
   #clients = new Set();
   #controlHandler;
+  #onControlResultDelivered;
   #deviceStore;
   #changeTimer = null;
   #heartbeatTimer = null;
@@ -362,6 +364,7 @@ export class MiniAppServer {
     localAccessSecret = "",
     localAccessSecretFile = null,
     controlHandler = null,
+    onControlResultDelivered = null,
     deviceStore = null,
     assetsDirectory = path.join(AGENT_HUB_ROOT, "assets", "mini-app"),
     attachmentDirectory = null,
@@ -378,6 +381,9 @@ export class MiniAppServer {
     this.#localAccessSecret = String(localAccessSecret);
     this.#localAccessSecretFile = localAccessSecretFile ? path.resolve(localAccessSecretFile) : null;
     this.#controlHandler = typeof controlHandler === "function" ? controlHandler : null;
+    this.#onControlResultDelivered = typeof onControlResultDelivered === "function"
+      ? onControlResultDelivered
+      : null;
     this.#deviceStore = deviceStore;
     this.#assetsDirectory = path.resolve(assetsDirectory);
     this.#themeRegistry = loadThemeRegistry(this.#assetsDirectory);
@@ -643,6 +649,44 @@ export class MiniAppServer {
       }
       return;
     }
+    if (url.pathname === "/api/control/ack") {
+      if (method !== "POST") {
+        response.writeHead(405, {
+          Allow: "POST",
+          ...responseHeaders("text/plain; charset=utf-8"),
+        });
+        response.end("Method Not Allowed\n");
+        return;
+      }
+      const authorization = await this.#authorize(request, response);
+      if (!authorization) return;
+      if (
+        String(request.headers["content-type"] ?? "").split(";", 1)[0].trim().toLowerCase()
+        !== "application/json"
+      ) {
+        json(response, 415, { error: "Ожидался application/json." }, method);
+        return;
+      }
+      if (!this.#onControlResultDelivered) {
+        json(response, 503, { error: "Подтверждение результата Agent Hub недоступно." }, method);
+        return;
+      }
+      try {
+        const body = await readJsonBody(request);
+        const commandId = String(body.commandId ?? "").trim();
+        if (!CONTROL_COMMAND_ID_PATTERN.test(commandId)) {
+          throw new Error("Некорректный идентификатор команды");
+        }
+        const retired = await this.#onControlResultDelivered({
+          id: commandId,
+          context: authorization,
+        }) === true;
+        json(response, 200, { ok: true, retired }, method);
+      } catch (error) {
+        json(response, 400, { ok: false, error: String(error?.message ?? error) }, method);
+      }
+      return;
+    }
     if (url.pathname === "/api/control") {
       if (method !== "POST") {
         response.writeHead(405, {
@@ -676,7 +720,7 @@ export class MiniAppServer {
           throw new Error("Некорректные параметры команды");
         }
         const commandId = String(body.commandId ?? "").trim();
-        if (commandId && !/^[A-Za-z0-9][A-Za-z0-9:._-]{0,199}$/.test(commandId)) {
+        if (commandId && !CONTROL_COMMAND_ID_PATTERN.test(commandId)) {
           throw new Error("Некорректный идентификатор команды");
         }
         json(response, 200, {
@@ -686,6 +730,7 @@ export class MiniAppServer {
             params,
             context: { ...authorization, ...(commandId ? { commandId } : {}) },
           }),
+          ...(commandId ? { receiptId: commandId } : {}),
         }, method);
       } catch (error) {
         json(response, 400, { ok: false, error: String(error?.message ?? error) }, method);

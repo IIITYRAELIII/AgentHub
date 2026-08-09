@@ -134,6 +134,7 @@ test("desktop client survives App Server exit during delayed startup and shares 
   const configured = await callDesktopControl("update-setting", {
     name: "reasoning",
     value: "medium",
+    ...initial.selected,
   }, { runtimeRoot });
   assert.equal(configured.settings.reasoning, "medium");
   const automatic = await callDesktopControl("update-setting", {
@@ -227,6 +228,7 @@ test("desktop client survives App Server exit during delayed startup and shares 
     callDesktopControl("update-setting", {
       name: "model",
       value: "gpt-5.6-terra",
+      ...beforeCompaction.selected,
     }, { runtimeRoot }),
     /завершения свёртки контекста/iu,
   );

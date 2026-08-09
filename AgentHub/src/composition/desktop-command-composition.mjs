@@ -54,7 +54,6 @@ export function createDesktopCommandComposition({
   const desktopUpdateSetting = (...args) => desktopSettingsService.update(...args);
 
   const applicationCommands = createApplicationCommandService({
-    selectedTask: application.selectedTask,
     handlers: {
       selectTask: desktopSelectTask,
       createTask: desktopNewTask,

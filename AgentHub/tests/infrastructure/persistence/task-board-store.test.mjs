@@ -84,3 +84,26 @@ test("Workspace and Notes column order persists after reordering", async (t) => 
   assert.deepEqual(reopened.orderedColumnIds(["one", "two", "three"]), ["one", "notes", "two", "three"]);
   assert.equal(reopened.notesComment(), "Книги и фильмы");
 });
+
+test("Workspace removal reassigns its cards and preserves their order", async (t) => {
+  const store = await fixture(t);
+  const target = store.create({ text: "Target" });
+  const first = store.create({ text: "First" });
+  const second = store.create({ text: "Second" });
+  store.move(target.id, { bucket: "workspace", workspaceId: "workspace-2" });
+  store.move(first.id, { bucket: "workspace", workspaceId: "workspace-1" });
+  store.move(second.id, { bucket: "workspace", workspaceId: "workspace-1" });
+  store.moveColumn(["workspace-1", "workspace-2"], {
+    columnId: "workspace-1",
+    beforeColumnId: "workspace-2",
+  });
+
+  assert.equal(store.reassignWorkspace("workspace-1", "workspace-2"), 2);
+  assert.deepEqual(
+    store.list({ includeDone: false })
+      .filter((task) => task.workspaceId === "workspace-2")
+      .map((task) => task.id),
+    [target.id, first.id, second.id],
+  );
+  assert.deepEqual(store.orderedColumnIds(["workspace-2"]), ["workspace-2", "notes"]);
+});

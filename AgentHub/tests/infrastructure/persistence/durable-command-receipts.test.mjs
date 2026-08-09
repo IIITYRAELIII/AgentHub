@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -115,6 +115,17 @@ test("receipt refuses new effects rather than evicting unacknowledged results", 
     action: "mutation",
     effect: async () => ({ accepted: true }),
   }), { accepted: true });
+});
+
+test("receipt acknowledgement can retire every command for one transport update", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "command-receipt-prefix-"));
+  const receipts = new DurableCommandReceipts({ file: path.join(root, "receipts.json") });
+  await receipts.execute({ id: "message:7:9:task.create", fingerprint: "one", action: "task.create", effect: async () => 1 });
+  await receipts.execute({ id: "message:7:9:task.select", fingerprint: "two", action: "task.select", effect: async () => 2 });
+  await receipts.execute({ id: "message:7:10:task.create", fingerprint: "three", action: "task.create", effect: async () => 3 });
+  assert.equal(await receipts.forgetPrefix("message:7:9:"), 2);
+  assert.equal(await receipts.forget("message:7:10:task.create"), true);
+  await rm(root, { recursive: true, force: true });
 });
 
 test("receipt refuses new effects when unresolved receipt capacity is exhausted", async () => {

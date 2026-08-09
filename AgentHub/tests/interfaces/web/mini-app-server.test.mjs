@@ -14,6 +14,7 @@ import {
 } from "../../../src/interfaces/web/mini-app-server.mjs";
 import { buildLazyJournalPayload } from "../../../src/interfaces/web/mini-app-journal-data.mjs";
 import { createAttachmentStorageName } from "../../../src/domain/attachment-files.mjs";
+import { createDesktopControlRouter } from "../../../src/interfaces/desktop/desktop-control-router.mjs";
 
 const LIMITS_HTML = '<div data-work-log-rate-limits data-sampled-at="2026-07-30T02:55:14.512Z">'
   + '<span data-rate-limit-caption>Лимиты</span>'
@@ -756,6 +757,7 @@ test("Mini App forwards authenticated control commands to Agent Hub", async () =
     assert.deepEqual(await local.json(), {
       ok: true,
       result: { generatedAt: "now" },
+      receiptId: "local-command-1",
     });
     const snapshot = await fetch(`${address.url}api/snapshot?knownVersion=version-1`);
     assert.equal(snapshot.status, 200);
@@ -817,6 +819,54 @@ test("Mini App forwards authenticated control commands to Agent Hub", async () =
     assert.equal(uploadedDocument.attachment.name, "заметки.txt");
     assert.equal(uploadedDocument.attachment.type, "text/plain");
     assert.deepEqual(await readFile(uploadedDocument.path, "utf8"), "plain text");
+  } finally {
+    await server.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("local HTTP ACK retires delivered receipts beyond receipt capacity", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-local-control-capacity-"));
+  const receiptFile = path.join(directory, "receipts.json");
+  let effects = 0;
+  const router = createDesktopControlRouter({
+    handlers: { mutate: async ({ index }) => ({ index, effect: ++effects }) },
+    mutationActions: ["mutate"],
+    receiptFile,
+    receiptOptions: { maxItems: 100 },
+  });
+  const server = new MiniAppServer({
+    host: "127.0.0.1",
+    port: 0,
+    journalDatabase: memoryJournal(),
+    controlHandler: router.handleDesktopControl,
+    onControlResultDelivered: ({ id }) => router.forgetDesktopControl(id),
+  });
+  try {
+    const address = await server.start();
+    for (let index = 0; index < 110; index += 1) {
+      const commandId = `http-command-${index}`;
+      const response = await fetch(`${address.url}api/control`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "mutate", params: { index }, commandId }),
+      });
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), {
+        ok: true,
+        result: { index, effect: index + 1 },
+        receiptId: commandId,
+      });
+      const acknowledgement = await fetch(`${address.url}api/control/ack`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ commandId }),
+      });
+      assert.equal(acknowledgement.status, 200);
+      assert.deepEqual(await acknowledgement.json(), { ok: true, retired: true });
+    }
+    assert.equal(effects, 110);
+    assert.deepEqual(JSON.parse(await readFile(receiptFile, "utf8")).records, []);
   } finally {
     await server.close();
     await rm(directory, { recursive: true, force: true });

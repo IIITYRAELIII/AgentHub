@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -40,6 +40,30 @@ test("desktop mutation reconciles a redelivery after a crash without repeating i
   });
   assert.deepEqual(await restarted.handleDesktopControl(request), { accepted: true });
   assert.equal(effects, 1);
+});
+
+test("desktop mutation receipt protects retries until delivery is acknowledged", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-desktop-ack-"));
+  const request = {
+    action: "mutate",
+    params: { value: "one" },
+    context: { source: "desktop-control", commandId: "stable-command" },
+  };
+  let effects = 0;
+  const router = createDesktopControlRouter({
+    handlers: { mutate: async () => ({ effect: ++effects }) },
+    mutationActions: ["mutate"],
+    receiptFile: path.join(root, "receipts.json"),
+  });
+  try {
+    assert.deepEqual(await router.handleDesktopControl(request), { effect: 1 });
+    assert.deepEqual(await router.handleDesktopControl(request), { effect: 1 });
+    assert.equal(effects, 1);
+    assert.equal(await router.forgetDesktopControl("stable-command"), true);
+    assert.deepEqual(await router.handleDesktopControl(request), { effect: 2 });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("desktop control router applies transport-specific response limits", async () => {

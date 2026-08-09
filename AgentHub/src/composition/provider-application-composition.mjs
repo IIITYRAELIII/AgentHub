@@ -1,4 +1,5 @@
 import { taskRunIsActive } from "../domain/task-runs.mjs";
+import { retargetTelegramClientSelections } from "../application/client-task-selection-service.mjs";
 import { StreamContextMaintenanceService } from "../application/stream-context-maintenance-service.mjs";
 import { processIsAlive } from "../providers/claude/claude-run-io.mjs";
 import { readClaudeSessionSnapshot } from "../providers/claude/claude-session-reader.mjs";
@@ -222,6 +223,7 @@ export async function createProviderApplicationComposition({
     selectionStore,
     deferredInputs: runtimeData.deferredInputs,
     invalidateCatalog: invalidateTaskCatalog,
+    retargetClientSelections: (binding) => retargetTelegramClientSelections(hostState, binding),
     saveState: api.saveState,
     scheduleDeferred: (item, delayMs) => late.runCoordinator().scheduleDeferred(item, delayMs),
     autoCompactEnabled: () => config.contextAutomation.autoCompactAfterTurn,

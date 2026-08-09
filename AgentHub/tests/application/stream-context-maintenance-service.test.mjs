@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { DeferredInputStore } from "../../src/application/deferred-input-store.mjs";
+import { retargetTelegramClientSelections } from "../../src/application/client-task-selection-service.mjs";
 import {
   contextUsagePercent,
   StreamContextMaintenanceService,
@@ -24,6 +25,21 @@ function fixture({
   const events = [];
   const registry = new StreamMaintenanceRegistry();
   const deferredInputs = new DeferredInputStore();
+  const clientSelections = new Map([
+    ["telegram:42", {
+      streamId: "stream-1", provider: "codex", projectRoot: "D:/Work", threadId: "thread-old", taskTitle: "Workspace",
+    }],
+    ["telegram:43", {
+      streamId: "stream-2", provider: "codex", projectRoot: "D:/Work", threadId: "thread-other", taskTitle: "Other",
+    }],
+    ["desktop:7", {
+      streamId: "stream-1", provider: "codex", projectRoot: "D:/Work", threadId: "thread-old", taskTitle: "Workspace",
+    }],
+  ]);
+  const sessionState = {
+    clientTaskSelectionsSnapshot: () => [...clientSelections.entries()].map(([key, value]) => [key, structuredClone(value)]),
+    setClientTaskSelection: (clientId, value) => clientSelections.set(clientId, structuredClone(value)),
+  };
   const source = {
     provider: "codex",
     projectRoot: "D:/Work",
@@ -125,6 +141,7 @@ function fixture({
     selectionStore,
     deferredInputs,
     invalidateCatalog: () => events.push(["invalidate"]),
+    retargetClientSelections: (binding) => retargetTelegramClientSelections(sessionState, binding),
     saveState: async () => events.push(["save"]),
     scheduleDeferred: (item) => events.push(["wake", item.id]),
     autoCompactEnabled: () => autoCompact,
@@ -132,7 +149,7 @@ function fixture({
     autoRotateEnabled: () => rotate,
     autoRotateThreshold: () => 20,
   });
-  return { deferredInputs, events, registry, service, source };
+  return { clientSelections, deferredInputs, events, registry, service, source };
 }
 
 test("context usage percentage uses the current model window", () => {
@@ -265,8 +282,23 @@ test("rotation reuses the completed compaction and retargets the blocked queue",
     "automatic-rotation",
   );
   assert.equal(state.deferredInputs.get("queued-1").threadId, "thread-new");
+  assert.equal(state.clientSelections.get("telegram:42").threadId, "thread-new");
+  assert.equal(state.clientSelections.get("telegram:43").threadId, "thread-other");
+  assert.equal(state.clientSelections.get("desktop:7").threadId, "thread-old");
   assert.equal(state.events.some(([name, id]) => name === "wake" && id === "queued-1"), true);
   assert.equal(state.registry.isActive(state.source), false);
+});
+
+test("manual rotation retargets the active Telegram task binding", async () => {
+  const state = fixture();
+  await state.service.rotate(state.source);
+  assert.deepEqual(state.clientSelections.get("telegram:42"), {
+    streamId: "stream-1",
+    provider: "codex",
+    projectRoot: "D:/Work",
+    threadId: "thread-new",
+    taskTitle: "Workspace",
+  });
 });
 
 test("a mid-turn compaction rotates only after completion and transfers that whole turn", async () => {

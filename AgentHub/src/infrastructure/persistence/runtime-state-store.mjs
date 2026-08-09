@@ -1,3 +1,4 @@
+import { renameSync } from "node:fs";
 import { copyFile, mkdir, readFile, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -5,6 +6,26 @@ import { DatabaseSync } from "node:sqlite";
 import { readJsonWithBackup } from "./state-store.mjs";
 
 const BUSY_TIMEOUT_MS = 5_000;
+
+function recoverableDatabaseError(error) {
+  return /(?:file is not a database|database disk image is malformed|malformed database schema)/iu
+    .test(String(error?.message ?? ""));
+}
+
+function preserveCorruptRuntimeDatabase(dataDir) {
+  const file = runtimeDatabasePath(dataDir);
+  const suffix = `.corrupt-${new Date().toISOString().replaceAll(/[:.]/gu, "-")}`;
+  let preserved = false;
+  for (const candidate of [file, `${file}-wal`, `${file}-shm`]) {
+    try {
+      renameSync(candidate, `${candidate}${suffix}`);
+      preserved = true;
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+  }
+  return preserved;
+}
 
 export function runtimeDatabasePath(dataDir) {
   return path.join(path.resolve(dataDir), "runtime.sqlite");
@@ -44,9 +65,14 @@ export function configureRuntimeDatabase(database) {
 
 export function openRuntimeDatabase(dataDir, { readOnly = false } = {}) {
   const database = new DatabaseSync(runtimeDatabasePath(dataDir), readOnly ? { readOnly: true } : {});
-  if (!readOnly) configureRuntimeDatabase(database);
-  else database.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS};`);
-  return database;
+  try {
+    if (!readOnly) configureRuntimeDatabase(database);
+    else database.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS};`);
+    return database;
+  } catch (error) {
+    database.close();
+    throw error;
+  }
 }
 
 function parseStateRow(row) {
@@ -123,12 +149,19 @@ export class RuntimeStateStore {
   #dataDir;
   #legacyFile;
   #legacyBackupFile;
+  #recoveredDatabase = false;
 
   constructor({ dataDir, legacyFile = path.join(dataDir, "state.json"), legacyBackupFile = `${legacyFile}.bak` }) {
     this.#dataDir = path.resolve(dataDir);
     this.#legacyFile = path.resolve(legacyFile);
     this.#legacyBackupFile = path.resolve(legacyBackupFile);
-    this.#database = openRuntimeDatabase(this.#dataDir);
+    try {
+      this.#database = openRuntimeDatabase(this.#dataDir);
+    } catch (error) {
+      if (!recoverableDatabaseError(error) || !preserveCorruptRuntimeDatabase(this.#dataDir)) throw error;
+      this.#database = openRuntimeDatabase(this.#dataDir);
+      this.#recoveredDatabase = true;
+    }
   }
 
   async load() {
@@ -141,11 +174,15 @@ export class RuntimeStateStore {
         [this.#legacyFile, this.#legacyBackupFile],
         "state",
       );
-      return { value: current, source: runtimeDatabasePath(this.#dataDir), recovered: false };
+      return {
+        value: current,
+        source: runtimeDatabasePath(this.#dataDir),
+        recovered: this.#recoveredDatabase,
+      };
     }
 
     const legacy = await readJsonWithBackup(this.#legacyFile, { backupFile: this.#legacyBackupFile });
-    if (!legacy.value) return { value: null, source: null, recovered: false };
+    if (!legacy.value) return { value: null, source: null, recovered: this.#recoveredDatabase };
     this.save(legacy.value);
     await archiveLegacyFiles(
       this.#dataDir,

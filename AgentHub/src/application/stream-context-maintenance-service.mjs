@@ -19,6 +19,7 @@ export class StreamContextMaintenanceService {
     selectionStore,
     deferredInputs,
     invalidateCatalog,
+    retargetClientSelections = () => 0,
     saveState,
     scheduleDeferred = () => {},
     autoCompactEnabled = () => false,
@@ -41,6 +42,7 @@ export class StreamContextMaintenanceService {
       selectionStore,
       deferredInputs,
       invalidateCatalog,
+      retargetClientSelections,
       saveState,
       scheduleDeferred,
       autoCompactEnabled,
@@ -240,11 +242,12 @@ export class StreamContextMaintenanceService {
     if (!workspace) throw new Error("Workspace не найден");
     const threadId = normalized(rotated?.thread?.id);
     if (!threadId) throw new Error("Codex App Server не создал новый Thread");
+    const projectRoot = binding.projectRoot || source.projectRoot;
     this.workspaceCatalog.bindThread({
       provider: "codex",
       threadId,
       streamId: stream.id,
-      projectRoot: binding.projectRoot || source.projectRoot,
+      projectRoot,
       source: "rebirth",
     });
     if (this.selectionStore.threadId === source.threadId) {
@@ -258,9 +261,17 @@ export class StreamContextMaintenanceService {
       if (normalized(item.streamId) !== stream.id) continue;
       item.provider = "codex";
       item.threadId = threadId;
-      item.projectRoot = binding.projectRoot || source.projectRoot;
+      item.projectRoot = projectRoot;
       item.taskTitle = workspace.name;
     }
+    this.retargetClientSelections({
+      provider: "codex",
+      sourceThreadId: source.threadId,
+      threadId,
+      streamId: stream.id,
+      projectRoot,
+      taskTitle: workspace.name,
+    });
     this.invalidateCatalog();
     await this.saveState();
     return { ...source, streamId: stream.id, threadId, taskTitle: workspace.name };

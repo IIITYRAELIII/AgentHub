@@ -741,6 +741,21 @@ async function waitRemoteResult(commandId, timeoutMs = DEFAULT_CONTROL_TIMEOUT_M
   );
 }
 
+async function acknowledgeLocalControl(commandId) {
+  const response = await hubFetch("/api/control/ack", {
+    method: "POST",
+    headers: {
+      ...authorizationHeaders(),
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ commandId }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload.ok === false) {
+    throw new Error(String(payload.error ?? `Agent Hub: HTTP ${response.status}`));
+  }
+}
+
 async function readSnapshot(params = {}) {
   await localSessionReady;
   const query = new URLSearchParams({
@@ -763,17 +778,23 @@ async function control(action, params = {}) {
   if (bridged) return bridged;
   if (action === "snapshot") return readSnapshot(params);
   await localSessionReady;
+  const commandId = crypto.randomUUID();
   const response = await hubFetch("/api/control", {
     method: "POST",
     headers: {
       ...authorizationHeaders(),
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ action, params, commandId: crypto.randomUUID() }),
+    body: JSON.stringify({ action, params, commandId }),
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || payload.ok === false) {
     throw new Error(String(payload.error ?? `Agent Hub: HTTP ${response.status}`));
+  }
+  if (payload.receiptId === commandId) {
+    await acknowledgeLocalControl(commandId).catch((error) => {
+      console.warn(`Agent Hub control acknowledgement failed: ${error.message}`);
+    });
   }
   return payload.pending && payload.id
     ? waitRemoteResult(
@@ -2156,7 +2177,11 @@ agentHub.on("selection:set", ({ key, value }) => runAction(async () => {
   };
   const name = names[key];
   if (!name) return;
+  const taskIdentity = ["provider", "project", "model", "reasoning", "mode"].includes(name)
+    ? exactSelectedTaskParams()
+    : {};
   applySnapshot(await control("update-setting", {
+    ...taskIdentity,
     name,
     value: key === "autoApprove" ? (value ? "auto" : "manual") : value,
   }));

@@ -20,6 +20,10 @@ const CONTROL_AVAILABLE_PREFIX = "control:available:";
 const CONTROL_EXPIRY_PREFIX = "control:expiry:";
 const CLIENT_SNAPSHOT_PREFIX = "client:snapshot:";
 const CONTROL_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+const DASHBOARD_BOT_PAIRING_EXPIRY_MS = 10 * 60 * 1_000;
+const DASHBOARD_BOT_COMMAND_EXPIRY_MS = 30 * 24 * 60 * 60 * 1_000;
+const DASHBOARD_BOT_PAIRING_CODE_PATTERN = /^[A-Z2-9]{8}$/u;
+const DASHBOARD_BOT_HUB_NAME_MAX_CHARS = 80;
 const SYNC_STAGING_EXPIRY_MS = 30 * 60 * 1_000;
 const STORAGE_DELETE_BATCH_SIZE = 128;
 const REMOTE_ATTACHMENT_PREFIX = "remote-attachment:";
@@ -64,6 +68,7 @@ const CONTROL_ACTIONS = new Set([
   "trusted-devices",
   "create-device-pairing",
   "revoke-device",
+  "board-task-ingest",
 ]);
 
 function hex(bytes) {
@@ -416,6 +421,15 @@ function json(payload, status = 200) {
   });
 }
 
+function dashboardBotTelegramReply(chatId, text) {
+  return json({
+    method: "sendMessage",
+    chat_id: chatId,
+    text,
+    disable_web_page_preview: true,
+  });
+}
+
 export async function validateControlBinaryServiceRequest(request, secret, {
   now = Date.now(),
   maxBytes = MAX_ATTACHMENT_BYTES,
@@ -461,6 +475,28 @@ function randomBytes(size) {
 function randomPairingCode() {
   const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
   return [...randomBytes(20)].map((value) => alphabet[value & 31]).join("");
+}
+
+function randomDashboardBotPairingCode() {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const bytes = randomBytes(8);
+  return [...bytes].map((value) => alphabet[value % alphabet.length]).join("");
+}
+
+function normalizedDashboardBotPairingCode(value) {
+  return String(value ?? "").toUpperCase().replace(/[^A-Z2-9]/gu, "");
+}
+
+function dashboardBotHubKey(hubId) {
+  return `dashboard-bot:hub:${hubId}`;
+}
+
+function dashboardBotUserKey(userId) {
+  return `dashboard-bot:user:${userId}`;
+}
+
+function dashboardBotPairingKey(codeHash) {
+  return `dashboard-bot:pairing:${codeHash}`;
 }
 
 function normalizedDeviceCode(value) {
@@ -614,6 +650,185 @@ export class JournalStore extends DurableObject {
 
   #wakeSnapshotWaiters(userId) {
     for (const settle of [...(this.#snapshotWaiters.get(userId) ?? [])]) settle();
+  }
+
+  async #registerDashboardBotHub(payload) {
+    const hubId = String(payload?.hubId ?? "").trim().toLowerCase();
+    const secret = String(payload?.secret ?? "").trim();
+    const name = String(payload?.name ?? "Agent Hub").trim().slice(0, DASHBOARD_BOT_HUB_NAME_MAX_CHARS)
+      || "Agent Hub";
+    if (!CONTROL_ID_PATTERN.test(hubId) || secret.length < 32 || secret.length > 256) {
+      throw new Error("invalid dashboard bot hub registration");
+    }
+    const now = Date.now();
+    const key = dashboardBotHubKey(hubId);
+    const existing = await this.ctx.storage.get(key);
+    if (existing && existing.secret !== secret) throw new Error("dashboard bot hub id conflict");
+    if (existing?.userId) {
+      existing.name = name;
+      existing.updatedAt = now;
+      await this.ctx.storage.put(key, existing);
+      return { paired: true, userId: String(existing.userId), name };
+    }
+    if (existing?.pairingKey) await this.ctx.storage.delete(existing.pairingKey);
+    const code = randomDashboardBotPairingCode();
+    const codeHash = await sha256(code);
+    const pairingKey = dashboardBotPairingKey(codeHash);
+    const expiresAt = now + DASHBOARD_BOT_PAIRING_EXPIRY_MS;
+    const record = {
+      hubId,
+      secret,
+      name,
+      userId: null,
+      chatId: null,
+      pairingKey,
+      createdAt: Number(existing?.createdAt) || now,
+      updatedAt: now,
+    };
+    await this.ctx.storage.put({
+      [key]: record,
+      [pairingKey]: { hubId, expiresAt },
+    });
+    return {
+      paired: false,
+      code: `${code.slice(0, 4)}-${code.slice(4)}`,
+      expiresAt,
+      name,
+    };
+  }
+
+  async #authenticateDashboardBotHub(request) {
+    const hubId = String(request.headers.get("X-Agent-Hub-Dashboard-Id") ?? "").trim().toLowerCase();
+    if (!CONTROL_ID_PATTERN.test(hubId)) throw new Error("invalid dashboard bot hub id");
+    const record = await this.ctx.storage.get(dashboardBotHubKey(hubId));
+    if (!record?.secret) throw new Error("dashboard bot hub is not registered");
+    const body = await validateControlServiceRequest(request, record.secret);
+    if (!record.userId || !record.chatId) throw new Error("dashboard bot hub is not paired");
+    return {
+      hubId,
+      body,
+      userId: String(record.userId),
+      chatId: String(record.chatId),
+    };
+  }
+
+  async #linkDashboardBotHub(message, code) {
+    const normalizedCode = normalizedDashboardBotPairingCode(code);
+    if (!DASHBOARD_BOT_PAIRING_CODE_PATTERN.test(normalizedCode)) {
+      return { reply: "Код привязки должен содержать 8 символов." };
+    }
+    const pairingKey = dashboardBotPairingKey(await sha256(normalizedCode));
+    const pairing = await this.ctx.storage.get(pairingKey);
+    const now = Date.now();
+    if (!pairing || Number(pairing.expiresAt ?? 0) <= now) {
+      if (pairing) await this.ctx.storage.delete(pairingKey);
+      return { reply: "Код привязки недействителен или истёк. Создайте новый код в Agent Hub." };
+    }
+    const hubKey = dashboardBotHubKey(String(pairing.hubId));
+    const hub = await this.ctx.storage.get(hubKey);
+    if (!hub || hub.pairingKey !== pairingKey) {
+      await this.ctx.storage.delete(pairingKey);
+      return { reply: "Код привязки уже недействителен. Создайте новый код в Agent Hub." };
+    }
+    const userId = String(message.from.id);
+    const chatId = String(message.chat.id);
+    const previousHubId = String(await this.ctx.storage.get(dashboardBotUserKey(userId)) ?? "");
+    const writes = [];
+    if (previousHubId && previousHubId !== hub.hubId) {
+      const previousKey = dashboardBotHubKey(previousHubId);
+      const previousHub = await this.ctx.storage.get(previousKey);
+      if (previousHub?.userId === userId) {
+        previousHub.userId = null;
+        previousHub.chatId = null;
+        previousHub.updatedAt = now;
+        writes.push([previousKey, previousHub]);
+      }
+    }
+    if (hub.userId && String(hub.userId) !== userId) {
+      await this.ctx.storage.delete(dashboardBotUserKey(String(hub.userId)));
+    }
+    hub.userId = userId;
+    hub.chatId = chatId;
+    hub.updatedAt = now;
+    delete hub.pairingKey;
+    writes.push([hubKey, hub], [dashboardBotUserKey(userId), hub.hubId]);
+    await putStorageEntries(this.ctx.storage, writes);
+    await this.ctx.storage.delete(pairingKey);
+    return { reply: `Готово. Сообщения будут попадать в Dashboard «${hub.name}».` };
+  }
+
+  async #unlinkDashboardBotHub(message) {
+    const userId = String(message.from.id);
+    const userKey = dashboardBotUserKey(userId);
+    const hubId = String(await this.ctx.storage.get(userKey) ?? "");
+    if (!hubId) return { reply: "Этот Telegram ещё не привязан к Agent Hub." };
+    const hubKey = dashboardBotHubKey(hubId);
+    const hub = await this.ctx.storage.get(hubKey);
+    if (hub?.userId === userId) {
+      hub.userId = null;
+      hub.chatId = null;
+      hub.updatedAt = Date.now();
+      await this.ctx.storage.put(hubKey, hub);
+    }
+    await this.ctx.storage.delete(userKey);
+    return { reply: "Привязка удалена. Новые сообщения больше не попадут в Dashboard." };
+  }
+
+  async #routeDashboardBotUpdate(update) {
+    const message = update?.message;
+    if (
+      !Number.isSafeInteger(update?.update_id)
+      || !message
+      || message.chat?.type !== "private"
+      || !Number.isSafeInteger(message.chat?.id)
+      || !Number.isSafeInteger(message.from?.id)
+      || message.from?.is_bot === true
+    ) {
+      return { ignored: true };
+    }
+    const text = String(message.text ?? message.caption ?? "").trim();
+    if (/^\/start(?:@\w+)?(?:\s|$)/iu.test(text)) {
+      return { reply: "Это общий бот Dashboard. В Agent Hub создайте код привязки и отправьте /link КОД." };
+    }
+    if (/^\/help(?:@\w+)?(?:\s|$)/iu.test(text)) {
+      return { reply: "Сначала отправьте /link КОД. После привязки любой обычный текст создаёт карточку в Backlog; /unlink удаляет привязку." };
+    }
+    const link = text.match(/^\/link(?:@\w+)?\s+(.+)$/iu);
+    if (link) return this.#linkDashboardBotHub(message, link[1]);
+    if (/^\/unlink(?:@\w+)?(?:\s|$)/iu.test(text)) return this.#unlinkDashboardBotHub(message);
+    const task = text.match(/^\/task(?:@\w+)?\s+(.+)$/iu);
+    const taskText = String(task?.[1] ?? text).trim();
+    if (!taskText) return { reply: "Пока поддерживаются текстовые сообщения и подписи к пересылкам." };
+    if (taskText.startsWith("/")) return { reply: "Неизвестная команда. Используйте /help." };
+    const userId = String(message.from.id);
+    const hubId = String(await this.ctx.storage.get(dashboardBotUserKey(userId)) ?? "");
+    if (!CONTROL_ID_PATTERN.test(hubId)) {
+      return { reply: "Сначала привяжите Agent Hub командой /link КОД." };
+    }
+    const hub = await this.ctx.storage.get(dashboardBotHubKey(hubId));
+    if (!hub || String(hub.userId) !== userId) {
+      return { reply: "Привязка Agent Hub устарела. Создайте новый код и повторите /link КОД." };
+    }
+    const command = {
+      id: crypto.randomUUID().toLowerCase(),
+      action: "board-task-ingest",
+      params: {
+        text: taskText,
+        sourceKey: `shared-dashboard:${update.update_id}`,
+        sourceDetails: {
+          updateId: update.update_id,
+          chatId: message.chat.id,
+          messageId: message.message_id,
+          userId: message.from.id,
+        },
+      },
+      userId,
+    };
+    return {
+      hubId,
+      command,
+      reply: "Принято в Backlog. Карточка появится, когда ваш Agent Hub подключится.",
+    };
   }
 
   async #storedSnapshot(userId) {
@@ -1063,6 +1278,33 @@ export class JournalStore extends DurableObject {
 
   async fetch(request) {
     const url = new URL(request.url);
+    if (request.method === "POST" && url.pathname === "/dashboard-bot/register") {
+      try {
+        const body = await readBoundedBody(request, 8 * 1024, "dashboard bot registration");
+        return json(await this.#registerDashboardBotHub(parseJson(body, "dashboard bot registration")));
+      } catch (error) {
+        return json({ error: error.message }, /conflict/iu.test(error.message) ? 409 : 400);
+      }
+    }
+    if (
+      request.method === "POST"
+      && ["/api/dashboard-bot/pull", "/api/dashboard-bot/result"].includes(url.pathname)
+    ) {
+      try {
+        return json(await this.#authenticateDashboardBotHub(request));
+      } catch (error) {
+        const status = /not paired/iu.test(error.message) ? 409 : 401;
+        return json({ error: error.message }, status);
+      }
+    }
+    if (request.method === "POST" && url.pathname === "/dashboard-bot/update") {
+      try {
+        const body = await readBoundedBody(request, 64 * 1024, "dashboard bot update");
+        return json(await this.#routeDashboardBotUpdate(parseJson(body, "dashboard bot update")));
+      } catch (error) {
+        return json({ error: error.message }, 400);
+      }
+    }
     if (request.method === "POST" && url.pathname === "/snapshot/push") {
       try {
         return json(await this.#pushSnapshot(await request.json()));
@@ -1369,6 +1611,10 @@ export class JournalStore extends DurableObject {
       const key = controlCommandKey(command.id);
       const attachmentIds = attachmentIdsFromParams(command.action, command.params);
       const requestHash = await sha256(`${command.action}\n${stableStringify(command.params)}`);
+      const requestedExpiryMs = Number(request.headers.get("X-Agent-Hub-Control-Expiry-Ms"));
+      const expiryMs = Number.isSafeInteger(requestedExpiryMs)
+        ? Math.min(DASHBOARD_BOT_COMMAND_EXPIRY_MS, Math.max(CONTROL_EXPIRY_MS, requestedExpiryMs))
+        : CONTROL_EXPIRY_MS;
       const response = await this.ctx.storage.transaction(async (storage) => {
         await this.#cleanupExpiredControlCommands(now, storage);
         if (attachmentIds.length) await this.#cleanupAttachments(now, storage);
@@ -1399,7 +1645,7 @@ export class JournalStore extends DurableObject {
           status: "pending",
           createdAt: now,
           updatedAt: now,
-          expiresAt: now + CONTROL_EXPIRY_MS,
+          expiresAt: now + expiryMs,
         };
         record.availabilityKey = controlAvailableKey(record, now);
         record.expiryKey = controlExpiryKey(record);
@@ -1418,7 +1664,7 @@ export class JournalStore extends DurableObject {
       });
       if (response.status === 202) {
         this.#wakeControlWaiters();
-        await this.#scheduleCleanupAlarm(now + CONTROL_EXPIRY_MS);
+        await this.#scheduleCleanupAlarm(now + expiryMs);
       }
       return response;
     }
@@ -1715,6 +1961,115 @@ export default {
     const url = new URL(request.url);
     const store = env.JOURNAL.getByName("current");
     if (url.pathname === "/health") return json({ ok: true });
+    if (url.pathname === "/api/dashboard-bot/register") {
+      if (request.method !== "POST") return json({ error: "Method Not Allowed" }, 405);
+      try {
+        const body = await readBoundedBody(request, 8 * 1024, "dashboard bot registration");
+        return store.fetch(new Request("https://journal.internal/dashboard-bot/register", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body,
+        }));
+      } catch (error) {
+        return json({ error: error.message }, /too large/iu.test(error.message) ? 413 : 400);
+      }
+    }
+    if (url.pathname === "/api/dashboard-bot/webhook") {
+      if (request.method !== "POST") return json({ error: "Method Not Allowed" }, 405);
+      const expectedSecret = String(env.DASHBOARD_BOT_WEBHOOK_SECRET ?? "").trim();
+      const actualSecret = String(request.headers.get("X-Telegram-Bot-Api-Secret-Token") ?? "").trim();
+      if (
+        expectedSecret.length < 32
+        || actualSecret.length !== expectedSecret.length
+        || await sha256(actualSecret) !== await sha256(expectedSecret)
+      ) {
+        return json({ error: "invalid dashboard bot webhook secret" }, 401);
+      }
+      let update;
+      try {
+        update = parseJson(
+          await readBoundedBody(request, 64 * 1024, "dashboard bot update"),
+          "dashboard bot update",
+        );
+      } catch (error) {
+        return json({ error: error.message }, /too large/iu.test(error.message) ? 413 : 400);
+      }
+      const routedResponse = await store.fetch(new Request("https://journal.internal/dashboard-bot/update", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(update),
+      }));
+      const routed = await routedResponse.json();
+      if (!routedResponse.ok) return json(routed, routedResponse.status);
+      if (routed.command && routed.hubId) {
+        const hubStore = env.JOURNAL.getByName(`dashboard-bot:${routed.hubId}`);
+        const enqueueResponse = await hubStore.fetch(new Request("https://journal.internal/control/enqueue", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Agent-Hub-Control-Expiry-Ms": String(DASHBOARD_BOT_COMMAND_EXPIRY_MS),
+          },
+          body: JSON.stringify(routed.command),
+        }));
+        if (!enqueueResponse.ok) {
+          const error = await enqueueResponse.json().catch(() => ({}));
+          return dashboardBotTelegramReply(
+            update?.message?.chat?.id,
+            `Agent Hub временно не принял сообщение: ${String(error?.error ?? "очередь недоступна").slice(0, 300)}`,
+          );
+        }
+      }
+      if (!routed.reply) return json({ ok: true, ignored: routed.ignored === true });
+      return dashboardBotTelegramReply(update?.message?.chat?.id, routed.reply);
+    }
+    if (["/api/dashboard-bot/pull", "/api/dashboard-bot/result"].includes(url.pathname)) {
+      if (request.method !== "POST") return json({ error: "Method Not Allowed" }, 405);
+      const authenticated = await store.fetch(new Request(`https://journal.internal${url.pathname}`, request));
+      if (!authenticated.ok) return authenticated;
+      const identity = await authenticated.json();
+      let payload;
+      try {
+        payload = parseJson(identity.body, "dashboard bot service request");
+      } catch (error) {
+        return json({ error: error.message }, 400);
+      }
+      const hubStore = env.JOURNAL.getByName(`dashboard-bot:${identity.hubId}`);
+      if (url.pathname.endsWith("/pull")) {
+        const limit = Number(payload?.limit ?? 10);
+        const waitMs = Number(payload?.waitMs ?? 0);
+        if (!Number.isSafeInteger(limit) || limit < 1 || limit > 20) {
+          return json({ error: "invalid dashboard bot pull limit" }, 400);
+        }
+        if (!Number.isSafeInteger(waitMs) || waitMs < 0 || waitMs > MAX_CONTROL_WAIT_MS) {
+          return json({ error: "invalid dashboard bot pull wait" }, 400);
+        }
+        return hubStore.fetch(new Request("https://journal.internal/control/pull", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ limit, waitMs }),
+        }));
+      }
+      const id = String(payload?.id ?? "").toLowerCase();
+      if (
+        !CONTROL_ID_PATTERN.test(id)
+        || String(payload?.userId ?? "") !== identity.userId
+        || typeof payload?.ok !== "boolean"
+      ) {
+        return json({ error: "invalid dashboard bot result" }, 400);
+      }
+      return hubStore.fetch(new Request("https://journal.internal/control/result", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id,
+          userId: identity.userId,
+          ok: payload.ok,
+          ...(payload.ok
+            ? { result: payload.result ?? null }
+            : { error: String(payload.error ?? "").slice(0, MAX_CONTROL_ERROR_CHARS) }),
+        }),
+      }));
+    }
     if (url.pathname === "/api/sync") {
       if (request.method !== "POST") return json({ error: "Method Not Allowed" }, 405);
       try {

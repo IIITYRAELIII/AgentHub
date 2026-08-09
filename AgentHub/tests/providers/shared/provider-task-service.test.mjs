@@ -4,7 +4,7 @@ import { ClaudeProviderTaskService, CodexProviderTaskService } from "../../../sr
 
 test("Codex task service creates, names and discovers tasks through its port", async () => {
   const calls = [];
-  const state = { running: false, threadId: null, title: "", diff: "old" };
+  const state = { running: false, streamId: "stream-1", threadId: null, title: "", diff: "old" };
   const pages = [
     { data: [{ id: "one" }], nextCursor: "next" },
     { data: [{ id: "two" }], nextCursor: null },
@@ -20,7 +20,11 @@ test("Codex task service creates, names and discovers tasks through its port", a
       return {};
     },
     selection: {
-      setThread: (id) => { state.threadId = id; },
+      get streamId() { return state.streamId; },
+      setThread: (id, options) => {
+        state.threadId = id;
+        state.streamId = options.streamId;
+      },
       setTitle: (title) => { state.title = title; },
     },
     activeProjectRoot: () => "D:/workspace",
@@ -34,11 +38,44 @@ test("Codex task service creates, names and discovers tasks through its port", a
   });
   const created = await service.createTask();
   assert.equal(state.threadId, "thread-1");
+  assert.equal(state.streamId, "stream-1");
   assert.match(state.title, /^Telegram · /u);
   assert.equal(state.diff, "");
   assert.equal(created.threadId, "thread-1");
   assert.deepEqual((await service.discoverTasks()).map((item) => item.id), ["one", "two"]);
   assert.ok(calls.includes("start"));
+  assert.ok(calls.indexOf("save") < calls.findIndex((call) => Array.isArray(call) && call[0] === "thread/name/set"));
+});
+
+test("Codex task service persists the created Thread before post-create setup", async () => {
+  const state = { streamId: "stream-1", threadId: null, savedThreadId: null };
+  const service = new CodexProviderTaskService({
+    transportRunning: () => true,
+    startTransport: async () => {},
+    initialize: async () => {},
+    sendRpc: async (method) => {
+      if (method === "thread/start") return { thread: { id: "thread-created" } };
+      throw new Error("post-create failure");
+    },
+    selection: {
+      get streamId() { return state.streamId; },
+      setThread: (threadId, options) => {
+        state.threadId = threadId;
+        state.streamId = options.streamId;
+      },
+      setTitle() {},
+    },
+    activeProjectRoot: () => "D:/workspace",
+    sandboxMode: () => "workspace-write",
+    invalidateCatalog() {},
+    restoreSettings() {},
+    updateSettings: async () => {},
+    clearLatestDiff() {},
+    saveState: async () => { state.savedThreadId = state.threadId; },
+  });
+  await assert.rejects(service.createTask(), /post-create failure/);
+  assert.equal(state.savedThreadId, "thread-created");
+  assert.equal(state.streamId, "stream-1");
 });
 
 test("Claude task service creates an unbound logical task", async () => {

@@ -21,6 +21,7 @@ import {
   validateDesktopControlEndpoint,
   validateDesktopControlRequest,
 } from "../../desktop-control.mjs";
+import { createDesktopControlRouter } from "../../src/interfaces/desktop/desktop-control-router.mjs";
 
 test("desktop control validates endpoint and request shape", () => {
   const endpointId = "a".repeat(64);
@@ -100,6 +101,38 @@ test("desktop control exchanges authenticated RPC and rotates endpoint after res
     const secondEndpoint = await readDesktopControlEndpoint(runtimeRoot);
     assert.notEqual(secondEndpoint.endpointId, firstEndpoint.endpointId);
     assert.equal((await callDesktopControl("after-restart", {}, { runtimeRoot })).action, "after-restart");
+  } finally {
+    await server.close();
+    await rm(runtimeRoot, { recursive: true, force: true });
+  }
+});
+
+test("desktop IPC retires delivered receipts and stays available beyond receipt capacity", async () => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-desktop-capacity-"));
+  const receiptFile = path.join(runtimeRoot, "receipts.json");
+  let effects = 0;
+  const router = createDesktopControlRouter({
+    handlers: { mutate: async ({ index }) => ({ index, effect: ++effects }) },
+    mutationActions: ["mutate"],
+    receiptFile,
+    receiptOptions: { maxItems: 100 },
+  });
+  const server = new DesktopControlServer({
+    runtimeRoot,
+    protectSecret: async () => {},
+    handler: router.handleDesktopControl,
+    onResultDelivered: ({ id }) => router.forgetDesktopControl(id),
+  });
+  try {
+    await server.start();
+    for (let index = 0; index < 110; index += 1) {
+      assert.deepEqual(await callDesktopControl("mutate", { index }, {
+        runtimeRoot,
+        commandId: `ipc-command-${index}`,
+      }), { index, effect: index + 1 });
+    }
+    assert.equal(effects, 110);
+    assert.deepEqual(JSON.parse(await readFile(receiptFile, "utf8")).records, []);
   } finally {
     await server.close();
     await rm(runtimeRoot, { recursive: true, force: true });

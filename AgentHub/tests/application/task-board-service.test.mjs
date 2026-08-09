@@ -66,6 +66,7 @@ test("disabled Spark leaves new Tasks idle and clears recovered triage", () => {
       markStarted: () => null,
       orderedColumnIds: (ids) => [...ids, "notes"],
       moveColumn: () => null,
+      reassignWorkspace: () => 0,
       notesComment: () => "",
       setNotesComment: () => "",
       disablePendingTriage: () => { disabled += 1; },

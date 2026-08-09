@@ -3,6 +3,7 @@
     "telegram": true,
     "miniApp": true,
     "androidApp": true,
+    "sharedDashboardBot": false,
     "codexContextCleanup": false
   },
   "telegramBotToken": "123456789:replace_with_your_bot_token",
@@ -48,6 +49,13 @@
     "triageEnabled": true,
     "triageModel": "gpt-5.3-codex-spark",
     "autoPlaceConfidence": 0.82
+  },
+  "sharedDashboardBot": {
+    "publicUrl": "https://hub.example.com",
+    "hubId": "018f6c86-3f34-7a31-8f27-16f5b96cce70",
+    "hubName": "Agent Hub — участник",
+    "secretFile": "shared-dashboard-bot.secret",
+    "retrySeconds": 5
   },
   "codexRolloutContext": {
     "keepRecentImages": 4,

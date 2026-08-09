@@ -130,7 +130,7 @@ export function createDesktopRunRouterWiring({
   }
 
   function dispatchTelegramSetting(callback, name, value) {
-    const params = { name, value };
+    const params = { ...state.selectedTask(), name, value };
     return desktop.dispatchApplicationCommand(
       "settings.update",
       params,
@@ -171,6 +171,7 @@ export function createDesktopRunRouterWiring({
       createDevicePairing: desktop.createDevicePairing,
       revokeDevice: desktop.revokeDevice,
       boardTaskCreate: (params) => taskBoardController.create(params),
+      boardTaskIngest: (params) => taskBoardController.ingest(params),
       boardTaskMove: (params) => taskBoardController.move(params),
       boardTaskComplete: (params) => taskBoardController.complete(params),
       boardTaskRemove: (params) => taskBoardController.remove(params),

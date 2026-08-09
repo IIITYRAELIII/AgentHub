@@ -1,21 +1,11 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
 import { withInterprocessLocks } from "../process/interprocess-lock.mjs";
 import { writeTextAtomic } from "./state-store.mjs";
 
-function stableValue(value) {
-  if (Array.isArray(value)) return value.map(stableValue);
-  if (value && typeof value === "object") {
-    return Object.fromEntries(Object.keys(value).sort().map((key) => [key, stableValue(value[key])]));
-  }
-  return value;
-}
-
-export function commandFingerprint(value) {
-  return createHash("sha256").update(JSON.stringify(stableValue(value))).digest("hex");
-}
+export { commandFingerprint } from "../../domain/command-fingerprint.mjs";
 
 export class DurableCommandRetryableError extends Error {
   constructor(message) {
@@ -188,6 +178,21 @@ export class DurableCommandReceipts {
       if (!this.#records.delete(String(id ?? "").trim())) return false;
       await this.#persist();
       return true;
+    });
+  }
+
+  async forgetPrefix(prefix) {
+    const value = String(prefix ?? "").trim();
+    if (!value) return 0;
+    return this.#withLock(async () => {
+      let removed = 0;
+      for (const id of this.#records.keys()) {
+        if (!id.startsWith(value)) continue;
+        this.#records.delete(id);
+        removed += 1;
+      }
+      if (removed) await this.#persist();
+      return removed;
     });
   }
 

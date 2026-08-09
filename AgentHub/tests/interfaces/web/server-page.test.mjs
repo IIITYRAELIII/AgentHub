@@ -49,7 +49,7 @@ test("server page snapshot excludes secrets and absolute filesystem paths", () =
   const snapshot = serverPageSnapshot({
     config: {
       components: {
-        telegram: true, miniApp: true, androidApp: true, codexContextCleanup: true,
+        telegram: true, miniApp: true, androidApp: true, sharedDashboardBot: true, codexContextCleanup: true,
       },
       miniApp: { enabled: true, worker: { enabled: true } },
       autoApproveOnStart: true,
@@ -86,6 +86,7 @@ test("server page snapshot excludes secrets and absolute filesystem paths", () =
     { id: "core", name: "Локальный HUB", enabled: true },
     { id: "web-app", name: "Web App", enabled: true },
     { id: "telegram", name: "Telegram Bot", enabled: true },
+    { id: "shared-dashboard-bot", name: "Общий бот дашборда", enabled: true },
     { id: "telegram-mini-app", name: "Telegram Mini App", enabled: true },
     { id: "android-app", name: "Android App", enabled: true },
     { id: "codex-context-optimization", name: "Оптимизация Codex", enabled: true },

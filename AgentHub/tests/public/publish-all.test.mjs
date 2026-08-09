@@ -8,8 +8,27 @@ import { fileURLToPath } from "node:url";
 import { parseArguments, publicationSteps, publishAll } from "../../publish-all.mjs";
 import { classifyPublicationChanges, parseChangedArguments, publishChanged } from "../../publish-changed.mjs";
 import { detectGitCommonDirectory, resolveWrangler } from "../../wrangler-runner.mjs";
+import {
+  assertCleanPublicationTree,
+  parseWorkingTreeStatus,
+} from "../../src/infrastructure/persistence/publication-state.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+test("publication rejects a dirty AgentHub working tree", async () => {
+  assert.deepEqual(parseWorkingTreeStatus(" M AgentHub/server.mjs\n?? AgentHub/new.mjs\n"), [
+    " M AgentHub/server.mjs",
+    "?? AgentHub/new.mjs",
+  ]);
+  await assert.rejects(
+    assertCleanPublicationTree({
+      cwd: ROOT,
+      status: async () => " M AgentHub/server.mjs\n",
+    }),
+    /dirty working tree/u,
+  );
+  assert.equal(await assertCleanPublicationTree({ cwd: ROOT, status: async () => "" }), true);
+});
 
 test("publication validates every client before the first deployment", () => {
   const steps = publicationSteps();

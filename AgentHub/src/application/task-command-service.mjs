@@ -154,6 +154,7 @@ export class TaskCommandService {
   async create(params = {}, context = {}) {
     let workspace = null;
     let stream = null;
+    let createdWorkspace = false;
     if (params.streamId) {
       stream = this.workspaceCatalog.stream(params.streamId);
       if (!stream) throw new Error("Stream не найден");
@@ -172,15 +173,6 @@ export class TaskCommandService {
     const provider = String(params.provider ?? streamSettings.provider ?? this.activeProvider()).trim();
     if (!["codex", "claude"].includes(provider)) throw new Error("Неизвестный агент");
     if (provider !== this.activeProvider()) await this.switchProvider(provider);
-    if (typeof this.prepareTaskCreation === "function") {
-      await this.prepareTaskCreation({
-        ...streamSettings,
-        provider,
-        streamId: stream?.id ?? null,
-        title: workspace?.name ?? "",
-      });
-    }
-    const created = await this.createTask();
     if (!stream && workspace) {
       stream = this.workspaceCatalog.createStream({
         workspaceId: workspace.id,
@@ -188,12 +180,47 @@ export class TaskCommandService {
       });
     } else if (!workspace) {
       workspace = this.workspaceCatalog.createWorkspace({
-        name: String(params.workspaceName ?? created?.title ?? "New Workspace").trim(),
+        name: String(params.workspaceName ?? "New Workspace").trim(),
       });
+      createdWorkspace = true;
       stream = this.workspaceCatalog.createStream({
         workspaceId: workspace.id,
         name: params.streamName,
       });
+    }
+    if (typeof this.prepareTaskCreation === "function") {
+      await this.prepareTaskCreation({
+        ...streamSettings,
+        provider,
+        streamId: stream.id,
+        title: workspace?.name ?? "",
+      });
+    } else {
+      this.selectionStore.setThread(null, {
+        provider,
+        streamId: stream.id,
+        title: workspace.name,
+      });
+      await this.saveState();
+    }
+    let created;
+    try {
+      created = await this.createTask();
+    } catch (error) {
+      const recoveredThreadId = String(this.selectionStore.threadId ?? "").trim();
+      const recoveredStreamId = String(this.selectionStore.streamId ?? "").trim();
+      const recoveredProvider = String(this.selectionStore.activeProvider ?? "").trim();
+      if (!recoveredThreadId || recoveredStreamId !== stream.id || recoveredProvider !== provider) throw error;
+      created = {
+        provider,
+        threadId: recoveredThreadId,
+        projectRoot: this.selectionStore.activeProjectRoot,
+        title: this.selectionStore.activeThreadTitle || workspace.name,
+      };
+    }
+    if (createdWorkspace && !params.workspaceName && created?.title
+      && typeof this.workspaceCatalog.renameWorkspace === "function") {
+      workspace = this.workspaceCatalog.renameWorkspace(workspace.id, created.title);
     }
     if (created?.threadId) {
       this.workspaceCatalog.bindThread({

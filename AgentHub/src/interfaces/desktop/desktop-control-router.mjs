@@ -15,11 +15,12 @@ export function createDesktopControlRouter({
   miniAppLimits = DEFAULT_MINI_APP_LIMITS,
   desktopMaxResponseBytes = DEFAULT_DESKTOP_MAX_RESPONSE_BYTES,
   receiptFile = null,
+  receiptOptions = {},
   reconcileMutation = null,
 }) {
   const mutations = new Set(mutationActions);
   let mutationQueue = Promise.resolve();
-  const receipts = receiptFile ? new DurableCommandReceipts({ file: receiptFile }) : null;
+  const receipts = receiptFile ? new DurableCommandReceipts({ ...receiptOptions, file: receiptFile }) : null;
 
   function serializeDesktopMutation(operation) {
     const next = mutationQueue.catch(() => {}).then(operation);

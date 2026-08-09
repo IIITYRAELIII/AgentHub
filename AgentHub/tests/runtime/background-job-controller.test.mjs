@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
+import { PersistentBackgroundJobStore } from "../../src/infrastructure/persistence/background-job-store.mjs";
 import { PersistentBackgroundJobController } from "../../src/runtime/background-job-controller.mjs";
 
 class MemoryStore {
@@ -16,12 +20,19 @@ class MemoryStore {
     return item;
   }
   async remove(id) { this.items.delete(id); }
+  async recordFailure(id, update) {
+    const current = this.items.get(id);
+    if (!current) return null;
+    const item = { ...current, ...update };
+    this.items.set(id, item);
+    return item;
+  }
   values() { return [...this.items.values()]; }
   get size() { return this.items.size; }
 }
 
 async function waitFor(predicate) {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
     if (predicate()) return;
     await new Promise((resolve) => setImmediate(resolve));
   }
@@ -57,6 +68,89 @@ test("persistent background controller preserves interrupted work during shutdow
   const item = await jobs.enqueue("image", { message: {}, target: {} }, 7);
   await waitFor(() => jobs.size === 0);
   assert.equal(store.items.has(item.id), true);
+});
+
+test("persistent background controller retries with bounded exponential backoff", async () => {
+  const store = new MemoryStore();
+  const timers = [];
+  let now = 1_000;
+  let attempts = 0;
+  const jobs = controller({
+    store,
+    now: () => now,
+    retryBaseDelayMs: 100,
+    retryMaxDelayMs: 500,
+    scheduleTimer: (callback, delayMs) => {
+      const timer = { callback, delayMs, unref() {} };
+      timers.push(timer);
+      return timer;
+    },
+    cancelTimer: () => {},
+    media: {
+      processSpeechRequest: async () => {
+        attempts += 1;
+        if (attempts < 3) throw new Error(`temporary-${attempts}`);
+      },
+    },
+  });
+
+  await jobs.enqueue("speech", { chatId: 7, text: "hello" }, 7);
+  await waitFor(() => timers.length === 1);
+  const firstRetry = timers.shift();
+  assert.equal(firstRetry.delayMs, 100);
+  assert.equal(store.values()[0].attempts, 1);
+
+  now += firstRetry.delayMs;
+  firstRetry.callback();
+  await waitFor(() => timers.length === 1);
+  const secondRetry = timers.shift();
+  assert.equal(secondRetry.delayMs, 200);
+  assert.equal(store.values()[0].attempts, 2);
+
+  now += secondRetry.delayMs;
+  secondRetry.callback();
+  await waitFor(() => store.size === 0);
+  assert.equal(attempts, 3);
+  assert.equal(jobs.size, 0);
+});
+
+test("persistent background controller restores a failed retry after restart", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-background-retry-"));
+  try {
+    let now = 10_000;
+    let retryPersisted;
+    const persisted = new Promise((resolve) => { retryPersisted = resolve; });
+    const firstStore = new PersistentBackgroundJobStore({ directoryPath: root, now: () => now });
+    const first = controller({
+      store: firstStore,
+      now: () => now,
+      retryBaseDelayMs: 250,
+      retryMaxDelayMs: 250,
+      scheduleTimer: () => ({ unref() {} }),
+      cancelTimer: () => {},
+      logger: { log() {}, warn: retryPersisted, error() {} },
+      media: { processSpeechRequest: async () => { throw new Error("temporary"); } },
+    });
+    await first.enqueue("speech", { chatId: 7, text: "hello" }, 7);
+    await persisted;
+    assert.equal(firstStore.values()[0]?.attempts, 1);
+
+    now += 250;
+    const restoredStore = new PersistentBackgroundJobStore({ directoryPath: root, now: () => now });
+    const calls = [];
+    const restored = controller({
+      store: restoredStore,
+      now: () => now,
+      retryBaseDelayMs: 250,
+      retryMaxDelayMs: 250,
+      media: { processSpeechRequest: async (...args) => calls.push(args) },
+    });
+    assert.deepEqual(await restored.restore(), { restored: 1, total: 1 });
+    await waitFor(() => restoredStore.size === 0);
+    assert.deepEqual(calls, [[7, "hello"]]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("persistent background controller enforces separate durable limits", async () => {

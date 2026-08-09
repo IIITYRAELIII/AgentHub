@@ -13,15 +13,16 @@ function createController(overrides = {}) {
     updateMessage: async () => events.push("message"),
     saveState: async () => events.push("save"),
     resources: {
-      flush: async () => events.push("flush"),
-      suspend: async () => events.push("suspend"),
-      finalize: async () => events.push("finalize"),
+      flush: async () => { events.push("flush"); return { ok: true }; },
+      suspend: async () => { events.push("suspend"); return { ok: true }; },
+      finalize: async () => { events.push("finalize"); return { ok: true }; },
     },
     beginStopping: () => { events.push("stopping"); return true; },
     stopTimers: () => events.push("timers"),
     stopMedia: () => events.push("media"),
     launchReplacement: async () => ({ lock: { pid: 42 }, attempt: 1, usedFallback: false }),
     recoverPrevious: async () => events.push("recover"),
+    abortRestart: async () => events.push("abort"),
     finishSuccessfulReplacement: async () => events.push("exit"),
     logger: { log: () => events.push("ready"), error: () => {} },
     ...overrides,
@@ -33,8 +34,64 @@ test("restart controller executes the explicit lifecycle phases in order", async
   const { controller, events } = createController();
   assert.deepEqual(await controller.perform(), { status: "replaced" });
   assert.deepEqual(events, [
-    "waiting:false", "message", "save", "flush", "stopping", "timers", "media",
+    "waiting:false", "stopping", "message", "save", "flush", "timers", "media",
     "suspend", "ready", "finalize", "exit",
+  ]);
+});
+
+test("restart controller closes admission before asynchronous preparation", async () => {
+  let releaseMessage;
+  const messageGate = new Promise((resolve) => { releaseMessage = resolve; });
+  let admissionClosed = false;
+  let messageStarted = false;
+  const { controller } = createController({
+    beginStopping: () => { admissionClosed = true; return true; },
+    updateMessage: async () => { messageStarted = true; await messageGate; },
+  });
+  const restart = controller.perform();
+  while (!messageStarted) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(admissionClosed, true);
+  releaseMessage();
+  assert.equal((await restart).status, "replaced");
+});
+
+test("restart controller aborts safely when flush reports failures", async () => {
+  const failure = new Error("disk full");
+  const { controller, events } = createController({
+    resources: {
+      flush: async () => {
+        events.push("flush");
+        return { ok: false, failures: [{ name: "state", error: failure }] };
+      },
+      suspend: async () => { events.push("suspend"); return { ok: true }; },
+      finalize: async () => { events.push("finalize"); return { ok: true }; },
+    },
+  });
+  const result = await controller.perform();
+  assert.equal(result.status, "aborted");
+  assert.equal(result.phase, "flush");
+  assert.deepEqual(result.error.failures, [{ name: "state", error: failure }]);
+  assert.deepEqual(events, ["waiting:false", "stopping", "message", "save", "flush", "abort"]);
+});
+
+test("restart controller restores the old runtime when suspend reports failures", async () => {
+  const failure = new Error("pipe close failed");
+  const { controller, events } = createController({
+    resources: {
+      flush: async () => { events.push("flush"); return { ok: true }; },
+      suspend: async () => {
+        events.push("suspend");
+        return { ok: false, failures: [{ name: "pipe", error: failure }] };
+      },
+      finalize: async () => { events.push("finalize"); return { ok: true }; },
+    },
+  });
+  const result = await controller.perform();
+  assert.equal(result.status, "recovered");
+  assert.equal(result.phase, "suspend");
+  assert.deepEqual(result.error.failures, [{ name: "pipe", error: failure }]);
+  assert.deepEqual(events, [
+    "waiting:false", "stopping", "message", "save", "flush", "timers", "media", "suspend", "recover",
   ]);
 });
 
@@ -54,7 +111,7 @@ test("restart controller restores the old runtime and never finalizes after laun
   assert.equal(result.status, "recovered");
   assert.equal(result.error, failure);
   assert.deepEqual(events, [
-    "waiting:false", "message", "save", "flush", "stopping", "timers", "media",
+    "waiting:false", "stopping", "message", "save", "flush", "timers", "media",
     "suspend", "recover",
   ]);
 });

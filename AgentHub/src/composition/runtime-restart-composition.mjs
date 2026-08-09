@@ -84,6 +84,7 @@ export function createRuntimeRestartComposition({
     ],
     suspend: [
       { name: "Codex App Server", run: stopCodexAppServerTree },
+      { name: "Shared Dashboard bot", run: () => miniAppLifecycle.closeSharedDashboardBot?.() },
       { name: "Mini App publisher", run: () => miniAppLifecycle.closePublisher() },
       { name: "direct gateway", run: () => miniAppLifecycle.closeDirectGateway() },
       { name: "quick tunnel", run: () => miniAppLifecycle.closeQuickTunnel() },
@@ -148,6 +149,20 @@ export function createRuntimeRestartComposition({
       startTimers: startRuntimeTimers,
       markReady: () => instanceGuard.markReady(),
     }),
+    abortRestart: async (error) => {
+      setStopping(false);
+      setRestartRequest(null);
+      let saveError = null;
+      try {
+        await saveState();
+      } catch (stateError) {
+        saveError = stateError;
+      }
+      await updateRestartMessage(
+        `⚠️ Перезапуск отменён: ${error.message}\n\nAgent Hub продолжает работу.`,
+      ).catch(() => {});
+      if (saveError) throw saveError;
+    },
     finishSuccessfulReplacement: async () => {
       await delay(500);
       process.exit(0);

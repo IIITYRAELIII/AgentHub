@@ -1,4 +1,14 @@
 // Coordinates one safe runtime replacement without owning process transport.
+function lifecycleFailure(phase, result) {
+  const failures = Array.isArray(result?.failures) ? result.failures : [];
+  const errors = failures.map((failure) => failure?.error instanceof Error
+    ? failure.error
+    : new Error(String(failure?.error ?? failure?.name ?? `${phase} failed`)));
+  const error = new AggregateError(errors, `Restart ${phase} failed`);
+  error.failures = failures;
+  return error;
+}
+
 export class RuntimeRestartController {
   constructor({
     getRequest,
@@ -13,6 +23,7 @@ export class RuntimeRestartController {
     stopMedia,
     launchReplacement,
     recoverPrevious,
+    abortRestart,
     finishSuccessfulReplacement,
     isStopping = () => false,
     logger = console,
@@ -20,7 +31,7 @@ export class RuntimeRestartController {
     for (const [name, value] of Object.entries({
       getRequest, updateOffset, hasBlockingWork, setWaiting, updateMessage, saveState,
       beginStopping, stopTimers, stopMedia, launchReplacement, recoverPrevious,
-      finishSuccessfulReplacement,
+      abortRestart, finishSuccessfulReplacement,
     })) {
       if (typeof value !== "function") throw new TypeError(`${name} is required`);
     }
@@ -28,7 +39,7 @@ export class RuntimeRestartController {
     Object.assign(this, {
       getRequest, updateOffset, hasBlockingWork, setWaiting, updateMessage, saveState,
       resources, beginStopping, stopTimers, stopMedia, launchReplacement,
-      recoverPrevious, finishSuccessfulReplacement, isStopping, logger,
+      recoverPrevious, abortRestart, finishSuccessfulReplacement, isStopping, logger,
     });
   }
 
@@ -44,13 +55,32 @@ export class RuntimeRestartController {
     }
 
     this.setWaiting(false);
-    await this.updateMessage("🔄 Перезапускаю Agent Hub…").catch(() => {});
-    await this.saveState();
-    await this.resources.flush({ label: "Restart flush failed" });
     if (!this.beginStopping()) return { status: "ignored" };
+    await this.updateMessage("🔄 Перезапускаю Agent Hub…").catch(() => {});
+    try {
+      await this.saveState();
+      const flush = await this.resources.flush({ label: "Restart flush failed" });
+      if (flush?.ok === false) throw lifecycleFailure("flush", flush);
+    } catch (error) {
+      this.logger.error("Cannot prepare runtime restart:", error.message);
+      let abortError = null;
+      try {
+        await this.abortRestart(error);
+      } catch (recoveryError) {
+        abortError = recoveryError;
+        this.logger.error("Cannot persist aborted restart state:", recoveryError.message);
+      }
+      return { status: "aborted", phase: "flush", error, ...(abortError ? { abortError } : {}) };
+    }
+
     this.stopTimers();
     this.stopMedia();
-    await this.resources.suspend({ label: "Restart close failed" });
+    try {
+      const suspend = await this.resources.suspend({ label: "Restart close failed" });
+      if (suspend?.ok === false) throw lifecycleFailure("suspend", suspend);
+    } catch (error) {
+      return this.#recover(error, "suspend");
+    }
 
     try {
       const replacement = await this.launchReplacement();
@@ -59,18 +89,22 @@ export class RuntimeRestartController {
           + `${replacement.usedFallback ? " (direct launcher fallback)" : ""}.`,
       );
     } catch (error) {
-      this.logger.error("Cannot start replacement bot:", error.message);
-      try {
-        await this.recoverPrevious(error);
-        return { status: "recovered", error };
-      } catch (restoreError) {
-        this.logger.error("Cannot restore the previous bot after failed replacement:", restoreError.message);
-        return { status: "failed", error, restoreError };
-      }
+      return this.#recover(error, "launch");
     }
 
     await this.resources.finalize({ label: "Restart finalize failed" });
     await this.finishSuccessfulReplacement();
     return { status: "replaced" };
+  }
+
+  async #recover(error, phase) {
+    this.logger.error(`Cannot complete runtime restart ${phase}:`, error.message);
+    try {
+      await this.recoverPrevious(error);
+      return { status: "recovered", phase, error };
+    } catch (restoreError) {
+      this.logger.error("Cannot restore the previous bot after failed restart:", restoreError.message);
+      return { status: "failed", phase, error, restoreError };
+    }
   }
 }

@@ -34,7 +34,7 @@ test("core-only components need neither Telegram credentials nor Web App", async
     process.env.AGENT_HUB_CONFIG = configFile;
     const config = await loadConfig();
     assert.deepEqual(config.components, {
-      telegram: false, miniApp: false, androidApp: false, codexContextCleanup: false,
+      telegram: false, miniApp: false, androidApp: false, sharedDashboardBot: false, codexContextCleanup: false,
     });
     assert.equal(config.telegramEnabled, false);
     assert.equal(config.allowedUserIds.size, 0);
@@ -228,7 +228,7 @@ test("Telegram and Android App components can be enabled independently", async (
     }), "utf8");
     const telegram = await loadConfig();
     assert.deepEqual(telegram.components, {
-      telegram: true, miniApp: false, androidApp: false, codexContextCleanup: false,
+      telegram: true, miniApp: false, androidApp: false, sharedDashboardBot: false, codexContextCleanup: false,
     });
     assert.equal(telegram.telegramEnabled, true);
     assert.equal(telegram.miniApp.enabled, false);
@@ -239,7 +239,7 @@ test("Telegram and Android App components can be enabled independently", async (
     }), "utf8");
     const web = await loadConfig();
     assert.deepEqual(web.components, {
-      telegram: false, miniApp: false, androidApp: true, codexContextCleanup: false,
+      telegram: false, miniApp: false, androidApp: true, sharedDashboardBot: false, codexContextCleanup: false,
     });
     assert.equal(web.telegramEnabled, false);
     assert.equal(web.miniApp.enabled, true);
@@ -265,9 +265,59 @@ test("legacy profiles migrate to equivalent components", async () => {
     }), "utf8");
     const config = await loadConfig();
     assert.deepEqual(config.components, {
-      telegram: true, miniApp: false, androidApp: false, codexContextCleanup: false,
+      telegram: true, miniApp: false, androidApp: false, sharedDashboardBot: false, codexContextCleanup: false,
     });
     assert.equal(config.miniApp.enabled, false);
+  } finally {
+    if (previous == null) delete process.env.AGENT_HUB_CONFIG;
+    else process.env.AGENT_HUB_CONFIG = previous;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("shared Dashboard bot is independent from personal Telegram and resolves its secret file", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-shared-dashboard-bot-"));
+  const configFile = path.join(root, "config.json");
+  const previous = process.env.AGENT_HUB_CONFIG;
+  try {
+    process.env.AGENT_HUB_CONFIG = configFile;
+    await writeFile(configFile, JSON.stringify({
+      components: {
+        telegram: false,
+        miniApp: false,
+        androidApp: false,
+        sharedDashboardBot: true,
+      },
+      projectRoot: root,
+      sharedDashboardBot: {
+        publicUrl: "https://hub.example.com",
+        hubId: "018f6c86-3f34-7a31-8f27-16f5b96cce70",
+        hubName: "Командный Hub",
+        secretFile: "shared-dashboard-bot.secret",
+        retrySeconds: 7,
+      },
+    }), "utf8");
+    const config = await loadConfig();
+    assert.equal(config.telegramEnabled, false);
+    assert.deepEqual(config.sharedDashboardBot, {
+      enabled: true,
+      publicUrl: "https://hub.example.com",
+      hubId: "018f6c86-3f34-7a31-8f27-16f5b96cce70",
+      hubName: "Командный Hub",
+      secretFile: path.join(root, "shared-dashboard-bot.secret"),
+      retrySeconds: 7,
+    });
+
+    await writeFile(configFile, JSON.stringify({
+      components: { sharedDashboardBot: true },
+      projectRoot: root,
+      sharedDashboardBot: {
+        publicUrl: "http://hub.example.com",
+        hubId: "018f6c86-3f34-7a31-8f27-16f5b96cce70",
+        secretFile: "shared-dashboard-bot.secret",
+      },
+    }), "utf8");
+    await assert.rejects(loadConfig(), /must use HTTPS/u);
   } finally {
     if (previous == null) delete process.env.AGENT_HUB_CONFIG;
     else process.env.AGENT_HUB_CONFIG = previous;

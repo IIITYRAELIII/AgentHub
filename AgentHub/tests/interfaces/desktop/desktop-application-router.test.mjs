@@ -11,7 +11,7 @@ function router(calls) {
     "updateServerConfiguration", "compactContext", "openAttachment", "submitBugReport",
     "trustedDevices", "createDevicePairing", "revokeDevice",
     "renameWorkspace", "createWorkspaceFromStream", "mergeWorkspaces", "renameStream", "moveStream",
-    "boardTaskCreate", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
+    "boardTaskCreate", "boardTaskIngest", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
     "boardTaskRetryTriage", "boardTaskStart", "boardColumnMove", "boardColumnComment",
     "boardWorkspaceMove",
   ].map((name) => [name, handler]));
@@ -19,7 +19,11 @@ function router(calls) {
     handlers,
     commands: {
       dispatch: async (...args) => { calls.push(args); return { accepted: true }; },
-      settingTarget: () => ({ streamId: "stream-1" }),
+      settingTarget: (params) => ({
+        streamId: params.streamId,
+        provider: params.provider,
+        threadId: params.threadId,
+      }),
     },
   });
 }
@@ -75,6 +79,29 @@ test("Desktop application router dispatches Stream rotation to the exact Thread"
   assert.equal(calls[0][0], "stream.rotate");
   assert.deepEqual(calls[0][3].target, {
     streamId: "stream-1", provider: "codex", projectRoot: null, threadId: "thread-1",
+  });
+});
+
+test("Desktop application router dispatches settings to the client task identity", async () => {
+  const calls = [];
+  const control = router(calls);
+  await control.handleDesktopControl({
+    action: "update-setting",
+    params: {
+      name: "reasoning",
+      value: "high",
+      streamId: "stream-client",
+      provider: "claude",
+      threadId: "thread-client",
+    },
+    context: { source: "vscode", userId: "7" },
+  });
+  assert.equal(calls[0][0], "settings.update");
+  assert.equal(calls[0][2].clientId, "vscode:7");
+  assert.deepEqual(calls[0][3].target, {
+    streamId: "stream-client",
+    provider: "claude",
+    threadId: "thread-client",
   });
 });
 

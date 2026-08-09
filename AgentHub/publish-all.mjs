@@ -3,7 +3,11 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 import { callDesktopControl } from "./desktop-control.mjs";
-import { currentRevision, writePublicationState } from "./src/infrastructure/persistence/publication-state.mjs";
+import {
+  assertCleanPublicationTree,
+  currentRevision,
+  writePublicationState,
+} from "./src/infrastructure/persistence/publication-state.mjs";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = path.resolve(ROOT, "..");
@@ -114,7 +118,7 @@ export async function publishAll(args = process.argv.slice(2), {
 
 const invokedFile = process.argv[1] ? path.resolve(process.argv[1]) : "";
 if (invokedFile === fileURLToPath(import.meta.url)) {
-  publishAll().catch((error) => {
+  assertCleanPublicationTree({ cwd: REPOSITORY_ROOT }).then(() => publishAll()).catch((error) => {
     console.error(`\nПубликация остановлена: ${error.message}`);
     process.exitCode = 1;
   });

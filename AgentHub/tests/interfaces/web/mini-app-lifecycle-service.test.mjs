@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { MiniAppLifecycleService } from "../../../src/interfaces/web/mini-app-lifecycle-service.mjs";
 
-function fixture({ gateway = false, worker = false, tunnel = false } = {}) {
+function fixture({ gateway = false, worker = false, tunnel = false, sharedBot = false } = {}) {
   const events = [];
   class Controller {
     constructor(options) { this.options = options; }
@@ -50,6 +50,10 @@ function fixture({ gateway = false, worker = false, tunnel = false } = {}) {
     controlHandler: async () => {},
     controlReconciler: async () => {},
     forgetControl: async () => {},
+    sharedDashboardBotClient: sharedBot ? {
+      async start() { events.push("shared-bot:start"); },
+      async close() { events.push("shared-bot:close"); },
+    } : null,
     logger: { log() {}, warn() {} },
   });
   return { service, events };
@@ -59,6 +63,15 @@ test("Mini App lifecycle starts the local surface without optional transports", 
   const { service, events } = fixture();
   assert.deepEqual(await service.start(), { url: "http://127.0.0.1:1/" });
   assert.deepEqual(events, ["local:start"]);
+});
+
+test("shared Dashboard bot starts without the Web App and closes independently", async () => {
+  const { service, events } = fixture({ sharedBot: true });
+  service.localServer = null;
+  assert.equal(await service.start(), null);
+  assert.deepEqual(events, ["shared-bot:start"]);
+  await service.closeSharedDashboardBot();
+  assert.deepEqual(events, ["shared-bot:start", "shared-bot:close"]);
 });
 
 test("Mini App lifecycle owns gateway, worker and tunnel transports", async () => {

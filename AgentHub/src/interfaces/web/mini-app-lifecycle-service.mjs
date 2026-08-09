@@ -16,6 +16,7 @@ export class MiniAppLifecycleService {
     controlHandler,
     controlReconciler,
     forgetControl,
+    sharedDashboardBotClient = null,
     logger = console,
   } = {}) {
     if (!config) throw new TypeError("config is required");
@@ -34,6 +35,7 @@ export class MiniAppLifecycleService {
       controlHandler,
       controlReconciler,
       forgetControl,
+      sharedDashboardBotClient,
       logger,
     });
     this.publisher = null;
@@ -52,6 +54,11 @@ export class MiniAppLifecycleService {
   }
 
   async start() {
+    if (this.sharedDashboardBotClient) {
+      await this.sharedDashboardBotClient.start().catch((error) => {
+        this.logger.warn(`Cannot start Shared Dashboard bot: ${error.message}`);
+      });
+    }
     if (!this.localServer) return null;
     const address = await this.localServer.start();
     const gatewaySettings = await this.loadGatewaySettings(
@@ -108,6 +115,7 @@ export class MiniAppLifecycleService {
   }
 
   closePublisher() { return this.publisher?.close(); }
+  closeSharedDashboardBot() { return this.sharedDashboardBotClient?.close(); }
   closeDirectGateway() { return this.directGateway?.close(); }
   closeQuickTunnel() { return this.quickTunnel?.close(); }
   closePublicServer() { return this.publicServer?.close(); }

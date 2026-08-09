@@ -13,10 +13,7 @@ function service(calls) {
     "renameWorkspace", "createWorkspace", "createWorkspaceFromStream", "mergeWorkspaces", "createStream",
     "renameStream", "updateStreamSettings", "moveStream",
   ].map((name) => [name, (...args) => { calls.push({ name, args }); return name; }]));
-  return createApplicationCommandService({
-    handlers,
-    selectedTask: () => ({ streamId: "stream-1", provider: "codex", threadId: "thread-1" }),
-  });
+  return createApplicationCommandService({ handlers });
 }
 
 test("application command service keeps exact task address and client identity", async () => {
@@ -30,12 +27,21 @@ test("application command service keeps exact task address and client identity",
   });
 });
 
-test("task-scoped settings inherit the selected streamId", () => {
+test("task-scoped settings require their own exact task identity", () => {
   const commands = service([]);
-  assert.deepEqual(commands.settingTarget({ name: "model", model: "gpt" }), {
-    streamId: "stream-1", provider: "codex", projectRoot: null, threadId: "thread-1",
+  assert.deepEqual(commands.settingTarget({
+    name: "model",
+    model: "gpt",
+    streamId: "stream-client",
+    provider: "claude",
+    projectRoot: "D:/client",
+    threadId: "thread-client",
+  }), {
+    streamId: "stream-client", provider: "claude", projectRoot: "D:/client", threadId: "thread-client",
   });
-  assert.equal(commands.settingTarget({ name: "project" }), null);
+  assert.throws(() => commands.settingTarget({ name: "model", model: "gpt" }), /exact task identity/u);
+  assert.throws(() => commands.settingTarget({ name: "project", value: "D:/client" }), /exact task identity/u);
+  assert.equal(commands.settingTarget({ name: "approvalMode" }), null);
   assert.equal(commandClientContext({ clientId: "explicit" }, "fallback").clientId, "explicit");
 });
 

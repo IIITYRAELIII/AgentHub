@@ -22,6 +22,17 @@ export class DesktopTaskBoardController {
     });
   }
 
+  async ingest(params) {
+    const task = this.taskBoard.create({
+      text: params.text,
+      source: "telegram",
+      sourceKey: params.sourceKey,
+      sourceDetails: params.sourceDetails,
+    });
+    await this.snapshot({ refresh: true });
+    return { taskId: task.id, rawText: task.rawText };
+  }
+
   move(params) {
     return this.#mutate(() => this.taskBoard.move(params));
   }
