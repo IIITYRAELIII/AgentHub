@@ -92,15 +92,15 @@ html[data-theme="gothic"] {
   --shell-header-gap: 0;
   --shell-header-height: 4.75rem;
   --shell-header-padding-right: 2rem;
-  --shell-header-rule: var(--gothic-header-rail-repeat) left top / 260px 10px repeat-x;
+  --shell-header-rule: var(--gothic-header-rail-repeat) left top / auto auto repeat-x;
   --shell-header-rule-bottom: 6px;
   --shell-header-rule-height: 10px;
   --shell-header-rule-left: 0;
   --shell-header-rule-opacity: 0.82;
   --shell-header-rule-right: 0;
   --shell-header-shadow: none;
-  --shell-toolbar-align-self: flex-start;
-  --shell-toolbar-margin-top: 1rem;
+  --shell-toolbar-align-self: center;
+  --shell-toolbar-margin-top: 0;
   --shell-control-background:
     linear-gradient(rgb(7 8 8 / 86%), rgb(7 8 8 / 86%)),
     var(--gothic-iron-texture) center / 18rem 18rem;
@@ -120,7 +120,7 @@ html[data-theme="gothic"] {
   --shell-view-switch-padding: 0 0.45rem;
   --shell-view-switch-radius: 0;
   --shell-view-switch-shadow: none;
-  --shell-view-switch-transform: translateY(-0.3rem);
+  --shell-view-switch-transform: none;
   --shell-workspace-padding-top: 0;
   --shell-panel-border: 13px solid transparent;
   --shell-panel-border-image: var(--gothic-forged-frame-matte) 9% / 13px stretch;
