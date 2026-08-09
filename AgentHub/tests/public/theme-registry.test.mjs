@@ -18,6 +18,7 @@ async function fixture(manifest) {
     writeFile(path.join(theme, "effect.js"), 'document.documentElement.dataset.effect = "aurora";', "utf8"),
     writeFile(path.join(theme, "theme.html"), "<canvas data-aurora></canvas>", "utf8"),
     writeFile(path.join(theme, "sky.webp"), Buffer.from([1, 2, 3])),
+    writeFile(path.join(theme, "texture.webp"), Buffer.from([4, 5, 6])),
   ]);
   return directory;
 }
@@ -30,6 +31,7 @@ const manifest = {
   styles: "theme.css",
   scripts: "effect.js",
   markup: "theme.html",
+  assets: { texture: "texture.webp" },
   backgrounds: [{ id: "aurora", name: "Сияние", asset: "sky.webp" }],
 };
 
@@ -43,6 +45,7 @@ test("theme registry discovers a complete theme package without core registratio
       [
         "/themes/aurora/effect.js",
         "/themes/aurora/sky.webp",
+        "/themes/aurora/texture.webp",
         "/themes/aurora/theme.css",
         "/themes/aurora/theme.html",
       ],
@@ -63,6 +66,7 @@ test("theme registry discovers a complete theme package without core registratio
     assert.match(html, /<canvas data-aurora><\/canvas>/u);
     assert.match(html, /src="\/themes\/aurora\/effect\.js"/u);
     assert.match(html, /"assetUrl":"\/themes\/aurora\/sky\.webp"/u);
+    assert.match(html, /"assets":\{"texture":"\/themes\/aurora\/texture\.webp"\}/u);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -179,6 +183,6 @@ test("desktop shell owns the shared header and Stream control shapes", async () 
   );
   assert.match(
     styles,
-    /html\[data-view="chat"\]:not\(\[data-surface="mobile"\]\) \.task-rail,[\s\S]*?\.chat\s*\{[^}]*border:\s*1px solid var\(--line\)\s*!important;[^}]*border-radius:\s*4px\s*!important;/u,
+    /html\[data-view="chat"\]:not\(\[data-surface="mobile"\]\) \.task-rail,[\s\S]*?\.chat\s*\{[^}]*border:\s*var\(--shell-panel-border, 1px solid var\(--line\)\)\s*!important;[^}]*border-radius:\s*4px\s*!important;/u,
   );
 });

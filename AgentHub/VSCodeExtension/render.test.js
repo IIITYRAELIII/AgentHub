@@ -627,13 +627,24 @@ test("Storm keeps the photo backdrop and adds only lightning", () => {
 test("Gothic theme packages the Old Camp banner with its Sleeper-temple palette", () => {
   const theme = THEME_REGISTRY.themes.find((item) => item.id === "gothic");
   const banner = theme.resources.find((resource) => resource.pathname.endsWith("/gothic-old-camp-banner.png"));
+  const ironTexture = theme.resources.find((resource) => resource.pathname.endsWith("/gothic-iron-texture.png"));
+  const ironFrame = theme.resources.find((resource) => resource.pathname.endsWith("/gothic-iron-frame.jpg"));
   /* Знамя — самостоятельный ресурс пакета темы. Это проверяет фактическую
-     доступность во Worker и webview вместо снимка конкретных CSS-деклараций. */
+     доступность во Worker и webview вместо снимка конкретных CSS-деклараций.
+     Кованая оболочка так же обязана доехать как растровые ресурсы темы. */
   assert.equal(theme.color, "#100d0b");
   assert.ok(banner);
   assert.equal(banner.contentType, "image/png");
   assert.equal(banner.immutable, true);
   assert.ok(fs.statSync(banner.file).size > 100_000);
+  assert.ok(ironTexture);
+  assert.equal(ironTexture.contentType, "image/png");
+  assert.equal(ironTexture.immutable, true);
+  assert.ok(fs.statSync(ironTexture.file).size > 100_000);
+  assert.ok(ironFrame);
+  assert.equal(ironFrame.contentType, "image/jpeg");
+  assert.equal(ironFrame.immutable, true);
+  assert.ok(fs.statSync(ironFrame.file).size > 10_000);
 });
 
 test("«Gothic» offers nine night scenes, each with its own light", () => {

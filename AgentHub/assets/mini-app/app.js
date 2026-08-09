@@ -272,12 +272,18 @@ const backgroundAssets = Object.freeze(Object.fromEntries(themeCatalog.flatMap((
 function cssBackgroundUrl(value) {
   return `url(${JSON.stringify(String(value ?? ""))})`;
 }
-/* CSS custom properties are consumed from backgrounds.css. Chromium resolves
-   relative url() tokens there against that shared stylesheet, not against the
-   theme stylesheet that declared the property. Catalog URLs are already exact
-   HTTP or VS Code WebView URLs, so install them as canonical root overrides. */
+/* CSS custom properties can be consumed from shared stylesheets. Chromium then
+   resolves a relative url() against that consumer rather than the theme file.
+   Catalog URLs are exact HTTP or VS Code WebView URLs, so install them as
+   canonical root overrides for both selectable scenes and shared-shell assets. */
 for (const [background, url] of Object.entries(backgroundAssets)) {
   root.style.setProperty(`--${background}-image`, cssBackgroundUrl(url));
+}
+const themeAssets = Object.freeze(Object.fromEntries(themeCatalog.flatMap((theme) => (
+  Object.entries(theme.assets ?? {}).map(([asset, url]) => [`${theme.id}-${asset}`, url])
+))));
+for (const [asset, url] of Object.entries(themeAssets)) {
+  root.style.setProperty(`--${asset}-asset`, cssBackgroundUrl(url));
 }
 const deferredBackgroundAssets = new Set(themeCatalog.flatMap((theme) => (
   theme.backgrounds.filter((background) => background.preload).map((background) => background.id)

@@ -102,6 +102,13 @@ function loadThemeRegistry(assetsDirectory) {
     const styles = fileList(id, manifest.styles ?? "theme.css", "style", ".css");
     const scripts = fileList(id, manifest.scripts, "script", ".js");
     const markup = fileList(id, manifest.markup, "markup", ".html");
+    const assets = Object.entries(manifest.assets ?? {}).map(([assetId, value]) => {
+      if (!THEME_ID.test(assetId)) fail(id, `asset id ${JSON.stringify(assetId)} is invalid`);
+      return {
+        id: assetId,
+        file: normalizeRelativeFile(id, value, `asset ${assetId}`),
+      };
+    });
     const aliases = (manifest.aliases ?? []).map((value) => String(value));
     if (aliases.some((alias) => !THEME_ID.test(alias))) fail(id, "aliases must be theme ids");
     const backgrounds = (manifest.backgrounds ?? []).map((background, index) => {
@@ -131,7 +138,7 @@ function loadThemeRegistry(assetsDirectory) {
     }
 
     const available = new Set(listFiles(directory));
-    for (const file of [...styles, ...scripts, ...markup, ...backgrounds.map((item) => item.asset).filter(Boolean)]) {
+    for (const file of [...styles, ...scripts, ...markup, ...assets.map((item) => item.file), ...backgrounds.map((item) => item.asset).filter(Boolean)]) {
       if (!available.has(file)) fail(id, `declared file is missing: ${file}`);
     }
     for (const file of available) validateThemeResource(id, directory, file);
@@ -151,7 +158,7 @@ function loadThemeRegistry(assetsDirectory) {
       resources.set(pathname, resource);
       themeResources.push(resource);
     }
-    themes.push({ id, name, color: color.toLowerCase(), order, aliases, backgrounds, styles, scripts, markup, directory, resources: themeResources });
+    themes.push({ id, name, color: color.toLowerCase(), order, aliases, assets, backgrounds, styles, scripts, markup, directory, resources: themeResources });
   }
 
   themes.sort((left, right) => left.order - right.order || left.id.localeCompare(right.id));
@@ -175,6 +182,10 @@ function publicThemeCatalog(registry, resourceUrl = (pathname) => pathname) {
     name: theme.name,
     color: theme.color,
     aliases: [...theme.aliases],
+    assets: Object.fromEntries(theme.assets.map((asset) => [
+      asset.id,
+      resourceUrl(`/themes/${theme.id}/${asset.file}`),
+    ])),
     backgrounds: theme.backgrounds.map((background) => ({
       id: background.id,
       name: background.name,

@@ -4116,15 +4116,15 @@ html[data-surface="mobile"]
   html:not([data-surface="mobile"]) .app-header {
     backdrop-filter: blur(18px) saturate(150%) !important;
     -webkit-backdrop-filter: blur(18px) saturate(150%) !important;
-    background: color-mix(in srgb, var(--bg) 82%, transparent) !important;
+    background: var(--shell-header-background, color-mix(in srgb, var(--bg) 82%, transparent)) !important;
     border: 0 !important;
-    border-bottom: 1px solid var(--line) !important;
+    border-bottom: var(--shell-header-border, 1px solid var(--line)) !important;
     border-radius: 0 !important;
-    box-shadow: none !important;
+    box-shadow: var(--shell-header-shadow, none) !important;
   }
 
   html:not([data-surface="mobile"]) .app-header::after {
-    background: linear-gradient(90deg, transparent, var(--accent-line), transparent) !important;
+    background: var(--shell-header-rule, linear-gradient(90deg, transparent, var(--accent-line), transparent)) !important;
     box-shadow: none !important;
     height: 1px !important;
     opacity: 0.7 !important;
@@ -4140,19 +4140,19 @@ html[data-surface="mobile"]
   }
 
   html:not([data-surface="mobile"]) .view-switch {
-    background: var(--surface-1) !important;
-    border: 1px solid var(--line) !important;
+    background: var(--shell-control-background, var(--surface-1)) !important;
+    border: var(--shell-control-border, 1px solid var(--line)) !important;
     border-radius: 4px !important;
-    box-shadow: none !important;
+    box-shadow: var(--shell-control-shadow, none) !important;
     gap: 0.15rem !important;
     padding: 0.18rem !important;
   }
 
   html:not([data-surface="mobile"]) .view-tab {
-    background: transparent !important;
-    border: 1px solid transparent !important;
+    background: var(--shell-tab-background, transparent) !important;
+    border: var(--shell-tab-border, 1px solid transparent) !important;
     border-radius: 3px !important;
-    box-shadow: none !important;
+    box-shadow: var(--shell-tab-shadow, none) !important;
     min-height: 2rem !important;
     padding: 0.32rem 0.75rem !important;
     transform: none !important;
@@ -4164,18 +4164,18 @@ html[data-surface="mobile"]
   }
 
   html:not([data-surface="mobile"]) .view-tab[aria-pressed="true"] {
-    background: var(--accent-soft) !important;
-    border: 1px solid var(--accent-line) !important;
+    background: var(--shell-tab-active-background, var(--accent-soft)) !important;
+    border: var(--shell-tab-active-border, 1px solid var(--accent-line)) !important;
     box-shadow: none !important;
     color: var(--accent) !important;
     padding: 0.32rem 0.75rem !important;
   }
 
   html:not([data-surface="mobile"]) .toolbar .view-settings {
-    background: var(--surface-2) !important;
-    border: 1px solid var(--line) !important;
+    background: var(--shell-control-background, var(--surface-2)) !important;
+    border: var(--shell-control-border, 1px solid var(--line)) !important;
     border-radius: 3px !important;
-    box-shadow: none !important;
+    box-shadow: var(--shell-control-shadow, none) !important;
     min-height: 2rem !important;
     padding: 0.3rem 0.75rem 0.3rem 0.6rem !important;
     transform: none !important;
@@ -4183,7 +4183,8 @@ html[data-surface="mobile"]
 
   html[data-view="chat"]:not([data-surface="mobile"]) .task-rail,
   html[data-view="chat"]:not([data-surface="mobile"]) .chat {
-    border: 1px solid var(--line) !important;
+    border: var(--shell-panel-border, 1px solid var(--line)) !important;
+    border-image: var(--shell-panel-border-image, none) !important;
     border-radius: 4px !important;
   }
 
@@ -4193,9 +4194,10 @@ html[data-surface="mobile"]
 
   html[data-view="chat"]:not([data-surface="mobile"]) .stream-tabs {
     align-items: stretch !important;
-    background: color-mix(in srgb, var(--surface-1) 88%, transparent) !important;
-    border: 0 !important;
-    border-bottom: 1px solid var(--line) !important;
+    background: var(--shell-stream-tabs-background, color-mix(in srgb, var(--surface-1) 88%, transparent)) !important;
+    border: var(--shell-stream-tabs-border, 0) !important;
+    border-bottom: var(--shell-stream-tabs-border-bottom, 1px solid var(--line)) !important;
+    border-image: var(--shell-stream-tabs-border-image, none) !important;
     border-radius: 0 !important;
     gap: 0.35rem !important;
     min-height: 3.7rem !important;
@@ -4207,10 +4209,10 @@ html[data-surface="mobile"]
   }
 
   html[data-view="chat"]:not([data-surface="mobile"]) .stream-tab {
-    background: transparent !important;
-    border: 1px solid transparent !important;
+    background: var(--shell-stream-tab-background, transparent) !important;
+    border: var(--shell-stream-tab-border, 1px solid transparent) !important;
     border-radius: 3px !important;
-    box-shadow: none !important;
+    box-shadow: var(--shell-stream-tab-shadow, none) !important;
     flex: 0 0 auto !important;
     max-width: 12rem !important;
     min-height: 3.05rem !important;
@@ -4221,21 +4223,22 @@ html[data-surface="mobile"]
 
   html[data-view="chat"]:not([data-surface="mobile"]) .stream-tab:hover,
   html[data-view="chat"]:not([data-surface="mobile"]) .stream-tab:focus-visible {
-    background: var(--surface-2) !important;
+    background: var(--shell-stream-tab-hover-background, var(--surface-2)) !important;
     border-color: transparent !important;
   }
 
   html[data-view="chat"]:not([data-surface="mobile"]) .stream-tab[aria-pressed="true"] {
-    background: var(--accent-soft) !important;
+    background: var(--shell-stream-tab-active-background, var(--accent-soft)) !important;
     border-color: var(--accent-line) !important;
     color: var(--text) !important;
   }
 
   html[data-view="chat"]:not([data-surface="mobile"]) .stream-tab-card {
-    background: color-mix(in srgb, var(--surface-2) 68%, transparent) !important;
-    border: 1px solid color-mix(in srgb, var(--line) 74%, transparent) !important;
+    background: var(--shell-stream-card-background, color-mix(in srgb, var(--surface-2) 68%, transparent)) !important;
+    border: var(--shell-stream-card-border, 1px solid color-mix(in srgb, var(--line) 74%, transparent)) !important;
+    border-image: var(--shell-stream-card-border-image, none) !important;
     border-radius: 3px !important;
-    box-shadow: none !important;
+    box-shadow: var(--shell-stream-card-shadow, none) !important;
     gap: 0.5rem !important;
     padding: 0.42rem 0.5rem !important;
   }
