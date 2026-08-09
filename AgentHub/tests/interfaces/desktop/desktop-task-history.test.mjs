@@ -597,7 +597,7 @@ test("desktop task history preserves pagination, field limits and response budge
   assert.equal(result.nextBefore, 1);
   assert.equal(result.items[0].answer.length, 1_000);
   assert.equal(result.items[0].messages[1].text.length, 1_000);
-  assert.equal(result.items[0].activities.length, 100);
+  assert.equal(result.items[0].activities.length, 105);
   assert.equal(result.items[0].messages.some((message) => message.role === "tool"), false);
   assert.deepEqual(calls.fit, { maxBytes: 64 * 1_024 });
 });

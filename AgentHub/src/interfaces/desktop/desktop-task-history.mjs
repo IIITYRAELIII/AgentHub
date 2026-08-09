@@ -66,6 +66,9 @@ export function mergeDurableTaskHistory(hydratedHistory, durableHistory) {
       activities: Array.isArray(durable?.activities) && durable.activities.length
         ? structuredClone(durable.activities)
         : current.activities,
+      activityGroups: Array.isArray(durable?.activityGroups) && durable.activityGroups.length
+        ? structuredClone(durable.activityGroups)
+        : current.activityGroups,
     };
   }
   return values;
@@ -297,7 +300,10 @@ export function createDesktopTaskHistoryFactory({
         completed: item.completed === true,
         startedAt: item.startedAt ?? null,
         completedAt: item.completedAt ?? null,
-        activities: Array.isArray(item.activities) ? item.activities.slice(-100) : [],
+        activities: Array.isArray(item.activities) ? item.activities : [],
+        ...(Array.isArray(item.activityGroups) && item.activityGroups.length
+          ? { activityGroups: item.activityGroups }
+          : {}),
         messages: (Array.isArray(item.messages) ? item.messages : []).flatMap((message) => {
           const role = String(message?.role ?? "");
           const itemProvider = String(item.provider ?? provider);

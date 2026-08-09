@@ -14,7 +14,11 @@ export function appendRunActivity(run, activity = {}) {
   const existing = run.activities.findIndex((entry) => entry.id === id);
   if (existing >= 0) run.activities[existing] = { ...run.activities[existing], ...normalized };
   else run.activities.push(normalized);
-  run.activities = run.activities.slice(-100);
+  let bytes = Buffer.byteLength(JSON.stringify(run.activities), "utf8");
+  while (bytes > 2_500_000 && run.activities.length > 1) {
+    run.activities.shift();
+    bytes = Buffer.byteLength(JSON.stringify(run.activities), "utf8");
+  }
 }
 
 function codexItemFailed(item) {

@@ -6,7 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { catalogTaskKey } from "../../domain/task-catalog-identity.mjs";
 
 const FORMAT_VERSION = 1;
-const TASK_SCHEMA_VERSION = 3;
+const TASK_SCHEMA_VERSION = 4;
 const DEFAULT_HISTORY_LIMIT = 50;
 const DEFAULT_RUNNING_FRESHNESS_MS = 10 * 60 * 1000;
 const DEFAULT_TASK_LIMIT = 1_000;
@@ -34,6 +34,32 @@ function cleanResponseAnnotations(annotations) {
       annotation: cleanText(annotation?.annotation ?? annotation?.comment, 4_000),
     }))
     .filter((annotation) => annotation.text || annotation.annotation);
+}
+
+function cleanActivities(activities) {
+  return (Array.isArray(activities) ? activities : [])
+    .map((activity) => ({
+      id: cleanText(activity?.id, 200),
+      type: cleanText(activity?.type, 40),
+      label: cleanText(activity?.label, 500),
+      detail: cleanText(activity?.detail, 4_000),
+      status: cleanText(activity?.status, 40),
+      ...(activity?.time ? { time: cleanText(activity.time, 80) } : {}),
+    }))
+    .filter((activity) => activity.id || activity.label);
+}
+
+function cleanActivityGroups(groups) {
+  return (Array.isArray(groups) ? groups : []).flatMap((group, index) => {
+    const reasoning = cleanText(group?.reasoning, 40_000);
+    const activities = cleanActivities(group?.activities);
+    if (!reasoning && !activities.length) return [];
+    return [{
+      id: cleanText(group?.id, 200) || `group:${index}`,
+      reasoning,
+      activities,
+    }];
+  });
 }
 
 function withoutPromptlessAnswerEchoes(history) {
@@ -69,17 +95,10 @@ function cleanHistory(history, limit) {
       ...(item?.startedAt ? { startedAt: cleanText(item.startedAt, 80) } : {}),
       ...(item?.completedAt ? { completedAt: cleanText(item.completedAt, 80) } : {}),
       attachments: cleanAttachments(item?.attachments),
-      activities: (Array.isArray(item?.activities) ? item.activities : [])
-        .slice(-100)
-        .map((activity) => ({
-          id: cleanText(activity?.id, 200),
-          type: cleanText(activity?.type, 40),
-          label: cleanText(activity?.label, 500),
-          detail: cleanText(activity?.detail, 1_000),
-          status: cleanText(activity?.status, 40),
-          ...(activity?.time ? { time: cleanText(activity.time, 80) } : {}),
-        }))
-        .filter((activity) => activity.id || activity.label),
+      activities: cleanActivities(item?.activities),
+      ...(cleanActivityGroups(item?.activityGroups).length
+        ? { activityGroups: cleanActivityGroups(item.activityGroups) }
+        : {}),
       messages: (Array.isArray(item?.messages) ? item.messages : [])
         .slice(-100)
         .flatMap((message) => {
@@ -202,6 +221,7 @@ function configure(database) {
       prompt_request TEXT NOT NULL DEFAULT '',
       attachments_json TEXT NOT NULL,
       activities_json TEXT NOT NULL,
+      activity_groups_json TEXT NOT NULL DEFAULT '[]',
       PRIMARY KEY (provider, thread_id, position),
       FOREIGN KEY (provider, thread_id)
         REFERENCES task_read_model_tasks (provider, thread_id) ON DELETE CASCADE
@@ -241,6 +261,9 @@ function configure(database) {
   }
   if (!turnColumns.has("prompt_request")) {
     database.exec("ALTER TABLE task_read_model_turns ADD COLUMN prompt_request TEXT NOT NULL DEFAULT ''");
+  }
+  if (!turnColumns.has("activity_groups_json")) {
+    database.exec("ALTER TABLE task_read_model_turns ADD COLUMN activity_groups_json TEXT NOT NULL DEFAULT '[]'");
   }
   const messageColumns = new Set(database.prepare(
     "PRAGMA table_info(task_read_model_messages)",
@@ -384,6 +407,9 @@ export class LocalTaskSyncStore {
       ...(row.prompt_request ? { promptRequest: String(row.prompt_request) } : {}),
       attachments: parseJsonArray(row.attachments_json),
       activities: parseJsonArray(row.activities_json),
+      ...(parseJsonArray(row.activity_groups_json).length
+        ? { activityGroups: parseJsonArray(row.activity_groups_json) }
+        : {}),
       messages: messagesByTurn.get(Number(row.position)) ?? [],
     }));
   }
@@ -485,8 +511,8 @@ export class LocalTaskSyncStore {
       INSERT INTO task_read_model_turns (
         provider, thread_id, position, id, prompt, answer, status, active,
         completed, started_at, completed_at, prompt_annotations_json, prompt_request,
-        attachments_json, activities_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        attachments_json, activities_json, activity_groups_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const insertMessage = this.#database.prepare(`
       INSERT INTO task_read_model_messages (
@@ -512,6 +538,7 @@ export class LocalTaskSyncStore {
         turn.promptRequest ?? "",
         JSON.stringify(turn.attachments),
         JSON.stringify(turn.activities),
+        JSON.stringify(turn.activityGroups ?? []),
       );
       turn.messages.forEach((message, messagePosition) => {
         insertMessage.run(

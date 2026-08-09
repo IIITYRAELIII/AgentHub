@@ -174,6 +174,39 @@ function activityFromCodexItem(item, index) {
   return null;
 }
 
+function codexReasoningText(value) {
+  if (typeof value === "string") return value.trim();
+  if (Array.isArray(value)) return value.map(codexReasoningText).filter(Boolean).join("\n\n");
+  if (!value || typeof value !== "object") return "";
+  return codexReasoningText(value.text ?? value.content ?? value.summary ?? "");
+}
+
+export function codexTurnActivityGroups(turn) {
+  const groups = [];
+  let current = null;
+  for (const [index, item] of (Array.isArray(turn?.items) ? turn.items : []).entries()) {
+    if (item?.type === "reasoning") {
+      const reasoning = codexReasoningText(item.summary) || codexReasoningText(item.content);
+      if (!reasoning) continue;
+      current = {
+        id: `reasoning:${String(item.id ?? index)}`,
+        reasoning,
+        activities: [],
+      };
+      groups.push(current);
+      continue;
+    }
+    const activity = activityFromCodexItem(item, index);
+    if (!activity) continue;
+    if (!current) {
+      current = { id: `activity:${String(item?.id ?? index)}`, reasoning: "", activities: [] };
+      groups.push(current);
+    }
+    current.activities.push(activity);
+  }
+  return groups;
+}
+
 export function codexTurnActivities(turn) {
   return (Array.isArray(turn?.items) ? turn.items : [])
     .map(activityFromCodexItem)
@@ -314,6 +347,7 @@ export function codexTurnHasExplicitFinalAnswer(turn) {
 export function codexThreadHistory(turns) {
   return (Array.isArray(turns) ? turns : []).flatMap((turn) => {
     const messages = codexTurnMessages(turn);
+    const activityGroups = codexTurnActivityGroups(turn);
     const userMessage = messages.find((item) => item.role === "user");
     const prompt = userMessage?.text ?? "";
     if (!prompt) return [];
@@ -346,6 +380,7 @@ export function codexThreadHistory(turns) {
         : {}),
       messages,
       activities: codexTurnActivities(turn),
+      ...(activityGroups.length ? { activityGroups } : {}),
     }];
   });
 }

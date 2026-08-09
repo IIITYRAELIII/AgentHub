@@ -5,6 +5,7 @@ import {
   codexTurnHasExplicitFinalAnswer,
   claudeTranscriptHistory,
   codexThreadHistory,
+  codexTurnActivityGroups,
   codexTurnActivities,
   displayUserPrompt,
   isEmptyTurnCompletionPlaceholder,
@@ -138,6 +139,29 @@ test("Codex history preserves a safe activity feed", () => {
   assert.equal(activities[0].detail, "npm test");
   assert.equal(activities[2].status, "failed");
   assert.equal(activities[3].status, "failed");
+});
+
+test("Codex history groups tool calls between reasoning blocks", () => {
+  const groups = codexTurnActivityGroups({
+    items: [
+      { id: "think-1", type: "reasoning", summary: ["**Проверяю проект**\n\nИщу нужный модуль."] },
+      { id: "cmd-1", type: "commandExecution", command: "rg handler" },
+      { id: "cmd-2", type: "commandExecution", command: "npm test" },
+      { id: "think-2", type: "reasoning", summary: [{ text: "**Исправляю**\n\nПричина найдена." }] },
+      { id: "file-1", type: "fileChange", changes: [{ path: "app.js" }] },
+    ],
+  });
+
+  assert.deepEqual(groups.map((group) => ({
+    reasoning: group.reasoning,
+    activities: group.activities.map((activity) => activity.id),
+  })), [{
+    reasoning: "**Проверяю проект**\n\nИщу нужный модуль.",
+    activities: ["item:cmd-1", "item:cmd-2"],
+  }, {
+    reasoning: "**Исправляю**\n\nПричина найдена.",
+    activities: ["item:file-1"],
+  }]);
 });
 
 test("Codex history keeps only real subagent lifecycle events", () => {

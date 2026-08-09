@@ -1269,6 +1269,7 @@ function historyMessages(history, focusedTurn = null) {
         responseAnnotationRequest: message.responseAnnotationRequest,
       } : {}),
       activities: message.role === "agent" && item.completed ? (item.activities ?? []) : [],
+      activityGroups: message.role === "agent" && item.completed ? (item.activityGroups ?? []) : [],
       time: message.time ?? (message.role === "user" ? item.startedAt : item.completedAt) ?? null,
       historyOrder: (historyStart + itemIndex) * 1_000 + messageIndex,
       attachments: attachmentViews(message.attachments),

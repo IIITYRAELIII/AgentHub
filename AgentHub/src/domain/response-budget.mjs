@@ -29,6 +29,11 @@ function textSlots(payload) {
         slots.push({ read: () => message.text, write: (value) => { message.text = value; } });
       }
     }
+    for (const group of item.activityGroups ?? []) {
+      if (typeof group.reasoning === "string") {
+        slots.push({ read: () => group.reasoning, write: (value) => { group.reasoning = value; } });
+      }
+    }
   }
   return slots;
 }
@@ -58,6 +63,15 @@ export function fitTaskHistoryPayload(payload, {
     const activityItem = (result.items ?? []).find((item) => (item.activities?.length ?? 0) > 0);
     if (activityItem) {
       activityItem.activities = activityItem.activities.slice(Math.ceil(activityItem.activities.length / 2));
+      truncated = true;
+      continue;
+    }
+    const groupedActivityItem = (result.items ?? []).find((item) => (
+      item.activityGroups?.some((group) => (group.activities?.length ?? 0) > 0)
+    ));
+    if (groupedActivityItem) {
+      const group = groupedActivityItem.activityGroups.find((entry) => (entry.activities?.length ?? 0) > 0);
+      group.activities = group.activities.slice(Math.ceil(group.activities.length / 2));
       truncated = true;
       continue;
     }

@@ -2,13 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { appendRunActivity, codexItemActivity } from "../../src/domain/run-activity.mjs";
 
-test("run activities update by stable id and remain bounded", () => {
+test("run activities preserve more than one hundred calls and update by stable id", () => {
   const run = { activities: [] };
   for (let index = 0; index < 105; index += 1) {
     appendRunActivity(run, { id: `item:${index}`, label: `Item ${index}` });
   }
   appendRunActivity(run, { id: "item:104", label: "Updated", status: "completed" });
-  assert.equal(run.activities.length, 100);
+  assert.equal(run.activities.length, 105);
   assert.deepEqual(run.activities.at(-1), {
     id: "item:104",
     type: "stage",

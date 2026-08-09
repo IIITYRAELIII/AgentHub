@@ -134,7 +134,7 @@ export function createDesktopSnapshotFactory({
       responseItemId: run.responseItemId ?? null,
       startedAt: run.startedAt ?? null,
       lastActivityAt: run.lastMeaningfulProgressAt ?? run.progressHeartbeatAt ?? run.startedAt ?? null,
-      activities: Array.isArray(run.activities) ? run.activities.slice(-100) : [],
+      activities: Array.isArray(run.activities) ? run.activities : [],
       context: desktopContextSnapshot(run.threadId, run.turnId),
     };
   }

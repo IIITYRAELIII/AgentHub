@@ -122,6 +122,11 @@ test("local task sync preserves durable message metadata and attachments", async
     completedAt: "2026-07-31T12:01:00.000Z",
     attachments: [{ id: "screen.png", name: "screen.png", type: "image/png" }],
     activities: [{ id: "tool-1", type: "tool", label: "Проверка", status: "completed" }],
+    activityGroups: [{
+      id: "reasoning-1",
+      reasoning: "Проверяю входные данные.",
+      activities: [{ id: "tool-1", type: "tool", label: "Проверка", status: "completed" }],
+    }],
     messages: [{
       itemId: "user-1",
       clientUserMessageId: "client-1",
@@ -154,6 +159,8 @@ test("local task sync preserves durable message metadata and attachments", async
     { id: "screen.png", name: "screen.png", type: "image/png" },
   ]);
   assert.equal(entry.activities[0].label, "Проверка");
+  assert.equal(entry.activityGroups[0].reasoning, "Проверяю входные данные.");
+  assert.equal(entry.activityGroups[0].activities[0].label, "Проверка");
 });
 
 test("local task sync migrates annotation columns in an existing SQLite cache", async () => {
@@ -210,6 +217,7 @@ test("local task sync migrates annotation columns in an existing SQLite cache", 
     migrated.close();
     assert.ok(turnColumns.includes("prompt_annotations_json"));
     assert.ok(turnColumns.includes("prompt_request"));
+    assert.ok(turnColumns.includes("activity_groups_json"));
     assert.ok(messageColumns.includes("response_annotations_json"));
     assert.ok(messageColumns.includes("response_annotation_request"));
   } finally {

@@ -3123,6 +3123,55 @@ function activityFeedNode(activities) {
   ]);
 }
 
+function turnTraceNode(groups) {
+  const values = (Array.isArray(groups) ? groups : []).filter((group) => (
+    String(group?.reasoning ?? "").trim() || (group?.activities?.length ?? 0) > 0
+  ));
+  if (!values.length) return null;
+  const reasoningCount = values.filter((group) => String(group.reasoning ?? "").trim()).length;
+  const activityCount = values.reduce((total, group) => total + (group.activities?.length ?? 0), 0);
+  const title = reasoningCount
+    ? `Рассуждения хода · блоков: ${reasoningCount} · действий: ${activityCount}`
+    : `Действия хода (${activityCount})`;
+  return el("details", { class: "turn-trace" }, [
+    el("summary", { text: title }),
+    el("div", { class: "turn-trace-groups" }, values.map((group, index) => {
+      const section = el("section", {
+        class: "turn-trace-block",
+        "data-trace-index": String(index),
+      });
+      const reasoning = String(group.reasoning ?? "").trim();
+      if (reasoning) {
+        const reasoningNode = el("div", { class: "turn-trace-reasoning" });
+        renderMarkdown(reasoningNode, reasoning);
+        section.append(reasoningNode);
+      }
+      const activities = Array.isArray(group.activities) ? group.activities : [];
+      if (activities.length) {
+        section.append(el("div", { class: "turn-trace-activities" }, [
+          el("div", {
+            class: "turn-trace-activities-title",
+            text: `Вызовы инструментов (${activities.length})`,
+          }),
+          el("div", { class: "activity-list" }, activities.map((activity) => el("div", {
+            class: "activity-item",
+            "data-type": activity.type ?? "stage",
+            "data-status": activity.status ?? "",
+          }, [
+            el("span", { class: "activity-marker", "aria-hidden": "true" }),
+            el("span", { class: "activity-time", text: activity.time
+              ? new Date(activity.time).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+              : "" }),
+            el("span", { class: "activity-label", text: activity.label ?? "Действие" }),
+            activity.detail ? el("span", { class: "activity-detail", text: activity.detail }) : null,
+          ]))),
+        ]));
+      }
+      return section;
+    })),
+  ]);
+}
+
 function renderMessage(message, { readOnly = false } = {}) {
   const role = message.role === "user" ? "user" : message.role === "system" ? "system" : "agent";
   const maintenance = role === "system" && message.kind === "maintenance";
@@ -3160,8 +3209,10 @@ function renderMessage(message, { readOnly = false } = {}) {
 
   if (maintenance) article.append(body);
   else article.append(head, body);
-  const activity = activityFeedNode(message.activities);
-  if (activity) article.append(activity);
+  const trace = turnTraceNode(message.activityGroups);
+  const activity = trace ? null : activityFeedNode(message.activities);
+  if (trace) article.append(trace);
+  else if (activity) article.append(activity);
 
   if (Array.isArray(message.attachments) && message.attachments.length > 0) {
     article.append(renderAttachmentStrip(message.attachments, { readOnly: true }));

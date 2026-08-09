@@ -27,6 +27,15 @@ test("task history is fitted by bytes and keeps the newest identity", () => {
       prompt: "Запрос ".repeat(20_000),
       answer: "Ответ ".repeat(20_000),
       activities: Array.from({ length: 100 }, () => ({ detail: "Действие".repeat(100) })),
+      activityGroups: [{
+        id: `reasoning-${index}`,
+        reasoning: "Рассуждение ".repeat(20_000),
+        activities: Array.from({ length: 105 }, (_, activityIndex) => ({
+          id: `call-${activityIndex}`,
+          label: "Вызов инструмента",
+          detail: "Действие".repeat(100),
+        })),
+      }],
       messages: [
         { itemId: `u-${index}`, role: "user", text: "Запрос ".repeat(20_000) },
         { itemId: `a-${index}`, role: "agent", text: "Ответ ".repeat(20_000) },
@@ -39,4 +48,5 @@ test("task history is fitted by bytes and keeps the newest identity", () => {
   assert.equal(result.threadId, "thread");
   assert.equal(result.items.at(-1).id, "turn-9");
   assert.equal(result.transportTruncated, true);
+  assert.ok(result.items.at(-1).activityGroups.length > 0);
 });
