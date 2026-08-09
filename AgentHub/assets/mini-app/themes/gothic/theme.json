@@ -8,7 +8,10 @@
     "iron-texture": "gothic-iron-texture.png",
     "iron-frame": "gothic-iron-frame.jpg",
     "forged-frame": "gothic-forged-frame.png",
-    "forged-frame-matte": "gothic-forged-frame-matte.png"
+    "forged-frame-matte": "gothic-forged-frame-matte.png",
+    "header-brand-rail": "gothic-header-brand-rail.png",
+    "header-rail-repeat": "gothic-header-rail-repeat.png",
+    "header-rivet": "gothic-header-rivet.png"
   },
   "backgrounds": [
     { "id": "gothic", "name": "Склеп", "asset": "gothic-concrete.jpg", "particles": "motes" },

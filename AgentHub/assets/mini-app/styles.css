@@ -4688,9 +4688,9 @@ html[data-surface="mobile"]
   html:not([data-surface="mobile"]) .view-tab[aria-pressed="true"] {
     background: var(--shell-tab-active-background, var(--accent-soft)) !important;
     border: var(--shell-tab-active-border, 1px solid var(--accent-line)) !important;
-    box-shadow: none !important;
+    box-shadow: var(--shell-tab-active-shadow, none) !important;
     color: var(--accent) !important;
-    padding: 0.32rem 0.75rem !important;
+    padding: var(--shell-tab-active-padding, 0.32rem 0.75rem) !important;
   }
 
   html:not([data-surface="mobile"]) .toolbar .view-settings {

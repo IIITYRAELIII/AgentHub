@@ -32,6 +32,9 @@ html[data-theme="gothic"] {
   --gothic-iron-frame: var(--gothic-iron-frame-asset, url("./gothic-iron-frame.jpg"));
   --gothic-forged-frame: var(--gothic-forged-frame-asset, url("./gothic-forged-frame.png"));
   --gothic-forged-frame-matte: var(--gothic-forged-frame-matte-asset, url("./gothic-forged-frame-matte.png"));
+  --gothic-header-brand-rail: var(--gothic-header-brand-rail-asset, url("./gothic-header-brand-rail.png"));
+  --gothic-header-rail-repeat: var(--gothic-header-rail-repeat-asset, url("./gothic-header-rail-repeat.png"));
+  --gothic-header-rivet: var(--gothic-header-rivet-asset, url("./gothic-header-rivet.png"));
   --card-bg: rgb(10 11 11 / 94%);
   --card-bg-open: rgb(17 18 18 / 96%);
   --card-texture: var(--gothic-iron-texture);
@@ -101,9 +104,11 @@ html[data-theme="gothic"] {
   --shell-connection-banner-display: none;
   --shell-tab-background: transparent;
   --shell-tab-active-background:
-    linear-gradient(rgb(30 17 15 / 84%), rgb(15 13 12 / 92%)),
+    linear-gradient(rgb(14 15 15 / 94%), rgb(8 9 9 / 96%)),
     var(--gothic-iron-texture) center / 20rem 20rem;
-  --shell-tab-active-border: 1px solid var(--accent-line);
+  --shell-tab-active-border: 1px solid #6f362f;
+  --shell-tab-active-padding: 0.32rem 0.94rem;
+  --shell-tab-active-shadow: inset 0 -2px 0 #a14438, inset 0 0 0 1px #111212;
   --shell-view-switch-background: transparent;
   --shell-view-switch-border: 0;
   --shell-view-switch-gap: 0.2rem;
@@ -158,15 +163,42 @@ html[data-theme="gothic"] .task-rail-title {
 }
 
 @media (min-width: 860px) {
+  html[data-theme="gothic"]:not([data-surface="mobile"]) {
+    --shell-header-background:
+      linear-gradient(rgb(5 6 6 / 58%), rgb(5 6 6 / 58%)),
+      var(--gothic-iron-texture) center / 24rem 24rem;
+    --shell-header-frame-border: 10px solid transparent;
+    --shell-header-frame-filter: brightness(1.12) contrast(1.1) saturate(0.76);
+    --shell-header-frame-image: var(--gothic-forged-frame-matte) 72 / 10px stretch;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .app-header::before {
+    background-image: var(--gothic-header-rivet), var(--gothic-header-rivet);
+    background-origin: border-box;
+    background-position: 12px 11px, right 12px top 11px;
+    background-repeat: no-repeat;
+    background-size: 8px 8px;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .app-header::after {
+    background: var(--gothic-header-rail-repeat) left center / 512px 24px repeat-x;
+    bottom: -6px;
+    height: 24px;
+    left: 16.5rem;
+    opacity: 0.82;
+    right: 0;
+    z-index: 0;
+  }
+
   html[data-theme="gothic"]:not([data-surface="mobile"]) .brand {
     align-self: stretch;
     background:
-      linear-gradient(rgb(6 7 7 / 78%), rgb(6 7 7 / 78%)),
+      linear-gradient(rgb(6 7 7 / 42%), rgb(6 7 7 / 42%)),
       var(--gothic-iron-texture) center / 20rem 20rem;
     border: 0;
     box-sizing: border-box;
     flex: 0 0 16.5rem;
-    gap: 1rem;
+    gap: 1.375rem;
     height: 4.75rem;
     margin-left: calc(clamp(1rem, 4vw, 4.25rem) * -1);
     padding: 0 0.9rem 0 2.45rem;
@@ -174,15 +206,33 @@ html[data-theme="gothic"] .task-rail-title {
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .brand::before {
+    background-image: var(--gothic-header-rivet), var(--gothic-header-rivet);
+    background-origin: border-box;
+    background-position: 12px 11px, right 0 top 11px;
+    background-repeat: no-repeat;
+    background-size: 8px 8px;
     border: 10px solid transparent;
-    border-image: var(--gothic-forged-frame-matte) 8% / 10px stretch;
+    border-image: var(--gothic-forged-frame-matte) 72 / 10px stretch;
     box-sizing: border-box;
     content: "";
-    filter: brightness(1.32) contrast(1.08);
+    filter: brightness(1.12) contrast(1.1) saturate(0.76);
     inset: 0;
     pointer-events: none;
     position: absolute;
     z-index: 0;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .brand::after {
+    background: var(--gothic-header-brand-rail) center / 100% 100% no-repeat;
+    bottom: -9px;
+    content: "";
+    filter: brightness(0.82) contrast(1.08) saturate(0.76);
+    height: 34px;
+    left: 4px;
+    pointer-events: none;
+    position: absolute;
+    width: 282px;
+    z-index: 2;
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .brand > * {
@@ -202,7 +252,7 @@ html[data-theme="gothic"] .task-rail-title {
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .view-tab,
   html[data-theme="gothic"]:not([data-surface="mobile"]) .view-settings {
-    color: #817b70;
+    color: #928b7e;
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .view-tab[aria-pressed="true"] {
