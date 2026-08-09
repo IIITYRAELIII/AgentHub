@@ -6,7 +6,8 @@
   "styles": "theme.css",
   "assets": {
     "iron-texture": "gothic-iron-texture.png",
-    "iron-frame": "gothic-iron-frame.jpg"
+    "iron-frame": "gothic-iron-frame.jpg",
+    "forged-frame": "gothic-forged-frame.png"
   },
   "backgrounds": [
     { "id": "gothic", "name": "Склеп", "asset": "gothic-concrete.jpg", "particles": "motes" },

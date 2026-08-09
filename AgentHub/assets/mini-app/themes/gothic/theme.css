@@ -30,6 +30,7 @@ html[data-theme="gothic"] {
 
   --gothic-iron-texture: var(--gothic-iron-texture-asset, url("./gothic-iron-texture.png"));
   --gothic-iron-frame: var(--gothic-iron-frame-asset, url("./gothic-iron-frame.jpg"));
+  --gothic-forged-frame: var(--gothic-forged-frame-asset, url("./gothic-forged-frame.png"));
   --card-bg: rgb(12 11 9 / 92%);
   --card-bg-open: rgb(20 17 14 / 96%);
   --card-texture: var(--gothic-iron-texture);
@@ -90,11 +91,11 @@ html[data-theme="gothic"] {
   --shell-tab-active-background: #411f17 var(--gothic-iron-texture) center / 20rem 20rem;
   --shell-tab-active-border: 1px solid var(--accent-line);
   --shell-panel-border: 1px solid transparent;
-  --shell-panel-border-image: var(--gothic-iron-frame) 34 / 12px stretch;
+  --shell-panel-border-image: var(--gothic-forged-frame) 58 / 14px stretch;
   --shell-stream-tabs-background: #080706 var(--gothic-iron-texture) center / 24rem 24rem;
   --shell-stream-tabs-border: 1px solid transparent;
   --shell-stream-tabs-border-bottom: 1px solid transparent;
-  --shell-stream-tabs-border-image: var(--gothic-iron-frame) 34 / 10px stretch;
+  --shell-stream-tabs-border-image: var(--gothic-forged-frame) 58 / 11px stretch;
   --shell-stream-tab-background: transparent;
   --shell-stream-tab-border: 0;
   --shell-stream-tab-hover-background: #17130f var(--gothic-iron-texture) center / 18rem 18rem;
@@ -376,8 +377,8 @@ html[data-theme="gothic"] .chip-button.primary {
       linear-gradient(rgb(0 0 0 / 62%), rgb(0 0 0 / 62%)),
       var(--gothic-iron-texture);
     background-blend-mode: normal;
-    border: 10px solid transparent;
-    border-image: var(--gothic-iron-frame) 34 / 10px stretch;
+    border: 12px solid transparent;
+    border-image: var(--gothic-forged-frame) 58 / 12px stretch;
     box-shadow: inset 0 0 0 1px rgb(220 184 132 / 7%), inset 0 0 2.2rem rgb(0 0 0 / 52%);
   }
 
@@ -386,8 +387,8 @@ html[data-theme="gothic"] .chip-button.primary {
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .composer {
-    border: 7px solid transparent;
-    border-image: var(--gothic-iron-frame) 34 / 7px stretch;
+    border: 9px solid transparent;
+    border-image: var(--gothic-forged-frame) 58 / 9px stretch;
     padding: 0.35rem 0.45rem max(0.35rem, env(safe-area-inset-bottom));
   }
 

@@ -630,6 +630,7 @@ test("Gothic theme packages the Old Camp banner with its Sleeper-temple palette"
   const banner = theme.resources.find((resource) => resource.pathname.endsWith("/gothic-old-camp-banner.png"));
   const ironTexture = theme.resources.find((resource) => resource.pathname.endsWith("/gothic-iron-texture.png"));
   const ironFrame = theme.resources.find((resource) => resource.pathname.endsWith("/gothic-iron-frame.jpg"));
+  const forgedFrame = theme.resources.find((resource) => resource.pathname.endsWith("/gothic-forged-frame.png"));
   /* Знамя — самостоятельный ресурс пакета темы. Это проверяет фактическую
      доступность во Worker и webview вместо снимка конкретных CSS-деклараций.
      Кованая оболочка так же обязана доехать как растровые ресурсы темы. */
@@ -646,9 +647,13 @@ test("Gothic theme packages the Old Camp banner with its Sleeper-temple palette"
   assert.equal(ironFrame.contentType, "image/jpeg");
   assert.equal(ironFrame.immutable, true);
   assert.ok(fs.statSync(ironFrame.file).size > 10_000);
-  assert.match(styles, /--shell-panel-border-image:\s*var\(--gothic-iron-frame\) 34 \/ 12px stretch/u);
+  assert.ok(forgedFrame);
+  assert.equal(forgedFrame.contentType, "image/png");
+  assert.equal(forgedFrame.immutable, true);
+  assert.ok(fs.statSync(forgedFrame.file).size > 50_000);
+  assert.match(styles, /--shell-panel-border-image:\s*var\(--gothic-forged-frame\) 58 \/ 14px stretch/u);
   assert.match(styles, /body > \.workspace\s*\{[^}]*max-width:\s*none;[^}]*width:\s*100%;/su);
-  assert.match(styles, /\.stream-chat-columns > \.chat-pane,[\s\S]*?\.stream-chat-preview\s*\{[^}]*border:\s*10px solid transparent;[^}]*border-image:\s*var\(--gothic-iron-frame\) 34 \/ 10px stretch;/u);
+  assert.match(styles, /\.stream-chat-columns > \.chat-pane,[\s\S]*?\.stream-chat-preview\s*\{[^}]*border:\s*12px solid transparent;[^}]*border-image:\s*var\(--gothic-forged-frame\) 58 \/ 12px stretch;/u);
   assert.match(styles, /--radius-lg:\s*0;/u);
 });
 
