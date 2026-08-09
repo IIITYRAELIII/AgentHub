@@ -169,6 +169,10 @@ test("desktop shell owns the shared header and Stream control shapes", async () 
     new URL("../../assets/mini-app/styles.css", import.meta.url),
     "utf8",
   );
+  const gothic = await readFile(
+    new URL("../../assets/mini-app/themes/gothic/theme.css", import.meta.url),
+    "utf8",
+  );
   assert.match(
     styles,
     /html:not\(\[data-surface="mobile"\]\) \.app-header-inner\s*\{[^}]*max-width:\s*none\s*!important;[^}]*padding-left:\s*var\(--shell-header-padding-left, clamp\(1rem, 4vw, 4\.25rem\)\)\s*!important;[^}]*padding-right:\s*var\(--shell-header-padding-right, clamp\(1rem, 4vw, 4\.25rem\)\)\s*!important;[^}]*width:\s*100%\s*!important;/su,
@@ -184,5 +188,13 @@ test("desktop shell owns the shared header and Stream control shapes", async () 
   assert.match(
     styles,
     /html\[data-view="chat"\]:not\(\[data-surface="mobile"\]\) \.task-rail,[\s\S]*?\.chat\s*\{[^}]*border:\s*var\(--shell-panel-border, 1px solid var\(--line\)\)\s*!important;[^}]*border-radius:\s*4px\s*!important;/u,
+  );
+  assert.doesNotMatch(
+    gothic,
+    /html\[data-theme="gothic"\]\s*\{[^}]*--shell-header-padding:\s*0;/su,
+  );
+  assert.match(
+    gothic,
+    /@media \(min-width: 860px\)\s*\{[\s\S]*?html\[data-theme="gothic"\]:not\(\[data-surface="mobile"\]\)\s*\{[^}]*--shell-header-padding:\s*0;/u,
   );
 });
