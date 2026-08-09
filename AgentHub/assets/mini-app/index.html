@@ -203,26 +203,15 @@
           <span>Workspaces</span>
           <span class="task-count" data-task-count hidden></span>
         </div>
-        <details class="task-new-picker" data-task-new-picker>
-          <summary class="icon-button task-new" title="Новая задача" aria-label="Новая задача">
-            <svg data-phosphor-icon="plus" viewBox="0 0 256 256" aria-hidden="true">
-              <line x1="40" y1="128" x2="216" y2="128" fill="none" stroke="currentColor"
-                stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
-              <line x1="128" y1="40" x2="128" y2="216" fill="none" stroke="currentColor"
-                stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
-            </svg>
-          </summary>
-          <div class="task-new-menu" role="menu" aria-label="Выбор агента новой задачи">
-            <button type="button" role="menuitem" data-action="task-new" data-provider="codex">
-              <span class="provider-dot" data-provider="codex" aria-hidden="true"></span>
-              <span>Codex</span>
-            </button>
-            <button type="button" role="menuitem" data-action="task-new" data-provider="claude">
-              <span class="provider-dot" data-provider="claude" aria-hidden="true"></span>
-              <span>Claude</span>
-            </button>
-          </div>
-        </details>
+        <button type="button" class="icon-button task-new" data-action="workspace-new"
+          title="Новый Workspace" aria-label="Новый Workspace">
+          <svg data-phosphor-icon="plus" viewBox="0 0 256 256" aria-hidden="true">
+            <line x1="40" y1="128" x2="216" y2="128" fill="none" stroke="currentColor"
+              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+            <line x1="128" y1="40" x2="128" y2="216" fill="none" stroke="currentColor"
+              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+          </svg>
+        </button>
       </div>
       <div class="task-search">
         <svg data-phosphor-icon="magnifying-glass" viewBox="0 0 256 256" aria-hidden="true">
@@ -476,7 +465,7 @@
       <header>
         <div>
           <p class="eyebrow">Workspace</p>
-          <h2>Редактирование Workspace</h2>
+          <h2 data-workspace-card-title>Редактирование Workspace</h2>
         </div>
         <button type="button" class="icon-button" data-workspace-card-close aria-label="Закрыть">×</button>
       </header>
@@ -496,7 +485,7 @@
       </section>
       <footer>
         <button type="button" class="board-task-quiet" data-workspace-card-cancel>Отмена</button>
-        <button type="submit" class="board-task-primary">Сохранить</button>
+        <button type="submit" class="board-task-primary" data-workspace-card-submit>Сохранить</button>
       </footer>
     </form>
   </dialog>

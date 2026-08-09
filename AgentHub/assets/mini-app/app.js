@@ -44,12 +44,13 @@ const taskList = document.querySelector("[data-task-list]");
 const taskEmpty = document.querySelector("[data-task-empty]");
 const taskCount = document.querySelector("[data-task-count]");
 const taskFilter = document.querySelector("[data-task-filter]");
-const taskNewPicker = document.querySelector("[data-task-new-picker]");
 const workspaceCardModal = document.querySelector("[data-workspace-card-modal]");
 const workspaceCardForm = document.querySelector("[data-workspace-card-form]");
+const workspaceCardTitle = document.querySelector("[data-workspace-card-title]");
 const workspaceCardName = document.querySelector("[data-workspace-card-name]");
 const workspaceCardComment = document.querySelector("[data-workspace-card-comment]");
 const workspaceCardOrder = document.querySelector("[data-workspace-card-order]");
+const workspaceCardSubmit = document.querySelector("[data-workspace-card-submit]");
 
 const chatPane = document.querySelector("[data-chat-pane]");
 const streamTabs = document.querySelector("[data-stream-tabs]");
@@ -2166,6 +2167,7 @@ streamTabs?.addEventListener("click", (event) => {
 let streamContextMenu = null;
 let workspaceContextMenu = null;
 let workspaceCardId = "";
+let workspaceCardMode = "edit";
 
 function closeStreamContextMenu() {
   if (!streamContextMenu) return;
@@ -2199,6 +2201,7 @@ function closeWorkspaceContextMenu() {
 
 function closeWorkspaceCard() {
   workspaceCardId = "";
+  workspaceCardMode = "edit";
   if (workspaceCardModal?.open) workspaceCardModal.close();
 }
 
@@ -2207,7 +2210,10 @@ function openWorkspaceCard(workspaceId) {
   if (!workspace || !workspaceCardModal) return;
   const columnId = `workspace:${workspace.id}`;
   const order = dashboardColumnOrder();
+  workspaceCardMode = "edit";
   workspaceCardId = String(workspace.id);
+  workspaceCardTitle.textContent = "Редактирование Workspace";
+  workspaceCardSubmit.textContent = "Сохранить";
   workspaceCardName.value = String(workspace.name ?? "");
   workspaceCardName.disabled = workspace.kind === "system";
   workspaceCardComment.value = String(workspace.comment ?? "");
@@ -2215,6 +2221,23 @@ function openWorkspaceCard(workspaceId) {
   workspaceCardOrder.value = String(Math.max(1, order.indexOf(columnId) + 1));
   workspaceCardModal.showModal();
   (workspaceCardName.disabled ? workspaceCardComment : workspaceCardName).focus();
+}
+
+function openNewWorkspaceCard() {
+  if (!workspaceCardModal) return;
+  const order = dashboardColumnOrder();
+  const notesIndex = order.indexOf("notes");
+  workspaceCardMode = "create";
+  workspaceCardId = "";
+  workspaceCardTitle.textContent = "Новый Workspace";
+  workspaceCardSubmit.textContent = "Создать";
+  workspaceCardName.value = "";
+  workspaceCardName.disabled = false;
+  workspaceCardComment.value = "";
+  workspaceCardOrder.max = String(order.length + 1);
+  workspaceCardOrder.value = String((notesIndex < 0 ? order.length : notesIndex) + 1);
+  workspaceCardModal.showModal();
+  workspaceCardName.focus();
 }
 
 function ensureWorkspaceContextMenu() {
@@ -4343,16 +4366,28 @@ document.addEventListener("contextmenu", (event) => {
 });
 workspaceCardForm?.addEventListener("submit", (event) => {
   event.preventDefault();
+  const name = workspaceCardName.value.trim();
+  if (!name) return workspaceCardName.focus();
+  const order = dashboardColumnOrder();
+  const requestedOrder = Math.round(Number(workspaceCardOrder.value));
+  if (workspaceCardMode === "create") {
+    const targetIndex = Math.max(0, Math.min(order.length, requestedOrder - 1));
+    emit("workspace:create", {
+      name,
+      comment: workspaceCardComment.value.trim(),
+      beforeColumnId: order[targetIndex] ?? null,
+    });
+    closeWorkspaceCard();
+    return;
+  }
   const workspace = workspaceCatalogItem(workspaceCardId);
   if (!workspace) return closeWorkspaceCard();
-  const order = dashboardColumnOrder();
   const columnId = `workspace:${workspace.id}`;
   const remaining = order.filter((id) => id !== columnId);
-  const requestedOrder = Math.round(Number(workspaceCardOrder.value));
   const targetIndex = Math.max(0, Math.min(remaining.length, requestedOrder - 1));
   emit("workspace:update", {
     workspaceId: workspace.id,
-    name: workspaceCardName.value.trim(),
+    name,
     comment: workspaceCardComment.value.trim(),
     beforeColumnId: remaining[targetIndex] ?? null,
   });
@@ -4363,7 +4398,10 @@ document.querySelector("[data-workspace-card-cancel]")?.addEventListener("click"
 workspaceCardModal?.addEventListener("click", (event) => {
   if (event.target === workspaceCardModal) closeWorkspaceCard();
 });
-workspaceCardModal?.addEventListener("close", () => { workspaceCardId = ""; });
+workspaceCardModal?.addEventListener("close", () => {
+  workspaceCardId = "";
+  workspaceCardMode = "edit";
+});
 bugReportAttach?.addEventListener("click", () => bugReportFiles?.click());
 bugReportFiles?.addEventListener("change", () => {
   void readBugReportFiles(bugReportFiles.files);
@@ -5032,9 +5070,6 @@ document.addEventListener("keydown", (event) => {
 /* ================================================= общие действия (intents) */
 
 document.addEventListener("click", (event) => {
-  if (taskNewPicker?.open && !taskNewPicker.contains(event.target)) {
-    taskNewPicker.open = false;
-  }
   const trigger = event.target.closest("[data-action]");
   if (!trigger) return;
   const action = trigger.dataset.action;
@@ -5045,11 +5080,13 @@ async function handleAction(action, trigger) {
   const taskId = trigger.closest("[data-stream-chat-task-id]")?.dataset.streamChatTaskId
     || state.selectedId;
   switch (action) {
+    case "workspace-new":
+      openNewWorkspaceCard();
+      break;
     case "task-new": {
       const provider = ["codex", "claude"].includes(trigger?.dataset?.provider)
         ? trigger.dataset.provider
         : (currentTask()?.provider ?? "codex");
-      if (taskNewPicker) taskNewPicker.open = false;
       const title = await askText({ title: "Название новой задачи" });
       if (title != null) emit("task:new", { title, provider });
       break;

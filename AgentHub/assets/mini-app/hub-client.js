@@ -1849,6 +1849,17 @@ agentHub.on("task:rename", ({ id, title }) => runAction(async () => {
 agentHub.on("workspace:rename", ({ workspaceId, name }) => runAction(async () => applySnapshot(
   await control("rename-workspace", { workspaceId, name }),
 )));
+agentHub.on("workspace:create", ({ name, comment, beforeColumnId }) => runAction(async () => {
+  let snapshot = await control("create-workspace", { name, comment });
+  const workspaceId = snapshot.createdWorkspace?.workspace?.id;
+  if (workspaceId) {
+    snapshot = await control("board-column-move", {
+      columnId: `workspace:${workspaceId}`,
+      beforeColumnId: beforeColumnId ?? null,
+    });
+  }
+  applySnapshot(snapshot);
+}));
 agentHub.on("workspace:update", ({ workspaceId, name, comment, beforeColumnId }) => runAction(async () => {
   if (!lastSnapshot?.boardLayout) {
     agentHub.toast("Agent Hub завершает обновление runtime. Повторите действие через минуту.");

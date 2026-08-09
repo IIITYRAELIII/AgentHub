@@ -22,13 +22,15 @@ function fixture() {
   return { calls, service: new WorkspaceCatalogService({ store }) };
 }
 
-test("createWorkspace creates its first Stream atomically", () => {
+test("createWorkspace creates its first empty Stream and comment atomically", () => {
   const { service, calls } = fixture();
-  const result = service.createWorkspace({ name: "Agent HUB", streamName: "Themes" });
+  const result = service.createWorkspace({
+    name: "Agent HUB", comment: "Локальный Hub", streamName: "Themes",
+  });
   assert.equal(result.workspace.id, "workspace-1");
   assert.equal(result.stream.id, "stream-1");
   assert.deepEqual(calls, [
-    ["createWorkspace", { name: "Agent HUB" }],
+    ["createWorkspace", { name: "Agent HUB", comment: "Локальный Hub" }],
     ["createStream", { workspaceId: "workspace-1", name: "Themes" }],
   ]);
 });

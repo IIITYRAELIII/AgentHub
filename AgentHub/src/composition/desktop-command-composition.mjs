@@ -65,6 +65,7 @@ export function createDesktopCommandComposition({
       cancelRun: desktopCancelRun,
       resolveApproval: application.resolveApproval,
       renameWorkspace: workspaceActions.renameWorkspace,
+      createWorkspace: workspaceActions.createWorkspace,
       createWorkspaceFromStream: workspaceActions.createWorkspaceFromStream,
       mergeWorkspaces: workspaceActions.mergeWorkspaces,
       createStream: workspaceActions.createStream,

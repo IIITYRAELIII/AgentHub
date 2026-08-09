@@ -16,9 +16,9 @@ export class WorkspaceCatalogService {
     return this.#store.hierarchy();
   }
 
-  createWorkspace({ name, streamName = null } = {}) {
+  createWorkspace({ name, comment = "", streamName = null } = {}) {
     return this.#store.transaction(() => {
-      const workspace = this.#store.createWorkspace({ name });
+      const workspace = this.#store.createWorkspace({ name, comment });
       const stream = this.#store.createStream({ workspaceId: workspace.id, name: streamName });
       return { workspace, stream };
     });

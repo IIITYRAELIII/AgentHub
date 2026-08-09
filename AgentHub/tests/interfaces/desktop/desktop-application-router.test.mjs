@@ -50,6 +50,20 @@ test("Desktop application router creates a Workspace from an existing Stream", a
   assert.equal(calls[0][1].name, "New Workspace");
 });
 
+test("Desktop application router creates a Workspace before any provider Thread", async () => {
+  const calls = [];
+  const control = router(calls);
+  await control.handleDesktopControl({
+    action: "create-workspace",
+    params: { name: "New Workspace", comment: "Описание" },
+    context: { source: "desktop", userId: "7" },
+  });
+  assert.equal(calls[0][0], "workspace.create");
+  assert.deepEqual(calls[0][1], {
+    name: "New Workspace", comment: "Описание", maxResponseBytes: 3_500_000,
+  });
+});
+
 test("Desktop application router dispatches Stream rotation to the exact Thread", async () => {
   const calls = [];
   const control = router(calls);

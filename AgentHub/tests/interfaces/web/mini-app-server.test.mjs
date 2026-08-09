@@ -247,8 +247,6 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.match(shellSource, /data-dialog-settings/u);
     assert.match(shellSource, /data-dialog-agent/u);
     assert.doesNotMatch(shellSource, /data-dialog-options="agent"/u);
-    assert.match(shellSource, /data-action="task-new" data-provider="codex"/u);
-    assert.match(shellSource, /data-action="task-new" data-provider="claude"/u);
     assert.match(shellSource, /data-status-slot/u);
     assert.match(shellSource, /data-browser-auth/u);
     assert.match(shellSource, /src="\/browser-device-auth\.js"/u);
