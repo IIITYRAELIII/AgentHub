@@ -203,8 +203,6 @@ test("desktop shell owns the shared header and Stream control shapes", async () 
   assert.match(gothic, /--shell-toolbar-align-self:\s*center;/u);
   assert.match(gothic, /--shell-toolbar-margin-top:\s*0;/u);
   assert.match(gothic, /--shell-view-switch-transform:\s*none;/u);
-  assert.match(gothic, /--shell-panel-border-image:\s*var\(--gothic-forged-frame-matte\) 9% \/ 13px stretch;/u);
-  assert.doesNotMatch(gothic, /gothic-forged-frame-matte\)[^;]*repeat;/u);
   assert.match(gothic, /body > \.workspace\s*\{[^}]*column-gap:\s*0;/u);
   assert.match(
     gothic,

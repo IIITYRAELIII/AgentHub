@@ -122,15 +122,15 @@ html[data-theme="gothic"] {
   --shell-view-switch-shadow: none;
   --shell-view-switch-transform: none;
   --shell-workspace-padding-top: 0;
-  --shell-panel-border: 13px solid transparent;
-  --shell-panel-border-image: var(--gothic-forged-frame-matte) 9% / 13px stretch;
+  --shell-panel-border: 6px solid transparent;
+  --shell-panel-border-image: var(--gothic-iron-frame) 5% / 6px stretch;
   --shell-stream-tabs-background:
     linear-gradient(rgb(7 8 8 / 82%), rgb(7 8 8 / 82%)),
     var(--gothic-iron-texture) center / 24rem 24rem;
-  --shell-stream-tabs-border: 4px solid transparent;
-  --shell-stream-tabs-border-bottom: 1px solid transparent;
-  --shell-stream-tabs-border-image: var(--gothic-forged-frame-matte) 9% / 4px stretch;
-  --shell-stream-tabs-margin-top: -13px;
+  --shell-stream-tabs-border: 0;
+  --shell-stream-tabs-border-bottom: 0;
+  --shell-stream-tabs-border-image: none;
+  --shell-stream-tabs-margin-top: 0;
   --shell-stream-tabs-min-height: 3.45rem;
   --shell-stream-tabs-padding: 0 0.55rem 0.2rem;
   --shell-stream-tab-background: transparent;
@@ -138,8 +138,8 @@ html[data-theme="gothic"] {
   --shell-stream-tab-hover-background: #121313 var(--gothic-iron-texture) center / 18rem 18rem;
   --shell-stream-tab-active-background: #251714 var(--gothic-iron-texture) center / 18rem 18rem;
   --shell-stream-card-background: #0a0b0b var(--gothic-iron-texture) center / 18rem 18rem;
-  --shell-stream-card-border: 4px solid transparent;
-  --shell-stream-card-border-image: var(--gothic-forged-frame-matte) 9% / 4px stretch;
+  --shell-stream-card-border: 6px solid transparent;
+  --shell-stream-card-border-image: var(--gothic-iron-frame) 5% / 6px stretch;
 }
 
 html[data-theme="gothic"] body::after {
@@ -219,6 +219,10 @@ html[data-theme="gothic"] .task-rail-title {
   html[data-theme="gothic"]:not([data-surface="mobile"]) .view-switch,
   html[data-theme="gothic"]:not([data-surface="mobile"]) .toolbar {
     margin-left: 0.75rem;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .stream-tab-card {
+    border-image: var(--gothic-iron-frame) 5% / 6px stretch !important;
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .brand .eyebrow {
@@ -494,8 +498,8 @@ html[data-theme="gothic"] .chip-button.primary {
       linear-gradient(rgb(8 9 9 / 74%), rgb(8 9 9 / 74%)),
       var(--gothic-iron-texture);
     background-blend-mode: color, normal;
-    border: 9px solid transparent;
-    border-image: var(--gothic-forged-frame-matte) 9% / 9px stretch;
+    border: 6px solid transparent;
+    border-image: var(--gothic-iron-frame) 5% / 6px stretch;
     box-shadow: inset 0 0 0 1px rgb(220 184 132 / 7%), inset 0 0 2.2rem rgb(0 0 0 / 52%);
   }
 
@@ -504,8 +508,8 @@ html[data-theme="gothic"] .chip-button.primary {
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .composer {
-    border: 8px solid transparent;
-    border-image: var(--gothic-forged-frame-matte) 9% / 8px stretch;
+    border: 6px solid transparent;
+    border-image: var(--gothic-iron-frame) 5% / 6px stretch;
     padding: 0.35rem 0.45rem max(0.35rem, env(safe-area-inset-bottom));
   }
 
