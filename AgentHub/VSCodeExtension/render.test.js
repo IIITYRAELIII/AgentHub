@@ -626,6 +626,7 @@ test("Storm keeps the photo backdrop and adds only lightning", () => {
 
 test("Gothic theme packages the Old Camp banner with its Sleeper-temple palette", () => {
   const theme = THEME_REGISTRY.themes.find((item) => item.id === "gothic");
+  const styles = themeFile("gothic");
   const banner = theme.resources.find((resource) => resource.pathname.endsWith("/gothic-old-camp-banner.png"));
   const ironTexture = theme.resources.find((resource) => resource.pathname.endsWith("/gothic-iron-texture.png"));
   const ironFrame = theme.resources.find((resource) => resource.pathname.endsWith("/gothic-iron-frame.jpg"));
@@ -645,6 +646,9 @@ test("Gothic theme packages the Old Camp banner with its Sleeper-temple palette"
   assert.equal(ironFrame.contentType, "image/jpeg");
   assert.equal(ironFrame.immutable, true);
   assert.ok(fs.statSync(ironFrame.file).size > 10_000);
+  assert.match(styles, /--shell-panel-border-image:\s*var\(--gothic-iron-frame\) 34 \/ 10px stretch/u);
+  assert.match(styles, /\.stream-chat-preview\s*\{[^}]*border:\s*8px solid transparent;[^}]*border-image:\s*var\(--gothic-iron-frame\) 34 \/ 8px stretch;/su);
+  assert.match(styles, /--radius-lg:\s*0;/u);
 });
 
 test("«Gothic» offers nine night scenes, each with its own light", () => {

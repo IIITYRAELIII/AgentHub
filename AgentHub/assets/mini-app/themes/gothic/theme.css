@@ -21,12 +21,12 @@ html[data-theme="gothic"] {
   --rail-width: 2px;
 
   --bg: #100d0b;
-  --surface-1: rgb(13 12 10 / 91%);
-  --surface-2: rgb(25 22 18 / 92%);
-  --surface-3: rgb(44 36 29 / 88%);
-  --sunken: rgb(4 3 3 / 78%);
-  --line: rgb(139 113 82 / 32%);
-  --line-strong: rgb(171 134 92 / 55%);
+  --surface-1: rgb(10 9 8 / 97%);
+  --surface-2: rgb(21 18 15 / 97%);
+  --surface-3: rgb(38 31 25 / 94%);
+  --sunken: rgb(3 3 2 / 92%);
+  --line: rgb(142 116 84 / 42%);
+  --line-strong: rgb(176 138 95 / 66%);
 
   --gothic-iron-texture: var(--gothic-iron-texture-asset, url("./gothic-iron-texture.png"));
   --gothic-iron-frame: var(--gothic-iron-frame-asset, url("./gothic-iron-frame.jpg"));
@@ -45,8 +45,8 @@ html[data-theme="gothic"] {
   --plate-shadow: inset 0 1px 0 rgb(216 182 134 / 8%), inset 0 -1px 0 rgb(0 0 0 / 82%);
   --turn-shadow: 0 12px 26px -18px #000;
 
-  --text: #cbbda8;
-  --text-soft: #aa9b86;
+  --text: #c5b9a5;
+  --text-soft: #a99b87;
   --text-muted: #817461;
   --text-faint: #62584b;
   --accent: #91533d;
@@ -75,29 +75,33 @@ html[data-theme="gothic"] {
 
   /* Материалы shell задаются токенами: общая таблица сохраняет единую
      геометрию верхних панелей, а тема меняет только их фактуру и рамку. */
-  --shell-header-background: #090806 var(--gothic-iron-texture) center / 28rem 28rem;
+  --shell-header-background:
+    var(--gothic-iron-frame) center / 100% 100% no-repeat,
+    #090806 var(--gothic-iron-texture) center / 22rem 22rem;
   --shell-header-border: 1px solid #5e4b37;
   --shell-header-shadow: inset 0 0 0 1px #15110d, inset 0 -4px 0 #050403;
-  --shell-header-rule: var(--gothic-iron-frame) center 98% / 100% auto no-repeat;
-  --shell-control-background: #0a0908 var(--gothic-iron-texture) center / 20rem 20rem;
+  --shell-header-rule: none;
+  --shell-control-background:
+    var(--gothic-iron-frame) center / 100% 100% no-repeat,
+    #0a0908 var(--gothic-iron-texture) center / 18rem 18rem;
   --shell-control-border: 1px solid rgb(126 101 73 / 52%);
   --shell-control-shadow: inset 0 1px 0 rgb(220 187 142 / 5%), inset 0 -1px 0 #030201;
   --shell-tab-background: transparent;
   --shell-tab-active-background: #411f17 var(--gothic-iron-texture) center / 20rem 20rem;
   --shell-tab-active-border: 1px solid var(--accent-line);
   --shell-panel-border: 1px solid transparent;
-  --shell-panel-border-image: var(--gothic-iron-frame) 34 / 7 stretch;
+  --shell-panel-border-image: var(--gothic-iron-frame) 34 / 10px stretch;
   --shell-stream-tabs-background: #080706 var(--gothic-iron-texture) center / 24rem 24rem;
   --shell-stream-tabs-border: 1px solid transparent;
   --shell-stream-tabs-border-bottom: 1px solid transparent;
-  --shell-stream-tabs-border-image: var(--gothic-iron-frame) 34 / 6 stretch;
+  --shell-stream-tabs-border-image: var(--gothic-iron-frame) 34 / 8px stretch;
   --shell-stream-tab-background: transparent;
   --shell-stream-tab-border: 0;
   --shell-stream-tab-hover-background: #17130f var(--gothic-iron-texture) center / 18rem 18rem;
   --shell-stream-tab-active-background: #351c15 var(--gothic-iron-texture) center / 18rem 18rem;
   --shell-stream-card-background: #0c0a09 var(--gothic-iron-texture) center / 18rem 18rem;
   --shell-stream-card-border: 1px solid transparent;
-  --shell-stream-card-border-image: var(--gothic-iron-frame) 34 / 4 stretch;
+  --shell-stream-card-border-image: var(--gothic-iron-frame) 34 / 4px stretch;
 }
 
 html[data-theme="gothic"] body::after {
@@ -246,7 +250,10 @@ html[data-theme="gothic"] .stream-chat-preview,
 html[data-theme="gothic"] .dialog-settings,
 html[data-theme="gothic"] .composer {
   background-color: rgb(9 8 7 / 88%);
-  background-image: var(--gothic-iron-texture);
+  background-image:
+    linear-gradient(rgb(0 0 0 / 58%), rgb(0 0 0 / 58%)),
+    var(--gothic-iron-texture);
+  background-blend-mode: normal;
   background-size: 24rem 24rem;
 }
 
@@ -271,13 +278,16 @@ html[data-theme="gothic"] .stream-chat-preview-log {
 }
 
 html[data-theme="gothic"] .msg {
-  backdrop-filter: blur(2px) saturate(82%);
-  -webkit-backdrop-filter: blur(2px) saturate(82%);
-  background-color: rgb(10 9 8 / 92%);
-  background-image: var(--gothic-iron-texture);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  background-color: rgb(10 9 8 / 97%);
+  background-image:
+    linear-gradient(rgb(0 0 0 / 56%), rgb(0 0 0 / 56%)),
+    var(--gothic-iron-texture);
+  background-blend-mode: normal;
   background-size: 22rem 22rem;
-  border: 3px solid transparent;
-  border-image: var(--gothic-iron-frame) 34 / 3px stretch;
+  border: 2px solid transparent;
+  border-image: var(--gothic-iron-frame) 34 / 2px stretch;
   border-radius: 0;
   box-shadow: inset 0 0 0 1px rgb(206 166 113 / 5%), 0 8px 18px -14px #000;
   max-width: calc(100% - 0.3rem);
@@ -286,7 +296,9 @@ html[data-theme="gothic"] .msg {
 
 html[data-theme="gothic"] .msg-user {
   background-color: rgb(47 27 21 / 94%);
-  background-image: var(--gothic-iron-texture);
+  background-image:
+    linear-gradient(rgb(58 29 22 / 64%), rgb(36 18 14 / 72%)),
+    var(--gothic-iron-texture);
   border-color: rgb(166 83 57 / 64%);
   max-width: min(34rem, 82%);
 }
@@ -329,22 +341,40 @@ html[data-theme="gothic"] .chip-button.primary {
     --task-rail-width: clamp(248px, 20vw, 284px);
   }
 
+  html[data-theme="gothic"]:not([data-surface="mobile"])
+    .workspace:has(.stream-chat-columns[data-multi-stream]) {
+    --task-rail-width: clamp(248px, 20vw, 284px);
+  }
+
   html[data-theme="gothic"]:not([data-surface="mobile"]) .task-rail,
   html[data-theme="gothic"]:not([data-surface="mobile"]) .chat {
-    background-color: rgb(7 6 5 / 88%);
-    background-image: var(--gothic-iron-texture);
+    background-color: rgb(7 6 5 / 97%);
+    background-image:
+      linear-gradient(rgb(0 0 0 / 62%), rgb(0 0 0 / 62%)),
+      var(--gothic-iron-texture);
+    background-blend-mode: normal;
     background-size: 28rem 28rem;
+    box-shadow: inset 0 0 0 1px rgb(218 184 137 / 7%), inset 0 0 2rem rgb(0 0 0 / 48%);
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) body > .workspace {
+    column-gap: 0.38rem;
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .stream-chat-preview {
-    background-color: rgb(7 6 5 / 48%);
-    border: 5px solid transparent;
-    border-image: var(--gothic-iron-frame) 34 / 5px stretch;
+    background-color: rgb(7 6 5 / 94%);
+    background-image:
+      linear-gradient(rgb(0 0 0 / 62%), rgb(0 0 0 / 62%)),
+      var(--gothic-iron-texture);
+    background-blend-mode: normal;
+    border: 8px solid transparent;
+    border-image: var(--gothic-iron-frame) 34 / 8px stretch;
+    box-shadow: inset 0 0 0 1px rgb(220 184 132 / 7%), inset 0 0 2.2rem rgb(0 0 0 / 52%);
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .composer {
-    border: 5px solid transparent;
-    border-image: var(--gothic-iron-frame) 34 / 5px stretch;
+    border: 7px solid transparent;
+    border-image: var(--gothic-iron-frame) 34 / 7px stretch;
     padding: 0.35rem 0.45rem max(0.35rem, env(safe-area-inset-bottom));
   }
 
@@ -353,7 +383,10 @@ html[data-theme="gothic"] .chip-button.primary {
   html[data-theme="gothic"]:not([data-surface="mobile"]) .icon-button,
   html[data-theme="gothic"]:not([data-surface="mobile"]) .chip-button {
     background-color: rgb(8 7 6 / 92%);
-    background-image: var(--gothic-iron-texture);
+    background-image:
+      linear-gradient(rgb(0 0 0 / 58%), rgb(0 0 0 / 58%)),
+      var(--gothic-iron-texture);
+    background-blend-mode: normal;
     background-size: 18rem 18rem;
     border-color: rgb(126 101 73 / 48%);
     border-radius: 0;
@@ -375,8 +408,8 @@ html[data-theme="gothic"] .chip-button.primary {
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .msg-body,
   html[data-theme="gothic"]:not([data-surface="mobile"]) .activity-feed {
-    font-size: 0.8rem;
-    line-height: 1.48;
+    font-size: 0.76rem;
+    line-height: 1.44;
   }
 }
 
