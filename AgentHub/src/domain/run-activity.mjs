@@ -1,9 +1,9 @@
-export function appendRunActivity(run, activity = {}) {
-  if (!run) return;
-  if (!Array.isArray(run.activities)) run.activities = [];
+const MAX_RUN_ACTIVITY_BYTES = 2_500_000;
+
+function normalizedRunActivity(activity, fallbackId) {
   const id = String(activity.id ?? "").trim()
-    || `${activity.type ?? "stage"}:${Date.now()}:${run.activities.length}`;
-  const normalized = {
+    || fallbackId;
+  return {
     id,
     type: String(activity.type ?? "stage"),
     label: String(activity.label ?? "Действие"),
@@ -11,13 +11,87 @@ export function appendRunActivity(run, activity = {}) {
     status: String(activity.status ?? "running"),
     time: activity.time ?? new Date().toISOString(),
   };
+}
+
+function trimRunActivityCollection(run, key) {
+  let bytes = Buffer.byteLength(JSON.stringify(run[key]), "utf8");
+  while (bytes > MAX_RUN_ACTIVITY_BYTES && run[key].length > 1) {
+    run[key].shift();
+    bytes = Buffer.byteLength(JSON.stringify(run[key]), "utf8");
+  }
+}
+
+function runActivityGroups(run) {
+  if (!Array.isArray(run.activityGroups)) run.activityGroups = [];
+  return run.activityGroups;
+}
+
+function currentRunActivityGroup(run) {
+  const groups = runActivityGroups(run);
+  const currentId = String(run.currentActivityGroupId ?? "").trim();
+  let group = currentId ? groups.find((entry) => entry.id === currentId) : null;
+  if (!group) {
+    group = {
+      id: `activity:${String(run.turnId ?? run.id ?? "current")}`,
+      reasoning: "",
+      activities: [],
+    };
+    groups.push(group);
+    run.currentActivityGroupId = group.id;
+  }
+  return group;
+}
+
+export function upsertRunReasoningBlock(run, { id, text = "", delta = "" } = {}) {
+  if (!run) return null;
+  const groupId = `reasoning:${String(id ?? "current").trim() || "current"}`;
+  const groups = runActivityGroups(run);
+  let group = groups.find((entry) => entry.id === groupId);
+  if (!group) {
+    group = { id: groupId, reasoning: "", activities: [] };
+    groups.push(group);
+  }
+  if (text) group.reasoning = String(text).trim();
+  else if (delta) group.reasoning = `${group.reasoning}${String(delta)}`.slice(-40_000);
+  run.currentActivityGroupId = groupId;
+  trimRunActivityCollection(run, "activityGroups");
+  return group;
+}
+
+export function replaceRunActivityGroups(run, groups) {
+  if (!run) return [];
+  run.activityGroups = (Array.isArray(groups) ? groups : []).map((group, index) => ({
+    id: String(group?.id ?? `group:${index}`),
+    reasoning: String(group?.reasoning ?? ""),
+    activities: (Array.isArray(group?.activities) ? group.activities : []).map((activity, activityIndex) => (
+      normalizedRunActivity(activity, `group:${index}:activity:${activityIndex}`)
+    )),
+  }));
+  run.currentActivityGroupId = run.activityGroups.at(-1)?.id ?? null;
+  trimRunActivityCollection(run, "activityGroups");
+  return run.activityGroups;
+}
+
+export function appendRunActivity(run, activity = {}) {
+  if (!run) return;
+  if (!Array.isArray(run.activities)) run.activities = [];
+  const normalized = normalizedRunActivity(
+    activity,
+    `${activity.type ?? "stage"}:${Date.now()}:${run.activities.length}`,
+  );
+  const { id } = normalized;
   const existing = run.activities.findIndex((entry) => entry.id === id);
   if (existing >= 0) run.activities[existing] = { ...run.activities[existing], ...normalized };
   else run.activities.push(normalized);
-  let bytes = Buffer.byteLength(JSON.stringify(run.activities), "utf8");
-  while (bytes > 2_500_000 && run.activities.length > 1) {
-    run.activities.shift();
-    bytes = Buffer.byteLength(JSON.stringify(run.activities), "utf8");
+  trimRunActivityCollection(run, "activities");
+  if (run.provider === "codex") {
+    const groups = runActivityGroups(run);
+    let group = groups.find((entry) => entry.activities.some((item) => item.id === id));
+    if (!group) group = currentRunActivityGroup(run);
+    const groupActivity = group.activities.findIndex((entry) => entry.id === id);
+    if (groupActivity >= 0) group.activities[groupActivity] = { ...group.activities[groupActivity], ...normalized };
+    else group.activities.push({ ...normalized });
+    trimRunActivityCollection(run, "activityGroups");
   }
 }
 

@@ -47,6 +47,7 @@ export class CodexEventService {
       "invalidateThreadRead", "forEvent", "reindexRun", "applyThreadSettings", "saveState",
       "trackTokenUsage", "completeTurn", "taskKey", "isSelectedRun", "setSelectedDiff", "appendActivity",
       "noteActivity", "scheduleProgress", "appendReasoning", "isCompactionItem",
+      "upsertReasoningBlock", "replaceActivityGroups", "turnActivityGroups",
       "contextUsage", "beginCompaction", "getCompaction", "rememberRawCompactionItem",
       "beginCompactionCleanup", "setStage", "describeItem",
       "itemActivity", "requestApproval", "formatCommandApproval", "formatFileApproval",
@@ -125,17 +126,21 @@ export class CodexEventService {
     }
     if (method === "item/agentMessage/delta" && run) {
       const delta = params.delta ?? "";
-      appendCodexAgentMessageDelta(run, {
+      const item = appendCodexAgentMessageDelta(run, {
         turnId: eventTurnId,
         itemId: params.itemId,
         delta,
         hydrationReplay: params.agentHubHydrationReplay === true,
       });
+      if (["analysis", "commentary", "reasoning"].includes(String(item?.phase ?? ""))) {
+        d.upsertReasoningBlock(run, { id: item.id, text: item.text });
+      }
       if (delta) d.noteActivity(run);
       d.scheduleProgress(run);
     }
     if ((method === "item/reasoning/summaryTextDelta" || method === "item/plan/delta") && run) {
       d.appendReasoning(run, params.delta);
+      d.upsertReasoningBlock(run, { id: params.itemId, delta: params.delta });
     }
     if (run) {
       const liveActivity = d.reduceLiveItemEvent(run, method, params);
@@ -156,7 +161,10 @@ export class CodexEventService {
         });
       }
       if (run) {
-        startCodexAgentMessage(run, { turnId: eventTurnId, item: params.item });
+        const item = startCodexAgentMessage(run, { turnId: eventTurnId, item: params.item });
+        if (["analysis", "commentary", "reasoning"].includes(String(item?.phase ?? ""))) {
+          d.upsertReasoningBlock(run, { id: item.id, text: item.text });
+        }
         d.startLiveItem(run, params.item);
         d.setStage(run, d.describeItem(params.item, false));
         const activity = d.itemActivity(params.item, false);
@@ -170,7 +178,10 @@ export class CodexEventService {
         });
       }
       if (run) {
-        completeCodexAgentMessage(run, { turnId: eventTurnId, item: params.item });
+        const item = completeCodexAgentMessage(run, { turnId: eventTurnId, item: params.item });
+        if (["analysis", "commentary", "reasoning"].includes(String(item?.phase ?? ""))) {
+          d.upsertReasoningBlock(run, { id: item.id, text: item.text });
+        }
         d.completeLiveItem(run, params.item);
         d.setStage(run, d.describeItem(params.item, true));
         const activity = d.itemActivity(params.item, true);
@@ -227,7 +238,10 @@ export class CodexEventService {
       });
       await d.requestUserInput(id, params, run);
     } else if (method === "turn/completed") {
-      if (run) hydrateCodexAgentMessages(run, params.turn?.items, { turnId: eventTurnId });
+      if (run) {
+        hydrateCodexAgentMessages(run, params.turn?.items, { turnId: eventTurnId });
+        d.replaceActivityGroups(run, d.turnActivityGroups(params.turn));
+      }
       d.completeTurn(eventTurnId, params.turn?.status);
       if (!run) {
         d.turnTokenUsage.delete(eventTurnId);

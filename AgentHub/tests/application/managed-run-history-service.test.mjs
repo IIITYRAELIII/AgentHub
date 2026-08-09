@@ -34,8 +34,10 @@ test("managed run history persists one active turn with HUB ownership", async ()
     turnId: "turn-1",
     responseText: "working",
     activities: [{ id: "a" }],
+    activityGroups: [{ id: "commentary-1", reasoning: "Проверяю.", activities: [{ id: "a" }] }],
   });
   assert.equal(setup.history.length, 1);
+  assert.equal(setup.history[0].activityGroups[0].reasoning, "Проверяю.");
   assert.deepEqual(setup.snapshots[0].snapshot, {
     active: true,
     turnId: "turn-1",

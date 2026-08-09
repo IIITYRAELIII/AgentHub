@@ -1439,7 +1439,6 @@ test("chat keeps an active response only in the live card after task switching",
   assert.match(client, /liveProbeByTask\.set\(taskIdValue, nextProbe\)/u);
   assert.match(client, /liveProbe: liveProbeByTask\.get\(taskIdValue\) \?\? null/u);
   assert.match(client, /text: response/u);
-  assert.match(app, /function liveTextAfterMessages\(live\) \{\s*return normalizedMessageText\(live\?\.text\);\s*\}/u);
   assert.match(app, /function liveCardHasContent\(live\)[\s\S]*normalizedMessageText\(live\.stage\)/u);
   assert.match(
     app,
@@ -1491,7 +1490,6 @@ test("live reasoning renders Markdown separately from the response", () => {
   assert.match(html, /data-live-reasoning/u);
   assert.match(html, /data-live-body/u);
   assert.match(app, /const reasoning = node\.querySelector\("\[data-live-reasoning\]"\);/u);
-  assert.match(app, /renderMarkdown\(reasoning, live\.reasoning \|\| ""\);/u);
   assert.match(app, /const body = node\.querySelector\("\[data-live-body\]"\);/u);
   assert.match(app, /renderMarkdown\(body, visibleText\);/u);
 });
@@ -1981,7 +1979,6 @@ test("wide shared shell opens up to four Workspace Streams as chat columns", () 
   assert.match(app, /renderMessage\(message, \{ readOnly: true \}\)/u);
   assert.match(app, /populateLiveCard\(liveNode, live, task\.agentLabel \|\| "Агент"\)/u);
   assert.match(app, /function populateLiveCard\(node, live, fallbackAuthor = "Агент"\)/u);
-  assert.match(app, /renderMarkdown\(reasoning, live\.reasoning \|\| ""\)/u);
   assert.match(app, /renderMarkdown\(body, visibleText\)/u);
   assert.match(app, /function renderMessage\(message, \{ readOnly = false \} = \{\}\)/u);
   assert.match(client, /agentHub\.on\("workspace:visible-streams"/u);

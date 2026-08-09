@@ -85,6 +85,8 @@ export function createDesktopSnapshotFactory({
 
   function desktopRunSnapshot(run) {
     if (!run) return null;
+    const responseItem = (Array.isArray(run.responseItems) ? run.responseItems : [])
+      .find((item) => String(item?.id ?? "") === String(run.responseItemId ?? ""));
     return {
       id: run.id,
       turnId: run.turnId ?? null,
@@ -130,11 +132,15 @@ export function createDesktopSnapshotFactory({
       }),
       progress: String(run.progressReasoning ?? ""),
       response: String(run.responseText ?? ""),
+      ...(responseItem?.phase ? { responsePhase: String(responseItem.phase) } : {}),
       clientUserMessageId: run.clientUserMessageId ?? null,
       responseItemId: run.responseItemId ?? null,
       startedAt: run.startedAt ?? null,
       lastActivityAt: run.lastMeaningfulProgressAt ?? run.progressHeartbeatAt ?? run.startedAt ?? null,
       activities: Array.isArray(run.activities) ? run.activities : [],
+      ...(Array.isArray(run.activityGroups) && run.activityGroups.length
+        ? { activityGroups: structuredClone(run.activityGroups) }
+        : {}),
       context: desktopContextSnapshot(run.threadId, run.turnId),
     };
   }

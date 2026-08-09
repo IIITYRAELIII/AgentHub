@@ -1925,6 +1925,7 @@ function renderStreamChatPreview(task) {
         el("span", { class: "msg-stage", "data-live-stage": "" }),
       ]),
       el("div", { class: "msg-reasoning", "data-live-reasoning": "", hidden: true }),
+      el("div", { class: "live-turn-trace", "data-live-trace": "", hidden: true }),
       el("div", { class: "msg-body", "data-live-body": "" }),
       el("details", { class: "activity-feed", "data-activity-feed": "", hidden: true }, [
         el("summary", { "data-activity-summary": "", text: "Действия хода" }),
@@ -3123,10 +3124,54 @@ function activityFeedNode(activities) {
   ]);
 }
 
-function turnTraceNode(groups) {
-  const values = (Array.isArray(groups) ? groups : []).filter((group) => (
+function visibleTurnTraceGroups(groups) {
+  return (Array.isArray(groups) ? groups : []).filter((group) => (
     String(group?.reasoning ?? "").trim() || (group?.activities?.length ?? 0) > 0
   ));
+}
+
+function turnTraceGroupsNode(values, { active = false } = {}) {
+  return el("div", { class: "turn-trace-groups" }, values.map((group, index) => {
+    const section = el("section", {
+      class: "turn-trace-block",
+      "data-trace-index": String(index),
+    });
+    const reasoning = String(group.reasoning ?? "").trim();
+    if (reasoning) {
+      const reasoningNode = el("div", { class: "turn-trace-reasoning" });
+      renderMarkdown(reasoningNode, reasoning);
+      section.append(reasoningNode);
+    }
+    const activities = Array.isArray(group.activities) ? group.activities : [];
+    if (activities.length) {
+      section.append(el("details", {
+        class: "turn-trace-activities",
+        ...(active && index === values.length - 1 ? { open: true } : {}),
+      }, [
+        el("summary", {
+          class: "turn-trace-activities-title",
+          text: `Вызовы инструментов (${activities.length})`,
+        }),
+        el("div", { class: "activity-list" }, activities.map((activity) => el("div", {
+          class: "activity-item",
+          "data-type": activity.type ?? "stage",
+          "data-status": activity.status ?? "",
+        }, [
+          el("span", { class: "activity-marker", "aria-hidden": "true" }),
+          el("span", { class: "activity-time", text: activity.time
+            ? new Date(activity.time).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+            : "" }),
+          el("span", { class: "activity-label", text: activity.label ?? "Действие" }),
+          activity.detail ? el("span", { class: "activity-detail", text: activity.detail }) : null,
+        ]))),
+      ]));
+    }
+    return section;
+  }));
+}
+
+function turnTraceNode(groups) {
+  const values = visibleTurnTraceGroups(groups);
   if (!values.length) return null;
   const reasoningCount = values.filter((group) => String(group.reasoning ?? "").trim()).length;
   const activityCount = values.reduce((total, group) => total + (group.activities?.length ?? 0), 0);
@@ -3135,40 +3180,7 @@ function turnTraceNode(groups) {
     : `Действия хода (${activityCount})`;
   return el("details", { class: "turn-trace" }, [
     el("summary", { text: title }),
-    el("div", { class: "turn-trace-groups" }, values.map((group, index) => {
-      const section = el("section", {
-        class: "turn-trace-block",
-        "data-trace-index": String(index),
-      });
-      const reasoning = String(group.reasoning ?? "").trim();
-      if (reasoning) {
-        const reasoningNode = el("div", { class: "turn-trace-reasoning" });
-        renderMarkdown(reasoningNode, reasoning);
-        section.append(reasoningNode);
-      }
-      const activities = Array.isArray(group.activities) ? group.activities : [];
-      if (activities.length) {
-        section.append(el("div", { class: "turn-trace-activities" }, [
-          el("div", {
-            class: "turn-trace-activities-title",
-            text: `Вызовы инструментов (${activities.length})`,
-          }),
-          el("div", { class: "activity-list" }, activities.map((activity) => el("div", {
-            class: "activity-item",
-            "data-type": activity.type ?? "stage",
-            "data-status": activity.status ?? "",
-          }, [
-            el("span", { class: "activity-marker", "aria-hidden": "true" }),
-            el("span", { class: "activity-time", text: activity.time
-              ? new Date(activity.time).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
-              : "" }),
-            el("span", { class: "activity-label", text: activity.label ?? "Действие" }),
-            activity.detail ? el("span", { class: "activity-detail", text: activity.detail }) : null,
-          ]))),
-        ]));
-      }
-      return section;
-    })),
+    turnTraceGroupsNode(values),
   ]);
 }
 
@@ -3263,6 +3275,12 @@ function normalizedMessageText(value) {
 }
 
 function liveTextAfterMessages(live) {
+  const phase = String(live?.responsePhase ?? "");
+  if (
+    live?.provider === "codex"
+    && visibleTurnTraceGroups(live?.activityGroups).length
+    && !["final", "final_answer", "finalAnswer"].includes(phase)
+  ) return "";
   return normalizedMessageText(live?.text);
 }
 
@@ -3271,6 +3289,7 @@ function liveCardHasContent(live) {
     liveTextAfterMessages(live)
     || normalizedMessageText(live.reasoning)
     || normalizedMessageText(live.stage)
+    || visibleTurnTraceGroups(live.activityGroups).length
   ));
 }
 
@@ -3280,14 +3299,19 @@ function populateLiveCard(node, live, fallbackAuthor = "Агент") {
   node.querySelector("[data-live-author]").textContent = live.author || fallbackAuthor;
   node.querySelector("[data-live-stage]").textContent = live.stage || "";
   const reasoning = node.querySelector("[data-live-reasoning]");
-  renderMarkdown(reasoning, live.reasoning || "");
-  reasoning.hidden = !live.reasoning;
+  const groups = visibleTurnTraceGroups(live.activityGroups);
+  const standaloneReasoning = groups.length ? "" : live.reasoning || "";
+  renderMarkdown(reasoning, standaloneReasoning);
+  reasoning.hidden = !standaloneReasoning;
+  const liveTrace = node.querySelector("[data-live-trace]");
+  liveTrace.replaceChildren(...(groups.length ? [turnTraceGroupsNode(groups, { active: true })] : []));
+  liveTrace.hidden = groups.length === 0;
   const body = node.querySelector("[data-live-body]");
   renderMarkdown(body, visibleText);
   body.hidden = !visibleText;
   const activityFeed = node.querySelector("[data-activity-feed]");
   const activities = Array.isArray(live.activities) ? live.activities : [];
-  activityFeed.hidden = activities.length === 0;
+  activityFeed.hidden = groups.length > 0 || activities.length === 0;
   node.querySelector("[data-activity-summary]").textContent = `Действия хода (${activities.length})`;
   node.querySelector("[data-activity-list]").replaceChildren(...activities.map((activity) => el("div", {
     class: "activity-item",

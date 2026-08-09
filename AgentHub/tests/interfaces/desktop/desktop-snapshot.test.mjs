@@ -32,9 +32,11 @@ function fixture(overrides = {}) {
     responseText: "Ответ",
     clientUserMessageId: "client-1",
     responseItemId: "response-1",
+    responseItems: [{ id: "response-1", phase: "commentary" }],
     startedAt: "2026-07-30T10:00:00.000Z",
     lastMeaningfulProgressAt: "2026-07-30T10:01:00.000Z",
     activities: [{ id: 1 }, { id: 2 }],
+    activityGroups: [{ id: "commentary-1", reasoning: "Ход работы", activities: [{ id: 1 }] }],
   };
   const entry = {
     ...selected,
@@ -367,11 +369,13 @@ test("desktopRunSnapshot preserves run fields and nested context", () => {
     }],
     progress: "Ход работы",
     response: "Ответ",
+    responsePhase: "commentary",
     clientUserMessageId: "client-1",
     responseItemId: "response-1",
     startedAt: "2026-07-30T10:00:00.000Z",
     lastActivityAt: "2026-07-30T10:01:00.000Z",
     activities: [{ id: 1 }, { id: 2 }],
+    activityGroups: [{ id: "commentary-1", reasoning: "Ход работы", activities: [{ id: 1 }] }],
     context: {
       usedTokens: 250,
       modelContextWindow: 1_000,

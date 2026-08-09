@@ -181,15 +181,24 @@ function codexReasoningText(value) {
   return codexReasoningText(value.text ?? value.content ?? value.summary ?? "");
 }
 
+function codexVisibleReasoning(item) {
+  if (item?.type === "reasoning") {
+    return codexReasoningText(item.summary) || codexReasoningText(item.content);
+  }
+  if (item?.type !== "agentMessage") return "";
+  const phase = String(item.phase ?? "").trim();
+  if (!["analysis", "commentary", "reasoning"].includes(phase)) return "";
+  return String(item.text ?? "").trim();
+}
+
 export function codexTurnActivityGroups(turn) {
   const groups = [];
   let current = null;
   for (const [index, item] of (Array.isArray(turn?.items) ? turn.items : []).entries()) {
-    if (item?.type === "reasoning") {
-      const reasoning = codexReasoningText(item.summary) || codexReasoningText(item.content);
-      if (!reasoning) continue;
+    const reasoning = codexVisibleReasoning(item);
+    if (reasoning) {
       current = {
-        id: `reasoning:${String(item.id ?? index)}`,
+        id: `${item?.type === "agentMessage" ? "commentary" : "reasoning"}:${String(item.id ?? index)}`,
         reasoning,
         activities: [],
       };
@@ -692,6 +701,9 @@ export function mergeActiveTaskHistory(history, activeTurn = {}) {
     current.messages = messages;
   }
   if (Array.isArray(activeTurn.activities)) current.activities = activeTurn.activities.slice();
+  if (Array.isArray(activeTurn.activityGroups)) {
+    current.activityGroups = structuredClone(activeTurn.activityGroups);
+  }
   const answer = String(activeTurn.answer ?? "").trim();
   if (answer) {
     current.answer = answer;

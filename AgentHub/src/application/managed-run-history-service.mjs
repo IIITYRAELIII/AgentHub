@@ -34,6 +34,7 @@ export class ManagedRunHistoryService {
         userMessages: run.userMessages,
         responseItemId: run.responseItemId,
         activities: run.activities,
+        activityGroups: run.activityGroups,
         startedAt: run.startedAt,
         attachments: run.messageAttachments ?? [],
       });
@@ -45,6 +46,9 @@ export class ManagedRunHistoryService {
         current.answer = String(answer || run.responseText || "").trim();
         current.activities = Array.isArray(run.activities)
           ? run.activities.map((item) => ({ ...item }))
+          : [];
+        current.activityGroups = Array.isArray(run.activityGroups)
+          ? structuredClone(run.activityGroups)
           : [];
         if (!active) current.completedAt = this.nowIso();
         if (current.answer) {

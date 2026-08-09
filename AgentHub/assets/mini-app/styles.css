@@ -6300,6 +6300,30 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
   padding: 0.42rem 0.52rem 0.5rem;
 }
 
+.turn-trace-activities > summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+.turn-trace-activities > summary::-webkit-details-marker {
+  display: none;
+}
+
+.turn-trace-activities > summary::before {
+  content: "›";
+  display: inline-block;
+  margin-right: 0.32rem;
+  transition: transform 0.14s ease;
+}
+
+.turn-trace-activities[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.live-turn-trace .turn-trace-groups {
+  margin-top: 0.65rem;
+}
+
 .turn-trace-activities-title {
   color: var(--text-faint);
   font-size: 0.68rem;

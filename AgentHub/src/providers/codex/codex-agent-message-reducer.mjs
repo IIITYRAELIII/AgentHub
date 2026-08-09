@@ -72,7 +72,8 @@ export function startCodexAgentMessage(run, { turnId = null, item = null } = {})
   });
   const text = agentMessageText(item);
   if (text) message.text = text;
-  return synchronizeResponse(run);
+  synchronizeResponse(run);
+  return message;
 }
 
 export function appendCodexAgentMessageDelta(run, {
@@ -86,7 +87,8 @@ export function appendCodexAgentMessageDelta(run, {
   const value = String(delta ?? "");
   message.text += hydrationReplay ? replaySuffix(message.text, value) : value;
   message.status = "inProgress";
-  return synchronizeResponse(run);
+  synchronizeResponse(run);
+  return message;
 }
 
 export function completeCodexAgentMessage(run, { turnId = null, item = null } = {}) {
@@ -96,7 +98,8 @@ export function completeCodexAgentMessage(run, { turnId = null, item = null } = 
     ...(phase ? { phase } : {}), status: "completed",
   });
   if (typeof item.text === "string") message.text = item.text;
-  return synchronizeResponse(run);
+  synchronizeResponse(run);
+  return message;
 }
 
 export function hydrateCodexAgentMessages(run, items = [], { turnId = null } = {}) {

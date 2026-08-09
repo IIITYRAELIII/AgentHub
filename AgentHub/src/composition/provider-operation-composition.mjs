@@ -1,4 +1,10 @@
-import { appendRunActivity, codexItemActivity } from "../domain/run-activity.mjs";
+import { codexTurnActivityGroups } from "../application/task-history.mjs";
+import {
+  appendRunActivity,
+  codexItemActivity,
+  replaceRunActivityGroups,
+  upsertRunReasoningBlock,
+} from "../domain/run-activity.mjs";
 import { taskRunKey } from "../domain/task-runs.mjs";
 import { ClaudeEventService } from "../providers/claude/claude-event-service.mjs";
 import { isContextCompactionItem } from "../providers/codex/context-compaction-tracker.mjs";
@@ -216,6 +222,9 @@ export function createProviderOperationComposition({
     noteActivity: (...args) => taskProgress().noteActivity(...args),
     scheduleProgress: (...args) => taskProgress().schedule(...args),
     appendReasoning: (...args) => taskProgress().appendReasoning(...args),
+    upsertReasoningBlock: upsertRunReasoningBlock,
+    replaceActivityGroups: replaceRunActivityGroups,
+    turnActivityGroups: codexTurnActivityGroups,
     isCompactionItem: isContextCompactionItem,
     contextUsage: latestContextUsage,
     beginCompaction: (...args) => contextCompactions.begin(...args),

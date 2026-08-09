@@ -233,6 +233,9 @@ export function createDesktopTaskHistoryFactory({
         clientUserMessageId: running.clientUserMessageId,
         responseItemId: running.responseItemId,
         activities: running.activities,
+        ...(Array.isArray(running.activityGroups) && running.activityGroups.length
+          ? { activityGroups: running.activityGroups }
+          : {}),
         startedAt: running.startedAt,
         attachments: running.messageAttachments ?? [],
       });

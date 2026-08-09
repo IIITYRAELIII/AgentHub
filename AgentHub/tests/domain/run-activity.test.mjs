@@ -1,6 +1,29 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { appendRunActivity, codexItemActivity } from "../../src/domain/run-activity.mjs";
+import {
+  appendRunActivity,
+  codexItemActivity,
+  upsertRunReasoningBlock,
+} from "../../src/domain/run-activity.mjs";
+
+test("Codex live activities stay under the current commentary block", () => {
+  const run = { id: "run-1", provider: "codex", turnId: "turn-1", activities: [] };
+  upsertRunReasoningBlock(run, { id: "comment-1", text: "Проверяю." });
+  appendRunActivity(run, { id: "tool-1", type: "tool", label: "Поиск" });
+  upsertRunReasoningBlock(run, { id: "comment-2", text: "Исправляю." });
+  appendRunActivity(run, { id: "tool-2", type: "tool", label: "Правка" });
+  appendRunActivity(run, { id: "tool-1", type: "tool", label: "Поиск завершён", status: "completed" });
+  assert.deepEqual(run.activityGroups.map((group) => ({
+    reasoning: group.reasoning,
+    activities: group.activities.map((activity) => activity.label),
+  })), [{
+    reasoning: "Проверяю.",
+    activities: ["Поиск завершён"],
+  }, {
+    reasoning: "Исправляю.",
+    activities: ["Правка"],
+  }]);
+});
 
 test("run activities preserve more than one hundred calls and update by stable id", () => {
   const run = { activities: [] };

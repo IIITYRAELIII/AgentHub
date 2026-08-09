@@ -164,6 +164,29 @@ test("Codex history groups tool calls between reasoning blocks", () => {
   }]);
 });
 
+test("Codex history uses visible commentary as reasoning blocks", () => {
+  const groups = codexTurnActivityGroups({
+    items: [
+      { id: "hidden-1", type: "reasoning", summary: [] },
+      { id: "comment-1", type: "agentMessage", phase: "commentary", text: "Проверяю причину." },
+      { id: "cmd-1", type: "commandExecution", command: "npm test", status: "completed" },
+      { id: "comment-2", type: "agentMessage", phase: "commentary", text: "Исправляю отображение." },
+      { id: "cmd-2", type: "commandExecution", command: "npm run check", status: "completed" },
+      { id: "final", type: "agentMessage", phase: "final_answer", text: "Готово." },
+    ],
+  });
+  assert.deepEqual(groups.map((group) => ({
+    reasoning: group.reasoning,
+    activities: group.activities.map((activity) => activity.id),
+  })), [{
+    reasoning: "Проверяю причину.",
+    activities: ["item:cmd-1"],
+  }, {
+    reasoning: "Исправляю отображение.",
+    activities: ["item:cmd-2"],
+  }]);
+});
+
 test("Codex history keeps only real subagent lifecycle events", () => {
   const activities = codexTurnActivities({
     items: [

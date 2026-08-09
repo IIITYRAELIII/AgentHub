@@ -14,6 +14,7 @@ function createService(run, overrides = {}) {
     completeTurn: noop,
     taskKey: () => "task", isSelectedRun: () => false, setSelectedDiff: noop,
     appendActivity: noop, noteActivity: noop, scheduleProgress: noop, appendReasoning: noop,
+    upsertReasoningBlock: noop, replaceActivityGroups: noop, turnActivityGroups: () => [],
     isCompactionItem: () => false, contextUsage: () => null,
     beginCompaction: noop, getCompaction: () => null,
     rememberRawCompactionItem: noop,
@@ -75,6 +76,23 @@ test("Codex event service applies canonical completed agent messages", async () 
   });
   assert.equal(run.responseText, "Готово");
   assert.equal(run.responseItems[0].status, "completed");
+});
+
+test("Codex event service exposes commentary as a live reasoning block", async () => {
+  const run = { responseText: "", responseItems: [], status: "running" };
+  const blocks = [];
+  const service = createService(run, {
+    upsertReasoningBlock: (_run, block) => blocks.push(block),
+  });
+  await service.handle({
+    method: "item/started",
+    params: { turnId: "t1", item: { id: "comment-1", type: "agentMessage", phase: "commentary" } },
+  });
+  await service.handle({
+    method: "item/agentMessage/delta",
+    params: { turnId: "t1", itemId: "comment-1", delta: "Проверяю." },
+  });
+  assert.deepEqual(blocks.at(-1), { id: "comment-1", text: "Проверяю." });
 });
 
 test("Codex event service completes a managed run through the coordinator", async () => {

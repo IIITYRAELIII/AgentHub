@@ -66,6 +66,7 @@ function fixture(overrides = {}) {
       clientUserMessageId: "client-live",
       responseItemId: "response-live",
       activities: [{ type: "reasoning" }],
+      activityGroups: [{ id: "commentary-1", reasoning: "Проверяю.", activities: [{ type: "reasoning" }] }],
       startedAt: "2026-07-30T11:00:00.000Z",
       messageAttachments: [{ id: "live.png", name: "live.png", type: "image/png" }],
     },
@@ -170,6 +171,7 @@ test("desktop task history resolves selection and merges the active run", async 
     clientUserMessageId: "client-live",
     responseItemId: "response-live",
     activities: [{ type: "reasoning" }],
+    activityGroups: [{ id: "commentary-1", reasoning: "Проверяю.", activities: [{ type: "reasoning" }] }],
     startedAt: "2026-07-30T11:00:00.000Z",
     attachments: [{ id: "live.png", name: "live.png", type: "image/png" }],
   });

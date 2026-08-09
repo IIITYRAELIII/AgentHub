@@ -1,6 +1,11 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { codexThreadWaitingOnApproval } from "./codex/codex-approvals.mjs";
-import { codexThreadHistory, codexTurnHasExplicitFinalAnswer } from "../application/task-history.mjs";
+import {
+  codexThreadHistory,
+  codexTurnActivityGroups,
+  codexTurnHasExplicitFinalAnswer,
+} from "../application/task-history.mjs";
+import { replaceRunActivityGroups } from "../domain/run-activity.mjs";
 import { resolveTaskRecoveryAction, TASK_RECOVERY_ACTIONS } from "../domain/task-recovery.mjs";
 import { emptyTokenUsage } from "../domain/token-usage.mjs";
 import { hydrateCodexAgentMessages } from "./codex/codex-agent-message-reducer.mjs";
@@ -81,6 +86,7 @@ export class CodexRecoveryService {
     const d = this.#d;
     const turn = result.thread?.turns?.find((item) => item.id === run.turnId) ?? result.thread?.turns?.at(-1);
     hydrateCodexAgentMessages(run, turn?.items, { turnId: turn?.id });
+    replaceRunActivityGroups(run, codexTurnActivityGroups(turn));
     const recoveryAction = resolveTaskRecoveryAction({
       run,
       codexAvailable: d.transportRunning(),
