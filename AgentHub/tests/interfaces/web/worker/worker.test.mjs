@@ -889,7 +889,7 @@ test("shared Dashboard bot pairs one Telegram user and queues Tasks only for tha
   assert.equal(response.status, 401);
 });
 
-test("shared Dashboard bot bundles forwards and user replies until explicit send", async (context) => {
+test("shared Dashboard bot can send forwards separately with their reply clarifications", async (context) => {
   const workerModule = await loadWorker();
   const { namespace } = durableNamespace(workerModule);
   const webhookSecret = "w".repeat(64);
@@ -966,8 +966,11 @@ test("shared Dashboard bot bundles forwards and user replies until explicit send
   });
   const bundleCard = telegramCalls.find((call) => call.method === "sendMessage" && /Собираю пачку/u.test(call.body.text));
   const sendCallback = bundleCard.body.reply_markup.inline_keyboard[0][0].callback_data;
-  const undoCallback = bundleCard.body.reply_markup.inline_keyboard[1][0].callback_data;
+  const separateCallback = bundleCard.body.reply_markup.inline_keyboard[1][0].callback_data;
   assert.match(sendCallback, /^forward-bundle:send:[0-9a-f-]{36}$/u);
+  assert.match(separateCallback, /^forward-bundle:separate:[0-9a-f-]{36}$/u);
+  assert.equal(bundleCard.body.reply_markup.inline_keyboard[1][0].text, "📤 Отправить раздельно");
+  assert.doesNotMatch(JSON.stringify(bundleCard.body.reply_markup), /Убрать последнее/u);
 
   await webhook({
     update_id: 202,
@@ -976,11 +979,11 @@ test("shared Dashboard bot bundles forwards and user replies until explicit send
       date: 1_786_200_002,
       chat: { id: 42, type: "private" },
       from: { id: 42, first_name: "Алиса" },
-      reply_to_message: { message_id: 2 },
-      text: "Воспроизводится только в мобильном виде",
+      forward_origin: { type: "hidden_user", sender_user_name: "Другой автор" },
+      text: "Вторая независимая задача",
     },
   });
-  assert.match(telegramCalls.at(-1).body.text, /ваших: 1/u);
+  assert.match(telegramCalls.at(-1).body.text, /переслано: 2/u);
 
   await webhook({
     update_id: 203,
@@ -989,20 +992,24 @@ test("shared Dashboard bot bundles forwards and user replies until explicit send
       date: 1_786_200_003,
       chat: { id: 42, type: "private" },
       from: { id: 42, first_name: "Алиса" },
-      text: "Это уточнение нужно вынести в следующую задачу",
+      reply_to_message: { message_id: 2 },
+      text: "Уточнение только для первой задачи",
     },
   });
   assert.match(telegramCalls.at(-1).body.text, /Сообщений: 3/u);
+
   await webhook({
     update_id: 204,
-    callback_query: {
-      id: "callback-undo",
+    message: {
+      message_id: 5,
+      date: 1_786_200_004,
+      chat: { id: 42, type: "private" },
       from: { id: 42, first_name: "Алиса" },
-      message: { message_id: 801, chat: { id: 42, type: "private" } },
-      data: undoCallback,
+      reply_to_message: { message_id: 3 },
+      text: "Уточнение только для второй задачи",
     },
   });
-  assert.match(telegramCalls.at(-1).body.text, /Сообщений: 2/u);
+  assert.match(telegramCalls.at(-1).body.text, /ваших: 2/u);
 
   response = await workerModule.default.fetch(signedServiceRequest(
     "https://hub.test/api/dashboard-bot/pull",
@@ -1018,7 +1025,7 @@ test("shared Dashboard bot bundles forwards and user replies until explicit send
       id: "callback-1",
       from: { id: 42, first_name: "Алиса" },
       message: { message_id: bundleCard.body.message_id ?? 801, chat: { id: 42, type: "private" } },
-      data: sendCallback,
+      data: separateCallback,
     },
   });
   assert.equal(response.status, 200);
@@ -1030,19 +1037,33 @@ test("shared Dashboard bot bundles forwards and user replies until explicit send
     hubSecret,
     { "X-Agent-Hub-Dashboard-Id": hubId },
   ), env);
-  const [command] = (await response.json()).commands;
-  assert.equal(command.action, "board-task-ingest");
-  assert.match(command.params.attachments[0], /^remote-attachment:[0-9a-f-]{36}$/u);
-  assert.match(command.params.text, /Переслано · Заказчик/u);
-  assert.match(command.params.text, /Изображение 1 приложено/u);
-  assert.match(command.params.text, /--- Сообщение 2 · Вы ---\nВоспроизводится/u);
-  assert.equal(command.params.sourceDetails.messageCount, 2);
-  assert.match(command.params.sourceKey, /^shared-dashboard:[0-9a-f-]{36}$/u);
+  const [firstCommand, secondCommand] = (await response.json()).commands;
+  assert.equal(firstCommand.action, "board-task-ingest");
+  assert.match(firstCommand.params.attachments[0], /^remote-attachment:[0-9a-f-]{36}$/u);
+  assert.match(firstCommand.params.text, /Переслано · Заказчик/u);
+  assert.match(firstCommand.params.text, /Изображение 1 приложено/u);
+  assert.match(firstCommand.params.text, /Уточнение только для первой задачи/u);
+  assert.doesNotMatch(firstCommand.params.text, /Вторая независимая задача|Уточнение только для второй/u);
+  assert.equal(firstCommand.params.sourceDetails.messageCount, 2);
+  assert.equal(firstCommand.params.sourceDetails.separate, true);
+  assert.equal(firstCommand.params.sourceDetails.separateIndex, 1);
+  assert.match(firstCommand.params.sourceKey, /^shared-dashboard:[0-9a-f-]{36}:1$/u);
+
+  assert.equal(secondCommand.action, "board-task-ingest");
+  assert.match(secondCommand.params.text, /Переслано · Другой автор/u);
+  assert.match(secondCommand.params.text, /Вторая независимая задача/u);
+  assert.match(secondCommand.params.text, /Уточнение только для второй задачи/u);
+  assert.doesNotMatch(secondCommand.params.text, /Заказчик|Уточнение только для первой/u);
+  assert.equal(secondCommand.params.sourceDetails.messageCount, 2);
+  assert.equal(secondCommand.params.sourceDetails.separate, true);
+  assert.equal(secondCommand.params.sourceDetails.separateIndex, 2);
+  assert.match(secondCommand.params.sourceKey, /^shared-dashboard:[0-9a-f-]{36}:2$/u);
+  assert.ok(telegramCalls.some((call) => call.method === "editMessageText" && /Создано отдельных задач: 2/u.test(call.body.text)));
 
   await webhook({
     update_id: 206,
     message: {
-      message_id: 5,
+      message_id: 6,
       date: 1_786_200_006,
       chat: { id: 42, type: "private" },
       from: { id: 42, first_name: "Алиса" },
@@ -1052,6 +1073,27 @@ test("shared Dashboard bot bundles forwards and user replies until explicit send
   });
   const latestCard = telegramCalls.filter((call) => call.method === "sendMessage" && /Собираю пачку/u.test(call.body.text)).at(-1);
   assert.notEqual(latestCard.body.reply_markup.inline_keyboard[0][0].callback_data, sendCallback);
+
+  response = await webhook({
+    update_id: 207,
+    callback_query: {
+      id: "callback-send-bundle",
+      from: { id: 42, first_name: "Алиса" },
+      message: { message_id: latestCard.body.message_id ?? 802, chat: { id: 42, type: "private" } },
+      data: latestCard.body.reply_markup.inline_keyboard[0][0].callback_data,
+    },
+  });
+  assert.equal(response.status, 200);
+
+  response = await workerModule.default.fetch(signedServiceRequest(
+    "https://hub.test/api/dashboard-bot/pull",
+    { limit: 10, waitMs: 0 },
+    hubSecret,
+    { "X-Agent-Hub-Dashboard-Id": hubId },
+  ), env);
+  const [bundledCommand] = (await response.json()).commands;
+  assert.equal(bundledCommand.params.sourceDetails.separate, false);
+  assert.match(bundledCommand.params.sourceKey, /^shared-dashboard:[0-9a-f-]{36}$/u);
 });
 
 test("Worker relay stores user-bound file uploads and serves them only to their command", async () => {

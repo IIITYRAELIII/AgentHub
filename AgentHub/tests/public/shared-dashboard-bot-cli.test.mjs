@@ -69,7 +69,10 @@ test("webhook CLI reads credentials from files and configures Telegram without r
     drop_pending_updates: false,
   });
   assert.match(requests[1].url, /\/setMyCommands$/u);
-  assert.equal(JSON.parse(requests[1].options.body).commands.length, 6);
+  const commands = JSON.parse(requests[1].options.body).commands;
+  assert.equal(commands.length, 6);
+  assert.ok(commands.some((command) => command.command === "separate"));
+  assert.equal(commands.some((command) => command.command === "undo"), false);
   assert.equal(JSON.stringify(result).includes(token), false);
   assert.equal(JSON.stringify(result).includes(webhookSecret), false);
 });

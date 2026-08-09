@@ -105,7 +105,7 @@ test("shared Dashboard bot downloads command images before creating the Task", a
     action: "board-task-ingest",
     params: {
       text: "Проверить скриншот",
-      sourceKey: "shared-dashboard:018f6c86-3f34-7a31-8f27-16f5b96cce64",
+      sourceKey: "shared-dashboard:018f6c86-3f34-7a31-8f27-16f5b96cce64:1",
       sourceDetails: { imageCount: 1 },
       attachments: [`remote-attachment:${attachmentId}`],
     },

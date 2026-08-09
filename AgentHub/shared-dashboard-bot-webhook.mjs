@@ -47,7 +47,7 @@ export async function configureSharedDashboardBotWebhook({
     commands: [
       { command: "link", description: "Привязать свой Agent Hub" },
       { command: "done", description: "Отправить собранную пачку" },
-      { command: "undo", description: "Убрать последнее сообщение" },
+      { command: "separate", description: "Отправить задачи раздельно" },
       { command: "cancel", description: "Отменить текущую пачку" },
       { command: "unlink", description: "Удалить привязку" },
       { command: "help", description: "Как пользоваться ботом" },

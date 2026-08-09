@@ -24,7 +24,7 @@ const DASHBOARD_BOT_PAIRING_EXPIRY_MS = 10 * 60 * 1_000;
 const DASHBOARD_BOT_COMMAND_EXPIRY_MS = 30 * 24 * 60 * 60 * 1_000;
 const DASHBOARD_BOT_PAIRING_CODE_PATTERN = /^[A-Z2-9]{8}$/u;
 const DASHBOARD_BOT_HUB_NAME_MAX_CHARS = 80;
-const DASHBOARD_BOT_BUNDLE_CALLBACK_PATTERN = /^forward-bundle:(send|undo|cancel):([0-9a-f-]{36})$/iu;
+const DASHBOARD_BOT_BUNDLE_CALLBACK_PATTERN = /^forward-bundle:(send|separate|cancel):([0-9a-f-]{36})$/iu;
 const DASHBOARD_BOT_BUNDLE_MAX_ITEMS = 100;
 const DASHBOARD_BOT_BUNDLE_MAX_CHARS = 50_000;
 const SYNC_STAGING_EXPIRY_MS = 30 * 60 * 1_000;
@@ -720,7 +720,7 @@ function dashboardBotBundleKeyboard(bundle) {
     inline_keyboard: [
       [{ text: "✅ Отправить пачку", callback_data: dashboardBotBundleCallbackData("send", bundle.id) }],
       [
-        { text: "↩️ Убрать последнее", callback_data: dashboardBotBundleCallbackData("undo", bundle.id) },
+        { text: "📤 Отправить раздельно", callback_data: dashboardBotBundleCallbackData("separate", bundle.id) },
         { text: "🗑 Отменить", callback_data: dashboardBotBundleCallbackData("cancel", bundle.id) },
       ],
     ],
@@ -760,6 +760,24 @@ function dashboardBotBundlePrompt(bundle) {
     "",
     ...blocks,
   ].join("\n");
+}
+
+function dashboardBotSeparatedGroups(bundle) {
+  const groups = [];
+  const groupByMessageId = new Map();
+  for (const item of bundle.items) {
+    let group = null;
+    if (item.kind !== "forward") {
+      group = groupByMessageId.get(item.replyToMessageId) ?? groups.at(-1) ?? null;
+    }
+    if (!group) {
+      group = { items: [] };
+      groups.push(group);
+    }
+    group.items.push(item);
+    groupByMessageId.set(item.messageId, group);
+  }
+  return groups;
 }
 
 function normalizedDeviceCode(value) {
@@ -1129,7 +1147,7 @@ export class JournalStore extends DurableObject {
     return card ? { card } : { ignored: true };
   }
 
-  async #dashboardBotSubmitBundle(userId, expectedId = "") {
+  async #dashboardBotSubmitBundle(userId, expectedId = "", { separate = false } = {}) {
     const key = dashboardBotBundleKey(userId);
     const bundle = await this.ctx.storage.get(key);
     if (!bundle || (expectedId && bundle.id !== expectedId) || bundle.submitting) {
@@ -1138,37 +1156,57 @@ export class JournalStore extends DurableObject {
     bundle.submitting = true;
     bundle.updatedAt = Date.now();
     await this.ctx.storage.put(key, bundle);
-    const telegramImages = bundle.items.flatMap((item) => item.images ?? []);
-    const command = {
-      id: crypto.randomUUID().toLowerCase(),
-      action: "board-task-ingest",
-      params: {
-        text: dashboardBotBundlePrompt(bundle),
-        sourceKey: `shared-dashboard:${bundle.id}`,
-        sourceDetails: {
-          bundleId: bundle.id,
-          chatId: bundle.chatId,
-          userId: Number(bundle.userId),
-          messageCount: bundle.items.length,
-          imageCount: telegramImages.length,
-          items: bundle.items.map((item) => ({
-            updateId: item.updateId,
-            messageId: item.messageId,
-            replyToMessageId: item.replyToMessageId,
-            kind: item.kind,
-            source: item.source,
-            imageCount: item.images?.length ?? 0,
-          })),
+    const groups = separate ? dashboardBotSeparatedGroups(bundle) : [{ items: bundle.items }];
+    const commands = groups.map((group, index) => {
+      const telegramImages = group.items.flatMap((item) => item.images ?? []);
+      return {
+        hubId: bundle.hubId,
+        telegramImages,
+        command: {
+          id: crypto.randomUUID().toLowerCase(),
+          action: "board-task-ingest",
+          params: {
+            text: dashboardBotBundlePrompt(group),
+            sourceKey: separate
+              ? `shared-dashboard:${bundle.id}:${index + 1}`
+              : `shared-dashboard:${bundle.id}`,
+            sourceDetails: {
+              bundleId: bundle.id,
+              chatId: bundle.chatId,
+              userId: Number(bundle.userId),
+              messageCount: group.items.length,
+              bundleMessageCount: bundle.items.length,
+              imageCount: telegramImages.length,
+              separate,
+              separateIndex: separate ? index + 1 : null,
+              items: group.items.map((item) => ({
+                updateId: item.updateId,
+                messageId: item.messageId,
+                replyToMessageId: item.replyToMessageId,
+                kind: item.kind,
+                source: item.source,
+                imageCount: item.images?.length ?? 0,
+              })),
+            },
+          },
+          userId: bundle.userId,
         },
-      },
-      userId: bundle.userId,
-    };
+      };
+    });
     return {
-      hubId: bundle.hubId,
-      command,
-      telegramImages,
-      submittedBundle: { userId: bundle.userId, id: bundle.id },
-      card: this.#dashboardBotBundleCard(bundle, { finalText: `⏳ Отправляю пачку из ${bundle.items.length} сообщений…` }),
+      commands,
+      submittedBundle: {
+        userId: bundle.userId,
+        id: bundle.id,
+        itemCount: bundle.items.length,
+        taskCount: commands.length,
+        separate,
+      },
+      card: this.#dashboardBotBundleCard(bundle, {
+        finalText: separate
+          ? `⏳ Отправляю ${commands.length} отдельных задач…`
+          : `⏳ Отправляю пачку из ${bundle.items.length} сообщений…`,
+      }),
     };
   }
 
@@ -1188,8 +1226,11 @@ export class JournalStore extends DurableObject {
     const userId = linked.userId;
     const action = match[1].toLowerCase();
     const id = match[2].toLowerCase();
-    if (action === "send") {
-      return { callbackQueryId: query.id, ...await this.#dashboardBotSubmitBundle(userId, id) };
+    if (["send", "separate"].includes(action)) {
+      return {
+        callbackQueryId: query.id,
+        ...await this.#dashboardBotSubmitBundle(userId, id, { separate: action === "separate" }),
+      };
     }
     const key = dashboardBotBundleKey(userId);
     const bundle = await this.ctx.storage.get(key);
@@ -1204,22 +1245,7 @@ export class JournalStore extends DurableObject {
         card: this.#dashboardBotBundleCard(bundle, { finalText: "❌ Сбор пачки отменён." }),
       };
     }
-    bundle.items.pop();
-    if (!bundle.items.length) {
-      await this.ctx.storage.delete(key);
-      return {
-        callbackQueryId: query.id,
-        callbackText: "Последнее сообщение убрано.",
-        card: this.#dashboardBotBundleCard(bundle, { finalText: "❌ Пачка опустела и была отменена." }),
-      };
-    }
-    bundle.updatedAt = Date.now();
-    await this.ctx.storage.put(key, bundle);
-    return {
-      callbackQueryId: query.id,
-      callbackText: "Последнее сообщение убрано.",
-      card: this.#dashboardBotBundleCard(bundle),
-    };
+    return { callbackQueryId: query.id, callbackText: "Неизвестное действие." };
   }
 
   async #routeDashboardBotUpdate(update) {
@@ -1240,7 +1266,7 @@ export class JournalStore extends DurableObject {
       return { reply: "Это общий бот Dashboard. В Agent Hub создайте код привязки и отправьте /link КОД." };
     }
     if (/^\/help(?:@\w+)?(?:\s|$)/iu.test(text)) {
-      return { reply: "Перешлите сообщения и изображения: бот соберёт их в одну пачку. Ваши сообщения до отправки станут уточнениями. Завершите пачку кнопкой «Отправить пачку» или командой /done; /undo убирает последнее, /cancel отменяет пачку." };
+      return { reply: "Перешлите сообщения и изображения: бот соберёт их в одну пачку. Ваши ответы до отправки станут уточнениями. Завершите её кнопкой «Отправить пачку» (/done) либо создайте отдельные задачи кнопкой «Отправить раздельно» (/separate); /cancel отменяет пачку." };
     }
     const link = text.match(/^\/link(?:@\w+)?\s+(.+)$/iu);
     if (link) return this.#linkDashboardBotHub(message, link[1]);
@@ -1251,21 +1277,13 @@ export class JournalStore extends DurableObject {
     if (/^\/(?:done|send)(?:@\w+)?(?:\s|$)/iu.test(text)) {
       return this.#dashboardBotSubmitBundle(linked.userId);
     }
+    if (/^\/separate(?:@\w+)?(?:\s|$)/iu.test(text)) {
+      return this.#dashboardBotSubmitBundle(linked.userId, "", { separate: true });
+    }
     if (/^\/cancel(?:@\w+)?(?:\s|$)/iu.test(text)) {
       if (!openBundle || openBundle.submitting) return { reply: "Открытая пачка не найдена." };
       await this.ctx.storage.delete(dashboardBotBundleKey(linked.userId));
       return { card: this.#dashboardBotBundleCard(openBundle, { finalText: "❌ Сбор пачки отменён." }) };
-    }
-    if (/^\/undo(?:@\w+)?(?:\s|$)/iu.test(text)) {
-      if (!openBundle || openBundle.submitting) return { reply: "Открытая пачка не найдена." };
-      openBundle.items.pop();
-      if (!openBundle.items.length) {
-        await this.ctx.storage.delete(dashboardBotBundleKey(linked.userId));
-        return { card: this.#dashboardBotBundleCard(openBundle, { finalText: "❌ Пачка опустела и была отменена." }) };
-      }
-      openBundle.updatedAt = Date.now();
-      await this.ctx.storage.put(dashboardBotBundleKey(linked.userId), openBundle);
-      return { card: this.#dashboardBotBundleCard(openBundle) };
     }
     const source = dashboardBotForwardedMessageSource(message);
     const image = dashboardBotImageDescriptor(message);
@@ -2527,23 +2545,42 @@ export default {
         });
       }
       if (routed.card) await updateDashboardBotCard(env, store, routed.card);
-      if (routed.command && routed.hubId) {
-        const hubStore = env.JOURNAL.getByName(`dashboard-bot:${routed.hubId}`);
-        let command = routed.command;
+      const routedCommands = Array.isArray(routed.commands)
+        ? routed.commands
+        : (routed.command && routed.hubId
+          ? [{ command: routed.command, hubId: routed.hubId, telegramImages: routed.telegramImages }]
+          : []);
+      if (routedCommands.length) {
         try {
-          if (Array.isArray(routed.telegramImages) && routed.telegramImages.length) {
-            command = {
-              ...command,
-              params: {
-                ...command.params,
-                attachments: await uploadDashboardBotImages(
-                  env,
-                  hubStore,
-                  command.userId,
-                  routed.telegramImages,
-                ),
+          for (const routedCommand of routedCommands) {
+            const hubStore = env.JOURNAL.getByName(`dashboard-bot:${routedCommand.hubId}`);
+            let command = routedCommand.command;
+            if (Array.isArray(routedCommand.telegramImages) && routedCommand.telegramImages.length) {
+              command = {
+                ...command,
+                params: {
+                  ...command.params,
+                  attachments: await uploadDashboardBotImages(
+                    env,
+                    hubStore,
+                    command.userId,
+                    routedCommand.telegramImages,
+                  ),
+                },
+              };
+            }
+            const enqueueResponse = await hubStore.fetch(new Request("https://journal.internal/control/enqueue", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "X-Agent-Hub-Control-Expiry-Ms": String(DASHBOARD_BOT_COMMAND_EXPIRY_MS),
               },
-            };
+              body: JSON.stringify(command),
+            }));
+            if (!enqueueResponse.ok) {
+              const error = await enqueueResponse.json().catch(() => ({}));
+              throw new Error(`Agent Hub временно не принял сообщение: ${String(error?.error ?? "очередь недоступна").slice(0, 300)}`);
+            }
           }
         } catch (error) {
           if (routed.submittedBundle) {
@@ -2554,35 +2591,13 @@ export default {
             }));
             const reset = await resetResponse.json().catch(() => ({}));
             if (reset.card) await updateDashboardBotCard(env, store, reset.card);
-          }
-          return json({ error: error.message }, 502);
-        }
-        const enqueueResponse = await hubStore.fetch(new Request("https://journal.internal/control/enqueue", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Agent-Hub-Control-Expiry-Ms": String(DASHBOARD_BOT_COMMAND_EXPIRY_MS),
-          },
-          body: JSON.stringify(command),
-        }));
-        if (!enqueueResponse.ok) {
-          const error = await enqueueResponse.json().catch(() => ({}));
-          const message = `Agent Hub временно не принял сообщение: ${String(error?.error ?? "очередь недоступна").slice(0, 300)}`;
-          if (routed.submittedBundle) {
-            const resetResponse = await store.fetch(new Request("https://journal.internal/dashboard-bot/finalize", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ ...routed.submittedBundle, submitted: false, error: message }),
-            }));
-            const reset = await resetResponse.json().catch(() => ({}));
-            if (reset.card) await updateDashboardBotCard(env, store, reset.card);
           } else {
             await dashboardBotTelegramRequest(env, "sendMessage", {
               chat_id: update?.message?.chat?.id,
-              text: message,
+              text: error.message,
             });
           }
-          return json({ error: message }, 503);
+          return json({ error: error.message }, 503);
         }
         if (routed.submittedBundle) {
           await store.fetch(new Request("https://journal.internal/dashboard-bot/finalize", {
@@ -2593,7 +2608,9 @@ export default {
           await updateDashboardBotCard(env, store, {
             ...routed.card,
             mode: "edit",
-            text: `✅ Пачка из ${routed.command.params.sourceDetails.messageCount} сообщений принята в Backlog.`,
+            text: routed.submittedBundle.separate
+              ? `✅ Создано отдельных задач: ${routed.submittedBundle.taskCount}.`
+              : `✅ Пачка из ${routed.submittedBundle.itemCount} сообщений принята в Backlog.`,
             replyMarkup: { inline_keyboard: [] },
           });
         }

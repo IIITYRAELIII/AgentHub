@@ -140,7 +140,7 @@ export class SharedDashboardBotClient {
       || typeof params !== "object"
       || Array.isArray(params)
       || !String(params.text ?? "").trim()
-      || !/^shared-dashboard:(?:\d+|[0-9a-f-]{36})$/iu.test(String(params.sourceKey ?? ""))
+      || !/^shared-dashboard:(?:\d+|[0-9a-f-]{36})(?::\d+)?$/iu.test(String(params.sourceKey ?? ""))
     ) {
       throw new Error("Shared Dashboard bot returned an invalid command");
     }
