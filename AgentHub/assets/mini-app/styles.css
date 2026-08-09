@@ -4847,6 +4847,11 @@ html[data-surface="mobile"]
     padding: 0.42rem 0.5rem !important;
   }
 
+  html[data-view="chat"]:not([data-surface="mobile"]) .stream-tab-create .stream-tab-card {
+    border: 1px dashed color-mix(in srgb, var(--line) 74%, transparent) !important;
+    border-image: none !important;
+  }
+
   html[data-view="chat"]:not([data-surface="mobile"])
     .stream-tab[aria-pressed="true"] .stream-tab-card {
     border-color: var(--accent-line) !important;
