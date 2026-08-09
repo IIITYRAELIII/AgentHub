@@ -236,6 +236,27 @@ test("displayUserPrompt unwraps Telegram replies and removes IDE context", () =>
   assert.equal(displayUserPrompt("<ide_context>служебное</ide_context>\nМой вопрос"), "Мой вопрос");
 });
 
+test("Codex abort marker never replaces the user's original prompt", () => {
+  const marker = [
+    "<turn_aborted>",
+    "The user interrupted the previous turn on purpose.",
+    "</turn_aborted>",
+  ].join("\n");
+  assert.equal(displayUserPrompt(marker), "");
+
+  const [exchange] = codexThreadHistory([{
+    id: "turn-aborted",
+    status: "interrupted",
+    items: [
+      { type: "userMessage", content: [{ type: "text", text: "Исходный текст пользователя" }] },
+      { type: "userMessage", content: [{ type: "text", text: marker }] },
+    ],
+  }]);
+
+  assert.equal(exchange.prompt, "Исходный текст пользователя");
+  assert.deepEqual(exchange.messages.map((message) => message.text), ["Исходный текст пользователя"]);
+});
+
 test("displayUserPrompt extracts comments and requests from response annotations", () => {
   const wrapper = (annotations, request = "") => [
     "# Response annotations:",

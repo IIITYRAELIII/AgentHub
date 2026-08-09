@@ -330,6 +330,7 @@ export function displayUserPrompt(value) {
     .replace(/<ide_[^>]+>[\s\S]*?<\/ide_[^>]+>/gi, "")
     .replace(/<environment_context>[\s\S]*?<\/environment_context>/gi, "")
     .trim();
+  if (/^<turn_aborted>\s*[\s\S]*?\s*<\/turn_aborted>$/iu.test(text)) return "";
   const annotated = responseAnnotationPrompt(text);
   if (annotated !== null) return annotated;
   return text;
