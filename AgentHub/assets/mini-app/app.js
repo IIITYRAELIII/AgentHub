@@ -23,6 +23,8 @@ const {
   liveActivityDisclosureOpen,
   liveActivityTitle,
   liveStageParts,
+  liveTraceDisclosureOpen,
+  liveTraceGroupId,
 } = window.AgentHubMessageDisclosure;
 const expandedUserMessageIds = new Set();
 let messageDisclosureFrame = 0;
@@ -3198,8 +3200,9 @@ function visibleTurnTraceGroups(groups) {
   ));
 }
 
-function turnTraceGroupsNode(values, { liveStage = "" } = {}) {
+function turnTraceGroupsNode(values, { liveStage = "", openGroupIds = [] } = {}) {
   return el("div", { class: "turn-trace-groups" }, values.map((group, index) => {
+    const groupId = liveTraceGroupId(group, index);
     const section = el("section", {
       class: "turn-trace-block",
       "data-trace-index": String(index),
@@ -3214,6 +3217,8 @@ function turnTraceGroupsNode(values, { liveStage = "" } = {}) {
     if (activities.length) {
       section.append(el("details", {
         class: "turn-trace-activities",
+        "data-trace-group-id": groupId,
+        open: liveTraceDisclosureOpen({ groupId, openGroupIds }),
       }, [
         el("summary", {
           class: "turn-trace-activities-title",
@@ -3374,7 +3379,14 @@ function populateLiveCard(node, live, fallbackAuthor = "Агент") {
   renderMarkdown(reasoning, standaloneReasoning);
   reasoning.hidden = !standaloneReasoning;
   const liveTrace = node.querySelector("[data-live-trace]");
-  liveTrace.replaceChildren(...(groups.length ? [turnTraceGroupsNode(groups, { liveStage: liveStage.detail })] : []));
+  const openGroupIds = new Set(Array.from(
+    liveTrace.querySelectorAll("details[data-trace-group-id][open]"),
+    (details) => details.dataset.traceGroupId,
+  ));
+  liveTrace.replaceChildren(...(groups.length ? [turnTraceGroupsNode(groups, {
+    liveStage: liveStage.detail,
+    openGroupIds,
+  })] : []));
   liveTrace.hidden = groups.length === 0;
   const body = node.querySelector("[data-live-body]");
   renderMarkdown(body, visibleText);

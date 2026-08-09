@@ -27,11 +27,21 @@
       : { status: value, detail: "" };
   }
 
+  function liveTraceGroupId(group, index = 0) {
+    return String(group?.id ?? `trace:${Math.max(0, Number(index) || 0)}`);
+  }
+
+  function liveTraceDisclosureOpen({ groupId = "", openGroupIds = [] } = {}) {
+    return Array.from(openGroupIds ?? []).includes(String(groupId));
+  }
+
   window.AgentHubMessageDisclosure = Object.freeze({
     USER_MESSAGE_COLLAPSE_HEIGHT_PX,
     hasCollapsedOverflow,
     liveActivityDisclosureOpen,
     liveActivityTitle,
     liveStageParts,
+    liveTraceDisclosureOpen,
+    liveTraceGroupId,
   });
 })();

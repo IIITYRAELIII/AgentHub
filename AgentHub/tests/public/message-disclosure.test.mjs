@@ -39,6 +39,15 @@ test("live stage is rendered in the current activity title", async () => {
   );
 });
 
+test("live trace preserves manually opened tool groups across refreshes", async () => {
+  const { liveTraceDisclosureOpen, liveTraceGroupId } = await disclosureApi();
+  const groupId = liveTraceGroupId({ id: "commentary:item-42" }, 3);
+  assert.equal(groupId, "commentary:item-42");
+  assert.equal(liveTraceDisclosureOpen({ groupId, openGroupIds: [groupId] }), true);
+  assert.equal(liveTraceDisclosureOpen({ groupId, openGroupIds: [] }), false);
+  assert.equal(liveTraceGroupId({}, 3), "trace:3");
+});
+
 test("shared shell keeps full text and limits only the rendered user-message body", async () => {
   const app = await readFile(new URL("../../assets/mini-app/app.js", import.meta.url), "utf8");
   const styles = await readFile(new URL("../../assets/mini-app/styles.css", import.meta.url), "utf8");
