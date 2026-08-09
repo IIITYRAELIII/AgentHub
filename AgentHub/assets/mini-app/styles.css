@@ -3477,7 +3477,6 @@ html[data-view="dashboard"] .task-board-view {
 }
 
 .task-board-inline-create textarea,
-.task-board-comment-form textarea,
 .task-start-new input,
 .task-start-new select,
 .board-task-destination {
@@ -3491,13 +3490,6 @@ html[data-view="dashboard"] .task-board-view {
 .task-board-inline-create textarea {
   min-height: 5rem;
   padding: 0.55rem 0.65rem;
-  resize: vertical;
-  width: 100%;
-}
-
-.task-board-comment-form textarea {
-  min-height: 3.4rem;
-  padding: 0.4rem 0.5rem;
   resize: vertical;
   width: 100%;
 }
@@ -3574,8 +3566,7 @@ html[data-view="dashboard"] .task-board-view {
 }
 
 .task-board-create-button,
-.task-board-workspace-handle,
-.task-board-comment-edit {
+.task-board-workspace-handle {
   background: transparent;
   border: 1px solid var(--line);
   border-radius: var(--radius-chip);
@@ -3587,9 +3578,7 @@ html[data-view="dashboard"] .task-board-view {
 }
 
 .task-board-create-button:hover,
-.task-board-create-button:focus-visible,
-.task-board-comment-edit:hover,
-.task-board-comment-edit:focus-visible {
+.task-board-create-button:focus-visible {
   border-color: var(--accent-line);
   color: var(--accent);
 }
@@ -3602,27 +3591,6 @@ html[data-view="dashboard"] .task-board-view {
 .task-board-column-head h2,
 .task-board-column-head p {
   margin: 0;
-}
-
-.task-board-comment {
-  align-items: start;
-  display: flex;
-  gap: 0.3rem;
-}
-
-.task-board-comment p {
-  overflow-wrap: anywhere;
-}
-
-.task-board-comment-edit {
-  flex: 0 0 auto;
-  padding: 0 0.25rem;
-}
-
-.task-board-comment-form {
-  display: grid;
-  gap: 0.35rem;
-  margin-top: 0.3rem;
 }
 
 .task-board-stream-count {
@@ -3794,6 +3762,90 @@ html[data-view="dashboard"] .task-board-view {
 .task-start-modal::backdrop {
   background: rgba(2, 5, 10, 0.76);
   backdrop-filter: blur(3px);
+}
+
+.workspace-card-modal {
+  background: var(--surface-1);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  color: var(--text);
+  max-width: 32rem;
+  padding: 0;
+  width: calc(100% - 2rem);
+}
+
+.workspace-card-modal::backdrop {
+  background: rgba(2, 5, 10, 0.76);
+  backdrop-filter: blur(3px);
+}
+
+.workspace-card-modal form {
+  display: grid;
+}
+
+.workspace-card-modal header,
+.workspace-card-modal footer {
+  align-items: center;
+  display: flex;
+  gap: 0.75rem;
+  justify-content: space-between;
+  padding: 0.85rem 1rem;
+}
+
+.workspace-card-modal header {
+  border-bottom: 1px solid var(--line);
+}
+
+.workspace-card-modal footer {
+  border-top: 1px solid var(--line);
+  justify-content: flex-end;
+}
+
+.workspace-card-modal h2,
+.workspace-card-modal p {
+  margin: 0;
+}
+
+.workspace-card-modal h2 {
+  font-size: 0.95rem;
+  margin-top: 0.2rem;
+}
+
+.workspace-card-fields {
+  display: grid;
+  gap: 0.8rem;
+  padding: 1rem;
+}
+
+.workspace-card-fields label {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.workspace-card-fields label > span {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}
+
+.workspace-card-fields input,
+.workspace-card-fields textarea {
+  min-width: 0;
+  padding: 0.55rem 0.65rem;
+  width: 100%;
+}
+
+.workspace-card-fields textarea {
+  min-height: 6rem;
+  resize: vertical;
+}
+
+.workspace-card-fields input[type="number"] {
+  max-width: 8rem;
+}
+
+.workspace-card-fields input:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
 }
 
 .task-start-modal > header,

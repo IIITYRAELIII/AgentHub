@@ -471,6 +471,36 @@
     </form>
   </dialog>
 
+  <dialog class="workspace-card-modal" data-workspace-card-modal>
+    <form data-workspace-card-form>
+      <header>
+        <div>
+          <p class="eyebrow">Workspace</p>
+          <h2>Редактирование Workspace</h2>
+        </div>
+        <button type="button" class="icon-button" data-workspace-card-close aria-label="Закрыть">×</button>
+      </header>
+      <section class="workspace-card-fields">
+        <label>
+          <span>Наименование</span>
+          <input type="text" maxlength="120" data-workspace-card-name required>
+        </label>
+        <label>
+          <span>Комментарий</span>
+          <textarea rows="4" maxlength="1000" data-workspace-card-comment></textarea>
+        </label>
+        <label>
+          <span>Порядковый номер в Дашборде</span>
+          <input type="number" min="1" step="1" data-workspace-card-order required>
+        </label>
+      </section>
+      <footer>
+        <button type="button" class="board-task-quiet" data-workspace-card-cancel>Отмена</button>
+        <button type="submit" class="board-task-primary">Сохранить</button>
+      </footer>
+    </form>
+  </dialog>
+
   <!-- ================================================= Отдельное представление: журнал === -->
   <main class="journal-view" data-journal-view>
     <section class="journal" data-journal aria-live="polite" aria-busy="true"></section>

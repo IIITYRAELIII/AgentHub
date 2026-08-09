@@ -27,7 +27,6 @@
     provider: "codex",
     startingTaskId: null,
     creatingWorkspaceId: null,
-    editingCommentColumnId: null,
     draggingColumnId: null,
   };
 
@@ -240,50 +239,7 @@
     return form;
   }
 
-  function renderComment(columnId, comment) {
-    const value = String(comment ?? "");
-    if (state.editingCommentColumnId === columnId) {
-      const input = node("textarea", {
-        rows: "2",
-        maxlength: "1000",
-        "aria-label": "Комментарий колонки",
-      });
-      input.value = value;
-      const form = node("form", {
-        class: "task-board-comment-form",
-        onsubmit: (event) => {
-          event.preventDefault();
-          state.editingCommentColumnId = null;
-          emit("update-comment", { columnId, comment: input.value.trim() });
-          renderBoard();
-        },
-      }, [
-        input,
-        node("div", { class: "task-board-inline-actions" }, [
-          node("button", { type: "submit", class: "board-task-primary", text: "Сохранить" }),
-          node("button", {
-            type: "button", class: "board-task-link", text: "Отмена",
-            onclick: () => { state.editingCommentColumnId = null; renderBoard(); },
-          }),
-        ]),
-      ]);
-      window.requestAnimationFrame(() => input.focus());
-      return form;
-    }
-    return node("div", { class: "task-board-comment" }, [
-      node("p", { text: value || "Без комментария" }),
-      node("button", {
-        type: "button",
-        class: "task-board-comment-edit",
-        title: "Изменить комментарий",
-        "aria-label": "Изменить комментарий",
-        text: "✎",
-        onclick: () => { state.editingCommentColumnId = columnId; renderBoard(); },
-      }),
-    ]);
-  }
-
-  function renderColumn({ id, title, subtitle, tasks, accent = "", workspace = null, movable = false, editable = false }) {
+  function renderColumn({ id, title, subtitle, tasks, accent = "", workspace = null, movable = false }) {
     const column = node("section", {
       class: `task-board-column ${accent}${workspace ? " is-workspace" : ""}`,
       "data-board-destination": id,
@@ -334,8 +290,7 @@
       })] : []),
     ]);
     const heading = node("div", {}, [node("h2", { text: title })]);
-    if (editable) heading.append(renderComment(id, subtitle));
-    else heading.append(node("p", { text: subtitle }));
+    if (String(subtitle ?? "").trim()) heading.append(node("p", { text: subtitle }));
     if (workspace) {
       heading.append(node("span", {
         class: "task-board-stream-count",
@@ -372,13 +327,13 @@
         title: workspace.name,
         subtitle: workspace.comment ?? "",
         tasks: openTasks.filter((task) => task.bucket === "workspace" && task.workspaceId === workspace.id),
-        workspace, movable: true, editable: true,
+        workspace, movable: true,
       }));
     }
     rendered.set("notes", renderColumn({
       id: "notes", title: "Заметки", subtitle: state.notesComment,
       tasks: openTasks.filter((task) => task.bucket === "notes"),
-      accent: "is-notes", movable: true, editable: true,
+      accent: "is-notes", movable: true,
     }));
     const orderedIds = ["backlog", ...state.columnOrder.filter((id) => rendered.has(id) && id !== "backlog")];
     for (const id of rendered.keys()) if (!orderedIds.includes(id)) orderedIds.push(id);

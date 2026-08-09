@@ -1057,6 +1057,7 @@ function applySnapshot(snapshot) {
   lastSnapshot = snapshot;
   agentHub.setExchangeRates(snapshot.exchangeRates ?? null);
   agentHub.setServerStatus(snapshot.server ?? null);
+  agentHub.setWorkspaces(snapshot.workspaces ?? [], snapshot.boardLayout?.columnOrder ?? []);
   window.AgentHubTaskBoard?.setSnapshot({
     tasks: snapshot.boardTasks ?? [],
     workspaces: snapshot.workspaces ?? [],
@@ -1747,6 +1748,28 @@ agentHub.on("task:rename", ({ id, title }) => runAction(async () => {
 agentHub.on("workspace:rename", ({ workspaceId, name }) => runAction(async () => applySnapshot(
   await control("rename-workspace", { workspaceId, name }),
 )));
+agentHub.on("workspace:update", ({ workspaceId, name, comment, beforeColumnId }) => runAction(async () => {
+  if (!lastSnapshot?.boardLayout) {
+    agentHub.toast("Agent Hub завершает обновление runtime. Повторите действие через минуту.");
+    return;
+  }
+  const workspace = (lastSnapshot.workspaces ?? []).find((item) => item.id === workspaceId);
+  let snapshot = lastSnapshot;
+  if (workspace?.kind !== "system" && name !== workspace?.name) {
+    snapshot = await control("rename-workspace", { workspaceId, name });
+  }
+  if (comment !== String(workspace?.comment ?? "")) {
+    snapshot = await control("board-column-comment", { columnId: `workspace:${workspaceId}`, comment });
+  }
+  const columnId = `workspace:${workspaceId}`;
+  const currentOrder = snapshot.boardLayout?.columnOrder ?? [];
+  const currentIndex = currentOrder.indexOf(columnId);
+  const currentBeforeColumnId = currentIndex < 0 ? null : currentOrder[currentIndex + 1] ?? null;
+  if (beforeColumnId !== currentBeforeColumnId) {
+    snapshot = await control("board-column-move", { columnId, beforeColumnId });
+  }
+  applySnapshot(snapshot);
+}));
 document.addEventListener("agenthub:board-action", (event) => runAction(async () => {
   const detail = event.detail ?? {};
   if (!lastSnapshot?.boardLayout && ["move-column", "update-comment"].includes(detail.type)) {

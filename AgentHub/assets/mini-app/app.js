@@ -41,6 +41,11 @@ const taskEmpty = document.querySelector("[data-task-empty]");
 const taskCount = document.querySelector("[data-task-count]");
 const taskFilter = document.querySelector("[data-task-filter]");
 const taskNewPicker = document.querySelector("[data-task-new-picker]");
+const workspaceCardModal = document.querySelector("[data-workspace-card-modal]");
+const workspaceCardForm = document.querySelector("[data-workspace-card-form]");
+const workspaceCardName = document.querySelector("[data-workspace-card-name]");
+const workspaceCardComment = document.querySelector("[data-workspace-card-comment]");
+const workspaceCardOrder = document.querySelector("[data-workspace-card-order]");
 
 const chatPane = document.querySelector("[data-chat-pane]");
 const streamTabs = document.querySelector("[data-stream-tabs]");
@@ -1105,6 +1110,8 @@ function emit(type, detail = {}) {
 
 const state = {
   tasks: [],
+  workspaces: [],
+  workspaceColumnOrder: [],
   selectedId: null,
   messages: new Map(),   // taskId -> message[]
   taskDiffs: new Map(),  // taskId -> { text, open }
@@ -1718,7 +1725,7 @@ function renderTaskWorkspaceItem({ id, name, kind, tasks }) {
     role: "button",
     tabindex: "0",
     "aria-pressed": String(selected),
-    title: "Двойной клик — переименовать Workspace",
+    title: "ПКМ — редактировать Workspace",
   }, [
     el("span", { class: "task-workspace-name", text: name }),
     el("span", {
@@ -2135,11 +2142,96 @@ streamTabs?.addEventListener("click", (event) => {
 });
 
 let streamContextMenu = null;
+let workspaceContextMenu = null;
+let workspaceCardId = "";
 
 function closeStreamContextMenu() {
   if (!streamContextMenu) return;
   streamContextMenu.hidden = true;
   streamContextMenu.replaceChildren();
+}
+
+function workspaceCatalogItem(workspaceId) {
+  const id = String(workspaceId ?? "").trim();
+  return state.workspaces.find((workspace) => String(workspace.id ?? "") === id) ?? null;
+}
+
+function dashboardColumnOrder() {
+  const workspaceColumns = state.workspaces.map((workspace) => `workspace:${workspace.id}`);
+  const available = new Set([...workspaceColumns, "notes"]);
+  const order = [];
+  for (const columnId of state.workspaceColumnOrder) {
+    if (available.has(columnId) && !order.includes(columnId)) order.push(columnId);
+  }
+  for (const columnId of [...workspaceColumns, "notes"]) {
+    if (!order.includes(columnId)) order.push(columnId);
+  }
+  return order;
+}
+
+function closeWorkspaceContextMenu() {
+  if (!workspaceContextMenu) return;
+  workspaceContextMenu.hidden = true;
+  workspaceContextMenu.dataset.workspaceId = "";
+}
+
+function closeWorkspaceCard() {
+  workspaceCardId = "";
+  if (workspaceCardModal?.open) workspaceCardModal.close();
+}
+
+function openWorkspaceCard(workspaceId) {
+  const workspace = workspaceCatalogItem(workspaceId);
+  if (!workspace || !workspaceCardModal) return;
+  const columnId = `workspace:${workspace.id}`;
+  const order = dashboardColumnOrder();
+  workspaceCardId = String(workspace.id);
+  workspaceCardName.value = String(workspace.name ?? "");
+  workspaceCardName.disabled = workspace.kind === "system";
+  workspaceCardComment.value = String(workspace.comment ?? "");
+  workspaceCardOrder.max = String(order.length);
+  workspaceCardOrder.value = String(Math.max(1, order.indexOf(columnId) + 1));
+  workspaceCardModal.showModal();
+  (workspaceCardName.disabled ? workspaceCardComment : workspaceCardName).focus();
+}
+
+function ensureWorkspaceContextMenu() {
+  if (workspaceContextMenu) return workspaceContextMenu;
+  workspaceContextMenu = el("div", {
+    class: "stream-context-menu workspace-context-menu",
+    role: "menu",
+    "aria-label": "Управление Workspace",
+    hidden: true,
+  }, [el("button", {
+    type: "button",
+    role: "menuitem",
+    class: "stream-context-action",
+    "data-workspace-menu-action": "edit",
+    text: "Редактировать Workspace…",
+  })]);
+  document.body.append(workspaceContextMenu);
+  workspaceContextMenu.addEventListener("click", (event) => {
+    const action = event.target.closest("[data-workspace-menu-action='edit']");
+    if (!action) return;
+    event.preventDefault();
+    const workspaceId = String(workspaceContextMenu.dataset.workspaceId ?? "");
+    closeWorkspaceContextMenu();
+    openWorkspaceCard(workspaceId);
+  });
+  return workspaceContextMenu;
+}
+
+function openWorkspaceContextMenu(event, workspaceId) {
+  if (!workspaceCatalogItem(workspaceId)) return;
+  closeStreamContextMenu();
+  const menu = ensureWorkspaceContextMenu();
+  menu.dataset.workspaceId = String(workspaceId);
+  menu.hidden = false;
+  const left = Math.max(8, Math.min(event.clientX, window.innerWidth - menu.offsetWidth - 8));
+  const top = Math.max(8, Math.min(event.clientY, window.innerHeight - menu.offsetHeight - 8));
+  menu.style.left = `${left}px`;
+  menu.style.top = `${top}px`;
+  menu.querySelector("button")?.focus();
 }
 
 function workspaceMenuOptions(currentWorkspaceId) {
@@ -2171,7 +2263,6 @@ function ensureStreamContextMenu() {
     const kind = String(action.dataset.streamMenuAction ?? "");
     const currentName = String(streamContextMenu.dataset.streamName ?? "");
     const workspaceId = String(streamContextMenu.dataset.workspaceId ?? "");
-    const workspaceName = String(streamContextMenu.dataset.workspaceName ?? "");
     const taskId = String(streamContextMenu.dataset.taskId ?? "");
     const provider = String(streamContextMenu.dataset.provider ?? "codex");
     closeStreamContextMenu();
@@ -2181,9 +2272,8 @@ function ensureStreamContextMenu() {
       if (name != null) emit("stream:rename", { streamId, name });
       return;
     }
-    if (kind === "rename-workspace") {
-      const name = await askText({ title: "Новое название Workspace", value: workspaceName });
-      if (name != null && workspaceId) emit("workspace:rename", { workspaceId, name });
+    if (kind === "edit-workspace") {
+      if (workspaceId) openWorkspaceCard(workspaceId);
       return;
     }
     if (kind === "replace-thread") {
@@ -2223,7 +2313,7 @@ function openStreamContextMenu(event, tab) {
     }),
     el("button", {
       type: "button", role: "menuitem", class: "stream-context-action",
-      "data-stream-menu-action": "rename-workspace", text: "Переименовать Workspace…",
+      "data-stream-menu-action": "edit-workspace", text: "Редактировать Workspace…",
     }),
     el("button", {
       type: "button", role: "menuitem", class: "stream-context-action",
@@ -2309,10 +2399,13 @@ streamTabs?.addEventListener("keydown", (event) => {
 
 document.addEventListener("click", (event) => {
   if (streamContextMenu && !streamContextMenu.contains(event.target)) closeStreamContextMenu();
+  if (workspaceContextMenu && !workspaceContextMenu.contains(event.target)) closeWorkspaceContextMenu();
 });
 window.addEventListener("resize", closeStreamContextMenu);
+window.addEventListener("resize", closeWorkspaceContextMenu);
 document.addEventListener("scroll", (event) => {
   if (!streamContextMenu?.contains(event.target)) closeStreamContextMenu();
+  if (!workspaceContextMenu?.contains(event.target)) closeWorkspaceContextMenu();
 }, true);
 
 let draggedStreamId = "";
@@ -4192,16 +4285,36 @@ bugReportToggle?.addEventListener("click", () => {
   bugReportToggle.setAttribute("aria-expanded", String(visible));
   if (visible) bugReportText?.focus();
 });
-taskList.addEventListener("dblclick", (event) => {
-  const workspace = event.target.closest("[data-workspace-heading]");
+document.addEventListener("contextmenu", (event) => {
+  const workspace = event.target.closest("[data-workspace-heading], [data-board-workspace-id]");
   if (!workspace) return;
   event.preventDefault();
-  const workspaceId = String(workspace.dataset.workspaceHeading ?? "");
-  void askText({ title: "Новое название Workspace", value: workspace.dataset.workspaceName ?? "" })
-    .then((name) => {
-      if (name) emit("workspace:rename", { workspaceId, name });
-    });
+  const workspaceId = String(workspace.dataset.workspaceHeading ?? workspace.dataset.boardWorkspaceId ?? "");
+  openWorkspaceContextMenu(event, workspaceId);
 });
+workspaceCardForm?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const workspace = workspaceCatalogItem(workspaceCardId);
+  if (!workspace) return closeWorkspaceCard();
+  const order = dashboardColumnOrder();
+  const columnId = `workspace:${workspace.id}`;
+  const remaining = order.filter((id) => id !== columnId);
+  const requestedOrder = Math.round(Number(workspaceCardOrder.value));
+  const targetIndex = Math.max(0, Math.min(remaining.length, requestedOrder - 1));
+  emit("workspace:update", {
+    workspaceId: workspace.id,
+    name: workspaceCardName.value.trim(),
+    comment: workspaceCardComment.value.trim(),
+    beforeColumnId: remaining[targetIndex] ?? null,
+  });
+  closeWorkspaceCard();
+});
+document.querySelector("[data-workspace-card-close]")?.addEventListener("click", closeWorkspaceCard);
+document.querySelector("[data-workspace-card-cancel]")?.addEventListener("click", closeWorkspaceCard);
+workspaceCardModal?.addEventListener("click", (event) => {
+  if (event.target === workspaceCardModal) closeWorkspaceCard();
+});
+workspaceCardModal?.addEventListener("close", () => { workspaceCardId = ""; });
 bugReportAttach?.addEventListener("click", () => bugReportFiles?.click());
 bugReportFiles?.addEventListener("change", () => {
   void readBugReportFiles(bugReportFiles.files);
@@ -5034,6 +5147,10 @@ const AgentHub = {
     if (selectionChanged || selectedTaskChanged || nextTasks.some((task) => (
       task.id !== nextSelectedId && state.visibleStreamTaskIds.includes(task.id)
     ))) renderChat();
+  },
+  setWorkspaces(workspaces, columnOrder = []) {
+    state.workspaces = Array.isArray(workspaces) ? workspaces.slice() : [];
+    state.workspaceColumnOrder = Array.isArray(columnOrder) ? columnOrder.slice() : [];
   },
   /** Точечное обновление задачи (статус, время, непрочитанное). */
   patchTask(id, patch) {
