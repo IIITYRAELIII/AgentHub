@@ -181,7 +181,7 @@ html[data-theme="gothic"] .task-rail-title {
     border: 6px solid transparent;
     border-image: var(--gothic-iron-frame) 5% / 6px stretch;
     filter: brightness(1.16) contrast(1.08) saturate(0.78);
-    left: calc(16.5rem - 6px);
+    left: 0;
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .brand {
@@ -200,8 +200,10 @@ html[data-theme="gothic"] .task-rail-title {
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .brand::before {
-    border: 6px solid transparent;
+    border: 0;
+    border-right: 6px solid transparent;
     border-image: var(--gothic-iron-frame) 5% / 6px stretch;
+    border-image-width: 0 6px 0 0;
     box-sizing: border-box;
     content: "";
     filter: brightness(1.16) contrast(1.08) saturate(0.78);
@@ -214,6 +216,17 @@ html[data-theme="gothic"] .task-rail-title {
   html[data-theme="gothic"]:not([data-surface="mobile"]) .brand > * {
     position: relative;
     z-index: 1;
+  }
+
+  html[data-theme="gothic"][data-view="chat"]:not([data-surface="mobile"]) .task-rail {
+    border-image-width: 0 6px 6px 6px !important;
+    border-top-width: 0 !important;
+  }
+
+  html[data-theme="gothic"][data-view="chat"]:not([data-surface="mobile"]) .chat {
+    border-image-width: 0 6px 6px 0 !important;
+    border-left-width: 0 !important;
+    border-top-width: 0 !important;
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .view-switch,
