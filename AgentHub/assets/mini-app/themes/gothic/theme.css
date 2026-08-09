@@ -90,11 +90,11 @@ html[data-theme="gothic"] {
   --shell-tab-active-background: #411f17 var(--gothic-iron-texture) center / 20rem 20rem;
   --shell-tab-active-border: 1px solid var(--accent-line);
   --shell-panel-border: 1px solid transparent;
-  --shell-panel-border-image: var(--gothic-iron-frame) 34 / 10px stretch;
+  --shell-panel-border-image: var(--gothic-iron-frame) 34 / 12px stretch;
   --shell-stream-tabs-background: #080706 var(--gothic-iron-texture) center / 24rem 24rem;
   --shell-stream-tabs-border: 1px solid transparent;
   --shell-stream-tabs-border-bottom: 1px solid transparent;
-  --shell-stream-tabs-border-image: var(--gothic-iron-frame) 34 / 8px stretch;
+  --shell-stream-tabs-border-image: var(--gothic-iron-frame) 34 / 10px stretch;
   --shell-stream-tab-background: transparent;
   --shell-stream-tab-border: 0;
   --shell-stream-tab-hover-background: #17130f var(--gothic-iron-texture) center / 18rem 18rem;
@@ -358,18 +358,31 @@ html[data-theme="gothic"] .chip-button.primary {
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) body > .workspace {
-    column-gap: 0.38rem;
+    column-gap: 0.28rem;
+    margin-inline: 0;
+    max-width: none;
+    padding-inline: 0.22rem;
+    width: 100%;
   }
 
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .stream-chat-columns {
+    gap: 0.16rem;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .stream-chat-columns > .chat-pane,
   html[data-theme="gothic"]:not([data-surface="mobile"]) .stream-chat-preview {
     background-color: rgb(7 6 5 / 94%);
     background-image:
       linear-gradient(rgb(0 0 0 / 62%), rgb(0 0 0 / 62%)),
       var(--gothic-iron-texture);
     background-blend-mode: normal;
-    border: 8px solid transparent;
-    border-image: var(--gothic-iron-frame) 34 / 8px stretch;
+    border: 10px solid transparent;
+    border-image: var(--gothic-iron-frame) 34 / 10px stretch;
     box-shadow: inset 0 0 0 1px rgb(220 184 132 / 7%), inset 0 0 2.2rem rgb(0 0 0 / 52%);
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .chat-log {
+    max-width: 72rem;
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .composer {

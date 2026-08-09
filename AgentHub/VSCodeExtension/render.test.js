@@ -646,8 +646,9 @@ test("Gothic theme packages the Old Camp banner with its Sleeper-temple palette"
   assert.equal(ironFrame.contentType, "image/jpeg");
   assert.equal(ironFrame.immutable, true);
   assert.ok(fs.statSync(ironFrame.file).size > 10_000);
-  assert.match(styles, /--shell-panel-border-image:\s*var\(--gothic-iron-frame\) 34 \/ 10px stretch/u);
-  assert.match(styles, /\.stream-chat-preview\s*\{[^}]*border:\s*8px solid transparent;[^}]*border-image:\s*var\(--gothic-iron-frame\) 34 \/ 8px stretch;/su);
+  assert.match(styles, /--shell-panel-border-image:\s*var\(--gothic-iron-frame\) 34 \/ 12px stretch/u);
+  assert.match(styles, /body > \.workspace\s*\{[^}]*max-width:\s*none;[^}]*width:\s*100%;/su);
+  assert.match(styles, /\.stream-chat-columns > \.chat-pane,[\s\S]*?\.stream-chat-preview\s*\{[^}]*border:\s*10px solid transparent;[^}]*border-image:\s*var\(--gothic-iron-frame\) 34 \/ 10px stretch;/u);
   assert.match(styles, /--radius-lg:\s*0;/u);
 });
 
