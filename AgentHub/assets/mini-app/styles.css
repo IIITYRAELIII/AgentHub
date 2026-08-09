@@ -243,7 +243,7 @@ a:hover {
   /* Положение верхней оболочки принадлежит Hub, а не теме: декоративный CSS
      может менять материал панели, но не её высоту или привязку к краю. */
   margin-top: 0 !important;
-  padding: max(0.55rem, env(safe-area-inset-top)) 0 0.55rem !important;
+  padding: var(--shell-header-padding, max(0.55rem, env(safe-area-inset-top)) 0 0.55rem) !important;
   position: sticky !important;
   top: 0 !important;
   transform: none !important;
@@ -261,6 +261,18 @@ a:hover {
   right: 0;
 }
 
+.app-header::before {
+  border: var(--shell-header-frame-border, 0);
+  border-image: var(--shell-header-frame-image, none);
+  box-sizing: border-box;
+  content: var(--shell-header-frame-content, none);
+  filter: var(--shell-header-frame-filter, none);
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+  z-index: 0;
+}
+
 .app-header-inner {
   align-items: center;
   display: flex;
@@ -271,6 +283,7 @@ a:hover {
   padding-left: var(--gutter-left);
   padding-right: var(--gutter-right);
   position: relative;
+  z-index: 1;
 }
 
 .brand {
@@ -346,9 +359,11 @@ h1 {
 
 .toolbar {
   align-items: center;
+  align-self: var(--shell-toolbar-align-self, auto);
   display: flex;
   flex: 1 1 auto;
   gap: 0.55rem;
+  margin-top: var(--shell-toolbar-margin-top, 0);
   min-width: 0;
 }
 
@@ -3010,7 +3025,7 @@ html[data-view="chat"] body {
 /* На desktop верхние границы списка Workspace и панели Streams всегда стоят
    на одной линии. Темы сохраняют собственные ширины, фон, рамки и прозрачность. */
 html[data-view="chat"]:not([data-surface="mobile"]) body > .workspace {
-  padding-top: 0.72rem !important;
+  padding-top: var(--shell-workspace-padding-top, 0.72rem) !important;
   transform: none !important;
 }
 
@@ -4619,6 +4634,9 @@ html[data-surface="mobile"]
     border-bottom: var(--shell-header-border, 1px solid var(--line)) !important;
     border-radius: 0 !important;
     box-shadow: var(--shell-header-shadow, none) !important;
+    box-sizing: border-box !important;
+    height: var(--shell-header-height, auto) !important;
+    min-height: var(--shell-header-height, auto) !important;
   }
 
   html:not([data-surface="mobile"]) .app-header::after {
@@ -4629,7 +4647,8 @@ html[data-surface="mobile"]
   }
 
   html:not([data-surface="mobile"]) .app-header-inner {
-    gap: 1rem !important;
+    gap: var(--shell-header-gap, 1rem) !important;
+    height: 100% !important;
     margin: 0 !important;
     max-width: none !important;
     padding-left: clamp(1rem, 4vw, 4.25rem) !important;
@@ -4638,12 +4657,17 @@ html[data-surface="mobile"]
   }
 
   html:not([data-surface="mobile"]) .view-switch {
-    background: var(--shell-control-background, var(--surface-1)) !important;
-    border: var(--shell-control-border, 1px solid var(--line)) !important;
-    border-radius: 4px !important;
-    box-shadow: var(--shell-control-shadow, none) !important;
-    gap: 0.15rem !important;
-    padding: 0.18rem !important;
+    background: var(--shell-view-switch-background, var(--shell-control-background, var(--surface-1))) !important;
+    border: var(--shell-view-switch-border, var(--shell-control-border, 1px solid var(--line))) !important;
+    border-radius: var(--shell-view-switch-radius, 4px) !important;
+    box-shadow: var(--shell-view-switch-shadow, var(--shell-control-shadow, none)) !important;
+    gap: var(--shell-view-switch-gap, 0.15rem) !important;
+    padding: var(--shell-view-switch-padding, 0.18rem) !important;
+    transform: var(--shell-view-switch-transform, none) !important;
+  }
+
+  html:not([data-surface="mobile"]) .connection-banner {
+    display: var(--shell-connection-banner-display, flex) !important;
   }
 
   html:not([data-surface="mobile"]) .view-tab {

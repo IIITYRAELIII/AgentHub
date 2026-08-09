@@ -78,22 +78,40 @@ html[data-theme="gothic"] {
   /* Материалы shell задаются токенами: общая таблица сохраняет единую
      геометрию верхних панелей, а тема меняет только их фактуру и рамку. */
   --shell-header-background:
-    var(--gothic-forged-frame-matte) center / 100% 100% no-repeat,
-    #080909;
-  --shell-brand-mark-size: 2.55rem;
-  --shell-header-border: 1px solid #3f3e39;
-  --shell-header-shadow: inset 0 0 0 1px #111212, inset 0 -4px 0 #030404;
+    linear-gradient(rgb(5 6 6 / 82%), rgb(5 6 6 / 82%)),
+    var(--gothic-iron-texture) center / 24rem 24rem;
+  --shell-brand-mark-size: 2.9rem;
+  --shell-header-border: 0;
+  --shell-header-frame-border: 6px solid transparent;
+  --shell-header-frame-content: "";
+  --shell-header-frame-filter: brightness(1.32) contrast(1.08);
+  --shell-header-frame-image: var(--gothic-forged-frame-matte) 8% / 6px stretch;
+  --shell-header-gap: 0.75rem;
+  --shell-header-height: 4.75rem;
+  --shell-header-padding: 0;
+  --shell-header-shadow: none;
   --shell-header-rule: none;
+  --shell-toolbar-align-self: flex-start;
+  --shell-toolbar-margin-top: 1rem;
   --shell-control-background:
     linear-gradient(rgb(7 8 8 / 86%), rgb(7 8 8 / 86%)),
     var(--gothic-iron-texture) center / 18rem 18rem;
   --shell-control-border: 1px solid rgb(106 102 94 / 54%);
   --shell-control-shadow: inset 0 1px 0 rgb(220 216 204 / 4%), inset 0 -1px 0 #020303;
+  --shell-connection-banner-display: none;
   --shell-tab-background: transparent;
   --shell-tab-active-background:
     linear-gradient(rgb(30 17 15 / 84%), rgb(15 13 12 / 92%)),
     var(--gothic-iron-texture) center / 20rem 20rem;
   --shell-tab-active-border: 1px solid var(--accent-line);
+  --shell-view-switch-background: transparent;
+  --shell-view-switch-border: 0;
+  --shell-view-switch-gap: 0.2rem;
+  --shell-view-switch-padding: 0 0.45rem;
+  --shell-view-switch-radius: 0;
+  --shell-view-switch-shadow: none;
+  --shell-view-switch-transform: translateY(-0.3rem);
+  --shell-workspace-padding-top: 0;
   --shell-panel-border: 13px solid transparent;
   --shell-panel-border-image: var(--gothic-forged-frame-matte) 9% / 13px stretch;
   --shell-stream-tabs-background:
@@ -142,31 +160,50 @@ html[data-theme="gothic"] .task-rail-title {
     background:
       linear-gradient(rgb(6 7 7 / 78%), rgb(6 7 7 / 78%)),
       var(--gothic-iron-texture) center / 20rem 20rem;
-    border: 7px solid transparent;
-    border-image: var(--gothic-forged-frame-matte) 9% / 7px stretch;
-    flex: 0 0 var(--task-rail-width);
-    gap: 2.7rem;
+    border: 0;
+    box-sizing: border-box;
+    flex: 0 0 16.5rem;
+    gap: 1rem;
+    height: 4.75rem;
     margin-left: calc(clamp(1rem, 4vw, 4.25rem) * -1);
-    padding: 0.08rem 0.9rem 0.08rem 0.7rem;
+    padding: 0 0.9rem 0 2.45rem;
+    position: relative;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .brand::before {
+    border: 10px solid transparent;
+    border-image: var(--gothic-forged-frame-matte) 8% / 10px stretch;
+    box-sizing: border-box;
+    content: "";
+    filter: brightness(1.32) contrast(1.08);
+    inset: 0;
+    pointer-events: none;
+    position: absolute;
+    z-index: 0;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .brand > * {
+    position: relative;
+    z-index: 1;
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .brand .eyebrow {
-    color: #aaa397;
+    color: #8f897e;
     text-shadow: 0 1px 0 #000;
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .brand h1 {
-    color: #c4bdaf;
+    color: #b5aea1;
     text-shadow: 0 1px 0 #000;
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .view-tab,
   html[data-theme="gothic"]:not([data-surface="mobile"]) .view-settings {
-    color: #918d84;
+    color: #817b70;
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .view-tab[aria-pressed="true"] {
-    color: #c2b9ac !important;
+    color: #bdb3a3 !important;
   }
 }
 
@@ -383,12 +420,12 @@ html[data-theme="gothic"] .chip-button.primary {
    сохраняет углы и заклёпки, но не содержит центральных крестов и засветов. */
 @media (min-width: 860px) {
   html[data-theme="gothic"]:not([data-surface="mobile"]) {
-    --task-rail-width: clamp(248px, 20vw, 284px);
+    --task-rail-width: 16.5rem;
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"])
     .workspace:has(.stream-chat-columns[data-multi-stream]) {
-    --task-rail-width: clamp(248px, 20vw, 284px);
+    --task-rail-width: 16.5rem;
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .task-rail,
@@ -406,7 +443,7 @@ html[data-theme="gothic"] .chip-button.primary {
     column-gap: 0.45rem;
     margin-inline: 0;
     max-width: none;
-    padding-inline: 0.45rem;
+    padding-inline: 0;
     width: 100%;
   }
 
@@ -477,7 +514,7 @@ html[data-theme="gothic"] .chip-button.primary {
   html[data-theme="gothic"]:not([data-surface="mobile"]) body > .workspace {
     grid-template-columns: var(--task-rail-width) clamp(640px, 43vw, 1080px);
     justify-content: start;
-    padding: clamp(0.75rem, 1vw, 1.15rem) 0 0.65rem clamp(0.75rem, 1vw, 1.15rem);
+    padding: 0 0 0.65rem;
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"])
@@ -485,7 +522,7 @@ html[data-theme="gothic"] .chip-button.primary {
   html[data-theme="gothic"]:not([data-surface="mobile"])
     .workspace:has(.stream-chat-columns[data-multi-stream]) {
     grid-template-columns: var(--task-rail-width) minmax(0, 1fr);
-    padding-right: clamp(0.75rem, 1vw, 1.15rem);
+    padding-right: 0;
   }
 }
 
