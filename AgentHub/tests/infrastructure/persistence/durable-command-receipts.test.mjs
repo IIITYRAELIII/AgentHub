@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -45,6 +45,38 @@ test("durable receipt reconciles a crash after the effect without repeating it",
     effect: async () => { throw new Error("must use cached result"); },
   }), { delivered: true });
   assert.doesNotMatch(await readFile(file, "utf8"), /private/u);
+});
+
+test("durable receipt migrates projected legacy results before serving them", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-durable-migration-"));
+  const file = path.join(root, "receipts.json");
+  await writeFile(file, `${JSON.stringify({
+    version: 1,
+    records: [{
+      id: "legacy",
+      fingerprint: "same-command",
+      action: "open-task",
+      phase: "completed",
+      result: { snapshot: { tasks: [{ output: "x".repeat(50_000) }] }, history: { items: [] } },
+      createdAtMs: 1,
+      updatedAtMs: 1,
+    }],
+  })}\n`);
+  const receipts = new DurableCommandReceipts({
+    file,
+    projectResult: (result) => result?.snapshot ? { compact: true } : result,
+  });
+
+  assert.deepEqual(await receipts.execute({
+    id: "legacy",
+    fingerprint: "same-command",
+    action: "open-task",
+    effect: async () => assert.fail("legacy effect must not repeat"),
+  }), { compact: true });
+  const persisted = await readFile(file, "utf8");
+  assert.doesNotMatch(persisted, /50000|history|output/u);
+  assert.ok(Buffer.byteLength(persisted) < 1_000);
+  await rm(root, { recursive: true, force: true });
 });
 
 test("receipt capacity never evicts an unresolved effect", async () => {

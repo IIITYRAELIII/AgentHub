@@ -555,6 +555,29 @@ test("filesystem aliases resolve to the configured canonical project path", asyn
   }
 });
 
+test("project root canonicalization does not scan large command output for paths", {
+  timeout: 1_000,
+}, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-large-state-output-"));
+  try {
+    const canonical = path.join(root, "canonical");
+    const alias = path.join(root, "alias");
+    await mkdir(canonical);
+    await symlink(canonical, alias, process.platform === "win32" ? "junction" : "dir");
+    const output = "C:\\untrusted\\command\\output\\".repeat(8_000);
+    const result = canonicalizeProjectRoots({
+      activeProjectRoot: alias,
+      activeRuns: [{ projectRoot: alias, responseText: output }],
+    }, [{ name: "Workspace", path: canonical }]);
+
+    assert.equal(result.activeProjectRoot, canonical);
+    assert.equal(result.activeRuns[0].projectRoot, canonical);
+    assert.equal(result.activeRuns[0].responseText, output);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("Telegram API URL allows plaintext HTTP only on loopback", () => {
   assert.equal(httpBaseUrl("http://127.0.0.1:8081/", "api"), "http://127.0.0.1:8081");
   assert.equal(httpBaseUrl("https://telegram.example", "api"), "https://telegram.example");

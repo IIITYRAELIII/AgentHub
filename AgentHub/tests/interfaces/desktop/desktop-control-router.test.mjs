@@ -66,6 +66,65 @@ test("desktop mutation receipt protects retries until delivery is acknowledged",
   }
 });
 
+test("desktop receipts persist a bounded projection and hydrate a lost result", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-desktop-bounded-receipt-"));
+  const receiptFile = path.join(root, "receipts.json");
+  let effects = 0;
+  let snapshots = 0;
+  const router = createDesktopControlRouter({
+    handlers: {
+      mutate: async () => ({
+        accepted: true,
+        snapshot: { tasks: [{ output: "x".repeat(100_000) }] },
+      }),
+      snapshot: async () => ({ apiVersion: 3, tasks: [], selected: { threadId: "fresh" }, sequence: ++snapshots }),
+    },
+    mutationActions: ["mutate"],
+    receiptFile,
+  });
+  const request = {
+    action: "mutate",
+    params: {},
+    context: { source: "desktop-control", commandId: "bounded-command" },
+  };
+
+  const first = await router.handleDesktopControl({
+    ...request,
+    params: { effect: ++effects },
+  });
+  assert.equal(first.snapshot.tasks[0].output.length, 100_000);
+  const replay = await router.handleDesktopControl({
+    ...request,
+    params: { effect: effects },
+  });
+  assert.equal(replay.accepted, true);
+  assert.equal(replay.snapshot.selected.threadId, "fresh");
+  assert.equal(snapshots, 1);
+  assert.ok(Buffer.byteLength(await readFile(receiptFile, "utf8")) < 2_000);
+  await rm(root, { recursive: true, force: true });
+});
+
+test("desktop receipt policy can bypass safe repeatable mutations", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-desktop-repeatable-"));
+  const receiptFile = path.join(root, "receipts.json");
+  let effects = 0;
+  const router = createDesktopControlRouter({
+    handlers: { navigate: async () => ({ effect: ++effects }) },
+    mutationActions: ["navigate"],
+    receiptActions: [],
+    receiptFile,
+  });
+  const request = {
+    action: "navigate",
+    params: {},
+    context: { source: "desktop-control", commandId: "repeatable-command" },
+  };
+  assert.deepEqual(await router.handleDesktopControl(request), { effect: 1 });
+  assert.deepEqual(await router.handleDesktopControl(request), { effect: 2 });
+  await assert.rejects(readFile(receiptFile, "utf8"), /ENOENT/u);
+  await rm(root, { recursive: true, force: true });
+});
+
 test("desktop control router applies transport-specific response limits", async () => {
   const received = [];
   const router = createDesktopControlRouter({

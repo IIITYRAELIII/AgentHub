@@ -387,10 +387,15 @@ export function findContainingProject(projects, candidatePath) {
 export function canonicalizeProjectRoots(value, projects) {
   const aliases = new Map(projects.map((project) => [project.path, project.path]));
   const discoverAliases = (text) => {
+    if (text.length > 4_096) return;
     const starts = text.matchAll(/[A-Za-z]:[\\/]/g);
+    let matchCount = 0;
     for (const match of starts) {
+      matchCount += 1;
+      if (matchCount > 32) break;
       const start = match.index;
-      for (let end = start + 3; end <= text.length; end += 1) {
+      const maximumEnd = Math.min(text.length, start + 2_048);
+      for (let end = start + 3; end <= maximumEnd; end += 1) {
         const terminator = end === text.length || text[end] === "\\" || text[end] === "/" || text[end] === "\0";
         if (!terminator) continue;
         const candidate = text.slice(start, end);
@@ -407,10 +412,7 @@ export function canonicalizeProjectRoots(value, projects) {
     }
   };
   const collectAliases = (item) => {
-    if (typeof item === "string") {
-      discoverAliases(item);
-      return;
-    }
+    if (typeof item === "string") return;
     if (Array.isArray(item)) {
       item.forEach(collectAliases);
       return;

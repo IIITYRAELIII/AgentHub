@@ -2,7 +2,7 @@ import { commandClientContext, commandTaskTarget } from "../../application/appli
 import { createDesktopControlRouter } from "./desktop-control-router.mjs";
 
 const MUTATION_ACTIONS = Object.freeze([
-  "open-task", "open-turn", "select-task", "send-message", "new-task", "rotate-stream", "create-stream",
+  "select-task", "send-message", "new-task", "rotate-stream", "create-stream",
   "update-setting", "rename-task", "archive-task", "cancel-run",
   "resolve-approval", "deferred-input", "restart-server", "set-autostart",
   "update-server-configuration", "compact-context", "create-device-pairing",

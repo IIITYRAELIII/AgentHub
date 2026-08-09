@@ -43,6 +43,8 @@ export class DurableCommandReceipts {
   #effectWaitTimeoutMs;
   #effectStaleMs;
   #effectMaxAgeMs;
+  #projectResult;
+  #migrationPending = false;
 
   constructor({
     file,
@@ -53,6 +55,7 @@ export class DurableCommandReceipts {
     effectWaitTimeoutMs = 30_000,
     effectStaleMs = 60_000,
     effectMaxAgeMs = 5 * 60_000,
+    projectResult = null,
   }) {
     this.#file = path.resolve(file);
     this.#maxItems = Math.max(100, Math.trunc(maxItems) || 2_000);
@@ -66,6 +69,7 @@ export class DurableCommandReceipts {
     this.#effectMaxAgeMs = Math.max(this.#effectWaitTimeoutMs, Number.isFinite(Number(effectMaxAgeMs))
       ? Math.trunc(effectMaxAgeMs)
       : 5 * 60_000);
+    this.#projectResult = typeof projectResult === "function" ? projectResult : null;
   }
 
   async #load({ fresh = false } = {}) {
@@ -76,9 +80,17 @@ export class DurableCommandReceipts {
       if (value?.version !== 1 || !Array.isArray(value.records)) {
         throw new Error("invalid durable command receipt journal");
       }
-      for (const record of value.records) {
+      for (const sourceRecord of value.records) {
+        let record = sourceRecord;
         if (!record || typeof record.id !== "string" || typeof record.fingerprint !== "string") {
           throw new Error("invalid durable command receipt record");
+        }
+        if (this.#projectResult && ["completed", "reconciled"].includes(record.phase)) {
+          const result = this.#projectResult(record.result, record);
+          if (result !== record.result) {
+            record = { ...record, result };
+            this.#migrationPending = true;
+          }
         }
         records.set(record.id, record);
       }
@@ -106,12 +118,17 @@ export class DurableCommandReceipts {
     this.#records = new Map(records.map((record) => [record.id, record]));
     await mkdir(path.dirname(this.#file), { recursive: true });
     await writeTextAtomic(this.#file, `${JSON.stringify({ version: 1, records }, null, 2)}\n`);
+    this.#migrationPending = false;
   }
 
   #withLock(operation) {
     return withInterprocessLocks([this.#file], async () => {
       await this.#load({ fresh: true });
-      return operation();
+      try {
+        return await operation();
+      } finally {
+        if (this.#migrationPending) await this.#persist();
+      }
     });
   }
 
@@ -142,7 +159,9 @@ export class DurableCommandReceipts {
         record.error = String(error?.message ?? error ?? "command failed").slice(0, 4_096);
         delete record.result;
       } else {
-        record.result = serializedResult(result);
+        record.result = this.#projectResult
+          ? this.#projectResult(result, record)
+          : serializedResult(result);
         delete record.error;
       }
       record.updatedAtMs = Date.now();

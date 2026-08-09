@@ -8,10 +8,32 @@ const DEFAULT_MINI_APP_LIMITS = Object.freeze({
 });
 
 const DEFAULT_DESKTOP_MAX_RESPONSE_BYTES = 3_500_000;
+const RECEIPT_SHAPE = "__agentHubDesktopReceiptShape";
+const SNAPSHOT_RESULT_KEYS = Object.freeze([
+  "apiVersion", "workspaces", "boardTasks", "boardLayout", "selected", "settings",
+  "pendingApprovals", "messageReceipts", "deferredInputs", "restartPending",
+  "restartWaiting", "restartBlockingCount", "exchangeRates", "activeCount", "server",
+  "tasks", "generatedAt", "version", "notModified",
+]);
+
+function projectDesktopReceiptResult(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || value[RECEIPT_SHAPE]) return value;
+  if (value.snapshot && typeof value.snapshot === "object") {
+    const projected = { ...value, [RECEIPT_SHAPE]: "nested-snapshot" };
+    delete projected.snapshot;
+    delete projected.history;
+    return projected;
+  }
+  if (!Array.isArray(value.tasks) || !value.selected) return value;
+  const projected = { ...value, [RECEIPT_SHAPE]: "snapshot" };
+  for (const key of SNAPSHOT_RESULT_KEYS) delete projected[key];
+  return projected;
+}
 
 export function createDesktopControlRouter({
   handlers,
   mutationActions,
+  receiptActions = mutationActions,
   miniAppLimits = DEFAULT_MINI_APP_LIMITS,
   desktopMaxResponseBytes = DEFAULT_DESKTOP_MAX_RESPONSE_BYTES,
   receiptFile = null,
@@ -19,8 +41,13 @@ export function createDesktopControlRouter({
   reconcileMutation = null,
 }) {
   const mutations = new Set(mutationActions);
+  const durableMutations = new Set(receiptActions);
   let mutationQueue = Promise.resolve();
-  const receipts = receiptFile ? new DurableCommandReceipts({ ...receiptOptions, file: receiptFile }) : null;
+  const receipts = receiptFile ? new DurableCommandReceipts({
+    ...receiptOptions,
+    file: receiptFile,
+    projectResult: projectDesktopReceiptResult,
+  }) : null;
 
   function serializeDesktopMutation(operation) {
     const next = mutationQueue.catch(() => {}).then(operation);
@@ -59,8 +86,10 @@ export function createDesktopControlRouter({
     if (mutations.has(action)) {
       const execute = () => serializeDesktopMutation(() => handler(resolvedParams, context));
       const commandId = String(context?.commandId ?? "").trim();
-      if (!receipts || !commandId) return execute();
-      return receipts.execute({
+      if (!receipts || !commandId || !durableMutations.has(action)) return execute();
+      const noLiveResult = Symbol("no-live-result");
+      let liveResult = noLiveResult;
+      const durableResult = await receipts.execute({
         id: commandId,
         fingerprint: commandFingerprint({
           action,
@@ -69,11 +98,22 @@ export function createDesktopControlRouter({
           userId: context?.userId ?? "",
         }),
         action,
-        effect: execute,
+        effect: async () => {
+          liveResult = await execute();
+          return projectDesktopReceiptResult(liveResult);
+        },
         reconcile: typeof reconcileMutation === "function"
           ? (receipt) => reconcileMutation({ action, params: resolvedParams, context, receipt })
           : null,
       });
+      if (liveResult !== noLiveResult) return liveResult;
+      const shape = durableResult?.[RECEIPT_SHAPE];
+      if (!shape) return durableResult;
+      const { [RECEIPT_SHAPE]: _shape, ...projected } = durableResult;
+      const snapshot = await handlers.snapshot(effectiveParams({}, context), context);
+      return shape === "nested-snapshot"
+        ? { ...projected, snapshot }
+        : { ...snapshot, ...projected };
     }
     return handler(resolvedParams, context);
   }
