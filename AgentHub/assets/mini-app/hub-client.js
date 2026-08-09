@@ -15,8 +15,6 @@ const maintenanceEventStorageKey = "agent-hub:maintenance-events:v1";
 let bridgeSequence = 0;
 let lastSnapshot = null;
 let observedServerIdentity = readStoredServerIdentity();
-let runtimeReloadPending = false;
-let runtimeReloadNoticeShown = false;
 let selectedTaskId = readSelectedTaskId();
 let refreshTimer = null;
 let rateLimitRefreshTimer = null;
@@ -143,20 +141,19 @@ function notifyAndroidAboutRelease(identity) {
   }
 }
 
+const runtimeReload = new window.AgentHubRuntimeReload.RuntimeReloadController({
+  prepare: () => agentHub.prepareForRuntimeReload?.() !== false,
+  apply: () => {
+    if (vscode) vscode.postMessage({ type: "agenthub:runtime-changed" });
+    else window.location.reload();
+  },
+  onDeferred: () => agentHub.toast(
+    "Обновление интерфейса отложено до завершения ввода или закрытия окна",
+  ),
+});
+
 function reloadForPublishedRuntime() {
-  if (!runtimeReloadPending) return false;
-  if (agentHub.prepareForRuntimeReload?.() === false) {
-    if (!runtimeReloadNoticeShown) {
-      agentHub.toast("Обновление интерфейса отложено до отправки или удаления вложений");
-      runtimeReloadNoticeShown = true;
-    }
-    return false;
-  }
-  runtimeReloadPending = false;
-  runtimeReloadNoticeShown = false;
-  if (vscode) vscode.postMessage({ type: "agenthub:runtime-changed" });
-  else window.location.reload();
-  return true;
+  return runtimeReload.request();
 }
 
 function observeServerIdentity(snapshot) {
@@ -168,12 +165,13 @@ function observeServerIdentity(snapshot) {
   }
   const instanceChanged = identity.instanceId !== observedServerIdentity.instanceId;
   const releaseChanged = identity.releaseId !== observedServerIdentity.releaseId;
+  let reloadStarted = false;
   if (instanceChanged || releaseChanged) {
     rememberServerIdentity(identity);
     if (instanceChanged) notifyAndroidAboutRelease(identity);
-    if (releaseChanged) runtimeReloadPending = true;
+    if (releaseChanged) reloadStarted = reloadForPublishedRuntime();
   }
-  return reloadForPublishedRuntime();
+  return reloadStarted;
 }
 
 function readSelectedTaskId() {
@@ -701,6 +699,10 @@ async function hubFetch(input, init) {
 
 window.addEventListener("message", (event) => {
   const message = event.data;
+  if (message?.type === "agenthub:runtime-published") {
+    reloadForPublishedRuntime();
+    return;
+  }
   if (message?.type !== "agenthub:control-result") return;
   const pending = pendingBridgeCalls.get(String(message.id ?? ""));
   if (!pending) return;

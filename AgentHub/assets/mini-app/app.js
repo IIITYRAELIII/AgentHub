@@ -4329,8 +4329,19 @@ function saveDraft() {
 
 function prepareForRuntimeReload() {
   saveDraft();
-  if ([...drafts.values()].some((draft) => (draft.attachments ?? []).length > 0)) return false;
-  if (bugReportAttachments.length > 0 || bugReportSending) return false;
+  const currentDraft = drafts.get(state.selectedId);
+  const modalOpen = Boolean(
+    document.querySelector("dialog[open], [role='dialog']:not([hidden])")
+    || dialogSettings?.hidden === false,
+  );
+  if (window.AgentHubRuntimeReload.runtimeReloadBlocked({
+    currentDraft,
+    drafts: drafts.values(),
+    modalOpen,
+    requestPending: Boolean(pendingComposerRequest),
+    bugReportAttachments,
+    bugReportSending,
+  })) return false;
   return persistDrafts();
 }
 

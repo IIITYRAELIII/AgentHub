@@ -1,6 +1,7 @@
 "use strict";
 
 const vscode = require("vscode");
+const { runtimeReloadAction } = require("./runtime-reload-policy");
 const path = require("node:path");
 
 const {
@@ -90,6 +91,7 @@ class WorkLogViewProvider {
     this.unsubscribeRuntime = null;
     this.sharedPanel = false;
     this.panelRuntimeRoot = null;
+    this.panelRuntimePreparationRoot = null;
     this.themes = new Set(["orbit"]);
     this.theme = String(context.globalState.get(THEME_KEY) ?? "orbit");
   }
@@ -163,7 +165,7 @@ class WorkLogViewProvider {
       if (message?.type === "agenthub:control") void this.handleControlMessage(message);
       if (message?.type === "agenthub:http") void this.handleHttpMessage(message);
       if (message?.type === "agenthub:runtime-changed") {
-        void this.refreshPanelShellIfReleaseChanged().catch(() => {});
+        void this.refreshPanelShellIfReleaseChanged({ clientReady: true }).catch(() => {});
       }
       if (message?.type === "open-link") void this.openLink(message.href);
       if (message?.type === "theme") void this.setTheme(message.theme, "panel");
@@ -172,6 +174,7 @@ class WorkLogViewProvider {
       if (this.panel === panel) this.panel = null;
       this.sharedPanel = false;
       this.panelRuntimeRoot = null;
+      this.panelRuntimePreparationRoot = null;
     }, null, this.context.subscriptions);
     this.scheduleRefresh(0, true);
   }
@@ -212,13 +215,25 @@ class WorkLogViewProvider {
     if (!this.themes.has(this.theme)) this.theme = "orbit";
     panel.webview.html = shell.html;
     this.panelRuntimeRoot = activeRuntimeRoot;
+    this.panelRuntimePreparationRoot = null;
   }
 
-  async refreshPanelShellIfReleaseChanged() {
+  async refreshPanelShellIfReleaseChanged({ clientReady = false } = {}) {
     if (!this.panel || this.sharedPanel === "unavailable") return false;
     const bridge = await this.currentBridge();
     const runtimeRoot = await bridge.runtimeReleaseRoot();
-    if (runtimeRoot === this.panelRuntimeRoot) return false;
+    const action = runtimeReloadAction({
+      currentRoot: this.panelRuntimeRoot,
+      targetRoot: runtimeRoot,
+      clientReady,
+    });
+    if (action === "none") return false;
+    if (action === "prepare") {
+      if (this.panelRuntimePreparationRoot === runtimeRoot) return false;
+      this.panelRuntimePreparationRoot = runtimeRoot;
+      await this.panel.webview.postMessage({ type: "agenthub:runtime-published" });
+      return false;
+    }
     await this.renderPanelShell(this.panel, runtimeRoot);
     return true;
   }

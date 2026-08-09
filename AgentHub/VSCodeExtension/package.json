@@ -27,7 +27,7 @@
   ],
   "main": "./extension.js",
   "scripts": {
-    "test": "node --test render.test.js agent-hub-bridge.test.js"
+    "test": "node --test render.test.js agent-hub-bridge.test.js runtime-reload-policy.test.js"
   },
   "contributes": {
     "viewsContainers": {
