@@ -23,14 +23,37 @@ async function fixture(t) {
   return store;
 }
 
-test("Experiments is seeded once and cannot be renamed", async (t) => {
+test("Other is seeded once and cannot be renamed", async (t) => {
   const store = await fixture(t);
   const first = store.ensureExperiments();
   const second = store.ensureExperiments();
   assert.equal(first.id, second.id);
-  assert.equal(first.name, "Experiments");
+  assert.equal(first.name, "Other");
   assert.equal(first.kind, "system");
   assert.throws(() => store.renameWorkspace(first.id, "Other"), /cannot be renamed/u);
+});
+
+test("legacy Experiments name migrates to Other without replacing its Workspace", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-workspaces-other-migration-"));
+  const databaseFile = path.join(directory, "journal.sqlite");
+  let store = new WorkspaceCatalogStore({ databaseFile, idFactory: () => "system-workspace" });
+  await store.load();
+  const originalId = store.ensureExperiments().id;
+  store.close();
+
+  const database = new DatabaseSync(databaseFile);
+  database.prepare("UPDATE hub_workspaces SET name = 'Experiments' WHERE id = ?").run(originalId);
+  database.close();
+
+  store = new WorkspaceCatalogStore({ databaseFile });
+  await store.load();
+  t.after(async () => {
+    store.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const migrated = store.ensureExperiments();
+  assert.equal(migrated.id, originalId);
+  assert.equal(migrated.name, "Other");
 });
 
 test("Workspace comment is a persisted catalog property", async (t) => {
@@ -56,6 +79,20 @@ test("an empty Stream persists the settings for its future Thread", async (t) =>
   assert.deepEqual(
     store.hierarchy().find((item) => item.id === workspace.id).streams[0].settings,
     updated.settings,
+  );
+});
+
+test("a Stream can be pinned first without replacing its siblings", async (t) => {
+  const store = await fixture(t);
+  const workspace = store.createWorkspace({ name: "Ordered" });
+  const first = store.createStream({ workspaceId: workspace.id, name: "First" });
+  const pinned = store.createStream({ workspaceId: workspace.id, name: "Pinned" });
+  const last = store.createStream({ workspaceId: workspace.id, name: "Last" });
+
+  assert.equal(store.moveStreamToStart(pinned.id).ordinal, 1);
+  assert.deepEqual(
+    store.hierarchy().find((item) => item.id === workspace.id).streams.map((stream) => stream.id),
+    [pinned.id, first.id, last.id],
   );
 });
 
@@ -88,14 +125,14 @@ test("legacy Workspace catalog gains the comment property without losing data", 
   assert.equal(store.updateWorkspaceComment("legacy", "После миграции").comment, "После миграции");
 });
 
-test("unknown Threads receive separate Streams in Experiments", async (t) => {
+test("unknown Threads receive separate Streams in Other", async (t) => {
   const store = await fixture(t);
   const first = store.assignUnknownThread({ provider: "codex", threadId: "one" });
   const repeated = store.assignUnknownThread({ provider: "codex", threadId: "one" });
   const second = store.assignUnknownThread({ provider: "claude", threadId: "two" });
   assert.equal(first.streamId, repeated.streamId);
   assert.notEqual(first.streamId, second.streamId);
-  assert.equal(first.workspaceName, "Experiments");
+  assert.equal(first.workspaceName, "Other");
   assert.equal(second.streamOrdinal, 2);
 });
 
@@ -128,32 +165,32 @@ test("moving a Thread creates a new Stream and removes its empty old Stream", as
   assert.equal(store.stream(stream.id), null);
 });
 
-test("catalog discovery keeps unbound Threads in separate Experiments Streams", async (t) => {
+test("catalog discovery keeps unbound Threads in separate Other Streams", async (t) => {
   const store = await fixture(t);
   const input = [{ provider: "codex", threadId: "one", title: "Task" }];
   const first = store.assignCatalogEntries(input);
   const second = store.assignCatalogEntries(input);
   assert.deepEqual(first, second);
-  assert.equal(first[0].workspaceName, "Experiments");
+  assert.equal(first[0].workspaceName, "Other");
   assert.equal(first[0].workspaceKind, "system");
   assert.equal(first[0].streamName, null);
   assert.equal(first[0].streamDisplayName, "");
   assert.match(first[0].streamId, /^id-\d+$/u);
   assert.equal(store.hierarchy().some((item) => item.name === "Task"), false);
-  assert.equal(store.hierarchy().find((item) => item.name === "Experiments").streams.length, 1);
+  assert.equal(store.hierarchy().find((item) => item.name === "Other").streams.length, 1);
 });
 
-test("catalog enrichment preserves automatic Experiments bindings", async (t) => {
+test("catalog enrichment preserves automatic Other bindings", async (t) => {
   const store = await fixture(t);
   const automatic = store.assignUnknownThread({ provider: "codex", threadId: "one" });
   const [resolved] = store.assignCatalogEntries([{ provider: "codex", threadId: "one", title: "Old task" }]);
-  assert.equal(resolved.workspaceName, "Experiments");
+  assert.equal(resolved.workspaceName, "Other");
   assert.equal(resolved.workspaceKind, "system");
   assert.equal(resolved.streamId, automatic.streamId);
-  assert.equal(store.hierarchy().find((item) => item.name === "Experiments").streams.length, 1);
+  assert.equal(store.hierarchy().find((item) => item.name === "Other").streams.length, 1);
 });
 
-test("catalog enrichment preserves explicit Experiments placement", async (t) => {
+test("catalog enrichment preserves explicit Other placement", async (t) => {
   const store = await fixture(t);
   const experiments = store.ensureExperiments();
   const stream = store.createStream({ workspaceId: experiments.id, name: "Intentional" });
@@ -212,11 +249,11 @@ test("legacy task data survives the default one-Workspace-per-Thread upgrade", a
     { provider: "claude", threadId: "old-two", title: "Old two", projectRoot: "D:/repo" },
   ]);
   assert.deepEqual(assigned.map((item) => [item.workspaceName, item.streamName]), [
-    ["Experiments", null],
-    ["Experiments", null],
+    ["Other", null],
+    ["Other", null],
   ]);
   assert.equal(store.hierarchy().filter((item) => item.kind === "user").length, 0);
-  assert.equal(store.hierarchy().find((item) => item.name === "Experiments").streams.length, 2);
+  assert.equal(store.hierarchy().find((item) => item.name === "Other").streams.length, 2);
   store.close();
 
   const verified = new DatabaseSync(databaseFile, { readOnly: true });
@@ -246,7 +283,7 @@ test("merging Workspaces preserves Streams and compacts their ordinals", async (
   );
 });
 
-test("rebindThread can replace an automatic Experiments assignment during migration", async (t) => {
+test("rebindThread can replace an automatic Other assignment during migration", async (t) => {
   const store = await fixture(t);
   const automatic = store.assignUnknownThread({ provider: "codex", threadId: "one" });
   const workspace = store.createWorkspace({ name: "Real" });
@@ -259,7 +296,7 @@ test("rebindThread can replace an automatic Experiments assignment during migrat
   assert.equal(store.stream(automatic.streamId), null);
 });
 
-test("moving the last Stream removes its empty user Workspace but preserves Experiments", async (t) => {
+test("moving the last Stream removes its empty user Workspace but preserves Other", async (t) => {
   const store = await fixture(t);
   const source = store.createWorkspace({ name: "Source" });
   const target = store.createWorkspace({ name: "Target" });
@@ -269,5 +306,5 @@ test("moving the last Stream removes its empty user Workspace but preserves Expe
   store.moveStream(sourceStream.id, target.id);
   store.moveStream(experimentStream.id, target.id);
   assert.equal(store.workspace(source.id), null);
-  assert.equal(store.workspace(experiments.id)?.name, "Experiments");
+  assert.equal(store.workspace(experiments.id)?.name, "Other");
 });

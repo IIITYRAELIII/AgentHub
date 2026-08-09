@@ -285,7 +285,7 @@ test("journal projection groups all Stream turns under one expandable Workspace"
   assert.ok(projected.includes('data-usage-credits="9"'));
 });
 
-test("journal assigns an unknown root Thread to Experiments instead of a fake group", async () => {
+test("journal assigns an unknown root Thread to Other instead of a fake group", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "work-log-workspace-fallback-"));
   try {
     const ledgerFile = path.join(root, "data", "work-log-usage.json");
@@ -300,7 +300,7 @@ test("journal assigns an unknown root Thread to Experiments instead of a fake gr
         resolution = {
           ...reference,
           workspaceId: "workspace-experiments",
-          workspaceName: "Experiments",
+          workspaceName: "Other",
           workspaceKind: "system",
           streamId: "stream-experiments",
           streamOrdinal: 1,
@@ -340,7 +340,7 @@ test("journal assigns an unknown root Thread to Experiments instead of a fake gr
       options: { source: "discovered" },
     }]);
     const projected = await projectedJournal(store);
-    assert.match(projected, /<strong>Experiments<\/strong>/u);
+    assert.match(projected, /<strong>Other<\/strong>/u);
     assert.doesNotMatch(projected, /Без воркспейса/u);
     assert.doesNotMatch(projected, /data-thread-id="child-thread">Stream/u);
   } finally {

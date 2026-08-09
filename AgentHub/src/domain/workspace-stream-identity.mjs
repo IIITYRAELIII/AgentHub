@@ -1,4 +1,5 @@
 export const EXPERIMENTS_SYSTEM_KEY = "experiments";
+export const OTHER_WORKSPACE_NAME = "Other";
 
 const PROVIDERS = new Set(["codex", "claude"]);
 
@@ -48,4 +49,3 @@ export function streamDisplayName({ name, ordinal, streamCount }) {
   if (count <= 1) return "";
   return `Stream ${Math.max(1, Number(ordinal) || 1)}`;
 }
-

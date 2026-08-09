@@ -1,7 +1,17 @@
 import { normalizedTaskBucket, normalizedTaskText, taskDisplayText } from "../domain/task-board-task.mjs";
+import { EXPERIMENTS_SYSTEM_KEY } from "../domain/workspace-stream-identity.mjs";
 
 function requiredMethod(value, name) {
   if (typeof value?.[name] !== "function") throw new TypeError(`task board ${name} is required`);
+}
+
+function pinnedLastWorkspaceId(workspaces) {
+  return workspaces.find((workspace) => workspace.systemKey === EXPERIMENTS_SYSTEM_KEY)?.id ?? null;
+}
+
+function withPinnedLast(order, workspaceId) {
+  if (!workspaceId || !order.includes(workspaceId)) return order;
+  return [...order.filter((id) => id !== workspaceId), workspaceId];
 }
 
 export class TaskBoardService {
@@ -44,15 +54,22 @@ export class TaskBoardService {
 
   workspaces() {
     const workspaces = this.workspaceCatalog.hierarchy();
-    const order = this.store.orderedColumnIds(workspaces.map((workspace) => workspace.id));
+    const order = withPinnedLast(
+      this.store.orderedColumnIds(workspaces.map((workspace) => workspace.id)),
+      pinnedLastWorkspaceId(workspaces),
+    );
     const position = new Map(order.map((id, index) => [id, index]));
     return workspaces.slice().sort((left, right) => position.get(left.id) - position.get(right.id));
   }
 
   layout() {
-    const workspaceIds = this.workspaceCatalog.hierarchy().map((workspace) => workspace.id);
+    const workspaces = this.workspaceCatalog.hierarchy();
+    const workspaceIds = workspaces.map((workspace) => workspace.id);
     return {
-      columnOrder: this.store.orderedColumnIds(workspaceIds)
+      columnOrder: withPinnedLast(
+        this.store.orderedColumnIds(workspaceIds),
+        pinnedLastWorkspaceId(workspaces),
+      )
         .map((id) => id === "notes" ? "notes" : `workspace:${id}`),
       notesComment: this.store.notesComment(),
     };
@@ -81,7 +98,9 @@ export class TaskBoardService {
   }
 
   moveColumn({ columnId, beforeColumnId = null } = {}) {
-    const ids = this.workspaceCatalog.hierarchy().map((workspace) => workspace.id);
+    const workspaces = this.workspaceCatalog.hierarchy();
+    const ids = workspaces.map((workspace) => workspace.id);
+    const pinnedId = pinnedLastWorkspaceId(workspaces);
     const storedId = (value) => {
       const normalized = String(value ?? "").trim();
       if (normalized === "notes") return "notes";
@@ -91,7 +110,8 @@ export class TaskBoardService {
       return workspaceId;
     };
     const movedId = storedId(columnId);
-    const targetId = beforeColumnId == null ? null : storedId(beforeColumnId);
+    if (movedId === pinnedId) throw new Error("Workspace Other всегда остаётся последним");
+    const targetId = beforeColumnId == null ? pinnedId : storedId(beforeColumnId);
     return this.store.moveColumn(ids, { columnId: movedId, beforeColumnId: targetId });
   }
 

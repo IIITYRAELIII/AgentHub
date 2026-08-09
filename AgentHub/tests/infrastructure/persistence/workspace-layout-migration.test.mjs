@@ -76,7 +76,7 @@ test("apply is atomic, backed up and idempotent", async (t) => {
   `).all().map((row) => ({ ...row }));
   database.close();
   assert.deepEqual(rows, [
-    { workspace_name: "Experiments", provider_thread_id: "historic" },
+    { workspace_name: "Other", provider_thread_id: "historic" },
     { workspace_name: "Agent HUB", provider_thread_id: "known" },
   ]);
 });

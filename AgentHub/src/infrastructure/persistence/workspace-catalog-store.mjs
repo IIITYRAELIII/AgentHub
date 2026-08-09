@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 
 import {
   EXPERIMENTS_SYSTEM_KEY,
+  OTHER_WORKSPACE_NAME,
   normalizedProvider,
   normalizedStreamName,
   normalizedThreadIdentity,
@@ -214,9 +215,15 @@ export class WorkspaceCatalogStore {
     const existing = this.#database.prepare(
       "SELECT * FROM hub_workspaces WHERE system_key = ?",
     ).get(EXPERIMENTS_SYSTEM_KEY);
-    if (existing) return workspaceFromRow(existing);
+    if (existing) {
+      if (existing.name !== OTHER_WORKSPACE_NAME) {
+        this.#database.prepare("UPDATE hub_workspaces SET name = ? WHERE id = ?")
+          .run(OTHER_WORKSPACE_NAME, existing.id);
+      }
+      return this.workspace(existing.id);
+    }
     return this.createWorkspace({
-      name: "Experiments",
+      name: OTHER_WORKSPACE_NAME,
       kind: "system",
       systemKey: EXPERIMENTS_SYSTEM_KEY,
     });
@@ -383,6 +390,15 @@ export class WorkspaceCatalogStore {
     return this.stream(id);
   }
 
+  moveStreamToStart(streamId) {
+    const id = safeIdentifier(streamId, "stream id");
+    const stream = this.stream(id);
+    if (!stream) throw new Error(`stream not found: ${id}`);
+    if (stream.ordinal === 1) return stream;
+    this.#compactOrdinals(stream.workspaceId, id);
+    return this.stream(id);
+  }
+
   #removeEmptyWorkspace(workspaceId) {
     const workspace = this.workspace(workspaceId);
     if (!workspace || workspace.kind === "system") return;
@@ -392,11 +408,14 @@ export class WorkspaceCatalogStore {
     if (count === 0) this.#database.prepare("DELETE FROM hub_workspaces WHERE id = ?").run(workspace.id);
   }
 
-  #compactOrdinals(workspaceId) {
+  #compactOrdinals(workspaceId, firstStreamId = null) {
     const rows = this.#database.prepare(`
       SELECT id FROM hub_streams WHERE workspace_id = ?
       ORDER BY ordinal, created_at_ms, id
     `).all(workspaceId);
+    if (firstStreamId) {
+      rows.sort((left, right) => Number(right.id === firstStreamId) - Number(left.id === firstStreamId));
+    }
     const temporaryBase = 1_000_000;
     const update = this.#database.prepare(
       "UPDATE hub_streams SET ordinal = ?, updated_at_ms = ? WHERE id = ?",

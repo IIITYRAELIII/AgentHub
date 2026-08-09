@@ -78,7 +78,9 @@ export function ensureDashBotStream(workspaceCatalog, {
   const experiments = workspaceCatalog.ensureExperiments();
   const storedStreamId = String(workspaceCatalog.meta(DASHBOT_STREAM_META_KEY) ?? "").trim();
   const storedStream = storedStreamId ? workspaceCatalog.stream(storedStreamId) : null;
-  if (storedStream?.workspaceId === experiments.id) return storedStream;
+  if (storedStream?.workspaceId === experiments.id) {
+    return workspaceCatalog.moveStreamToStart(storedStream.id);
+  }
   const existing = workspaceCatalog.hierarchy()
     .find((workspace) => workspace.id === experiments.id)?.streams
     .find((stream) => stream.name === DASHBOT_STREAM_NAME);
@@ -93,7 +95,7 @@ export function ensureDashBotStream(workspaceCatalog, {
     },
   });
   workspaceCatalog.setMeta(DASHBOT_STREAM_META_KEY, stream.id);
-  return stream;
+  return workspaceCatalog.moveStreamToStart(stream.id);
 }
 
 export class CodexSparkTaskClassifier {

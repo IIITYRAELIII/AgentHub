@@ -265,7 +265,7 @@ namespace AgentHubDesktop
             };
             var otherWorkspace = new TaskItem
             {
-                WorkspaceId = "workspace-b", WorkspaceName = "Experiments",
+                WorkspaceId = "workspace-b", WorkspaceName = "Other",
                 StreamId = "stream-3", Provider = "codex", ThreadId = "thread-4", Title = "Probe", OrderingActivityAtMs = 1
             };
             var groups = DesktopWorkspacePresentation.Group(new[] { first, secondThread, secondStream, otherWorkspace });

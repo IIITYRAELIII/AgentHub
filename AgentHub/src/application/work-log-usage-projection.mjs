@@ -1165,7 +1165,7 @@ function workspaceResolutionForRecord(record, workspaceResolver) {
     if (!resolved?.workspaceId || !resolved?.streamId) return null;
     return {
       workspaceId: String(resolved.workspaceId),
-      workspaceName: String(resolved.workspaceName ?? "Experiments"),
+      workspaceName: String(resolved.workspaceName ?? "Other"),
       workspaceKind: String(resolved.workspaceKind ?? "user"),
       streamId: String(resolved.streamId),
       streamName: resolved.streamName == null ? null : String(resolved.streamName),

@@ -11,7 +11,10 @@ async function fixture(t, classify) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-task-service-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const store = new TaskBoardStore({ databaseFile: path.join(directory, "journal.sqlite") });
-  const workspaces = [{ id: "agent-hub", name: "Agent Hub", streams: [] }];
+  const workspaces = [
+    { id: "agent-hub", name: "Agent Hub", systemKey: null, streams: [] },
+    { id: "other", name: "Other", systemKey: "experiments", streams: [] },
+  ];
   const workspaceCatalog = {
     hierarchy: () => workspaces,
     workspace: (id) => workspaces.find((item) => item.id === id) ?? null,
@@ -91,8 +94,21 @@ test("manual dashboard creation never starts Spark triage", async (t) => {
   assert.equal(classifyCalls, 0);
 });
 
-test("dashboard layout includes movable Notes between Workspaces", async (t) => {
+test("dashboard keeps Other last while the remaining columns stay movable", async (t) => {
   const service = await fixture(t);
+  assert.deepEqual(service.layout().columnOrder, ["workspace:agent-hub", "notes", "workspace:other"]);
+  assert.deepEqual(service.workspaces().map((workspace) => workspace.name), ["Agent Hub", "Other"]);
   service.moveColumn({ columnId: "notes", beforeColumnId: "workspace:agent-hub" });
-  assert.deepEqual(service.layout().columnOrder, ["notes", "workspace:agent-hub"]);
+  assert.deepEqual(service.layout().columnOrder, ["notes", "workspace:agent-hub", "workspace:other"]);
+  service.moveColumn({ columnId: "workspace:agent-hub" });
+  assert.deepEqual(service.layout().columnOrder, ["notes", "workspace:agent-hub", "workspace:other"]);
+  service.workspaceCatalog.hierarchy().push({ id: "new", name: "New", systemKey: null, streams: [] });
+  assert.deepEqual(
+    service.layout().columnOrder,
+    ["notes", "workspace:agent-hub", "workspace:new", "workspace:other"],
+  );
+  assert.throws(
+    () => service.moveColumn({ columnId: "workspace:other", beforeColumnId: "workspace:agent-hub" }),
+    /всегда остаётся последним/u,
+  );
 });
