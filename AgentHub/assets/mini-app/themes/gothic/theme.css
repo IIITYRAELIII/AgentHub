@@ -32,8 +32,8 @@ html[data-theme="gothic"] {
   --gothic-iron-frame: var(--gothic-iron-frame-asset, url("./gothic-iron-frame.jpg"));
   --gothic-forged-frame: var(--gothic-forged-frame-asset, url("./gothic-forged-frame.png"));
   --gothic-forged-frame-matte: var(--gothic-forged-frame-matte-asset, url("./gothic-forged-frame-matte.png"));
-  --gothic-header-brand-rail: var(--gothic-header-brand-rail-asset, url("./gothic-header-brand-rail.png"));
-  --gothic-header-rail-repeat: var(--gothic-header-rail-repeat-asset, url("./gothic-header-rail-repeat.png"));
+  --gothic-header-brand-rail: var(--gothic-header-brand-rail-asset, url("./gothic-header-details-reference.png"));
+  --gothic-header-rail-repeat: var(--gothic-header-rail-repeat-asset, url("./gothic-header-rail-reference.png"));
   --gothic-header-rivet: var(--gothic-header-rivet-asset, url("./gothic-header-rivet.png"));
   --card-bg: rgb(10 11 11 / 94%);
   --card-bg-open: rgb(17 18 18 / 96%);
@@ -89,12 +89,12 @@ html[data-theme="gothic"] {
   --shell-header-frame-content: "";
   --shell-header-frame-filter: brightness(1.32) contrast(1.08);
   --shell-header-frame-image: var(--gothic-forged-frame-matte) 8% / 6px stretch;
-  --shell-header-gap: 0.75rem;
+  --shell-header-gap: 0;
   --shell-header-height: 4.75rem;
   --shell-header-padding-right: 2rem;
-  --shell-header-rule: var(--gothic-header-rail-repeat) left -7px / 512px 24px repeat-x;
-  --shell-header-rule-bottom: 9px;
-  --shell-header-rule-height: 6px;
+  --shell-header-rule: var(--gothic-header-rail-repeat) left top / 260px 10px repeat-x;
+  --shell-header-rule-bottom: 6px;
+  --shell-header-rule-height: 10px;
   --shell-header-rule-left: 0;
   --shell-header-rule-opacity: 0.82;
   --shell-header-rule-right: 0;
@@ -109,7 +109,7 @@ html[data-theme="gothic"] {
   --shell-connection-banner-display: none;
   --shell-tab-background: transparent;
   --shell-tab-active-background:
-    linear-gradient(rgb(9 10 10 / 74%), rgb(5 6 6 / 84%)),
+    linear-gradient(rgb(9 10 10 / 42%), rgb(5 6 6 / 56%)),
     var(--gothic-iron-texture) center / 20rem 20rem;
   --shell-tab-active-border: 1px solid rgb(105 100 90 / 62%);
   --shell-tab-active-padding: 0.42rem 0.94rem;
@@ -184,6 +184,7 @@ html[data-theme="gothic"] .task-rail-title {
     background-repeat: no-repeat;
     background-size: 8px 8px;
     border-bottom-width: 0;
+    left: 16.5rem;
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .brand {
@@ -220,11 +221,10 @@ html[data-theme="gothic"] .task-rail-title {
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .brand::after {
-    background: var(--gothic-header-brand-rail) left center / 282px 34px no-repeat;
-    bottom: -9px;
+    background: var(--gothic-header-brand-rail) left center / 282px 25px no-repeat;
+    bottom: -2px;
     content: "";
-    filter: brightness(0.82) contrast(1.08) saturate(0.76);
-    height: 34px;
+    height: 25px;
     left: 0;
     pointer-events: none;
     position: absolute;
@@ -235,6 +235,11 @@ html[data-theme="gothic"] .task-rail-title {
   html[data-theme="gothic"]:not([data-surface="mobile"]) .brand > * {
     position: relative;
     z-index: 1;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .view-switch,
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .toolbar {
+    margin-left: 0.75rem;
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .brand .eyebrow {
@@ -491,7 +496,7 @@ html[data-theme="gothic"] .chip-button.primary {
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) body > .workspace {
-    column-gap: 0.45rem;
+    column-gap: 0;
     margin-inline: 0;
     max-width: none;
     padding-inline: 0;
