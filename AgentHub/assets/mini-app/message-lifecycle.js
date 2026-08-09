@@ -463,6 +463,17 @@ function rememberBounded(messages, message, limit = 100) {
   return messages;
 }
 
+function outgoingTaskId(outgoingByTask, clientUserMessageId, preferredTaskId = "") {
+  const clientId = String(clientUserMessageId ?? "").trim();
+  const preferred = String(preferredTaskId ?? "").trim();
+  if (!clientId) return "";
+  if (preferred && outgoingByTask.get(preferred)?.has(clientId)) return preferred;
+  for (const [taskIdValue, messages] of outgoingByTask) {
+    if (messages?.has(clientId)) return taskIdValue;
+  }
+  return "";
+}
+
 function liveMessageMatch(messages, probe) {
   const values = Array.isArray(messages) ? messages : [];
   const exact = identityKey(probe);
@@ -731,6 +742,12 @@ function chronologicalMessages(messages) {
   }
   return decorated
     .sort((left, right) => {
+      const leftTurnOrder = historyTurnOrders.get(String(left.message?.turnId ?? ""));
+      const rightTurnOrder = historyTurnOrders.get(String(right.message?.turnId ?? ""));
+      if (Number.isFinite(leftTurnOrder) && Number.isFinite(rightTurnOrder)
+        && leftTurnOrder !== rightTurnOrder) {
+        return leftTurnOrder - rightTurnOrder;
+      }
       if (left.time !== right.time) return left.time - right.time;
       const sameTurn = String(left.message?.turnId ?? "")
         && String(left.message?.turnId ?? "") === String(right.message?.turnId ?? "");
@@ -821,6 +838,7 @@ globalThis.AgentHubMessageLifecycle = Object.freeze({
   mergeTurnMaintenanceMessages,
   normalizedResponseAnnotations,
   normalizedUserMessage,
+  outgoingTaskId,
   mergeReconciledUserMessage,
   reconciledUserMetadataConfirmed,
   responseAnnotationPrompt,

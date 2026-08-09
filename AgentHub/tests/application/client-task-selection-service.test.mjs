@@ -76,8 +76,15 @@ test("Telegram selection remains stable when the shared fallback selection chang
   assert.equal(f.saves(), 1);
 });
 
-test("Telegram selection is isolated by chat and falls back before first selection", async () => {
+test("Telegram selection is isolated by chat and keeps its startup fallback", async () => {
   const f = fixture();
+  assert.equal(f.service.selectedTask(99).threadId, "desktop-thread");
+  f.setFallback({
+    streamId: "other-stream",
+    provider: "codex",
+    projectRoot: "D:/Work",
+    threadId: "other-desktop-thread",
+  });
   assert.equal(f.service.selectedTask(99).threadId, "desktop-thread");
   await f.service.select({
     provider: "codex",

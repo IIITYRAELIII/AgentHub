@@ -42,6 +42,10 @@ test("managed run lifecycle creates and persists one owned run", async () => {
 
   assert.equal(taskRuns.forTask(run), run);
   assert.equal(run.promptPreview, "hello");
+  assert.deepEqual(run.userMessages, [{
+    role: "user",
+    text: "hello",
+  }]);
   assert.equal(run.streamId, "stream-1");
   assert.equal(run.model, "GPT");
   assert.deepEqual(events, ["catalog", "diff", "clear-diff", "sync-start", "save", "progress"]);

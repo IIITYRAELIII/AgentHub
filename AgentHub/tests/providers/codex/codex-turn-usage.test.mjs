@@ -881,6 +881,32 @@ test("terminal event scanner carries active turns across bounded chunks", async 
   assert.deepEqual(second.terminals.map((value) => value.turnId), ["turn-across-chunks"]);
 });
 
+test("historical rollout keeps the initial prompt when a turn is steered", async () => {
+  const turnId = "019f1eca-8de7-7aa3-92b6-045036561c8e";
+  const text = [
+    line({ timestamp: "2026-08-09T21:30:00Z", type: "event_msg", payload: {
+      type: "task_started", turn_id: turnId,
+    } }),
+    line(response(turnId, "message", {
+      role: "user",
+      content: [{ type: "input_text", text: "Изначальный запрос" }],
+    })),
+    line(response(turnId, "message", {
+      role: "user",
+      content: [{ type: "input_text", text: "Докинутое уточнение" }],
+    })),
+    line({ timestamp: "2026-08-09T21:31:00Z", type: "event_msg", payload: {
+      type: "task_complete", turn_id: turnId,
+    } }),
+  ].join("\n");
+
+  const result = await scanCodexHistoricalRollout("fixture.jsonl", {
+    createReadStreamImpl: () => Readable.from([text]),
+  });
+
+  assert.equal(result.turns[0].prompt, "Изначальный запрос");
+});
+
 test("terminal event scanner marks the real rollout shape of a context probe", async () => {
   const turnId = "probe-turn";
   const source = [

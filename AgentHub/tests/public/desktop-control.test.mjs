@@ -45,6 +45,11 @@ test("desktop control validates endpoint and request shape", () => {
     action: "snapshot",
     params: {},
   }), { action: "snapshot", params: {} });
+  assert.deepEqual(validateDesktopControlRequest({
+    action: "send-message",
+    params: {},
+    commandId: "command-1",
+  }), { action: "send-message", params: {}, commandId: "command-1" });
   assert.throws(
     () => validateDesktopControlRequest({ action: "../run" }),
     /Invalid desktop control action/,
@@ -60,6 +65,7 @@ test("desktop control exchanges authenticated RPC and rotates endpoint after res
     handler: async ({ action, params, context }) => ({
       action,
       source: context?.source,
+      commandId: context?.commandId,
       value: params.value,
       tasks: ["один", "два"],
     }),
@@ -75,9 +81,13 @@ test("desktop control exchanges authenticated RPC and rotates endpoint after res
     const firstEndpoint = await readDesktopControlEndpoint(runtimeRoot);
     assert.match(firstEndpoint.endpointId, /^[a-f0-9]{64}$/);
     assert.notEqual(firstEndpoint.endpointId, staleEndpointId);
-    assert.deepEqual(await callDesktopControl("snapshot", { value: 42 }, { runtimeRoot }), {
+    assert.deepEqual(await callDesktopControl("snapshot", { value: 42 }, {
+      runtimeRoot,
+      commandId: "desktop-command-1",
+    }), {
       action: "snapshot",
       source: "desktop-control",
+      commandId: "desktop-command-1",
       value: 42,
       tasks: ["один", "два"],
     });

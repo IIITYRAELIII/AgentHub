@@ -84,6 +84,7 @@ const {
   mergeTurnMaintenanceMessages,
   normalizedResponseAnnotations,
   normalizedUserMessage,
+  outgoingTaskId,
   responseAnnotationPrompt,
   reconcile: reconcileMessageLifecycle,
   rememberBounded: rememberBoundedMessage,
@@ -319,10 +320,12 @@ function nonEmptyAttachmentPatch(values) {
 }
 
 function patchOutgoing(taskIdValue, clientUserMessageId, patch) {
-  const message = outgoingMessages(taskIdValue).get(clientUserMessageId);
+  const resolvedTaskId = outgoingTaskId(outgoingByTask, clientUserMessageId, taskIdValue);
+  if (!resolvedTaskId) return;
+  const message = outgoingMessages(resolvedTaskId).get(clientUserMessageId);
   if (!message) return;
   Object.assign(message, patch);
-  renderTaskMessages(taskIdValue);
+  renderTaskMessages(resolvedTaskId);
 }
 
 function liveUserMessagesSignature(run) {

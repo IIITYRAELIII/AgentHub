@@ -72,6 +72,15 @@ export class ManagedRunLifecycleService {
       telegramDeliveryRequested: target?.telegramDeliveryRequested !== false,
       clientSource: String(target?.clientSource ?? "telegram").trim() || "telegram",
     });
+    if (run.promptPreview) {
+      run.userMessages = [{
+        role: "user",
+        ...(run.clientUserMessageId
+          ? { clientUserMessageId: run.clientUserMessageId }
+          : {}),
+        text: run.promptPreview,
+      }];
+    }
     d.taskRuns.add(run);
     d.invalidateCatalog();
     await d.persistTaskDiff(taskRunKey(run), "");

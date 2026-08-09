@@ -276,6 +276,7 @@ export class RunCoordinator {
               .map((item) => String(item.text ?? ""))
               .filter(Boolean)
               .join("\n"),
+          time: new Date().toISOString(),
         });
         existingRun.userMessages = userMessages;
       }

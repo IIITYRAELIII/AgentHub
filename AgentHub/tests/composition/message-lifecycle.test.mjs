@@ -775,6 +775,33 @@ test("unmatched optimistic messages keep chronological position", () => {
   ]);
 });
 
+test("durable turn order wins over an earlier queue timestamp", () => {
+  const values = lifecycle.chronologicalMessages([
+    {
+      id: "first-user", role: "user", turnId: "first",
+      time: "2026-08-09T21:20:00.000Z", historyOrder: 1_000,
+    },
+    {
+      id: "first-agent", role: "agent", turnId: "first",
+      time: "2026-08-09T21:33:00.000Z", historyOrder: 1_001,
+    },
+    {
+      id: "queued-user", role: "user", turnId: "second",
+      time: "2026-08-09T21:19:00.000Z", historyOrder: 2_000,
+    },
+    {
+      id: "second-agent", role: "agent", turnId: "second",
+      time: "2026-08-09T21:36:00.000Z", historyOrder: 2_001,
+    },
+  ]);
+  assert.deepEqual(values.map((item) => item.id), [
+    "first-user",
+    "first-agent",
+    "queued-user",
+    "second-agent",
+  ]);
+});
+
 test("deferred queue merges the server row with its optimistic client message", () => {
   const merged = lifecycle.mergeDeferredQueueEntries([{
     id: "queue-1",
@@ -1111,4 +1138,14 @@ test("failed context compaction remains as a centered maintenance message", () =
   assert.match(hubClientSource, /\["failed", "timeout"\]\.includes\(status\)/u);
   assert.match(hubClientSource, /"Автосвёртка контекста не завершилась"/u);
   assert.match(hubClientSource, /"Свёртка контекста не завершилась"/u);
+});
+
+test("outgoing receipt lookup survives a task thread rebind", () => {
+  const outgoingByTask = new Map([
+    ["codex:thread-before", new Map([["client-1", { text: "Сообщение" }]])],
+  ]);
+  assert.equal(
+    lifecycle.outgoingTaskId(outgoingByTask, "client-1", "codex:thread-after"),
+    "codex:thread-before",
+  );
 });

@@ -231,6 +231,7 @@ export function createDesktopTaskHistoryFactory({
         prompt: running.promptPreview,
         answer: running.responseText,
         clientUserMessageId: running.clientUserMessageId,
+        userMessages: running.userMessages,
         responseItemId: running.responseItemId,
         activities: running.activities,
         ...(Array.isArray(running.activityGroups) && running.activityGroups.length
@@ -352,8 +353,8 @@ export function createDesktopTaskHistoryFactory({
               : {}),
             ...(message.phase ? { phase: String(message.phase) } : {}),
             time: message.time
-              ?? receipt?.createdAt
               ?? (role === "user" ? item.startedAt : item.completedAt)
+              ?? receipt?.createdAt
               ?? null,
             attachments,
           }];

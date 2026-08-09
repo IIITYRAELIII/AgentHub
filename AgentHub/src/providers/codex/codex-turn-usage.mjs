@@ -798,7 +798,7 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
       && entry.payload?.role === "user") {
       const rawPrompt = messageText(entry.payload);
       const candidate = displayUserPrompt(rawPrompt);
-      if (candidate) exactTurn.prompt = candidate;
+      if (candidate && !exactTurn.prompt) exactTurn.prompt = candidate;
       for (const name of explicitSkillNames(rawPrompt, knownSkills)) exactTurn.skillsUsed.add(name);
     }
     if (entry?.type === "response_item"

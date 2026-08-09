@@ -216,11 +216,12 @@ test("desktop message controller steers the exact active Codex turn", async () =
   assert.equal(rpc[0].method, "turn/steer");
   assert.equal(rpc[0].params.expectedTurnId, "turn-active");
   assert.deepEqual(stages, ["Уточнение принято."]);
-  assert.deepEqual(run.userMessages, [{
+  assert.deepEqual(run.userMessages.map(({ time: _time, ...message }) => message), [{
     role: "user",
     clientUserMessageId: "message-steer",
     text: "уточнение",
   }]);
+  assert.equal(Number.isFinite(Date.parse(run.userMessages[0].time)), true);
 });
 
 test("a queued image message steers with its stable client id", async () => {

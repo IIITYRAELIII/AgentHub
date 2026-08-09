@@ -2,6 +2,7 @@ import {
   createHash,
   createHmac,
   randomBytes,
+  randomUUID,
   timingSafeEqual,
 } from "node:crypto";
 import {
@@ -32,6 +33,7 @@ const TRANSIENT_CONNECT_CODES = new Set([
 ]);
 const ENDPOINT_ID_PATTERN = /^[a-f0-9]{64}$/;
 const NONCE_PATTERN = /^[a-f0-9]{64}$/;
+const COMMAND_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,199}$/;
 const BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 
 export function desktopControlSecretFile(runtimeRoot = defaultRuntimeRoot()) {
@@ -197,7 +199,11 @@ export function validateDesktopControlRequest(value) {
   if (!params || typeof params !== "object" || Array.isArray(params)) {
     throw new Error("Invalid desktop control parameters");
   }
-  return { action, params };
+  const commandId = String(value.commandId ?? "").trim();
+  if (commandId && !COMMAND_ID_PATTERN.test(commandId)) {
+    throw new Error("Invalid desktop control command id");
+  }
+  return { action, params, ...(commandId ? { commandId } : {}) };
 }
 
 function parseProtocolLine(line) {
@@ -320,6 +326,7 @@ export class DesktopControlServer {
               context: {
                 ...(request.context ?? {}),
                 source: request.context?.source ?? "desktop-control",
+                commandId: request.commandId ?? null,
               },
             });
             const response = `${JSON.stringify({ ok: true, result: result ?? null })}\n`;
@@ -392,12 +399,17 @@ export class DesktopControlServer {
 async function callDesktopControlOnce(action, params, {
   runtimeRoot,
   timeoutMs,
+  commandId,
 }) {
   const [secret, descriptor] = await Promise.all([
     readFile(desktopControlSecretFile(runtimeRoot), "utf8").then((value) => value.trim()),
     readDesktopControlEndpoint(runtimeRoot),
   ]);
-  const requestPayload = Buffer.from(JSON.stringify(validateDesktopControlRequest({ action, params })), "utf8");
+  const requestPayload = Buffer.from(JSON.stringify(validateDesktopControlRequest({
+    action,
+    params,
+    commandId,
+  })), "utf8");
   if (requestPayload.length > MAX_REQUEST_BYTES) {
     throw new Error("Desktop control request is too large");
   }
@@ -517,10 +529,11 @@ function reconnectDelay(delayMs) {
 export async function callDesktopControl(action, params = {}, {
   runtimeRoot = defaultRuntimeRoot(),
   timeoutMs = 10_000,
+  commandId = randomUUID(),
 } = {}) {
   for (let attempt = 0; ; attempt += 1) {
     try {
-      return await callDesktopControlOnce(action, params, { runtimeRoot, timeoutMs });
+      return await callDesktopControlOnce(action, params, { runtimeRoot, timeoutMs, commandId });
     } catch (error) {
       const delayMs = CLIENT_RECONNECT_DELAYS_MS[attempt];
       if (delayMs == null || !canReconnectDesktopControl(error)) throw error;

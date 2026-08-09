@@ -746,7 +746,11 @@ test("Mini App forwards authenticated control commands to Agent Hub", async () =
     const local = await fetch(`${address.url}api/control`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "snapshot", params: { refresh: true } }),
+      body: JSON.stringify({
+        action: "snapshot",
+        params: { refresh: true },
+        commandId: "local-command-1",
+      }),
     });
     assert.equal(local.status, 200);
     assert.deepEqual(await local.json(), {
@@ -760,7 +764,7 @@ test("Mini App forwards authenticated control commands to Agent Hub", async () =
       {
         action: "snapshot",
         params: { refresh: true },
-        context: { source: "local-mini-app" },
+        context: { source: "local-mini-app", commandId: "local-command-1" },
       },
       {
         action: "snapshot",

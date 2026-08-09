@@ -675,9 +675,17 @@ export class MiniAppServer {
         if (!params || typeof params !== "object" || Array.isArray(params)) {
           throw new Error("Некорректные параметры команды");
         }
+        const commandId = String(body.commandId ?? "").trim();
+        if (commandId && !/^[A-Za-z0-9][A-Za-z0-9:._-]{0,199}$/.test(commandId)) {
+          throw new Error("Некорректный идентификатор команды");
+        }
         json(response, 200, {
           ok: true,
-          result: await this.#controlHandler({ action, params, context: authorization }),
+          result: await this.#controlHandler({
+            action,
+            params,
+            context: { ...authorization, ...(commandId ? { commandId } : {}) },
+          }),
         }, method);
       } catch (error) {
         json(response, 400, { ok: false, error: String(error?.message ?? error) }, method);

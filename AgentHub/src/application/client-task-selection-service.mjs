@@ -29,6 +29,13 @@ export class ClientTaskSelectionService {
       save,
       contextNonce,
     });
+    this.initialFallbackBinding = this.fallbackBinding();
+    if (Number.isSafeInteger(this.sessionState.chatId)) {
+      const clientId = this.clientId(this.sessionState.chatId);
+      if (!this.sessionState.clientTaskSelection(clientId)) {
+        this.sessionState.setClientTaskSelection(clientId, this.initialFallbackBinding);
+      }
+    }
   }
 
   clientId(chatId = this.sessionState.chatId) {
@@ -40,7 +47,8 @@ export class ClientTaskSelectionService {
   }
 
   binding(chatId = this.sessionState.chatId) {
-    return this.sessionState.clientTaskSelection(this.clientId(chatId)) ?? this.fallbackBinding();
+    return this.sessionState.clientTaskSelection(this.clientId(chatId))
+      ?? structuredClone(this.initialFallbackBinding);
   }
 
   selectedTask(chatId = this.sessionState.chatId) {
@@ -101,7 +109,8 @@ export class ClientTaskSelectionService {
     )) : null;
     const clientId = String(context?.clientId ?? "").trim()
       || this.clientId(binding?.chatId ?? this.sessionState.chatId);
-    const previous = this.sessionState.clientTaskSelection(clientId) ?? this.fallbackBinding();
+    const previous = this.sessionState.clientTaskSelection(clientId)
+      ?? structuredClone(this.initialFallbackBinding);
     const next = {
       streamId: String(binding?.streamId ?? entry?.streamId ?? "").trim() || null,
       provider: binding.provider,

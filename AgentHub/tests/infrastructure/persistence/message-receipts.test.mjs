@@ -45,11 +45,22 @@ test("message receipts survive persistence and reject changed content", async ()
   );
 });
 
-test("message receipt identity includes provider and thread", () => {
-  assert.notEqual(
+test("message receipt identity survives a provider thread rebind", () => {
+  assert.equal(
     messageReceiptKey(identity),
     messageReceiptKey({ ...identity, threadId: "thread-2" }),
   );
+});
+
+test("message receipts deduplicate the same client message after a thread rebind", async () => {
+  const registry = new MessageReceiptRegistry();
+  const fingerprint = await messageRequestFingerprint({ text: "Проверь" });
+  registry.remember(identity, fingerprint, { accepted: true, turnId: "turn-1" });
+
+  assert.deepEqual(registry.find({ ...identity, threadId: "thread-2" }, fingerprint), {
+    accepted: true,
+    turnId: "turn-1",
+  });
 });
 
 test("message receipt result can follow a deferred message into an active run", async () => {

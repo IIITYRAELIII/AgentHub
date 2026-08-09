@@ -11,8 +11,8 @@ function normalizedIdentity({ provider, threadId, clientUserMessageId } = {}) {
 
 export function messageReceiptKey(identity) {
   const normalized = normalizedIdentity(identity);
-  if (!normalized.provider || !normalized.threadId || !normalized.clientUserMessageId) return "";
-  return `${normalized.provider}\0${normalized.threadId}\0${normalized.clientUserMessageId}`;
+  if (!normalized.clientUserMessageId) return "";
+  return normalized.clientUserMessageId;
 }
 
 export async function messageRequestFingerprint({
