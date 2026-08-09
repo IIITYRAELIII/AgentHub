@@ -840,7 +840,7 @@ test("shared Dashboard bot pairs one Telegram user and queues Tasks only for tha
   });
   assert.equal(response.status, 200);
   assert.equal((await response.json()).ok, true);
-  assert.match(telegramCalls.at(-1).body.text, /Backlog/u);
+  assert.equal(telegramCalls.at(-1).body.text, "Принято в Backlog.");
 
   response = await workerModule.default.fetch(signedServiceRequest(
     "https://hub.test/api/dashboard-bot/pull",

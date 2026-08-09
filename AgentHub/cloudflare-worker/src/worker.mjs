@@ -1313,7 +1313,7 @@ export class JournalStore extends DurableObject {
     return {
       hubId: linked.hubId,
       command,
-      reply: "Принято в Backlog. Карточка появится, когда ваш Agent Hub подключится.",
+      reply: "Принято в Backlog.",
     };
   }
 

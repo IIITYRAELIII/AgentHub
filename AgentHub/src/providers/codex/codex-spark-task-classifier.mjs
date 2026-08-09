@@ -5,6 +5,10 @@ import path from "node:path";
 import { captureProcess } from "../../infrastructure/process/process-capture.mjs";
 import { resolveCodexExecutable } from "./codex-invocation.mjs";
 
+const DASHBOT_STREAM_META_KEY = "task_board.spark_stream_id";
+const DASHBOT_THREAD_META_KEY = "task_board.spark_thread_id";
+const DASHBOT_STREAM_NAME = "DashBot";
+
 const OUTPUT_SCHEMA = Object.freeze({
   type: "object",
   additionalProperties: false,
@@ -53,6 +57,45 @@ export function parseTaskClassifierResult(value) {
   };
 }
 
+export function parseTaskClassifierThreadId(stdout) {
+  for (const line of String(stdout ?? "").split(/\r?\n/gu)) {
+    if (!line.trim()) continue;
+    try {
+      const event = JSON.parse(line);
+      if (event?.type === "thread.started" && String(event.thread_id ?? "").trim()) {
+        return String(event.thread_id).trim();
+      }
+    } catch {}
+  }
+  return null;
+}
+
+export function ensureDashBotStream(workspaceCatalog, {
+  model = "gpt-5.3-codex-spark",
+  projectRoot = "",
+} = {}) {
+  if (!workspaceCatalog) throw new TypeError("workspaceCatalog is required");
+  const experiments = workspaceCatalog.ensureExperiments();
+  const storedStreamId = String(workspaceCatalog.meta(DASHBOT_STREAM_META_KEY) ?? "").trim();
+  const storedStream = storedStreamId ? workspaceCatalog.stream(storedStreamId) : null;
+  if (storedStream?.workspaceId === experiments.id) return storedStream;
+  const existing = workspaceCatalog.hierarchy()
+    .find((workspace) => workspace.id === experiments.id)?.streams
+    .find((stream) => stream.name === DASHBOT_STREAM_NAME);
+  const stream = existing ?? workspaceCatalog.createStream({
+    workspaceId: experiments.id,
+    name: DASHBOT_STREAM_NAME,
+    settings: {
+      provider: "codex",
+      model,
+      project: projectRoot,
+      sandbox: "read-only",
+    },
+  });
+  workspaceCatalog.setMeta(DASHBOT_STREAM_META_KEY, stream.id);
+  return stream;
+}
+
 export class CodexSparkTaskClassifier {
   constructor({
     requestedExecutable = "",
@@ -63,6 +106,8 @@ export class CodexSparkTaskClassifier {
     resolveExecutable = resolveCodexExecutable,
     runProcess = captureProcess,
     stopProcess,
+    workspaceCatalog,
+    streamId,
   } = {}) {
     this.requestedExecutable = requestedExecutable;
     this.executableArgs = executableArgs;
@@ -72,6 +117,8 @@ export class CodexSparkTaskClassifier {
     this.resolveExecutable = resolveExecutable;
     this.runProcess = runProcess;
     this.stopProcess = stopProcess;
+    this.workspaceCatalog = workspaceCatalog;
+    this.streamId = streamId;
   }
 
   async classify(input) {
@@ -81,20 +128,32 @@ export class CodexSparkTaskClassifier {
     try {
       await writeFile(schemaFile, `${JSON.stringify(OUTPUT_SCHEMA)}\n`, "utf8");
       const executable = await this.resolveExecutable({ requested: this.requestedExecutable });
-      const args = [
-        ...this.executableArgs,
-        "exec",
-        "--ephemeral",
+      const prompt = taskClassifierPrompt(input);
+      const threadId = this.#threadId();
+      const commonArgs = [
         "--ignore-user-config",
         "--ignore-rules",
         "--skip-git-repo-check",
-        "--sandbox", "read-only",
         "--model", this.model,
         "--output-schema", schemaFile,
         "--output-last-message", outputFile,
+        "--json",
+      ];
+      const args = threadId ? [
+        ...this.executableArgs,
+        "exec",
+        "resume",
+        ...commonArgs,
+        threadId,
+        prompt,
+      ] : [
+        ...this.executableArgs,
+        "exec",
+        "--sandbox", "read-only",
         "--color", "never",
         "--cd", this.projectRoot,
-        taskClassifierPrompt(input),
+        ...commonArgs,
+        prompt,
       ];
       const result = await this.runProcess(executable, args, {
         cwd: this.projectRoot,
@@ -106,9 +165,36 @@ export class CodexSparkTaskClassifier {
       if (result.code !== 0) {
         throw new Error(`Codex Spark завершился с кодом ${result.code}: ${String(result.stderr ?? "").trim()}`);
       }
+      const completedThreadId = parseTaskClassifierThreadId(result.stdout) ?? threadId;
+      if (!completedThreadId) throw new Error("Codex Spark не вернул идентификатор Thread");
+      this.#bindThread(completedThreadId);
       return parseTaskClassifierResult(await readFile(outputFile, "utf8"));
     } finally {
       await rm(directory, { recursive: true, force: true }).catch(() => {});
     }
+  }
+
+  #threadId() {
+    if (!this.workspaceCatalog || !this.streamId) return null;
+    const stored = String(this.workspaceCatalog.meta(DASHBOT_THREAD_META_KEY) ?? "").trim();
+    const storedBinding = stored
+      ? this.workspaceCatalog.resolveThread({ provider: "codex", threadId: stored })
+      : null;
+    if (storedBinding?.streamId === this.streamId) return stored;
+    const active = this.workspaceCatalog.activeThread(this.streamId);
+    return active?.provider === "codex" ? active.threadId : null;
+  }
+
+  #bindThread(threadId) {
+    if (!this.workspaceCatalog || !this.streamId) return;
+    this.workspaceCatalog.rebindThread(
+      { provider: "codex", threadId },
+      {
+        streamId: this.streamId,
+        projectRoot: this.projectRoot,
+        source: "created",
+      },
+    );
+    this.workspaceCatalog.setMeta(DASHBOT_THREAD_META_KEY, threadId);
   }
 }

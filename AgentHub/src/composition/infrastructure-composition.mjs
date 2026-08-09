@@ -22,7 +22,10 @@ import { captureProcess } from "../infrastructure/process/process-capture.mjs";
 import { RuntimeCommandServer } from "../infrastructure/process/runtime-command.mjs";
 import { MiniAppServer } from "../interfaces/web/mini-app-server.mjs";
 import { CodexRolloutContextSanitizer } from "../providers/codex/codex-rollout-context.mjs";
-import { CodexSparkTaskClassifier } from "../providers/codex/codex-spark-task-classifier.mjs";
+import {
+  CodexSparkTaskClassifier,
+  ensureDashBotStream,
+} from "../providers/codex/codex-spark-task-classifier.mjs";
 import { RuntimeNotificationController } from "../runtime/runtime-notification-controller.mjs";
 
 export async function createHubInfrastructure({
@@ -58,6 +61,12 @@ export async function createHubInfrastructure({
   });
   await workspaceCatalogStore.load();
   const taskBoardStore = new TaskBoardStore({ databaseFile: journalDatabaseFile });
+  const dashBotStream = config.taskBoard.triageEnabled
+    ? ensureDashBotStream(workspaceCatalogStore, {
+      model: config.taskBoard.triageModel,
+      projectRoot: config.projectRoot,
+    })
+    : null;
   const taskClassifier = config.taskBoard.triageEnabled
     ? new CodexSparkTaskClassifier({
       requestedExecutable: config.codexExecutable,
@@ -65,6 +74,8 @@ export async function createHubInfrastructure({
       projectRoot: config.projectRoot,
       model: config.taskBoard.triageModel,
       stopProcess: (worker) => stopProcessTree(worker.pid),
+      workspaceCatalog: workspaceCatalogStore,
+      streamId: dashBotStream.id,
     })
     : null;
   const taskBoard = new TaskBoardService({
