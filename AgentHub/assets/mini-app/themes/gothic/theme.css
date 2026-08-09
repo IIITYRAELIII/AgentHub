@@ -90,19 +90,19 @@ html[data-theme="gothic"] {
   --shell-tab-background: transparent;
   --shell-tab-active-background: #411f17 var(--gothic-iron-texture) center / 20rem 20rem;
   --shell-tab-active-border: 1px solid var(--accent-line);
-  --shell-panel-border: 13px solid transparent;
-  --shell-panel-border-image: var(--gothic-forged-frame) 72 / 13px stretch;
+  --shell-panel-border: 1px solid rgb(112 91 67 / 46%);
+  --shell-panel-border-image: none;
   --shell-stream-tabs-background: #080706 var(--gothic-iron-texture) center / 24rem 24rem;
-  --shell-stream-tabs-border: 8px solid transparent;
-  --shell-stream-tabs-border-bottom: 1px solid transparent;
-  --shell-stream-tabs-border-image: var(--gothic-forged-frame) 72 / 8px stretch;
+  --shell-stream-tabs-border: 0;
+  --shell-stream-tabs-border-bottom: 1px solid rgb(112 91 67 / 46%);
+  --shell-stream-tabs-border-image: none;
   --shell-stream-tab-background: transparent;
   --shell-stream-tab-border: 0;
   --shell-stream-tab-hover-background: #17130f var(--gothic-iron-texture) center / 18rem 18rem;
   --shell-stream-tab-active-background: #351c15 var(--gothic-iron-texture) center / 18rem 18rem;
   --shell-stream-card-background: #0c0a09 var(--gothic-iron-texture) center / 18rem 18rem;
-  --shell-stream-card-border: 1px solid transparent;
-  --shell-stream-card-border-image: var(--gothic-iron-frame) 34 / 4px stretch;
+  --shell-stream-card-border: 1px solid rgb(112 91 67 / 46%);
+  --shell-stream-card-border-image: none;
 }
 
 html[data-theme="gothic"] body::after {
@@ -236,9 +236,7 @@ html[data-background-override="true"][data-background="gothic-minental-fortress"
 html[data-background-override="true"][data-background="gothic-finkregh"] body::before { animation: gothic-scene-fog 28s ease-in-out infinite !important; background-image: radial-gradient(58% 28% at 42% 76%, rgb(116 178 222 / 18%), transparent 78%), radial-gradient(34% 30% at 66% 34%, rgb(130 196 236 / 20%), transparent 76%) !important; opacity: 0.44 !important; }
 html[data-background-override="true"][data-background="gothic-xardas-tower"] body::before { animation: gothic-scene-fog 36s ease-in-out infinite !important; background-image: radial-gradient(42% 30% at 52% 66%, rgb(125 151 174 / 18%), transparent 78%), radial-gradient(24% 30% at 79% 48%, rgb(120 141 163 / 12%), transparent 78%) !important; opacity: 0.46 !important; }
 
-/* Железная подложка повторяется на всю высоту описи. Знамя идёт отдельным
-   растровым предметом после последнего Workspace, поэтому не темнеет от
-   background-blend-mode и не висит посередине прокручиваемой панели. */
+/* Железная подложка повторяется на всю высоту описи. */
 html[data-theme="gothic"] .task-list {
   background-color: rgb(8 7 6 / 96%);
   background-image: var(--gothic-iron-texture);
@@ -247,17 +245,6 @@ html[data-theme="gothic"] .task-list {
   background-size: 24rem 24rem;
   display: flex;
   flex-direction: column;
-}
-
-html[data-theme="gothic"] .task-list::after {
-  aspect-ratio: 1;
-  background: url("./gothic-old-camp-banner.png") center / contain no-repeat;
-  content: "";
-  flex: 0 0 auto;
-  margin: 0.45rem auto 0;
-  max-width: 16rem;
-  min-height: 12rem;
-  width: 94%;
 }
 
 html[data-theme="gothic"] .task-workspace-item,
@@ -349,9 +336,8 @@ html[data-theme="gothic"] .chip-button.primary {
   color: #ddc6aa;
 }
 
-/* Референс держится на настоящей кованой оболочке, а не только на палитре.
-   Один nine-slice ресурс даёт одинаковые стыки и заклёпки на панелях любой
-   ширины, не создавая отдельные DOM-декорации и не утяжеляя прокрутку. */
+/* Крупные поверхности разделены тонкой железной линией без повторяющихся
+   декоративных стоек между Workspace и чатом. */
 @media (min-width: 860px) {
   html[data-theme="gothic"]:not([data-surface="mobile"]) {
     --task-rail-width: clamp(248px, 20vw, 284px);
@@ -392,8 +378,8 @@ html[data-theme="gothic"] .chip-button.primary {
       linear-gradient(rgb(0 0 0 / 62%), rgb(0 0 0 / 62%)),
       var(--gothic-iron-texture);
     background-blend-mode: normal;
-    border: 9px solid transparent;
-    border-image: var(--gothic-forged-frame) 72 / 9px stretch;
+    border: 1px solid rgb(112 91 67 / 46%);
+    border-image: none;
     box-shadow: inset 0 0 0 1px rgb(220 184 132 / 7%), inset 0 0 2.2rem rgb(0 0 0 / 52%);
   }
 
@@ -402,8 +388,8 @@ html[data-theme="gothic"] .chip-button.primary {
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .composer {
-    border: 8px solid transparent;
-    border-image: var(--gothic-forged-frame) 72 / 8px stretch;
+    border: 1px solid rgb(112 91 67 / 46%);
+    border-image: none;
     padding: 0.35rem 0.45rem max(0.35rem, env(safe-area-inset-bottom));
   }
 
@@ -471,7 +457,6 @@ html[data-theme="gothic"] .chip-button.primary {
   html[data-background-override="true"][data-background="gothic-finkregh"] { --hub-background-position: center, 78% 50%; }
   html[data-background-override="true"][data-background="gothic-xardas-tower"] { --hub-background-position: 82% 50%; }
   html[data-theme="gothic"] .task-list { background-image: none; }
-  html[data-theme="gothic"] .task-list::after { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {
