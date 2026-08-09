@@ -6,7 +6,7 @@
   "styles": "theme.css",
   "assets": {
     "iron-texture": "gothic-iron-texture.png",
-    "iron-frame": "gothic-iron-frame.jpg",
+    "iron-frame": "gothic-iron-frame-plain.png",
     "forged-frame": "gothic-forged-frame.png",
     "forged-frame-matte": "gothic-forged-frame-matte.png",
     "header-brand-rail": "gothic-header-details-reference.png",

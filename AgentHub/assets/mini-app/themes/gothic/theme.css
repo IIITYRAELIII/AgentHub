@@ -29,7 +29,7 @@ html[data-theme="gothic"] {
   --line-strong: rgb(148 140 125 / 62%);
 
   --gothic-iron-texture: var(--gothic-iron-texture-asset, url("./gothic-iron-texture.png"));
-  --gothic-iron-frame: var(--gothic-iron-frame-asset, url("./gothic-iron-frame.jpg"));
+  --gothic-iron-frame: var(--gothic-iron-frame-asset, url("./gothic-iron-frame-plain.png"));
   --gothic-forged-frame: var(--gothic-forged-frame-asset, url("./gothic-forged-frame.png"));
   --gothic-forged-frame-matte: var(--gothic-forged-frame-matte-asset, url("./gothic-forged-frame-matte.png"));
   --gothic-header-brand-rail: var(--gothic-header-brand-rail-asset, url("./gothic-header-details-reference.png"));
