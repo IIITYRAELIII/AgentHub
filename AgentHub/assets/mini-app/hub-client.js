@@ -1736,7 +1736,7 @@ agentHub.on("workspace:rename", ({ workspaceId, name }) => runAction(async () =>
 )));
 document.addEventListener("agenthub:board-action", (event) => runAction(async () => {
   const detail = event.detail ?? {};
-  if (!lastSnapshot?.boardLayout && detail.type === "update-comment") {
+  if (!lastSnapshot?.boardLayout && ["move-column", "update-comment"].includes(detail.type)) {
     agentHub.toast("Agent Hub завершает обновление runtime. Повторите действие через минуту.");
     return;
   }
@@ -1750,23 +1750,9 @@ document.addEventListener("agenthub:board-action", (event) => runAction(async ()
     "move-column": "board-column-move",
     "update-comment": "board-column-comment",
   };
-  let action = actions[detail.type];
+  const action = actions[detail.type];
   if (!action) return;
-  let { type: _type, ...params } = detail;
-  if (!lastSnapshot?.boardLayout && detail.type === "move-column") {
-    const columnId = String(detail.columnId ?? "");
-    const beforeColumnId = String(detail.beforeColumnId ?? "");
-    if (!columnId.startsWith("workspace:")
-      || (beforeColumnId && beforeColumnId !== "notes" && !beforeColumnId.startsWith("workspace:"))) {
-      agentHub.toast("Agent Hub завершает обновление runtime. Повторите действие через минуту.");
-      return;
-    }
-    action = "board-workspace-move";
-    params = {
-      workspaceId: columnId.slice(10),
-      beforeWorkspaceId: beforeColumnId.startsWith("workspace:") ? beforeColumnId.slice(10) : null,
-    };
-  }
+  const { type: _type, ...params } = detail;
   const result = await control(action, params);
   applySnapshot(result);
   if (detail.type === "start") agentHub.showSelectedTask();
