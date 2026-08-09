@@ -9,6 +9,7 @@ const RUNTIME_ASSETS = {
   index: [...ASSET_ROOT, "index.html"],
   disclosure: [...ASSET_ROOT, "message-disclosure.js"],
   chatScroll: [...ASSET_ROOT, "chat-scroll-controller.js"],
+  taskBoard: [...ASSET_ROOT, "task-board.js"],
   app: [...ASSET_ROOT, "app.js"],
   lifecycle: [...ASSET_ROOT, "message-lifecycle.js"],
   client: [...ASSET_ROOT, "hub-client.js"],
@@ -43,7 +44,7 @@ async function resolveSharedAssets({ runtimeUri, extensionUri }) {
     assets.bootstrap = null;
   }
   for (const required of [
-    "index", "disclosure", "chatScroll", "app", "lifecycle", "client", "styles", "backgrounds", "streamStatus", "streamStatusVisibility",
+    "index", "disclosure", "chatScroll", "taskBoard", "app", "lifecycle", "client", "styles", "backgrounds", "streamStatus", "streamStatusVisibility",
     "mark", "workLogStyles", "bootstrap",
   ]) {
     if (!assets[required]) throw new Error(`Не найден ресурс Agent Hub: ${required}`);
@@ -95,6 +96,7 @@ async function sharedWebviewHtml(webview, locations) {
     .replace('<script src="/browser-device-auth.js" defer></script>', "")
     .replace('<script src="/message-disclosure.js" defer></script>', "")
     .replace('<script src="/chat-scroll-controller.js" defer></script>', "")
+    .replace('<script src="/task-board.js" defer></script>', `<script src="${resource(webview, assets.taskBoard)}" defer></script>`)
     .replace(
       '<script src="/app.js" defer></script>',
       `<script src="${resource(webview, assets.bootstrap)}" defer></script>`

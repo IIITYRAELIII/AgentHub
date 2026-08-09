@@ -79,7 +79,7 @@ test("shared webview loads the active runtime, never a workspace shadow", async 
   const runtimeRoot = path.join(root, "runtime", "releases", "current");
   const shadowAssets = path.join(shadowRoot, "Utilities", "AgentHub", "assets", "mini-app");
   const runtimeAssets = path.join(runtimeRoot, "assets", "mini-app");
-  const required = ["message-disclosure.js", "chat-scroll-controller.js", "app.js", "message-lifecycle.js", "hub-client.js", "styles.css", "backgrounds.css", "stream-status.css", "stream-status-visibility.mjs", "agent-hub-mark.png"];
+  const required = ["message-disclosure.js", "chat-scroll-controller.js", "task-board.js", "app.js", "message-lifecycle.js", "hub-client.js", "styles.css", "backgrounds.css", "stream-status.css", "stream-status-visibility.mjs", "agent-hub-mark.png"];
   try {
     fs.mkdirSync(shadowAssets, { recursive: true });
     fs.mkdirSync(runtimeAssets, { recursive: true });
@@ -89,7 +89,7 @@ test("shared webview loads the active runtime, never a workspace shadow", async 
       <img data-app-mark src="/agent-hub-mark.png" alt="">
       <!-- agent-hub-theme-styles --><select data-theme-select></select>
       <!-- agent-hub-theme-markup --><!-- agent-hub-theme-catalog -->
-      <script src="/browser-device-auth.js" defer></script><script src="/message-disclosure.js" defer></script><script src="/chat-scroll-controller.js" defer></script>
+      <script src="/browser-device-auth.js" defer></script><script src="/message-disclosure.js" defer></script><script src="/chat-scroll-controller.js" defer></script><script src="/task-board.js" defer></script>
       <script src="/app.js" defer></script><!-- agent-hub-theme-scripts -->
       <script src="/message-lifecycle.js" defer></script><script src="/hub-client.js" defer></script>`);
     for (const file of required) {
@@ -115,6 +115,8 @@ test("shared webview loads the active runtime, never a workspace shadow", async 
     assert.doesNotMatch(result.html, /shadow/u);
     assert.match(result.html, /vscode-webview-resource:.*agent-hub-mark\.png/u);
     assert.doesNotMatch(result.html, /(?:href|src)="\/agent-hub-mark\.png"/u);
+    assert.match(result.html, /vscode-webview-resource:.*task-board\.js/u);
+    assert.doesNotMatch(result.html, /src="\/task-board\.js"/u);
     assert.ok(result.roots.every((uri) => (
       uri.fsPath.startsWith(runtimeRoot) || uri.fsPath.startsWith(extensionRoot)
     )));
