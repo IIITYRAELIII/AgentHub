@@ -45,9 +45,6 @@ const chatEmpty = document.querySelector("[data-chat-empty]");
 const chatEmptyText = document.querySelector("[data-chat-empty-text]");
 const chatScroll = document.querySelector("[data-chat-scroll]");
 const chatScrollDown = document.querySelector("[data-chat-scroll-down]");
-const chatMessageNav = document.querySelector("[data-chat-message-nav]");
-const chatMessagePrev = document.querySelector("[data-chat-message-prev]");
-const chatMessageNext = document.querySelector("[data-chat-message-next]");
 const historyLoader = document.querySelector("[data-history-loader]");
 const historyLoadButton = document.querySelector("[data-history-load]");
 const historyLoadLabel = document.querySelector("[data-history-load-label]");
@@ -2698,7 +2695,6 @@ function renderMessages({ forceBottom = false, preserveTop = false } = {}) {
     else if (stickToBottom) pinChatToBottom();
     else window.requestAnimationFrame(() => scrollController?.afterMutation(scrollSnapshot, { preserveDistance: true }));
     scheduleUnderfilledHistoryLoad();
-    syncUserMessageNavigation();
     return;
   }
   let lastAgentIndex = -1;
@@ -2725,34 +2721,7 @@ function renderMessages({ forceBottom = false, preserveTop = false } = {}) {
   else if (stickToBottom) pinChatToBottom();
   else window.requestAnimationFrame(() => scrollController?.afterMutation(scrollSnapshot, { preserveDistance: true }));
   scheduleUnderfilledHistoryLoad();
-  syncUserMessageNavigation();
 }
-
-function userMessageNodes() {
-  return [...chatLog.querySelectorAll(".msg[data-role='user']")];
-}
-
-function syncUserMessageNavigation() {
-  if (!chatMessageNav) return;
-  chatMessageNav.hidden = userMessageNodes().length < 2;
-}
-
-function navigateUserMessage(direction) {
-  const messages = userMessageNodes();
-  if (!messages.length) return;
-  const viewportTop = chatScroll.getBoundingClientRect().top;
-  const positions = messages.map((message) => ({
-    message,
-    top: message.getBoundingClientRect().top - viewportTop,
-  }));
-  const target = direction < 0
-    ? positions.filter((item) => item.top < -8).at(-1) ?? positions[0]
-    : positions.find((item) => item.top > 8) ?? positions.at(-1);
-  target?.message.scrollIntoView({ behavior: "smooth", block: "start" });
-}
-
-chatMessagePrev?.addEventListener("click", () => navigateUserMessage(-1));
-chatMessageNext?.addEventListener("click", () => navigateUserMessage(1));
 
 function taskDiffSummary(text) {
   const lines = String(text ?? "").split(/\r?\n/u);
