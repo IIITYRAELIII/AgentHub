@@ -4693,9 +4693,12 @@ html[data-surface="mobile"]
 
   html:not([data-surface="mobile"]) .app-header::after {
     background: var(--shell-header-rule, linear-gradient(90deg, transparent, var(--accent-line), transparent)) !important;
+    bottom: var(--shell-header-rule-bottom, -1px) !important;
     box-shadow: none !important;
-    height: 1px !important;
-    opacity: 0.7 !important;
+    height: var(--shell-header-rule-height, 1px) !important;
+    left: var(--shell-header-rule-left, 0) !important;
+    opacity: var(--shell-header-rule-opacity, 0.7) !important;
+    right: var(--shell-header-rule-right, 0) !important;
   }
 
   html:not([data-surface="mobile"]) .app-header-inner {
