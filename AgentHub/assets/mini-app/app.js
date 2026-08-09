@@ -1287,6 +1287,12 @@ function orderedWorkspaceStreams(workspaceId, streams) {
   for (const stream of streams) {
     if (!orderedIds.includes(stream.id)) orderedIds.push(stream.id);
   }
+  const dashBotId = streams.find((stream) => stream.name === "DashBot")?.id;
+  if (dashBotId) {
+    const currentIndex = orderedIds.indexOf(dashBotId);
+    if (currentIndex >= 0) orderedIds.splice(currentIndex, 1);
+    orderedIds.unshift(dashBotId);
+  }
   state.streamOrderByWorkspace.set(workspaceId, orderedIds);
   return orderedIds.map((streamId) => available.get(streamId));
 }
@@ -1633,7 +1639,10 @@ function renderTasks() {
       groups.get(key).tasks.push(task);
     }
     visibleCount = groups.size;
-    for (const group of groups.values()) taskList.append(renderTaskWorkspaceItem(group));
+    const orderedGroups = [...groups.values()].sort((left, right) => (
+      Number(left.kind === "system") - Number(right.kind === "system")
+    ));
+    for (const group of orderedGroups) taskList.append(renderTaskWorkspaceItem(group));
   } else if (!hasProject) {
     for (const task of visible) taskList.append(renderTaskItem(task));
   } else {
@@ -5405,7 +5414,7 @@ const AgentHub = {
    *  attachments }. role: "user" | "agent" | "system". */
   setMessages(taskId, messages) {
     const next = Array.isArray(messages) ? messages.slice() : [];
-    if (sameData(state.messages.get(taskId) ?? [], next)) return;
+    if (state.messages.has(taskId) && sameData(state.messages.get(taskId), next)) return;
     state.messages.set(taskId, next);
     if (taskId === state.selectedId) {
       renderMessages({ preserveTop: true });
@@ -5426,7 +5435,7 @@ const AgentHub = {
   },
   setMessagesPreservingScroll(taskId, messages) {
     const next = Array.isArray(messages) ? messages.slice() : [];
-    if (sameData(state.messages.get(taskId) ?? [], next)) return;
+    if (state.messages.has(taskId) && sameData(state.messages.get(taskId), next)) return;
     state.messages.set(taskId, next);
     if (taskId === state.selectedId) {
       renderMessages({ preserveTop: true });
