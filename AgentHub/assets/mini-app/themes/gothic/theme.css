@@ -88,7 +88,7 @@ html[data-theme="gothic"] {
   --shell-header-frame-border: 6px solid transparent;
   --shell-header-frame-content: "";
   --shell-header-frame-filter: brightness(1.32) contrast(1.08);
-  --shell-header-frame-image: var(--gothic-forged-frame-matte) 8% / 6px stretch;
+  --shell-header-frame-image: var(--gothic-forged-frame-matte) 9% / 6px repeat;
   --shell-header-gap: 0;
   --shell-header-height: 4.75rem;
   --shell-header-padding-right: 2rem;
@@ -123,13 +123,13 @@ html[data-theme="gothic"] {
   --shell-view-switch-transform: none;
   --shell-workspace-padding-top: 0;
   --shell-panel-border: 13px solid transparent;
-  --shell-panel-border-image: var(--gothic-forged-frame-matte) 9% / 13px stretch;
+  --shell-panel-border-image: var(--gothic-forged-frame-matte) 9% / 13px repeat;
   --shell-stream-tabs-background:
     linear-gradient(rgb(7 8 8 / 82%), rgb(7 8 8 / 82%)),
     var(--gothic-iron-texture) center / 24rem 24rem;
   --shell-stream-tabs-border: 4px solid transparent;
   --shell-stream-tabs-border-bottom: 1px solid transparent;
-  --shell-stream-tabs-border-image: var(--gothic-forged-frame-matte) 8% / 4px stretch;
+  --shell-stream-tabs-border-image: var(--gothic-forged-frame-matte) 9% / 4px repeat;
   --shell-stream-tabs-margin-top: -13px;
   --shell-stream-tabs-min-height: 3.45rem;
   --shell-stream-tabs-padding: 0 0.55rem 0.2rem;
@@ -139,7 +139,7 @@ html[data-theme="gothic"] {
   --shell-stream-tab-active-background: #251714 var(--gothic-iron-texture) center / 18rem 18rem;
   --shell-stream-card-background: #0a0b0b var(--gothic-iron-texture) center / 18rem 18rem;
   --shell-stream-card-border: 4px solid transparent;
-  --shell-stream-card-border-image: var(--gothic-forged-frame-matte) 9% / 4px stretch;
+  --shell-stream-card-border-image: var(--gothic-forged-frame-matte) 9% / 4px repeat;
 }
 
 html[data-theme="gothic"] body::after {
@@ -174,7 +174,7 @@ html[data-theme="gothic"] .task-rail-title {
       var(--gothic-iron-texture) center / 24rem 24rem;
     --shell-header-frame-border: 10px solid transparent;
     --shell-header-frame-filter: brightness(1.12) contrast(1.1) saturate(0.76);
-    --shell-header-frame-image: var(--gothic-forged-frame-matte) 72 / 10px stretch;
+    --shell-header-frame-image: var(--gothic-forged-frame-matte) 9% / 10px repeat;
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .app-header::before {
@@ -210,7 +210,7 @@ html[data-theme="gothic"] .task-rail-title {
     background-size: 8px 8px;
     border: 10px solid transparent;
     border-bottom-width: 0;
-    border-image: var(--gothic-forged-frame-matte) 72 / 10px stretch;
+    border-image: var(--gothic-forged-frame-matte) 9% / 10px repeat;
     box-sizing: border-box;
     content: "";
     filter: brightness(1.12) contrast(1.1) saturate(0.76);
@@ -498,6 +498,7 @@ html[data-theme="gothic"] .chip-button.primary {
   html[data-theme="gothic"]:not([data-surface="mobile"]) body > .workspace {
     column-gap: 0;
     margin-inline: 0;
+    margin-top: -10px;
     max-width: none;
     padding-inline: 0;
     width: 100%;
@@ -515,7 +516,7 @@ html[data-theme="gothic"] .chip-button.primary {
       var(--gothic-iron-texture);
     background-blend-mode: color, normal;
     border: 9px solid transparent;
-    border-image: var(--gothic-forged-frame-matte) 9% / 9px stretch;
+    border-image: var(--gothic-forged-frame-matte) 9% / 9px repeat;
     box-shadow: inset 0 0 0 1px rgb(220 184 132 / 7%), inset 0 0 2.2rem rgb(0 0 0 / 52%);
   }
 
@@ -525,7 +526,7 @@ html[data-theme="gothic"] .chip-button.primary {
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .composer {
     border: 8px solid transparent;
-    border-image: var(--gothic-forged-frame-matte) 9% / 8px stretch;
+    border-image: var(--gothic-forged-frame-matte) 9% / 8px repeat;
     padding: 0.35rem 0.45rem max(0.35rem, env(safe-area-inset-bottom));
   }
 
