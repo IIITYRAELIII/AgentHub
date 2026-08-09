@@ -11,6 +11,8 @@ function router(calls) {
     "updateServerConfiguration", "compactContext", "openAttachment", "submitBugReport",
     "trustedDevices", "createDevicePairing", "revokeDevice",
     "renameWorkspace", "createWorkspaceFromStream", "mergeWorkspaces", "renameStream", "moveStream",
+    "boardTaskCreate", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
+    "boardTaskRetryTriage", "boardTaskStart",
   ].map((name) => [name, handler]));
   return createDesktopApplicationRouter({
     handlers,

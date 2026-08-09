@@ -62,6 +62,9 @@ export function createDesktopReadSystemWiring({
       maintenance: {
         entryFor: services.maintenanceFor,
       },
+      board: {
+        snapshot: services.taskBoardSnapshot,
+      },
       runs: {
         forTask: services.runForTask,
         titleFor: services.runTitle,

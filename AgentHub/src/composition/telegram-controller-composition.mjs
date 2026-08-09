@@ -97,6 +97,7 @@ export function createTelegramControllerComposition({
   failedUpdateStore,
   restartReady,
   performRestart,
+  taskBoard,
 }) {
   const interactiveJobService = new InteractiveJobService({
     queue: interactiveJobs,
@@ -271,6 +272,26 @@ export function createTelegramControllerComposition({
     menu: botMenu,
   });
 
+  const taskCommand = async ({ message, argument }) => {
+    const value = String(argument ?? "").trim();
+    if (value.toLowerCase() === "off") {
+      taskBoard.setCaptureEnabled(message.chat.id, false);
+      await sendMessage("Режим Task выключен. Обычные сообщения снова отправляются в текущий диалог.");
+      return;
+    }
+    if (value) {
+      const task = taskBoard.create({
+        text: value,
+        source: "telegram",
+        sourceKey: `telegram:${message.chat.id}:${message.message_id}`,
+        sourceDetails: { chatId: message.chat.id, messageId: message.message_id, userId: message.from?.id },
+      });
+      await sendMessage(`Task добавлен в бэклог: ${task.rawText.slice(0, 300)}`);
+      return;
+    }
+    taskBoard.setCaptureEnabled(message.chat.id, true);
+    await sendMessage("Режим Task включён. Все обычные текстовые сообщения попадут в бэклог. Чтобы выйти: /task off");
+  };
   const telegramMessageController = new TelegramMessageController({
     config,
     menuCommands,
@@ -281,7 +302,18 @@ export function createTelegramControllerComposition({
     selectedTurnTarget,
     bindIncomingMessage: bindIncomingTaskMessage,
     enqueueMedia: (...args) => backgroundJobs.enqueue(...args),
-    commandHandlers: telegramCommandService.handlers(),
+    commandHandlers: { ...telegramCommandService.handlers(), task: taskCommand },
+    captureTask: async (message, text) => {
+      if (!taskBoard.captureEnabled(message.chat.id)) return false;
+      const task = taskBoard.create({
+        text,
+        source: "telegram",
+        sourceKey: `telegram:${message.chat.id}:${message.message_id}`,
+        sourceDetails: { chatId: message.chat.id, messageId: message.message_id, userId: message.from?.id },
+      });
+      await sendMessage(`Task добавлен в бэклог: ${task.rawText.slice(0, 300)}`);
+      return true;
+    },
     handleBundleText: (message, text) => forwardBundleController.handleText(message, text),
     handleBundleMedia: (message, options) => forwardBundleController.handleImage(message, options),
     handleText: (message, text, target) => startTurn(

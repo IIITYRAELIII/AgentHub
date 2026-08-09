@@ -304,6 +304,7 @@ export function createExecutionBootstrapPhase({
         && !selection.hostState.stopping
       ),
       performRestart: api.performRestart,
+      taskBoard: infrastructure.taskBoard,
     },
     ports: { telegramShell: ports.telegramShell },
   });

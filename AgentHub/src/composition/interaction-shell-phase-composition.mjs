@@ -124,6 +124,7 @@ export function createInteractionShellPhase({
       rateLimitHistoryStore: infrastructure.rateLimitHistoryStore,
       workLogUsageStore: infrastructure.workLogUsageStore,
       workspaceCatalogStore: infrastructure.workspaceCatalogStore,
+      taskBoard: infrastructure.taskBoard,
       taskReadStateStore: infrastructure.taskReadStateStore,
       usdRubRateStore: infrastructure.usdRubRateStore,
       pendingInputs: provider.pendingInputs,

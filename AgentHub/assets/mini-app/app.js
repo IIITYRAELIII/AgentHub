@@ -1335,10 +1335,10 @@ function toggleOpenStream(workspaceId, streamId, streams, { additive = false } =
 /* =========================================================== роутер видов */
 
 const NAVIGATION_TAB_KEY = "agent-hub-navigation-tab-v1";
-const navigationTabs = new Set(["tasks", "chat", "journal", "statistics", "background", "server"]);
+const navigationTabs = new Set(["tasks", "chat", "dashboard", "journal", "statistics", "background", "server"]);
 
 function currentNavigationTab() {
-  return ["journal", "statistics", "background", "server"].includes(root.dataset.view)
+  return ["dashboard", "journal", "statistics", "background", "server"].includes(root.dataset.view)
     ? root.dataset.view
     : (root.dataset.pane === "chat" ? "chat" : "tasks");
 }
@@ -1464,7 +1464,7 @@ function populateBackgroundOptions(theme = root.dataset.theme) {
 }
 
 function setView(view, { persist = true, activate = true } = {}) {
-  const next = ["journal", "statistics", "background", "server"].includes(view) ? view : "chat";
+  const next = ["dashboard", "journal", "statistics", "background", "server"].includes(view) ? view : "chat";
   root.dataset.view = next;
   for (const button of document.querySelectorAll("[data-view-button]")) {
     button.setAttribute("aria-pressed", String(button.dataset.viewButton === next));
@@ -1473,7 +1473,9 @@ function setView(view, { persist = true, activate = true } = {}) {
   if (title) {
     /* Заголовок раздела короче и одинаковой длины на латинице; вкладки
        переключателя остаются русскими. */
-    title.textContent = next === "journal"
+    title.textContent = next === "dashboard"
+      ? "Tasks"
+      : next === "journal"
       ? "Log"
       : next === "statistics"
         ? "Stats"
@@ -1495,7 +1497,7 @@ function setPane(pane, { persist = true } = {}) {
 }
 
 function syncMobileNav() {
-  const active = ["journal", "statistics", "background", "server"].includes(root.dataset.view)
+  const active = ["dashboard", "journal", "statistics", "background", "server"].includes(root.dataset.view)
     ? root.dataset.view
     : (root.dataset.pane === "chat" ? "chat" : "tasks");
   for (const button of document.querySelectorAll("[data-mobile-button]")) {
@@ -1509,7 +1511,7 @@ for (const button of document.querySelectorAll("[data-view-button]")) {
 for (const button of document.querySelectorAll("[data-mobile-button]")) {
   button.addEventListener("click", () => {
     const target = button.dataset.mobileButton;
-    if (["journal", "statistics", "background", "server"].includes(target)) { setView(target); return; }
+    if (["dashboard", "journal", "statistics", "background", "server"].includes(target)) { setView(target); return; }
     setView("chat");
     setPane(target === "chat" ? "chat" : "tasks");
   });

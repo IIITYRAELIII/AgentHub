@@ -14,6 +14,7 @@ export class TelegramMessageController {
     handleBundleText = null,
     handleBundleMedia = null,
     handleText,
+    captureTask = null,
     sendMessage,
     logger = console,
   }) {
@@ -30,6 +31,7 @@ export class TelegramMessageController {
     this.handleBundleText = handleBundleText;
     this.handleBundleMedia = handleBundleMedia;
     this.handleText = handleText;
+    this.captureTask = captureTask;
     this.sendMessage = sendMessage;
     this.logger = logger;
   }
@@ -109,6 +111,7 @@ export class TelegramMessageController {
     if (this.handleBundleText && await this.handleBundleText(message, text, { forwardedOnly: true })) return;
     const parsed = this.parseCommand(text);
     if (!parsed) {
+      if (this.captureTask && await this.captureTask(message, text)) return;
       if (this.handleBundleText && await this.handleBundleText(message, text)) return;
       const target = this.selectedTurnTarget(message.chat.id);
       await this.bindIncomingMessage(message, text, target);

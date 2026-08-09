@@ -75,6 +75,19 @@ test("ordinary text uses the Telegram-selected target for binding and turn start
   ]);
 });
 
+test("Task capture intercepts ordinary text before it reaches the selected dialog", async () => {
+  const { controller, events } = fixture({
+    captureTask: async (_message, text) => {
+      events.push(["capture", text]);
+      return true;
+    },
+  });
+  await controller.handle({ ...baseMessage, message_id: 15, text: "Не забыть проверить отчёт" });
+  assert.deepEqual(events.filter(([kind]) => ["capture", "bind", "text"].includes(kind)), [
+    ["capture", "Не забыть проверить отчёт"],
+  ]);
+});
+
 test("forwarded image is collected before the ordinary media queue", async () => {
   const { controller, events } = fixture({
     handleBundleMedia: async (_message, options) => {

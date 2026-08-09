@@ -87,6 +87,23 @@ function contextAutomationSettings(value) {
   };
 }
 
+function taskBoardSettings(value) {
+  const source = value == null ? {} : value;
+  if (!source || typeof source !== "object" || Array.isArray(source)) {
+    throw new Error("taskBoard must be an object");
+  }
+  const confidence = Number(source.autoPlaceConfidence ?? 0.82);
+  if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) {
+    throw new Error("taskBoard.autoPlaceConfidence must be between 0 and 1");
+  }
+  return {
+    triageEnabled: source.triageEnabled !== false,
+    triageModel: String(source.triageModel ?? "gpt-5.3-codex-spark").trim()
+      || "gpt-5.3-codex-spark",
+    autoPlaceConfidence: confidence,
+  };
+}
+
 function stringArray(value, name) {
   if (value == null) return [];
   if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
@@ -615,6 +632,7 @@ export async function loadConfig() {
       enabled: false,
     }),
     contextAutomation: contextAutomationSettings(raw.contextAutomation),
+    taskBoard: taskBoardSettings(raw.taskBoard),
     claudeExecutable: String(process.env.CLAUDE_EXECUTABLE ?? raw.claudeExecutable ?? "claude").trim(),
     claudeExecutableArgs: stringArray(raw.claudeExecutableArgs, "claudeExecutableArgs"),
     claudeModel: String(process.env.CLAUDE_MODEL ?? raw.claudeModel ?? "").trim(),

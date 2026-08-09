@@ -18,6 +18,7 @@
   <script src="/chat-scroll-controller.js" defer></script>
   <!-- agent-hub-theme-catalog -->
   <script src="/app.js" defer></script>
+  <script src="/task-board.js" defer></script>
   <!-- agent-hub-theme-scripts -->
   <script src="/message-lifecycle.js" defer></script>
   <script src="/hub-client.js" defer></script>
@@ -77,6 +78,14 @@
               stroke-width="16"></path>
           </svg>
           <span>Диалоги</span>
+        </button>
+        <button type="button" class="view-tab" data-view-button="dashboard" aria-pressed="false">
+          <svg data-phosphor-icon="kanban" viewBox="0 0 256 256" aria-hidden="true">
+            <rect x="32" y="48" width="52" height="160" rx="8" fill="none" stroke="currentColor" stroke-width="16"></rect>
+            <rect x="102" y="48" width="52" height="104" rx="8" fill="none" stroke="currentColor" stroke-width="16"></rect>
+            <rect x="172" y="48" width="52" height="136" rx="8" fill="none" stroke="currentColor" stroke-width="16"></rect>
+          </svg>
+          <span>Task</span>
         </button>
         <button type="button" class="view-tab" data-view-button="journal" aria-pressed="false">
           <svg data-phosphor-icon="notebook" viewBox="0 0 256 256" aria-hidden="true">
@@ -228,6 +237,13 @@
       </div>
       <ul class="task-list" data-task-list></ul>
       <p class="rail-empty" data-task-empty>Пока нет Workspaces. Создайте новый кнопкой «+».</p>
+      <section class="workspace-task-panel" data-workspace-task-panel hidden>
+        <header>
+          <strong data-workspace-task-title>Task</strong>
+          <button type="button" data-workspace-task-dashboard>Все</button>
+        </header>
+        <div class="workspace-task-list" data-workspace-task-list></div>
+      </section>
     </aside>
 
     <!-- Чат выбранной задачи. -->
@@ -426,6 +442,44 @@
 
     </section>
   </div>
+
+  <main class="task-board-view" data-task-board>
+    <header class="task-board-head">
+      <div>
+        <p class="eyebrow">Личные входящие</p>
+        <h2>Task Dashboard</h2>
+        <p>Переносите Task между бэклогом, Workspace и заметками. Spark исправляет текст и предлагает размещение.</p>
+      </div>
+      <form class="task-board-create" data-task-board-create>
+        <textarea rows="2" maxlength="20000" data-task-board-input placeholder="Новый Task…" aria-label="Новый Task"></textarea>
+        <button type="submit">Добавить</button>
+      </form>
+    </header>
+    <div class="task-board-columns" data-task-board-columns aria-live="polite"></div>
+  </main>
+
+  <dialog class="task-start-modal" data-task-start-modal>
+    <header>
+      <div>
+        <p class="eyebrow">Начать работу</p>
+        <h2 data-task-start-title>Task</h2>
+      </div>
+      <button type="button" class="icon-button" data-task-start-close aria-label="Закрыть">×</button>
+    </header>
+    <section>
+      <h3>Существующий Stream</h3>
+      <div class="task-start-options" data-task-start-options></div>
+    </section>
+    <form class="task-start-new" data-task-start-new>
+      <h3>Новый Stream</h3>
+      <input type="text" maxlength="80" data-task-start-new-name aria-label="Название нового Stream" required>
+      <select data-task-start-provider aria-label="Агент нового Stream">
+        <option value="codex">Codex</option>
+        <option value="claude">Claude</option>
+      </select>
+      <button type="submit">Создать и отправить Task</button>
+    </form>
+  </dialog>
 
   <!-- ================================================= Отдельное представление: журнал === -->
   <main class="journal-view" data-journal-view>
@@ -717,6 +771,14 @@
           stroke-width="16"></path>
       </svg>
       <span>Чат</span>
+    </button>
+    <button type="button" class="mobile-tab" data-mobile-button="dashboard" aria-pressed="false">
+      <svg data-phosphor-icon="kanban" viewBox="0 0 256 256" aria-hidden="true">
+        <rect x="32" y="48" width="52" height="160" rx="8" fill="none" stroke="currentColor" stroke-width="16"></rect>
+        <rect x="102" y="48" width="52" height="104" rx="8" fill="none" stroke="currentColor" stroke-width="16"></rect>
+        <rect x="172" y="48" width="52" height="136" rx="8" fill="none" stroke="currentColor" stroke-width="16"></rect>
+      </svg>
+      <span>Task</span>
     </button>
     <button type="button" class="mobile-tab" data-mobile-button="journal" aria-pressed="false">
       <svg data-phosphor-icon="notebook" viewBox="0 0 256 256" aria-hidden="true">

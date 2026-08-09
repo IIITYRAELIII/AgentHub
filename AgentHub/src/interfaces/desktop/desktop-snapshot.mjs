@@ -17,6 +17,7 @@ export function createDesktopSnapshotFactory({
   restart,
   exchangeRates,
   maintenance = {},
+  board = {},
   server = {},
   readState = null,
   warn,
@@ -286,6 +287,7 @@ export function createDesktopSnapshotFactory({
     const snapshot = {
       apiVersion: 3,
       workspaces: catalog.hierarchy?.() ?? [],
+      boardTasks: board.snapshot?.() ?? [],
       selected: {
         ...selectedIdentity,
         workspaceId: selectedTaskSnapshot?.workspaceId ?? selectedIdentity.workspaceId ?? null,

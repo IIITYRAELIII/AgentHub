@@ -9,6 +9,7 @@ import { runInputPreview } from "../application/managed-run-lifecycle-service.mj
 import { commandClientContext } from "../application/application-command-service.mjs";
 import { createDesktopRunInputComposition } from "./desktop-run-input-composition.mjs";
 import { createDesktopRouterComposition } from "./desktop-router-composition.mjs";
+import { DesktopTaskBoardController } from "../interfaces/desktop/desktop-task-board-controller.mjs";
 
 export function createDesktopRunRouterWiring({
   config,
@@ -138,6 +139,14 @@ export function createDesktopRunRouterWiring({
     );
   }
 
+  const taskBoardController = new DesktopTaskBoardController({
+    taskBoard: services.taskBoard,
+    workspaceCatalog: services.workspaceCatalog,
+    dispatchCommand: desktop.dispatchApplicationCommand,
+    sendMessage: runInputs.desktopMessageController.sendMessage,
+    snapshot: desktop.snapshot,
+  });
+
   const router = createDesktopRouterComposition({
     handlers: {
       snapshot: desktop.snapshot,
@@ -161,6 +170,12 @@ export function createDesktopRunRouterWiring({
       trustedDevices: desktop.trustedDevices,
       createDevicePairing: desktop.createDevicePairing,
       revokeDevice: desktop.revokeDevice,
+      boardTaskCreate: (params) => taskBoardController.create(params),
+      boardTaskMove: (params) => taskBoardController.move(params),
+      boardTaskComplete: (params) => taskBoardController.complete(params),
+      boardTaskRemove: (params) => taskBoardController.remove(params),
+      boardTaskRetryTriage: (params) => taskBoardController.retryTriage(params),
+      boardTaskStart: (params, context) => taskBoardController.start(params, context),
     },
     commands: desktop.applicationCommands,
     receiptFile: path.join(config.dataDir, "desktop-control-receipts.json"),

@@ -44,6 +44,11 @@
   "codexReasoningEffort": "high",
   "codexSandboxMode": "workspace-write",
   "codexCollaborationMode": "default",
+  "taskBoard": {
+    "triageEnabled": true,
+    "triageModel": "gpt-5.3-codex-spark",
+    "autoPlaceConfidence": 0.82
+  },
   "codexRolloutContext": {
     "keepRecentImages": 4,
     "minReclaimBytes": 1048576,

@@ -94,6 +94,9 @@ function fixture(overrides = {}) {
     maintenance: {
       entryFor: () => state.maintenance,
     },
+    board: {
+      snapshot: () => [{ id: "board-task-1", text: "Проверить дашборд" }],
+    },
     runs: {
       forTask: (task) => (task.threadId === "thread-1" ? state.run : null),
       titleFor: (item) => item.taskTitle ?? "Задача",
@@ -222,6 +225,12 @@ test("desktop task snapshot carries server-side unread state for the account", (
   };
   assert.equal(desktopTaskSnapshot(entry, { accountId: "owner" }).unread, true);
   assert.equal(desktopTaskSnapshot(entry, { accountId: "other" }).unread, false);
+});
+
+test("desktop snapshot exposes Task board state", async () => {
+  const { desktopSnapshot } = fixture();
+  const snapshot = await desktopSnapshot();
+  assert.deepEqual(snapshot.boardTasks, [{ id: "board-task-1", text: "Проверить дашборд" }]);
 });
 
 test("desktop task snapshot exposes a persisted model without a live run", () => {

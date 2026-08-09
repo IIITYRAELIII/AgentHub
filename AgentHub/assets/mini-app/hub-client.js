@@ -1042,6 +1042,12 @@ function applySnapshot(snapshot) {
   lastSnapshot = snapshot;
   agentHub.setExchangeRates(snapshot.exchangeRates ?? null);
   agentHub.setServerStatus(snapshot.server ?? null);
+  window.AgentHubTaskBoard?.setSnapshot({
+    tasks: snapshot.boardTasks ?? [],
+    workspaces: snapshot.workspaces ?? [],
+    selectedWorkspaceId: snapshot.selected?.workspaceId ?? null,
+    provider: snapshot.settings?.provider ?? "codex",
+  });
   const maintenanceChanged = new Set([
     ...observeContextCompactions(snapshot.tasks),
     ...observeStreamRotations(previousTasks, snapshot.tasks),
@@ -1719,6 +1725,23 @@ agentHub.on("task:rename", ({ id, title }) => runAction(async () => {
 agentHub.on("workspace:rename", ({ workspaceId, name }) => runAction(async () => applySnapshot(
   await control("rename-workspace", { workspaceId, name }),
 )));
+document.addEventListener("agenthub:board-action", (event) => runAction(async () => {
+  const detail = event.detail ?? {};
+  const actions = {
+    create: "board-task-create",
+    move: "board-task-move",
+    complete: "board-task-complete",
+    remove: "board-task-remove",
+    "retry-triage": "board-task-retry-triage",
+    start: "board-task-start",
+  };
+  const action = actions[detail.type];
+  if (!action) return;
+  const { type: _type, ...params } = detail;
+  const result = await control(action, params);
+  applySnapshot(result);
+  if (detail.type === "start") agentHub.showSelectedTask();
+}));
 agentHub.on("workspace:create-from-stream", ({ streamId, name }) => runAction(async () => applySnapshot(
   await control("create-workspace-from-stream", { streamId, name }),
 )));

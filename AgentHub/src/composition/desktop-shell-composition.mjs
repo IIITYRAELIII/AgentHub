@@ -83,6 +83,7 @@ export function createDesktopShellComposition({
     runTaskTitle,
     streamContextMaintenance,
     streamMaintenance,
+    taskBoard,
   } = runtime;
   const {
     agentProviders,
@@ -189,6 +190,7 @@ export function createDesktopShellComposition({
       orderingActivityAtMs: taskOrderingActivityAtMs,
       catalogEntries: getTaskCatalog,
       workspaceHierarchy: () => workspaceCatalogStore.hierarchy(),
+      taskBoardSnapshot: () => taskBoard.snapshot(),
       catalogRefreshedAt: () => taskCatalogService.refreshedAt,
       mergeCatalog: mergeTaskCatalog,
       pendingValues: () => [...pendingInputs.values()],
@@ -285,6 +287,8 @@ export function createDesktopShellComposition({
       expectTitleConfirmation: runtime.expectTaskTitleConfirmation,
       invalidateCatalog: invalidateTaskCatalog,
       runForTask: (target) => taskRuns.forTask(target),
+      taskBoard,
+      workspaceCatalog: workspaceCatalogStore,
       updateRunTitle: updateTaskRunTitle,
       catalogEntryIsSelected,
       selection: {

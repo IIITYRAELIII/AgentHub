@@ -5,6 +5,7 @@ import process from "node:process";
 import { RunJournalService } from "../application/run-journal-service.mjs";
 import { TurnEndNotificationRegistry } from "../application/turn-end-notifications.mjs";
 import { createWorkLogUsageStore } from "../application/work-log-usage-store.mjs";
+import { TaskBoardService } from "../application/task-board-service.mjs";
 import { samePath } from "../infrastructure/filesystem/config.mjs";
 import { UsdRubRateStore } from "../infrastructure/network/exchange-rate.mjs";
 import { migrateMessageBindings } from "../infrastructure/persistence/message-bindings.mjs";
@@ -14,12 +15,14 @@ import { RuntimeStateStore } from "../infrastructure/persistence/runtime-state-s
 import { TaskReadStateStore } from "../infrastructure/persistence/task-read-state-store.mjs";
 import { TrustedDeviceStore } from "../infrastructure/persistence/trusted-device-store.mjs";
 import { WorkspaceCatalogStore } from "../infrastructure/persistence/workspace-catalog-store.mjs";
+import { TaskBoardStore } from "../infrastructure/persistence/task-board-store.mjs";
 import { WorkLogUsageRepository } from "../infrastructure/persistence/work-log-usage-repository.mjs";
 import { SingleInstanceGuard } from "../infrastructure/process/instance-lock.mjs";
 import { captureProcess } from "../infrastructure/process/process-capture.mjs";
 import { RuntimeCommandServer } from "../infrastructure/process/runtime-command.mjs";
 import { MiniAppServer } from "../interfaces/web/mini-app-server.mjs";
 import { CodexRolloutContextSanitizer } from "../providers/codex/codex-rollout-context.mjs";
+import { CodexSparkTaskClassifier } from "../providers/codex/codex-spark-task-classifier.mjs";
 import { RuntimeNotificationController } from "../runtime/runtime-notification-controller.mjs";
 
 export async function createHubInfrastructure({
@@ -53,6 +56,23 @@ export async function createHubInfrastructure({
     databaseFile: journalDatabaseFile,
   });
   await workspaceCatalogStore.load();
+  const taskBoardStore = new TaskBoardStore({ databaseFile: journalDatabaseFile });
+  const taskClassifier = config.taskBoard.triageEnabled
+    ? new CodexSparkTaskClassifier({
+      requestedExecutable: config.codexExecutable,
+      executableArgs: config.codexExecutableArgs,
+      projectRoot: config.projectRoot,
+      model: config.taskBoard.triageModel,
+      stopProcess: (worker) => stopProcessTree(worker.pid),
+    })
+    : null;
+  const taskBoard = new TaskBoardService({
+    store: taskBoardStore,
+    workspaceCatalog: workspaceCatalogStore,
+    classify: taskClassifier ? (input) => taskClassifier.classify(input) : null,
+    autoPlaceConfidence: config.taskBoard.autoPlaceConfidence,
+  });
+  taskBoard.recoverPendingTriage();
   const workLogUsageStore = createWorkLogUsageStore({
     repositoryFactory: (options) => new WorkLogUsageRepository(options),
     ledgerFile: legacyWorkLogLedgerFile,
@@ -159,6 +179,7 @@ export async function createHubInfrastructure({
     codexRolloutContextSanitizer,
     workLogUsageStore,
     workspaceCatalogStore,
+    taskBoard,
     miniAppServer,
     publicMiniAppServer,
     usdRubRateStore,

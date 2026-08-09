@@ -8,6 +8,8 @@ const MUTATION_ACTIONS = Object.freeze([
   "update-server-configuration", "compact-context", "create-device-pairing",
   "revoke-device", "submit-bug-report",
   "rename-workspace", "create-workspace-from-stream", "merge-workspaces", "rename-stream", "move-stream",
+  "board-task-create", "board-task-move", "board-task-complete", "board-task-remove",
+  "board-task-retry-triage", "board-task-start",
 ]);
 
 function requiredFunction(value, name) {
@@ -25,6 +27,8 @@ export function createDesktopApplicationRouter({ handlers, commands, receiptFile
     "statusDetails", "speakLastAnswer", "restartServer", "setAutostart",
     "updateServerConfiguration", "compactContext", "openAttachment",
     "submitBugReport", "trustedDevices", "createDevicePairing", "revokeDevice",
+    "boardTaskCreate", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
+    "boardTaskRetryTriage", "boardTaskStart",
   ]) requiredFunction(handlers[name], name);
 
   const dispatch = (type, params, context, target) => commands.dispatch(
@@ -69,6 +73,12 @@ export function createDesktopApplicationRouter({ handlers, commands, receiptFile
       "merge-workspaces": (params, context) => dispatch("workspace.merge", params, context),
       "rename-stream": (params, context) => dispatch("stream.rename", params, context),
       "move-stream": (params, context) => dispatch("stream.move", params, context),
+      "board-task-create": handlers.boardTaskCreate,
+      "board-task-move": handlers.boardTaskMove,
+      "board-task-complete": handlers.boardTaskComplete,
+      "board-task-remove": handlers.boardTaskRemove,
+      "board-task-retry-triage": handlers.boardTaskRetryTriage,
+      "board-task-start": handlers.boardTaskStart,
     },
     mutationActions: MUTATION_ACTIONS,
     miniAppLimits: {

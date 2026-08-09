@@ -54,6 +54,44 @@ test("core-only components need neither Telegram credentials nor Web App", async
       autoRotateAfterCompaction: false,
       autoRotateThresholdPercent: 20,
     });
+    assert.deepEqual(config.taskBoard, {
+      triageEnabled: true,
+      triageModel: "gpt-5.3-codex-spark",
+      autoPlaceConfidence: 0.82,
+    });
+  } finally {
+    if (previous == null) delete process.env.AGENT_HUB_CONFIG;
+    else process.env.AGENT_HUB_CONFIG = previous;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Task board validates Spark triage settings", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-task-board-"));
+  const configFile = path.join(root, "config.json");
+  const previous = process.env.AGENT_HUB_CONFIG;
+  try {
+    process.env.AGENT_HUB_CONFIG = configFile;
+    await writeFile(configFile, JSON.stringify({
+      components: { telegram: false, miniApp: false, androidApp: false },
+      projectRoot: root,
+      taskBoard: {
+        triageEnabled: false,
+        triageModel: "gpt-5.3-codex-spark",
+        autoPlaceConfidence: 0.9,
+      },
+    }), "utf8");
+    assert.deepEqual((await loadConfig()).taskBoard, {
+      triageEnabled: false,
+      triageModel: "gpt-5.3-codex-spark",
+      autoPlaceConfidence: 0.9,
+    });
+    await writeFile(configFile, JSON.stringify({
+      components: { telegram: false, miniApp: false, androidApp: false },
+      projectRoot: root,
+      taskBoard: { autoPlaceConfidence: 2 },
+    }), "utf8");
+    await assert.rejects(loadConfig(), /taskBoard\.autoPlaceConfidence/u);
   } finally {
     if (previous == null) delete process.env.AGENT_HUB_CONFIG;
     else process.env.AGENT_HUB_CONFIG = previous;
