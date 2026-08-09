@@ -22,11 +22,12 @@ function relativeSegments(value) {
 
 function editorFileTarget(value) {
   const decoded = decodeURIComponent(String(value ?? "").trim());
-  const match = decoded.match(/^(?<file>.+?)(?::(?<line>[1-9][0-9]*))?(?::(?<column>[1-9][0-9]*))?$/u);
+  const positioned = decoded.match(/^(?<file>.+):(?<line>[1-9][0-9]*):(?<column>[1-9][0-9]*)$/u)
+    ?? decoded.match(/^(?<file>.+):(?<line>[1-9][0-9]*)$/u);
   return {
-    file: String(match?.groups?.file ?? decoded),
-    line: Number(match?.groups?.line) || 0,
-    column: Number(match?.groups?.column) || 0,
+    file: String(positioned?.groups?.file ?? decoded),
+    line: Number(positioned?.groups?.line) || 0,
+    column: Number(positioned?.groups?.column) || 0,
   };
 }
 
@@ -39,7 +40,7 @@ async function firstExisting(candidates) {
       // The next workspace folder may contain the configured file.
     }
   }
-  return candidates[0] ?? null;
+  return null;
 }
 
 class WorkLogViewProvider {
@@ -346,4 +347,4 @@ function activate(context) {
 
 function deactivate() {}
 
-module.exports = { activate, deactivate };
+module.exports = { activate, deactivate, editorFileTarget, firstExisting };

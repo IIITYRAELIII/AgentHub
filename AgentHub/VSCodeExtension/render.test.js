@@ -43,6 +43,49 @@ function loadSharedWebview(vscode) {
   }
 }
 
+function loadExtension(vscode) {
+  const Module = require("node:module");
+  const modulePath = require.resolve("./extension.js");
+  const originalLoad = Module._load;
+  delete require.cache[modulePath];
+  Module._load = function patchedLoad(request, parent, isMain) {
+    if (request === "vscode") return vscode;
+    return originalLoad.call(this, request, parent, isMain);
+  };
+  try {
+    return require(modulePath);
+  } finally {
+    Module._load = originalLoad;
+  }
+}
+
+test("file targets separate line and column from Windows paths", () => {
+  const { editorFileTarget } = loadExtension({ FileType: { File: 1 } });
+  assert.deepEqual(editorFileTarget("D:/work/extension.js:23"), {
+    file: "D:/work/extension.js",
+    line: 23,
+    column: 0,
+  });
+  assert.deepEqual(editorFileTarget("D:/work/extension.js:23:7"), {
+    file: "D:/work/extension.js",
+    line: 23,
+    column: 7,
+  });
+});
+
+test("file target lookup rejects missing candidates", async () => {
+  const vscode = {
+    FileType: { File: 1 },
+    workspace: {
+      fs: {
+        stat: async () => { throw new Error("missing"); },
+      },
+    },
+  };
+  const { firstExisting } = loadExtension(vscode);
+  assert.equal(await firstExisting([{ fsPath: "D:/missing.js" }]), null);
+});
+
 function vscodeUri(fsPath) {
   return { fsPath };
 }

@@ -3013,8 +3013,9 @@ function fileReferenceParts(raw) {
     ? source.slice(1, -1).trim()
     : source;
   if (!value || /^(?:https?|vscode):/iu.test(value)) return null;
-  const match = value.match(/^(?<file>.+?)(?::(?<line>[1-9][0-9]*))?(?::(?<column>[1-9][0-9]*))?$/u);
-  const file = String(match?.groups?.file ?? "").trim();
+  const positioned = value.match(/^(?<file>.+):(?<line>[1-9][0-9]*):(?<column>[1-9][0-9]*)$/u)
+    ?? value.match(/^(?<file>.+):(?<line>[1-9][0-9]*)$/u);
+  const file = String(positioned?.groups?.file ?? value).trim();
   const absolute = /^\/?[A-Za-z]:[\\/]/u.test(file);
   const name = file.replaceAll("\\", "/").split("/").at(-1) ?? "";
   const extension = name.match(/\.([^./\\\s:]+)$/u)?.[1]?.toLowerCase() ?? "";
@@ -3022,8 +3023,8 @@ function fileReferenceParts(raw) {
     && !knownBareFileExtensions.has(extension))) return null;
   return {
     file,
-    line: Number(match?.groups?.line) || 0,
-    column: Number(match?.groups?.column) || 0,
+    line: Number(positioned?.groups?.line) || 0,
+    column: Number(positioned?.groups?.column) || 0,
   };
 }
 
