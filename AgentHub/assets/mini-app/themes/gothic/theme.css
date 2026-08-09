@@ -222,18 +222,6 @@ html[data-theme="gothic"] .task-rail-title {
     z-index: 0;
   }
 
-  html[data-theme="gothic"]:not([data-surface="mobile"]) .brand::after {
-    background: var(--gothic-header-brand-rail) left center / 282px 25px no-repeat;
-    bottom: -2px;
-    content: "";
-    height: 25px;
-    left: 0;
-    pointer-events: none;
-    position: absolute;
-    width: 282px;
-    z-index: 2;
-  }
-
   html[data-theme="gothic"]:not([data-surface="mobile"]) .brand > * {
     position: relative;
     z-index: 1;
