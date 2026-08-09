@@ -214,6 +214,23 @@ test("rollout history represents a final image-only turn", () => {
   assert.equal(exchange.completed, true);
 });
 
+test("rollout history carries commentary groups into completed turns", () => {
+  const [exchange] = codexRolloutHistory({
+    userMessages: { "turn-trace": [{ text: "Проверь проект" }] },
+    finalMessages: { "turn-trace": "Готово" },
+    activityGroups: {
+      "turn-trace": [{
+        id: "comment-1",
+        reasoning: "Сначала изучаю структуру.",
+        activities: [{ id: "item:tool-1", type: "command", label: "Команда выполнена" }],
+      }],
+    },
+  });
+
+  assert.equal(exchange.activityGroups[0].reasoning, "Сначала изучаю структуру.");
+  assert.equal(exchange.activities[0].id, "item:tool-1");
+});
+
 test("rollout history hides Codex auto-compaction transfer turns", () => {
   const history = codexRolloutHistory({
     latestMessages: {

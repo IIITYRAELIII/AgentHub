@@ -378,6 +378,50 @@ test("Codex rollout activity identifies the current VSC turn by client id", () =
   }]);
 });
 
+test("Codex rollout activity groups tool calls between visible commentary blocks", () => {
+  const turnId = "turn-trace";
+  const entry = (timestamp, payload) => JSON.stringify({
+    timestamp,
+    type: "response_item",
+    payload: {
+      ...payload,
+      internal_chat_message_metadata_passthrough: { turn_id: turnId },
+    },
+  });
+  const result = parseCodexRolloutActivity([
+    entry("2026-08-09T10:00:00.000Z", {
+      type: "message", id: "comment-1", role: "assistant", phase: "commentary",
+      content: [{ type: "output_text", text: "Сначала проверяю состояние." }],
+    }),
+    entry("2026-08-09T10:00:01.000Z", {
+      type: "custom_tool_call", id: "tool-1", name: "exec", status: "completed",
+      input: "await tools.shell_command({ command: \"git status --short\" })",
+    }),
+    entry("2026-08-09T10:00:02.000Z", {
+      type: "message", id: "comment-2", role: "assistant", phase: "commentary",
+      content: [{ type: "output_text", text: "Теперь запускаю проверку." }],
+    }),
+    entry("2026-08-09T10:00:03.000Z", {
+      type: "function_call", id: "tool-2", name: "wait", call_id: "wait-1",
+    }),
+  ].join("\n"));
+
+  assert.deepEqual(result.activityGroups[turnId].map((group) => ({
+    reasoning: group.reasoning,
+    activities: group.activities.map((activity) => ({
+      id: activity.id,
+      type: activity.type,
+      detail: activity.detail,
+    })),
+  })), [{
+    reasoning: "Сначала проверяю состояние.",
+    activities: [{ id: "item:tool-1", type: "command", detail: "shell_command" }],
+  }, {
+    reasoning: "Теперь запускаю проверку.",
+    activities: [{ id: "item:tool-2", type: "tool", detail: "wait" }],
+  }]);
+});
+
 test("Codex rollout activity hides the internal context probe turn", () => {
   const entry = (timestamp, type, payload) => JSON.stringify({ timestamp, type, payload });
   const result = parseCodexRolloutActivity([

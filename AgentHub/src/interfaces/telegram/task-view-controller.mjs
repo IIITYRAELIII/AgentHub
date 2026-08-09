@@ -113,6 +113,12 @@ function mergeAuthoritativeRolloutTurn(current, rollout) {
     active: Boolean(rollout.active),
     completed: Boolean(rollout.completed),
     messages: [...users, ...agents],
+    ...(rollout.activityGroups?.length
+      ? {
+        activityGroups: structuredClone(rollout.activityGroups),
+        activities: structuredClone(rollout.activities ?? []),
+      }
+      : {}),
     ...(rollout.promptAnnotations?.length
       ? {
         promptAnnotations: rollout.promptAnnotations.map((annotation) => ({ ...annotation })),
@@ -153,12 +159,14 @@ export function codexRolloutHistory(activity = {}) {
   const latestMessages = activity?.latestMessages ?? {};
   const finalMessages = activity?.finalMessages ?? {};
   const generatedImageSources = activity?.generatedImageSources ?? {};
+  const activityGroups = activity?.activityGroups ?? {};
   const activeTurnIds = new Set(activity?.activeTurnIds ?? []);
   const ids = [...new Set([
     ...Object.keys(userMessages),
     ...Object.keys(latestMessages),
     ...Object.keys(finalMessages),
     ...Object.keys(generatedImageSources),
+    ...Object.keys(activityGroups),
   ])];
   return ids.flatMap((id) => {
     if (isCodexAutoCompactionTurnId(id)) return [];
@@ -189,7 +197,8 @@ export function codexRolloutHistory(activity = {}) {
     const generatedImages = Array.isArray(generatedImageSources[id])
       ? generatedImageSources[id].map((item) => ({ ...item }))
       : [];
-    if (!users.length && !answer && !generatedImages.length) return [];
+    const trace = Array.isArray(activityGroups[id]) ? structuredClone(activityGroups[id]) : [];
+    if (!users.length && !answer && !generatedImages.length && !trace.length) return [];
     const active = activeTurnIds.has(id);
     const completed = Boolean(finalAnswer);
     const prompt = users[0]?.text ?? "Сообщение с вложением";
@@ -228,7 +237,8 @@ export function codexRolloutHistory(activity = {}) {
         }
         : {}),
       messages,
-      activities: [],
+      activities: trace.flatMap((group) => group.activities ?? []),
+      ...(trace.length ? { activityGroups: trace } : {}),
     }];
   });
 }
@@ -257,6 +267,16 @@ function mergeCodexHistory(cachedHistory, sourceHistory, rolloutHistory) {
     const messagesWithImages = mergeAttachmentSources(current?.messages, item.messages);
     if (messagesWithImages !== current?.messages) {
       current = { ...current, messages: messagesWithImages };
+      merged[index] = current;
+    }
+    if (item.activityGroups?.length) {
+      current = {
+        ...current,
+        activityGroups: structuredClone(item.activityGroups),
+        activities: current.activities?.length
+          ? current.activities
+          : structuredClone(item.activities ?? []),
+      };
       merged[index] = current;
     }
     if (item.completed && !current?.completed) {

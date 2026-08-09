@@ -67,6 +67,8 @@ export function codexTurnSnapshot(turn, threadStatus = null) {
     prompt,
     clientUserMessageId: userMessages[0]?.clientUserMessageId ?? null,
     userMessages,
+    activities: exchange?.activities ?? [],
+    activityGroups: exchange?.activityGroups ?? [],
     startedAt: codexTurnStartedAt(turn),
     completedAt: codexTurnCompletedAt(turn),
     completed: turn?.status !== "inProgress",
@@ -262,6 +264,18 @@ export class CodexTaskSnapshotService {
       run.reasoning = this.#d.reasoningLabels?.[snapshot.reasoningEffort]
         ?? snapshot.reasoningEffort;
     }
+    if (Array.isArray(snapshot?.activityGroups) && snapshot.activityGroups.length) {
+      const existingActivities = new Map((run.activities ?? []).map((activity) => [activity.id, activity]));
+      run.activityGroups = snapshot.activityGroups.map((group) => ({
+        ...group,
+        activities: (group.activities ?? []).map((activity) => (
+          existingActivities.has(activity.id)
+            ? { ...activity, ...existingActivities.get(activity.id) }
+            : { ...activity }
+        )),
+      }));
+      run.currentActivityGroupId = run.activityGroups.at(-1)?.id ?? null;
+    }
   }
 
   applyActive(run, snapshot) {
@@ -277,6 +291,7 @@ export class CodexTaskSnapshotService {
       prompt: state.userMessages[0]?.text ?? "",
       clientUserMessageId: state.userMessages[0]?.clientUserMessageId ?? null,
       userMessages: state.userMessages,
+      activityGroups: structuredClone(activity.activityGroups?.[state.turnId] ?? []),
       startedAt: state.startedAt,
       completedAt: state.completedAt,
       completed: overrides.completed,

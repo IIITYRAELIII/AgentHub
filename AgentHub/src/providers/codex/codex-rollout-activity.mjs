@@ -241,6 +241,79 @@ function completePendingViewImageCall(metadata, turnId, entry) {
   metadata.pendingViewImageCalls.delete(callId);
 }
 
+function rolloutResponseText(payload) {
+  return (Array.isArray(payload?.content) ? payload.content : [])
+    .filter((item) => ["output_text", "text"].includes(String(item?.type ?? "")))
+    .map((item) => String(item?.text ?? "").trim())
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function rolloutReasoningSummary(payload) {
+  return (Array.isArray(payload?.summary) ? payload.summary : [])
+    .map((item) => String(item?.text ?? item?.summary ?? item ?? "").trim())
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function rolloutToolActivity(entry) {
+  const payload = entry?.payload ?? {};
+  const payloadType = String(payload.type ?? "");
+  if (!payloadType.endsWith("_call") || payloadType.endsWith("_call_output")) return null;
+  const input = String(payload.input ?? payload.arguments ?? "");
+  const nestedTool = /\btools\.([A-Za-z0-9_]+)/u.exec(input)?.[1] ?? "";
+  const tool = nestedTool || String(payload.name ?? payload.tool ?? payloadType).trim();
+  const type = tool === "shell_command" ? "command" : tool === "apply_patch" ? "file" : "tool";
+  const completed = !["in_progress", "running", "started"].includes(String(payload.status ?? "").toLowerCase());
+  const labels = {
+    command: completed ? "Команда выполнена" : "Выполняется команда",
+    file: completed ? "Файлы изменены" : "Изменяются файлы",
+    tool: completed ? "Инструмент завершён" : "Используется инструмент",
+  };
+  const id = String(payload.id ?? payload.call_id ?? `${payloadType}:${tool}`).trim();
+  return {
+    id: `item:${id}`,
+    type,
+    label: labels[type],
+    detail: tool,
+    status: completed ? "completed" : "running",
+    time: entry.timestamp ?? null,
+  };
+}
+
+function rememberCodexTraceEntry(metadata, turnId, entry) {
+  if (entry?.type !== "response_item" || !turnId) return;
+  const payload = entry.payload ?? {};
+  const groups = metadata.activityGroups.get(turnId) ?? [];
+  const phase = String(payload.phase ?? "").trim();
+  const reasoning = payload.type === "message"
+    && payload.role === "assistant"
+    && ["analysis", "commentary", "reasoning"].includes(phase)
+    ? rolloutResponseText(payload)
+    : payload.type === "reasoning"
+      ? rolloutReasoningSummary(payload)
+      : "";
+  if (reasoning) {
+    const id = `${payload.type === "message" ? "commentary" : "reasoning"}:${String(payload.id ?? groups.length)}`;
+    const current = groups.find((group) => group.id === id);
+    if (current) current.reasoning = reasoning;
+    else groups.push({ id, reasoning, activities: [] });
+  } else {
+    const activity = rolloutToolActivity(entry);
+    if (activity) {
+      if (!groups.length) groups.push({ id: `activity:${activity.id}`, reasoning: "", activities: [] });
+      const current = groups.at(-1);
+      const existing = current.activities.findIndex((item) => item.id === activity.id);
+      if (existing >= 0) current.activities[existing] = activity;
+      else current.activities.push(activity);
+    }
+  }
+  if (groups.length) metadata.activityGroups.set(turnId, groups);
+  while (metadata.activityGroups.size > 8) {
+    metadata.activityGroups.delete(metadata.activityGroups.keys().next().value);
+  }
+}
+
 function observeOversizedCodexLine(metadata, activeTurnIds, { head = "", tail = "" } = {}) {
   const sample = `${head}\n${tail}`;
   if (/"type"\s*:\s*"image_generation_end"/u.test(sample)) {
@@ -313,6 +386,7 @@ function observeCodexEntry(activeTurnIds, lastSeenAtByTurnId, metadata, entry) {
   const lifecycle = entry?.type === "event_msg"
     && ["task_started", "task_complete", "turn_aborted"].includes(entry.payload?.type);
   const turnId = codexEntryTurnId(entry) || (lifecycle ? LEGACY_TURN_ID : "");
+  rememberCodexTraceEntry(metadata, turnId, entry);
   const isUserMessage = entry?.type === "event_msg" && entry.payload?.type === "user_message";
   if (
     metadata.pendingUserMessages.length
@@ -498,6 +572,9 @@ function withoutCodexContextProbeTurns(activity) {
     latestMessages: withoutHiddenKeys(activity.latestMessages),
     finalMessages: withoutHiddenKeys(activity.finalMessages),
     userMessages: withoutHiddenKeys(activity.userMessages),
+    ...(activity.activityGroups
+      ? { activityGroups: withoutHiddenKeys(activity.activityGroups) }
+      : {}),
     unscopedLatestMessage: isCodexContextProbeText(activity.unscopedLatestMessage)
       ? null
       : activity.unscopedLatestMessage,
@@ -543,6 +620,7 @@ export function parseCodexRolloutActivity(text, options = {}) {
     finalMessages: new Map(),
     userMessages: new Map(),
     generatedImageSources: new Map(),
+    activityGroups: new Map(),
     pendingViewImageCalls: new Map(),
     pendingUserMessages: [],
     unscopedLatestMessage: "",
@@ -571,6 +649,9 @@ export function parseCodexRolloutActivity(text, options = {}) {
     userMessages: Object.fromEntries(metadata.userMessages),
     ...(metadata.generatedImageSources.size
       ? { generatedImageSources: Object.fromEntries(metadata.generatedImageSources) }
+      : {}),
+    ...(metadata.activityGroups.size
+      ? { activityGroups: Object.fromEntries(metadata.activityGroups) }
       : {}),
     unscopedLatestMessage: metadata.unscopedLatestMessage || null,
   });
@@ -657,6 +738,9 @@ export async function readCodexRolloutActivity(
       finalMessages: Object.fromEntries(cached?.finalMessages ?? []),
       userMessages: Object.fromEntries(cached?.userMessages ?? []),
       generatedImageSources: Object.fromEntries(cached?.generatedImageSources ?? []),
+      ...(cached?.activityGroups?.length
+        ? { activityGroups: Object.fromEntries(cached.activityGroups) }
+        : {}),
       unscopedLatestMessage: cached?.unscopedLatestMessage || null,
     });
   }
@@ -691,6 +775,9 @@ export async function readCodexRolloutActivity(
       ),
       userMessages: Object.fromEntries(cached.userMessages ?? []),
       generatedImageSources: Object.fromEntries(cached.generatedImageSources ?? []),
+      ...(cached.activityGroups?.length
+        ? { activityGroups: Object.fromEntries(cached.activityGroups) }
+        : {}),
       unscopedLatestMessage: cached.unscopedLatestMessage || null,
     });
   }
@@ -711,6 +798,9 @@ export async function readCodexRolloutActivity(
     finalMessages: new Map(appendOnly ? cached.finalMessages ?? [] : []),
     userMessages: new Map(appendOnly ? cached.userMessages ?? [] : []),
     generatedImageSources: new Map(appendOnly ? cached.generatedImageSources ?? [] : []),
+    activityGroups: new Map((appendOnly ? cached.activityGroups ?? [] : []).map(([turnId, groups]) => (
+      [turnId, structuredClone(groups)]
+    ))),
     pendingViewImageCalls: new Map(appendOnly ? cached.pendingViewImageCalls ?? [] : []),
     pendingUserMessages: appendOnly
       ? (cached.pendingUserMessages ?? []).map((message) => ({ ...message }))
@@ -810,6 +900,7 @@ export async function readCodexRolloutActivity(
     finalMessages: [...metadata.finalMessages],
     userMessages: [...metadata.userMessages],
     generatedImageSources: [...metadata.generatedImageSources],
+    activityGroups: [...metadata.activityGroups],
     pendingViewImageCalls: [...metadata.pendingViewImageCalls],
     pendingUserMessages: metadata.pendingUserMessages.map((message) => ({ ...message })),
     unscopedLatestMessage: metadata.unscopedLatestMessage,
@@ -833,6 +924,9 @@ export async function readCodexRolloutActivity(
     completedAtMsByTurnId: codexCompletedAtMsByTurnId(metadata.finalMessages, lastSeenAtByTurnId),
     userMessages: Object.fromEntries(metadata.userMessages),
     generatedImageSources: Object.fromEntries(metadata.generatedImageSources),
+    ...(metadata.activityGroups.size
+      ? { activityGroups: Object.fromEntries(metadata.activityGroups) }
+      : {}),
     unscopedLatestMessage: metadata.unscopedLatestMessage || null,
   });
 }

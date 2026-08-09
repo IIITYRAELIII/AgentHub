@@ -24,6 +24,21 @@ test("live activity disclosure starts closed and preserves only a manual opening
   assert.equal(liveActivityDisclosureOpen({ open: true, wasHidden: false, visible: false }), false);
 });
 
+test("live stage is rendered in the current activity title", async () => {
+  const { liveActivityTitle, liveStageParts } = await disclosureApi();
+  const stage = liveStageParts("Ход выполняется · Анализирую задачу…");
+  assert.equal(stage.status, "Ход выполняется");
+  assert.equal(stage.detail, "Анализирую задачу…");
+  assert.equal(
+    liveActivityTitle({ count: 3, stage: "Анализирую задачу…" }),
+    "Вызовы инструментов (3) · Анализирую задачу…",
+  );
+  assert.equal(
+    liveActivityTitle({ label: "Выполненные действия", count: 2 }),
+    "Выполненные действия (2)",
+  );
+});
+
 test("shared shell keeps full text and limits only the rendered user-message body", async () => {
   const app = await readFile(new URL("../../assets/mini-app/app.js", import.meta.url), "utf8");
   const styles = await readFile(new URL("../../assets/mini-app/styles.css", import.meta.url), "utf8");

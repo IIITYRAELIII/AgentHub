@@ -21,7 +21,12 @@ test("Codex turn snapshot preserves the actual completion time", () => {
 test("Codex snapshot service reports an exact rollout observer", async () => {
   const service = new CodexTaskSnapshotService({
     knownRolloutPath: async () => "rollout.jsonl",
-    readRolloutActivity: async () => ({ activeTurnIds: ["turn-1"], activityAtMsByTurnId: {}, running: true }),
+    readRolloutActivity: async () => ({
+      activeTurnIds: ["turn-1"], activityAtMsByTurnId: {}, running: true,
+      activityGroups: {
+        "turn-1": [{ id: "comment-1", reasoning: "Проверяю.", activities: [] }],
+      },
+    }),
     rolloutTurnState: () => ({
       turnId: "turn-1", active: true, completed: false, latestAnswer: "Now", finalAnswer: "",
       userMessages: [{ text: "Do" }], startedAt: "2026-08-04T10:00:00.000Z",
@@ -36,6 +41,7 @@ test("Codex snapshot service reports an exact rollout observer", async () => {
   assert.equal(snapshot.active, true);
   assert.equal(snapshot.answer, "Now");
   assert.equal(snapshot.executionOwner, "vscode-app-server");
+  assert.equal(snapshot.activityGroups[0].reasoning, "Проверяю.");
 });
 
 test("Codex snapshot service never selects a context probe from thread reads", async () => {
@@ -117,6 +123,31 @@ test("Codex snapshot service reads a delayed final answer and applies runtime pr
   assert.equal(run.reasoning, "High");
   assert.equal(run.appServer, "runtime:agent-hub");
   assert.equal(run.activeTurnCount, 2);
+});
+
+test("Codex observed snapshot keeps rollout grouping and enriches known tool activity", () => {
+  const service = new CodexTaskSnapshotService({
+    knownRolloutPath: async () => "", readRolloutActivity: async () => ({}), rolloutTurnState: () => ({}),
+    capturedOwner: () => null, runtimeActive: async () => true, resolveOwner: async () => "agent-hub",
+    readThread: async () => ({ thread: {} }), selectTurn: () => null, turnSnapshot: () => ({}),
+    turnStartedAt: () => null, describeItem: () => "", hubOwner: () => "agent-hub", agentHubPid: () => 1,
+    modelLabel: (value) => value, reasoningLabels: {}, runtimeLabel: (value) => value,
+    delay: async () => {}, reindexRun: () => {}, logger: { warn() {} },
+  });
+  const run = {
+    activities: [{ id: "item:tool-1", type: "command", label: "Команда выполнена", detail: "git status --short" }],
+  };
+  service.applyObserved(run, {
+    activityGroups: [{
+      id: "comment-1",
+      reasoning: "Проверяю.",
+      activities: [{ id: "item:tool-1", type: "tool", label: "Инструмент завершён", detail: "shell_command" }],
+    }],
+  });
+
+  assert.equal(run.activityGroups[0].reasoning, "Проверяю.");
+  assert.equal(run.activityGroups[0].activities[0].type, "command");
+  assert.equal(run.activityGroups[0].activities[0].detail, "git status --short");
 });
 
 test("Codex snapshot service prefers the exact rollout answer for an interrupted rotated turn", async () => {
