@@ -92,11 +92,11 @@ html[data-theme="gothic"] {
   --shell-header-gap: 0;
   --shell-header-height: 4.75rem;
   --shell-header-padding-right: 2rem;
-  --shell-header-rule: var(--gothic-header-rail-repeat) left top / auto auto repeat-x;
-  --shell-header-rule-bottom: 6px;
-  --shell-header-rule-height: 10px;
+  --shell-header-rule: none;
+  --shell-header-rule-bottom: 0;
+  --shell-header-rule-height: 0;
   --shell-header-rule-left: 0;
-  --shell-header-rule-opacity: 0.82;
+  --shell-header-rule-opacity: 0;
   --shell-header-rule-right: 0;
   --shell-header-shadow: none;
   --shell-toolbar-align-self: center;
@@ -174,12 +174,14 @@ html[data-theme="gothic"] .task-rail-title {
       var(--gothic-iron-texture) center / 24rem 24rem;
     --shell-header-frame-border: 6px solid transparent;
     --shell-header-frame-filter: brightness(1.16) contrast(1.08) saturate(0.78);
-    --shell-header-frame-image: var(--gothic-iron-frame) 5% / 6px 6px 0 6px stretch;
+    --shell-header-frame-image: var(--gothic-iron-frame) 5% / 6px stretch;
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .app-header::before {
-    border-bottom-width: 0;
-    left: 16.5rem;
+    border: 6px solid transparent;
+    border-image: var(--gothic-iron-frame) 5% / 6px stretch;
+    filter: brightness(1.16) contrast(1.08) saturate(0.78);
+    left: calc(16.5rem - 6px);
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .brand {
@@ -199,11 +201,10 @@ html[data-theme="gothic"] .task-rail-title {
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .brand::before {
     border: 6px solid transparent;
-    border-bottom-width: 0;
-    border-image: var(--gothic-iron-frame) 5% / 6px 6px 0 6px stretch;
+    border-image: var(--gothic-iron-frame) 5% / 6px stretch;
     box-sizing: border-box;
     content: "";
-    filter: brightness(1.12) contrast(1.1) saturate(0.76);
+    filter: brightness(1.16) contrast(1.08) saturate(0.78);
     inset: 0;
     pointer-events: none;
     position: absolute;
