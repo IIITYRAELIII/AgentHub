@@ -1923,11 +1923,11 @@ function renderStreamChatPreview(task) {
       ]),
       el("div", { class: "msg-reasoning", "data-live-reasoning": "", hidden: true }),
       el("div", { class: "live-turn-trace", "data-live-trace": "", hidden: true }),
-      el("div", { class: "msg-body", "data-live-body": "" }),
       el("details", { class: "activity-feed", "data-activity-feed": "", hidden: true }, [
-        el("summary", { "data-activity-summary": "", text: "Действия хода" }),
+        el("summary", { "data-activity-summary": "", text: "Выполненные действия" }),
         el("div", { class: "activity-list", "data-activity-list": "" }),
       ]),
+      el("div", { class: "msg-body", "data-live-body": "" }),
     ]);
     populateLiveCard(liveNode, live, task.agentLabel || "Агент");
     log.append(liveNode);
@@ -3077,7 +3077,7 @@ function activityFeedNode(activities) {
   const values = Array.isArray(activities) ? activities : [];
   if (!values.length) return null;
   return el("details", { class: "activity-feed" }, [
-    el("summary", { text: `Действия хода (${values.length})` }),
+    el("summary", { text: `Выполненные действия (${values.length})` }),
     el("div", { class: "activity-list" }, values.map((activity) => el("div", {
       class: "activity-item",
       "data-type": activity.type ?? "stage",
@@ -3099,7 +3099,7 @@ function visibleTurnTraceGroups(groups) {
   ));
 }
 
-function turnTraceGroupsNode(values, { active = false } = {}) {
+function turnTraceGroupsNode(values) {
   return el("div", { class: "turn-trace-groups" }, values.map((group, index) => {
     const section = el("section", {
       class: "turn-trace-block",
@@ -3115,7 +3115,6 @@ function turnTraceGroupsNode(values, { active = false } = {}) {
     if (activities.length) {
       section.append(el("details", {
         class: "turn-trace-activities",
-        ...(active && index === values.length - 1 ? { open: true } : {}),
       }, [
         el("summary", {
           class: "turn-trace-activities-title",
@@ -3142,13 +3141,9 @@ function turnTraceGroupsNode(values, { active = false } = {}) {
 function turnTraceNode(groups) {
   const values = visibleTurnTraceGroups(groups);
   if (!values.length) return null;
-  const reasoningCount = values.filter((group) => String(group.reasoning ?? "").trim()).length;
   const activityCount = values.reduce((total, group) => total + (group.activities?.length ?? 0), 0);
-  const title = reasoningCount
-    ? `Рассуждения хода · блоков: ${reasoningCount} · действий: ${activityCount}`
-    : `Действия хода (${activityCount})`;
   return el("details", { class: "turn-trace" }, [
-    el("summary", { text: title }),
+    el("summary", { text: `Выполненные действия (${activityCount})` }),
     turnTraceGroupsNode(values),
   ]);
 }
@@ -3189,11 +3184,12 @@ function renderMessage(message, { readOnly = false } = {}) {
   if (!renderResponseAnnotations(body, message)) renderMarkdown(body, message.text ?? "");
 
   if (maintenance) article.append(body);
-  else article.append(head, body);
+  else article.append(head);
   const trace = turnTraceNode(message.activityGroups);
   const activity = trace ? null : activityFeedNode(message.activities);
   if (trace) article.append(trace);
   else if (activity) article.append(activity);
+  if (!maintenance) article.append(body);
 
   if (Array.isArray(message.attachments) && message.attachments.length > 0) {
     article.append(renderAttachmentStrip(message.attachments, { readOnly: true }));
@@ -3273,7 +3269,7 @@ function populateLiveCard(node, live, fallbackAuthor = "Агент") {
   renderMarkdown(reasoning, standaloneReasoning);
   reasoning.hidden = !standaloneReasoning;
   const liveTrace = node.querySelector("[data-live-trace]");
-  liveTrace.replaceChildren(...(groups.length ? [turnTraceGroupsNode(groups, { active: true })] : []));
+  liveTrace.replaceChildren(...(groups.length ? [turnTraceGroupsNode(groups)] : []));
   liveTrace.hidden = groups.length === 0;
   const body = node.querySelector("[data-live-body]");
   renderMarkdown(body, visibleText);
@@ -3281,7 +3277,7 @@ function populateLiveCard(node, live, fallbackAuthor = "Агент") {
   const activityFeed = node.querySelector("[data-activity-feed]");
   const activities = Array.isArray(live.activities) ? live.activities : [];
   activityFeed.hidden = groups.length > 0 || activities.length === 0;
-  node.querySelector("[data-activity-summary]").textContent = `Действия хода (${activities.length})`;
+  node.querySelector("[data-activity-summary]").textContent = `Выполненные действия (${activities.length})`;
   node.querySelector("[data-activity-list]").replaceChildren(...activities.map((activity) => el("div", {
     class: "activity-item",
     "data-type": activity.type ?? "stage",

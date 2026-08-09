@@ -78,8 +78,10 @@ const {
   looksLikeConnectionFailure,
   markConnectionFailure,
   mergeDeferredQueueEntries,
+  mergeLiveMaintenance,
   mergeReconciledUserMessage,
   mergeLiveUserMessages,
+  mergeTurnMaintenanceMessages,
   normalizedResponseAnnotations,
   normalizedUserMessage,
   responseAnnotationPrompt,
@@ -311,6 +313,11 @@ function attachmentViews(values) {
   return (Array.isArray(values) ? values : []).map(attachmentView);
 }
 
+function nonEmptyAttachmentPatch(values) {
+  const attachments = attachmentViews(values);
+  return attachments.length ? { attachments } : {};
+}
+
 function patchOutgoing(taskIdValue, clientUserMessageId, patch) {
   const message = outgoingMessages(taskIdValue).get(clientUserMessageId);
   if (!message) return;
@@ -355,12 +362,12 @@ function reconciledMessages(taskIdValue) {
   const maintenanceMessages = maintenanceEventsByTask.get(taskIdValue) ?? [];
   const activeMaintenance = activeMaintenanceByTask.get(taskIdValue);
   const serverMessages = deduplicateConversationMessages(mergeLiveUserMessages(
-    [
+    mergeTurnMaintenanceMessages([
       ...durableMessages,
       ...overlayMessages,
       ...maintenanceMessages,
       ...(activeMaintenance ? [activeMaintenance] : []),
-    ],
+    ]),
     liveUserMessagesByTask.get(taskIdValue) ?? {},
   ));
   const pending = outgoingMessages(taskIdValue);
@@ -453,7 +460,7 @@ function applyMessageReceipts(snapshot) {
       turnId: String(receipt.turnId ?? ""),
       itemId: receipt.steered === true ? clientUserMessageId : receipt.id ?? clientUserMessageId,
       time: receipt.createdAt ?? null,
-      attachments: attachmentViews(receipt.attachments),
+      ...nonEmptyAttachmentPatch(receipt.attachments),
       ...(receipt.accepted && !receipt.steered ? { turnUserSlot: "root" } : {}),
       ...(receipt.steered ? { turnUserSlot: "steer" } : {}),
       ...patch,
@@ -600,7 +607,7 @@ function updateLiveMessage(taskIdValue, selected) {
     const removed = liveProbeByTask.delete(taskIdValue);
     if (removed || liveUsersChanged) renderTaskMessages(taskIdValue);
   }
-  const liveCard = {
+  const liveCard = mergeLiveMaintenance({
     author: selected.provider === "claude" ? "Claude" : "Codex",
     stage: activeStageLabel(run.stage),
     reasoning: run.progress || "",
@@ -613,7 +620,7 @@ function updateLiveMessage(taskIdValue, selected) {
     itemId: run.responseItemId ?? null,
     provider: selected.provider,
     time: run.lastActivityAt ?? run.startedAt ?? null,
-  };
+  }, maintenanceEventsByTask.get(taskIdValue) ?? []);
   liveCardsByTask.set(taskIdValue, liveCard);
   return liveCard;
 }
@@ -961,6 +968,7 @@ function observeContextCompactions(tasks) {
         provider: task.provider,
         threadId: task.threadId,
         itemId: eventId,
+        turnId: compaction.turnId ?? null,
         beforePercent,
         afterPercent: null,
         text: automatic
@@ -979,6 +987,11 @@ function observeContextCompactions(tasks) {
         provider: task.provider,
         threadId: task.threadId,
         itemId: eventId,
+        turnId: compaction.turnId ?? null,
+        maintenanceType: "compaction",
+        maintenanceStatus: "completed",
+        maintenanceLabel: "Свёртка завершена успешно",
+        maintenanceDetail: `${visibleBeforePercent}% → ${visibleAfterPercent}%`,
         beforePercent,
         afterPercent,
         text: `Свёртка завершена успешно ${visibleBeforePercent}%>${visibleAfterPercent}%`,
@@ -1113,7 +1126,7 @@ function applySnapshot(snapshot) {
               : "deferred",
         ),
         time: deferred.createdAt ?? null,
-        attachments: attachmentViews(deferred.attachments),
+        ...nonEmptyAttachmentPatch(deferred.attachments),
       },
     );
   }
@@ -1125,7 +1138,7 @@ function applySnapshot(snapshot) {
       threadId: task.threadId,
       turnId: String(task.run?.turnId ?? ""),
       time: task.run?.startedAt ?? null,
-      attachments: attachmentViews(task.run?.attachments),
+      ...nonEmptyAttachmentPatch(task.run?.attachments),
       // The run-level receipt is assigned only when Agent Hub starts a new
       // turn. It identifies the first user item even while Codex history has
       // not yet echoed client_id back to us.

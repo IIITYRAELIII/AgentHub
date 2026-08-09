@@ -6229,9 +6229,11 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
 }
 
 .activity-feed {
-  border-top: 1px solid var(--line);
-  margin-top: 0.7rem;
-  padding-top: 0.45rem;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  flex-direction: column-reverse;
+  margin-bottom: 0.7rem;
+  padding-bottom: 0.45rem;
 }
 
 .activity-feed > summary {
@@ -6241,9 +6243,11 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
 }
 
 .turn-trace {
-  border-top: 1px solid var(--line);
-  margin-top: 0.7rem;
-  padding-top: 0.45rem;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  flex-direction: column-reverse;
+  margin-bottom: 0.7rem;
+  padding-bottom: 0.45rem;
 }
 
 .turn-trace > summary {
@@ -6274,7 +6278,7 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
   border-left: 1px solid var(--accent-line);
   display: grid;
   gap: 0.8rem;
-  margin: 0.6rem 0 0 0.18rem;
+  margin: 0 0 0.6rem 0.18rem;
   padding-left: 0.8rem;
 }
 

@@ -258,9 +258,103 @@ function reconciledUserMetadataConfirmed(message, local) {
   const server = normalizedUserMessage(message);
   const optimistic = normalizedUserMessage(local);
   const localAnnotations = normalizedResponseAnnotations(optimistic.responseAnnotations);
-  if (!localAnnotations.length) return true;
   const serverAnnotations = normalizedResponseAnnotations(server.responseAnnotations);
-  return JSON.stringify(serverAnnotations) === JSON.stringify(localAnnotations);
+  const annotationsConfirmed = !localAnnotations.length
+    || JSON.stringify(serverAnnotations) === JSON.stringify(localAnnotations);
+  const localAttachments = Array.isArray(local?.attachments) ? local.attachments : [];
+  const serverAttachments = Array.isArray(message?.attachments) ? message.attachments : [];
+  const attachmentsConfirmed = !localAttachments.length
+    || serverAttachments.length >= localAttachments.length;
+  return annotationsConfirmed && attachmentsConfirmed;
+}
+
+function completedMaintenanceActivity(message) {
+  if (
+    message?.kind !== "maintenance"
+    || message?.maintenanceType !== "compaction"
+    || message?.maintenanceStatus !== "completed"
+  ) return null;
+  return {
+    id: String(message.id ?? message.itemId ?? "maintenance:compaction"),
+    type: "compaction",
+    status: "completed",
+    label: String(message.maintenanceLabel ?? "Свёртка завершена успешно"),
+    detail: String(message.maintenanceDetail ?? ""),
+    time: message.time ?? null,
+  };
+}
+
+function sameMaintenanceActivity(left, right) {
+  return String(left?.id ?? "") === String(right?.id ?? "")
+    || (left?.type === "compaction" && right?.type === "compaction");
+}
+
+function messageWithMaintenanceActivity(message, activity) {
+  if (!activity) return message;
+  const groups = Array.isArray(message?.activityGroups)
+    ? message.activityGroups.map((group) => ({
+      ...group,
+      activities: Array.isArray(group?.activities)
+        ? group.activities.map((entry) => ({ ...entry }))
+        : [],
+    }))
+    : [];
+  if (groups.length) {
+    let replaced = false;
+    for (const group of groups) {
+      group.activities = group.activities.map((entry) => {
+        if (replaced || !sameMaintenanceActivity(entry, activity)) return entry;
+        replaced = true;
+        return { ...entry, ...activity, id: entry.id || activity.id };
+      });
+    }
+    if (!replaced) groups.at(-1).activities.push(activity);
+    return { ...message, activityGroups: groups };
+  }
+  const activities = Array.isArray(message?.activities)
+    ? message.activities.map((entry) => ({ ...entry }))
+    : [];
+  const existing = activities.findIndex((entry) => sameMaintenanceActivity(entry, activity));
+  if (existing >= 0) {
+    activities[existing] = { ...activities[existing], ...activity, id: activities[existing].id || activity.id };
+  } else {
+    activities.push(activity);
+  }
+  return { ...message, activities };
+}
+
+function mergeTurnMaintenanceMessages(messages) {
+  const values = (Array.isArray(messages) ? messages : []).slice();
+  const embedded = new Set();
+  for (const [eventIndex, event] of values.entries()) {
+    const activity = completedMaintenanceActivity(event);
+    const turnId = String(event?.turnId ?? "").trim();
+    if (!activity || !turnId) continue;
+    const answerIndex = values.findIndex((message) => (
+      message?.role === "agent"
+      && String(message?.provider ?? "") === String(event?.provider ?? "")
+      && String(message?.threadId ?? "") === String(event?.threadId ?? "")
+      && String(message?.turnId ?? "") === turnId
+    ));
+    if (answerIndex < 0) continue;
+    values[answerIndex] = messageWithMaintenanceActivity(values[answerIndex], activity);
+    embedded.add(eventIndex);
+  }
+  return values.filter((_, index) => !embedded.has(index));
+}
+
+function mergeLiveMaintenance(live, messages) {
+  if (!live) return live;
+  return (Array.isArray(messages) ? messages : []).reduce((value, event) => {
+    const activity = completedMaintenanceActivity(event);
+    if (
+      !activity
+      || String(event?.provider ?? "") !== String(value?.provider ?? "")
+      || String(event?.threadId ?? "") !== String(value?.threadId ?? "")
+      || String(event?.turnId ?? "") !== String(value?.turnId ?? "")
+    ) return value;
+    return messageWithMaintenanceActivity(value, activity);
+  }, live);
 }
 
 function confirmedOutgoingMessageIds(durableMessages, outgoingMessages) {
@@ -722,7 +816,9 @@ globalThis.AgentHubMessageLifecycle = Object.freeze({
   liveMessageMatch,
   markConnectionFailure,
   mergeDeferredQueueEntries,
+  mergeLiveMaintenance,
   mergeLiveUserMessages,
+  mergeTurnMaintenanceMessages,
   normalizedResponseAnnotations,
   normalizedUserMessage,
   mergeReconciledUserMessage,

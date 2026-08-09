@@ -334,6 +334,70 @@ test("a live user echo does not confirm an outgoing message before durable histo
   );
 });
 
+test("outgoing attachments remain optimistic until durable history contains them", () => {
+  const outgoing = {
+    ...message("client-image", "Сообщение со скриншотом"),
+    attachments: [{ name: "screen.png", type: "image/png", dataUrl: "data:image/png;base64,AA==" }],
+  };
+  const withoutAttachment = {
+    ...outgoing,
+    itemId: "durable-user",
+    attachments: [],
+  };
+  assert.equal(lifecycle.reconciledUserMetadataConfirmed(withoutAttachment, outgoing), false);
+  assert.deepEqual(
+    [...lifecycle.confirmedOutgoingMessageIds([withoutAttachment], [outgoing])],
+    [],
+  );
+  const durable = {
+    ...withoutAttachment,
+    attachments: [{ id: "stored-screen", name: "screen.png", type: "image/png" }],
+  };
+  assert.equal(lifecycle.reconciledUserMetadataConfirmed(durable, outgoing), true);
+  assert.deepEqual(
+    [...lifecycle.confirmedOutgoingMessageIds([durable], [outgoing])],
+    ["client-image"],
+  );
+});
+
+test("completed mid-turn compaction is embedded into the answer trace", () => {
+  const answer = {
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    itemId: "answer-1",
+    role: "agent",
+    text: "Готово",
+    activityGroups: [{
+      id: "reasoning-1",
+      reasoning: "Проверяю.",
+      activities: [{ id: "compaction-item", type: "compaction", label: "Контекст свёрнут" }],
+    }],
+  };
+  const compaction = {
+    id: "maintenance:compaction:1",
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    role: "system",
+    kind: "maintenance",
+    maintenanceType: "compaction",
+    maintenanceStatus: "completed",
+    maintenanceLabel: "Свёртка завершена успешно",
+    maintenanceDetail: "87% → 14%",
+    time: "2026-08-09T20:00:00.000Z",
+  };
+  const merged = lifecycle.mergeTurnMaintenanceMessages([answer, compaction]);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].role, "agent");
+  assert.equal(merged[0].activityGroups[0].activities.length, 1);
+  assert.equal(merged[0].activityGroups[0].activities[0].label, "Свёртка завершена успешно");
+  assert.equal(merged[0].activityGroups[0].activities[0].detail, "87% → 14%");
+
+  const live = lifecycle.mergeLiveMaintenance(answer, [compaction]);
+  assert.equal(live.activityGroups[0].activities[0].detail, "87% → 14%");
+});
+
 test("completed turn becomes durable only with its prompt and exact final", () => {
   const prompt = {
     provider: "codex",
