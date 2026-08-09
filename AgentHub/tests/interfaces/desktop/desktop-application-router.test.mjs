@@ -13,6 +13,7 @@ function router(calls) {
     "renameWorkspace", "createWorkspaceFromStream", "mergeWorkspaces", "renameStream", "moveStream",
     "boardTaskCreate", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
     "boardTaskRetryTriage", "boardTaskStart", "boardColumnMove", "boardColumnComment",
+    "boardWorkspaceMove",
   ].map((name) => [name, handler]));
   return createDesktopApplicationRouter({
     handlers,
@@ -72,4 +73,14 @@ test("Desktop application router enforces Mini App history limits", async () => 
   });
   assert.equal(result.params.limit, 10);
   assert.equal(result.params.maxAnswerChars, 75_000);
+});
+
+test("Desktop application router keeps the legacy Workspace move alias", async () => {
+  const control = router([]);
+  const result = await control.handleDesktopControl({
+    action: "board-workspace-move",
+    params: { workspaceId: "workspace-2", beforeWorkspaceId: "workspace-1" },
+  });
+  assert.equal(result.params.workspaceId, "workspace-2");
+  assert.equal(result.params.beforeWorkspaceId, "workspace-1");
 });

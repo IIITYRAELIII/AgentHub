@@ -30,6 +30,15 @@ export class DesktopTaskBoardController {
     return this.#mutate(() => this.taskBoard.moveColumn(params));
   }
 
+  moveWorkspace(params) {
+    const workspaceId = String(params.workspaceId ?? "").trim();
+    const beforeWorkspaceId = String(params.beforeWorkspaceId ?? "").trim();
+    return this.moveColumn({
+      columnId: `workspace:${workspaceId}`,
+      beforeColumnId: beforeWorkspaceId ? `workspace:${beforeWorkspaceId}` : null,
+    });
+  }
+
   updateColumnComment(params) {
     return this.#mutate(() => {
       const columnId = String(params.columnId ?? "").trim();

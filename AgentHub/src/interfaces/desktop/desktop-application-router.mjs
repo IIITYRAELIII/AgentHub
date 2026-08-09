@@ -10,6 +10,7 @@ const MUTATION_ACTIONS = Object.freeze([
   "rename-workspace", "create-workspace-from-stream", "merge-workspaces", "rename-stream", "move-stream",
   "board-task-create", "board-task-move", "board-task-complete", "board-task-remove",
   "board-task-retry-triage", "board-task-start", "board-column-move", "board-column-comment",
+  "board-workspace-move",
 ]);
 
 function requiredFunction(value, name) {
@@ -29,6 +30,7 @@ export function createDesktopApplicationRouter({ handlers, commands, receiptFile
     "submitBugReport", "trustedDevices", "createDevicePairing", "revokeDevice",
     "boardTaskCreate", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
     "boardTaskRetryTriage", "boardTaskStart", "boardColumnMove", "boardColumnComment",
+    "boardWorkspaceMove",
   ]) requiredFunction(handlers[name], name);
 
   const dispatch = (type, params, context, target) => commands.dispatch(
@@ -81,6 +83,7 @@ export function createDesktopApplicationRouter({ handlers, commands, receiptFile
       "board-task-start": handlers.boardTaskStart,
       "board-column-move": handlers.boardColumnMove,
       "board-column-comment": handlers.boardColumnComment,
+      "board-workspace-move": handlers.boardWorkspaceMove,
     },
     mutationActions: MUTATION_ACTIONS,
     miniAppLimits: {

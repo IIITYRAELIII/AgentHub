@@ -606,6 +606,8 @@ function updateLiveMessage(taskIdValue, selected) {
     reasoning: run.progress || "",
     text: response,
     activities: run.activities ?? [],
+    activityGroups: run.activityGroups ?? [],
+    responsePhase: run.responsePhase ?? "",
     threadId: selected.threadId,
     turnId: run.turnId,
     itemId: run.responseItemId ?? null,
@@ -1734,6 +1736,10 @@ agentHub.on("workspace:rename", ({ workspaceId, name }) => runAction(async () =>
 )));
 document.addEventListener("agenthub:board-action", (event) => runAction(async () => {
   const detail = event.detail ?? {};
+  if (!lastSnapshot?.boardLayout && detail.type === "update-comment") {
+    agentHub.toast("Agent Hub завершает обновление runtime. Повторите действие через минуту.");
+    return;
+  }
   const actions = {
     create: "board-task-create",
     move: "board-task-move",
@@ -1744,9 +1750,23 @@ document.addEventListener("agenthub:board-action", (event) => runAction(async ()
     "move-column": "board-column-move",
     "update-comment": "board-column-comment",
   };
-  const action = actions[detail.type];
+  let action = actions[detail.type];
   if (!action) return;
-  const { type: _type, ...params } = detail;
+  let { type: _type, ...params } = detail;
+  if (!lastSnapshot?.boardLayout && detail.type === "move-column") {
+    const columnId = String(detail.columnId ?? "");
+    const beforeColumnId = String(detail.beforeColumnId ?? "");
+    if (!columnId.startsWith("workspace:")
+      || (beforeColumnId && beforeColumnId !== "notes" && !beforeColumnId.startsWith("workspace:"))) {
+      agentHub.toast("Agent Hub завершает обновление runtime. Повторите действие через минуту.");
+      return;
+    }
+    action = "board-workspace-move";
+    params = {
+      workspaceId: columnId.slice(10),
+      beforeWorkspaceId: beforeColumnId.startsWith("workspace:") ? beforeColumnId.slice(10) : null,
+    };
+  }
   const result = await control(action, params);
   applySnapshot(result);
   if (detail.type === "start") agentHub.showSelectedTask();

@@ -178,6 +178,7 @@ export function createDesktopRunRouterWiring({
       boardTaskStart: (params, context) => taskBoardController.start(params, context),
       boardColumnMove: (params) => taskBoardController.moveColumn(params),
       boardColumnComment: (params) => taskBoardController.updateColumnComment(params),
+      boardWorkspaceMove: (params) => taskBoardController.moveWorkspace(params),
     },
     commands: desktop.applicationCommands,
     receiptFile: path.join(config.dataDir, "desktop-control-receipts.json"),

@@ -60,6 +60,14 @@ test("dashboard persists column reordering", async () => {
   }]);
 });
 
+test("legacy Workspace move adapts to the shared column contract", async () => {
+  const { controller, calls } = fixture();
+  await controller.moveWorkspace({ workspaceId: "workspace-2", beforeWorkspaceId: "workspace-1" });
+  assert.deepEqual(calls[0], ["move-column", {
+    columnId: "workspace:workspace-2", beforeColumnId: "workspace:workspace-1",
+  }]);
+});
+
 test("dashboard updates Notes and Workspace comments", async () => {
   const { controller, calls } = fixture();
   await controller.updateColumnComment({ columnId: "notes", comment: "Фильмы" });

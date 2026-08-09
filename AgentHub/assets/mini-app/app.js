@@ -1475,7 +1475,7 @@ function setView(view, { persist = true, activate = true } = {}) {
   const title = document.querySelector("[data-view-title]");
   if (title) {
     title.textContent = next === "dashboard"
-      ? "Дашборд"
+      ? "Dash"
       : next === "journal"
       ? "Log"
       : next === "statistics"
