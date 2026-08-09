@@ -74,11 +74,13 @@ test("Task card order persists within and between columns", async (t) => {
   assert.deepEqual(tasks.filter((task) => task.bucket === "notes").map((task) => task.id), [second.id]);
 });
 
-test("Workspace order persists after reordering", async (t) => {
+test("Workspace and Notes column order persists after reordering", async (t) => {
   const store = await fixture(t);
-  assert.deepEqual(store.orderedWorkspaceIds(["one", "two", "three"]), ["one", "two", "three"]);
-  store.moveWorkspace(["one", "two", "three"], { workspaceId: "three", beforeWorkspaceId: "one" });
+  assert.deepEqual(store.orderedColumnIds(["one", "two", "three"]), ["one", "two", "three", "notes"]);
+  store.moveColumn(["one", "two", "three"], { columnId: "notes", beforeColumnId: "two" });
+  store.setNotesComment("Книги и фильмы");
 
   const reopened = new TaskBoardStore({ databaseFile: store.databaseFile });
-  assert.deepEqual(reopened.orderedWorkspaceIds(["one", "two", "three"]), ["three", "one", "two"]);
+  assert.deepEqual(reopened.orderedColumnIds(["one", "two", "three"]), ["one", "notes", "two", "three"]);
+  assert.equal(reopened.notesComment(), "Книги и фильмы");
 });

@@ -15,15 +15,20 @@
   if (!board || !columns) return;
 
   const TASK_MIME = "application/x-agent-hub-board-task";
-  const WORKSPACE_MIME = "application/x-agent-hub-board-workspace";
+  const COLUMN_MIME = "application/x-agent-hub-board-column";
+  const COLUMN_TEXT_PREFIX = "agent-hub-column:";
 
   const state = {
     tasks: [],
     workspaces: [],
+    columnOrder: [],
+    notesComment: "Игры, фильмы, сериалы и идеи",
     selectedWorkspaceId: null,
     provider: "codex",
     startingTaskId: null,
     creatingWorkspaceId: null,
+    editingCommentColumnId: null,
+    draggingColumnId: null,
   };
 
   function node(tag, attributes = {}, children = []) {
@@ -67,6 +72,18 @@
         beforeId,
       });
     }
+  }
+
+  function draggedColumnId(dataTransfer) {
+    const custom = dataTransfer.getData(COLUMN_MIME);
+    if (custom) return custom;
+    const plain = dataTransfer.getData("text/plain");
+    return plain.startsWith(COLUMN_TEXT_PREFIX) ? plain.slice(COLUMN_TEXT_PREFIX.length) : "";
+  }
+
+  function hasColumnDrag(dataTransfer) {
+    return Boolean(state.draggingColumnId)
+      || Array.from(dataTransfer.types).includes(COLUMN_MIME);
   }
 
   function destinationSelect(task) {
@@ -136,6 +153,7 @@
     });
     if (!compact) {
       card.addEventListener("dragover", (event) => {
+        if (hasColumnDrag(event.dataTransfer)) return;
         if (!Array.from(event.dataTransfer.types).includes(TASK_MIME)) return;
         event.preventDefault();
         event.stopPropagation();
@@ -143,6 +161,7 @@
       });
       card.addEventListener("dragleave", () => card.classList.remove("is-dragover"));
       card.addEventListener("drop", (event) => {
+        if (draggedColumnId(event.dataTransfer)) return;
         const draggedId = event.dataTransfer.getData(TASK_MIME) || event.dataTransfer.getData("text/plain");
         if (!draggedId || draggedId === task.id) return;
         const draggedTask = state.tasks.find((item) => item.id === draggedId);
@@ -221,16 +240,57 @@
     return form;
   }
 
-  function renderColumn({ id, title, subtitle, tasks, accent = "", workspace = null, appendWorkspaces = false }) {
+  function renderComment(columnId, comment) {
+    const value = String(comment ?? "");
+    if (state.editingCommentColumnId === columnId) {
+      const input = node("textarea", {
+        rows: "2",
+        maxlength: "1000",
+        "aria-label": "Комментарий колонки",
+      });
+      input.value = value;
+      const form = node("form", {
+        class: "task-board-comment-form",
+        onsubmit: (event) => {
+          event.preventDefault();
+          state.editingCommentColumnId = null;
+          emit("update-comment", { columnId, comment: input.value.trim() });
+          renderBoard();
+        },
+      }, [
+        input,
+        node("div", { class: "task-board-inline-actions" }, [
+          node("button", { type: "submit", class: "board-task-primary", text: "Сохранить" }),
+          node("button", {
+            type: "button", class: "board-task-link", text: "Отмена",
+            onclick: () => { state.editingCommentColumnId = null; renderBoard(); },
+          }),
+        ]),
+      ]);
+      window.requestAnimationFrame(() => input.focus());
+      return form;
+    }
+    return node("div", { class: "task-board-comment" }, [
+      node("p", { text: value || "Без комментария" }),
+      node("button", {
+        type: "button",
+        class: "task-board-comment-edit",
+        title: "Изменить комментарий",
+        "aria-label": "Изменить комментарий",
+        text: "✎",
+        onclick: () => { state.editingCommentColumnId = columnId; renderBoard(); },
+      }),
+    ]);
+  }
+
+  function renderColumn({ id, title, subtitle, tasks, accent = "", workspace = null, movable = false, editable = false }) {
     const column = node("section", {
       class: `task-board-column ${accent}${workspace ? " is-workspace" : ""}`,
       "data-board-destination": id,
       "data-board-workspace-id": workspace?.id,
     });
     column.addEventListener("dragover", (event) => {
-      const types = Array.from(event.dataTransfer.types);
-      const workspaceDrag = types.includes(WORKSPACE_MIME);
-      if (workspaceDrag && !workspace && !appendWorkspaces) return;
+      if (hasColumnDrag(event.dataTransfer) && !movable) return;
       event.preventDefault();
       column.classList.add("is-dragover");
     });
@@ -238,10 +298,10 @@
     column.addEventListener("drop", (event) => {
       event.preventDefault();
       column.classList.remove("is-dragover");
-      const workspaceId = event.dataTransfer.getData(WORKSPACE_MIME);
-      if (workspaceId) {
-        if (workspaceId !== workspace?.id) {
-          emit("move-workspace", { workspaceId, beforeWorkspaceId: workspace?.id ?? null });
+      const movedColumnId = draggedColumnId(event.dataTransfer);
+      if (movedColumnId) {
+        if (movedColumnId !== id) {
+          emit("move-column", { columnId: movedColumnId, beforeColumnId: id });
         }
         return;
       }
@@ -257,21 +317,33 @@
         onclick: () => { state.creatingWorkspaceId = workspace.id; renderBoard(); },
       })] : []),
       node("span", { class: "task-board-count", text: String(tasks.length) }),
-      ...(workspace ? [node("button", {
+      ...(movable ? [node("button", {
         type: "button",
         class: "task-board-workspace-handle",
         draggable: "true",
-        title: "Перетащить Workspace",
-        "aria-label": `Перетащить Workspace ${workspace.name}`,
+        title: "Перетащить колонку",
+        "aria-label": `Перетащить колонку ${title}`,
         text: "↔",
         ondragstart: (event) => {
-          event.dataTransfer.setData(WORKSPACE_MIME, workspace.id);
+          state.draggingColumnId = id;
+          event.dataTransfer.setData(COLUMN_MIME, id);
+          event.dataTransfer.setData("text/plain", `${COLUMN_TEXT_PREFIX}${id}`);
           event.dataTransfer.effectAllowed = "move";
         },
+        ondragend: () => { state.draggingColumnId = null; },
       })] : []),
     ]);
+    const heading = node("div", {}, [node("h2", { text: title })]);
+    if (editable) heading.append(renderComment(id, subtitle));
+    else heading.append(node("p", { text: subtitle }));
+    if (workspace) {
+      heading.append(node("span", {
+        class: "task-board-stream-count",
+        text: `${(workspace.streams ?? []).length} Streams`,
+      }));
+    }
     column.append(node("header", { class: "task-board-column-head" }, [
-      node("div", {}, [node("h2", { text: title }), node("p", { text: subtitle })]),
+      heading,
       controls,
     ]));
     const list = node("div", { class: "task-board-column-list" });
@@ -288,23 +360,29 @@
   function renderBoard() {
     const openTasks = state.tasks.filter((task) => task.status !== "done");
     columns.style.setProperty("--board-column-count", String(state.workspaces.length + 2));
-    columns.replaceChildren(renderColumn({
+    const rendered = new Map();
+    rendered.set("backlog", renderColumn({
       id: "backlog", title: "Бэклог", subtitle: "Неразобранные входящие",
       tasks: openTasks.filter((task) => task.bucket === "backlog"), accent: "is-backlog",
     }));
     for (const workspace of state.workspaces) {
-      columns.append(renderColumn({
-        id: `workspace:${workspace.id}`,
+      const id = `workspace:${workspace.id}`;
+      rendered.set(id, renderColumn({
+        id,
         title: workspace.name,
-        subtitle: `${(workspace.streams ?? []).length} Streams`,
+        subtitle: workspace.comment ?? "",
         tasks: openTasks.filter((task) => task.bucket === "workspace" && task.workspaceId === workspace.id),
-        workspace,
+        workspace, movable: true, editable: true,
       }));
     }
-    columns.append(renderColumn({
-      id: "notes", title: "Заметки", subtitle: "Игры, фильмы, сериалы и идеи",
-      tasks: openTasks.filter((task) => task.bucket === "notes"), accent: "is-notes", appendWorkspaces: true,
+    rendered.set("notes", renderColumn({
+      id: "notes", title: "Заметки", subtitle: state.notesComment,
+      tasks: openTasks.filter((task) => task.bucket === "notes"),
+      accent: "is-notes", movable: true, editable: true,
     }));
+    const orderedIds = ["backlog", ...state.columnOrder.filter((id) => rendered.has(id) && id !== "backlog")];
+    for (const id of rendered.keys()) if (!orderedIds.includes(id)) orderedIds.push(id);
+    columns.replaceChildren(...orderedIds.map((id) => rendered.get(id)));
   }
 
   function renderWorkspacePanel() {
@@ -347,6 +425,8 @@
     setSnapshot(payload = {}) {
       state.tasks = Array.isArray(payload.tasks) ? payload.tasks.slice() : [];
       state.workspaces = Array.isArray(payload.workspaces) ? payload.workspaces.slice() : [];
+      state.columnOrder = Array.isArray(payload.columnOrder) ? payload.columnOrder.slice() : [];
+      state.notesComment = String(payload.notesComment ?? "Игры, фильмы, сериалы и идеи");
       state.selectedWorkspaceId = payload.selectedWorkspaceId ?? null;
       state.provider = payload.provider === "claude" ? "claude" : "codex";
       renderBoard();

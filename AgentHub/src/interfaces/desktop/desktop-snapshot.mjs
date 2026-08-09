@@ -288,6 +288,7 @@ export function createDesktopSnapshotFactory({
       apiVersion: 3,
       workspaces: board.workspaces?.() ?? catalog.hierarchy?.() ?? [],
       boardTasks: board.snapshot?.() ?? [],
+      boardLayout: board.layout?.() ?? { columnOrder: [], notesComment: "" },
       selected: {
         ...selectedIdentity,
         workspaceId: selectedTaskSnapshot?.workspaceId ?? selectedIdentity.workspaceId ?? null,

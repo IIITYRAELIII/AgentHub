@@ -9,6 +9,8 @@ import {
   normalizedTaskText,
 } from "../../domain/task-board-task.mjs";
 
+const NOTES_COLUMN_ID = "notes";
+
 function configure(database) {
   database.exec("PRAGMA busy_timeout = 5000");
   database.exec("PRAGMA journal_mode = WAL");
@@ -41,6 +43,18 @@ function configure(database) {
       position INTEGER NOT NULL,
       updated_at_ms INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS hub_board_column_order (
+      column_id TEXT PRIMARY KEY,
+      position INTEGER NOT NULL,
+      updated_at_ms INTEGER NOT NULL
+    );
+    INSERT OR IGNORE INTO hub_board_column_order (column_id, position, updated_at_ms)
+      SELECT workspace_id, position, updated_at_ms FROM hub_board_workspace_order;
+    CREATE TABLE IF NOT EXISTS hub_board_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at_ms INTEGER NOT NULL
+    ) WITHOUT ROWID;
     CREATE INDEX IF NOT EXISTS hub_board_tasks_location_idx
       ON hub_board_tasks(status, bucket, workspace_id, updated_at_ms DESC);
     CREATE INDEX IF NOT EXISTS hub_board_tasks_triage_idx
@@ -79,22 +93,22 @@ function writeTaskOrder(database, bucket, workspaceId, ids) {
   ids.forEach((id, position) => update.run(position, id, bucket, workspaceId, workspaceId));
 }
 
-function normalizedWorkspaceIds(workspaceIds) {
+function normalizedColumnIds(workspaceIds) {
   return [...new Set((workspaceIds ?? []).map((id) => String(id ?? "").trim()).filter(Boolean))];
 }
 
-function ensureWorkspaceOrder(database, workspaceIds, timestamp) {
-  const ids = normalizedWorkspaceIds(workspaceIds);
+function ensureColumnOrder(database, workspaceIds, timestamp) {
+  const ids = [...normalizedColumnIds(workspaceIds), NOTES_COLUMN_ID];
   const rows = database.prepare(`
-    SELECT workspace_id, position FROM hub_board_workspace_order
-    ORDER BY position, workspace_id
+    SELECT column_id, position FROM hub_board_column_order
+    ORDER BY position, column_id
   `).all();
-  const known = new Map(rows.map((row) => [row.workspace_id, Number(row.position)]));
+  const known = new Map(rows.map((row) => [row.column_id, Number(row.position)]));
   let position = rows.reduce((maximum, row) => Math.max(maximum, Number(row.position)), -1) + 1;
   const insert = database.prepare(`
-    INSERT INTO hub_board_workspace_order (workspace_id, position, updated_at_ms)
+    INSERT INTO hub_board_column_order (column_id, position, updated_at_ms)
     VALUES (?, ?, ?)
-    ON CONFLICT(workspace_id) DO NOTHING
+    ON CONFLICT(column_id) DO NOTHING
   `);
   for (const id of ids) {
     if (known.has(id)) continue;
@@ -349,21 +363,22 @@ export class TaskBoardStore {
     });
   }
 
-  orderedWorkspaceIds(workspaceIds) {
-    return this.#withDatabase((database) => ensureWorkspaceOrder(database, workspaceIds, this.now()));
+  orderedColumnIds(workspaceIds) {
+    return this.#withDatabase((database) => ensureColumnOrder(database, workspaceIds, this.now()));
   }
 
-  moveWorkspace(workspaceIds, { workspaceId, beforeWorkspaceId = null } = {}) {
-    const taskWorkspaceId = String(workspaceId ?? "").trim();
-    const targetWorkspaceId = String(beforeWorkspaceId ?? "").trim() || null;
+  moveColumn(workspaceIds, { columnId, beforeColumnId = null } = {}) {
+    const movedColumnId = String(columnId ?? "").trim();
+    const targetColumnId = String(beforeColumnId ?? "").trim() || null;
     return this.#withDatabase((database) => {
-      const ordered = ensureWorkspaceOrder(database, workspaceIds, this.now());
-      if (!ordered.includes(taskWorkspaceId)) throw new Error("Workspace не найден");
-      const reordered = ordered.filter((id) => id !== taskWorkspaceId);
-      const targetIndex = targetWorkspaceId ? reordered.indexOf(targetWorkspaceId) : -1;
-      reordered.splice(targetIndex < 0 ? reordered.length : targetIndex, 0, taskWorkspaceId);
+      const ordered = ensureColumnOrder(database, workspaceIds, this.now());
+      if (!ordered.includes(movedColumnId)) throw new Error("Колонка не найдена");
+      if (targetColumnId && !ordered.includes(targetColumnId)) throw new Error("Колонка не найдена");
+      const reordered = ordered.filter((id) => id !== movedColumnId);
+      const targetIndex = targetColumnId ? reordered.indexOf(targetColumnId) : -1;
+      reordered.splice(targetIndex < 0 ? reordered.length : targetIndex, 0, movedColumnId);
       const update = database.prepare(`
-        UPDATE hub_board_workspace_order SET position = ?, updated_at_ms = ? WHERE workspace_id = ?
+        UPDATE hub_board_column_order SET position = ?, updated_at_ms = ? WHERE column_id = ?
       `);
       database.exec("BEGIN IMMEDIATE");
       try {
@@ -376,6 +391,22 @@ export class TaskBoardStore {
       }
       return reordered;
     });
+  }
+
+  notesComment() {
+    return this.#withDatabase((database) => String(database.prepare(
+      "SELECT value FROM hub_board_settings WHERE key = 'notes_comment'",
+    ).get()?.value ?? "Игры, фильмы, сериалы и идеи"));
+  }
+
+  setNotesComment(comment) {
+    const value = String(comment ?? "").trim().slice(0, 1000);
+    this.#withDatabase((database) => database.prepare(`
+      INSERT INTO hub_board_settings (key, value, updated_at_ms)
+      VALUES ('notes_comment', ?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at_ms = excluded.updated_at_ms
+    `).run(value, this.now()));
+    return value;
   }
 
   markStarted(id, { workspaceId, streamId } = {}) {

@@ -33,6 +33,43 @@ test("Experiments is seeded once and cannot be renamed", async (t) => {
   assert.throws(() => store.renameWorkspace(first.id, "Other"), /cannot be renamed/u);
 });
 
+test("Workspace comment is a persisted catalog property", async (t) => {
+  const store = await fixture(t);
+  const workspace = store.createWorkspace({ name: "Agent HUB", comment: "Сервер и клиенты" });
+  assert.equal(workspace.comment, "Сервер и клиенты");
+  assert.equal(store.updateWorkspaceComment(workspace.id, "Дашборд и интеграции").comment, "Дашборд и интеграции");
+  assert.equal(store.hierarchy().find((item) => item.id === workspace.id).comment, "Дашборд и интеграции");
+});
+
+test("legacy Workspace catalog gains the comment property without losing data", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-workspaces-legacy-comment-"));
+  const databaseFile = path.join(directory, "journal.sqlite");
+  const database = new DatabaseSync(databaseFile);
+  database.exec(`
+    CREATE TABLE hub_workspaces (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      system_key TEXT UNIQUE,
+      created_at_ms INTEGER NOT NULL,
+      updated_at_ms INTEGER NOT NULL,
+      settings_json TEXT NOT NULL DEFAULT '{}'
+    ) WITHOUT ROWID;
+    INSERT INTO hub_workspaces
+      (id, name, kind, system_key, created_at_ms, updated_at_ms, settings_json)
+    VALUES ('legacy', 'Legacy', 'user', NULL, 1, 1, '{}');
+  `);
+  database.close();
+  const store = new WorkspaceCatalogStore({ databaseFile });
+  await store.load();
+  t.after(async () => {
+    store.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  assert.equal(store.workspace("legacy").comment, "");
+  assert.equal(store.updateWorkspaceComment("legacy", "После миграции").comment, "После миграции");
+});
+
 test("unknown Threads receive separate Streams in Experiments", async (t) => {
   const store = await fixture(t);
   const first = store.assignUnknownThread({ provider: "codex", threadId: "one" });

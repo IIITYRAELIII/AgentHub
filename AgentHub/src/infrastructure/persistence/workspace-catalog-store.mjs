@@ -13,7 +13,7 @@ import {
   streamDisplayName,
 } from "../../domain/workspace-stream-identity.mjs";
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 const SOURCES = new Set(["created", "discovered", "migration", "rebirth"]);
 
 function recoverableDatabaseError(error) {
@@ -34,6 +34,7 @@ function configure(database) {
     CREATE TABLE IF NOT EXISTS hub_workspaces (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
+      comment TEXT NOT NULL DEFAULT '',
       kind TEXT NOT NULL CHECK (kind IN ('user', 'system')),
       system_key TEXT UNIQUE,
       created_at_ms INTEGER NOT NULL,
@@ -73,6 +74,10 @@ function configure(database) {
     INSERT INTO hub_workspace_catalog_meta (key, value) VALUES ('schema_version', '${SCHEMA_VERSION}')
       ON CONFLICT(key) DO UPDATE SET value = excluded.value;
   `);
+  const workspaceColumns = database.prepare("PRAGMA table_info(hub_workspaces)").all();
+  if (!workspaceColumns.some((column) => column.name === "comment")) {
+    database.exec("ALTER TABLE hub_workspaces ADD COLUMN comment TEXT NOT NULL DEFAULT ''");
+  }
 }
 
 function workspaceFromRow(row) {
@@ -82,6 +87,7 @@ function workspaceFromRow(row) {
   return {
     id: String(row.id),
     name: String(row.name),
+    comment: String(row.comment ?? ""),
     kind: String(row.kind),
     systemKey: row.system_key ? String(row.system_key) : null,
     createdAtMs: Number(row.created_at_ms) || 0,
@@ -208,7 +214,9 @@ export class WorkspaceCatalogStore {
     });
   }
 
-  createWorkspace({ id = this.#idFactory(), name, kind = "user", systemKey = null, settings = {} } = {}) {
+  createWorkspace({
+    id = this.#idFactory(), name, comment = "", kind = "user", systemKey = null, settings = {},
+  } = {}) {
     const workspaceId = safeIdentifier(id, "workspace id");
     const workspaceName = normalizedWorkspaceName(name);
     const normalizedKind = String(kind).trim().toLowerCase();
@@ -219,9 +227,18 @@ export class WorkspaceCatalogStore {
     const nowMs = this.#nowMs();
     this.#database.prepare(`
       INSERT INTO hub_workspaces
-        (id, name, kind, system_key, created_at_ms, updated_at_ms, settings_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(workspaceId, workspaceName, normalizedKind, key, nowMs, nowMs, JSON.stringify(settings ?? {}));
+        (id, name, comment, kind, system_key, created_at_ms, updated_at_ms, settings_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      workspaceId,
+      workspaceName,
+      String(comment ?? "").trim().slice(0, 1000),
+      normalizedKind,
+      key,
+      nowMs,
+      nowMs,
+      JSON.stringify(settings ?? {}),
+    );
     return this.workspace(workspaceId);
   }
 
@@ -234,6 +251,16 @@ export class WorkspaceCatalogStore {
     this.#database.prepare(`
       UPDATE hub_workspaces SET name = ?, updated_at_ms = ? WHERE id = ?
     `).run(nextName, this.#nowMs(), id);
+    return this.workspace(id);
+  }
+
+  updateWorkspaceComment(workspaceId, comment) {
+    const id = safeIdentifier(workspaceId, "workspace id");
+    if (!this.workspace(id)) throw new Error(`workspace not found: ${id}`);
+    const value = String(comment ?? "").trim().slice(0, 1000);
+    this.#database.prepare(`
+      UPDATE hub_workspaces SET comment = ?, updated_at_ms = ? WHERE id = ?
+    `).run(value, this.#nowMs(), id);
     return this.workspace(id);
   }
 

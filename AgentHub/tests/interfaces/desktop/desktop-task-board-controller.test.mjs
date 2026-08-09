@@ -16,13 +16,15 @@ function fixture({ activeThread = null } = {}) {
       task: () => task,
       create: (value) => { calls.push(["create", value]); return { id: "board-created" }; },
       move: (value) => calls.push(["move", value]),
-      moveWorkspace: (value) => calls.push(["move-workspace", value]),
+      moveColumn: (value) => calls.push(["move-column", value]),
+      setNotesComment: (value) => calls.push(["notes-comment", value]),
       markStarted: (value) => calls.push(["started", value]),
     },
     workspaceCatalog: {
       workspace: (id) => id === "workspace-1" ? { id, name: "Agent Hub" } : null,
       stream: (id) => id === "stream-1" ? { id, workspaceId: "workspace-1" } : null,
       activeThread: () => activeThread,
+      updateWorkspaceComment: (...value) => calls.push(["workspace-comment", ...value]),
     },
     dispatchCommand: async (...args) => {
       calls.push(["command", ...args]);
@@ -50,12 +52,20 @@ test("dashboard creation adds a manual task directly to its Workspace", async ()
   }]);
 });
 
-test("dashboard persists Workspace reordering", async () => {
+test("dashboard persists column reordering", async () => {
   const { controller, calls } = fixture();
-  await controller.moveWorkspace({ workspaceId: "workspace-2", beforeWorkspaceId: "workspace-1" });
-  assert.deepEqual(calls[0], ["move-workspace", {
-    workspaceId: "workspace-2", beforeWorkspaceId: "workspace-1",
+  await controller.moveColumn({ columnId: "notes", beforeColumnId: "workspace:workspace-1" });
+  assert.deepEqual(calls[0], ["move-column", {
+    columnId: "notes", beforeColumnId: "workspace:workspace-1",
   }]);
+});
+
+test("dashboard updates Notes and Workspace comments", async () => {
+  const { controller, calls } = fixture();
+  await controller.updateColumnComment({ columnId: "notes", comment: "Фильмы" });
+  await controller.updateColumnComment({ columnId: "workspace:workspace-1", comment: "Разработка" });
+  assert.deepEqual(calls[0], ["notes-comment", { columnId: "notes", comment: "Фильмы" }]);
+  assert.deepEqual(calls[1], ["workspace-comment", "workspace-1", "Разработка"]);
 });
 
 test("starting a Task in an existing Stream selects it and sends the Task text", async () => {

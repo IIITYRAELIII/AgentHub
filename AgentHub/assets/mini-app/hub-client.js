@@ -1045,6 +1045,8 @@ function applySnapshot(snapshot) {
   window.AgentHubTaskBoard?.setSnapshot({
     tasks: snapshot.boardTasks ?? [],
     workspaces: snapshot.workspaces ?? [],
+    columnOrder: snapshot.boardLayout?.columnOrder ?? [],
+    notesComment: snapshot.boardLayout?.notesComment ?? "Игры, фильмы, сериалы и идеи",
     selectedWorkspaceId: snapshot.selected?.workspaceId ?? null,
     provider: snapshot.settings?.provider ?? "codex",
   });
@@ -1739,7 +1741,8 @@ document.addEventListener("agenthub:board-action", (event) => runAction(async ()
     remove: "board-task-remove",
     "retry-triage": "board-task-retry-triage",
     start: "board-task-start",
-    "move-workspace": "board-workspace-move",
+    "move-column": "board-column-move",
+    "update-comment": "board-column-comment",
   };
   const action = actions[detail.type];
   if (!action) return;

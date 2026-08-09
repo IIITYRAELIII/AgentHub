@@ -15,7 +15,8 @@ export class TaskBoardService {
     logger = console,
   } = {}) {
     for (const name of [
-      "create", "task", "list", "move", "markStarted", "orderedWorkspaceIds", "moveWorkspace",
+      "create", "task", "list", "move", "markStarted", "orderedColumnIds", "moveColumn",
+      "notesComment", "setNotesComment",
     ]) requiredMethod(store, name);
     if (typeof workspaceCatalog?.hierarchy !== "function") throw new TypeError("workspaceCatalog is required");
     this.store = store;
@@ -43,9 +44,18 @@ export class TaskBoardService {
 
   workspaces() {
     const workspaces = this.workspaceCatalog.hierarchy();
-    const order = this.store.orderedWorkspaceIds(workspaces.map((workspace) => workspace.id));
+    const order = this.store.orderedColumnIds(workspaces.map((workspace) => workspace.id));
     const position = new Map(order.map((id, index) => [id, index]));
     return workspaces.slice().sort((left, right) => position.get(left.id) - position.get(right.id));
+  }
+
+  layout() {
+    const workspaceIds = this.workspaceCatalog.hierarchy().map((workspace) => workspace.id);
+    return {
+      columnOrder: this.store.orderedColumnIds(workspaceIds)
+        .map((id) => id === "notes" ? "notes" : `workspace:${id}`),
+      notesComment: this.store.notesComment(),
+    };
   }
 
   create(payload = {}) {
@@ -66,11 +76,23 @@ export class TaskBoardService {
     return this.store.move(id, { bucket: normalizedBucket, workspaceId, beforeId });
   }
 
-  moveWorkspace({ workspaceId, beforeWorkspaceId = null } = {}) {
+  moveColumn({ columnId, beforeColumnId = null } = {}) {
     const ids = this.workspaceCatalog.hierarchy().map((workspace) => workspace.id);
-    if (!ids.includes(String(workspaceId ?? "").trim())) throw new Error("Workspace не найден");
-    if (beforeWorkspaceId && !ids.includes(String(beforeWorkspaceId).trim())) throw new Error("Workspace не найден");
-    return this.store.moveWorkspace(ids, { workspaceId, beforeWorkspaceId });
+    const storedId = (value) => {
+      const normalized = String(value ?? "").trim();
+      if (normalized === "notes") return "notes";
+      if (!normalized.startsWith("workspace:")) throw new Error("Колонка не найдена");
+      const workspaceId = normalized.slice(10);
+      if (!ids.includes(workspaceId)) throw new Error("Workspace не найден");
+      return workspaceId;
+    };
+    const movedId = storedId(columnId);
+    const targetId = beforeColumnId == null ? null : storedId(beforeColumnId);
+    return this.store.moveColumn(ids, { columnId: movedId, beforeColumnId: targetId });
+  }
+
+  setNotesComment({ comment } = {}) {
+    return this.store.setNotesComment(comment);
   }
 
   complete({ id } = {}) {

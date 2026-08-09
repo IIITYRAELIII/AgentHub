@@ -64,8 +64,10 @@ test("disabled Spark leaves new Tasks idle and clears recovered triage", () => {
       list: () => [],
       move: () => null,
       markStarted: () => null,
-      orderedWorkspaceIds: (ids) => ids,
-      moveWorkspace: () => null,
+      orderedColumnIds: (ids) => [...ids, "notes"],
+      moveColumn: () => null,
+      notesComment: () => "",
+      setNotesComment: () => "",
       disablePendingTriage: () => { disabled += 1; },
     },
     workspaceCatalog: { hierarchy: () => [] },
@@ -86,4 +88,10 @@ test("manual dashboard creation never starts Spark triage", async (t) => {
   await service.waitForTriage();
   assert.equal(task.triageStatus, "disabled");
   assert.equal(classifyCalls, 0);
+});
+
+test("dashboard layout includes movable Notes between Workspaces", async (t) => {
+  const service = await fixture(t);
+  service.moveColumn({ columnId: "notes", beforeColumnId: "workspace:agent-hub" });
+  assert.deepEqual(service.layout().columnOrder, ["notes", "workspace:agent-hub"]);
 });

@@ -26,8 +26,17 @@ export class DesktopTaskBoardController {
     return this.#mutate(() => this.taskBoard.move(params));
   }
 
-  moveWorkspace(params) {
-    return this.#mutate(() => this.taskBoard.moveWorkspace(params));
+  moveColumn(params) {
+    return this.#mutate(() => this.taskBoard.moveColumn(params));
+  }
+
+  updateColumnComment(params) {
+    return this.#mutate(() => {
+      const columnId = String(params.columnId ?? "").trim();
+      if (columnId === "notes") return this.taskBoard.setNotesComment(params);
+      if (!columnId.startsWith("workspace:")) throw new Error("Колонка не найдена");
+      return this.workspaceCatalog.updateWorkspaceComment(columnId.slice(10), params.comment);
+    });
   }
 
   complete(params) {

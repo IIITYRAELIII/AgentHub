@@ -12,7 +12,7 @@ function router(calls) {
     "trustedDevices", "createDevicePairing", "revokeDevice",
     "renameWorkspace", "createWorkspaceFromStream", "mergeWorkspaces", "renameStream", "moveStream",
     "boardTaskCreate", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
-    "boardTaskRetryTriage", "boardTaskStart", "boardWorkspaceMove",
+    "boardTaskRetryTriage", "boardTaskStart", "boardColumnMove", "boardColumnComment",
   ].map((name) => [name, handler]));
   return createDesktopApplicationRouter({
     handlers,
