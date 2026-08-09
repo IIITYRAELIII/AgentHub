@@ -43,6 +43,42 @@ async function firstExisting(candidates) {
   return null;
 }
 
+function literalGlob(value) {
+  return String(value ?? "").replace(/[?*\[\]{}]/gu, (character) => `[${character}]`);
+}
+
+async function resolveAbsoluteWorkspaceFile(file, workspaceFolders) {
+  const contained = workspaceFolders.flatMap((folder) => {
+    const root = path.resolve(folder.uri.fsPath);
+    const candidate = path.resolve(file);
+    const relative = path.relative(root, candidate);
+    return relative && !relative.startsWith("..") && !path.isAbsolute(relative)
+      ? [{ folder, root, candidate, relative }]
+      : [];
+  });
+  const exact = await firstExisting(contained.map(({ candidate }) => vscode.Uri.file(candidate)));
+  if (exact) return exact;
+  const discovered = [];
+  for (const { folder, root, relative } of contained) {
+    const suffix = relativeSegments(relative).join("/").toLowerCase();
+    const basename = relativeSegments(relative).at(-1);
+    if (!suffix || !basename) continue;
+    const matches = await vscode.workspace.findFiles(
+      new vscode.RelativePattern(folder, `**/${literalGlob(basename)}`),
+      undefined,
+      50,
+    );
+    for (const match of matches) {
+      const matchedRelative = path.relative(root, path.resolve(match.fsPath));
+      if (!matchedRelative || matchedRelative.startsWith("..") || path.isAbsolute(matchedRelative)) continue;
+      const normalized = relativeSegments(matchedRelative).join("/").toLowerCase();
+      if (normalized === suffix || normalized.endsWith(`/${suffix}`)) discovered.push(match);
+    }
+  }
+  const unique = [...new Map(discovered.map((uri) => [path.resolve(uri.fsPath).toLowerCase(), uri])).values()];
+  return unique.length === 1 ? unique[0] : null;
+}
+
 class WorkLogViewProvider {
   constructor(context) {
     this.context = context;
@@ -297,14 +333,7 @@ class WorkLogViewProvider {
     const fileTarget = editorFileTarget(href);
     const absolute = /^[A-Za-z]:[\\/]/u.test(fileTarget.file);
     const target = absolute
-      ? await firstExisting(this.workspaceFolders().flatMap((folder) => {
-        const root = path.resolve(folder.uri.fsPath);
-        const candidate = path.resolve(fileTarget.file);
-        const relative = path.relative(root, candidate);
-        return relative && !relative.startsWith("..") && !path.isAbsolute(relative)
-          ? [vscode.Uri.file(candidate)]
-          : [];
-      }))
+      ? await resolveAbsoluteWorkspaceFile(fileTarget.file, this.workspaceFolders())
       : await firstExisting(
         this.workspaceFolders().map((folder) => vscode.Uri.joinPath(
           folder.uri,
@@ -347,4 +376,10 @@ function activate(context) {
 
 function deactivate() {}
 
-module.exports = { activate, deactivate, editorFileTarget, firstExisting };
+module.exports = {
+  activate,
+  deactivate,
+  editorFileTarget,
+  firstExisting,
+  resolveAbsoluteWorkspaceFile,
+};
