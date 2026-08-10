@@ -20,6 +20,16 @@ test("Dashboard renders only non-empty comments without inline editing", async (
   assert.match(board, /if \(String\(subtitle \?\? ""\)\.trim\(\)\)/u);
 });
 
+test("Dashboard renders and opens Task attachments", async () => {
+  const [html, board, app] = await Promise.all([
+    asset("index.html"), asset("task-board.js"), asset("app.js"),
+  ]);
+  assert.match(html, /data-task-card-attachments/u);
+  assert.match(board, /board-task-attachment/u);
+  assert.match(board, /agenthub:attachment-open/u);
+  assert.match(app, /emit\("attachment:open"/u);
+});
+
 test("workspace card saves through existing workspace and board commands", async () => {
   const client = await asset("hub-client.js");
   assert.match(client, /agentHub\.on\("workspace:update"/u);

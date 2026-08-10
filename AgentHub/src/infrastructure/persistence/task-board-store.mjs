@@ -250,6 +250,38 @@ export class TaskBoardStore {
     });
   }
 
+  attachToSourceMessage({ source = "telegram", chatId, userId, messageId, attachments = [] } = {}) {
+    const identity = [chatId, userId, messageId].map((value) => String(value ?? "").trim());
+    const incoming = (Array.isArray(attachments) ? attachments : [])
+      .map((value) => String(value ?? "").trim())
+      .filter(Boolean);
+    if (identity.some((value) => !value) || !incoming.length) {
+      throw new Error("Не удалось определить задачу или вложение");
+    }
+    return this.#withDatabase((database) => {
+      const row = database.prepare(`
+        SELECT * FROM hub_board_tasks
+        WHERE source = ?
+        ORDER BY created_at_ms DESC, id DESC
+      `).all(String(source)).find((candidate) => {
+        const details = parseJson(candidate.source_json);
+        return String(details.chatId ?? "") === identity[0]
+          && String(details.userId ?? "") === identity[1]
+          && String(details.messageId ?? "") === identity[2];
+      });
+      if (!row) throw new Error("Задача для исходного сообщения не найдена");
+      const details = parseJson(row.source_json);
+      details.attachments = [...new Set([
+        ...(Array.isArray(details.attachments) ? details.attachments : []),
+        ...incoming,
+      ])];
+      database.prepare(`
+        UPDATE hub_board_tasks SET source_json = ?, updated_at_ms = ? WHERE id = ?
+      `).run(JSON.stringify(details), this.now(), row.id);
+      return taskFromRow(database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(row.id));
+    });
+  }
+
   task(id) {
     const taskId = String(id ?? "").trim();
     if (!taskId) return null;

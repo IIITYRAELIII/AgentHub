@@ -1145,7 +1145,10 @@ function applySnapshot(snapshot) {
   agentHub.setServerStatus(snapshot.server ?? null);
   agentHub.setWorkspaces(snapshot.workspaces ?? [], snapshot.boardLayout?.columnOrder ?? []);
   window.AgentHubTaskBoard?.setSnapshot({
-    tasks: snapshot.boardTasks ?? [],
+    tasks: (snapshot.boardTasks ?? []).map((task) => ({
+      ...task,
+      attachments: attachmentViews(task.attachments),
+    })),
     workspaces: snapshot.workspaces ?? [],
     columnOrder: snapshot.boardLayout?.columnOrder ?? [],
     notesComment: snapshot.boardLayout?.notesComment ?? "Игры, фильмы, сериалы и идеи",

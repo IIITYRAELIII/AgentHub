@@ -37,6 +37,25 @@ test("Task store can persist disabled Spark triage", async (t) => {
   assert.equal(store.pendingTriage().length, 0);
 });
 
+test("Task store attaches a screenshot to the Task addressed by a Telegram reply", async (t) => {
+  const store = await fixture(t);
+  const task = store.create({
+    text: "FB Миллениум",
+    source: "telegram",
+    sourceDetails: { chatId: 42, userId: 42, messageId: 7 },
+  });
+  const attached = store.attachToSourceMessage({
+    source: "telegram",
+    chatId: 42,
+    userId: 42,
+    messageId: 7,
+    attachments: ["D:/attachments/screenshot.jpg", "D:/attachments/screenshot.jpg"],
+  });
+  assert.equal(attached.id, task.id);
+  assert.deepEqual(attached.sourceDetails.attachments, ["D:/attachments/screenshot.jpg"]);
+  assert.equal(store.list().length, 1);
+});
+
 test("manual Task placement is not overwritten by a late Spark result", async (t) => {
   const store = await fixture(t);
   const task = store.create({ text: "посмотреть дюну" });

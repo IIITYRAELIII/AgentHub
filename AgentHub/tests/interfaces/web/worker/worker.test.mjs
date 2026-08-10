@@ -804,7 +804,17 @@ test("shared Dashboard bot pairs one Telegram user and queues Tasks only for tha
   const telegramCalls = [];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (url, options) => {
-    telegramCalls.push({ url: String(url), body: JSON.parse(options.body) });
+    const target = String(url);
+    if (target.includes("/file/bot")) {
+      return new Response(Buffer.from([0xff, 0xd8, 0xff, 0xd9]), {
+        headers: { "Content-Type": "image/jpeg" },
+      });
+    }
+    const body = JSON.parse(options.body);
+    telegramCalls.push({ url: target, body });
+    if (target.endsWith("/getFile")) {
+      return Response.json({ ok: true, result: { file_path: "documents/reply.jpg", file_size: 4 } });
+    }
     return Response.json({ ok: true, result: { message_id: 700 } });
   };
   context.after(() => { globalThis.fetch = originalFetch; });
@@ -906,6 +916,44 @@ test("shared Dashboard bot pairs one Telegram user and queues Tasks only for tha
   ), env);
   assert.equal(response.status, 200);
   assert.ok(stores.has(`dashboard-bot:${hubId}`));
+
+  response = await webhook({
+    update_id: 102,
+    message: {
+      message_id: 3,
+      date: 1_786_200_002,
+      chat: { id: 42, type: "private" },
+      from: { id: 42, first_name: "Алиса" },
+      document: {
+        file_id: "reply-jpg",
+        file_name: "photo_2026-08-10.jpg",
+        mime_type: "application/octet-stream",
+        file_size: 4,
+      },
+      reply_to_message: {
+        message_id: 2,
+        from: { id: 42, first_name: "Алиса" },
+        text: "Исправить фильтр на дашборде",
+      },
+    },
+  });
+  assert.equal(response.status, 200);
+  assert.equal(telegramCalls.at(-1).body.text, "Скриншот добавлен к задаче.");
+
+  response = await workerModule.default.fetch(signedServiceRequest(
+    "https://hub.test/api/dashboard-bot/pull",
+    { limit: 10, waitMs: 0 },
+    hubSecret,
+    { "X-Agent-Hub-Dashboard-Id": hubId },
+  ), env);
+  assert.equal(response.status, 200);
+  const [attachmentCommand] = (await response.json()).commands;
+  assert.equal(attachmentCommand.action, "board-task-ingest");
+  assert.equal(attachmentCommand.params.replyMessageId, 2);
+  assert.equal(attachmentCommand.params.text, undefined);
+  assert.equal(attachmentCommand.params.sourceKey, undefined);
+  assert.equal(attachmentCommand.params.sourceDetails.messageId, 3);
+  assert.match(attachmentCommand.params.attachments[0], /^remote-attachment:[0-9a-f-]{36}$/u);
 
   response = await workerModule.default.fetch(signedServiceRequest(
     "https://hub.test/api/dashboard-bot/pull",

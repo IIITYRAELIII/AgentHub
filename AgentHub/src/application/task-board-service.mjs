@@ -1,3 +1,4 @@
+import { attachmentDescriptor } from "../domain/attachment-files.mjs";
 import { normalizedTaskBucket, normalizedTaskText, taskDisplayText } from "../domain/task-board-task.mjs";
 import { EXPERIMENTS_SYSTEM_KEY } from "../domain/workspace-stream-identity.mjs";
 
@@ -46,10 +47,19 @@ export class TaskBoardService {
   }
 
   snapshot() {
-    return this.store.list().map((task) => ({
-      ...task,
-      text: taskDisplayText(task),
-    }));
+    return this.store.list().map((task) => {
+      const sourceDetails = { ...(task.sourceDetails ?? {}) };
+      const attachments = (Array.isArray(sourceDetails.attachments) ? sourceDetails.attachments : [])
+        .map(attachmentDescriptor)
+        .filter(Boolean);
+      delete sourceDetails.attachments;
+      return {
+        ...task,
+        sourceDetails,
+        attachments,
+        text: taskDisplayText(task),
+      };
+    });
   }
 
   workspaces() {
@@ -83,6 +93,10 @@ export class TaskBoardService {
     });
     if (task.triageStatus === "pending") this.scheduleTriage(task.id);
     return task;
+  }
+
+  attachToSourceMessage(payload = {}) {
+    return this.store.attachToSourceMessage(payload);
   }
 
   move({ id, bucket, workspaceId = null, beforeId = null } = {}) {

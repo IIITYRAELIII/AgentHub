@@ -1268,6 +1268,10 @@ function emit(type, detail = {}) {
   }
 }
 
+document.addEventListener("agenthub:attachment-open", (event) => {
+  emit("attachment:open", event.detail ?? {});
+});
+
 /* ------------------------------------------------------------- состояние UI */
 
 const state = {

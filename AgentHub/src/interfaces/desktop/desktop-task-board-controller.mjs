@@ -24,14 +24,22 @@ export class DesktopTaskBoardController {
 
   async ingest(params) {
     const attachments = Array.isArray(params.attachments) ? params.attachments : [];
-    const task = this.taskBoard.create({
-      text: params.text,
-      source: "telegram",
-      sourceKey: params.sourceKey,
-      sourceDetails: attachments.length
-        ? { ...(params.sourceDetails ?? {}), attachments }
-        : params.sourceDetails,
-    });
+    const task = Number.isSafeInteger(params.replyMessageId)
+      ? this.taskBoard.attachToSourceMessage({
+        source: "telegram",
+        chatId: params.sourceDetails?.chatId,
+        userId: params.sourceDetails?.userId,
+        messageId: params.replyMessageId,
+        attachments,
+      })
+      : this.taskBoard.create({
+        text: params.text,
+        source: "telegram",
+        sourceKey: params.sourceKey,
+        sourceDetails: attachments.length
+          ? { ...(params.sourceDetails ?? {}), attachments }
+          : params.sourceDetails,
+      });
     await this.snapshot({ refresh: true });
     return { taskId: task.id, rawText: task.rawText };
   }

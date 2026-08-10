@@ -16,6 +16,10 @@ function fixture({ activeThread = null, sourceDetails = undefined } = {}) {
     taskBoard: {
       task: () => task,
       create: (value) => { calls.push(["create", value]); return { id: "board-created", rawText: value.text }; },
+      attachToSourceMessage: (value) => {
+        calls.push(["attach", value]);
+        return { id: "board-1", rawText: task.rawText };
+      },
       update: (value) => calls.push(["update", value]),
       move: (value) => calls.push(["move", value]),
       moveColumn: (value) => calls.push(["move-column", value]),
@@ -85,6 +89,23 @@ test("shared Telegram bot persists downloaded images with the dashboard Task", a
     imageCount: 1,
     attachments: ["D:/runtime/attachments/screenshot.jpg"],
   });
+});
+
+test("a screenshot reply augments the existing dashboard Task", async () => {
+  const { controller, calls } = fixture();
+  await controller.ingest({
+    replyMessageId: 7,
+    sourceDetails: { chatId: 42, userId: 42, messageId: 8 },
+    attachments: ["D:/runtime/attachments/screenshot.jpg"],
+  });
+  assert.deepEqual(calls[0], ["attach", {
+    source: "telegram",
+    chatId: 42,
+    userId: 42,
+    messageId: 7,
+    attachments: ["D:/runtime/attachments/screenshot.jpg"],
+  }]);
+  assert.equal(calls.some(([name]) => name === "create"), false);
 });
 
 test("dashboard persists column reordering", async () => {

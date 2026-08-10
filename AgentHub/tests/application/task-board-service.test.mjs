@@ -123,6 +123,24 @@ test("manual dashboard creation never starts Spark triage", async (t) => {
   assert.equal(classifyCalls, 0);
 });
 
+test("Dashboard snapshot exposes attachment descriptors without local paths", async (t) => {
+  const service = await fixture(t);
+  service.create({
+    text: "Проверить скриншот",
+    source: "hub",
+    sourceDetails: { attachments: ["D:/runtime/attachments/screenshot.jpg"] },
+  });
+  const [task] = service.snapshot();
+  assert.deepEqual(task.attachments, [{
+    id: "screenshot.jpg",
+    name: "screenshot.jpg",
+    type: "image/jpeg",
+    isImage: true,
+  }]);
+  assert.equal(Object.hasOwn(task.sourceDetails, "attachments"), false);
+  assert.doesNotMatch(JSON.stringify(task), /D:\/runtime/u);
+});
+
 test("personal bug report capture bypasses Spark and resolves Agent HUB by name", async (t) => {
   let classifyCalls = 0;
   const service = await fixture(t, async () => { classifyCalls += 1; return {}; });

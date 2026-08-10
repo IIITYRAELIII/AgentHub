@@ -11,6 +11,7 @@
   const taskCardEditor = document.querySelector("[data-task-card-editor]");
   const taskCardTitle = document.querySelector("[data-task-card-title]");
   const taskCardDescription = document.querySelector("[data-task-card-description]");
+  const taskCardAttachments = document.querySelector("[data-task-card-attachments]");
   const taskCardOriginal = document.querySelector("[data-task-card-original]");
   const taskCardOriginalToggle = document.querySelector("[data-task-card-original-toggle]");
   const taskCardOriginalText = document.querySelector("[data-task-card-original-text]");
@@ -59,6 +60,33 @@
     document.dispatchEvent(new CustomEvent("agenthub:board-action", {
       detail: { type, ...detail },
     }));
+  }
+
+  function openAttachment(event, attachment) {
+    event.preventDefault();
+    event.stopPropagation();
+    document.dispatchEvent(new CustomEvent("agenthub:attachment-open", {
+      detail: { attachment },
+    }));
+  }
+
+  function attachmentStrip(attachments, { compact = false } = {}) {
+    const values = Array.isArray(attachments) ? attachments : [];
+    const strip = node("div", { class: `board-task-attachments${compact ? " is-compact" : ""}` });
+    for (const attachment of values) {
+      const image = attachment?.isImage || String(attachment?.type ?? "").startsWith("image/");
+      const preview = image && attachment?.url
+        ? node("img", { src: attachment.url, alt: attachment.name || "Скриншот", loading: "lazy" })
+        : node("span", { text: image ? "Скриншот" : (attachment?.name || "Вложение") });
+      strip.append(node("button", {
+        type: "button",
+        class: `board-task-attachment${image ? " is-image" : ""}`,
+        title: attachment?.name || "Открыть вложение",
+        "aria-label": `Открыть ${attachment?.name || "вложение"}`,
+        onclick: (event) => openAttachment(event, attachment),
+      }, [preview]));
+    }
+    return strip;
   }
 
   function workspaceById(id) {
@@ -188,6 +216,9 @@
     taskCardOriginal.hidden = !originalText;
     taskCardOriginalText.textContent = originalText;
     if (!originalText) setTaskCardOriginalExpanded(false);
+    const attachments = Array.isArray(task.attachments) ? task.attachments : [];
+    taskCardAttachments.hidden = attachments.length === 0;
+    taskCardAttachments.replaceChildren(...(attachments.length ? [attachmentStrip(attachments)] : []));
     const actions = [];
     if (task.bucket === "workspace") {
       actions.push(node("button", {
@@ -271,6 +302,7 @@
       });
     }
     card.append(node("h3", { class: "board-task-title", text: task.title || task.text }));
+    if (task.attachments?.length) card.append(attachmentStrip(task.attachments, { compact: true }));
     return card;
   }
 

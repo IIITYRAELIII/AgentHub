@@ -92,7 +92,7 @@ test("shared Dashboard bot request signature is stable for an explicit timestamp
   });
 });
 
-test("shared Dashboard bot downloads command images before creating the Task", async (context) => {
+test("shared Dashboard bot downloads a screenshot reply before augmenting the Task", async (context) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-shared-bot-image-"));
   context.after(() => rm(directory, { recursive: true, force: true }));
   const secretFile = path.join(directory, "shared-dashboard-bot.secret");
@@ -104,9 +104,8 @@ test("shared Dashboard bot downloads command images before creating the Task", a
     userId: "42",
     action: "board-task-ingest",
     params: {
-      text: "Проверить скриншот",
-      sourceKey: "shared-dashboard:018f6c86-3f34-7a31-8f27-16f5b96cce64:1",
-      sourceDetails: { imageCount: 1 },
+      replyMessageId: 7,
+      sourceDetails: { chatId: 42, userId: 42, messageId: 8 },
       attachments: [`remote-attachment:${attachmentId}`],
     },
   };
@@ -138,6 +137,7 @@ test("shared Dashboard bot downloads command images before creating the Task", a
   });
 
   assert.equal(await client.poll(), 1);
+  assert.equal(handled[0].params.replyMessageId, 7);
   assert.equal(handled[0].params.attachments.length, 1);
   assert.deepEqual(await readFile(handled[0].params.attachments[0]), image);
 });

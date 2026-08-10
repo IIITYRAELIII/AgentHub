@@ -696,16 +696,26 @@ function dashboardBotImageDescriptor(message) {
     };
   }
   const document = message?.document;
-  if (
-    dashboardBotNonEmpty(document?.file_id)
-    && String(document?.mime_type ?? "").toLowerCase().startsWith("image/")
-  ) {
+  const fileName = attachmentFileName(document?.file_name ?? `telegram-${message.message_id}.bin`);
+  const declaredType = attachmentContentType(document?.mime_type);
+  const extensionType = ({
+    ".bmp": "image/bmp",
+    ".gif": "image/gif",
+    ".jpeg": "image/jpeg",
+    ".jpg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+  })[/\.[a-z0-9]{1,16}$/u.exec(fileName.toLowerCase())?.[0]];
+  const contentType = [
+    "image/bmp", "image/gif", "image/jpeg", "image/png", "image/webp",
+  ].includes(declaredType) ? declaredType : extensionType;
+  if (dashboardBotNonEmpty(document?.file_id) && contentType) {
     return {
       type: "image",
       fileId: String(document.file_id),
       fileSize: Math.max(0, Number(document.file_size) || 0),
-      fileName: attachmentFileName(document.file_name ?? `telegram-${message.message_id}.bin`),
-      contentType: attachmentContentType(document.mime_type),
+      fileName,
+      contentType,
     };
   }
   return null;
@@ -1282,6 +1292,32 @@ export class JournalStore extends DurableObject {
     }
     const source = dashboardBotForwardedMessageSource(message);
     const image = dashboardBotImageDescriptor(message);
+    const repliedMessageId = Number.isSafeInteger(message.reply_to_message?.message_id)
+      ? message.reply_to_message.message_id
+      : null;
+    const repliesToOwnMessage = repliedMessageId != null
+      && String(message.reply_to_message?.from?.id ?? "") === String(message.from.id);
+    if (!openBundle && image && repliesToOwnMessage) {
+      return {
+        hubId: linked.hubId,
+        telegramImages: [image],
+        command: {
+          id: crypto.randomUUID().toLowerCase(),
+          action: "board-task-ingest",
+          params: {
+            replyMessageId: repliedMessageId,
+            sourceDetails: {
+              updateId: update.update_id,
+              chatId: message.chat.id,
+              messageId: message.message_id,
+              userId: message.from.id,
+            },
+          },
+          userId: linked.userId,
+        },
+        reply: "Скриншот добавлен к задаче.",
+      };
+    }
     if (source || openBundle || image) {
       if (!text && !image) return { reply: "В пачку можно добавить текст или изображение." };
       return this.#dashboardBotAppendBundle(update, message, linked, { source, image });
