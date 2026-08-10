@@ -91,4 +91,5 @@ test("trusted device store removes only revoked legacy diagnostic devices", asyn
   await store.load();
   assert.deepEqual((await store.list("42")).devices.map((device) => device.id), [activeId]);
   assert.deepEqual(Object.keys(JSON.parse(await readFile(filePath, "utf8")).devices), [activeId]);
+  assert.deepEqual(Object.keys(JSON.parse(await readFile(`${filePath}.bak`, "utf8")).devices), [activeId]);
 });

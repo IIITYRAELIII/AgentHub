@@ -88,7 +88,10 @@ export class TrustedDeviceStore {
       };
     }
     this.#loaded = true;
-    await this.#mutate(() => this.#cleanup(this.#now()), { persistWhenUnchanged: false });
+    await this.#mutate(() => this.#cleanup(this.#now()), {
+      persistWhenUnchanged: false,
+      mirrorBackup: true,
+    });
   }
 
   #publicDevice(record) {
@@ -119,20 +122,26 @@ export class TrustedDeviceStore {
     return changed;
   }
 
-  async #persist() {
+  async #persist({ mirrorBackup = false } = {}) {
     await mkdir(path.dirname(this.#filePath), { recursive: true });
-    const previous = await readJsonWithBackup(this.#filePath).catch(() => ({ value: null }));
-    if (previous.value) {
-      await writeTextAtomic(`${this.#filePath}.bak`, `${JSON.stringify(previous.value, null, 2)}\n`);
+    if (mirrorBackup) {
+      await writeTextAtomic(`${this.#filePath}.bak`, `${JSON.stringify(this.#state, null, 2)}\n`);
+    } else {
+      const previous = await readJsonWithBackup(this.#filePath).catch(() => ({ value: null }));
+      if (previous.value) {
+        await writeTextAtomic(`${this.#filePath}.bak`, `${JSON.stringify(previous.value, null, 2)}\n`);
+      }
     }
     await writeTextAtomic(this.#filePath, `${JSON.stringify(this.#state, null, 2)}\n`);
   }
 
-  #mutate(callback, { persistWhenUnchanged = true } = {}) {
+  #mutate(callback, { persistWhenUnchanged = true, mirrorBackup = false } = {}) {
     const operation = this.#writeQueue.then(async () => {
       if (!this.#loaded) throw new Error("TrustedDeviceStore is not loaded");
       const result = await callback();
-      if (persistWhenUnchanged || result === true || result?.changed === true) await this.#persist();
+      if (persistWhenUnchanged || result === true || result?.changed === true) {
+        await this.#persist({ mirrorBackup });
+      }
       return result?.value ?? result;
     });
     this.#writeQueue = operation.catch(() => {});
