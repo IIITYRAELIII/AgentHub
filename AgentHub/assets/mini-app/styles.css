@@ -581,6 +581,34 @@ h1 {
   html[data-view="journal"] .toolbar {
     flex: 1 0 100%;
   }
+
+  html[data-view="chat"] .app-header-inner {
+    flex-wrap: nowrap;
+  }
+
+  html[data-view="chat"] .view-switch {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  html[data-view="chat"] .view-tab {
+    padding-inline: 0.5rem !important;
+  }
+
+  html[data-view="chat"] .view-tab > span,
+  html[data-view="chat"] .view-settings-label {
+    display: none;
+  }
+
+  html[data-view="chat"] .toolbar {
+    flex: 0 0 auto;
+    margin-left: 0;
+    width: auto;
+  }
+
+  html[data-view="chat"] .toolbar .view-settings {
+    padding-inline: 0.55rem !important;
+  }
 }
 
 /* Блок остаётся в теле журнала там, где шапки нет (панель VS Code до
