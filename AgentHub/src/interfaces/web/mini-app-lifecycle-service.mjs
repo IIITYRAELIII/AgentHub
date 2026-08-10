@@ -65,9 +65,11 @@ export class MiniAppLifecycleService {
       path.join(this.runtimeCommandRoot, "gateway.json"),
       { localUrl: address.url },
     );
+    let preferredMenuUrl = "";
     if (gatewaySettings.enabled) {
       this.directGateway ??= new this.DirectGatewayControllerClass(gatewaySettings);
       const publicUrl = await this.directGateway.start();
+      preferredMenuUrl = publicUrl;
       await this.configureMenu(publicUrl, this.config.miniApp.worker.menuText);
       this.logger.log(`Direct Agent Hub gateway ready at ${publicUrl}`);
     }
@@ -82,7 +84,7 @@ export class MiniAppLifecycleService {
         onControlResultDelivered: async ({ id }) => this.forgetControl(id),
         attachmentDirectory: path.join(this.runtimeCommandRoot, "DesktopApp", "attachments"),
         onPublished: async (url) => {
-          await this.configureMenu(url, this.config.miniApp.worker.menuText);
+          if (!preferredMenuUrl) await this.configureMenu(url, this.config.miniApp.worker.menuText);
           this.logger.log(`Agent Hub Worker ready at ${url}`);
         },
       });
@@ -106,7 +108,7 @@ export class MiniAppLifecycleService {
       controlPort: this.config.miniApp.quickTunnel.controlPort,
       localUrl: publicAddress.url,
       onUrl: async (url) => {
-        await this.configureMenu(url, this.config.miniApp.quickTunnel.menuText);
+        if (!preferredMenuUrl) await this.configureMenu(url, this.config.miniApp.quickTunnel.menuText);
       },
     });
     const publicUrl = await this.quickTunnel.start();

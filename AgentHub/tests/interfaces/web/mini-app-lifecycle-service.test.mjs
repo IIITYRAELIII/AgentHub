@@ -41,8 +41,10 @@ function fixture({ gateway = false, worker = false, tunnel = false, sharedBot = 
     publicServer,
     runtimeCommandRoot: "runtime",
     journalDatabaseFile: "journal.sqlite",
-    telegram: async (method, body) => events.push(`${method}:${body.chat_id ?? "default"}`),
-    menuButtonRequests: ({ chatIds }) => [...chatIds].map((chatId) => ({ chat_id: chatId })),
+    telegram: async (method, body) => events.push(
+      `${method}:${body.chat_id ?? "default"}:${body.url ?? ""}`,
+    ),
+    menuButtonRequests: ({ chatIds, url }) => [...chatIds].map((chatId) => ({ chat_id: chatId, url })),
     loadGatewaySettings: async () => ({ enabled: gateway, publicUrl: "https://gateway.example/" }),
     DirectGatewayControllerClass: Controller,
     MiniAppPublisherClass: Publisher,
@@ -80,7 +82,9 @@ test("Mini App lifecycle owns gateway, worker and tunnel transports", async () =
     url: "http://127.0.0.1:1/",
     publicUrl: "https://public.example/",
   });
-  assert.equal(events.filter((event) => event.startsWith("setChatMenuButton")).length, 3);
+  assert.deepEqual(events.filter((event) => event.startsWith("setChatMenuButton")), [
+    "setChatMenuButton:42:https://public.example/",
+  ]);
   assert.ok(events.includes("publisher:start"));
   assert.ok(events.includes("public:start"));
   await service.closePublisher();
@@ -89,4 +93,12 @@ test("Mini App lifecycle owns gateway, worker and tunnel transports", async () =
   await service.closePublicServer();
   await service.closeLocalServer();
   assert.equal(events.filter((event) => event.endsWith(":close")).length, 5);
+});
+
+test("Mini App lifecycle publishes the Worker menu without a direct gateway", async () => {
+  const { service, events } = fixture({ worker: true });
+  await service.start();
+  assert.deepEqual(events.filter((event) => event.startsWith("setChatMenuButton")), [
+    "setChatMenuButton:42:https://worker.example/",
+  ]);
 });
