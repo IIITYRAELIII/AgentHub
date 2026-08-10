@@ -5,8 +5,8 @@ import { createDesktopApplicationRouter } from "../../../src/interfaces/desktop/
 function router(calls) {
   const handler = async (params) => ({ params });
   const handlers = Object.fromEntries([
-    "snapshot", "taskHistory", "rateLimitHistory", "usageHistory", "search",
-    "openTask", "openTurn", "sendMessage", "taskDiff", "deferredInput",
+    "snapshot", "taskHistory", "rateLimitHistory", "usageHistory", "search", "workspaceMessageSearch",
+    "openTask", "openTurn", "workspaceMessageOpen", "sendMessage", "taskDiff", "deferredInput",
     "statusDetails", "speakLastAnswer", "restartServer", "setAutostart",
     "updateServerConfiguration", "compactContext", "openAttachment", "submitBugReport",
     "trustedDevices", "createDevicePairing", "revokeDevice",

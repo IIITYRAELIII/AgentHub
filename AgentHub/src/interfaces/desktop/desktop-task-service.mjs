@@ -44,6 +44,8 @@ export class DesktopTaskService {
     dispatchCommand,
     commandTaskTarget,
     readTurn,
+    searchMessage = () => null,
+    threadsForStream = () => [],
     samePath,
     chatId,
     warn = console.warn,
@@ -57,6 +59,8 @@ export class DesktopTaskService {
     this.dispatchCommand = dispatchCommand;
     this.commandTaskTarget = commandTaskTarget;
     this.readTurn = readTurn;
+    this.searchMessage = searchMessage;
+    this.threadsForStream = threadsForStream;
     this.samePath = samePath;
     this.chatId = chatId;
     this.warn = warn;
@@ -136,20 +140,35 @@ export class DesktopTaskService {
     const taskThread = String(params.taskThreadId || reference.threadId || entry?.threadId || "").trim();
     const turnThread = String(params.turnThreadId ?? taskThread).trim();
     const turnId = String(params.turnId ?? "").trim();
+    const itemId = String(params.itemId ?? "").trim();
     if (!taskThread || !turnThread || !turnId) throw new Error("Укажите корректный ход");
     void this.refreshCatalog().catch((error) => {
       this.warn(`Cannot refresh task catalog after Desktop turn open: ${error.message}`);
     });
     if (!entry) throw new Error("Задача не найдена в локальном каталоге");
+    const targetProvider = String(params.provider ?? entry.provider).trim();
+    if (itemId && entry.streamId && !this.threadsForStream(entry.streamId).some((thread) => (
+      String(thread?.provider ?? "") === targetProvider
+      && String(thread?.threadId ?? "") === taskThread
+    ))) {
+      throw new Error("Ход не относится к выбранному Stream");
+    }
+    const indexedMessage = itemId ? this.searchMessage({
+      provider: targetProvider,
+      threadId: taskThread,
+      turnId,
+      itemId,
+    }) : null;
+    if (itemId && !indexedMessage) throw new Error("Сообщение не найдено в индексе");
     const record = await this.readTurn({
-      provider: entry.provider,
+      provider: targetProvider,
       threadId: turnThread,
       turnId,
     });
-    if (!record) throw new Error("Ход не найден в журнале");
-    const recordedTaskThread = String(record.taskThreadId ?? record.threadId ?? "").trim();
-    if (recordedTaskThread !== taskThread
-      || (record.projectRoot && !this.samePath(record.projectRoot, entry.projectRoot))) {
+    if (!record && !indexedMessage) throw new Error("Ход не найден в журнале");
+    const recordedTaskThread = String(record?.taskThreadId ?? record?.threadId ?? "").trim();
+    if (record && (recordedTaskThread !== taskThread
+      || (record.projectRoot && !this.samePath(record.projectRoot, entry.projectRoot)))) {
       throw new Error("Ход не относится к выбранной задаче");
     }
     const snapshot = await this.dispatchCommand(
@@ -172,31 +191,42 @@ export class DesktopTaskService {
       },
     );
     const focusedTurn = {
-      provider: entry.provider,
+      provider: targetProvider,
       taskThreadId: taskThread,
       turnThreadId: turnThread,
       turnId,
-      title: String(record.title ?? ""),
-      prompt: displayUserPrompt(record.prompt),
-      answer: String(record.body ?? record.text ?? "").slice(
+      title: String(record?.title ?? ""),
+      prompt: displayUserPrompt(record?.prompt),
+      answer: String(record?.body ?? record?.text ?? "").slice(
         0,
         Math.max(1_000, Math.min(Number(params.maxAnswerChars) || 200_000, 200_000)),
       ),
-      status: String(record.status ?? ""),
-      startedAt: record.startedAt ?? null,
-      completedAt: record.completedAt ?? null,
+      status: String(record?.status ?? ""),
+      startedAt: record?.startedAt ?? null,
+      completedAt: record?.completedAt ?? null,
+      ...(indexedMessage ? {
+        messages: [{
+          itemId: indexedMessage.itemId,
+          role: indexedMessage.role,
+          text: indexedMessage.text,
+          time: indexedMessage.occurredAt,
+          attachments: indexedMessage.attachmentNames.map((name) => ({ name })),
+        }],
+        focusItemId: indexedMessage.itemId,
+      } : {}),
     };
     return {
       snapshot,
       history: await this.taskHistory({
         streamId: entry.streamId,
-        provider: entry.provider,
+        provider: targetProvider,
         threadId: taskThread,
         limit: params.limit,
         maxAnswerChars: params.maxAnswerChars,
         maxResponseBytes: historyResponseBudget({ snapshot, focusedTurn }, params),
       }),
       focusedTurn,
+      ...(indexedMessage ? { focusedMessage: indexedMessage } : {}),
     };
   }
 }

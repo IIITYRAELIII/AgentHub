@@ -16,6 +16,11 @@ export class DesktopSystemService {
     readUsageHistory,
     refreshCatalog,
     searchTurns,
+    searchMessages,
+    messageSearchStatus = null,
+    markMessageSearchThread = null,
+    refreshHistory = null,
+    workspaceHierarchy,
     projectRoots,
     samePath,
     trustedDeviceManager,
@@ -39,6 +44,11 @@ export class DesktopSystemService {
       readUsageHistory,
       refreshCatalog,
       searchTurns,
+      searchMessages,
+      messageSearchStatus,
+      markMessageSearchThread,
+      refreshHistory,
+      workspaceHierarchy,
       projectRoots,
       samePath,
       trustedDeviceManager,
@@ -47,6 +57,8 @@ export class DesktopSystemService {
       enqueueSpeech,
       maxSpeechJobs,
     });
+    this.messageSearchIndexTail = Promise.resolve();
+    this.messageSearchIndexScheduled = new Set();
   }
 
   async statusDetails() {
@@ -120,6 +132,105 @@ export class DesktopSystemService {
         };
       }),
     };
+  }
+
+  async workspaceMessageSearch(params = {}) {
+    const workspaceId = String(params.workspaceId ?? "").trim();
+    const query = String(params.query ?? "").trim().slice(0, 200);
+    const offset = Math.max(0, Math.floor(Number(params.offset) || 0));
+    const limit = Math.min(Math.max(Math.floor(Number(params.limit) || 40), 1), 100);
+    if (!workspaceId) throw new Error("Укажите Workspace для поиска");
+    if (query.length < 2) return {
+      workspaceId, query, total: 0, nextOffset: null, results: [],
+      indexing: { state: "ready", completedThreads: 0, totalThreads: 0, revision: 1 },
+    };
+    const workspace = (this.workspaceHierarchy?.() ?? [])
+      .find((candidate) => String(candidate?.id ?? "") === workspaceId);
+    if (!workspace) throw new Error("Workspace не найден");
+    const streams = Array.isArray(workspace.streams) ? workspace.streams : [];
+    const streamByThread = new Map();
+    const references = [];
+    for (const stream of streams) {
+      for (const thread of Array.isArray(stream?.threads) ? stream.threads : []) {
+        const reference = {
+          provider: String(thread?.provider ?? "").trim().toLowerCase(),
+          threadId: String(thread?.threadId ?? "").trim(),
+        };
+        if (!reference.provider || !reference.threadId) continue;
+        references.push(reference);
+        reference.streamId = String(stream.id ?? "");
+        reference.projectRoot = String(thread?.projectRoot ?? "");
+        reference.taskTitle = String(stream.displayName ?? stream.name ?? "");
+        streamByThread.set(`${reference.provider}\0${reference.threadId}`, stream);
+      }
+    }
+    const indexStatus = typeof this.messageSearchStatus === "function"
+      ? this.messageSearchStatus(references)
+      : {
+        totalThreads: references.length,
+        completedThreads: references.length,
+        failedThreads: 0,
+        threads: references.map((reference) => ({ ...reference, state: "ready" })),
+      };
+    this.scheduleWorkspaceMessageIndex(references, indexStatus);
+    const searched = this.searchMessages({ references, query, offset, limit });
+    const results = searched.results.flatMap((result) => {
+      const stream = streamByThread.get(`${result.provider}\0${result.threadId}`);
+      if (!stream) return [];
+      return [{
+        ...result,
+        workspaceId,
+        streamId: String(stream.id),
+        streamName: String(stream.displayName ?? stream.name ?? `Stream ${stream.ordinal ?? 1}`),
+        streamOrdinal: Math.max(1, Number(stream.ordinal) || 1),
+      }];
+    });
+    const nextOffset = offset + results.length < searched.total
+      ? offset + results.length
+      : null;
+    return {
+      workspaceId,
+      query,
+      total: searched.total,
+      nextOffset,
+      results,
+      indexing: {
+        state: indexStatus.failedThreads > 0
+          ? "partial"
+          : indexStatus.completedThreads < indexStatus.totalThreads ? "indexing" : "ready",
+        completedThreads: indexStatus.completedThreads,
+        totalThreads: indexStatus.totalThreads,
+        failedThreads: indexStatus.failedThreads,
+        revision: 1,
+      },
+    };
+  }
+
+  scheduleWorkspaceMessageIndex(references, status) {
+    if (typeof this.refreshHistory !== "function"
+      || typeof this.markMessageSearchThread !== "function") return;
+    const stateByThread = new Map((status?.threads ?? []).map((thread) => (
+      [`${thread.provider}\0${thread.threadId}`, thread]
+    )));
+    for (const reference of references) {
+      const key = `${reference.provider}\0${reference.threadId}`;
+      const threadState = stateByThread.get(key);
+      const failedRetryDue = threadState?.state === "failed"
+        && Date.now() - Number(threadState.completedAtMs ?? 0) >= 60_000;
+      if (!threadState || !(threadState.state === "pending" || failedRetryDue)
+        || this.messageSearchIndexScheduled.has(key)) continue;
+      this.messageSearchIndexScheduled.add(key);
+      this.messageSearchIndexTail = this.messageSearchIndexTail.catch(() => null).then(async () => {
+        try {
+          await this.refreshHistory(reference);
+          this.markMessageSearchThread(reference);
+        } catch (error) {
+          this.markMessageSearchThread(reference, { error: error?.message ?? error });
+        } finally {
+          this.messageSearchIndexScheduled.delete(key);
+        }
+      });
+    }
   }
 
   trustedDevices(_params, context) {

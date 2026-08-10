@@ -168,7 +168,7 @@ function activityFromCodexItem(item, index) {
   if (item?.type === "contextCompaction") return {
     id, type: "compaction", label: "Контекст свёрнут", detail: "", status: "completed",
   };
-  if (item?.type === "userMessage" || item?.type === "agentMessage") return null;
+  if (item?.type === "userMessage" || item?.type === "agentMessage" || item?.type === "plan") return null;
   const subagent = codexSubagentActivity(item, true);
   if (subagent) return { id, ...subagent };
   return null;
@@ -189,6 +189,14 @@ function codexVisibleReasoning(item) {
   const phase = String(item.phase ?? "").trim();
   if (!["analysis", "commentary", "reasoning"].includes(phase)) return "";
   return String(item.text ?? "").trim();
+}
+
+function isCodexAnswerItem(item) {
+  return item?.type === "agentMessage" || item?.type === "plan";
+}
+
+function codexAnswerPhase(item) {
+  return item?.type === "plan" ? "final_answer" : String(item?.phase ?? "");
 }
 
 export function codexTurnActivityGroups(turn) {
@@ -254,12 +262,12 @@ function codexTurnMessages(turn) {
           : {}),
       }] : [];
     }
-    if (item?.type === "agentMessage" && String(item.text ?? "").trim()) {
+    if (isCodexAnswerItem(item) && String(item.text ?? "").trim()) {
       return [{
         itemId: messageItemId(turnId, "agent", item, index),
         role: "agent",
         text: String(item.text).trim(),
-        phase: String(item.phase ?? ""),
+        phase: codexAnswerPhase(item),
         ...(normalizedTimestamp(item.createdAt ?? turn?.completedAt ?? turn?.updatedAt)
           ? { time: normalizedTimestamp(item.createdAt ?? turn?.completedAt ?? turn?.updatedAt) }
           : {}),
@@ -339,18 +347,18 @@ export function displayUserPrompt(value) {
 export function codexFinalTurnAnswer(turn) {
   if (isCodexContextProbeTurn(turn)) return "";
   const messages = (turn?.items ?? [])
-    .filter((item) => item?.type === "agentMessage" && String(item.text ?? "").trim());
+    .filter((item) => isCodexAnswerItem(item) && String(item.text ?? "").trim());
   const explicitFinal = messages.findLast((item) => (
-    ["final", "final_answer", "finalAnswer"].includes(String(item.phase ?? ""))
+    ["final", "final_answer", "finalAnswer"].includes(codexAnswerPhase(item))
   ));
   return String(explicitFinal?.text ?? messages.at(-1)?.text ?? "").trim();
 }
 
 export function codexTurnHasExplicitFinalAnswer(turn) {
   return (turn?.items ?? []).some((item) => (
-    item?.type === "agentMessage"
+    isCodexAnswerItem(item)
       && String(item.text ?? "").trim()
-      && ["final", "final_answer", "finalAnswer"].includes(String(item.phase ?? ""))
+      && ["final", "final_answer", "finalAnswer"].includes(codexAnswerPhase(item))
   ));
 }
 

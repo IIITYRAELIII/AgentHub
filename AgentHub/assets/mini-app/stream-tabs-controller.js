@@ -6,10 +6,21 @@
     MANUAL: "manual",
   });
 
+  const STREAM_ACTIVITY_DIRECTIONS = Object.freeze({
+    START: "start",
+    END: "end",
+  });
+
   function normalizeStreamOrderMode(value) {
     return value === STREAM_ORDER_MODES.MANUAL
       ? STREAM_ORDER_MODES.MANUAL
       : STREAM_ORDER_MODES.ACTIVITY;
+  }
+
+  function normalizeStreamActivityDirection(value) {
+    return value === STREAM_ACTIVITY_DIRECTIONS.END
+      ? STREAM_ACTIVITY_DIRECTIONS.END
+      : STREAM_ACTIVITY_DIRECTIONS.START;
   }
 
   function streamLastActivity(stream) {
@@ -23,7 +34,13 @@
       && surface !== "mobile";
   }
 
-  function orderWorkspaceStreams(streams, mode) {
+  function streamCreationSide(mode, activityDirection) {
+    return normalizeStreamOrderMode(mode) === STREAM_ORDER_MODES.ACTIVITY
+      ? normalizeStreamActivityDirection(activityDirection)
+      : STREAM_ACTIVITY_DIRECTIONS.END;
+  }
+
+  function orderWorkspaceStreams(streams, mode, activityDirection = STREAM_ACTIVITY_DIRECTIONS.START) {
     const uniqueStreams = [];
     const available = new Map();
     for (const stream of streams ?? []) {
@@ -34,9 +51,11 @@
     }
 
     if (normalizeStreamOrderMode(mode) === STREAM_ORDER_MODES.ACTIVITY) {
+      const direction = normalizeStreamActivityDirection(activityDirection)
+        === STREAM_ACTIVITY_DIRECTIONS.END ? 1 : -1;
       return uniqueStreams.sort((left, right) => (
-        streamLastActivity(right) - streamLastActivity(left)
-        || (Number(right?.ordinal) || 0) - (Number(left?.ordinal) || 0)
+        direction * (streamLastActivity(left) - streamLastActivity(right))
+        || direction * ((Number(left?.ordinal) || 0) - (Number(right?.ordinal) || 0))
       ));
     }
 
@@ -121,9 +140,12 @@
 
   window.AgentHubStreamTabs = Object.freeze({
     HorizontalPointerScroller,
+    STREAM_ACTIVITY_DIRECTIONS,
     STREAM_ORDER_MODES,
+    normalizeStreamActivityDirection,
     normalizeStreamOrderMode,
     orderWorkspaceStreams,
+    streamCreationSide,
     streamLastActivity,
     streamsAreDraggable,
   });

@@ -77,6 +77,8 @@ export function createDesktopCommandWiring({
       snapshot: services.snapshot,
       taskHistory: services.taskHistory,
       readTurn: services.readTurn,
+      searchMessage: services.searchMessage,
+      threadsForStream: services.threadsForStream,
       samePath: services.samePath,
       chatId: state.chatId,
       warn: services.warn,

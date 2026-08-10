@@ -1392,6 +1392,30 @@ function historyMessages(history, focusedTurn = null) {
       attachments: attachmentViews(message.attachments),
     });
   }
+  if (focusedTurn && Array.isArray(focusedTurn.messages)) {
+    const focusedThreadId = focusedTurnTaskThreadId(focusedTurn);
+    for (const [index, message] of focusedTurn.messages.entries()) {
+      const itemId = String(message?.itemId ?? "").trim();
+      if (!itemId || messages.some((candidate) => (
+        candidate.turnId === focusedTurn.turnId && candidate.itemId === itemId
+      ))) continue;
+      messages.push({
+        id: `${focusedTurn.provider}:${focusedThreadId}:${focusedTurn.turnId}:${itemId}:${message.role}`,
+        provider: focusedTurn.provider,
+        threadId: focusedThreadId,
+        turnId: focusedTurn.turnId,
+        itemId,
+        role: message.role,
+        author: message.role === "user"
+          ? "Вы"
+          : focusedTurn.provider === "claude" ? "Claude" : "Codex",
+        text: message.text,
+        time: message.time ?? null,
+        attachments: attachmentViews(message.attachments),
+        historyOrder: Number.MAX_SAFE_INTEGER - 100 + index,
+      });
+    }
+  }
   if (focusedTurn && !focusedTurnAlreadyVisible(history, messages, focusedTurn)) {
     const focusedThreadId = focusedTurnTaskThreadId(focusedTurn);
     if (focusedTurn.prompt) messages.push({
@@ -1482,6 +1506,12 @@ function applyOpened(result, {
   if (selectTask) agentHub.selectTask(id);
   syncHistoryPagination(id);
   renderTaskMessages(id, { preserveScroll });
+  if (result.focusedMessage) {
+    window.requestAnimationFrame(() => agentHub.focusMessage?.({
+      turnId: result.focusedMessage.turnId,
+      itemId: result.focusedMessage.itemId,
+    }));
+  }
   if (selectTask && !result.focusedTurn) {
     void settleOpenedTaskHistory(id, {
       ...(history.streamId ? { streamId: history.streamId } : {}),
@@ -2365,6 +2395,42 @@ agentHub.on("search:query", ({ query }) => {
     }
   });
 });
+let workspaceMessageSearchSequence = 0;
+agentHub.on("workspace-search:query", ({ workspaceId, query, offset, limit, append }) => {
+  const sequence = ++workspaceMessageSearchSequence;
+  void runAction(() => control("workspace-message-search", {
+    workspaceId,
+    query,
+    offset,
+    limit,
+  })).then((result) => {
+    if (sequence !== workspaceMessageSearchSequence) return;
+    if (!result) {
+      agentHub.setWorkspaceMessageSearchError("Не удалось выполнить поиск");
+      return;
+    }
+    agentHub.setWorkspaceMessageSearchResults(result, { append: Boolean(append) });
+  });
+});
+agentHub.on("workspace-search:open", (result) => runAction(async () => {
+  const params = {
+    workspaceId: result.workspaceId,
+    streamId: result.streamId,
+    provider: result.provider,
+    taskThreadId: result.threadId,
+    threadId: result.threadId,
+    turnThreadId: result.turnThreadId,
+    turnId: result.turnId,
+    itemId: result.itemId,
+    limit: 20,
+  };
+  applyOpened(await control("workspace-message-open", params));
+  agentHub.closeWorkspaceMessageSearch({ restoreFocus: false });
+  document.querySelector("[data-view-button='chat']")?.click();
+  replaceRoute("#/chat/"
+    + `${encodeURIComponent(params.provider)}/${encodeURIComponent(params.taskThreadId)}`
+    + `/turn/${encodeURIComponent(params.turnThreadId)}/${encodeURIComponent(params.turnId)}`);
+}));
 agentHub.on("context:compact", () => runAction(async () => {
   const result = await control("compact-context", exactSelectedTaskParams());
   if (result?.accepted && result.compactionId) {

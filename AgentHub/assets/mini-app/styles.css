@@ -5506,6 +5506,196 @@ html[data-surface="mobile"]
   padding-block: 0;
 }
 
+.chat-overlay-actions > .chip-button svg,
+.workspace-message-search svg {
+  height: 1rem;
+  width: 1rem;
+}
+
+.workspace-message-search {
+  background:
+    radial-gradient(90% 45% at 100% 0%, var(--space-glow-a), transparent 65%),
+    color-mix(in srgb, var(--space-base) 96%, transparent);
+  border-bottom: 1px solid var(--line-strong);
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  left: 0;
+  min-height: 0;
+  padding: 1rem max(1rem, var(--gutter-right)) 1.2rem max(1rem, var(--gutter-left));
+  position: absolute;
+  right: 0;
+  top: 3.7rem;
+  z-index: 30;
+}
+
+.workspace-message-search[hidden] {
+  display: none;
+}
+
+.workspace-message-search-head,
+.workspace-message-search-head > div,
+.workspace-message-search-hit-meta {
+  align-items: center;
+  display: flex;
+}
+
+.workspace-message-search-head {
+  gap: 1rem;
+  justify-content: space-between;
+}
+
+.workspace-message-search-head > div {
+  gap: 0.6rem;
+  min-width: 0;
+}
+
+.workspace-message-search-head strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-message-search-head [data-workspace-message-search-count] {
+  color: var(--text-muted);
+  font-size: 0.76rem;
+  white-space: nowrap;
+}
+
+.workspace-message-search-input {
+  align-items: center;
+  background: var(--surface-1);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  color: var(--text-muted);
+  display: flex;
+  gap: 0.55rem;
+  padding: 0 0.75rem;
+}
+
+.workspace-message-search-input:focus-within {
+  border-color: var(--accent-line);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+  color: var(--accent);
+}
+
+.workspace-message-search-input input {
+  background: transparent;
+  border: 0;
+  color: var(--text);
+  font: inherit;
+  min-height: 2.65rem;
+  min-width: 0;
+  outline: 0;
+  width: 100%;
+}
+
+.workspace-message-search-status {
+  color: var(--text-muted);
+  font-size: 0.84rem;
+  margin: 0;
+  padding: 0.4rem 0;
+}
+
+.workspace-message-search-results {
+  display: grid;
+  gap: 0.85rem;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  padding: 0 0.2rem 0.25rem 0;
+}
+
+.workspace-message-search-group {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.workspace-message-search-group-head {
+  align-items: center;
+  color: var(--text-muted);
+  display: flex;
+  font-size: 0.75rem;
+  gap: 0.45rem;
+  padding: 0.2rem 0.35rem;
+}
+
+.workspace-message-search-group-head span {
+  background: var(--surface-2);
+  border-radius: var(--radius-chip);
+  min-width: 1.45rem;
+  padding: 0.05rem 0.38rem;
+  text-align: center;
+}
+
+.workspace-message-search-hit {
+  background: color-mix(in srgb, var(--surface-1) 88%, transparent);
+  border: 1px solid transparent;
+  border-radius: var(--radius-card);
+  color: var(--text);
+  cursor: pointer;
+  display: grid;
+  font: inherit;
+  gap: 0.35rem;
+  padding: 0.65rem 0.75rem;
+  text-align: left;
+  width: 100%;
+}
+
+.workspace-message-search-hit:hover,
+.workspace-message-search-hit:focus-visible {
+  background: var(--surface-2);
+  border-color: var(--accent-line);
+  outline: none;
+}
+
+.workspace-message-search-hit-meta {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  gap: 0.5rem;
+}
+
+.workspace-message-search-hit-meta strong {
+  color: var(--text-soft);
+}
+
+.workspace-message-search-field {
+  background: var(--accent-soft);
+  border-radius: var(--radius-chip);
+  color: var(--accent);
+  padding: 0.04rem 0.35rem;
+}
+
+.workspace-message-search-snippet {
+  font-size: 0.86rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.workspace-message-search-snippet mark {
+  background: var(--accent-soft);
+  border-radius: 0.18rem;
+  color: var(--text);
+  padding: 0 0.08rem;
+}
+
+.workspace-message-search-more {
+  align-self: center;
+  background: var(--surface-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  min-height: 2.35rem;
+  padding: 0.35rem 1rem;
+}
+
+.msg[data-search-match] {
+  box-shadow: 0 0 0 2px var(--accent), var(--accent-glow);
+}
+
 /* ---- лента сообщений ---- */
 
 .chat-scroll {
@@ -8219,6 +8409,11 @@ html[data-surface="mobile"] .stream-tabs {
   padding: 0.22rem var(--gutter-right) 0.22rem var(--gutter-left);
 }
 
+html[data-surface="mobile"] .workspace-message-search {
+  padding-inline: var(--gutter-left) var(--gutter-right);
+  top: 3.35rem;
+}
+
 html[data-surface="mobile"] .stream-tab {
   min-height: 2.85rem;
   width: min(11rem, 72vw);
@@ -8492,6 +8687,527 @@ html[data-view="server"] .journal-view,
 html[data-view="server"] .statistics-view,
 html[data-view="server"] .background-view {
   display: none;
+}
+
+/* ================================================= новый журнал-реестр === */
+
+.journal-view {
+  max-width: 1440px;
+  width: min(100%, 1440px);
+}
+
+.journal-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.journal-shell-head {
+  align-items: center;
+  display: flex;
+  gap: 1.2rem;
+  min-width: 0;
+  padding: 0 0.25rem;
+}
+
+.journal-shell-title {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 0.08rem;
+}
+
+.journal-shell-title > span,
+[data-journal-section-label] {
+  color: var(--text-faint);
+  font-family: var(--font-title);
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.journal-shell-title h1 {
+  color: var(--text);
+  font-family: var(--font-title);
+  font-size: 1.06rem;
+  letter-spacing: -0.01em;
+  line-height: 1.25;
+  margin: 0;
+}
+
+.journal-shell-totals {
+  align-items: baseline;
+  color: var(--text-muted);
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  font-family: var(--font-numeric);
+  font-size: 0.75rem;
+  gap: 0.5rem 1rem;
+  min-width: 0;
+}
+
+.journal-shell-totals strong {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.journal-shell-totals i {
+  color: var(--line-strong);
+  font-style: normal;
+}
+
+.journal-grouping-tabs {
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 0.15rem;
+  padding: 0.18rem;
+}
+
+.journal-grouping-tabs button,
+.journal-collapse-all {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: calc(var(--radius-md) - 2px);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.72rem;
+  padding: 0.38rem 0.72rem;
+  transition: background 0.16s ease, border-color 0.16s ease, color 0.16s ease;
+}
+
+.journal-grouping-tabs button:hover,
+.journal-collapse-all:hover {
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+
+.journal-grouping-tabs button[aria-pressed="true"] {
+  background: var(--surface-3);
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+
+.journal-collapse-all {
+  border-color: var(--line);
+  flex: 0 0 auto;
+}
+
+.journal-ledger {
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--card-shadow);
+  overflow: hidden;
+}
+
+.journal-ledger-head,
+summary[data-journal-ledger-summary] {
+  column-gap: 1.4rem;
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) 76px 104px 140px 80px;
+}
+
+.journal-ledger-head {
+  align-items: center;
+  background: color-mix(in srgb, var(--surface-2) 76%, transparent);
+  border-bottom: 1px solid var(--line);
+  color: var(--text-faint);
+  font-family: var(--font-title);
+  font-size: 0.56rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  padding: 0.68rem 1.3rem;
+  text-transform: uppercase;
+}
+
+.journal-ledger-head > span:not(:first-child) {
+  text-align: right;
+}
+
+.journal-ledger .journal {
+  min-height: 0;
+}
+
+.journal-ledger .journal[aria-busy="true"]::before {
+  border: 0;
+  border-radius: 0;
+  height: 9rem;
+}
+
+.journal [data-work-log-task-groups],
+.journal [data-journal-day-groups] {
+  display: flex;
+  flex-direction: column;
+}
+
+.journal details[data-journal-ledger-row] {
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  box-shadow: none;
+  margin: 0;
+  overflow: hidden;
+  padding: 0;
+}
+
+.journal details[data-journal-ledger-row]:last-child {
+  border-bottom: 0;
+}
+
+.journal details[data-journal-ledger-row][open] {
+  background: color-mix(in srgb, var(--surface-2) 64%, transparent);
+}
+
+.journal summary[data-journal-ledger-summary] {
+  align-items: center;
+  border: 0;
+  border-radius: 0;
+  cursor: pointer;
+  list-style: none;
+  min-height: 3.1rem;
+  padding: 0.72rem 1.3rem;
+}
+
+.journal summary[data-journal-ledger-summary]:hover {
+  background: color-mix(in srgb, var(--surface-3) 58%, transparent);
+}
+
+.journal summary[data-journal-ledger-summary]::-webkit-details-marker,
+.journal summary[data-journal-ledger-summary]::marker {
+  display: none;
+}
+
+[data-journal-ledger-title] {
+  align-items: center;
+  color: var(--text);
+  display: flex;
+  gap: 0.55rem;
+  min-width: 0;
+}
+
+[data-journal-ledger-title]::before {
+  background: var(--text-faint);
+  content: "";
+  flex: 0 0 auto;
+  height: 0.72rem;
+  -webkit-mask: var(--ph-mask-caret-right) center / contain no-repeat;
+  mask: var(--ph-mask-caret-right) center / contain no-repeat;
+  transition: background 0.16s ease, transform 0.16s ease;
+  width: 0.72rem;
+}
+
+details[open] > summary[data-journal-ledger-summary] [data-journal-ledger-title]::before {
+  background: var(--accent);
+  transform: rotate(90deg);
+}
+
+[data-journal-ledger-title-text] {
+  font-size: 0.86rem;
+  font-weight: 560;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-journal-ledger-title-text] [data-work-log-task-content],
+[data-journal-ledger-title-text] button[data-open-task] {
+  border: 0;
+  max-width: 100%;
+  overflow: hidden;
+  padding: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-journal-stream-badge] {
+  background: color-mix(in srgb, var(--accent) 13%, transparent);
+  border-radius: var(--radius-sm);
+  color: color-mix(in srgb, var(--accent) 62%, var(--text));
+  flex: 0 0 auto;
+  font-family: var(--font-numeric);
+  font-size: 0.68rem;
+  padding: 0.12rem 0.42rem;
+}
+
+[data-journal-ledger-metric] {
+  color: var(--text-soft);
+  font-family: var(--font-numeric);
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  justify-self: end;
+  text-align: right;
+  white-space: nowrap;
+}
+
+[data-journal-ledger-metric="credits"] {
+  color: var(--warning, var(--accent));
+}
+
+[data-journal-ledger-metric="gaps"] {
+  color: var(--text-faint);
+}
+
+[data-journal-ledger-expanded] {
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: minmax(0, 1fr);
+  padding: 0.9rem 1.3rem 1.2rem 2.5rem;
+}
+
+[data-journal-ledger-expanded] > [data-work-log-task-profile] {
+  margin: 0;
+}
+
+[data-journal-turn-list] {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+[data-journal-turn-list] > [data-journal-section-label] {
+  margin-bottom: 0.1rem;
+}
+
+[data-journal-turn-list] > [data-work-log-turn-entry],
+[data-journal-turn-list] > [data-work-log-turn-table] {
+  margin: 0;
+}
+
+[data-journal-day-expanded] {
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 1.4rem;
+  grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
+  padding: 0.85rem 1.3rem 1.2rem 2.5rem;
+}
+
+[data-journal-weekday] {
+  color: var(--text-muted);
+  font-size: 0.74rem;
+  font-weight: 400;
+  margin-left: 0.5rem;
+}
+
+[data-journal-day-picker] {
+  display: flex;
+  flex-direction: column;
+  gap: 0.42rem;
+  min-width: 0;
+}
+
+[data-journal-day-picker-item] {
+  background: color-mix(in srgb, var(--surface-1) 60%, transparent);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+[data-journal-day-picker-item][data-selected] {
+  background: var(--surface-2);
+  border-color: var(--line-strong);
+}
+
+[data-journal-day-picker-item] > button {
+  align-items: baseline;
+  background: transparent;
+  border: 0;
+  color: var(--text-soft);
+  cursor: pointer;
+  display: flex;
+  gap: 0.6rem;
+  justify-content: space-between;
+  padding: 0.62rem 0.7rem;
+  text-align: left;
+  width: 100%;
+}
+
+[data-journal-day-picker-item][data-selected] > button {
+  color: var(--text);
+}
+
+[data-journal-day-picker-title] {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-journal-day-picker-title] [data-work-log-task-content],
+[data-journal-day-picker-title] button[data-open-task] {
+  border: 0;
+  max-width: 100%;
+  overflow: hidden;
+  padding: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-journal-day-picker-credits] {
+  flex: 0 0 auto;
+  font-family: var(--font-numeric);
+  font-size: 0.74rem;
+}
+
+[data-journal-day-breakdown] {
+  border-top: 1px solid var(--line);
+  display: none;
+  padding: 0.5rem 0.7rem;
+}
+
+[data-journal-day-picker-item][data-selected] [data-journal-day-breakdown] {
+  display: block;
+}
+
+[data-journal-day-breakdown] [data-task-usage-breakdown],
+[data-journal-day-breakdown] [data-work-log-workspace-usage-breakdown] {
+  background: transparent;
+  border: 0;
+  display: block;
+  position: static;
+  width: 100%;
+}
+
+[data-journal-day-panels] {
+  min-width: 0;
+}
+
+[data-journal-day-panel] {
+  min-width: 0;
+}
+
+[data-journal-day-panel][hidden] {
+  display: none;
+}
+
+[data-journal-day-panel-heading] {
+  color: var(--text-faint);
+  font-family: var(--font-title);
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  margin-bottom: 0.42rem;
+  text-transform: uppercase;
+}
+
+@media (min-width: 861px) {
+  [data-journal-ledger-expanded] > [data-work-log-task-profile] {
+    grid-template-columns: minmax(0, 1fr) minmax(230px, 320px);
+  }
+}
+
+@media (max-width: 1100px) {
+  .journal-shell-head {
+    flex-wrap: wrap;
+  }
+
+  .journal-shell-totals {
+    order: 2;
+    width: 100%;
+  }
+
+  .journal-ledger-head,
+  summary[data-journal-ledger-summary] {
+    column-gap: 0.8rem;
+    grid-template-columns: minmax(230px, 1fr) 62px 88px 118px 62px;
+  }
+}
+
+@media (max-width: 860px) {
+  .journal-view {
+    padding-left: 0.55rem;
+    padding-right: 0.55rem;
+  }
+
+  .journal-shell-head {
+    gap: 0.65rem;
+  }
+
+  .journal-shell-title {
+    margin-right: auto;
+  }
+
+  .journal-grouping-tabs {
+    display: grid;
+    flex: 1 1 100%;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    order: 3;
+  }
+
+  .journal-grouping-tabs button {
+    min-width: 0;
+    padding-inline: 0.25rem;
+  }
+
+  .journal-collapse-all {
+    order: 1;
+  }
+
+  .journal-shell-totals {
+    font-size: 0.68rem;
+    gap: 0.35rem 0.65rem;
+    order: 2;
+  }
+
+  .journal-ledger-head {
+    display: none;
+  }
+
+  .journal summary[data-journal-ledger-summary] {
+    column-gap: 0.55rem;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    padding: 0.68rem 0.75rem;
+    row-gap: 0.5rem;
+  }
+
+  [data-journal-ledger-title] {
+    grid-column: 1 / -1;
+  }
+
+  [data-journal-ledger-metric] {
+    align-items: end;
+    display: flex;
+    flex-direction: column;
+    gap: 0.12rem;
+    justify-self: stretch;
+    text-align: left;
+  }
+
+  [data-journal-ledger-metric]::before {
+    color: var(--text-faint);
+    font-family: var(--font-title);
+    font-size: 0.48rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+
+  [data-journal-ledger-metric="turns"]::before { content: "Ходы"; }
+  [data-journal-ledger-metric="credits"]::before { content: "Расход"; }
+  [data-journal-ledger-metric="duration"]::before { content: "Время"; }
+  [data-journal-ledger-metric="gaps"]::before { content: "Пробелы"; }
+
+  [data-journal-ledger-expanded],
+  [data-journal-day-expanded] {
+    display: block;
+    padding: 0.7rem 0.75rem 0.9rem;
+  }
+
+  [data-journal-day-picker] {
+    margin-bottom: 0.8rem;
+  }
+
+  [data-journal-turn-list] {
+    margin-top: 0.8rem;
+  }
 }
 
 html[data-view="server"] .server-view {

@@ -41,6 +41,18 @@ function fixture() {
       body: "answer",
       title: "Turn",
     }),
+    searchMessage: ({ itemId }) => itemId === "assistant-middle" ? {
+      provider: "codex",
+      threadId: "thread-1",
+      turnThreadId: "thread-1",
+      turnId: "turn-1",
+      itemId,
+      role: "assistant",
+      text: "intermediate answer",
+      occurredAt: "2026-08-10T08:00:00.000Z",
+      attachmentNames: [],
+    } : null,
+    threadsForStream: () => [{ provider: "codex", threadId: "thread-1" }],
     samePath: (left, right) => left.toLowerCase() === right.toLowerCase(),
     chatId: () => 101,
   });
@@ -149,4 +161,19 @@ test("Desktop turn open forwards compact limits and bounds its history", async (
   assert.ok(historyParams.maxResponseBytes < 430_000);
   assert.equal(calls.at(-1)[0], "dispatch");
   assert.equal(calls.at(-1)[2].compactSnapshot, true);
+});
+
+test("Desktop turn open returns the exact indexed intermediate message", async () => {
+  const { service } = fixture();
+  const result = await service.openTurn({
+    streamId: "stream-1",
+    provider: "codex",
+    taskThreadId: "thread-1",
+    turnThreadId: "thread-1",
+    turnId: "turn-1",
+    itemId: "assistant-middle",
+  });
+  assert.equal(result.focusedMessage.itemId, "assistant-middle");
+  assert.equal(result.focusedTurn.focusItemId, "assistant-middle");
+  assert.equal(result.focusedTurn.messages[0].text, "intermediate answer");
 });

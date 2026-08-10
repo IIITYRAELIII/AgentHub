@@ -34,6 +34,15 @@ test("codexTurnAnswer preserves every visible agent message in the turn", () => 
   }), "Первое сообщение\n\nВторое сообщение\n\nПоследний абзац");
 });
 
+test("codexTurnAnswer includes the final Plan item", () => {
+  assert.equal(codexTurnAnswer({
+    items: [
+      { type: "agentMessage", phase: "commentary", text: "Уточняю требования." },
+      { type: "plan", text: "1. Исправить\n2. Проверить" },
+    ],
+  }), "Уточняю требования.\n\n1. Исправить\n2. Проверить");
+});
+
 test("codexFinalTurnAnswer returns the explicit final answer instead of commentary", () => {
   assert.equal(codexFinalTurnAnswer({
     items: [

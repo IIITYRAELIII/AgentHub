@@ -40,6 +40,7 @@ export function createDesktopSystemComposition({
     desktopRateLimitHistory: (...args) => desktopSystemService.rateLimitHistory(...args),
     desktopUsageHistory: (...args) => desktopSystemService.usageHistory(...args),
     desktopSearch: (...args) => desktopSystemService.search(...args),
+    desktopWorkspaceMessageSearch: (...args) => desktopSystemService.workspaceMessageSearch(...args),
     desktopTrustedDevices: (...args) => desktopSystemService.trustedDevices(...args),
     desktopCreateDevicePairing: (...args) => desktopSystemService.createDevicePairing(...args),
     desktopRevokeDevice: (...args) => desktopSystemService.revokeDevice(...args),

@@ -27,6 +27,7 @@ const {
   liveTraceGroupId,
 } = window.AgentHubMessageDisclosure;
 const chatSurfacePreference = window.AgentHubChatSurfacePreference;
+const JournalView = window.AgentHubJournalView;
 const expandedUserMessageIds = new Set();
 let messageDisclosureFrame = 0;
 const journal = document.querySelector("[data-journal]");
@@ -40,6 +41,11 @@ const themeSelect = document.querySelector("[data-theme-select]");
 const backgroundSelect = document.querySelector("[data-background-select]");
 const chatBackgroundToggle = document.querySelector("[data-chat-background-toggle]");
 const groupSelect = document.querySelector("[data-group-select]");
+const journalGroupingButtons = [...document.querySelectorAll("[data-journal-grouping]")];
+const journalPrimaryColumn = document.querySelector("[data-journal-primary-column]");
+const journalWorkspaceCount = document.querySelector("[data-journal-workspace-count]");
+const journalTotalCredits = document.querySelector("[data-journal-total-credits]");
+const journalTotalDuration = document.querySelector("[data-journal-total-duration]");
 const themeColor = document.querySelector("[data-theme-color]");
 
 const taskList = document.querySelector("[data-task-list]");
@@ -74,6 +80,15 @@ const chatLive = document.querySelector("[data-chat-live]");
 const chatStops = [...document.querySelectorAll("[data-chat-stop]")];
 const dialogSettings = document.querySelector("[data-dialog-settings]");
 const dialogSettingsToggle = document.querySelector("[data-dialog-settings-toggle]");
+const workspaceMessageSearch = document.querySelector("[data-workspace-message-search]");
+const workspaceMessageSearchToggle = document.querySelector("[data-workspace-message-search-toggle]");
+const workspaceMessageSearchClose = document.querySelector("[data-workspace-message-search-close]");
+const workspaceMessageSearchTitle = document.querySelector("[data-workspace-message-search-title]");
+const workspaceMessageSearchCount = document.querySelector("[data-workspace-message-search-count]");
+const workspaceMessageSearchInput = document.querySelector("[data-workspace-message-search-input]");
+const workspaceMessageSearchStatus = document.querySelector("[data-workspace-message-search-status]");
+const workspaceMessageSearchResults = document.querySelector("[data-workspace-message-search-results]");
+const workspaceMessageSearchMore = document.querySelector("[data-workspace-message-search-more]");
 
 const composer = document.querySelector("[data-composer]");
 const composerGrow = document.querySelector("[data-composer-grow]");
@@ -116,6 +131,8 @@ const streamStatusEffectSelect = document.querySelector("[data-stream-status-eff
 const streamOrderModeSelect = document.querySelector("[data-stream-order-mode-select]");
 const activityPeriodHours = document.querySelector("[data-activity-period-hours]");
 const activityPeriodMinutes = document.querySelector("[data-activity-period-minutes]");
+const streamActivityDirectionRow = document.querySelector("[data-stream-activity-direction-row]");
+const streamActivityDirectionSelect = document.querySelector("[data-stream-activity-direction-select]");
 const usageUnitButtons = [...document.querySelectorAll("[data-usage-unit]")];
 const exchangeRateHint = document.querySelector("[data-exchange-rate-hint]");
 const panelScrim = document.querySelector("[data-panel-scrim]");
@@ -199,7 +216,7 @@ const comparisonViewModeButtons = [...document.querySelectorAll("[data-compariso
 /* --------------------------------------------------------- Telegram / темы */
 
 let journalHtml = "";
-let grouping = "date";
+let grouping = "task";
 let usageUnit = "cr";
 let usdRubRate = null;
 let usdRubEffectiveDate = "";
@@ -207,7 +224,9 @@ let exchangeRatesInitialized = false;
 let groupClaudeTasks = false;
 let collapseStreams = false;
 let streamOrderMode = "activity";
+let streamActivityDirection = "start";
 const groupingStates = { date: null, week: null, month: null, task: null };
+const journalDaySelections = new Map();
 const TASK_GROUP_TURN_PAGE_SIZE = 30;
 const taskGroupTurns = new WeakMap();
 const telegram = window.Telegram?.WebApp;
@@ -342,7 +361,7 @@ if (themeSelect) {
     return option;
   }));
 }
-const groupings = new Set(["date", "week", "month", "task"]);
+const groupings = new Set(JournalView.GROUPINGS);
 const usageUnits = new Set(["$", "rub", "cr", "pte"]);
 const CREDITS_PER_USD = 25;
 const PTE_PER_CREDIT = 16_000;
@@ -669,6 +688,7 @@ function applyStreamStatusEffect(value, { persist = false } = {}) {
 }
 
 const STREAM_ORDER_MODE_KEY = "agent-hub-stream-order-mode";
+const STREAM_ACTIVITY_DIRECTION_KEY = "agent-hub-stream-activity-direction";
 
 function savedStreamOrderMode() {
   try {
@@ -684,6 +704,8 @@ function applyStreamOrderMode(value, { persist = false, update = false } = {}) {
   streamOrderMode = window.AgentHubStreamTabs.normalizeStreamOrderMode(value);
   root.dataset.streamOrderMode = streamOrderMode;
   if (streamOrderModeSelect) streamOrderModeSelect.value = streamOrderMode;
+  if (streamActivityDirectionRow) streamActivityDirectionRow.hidden = streamOrderMode !== "activity";
+  if (streamActivityDirectionSelect) streamActivityDirectionSelect.disabled = streamOrderMode !== "activity";
   if (streamTabs) streamTabs.dataset.orderMode = streamOrderMode;
   if (persist) {
     try {
@@ -783,16 +805,48 @@ function applyStreamCollapse(value, { persist = false, update = false } = {}) {
 function savedGrouping() {
   try {
     const value = localStorage.getItem("agent-hub-grouping");
-    return groupings.has(value) ? value : "date";
+    return JournalView.normalizeGrouping(value);
   } catch {
-    return "date";
+    return "task";
+  }
+}
+
+function savedStreamActivityDirection() {
+  try {
+    return window.AgentHubStreamTabs.normalizeStreamActivityDirection(
+      localStorage.getItem(STREAM_ACTIVITY_DIRECTION_KEY),
+    );
+  } catch {
+    return "start";
+  }
+}
+
+function applyStreamActivityDirection(value, { persist = false, update = false } = {}) {
+  streamActivityDirection = window.AgentHubStreamTabs.normalizeStreamActivityDirection(value);
+  root.dataset.streamActivityDirection = streamActivityDirection;
+  if (streamActivityDirectionSelect) streamActivityDirectionSelect.value = streamActivityDirection;
+  if (streamTabs) streamTabs.dataset.activityDirection = streamActivityDirection;
+  if (persist) {
+    try {
+      localStorage.setItem(STREAM_ACTIVITY_DIRECTION_KEY, streamActivityDirection);
+    } catch {
+      // Выбор останется активным до закрытия WebView.
+    }
+  }
+  if (update) {
+    renderStreamTabs();
+    renderStreamChatDeck();
   }
 }
 
 function selectGrouping(value, { persist = false } = {}) {
-  grouping = groupings.has(value) ? value : "date";
+  grouping = JournalView.normalizeGrouping(value);
   document.documentElement.dataset.grouping = grouping;
   groupSelect.value = grouping;
+  if (journalPrimaryColumn) journalPrimaryColumn.textContent = JournalView.primaryColumn(grouping);
+  for (const button of journalGroupingButtons) {
+    button.setAttribute("aria-pressed", String(button.dataset.journalGrouping === grouping));
+  }
   if (persist) {
     try {
       localStorage.setItem("agent-hub-grouping", grouping);
@@ -880,6 +934,7 @@ applyStreamStatusStyle(savedStreamStatusStyle());
 applyStreamStatusEffect(savedStreamStatusEffect());
 applyStreamOrderMode(savedStreamOrderMode());
 applyActivityRecentPeriod(savedActivityRecentMinutes());
+applyStreamActivityDirection(savedStreamActivityDirection());
 applyStreamCollapse(savedStreamCollapse());
 selectUsageUnit(savedUsageUnit());
 selectUsageRateBasis(savedUsageRateBasis());
@@ -898,6 +953,9 @@ streamOrderModeSelect?.addEventListener("change", () => {
 });
 activityPeriodHours?.addEventListener("change", applyActivityRecentPeriodInputs);
 activityPeriodMinutes?.addEventListener("change", applyActivityRecentPeriodInputs);
+streamActivityDirectionSelect?.addEventListener("change", () => {
+  applyStreamActivityDirection(streamActivityDirectionSelect.value, { persist: true, update: true });
+});
 streamCollapseToggle?.addEventListener("change", () => {
   applyStreamCollapse(streamCollapseToggle.checked, { persist: true, update: true });
 });
@@ -927,6 +985,15 @@ groupSelect.addEventListener("change", () => {
   selectGrouping(groupSelect.value, { persist: true });
   if (journalHtml) renderJournal();
 });
+for (const button of journalGroupingButtons) {
+  button.addEventListener("click", () => {
+    const next = JournalView.normalizeGrouping(button.dataset.journalGrouping);
+    if (next === grouping) return;
+    if (journalRendered) groupingStates[grouping] = captureOpenState();
+    selectGrouping(next, { persist: true });
+    if (journalHtml) renderJournal();
+  });
+}
 
 /* Нативное раскрытое меню select рисует операционная система, поэтому его
    выделение не следует токенам темы. Обёртка сохраняет исходный select как
@@ -1300,6 +1367,17 @@ const state = {
   searchQuery: "",
   searchResults: new Map(),
   searchLoading: false,
+  workspaceMessageSearch: {
+    open: false,
+    workspaceId: "",
+    query: "",
+    results: [],
+    total: 0,
+    nextOffset: null,
+    loading: false,
+    error: "",
+    indexing: null,
+  },
   // This is presentation state, intentionally local to one client. The Hub
   // selects a Thread; a wide shell may keep several Streams from the same
   // Workspace visible without making another device jump to that layout.
@@ -1447,7 +1525,11 @@ function persistOpenStreams() {
 }
 
 function orderedWorkspaceStreams(streams) {
-  return window.AgentHubStreamTabs.orderWorkspaceStreams(streams, streamOrderMode);
+  return window.AgentHubStreamTabs.orderWorkspaceStreams(
+    streams,
+    streamOrderMode,
+    streamActivityDirection,
+  );
 }
 
 function reconcileOpenStreams(workspaceId, streams) {
@@ -2166,7 +2248,7 @@ function renderStreamTabs() {
     ]);
     return button;
   });
-  tabs.push(el("button", {
+  const createTab = el("button", {
     type: "button",
     class: "stream-tab stream-tab-create",
     "data-action": "stream-create",
@@ -2176,7 +2258,12 @@ function renderStreamTabs() {
   }, [el("span", { class: "stream-tab-card" }, [
     el("span", { class: "stream-tab-create-mark", text: "+" }),
     el("span", { class: "stream-tab-create-label", text: "Новый Stream" }),
-  ])]));
+  ])]);
+  if (window.AgentHubStreamTabs.streamCreationSide(streamOrderMode, streamActivityDirection) === "start") {
+    tabs.unshift(createTab);
+  } else {
+    tabs.push(createTab);
+  }
   streamTabs.replaceChildren(...tabs);
   streamTabs.hidden = false;
 }
@@ -2449,23 +2536,156 @@ activityStreamList?.addEventListener("click", (event) => {
   const item = event.target.closest("[data-activity-task-id]");
   if (item) selectTaskFromUi(String(item.dataset.activityTaskId ?? ""));
 });
-let taskSearchTimer = null;
 taskFilter.addEventListener("input", () => {
-  const query = String(taskFilter.value ?? "").trim();
-  state.searchQuery = query;
+  renderTasks();
+});
+
+function workspaceSearchSnippet(text, query) {
+  const container = el("span", { class: "workspace-message-search-snippet" });
+  const terms = String(query ?? "").trim().split(/\s+/u).filter(Boolean)
+    .sort((left, right) => right.length - left.length);
+  if (!terms.length) {
+    container.textContent = String(text ?? "");
+    return container;
+  }
+  const escaped = terms.map((term) => term.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"));
+  const matcher = new RegExp(`(${escaped.join("|")})`, "giu");
+  for (const part of String(text ?? "").split(matcher)) {
+    if (!part) continue;
+    container.append(matcher.test(part) ? el("mark", { text: part }) : document.createTextNode(part));
+    matcher.lastIndex = 0;
+  }
+  return container;
+}
+
+function renderWorkspaceMessageSearch() {
+  const search = state.workspaceMessageSearch;
+  if (!workspaceMessageSearch) return;
+  workspaceMessageSearch.hidden = !search.open;
+  root.toggleAttribute("data-workspace-message-search-open", search.open);
+  if (!search.open) return;
+  workspaceMessageSearchCount.textContent = search.total ? `${search.total} совп.` : "";
+  workspaceMessageSearchResults.replaceChildren();
+  const groups = new Map();
+  for (const result of search.results) {
+    const values = groups.get(result.streamId) ?? [];
+    values.push(result);
+    groups.set(result.streamId, values);
+  }
+  for (const values of groups.values()) {
+    const first = values[0];
+    const group = el("section", { class: "workspace-message-search-group" }, [
+      el("header", { class: "workspace-message-search-group-head" }, [
+        el("strong", { text: first.streamName || `Stream ${first.streamOrdinal || 1}` }),
+        el("span", { text: String(values.length) }),
+      ]),
+    ]);
+    for (const result of values) {
+      const occurred = result.occurredAt ? new Date(result.occurredAt) : null;
+      group.append(el("button", {
+        type: "button",
+        class: "workspace-message-search-hit",
+        "data-workspace-message-search-result": result.id,
+        title: "Открыть сообщение",
+      }, [
+        el("span", { class: "workspace-message-search-hit-meta" }, [
+          el("strong", { text: result.role === "user" ? "Вы" : result.provider === "claude" ? "Claude" : "Codex" }),
+          el("span", { text: occurred && Number.isFinite(occurred.getTime())
+            ? occurred.toLocaleString("ru-RU", { dateStyle: "short", timeStyle: "short" })
+            : "" }),
+          result.matchedField === "attachment"
+            ? el("span", { class: "workspace-message-search-field", text: "Вложение" })
+            : null,
+        ]),
+        workspaceSearchSnippet(result.snippet, search.query),
+      ]));
+    }
+    workspaceMessageSearchResults.append(group);
+  }
+  const shortQuery = search.query.length < 2;
+  const indexing = search.indexing ?? {};
+  const indexingActive = indexing.state === "indexing";
+  const indexingPartial = indexing.state === "partial";
+  workspaceMessageSearchStatus.hidden = Boolean(search.results.length)
+    && !search.loading && !search.error && !indexingActive && !indexingPartial;
+  workspaceMessageSearchStatus.textContent = search.error
+    || (shortQuery ? "Введите минимум два символа."
+      : search.loading ? "Ищем во всех Streams…"
+        : indexingActive
+          ? `Индексируем историю: ${indexing.completedThreads ?? 0} из ${indexing.totalThreads ?? 0} Streams.`
+          : indexingPartial
+            ? `Индекс готов частично: ${indexing.failedThreads ?? 0} Streams пока недоступно.`
+        : search.results.length ? "" : "Ничего не найдено.");
+  workspaceMessageSearchMore.hidden = search.nextOffset == null || search.loading;
+}
+
+function openWorkspaceMessageSearch() {
+  const task = currentTask();
+  const workspaceId = String(task?.workspaceId ?? "").trim();
+  if (!workspaceId) return showToast("Сначала выберите Workspace");
+  const search = state.workspaceMessageSearch;
+  search.open = true;
+  search.workspaceId = workspaceId;
+  workspaceMessageSearchTitle.textContent = `Поиск в «${task.workspaceName || task.title || "Workspace"}»`;
+  renderWorkspaceMessageSearch();
+  window.requestAnimationFrame(() => workspaceMessageSearchInput?.focus());
+}
+
+function closeWorkspaceMessageSearch({ restoreFocus = true } = {}) {
+  state.workspaceMessageSearch.open = false;
+  clearTimeout(workspaceMessageSearchIndexPollTimer);
+  renderWorkspaceMessageSearch();
+  if (restoreFocus) workspaceMessageSearchToggle?.focus();
+}
+
+let workspaceMessageSearchTimer = null;
+let workspaceMessageSearchIndexPollTimer = null;
+function requestWorkspaceMessageSearch({ append = false } = {}) {
+  const search = state.workspaceMessageSearch;
+  const query = String(workspaceMessageSearchInput?.value ?? "").trim();
+  search.query = query;
+  search.error = "";
+  if (!append) {
+    search.results = [];
+    search.total = 0;
+    search.nextOffset = null;
+  }
   if (query.length < 2) {
-    state.searchResults.clear();
-    state.searchLoading = false;
-    clearTimeout(taskSearchTimer);
-    renderTasks();
+    search.loading = false;
+    renderWorkspaceMessageSearch();
     return;
   }
-  renderTasks();
-  clearTimeout(taskSearchTimer);
-  taskSearchTimer = window.setTimeout(() => {
-    state.searchLoading = true;
-    emit("search:query", { query });
-  }, 250);
+  search.loading = true;
+  renderWorkspaceMessageSearch();
+  emit("workspace-search:query", {
+    workspaceId: search.workspaceId,
+    query,
+    offset: append ? search.nextOffset ?? search.results.length : 0,
+    limit: 40,
+    append,
+  });
+}
+
+workspaceMessageSearchToggle?.addEventListener("click", openWorkspaceMessageSearch);
+workspaceMessageSearchClose?.addEventListener("click", () => closeWorkspaceMessageSearch());
+workspaceMessageSearchInput?.addEventListener("input", () => {
+  clearTimeout(workspaceMessageSearchTimer);
+  workspaceMessageSearchTimer = window.setTimeout(() => requestWorkspaceMessageSearch(), 250);
+});
+workspaceMessageSearchMore?.addEventListener("click", () => requestWorkspaceMessageSearch({ append: true }));
+workspaceMessageSearchResults?.addEventListener("click", (event) => {
+  const hit = event.target.closest("[data-workspace-message-search-result]");
+  if (!hit) return;
+  const result = state.workspaceMessageSearch.results.find(
+    (candidate) => candidate.id === hit.dataset.workspaceMessageSearchResult,
+  );
+  if (result) emit("workspace-search:open", result);
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && state.workspaceMessageSearch.open) {
+    event.preventDefault();
+    closeWorkspaceMessageSearch();
+  }
 });
 
 let suppressStreamTabClick = false;
@@ -3725,6 +3945,8 @@ function renderMessage(message, { readOnly = false, task = currentTask() } = {})
     class: `msg msg-${role}${maintenance ? " msg-maintenance" : ""}`,
     "data-role": role,
     "data-message-id": message.id ?? "",
+    "data-turn-id": message.turnId ?? "",
+    "data-item-id": message.itemId ?? "",
     "data-delivery-state": message.deliveryState ?? "",
   });
 
@@ -4101,10 +4323,7 @@ function renderQueue() {
 const slashCommands = [
   { command: "/new", label: "Новая задача", action: "task-new" },
   { command: "/tasks", label: "Открыть список задач", run: () => setPane("tasks") },
-  { command: "/search", label: "Поиск по истории", run: () => {
-    setPane("tasks");
-    taskFilter.focus();
-  } },
+  { command: "/search", label: "Поиск по сообщениям Workspace", run: openWorkspaceMessageSearch },
   { command: "/model", label: "Выбрать модель", run: openDialogSettings },
   { command: "/reasoning", label: "Настроить reasoning", run: openDialogSettings },
   { command: "/mode", label: "Выбрать режим", run: openDialogSettings },
@@ -5566,19 +5785,11 @@ async function handleAction(action, trigger) {
       });
       break;
     case "approval-submit": {
-      const approval = trigger.closest("[data-approval-id]");
-      const answers = {};
-      for (const field of approval?.querySelectorAll("[data-approval-question]") ?? []) {
-        const id = field.dataset.approvalQuestion;
-        const selected = field.querySelector("input[type='radio']:checked")?.value ?? "";
-        const other = field.querySelector("[data-approval-other]")?.value?.trim() ?? "";
-        answers[id] = [other || selected].filter(Boolean);
-      }
       emit("approval:respond", {
         taskId,
         id: trigger.dataset.approvalId,
         decision: "submit",
-        answers,
+        answers: window.AgentHubApprovalForm.collectAnswers(trigger),
       });
       break;
     }
@@ -5695,6 +5906,21 @@ const AgentHub = {
       workspaceKey(previousSelectedTask) !== workspaceKey(nextSelectedTask)
       || streamKey(previousSelectedTask) !== streamKey(nextSelectedTask)
     );
+    if (state.workspaceMessageSearch.open && nextSelectedTask
+      && state.workspaceMessageSearch.workspaceId !== workspaceKey(nextSelectedTask)) {
+      closeWorkspaceMessageSearch({ restoreFocus: false });
+      Object.assign(state.workspaceMessageSearch, {
+        workspaceId: "",
+        query: "",
+        results: [],
+        total: 0,
+        nextOffset: null,
+        loading: false,
+        error: "",
+        indexing: null,
+      });
+      if (workspaceMessageSearchInput) workspaceMessageSearchInput.value = "";
+    }
     if (!tasksChanged && !selectionChanged) return;
     if (selectionChanged && state.selectedId) saveDraft();
     state.tasks = nextTasks;
@@ -5833,6 +6059,56 @@ const AgentHub = {
       .map((result) => [result.id, result]));
     state.searchLoading = false;
     renderTasks();
+  },
+  setWorkspaceMessageSearchResults(payload, { append = false } = {}) {
+    const search = state.workspaceMessageSearch;
+    if (String(payload?.workspaceId ?? "") !== search.workspaceId
+      || String(payload?.query ?? "").trim() !== search.query) return;
+    const received = Array.isArray(payload?.results) ? payload.results : [];
+    search.results = append ? [...search.results, ...received] : received;
+    search.total = Math.max(0, Number(payload?.total) || 0);
+    search.nextOffset = Number.isSafeInteger(Number(payload?.nextOffset))
+      ? Number(payload.nextOffset)
+      : null;
+    search.indexing = payload?.indexing ?? null;
+    search.loading = false;
+    search.error = "";
+    renderWorkspaceMessageSearch();
+    clearTimeout(workspaceMessageSearchIndexPollTimer);
+    if (search.open && search.indexing?.state === "indexing") {
+      workspaceMessageSearchIndexPollTimer = window.setTimeout(() => {
+        if (!search.open || search.indexing?.state !== "indexing") return;
+        emit("workspace-search:query", {
+          workspaceId: search.workspaceId,
+          query: search.query,
+          offset: 0,
+          limit: Math.min(100, Math.max(40, search.results.length)),
+          append: false,
+        });
+      }, 800);
+    }
+  },
+  setWorkspaceMessageSearchError(message) {
+    clearTimeout(workspaceMessageSearchIndexPollTimer);
+    state.workspaceMessageSearch.loading = false;
+    state.workspaceMessageSearch.error = String(message ?? "Не удалось выполнить поиск");
+    renderWorkspaceMessageSearch();
+  },
+  openWorkspaceMessageSearch,
+  closeWorkspaceMessageSearch,
+  focusMessage({ turnId, itemId } = {}) {
+    const target = [...chatLog.querySelectorAll("[data-item-id]")].find((node) => (
+      String(node.dataset.turnId ?? "") === String(turnId ?? "")
+      && String(node.dataset.itemId ?? "") === String(itemId ?? "")
+    ));
+    if (!target) return false;
+    chatLog.querySelectorAll("[data-search-match]").forEach((node) => {
+      node.removeAttribute("data-search-match");
+    });
+    target.setAttribute("data-search-match", "");
+    target.scrollIntoView({ block: "center", behavior: "smooth" });
+    window.setTimeout(() => target.removeAttribute("data-search-match"), 4_000);
+    return true;
   },
   /** running=true подсвечивает индикатор и показывает «Стоп». */
   setRunning(taskId, running) {
@@ -8812,6 +9088,7 @@ let currentVersion = "";
 let loading = null;
 const loadingDays = new Map();
 const loadingTurns = new Map();
+const journalDayHtmlCache = new Map();
 let journalRendered = false;
 let journalRequested = false;
 let desiredOpenState = null;
@@ -9090,10 +9367,15 @@ async function loadLazyDay(details) {
   desiredOpenState = captureOpenState();
   details.setAttribute("aria-busy", "true");
   const promise = (async () => {
-    const payload = await fetchJournalFragment("/api/journal/day", { date });
+    let html = journalDayHtmlCache.get(date);
+    if (!html) {
+      const payload = await fetchJournalFragment("/api/journal/day", { date });
+      html = payload.html;
+      journalDayHtmlCache.set(date, html);
+    }
     if (!details.isConnected) return;
     const template = document.createElement("template");
-    template.innerHTML = payload.html.trim();
+    template.innerHTML = html.trim();
     const replacement = template.content.firstElementChild;
     if (!replacement?.matches("details[data-work-log-day-section]")) {
       throw new Error("Некорректный фрагмент дня.");
@@ -9492,30 +9774,7 @@ function groupClaudeRowsInDay(day) {
 }
 
 function periodIdentity(value, mode) {
-  const date = parseJournalDate(value);
-  if (!date) return null;
-  if (mode === "month") {
-    const start = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1));
-    return {
-      key: `${start.getUTCFullYear()}-${String(start.getUTCMonth() + 1).padStart(2, "0")}`,
-      sort: start.getTime(),
-      label: new Intl.DateTimeFormat("ru-RU", {
-        timeZone: "UTC",
-        month: "long",
-        year: "numeric",
-      }).format(start),
-    };
-  }
-  const mondayOffset = (date.getUTCDay() + 6) % 7;
-  const start = new Date(date);
-  start.setUTCDate(start.getUTCDate() - mondayOffset);
-  const end = new Date(start);
-  end.setUTCDate(end.getUTCDate() + 6);
-  return {
-    key: start.toISOString().slice(0, 10),
-    sort: start.getTime(),
-    label: `${formatJournalDate(start)} — ${formatJournalDate(end)}`,
-  };
+  return JournalView.periodIdentity(value, mode);
 }
 
 function periodGroupingContent(source, mode) {
@@ -9529,28 +9788,28 @@ function periodGroupingContent(source, mode) {
     periods.get(period.key).days.push(day.cloneNode(true));
   }
   const fragment = document.createDocumentFragment();
-  const ordered = [...periods.values()].sort((left, right) => right.sort - left.sort);
+  const ordered = [...periods.values()].sort((left, right) => right.sort - left.sort)
+    .map((period) => {
+      const sourceDays = document.createElement("div");
+      sourceDays.append(...period.days);
+      return {
+        ...period,
+        group: combinedJournalGroup(taskGroupsFrom(sourceDays), {
+          provider: `period-${mode}`,
+          threadId: period.key,
+        }),
+      };
+    });
+  const cohort = ordered.map((period) => period.group);
   ordered.forEach((period, index) => {
-    const section = document.createElement("details");
+    const section = journalGroupSection(period.group, cohort, {
+      label: period.label,
+      profileTitle: mode === "week" ? "Профиль недели" : "Профиль месяца",
+      profileItemName: mode === "week" ? "Эта неделя" : "Этот месяц",
+      profileCohortName: mode === "week" ? "видимых недель" : "видимых месяцев",
+    });
     section.dataset.workLogPeriodSection = mode;
     section.open = index === 0;
-    const summary = document.createElement("summary");
-    summary.dataset.workLogPeriod = "";
-    summary.append(el("strong", { text: period.label }));
-    const sourceDays = document.createElement("div");
-    sourceDays.append(...period.days);
-    const groups = taskGroupsFrom(sourceDays);
-    const total = groups.reduce((sum, group) => sum + (Number(group.credits) || 0), 0);
-    if (groups.some((group) => Number.isFinite(group.credits))) {
-      summary.append(el("span", { class: "period-usage" }, [
-        el("span", { "data-usage-label": "", text: "Итого" }),
-        " ",
-        usageBadge(formatUsageValue(total), total),
-      ]));
-    }
-    section.append(summary, taskGroupingContent(sourceDays, {
-      overview: `Задач: ${groups.length}.`,
-    }));
     fragment.append(section);
   });
   return fragment;
@@ -9699,8 +9958,12 @@ function taskProfileAccordion(axis, group) {
   return details;
 }
 
-function taskProfile(group, cohort) {
-  const comparableCohort = cohort.filter((item) => item.provider === group.provider);
+function taskProfile(group, cohort, {
+  title: profileTitle = "Профиль задачи",
+  itemName = "Эта задача",
+  cohortName = "видимых задач",
+} = {}) {
+  const comparableCohort = JournalView.profileCohort(cohort, group.provider);
   const scales = Object.fromEntries(taskProfileAxes.map((axis) => [
     axis.key,
     profileScale(comparableCohort.map((item) => item[axis.key])),
@@ -9723,10 +9986,12 @@ function taskProfile(group, cohort) {
   const heading = document.createElement("div");
   heading.dataset.workLogTaskProfileHeading = "";
   const title = document.createElement("strong");
-  title.textContent = "Профиль задачи";
+  title.textContent = profileTitle;
   const caption = document.createElement("span");
-  const providerLabel = group.provider === "claude" ? "Claude" : "Codex";
-  caption.textContent = `Относительно видимых задач ${providerLabel}. Больше — не лучше, а больше по масштабу.`;
+  const providerLabel = group.provider === "claude"
+    ? "Claude"
+    : group.provider === "codex" ? "Codex" : "";
+  caption.textContent = `Относительно ${cohortName}${providerLabel ? ` ${providerLabel}` : ""}. Больше — не лучше, а больше по масштабу.`;
   heading.append(title, caption);
   const values = document.createElement("div");
   values.dataset.workLogTaskProfileValues = "";
@@ -9760,7 +10025,7 @@ function taskProfile(group, cohort) {
     const baselineValue = formatProfileAxisValue(axis, baselines[axis.key]);
     tooltip.replaceChildren(
       el("strong", { text: axis.label }),
-      el("span", { text: `Эта задача: ${currentValue}` }),
+      el("span", { text: `${itemName}: ${currentValue}` }),
       el("span", { text: `Медиана: ${baselineValue}` }),
     );
     tooltip.style.setProperty("--radar-tooltip-x", `${point.x / 360 * 100}%`);
@@ -9828,7 +10093,7 @@ function taskProfile(group, cohort) {
       r: 13,
       tabindex: 0,
       focusable: true,
-      "aria-label": `${axis.label}. Эта задача: ${
+      "aria-label": `${axis.label}. ${itemName}: ${
         formatProfileAxisValue(axis, group[axis.key])
       }. Медиана: ${formatProfileAxisValue(axis, baselines[axis.key])}.`,
       "data-radar-hit": axis.key,
@@ -9850,10 +10115,10 @@ function taskProfile(group, cohort) {
     svg.append(label);
   });
   const legend = document.createElement("figcaption");
-  legend.innerHTML = [
-    '<span data-radar-legend="current">Эта задача</span>',
-    '<span data-radar-legend="baseline">Медиана</span>',
-  ].join("");
+  legend.append(
+    el("span", { "data-radar-legend": "current", text: itemName }),
+    el("span", { "data-radar-legend": "baseline", text: "Медиана" }),
+  );
   figure.append(svg, tooltip, legend);
   section.append(copy, figure);
   return section;
@@ -9903,6 +10168,10 @@ function taskGroupsFrom(source) {
           mcpTools: new Set(),
           mcpFailures: 0,
           knownToolMetricTurns: 0,
+          streamLabels: new Set(),
+          usageBreakdown: row.querySelector("[data-task-usage-breakdown]")?.cloneNode(true)
+            ?? row.querySelector("[data-work-log-workspace-usage-breakdown]")?.cloneNode(true)
+            ?? null,
           order: order++,
         };
         groups.set(key, group);
@@ -9911,6 +10180,8 @@ function taskGroupsFrom(source) {
         const turnId = String(entry.dataset.workLogTurnId ?? "").trim();
         if (turnId && group.seenTurns.has(turnId)) continue;
         if (turnId) group.seenTurns.add(turnId);
+        const streamLabel = entry.querySelector("[data-work-log-turn-stream]")?.textContent?.trim();
+        if (streamLabel) group.streamLabels.add(streamLabel);
         group.turnCount += 1;
         const elapsed = Number(entry.dataset.workLogTurnDurationSeconds);
         if (Number.isFinite(elapsed) && elapsed >= 0) {
@@ -9992,13 +10263,14 @@ function taskGroupsFrom(source) {
       skillCount: group.knownToolMetricTurns ? group.skillNames.size : null,
       mcpCallCount: group.knownToolMetricTurns ? group.mcpCallCount : null,
       mcpTools: [...group.mcpTools].sort((left, right) => left.localeCompare(right)),
+      streamLabels: [...group.streamLabels],
     }))
     .sort((left, right) => right.latestAt - left.latestAt || left.order - right.order);
 }
 
 function appendTaskGroupTurnPage(details, { nextPage = false } = {}) {
   const turns = taskGroupTurns.get(details);
-  const body = details?.querySelector(":scope > [data-work-log-task-group-turns]");
+  const body = details?.querySelector("[data-work-log-task-group-turns]");
   if (!turns || !body) return;
   const rendered = Math.max(0, Number(body.dataset.workLogTaskRendered) || 0);
   if (rendered > 0 && !nextPage) return;
@@ -10021,76 +10293,246 @@ function appendTaskGroupTurnPage(details, { nextPage = false } = {}) {
   body.append(more);
 }
 
-function taskGroupingContent(source, { overview: overviewText = "" } = {}) {
+function combinedJournalGroup(groups, { provider = "period", threadId = "period" } = {}) {
+  const values = Array.isArray(groups) ? groups : [];
+  const skillNames = new Set(values.flatMap((group) => group.skillNames ?? []));
+  const mcpTools = new Set(values.flatMap((group) => group.mcpTools ?? []));
+  const turns = values.flatMap((group) => group.turns ?? []).sort((left, right) => (
+    (Date.parse(right.dataset.workLogTurnCompletedAt ?? "") || 0)
+      - (Date.parse(left.dataset.workLogTurnCompletedAt ?? "") || 0)
+  ));
+  const knownCredits = values.reduce((sum, group) => sum + (Number(group.knownCredits) || 0), 0);
+  const knownDurations = values.reduce((sum, group) => sum + (Number(group.knownDurations) || 0), 0);
+  const knownFileTouches = values.reduce((sum, group) => sum + (Number(group.knownFileTouches) || 0), 0);
+  const knownChangedLines = values.reduce((sum, group) => sum + (Number(group.knownChangedLines) || 0), 0);
+  const knownSubagentTurns = values.reduce((sum, group) => sum + (Number(group.knownSubagentTurns) || 0), 0);
+  const knownToolMetricTurns = values.reduce((sum, group) => sum + (Number(group.knownToolMetricTurns) || 0), 0);
+  const subagentTurns = values.reduce((sum, group) => sum + (Number(group.subagentTurns) || 0), 0);
+  return {
+    provider,
+    threadId,
+    turns,
+    turnCount: values.reduce((sum, group) => sum + (Number(group.turnCount) || 0), 0),
+    legacy: values.flatMap((group) => group.legacy ?? []),
+    credits: knownCredits
+      ? values.reduce((sum, group) => sum + (Number(group.credits) || 0), 0)
+      : null,
+    knownCredits,
+    unknownCredits: values.reduce((sum, group) => sum + (Number(group.unknownCredits) || 0), 0),
+    durationSeconds: knownDurations
+      ? values.reduce((sum, group) => sum + (Number(group.durationSeconds) || 0), 0)
+      : null,
+    knownDurations,
+    unknownDurations: values.reduce((sum, group) => sum + (Number(group.unknownDurations) || 0), 0),
+    fileTouches: knownFileTouches
+      ? values.reduce((sum, group) => sum + (Number(group.fileTouches) || 0), 0)
+      : null,
+    knownFileTouches,
+    changedLines: knownChangedLines
+      ? values.reduce((sum, group) => sum + (Number(group.changedLines) || 0), 0)
+      : null,
+    knownChangedLines,
+    subagentTurns,
+    knownSubagentTurns,
+    subagentShare: knownSubagentTurns ? subagentTurns / knownSubagentTurns * 100 : null,
+    skillNames: [...skillNames].sort((left, right) => left.localeCompare(right)),
+    skillCount: knownToolMetricTurns ? skillNames.size : null,
+    mcpCallCount: knownToolMetricTurns
+      ? values.reduce((sum, group) => sum + (Number(group.mcpCallCount) || 0), 0)
+      : null,
+    mcpFailures: values.reduce((sum, group) => sum + (Number(group.mcpFailures) || 0), 0),
+    mcpTools: [...mcpTools].sort((left, right) => left.localeCompare(right)),
+    knownToolMetricTurns,
+    latestAt: Math.max(0, ...values.map((group) => Number(group.latestAt) || 0)),
+    streamLabels: [...new Set(values.flatMap((group) => group.streamLabels ?? []))],
+  };
+}
+
+function journalGroupTitle(group, label = "") {
+  const cell = document.createElement("span");
+  cell.dataset.journalLedgerTitle = "";
+  const main = document.createElement("span");
+  main.dataset.journalLedgerTitleText = "";
+  if (label?.nodeType) main.append(label);
+  else if (label) main.textContent = label;
+  else if (group.title) main.append(group.title.cloneNode(true));
+  else main.textContent = `${group.provider} · ${group.threadId}`;
+  cell.append(main);
+  const streamLabels = group.streamLabels ?? [];
+  if (streamLabels.length) {
+    cell.append(el("span", {
+      "data-journal-stream-badge": "",
+      text: streamLabels.length === 1 ? streamLabels[0] : `${streamLabels[0]} +${streamLabels.length - 1}`,
+    }));
+  }
+  return cell;
+}
+
+function journalLedgerSummary(group, { label = "" } = {}) {
+  const summary = document.createElement("summary");
+  summary.dataset.workLogTaskGroupSummary = "";
+  summary.dataset.journalLedgerSummary = "";
+  const turns = el("span", {
+    "data-journal-ledger-metric": "turns",
+    text: String(Math.max(0, Number(group.turnCount) || 0)),
+  });
+  const credits = el("span", { "data-journal-ledger-metric": "credits" });
+  if (group.knownCredits) credits.append(usageBadge(formatUsageValue(group.credits), group.credits));
+  else credits.textContent = "—";
+  const duration = el("span", {
+    "data-journal-ledger-metric": "duration",
+    text: group.knownDurations ? formatTaskDuration(group.durationSeconds) : "—",
+  });
+  const gaps = el("span", {
+    "data-journal-ledger-metric": "gaps",
+    text: group.unknownCredits ? String(group.unknownCredits) : "—",
+  });
+  summary.append(journalGroupTitle(group, label), turns, credits, duration, gaps);
+  return summary;
+}
+
+function journalGroupSection(group, cohort, {
+  label = "",
+  profileTitle = "Профиль задачи",
+  profileItemName = "Эта задача",
+  profileCohortName = "видимых задач",
+} = {}) {
+  const details = document.createElement("details");
+  details.dataset.workLogTaskGroup = "";
+  details.dataset.journalLedgerRow = "";
+  details.dataset.workLogProvider = group.provider;
+  details.dataset.workLogThreadId = group.threadId;
+  const expanded = document.createElement("div");
+  expanded.dataset.journalLedgerExpanded = "";
+  const body = document.createElement("div");
+  body.dataset.workLogTaskGroupTurns = "";
+  body.dataset.journalTurnList = "";
+  body.append(el("span", { "data-journal-section-label": "", text: "Ходы" }));
+  expanded.append(
+    taskProfile(group, cohort, {
+      title: profileTitle,
+      itemName: profileItemName,
+      cohortName: profileCohortName,
+    }),
+    body,
+  );
+  details.append(journalLedgerSummary(group, { label }), expanded);
+  taskGroupTurns.set(details, [...group.turns, ...group.legacy]);
+  return details;
+}
+
+function taskGroupingContent(source) {
   const groups = taskGroupsFrom(source);
   if (!groups.length) return source.cloneNode(true);
-  const fragment = document.createDocumentFragment();
-  const overview = document.createElement("div");
-  overview.dataset.workLogTaskOverview = "";
-  overview.textContent = overviewText || `Задач: ${groups.length}. Ходы собраны за все даты журнала.`;
-  fragment.append(overview);
   const list = document.createElement("div");
   list.dataset.workLogTaskGroups = "";
-  for (const group of groups) {
-    const details = document.createElement("details");
-    details.dataset.workLogTaskGroup = "";
-    details.dataset.workLogProvider = group.provider;
-    details.dataset.workLogThreadId = group.threadId;
-    const summary = document.createElement("summary");
-    summary.dataset.workLogTaskGroupSummary = "";
-    const title = document.createElement("div");
-    title.dataset.workLogTaskGroupTitle = "";
-    if (group.title) title.append(group.title);
-    else title.textContent = `${group.provider} · ${group.threadId}`;
-    const metrics = document.createElement("div");
-    metrics.dataset.workLogTaskMetrics = "";
-    const turns = document.createElement("span");
-    turns.dataset.workLogTaskTurnCount = String(group.turns.length);
-    turns.textContent = `Ходов: ${group.turns.length}`;
-    /* Подписи и окраска — как в режиме по датам: там «Итого» и значение в
-       цветном бейдже по порядку величины, а здесь стояли длинные подписи и
-       ровный текст, из-за чего два режима выглядели разными продуктами. */
-    const credits = document.createElement("span");
-    credits.dataset.workLogTaskCredits = String(group.credits);
-    const creditsLabel = document.createElement("span");
-    creditsLabel.dataset.usageLabel = "";
-    creditsLabel.textContent = "Итого";
-    credits.append(creditsLabel, " ");
-    if (group.knownCredits) {
-      credits.append(usageBadge(formatUsageValue(group.credits), group.credits));
-    }
-    else credits.append("нет данных");
-    const duration = document.createElement("span");
-    duration.dataset.workLogTaskDuration = String(group.durationSeconds);
-    const durationLabel = document.createElement("span");
-    durationLabel.dataset.usageLabel = "";
-    durationLabel.textContent = "Длит.";
-    duration.append(
-      durationLabel,
-      ` ${group.knownDurations ? formatTaskDuration(group.durationSeconds) : "неизвестна"}`,
-    );
-    metrics.append(turns, credits, duration);
-    if (group.unknownCredits) {
-      const unknown = document.createElement("span");
-      unknown.dataset.workLogTaskUnknownCredits = String(group.unknownCredits);
-      unknown.textContent = `Без данных по кредитам: ${group.unknownCredits}`;
-      metrics.append(unknown);
-    }
-    if (group.unknownDurations) {
-      const unknown = document.createElement("span");
-      unknown.dataset.workLogTaskUnknownDurations = String(group.unknownDurations);
-      unknown.textContent = `Без времени: ${group.unknownDurations}`;
-      metrics.append(unknown);
-    }
-    summary.append(title, metrics);
-    const body = document.createElement("div");
-    body.dataset.workLogTaskGroupTurns = "";
-    details.append(summary, taskProfile(group, groups), body);
-    taskGroupTurns.set(details, [...group.turns, ...group.legacy]);
+  groups.forEach((group, index) => {
+    const details = journalGroupSection(group, groups);
+    details.open = index === 0;
     list.append(details);
-  }
-  fragment.append(list);
-  return fragment;
+  });
+  return list;
+}
+
+function journalWeekday(date) {
+  const parsed = parseJournalDate(date);
+  return parsed
+    ? new Intl.DateTimeFormat("ru-RU", { weekday: "short", timeZone: "UTC" })
+      .format(parsed).replace(".", "")
+    : "";
+}
+
+function dayGroupKey(group) {
+  return `${group.provider}\u001f${group.threadId}`;
+}
+
+function dayGroupingContent(source) {
+  const list = document.createElement("div");
+  list.dataset.journalDayGroups = "";
+  const days = [...source.querySelectorAll("details[data-work-log-day-section]")];
+  days.forEach((day, dayIndex) => {
+    const date = day.querySelector("summary[data-work-log-day] strong")?.dataset.workLogDate
+      ?? plainDateText(day.querySelector("summary[data-work-log-day] strong")?.textContent);
+    if (!date) return;
+    const holder = document.createElement("div");
+    holder.append(day.cloneNode(true));
+    const groups = taskGroupsFrom(holder);
+    const total = combinedJournalGroup(groups, { provider: "day", threadId: date });
+    const details = document.createElement("details");
+    details.dataset.workLogDaySection = "";
+    details.dataset.journalLedgerRow = "";
+    details.dataset.journalDayDate = date;
+    details.open = day.open || dayIndex === 0;
+    const dateLabel = document.createElement("span");
+    const strong = el("strong", { text: date });
+    strong.dataset.workLogDate = date;
+    dateLabel.append(strong, el("span", {
+      "data-journal-weekday": "",
+      text: journalWeekday(date),
+    }));
+    const summary = journalLedgerSummary(total, { label: dateLabel });
+    summary.dataset.workLogDay = "";
+    const expanded = document.createElement("div");
+    expanded.dataset.journalDayExpanded = "";
+    const picker = document.createElement("div");
+    picker.dataset.journalDayPicker = "";
+    picker.append(el("span", { "data-journal-section-label": "", text: "Workspace" }));
+    const panels = document.createElement("div");
+    panels.dataset.journalDayPanels = "";
+    const savedKey = journalDaySelections.get(date);
+    const selectedKey = groups.some((group) => dayGroupKey(group) === savedKey)
+      ? savedKey
+      : groups.length ? dayGroupKey(groups[0]) : "";
+    if (selectedKey) journalDaySelections.set(date, selectedKey);
+    groups.forEach((group) => {
+      const key = dayGroupKey(group);
+      const selected = key === selectedKey;
+      const item = document.createElement("div");
+      item.dataset.journalDayPickerItem = "";
+      item.toggleAttribute("data-selected", selected);
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.journalDaySelect = key;
+      button.setAttribute("aria-pressed", String(selected));
+      const title = document.createElement("span");
+      title.dataset.journalDayPickerTitle = "";
+      if (group.title) title.append(group.title.cloneNode(true));
+      else title.textContent = `${group.provider} · ${group.threadId}`;
+      const credits = el("span", { "data-journal-day-picker-credits": "" });
+      if (group.knownCredits) credits.append(usageBadge(formatUsageValue(group.credits), group.credits));
+      else credits.textContent = "—";
+      button.append(title, credits);
+      item.append(button);
+      if (group.usageBreakdown) {
+        const breakdown = document.createElement("div");
+        breakdown.dataset.journalDayBreakdown = "";
+        breakdown.append(group.usageBreakdown.cloneNode(true));
+        item.append(breakdown);
+      }
+      picker.append(item);
+
+      const panel = document.createElement("section");
+      panel.dataset.journalDayPanel = key;
+      panel.hidden = !selected;
+      const heading = document.createElement("div");
+      heading.dataset.journalDayPanelHeading = "";
+      const plainTitle = group.title?.textContent?.trim() || `${group.provider} · ${group.threadId}`;
+      heading.textContent = `Ходы · ${plainTitle}`;
+      const table = document.createElement("div");
+      table.dataset.workLogTurnTable = "";
+      for (const entry of [...group.turns, ...group.legacy]) {
+        const copy = entry.cloneNode(true);
+        copy.querySelector("[data-work-log-turn-day]")?.remove();
+        table.append(copy);
+      }
+      panel.append(heading, table);
+      panels.append(panel);
+    });
+    expanded.append(picker, panels);
+    details.append(summary, expanded);
+    list.append(details);
+  });
+  return list;
 }
 
 let journalRenderSequence = 0;
@@ -10102,14 +10544,34 @@ async function hydrateAllLazyDays() {
   await Promise.all(days.map(loadLazyDay));
 }
 
+function updateJournalSummary(source) {
+  const groups = taskGroupsFrom(source);
+  const totals = JournalView.summarizeGroups(groups);
+  if (journalWorkspaceCount) journalWorkspaceCount.textContent = totals.count.toLocaleString("ru-RU");
+  if (journalTotalCredits) {
+    journalTotalCredits.replaceChildren(
+      totals.knownCredits
+        ? usageBadge(formatUsageValue(totals.credits), totals.credits)
+        : document.createTextNode("—"),
+    );
+  }
+  if (journalTotalDuration) {
+    journalTotalDuration.textContent = totals.knownDurations
+      ? formatTaskDuration(totals.durationSeconds)
+      : "—";
+  }
+}
+
 function applyJournalGrouping() {
   decorateDayHeadings(journal);
   upgradeLegacyWorkspaceGroups(journal);
   decorateLegacyStreamTurns(journal);
+  updateJournalSummary(journal);
   if (grouping === "date") {
     for (const day of journal.querySelectorAll("details[data-work-log-day-section]")) {
       groupClaudeRowsInDay(day);
     }
+    journal.replaceChildren(dayGroupingContent(journal));
   } else if (grouping === "task") {
     journal.replaceChildren(taskGroupingContent(journal));
   } else {
@@ -10126,11 +10588,9 @@ function applyJournalGrouping() {
   if (collapseStreams || !saved || !Array.isArray(saved.streams)) {
     setStreamsCollapsed(collapseStreams);
   }
-  if (grouping === "task") {
-    for (const details of journal.querySelectorAll(
-      "details[data-work-log-task-group][open]",
-    )) appendTaskGroupTurnPage(details);
-  }
+  for (const details of journal.querySelectorAll(
+    "details[data-work-log-task-group][open]",
+  )) appendTaskGroupTurnPage(details);
   journalRendered = true;
   journal.setAttribute("aria-busy", "false");
 }
@@ -10141,10 +10601,6 @@ function renderJournal() {
   template.innerHTML = journalHtml;
   journal.replaceChildren(template.content.cloneNode(true));
   removeJournalRateLimits();
-  if (grouping === "date") {
-    applyJournalGrouping();
-    return;
-  }
   journal.setAttribute("aria-busy", "true");
   void hydrateAllLazyDays().then(() => {
     if (sequence !== journalRenderSequence) return;
@@ -10172,12 +10628,14 @@ async function loadJournal({ force = false } = {}) {
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
       if (force || payload.version !== currentVersion) {
+        const versionChanged = payload.version !== currentVersion;
         const openState = journalRendered ? captureOpenState() : storedOpenState();
         if (openState) groupingStates[grouping] = openState;
+        if (versionChanged) journalDayHtmlCache.clear();
+        currentVersion = payload.version;
         journalHtml = payload.html;
         renderJournal();
         persistOpenState();
-        currentVersion = payload.version;
       }
       const date = new Date(payload.updatedAt);
       /* На телефоне секунды съедают place в шапке, где рядом стоят лимиты и
@@ -10245,6 +10703,25 @@ function toggleMobileTask(cell) {
 }
 
 journal.addEventListener("click", (event) => {
+  const daySelector = event.target.closest("[data-journal-day-select]");
+  if (daySelector) {
+    event.preventDefault();
+    event.stopPropagation();
+    const day = daySelector.closest("[data-journal-day-date]");
+    const key = daySelector.dataset.journalDaySelect;
+    if (!day || !key) return;
+    journalDaySelections.set(day.dataset.journalDayDate, key);
+    for (const item of day.querySelectorAll("[data-journal-day-picker-item]")) {
+      const button = item.querySelector("[data-journal-day-select]");
+      const selected = button?.dataset.journalDaySelect === key;
+      item.toggleAttribute("data-selected", selected);
+      button?.setAttribute("aria-pressed", String(selected));
+    }
+    for (const panel of day.querySelectorAll("[data-journal-day-panel]")) {
+      panel.hidden = panel.dataset.journalDayPanel !== key;
+    }
+    return;
+  }
   const collapse = event.target.closest("[data-work-log-collapse-turns]");
   if (collapse && surface !== "mobile") {
     event.preventDefault();

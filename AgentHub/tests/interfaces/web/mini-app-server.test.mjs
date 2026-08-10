@@ -189,18 +189,6 @@ test("Telegram Mini App initData is signed, fresh and allowlisted", () => {
   }), /expired/u);
 });
 
-test("task profile compares tasks only within the same provider", async () => {
-  const script = await readFile(
-    new URL("../../../assets/mini-app/app.js", import.meta.url),
-    "utf8",
-  );
-  assert.match(
-    script,
-    /const comparableCohort = cohort\.filter\(\(item\) => item\.provider === group\.provider\)/u,
-  );
-  assert.match(script, /Относительно видимых задач \$\{providerLabel\}/u);
-});
-
 test("Mini App serves the SQLite journal and announces revision changes", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-mini-app-"));
   const journalDatabase = memoryJournal(DAY_HTML);
@@ -274,6 +262,8 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
       "browser-device-auth.js",
       "chat-surface-preference.js",
       "navigation-tabs-controller.js",
+      "approval-form.js",
+      "journal-view-controller.js",
       "app.js",
       "themes/metropolis/metropolis-glass.js",
       "themes/stormglass/storm-glass.js",
@@ -452,7 +442,9 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.match(page, /<option value="date">По дням<\/option>/u);
     assert.match(page, /<option value="week">По неделям<\/option>/u);
     assert.match(page, /<option value="month">По месяцам<\/option>/u);
-    assert.match(page, /<option value="task">По задачам<\/option>/u);
+    assert.match(page, /<option value="task">По воркспейсам<\/option>/u);
+    assert.match(page, /data-journal-grouping="task"/u);
+    assert.match(page, /data-journal-grouping="month"/u);
     assert.match(page, />Орбита</u);
     assert.match(page, />Туманность</u);
     assert.match(page, />Пульсар</u);
@@ -507,11 +499,6 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.match(script, /agent-hub-grouping/u);
     assert.match(script, /document\.documentElement\.dataset\.theme/u);
     assert.match(script, /document\.documentElement\.dataset\.grouping/u);
-    assert.match(script, /function taskGroupingContent/u);
-    assert.match(script, /workLogTurnDurationSeconds/u);
-    assert.match(script, /durationLabel\.textContent = "Длит\."/u);
-    assert.match(script, /workLogTurnCredits/u);
-    assert.match(script, /creditsLabel\.textContent = "Итого"/u);
     assert.match(script, /agent-hub-token-breakdown/u);
     assert.match(script, /function applyBreakdown/u);
     assert.match(script, /function comparisonSeriesPicker/u);

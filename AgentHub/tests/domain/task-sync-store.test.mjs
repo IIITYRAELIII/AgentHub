@@ -163,6 +163,83 @@ test("local task sync preserves durable message metadata and attachments", async
   assert.equal(entry.activityGroups[0].activities[0].label, "Проверка");
 });
 
+test("message search keeps every indexed reply beyond the bounded chat read model", async () => {
+  const filePath = await storeFile();
+  const store = new LocalTaskSyncStore({ filePath, historyLimit: 1 });
+  await store.load();
+  store.recordHistory(task, [{
+    id: "turn-old",
+    prompt: "Старый вопрос",
+    answer: "Старый точный ответ",
+    status: "completed",
+    completed: true,
+    messages: [
+      { itemId: "old-user", role: "user", text: "Старый вопрос" },
+      { itemId: "old-agent", role: "agent", text: "Старый точный ответ" },
+    ],
+  }, {
+    id: "turn-new",
+    prompt: "Новый вопрос",
+    answer: "Новый ответ",
+    status: "completed",
+    completed: true,
+    messages: [
+      { itemId: "new-user", role: "user", text: "Новый вопрос" },
+      { itemId: "new-agent", role: "agent", text: "Новый ответ" },
+    ],
+  }]);
+  assert.equal(store.history(task).length, 1);
+  const result = store.searchMessages({
+    references: [{ provider: task.provider, threadId: task.threadId }],
+    query: "старый точный",
+  });
+  assert.equal(result.total, 1);
+  assert.equal(result.results[0].itemId, "old-agent");
+  assert.equal(store.searchMessage({
+    provider: task.provider,
+    threadId: task.threadId,
+    turnId: "turn-old",
+    itemId: "old-agent",
+  })?.text, "Старый точный ответ");
+  assert.equal(store.messageSearchStatus([task]).completedThreads, 0);
+  store.markMessageSearchThread(task, { nowMs: 123 });
+  assert.deepEqual(store.messageSearchStatus([task]), {
+    totalThreads: 1,
+    completedThreads: 1,
+    failedThreads: 0,
+    threads: [{
+      provider: task.provider,
+      threadId: task.threadId,
+      state: "ready",
+      completedAtMs: 123,
+      error: "",
+    }],
+  });
+  store.close();
+});
+
+test("message search indexes more than one hundred intermediate messages in one turn", async () => {
+  const filePath = await storeFile();
+  const store = new LocalTaskSyncStore({ filePath });
+  await store.load();
+  const messages = Array.from({ length: 130 }, (_, index) => ({
+    itemId: `agent-${index}`,
+    role: "agent",
+    text: index === 0 ? "needle at the beginning" : `reply ${index}`,
+  }));
+  store.recordHistory(task, [{
+    id: "long-turn",
+    answer: "done",
+    completed: true,
+    messages,
+  }]);
+  assert.equal(store.history(task)[0].messages.length, 100);
+  assert.equal(store.searchMessages({
+    references: [task], query: "needle beginning",
+  }).results[0].itemId, "agent-0");
+  store.close();
+});
+
 test("local task sync migrates annotation columns in an existing SQLite cache", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "task-sync-annotation-schema-"));
   const filePath = path.join(directory, "task-sync.json");

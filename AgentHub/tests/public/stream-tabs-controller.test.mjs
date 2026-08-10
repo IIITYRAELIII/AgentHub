@@ -59,6 +59,22 @@ test("activity mode puts the most recently active Stream first", async () => {
   );
 });
 
+test("activity direction moves new and active Streams together with the create button", async () => {
+  const { orderWorkspaceStreams, streamCreationSide } = await streamTabsApi();
+  const streams = [
+    stream("older", 1, "2026-08-10T08:00:00.000Z"),
+    stream("latest", 2, "2026-08-10T10:00:00.000Z"),
+    stream("middle", 3, "2026-08-10T09:00:00.000Z"),
+  ];
+  assert.deepEqual(
+    Array.from(orderWorkspaceStreams(streams, "activity", "end"), (item) => item.id),
+    ["older", "middle", "latest"],
+  );
+  assert.equal(streamCreationSide("activity", "start"), "start");
+  assert.equal(streamCreationSide("activity", "end"), "end");
+  assert.equal(streamCreationSide("manual", "start"), "end");
+});
+
 test("manual mode follows the server-synchronized ordinal order", async () => {
   const { orderWorkspaceStreams, streamsAreDraggable } = await streamTabsApi();
   const streams = [

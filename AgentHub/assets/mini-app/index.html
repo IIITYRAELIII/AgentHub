@@ -19,7 +19,9 @@
   <script src="/chat-surface-preference.js" defer></script>
   <script src="/navigation-tabs-controller.js" defer></script>
   <script src="/stream-tabs-controller.js" defer></script>
+  <script src="/approval-form.js" defer></script>
   <script src="/runtime-reload-controller.js" defer></script>
+  <script src="/journal-view-controller.js" defer></script>
   <!-- agent-hub-theme-catalog -->
   <script src="/rate-limit-series.js" defer></script>
   <script src="/app.js" defer></script>
@@ -152,10 +154,6 @@
       <div class="toolbar">
         <div class="connection-banner" data-restart-banner hidden role="status"
           aria-live="polite"></div>
-        <button class="refresh collapse-all" type="button" data-collapse-all title="Свернуть всё"
-          data-journal-only>
-          <span>Свернуть всё</span>
-        </button>
         <button class="refresh" type="button" data-refresh title="Обновить журнал"
           data-journal-only>
           <svg class="refresh-icon" data-phosphor-icon="arrow-clockwise" viewBox="0 0 256 256"
@@ -241,6 +239,41 @@
     <!-- Чат выбранной задачи. -->
     <section class="chat" data-chat aria-label="Диалог задачи">
       <nav class="stream-tabs" data-stream-tabs aria-label="Потоки Workspace" hidden></nav>
+      <section class="workspace-message-search" data-workspace-message-search hidden
+        aria-label="Поиск по сообщениям Workspace">
+        <header class="workspace-message-search-head">
+          <div>
+            <strong data-workspace-message-search-title>Поиск по Workspace</strong>
+            <span data-workspace-message-search-count></span>
+          </div>
+          <button type="button" class="icon-button" data-workspace-message-search-close
+            title="Закрыть поиск" aria-label="Закрыть поиск">
+            <svg data-phosphor-icon="x" viewBox="0 0 256 256" aria-hidden="true">
+              <line x1="200" y1="56" x2="56" y2="200" fill="none" stroke="currentColor"
+                stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+              <line x1="200" y1="200" x2="56" y2="56" fill="none" stroke="currentColor"
+                stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+            </svg>
+          </button>
+        </header>
+        <label class="workspace-message-search-input">
+          <svg data-phosphor-icon="magnifying-glass" viewBox="0 0 256 256" aria-hidden="true">
+            <circle cx="112" cy="112" r="80" fill="none" stroke="currentColor"
+              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></circle>
+            <line x1="168.57" y1="168.57" x2="224" y2="224" fill="none"
+              stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"
+              stroke-width="16"></line>
+          </svg>
+          <input type="search" data-workspace-message-search-input
+            placeholder="Сообщение во всех Streams" autocomplete="off">
+        </label>
+        <p class="workspace-message-search-status" data-workspace-message-search-status>
+          Введите минимум два символа.
+        </p>
+        <div class="workspace-message-search-results" data-workspace-message-search-results></div>
+        <button type="button" class="workspace-message-search-more"
+          data-workspace-message-search-more hidden>Показать ещё</button>
+      </section>
       <div class="chat-empty" data-chat-empty>
         <span class="chat-empty-mark" aria-hidden="true">
           <svg data-phosphor-icon="chat-centered-text" viewBox="0 0 256 256">
@@ -259,6 +292,17 @@
       <div class="stream-chat-columns" data-stream-chat-columns>
       <div class="chat-pane" data-chat-pane hidden>
         <div class="chat-overlay-actions" aria-label="Действия текущего Stream">
+          <button type="button" class="chip-button" data-workspace-message-search-toggle
+            title="Поиск по сообщениям всех Streams Workspace">
+            <svg data-phosphor-icon="magnifying-glass" viewBox="0 0 256 256" aria-hidden="true">
+              <circle cx="112" cy="112" r="80" fill="none" stroke="currentColor"
+                stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></circle>
+              <line x1="168.57" y1="168.57" x2="224" y2="224" fill="none"
+                stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"
+                stroke-width="16"></line>
+            </svg>
+            <span>Поиск</span>
+          </button>
           <button type="button" class="chip-button" data-action="task-diff" title="Изменения Stream">
             <svg data-phosphor-icon="git-diff" viewBox="0 0 256 256" aria-hidden="true">
               <path d="M200,168V110.63a16,16,0,0,0-4.69-11.32L144,48" fill="none"
@@ -551,7 +595,38 @@
 
   <!-- ================================================= Отдельное представление: журнал === -->
   <main class="journal-view" data-journal-view>
-    <section class="journal" data-journal aria-live="polite" aria-busy="true"></section>
+    <section class="journal-shell" aria-labelledby="journal-view-title">
+      <header class="journal-shell-head">
+        <div class="journal-shell-title">
+          <span>Agent Hub</span>
+          <h1 id="journal-view-title">Журнал</h1>
+        </div>
+        <div class="journal-shell-totals" aria-live="polite">
+          <span><strong data-journal-workspace-count>—</strong> воркспейсов</span>
+          <i aria-hidden="true">/</i>
+          <span><strong data-journal-total-credits>—</strong> расход</span>
+          <i aria-hidden="true">/</i>
+          <span><strong data-journal-total-duration>—</strong> работы</span>
+        </div>
+        <div class="journal-grouping-tabs" role="group" aria-label="Режим журнала">
+          <button type="button" data-journal-grouping="task" aria-pressed="true">Воркспейсы</button>
+          <button type="button" data-journal-grouping="date" aria-pressed="false">День</button>
+          <button type="button" data-journal-grouping="week" aria-pressed="false">Неделя</button>
+          <button type="button" data-journal-grouping="month" aria-pressed="false">Месяц</button>
+        </div>
+        <button class="journal-collapse-all" type="button" data-collapse-all>Свернуть всё</button>
+      </header>
+      <div class="journal-ledger">
+        <div class="journal-ledger-head" aria-hidden="true">
+          <span data-journal-primary-column>Workspace</span>
+          <span>Ходов</span>
+          <span>Расход</span>
+          <span>Длительность</span>
+          <span>Пробелы</span>
+        </div>
+        <section class="journal" data-journal aria-live="polite" aria-busy="true"></section>
+      </div>
+    </section>
   </main>
 
   <!-- =============================================== Статистика расхода === -->
@@ -1016,6 +1091,14 @@
               <option value="manual">Ручной порядок</option>
             </select>
           </label>
+          <label class="setting-row setting-field" data-stream-activity-direction-row>
+            <span class="setting-name">Новые и активные Stream</span>
+            <select data-stream-activity-direction-select
+              aria-label="Положение новых и активных Stream">
+              <option value="start">Начало ленты</option>
+              <option value="end">Конец ленты</option>
+            </select>
+          </label>
           <label class="setting-switch">
             <input type="checkbox" data-stream-status-fill-toggle>
             <span class="switch-text">Подсвечивать панели Stream целиком
@@ -1044,10 +1127,10 @@
           <label class="setting-row setting-field">
             <span class="setting-name">Группировка</span>
             <select data-group-select aria-label="Группировка журнала">
+              <option value="task">По воркспейсам</option>
               <option value="date">По дням</option>
               <option value="week">По неделям</option>
               <option value="month">По месяцам</option>
-              <option value="task">По задачам</option>
             </select>
           </label>
           <div class="setting-stack">

@@ -24,8 +24,8 @@ export function createDesktopApplicationRouter({ handlers, commands, receiptFile
   requiredFunction(commands?.dispatch, "commands.dispatch");
   requiredFunction(commands?.settingTarget, "commands.settingTarget");
   for (const name of [
-    "snapshot", "taskHistory", "rateLimitHistory", "usageHistory", "search",
-    "openTask", "openTurn", "sendMessage", "taskDiff", "deferredInput",
+    "snapshot", "taskHistory", "rateLimitHistory", "usageHistory", "search", "workspaceMessageSearch",
+    "openTask", "openTurn", "workspaceMessageOpen", "sendMessage", "taskDiff", "deferredInput",
     "statusDetails", "speakLastAnswer", "restartServer", "setAutostart",
     "updateServerConfiguration", "compactContext", "openAttachment",
     "submitBugReport", "trustedDevices", "createDevicePairing", "revokeDevice",
@@ -47,8 +47,10 @@ export function createDesktopApplicationRouter({ handlers, commands, receiptFile
       "rate-limit-history": handlers.rateLimitHistory,
       "usage-history": handlers.usageHistory,
       search: handlers.search,
+      "workspace-message-search": handlers.workspaceMessageSearch,
       "open-task": handlers.openTask,
       "open-turn": handlers.openTurn,
+      "workspace-message-open": handlers.workspaceMessageOpen,
       "select-task": (params, context) => dispatch("task.select", params, context, commandTaskTarget(params)),
       "send-message": handlers.sendMessage,
       "new-task": (params, context) => dispatch("task.create", params, context),

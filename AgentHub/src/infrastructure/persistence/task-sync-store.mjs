@@ -6,7 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { catalogTaskKey } from "../../domain/task-catalog-identity.mjs";
 
 const FORMAT_VERSION = 1;
-const TASK_SCHEMA_VERSION = 4;
+const TASK_SCHEMA_VERSION = 5;
 const DEFAULT_HISTORY_LIMIT = 50;
 const DEFAULT_RUNNING_FRESHNESS_MS = 10 * 60 * 1000;
 const DEFAULT_TASK_LIMIT = 1_000;
@@ -168,6 +168,38 @@ function parseJsonArray(value) {
   }
 }
 
+function normalizedSearchTerms(value) {
+  return String(value ?? "")
+    .normalize("NFKC")
+    .toLocaleLowerCase("ru-RU")
+    .split(/\s+/u)
+    .map((term) => term.replaceAll('"', "").trim())
+    .filter(Boolean);
+}
+
+function ftsSearchQuery(value) {
+  return normalizedSearchTerms(value)
+    .map((term) => `"${term.replaceAll('"', '""')}"*`)
+    .join(" AND ");
+}
+
+function compactSearchSnippet(value, terms, limit = 220) {
+  const text = String(value ?? "").replace(/\s+/gu, " ").trim();
+  if (!text || text.length <= limit) return text;
+  const normalized = text.normalize("NFKC").toLocaleLowerCase("ru-RU");
+  const first = terms
+    .map((term) => normalized.indexOf(term))
+    .filter((index) => index >= 0)
+    .sort((left, right) => left - right)[0] ?? 0;
+  const start = Math.max(0, Math.min(first - Math.floor(limit / 3), text.length - limit));
+  const end = Math.min(text.length, start + limit);
+  return `${start > 0 ? "…" : ""}${text.slice(start, end).trim()}${end < text.length ? "…" : ""}`;
+}
+
+function searchDocumentKey({ provider, threadId, turnId, itemId, role }) {
+  return JSON.stringify([provider, threadId, turnId, itemId, role]);
+}
+
 function recoverableDatabaseError(error) {
   return /(?:file is not a database|database disk image is malformed|malformed database schema)/iu
     .test(String(error?.message ?? ""));
@@ -246,6 +278,56 @@ function configure(database) {
       FOREIGN KEY (provider, thread_id, turn_position)
         REFERENCES task_read_model_turns (provider, thread_id, position) ON DELETE CASCADE
     ) WITHOUT ROWID;
+    CREATE TABLE IF NOT EXISTS task_message_search_documents (
+      id INTEGER PRIMARY KEY,
+      document_key TEXT NOT NULL UNIQUE,
+      provider TEXT NOT NULL,
+      thread_id TEXT NOT NULL,
+      turn_thread_id TEXT NOT NULL,
+      turn_id TEXT NOT NULL,
+      item_id TEXT NOT NULL,
+      role TEXT NOT NULL CHECK (role IN ('user', 'agent')),
+      message_text TEXT NOT NULL,
+      annotation_text TEXT NOT NULL DEFAULT '',
+      attachment_names TEXT NOT NULL DEFAULT '',
+      occurred_at TEXT,
+      occurred_at_ms INTEGER NOT NULL DEFAULT 0,
+      source TEXT NOT NULL CHECK (source IN ('history', 'journal'))
+    );
+    CREATE INDEX IF NOT EXISTS task_message_search_identity
+      ON task_message_search_documents(provider, thread_id, turn_id, item_id);
+    CREATE INDEX IF NOT EXISTS task_message_search_time
+      ON task_message_search_documents(occurred_at_ms DESC, document_key);
+    CREATE TABLE IF NOT EXISTS task_message_search_threads (
+      provider TEXT NOT NULL,
+      thread_id TEXT NOT NULL,
+      state TEXT NOT NULL CHECK (state IN ('ready', 'failed')),
+      completed_at_ms INTEGER NOT NULL,
+      last_error TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY (provider, thread_id)
+    ) WITHOUT ROWID;
+    CREATE VIRTUAL TABLE IF NOT EXISTS task_message_search_fts USING fts5(
+      message_text,
+      annotation_text,
+      attachment_names,
+      content='task_message_search_documents',
+      content_rowid='id',
+      tokenize='unicode61 remove_diacritics 2'
+    );
+    CREATE TRIGGER IF NOT EXISTS task_message_search_insert AFTER INSERT ON task_message_search_documents BEGIN
+      INSERT INTO task_message_search_fts(rowid, message_text, annotation_text, attachment_names)
+      VALUES (new.id, new.message_text, new.annotation_text, new.attachment_names);
+    END;
+    CREATE TRIGGER IF NOT EXISTS task_message_search_delete AFTER DELETE ON task_message_search_documents BEGIN
+      INSERT INTO task_message_search_fts(task_message_search_fts, rowid, message_text, annotation_text, attachment_names)
+      VALUES ('delete', old.id, old.message_text, old.annotation_text, old.attachment_names);
+    END;
+    CREATE TRIGGER IF NOT EXISTS task_message_search_update AFTER UPDATE ON task_message_search_documents BEGIN
+      INSERT INTO task_message_search_fts(task_message_search_fts, rowid, message_text, annotation_text, attachment_names)
+      VALUES ('delete', old.id, old.message_text, old.annotation_text, old.attachment_names);
+      INSERT INTO task_message_search_fts(rowid, message_text, annotation_text, attachment_names)
+      VALUES (new.id, new.message_text, new.annotation_text, new.attachment_names);
+    END;
   `);
   const taskColumns = new Set(database.prepare(
     "PRAGMA table_info(task_read_model_tasks)",
@@ -560,6 +642,153 @@ export class LocalTaskSyncStore {
     });
   }
 
+  #writeSearchDocument(document, { replace = true } = {}) {
+    const occurredAt = String(document.occurredAt ?? "").trim() || null;
+    const occurredAtMs = occurredAt ? Date.parse(occurredAt) : 0;
+    const values = [
+      searchDocumentKey(document),
+      document.provider,
+      document.threadId,
+      document.turnThreadId ?? document.threadId,
+      document.turnId,
+      document.itemId,
+      document.role,
+      String(document.text ?? "").trim(),
+      String(document.annotationText ?? "").trim(),
+      String(document.attachmentNames ?? "").trim(),
+      occurredAt,
+      Number.isFinite(occurredAtMs) ? occurredAtMs : 0,
+      document.source ?? "history",
+    ];
+    const conflict = replace ? `DO UPDATE SET
+      turn_thread_id = excluded.turn_thread_id,
+      message_text = excluded.message_text,
+      annotation_text = excluded.annotation_text,
+      attachment_names = excluded.attachment_names,
+      occurred_at = excluded.occurred_at,
+      occurred_at_ms = excluded.occurred_at_ms,
+      source = excluded.source` : "DO NOTHING";
+    this.#database.prepare(`
+      INSERT INTO task_message_search_documents (
+        document_key, provider, thread_id, turn_thread_id, turn_id, item_id,
+        role, message_text, annotation_text, attachment_names,
+        occurred_at, occurred_at_ms, source
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(document_key) ${conflict}
+    `).run(...values);
+  }
+
+  #writeSearchHistory(task, history) {
+    const provider = cleanText(task?.provider, 20).toLowerCase();
+    const threadId = cleanText(task?.threadId, 100);
+    if (!provider || !threadId) return;
+    const turns = Array.isArray(history) ? history : [];
+    const removeTurn = this.#database.prepare(`
+      DELETE FROM task_message_search_documents
+      WHERE provider = ? AND thread_id = ? AND turn_id = ?
+    `);
+    for (const turn of turns) {
+      if (!turn.id) continue;
+      removeTurn.run(provider, threadId, turn.id);
+      const messages = (Array.isArray(turn?.messages) ? turn.messages : []).flatMap((message) => {
+        const role = String(message?.role ?? "").trim() === "assistant"
+          ? "agent"
+          : String(message?.role ?? "").trim();
+        return ["user", "agent"].includes(role) ? [{ ...message, role }] : [];
+      });
+      if (!messages.some((message) => message.role === "user") && turn?.prompt) {
+        messages.unshift({
+          itemId: `${turn.id}:prompt`,
+          role: "user",
+          text: turn.prompt,
+          time: turn.startedAt,
+          attachments: turn.attachments,
+          responseAnnotations: turn.promptAnnotations,
+        });
+      }
+      if (!messages.some((message) => message.role === "agent") && turn?.answer) {
+        messages.push({
+          itemId: `${turn.id}:answer`,
+          role: "agent",
+          text: turn.answer,
+          time: turn.completedAt,
+          attachments: [],
+        });
+      }
+      for (const [position, message] of messages.entries()) {
+        const text = String(message?.text ?? "").trim();
+        const annotations = [
+          ...(Array.isArray(message?.responseAnnotations) ? message.responseAnnotations : []),
+          ...(message.role === "user" && Array.isArray(turn?.promptAnnotations)
+            ? turn.promptAnnotations : []),
+        ];
+        const annotationText = annotations.flatMap((annotation) => [annotation?.text, annotation?.annotation])
+          .map((value) => String(value ?? "").trim()).filter(Boolean).join(" \n");
+        const attachmentNames = (Array.isArray(message?.attachments) ? message.attachments : [])
+          .map((attachment) => String(attachment?.name ?? "").trim()).filter(Boolean).join(" \n");
+        if (!text && !annotationText && !attachmentNames) continue;
+        this.#writeSearchDocument({
+          provider,
+          threadId,
+          turnThreadId: threadId,
+          turnId: turn.id,
+          itemId: String(message?.itemId ?? "").trim() || `${turn.id}:${message.role}:${position}`,
+          role: message.role,
+          text,
+          annotationText,
+          attachmentNames,
+          occurredAt: message?.time
+            ?? (message.role === "user" ? turn.startedAt : turn.completedAt),
+          source: "history",
+        });
+      }
+    }
+  }
+
+  #backfillSearchIndex() {
+    for (const task of this.#database.prepare(
+      "SELECT provider, thread_id FROM task_read_model_tasks",
+    ).all()) {
+      this.#writeSearchHistory({ provider: task.provider, threadId: task.thread_id }, this.#readHistory({
+        provider: task.provider,
+        threadId: task.thread_id,
+      }));
+    }
+    let rows = [];
+    try {
+      rows = this.#database.prepare(`
+        SELECT provider, thread_id, task_thread_id, turn_id, record_json
+        FROM journal_records ORDER BY completed_at_ms
+      `).all();
+    } catch {
+      return;
+    }
+    for (const row of rows) {
+      let record;
+      try { record = JSON.parse(String(row.record_json ?? "{}")); } catch { continue; }
+      if (record?.aggregateOnly === true || String(record?.parentThreadId ?? "").trim()) continue;
+      const provider = String(row.provider ?? record?.provider ?? "").trim().toLowerCase();
+      const threadId = String(row.task_thread_id ?? record?.taskThreadId ?? row.thread_id ?? "").trim();
+      const turnThreadId = String(row.thread_id ?? record?.threadId ?? threadId).trim();
+      const turnId = String(row.turn_id ?? record?.turnId ?? "").trim();
+      if (!provider || !threadId || !turnId) continue;
+      for (const candidate of [
+        { role: "user", itemId: `${turnId}:prompt`, text: record?.prompt, occurredAt: record?.startedAt },
+        { role: "agent", itemId: `${turnId}:answer`, text: record?.body ?? record?.text, occurredAt: record?.completedAt },
+      ]) {
+        if (!String(candidate.text ?? "").trim()) continue;
+        this.#writeSearchDocument({
+          provider,
+          threadId,
+          turnThreadId,
+          turnId,
+          ...candidate,
+          source: "journal",
+        }, { replace: false });
+      }
+    }
+  }
+
   #transaction(run) {
     this.#database.exec("BEGIN IMMEDIATE");
     try {
@@ -649,7 +878,10 @@ export class LocalTaskSyncStore {
   async load() {
     await this.#open();
     await this.#migrateLegacyFile();
-    this.#transaction(() => this.#backfillModelsFromJournal());
+    this.#transaction(() => {
+      this.#backfillModelsFromJournal();
+      this.#backfillSearchIndex();
+    });
     return this;
   }
 
@@ -752,12 +984,136 @@ export class LocalTaskSyncStore {
     }, this.#canonicalizeProjectRoot);
     const metadataChanged = next && taskMetadataChanged(existing, next);
     const historyChanged = JSON.stringify(existing.history ?? []) !== JSON.stringify(cleanedHistory);
-    if (!next || (!metadataChanged && !historyChanged)) return false;
+    if (!next) return false;
+    if (!metadataChanged && !historyChanged) {
+      this.#transaction(() => this.#writeSearchHistory(next, history));
+      return false;
+    }
     this.#transaction(() => {
       this.#writeTask(next);
+      this.#writeSearchHistory(next, history);
       if (historyChanged) this.#writeHistory(next, cleanedHistory);
       this.#prune();
     });
+    return true;
+  }
+
+  searchMessages({ references = [], query, offset = 0, limit = 40 } = {}) {
+    const normalizedReferences = (Array.isArray(references) ? references : [])
+      .map((reference) => ({
+        provider: cleanText(reference?.provider, 20).toLowerCase(),
+        threadId: cleanText(reference?.threadId, 100),
+      }))
+      .filter((reference) => reference.provider && reference.threadId);
+    const terms = normalizedSearchTerms(query).slice(0, 20);
+    if (!normalizedReferences.length || !terms.length) return { total: 0, results: [] };
+    const safeOffset = Math.max(0, Math.floor(Number(offset) || 0));
+    const safeLimit = Math.max(1, Math.min(Math.floor(Number(limit) || 40), 100));
+    const identitySql = normalizedReferences.map(() => "(d.provider = ? AND d.thread_id = ?)").join(" OR ");
+    const identityParams = normalizedReferences.flatMap((reference) => [reference.provider, reference.threadId]);
+    const match = ftsSearchQuery(terms.join(" "));
+    const fromSql = `
+      FROM task_message_search_fts AS f
+      JOIN task_message_search_documents AS d ON d.id = f.rowid
+      WHERE task_message_search_fts MATCH ? AND (${identitySql})
+    `;
+    const total = Number(this.#database.prepare(`SELECT COUNT(*) AS count ${fromSql}`)
+      .get(match, ...identityParams)?.count ?? 0);
+    const rows = this.#database.prepare(`
+      SELECT d.* ${fromSql}
+      ORDER BY d.occurred_at_ms DESC, d.document_key
+      LIMIT ? OFFSET ?
+    `).all(match, ...identityParams, safeLimit, safeOffset);
+    return {
+      total,
+      results: rows.map((row) => {
+        const matchedField = terms.some((term) => String(row.attachment_names ?? "")
+          .normalize("NFKC").toLocaleLowerCase("ru-RU").includes(term))
+          ? "attachment" : "text";
+        const source = matchedField === "attachment" ? row.attachment_names : (
+          String(row.message_text ?? "").trim() || row.annotation_text
+        );
+        return {
+          id: String(row.document_key),
+          provider: String(row.provider),
+          threadId: String(row.thread_id),
+          turnThreadId: String(row.turn_thread_id),
+          turnId: String(row.turn_id),
+          itemId: String(row.item_id),
+          role: String(row.role),
+          matchedField,
+          snippet: compactSearchSnippet(source, terms),
+          occurredAt: row.occurred_at ? String(row.occurred_at) : null,
+        };
+      }),
+    };
+  }
+
+  searchMessage({ provider, threadId, turnId, itemId } = {}) {
+    const row = this.#database.prepare(`
+      SELECT * FROM task_message_search_documents
+      WHERE provider = ? AND thread_id = ? AND turn_id = ? AND item_id = ?
+      ORDER BY source = 'history' DESC LIMIT 1
+    `).get(
+      cleanText(provider, 20).toLowerCase(),
+      cleanText(threadId, 100),
+      cleanText(turnId, 100),
+      cleanText(itemId, 200),
+    );
+    if (!row) return null;
+    return {
+      provider: String(row.provider),
+      threadId: String(row.thread_id),
+      turnThreadId: String(row.turn_thread_id),
+      turnId: String(row.turn_id),
+      itemId: String(row.item_id),
+      role: String(row.role),
+      text: String(row.message_text),
+      attachmentNames: String(row.attachment_names ?? "").split(/\s*\n\s*/u).filter(Boolean),
+      occurredAt: row.occurred_at ? String(row.occurred_at) : null,
+    };
+  }
+
+  messageSearchStatus(references = []) {
+    const normalized = (Array.isArray(references) ? references : []).map((reference) => ({
+      provider: cleanText(reference?.provider, 20).toLowerCase(),
+      threadId: cleanText(reference?.threadId, 100),
+    })).filter((reference) => reference.provider && reference.threadId);
+    const read = this.#database.prepare(`
+      SELECT state, completed_at_ms, last_error FROM task_message_search_threads
+      WHERE provider = ? AND thread_id = ?
+    `);
+    const threads = normalized.map((reference) => {
+      const row = read.get(reference.provider, reference.threadId);
+      return {
+        ...reference,
+        state: String(row?.state ?? "pending"),
+        completedAtMs: Number(row?.completed_at_ms) || null,
+        error: String(row?.last_error ?? ""),
+      };
+    });
+    return {
+      totalThreads: threads.length,
+      completedThreads: threads.filter((thread) => thread.state === "ready").length,
+      failedThreads: threads.filter((thread) => thread.state === "failed").length,
+      threads,
+    };
+  }
+
+  markMessageSearchThread(reference, { error = "", nowMs = Date.now() } = {}) {
+    const provider = cleanText(reference?.provider, 20).toLowerCase();
+    const threadId = cleanText(reference?.threadId, 100);
+    if (!provider || !threadId) return false;
+    const lastError = cleanText(error, 2_000);
+    this.#database.prepare(`
+      INSERT INTO task_message_search_threads (
+        provider, thread_id, state, completed_at_ms, last_error
+      ) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(provider, thread_id) DO UPDATE SET
+        state = excluded.state,
+        completed_at_ms = excluded.completed_at_ms,
+        last_error = excluded.last_error
+    `).run(provider, threadId, lastError ? "failed" : "ready", Number(nowMs) || Date.now(), lastError);
     return true;
   }
 

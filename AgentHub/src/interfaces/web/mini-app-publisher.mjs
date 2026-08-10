@@ -39,6 +39,8 @@ const CONTROL_ACTIONS = new Set([
   "task-history",
   "rate-limit-history",
   "usage-history",
+  "workspace-message-search",
+  "workspace-message-open",
   "open-task",
   "open-turn",
   "select-task",

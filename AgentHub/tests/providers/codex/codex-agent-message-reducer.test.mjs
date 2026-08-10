@@ -45,6 +45,24 @@ test("Codex completed agent message replaces streamed text with canonical text",
   assert.equal(run.responseItems[0].status, "completed");
 });
 
+test("Codex completed Plan becomes the final response", () => {
+  const run = { responseText: "", responseItems: [] };
+  completeCodexAgentMessage(run, {
+    turnId: "turn-plan",
+    item: { id: "plan-1", type: "plan", text: "1. Проверить\n2. Исправить" },
+  });
+  assert.equal(run.responseText, "1. Проверить\n2. Исправить");
+  assert.equal(run.responseItemId, "plan-1");
+  assert.deepEqual(run.responseItems[0], {
+    id: "plan-1",
+    type: "plan",
+    text: "1. Проверить\n2. Исправить",
+    phase: "final_answer",
+    status: "completed",
+    turnId: "turn-plan",
+  });
+});
+
 test("Codex hydration replay appends only the missing suffix", () => {
   const run = { responseText: "", responseItems: [] };
   hydrateCodexAgentMessages(run, [{
@@ -57,4 +75,14 @@ test("Codex hydration replay appends only the missing suffix", () => {
     hydrationReplay: true,
   });
   assert.equal(run.responseText, "Готово!");
+});
+
+test("Codex hydration restores a completed Plan as the final response", () => {
+  const run = { responseText: "", responseItems: [] };
+  hydrateCodexAgentMessages(run, [{
+    id: "plan-1", type: "plan", text: "Итоговый план",
+  }], { turnId: "turn-plan" });
+  assert.equal(run.responseText, "Итоговый план");
+  assert.equal(run.responseItems[0].type, "plan");
+  assert.equal(run.responseItems[0].phase, "final_answer");
 });

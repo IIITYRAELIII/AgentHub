@@ -229,6 +229,27 @@ test("completed Codex history shows only the final answer", () => {
   assert.equal(exchange.answer, "Финальный ответ.");
 });
 
+test("completed Codex Plan is shown as the final answer in restored history", () => {
+  const turn = {
+    id: "turn-plan",
+    status: "completed",
+    items: [
+      { type: "userMessage", content: [{ type: "text", text: "Составь план" }] },
+      { id: "plan-1", type: "plan", text: "1. Анализ\n2. Реализация" },
+    ],
+  };
+  const [exchange] = codexThreadHistory([turn]);
+  assert.equal(codexFinalTurnAnswer(turn), "1. Анализ\n2. Реализация");
+  assert.equal(codexTurnHasExplicitFinalAnswer(turn), true);
+  assert.equal(exchange.answer, "1. Анализ\n2. Реализация");
+  assert.deepEqual(exchange.messages.at(-1), {
+    itemId: "plan-1",
+    role: "agent",
+    text: "1. Анализ\n2. Реализация",
+    phase: "final_answer",
+  });
+});
+
 test("displayUserPrompt unwraps Telegram replies and removes IDE context", () => {
   assert.equal(displayUserPrompt(
     "Пользователь отвечает на сообщение:\n> Старый ответ\n\nТекст пользователя:\nПродолжай",
