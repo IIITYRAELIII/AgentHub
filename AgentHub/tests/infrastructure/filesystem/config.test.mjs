@@ -58,6 +58,7 @@ test("core-only components need neither Telegram credentials nor Web App", async
       triageEnabled: true,
       triageModel: "gpt-5.3-codex-spark",
       autoPlaceConfidence: 0.82,
+      bugReportWorkspaceName: "",
     });
   } finally {
     if (previous == null) delete process.env.AGENT_HUB_CONFIG;
@@ -79,12 +80,14 @@ test("Task board validates Spark triage settings", async () => {
         triageEnabled: false,
         triageModel: "gpt-5.3-codex-spark",
         autoPlaceConfidence: 0.9,
+        bugReportWorkspaceName: "  Agent   HUB  ",
       },
     }), "utf8");
     assert.deepEqual((await loadConfig()).taskBoard, {
       triageEnabled: false,
       triageModel: "gpt-5.3-codex-spark",
       autoPlaceConfidence: 0.9,
+      bugReportWorkspaceName: "Agent HUB",
     });
     await writeFile(configFile, JSON.stringify({
       components: { telegram: false, miniApp: false, androidApp: false },

@@ -1,6 +1,7 @@
 import { unlink } from "node:fs/promises";
 import path from "node:path";
 
+import { BugReportTaskCapture } from "../application/bug-report-task-capture.mjs";
 import { RateLimitTelemetryService } from "../application/rate-limit-telemetry-service.mjs";
 import { createCodexAssistantAttachmentImporter } from "../providers/codex/codex-assistant-attachments.mjs";
 import { ApprovalController } from "../interfaces/telegram/approval-controller.mjs";
@@ -33,6 +34,7 @@ export async function createClientInterfaceComposition({
   publicMiniAppServer,
   runtimeCommandRoot,
   journalDatabaseFile,
+  taskBoard,
   handleDesktopControl,
   reconcileRemoteDesktopControl,
   forgetDesktopControl,
@@ -138,16 +140,26 @@ export async function createClientInterfaceComposition({
     agentHubRoot,
     projectRoots: config.projects.map((project) => project.path),
   });
+  const bugReportTasks = new BugReportTaskCapture({
+    taskBoard,
+    workspaceName: config.taskBoard.bugReportWorkspaceName,
+  });
   const desktopSubmitBugReport = async (params, context) => {
     const files = await desktopAttachments.paths(params?.attachments);
     try {
       const descriptors = desktopAttachments.descriptors(files);
-      return await bugReports.submit({
+      const result = await bugReports.submit({
         text: params?.text,
         reportId: params?.reportId,
         source: context?.source,
         screenshots: files.map((file, index) => ({ file, type: descriptors[index]?.type })),
       });
+      try {
+        bugReportTasks.capture(result, { text: params?.text });
+      } catch (error) {
+        console.warn(`Cannot add bug report ${result.id} to Dashboard: ${error.message}`);
+      }
+      return result;
     } finally {
       await Promise.all(files.map((file) => unlink(file).catch(() => {})));
     }

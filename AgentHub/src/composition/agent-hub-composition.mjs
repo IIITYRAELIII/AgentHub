@@ -435,6 +435,7 @@ const clientRuntime = await createClientRuntimeComposition({
     trustedDeviceStore,
     rateLimitHistoryStore,
     workLogUsageStore,
+    taskBoard,
     runtimeStateStore,
     turnEndNotifications,
     runJournal,

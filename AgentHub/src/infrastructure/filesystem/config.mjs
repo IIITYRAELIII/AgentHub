@@ -102,6 +102,7 @@ function taskBoardSettings(value) {
     triageModel: String(source.triageModel ?? "gpt-5.3-codex-spark").trim()
       || "gpt-5.3-codex-spark",
     autoPlaceConfidence: confidence,
+    bugReportWorkspaceName: String(source.bugReportWorkspaceName ?? "").replace(/\s+/gu, " ").trim(),
   };
 }
 

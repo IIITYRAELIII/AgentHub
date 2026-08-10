@@ -48,7 +48,8 @@
   "taskBoard": {
     "triageEnabled": true,
     "triageModel": "gpt-5.3-codex-spark",
-    "autoPlaceConfidence": 0.82
+    "autoPlaceConfidence": 0.82,
+    "bugReportWorkspaceName": ""
   },
   "sharedDashboardBot": {
     "publicUrl": "https://hub.example.com",

@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { BugReportTaskCapture } from "../../src/application/bug-report-task-capture.mjs";
 import { TaskBoardService } from "../../src/application/task-board-service.mjs";
 import { TaskBoardStore } from "../../src/infrastructure/persistence/task-board-store.mjs";
 
@@ -118,6 +119,25 @@ test("manual dashboard creation never starts Spark triage", async (t) => {
   const service = await fixture(t, async () => { classifyCalls += 1; return {}; });
   const task = service.create({ text: "Создано вручную", source: "hub" });
   await service.waitForTriage();
+  assert.equal(task.triageStatus, "disabled");
+  assert.equal(classifyCalls, 0);
+});
+
+test("personal bug report capture bypasses Spark and resolves Agent HUB by name", async (t) => {
+  let classifyCalls = 0;
+  const service = await fixture(t, async () => { classifyCalls += 1; return {}; });
+  const task = new BugReportTaskCapture({
+    taskBoard: service,
+    workspaceName: "Agent HUB",
+  }).capture({
+    id: "12345678-1234-4234-8234-123456789abc",
+    folder: "AgentHub/Bugs/bug-12345678-1234-4234-8234-123456789abc",
+    screenshots: 1,
+  }, { text: "Не открывается карточка" });
+  await service.waitForTriage();
+
+  assert.equal(task.bucket, "workspace");
+  assert.equal(task.workspaceId, "agent-hub");
   assert.equal(task.triageStatus, "disabled");
   assert.equal(classifyCalls, 0);
 });
