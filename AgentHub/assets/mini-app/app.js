@@ -1926,6 +1926,7 @@ function activityStreamEntries(tasks) {
   const now = Date.now();
   const groups = new Map();
   for (const task of tasks) {
+    if (String(task?.workspaceName ?? "").trim() === "Other") continue;
     const kind = streamAttentionKind(task, now);
     if (!kind) continue;
     const key = `${workspaceKey(task)}\u0000${streamKey(task)}`;
