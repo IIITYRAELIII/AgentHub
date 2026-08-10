@@ -56,6 +56,32 @@ test("Task store attaches a screenshot to the Task addressed by a Telegram reply
   assert.equal(store.list().length, 1);
 });
 
+test("Task store merges a following forward into the preceding Telegram Task", async (t) => {
+  const store = await fixture(t);
+  const task = store.create({
+    text: "КЭМЗ",
+    source: "telegram",
+    sourceKey: "shared-dashboard:798",
+    sourceDetails: { updateId: 798, chatId: 42, userId: 42, messageId: 18 },
+  });
+  const text = "--- Сообщение 1 · Вы ---\nКЭМЗ\n\n--- Сообщение 2 · Переслано · Иван ---\nКонтекст";
+  const merged = store.mergeSourceMessage({
+    source: "telegram",
+    chatId: 42,
+    userId: 42,
+    messageId: 18,
+    text,
+    sourceDetails: { bundleId: "bundle-1", chatId: 42, userId: 42, messageCount: 2 },
+  });
+  assert.equal(merged.id, task.id);
+  assert.equal(merged.rawText, text);
+  assert.equal(merged.sourceKey, "shared-dashboard:798");
+  assert.equal(merged.sourceDetails.messageId, 18);
+  assert.equal(merged.sourceDetails.bundleId, "bundle-1");
+  assert.equal(merged.triageStatus, "pending");
+  assert.equal(store.list().length, 1);
+});
+
 test("manual Task placement is not overwritten by a late Spark result", async (t) => {
   const store = await fixture(t);
   const task = store.create({ text: "посмотреть дюну" });

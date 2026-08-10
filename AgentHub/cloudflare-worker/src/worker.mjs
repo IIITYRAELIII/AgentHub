@@ -27,6 +27,9 @@ const DASHBOARD_BOT_HUB_NAME_MAX_CHARS = 80;
 const DASHBOARD_BOT_BUNDLE_CALLBACK_PATTERN = /^forward-bundle:(send|separate|cancel):([0-9a-f-]{36})$/iu;
 const DASHBOARD_BOT_BUNDLE_MAX_ITEMS = 100;
 const DASHBOARD_BOT_BUNDLE_MAX_CHARS = 50_000;
+const DASHBOARD_BOT_PRECEDING_COMMENT_MAX_AGE_MS = 60 * 1_000;
+const DASHBOARD_BOT_PRECEDING_COMMENT_MAX_CHARS = 160;
+const DASHBOARD_BOT_PRECEDING_COMMENT_MAX_MESSAGE_GAP = 4;
 const SYNC_STAGING_EXPIRY_MS = 30 * 60 * 1_000;
 const STORAGE_DELETE_BATCH_SIZE = 128;
 const REMOTE_ATTACHMENT_PREFIX = "remote-attachment:";
@@ -602,6 +605,10 @@ function dashboardBotBundleKey(userId) {
   return `dashboard-bot:bundle:${userId}`;
 }
 
+function dashboardBotRecentDirectKey(userId) {
+  return `dashboard-bot:recent-direct:${userId}`;
+}
+
 function dashboardBotNonEmpty(value) {
   const text = String(value ?? "").trim();
   return text || null;
@@ -770,21 +777,54 @@ function dashboardBotBundleText(bundle) {
 }
 
 function dashboardBotSeparatedGroups(bundle) {
-  const groups = [];
-  const groupByMessageId = new Map();
+  const forwards = bundle.items.filter((item) => item.kind === "forward");
+  const groups = forwards.map((item) => ({ items: [], forwardMessageId: item.messageId }));
+  const groupByMessageId = new Map(groups.map((group) => [group.forwardMessageId, group]));
+  let latestGroup = null;
   for (const item of bundle.items) {
-    let group = null;
-    if (item.kind !== "forward") {
-      group = groupByMessageId.get(item.replyToMessageId) ?? groups.at(-1) ?? null;
-    }
+    let group = item.kind === "forward"
+      ? groupByMessageId.get(item.messageId)
+      : groupByMessageId.get(item.replyToMessageId) ?? latestGroup ?? groups[0];
     if (!group) {
       group = { items: [] };
       groups.push(group);
     }
     group.items.push(item);
     groupByMessageId.set(item.messageId, group);
+    if (item.kind === "forward") latestGroup = group;
   }
   return groups;
+}
+
+function dashboardBotPrecedingComment(recent, message, linked) {
+  if (!recent || typeof recent !== "object") return null;
+  const messageTime = Number(message.date) > 0 ? Number(message.date) * 1_000 : Date.now();
+  const messageGap = Number(message.message_id) - Number(recent.messageId);
+  const age = messageTime - Number(recent.createdAt);
+  if (
+    recent.hubId !== linked.hubId
+    || Number(recent.chatId) !== Number(message.chat.id)
+    || String(recent.userId) !== String(linked.userId)
+    || !dashboardBotNonEmpty(recent.text)
+    || String(recent.text).length > DASHBOARD_BOT_PRECEDING_COMMENT_MAX_CHARS
+    || !Number.isSafeInteger(messageGap)
+    || messageGap < 1
+    || messageGap > DASHBOARD_BOT_PRECEDING_COMMENT_MAX_MESSAGE_GAP
+    || !Number.isFinite(age)
+    || age < 0
+    || age > DASHBOARD_BOT_PRECEDING_COMMENT_MAX_AGE_MS
+  ) return null;
+  return {
+    updateId: recent.updateId,
+    messageId: recent.messageId,
+    replyToMessageId: message.message_id,
+    kind: "comment",
+    source: null,
+    text: recent.text,
+    images: [],
+    createdAt: recent.createdAt,
+    existingTaskMessageId: recent.messageId,
+  };
 }
 
 function normalizedDeviceCode(value) {
@@ -1088,7 +1128,7 @@ export class JournalStore extends DurableObject {
     };
   }
 
-  async #dashboardBotAppendBundle(update, message, linked, { source, image }) {
+  async #dashboardBotAppendBundle(update, message, linked, { source, image, precedingComment = null }) {
     const key = dashboardBotBundleKey(linked.userId);
     let bundle = await this.ctx.storage.get(key);
     if (!bundle && !source && !image) return null;
@@ -1101,7 +1141,7 @@ export class JournalStore extends DurableObject {
         chatId: message.chat.id,
         cardMessageId: null,
         cardPending: false,
-        items: [],
+        items: precedingComment ? [precedingComment] : [],
         createdAt: now,
         updatedAt: now,
         submitting: false,
@@ -1174,6 +1214,8 @@ export class JournalStore extends DurableObject {
           action: "board-task-ingest",
           params: {
             text: dashboardBotBundleText(group),
+            mergeMessageId: group.items.find((item) => Number.isSafeInteger(item.existingTaskMessageId))
+              ?.existingTaskMessageId,
             sourceKey: separate
               ? `shared-dashboard:${bundle.id}:${index + 1}`
               : `shared-dashboard:${bundle.id}`,
@@ -1300,6 +1342,7 @@ export class JournalStore extends DurableObject {
     const repliesToOwnMessage = repliedMessageId != null
       && String(message.reply_to_message?.from?.id ?? "") === String(message.from.id);
     if (!openBundle && image && repliesToOwnMessage) {
+      await this.ctx.storage.delete(dashboardBotRecentDirectKey(linked.userId));
       return {
         hubId: linked.hubId,
         telegramImages: [image],
@@ -1322,7 +1365,14 @@ export class JournalStore extends DurableObject {
     }
     if (source || openBundle || image) {
       if (!text && !image) return { reply: "В пачку можно добавить текст или изображение." };
-      return this.#dashboardBotAppendBundle(update, message, linked, { source, image });
+      let precedingComment = null;
+      if (!openBundle && (source || image)) {
+        const recentKey = dashboardBotRecentDirectKey(linked.userId);
+        const recent = await this.ctx.storage.get(recentKey);
+        precedingComment = dashboardBotPrecedingComment(recent, message, linked);
+        await this.ctx.storage.delete(recentKey);
+      }
+      return this.#dashboardBotAppendBundle(update, message, linked, { source, image, precedingComment });
     }
     const task = text.match(/^\/task(?:@\w+)?\s+(.+)$/iu);
     const taskText = String(task?.[1] ?? text).trim();
@@ -1343,6 +1393,15 @@ export class JournalStore extends DurableObject {
       },
       userId: linked.userId,
     };
+    await this.ctx.storage.put(dashboardBotRecentDirectKey(linked.userId), {
+      hubId: linked.hubId,
+      chatId: message.chat.id,
+      userId: linked.userId,
+      updateId: update.update_id,
+      messageId: message.message_id,
+      text: taskText,
+      createdAt: Number(message.date) > 0 ? Number(message.date) * 1_000 : Date.now(),
+    });
     return {
       hubId: linked.hubId,
       command,

@@ -99,6 +99,16 @@ export class TaskBoardService {
     return this.store.attachToSourceMessage(payload);
   }
 
+  mergeSourceMessage(payload = {}) {
+    const task = this.store.mergeSourceMessage({
+      ...payload,
+      text: normalizedTaskText(payload.text),
+      triageStatus: this.classify && payload.source === "telegram" ? "pending" : "disabled",
+    });
+    if (task.triageStatus === "pending") this.scheduleTriage(task.id);
+    return task;
+  }
+
   move({ id, bucket, workspaceId = null, beforeId = null } = {}) {
     const normalizedBucket = normalizedTaskBucket(bucket);
     if (normalizedBucket === "workspace" && !this.workspaceCatalog.workspace(workspaceId)) {

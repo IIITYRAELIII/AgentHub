@@ -955,6 +955,67 @@ test("shared Dashboard bot pairs one Telegram user and queues Tasks only for tha
   assert.equal(attachmentCommand.params.sourceDetails.messageId, 3);
   assert.match(attachmentCommand.params.attachments[0], /^remote-attachment:[0-9a-f-]{36}$/u);
 
+  response = await webhook({
+    update_id: 103,
+    message: {
+      message_id: 4,
+      date: 1_786_200_010,
+      chat: { id: 42, type: "private" },
+      from: { id: 42, first_name: "Алиса" },
+      text: "КЭМЗ",
+    },
+  });
+  assert.equal(response.status, 200);
+  assert.equal(telegramCalls.at(-1).body.text, "Принято в Backlog.");
+  response = await workerModule.default.fetch(signedServiceRequest(
+    "https://hub.test/api/dashboard-bot/pull",
+    { limit: 10, waitMs: 0 },
+    hubSecret,
+    { "X-Agent-Hub-Dashboard-Id": hubId },
+  ), env);
+  const [precedingCommand] = (await response.json()).commands;
+  assert.equal(precedingCommand.params.text, "КЭМЗ");
+
+  response = await webhook({
+    update_id: 104,
+    message: {
+      message_id: 5,
+      date: 1_786_200_014,
+      chat: { id: 42, type: "private" },
+      from: { id: 42, first_name: "Алиса" },
+      forward_origin: { type: "hidden_user", sender_user_name: "Иван" },
+      text: "Изменился механизм распределения запасов",
+    },
+  });
+  assert.equal(response.status, 200);
+  const precedingBundleCard = telegramCalls
+    .filter((call) => /\/sendMessage$/u.test(call.url) && /Собираю пачку/u.test(call.body.text))
+    .at(-1);
+  assert.match(precedingBundleCard.body.text, /Сообщений: 2/u);
+  assert.match(precedingBundleCard.body.text, /ваших: 1/u);
+
+  response = await webhook({
+    update_id: 105,
+    callback_query: {
+      id: "callback-preceding-comment",
+      from: { id: 42, first_name: "Алиса" },
+      message: { message_id: 701, chat: { id: 42, type: "private" } },
+      data: precedingBundleCard.body.reply_markup.inline_keyboard[0][0].callback_data,
+    },
+  });
+  assert.equal(response.status, 200);
+  response = await workerModule.default.fetch(signedServiceRequest(
+    "https://hub.test/api/dashboard-bot/pull",
+    { limit: 10, waitMs: 0 },
+    hubSecret,
+    { "X-Agent-Hub-Dashboard-Id": hubId },
+  ), env);
+  const [mergeCommand] = (await response.json()).commands;
+  assert.equal(mergeCommand.params.mergeMessageId, 4);
+  assert.match(mergeCommand.params.text, /Сообщение 1 · Вы[\s\S]*КЭМЗ/u);
+  assert.match(mergeCommand.params.text, /Сообщение 2 · Переслано · Иван/u);
+  assert.equal(mergeCommand.params.sourceDetails.messageCount, 2);
+
   response = await workerModule.default.fetch(signedServiceRequest(
     "https://hub.test/api/dashboard-bot/pull",
     { limit: 10, waitMs: 0 },

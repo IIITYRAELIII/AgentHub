@@ -161,6 +161,21 @@ function parseJson(value) {
   }
 }
 
+function sourceTaskRow(database, { source, chatId, userId, messageId }) {
+  const identity = [chatId, userId, messageId].map((value) => String(value ?? "").trim());
+  if (identity.some((value) => !value)) return null;
+  return database.prepare(`
+    SELECT * FROM hub_board_tasks
+    WHERE source = ?
+    ORDER BY created_at_ms DESC, id DESC
+  `).all(String(source)).find((candidate) => {
+    const details = parseJson(candidate.source_json);
+    return String(details.chatId ?? "") === identity[0]
+      && String(details.userId ?? "") === identity[1]
+      && String(details.messageId ?? "") === identity[2];
+  }) ?? null;
+}
+
 function taskFromRow(row) {
   if (!row) return null;
   const presentation = String(row.title ?? "").trim()
@@ -259,16 +274,7 @@ export class TaskBoardStore {
       throw new Error("Не удалось определить задачу или вложение");
     }
     return this.#withDatabase((database) => {
-      const row = database.prepare(`
-        SELECT * FROM hub_board_tasks
-        WHERE source = ?
-        ORDER BY created_at_ms DESC, id DESC
-      `).all(String(source)).find((candidate) => {
-        const details = parseJson(candidate.source_json);
-        return String(details.chatId ?? "") === identity[0]
-          && String(details.userId ?? "") === identity[1]
-          && String(details.messageId ?? "") === identity[2];
-      });
+      const row = sourceTaskRow(database, { source, chatId, userId, messageId });
       if (!row) throw new Error("Задача для исходного сообщения не найдена");
       const details = parseJson(row.source_json);
       details.attachments = [...new Set([
@@ -278,6 +284,57 @@ export class TaskBoardStore {
       database.prepare(`
         UPDATE hub_board_tasks SET source_json = ?, updated_at_ms = ? WHERE id = ?
       `).run(JSON.stringify(details), this.now(), row.id);
+      return taskFromRow(database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(row.id));
+    });
+  }
+
+  mergeSourceMessage({
+    source = "telegram",
+    chatId,
+    userId,
+    messageId,
+    text,
+    sourceDetails = {},
+    triageStatus = "pending",
+  } = {}) {
+    const rawText = normalizedTaskText(text);
+    const presentation = taskPresentation(rawText);
+    const nextTriageStatus = triageStatus === "disabled" ? "disabled" : "pending";
+    return this.#withDatabase((database) => {
+      const row = sourceTaskRow(database, { source, chatId, userId, messageId });
+      if (!row) throw new Error("Задача для исходного сообщения не найдена");
+      const currentDetails = parseJson(row.source_json);
+      const nextDetails = {
+        ...currentDetails,
+        ...(sourceDetails && typeof sourceDetails === "object" ? sourceDetails : {}),
+        chatId: currentDetails.chatId ?? chatId,
+        userId: currentDetails.userId ?? userId,
+        messageId: currentDetails.messageId ?? messageId,
+      };
+      const attachments = [...new Set([
+        ...(Array.isArray(currentDetails.attachments) ? currentDetails.attachments : []),
+        ...(Array.isArray(sourceDetails?.attachments) ? sourceDetails.attachments : []),
+      ])];
+      if (attachments.length) nextDetails.attachments = attachments;
+      database.prepare(`
+        UPDATE hub_board_tasks SET
+          raw_text = ?,
+          title = CASE WHEN presentation_source = 'manual' THEN title ELSE ? END,
+          description = CASE WHEN presentation_source = 'manual' THEN description ELSE ? END,
+          corrected_text = CASE WHEN presentation_source = 'manual' THEN corrected_text ELSE NULL END,
+          category = CASE WHEN presentation_source = 'manual' THEN category ELSE 'unknown' END,
+          source_json = ?, triage_status = ?, triage_confidence = NULL,
+          triage_reason = NULL, triage_error = NULL, updated_at_ms = ?
+        WHERE id = ?
+      `).run(
+        rawText,
+        presentation.title,
+        presentation.description,
+        JSON.stringify(nextDetails),
+        nextTriageStatus,
+        this.now(),
+        row.id,
+      );
       return taskFromRow(database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(row.id));
     });
   }

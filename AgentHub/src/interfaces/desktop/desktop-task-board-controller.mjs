@@ -24,22 +24,35 @@ export class DesktopTaskBoardController {
 
   async ingest(params) {
     const attachments = Array.isArray(params.attachments) ? params.attachments : [];
-    const task = Number.isSafeInteger(params.replyMessageId)
-      ? this.taskBoard.attachToSourceMessage({
+    const sourceDetails = attachments.length
+      ? { ...(params.sourceDetails ?? {}), attachments }
+      : params.sourceDetails;
+    let task;
+    if (Number.isSafeInteger(params.mergeMessageId)) {
+      task = this.taskBoard.mergeSourceMessage({
+        source: "telegram",
+        chatId: params.sourceDetails?.chatId,
+        userId: params.sourceDetails?.userId,
+        messageId: params.mergeMessageId,
+        text: params.text,
+        sourceDetails,
+      });
+    } else if (Number.isSafeInteger(params.replyMessageId)) {
+      task = this.taskBoard.attachToSourceMessage({
         source: "telegram",
         chatId: params.sourceDetails?.chatId,
         userId: params.sourceDetails?.userId,
         messageId: params.replyMessageId,
         attachments,
-      })
-      : this.taskBoard.create({
+      });
+    } else {
+      task = this.taskBoard.create({
         text: params.text,
         source: "telegram",
         sourceKey: params.sourceKey,
-        sourceDetails: attachments.length
-          ? { ...(params.sourceDetails ?? {}), attachments }
-          : params.sourceDetails,
+        sourceDetails,
       });
+    }
     await this.snapshot({ refresh: true });
     return { taskId: task.id, rawText: task.rawText };
   }

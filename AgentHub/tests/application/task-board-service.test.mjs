@@ -83,6 +83,42 @@ test("Telegram bundle rules are passed to Spark outside the Task text", async (t
   assert.doesNotMatch(classifierInput.text, /Ниже пакет сообщений/u);
 });
 
+test("a following forward retriages the preceding Telegram Task instead of creating another", async (t) => {
+  const classifierInputs = [];
+  const service = await fixture(t, async (input) => {
+    classifierInputs.push(input.text);
+    return {
+      title: input.text.includes("Переслано") ? "КЭМЗ: изменить механизм отчёта" : "КЭМЗ",
+      description: "",
+      correctedText: input.text,
+      category: "task",
+      workspaceId: null,
+      confidence: 0.4,
+      reason: "Workspace не определён",
+    };
+  });
+  const task = service.create({
+    text: "КЭМЗ",
+    source: "telegram",
+    sourceDetails: { updateId: 798, chatId: 42, userId: 42, messageId: 18 },
+  });
+  await service.waitForTriage();
+  const mergedText = "--- Сообщение 1 · Вы ---\nКЭМЗ\n\n--- Сообщение 2 · Переслано · Иван ---\nКонтекст";
+  const merged = service.mergeSourceMessage({
+    source: "telegram",
+    chatId: 42,
+    userId: 42,
+    messageId: 18,
+    text: mergedText,
+    sourceDetails: { bundleId: "bundle-1", chatId: 42, userId: 42 },
+  });
+  assert.equal(merged.id, task.id);
+  await service.waitForTriage();
+  assert.equal(service.task(task.id).title, "КЭМЗ: изменить механизм отчёта");
+  assert.deepEqual(classifierInputs, ["КЭМЗ", mergedText]);
+  assert.equal(service.snapshot().length, 1);
+});
+
 test("disabled Spark leaves new Tasks idle and clears recovered triage", () => {
   let disabled = 0;
   const created = [];
