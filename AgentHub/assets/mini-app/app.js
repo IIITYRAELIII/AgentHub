@@ -44,7 +44,6 @@ const taskList = document.querySelector("[data-task-list]");
 const taskEmpty = document.querySelector("[data-task-empty]");
 const taskCount = document.querySelector("[data-task-count]");
 const taskFilter = document.querySelector("[data-task-filter]");
-const workspaceShell = document.querySelector("[data-workspace]");
 const activityRail = document.querySelector("[data-activity-rail]");
 const activityRailToggle = document.querySelector("[data-activity-rail-toggle]");
 const activityRailCount = document.querySelector("[data-activity-rail-count]");
@@ -1919,12 +1918,11 @@ let activityRailCollapsed = savedActivityRailCollapsed();
 
 function applyActivityRailState({ persist = false } = {}) {
   activityRail?.toggleAttribute("data-collapsed", activityRailCollapsed);
-  workspaceShell?.toggleAttribute("data-activity-rail-collapsed", activityRailCollapsed);
   activityRailToggle?.setAttribute("aria-expanded", String(!activityRailCollapsed));
   if (activityRailToggle) {
     activityRailToggle.title = activityRailCollapsed
-      ? "Развернуть активные потоки и задачи"
-      : "Свернуть активные потоки и задачи";
+      ? "Развернуть активные потоки"
+      : "Свернуть активные потоки";
   }
   if (!persist) return;
   try {
@@ -1946,6 +1944,7 @@ function renderActivityRail() {
     const streamName = String(task.streamName || task.streamDisplayName || "").trim()
       || `Stream ${Math.max(1, Number(task.streamOrdinal) || 1)}`;
     const workspaceName = String(task.workspaceName || task.title || "Workspace").trim();
+    const activityTitle = `${workspaceName} — ${streamName}`;
     return el("button", {
       type: "button",
       class: "stream-tab activity-stream-item",
@@ -1957,8 +1956,8 @@ function renderActivityRail() {
       "aria-pressed": String(task.id === state.selectedId),
       "aria-label": [workspaceName, streamName, presentation.agentLabel, presentation.statusLabel]
         .filter(Boolean).join(". "),
-      title: `${presentation.statusLabel ? `${presentation.statusLabel}. ` : ""}${workspaceName} — ${streamName}`,
-    }, [renderStreamStatusCard(task, streamName, presentation)]);
+      title: `${presentation.statusLabel ? `${presentation.statusLabel}. ` : ""}${activityTitle}`,
+    }, [renderStreamStatusCard(task, activityTitle, presentation)]);
   }));
   applyActivityRailState();
 }

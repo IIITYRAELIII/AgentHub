@@ -3053,13 +3053,10 @@ html[data-view="chat"] body {
   z-index: 2;
 }
 
-.workspace[data-activity-rail-collapsed] {
-  --activity-rail-width: 7.4rem;
-}
-
 /* На desktop верхние границы списка Workspace и панели Streams всегда стоят
    на одной линии. Темы сохраняют собственные ширины, фон, рамки и прозрачность. */
 html[data-view="chat"]:not([data-surface="mobile"]) body > .workspace {
+  grid-template-columns: var(--task-rail-width) minmax(0, 1fr) var(--activity-rail-width) !important;
   padding-top: var(--shell-workspace-padding-top, 0.72rem) !important;
   transform: none !important;
 }
@@ -3531,13 +3528,13 @@ html[data-surface="mobile"]
 .activity-rail-toggle svg {
   flex: 0 0 auto;
   height: 0.9rem;
-  transform: rotate(180deg);
+  transform: rotate(0deg);
   transition: transform 0.14s ease;
   width: 0.9rem;
 }
 
 .activity-rail[data-collapsed] .activity-rail-toggle svg {
-  transform: rotate(0deg);
+  transform: rotate(180deg);
 }
 
 .activity-rail-content {
@@ -3547,7 +3544,7 @@ html[data-surface="mobile"]
   min-height: 0;
 }
 
-.activity-rail[data-collapsed] .activity-rail-content {
+.activity-rail[data-collapsed] .activity-streams {
   display: none;
 }
 
