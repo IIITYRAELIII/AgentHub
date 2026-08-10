@@ -21,7 +21,7 @@ import { BugReportRepository } from "../infrastructure/filesystem/bug-report-rep
 import { BugReportCaptureCursorStore } from "../infrastructure/persistence/bug-report-capture-cursor-store.mjs";
 import { QuickTunnelController } from "../infrastructure/network/quick-tunnel.mjs";
 
-const BUG_REPORT_SCAN_INTERVAL_MS = 10_000;
+const BUG_REPORT_SCAN_INTERVAL_MS = 5 * 60_000;
 
 export async function createClientInterfaceComposition({
   config,
