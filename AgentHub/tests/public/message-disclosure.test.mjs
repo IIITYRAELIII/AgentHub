@@ -39,13 +39,29 @@ test("live stage is rendered in the current activity title", async () => {
   );
 });
 
-test("live trace preserves manually opened tool groups across refreshes", async () => {
-  const { liveTraceDisclosureOpen, liveTraceGroupId } = await disclosureApi();
-  const groupId = liveTraceGroupId({ id: "commentary:item-42" }, 3);
-  assert.equal(groupId, "commentary:item-42");
-  assert.equal(liveTraceDisclosureOpen({ groupId, openGroupIds: [groupId] }), true);
-  assert.equal(liveTraceDisclosureOpen({ groupId, openGroupIds: [] }), false);
-  assert.equal(liveTraceGroupId({}, 3), "trace:3");
+test("live trace keeps reasoning blocks and collects every tool at the bottom", async () => {
+  const {
+    TURN_TRACE_ACTIVITY_GROUP_ID,
+    liveTraceDisclosureOpen,
+    turnTraceContent,
+  } = await disclosureApi();
+  const content = turnTraceContent([
+    { reasoning: "Сначала проверяю.", activities: [{ id: "tool-1" }] },
+    { reasoning: "Теперь исправляю.", activities: [{ id: "tool-2" }, { id: "tool-3" }] },
+  ]);
+  assert.deepEqual(Array.from(content.reasoningBlocks), ["Сначала проверяю.", "Теперь исправляю."]);
+  assert.deepEqual(Array.from(content.activities, (activity) => activity.id), ["tool-1", "tool-2", "tool-3"]);
+  assert.equal(
+    liveTraceDisclosureOpen({
+      groupId: TURN_TRACE_ACTIVITY_GROUP_ID,
+      openGroupIds: [TURN_TRACE_ACTIVITY_GROUP_ID],
+    }),
+    true,
+  );
+  assert.equal(
+    liveTraceDisclosureOpen({ groupId: TURN_TRACE_ACTIVITY_GROUP_ID, openGroupIds: [] }),
+    false,
+  );
 });
 
 test("shared shell keeps full text and limits only the rendered user-message body", async () => {

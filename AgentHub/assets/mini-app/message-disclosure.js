@@ -4,6 +4,7 @@
   // This is intentionally a visual limit only.  Message text remains intact
   // in the DOM and in every transport payload.
   const USER_MESSAGE_COLLAPSE_HEIGHT_PX = 264;
+  const TURN_TRACE_ACTIVITY_GROUP_ID = "trace:activities";
 
   function hasCollapsedOverflow(scrollHeight, collapseHeight = USER_MESSAGE_COLLAPSE_HEIGHT_PX) {
     return Number(scrollHeight) > Number(collapseHeight);
@@ -27,8 +28,15 @@
       : { status: value, detail: "" };
   }
 
-  function liveTraceGroupId(group, index = 0) {
-    return String(group?.id ?? `trace:${Math.max(0, Number(index) || 0)}`);
+  function turnTraceContent(groups = []) {
+    const reasoningBlocks = [];
+    const activities = [];
+    for (const group of Array.isArray(groups) ? groups : []) {
+      const reasoning = String(group?.reasoning ?? "").trim();
+      if (reasoning) reasoningBlocks.push(reasoning);
+      if (Array.isArray(group?.activities)) activities.push(...group.activities);
+    }
+    return { reasoningBlocks, activities };
   }
 
   function liveTraceDisclosureOpen({ groupId = "", openGroupIds = [] } = {}) {
@@ -37,11 +45,12 @@
 
   window.AgentHubMessageDisclosure = Object.freeze({
     USER_MESSAGE_COLLAPSE_HEIGHT_PX,
+    TURN_TRACE_ACTIVITY_GROUP_ID,
     hasCollapsedOverflow,
     liveActivityDisclosureOpen,
     liveActivityTitle,
     liveStageParts,
     liveTraceDisclosureOpen,
-    liveTraceGroupId,
+    turnTraceContent,
   });
 })();

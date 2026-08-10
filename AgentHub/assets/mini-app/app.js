@@ -18,13 +18,14 @@
 
 const root = document.documentElement;
 const {
+  TURN_TRACE_ACTIVITY_GROUP_ID,
   USER_MESSAGE_COLLAPSE_HEIGHT_PX,
   hasCollapsedOverflow,
   liveActivityDisclosureOpen,
   liveActivityTitle,
   liveStageParts,
   liveTraceDisclosureOpen,
-  liveTraceGroupId,
+  turnTraceContent,
 } = window.AgentHubMessageDisclosure;
 const chatSurfacePreference = window.AgentHubChatSurfacePreference;
 const JournalView = window.AgentHubJournalView;
@@ -3832,48 +3833,45 @@ function visibleTurnTraceGroups(groups) {
 }
 
 function turnTraceGroupsNode(values, { liveStage = "", openGroupIds = [] } = {}) {
-  return el("div", { class: "turn-trace-groups" }, values.map((group, index) => {
-    const groupId = liveTraceGroupId(group, index);
+  const content = turnTraceContent(values);
+  const blocks = content.reasoningBlocks.map((reasoning, index) => {
     const section = el("section", {
       class: "turn-trace-block",
       "data-trace-index": String(index),
     });
-    const reasoning = String(group.reasoning ?? "").trim();
-    if (reasoning) {
-      const reasoningNode = el("div", { class: "turn-trace-reasoning" });
-      renderMarkdown(reasoningNode, reasoning);
-      section.append(reasoningNode);
-    }
-    const activities = Array.isArray(group.activities) ? group.activities : [];
-    if (activities.length) {
-      section.append(el("details", {
-        class: "turn-trace-activities",
-        "data-trace-group-id": groupId,
-        open: liveTraceDisclosureOpen({ groupId, openGroupIds }),
-      }, [
-        el("summary", {
-          class: "turn-trace-activities-title",
-          text: liveActivityTitle({
-            count: activities.length,
-            stage: index === values.length - 1 ? liveStage : "",
-          }),
-        }),
-        el("div", { class: "activity-list" }, activities.map((activity) => el("div", {
-          class: "activity-item",
-          "data-type": activity.type ?? "stage",
-          "data-status": activity.status ?? "",
-        }, [
-          el("span", { class: "activity-marker", "aria-hidden": "true" }),
-          el("span", { class: "activity-time", text: activity.time
-            ? new Date(activity.time).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
-            : "" }),
-          el("span", { class: "activity-label", text: activity.label ?? "Действие" }),
-          activity.detail ? el("span", { class: "activity-detail", text: activity.detail }) : null,
-        ]))),
-      ]));
-    }
+    const reasoningNode = el("div", { class: "turn-trace-reasoning" });
+    renderMarkdown(reasoningNode, reasoning);
+    section.append(reasoningNode);
     return section;
-  }));
+  });
+  if (content.activities.length) {
+    blocks.push(el("details", {
+      class: "turn-trace-activities",
+      "data-trace-group-id": TURN_TRACE_ACTIVITY_GROUP_ID,
+      open: liveTraceDisclosureOpen({
+        groupId: TURN_TRACE_ACTIVITY_GROUP_ID,
+        openGroupIds,
+      }),
+    }, [
+      el("summary", {
+        class: "turn-trace-activities-title",
+        text: liveActivityTitle({ count: content.activities.length, stage: liveStage }),
+      }),
+      el("div", { class: "activity-list" }, content.activities.map((activity) => el("div", {
+        class: "activity-item",
+        "data-type": activity.type ?? "stage",
+        "data-status": activity.status ?? "",
+      }, [
+        el("span", { class: "activity-marker", "aria-hidden": "true" }),
+        el("span", { class: "activity-time", text: activity.time
+          ? new Date(activity.time).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+          : "" }),
+        el("span", { class: "activity-label", text: activity.label ?? "Действие" }),
+        activity.detail ? el("span", { class: "activity-detail", text: activity.detail }) : null,
+      ]))),
+    ]));
+  }
+  return el("div", { class: "turn-trace-groups" }, blocks);
 }
 
 function turnTraceNode(groups) {
