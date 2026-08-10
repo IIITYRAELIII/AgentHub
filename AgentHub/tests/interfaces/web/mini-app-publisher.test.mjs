@@ -339,7 +339,7 @@ test("Mini App publisher polls signed controls and posts their result", async ()
     assert.equal(requests.length, 2);
     assert.deepEqual(JSON.parse(requests[0].options.body), {
       limit: 10,
-      waitMs: 25_000,
+      waitMs: 0,
     });
     for (const request of requests) {
       const pathname = new URL(request.url).pathname;
@@ -366,12 +366,12 @@ test("Mini App publisher polls signed controls and posts their result", async ()
   }
 });
 
-test("Mini App publisher keeps one long poll open and aborts it on close", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-control-long-poll-"));
+test("Mini App publisher pauses between short control polls", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-control-short-poll-"));
   const secretFile = path.join(root, "sync.secret");
   await writeFile(secretFile, "l".repeat(64));
   let pullCount = 0;
-  let aborted = false;
+  let pullBody = null;
   let markStarted;
   const started = new Promise((resolve) => { markStarted = resolve; });
   const publisher = new MiniAppPublisher({
@@ -382,13 +382,9 @@ test("Mini App publisher keeps one long poll open and aborts it on close", async
     fetchImpl: async (url, options) => {
       if (!url.endsWith("/api/control/pull")) return Response.json({ ok: true });
       pullCount += 1;
+      pullBody = JSON.parse(options.body);
       markStarted();
-      return new Promise((resolve, reject) => {
-        options.signal.addEventListener("abort", () => {
-          aborted = true;
-          reject(options.signal.reason ?? new Error("aborted"));
-        }, { once: true });
-      });
+      return Response.json({ commands: [] });
     },
     controlHandler: async () => ({ ok: true }),
   });
@@ -397,7 +393,7 @@ test("Mini App publisher keeps one long poll open and aborts it on close", async
     await started;
     await publisher.close();
     assert.equal(pullCount, 1);
-    assert.equal(aborted, true);
+    assert.deepEqual(pullBody, { limit: 10, waitMs: 0 });
   } finally {
     await publisher.close();
     await rm(root, { recursive: true, force: true });

@@ -115,6 +115,7 @@ export class StreamContextMaintenanceService {
         this.provider.compactions.annotate?.(run.threadId, compaction.id, { rotated: true });
         compactionId = null;
         queueTarget = await this.#bindRotation(run, rotated);
+        await this.#exactContextAfterRotation(queueTarget);
         return {
           compacted: true,
           rotated: true,
@@ -165,6 +166,7 @@ export class StreamContextMaintenanceService {
       this.provider.compactions.annotate?.(run.threadId, started.compactionId, { rotated: true });
       compactionId = null;
       queueTarget = await this.#bindRotation(run, rotated);
+      await this.#exactContextAfterRotation(queueTarget);
       return { compacted: true, rotated: true, beforePercent, afterPercent, ...rotated };
     } catch (error) {
       this.logger.error(`Automatic context maintenance failed for ${run?.threadId ?? "unknown"}:`, error.message);
@@ -223,6 +225,7 @@ export class StreamContextMaintenanceService {
     try {
       const rotated = await this.provider.rotate(target);
       queueTarget = await this.#bindRotation(target, rotated);
+      await this.#exactContextAfterRotation(queueTarget);
       return rotated;
     } finally {
       this.registry.end(reservation);
@@ -319,6 +322,31 @@ export class StreamContextMaintenanceService {
       || normalized(compaction.turnId) !== normalized(run?.turnId)
     ) return null;
     return compaction;
+  }
+
+  async #exactContextAfterRotation(target) {
+    const probeStartedAt = Date.now() - 1;
+    try {
+      const probe = await this.provider.probeContext(target);
+      const [measured, completion] = await Promise.all([
+        this.waitForContextUpdate(target.threadId, {
+          after: probeStartedAt,
+          turnId: probe?.turnId,
+          timeoutMs: 60_000,
+        }),
+        this.waitForTurnCompletion(probe?.turnId, { timeoutMs: 60_000 }),
+      ]);
+      if (!completion) throw new Error("Скрытый замер нового Thread не завершился вовремя");
+      if (completion.status !== "completed") {
+        throw new Error(`Скрытый замер нового Thread завершился со статусом ${completion.status}`);
+      }
+      return measured?.provisional === true || Number(measured?.usedTokens) <= 0
+        ? null
+        : measured;
+    } catch (error) {
+      this.logger.warn?.(`Cannot measure rotated context for ${target.threadId}: ${error.message}`);
+      return null;
+    }
   }
 
   #wakeQueue(target) {

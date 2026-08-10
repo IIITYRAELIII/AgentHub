@@ -60,6 +60,8 @@ function fixture(overrides = {}) {
     history: sourceHistory,
     run: {
       id: "run-1",
+      provider: "codex",
+      threadId: "thread-1",
       turnId: "turn-live",
       promptPreview: "Текущий вопрос",
       responseText: "Текущий ответ",
@@ -346,8 +348,25 @@ test("desktop task history combines sequential provider Threads from one Stream"
         history: [{ id: `turn-${threadId}`, prompt: threadId, answer: `answer-${threadId}` }],
       }),
     },
-    runs: { forTask: () => null },
-    historyMerger: { mergeActive() {}, mergeCompleted() {} },
+    runs: {
+      forTask: () => ({
+        provider: "codex",
+        threadId: "thread-1",
+        turnId: "stale-live-turn",
+        responseText: "Старый live-ответ",
+      }),
+    },
+    latestMessage: () => ({
+      provider: "codex",
+      threadId: "thread-1",
+      turnId: "stale-final-turn",
+      text: "Старый финальный ответ",
+      updatedAt: "2026-07-30T09:00:00.000Z",
+    }),
+    historyMerger: {
+      mergeActive: (history) => history.push({ id: "unexpected-live" }),
+      mergeCompleted: (history) => history.push({ id: "unexpected-final" }),
+    },
     responseBudget: { fit: (payload) => payload },
   });
   const result = await factory({ streamId: "stream-1", provider: "codex", threadId: "thread-2" });

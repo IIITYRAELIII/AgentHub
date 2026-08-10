@@ -25,9 +25,6 @@ const DEFAULT_TIMEOUT_MS = 15_000;
 const ATTACHMENT_TIMEOUT_MS = 60_000;
 const SYNC_CHUNK_BYTES = 1024 * 1024;
 const DEFAULT_CONTROL_POLL_MS = 2_000;
-const CONTROL_LONG_POLL_MS = 25_000;
-const CONTROL_LONG_POLL_TIMEOUT_MS = 35_000;
-const CONTROL_LOOP_GAP_MS = 25;
 const DEFAULT_SNAPSHOT_REFRESH_MS = 5_000;
 const MAX_CONTROL_RESULT_BYTES = 1024 * 1024;
 const MAX_CONTROL_ERROR_CHARS = 4_096;
@@ -158,7 +155,6 @@ export class MiniAppPublisher {
   #controlDelayResolve = null;
   #controlLoop = null;
   #controlAbortController = null;
-  #lastControlLongPoll = false;
   #retryTimer = null;
   #debounceTimer = null;
   #syncing = null;
@@ -585,13 +581,11 @@ export class MiniAppPublisher {
       await this.#flushControlResults();
       const response = await this.#signedControlRequest("/api/control/pull", {
         limit: this.#controlBatchSize,
-        waitMs: CONTROL_LONG_POLL_MS,
+        waitMs: 0,
       }, secret, {
-        timeoutMs: CONTROL_LONG_POLL_TIMEOUT_MS,
         signal: abortController.signal,
       });
       if (!Array.isArray(response?.commands)) throw new Error("Mini App Worker returned an invalid control response");
-      this.#lastControlLongPoll = response.longPoll === true;
       let handled = 0;
       let deliveryError = null;
       for (const rawCommand of response.commands) {
@@ -682,7 +676,7 @@ export class MiniAppPublisher {
       let retryDelay = 0;
       try {
         await this.pollControl();
-        retryDelay = this.#lastControlLongPoll ? CONTROL_LOOP_GAP_MS : this.#controlPollMs;
+        retryDelay = this.#controlPollMs;
       } catch {
         if (this.#closed) break;
         retryDelay = this.#controlPollMs;

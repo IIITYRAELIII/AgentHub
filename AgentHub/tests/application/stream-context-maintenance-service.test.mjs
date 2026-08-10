@@ -17,6 +17,8 @@ function fixture({
   preliminaryProvisional = false,
   probePercent = afterPercent,
   probeFails = false,
+  rotationProbePercent = 6,
+  rotationProbeFails = false,
   autoCompact = true,
   observedCompaction = false,
   observedAfterPercent = null,
@@ -81,8 +83,14 @@ function fixture({
     startManual: async () => ({ accepted: true, compactionId: "manual-1" }),
     probeContext: async (...args) => {
       events.push(["probe", ...args, registry.isActive(source)]);
-      if (probeFails) throw new Error("probe timed out");
-      return { threadId: source.threadId, turnId: "probe-1", status: "completed" };
+      const target = args[0];
+      const afterRotation = target?.threadId === "thread-new";
+      if (probeFails || (afterRotation && rotationProbeFails)) throw new Error("probe timed out");
+      return {
+        threadId: target.threadId,
+        turnId: afterRotation ? "rotation-probe-1" : "probe-1",
+        status: "completed",
+      };
     },
     rotate: async () => ({ thread: { id: "thread-new" } }),
     rotateCompacted: async (...args) => {
@@ -122,10 +130,12 @@ function fixture({
       updatedAt: "2026-08-07T10:00:00.000Z",
     }),
     waitForContextUpdate: async (...args) => {
-      const probeStarted = events.some(([name]) => name === "probe");
+      const probeTarget = events.filter(([name]) => name === "probe").at(-1)?.[1];
+      const probeStarted = Boolean(probeTarget);
+      const afterRotation = probeTarget?.threadId === "thread-new";
       events.push(["usage", ...args]);
       return {
-        usedTokens: probeStarted ? probePercent : afterPercent,
+        usedTokens: afterRotation ? rotationProbePercent : probeStarted ? probePercent : afterPercent,
         modelContextWindow: 100,
         provisional: probeStarted ? false : preliminaryProvisional,
         updatedAt: probeStarted
@@ -281,6 +291,19 @@ test("rotation reuses the completed compaction and retargets the blocked queue",
     state.events.find(([name]) => name === "rotate").at(-1),
     "automatic-rotation",
   );
+  const rotationProbe = state.events.find(([name, target]) => (
+    name === "probe" && target.threadId === "thread-new"
+  ));
+  assert.equal(rotationProbe.at(-1), true);
+  assert.equal(
+    state.events.find(([name, threadId]) => name === "usage" && threadId === "thread-new").at(-1).turnId,
+    "rotation-probe-1",
+  );
+  assert.equal(
+    state.events.findIndex(([name]) => name === "wake")
+      > state.events.findIndex(([name, target]) => name === "probe" && target.threadId === "thread-new"),
+    true,
+  );
   assert.equal(state.deferredInputs.get("queued-1").threadId, "thread-new");
   assert.equal(state.clientSelections.get("telegram:42").threadId, "thread-new");
   assert.equal(state.clientSelections.get("telegram:43").threadId, "thread-other");
@@ -299,6 +322,29 @@ test("manual rotation retargets the active Telegram task binding", async () => {
     threadId: "thread-new",
     taskTitle: "Workspace",
   });
+  assert.equal(
+    state.events.some(([name, target]) => name === "probe" && target.threadId === "thread-new"),
+    true,
+  );
+});
+
+test("a failed post-rotation probe keeps the new Thread and releases the queue", async () => {
+  const state = fixture({ rotationProbeFails: true });
+  state.deferredInputs.put({
+    id: "queued-after-failed-probe",
+    provider: "codex",
+    streamId: "stream-1",
+    threadId: "thread-old",
+    projectRoot: "D:/Work",
+    taskTitle: "Workspace",
+  }, "queued");
+
+  const result = await state.service.rotate(state.source);
+
+  assert.equal(result.thread.id, "thread-new");
+  assert.equal(state.deferredInputs.get("queued-after-failed-probe").threadId, "thread-new");
+  assert.equal(state.events.some(([name, id]) => name === "wake" && id === "queued-after-failed-probe"), true);
+  assert.equal(state.registry.isActive(state.source), false);
 });
 
 test("a mid-turn compaction rotates only after completion and transfers that whole turn", async () => {

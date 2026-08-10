@@ -31,6 +31,20 @@ function agentTurnKey(message) {
   return `${provider}\0${threadId}\0${turnId}\0agent`;
 }
 
+function liveCompletionTransition(previous, selected, incomingTurnId = "") {
+  const previousTurnId = String(previous?.turnId ?? "").trim();
+  if (!previousTurnId || previousTurnId === String(incomingTurnId ?? "").trim()) return "none";
+  const previousProvider = String(previous?.provider ?? "").trim();
+  const previousThreadId = String(previous?.threadId ?? "").trim();
+  const selectedProvider = String(selected?.provider ?? "").trim();
+  const selectedThreadId = String(selected?.threadId ?? "").trim();
+  if (
+    (previousProvider && selectedProvider && previousProvider !== selectedProvider)
+    || (previousThreadId && selectedThreadId && previousThreadId !== selectedThreadId)
+  ) return "discard";
+  return "promote";
+}
+
 // The App Server may replay a materialized user item while reconnecting. A
 // client id is an idempotency key for one user submission, so two history
 // items with that key must render as one message even when server item ids
@@ -830,6 +844,7 @@ globalThis.AgentHubMessageLifecycle = Object.freeze({
   focusedTurnTaskThreadId,
   historyContainsLatestAnswer,
   historicalAgentResponseVisible,
+  liveCompletionTransition,
   liveMessageMatch,
   markConnectionFailure,
   mergeDeferredQueueEntries,

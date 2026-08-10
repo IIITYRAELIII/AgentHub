@@ -80,6 +80,7 @@ function fixture(overrides = {}) {
     receipts: [],
     restartRequest: null,
     maintenance: null,
+    runForTask: null,
     ...overrides,
   };
   const factory = createDesktopSnapshotFactory({
@@ -106,7 +107,8 @@ function fixture(overrides = {}) {
       }),
     },
     runs: {
-      forTask: (task) => (task.threadId === "thread-1" ? state.run : null),
+      forTask: (task) => state.runForTask?.(task)
+        ?? (task.threadId === "thread-1" ? state.run : null),
       titleFor: (item) => item.taskTitle ?? "Задача",
     },
     tasks: {
@@ -274,6 +276,17 @@ test("desktop task snapshot hides an internal context probe run", () => {
 
   assert.equal(snapshot.run, null);
   assert.equal(snapshot.running, false);
+});
+
+test("desktop task snapshot rejects a retained run from the pre-rotation Thread", () => {
+  const { desktopTaskSnapshot, entry, state } = fixture();
+  state.run.threadId = "thread-before-rotation";
+  state.run.responseText = "Старый финальный ответ";
+  state.runForTask = () => state.run;
+
+  const snapshot = desktopTaskSnapshot(entry);
+
+  assert.equal(snapshot.run, null);
 });
 
 test("desktop task snapshot hides a standalone automatic compaction observer", () => {

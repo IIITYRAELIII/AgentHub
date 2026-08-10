@@ -204,7 +204,12 @@ export function createDesktopSnapshotFactory({
       projectRoot: entry.projectRoot,
       threadId: entry.threadId,
     };
-    const run = runs.forTask(task);
+    const candidateRun = runs.forTask(task);
+    const run = candidateRun
+      && String(candidateRun.provider ?? "") === String(entry.provider ?? "")
+      && String(candidateRun.threadId ?? "") === String(entry.threadId ?? "")
+      ? candidateRun
+      : null;
     const context = desktopContextSnapshot(entry.threadId, run?.turnId);
     const internalMaintenanceObserver = isInternalMaintenanceObserver(run, context);
     const visibleRun = internalMaintenanceObserver ? null : run;

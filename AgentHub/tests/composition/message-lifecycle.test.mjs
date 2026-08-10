@@ -105,6 +105,22 @@ test("message lifecycle removes a replayed server echo before optimistic reconci
   assert.deepEqual([...result.matchedIds], ["client-1"]);
 });
 
+test("live completion is discarded instead of promoted across a rotated Thread", () => {
+  const previous = {
+    provider: "codex",
+    threadId: "thread-old",
+    turnId: "turn-old",
+  };
+  const selected = { provider: "codex", threadId: "thread-new" };
+
+  assert.equal(lifecycle.liveCompletionTransition(previous, selected, "turn-new"), "discard");
+  assert.equal(
+    lifecycle.liveCompletionTransition(previous, { ...selected, threadId: "thread-old" }, "turn-new"),
+    "promote",
+  );
+  assert.equal(lifecycle.liveCompletionTransition(previous, selected, "turn-old"), "none");
+});
+
 test("accepted optimistic message and rebound server echo render as one card", () => {
   const clientUserMessageId = "b40b178a-6f2d-4c1c-8922-558ab1070c06";
   const server = {

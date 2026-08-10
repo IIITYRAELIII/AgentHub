@@ -51,6 +51,8 @@ export class RunJournalService {
     this.lastTaskMessages.delete(key);
     this.lastTaskMessages.set(key, {
       text: value,
+      provider: String(run.provider ?? "").trim() || null,
+      threadId: String(run.threadId ?? "").trim(),
       updatedAt: authoritativeUpdatedAt
         || (sameTurn ? current.updatedAt : null)
         || this.now().toISOString(),

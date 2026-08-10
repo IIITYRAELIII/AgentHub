@@ -32,7 +32,7 @@ let visibleStreamTaskIds = new Set();
 const EXTERNAL_HISTORY_REFRESH_MS = 2_500;
 const HISTORY_ATTACHMENT_REFRESH_MS = 10_000;
 const HISTORY_ATTACHMENT_SETTLE_TIMEOUT_MS = 120_000;
-const REMOTE_RESULT_LONG_POLL_MS = 25_000;
+const REMOTE_WAIT_MS = 0;
 const REMOTE_RESULT_FALLBACK_POLL_MS = 600;
 const DEFAULT_CONTROL_TIMEOUT_MS = 45_000;
 const LONG_CONTROL_TIMEOUT_MS = 180_000;
@@ -73,6 +73,7 @@ const {
   historicalAgentResponseVisible,
   hubErrorMessage,
   isConnectionFailure,
+  liveCompletionTransition,
   looksLikeConnectionFailure,
   markConnectionFailure,
   mergeDeferredQueueEntries,
@@ -477,7 +478,15 @@ function messageSendDefinitelyRejected(error) {
 function promoteLiveCompletion(taskIdValue, selected, incomingTurnId = "") {
   const previous = liveCardsByTask.get(taskIdValue);
   const previousTurnId = String(previous?.turnId ?? "").trim();
-  if (!previousTurnId || previousTurnId === String(incomingTurnId ?? "").trim()) return false;
+  const transition = liveCompletionTransition(previous, selected, incomingTurnId);
+  if (transition === "none") return false;
+  if (transition === "discard") {
+    liveCardsByTask.delete(taskIdValue);
+    liveProbeByTask.delete(taskIdValue);
+    liveUserMessagesByTask.delete(taskIdValue);
+    completionOverlaysByTask.delete(taskIdValue);
+    return true;
+  }
   const liveUsers = liveUserMessagesByTask.get(taskIdValue) ?? {};
   const taskAnswerTurnId = String(selected?.lastAnswerTurnId ?? "").trim();
   const answer = String(
@@ -720,7 +729,7 @@ async function waitRemoteResult(commandId, timeoutMs = DEFAULT_CONTROL_TIMEOUT_M
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const response = await hubFetch(
-      `/api/control/result?id=${encodeURIComponent(commandId)}&waitMs=${REMOTE_RESULT_LONG_POLL_MS}`,
+      `/api/control/result?id=${encodeURIComponent(commandId)}&waitMs=${REMOTE_WAIT_MS}`,
       {
         headers: authorizationHeaders(),
         cache: "no-store",
@@ -762,7 +771,7 @@ async function readSnapshot(params = {}) {
   await localSessionReady;
   const query = new URLSearchParams({
     knownVersion: String(params?.knownVersion ?? ""),
-    waitMs: String(REMOTE_RESULT_LONG_POLL_MS),
+    waitMs: String(REMOTE_WAIT_MS),
   });
   const response = await hubFetch(`/api/snapshot?${query}`, {
     headers: authorizationHeaders(),

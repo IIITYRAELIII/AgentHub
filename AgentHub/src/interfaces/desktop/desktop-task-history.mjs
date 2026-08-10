@@ -220,7 +220,12 @@ export function createDesktopTaskHistoryFactory({
         threadId: threadBinding.threadId,
       })));
     }
-    const candidateRun = params.includeActive === false ? null : runs.forTask(binding);
+    const indexedRun = params.includeActive === false ? null : runs.forTask(binding);
+    const candidateRun = indexedRun
+      && String(indexedRun.provider ?? "") === String(binding.provider ?? "")
+      && String(indexedRun.threadId ?? "") === String(binding.threadId ?? "")
+      ? indexedRun
+      : null;
     const running = binding.provider === "codex" && isCodexContextProbeTurn({
       prompt: candidateRun?.promptPreview,
       finalAnswer: candidateRun?.responseText,
@@ -245,7 +250,11 @@ export function createDesktopTaskHistoryFactory({
         attachments: running.messageAttachments ?? [],
       });
     } else {
-      const completed = latestMessage(binding);
+      const savedCompletion = latestMessage(binding);
+      const completed = savedCompletion?.threadId
+        && String(savedCompletion.threadId) !== String(binding.threadId)
+        ? null
+        : savedCompletion;
       const completedTurnId = String(completed?.turnId ?? "").trim();
       const matchingTurnVisible = completedTurnId && history.some((item) => (
         String(item?.id ?? "").trim() === completedTurnId

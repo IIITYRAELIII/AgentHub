@@ -37,6 +37,8 @@ test("RunJournalService owns bounded last-message state by task identity", () =>
   assert.equal(service.lastMessage(task("one")), "");
   assert.equal(service.lastMessage(task("two")), "Second");
   assert.equal(service.lastMessageRecord(task("three")).updatedAt, "2026-08-04T12:00:00.000Z");
+  assert.equal(service.lastMessageRecord(task("three")).threadId, "three");
+  assert.equal(service.lastMessageRecord(task("three")).provider, "codex");
   assert.equal(service.lastMessageSnapshot().length, 2);
 });
 
