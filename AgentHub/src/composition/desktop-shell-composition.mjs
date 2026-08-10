@@ -401,6 +401,8 @@ export function createDesktopShellComposition({
         agentPreferences.setIncludeClaudeUsage(value);
         workLogUsageStore.setIncludeClaudeUsage(value);
       },
+      getActivityRecentMinutes: () => agentPreferences.activityRecentMinutes,
+      setActivityRecentMinutes: (value) => agentPreferences.setActivityRecentMinutes(value),
       projectUsage: () => workLogUsageStore.project(null, {
         projectRoot: config.projectRoot,
         projectionProjectRoots: globalWorkLogProjectRoots,

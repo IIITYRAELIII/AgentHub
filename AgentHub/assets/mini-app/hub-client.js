@@ -1284,7 +1284,7 @@ function applySnapshot(snapshot) {
     })),
   });
   const selectedDraft = tasks.find((task) => task.id === effectiveSelectedId && task.draftStream);
-  agentHub.setSelection(selectedDraft?.streamSettings ?? {
+  agentHub.setSelection({
     provider: settings.provider,
     model: settings.model,
     reasoning: settings.reasoning,
@@ -1292,6 +1292,8 @@ function applySnapshot(snapshot) {
     project: (settings.projects ?? []).find((project) => project.selected)?.path ?? "",
     autoApprove: settings.approvalMode === "auto",
     includeClaudeUsage: settings.includeClaudeUsage !== false,
+    activityRecentMinutes: settings.activityRecentMinutes,
+    ...(selectedDraft?.streamSettings ?? {}),
   });
   applySnapshotConnection(snapshot);
 }
@@ -2210,6 +2212,7 @@ agentHub.on("selection:set", ({ key, value }) => runAction(async () => {
     project: "project",
     autoApprove: "approvalMode",
     includeClaudeUsage: "includeClaudeUsage",
+    activityRecentMinutes: "activityRecentMinutes",
   };
   const name = names[key];
   if (!name) return;

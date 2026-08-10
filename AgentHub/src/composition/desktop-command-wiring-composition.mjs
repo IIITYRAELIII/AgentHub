@@ -185,6 +185,8 @@ export function createDesktopCommandWiring({
       setAutoApprove: state.setAutoApprove,
       getIncludeClaudeUsage: services.getIncludeClaudeUsage,
       setIncludeClaudeUsage: services.setIncludeClaudeUsage,
+      getActivityRecentMinutes: services.getActivityRecentMinutes,
+      setActivityRecentMinutes: services.setActivityRecentMinutes,
       projectUsage: services.projectUsage,
       findProjectIndex: (value) => projects.findIndex((project) => (
         services.samePath(project.path, value)

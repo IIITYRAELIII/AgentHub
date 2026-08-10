@@ -351,6 +351,7 @@ export function createDesktopSnapshotFactory({
           : current.claudeCollaborationMode,
         approvalMode: current.autoApprove ? "auto" : "manual",
         includeClaudeUsage: current.includeClaudeUsage !== false,
+        activityRecentMinutes: current.activityRecentMinutes,
         models: activeProvider === "codex"
           ? current.codexModels.map((model) => ({ value: model.value, label: model.label }))
           : current.claudeModels.map((value) => ({

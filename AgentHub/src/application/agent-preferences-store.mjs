@@ -2,6 +2,16 @@ function oneOf(value, allowed, fallback) {
   return allowed.has(value) ? value : fallback;
 }
 
+const DEFAULT_ACTIVITY_RECENT_MINUTES = 3 * 60;
+const MAX_ACTIVITY_RECENT_MINUTES = 30 * 24 * 60;
+
+function activityRecentMinutes(value, fallback = DEFAULT_ACTIVITY_RECENT_MINUTES) {
+  const minutes = Math.round(Number(value));
+  return Number.isFinite(minutes)
+    ? Math.max(0, Math.min(MAX_ACTIVITY_RECENT_MINUTES, minutes))
+    : fallback;
+}
+
 export class AgentPreferencesStore {
   constructor({
     selectionStore,
@@ -61,6 +71,7 @@ export class AgentPreferencesStore {
   get claudeReasoningEffort() { return this.values.claudeReasoningEffort; }
   get claudeCollaborationMode() { return this.values.claudeCollaborationMode; }
   get includeClaudeUsage() { return this.values.includeClaudeUsage; }
+  get activityRecentMinutes() { return this.values.activityRecentMinutes; }
   get defaultCodexModel() { return this.defaults.codexModel; }
   get defaultCodexReasoningEffort() { return this.defaults.codexReasoningEffort; }
 
@@ -96,6 +107,10 @@ export class AgentPreferencesStore {
 
   setIncludeClaudeUsage(value) {
     return this.#set("includeClaudeUsage", value === true);
+  }
+
+  setActivityRecentMinutes(value) {
+    return this.#set("activityRecentMinutes", activityRecentMinutes(value));
   }
 
   #set(name, value) {
@@ -204,6 +219,7 @@ export class AgentPreferencesStore {
       includeClaudeUsage: typeof snapshot.includeClaudeUsage === "boolean"
         ? snapshot.includeClaudeUsage
         : true,
+      activityRecentMinutes: activityRecentMinutes(snapshot.activityRecentMinutes),
     };
     return this.snapshot();
   }

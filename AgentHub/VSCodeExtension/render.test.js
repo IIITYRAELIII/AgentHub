@@ -488,8 +488,6 @@ test("general settings and current-dialog settings stay separate", () => {
   assert.match(app, /chatPane\.toggleAttribute\("data-dialog-settings-open", visible\)/u);
   assert.match(html, /data-token-breakdown-toggle/u);
   assert.match(html, /data-claude-group-toggle/u);
-  assert.match(html, /<option value="week">По неделям<\/option>/u);
-  assert.match(html, /<option value="month">По месяцам<\/option>/u);
   assert.match(html, /data-usage-unit="rub">₽<\/button>/u);
   assert.match(html, /data-usage-unit="pte"/u);
   assert.match(html, /data-exchange-rate-hint/u);
@@ -518,10 +516,6 @@ test("general settings and current-dialog settings stay separate", () => {
   assert.match(app, /agent-hub-token-breakdown/u);
   assert.match(app, /agent-hub-group-claude/u);
   assert.match(app, /agent-hub-usage-unit/u);
-  assert.match(html, /data-usage-rate-basis/u);
-  assert.match(html, /<option value="task">По времени задач<\/option>/u);
-  assert.match(html, /<option value="calendar">По календарному времени<\/option>/u);
-  assert.match(app, /agent-hub:usage-rate-basis:v1/u);
   assert.match(html, /data-toggle="includeClaudeUsage"/u);
   assert.match(html, /data-trusted-device-list/u);
   assert.match(app, /setTrustedDevices/u);

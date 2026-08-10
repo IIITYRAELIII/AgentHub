@@ -414,7 +414,6 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.match(page, /data-comparison-chart/u);
     assert.match(page, /data-comparison-summary/u);
     assert.match(page, /data-usage-unit="pte"/u);
-    assert.match(page, /data-usage-rate-basis/u);
     assert.match(page, /data-toggle="includeClaudeUsage"/u);
     assert.match(page, /data-claude-group-toggle/u);
     assert.match(page, /data-token-breakdown-toggle/u);
@@ -438,11 +437,6 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.doesNotMatch(page, /data-connection|Автообновление/u);
     assert.match(page, /<option value="graphite">Графит<\/option>/u);
     assert.match(page, /<option value="reliquary">Пепельный реликварий<\/option>/u);
-    assert.match(page, /data-group-select/u);
-    assert.match(page, /<option value="date">По дням<\/option>/u);
-    assert.match(page, /<option value="week">По неделям<\/option>/u);
-    assert.match(page, /<option value="month">По месяцам<\/option>/u);
-    assert.match(page, /<option value="task">По воркспейсам<\/option>/u);
     assert.match(page, /data-journal-grouping="task"/u);
     assert.match(page, /data-journal-grouping="month"/u);
     assert.match(page, />Орбита</u);
@@ -505,7 +499,6 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.match(script, /data-comparison-series-select/u);
     assert.match(page, /data-stream-collapse-toggle/u);
     assert.doesNotMatch(page, /data-workspace-collapse-toggle/u);
-    assert.match(page, /Сворачивать все потоки/u);
     assert.match(script, /agent-hub-collapse-streams/u);
     assert.match(script, /function applyStreamCollapse/u);
     assert.match(script, /function setStreamsCollapsed/u);

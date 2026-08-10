@@ -147,6 +147,7 @@ function fixture(overrides = {}) {
         codexCollaborationMode: "default",
         claudeCollaborationMode: "plan",
         autoApprove: true,
+        activityRecentMinutes: 180,
         codexModels: [{ value: "gpt-test", label: "GPT Test" }],
         codexModelLabel: () => "GPT Test",
         claudeModels: ["opus"],
@@ -557,6 +558,7 @@ test("desktopSnapshot preserves top-level settings, queues and restart state", a
     mode: "default",
     approvalMode: "auto",
     includeClaudeUsage: true,
+    activityRecentMinutes: 180,
     models: [{ value: "gpt-test", label: "GPT Test" }],
     modelOptionsByProvider: {
       codex: [{ value: "gpt-test", label: "GPT Test" }],

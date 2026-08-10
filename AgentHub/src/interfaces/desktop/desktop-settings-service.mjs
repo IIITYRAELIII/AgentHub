@@ -14,6 +14,7 @@ export class DesktopSettingsService {
       "getCodexReasoning", "setCodexReasoning", "getClaudeReasoning", "setClaudeReasoning",
       "getCodexMode", "setCodexMode", "getClaudeMode", "setClaudeMode", "getAutoApprove",
       "setAutoApprove", "getIncludeClaudeUsage", "setIncludeClaudeUsage", "projectUsage",
+      "getActivityRecentMinutes", "setActivityRecentMinutes",
       "findProjectIndex", "switchProject", "snapshot",
     ]) requiredFunction(dependencies[name], name);
     this.#d = dependencies;
@@ -70,6 +71,14 @@ export class DesktopSettingsService {
       changed = d.getIncludeClaudeUsage() !== (value === "true");
       d.setIncludeClaudeUsage(value === "true");
       await d.projectUsage();
+      await d.saveState();
+    } else if (name === "activityRecentMinutes") {
+      const minutes = Number(value);
+      if (!Number.isSafeInteger(minutes) || minutes < 0 || minutes > 30 * 24 * 60) {
+        throw new Error("Неизвестный период отображения активных задач");
+      }
+      changed = d.getActivityRecentMinutes() !== minutes;
+      d.setActivityRecentMinutes(minutes);
       await d.saveState();
     } else if (name === "project") {
       const index = d.findProjectIndex(value);

@@ -616,6 +616,73 @@
         </div>
         <button class="journal-collapse-all" type="button" data-collapse-all>Свернуть всё</button>
       </header>
+      <details class="page-settings journal-page-settings">
+        <summary>Настройки журнала</summary>
+        <div class="page-settings-grid">
+          <div class="setting-stack">
+            <span class="setting-name">Единица расхода</span>
+            <div class="setting-options compact-options" role="group" aria-label="Единица расхода в журнале">
+              <button type="button" class="option-chip" data-usage-unit="pte">ПТЭ</button>
+              <button type="button" class="option-chip" data-usage-unit="cr">cr</button>
+              <button type="button" class="option-chip" data-usage-unit="$">$</button>
+              <button type="button" class="option-chip" data-usage-unit="rub">₽</button>
+            </div>
+            <details class="setting-note">
+              <summary>Как считается расход</summary>
+              <div class="setting-note-body">
+                <p>
+                  <b>ПТЭ</b> — приведённые токен-эквиваленты. База = входные токены +
+                  кэшированный вход × 0,1 + выходные токены × 6 + токены рассуждений × 6;
+                </p>
+                <ul class="setting-note-list">
+                  <li>GPT-5.4 и GPT-5.6-Terra — База;</li>
+                  <li>GPT-5.5 и GPT-5.6-Sol — База ×2;</li>
+                  <li>GPT-5.4-mini — База ×0,3;</li>
+                  <li>GPT-5.6-Luna — База ×0,4;</li>
+                  <li>
+                    режим Fast дополнительно увеличивает расход в 2,5 раза для GPT-5.5 и всех
+                    GPT-5.6 и в 2 раза для GPT-5.4; на GPT-5.4-mini не влияет;
+                  </li>
+                  <li>Codex Spark в общем расходе не учитывается — у него отдельный лимит.</li>
+                </ul>
+                <p><b>cr</b> — официальные «кредиты» Codex, ПТЭ / 16000.</p>
+                <p><b>$</b> — эквивалентная цена токенов по ключу API, cr / 25.</p>
+                <p><b>₽</b> — <span data-exchange-rate-hint>доллары по официальному курсу ЦБ РФ.</span></p>
+                <p class="setting-note-aside">
+                  У задач Claude базой служит цена API Anthropic за те же токены; в cr она
+                  переводится тем же курсом 25 cr = $1.
+                </p>
+              </div>
+            </details>
+          </div>
+          <label class="setting-switch">
+            <input type="checkbox" data-claude-group-toggle>
+            <span class="switch-text">Группировать задачи Claude в Work</span>
+            <span class="switch-track" aria-hidden="true"></span>
+          </label>
+          <label class="setting-switch">
+            <input type="checkbox" data-toggle="includeClaudeUsage">
+            <span class="switch-text">Учитывать расход Claude
+              <span class="switch-note">В итогах журнала и на графике расхода.</span>
+            </span>
+            <span class="switch-track" aria-hidden="true"></span>
+          </label>
+          <label class="setting-switch">
+            <input type="checkbox" data-token-breakdown-toggle>
+            <span class="switch-text">Токены в шапке дня
+              <span class="switch-note">Вход, кэш, выход, думы и ImageGen.</span>
+            </span>
+            <span class="switch-track" aria-hidden="true"></span>
+          </label>
+          <label class="setting-switch">
+            <input type="checkbox" data-stream-collapse-toggle>
+            <span class="switch-text">Сворачивать Streams до Workspace
+              <span class="switch-note">В режиме «День» применяется автоматически.</span>
+            </span>
+            <span class="switch-track" aria-hidden="true"></span>
+          </label>
+        </div>
+      </details>
       <div class="journal-ledger">
         <div class="journal-ledger-head" aria-hidden="true">
           <span data-journal-primary-column>Workspace</span>
@@ -638,6 +705,36 @@
         </header>
         <div class="current-limits-row" data-current-limits="statistics">
           <span class="current-limits-empty">Загрузка…</span>
+        </div>
+      </section>
+      <section class="statistics-card statistics-preferences-card" aria-labelledby="statistics-preferences-title">
+        <header class="statistics-card-head">
+          <div>
+            <h2 id="statistics-preferences-title">Настройки статистики</h2>
+          </div>
+        </header>
+        <div class="statistics-preferences-grid">
+          <div class="setting-stack">
+            <span class="setting-name">Учитывать расход по времени хода</span>
+            <div class="setting-options turn-time-options" role="group"
+              aria-label="Временная привязка расхода">
+              <button type="button" class="option-chip" data-turn-time-mode="start">Начало</button>
+              <button type="button" class="option-chip" data-turn-time-mode="middle">Середина</button>
+              <button type="button" class="option-chip" data-turn-time-mode="end">Окончание</button>
+            </div>
+            <span class="switch-note">
+              Определяет, в какую точку графика попадёт расход завершённого хода.
+            </span>
+          </div>
+          <div class="setting-stack">
+            <span class="setting-name">Единица расхода</span>
+            <div class="setting-options compact-options" role="group" aria-label="Единица расхода в статистике">
+              <button type="button" class="option-chip" data-usage-unit="pte">ПТЭ</button>
+              <button type="button" class="option-chip" data-usage-unit="cr">cr</button>
+              <button type="button" class="option-chip" data-usage-unit="$">$</button>
+              <button type="button" class="option-chip" data-usage-unit="rub">₽</button>
+            </div>
+          </div>
         </div>
       </section>
       <section class="statistics-card" aria-labelledby="usage-chart-title">
@@ -765,6 +862,14 @@
             <div class="comparison-summary" data-comparison-summary hidden aria-live="polite"></div>
           </div>
         </header>
+        <div class="comparison-view-control">
+          <span class="setting-name">Вид диаграммы</span>
+          <div class="setting-options comparison-view-options" role="group"
+            aria-label="Вид диаграммы сопоставления расхода">
+            <button type="button" class="option-chip" data-comparison-view-mode="combined">Общая</button>
+            <button type="button" class="option-chip" data-comparison-view-mode="split">Раздельно</button>
+          </div>
+        </div>
         <div class="limits-ranges" role="group" aria-label="Период сопоставления"
           data-comparison-ranges>
           <button type="button" class="limits-range" data-range="6h" aria-pressed="false">6&nbsp;ч</button>
@@ -999,7 +1104,7 @@
     </button>
   </nav>
 
-  <!-- Единая панель настроек интерфейса и журнала. -->
+  <!-- Единая панель общих настроек интерфейса. -->
   <div class="panel-scrim" data-panel-scrim hidden></div>
   <aside class="settings-panel" data-settings-panel hidden aria-label="Настройки" role="dialog"
     aria-modal="true">
@@ -1024,34 +1129,6 @@
         </div>
       </section>
       <section class="settings-section">
-        <h3 class="settings-section-title">Статистика</h3>
-        <div class="settings-card">
-          <div class="setting-stack">
-            <span class="setting-name">Учитывать расход по времени хода</span>
-            <div class="setting-options turn-time-options" role="group"
-              aria-label="Временная привязка расхода">
-              <button type="button" class="option-chip" data-turn-time-mode="start">Начало</button>
-              <button type="button" class="option-chip" data-turn-time-mode="middle">Середина</button>
-              <button type="button" class="option-chip" data-turn-time-mode="end">Окончание</button>
-            </div>
-            <span class="switch-note">
-              Определяет, в какую точку графика попадёт расход завершённого хода.
-            </span>
-          </div>
-          <div class="setting-stack">
-            <span class="setting-name">Диаграмма сопоставления расхода</span>
-            <div class="setting-options comparison-view-options" role="group"
-              aria-label="Вид диаграммы сопоставления расхода">
-              <button type="button" class="option-chip" data-comparison-view-mode="combined">Общая</button>
-              <button type="button" class="option-chip" data-comparison-view-mode="split">Раздельно</button>
-            </div>
-            <span class="switch-note">
-              Раздельный вид показывает исходные расходы, корреляцию и разность по дням.
-            </span>
-          </div>
-        </div>
-      </section>
-      <section class="settings-section">
         <h3 class="settings-section-title">Интерфейс</h3>
         <div class="settings-card">
           <label class="setting-row setting-field">
@@ -1071,6 +1148,13 @@
             <span class="switch-track" aria-hidden="true"></span>
           </label>
           <label class="setting-row setting-field">
+            <span class="setting-name">Порядок Stream</span>
+            <select data-stream-order-mode-select aria-label="Порядок Stream">
+              <option value="activity">По последней активности</option>
+              <option value="manual">Ручной порядок</option>
+            </select>
+          </label>
+          <label class="setting-row setting-field">
             <span class="setting-name">Эффект Stream</span>
             <select data-stream-status-effect-select aria-label="Эффект активности и готового ответа Stream">
               <option value="calm">Спокойный</option>
@@ -1082,13 +1166,6 @@
               <option value="sediment">Осадок</option>
               <option value="echo">Эхо</option>
               <option value="off">Выключено</option>
-            </select>
-          </label>
-          <label class="setting-row setting-field">
-            <span class="setting-name">Порядок Stream</span>
-            <select data-stream-order-mode-select aria-label="Порядок Stream">
-              <option value="activity">По последней активности</option>
-              <option value="manual">Ручной порядок</option>
             </select>
           </label>
           <label class="setting-row setting-field" data-stream-activity-direction-row>
@@ -1124,92 +1201,6 @@
               Завершённые и выполняющиеся показываются всегда; остальные — с момента последней активности.
             </span>
           </div>
-          <label class="setting-row setting-field">
-            <span class="setting-name">Группировка</span>
-            <select data-group-select aria-label="Группировка журнала">
-              <option value="task">По воркспейсам</option>
-              <option value="date">По дням</option>
-              <option value="week">По неделям</option>
-              <option value="month">По месяцам</option>
-            </select>
-          </label>
-          <div class="setting-stack">
-            <span class="setting-name">Единица расхода</span>
-            <div class="setting-options compact-options" role="group" aria-label="Единица расхода">
-              <button type="button" class="option-chip" data-usage-unit="pte">ПТЭ</button>
-              <button type="button" class="option-chip" data-usage-unit="cr">cr</button>
-              <button type="button" class="option-chip" data-usage-unit="$">$</button>
-              <button type="button" class="option-chip" data-usage-unit="rub">₽</button>
-            </div>
-            <details class="setting-note">
-              <summary>Как считается расход</summary>
-              <div class="setting-note-body">
-                <p>
-                  <b>ПТЭ</b> — приведённые токен-эквиваленты. База = входные токены +
-                  кэшированный вход × 0,1 + выходные токены × 6 + токены рассуждений × 6;
-                </p>
-                <ul class="setting-note-list">
-                  <li>GPT-5.4 и GPT-5.6-Terra — База;</li>
-                  <li>GPT-5.5 и GPT-5.6-Sol — База ×2;</li>
-                  <li>GPT-5.4-mini — База ×0,3;</li>
-                  <li>GPT-5.6-Luna — База ×0,4;</li>
-                  <li>
-                    режим Fast дополнительно увеличивает расход в 2,5 раза для GPT-5.5 и всех
-                    GPT-5.6 и в 2 раза для GPT-5.4; на GPT-5.4-mini не влияет;
-                  </li>
-                  <li>Codex Spark в общем расходе не учитывается — у него отдельный лимит.</li>
-                </ul>
-                <p><b>cr</b> — официальные «кредиты» Codex, ПТЭ / 16000.</p>
-                <p>
-                  <b>$</b> — столько же токенов стоило бы по ключу API: например, если встроить
-                  Codex в коммерческий продукт. cr / 25.
-                </p>
-                <p><b>₽</b> — <span data-exchange-rate-hint>доллары по официальному курсу ЦБ РФ.</span></p>
-                <p class="setting-note-aside">
-                  У задач Claude базой служит цена API Anthropic за те же токены; в cr она
-                  переводится тем же курсом 25 cr = $1.
-                </p>
-              </div>
-            </details>
-          </div>
-          <label class="setting-row setting-field">
-            <span class="setting-name">Расчёт скорости</span>
-            <select data-usage-rate-basis aria-label="Расчёт скорости расхода">
-              <option value="task">По времени задач</option>
-              <option value="calendar">По календарному времени</option>
-            </select>
-          </label>
-        </div>
-      </section>
-      <section class="settings-section">
-        <h3 class="settings-section-title">Журнал</h3>
-        <div class="settings-card">
-          <label class="setting-switch">
-            <input type="checkbox" data-claude-group-toggle>
-            <span class="switch-text">Группировать задачи Claude в Work</span>
-            <span class="switch-track" aria-hidden="true"></span>
-          </label>
-          <label class="setting-switch">
-            <input type="checkbox" data-toggle="includeClaudeUsage">
-            <span class="switch-text">Учитывать расход Claude
-              <span class="switch-note">В итогах журнала и на графике расхода.</span>
-            </span>
-            <span class="switch-track" aria-hidden="true"></span>
-          </label>
-          <label class="setting-switch">
-            <input type="checkbox" data-token-breakdown-toggle>
-            <span class="switch-text">Токены в шапке дня
-              <span class="switch-note">Вход, кэш, выход, думы и ImageGen.</span>
-            </span>
-            <span class="switch-track" aria-hidden="true"></span>
-          </label>
-          <label class="setting-switch">
-            <input type="checkbox" data-stream-collapse-toggle>
-            <span class="switch-text">Сворачивать Streams до Workspace
-              <span class="switch-note">В режиме «День» применяется автоматически.</span>
-            </span>
-            <span class="switch-track" aria-hidden="true"></span>
-          </label>
         </div>
       </section>
       <section class="settings-section">

@@ -40,7 +40,6 @@ const collapseAllButton = document.querySelector("[data-collapse-all]");
 const themeSelect = document.querySelector("[data-theme-select]");
 const backgroundSelect = document.querySelector("[data-background-select]");
 const chatBackgroundToggle = document.querySelector("[data-chat-background-toggle]");
-const groupSelect = document.querySelector("[data-group-select]");
 const journalGroupingButtons = [...document.querySelectorAll("[data-journal-grouping]")];
 const journalPrimaryColumn = document.querySelector("[data-journal-primary-column]");
 const journalWorkspaceCount = document.querySelector("[data-journal-workspace-count]");
@@ -181,7 +180,6 @@ const usageRanges = document.querySelector("[data-usage-ranges]");
 const usageSubtitle = document.querySelector("[data-usage-subtitle]");
 const usageTitle = document.querySelector("[data-usage-title]");
 const usageModes = document.querySelector("[data-usage-modes]");
-const usageRateBasisSelect = document.querySelector("[data-usage-rate-basis]");
 const usageTotal = document.querySelector("[data-usage-total]");
 const usageLoading = document.querySelector("[data-usage-loading]");
 const usageError = document.querySelector("[data-usage-error]");
@@ -344,7 +342,6 @@ const backgroundAssetLoads = new Map();
 const sessionBackgrounds = new Map();
 const LEGACY_BACKGROUND_STORAGE_KEY = "agent-hub-background";
 const ACTIVITY_RAIL_COLLAPSED_KEY = "agent-hub:activity-rail-collapsed:v1";
-const ACTIVITY_RECENT_PERIOD_KEY = "agent-hub:activity-recent-period:v1";
 const DEFAULT_ACTIVITY_RECENT_MINUTES = 3 * 60;
 const MAX_ACTIVITY_RECENT_MINUTES = 30 * 24 * 60;
 let activityRecentPeriodMinutes = DEFAULT_ACTIVITY_RECENT_MINUTES;
@@ -377,7 +374,6 @@ function savedUsageRange() {
 }
 
 const USAGE_MODE_KEY = "agent-hub:usage-mode:v1";
-const USAGE_RATE_BASIS_KEY = "agent-hub:usage-rate-basis:v1";
 
 function savedUsageMode() {
   try {
@@ -388,18 +384,10 @@ function savedUsageMode() {
   }
 }
 
-function savedUsageRateBasis() {
-  try {
-    return localStorage.getItem(USAGE_RATE_BASIS_KEY) === "calendar" ? "calendar" : "task";
-  } catch {
-    return "task";
-  }
-}
-
 const usageState = {
   range: savedUsageRange(),
   mode: savedUsageMode(),
-  rateBasis: savedUsageRateBasis(),
+  rateBasis: "task",
   status: "idle",
   payload: null,
   error: "",
@@ -727,35 +715,20 @@ function normalizedActivityRecentMinutes(value) {
     : DEFAULT_ACTIVITY_RECENT_MINUTES;
 }
 
-function savedActivityRecentMinutes() {
-  try {
-    const saved = localStorage.getItem(ACTIVITY_RECENT_PERIOD_KEY);
-    return saved === null
-      ? DEFAULT_ACTIVITY_RECENT_MINUTES
-      : normalizedActivityRecentMinutes(saved);
-  } catch {
-    return DEFAULT_ACTIVITY_RECENT_MINUTES;
-  }
-}
-
-function applyActivityRecentPeriod(value, { persist = false, update = false } = {}) {
+function applyActivityRecentPeriod(value, { update = false } = {}) {
   activityRecentPeriodMinutes = normalizedActivityRecentMinutes(value);
   if (activityPeriodHours) activityPeriodHours.value = String(Math.floor(activityRecentPeriodMinutes / 60));
   if (activityPeriodMinutes) activityPeriodMinutes.value = String(activityRecentPeriodMinutes % 60);
-  if (persist) {
-    try {
-      localStorage.setItem(ACTIVITY_RECENT_PERIOD_KEY, String(activityRecentPeriodMinutes));
-    } catch {
-      // Настройка останется активной до закрытия WebView.
-    }
-  }
   if (update) renderActivityRail();
 }
 
 function applyActivityRecentPeriodInputs() {
   const hours = Math.max(0, Number(activityPeriodHours?.value) || 0);
   const minutes = Math.max(0, Number(activityPeriodMinutes?.value) || 0);
-  applyActivityRecentPeriod(hours * 60 + minutes, { persist: true, update: true });
+  const value = normalizedActivityRecentMinutes(hours * 60 + minutes);
+  applyActivityRecentPeriod(value, { update: true });
+  state.selection.activityRecentMinutes = value;
+  emit("selection:set", { key: "activityRecentMinutes", value });
 }
 
 function savedStreamCollapse() {
@@ -842,7 +815,6 @@ function applyStreamActivityDirection(value, { persist = false, update = false }
 function selectGrouping(value, { persist = false } = {}) {
   grouping = JournalView.normalizeGrouping(value);
   document.documentElement.dataset.grouping = grouping;
-  groupSelect.value = grouping;
   if (journalPrimaryColumn) journalPrimaryColumn.textContent = JournalView.primaryColumn(grouping);
   for (const button of journalGroupingButtons) {
     button.setAttribute("aria-pressed", String(button.dataset.journalGrouping === grouping));
@@ -886,19 +858,6 @@ function selectUsageUnit(value, { persist = false } = {}) {
   if (journalHtml) renderJournal();
 }
 
-function selectUsageRateBasis(value, { persist = false } = {}) {
-  usageState.rateBasis = value === "calendar" ? "calendar" : "task";
-  if (usageRateBasisSelect) usageRateBasisSelect.value = usageState.rateBasis;
-  if (persist) {
-    try {
-      localStorage.setItem(USAGE_RATE_BASIS_KEY, usageState.rateBasis);
-    } catch {
-      // Выбор останется активным до закрытия WebView.
-    }
-  }
-  renderUsageHistory();
-}
-
 function savedClaudeGrouping() {
   try {
     return localStorage.getItem("agent-hub-group-claude") === "on";
@@ -933,11 +892,10 @@ applyBreakdown(savedBreakdown());
 applyStreamStatusStyle(savedStreamStatusStyle());
 applyStreamStatusEffect(savedStreamStatusEffect());
 applyStreamOrderMode(savedStreamOrderMode());
-applyActivityRecentPeriod(savedActivityRecentMinutes());
+applyActivityRecentPeriod(DEFAULT_ACTIVITY_RECENT_MINUTES);
 applyStreamActivityDirection(savedStreamActivityDirection());
 applyStreamCollapse(savedStreamCollapse());
 selectUsageUnit(savedUsageUnit());
-selectUsageRateBasis(savedUsageRateBasis());
 selectClaudeGrouping(savedClaudeGrouping());
 breakdownToggle?.addEventListener("change", () => {
   applyBreakdown(breakdownToggle.checked ? "on" : "off", { persist: true });
@@ -966,9 +924,6 @@ claudeGroupToggle?.addEventListener("change", () => {
 for (const button of usageUnitButtons) {
   button.addEventListener("click", () => selectUsageUnit(button.dataset.usageUnit, { persist: true }));
 }
-usageRateBasisSelect?.addEventListener("change", () => {
-  selectUsageRateBasis(usageRateBasisSelect.value, { persist: true });
-});
 selectGrouping(savedGrouping());
 themeSelect.addEventListener("change", () => {
   applyTheme(themeSelect.value, { persist: true });
@@ -979,11 +934,6 @@ backgroundSelect?.addEventListener("change", () => {
 });
 chatBackgroundToggle?.addEventListener("change", () => {
   applyChatSurface(chatBackgroundToggle.checked ? "transparent" : "themed", { persist: true });
-});
-groupSelect.addEventListener("change", () => {
-  if (journalRendered) groupingStates[grouping] = captureOpenState();
-  selectGrouping(groupSelect.value, { persist: true });
-  if (journalHtml) renderJournal();
 });
 for (const button of journalGroupingButtons) {
   button.addEventListener("click", () => {
@@ -5204,7 +5154,7 @@ function renderOptions() {
   renderDialogSettings();
   renderTurnTimeModeOptions();
   renderComparisonViewModeOptions();
-  for (const toggle of settingsPanel.querySelectorAll("[data-toggle]")) {
+  for (const toggle of document.querySelectorAll("[data-toggle]")) {
     toggle.checked = Boolean(state.selection[toggle.dataset.toggle]);
   }
 }
@@ -5316,7 +5266,7 @@ dialogSettings.addEventListener("change", (event) => {
   }
 });
 
-settingsPanel.addEventListener("change", (event) => {
+document.addEventListener("change", (event) => {
   const toggle = event.target.closest("[data-toggle]");
   if (!toggle) return;
   const key = toggle.dataset.toggle;
@@ -6137,13 +6087,16 @@ const AgentHub = {
     renderOptions();
   },
   /** Текущий выбор: { model, reasoning, mode, project, autoApprove,
-   *  includeClaudeUsage }. */
+   *  includeClaudeUsage, activityRecentMinutes }. */
   setSelection(selection) {
     const claudeUsageChanged = Object.hasOwn(selection ?? {}, "includeClaudeUsage")
       && state.selection.includeClaudeUsage !== selection.includeClaudeUsage;
     const next = { ...state.selection, ...selection };
     if (sameData(state.selection, next)) return;
     state.selection = next;
+    if (Object.hasOwn(selection ?? {}, "activityRecentMinutes")) {
+      applyActivityRecentPeriod(selection.activityRecentMinutes, { update: true });
+    }
     renderOptions();
     if (state.selectedId) renderChat();
     if (claudeUsageChanged && journalHtml) renderJournal();

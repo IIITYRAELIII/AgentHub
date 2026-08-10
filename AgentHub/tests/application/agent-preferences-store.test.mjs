@@ -46,6 +46,7 @@ test("agent preferences restore and validate both providers in one state owner",
     claudeReasoningEffort: "low",
     claudeCollaborationMode: "plan",
     includeClaudeUsage: false,
+    activityRecentMinutes: 90,
   });
   assert.deepEqual(store.snapshot(), {
     codexModel: "terra",
@@ -55,9 +56,12 @@ test("agent preferences restore and validate both providers in one state owner",
     claudeReasoningEffort: "low",
     claudeCollaborationMode: "plan",
     includeClaudeUsage: false,
+    activityRecentMinutes: 90,
   });
   assert.throws(() => store.setCodexModel("unknown"), /unknown Codex model/u);
   assert.throws(() => store.setClaudeReasoning("ultra"), /unknown Claude reasoning effort/u);
+  assert.deepEqual(store.setActivityRecentMinutes(240), { changed: true });
+  assert.equal(store.activityRecentMinutes, 240);
 });
 
 test("task preferences follow the selected Codex thread without becoming task identity", () => {
