@@ -7,7 +7,9 @@ import {
   LEGACY_TELEGRAM_BUNDLE_PREFIX,
   normalizedTaskBucket,
   normalizedTaskCategory,
+  normalizedTaskDescription,
   normalizedTaskText,
+  normalizedTaskTitle,
   taskPresentation,
 } from "../../domain/task-board-task.mjs";
 
@@ -22,6 +24,7 @@ function configure(database) {
       raw_text TEXT NOT NULL,
       title TEXT NOT NULL DEFAULT '',
       description TEXT NOT NULL DEFAULT '',
+      presentation_source TEXT NOT NULL DEFAULT 'automatic',
       corrected_text TEXT,
       category TEXT NOT NULL DEFAULT 'unknown',
       bucket TEXT NOT NULL DEFAULT 'backlog',
@@ -79,6 +82,9 @@ function configure(database) {
   if (!taskColumns.some((column) => column.name === "description")) {
     database.exec("ALTER TABLE hub_board_tasks ADD COLUMN description TEXT NOT NULL DEFAULT ''");
   }
+  if (!taskColumns.some((column) => column.name === "presentation_source")) {
+    database.exec("ALTER TABLE hub_board_tasks ADD COLUMN presentation_source TEXT NOT NULL DEFAULT 'automatic'");
+  }
   const legacyPrefixPattern = `${LEGACY_TELEGRAM_BUNDLE_PREFIX}%`;
   const contentOffset = LEGACY_TELEGRAM_BUNDLE_PREFIX.length + 1;
   database.prepare(`
@@ -88,7 +94,7 @@ function configure(database) {
         WHEN corrected_text LIKE ? THEN substr(corrected_text, ?)
         ELSE corrected_text
       END,
-      title = '', description = '',
+      title = '', description = '', presentation_source = 'automatic',
       triage_status = CASE WHEN status = 'done' THEN triage_status ELSE 'pending' END,
       triage_error = NULL
     WHERE source_key LIKE 'shared-dashboard:%' AND raw_text LIKE ?
@@ -287,6 +293,25 @@ export class TaskBoardStore {
     });
   }
 
+  updatePresentation(id, { title, description = "" } = {}) {
+    const taskId = String(id ?? "").trim();
+    const normalizedTitle = normalizedTaskTitle(title);
+    const normalizedDescription = normalizedTaskDescription(description);
+    const correctedText = normalizedDescription
+      ? `${normalizedTitle}\n\n${normalizedDescription}`
+      : normalizedTitle;
+    return this.#withDatabase((database) => {
+      const result = database.prepare(`
+        UPDATE hub_board_tasks SET
+          title = ?, description = ?, corrected_text = ?, presentation_source = 'manual',
+          updated_at_ms = ?
+        WHERE id = ?
+      `).run(normalizedTitle, normalizedDescription, correctedText, this.now(), taskId);
+      if (!result.changes) throw new Error("Задача не найдена");
+      return taskFromRow(database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(taskId));
+    });
+  }
+
   applyTriage(id, {
     title,
     description,
@@ -313,7 +338,10 @@ export class TaskBoardStore {
         && current.status === "open";
       database.prepare(`
         UPDATE hub_board_tasks SET
-          title = ?, description = ?, corrected_text = ?, category = ?, triage_status = 'completed',
+          title = CASE WHEN presentation_source = 'manual' THEN title ELSE ? END,
+          description = CASE WHEN presentation_source = 'manual' THEN description ELSE ? END,
+          corrected_text = CASE WHEN presentation_source = 'manual' THEN corrected_text ELSE ? END,
+          category = ?, triage_status = 'completed',
           triage_confidence = ?, triage_reason = ?, triage_error = NULL,
           bucket = ?, workspace_id = ?, placement_source = ?, updated_at_ms = ?
         WHERE id = ?
@@ -349,7 +377,8 @@ export class TaskBoardStore {
     return this.#withDatabase((database) => {
       database.prepare(`
         UPDATE hub_board_tasks
-        SET triage_status = 'pending', triage_error = NULL, updated_at_ms = ?
+        SET triage_status = 'pending', triage_error = NULL,
+          presentation_source = 'automatic', updated_at_ms = ?
         WHERE id = ?
       `).run(this.now(), String(id));
       return taskFromRow(database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(String(id)));

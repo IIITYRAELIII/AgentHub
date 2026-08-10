@@ -1918,6 +1918,7 @@ document.addEventListener("agenthub:board-action", (event) => runAction(async ()
   }
   const actions = {
     create: "board-task-create",
+    update: "board-task-update",
     move: "board-task-move",
     complete: "board-task-complete",
     remove: "board-task-remove",

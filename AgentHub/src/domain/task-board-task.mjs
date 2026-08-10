@@ -3,6 +3,7 @@ export const TASK_STATUSES = Object.freeze(["open", "started", "done"]);
 export const TASK_CATEGORIES = Object.freeze(["task", "note", "unknown"]);
 export const TASK_SHORT_TITLE_MAX_LENGTH = 100;
 export const TASK_TITLE_MAX_LENGTH = 160;
+export const TASK_DESCRIPTION_MAX_LENGTH = 20_000;
 export const TELEGRAM_BUNDLE_TRIAGE_INSTRUCTIONS = Object.freeze([
   "Ниже пакет сообщений, собранный пользователем в Telegram.",
   "Сохраняй порядок и авторов. Пересланные реплики — контекст третьих лиц; не путай их с прямыми комментариями пользователя, отмеченными «Вы».",
@@ -14,6 +15,23 @@ export function normalizedTaskText(value, { maximumLength = 20_000 } = {}) {
   if (!text) throw new Error("Введите текст Task");
   if (text.length > maximumLength) throw new Error(`Task длиннее ${maximumLength} символов`);
   return text;
+}
+
+export function normalizedTaskTitle(value) {
+  const title = String(value ?? "").replace(/\s+/gu, " ").trim();
+  if (!title) throw new Error("Введите заголовок Task");
+  if (title.length > TASK_TITLE_MAX_LENGTH) {
+    throw new Error(`Заголовок Task длиннее ${TASK_TITLE_MAX_LENGTH} символов`);
+  }
+  return title;
+}
+
+export function normalizedTaskDescription(value) {
+  const description = String(value ?? "").replace(/\r\n?/gu, "\n").trim();
+  if (description.length > TASK_DESCRIPTION_MAX_LENGTH) {
+    throw new Error(`Описание Task длиннее ${TASK_DESCRIPTION_MAX_LENGTH} символов`);
+  }
+  return description;
 }
 
 export function normalizedTaskBucket(value) {

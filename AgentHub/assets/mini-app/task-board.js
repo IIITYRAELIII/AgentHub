@@ -8,9 +8,9 @@
   const workspacePanelTitle = document.querySelector("[data-workspace-task-title]");
   const taskCardModal = document.querySelector("[data-task-card-modal]");
   const taskCardSource = document.querySelector("[data-task-card-source]");
+  const taskCardEditor = document.querySelector("[data-task-card-editor]");
   const taskCardTitle = document.querySelector("[data-task-card-title]");
   const taskCardDescription = document.querySelector("[data-task-card-description]");
-  const taskCardEmptyDescription = document.querySelector("[data-task-card-empty-description]");
   const taskCardOriginal = document.querySelector("[data-task-card-original]");
   const taskCardOriginalText = document.querySelector("[data-task-card-original-text]");
   const taskCardActions = document.querySelector("[data-task-card-actions]");
@@ -37,6 +37,8 @@
     startingTaskId: null,
     creatingWorkspaceId: null,
     draggingColumnId: null,
+    editingTaskId: null,
+    editDirty: false,
   };
 
   function node(tag, attributes = {}, children = []) {
@@ -150,6 +152,8 @@
 
   function closeTaskCard() {
     state.openTaskId = null;
+    state.editingTaskId = null;
+    state.editDirty = false;
     taskCardModal?.close?.();
     taskCardModal?.removeAttribute("open");
   }
@@ -162,11 +166,11 @@
       return;
     }
     taskCardSource.textContent = task.source === "telegram" ? "Telegram" : "Hub";
-    taskCardTitle.textContent = task.title || task.text;
-    const description = String(task.description ?? "").trim();
-    taskCardDescription.textContent = description;
-    taskCardDescription.hidden = !description;
-    taskCardEmptyDescription.hidden = Boolean(description);
+    if (state.editingTaskId !== task.id || !state.editDirty) {
+      taskCardTitle.value = task.title || task.text;
+      taskCardDescription.value = String(task.description ?? "").trim();
+      state.editingTaskId = task.id;
+    }
     const hasOriginal = Boolean(task.correctedText && task.correctedText.trim() !== task.rawText.trim());
     taskCardOriginal.hidden = !hasOriginal;
     taskCardOriginalText.textContent = hasOriginal ? task.rawText : "";
@@ -203,6 +207,8 @@
 
   function openTaskCard(task) {
     state.openTaskId = task.id;
+    state.editingTaskId = null;
+    state.editDirty = false;
     renderOpenTaskCard();
     taskCardModal.showModal?.();
     if (!taskCardModal.open) taskCardModal.setAttribute("open", "");
@@ -405,6 +411,18 @@
 
   document.querySelector("[data-task-start-close]")?.addEventListener("click", closeStart);
   document.querySelector("[data-task-card-close]")?.addEventListener("click", closeTaskCard);
+  taskCardEditor?.addEventListener("input", () => { state.editDirty = true; });
+  taskCardEditor?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const task = state.tasks.find((item) => item.id === state.openTaskId);
+    const title = taskCardTitle.value.trim();
+    if (!task || !title) {
+      taskCardTitle.reportValidity?.();
+      return;
+    }
+    emit("update", { id: task.id, title, description: taskCardDescription.value.trim() });
+    closeTaskCard();
+  });
   taskCardModal?.addEventListener("cancel", (event) => { event.preventDefault(); closeTaskCard(); });
   startModal.addEventListener("cancel", (event) => { event.preventDefault(); closeStart(); });
   startNewForm.addEventListener("submit", (event) => {

@@ -40,6 +40,10 @@ export class DesktopTaskBoardController {
     return this.#mutate(() => this.taskBoard.move(params));
   }
 
+  update(params) {
+    return this.#mutate(() => this.taskBoard.update(params));
+  }
+
   moveColumn(params) {
     return this.#mutate(() => this.taskBoard.moveColumn(params));
   }

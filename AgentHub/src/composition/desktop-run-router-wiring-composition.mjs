@@ -172,6 +172,7 @@ export function createDesktopRunRouterWiring({
       revokeDevice: desktop.revokeDevice,
       boardTaskCreate: (params) => taskBoardController.create(params),
       boardTaskIngest: (params) => taskBoardController.ingest(params),
+      boardTaskUpdate: (params) => taskBoardController.update(params),
       boardTaskMove: (params) => taskBoardController.move(params),
       boardTaskComplete: (params) => taskBoardController.complete(params),
       boardTaskRemove: (params) => taskBoardController.remove(params),

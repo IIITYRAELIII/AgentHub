@@ -93,6 +93,10 @@ export class TaskBoardService {
     return this.store.move(id, { bucket: normalizedBucket, workspaceId, beforeId });
   }
 
+  update({ id, title, description = "" } = {}) {
+    return this.store.updatePresentation(id, { title, description });
+  }
+
   reassignWorkspace(sourceWorkspaceId, targetWorkspaceId) {
     return this.store.reassignWorkspace(sourceWorkspaceId, targetWorkspaceId);
   }

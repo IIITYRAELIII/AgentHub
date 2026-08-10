@@ -16,6 +16,7 @@ function fixture({ activeThread = null, sourceDetails = undefined } = {}) {
     taskBoard: {
       task: () => task,
       create: (value) => { calls.push(["create", value]); return { id: "board-created", rawText: value.text }; },
+      update: (value) => calls.push(["update", value]),
       move: (value) => calls.push(["move", value]),
       moveColumn: (value) => calls.push(["move-column", value]),
       setNotesComment: (value) => calls.push(["notes-comment", value]),
@@ -92,6 +93,15 @@ test("dashboard persists column reordering", async () => {
   assert.deepEqual(calls[0], ["move-column", {
     columnId: "notes", beforeColumnId: "workspace:workspace-1",
   }]);
+});
+
+test("dashboard saves edited Task fields", async () => {
+  const { controller, calls } = fixture();
+  await controller.update({ id: "board-1", title: "Новый заголовок", description: "Описание" });
+  assert.deepEqual(calls[0], ["update", {
+    id: "board-1", title: "Новый заголовок", description: "Описание",
+  }]);
+  assert.deepEqual(calls[1], ["snapshot", { refresh: true }]);
 });
 
 test("legacy Workspace move adapts to the shared column contract", async () => {

@@ -11,7 +11,7 @@ function router(calls) {
     "updateServerConfiguration", "compactContext", "openAttachment", "submitBugReport",
     "trustedDevices", "createDevicePairing", "revokeDevice",
     "renameWorkspace", "createWorkspaceFromStream", "mergeWorkspaces", "renameStream", "moveStream",
-    "boardTaskCreate", "boardTaskIngest", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
+    "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
     "boardTaskRetryTriage", "boardTaskStart", "boardColumnMove", "boardColumnComment",
     "boardWorkspaceMove",
   ].map((name) => [name, handler]));
@@ -124,4 +124,15 @@ test("Desktop application router keeps the legacy Workspace move alias", async (
   });
   assert.equal(result.params.workspaceId, "workspace-2");
   assert.equal(result.params.beforeWorkspaceId, "workspace-1");
+});
+
+test("Desktop application router saves Task presentation fields", async () => {
+  const control = router([]);
+  const result = await control.handleDesktopControl({
+    action: "board-task-update",
+    params: { id: "board-1", title: "Новый заголовок", description: "Описание" },
+  });
+  assert.deepEqual(result.params, {
+    id: "board-1", title: "Новый заголовок", description: "Описание", maxResponseBytes: 3_500_000,
+  });
 });

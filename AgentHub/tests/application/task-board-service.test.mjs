@@ -122,6 +122,18 @@ test("manual dashboard creation never starts Spark triage", async (t) => {
   assert.equal(classifyCalls, 0);
 });
 
+test("dashboard updates a Task title and description", async (t) => {
+  const service = await fixture(t);
+  const task = service.create({ text: "Черновик", source: "hub" });
+  const updated = service.update({
+    id: task.id,
+    title: "Готовый заголовок",
+    description: "Подробное описание",
+  });
+  assert.equal(updated.title, "Готовый заголовок");
+  assert.equal(updated.description, "Подробное описание");
+});
+
 test("dashboard keeps Other last while the remaining columns stay movable", async (t) => {
   const service = await fixture(t);
   assert.deepEqual(service.layout().columnOrder, ["workspace:agent-hub", "notes", "workspace:other"]);

@@ -9,7 +9,7 @@ const MUTATION_ACTIONS = Object.freeze([
   "revoke-device", "submit-bug-report",
   "rename-workspace", "create-workspace", "create-workspace-from-stream", "merge-workspaces", "rename-stream",
   "update-stream-settings", "move-stream",
-  "board-task-create", "board-task-ingest", "board-task-move", "board-task-complete", "board-task-remove",
+  "board-task-create", "board-task-ingest", "board-task-update", "board-task-move", "board-task-complete", "board-task-remove",
   "board-task-retry-triage", "board-task-start", "board-column-move", "board-column-comment",
   "board-workspace-move",
 ]);
@@ -29,7 +29,7 @@ export function createDesktopApplicationRouter({ handlers, commands, receiptFile
     "statusDetails", "speakLastAnswer", "restartServer", "setAutostart",
     "updateServerConfiguration", "compactContext", "openAttachment",
     "submitBugReport", "trustedDevices", "createDevicePairing", "revokeDevice",
-    "boardTaskCreate", "boardTaskIngest", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
+    "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
     "boardTaskRetryTriage", "boardTaskStart", "boardColumnMove", "boardColumnComment",
     "boardWorkspaceMove",
   ]) requiredFunction(handlers[name], name);
@@ -81,6 +81,7 @@ export function createDesktopApplicationRouter({ handlers, commands, receiptFile
       "move-stream": (params, context) => dispatch("stream.move", params, context),
       "board-task-create": handlers.boardTaskCreate,
       "board-task-ingest": handlers.boardTaskIngest,
+      "board-task-update": handlers.boardTaskUpdate,
       "board-task-move": handlers.boardTaskMove,
       "board-task-complete": handlers.boardTaskComplete,
       "board-task-remove": handlers.boardTaskRemove,

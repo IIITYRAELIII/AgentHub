@@ -469,13 +469,22 @@
     <header>
       <div>
         <p class="eyebrow" data-task-card-source>Задача</p>
-        <h2 data-task-card-title>Задача</h2>
+        <h2>Карточка задачи</h2>
       </div>
       <button type="button" class="icon-button" data-task-card-close aria-label="Закрыть">×</button>
     </header>
     <section class="task-card-content">
-      <p class="task-card-description" data-task-card-description></p>
-      <p class="task-card-empty-description" data-task-card-empty-description>Описание не добавлено.</p>
+      <form class="task-card-editor" data-task-card-editor>
+        <label>
+          <span>Заголовок</span>
+          <input type="text" maxlength="160" required data-task-card-title>
+        </label>
+        <label>
+          <span>Описание</span>
+          <textarea rows="8" maxlength="20000" placeholder="Добавьте подробности задачи" data-task-card-description></textarea>
+        </label>
+        <button type="submit" class="board-task-primary">Сохранить изменения</button>
+      </form>
       <details class="board-task-original" data-task-card-original>
         <summary>Исходный текст</summary>
         <p data-task-card-original-text></p>
