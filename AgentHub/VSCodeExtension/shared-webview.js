@@ -9,6 +9,7 @@ const RUNTIME_ASSETS = {
   index: [...ASSET_ROOT, "index.html"],
   disclosure: [...ASSET_ROOT, "message-disclosure.js"],
   chatScroll: [...ASSET_ROOT, "chat-scroll-controller.js"],
+  chatSurfacePreference: [...ASSET_ROOT, "chat-surface-preference.js"],
   navigationTabs: [...ASSET_ROOT, "navigation-tabs-controller.js"],
   streamTabs: [...ASSET_ROOT, "stream-tabs-controller.js"],
   approvalForm: [...ASSET_ROOT, "approval-form.js"],
@@ -50,7 +51,7 @@ async function resolveSharedAssets({ runtimeUri, extensionUri }) {
     assets.bootstrap = null;
   }
   for (const required of [
-    "index", "disclosure", "chatScroll", "navigationTabs", "streamTabs", "approvalForm", "runtimeReload", "journalView", "rateLimitSeries", "taskBoard", "app", "lifecycle", "client", "styles", "backgrounds", "streamStatus", "streamStatusVisibility",
+    "index", "disclosure", "chatScroll", "chatSurfacePreference", "navigationTabs", "streamTabs", "approvalForm", "runtimeReload", "journalView", "rateLimitSeries", "taskBoard", "app", "lifecycle", "client", "styles", "backgrounds", "streamStatus", "streamStatusVisibility",
     "mark", "workLogStyles", "bootstrap",
   ]) {
     if (!assets[required]) throw new Error(`Не найден ресурс Agent Hub: ${required}`);
@@ -102,6 +103,7 @@ async function sharedWebviewHtml(webview, locations) {
     .replace('<script src="/browser-device-auth.js" defer></script>', "")
     .replace('<script src="/message-disclosure.js" defer></script>', "")
     .replace('<script src="/chat-scroll-controller.js" defer></script>', "")
+    .replace('<script src="/chat-surface-preference.js" defer></script>', "")
     .replace('<script src="/navigation-tabs-controller.js" defer></script>', "")
     .replace('<script src="/stream-tabs-controller.js" defer></script>', "")
     .replace('<script src="/approval-form.js" defer></script>', "")
@@ -114,6 +116,7 @@ async function sharedWebviewHtml(webview, locations) {
       `<script src="${resource(webview, assets.bootstrap)}" defer></script>`
         + `<script src="${resource(webview, assets.disclosure)}" defer></script>`
         + `<script src="${resource(webview, assets.chatScroll)}" defer></script>`
+        + `<script src="${resource(webview, assets.chatSurfacePreference)}" defer></script>`
         + `<script src="${resource(webview, assets.navigationTabs)}" defer></script>`
         + `<script src="${resource(webview, assets.streamTabs)}" defer></script>`
         + `<script src="${resource(webview, assets.approvalForm)}" defer></script>`
