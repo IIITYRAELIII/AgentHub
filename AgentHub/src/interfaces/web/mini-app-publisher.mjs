@@ -545,6 +545,7 @@ export class MiniAppPublisher {
           command = await this.#prepareRemoteCommand(command, secret);
           const context = {
             source: "telegram-mini-app",
+            transport: "worker",
             userId: command.userId,
             commandId: command.id,
           };
@@ -710,7 +711,7 @@ export class MiniAppPublisher {
         const snapshot = await this.#controlHandler({
           action: "snapshot",
           params: { knownVersion: this.#snapshotVersions.get(userId) ?? "" },
-          context: { source: "telegram-mini-app", userId },
+          context: { source: "telegram-mini-app", transport: "worker", userId },
         });
         if (snapshot?.notModified === true) continue;
         if (!snapshot || typeof snapshot !== "object" || !String(snapshot.version ?? "")) {

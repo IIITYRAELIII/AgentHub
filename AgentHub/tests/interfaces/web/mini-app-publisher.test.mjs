@@ -289,6 +289,7 @@ test("Mini App publisher polls signed controls and posts their result", async ()
     assert.equal(await publisher.pollControl(), 1);
     assert.equal(handled.length, 1);
     assert.equal(handled[0].context.source, "telegram-mini-app");
+    assert.equal(handled[0].context.transport, "worker");
     assert.equal(handled[0].context.userId, "42");
     assert.equal(requests.length, 2);
     assert.deepEqual(JSON.parse(requests[0].options.body), {

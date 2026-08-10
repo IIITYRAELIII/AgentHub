@@ -76,6 +76,49 @@ test("trusted device management follows the public Worker when it is enabled", a
   ]);
 });
 
+test("trusted device management keeps direct and Worker pairings isolated", async () => {
+  const calls = [];
+  const publisher = {
+    trustedDevices: async (userId) => calls.push(["worker-list", userId]),
+    createDevicePairing: async (userId) => calls.push(["worker-pair", userId]),
+    revokeDevice: async (userId, deviceId) => calls.push(["worker-revoke", userId, deviceId]),
+  };
+  const localStore = {
+    list: async (userId) => calls.push(["local-list", userId]),
+    createPairing: async (userId) => calls.push(["local-pair", userId]),
+    revoke: async (userId, deviceId) => calls.push(["local-revoke", userId, deviceId]),
+  };
+
+  const direct = createTrustedDeviceManager({
+    workerEnabled: true,
+    publisher,
+    localStore,
+    context: { source: "telegram-mini-app" },
+  });
+  await direct.list("42");
+  await direct.createPairing("42");
+  await direct.revoke("42", "direct-device");
+
+  const worker = createTrustedDeviceManager({
+    workerEnabled: true,
+    publisher,
+    localStore,
+    context: { source: "telegram-mini-app", transport: "worker" },
+  });
+  await worker.list("42");
+  await worker.createPairing("42");
+  await worker.revoke("42", "worker-device");
+
+  assert.deepEqual(calls, [
+    ["local-list", "42"],
+    ["local-pair", "42"],
+    ["local-revoke", "42", "direct-device"],
+    ["worker-list", "42"],
+    ["worker-pair", "42"],
+    ["worker-revoke", "42", "worker-device"],
+  ]);
+});
+
 test("trusted device management resolves a Worker started after composition", async () => {
   const calls = [];
   let publisher = null;

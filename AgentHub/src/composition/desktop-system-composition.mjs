@@ -28,6 +28,7 @@ export function createDesktopSystemComposition({
         workerEnabled: config.miniApp.worker.enabled,
         publisher: miniAppPublisher,
         localStore: trustedDeviceStore,
+        context,
       });
       return {
         list: () => manager.list(userId),

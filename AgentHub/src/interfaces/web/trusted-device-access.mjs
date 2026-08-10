@@ -13,8 +13,20 @@ export function resolveTrustedDeviceUserId(
   return userId;
 }
 
-export function createTrustedDeviceManager({ workerEnabled = false, publisher = null, localStore } = {}) {
-  if (workerEnabled) {
+function usesLocalTrustedDeviceStore(context) {
+  const source = String(context?.source ?? "");
+  return source === "local-mini-app"
+    || source === "trusted-device"
+    || (source === "telegram-mini-app" && context?.transport !== "worker");
+}
+
+export function createTrustedDeviceManager({
+  workerEnabled = false,
+  publisher = null,
+  localStore,
+  context = null,
+} = {}) {
+  if (workerEnabled && !usesLocalTrustedDeviceStore(context)) {
     const currentPublisher = () => {
       const activePublisher = typeof publisher === "function" ? publisher() : publisher;
       if (!activePublisher) {
