@@ -26,6 +26,7 @@ const {
   liveTraceDisclosureOpen,
   liveTraceGroupId,
 } = window.AgentHubMessageDisclosure;
+const chatSurfacePreference = window.AgentHubChatSurfacePreference;
 const expandedUserMessageIds = new Set();
 let messageDisclosureFrame = 0;
 const journal = document.querySelector("[data-journal]");
@@ -37,6 +38,7 @@ const refreshButton = document.querySelector("[data-refresh]");
 const collapseAllButton = document.querySelector("[data-collapse-all]");
 const themeSelect = document.querySelector("[data-theme-select]");
 const backgroundSelect = document.querySelector("[data-background-select]");
+const chatBackgroundToggle = document.querySelector("[data-chat-background-toggle]");
 const groupSelect = document.querySelector("[data-group-select]");
 const themeColor = document.querySelector("[data-theme-color]");
 
@@ -584,6 +586,11 @@ function applyTheme(theme, { persist = false } = {}) {
   }
 }
 
+function applyChatSurface(value, { persist = false } = {}) {
+  const selected = chatSurfacePreference.apply(root, chatBackgroundToggle, value);
+  if (persist) chatSurfacePreference.persist(localStorage, selected);
+}
+
 /* Разбивка по видам токенов занимала всю правую половину шапки дня и почти
    всегда была не нужна, поэтому по умолчанию она скрыта, а включается
    переключателем в панели «Вид». */
@@ -867,6 +874,7 @@ telegramFullscreenButton?.addEventListener("click", () => {
   else telegram?.requestFullscreen?.();
 });
 applyTheme(savedTheme());
+applyChatSurface(chatSurfacePreference.stored(localStorage));
 applyBreakdown(savedBreakdown());
 applyStreamStatusStyle(savedStreamStatusStyle());
 applyStreamStatusEffect(savedStreamStatusEffect());
@@ -910,6 +918,9 @@ themeSelect.addEventListener("change", () => {
 });
 backgroundSelect?.addEventListener("change", () => {
   applyBackground(backgroundSelect.value, { persist: true });
+});
+chatBackgroundToggle?.addEventListener("change", () => {
+  applyChatSurface(chatBackgroundToggle.checked ? "transparent" : "themed", { persist: true });
 });
 groupSelect.addEventListener("change", () => {
   if (journalRendered) groupingStates[grouping] = captureOpenState();

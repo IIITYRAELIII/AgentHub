@@ -272,6 +272,7 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     for (const pathname of [
       "",
       "browser-device-auth.js",
+      "chat-surface-preference.js",
       "navigation-tabs-controller.js",
       "app.js",
       "themes/metropolis/metropolis-glass.js",
