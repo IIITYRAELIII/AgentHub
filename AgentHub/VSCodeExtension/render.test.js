@@ -514,6 +514,10 @@ test("general settings and current-dialog settings stay separate", () => {
   assert.match(app, /agent-hub-token-breakdown/u);
   assert.match(app, /agent-hub-group-claude/u);
   assert.match(app, /agent-hub-usage-unit/u);
+  assert.match(html, /data-usage-rate-basis/u);
+  assert.match(html, /<option value="task">По времени задач<\/option>/u);
+  assert.match(html, /<option value="calendar">По календарному времени<\/option>/u);
+  assert.match(app, /agent-hub:usage-rate-basis:v1/u);
   assert.match(html, /data-toggle="includeClaudeUsage"/u);
   assert.match(html, /data-trusted-device-list/u);
   assert.match(app, /setTrustedDevices/u);

@@ -8703,21 +8703,22 @@ html[data-surface="mobile"] .server-config-inline-label {
 .current-limits-card {
   background: var(--card-bg-open), color-mix(in srgb, var(--bg) 94%, transparent);
   border: 1px solid var(--line-strong);
-  border-radius: var(--radius-lg);
+  border-radius: 14px;
   box-shadow: var(--card-shadow);
   min-width: 0;
-  padding: 0.8rem 0.95rem;
+  padding: 18px 22px 20px;
 }
 
 .current-limits-head {
-  margin-bottom: 0.55rem;
+  margin-bottom: 16px;
 }
 
 .current-limits-head h2 {
-  color: var(--text);
+  color: #93a6bc;
   font-family: var(--font-title);
-  font-size: 0.82rem;
-  letter-spacing: 0.1em;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
   margin: 0;
   text-transform: uppercase;
 }
@@ -8738,8 +8739,8 @@ html[data-surface="mobile"] .server-config-inline-label {
    уезжают в горизонтальную прокрутку. */
 .current-limits-card .current-limits-row {
   display: grid;
-  gap: 0.5rem;
-  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  column-gap: 34px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   overflow: visible;
 }
 
@@ -8757,26 +8758,93 @@ html[data-surface="mobile"] .server-config-inline-label {
 }
 
 .current-limits-card .current-limit {
-  align-items: baseline;
-  display: grid;
-  gap: 0.1rem 0.45rem;
-  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+  background: none;
+  border: 0;
+  border-left: 1px solid #222e3d;
+  border-radius: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
   min-width: 0;
+  padding: 0 0 0 18px;
   white-space: normal;
 }
 
+.current-limit-copy {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 9px;
+  min-width: 0;
+}
+
+.current-limit-primary {
+  align-items: baseline;
+  display: flex;
+  gap: 14px;
+  height: 17px;
+  justify-content: space-between;
+  min-width: 0;
+}
+
 .current-limits-card .current-limit-name {
+  color: #8093a9;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .current-limits-card .current-limit-value {
-  justify-self: end;
+  color: #edf3f9;
+  flex: 0 0 auto;
+  font-size: 15px;
+  font-weight: 500;
 }
 
 .current-limits-card .current-limit-reset {
-  grid-column: 1 / -1;
+  color: #66788e;
+  font-family: var(--font-numeric);
+  font-size: 11px;
+  height: 14px;
+  line-height: 14px;
+  white-space: nowrap;
+}
+
+.current-limit-ring {
+  display: none;
+}
+
+.current-limit-bar {
+  background: #202d3c;
+  border-radius: 2px;
+  display: block;
+  height: 3px;
+  overflow: hidden;
+}
+
+.current-limit-bar-fill {
+  background: var(--current-limit-accent);
+  border-radius: inherit;
+  display: block;
+  height: 100%;
+  width: var(--current-limit-progress);
+}
+
+.current-limit[data-current-limit-provider="codex"] {
+  --current-limit-accent: oklch(0.74 0.11 150);
+}
+
+.current-limit[data-current-limit-provider="spark"] {
+  --current-limit-accent: oklch(0.72 0.1 195);
+}
+
+.current-limit[data-current-limit-provider="claude"] {
+  --current-limit-accent: oklch(0.78 0.13 60);
 }
 
 .current-limit-name {
@@ -9354,21 +9422,74 @@ html[data-surface="mobile"] .statistics-content {
 }
 
 html[data-surface="mobile"] .current-limits-card {
-  border-radius: var(--radius-md);
-  padding: 0.75rem 0.8rem;
+  border-radius: 14px;
+  padding: 14px 14px 16px;
+}
+
+html[data-surface="mobile"] .current-limits-head {
+  margin-bottom: 12px;
 }
 
 /* На телефоне лимиты не влезают в строку, поэтому идут сеткой два на два. */
 html[data-surface="mobile"] .current-limits-card .current-limits-row {
+  column-gap: 10px;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  row-gap: 14px;
 }
 
 html[data-surface="mobile"] .current-limits-card .current-limit {
-  grid-template-columns: minmax(0, 1fr);
+  align-items: center;
+  border-left: 0;
+  flex-direction: row;
+  gap: 8px;
+  padding: 0;
 }
 
-html[data-surface="mobile"] .current-limits-card .current-limit-value {
-  justify-self: start;
+html[data-surface="mobile"] .current-limit-copy {
+  gap: 4px;
+}
+
+html[data-surface="mobile"] .current-limits-card .current-limit-name {
+  font-size: 10px;
+  letter-spacing: 0.06em;
+}
+
+html[data-surface="mobile"] .current-limits-card .current-limit-value,
+html[data-surface="mobile"] .current-limit-bar {
+  display: none;
+}
+
+html[data-surface="mobile"] .current-limit-ring {
+  align-items: center;
+  background: conic-gradient(
+    from -90deg,
+    var(--current-limit-accent) 0 var(--current-limit-progress),
+    #202d3c var(--current-limit-progress) 100%
+  );
+  border-radius: 50%;
+  display: flex;
+  flex: 0 0 44px;
+  height: 44px;
+  justify-content: center;
+  position: relative;
+  width: 44px;
+}
+
+html[data-surface="mobile"] .current-limit-ring::after {
+  background: color-mix(in srgb, var(--bg) 88%, #131c27);
+  border-radius: 50%;
+  content: "";
+  inset: 4px;
+  position: absolute;
+}
+
+html[data-surface="mobile"] .current-limit-ring-value {
+  color: #edf3f9;
+  font-family: var(--font-numeric);
+  font-size: 11px;
+  letter-spacing: -0.02em;
+  position: relative;
+  z-index: 1;
 }
 
 html[data-surface="mobile"] .current-limits-row {

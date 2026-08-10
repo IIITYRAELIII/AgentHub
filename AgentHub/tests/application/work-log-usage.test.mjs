@@ -130,6 +130,36 @@ test("local usage history can anchor a turn at its start, middle, or end", () =>
   assert.equal(creditedAt("end"), "2026-07-30T11:00:00.000Z");
 });
 
+test("local usage history exposes compatibility fields for task-time rate", () => {
+  const now = Date.parse("2026-07-30T12:00:00.000Z");
+  const history = buildWorkLogUsageHistory({
+    first: {
+      startedAt: "2026-07-30T10:00:00.000Z",
+      completedAt: "2026-07-30T10:10:00.000Z",
+      estimatedCredits: 20,
+      estimateKind: "model",
+    },
+    second: {
+      startedAt: "2026-07-30T10:15:00.000Z",
+      completedAt: "2026-07-30T10:35:00.000Z",
+      estimatedCredits: 30,
+      estimateKind: "model",
+    },
+    missingDuration: {
+      completedAt: "2026-07-30T11:00:00.000Z",
+      estimatedCredits: 7,
+      estimateKind: "model",
+    },
+  }, { range: "6h", now });
+
+  assert.equal(history.totalCredits, 57);
+  assert.equal(history.timedCredits, 50);
+  assert.equal(history.taskDurationSeconds, 30 * 60);
+  assert.equal(history.untimedCount, 1);
+  assert.equal(history.points.reduce((sum, point) => sum + point.timedCredits, 0), 50);
+  assert.equal(history.points.reduce((sum, point) => sum + point.taskDurationSeconds, 0), 30 * 60);
+});
+
 test("local usage history can exclude Claude from global totals", () => {
   const now = Date.parse("2026-07-30T12:00:00.000Z");
   const turns = {
@@ -277,6 +307,14 @@ test("journal projection groups all Stream turns under one expandable Workspace"
   assert.match(
     projected,
     /data-open-task data-provider="codex" data-thread-id="thread-main-next">Stream 1/u,
+  );
+  assert.match(
+    projected,
+    /data-work-log-task-content><button[^>]*data-thread-id="thread-main-next">Agent HUB - Stream 1<\/button>/u,
+  );
+  assert.match(
+    projected,
+    /data-work-log-task-content><button[^>]*data-thread-id="thread-themes">Agent HUB - Themes<\/button>/u,
   );
   assert.match(
     projected,

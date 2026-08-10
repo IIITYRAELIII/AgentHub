@@ -154,6 +154,7 @@ const usageRanges = document.querySelector("[data-usage-ranges]");
 const usageSubtitle = document.querySelector("[data-usage-subtitle]");
 const usageTitle = document.querySelector("[data-usage-title]");
 const usageModes = document.querySelector("[data-usage-modes]");
+const usageRateBasisSelect = document.querySelector("[data-usage-rate-basis]");
 const usageTotal = document.querySelector("[data-usage-total]");
 const usageLoading = document.querySelector("[data-usage-loading]");
 const usageError = document.querySelector("[data-usage-error]");
@@ -333,6 +334,7 @@ function savedUsageRange() {
 }
 
 const USAGE_MODE_KEY = "agent-hub:usage-mode:v1";
+const USAGE_RATE_BASIS_KEY = "agent-hub:usage-rate-basis:v1";
 
 function savedUsageMode() {
   try {
@@ -343,9 +345,18 @@ function savedUsageMode() {
   }
 }
 
+function savedUsageRateBasis() {
+  try {
+    return localStorage.getItem(USAGE_RATE_BASIS_KEY) === "calendar" ? "calendar" : "task";
+  } catch {
+    return "task";
+  }
+}
+
 const usageState = {
   range: savedUsageRange(),
   mode: savedUsageMode(),
+  rateBasis: savedUsageRateBasis(),
   status: "idle",
   payload: null,
   error: "",
@@ -709,6 +720,19 @@ function selectUsageUnit(value, { persist = false } = {}) {
   if (journalHtml) renderJournal();
 }
 
+function selectUsageRateBasis(value, { persist = false } = {}) {
+  usageState.rateBasis = value === "calendar" ? "calendar" : "task";
+  if (usageRateBasisSelect) usageRateBasisSelect.value = usageState.rateBasis;
+  if (persist) {
+    try {
+      localStorage.setItem(USAGE_RATE_BASIS_KEY, usageState.rateBasis);
+    } catch {
+      // Выбор останется активным до закрытия WebView.
+    }
+  }
+  renderUsageHistory();
+}
+
 function savedClaudeGrouping() {
   try {
     return localStorage.getItem("agent-hub-group-claude") === "on";
@@ -743,6 +767,7 @@ applyStreamStatusStyle(savedStreamStatusStyle());
 applyStreamStatusEffect(savedStreamStatusEffect());
 applyStreamCollapse(savedStreamCollapse());
 selectUsageUnit(savedUsageUnit());
+selectUsageRateBasis(savedUsageRateBasis());
 selectClaudeGrouping(savedClaudeGrouping());
 breakdownToggle?.addEventListener("change", () => {
   applyBreakdown(breakdownToggle.checked ? "on" : "off", { persist: true });
@@ -763,6 +788,9 @@ claudeGroupToggle?.addEventListener("change", () => {
 for (const button of usageUnitButtons) {
   button.addEventListener("click", () => selectUsageUnit(button.dataset.usageUnit, { persist: true }));
 }
+usageRateBasisSelect?.addEventListener("change", () => {
+  selectUsageRateBasis(usageRateBasisSelect.value, { persist: true });
+});
 selectGrouping(savedGrouping());
 themeSelect.addEventListener("change", () => {
   applyTheme(themeSelect.value, { persist: true });
@@ -6200,16 +6228,44 @@ function renderCurrentLimits() {
     }
     slot.replaceChildren(...series.map((item) => {
       const remaining = Number(item.point?.remainingPercent);
+      const progress = Number.isFinite(remaining)
+        ? Math.max(0, Math.min(100, remaining))
+        : 0;
       const countdown = formatResetCountdown(item.point);
-      return el("span", { class: "current-limit" }, [
-        el("span", { class: "current-limit-name", text: item.label }),
-        el("strong", {
-          class: "current-limit-value",
-          text: Number.isFinite(remaining) ? `${remaining.toFixed(1)}%` : "—",
+      const id = String(item.id ?? "").toLowerCase();
+      const name = String(item.name ?? "").toLowerCase();
+      const provider = id.startsWith("claude:") || name === "claude"
+        ? "claude"
+        : name === "spark" ? "spark" : "codex";
+      const ring = el("span", { class: "current-limit-ring" }, [
+        el("span", {
+          class: "current-limit-ring-value",
+          text: Number.isFinite(remaining) ? `${Math.round(remaining)}%` : "—",
         }),
-        countdown
-          ? el("span", { class: "current-limit-reset", text: countdown })
-          : null,
+      ]);
+      ring.style.setProperty("--current-limit-progress", `${progress}%`);
+      const bar = el("span", { class: "current-limit-bar" }, [
+        el("span", { class: "current-limit-bar-fill" }),
+      ]);
+      bar.style.setProperty("--current-limit-progress", `${progress}%`);
+      return el("span", {
+        class: "current-limit",
+        "data-current-limit-provider": provider,
+      }, [
+        ring,
+        el("span", { class: "current-limit-copy" }, [
+          el("span", { class: "current-limit-primary" }, [
+            el("span", { class: "current-limit-name", text: item.label }),
+            el("strong", {
+              class: "current-limit-value",
+              text: Number.isFinite(remaining) ? `${remaining.toFixed(1)}%` : "—",
+            }),
+          ]),
+          bar,
+          countdown
+            ? el("span", { class: "current-limit-reset", text: countdown })
+            : null,
+        ]),
       ]);
     }));
   }
@@ -7104,13 +7160,30 @@ function usagePeriodHours(payload) {
 }
 
 function formatUsageRate(credits, hours) {
-  const perHour = hours > 0 ? credits / hours : 0;
+  if (!(hours > 0)) return "—/ч";
+  const perHour = credits / hours;
   return `${formatUsageValue(perHour)}/ч`;
 }
 
 function formatUsageIntensity(credits, durationSeconds) {
   const perMinute = durationSeconds > 0 ? credits / durationSeconds * 60 : 0;
   return `${formatUsageValue(perMinute)}/мин`;
+}
+
+function usageRateCredits(source) {
+  return usageState.rateBasis === "task"
+    ? Math.max(0, Number(source?.timedCredits) || 0)
+    : Math.max(0, Number(source?.credits ?? source?.totalCredits) || 0);
+}
+
+function usageRateHours(source, calendarHours) {
+  return usageState.rateBasis === "task"
+    ? Math.max(0, Number(source?.taskDurationSeconds ?? source?.durationSeconds) || 0) / 3600
+    : calendarHours;
+}
+
+function usageRateBasisLabel() {
+  return usageState.rateBasis === "task" ? "по времени задач" : "по календарному времени";
 }
 
 function showUsageTooltip(point, fx, fy, daily = false, hours = 0) {
@@ -7120,7 +7193,7 @@ function showUsageTooltip(point, fx, fy, daily = false, hours = 0) {
     el("span", {
       class: "limits-tooltip-row",
       text: usageState.mode === "rate"
-        ? formatUsageRate(point.credits, hours)
+        ? formatUsageRate(usageRateCredits(point), usageRateHours(point, hours))
         : usageState.mode === "intensity"
           ? formatUsageIntensity(point.timedCredits, point.durationSeconds)
           : formatUsageValue(point.credits),
@@ -7157,19 +7230,22 @@ function buildUsageChart(payload) {
       credits: Math.max(0, Number(point.credits) || 0),
       timedCredits: Math.max(0, Number(point.timedCredits) || 0),
       durationSeconds: Math.max(0, Number(point.durationSeconds) || 0),
+      taskDurationSeconds: Math.max(0, Number(point.taskDurationSeconds ?? point.durationSeconds) || 0),
     }))
     .filter((point) => Number.isFinite(point.time));
   const daily = payload?.bucket === "day";
   const rate = usageState.mode === "rate";
   const intensity = usageState.mode === "intensity";
   const hours = usageBucketHours(payload);
-  const valueOf = (point) => (
-    rate
-      ? point.credits / Math.max(hours, 0.0001)
-      : intensity
-        ? point.timedCredits / Math.max(point.durationSeconds, 0.0001) * 60
-        : point.credits
-  );
+  const valueOf = (point) => {
+    if (rate) {
+      const rateHours = usageRateHours(point, hours);
+      return rateHours > 0 ? usageRateCredits(point) / rateHours : 0;
+    }
+    return intensity
+      ? point.timedCredits / Math.max(point.durationSeconds, 0.0001) * 60
+      : point.credits;
+  };
   const formatValue = (value) => (
     rate ? `${formatUsageValue(value)}/ч` : intensity ? `${formatUsageValue(value)}/мин` : formatUsageValue(value)
   );
@@ -7227,9 +7303,9 @@ function buildUsageChart(payload) {
         class: "usage-bar",
         tabindex: 0,
         role: "img",
-        "aria-label": `${formatLimitsDateTime(point.at)}: ${
+          "aria-label": `${formatLimitsDateTime(point.at)}: ${
           rate
-            ? formatUsageRate(point.credits, hours)
+            ? formatUsageRate(usageRateCredits(point), usageRateHours(point, hours))
             : intensity
               ? formatUsageIntensity(point.timedCredits, point.durationSeconds)
               : formatUsageValue(point.credits)
@@ -7311,7 +7387,7 @@ function buildUsageChart(payload) {
   usageChart.setAttribute(
     "aria-label",
     rate
-      ? `Скорость расхода за ${formatUsagePeriod(payload)}.`
+      ? `Скорость расхода ${usageRateBasisLabel()} за ${formatUsagePeriod(payload)}.`
       : intensity
         ? `Скорость поглощения расхода за ${formatUsagePeriod(payload)}.`
         : `Локальный расход: ${formatUsageValue(payload.totalCredits)} за ${formatUsagePeriod(payload)}.`,
@@ -7347,13 +7423,16 @@ function renderUsageHistory() {
     button.toggleAttribute("data-active", active);
   }
   usageSubtitle.textContent = payload && !payload.error
-    ? formatUsagePeriod(payload)
+    ? `${formatUsagePeriod(payload)}${rate ? ` · ${usageRateBasisLabel()}` : ""}`
     : RANGE_LABELS[usageState.range] ?? "";
   /* В режиме скорости итог за период бессмыслен: показывается средний расход
      в час, то есть та же величина, что и на столбиках. */
   usageTotal.textContent = payload && !payload.error
     ? (rate
-      ? formatUsageRate(Number(payload.totalCredits) || 0, usagePeriodHours(payload))
+      ? formatUsageRate(
+        usageRateCredits(payload),
+        usageRateHours(payload, usagePeriodHours(payload)),
+      )
       : intensity
         ? formatUsageIntensity(
           Number(payload.totalTimedCredits) || 0,
@@ -7370,9 +7449,13 @@ function renderUsageHistory() {
         : "Расход делится на суммарное фактическое время тарифицированных ходов.";
     } else {
       const unpriced = Math.max(0, Number(payload.unpricedCount) || 0);
-      usageNote.textContent = unpriced
-        ? `Без тарифа и вне суммы: ${unpriced}.`
-        : "Все показанные ходы тарифицированы.";
+      const untimed = Math.max(0, Number(payload.untimedCount ?? payload.untimedCreditCount) || 0);
+      const notes = [];
+      if (unpriced) notes.push(`Без тарифа и вне суммы: ${unpriced}.`);
+      if (rate && usageState.rateBasis === "task" && untimed) {
+        notes.push(`Без длительности и вне скорости по времени задач: ${untimed}.`);
+      }
+      usageNote.textContent = notes.join(" ") || "Все показанные ходы тарифицированы и имеют длительность.";
     }
   }
 }

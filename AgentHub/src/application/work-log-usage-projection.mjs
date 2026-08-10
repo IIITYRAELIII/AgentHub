@@ -6,6 +6,7 @@ import {
 } from "../domain/codex-usage-estimate.mjs";
 import { isCodexAutoCompactionTurnId } from "../domain/codex-internal-turn.mjs";
 import { isInheritedSubagentTurn } from "../domain/subagent-turn-identity.mjs";
+import { taskDisplayTitle } from "../domain/task-display-title.mjs";
 import { displayUserPrompt } from "./task-history.mjs";
 import {
   addCreditBreakdown,
@@ -1531,6 +1532,14 @@ function formatWorkspaceRows(rows, dayCredits, dayElapsedSeconds, workspaceResol
             escapeHtmlText(label)
           }</button>`
           : escapeHtmlText(label);
+        const groupedTaskLabel = taskDisplayTitle(stream.workspace, label);
+        const groupedTaskContent = identity
+          ? `<button type="button" data-open-task data-provider="${
+            escapeHtmlAttribute(identity.provider)
+          }" data-thread-id="${escapeHtmlAttribute(identity.threadId)}">${
+            escapeHtmlText(groupedTaskLabel)
+          }</button>`
+          : escapeHtmlText(groupedTaskLabel);
         const records = [];
         const seenRecords = new Set();
         for (const row of rowsByRecency) {
@@ -1563,7 +1572,7 @@ function formatWorkspaceRows(rows, dayCredits, dayElapsedSeconds, workspaceResol
           markers,
           records,
           stream.workspace,
-          "",
+          groupedTaskContent,
         );
         return `<details data-work-log-stream data-work-log-stream-id="${
           escapeHtmlAttribute(stream.workspace.streamId)
@@ -2210,7 +2219,14 @@ export function buildWorkLogUsageHistory(turns = {}, {
     totalTimedCredits,
     totalDurationSeconds,
     untimedCreditCount,
+    // Compatibility aliases used by the selectable hourly-rate basis.
+    timedCredits: totalTimedCredits,
+    taskDurationSeconds: totalDurationSeconds,
     unpricedCount,
-    points,
+    untimedCount: untimedCreditCount,
+    points: points.map((point) => ({
+      ...point,
+      taskDurationSeconds: point.durationSeconds,
+    })),
   };
 }

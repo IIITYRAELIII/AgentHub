@@ -9,6 +9,7 @@ import { TASK_EXECUTION_OWNERS } from "../../domain/task-execution-owner.mjs";
 const OWNER_PROBE_CACHE_MS = 5_000;
 const OWNER_PROBE_TIMEOUT_MS = 5_000;
 const UNOWNED_ACTIVITY_GRACE_MS = 90_000;
+const AGENT_HUB_ROOT = path.resolve(import.meta.dirname, "..", "..", "..");
 const ownerProbeCache = new Map();
 const ownerProbeInFlight = new Map();
 
@@ -107,7 +108,7 @@ export function readWindowsRolloutProcesses(rolloutPath, {
       "-NoProfile",
       "-NonInteractive",
       "-ExecutionPolicy", "Bypass",
-      "-File", path.join(import.meta.dirname, "codex-rollout-processes.ps1"),
+      "-File", path.join(AGENT_HUB_ROOT, "codex-rollout-processes.ps1"),
       "-RolloutPath", rolloutPath,
       "-AgentHubPid", String(Number(agentHubPid) || 0),
     ], {
@@ -155,7 +156,7 @@ export function readWindowsProcessAncestry(processId, {
       "-NoProfile",
       "-NonInteractive",
       "-ExecutionPolicy", "Bypass",
-      "-File", path.join(import.meta.dirname, "codex-process-ancestry.ps1"),
+      "-File", path.join(AGENT_HUB_ROOT, "codex-process-ancestry.ps1"),
       "-ProcessId", String(Number(processId) || 0),
     ], {
       windowsHide: true,

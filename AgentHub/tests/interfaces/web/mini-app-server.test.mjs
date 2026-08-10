@@ -422,6 +422,7 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.match(page, /data-comparison-chart/u);
     assert.match(page, /data-comparison-summary/u);
     assert.match(page, /data-usage-unit="pte"/u);
+    assert.match(page, /data-usage-rate-basis/u);
     assert.match(page, /data-toggle="includeClaudeUsage"/u);
     assert.match(page, /data-claude-group-toggle/u);
     assert.match(page, /data-token-breakdown-toggle/u);
@@ -543,6 +544,10 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.doesNotMatch(script, /if \(!telegramMode\) return "desktop"/u);
     assert.match(script, /class: "task-runtime"/u);
     assert.match(script, /if \(sameData\(state\.live\.get\(taskId\)/u);
+    const taskBoard = await fetch(`${address.url}task-board.js`);
+    assert.equal(taskBoard.status, 200);
+    assert.match(taskBoard.headers.get("content-type"), /text\/javascript/u);
+    assert.match(await taskBoard.text(), /window\.AgentHubTaskBoard = Object\.freeze/u);
     const hubClient = await (await fetch(`${address.url}hub-client.js`)).text();
     assert.match(hubClient, /hub: "HUB"/u);
     assert.match(hubClient, /telegram: "HUB"/u);
