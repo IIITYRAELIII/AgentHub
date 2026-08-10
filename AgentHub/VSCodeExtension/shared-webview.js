@@ -9,6 +9,8 @@ const RUNTIME_ASSETS = {
   index: [...ASSET_ROOT, "index.html"],
   disclosure: [...ASSET_ROOT, "message-disclosure.js"],
   chatScroll: [...ASSET_ROOT, "chat-scroll-controller.js"],
+  navigationTabs: [...ASSET_ROOT, "navigation-tabs-controller.js"],
+  streamTabs: [...ASSET_ROOT, "stream-tabs-controller.js"],
   runtimeReload: [...ASSET_ROOT, "runtime-reload-controller.js"],
   rateLimitSeries: [...ASSET_ROOT, "rate-limit-series.js"],
   taskBoard: [...ASSET_ROOT, "task-board.js"],
@@ -46,7 +48,7 @@ async function resolveSharedAssets({ runtimeUri, extensionUri }) {
     assets.bootstrap = null;
   }
   for (const required of [
-    "index", "disclosure", "chatScroll", "runtimeReload", "rateLimitSeries", "taskBoard", "app", "lifecycle", "client", "styles", "backgrounds", "streamStatus", "streamStatusVisibility",
+    "index", "disclosure", "chatScroll", "navigationTabs", "streamTabs", "runtimeReload", "rateLimitSeries", "taskBoard", "app", "lifecycle", "client", "styles", "backgrounds", "streamStatus", "streamStatusVisibility",
     "mark", "workLogStyles", "bootstrap",
   ]) {
     if (!assets[required]) throw new Error(`Не найден ресурс Agent Hub: ${required}`);
@@ -98,6 +100,8 @@ async function sharedWebviewHtml(webview, locations) {
     .replace('<script src="/browser-device-auth.js" defer></script>', "")
     .replace('<script src="/message-disclosure.js" defer></script>', "")
     .replace('<script src="/chat-scroll-controller.js" defer></script>', "")
+    .replace('<script src="/navigation-tabs-controller.js" defer></script>', "")
+    .replace('<script src="/stream-tabs-controller.js" defer></script>', "")
     .replace('<script src="/runtime-reload-controller.js" defer></script>', "")
     .replace('<script src="/rate-limit-series.js" defer></script>', "")
     .replace('<script src="/task-board.js" defer></script>', `<script src="${resource(webview, assets.taskBoard)}" defer></script>`)
@@ -106,6 +110,8 @@ async function sharedWebviewHtml(webview, locations) {
       `<script src="${resource(webview, assets.bootstrap)}" defer></script>`
         + `<script src="${resource(webview, assets.disclosure)}" defer></script>`
         + `<script src="${resource(webview, assets.chatScroll)}" defer></script>`
+        + `<script src="${resource(webview, assets.navigationTabs)}" defer></script>`
+        + `<script src="${resource(webview, assets.streamTabs)}" defer></script>`
         + `<script src="${resource(webview, assets.runtimeReload)}" defer></script>`
         + `<script src="${resource(webview, assets.rateLimitSeries)}" defer></script>`
         + `<script src="${resource(webview, assets.app)}" defer></script>`,

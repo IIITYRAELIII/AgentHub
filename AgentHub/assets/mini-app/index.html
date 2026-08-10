@@ -16,6 +16,8 @@
   <script src="/browser-device-auth.js" defer></script>
   <script src="/message-disclosure.js" defer></script>
   <script src="/chat-scroll-controller.js" defer></script>
+  <script src="/navigation-tabs-controller.js" defer></script>
+  <script src="/stream-tabs-controller.js" defer></script>
   <script src="/runtime-reload-controller.js" defer></script>
   <!-- agent-hub-theme-catalog -->
   <script src="/rate-limit-series.js" defer></script>
@@ -82,10 +84,15 @@
           <span>Диалоги</span>
         </button>
         <button type="button" class="view-tab" data-view-button="dashboard" aria-pressed="false">
-          <svg data-phosphor-icon="kanban" viewBox="0 0 256 256" aria-hidden="true">
-            <rect x="32" y="48" width="52" height="160" rx="8" fill="none" stroke="currentColor" stroke-width="16"></rect>
-            <rect x="102" y="48" width="52" height="104" rx="8" fill="none" stroke="currentColor" stroke-width="16"></rect>
-            <rect x="172" y="48" width="52" height="136" rx="8" fill="none" stroke="currentColor" stroke-width="16"></rect>
+          <svg data-phosphor-icon="squares-four" viewBox="0 0 256 256" aria-hidden="true">
+            <rect x="48" y="48" width="64" height="64" fill="none" stroke="currentColor"
+              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></rect>
+            <rect x="144" y="48" width="64" height="64" fill="none" stroke="currentColor"
+              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></rect>
+            <rect x="48" y="144" width="64" height="64" fill="none" stroke="currentColor"
+              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></rect>
+            <rect x="144" y="144" width="64" height="64" fill="none" stroke="currentColor"
+              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></rect>
           </svg>
           <span>Дашборд</span>
         </button>
@@ -845,10 +852,15 @@
       <span>Чат</span>
     </button>
     <button type="button" class="mobile-tab" data-mobile-button="dashboard" aria-pressed="false">
-      <svg data-phosphor-icon="kanban" viewBox="0 0 256 256" aria-hidden="true">
-        <rect x="32" y="48" width="52" height="160" rx="8" fill="none" stroke="currentColor" stroke-width="16"></rect>
-        <rect x="102" y="48" width="52" height="104" rx="8" fill="none" stroke="currentColor" stroke-width="16"></rect>
-        <rect x="172" y="48" width="52" height="136" rx="8" fill="none" stroke="currentColor" stroke-width="16"></rect>
+      <svg data-phosphor-icon="squares-four" viewBox="0 0 256 256" aria-hidden="true">
+        <rect x="48" y="48" width="64" height="64" fill="none" stroke="currentColor"
+          stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></rect>
+        <rect x="144" y="48" width="64" height="64" fill="none" stroke="currentColor"
+          stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></rect>
+        <rect x="48" y="144" width="64" height="64" fill="none" stroke="currentColor"
+          stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></rect>
+        <rect x="144" y="144" width="64" height="64" fill="none" stroke="currentColor"
+          stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></rect>
       </svg>
       <span>Дашборд</span>
     </button>
@@ -976,6 +988,13 @@
               <option value="sediment">Осадок</option>
               <option value="echo">Эхо</option>
               <option value="off">Выключено</option>
+            </select>
+          </label>
+          <label class="setting-row setting-field">
+            <span class="setting-name">Порядок Stream</span>
+            <select data-stream-order-mode-select aria-label="Порядок Stream">
+              <option value="activity">По последней активности</option>
+              <option value="manual">Ручной порядок</option>
             </select>
           </label>
           <label class="setting-switch">

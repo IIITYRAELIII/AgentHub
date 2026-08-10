@@ -111,6 +111,7 @@ const streamCollapseToggle = document.querySelector("[data-stream-collapse-toggl
 const claudeGroupToggle = document.querySelector("[data-claude-group-toggle]");
 const streamStatusFillToggle = document.querySelector("[data-stream-status-fill-toggle]");
 const streamStatusEffectSelect = document.querySelector("[data-stream-status-effect-select]");
+const streamOrderModeSelect = document.querySelector("[data-stream-order-mode-select]");
 const usageUnitButtons = [...document.querySelectorAll("[data-usage-unit]")];
 const exchangeRateHint = document.querySelector("[data-exchange-rate-hint]");
 const panelScrim = document.querySelector("[data-panel-scrim]");
@@ -201,6 +202,7 @@ let usdRubEffectiveDate = "";
 let exchangeRatesInitialized = false;
 let groupClaudeTasks = false;
 let collapseStreams = false;
+let streamOrderMode = "activity";
 const groupingStates = { date: null, week: null, month: null, task: null };
 const TASK_GROUP_TURN_PAGE_SIZE = 30;
 const taskGroupTurns = new WeakMap();
@@ -653,6 +655,36 @@ function applyStreamStatusEffect(value, { persist = false } = {}) {
   }
 }
 
+const STREAM_ORDER_MODE_KEY = "agent-hub-stream-order-mode";
+
+function savedStreamOrderMode() {
+  try {
+    return window.AgentHubStreamTabs.normalizeStreamOrderMode(
+      localStorage.getItem(STREAM_ORDER_MODE_KEY),
+    );
+  } catch {
+    return "activity";
+  }
+}
+
+function applyStreamOrderMode(value, { persist = false, update = false } = {}) {
+  streamOrderMode = window.AgentHubStreamTabs.normalizeStreamOrderMode(value);
+  root.dataset.streamOrderMode = streamOrderMode;
+  if (streamOrderModeSelect) streamOrderModeSelect.value = streamOrderMode;
+  if (streamTabs) streamTabs.dataset.orderMode = streamOrderMode;
+  if (persist) {
+    try {
+      localStorage.setItem(STREAM_ORDER_MODE_KEY, streamOrderMode);
+    } catch {
+      // Выбор останется активным до закрытия WebView.
+    }
+  }
+  if (update) {
+    renderStreamTabs();
+    renderStreamChatDeck();
+  }
+}
+
 function savedStreamCollapse() {
   try {
     return localStorage.getItem("agent-hub-collapse-streams") === "on";
@@ -794,6 +826,7 @@ applyTheme(savedTheme());
 applyBreakdown(savedBreakdown());
 applyStreamStatusStyle(savedStreamStatusStyle());
 applyStreamStatusEffect(savedStreamStatusEffect());
+applyStreamOrderMode(savedStreamOrderMode());
 applyStreamCollapse(savedStreamCollapse());
 selectUsageUnit(savedUsageUnit());
 selectUsageRateBasis(savedUsageRateBasis());
@@ -806,6 +839,9 @@ streamStatusFillToggle?.addEventListener("change", () => {
 });
 streamStatusEffectSelect?.addEventListener("change", () => {
   applyStreamStatusEffect(streamStatusEffectSelect.value, { persist: true });
+});
+streamOrderModeSelect?.addEventListener("change", () => {
+  applyStreamOrderMode(streamOrderModeSelect.value, { persist: true, update: true });
 });
 streamCollapseToggle?.addEventListener("change", () => {
   applyStreamCollapse(streamCollapseToggle.checked, { persist: true, update: true });
@@ -1342,17 +1378,7 @@ function persistOpenStreams() {
 }
 
 function orderedWorkspaceStreams(streams) {
-  const available = new Map(streams.map((stream) => [stream.id, stream]));
-  const orderedIds = [...streams]
-    .sort((left, right) => left.ordinal - right.ordinal || left.id.localeCompare(right.id))
-    .map((stream) => stream.id);
-  const dashBotId = streams.find((stream) => stream.name === "DashBot")?.id;
-  if (dashBotId) {
-    const currentIndex = orderedIds.indexOf(dashBotId);
-    if (currentIndex >= 0) orderedIds.splice(currentIndex, 1);
-    orderedIds.unshift(dashBotId);
-  }
-  return orderedIds.map((streamId) => available.get(streamId));
+  return window.AgentHubStreamTabs.orderWorkspaceStreams(streams, streamOrderMode);
 }
 
 function reconcileOpenStreams(workspaceId, streams) {
@@ -1426,22 +1452,14 @@ function toggleOpenStream(workspaceId, streamId, streams, { additive = false } =
 /* =========================================================== роутер видов */
 
 const NAVIGATION_TAB_KEY = "agent-hub-navigation-tab-v1";
-const navigationTabs = new Set(["tasks", "chat", "dashboard", "journal", "statistics", "background", "server"]);
+const navigationTabs = window.AgentHubNavigationTabs;
 
 function currentNavigationTab() {
-  return ["dashboard", "journal", "statistics", "background", "server"].includes(root.dataset.view)
-    ? root.dataset.view
-    : (root.dataset.pane === "chat" ? "chat" : "tasks");
+  return navigationTabs.currentNavigationTab(root.dataset.view, root.dataset.pane);
 }
 
 function storedNavigationTab() {
-  try {
-    const stored = localStorage.getItem(NAVIGATION_TAB_KEY);
-    return navigationTabs.has(stored) ? stored : "tasks";
-  } catch {
-    // Приватный WebView может запрещать localStorage.
-    return "tasks";
-  }
+  return navigationTabs.storedNavigationTab(localStorage, NAVIGATION_TAB_KEY);
 }
 
 function persistNavigationTab() {
@@ -1555,7 +1573,7 @@ function populateBackgroundOptions(theme = root.dataset.theme) {
 }
 
 function setView(view, { persist = true, activate = true } = {}) {
-  const next = ["dashboard", "journal", "statistics", "background", "server"].includes(view) ? view : "chat";
+  const next = navigationTabs.isStandaloneNavigationTab(view) ? view : "chat";
   root.dataset.view = next;
   for (const button of document.querySelectorAll("[data-view-button]")) {
     button.setAttribute("aria-pressed", String(button.dataset.viewButton === next));
@@ -1569,7 +1587,7 @@ function setView(view, { persist = true, activate = true } = {}) {
       : next === "statistics"
         ? "Stats"
         : next === "background"
-          ? "Фон"
+          ? "Ground"
           : next === "server"
             ? "Server"
             : "Chat";
@@ -1586,7 +1604,7 @@ function setPane(pane, { persist = true } = {}) {
 }
 
 function syncMobileNav() {
-  const active = ["dashboard", "journal", "statistics", "background", "server"].includes(root.dataset.view)
+  const active = navigationTabs.isStandaloneNavigationTab(root.dataset.view)
     ? root.dataset.view
     : (root.dataset.pane === "chat" ? "chat" : "tasks");
   for (const button of document.querySelectorAll("[data-mobile-button]")) {
@@ -1600,7 +1618,7 @@ for (const button of document.querySelectorAll("[data-view-button]")) {
 for (const button of document.querySelectorAll("[data-mobile-button]")) {
   button.addEventListener("click", () => {
     const target = button.dataset.mobileButton;
-    if (["dashboard", "journal", "statistics", "background", "server"].includes(target)) { setView(target); return; }
+    if (navigationTabs.isStandaloneNavigationTab(target)) { setView(target); return; }
     setView("chat");
     setPane(target === "chat" ? "chat" : "tasks");
   });
@@ -2029,9 +2047,9 @@ function renderStreamTabs() {
       "data-running": running ? "" : null,
       "data-answer-ready": answerReady ? "" : null,
       "data-maintenance": streamMaintenanceKind(task) || null,
-      draggable: surface === "mobile" ? null : "true",
+      draggable: window.AgentHubStreamTabs.streamsAreDraggable(streamOrderMode, surface) ? "true" : null,
       "aria-label": [streamName, agentLabel, task?.modelLabel, statusLabel].filter(Boolean).join(". "),
-      title: `${statusLabel ? `${statusLabel}. ` : ""}Нажмите, чтобы переключиться. Ctrl+click — добавить или убрать колонку. Перетащите, чтобы изменить порядок. ПКМ — управление Stream.`,
+      title: `${statusLabel ? `${statusLabel}. ` : ""}Нажмите, чтобы переключиться. Ctrl+click — добавить или убрать колонку. ${streamOrderMode === "manual" ? "Перетащите, чтобы изменить порядок." : "Потяните горизонтально, чтобы прокрутить."} ПКМ — управление Stream.`,
     }, [
       el("span", { class: "stream-tab-card" }, [
         el("span", { class: "provider-dot", "data-provider": provider, "aria-hidden": "true" }),
@@ -2373,6 +2391,13 @@ taskFilter.addEventListener("input", () => {
 });
 
 let suppressStreamTabClick = false;
+if (streamTabs) new window.AgentHubStreamTabs.HorizontalPointerScroller(streamTabs, {
+  enabled: () => streamOrderMode === "activity",
+  onDragEnd: () => {
+    suppressStreamTabClick = true;
+    window.setTimeout(() => { suppressStreamTabClick = false; }, 0);
+  },
+});
 streamTabs?.addEventListener("click", (event) => {
   if (suppressStreamTabClick) {
     suppressStreamTabClick = false;
@@ -2678,6 +2703,10 @@ document.addEventListener("scroll", (event) => {
 
 let draggedStreamId = "";
 streamTabs?.addEventListener("dragstart", (event) => {
+  if (streamOrderMode !== "manual") {
+    event.preventDefault();
+    return;
+  }
   const tab = event.target.closest("[data-stream-tab-id]");
   draggedStreamId = String(tab?.dataset.streamTabId ?? "");
   if (!draggedStreamId) event.preventDefault();
@@ -2688,6 +2717,7 @@ streamTabs?.addEventListener("dragover", (event) => {
   event.preventDefault();
 });
 streamTabs?.addEventListener("drop", (event) => {
+  if (streamOrderMode !== "manual") return;
   const target = event.target.closest("[data-stream-tab-id][data-workspace-id]");
   const streamId = draggedStreamId || event.dataTransfer?.getData("text/plain") || "";
   draggedStreamId = "";
@@ -10248,7 +10278,7 @@ renderTasks();
 renderChat();
 renderOptions();
 const initialNavigationTab = storedNavigationTab();
-if (["journal", "statistics"].includes(initialNavigationTab)) {
+if (navigationTabs.isStandaloneNavigationTab(initialNavigationTab)) {
   setView(initialNavigationTab, { persist: false, activate: false });
 } else {
   setView("chat", { persist: false, activate: false });
