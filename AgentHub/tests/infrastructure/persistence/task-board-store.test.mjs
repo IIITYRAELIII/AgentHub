@@ -90,6 +90,7 @@ test("long Tasks persist a separate Spark title and description", async (t) => {
     category: "task",
     confidence: 0.9,
   });
+  assert.equal(triaged.rawText, text);
   assert.equal(triaged.title, "Проверить многострочную задачу");
   assert.equal(triaged.description, "Полное уточнённое описание задачи");
 });
@@ -101,6 +102,7 @@ test("manual Task edits persist and win over a late Spark result", async (t) => 
     title: "Исправить дату документа",
     description: "Дата должна совпадать с моментом проведения.",
   });
+  assert.equal(edited.rawText, "исходная задача");
   assert.equal(edited.title, "Исправить дату документа");
   assert.equal(edited.description, "Дата должна совпадать с моментом проведения.");
   assert.equal(edited.correctedText, "Исправить дату документа\n\nДата должна совпадать с моментом проведения.");
@@ -112,6 +114,7 @@ test("manual Task edits persist and win over a late Spark result", async (t) => 
     category: "task",
     confidence: 0.9,
   });
+  assert.equal(triaged.rawText, "исходная задача");
   assert.equal(triaged.title, edited.title);
   assert.equal(triaged.description, edited.description);
   assert.equal(triaged.correctedText, edited.correctedText);

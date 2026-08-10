@@ -3887,6 +3887,20 @@ html[data-view="dashboard"] .task-board-view {
   margin-bottom: 0.5rem;
 }
 
+.board-task-original-toggle {
+  background: transparent;
+  border: 0;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  padding: 0.18rem 0;
+}
+
+.board-task-original-toggle:hover,
+.board-task-original-toggle:focus-visible {
+  text-decoration: underline;
+}
+
 .board-task-original p {
   margin: 0.35rem 0;
   white-space: pre-wrap;

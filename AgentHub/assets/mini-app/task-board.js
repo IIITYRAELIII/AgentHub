@@ -12,6 +12,7 @@
   const taskCardTitle = document.querySelector("[data-task-card-title]");
   const taskCardDescription = document.querySelector("[data-task-card-description]");
   const taskCardOriginal = document.querySelector("[data-task-card-original]");
+  const taskCardOriginalToggle = document.querySelector("[data-task-card-original-toggle]");
   const taskCardOriginalText = document.querySelector("[data-task-card-original-text]");
   const taskCardActions = document.querySelector("[data-task-card-actions]");
   const startModal = document.querySelector("[data-task-start-modal]");
@@ -154,8 +155,20 @@
     state.openTaskId = null;
     state.editingTaskId = null;
     state.editDirty = false;
+    setTaskCardOriginalExpanded(false);
     taskCardModal?.close?.();
     taskCardModal?.removeAttribute("open");
+  }
+
+  function setTaskCardOriginalExpanded(expanded) {
+    const nextExpanded = Boolean(expanded && taskCardOriginalText?.textContent);
+    if (taskCardOriginalToggle) {
+      taskCardOriginalToggle.setAttribute("aria-expanded", String(nextExpanded));
+      taskCardOriginalToggle.textContent = nextExpanded
+        ? "Скрыть исходный текст"
+        : "Показать исходный текст";
+    }
+    if (taskCardOriginalText) taskCardOriginalText.hidden = !nextExpanded;
   }
 
   function renderOpenTaskCard() {
@@ -171,9 +184,10 @@
       taskCardDescription.value = String(task.description ?? "").trim();
       state.editingTaskId = task.id;
     }
-    const hasOriginal = Boolean(task.correctedText && task.correctedText.trim() !== task.rawText.trim());
-    taskCardOriginal.hidden = !hasOriginal;
-    taskCardOriginalText.textContent = hasOriginal ? task.rawText : "";
+    const originalText = String(task.rawText ?? "").trim();
+    taskCardOriginal.hidden = !originalText;
+    taskCardOriginalText.textContent = originalText;
+    if (!originalText) setTaskCardOriginalExpanded(false);
     const actions = [];
     if (task.bucket === "workspace") {
       actions.push(node("button", {
@@ -209,6 +223,7 @@
     state.openTaskId = task.id;
     state.editingTaskId = null;
     state.editDirty = false;
+    setTaskCardOriginalExpanded(false);
     renderOpenTaskCard();
     taskCardModal.showModal?.();
     if (!taskCardModal.open) taskCardModal.setAttribute("open", "");
@@ -411,6 +426,9 @@
 
   document.querySelector("[data-task-start-close]")?.addEventListener("click", closeStart);
   document.querySelector("[data-task-card-close]")?.addEventListener("click", closeTaskCard);
+  taskCardOriginalToggle?.addEventListener("click", () => {
+    setTaskCardOriginalExpanded(taskCardOriginalToggle.getAttribute("aria-expanded") !== "true");
+  });
   taskCardEditor?.addEventListener("input", () => { state.editDirty = true; });
   taskCardEditor?.addEventListener("submit", (event) => {
     event.preventDefault();

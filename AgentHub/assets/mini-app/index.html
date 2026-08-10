@@ -485,10 +485,11 @@
         </label>
         <button type="submit" class="board-task-primary">Сохранить изменения</button>
       </form>
-      <details class="board-task-original" data-task-card-original>
-        <summary>Исходный текст</summary>
-        <p data-task-card-original-text></p>
-      </details>
+      <div class="board-task-original" data-task-card-original>
+        <button type="button" class="board-task-original-toggle" data-task-card-original-toggle
+          aria-expanded="false" aria-controls="task-card-original-text">Показать исходный текст</button>
+        <p id="task-card-original-text" data-task-card-original-text hidden></p>
+      </div>
     </section>
     <footer class="board-task-actions" data-task-card-actions></footer>
   </dialog>
