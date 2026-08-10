@@ -3085,6 +3085,14 @@ html[data-view="chat"]:not([data-surface="mobile"]) body > .workspace {
   width: auto !important;
 }
 
+/* Gothic сохраняет исходную цельную железную сцену даже с одним Stream. */
+html[data-theme="gothic"][data-view="chat"]:not([data-surface="mobile"])
+  body > .workspace {
+  margin-left: 0 !important;
+  margin-right: 0 !important;
+  width: 100% !important;
+}
+
 html[data-view="chat"]:not([data-surface="mobile"])
   body > .workspace:has(.stream-chat-columns[data-multi-stream]) {
   margin-left: 0 !important;
