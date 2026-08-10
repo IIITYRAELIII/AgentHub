@@ -333,22 +333,29 @@ export class MiniAppPublisher {
     return result;
   }
 
-  async createDevicePairing(userId) {
+  async createDevicePairing(userId, { code = "", timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
     const secret = await this.#secret();
-    return this.#signedControlRequest("/api/device/pairing", { userId: String(userId) }, secret);
+    const payload = { userId: String(userId) };
+    if (code) payload.code = String(code);
+    return this.#signedControlRequest("/api/device/pairing", payload, secret, { timeoutMs });
   }
 
-  async trustedDevices(userId) {
+  async trustedDevices(userId, { timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
     const secret = await this.#secret();
-    return this.#signedControlRequest("/api/device/list", { userId: String(userId) }, secret);
+    return this.#signedControlRequest(
+      "/api/device/list",
+      { userId: String(userId) },
+      secret,
+      { timeoutMs },
+    );
   }
 
-  async revokeDevice(userId, deviceId) {
+  async revokeDevice(userId, deviceId, { timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
     const secret = await this.#secret();
     return this.#signedControlRequest("/api/device/revoke", {
       userId: String(userId),
       deviceId: String(deviceId),
-    }, secret);
+    }, secret, { timeoutMs });
   }
 
   pairDevice(payload) {
@@ -368,12 +375,12 @@ export class MiniAppPublisher {
     return this.#signedControlRequest("/api/device/session/resolve", { token: String(token) }, secret);
   }
 
-  async importDevices(userId, devices) {
+  async importDevices(userId, devices, { timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
     const secret = await this.#secret();
     return this.#signedControlRequest("/api/device/import", {
       userId: String(userId),
       devices,
-    }, secret);
+    }, secret, { timeoutMs });
   }
 
   async deleteDevices(userId, deviceIds) {

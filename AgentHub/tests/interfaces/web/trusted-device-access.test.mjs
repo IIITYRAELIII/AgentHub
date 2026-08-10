@@ -55,50 +55,97 @@ test("Android-only Hub uses an isolated local device owner", () => {
   );
 });
 
-test("trusted device registry switches all surfaces to one Worker backend after migration", async () => {
+test("trusted device registry federates management while direct auth stays local", async () => {
   const calls = [];
+  const localDevice = {
+    id: "018f6c86-3f34-7a31-8f27-16f5b96cce10",
+    userId: "42",
+    name: "Direct browser",
+    createdAt: 1,
+  };
+  const workerDevice = {
+    id: "018f6c86-3f34-7a31-8f27-16f5b96cce11",
+    name: "Worker browser",
+    createdAt: 2,
+  };
   const publisher = {
-    trustedDevices: async (userId) => calls.push(["worker-list", userId]),
-    createDevicePairing: async (userId) => calls.push(["worker-pair", userId]),
-    revokeDevice: async (userId, deviceId) => calls.push(["worker-revoke", userId, deviceId]),
+    trustedDevices: async (userId) => {
+      calls.push(["worker-list", userId]);
+      return { devices: [workerDevice] };
+    },
+    createDevicePairing: async (userId, options) => {
+      calls.push(["worker-pair", userId, options.code]);
+      return { code: options.code };
+    },
+    revokeDevice: async (userId, deviceId) => {
+      calls.push(["worker-revoke", userId, deviceId]);
+      return { device: workerDevice };
+    },
     importDevices: async (userId, devices) => {
       calls.push(["worker-import", userId, devices.map((device) => device.id)]);
       return { imported: devices.length };
     },
   };
   const localStore = {
-    list: async (userId) => calls.push(["local-list", userId]),
-    createPairing: async (userId) => calls.push(["local-pair", userId]),
-    revoke: async (userId, deviceId) => calls.push(["local-revoke", userId, deviceId]),
-    exportActiveDevices: async () => [{ id: "local-device", userId: "42" }],
+    list: async (userId) => {
+      calls.push(["local-list", userId]);
+      return { devices: [localDevice] };
+    },
+    createPairing: async (userId) => {
+      calls.push(["local-pair", userId]);
+      return { code: "AAAAA-BBBBB-CCCCC-DDDDD", expiresAt: 3 };
+    },
+    revoke: async (userId, deviceId) => {
+      calls.push(["local-revoke", userId, deviceId]);
+      throw new Error("device not found");
+    },
+    pair: async () => {
+      calls.push(["local-auth-pair"]);
+      return { device: localDevice };
+    },
+    exportActiveDevices: async () => [localDevice],
   };
   const registry = new TrustedDeviceRegistry(localStore);
   const manager = createTrustedDeviceManager({ localStore: registry });
-  await manager.list("42");
   assert.deepEqual(await registry.use(createWorkerTrustedDeviceStore(publisher)), { migrated: 1 });
-  await manager.list("42");
-  await manager.createPairing("42");
-  await manager.revoke("42", "device");
+  assert.deepEqual((await manager.list("42")).devices.map((device) => device.id), [
+    workerDevice.id,
+    localDevice.id,
+  ]);
+  assert.equal((await manager.createPairing("42")).workerAvailable, true);
+  await manager.revoke("42", workerDevice.id);
+  await registry.pair({ code: "AAAAA-BBBBB-CCCCC-DDDDD" });
   assert.deepEqual(calls, [
+    ["worker-import", "42", [localDevice.id]],
     ["local-list", "42"],
-    ["worker-import", "42", ["local-device"]],
     ["worker-list", "42"],
-    ["worker-pair", "42"],
-    ["worker-revoke", "42", "device"],
+    ["local-pair", "42"],
+    ["worker-pair", "42", "AAAAA-BBBBB-CCCCC-DDDDD"],
+    ["local-revoke", "42", workerDevice.id],
+    ["worker-revoke", "42", workerDevice.id],
+    ["local-auth-pair"],
   ]);
 });
 
-test("trusted device registry stays local when migration fails", async () => {
+test("trusted device registry keeps local pairing available when Worker is offline", async () => {
   const calls = [];
   const localStore = {
     exportActiveDevices: async () => [{ id: "local-device", userId: "42" }],
-    list: async () => calls.push("local-list"),
+    list: async () => {
+      calls.push("local-list");
+      return { devices: [] };
+    },
+    createPairing: async () => ({ code: "AAAAA-BBBBB-CCCCC-DDDDD", expiresAt: 1 }),
   };
   const registry = new TrustedDeviceRegistry(localStore);
-  await assert.rejects(
-    () => registry.use({ importDevices: async () => { throw new Error("offline"); } }),
-    /offline/u,
-  );
-  await registry.list("42");
+  const migration = await registry.use({
+    importDevices: async () => { throw new Error("offline"); },
+    list: async () => { throw new Error("offline"); },
+    createPairing: async () => { throw new Error("offline"); },
+  });
+  assert.equal(migration.migrated, 0);
+  assert.match(migration.warning, /offline/u);
+  assert.equal((await registry.list("42")).partial, true);
+  assert.equal((await registry.createPairing("42")).workerAvailable, false);
   assert.deepEqual(calls, ["local-list"]);
 });

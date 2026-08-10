@@ -11,7 +11,6 @@ import {
   MAX_MESSAGE_ATTACHMENTS,
 } from "../../domain/attachment-files.mjs";
 
-const DEFAULT_POLL_WAIT_MS = 25_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 35_000;
 const DEFAULT_RETRY_MS = 5_000;
 const COMMAND_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
@@ -248,7 +247,7 @@ export class SharedDashboardBotClient {
     try {
       const payload = await this.#signedRequest("/api/dashboard-bot/pull", {
         limit: 10,
-        waitMs: DEFAULT_POLL_WAIT_MS,
+        waitMs: 0,
       }, { signal: abortController.signal });
       if (!Array.isArray(payload?.commands)) throw new Error("Shared Dashboard bot returned an invalid queue");
       let handled = 0;
@@ -304,7 +303,8 @@ export class SharedDashboardBotClient {
   async #run() {
     while (!this.#closed) {
       try {
-        await this.poll();
+        const handled = await this.poll();
+        if (handled === 0) await this.#delay();
       } catch (error) {
         if (this.#closed || error?.name === "AbortError") break;
         if (error?.status !== 409) this.#logger.warn(`Shared Dashboard bot: ${error.message}`);

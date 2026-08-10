@@ -24,7 +24,8 @@ test("trusted device store pairs, authorizes, persists and revokes an Android ke
   );
   const publicKey = Buffer.from(await webcrypto.subtle.exportKey("spki", keyPair.publicKey))
     .toString("base64url");
-  const pairing = await store.createPairing("42");
+  const pairing = await store.createPairing("42", { code: "ABCDE-FGHIJ-KLMNO-PQRST" });
+  assert.equal(pairing.code, "ABCDE-FGHIJ-KLMNO-PQRST");
   const paired = await store.pair({
     code: pairing.code,
     name: "Test phone",

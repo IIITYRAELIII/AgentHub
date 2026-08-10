@@ -148,13 +148,17 @@ export class TrustedDeviceStore {
     return operation;
   }
 
-  async createPairing(userId) {
+  async createPairing(userId, { code: requestedCode = "" } = {}) {
     const normalizedUserId = String(userId ?? "").trim();
     if (!normalizedUserId) throw new Error("invalid device user");
+    const suppliedCode = normalizedDeviceCode(requestedCode);
+    if (suppliedCode && !DEVICE_CODE_PATTERN.test(suppliedCode)) {
+      throw new Error("invalid pairing code");
+    }
     return this.#mutate(() => {
       const now = this.#now();
       this.#cleanup(now);
-      const code = randomPairingCode();
+      const code = suppliedCode || randomPairingCode();
       const expiresAt = now + DEVICE_PAIRING_EXPIRY_MS;
       this.#state.pairings[sha256(code)] = { userId: normalizedUserId, createdAt: now, expiresAt };
       return { value: { code: code.match(/.{1,5}/gu).join("-"), expiresAt }, changed: true };

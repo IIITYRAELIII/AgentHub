@@ -59,6 +59,7 @@ test("shared Dashboard bot signs requests, dispatches a Task, and reports its re
   assert.equal(registration.name, "Командный Hub");
   const pull = requests[1];
   const pullBody = pull.options.body;
+  assert.deepEqual(JSON.parse(pullBody), { limit: 10, waitMs: 0 });
   const pullTimestamp = pull.options.headers["X-Agent-Hub-Timestamp"];
   const expectedSignature = createHmac("sha256", secret)
     .update([
@@ -90,6 +91,37 @@ test("shared Dashboard bot request signature is stable for an explicit timestamp
       .update(`1700000000\nPOST\n/api/dashboard-bot/pull\n${createHash("sha256").update("{}").digest("hex")}`)
       .digest("hex"),
   });
+});
+
+test("shared Dashboard bot pauses after an empty short poll", async (context) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-shared-bot-idle-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const secretFile = path.join(directory, "shared-dashboard-bot.secret");
+  await writeFile(secretFile, "s".repeat(64), "utf8");
+  let pulls = 0;
+  let firstPull;
+  const firstPullSeen = new Promise((resolve) => { firstPull = resolve; });
+  const client = new SharedDashboardBotClient({
+    publicUrl: "https://hub.example.com",
+    hubId: "018f6c86-3f34-7a31-8f27-16f5b96cce66",
+    secretFile,
+    retrySeconds: 1,
+    fetchImpl: async (url) => {
+      if (url.endsWith("/api/dashboard-bot/register")) return Response.json({ paired: true });
+      if (url.endsWith("/api/dashboard-bot/pull")) {
+        pulls += 1;
+        firstPull();
+        return Response.json({ commands: [] });
+      }
+      return Response.json({ error: "unexpected request" }, { status: 500 });
+    },
+    handler: async () => null,
+  });
+  await client.start();
+  await firstPullSeen;
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(pulls, 1);
+  await client.close();
 });
 
 test("shared Dashboard bot downloads a screenshot reply before augmenting the Task", async (context) => {

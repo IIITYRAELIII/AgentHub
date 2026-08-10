@@ -97,9 +97,12 @@ export class MiniAppLifecycleService {
           const migration = await this.trustedDeviceStore.use(
             createWorkerTrustedDeviceStore(() => this.publisher),
           );
-          this.logger.log(`Trusted device registry uses Worker; migrated ${migration.migrated} local device(s)`);
+          this.logger.log(`Trusted device registry federates Worker; migrated ${migration.migrated} local device(s)`);
+          if (migration.warning) {
+            this.logger.warn(`Trusted device Worker migration deferred: ${migration.warning}`);
+          }
         } catch (error) {
-          this.logger.warn(`Cannot switch trusted device registry to Worker: ${error.message}`);
+          this.logger.warn(`Cannot attach Worker trusted device registry: ${error.message}`);
         }
       }
       await this.publisher.start().catch((error) => {

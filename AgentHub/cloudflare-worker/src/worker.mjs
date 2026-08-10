@@ -1519,9 +1519,13 @@ export class JournalStore extends DurableObject {
   async #createDevicePairing(payload) {
     const userId = String(payload?.userId ?? "").trim();
     if (!userId) throw new Error("invalid device user");
+    const suppliedCode = normalizedDeviceCode(payload?.code);
+    if (suppliedCode && !DEVICE_CODE_PATTERN.test(suppliedCode)) {
+      throw new Error("invalid pairing code");
+    }
     const now = Date.now();
     await this.#cleanupDeviceAuth(now);
-    const code = randomPairingCode();
+    const code = suppliedCode || randomPairingCode();
     const codeHash = await sha256(code);
     const expiresAt = now + DEVICE_PAIRING_EXPIRY_MS;
     await this.ctx.storage.put(`device:pairing:${codeHash}`, { userId, createdAt: now, expiresAt });

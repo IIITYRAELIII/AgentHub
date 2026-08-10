@@ -179,7 +179,9 @@ test("Mini App publisher manages trusted devices through signed service requests
     },
   });
   try {
-    assert.equal((await publisher.createDevicePairing("42")).code, "AAAAA-BBBBB-CCCCC-DDDDD");
+    assert.equal((await publisher.createDevicePairing("42", {
+      code: "AAAAA-BBBBB-CCCCC-DDDDD",
+    })).code, "AAAAA-BBBBB-CCCCC-DDDDD");
     assert.equal((await publisher.trustedDevices("42")).devices.length, 1);
     assert.equal((await publisher.revokeDevice("42", "device")).device.revokedAt, 1);
     assert.deepEqual(requests.map((request) => new URL(request.url).pathname), [
@@ -187,6 +189,10 @@ test("Mini App publisher manages trusted devices through signed service requests
       "/api/device/list",
       "/api/device/revoke",
     ]);
+    assert.deepEqual(JSON.parse(requests[0].options.body), {
+      userId: "42",
+      code: "AAAAA-BBBBB-CCCCC-DDDDD",
+    });
     for (const request of requests) {
       const pathname = new URL(request.url).pathname;
       const timestamp = Number(request.options.headers["X-Agent-Hub-Timestamp"]);

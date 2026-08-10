@@ -512,12 +512,15 @@ test("Android device pairing creates a revocable signed session", async () => {
   };
 
   let response = await workerModule.default.fetch(
-    signedServiceRequest("https://hub.test/api/device/pairing", { userId: "42" }, syncSecret),
+    signedServiceRequest("https://hub.test/api/device/pairing", {
+      userId: "42",
+      code: "ABCDE-FGHIJ-KLMNO-PQRST",
+    }, syncSecret),
     env,
   );
   assert.equal(response.status, 200);
   const pairing = await response.json();
-  assert.match(pairing.code, /^[A-Z2-7]{5}(?:-[A-Z2-7]{5}){3}$/u);
+  assert.equal(pairing.code, "ABCDE-FGHIJ-KLMNO-PQRST");
 
   const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
   response = await workerModule.default.fetch(new Request("https://hub.test/api/device/pair", {
