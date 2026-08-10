@@ -3,6 +3,8 @@ import { isCodexContextProbeTurn } from "../../domain/codex-context-probe.mjs";
 import { taskDisplayTitle } from "../../domain/task-display-title.mjs";
 import { taskRunIsActive } from "../../domain/task-runs.mjs";
 
+const MAX_COMPACT_ACTIVITY_DETAIL_CHARS = 1_200;
+
 export function createDesktopSnapshotFactory({
   clock,
   context,
@@ -83,10 +85,26 @@ export function createDesktopSnapshotFactory({
     };
   }
 
-  function desktopRunSnapshot(run) {
+  function desktopRunSnapshot(run, { compactSnapshot = false } = {}) {
     if (!run) return null;
     const responseItem = (Array.isArray(run.responseItems) ? run.responseItems : [])
       .find((item) => String(item?.id ?? "") === String(run.responseItemId ?? ""));
+    const compactActivity = (activity) => {
+      const cloned = structuredClone(activity);
+      if (!compactSnapshot || typeof cloned?.detail !== "string") return cloned;
+      if (cloned.detail.length <= MAX_COMPACT_ACTIVITY_DETAIL_CHARS) return cloned;
+      return {
+        ...cloned,
+        detail: `${cloned.detail.slice(0, MAX_COMPACT_ACTIVITY_DETAIL_CHARS)}…`,
+      };
+    };
+    const activityGroups = (Array.isArray(run.activityGroups) ? run.activityGroups : []).map((group) => ({
+      ...structuredClone(group),
+      activities: (Array.isArray(group?.activities) ? group.activities : []).map(compactActivity),
+    }));
+    const activities = compactSnapshot && activityGroups.length
+      ? []
+      : (Array.isArray(run.activities) ? run.activities : []).map(compactActivity);
     return {
       id: run.id,
       turnId: run.turnId ?? null,
@@ -137,9 +155,9 @@ export function createDesktopSnapshotFactory({
       responseItemId: run.responseItemId ?? null,
       startedAt: run.startedAt ?? null,
       lastActivityAt: run.lastMeaningfulProgressAt ?? run.progressHeartbeatAt ?? run.startedAt ?? null,
-      activities: Array.isArray(run.activities) ? run.activities : [],
-      ...(Array.isArray(run.activityGroups) && run.activityGroups.length
-        ? { activityGroups: structuredClone(run.activityGroups) }
+      activities,
+      ...(activityGroups.length
+        ? { activityGroups }
         : {}),
       context: desktopContextSnapshot(run.threadId, run.turnId),
     };
@@ -241,7 +259,7 @@ export function createDesktopSnapshotFactory({
       unread,
       maintenance: maintenance.entryFor?.(task) ?? null,
       context,
-      run: desktopRunSnapshot(visibleRun),
+      run: desktopRunSnapshot(visibleRun, { compactSnapshot }),
     };
   }
 

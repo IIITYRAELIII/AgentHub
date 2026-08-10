@@ -171,6 +171,39 @@ test("desktop control router applies transport-specific response limits", async 
   ]);
 });
 
+test("Mini App mutations replace a large live result with a compact fresh snapshot", async () => {
+  const snapshotParams = [];
+  const router = createDesktopControlRouter({
+    handlers: {
+      mutate: async () => ({
+        accepted: true,
+        snapshot: { apiVersion: 3, tasks: [{ output: "x".repeat(1_100_000) }], selected: { threadId: "old" } },
+      }),
+      snapshot: async (params) => {
+        snapshotParams.push(params);
+        return { apiVersion: 3, tasks: [], selected: { threadId: "fresh" } };
+      },
+    },
+    mutationActions: ["mutate"],
+  });
+
+  const result = await router.handleDesktopControl({
+    action: "mutate",
+    params: {},
+    context: { source: "telegram-mini-app", userId: "42" },
+  });
+
+  assert.equal(result.accepted, true);
+  assert.equal(result.snapshot.selected.threadId, "fresh");
+  assert.ok(Buffer.byteLength(JSON.stringify(result), "utf8") < 10_000);
+  assert.deepEqual(snapshotParams, [{
+    limit: 10,
+    maxAnswerChars: 75_000,
+    maxResponseBytes: 850_000,
+    compactSnapshot: true,
+  }]);
+});
+
 test("desktop control router serializes mutations and continues after a failure", async () => {
   const events = [];
   let releaseFirst;

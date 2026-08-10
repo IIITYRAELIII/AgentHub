@@ -678,6 +678,25 @@ test("compact remote snapshot omits answer text when the turn id is sufficient",
   assert.equal(snapshot.tasks[0].lastAnswerTurnId, "turn-previous");
 });
 
+test("compact remote snapshot keeps one bounded live activity representation", async () => {
+  const activities = Array.from({ length: 50 }, (_, index) => ({
+    id: `activity-${index}`,
+    type: "command",
+    label: "Команда выполнена",
+    detail: "x".repeat(4_500),
+  }));
+  const { desktopSnapshot, state } = fixture();
+  state.run.activities = structuredClone(activities);
+  state.run.activityGroups = [{ id: "group-1", reasoning: "Проверяю", activities }];
+
+  const snapshot = await desktopSnapshot({ compactSnapshot: true });
+
+  assert.deepEqual(snapshot.tasks[0].run.activities, []);
+  assert.equal(snapshot.tasks[0].run.activityGroups[0].activities.length, 50);
+  assert.equal(snapshot.tasks[0].run.activityGroups[0].activities[0].detail.length, 1_201);
+  assert.ok(Buffer.byteLength(JSON.stringify(snapshot), "utf8") < 100_000);
+});
+
 test("forced desktop snapshot returns cached tasks while catalog refreshes", async () => {
   let finishRefresh;
   const refreshWait = new Promise((resolve) => {

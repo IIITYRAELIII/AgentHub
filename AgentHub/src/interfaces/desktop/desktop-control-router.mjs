@@ -74,6 +74,21 @@ export function createDesktopControlRouter({
     };
   }
 
+  async function hydrateProjectedResult(value, context) {
+    const shape = value?.[RECEIPT_SHAPE];
+    if (!shape) return value;
+    const { [RECEIPT_SHAPE]: _shape, ...projected } = value;
+    const snapshot = await handlers.snapshot(effectiveParams({}, context), context);
+    return shape === "nested-snapshot"
+      ? { ...projected, snapshot }
+      : { ...snapshot, ...projected };
+  }
+
+  async function mutationResultForClient(value, context) {
+    if (context?.source !== miniAppLimits.source) return value;
+    return hydrateProjectedResult(projectDesktopReceiptResult(value), context);
+  }
+
   async function handleDesktopControl({ action, params, context = null }) {
     const handler = handlers[action];
     if (typeof handler !== "function") {
@@ -86,7 +101,9 @@ export function createDesktopControlRouter({
     if (mutations.has(action)) {
       const execute = () => serializeDesktopMutation(() => handler(resolvedParams, context));
       const commandId = String(context?.commandId ?? "").trim();
-      if (!receipts || !commandId || !durableMutations.has(action)) return execute();
+      if (!receipts || !commandId || !durableMutations.has(action)) {
+        return mutationResultForClient(await execute(), context);
+      }
       const noLiveResult = Symbol("no-live-result");
       let liveResult = noLiveResult;
       const durableResult = await receipts.execute({
@@ -106,14 +123,8 @@ export function createDesktopControlRouter({
           ? (receipt) => reconcileMutation({ action, params: resolvedParams, context, receipt })
           : null,
       });
-      if (liveResult !== noLiveResult) return liveResult;
-      const shape = durableResult?.[RECEIPT_SHAPE];
-      if (!shape) return durableResult;
-      const { [RECEIPT_SHAPE]: _shape, ...projected } = durableResult;
-      const snapshot = await handlers.snapshot(effectiveParams({}, context), context);
-      return shape === "nested-snapshot"
-        ? { ...projected, snapshot }
-        : { ...snapshot, ...projected };
+      if (liveResult !== noLiveResult) return mutationResultForClient(liveResult, context);
+      return hydrateProjectedResult(durableResult, context);
     }
     return handler(resolvedParams, context);
   }
