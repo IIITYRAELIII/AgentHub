@@ -228,8 +228,22 @@ html[data-background-override="true"][data-background="orbit-limb"] {
   --hub-background-position: 58% 46%;
 }
 
+html[data-background-override="true"][data-background="orbit-aurora"] {
+  --hub-background-color: #01050a;
+  --hub-background-image: var(--orbit-aurora-image, url("./orbit-aurora.jpg"));
+  --hub-background-position: 60% center;
+}
+
+html[data-background-override="true"][data-background="orbit-earthrise"] {
+  --hub-background-color: #010204;
+  --hub-background-image: var(--orbit-earthrise-image, url("./orbit-earthrise.jpg"));
+  --hub-background-position: 60% center;
+}
+
 html[data-background-override="true"][data-background="orbit"] body::before,
-html[data-background-override="true"][data-background="orbit-limb"] body::before {
+html[data-background-override="true"][data-background="orbit-limb"] body::before,
+html[data-background-override="true"][data-background="orbit-aurora"] body::before,
+html[data-background-override="true"][data-background="orbit-earthrise"] body::before {
   background: radial-gradient(circle, rgb(148 233 255 / 100%) 0 1px, rgb(73 201 240 / 62%) 2px, transparent 5px) !important;
   content: "" !important;
 }
@@ -244,6 +258,11 @@ html[data-background-override="true"][data-background="orbit-limb"] body::before
   html:not([data-theme]) body::after,
   html[data-theme="orbit"] body::after {
     background-position: 64% center;
+  }
+
+  html[data-background-override="true"][data-background="orbit-aurora"],
+  html[data-background-override="true"][data-background="orbit-earthrise"] {
+    --hub-background-position: 76% center;
   }
 }
 

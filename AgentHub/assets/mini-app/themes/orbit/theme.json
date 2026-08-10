@@ -6,6 +6,8 @@
   "styles": "theme.css",
   "backgrounds": [
     { "id": "orbit", "name": "Картография", "asset": "orbit-cartography.jpg", "preload": true },
-    { "id": "orbit-limb", "name": "Лимб", "asset": "orbit-limb.jpg" }
+    { "id": "orbit-limb", "name": "Лимб", "asset": "orbit-limb.jpg" },
+    { "id": "orbit-aurora", "name": "Аврора", "asset": "orbit-aurora.jpg" },
+    { "id": "orbit-earthrise", "name": "Восход Земли", "asset": "orbit-earthrise.jpg" }
   ]
 }

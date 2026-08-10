@@ -863,6 +863,8 @@ test("Orbit fills the viewport with one translucent cartography console", () => 
     [
       ["orbit", "orbit-cartography.jpg"],
       ["orbit-limb", "orbit-limb.jpg"],
+      ["orbit-aurora", "orbit-aurora.jpg"],
+      ["orbit-earthrise", "orbit-earthrise.jpg"],
     ],
   );
   /* В отличие от Verdant чат занимает всю оставшуюся колонку, а свободная
