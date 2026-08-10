@@ -28,6 +28,23 @@ namespace AgentHubDesktop
             WorkspacePresentationKeepsAtMostFourOpenStreams();
         }
 
+        private static void MarkdownTableIsRecognisedOnlyWithSeparator()
+        {
+            Require(AgentHubWindow.IsTableRow("| Тема | Фон |"), "table row was not recognised");
+            Require(!AgentHubWindow.IsTableRow("обычная строка"), "plain text passed as a table row");
+            Require(AgentHubWindow.IsTableSeparator("|---|---|"), "separator was not recognised");
+            Require(AgentHubWindow.IsTableSeparator("| :--- | ---: |"), "aligned separator was not recognised");
+            /* Строка с вертикальными чертами внутри текста не должна превращать
+               абзац в таблицу: разделитель обязателен. */
+            Require(!AgentHubWindow.IsTableSeparator("| текст | ещё |"), "text passed as a separator");
+            var cells = AgentHubWindow.SplitTableRow("| a | b | c |");
+            Require(cells.Length == 3, "table row split lost a cell");
+            Require(AgentHubWindow.TableAlignment("---:") == System.Windows.TextAlignment.Right,
+                "right alignment was lost");
+            Require(AgentHubWindow.TableAlignment(":---:") == System.Windows.TextAlignment.Center,
+                "center alignment was lost");
+        }
+
         private static void LongRunningCommandsReceiveAnExtendedResponseWindow()
         {
             Require(AgentHubClient.ResponseTimeoutForAction("snapshot", 15000) == 15000,

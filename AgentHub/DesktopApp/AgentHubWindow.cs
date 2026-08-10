@@ -1368,8 +1368,15 @@ namespace AgentHubDesktop
             var lines = (text ?? "").Replace("\r\n", "\n").Split('\n');
             var code = false;
             Paragraph codeBlock = null;
-            foreach (var raw in lines)
+            for (var index = 0; index < lines.Length; index++)
             {
+                var raw = lines[index];
+                if (!code && IsTableRow(raw)
+                    && IsTableSeparator(index + 1 < lines.Length ? lines[index + 1] : null))
+                {
+                    index = AppendTable(document, lines, index);
+                    continue;
+                }
                 if (raw.TrimStart().StartsWith("```", StringComparison.Ordinal))
                 {
                     if (!code)
@@ -1425,6 +1432,105 @@ namespace AgentHubDesktop
                 document.Blocks.Add(paragraph);
             }
             return document;
+        }
+
+        internal static bool IsTableRow(string line)
+        {
+            var value = (line ?? "").Trim();
+            return value.Length > 1 && value.StartsWith("|", StringComparison.Ordinal)
+                && value.EndsWith("|", StringComparison.Ordinal);
+        }
+
+        /* Разделитель отличает таблицу от обычной строки с вертикальными чертами:
+           каждая ячейка состоит только из дефисов и необязательных двоеточий. */
+        internal static bool IsTableSeparator(string line)
+        {
+            if (!IsTableRow(line)) return false;
+            foreach (var cell in SplitTableRow(line))
+            {
+                var value = cell.Trim();
+                if (value.Length == 0) return false;
+                if (!Regex.IsMatch(value, @"^:?-{1,}:?$")) return false;
+            }
+            return true;
+        }
+
+        internal static string[] SplitTableRow(string line)
+        {
+            var value = (line ?? "").Trim();
+            if (value.StartsWith("|", StringComparison.Ordinal)) value = value.Substring(1);
+            if (value.EndsWith("|", StringComparison.Ordinal)) value = value.Substring(0, value.Length - 1);
+            return value.Split('|');
+        }
+
+        internal static TextAlignment TableAlignment(string separatorCell)
+        {
+            var value = (separatorCell ?? "").Trim();
+            var left = value.StartsWith(":", StringComparison.Ordinal);
+            var right = value.EndsWith(":", StringComparison.Ordinal);
+            if (left && right) return TextAlignment.Center;
+            return right ? TextAlignment.Right : TextAlignment.Left;
+        }
+
+        /* Возвращает индекс последней использованной строки: разметка Markdown
+           раньше выпадала в обычный абзац и показывалась сырыми чертами. */
+        private int AppendTable(FlowDocument document, string[] lines, int start)
+        {
+            var header = SplitTableRow(lines[start]);
+            var separator = SplitTableRow(lines[start + 1]);
+            var alignments = new TextAlignment[header.Length];
+            for (var column = 0; column < header.Length; column++)
+            {
+                alignments[column] = column < separator.Length
+                    ? TableAlignment(separator[column])
+                    : TextAlignment.Left;
+            }
+
+            var table = new Table
+            {
+                CellSpacing = 0,
+                Margin = new Thickness(0, 4, 0, 8)
+            };
+            for (var column = 0; column < header.Length; column++)
+            {
+                table.Columns.Add(new TableColumn());
+            }
+            var group = new TableRowGroup();
+            table.RowGroups.Add(group);
+            group.Rows.Add(BuildTableRow(header, alignments, true));
+
+            var index = start + 2;
+            while (index < lines.Length && IsTableRow(lines[index]))
+            {
+                group.Rows.Add(BuildTableRow(SplitTableRow(lines[index]), alignments, false));
+                index++;
+            }
+            document.Blocks.Add(table);
+            return index - 1;
+        }
+
+        private TableRow BuildTableRow(string[] cells, TextAlignment[] alignments, bool header)
+        {
+            var row = new TableRow();
+            for (var column = 0; column < cells.Length; column++)
+            {
+                var paragraph = new Paragraph
+                {
+                    Margin = new Thickness(0),
+                    TextAlignment = column < alignments.Length ? alignments[column] : TextAlignment.Left
+                };
+                if (header) paragraph.FontWeight = FontWeights.SemiBold;
+                AppendInlineMarkdown(paragraph, cells[column].Trim());
+                row.Cells.Add(new TableCell(paragraph)
+                {
+                    BorderBrush = Theme.Solid(Theme.Border),
+                    BorderThickness = header
+                        ? new Thickness(0, 0, 0, 1)
+                        : new Thickness(0, 0, 0, 0),
+                    Padding = new Thickness(8, 5, 8, 5)
+                });
+            }
+            return row;
         }
 
         private void AppendInlineMarkdown(Paragraph paragraph, string text)
