@@ -1004,6 +1004,24 @@
             </span>
             <span class="switch-track" aria-hidden="true"></span>
           </label>
+          <div class="setting-stack">
+            <span class="setting-name">Период отображения активных задач</span>
+            <div class="setting-duration" role="group" aria-label="Период отображения активных задач">
+              <label>
+                <input type="number" min="0" max="720" step="1" inputmode="numeric"
+                  data-activity-period-hours aria-label="Часы">
+                <span>ч</span>
+              </label>
+              <label>
+                <input type="number" min="0" max="59" step="1" inputmode="numeric"
+                  data-activity-period-minutes aria-label="Минуты">
+                <span>мин</span>
+              </label>
+            </div>
+            <span class="switch-note">
+              Завершённые и выполняющиеся показываются всегда; остальные — с момента последней активности.
+            </span>
+          </div>
           <label class="setting-row setting-field">
             <span class="setting-name">Группировка</span>
             <select data-group-select aria-label="Группировка журнала">

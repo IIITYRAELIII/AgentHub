@@ -112,6 +112,8 @@ const claudeGroupToggle = document.querySelector("[data-claude-group-toggle]");
 const streamStatusFillToggle = document.querySelector("[data-stream-status-fill-toggle]");
 const streamStatusEffectSelect = document.querySelector("[data-stream-status-effect-select]");
 const streamOrderModeSelect = document.querySelector("[data-stream-order-mode-select]");
+const activityPeriodHours = document.querySelector("[data-activity-period-hours]");
+const activityPeriodMinutes = document.querySelector("[data-activity-period-minutes]");
 const usageUnitButtons = [...document.querySelectorAll("[data-usage-unit]")];
 const exchangeRateHint = document.querySelector("[data-exchange-rate-hint]");
 const panelScrim = document.querySelector("[data-panel-scrim]");
@@ -321,6 +323,10 @@ const backgroundAssetLoads = new Map();
 const sessionBackgrounds = new Map();
 const LEGACY_BACKGROUND_STORAGE_KEY = "agent-hub-background";
 const ACTIVITY_RAIL_COLLAPSED_KEY = "agent-hub:activity-rail-collapsed:v1";
+const ACTIVITY_RECENT_PERIOD_KEY = "agent-hub:activity-recent-period:v1";
+const DEFAULT_ACTIVITY_RECENT_MINUTES = 3 * 60;
+const MAX_ACTIVITY_RECENT_MINUTES = 30 * 24 * 60;
+let activityRecentPeriodMinutes = DEFAULT_ACTIVITY_RECENT_MINUTES;
 const backgroundStorageKey = (theme) => `${LEGACY_BACKGROUND_STORAGE_KEY}:${theme}`;
 let backgroundRequestId = 0;
 const themeAliases = Object.freeze(Object.fromEntries(themeCatalog.flatMap((theme) => (
@@ -685,6 +691,44 @@ function applyStreamOrderMode(value, { persist = false, update = false } = {}) {
   }
 }
 
+function normalizedActivityRecentMinutes(value) {
+  const minutes = Math.round(Number(value));
+  return Number.isFinite(minutes)
+    ? Math.max(0, Math.min(MAX_ACTIVITY_RECENT_MINUTES, minutes))
+    : DEFAULT_ACTIVITY_RECENT_MINUTES;
+}
+
+function savedActivityRecentMinutes() {
+  try {
+    const saved = localStorage.getItem(ACTIVITY_RECENT_PERIOD_KEY);
+    return saved === null
+      ? DEFAULT_ACTIVITY_RECENT_MINUTES
+      : normalizedActivityRecentMinutes(saved);
+  } catch {
+    return DEFAULT_ACTIVITY_RECENT_MINUTES;
+  }
+}
+
+function applyActivityRecentPeriod(value, { persist = false, update = false } = {}) {
+  activityRecentPeriodMinutes = normalizedActivityRecentMinutes(value);
+  if (activityPeriodHours) activityPeriodHours.value = String(Math.floor(activityRecentPeriodMinutes / 60));
+  if (activityPeriodMinutes) activityPeriodMinutes.value = String(activityRecentPeriodMinutes % 60);
+  if (persist) {
+    try {
+      localStorage.setItem(ACTIVITY_RECENT_PERIOD_KEY, String(activityRecentPeriodMinutes));
+    } catch {
+      // Настройка останется активной до закрытия WebView.
+    }
+  }
+  if (update) renderActivityRail();
+}
+
+function applyActivityRecentPeriodInputs() {
+  const hours = Math.max(0, Number(activityPeriodHours?.value) || 0);
+  const minutes = Math.max(0, Number(activityPeriodMinutes?.value) || 0);
+  applyActivityRecentPeriod(hours * 60 + minutes, { persist: true, update: true });
+}
+
 function savedStreamCollapse() {
   try {
     return localStorage.getItem("agent-hub-collapse-streams") === "on";
@@ -827,6 +871,7 @@ applyBreakdown(savedBreakdown());
 applyStreamStatusStyle(savedStreamStatusStyle());
 applyStreamStatusEffect(savedStreamStatusEffect());
 applyStreamOrderMode(savedStreamOrderMode());
+applyActivityRecentPeriod(savedActivityRecentMinutes());
 applyStreamCollapse(savedStreamCollapse());
 selectUsageUnit(savedUsageUnit());
 selectUsageRateBasis(savedUsageRateBasis());
@@ -843,6 +888,8 @@ streamStatusEffectSelect?.addEventListener("change", () => {
 streamOrderModeSelect?.addEventListener("change", () => {
   applyStreamOrderMode(streamOrderModeSelect.value, { persist: true, update: true });
 });
+activityPeriodHours?.addEventListener("change", applyActivityRecentPeriodInputs);
+activityPeriodMinutes?.addEventListener("change", applyActivityRecentPeriodInputs);
 streamCollapseToggle?.addEventListener("change", () => {
   applyStreamCollapse(streamCollapseToggle.checked, { persist: true, update: true });
 });
@@ -1164,10 +1211,17 @@ function formatRunningDuration(input, now = Date.now()) {
   return `${days}д ${String(hours % 24).padStart(2, "0")}ч`;
 }
 
+let lastActivityRailRefreshMinute = -1;
+
 function refreshTaskDurations() {
   const now = Date.now();
   for (const node of document.querySelectorAll(".task-time[data-task-started-at]")) {
     node.textContent = formatRunningDuration(node.dataset.taskStartedAt, now);
+  }
+  const minute = Math.floor(now / 60_000);
+  if (minute !== lastActivityRailRefreshMinute) {
+    lastActivityRailRefreshMinute = minute;
+    renderActivityRail();
   }
 }
 
@@ -1857,30 +1911,37 @@ function streamActivityTime(task) {
   return Number.isFinite(value) ? value : 0;
 }
 
-function streamAttentionKind(task) {
+function streamAttentionKind(task, now = Date.now()) {
   if (task?.unread && !task?.running) return "completed";
   if (task?.running) return "running";
+  const activityTime = streamActivityTime(task);
+  const recentWindow = activityRecentPeriodMinutes * 60_000;
+  if (recentWindow > 0 && activityTime > 0 && Math.max(0, now - activityTime) <= recentWindow) {
+    return "recent";
+  }
   return "";
 }
 
 function activityStreamEntries(tasks) {
+  const now = Date.now();
   const groups = new Map();
   for (const task of tasks) {
-    const kind = streamAttentionKind(task);
+    const kind = streamAttentionKind(task, now);
     if (!kind) continue;
     const key = `${workspaceKey(task)}\u0000${streamKey(task)}`;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(task);
   }
+  const attentionRank = (task) => ({ completed: 0, running: 1, recent: 2 }[
+    streamAttentionKind(task, now)
+  ] ?? 3);
   return [...groups.values()]
     .map((group) => [...group].sort((left, right) => (
-      Number(streamAttentionKind(left) !== "completed")
-      - Number(streamAttentionKind(right) !== "completed")
+      attentionRank(left) - attentionRank(right)
       || streamActivityTime(right) - streamActivityTime(left)
     ))[0])
     .sort((left, right) => (
-      Number(streamAttentionKind(left) !== "completed")
-      - Number(streamAttentionKind(right) !== "completed")
+      attentionRank(left) - attentionRank(right)
       || streamActivityTime(right) - streamActivityTime(left)
     ));
 }
@@ -1984,6 +2045,7 @@ function renderActivityRail() {
       "data-current": task.id === state.selectedId ? "" : null,
       "data-running": presentation.running ? "" : null,
       "data-answer-ready": presentation.answerReady ? "" : null,
+      "data-recent": streamAttentionKind(task) === "recent" ? "" : null,
       "data-maintenance": streamMaintenanceKind(task) || null,
       "aria-pressed": String(task.id === state.selectedId),
       "aria-label": [workspaceName, streamName, presentation.agentLabel, presentation.statusLabel]
