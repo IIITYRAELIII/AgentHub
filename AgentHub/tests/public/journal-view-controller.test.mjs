@@ -22,6 +22,23 @@ test("journal grouping keeps legacy values and defaults new state to workspaces"
   assert.equal(api.primaryColumn("month"), "Месяц");
 });
 
+test("day grouping keeps historical days lazy while aggregate views require them", async () => {
+  const api = await journalViewApi();
+  assert.equal(api.requiresCompleteHistory("date"), false);
+  assert.equal(api.requiresCompleteHistory("task"), true);
+  assert.equal(api.requiresCompleteHistory("week"), true);
+  assert.equal(api.requiresCompleteHistory("month"), true);
+});
+
+test("journal header counts current catalog streams instead of historical tasks", async () => {
+  const api = await journalViewApi();
+  assert.equal(api.streamCount([
+    { id: "one", streams: [{ id: "a" }, { id: "b" }] },
+    { id: "two", streams: [{ id: "c" }] },
+  ]), 3);
+  assert.equal(api.streamCount(null), 0);
+});
+
 test("journal periods use Monday weeks and calendar months", async () => {
   const api = await journalViewApi();
   assert.deepEqual(

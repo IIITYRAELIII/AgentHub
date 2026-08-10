@@ -94,6 +94,18 @@
     return (Array.isArray(groups) ? groups : []).filter((group) => group?.provider === provider);
   }
 
+  function requiresCompleteHistory(value) {
+    return normalizeGrouping(value) !== "date";
+  }
+
+  function streamCount(workspaces) {
+    return Array.isArray(workspaces)
+      ? workspaces.reduce((count, workspace) => (
+        count + (Array.isArray(workspace?.streams) ? workspace.streams.length : 0)
+      ), 0)
+      : 0;
+  }
+
   window.AgentHubJournalView = Object.freeze({
     GROUPINGS,
     groupingLabel: (value) => LABELS[normalizeGrouping(value)],
@@ -101,6 +113,8 @@
     periodIdentity,
     primaryColumn: (value) => PRIMARY_COLUMNS[normalizeGrouping(value)],
     profileCohort,
+    requiresCompleteHistory,
     summarizeGroups,
+    streamCount,
   });
 })();
