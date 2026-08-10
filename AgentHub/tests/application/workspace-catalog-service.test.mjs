@@ -14,7 +14,8 @@ function fixture() {
     mergeWorkspaces: (...args) => calls.push(["mergeWorkspaces", ...args]),
     renameStream: (...args) => calls.push(["renameStream", ...args]),
     updateStreamSettings: (...args) => (calls.push(["updateStreamSettings", ...args]), { settings: args[1] }),
-    moveStream: (...args) => calls.push(["moveStream", ...args]),
+    moveStream: (...args) => (calls.push(["moveStream", ...args]), { id: args[0] }),
+    reorderStream: (...args) => (calls.push(["reorderStream", ...args]), { id: args[0] }),
     bindThread: (value) => (calls.push(["bindThread", value]), value),
     activeThread: (streamId) => ({ streamId }),
     resolveThread: (value) => value,
@@ -63,5 +64,18 @@ test("Stream settings are stored independently from its future Thread", () => {
   assert.deepEqual(calls.slice(-2), [
     ["createStream", { workspaceId: "workspace-1", name: "Draft", settings }],
     ["updateStreamSettings", "stream-1", settings],
+  ]);
+});
+
+test("moving a Stream can place it before a sibling in the same transaction", () => {
+  const { service, calls } = fixture();
+  assert.deepEqual(service.moveStream({
+    streamId: "stream-2",
+    workspaceId: "workspace-1",
+    beforeStreamId: "stream-1",
+  }), { id: "stream-2" });
+  assert.deepEqual(calls.slice(-2), [
+    ["moveStream", "stream-2", "workspace-1"],
+    ["reorderStream", "stream-2", "stream-1"],
   ]);
 });

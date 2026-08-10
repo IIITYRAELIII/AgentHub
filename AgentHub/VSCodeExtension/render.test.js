@@ -1971,7 +1971,6 @@ test("shared shell groups threads under stable Workspace and Stream identities",
   assert.doesNotMatch(app, /class: "task-workspace-streams"/u);
   assert.match(styles, /\.task-workspace-item\[data-selected\]/u);
   assert.match(styles, /\.stream-tab\[aria-pressed="true"\]/u);
-  assert.match(app, /state\.streamOrderByWorkspace\.set\(workspaceId, order\)/u);
   // Верхняя полоса показывает Stream и свойства текущего Thread, но не его
   // сменяемое название: история Thread появится только в истории перерождений.
   assert.match(tabs, /class: "stream-tab-card"/u);

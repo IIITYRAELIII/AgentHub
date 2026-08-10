@@ -52,8 +52,13 @@ export class WorkspaceCatalogService {
     return this.#store.updateStreamSettings(streamId, settings);
   }
 
-  moveStream({ streamId, workspaceId } = {}) {
-    return this.#store.transaction(() => this.#store.moveStream(streamId, workspaceId));
+  moveStream({ streamId, workspaceId, beforeStreamId = undefined } = {}) {
+    return this.#store.transaction(() => {
+      const moved = this.#store.moveStream(streamId, workspaceId);
+      return beforeStreamId === undefined
+        ? moved
+        : this.#store.reorderStream(streamId, beforeStreamId);
+    });
   }
 
   bindThread({ streamId, provider, threadId, projectRoot = "", source = "rebirth" } = {}) {

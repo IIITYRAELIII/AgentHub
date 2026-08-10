@@ -96,6 +96,42 @@ test("a Stream can be pinned first without replacing its siblings", async (t) =>
   );
 });
 
+test("Stream order is persisted as contiguous server ordinals", async (t) => {
+  const store = await fixture(t);
+  const workspace = store.createWorkspace({ name: "Ordered" });
+  const first = store.createStream({ workspaceId: workspace.id, name: "First" });
+  const second = store.createStream({ workspaceId: workspace.id, name: "Second" });
+  const third = store.createStream({ workspaceId: workspace.id, name: "Third" });
+
+  store.transaction(() => store.reorderStream(third.id, second.id));
+  assert.deepEqual(
+    store.hierarchy().find((item) => item.id === workspace.id).streams
+      .map((stream) => [stream.id, stream.ordinal]),
+    [[first.id, 1], [third.id, 2], [second.id, 3]],
+  );
+
+  store.transaction(() => store.reorderStream(first.id, null));
+  assert.deepEqual(
+    store.hierarchy().find((item) => item.id === workspace.id).streams
+      .map((stream) => [stream.id, stream.ordinal]),
+    [[third.id, 1], [second.id, 2], [first.id, 3]],
+  );
+});
+
+test("Stream order cannot reference another Workspace", async (t) => {
+  const store = await fixture(t);
+  const firstWorkspace = store.createWorkspace({ name: "First" });
+  const secondWorkspace = store.createWorkspace({ name: "Second" });
+  const stream = store.createStream({ workspaceId: firstWorkspace.id });
+  const foreign = store.createStream({ workspaceId: secondWorkspace.id });
+
+  assert.throws(
+    () => store.transaction(() => store.reorderStream(stream.id, foreign.id)),
+    /before stream not found in workspace/u,
+  );
+  assert.equal(store.stream(stream.id).ordinal, 1);
+});
+
 test("legacy Workspace catalog gains the comment property without losing data", async (t) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-workspaces-legacy-comment-"));
   const databaseFile = path.join(directory, "journal.sqlite");

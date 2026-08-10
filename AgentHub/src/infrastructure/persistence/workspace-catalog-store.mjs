@@ -399,6 +399,29 @@ export class WorkspaceCatalogStore {
     return this.stream(id);
   }
 
+  reorderStream(streamId, beforeStreamId = null) {
+    const id = safeIdentifier(streamId, "stream id");
+    const stream = this.stream(id);
+    if (!stream) throw new Error(`stream not found: ${id}`);
+    const beforeId = beforeStreamId == null
+      ? null
+      : safeIdentifier(beforeStreamId, "before stream id");
+    if (beforeId === id) return stream;
+    const rows = this.#database.prepare(`
+      SELECT id FROM hub_streams WHERE workspace_id = ?
+      ORDER BY ordinal, created_at_ms, id
+    `).all(stream.workspaceId);
+    const ordered = rows.filter((row) => row.id !== id);
+    const insertAt = beforeId == null
+      ? ordered.length
+      : ordered.findIndex((row) => row.id === beforeId);
+    if (insertAt < 0) throw new Error(`before stream not found in workspace: ${beforeId}`);
+    ordered.splice(insertAt, 0, { id });
+    if (ordered.every((row, index) => row.id === rows[index]?.id)) return stream;
+    this.#writeStreamOrdinals(ordered);
+    return this.stream(id);
+  }
+
   #removeEmptyWorkspace(workspaceId) {
     const workspace = this.workspace(workspaceId);
     if (!workspace || workspace.kind === "system") return;
@@ -416,6 +439,10 @@ export class WorkspaceCatalogStore {
     if (firstStreamId) {
       rows.sort((left, right) => Number(right.id === firstStreamId) - Number(left.id === firstStreamId));
     }
+    this.#writeStreamOrdinals(rows);
+  }
+
+  #writeStreamOrdinals(rows) {
     const temporaryBase = 1_000_000;
     const update = this.#database.prepare(
       "UPDATE hub_streams SET ordinal = ?, updated_at_ms = ? WHERE id = ?",

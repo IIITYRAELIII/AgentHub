@@ -1939,8 +1939,8 @@ agentHub.on("workspace:create-from-stream", ({ streamId, name }) => runAction(as
 agentHub.on("stream:rename", ({ streamId, name }) => runAction(async () => applySnapshot(
   await control("rename-stream", { streamId, name }),
 )));
-agentHub.on("stream:move", ({ streamId, workspaceId }) => runAction(async () => applySnapshot(
-  await control("move-stream", { streamId, workspaceId }),
+agentHub.on("stream:move", ({ streamId, workspaceId, beforeStreamId }) => runAction(async () => applySnapshot(
+  await control("move-stream", { streamId, workspaceId, beforeStreamId }),
 )));
 agentHub.on("stream:rebirth", ({ streamId, provider, taskId: targetTaskId }) => runAction(async () => {
   const identity = exactTaskParams(targetTaskId || selectedTaskId);

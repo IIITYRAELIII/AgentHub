@@ -71,6 +71,7 @@ test("workspace and stream commands use the shared command path", async () => {
   await commands.dispatch("stream.move", {
     streamId: "stream-1",
     workspaceId: "workspace-2",
+    beforeStreamId: "stream-2",
   }, { source: "desktop", userId: "7" });
   assert.deepEqual(calls, [
     {
@@ -95,7 +96,7 @@ test("workspace and stream commands use the shared command path", async () => {
     },
     {
       name: "moveStream",
-      args: [{ streamId: "stream-1", workspaceId: "workspace-2" }],
+      args: [{ streamId: "stream-1", workspaceId: "workspace-2", beforeStreamId: "stream-2" }],
     },
   ]);
 });

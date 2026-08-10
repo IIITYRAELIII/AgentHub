@@ -1193,7 +1193,6 @@ const state = {
   // selects a Thread; a wide shell may keep several Streams from the same
   // Workspace visible without making another device jump to that layout.
   openStreamsByWorkspace: new Map(),
-  streamOrderByWorkspace: new Map(),
   activeStreamByWorkspace: new Map(),
   configuredOpenStreamWorkspaces: new Set(),
   visibleStreamTaskIds: [],
@@ -1302,13 +1301,9 @@ function restoreOpenStreams() {
       const streamIds = [...new Set((Array.isArray(entry?.streamIds) ? entry.streamIds : [])
         .map((value) => String(value ?? "").trim())
         .filter(Boolean))].slice(-4);
-      const order = [...new Set((Array.isArray(entry?.order) ? entry.order : [])
-        .map((value) => String(value ?? "").trim())
-        .filter(Boolean))];
       const activeStreamId = String(entry?.activeStreamId ?? "").trim();
       if (!workspaceId) continue;
       state.openStreamsByWorkspace.set(workspaceId, streamIds);
-      if (order.length) state.streamOrderByWorkspace.set(workspaceId, order);
       if (activeStreamId) state.activeStreamByWorkspace.set(workspaceId, activeStreamId);
       state.configuredOpenStreamWorkspaces.add(workspaceId);
     }
@@ -1322,7 +1317,6 @@ function persistOpenStreams() {
     const stored = [...state.configuredOpenStreamWorkspaces].slice(-100).map((workspaceId) => ({
       workspaceId,
       streamIds: (state.openStreamsByWorkspace.get(workspaceId) ?? []).slice(-4),
-      order: state.streamOrderByWorkspace.get(workspaceId) ?? [],
       activeStreamId: state.activeStreamByWorkspace.get(workspaceId) ?? "",
     }));
     localStorage.setItem(openStreamsStorageKey(), JSON.stringify(stored));
@@ -1331,26 +1325,23 @@ function persistOpenStreams() {
   }
 }
 
-function orderedWorkspaceStreams(workspaceId, streams) {
+function orderedWorkspaceStreams(streams) {
   const available = new Map(streams.map((stream) => [stream.id, stream]));
-  const stored = state.streamOrderByWorkspace.get(workspaceId) ?? [];
-  const orderedIds = stored.filter((streamId) => available.has(streamId));
-  for (const stream of streams) {
-    if (!orderedIds.includes(stream.id)) orderedIds.push(stream.id);
-  }
+  const orderedIds = [...streams]
+    .sort((left, right) => left.ordinal - right.ordinal || left.id.localeCompare(right.id))
+    .map((stream) => stream.id);
   const dashBotId = streams.find((stream) => stream.name === "DashBot")?.id;
   if (dashBotId) {
     const currentIndex = orderedIds.indexOf(dashBotId);
     if (currentIndex >= 0) orderedIds.splice(currentIndex, 1);
     orderedIds.unshift(dashBotId);
   }
-  state.streamOrderByWorkspace.set(workspaceId, orderedIds);
   return orderedIds.map((streamId) => available.get(streamId));
 }
 
 function reconcileOpenStreams(workspaceId, streams) {
   restoreOpenStreams();
-  const ordered = orderedWorkspaceStreams(workspaceId, streams);
+  const ordered = orderedWorkspaceStreams(streams);
   const available = new Set(streams.map((stream) => stream.id));
   const selected = currentTask();
   const selectedInWorkspace = selected && workspaceKey(selected) === workspaceId
@@ -1366,7 +1357,8 @@ function reconcileOpenStreams(workspaceId, streams) {
     // только после явного Ctrl+click и сохраняются для этого клиента.
     normalized = [selectedInWorkspace || ordered[0]?.id].filter(Boolean);
   } else {
-    normalized = previous.filter((streamId) => available.has(streamId)).slice(-4);
+    const previousSet = new Set(previous.filter((streamId) => available.has(streamId)));
+    normalized = ordered.map((stream) => stream.id).filter((streamId) => previousSet.has(streamId)).slice(0, 4);
     if (!normalized.length) normalized = [selectedInWorkspace || ordered[0]?.id].filter(Boolean);
   }
   state.openStreamsByWorkspace.set(workspaceId, normalized);
@@ -1847,7 +1839,7 @@ function renderStreamTabs() {
   const workspaceId = workspaceKey(selected);
   const streams = workspaceStreams(state.tasks.filter((task) => workspaceKey(task) === workspaceId));
   reconcileOpenStreams(workspaceId, streams);
-  const ordered = orderedWorkspaceStreams(workspaceId, streams);
+  const ordered = orderedWorkspaceStreams(streams);
   const open = new Set(state.openStreamsByWorkspace.get(workspaceId) ?? []);
   const tabs = ordered.map((stream) => {
     const task = representativeStreamTask(stream);
@@ -2533,19 +2525,15 @@ streamTabs?.addEventListener("drop", (event) => {
   suppressStreamTabClick = true;
   const workspaceId = String(target.dataset.workspaceId ?? "");
   const targetId = String(target.dataset.streamTabId ?? "");
+  if (targetId === streamId) return;
   const streams = workspaceStreams(state.tasks.filter((task) => workspaceKey(task) === workspaceId));
-  const order = orderedWorkspaceStreams(workspaceId, streams).map((stream) => stream.id)
+  const order = orderedWorkspaceStreams(streams).map((stream) => stream.id)
     .filter((id) => id !== streamId);
   const targetIndex = order.indexOf(targetId);
   const insertAfter = event.clientX > target.getBoundingClientRect().left + target.clientWidth / 2;
   order.splice(Math.max(0, targetIndex + (insertAfter ? 1 : 0)), 0, streamId);
-  state.streamOrderByWorkspace.set(workspaceId, order);
-  const open = new Set(state.openStreamsByWorkspace.get(workspaceId) ?? []);
-  state.openStreamsByWorkspace.set(workspaceId, order.filter((id) => open.has(id)));
-  state.configuredOpenStreamWorkspaces.add(workspaceId);
-  persistOpenStreams();
-  renderStreamTabs();
-  renderStreamChatDeck();
+  const beforeStreamId = order[order.indexOf(streamId) + 1] ?? null;
+  emit("stream:move", { streamId, workspaceId, beforeStreamId });
 });
 streamTabs?.addEventListener("dragend", () => {
   draggedStreamId = "";

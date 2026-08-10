@@ -4,7 +4,7 @@ import test from "node:test";
 
 const appSource = await readFile(new URL("../../../assets/mini-app/app.js", import.meta.url), "utf8");
 
-test("workspace layout persists open, ordered and active Streams per client", () => {
+test("workspace layout persists open and active Streams per client", () => {
   assert.match(appSource, /activeStreamByWorkspace:\s*new Map\(\)/u);
   assert.match(appSource, /activeStreamId:\s*state\.activeStreamByWorkspace\.get\(workspaceId\)/u);
   assert.match(appSource, /state\.activeStreamByWorkspace\.set\(workspaceKey\(selected\), streamKey\(selected\)\)/u);
