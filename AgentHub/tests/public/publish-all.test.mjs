@@ -230,6 +230,11 @@ test("Worker packages and revisions the Task board controller", () => {
   assert.equal((build.match(/"task-board\.js"/gu) ?? []).length, 2);
 });
 
+test("Worker packages and revisions the chat surface preference controller", () => {
+  const build = fs.readFileSync(path.join(ROOT, "cloudflare-worker", "build-assets.mjs"), "utf8");
+  assert.equal((build.match(/"chat-surface-preference\.js"/gu) ?? []).length, 2);
+});
+
 test("every validation failure stops publication before deployment", async () => {
   const validations = [
     "Полные тесты Agent Hub",
