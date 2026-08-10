@@ -1029,6 +1029,29 @@ test("task-grouped journal pages large histories without per-row Metropolis blur
   );
 });
 
+test("day-grouped journal uses Workspace cards and plain credit values", () => {
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const styles = fs.readFileSync(
+    require.resolve("../assets/mini-app/styles.css"),
+    "utf8",
+  );
+  assert.match(app, /function workspaceGroupsFrom\(day\)/u);
+  assert.match(app, /taskGroupsFrom\(day, \{ workspace \}\)/u);
+  assert.doesNotMatch(app, /holder\.append\(day\.cloneNode\(true\)\)/u);
+  assert.match(app, /data-work-log-collapsed-workspace-usage-details/u);
+  assert.match(app, /journalLedgerSummary\(total, \{ label: dateLabel, showStreams: false \}\)/u);
+  assert.match(app, /data-journal-day-picker-turns/u);
+  const lazyDayBody = app.slice(
+    app.indexOf("async function loadLazyDay"),
+    app.indexOf("async function loadLazyTurn"),
+  );
+  assert.doesNotMatch(lazyDayBody, /setStreamsCollapsed\(collapseStreams, replacement\)/u);
+  assert.match(
+    styles,
+    /\.journal-ledger \.journal span\[data-kilo-usage\][\s\S]*?background:\s*transparent;[\s\S]*?box-shadow:\s*none;/u,
+  );
+});
+
 test("compact desktop header wraps before it can create horizontal overflow", () => {
   const styles = fs.readFileSync(
     require.resolve("../assets/mini-app/styles.css"),

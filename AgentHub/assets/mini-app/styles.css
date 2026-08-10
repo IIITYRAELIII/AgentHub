@@ -2419,6 +2419,16 @@ html[data-grouping="task"]
   box-shadow: inset 0 0 0 1px rgba(241, 76, 76, 0.24);
 }
 
+/* В новом журнальном ledger расход читается как число, а не как отдельный badge. */
+.journal-ledger .journal span[data-kilo-usage],
+.journal-ledger .journal span[data-mega-usage],
+.journal-ledger .journal span[data-high-usage] {
+  background: transparent;
+  box-shadow: none;
+  padding-left: 0;
+  padding-right: 0;
+}
+
 .journal span[data-usage-percent] {
   color: var(--text-muted);
   font-size: 0.92em;
@@ -8710,6 +8720,7 @@ html[data-view="server"] .background-view {
 /* ================================================= новый журнал-реестр === */
 
 .journal-view {
+  margin-inline: auto;
   max-width: 1440px;
   width: min(100%, 1440px);
 }
@@ -8816,7 +8827,7 @@ html[data-view="server"] .background-view {
 }
 
 .journal-ledger {
-  background: var(--surface-1);
+  background: var(--card-bg);
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
   box-shadow: var(--card-shadow);
@@ -8824,15 +8835,15 @@ html[data-view="server"] .background-view {
 }
 
 .journal-ledger-head,
-summary[data-journal-ledger-summary] {
+.journal summary[data-journal-ledger-summary] {
   column-gap: 1.4rem;
   display: grid;
-  grid-template-columns: minmax(280px, 1fr) 76px 104px 140px 80px;
+  grid-template-columns: minmax(280px, 1fr) 76px 104px 140px 104px;
 }
 
 .journal-ledger-head {
   align-items: center;
-  background: color-mix(in srgb, var(--surface-2) 76%, transparent);
+  background: var(--sunken);
   border-bottom: 1px solid var(--line);
   color: var(--text-faint);
   font-family: var(--font-title);
@@ -8864,7 +8875,7 @@ summary[data-journal-ledger-summary] {
 }
 
 .journal details[data-journal-ledger-row] {
-  background: transparent;
+  background: var(--surface-1);
   border: 0;
   border-bottom: 1px solid var(--line);
   border-radius: 0;
@@ -8879,7 +8890,7 @@ summary[data-journal-ledger-summary] {
 }
 
 .journal details[data-journal-ledger-row][open] {
-  background: color-mix(in srgb, var(--surface-2) 64%, transparent);
+  background: var(--card-bg-open);
 }
 
 .journal summary[data-journal-ledger-summary] {
@@ -8888,8 +8899,8 @@ summary[data-journal-ledger-summary] {
   border-radius: 0;
   cursor: pointer;
   list-style: none;
-  min-height: 3.1rem;
-  padding: 0.72rem 1.3rem;
+  min-height: 3rem;
+  padding: 0.82rem 1.35rem;
 }
 
 .journal summary[data-journal-ledger-summary]:hover {
@@ -8898,6 +8909,11 @@ summary[data-journal-ledger-summary] {
 
 .journal summary[data-journal-ledger-summary]::-webkit-details-marker,
 .journal summary[data-journal-ledger-summary]::marker {
+  display: none;
+}
+
+.journal summary[data-journal-ledger-summary]::before {
+  content: none;
   display: none;
 }
 
@@ -8973,15 +8989,125 @@ details[open] > summary[data-journal-ledger-summary] [data-journal-ledger-title]
 }
 
 [data-journal-ledger-expanded] {
-  border-top: 1px solid var(--line);
+  align-items: start;
   display: grid;
-  gap: 1rem;
-  grid-template-columns: minmax(0, 1fr);
-  padding: 0.9rem 1.3rem 1.2rem 2.5rem;
+  gap: 2rem;
+  grid-template-columns: minmax(0, 1fr) 260px;
+  padding: 0.25rem 1.35rem 1.35rem;
 }
 
 [data-journal-ledger-expanded] > [data-work-log-task-profile] {
+  align-items: stretch;
+  align-self: start;
+  background: transparent;
+  border: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
   margin: 0;
+  min-height: 0;
+  padding: 0;
+  width: 100%;
+}
+
+[data-journal-group-overview] {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  min-width: 0;
+}
+
+[data-journal-profile-metrics] {
+  align-items: stretch;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 0;
+}
+
+[data-journal-profile-metric] {
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex: 0 1 auto;
+  flex-direction: column;
+  gap: 0.18rem;
+  min-width: 7rem;
+  padding: 0 1.7rem 0 0;
+}
+
+[data-journal-profile-metric] + [data-journal-profile-metric] {
+  padding-left: 1.7rem;
+}
+
+[data-journal-profile-metric]:last-child {
+  border-right: 0;
+}
+
+[data-journal-profile-metric] > span {
+  color: var(--text-faint);
+  font-family: var(--font-title);
+  font-size: 0.56rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+[data-journal-profile-metric] > strong {
+  color: var(--text-soft);
+  font-family: var(--font-numeric);
+  font-size: 0.78rem;
+  font-weight: 500;
+}
+
+[data-journal-profile-metric][data-missing] > strong {
+  color: var(--text-faint);
+}
+
+[data-journal-ledger-expanded] [data-work-log-task-profile-copy] {
+  display: block;
+}
+
+[data-journal-ledger-expanded] [data-work-log-task-profile-heading] {
+  align-items: baseline;
+  display: flex;
+  gap: 0.6rem;
+  justify-content: space-between;
+}
+
+[data-journal-ledger-expanded] [data-work-log-task-profile-heading] > strong {
+  color: var(--text-faint);
+  font-family: var(--font-title);
+  font-size: 0.56rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+[data-journal-ledger-expanded] [data-work-log-task-profile-heading] > span {
+  color: var(--text-faint);
+  font-family: var(--font-numeric);
+  font-size: 0.62rem;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+[data-journal-ledger-expanded] figure[data-work-log-task-radar] {
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  display: flex;
+  flex: 0 0 190px;
+  flex-direction: column;
+  justify-content: center;
+  height: 190px;
+  max-height: 190px;
+  min-height: 190px;
+  overflow: hidden;
+  padding: 0.15rem 0.35rem 0.45rem;
+}
+
+[data-journal-ledger-expanded] figure[data-work-log-task-radar] svg {
+  height: 158px;
+  max-height: 158px;
 }
 
 [data-journal-turn-list] {
@@ -8995,9 +9121,70 @@ details[open] > summary[data-journal-ledger-summary] [data-journal-ledger-title]
   margin-bottom: 0.1rem;
 }
 
-[data-journal-turn-list] > [data-work-log-turn-entry],
-[data-journal-turn-list] > [data-work-log-turn-table] {
+.journal [data-journal-turn-table] {
+  background: var(--sunken);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.journal [data-journal-turn-table] > [data-work-log-turn-entry] {
   margin: 0;
+}
+
+.journal [data-journal-turn-table] > [data-work-log-turn-entry] + [data-work-log-turn-entry] {
+  border-top: 1px solid var(--line);
+}
+
+.journal [data-journal-turn-table] details[data-work-log-turn-details] {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.journal [data-journal-turn-table] details[data-work-log-turn-details]:hover,
+.journal [data-journal-turn-table] details[data-work-log-turn-details][open] {
+  background: var(--surface-2);
+  border: 0;
+  box-shadow: none;
+}
+
+html[data-grouping="task"] .journal [data-journal-turn-table]
+  details[data-work-log-turn-details] > summary,
+.journal [data-journal-turn-table] details[data-work-log-turn-details] > summary {
+  grid-template-columns: 15.5rem minmax(0, 1fr) auto auto;
+  min-height: 2.35rem;
+}
+
+.journal [data-journal-turn-table] [data-work-log-turn-meta] {
+  display: grid;
+  gap: 0.7rem;
+  grid-template-columns: minmax(8.5rem, 1fr) 5.5rem;
+  padding: 0.48rem 0.65rem;
+}
+
+.journal [data-journal-turn-table] [data-journal-turn-when],
+.journal [data-journal-turn-table] [data-journal-turn-cost] {
+  font-family: var(--font-numeric);
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+.journal [data-journal-turn-table] [data-journal-turn-cost] {
+  color: var(--warning, var(--accent));
+  text-align: right;
+}
+
+.journal [data-journal-turn-table] [data-work-log-turn-share] {
+  display: none;
+}
+
+.journal [data-journal-turn-table] [data-work-log-turn-title] {
+  font-size: 0.8rem;
+  padding-block: 0.48rem;
 }
 
 [data-journal-day-expanded] {
@@ -9075,6 +9262,23 @@ details[open] > summary[data-journal-ledger-summary] [data-journal-ledger-title]
   font-size: 0.74rem;
 }
 
+[data-journal-day-picker-turns] {
+  color: var(--text-muted);
+  display: none;
+  flex: 0 0 auto;
+  font-family: var(--font-numeric);
+  font-size: 0.68rem;
+  text-transform: uppercase;
+}
+
+[data-journal-day-picker-item][data-selected] [data-journal-day-picker-turns] {
+  display: inline;
+}
+
+[data-journal-day-picker-item][data-selected] [data-journal-day-picker-credits] {
+  display: none;
+}
+
 [data-journal-day-breakdown] {
   border-top: 1px solid var(--line);
   display: none;
@@ -9092,6 +9296,45 @@ details[open] > summary[data-journal-ledger-summary] [data-journal-ledger-title]
   display: block;
   position: static;
   width: 100%;
+}
+
+[data-journal-day-breakdown]
+  details[data-work-log-collapsed-workspace-usage-details] {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  margin: 0;
+  padding: 0;
+}
+
+[data-journal-day-breakdown]
+  details[data-work-log-collapsed-workspace-usage-details]
+  > summary[data-task-usage] {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  padding: 0.18rem 0;
+}
+
+[data-journal-day-breakdown]
+  details[data-work-log-collapsed-workspace-usage-details]
+  > summary[data-task-usage]::before {
+  content: none;
+  display: none;
+}
+
+[data-journal-day-breakdown]
+  details[data-work-log-collapsed-workspace-usage-details]
+  > [data-task-usage-breakdown] {
+  border: 0;
+  border-radius: 0;
+  padding-top: 0.38rem;
+}
+
+[data-journal-day-breakdown] [data-task-usage-part] {
+  border: 0;
+  padding: 0.2rem 0;
 }
 
 [data-journal-day-panels] {
@@ -9116,10 +9359,60 @@ details[open] > summary[data-journal-ledger-summary] [data-journal-ledger-title]
   text-transform: uppercase;
 }
 
-@media (min-width: 861px) {
-  [data-journal-ledger-expanded] > [data-work-log-task-profile] {
-    grid-template-columns: minmax(0, 1fr) minmax(230px, 320px);
-  }
+.journal [data-journal-day-panel] [data-work-log-turn-table] {
+  background: var(--sunken);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  gap: 0;
+  overflow: hidden;
+}
+
+.journal [data-journal-day-panel] [data-work-log-turn-entry] {
+  margin: 0;
+}
+
+.journal [data-journal-day-panel] [data-work-log-turn-entry]
+  + [data-work-log-turn-entry] {
+  border-top: 1px solid var(--line);
+}
+
+.journal [data-journal-day-panel] details[data-work-log-turn-details],
+.journal [data-journal-day-panel] details[data-work-log-turn-details]:hover,
+.journal [data-journal-day-panel] details[data-work-log-turn-details][open] {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.journal [data-journal-day-panel] details[data-work-log-turn-details] > summary {
+  grid-template-columns: 14rem minmax(0, 1fr) auto auto;
+  min-height: 2.35rem;
+}
+
+.journal [data-journal-day-panel] [data-work-log-turn-meta] {
+  display: grid;
+  gap: 0.6rem;
+  grid-template-columns: 3.2rem 4.6rem 2.9rem;
+  padding: 0.48rem 0.65rem;
+}
+
+.journal [data-journal-day-panel] [data-journal-turn-when],
+.journal [data-journal-day-panel] [data-journal-turn-cost],
+.journal [data-journal-day-panel] [data-work-log-turn-share] {
+  font-family: var(--font-numeric);
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+.journal [data-journal-day-panel] [data-journal-turn-cost],
+.journal [data-journal-day-panel] [data-work-log-turn-share] {
+  text-align: right;
+}
+
+.journal [data-journal-day-panel] [data-work-log-turn-title] {
+  font-size: 0.8rem;
+  padding-block: 0.48rem;
 }
 
 @media (max-width: 1100px) {
@@ -9133,7 +9426,7 @@ details[open] > summary[data-journal-ledger-summary] [data-journal-ledger-title]
   }
 
   .journal-ledger-head,
-  summary[data-journal-ledger-summary] {
+  .journal summary[data-journal-ledger-summary] {
     column-gap: 0.8rem;
     grid-template-columns: minmax(230px, 1fr) 62px 88px 118px 62px;
   }
@@ -9217,6 +9510,23 @@ details[open] > summary[data-journal-ledger-summary] [data-journal-ledger-title]
   [data-journal-day-expanded] {
     display: block;
     padding: 0.7rem 0.75rem 0.9rem;
+  }
+
+  [data-journal-ledger-expanded] > [data-work-log-task-profile] {
+    margin-top: 1rem;
+  }
+
+  [data-journal-profile-metrics] {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  [data-journal-profile-metric],
+  [data-journal-profile-metric] + [data-journal-profile-metric] {
+    border: 0;
+    border-bottom: 1px solid var(--line);
+    min-width: 0;
+    padding: 0 0 0.55rem;
   }
 
   [data-journal-day-picker] {

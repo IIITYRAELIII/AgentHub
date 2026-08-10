@@ -9391,7 +9391,6 @@ async function loadLazyDay(details) {
     syncCollapseTurnButtons(replacement);
     prepareMobileControls(journal);
     if (desiredOpenState) restoreOpenState(desiredOpenState);
-    setStreamsCollapsed(collapseStreams, replacement);
   })().catch((error) => {
     if (details.isConnected) {
       details.removeAttribute("aria-busy");
@@ -9490,13 +9489,23 @@ function formatTaskCredits(value) {
 function groupedTurn(entry, date) {
   const copy = entry.cloneNode(true);
   copy.dataset.workLogSourceDate = date;
-  copy.querySelector("[data-work-log-turn-share]")?.remove();
-  const measure = copy.querySelector("[data-work-log-turn-measure]");
-  if (measure) {
-    const day = document.createElement("span");
-    day.dataset.workLogTurnDay = "";
-    day.textContent = `${date} · `;
-    measure.prepend(day);
+  const meta = copy.querySelector("[data-work-log-turn-meta]");
+  if (meta) {
+    const completedAt = new Date(copy.dataset.workLogTurnCompletedAt ?? "");
+    const time = Number.isFinite(completedAt.getTime())
+      ? completedAt.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })
+      : "—";
+    const when = document.createElement("span");
+    when.dataset.journalTurnWhen = "";
+    const day = el("span", { "data-work-log-turn-day": "", text: `${date} · ` });
+    when.append(day, document.createTextNode(time));
+    const cost = document.createElement("span");
+    cost.dataset.journalTurnCost = "";
+    const credits = Number(copy.dataset.workLogTurnCredits);
+    if (Number.isFinite(credits)) cost.append(usageBadge(formatUsageValue(credits), credits));
+    else cost.textContent = "—";
+    const share = copy.querySelector("[data-work-log-turn-share]")?.cloneNode(true);
+    meta.replaceChildren(when, cost, ...(share ? [share] : []));
   }
   return copy;
 }
@@ -9958,6 +9967,24 @@ function taskProfileAccordion(axis, group) {
   return details;
 }
 
+function journalProfileMetrics(group) {
+  const metrics = document.createElement("div");
+  metrics.dataset.journalProfileMetrics = "";
+  for (const axis of taskProfileAxes.slice(3)) {
+    const item = document.createElement("div");
+    item.dataset.journalProfileMetric = axis.key;
+    const label = el("span", { text: axis.label });
+    const value = el("strong", { text: formatProfileAxisValue(axis, group[axis.key]) });
+    if (!Number.isFinite(group[axis.key])) item.dataset.missing = "";
+    const detailItems = axis.detailItems?.(group) ?? [];
+    const note = axis.detailNote?.(group) ?? "";
+    if (detailItems.length || note) item.title = [...detailItems, note].filter(Boolean).join("\n");
+    item.append(label, value);
+    metrics.append(item);
+  }
+  return metrics;
+}
+
 function taskProfile(group, cohort, {
   title: profileTitle = "Профиль задачи",
   itemName = "Эта задача",
@@ -9991,28 +10018,10 @@ function taskProfile(group, cohort, {
   const providerLabel = group.provider === "claude"
     ? "Claude"
     : group.provider === "codex" ? "Codex" : "";
-  caption.textContent = `Относительно ${cohortName}${providerLabel ? ` ${providerLabel}` : ""}. Больше — не лучше, а больше по масштабу.`;
+  caption.textContent = "vs медиана";
+  caption.title = `Относительно ${cohortName}${providerLabel ? ` ${providerLabel}` : ""}. Больше — не лучше, а больше по масштабу.`;
   heading.append(title, caption);
-  const values = document.createElement("div");
-  values.dataset.workLogTaskProfileValues = "";
-  for (const axis of taskProfileAxes) {
-    if (axis.expandable) {
-      values.append(taskProfileAccordion(axis, group));
-      continue;
-    }
-    const item = document.createElement("div");
-    item.dataset.workLogTaskProfileValue = axis.key;
-    const label = document.createElement("span");
-    label.textContent = axis.label;
-    const value = document.createElement("strong");
-    value.textContent = Number.isFinite(group[axis.key])
-      ? axis.format(group[axis.key])
-      : "нет данных";
-    if (!Number.isFinite(group[axis.key])) item.dataset.missing = "";
-    item.append(label, value);
-    values.append(item);
-  }
-  copy.append(heading, values);
+  copy.append(heading);
 
   const figure = document.createElement("figure");
   figure.dataset.workLogTaskRadar = "";
@@ -10124,14 +10133,18 @@ function taskProfile(group, cohort, {
   return section;
 }
 
-function taskGroupsFrom(source) {
+function taskGroupsFrom(source, { workspace = null } = {}) {
   const groups = new Map();
   let order = 0;
-  for (const day of source.querySelectorAll("details[data-work-log-day-section]")) {
+  const days = source.matches?.("details[data-work-log-day-section]")
+    ? [source]
+    : [...source.querySelectorAll("details[data-work-log-day-section]")];
+  for (const day of days) {
     const date = day.querySelector("summary[data-work-log-day] strong")?.dataset.workLogDate
       ?? plainDateText(day.querySelector("summary[data-work-log-day] strong")?.textContent);
     if (!date) continue;
     for (const row of day.querySelectorAll("[data-work-log-row]")) {
+      if (workspace && row.closest("details[data-work-log-workspace]") !== workspace) continue;
       const provider = String(row.dataset.workLogProvider ?? "").trim();
       const sourceThreadId = String(row.dataset.workLogThreadId ?? "").trim();
       const groupedClaude = groupClaudeTasks && provider === "claude";
@@ -10348,18 +10361,31 @@ function combinedJournalGroup(groups, { provider = "period", threadId = "period"
   };
 }
 
-function journalGroupTitle(group, label = "") {
+function journalGroupTitle(group, label = "", { showStreams = true } = {}) {
   const cell = document.createElement("span");
   cell.dataset.journalLedgerTitle = "";
   const main = document.createElement("span");
   main.dataset.journalLedgerTitleText = "";
   if (label?.nodeType) main.append(label);
   else if (label) main.textContent = label;
-  else if (group.title) main.append(group.title.cloneNode(true));
+  else if (group.title) {
+    const title = group.title.cloneNode(true);
+    const target = title.matches?.("[data-open-task]")
+      ? title
+      : title.querySelector?.("[data-open-task]") ?? title;
+    let text = String(target.textContent ?? "").trim()
+      .replace(/^(?:Codex|Claude)\s*[-—]\s*/iu, "");
+    for (const streamLabel of group.streamLabels ?? []) {
+      const escaped = String(streamLabel).replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+      text = text.replace(new RegExp(`\\s*[-—]\\s*${escaped}\\s*$`, "iu"), "");
+    }
+    target.textContent = text || String(target.textContent ?? "").trim();
+    main.append(title);
+  }
   else main.textContent = `${group.provider} · ${group.threadId}`;
   cell.append(main);
   const streamLabels = group.streamLabels ?? [];
-  if (streamLabels.length) {
+  if (showStreams && streamLabels.length) {
     cell.append(el("span", {
       "data-journal-stream-badge": "",
       text: streamLabels.length === 1 ? streamLabels[0] : `${streamLabels[0]} +${streamLabels.length - 1}`,
@@ -10368,7 +10394,7 @@ function journalGroupTitle(group, label = "") {
   return cell;
 }
 
-function journalLedgerSummary(group, { label = "" } = {}) {
+function journalLedgerSummary(group, { label = "", showStreams = true } = {}) {
   const summary = document.createElement("summary");
   summary.dataset.workLogTaskGroupSummary = "";
   summary.dataset.journalLedgerSummary = "";
@@ -10387,7 +10413,7 @@ function journalLedgerSummary(group, { label = "" } = {}) {
     "data-journal-ledger-metric": "gaps",
     text: group.unknownCredits ? String(group.unknownCredits) : "—",
   });
-  summary.append(journalGroupTitle(group, label), turns, credits, duration, gaps);
+  summary.append(journalGroupTitle(group, label, { showStreams }), turns, credits, duration, gaps);
   return summary;
 }
 
@@ -10404,17 +10430,23 @@ function journalGroupSection(group, cohort, {
   details.dataset.workLogThreadId = group.threadId;
   const expanded = document.createElement("div");
   expanded.dataset.journalLedgerExpanded = "";
+  const overview = document.createElement("div");
+  overview.dataset.journalGroupOverview = "";
   const body = document.createElement("div");
-  body.dataset.workLogTaskGroupTurns = "";
   body.dataset.journalTurnList = "";
   body.append(el("span", { "data-journal-section-label": "", text: "Ходы" }));
+  const turnTable = document.createElement("div");
+  turnTable.dataset.workLogTaskGroupTurns = "";
+  turnTable.dataset.journalTurnTable = "";
+  body.append(turnTable);
+  overview.append(journalProfileMetrics(group), body);
   expanded.append(
+    overview,
     taskProfile(group, cohort, {
       title: profileTitle,
       itemName: profileItemName,
       cohortName: profileCohortName,
     }),
-    body,
   );
   details.append(journalLedgerSummary(group, { label }), expanded);
   taskGroupTurns.set(details, [...group.turns, ...group.legacy]);
@@ -10446,6 +10478,30 @@ function dayGroupKey(group) {
   return `${group.provider}\u001f${group.threadId}`;
 }
 
+function workspaceGroupsFrom(day) {
+  if (!day) return [];
+  const workspaces = [...day.querySelectorAll("details[data-work-log-workspace]")];
+  return workspaces.map((workspace, workspaceIndex) => {
+    const workspaceId = String(workspace.dataset.workLogWorkspaceId ?? workspaceIndex);
+    const workspaceKind = String(workspace.dataset.workLogWorkspaceKind ?? "workspace");
+    const workspaceName = workspace.querySelector(
+      ":scope > summary[data-work-log-workspace-header] strong",
+    )?.textContent?.trim() || "Workspace";
+    const group = combinedJournalGroup(taskGroupsFrom(day, { workspace }), {
+      provider: "workspace",
+      threadId: `${workspaceKind}:${workspaceId}`,
+    });
+    group.title = el("span", { text: workspaceName });
+    group.workspaceName = workspaceName;
+    group.workspaceUsage = workspace.querySelector(
+      ":scope > [data-work-log-collapsed-workspace-usage] "
+        + "> details[data-work-log-collapsed-workspace-usage-details]",
+    )?.cloneNode(true) ?? null;
+    if (group.workspaceUsage) group.workspaceUsage.open = true;
+    return group;
+  }).filter((group) => group.turnCount || group.legacy.length);
+}
+
 function dayGroupingContent(source) {
   const list = document.createElement("div");
   list.dataset.journalDayGroups = "";
@@ -10454,9 +10510,8 @@ function dayGroupingContent(source) {
     const date = day.querySelector("summary[data-work-log-day] strong")?.dataset.workLogDate
       ?? plainDateText(day.querySelector("summary[data-work-log-day] strong")?.textContent);
     if (!date) return;
-    const holder = document.createElement("div");
-    holder.append(day.cloneNode(true));
-    const groups = taskGroupsFrom(holder);
+    const workspaceGroups = workspaceGroupsFrom(day);
+    const groups = workspaceGroups.length ? workspaceGroups : taskGroupsFrom(day);
     const total = combinedJournalGroup(groups, { provider: "day", threadId: date });
     const details = document.createElement("details");
     details.dataset.workLogDaySection = "";
@@ -10470,7 +10525,7 @@ function dayGroupingContent(source) {
       "data-journal-weekday": "",
       text: journalWeekday(date),
     }));
-    const summary = journalLedgerSummary(total, { label: dateLabel });
+    const summary = journalLedgerSummary(total, { label: dateLabel, showStreams: false });
     summary.dataset.workLogDay = "";
     const expanded = document.createElement("div");
     expanded.dataset.journalDayExpanded = "";
@@ -10501,12 +10556,16 @@ function dayGroupingContent(source) {
       const credits = el("span", { "data-journal-day-picker-credits": "" });
       if (group.knownCredits) credits.append(usageBadge(formatUsageValue(group.credits), group.credits));
       else credits.textContent = "—";
-      button.append(title, credits);
+      const turns = el("span", {
+        "data-journal-day-picker-turns": "",
+        text: `${group.turnCount} ходов`,
+      });
+      button.append(title, turns, credits);
       item.append(button);
-      if (group.usageBreakdown) {
+      if (group.workspaceUsage) {
         const breakdown = document.createElement("div");
         breakdown.dataset.journalDayBreakdown = "";
-        breakdown.append(group.usageBreakdown.cloneNode(true));
+        breakdown.append(group.workspaceUsage.cloneNode(true));
         item.append(breakdown);
       }
       picker.append(item);
