@@ -5765,7 +5765,7 @@ function renderLimitsModes() {
         ? "Фактическая скорость появляется после накопления почти полного часа."
         : "Фактическая скорость появляется после накопления почти полных суток."
       : "Предварительная скорость считается по доступной истории сразу после второго замера и в начале цикла может резко меняться.";
-    limitsSpeedNote.textContent = `${calculation} Пунктир показывает допустимый темп по остатку и времени до сброса. Горизонтальная линия — ровный расход 100% за неделю, или ${hourly ? "0,6% в час" : "14,3% в сутки"}.`;
+    limitsSpeedNote.textContent = `${calculation} Разрывы между замерами восстанавливаются: неизменившийся лимит даёт нулевой расход, а изменение равномерно распределяется по пропущенному времени. Пунктир показывает допустимый темп по остатку и времени до сброса. Горизонтальная линия — ровный расход 100% за неделю, или ${hourly ? "0,6% в час" : "14,3% в сутки"}.`;
   }
   if (limitsSpeedWindowSetting) limitsSpeedWindowSetting.hidden = limitsState.mode !== "speed";
   if (limitsSpeedFullWindow) limitsSpeedFullWindow.checked = limitsState.speedFullWindow;
@@ -6005,6 +6005,7 @@ const BURN_RATE_HOURLY_WINDOW_MS = 60 * 60_000;
 const BURN_RATE_MINIMUM_SPAN_MS = 23 * 60 * 60_000;
 const BURN_RATE_HOURLY_MINIMUM_SPAN_MS = 45 * 60_000;
 const BURN_RATE_CHART_MAX = 400;
+const { interpolateRateLimitGaps, rateLimitDeltasByBuckets } = globalThis.AgentHubRateLimitSeries;
 
 function burnRatePolicyForRange(range) {
   return ["6h", "24h"].includes(String(range))
@@ -6102,7 +6103,7 @@ function weeklyBurnRatePoints(series, {
 } = {}) {
   const durationMs = weeklyLimitDurationMs(series);
   if (!durationMs) return [];
-  const points = (Array.isArray(series?.points) ? series.points : [])
+  const points = interpolateRateLimitGaps(series?.points)
     .map((point) => ({
       raw: point,
       atMs: Date.parse(point?.at ?? ""),
@@ -6123,7 +6124,12 @@ function weeklyBurnRatePoints(series, {
 
   let cycleIndex = 0;
   for (let index = 0; index < points.length; index += 1) {
-    if (index > 0 && points[index].usedPercent < points[index - 1].usedPercent) cycleIndex += 1;
+    const previousAccount = String(points[index - 1]?.raw?.accountKey ?? "");
+    const currentAccount = String(points[index]?.raw?.accountKey ?? "");
+    if (index > 0 && (
+      points[index].usedPercent < points[index - 1].usedPercent
+      || (previousAccount && currentAccount && previousAccount !== currentAccount)
+    )) cycleIndex += 1;
     points[index].cycleIndex = cycleIndex;
   }
 
@@ -6716,6 +6722,7 @@ function buildLimitsSpeedChart(payload) {
         actualRate: point.actualRate,
         targetRate: point.targetRate,
         deviationRate: point.deviationRate,
+        estimated: point.raw?.estimated === true,
       };
       const fx = point.x / W;
       const fy = point.y / H;
@@ -6920,7 +6927,8 @@ function limitsTooltipText(info) {
       ? `выше допустимой на ${deviation}%`
       : `запас ${Math.abs(deviation)}%`;
     const name = info.window ? `${info.name} · ${info.window}` : info.name;
-    return `${name}. ${time}: ${actualPeriod}${periodSuffix} (${actual}% в неделю), допустимо ${targetPeriod}${periodSuffix} (${target}% в неделю), ${status}`;
+    const estimate = info.estimated ? ". Оценка по соседним замерам" : "";
+    return `${name}. ${time}: ${actualPeriod}${periodSuffix} (${actual}% в неделю), допустимо ${targetPeriod}${periodSuffix} (${target}% в неделю), ${status}${estimate}`;
   }
   const used = Math.round(Number(info.used) || 0);
   const remaining = info.remaining == null
@@ -6950,6 +6958,10 @@ function showLimitsTooltip(info, fx, fy) {
           ? `Перерасход скорости +${deviation}%`
           : `Запас скорости ${Math.abs(deviation)}%`,
       }),
+      ...(info.estimated ? [el("span", {
+        class: "limits-tooltip-row",
+        text: "Оценка: изменение равномерно распределено между соседними замерами",
+      })] : []),
     );
     limitsTooltip.style.left = `${clampNumber(fx * 100, 0, 100)}%`;
     limitsTooltip.style.top = `${clampNumber(fy * 100, 0, 100)}%`;
@@ -7672,28 +7684,7 @@ function meanAbsoluteDeviation(left, right) {
 }
 
 function limitDeltasByBucket(series, buckets) {
-  const points = (Array.isArray(series?.points) ? series.points : [])
-    .map((point) => ({ time: Date.parse(point.at), used: Number(point.usedPercent) }))
-    .filter((point) => Number.isFinite(point.time) && Number.isFinite(point.used))
-    .sort((left, right) => left.time - right.time);
-  if (points.length < 2) return buckets.map(() => null);
-  const values = buckets.map((bucket) => (
-    bucket.end > points[0].time && bucket.start < points.at(-1).time ? 0 : null
-  ));
-  let bucketIndex = 0;
-  for (let index = 1; index < points.length; index += 1) {
-    const current = points[index];
-    const delta = current.used - points[index - 1].used;
-    if (!(delta > 0)) continue;
-    while (bucketIndex < buckets.length && current.time >= buckets[bucketIndex].end) {
-      bucketIndex += 1;
-    }
-    const bucket = buckets[bucketIndex];
-    if (bucket && current.time >= bucket.start && current.time < bucket.end) {
-      values[bucketIndex] = (values[bucketIndex] ?? 0) + delta;
-    }
-  }
-  return values;
+  return rateLimitDeltasByBuckets(series?.points, buckets);
 }
 
 function normalizeComparisonValues(values) {
@@ -8509,8 +8500,8 @@ function renderUsageComparison() {
   else buildUsageComparisonChart(model);
   if (comparisonNote) {
     comparisonNote.textContent = split
-      ? "Временные графики используют исходные единицы и общую ось дат. Точки показывают совпадающие интервалы. Разность считается как нормированный расход аккаунта минус локальный: выше нуля — больше расход лимита, ниже нуля — больше локальный расход. Цена остаётся в итоговом показателе."
-      : "При выборе аккаунта локальный расход учитывает только ходы, завершённые в интервалах его активности. Пункт «Все» снимает отбор аккаунта. Линии расхода приведены к собственному пику. r — корреляция Пирсона, Δ — среднее абсолютное отклонение, цена — расход лимита в п.п. на 1 kcr. Изменение цены сравнивает первую и вторую половины периода.";
+      ? "Временные графики используют исходные единицы и общую ось дат. Точки показывают совпадающие интервалы. Разность считается как нормированный расход аккаунта минус локальный: выше нуля — больше расход лимита, ниже нуля — больше локальный расход. Изменение лимита между соседними замерами равномерно распределяется по их интервалу. Цена остаётся в итоговом показателе."
+      : "При выборе аккаунта локальный расход учитывает только ходы, завершённые в интервалах его активности. Пункт «Все» снимает отбор аккаунта. Изменение лимита между соседними замерами равномерно распределяется по их интервалу; неизменное значение считается нулевым расходом. Линии расхода приведены к собственному пику. r — корреляция Пирсона, Δ — среднее абсолютное отклонение, цена — расход лимита в п.п. на 1 kcr. Изменение цены сравнивает первую и вторую половины периода.";
   }
   renderComparisonLegend(model);
   renderComparisonSummary(model);

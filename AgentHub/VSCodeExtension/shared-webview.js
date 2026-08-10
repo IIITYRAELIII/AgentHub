@@ -10,6 +10,7 @@ const RUNTIME_ASSETS = {
   disclosure: [...ASSET_ROOT, "message-disclosure.js"],
   chatScroll: [...ASSET_ROOT, "chat-scroll-controller.js"],
   runtimeReload: [...ASSET_ROOT, "runtime-reload-controller.js"],
+  rateLimitSeries: [...ASSET_ROOT, "rate-limit-series.js"],
   taskBoard: [...ASSET_ROOT, "task-board.js"],
   app: [...ASSET_ROOT, "app.js"],
   lifecycle: [...ASSET_ROOT, "message-lifecycle.js"],
@@ -45,7 +46,7 @@ async function resolveSharedAssets({ runtimeUri, extensionUri }) {
     assets.bootstrap = null;
   }
   for (const required of [
-    "index", "disclosure", "chatScroll", "runtimeReload", "taskBoard", "app", "lifecycle", "client", "styles", "backgrounds", "streamStatus", "streamStatusVisibility",
+    "index", "disclosure", "chatScroll", "runtimeReload", "rateLimitSeries", "taskBoard", "app", "lifecycle", "client", "styles", "backgrounds", "streamStatus", "streamStatusVisibility",
     "mark", "workLogStyles", "bootstrap",
   ]) {
     if (!assets[required]) throw new Error(`Не найден ресурс Agent Hub: ${required}`);
@@ -98,6 +99,7 @@ async function sharedWebviewHtml(webview, locations) {
     .replace('<script src="/message-disclosure.js" defer></script>', "")
     .replace('<script src="/chat-scroll-controller.js" defer></script>', "")
     .replace('<script src="/runtime-reload-controller.js" defer></script>', "")
+    .replace('<script src="/rate-limit-series.js" defer></script>', "")
     .replace('<script src="/task-board.js" defer></script>', `<script src="${resource(webview, assets.taskBoard)}" defer></script>`)
     .replace(
       '<script src="/app.js" defer></script>',
@@ -105,6 +107,7 @@ async function sharedWebviewHtml(webview, locations) {
         + `<script src="${resource(webview, assets.disclosure)}" defer></script>`
         + `<script src="${resource(webview, assets.chatScroll)}" defer></script>`
         + `<script src="${resource(webview, assets.runtimeReload)}" defer></script>`
+        + `<script src="${resource(webview, assets.rateLimitSeries)}" defer></script>`
         + `<script src="${resource(webview, assets.app)}" defer></script>`,
     )
     .replace('<script src="/message-lifecycle.js" defer></script>', `<script src="${resource(webview, assets.lifecycle)}" defer></script>`)
