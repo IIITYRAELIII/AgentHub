@@ -106,7 +106,6 @@ html[data-theme="gothic"] {
     var(--gothic-iron-texture) center / 18rem 18rem;
   --shell-control-border: 1px solid rgb(106 102 94 / 54%);
   --shell-control-shadow: inset 0 1px 0 rgb(220 216 204 / 4%), inset 0 -1px 0 #020303;
-  --shell-connection-banner-display: none;
   --shell-tab-background: transparent;
   --shell-tab-active-background:
     linear-gradient(rgb(9 10 10 / 42%), rgb(5 6 6 / 56%)),

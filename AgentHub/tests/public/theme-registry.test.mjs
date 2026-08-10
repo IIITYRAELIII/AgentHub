@@ -164,6 +164,24 @@ test("theme registry keeps top-panel geometry under shell ownership", async () =
   }
 });
 
+test("theme registry keeps system status visibility under shell ownership", async () => {
+  const directory = await fixture(manifest);
+  try {
+    const stylesheet = path.join(directory, "themes", "aurora", "theme.css");
+    await writeFile(
+      stylesheet,
+      'html[data-theme="aurora"] { --shell-connection-banner-display: none; }',
+      "utf8",
+    );
+    assert.throws(
+      () => loadThemeRegistry(directory),
+      /theme aurora: theme\.css overrides shell-owned system status visibility/iu,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("desktop shell owns the shared header and Stream control shapes", async () => {
   const styles = await readFile(
     new URL("../../assets/mini-app/styles.css", import.meta.url),
