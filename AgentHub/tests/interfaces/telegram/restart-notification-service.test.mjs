@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { RestartNotificationService } from "../../../src/interfaces/telegram/restart-notification-service.mjs";
 
-function fixture(request = { chatId: 7, messageId: null }) {
+function fixture(request = { chatId: 7, messageId: null, notifyTelegram: true }) {
   const calls = [];
   let current = request;
   return {
@@ -33,8 +33,16 @@ test("Desktop restart announcement persists the returned Telegram message id", a
   assert.deepEqual(setup.calls.map(([kind]) => kind), ["send", "save"]);
 });
 
+test("non-Telegram restart does not announce or finalize in Telegram", async () => {
+  const setup = fixture({ chatId: 7, messageId: null, notifyTelegram: false });
+  assert.equal(await setup.value.announceDesktop(setup.request, 2), false);
+  assert.equal(await setup.value.finalize(), true);
+  assert.equal(setup.current(), null);
+  assert.deepEqual(setup.calls, [["save"]]);
+});
+
 test("restart completion edits the original card when it remains addressable", async () => {
-  const setup = fixture({ chatId: 7, messageId: 8 });
+  const setup = fixture({ chatId: 7, messageId: 8, notifyTelegram: true });
   assert.equal(await setup.value.finalize(), true);
   assert.deepEqual(setup.calls[0], ["telegram", "editMessageText", {
     chat_id: 7,
@@ -45,7 +53,7 @@ test("restart completion edits the original card when it remains addressable", a
 });
 
 test("restart completion sends a replacement and clears an unaddressable request", async () => {
-  const setup = fixture({ chatId: 7, messageId: null });
+  const setup = fixture({ chatId: 7, messageId: null, notifyTelegram: true });
   assert.equal(await setup.value.finalize(), true);
   assert.equal(setup.current(), null);
   assert.deepEqual(setup.calls.map(([kind]) => kind), ["send", "save"]);

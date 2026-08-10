@@ -29,13 +29,14 @@ export class RestartRequestService {
     });
   }
 
-  #request({ messageId, minimumUpdateOffset, blockingCount }) {
+  #request({ messageId, minimumUpdateOffset, blockingCount, notifyTelegram }) {
     return {
       chatId: this.currentChatId(),
       messageId,
       requestedAt: this.nowIso(),
       waitingForRuns: blockingCount > 0,
       minimumUpdateOffset,
+      notifyTelegram: notifyTelegram === true,
     };
   }
 
@@ -46,6 +47,7 @@ export class RestartRequestService {
       messageId: null,
       minimumUpdateOffset: this.updateOffset(),
       blockingCount,
+      notifyTelegram: false,
     });
     this.setRequest(request);
     await this.saveState();
@@ -80,6 +82,7 @@ export class RestartRequestService {
         ? processingUpdateId + 1
         : this.updateOffset(),
       blockingCount,
+      notifyTelegram: true,
     }));
     await this.saveState();
     if (!blockingCount && processingUpdateId == null) await this.performRestart();

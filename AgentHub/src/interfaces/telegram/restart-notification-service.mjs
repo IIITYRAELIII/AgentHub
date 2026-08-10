@@ -28,11 +28,13 @@ export class RestartNotificationService {
   }
 
   editable(request = this.getRequest()) {
-    return Number.isSafeInteger(request?.chatId) && Number.isSafeInteger(request?.messageId);
+    return request?.notifyTelegram === true
+      && Number.isSafeInteger(request.chatId)
+      && Number.isSafeInteger(request.messageId);
   }
 
   async announceDesktop(request, blockingWorkCount) {
-    if (!request || !Number.isSafeInteger(request.chatId)) return false;
+    if (request?.notifyTelegram !== true || !Number.isSafeInteger(request.chatId)) return false;
     try {
       const message = await this.sendMessage(request.chatId, blockingWorkCount
         ? `🔄 Agent Hub Server перезапустится после завершения выполняющихся задач: ${blockingWorkCount}.`
@@ -64,6 +66,11 @@ export class RestartNotificationService {
   async finalize() {
     const request = this.getRequest();
     if (!request) return false;
+    if (request.notifyTelegram !== true) {
+      this.setRequest(null);
+      await this.saveState();
+      return true;
+    }
     const text = this.formatCompleteMessage(this.completeMessageState());
     if (!this.editable(request)) {
       try {

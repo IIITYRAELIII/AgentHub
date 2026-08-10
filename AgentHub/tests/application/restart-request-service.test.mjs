@@ -34,6 +34,7 @@ test("desktop restart persists before scheduling replacement", async () => {
   const result = await state.service.fromDesktop();
   assert.equal(result.accepted, true);
   assert.equal(state.request().minimumUpdateOffset, 20);
+  assert.equal(state.request().notifyTelegram, false);
   assert.deepEqual(state.events.slice(0, 2), ["save", "announce"]);
   assert.equal(state.events.includes("schedule"), true);
 });
@@ -43,5 +44,6 @@ test("Telegram restart waits for the current update and active work", async () =
   const result = await state.service.fromTelegram();
   assert.equal(result.waiting, true);
   assert.equal(state.request().minimumUpdateOffset, 41);
+  assert.equal(state.request().notifyTelegram, true);
   assert.equal(state.events.includes("restart"), false);
 });
