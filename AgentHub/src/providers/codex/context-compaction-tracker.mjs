@@ -148,13 +148,21 @@ export class ContextCompactionTracker {
     for (const timer of this.timers.values()) this.clearTimer(timer);
     this.timers.clear();
     this.entries.clear();
+    const restoredAt = new Date(this.clock()).toISOString();
     for (const entry of (Array.isArray(snapshot) ? snapshot : []).slice(-this.maxEntries)) {
       if (!Array.isArray(entry)) continue;
       const threadId = normalizedThreadId(entry[0]);
-      const record = persistedCompaction(entry[1]);
-      if (!threadId || !record) continue;
+      const persisted = persistedCompaction(entry[1]);
+      if (!threadId || !persisted) continue;
+      const record = persisted.status === "running"
+        ? {
+          ...persisted,
+          status: "timeout",
+          stage: "timeout",
+          completedAt: restoredAt,
+        }
+        : persisted;
       this.entries.set(threadId, record);
-      if (record.status === "running") this.scheduleTimeout(threadId, record.id);
     }
   }
 

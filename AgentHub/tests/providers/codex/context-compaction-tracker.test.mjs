@@ -169,6 +169,46 @@ test("a missing completion becomes a bounded timeout instead of staying active f
   tracker.dispose();
 });
 
+test("a running compaction becomes a timeout immediately after process restart", () => {
+  const now = Date.parse("2026-08-11T00:15:00.000Z");
+  let scheduled = 0;
+  const tracker = new ContextCompactionTracker({
+    clock: () => now,
+    setTimer: () => {
+      scheduled += 1;
+      return { unref() {} };
+    },
+  });
+
+  tracker.restore([[
+    "thread-restarted",
+    {
+      id: "interrupted-compaction",
+      origin: "automatic",
+      status: "running",
+      stage: "compacting",
+      startedAt: "2026-08-11T00:14:30.000Z",
+    },
+  ]]);
+
+  assert.deepEqual(tracker.get("thread-restarted"), {
+    id: "interrupted-compaction",
+    origin: "automatic",
+    status: "timeout",
+    stage: "timeout",
+    turnId: null,
+    itemId: null,
+    captureRawItem: false,
+    startedAt: "2026-08-11T00:14:30.000Z",
+    compactedAt: null,
+    completedAt: "2026-08-11T00:15:00.000Z",
+    probeTurnIds: [],
+  });
+  assert.equal(tracker.isRunning("thread-restarted"), false);
+  assert.equal(scheduled, 0);
+  tracker.dispose();
+});
+
 test("a failed compaction remains visible after it stops running", async () => {
   let now = Date.parse("2026-08-08T12:50:36.000Z");
   const settled = [];
