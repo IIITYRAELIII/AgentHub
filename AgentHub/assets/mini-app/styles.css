@@ -731,6 +731,10 @@ main {
   height: 11rem;
 }
 
+.journal[aria-busy="true"] > * {
+  visibility: hidden;
+}
+
 @keyframes shimmer {
   from {
     background-position: 140% 0;
