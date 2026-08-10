@@ -7,6 +7,8 @@
   "backgrounds": [
     { "id": "taiga", "name": "Лесной коридор", "asset": "rain-corridor.png", "particles": "rain", "preload": true },
     { "id": "taiga-corridor", "name": "Убежище", "asset": "rain-shelter.png", "particles": "rain" },
-    { "id": "taiga-lantern", "name": "Поляна с фонарём", "asset": "rain-lantern.png", "particles": "rain" }
+    { "id": "taiga-lantern", "name": "Поляна с фонарём", "asset": "rain-lantern.png", "particles": "rain" },
+    { "id": "taiga-waterfall", "name": "Лунный водопад", "asset": "rain-waterfall.png", "particles": "rain" },
+    { "id": "taiga-ruins", "name": "Руины под дождём", "asset": "rain-ruins.png", "particles": "rain" }
   ]
 }
