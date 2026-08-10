@@ -2977,6 +2977,7 @@ html[data-surface="mobile"][data-grouping="task"]
 :root {
   --mobile-nav-h: 3.4rem;
   --task-rail-width: clamp(272px, 24vw, 336px);
+  --activity-rail-width: clamp(220px, 18vw, 288px);
 }
 
 body {
@@ -2989,6 +2990,8 @@ body {
    content-box и не затрагивается. */
 .workspace,
 .workspace *,
+.activity-rail,
+.activity-rail *,
 .settings-panel,
 .settings-panel *,
 .text-dialog,
@@ -3013,13 +3016,17 @@ html[data-view="chat"] body {
 .workspace {
   display: grid;
   flex: 1 1 auto;
-  grid-template-columns: var(--task-rail-width) minmax(0, 1fr);
+  grid-template-columns: var(--task-rail-width) minmax(0, 1fr) var(--activity-rail-width);
   margin: 0 auto;
   max-width: var(--content-width);
   min-height: 0;
   position: relative;
   width: 100%;
   z-index: 2;
+}
+
+.workspace[data-activity-rail-collapsed] {
+  --activity-rail-width: 7.4rem;
 }
 
 /* На desktop верхние границы списка Workspace и панели Streams всегда стоят
@@ -3445,6 +3452,117 @@ html[data-surface="mobile"]
   font-size: 0.72rem;
   margin: 0;
   padding: 0.45rem;
+}
+
+/* =========================================== правая колонка активности === */
+
+.activity-rail {
+  background: var(--surface-1);
+  border-left: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.activity-rail-head {
+  border-bottom: 1px solid var(--line);
+  flex: 0 0 auto;
+  padding: 0.5rem;
+}
+
+.activity-rail-toggle {
+  align-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-chip);
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 700;
+  gap: 0.45rem;
+  justify-content: space-between;
+  letter-spacing: var(--label-spacing);
+  min-height: 2rem;
+  padding: 0.35rem 0.5rem;
+  text-transform: uppercase;
+  width: 100%;
+}
+
+.activity-rail-toggle:hover,
+.activity-rail-toggle:focus-visible {
+  background: var(--surface-2);
+  border-color: var(--line);
+  color: var(--text);
+  outline: none;
+}
+
+.activity-rail-toggle svg {
+  flex: 0 0 auto;
+  height: 0.9rem;
+  transform: rotate(180deg);
+  transition: transform 0.14s ease;
+  width: 0.9rem;
+}
+
+.activity-rail[data-collapsed] .activity-rail-toggle svg {
+  transform: rotate(0deg);
+}
+
+.activity-rail-content {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.activity-rail[data-collapsed] .activity-rail-content {
+  display: none;
+}
+
+.activity-streams {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.activity-stream-list {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0.35rem;
+}
+
+html[data-view="chat"]:not([data-surface="mobile"])
+  .activity-stream-list .stream-tab {
+  flex: 0 0 auto !important;
+  max-width: none !important;
+  width: 100% !important;
+}
+
+.activity-stream-item[data-current] {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+}
+
+.activity-stream-empty {
+  color: var(--text-faint);
+  font-size: 0.72rem;
+  margin: 0;
+  padding: 0.8rem;
+  text-align: center;
+}
+
+.activity-rail .workspace-task-panel {
+  margin-top: auto;
+  max-height: 44%;
 }
 
 /* ======================================================= Task board === */
@@ -4874,6 +4992,7 @@ html[data-surface="mobile"]
   }
 
   html[data-view="chat"]:not([data-surface="mobile"]) .task-rail,
+  html[data-view="chat"]:not([data-surface="mobile"]) .activity-rail,
   html[data-view="chat"]:not([data-surface="mobile"]) .chat {
     border: var(--shell-panel-border, 1px solid var(--line)) !important;
     border-image: var(--shell-panel-border-image, none) !important;
@@ -7897,6 +8016,10 @@ html[data-surface="mobile"] .connection-label {
 
 html[data-surface="mobile"] .workspace {
   grid-template-columns: minmax(0, 1fr);
+}
+
+html[data-surface="mobile"] .activity-rail {
+  display: none;
 }
 
 html[data-surface="mobile"] .task-rail,

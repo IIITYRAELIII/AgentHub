@@ -511,6 +511,7 @@ html[data-theme="gothic"] .chip-button.primary {
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .task-rail,
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .activity-rail,
   html[data-theme="gothic"]:not([data-surface="mobile"]) .chat {
     background-color: rgb(7 8 8 / 97%);
     background-image:
@@ -591,12 +592,12 @@ html[data-theme="gothic"] .chip-button.primary {
   }
 }
 
-/* Один Stream оставляет справа самостоятельную сцену, как полевые консоли
-   Verdant. При нескольких Streams рабочая область снова занимает весь экран. */
+/* Три рабочие панели занимают всю сцену; чат получает оставшееся место между
+   навигацией Workspace и правой колонкой активности. */
 @media (min-width: 1120px) {
   html[data-theme="gothic"]:not([data-surface="mobile"]) body > .workspace {
-    grid-template-columns: var(--task-rail-width) clamp(640px, 43vw, 1080px);
-    justify-content: start;
+    grid-template-columns: var(--task-rail-width) minmax(0, 1fr) var(--activity-rail-width);
+    justify-content: stretch;
     padding: 0;
   }
 
@@ -604,7 +605,7 @@ html[data-theme="gothic"] .chip-button.primary {
     .workspace:has(.chat-pane[data-dialog-settings-open]),
   html[data-theme="gothic"]:not([data-surface="mobile"])
     .workspace:has(.stream-chat-columns[data-multi-stream]) {
-    grid-template-columns: var(--task-rail-width) minmax(0, 1fr);
+    grid-template-columns: var(--task-rail-width) minmax(0, 1fr) var(--activity-rail-width);
     padding-right: 0;
   }
 }

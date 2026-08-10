@@ -44,6 +44,12 @@ const taskList = document.querySelector("[data-task-list]");
 const taskEmpty = document.querySelector("[data-task-empty]");
 const taskCount = document.querySelector("[data-task-count]");
 const taskFilter = document.querySelector("[data-task-filter]");
+const workspaceShell = document.querySelector("[data-workspace]");
+const activityRail = document.querySelector("[data-activity-rail]");
+const activityRailToggle = document.querySelector("[data-activity-rail-toggle]");
+const activityRailCount = document.querySelector("[data-activity-rail-count]");
+const activityStreamList = document.querySelector("[data-activity-stream-list]");
+const activityStreamEmpty = document.querySelector("[data-activity-stream-empty]");
 const workspaceCardModal = document.querySelector("[data-workspace-card-modal]");
 const workspaceCardForm = document.querySelector("[data-workspace-card-form]");
 const workspaceCardTitle = document.querySelector("[data-workspace-card-title]");
@@ -313,6 +319,7 @@ const deferredBackgroundAssets = new Set(themeCatalog.flatMap((theme) => (
 const backgroundAssetLoads = new Map();
 const sessionBackgrounds = new Map();
 const LEGACY_BACKGROUND_STORAGE_KEY = "agent-hub-background";
+const ACTIVITY_RAIL_COLLAPSED_KEY = "agent-hub:activity-rail-collapsed:v1";
 const backgroundStorageKey = (theme) => `${LEGACY_BACKGROUND_STORAGE_KEY}:${theme}`;
 let backgroundRequestId = 0;
 const themeAliases = Object.freeze(Object.fromEntries(themeCatalog.flatMap((theme) => (
@@ -1124,7 +1131,7 @@ function formatRunningDuration(input, now = Date.now()) {
 
 function refreshTaskDurations() {
   const now = Date.now();
-  for (const node of taskList.querySelectorAll(".task-time[data-task-started-at]")) {
+  for (const node of document.querySelectorAll(".task-time[data-task-started-at]")) {
     node.textContent = formatRunningDuration(node.dataset.taskStartedAt, now);
   }
 }
@@ -1711,6 +1718,7 @@ function renderTasks() {
   }
   taskCount.hidden = !hasTasks;
   taskCount.textContent = String(visibleCount);
+  renderActivityRail();
 }
 
 function workspaceStreams(tasks) {
@@ -1811,6 +1819,146 @@ function representativeStreamTask(stream) {
       Date.parse(right.lastActivity || 0) - Date.parse(left.lastActivity || 0)
     ))[0]
     ?? null;
+}
+
+function streamActivityTime(task) {
+  const value = Date.parse(String(task?.lastActivity ?? ""));
+  return Number.isFinite(value) ? value : 0;
+}
+
+function streamAttentionKind(task) {
+  if (task?.unread && !task?.running) return "completed";
+  if (task?.running) return "running";
+  return "";
+}
+
+function activityStreamEntries(tasks) {
+  const groups = new Map();
+  for (const task of tasks) {
+    const kind = streamAttentionKind(task);
+    if (!kind) continue;
+    const key = `${workspaceKey(task)}\u0000${streamKey(task)}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(task);
+  }
+  return [...groups.values()]
+    .map((group) => [...group].sort((left, right) => (
+      Number(streamAttentionKind(left) !== "completed")
+      - Number(streamAttentionKind(right) !== "completed")
+      || streamActivityTime(right) - streamActivityTime(left)
+    ))[0])
+    .sort((left, right) => (
+      Number(streamAttentionKind(left) !== "completed")
+      - Number(streamAttentionKind(right) !== "completed")
+      || streamActivityTime(right) - streamActivityTime(left)
+    ));
+}
+
+function streamPresentation(task) {
+  const provider = String(task?.provider ?? "none");
+  const agentLabel = task?.agentLabel || providerLabels[provider] || "Агент";
+  const running = Boolean(task?.running);
+  const answerReady = Boolean(task?.unread && !running);
+  const time = running && task?.startedAt
+    ? formatRunningDuration(task.startedAt)
+    : formatRelativeTime(task?.lastActivity);
+  const statusLabel = running ? "Ход выполняется" : answerReady ? "Ответ готов" : task?.statusLabel || "";
+  return { provider, agentLabel, running, answerReady, time, statusLabel };
+}
+
+function renderStreamStatusCard(task, title, presentation) {
+  return el("span", { class: "stream-tab-card" }, [
+    el("span", {
+      class: "provider-dot",
+      "data-provider": presentation.provider,
+      "aria-hidden": "true",
+    }),
+    el("span", { class: "stream-tab-body" }, [
+      el("span", { class: "stream-tab-title-row" }, [
+        el("span", { class: "stream-tab-title", text: title }),
+        el("span", {
+          class: "task-time",
+          text: presentation.time,
+          title: presentation.running && task?.startedAt
+            ? `Выполняется с ${new Date(task.startedAt).toLocaleString("ru-RU")}`
+            : task?.lastActivity ? new Date(task.lastActivity).toLocaleString("ru-RU") : "",
+          "data-task-started-at": presentation.running && task?.startedAt ? task.startedAt : null,
+        }),
+      ]),
+      el("span", { class: "stream-tab-meta" }, [
+        el("span", { class: "task-agent", text: presentation.agentLabel }),
+        task?.modelLabel
+          ? el("span", {
+            class: "task-agent task-model",
+            "data-model-tier": modelTier(task.modelLabel),
+            text: shortModelLabel(task.modelLabel),
+            title: task.modelLabel,
+          })
+          : null,
+        task?.runtimeLabel
+          ? el("span", {
+            class: "task-runtime",
+            text: task.runtimeLabel,
+            title: task.runtimeTitle || task.runtimeLabel,
+          })
+          : null,
+      ]),
+    ]),
+  ]);
+}
+
+function savedActivityRailCollapsed() {
+  try {
+    return localStorage.getItem(ACTIVITY_RAIL_COLLAPSED_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+let activityRailCollapsed = savedActivityRailCollapsed();
+
+function applyActivityRailState({ persist = false } = {}) {
+  activityRail?.toggleAttribute("data-collapsed", activityRailCollapsed);
+  workspaceShell?.toggleAttribute("data-activity-rail-collapsed", activityRailCollapsed);
+  activityRailToggle?.setAttribute("aria-expanded", String(!activityRailCollapsed));
+  if (activityRailToggle) {
+    activityRailToggle.title = activityRailCollapsed
+      ? "Развернуть активные потоки и задачи"
+      : "Свернуть активные потоки и задачи";
+  }
+  if (!persist) return;
+  try {
+    localStorage.setItem(ACTIVITY_RAIL_COLLAPSED_KEY, String(activityRailCollapsed));
+  } catch {
+    // Недоступный localStorage не мешает сворачивать панель в текущей сессии.
+  }
+}
+
+function renderActivityRail() {
+  if (!activityStreamList || !activityRailCount || !activityStreamEmpty) return;
+  const entries = activityStreamEntries(state.tasks);
+  activityRailCount.textContent = `Активно: ${entries.length}`;
+  activityStreamEmpty.hidden = entries.length > 0;
+  activityStreamList.replaceChildren(...entries.map((task) => {
+    const presentation = streamPresentation(task);
+    const streamName = String(task.streamName || task.streamDisplayName || "").trim()
+      || `Stream ${Math.max(1, Number(task.streamOrdinal) || 1)}`;
+    const workspaceName = String(task.workspaceName || task.title || "Workspace").trim();
+    return el("button", {
+      type: "button",
+      class: "stream-tab activity-stream-item",
+      "data-activity-task-id": task.id,
+      "data-current": task.id === state.selectedId ? "" : null,
+      "data-running": presentation.running ? "" : null,
+      "data-answer-ready": presentation.answerReady ? "" : null,
+      "data-maintenance": streamMaintenanceKind(task) || null,
+      "aria-pressed": String(task.id === state.selectedId),
+      "aria-label": [workspaceName, streamName, presentation.agentLabel, presentation.statusLabel]
+        .filter(Boolean).join(". "),
+      title: `${presentation.statusLabel ? `${presentation.statusLabel}. ` : ""}${workspaceName} — ${streamName}`,
+    }, [renderStreamStatusCard(task, streamName, presentation)]);
+  }));
+  applyActivityRailState();
 }
 
 function visibleWorkspaceStreamTasks() {
@@ -2181,6 +2329,14 @@ taskList.addEventListener("keydown", (event) => {
   const workspaceId = String(workspace.dataset.workspaceSelect ?? "");
   const target = representativeWorkspaceTask(state.tasks.filter((task) => workspaceKey(task) === workspaceId));
   if (target) selectTaskFromUi(target.id);
+});
+activityRailToggle?.addEventListener("click", () => {
+  activityRailCollapsed = !activityRailCollapsed;
+  applyActivityRailState({ persist: true });
+});
+activityStreamList?.addEventListener("click", (event) => {
+  const item = event.target.closest("[data-activity-task-id]");
+  if (item) selectTaskFromUi(String(item.dataset.activityTaskId ?? ""));
 });
 let taskSearchTimer = null;
 taskFilter.addEventListener("input", () => {
