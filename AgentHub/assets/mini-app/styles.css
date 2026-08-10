@@ -3063,13 +3063,31 @@ html[data-view="chat"]:not([data-surface="mobile"]) body > .workspace {
   transform: none !important;
 }
 
-/* Несколько одновременно открытых Streams требуют больше места по горизонтали.
-   Темы с узкой сценической композицией расширяют чат своим правилом, а общая
-   оболочка немного ужимает список Workspace без потери его читаемости. */
+/* На desktop рабочая область следует тем же краям, что логотип и кнопка
+   настроек. Темы отвечают за материал панелей, но не сужают общую сцену.
+   Мультичат использует весь viewport без внешних полей. */
+html[data-view="chat"]:not([data-surface="mobile"]) body > .workspace {
+  margin-left: var(--shell-header-padding-left, clamp(1rem, 4vw, 4.25rem)) !important;
+  margin-right: var(--shell-header-padding-right, clamp(1rem, 4vw, 4.25rem)) !important;
+  max-width: none !important;
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+  width: auto !important;
+}
+
+html[data-view="chat"]:not([data-surface="mobile"])
+  body > .workspace:has(.stream-chat-columns[data-multi-stream]) {
+  margin-left: 0 !important;
+  margin-right: 0 !important;
+  max-width: none !important;
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+  width: 100% !important;
+}
+
 @media (min-width: 1120px) {
   html:not([data-surface="mobile"]) .workspace:has(.stream-chat-columns[data-multi-stream]) {
     --task-rail-width: clamp(232px, 15vw, 280px);
-    max-width: 100vw;
   }
 }
 

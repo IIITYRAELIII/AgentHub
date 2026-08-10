@@ -2043,25 +2043,6 @@ test("wide shared shell opens up to four Workspace Streams as chat columns", () 
   assert.match(styles, /html\[data-surface="mobile"\] \.stream-chat-columns\s*\{[\s\S]*?display: grid;/u);
 });
 
-test("wide themes give multiple Streams the available scene width", () => {
-  const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
-  /* Многоколонный режим слегка сужает общий список Workspace. Темы, которые
-     намеренно оставляют справа открытую сцену, раскрывают чат только при
-     появлении второго Stream; одиночная композиция остаётся прежней. */
-  assert.match(
-    styles,
-    /\.workspace:has\(\.stream-chat-columns\[data-multi-stream\]\)\s*\{[^}]*--task-rail-width:\s*clamp\(232px, 15vw, 280px\);[^}]*max-width:\s*100vw;/su,
-  );
-  for (const themeId of ["lake", "verdant"]) {
-    const themeStyles = themeFile(themeId);
-    assert.match(
-      themeStyles,
-      /\.workspace:has\(\.stream-chat-columns\[data-multi-stream\]\)\s*\{[^}]*grid-template-columns:\s*var\(--task-rail-width\) minmax\(0, 1fr\);[^}]*padding-right:/su,
-      themeId,
-    );
-  }
-});
-
 test("VS Code stream refresh keeps composer focus and opens history at the bottom", () => {
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   const deckStart = app.indexOf("function renderStreamChatDeck()");
