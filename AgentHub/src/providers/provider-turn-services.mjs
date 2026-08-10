@@ -1,4 +1,5 @@
 import { unlink } from "node:fs/promises";
+import { setTimeout as delay } from "node:timers/promises";
 import { buildCodexCollaborationMode } from "./codex/codex-settings.mjs";
 import { activeTurnMissing, interruptCodexTurnWithRecovery, startCodexTurnWithRecovery } from "./codex/codex-recovery.mjs";
 import { codexThreadSandboxSettings, codexTurnSandboxSettings } from "./codex/codex-sandbox.mjs";
@@ -18,6 +19,61 @@ function rememberBounded(map, key, value, limit) {
 function codexInputItems(input) {
   const values = typeof input === "string" ? [{ type: "text", text: input }] : input;
   return (Array.isArray(values) ? values : []).filter((item) => item?.type !== "localFile");
+}
+
+function codexTurnHasUserInput(turn) {
+  if ((Array.isArray(turn?.userMessages) ? turn.userMessages : []).length) return true;
+  if (String(turn?.prompt ?? "").trim()) return true;
+  return (Array.isArray(turn?.items) ? turn.items : [])
+    .some((item) => item?.type === "userMessage");
+}
+
+export const CODEX_TURN_NOT_MATERIALIZED = "ERR_CODEX_TURN_NOT_MATERIALIZED";
+
+function turnNotMaterializedError(turnId) {
+  const error = new Error(
+    turnId
+      ? `Codex App Server принял запуск Turn ${turnId}, но не добавил его в Thread`
+      : "Codex App Server принял запуск, но не вернул Turn",
+  );
+  error.code = CODEX_TURN_NOT_MATERIALIZED;
+  return error;
+}
+
+export async function waitForCodexTurnMaterialization({
+  readThread,
+  threadId,
+  turnId,
+  timeoutMs = 10_000,
+  pollMs = 1_000,
+  sleep = delay,
+}) {
+  const expectedTurnId = String(turnId ?? "").trim();
+  if (!expectedTurnId) throw turnNotMaterializedError("");
+  const intervalMs = Math.max(1, Number(pollMs) || 1_000);
+  const attempts = Math.max(1, Math.ceil(Math.max(0, Number(timeoutMs) || 0) / intervalMs) + 1);
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      const response = await readThread(threadId, {
+        fresh: true,
+        includeTurns: true,
+        priority: "interactive",
+        turnLimit: 8,
+        turnPageSize: 8,
+      });
+      const thread = response?.thread ?? response;
+      const materialized = (Array.isArray(thread?.turns) ? thread.turns : [])
+        .some((turn) => (
+          String(turn?.id ?? "").trim() === expectedTurnId
+          && codexTurnHasUserInput(turn)
+        ));
+      if (materialized) return expectedTurnId;
+    } catch {
+      // A transient read failure is indistinguishable from delayed materialization here.
+    }
+    if (attempt + 1 < attempts) await sleep(intervalMs);
+  }
+  throw turnNotMaterializedError(expectedTurnId);
 }
 
 export class CodexTurnService {
@@ -62,8 +118,17 @@ export class CodexTurnService {
         }),
         rollback: (params) => d.sendRpc("thread/rollback", params),
       });
+      const turnId = String(result?.turn?.id ?? result?.turnId ?? "").trim();
+      await waitForCodexTurnMaterialization({
+        readThread: d.readThread,
+        threadId: run.threadId,
+        turnId,
+        timeoutMs: d.turnMaterializationTimeoutMs,
+        pollMs: d.turnMaterializationPollMs,
+        sleep: d.sleep,
+      });
       const previousTurnId = run.turnId;
-      run.turnId = result.turn.id;
+      run.turnId = turnId;
       d.reindexRun(run, { turnId: previousTurnId });
       d.speechButtons.set(run.turnId, forceSpeechButton);
       if (temporaryFiles.length) d.temporaryFiles.set(run.turnId, temporaryFiles);

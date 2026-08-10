@@ -46,6 +46,9 @@ function fixture(overrides = {}) {
 test("retryable deferred launch errors are limited to transport failures", () => {
   assert.equal(isRetryableDeferredLaunchError(new Error("Codex app-server stopped (write EPIPE)")), true);
   assert.equal(isRetryableDeferredLaunchError(Object.assign(new Error("socket closed"), { code: "ECONNRESET" })), true);
+  assert.equal(isRetryableDeferredLaunchError(Object.assign(new Error("phantom turn"), {
+    code: "ERR_CODEX_TURN_NOT_MATERIALIZED",
+  })), true);
   assert.equal(isRetryableDeferredLaunchError(new Error("invalid model")), false);
 });
 
@@ -139,6 +142,29 @@ test("DeferredInputController retries a transient app-server failure without los
     state.transitions.map((entry) => entry.state),
     ["dispatching", "retrying", "dispatching", "started"],
   );
+});
+
+test("DeferredInputController retains a message when Codex acknowledges a phantom turn", async () => {
+  const error = Object.assign(new Error("turn was not materialized"), {
+    code: "ERR_CODEX_TURN_NOT_MATERIALIZED",
+  });
+  const state = fixture({ start: async () => { throw error; } });
+  const item = {
+    id: "queued-user-message",
+    provider: "codex",
+    threadId: "thread-1",
+    taskTitle: "Task",
+    input: "This message must reach the model",
+  };
+  state.queuedInputs.set(item.id, item);
+
+  await state.controller.process(item.id);
+
+  assert.equal(state.queuedInputs.get(item.id), item);
+  assert.equal(state.pendingInputs.has(item.id), false);
+  assert.equal(item.attempts, 1);
+  assert.equal(state.timers.at(-1).delay, 2_000);
+  assert.deepEqual(state.transitions.map((entry) => entry.state), ["dispatching", "retrying"]);
 });
 
 test("DeferredInputController preserves FIFO order inside one task", async () => {

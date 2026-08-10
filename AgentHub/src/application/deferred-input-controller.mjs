@@ -1,6 +1,12 @@
 export function isRetryableDeferredLaunchError(error) {
   const code = String(error?.code ?? "").trim().toUpperCase();
-  if (["EPIPE", "ECONNRESET", "ECONNREFUSED", "ERR_STREAM_DESTROYED"].includes(code)) return true;
+  if ([
+    "EPIPE",
+    "ECONNRESET",
+    "ECONNREFUSED",
+    "ERR_STREAM_DESTROYED",
+    "ERR_CODEX_TURN_NOT_MATERIALIZED",
+  ].includes(code)) return true;
   const message = String(error?.message ?? error ?? "");
   return /(?:codex )?app-server (?:stopped|is not running)|write EPIPE|broken pipe/i.test(message);
 }
