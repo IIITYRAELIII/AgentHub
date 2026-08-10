@@ -737,9 +737,7 @@ async function waitRemoteResult(commandId, timeoutMs = DEFAULT_CONTROL_TIMEOUT_M
     );
     const payload = await response.json().catch(() => ({}));
     if (response.status === 202 || payload.pending) {
-      if (payload.longPoll !== true) {
-        await new Promise((resolve) => window.setTimeout(resolve, REMOTE_RESULT_FALLBACK_POLL_MS));
-      }
+      await new Promise((resolve) => window.setTimeout(resolve, REMOTE_RESULT_FALLBACK_POLL_MS));
       continue;
     }
     if (!response.ok || payload.ok === false) {
