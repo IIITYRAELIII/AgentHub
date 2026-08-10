@@ -758,7 +758,7 @@ function applyStreamCollapse(value, { persist = false, update = false } = {}) {
         if (!collapseStreams) delete openState.streams;
         groupingStates[grouping] = openState;
       }
-      void renderJournal();
+      renderJournal();
       queueMicrotask(persistOpenState);
     } else {
       setStreamsCollapsed(collapseStreams);
@@ -853,7 +853,7 @@ function selectUsageUnit(value, { persist = false } = {}) {
   refreshUsageUnits();
   renderUsageHistory();
   renderUsageComparison();
-  if (journalHtml) void renderJournal();
+  if (journalHtml) renderJournal();
 }
 
 function savedClaudeGrouping() {
@@ -917,7 +917,7 @@ streamCollapseToggle?.addEventListener("change", () => {
 });
 claudeGroupToggle?.addEventListener("change", () => {
   selectClaudeGrouping(claudeGroupToggle.checked, { persist: true });
-  if (journalHtml) void renderJournal();
+  if (journalHtml) renderJournal();
 });
 for (const button of usageUnitButtons) {
   button.addEventListener("click", () => selectUsageUnit(button.dataset.usageUnit, { persist: true }));
@@ -939,7 +939,7 @@ for (const button of journalGroupingButtons) {
     if (next === grouping) return;
     if (journalRendered) groupingStates[grouping] = captureOpenState();
     selectGrouping(next, { persist: true });
-    if (journalHtml) void renderJournal();
+    if (journalHtml) renderJournal();
   });
 }
 
@@ -5884,7 +5884,6 @@ const AgentHub = {
   setWorkspaces(workspaces, columnOrder = []) {
     state.workspaces = Array.isArray(workspaces) ? workspaces.slice() : [];
     state.workspaceColumnOrder = Array.isArray(columnOrder) ? columnOrder.slice() : [];
-    if (journalRendered) updateJournalStreamCount();
   },
   openDialogSettings,
   /** Точечное обновление задачи (статус, время, непрочитанное). */
@@ -6095,7 +6094,7 @@ const AgentHub = {
     }
     renderOptions();
     if (state.selectedId) renderChat();
-    if (claudeUsageChanged && journalHtml) void renderJournal();
+    if (claudeUsageChanged && journalHtml) renderJournal();
   },
   /** Сводка статуса/лимитов для панели: { rows: [{ name, value }] }. */
   setStatus(status) {
@@ -6140,7 +6139,7 @@ const AgentHub = {
     }
     refreshUsageUnits();
     renderUsageHistory();
-    if (journalHtml) void renderJournal();
+    if (journalHtml) renderJournal();
   },
   setTrustedDevices(payload) {
     renderTrustedDevices(payload);
@@ -9323,19 +9322,14 @@ async function loadLazyDay(details) {
       throw new Error("Некорректный фрагмент дня.");
     }
     replacement.open = true;
+    details.replaceWith(replacement);
     upgradeLegacyWorkspaceGroups(replacement);
     decorateDayHeadings(replacement);
     decorateLegacyStreamTurns(replacement);
     groupClaudeRowsInDay(replacement);
-    const renderedDay = grouping === "date" && details.hasAttribute("data-journal-ledger-row")
-      ? dayGroupingContent(replacement).firstElementChild
-      : replacement;
-    if (!renderedDay) throw new Error("Не удалось собрать день журнала.");
-    renderedDay.open = true;
-    details.replaceWith(renderedDay);
-    refreshUsageUnits(renderedDay);
-    disableLocalLinks(renderedDay);
-    syncCollapseTurnButtons(renderedDay);
+    refreshUsageUnits(replacement);
+    disableLocalLinks(replacement);
+    syncCollapseTurnButtons(replacement);
     prepareMobileControls(journal);
     if (desiredOpenState) restoreOpenState(desiredOpenState);
   })().catch((error) => {
@@ -10347,7 +10341,7 @@ function journalLedgerSummary(group, { label = "", showStreams = true } = {}) {
   summary.dataset.journalLedgerSummary = "";
   const turns = el("span", {
     "data-journal-ledger-metric": "turns",
-    text: group.lazy ? "—" : String(Math.max(0, Number(group.turnCount) || 0)),
+    text: String(Math.max(0, Number(group.turnCount) || 0)),
   });
   const credits = el("span", { "data-journal-ledger-metric": "credits" });
   if (group.knownCredits) credits.append(usageBadge(formatUsageValue(group.credits), group.credits));
@@ -10358,7 +10352,7 @@ function journalLedgerSummary(group, { label = "", showStreams = true } = {}) {
   });
   const gaps = el("span", {
     "data-journal-ledger-metric": "gaps",
-    text: !group.lazy && group.unknownCredits ? String(group.unknownCredits) : "—",
+    text: group.unknownCredits ? String(group.unknownCredits) : "—",
   });
   summary.append(journalGroupTitle(group, label, { showStreams }), turns, credits, duration, gaps);
   return summary;
@@ -10452,53 +10446,11 @@ function workspaceGroupsFrom(day) {
 function dayGroupingContent(source) {
   const list = document.createElement("div");
   list.dataset.journalDayGroups = "";
-  const days = source.matches?.("details[data-work-log-day-section]")
-    ? [source]
-    : [...source.querySelectorAll("details[data-work-log-day-section]")];
+  const days = [...source.querySelectorAll("details[data-work-log-day-section]")];
   days.forEach((day, dayIndex) => {
     const date = day.querySelector("summary[data-work-log-day] strong")?.dataset.workLogDate
       ?? plainDateText(day.querySelector("summary[data-work-log-day] strong")?.textContent);
     if (!date) return;
-    if (day.hasAttribute("data-lazy-day")) {
-      const sourceSummary = day.querySelector(":scope > summary[data-work-log-day]");
-      const creditsValue = sourceSummary?.querySelector(
-        "[data-day-usage] [data-usage-credits]",
-      )?.dataset.usageCredits;
-      const durationValue = sourceSummary?.querySelector(
-        "[data-work-log-day-duration]",
-      )?.dataset.workLogDurationSeconds;
-      const credits = Number(creditsValue);
-      const durationSeconds = Number(durationValue);
-      const total = {
-        provider: "day",
-        threadId: date,
-        turnCount: null,
-        credits: Number.isFinite(credits) ? credits : null,
-        knownCredits: Number.isFinite(credits) ? 1 : 0,
-        unknownCredits: 0,
-        durationSeconds: Number.isFinite(durationSeconds) ? durationSeconds : null,
-        knownDurations: Number.isFinite(durationSeconds) ? 1 : 0,
-        lazy: true,
-        streamLabels: [],
-      };
-      const details = document.createElement("details");
-      details.dataset.workLogDaySection = "";
-      details.dataset.journalLedgerRow = "";
-      details.dataset.journalDayDate = date;
-      details.dataset.lazyDay = date;
-      const dateLabel = document.createElement("span");
-      const strong = el("strong", { text: date });
-      strong.dataset.workLogDate = date;
-      dateLabel.append(strong, el("span", {
-        "data-journal-weekday": "",
-        text: journalWeekday(date),
-      }));
-      const summary = journalLedgerSummary(total, { label: dateLabel, showStreams: false });
-      summary.dataset.workLogDay = "";
-      details.append(summary, el("div", { "data-lazy-day-content": "" }));
-      list.append(details);
-      return;
-    }
     const workspaceGroups = workspaceGroupsFrom(day);
     const groups = workspaceGroups.length ? workspaceGroups : taskGroupsFrom(day);
     const total = combinedJournalGroup(groups, { provider: "day", threadId: date });
@@ -10592,62 +10544,10 @@ async function hydrateAllLazyDays() {
   await Promise.all(days.map(loadLazyDay));
 }
 
-function summarizedLazyDays(source) {
-  const lazyDays = source.querySelectorAll(
-    "details[data-work-log-day-section][data-lazy-day]",
-  );
-  if (!lazyDays.length || state.selection.includeClaudeUsage === false) return null;
-  let credits = 0;
-  let durationSeconds = 0;
-  let knownCredits = 0;
-  let knownDurations = 0;
-  for (const day of source.querySelectorAll("details[data-work-log-day-section]")) {
-    const summary = day.querySelector(":scope > summary[data-work-log-day]");
-    const creditValue = Number(summary?.querySelector(
-      "[data-day-usage] [data-usage-credits]",
-    )?.dataset.usageCredits);
-    const durationValue = Number(summary?.querySelector(
-      "[data-work-log-day-duration]",
-    )?.dataset.workLogDurationSeconds);
-    if (Number.isFinite(creditValue)) {
-      credits += creditValue;
-      knownCredits += 1;
-    }
-    if (Number.isFinite(durationValue)) {
-      durationSeconds += durationValue;
-      knownDurations += 1;
-    }
-  }
-  return { credits, durationSeconds, knownCredits, knownDurations };
-}
-
-function updateJournalStreamCount() {
-  if (!journalWorkspaceCount) return;
-  journalWorkspaceCount.textContent = JournalView.streamCount(state.workspaces)
-    .toLocaleString("ru-RU");
-}
-
 function updateJournalSummary(source) {
-  const lazyTotals = grouping === "date" ? summarizedLazyDays(source) : null;
-  if (lazyTotals) {
-    updateJournalStreamCount();
-    if (journalTotalCredits) {
-      journalTotalCredits.replaceChildren(
-        lazyTotals.knownCredits
-          ? usageBadge(formatUsageValue(lazyTotals.credits), lazyTotals.credits)
-          : document.createTextNode("—"),
-      );
-    }
-    if (journalTotalDuration) {
-      journalTotalDuration.textContent = lazyTotals.knownDurations
-        ? formatTaskDuration(lazyTotals.durationSeconds)
-        : "—";
-    }
-    return;
-  }
   const groups = taskGroupsFrom(source);
   const totals = JournalView.summarizeGroups(groups);
-  updateJournalStreamCount();
+  if (journalWorkspaceCount) journalWorkspaceCount.textContent = totals.count.toLocaleString("ru-RU");
   if (journalTotalCredits) {
     journalTotalCredits.replaceChildren(
       totals.knownCredits
@@ -10695,22 +10595,21 @@ function applyJournalGrouping() {
   journal.setAttribute("aria-busy", "false");
 }
 
-async function renderJournal() {
+function renderJournal() {
   const sequence = ++journalRenderSequence;
   const template = document.createElement("template");
   template.innerHTML = journalHtml;
-  journal.setAttribute("aria-busy", "true");
   journal.replaceChildren(template.content.cloneNode(true));
   removeJournalRateLimits();
-  try {
-    if (JournalView.requiresCompleteHistory(grouping)) await hydrateAllLazyDays();
+  journal.setAttribute("aria-busy", "true");
+  void hydrateAllLazyDays().then(() => {
     if (sequence !== journalRenderSequence) return;
     applyJournalGrouping();
-  } catch (error) {
+  }).catch((error) => {
     if (sequence !== journalRenderSequence) return;
     journal.setAttribute("aria-busy", "false");
     showToast(`Не удалось собрать журнал: ${error.message}`);
-  }
+  });
 }
 
 async function loadJournal({ force = false } = {}) {
@@ -10735,7 +10634,7 @@ async function loadJournal({ force = false } = {}) {
         if (versionChanged) journalDayHtmlCache.clear();
         currentVersion = payload.version;
         journalHtml = payload.html;
-        await renderJournal();
+        renderJournal();
         persistOpenState();
       }
       const date = new Date(payload.updatedAt);
