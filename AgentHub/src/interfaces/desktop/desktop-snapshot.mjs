@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { displayUserPrompt } from "../../application/task-history.mjs";
 import { isCodexContextProbeTurn } from "../../domain/codex-context-probe.mjs";
 import { taskDisplayTitle } from "../../domain/task-display-title.mjs";
 import { taskRunIsActive } from "../../domain/task-runs.mjs";
@@ -118,12 +119,12 @@ export function createDesktopSnapshotFactory({
       model: run.model ?? null,
       reasoning: run.reasoning ?? null,
       stage: String(run.progressStage ?? "Выполняется…"),
-      prompt: String(run.promptPreview ?? ""),
+      prompt: displayUserPrompt(run.promptPreview),
       attachments: Array.isArray(run.messageAttachments)
         ? run.messageAttachments.map((attachment) => ({ ...attachment }))
         : [],
       userMessages: (Array.isArray(run.userMessages) ? run.userMessages : []).flatMap((message) => {
-        const text = String(message?.text ?? "").trim();
+        const text = displayUserPrompt(message?.text);
         if (!text) return [];
         const clientUserMessageId = String(message.clientUserMessageId ?? "");
         const receipt = clientUserMessageId

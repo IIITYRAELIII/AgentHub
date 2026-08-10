@@ -697,6 +697,25 @@ test("compact remote snapshot keeps one bounded live activity representation", a
   assert.ok(Buffer.byteLength(JSON.stringify(snapshot), "utf8") < 100_000);
 });
 
+test("live snapshot hides the Codex Desktop file envelope", async () => {
+  const { desktopSnapshot, state } = fixture();
+  const prompt = [
+    "# FILES MENTIONED BY THE USER:",
+    "",
+    "## Вставленный текст.txt: C:/AgentHub/attachments/message.txt",
+    "",
+    "## My request for Codex:",
+    "Проверь содержимое файла",
+  ].join("\n");
+  state.run.promptPreview = prompt;
+  state.run.userMessages[0].text = prompt;
+
+  const snapshot = await desktopSnapshot({ compactSnapshot: true });
+
+  assert.equal(snapshot.tasks[0].run.prompt, "Проверь содержимое файла");
+  assert.equal(snapshot.tasks[0].run.userMessages[0].text, "Проверь содержимое файла");
+});
+
 test("forced desktop snapshot returns cached tasks while catalog refreshes", async () => {
   let finishRefresh;
   const refreshWait = new Promise((resolve) => {

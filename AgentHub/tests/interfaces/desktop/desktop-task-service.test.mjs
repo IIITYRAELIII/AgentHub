@@ -22,8 +22,14 @@ function fixture() {
       return { changed: true };
     },
     markRead: (...args) => calls.push(["read", ...args]),
-    snapshot: async () => ({ selected: true }),
-    taskHistory: async (params) => ({ params }),
+    snapshot: async (...args) => {
+      calls.push(["snapshot", ...args]);
+      return { selected: true };
+    },
+    taskHistory: async (params) => {
+      calls.push(["history", params]);
+      return { params };
+    },
     dispatchCommand: async (...args) => {
       calls.push(["dispatch", ...args]);
       return { selected: true };
@@ -57,11 +63,43 @@ test("Desktop task service resolves streamId before provider references", async 
 
 test("Desktop task selection activates and marks one exact task", async () => {
   const { service, calls } = fixture();
-  const result = await service.select({ provider: "codex", threadId: "thread-1" });
+  const params = {
+    provider: "codex",
+    threadId: "thread-1",
+    compactSnapshot: true,
+    maxResponseBytes: 850_000,
+  };
+  const context = { source: "telegram-mini-app" };
+  const result = await service.select(params, context);
   assert.equal(result.selectionChanged, true);
   assert.equal(calls[0][0], "activate");
   assert.equal(calls[0][1].taskTitle, "Agent HUB - Themes");
   assert.equal(calls[1][0], "read");
+  assert.deepEqual(calls[2], ["snapshot", params, context]);
+});
+
+test("Desktop task open shares one response budget between snapshot and history", async () => {
+  const { service } = fixture();
+  let historyParams;
+  service.dispatchCommand = async () => ({ payload: "s".repeat(300_000) });
+  service.taskHistory = async (params) => {
+    historyParams = params;
+    return { payload: "h".repeat(params.maxResponseBytes - 1_000) };
+  };
+
+  const result = await service.openTask({
+    streamId: "stream-1",
+    provider: "codex",
+    threadId: "thread-1",
+    limit: 10,
+    maxAnswerChars: 75_000,
+    maxResponseBytes: 850_000,
+    compactSnapshot: true,
+  });
+
+  assert.ok(Buffer.byteLength(JSON.stringify(result), "utf8") < 850_000);
+  assert.ok(historyParams.maxResponseBytes >= 64 * 1_024);
+  assert.ok(historyParams.maxResponseBytes < 550_000);
 });
 
 test("Desktop turn open verifies task ownership before returning the body", async () => {
@@ -74,4 +112,41 @@ test("Desktop turn open verifies task ownership before returning the body", asyn
   });
   assert.equal(result.focusedTurn.answer, "answer");
   assert.equal(calls.some(([name]) => name === "dispatch"), true);
+});
+
+test("Desktop turn open forwards compact limits and bounds its history", async () => {
+  const { service, calls } = fixture();
+  let historyParams;
+  service.dispatchCommand = async (...args) => {
+    calls.push(["dispatch", ...args]);
+    return { payload: "s".repeat(300_000) };
+  };
+  service.readTurn = async () => ({
+    taskThreadId: "thread-1",
+    projectRoot: "C:\\repo",
+    body: "a".repeat(120_000),
+    title: "Turn",
+  });
+  service.taskHistory = async (params) => {
+    historyParams = params;
+    return { payload: "h".repeat(params.maxResponseBytes - 1_000) };
+  };
+  const params = {
+    streamId: "stream-1",
+    provider: "codex",
+    taskThreadId: "thread-1",
+    turnThreadId: "thread-1",
+    turnId: "turn-1",
+    compactSnapshot: true,
+    maxAnswerChars: 120_000,
+    maxResponseBytes: 850_000,
+  };
+
+  const result = await service.openTurn(params, { source: "telegram-mini-app" });
+
+  assert.ok(Buffer.byteLength(JSON.stringify(result), "utf8") < 850_000);
+  assert.ok(historyParams.maxResponseBytes >= 64 * 1_024);
+  assert.ok(historyParams.maxResponseBytes < 430_000);
+  assert.equal(calls.at(-1)[0], "dispatch");
+  assert.equal(calls.at(-1)[2].compactSnapshot, true);
 });

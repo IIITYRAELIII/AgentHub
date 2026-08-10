@@ -1,4 +1,21 @@
+import { displayUserPrompt } from "../../application/task-history.mjs";
 import { taskDisplayTitle } from "../../domain/task-display-title.mjs";
+
+const MAX_DESKTOP_RESPONSE_BYTES = 3_500_000;
+const MIN_HISTORY_RESPONSE_BYTES = 64 * 1_024;
+const RESPONSE_ENVELOPE_RESERVE_BYTES = 16 * 1_024;
+
+function historyResponseBudget(value, params = {}) {
+  const totalBytes = Math.min(
+    Math.max(Number(params.maxResponseBytes) || MAX_DESKTOP_RESPONSE_BYTES, MIN_HISTORY_RESPONSE_BYTES),
+    MAX_DESKTOP_RESPONSE_BYTES,
+  );
+  const consumedBytes = Buffer.byteLength(JSON.stringify(value), "utf8");
+  return Math.max(
+    MIN_HISTORY_RESPONSE_BYTES,
+    totalBytes - consumedBytes - RESPONSE_ENVELOPE_RESERVE_BYTES,
+  );
+}
 
 function normalizedTaskReference(params = {}) {
   const streamId = String(params.streamId ?? "").trim();
@@ -88,7 +105,7 @@ export class DesktopTaskService {
     });
     this.markRead(entry, context);
     return {
-      ...await this.snapshot({}, context),
+      ...await this.snapshot(params, context),
       selectionChanged: activation.changed,
     };
   }
@@ -108,6 +125,7 @@ export class DesktopTaskService {
         threadId: params.threadId,
         limit: params.limit,
         maxAnswerChars: params.maxAnswerChars,
+        maxResponseBytes: historyResponseBudget({ snapshot }, params),
       }),
     };
   }
@@ -134,9 +152,15 @@ export class DesktopTaskService {
       || (record.projectRoot && !this.samePath(record.projectRoot, entry.projectRoot))) {
       throw new Error("Ход не относится к выбранной задаче");
     }
-    await this.dispatchCommand(
+    const snapshot = await this.dispatchCommand(
       "task.select",
-      { taskTitle: taskDisplayTitle(entry) },
+      {
+        ...params,
+        streamId: entry.streamId,
+        provider: entry.provider,
+        threadId: entry.threadId,
+        taskTitle: taskDisplayTitle(entry),
+      },
       context,
       {
         target: this.commandTaskTarget({
@@ -147,30 +171,32 @@ export class DesktopTaskService {
         }),
       },
     );
+    const focusedTurn = {
+      provider: entry.provider,
+      taskThreadId: taskThread,
+      turnThreadId: turnThread,
+      turnId,
+      title: String(record.title ?? ""),
+      prompt: displayUserPrompt(record.prompt),
+      answer: String(record.body ?? record.text ?? "").slice(
+        0,
+        Math.max(1_000, Math.min(Number(params.maxAnswerChars) || 200_000, 200_000)),
+      ),
+      status: String(record.status ?? ""),
+      startedAt: record.startedAt ?? null,
+      completedAt: record.completedAt ?? null,
+    };
     return {
-      snapshot: await this.snapshot({}, context),
+      snapshot,
       history: await this.taskHistory({
         streamId: entry.streamId,
         provider: entry.provider,
         threadId: taskThread,
         limit: params.limit,
         maxAnswerChars: params.maxAnswerChars,
+        maxResponseBytes: historyResponseBudget({ snapshot, focusedTurn }, params),
       }),
-      focusedTurn: {
-        provider: entry.provider,
-        taskThreadId: taskThread,
-        turnThreadId: turnThread,
-        turnId,
-        title: String(record.title ?? ""),
-        prompt: String(record.prompt ?? ""),
-        answer: String(record.body ?? record.text ?? "").slice(
-          0,
-          Math.max(1_000, Math.min(Number(params.maxAnswerChars) || 200_000, 200_000)),
-        ),
-        status: String(record.status ?? ""),
-        startedAt: record.startedAt ?? null,
-        completedAt: record.completedAt ?? null,
-      },
+      focusedTurn,
     };
   }
 }
