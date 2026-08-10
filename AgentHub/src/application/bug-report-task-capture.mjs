@@ -22,9 +22,12 @@ export function bugReportTaskText({ id, folder, text } = {}) {
 }
 
 export class BugReportTaskCapture {
-  constructor({ taskBoard, workspaceName = "" } = {}) {
+  constructor({ taskBoard, workspaceName = "", reports = null, cursorStore = null } = {}) {
     this.taskBoard = taskBoard;
     this.workspaceName = String(workspaceName ?? "").replace(/\s+/gu, " ").trim();
+    this.reports = reports;
+    this.cursorStore = cursorStore;
+    this.scanPromise = null;
     if (this.workspaceName && (
       typeof taskBoard?.create !== "function"
       || typeof taskBoard?.workspaces !== "function"
@@ -32,6 +35,10 @@ export class BugReportTaskCapture {
     )) {
       throw new TypeError("taskBoard is required for bug report capture");
     }
+  }
+
+  get enabled() {
+    return Boolean(this.workspaceName);
   }
 
   capture(report, { text = "" } = {}) {
@@ -56,5 +63,31 @@ export class BugReportTaskCapture {
     ));
     if (!workspace) return task;
     return this.taskBoard.move({ id: task.id, bucket: "workspace", workspaceId: workspace.id });
+  }
+
+  scan() {
+    if (!this.enabled) return Promise.resolve({ captured: 0, baseline: false });
+    if (
+      typeof this.reports?.addedSince !== "function"
+      || typeof this.cursorStore?.load !== "function"
+      || typeof this.cursorStore?.save !== "function"
+    ) {
+      return Promise.reject(new TypeError("reports and cursorStore are required for bug report synchronization"));
+    }
+    if (this.scanPromise) return this.scanPromise;
+    this.scanPromise = this.#scan().finally(() => { this.scanPromise = null; });
+    return this.scanPromise;
+  }
+
+  async #scan() {
+    const revision = await this.cursorStore.load();
+    const batch = await this.reports.addedSince(revision);
+    if (!revision || batch.baseline) {
+      await this.cursorStore.save(batch.head);
+      return { captured: 0, baseline: true, head: batch.head };
+    }
+    for (const report of batch.reports) this.capture(report, { text: report.text });
+    await this.cursorStore.save(batch.head);
+    return { captured: batch.reports.length, baseline: false, head: batch.head };
   }
 }

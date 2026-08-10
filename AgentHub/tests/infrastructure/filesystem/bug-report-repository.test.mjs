@@ -40,6 +40,7 @@ test("bug report commit and push contain only one generated report folder", asyn
     await writeFile(path.join(repository, "notes.txt"), "user staged change\n", "utf8");
     await git(repository, "add", "notes.txt");
     await writeFile(screenshot, PNG);
+    const baseline = (await git(repository, "rev-parse", "HEAD")).trim();
 
     const reports = new BugReportRepository({
       repository,
@@ -70,6 +71,19 @@ test("bug report commit and push contain only one generated report folder", asyn
       await git(root, `--git-dir=${origin}`, "show", `main:AgentHub/Bugs/bug-${reportId}/report.md`),
       /Кнопка не отвечает/u,
     );
+    assert.deepEqual(await reports.addedSince(""), {
+      head: (await git(repository, "rev-parse", "HEAD")).trim(),
+      reports: [],
+      baseline: true,
+    });
+    const incoming = await reports.addedSince(baseline);
+    assert.equal(incoming.baseline, false);
+    assert.deepEqual(incoming.reports, [{
+      id: reportId,
+      folder: `AgentHub/Bugs/bug-${reportId}`,
+      text: "Кнопка не отвечает",
+      screenshots: 1,
+    }]);
     await assert.rejects(() => readFile(screenshot), /ENOENT/u);
   } finally {
     await rm(root, { recursive: true, force: true });

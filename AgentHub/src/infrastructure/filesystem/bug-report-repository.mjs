@@ -51,6 +51,29 @@ function reportMarkdown({ text, source, submittedAt, screenshotNames }) {
   ].join("\n");
 }
 
+function reportFromMarkdown({ id, folder, markdown }) {
+  const normalized = String(markdown ?? "").replace(/\r\n?/gu, "\n");
+  const descriptionMarker = "## Description\n";
+  const descriptionStart = normalized.indexOf(descriptionMarker);
+  const screenshotsMarker = "\n## Screenshots\n";
+  const screenshotsStart = normalized.lastIndexOf(screenshotsMarker);
+  const descriptionEnd = screenshotsStart > descriptionStart ? screenshotsStart : normalized.length;
+  const description = descriptionStart < 0
+    ? ""
+    : normalized.slice(descriptionStart + descriptionMarker.length, descriptionEnd).trim();
+  const screenshots = screenshotsStart < 0
+    ? 0
+    : normalized.slice(screenshotsStart + screenshotsMarker.length)
+      .split("\n")
+      .filter((line) => /^-\s+\S/iu.test(line)).length;
+  return {
+    id,
+    folder,
+    text: description === "_Описание не добавлено._" ? "" : description,
+    screenshots,
+  };
+}
+
 async function defaultRunGit(repository, args) {
   try {
     const result = await execFileAsync("git", args, {
@@ -159,6 +182,31 @@ export class BugReportRepository {
       throw new Error("Локальная main должна быть синхронизирована с upstream перед отправкой бага");
     }
     return { head, remote, remoteBranch };
+  }
+
+  async addedSince(revision = "") {
+    const head = (await this.#git("rev-parse", "HEAD")).stdout.trim().toLowerCase();
+    const previous = String(revision ?? "").trim().toLowerCase();
+    if (!previous) return { head, reports: [], baseline: true };
+    if (!/^[0-9a-f]{40,64}$/u.test(previous)) return { head, reports: [], baseline: true };
+    try {
+      await this.#git("cat-file", "-e", `${previous}^{commit}`);
+    } catch {
+      return { head, reports: [], baseline: true };
+    }
+    if (previous === head) return { head, reports: [], baseline: false };
+    const changed = (await this.#git(
+      "diff", "--name-only", "--diff-filter=A", "-z", previous, head, "--", BUG_REPORTS_RELATIVE_ROOT,
+    )).stdout.split("\0").map(normalizedGitPath).filter(Boolean).sort();
+    const reports = [];
+    for (const reportFile of changed) {
+      const match = /^AgentHub\/Bugs\/bug-([0-9a-f-]{36})\/report\.md$/iu.exec(reportFile);
+      if (!match || !REPORT_ID_PATTERN.test(match[1])) continue;
+      const folder = reportFile.slice(0, -"/report.md".length);
+      const markdown = (await this.#git("show", `${head}:${reportFile}`)).stdout;
+      reports.push(reportFromMarkdown({ id: match[1].toLowerCase(), folder, markdown }));
+    }
+    return { head, reports, baseline: false };
   }
 
   async submit({ text = "", screenshots = [], reportId = "", source = "unknown" } = {}) {

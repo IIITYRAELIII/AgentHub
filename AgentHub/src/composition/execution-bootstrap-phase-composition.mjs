@@ -130,6 +130,7 @@ export function createExecutionBootstrapPhase({
       sendMessageTo: clients.sendMessageTo,
       telegram: clients.telegram,
       formatRestartCompleteMessage,
+      scheduleBugReportScan: clients.scheduleBugReportScan,
       uiCallback: api.uiCallback,
     },
     persistence: {

@@ -72,3 +72,66 @@ test("bug report Task text stays bounded and always contains its report path", (
   assert.equal(text.length, 20_000);
   assert.match(text, /…\n\nОтчёт: AgentHub\/Bugs\/bug-12345678-1234-4234-8234-123456789abc\/report\.md$/u);
 });
+
+test("first personal bug report scan records a baseline without importing old reports", async () => {
+  const { calls, taskBoard } = fixture([{ id: "agent-hub", name: "Agent HUB" }]);
+  const saved = [];
+  const capture = new BugReportTaskCapture({
+    taskBoard,
+    workspaceName: "Agent HUB",
+    reports: {
+      addedSince: async (revision) => {
+        assert.equal(revision, "");
+        return { head: "a".repeat(40), reports: [], baseline: true };
+      },
+    },
+    cursorStore: {
+      load: async () => "",
+      save: async (revision) => saved.push(revision),
+    },
+  });
+
+  assert.deepEqual(await capture.scan(), {
+    captured: 0, baseline: true, head: "a".repeat(40),
+  });
+  assert.deepEqual(saved, ["a".repeat(40)]);
+  assert.deepEqual(calls, []);
+});
+
+test("personal bug report scan captures reports added by a later Git pull", async () => {
+  const { calls, taskBoard } = fixture([{ id: "agent-hub", name: "Agent HUB" }]);
+  let cursor = "a".repeat(40);
+  const capture = new BugReportTaskCapture({
+    taskBoard,
+    workspaceName: "Agent HUB",
+    reports: {
+      addedSince: async (revision) => {
+        assert.equal(revision, "a".repeat(40));
+        return {
+          head: "b".repeat(40),
+          baseline: false,
+          reports: [{
+            id: "12345678-1234-4234-8234-123456789abc",
+            folder: "AgentHub/Bugs/bug-12345678-1234-4234-8234-123456789abc",
+            text: "Пришло через pull",
+            screenshots: 1,
+          }],
+        };
+      },
+    },
+    cursorStore: {
+      load: async () => cursor,
+      save: async (revision) => { cursor = revision; },
+    },
+  });
+
+  assert.deepEqual(await capture.scan(), {
+    captured: 1, baseline: false, head: "b".repeat(40),
+  });
+  assert.equal(cursor, "b".repeat(40));
+  assert.equal(calls[0][1].source, "bug-report");
+  assert.match(calls[0][1].text, /^Пришло через pull/u);
+  assert.deepEqual(calls[1], ["move", {
+    id: "task-1", bucket: "workspace", workspaceId: "agent-hub",
+  }]);
+});

@@ -18,6 +18,7 @@ export function createRuntimeTimersComposition({
   scheduleDeliveryOutboxFlush,
   selectedTaskWatch,
   scheduleCodexTerminalAudit,
+  scheduleBugReportScan,
   rateLimitTelemetry,
 }) {
   function stopRuntimeTimers() {
@@ -38,6 +39,7 @@ export function createRuntimeTimersComposition({
     if (telegramEnabled) scheduleDeliveryOutboxFlush(1_000);
     selectedTaskWatch.schedule(500);
     scheduleCodexTerminalAudit(500);
+    scheduleBugReportScan(500);
     rateLimitTelemetry.schedule(1_000);
   }
 

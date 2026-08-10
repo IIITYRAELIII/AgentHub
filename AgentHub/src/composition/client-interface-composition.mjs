@@ -18,7 +18,10 @@ import { MiniAppPublisher } from "../interfaces/web/mini-app-publisher.mjs";
 import { SharedDashboardBotClient } from "../interfaces/web/shared-dashboard-bot-client.mjs";
 import { miniAppMenuButtonRequests } from "../interfaces/web/mini-app-server.mjs";
 import { BugReportRepository } from "../infrastructure/filesystem/bug-report-repository.mjs";
+import { BugReportCaptureCursorStore } from "../infrastructure/persistence/bug-report-capture-cursor-store.mjs";
 import { QuickTunnelController } from "../infrastructure/network/quick-tunnel.mjs";
+
+const BUG_REPORT_SCAN_INTERVAL_MS = 10_000;
 
 export async function createClientInterfaceComposition({
   config,
@@ -143,7 +146,24 @@ export async function createClientInterfaceComposition({
   const bugReportTasks = new BugReportTaskCapture({
     taskBoard,
     workspaceName: config.taskBoard.bugReportWorkspaceName,
+    reports: bugReports,
+    cursorStore: new BugReportCaptureCursorStore({
+      filePath: path.join(config.dataDir, "bug-report-capture.json"),
+    }),
   });
+  const scheduleBugReportScan = (delayMs = BUG_REPORT_SCAN_INTERVAL_MS) => {
+    if (!bugReportTasks.enabled || isStopping()) return false;
+    return runtimeTimers.schedule("bug-report-capture", async () => {
+      try {
+        const result = await bugReportTasks.scan();
+        if (result.captured) console.log(`Added ${result.captured} fresh bug report(s) to Dashboard`);
+      } catch (error) {
+        console.warn(`Cannot scan fresh bug reports for Dashboard: ${error.message}`);
+      } finally {
+        scheduleBugReportScan();
+      }
+    }, Math.max(0, Number(delayMs) || 0));
+  };
   const desktopSubmitBugReport = async (params, context) => {
     const files = await desktopAttachments.paths(params?.attachments);
     try {
@@ -156,6 +176,7 @@ export async function createClientInterfaceComposition({
       });
       try {
         bugReportTasks.capture(result, { text: params?.text });
+        await bugReportTasks.scan();
       } catch (error) {
         console.warn(`Cannot add bug report ${result.id} to Dashboard: ${error.message}`);
       }
@@ -254,6 +275,7 @@ export async function createClientInterfaceComposition({
     importCodexDesktopAttachments: (...args) => desktopAttachments.importCodex(...args),
     desktopOpenAttachment: (...args) => desktopAttachments.open(...args),
     desktopSubmitBugReport,
+    scheduleBugReportScan,
     telegramMultipart,
     sendStatusCard,
     sendMessage,

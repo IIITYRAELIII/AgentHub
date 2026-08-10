@@ -106,6 +106,7 @@ export function createRuntimeOrchestrationComposition({
     sendMessageTo,
     telegram,
     formatRestartCompleteMessage,
+    scheduleBugReportScan,
     uiCallback,
   } = clients;
   const {
@@ -231,6 +232,7 @@ export function createRuntimeOrchestrationComposition({
     scheduleDeliveryOutboxFlush,
     selectedTaskWatch,
     scheduleCodexTerminalAudit,
+    scheduleBugReportScan,
     rateLimitTelemetry,
   });
 
