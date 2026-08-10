@@ -25,6 +25,8 @@ async function fixture(t, classify) {
 
 test("Spark correction and confident Workspace suggestion place a Task automatically", async (t) => {
   const service = await fixture(t, async () => ({
+    title: "Исправить дашборд",
+    description: "Нужно исправить дашборд Agent Hub.",
     correctedText: "Исправить дашборд Agent Hub",
     category: "task",
     workspaceId: "agent-hub",
@@ -35,12 +37,16 @@ test("Spark correction and confident Workspace suggestion place a Task automatic
   await service.waitForTriage();
   const task = service.task(created.id);
   assert.equal(task.correctedText, "Исправить дашборд Agent Hub");
+  assert.equal(task.title, "Исправить дашборд Agent Hub");
+  assert.equal(task.description, "");
   assert.equal(task.bucket, "workspace");
   assert.equal(task.workspaceId, "agent-hub");
 });
 
 test("uncertain Spark suggestion leaves a Task in the backlog", async (t) => {
   const service = await fixture(t, async () => ({
+    title: "Что-то проверить",
+    description: "",
     correctedText: "Что-то проверить",
     category: "unknown",
     workspaceId: null,
@@ -52,6 +58,28 @@ test("uncertain Spark suggestion leaves a Task in the backlog", async (t) => {
   const task = service.task(created.id);
   assert.equal(task.bucket, "backlog");
   assert.equal(task.triageStatus, "completed");
+});
+
+test("Telegram bundle rules are passed to Spark outside the Task text", async (t) => {
+  let classifierInput;
+  const service = await fixture(t, async (input) => {
+    classifierInput = input;
+    return {
+      title: "Исправить дату документа",
+      description: "Пересланный контекст и уточнение пользователя.",
+      correctedText: input.text,
+      category: "task",
+      workspaceId: null,
+      confidence: 0.4,
+      reason: "Workspace не определён",
+    };
+  });
+  const text = "--- Сообщение 1 · Переслано · Клиент ---\nИсправить дату документа";
+  service.create({ text, source: "telegram", sourceDetails: { bundleId: "bundle-1" } });
+  await service.waitForTriage();
+  assert.equal(classifierInput.text, text);
+  assert.equal(classifierInput.inputKind, "telegram-forward-bundle");
+  assert.doesNotMatch(classifierInput.text, /Ниже пакет сообщений/u);
 });
 
 test("disabled Spark leaves new Tasks idle and clears recovered triage", () => {

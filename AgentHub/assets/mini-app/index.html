@@ -438,6 +438,25 @@
     <div class="task-board-columns" data-task-board-columns aria-live="polite"></div>
   </main>
 
+  <dialog class="task-card-modal" data-task-card-modal>
+    <header>
+      <div>
+        <p class="eyebrow" data-task-card-source>Задача</p>
+        <h2 data-task-card-title>Задача</h2>
+      </div>
+      <button type="button" class="icon-button" data-task-card-close aria-label="Закрыть">×</button>
+    </header>
+    <section class="task-card-content">
+      <p class="task-card-description" data-task-card-description></p>
+      <p class="task-card-empty-description" data-task-card-empty-description>Описание не добавлено.</p>
+      <details class="board-task-original" data-task-card-original>
+        <summary>Исходный текст</summary>
+        <p data-task-card-original-text></p>
+      </details>
+    </section>
+    <footer class="board-task-actions" data-task-card-actions></footer>
+  </dialog>
+
   <dialog class="task-start-modal" data-task-start-modal>
     <header>
       <div>

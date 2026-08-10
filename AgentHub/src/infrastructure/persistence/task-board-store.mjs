@@ -4,9 +4,11 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import {
+  LEGACY_TELEGRAM_BUNDLE_PREFIX,
   normalizedTaskBucket,
   normalizedTaskCategory,
   normalizedTaskText,
+  taskPresentation,
 } from "../../domain/task-board-task.mjs";
 
 const NOTES_COLUMN_ID = "notes";
@@ -18,6 +20,8 @@ function configure(database) {
     CREATE TABLE IF NOT EXISTS hub_board_tasks (
       id TEXT PRIMARY KEY,
       raw_text TEXT NOT NULL,
+      title TEXT NOT NULL DEFAULT '',
+      description TEXT NOT NULL DEFAULT '',
       corrected_text TEXT,
       category TEXT NOT NULL DEFAULT 'unknown',
       bucket TEXT NOT NULL DEFAULT 'backlog',
@@ -69,6 +73,26 @@ function configure(database) {
   if (!taskColumns.some((column) => column.name === "board_order")) {
     database.exec("ALTER TABLE hub_board_tasks ADD COLUMN board_order INTEGER NOT NULL DEFAULT 0");
   }
+  if (!taskColumns.some((column) => column.name === "title")) {
+    database.exec("ALTER TABLE hub_board_tasks ADD COLUMN title TEXT NOT NULL DEFAULT ''");
+  }
+  if (!taskColumns.some((column) => column.name === "description")) {
+    database.exec("ALTER TABLE hub_board_tasks ADD COLUMN description TEXT NOT NULL DEFAULT ''");
+  }
+  const legacyPrefixPattern = `${LEGACY_TELEGRAM_BUNDLE_PREFIX}%`;
+  const contentOffset = LEGACY_TELEGRAM_BUNDLE_PREFIX.length + 1;
+  database.prepare(`
+    UPDATE hub_board_tasks SET
+      raw_text = substr(raw_text, ?),
+      corrected_text = CASE
+        WHEN corrected_text LIKE ? THEN substr(corrected_text, ?)
+        ELSE corrected_text
+      END,
+      title = '', description = '',
+      triage_status = CASE WHEN status = 'done' THEN triage_status ELSE 'pending' END,
+      triage_error = NULL
+    WHERE source_key LIKE 'shared-dashboard:%' AND raw_text LIKE ?
+  `).run(contentOffset, legacyPrefixPattern, contentOffset, legacyPrefixPattern);
   database.exec(`
     CREATE INDEX IF NOT EXISTS hub_board_tasks_board_order_idx
       ON hub_board_tasks(status, bucket, workspace_id, board_order);
@@ -133,9 +157,14 @@ function parseJson(value) {
 
 function taskFromRow(row) {
   if (!row) return null;
+  const presentation = String(row.title ?? "").trim()
+    ? { title: row.title, description: row.description ?? "" }
+    : taskPresentation(row.corrected_text ?? row.raw_text);
   return {
     id: row.id,
     rawText: row.raw_text,
+    title: presentation.title,
+    description: presentation.description,
     correctedText: row.corrected_text ?? "",
     category: row.category,
     bucket: row.bucket,
@@ -180,6 +209,7 @@ export class TaskBoardStore {
 
   create({ text, source = "hub", sourceKey = null, sourceDetails = {}, triageStatus = "pending" } = {}) {
     const rawText = normalizedTaskText(text);
+    const presentation = taskPresentation(rawText);
     const normalizedSourceKey = String(sourceKey ?? "").trim() || null;
     const initialTriageStatus = triageStatus === "disabled" ? "disabled" : "pending";
     return this.#withDatabase((database) => {
@@ -194,12 +224,14 @@ export class TaskBoardStore {
       const boardOrder = taskLocationRows(database, "backlog").length;
       database.prepare(`
         INSERT INTO hub_board_tasks (
-          id, raw_text, source, source_key, source_json, triage_status,
+          id, raw_text, title, description, source, source_key, source_json, triage_status,
           board_order, created_at_ms, updated_at_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         id,
         rawText,
+        presentation.title,
+        presentation.description,
         String(source ?? "hub").trim() || "hub",
         normalizedSourceKey,
         JSON.stringify(sourceDetails ?? {}),
@@ -256,6 +288,8 @@ export class TaskBoardStore {
   }
 
   applyTriage(id, {
+    title,
+    description,
     correctedText,
     category,
     confidence,
@@ -266,6 +300,7 @@ export class TaskBoardStore {
   } = {}) {
     const taskId = String(id ?? "").trim();
     const normalizedCorrectedText = normalizedTaskText(correctedText);
+    const presentation = taskPresentation(normalizedCorrectedText, { title, description });
     const normalizedCategory = normalizedTaskCategory(category);
     const normalizedBucket = normalizedTaskBucket(bucket);
     const numericConfidence = Math.max(0, Math.min(1, Number(confidence) || 0));
@@ -278,11 +313,13 @@ export class TaskBoardStore {
         && current.status === "open";
       database.prepare(`
         UPDATE hub_board_tasks SET
-          corrected_text = ?, category = ?, triage_status = 'completed',
+          title = ?, description = ?, corrected_text = ?, category = ?, triage_status = 'completed',
           triage_confidence = ?, triage_reason = ?, triage_error = NULL,
           bucket = ?, workspace_id = ?, placement_source = ?, updated_at_ms = ?
         WHERE id = ?
       `).run(
+        presentation.title,
+        presentation.description,
         normalizedCorrectedText,
         normalizedCategory,
         numericConfidence,

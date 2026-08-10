@@ -3651,7 +3651,7 @@ html[data-view="dashboard"] .task-board-view {
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
   box-shadow: var(--card-shadow);
-  cursor: grab;
+  cursor: pointer;
   padding: 0.65rem;
 }
 
@@ -3668,6 +3668,21 @@ html[data-view="dashboard"] .task-board-view {
   box-shadow: none;
   cursor: default;
   padding: 0.5rem;
+}
+
+.board-task-card:focus-visible {
+  border-color: var(--accent-line);
+  box-shadow: var(--accent-glow);
+  outline: none;
+}
+
+.board-task-title {
+  color: var(--text);
+  font-size: 0.8rem;
+  font-weight: 600;
+  line-height: 1.35;
+  margin: 0;
+  overflow-wrap: anywhere;
 }
 
 .board-task-card-head,
@@ -3748,7 +3763,8 @@ html[data-view="dashboard"] .task-board-view {
   color: #ff9d9d;
 }
 
-.task-start-modal {
+.task-start-modal,
+.task-card-modal {
   background: var(--surface-1);
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-lg);
@@ -3759,9 +3775,57 @@ html[data-view="dashboard"] .task-board-view {
   width: calc(100% - 2rem);
 }
 
-.task-start-modal::backdrop {
+.task-start-modal::backdrop,
+.task-card-modal::backdrop {
   background: rgba(2, 5, 10, 0.76);
   backdrop-filter: blur(3px);
+}
+
+.task-card-modal > header,
+.task-card-modal > section,
+.task-card-modal > footer {
+  padding: 0.85rem 1rem;
+}
+
+.task-card-modal > header {
+  align-items: start;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+}
+
+.task-card-modal > footer {
+  border-top: 1px solid var(--line);
+  margin-top: 0;
+}
+
+.task-card-modal h2,
+.task-card-modal p {
+  margin: 0;
+}
+
+.task-card-modal h2 {
+  font-size: 1rem;
+  margin-top: 0.2rem;
+}
+
+.task-card-content {
+  display: grid;
+  gap: 0.75rem;
+  max-height: min(55dvh, 30rem);
+  overflow-y: auto;
+}
+
+.task-card-description {
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.task-card-empty-description {
+  color: var(--text-faint);
+  font-size: 0.72rem;
 }
 
 .workspace-card-modal {

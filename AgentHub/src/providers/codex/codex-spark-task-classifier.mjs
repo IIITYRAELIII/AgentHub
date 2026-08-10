@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { captureProcess } from "../../infrastructure/process/process-capture.mjs";
+import { TELEGRAM_BUNDLE_TRIAGE_INSTRUCTIONS } from "../../domain/task-board-task.mjs";
 import { resolveCodexExecutable } from "./codex-invocation.mjs";
 
 const DASHBOT_STREAM_META_KEY = "task_board.spark_stream_id";
@@ -12,8 +13,10 @@ const DASHBOT_STREAM_NAME = "DashBot";
 const OUTPUT_SCHEMA = Object.freeze({
   type: "object",
   additionalProperties: false,
-  required: ["correctedText", "category", "workspaceId", "confidence", "reason"],
+  required: ["title", "description", "correctedText", "category", "workspaceId", "confidence", "reason"],
   properties: {
+    title: { type: "string", minLength: 1, maxLength: 160 },
+    description: { type: "string", maxLength: 20_000 },
     correctedText: { type: "string", minLength: 1, maxLength: 20_000 },
     category: { type: "string", enum: ["task", "note", "unknown"] },
     workspaceId: { type: ["string", "null"] },
@@ -22,14 +25,20 @@ const OUTPUT_SCHEMA = Object.freeze({
   },
 });
 
-export function taskClassifierPrompt({ text, workspaces }) {
+export function taskClassifierPrompt({ text, workspaces, inputKind = "plain" }) {
+  const bundleInstructions = inputKind === "telegram-forward-bundle" ? [
+    ...TELEGRAM_BUNDLE_TRIAGE_INSTRUCTIONS,
+  ] : [];
   return [
     "Ты сортировщик личных записей Agent Hub.",
     "Исправь только явные опечатки, пунктуацию и регистр, не меняя смысл и не добавляя фактов.",
+    "Верни отдельные title и description. title — краткий понятный заголовок задачи, description — её полное исправленное содержание без потери деталей.",
+    "Если содержательная запись короткая, перенеси её целиком в title, а description верни пустым.",
     "category=note используй для фильмов, сериалов, игр, книг, идей на потом и справочных заметок.",
     "category=task используй для действий, которые нужно выполнить.",
     "Выбери workspaceId только когда назначение однозначно следует из текста.",
     "Если не уверен, верни workspaceId=null и низкую confidence.",
+    ...bundleInstructions,
     `Доступные Workspace: ${JSON.stringify(workspaces)}`,
     `Исходная запись: ${JSON.stringify(String(text))}`,
   ].join("\n");
@@ -41,14 +50,21 @@ export function parseTaskClassifierResult(value) {
     throw new Error("Spark вернул некорректный результат");
   }
   const correctedText = String(parsed.correctedText ?? "").trim();
+  const title = String(parsed.title ?? "").replace(/\s+/gu, " ").trim();
+  const description = String(parsed.description ?? "").trim();
   const category = String(parsed.category ?? "unknown").trim().toLowerCase();
   const confidence = Number(parsed.confidence);
   if (!correctedText) throw new Error("Spark не вернул исправленный текст");
+  if (!title) throw new Error("Spark не вернул заголовок");
+  if (title.length > 160) throw new Error("Spark вернул слишком длинный заголовок");
+  if (description.length > 20_000) throw new Error("Spark вернул слишком длинное описание");
   if (!["task", "note", "unknown"].includes(category)) throw new Error("Spark вернул неизвестную категорию");
   if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) {
     throw new Error("Spark вернул некорректную уверенность");
   }
   return {
+    title,
+    description,
     correctedText,
     category,
     workspaceId: parsed.workspaceId == null ? null : String(parsed.workspaceId).trim() || null,

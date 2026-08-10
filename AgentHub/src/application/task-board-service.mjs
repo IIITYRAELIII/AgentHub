@@ -180,12 +180,18 @@ export class TaskBoardService {
       name: workspace.name,
     }));
     try {
-      const result = await this.classify({ text: task.rawText, workspaces });
+      const result = await this.classify({
+        text: task.rawText,
+        workspaces,
+        inputKind: task.sourceDetails?.bundleId ? "telegram-forward-bundle" : "plain",
+      });
       const confidence = Math.max(0, Math.min(1, Number(result?.confidence) || 0));
       const suggestedWorkspace = workspaces.find((workspace) => workspace.id === result?.workspaceId) ?? null;
       const wantsNotes = result?.category === "note";
       const autoPlace = confidence >= this.autoPlaceConfidence && (wantsNotes || suggestedWorkspace);
       this.store.applyTriage(id, {
+        title: result?.title,
+        description: result?.description,
         correctedText: result?.correctedText || task.rawText,
         category: result?.category,
         confidence,

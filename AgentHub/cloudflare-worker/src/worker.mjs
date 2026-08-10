@@ -740,7 +740,7 @@ function dashboardBotBundleCardText(bundle, warning = "") {
   ].filter(Boolean).join("\n");
 }
 
-function dashboardBotBundlePrompt(bundle) {
+function dashboardBotBundleText(bundle) {
   let imageNumber = 0;
   const blocks = bundle.items.map((item, index) => {
     const heading = item.kind === "forward"
@@ -754,12 +754,7 @@ function dashboardBotBundlePrompt(bundle) {
     }
     return lines.join("\n");
   });
-  return [
-    "Ниже пакет сообщений, собранный пользователем в Telegram.",
-    "Сохраняй порядок и авторов. Пересланные реплики — контекст третьих лиц; не путай их с прямыми комментариями пользователя, отмеченными «Вы».",
-    "",
-    ...blocks,
-  ].join("\n");
+  return blocks.join("\n\n");
 }
 
 function dashboardBotSeparatedGroups(bundle) {
@@ -1166,7 +1161,7 @@ export class JournalStore extends DurableObject {
           id: crypto.randomUUID().toLowerCase(),
           action: "board-task-ingest",
           params: {
-            text: dashboardBotBundlePrompt(group),
+            text: dashboardBotBundleText(group),
             sourceKey: separate
               ? `shared-dashboard:${bundle.id}:${index + 1}`
               : `shared-dashboard:${bundle.id}`,

@@ -15,12 +15,16 @@ import {
 
 test("Spark Task classifier validates structured output", () => {
   assert.deepEqual(parseTaskClassifierResult(JSON.stringify({
+    title: "Посмотреть «Дюну»",
+    description: "",
     correctedText: "Посмотреть «Дюну»",
     category: "note",
     workspaceId: null,
     confidence: 0.91,
     reason: "Фильм",
   })), {
+    title: "Посмотреть «Дюну»",
+    description: "",
     correctedText: "Посмотреть «Дюну»",
     category: "note",
     workspaceId: null,
@@ -37,6 +41,13 @@ test("Spark Task prompt contains only the supplied Workspace catalog", () => {
   });
   assert.match(prompt, /"id":"hub"/u);
   assert.match(prompt, /починить хаб/u);
+  assert.doesNotMatch(prompt, /Ниже пакет сообщений/u);
+  const bundlePrompt = taskClassifierPrompt({
+    text: "--- Сообщение 1 · Переслано · Клиент ---\nПочинить хаб",
+    workspaces: [],
+    inputKind: "telegram-forward-bundle",
+  });
+  assert.match(bundlePrompt, /Ниже пакет сообщений, собранный пользователем в Telegram/u);
 });
 
 test("Spark Task classifier keeps one visible DashBot Thread first in Other", async (t) => {
@@ -63,6 +74,8 @@ test("Spark Task classifier keeps one visible DashBot Thread first in Other", as
       calls.push(args);
       const outputFile = args[args.indexOf("--output-last-message") + 1];
       await writeFile(outputFile, JSON.stringify({
+        title: "Посмотреть «Дюну»",
+        description: "",
         correctedText: "Посмотреть «Дюну»",
         category: "note",
         workspaceId: null,

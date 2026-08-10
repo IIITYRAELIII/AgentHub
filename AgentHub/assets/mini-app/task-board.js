@@ -6,6 +6,14 @@
   const workspacePanel = document.querySelector("[data-workspace-task-panel]");
   const workspacePanelList = document.querySelector("[data-workspace-task-list]");
   const workspacePanelTitle = document.querySelector("[data-workspace-task-title]");
+  const taskCardModal = document.querySelector("[data-task-card-modal]");
+  const taskCardSource = document.querySelector("[data-task-card-source]");
+  const taskCardTitle = document.querySelector("[data-task-card-title]");
+  const taskCardDescription = document.querySelector("[data-task-card-description]");
+  const taskCardEmptyDescription = document.querySelector("[data-task-card-empty-description]");
+  const taskCardOriginal = document.querySelector("[data-task-card-original]");
+  const taskCardOriginalText = document.querySelector("[data-task-card-original-text]");
+  const taskCardActions = document.querySelector("[data-task-card-actions]");
   const startModal = document.querySelector("[data-task-start-modal]");
   const startTitle = document.querySelector("[data-task-start-title]");
   const startOptions = document.querySelector("[data-task-start-options]");
@@ -25,6 +33,7 @@
     notesComment: "Игры, фильмы, сериалы и идеи",
     selectedWorkspaceId: null,
     provider: "codex",
+    openTaskId: null,
     startingTaskId: null,
     creatingWorkspaceId: null,
     draggingColumnId: null,
@@ -104,7 +113,7 @@
     const workspace = workspaceById(task.workspaceId);
     if (!workspace) return;
     state.startingTaskId = task.id;
-    startTitle.textContent = task.text;
+    startTitle.textContent = task.title || task.text;
     startOptions.replaceChildren();
     for (const stream of workspace.streams ?? []) {
       startOptions.append(node("button", {
@@ -127,7 +136,7 @@
     if (!(workspace.streams ?? []).length) {
       startOptions.append(node("p", { class: "task-start-empty", text: "В Workspace пока нет Streams." }));
     }
-    startNewName.value = task.text.split("\n")[0].slice(0, 80);
+    startNewName.value = (task.title || task.text).slice(0, 80);
     startProvider.value = state.provider;
     startModal.showModal?.();
     if (!startModal.open) startModal.setAttribute("open", "");
@@ -139,11 +148,80 @@
     startModal.removeAttribute("open");
   }
 
+  function closeTaskCard() {
+    state.openTaskId = null;
+    taskCardModal?.close?.();
+    taskCardModal?.removeAttribute("open");
+  }
+
+  function renderOpenTaskCard() {
+    if (!taskCardModal) return;
+    const task = state.tasks.find((item) => item.id === state.openTaskId && item.status !== "done");
+    if (!task) {
+      if (state.openTaskId) closeTaskCard();
+      return;
+    }
+    taskCardSource.textContent = task.source === "telegram" ? "Telegram" : "Hub";
+    taskCardTitle.textContent = task.title || task.text;
+    const description = String(task.description ?? "").trim();
+    taskCardDescription.textContent = description;
+    taskCardDescription.hidden = !description;
+    taskCardEmptyDescription.hidden = Boolean(description);
+    const hasOriginal = Boolean(task.correctedText && task.correctedText.trim() !== task.rawText.trim());
+    taskCardOriginal.hidden = !hasOriginal;
+    taskCardOriginalText.textContent = hasOriginal ? task.rawText : "";
+    const actions = [];
+    if (task.bucket === "workspace") {
+      actions.push(node("button", {
+        type: "button",
+        class: "board-task-primary",
+        text: task.status === "started" ? "Продолжить" : "Начать работу",
+        onclick: () => { closeTaskCard(); openStart(task); },
+      }));
+    }
+    actions.push(destinationSelect(task));
+    if (task.triageStatus === "failed") {
+      actions.push(node("button", {
+        type: "button", class: "board-task-quiet", text: "Повторить Spark",
+        onclick: () => emit("retry-triage", { id: task.id }),
+      }));
+    }
+    actions.push(node("button", {
+      type: "button", class: "board-task-quiet", text: "Готово",
+      onclick: () => { closeTaskCard(); emit("complete", { id: task.id }); },
+    }));
+    actions.push(node("button", {
+      type: "button", class: "board-task-remove", text: "Удалить",
+      onclick: () => {
+        if (!window.confirm("Удалить задачу без возможности восстановления?")) return;
+        closeTaskCard();
+        emit("remove", { id: task.id });
+      },
+    }));
+    taskCardActions.replaceChildren(...actions);
+  }
+
+  function openTaskCard(task) {
+    state.openTaskId = task.id;
+    renderOpenTaskCard();
+    taskCardModal.showModal?.();
+    if (!taskCardModal.open) taskCardModal.setAttribute("open", "");
+  }
+
   function taskCard(task, { compact = false } = {}) {
     const card = node("article", {
       class: `board-task-card${task.status === "started" ? " is-started" : ""}${compact ? " is-compact" : ""}`,
       draggable: compact ? null : "true",
+      role: "button",
+      tabindex: "0",
+      "aria-label": `Открыть задачу ${task.title || task.text}`,
       "data-board-task-id": task.id,
+      onclick: () => openTaskCard(task),
+      onkeydown: (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        openTaskCard(task);
+      },
       ondragstart: (event) => {
         event.dataTransfer.setData(TASK_MIME, task.id);
         event.dataTransfer.setData("text/plain", task.id);
@@ -171,38 +249,7 @@
         moveTask(draggedTask, destinationValue(task), task.id);
       });
     }
-    const heading = node("div", { class: "board-task-card-head" }, [
-      node("span", { class: "board-task-source", text: task.source === "telegram" ? "Telegram" : "Hub" }),
-    ]);
-    const text = node("p", { class: "board-task-text", text: task.text });
-    const actions = node("div", { class: "board-task-actions" });
-    if (task.bucket === "workspace") {
-      actions.append(node("button", {
-        type: "button", class: "board-task-primary", text: task.status === "started" ? "Продолжить" : "Начать работу",
-        onclick: () => openStart(task),
-      }));
-    }
-    if (!compact) {
-      actions.append(destinationSelect(task));
-      actions.append(node("button", {
-        type: "button", class: "board-task-quiet", text: "Готово",
-        onclick: () => emit("complete", { id: task.id }),
-      }));
-      actions.append(node("button", {
-        type: "button", class: "board-task-remove", text: "Удалить",
-        onclick: () => {
-          if (window.confirm("Удалить задачу без возможности восстановления?")) emit("remove", { id: task.id });
-        },
-      }));
-    }
-    card.append(heading, text);
-    if (task.correctedText && task.correctedText.trim() !== task.rawText.trim() && !compact) {
-      card.append(node("details", { class: "board-task-original" }, [
-        node("summary", { text: "Исходный текст" }),
-        node("p", { text: task.rawText }),
-      ]));
-    }
-    card.append(actions);
+    card.append(node("h3", { class: "board-task-title", text: task.title || task.text }));
     return card;
   }
 
@@ -357,6 +404,8 @@
   }
 
   document.querySelector("[data-task-start-close]")?.addEventListener("click", closeStart);
+  document.querySelector("[data-task-card-close]")?.addEventListener("click", closeTaskCard);
+  taskCardModal?.addEventListener("cancel", (event) => { event.preventDefault(); closeTaskCard(); });
   startModal.addEventListener("cancel", (event) => { event.preventDefault(); closeStart(); });
   startNewForm.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -386,6 +435,7 @@
       state.provider = payload.provider === "claude" ? "claude" : "codex";
       renderBoard();
       renderWorkspacePanel();
+      renderOpenTaskCard();
     },
   });
 })();

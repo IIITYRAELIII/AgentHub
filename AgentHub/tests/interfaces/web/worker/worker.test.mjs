@@ -1041,6 +1041,7 @@ test("shared Dashboard bot can send forwards separately with their reply clarifi
   assert.equal(firstCommand.action, "board-task-ingest");
   assert.match(firstCommand.params.attachments[0], /^remote-attachment:[0-9a-f-]{36}$/u);
   assert.match(firstCommand.params.text, /Переслано · Заказчик/u);
+  assert.doesNotMatch(firstCommand.params.text, /Ниже пакет сообщений/u);
   assert.match(firstCommand.params.text, /Изображение 1 приложено/u);
   assert.match(firstCommand.params.text, /Уточнение только для первой задачи/u);
   assert.doesNotMatch(firstCommand.params.text, /Вторая независимая задача|Уточнение только для второй/u);
@@ -1093,6 +1094,7 @@ test("shared Dashboard bot can send forwards separately with their reply clarifi
   ), env);
   const [bundledCommand] = (await response.json()).commands;
   assert.equal(bundledCommand.params.sourceDetails.separate, false);
+  assert.doesNotMatch(bundledCommand.params.text, /Ниже пакет сообщений/u);
   assert.match(bundledCommand.params.sourceKey, /^shared-dashboard:[0-9a-f-]{36}$/u);
 });
 

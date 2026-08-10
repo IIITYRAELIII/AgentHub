@@ -23,6 +23,8 @@ test("Task store deduplicates Telegram updates and persists capture mode", async
   const duplicate = store.create({ text: "Другой текст", source: "telegram", sourceKey: "telegram:1:2" });
   assert.equal(duplicate.id, first.id);
   assert.equal(duplicate.rawText, "Купить молоко");
+  assert.equal(duplicate.title, "Купить молоко");
+  assert.equal(duplicate.description, "");
   assert.equal(store.captureEnabled(1), false);
   store.setCaptureEnabled(1, true);
   assert.equal(store.captureEnabled(1), true);
@@ -40,6 +42,8 @@ test("manual Task placement is not overwritten by a late Spark result", async (t
   const task = store.create({ text: "посмотреть дюну" });
   store.move(task.id, { bucket: "workspace", workspaceId: "workspace-manual" });
   const triaged = store.applyTriage(task.id, {
+    title: "Посмотреть «Дюну»",
+    description: "",
     correctedText: "Посмотреть «Дюну»",
     category: "note",
     confidence: 0.98,
@@ -47,9 +51,47 @@ test("manual Task placement is not overwritten by a late Spark result", async (t
     autoPlace: true,
   });
   assert.equal(triaged.correctedText, "Посмотреть «Дюну»");
+  assert.equal(triaged.title, "Посмотреть «Дюну»");
+  assert.equal(triaged.description, "");
   assert.equal(triaged.bucket, "workspace");
   assert.equal(triaged.workspaceId, "workspace-manual");
   assert.equal(triaged.placementSource, "manual");
+});
+
+test("Task store removes legacy bundle instructions and schedules open Tasks for new triage", async (t) => {
+  const store = await fixture(t);
+  const prefix = [
+    "Ниже пакет сообщений, собранный пользователем в Telegram.",
+    "Сохраняй порядок и авторов. Пересланные реплики — контекст третьих лиц; не путай их с прямыми комментариями пользователя, отмеченными «Вы».",
+    "",
+  ].join("\n");
+  const created = store.create({
+    text: `${prefix}\n--- Сообщение 1 · Переслано · Клиент ---\nИсправить дату`,
+    source: "telegram",
+    sourceKey: "shared-dashboard:legacy",
+    triageStatus: "disabled",
+  });
+  const migrated = store.task(created.id);
+  assert.equal(migrated.rawText, "--- Сообщение 1 · Переслано · Клиент ---\nИсправить дату");
+  assert.equal(migrated.title, "Исправить дату");
+  assert.equal(migrated.triageStatus, "pending");
+});
+
+test("long Tasks persist a separate Spark title and description", async (t) => {
+  const store = await fixture(t);
+  const text = "Первая строка с контекстом\nВторая строка с подробностями задачи";
+  const task = store.create({ text });
+  assert.equal(task.title, "Первая строка с контекстом");
+  assert.equal(task.description, text);
+  const triaged = store.applyTriage(task.id, {
+    title: "Проверить многострочную задачу",
+    description: "Полное уточнённое описание задачи",
+    correctedText: text,
+    category: "task",
+    confidence: 0.9,
+  });
+  assert.equal(triaged.title, "Проверить многострочную задачу");
+  assert.equal(triaged.description, "Полное уточнённое описание задачи");
 });
 
 test("Task card order persists within and between columns", async (t) => {
