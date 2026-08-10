@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { webcrypto } from "node:crypto";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -56,4 +56,39 @@ test("trusted device store pairs, authorizes, persists and revokes an Android ke
   assert.equal(persisted.devices[paired.device.id].revokedAt, now);
 
   now += 1;
+});
+
+test("trusted device store removes only revoked legacy diagnostic devices", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-device-cleanup-"));
+  const filePath = path.join(directory, "devices.json");
+  const activeId = "018f6c86-3f34-7a31-8f27-16f5b96cce19";
+  const revokedId = "018f6c86-3f34-7a31-8f27-16f5b96cce20";
+  await writeFile(filePath, JSON.stringify({
+    version: 1,
+    pairings: {},
+    challenges: {},
+    sessions: {},
+    devices: {
+      [activeId]: {
+        id: activeId,
+        userId: "42",
+        name: "Diagnostic temporary device",
+        platform: "Browser",
+        createdAt: 1,
+        revokedAt: null,
+      },
+      [revokedId]: {
+        id: revokedId,
+        userId: "42",
+        name: "Diagnostic temporary device",
+        platform: "Browser",
+        createdAt: 1,
+        revokedAt: 2,
+      },
+    },
+  }));
+  const store = new TrustedDeviceStore({ filePath, now: () => 3 });
+  await store.load();
+  assert.deepEqual((await store.list("42")).devices.map((device) => device.id), [activeId]);
+  assert.deepEqual(Object.keys(JSON.parse(await readFile(filePath, "utf8")).devices), [activeId]);
 });

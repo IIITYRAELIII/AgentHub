@@ -13,6 +13,7 @@ const DEVICE_CODE_PATTERN = /^[A-Z2-7]{20}$/u;
 const DEVICE_PUBLIC_KEY_PATTERN = /^[A-Za-z0-9_-]{80,256}$/u;
 const DEVICE_SIGNATURE_PATTERN = /^[A-Za-z0-9_-]{86}$/u;
 const SESSION_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
+const LEGACY_DIAGNOSTIC_DEVICE_NAMES = new Set(["Diagnostic temporary device"]);
 
 function base64Url(value) {
   return Buffer.from(value).toString("base64url");
@@ -109,6 +110,11 @@ export class TrustedDeviceStore {
         delete this.#state[field][key];
         changed = true;
       }
+    }
+    for (const [deviceId, record] of Object.entries(this.#state.devices)) {
+      if (!record?.revokedAt || !LEGACY_DIAGNOSTIC_DEVICE_NAMES.has(String(record.name))) continue;
+      delete this.#state.devices[deviceId];
+      changed = true;
     }
     return changed;
   }
