@@ -10419,8 +10419,10 @@ html[data-surface="mobile"] .server-config-inline-label {
   align-items: center;
   display: grid;
   gap: 0.7rem;
-  grid-template-columns: minmax(7rem, auto) minmax(12rem, 22rem);
+  grid-template-columns: max-content minmax(12rem, 22rem);
+  justify-content: start;
   margin-bottom: 0.8rem;
+  width: min(100%, 30rem);
 }
 
 .statistics-card-head h2 {
@@ -11093,6 +11095,7 @@ html[data-surface="mobile"] .page-settings-grid > .setting-stack:first-child {
 html[data-surface="mobile"] .comparison-view-control {
   align-items: stretch;
   grid-template-columns: minmax(0, 1fr);
+  width: 100%;
 }
 
 html[data-surface="mobile"] .comparison-summary {

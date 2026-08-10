@@ -15,6 +15,7 @@ const RUNTIME_ASSETS = {
   approvalForm: [...ASSET_ROOT, "approval-form.js"],
   runtimeReload: [...ASSET_ROOT, "runtime-reload-controller.js"],
   journalView: [...ASSET_ROOT, "journal-view-controller.js"],
+  statisticsControls: [...ASSET_ROOT, "statistics-controls.js"],
   rateLimitSeries: [...ASSET_ROOT, "rate-limit-series.js"],
   taskBoard: [...ASSET_ROOT, "task-board.js"],
   app: [...ASSET_ROOT, "app.js"],
@@ -51,7 +52,7 @@ async function resolveSharedAssets({ runtimeUri, extensionUri }) {
     assets.bootstrap = null;
   }
   for (const required of [
-    "index", "disclosure", "chatScroll", "chatSurfacePreference", "navigationTabs", "streamTabs", "approvalForm", "runtimeReload", "journalView", "rateLimitSeries", "taskBoard", "app", "lifecycle", "client", "styles", "backgrounds", "streamStatus", "streamStatusVisibility",
+    "index", "disclosure", "chatScroll", "chatSurfacePreference", "navigationTabs", "streamTabs", "approvalForm", "runtimeReload", "journalView", "statisticsControls", "rateLimitSeries", "taskBoard", "app", "lifecycle", "client", "styles", "backgrounds", "streamStatus", "streamStatusVisibility",
     "mark", "workLogStyles", "bootstrap",
   ]) {
     if (!assets[required]) throw new Error(`Не найден ресурс Agent Hub: ${required}`);
@@ -109,6 +110,7 @@ async function sharedWebviewHtml(webview, locations) {
     .replace('<script src="/approval-form.js" defer></script>', "")
     .replace('<script src="/runtime-reload-controller.js" defer></script>', "")
     .replace('<script src="/journal-view-controller.js" defer></script>', "")
+    .replace('<script src="/statistics-controls.js" defer></script>', "")
     .replace('<script src="/rate-limit-series.js" defer></script>', "")
     .replace('<script src="/task-board.js" defer></script>', `<script src="${resource(webview, assets.taskBoard)}" defer></script>`)
     .replace(
@@ -122,6 +124,7 @@ async function sharedWebviewHtml(webview, locations) {
         + `<script src="${resource(webview, assets.approvalForm)}" defer></script>`
         + `<script src="${resource(webview, assets.runtimeReload)}" defer></script>`
         + `<script src="${resource(webview, assets.journalView)}" defer></script>`
+        + `<script src="${resource(webview, assets.statisticsControls)}" defer></script>`
         + `<script src="${resource(webview, assets.rateLimitSeries)}" defer></script>`
         + `<script src="${resource(webview, assets.app)}" defer></script>`,
     )

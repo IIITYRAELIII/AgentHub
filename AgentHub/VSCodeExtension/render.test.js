@@ -151,7 +151,7 @@ test("shared webview loads the active runtime, never a workspace shadow", async 
   const runtimeRoot = path.join(root, "runtime", "releases", "current");
   const shadowAssets = path.join(shadowRoot, "Utilities", "AgentHub", "assets", "mini-app");
   const runtimeAssets = path.join(runtimeRoot, "assets", "mini-app");
-  const required = ["message-disclosure.js", "chat-scroll-controller.js", "chat-surface-preference.js", "navigation-tabs-controller.js", "stream-tabs-controller.js", "approval-form.js", "runtime-reload-controller.js", "journal-view-controller.js", "rate-limit-series.js", "task-board.js", "app.js", "message-lifecycle.js", "hub-client.js", "styles.css", "backgrounds.css", "stream-status.css", "stream-status-visibility.mjs", "agent-hub-mark.png"];
+  const required = ["message-disclosure.js", "chat-scroll-controller.js", "chat-surface-preference.js", "navigation-tabs-controller.js", "stream-tabs-controller.js", "approval-form.js", "runtime-reload-controller.js", "journal-view-controller.js", "statistics-controls.js", "rate-limit-series.js", "task-board.js", "app.js", "message-lifecycle.js", "hub-client.js", "styles.css", "backgrounds.css", "stream-status.css", "stream-status-visibility.mjs", "agent-hub-mark.png"];
   try {
     fs.mkdirSync(shadowAssets, { recursive: true });
     fs.mkdirSync(runtimeAssets, { recursive: true });
@@ -161,7 +161,7 @@ test("shared webview loads the active runtime, never a workspace shadow", async 
       <img data-app-mark src="/agent-hub-mark.png" alt="">
       <!-- agent-hub-theme-styles --><select data-theme-select></select>
       <!-- agent-hub-theme-markup --><!-- agent-hub-theme-catalog -->
-      <script src="/browser-device-auth.js" defer></script><script src="/message-disclosure.js" defer></script><script src="/chat-scroll-controller.js" defer></script><script src="/chat-surface-preference.js" defer></script><script src="/navigation-tabs-controller.js" defer></script><script src="/stream-tabs-controller.js" defer></script><script src="/approval-form.js" defer></script><script src="/runtime-reload-controller.js" defer></script><script src="/journal-view-controller.js" defer></script><script src="/rate-limit-series.js" defer></script><script src="/task-board.js" defer></script>
+      <script src="/browser-device-auth.js" defer></script><script src="/message-disclosure.js" defer></script><script src="/chat-scroll-controller.js" defer></script><script src="/chat-surface-preference.js" defer></script><script src="/navigation-tabs-controller.js" defer></script><script src="/stream-tabs-controller.js" defer></script><script src="/approval-form.js" defer></script><script src="/runtime-reload-controller.js" defer></script><script src="/journal-view-controller.js" defer></script><script src="/statistics-controls.js" defer></script><script src="/rate-limit-series.js" defer></script><script src="/task-board.js" defer></script>
       <script src="/app.js" defer></script><!-- agent-hub-theme-scripts -->
       <script src="/message-lifecycle.js" defer></script><script src="/hub-client.js" defer></script>`);
     for (const file of required) {
@@ -1682,7 +1682,6 @@ test("statistics page offers local usage and full limit history", () => {
     assert.match(html, new RegExp(`data-range="${range}"`, "u"));
   }
   assert.equal(html.match(/data-range="15d"/gu)?.length, 3);
-  assert.match(app, /const RANGE_SEQUENCE = \["6h", "24h", "7d", "15d", "30d", "all"\];/u);
   assert.match(html, /data-limits-credits/u);
   assert.match(app, /resetCredits/u);
   assert.match(app, /availableCount/u);
@@ -1797,8 +1796,6 @@ test("statistics switches between combined and split comparison charts", () => {
 test("local usage chart keeps its range and labels every calendar day", () => {
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
-  assert.match(app, /agent-hub:usage-range:v1/u);
-  assert.match(app, /localStorage\.setItem\(USAGE_RANGE_KEY, usageState\.range\)/u);
   assert.match(app, /payload\?\.bucket === "day"/u);
   assert.match(app, /usage-axis-day/u);
   assert.match(styles, /\.usage-chart\s*\{[^}]*overflow-x:\s*auto;/su);

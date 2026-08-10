@@ -362,15 +362,17 @@ const groupings = new Set(JournalView.GROUPINGS);
 const usageUnits = new Set(["$", "rub", "cr", "pte"]);
 const CREDITS_PER_USD = 25;
 const PTE_PER_CREDIT = 16_000;
+const {
+  RANGE_SEQUENCE,
+  bindDatasetChoice,
+  normalizeRange,
+  persistRange,
+  storedRange,
+} = globalThis.AgentHubStatisticsControls;
 const USAGE_RANGE_KEY = "agent-hub:usage-range:v1";
-const RANGE_SEQUENCE = ["6h", "24h", "7d", "15d", "30d", "all"];
 
 function savedUsageRange() {
-  try {
-    return normalizeRange(localStorage.getItem(USAGE_RANGE_KEY));
-  } catch {
-    return "24h";
-  }
+  return storedRange(localStorage, USAGE_RANGE_KEY);
 }
 
 const USAGE_MODE_KEY = "agent-hub:usage-mode:v1";
@@ -414,11 +416,7 @@ function savedTurnTimeMode() {
 let turnTimeMode = savedTurnTimeMode();
 
 function savedComparisonRange() {
-  try {
-    return normalizeRange(localStorage.getItem(COMPARISON_RANGE_KEY));
-  } catch {
-    return "24h";
-  }
+  return storedRange(localStorage, COMPARISON_RANGE_KEY);
 }
 
 function savedComparisonSeriesId() {
@@ -4881,7 +4879,7 @@ function toggleDialogSettings() {
 function openPanel() {
   settingsPanel.hidden = false;
   panelScrim.hidden = false;
-  if (limitsState.status === "idle") requestLimits("24h");
+  if (limitsState.status === "idle") requestLimits(limitsState.range);
   emit("devices:refresh");
   requestAnimationFrame(() => {
     settingsPanel.classList.add("open");
@@ -5278,10 +5276,7 @@ settingsPanel.addEventListener("click", (event) => {
   const turnTimeButton = event.target.closest("[data-turn-time-mode]");
   if (turnTimeButton) {
     selectTurnTimeMode(turnTimeButton.dataset.turnTimeMode);
-    return;
   }
-  const comparisonViewButton = event.target.closest("[data-comparison-view-mode]");
-  if (comparisonViewButton) selectComparisonViewMode(comparisonViewButton.dataset.comparisonViewMode);
 });
 
 function renderStatus() {
@@ -6192,7 +6187,12 @@ const SERIES_PALETTE = [
  * несовместимом изменении формата, чтобы восстановление пережило перезапуск. */
 const LIMITS_HIDDEN_KEY = "agent-hub-limits-hidden-v1";
 const LIMITS_MODE_KEY = "agent-hub-limits-mode-v1";
+const LIMITS_RANGE_KEY = "agent-hub:limits-range:v1";
 const LIMITS_SPEED_FULL_WINDOW_KEY = "agent-hub-limits-speed-full-window-v1";
+
+function savedLimitsRange() {
+  return storedRange(localStorage, LIMITS_RANGE_KEY);
+}
 
 function loadLimitsMode() {
   try {
@@ -6243,7 +6243,7 @@ function seriesId(series) {
 }
 
 const limitsState = {
-  range: "24h",
+  range: savedLimitsRange(),
   mode: loadLimitsMode(),
   status: "idle", // idle | loading | ready | empty | error
   payload: null,
@@ -6388,10 +6388,6 @@ function toggleSeriesVisibility(id) {
 
 function clampNumber(value, min, max) {
   return Math.min(max, Math.max(min, value));
-}
-
-function normalizeRange(range) {
-  return RANGE_SEQUENCE.includes(range) ? range : "24h";
 }
 
 function svgEl(tag, attrs = {}, children = []) {
@@ -6815,7 +6811,7 @@ function renderCurrentLimits() {
 /* Запрос данных за период: показываем загрузку (если нет свежих данных за этот
  * период) и просим backend прислать историю. */
 function requestLimits(range, { force = false } = {}) {
-  limitsState.range = normalizeRange(range);
+  limitsState.range = persistRange(localStorage, LIMITS_RANGE_KEY, range);
   const cached = limitsState.payload
     && !limitsState.payload.error
     && normalizeRange(limitsState.payload.range) === limitsState.range;
@@ -7631,12 +7627,7 @@ function applyUsageHistory(payload) {
 }
 
 function requestUsageHistory(range, { force = false } = {}) {
-  usageState.range = normalizeRange(range);
-  try {
-    localStorage.setItem(USAGE_RANGE_KEY, usageState.range);
-  } catch {
-    // Выбор останется активным до закрытия WebView.
-  }
+  usageState.range = persistRange(localStorage, USAGE_RANGE_KEY, range);
   const cached = usageState.payload
     && !usageState.payload.error
     && normalizeRange(usageState.payload.range) === usageState.range
@@ -8028,6 +8019,8 @@ function selectComparisonViewMode(value) {
   renderUsageComparison();
 }
 
+bindDatasetChoice(comparisonViewModeButtons, "comparisonViewMode", selectComparisonViewMode);
+
 usageRanges?.addEventListener("click", (event) => {
   const button = event.target.closest("[data-range]");
   if (button) requestUsageHistory(button.dataset.range);
@@ -8079,12 +8072,7 @@ function applyUsageComparison(payload) {
 }
 
 function requestUsageComparison(range, { force = false } = {}) {
-  comparisonState.range = normalizeRange(range);
-  try {
-    localStorage.setItem(COMPARISON_RANGE_KEY, comparisonState.range);
-  } catch {
-    // Выбор останется активным до закрытия WebView.
-  }
+  comparisonState.range = persistRange(localStorage, COMPARISON_RANGE_KEY, range);
   const cached = comparisonState.payload
     && !comparisonState.payload.error
     && normalizeRange(comparisonState.payload.range) === comparisonState.range
