@@ -1079,7 +1079,7 @@ export class JournalStore extends DurableObject {
   async #dashboardBotAppendBundle(update, message, linked, { source, image }) {
     const key = dashboardBotBundleKey(linked.userId);
     let bundle = await this.ctx.storage.get(key);
-    if (!bundle && !source) return null;
+    if (!bundle && !source && !image) return null;
     if (!bundle) {
       const now = Date.now();
       bundle = {
@@ -1282,7 +1282,7 @@ export class JournalStore extends DurableObject {
     }
     const source = dashboardBotForwardedMessageSource(message);
     const image = dashboardBotImageDescriptor(message);
-    if (source || openBundle) {
+    if (source || openBundle || image) {
       if (!text && !image) return { reply: "В пачку можно добавить текст или изображение." };
       return this.#dashboardBotAppendBundle(update, message, linked, { source, image });
     }

@@ -1123,6 +1123,55 @@ test("shared Dashboard bot can send forwards separately with their reply clarifi
   assert.equal(bundledCommand.params.sourceDetails.separate, false);
   assert.doesNotMatch(bundledCommand.params.text, /Ниже пакет сообщений/u);
   assert.match(bundledCommand.params.sourceKey, /^shared-dashboard:[0-9a-f-]{36}$/u);
+
+  await webhook({
+    update_id: 208,
+    message: {
+      message_id: 7,
+      date: 1_786_200_008,
+      chat: { id: 42, type: "private" },
+      from: { id: 42, first_name: "Алиса" },
+      photo: [{ file_id: "standalone-small" }, { file_id: "standalone-large", file_size: 4 }],
+    },
+  });
+  const standaloneImageCard = telegramCalls
+    .filter((call) => call.method === "sendMessage" && /Собираю пачку/u.test(call.body.text))
+    .at(-1);
+  assert.match(standaloneImageCard.body.text, /изображений: 1/u);
+
+  await webhook({
+    update_id: 209,
+    message: {
+      message_id: 8,
+      date: 1_786_200_009,
+      chat: { id: 42, type: "private" },
+      from: { id: 42, first_name: "Алиса" },
+      text: "FB Миллениум",
+    },
+  });
+  assert.match(telegramCalls.at(-1).body.text, /Сообщений: 2/u);
+
+  await webhook({
+    update_id: 210,
+    callback_query: {
+      id: "callback-send-standalone-image",
+      from: { id: 42, first_name: "Алиса" },
+      message: { message_id: 803, chat: { id: 42, type: "private" } },
+      data: standaloneImageCard.body.reply_markup.inline_keyboard[0][0].callback_data,
+    },
+  });
+  response = await workerModule.default.fetch(signedServiceRequest(
+    "https://hub.test/api/dashboard-bot/pull",
+    { limit: 10, waitMs: 0 },
+    hubSecret,
+    { "X-Agent-Hub-Dashboard-Id": hubId },
+  ), env);
+  const [standaloneImageCommand] = (await response.json()).commands;
+  assert.equal(standaloneImageCommand.params.sourceDetails.messageCount, 2);
+  assert.equal(standaloneImageCommand.params.sourceDetails.imageCount, 1);
+  assert.match(standaloneImageCommand.params.attachments[0], /^remote-attachment:[0-9a-f-]{36}$/u);
+  assert.match(standaloneImageCommand.params.text, /Изображение 1 приложено/u);
+  assert.match(standaloneImageCommand.params.text, /FB Миллениум/u);
 });
 
 test("Worker relay stores user-bound file uploads and serves them only to their command", async () => {
