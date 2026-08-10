@@ -2704,9 +2704,10 @@ function ensureTaskStreamVisible(task) {
   reconcileOpenStreams(workspaceId, streams);
   const streamId = streamKey(task);
   const open = state.openStreamsByWorkspace.get(workspaceId) ?? [];
+  // Прямой переход сохраняет мультинабор, только если целевой Stream уже
+  // входит в него. Иначе открываем цель одной колонкой, а не дописываем её.
   if (open.includes(streamId)) return;
-  const next = surface === "mobile" ? [streamId] : [...open.slice(-3), streamId];
-  state.openStreamsByWorkspace.set(workspaceId, next);
+  state.openStreamsByWorkspace.set(workspaceId, [streamId]);
   state.configuredOpenStreamWorkspaces.add(workspaceId);
   persistOpenStreams();
 }
