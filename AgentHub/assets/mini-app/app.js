@@ -1380,7 +1380,7 @@ function workspaceKey(task) {
     || `legacy:${String(task?.project ?? "").trim() || "unassigned"}`;
 }
 
-const OPEN_STREAMS_STORAGE_VERSION = "agent-hub:workspace-open-streams:v2";
+const OPEN_STREAMS_STORAGE_VERSION = "agent-hub:workspace-open-streams:v3";
 let openStreamsRestored = false;
 
 function openStreamsStorageKey() {
@@ -1401,7 +1401,7 @@ function restoreOpenStreams() {
       const activeStreamId = String(entry?.activeStreamId ?? "").trim();
       const savedMultiStreamIds = [...new Set((Array.isArray(entry?.multiStreamIds)
         ? entry.multiStreamIds
-        : streamIds.length > 1 ? streamIds : [])
+        : [])
         .map((value) => String(value ?? "").trim())
         .filter(Boolean))].slice(-4);
       if (!workspaceId) continue;
@@ -2432,7 +2432,7 @@ activityRailToggle?.addEventListener("click", () => {
 });
 activityStreamList?.addEventListener("click", (event) => {
   const item = event.target.closest("[data-activity-task-id]");
-  if (item) selectTaskFromUi(String(item.dataset.activityTaskId ?? ""), { singleStream: true });
+  if (item) selectTaskFromUi(String(item.dataset.activityTaskId ?? ""));
 });
 let taskSearchTimer = null;
 taskFilter.addEventListener("input", () => {
@@ -2804,20 +2804,13 @@ streamTabs?.addEventListener("dragend", () => {
   window.setTimeout(() => { suppressStreamTabClick = false; }, 0);
 });
 
-function ensureTaskStreamVisible(task, { singleStream = false } = {}) {
+function ensureTaskStreamVisible(task) {
   if (!task || !String(task.workspaceId ?? "").trim()) return;
   const workspaceId = workspaceKey(task);
   const streams = workspaceStreams(state.tasks.filter((candidate) => workspaceKey(candidate) === workspaceId));
   reconcileOpenStreams(workspaceId, streams);
   const streamId = streamKey(task);
   const open = state.openStreamsByWorkspace.get(workspaceId) ?? [];
-  if (singleStream) {
-    if (open.length === 1 && open[0] === streamId) return;
-    state.openStreamsByWorkspace.set(workspaceId, [streamId]);
-    state.configuredOpenStreamWorkspaces.add(workspaceId);
-    persistOpenStreams();
-    return;
-  }
   if (open.includes(streamId)) return;
   const available = new Set(streams.map((stream) => stream.id));
   const savedMulti = (state.savedMultiStreamsByWorkspace.get(workspaceId) ?? [])
@@ -2830,7 +2823,7 @@ function ensureTaskStreamVisible(task, { singleStream = false } = {}) {
   persistOpenStreams();
 }
 
-function selectTaskFromUi(id, { singleStream = false } = {}) {
+function selectTaskFromUi(id) {
   if (!id) return;
   saveDraft();
   state.selectedId = id;
@@ -2839,7 +2832,7 @@ function selectTaskFromUi(id, { singleStream = false } = {}) {
   if (selected) {
     state.activeStreamByWorkspace.set(workspaceKey(selected), streamKey(selected));
   }
-  ensureTaskStreamVisible(currentTask(), { singleStream });
+  ensureTaskStreamVisible(currentTask());
   persistOpenStreams();
   renderTasks();
   renderChat();
