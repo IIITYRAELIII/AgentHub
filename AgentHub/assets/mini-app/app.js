@@ -1936,6 +1936,8 @@ function applyActivityRailState({ persist = false } = {}) {
 
 function renderActivityRail() {
   if (!activityStreamList || !activityRailCount || !activityStreamEmpty) return;
+  const selectedWorkspaceId = String(currentTask()?.workspaceId ?? "").trim() || null;
+  window.AgentHubTaskBoard?.setSelectedWorkspace(selectedWorkspaceId);
   const entries = activityStreamEntries(state.tasks);
   activityRailCount.textContent = `Активно: ${entries.length}`;
   activityStreamEmpty.hidden = entries.length > 0;

@@ -426,6 +426,12 @@
   });
 
   window.AgentHubTaskBoard = Object.freeze({
+    setSelectedWorkspace(workspaceId) {
+      const nextWorkspaceId = String(workspaceId ?? "").trim() || null;
+      if (state.selectedWorkspaceId === nextWorkspaceId) return;
+      state.selectedWorkspaceId = nextWorkspaceId;
+      renderWorkspacePanel();
+    },
     setSnapshot(payload = {}) {
       state.tasks = Array.isArray(payload.tasks) ? payload.tasks.slice() : [];
       state.workspaces = Array.isArray(payload.workspaces) ? payload.workspaces.slice() : [];
