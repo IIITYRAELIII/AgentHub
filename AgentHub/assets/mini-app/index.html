@@ -654,12 +654,35 @@
             <p>За выбранный период недостаточно совпадающих данных.</p>
           </div>
           <div class="limits-chart-wrap" data-comparison-chart-wrap hidden>
-            <figure class="limits-chart comparison-chart" data-comparison-chart role="img"
-              aria-label="График корреляции локального расхода и лимитов API"></figure>
+            <div data-comparison-combined-view>
+              <figure class="limits-chart comparison-chart" data-comparison-chart role="img"
+                aria-label="Общий график корреляции локального расхода и лимитов API"></figure>
+            </div>
+            <div class="comparison-split-view" data-comparison-split-view hidden>
+              <section class="comparison-split-section" aria-labelledby="comparison-time-title">
+                <h3 id="comparison-time-title">Расход по времени</h3>
+                <figure class="limits-chart comparison-compact-chart" data-comparison-local-chart role="img"
+                  aria-label="Локальный расход по времени в исходных единицах"></figure>
+                <figure class="limits-chart comparison-compact-chart" data-comparison-api-chart role="img"
+                  aria-label="Расход выбранного лимита по времени в процентных пунктах"></figure>
+              </section>
+              <div class="comparison-analysis-grid">
+                <section class="comparison-split-section" aria-labelledby="comparison-scatter-title">
+                  <h3 id="comparison-scatter-title">Связь расходов</h3>
+                  <figure class="limits-chart comparison-analysis-chart" data-comparison-scatter-chart role="img"
+                    aria-label="Точечная диаграмма связи локального расхода и расхода лимита"></figure>
+                </section>
+                <section class="comparison-split-section" aria-labelledby="comparison-difference-title">
+                  <h3 id="comparison-difference-title">Разность: аккаунт − локально</h3>
+                  <figure class="limits-chart comparison-analysis-chart" data-comparison-difference-chart role="img"
+                    aria-label="Разность нормированных расходов аккаунта и локального расхода по времени"></figure>
+                </section>
+              </div>
+            </div>
             <div class="limits-tooltip" data-comparison-tooltip hidden role="status"
               aria-live="polite"></div>
             <ul class="limits-legend comparison-legend" data-comparison-legend></ul>
-            <p class="statistics-note comparison-note">
+            <p class="statistics-note comparison-note" data-comparison-note>
               При выборе аккаунта локальный расход учитывает только ходы, завершённые в интервалах его активности.
               Пункт «Все» снимает отбор аккаунта.
               Линии расхода приведены к собственному пику. r — корреляция Пирсона,
@@ -875,6 +898,17 @@
             </div>
             <span class="switch-note">
               Определяет, в какую точку графика попадёт расход завершённого хода.
+            </span>
+          </div>
+          <div class="setting-stack">
+            <span class="setting-name">Диаграмма сопоставления расхода</span>
+            <div class="setting-options comparison-view-options" role="group"
+              aria-label="Вид диаграммы сопоставления расхода">
+              <button type="button" class="option-chip" data-comparison-view-mode="combined">Общая</button>
+              <button type="button" class="option-chip" data-comparison-view-mode="split">Раздельно</button>
+            </div>
+            <span class="switch-note">
+              Раздельный вид показывает исходные расходы, корреляцию и разность по дням.
             </span>
           </div>
         </div>

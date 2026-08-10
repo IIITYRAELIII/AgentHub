@@ -172,11 +172,19 @@ const comparisonError = document.querySelector("[data-comparison-error]");
 const comparisonErrorText = document.querySelector("[data-comparison-error-text]");
 const comparisonEmpty = document.querySelector("[data-comparison-empty]");
 const comparisonChartWrap = document.querySelector("[data-comparison-chart-wrap]");
+const comparisonCombinedView = document.querySelector("[data-comparison-combined-view]");
+const comparisonSplitView = document.querySelector("[data-comparison-split-view]");
 const comparisonChart = document.querySelector("[data-comparison-chart]");
+const comparisonLocalChart = document.querySelector("[data-comparison-local-chart]");
+const comparisonApiChart = document.querySelector("[data-comparison-api-chart]");
+const comparisonScatterChart = document.querySelector("[data-comparison-scatter-chart]");
+const comparisonDifferenceChart = document.querySelector("[data-comparison-difference-chart]");
 const comparisonTooltip = document.querySelector("[data-comparison-tooltip]");
 const comparisonLegend = document.querySelector("[data-comparison-legend]");
+const comparisonNote = document.querySelector("[data-comparison-note]");
 const statisticsAccountSelects = [...document.querySelectorAll("[data-statistics-account-select]")];
 const turnTimeModeButtons = [...document.querySelectorAll("[data-turn-time-mode]")];
+const comparisonViewModeButtons = [...document.querySelectorAll("[data-comparison-view-mode]")];
 
 /* --------------------------------------------------------- Telegram / темы */
 
@@ -363,6 +371,7 @@ const usageState = {
 };
 const COMPARISON_RANGE_KEY = "agent-hub:comparison-range:v1";
 const COMPARISON_SERIES_KEY = "agent-hub:comparison-series:v2";
+const COMPARISON_VIEW_MODE_KEY = "agent-hub:comparison-view-mode:v1";
 const STATISTICS_ACCOUNT_KEY = "agent-hub:statistics-account:v1";
 const TURN_TIME_MODE_KEY = "agent-hub:turn-time-mode:v1";
 const ALL_STATISTICS_ACCOUNTS = "all";
@@ -399,9 +408,22 @@ function savedComparisonSeriesId() {
   }
 }
 
+function normalizeComparisonViewMode(value) {
+  return value === "split" ? "split" : "combined";
+}
+
+function savedComparisonViewMode() {
+  try {
+    return normalizeComparisonViewMode(localStorage.getItem(COMPARISON_VIEW_MODE_KEY));
+  } catch {
+    return "combined";
+  }
+}
+
 const comparisonState = {
   range: savedComparisonRange(),
   seriesId: savedComparisonSeriesId(),
+  viewMode: savedComparisonViewMode(),
   status: "idle",
   payload: null,
   error: "",
@@ -717,6 +739,7 @@ function selectUsageUnit(value, { persist = false } = {}) {
   }
   refreshUsageUnits();
   renderUsageHistory();
+  renderUsageComparison();
   if (journalHtml) renderJournal();
 }
 
@@ -4689,6 +4712,7 @@ panelScrim.addEventListener("click", closePanel);
 function renderOptions() {
   renderDialogSettings();
   renderTurnTimeModeOptions();
+  renderComparisonViewModeOptions();
   for (const toggle of settingsPanel.querySelectorAll("[data-toggle]")) {
     toggle.checked = Boolean(state.selection[toggle.dataset.toggle]);
   }
@@ -4810,8 +4834,13 @@ settingsPanel.addEventListener("change", (event) => {
 });
 
 settingsPanel.addEventListener("click", (event) => {
-  const button = event.target.closest("[data-turn-time-mode]");
-  if (button) selectTurnTimeMode(button.dataset.turnTimeMode);
+  const turnTimeButton = event.target.closest("[data-turn-time-mode]");
+  if (turnTimeButton) {
+    selectTurnTimeMode(turnTimeButton.dataset.turnTimeMode);
+    return;
+  }
+  const comparisonViewButton = event.target.closest("[data-comparison-view-mode]");
+  if (comparisonViewButton) selectComparisonViewMode(comparisonViewButton.dataset.comparisonViewMode);
 });
 
 function renderStatus() {
@@ -7460,6 +7489,27 @@ function renderUsageHistory() {
   }
 }
 
+function renderComparisonViewModeOptions() {
+  for (const button of comparisonViewModeButtons) {
+    const active = button.dataset.comparisonViewMode === comparisonState.viewMode;
+    button.setAttribute("aria-pressed", String(active));
+    button.toggleAttribute("data-active", active);
+  }
+}
+
+function selectComparisonViewMode(value) {
+  const next = normalizeComparisonViewMode(value);
+  if (next === comparisonState.viewMode) return;
+  comparisonState.viewMode = next;
+  try {
+    localStorage.setItem(COMPARISON_VIEW_MODE_KEY, next);
+  } catch {
+    // Выбор останется активным до закрытия WebView.
+  }
+  renderComparisonViewModeOptions();
+  renderUsageComparison();
+}
+
 usageRanges?.addEventListener("click", (event) => {
   const button = event.target.closest("[data-range]");
   if (button) requestUsageHistory(button.dataset.range);
@@ -7751,18 +7801,22 @@ function buildUsageComparisonModel(payload) {
   const deviationValues = aggregate.map((value, index) => (
     Number.isFinite(value) ? Math.abs(local.values[index] - value) : null
   ));
+  const differenceValues = aggregate.map((value, index) => (
+    Number.isFinite(value) ? value - local.values[index] : null
+  ));
   const price = selectedSeries
     ? comparisonLimitPrice(localRaw, selectedSeries.rawValues, buckets)
     : comparisonLimitPrice([], [], buckets);
   return {
     extent,
     buckets,
-    local,
+    local: { ...local, rawValues: localRaw },
     allSeries,
     selectedSeries,
     visibleSeries,
     aggregate,
     deviationValues,
+    differenceValues,
     correlation: pearsonCorrelation(local.values, aggregate),
     deviation: meanAbsoluteDeviation(local.values, aggregate),
     price,
@@ -7799,6 +7853,7 @@ function correlationStrength(value) {
 }
 
 function comparisonTooltipText(info) {
+  if (info.detail) return `${info.name}. ${formatLimitsDateTime(info.at)}: ${info.detail}`;
   if (info.kind === "cost") {
     return `${info.name}. ${formatLimitsDateTime(info.at)}: ${formatComparisonNumber(info.raw, 2)} п.п./kcr`;
   }
@@ -7818,16 +7873,24 @@ function comparisonPriceAxisMax(values) {
   return Math.ceil(maximum / magnitude * 2) / 2 * magnitude;
 }
 
-function showComparisonTooltip(info, fx, fy) {
+function showComparisonTooltip(info, fx, fy, source = comparisonChart) {
   if (!comparisonTooltip) return;
   comparisonTooltip.replaceChildren(
     el("span", { class: "limits-tooltip-title", text: info.name }),
     el("span", { class: "limits-tooltip-time", text: formatLimitsDateTime(info.at) }),
     el("span", { class: "limits-tooltip-row", text: comparisonTooltipText(info).split(": ").at(-1) }),
   );
-  comparisonTooltip.style.left = `${clampNumber(fx * 100, 0, 100)}%`;
-  comparisonTooltip.style.top = `${clampNumber(fy * 100, 0, 100)}%`;
-  comparisonTooltip.dataset.side = fx > 0.6 ? "left" : "right";
+  const wrapRect = comparisonChartWrap?.getBoundingClientRect();
+  const sourceRect = source?.getBoundingClientRect();
+  const positionedX = wrapRect?.width && sourceRect?.width
+    ? (sourceRect.left - wrapRect.left + fx * sourceRect.width) / wrapRect.width
+    : fx;
+  const positionedY = wrapRect?.height && sourceRect?.height
+    ? (sourceRect.top - wrapRect.top + fy * sourceRect.height) / wrapRect.height
+    : fy;
+  comparisonTooltip.style.left = `${clampNumber(positionedX * 100, 0, 100)}%`;
+  comparisonTooltip.style.top = `${clampNumber(positionedY * 100, 0, 100)}%`;
+  comparisonTooltip.dataset.side = positionedX > 0.6 ? "left" : "right";
   comparisonTooltip.hidden = false;
 }
 
@@ -7855,13 +7918,13 @@ function appendComparisonMarkers(svg, values, rawValues, model, chart, options) 
     });
     const fx = point.x / chart.W;
     const fy = point.y / chart.H;
-    circle.addEventListener("pointerenter", () => showComparisonTooltip(info, fx, fy));
+    circle.addEventListener("pointerenter", () => showComparisonTooltip(info, fx, fy, svg));
     circle.addEventListener("pointerleave", hideComparisonTooltip);
     if (isLast) {
       circle.setAttribute("tabindex", "0");
       circle.setAttribute("role", "img");
       circle.setAttribute("aria-label", comparisonTooltipText(info));
-      circle.addEventListener("focus", () => showComparisonTooltip(info, fx, fy));
+      circle.addEventListener("focus", () => showComparisonTooltip(info, fx, fy, svg));
       circle.addEventListener("blur", hideComparisonTooltip);
     }
     svg.append(circle);
@@ -8011,6 +8074,317 @@ function buildUsageComparisonChart(model) {
   comparisonChart.replaceChildren(svg);
 }
 
+function comparisonUsageUnitLabel() {
+  return usageUnit === "pte" ? "ПТЭ" : usageUnit === "rub" ? "₽" : usageUnit;
+}
+
+function comparisonNumericAxisMax(values) {
+  const maximum = Math.max(0, ...values.filter(Number.isFinite));
+  if (!(maximum > 0)) return 1;
+  const magnitude = 10 ** Math.floor(Math.log10(maximum));
+  const scaled = maximum / magnitude;
+  const factor = [1, 2, 5, 10].find((candidate) => candidate >= scaled) ?? 10;
+  return factor * magnitude;
+}
+
+function comparisonTimeTicks(model, width) {
+  const span = Math.max(1, model.extent.to - model.extent.from);
+  const count = clampNumber(Math.floor(width / 90), 2, 6);
+  return Array.from({ length: count }, (_, index) => (
+    model.extent.from + span * index / Math.max(1, count - 1)
+  ));
+}
+
+function appendComparisonTimeGrid(svg, model, chart, { labels = true } = {}) {
+  const ticks = comparisonTimeTicks(model, chart.plotW);
+  for (const [index, time] of ticks.entries()) {
+    const x = chart.xOf(time);
+    svg.append(svgEl("line", {
+      x1: x,
+      y1: chart.padT,
+      x2: x,
+      y2: chart.padT + chart.plotH,
+      class: "limits-grid-line limits-grid-day",
+    }));
+    if (!labels) continue;
+    svg.append(svgEl("text", {
+      x,
+      y: chart.H - 8,
+      class: "limits-axis-label limits-axis-x",
+      "text-anchor": index === 0 ? "start" : index === ticks.length - 1 ? "end" : "middle",
+    }, [formatAxisTime(time, model.extent.to - model.extent.from)]));
+  }
+}
+
+function appendRawComparisonMarkers(svg, values, model, chart, options) {
+  const points = values.map((value, index) => Number.isFinite(value) ? {
+    x: chart.xOf(model.buckets[index].time),
+    y: chart.yOf(value),
+    raw: value,
+    at: new Date(model.buckets[index].time).toISOString(),
+  } : null).filter(Boolean);
+  limitsMarkerPoints(points, 14).forEach((point) => {
+    const detail = options.format(point.raw);
+    const info = { ...point, name: options.name, kind: options.kind, detail };
+    const circle = svgEl("circle", {
+      cx: point.x,
+      cy: point.y,
+      r: point === points.at(-1) ? 3.6 : 2.3,
+      class: `limits-point comparison-point comparison-point-${options.kind}`,
+      fill: options.color,
+    });
+    const fx = point.x / chart.W;
+    const fy = point.y / chart.H;
+    circle.addEventListener("pointerenter", () => showComparisonTooltip(info, fx, fy, svg));
+    circle.addEventListener("pointerleave", hideComparisonTooltip);
+    if (point === points.at(-1)) {
+      circle.setAttribute("tabindex", "0");
+      circle.setAttribute("role", "img");
+      circle.setAttribute("aria-label", comparisonTooltipText(info));
+      circle.addEventListener("focus", () => showComparisonTooltip(info, fx, fy, svg));
+      circle.addEventListener("blur", hideComparisonTooltip);
+    }
+    svg.append(circle);
+  });
+}
+
+function buildComparisonTimeChart(target, model, options) {
+  if (!target) return;
+  const W = chartWidth(target);
+  const H = 176;
+  const padL = 78;
+  const padR = 16;
+  const padT = 25;
+  const padB = options.showDates ? 38 : 14;
+  const plotW = W - padL - padR;
+  const plotH = H - padT - padB;
+  const span = Math.max(1, model.extent.to - model.extent.from);
+  const axisMax = comparisonNumericAxisMax(options.values);
+  const xOf = (time) => padL + ((time - model.extent.from) / span) * plotW;
+  const yOf = (value) => padT + (1 - clampNumber(value, 0, axisMax) / axisMax) * plotH;
+  const chart = { W, H, padL, padR, padT, padB, plotW, plotH, xOf, yOf };
+  const svg = svgEl("svg", {
+    viewBox: `0 0 ${W} ${H}`,
+    class: "limits-chart-svg comparison-chart-svg comparison-split-svg",
+    preserveAspectRatio: "none",
+    "aria-hidden": "true",
+  });
+  svg.append(svgEl("text", {
+    x: padL,
+    y: 13,
+    class: "comparison-panel-label",
+  }, [options.axisTitle]));
+  for (const fraction of [0, 0.5, 1]) {
+    const value = axisMax * fraction;
+    const y = yOf(value);
+    svg.append(svgEl("line", { x1: padL, y1: y, x2: W - padR, y2: y, class: "limits-grid-line" }));
+    svg.append(svgEl("text", {
+      x: padL - 7,
+      y: y + 3,
+      class: "limits-axis-label limits-axis-y",
+      "text-anchor": "end",
+    }, [options.formatTick(value)]));
+  }
+  appendComparisonTimeGrid(svg, model, chart, { labels: options.showDates });
+  const path = comparisonPath(options.values, model.buckets, xOf, yOf);
+  if (path) svg.append(svgEl("path", {
+    d: path,
+    class: `comparison-split-line ${options.lineClass}`,
+    fill: "none",
+    stroke: options.color,
+  }));
+  appendRawComparisonMarkers(svg, options.values, model, chart, options);
+  target.setAttribute("aria-label", `${options.axisTitle}. Пик ${options.formatTick(axisMax)}.`);
+  target.replaceChildren(svg);
+}
+
+function comparisonRegression(pairs) {
+  if (pairs.length < 2) return null;
+  const meanX = pairs.reduce((sum, point) => sum + point.x, 0) / pairs.length;
+  const meanY = pairs.reduce((sum, point) => sum + point.y, 0) / pairs.length;
+  const variance = pairs.reduce((sum, point) => sum + (point.x - meanX) ** 2, 0);
+  if (!(variance > 0)) return null;
+  const slope = pairs.reduce((sum, point) => sum + (point.x - meanX) * (point.y - meanY), 0) / variance;
+  return { slope, intercept: meanY - slope * meanX };
+}
+
+function buildComparisonScatterChart(model) {
+  if (!comparisonScatterChart) return;
+  const series = model.selectedSeries;
+  const pairs = model.buckets.map((bucket, index) => ({
+    x: series?.rawValues[index],
+    y: model.local.rawValues[index],
+    at: new Date(bucket.time).toISOString(),
+  })).filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
+  const W = chartWidth(comparisonScatterChart);
+  const H = 240;
+  const padL = 70;
+  const padR = 18;
+  const padT = 30;
+  const padB = 48;
+  const plotW = W - padL - padR;
+  const plotH = H - padT - padB;
+  const xMax = comparisonNumericAxisMax(pairs.map((point) => point.x));
+  const yMax = comparisonNumericAxisMax(pairs.map((point) => point.y));
+  const xOf = (value) => padL + clampNumber(value, 0, xMax) / xMax * plotW;
+  const yOf = (value) => padT + (1 - clampNumber(value, 0, yMax) / yMax) * plotH;
+  const svg = svgEl("svg", {
+    viewBox: `0 0 ${W} ${H}`,
+    class: "limits-chart-svg comparison-chart-svg comparison-split-svg",
+    preserveAspectRatio: "none",
+    "aria-hidden": "true",
+  });
+  for (const fraction of [0, 0.5, 1]) {
+    const xValue = xMax * fraction;
+    const yValue = yMax * fraction;
+    svg.append(svgEl("line", { x1: xOf(xValue), y1: padT, x2: xOf(xValue), y2: padT + plotH, class: "limits-grid-line" }));
+    svg.append(svgEl("line", { x1: padL, y1: yOf(yValue), x2: W - padR, y2: yOf(yValue), class: "limits-grid-line" }));
+    svg.append(svgEl("text", {
+      x: xOf(xValue), y: H - 27, class: "limits-axis-label limits-axis-x", "text-anchor": "middle",
+    }, [formatComparisonNumber(xValue, xValue < 10 ? 1 : 0)]));
+    svg.append(svgEl("text", {
+      x: padL - 7, y: yOf(yValue) + 3, class: "limits-axis-label limits-axis-y", "text-anchor": "end",
+    }, [formatUsageValue(yValue)]));
+  }
+  svg.append(svgEl("text", {
+    x: padL + plotW / 2, y: H - 7, class: "comparison-axis-title", "text-anchor": "middle",
+  }, ["Расход лимита, п.п."]));
+  svg.append(svgEl("text", {
+    x: padL, y: 13, class: "comparison-panel-label",
+  }, [`Локальный расход, ${comparisonUsageUnitLabel()}`]));
+  svg.append(svgEl("text", {
+    x: W - padR, y: 13, class: "comparison-correlation-label", "text-anchor": "end",
+  }, [`r ${Number.isFinite(model.correlation) ? formatComparisonNumber(model.correlation, 2, true) : "—"}`]));
+  const regression = comparisonRegression(pairs);
+  if (regression) {
+    const fromY = clampNumber(regression.intercept, 0, yMax);
+    const toY = clampNumber(regression.intercept + regression.slope * xMax, 0, yMax);
+    svg.append(svgEl("line", {
+      x1: xOf(0), y1: yOf(fromY), x2: xOf(xMax), y2: yOf(toY), class: "comparison-regression-line",
+    }));
+  }
+  for (const point of pairs) {
+    const circle = svgEl("circle", {
+      cx: xOf(point.x),
+      cy: yOf(point.y),
+      r: 3.5,
+      class: "comparison-scatter-point",
+      fill: series?.color || "var(--accent)",
+    });
+    const info = {
+      ...point,
+      name: "Связь расходов",
+      detail: `лимит +${formatComparisonNumber(point.x, 1)} п.п.; локально ${formatUsageValue(point.y)}`,
+    };
+    circle.addEventListener("pointerenter", () => showComparisonTooltip(info, xOf(point.x) / W, yOf(point.y) / H, svg));
+    circle.addEventListener("pointerleave", hideComparisonTooltip);
+    svg.append(circle);
+  }
+  if (!pairs.length) svg.append(svgEl("text", {
+    x: padL + plotW / 2, y: padT + plotH / 2, class: "limits-empty-plot", "text-anchor": "middle",
+  }, ["Нет совпадающих точек"]));
+  comparisonScatterChart.setAttribute(
+    "aria-label",
+    `Связь расходов по ${pairs.length} совпадающим интервалам. Корреляция ${
+      Number.isFinite(model.correlation) ? formatComparisonNumber(model.correlation, 2, true) : "не рассчитана"
+    }.`,
+  );
+  comparisonScatterChart.replaceChildren(svg);
+}
+
+function buildComparisonDifferenceChart(model) {
+  if (!comparisonDifferenceChart) return;
+  const values = model.differenceValues;
+  const W = chartWidth(comparisonDifferenceChart);
+  const H = 240;
+  const padL = 52;
+  const padR = 16;
+  const padT = 28;
+  const padB = 42;
+  const plotW = W - padL - padR;
+  const plotH = H - padT - padB;
+  const span = Math.max(1, model.extent.to - model.extent.from);
+  const maximum = comparisonNumericAxisMax(values.map((value) => Math.abs(value)));
+  const xOf = (time) => padL + ((time - model.extent.from) / span) * plotW;
+  const yOf = (value) => padT + (maximum - clampNumber(value, -maximum, maximum)) / (maximum * 2) * plotH;
+  const chart = { W, H, padL, padR, padT, padB, plotW, plotH, xOf, yOf };
+  const svg = svgEl("svg", {
+    viewBox: `0 0 ${W} ${H}`,
+    class: "limits-chart-svg comparison-chart-svg comparison-split-svg",
+    preserveAspectRatio: "none",
+    "aria-hidden": "true",
+  });
+  svg.append(svgEl("text", { x: padL, y: 13, class: "comparison-panel-label" }, ["Разность, п.п. от пика"]));
+  for (const value of [-maximum, 0, maximum]) {
+    const y = yOf(value);
+    svg.append(svgEl("line", {
+      x1: padL, y1: y, x2: W - padR, y2: y, class: value === 0 ? "comparison-zero-line" : "limits-grid-line",
+    }));
+    svg.append(svgEl("text", {
+      x: padL - 7, y: y + 3, class: "limits-axis-label limits-axis-y", "text-anchor": "end",
+    }, [formatComparisonNumber(value, 0, value !== 0)]));
+  }
+  appendComparisonTimeGrid(svg, model, chart);
+  const barWidth = clampNumber(plotW / Math.max(1, values.length) * 0.68, 1, 12);
+  values.forEach((value, index) => {
+    if (!Number.isFinite(value)) return;
+    const x = xOf(model.buckets[index].time);
+    const zeroY = yOf(0);
+    const valueY = yOf(value);
+    const rect = svgEl("rect", {
+      x: x - barWidth / 2,
+      y: Math.min(zeroY, valueY),
+      width: barWidth,
+      height: Math.max(1, Math.abs(valueY - zeroY)),
+      class: `comparison-difference-bar ${value >= 0 ? "is-api-higher" : "is-local-higher"}`,
+      fill: value >= 0 ? (model.selectedSeries?.color || "var(--accent)") : "var(--comparison-local)",
+    });
+    const at = new Date(model.buckets[index].time).toISOString();
+    const info = {
+      name: "Разность аккаунт − локально",
+      at,
+      detail: `${formatComparisonNumber(value, 1, true)} п.п.; ${value >= 0 ? "аккаунт выше" : "локальный расход выше"}`,
+    };
+    rect.addEventListener("pointerenter", () => showComparisonTooltip(info, x / W, valueY / H, svg));
+    rect.addEventListener("pointerleave", hideComparisonTooltip);
+    svg.append(rect);
+  });
+  const largest = Math.max(0, ...values.filter(Number.isFinite).map(Math.abs));
+  comparisonDifferenceChart.setAttribute(
+    "aria-label",
+    `Разность нормированных расходов аккаунта и локального расхода. Максимальное расхождение ${formatComparisonNumber(largest, 1)} процентного пункта.`,
+  );
+  comparisonDifferenceChart.replaceChildren(svg);
+}
+
+function buildUsageComparisonSplitCharts(model) {
+  const series = model.selectedSeries;
+  buildComparisonTimeChart(comparisonLocalChart, model, {
+    values: model.local.rawValues,
+    axisTitle: `Локальный расход, ${comparisonUsageUnitLabel()}`,
+    color: "var(--comparison-local)",
+    lineClass: "comparison-local-line",
+    name: "Локальный расход",
+    kind: "local-raw",
+    formatTick: (value) => formatUsageValue(value),
+    format: (value) => formatUsageValue(value),
+    showDates: false,
+  });
+  buildComparisonTimeChart(comparisonApiChart, model, {
+    values: series?.rawValues ?? model.buckets.map(() => null),
+    axisTitle: "Расход выбранного лимита, п.п.",
+    color: series?.color || "var(--accent)",
+    lineClass: "comparison-api-line",
+    name: series ? comparisonSeriesName(series) : "Выбранный лимит",
+    kind: "api-raw",
+    formatTick: (value) => formatComparisonNumber(value, value < 10 ? 1 : 0),
+    format: (value) => `+${formatComparisonNumber(value, 1)} п.п.`,
+    showDates: true,
+  });
+  buildComparisonScatterChart(model);
+  buildComparisonDifferenceChart(model);
+}
+
 function comparisonLegendItem(name, color, value, attrs = {}) {
   const swatch = el("span", { class: "limits-legend-swatch", "aria-hidden": "true" });
   swatch.style.setProperty("--series-color", color);
@@ -8140,7 +8514,16 @@ function renderUsageComparison() {
     renderUsageComparison();
     return;
   }
-  buildUsageComparisonChart(model);
+  const split = comparisonState.viewMode === "split";
+  if (comparisonCombinedView) comparisonCombinedView.hidden = split;
+  if (comparisonSplitView) comparisonSplitView.hidden = !split;
+  if (split) buildUsageComparisonSplitCharts(model);
+  else buildUsageComparisonChart(model);
+  if (comparisonNote) {
+    comparisonNote.textContent = split
+      ? "Временные графики используют исходные единицы и общую ось дат. Точки показывают совпадающие интервалы. Разность считается как нормированный расход аккаунта минус локальный: выше нуля — больше расход лимита, ниже нуля — больше локальный расход. Цена остаётся в итоговом показателе."
+      : "При выборе аккаунта локальный расход учитывает только ходы, завершённые в интервалах его активности. Пункт «Все» снимает отбор аккаунта. Линии расхода приведены к собственному пику. r — корреляция Пирсона, Δ — среднее абсолютное отклонение, цена — расход лимита в п.п. на 1 kcr. Изменение цены сравнивает первую и вторую половины периода.";
+  }
   renderComparisonLegend(model);
   renderComparisonSummary(model);
 }

@@ -1739,7 +1739,7 @@ test("statistics compares one independently selected limit and tracks its price"
   assert.doesNotMatch(comparisonModel, /limitsState\.hidden/u);
   const comparisonChart = app.slice(
     app.indexOf("function buildUsageComparisonChart(model)"),
-    app.indexOf("function comparisonLegendItem", app.indexOf("function buildUsageComparisonChart(model)")),
+    app.indexOf("function comparisonUsageUnitLabel", app.indexOf("function buildUsageComparisonChart(model)")),
   );
   assert.doesNotMatch(comparisonChart, /svgEl\("rect"/u);
   assert.match(client, /agentHub\.on\("comparison:open"/u);
@@ -1757,6 +1757,26 @@ test("statistics compares one independently selected limit and tracks its price"
   assert.match(styles, /\.comparison-cost-line\s*\{[^}]*stroke:\s*var\(--comparison-cost\);/su);
   assert.match(styles, /\.comparison-series-picker\s*\{[^}]*border-radius:\s*var\(--radius-chip\);/su);
   assert.doesNotMatch(app, /class: `limits-legend-toggle\$\{selected/u);
+});
+
+test("statistics switches between combined and split comparison charts", () => {
+  const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
+  assert.match(html, /data-comparison-view-mode="combined"[^>]*>Общая</u);
+  assert.match(html, /data-comparison-view-mode="split"[^>]*>Раздельно</u);
+  assert.match(html, /data-comparison-local-chart[\s\S]*?data-comparison-api-chart/u);
+  assert.match(html, /data-comparison-scatter-chart[\s\S]*?data-comparison-difference-chart/u);
+  assert.match(app, /COMPARISON_VIEW_MODE_KEY = "agent-hub:comparison-view-mode:v1"/u);
+  assert.match(app, /function selectComparisonViewMode\(value\)/u);
+  assert.match(app, /localStorage\.setItem\(COMPARISON_VIEW_MODE_KEY, next\)/u);
+  assert.match(app, /const differenceValues = aggregate\.map\(\(value, index\) => \(\s*Number\.isFinite\(value\) \? value - local\.values\[index\]/u);
+  assert.match(app, /function buildUsageComparisonSplitCharts\(model\)/u);
+  assert.match(app, /function buildComparisonScatterChart\(model\)/u);
+  assert.match(app, /function buildComparisonDifferenceChart\(model\)/u);
+  assert.match(app, /if \(split\) buildUsageComparisonSplitCharts\(model\);\s*else buildUsageComparisonChart\(model\);/u);
+  assert.match(styles, /\.comparison-analysis-grid\s*\{[^}]*grid-template-columns:\s*repeat\(2,/su);
+  assert.match(styles, /html\[data-surface="mobile"\] \.comparison-analysis-grid\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\);/su);
 });
 
 test("local usage chart keeps its range and labels every calendar day", () => {

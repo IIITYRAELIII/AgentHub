@@ -9426,6 +9426,100 @@ html[data-surface="mobile"] .current-limits-card {
   padding: 14px 14px 16px;
 }
 
+.comparison-view-options {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.comparison-split-view {
+  display: grid;
+  gap: 1rem;
+}
+
+.comparison-split-section {
+  min-width: 0;
+}
+
+.comparison-split-section > h3 {
+  color: var(--text-soft);
+  font-family: var(--font-title);
+  font-size: 0.78rem;
+  font-weight: 650;
+  margin: 0 0 0.35rem;
+}
+
+.comparison-compact-chart + .comparison-compact-chart {
+  margin-top: 0.3rem;
+}
+
+.comparison-compact-chart .limits-chart-svg {
+  height: 10.5rem;
+}
+
+.comparison-analysis-chart .limits-chart-svg {
+  height: 14rem;
+}
+
+.comparison-analysis-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.comparison-split-svg {
+  overflow: visible;
+}
+
+.comparison-panel-label,
+.comparison-axis-title,
+.comparison-correlation-label {
+  fill: var(--text-soft);
+  font-family: var(--font-numeric);
+  font-size: 10px;
+}
+
+.comparison-correlation-label {
+  fill: var(--text);
+  font-weight: 650;
+}
+
+.comparison-split-line {
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.comparison-regression-line {
+  opacity: 0.78;
+  stroke: var(--text-soft);
+  stroke-dasharray: 5 4;
+  stroke-width: 1.4;
+}
+
+.comparison-scatter-point {
+  opacity: 0.82;
+  stroke: var(--surface-1);
+  stroke-width: 1.2;
+}
+
+.comparison-scatter-point:hover {
+  opacity: 1;
+  stroke: var(--text);
+  stroke-width: 1.8;
+}
+
+.comparison-zero-line {
+  opacity: 0.78;
+  stroke: var(--text-soft);
+  stroke-width: 1.2;
+}
+
+.comparison-difference-bar {
+  opacity: 0.78;
+}
+
+.comparison-difference-bar:hover {
+  opacity: 1;
+}
+
 html[data-surface="mobile"] .current-limits-head {
   margin-bottom: 12px;
 }
@@ -9513,6 +9607,10 @@ html[data-surface="mobile"] .statistics-card-head {
 
 html[data-surface="mobile"] .comparison-summary {
   justify-content: flex-start;
+}
+
+html[data-surface="mobile"] .comparison-analysis-grid {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 html[data-surface="mobile"] .comparison-head-controls {
