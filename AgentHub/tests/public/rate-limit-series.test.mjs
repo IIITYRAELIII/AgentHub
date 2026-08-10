@@ -9,7 +9,12 @@ const source = await readFile(
 );
 const context = {};
 vm.runInNewContext(source, context);
-const { interpolateRateLimitGaps, rateLimitDeltasByBuckets } = context.AgentHubRateLimitSeries;
+const {
+  interpolateRateLimitGaps,
+  meanSignedComparisonDeviation,
+  rateLimitDeltasByBuckets,
+  signedComparisonDeviations,
+} = context.AgentHubRateLimitSeries;
 
 const hour = 60 * 60_000;
 const buckets = [
@@ -72,4 +77,20 @@ test("correlation leaves reset gaps unknown", () => {
     [...rateLimitDeltasByBuckets([point(0, 95), point(2 * hour, 5)], buckets)],
     [null, null],
   );
+});
+
+test("signed comparison deviations cancel opposite differences in the mean", () => {
+  assert.deepEqual(
+    [...signedComparisonDeviations([80, 100], [100, 80])],
+    [-20, 20],
+  );
+  assert.equal(meanSignedComparisonDeviation([80, 100], [100, 80]), 0);
+});
+
+test("signed comparison deviation excludes unknown interval pairs", () => {
+  assert.deepEqual(
+    [...signedComparisonDeviations([80, null, 70], [100, 10, 80])],
+    [-20, null, -10],
+  );
+  assert.equal(meanSignedComparisonDeviation([80, null, 70], [100, 10, 80]), -15);
 });

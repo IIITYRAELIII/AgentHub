@@ -6274,7 +6274,12 @@ const BURN_RATE_HOURLY_WINDOW_MS = 60 * 60_000;
 const BURN_RATE_MINIMUM_SPAN_MS = 23 * 60 * 60_000;
 const BURN_RATE_HOURLY_MINIMUM_SPAN_MS = 45 * 60_000;
 const BURN_RATE_CHART_MAX = 400;
-const { interpolateRateLimitGaps, rateLimitDeltasByBuckets } = globalThis.AgentHubRateLimitSeries;
+const {
+  interpolateRateLimitGaps,
+  meanSignedComparisonDeviation,
+  rateLimitDeltasByBuckets,
+  signedComparisonDeviations,
+} = globalThis.AgentHubRateLimitSeries;
 
 function burnRatePolicyForRange(range) {
   return ["6h", "24h"].includes(String(range))
@@ -7943,15 +7948,6 @@ function pearsonCorrelation(left, right) {
   return denominator > 0 ? clampNumber(numerator / denominator, -1, 1) : null;
 }
 
-function meanAbsoluteDeviation(left, right) {
-  const values = left.map((value, index) => (
-    Number.isFinite(value) && Number.isFinite(right[index])
-      ? Math.abs(value - right[index])
-      : null
-  )).filter(Number.isFinite);
-  return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
-}
-
 function limitDeltasByBucket(series, buckets) {
   return rateLimitDeltasByBuckets(series?.points, buckets);
 }
@@ -8028,7 +8024,7 @@ function buildUsageComparisonModel(payload) {
           ? pearsonCorrelation(local.values, normalized.values)
           : null,
         deviation: normalized.peak > 0
-          ? meanAbsoluteDeviation(local.values, normalized.values)
+          ? meanSignedComparisonDeviation(normalized.values, local.values)
           : null,
       };
     });
@@ -8046,12 +8042,8 @@ function buildUsageComparisonModel(payload) {
   }
   const visibleSeries = selectedSeries?.peak > 0 ? [selectedSeries] : [];
   const aggregate = selectedSeries?.peak > 0 ? selectedSeries.values : buckets.map(() => null);
-  const deviationValues = aggregate.map((value, index) => (
-    Number.isFinite(value) ? Math.abs(local.values[index] - value) : null
-  ));
-  const differenceValues = aggregate.map((value, index) => (
-    Number.isFinite(value) ? value - local.values[index] : null
-  ));
+  const deviationValues = signedComparisonDeviations(aggregate, local.values);
+  const differenceValues = [...deviationValues];
   const price = selectedSeries
     ? comparisonLimitPrice(localRaw, selectedSeries.rawValues, buckets)
     : comparisonLimitPrice([], [], buckets);
@@ -8066,7 +8058,7 @@ function buildUsageComparisonModel(payload) {
     deviationValues,
     differenceValues,
     correlation: pearsonCorrelation(local.values, aggregate),
-    deviation: meanAbsoluteDeviation(local.values, aggregate),
+    deviation: meanSignedComparisonDeviation(aggregate, local.values),
     price,
   };
 }
@@ -8190,7 +8182,10 @@ function buildUsageComparisonChart(model) {
   const plotH = H - padT - padB;
   const span = Math.max(1, model.extent.to - model.extent.from);
   const xOf = (time) => padL + ((time - model.extent.from) / span) * plotW;
-  const yOf = (value) => padT + (1 - clampNumber(value, 0, 100) / 100) * plotH;
+  const minimumDeviation = Math.min(0, ...model.deviationValues.filter(Number.isFinite));
+  const yMinimum = Math.max(-100, Math.floor(minimumDeviation / 25) * 25);
+  const ySpan = 100 - yMinimum;
+  const yOf = (value) => padT + ((100 - clampNumber(value, yMinimum, 100)) / ySpan) * plotH;
   const priceMax = comparisonPriceAxisMax(model.price.values);
   const yOfPrice = (value) => padT + (1 - clampNumber(value, 0, priceMax) / priceMax) * plotH;
   const svg = svgEl("svg", {
@@ -8199,9 +8194,16 @@ function buildUsageComparisonChart(model) {
     preserveAspectRatio: "none",
     "aria-hidden": "true",
   });
-  for (const value of [0, 25, 50, 75, 100]) {
+  const yTicks = [...new Set([yMinimum, 0, 25, 50, 75, 100])].sort((left, right) => left - right);
+  for (const value of yTicks) {
     const y = yOf(value);
-    svg.append(svgEl("line", { x1: padL, y1: y, x2: W - padR, y2: y, class: "limits-grid-line" }));
+    svg.append(svgEl("line", {
+      x1: padL,
+      y1: y,
+      x2: W - padR,
+      y2: y,
+      class: value === 0 && yMinimum < 0 ? "comparison-zero-line" : "limits-grid-line",
+    }));
     svg.append(svgEl("text", {
       x: padL - 6,
       y: y + 3,
@@ -8312,7 +8314,7 @@ function buildUsageComparisonChart(model) {
   comparisonChart.setAttribute(
     "aria-label",
     `Сопоставление локального и API-расхода. Корреляция ${correlation}; среднее отклонение ${
-      Number.isFinite(model.deviation) ? `${formatComparisonNumber(model.deviation, 1)} процентного пункта` : "не рассчитано"
+      Number.isFinite(model.deviation) ? `${formatComparisonNumber(model.deviation, 1, true)} процентного пункта` : "не рассчитано"
     }; изменение цены ${
       Number.isFinite(model.price.changePercent)
         ? `${formatComparisonNumber(model.price.changePercent, 0, true)} процента`
@@ -8666,7 +8668,7 @@ function comparisonSeriesPicker(model) {
   const swatch = el("span", { class: "limits-legend-swatch", "aria-hidden": "true" });
   swatch.style.setProperty("--series-color", selected?.color || "var(--accent)");
   const metrics = selected && Number.isFinite(selected.correlation)
-    ? `r ${formatComparisonNumber(selected.correlation, 2, true)} · Δ ${formatComparisonNumber(selected.deviation, 1)} п.п.`
+    ? `r ${formatComparisonNumber(selected.correlation, 2, true)} · Δ ${formatComparisonNumber(selected.deviation, 1, true)} п.п.`
     : selected ? "нет изменений" : "нет данных";
   const item = el("li", { class: "limits-legend-item comparison-series-picker" }, [
     swatch,
@@ -8694,7 +8696,7 @@ function renderComparisonLegend(model) {
   entries.push(comparisonLegendItem(
     "Отклонение",
     "var(--comparison-deviation)",
-    Number.isFinite(model.deviation) ? `${formatComparisonNumber(model.deviation, 1)} п.п.` : "—",
+    Number.isFinite(model.deviation) ? `${formatComparisonNumber(model.deviation, 1, true)} п.п.` : "—",
   ));
   entries.push(comparisonLegendItem(
     "Цена лимита",
@@ -8709,7 +8711,7 @@ function renderComparisonSummary(model) {
   const correlation = Number.isFinite(model?.correlation)
     ? formatComparisonNumber(model.correlation, 2, true)
     : "—";
-  const deviation = Number.isFinite(model?.deviation) ? `${formatComparisonNumber(model.deviation, 1)} п.п.` : "—";
+  const deviation = Number.isFinite(model?.deviation) ? `${formatComparisonNumber(model.deviation, 1, true)} п.п.` : "—";
   const priceChange = Number.isFinite(model?.price?.changePercent)
     ? `${formatComparisonNumber(model.price.changePercent, 0, true)}%`
     : "—";
@@ -8722,7 +8724,7 @@ function renderComparisonSummary(model) {
       el("span", { text: "r" }),
       el("strong", { text: correlation }),
     ]),
-    el("span", { class: "comparison-metric", title: "Среднее абсолютное отклонение нормализованных линий" }, [
+    el("span", { class: "comparison-metric", title: "Среднее знаковое отклонение: расход аккаунта минус локальный" }, [
       el("span", { text: "Δ" }),
       el("strong", { text: deviation }),
     ]),
@@ -8770,7 +8772,7 @@ function renderUsageComparison() {
   if (comparisonNote) {
     comparisonNote.textContent = split
       ? "Временные графики используют исходные единицы и общую ось дат. Точки показывают совпадающие интервалы. Разность считается как нормированный расход аккаунта минус локальный: выше нуля — больше расход лимита, ниже нуля — больше локальный расход. Изменение лимита между соседними замерами равномерно распределяется по их интервалу. Цена остаётся в итоговом показателе."
-      : "При выборе аккаунта локальный расход учитывает только ходы, завершённые в интервалах его активности. Пункт «Все» снимает отбор аккаунта. Изменение лимита между соседними замерами равномерно распределяется по их интервалу; неизменное значение считается нулевым расходом. Линии расхода приведены к собственному пику. r — корреляция Пирсона, Δ — среднее абсолютное отклонение, цена — расход лимита в п.п. на 1 kcr. Изменение цены сравнивает первую и вторую половины периода.";
+      : "При выборе аккаунта локальный расход учитывает только ходы, завершённые в интервалах его активности. Пункт «Все» снимает отбор аккаунта. Изменение лимита между соседними замерами равномерно распределяется по их интервалу; неизменное значение считается нулевым расходом. Линии расхода приведены к собственному пику. r — корреляция Пирсона, Δ — среднее знаковое отклонение «аккаунт − локально»: минусы и плюсы взаимно компенсируются. Цена — расход лимита в п.п. на 1 kcr. Изменение цены сравнивает первую и вторую половины периода.";
   }
   renderComparisonLegend(model);
   renderComparisonSummary(model);

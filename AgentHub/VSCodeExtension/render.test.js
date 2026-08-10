@@ -1702,7 +1702,6 @@ test("statistics compares one independently selected limit and tracks its price"
   assert.match(html, /data-comparison-chart role="img"/u);
   assert.match(html, /r — корреляция Пирсона,[\s\S]*?цена — расход лимита в п\.п\. на 1 kcr/u);
   assert.match(app, /function pearsonCorrelation\(left, right\)/u);
-  assert.match(app, /function meanAbsoluteDeviation\(left, right\)/u);
   assert.match(app, /function limitDeltasByBucket\(series, buckets\)/u);
   assert.match(app, /agent-hub:comparison-series:v2/u);
   assert.match(html, /(data-statistics-account-select[\s\S]*?){2}/u);
@@ -1764,7 +1763,6 @@ test("statistics switches between combined and split comparison charts", () => {
   assert.match(app, /COMPARISON_VIEW_MODE_KEY = "agent-hub:comparison-view-mode:v1"/u);
   assert.match(app, /function selectComparisonViewMode\(value\)/u);
   assert.match(app, /localStorage\.setItem\(COMPARISON_VIEW_MODE_KEY, next\)/u);
-  assert.match(app, /const differenceValues = aggregate\.map\(\(value, index\) => \(\s*Number\.isFinite\(value\) \? value - local\.values\[index\]/u);
   assert.match(app, /function buildUsageComparisonSplitCharts\(model\)/u);
   assert.match(app, /function buildComparisonScatterChart\(model\)/u);
   assert.match(app, /function buildComparisonDifferenceChart\(model\)/u);

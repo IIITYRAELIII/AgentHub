@@ -129,9 +129,28 @@
     return values;
   }
 
+  function signedComparisonDeviations(accountValues, localValues) {
+    const account = Array.isArray(accountValues) ? accountValues : [];
+    const local = Array.isArray(localValues) ? localValues : [];
+    return Array.from({ length: Math.max(account.length, local.length) }, (_, index) => (
+      Number.isFinite(account[index]) && Number.isFinite(local[index])
+        ? account[index] - local[index]
+        : null
+    ));
+  }
+
+  function meanSignedComparisonDeviation(accountValues, localValues) {
+    const values = signedComparisonDeviations(accountValues, localValues).filter(Number.isFinite);
+    if (!values.length) return null;
+    const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+    return Math.abs(mean) < 1e-9 ? 0 : mean;
+  }
+
   globalThis.AgentHubRateLimitSeries = Object.freeze({
     DEFAULT_SAMPLE_INTERVAL_MS,
     interpolateRateLimitGaps,
+    meanSignedComparisonDeviation,
     rateLimitDeltasByBuckets,
+    signedComparisonDeviations,
   });
 })();
