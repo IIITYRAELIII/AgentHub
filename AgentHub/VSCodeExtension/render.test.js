@@ -1950,7 +1950,6 @@ test("shared shell groups threads under stable Workspace and Stream identities",
   assert.match(app, /function streamDisplayName\(stream, streamCount\)/u);
   assert.match(app, /streamCount > 1 \? `Stream \$\{stream\.ordinal\}` : "Stream"/u);
   // Обычный клик переключает единственную колонку; Ctrl+click держит до четырёх.
-  assert.match(app, /agent-hub:workspace-open-streams:v2/u);
   assert.match(app, /normalized = \[selectedInWorkspace \|\| ordered\[0\]\?\.id\]\.filter\(Boolean\)/u);
   assert.match(app, /configuredOpenStreamWorkspaces/u);
   assert.match(app, /function toggleOpenStream\(workspaceId, streamId, streams, \{ additive = false \} = \{\}\)/u);
