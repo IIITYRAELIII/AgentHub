@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { createTrustedDeviceManager, resolveTrustedDeviceUserId } from "../../../src/interfaces/web/trusted-device-access.mjs";
+import {
+  createTrustedDeviceManager,
+  createWorkerTrustedDeviceStore,
+  resolveTrustedDeviceUserId,
+  TrustedDeviceRegistry,
+} from "../../../src/interfaces/web/trusted-device-access.mjs";
 
 test("public browser pairing clears stale errors and submits a complete pasted code", () => {
   const auth = readFileSync(new URL("../../../assets/mini-app/browser-device-auth.js", import.meta.url), "utf8");
@@ -50,94 +55,50 @@ test("Android-only Hub uses an isolated local device owner", () => {
   );
 });
 
-test("trusted device management follows the public Worker when it is enabled", async () => {
+test("trusted device registry switches all surfaces to one Worker backend after migration", async () => {
   const calls = [];
   const publisher = {
     trustedDevices: async (userId) => calls.push(["worker-list", userId]),
     createDevicePairing: async (userId) => calls.push(["worker-pair", userId]),
     revokeDevice: async (userId, deviceId) => calls.push(["worker-revoke", userId, deviceId]),
+    importDevices: async (userId, devices) => {
+      calls.push(["worker-import", userId, devices.map((device) => device.id)]);
+      return { imported: devices.length };
+    },
   };
   const localStore = {
     list: async (userId) => calls.push(["local-list", userId]),
     createPairing: async (userId) => calls.push(["local-pair", userId]),
     revoke: async (userId, deviceId) => calls.push(["local-revoke", userId, deviceId]),
+    exportActiveDevices: async () => [{ id: "local-device", userId: "42" }],
   };
-  const remote = createTrustedDeviceManager({ workerEnabled: true, publisher, localStore });
-  await remote.list("42");
-  await remote.createPairing("42");
-  await remote.revoke("42", "device");
-  const local = createTrustedDeviceManager({ localStore });
-  await local.list("local");
+  const registry = new TrustedDeviceRegistry(localStore);
+  const manager = createTrustedDeviceManager({ localStore: registry });
+  await manager.list("42");
+  assert.deepEqual(await registry.use(createWorkerTrustedDeviceStore(publisher)), { migrated: 1 });
+  await manager.list("42");
+  await manager.createPairing("42");
+  await manager.revoke("42", "device");
   assert.deepEqual(calls, [
+    ["local-list", "42"],
+    ["worker-import", "42", ["local-device"]],
     ["worker-list", "42"],
     ["worker-pair", "42"],
     ["worker-revoke", "42", "device"],
-    ["local-list", "local"],
   ]);
 });
 
-test("trusted device management keeps direct and Worker pairings isolated", async () => {
+test("trusted device registry stays local when migration fails", async () => {
   const calls = [];
-  const publisher = {
-    trustedDevices: async (userId) => calls.push(["worker-list", userId]),
-    createDevicePairing: async (userId) => calls.push(["worker-pair", userId]),
-    revokeDevice: async (userId, deviceId) => calls.push(["worker-revoke", userId, deviceId]),
-  };
   const localStore = {
-    list: async (userId) => calls.push(["local-list", userId]),
-    createPairing: async (userId) => calls.push(["local-pair", userId]),
-    revoke: async (userId, deviceId) => calls.push(["local-revoke", userId, deviceId]),
+    exportActiveDevices: async () => [{ id: "local-device", userId: "42" }],
+    list: async () => calls.push("local-list"),
   };
-
-  const direct = createTrustedDeviceManager({
-    workerEnabled: true,
-    publisher,
-    localStore,
-    context: { source: "telegram-mini-app" },
-  });
-  await direct.list("42");
-  await direct.createPairing("42");
-  await direct.revoke("42", "direct-device");
-
-  const worker = createTrustedDeviceManager({
-    workerEnabled: true,
-    publisher,
-    localStore,
-    context: { source: "telegram-mini-app", transport: "worker" },
-  });
-  await worker.list("42");
-  await worker.createPairing("42");
-  await worker.revoke("42", "worker-device");
-
-  assert.deepEqual(calls, [
-    ["local-list", "42"],
-    ["local-pair", "42"],
-    ["local-revoke", "42", "direct-device"],
-    ["worker-list", "42"],
-    ["worker-pair", "42"],
-    ["worker-revoke", "42", "worker-device"],
-  ]);
-});
-
-test("trusted device management resolves a Worker started after composition", async () => {
-  const calls = [];
-  let publisher = null;
-  const remote = createTrustedDeviceManager({
-    workerEnabled: true,
-    publisher: () => publisher,
-  });
-
-  assert.throws(
-    () => remote.list("42"),
-    /недоступны без Mini App Worker publisher/u,
+  const registry = new TrustedDeviceRegistry(localStore);
+  await assert.rejects(
+    () => registry.use({ importDevices: async () => { throw new Error("offline"); } }),
+    /offline/u,
   );
-
-  publisher = {
-    trustedDevices: async (userId) => calls.push(["worker-list", userId]),
-    createDevicePairing: async () => {},
-    revokeDevice: async () => {},
-  };
-  await remote.list("42");
-
-  assert.deepEqual(calls, [["worker-list", "42"]]);
+  await registry.list("42");
+  assert.deepEqual(calls, ["local-list"]);
 });

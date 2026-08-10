@@ -44,11 +44,13 @@ test("trusted device store pairs, authorizes, persists and revokes an Android ke
   });
   assert.equal((await store.resolveSession(session.token)).id, "42");
   assert.equal((await store.list("42")).devices[0].name, "Test phone");
+  assert.deepEqual((await store.exportActiveDevices()).map((device) => device.id), [paired.device.id]);
 
   const restored = new TrustedDeviceStore({ filePath, now: () => now });
   await restored.load();
   assert.equal((await restored.resolveSession(session.token)).deviceId, paired.device.id);
   await restored.revoke("42", paired.device.id);
+  assert.deepEqual(await restored.exportActiveDevices(), []);
   await assert.rejects(() => restored.resolveSession(session.token), /invalid|trusted/);
   const persisted = JSON.parse(await readFile(filePath, "utf8"));
   assert.equal(persisted.devices[paired.device.id].revokedAt, now);

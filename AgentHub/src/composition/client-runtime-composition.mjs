@@ -66,6 +66,7 @@ export async function createClientRuntimeComposition({
   const {
     miniAppServer,
     publicMiniAppServer,
+    trustedDeviceStore,
     rateLimitHistoryStore,
     workLogUsageStore,
     runtimeStateStore,
@@ -132,6 +133,7 @@ export async function createClientRuntimeComposition({
     reconcileRemoteDesktopControl: api.deferredReconcileRemoteDesktopControl,
     forgetDesktopControl: api.deferredForgetDesktopControl,
     trustedDeviceUserId: api.deferredDesktopTrustedDeviceUserId,
+    trustedDeviceStore,
     desktopMessageReceipts,
     projects,
     codexModels,

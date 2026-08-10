@@ -432,6 +432,7 @@ const clientRuntime = await createClientRuntimeComposition({
   infrastructure: {
     miniAppServer,
     publicMiniAppServer,
+    trustedDeviceStore,
     rateLimitHistoryStore,
     workLogUsageStore,
     runtimeStateStore,

@@ -27,6 +27,13 @@ function fixture({ gateway = false, worker = false, tunnel = false, sharedBot = 
     async start() { events.push("public:start"); return { url: "http://127.0.0.1:2/" }; },
     async close() { events.push("public:close"); },
   };
+  const trustedDeviceStore = {
+    async use(store) {
+      assert.equal(typeof store.resolveSession, "function");
+      events.push("registry:worker");
+      return { migrated: 2 };
+    },
+  };
   const service = new MiniAppLifecycleService({
     config: {
       dataDir: "data",
@@ -52,6 +59,7 @@ function fixture({ gateway = false, worker = false, tunnel = false, sharedBot = 
     controlHandler: async () => {},
     controlReconciler: async () => {},
     forgetControl: async () => {},
+    trustedDeviceStore,
     sharedDashboardBotClient: sharedBot ? {
       async start() { events.push("shared-bot:start"); },
       async close() { events.push("shared-bot:close"); },
@@ -86,6 +94,7 @@ test("Mini App lifecycle owns gateway, worker and tunnel transports", async () =
     "setChatMenuButton:42:https://public.example/",
   ]);
   assert.ok(events.includes("publisher:start"));
+  assert.ok(events.includes("registry:worker"));
   assert.ok(events.includes("public:start"));
   await service.closePublisher();
   await service.closeDirectGateway();

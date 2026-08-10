@@ -21,6 +21,7 @@ import { SingleInstanceGuard } from "../infrastructure/process/instance-lock.mjs
 import { captureProcess } from "../infrastructure/process/process-capture.mjs";
 import { RuntimeCommandServer } from "../infrastructure/process/runtime-command.mjs";
 import { MiniAppServer } from "../interfaces/web/mini-app-server.mjs";
+import { TrustedDeviceRegistry } from "../interfaces/web/trusted-device-access.mjs";
 import { CodexRolloutContextSanitizer } from "../providers/codex/codex-rollout-context.mjs";
 import {
   CodexSparkTaskClassifier,
@@ -49,10 +50,11 @@ export async function createHubInfrastructure({
   handleRuntimeCommand,
   stopProcessTree,
 }) {
-  const trustedDeviceStore = new TrustedDeviceStore({
+  const localTrustedDeviceStore = new TrustedDeviceStore({
     filePath: path.join(config.dataDir, "trusted-devices.json"),
   });
-  await trustedDeviceStore.load();
+  await localTrustedDeviceStore.load();
+  const trustedDeviceStore = new TrustedDeviceRegistry(localTrustedDeviceStore);
   const codexRolloutContextSanitizer = new CodexRolloutContextSanitizer({
     ...config.codexRolloutContext,
   });

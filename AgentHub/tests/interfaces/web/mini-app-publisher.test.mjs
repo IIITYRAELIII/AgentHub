@@ -206,6 +206,45 @@ test("Mini App publisher manages trusted devices through signed service requests
   }
 });
 
+test("Mini App publisher proxies direct device authentication to the Worker registry", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-device-proxy-"));
+  const secretFile = path.join(root, "sync.secret");
+  await writeFile(secretFile, "w".repeat(64));
+  const requests = [];
+  const publisher = new MiniAppPublisher({
+    dataDirectory: root,
+    publicUrl: "https://hub.example.test",
+    syncSecretFile: secretFile,
+    fetchImpl: async (url, options) => {
+      requests.push({ url, options });
+      return Response.json(new URL(url).pathname.endsWith("/resolve")
+        ? { id: "42", deviceId: "device" }
+        : { ok: true });
+    },
+  });
+  try {
+    await publisher.pairDevice({ code: "code" });
+    await publisher.createDeviceChallenge({ deviceId: "device" });
+    await publisher.createDeviceSession({ deviceId: "device" });
+    await publisher.resolveDeviceSession("token");
+    await publisher.importDevices("42", []);
+    await publisher.deleteDevices("42", ["device"]);
+    assert.deepEqual(requests.map((request) => new URL(request.url).pathname), [
+      "/api/device/pair",
+      "/api/device/challenge",
+      "/api/device/session",
+      "/api/device/session/resolve",
+      "/api/device/import",
+      "/api/device/delete",
+    ]);
+    assert.equal(requests[0].options.headers["X-Agent-Hub-Signature"], undefined);
+    assert.match(String(requests[3].options.headers["X-Agent-Hub-Signature"]), /^[a-f0-9]{64}$/u);
+  } finally {
+    await publisher.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("Mini App publisher exposes a local image through a signed temporary view", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-view-publisher-"));
   const attachmentDirectory = path.join(root, "attachments");

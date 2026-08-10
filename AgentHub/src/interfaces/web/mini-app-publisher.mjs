@@ -317,6 +317,20 @@ export class MiniAppPublisher {
     return (await this.#signedControlFetch(pathname, payload, secret, options)).json();
   }
 
+  async #publicDeviceRequest(pathname, payload) {
+    const response = await this.#fetch(`${this.#publicUrl}${pathname}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(String(result?.error ?? `Mini App Worker device request failed with HTTP ${response.status}`));
+    }
+    return result;
+  }
+
   async createDevicePairing(userId) {
     const secret = await this.#secret();
     return this.#signedControlRequest("/api/device/pairing", { userId: String(userId) }, secret);
@@ -332,6 +346,39 @@ export class MiniAppPublisher {
     return this.#signedControlRequest("/api/device/revoke", {
       userId: String(userId),
       deviceId: String(deviceId),
+    }, secret);
+  }
+
+  pairDevice(payload) {
+    return this.#publicDeviceRequest("/api/device/pair", payload);
+  }
+
+  createDeviceChallenge(payload) {
+    return this.#publicDeviceRequest("/api/device/challenge", payload);
+  }
+
+  createDeviceSession(payload) {
+    return this.#publicDeviceRequest("/api/device/session", payload);
+  }
+
+  async resolveDeviceSession(token) {
+    const secret = await this.#secret();
+    return this.#signedControlRequest("/api/device/session/resolve", { token: String(token) }, secret);
+  }
+
+  async importDevices(userId, devices) {
+    const secret = await this.#secret();
+    return this.#signedControlRequest("/api/device/import", {
+      userId: String(userId),
+      devices,
+    }, secret);
+  }
+
+  async deleteDevices(userId, deviceIds) {
+    const secret = await this.#secret();
+    return this.#signedControlRequest("/api/device/delete", {
+      userId: String(userId),
+      deviceIds,
     }, secret);
   }
 

@@ -37,6 +37,7 @@ export async function createClientInterfaceComposition({
   reconcileRemoteDesktopControl,
   forgetDesktopControl,
   trustedDeviceUserId,
+  trustedDeviceStore,
   desktopMessageReceipts,
   projects,
   codexModels,
@@ -121,6 +122,7 @@ export async function createClientInterfaceComposition({
     controlHandler: handleDesktopControl,
     controlReconciler: reconcileRemoteDesktopControl,
     forgetControl: forgetDesktopControl,
+    trustedDeviceStore,
     sharedDashboardBotClient,
   });
   const desktopAttachments = new DesktopAttachmentService({

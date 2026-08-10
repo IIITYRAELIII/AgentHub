@@ -585,6 +585,25 @@ test("Android device pairing creates a revocable signed session", async () => {
     name: "Pixel test",
   }]);
 
+  const importedId = "018f6c86-3f34-7a31-8f27-16f5b96cce19";
+  response = await workerModule.default.fetch(
+    signedServiceRequest("https://hub.test/api/device/import", {
+      userId: "42",
+      devices: [{
+        id: importedId,
+        userId: "42",
+        name: "Direct browser",
+        platform: "Chromium",
+        publicKey: base64Url(publicKey.export({ type: "spki", format: "der" })),
+        createdAt: Date.now() - 1_000,
+        lastSeenAt: null,
+        revokedAt: null,
+      }],
+    }, syncSecret),
+    env,
+  );
+  assert.deepEqual(await response.json(), { imported: 1, existing: 0 });
+
   response = await workerModule.default.fetch(
     signedServiceRequest("https://hub.test/api/device/revoke", {
       userId: "42",
@@ -593,6 +612,14 @@ test("Android device pairing creates a revocable signed session", async () => {
     env,
   );
   assert.equal(response.status, 200);
+  response = await workerModule.default.fetch(
+    signedServiceRequest("https://hub.test/api/device/delete", {
+      userId: "42",
+      deviceIds: [paired.device.id],
+    }, syncSecret),
+    env,
+  );
+  assert.deepEqual(await response.json(), { deleted: 1 });
   response = await workerModule.default.fetch(new Request("https://hub.test/api/control", {
     method: "POST",
     headers: {

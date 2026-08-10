@@ -1,5 +1,7 @@
 import path from "node:path";
 
+import { createWorkerTrustedDeviceStore } from "./trusted-device-access.mjs";
+
 export class MiniAppLifecycleService {
   constructor({
     config,
@@ -16,6 +18,7 @@ export class MiniAppLifecycleService {
     controlHandler,
     controlReconciler,
     forgetControl,
+    trustedDeviceStore = null,
     sharedDashboardBotClient = null,
     logger = console,
   } = {}) {
@@ -35,6 +38,7 @@ export class MiniAppLifecycleService {
       controlHandler,
       controlReconciler,
       forgetControl,
+      trustedDeviceStore,
       sharedDashboardBotClient,
       logger,
     });
@@ -88,6 +92,16 @@ export class MiniAppLifecycleService {
           this.logger.log(`Agent Hub Worker ready at ${url}`);
         },
       });
+      if (this.trustedDeviceStore) {
+        try {
+          const migration = await this.trustedDeviceStore.use(
+            createWorkerTrustedDeviceStore(() => this.publisher),
+          );
+          this.logger.log(`Trusted device registry uses Worker; migrated ${migration.migrated} local device(s)`);
+        } catch (error) {
+          this.logger.warn(`Cannot switch trusted device registry to Worker: ${error.message}`);
+        }
+      }
       await this.publisher.start().catch((error) => {
         this.logger.warn(`Cannot publish Mini App journal yet: ${error.message}`);
       });

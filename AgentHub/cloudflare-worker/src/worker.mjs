@@ -1555,6 +1555,46 @@ export class JournalStore extends DurableObject {
     return { devices: records.map((record) => this.#publicDevice(record)) };
   }
 
+  async #importDevices(payload) {
+    const userId = String(payload?.userId ?? "").trim();
+    const devices = Array.isArray(payload?.devices) ? payload.devices : null;
+    if (!userId || !devices || devices.length > 100) throw new Error("invalid device import");
+    const records = [];
+    for (const value of devices) {
+      const id = String(value?.id ?? "").trim().toLowerCase();
+      const recordUserId = String(value?.userId ?? "").trim();
+      const name = normalizedDeviceName(value?.name);
+      const platform = String(value?.platform ?? "Browser").trim().slice(0, 40) || "Browser";
+      const publicKey = String(value?.publicKey ?? "").trim();
+      const createdAt = Number(value?.createdAt);
+      const lastSeenAt = value?.lastSeenAt == null ? null : Number(value.lastSeenAt);
+      if (
+        !DEVICE_ID_PATTERN.test(id)
+        || recordUserId !== userId
+        || !Number.isSafeInteger(createdAt)
+        || createdAt < 1
+        || (lastSeenAt != null && (!Number.isSafeInteger(lastSeenAt) || lastSeenAt < createdAt))
+        || value?.revokedAt != null
+      ) {
+        throw new Error("invalid device import");
+      }
+      await importDevicePublicKey(publicKey);
+      records.push({ id, userId, name, platform, publicKey, createdAt, lastSeenAt, revokedAt: null });
+    }
+    const keys = records.map((record) => `device:record:${record.id}`);
+    const existing = keys.length ? await this.ctx.storage.get(keys) : new Map();
+    const writes = [];
+    for (const [index, record] of records.entries()) {
+      const current = existing.get(keys[index]);
+      if (current && (String(current.userId) !== userId || current.publicKey !== record.publicKey)) {
+        throw new Error("device import conflict");
+      }
+      if (!current) writes.push([keys[index], record]);
+    }
+    if (writes.length) await putStorageEntries(this.ctx.storage, writes);
+    return { imported: writes.length, existing: records.length - writes.length };
+  }
+
   async #revokeDevice(payload) {
     const userId = String(payload?.userId ?? "").trim();
     const deviceId = String(payload?.deviceId ?? "").trim().toLowerCase();
@@ -1571,6 +1611,35 @@ export class JournalStore extends DurableObject {
     await this.ctx.storage.put(recordKey, record);
     if (sessionKeys.length) await deleteStorageKeys(this.ctx.storage, sessionKeys);
     return { device: this.#publicDevice(record) };
+  }
+
+  async #deleteDevices(payload) {
+    const userId = String(payload?.userId ?? "").trim();
+    const deviceIds = [...new Set((Array.isArray(payload?.deviceIds) ? payload.deviceIds : [])
+      .map((value) => String(value).trim().toLowerCase()))];
+    if (!userId || !deviceIds.length || deviceIds.length > 100
+      || deviceIds.some((deviceId) => !DEVICE_ID_PATTERN.test(deviceId))) {
+      throw new Error("invalid device delete request");
+    }
+    const recordKeys = deviceIds.map((deviceId) => `device:record:${deviceId}`);
+    const records = await this.ctx.storage.get(recordKeys);
+    for (const key of recordKeys) {
+      const record = records.get(key);
+      if (!record || String(record.userId) !== userId || !record.revokedAt) {
+        throw new Error("only revoked devices can be deleted");
+      }
+    }
+    const [sessions, challenges] = await Promise.all([
+      this.ctx.storage.list({ prefix: "device:session:" }),
+      this.ctx.storage.list({ prefix: "device:challenge:" }),
+    ]);
+    const selected = new Set(deviceIds);
+    await deleteStorageKeys(this.ctx.storage, [
+      ...recordKeys,
+      ...[...sessions].filter(([, value]) => selected.has(value?.deviceId)).map(([key]) => key),
+      ...[...challenges].filter(([, value]) => selected.has(value?.deviceId)).map(([key]) => key),
+    ]);
+    return { deleted: deviceIds.length };
   }
 
   async #ensureControlIndex(storage = this.ctx.storage, now = Date.now()) {
@@ -1893,9 +1962,23 @@ export class JournalStore extends DurableObject {
         return json({ error: error.message }, 400);
       }
     }
+    if (request.method === "POST" && url.pathname === "/device/import") {
+      try {
+        return json(await this.#importDevices(await request.json()));
+      } catch (error) {
+        return json({ error: error.message }, 400);
+      }
+    }
     if (request.method === "POST" && url.pathname === "/device/revoke") {
       try {
         return json(await this.#revokeDevice(await request.json()));
+      } catch (error) {
+        return json({ error: error.message }, 400);
+      }
+    }
+    if (request.method === "POST" && url.pathname === "/device/delete") {
+      try {
+        return json(await this.#deleteDevices(await request.json()));
       } catch (error) {
         return json({ error: error.message }, 400);
       }
@@ -2743,7 +2826,14 @@ export default {
         return json({ error: error.message }, 400);
       }
     }
-    if (["/api/device/pairing", "/api/device/list", "/api/device/revoke"].includes(url.pathname)) {
+    if ([
+      "/api/device/pairing",
+      "/api/device/list",
+      "/api/device/revoke",
+      "/api/device/import",
+      "/api/device/delete",
+      "/api/device/session/resolve",
+    ].includes(url.pathname)) {
       if (request.method !== "POST") return json({ error: "Method Not Allowed" }, 405);
       let body;
       try {
@@ -2754,7 +2844,8 @@ export default {
       try {
         const payload = parseJson(body, "device service request");
         const userId = String(payload?.userId ?? "").trim();
-        if (!allowedUserIds(env.ALLOWED_USER_IDS).has(userId)) throw new Error("user is not allowed");
+        if (url.pathname !== "/api/device/session/resolve"
+          && !allowedUserIds(env.ALLOWED_USER_IDS).has(userId)) throw new Error("user is not allowed");
         const internalPath = url.pathname === "/api/device/pairing"
           ? "/device/pairing/create"
           : url.pathname.replace(/^\/api/u, "");

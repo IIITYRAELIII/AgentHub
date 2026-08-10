@@ -277,6 +277,13 @@ export class TrustedDeviceStore {
     };
   }
 
+  async exportActiveDevices() {
+    await this.#writeQueue;
+    return Object.values(this.#state.devices)
+      .filter((record) => !record.revokedAt)
+      .map((record) => ({ ...record }));
+  }
+
   async revoke(userId, deviceId) {
     const normalizedUserId = String(userId ?? "").trim();
     const normalizedDeviceId = String(deviceId ?? "").trim().toLowerCase();

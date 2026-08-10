@@ -9,7 +9,6 @@ export function createDesktopSystemComposition({
   dependencies,
 }) {
   const {
-    miniAppPublisher,
     trustedDeviceStore,
     ...systemDependencies
   } = dependencies;
@@ -25,10 +24,7 @@ export function createDesktopSystemComposition({
     trustedDeviceManager: (context) => {
       const userId = trustedDeviceUserId(context);
       const manager = createTrustedDeviceManager({
-        workerEnabled: config.miniApp.worker.enabled,
-        publisher: miniAppPublisher,
         localStore: trustedDeviceStore,
-        context,
       });
       return {
         list: () => manager.list(userId),
