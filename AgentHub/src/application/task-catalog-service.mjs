@@ -17,13 +17,16 @@ export class TaskCatalogService {
   get refreshedAt() { return this.#refreshedAt; }
   get revision() { return this.#revision; }
   get refreshing() { return this.#refreshInFlight !== null; }
+  get stale() {
+    return !this.#entries.length || this.now() - this.#refreshedAt >= this.cacheMs;
+  }
 
   invalidate() {
     this.#refreshedAt = 0;
   }
 
   async refresh({ force = false } = {}) {
-    if (!force && this.#entries.length && this.now() - this.#refreshedAt < this.cacheMs) {
+    if (!force && !this.stale) {
       return this.#entries;
     }
     if (this.#refreshInFlight) return this.#refreshInFlight;

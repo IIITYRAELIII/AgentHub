@@ -89,7 +89,7 @@ export function createDesktopReadSystemWiring({
       catalog: {
         entries: services.catalogEntries,
         hierarchy: services.workspaceHierarchy,
-        refreshedAt: services.catalogRefreshedAt,
+        stale: services.catalogStale,
         refresh: services.refreshCatalog,
         merge: services.mergeCatalog,
       },

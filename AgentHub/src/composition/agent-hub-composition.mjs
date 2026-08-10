@@ -246,7 +246,7 @@ const providerApplication = await createProviderApplicationComposition({
     maximumMediaJobs: MAX_BACKGROUND_MEDIA_JOBS,
     maximumSpeechJobs: MAX_BACKGROUND_SPEECH_JOBS,
     maximumInteractiveJobs: MAX_INTERACTIVE_JOBS,
-    taskCatalogCacheMs: 1_500,
+    taskCatalogCacheMs: 30_000,
     taskTitleReconcileIntervalMs: 5 * 60_000,
     threadListLimit: THREAD_LIST_LIMIT,
     claudeModelLabels: CLAUDE_MODEL_LABELS,

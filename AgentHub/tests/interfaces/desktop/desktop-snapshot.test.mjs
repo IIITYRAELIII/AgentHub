@@ -60,7 +60,7 @@ function fixture(overrides = {}) {
   };
   const state = {
     entries: [entry],
-    refreshedAt: 5_000,
+    catalogStale: false,
     refreshCalls: [],
     usage: {
       usedTokens: 250,
@@ -125,7 +125,7 @@ function fixture(overrides = {}) {
     },
     catalog: {
       entries: () => state.entries,
-      refreshedAt: () => state.refreshedAt,
+      stale: () => state.catalogStale,
       refresh: async (options) => state.refreshCalls.push(options),
       merge: (current, added) => [...current, ...added],
     },
@@ -739,4 +739,12 @@ test("forced desktop snapshot returns cached tasks while catalog refreshes", asy
   assert.equal(state.refreshCalls.length, 1);
   assert.deepEqual(state.refreshCalls[0], { force: true });
   finishRefresh();
+});
+
+test("desktop snapshot refreshes a stale catalog without bypassing its cache policy", async () => {
+  const { desktopSnapshot, state } = fixture({ catalogStale: true });
+
+  await desktopSnapshot();
+
+  assert.deepEqual(state.refreshCalls, [{ force: false }]);
 });

@@ -19,6 +19,24 @@ test("task catalog service preserves array identity and advances revision", asyn
   assert.equal(service.refreshedAt, 100);
 });
 
+test("task catalog service reports cache freshness and invalidation", async () => {
+  let now = 100;
+  const service = new TaskCatalogService({
+    initialEntries: [{ id: "cached" }],
+    cacheMs: 1_000,
+    now: () => now,
+    build: async () => [{ id: "live" }],
+  });
+
+  await service.refresh();
+  assert.equal(service.stale, false);
+  now = 1_100;
+  assert.equal(service.stale, true);
+  await service.refresh();
+  service.invalidate();
+  assert.equal(service.stale, true);
+});
+
 test("task catalog service caches and coalesces concurrent refreshes", async () => {
   let builds = 0;
   let release;
