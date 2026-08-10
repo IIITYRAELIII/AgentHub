@@ -1199,6 +1199,7 @@ const state = {
   // selects a Thread; a wide shell may keep several Streams from the same
   // Workspace visible without making another device jump to that layout.
   openStreamsByWorkspace: new Map(),
+  savedMultiStreamsByWorkspace: new Map(),
   activeStreamByWorkspace: new Map(),
   configuredOpenStreamWorkspaces: new Set(),
   visibleStreamTaskIds: [],
@@ -1308,8 +1309,16 @@ function restoreOpenStreams() {
         .map((value) => String(value ?? "").trim())
         .filter(Boolean))].slice(-4);
       const activeStreamId = String(entry?.activeStreamId ?? "").trim();
+      const savedMultiStreamIds = [...new Set((Array.isArray(entry?.multiStreamIds)
+        ? entry.multiStreamIds
+        : streamIds.length > 1 ? streamIds : [])
+        .map((value) => String(value ?? "").trim())
+        .filter(Boolean))].slice(-4);
       if (!workspaceId) continue;
       state.openStreamsByWorkspace.set(workspaceId, streamIds);
+      if (savedMultiStreamIds.length > 1) {
+        state.savedMultiStreamsByWorkspace.set(workspaceId, savedMultiStreamIds);
+      }
       if (activeStreamId) state.activeStreamByWorkspace.set(workspaceId, activeStreamId);
       state.configuredOpenStreamWorkspaces.add(workspaceId);
     }
@@ -1323,6 +1332,7 @@ function persistOpenStreams() {
     const stored = [...state.configuredOpenStreamWorkspaces].slice(-100).map((workspaceId) => ({
       workspaceId,
       streamIds: (state.openStreamsByWorkspace.get(workspaceId) ?? []).slice(-4),
+      multiStreamIds: (state.savedMultiStreamsByWorkspace.get(workspaceId) ?? []).slice(-4),
       activeStreamId: state.activeStreamByWorkspace.get(workspaceId) ?? "",
     }));
     localStorage.setItem(openStreamsStorageKey(), JSON.stringify(stored));
@@ -1399,6 +1409,10 @@ function toggleOpenStream(workspaceId, streamId, streams, { additive = false } =
     next = [...selected, streamId];
   }
   state.openStreamsByWorkspace.set(workspaceId, next);
+  if (additive) {
+    if (next.length > 1) state.savedMultiStreamsByWorkspace.set(workspaceId, next);
+    else state.savedMultiStreamsByWorkspace.delete(workspaceId);
+  }
   state.configuredOpenStreamWorkspaces.add(workspaceId);
   persistOpenStreams();
   if (next.includes(streamId)) {
@@ -2704,10 +2718,14 @@ function ensureTaskStreamVisible(task) {
   reconcileOpenStreams(workspaceId, streams);
   const streamId = streamKey(task);
   const open = state.openStreamsByWorkspace.get(workspaceId) ?? [];
-  // Прямой переход сохраняет мультинабор, только если целевой Stream уже
-  // входит в него. Иначе открываем цель одной колонкой, а не дописываем её.
   if (open.includes(streamId)) return;
-  state.openStreamsByWorkspace.set(workspaceId, [streamId]);
+  const available = new Set(streams.map((stream) => stream.id));
+  const savedMulti = (state.savedMultiStreamsByWorkspace.get(workspaceId) ?? [])
+    .filter((savedStreamId) => available.has(savedStreamId));
+  const next = savedMulti.length > 1 && savedMulti.includes(streamId)
+    ? savedMulti
+    : [streamId];
+  state.openStreamsByWorkspace.set(workspaceId, next);
   state.configuredOpenStreamWorkspaces.add(workspaceId);
   persistOpenStreams();
 }
