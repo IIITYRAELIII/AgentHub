@@ -1952,30 +1952,41 @@ agentHub.on("workspace:update", ({ workspaceId, name, comment, beforeColumnId })
   }
   applySnapshot(snapshot);
 }));
-document.addEventListener("agenthub:board-action", (event) => runAction(async () => {
+document.addEventListener("agenthub:board-action", (event) => {
   const detail = event.detail ?? {};
-  if (!lastSnapshot?.boardLayout && ["move-column", "update-comment"].includes(detail.type)) {
-    agentHub.toast("Agent Hub завершает обновление runtime. Повторите действие через минуту.");
-    return;
-  }
-  const actions = {
-    create: "board-task-create",
-    update: "board-task-update",
-    move: "board-task-move",
-    complete: "board-task-complete",
-    remove: "board-task-remove",
-    "retry-triage": "board-task-retry-triage",
-    start: "board-task-start",
-    "move-column": "board-column-move",
-    "update-comment": "board-column-comment",
-  };
-  const action = actions[detail.type];
-  if (!action) return;
-  const { type: _type, ...params } = detail;
-  const result = await control(action, params);
-  applySnapshot(result);
-  if (detail.type === "start") agentHub.showSelectedTask();
-}));
+  let succeeded = false;
+  void runAction(async () => {
+    if (!lastSnapshot?.boardLayout && ["move-column", "update-comment"].includes(detail.type)) {
+      agentHub.toast("Agent Hub завершает обновление runtime. Повторите действие через минуту.");
+      return;
+    }
+    const actions = {
+      create: "board-task-create",
+      update: "board-task-update",
+      move: "board-task-move",
+      complete: "board-task-complete",
+      remove: "board-task-remove",
+      "retry-triage": "board-task-retry-triage",
+      start: "board-task-start",
+      "move-column": "board-column-move",
+      "update-comment": "board-column-comment",
+    };
+    const action = actions[detail.type];
+    if (!action) return;
+    const { type: _type, ...params } = detail;
+    const result = await control(action, params);
+    succeeded = true;
+    applySnapshot(result);
+    if (detail.type === "start") agentHub.showSelectedTask();
+    if (detail.type === "update") agentHub.toast("Изменения сохранены");
+  }).finally(() => {
+    window.AgentHubTaskBoard?.finishAction?.({
+      type: detail.type,
+      id: detail.id,
+      succeeded,
+    });
+  });
+});
 agentHub.on("workspace:create-from-stream", ({ streamId, name }) => runAction(async () => applySnapshot(
   await control("create-workspace-from-stream", { streamId, name }),
 )));

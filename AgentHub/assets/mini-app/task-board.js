@@ -11,6 +11,7 @@
   const taskCardEditor = document.querySelector("[data-task-card-editor]");
   const taskCardTitle = document.querySelector("[data-task-card-title]");
   const taskCardDescription = document.querySelector("[data-task-card-description]");
+  const taskCardSaveButton = taskCardEditor?.querySelector("button[type='submit']");
   const taskCardAttachments = document.querySelector("[data-task-card-attachments]");
   const taskCardOriginal = document.querySelector("[data-task-card-original]");
   const taskCardOriginalToggle = document.querySelector("[data-task-card-original-toggle]");
@@ -41,6 +42,7 @@
     draggingColumnId: null,
     editingTaskId: null,
     editDirty: false,
+    savingTaskId: null,
   };
 
   function node(tag, attributes = {}, children = []) {
@@ -199,6 +201,17 @@
     if (taskCardOriginalText) taskCardOriginalText.hidden = !nextExpanded;
   }
 
+  function renderTaskCardSaving(taskId) {
+    const saving = state.savingTaskId === taskId;
+    if (taskCardTitle) taskCardTitle.disabled = saving;
+    if (taskCardDescription) taskCardDescription.disabled = saving;
+    if (taskCardSaveButton) {
+      taskCardSaveButton.disabled = saving;
+      taskCardSaveButton.setAttribute("aria-busy", String(saving));
+      taskCardSaveButton.textContent = saving ? "Сохраняю…" : "Сохранить изменения";
+    }
+  }
+
   function renderOpenTaskCard() {
     if (!taskCardModal) return;
     const task = state.tasks.find((item) => item.id === state.openTaskId && item.status !== "done");
@@ -212,6 +225,7 @@
       taskCardDescription.value = String(task.description ?? "").trim();
       state.editingTaskId = task.id;
     }
+    renderTaskCardSaving(task.id);
     const originalText = String(task.rawText ?? "").trim();
     taskCardOriginal.hidden = !originalText;
     taskCardOriginalText.textContent = originalText;
@@ -236,7 +250,8 @@
       }));
     }
     actions.push(node("button", {
-      type: "button", class: "board-task-quiet", text: "Готово",
+      type: "button", class: "board-task-quiet", text: "Завершить задачу",
+      title: "Убрать задачу с доски как выполненную",
       onclick: () => { closeTaskCard(); emit("complete", { id: task.id }); },
     }));
     actions.push(node("button", {
@@ -470,8 +485,10 @@
       taskCardTitle.reportValidity?.();
       return;
     }
+    if (state.savingTaskId === task.id) return;
+    state.savingTaskId = task.id;
+    renderTaskCardSaving(task.id);
     emit("update", { id: task.id, title, description: taskCardDescription.value.trim() });
-    closeTaskCard();
   });
   taskCardModal?.addEventListener("cancel", (event) => { event.preventDefault(); closeTaskCard(); });
   startModal.addEventListener("cancel", (event) => { event.preventDefault(); closeStart(); });
@@ -509,6 +526,16 @@
       state.provider = payload.provider === "claude" ? "claude" : "codex";
       renderBoard();
       renderWorkspacePanel();
+      renderOpenTaskCard();
+    },
+    finishAction({ type, id, succeeded } = {}) {
+      if (type !== "update" || state.savingTaskId !== id) return;
+      state.savingTaskId = null;
+      if (succeeded) {
+        state.editDirty = false;
+        closeTaskCard();
+        return;
+      }
       renderOpenTaskCard();
     },
   });
