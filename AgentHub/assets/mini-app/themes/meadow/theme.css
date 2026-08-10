@@ -164,7 +164,6 @@ html[data-background-override="true"][data-background="orbit-limb"] body::before
 html[data-background-override="true"][data-background="nebula-core"] body::before,
 html[data-background-override="true"][data-background="pulsar-beam"] body::before,
 html[data-background-override="true"][data-background="blackhole-disk"] body::before,
-html[data-background-override="true"][data-background="magma-flow"] body::before,
 html[data-background-override="true"][data-background="meadow-goldenhour"] body::before {
   background-position: center !important;
   background-repeat: no-repeat !important;

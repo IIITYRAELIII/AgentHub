@@ -5138,7 +5138,7 @@ html[data-surface="mobile"]
     transform: var(--shell-view-switch-transform, none) !important;
   }
 
-  html:not([data-surface="mobile"]) .connection-banner {
+  html:not([data-surface="mobile"]) .connection-banner:not([hidden]) {
     display: var(--shell-connection-banner-display, flex) !important;
   }
 

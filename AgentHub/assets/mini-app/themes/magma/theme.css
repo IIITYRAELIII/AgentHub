@@ -1,92 +1,128 @@
-/* ========================================================= тема «Магма» === */
-
 html[data-theme="magma"] {
   --display-weight: 640;
   --display-spacing: -0.012em;
-  --title-weight: 550;
-  --label-spacing: 0.15em;
+  --title-weight: 560;
+  --label-spacing: 0.14em;
 
-  /* колотый базальт: углы жёстче «Орбиты», но мягче «Пульсара» */
-  --radius-lg: 10px;
-  --radius-md: 8px;
-  --radius-sm: 6px;
-  --radius-chip: 999px;
+  --radius-lg: 4px;
+  --radius-md: 3px;
+  --radius-sm: 2px;
+  --radius-chip: 3px;
   --rail-width: 2px;
 
-  --bg: #0a0605;
-  --surface-1: rgba(255, 226, 205, 0.028);
-  --surface-2: rgba(255, 226, 205, 0.05);
-  --surface-3: rgba(255, 226, 205, 0.088);
-  --sunken: rgba(8, 3, 2, 0.5);
+  --bg: #05080b;
+  --surface-1: rgb(8 13 17 / 82%);
+  --surface-2: rgb(17 24 30 / 76%);
+  --surface-3: rgb(33 42 50 / 72%);
+  --sunken: rgb(2 5 8 / 78%);
 
-  --line: rgba(226, 168, 128, 0.14);
-  --line-strong: rgba(232, 178, 140, 0.28);
+  --line: rgb(99 112 123 / 34%);
+  --line-strong: rgb(135 148 158 / 54%);
 
-  --card-bg: linear-gradient(180deg, rgba(20, 11, 8, 0.5), rgba(9, 5, 4, 0.58));
-  --card-bg-open: linear-gradient(180deg, rgba(20, 11, 8, 0.56), rgba(9, 5, 4, 0.64));
-  --card-texture: none;
-  --card-border: rgba(226, 168, 128, 0.17);
-  --card-border-open: rgba(255, 154, 92, 0.4);
+  --magma-metal-texture: url("/themes/magma/magma-blackened-steel.jpg");
+  --magma-rivet: url("/themes/magma/magma-rivet.png");
+  --magma-image: url("/themes/magma/magma-lava-well.jpg");
+  --magma-panel:
+    linear-gradient(rgb(5 9 12 / 90%), rgb(5 9 12 / 90%)),
+    var(--magma-metal-texture) center / 28rem 28rem;
+  --magma-panel-soft:
+    linear-gradient(rgb(7 12 16 / 82%), rgb(7 12 16 / 82%)),
+    var(--magma-metal-texture) center / 24rem 24rem;
+  --magma-control:
+    linear-gradient(rgb(12 18 23 / 88%), rgb(7 11 15 / 94%)),
+    var(--magma-metal-texture) center / 18rem 18rem;
+
+  --card-bg: linear-gradient(180deg, rgb(11 17 22 / 94%), rgb(5 9 12 / 96%));
+  --card-bg-open: linear-gradient(180deg, rgb(15 22 28 / 96%), rgb(5 9 12 / 98%));
+  --card-texture:
+    linear-gradient(rgb(7 12 16 / 88%), rgb(7 12 16 / 88%)),
+    var(--magma-metal-texture);
+  --card-border: rgb(92 105 116 / 42%);
+  --card-border-open: rgb(255 105 55 / 62%);
   --card-shadow:
-    inset 0 1px 0 rgba(255, 226, 205, 0.05),
-    0 24px 56px -34px rgba(0, 0, 0, 0.95);
+    inset 0 1px 0 rgb(210 224 235 / 7%),
+    inset 0 -1px 0 rgb(0 0 0 / 88%),
+    0 20px 44px -32px #000;
 
-  --plate-bg: linear-gradient(180deg, rgba(255, 226, 205, 0.07), rgba(9, 5, 4, 0.3));
-  --plate-shadow: inset 0 1px 0 rgba(255, 226, 205, 0.06);
-  --turn-shadow: 0 0 28px -20px rgba(255, 138, 61, 0.85);
+  --plate-bg: var(--magma-control);
+  --plate-shadow: inset 0 1px 0 rgb(210 224 235 / 7%), inset 0 -1px 0 #020405;
+  --turn-shadow: 0 18px 34px -26px #000;
 
-  --text: #f1e7e0;
-  --text-soft: #ccbcb2;
-  --text-muted: #9c8b81;
-  --text-faint: #766862;
+  --text: #d9dde1;
+  --text-soft: #adb4ba;
+  --text-muted: #7e8790;
+  --text-faint: #59636c;
 
-  /* акцент светлее и мягче оранжевого бейджа kcr, чтобы рамки не спорили
-     с цветовым кодом расхода */
-  --accent: #ff9a5c;
-  --accent-soft: rgba(255, 154, 92, 0.13);
-  --accent-line: rgba(255, 154, 92, 0.42);
-  --accent-glow: 0 0 22px -10px rgba(255, 138, 61, 0.9);
-  --selection: rgba(255, 154, 92, 0.3);
-  --brand-gradient: linear-gradient(150deg, rgba(255, 138, 61, 0.32), rgba(120, 40, 20, 0.3));
-  --brand-shadow: 0 0 24px -10px rgba(255, 138, 61, 0.85);
+  --accent: #ff6a38;
+  --accent-soft: rgb(255 88 42 / 12%);
+  --accent-line: rgb(255 101 53 / 56%);
+  --accent-glow: 0 0 18px -10px rgb(255 82 35 / 78%);
+  --selection: rgb(255 97 48 / 25%);
+  --brand-gradient: linear-gradient(150deg, rgb(255 94 43 / 22%), rgb(35 47 57 / 20%));
+  --brand-shadow: 0 0 18px -12px rgb(255 82 35 / 72%);
 
-  /* провайдер Codex холодный: тонкий рейл на чёрном базальте иначе теряется
-     среди лавы */
-  --provider-none: #8a7a72;
-  --provider-codex: #86b6cf;
-  --provider-claude: #ffb066;
-  --ok: #c6d18a;
-  --pending: #d9a866;
+  --provider-none: #7d8790;
+  --provider-codex: #7eb4ce;
+  --provider-claude: #ff8a55;
+  --ok: #a9bf82;
+  --pending: #d59c67;
 
-  --dot-input: #86b6cf;
-  --dot-cache: #d0a07a;
-  --dot-output: #ffb066;
-  --dot-think: #b09ad0;
+  --dot-input: #7eb4ce;
+  --dot-cache: #94a5b1;
+  --dot-output: #ff8a55;
+  --dot-think: #9d91bd;
 
-  --space-glow-a: rgba(255, 138, 61, 0.1);
-  --space-glow-b: rgba(120, 50, 30, 0.1);
-  --space-base: #0a0605;
+  --space-glow-a: rgb(255 82 35 / 7%);
+  --space-glow-b: rgb(66 89 105 / 7%);
+  --space-base: #05080b;
   --space-star: transparent;
   --star-opacity: 0;
+
+  --shell-header-background: var(--magma-panel);
+  --shell-header-border: 1px solid rgb(57 68 77 / 76%);
+  --shell-header-frame-border: 1px solid rgb(99 112 123 / 54%);
+  --shell-header-frame-content: "";
+  --shell-header-gap: 0.8rem;
+  --shell-header-height: 4.5rem;
+  --shell-header-padding-left: clamp(0.75rem, 2.2vw, 2rem);
+  --shell-header-padding-right: clamp(0.75rem, 2.2vw, 2rem);
+  --shell-header-rule: linear-gradient(90deg, transparent, rgb(255 92 42 / 54%), transparent);
+  --shell-header-rule-bottom: 0;
+  --shell-header-rule-opacity: 0.78;
+  --shell-header-shadow: inset 0 -1px 0 #000, 0 12px 32px -26px #000;
+  --shell-control-background: var(--magma-control);
+  --shell-control-border: 1px solid rgb(89 102 112 / 54%);
+  --shell-control-shadow: inset 0 1px 0 rgb(210 224 235 / 6%), inset 0 -1px 0 #020405;
+  --shell-view-switch-background: var(--magma-panel-soft);
+  --shell-view-switch-border: 1px solid rgb(78 91 101 / 52%);
+  --shell-view-switch-radius: 3px;
+  --shell-view-switch-shadow: inset 0 1px 0 rgb(210 224 235 / 5%), inset 0 -1px 0 #000;
+  --shell-tab-border: 1px solid transparent;
+  --shell-tab-active-background: var(--magma-control);
+  --shell-tab-active-border: 1px solid rgb(105 118 128 / 58%);
+  --shell-tab-active-shadow: inset 0 -2px 0 var(--accent), 0 10px 22px -18px rgb(255 82 35 / 76%);
+  --shell-workspace-padding-top: 0.45rem;
+  --shell-panel-border: 1px solid rgb(83 96 106 / 56%);
+  --shell-stream-tabs-background: var(--magma-panel);
+  --shell-stream-tabs-border: 1px solid rgb(83 96 106 / 56%);
+  --shell-stream-tabs-border-bottom: 1px solid rgb(46 57 66 / 86%);
+  --shell-stream-tabs-padding: 0.34rem 0.5rem;
+  --shell-stream-tab-background: transparent;
+  --shell-stream-tab-border: 1px solid transparent;
+  --shell-stream-tab-hover-background: rgb(26 35 42 / 70%);
+  --shell-stream-tab-active-background: rgb(35 22 18 / 78%);
+  --shell-stream-card-background: var(--magma-control);
+  --shell-stream-card-border: 1px solid rgb(82 95 105 / 58%);
+  --shell-stream-card-shadow: inset 0 1px 0 rgb(210 224 235 / 6%), inset 0 -1px 0 #020405;
 }
 
-/* ================================ «Магма»: остывшая корка и живые трещины === */
-
-html[data-theme="magma"] {
-  --magma-image: url("./magma-crust.jpg");
-}
-
-/* Лава сама по себе яркая, поэтому затемняем её справа — там, где идут
-   заголовки ходов; свободная левая треть кадра остаётся как есть. Нижний
-   градиент гасит хвост страницы: под последним днём контента уже нет, и
-   открытая лава там перетягивала бы взгляд с журнала. */
 html[data-theme="magma"] body::after {
-  background-color: #0a0605;
+  background-color: #030609;
   background-image:
-    linear-gradient(180deg, rgba(8, 4, 3, 0) 62%, rgba(8, 4, 3, 0.55)),
-    linear-gradient(90deg, rgba(8, 4, 3, 0) 34%, rgba(8, 4, 3, 0.46)),
+    linear-gradient(180deg, rgb(2 5 8 / 48%), transparent 24% 76%, rgb(2 4 7 / 46%)),
+    radial-gradient(92% 92% at 50% 52%, transparent 46%, rgb(0 0 0 / 48%) 100%),
     var(--magma-image);
-  background-position: center, center, 58% 50%;
+  background-position: center, center, 50% 50%;
   background-repeat: no-repeat;
   background-size: cover;
   inset: 0;
@@ -94,163 +130,220 @@ html[data-theme="magma"] body::after {
   opacity: 1;
 }
 
-html[data-theme="magma"] .app-header {
-  backdrop-filter: blur(12px) saturate(115%);
-  -webkit-backdrop-filter: blur(12px) saturate(115%);
-  background: rgba(8, 4, 3, 0.62);
-}
-
-html[data-theme="magma"] .app-header::after {
-  background: linear-gradient(90deg, transparent, rgba(255, 138, 61, 0.6), transparent);
-}
-
-html[data-theme="magma"] .journal details[data-work-log-day-section] {
-  backdrop-filter: blur(5px) saturate(116%);
-  -webkit-backdrop-filter: blur(5px) saturate(116%);
-  background-color: rgba(8, 4, 3, 0.5);
-  background-image: none;
-}
-
-html[data-theme="magma"] .journal details[data-work-log-day-section][open] {
-  background-color: rgba(8, 4, 3, 0.54);
-}
-
-html[data-theme="magma"] .journal details[data-work-log-turn-details] {
-  backdrop-filter: blur(3px);
-  -webkit-backdrop-filter: blur(3px);
-  background-color: rgba(11, 6, 5, 0.4);
-  background-image: none;
-}
-
-html[data-theme="magma"] .journal details[data-work-log-turn-details]:hover {
-  background-color: rgba(18, 10, 7, 0.52);
-}
-
-html[data-theme="magma"] .journal details[data-work-log-turn-details][open] {
-  background-color: rgba(11, 6, 5, 0.58);
-}
-
-/* на узком экране кадр сдвигается к трещинам, поэтому стекло плотнее */
-@media (max-width: 720px) {html[data-theme="magma"] body::after {
-    background-position: center, center, 72% 56%;
-  }
-
-  html[data-theme="magma"] .journal details[data-work-log-day-section] {
-    background-color: rgba(8, 4, 3, 0.62);
-  }
-
-  html[data-theme="magma"] .journal details[data-work-log-turn-details] {
-    background-color: rgba(11, 6, 5, 0.52);
-  }
-}
-
-/* «Магма»: жар идёт снизу и медленно смещается вдоль трещин. */
 @keyframes magma-glow {
-  0%, 100% {
-    background-position: 70% 82%, 22% 90%;
-    filter: saturate(0.9) brightness(0.86);
-    opacity: 0.2;
-    transform: scale(1.01);
-  }
-  44% {
-    background-position: 62% 74%, 32% 82%;
-    filter: saturate(1.18) brightness(1.14);
-    opacity: 0.78;
-    transform: scale(1.055);
-  }
-  70% {
-    background-position: 66% 79%, 27% 86%;
-    filter: saturate(1.02) brightness(0.98);
-    opacity: 0.42;
-    transform: scale(1.03);
-  }
+  0%, 100% { opacity: 0.18; transform: scale(1.01); }
+  48% { opacity: 0.34; transform: scale(1.035); }
+  72% { opacity: 0.24; transform: scale(1.02); }
 }
 
 html[data-theme="magma"] body::before {
-  animation: magma-glow 7.2s ease-in-out infinite;
+  animation: magma-glow 11s ease-in-out infinite;
   background-image:
-    radial-gradient(74% 54% at 66% 78%, rgba(255, 178, 77, 0.48), rgba(255, 84, 24, 0.15) 48%, transparent 76%),
-    radial-gradient(42% 34% at 28% 84%, rgba(255, 117, 34, 0.34), transparent 74%);
+    radial-gradient(34% 46% at 50% 78%, rgb(255 99 45 / 30%), rgb(255 70 28 / 8%) 46%, transparent 78%),
+    radial-gradient(18% 54% at 50% 48%, rgb(255 119 58 / 14%), transparent 76%);
+  background-position: center;
   background-repeat: no-repeat;
-  background-size: cover, 120% 90%;
+  background-size: cover;
   content: "";
   mask-image: none;
   mix-blend-mode: screen;
-  opacity: 0.42;
+  opacity: 0.22;
 }
 
-html[data-background-override="true"][data-background="magma"] { --magma-image: url("./magma-crust.jpg"); --hub-background-color: #0a0605; --hub-background-image: linear-gradient(180deg, rgba(8, 4, 3, 0) 62%, rgba(8, 4, 3, .55)), linear-gradient(90deg, rgba(8, 4, 3, 0) 34%, rgba(8, 4, 3, .46)), var(--magma-image); --hub-background-position: center, center, 58% 50%; }
-html[data-background-override="true"][data-background="magma-flow"] { --hub-background-color: #0a0605; --hub-background-image: linear-gradient(90deg, rgba(8, 4, 3, .64), rgba(8, 4, 3, .2) 34%, rgba(8, 4, 3, 0) 58%), var(--magma-flow-image, url("./magma-flow.jpg")); --hub-background-position: center, 58% 52%; }
-
-html[data-background-override="true"][data-background="orbit-limb"] body::before,
-html[data-background-override="true"][data-background="nebula-core"] body::before,
-html[data-background-override="true"][data-background="pulsar-beam"] body::before,
-html[data-background-override="true"][data-background="blackhole-disk"] body::before,
-html[data-background-override="true"][data-background="magma-flow"] body::before,
-html[data-background-override="true"][data-background="meadow-goldenhour"] body::before {
-  background-position: center !important;
-  background-repeat: no-repeat !important;
-  background-size: cover !important;
-  content: "" !important;
-  mask-image: none !important;
-  mix-blend-mode: screen !important;
-  opacity: 0.4 !important;
+html[data-background-override="true"][data-background="magma"] {
+  --magma-image: url("/themes/magma/magma-lava-well.jpg");
+  --hub-background-color: #030609;
+  --hub-background-image:
+    linear-gradient(180deg, rgb(2 5 8 / 48%), transparent 24% 76%, rgb(2 4 7 / 46%)),
+    radial-gradient(92% 92% at 50% 52%, transparent 46%, rgb(0 0 0 / 48%) 100%),
+    var(--magma-image);
+  --hub-background-position: center, center, 50% 50%;
 }
 
-html[data-background-override="true"][data-background="magma-flow"] body::before {
-  animation: scene-glow 12s ease-in-out infinite !important;
-  background-image: radial-gradient(56% 40% at 68% 68%, rgba(255, 138, 61, 0.26), transparent 76%) !important;
+html[data-background-override="true"][data-background="magma-fissure"] {
+  --hub-background-color: #030609;
+  --hub-background-image:
+    linear-gradient(180deg, rgb(2 5 8 / 44%), transparent 24% 76%, rgb(2 4 7 / 42%)),
+    radial-gradient(94% 94% at 50% 52%, transparent 44%, rgb(0 0 0 / 46%) 100%),
+    var(--magma-fissure-image, url("/themes/magma/magma-fissure.jpg"));
+  --hub-background-position: center, center, 50% 50%;
 }
 
-@media (max-width: 720px) {html[data-background-override="true"][data-background="magma"] { --hub-background-position: center, center, 72% 56%; }
-  html[data-background-override="true"][data-background="magma-flow"] { --hub-background-position: center, 70% 56%; }
+html[data-background-override="true"][data-background="magma-forge-heart"] {
+  --hub-background-color: #030609;
+  --hub-background-image:
+    linear-gradient(180deg, rgb(2 5 8 / 48%), transparent 22% 74%, rgb(2 4 7 / 38%)),
+    radial-gradient(96% 90% at 50% 56%, transparent 42%, rgb(0 0 0 / 50%) 100%),
+    var(--magma-forge-heart-image, url("/themes/magma/magma-forge-heart.jpg"));
+  --hub-background-position: center, center, 50% 50%;
 }
 
-/* ================================================= облик: раскалённый скол ===
-   Магма — это корка с трещинами, сквозь которые бьёт свет. Панели получают
-   скошенные углы, будто отколоты, свет идёт из разлома слева, а кнопки
-   выглядят клеймом: тяжёлые, с горячей кромкой. */
+html[data-background-override="true"][data-background^="magma-"] body::before {
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: cover;
+  content: "";
+  mask-image: none;
+  mix-blend-mode: screen;
+}
 
-/* Отколотый край: угол панели срезан, а из разлома идёт свет. */
-html[data-theme="magma"] .task-rail {
-  border-radius: 0;
-  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 26px), calc(100% - 26px) 100%, 0 100%);
-  box-shadow: inset -1px 0 0 rgba(255, 154, 92, .3);
+html[data-theme="magma"] .task-rail,
+html[data-theme="magma"] .activity-rail {
+  background: var(--magma-panel);
+  box-shadow:
+    inset 0 1px 0 rgb(210 224 235 / 7%),
+    inset 0 -1px 0 #020405,
+    0 18px 38px -30px #000;
+  position: relative;
 }
 
 html[data-theme="magma"] .chat {
-  border-radius: 0;
-  clip-path: polygon(0 0, calc(100% - 26px) 0, 100% 26px, 100% 100%, 0 100%);
+  background: rgb(3 7 10 / 26%);
+  box-shadow:
+    inset 0 0 0 1px rgb(4 7 10 / 70%),
+    inset 0 0 56px rgb(0 0 0 / 16%);
+  position: relative;
 }
 
-/* Выбранная задача светится изнутри разлома. */
-html[data-theme="magma"] .task-item {
-  border-radius: 0;
-  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%);
+html[data-theme="magma"] .task-rail::before,
+html[data-theme="magma"] .chat::before,
+html[data-theme="magma"] .activity-rail::before {
+  background-image: var(--magma-rivet), var(--magma-rivet), var(--magma-rivet), var(--magma-rivet);
+  background-position: 5px 5px, calc(100% - 5px) 5px, 5px calc(100% - 5px), calc(100% - 5px) calc(100% - 5px);
+  background-repeat: no-repeat;
+  background-size: 12px 12px;
+  content: "";
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+  z-index: 5;
 }
 
-html[data-theme="magma"] .task-item[data-selected] {
-  background: linear-gradient(90deg, rgba(255, 122, 47, .22), transparent 62%);
+html[data-theme="magma"] .stream-tabs,
+html[data-theme="magma"] .composer,
+html[data-theme="magma"] .dialog-settings,
+html[data-theme="magma"] .settings-panel {
+  background: var(--magma-panel);
+  box-shadow: inset 0 1px 0 rgb(210 224 235 / 6%), inset 0 -1px 0 #020405;
 }
 
-html[data-theme="magma"] .task-item[data-selected]::before {
-  background: linear-gradient(180deg, #ffd9a8, #ff7a2f);
-  box-shadow: 0 0 14px -2px rgba(255, 122, 47, .95);
-  width: 3px;
-}
-
-/* Кнопки-клейма: тяжёлая литера и горячая нижняя кромка. */
-html[data-theme="magma"] .view-tab,
+html[data-theme="magma"] .task-workspace-item,
+html[data-theme="magma"] .activity-stream-item,
+html[data-theme="magma"] .stream-tab-card,
+html[data-theme="magma"] .composer-input,
+html[data-theme="magma"] .chip-button,
 html[data-theme="magma"] .option-chip {
-  border-radius: 0;
-  font-weight: 600;
-  letter-spacing: .04em;
+  background: var(--magma-control);
+  border-color: rgb(77 91 101 / 54%);
+  box-shadow: inset 0 1px 0 rgb(210 224 235 / 6%), inset 0 -1px 0 #020405;
+}
+
+html[data-theme="magma"] .task-workspace-item:hover,
+html[data-theme="magma"] .task-workspace-item:focus-visible,
+html[data-theme="magma"] .activity-stream-item:hover,
+html[data-theme="magma"] .activity-stream-item:focus-visible {
+  background:
+    linear-gradient(rgb(21 29 35 / 82%), rgb(12 18 23 / 90%)),
+    var(--magma-metal-texture) center / 18rem 18rem;
+  border-color: rgb(112 126 137 / 62%);
+}
+
+html[data-theme="magma"] .task-workspace-item[data-selected],
+html[data-theme="magma"] .activity-stream-item[data-current] {
+  background:
+    linear-gradient(90deg, rgb(255 82 35 / 14%), rgb(10 15 19 / 90%) 54%),
+    var(--magma-metal-texture) center / 18rem 18rem;
+  border-color: var(--accent-line);
+  box-shadow: inset 2px 0 0 var(--accent), inset 0 1px 0 rgb(210 224 235 / 6%), inset 0 -1px 0 #020405;
+}
+
+html[data-theme="magma"] .msg {
+  backdrop-filter: blur(6px) saturate(106%);
+  -webkit-backdrop-filter: blur(6px) saturate(106%);
+  background-color: rgb(4 8 11 / 76%);
+  background-image:
+    linear-gradient(rgb(5 10 14 / 74%), rgb(5 10 14 / 74%)),
+    var(--magma-metal-texture);
+  background-size: auto, 24rem 24rem;
+  border-color: rgb(82 95 105 / 56%);
+  border-radius: 3px;
+  box-shadow: inset 0 1px 0 rgb(210 224 235 / 6%), inset 0 -1px 0 #020405, var(--turn-shadow);
+}
+
+html[data-theme="magma"] .msg-user {
+  background-color: rgb(10 10 10 / 82%);
+  background-image:
+    linear-gradient(90deg, rgb(255 82 35 / 12%), rgb(5 10 14 / 80%) 58%),
+    var(--magma-metal-texture);
+  border-color: rgb(255 99 51 / 50%);
+}
+
+html[data-theme="magma"] .msg-system {
+  background: rgb(3 7 10 / 70%);
+  border-color: rgb(74 86 96 / 42%);
+  border-radius: 2px;
+}
+
+html[data-theme="magma"] .view-tab,
+html[data-theme="magma"] .view-settings,
+html[data-theme="magma"] .chip-button,
+html[data-theme="magma"] .option-chip {
+  border-radius: 2px;
 }
 
 html[data-theme="magma"] .view-tab[aria-pressed="true"] {
-  background: linear-gradient(180deg, rgba(255, 122, 47, .16), rgba(184, 48, 11, .28));
-  box-shadow: inset 0 -2px 0 #ff7a2f, 0 0 18px -8px rgba(255, 122, 47, .9);
+  color: #e4e7ea;
 }
 
-html[data-theme="magma"] .msg-agent { clip-path: polygon(0 0, 100% 0, 100% calc(100% - 12px), calc(100% - 12px) 100%, 0 100%); border-radius: 0; }
-html[data-theme="magma"] .msg-user { clip-path: polygon(0 0, 100% 0, 100% 100%, 12px 100%, 0 calc(100% - 12px)); border-radius: 0; }
+html[data-theme="magma"] .task-rail-title,
+html[data-theme="magma"] .activity-rail-toggle,
+html[data-theme="magma"] .task-project-heading,
+html[data-theme="magma"] .eyebrow {
+  color: #aeb5bb;
+  letter-spacing: 0.13em;
+  text-shadow: 0 1px 0 #000;
+}
+
+html[data-theme="magma"] .journal details[data-work-log-day-section] {
+  backdrop-filter: blur(6px) saturate(106%);
+  -webkit-backdrop-filter: blur(6px) saturate(106%);
+  background-color: rgb(4 8 11 / 80%);
+  border-color: rgb(82 95 105 / 52%);
+}
+
+html[data-theme="magma"] .journal details[data-work-log-turn-details] {
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  background-color: rgb(4 8 11 / 72%);
+  border-color: rgb(72 84 94 / 44%);
+}
+
+@media (max-width: 720px) {
+  html[data-theme="magma"] body::after {
+    background-position: center, center, 50% 52%;
+  }
+
+  html[data-background-override="true"][data-background="magma"],
+  html[data-background-override="true"][data-background="magma-fissure"],
+  html[data-background-override="true"][data-background="magma-forge-heart"] {
+    --hub-background-position: center, center, 50% 52%;
+  }
+
+  html[data-theme="magma"] .task-rail::before,
+  html[data-theme="magma"] .chat::before,
+  html[data-theme="magma"] .activity-rail::before {
+    background-size: 10px 10px;
+  }
+
+  html[data-theme="magma"] .journal details[data-work-log-day-section],
+  html[data-theme="magma"] .journal details[data-work-log-turn-details] {
+    background-color: rgb(4 8 11 / 88%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-theme="magma"] body::before,
+  html[data-background-override="true"][data-background^="magma-"] body::before {
+    animation: none !important;
+  }
+}

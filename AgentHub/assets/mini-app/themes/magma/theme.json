@@ -1,11 +1,12 @@
 {
   "id": "magma",
   "name": "Магма",
-  "color": "#0a0605",
+  "color": "#05080b",
   "order": 90,
   "styles": "theme.css",
   "backgrounds": [
-    { "id": "magma", "name": "Магма", "asset": "magma-crust.jpg" },
-    { "id": "magma-flow", "name": "Поток", "asset": "magma-flow.jpg" }
+    { "id": "magma", "name": "Лавовый колодец", "asset": "magma-lava-well.jpg", "preload": true },
+    { "id": "magma-fissure", "name": "Центральный разлом", "asset": "magma-fissure.jpg" },
+    { "id": "magma-forge-heart", "name": "Сердце горна", "asset": "magma-forge-heart.jpg" }
   ]
 }

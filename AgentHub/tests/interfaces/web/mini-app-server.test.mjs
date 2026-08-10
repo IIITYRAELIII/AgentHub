@@ -375,7 +375,7 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.equal(storm.headers.get("content-type"), "image/jpeg");
     assert.match(storm.headers.get("cache-control"), /immutable/u);
     assert.ok((await storm.arrayBuffer()).byteLength > 100_000);
-    const magma = await fetch(`${address.url}themes/magma/magma-crust.jpg`);
+    const magma = await fetch(`${address.url}themes/magma/magma-lava-well.jpg`);
     assert.equal(magma.status, 200);
     assert.equal(magma.headers.get("content-type"), "image/jpeg");
     assert.match(magma.headers.get("cache-control"), /immutable/u);
@@ -590,7 +590,7 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.match(glass, /uniform sampler2D uFogImage/u);
     assert.match(glass, /function createFogTexture/u);
     assert.match(styles, /url\("\/pulsar-dead-star\.png"\)/u);
-    assert.match(styles, /url\("\/magma-crust\.jpg"\)/u);
+    assert.match(styles, /url\("\/themes\/magma\/magma-lava-well\.jpg"\)/u);
     assert.match(styles, /html\[data-theme="magma"\]/u);
     assert.match(styles, /url\("\/meadow-sun\.jpg"\)/u);
     assert.match(styles, /html\[data-theme="meadow"\]/u);

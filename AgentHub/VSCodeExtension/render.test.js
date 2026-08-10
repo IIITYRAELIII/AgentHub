@@ -441,7 +441,7 @@ test("theme motion is visible, distinct and keeps reduced-motion support", () =>
   for (const property of ["--x", "--len", "--thickness", "--alpha", "--dur", "--delay"]) {
     assert.ok(client.includes(`"${property}"`), `капля задаёт ${property}`);
   }
-  assert.match(styles, /@keyframes magma-glow\s*\{[\s\S]*filter:\s*saturate\(1\.18\) brightness\(1\.14\);/u);
+  assert.match(styles, /@keyframes magma-glow\s*\{[\s\S]*opacity:\s*0\.34;[\s\S]*transform:\s*scale\(1\.035\);/u);
   /* Gothic остаётся тёплым: фон темы — склеп с горящим факелом. Пыль ушла из
      плитки в отдельные элементы, на фоновом слое остался только блик. */
   assert.match(styles, /@keyframes gothic-fire\s*\{[\s\S]*filter:\s*brightness\(1\.22\);/u);
@@ -470,6 +470,21 @@ test("Rain keeps its stored key and is named consistently", () => {
   const webview = fs.readFileSync(require.resolve("./webview.js"), "utf8");
   assert.equal(manifest.name, "Rain");
   assert.match(webview, /availableThemes\.map\(\(item\) => `<option value="\$\{item\.id\}">\$\{escapeHtml\(item\.name\)\}<\/option>`\)/u);
+});
+
+test("Magma packages three Obsidian Forge scenes without legacy lava textures", () => {
+  const theme = THEME_REGISTRY.themes.find((item) => item.id === "magma");
+  assert.deepEqual(
+    theme.backgrounds.map(({ id, name, asset }) => [id, name, asset]),
+    [
+      ["magma", "Лавовый колодец", "magma-lava-well.jpg"],
+      ["magma-fissure", "Центральный разлом", "magma-fissure.jpg"],
+      ["magma-forge-heart", "Сердце горна", "magma-forge-heart.jpg"],
+    ],
+  );
+  assert.equal(theme.backgrounds[0].preload, true);
+  assert.equal(theme.resources.some((resource) => resource.pathname.endsWith("/magma-crust.jpg")), false);
+  assert.equal(theme.resources.some((resource) => resource.pathname.endsWith("/magma-flow.jpg")), false);
 });
 
 test("general settings and current-dialog settings stay separate", () => {
@@ -2092,6 +2107,8 @@ test("hub status band lives inside the top toolbar instead of covering the strea
   assert.doesNotMatch(styles, /\.connection-banner \{[^}]*position: fixed;/u);
   assert.match(styles, /\.connection-banner \{[^}]*border: 0;[^}]*flex: 0 1 auto;[^}]*width: max-content;/u);
   assert.match(styles, /html\[data-surface="mobile"\] \.connection-banner \{[^}]*flex: 0 1 auto;/u);
+  assert.match(styles, /html:not\(\[data-surface="mobile"\]\) \.connection-banner:not\(\[hidden\]\) \{/u);
+  assert.doesNotMatch(styles, /html:not\(\[data-surface="mobile"\]\) \.connection-banner \{[^}]*display:/u);
 });
 
 test("«Ноль» keeps a flat monochrome ground without a single coloured token", () => {
