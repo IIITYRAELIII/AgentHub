@@ -300,6 +300,7 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
       "approval-form.js",
       "journal-view-controller.js",
       "resource-interactions.js",
+      "usage-burn-rate.js",
       "app.js",
       "themes/metropolis/metropolis-glass.js",
       "themes/stormglass/storm-glass.js",

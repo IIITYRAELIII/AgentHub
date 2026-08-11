@@ -1,0 +1,275 @@
+/* ========================================================= тема «Апельсин» ===
+   Тёплая рабочая палитра без декора. Общая оболочка продолжает владеть
+   каноничным знаком, Phosphor-иконками и геометрией desktop-панелей. */
+
+html[data-theme="orange"] {
+  --font-body: Inter, "Segoe UI", system-ui, sans-serif;
+  --font-title: Inter, "Segoe UI", system-ui, sans-serif;
+  --font-numeric: "Cascadia Mono", "Cascadia Code", Consolas, monospace;
+  --display-weight: 650;
+  --display-spacing: -0.02em;
+  --title-weight: 620;
+  --label-spacing: 0.08em;
+
+  --radius-lg: 12px;
+  --radius-md: 10px;
+  --radius-sm: 7px;
+  --radius-chip: 8px;
+  --rail-width: 2px;
+
+  --bg: #f7f1e8;
+  --surface-1: #f2e8dc;
+  --surface-2: #eadfd2;
+  --surface-3: #dfd2c4;
+  --sunken: #efe5d9;
+  --line: #d8cbbc;
+  --line-strong: #bea997;
+
+  --card-bg: #fffaf4;
+  --card-bg-open: #fffdf9;
+  --card-texture: none;
+  --card-border: #dfd1c2;
+  --card-border-open: #cbb6a4;
+  --card-shadow: none;
+  --plate-bg: #f4eadf;
+  --plate-texture: none;
+  --plate-shadow: none;
+  --turn-shadow: none;
+
+  --text: #2a2424;
+  --text-soft: #4a3f3d;
+  --text-muted: #5f534f;
+  --text-faint: #645854;
+  --accent: #9e3316;
+  --accent-soft: #f5dfd4;
+  --accent-line: #d86a43;
+  --accent-glow: none;
+  --selection: #e8a489;
+  --brand-gradient: none;
+  --brand-shadow: none;
+
+  --provider-none: #8b807b;
+  --provider-codex: #168f82;
+  --provider-claude: #9e3316;
+  --ok: #0d655d;
+  --pending: #82500d;
+
+  --dot-input: #9e3316;
+  --dot-cache: #168f82;
+  --dot-output: #497eaa;
+  --dot-think: #8f63a8;
+
+  --space-glow-a: transparent;
+  --space-glow-b: transparent;
+  --space-base: var(--bg);
+  --space-star: transparent;
+  --star-opacity: 0;
+  --decor-opacity: 0;
+
+  --task-rail-width: clamp(270px, 18vw, 320px);
+  --activity-rail-width: clamp(300px, 20vw, 360px);
+  --shell-header-background: #211a20;
+  --shell-header-border: 1px solid #44353e;
+  --shell-header-rule: none;
+  --shell-control-background: #2b2229;
+  --shell-control-border: 1px solid #504049;
+  --shell-panel-border: 1px solid var(--line);
+  --shell-stream-tabs-background: #fffaf4;
+  --shell-stream-tab-background: transparent;
+  --shell-stream-tab-hover-background: #f6e9df;
+  --shell-stream-tab-active-background: #fff4ed;
+  --shell-stream-card-background: transparent;
+  --shell-stream-card-border: 1px solid transparent;
+}
+
+html[data-theme="orange"] body {
+  background: var(--bg);
+}
+
+html[data-theme="orange"] body::before,
+html[data-theme="orange"] body::after {
+  content: none;
+}
+
+html[data-theme="orange"] .theme-atmosphere {
+  display: none;
+}
+
+html[data-theme="orange"] .app-header,
+html[data-theme="orange"] .task-rail {
+  --surface-1: #211a20;
+  --surface-2: #2b2229;
+  --surface-3: #3a2d35;
+  --line: #44353e;
+  --line-strong: #66505c;
+  --text: #fff8f1;
+  --text-soft: #e8dcd8;
+  --text-muted: #b9a9a7;
+  --text-faint: #aa9d9b;
+  --accent: #f08a62;
+  --accent-soft: #4a2927;
+  --accent-line: #b84420;
+  --ok: #55c7ba;
+  --pending: #e7ae5b;
+  background: #211a20;
+  color: var(--text);
+}
+
+html[data-theme="orange"] .task-rail {
+  border-color: #44353e;
+}
+
+html[data-theme="orange"] .chat,
+html[data-theme="orange"] .stream-chat-columns > .chat-pane,
+html[data-theme="orange"] .stream-chat-preview {
+  background: #f7f1e8;
+}
+
+html[data-theme="orange"] .activity-rail {
+  background: #eee4d8;
+}
+
+html[data-theme="orange"] .stream-tabs {
+  color: var(--text);
+}
+
+html[data-theme="orange"] .stream-tab[aria-pressed="true"] {
+  color: var(--text);
+}
+
+html[data-theme="orange"] .stream-tab[aria-pressed="true"]::after {
+  background: var(--accent);
+  bottom: 0;
+  content: "";
+  height: 2px;
+  left: 0.2rem;
+  position: absolute;
+  right: 0.2rem;
+}
+
+html[data-theme="orange"] .provider-dot[data-provider="codex"] {
+  background: var(--provider-codex);
+}
+
+html[data-theme="orange"] .provider-dot[data-provider="claude"] {
+  background: #c84f27;
+}
+
+html[data-theme="orange"] .task-workspace-item {
+  border-radius: var(--radius-sm);
+}
+
+html[data-theme="orange"] .task-workspace-item[data-selected] {
+  background: #bf4822;
+  border-color: #df7652;
+}
+
+html[data-theme="orange"] .task-workspace-item[data-selected] .task-title,
+html[data-theme="orange"] .task-workspace-item[data-selected] .task-time,
+html[data-theme="orange"] .task-workspace-item[data-selected] .task-status {
+  color: #fffaf5;
+}
+
+html[data-theme="orange"] .msg {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: none;
+}
+
+html[data-theme="orange"] .msg-agent {
+  background: transparent;
+  border-color: transparent;
+  padding-inline: 0;
+}
+
+html[data-theme="orange"] .msg-user {
+  background: #fff0e7;
+  border-color: #edc7b5;
+  border-radius: 12px;
+  color: var(--text);
+  padding: 0.72rem 0.9rem;
+}
+
+html[data-theme="orange"] .msg-live {
+  background: #edf7f3;
+  border-color: #8bc5bb;
+}
+
+html[data-theme="orange"] .composer {
+  background: #fffaf4;
+  border-color: #dfd1c2;
+  box-shadow: none;
+}
+
+html[data-theme="orange"] .composer-send,
+html[data-theme="orange"] .board-task-primary {
+  background: #bf4822;
+  border-color: #bf4822;
+  color: #fff;
+}
+
+html[data-theme="orange"] .activity-stream-item,
+html[data-theme="orange"] .workspace-task-panel .board-task-card {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+html[data-theme="orange"] .activity-stream-item[data-current],
+html[data-theme="orange"] .workspace-task-panel .board-task-card:hover {
+  background: #f8ece3;
+  border-color: #d9c6b7;
+}
+
+html[data-theme="orange"] .orange-focus-toggle {
+  margin-left: auto;
+}
+
+html[data-theme="orange"] .toolbar .view-settings {
+  margin-left: 0;
+}
+
+html[data-theme="orange"] .orange-focus-toggle[aria-pressed="true"] {
+  background: #bf4822;
+  border-color: #df7652;
+  color: #fff;
+}
+
+html[data-theme="orange"] .orange-focus-toggle[aria-pressed="true"]:focus-visible {
+  outline: none;
+}
+
+html[data-theme="orange"][data-focus-mode="true"] .chat-overlay-actions {
+  opacity: 0.72;
+  transition: opacity 0.16s ease;
+}
+
+html[data-theme="orange"][data-focus-mode="true"] .chat-overlay-actions:hover,
+html[data-theme="orange"][data-focus-mode="true"] .chat-overlay-actions:focus-within {
+  opacity: 1;
+}
+
+html[data-theme="orange"][data-focus-mode="true"] .activity-rail-toggle,
+html[data-theme="orange"][data-focus-mode="true"] .workspace-task-panel > header strong {
+  color: #6d5f5b;
+}
+
+html[data-theme="orange"][data-focus-mode="true"] .msg-head {
+  font-size: 0.68rem;
+}
+
+html[data-theme="orange"][data-focus-mode="true"] .msg-user {
+  background: #fff1e8;
+  border-color: #edc7b5;
+}
+
+@media (max-width: 859px) {
+  html[data-theme="orange"] .orange-focus-toggle {
+    display: none;
+  }
+}
+
+html[data-background-override="true"][data-background="orange"] {
+  --hub-background-color: #f7f1e8;
+  --hub-background-image: none;
+}

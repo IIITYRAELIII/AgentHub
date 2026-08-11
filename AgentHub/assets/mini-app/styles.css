@@ -5250,7 +5250,7 @@ html[data-surface="mobile"]
     border-bottom: var(--shell-stream-tabs-border-bottom, 1px solid var(--line)) !important;
     border-image: var(--shell-stream-tabs-border-image, none) !important;
     border-radius: 0 !important;
-    gap: 0.35rem !important;
+    gap: var(--shell-stream-tabs-gap, 0.35rem) !important;
     margin-top: var(--shell-stream-tabs-margin-top, 0) !important;
     min-height: var(--shell-stream-tabs-min-height, 3.7rem) !important;
     padding: var(--shell-stream-tabs-padding, 0.3rem 0.55rem) !important;
@@ -5266,11 +5266,11 @@ html[data-surface="mobile"]
     border-radius: 3px !important;
     box-shadow: var(--shell-stream-tab-shadow, none) !important;
     flex: 0 0 auto !important;
-    max-width: 12rem !important;
-    min-height: 3.05rem !important;
-    padding: 0.15rem !important;
+    max-width: var(--shell-stream-tab-max-width, 12rem) !important;
+    min-height: var(--shell-stream-tab-min-height, 3.05rem) !important;
+    padding: var(--shell-stream-tab-padding, 0.15rem) !important;
     transform: none !important;
-    width: 12rem !important;
+    width: var(--shell-stream-tab-width, 12rem) !important;
   }
 
   html[data-view="chat"]:not([data-surface="mobile"]) .stream-tab-create {
@@ -5297,8 +5297,13 @@ html[data-surface="mobile"]
     border-image: var(--shell-stream-card-border-image, none) !important;
     border-radius: 3px !important;
     box-shadow: var(--shell-stream-card-shadow, none) !important;
-    gap: 0.5rem !important;
-    padding: 0.42rem 0.5rem !important;
+    gap: var(--shell-stream-card-gap, 0.5rem) !important;
+    padding: var(--shell-stream-card-padding, 0.42rem 0.5rem) !important;
+  }
+
+  html[data-view="chat"]:not([data-surface="mobile"]) .stream-tab-create {
+    max-width: var(--shell-stream-create-width, var(--shell-stream-tab-max-width, 12rem)) !important;
+    width: var(--shell-stream-create-width, var(--shell-stream-tab-width, 12rem)) !important;
   }
 
   html[data-view="chat"]:not([data-surface="mobile"]) .stream-tab-create .stream-tab-card {
@@ -5308,6 +5313,139 @@ html[data-surface="mobile"]
   html[data-view="chat"]:not([data-surface="mobile"])
     .stream-tab[aria-pressed="true"] .stream-tab-card {
     border-color: var(--accent-line) !important;
+  }
+
+  /* «Апельсин» использует одну внешнюю рамку выбранного Stream. */
+  html[data-theme="orange"][data-view="chat"]:not([data-surface="mobile"])
+    .stream-tab[aria-pressed="true"] .stream-tab-card {
+    border-color: transparent !important;
+  }
+
+  html[data-theme="orange"][data-view="chat"]:not([data-surface="mobile"])
+    .stream-tab[aria-pressed="true"]:focus-visible {
+    outline: none !important;
+  }
+}
+
+/* Режим концентрации принадлежит общей оболочке: тема может включить его,
+   но геометрия шапки, Streams и правой панели остаётся централизованной. */
+@media (min-width: 860px) {
+  html[data-focus-mode="true"][data-view="chat"]:not([data-surface="mobile"]) {
+    --task-rail-width: clamp(230px, 16vw, 280px);
+    --activity-rail-width: clamp(300px, 19vw, 340px);
+    --shell-stream-tabs-gap: 0.12rem;
+    --shell-stream-tabs-min-height: 2.45rem;
+    --shell-stream-tabs-padding: 0.16rem 0.35rem;
+    --shell-stream-tab-max-width: 9.25rem;
+    --shell-stream-tab-min-height: 2.05rem;
+    --shell-stream-tab-padding: 0.05rem;
+    --shell-stream-tab-width: 9.25rem;
+    --shell-stream-card-gap: 0.34rem;
+    --shell-stream-card-padding: 0.22rem 0.38rem;
+    --shell-stream-create-width: 2.25rem;
+  }
+
+  html[data-focus-mode="true"][data-view="chat"]:not([data-surface="mobile"])
+    .brand-text {
+    display: none;
+  }
+
+  html[data-focus-mode="true"][data-view="chat"]:not([data-surface="mobile"])
+    .app-header-inner {
+    justify-content: flex-start;
+  }
+
+  html[data-focus-mode="true"][data-view="chat"]:not([data-surface="mobile"])
+    .toolbar {
+    margin-left: auto;
+  }
+
+  html[data-focus-mode="true"][data-view="chat"]:not([data-surface="mobile"])
+    .view-settings-label {
+    display: none;
+  }
+
+  html[data-focus-mode="true"][data-view="chat"]:not([data-surface="mobile"])
+    .stream-tab {
+    font-size: 0.68rem;
+  }
+
+  html[data-focus-mode="true"][data-view="chat"]:not([data-surface="mobile"])
+    .stream-tab-meta,
+  html[data-focus-mode="true"][data-view="chat"]:not([data-surface="mobile"])
+    .stream-tab-create-label,
+  html[data-focus-mode="true"][data-view="chat"]:not([data-surface="mobile"])
+    .activity-stream-item .stream-tab-meta {
+    display: none;
+  }
+
+  html[data-focus-mode="true"][data-view="chat"]:not([data-surface="mobile"])
+    .stream-tab-title-row {
+    gap: 0.4rem;
+  }
+
+  html[data-focus-mode="true"][data-view="chat"]:not([data-surface="mobile"])
+    .stream-tab-create .stream-tab-card {
+    align-items: center;
+    justify-content: center;
+  }
+
+  html[data-focus-mode="true"][data-view="chat"]:not([data-surface="mobile"])
+    .stream-tab-create-mark {
+    font-size: 1rem;
+  }
+
+  html[data-focus-mode="true"][data-view="chat"]:not([data-surface="mobile"])
+    .chat-overlay-actions .chip-button {
+    height: 2.1rem;
+    justify-content: center;
+    padding: 0;
+    width: 2.1rem;
+  }
+
+  html[data-focus-mode="true"][data-view="chat"]:not([data-surface="mobile"])
+    .chat-overlay-actions .chip-button > span {
+    display: none;
+  }
+
+  html[data-focus-mode="true"][data-view="chat"]:not([data-surface="mobile"])
+    .activity-streams {
+    flex: 0 1 auto;
+    max-height: 34%;
+  }
+
+  html[data-focus-mode="true"][data-view="chat"]:not([data-surface="mobile"])
+    .activity-rail .workspace-task-panel {
+    flex: 1 1 auto;
+    margin-top: 0;
+    max-height: none;
+  }
+
+  html[data-focus-mode="true"][data-view="chat"]:not([data-surface="mobile"])
+    .activity-rail[data-collapsed] .activity-rail-content {
+    display: none;
+  }
+
+  html[data-focus-mode="true"][data-view="chat"]:not([data-surface="mobile"]):has(
+      .activity-rail[data-collapsed]
+    ) {
+    --activity-rail-width: 2.7rem;
+  }
+
+  html[data-focus-mode="true"][data-view="chat"]:not([data-surface="mobile"])
+    .activity-rail[data-collapsed] [data-activity-rail-count] {
+    display: none;
+  }
+
+  html[data-focus-mode="true"][data-view="chat"]:not([data-surface="mobile"])
+    .activity-rail[data-collapsed] .activity-rail-head {
+    padding-inline: 0.25rem;
+  }
+
+  html[data-focus-mode="true"][data-view="chat"]:not([data-surface="mobile"])
+    .msg-user {
+    margin-left: auto;
+    max-width: min(38rem, 58%);
   }
 }
 
@@ -10844,6 +10982,51 @@ html[data-surface="mobile"] .server-config-inline-label {
 
 .limits-speed-summary-card.is-over-target .limits-speed-summary-status {
   color: var(--danger, #ff7f8d);
+}
+
+.usage-burn-summary {
+  display: grid;
+  gap: 0.55rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr));
+  margin-bottom: 0.85rem;
+}
+
+.usage-burn-summary-card {
+  background: color-mix(in srgb, var(--surface-2) 86%, transparent);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-sm);
+  display: grid;
+  gap: 0.26rem;
+  padding: 0.7rem 0.8rem;
+}
+
+.usage-burn-summary-card.is-forecast {
+  border-left-color: var(--ok);
+}
+
+.usage-burn-summary-card.is-muted {
+  border-left-color: var(--text-faint);
+}
+
+.usage-burn-summary-name {
+  color: var(--text-faint);
+  font-size: 0.64rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.usage-burn-summary-value {
+  color: var(--text);
+  font-family: var(--font-numeric);
+  font-size: 1rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-burn-summary-detail {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  line-height: 1.35;
 }
 
 .comparison-card-head {

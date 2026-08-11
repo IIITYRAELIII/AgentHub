@@ -194,6 +194,7 @@ const usageError = document.querySelector("[data-usage-error]");
 const usageErrorText = document.querySelector("[data-usage-error-text]");
 const usageEmpty = document.querySelector("[data-usage-empty]");
 const usageChartWrap = document.querySelector("[data-usage-chart-wrap]");
+const usageBurnSummary = document.querySelector("[data-usage-burn-summary]");
 const usageChart = document.querySelector("[data-usage-chart]");
 const usageTooltip = document.querySelector("[data-usage-tooltip]");
 const usageNote = document.querySelector("[data-usage-note]");
@@ -7854,6 +7855,11 @@ function formatUsageIntensity(credits, durationSeconds) {
   return `${formatUsageValue(perMinute)}/мин`;
 }
 
+function formatUsageMinuteRate(creditsPerMinute) {
+  if (creditsPerMinute == null || !Number.isFinite(Number(creditsPerMinute))) return "—";
+  return `${formatUsageValue(Math.max(0, Number(creditsPerMinute) || 0))}/мин`;
+}
+
 function usageRateCredits(source) {
   return usageState.rateBasis === "task"
     ? Math.max(0, Number(source?.timedCredits) || 0)
@@ -7870,6 +7876,77 @@ function usageRateBasisLabel() {
   return usageState.rateBasis === "task" ? "по времени задач" : "по календарному времени";
 }
 
+function usageBurnRateAnalysis(payload) {
+  const calculator = globalThis.AgentHubUsageBurnRate?.buildUsageBurnRate;
+  return typeof calculator === "function" ? calculator(payload) : null;
+}
+
+function usagePayloadPeriodMinutes(payload) {
+  const from = Date.parse(payload?.from ?? "");
+  const to = Date.parse(payload?.to ?? "");
+  const minutes = (to - from) / 60_000;
+  return Number.isFinite(minutes) && minutes > 0 ? minutes : 1;
+}
+
+function formatUsageMinutes(value) {
+  const minutes = Math.max(0, Number(value) || 0);
+  if (minutes < 120) return `${Math.round(minutes)} мин`;
+  const hours = minutes / 60;
+  return `${new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 1 }).format(hours)} ч`;
+}
+
+function usageBurnSummaryCard(name, value, detail, status = "") {
+  return el("section", { class: `usage-burn-summary-card${status ? ` ${status}` : ""}` }, [
+    el("span", { class: "usage-burn-summary-name", text: name }),
+    el("strong", { class: "usage-burn-summary-value", text: value }),
+    el("span", { class: "usage-burn-summary-detail", text: detail }),
+  ]);
+}
+
+function renderUsageBurnSummary(payload, analysis = usageBurnRateAnalysis(payload)) {
+  if (!usageBurnSummary) return;
+  if (usageState.mode !== "intensity" || !payload || payload.error || !analysis) {
+    usageBurnSummary.hidden = true;
+    usageBurnSummary.replaceChildren();
+    return;
+  }
+  const periodRate = analysis.totalCredits / usagePayloadPeriodMinutes(payload);
+  const averageName = analysis.forecastAvailable ? "Средняя за день" : "Средняя диапазона";
+  const averageValue = formatUsageMinuteRate(
+    analysis.forecastAvailable ? analysis.calendarDayRate : periodRate,
+  );
+  const forecastValue = analysis.forecastAvailable
+    ? formatUsageValue(analysis.forecastDay)
+    : "—";
+  const forecastDetail = analysis.forecastAvailable
+    ? `по EMA, осталось ${formatUsageMinutes(analysis.remainingDayMinutes)}`
+    : "прогноз доступен на диапазоне 24 ч";
+  usageBurnSummary.hidden = false;
+  usageBurnSummary.replaceChildren(
+    usageBurnSummaryCard(
+      "EMA сейчас",
+      formatUsageMinuteRate(analysis.emaRate),
+      `календарно, полураспад ${analysis.halfLifeMinutes} мин`,
+    ),
+    usageBurnSummaryCard(
+      averageName,
+      averageValue,
+      analysis.forecastAvailable ? "расход / время с полуночи" : "расход / выбранный период",
+    ),
+    usageBurnSummaryCard(
+      "Рабочая интенсивность",
+      analysis.workRate == null ? "—" : formatUsageMinuteRate(analysis.workRate),
+      "только ходы с известной длительностью",
+    ),
+    usageBurnSummaryCard(
+      "Прогноз суток",
+      forecastValue,
+      forecastDetail,
+      analysis.forecastAvailable ? "is-forecast" : "is-muted",
+    ),
+  );
+}
+
 function showUsageTooltip(point, fx, fy, daily = false, hours = 0) {
   if (!usageTooltip) return;
   usageTooltip.replaceChildren(
@@ -7879,7 +7956,7 @@ function showUsageTooltip(point, fx, fy, daily = false, hours = 0) {
       text: usageState.mode === "rate"
         ? formatUsageRate(usageRateCredits(point), usageRateHours(point, hours))
         : usageState.mode === "intensity"
-          ? formatUsageIntensity(point.timedCredits, point.durationSeconds)
+          ? `EMA ${formatUsageMinuteRate(point.emaRate)} · bucket ${formatUsageMinuteRate(point.rawRate)}`
           : formatUsageValue(point.credits),
     }),
   );
@@ -7907,15 +7984,23 @@ function usageAxisTicks(fromMs, toMs, plotW) {
 }
 
 function buildUsageChart(payload) {
+  const burnAnalysis = usageState.mode === "intensity" ? usageBurnRateAnalysis(payload) : null;
+  const burnPointsByTime = new Map((burnAnalysis?.points ?? []).map((point) => [point.time, point]));
   const points = (Array.isArray(payload?.points) ? payload.points : [])
-    .map((point) => ({
-      at: point.at,
-      time: Date.parse(point.at),
-      credits: Math.max(0, Number(point.credits) || 0),
-      timedCredits: Math.max(0, Number(point.timedCredits) || 0),
-      durationSeconds: Math.max(0, Number(point.durationSeconds) || 0),
-      taskDurationSeconds: Math.max(0, Number(point.taskDurationSeconds ?? point.durationSeconds) || 0),
-    }))
+    .map((point) => {
+      const time = Date.parse(point.at);
+      const burnPoint = burnPointsByTime.get(time);
+      return {
+        at: point.at,
+        time,
+        credits: Math.max(0, Number(point.credits) || 0),
+        timedCredits: Math.max(0, Number(point.timedCredits) || 0),
+        durationSeconds: Math.max(0, Number(point.durationSeconds) || 0),
+        taskDurationSeconds: Math.max(0, Number(point.taskDurationSeconds ?? point.durationSeconds) || 0),
+        rawRate: Math.max(0, Number(burnPoint?.rawRate) || 0),
+        emaRate: Math.max(0, Number(burnPoint?.emaRate) || 0),
+      };
+    })
     .filter((point) => Number.isFinite(point.time));
   const daily = payload?.bucket === "day";
   const rate = usageState.mode === "rate";
@@ -7927,7 +8012,7 @@ function buildUsageChart(payload) {
       return rateHours > 0 ? usageRateCredits(point) / rateHours : 0;
     }
     return intensity
-      ? point.timedCredits / Math.max(point.durationSeconds, 0.0001) * 60
+      ? point.emaRate
       : point.credits;
   };
   const formatValue = (value) => (
@@ -7991,7 +8076,7 @@ function buildUsageChart(payload) {
           rate
             ? formatUsageRate(usageRateCredits(point), usageRateHours(point, hours))
             : intensity
-              ? formatUsageIntensity(point.timedCredits, point.durationSeconds)
+              ? `EMA ${formatUsageMinuteRate(point.emaRate)} · bucket ${formatUsageMinuteRate(point.rawRate)}`
               : formatUsageValue(point.credits)
         }`,
       });
@@ -8073,7 +8158,7 @@ function buildUsageChart(payload) {
     rate
       ? `Скорость расхода ${usageRateBasisLabel()} за ${formatUsagePeriod(payload)}.`
       : intensity
-        ? `Скорость поглощения расхода за ${formatUsagePeriod(payload)}.`
+        ? `EMA-поглощение расхода за ${formatUsagePeriod(payload)}.`
         : `Локальный расход: ${formatUsageValue(payload.totalCredits)} за ${formatUsagePeriod(payload)}.`,
   );
   svg.style.width = "100%";
@@ -8094,11 +8179,12 @@ function renderUsageHistory() {
   const payload = usageState.payload;
   const rate = usageState.mode === "rate";
   const intensity = usageState.mode === "intensity";
+  const burnAnalysis = intensity && payload && !payload.error ? usageBurnRateAnalysis(payload) : null;
   if (usageTitle) {
     usageTitle.textContent = rate
       ? "Скорость расхода"
       : intensity
-        ? "Скорость поглощения"
+        ? "Поглощение cr"
         : "Локальный расход";
   }
   for (const button of usageModes?.querySelectorAll("[data-usage-mode]") ?? []) {
@@ -8107,7 +8193,7 @@ function renderUsageHistory() {
     button.toggleAttribute("data-active", active);
   }
   usageSubtitle.textContent = payload && !payload.error
-    ? `${formatUsagePeriod(payload)}${rate ? ` · ${usageRateBasisLabel()}` : ""}`
+    ? `${formatUsagePeriod(payload)}${rate ? ` · ${usageRateBasisLabel()}` : intensity ? " · календарная EMA 60 мин" : ""}`
     : RANGE_LABELS[usageState.range] ?? "";
   /* В режиме скорости итог за период бессмыслен: показывается средний расход
      в час, то есть та же величина, что и на столбиках. */
@@ -8118,20 +8204,19 @@ function renderUsageHistory() {
         usageRateHours(payload, usagePeriodHours(payload)),
       )
       : intensity
-        ? formatUsageIntensity(
-          Number(payload.totalTimedCredits) || 0,
-          Number(payload.totalDurationSeconds) || 0,
-        )
+        ? formatUsageMinuteRate(burnAnalysis?.emaRate)
         : formatUsageValue(payload.totalCredits))
     : "";
+  if (status !== "ready") renderUsageBurnSummary(null, null);
   if (status === "ready") {
     buildUsageChart(payload);
+    renderUsageBurnSummary(payload, burnAnalysis);
     if (intensity) {
-      const untimed = Math.max(0, Number(payload.untimedCreditCount) || 0);
-      usageNote.textContent = untimed
-        ? `Расход делится на фактическое время хода. Без длительности и вне скорости: ${untimed}.`
-        : "Расход делится на суммарное фактическое время тарифицированных ходов.";
+      usageNote.textContent = burnAnalysis?.forecastAvailable
+        ? "EMA считает календарный темп расхода cr/мин; прогноз суток не использует неизвестные лимиты Codex или Claude."
+        : "EMA считает календарный темп cr/мин. Суточный прогноз показывается только на диапазоне 24 ч, где известен расход с полуночи.";
     } else {
+      renderUsageBurnSummary(null, null);
       const unpriced = Math.max(0, Number(payload.unpricedCount) || 0);
       const untimed = Math.max(0, Number(payload.untimedCount ?? payload.untimedCreditCount) || 0);
       const notes = [];

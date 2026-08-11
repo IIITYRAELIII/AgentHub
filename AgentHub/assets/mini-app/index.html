@@ -26,6 +26,7 @@
   <script src="/resource-interactions.js" defer></script>
   <!-- agent-hub-theme-catalog -->
   <script src="/rate-limit-series.js" defer></script>
+  <script src="/usage-burn-rate.js" defer></script>
   <script src="/app.js" defer></script>
   <script src="/task-board.js" defer></script>
   <!-- agent-hub-theme-scripts -->
@@ -185,6 +186,21 @@
               stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
           </svg>
           <span class="view-settings-label">Настройки</span>
+        </button>
+        <button class="refresh orange-focus-toggle" type="button" data-orange-focus-toggle
+          title="Включить режим концентрации" aria-label="Включить режим концентрации"
+          aria-pressed="false" hidden>
+          <svg data-phosphor-icon="corners-out" viewBox="0 0 256 256" aria-hidden="true">
+            <polyline points="160 40 216 40 216 96" fill="none" stroke="currentColor"
+              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></polyline>
+            <polyline points="96 216 40 216 40 160" fill="none" stroke="currentColor"
+              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></polyline>
+            <line x1="152" y1="104" x2="216" y2="40" fill="none" stroke="currentColor"
+              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+            <line x1="104" y1="152" x2="40" y2="216" fill="none" stroke="currentColor"
+              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+          </svg>
+          <span>Фокус</span>
         </button>
         <button class="refresh view-fullscreen" type="button" data-telegram-fullscreen hidden
           title="Развернуть Mini App" aria-label="Развернуть Mini App" aria-pressed="false">
@@ -791,6 +807,8 @@
             <p>За выбранный период нет тарифицированных ходов.</p>
           </div>
           <div class="limits-chart-wrap" data-usage-chart-wrap hidden>
+            <div class="usage-burn-summary" data-usage-burn-summary hidden
+              aria-live="polite"></div>
             <figure class="limits-chart usage-chart" data-usage-chart role="img"
               aria-label="График локального расхода"></figure>
             <div class="limits-tooltip" data-usage-tooltip hidden role="status"
