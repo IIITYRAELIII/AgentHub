@@ -2326,60 +2326,175 @@ agentHub.on("queue:move", ({ id, direction, taskId: taskIdValue }) => runAction(
   taskIdValue,
   async () => control("deferred-input", { id, action: "move", direction }),
 )));
-agentHub.on("attachment:open", ({ attachment }) => runAction(async () => {
+function downloadBlob(blob, name) {
+  const objectUrl = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = objectUrl;
+  link.download = String(name || "attachment");
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 1_000);
+}
+
+async function saveBlob(blob, name) {
+  if (window.AgentHubAndroid?.saveDataUrl) {
+    window.AgentHubAndroid.saveDataUrl(String(name || "attachment"), await blobDataUrl(blob));
+    return;
+  }
+  downloadBlob(blob, name);
+}
+
+async function attachmentBlob(attachment) {
+  const id = String(attachment?.id ?? "").trim();
+  const directDataUrl = String(attachment?.dataUrl ?? "").trim();
+  if (directDataUrl) {
+    const response = await fetch(directDataUrl);
+    return { blob: await response.blob(), name: attachment?.name, type: attachment?.type };
+  }
+  const access = id && !String(attachment?.url ?? "").trim()
+    ? await control("open-attachment", { id })
+    : attachment;
+  const url = String(access?.url ?? attachment?.url ?? "").trim()
+    || `/api/attachment/view?id=${encodeURIComponent(String(access?.id ?? ""))}`;
+  if (!url || /id=$/u.test(url)) throw new Error("Файл вложения недоступен");
+  await localSessionReady;
+  const response = await hubFetch(url, {
+    headers: authorizationHeaders(),
+    cache: "no-store",
+  });
+  if (!response.ok) throw new Error(`Файл вложения недоступен: HTTP ${response.status}`);
+  return {
+    blob: await response.blob(),
+    name: access?.name ?? attachment?.name,
+    type: access?.type ?? attachment?.type,
+  };
+}
+
+function blobDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(new Error("Не удалось прочитать файл вложения"));
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function loadAttachmentImage(attachment, index) {
+  const directDataUrl = String(attachment?.dataUrl ?? "").trim();
+  const result = directDataUrl
+    ? { dataUrl: directDataUrl, name: attachment?.name }
+    : await attachmentBlob(attachment).then(async ({ blob, name }) => ({
+      dataUrl: await blobDataUrl(blob),
+      name,
+    }));
+  agentHub.showAttachmentViewer({ ...result, index });
+}
+
+agentHub.on("attachment:open", ({ attachment, gallery = [], index = 0 }) => runAction(async () => {
+  const image = String(attachment?.type ?? "").toLowerCase().startsWith("image/") || attachment?.isImage;
+  if (image) {
+    agentHub.openAttachmentViewer({
+      gallery: gallery.length ? gallery : [attachment],
+      index,
+      dataUrl: attachment?.dataUrl,
+      name: attachment?.name,
+    });
+    try {
+      if (!attachment?.dataUrl) await loadAttachmentImage(attachment, index);
+    } catch (error) {
+      agentHub.closeAttachmentViewer();
+      throw error;
+    }
+    return;
+  }
   const id = String(attachment?.id ?? "").trim();
   if (vscode && id) {
     await bridgeCall("open-attachment", { id });
     return;
   }
-  const directDataUrl = String(attachment?.dataUrl ?? "").trim();
-  const image = String(attachment?.type ?? "").toLowerCase().startsWith("image/");
-  if (directDataUrl) {
-    if (image) agentHub.openAttachmentViewer({ dataUrl: directDataUrl, name: attachment?.name });
-    else {
-      const link = document.createElement("a");
-      link.href = directDataUrl;
-      link.download = String(attachment?.name ?? "attachment");
-      link.click();
-    }
+  const result = await attachmentBlob(attachment);
+  await saveBlob(result.blob, result.name);
+}));
+
+agentHub.on("attachment:load", ({ attachment, index }) => runAction(
+  () => loadAttachmentImage(attachment, index),
+));
+
+function resourceReference(resource) {
+  if (resource?.kind === "attachment") {
+    return String(resource.attachment?.url ?? resource.attachment?.name ?? resource.attachment?.id ?? "");
+  }
+  return String(resource?.localPath ?? resource?.href ?? "");
+}
+
+function resourceFileName(resource) {
+  if (resource?.kind === "attachment") return String(resource.attachment?.name ?? "attachment");
+  try {
+    const url = new URL(String(resource?.href ?? ""));
+    return decodeURIComponent(url.pathname.split("/").filter(Boolean).at(-1) || "download");
+  } catch {
+    return String(resource?.name ?? "download");
+  }
+}
+
+async function copyAttachmentResource(attachment) {
+  if (vscode && attachment?.id) {
+    await bridgeCall("copy-attachment", { id: attachment.id });
     return;
   }
-  if (image) agentHub.openAttachmentViewer({ name: attachment?.name });
+  const { blob } = await attachmentBlob(attachment);
   try {
-    const access = id
-      ? await control("open-attachment", { id })
-      : { url: String(attachment?.url ?? "").trim() };
-    const url = String(access?.url ?? attachment?.url ?? "").trim()
-      || `/api/attachment/view?id=${encodeURIComponent(String(access?.id ?? ""))}`;
-    if (!url || /id=$/u.test(url)) throw new Error("Файл вложения недоступен");
-    await localSessionReady;
-    const response = await hubFetch(url, {
-      headers: authorizationHeaders(),
-      cache: "no-store",
-    });
-    if (!response.ok) throw new Error(`Файл вложения недоступен: HTTP ${response.status}`);
-    const blob = await response.blob();
-    const resultType = String(access?.type ?? attachment?.type ?? blob.type ?? "").toLowerCase();
-    if (!resultType.startsWith("image/")) {
-      const objectUrl = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = objectUrl;
-      link.download = String(access?.name ?? attachment?.name ?? "attachment");
-      link.click();
-      setTimeout(() => URL.revokeObjectURL(objectUrl), 1_000);
-      return;
-    }
-    const dataUrl = await new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(String(reader.result));
-      reader.onerror = () => reject(new Error("Не удалось прочитать файл вложения"));
-      reader.readAsDataURL(blob);
-    });
-    agentHub.showAttachmentViewer({ dataUrl, name: access?.name ?? attachment?.name });
-  } catch (error) {
-    if (image) agentHub.closeAttachmentViewer();
-    throw error;
+    if (!window.ClipboardItem || !navigator.clipboard?.write) throw new Error("binary clipboard unavailable");
+    await navigator.clipboard.write([new ClipboardItem({
+      [blob.type || "application/octet-stream"]: blob,
+    })]);
+  } catch {
+    await navigator.clipboard.writeText(resourceReference({ kind: "attachment", attachment }));
   }
+}
+
+async function saveLinkResource(resource) {
+  if (vscode) {
+    await bridgeCall("save-link", {
+      href: resource.href,
+      localPath: resource.localPath,
+      name: resource.name,
+    });
+    return;
+  }
+  const target = new URL(String(resource.href ?? ""), window.location.href);
+  const sameOrigin = target.origin === window.location.origin;
+  const response = await hubFetch(target.href, {
+    headers: sameOrigin ? authorizationHeaders() : {},
+    cache: "no-store",
+  });
+  if (!response.ok) throw new Error(`Не удалось сохранить ссылку: HTTP ${response.status}`);
+  await saveBlob(await response.blob(), resourceFileName(resource));
+}
+
+agentHub.on("resource:open", ({ resource }) => runAction(async () => {
+  if (vscode) {
+    await bridgeCall("open-link", { href: resource.localPath || resource.href });
+    return;
+  }
+  window.open(String(resource.href ?? ""), "_blank", "noopener,noreferrer");
+}));
+
+agentHub.on("resource:copy", ({ resource }) => runAction(async () => {
+  if (resource?.kind === "attachment") await copyAttachmentResource(resource.attachment);
+  else if (vscode) await bridgeCall("copy-link", { href: resource.localPath || resource.href });
+  else await navigator.clipboard.writeText(resourceReference(resource));
+  agentHub.toast("Скопировано в буфер обмена");
+}));
+
+agentHub.on("resource:save", ({ resource }) => runAction(async () => {
+  if (resource?.kind === "attachment") {
+    if (vscode && resource.attachment?.id) {
+      await bridgeCall("save-attachment", { id: resource.attachment.id, name: resource.attachment.name });
+    } else {
+      const result = await attachmentBlob(resource.attachment);
+      await saveBlob(result.blob, result.name);
+    }
+  } else await saveLinkResource(resource);
 }));
 agentHub.on("hub:restart", () => runAction(async () => {
   const result = await control("restart-server");

@@ -1259,20 +1259,24 @@ test("chat short-polls commands and skips only unchanged loaded history renders"
 });
 
 test("message attachments keep timestamps, previews and an explicit open action", () => {
+  const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
   const extension = fs.readFileSync(require.resolve("./extension.js"), "utf8");
   assert.match(client, /time:\s*message\.time \?\?/u);
   assert.match(client, /attachments:\s*attachmentViews\(message\.attachments\)/u);
   assert.match(client, /agentHub\.on\("attachment:open"/u);
-  assert.match(app, /emit\("attachment:open",\s*\{\s*attachment:\s*item\s*\}\)/u);
+  assert.match(app, /emit\("attachment:open",\s*\{\s*attachment:\s*item,\s*gallery,\s*index:/u);
   assert.match(extension, /decorateAttachmentUrls/u);
-  assert.match(extension, /action === "open-attachment"/u);
+  assert.match(extension, /\["open-attachment", "copy-attachment", "save-attachment"\]\.includes\(action\)/u);
   assert.match(app, /Файл недоступен/u);
   assert.match(app, /disabled:\s*missing/u);
   assert.match(app, /\(!source && !item\.id\)/u);
   assert.match(client, /control\("open-attachment", \{ id \}\)/u);
   assert.match(client, /agentHub\.openAttachmentViewer/u);
+  assert.match(client, /agentHub\.on\("attachment:load"/u);
+  assert.match(html, /data-resource-context-menu[\s\S]*data-resource-action="open"[\s\S]*data-resource-action="copy"[\s\S]*data-resource-action="save"/u);
+  assert.match(client, /agentHub\.on\("resource:copy"[\s\S]*agentHub\.on\("resource:save"/u);
   assert.match(client, /value\.url = `\/api\/message-attachment\/\$\{encodeURIComponent\(id\)\}`/u);
   assert.doesNotMatch(client, /window\.open\(url, "_blank"/u);
 });
@@ -1317,7 +1321,8 @@ test("composer accepts documents and renders downloadable file cards", () => {
   assert.match(app, /file\.size <= 20 \* 1024 \* 1024/u);
   assert.match(app, /attachment-file-card/u);
   assert.match(client, /X-Agent-Hub-File-Name/u);
-  assert.match(client, /link\.download = String\(access\?\.name \?\? attachment\?\.name/u);
+  assert.match(client, /async function saveBlob\(blob, name\)/u);
+  assert.match(client, /downloadBlob\(blob, name\)/u);
 });
 
 test("mobile navigation backs out from image to chat and from chat to tasks", () => {
@@ -1328,7 +1333,9 @@ test("mobile navigation backs out from image to chat and from chat to tasks", ()
     "utf8",
   );
   assert.match(html, /data-attachment-viewer[\s\S]*data-attachment-viewer-close/u);
+  assert.match(html, /data-attachment-viewer-previous[\s\S]*data-attachment-viewer-next/u);
   assert.match(app, /function navigateBack\(\)[\s\S]*closeAttachmentViewer\(\)[\s\S]*setPane\("tasks"\)/u);
+  assert.match(app, /event\.key === "ArrowLeft"[\s\S]*event\.key === "ArrowRight"/u);
   assert.match(app, /dx < EDGE_SWIPE_DISTANCE[\s\S]*navigateBack\(\);/u);
   assert.match(android, /window\.AgentHub\.navigateBack/u);
 });

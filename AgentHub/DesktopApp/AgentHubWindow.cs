@@ -1,9 +1,11 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Collections.Specialized;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
@@ -1029,6 +1031,8 @@ namespace AgentHubDesktop
                 requestText.Margin = new Thickness(0, annotationIndex > 0 ? 2 : 0, 0, 0);
                 content.Children.Add(requestText);
             }
+            var attachmentStrip = AssistantAttachmentStrip(DesktopAttachmentPresentation.UserAttachments(exchange));
+            if (attachmentStrip != null) content.Children.Add(attachmentStrip);
             var border = new Border
             {
                 Background = Theme.Solid("#173145"),
@@ -1190,23 +1194,30 @@ namespace AgentHubDesktop
         private FrameworkElement AssistantAttachmentStrip(IList<Dictionary<string, object>> values)
         {
             if (values == null || values.Count == 0) return null;
+            var paths = values
+                .Select(attachment => DesktopAttachmentPresentation.ResolvePath(attachmentRoot, attachment))
+                .Where(path => !String.IsNullOrWhiteSpace(path))
+                .ToList();
+            if (paths.Count == 0) return null;
+            var imagePaths = paths.Where(DesktopAttachmentStorage.IsImage).ToList();
             var panel = new WrapPanel { Margin = new Thickness(0, 12, 0, 0) };
-            foreach (var attachment in values)
+            foreach (var path in paths)
             {
-                var path = DesktopAttachmentPresentation.ResolvePath(attachmentRoot, attachment);
-                panel.Children.Add(AssistantAttachmentTile(path));
+                panel.Children.Add(AssistantAttachmentTile(path, imagePaths));
             }
             return panel;
         }
 
-        private UIElement AssistantAttachmentTile(string path)
+        private UIElement AssistantAttachmentTile(string path, IList<string> imagePaths)
         {
+            var isImage = DesktopAttachmentStorage.IsImage(path);
             var image = new Image { Stretch = Stretch.UniformToFill };
-            var bitmap = LoadAttachmentBitmap(path, 360);
+            var bitmap = isImage ? LoadAttachmentBitmap(path, 360) : null;
             if (bitmap != null) image.Source = bitmap;
-            FrameworkElement content = bitmap == null
-                ? (FrameworkElement)Theme.Label("Изображение недоступно", 12, Theme.Solid(Theme.Muted), FontWeights.Normal)
-                : image;
+            var displayName = DesktopAttachmentStorage.DisplayName(path);
+            FrameworkElement content = bitmap != null
+                ? (FrameworkElement)image
+                : AttachmentFileCard(displayName);
             if (content is TextBlock) ((TextBlock)content).TextAlignment = TextAlignment.Center;
 
             var tile = new Button
@@ -1218,13 +1229,35 @@ namespace AgentHubDesktop
                 Background = Theme.Solid(Theme.PanelRaised),
                 BorderBrush = Theme.Solid(Theme.Border),
                 BorderThickness = new Thickness(1),
-                Cursor = bitmap == null ? Cursors.Arrow : Cursors.Hand,
-                IsEnabled = bitmap != null,
-                ToolTip = bitmap == null ? "Изображение недоступно" : "Открыть изображение",
+                Cursor = Cursors.Hand,
+                ToolTip = isImage ? "Открыть изображение" : displayName,
                 Content = content
             };
-            if (bitmap != null) tile.Click += delegate { ShowAttachmentViewer(path); };
+            if (isImage && bitmap != null)
+            {
+                tile.Click += delegate { ShowAttachmentViewer(imagePaths, imagePaths.IndexOf(path)); };
+            }
+            else if (!isImage)
+            {
+                tile.Click += delegate { OpenLocalResource(path); };
+                tile.ContextMenu = FileContextMenu(path);
+            }
             return tile;
+        }
+
+        private FrameworkElement AttachmentFileCard(string displayName)
+        {
+            var panel = new StackPanel { Margin = new Thickness(12), VerticalAlignment = VerticalAlignment.Center };
+            var extension = Path.GetExtension(displayName).TrimStart('.').ToUpperInvariant();
+            var type = Theme.Label(String.IsNullOrWhiteSpace(extension) ? "FILE" : extension, 11, Theme.Solid(Theme.Codex), FontWeights.Bold);
+            type.TextAlignment = TextAlignment.Center;
+            panel.Children.Add(type);
+            var name = Theme.Label(displayName, 11, Theme.Solid(Theme.Text), FontWeights.Normal);
+            name.TextAlignment = TextAlignment.Center;
+            name.TextWrapping = TextWrapping.Wrap;
+            name.Margin = new Thickness(0, 7, 0, 0);
+            panel.Children.Add(name);
+            return panel;
         }
 
         private static BitmapImage LoadAttachmentBitmap(string path, int decodePixelWidth)
@@ -1244,40 +1277,150 @@ namespace AgentHubDesktop
             catch { return null; }
         }
 
-        private void ShowAttachmentViewer(string path)
+        private void ShowAttachmentViewer(IList<string> paths, int selectedIndex)
         {
-            var bitmap = LoadAttachmentBitmap(path, 0);
-            if (bitmap == null)
+            var selectedPath = paths != null && selectedIndex >= 0 && selectedIndex < paths.Count
+                ? paths[selectedIndex]
+                : null;
+            var images = (paths ?? new List<string>())
+                .Where(path => DesktopAttachmentStorage.IsImage(path) && LoadAttachmentBitmap(path, 24) != null)
+                .ToList();
+            if (images.Count == 0)
             {
                 footer.Text = "Изображение недоступно";
                 return;
             }
+            var index = images.IndexOf(selectedPath);
+            if (index < 0) index = 0;
             var image = new Image
             {
-                Source = bitmap,
                 Stretch = Stretch.Uniform,
                 HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center
             };
+            var caption = Theme.Label("", 12, Theme.Solid(Theme.Text), FontWeights.SemiBold);
+            caption.HorizontalAlignment = HorizontalAlignment.Center;
+            caption.Margin = new Thickness(14, 8, 14, 12);
+            var previous = Theme.Button("‹", "", false);
+            var next = Theme.Button("›", "", false);
+            previous.FontSize = 24;
+            next.FontSize = 24;
+            previous.Width = next.Width = 48;
+            previous.Height = next.Height = 48;
+            previous.HorizontalAlignment = HorizontalAlignment.Left;
+            next.HorizontalAlignment = HorizontalAlignment.Right;
+            previous.VerticalAlignment = next.VerticalAlignment = VerticalAlignment.Center;
+            previous.Margin = new Thickness(14);
+            next.Margin = new Thickness(14);
+            var stage = new Grid();
+            stage.Children.Add(new ScrollViewer
+            {
+                Content = image,
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                Padding = new Thickness(74, 18, 74, 18)
+            });
+            stage.Children.Add(previous);
+            stage.Children.Add(next);
+            var shell = new DockPanel();
+            DockPanel.SetDock(caption, Dock.Bottom);
+            shell.Children.Add(caption);
+            shell.Children.Add(stage);
             var window = new Window
             {
                 Title = "Изображение",
                 Owner = this,
-                Width = Math.Min(1280, Math.Max(720, bitmap.PixelWidth + 48)),
-                Height = Math.Min(900, Math.Max(520, bitmap.PixelHeight + 72)),
+                Width = 1100,
+                Height = 760,
                 MinWidth = 560,
                 MinHeight = 420,
                 WindowStartupLocation = WindowStartupLocation.CenterOwner,
                 Background = Theme.Solid(Theme.Ink),
-                Content = new ScrollViewer
-                {
-                    Content = image,
-                    HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
-                    VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-                    Padding = new Thickness(18)
-                }
+                Content = shell
             };
+            Action render = delegate
+            {
+                image.Source = LoadAttachmentBitmap(images[index], 0);
+                caption.Text = DesktopAttachmentStorage.DisplayName(images[index])
+                    + (images.Count > 1 ? "   " + (index + 1) + " / " + images.Count : "");
+                previous.Visibility = index > 0 ? Visibility.Visible : Visibility.Hidden;
+                next.Visibility = index < images.Count - 1 ? Visibility.Visible : Visibility.Hidden;
+            };
+            Action<int> move = direction =>
+            {
+                var nextIndex = Math.Max(0, Math.Min(images.Count - 1, index + direction));
+                if (nextIndex == index) return;
+                index = nextIndex;
+                render();
+            };
+            previous.Click += delegate { move(-1); };
+            next.Click += delegate { move(1); };
+            window.KeyDown += delegate(object sender, KeyEventArgs eventArgs)
+            {
+                if (eventArgs.Key == System.Windows.Input.Key.Left) { move(-1); eventArgs.Handled = true; }
+                else if (eventArgs.Key == System.Windows.Input.Key.Right) { move(1); eventArgs.Handled = true; }
+                else if (eventArgs.Key == System.Windows.Input.Key.Escape) { window.Close(); eventArgs.Handled = true; }
+            };
+            render();
             window.ShowDialog();
+        }
+
+        private ContextMenu FileContextMenu(string path)
+        {
+            var menu = ResourceContextMenu(
+                null,
+                delegate
+                {
+                    var files = new StringCollection();
+                    files.Add(path);
+                    Clipboard.SetFileDropList(files);
+                    footer.Text = "Файл скопирован в буфер обмена";
+                },
+                delegate { SaveLocalResource(path); });
+            return menu;
+        }
+
+        private ContextMenu ResourceContextMenu(Action open, Action copy, Action save)
+        {
+            var menu = new ContextMenu { Background = Theme.Solid(Theme.PanelRaised), Foreground = Theme.Solid(Theme.Text) };
+            foreach (var action in new[]
+            {
+                new KeyValuePair<string, Action>("Открыть", open),
+                new KeyValuePair<string, Action>("Копировать", copy),
+                new KeyValuePair<string, Action>("Сохранить как…", save)
+            })
+            {
+                if (action.Value == null) continue;
+                var item = new MenuItem { Header = action.Key, Foreground = Theme.Solid(Theme.Text) };
+                item.Click += delegate { action.Value(); };
+                menu.Items.Add(item);
+            }
+            return menu;
+        }
+
+        private void OpenLocalResource(string path)
+        {
+            try { Process.Start(new ProcessStartInfo(path) { UseShellExecute = true }); }
+            catch (Exception error) { footer.Text = "Не удалось открыть файл: " + error.Message; }
+        }
+
+        private void SaveLocalResource(string path)
+        {
+            try
+            {
+                var dialog = new Microsoft.Win32.SaveFileDialog
+                {
+                    FileName = DesktopAttachmentStorage.DisplayName(path),
+                    Title = "Сохранить как"
+                };
+                if (dialog.ShowDialog(this) != true) return;
+                File.Copy(path, dialog.FileName, true);
+                footer.Text = "Файл сохранён";
+            }
+            catch (Exception error)
+            {
+                footer.Text = "Не удалось сохранить файл: " + error.Message;
+            }
         }
 
         private UIElement AccentCard(Border card, string provider, bool glow)
@@ -1552,6 +1695,16 @@ namespace AgentHubDesktop
                         ToolTip = localFile + (localLine > 0 ? ":" + localLine : "")
                     };
                     localLink.Click += delegate { OpenWorkspaceFile(localFile, localLine); };
+                    var capturedLocalFile = localFile;
+                    var capturedLocalLine = localLine;
+                    localLink.ContextMenu = ResourceContextMenu(
+                        delegate { OpenWorkspaceFile(capturedLocalFile, capturedLocalLine); },
+                        delegate
+                        {
+                            Clipboard.SetText(capturedLocalFile + (capturedLocalLine > 0 ? ":" + capturedLocalLine : ""));
+                            footer.Text = "Ссылка скопирована";
+                        },
+                        delegate { SaveLocalResource(capturedLocalFile); });
                     paragraph.Inlines.Add(localLink);
                     index = match.Index + match.Length;
                     continue;
@@ -1575,6 +1728,19 @@ namespace AgentHubDesktop
                     try { Process.Start(new ProcessStartInfo(safeTarget.AbsoluteUri) { UseShellExecute = true }); }
                     catch (Exception error) { footer.Text = "Не удалось открыть ссылку: " + error.Message; }
                 };
+                var capturedTarget = safeTarget;
+                link.ContextMenu = ResourceContextMenu(
+                    delegate
+                    {
+                        try { Process.Start(new ProcessStartInfo(capturedTarget.AbsoluteUri) { UseShellExecute = true }); }
+                        catch (Exception error) { footer.Text = "Не удалось открыть ссылку: " + error.Message; }
+                    },
+                    delegate
+                    {
+                        Clipboard.SetText(capturedTarget.AbsoluteUri);
+                        footer.Text = "Ссылка скопирована";
+                    },
+                    delegate { SaveRemoteResource(capturedTarget); });
                 paragraph.Inlines.Add(link);
                 index = match.Index + match.Length;
             }
@@ -1629,6 +1795,30 @@ namespace AgentHubDesktop
                 {
                     footer.Text = "Не удалось открыть файл: " + error.Message;
                 }
+            }
+        }
+
+        private async void SaveRemoteResource(Uri uri)
+        {
+            try
+            {
+                var name = Path.GetFileName(uri.LocalPath);
+                var dialog = new Microsoft.Win32.SaveFileDialog
+                {
+                    FileName = String.IsNullOrWhiteSpace(name) ? "download" : name,
+                    Title = "Сохранить как"
+                };
+                if (dialog.ShowDialog(this) != true) return;
+                using (var client = new WebClient())
+                {
+                    var data = await client.DownloadDataTaskAsync(uri);
+                    File.WriteAllBytes(dialog.FileName, data);
+                }
+                footer.Text = "Файл сохранён";
+            }
+            catch (Exception error)
+            {
+                footer.Text = "Не удалось сохранить ссылку: " + error.Message;
             }
         }
 

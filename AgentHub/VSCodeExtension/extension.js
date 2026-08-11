@@ -3,6 +3,7 @@
 const vscode = require("vscode");
 const { runtimeReloadAction } = require("./runtime-reload-policy");
 const path = require("node:path");
+const os = require("node:os");
 
 const {
   AgentHubBridge,
@@ -243,14 +244,42 @@ class WorkLogViewProvider {
     try {
       const bridge = await this.currentBridge();
       const action = String(message.action ?? "");
-      if (action === "open-attachment") {
+      if (["open-attachment", "copy-attachment", "save-attachment"].includes(action)) {
         const target = await bridge.attachmentPath(message.params?.id);
-        await vscode.commands.executeCommand("vscode.open", vscode.Uri.file(target));
+        if (action === "open-attachment") {
+          await vscode.commands.executeCommand("vscode.open", vscode.Uri.file(target));
+        } else if (action === "copy-attachment") {
+          await vscode.env.clipboard.writeText(target);
+        } else {
+          const destination = await vscode.window.showSaveDialog({
+            defaultUri: vscode.Uri.file(path.join(
+              os.homedir(),
+              path.basename(String(message.params?.name || target)),
+            )),
+            saveLabel: "Сохранить вложение",
+          });
+          if (destination) {
+            await vscode.workspace.fs.copy(vscode.Uri.file(target), destination, { overwrite: true });
+          }
+        }
         await this.panel?.webview.postMessage({
           type: "agenthub:control-result",
           id,
           ok: true,
-          result: { opened: true },
+          result: { completed: true },
+        });
+        return;
+      }
+      if (["open-link", "copy-link", "save-link"].includes(action)) {
+        const href = String(message.params?.localPath || message.params?.href || "").trim();
+        if (action === "open-link") await this.openLink(href);
+        else if (action === "copy-link") await vscode.env.clipboard.writeText(href);
+        else await this.saveLink(href, message.params?.name);
+        await this.panel?.webview.postMessage({
+          type: "agenthub:control-result",
+          id,
+          ok: true,
+          result: { completed: true },
         });
         return;
       }
@@ -366,6 +395,42 @@ class WorkLogViewProvider {
       } : undefined;
       await vscode.commands.executeCommand("vscode.open", target, options);
     }
+  }
+
+  async resolveWorkspaceLink(rawHref) {
+    const fileTarget = editorFileTarget(rawHref);
+    const absolute = /^[A-Za-z]:[\\/]/u.test(fileTarget.file);
+    return absolute
+      ? resolveAbsoluteWorkspaceFile(fileTarget.file, this.workspaceFolders())
+      : firstExisting(this.workspaceFolders().map((folder) => vscode.Uri.joinPath(
+        folder.uri,
+        ...relativeSegments(fileTarget.file),
+      )));
+  }
+
+  async saveLink(rawHref, label) {
+    const href = String(rawHref ?? "").trim();
+    let bytes;
+    let suggestedName = "";
+    if (/^https?:/iu.test(href)) {
+      const response = await fetch(href, { redirect: "follow" });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      bytes = new Uint8Array(await response.arrayBuffer());
+      suggestedName = decodeURIComponent(new URL(response.url).pathname.split("/").filter(Boolean).at(-1) || "")
+        || String(label ?? "").trim()
+        || "download";
+    } else {
+      const source = await this.resolveWorkspaceLink(href);
+      if (!source) throw new Error("Файл ссылки не найден в Workspace");
+      bytes = await vscode.workspace.fs.readFile(source);
+      suggestedName = path.basename(source.fsPath);
+    }
+    const safeName = path.basename(suggestedName || "download");
+    const destination = await vscode.window.showSaveDialog({
+      defaultUri: vscode.Uri.file(path.join(os.homedir(), safeName)),
+      saveLabel: "Сохранить как",
+    });
+    if (destination) await vscode.workspace.fs.writeFile(destination, bytes);
   }
 
   dispose() {

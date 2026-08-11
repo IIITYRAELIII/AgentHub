@@ -74,6 +74,8 @@ public final class MainActivity extends Activity {
     private static final long UPDATE_CHECK_INTERVAL_MS = 5L * 60L * 1000L;
     private static final int REQUEST_UNKNOWN_SOURCES = 1201;
     private static final int REQUEST_IMAGE_CHOOSER = 1202;
+    private static final int REQUEST_SAVE_RESOURCE = 1203;
+    private static final int MAX_RESOURCE_BYTES = 20 * 1024 * 1024;
     private static final int MENU_ANNOTATE_SELECTION = 0x41485542;
     private static final String APK_TYPE = "application/vnd.android.package-archive";
 
@@ -85,6 +87,9 @@ public final class MainActivity extends Activity {
     private File pendingUpdateFile;
     private WebView webView;
     private ValueCallback<Uri[]> pendingFileChooser;
+    private byte[] pendingResourceBytes;
+    private String pendingResourceName = "attachment";
+    private String pendingResourceType = "application/octet-stream";
     private final OnBackInvokedCallback backCallback = this::handleBackNavigation;
 
     @Override
@@ -119,6 +124,7 @@ public final class MainActivity extends Activity {
             pendingFileChooser.onReceiveValue(null);
             pendingFileChooser = null;
         }
+        pendingResourceBytes = null;
         worker.shutdownNow();
         super.onDestroy();
     }
@@ -130,6 +136,24 @@ public final class MainActivity extends Activity {
             ValueCallback<Uri[]> callback = pendingFileChooser;
             pendingFileChooser = null;
             if (callback != null) callback.onReceiveValue(selectedFiles(resultCode, data));
+            return;
+        }
+        if (requestCode == REQUEST_SAVE_RESOURCE) {
+            byte[] bytes = pendingResourceBytes;
+            pendingResourceBytes = null;
+            if (resultCode == Activity.RESULT_OK && data != null && data.getData() != null && bytes != null) {
+                Uri target = data.getData();
+                worker.execute(() -> {
+                    try (OutputStream output = getContentResolver().openOutputStream(target, "w")) {
+                        if (output == null) throw new IllegalStateException("Файл недоступен для записи");
+                        output.write(bytes);
+                        output.flush();
+                        runOnUiThread(() -> Toast.makeText(this, "Файл сохранён.", Toast.LENGTH_SHORT).show());
+                    } catch (Exception error) {
+                        runOnUiThread(() -> Toast.makeText(this, "Не удалось сохранить файл.", Toast.LENGTH_LONG).show());
+                    }
+                });
+            }
             return;
         }
         if (requestCode != REQUEST_UNKNOWN_SOURCES || pendingUpdateFile == null) return;
@@ -881,6 +905,38 @@ public final class MainActivity extends Activity {
         @JavascriptInterface
         public void onHubRestarted(String releaseId) {
             runOnUiThread(() -> checkForUpdate(activeServerUrl, true));
+        }
+
+        @JavascriptInterface
+        public void saveDataUrl(String name, String dataUrl) {
+            worker.execute(() -> {
+                try {
+                    int comma = dataUrl == null ? -1 : dataUrl.indexOf(',');
+                    String metadata = comma > 5 ? dataUrl.substring(5, comma) : "";
+                    if (comma < 0 || !metadata.endsWith(";base64")) throw new IllegalArgumentException("Некорректный файл");
+                    byte[] bytes = Base64.getDecoder().decode(dataUrl.substring(comma + 1));
+                    if (bytes.length == 0 || bytes.length > MAX_RESOURCE_BYTES) throw new IllegalArgumentException("Недопустимый размер файла");
+                    String mime = metadata.substring(0, metadata.length() - ";base64".length());
+                    pendingResourceBytes = bytes;
+                    String safeName = String.valueOf(name).replace('\\', '/');
+                    pendingResourceName = new File(safeName).getName();
+                    pendingResourceType = mime.isBlank() ? "application/octet-stream" : mime;
+                    runOnUiThread(() -> {
+                        Intent target = new Intent(Intent.ACTION_CREATE_DOCUMENT)
+                            .addCategory(Intent.CATEGORY_OPENABLE)
+                            .setType(pendingResourceType)
+                            .putExtra(Intent.EXTRA_TITLE, pendingResourceName);
+                        try {
+                            startActivityForResult(target, REQUEST_SAVE_RESOURCE);
+                        } catch (ActivityNotFoundException error) {
+                            pendingResourceBytes = null;
+                            Toast.makeText(MainActivity.this, "Сохранение файлов недоступно.", Toast.LENGTH_LONG).show();
+                        }
+                    });
+                } catch (Exception error) {
+                    runOnUiThread(() -> Toast.makeText(MainActivity.this, "Не удалось подготовить файл.", Toast.LENGTH_LONG).show());
+                }
+            });
         }
     }
 }

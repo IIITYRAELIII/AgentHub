@@ -203,6 +203,9 @@ namespace AgentHubDesktop
             var values = DesktopAttachmentPresentation.AssistantAttachments(exchange);
             Require(values.Count == 2, "assistant image attachments were not deduplicated");
             Require(AgentHubClient.Text(values[0], "id") == "abc.png", "assistant image order changed");
+            var userValues = DesktopAttachmentPresentation.UserAttachments(exchange);
+            Require(userValues.Count == 1, "user attachments were not collected");
+            Require(AgentHubClient.Text(userValues[0], "id") == "user.png", "user attachment order changed");
         }
 
         private static void AssistantAttachmentPathIsConfinedToPrivateRoot()

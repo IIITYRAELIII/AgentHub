@@ -97,6 +97,7 @@ const composerSend = document.querySelector("[data-composer-send]");
 const annotationsBox = document.querySelector("[data-annotations]");
 const attachmentsBox = document.querySelector("[data-attachments]");
 const annotationContextMenu = document.querySelector("[data-annotation-context-menu]");
+const resourceContextMenu = document.querySelector("[data-resource-context-menu]");
 // Theme panels may clip their children (for example Lake uses overflow:hidden
 // around the chat). Keep the fixed selection menu at the document level so it
 // can never be reduced to the narrow fragment left inside the chat boundary.
@@ -159,6 +160,12 @@ const attachmentViewer = document.querySelector("[data-attachment-viewer]");
 const attachmentViewerImage = document.querySelector("[data-attachment-viewer-image]");
 const attachmentViewerLoading = document.querySelector("[data-attachment-viewer-loading]");
 const attachmentViewerClose = document.querySelector("[data-attachment-viewer-close]");
+const attachmentViewerPrevious = document.querySelector("[data-attachment-viewer-previous]");
+const attachmentViewerNext = document.querySelector("[data-attachment-viewer-next]");
+const attachmentViewerCaption = document.querySelector("[data-attachment-viewer-caption]");
+const attachmentViewerName = document.querySelector("[data-attachment-viewer-name]");
+const attachmentViewerCounter = document.querySelector("[data-attachment-viewer-counter]");
+const resourceInteractions = window.AgentHubResourceInteractions;
 
 const limitsRanges = document.querySelector("[data-limits-ranges]");
 const limitsModes = document.querySelector("[data-limits-modes]");
@@ -3109,23 +3116,68 @@ function pinChatToBottom() {
 }
 
 let attachmentViewerOpen = false;
+let attachmentViewerGallery = [];
+let attachmentViewerIndex = 0;
 
-function openAttachmentViewer({ dataUrl = "", name = "Изображение" } = {}) {
+function syncAttachmentViewerControls() {
+  const length = attachmentViewerGallery.length;
+  const selected = attachmentViewerGallery[attachmentViewerIndex] ?? {};
+  attachmentViewerPrevious.hidden = length < 2 || attachmentViewerIndex <= 0;
+  attachmentViewerNext.hidden = length < 2 || attachmentViewerIndex >= length - 1;
+  attachmentViewerCaption.hidden = length === 0;
+  attachmentViewerName.textContent = String(selected.name ?? "Изображение");
+  attachmentViewerCounter.textContent = length > 1 ? `${attachmentViewerIndex + 1} / ${length}` : "";
+}
+
+function openAttachmentViewer({ dataUrl = "", name = "Изображение", gallery = [], index = 0 } = {}) {
+  attachmentViewerGallery = resourceInteractions.imageGallery(
+    Array.isArray(gallery) && gallery.length ? gallery : [{ dataUrl, name, type: "image/*" }],
+  );
+  attachmentViewerIndex = resourceInteractions.galleryIndex(index, attachmentViewerGallery.length);
+  const selected = attachmentViewerGallery[attachmentViewerIndex] ?? { dataUrl, name };
+  const selectedDataUrl = String(selected.dataUrl ?? dataUrl ?? "");
   attachmentViewerOpen = true;
   attachmentViewer.hidden = false;
-  attachmentViewerImage.hidden = !dataUrl;
-  attachmentViewerLoading.hidden = Boolean(dataUrl);
-  attachmentViewerImage.alt = name;
-  attachmentViewerImage.src = dataUrl;
+  attachmentViewerImage.hidden = !selectedDataUrl;
+  attachmentViewerLoading.hidden = Boolean(selectedDataUrl);
+  attachmentViewerImage.alt = String(selected.name ?? name);
+  attachmentViewerImage.src = selectedDataUrl;
+  syncAttachmentViewerControls();
   root.dataset.overlay = "attachment";
 }
 
-function showAttachmentViewer({ dataUrl, name = "Изображение" } = {}) {
+function showAttachmentViewer({ dataUrl, name = "Изображение", index = attachmentViewerIndex } = {}) {
   if (!attachmentViewerOpen) openAttachmentViewer();
+  if (resourceInteractions.galleryIndex(index, attachmentViewerGallery.length) !== attachmentViewerIndex) return;
   attachmentViewerImage.alt = name;
   attachmentViewerImage.src = String(dataUrl ?? "");
   attachmentViewerImage.hidden = !dataUrl;
   attachmentViewerLoading.hidden = Boolean(dataUrl);
+  syncAttachmentViewerControls();
+}
+
+function moveAttachmentViewer(direction) {
+  if (!attachmentViewerOpen) return false;
+  const nextIndex = resourceInteractions.moveGalleryIndex(
+    attachmentViewerIndex,
+    direction,
+    attachmentViewerGallery.length,
+  );
+  if (nextIndex === attachmentViewerIndex) return false;
+  attachmentViewerIndex = nextIndex;
+  const attachment = attachmentViewerGallery[attachmentViewerIndex];
+  const dataUrl = String(attachment?.dataUrl ?? "");
+  attachmentViewerImage.alt = String(attachment?.name ?? "Изображение");
+  attachmentViewerImage.src = dataUrl;
+  attachmentViewerImage.hidden = !dataUrl;
+  attachmentViewerLoading.hidden = Boolean(dataUrl);
+  syncAttachmentViewerControls();
+  if (!dataUrl) emit("attachment:load", {
+    attachment,
+    gallery: attachmentViewerGallery,
+    index: attachmentViewerIndex,
+  });
+  return true;
 }
 
 function closeAttachmentViewer() {
@@ -3135,6 +3187,8 @@ function closeAttachmentViewer() {
   attachmentViewerImage.removeAttribute("src");
   attachmentViewerImage.hidden = true;
   attachmentViewerLoading.hidden = false;
+  attachmentViewerGallery = [];
+  attachmentViewerIndex = 0;
   delete root.dataset.overlay;
   return true;
 }
@@ -3159,8 +3213,19 @@ function navigateBack() {
 }
 
 attachmentViewerClose.addEventListener("click", closeAttachmentViewer);
+attachmentViewerPrevious.addEventListener("click", () => moveAttachmentViewer(-1));
+attachmentViewerNext.addEventListener("click", () => moveAttachmentViewer(1));
 attachmentViewer.addEventListener("click", (event) => {
   if (event.target === attachmentViewer) closeAttachmentViewer();
+});
+document.addEventListener("keydown", (event) => {
+  if (!attachmentViewerOpen) return;
+  if (event.key === "ArrowLeft" && moveAttachmentViewer(-1)) event.preventDefault();
+  if (event.key === "ArrowRight" && moveAttachmentViewer(1)) event.preventDefault();
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeAttachmentViewer();
+  }
 });
 
 const EDGE_SWIPE_ZONE = 32;
@@ -4482,12 +4547,13 @@ function renderAttachments() {
 
 function renderAttachmentStrip(items, { readOnly }) {
   const strip = el("div", { class: "attachment-strip" });
+  const gallery = resourceInteractions.imageGallery(items);
   items.forEach((item, index) => {
     const source = item.dataUrl || item.url || "";
-    const image = String(item.type ?? "").toLowerCase().startsWith("image/");
+    const image = resourceInteractions.isImageAttachment(item);
     const missing = readOnly && (item.missing || (!source && !item.id));
     const thumb = el(readOnly ? "button" : "div", {
-      class: `attachment${image ? " attachment-image" : " attachment-file"}${readOnly && !missing ? " attachment-open" : ""}${missing ? " attachment-missing" : ""}`,
+      class: `attachment${image ? " attachment-image" : " attachment-file"}${!missing && (readOnly || image) ? " attachment-open" : ""}${missing ? " attachment-missing" : ""}`,
       title: readOnly
         ? (missing ? "Файл недоступен" : (image ? "Открыть изображение" : `Скачать ${item.name || "файл"}`))
         : item.name || "",
@@ -4512,7 +4578,17 @@ function renderAttachmentStrip(items, { readOnly }) {
             el("span", { class: "attachment-file-name", text: item.name || "Вложение" }),
           ])]);
     if (readOnly && !missing) {
-      thumb.addEventListener("click", () => emit("attachment:open", { attachment: item }));
+      thumb.addEventListener("click", () => emit("attachment:open", {
+        attachment: item,
+        gallery,
+        index: image ? gallery.indexOf(item) : index,
+      }));
+      if (!image) thumb.__agentHubResource = { kind: "attachment", attachment: item };
+    } else if (image && !missing) {
+      thumb.addEventListener("click", (event) => {
+        if (event.target.closest("[data-attachment-index]")) return;
+        openAttachmentViewer({ gallery, index: gallery.indexOf(item) });
+      });
     }
     if (!readOnly) {
       thumb.append(el("button", {
@@ -4812,6 +4888,61 @@ document.addEventListener("keydown", (event) => {
 
 window.addEventListener("scroll", closeAnnotationContextMenu, true);
 
+let pendingResource = null;
+
+function closeResourceContextMenu() {
+  pendingResource = null;
+  resourceContextMenu.hidden = true;
+}
+
+function openResourceContextMenu(event, resource) {
+  pendingResource = resource;
+  const actions = new Set(resourceInteractions.resourceActions(resource.kind));
+  for (const button of resourceContextMenu.querySelectorAll("[data-resource-action]")) {
+    button.hidden = !actions.has(button.dataset.resourceAction);
+  }
+  resourceContextMenu.hidden = false;
+  const rect = resourceContextMenu.getBoundingClientRect();
+  resourceContextMenu.style.left = `${Math.max(8, Math.min(event.clientX, window.innerWidth - rect.width - 8))}px`;
+  resourceContextMenu.style.top = `${Math.max(8, Math.min(event.clientY, window.innerHeight - rect.height - 8))}px`;
+  resourceContextMenu.querySelector("button:not([hidden])")?.focus({ preventScroll: true });
+}
+
+document.addEventListener("contextmenu", (event) => {
+  const attachment = event.target.closest?.(".attachment-file, .board-task-attachment")?.__agentHubResource;
+  const link = event.target.closest?.("a[href]");
+  const resource = attachment ?? (link ? {
+    kind: "link",
+    href: link.href,
+    localPath: link.dataset.agentHubLocalLink ?? "",
+    name: link.textContent?.trim() || link.href,
+  } : null);
+  if (!resource) {
+    closeResourceContextMenu();
+    return;
+  }
+  event.preventDefault();
+  closeAnnotationContextMenu();
+  openResourceContextMenu(event, resource);
+});
+
+resourceContextMenu.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-resource-action]");
+  if (!button || !pendingResource) return;
+  const resource = pendingResource;
+  const action = button.dataset.resourceAction;
+  closeResourceContextMenu();
+  emit(`resource:${action}`, { resource });
+});
+
+document.addEventListener("pointerdown", (event) => {
+  if (!resourceContextMenu.hidden && !resourceContextMenu.contains(event.target)) closeResourceContextMenu();
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeResourceContextMenu();
+});
+window.addEventListener("scroll", closeResourceContextMenu, true);
+
 /* ---- черновики ---- */
 
 function saveDraft() {
@@ -4907,8 +5038,8 @@ function setBugReportSending(value) {
 function renderBugReportAttachments() {
   if (!bugReportScreenshots) return;
   bugReportScreenshots.hidden = bugReportAttachments.length === 0;
-  bugReportScreenshots.replaceChildren(...bugReportAttachments.map((item, index) => (
-    el("div", { class: "bug-report-screenshot" }, [
+  bugReportScreenshots.replaceChildren(...bugReportAttachments.map((item, index) => {
+    const card = el("div", { class: "bug-report-screenshot attachment-open" }, [
       el("img", { src: item.dataUrl, alt: item.name || `Скриншот ${index + 1}` }),
       el("span", { text: item.name || `Скриншот ${index + 1}` }),
       el("button", {
@@ -4919,8 +5050,13 @@ function renderBugReportAttachments() {
         "aria-label": `Удалить ${item.name || `скриншот ${index + 1}`}`,
         text: "×",
       }),
-    ])
-  )));
+    ]);
+    card.addEventListener("click", (event) => {
+      if (event.target.closest("[data-bug-report-remove]")) return;
+      openAttachmentViewer({ gallery: bugReportAttachments, index });
+    });
+    return card;
+  }));
 }
 
 async function readBugReportFiles(files) {
@@ -4959,6 +5095,7 @@ bugReportToggle?.addEventListener("click", () => {
   if (visible) bugReportText?.focus();
 });
 document.addEventListener("contextmenu", (event) => {
+  if (event.defaultPrevented) return;
   const workspace = event.target.closest("[data-workspace-heading], [data-board-workspace-id]");
   if (!workspace) return;
   event.preventDefault();

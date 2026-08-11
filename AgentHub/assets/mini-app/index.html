@@ -23,6 +23,7 @@
   <script src="/runtime-reload-controller.js" defer></script>
   <script src="/journal-view-controller.js" defer></script>
   <script src="/statistics-controls.js" defer></script>
+  <script src="/resource-interactions.js" defer></script>
   <!-- agent-hub-theme-catalog -->
   <script src="/rate-limit-series.js" defer></script>
   <script src="/app.js" defer></script>
@@ -1281,10 +1282,35 @@
           stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></polyline>
       </svg>
     </button>
+    <button type="button" class="attachment-viewer-arrow is-previous" data-attachment-viewer-previous
+      aria-label="Предыдущее изображение" title="Предыдущее изображение">
+      <svg data-phosphor-icon="caret-left" viewBox="0 0 256 256" aria-hidden="true">
+        <polyline points="160 208 80 128 160 48" fill="none" stroke="currentColor"
+          stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></polyline>
+      </svg>
+    </button>
     <div class="attachment-viewer-stage">
       <div class="attachment-viewer-loading" data-attachment-viewer-loading>Загрузка…</div>
       <img data-attachment-viewer-image alt="" hidden>
     </div>
+    <button type="button" class="attachment-viewer-arrow is-next" data-attachment-viewer-next
+      aria-label="Следующее изображение" title="Следующее изображение">
+      <svg data-phosphor-icon="caret-right" viewBox="0 0 256 256" aria-hidden="true">
+        <polyline points="96 48 176 128 96 208" fill="none" stroke="currentColor"
+          stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></polyline>
+      </svg>
+    </button>
+    <div class="attachment-viewer-caption" data-attachment-viewer-caption hidden>
+      <span data-attachment-viewer-name></span>
+      <span data-attachment-viewer-counter></span>
+    </div>
+  </div>
+
+  <div class="resource-context-menu" data-resource-context-menu hidden role="menu"
+    aria-label="Действия с ресурсом">
+    <button type="button" role="menuitem" data-resource-action="open">Открыть</button>
+    <button type="button" role="menuitem" data-resource-action="copy">Копировать</button>
+    <button type="button" role="menuitem" data-resource-action="save">Сохранить как…</button>
   </div>
 
   <div class="toast" data-toast hidden role="status" aria-live="polite"></div>

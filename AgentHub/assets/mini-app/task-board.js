@@ -112,19 +112,22 @@
     }));
   }
 
-  function openAttachment(event, attachment) {
+  function openAttachment(event, attachment, gallery, index) {
     event.preventDefault();
     event.stopPropagation();
     document.dispatchEvent(new CustomEvent("agenthub:attachment-open", {
-      detail: { attachment },
+      detail: { attachment, gallery, index },
     }));
   }
 
   function attachmentStrip(attachments, { compact = false } = {}) {
     const values = Array.isArray(attachments) ? attachments : [];
     const strip = node("div", { class: `board-task-attachments${compact ? " is-compact" : ""}` });
+    const gallery = values.filter((attachment) => (
+      attachment?.isImage || String(attachment?.type ?? "").toLowerCase().startsWith("image/")
+    ));
     for (const attachment of values) {
-      const image = attachment?.isImage || String(attachment?.type ?? "").startsWith("image/");
+      const image = attachment?.isImage || String(attachment?.type ?? "").toLowerCase().startsWith("image/");
       const preview = image && attachment?.url
         ? node("img", { src: attachment.url, alt: attachment.name || "Скриншот", loading: "lazy" })
         : node("span", { text: image ? "Скриншот" : (attachment?.name || "Вложение") });
@@ -133,8 +136,10 @@
         class: `board-task-attachment${image ? " is-image" : ""}`,
         title: attachment?.name || "Открыть вложение",
         "aria-label": `Открыть ${attachment?.name || "вложение"}`,
-        onclick: (event) => openAttachment(event, attachment),
+        onclick: (event) => openAttachment(event, attachment, gallery, gallery.indexOf(attachment)),
       }, [preview]));
+      const tile = strip.lastElementChild;
+      if (!image) tile.__agentHubResource = { kind: "attachment", attachment };
     }
     return strip;
   }
