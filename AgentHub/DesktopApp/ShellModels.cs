@@ -28,13 +28,31 @@ namespace AgentHubDesktop
             {
                 normalized = normalized.Substring(1);
             }
-            var match = Regex.Match(
-                normalized,
-                @"^(?<file>[A-Za-z]:[\\/].*?)(?::(?<line>[1-9][0-9]*))?$",
-                RegexOptions.CultureInvariant);
-            if (!match.Success) return false;
-            file = match.Groups["file"].Value;
-            Int32.TryParse(match.Groups["line"].Value, out line);
+            /* Ссылка с сетевой схемой файлом не является: иначе https-адрес
+               с двоеточием прошёл бы как путь со строкой. */
+            if (Regex.IsMatch(normalized, @"^[A-Za-z][A-Za-z0-9+.-]*://", RegexOptions.CultureInvariant)) return false;
+            /* Номер строки пишут двумя способами: путь:36 и якорем путь#L36 в
+               стиле GitHub и VS Code. Понимаем оба. */
+            var anchor = Regex.Match(normalized, @"^(?<file>.*?)#L(?<line>[1-9][0-9]*)$", RegexOptions.CultureInvariant);
+            if (anchor.Success)
+            {
+                normalized = anchor.Groups["file"].Value;
+                Int32.TryParse(anchor.Groups["line"].Value, out line);
+            }
+            else
+            {
+                var suffix = Regex.Match(normalized, @"^(?<file>.*[^:]):(?<line>[1-9][0-9]*)$", RegexOptions.CultureInvariant);
+                if (suffix.Success && !Regex.IsMatch(suffix.Groups["file"].Value, @"^[A-Za-z]:$", RegexOptions.CultureInvariant))
+                {
+                    normalized = suffix.Groups["file"].Value;
+                    Int32.TryParse(suffix.Groups["line"].Value, out line);
+                }
+            }
+            normalized = normalized.Trim();
+            if (normalized.Length == 0 || normalized.StartsWith("#", StringComparison.Ordinal)) return false;
+            /* Относительный путь допустим: его разрешает вызывающая сторона
+               относительно корня выбранного проекта, а не текущего каталога. */
+            file = normalized;
             return true;
         }
     }

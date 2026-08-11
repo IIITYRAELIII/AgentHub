@@ -1593,7 +1593,12 @@ namespace AgentHubDesktop
                 || String.IsNullOrWhiteSpace(selected.ProjectRoot)) return false;
             try
             {
-                var candidate = Path.GetFullPath(parsedFile);
+                /* Относительная ссылка адресует файл проекта, а не каталога, из
+                   которого запущен клиент: раньше такой путь всегда терялся. */
+                var projectRoot = Path.GetFullPath(selected.ProjectRoot);
+                var candidate = Path.IsPathRooted(parsedFile)
+                    ? Path.GetFullPath(parsedFile)
+                    : Path.GetFullPath(Path.Combine(projectRoot, parsedFile));
                 var root = Path.GetFullPath(selected.ProjectRoot)
                     .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
                     + Path.DirectorySeparatorChar;

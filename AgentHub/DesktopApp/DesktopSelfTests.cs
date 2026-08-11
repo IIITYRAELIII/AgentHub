@@ -146,6 +146,23 @@ namespace AgentHubDesktop
             Require(line == 36, "workspace link line was lost");
         }
 
+        private static void WorkspaceFileLinkAcceptsRelativeTargetAndAnchor()
+        {
+            string file;
+            int line;
+            /* Ссылки на файлы репозитория пишут относительным путём: раньше
+               такой адрес не разбирался и выводился сырой разметкой. */
+            Require(
+                WorkspaceFileLink.TryParse("Utilities/AgentHub/DesktopApp/AgentHubWindow.cs#L1360", out file, out line),
+                "relative workspace link was rejected");
+            Require(file == "Utilities/AgentHub/DesktopApp/AgentHubWindow.cs", "relative link path was damaged");
+            Require(line == 1360, "anchor line was lost");
+            Require(WorkspaceFileLink.TryParse("README.md:12", out file, out line), "relative link with a line was rejected");
+            Require(file == "README.md" && line == 12, "relative link line was lost");
+            Require(!WorkspaceFileLink.TryParse("#L12", out file, out line), "bare anchor passed as a file");
+            Require(!WorkspaceFileLink.TryParse("mailto://a.b", out file, out line), "scheme link passed as a file");
+        }
+
         private static void WorkspaceFileLinkRejectsWebTarget()
         {
             string file;
