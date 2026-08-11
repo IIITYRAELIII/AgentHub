@@ -15,7 +15,7 @@ const ROOT = path.resolve(import.meta.dirname, "../..");
 test("Worker build packages the same shell and theme resources used by local clients", async () => {
   const output = await mkdtemp(path.join(os.tmpdir(), "agent-hub-worker-assets-"));
   try {
-    await buildWorkerAssets({ output, includeMobile: false });
+    const build = await buildWorkerAssets({ output, includeMobile: false });
     const sourceIndex = await readFile(path.join(ROOT, "assets", "mini-app", "index.html"), "utf8");
     const expectedShell = [
       ...localAssetReferences(sourceIndex),
@@ -30,6 +30,9 @@ test("Worker build packages the same shell and theme resources used by local cli
     for (const resource of registry.resources.values()) {
       const packaged = path.join(output, ...resource.pathname.slice(1).split("/"));
       assert.equal((await stat(packaged)).size, (await stat(resource.file)).size, resource.pathname);
+      const publishedPathname = build.publishedThemePathnames.get(resource.pathname);
+      assert.match(publishedPathname, /^\/themes\/[a-z0-9-]+\/.+\.[a-f0-9]{12}\.[a-z0-9]+$/u);
+      assert.ok((await stat(path.join(output, ...publishedPathname.slice(1).split("/")))).isFile(), publishedPathname);
     }
 
     const builtIndex = await readFile(path.join(output, "index.html"), "utf8");
@@ -39,8 +42,11 @@ test("Worker build packages the same shell and theme resources used by local cli
     const bespin = catalog.find((theme) => theme.id === "bespin");
     assert.equal(bespin.backgrounds.length, 3);
     for (const background of bespin.backgrounds) {
-      assert.match(background.assetUrl, /^\/themes\/bespin\/[^?]+\?v=[a-f0-9]{12}$/u);
+      assert.match(background.assetUrl, /^\/themes\/bespin\/[^?]+\.[a-f0-9]{12}\.jpg$/u);
     }
+    const bespinStylesheet = build.publishedThemePathnames.get("/themes/bespin/theme.css");
+    const bespinCss = await readFile(path.join(output, ...bespinStylesheet.slice(1).split("/")), "utf8");
+    for (const background of bespin.backgrounds) assert.ok(bespinCss.includes(background.assetUrl), background.assetUrl);
 
     const headers = await readFile(path.join(output, "_headers"), "utf8");
     assert.match(headers, /Content-Security-Policy:/u);

@@ -26,6 +26,28 @@ async function copyShellAsset(output, reference) {
   await copyFile(shellAssetSource(pathname), target);
 }
 
+function revisionFor(body) {
+  return createHash("sha256").update(body).digest("hex").slice(0, 12);
+}
+
+function versionedPathname(pathname, revision) {
+  const extension = path.posix.extname(pathname);
+  return `${pathname.slice(0, -extension.length)}.${revision}${extension}`;
+}
+
+function rewriteThemeCss(css, stylesheetPathname, publishedPathnames) {
+  return css.replace(/url\(\s*(["']?)([^"'()]+)\1\s*\)/giu, (match, _quote, reference) => {
+    const value = String(reference).trim();
+    if (/^(?:data:|https?:|\/\/|#)/iu.test(value)) return match;
+    const clean = value.split(/[?#]/u, 1)[0];
+    const pathname = clean.startsWith("/")
+      ? path.posix.normalize(clean)
+      : path.posix.resolve(path.posix.dirname(stylesheetPathname), clean);
+    const published = publishedPathnames.get(pathname);
+    return published ? `url("${published}")` : match;
+  });
+}
+
 export async function buildWorkerAssets({
   output = defaultOutput,
   includeMobile = true,
@@ -46,10 +68,31 @@ export async function buildWorkerAssets({
   const shellReferences = localAssetReferences(index);
   await Promise.all(shellReferences.map((reference) => copyShellAsset(output, reference)));
 
+  const themeBodies = new Map(await Promise.all([...themeRegistry.resources].map(async ([pathname, resource]) => (
+    [pathname, await readFile(resource.file)]
+  ))));
+  const publishedThemeBodies = new Map();
+  const publishedThemePathnames = new Map();
+  for (const [pathname, body] of themeBodies) {
+    if (path.posix.extname(pathname).toLowerCase() === ".css") continue;
+    publishedThemeBodies.set(pathname, body);
+    publishedThemePathnames.set(pathname, versionedPathname(pathname, revisionFor(body)));
+  }
+  for (const [pathname, body] of themeBodies) {
+    if (path.posix.extname(pathname).toLowerCase() !== ".css") continue;
+    const published = Buffer.from(rewriteThemeCss(body.toString("utf8"), pathname, publishedThemePathnames), "utf8");
+    publishedThemeBodies.set(pathname, published);
+    publishedThemePathnames.set(pathname, versionedPathname(pathname, revisionFor(published)));
+  }
+
   for (const resource of themeRegistry.resources.values()) {
     const target = path.join(output, ...resource.pathname.slice(1).split("/"));
     await mkdir(path.dirname(target), { recursive: true });
     await copyFile(resource.file, target);
+    const publishedPathname = publishedThemePathnames.get(resource.pathname);
+    const publishedTarget = path.join(output, ...publishedPathname.slice(1).split("/"));
+    await mkdir(path.dirname(publishedTarget), { recursive: true });
+    await writeFile(publishedTarget, publishedThemeBodies.get(resource.pathname));
   }
   await copyFile(path.join(import.meta.dirname, "_headers"), path.join(output, "_headers"));
 
@@ -72,11 +115,8 @@ export async function buildWorkerAssets({
     }
   }
 
-  const themeRevisions = new Map(await Promise.all([...themeRegistry.resources].map(async ([pathname, resource]) => (
-    [pathname, createHash("sha256").update(await readFile(resource.file)).digest("hex").slice(0, 12)]
-  ))));
   index = renderThemeHtml(index, themeRegistry, {
-    revision: (pathname) => themeRevisions.get(pathname) ?? "",
+    resourceUrl: (pathname) => publishedThemePathnames.get(pathname) ?? pathname,
   });
 
   for (const reference of shellReferences) {
@@ -97,7 +137,7 @@ export async function buildWorkerAssets({
   }
 
   await writeFile(path.join(output, "index.html"), index, "utf8");
-  return { output, shellReferences, themeRegistry };
+  return { output, shellReferences, themeRegistry, publishedThemePathnames };
 }
 
 const invokedFile = process.argv[1] ? pathToFileURL(path.resolve(process.argv[1])).href : "";
