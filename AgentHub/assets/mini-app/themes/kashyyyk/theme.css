@@ -9,11 +9,11 @@ html[data-theme="kashyyyk"] {
   --radius-sm: 4px;
   --radius-chip: 5px;
   --rail-width: 2px;
-  --bg: #030908;
-  --surface-1: rgb(5 16 14 / 88%);
-  --surface-2: rgb(10 25 21 / 86%);
-  --surface-3: rgb(21 42 34 / 82%);
-  --sunken: rgb(1 7 6 / 82%);
+  --bg: #0a0603;
+  --surface-1: rgb(20 12 7 / 88%);
+  --surface-2: rgb(30 18 10 / 86%);
+  --surface-3: rgb(44 27 15 / 82%);
+  --sunken: rgb(8 5 3 / 82%);
   --line: rgb(154 126 76 / 28%);
   --line-strong: rgb(190 154 88 / 52%);
   --kashyyyk-image: url("./kashyyyk-origin-tree.jpg");
@@ -22,13 +22,13 @@ html[data-theme="kashyyyk"] {
   --kashyyyk-side-rail: url("./kashyyyk-side-rail.webp");
   --kashyyyk-panel-moss: url("./kashyyyk-panel-moss.webp");
   --kashyyyk-wood:
-    linear-gradient(rgb(3 8 7 / 76%), rgb(3 8 7 / 76%)),
+    linear-gradient(rgb(24 13 7 / 62%), rgb(14 8 4 / 68%)),
     var(--kashyyyk-wood-texture) center / 28rem 28rem;
   --kashyyyk-wood-soft:
-    linear-gradient(rgb(8 15 13 / 72%), rgb(4 10 9 / 78%)),
+    linear-gradient(rgb(31 18 10 / 65%), rgb(18 10 6 / 72%)),
     var(--kashyyyk-wood-texture) center / 24rem 24rem;
   --kashyyyk-control:
-    linear-gradient(rgb(10 19 16 / 80%), rgb(3 9 8 / 86%)),
+    linear-gradient(rgb(36 21 12 / 70%), rgb(14 8 5 / 80%)),
     var(--kashyyyk-wood-texture) center / 18rem 18rem;
   --kashyyyk-bronze: linear-gradient(180deg, #9f7a3f, #4f371e 46%, #24170d 52%, #805d30);
   --kashyyyk-panel-shadow:
@@ -42,7 +42,7 @@ html[data-theme="kashyyyk"] {
   --card-border: rgb(142 116 72 / 38%);
   --card-border-open: rgb(206 163 85 / 68%);
   --card-shadow: var(--kashyyyk-panel-shadow);
-  --plate-bg: linear-gradient(180deg, rgb(22 42 33 / 92%), rgb(5 14 12 / 96%));
+  --plate-bg: linear-gradient(180deg, rgb(43 27 16 / 92%), rgb(14 8 5 / 96%));
   --plate-texture: none;
   --plate-shadow: inset 0 1px 0 rgb(229 199 136 / 8%), inset 0 -1px 0 #020706;
   --turn-shadow: 0 20px 40px -30px #000;
@@ -72,7 +72,7 @@ html[data-theme="kashyyyk"] {
   --space-star: transparent;
   --star-opacity: 0;
   --shell-header-background:
-    linear-gradient(rgb(3 8 7 / 58%), rgb(3 8 7 / 68%)),
+    linear-gradient(rgb(26 15 8 / 50%), rgb(12 7 4 / 58%)),
     var(--kashyyyk-wood-texture) center / 22rem 22rem;
   --shell-header-border: 0;
   --shell-header-frame-border: 9px solid transparent;
@@ -90,13 +90,13 @@ html[data-theme="kashyyyk"] {
   --shell-control-border: 1px solid rgb(156 126 76 / 42%);
   --shell-control-radius: 7px;
   --shell-control-shadow: inset 0 1px 0 rgb(234 204 139 / 7%), inset 0 -1px 0 #020706;
-  --shell-view-switch-background: rgb(2 10 9 / 48%);
+  --shell-view-switch-background: rgb(18 10 6 / 54%);
   --shell-view-switch-border: 1px solid rgb(145 116 69 / 30%);
   --shell-view-switch-radius: 9px;
   --shell-view-switch-shadow: inset 0 1px 0 rgb(232 203 139 / 5%);
   --shell-tab-border: 1px solid transparent;
   --shell-tab-radius: 7px;
-  --shell-tab-active-background: linear-gradient(180deg, rgb(42 60 44 / 84%), rgb(13 25 20 / 94%));
+  --shell-tab-active-background: linear-gradient(180deg, rgb(58 39 22 / 84%), rgb(24 14 8 / 94%));
   --shell-tab-active-border: 1px solid rgb(190 148 78 / 46%);
   --shell-tab-active-shadow: inset 0 -2px 0 var(--accent), 0 12px 24px -20px rgb(220 174 92 / 72%);
   --shell-workspace-gap: 0.36rem;
@@ -116,8 +116,8 @@ html[data-theme="kashyyyk"] {
   --shell-stream-tabs-radius: 5px;
   --shell-stream-tab-background: transparent;
   --shell-stream-tab-border: 1px solid transparent;
-  --shell-stream-tab-hover-background: rgb(29 49 38 / 66%);
-  --shell-stream-tab-active-background: rgb(48 45 28 / 70%);
+  --shell-stream-tab-hover-background: rgb(46 29 17 / 66%);
+  --shell-stream-tab-active-background: rgb(58 39 22 / 72%);
   --shell-stream-tab-radius: 7px;
   --shell-stream-card-background: var(--kashyyyk-control);
   --shell-stream-card-border: 6px solid transparent;
@@ -197,14 +197,11 @@ html[data-theme="kashyyyk"] .settings-panel {
   border: 7px solid transparent;
   border-image: var(--kashyyyk-panel-frame) 80 / 7px stretch;
   box-shadow: var(--kashyyyk-panel-shadow);
-  position: relative;
 }
 
 html[data-theme="kashyyyk"] .task-rail,
 html[data-theme="kashyyyk"] .activity-rail,
 html[data-theme="kashyyyk"] .composer,
-html[data-theme="kashyyyk"] .dialog-settings,
-html[data-theme="kashyyyk"] .settings-panel,
 html[data-theme="kashyyyk"] .stream-chat-columns {
   overflow: hidden;
 }
@@ -312,7 +309,7 @@ html[data-theme="kashyyyk"] .task-workspace-item:focus-visible,
 html[data-theme="kashyyyk"] .activity-stream-item:hover,
 html[data-theme="kashyyyk"] .activity-stream-item:focus-visible {
   background:
-    linear-gradient(rgb(19 31 25 / 74%), rgb(7 15 12 / 80%)),
+    linear-gradient(rgb(43 27 16 / 74%), rgb(18 10 6 / 80%)),
     var(--kashyyyk-wood-texture) center / 18rem 18rem;
   border-color: rgb(193 153 83 / 58%);
 }
@@ -320,7 +317,7 @@ html[data-theme="kashyyyk"] .activity-stream-item:focus-visible {
 html[data-theme="kashyyyk"] .task-workspace-item[data-selected],
 html[data-theme="kashyyyk"] .activity-stream-item[data-current] {
   background:
-    linear-gradient(90deg, rgb(214 170 91 / 15%), rgb(5 12 10 / 82%) 58%),
+    linear-gradient(90deg, rgb(214 170 91 / 15%), rgb(18 10 6 / 82%) 58%),
     var(--kashyyyk-wood-texture) center / 18rem 18rem;
   border-color: rgb(205 161 84 / 66%);
   box-shadow: inset 3px 0 0 var(--accent), var(--kashyyyk-panel-shadow);
@@ -339,9 +336,9 @@ html[data-theme="kashyyyk"] .stream-tab[aria-pressed="true"] .stream-tab-card {
 html[data-theme="kashyyyk"] .msg {
   backdrop-filter: blur(9px) saturate(112%);
   -webkit-backdrop-filter: blur(9px) saturate(112%);
-  background-color: rgb(4 14 12 / 72%);
+  background-color: rgb(19 11 7 / 72%);
   background-image:
-    linear-gradient(rgb(5 14 12 / 72%), rgb(3 10 9 / 78%)),
+    linear-gradient(rgb(27 16 9 / 72%), rgb(14 8 5 / 78%)),
     var(--kashyyyk-wood-texture);
   background-size: auto, 28rem 28rem;
   border-color: rgb(137 112 72 / 40%);
@@ -351,7 +348,7 @@ html[data-theme="kashyyyk"] .msg {
 
 html[data-theme="kashyyyk"] .msg-user {
   background-image:
-    linear-gradient(90deg, rgb(207 161 80 / 14%), rgb(5 12 10 / 78%) 62%),
+    linear-gradient(90deg, rgb(207 161 80 / 14%), rgb(18 10 6 / 78%) 62%),
     var(--kashyyyk-wood-texture);
   background-size: auto, 28rem 28rem;
   border-color: rgb(202 156 80 / 52%);
@@ -359,8 +356,8 @@ html[data-theme="kashyyyk"] .msg-user {
 
 html[data-theme="kashyyyk"] .msg-system,
 html[data-theme="kashyyyk"] .queue-item {
-  background: rgb(3 11 10 / 68%);
-  border-color: rgb(102 124 99 / 34%);
+  background: rgb(17 10 6 / 70%);
+  border-color: rgb(133 103 66 / 34%);
 }
 
 html[data-theme="kashyyyk"] .composer-input,
