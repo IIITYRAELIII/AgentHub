@@ -1096,6 +1096,38 @@ test("Codex rollout activity retains imagegen output paths for the exact turn", 
   });
 });
 
+test("custom imagegen output keeps its exact turn while other turns remain active", () => {
+  const savedPath = "C:\\Users\\test\\.codex\\generated_images\\thread\\custom-image.png";
+  const result = parseCodexRolloutActivity([
+    JSON.stringify({
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: "stale-active-turn" },
+    }),
+    JSON.stringify({
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: "turn-image" },
+    }),
+    JSON.stringify({
+      type: "response_item",
+      payload: {
+        type: "custom_tool_call_output",
+        output: [
+          { type: "input_image", image_url: "data:image/png;base64,aGVsbG8=" },
+          {
+            type: "input_text",
+            text: `Generated images are saved to C:\\Users\\test\\.codex\\generated_images\\thread as ${savedPath} by default.`,
+          },
+        ],
+        internal_chat_message_metadata_passthrough: { turn_id: "turn-image" },
+      },
+    }),
+  ].join("\n"));
+
+  assert.deepEqual(result.generatedImageSources, {
+    "turn-image": [{ type: "generated-path", value: savedPath }],
+  });
+});
+
 test("Codex rollout activity links a returned view_image to its local source", () => {
   const turnId = "turn-view-image";
   const callId = "call-view-image";
@@ -1185,6 +1217,41 @@ test("rollout reader recovers an oversized image_generation_end without loading 
     assert.deepEqual(result.generatedImageSources, {
       [turnId]: [{ type: "generated-path", value: savedPath }],
     });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("rollout reader recovers an oversized custom imagegen output for its exact turn", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-custom-image-rollout-"));
+  const rolloutPath = path.join(directory, "rollout.jsonl");
+  try {
+    const turnId = "turn-generated";
+    const savedPath = "C:\\Users\\test\\.codex\\generated_images\\thread\\custom-image.png";
+    await writeFile(rolloutPath, JSON.stringify({
+      type: "response_item",
+      payload: {
+        type: "custom_tool_call_output",
+        output: [
+          { type: "input_image", image_url: `data:image/png;base64,${"a".repeat(16_384)}` },
+          {
+            type: "input_text",
+            text: `Generated images are saved to C:\\Users\\test\\.codex\\generated_images\\thread as ${savedPath} by default.`,
+          },
+        ],
+        internal_chat_message_metadata_passthrough: { turn_id: turnId },
+      },
+    }), "utf8");
+
+    const result = await readCodexRolloutActivity(rolloutPath, {
+      freshnessMs: Number.POSITIVE_INFINITY,
+      maximumLineBytes: 256,
+      tailBytes: 32 * 1024,
+    });
+    assert.deepEqual(result.generatedImageSources, {
+      [turnId]: [{ type: "generated-path", value: savedPath }],
+    });
+    assert.doesNotMatch(JSON.stringify(result), /data:image/iu);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

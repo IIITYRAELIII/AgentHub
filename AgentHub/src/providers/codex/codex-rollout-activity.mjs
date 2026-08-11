@@ -13,7 +13,7 @@ import {
 
 const CODEX_ACTIVE_FRESHNESS_MS = 10 * 60 * 1000;
 const CODEX_PROMPTLESS_TURN_GRACE_MS = 15 * 1000;
-const CODEX_ROLLOUT_TAIL_BYTES = 64 * 1024 * 1024;
+const CODEX_ROLLOUT_TAIL_BYTES = 128 * 1024 * 1024;
 const CODEX_ROLLOUT_LINE_BYTES = 4 * 1024 * 1024;
 const LEGACY_TURN_ID = "__legacy__";
 const codexActivityCache = new Map();
@@ -188,6 +188,26 @@ function responseItemImageCount(entry) {
   )).length;
 }
 
+function generatedImagePathsFromText(text) {
+  const paths = [];
+  const pattern = /Generated images are saved to[\s\S]*?\sas\s+((?:[A-Za-z]:)?(?:\\|\/)[^"\r\n]+?\.(?:png|jpe?g|webp|gif|bmp))/giu;
+  for (const match of String(text ?? "").matchAll(pattern)) {
+    const value = String(match[1] ?? "").replace(/\\\\/gu, "\\").trim();
+    if (value) paths.push(value);
+  }
+  return [...new Set(paths)];
+}
+
+function generatedImagePathsFromJsonSample(sample) {
+  const paths = [];
+  const pattern = /Generated images are saved to[\s\S]*?\sas\s+((?:[A-Za-z]:)?(?:\\\\|\\\/|\/)(?:\\.|[^"\\\r\n])*?\.(?:png|jpe?g|webp|gif|bmp))/giu;
+  for (const match of String(sample ?? "").matchAll(pattern)) {
+    const value = String(decodedJsonString(match[1]) ?? "").trim();
+    if (value) paths.push(value);
+  }
+  return [...new Set(paths)];
+}
+
 function generatedImagePaths(entry) {
   const payload = entry?.payload ?? {};
   if (entry?.type === "event_msg" && payload.type === "image_generation_end") {
@@ -195,6 +215,8 @@ function generatedImagePaths(entry) {
     return value ? [value] : [];
   }
   if (entry?.type !== "response_item" || ![
+    "custom_tool_call_output",
+    "customToolCallOutput",
     "function_call_output",
     "functionCallOutput",
   ].includes(String(payload.type ?? ""))) return [];
@@ -207,13 +229,7 @@ function generatedImagePaths(entry) {
     .filter((block) => ["input_text", "output_text", "text"].includes(String(block?.type ?? "")))
     .map((block) => String(block?.text ?? ""))
     .join("\n");
-  const paths = [];
-  const pattern = /Generated images are saved to[\s\S]*?\sas\s+((?:[A-Za-z]:)?(?:\\|\/)[^"\r\n]+?\.(?:png|jpe?g|webp|gif|bmp))/giu;
-  for (const match of text.matchAll(pattern)) {
-    const value = String(match[1] ?? "").replace(/\\\\/gu, "\\").trim();
-    if (value) paths.push(value);
-  }
-  return [...new Set(paths)];
+  return generatedImagePathsFromText(text);
 }
 
 function rememberCodexImagePaths(metadata, turnId, paths, type = "generated-path") {
@@ -346,6 +362,15 @@ function observeOversizedCodexLine(metadata, activeTurnIds, { head = "", tail = 
     const turnId = String(turnMatch?.[1] ?? "").trim()
       || (activeTurnIds.size === 1 ? [...activeTurnIds][0] : "");
     if (savedPath) rememberCodexImagePaths(metadata, turnId, [savedPath]);
+  }
+  if (
+    /"type"\s*:\s*"(?:custom_tool_call_output|customToolCallOutput|function_call_output|functionCallOutput)"/u.test(sample)
+    && /Generated images are saved to/u.test(sample)
+  ) {
+    const turnId = decodedJsonString(
+      /"turn_id"\s*:\s*"((?:\\.|[^"\\])*)"/u.exec(sample)?.[1],
+    );
+    rememberCodexImagePaths(metadata, turnId, generatedImagePathsFromJsonSample(sample));
   }
   if (
     /"type"\s*:\s*"(?:custom_tool_call_output|customToolCallOutput|function_call_output|functionCallOutput)"/u.test(sample)
