@@ -4109,7 +4109,13 @@ document.addEventListener("click", (event) => {
   const link = event.target.closest("a[data-agent-hub-local-link]");
   if (!link || !vscodeMode) return;
   event.preventDefault();
-  window.__agentHubVscode.postMessage({ type: "open-link", href: link.dataset.agentHubLocalLink });
+  emit("resource:open", {
+    resource: resourceInteractions.linkResource({
+      href: link.href,
+      localPath: link.dataset.agentHubLocalLink,
+      name: link.textContent,
+    }),
+  });
 });
 
 function renderResponseAnnotations(body, message) {
@@ -5015,12 +5021,11 @@ function openResourceContextMenu(event, resource) {
 document.addEventListener("contextmenu", (event) => {
   const attachment = event.target.closest?.(".attachment-file, .board-task-attachment")?.__agentHubResource;
   const link = event.target.closest?.("a[href]");
-  const resource = attachment ?? (link ? {
-    kind: "link",
+  const resource = attachment ?? (link ? resourceInteractions.linkResource({
     href: link.href,
-    localPath: link.dataset.agentHubLocalLink ?? "",
-    name: link.textContent?.trim() || link.href,
-  } : null);
+    localPath: link.dataset.agentHubLocalLink,
+    name: link.textContent,
+  }) : null);
   if (!resource) {
     closeResourceContextMenu();
     return;

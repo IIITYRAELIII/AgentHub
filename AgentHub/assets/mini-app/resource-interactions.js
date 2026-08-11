@@ -30,6 +30,15 @@
     return current;
   }
 
+  function linkResource({ href = "", localPath = "", name = "" } = {}) {
+    return {
+      kind: "link",
+      href: String(href),
+      localPath: String(localPath),
+      name: String(name).trim() || String(href),
+    };
+  }
+
   function resourceActions(resource, { canCopyLocalObject = false } = {}) {
     if (resource?.kind !== "link") return ["copy", "save"];
     if (String(resource?.localPath ?? "").trim()) {
@@ -42,6 +51,7 @@
     galleryIndex,
     imageGallery,
     isImageAttachment,
+    linkResource,
     moveGalleryIndex,
     resourceActions,
     viewerGallery,
