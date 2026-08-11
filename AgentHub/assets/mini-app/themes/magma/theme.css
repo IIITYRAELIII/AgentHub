@@ -219,7 +219,7 @@ html[data-theme="magma"] .chat {
     border: 10px solid transparent;
     border-image: var(--magma-chat-frame) 34 / 10px stretch;
     box-sizing: border-box;
-    margin: 0.55rem 0.65rem 0;
+    margin: 0.55rem 0 0;
     width: auto;
   }
 
