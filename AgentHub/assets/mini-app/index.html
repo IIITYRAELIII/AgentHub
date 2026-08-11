@@ -157,18 +157,6 @@
       <div class="toolbar">
         <div class="connection-banner" data-restart-banner hidden role="status"
           aria-live="polite"></div>
-        <button class="refresh" type="button" data-refresh title="Обновить журнал"
-          data-journal-only>
-          <svg class="refresh-icon" data-phosphor-icon="arrow-clockwise" viewBox="0 0 256 256"
-            aria-hidden="true">
-            <polyline points="184 104 232 104 232 56" fill="none" stroke="currentColor"
-              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></polyline>
-            <path d="M188.4,192a88,88,0,1,1,1.83-126.23L232,104" fill="none"
-              stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"
-              stroke-width="16"></path>
-          </svg>
-          <span class="refresh-label" data-updated-at>Обновить</span>
-        </button>
         <button class="refresh view-settings" type="button" data-panel-open="settings"
           title="Настройки Agent Hub">
           <svg data-phosphor-icon="sliders-horizontal" viewBox="0 0 256 256" aria-hidden="true">
@@ -645,6 +633,17 @@
           <button type="button" data-journal-grouping="month" aria-pressed="false">Месяц</button>
         </div>
         <button class="journal-collapse-all" type="button" data-collapse-all>Свернуть всё</button>
+        <button class="refresh journal-collapse-all" type="button" data-refresh title="Обновить журнал">
+          <svg class="refresh-icon" data-phosphor-icon="arrow-clockwise" viewBox="0 0 256 256"
+            aria-hidden="true">
+            <polyline points="184 104 232 104 232 56" fill="none" stroke="currentColor"
+              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></polyline>
+            <path d="M188.4,192a88,88,0,1,1,1.83-126.23L232,104" fill="none"
+              stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"
+              stroke-width="16"></path>
+          </svg>
+          <span class="refresh-label" data-updated-at>Обновить</span>
+        </button>
       </header>
       <details class="page-settings journal-page-settings">
         <summary>Настройки журнала</summary>
