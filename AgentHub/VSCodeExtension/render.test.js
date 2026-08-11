@@ -151,7 +151,7 @@ test("shared webview loads the active runtime, never a workspace shadow", async 
   const runtimeRoot = path.join(root, "runtime", "releases", "current");
   const shadowAssets = path.join(shadowRoot, "Utilities", "AgentHub", "assets", "mini-app");
   const runtimeAssets = path.join(runtimeRoot, "assets", "mini-app");
-  const required = ["message-disclosure.js", "chat-scroll-controller.js", "chat-surface-preference.js", "navigation-tabs-controller.js", "stream-tabs-controller.js", "approval-form.js", "runtime-reload-controller.js", "journal-view-controller.js", "statistics-controls.js", "rate-limit-series.js", "task-board.js", "app.js", "message-lifecycle.js", "hub-client.js", "styles.css", "backgrounds.css", "stream-status.css", "stream-status-visibility.mjs", "agent-hub-mark.png"];
+  const required = ["message-disclosure.js", "chat-scroll-controller.js", "chat-surface-preference.js", "navigation-tabs-controller.js", "stream-tabs-controller.js", "approval-form.js", "runtime-reload-controller.js", "journal-view-controller.js", "statistics-controls.js", "resource-interactions.js", "future-runtime-module.js", "rate-limit-series.js", "task-board.js", "app.js", "message-lifecycle.js", "hub-client.js", "styles.css", "backgrounds.css", "stream-status.css", "stream-status-visibility.mjs", "agent-hub-mark.png"];
   try {
     fs.mkdirSync(shadowAssets, { recursive: true });
     fs.mkdirSync(runtimeAssets, { recursive: true });
@@ -161,7 +161,7 @@ test("shared webview loads the active runtime, never a workspace shadow", async 
       <img data-app-mark src="/agent-hub-mark.png" alt="">
       <!-- agent-hub-theme-styles --><select data-theme-select></select>
       <!-- agent-hub-theme-markup --><!-- agent-hub-theme-catalog -->
-      <script src="/browser-device-auth.js" defer></script><script src="/message-disclosure.js" defer></script><script src="/chat-scroll-controller.js" defer></script><script src="/chat-surface-preference.js" defer></script><script src="/navigation-tabs-controller.js" defer></script><script src="/stream-tabs-controller.js" defer></script><script src="/approval-form.js" defer></script><script src="/runtime-reload-controller.js" defer></script><script src="/journal-view-controller.js" defer></script><script src="/statistics-controls.js" defer></script><script src="/rate-limit-series.js" defer></script><script src="/task-board.js" defer></script>
+      <script src="/browser-device-auth.js" defer></script><script src="/message-disclosure.js" defer></script><script src="/chat-scroll-controller.js" defer></script><script src="/chat-surface-preference.js" defer></script><script src="/navigation-tabs-controller.js" defer></script><script src="/stream-tabs-controller.js" defer></script><script src="/approval-form.js" defer></script><script src="/runtime-reload-controller.js" defer></script><script src="/journal-view-controller.js" defer></script><script src="/statistics-controls.js" defer></script><script src="/resource-interactions.js" defer></script><script src="/future-runtime-module.js" defer></script><script src="/rate-limit-series.js" defer></script><script src="/task-board.js" defer></script>
       <script src="/app.js" defer></script><!-- agent-hub-theme-scripts -->
       <script src="/message-lifecycle.js" defer></script><script src="/hub-client.js" defer></script>`);
     for (const file of required) {
@@ -193,6 +193,11 @@ test("shared webview loads the active runtime, never a workspace shadow", async 
     assert.doesNotMatch(result.html, /src="\/journal-view-controller\.js"/u);
     assert.match(result.html, /vscode-webview-resource:.*chat-surface-preference\.js/u);
     assert.doesNotMatch(result.html, /src="\/chat-surface-preference\.js"/u);
+    assert.match(result.html, /vscode-webview-resource:.*resource-interactions\.js/u);
+    assert.doesNotMatch(result.html, /src="\/resource-interactions\.js"/u);
+    assert.match(result.html, /vscode-webview-resource:.*future-runtime-module\.js/u);
+    assert.doesNotMatch(result.html, /src="\/future-runtime-module\.js"/u);
+    assert.doesNotMatch(result.html, /browser-device-auth\.js/u);
     assert.ok(result.roots.every((uri) => (
       uri.fsPath.startsWith(runtimeRoot) || uri.fsPath.startsWith(extensionRoot)
     )));
@@ -204,9 +209,7 @@ test("shared webview loads the active runtime, never a workspace shadow", async 
 test("extension keeps its shell synchronized with the active runtime", () => {
   const extension = fs.readFileSync(require.resolve("./extension.js"), "utf8");
   const shared = fs.readFileSync(require.resolve("./shared-webview.js"), "utf8");
-  assert.match(shared, /const ASSET_ROOT = \["assets", "mini-app"\]/u);
-  assert.match(shared, /backgrounds: \[\.\.\.ASSET_ROOT, "backgrounds\.css"\]/u);
-  assert.match(shared, /mark: \[\.\.\.ASSET_ROOT, "agent-hub-mark\.png"\]/u);
+  assert.match(shared, /rewriteRuntimeAssetReferences/u);
   assert.match(extension, /refreshPanelShellIfReleaseChanged/u);
   assert.match(extension, /agenthub:runtime-changed/u);
   assert.match(extension, /subscribeRuntime/u);
@@ -607,7 +610,7 @@ test("shared VS Code webview removes public browser pairing", () => {
   const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
   const shared = fs.readFileSync(require.resolve("./shared-webview.js"), "utf8");
   assert.match(html, /<script src="\/browser-device-auth\.js" defer><\/script>/u);
-  assert.match(shared, /\.replace\('<script src="\/browser-device-auth\.js" defer><\/script>', ""\)/u);
+  assert.match(shared, /browser-device-auth/u);
 });
 
 test("Metropolis uses a fogged-glass WebGL plane with refracted moving drops", () => {

@@ -5,71 +5,78 @@ const path = require("node:path");
 const vscode = require("vscode");
 
 const ASSET_ROOT = ["assets", "mini-app"];
-const RUNTIME_ASSETS = {
-  index: [...ASSET_ROOT, "index.html"],
-  disclosure: [...ASSET_ROOT, "message-disclosure.js"],
-  chatScroll: [...ASSET_ROOT, "chat-scroll-controller.js"],
-  chatSurfacePreference: [...ASSET_ROOT, "chat-surface-preference.js"],
-  navigationTabs: [...ASSET_ROOT, "navigation-tabs-controller.js"],
-  streamTabs: [...ASSET_ROOT, "stream-tabs-controller.js"],
-  approvalForm: [...ASSET_ROOT, "approval-form.js"],
-  runtimeReload: [...ASSET_ROOT, "runtime-reload-controller.js"],
-  journalView: [...ASSET_ROOT, "journal-view-controller.js"],
-  statisticsControls: [...ASSET_ROOT, "statistics-controls.js"],
-  rateLimitSeries: [...ASSET_ROOT, "rate-limit-series.js"],
-  taskBoard: [...ASSET_ROOT, "task-board.js"],
-  app: [...ASSET_ROOT, "app.js"],
-  lifecycle: [...ASSET_ROOT, "message-lifecycle.js"],
-  client: [...ASSET_ROOT, "hub-client.js"],
-  styles: [...ASSET_ROOT, "styles.css"],
-  backgrounds: [...ASSET_ROOT, "backgrounds.css"],
-  streamStatus: [...ASSET_ROOT, "stream-status.css"],
-  streamStatusVisibility: [...ASSET_ROOT, "stream-status-visibility.mjs"],
-  mark: [...ASSET_ROOT, "agent-hub-mark.png"],
-  workLogStyles: ["work-log.css"],
-};
+const LOCAL_ASSET_REFERENCE = /\b(?:src|href)="(\/[^"?#]+(?:[?#][^"]*)?)"/giu;
+const LOCAL_ASSET_PATH = /\.(?:avif|css|gif|ico|jpe?g|js|mjs|png|svg|ttf|webp|woff2?)(?:[?#]|$)/iu;
+
+async function existingFile(uri, label) {
+  try {
+    const info = await vscode.workspace.fs.stat(uri);
+    if (info.type & vscode.FileType.File) return uri;
+  } catch {
+    // The caller reports one stable diagnostic for missing runtime resources.
+  }
+  throw new Error(`Не найден ресурс Agent Hub: ${label}`);
+}
+
+function runtimeAssetUri(runtimeUri, reference) {
+  const pathname = String(reference).split(/[?#]/u, 1)[0];
+  let decoded;
+  try {
+    decoded = decodeURIComponent(pathname);
+  } catch {
+    throw new Error(`Некорректный путь ресурса Agent Hub: ${pathname}`);
+  }
+  const segments = decoded.replace(/^\/+/, "").split("/");
+  if (
+    !segments.length
+    || segments.some((segment) => (
+      !segment || segment === "." || segment === ".." || segment.includes("\\") || segment.includes(":")))
+  ) {
+    throw new Error(`Некорректный путь ресурса Agent Hub: ${pathname}`);
+  }
+  return decoded === "/work-log.css"
+    ? vscode.Uri.joinPath(runtimeUri, "work-log.css")
+    : vscode.Uri.joinPath(runtimeUri, ...ASSET_ROOT, ...segments);
+}
+
+function localAssetReferences(html) {
+  return [...new Set([...String(html).matchAll(LOCAL_ASSET_REFERENCE)]
+    .map((match) => match[1])
+    .filter((reference) => LOCAL_ASSET_PATH.test(reference)))];
+}
 
 async function resolveSharedAssets({ runtimeUri, extensionUri }) {
   if (!runtimeUri) throw new Error("Активный runtime Agent Hub не найден");
   if (!extensionUri) throw new Error("Не найден мост VS Code Agent Hub");
-  const entries = await Promise.all(
-    Object.entries(RUNTIME_ASSETS).map(async ([name, segments]) => {
-      const asset = vscode.Uri.joinPath(runtimeUri, ...segments);
-      try {
-        const info = await vscode.workspace.fs.stat(asset);
-        return [name, info.type & vscode.FileType.File ? asset : null];
-      } catch {
-        return [name, null];
-      }
-    }),
-  );
-  const assets = Object.fromEntries(entries);
-  const bootstrap = vscode.Uri.joinPath(extensionUri, "vscode-bootstrap.js");
-  try {
-    const info = await vscode.workspace.fs.stat(bootstrap);
-    assets.bootstrap = info.type & vscode.FileType.File ? bootstrap : null;
-  } catch {
-    assets.bootstrap = null;
-  }
-  for (const required of [
-    "index", "disclosure", "chatScroll", "chatSurfacePreference", "navigationTabs", "streamTabs", "approvalForm", "runtimeReload", "journalView", "statisticsControls", "rateLimitSeries", "taskBoard", "app", "lifecycle", "client", "styles", "backgrounds", "streamStatus", "streamStatusVisibility",
-    "mark", "workLogStyles", "bootstrap",
-  ]) {
-    if (!assets[required]) throw new Error(`Не найден ресурс Agent Hub: ${required}`);
-  }
+  const index = await existingFile(vscode.Uri.joinPath(runtimeUri, ...ASSET_ROOT, "index.html"), "index.html");
+  const bootstrap = await existingFile(vscode.Uri.joinPath(extensionUri, "vscode-bootstrap.js"), "bootstrap");
   const registryTools = require(path.join(runtimeUri.fsPath, "theme-registry.cjs"));
   const themeRegistry = registryTools.loadThemeRegistry(path.join(runtimeUri.fsPath, ...ASSET_ROOT));
-  return { assets, themeRegistry, renderThemeHtml: registryTools.renderThemeHtml };
+  return { index, bootstrap, themeRegistry, renderThemeHtml: registryTools.renderThemeHtml };
 }
 
 function resource(webview, uri) {
   return uri ? String(webview.asWebviewUri(uri)) : "";
 }
 
+async function rewriteRuntimeAssetReferences(html, webview, runtimeUri) {
+  const references = localAssetReferences(html);
+  const entries = await Promise.all(references.map(async (reference) => {
+    const uri = runtimeAssetUri(runtimeUri, reference);
+    await existingFile(uri, reference);
+    return [reference, uri];
+  }));
+  for (const [reference, uri] of entries) {
+    html = html.replaceAll(`="${reference}"`, `="${resource(webview, uri)}"`);
+  }
+  return { html, uris: entries.map(([, uri]) => uri) };
+}
+
 async function sharedWebviewHtml(webview, locations) {
-  const { assets, themeRegistry, renderThemeHtml } = await resolveSharedAssets(locations);
+  const { runtimeUri } = locations;
+  const { index, bootstrap, themeRegistry, renderThemeHtml } = await resolveSharedAssets(locations);
   const nonce = randomBytes(16).toString("base64");
-  let html = Buffer.from(await vscode.workspace.fs.readFile(assets.index)).toString("utf8");
+  let html = Buffer.from(await vscode.workspace.fs.readFile(index)).toString("utf8");
   const themeResourceUrls = new Map([...themeRegistry.resources].map(([pathname, item]) => (
     [pathname, resource(webview, vscode.Uri.file(item.file))]
   )));
@@ -77,6 +84,17 @@ async function sharedWebviewHtml(webview, locations) {
     nonce,
     resourceUrl: (pathname) => themeResourceUrls.get(pathname) ?? pathname,
   });
+  html = html
+    .replace(/<script\b[^>]*\bsrc="https:\/\/telegram\.org\/[^"]+"[^>]*><\/script>\s*/iu, "")
+    .replace(/<script\b[^>]*\bsrc="\/browser-device-auth\.js"[^>]*><\/script>\s*/iu, "");
+  const firstRuntimeScript = /<script\b(?=[^>]*\bsrc="\/[^"]+")[^>]*><\/script>/iu;
+  if (!firstRuntimeScript.test(html)) throw new Error("Не найдена точка запуска Agent Hub");
+  html = html.replace(
+    firstRuntimeScript,
+    `<script src="${resource(webview, bootstrap)}" defer></script>$&`,
+  );
+  const rewritten = await rewriteRuntimeAssetReferences(html, webview, runtimeUri);
+  html = rewritten.html;
   const csp = [
     "default-src 'none'",
     `img-src ${webview.cspSource} data: blob:`,
@@ -85,54 +103,18 @@ async function sharedWebviewHtml(webview, locations) {
     "connect-src 'none'",
     "font-src 'none'",
   ].join("; ");
-  html = html
-    .replace(
-      /<meta charset="utf-8">/iu,
-      `<meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${csp}">`,
-    )
-    .replace('href="/work-log.css"', `href="${resource(webview, assets.workLogStyles)}"`)
-    .replace('href="/styles.css"', `href="${resource(webview, assets.styles)}"`)
-    .replace('href="/backgrounds.css"', `href="${resource(webview, assets.backgrounds)}"`)
-    .replace('href="/stream-status.css"', `href="${resource(webview, assets.streamStatus)}"`)
-    .replace(
-      '<script src="/stream-status-visibility.mjs" type="module"></script>',
-      `<script src="${resource(webview, assets.streamStatusVisibility)}" type="module"></script>`,
-    )
-    .replaceAll('href="/agent-hub-mark.png"', `href="${resource(webview, assets.mark)}"`)
-    .replaceAll('src="/agent-hub-mark.png"', `src="${resource(webview, assets.mark)}"`)
-    .replace(/<script src="https:\/\/telegram\.org\/[^>]+><\/script>\s*/iu, "")
-    .replace('<script src="/browser-device-auth.js" defer></script>', "")
-    .replace('<script src="/message-disclosure.js" defer></script>', "")
-    .replace('<script src="/chat-scroll-controller.js" defer></script>', "")
-    .replace('<script src="/chat-surface-preference.js" defer></script>', "")
-    .replace('<script src="/navigation-tabs-controller.js" defer></script>', "")
-    .replace('<script src="/stream-tabs-controller.js" defer></script>', "")
-    .replace('<script src="/approval-form.js" defer></script>', "")
-    .replace('<script src="/runtime-reload-controller.js" defer></script>', "")
-    .replace('<script src="/journal-view-controller.js" defer></script>', "")
-    .replace('<script src="/statistics-controls.js" defer></script>', "")
-    .replace('<script src="/rate-limit-series.js" defer></script>', "")
-    .replace('<script src="/task-board.js" defer></script>', `<script src="${resource(webview, assets.taskBoard)}" defer></script>`)
-    .replace(
-      '<script src="/app.js" defer></script>',
-      `<script src="${resource(webview, assets.bootstrap)}" defer></script>`
-        + `<script src="${resource(webview, assets.disclosure)}" defer></script>`
-        + `<script src="${resource(webview, assets.chatScroll)}" defer></script>`
-        + `<script src="${resource(webview, assets.chatSurfacePreference)}" defer></script>`
-        + `<script src="${resource(webview, assets.navigationTabs)}" defer></script>`
-        + `<script src="${resource(webview, assets.streamTabs)}" defer></script>`
-        + `<script src="${resource(webview, assets.approvalForm)}" defer></script>`
-        + `<script src="${resource(webview, assets.runtimeReload)}" defer></script>`
-        + `<script src="${resource(webview, assets.journalView)}" defer></script>`
-        + `<script src="${resource(webview, assets.statisticsControls)}" defer></script>`
-        + `<script src="${resource(webview, assets.rateLimitSeries)}" defer></script>`
-        + `<script src="${resource(webview, assets.app)}" defer></script>`,
-    )
-    .replace('<script src="/message-lifecycle.js" defer></script>', `<script src="${resource(webview, assets.lifecycle)}" defer></script>`)
-    .replace('<script src="/hub-client.js" defer></script>', `<script src="${resource(webview, assets.client)}" defer></script>`);
+  html = html.replace(
+    /<meta charset="utf-8">/iu,
+    `<meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${csp}">`,
+  );
   return {
     html,
-    roots: [...Object.values(assets).filter(Boolean), ...[...themeRegistry.resources.values()].map((item) => vscode.Uri.file(item.file))],
+    roots: [
+      index,
+      bootstrap,
+      ...rewritten.uris,
+      ...[...themeRegistry.resources.values()].map((item) => vscode.Uri.file(item.file)),
+    ],
     themeIds: themeRegistry.themes.map((theme) => theme.id),
   };
 }

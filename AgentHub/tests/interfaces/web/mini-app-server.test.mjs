@@ -239,6 +239,15 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.match(shellSource, /data-status-slot/u);
     assert.match(shellSource, /data-browser-auth/u);
     assert.match(shellSource, /src="\/browser-device-auth\.js"/u);
+    const shellAssets = [...new Set([...shellSource.matchAll(
+      /\b(?:src|href)="(\/(?!\/)[^"?#]+)(?:[?#][^"]*)?"/gu,
+    )].map((match) => match[1]))];
+    assert.ok(shellAssets.includes("/resource-interactions.js"));
+    for (const pathname of shellAssets) {
+      const response = await fetch(new URL(pathname, address.url));
+      assert.equal(response.status, 200, `index.html resource ${pathname}`);
+      assert.ok((await response.arrayBuffer()).byteLength > 0, pathname);
+    }
     const browserAuthSource = await (await fetch(`${address.url}browser-device-auth.js`)).text();
     assert.match(browserAuthSource, /indexedDB\.open\(DATABASE_NAME, 1\)/u);
     assert.match(browserAuthSource, /crypto\.subtle\.generateKey\([\s\S]*false,[\s\S]*\["sign", "verify"\]/u);
@@ -264,6 +273,7 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
       "navigation-tabs-controller.js",
       "approval-form.js",
       "journal-view-controller.js",
+      "resource-interactions.js",
       "app.js",
       "themes/metropolis/metropolis-glass.js",
       "themes/stormglass/storm-glass.js",

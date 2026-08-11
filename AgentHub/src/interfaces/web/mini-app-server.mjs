@@ -1,4 +1,4 @@
-import { createReadStream } from "node:fs";
+import { createReadStream, readFileSync, statSync } from "node:fs";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
@@ -25,54 +25,69 @@ const { loadThemeRegistry, renderThemeHtml } = require("../../../theme-registry.
 
 const AGENT_HUB_ROOT = path.resolve(import.meta.dirname, "../../..");
 
-const CONTENT_TYPES = new Map([
-  ["/", "text/html; charset=utf-8"],
-  ["/browser-device-auth.js", "text/javascript; charset=utf-8"],
-  ["/message-disclosure.js", "text/javascript; charset=utf-8"],
-  ["/chat-scroll-controller.js", "text/javascript; charset=utf-8"],
-  ["/chat-surface-preference.js", "text/javascript; charset=utf-8"],
-  ["/navigation-tabs-controller.js", "text/javascript; charset=utf-8"],
-  ["/stream-tabs-controller.js", "text/javascript; charset=utf-8"],
-  ["/approval-form.js", "text/javascript; charset=utf-8"],
-  ["/runtime-reload-controller.js", "text/javascript; charset=utf-8"],
-  ["/journal-view-controller.js", "text/javascript; charset=utf-8"],
-  ["/statistics-controls.js", "text/javascript; charset=utf-8"],
-  ["/rate-limit-series.js", "text/javascript; charset=utf-8"],
-  ["/app.js", "text/javascript; charset=utf-8"],
-  ["/task-board.js", "text/javascript; charset=utf-8"],
-  ["/message-lifecycle.js", "text/javascript; charset=utf-8"],
-  ["/hub-client.js", "text/javascript; charset=utf-8"],
-  ["/styles.css", "text/css; charset=utf-8"],
-  ["/backgrounds.css", "text/css; charset=utf-8"],
-  ["/stream-status.css", "text/css; charset=utf-8"],
-  ["/stream-status-visibility.mjs", "text/javascript; charset=utf-8"],
-  ["/work-log.css", "text/css; charset=utf-8"],
-  ["/agent-hub-mark.png", "image/png"],
+const STATIC_CONTENT_TYPES = new Map([
+  [".avif", "image/avif"],
+  [".css", "text/css; charset=utf-8"],
+  [".gif", "image/gif"],
+  [".ico", "image/x-icon"],
+  [".jpeg", "image/jpeg"],
+  [".jpg", "image/jpeg"],
+  [".js", "text/javascript; charset=utf-8"],
+  [".mjs", "text/javascript; charset=utf-8"],
+  [".png", "image/png"],
+  [".svg", "image/svg+xml; charset=utf-8"],
+  [".ttf", "font/ttf"],
+  [".webp", "image/webp"],
+  [".woff", "font/woff"],
+  [".woff2", "font/woff2"],
 ]);
-const STATIC_FILES = new Map([
-  ["/", "index.html"],
-  ["/browser-device-auth.js", "browser-device-auth.js"],
-  ["/message-disclosure.js", "message-disclosure.js"],
-  ["/chat-scroll-controller.js", "chat-scroll-controller.js"],
-  ["/chat-surface-preference.js", "chat-surface-preference.js"],
-  ["/navigation-tabs-controller.js", "navigation-tabs-controller.js"],
-  ["/stream-tabs-controller.js", "stream-tabs-controller.js"],
-  ["/approval-form.js", "approval-form.js"],
-  ["/runtime-reload-controller.js", "runtime-reload-controller.js"],
-  ["/journal-view-controller.js", "journal-view-controller.js"],
-  ["/statistics-controls.js", "statistics-controls.js"],
-  ["/rate-limit-series.js", "rate-limit-series.js"],
-  ["/app.js", "app.js"],
-  ["/task-board.js", "task-board.js"],
-  ["/message-lifecycle.js", "message-lifecycle.js"],
-  ["/hub-client.js", "hub-client.js"],
-  ["/styles.css", "styles.css"],
-  ["/backgrounds.css", "backgrounds.css"],
-  ["/stream-status.css", "stream-status.css"],
-  ["/stream-status-visibility.mjs", "stream-status-visibility.mjs"],
-  ["/agent-hub-mark.png", "agent-hub-mark.png"],
-]);
-const IMMUTABLE_STATIC_FILES = new Set(["/agent-hub-mark.png"]);
+const LOCAL_ASSET_REFERENCE = /\b(?:src|href)=["'](\/(?!\/)[^"'?#]+)(?:[?#][^"']*)?["']/giu;
+
+function staticAssetManifest(assetsDirectory) {
+  const root = path.resolve(assetsDirectory);
+  const indexSource = readFileSync(path.join(root, "index.html"), "utf8");
+  const assets = new Map([
+    ["/", {
+      binary: false,
+      contentType: "text/html; charset=utf-8",
+      file: "index.html",
+      immutable: false,
+    }],
+  ]);
+  for (const match of indexSource.matchAll(LOCAL_ASSET_REFERENCE)) {
+    let pathname;
+    try {
+      pathname = decodeURIComponent(match[1]);
+    } catch {
+      throw new Error(`Некорректный путь ресурса Agent Hub: ${match[1]}`);
+    }
+    if (pathname === "/work-log.css") continue;
+    const segments = pathname.slice(1).split("/");
+    if (
+      !segments.length
+      || segments.some((segment) => (
+        !segment || segment === "." || segment === ".." || segment.includes("\\") || segment.includes(":")))
+    ) {
+      throw new Error(`Некорректный путь ресурса Agent Hub: ${pathname}`);
+    }
+    const target = path.resolve(root, ...segments);
+    const relative = path.relative(root, target);
+    if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+      throw new Error(`Ресурс Agent Hub выходит за пределы runtime: ${pathname}`);
+    }
+    if (!statSync(target).isFile()) throw new Error(`Не найден ресурс Agent Hub: ${pathname}`);
+    const contentType = STATIC_CONTENT_TYPES.get(path.extname(pathname).toLowerCase());
+    if (!contentType) throw new Error(`Неизвестный тип ресурса Agent Hub: ${pathname}`);
+    const binary = !contentType.startsWith("text/") && contentType !== "image/svg+xml; charset=utf-8";
+    assets.set(pathname, {
+      binary,
+      contentType,
+      file: relative,
+      immutable: binary,
+    });
+  }
+  return assets;
+}
 const MAX_CONTROL_REQUEST_BYTES = 512 * 1024;
 const MAX_MOBILE_UPDATE_BYTES = 100 * 1024 * 1024;
 const CONTROL_COMMAND_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,199}$/;
@@ -370,6 +385,7 @@ export class MiniAppServer {
   #publicAuthAttempts = new PublicAuthAttemptLimiter();
   #requireTelegramAuth;
   #server = null;
+  #staticAssets;
   #themeRegistry;
   #workLogCssFile;
 
@@ -404,6 +420,7 @@ export class MiniAppServer {
       : null;
     this.#deviceStore = deviceStore;
     this.#assetsDirectory = path.resolve(assetsDirectory);
+    this.#staticAssets = staticAssetManifest(this.#assetsDirectory);
     this.#themeRegistry = loadThemeRegistry(this.#assetsDirectory);
     this.#attachmentDirectory = attachmentDirectory ? path.resolve(attachmentDirectory) : null;
     this.#mobileUpdateDirectory = mobileUpdateDirectory
@@ -458,10 +475,10 @@ export class MiniAppServer {
         ? readFile(themeResource.file)
         : readFile(themeResource.file, "utf8");
     }
-    const file = STATIC_FILES.get(pathname);
-    if (!file) return null;
-    const target = path.join(this.#assetsDirectory, file);
-    const body = IMMUTABLE_STATIC_FILES.has(pathname)
+    const asset = this.#staticAssets.get(pathname);
+    if (!asset) return null;
+    const target = path.join(this.#assetsDirectory, asset.file);
+    const body = asset.binary
       ? await readFile(target)
       : await readFile(target, "utf8");
     return pathname === "/" ? renderThemeHtml(body, this.#themeRegistry) : body;
@@ -470,8 +487,10 @@ export class MiniAppServer {
   #staticDescriptor(pathname) {
     const themeResource = this.#themeRegistry.resources.get(pathname);
     if (themeResource) return themeResource;
-    const contentType = CONTENT_TYPES.get(pathname);
-    return contentType ? { contentType, immutable: IMMUTABLE_STATIC_FILES.has(pathname) } : null;
+    if (pathname === "/work-log.css") {
+      return { contentType: "text/css; charset=utf-8", immutable: false };
+    }
+    return this.#staticAssets.get(pathname) ?? null;
   }
 
   #writeEvent(response, event, data) {
