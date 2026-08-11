@@ -3118,6 +3118,7 @@ function pinChatToBottom() {
 let attachmentViewerOpen = false;
 let attachmentViewerGallery = [];
 let attachmentViewerIndex = 0;
+let attachmentViewerReturnFocus = null;
 
 function syncAttachmentViewerControls() {
   const length = attachmentViewerGallery.length;
@@ -3130,6 +3131,7 @@ function syncAttachmentViewerControls() {
 }
 
 function openAttachmentViewer({ dataUrl = "", name = "Изображение", gallery = [], index = 0 } = {}) {
+  if (!attachmentViewerOpen) attachmentViewerReturnFocus = document.activeElement;
   attachmentViewerGallery = resourceInteractions.imageGallery(
     Array.isArray(gallery) && gallery.length ? gallery : [{ dataUrl, name, type: "image/*" }],
   );
@@ -3144,6 +3146,7 @@ function openAttachmentViewer({ dataUrl = "", name = "Изображение", g
   attachmentViewerImage.src = selectedDataUrl;
   syncAttachmentViewerControls();
   root.dataset.overlay = "attachment";
+  attachmentViewer.focus({ preventScroll: true });
 }
 
 function showAttachmentViewer({ dataUrl, name = "Изображение", index = attachmentViewerIndex } = {}) {
@@ -3190,6 +3193,9 @@ function closeAttachmentViewer() {
   attachmentViewerGallery = [];
   attachmentViewerIndex = 0;
   delete root.dataset.overlay;
+  const returnFocus = attachmentViewerReturnFocus;
+  attachmentViewerReturnFocus = null;
+  if (returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
   return true;
 }
 
@@ -3218,15 +3224,20 @@ attachmentViewerNext.addEventListener("click", () => moveAttachmentViewer(1));
 attachmentViewer.addEventListener("click", (event) => {
   if (event.target === attachmentViewer) closeAttachmentViewer();
 });
-document.addEventListener("keydown", (event) => {
+window.addEventListener("keydown", (event) => {
   if (!attachmentViewerOpen) return;
-  if (event.key === "ArrowLeft" && moveAttachmentViewer(-1)) event.preventDefault();
-  if (event.key === "ArrowRight" && moveAttachmentViewer(1)) event.preventDefault();
+  if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+    event.preventDefault();
+    event.stopPropagation();
+    moveAttachmentViewer(event.key === "ArrowLeft" ? -1 : 1);
+    return;
+  }
   if (event.key === "Escape") {
     event.preventDefault();
+    event.stopPropagation();
     closeAttachmentViewer();
   }
-});
+}, true);
 
 const EDGE_SWIPE_ZONE = 32;
 const EDGE_SWIPE_DISTANCE = 52;
