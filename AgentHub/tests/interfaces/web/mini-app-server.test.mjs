@@ -422,6 +422,14 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.equal(magmaFrame.headers.get("content-type"), "image/png");
     assert.match(magmaFrame.headers.get("cache-control"), /immutable/u);
     assert.ok((await magmaFrame.arrayBuffer()).byteLength > 100_000);
+    const magmaStylesResponse = await fetch(`${address.url}themes/magma/theme.css`);
+    assert.equal(magmaStylesResponse.status, 200);
+    assert.match(magmaStylesResponse.headers.get("content-type"), /text\/css/u);
+    const magmaStyles = await magmaStylesResponse.text();
+    assert.match(magmaStyles, /url\("\.\/magma-lava-well\.jpg"\)/u);
+    assert.match(magmaStyles, /url\("\.\/magma-forged-frame\.png"\)/u);
+    assert.match(magmaStyles, /url\("\.\/magma-chat-frame\.png"\)/u);
+    assert.match(magmaStyles, /url\("\.\/magma-side-rail\.png"\)/u);
     for (const asset of ["magma-chat-frame.png", "magma-side-rail.png"]) {
       const magmaOrnament = await fetch(`${address.url}themes/magma/${asset}`);
       assert.equal(magmaOrnament.status, 200);
@@ -639,10 +647,10 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.match(glass, /uniform sampler2D uFogImage/u);
     assert.match(glass, /function createFogTexture/u);
     assert.match(styles, /url\("\/pulsar-dead-star\.png"\)/u);
-    assert.match(styles, /url\("\/themes\/magma\/magma-lava-well\.jpg"\)/u);
-    assert.match(styles, /url\("\/themes\/magma\/magma-forged-frame\.png"\)/u);
-    assert.match(styles, /url\("\/themes\/magma\/magma-chat-frame\.png"\)/u);
-    assert.match(styles, /url\("\/themes\/magma\/magma-side-rail\.png"\)/u);
+    assert.match(styles, /url\("\/magma-lava-well\.jpg"\)/u);
+    assert.match(styles, /url\("\/magma-forged-frame\.png"\)/u);
+    assert.match(styles, /url\("\/magma-chat-frame\.png"\)/u);
+    assert.match(styles, /url\("\/magma-side-rail\.png"\)/u);
     assert.match(styles, /html\[data-theme="magma"\]/u);
     assert.match(styles, /url\("\/meadow-sun\.jpg"\)/u);
     assert.match(styles, /html\[data-theme="meadow"\]/u);
