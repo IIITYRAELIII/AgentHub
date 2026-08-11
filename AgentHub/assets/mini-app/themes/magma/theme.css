@@ -19,11 +19,11 @@ html[data-theme="magma"] {
   --line: rgb(99 112 123 / 34%);
   --line-strong: rgb(135 148 158 / 54%);
 
-  --magma-metal-texture: url("/themes/magma/magma-blackened-steel.jpg");
-  --magma-forged-frame: url("/themes/magma/magma-forged-frame.png");
-  --magma-chat-frame: url("/themes/magma/magma-chat-frame.png");
-  --magma-side-rail: url("/themes/magma/magma-side-rail.png");
-  --magma-image: url("/themes/magma/magma-lava-well.jpg");
+  --magma-metal-texture: url("./magma-blackened-steel.jpg");
+  --magma-forged-frame: url("./magma-forged-frame.png");
+  --magma-chat-frame: url("./magma-chat-frame.png");
+  --magma-side-rail: url("./magma-side-rail.png");
+  --magma-image: url("./magma-lava-well.jpg");
   --magma-panel:
     linear-gradient(rgb(5 9 12 / 90%), rgb(5 9 12 / 90%)),
     var(--magma-metal-texture) center / 28rem 28rem;
@@ -160,7 +160,7 @@ html[data-theme="magma"] body::before {
 }
 
 html[data-background-override="true"][data-background="magma"] {
-  --magma-image: url("/themes/magma/magma-lava-well.jpg");
+  --magma-image: url("./magma-lava-well.jpg");
   --hub-background-color: #030609;
   --hub-background-image:
     linear-gradient(180deg, rgb(2 5 8 / 48%), transparent 24% 76%, rgb(2 4 7 / 46%)),
@@ -174,7 +174,7 @@ html[data-background-override="true"][data-background="magma-fissure"] {
   --hub-background-image:
     linear-gradient(180deg, rgb(2 5 8 / 44%), transparent 24% 76%, rgb(2 4 7 / 42%)),
     radial-gradient(94% 94% at 50% 52%, transparent 44%, rgb(0 0 0 / 46%) 100%),
-    var(--magma-fissure-image, url("/themes/magma/magma-fissure.jpg"));
+    var(--magma-fissure-image, url("./magma-fissure.jpg"));
   --hub-background-position: center, center, 50% 50%;
 }
 
@@ -183,7 +183,7 @@ html[data-background-override="true"][data-background="magma-forge-heart"] {
   --hub-background-image:
     linear-gradient(180deg, rgb(2 5 8 / 48%), transparent 22% 74%, rgb(2 4 7 / 38%)),
     radial-gradient(96% 90% at 50% 56%, transparent 42%, rgb(0 0 0 / 50%) 100%),
-    var(--magma-forge-heart-image, url("/themes/magma/magma-forge-heart.jpg"));
+    var(--magma-forge-heart-image, url("./magma-forge-heart.jpg"));
   --hub-background-position: center, center, 50% 50%;
 }
 

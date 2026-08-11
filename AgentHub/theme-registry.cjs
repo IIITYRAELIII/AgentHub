@@ -5,6 +5,7 @@ const path = require("node:path");
 
 const THEME_ID = /^[a-z][a-z0-9-]{0,63}$/u;
 const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/u;
+const CSS_URL_REFERENCE = /url\(\s*(?:"([^"]*)"|'([^']*)'|([^)'"\s]+))\s*\)/giu;
 const PROTECTED_BRAND_REFERENCE = /(?:\.brand-mark\b|\[\s*data-app-mark\b|agent-hub-mark)/iu;
 const PROTECTED_SHELL_LAYOUT_OVERRIDE = /(?:\.app-header(?:-inner)?(?![A-Za-z0-9_-])|\.workspace(?![A-Za-z0-9_-])|\.view-switch(?![A-Za-z0-9_-])|\.view-tab(?![A-Za-z0-9_-])|\.view-settings(?![A-Za-z0-9_-])|\.task-rail(?![A-Za-z0-9_-])|\.chat(?![A-Za-z0-9_-])|\.stream-tabs(?![A-Za-z0-9_-])|\.stream-tab(?:-card)?(?![A-Za-z0-9_-]))[^{]*\{[^}]*\b(?:background(?:-color|-image)?|border(?:-radius|-width|-style|-color|-top|-right|-bottom|-left)?|box-shadow|flex(?:-basis|-grow|-shrink)?|gap|height|max-height|max-width|min-height|min-width|margin(?:-block|-inline|-top|-right|-bottom|-left)?|padding(?:-block|-inline|-top|-right|-bottom|-left)?|position|top|right|bottom|left|transform|translate|width)\s*:[^;}]*!important/isu;
 const PROTECTED_SHELL_STATUS_OVERRIDE = /--shell-connection-banner-display\s*:/iu;
@@ -72,6 +73,14 @@ function validateThemeResource(theme, directory, file) {
   }
   if (extension === ".css" && PROTECTED_SHELL_STATUS_OVERRIDE.test(source)) {
     fail(theme, `${file} overrides shell-owned system status visibility`);
+  }
+  if (extension === ".css") {
+    for (const match of source.matchAll(CSS_URL_REFERENCE)) {
+      const reference = String(match[1] ?? match[2] ?? match[3] ?? "").trim();
+      if (reference.startsWith("/")) {
+        fail(theme, `${file} uses root-relative CSS URL ${reference}`);
+      }
+    }
   }
 }
 

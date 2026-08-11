@@ -81,6 +81,24 @@ test("theme registry rejects a manifest that escapes its package", async () => {
   }
 });
 
+test("theme registry rejects root-relative stylesheet assets", async () => {
+  const directory = await fixture(manifest);
+  try {
+    const stylesheet = path.join(directory, "themes", "aurora", "theme.css");
+    await writeFile(
+      stylesheet,
+      'html[data-theme="aurora"] { background: url("/themes/aurora/texture.webp"); }',
+      "utf8",
+    );
+    assert.throws(
+      () => loadThemeRegistry(directory),
+      /theme aurora: theme\.css uses root-relative CSS URL \/themes\/aurora\/texture\.webp/iu,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("theme registry rejects attempts to replace the shell-owned brand mark", async () => {
   const directory = await fixture(manifest);
   try {
