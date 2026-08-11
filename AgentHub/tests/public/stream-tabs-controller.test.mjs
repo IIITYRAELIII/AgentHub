@@ -75,6 +75,16 @@ test("activity direction moves new and active Streams together with the create b
   assert.equal(streamCreationSide("manual", "start"), "end");
 });
 
+test("activity rail count excludes merely recent Streams", async () => {
+  const { attentionStreamCount } = await streamTabsApi();
+  assert.equal(attentionStreamCount([
+    { id: "running", running: true, unread: false },
+    { id: "unread", running: false, unread: true },
+    { id: "both", running: true, unread: true },
+    { id: "recent", running: false, unread: false },
+  ]), 3);
+});
+
 test("manual mode follows the server-synchronized ordinal order", async () => {
   const { orderWorkspaceStreams, streamsAreDraggable } = await streamTabsApi();
   const streams = [

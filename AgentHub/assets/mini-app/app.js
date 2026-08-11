@@ -2161,7 +2161,8 @@ function renderActivityRail() {
   const selectedWorkspaceId = String(currentTask()?.workspaceId ?? "").trim() || null;
   window.AgentHubTaskBoard?.setSelectedWorkspace(selectedWorkspaceId);
   const entries = activityStreamEntries(state.tasks);
-  activityRailCount.textContent = `Активно: ${entries.length}`;
+  const attentionCount = window.AgentHubStreamTabs.attentionStreamCount(entries);
+  activityRailCount.textContent = `Активно: ${attentionCount}`;
   activityStreamEmpty.hidden = entries.length > 0;
   activityStreamList.replaceChildren(...entries.map((task) => {
     const presentation = streamPresentation(task);

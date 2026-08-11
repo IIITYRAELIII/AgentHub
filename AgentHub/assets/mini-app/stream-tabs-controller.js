@@ -40,6 +40,12 @@
       : STREAM_ACTIVITY_DIRECTIONS.END;
   }
 
+  function attentionStreamCount(tasks) {
+    return (tasks ?? []).reduce((count, task) => (
+      count + (task?.running || task?.unread ? 1 : 0)
+    ), 0);
+  }
+
   function orderWorkspaceStreams(streams, mode, activityDirection = STREAM_ACTIVITY_DIRECTIONS.START) {
     const uniqueStreams = [];
     const available = new Map();
@@ -139,6 +145,7 @@
   }
 
   window.AgentHubStreamTabs = Object.freeze({
+    attentionStreamCount,
     HorizontalPointerScroller,
     STREAM_ACTIVITY_DIRECTIONS,
     STREAM_ORDER_MODES,
