@@ -1614,7 +1614,7 @@ function backgroundAssetUrl(background) {
 }
 
 async function decodedBackgroundUrl(background, url) {
-  if (!encodedBackgroundUrl(url)) return url;
+  if (!encodedBackgroundUrl(url)) return { loaded: false, url };
   if (backgroundObjectUrls.has(url)) return backgroundObjectUrls.get(url);
   const readPart = async (target, read) => {
     let lastError = null;
@@ -1642,6 +1642,12 @@ async function decodedBackgroundUrl(background, url) {
   if (!Array.isArray(manifest.parts) || !manifest.parts.length || manifest.parts.length > 512) {
     throw new Error("Background transport manifest is invalid");
   }
+  if (manifest.directUrl && await loadBackgroundImage(manifest.directUrl)) {
+    const direct = { loaded: true, url: manifest.directUrl };
+    backgroundObjectUrls.set(url, direct);
+    root.style.setProperty(`--${background}-image`, cssBackgroundUrl(direct.url));
+    return direct;
+  }
   const chunks = new Array(manifest.parts.length);
   let nextPart = 0;
   await Promise.all(Array.from({ length: Math.min(6, manifest.parts.length) }, async () => {
@@ -1655,16 +1661,14 @@ async function decodedBackgroundUrl(background, url) {
   const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
   if (Number(manifest.bytes) !== bytes.length) throw new Error("Background transport size mismatch");
   const objectUrl = URL.createObjectURL(new Blob([bytes], { type: String(manifest.type || "image/jpeg") }));
-  backgroundObjectUrls.set(url, objectUrl);
+  const decoded = { loaded: false, url: objectUrl };
+  backgroundObjectUrls.set(url, decoded);
   root.style.setProperty(`--${background}-image`, cssBackgroundUrl(objectUrl));
-  return objectUrl;
+  return decoded;
 }
 
-function preloadBackgroundAsset(background) {
-  const url = backgroundAssetUrl(background);
-  if (!url || typeof Image !== "function") return Promise.resolve(true);
-  if (backgroundAssetLoads.has(url)) return backgroundAssetLoads.get(url);
-  const loading = decodedBackgroundUrl(background, url).then((resolvedUrl) => new Promise((resolve) => {
+function loadBackgroundImage(url) {
+  return new Promise((resolve) => {
     const image = document.createElement("img");
     let settled = false;
     const finish = (loaded) => {
@@ -1677,9 +1681,18 @@ function preloadBackgroundAsset(background) {
       void image.decode().then(() => finish(true), () => finish(true));
     };
     image.onerror = () => finish(false);
-    image.src = resolvedUrl;
+    image.src = url;
     if (image.complete && image.naturalWidth > 0) image.onload();
-  })).catch(() => false);
+  });
+}
+
+function preloadBackgroundAsset(background) {
+  const url = backgroundAssetUrl(background);
+  if (!url || typeof Image !== "function") return Promise.resolve(true);
+  if (backgroundAssetLoads.has(url)) return backgroundAssetLoads.get(url);
+  const loading = decodedBackgroundUrl(background, url)
+    .then((resolved) => resolved.loaded || loadBackgroundImage(resolved.url))
+    .catch(() => false);
   backgroundAssetLoads.set(url, loading);
   return loading;
 }

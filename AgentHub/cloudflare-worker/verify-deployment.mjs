@@ -68,6 +68,22 @@ export async function verifyThemeDeployment({
     if (!Array.isArray(manifest.parts) || !manifest.parts.length || manifest.parts.length > 512) {
       throw new Error(`Published background ${theme.id}/${background.id} has an invalid manifest`);
     }
+    const source = await readFile(path.join(theme.directory, ...background.asset.split("/")));
+    if (manifest.directUrl) {
+      try {
+        const direct = Buffer.from(await readWithRetry(
+          fetchImpl,
+          new URL(manifest.directUrl),
+          (directResponse) => directResponse.arrayBuffer(),
+        ));
+        if (direct.length === source.length && sha256(direct) === sha256(source)) {
+          bytes += direct.length;
+          return;
+        }
+      } catch {
+        // The Worker chunk transport remains the bounded fallback.
+      }
+    }
     const chunks = [];
     for (const part of manifest.parts) {
       const chunk = (await readWithRetry(fetchImpl, new URL(part, base), (response) => response.text())).trim();
@@ -75,7 +91,6 @@ export async function verifyThemeDeployment({
       chunks.push(chunk);
     }
     const decoded = Buffer.from(chunks.join(""), "base64");
-    const source = await readFile(path.join(theme.directory, ...background.asset.split("/")));
     if (Number(manifest.bytes) !== source.length || manifest.sha256 !== sha256(source)
       || decoded.length !== source.length || sha256(decoded) !== sha256(source)) {
       throw new Error(`Published background ${theme.id}/${background.id} does not match its source`);

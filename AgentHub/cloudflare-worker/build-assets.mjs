@@ -52,11 +52,21 @@ function rewriteThemeCss(css, stylesheetPathname, publishedPathnames, background
   });
 }
 
+async function directAssetOrigin() {
+  const config = JSON.parse(await readFile(path.join(import.meta.dirname, "wrangler.jsonc"), "utf8"));
+  const route = config.routes?.find((item) => typeof item === "string" || item?.pattern);
+  const pattern = typeof route === "string" ? route : route?.pattern;
+  const hostname = String(pattern ?? "").replace(/^https?:\/\//iu, "").replace(/\/\*.*$/u, "").replace(/\/$/u, "");
+  if (!hostname.startsWith("hub.")) return "";
+  return `https://home.${hostname.slice(4)}`;
+}
+
 export async function buildWorkerAssets({
   output = defaultOutput,
   includeMobile = true,
 } = {}) {
   const themeRegistry = loadThemeRegistry(source);
+  const assetOrigin = await directAssetOrigin();
   await rm(output, { recursive: true, force: true });
   await mkdir(output, { recursive: true });
 
@@ -128,6 +138,7 @@ export async function buildWorkerAssets({
         type: resource.contentType,
         bytes: body.length,
         sha256: createHash("sha256").update(body).digest("hex"),
+        directUrl: assetOrigin ? `${assetOrigin}${resource.pathname}?v=${revisionFor(body)}` : "",
         parts,
       }), "utf8");
     }

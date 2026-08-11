@@ -47,6 +47,7 @@ test("Worker build packages the same shell and theme resources used by local cli
       assert.match(background.assetUrl, /^\/themes\/bespin\/[^?]+\.jpg\.[a-f0-9]{12}\.json$/u);
       const manifest = JSON.parse(await readFile(path.join(output, ...background.assetUrl.slice(1).split("/")), "utf8"));
       assert.ok(manifest.parts.length > 1);
+      assert.match(manifest.directUrl, /^https:\/\/home\.[^/]+\/themes\/bespin\//u);
       const encoded = (await Promise.all(manifest.parts.map(async (part) => {
         const chunk = await readFile(path.join(output, ...part.slice(1).split("/")), "ascii");
         assert.ok(Buffer.byteLength(chunk) <= 20 * 1024);
