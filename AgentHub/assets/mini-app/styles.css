@@ -4022,7 +4022,8 @@ html[data-view="dashboard"] .task-board-view {
 }
 
 .task-start-modal,
-.task-card-modal {
+.task-card-modal,
+.task-delete-modal {
   background: var(--surface-1);
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-lg);
@@ -4034,9 +4035,62 @@ html[data-view="dashboard"] .task-board-view {
 }
 
 .task-start-modal::backdrop,
-.task-card-modal::backdrop {
+.task-card-modal::backdrop,
+.task-delete-modal::backdrop {
   background: rgba(2, 5, 10, 0.76);
   backdrop-filter: blur(3px);
+}
+
+.task-delete-modal {
+  max-width: 26rem;
+}
+
+.task-delete-modal > section,
+.task-delete-modal > footer {
+  padding: 1rem;
+}
+
+.task-delete-modal > section {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.task-delete-modal h2,
+.task-delete-modal p {
+  margin: 0;
+}
+
+.task-delete-modal h2 {
+  font-size: 1.05rem;
+}
+
+.task-delete-modal > section > p:last-child {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
+.task-delete-modal > footer {
+  align-items: center;
+  border-top: 1px solid var(--line);
+  display: flex;
+  gap: 0.65rem;
+  justify-content: flex-end;
+}
+
+.task-delete-confirm {
+  background: color-mix(in srgb, #b44747 24%, var(--surface-2));
+  border: 1px solid color-mix(in srgb, #ff7777 55%, var(--line-strong));
+  border-radius: var(--radius-sm);
+  color: #ffb0b0;
+  cursor: pointer;
+  font: inherit;
+  padding: 0.45rem 0.8rem;
+}
+
+.task-delete-confirm:hover,
+.task-delete-confirm:focus-visible {
+  border-color: #ff8d8d;
+  color: #ffd0d0;
 }
 
 .task-card-modal > header,

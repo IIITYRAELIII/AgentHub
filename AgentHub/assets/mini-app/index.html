@@ -541,6 +541,18 @@
     <footer class="board-task-actions" data-task-card-actions></footer>
   </dialog>
 
+  <dialog class="task-delete-modal" data-task-delete-modal aria-labelledby="task-delete-title">
+    <section>
+      <p class="eyebrow">Удаление задачи</p>
+      <h2 id="task-delete-title">Вы уверены?</h2>
+      <p>Задача будет удалена без возможности восстановления.</p>
+    </section>
+    <footer>
+      <button type="button" class="board-task-quiet" data-task-delete-cancel>Отмена</button>
+      <button type="button" class="task-delete-confirm" data-task-delete-confirm>Удалить</button>
+    </footer>
+  </dialog>
+
   <dialog class="task-start-modal" data-task-start-modal>
     <header>
       <div>

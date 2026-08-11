@@ -1978,6 +1978,7 @@ document.addEventListener("agenthub:board-action", (event) => {
     applySnapshot(result);
     if (detail.type === "start") agentHub.showSelectedTask();
     if (detail.type === "update") agentHub.toast("Изменения сохранены");
+    if (detail.type === "remove") agentHub.toast("Задача удалена");
   }).finally(() => {
     window.AgentHubTaskBoard?.finishAction?.({
       type: detail.type,

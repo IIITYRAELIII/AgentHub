@@ -1,6 +1,39 @@
 "use strict";
 
 (() => {
+  function createDeleteDialog({ dialog, cancelButton, confirmButton, onConfirm } = {}) {
+    let pendingTaskId = null;
+
+    function close() {
+      pendingTaskId = null;
+      if (dialog?.open) dialog.close?.();
+      dialog?.removeAttribute?.("open");
+    }
+
+    function request(taskId) {
+      pendingTaskId = taskId ?? null;
+      if (pendingTaskId == null || !dialog) return;
+      dialog.showModal?.();
+      if (!dialog.open) dialog.setAttribute?.("open", "");
+    }
+
+    cancelButton?.addEventListener("click", close);
+    confirmButton?.addEventListener("click", () => {
+      const taskId = pendingTaskId;
+      if (taskId == null) return;
+      close();
+      onConfirm?.(taskId);
+    });
+    dialog?.addEventListener("cancel", (event) => {
+      event.preventDefault();
+      close();
+    });
+
+    return Object.freeze({ request, close });
+  }
+
+  window.AgentHubTaskDeleteDialog = Object.freeze({ create: createDeleteDialog });
+
   const board = document.querySelector("[data-task-board]");
   const columns = document.querySelector("[data-task-board-columns]");
   const workspacePanel = document.querySelector("[data-workspace-task-panel]");
@@ -17,6 +50,9 @@
   const taskCardOriginalToggle = document.querySelector("[data-task-card-original-toggle]");
   const taskCardOriginalText = document.querySelector("[data-task-card-original-text]");
   const taskCardActions = document.querySelector("[data-task-card-actions]");
+  const taskDeleteModal = document.querySelector("[data-task-delete-modal]");
+  const taskDeleteCancel = document.querySelector("[data-task-delete-cancel]");
+  const taskDeleteConfirm = document.querySelector("[data-task-delete-confirm]");
   const startModal = document.querySelector("[data-task-start-modal]");
   const startTitle = document.querySelector("[data-task-start-title]");
   const startOptions = document.querySelector("[data-task-start-options]");
@@ -43,7 +79,19 @@
     editingTaskId: null,
     editDirty: false,
     savingTaskId: null,
+    removingTaskId: null,
   };
+  const taskDeleteDialog = createDeleteDialog({
+    dialog: taskDeleteModal,
+    cancelButton: taskDeleteCancel,
+    confirmButton: taskDeleteConfirm,
+    onConfirm: (id) => {
+      if (state.removingTaskId != null) return;
+      state.removingTaskId = id;
+      renderOpenTaskCard();
+      emit("remove", { id });
+    },
+  });
 
   function node(tag, attributes = {}, children = []) {
     const element = document.createElement(tag);
@@ -182,6 +230,7 @@
   }
 
   function closeTaskCard() {
+    taskDeleteDialog.close();
     state.openTaskId = null;
     state.editingTaskId = null;
     state.editDirty = false;
@@ -255,12 +304,11 @@
       onclick: () => { closeTaskCard(); emit("complete", { id: task.id }); },
     }));
     actions.push(node("button", {
-      type: "button", class: "board-task-remove", text: "Удалить",
-      onclick: () => {
-        if (!window.confirm("Удалить задачу без возможности восстановления?")) return;
-        closeTaskCard();
-        emit("remove", { id: task.id });
-      },
+      type: "button",
+      class: "board-task-remove",
+      text: state.removingTaskId === task.id ? "Удаляю…" : "Удалить",
+      disabled: state.removingTaskId === task.id ? "" : null,
+      onclick: () => taskDeleteDialog.request(task.id),
     }));
     taskCardActions.replaceChildren(...actions);
   }
@@ -529,14 +577,21 @@
       renderOpenTaskCard();
     },
     finishAction({ type, id, succeeded } = {}) {
-      if (type !== "update" || state.savingTaskId !== id) return;
-      state.savingTaskId = null;
-      if (succeeded) {
-        state.editDirty = false;
-        closeTaskCard();
+      if (type === "update" && state.savingTaskId === id) {
+        state.savingTaskId = null;
+        if (succeeded) {
+          state.editDirty = false;
+          closeTaskCard();
+          return;
+        }
+        renderOpenTaskCard();
         return;
       }
-      renderOpenTaskCard();
+      if (type === "remove" && state.removingTaskId === id) {
+        state.removingTaskId = null;
+        if (succeeded) closeTaskCard();
+        else renderOpenTaskCard();
+      }
     },
   });
 })();
