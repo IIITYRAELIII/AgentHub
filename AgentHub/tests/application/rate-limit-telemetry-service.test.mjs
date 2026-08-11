@@ -13,6 +13,7 @@ function fixture({
   claudeOutput = "Current session: 10% used · resets Aug 5, 5:00pm (Asia/Yekaterinburg)",
 } = {}) {
   const events = [];
+  let nowMs = 1_000;
   let releaseCodex;
   let delayCodex = false;
   const delayedCodex = new Promise((resolve) => { releaseCodex = resolve; });
@@ -37,12 +38,17 @@ function fixture({
     codexRunning: () => codexRunning,
     historyStore: {
       record: async (...args) => events.push(["record", ...args]),
+      read: async (...args) => {
+        events.push(["read-history", ...args]);
+        return { fresh: true };
+      },
     },
     workLogUsageStore: {
       projectRateLimits: async (...args) => events.push(["project", ...args]),
     },
     timers: { schedule: (...args) => events.push(["schedule", ...args.slice(0, 1)]) },
     isStopping: () => false,
+    clock: () => nowMs,
     nowIso: () => "2026-08-05T00:00:00.000Z",
     logger: { error: (...args) => events.push(["error", ...args]) },
   });
@@ -51,6 +57,7 @@ function fixture({
     events,
     delayCodex: () => { delayCodex = true; },
     releaseCodex,
+    advance: (milliseconds) => { nowMs += milliseconds; },
   };
 }
 
@@ -102,6 +109,31 @@ test("RateLimitTelemetryService coalesces concurrent polling", async () => {
   state.releaseCodex({ rateLimits: { primary: { usedPercent: 30 } } });
   await first;
   assert.equal(state.events.filter(([name]) => name === "schedule").length, 1);
+});
+
+test("RateLimitTelemetryService refreshes history from live Codex limits and reuses a fresh sample", async () => {
+  const state = fixture();
+  assert.deepEqual(await state.service.history({ range: "24h" }), { fresh: true });
+  assert.deepEqual(await state.service.history({ range: "24h" }), { fresh: true });
+
+  assert.equal(state.events.filter(([name]) => name === "read-codex").length, 1);
+  assert.equal(state.events.filter(([name]) => name === "record").length, 1);
+  assert.equal(state.events.filter(([name]) => name === "read-history").length, 2);
+
+  state.advance(30_001);
+  await state.service.history({ range: "24h" });
+  assert.equal(state.events.filter(([name]) => name === "read-codex").length, 2);
+});
+
+test("RateLimitTelemetryService serves stored history when the live refresh fails", async () => {
+  const state = fixture();
+  state.service.readCodexRateLimits = async () => { throw new Error("offline"); };
+
+  assert.deepEqual(await state.service.history({ range: "7d" }), { fresh: true });
+  assert.equal(state.events.some((event) => (
+    event[0] === "error" && event[1] === "Cannot refresh current Codex rate limits:"
+  )), true);
+  assert.deepEqual(state.events.find(([name]) => name === "read-history")?.[1], { range: "7d" });
 });
 
 test("RateLimitTelemetryService returns a bounded Claude failure", async () => {

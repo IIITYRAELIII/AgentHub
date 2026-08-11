@@ -232,7 +232,7 @@ export async function createClientInterfaceComposition({
     refreshTaskCatalog,
     currentTaskCatalog,
     currentTaskRuns,
-    readCodexRateLimits: () => rateLimitTelemetry.readCodex(),
+    readCodexRateLimits: () => rateLimitTelemetry.refreshCodex(),
     readClaudeRateLimits: () => rateLimitTelemetry.readClaude(),
     parseClaudeLimits,
     codexModelLabel,

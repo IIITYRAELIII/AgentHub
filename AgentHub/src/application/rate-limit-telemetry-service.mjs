@@ -13,6 +13,8 @@ export class RateLimitTelemetryService {
     timers,
     isStopping,
     intervalMs = 5 * 60_000,
+    historyFreshnessMs = 30_000,
+    clock = () => Date.now(),
     nowIso = () => new Date().toISOString(),
     logger = console,
   }) {
@@ -29,9 +31,13 @@ export class RateLimitTelemetryService {
     this.timers = timers;
     this.isStopping = isStopping;
     this.intervalMs = intervalMs;
+    this.historyFreshnessMs = historyFreshnessMs;
+    this.clock = clock;
     this.nowIso = nowIso;
     this.logger = logger;
     this.pollInFlight = null;
+    this.codexRefreshInFlight = null;
+    this.lastCodexRefresh = null;
   }
 
   readCodex() {
@@ -40,6 +46,30 @@ export class RateLimitTelemetryService {
 
   readAccount() {
     return this.readCodexAccount();
+  }
+
+  refreshCodex({ maxAgeMs = 0 } = {}) {
+    const maximumAge = Math.max(0, Number(maxAgeMs) || 0);
+    if (maximumAge > 0 && this.lastCodexRefresh
+      && this.clock() - this.lastCodexRefresh.atMs <= maximumAge) {
+      return Promise.resolve(this.lastCodexRefresh.result);
+    }
+    if (this.codexRefreshInFlight) return this.codexRefreshInFlight;
+    this.codexRefreshInFlight = this.#refreshCodexOnce().finally(() => {
+      this.codexRefreshInFlight = null;
+    });
+    return this.codexRefreshInFlight;
+  }
+
+  async history(params = {}) {
+    if (this.codexRunning()) {
+      try {
+        await this.refreshCodex({ maxAgeMs: this.historyFreshnessMs });
+      } catch (error) {
+        this.logger.error("Cannot refresh current Codex rate limits:", error.message);
+      }
+    }
+    return this.historyStore.read(params);
   }
 
   async readClaude() {
@@ -84,16 +114,7 @@ export class RateLimitTelemetryService {
     const observedAt = this.nowIso();
     const jobs = [];
     if (this.codexRunning()) {
-      jobs.push((async () => {
-        const accountPromise = this.readAccount().catch((error) => {
-          this.logger.error("Cannot identify Codex account:", error.message);
-          return null;
-        });
-        const [account, result] = await Promise.all([accountPromise, this.readCodex()]);
-        const summary = this.formatCodexRateLimits(result);
-        await this.historyStore.record(result, observedAt, "codex", account);
-        await this.workLogUsageStore.projectRateLimits(null, summary, observedAt);
-      })().catch((error) => {
+      jobs.push(this.refreshCodex().catch((error) => {
         this.logger.error("Cannot poll Codex rate limits:", error.message);
       }));
     }
@@ -105,5 +126,19 @@ export class RateLimitTelemetryService {
       this.logger.error("Cannot poll Claude rate limits:", error.message);
     }));
     await Promise.all(jobs);
+  }
+
+  async #refreshCodexOnce() {
+    const observedAt = this.nowIso();
+    const accountPromise = this.readAccount().catch((error) => {
+      this.logger.error("Cannot identify Codex account:", error.message);
+      return null;
+    });
+    const [account, result] = await Promise.all([accountPromise, this.readCodex()]);
+    const summary = this.formatCodexRateLimits(result);
+    await this.historyStore.record(result, observedAt, "codex", account);
+    await this.workLogUsageStore.projectRateLimits(null, summary, observedAt);
+    this.lastCodexRefresh = { atMs: this.clock(), result };
+    return result;
   }
 }

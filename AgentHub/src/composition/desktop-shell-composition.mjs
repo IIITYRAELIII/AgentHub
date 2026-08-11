@@ -161,7 +161,7 @@ export function createDesktopShellComposition({
       formattedRateLimits: (targetProvider) => rateLimitTelemetry.formatted(targetProvider),
       activeRunCount: () => taskRuns.values().filter(taskRunIsActive).length,
       backgroundJobCount: () => backgroundJobs.size,
-      readRateLimitHistory: (params) => rateLimitHistoryStore.read(params),
+      readRateLimitHistory: (params) => rateLimitTelemetry.history(params),
       readUsageHistory: (params) => workLogUsageStore.usageHistory(params),
       refreshCatalog: refreshTaskCatalog,
       threadsForStream: (streamId) => workspaceCatalogStore.threadsForStream(streamId),

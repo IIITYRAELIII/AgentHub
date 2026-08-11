@@ -52,7 +52,8 @@ test("Agent Hub persists Codex and Claude limit snapshots every five minutes", a
   assert.match(telemetrySource, /this\.historyStore\.record\(result, observedAt, "codex", account\)/u);
   assert.match(telemetrySource, /parseClaudeLimits\(await this\.readClaude\(\)\)/u);
   assert.match(telemetrySource, /this\.historyStore\.record\(\{ limits \}, observedAt, "claude"\)/u);
-  assert.match(source, /readRateLimitHistory: \(params\) => rateLimitHistoryStore\.read\(params\)/u);
+  assert.match(source, /readRateLimitHistory: \(params\) => rateLimitTelemetry\.history\(params\)/u);
+  assert.match(source, /readCodexRateLimits: \(\) => rateLimitTelemetry\.refreshCodex\(\)/u);
   assert.match(desktopSystemSource, /return this\.readRateLimitHistory\(\{/u);
   assert.match(source, /rateLimitTelemetry\.schedule\(1_000\)/u);
   assert.match(telemetrySource, /"--safe-mode", "--no-session-persistence"/u);
