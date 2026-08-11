@@ -1403,6 +1403,7 @@ namespace AgentHubDesktop
         {
             var menu = ResourceContextMenu(
                 null,
+                "Скопировать объект",
                 delegate
                 {
                     var files = new StringCollection();
@@ -1414,13 +1415,13 @@ namespace AgentHubDesktop
             return menu;
         }
 
-        private ContextMenu ResourceContextMenu(Action open, Action copy, Action save)
+        private ContextMenu ResourceContextMenu(Action open, string copyLabel, Action copy, Action save)
         {
             var menu = new ContextMenu { Background = Theme.Solid(Theme.PanelRaised), Foreground = Theme.Solid(Theme.Text) };
             foreach (var action in new[]
             {
                 new KeyValuePair<string, Action>("Открыть", open),
-                new KeyValuePair<string, Action>("Копировать", copy),
+                new KeyValuePair<string, Action>(copyLabel, copy),
                 new KeyValuePair<string, Action>("Сохранить как…", save)
             })
             {
@@ -1733,10 +1734,13 @@ namespace AgentHubDesktop
                     var capturedLocalLine = localLine;
                     localLink.ContextMenu = ResourceContextMenu(
                         delegate { OpenWorkspaceFile(capturedLocalFile, capturedLocalLine); },
+                        "Скопировать объект",
                         delegate
                         {
-                            Clipboard.SetText(capturedLocalFile + (capturedLocalLine > 0 ? ":" + capturedLocalLine : ""));
-                            footer.Text = "Ссылка скопирована";
+                            var files = new StringCollection();
+                            files.Add(capturedLocalFile);
+                            Clipboard.SetFileDropList(files);
+                            footer.Text = "Объект скопирован в буфер обмена";
                         },
                         delegate { SaveLocalResource(capturedLocalFile); });
                     paragraph.Inlines.Add(localLink);
@@ -1769,6 +1773,7 @@ namespace AgentHubDesktop
                         try { Process.Start(new ProcessStartInfo(capturedTarget.AbsoluteUri) { UseShellExecute = true }); }
                         catch (Exception error) { footer.Text = "Не удалось открыть ссылку: " + error.Message; }
                     },
+                    "Копировать",
                     delegate
                     {
                         Clipboard.SetText(capturedTarget.AbsoluteUri);

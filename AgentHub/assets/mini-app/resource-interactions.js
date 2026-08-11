@@ -30,8 +30,12 @@
     return current;
   }
 
-  function resourceActions(kind) {
-    return kind === "link" ? ["open", "copy", "save"] : ["copy", "save"];
+  function resourceActions(resource, { canCopyLocalObject = false } = {}) {
+    if (resource?.kind !== "link") return ["copy", "save"];
+    if (String(resource?.localPath ?? "").trim()) {
+      return canCopyLocalObject ? ["open", "copy-object", "save"] : ["open", "save"];
+    }
+    return ["open", "copy", "save"];
   }
 
   window.AgentHubResourceInteractions = {

@@ -4999,7 +4999,9 @@ function closeResourceContextMenu() {
 
 function openResourceContextMenu(event, resource) {
   pendingResource = resource;
-  const actions = new Set(resourceInteractions.resourceActions(resource.kind));
+  const actions = new Set(resourceInteractions.resourceActions(resource, {
+    canCopyLocalObject: vscodeMode,
+  }));
   for (const button of resourceContextMenu.querySelectorAll("[data-resource-action]")) {
     button.hidden = !actions.has(button.dataset.resourceAction);
   }

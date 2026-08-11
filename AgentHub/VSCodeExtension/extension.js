@@ -2,6 +2,7 @@
 
 const vscode = require("vscode");
 const { runtimeReloadAction } = require("./runtime-reload-policy");
+const { execFile } = require("node:child_process");
 const path = require("node:path");
 const os = require("node:os");
 
@@ -14,6 +15,36 @@ const { sidebarHtml } = require("./webview.js");
 
 const VIEW_ID = "agentHub.view";
 const THEME_KEY = "agentHub.theme";
+const FILE_DROP_CLIPBOARD_SCRIPT = Buffer.from([
+  "Add-Type -AssemblyName System.Windows.Forms",
+  "$files = New-Object System.Collections.Specialized.StringCollection",
+  "[void]$files.Add($env:AGENT_HUB_CLIPBOARD_FILE)",
+  "[System.Windows.Forms.Clipboard]::SetFileDropList($files)",
+].join("\n"), "utf16le").toString("base64");
+
+function copyWindowsFileObject(file, {
+  platform = process.platform,
+  execFileImpl = execFile,
+} = {}) {
+  if (platform !== "win32") throw new Error("Копирование файлового объекта поддерживается только в Windows");
+  const target = path.resolve(String(file ?? ""));
+  return new Promise((resolve, reject) => {
+    execFileImpl("powershell.exe", [
+      "-NoProfile",
+      "-NonInteractive",
+      "-STA",
+      "-EncodedCommand",
+      FILE_DROP_CLIPBOARD_SCRIPT,
+    ], {
+      env: { ...process.env, AGENT_HUB_CLIPBOARD_FILE: target },
+      timeout: 10_000,
+      windowsHide: true,
+    }, (error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
+}
 
 function relativeSegments(value) {
   return String(value ?? "")
@@ -270,10 +301,15 @@ class WorkLogViewProvider {
         });
         return;
       }
-      if (["open-link", "copy-link", "save-link"].includes(action)) {
+      if (["open-link", "copy-link", "copy-link-object", "save-link"].includes(action)) {
         const href = String(message.params?.localPath || message.params?.href || "").trim();
         if (action === "open-link") await this.openLink(href);
         else if (action === "copy-link") await vscode.env.clipboard.writeText(href);
+        else if (action === "copy-link-object") {
+          const target = await this.resolveWorkspaceLink(href);
+          if (!target) throw new Error("Файл ссылки не найден в Workspace");
+          await copyWindowsFileObject(target.fsPath);
+        }
         else await this.saveLink(href, message.params?.name);
         await this.panel?.webview.postMessage({
           type: "agenthub:control-result",
@@ -459,6 +495,7 @@ function deactivate() {}
 module.exports = {
   activate,
   deactivate,
+  copyWindowsFileObject,
   editorFileTarget,
   firstExisting,
   resolveAbsoluteWorkspaceFile,

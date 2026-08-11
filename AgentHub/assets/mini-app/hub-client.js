@@ -2491,6 +2491,14 @@ agentHub.on("resource:copy", ({ resource }) => runAction(async () => {
   agentHub.toast("Скопировано в буфер обмена");
 }));
 
+agentHub.on("resource:copy-object", ({ resource }) => runAction(async () => {
+  if (!vscode || !String(resource?.localPath ?? "").trim()) {
+    throw new Error("Копирование файлового объекта недоступно в этой поверхности");
+  }
+  await bridgeCall("copy-link-object", { href: resource.localPath });
+  agentHub.toast("Объект скопирован в буфер обмена");
+}));
+
 agentHub.on("resource:save", ({ resource }) => runAction(async () => {
   if (resource?.kind === "attachment") {
     if (vscode && resource.attachment?.id) {

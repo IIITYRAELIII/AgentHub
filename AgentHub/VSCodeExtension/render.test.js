@@ -476,6 +476,31 @@ test("Rain keeps its stored key and is named consistently", () => {
   assert.match(webview, /availableThemes\.map\(\(item\) => `<option value="\$\{item\.id\}">\$\{escapeHtml\(item\.name\)\}<\/option>`\)/u);
 });
 
+test("Windows file objects use an STA clipboard process without interpolating the path", async () => {
+  const { copyWindowsFileObject } = loadExtension({ FileType: { File: 1 } });
+  let invocation = null;
+  await copyWindowsFileObject("D:/work/file with spaces.txt", {
+    platform: "win32",
+    execFileImpl(command, args, options, callback) {
+      invocation = { command, args, options };
+      callback(null);
+    },
+  });
+  assert.equal(invocation.command, "powershell.exe");
+  assert.deepEqual(invocation.args.slice(0, 4), ["-NoProfile", "-NonInteractive", "-STA", "-EncodedCommand"]);
+  assert.equal(invocation.options.env.AGENT_HUB_CLIPBOARD_FILE, path.resolve("D:/work/file with spaces.txt"));
+  assert.equal(invocation.args.includes(invocation.options.env.AGENT_HUB_CLIPBOARD_FILE), false);
+  assert.equal(invocation.options.windowsHide, true);
+});
+
+test("file object clipboard rejects unsupported operating systems", () => {
+  const { copyWindowsFileObject } = loadExtension({ FileType: { File: 1 } });
+  assert.throws(
+    () => copyWindowsFileObject("/tmp/file.txt", { platform: "linux" }),
+    /поддерживается только в Windows/u,
+  );
+});
+
 test("Magma packages three Obsidian Forge scenes without legacy lava textures", () => {
   const theme = THEME_REGISTRY.themes.find((item) => item.id === "magma");
   assert.deepEqual(
@@ -870,7 +895,7 @@ test("Bespin keeps the three selected Cloud City scenes", () => {
   }
 });
 
-test("Kashyyyk packages three original forest-world scenes", () => {
+test("Kashyyyk packages forest scenes and its physical panel materials", () => {
   const theme = THEME_REGISTRY.themes.find((item) => item.id === "kashyyyk");
   assert.deepEqual(
     theme.backgrounds.map(({ id, name, asset }) => [id, name, asset]),
@@ -885,6 +910,17 @@ test("Kashyyyk packages three original forest-world scenes", () => {
     assert.ok(
       theme.resources.some((resource) => resource.pathname.endsWith(`/${background.asset}`)),
       background.asset,
+    );
+  }
+  for (const asset of [
+    "kashyyyk-dark-wood.webp",
+    "kashyyyk-panel-frame.webp",
+    "kashyyyk-side-rail.webp",
+    "kashyyyk-panel-moss.webp",
+  ]) {
+    assert.ok(
+      theme.resources.some((resource) => resource.pathname.endsWith(`/${asset}`)),
+      asset,
     );
   }
 });
