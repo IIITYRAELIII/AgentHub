@@ -18,6 +18,7 @@ import { defaultRuntimeRoot, runtimeLayout, runtimeReleaseDirectory } from "../i
 import { verifyRuntimeImportClosure } from "../infrastructure/filesystem/runtime-manifest-verifier.mjs";
 import { protectRuntimeConfig, protectRuntimeDirectory } from "../infrastructure/filesystem/runtime-security.mjs";
 import { buildWindowsRuntimeHost, runtimeHostSourceHash } from "../infrastructure/process/runtime-host-builder.mjs";
+import { processIsAlive } from "../infrastructure/process/process-liveness.mjs";
 import { writeTextAtomic } from "../infrastructure/persistence/state-store.mjs";
 
 const SOURCE_ROOT = path.resolve(import.meta.dirname, "..", "..");
@@ -486,12 +487,21 @@ export async function rollbackRuntime({ runtimeRoot = defaultRuntimeRoot() } = {
 export async function runtimeStatus({ runtimeRoot = defaultRuntimeRoot() } = {}) {
   const layout = runtimeLayout(runtimeRoot);
   const pointer = JSON.parse(await readFile(layout.currentFile, "utf8").catch(() => "{}"));
+  const lock = JSON.parse(await readFile(path.join(layout.dataDir, "bot.lock"), "utf8").catch(() => "{}"));
+  const pid = Number.isSafeInteger(lock.pid) ? lock.pid : null;
+  const running = pid !== null && processIsAlive(pid);
+  const runningRelease = running ? String(lock.releaseId ?? "").trim() || null : null;
   return {
     root: layout.root,
     current: pointer.current ?? null,
     previous: pointer.previous ?? null,
     configured: await exists(layout.configFile),
     active: await exists(layout.activationFile),
+    running,
+    ready: running && lock.ready === true,
+    pid: running ? pid : null,
+    runningRelease,
+    restartRequired: running && pointer.current != null && runningRelease !== pointer.current,
   };
 }
 

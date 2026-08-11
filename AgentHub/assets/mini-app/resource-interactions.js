@@ -10,6 +10,14 @@
     return (Array.isArray(values) ? values : []).filter(isImageAttachment);
   }
 
+  function viewerGallery(values, preferResourceUrl = false) {
+    return imageGallery(values).map((item) => {
+      const resourceUrl = String(item?.url ?? "").trim();
+      if (!preferResourceUrl || !resourceUrl || item?.dataUrl) return item;
+      return { ...item, dataUrl: resourceUrl };
+    });
+  }
+
   function galleryIndex(value, length) {
     if (!Number.isFinite(Number(value)) || length <= 0) return 0;
     return Math.min(length - 1, Math.max(0, Math.trunc(Number(value))));
@@ -32,5 +40,6 @@
     isImageAttachment,
     moveGalleryIndex,
     resourceActions,
+    viewerGallery,
   };
 })();

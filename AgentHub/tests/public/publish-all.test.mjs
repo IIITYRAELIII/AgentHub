@@ -87,8 +87,8 @@ test("publication requests the server's safe deferred restart last", async () =>
     "Сборка runtime-релиза",
     "Активация runtime-релиза",
     "Установка расширения VS Code",
-    "restart-server",
     "record-publication",
+    "restart-server",
   ]);
 });
 
@@ -104,6 +104,7 @@ test("selective publication maps shared UI to runtime and Worker only", async ()
     ]),
     {
       runtime: true,
+      runtimeRestart: false,
       worker: true,
       android: false,
       desktop: false,
@@ -121,6 +122,7 @@ test("selective publication maps shared UI to runtime and Worker only", async ()
     classifyPublicationChanges(["AgentHub/theme-registry.cjs"]),
     {
       runtime: true,
+      runtimeRestart: true,
       worker: false,
       android: false,
       desktop: false,
@@ -134,6 +136,7 @@ test("selective publication maps shared UI to runtime and Worker only", async ()
     classifyPublicationChanges(["AgentHub/RuntimeHost/AgentHub.RuntimeHost.cs"]),
     {
       runtime: true,
+      runtimeRestart: true,
       worker: false,
       android: false,
       desktop: false,
@@ -228,6 +231,33 @@ test("Worker packages only a verified published Android artifact", () => {
 test("Worker packages and revisions the Task board controller", () => {
   const build = fs.readFileSync(path.join(ROOT, "cloudflare-worker", "build-assets.mjs"), "utf8");
   assert.equal((build.match(/"task-board\.js"/gu) ?? []).length, 2);
+});
+
+test("selective frontend publication records state without restarting Hub", async () => {
+  const events = [];
+  await publishChanged(["--from", "base"], {
+    run: async (step) => events.push(step.label),
+    restart: async () => events.push("restart-server"),
+    readState: async () => null,
+    writeState: async () => events.push("record-publication"),
+    revision: async () => "head",
+    diff: async () => ["AgentHub/assets/mini-app/app.js"],
+  });
+  assert.ok(events.includes("record-publication"));
+  assert.ok(!events.includes("restart-server"));
+});
+
+test("selective backend publication records state before requesting restart", async () => {
+  const events = [];
+  await publishChanged(["--from", "base"], {
+    run: async (step) => events.push(step.label),
+    restart: async () => events.push("restart-server"),
+    readState: async () => null,
+    writeState: async () => events.push("record-publication"),
+    revision: async () => "head",
+    diff: async () => ["AgentHub/src/interfaces/web/mini-app-server.mjs"],
+  });
+  assert.ok(events.indexOf("record-publication") < events.indexOf("restart-server"));
 });
 
 test("Worker packages and revisions shared resource interactions", () => {

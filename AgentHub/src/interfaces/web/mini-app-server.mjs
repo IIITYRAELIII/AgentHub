@@ -88,6 +88,18 @@ function staticAssetManifest(assetsDirectory) {
   }
   return assets;
 }
+
+function staticAssetBundle({ id = "", assetsDirectory, workLogCssFile }) {
+  const resolvedAssetsDirectory = path.resolve(assetsDirectory);
+  const resolvedWorkLogCssFile = path.resolve(workLogCssFile);
+  return {
+    id: String(id || `${resolvedAssetsDirectory}\0${resolvedWorkLogCssFile}`),
+    assetsDirectory: resolvedAssetsDirectory,
+    staticAssets: staticAssetManifest(resolvedAssetsDirectory),
+    themeRegistry: loadThemeRegistry(resolvedAssetsDirectory),
+    workLogCssFile: resolvedWorkLogCssFile,
+  };
+}
 const MAX_CONTROL_REQUEST_BYTES = 512 * 1024;
 const MAX_MOBILE_UPDATE_BYTES = 100 * 1024 * 1024;
 const CONTROL_COMMAND_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,199}$/;
@@ -364,7 +376,11 @@ export class PublicAuthAttemptLimiter {
 
 export class MiniAppServer {
   #allowedUserIds;
-  #assetsDirectory;
+  #assetBundle;
+  #assetBundleProvider;
+  #assetBundleRefreshAfter = 0;
+  #assetBundleRefreshMs;
+  #assetBundleWarning = "";
   #attachmentDirectory;
   #botToken;
   #clients = new Set();
@@ -385,9 +401,6 @@ export class MiniAppServer {
   #publicAuthAttempts = new PublicAuthAttemptLimiter();
   #requireTelegramAuth;
   #server = null;
-  #staticAssets;
-  #themeRegistry;
-  #workLogCssFile;
 
   constructor({
     host = "127.0.0.1",
@@ -401,6 +414,8 @@ export class MiniAppServer {
     onControlResultDelivered = null,
     deviceStore = null,
     assetsDirectory = path.join(AGENT_HUB_ROOT, "assets", "mini-app"),
+    assetBundleProvider = null,
+    assetBundleRefreshMs = 1_000,
     attachmentDirectory = null,
     mobileUpdateDirectory = path.join(AGENT_HUB_ROOT, "assets", "mobile"),
     workLogCssFile = path.join(AGENT_HUB_ROOT, "work-log.css"),
@@ -419,19 +434,38 @@ export class MiniAppServer {
       ? onControlResultDelivered
       : null;
     this.#deviceStore = deviceStore;
-    this.#assetsDirectory = path.resolve(assetsDirectory);
-    this.#staticAssets = staticAssetManifest(this.#assetsDirectory);
-    this.#themeRegistry = loadThemeRegistry(this.#assetsDirectory);
+    this.#assetBundle = staticAssetBundle({ assetsDirectory, workLogCssFile });
+    this.#assetBundleProvider = typeof assetBundleProvider === "function" ? assetBundleProvider : null;
+    this.#assetBundleRefreshMs = Math.max(0, Number(assetBundleRefreshMs) || 0);
     this.#attachmentDirectory = attachmentDirectory ? path.resolve(attachmentDirectory) : null;
     this.#mobileUpdateDirectory = mobileUpdateDirectory
       ? path.resolve(mobileUpdateDirectory)
       : null;
-    this.#workLogCssFile = path.resolve(workLogCssFile);
     if (!journalDatabase && !journalDatabaseFile) {
       throw new Error("Mini App journalDatabase or journalDatabaseFile is required");
     }
     this.#journalDatabase = journalDatabase ?? new JournalDatabase(journalDatabaseFile);
     this.#ownsJournalDatabase = !journalDatabase;
+  }
+
+  async #activeAssetBundle() {
+    if (!this.#assetBundleProvider) return this.#assetBundle;
+    const now = Date.now();
+    if (now < this.#assetBundleRefreshAfter) return this.#assetBundle;
+    this.#assetBundleRefreshAfter = now + this.#assetBundleRefreshMs;
+    try {
+      const candidate = await this.#assetBundleProvider();
+      const id = String(candidate?.id ?? "").trim();
+      if (id && id === this.#assetBundle.id) return this.#assetBundle;
+      const next = staticAssetBundle(candidate ?? {});
+      this.#assetBundle = next;
+      this.#assetBundleWarning = "";
+    } catch (error) {
+      const warning = `Cannot switch Mini App assets: ${error.message}`;
+      if (warning !== this.#assetBundleWarning) console.warn(warning);
+      this.#assetBundleWarning = warning;
+    }
+    return this.#assetBundle;
   }
 
   async #journal() {
@@ -467,30 +501,30 @@ export class MiniAppServer {
     return { versionCode, versionName, sha256, bytes, apkFile };
   }
 
-  async #staticBody(pathname) {
-    if (pathname === "/work-log.css") return readFile(this.#workLogCssFile, "utf8");
-    const themeResource = this.#themeRegistry.resources.get(pathname);
+  async #staticBody(pathname, bundle) {
+    if (pathname === "/work-log.css") return readFile(bundle.workLogCssFile, "utf8");
+    const themeResource = bundle.themeRegistry.resources.get(pathname);
     if (themeResource) {
       return themeResource.immutable
         ? readFile(themeResource.file)
         : readFile(themeResource.file, "utf8");
     }
-    const asset = this.#staticAssets.get(pathname);
+    const asset = bundle.staticAssets.get(pathname);
     if (!asset) return null;
-    const target = path.join(this.#assetsDirectory, asset.file);
+    const target = path.join(bundle.assetsDirectory, asset.file);
     const body = asset.binary
       ? await readFile(target)
       : await readFile(target, "utf8");
-    return pathname === "/" ? renderThemeHtml(body, this.#themeRegistry) : body;
+    return pathname === "/" ? renderThemeHtml(body, bundle.themeRegistry) : body;
   }
 
-  #staticDescriptor(pathname) {
-    const themeResource = this.#themeRegistry.resources.get(pathname);
+  #staticDescriptor(pathname, bundle) {
+    const themeResource = bundle.themeRegistry.resources.get(pathname);
     if (themeResource) return themeResource;
     if (pathname === "/work-log.css") {
       return { contentType: "text/css; charset=utf-8", immutable: false };
     }
-    return this.#staticAssets.get(pathname) ?? null;
+    return bundle.staticAssets.get(pathname) ?? null;
   }
 
   #writeEvent(response, event, data) {
@@ -959,7 +993,8 @@ export class MiniAppServer {
       request.on("close", () => this.#clients.delete(response));
       return;
     }
-    const descriptor = this.#staticDescriptor(url.pathname);
+    const assetBundle = await this.#activeAssetBundle();
+    const descriptor = this.#staticDescriptor(url.pathname, assetBundle);
     if (!descriptor) {
       send(response, 404, "text/plain; charset=utf-8", "Not Found\n", method);
       return;
@@ -969,7 +1004,7 @@ export class MiniAppServer {
         response,
         200,
         descriptor.contentType,
-        await this.#staticBody(url.pathname),
+        await this.#staticBody(url.pathname, assetBundle),
         method,
         { immutable: descriptor.immutable },
       );

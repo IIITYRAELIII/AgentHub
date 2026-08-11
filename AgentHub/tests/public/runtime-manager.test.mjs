@@ -276,6 +276,24 @@ test("runtime config and data are external, activation is explicit and rollback 
   await assert.rejects(readFile(path.join(sourceRoot, "data", "state.json"), "utf8"), /ENOENT/);
 
   await deployRuntime({ sourceRoot, runtimeRoot, releaseId: "release-2" });
+  await writeFile(path.join(runtimeRoot, "data", "bot.lock"), JSON.stringify({
+    pid: process.pid,
+    instanceToken: "test-runtime",
+    releaseId: "release-1",
+    ready: true,
+  }), "utf8");
+  assert.deepEqual(await runtimeStatus({ runtimeRoot }), {
+    root: path.resolve(runtimeRoot),
+    current: "release-2",
+    previous: "release-1",
+    configured: true,
+    active: true,
+    running: true,
+    ready: true,
+    pid: process.pid,
+    runningRelease: "release-1",
+    restartRequired: true,
+  });
   assert.deepEqual(await rollbackRuntime({ runtimeRoot }), {
     current: "release-1",
     previous: "release-2",

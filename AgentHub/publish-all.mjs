@@ -107,12 +107,12 @@ export async function publishAll(args = process.argv.slice(2), {
 } = {}) {
   const options = parseArguments(args);
   for (const step of publicationSteps(options)) await run(step);
+  await record();
   if (!options.skipRestart) {
     console.log("\n==> Запрос безопасного перезапуска Agent Hub");
     const result = await restart("restart-server");
     console.log(result?.message ?? "Перезапуск запрошен");
   }
-  await record();
   console.log("\nПубликация завершена. Интерфейс VS Code подхватит runtime после переоткрытия панели или команды «Обновить Agent Hub»; Reload Window нужен только при изменении моста расширения.");
 }
 

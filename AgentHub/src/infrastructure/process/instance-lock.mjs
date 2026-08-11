@@ -50,15 +50,22 @@ export class SingleInstanceGuard {
   #dataDir;
   #lockFile;
   #isAlive;
+  #releaseId;
   #server = null;
   #handle = null;
   #token = randomUUID();
   #startedAt = new Date().toISOString();
 
-  constructor({ dataDir, lockFile = path.join(dataDir, "bot.lock"), isAlive = processIsAlive }) {
+  constructor({
+    dataDir,
+    lockFile = path.join(dataDir, "bot.lock"),
+    isAlive = processIsAlive,
+    releaseId = process.env.AGENT_HUB_RELEASE_ID,
+  }) {
     this.#dataDir = dataDir;
     this.#lockFile = lockFile;
     this.#isAlive = isAlive;
+    this.#releaseId = String(releaseId ?? "").trim() || null;
   }
 
   async acquire() {
@@ -108,6 +115,7 @@ export class SingleInstanceGuard {
         instanceToken: this.#token,
         startedAt: this.#startedAt,
         endpoint: pipeName(this.#dataDir),
+        releaseId: this.#releaseId,
         ready,
       })}\n`;
     await this.#handle.truncate(0);

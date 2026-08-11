@@ -16,6 +16,7 @@ const REPOSITORY_ROOT = path.resolve(ROOT, "..");
 
 const emptyPlan = () => ({
   runtime: false,
+  runtimeRestart: false,
   worker: false,
   android: false,
   desktop: false,
@@ -61,6 +62,7 @@ export function classifyPublicationChanges(files) {
     }
     if (relative.startsWith("RuntimeHost/")) {
       plan.runtime = true;
+      plan.runtimeRestart = true;
       plan.unitTests = true;
       continue;
     }
@@ -70,9 +72,12 @@ export function classifyPublicationChanges(files) {
     }
     if (relative === "package.json" || relative.endsWith(".mjs") || relative.endsWith(".cjs") || relative.endsWith(".ps1") || relative.endsWith(".vbs") || relative.endsWith(".py")) {
       plan.runtime = true;
+      plan.runtimeRestart = true;
       plan.unitTests = true;
       continue;
     }
+    plan.runtime = true;
+    plan.runtimeRestart = true;
     plan.unknown.push(file);
   }
   return plan;
@@ -143,9 +148,9 @@ export async function publishChanged(args = process.argv.slice(2), {
   if (options.fullTests) plan.fullTests = true;
   if (plan.unknown.length) console.warn(`Неизвестные пути требуют полной публикации: ${plan.unknown.join(", ")}`);
   for (const step of focusedSteps(plan)) await run(step);
-  if (plan.runtime && !options.skipRestart) await restart("restart-server");
   const head = await revision({ cwd: REPOSITORY_ROOT });
   await writeState({ revision: head, publishedAt: new Date().toISOString(), files, plan });
+  if (plan.runtimeRestart && !options.skipRestart) await restart("restart-server");
   console.log(`\nВыборочная публикация завершена: ${files.length} изменённых файлов.`);
   return { files, plan, revision: head };
 }

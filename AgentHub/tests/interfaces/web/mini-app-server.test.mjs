@@ -162,6 +162,32 @@ test("Mini App serves only safe persistent message attachment names", async () =
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("Mini App switches published frontend assets without restarting the server", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-static-bundle-"));
+  const firstCss = path.join(directory, "first.css");
+  const secondCss = path.join(directory, "second.css");
+  await writeFile(firstCss, "first-release\n", "utf8");
+  await writeFile(secondCss, "second-release\n", "utf8");
+  let current = { id: "release-1", assetsDirectory: path.resolve(import.meta.dirname, "../../../assets/mini-app"), workLogCssFile: firstCss };
+  const server = new MiniAppServer({
+    host: "127.0.0.1",
+    port: 0,
+    journalDatabase: memoryJournal(),
+    workLogCssFile: firstCss,
+    assetBundleProvider: async () => current,
+    assetBundleRefreshMs: 0,
+  });
+  try {
+    const address = await server.start();
+    assert.equal(await (await fetch(`${address.url}work-log.css`)).text(), "first-release\n");
+    current = { ...current, id: "release-2", workLogCssFile: secondCss };
+    assert.equal(await (await fetch(`${address.url}work-log.css`)).text(), "second-release\n");
+  } finally {
+    await server.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 test("Telegram Mini App initData is signed, fresh and allowlisted", () => {
   const now = Date.UTC(2026, 6, 27, 12, 0, 0);
   const initData = signedInitData({ authDate: Math.floor(now / 1_000) });

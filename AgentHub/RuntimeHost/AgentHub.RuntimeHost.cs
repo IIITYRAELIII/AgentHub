@@ -101,6 +101,7 @@ namespace AgentHub.RuntimeHost
             start.EnvironmentVariables["AGENT_HUB_CONFIG"] = Path.Combine(runtimeRoot, "config.json");
             start.EnvironmentVariables["AGENT_HUB_LAUNCHER"] = Assembly.GetExecutingAssembly().Location;
             start.EnvironmentVariables["AGENT_HUB_RUNTIME_ROOT"] = runtimeRoot;
+            start.EnvironmentVariables["AGENT_HUB_RELEASE_ID"] = current;
 
             using (Process process = Process.Start(start))
             {

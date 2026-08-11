@@ -2392,14 +2392,19 @@ async function loadAttachmentImage(attachment, index) {
 agentHub.on("attachment:open", ({ attachment, gallery = [], index = 0 }) => runAction(async () => {
   const image = String(attachment?.type ?? "").toLowerCase().startsWith("image/") || attachment?.isImage;
   if (image) {
+    const viewerGallery = window.AgentHubResourceInteractions.viewerGallery(
+      gallery.length ? gallery : [attachment],
+      vscode,
+    );
+    const viewerAttachment = viewerGallery[index] ?? viewerGallery[0] ?? attachment;
     agentHub.openAttachmentViewer({
-      gallery: gallery.length ? gallery : [attachment],
+      gallery: viewerGallery,
       index,
-      dataUrl: attachment?.dataUrl,
-      name: attachment?.name,
+      dataUrl: viewerAttachment?.dataUrl,
+      name: viewerAttachment?.name,
     });
     try {
-      if (!attachment?.dataUrl) await loadAttachmentImage(attachment, index);
+      if (!viewerAttachment?.dataUrl) await loadAttachmentImage(viewerAttachment, index);
     } catch (error) {
       agentHub.closeAttachmentViewer();
       throw error;

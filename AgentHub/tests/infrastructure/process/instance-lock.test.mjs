@@ -8,13 +8,14 @@ import { SingleInstanceGuard } from "../../../src/infrastructure/process/instanc
 test("single-instance guard rejects a concurrent owner and releases cleanly", async (context) => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "telegram-instance-lock-"));
   context.after(() => rm(dataDir, { recursive: true, force: true }));
-  const first = new SingleInstanceGuard({ dataDir });
+  const first = new SingleInstanceGuard({ dataDir, releaseId: "release-1" });
   const second = new SingleInstanceGuard({ dataDir });
   await first.acquire();
   await assert.rejects(() => second.acquire(), /already running/);
   const lock = JSON.parse(await readFile(path.join(dataDir, "bot.lock"), "utf8"));
   assert.equal(lock.pid, process.pid);
   assert.ok(lock.instanceToken);
+  assert.equal(lock.releaseId, "release-1");
   assert.equal(lock.ready, false);
   await first.markReady();
   assert.equal(JSON.parse(await readFile(path.join(dataDir, "bot.lock"), "utf8")).ready, true);

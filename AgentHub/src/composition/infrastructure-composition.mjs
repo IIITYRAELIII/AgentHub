@@ -1,4 +1,4 @@
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 
@@ -7,6 +7,7 @@ import { TurnEndNotificationRegistry } from "../application/turn-end-notificatio
 import { createWorkLogUsageStore } from "../application/work-log-usage-store.mjs";
 import { TaskBoardService } from "../application/task-board-service.mjs";
 import { samePath } from "../infrastructure/filesystem/config.mjs";
+import { runtimeLayout, runtimeReleaseDirectory } from "../infrastructure/filesystem/runtime-layout.mjs";
 import { UsdRubRateStore } from "../infrastructure/network/exchange-rate.mjs";
 import { migrateMessageBindings } from "../infrastructure/persistence/message-bindings.mjs";
 import { RateLimitHistoryStore } from "../infrastructure/persistence/rate-limit-history.mjs";
@@ -28,6 +29,20 @@ import {
   ensureDashBotStream,
 } from "../providers/codex/codex-spark-task-classifier.mjs";
 import { RuntimeNotificationController } from "../runtime/runtime-notification-controller.mjs";
+
+function runtimeAssetBundleProvider(runtimeRoot) {
+  const layout = runtimeLayout(runtimeRoot);
+  return async () => {
+    const pointer = JSON.parse(await readFile(layout.currentFile, "utf8"));
+    const id = String(pointer.current ?? "").trim();
+    const releaseRoot = runtimeReleaseDirectory(runtimeRoot, id);
+    return {
+      id,
+      assetsDirectory: path.join(releaseRoot, "assets", "mini-app"),
+      workLogCssFile: path.join(releaseRoot, "work-log.css"),
+    };
+  };
+}
 
 export async function createHubInfrastructure({
   config,
@@ -101,6 +116,7 @@ export async function createHubInfrastructure({
     controlHandler: handleDesktopControl,
     onControlResultDelivered: ({ id }) => forgetDesktopControl(id),
     attachmentDirectory: path.join(runtimeCommandRoot, "DesktopApp", "attachments"),
+    assetBundleProvider: runtimeAssetBundleProvider(runtimeCommandRoot),
     journalDatabaseFile,
   };
   const miniAppServer = config.miniApp.enabled
