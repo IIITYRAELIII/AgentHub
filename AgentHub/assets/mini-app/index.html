@@ -17,6 +17,7 @@
   <script src="/message-disclosure.js" defer></script>
   <script src="/chat-scroll-controller.js" defer></script>
   <script src="/chat-surface-preference.js" defer></script>
+  <script src="/background-motion-preference.js" defer></script>
   <script src="/navigation-tabs-controller.js" defer></script>
   <script src="/stream-tabs-controller.js" defer></script>
   <script src="/approval-form.js" defer></script>
@@ -1171,6 +1172,13 @@
           <label class="setting-row setting-field">
             <span class="setting-name">Фон</span>
             <select data-background-select aria-label="Фон интерфейса"></select>
+          </label>
+          <label class="setting-switch">
+            <input type="checkbox" data-background-motion-toggle>
+            <span class="switch-text">Анимация фона
+              <span class="switch-note">Дождь, молнии, туман и другие движущиеся фоновые эффекты.</span>
+            </span>
+            <span class="switch-track" aria-hidden="true"></span>
           </label>
           <label class="setting-switch">
             <input type="checkbox" data-chat-background-toggle>

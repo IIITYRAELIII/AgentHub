@@ -19,6 +19,21 @@ html[data-background-override="true"] body::after {
    Погода Rain/Storm выбирается app.js по data-background. */
 html[data-background-override="true"] body::before { content: none !important; }
 
+html[data-background-motion="off"] body::before,
+html[data-background-motion="off"] body::after,
+html[data-background-motion="off"] .theme-atmosphere,
+html[data-background-motion="off"] .theme-atmosphere::before,
+html[data-background-motion="off"] .theme-atmosphere::after,
+html[data-background-motion="off"] .theme-atmosphere * {
+  animation: none !important;
+  transition: none !important;
+}
+
+html[data-background-motion="off"] .rain,
+html[data-background-motion="off"] .motes {
+  display: none !important;
+}
+
 /* Свет сцены дышит на месте: медленнее у космоса, заметнее у огня. */
 @keyframes scene-glow {
   0%, 100% { opacity: 0.24; transform: scale(1.01); }

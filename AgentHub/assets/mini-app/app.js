@@ -28,6 +28,7 @@ const {
   turnTraceContent,
 } = window.AgentHubMessageDisclosure;
 const chatSurfacePreference = window.AgentHubChatSurfacePreference;
+const backgroundMotionPreference = window.AgentHubBackgroundMotionPreference;
 const JournalView = window.AgentHubJournalView;
 const expandedUserMessageIds = new Set();
 let messageDisclosureFrame = 0;
@@ -40,6 +41,7 @@ const refreshButton = document.querySelector("[data-refresh]");
 const collapseAllButton = document.querySelector("[data-collapse-all]");
 const themeSelect = document.querySelector("[data-theme-select]");
 const backgroundSelect = document.querySelector("[data-background-select]");
+const backgroundMotionToggle = document.querySelector("[data-background-motion-toggle]");
 const chatBackgroundToggle = document.querySelector("[data-chat-background-toggle]");
 const journalGroupingButtons = [...document.querySelectorAll("[data-journal-grouping]")];
 const journalPrimaryColumn = document.querySelector("[data-journal-primary-column]");
@@ -574,7 +576,10 @@ function buildParticleLayer(kind) {
 
 function syncParticleLayer(background) {
   const kind = PARTICLE_BACKGROUNDS[background] ?? null;
-  const allowed = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches !== true;
+  const allowed = backgroundMotionPreference.enabled(
+    root,
+    globalThis.matchMedia?.("(prefers-reduced-motion: reduce)"),
+  );
   if (!kind || !allowed) {
     particleLayer?.remove();
     particleLayer = null;
@@ -585,6 +590,12 @@ function syncParticleLayer(background) {
   particleLayer = buildParticleLayer(kind);
   particleLayer.dataset.kind = kind;
   document.body.append(particleLayer);
+}
+
+function applyBackgroundMotion(value, { persist = false } = {}) {
+  const selected = backgroundMotionPreference.apply(root, backgroundMotionToggle, value);
+  syncParticleLayer(root.dataset.background);
+  if (persist) backgroundMotionPreference.persist(localStorage, selected);
 }
 
 function applyTheme(theme, { persist = false } = {}) {
@@ -902,6 +913,7 @@ telegramFullscreenButton?.addEventListener("click", () => {
   if (telegram?.isFullscreen === true) telegram?.exitFullscreen?.();
   else telegram?.requestFullscreen?.();
 });
+applyBackgroundMotion(backgroundMotionPreference.stored(localStorage));
 applyTheme(savedTheme());
 applyChatSurface(chatSurfacePreference.stored(localStorage));
 applyBreakdown(savedBreakdown());
@@ -947,6 +959,9 @@ themeSelect.addEventListener("change", () => {
 });
 backgroundSelect?.addEventListener("change", () => {
   applyBackground(backgroundSelect.value, { persist: true });
+});
+backgroundMotionToggle?.addEventListener("change", () => {
+  applyBackgroundMotion(backgroundMotionToggle.checked ? "on" : "off", { persist: true });
 });
 chatBackgroundToggle?.addEventListener("change", () => {
   applyChatSurface(chatBackgroundToggle.checked ? "transparent" : "themed", { persist: true });

@@ -96,6 +96,10 @@
   let context = null;
   let program = null;
   let locations = null;
+
+  function motionEnabled() {
+    return window.AgentHubBackgroundMotionPreference.enabled(root, reducedMotion);
+  }
   let boltTexture = null;
   let imageSize = [1, 1];
   let ready = false;
@@ -282,17 +286,18 @@
     frame = 0;
     if (!ready || root.dataset.theme !== THEME || document.hidden) return;
     resize();
-    const strike = reducedMotion.matches ? 0 : strikeAt(now);
+    const moving = motionEnabled();
+    const strike = moving ? strikeAt(now) : 0;
     context.useProgram(program);
     context.uniform2f(locations.viewport, width, height);
     context.uniform2f(locations.imageSize, imageSize[0], imageSize[1]);
-    context.uniform1f(locations.time, reducedMotion.matches ? 0 : (now - startedAt) / 1000);
+    context.uniform1f(locations.time, moving ? (now - startedAt) / 1000 : 0);
     context.uniform1f(locations.focusX, window.innerWidth < window.innerHeight ? 0.66 : 0.58);
     context.uniform1f(locations.horizon, 1 - HORIZON);
     context.uniform1f(locations.strike, strike);
     context.drawArrays(context.TRIANGLE_STRIP, 0, 4);
     atmosphere.dataset.ready = "true";
-    if (!reducedMotion.matches) frame = window.requestAnimationFrame(draw);
+    if (moving) frame = window.requestAnimationFrame(draw);
   }
 
   function schedule() {
@@ -395,11 +400,18 @@
       nextLightningAt = 0;
       return;
     }
+    if (!motionEnabled()) {
+      lightning = null;
+      nextLightningAt = 0;
+    }
     initialize();
     schedule();
   }
 
-  new MutationObserver(sync).observe(root, { attributes: true, attributeFilter: ["data-theme"] });
+  new MutationObserver(sync).observe(root, {
+    attributes: true,
+    attributeFilter: ["data-theme", "data-background-motion"],
+  });
   window.addEventListener("resize", schedule, { passive: true });
   window.addEventListener("focus", sync);
   window.addEventListener("pageshow", sync);

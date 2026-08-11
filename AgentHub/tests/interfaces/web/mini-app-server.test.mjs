@@ -294,6 +294,7 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
 
     for (const pathname of [
       "",
+      "background-motion-preference.js",
       "browser-device-auth.js",
       "chat-surface-preference.js",
       "navigation-tabs-controller.js",
@@ -511,6 +512,7 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.match(page, /<option value="lake">Озеро<\/option>/u);
     assert.match(page, /data-surface="desktop"/u);
     assert.match(page, /data-theme-select/u);
+    assert.match(page, /data-background-motion-toggle/u);
     assert.match(page, /data-collapse-all/u);
     assert.doesNotMatch(page, /data-rate-limits-slot/u);
     assert.equal(page.match(/data-current-limits=/gu)?.length, 2);

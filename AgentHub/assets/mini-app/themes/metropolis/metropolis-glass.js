@@ -168,6 +168,10 @@
   let initialization = 0;
   let locations = null;
 
+  function motionEnabled() {
+    return window.AgentHubBackgroundMotionPreference.enabled(root, reducedMotion);
+  }
+
   function cssUrl(value) {
     const match = String(value ?? "").trim().match(/^url\((['"]?)(.*)\1\)$/u);
     return match?.[2] ?? "";
@@ -221,7 +225,8 @@
     context.useProgram(program);
     context.uniform2f(locations.viewport, canvas.width, canvas.height);
     context.uniform2f(locations.imageSize, imageSize[0], imageSize[1]);
-    context.uniform1f(locations.time, reducedMotion.matches ? 0 : (now - startedAt) / 1000);
+    const moving = motionEnabled();
+    context.uniform1f(locations.time, moving ? (now - startedAt) / 1000 : 0);
     const theme = THEMES[activeTheme] ?? THEMES.metropolis;
     const focus = theme.focus;
     context.uniform1f(locations.dropScale, theme.drops);
@@ -236,7 +241,7 @@
     );
     context.drawArrays(context.TRIANGLE_STRIP, 0, 4);
     atmosphere.dataset.ready = "true";
-    if (!reducedMotion.matches) frame = window.requestAnimationFrame(draw);
+    if (moving) frame = window.requestAnimationFrame(draw);
   }
 
   function schedule() {
@@ -407,7 +412,7 @@
   const themeObserver = new MutationObserver(syncTheme);
   themeObserver.observe(root, {
     attributes: true,
-    attributeFilter: ["data-theme", "data-background"],
+    attributeFilter: ["data-theme", "data-background", "data-background-motion"],
   });
   window.addEventListener("resize", schedule, { passive: true });
   /* VS Code keeps the webview alive while its editor tab is hidden. Depending
