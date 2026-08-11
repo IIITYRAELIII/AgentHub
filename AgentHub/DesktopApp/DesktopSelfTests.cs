@@ -26,6 +26,22 @@ namespace AgentHubDesktop
             AttachmentStoragePreservesRdpFileName();
             WorkspacePresentationGroupsThreadsByWorkspaceAndStream();
             WorkspacePresentationKeepsAtMostFourOpenStreams();
+            MarkdownTableIsRecognisedOnlyWithSeparator();
+            WorkspaceFileLinkAcceptsRelativeTargetAndAnchor();
+            ScrollBarStyleReplacesTheSystemTheme();
+        }
+
+        private static void ScrollBarStyleReplacesTheSystemTheme()
+        {
+            var styles = Theme.ControlStyles();
+            var style = styles[typeof(System.Windows.Controls.Primitives.ScrollBar)] as System.Windows.Style;
+            Require(style != null, "полоса прокрутки осталась с системным оформлением");
+            Require(style.TargetType == typeof(System.Windows.Controls.Primitives.ScrollBar),
+                "стиль полосы прокрутки описан для чужого типа");
+            /* Ключ SystemColors.ControlBrushKey отвечает за угол между двумя
+               полосами: без подмены он остаётся светло-серым. */
+            var corner = styles[System.Windows.SystemColors.ControlBrushKey] as System.Windows.Media.SolidColorBrush;
+            Require(corner != null && corner.Color == Theme.Rail, "угол прокрутки остался системного цвета");
         }
 
         private static void MarkdownTableIsRecognisedOnlyWithSeparator()

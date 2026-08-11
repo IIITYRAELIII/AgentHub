@@ -10,6 +10,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Web.Script.Serialization;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Documents;
@@ -89,9 +90,14 @@ namespace AgentHubDesktop
             WindowStartupLocation = WindowStartupLocation.CenterScreen;
             WindowStyle = WindowStyle.None;
             ResizeMode = ResizeMode.CanResize;
+            /* Без собственного оформления Windows 11 всё равно рисует рамку
+               изменения размера и полосу заголовка системными цветами: сверху
+               и по краям окна видны светлые полосы. Красим их в цвет фона. */
+            SourceInitialized += delegate { ApplySystemFrameColours(); };
 
             sendButton = Theme.Button("Отправить", "\uE724", true);
             olderButton = Theme.Button("Ранние сообщения", "\uE823", false);
+            Resources.MergedDictionaries.Add(Theme.ControlStyles());
             Content = BuildShell();
             LoadDrafts();
 
@@ -118,6 +124,34 @@ namespace AgentHubDesktop
             composer.PreviewKeyDown += ComposerPreviewKeyDown;
             composer.AllowDrop = true;
             composer.Drop += ComposerDrop;
+        }
+
+        private const int DwmImmersiveDarkMode = 20;
+        private const int DwmBorderColour = 34;
+        private const int DwmCaptionColour = 35;
+
+        [DllImport("dwmapi.dll", PreserveSig = true)]
+        private static extern int DwmSetWindowAttribute(IntPtr window, int attribute, ref int value, int size);
+
+        private void ApplySystemFrameColours()
+        {
+            try
+            {
+                var handle = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+                if (handle == IntPtr.Zero) return;
+                var ink = Theme.Ink;
+                /* DWM ждёт COLORREF: младший байт — красный, старший — синий. */
+                var colour = ink.R | (ink.G << 8) | (ink.B << 16);
+                var dark = 1;
+                DwmSetWindowAttribute(handle, DwmImmersiveDarkMode, ref dark, sizeof(int));
+                DwmSetWindowAttribute(handle, DwmBorderColour, ref colour, sizeof(int));
+                DwmSetWindowAttribute(handle, DwmCaptionColour, ref colour, sizeof(int));
+            }
+            catch
+            {
+                /* На более старых сборках Windows атрибуты неизвестны: рамка
+                   останется системной, приложение работает как прежде. */
+            }
         }
 
         private UIElement BuildShell()

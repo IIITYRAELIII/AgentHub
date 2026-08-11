@@ -31,6 +31,97 @@ namespace AgentHubDesktop
             return (Color)ColorConverter.ConvertFromString(color);
         }
 
+        /* Полосы прокрутки WPF по умолчанию рисуются светлой системной темой:
+           на тёмном окне они читались как белые полосы по краям. Собственный
+           шаблон описан разметкой, потому что Track задаёт кнопки и ползунок
+           отдельными свойствами, а не потомками. */
+        private const string ScrollBarStyleXaml = @"<ResourceDictionary xmlns=""http://schemas.microsoft.com/winfx/2006/xaml/presentation""
+                    xmlns:x=""http://schemas.microsoft.com/winfx/2006/xaml""
+                    xmlns:sw=""clr-namespace:System.Windows;assembly=PresentationFramework"">
+  <SolidColorBrush x:Key=""{x:Static sw:SystemColors.ControlBrushKey}"" Color=""$rail$"" />
+  <Style x:Key=""AgentHubScrollThumb"" TargetType=""{x:Type Thumb}"">
+    <Setter Property=""OverridesDefaultStyle"" Value=""True"" />
+    <Setter Property=""IsTabStop"" Value=""False"" />
+    <Setter Property=""Template"">
+      <Setter.Value>
+        <ControlTemplate TargetType=""{x:Type Thumb}"">
+          <Border x:Name=""body"" Background=""$thumb$"" CornerRadius=""4"" Margin=""2"" />
+          <ControlTemplate.Triggers>
+            <Trigger Property=""IsMouseOver"" Value=""True"">
+              <Setter TargetName=""body"" Property=""Background"" Value=""$thumbHover$"" />
+            </Trigger>
+            <Trigger Property=""IsDragging"" Value=""True"">
+              <Setter TargetName=""body"" Property=""Background"" Value=""$thumbActive$"" />
+            </Trigger>
+          </ControlTemplate.Triggers>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+  </Style>
+  <Style x:Key=""AgentHubScrollPage"" TargetType=""{x:Type RepeatButton}"">
+    <Setter Property=""OverridesDefaultStyle"" Value=""True"" />
+    <Setter Property=""Focusable"" Value=""False"" />
+    <Setter Property=""IsTabStop"" Value=""False"" />
+    <Setter Property=""Template"">
+      <Setter.Value>
+        <ControlTemplate TargetType=""{x:Type RepeatButton}"">
+          <Border Background=""Transparent"" />
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+  </Style>
+  <Style x:Key=""{x:Type ScrollBar}"" TargetType=""{x:Type ScrollBar}"">
+    <Setter Property=""OverridesDefaultStyle"" Value=""True"" />
+    <Setter Property=""Background"" Value=""Transparent"" />
+    <Setter Property=""Width"" Value=""10"" />
+    <Setter Property=""Template"">
+      <Setter.Value>
+        <ControlTemplate TargetType=""{x:Type ScrollBar}"">
+          <Grid Background=""{TemplateBinding Background}"" SnapsToDevicePixels=""True"">
+            <Track x:Name=""PART_Track"" Orientation=""{TemplateBinding Orientation}"" IsDirectionReversed=""True"">
+              <Track.DecreaseRepeatButton>
+                <RepeatButton Style=""{StaticResource AgentHubScrollPage}"" Command=""ScrollBar.PageUpCommand"" />
+              </Track.DecreaseRepeatButton>
+              <Track.Thumb>
+                <Thumb Style=""{StaticResource AgentHubScrollThumb}"" />
+              </Track.Thumb>
+              <Track.IncreaseRepeatButton>
+                <RepeatButton Style=""{StaticResource AgentHubScrollPage}"" Command=""ScrollBar.PageDownCommand"" />
+              </Track.IncreaseRepeatButton>
+            </Track>
+          </Grid>
+          <ControlTemplate.Triggers>
+            <Trigger Property=""Orientation"" Value=""Horizontal"">
+              <Setter TargetName=""PART_Track"" Property=""IsDirectionReversed"" Value=""False"" />
+            </Trigger>
+          </ControlTemplate.Triggers>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+    <Style.Triggers>
+      <Trigger Property=""Orientation"" Value=""Horizontal"">
+        <Setter Property=""Width"" Value=""Auto"" />
+        <Setter Property=""Height"" Value=""10"" />
+      </Trigger>
+    </Style.Triggers>
+  </Style>
+</ResourceDictionary>";
+
+        public static string Hex(Color color)
+        {
+            return String.Format("#{0:X2}{1:X2}{2:X2}", color.R, color.G, color.B);
+        }
+
+        public static ResourceDictionary ControlStyles()
+        {
+            var xaml = ScrollBarStyleXaml
+                .Replace("$rail$", Hex(Rail))
+                .Replace("$thumbHover$", Hex(PanelHover))
+                .Replace("$thumbActive$", Hex(Dim))
+                .Replace("$thumb$", Hex(Border));
+            return (ResourceDictionary)System.Windows.Markup.XamlReader.Parse(xaml);
+        }
+
         public static Brush Provider(string provider)
         {
             return String.Equals(provider, "claude", StringComparison.OrdinalIgnoreCase)
