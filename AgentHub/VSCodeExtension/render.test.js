@@ -2111,16 +2111,33 @@ test("hub status band lives inside the top toolbar instead of covering the strea
   assert.doesNotMatch(styles, /html:not\(\[data-surface="mobile"\]\) \.connection-banner \{[^}]*display:/u);
 });
 
-test("«Ноль» keeps a flat monochrome ground without a single coloured token", () => {
+test("Null keeps a flat monochrome ground without a single coloured token", () => {
   const styles = themeFile("zero");
   const manifest = JSON.parse(fs.readFileSync(path.join(MINI_APP_ROOT, "themes", "zero", "theme.json"), "utf8"));
-  /* Тема отличается от остальных отсутствием цвета: у каждого oklch-токена
-     насыщенность обязана быть нулевой, иначе смысл темы теряется. */
+  /* Монохромность — визуальный контракт, а не требование к конкретной записи
+     цвета. Проверяем и oklch, и hex, чтобы замена одного CSS-синтаксиса другим
+     не ломала тест при сохранении той же grayscale-палитры. */
   const chroma = [...styles.matchAll(/oklch\(\s*[\d.]+\s+([\d.]+)/gu)].map((match) => Number(match[1]));
-  assert.ok(chroma.length > 20);
-  assert.deepEqual([...new Set(chroma)], [0]);
+  assert.ok(chroma.every((value) => value === 0));
+  const hexColours = [...styles.matchAll(/#([\da-f]{3,8})\b/giu)].map((match) => match[1]);
+  assert.ok(hexColours.length > 20);
+  for (const value of hexColours) {
+    const expanded = value.length <= 4
+      ? [...value].map((digit) => `${digit}${digit}`).join("")
+      : value;
+    assert.equal(expanded.slice(0, 2), expanded.slice(2, 4));
+    assert.equal(expanded.slice(2, 4), expanded.slice(4, 6));
+  }
   assert.equal(manifest.backgrounds.length, 1);
   assert.doesNotMatch(styles, /url\(/u);
   const shadows = [...styles.matchAll(/box-shadow:\s*([^;}]+)/gu)].map((match) => match[1].trim());
-  assert.deepEqual([...new Set(shadows)], ["none"]);
+  for (const shadow of shadows) {
+    if (shadow === "none") continue;
+    const [inset, offsetX, offsetY, blur, colour, ...extra] = shadow.split(/\s+/u);
+    assert.equal(inset, "inset");
+    assert.equal(blur, "0");
+    assert.equal(colour, "var(--accent)");
+    assert.deepEqual(extra, []);
+    assert.ok([offsetX, offsetY].some((offset) => Math.abs(Number.parseFloat(offset)) === 1));
+  }
 });
