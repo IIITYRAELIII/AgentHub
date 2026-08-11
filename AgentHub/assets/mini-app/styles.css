@@ -4648,6 +4648,7 @@ html[data-surface="mobile"]
    внешние тени и border-image рамок. !important нужен, потому что пакеты тем
    подключаются после общей оболочки и иначе возвращают собственную текстуру. */
 :root[data-chat-surface="transparent"] .chat,
+:root[data-chat-surface="transparent"] .stream-chat-columns,
 :root[data-chat-surface="transparent"] .stream-chat-columns > .chat-pane,
 :root[data-chat-surface="transparent"] .stream-chat-preview {
   background-blend-mode: normal !important;
