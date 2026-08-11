@@ -1616,7 +1616,7 @@ function backgroundAssetUrl(background) {
 async function decodedBackgroundUrl(background, url) {
   if (!encodedBackgroundUrl(url)) return url;
   if (backgroundObjectUrls.has(url)) return backgroundObjectUrls.get(url);
-  const fetchPart = async (target) => {
+  const readPart = async (target, read) => {
     let lastError = null;
     for (let attempt = 0; attempt < 4; attempt += 1) {
       const controller = new AbortController();
@@ -1628,7 +1628,7 @@ async function decodedBackgroundUrl(background, url) {
           signal: controller.signal,
         });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        return response;
+        return await read(response);
       } catch (error) {
         lastError = error;
         if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, 200 * (2 ** attempt)));
@@ -1638,8 +1638,7 @@ async function decodedBackgroundUrl(background, url) {
     }
     throw lastError ?? new Error("Background transport failed");
   };
-  const response = await fetchPart(url);
-  const manifest = await response.json();
+  const manifest = await readPart(url, (response) => response.json());
   if (!Array.isArray(manifest.parts) || !manifest.parts.length || manifest.parts.length > 512) {
     throw new Error("Background transport manifest is invalid");
   }
@@ -1648,8 +1647,7 @@ async function decodedBackgroundUrl(background, url) {
   await Promise.all(Array.from({ length: Math.min(6, manifest.parts.length) }, async () => {
     while (nextPart < manifest.parts.length) {
       const index = nextPart++;
-      const partResponse = await fetchPart(manifest.parts[index]);
-      chunks[index] = (await partResponse.text()).trim();
+      chunks[index] = (await readPart(manifest.parts[index], (response) => response.text())).trim();
     }
   }));
   const encoded = chunks.join("");
