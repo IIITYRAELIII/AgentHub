@@ -85,7 +85,16 @@ test("orange theme text roles meet the AA contrast contract", async () => {
     ...parseCssVariables(css, 'html[data-theme="orange"] .app-header,\nhtml[data-theme="orange"] .task-rail'),
   };
 
-  const rootTextRoles = ["--text", "--text-soft", "--text-muted", "--text-faint", "--accent", "--ok", "--pending"];
+  const rootTextRoles = [
+    "--text",
+    "--text-soft",
+    "--text-muted",
+    "--text-faint",
+    "--accent",
+    "--warning",
+    "--ok",
+    "--pending",
+  ];
   const rootBackgrounds = [
     ["--bg", root["--bg"]],
     ["--surface-1", root["--surface-1"]],
@@ -128,10 +137,26 @@ test("orange theme text roles meet the AA contrast contract", async () => {
     label: "orange selected workspace text",
   });
   assertContrast({
+    foreground: "#fff1d5",
+    background: "#bf4822",
+    label: "orange selected workspace activity text",
+  });
+  assertContrast({
     foreground: "#fff",
     background: "#bf4822",
     label: "orange primary button text",
   });
+
+  for (const role of ["--comparison-local", "--comparison-deviation", "--comparison-cost"]) {
+    for (const [backgroundName, background] of [["--bg", root["--bg"]], ["--surface-1", root["--surface-1"]]]) {
+      assertContrast({
+        foreground: root[role],
+        background,
+        label: `orange chart ${role} on ${backgroundName}`,
+        minimum: 3,
+      });
+    }
+  }
 });
 
 test("orange focus defaults on, persists, and only applies inside the orange theme", async () => {

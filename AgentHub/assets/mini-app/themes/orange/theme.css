@@ -40,6 +40,7 @@ html[data-theme="orange"] {
   --text-soft: #4a3f3d;
   --text-muted: #5f534f;
   --text-faint: #645854;
+  --warning: #9e3316;
   --accent: #9e3316;
   --accent-soft: #f5dfd4;
   --accent-line: #d86a43;
@@ -58,6 +59,9 @@ html[data-theme="orange"] {
   --dot-cache: #168f82;
   --dot-output: #497eaa;
   --dot-think: #8f63a8;
+  --comparison-local: #286a9c;
+  --comparison-deviation: #72531d;
+  --comparison-cost: #764d8d;
 
   --space-glow-a: transparent;
   --space-glow-b: transparent;
@@ -74,12 +78,21 @@ html[data-theme="orange"] {
   --shell-control-background: #2b2229;
   --shell-control-border: 1px solid #504049;
   --shell-panel-border: 1px solid var(--line);
+  --shell-tab-active-background: #bf4822;
+  --shell-tab-active-border: 1px solid #df7652;
+  --shell-tab-active-color: #fffaf5;
   --shell-stream-tabs-background: #fffaf4;
   --shell-stream-tab-background: transparent;
   --shell-stream-tab-hover-background: #f6e9df;
   --shell-stream-tab-active-background: #fff4ed;
   --shell-stream-card-background: transparent;
   --shell-stream-card-border: 1px solid transparent;
+  --current-limit-name-color: #5f534f;
+  --current-limit-value-color: #2a2424;
+  --current-limit-reset-color: #5f534f;
+  --current-limit-ring-value-color: #2a2424;
+  --current-limit-track: #d7caba;
+  --tooltip-background: #fffaf4;
 }
 
 html[data-theme="orange"] body {
@@ -167,7 +180,12 @@ html[data-theme="orange"] .task-workspace-item[data-selected] {
 html[data-theme="orange"] .task-workspace-item[data-selected] .task-title,
 html[data-theme="orange"] .task-workspace-item[data-selected] .task-time,
 html[data-theme="orange"] .task-workspace-item[data-selected] .task-status {
-  color: #fffaf5;
+  color: #fffdf8;
+}
+
+html[data-theme="orange"] .task-workspace-item[data-selected] .task-time {
+  color: #fff1d5;
+  font-weight: 700;
 }
 
 html[data-theme="orange"] .msg {
@@ -222,11 +240,17 @@ html[data-theme="orange"] .workspace-task-panel .board-task-card:hover {
 }
 
 html[data-theme="orange"] .orange-focus-toggle {
-  margin-left: auto;
+  margin-left: 0;
+  min-height: var(--shell-tab-height, 2rem);
 }
 
 html[data-theme="orange"] .toolbar .view-settings {
-  margin-left: 0;
+  margin-left: auto;
+  min-height: var(--shell-tab-height, 2rem);
+}
+
+html[data-theme="orange"] .view-tab[data-view-button="background"] {
+  display: none !important;
 }
 
 html[data-theme="orange"] .orange-focus-toggle[aria-pressed="true"] {

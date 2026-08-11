@@ -1823,6 +1823,13 @@ telegram?.onEvent?.("fullscreenFailed", (event) => {
 
 const providerLabels = { codex: "Codex", claude: "Claude" };
 
+function streamProviderModelTitle({ provider = "", agentLabel = "", modelLabel = "" } = {}) {
+  const normalizedProvider = String(provider ?? "").trim();
+  const providerName = String(agentLabel || providerLabels[normalizedProvider] || normalizedProvider || "не указан").trim();
+  const modelName = String(modelLabel ?? "").trim();
+  return `Провайдер: ${providerName}${modelName ? `. Модель: ${modelName}` : ""}`;
+}
+
 function shortModelLabel(value) {
   const source = String(value ?? "").trim();
   if (!source) return "";
@@ -2151,10 +2158,21 @@ function renderActivityRail() {
       || `Stream ${Math.max(1, Number(task.streamOrdinal) || 1)}`;
     const workspaceName = String(task.workspaceName || task.title || "Workspace").trim();
     const activityTitle = `${workspaceName} — ${streamName}`;
+    const provider = String(task?.provider ?? "none");
+    const providerModelTitle = streamProviderModelTitle({
+      provider,
+      agentLabel: presentation.agentLabel,
+      modelLabel: task?.modelLabel,
+    });
+    const title = `${presentation.statusLabel ? `${presentation.statusLabel}. ` : ""}${activityTitle}. ${providerModelTitle}`;
     return el("button", {
       type: "button",
       class: "stream-tab activity-stream-item",
       "data-activity-task-id": task.id,
+      "data-stream-provider": provider,
+      "data-stream-provider-label": presentation.agentLabel,
+      "data-stream-model": task?.modelLabel ?? "",
+      "data-stream-title": title,
       "data-current": task.id === state.selectedId ? "" : null,
       "data-running": presentation.running ? "" : null,
       "data-answer-ready": presentation.answerReady ? "" : null,
@@ -2163,7 +2181,7 @@ function renderActivityRail() {
       "aria-pressed": String(task.id === state.selectedId),
       "aria-label": [workspaceName, streamName, presentation.agentLabel, presentation.statusLabel]
         .filter(Boolean).join(". "),
-      title: `${presentation.statusLabel ? `${presentation.statusLabel}. ` : ""}${activityTitle}`,
+      title,
     }, [renderStreamStatusCard(task, activityTitle, presentation)]);
   }));
   applyActivityRailState();
@@ -2208,6 +2226,7 @@ function renderStreamTabs() {
       ? formatRunningDuration(task.startedAt)
       : formatRelativeTime(task?.lastActivity);
     const statusLabel = running ? "Ход выполняется" : answerReady ? "Ответ готов" : task?.statusLabel || "";
+    const title = `${statusLabel ? `${statusLabel}. ` : ""}${streamProviderModelTitle({ provider, agentLabel, modelLabel: task?.modelLabel })}. Нажмите, чтобы переключиться. Ctrl+click — добавить или убрать колонку. ${streamOrderMode === "manual" ? "Перетащите, чтобы изменить порядок." : "Потяните горизонтально, чтобы прокрутить."} ПКМ — управление Stream.`;
     const button = el("button", {
       type: "button",
       class: "stream-tab",
@@ -2217,6 +2236,9 @@ function renderStreamTabs() {
       "data-stream-name": stream.name ?? "",
       "data-stream-task-id": task?.id ?? "",
       "data-stream-provider": provider,
+      "data-stream-provider-label": agentLabel,
+      "data-stream-model": task?.modelLabel ?? "",
+      "data-stream-title": title,
       "aria-pressed": String(open.has(stream.id)),
       "data-current": task?.id === selected.id ? "" : null,
       "data-running": running ? "" : null,
@@ -2224,7 +2246,7 @@ function renderStreamTabs() {
       "data-maintenance": streamMaintenanceKind(task) || null,
       draggable: window.AgentHubStreamTabs.streamsAreDraggable(streamOrderMode, surface) ? "true" : null,
       "aria-label": [streamName, agentLabel, task?.modelLabel, statusLabel].filter(Boolean).join(". "),
-      title: `${statusLabel ? `${statusLabel}. ` : ""}Нажмите, чтобы переключиться. Ctrl+click — добавить или убрать колонку. ${streamOrderMode === "manual" ? "Перетащите, чтобы изменить порядок." : "Потяните горизонтально, чтобы прокрутить."} ПКМ — управление Stream.`,
+      title,
     }, [
       el("span", { class: "stream-tab-card" }, [
         el("span", { class: "provider-dot", "data-provider": provider, "aria-hidden": "true" }),
@@ -7656,6 +7678,20 @@ function limitsTooltipText(info) {
   return `${name}. ${time}: израсходовано ${used}%, осталось ${remaining}%`;
 }
 
+function positionChartTooltip(element, fx, fy, options) {
+  const positioning = globalThis.AgentHubTooltipPosition;
+  if (positioning?.applyTooltipPosition) {
+    return positioning.applyTooltipPosition(element, fx, fy, options);
+  }
+  if (!element) return null;
+  const x = clampNumber(fx, 0.08, 0.92);
+  const y = clampNumber(fy, 0.14, 0.86);
+  element.style.left = `${(x * 100).toFixed(3).replace(/\.?0+$/u, "")}%`;
+  element.style.top = `${(y * 100).toFixed(3).replace(/\.?0+$/u, "")}%`;
+  element.dataset.side = x > 0.6 ? "left" : "right";
+  return { x, y, side: element.dataset.side };
+}
+
 function showLimitsTooltip(info, fx, fy) {
   if (!limitsTooltip) return;
   if (info.mode === "speed") {
@@ -7681,9 +7717,7 @@ function showLimitsTooltip(info, fx, fy) {
         text: "Оценка: изменение равномерно распределено между соседними замерами",
       })] : []),
     );
-    limitsTooltip.style.left = `${clampNumber(fx * 100, 0, 100)}%`;
-    limitsTooltip.style.top = `${clampNumber(fy * 100, 0, 100)}%`;
-    limitsTooltip.dataset.side = fx > 0.6 ? "left" : "right";
+    positionChartTooltip(limitsTooltip, fx, fy);
     limitsTooltip.hidden = false;
     return;
   }
@@ -7696,9 +7730,7 @@ function showLimitsTooltip(info, fx, fy) {
     el("span", { class: "limits-tooltip-time", text: formatLimitsDateTime(info.at) }),
     el("span", { class: "limits-tooltip-row", text: `Расход ${used}% · остаток ${remaining}%` }),
   );
-  limitsTooltip.style.left = `${clampNumber(fx * 100, 0, 100)}%`;
-  limitsTooltip.style.top = `${clampNumber(fy * 100, 0, 100)}%`;
-  limitsTooltip.dataset.side = fx > 0.6 ? "left" : "right";
+  positionChartTooltip(limitsTooltip, fx, fy);
   limitsTooltip.hidden = false;
 }
 
@@ -7952,9 +7984,29 @@ function formatUsageMinutes(value) {
   return `${new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 1 }).format(hours)} ч`;
 }
 
+const usageBurnSummaryHelp = {
+  "EMA сейчас": "Формула: EMAₙ = α × bucketRateₙ + (1 − α) × EMAₙ₋₁, где α считается из полураспада; bucketRate = расход bucket / минуты bucket.",
+  "Средняя за день": "Формула: средняя = расход с 00:00 / минуты с 00:00 до текущего момента.",
+  "Средняя диапазона": "Формула: средняя = расход выбранного диапазона / длительность выбранного диапазона в минутах.",
+  "Рабочая интенсивность": "Формула: рабочая интенсивность = сумма расхода ходов с известной длительностью / сумма длительностей этих ходов.",
+  "Прогноз суток": "Формула: прогноз = уже потрачено сегодня + EMA сейчас × оставшиеся минуты суток.",
+};
+
 function usageBurnSummaryCard(name, value, detail, status = "") {
+  const help = usageBurnSummaryHelp[name] ?? "";
   return el("section", { class: `usage-burn-summary-card${status ? ` ${status}` : ""}` }, [
-    el("span", { class: "usage-burn-summary-name", text: name }),
+    el("span", { class: "usage-burn-summary-name-row" }, [
+      el("span", { class: "usage-burn-summary-name", text: name }),
+      help
+        ? el("button", {
+          type: "button",
+          class: "usage-burn-summary-help",
+          "aria-label": `${name}: ${help}`,
+          title: help,
+          text: "?",
+        })
+        : null,
+    ]),
     el("strong", { class: "usage-burn-summary-value", text: value }),
     el("span", { class: "usage-burn-summary-detail", text: detail }),
   ]);
@@ -8017,9 +8069,7 @@ function showUsageTooltip(point, fx, fy, daily = false, hours = 0) {
           : formatUsageValue(point.credits),
     }),
   );
-  usageTooltip.style.left = `${clampNumber(fx * 100, 0, 100)}%`;
-  usageTooltip.style.top = `${clampNumber(fy * 100, 0, 100)}%`;
-  usageTooltip.dataset.side = fx > 0.6 ? "left" : "right";
+  positionChartTooltip(usageTooltip, fx, fy);
   usageTooltip.hidden = false;
 }
 
@@ -8648,9 +8698,7 @@ function showComparisonTooltip(info, fx, fy, source = comparisonChart) {
   const positionedY = wrapRect?.height && sourceRect?.height
     ? (sourceRect.top - wrapRect.top + fy * sourceRect.height) / wrapRect.height
     : fy;
-  comparisonTooltip.style.left = `${clampNumber(positionedX * 100, 0, 100)}%`;
-  comparisonTooltip.style.top = `${clampNumber(positionedY * 100, 0, 100)}%`;
-  comparisonTooltip.dataset.side = positionedX > 0.6 ? "left" : "right";
+  positionChartTooltip(comparisonTooltip, positionedX, positionedY);
   comparisonTooltip.hidden = false;
 }
 

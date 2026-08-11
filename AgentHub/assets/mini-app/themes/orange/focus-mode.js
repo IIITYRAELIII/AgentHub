@@ -58,16 +58,29 @@
     return "не указан";
   }
 
+  function providerModelHint(target) {
+    const dot = target?.querySelector?.(".provider-dot[data-provider]");
+    const provider = target?.dataset?.streamProvider || dot?.dataset?.provider || "";
+    const providerName = String(target?.dataset?.streamProviderLabel || providerLabel(provider)).trim();
+    const modelName = String(target?.dataset?.streamModel || "").trim();
+    return `Провайдер: ${providerName}${modelName ? `. Модель: ${modelName}` : ""}`;
+  }
+
   function updateProviderHints() {
     if (root.dataset.theme !== THEME_ID) return;
-    document.querySelectorAll(".stream-tab[data-stream-provider] .provider-dot")
-      .forEach((dot) => {
-        const tab = dot.closest("[data-stream-provider]");
-        dot.title = `Провайдер: ${providerLabel(tab?.dataset.streamProvider)}`;
+    document.querySelectorAll(".stream-tab[data-stream-provider]")
+      .forEach((tab) => {
+        const hint = providerModelHint(tab);
+        const dot = tab.querySelector(".provider-dot");
+        if (dot) dot.title = hint;
+        tab.title = root.dataset.focusMode === "true"
+          ? hint
+          : tab.dataset.streamTitle || tab.title;
       });
     document.querySelectorAll(".activity-stream-item .provider-dot[data-provider]")
       .forEach((dot) => {
-        dot.title = `Провайдер: ${providerLabel(dot.dataset.provider)}`;
+        const tab = dot.closest(".activity-stream-item");
+        dot.title = providerModelHint(tab || dot);
       });
   }
 

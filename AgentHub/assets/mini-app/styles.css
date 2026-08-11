@@ -5224,7 +5224,7 @@ html[data-surface="mobile"]
     background: var(--shell-tab-active-background, var(--accent-soft)) !important;
     border: var(--shell-tab-active-border, 1px solid var(--accent-line)) !important;
     box-shadow: var(--shell-tab-active-shadow, none) !important;
-    color: var(--accent) !important;
+    color: var(--shell-tab-active-color, var(--accent)) !important;
     padding: var(--shell-tab-active-padding, 0.32rem 0.75rem) !important;
   }
 
@@ -5356,23 +5356,19 @@ html[data-surface="mobile"]
     --shell-stream-create-width: 2.25rem;
   }
 
-  html[data-focus-mode="true"][data-view="chat"]:not([data-surface="mobile"])
-    .brand-text {
+  html[data-focus-mode="true"]:not([data-surface="mobile"]) .brand-text {
     display: none;
   }
 
-  html[data-focus-mode="true"][data-view="chat"]:not([data-surface="mobile"])
-    .app-header-inner {
+  html[data-focus-mode="true"]:not([data-surface="mobile"]) .app-header-inner {
     justify-content: flex-start;
   }
 
-  html[data-focus-mode="true"][data-view="chat"]:not([data-surface="mobile"])
-    .toolbar {
+  html[data-focus-mode="true"]:not([data-surface="mobile"]) .toolbar {
     margin-left: auto;
   }
 
-  html[data-focus-mode="true"][data-view="chat"]:not([data-surface="mobile"])
-    .view-settings-label {
+  html[data-focus-mode="true"]:not([data-surface="mobile"]) .view-settings-label {
     display: none;
   }
 
@@ -8544,7 +8540,8 @@ html[data-token-breakdown="off"] .journal span[data-day-usage-breakdown] {
 }
 
 .limits-tooltip {
-  background: var(--card-bg-open), var(--bg);
+  background: var(--tooltip-background, var(--card-bg-open)), var(--bg);
+  background-color: var(--bg);
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-sm);
   box-shadow: var(--card-shadow);
@@ -8553,13 +8550,13 @@ html[data-token-breakdown="off"] .journal span[data-day-usage-breakdown] {
   flex-direction: column;
   gap: 0.15rem;
   font-size: 0.72rem;
-  max-width: 14rem;
+  max-width: min(18rem, calc(100% - 1rem));
   padding: 0.4rem 0.55rem;
   pointer-events: none;
   position: absolute;
   transform: translate(0.6rem, -50%);
-  white-space: nowrap;
-  z-index: 2;
+  white-space: normal;
+  z-index: 6;
 }
 
 .limits-tooltip[data-side="left"] {
@@ -10558,7 +10555,7 @@ html[data-surface="mobile"] .server-config-inline-label {
 }
 
 .current-limits-card .current-limit-name {
-  color: #8093a9;
+  color: var(--current-limit-name-color, var(--text-faint));
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.1em;
@@ -10568,14 +10565,14 @@ html[data-surface="mobile"] .server-config-inline-label {
 }
 
 .current-limits-card .current-limit-value {
-  color: #edf3f9;
+  color: var(--current-limit-value-color, var(--text));
   flex: 0 0 auto;
   font-size: 15px;
   font-weight: 500;
 }
 
 .current-limits-card .current-limit-reset {
-  color: #66788e;
+  color: var(--current-limit-reset-color, var(--text-muted));
   font-family: var(--font-numeric);
   font-size: 11px;
   height: 14px;
@@ -10588,7 +10585,7 @@ html[data-surface="mobile"] .server-config-inline-label {
   background: conic-gradient(
     from -90deg,
     var(--current-limit-accent) 0 var(--current-limit-progress),
-    #202d3c var(--current-limit-progress) 100%
+    var(--current-limit-track, color-mix(in srgb, var(--line-strong) 72%, var(--surface-2))) var(--current-limit-progress) 100%
   );
   border-radius: 50%;
   display: none;
@@ -10608,7 +10605,7 @@ html[data-surface="mobile"] .server-config-inline-label {
 }
 
 .current-limit-ring-value {
-  color: #edf3f9;
+  color: var(--current-limit-ring-value-color, var(--text));
   font-family: var(--font-numeric);
   font-size: 11px;
   letter-spacing: -0.02em;
@@ -10617,7 +10614,7 @@ html[data-surface="mobile"] .server-config-inline-label {
 }
 
 .current-limit-bar {
-  background: #202d3c;
+  background: var(--current-limit-track, color-mix(in srgb, var(--line-strong) 72%, var(--surface-2)));
   border-radius: 2px;
   display: block;
   height: 3px;
@@ -11020,11 +11017,47 @@ html[data-surface="mobile"] .server-config-inline-label {
   border-left-color: var(--text-faint);
 }
 
+.usage-burn-summary-name-row {
+  align-items: center;
+  display: flex;
+  gap: 0.4rem;
+  justify-content: space-between;
+  min-width: 0;
+}
+
 .usage-burn-summary-name {
   color: var(--text-faint);
   font-size: 0.64rem;
   letter-spacing: 0.06em;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.usage-burn-summary-help {
+  align-items: center;
+  background: var(--surface-3);
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  color: var(--text-soft);
+  cursor: help;
+  display: inline-flex;
+  flex: 0 0 auto;
+  font: 700 0.66rem/1 var(--font-body);
+  height: 1rem;
+  justify-content: center;
+  padding: 0;
+  width: 1rem;
+}
+
+.usage-burn-summary-help:hover,
+.usage-burn-summary-help:focus-visible {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--accent);
+  outline: none;
 }
 
 .usage-burn-summary-value {
