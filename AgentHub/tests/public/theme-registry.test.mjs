@@ -182,7 +182,7 @@ test("theme registry keeps system status visibility under shell ownership", asyn
   }
 });
 
-test("desktop shell owns the shared header and Stream control shapes", async () => {
+test("desktop shell owns and tokenizes the shared header and Stream control shapes", async () => {
   const styles = await readFile(
     new URL("../../assets/mini-app/styles.css", import.meta.url),
     "utf8",
@@ -197,15 +197,15 @@ test("desktop shell owns the shared header and Stream control shapes", async () 
   );
   assert.match(
     styles,
-    /html:not\(\[data-surface="mobile"\]\) \.view-tab\s*\{[^}]*border-radius:\s*3px\s*!important;/su,
+    /html:not\(\[data-surface="mobile"\]\) \.view-tab\s*\{[^}]*border-radius:\s*var\(--shell-tab-radius, 3px\)\s*!important;/su,
   );
   assert.match(
     styles,
-    /html\[data-view="chat"\]:not\(\[data-surface="mobile"\]\) \.stream-tab-card\s*\{[^}]*border-radius:\s*3px\s*!important;/su,
+    /html\[data-view="chat"\]:not\(\[data-surface="mobile"\]\) \.stream-tab-card\s*\{[^}]*border-radius:\s*var\(--shell-stream-card-radius, 3px\)\s*!important;/su,
   );
   assert.match(
     styles,
-    /html\[data-view="chat"\]:not\(\[data-surface="mobile"\]\) \.task-rail,[\s\S]*?\.chat\s*\{[^}]*border:\s*var\(--shell-panel-border, 1px solid var\(--line\)\)\s*!important;[^}]*border-radius:\s*4px\s*!important;/u,
+    /html\[data-view="chat"\]:not\(\[data-surface="mobile"\]\) \.task-rail,[\s\S]*?\.chat\s*\{[^}]*border:\s*var\(--shell-panel-border, 1px solid var\(--line\)\)\s*!important;[^}]*border-radius:\s*var\(--shell-panel-radius, 4px\)\s*!important;/u,
   );
   assert.doesNotMatch(
     gothic,

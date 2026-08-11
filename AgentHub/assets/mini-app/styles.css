@@ -3078,7 +3078,9 @@ html[data-view="chat"] {
 /* На desktop верхние границы списка Workspace и панели Streams всегда стоят
    на одной линии. Темы сохраняют собственные ширины, фон, рамки и прозрачность. */
 html[data-view="chat"]:not([data-surface="mobile"]) body > .workspace {
+  gap: var(--shell-workspace-gap, 0) !important;
   grid-template-columns: var(--task-rail-width) minmax(0, 1fr) var(--activity-rail-width) !important;
+  padding-bottom: var(--shell-workspace-padding-bottom, 0) !important;
   padding-top: var(--shell-workspace-padding-top, 0.72rem) !important;
   transform: none !important;
 }
@@ -5153,9 +5155,8 @@ html[data-surface="mobile"]
   opacity: 0.15;
 }
 
-/* Верхняя desktop-оболочка едина для всех тем. Палитра по-прежнему приходит
-   из тематических токенов, но форма шапки, навигации, Workspace и Streams не
-   превращается в капсулы, орбитальные узлы или отдельную сценическую панель. */
+/* Верхняя desktop-оболочка едина для всех тем. Shell применяет геометрию и
+   разрешает темам выбирать только объявленные ниже радиусы и зазоры токенами. */
 @media (min-width: 860px) {
   html:not([data-surface="mobile"]) .app-header {
     backdrop-filter: blur(18px) saturate(150%) !important;
@@ -5207,7 +5208,7 @@ html[data-surface="mobile"]
   html:not([data-surface="mobile"]) .view-tab {
     background: var(--shell-tab-background, transparent) !important;
     border: var(--shell-tab-border, 1px solid transparent) !important;
-    border-radius: 3px !important;
+    border-radius: var(--shell-tab-radius, 3px) !important;
     box-shadow: var(--shell-tab-shadow, none) !important;
     min-height: 2rem !important;
     padding: 0.32rem 0.75rem !important;
@@ -5230,7 +5231,7 @@ html[data-surface="mobile"]
   html:not([data-surface="mobile"]) .toolbar .view-settings {
     background: var(--shell-control-background, var(--surface-2)) !important;
     border: var(--shell-control-border, 1px solid var(--line)) !important;
-    border-radius: 3px !important;
+    border-radius: var(--shell-control-radius, 3px) !important;
     box-shadow: var(--shell-control-shadow, none) !important;
     min-height: 2rem !important;
     padding: 0.3rem 0.75rem 0.3rem 0.6rem !important;
@@ -5242,11 +5243,13 @@ html[data-surface="mobile"]
   html[data-view="chat"]:not([data-surface="mobile"]) .chat {
     border: var(--shell-panel-border, 1px solid var(--line)) !important;
     border-image: var(--shell-panel-border-image, none) !important;
-    border-radius: 4px !important;
+    border-radius: var(--shell-panel-radius, 4px) !important;
   }
 
   html[data-view="chat"]:not([data-surface="mobile"]) .chat {
-    gap: 0 !important;
+    border: var(--shell-chat-border, var(--shell-panel-border, 1px solid var(--line))) !important;
+    border-radius: var(--shell-chat-radius, var(--shell-panel-radius, 4px)) !important;
+    gap: var(--shell-chat-gap, 0) !important;
   }
 
   html[data-view="chat"]:not([data-surface="mobile"]) .stream-tabs {
@@ -5255,7 +5258,7 @@ html[data-surface="mobile"]
     border: var(--shell-stream-tabs-border, 0) !important;
     border-bottom: var(--shell-stream-tabs-border-bottom, 1px solid var(--line)) !important;
     border-image: var(--shell-stream-tabs-border-image, none) !important;
-    border-radius: 0 !important;
+    border-radius: var(--shell-stream-tabs-radius, 0) !important;
     gap: var(--shell-stream-tabs-gap, 0.35rem) !important;
     margin-top: var(--shell-stream-tabs-margin-top, 0) !important;
     min-height: var(--shell-stream-tabs-min-height, 3.7rem) !important;
@@ -5269,7 +5272,7 @@ html[data-surface="mobile"]
   html[data-view="chat"]:not([data-surface="mobile"]) .stream-tab {
     background: var(--shell-stream-tab-background, transparent) !important;
     border: var(--shell-stream-tab-border, 1px solid transparent) !important;
-    border-radius: 3px !important;
+    border-radius: var(--shell-stream-tab-radius, 3px) !important;
     box-shadow: var(--shell-stream-tab-shadow, none) !important;
     flex: 0 0 auto !important;
     max-width: var(--shell-stream-tab-max-width, 12rem) !important;
@@ -5301,7 +5304,7 @@ html[data-surface="mobile"]
     background: var(--shell-stream-card-background, color-mix(in srgb, var(--surface-2) 68%, transparent)) !important;
     border: var(--shell-stream-card-border, 1px solid color-mix(in srgb, var(--line) 74%, transparent)) !important;
     border-image: var(--shell-stream-card-border-image, none) !important;
-    border-radius: 3px !important;
+    border-radius: var(--shell-stream-card-radius, 3px) !important;
     box-shadow: var(--shell-stream-card-shadow, none) !important;
     gap: var(--shell-stream-card-gap, 0.5rem) !important;
     padding: var(--shell-stream-card-padding, 0.42rem 0.5rem) !important;
