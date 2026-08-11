@@ -1421,7 +1421,6 @@ function historyMessages(history, focusedTurn = null) {
         text: message.text,
         time: message.time ?? null,
         attachments: attachmentViews(message.attachments),
-        historyOrder: Number.MAX_SAFE_INTEGER - 100 + index,
       });
     }
   }

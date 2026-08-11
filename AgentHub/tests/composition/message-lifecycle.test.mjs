@@ -818,6 +818,34 @@ test("durable turn order wins over an earlier queue timestamp", () => {
   ]);
 });
 
+test("an older focused turn keeps its timestamp instead of falling below current history", () => {
+  assert.doesNotMatch(hubClientSource, /historyOrder: Number\.MAX_SAFE_INTEGER/u);
+  const values = lifecycle.chronologicalMessages([
+    {
+      id: "current-user", role: "user", turnId: "current",
+      time: "2026-08-11T09:57:33.047Z", historyOrder: 102_000,
+    },
+    {
+      id: "current-agent", role: "agent", turnId: "current",
+      time: "2026-08-11T09:57:54.524Z", historyOrder: 102_001,
+    },
+    {
+      id: "focused-old-user", role: "user", turnId: "focused-old",
+      time: "2026-08-10T21:28:10.000Z",
+    },
+    {
+      id: "focused-old-agent", role: "agent", turnId: "focused-old",
+      time: "2026-08-10T21:28:44.697Z",
+    },
+  ]);
+  assert.deepEqual(values.map((item) => item.id), [
+    "focused-old-user",
+    "focused-old-agent",
+    "current-user",
+    "current-agent",
+  ]);
+});
+
 test("deferred queue merges the server row with its optimistic client message", () => {
   const merged = lifecycle.mergeDeferredQueueEntries([{
     id: "queue-1",
