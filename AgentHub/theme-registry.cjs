@@ -230,7 +230,7 @@ function renderThemeHtml(html, registry, {
   const markup = registry.themes.flatMap((theme) => theme.markup.map((file) => (
     fs.readFileSync(path.join(theme.directory, ...file.split("/")), "utf8").trim()
   ))).filter(Boolean).join("\n");
-  const catalog = JSON.stringify(publicThemeCatalog(registry, resourceUrl)).replaceAll("<", "\\u003c");
+  const catalog = JSON.stringify(publicThemeCatalog(registry, link)).replaceAll("<", "\\u003c");
   const nonceAttribute = nonce ? ` nonce="${escapeHtml(nonce)}"` : "";
   const options = registry.themes.map((theme) => (
     `<option value="${escapeHtml(theme.id)}">${escapeHtml(theme.name)}</option>`

@@ -5,8 +5,6 @@ const path = require("node:path");
 const vscode = require("vscode");
 
 const ASSET_ROOT = ["assets", "mini-app"];
-const LOCAL_ASSET_REFERENCE = /\b(?:src|href)="(\/[^"?#]+(?:[?#][^"]*)?)"/giu;
-const LOCAL_ASSET_PATH = /\.(?:avif|css|gif|ico|jpe?g|js|mjs|png|svg|ttf|webp|woff2?)(?:[?#]|$)/iu;
 
 async function existingFile(uri, label) {
   try {
@@ -18,31 +16,11 @@ async function existingFile(uri, label) {
   throw new Error(`Не найден ресурс Agent Hub: ${label}`);
 }
 
-function runtimeAssetUri(runtimeUri, reference) {
-  const pathname = String(reference).split(/[?#]/u, 1)[0];
-  let decoded;
-  try {
-    decoded = decodeURIComponent(pathname);
-  } catch {
-    throw new Error(`Некорректный путь ресурса Agent Hub: ${pathname}`);
-  }
-  const segments = decoded.replace(/^\/+/, "").split("/");
-  if (
-    !segments.length
-    || segments.some((segment) => (
-      !segment || segment === "." || segment === ".." || segment.includes("\\") || segment.includes(":")))
-  ) {
-    throw new Error(`Некорректный путь ресурса Agent Hub: ${pathname}`);
-  }
-  return decoded === "/work-log.css"
+function runtimeAssetUri(runtimeUri, reference, clientAssets) {
+  const pathname = clientAssets.localAssetPathname(reference);
+  return pathname === "/work-log.css"
     ? vscode.Uri.joinPath(runtimeUri, "work-log.css")
-    : vscode.Uri.joinPath(runtimeUri, ...ASSET_ROOT, ...segments);
-}
-
-function localAssetReferences(html) {
-  return [...new Set([...String(html).matchAll(LOCAL_ASSET_REFERENCE)]
-    .map((match) => match[1])
-    .filter((reference) => LOCAL_ASSET_PATH.test(reference)))];
+    : vscode.Uri.joinPath(runtimeUri, ...ASSET_ROOT, ...pathname.slice(1).split("/"));
 }
 
 async function resolveSharedAssets({ runtimeUri, extensionUri }) {
@@ -51,30 +29,31 @@ async function resolveSharedAssets({ runtimeUri, extensionUri }) {
   const index = await existingFile(vscode.Uri.joinPath(runtimeUri, ...ASSET_ROOT, "index.html"), "index.html");
   const bootstrap = await existingFile(vscode.Uri.joinPath(extensionUri, "vscode-bootstrap.js"), "bootstrap");
   const registryTools = require(path.join(runtimeUri.fsPath, "theme-registry.cjs"));
+  const clientAssets = require(path.join(runtimeUri.fsPath, "client-assets.cjs"));
   const themeRegistry = registryTools.loadThemeRegistry(path.join(runtimeUri.fsPath, ...ASSET_ROOT));
-  return { index, bootstrap, themeRegistry, renderThemeHtml: registryTools.renderThemeHtml };
+  return { clientAssets, index, bootstrap, themeRegistry, renderThemeHtml: registryTools.renderThemeHtml };
 }
 
 function resource(webview, uri) {
   return uri ? String(webview.asWebviewUri(uri)) : "";
 }
 
-async function rewriteRuntimeAssetReferences(html, webview, runtimeUri) {
-  const references = localAssetReferences(html);
+async function rewriteRuntimeAssetReferences(html, webview, runtimeUri, clientAssets) {
+  const references = clientAssets.localAssetReferences(html);
   const entries = await Promise.all(references.map(async (reference) => {
-    const uri = runtimeAssetUri(runtimeUri, reference);
+    const uri = runtimeAssetUri(runtimeUri, reference, clientAssets);
     await existingFile(uri, reference);
     return [reference, uri];
   }));
   for (const [reference, uri] of entries) {
-    html = html.replaceAll(`="${reference}"`, `="${resource(webview, uri)}"`);
+    html = clientAssets.replaceLocalAssetReference(html, reference, resource(webview, uri));
   }
   return { html, uris: entries.map(([, uri]) => uri) };
 }
 
 async function sharedWebviewHtml(webview, locations) {
   const { runtimeUri } = locations;
-  const { index, bootstrap, themeRegistry, renderThemeHtml } = await resolveSharedAssets(locations);
+  const { clientAssets, index, bootstrap, themeRegistry, renderThemeHtml } = await resolveSharedAssets(locations);
   const nonce = randomBytes(16).toString("base64");
   let html = Buffer.from(await vscode.workspace.fs.readFile(index)).toString("utf8");
   const themeResourceUrls = new Map([...themeRegistry.resources].map(([pathname, item]) => (
@@ -93,7 +72,7 @@ async function sharedWebviewHtml(webview, locations) {
     firstRuntimeScript,
     `<script src="${resource(webview, bootstrap)}" defer></script>$&`,
   );
-  const rewritten = await rewriteRuntimeAssetReferences(html, webview, runtimeUri);
+  const rewritten = await rewriteRuntimeAssetReferences(html, webview, runtimeUri, clientAssets);
   html = rewritten.html;
   const csp = [
     "default-src 'none'",

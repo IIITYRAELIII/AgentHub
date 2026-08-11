@@ -170,6 +170,7 @@ test("shared webview loads the active runtime, never a workspace shadow", async 
     }
     fs.cpSync(path.join(MINI_APP_ROOT, "themes"), path.join(runtimeAssets, "themes"), { recursive: true });
     fs.copyFileSync(path.resolve(__dirname, "..", "theme-registry.cjs"), path.join(runtimeRoot, "theme-registry.cjs"));
+    fs.copyFileSync(path.resolve(__dirname, "..", "client-assets.cjs"), path.join(runtimeRoot, "client-assets.cjs"));
     fs.writeFileSync(path.join(shadowRoot, "Utilities", "AgentHub", "work-log.css"), "");
     fs.writeFileSync(path.join(runtimeRoot, "work-log.css"), "");
     fs.mkdirSync(extensionRoot, { recursive: true });

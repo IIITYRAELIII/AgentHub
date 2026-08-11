@@ -187,7 +187,7 @@ test("selective publication can request the full Agent Hub test suite explicitly
     diff: async () => ["AgentHub/assets/mini-app/app.js"],
   });
   assert.ok(labels.includes("Полные тесты Agent Hub"));
-  assert.ok(!labels.includes("Тесты жизненного цикла сообщений"));
+  assert.ok(!labels.includes("Контракт интерфейсов Agent Hub"));
 });
 
 test("selective publication records the exact published revision", async () => {
@@ -205,19 +205,22 @@ test("selective publication records the exact published revision", async () => {
   assert.equal(written.revision, "head");
   assert.deepEqual(steps.map((step) => step.label), [
     "Проверка синтаксиса Agent Hub",
-    "Тесты жизненного цикла сообщений",
+    "Контракт интерфейсов Agent Hub",
     "Тесты расширения VS Code",
     "Публикация Mini App Worker",
     "Сборка runtime-релиза",
     "Активация runtime-релиза",
   ]);
-  const lifecycle = steps.find((step) => step.label === "Тесты жизненного цикла сообщений");
-  assert.deepEqual(lifecycle.args, [
+  const surfaceContract = steps.find((step) => step.label === "Контракт интерфейсов Agent Hub");
+  assert.deepEqual(surfaceContract.args, [
     "--test",
     "tests/composition/message-lifecycle.test.mjs",
+    "tests/interfaces/web/mini-app-server.test.mjs",
     "tests/interfaces/web/worker/worker.test.mjs",
+    "tests/public/client-assets.test.mjs",
+    "tests/public/worker-assets.test.mjs",
   ]);
-  for (const file of lifecycle.args.slice(1)) assert.equal(fs.existsSync(path.join(ROOT, file)), true);
+  for (const file of surfaceContract.args.slice(1)) assert.equal(fs.existsSync(path.join(ROOT, file)), true);
 });
 
 test("Worker packages only a verified published Android artifact", () => {
@@ -226,11 +229,6 @@ test("Worker packages only a verified published Android artifact", () => {
   assert.match(build, /update\.json/u);
   assert.match(build, /createHash\("sha256"\)/u);
   assert.doesNotMatch(build, /app["'],\s*"build"/u);
-});
-
-test("Worker packages and revisions the Task board controller", () => {
-  const build = fs.readFileSync(path.join(ROOT, "cloudflare-worker", "build-assets.mjs"), "utf8");
-  assert.equal((build.match(/"task-board\.js"/gu) ?? []).length, 2);
 });
 
 test("selective frontend publication records state without restarting Hub", async () => {
@@ -258,16 +256,6 @@ test("selective backend publication records state before requesting restart", as
     diff: async () => ["AgentHub/src/interfaces/web/mini-app-server.mjs"],
   });
   assert.ok(events.indexOf("record-publication") < events.indexOf("restart-server"));
-});
-
-test("Worker packages and revisions shared resource interactions", () => {
-  const build = fs.readFileSync(path.join(ROOT, "cloudflare-worker", "build-assets.mjs"), "utf8");
-  assert.equal((build.match(/"resource-interactions\.js"/gu) ?? []).length, 2);
-});
-
-test("Worker packages and revisions the chat surface preference controller", () => {
-  const build = fs.readFileSync(path.join(ROOT, "cloudflare-worker", "build-assets.mjs"), "utf8");
-  assert.equal((build.match(/"chat-surface-preference\.js"/gu) ?? []).length, 2);
 });
 
 test("every validation failure stops publication before deployment", async () => {

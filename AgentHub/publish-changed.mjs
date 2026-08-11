@@ -96,12 +96,15 @@ function focusedSteps(plan) {
       steps.push(npmStep("Unit-тесты Agent Hub", ["test"]));
     } else if (plan.runtime || plan.worker) {
       steps.push({
-        label: "Тесты жизненного цикла сообщений",
+        label: "Контракт интерфейсов Agent Hub",
         command: process.execPath,
         args: [
           "--test",
           "tests/composition/message-lifecycle.test.mjs",
+          "tests/interfaces/web/mini-app-server.test.mjs",
           "tests/interfaces/web/worker/worker.test.mjs",
+          "tests/public/client-assets.test.mjs",
+          "tests/public/worker-assets.test.mjs",
         ],
       });
     }

@@ -22,6 +22,7 @@ export { extractWorkLogHtml } from "./mini-app-journal-data.mjs";
 
 const require = createRequire(import.meta.url);
 const { loadThemeRegistry, renderThemeHtml } = require("../../../theme-registry.cjs");
+const { localAssetFile, localAssetReferences } = require("../../../client-assets.cjs");
 
 const AGENT_HUB_ROOT = path.resolve(import.meta.dirname, "../../..");
 
@@ -41,8 +42,6 @@ const STATIC_CONTENT_TYPES = new Map([
   [".woff", "font/woff"],
   [".woff2", "font/woff2"],
 ]);
-const LOCAL_ASSET_REFERENCE = /\b(?:src|href)=["'](\/(?!\/)[^"'?#]+)(?:[?#][^"']*)?["']/giu;
-
 function staticAssetManifest(assetsDirectory) {
   const root = path.resolve(assetsDirectory);
   const indexSource = readFileSync(path.join(root, "index.html"), "utf8");
@@ -54,27 +53,9 @@ function staticAssetManifest(assetsDirectory) {
       immutable: false,
     }],
   ]);
-  for (const match of indexSource.matchAll(LOCAL_ASSET_REFERENCE)) {
-    let pathname;
-    try {
-      pathname = decodeURIComponent(match[1]);
-    } catch {
-      throw new Error(`Некорректный путь ресурса Agent Hub: ${match[1]}`);
-    }
+  for (const reference of localAssetReferences(indexSource)) {
+    const { pathname, relative, target } = localAssetFile(root, reference);
     if (pathname === "/work-log.css") continue;
-    const segments = pathname.slice(1).split("/");
-    if (
-      !segments.length
-      || segments.some((segment) => (
-        !segment || segment === "." || segment === ".." || segment.includes("\\") || segment.includes(":")))
-    ) {
-      throw new Error(`Некорректный путь ресурса Agent Hub: ${pathname}`);
-    }
-    const target = path.resolve(root, ...segments);
-    const relative = path.relative(root, target);
-    if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
-      throw new Error(`Ресурс Agent Hub выходит за пределы runtime: ${pathname}`);
-    }
     if (!statSync(target).isFile()) throw new Error(`Не найден ресурс Agent Hub: ${pathname}`);
     const contentType = STATIC_CONTENT_TYPES.get(path.extname(pathname).toLowerCase());
     if (!contentType) throw new Error(`Неизвестный тип ресурса Agent Hub: ${pathname}`);
