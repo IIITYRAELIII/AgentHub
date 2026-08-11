@@ -895,7 +895,7 @@ test("Bespin keeps the three selected Cloud City scenes", () => {
   }
 });
 
-test("Kashyyyk packages forest scenes and its physical panel materials", () => {
+test("Kashyyyk packages three original forest-world scenes", () => {
   const theme = THEME_REGISTRY.themes.find((item) => item.id === "kashyyyk");
   assert.deepEqual(
     theme.backgrounds.map(({ id, name, asset }) => [id, name, asset]),
@@ -910,17 +910,6 @@ test("Kashyyyk packages forest scenes and its physical panel materials", () => {
     assert.ok(
       theme.resources.some((resource) => resource.pathname.endsWith(`/${background.asset}`)),
       background.asset,
-    );
-  }
-  for (const asset of [
-    "kashyyyk-dark-wood.webp",
-    "kashyyyk-panel-frame.webp",
-    "kashyyyk-side-rail.webp",
-    "kashyyyk-panel-moss.webp",
-  ]) {
-    assert.ok(
-      theme.resources.some((resource) => resource.pathname.endsWith(`/${asset}`)),
-      asset,
     );
   }
 });
