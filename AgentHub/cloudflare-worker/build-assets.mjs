@@ -10,6 +10,7 @@ const { loadThemeRegistry, renderThemeHtml } = require("../theme-registry.cjs");
 const root = path.resolve(import.meta.dirname, "..");
 const source = path.join(root, "assets", "mini-app");
 const defaultOutput = path.join(import.meta.dirname, "public");
+const BACKGROUND_CHUNK_CHARACTERS = 20 * 1024;
 
 function shellAssetSource(pathname) {
   if (pathname === "/work-log.css") return path.join(root, "work-log.css");
@@ -82,13 +83,13 @@ export async function buildWorkerAssets({
   )));
   const publishedThemeBodies = new Map();
   const publishedThemePathnames = new Map();
-  const encodedBackgroundPathnames = new Map();
+  const backgroundManifestPathnames = new Map();
   for (const [pathname, body] of themeBodies) {
     if (path.posix.extname(pathname).toLowerCase() === ".css") continue;
     publishedThemeBodies.set(pathname, body);
     const revision = revisionFor(body);
     publishedThemePathnames.set(pathname, versionedPathname(pathname, revision));
-    if (backgroundVariables.has(pathname)) encodedBackgroundPathnames.set(pathname, `${pathname}.${revision}.b64`);
+    if (backgroundVariables.has(pathname)) backgroundManifestPathnames.set(pathname, `${pathname}.${revision}.json`);
   }
   for (const [pathname, body] of themeBodies) {
     if (path.posix.extname(pathname).toLowerCase() !== ".css") continue;
@@ -108,10 +109,27 @@ export async function buildWorkerAssets({
     const publishedTarget = path.join(output, ...publishedPathname.slice(1).split("/"));
     await mkdir(path.dirname(publishedTarget), { recursive: true });
     await writeFile(publishedTarget, publishedThemeBodies.get(resource.pathname));
-    const encodedPathname = encodedBackgroundPathnames.get(resource.pathname);
-    if (encodedPathname) {
-      const encodedTarget = path.join(output, ...encodedPathname.slice(1).split("/"));
-      await writeFile(encodedTarget, themeBodies.get(resource.pathname).toString("base64"), "ascii");
+    const manifestPathname = backgroundManifestPathnames.get(resource.pathname);
+    if (manifestPathname) {
+      const body = themeBodies.get(resource.pathname);
+      const encoded = body.toString("base64");
+      const parts = [];
+      for (let offset = 0; offset < encoded.length; offset += BACKGROUND_CHUNK_CHARACTERS) {
+        const index = parts.length;
+        const partPathname = manifestPathname.replace(/\.json$/u, `.${String(index).padStart(3, "0")}.b64`);
+        await writeFile(
+          path.join(output, ...partPathname.slice(1).split("/")),
+          encoded.slice(offset, offset + BACKGROUND_CHUNK_CHARACTERS),
+          "ascii",
+        );
+        parts.push(partPathname);
+      }
+      await writeFile(path.join(output, ...manifestPathname.slice(1).split("/")), JSON.stringify({
+        type: resource.contentType,
+        bytes: body.length,
+        sha256: createHash("sha256").update(body).digest("hex"),
+        parts,
+      }), "utf8");
     }
   }
   await copyFile(path.join(import.meta.dirname, "_headers"), path.join(output, "_headers"));
@@ -136,7 +154,7 @@ export async function buildWorkerAssets({
   }
 
   index = renderThemeHtml(index, themeRegistry, {
-    resourceUrl: (pathname) => encodedBackgroundPathnames.get(pathname)
+    resourceUrl: (pathname) => backgroundManifestPathnames.get(pathname)
       ?? publishedThemePathnames.get(pathname)
       ?? pathname,
   });
@@ -164,7 +182,7 @@ export async function buildWorkerAssets({
     shellReferences,
     themeRegistry,
     publishedThemePathnames,
-    encodedBackgroundPathnames,
+    backgroundManifestPathnames,
   };
 }
 

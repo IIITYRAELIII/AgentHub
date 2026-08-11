@@ -336,7 +336,7 @@ function cssBackgroundUrl(value) {
    Catalog URLs are exact HTTP or VS Code WebView URLs, so install them as
    canonical root overrides for both selectable scenes and shared-shell assets. */
 function encodedBackgroundUrl(url) {
-  return /\.b64(?:[?#]|$)/iu.test(String(url ?? ""));
+  return /\.json(?:[?#]|$)/iu.test(String(url ?? ""));
 }
 for (const [background, url] of Object.entries(backgroundAssets)) {
   if (!encodedBackgroundUrl(url)) root.style.setProperty(`--${background}-image`, cssBackgroundUrl(url));
@@ -1618,12 +1618,25 @@ async function decodedBackgroundUrl(background, url) {
   if (backgroundObjectUrls.has(url)) return backgroundObjectUrls.get(url);
   const response = await fetch(url, { cache: "force-cache", credentials: "same-origin" });
   if (!response.ok) throw new Error(`Background transport failed: HTTP ${response.status}`);
-  const encoded = (await response.text()).trim();
+  const manifest = await response.json();
+  if (!Array.isArray(manifest.parts) || !manifest.parts.length || manifest.parts.length > 512) {
+    throw new Error("Background transport manifest is invalid");
+  }
+  const chunks = new Array(manifest.parts.length);
+  let nextPart = 0;
+  await Promise.all(Array.from({ length: Math.min(6, manifest.parts.length) }, async () => {
+    while (nextPart < manifest.parts.length) {
+      const index = nextPart++;
+      const partResponse = await fetch(manifest.parts[index], { cache: "force-cache", credentials: "same-origin" });
+      if (!partResponse.ok) throw new Error(`Background transport part failed: HTTP ${partResponse.status}`);
+      chunks[index] = (await partResponse.text()).trim();
+    }
+  }));
+  const encoded = chunks.join("");
   const binary = atob(encoded);
   const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
-  const extension = url.match(/\.(avif|gif|jpe?g|png|svg|webp)(?:\.[a-f0-9]{12})?\.b64(?:[?#]|$)/iu)?.[1]?.toLowerCase();
-  const type = extension === "jpg" || extension === "jpeg" ? "image/jpeg" : `image/${extension || "png"}`;
-  const objectUrl = URL.createObjectURL(new Blob([bytes], { type }));
+  if (Number(manifest.bytes) !== bytes.length) throw new Error("Background transport size mismatch");
+  const objectUrl = URL.createObjectURL(new Blob([bytes], { type: String(manifest.type || "image/jpeg") }));
   backgroundObjectUrls.set(url, objectUrl);
   root.style.setProperty(`--${background}-image`, cssBackgroundUrl(objectUrl));
   return objectUrl;

@@ -47,17 +47,33 @@ export async function verifyThemeDeployment({
   let bytes = 0;
   await mapConcurrent(backgrounds, 6, async ({ theme, background }) => {
     const assetUrl = published.get(theme.id)?.backgrounds?.find((item) => item.id === background.id)?.assetUrl;
-    if (!/\.b64(?:[?#]|$)/iu.test(String(assetUrl ?? ""))) {
-      throw new Error(`Published background ${theme.id}/${background.id} does not use text transport`);
+    if (!/\.json(?:[?#]|$)/iu.test(String(assetUrl ?? ""))) {
+      throw new Error(`Published background ${theme.id}/${background.id} does not use chunked text transport`);
     }
     const response = await fetchImpl(new URL(assetUrl, base), {
       cache: "no-store",
       signal: AbortSignal.timeout(20_000),
     });
     if (!response.ok) throw new Error(`Published background ${theme.id}/${background.id} returned HTTP ${response.status}`);
-    const decoded = Buffer.from((await response.text()).trim(), "base64");
+    const manifest = await response.json();
+    if (!Array.isArray(manifest.parts) || !manifest.parts.length || manifest.parts.length > 512) {
+      throw new Error(`Published background ${theme.id}/${background.id} has an invalid manifest`);
+    }
+    const chunks = [];
+    for (const part of manifest.parts) {
+      const partResponse = await fetchImpl(new URL(part, base), {
+        cache: "no-store",
+        signal: AbortSignal.timeout(20_000),
+      });
+      if (!partResponse.ok) throw new Error(`Published background part ${part} returned HTTP ${partResponse.status}`);
+      const chunk = (await partResponse.text()).trim();
+      if (Buffer.byteLength(chunk) > 20 * 1024) throw new Error(`Published background part ${part} exceeds 20 KiB`);
+      chunks.push(chunk);
+    }
+    const decoded = Buffer.from(chunks.join(""), "base64");
     const source = await readFile(path.join(theme.directory, ...background.asset.split("/")));
-    if (decoded.length !== source.length || sha256(decoded) !== sha256(source)) {
+    if (Number(manifest.bytes) !== source.length || manifest.sha256 !== sha256(source)
+      || decoded.length !== source.length || sha256(decoded) !== sha256(source)) {
       throw new Error(`Published background ${theme.id}/${background.id} does not match its source`);
     }
     bytes += decoded.length;
