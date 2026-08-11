@@ -378,6 +378,56 @@ test("Codex rollout activity identifies the current VSC turn by client id", () =
   }]);
 });
 
+test("Codex rollout activity preserves response annotations before formatting the prompt", () => {
+  const turnId = "annotation-turn";
+  const prompt = [
+    "# Response annotations:",
+    "<response-annotations>",
+    JSON.stringify([
+      { text: "Первый выбранный фрагмент", annotation: "Почему?" },
+      { text: "Второй выбранный фрагмент", annotation: "Что это?" },
+    ]),
+    "</response-annotations>",
+    "",
+    "## My request for Codex:",
+  ].join("\n");
+  const result = parseCodexRolloutActivity([
+    JSON.stringify({
+      type: "event_msg",
+      payload: {
+        type: "user_message",
+        client_id: "annotation-client",
+        message: prompt,
+      },
+    }),
+    JSON.stringify({
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: turnId },
+    }),
+    JSON.stringify({
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: prompt }],
+        internal_chat_message_metadata_passthrough: { turn_id: turnId },
+      },
+    }),
+  ].join("\n"));
+
+  assert.deepEqual(result.userMessages[turnId], [{
+    itemId: "annotation-client",
+    clientUserMessageId: "annotation-client",
+    role: "user",
+    text: "Аннотация 1: Почему?\nАннотация 2: Что это?",
+    responseAnnotations: [
+      { text: "Первый выбранный фрагмент", annotation: "Почему?" },
+      { text: "Второй выбранный фрагмент", annotation: "Что это?" },
+    ],
+    responseAnnotationRequest: "",
+  }]);
+});
+
 test("Codex rollout activity groups tool calls between visible commentary blocks", () => {
   const turnId = "turn-trace";
   const entry = (timestamp, payload) => JSON.stringify({

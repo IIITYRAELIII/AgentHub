@@ -1,7 +1,10 @@
 import { createReadStream } from "node:fs";
 import path from "node:path";
 import { open, stat } from "node:fs/promises";
-import { displayUserPrompt } from "../../application/task-history.mjs";
+import {
+  displayUserPrompt,
+  responseAnnotationDetails,
+} from "../../application/task-history.mjs";
 import { TASK_EXECUTION_OWNERS } from "../../domain/task-execution-owner.mjs";
 import {
   isCodexContextProbeClientId,
@@ -79,18 +82,38 @@ function rememberCodexUserMessage(metadata, turnId, {
   text = "",
   attachmentSources = [],
 } = {}) {
+  const responseAnnotations = responseAnnotationDetails(text);
   const value = displayUserPrompt(text);
   if (!turnId || !value) return;
   const clientId = String(clientUserMessageId ?? "").trim();
   const messages = metadata.userMessages.get(turnId) ?? [];
-  if (clientId && messages.some((item) => item.clientUserMessageId === clientId)) return;
-  messages.push({
+  const duplicateIndex = messages.findIndex((item) => (
+    (clientId && item.clientUserMessageId === clientId)
+    || (item.text === value && (!clientId || !item.clientUserMessageId))
+  ));
+  const message = {
     itemId: clientId || `${turnId}:rollout-user:${messages.length}`,
     ...(clientId ? { clientUserMessageId: clientId } : {}),
     role: "user",
     text: value,
+    ...(responseAnnotations?.items.length
+      ? {
+        responseAnnotations: responseAnnotations.items.map((annotation) => ({ ...annotation })),
+        responseAnnotationRequest: responseAnnotations.request,
+      }
+      : {}),
     ...(attachmentSources.length ? { attachmentSources: structuredClone(attachmentSources) } : {}),
-  });
+  };
+  if (duplicateIndex >= 0) {
+    const duplicate = messages[duplicateIndex];
+    messages[duplicateIndex] = {
+      ...duplicate,
+      ...message,
+      itemId: clientId ? message.itemId : duplicate.itemId,
+    };
+  } else {
+    messages.push(message);
+  }
   metadata.userMessages.set(turnId, messages.slice(-20));
   while (metadata.userMessages.size > 8) {
     metadata.userMessages.delete(metadata.userMessages.keys().next().value);
@@ -428,7 +451,10 @@ function observeCodexEntry(activeTurnIds, lastSeenAtByTurnId, metadata, entry) {
   const responseItemHasImage = responseItemUserContent.some((item) => (
     ["image", "input_image", "localImage"].includes(item?.type)
   ));
-  if (turnId && responseItemHasImage && !codexResponseItemMessage(entry, "user")) {
+  const responseItemUserMessage = codexResponseItemMessage(entry, "user");
+  if (turnId && responseItemUserMessage) {
+    rememberCodexUserMessage(metadata, turnId, { text: responseItemUserMessage });
+  } else if (turnId && responseItemHasImage) {
     rememberCodexUserMessage(metadata, turnId, { text: "Изображение" });
   }
   if (entry?.type === "event_msg" && entry.payload?.type === "agent_message") {

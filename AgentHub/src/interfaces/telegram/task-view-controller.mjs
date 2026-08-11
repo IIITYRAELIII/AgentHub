@@ -174,7 +174,14 @@ export function codexRolloutHistory(activity = {}) {
       .filter((message) => String(message?.text ?? "").trim())
       .map((message, index) => {
         const rawText = String(message.text).trim();
-        const responseAnnotations = responseAnnotationDetails(rawText);
+        const parsedAnnotations = responseAnnotationDetails(rawText);
+        const responseAnnotations = Array.isArray(message.responseAnnotations)
+          && message.responseAnnotations.length
+          ? {
+            items: message.responseAnnotations,
+            request: String(message.responseAnnotationRequest ?? ""),
+          }
+          : parsedAnnotations;
         return {
           itemId: String(message.itemId ?? `${id}:rollout-user:${index}`),
           ...(String(message.clientUserMessageId ?? "").trim()

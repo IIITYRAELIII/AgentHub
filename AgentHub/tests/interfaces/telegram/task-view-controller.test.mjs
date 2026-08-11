@@ -303,6 +303,29 @@ test("rollout fallback keeps response annotations structured", () => {
   assert.doesNotMatch(exchange.prompt, /response-annotations|My request for Codex/iu);
 });
 
+test("rollout fallback keeps annotations normalized by the activity parser", () => {
+  const [exchange] = codexRolloutHistory({
+    userMessages: {
+      "turn-1": [{
+        text: "Аннотация 1: Почему?\nАннотация 2: Что это?",
+        responseAnnotations: [
+          { text: "Первая цитата", annotation: "Почему?" },
+          { text: "Вторая цитата", annotation: "Что это?" },
+        ],
+        responseAnnotationRequest: "",
+      }],
+    },
+    finalMessages: { "turn-1": "Ответ" },
+  });
+
+  assert.deepEqual(exchange.promptAnnotations, [
+    { text: "Первая цитата", annotation: "Почему?" },
+    { text: "Вторая цитата", annotation: "Что это?" },
+  ]);
+  assert.deepEqual(exchange.messages[0].responseAnnotations, exchange.promptAnnotations);
+  assert.equal(exchange.messages[0].responseAnnotationRequest, "");
+});
+
 test("rollout history replaces a stale inherited answer after Thread rotation", async () => {
   const turnId = "019fdbb2-0304-7d32-a5bc-76fb3ff9c0d3";
   let recorded = null;
