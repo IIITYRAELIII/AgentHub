@@ -1616,8 +1616,29 @@ function backgroundAssetUrl(background) {
 async function decodedBackgroundUrl(background, url) {
   if (!encodedBackgroundUrl(url)) return url;
   if (backgroundObjectUrls.has(url)) return backgroundObjectUrls.get(url);
-  const response = await fetch(url, { cache: "force-cache", credentials: "same-origin" });
-  if (!response.ok) throw new Error(`Background transport failed: HTTP ${response.status}`);
+  const fetchPart = async (target) => {
+    let lastError = null;
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 8_000);
+      try {
+        const response = await fetch(target, {
+          cache: "force-cache",
+          credentials: "same-origin",
+          signal: controller.signal,
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return response;
+      } catch (error) {
+        lastError = error;
+        if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, 200 * (2 ** attempt)));
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+    throw lastError ?? new Error("Background transport failed");
+  };
+  const response = await fetchPart(url);
   const manifest = await response.json();
   if (!Array.isArray(manifest.parts) || !manifest.parts.length || manifest.parts.length > 512) {
     throw new Error("Background transport manifest is invalid");
@@ -1627,8 +1648,7 @@ async function decodedBackgroundUrl(background, url) {
   await Promise.all(Array.from({ length: Math.min(6, manifest.parts.length) }, async () => {
     while (nextPart < manifest.parts.length) {
       const index = nextPart++;
-      const partResponse = await fetch(manifest.parts[index], { cache: "force-cache", credentials: "same-origin" });
-      if (!partResponse.ok) throw new Error(`Background transport part failed: HTTP ${partResponse.status}`);
+      const partResponse = await fetchPart(manifest.parts[index]);
       chunks[index] = (await partResponse.text()).trim();
     }
   }));

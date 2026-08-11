@@ -27,17 +27,31 @@ async function mapConcurrent(values, limit, action) {
   await Promise.all(workers);
 }
 
+async function fetchWithRetry(fetchImpl, target, attempts = 4) {
+  let lastError = null;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      const response = await fetchImpl(target, {
+        cache: "no-store",
+        signal: AbortSignal.timeout(8_000),
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return response;
+    } catch (error) {
+      lastError = error;
+      if (attempt < attempts - 1) await new Promise((resolve) => setTimeout(resolve, 200 * (2 ** attempt)));
+    }
+  }
+  throw new Error(`${new URL(target).pathname}: ${lastError?.message ?? "request failed"}`);
+}
+
 export async function verifyThemeDeployment({
   baseUrl,
   sourceRoot = themeRoot,
   fetchImpl = fetch,
 } = {}) {
   const base = new URL(baseUrl);
-  const indexResponse = await fetchImpl(new URL(`/?verify=${Date.now()}`, base), {
-    cache: "no-store",
-    signal: AbortSignal.timeout(20_000),
-  });
-  if (!indexResponse.ok) throw new Error(`Published index returned HTTP ${indexResponse.status}`);
+  const indexResponse = await fetchWithRetry(fetchImpl, new URL(`/?verify=${Date.now()}`, base));
   const catalog = themeCatalog(await indexResponse.text());
   const published = new Map(catalog.map((theme) => [theme.id, theme]));
   const registry = loadThemeRegistry(sourceRoot);
@@ -50,22 +64,14 @@ export async function verifyThemeDeployment({
     if (!/\.json(?:[?#]|$)/iu.test(String(assetUrl ?? ""))) {
       throw new Error(`Published background ${theme.id}/${background.id} does not use chunked text transport`);
     }
-    const response = await fetchImpl(new URL(assetUrl, base), {
-      cache: "no-store",
-      signal: AbortSignal.timeout(20_000),
-    });
-    if (!response.ok) throw new Error(`Published background ${theme.id}/${background.id} returned HTTP ${response.status}`);
+    const response = await fetchWithRetry(fetchImpl, new URL(assetUrl, base));
     const manifest = await response.json();
     if (!Array.isArray(manifest.parts) || !manifest.parts.length || manifest.parts.length > 512) {
       throw new Error(`Published background ${theme.id}/${background.id} has an invalid manifest`);
     }
     const chunks = [];
     for (const part of manifest.parts) {
-      const partResponse = await fetchImpl(new URL(part, base), {
-        cache: "no-store",
-        signal: AbortSignal.timeout(20_000),
-      });
-      if (!partResponse.ok) throw new Error(`Published background part ${part} returned HTTP ${partResponse.status}`);
+      const partResponse = await fetchWithRetry(fetchImpl, new URL(part, base));
       const chunk = (await partResponse.text()).trim();
       if (Buffer.byteLength(chunk) > 20 * 1024) throw new Error(`Published background part ${part} exceeds 20 KiB`);
       chunks.push(chunk);
