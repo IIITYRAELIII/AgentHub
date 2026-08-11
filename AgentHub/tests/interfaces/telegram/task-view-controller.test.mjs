@@ -383,9 +383,10 @@ test("rollout history replaces a stale inherited answer after Thread rotation", 
   assert.deepEqual(recorded, result.history);
 });
 
-test("official Codex history keeps multiple rollout images on one final assistant message", async () => {
+test("generated images replace inspected inputs on the final assistant message", async () => {
   const turnId = "019fc8f4-258f-72d3-9f37-02cb9a797790";
   let recorded = null;
+  let importedSources = null;
   const view = controller({
     ensureCodex: async () => {},
     readCodexThread: async () => ({ thread: {
@@ -405,18 +406,24 @@ test("official Codex history keeps multiple rollout images on one final assistan
       finalMessages: { [turnId]: "Три варианта показаны" },
       generatedImageSources: {
         [turnId]: [
+          { type: "view-path", value: "C:/viewed/reference.jpg" },
+          { type: "view-path", value: "C:/viewed/screenshot-one.png" },
+          { type: "view-path", value: "C:/viewed/screenshot-two.png" },
           { type: "generated-path", value: "C:/generated/one.png" },
           { type: "generated-path", value: "C:/generated/two.png" },
-          { type: "view-path", value: "C:/viewed/three.png" },
+          { type: "generated-path", value: "C:/generated/three.png" },
         ],
       },
     }),
     readCodexSnapshot: async () => ({ active: false }),
-    attachmentImporter: async (sources) => sources.map((source, index) => ({
-      id: `assistant-${index + 1}.png`,
-      name: "Изображение",
-      type: "image/png",
-    })),
+    attachmentImporter: async (sources) => {
+      importedSources = structuredClone(sources);
+      return sources.map((source) => ({
+        id: `codex-generated-${source.value.split("/").at(-1)}`,
+        name: "Изображение",
+        type: "image/png",
+      }));
+    },
     taskSyncStore: {
       history: () => [{
         id: turnId,
@@ -426,7 +433,19 @@ test("official Codex history keeps multiple rollout images on one final assistan
         completed: false,
         messages: [
           { itemId: `${turnId}:user`, role: "user", text: "Покажи варианты" },
-          { itemId: `${turnId}:agent:live`, role: "agent", text: "Промежуточный ответ" },
+          {
+            itemId: `${turnId}:agent:live`,
+            role: "agent",
+            text: "Промежуточный ответ",
+            attachments: [
+              { id: "codex-viewed-reference.jpg", type: "image/jpeg" },
+              { id: "codex-viewed-screenshot-one.png", type: "image/png" },
+              { id: "codex-viewed-screenshot-two.png", type: "image/png" },
+              { id: "codex-generated-one.png", type: "image/png" },
+              { id: "codex-generated-two.png", type: "image/png" },
+              { id: "codex-generated-three.png", type: "image/png" },
+            ],
+          },
         ],
       }],
       recordHistory: (_task, history) => { recorded = structuredClone(history); },
@@ -445,12 +464,28 @@ test("official Codex history keeps multiple rollout images on one final assistan
   assert.equal(agents.length, 1);
   assert.equal(agents[0].text, "Три варианта показаны");
   assert.deepEqual(agents[0].attachments.map((attachment) => attachment.id), [
-    "assistant-1.png",
-    "assistant-2.png",
-    "assistant-3.png",
+    "codex-generated-one.png",
+    "codex-generated-two.png",
+    "codex-generated-three.png",
+  ]);
+  assert.deepEqual(importedSources, [
+    { type: "generated-path", value: "C:/generated/one.png" },
+    { type: "generated-path", value: "C:/generated/two.png" },
+    { type: "generated-path", value: "C:/generated/three.png" },
   ]);
   assert.equal("attachmentSources" in agents[0], false);
   assert.deepEqual(recorded, result.history);
+});
+
+test("an inspected image remains visible when a turn has no generated output", () => {
+  const [exchange] = codexRolloutHistory({
+    generatedImageSources: {
+      "turn-view-only": [{ type: "view-path", value: "C:/viewed/result.png" }],
+    },
+  });
+  assert.deepEqual(exchange.messages.at(-1).attachmentSources, [
+    { type: "view-path", value: "C:/viewed/result.png" },
+  ]);
 });
 
 test("rollout history keeps an image-only assistant result visible", () => {

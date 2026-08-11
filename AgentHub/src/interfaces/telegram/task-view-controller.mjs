@@ -67,6 +67,9 @@ function mergeAttachmentSources(currentMessages, rolloutMessages) {
 
 function mergeMessageAttachments(target, source) {
   const merged = { ...target };
+  const hasGeneratedOutput = (Array.isArray(target?.attachmentSources)
+    ? target.attachmentSources
+    : []).some((item) => item?.type === "generated-path");
   for (const field of ["attachments", "attachmentSources"]) {
     const values = Array.isArray(target?.[field])
       ? target[field].map((item) => ({ ...item }))
@@ -75,7 +78,13 @@ function mergeMessageAttachments(target, source) {
       ? (item) => String(item?.id ?? item?.path ?? item?.name ?? "")
       : (item) => `${item?.type}:${item?.value}`;
     const known = new Set(values.map(keyFor));
-    for (const item of Array.isArray(source?.[field]) ? source[field] : []) {
+    const sourceValues = Array.isArray(source?.[field]) ? source[field] : [];
+    for (const item of sourceValues) {
+      if (
+        field === "attachments"
+        && hasGeneratedOutput
+        && String(item?.id ?? "").startsWith("codex-viewed-")
+      ) continue;
       const key = keyFor(item);
       if (!key || known.has(key)) continue;
       values.push({ ...item });
@@ -201,9 +210,12 @@ export function codexRolloutHistory(activity = {}) {
     const finalAnswer = String(finalMessages[id] ?? "").trim();
     const latestAnswer = String(latestMessages[id] ?? "").trim();
     const answer = finalAnswer || latestAnswer;
-    const generatedImages = Array.isArray(generatedImageSources[id])
-      ? generatedImageSources[id].map((item) => ({ ...item }))
+    const imageSources = Array.isArray(generatedImageSources[id])
+      ? generatedImageSources[id]
       : [];
+    const generatedSources = imageSources.filter((item) => item?.type === "generated-path");
+    const generatedImages = (generatedSources.length ? generatedSources : imageSources)
+      .map((item) => ({ ...item }));
     const trace = Array.isArray(activityGroups[id]) ? structuredClone(activityGroups[id]) : [];
     if (!users.length && !answer && !generatedImages.length && !trace.length) return [];
     const active = activeTurnIds.has(id);
