@@ -870,6 +870,25 @@ test("Bespin keeps the three selected Cloud City scenes", () => {
   }
 });
 
+test("Kashyyyk packages three original forest-world scenes", () => {
+  const theme = THEME_REGISTRY.themes.find((item) => item.id === "kashyyyk");
+  assert.deepEqual(
+    theme.backgrounds.map(({ id, name, asset }) => [id, name, asset]),
+    [
+      ["kashyyyk", "Древо Истока", "kashyyyk-origin-tree.jpg"],
+      ["kashyyyk-village", "Ночная деревня", "kashyyyk-canopy-village.jpg"],
+      ["kashyyyk-refinery", "Заброшенный завод", "kashyyyk-refinery.jpg"],
+    ],
+  );
+  assert.deepEqual(theme.backgrounds.map(({ preload }) => preload), [true, true, true]);
+  for (const background of theme.backgrounds) {
+    assert.ok(
+      theme.resources.some((resource) => resource.pathname.endsWith(`/${background.asset}`)),
+      background.asset,
+    );
+  }
+});
+
 test("Verdant keeps its signal sweep across three environment scenes", () => {
   const theme = THEME_REGISTRY.themes.find((item) => item.id === "verdant");
   const styles = themeFile("verdant");

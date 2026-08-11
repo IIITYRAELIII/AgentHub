@@ -417,6 +417,17 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.equal(magma.headers.get("content-type"), "image/jpeg");
     assert.match(magma.headers.get("cache-control"), /immutable/u);
     assert.ok((await magma.arrayBuffer()).byteLength > 100_000);
+    for (const asset of [
+      "kashyyyk-origin-tree.jpg",
+      "kashyyyk-canopy-village.jpg",
+      "kashyyyk-refinery.jpg",
+    ]) {
+      const kashyyyk = await fetch(`${address.url}themes/kashyyyk/${asset}`);
+      assert.equal(kashyyyk.status, 200, asset);
+      assert.equal(kashyyyk.headers.get("content-type"), "image/jpeg", asset);
+      assert.match(kashyyyk.headers.get("cache-control"), /immutable/u, asset);
+      assert.ok((await kashyyyk.arrayBuffer()).byteLength > 100_000, asset);
+    }
     const magmaFrame = await fetch(`${address.url}themes/magma/magma-forged-frame.png`);
     assert.equal(magmaFrame.status, 200);
     assert.equal(magmaFrame.headers.get("content-type"), "image/png");
@@ -482,6 +493,7 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.match(page, /\/themes\/stormglass\/storm-glass\.js/u);
     assert.match(page, /data-theme-catalog/u);
     assert.match(page, /<option value="magma">Магма<\/option>/u);
+    assert.match(page, /<option value="kashyyyk">Kashyyyk<\/option>/u);
     assert.match(page, /<option value="stormglass">Storm<\/option>/u);
     assert.match(page, /<option value="meadow">Луг<\/option>/u);
     assert.match(page, /<option value="lake">Озеро<\/option>/u);

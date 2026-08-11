@@ -1,0 +1,12 @@
+{
+  "id": "kashyyyk",
+  "name": "Kashyyyk",
+  "color": "#07110f",
+  "order": 170,
+  "styles": "theme.css",
+  "backgrounds": [
+    { "id": "kashyyyk", "name": "Древо Истока", "asset": "kashyyyk-origin-tree.jpg", "preload": true },
+    { "id": "kashyyyk-village", "name": "Ночная деревня", "asset": "kashyyyk-canopy-village.jpg", "preload": true },
+    { "id": "kashyyyk-refinery", "name": "Заброшенный завод", "asset": "kashyyyk-refinery.jpg", "preload": true }
+  ]
+}
