@@ -2,6 +2,7 @@
   "use strict";
 
   const RANGE_SEQUENCE = Object.freeze(["6h", "24h", "7d", "15d", "30d", "all"]);
+  const LIMITS_RANGE_STORAGE_KEY = "agent-hub:limits-range:v1";
 
   function normalizeRange(value) {
     return RANGE_SEQUENCE.includes(String(value)) ? String(value) : "24h";
@@ -25,6 +26,18 @@
     return selected;
   }
 
+  function storedLimitsRange(storage) {
+    return storedRange(storage, LIMITS_RANGE_STORAGE_KEY);
+  }
+
+  function persistLimitsRange(storage, value) {
+    return persistRange(storage, LIMITS_RANGE_STORAGE_KEY, value);
+  }
+
+  function payloadMatchesSelectedRange(payload, selectedRange) {
+    return !payload?.range || normalizeRange(payload.range) === normalizeRange(selectedRange);
+  }
+
   function bindDatasetChoice(buttons, datasetKey, select) {
     const listeners = [];
     for (const button of buttons ?? []) {
@@ -40,10 +53,14 @@
   }
 
   window.AgentHubStatisticsControls = Object.freeze({
+    LIMITS_RANGE_STORAGE_KEY,
     RANGE_SEQUENCE,
     bindDatasetChoice,
     normalizeRange,
+    payloadMatchesSelectedRange,
+    persistLimitsRange,
     persistRange,
+    storedLimitsRange,
     storedRange,
   });
 })();

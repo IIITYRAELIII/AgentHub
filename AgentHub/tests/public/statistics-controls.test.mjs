@@ -14,7 +14,14 @@ async function statisticsControlsApi() {
 }
 
 test("statistics ranges restore and persist every supported period", async () => {
-  const { RANGE_SEQUENCE, persistRange, storedRange } = await statisticsControlsApi();
+  const {
+    LIMITS_RANGE_STORAGE_KEY,
+    RANGE_SEQUENCE,
+    persistLimitsRange,
+    persistRange,
+    storedLimitsRange,
+    storedRange,
+  } = await statisticsControlsApi();
   const values = new Map();
   const storage = {
     getItem: (key) => values.get(key) ?? null,
@@ -28,6 +35,18 @@ test("statistics ranges restore and persist every supported period", async () =>
   }
   values.set("limits", "unsupported");
   assert.equal(storedRange(storage, "limits"), "24h");
+
+  assert.equal(LIMITS_RANGE_STORAGE_KEY, "agent-hub:limits-range:v1");
+  assert.equal(persistLimitsRange(storage, "30d"), "30d");
+  assert.equal(storedLimitsRange(storage), "30d");
+});
+
+test("a delayed limits response cannot replace the selected range", async () => {
+  const { payloadMatchesSelectedRange } = await statisticsControlsApi();
+
+  assert.equal(payloadMatchesSelectedRange({ range: "24h" }, "7d"), false);
+  assert.equal(payloadMatchesSelectedRange({ range: "7d" }, "7d"), true);
+  assert.equal(payloadMatchesSelectedRange({ error: "offline" }, "7d"), true);
 });
 
 test("statistics ranges survive unavailable storage without breaking the session", async () => {

@@ -375,7 +375,10 @@ const {
   RANGE_SEQUENCE,
   bindDatasetChoice,
   normalizeRange,
+  payloadMatchesSelectedRange,
+  persistLimitsRange,
   persistRange,
+  storedLimitsRange,
   storedRange,
 } = globalThis.AgentHubStatisticsControls;
 const USAGE_RANGE_KEY = "agent-hub:usage-range:v1";
@@ -6334,11 +6337,10 @@ const SERIES_PALETTE = [
  * несовместимом изменении формата, чтобы восстановление пережило перезапуск. */
 const LIMITS_HIDDEN_KEY = "agent-hub-limits-hidden-v1";
 const LIMITS_MODE_KEY = "agent-hub-limits-mode-v1";
-const LIMITS_RANGE_KEY = "agent-hub:limits-range:v1";
 const LIMITS_SPEED_FULL_WINDOW_KEY = "agent-hub-limits-speed-full-window-v1";
 
 function savedLimitsRange() {
-  return storedRange(localStorage, LIMITS_RANGE_KEY);
+  return storedLimitsRange(localStorage);
 }
 
 function loadLimitsMode() {
@@ -6616,9 +6618,9 @@ function statusFromPayload(payload) {
  * график сразу. */
 function applyRateLimitHistory(payload) {
   const data = payload && typeof payload === "object" ? payload : null;
+  if (!payloadMatchesSelectedRange(data, limitsState.range)) return;
   limitsState.payload = data;
   limitsState.error = data?.error ? String(data.error) : "";
-  if (data?.range) limitsState.range = normalizeRange(data.range);
   limitsState.status = statusFromPayload(data);
   renderStatisticsAccountSelects(data);
   renderCurrentLimits();
@@ -6958,7 +6960,7 @@ function renderCurrentLimits() {
 /* Запрос данных за период: показываем загрузку (если нет свежих данных за этот
  * период) и просим backend прислать историю. */
 function requestLimits(range, { force = false } = {}) {
-  limitsState.range = persistRange(localStorage, LIMITS_RANGE_KEY, range);
+  limitsState.range = persistLimitsRange(localStorage, range);
   const cached = limitsState.payload
     && !limitsState.payload.error
     && normalizeRange(limitsState.payload.range) === limitsState.range;
