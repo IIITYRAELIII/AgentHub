@@ -1,7 +1,7 @@
 {
   "id": "zero",
   "name": "Null",
-  "color": "#0b0b0b",
+  "color": "#000000",
   "order": 125,
   "styles": "theme.css",
   "backgrounds": [

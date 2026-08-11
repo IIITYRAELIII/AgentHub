@@ -1,171 +1,445 @@
-/* ============================================================ тема «Ноль» ===
-   Всё лишнее убрано: ни фотографии, ни свечений, ни теней, ни скруглений и ни
-   одного цветного пикселя. В палитре нулевая насыщенность, поэтому различия
-   держатся только на светлоте, а границы — на волосяных линиях. */
+/* ============================================================ тема «Null» ===
+   Строгая терминальная TUI: настоящий чёрный фон, моноширинный текст, один
+   уровень линий и никаких декоративных поверхностей. */
 
 html[data-theme="zero"] {
-  --display-weight: 600;
-  --display-spacing: -0.005em;
-  --title-weight: 560;
-  --label-spacing: 0.06em;
+  --font-body: ui-monospace, "Cascadia Mono", "Cascadia Code", Consolas,
+    "SF Mono", "Roboto Mono", monospace;
+  --font-display: var(--font-body);
+  --font-title: var(--font-body);
+  --font-numeric: var(--font-body);
+  --display-weight: 500;
+  --display-spacing: 0;
+  --title-weight: 500;
+  --label-spacing: 0.04em;
 
-  --radius-lg: 0px;
-  --radius-md: 0px;
-  --radius-sm: 0px;
-  --radius-chip: 0px;
-  --rail-width: 2px;
+  --radius-lg: 0;
+  --radius-md: 0;
+  --radius-sm: 0;
+  --radius-chip: 0;
+  --rail-width: 1px;
 
-  --bg: oklch(0.13 0 0);
-  --surface-1: oklch(0.13 0 0);
-  --surface-2: oklch(0.17 0 0);
-  --surface-3: oklch(0.2 0 0);
-  --sunken: oklch(0.11 0 0);
+  --bg: #000;
+  --surface-1: #000;
+  --surface-2: #080808;
+  --surface-3: #111;
+  --sunken: #000;
 
-  --line: oklch(0.26 0 0);
-  --line-strong: oklch(0.38 0 0);
+  --line: #2f2f2f;
+  --line-strong: #777;
 
-  --card-bg: linear-gradient(oklch(0.15 0 0), oklch(0.15 0 0));
-  --card-bg-open: linear-gradient(oklch(0.17 0 0), oklch(0.17 0 0));
+  --card-bg: #000;
+  --card-bg-open: #080808;
   --card-texture: none;
-  --card-border: oklch(0.26 0 0);
-  --card-border-open: oklch(0.38 0 0);
+  --card-border: #2f2f2f;
+  --card-border-open: #777;
   --card-shadow: none;
 
-  --plate-bg: linear-gradient(oklch(0.17 0 0), oklch(0.17 0 0));
+  --plate-bg: #000;
   --plate-texture: none;
   --plate-shadow: none;
   --turn-shadow: none;
 
-  --text: oklch(0.93 0 0);
-  --text-soft: oklch(0.82 0 0);
-  --text-muted: oklch(0.6 0 0);
-  --text-faint: oklch(0.53 0 0);
+  --text: #e6e6e6;
+  --text-soft: #c8c8c8;
+  --text-muted: #8a8a8a;
+  --text-faint: #5f5f5f;
 
-  --accent: oklch(0.95 0 0);
-  --accent-soft: oklch(0.22 0 0);
-  --accent-line: oklch(0.5 0 0);
+  --accent: #fff;
+  --accent-soft: #101010;
+  --accent-line: #bdbdbd;
   --accent-glow: none;
-  --selection: oklch(0.38 0 0);
+  --selection: #3d3d3d;
   --brand-gradient: none;
   --brand-shadow: none;
 
-  /* Агентов различает светлота, а не цвет: Codex светлее, Claude темнее. */
-  --provider-none: oklch(0.5 0 0);
-  --provider-codex: oklch(0.86 0 0);
-  --provider-claude: oklch(0.62 0 0);
+  --provider-none: #737373;
+  --provider-codex: #d8d8d8;
+  --provider-claude: #949494;
+  --ok: #d8d8d8;
+  --pending: #9a9a9a;
 
-  --ok: oklch(0.86 0 0);
-  --pending: oklch(0.66 0 0);
-
-  --dot-input: oklch(0.86 0 0);
-  --dot-cache: oklch(0.7 0 0);
-  --dot-output: oklch(0.55 0 0);
-  --dot-think: oklch(0.42 0 0);
+  --dot-input: #d8d8d8;
+  --dot-cache: #b0b0b0;
+  --dot-output: #858585;
+  --dot-think: #5f5f5f;
 
   --space-glow-a: transparent;
   --space-glow-b: transparent;
-  --space-base: var(--bg);
+  --space-base: #000;
   --space-star: transparent;
   --star-opacity: 0;
   --decor-opacity: 0;
+
+  --shell-header-background: #000;
+  --shell-header-border: 1px solid var(--line);
+  --shell-header-gap: 0.55rem;
+  --shell-header-height: 3.35rem;
+  --shell-header-padding-left: clamp(0.65rem, 1.2vw, 1.1rem);
+  --shell-header-padding-right: clamp(0.65rem, 1.2vw, 1.1rem);
+  --shell-header-rule: none;
+  --shell-header-rule-opacity: 0;
+  --shell-header-shadow: none;
+  --shell-control-background: transparent;
+  --shell-control-border: 1px solid var(--line);
+  --shell-control-shadow: none;
+  --shell-view-switch-background: transparent;
+  --shell-view-switch-border: 0;
+  --shell-view-switch-radius: 0;
+  --shell-view-switch-shadow: none;
+  --shell-view-switch-gap: 0.15rem;
+  --shell-view-switch-padding: 0;
+  --shell-tab-border: 0;
+  --shell-tab-active-background: transparent;
+  --shell-tab-active-border: 0;
+  --shell-tab-active-shadow: inset 0 -1px 0 var(--accent);
+  --shell-workspace-padding-top: 0;
+  --shell-panel-border: 1px solid var(--line);
+  --shell-panel-border-image: none;
+  --shell-stream-tabs-background: #000;
+  --shell-stream-tabs-border: 0;
+  --shell-stream-tabs-border-bottom: 1px solid var(--line);
+  --shell-stream-tabs-border-image: none;
+  --shell-stream-tabs-padding: 0;
+  --shell-stream-tabs-min-height: 3.35rem;
+  --shell-stream-tab-background: transparent;
+  --shell-stream-tab-border: 0;
+  --shell-stream-tab-hover-background: #080808;
+  --shell-stream-tab-active-background: transparent;
+  --shell-stream-card-background: transparent;
+  --shell-stream-card-border: 0;
+  --shell-stream-card-border-image: none;
+  --shell-stream-card-shadow: none;
 }
 
-/* Фон ровный: ни градиента, ни картинки, ни атмосферного слоя. */
-html[data-theme="zero"] body {
-  background: var(--bg);
+html[data-theme="zero"] body,
+html[data-theme="zero"] .app-header {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  background: #000;
 }
 
 html[data-theme="zero"] body::before,
-html[data-theme="zero"] body::after {
+html[data-theme="zero"] body::after,
+html[data-theme="zero"] .app-header::after {
   content: none;
 }
 
-html[data-theme="zero"] .theme-atmosphere { display: none; }
+html[data-theme="zero"] .theme-atmosphere {
+  display: none;
+}
 
-/* Панели не карточки, а области: разделены линией и воздухом. */
+html[data-background-override="true"][data-background="zero"] {
+  --hub-background-color: #000;
+  --hub-background-image: none;
+}
+
+html[data-theme="zero"] :focus-visible {
+  border-radius: 0;
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+html[data-theme="zero"] * {
+  scrollbar-color: var(--line-strong) #000;
+}
+
+html[data-theme="zero"] *::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border-radius: 0;
+}
+
+html[data-theme="zero"] *::-webkit-scrollbar-track {
+  background: #000;
+}
+
 html[data-theme="zero"] .task-rail,
-html[data-theme="zero"] .chat {
+html[data-theme="zero"] .chat,
+html[data-theme="zero"] .activity-rail,
+html[data-theme="zero"] .stream-tabs,
+html[data-theme="zero"] .composer {
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
-  background: none;
-  border: 0;
-  border-radius: 0;
+  background: #000;
   box-shadow: none;
 }
 
-html[data-theme="zero"] .task-rail {
-  border-right: 1px solid var(--line);
+html[data-theme="zero"] .view-tab,
+html[data-theme="zero"] .view-settings,
+html[data-theme="zero"] .icon-button,
+html[data-theme="zero"] .chip-button,
+html[data-theme="zero"] .option-chip,
+html[data-theme="zero"] .composer-send,
+html[data-theme="zero"] .composer-attach {
+  background: transparent;
+  border-color: transparent;
+  border-radius: 0;
+  box-shadow: none;
+  color: var(--text-muted);
 }
 
-html[data-theme="zero"] .app-header {
+html[data-theme="zero"] .view-tab:hover,
+html[data-theme="zero"] .view-settings:hover,
+html[data-theme="zero"] .icon-button:hover,
+html[data-theme="zero"] .chip-button:hover,
+html[data-theme="zero"] .option-chip:hover,
+html[data-theme="zero"] .composer-send:hover:not(:disabled),
+html[data-theme="zero"] .composer-attach:hover {
+  background: #080808;
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+
+html[data-theme="zero"] .view-tab[aria-pressed="true"],
+html[data-theme="zero"] .option-chip[aria-pressed="true"] {
+  background: transparent;
+  color: var(--accent);
+}
+
+html[data-theme="zero"] .task-rail-head,
+html[data-theme="zero"] .activity-rail-head {
   border-bottom: 1px solid var(--line);
 }
 
-/* Раздел выбирают подчёркиванием, а не заливкой. */
-html[data-theme="zero"] .view-tab {
-  background: none;
+html[data-theme="zero"] .task-rail-title,
+html[data-theme="zero"] .activity-rail-toggle,
+html[data-theme="zero"] .task-project-heading,
+html[data-theme="zero"] .workspace-task-panel > header strong {
+  color: var(--text-soft);
+  font-weight: 500;
+  letter-spacing: var(--label-spacing);
+}
+
+html[data-theme="zero"] .task-count,
+html[data-theme="zero"] .task-project-count {
+  background: transparent;
+  color: var(--text-faint);
+  padding-inline: 0.2rem;
+}
+
+html[data-theme="zero"] .task-search {
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  margin-bottom: 0.35rem;
+  padding-inline: 0;
+}
+
+html[data-theme="zero"] .task-search:focus-within {
+  border-bottom-color: var(--accent);
+}
+
+html[data-theme="zero"] .task-workspace-item {
+  background: transparent;
   border: 0;
   border-bottom: 1px solid transparent;
+  border-radius: 0;
   box-shadow: none;
+  margin: 0;
+  min-height: 2.35rem;
+  padding-inline: 0.55rem;
 }
 
-html[data-theme="zero"] .view-tab[aria-pressed="true"] {
-  background: none;
+html[data-theme="zero"] .task-workspace-item:hover,
+html[data-theme="zero"] .task-workspace-item:focus-visible {
+  background: #080808;
+  border-bottom-color: var(--line);
+}
+
+html[data-theme="zero"] .task-workspace-item[data-selected] {
+  background: transparent;
   border-bottom-color: var(--accent);
-  box-shadow: none;
-  color: var(--accent);
+  box-shadow: inset 1px 0 0 var(--accent);
 }
 
-/* Задача — строка, а не плитка: выбранную отмечает одна риска слева. */
-html[data-theme="zero"] .task-item {
-  background: none;
+html[data-theme="zero"] .task-workspace-name {
+  font-weight: 400;
+}
+
+html[data-theme="zero"] .stream-tab-name,
+html[data-theme="zero"] .activity-stream-name,
+html[data-theme="zero"] .workspace-task-title,
+html[data-theme="zero"] .msg-body strong,
+html[data-theme="zero"] .msg-reasoning strong {
+  font-weight: 500;
+}
+
+html[data-theme="zero"] .activity-stream-list {
+  gap: 0;
+  padding-inline: 0.55rem;
+}
+
+html[data-theme="zero"] .activity-stream-item {
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  box-shadow: none;
+}
+
+html[data-theme="zero"] .activity-stream-item[data-current] {
+  background: transparent;
+  border-bottom-color: var(--accent);
+}
+
+html[data-theme="zero"] .workspace-task-panel {
+  border-top-color: var(--line);
+}
+
+html[data-theme="zero"] .stream-tabs {
+  gap: 0;
+}
+
+html[data-theme="zero"] .stream-tab {
+  border-right: 1px solid var(--line);
+  border-radius: 0;
+  color: var(--text-muted);
+}
+
+html[data-theme="zero"] .stream-tab[aria-pressed="true"] {
+  box-shadow: inset 0 -1px 0 var(--accent);
+  color: var(--text);
+}
+
+html[data-theme="zero"] .stream-tab-card {
+  background: transparent;
   border: 0;
   border-radius: 0;
   box-shadow: none;
 }
 
-html[data-theme="zero"] .task-item[data-selected] {
-  background: var(--surface-2);
+html[data-theme="zero"] .stream-tab-create .stream-tab-card {
+  border: 0;
 }
 
-html[data-theme="zero"] .task-item[data-selected]::before {
-  background: var(--accent);
+html[data-theme="zero"] .stream-tab-create-mark,
+html[data-theme="zero"] .stream-tab-create-label {
+  color: var(--text-muted);
 }
 
-html[data-theme="zero"] .task-agent,
-html[data-theme="zero"] .task-model {
-  background: none;
-  border: 1px solid var(--line);
+html[data-theme="zero"] .chat-overlay-actions > .chip-button {
+  background: #000;
+  border: 1px solid transparent;
+}
+
+html[data-theme="zero"] .chat-log {
+  gap: 0.35rem;
+}
+
+html[data-theme="zero"] .msg,
+html[data-theme="zero"] .msg-user,
+html[data-theme="zero"] .msg-agent,
+html[data-theme="zero"] .msg-live,
+html[data-theme="zero"] .msg-system {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  background: transparent;
+  border: 0;
   border-radius: 0;
+  box-shadow: none;
 }
 
-/* Реплики без пузырей: своё отделено риской слева, чужое — ничем. */
 html[data-theme="zero"] .msg {
-  border: 0;
-  border-radius: 0;
-  box-shadow: none;
-}
-
-html[data-theme="zero"] .msg-agent {
-  background: none;
+  max-width: min(52rem, 94%);
+  padding: 0.45rem 0.65rem;
 }
 
 html[data-theme="zero"] .msg-user {
-  background: none;
-  border-left: 2px solid var(--line-strong);
+  border-left: 1px solid var(--line-strong);
 }
 
-html[data-theme="zero"] .option-chip,
-html[data-theme="zero"] .composer,
-html[data-theme="zero"] .composer input,
-html[data-theme="zero"] .composer textarea,
-html[data-theme="zero"] .composer button {
+html[data-theme="zero"] .msg-live {
+  border-left: 1px dashed var(--accent);
+}
+
+html[data-theme="zero"] .msg-system {
+  border-bottom: 1px dashed var(--line);
+  color: var(--text-faint);
+  max-width: min(52rem, 94%);
+  width: 100%;
+}
+
+html[data-theme="zero"] .msg-head {
+  margin-bottom: 0.2rem;
+}
+
+html[data-theme="zero"] .msg-author,
+html[data-theme="zero"] .msg-stage {
+  color: var(--text-soft);
+  font-weight: 400;
+}
+
+html[data-theme="zero"] .msg-body {
+  font-size: 0.84rem;
+  font-weight: 400;
+  line-height: 1.48;
+}
+
+html[data-theme="zero"] .msg-reasoning,
+html[data-theme="zero"] .msg-body blockquote,
+html[data-theme="zero"] .msg-reasoning blockquote {
+  border-left: 1px solid var(--line-strong);
+}
+
+html[data-theme="zero"] .msg-body code,
+html[data-theme="zero"] .msg-reasoning code,
+html[data-theme="zero"] .msg-body pre,
+html[data-theme="zero"] .msg-reasoning pre {
+  background: transparent;
+  border-color: var(--line);
   border-radius: 0;
   box-shadow: none;
 }
 
-html[data-theme="zero"] .option-chip[aria-pressed="true"] {
-  background: var(--surface-2);
-  border-color: var(--accent-line);
-  color: var(--accent);
+html[data-theme="zero"] .composer {
+  gap: 0.25rem;
+  padding-block: 0.4rem;
+}
+
+html[data-theme="zero"] .composer-input {
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--line-strong);
+  border-radius: 0;
+  box-shadow: none;
+}
+
+html[data-theme="zero"] .composer-input:focus-within {
+  border-bottom-color: var(--accent);
+  box-shadow: none;
+}
+
+html[data-theme="zero"] .composer-input > textarea {
+  font-family: var(--font-body);
+}
+
+html[data-theme="zero"] .composer-send {
+  border: 1px solid var(--line);
+}
+
+html[data-theme="zero"] .composer-send:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+html[data-theme="zero"] .annotation,
+html[data-theme="zero"] .attachment,
+html[data-theme="zero"] .attachment-file-type,
+html[data-theme="zero"] .task-new-menu,
+html[data-theme="zero"] .stream-context-menu {
+  background: #000;
+  border-color: var(--line-strong);
+  border-radius: 0;
+  box-shadow: none;
+}
+
+@media (max-width: 720px) {
+  html[data-theme="zero"] {
+    --shell-header-height: 3.25rem;
+  }
+
+  html[data-theme="zero"] .msg {
+    max-width: 100%;
+    padding-inline: 0.5rem;
+  }
 }
