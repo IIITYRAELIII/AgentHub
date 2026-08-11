@@ -1,8 +1,8 @@
 html[data-theme="bespin"] {
   color-scheme: light;
 
-  --font-body: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
-  --font-display: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+  --font-body: "Cascadia Mono", "Cascadia Code", Consolas, monospace;
+  --font-display: var(--font-body);
   --font-title: var(--font-display);
   --font-numeric: "Cascadia Mono", "Segoe UI Mono", monospace;
   --display-weight: 650;
@@ -39,9 +39,9 @@ html[data-theme="bespin"] {
   --turn-shadow: 0 12px 30px -25px rgb(93 58 39 / 46%);
 
   --text: #2f3040;
-  --text-soft: #4f4d59;
-  --text-muted: #736a68;
-  --text-faint: #938782;
+  --text-soft: #464550;
+  --text-muted: #625c60;
+  --text-faint: #81787a;
 
   --accent: #c9694c;
   --accent-soft: rgb(226 119 82 / 15%);
