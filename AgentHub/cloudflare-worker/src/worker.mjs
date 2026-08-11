@@ -2638,7 +2638,7 @@ function secureStaticResponse(response, request) {
     "connect-src 'self'",
     "form-action 'none'",
     "frame-ancestors 'none'",
-    "img-src 'self' data:",
+    "img-src 'self' data: blob:",
     "object-src 'none'",
     "script-src 'self' https://telegram.org",
     "style-src 'self'",

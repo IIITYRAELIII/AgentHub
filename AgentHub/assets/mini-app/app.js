@@ -335,8 +335,11 @@ function cssBackgroundUrl(value) {
    resolves a relative url() against that consumer rather than the theme file.
    Catalog URLs are exact HTTP or VS Code WebView URLs, so install them as
    canonical root overrides for both selectable scenes and shared-shell assets. */
+function encodedBackgroundUrl(url) {
+  return /\.b64(?:[?#]|$)/iu.test(String(url ?? ""));
+}
 for (const [background, url] of Object.entries(backgroundAssets)) {
-  root.style.setProperty(`--${background}-image`, cssBackgroundUrl(url));
+  if (!encodedBackgroundUrl(url)) root.style.setProperty(`--${background}-image`, cssBackgroundUrl(url));
 }
 const themeAssets = Object.freeze(Object.fromEntries(themeCatalog.flatMap((theme) => (
   Object.entries(theme.assets ?? {}).map(([asset, url]) => [`${theme.id}-${asset}`, url])
@@ -345,9 +348,12 @@ for (const [asset, url] of Object.entries(themeAssets)) {
   root.style.setProperty(`--${asset}-asset`, cssBackgroundUrl(url));
 }
 const deferredBackgroundAssets = new Set(themeCatalog.flatMap((theme) => (
-  theme.backgrounds.filter((background) => background.preload).map((background) => background.id)
+  theme.backgrounds
+    .filter((background) => background.preload || encodedBackgroundUrl(background.assetUrl))
+    .map((background) => background.id)
 )));
 const backgroundAssetLoads = new Map();
+const backgroundObjectUrls = new Map();
 const sessionBackgrounds = new Map();
 const LEGACY_BACKGROUND_STORAGE_KEY = "agent-hub-background";
 const ACTIVITY_RAIL_COLLAPSED_KEY = "agent-hub:activity-rail-collapsed:v1";
@@ -1607,11 +1613,27 @@ function backgroundAssetUrl(background) {
   return backgroundAssets[background] ?? "";
 }
 
+async function decodedBackgroundUrl(background, url) {
+  if (!encodedBackgroundUrl(url)) return url;
+  if (backgroundObjectUrls.has(url)) return backgroundObjectUrls.get(url);
+  const response = await fetch(url, { cache: "force-cache", credentials: "same-origin" });
+  if (!response.ok) throw new Error(`Background transport failed: HTTP ${response.status}`);
+  const encoded = (await response.text()).trim();
+  const binary = atob(encoded);
+  const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  const extension = url.match(/\.(avif|gif|jpe?g|png|svg|webp)(?:\.[a-f0-9]{12})?\.b64(?:[?#]|$)/iu)?.[1]?.toLowerCase();
+  const type = extension === "jpg" || extension === "jpeg" ? "image/jpeg" : `image/${extension || "png"}`;
+  const objectUrl = URL.createObjectURL(new Blob([bytes], { type }));
+  backgroundObjectUrls.set(url, objectUrl);
+  root.style.setProperty(`--${background}-image`, cssBackgroundUrl(objectUrl));
+  return objectUrl;
+}
+
 function preloadBackgroundAsset(background) {
   const url = backgroundAssetUrl(background);
   if (!url || typeof Image !== "function") return Promise.resolve(true);
   if (backgroundAssetLoads.has(url)) return backgroundAssetLoads.get(url);
-  const loading = new Promise((resolve) => {
+  const loading = decodedBackgroundUrl(background, url).then((resolvedUrl) => new Promise((resolve) => {
     const image = document.createElement("img");
     let settled = false;
     const finish = (loaded) => {
@@ -1624,9 +1646,9 @@ function preloadBackgroundAsset(background) {
       void image.decode().then(() => finish(true), () => finish(true));
     };
     image.onerror = () => finish(false);
-    image.src = url;
+    image.src = resolvedUrl;
     if (image.complete && image.naturalWidth > 0) image.onload();
-  });
+  })).catch(() => false);
   backgroundAssetLoads.set(url, loading);
   return loading;
 }

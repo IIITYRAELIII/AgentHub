@@ -18,7 +18,7 @@
     "runtime:rollback": "node runtime-manager.mjs rollback",
     "runtime:request-restart": "node request-safe-restart.mjs",
     "worker:build": "node cloudflare-worker/build-assets.mjs",
-    "worker:deploy": "npm run worker:build && node wrangler-runner.mjs deploy --config cloudflare-worker/wrangler.jsonc",
+    "worker:deploy": "npm run worker:build && node wrangler-runner.mjs deploy --config cloudflare-worker/wrangler.jsonc && node cloudflare-worker/verify-deployment.mjs",
     "dashboard-bot:pair": "node shared-dashboard-bot-pair.mjs",
     "dashboard-bot:webhook": "node shared-dashboard-bot-webhook.mjs",
     "android:build": "powershell -NoProfile -ExecutionPolicy Bypass -File AndroidApp/build.ps1",

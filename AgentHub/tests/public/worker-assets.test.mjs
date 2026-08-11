@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { buildWorkerAssets } from "../../cloudflare-worker/build-assets.mjs";
+import { verifyThemeDeployment } from "../../cloudflare-worker/verify-deployment.mjs";
 
 const require = createRequire(import.meta.url);
 const { localAssetPathname, localAssetReferences } = require("../../client-assets.cjs");
@@ -42,17 +43,35 @@ test("Worker build packages the same shell and theme resources used by local cli
     const bespin = catalog.find((theme) => theme.id === "bespin");
     assert.equal(bespin.backgrounds.length, 3);
     for (const background of bespin.backgrounds) {
-      assert.match(background.assetUrl, /^\/themes\/bespin\/[^?]+\.[a-f0-9]{12}\.jpg$/u);
+      assert.match(background.assetUrl, /^\/themes\/bespin\/[^?]+\.jpg\.[a-f0-9]{12}\.b64$/u);
+      const encoded = await readFile(path.join(output, ...background.assetUrl.slice(1).split("/")), "ascii");
+      const sourceName = path.basename(background.assetUrl).replace(/\.[a-f0-9]{12}\.b64$/u, "");
+      assert.deepEqual(Buffer.from(encoded, "base64"), await readFile(path.join(ROOT, "assets", "mini-app", "themes", "bespin", sourceName)));
     }
     const bespinStylesheet = build.publishedThemePathnames.get("/themes/bespin/theme.css");
     const bespinCss = await readFile(path.join(output, ...bespinStylesheet.slice(1).split("/")), "utf8");
-    for (const background of bespin.backgrounds) assert.ok(bespinCss.includes(background.assetUrl), background.assetUrl);
+    for (const background of bespin.backgrounds) {
+      assert.match(bespinCss, new RegExp(`var\\(--${background.id}-image, url\\("/themes/bespin/[^\"]+\\.[a-f0-9]{12}\\.jpg"\\)\\)`, "u"));
+    }
 
     const headers = await readFile(path.join(output, "_headers"), "utf8");
     assert.match(headers, /Content-Security-Policy:/u);
     assert.match(headers, /Cache-Control: no-store/u);
     const wrangler = JSON.parse(await readFile(path.join(ROOT, "cloudflare-worker", "wrangler.jsonc"), "utf8"));
     assert.equal(wrangler.assets.run_worker_first, false);
+    const deployment = await verifyThemeDeployment({
+      baseUrl: "https://agent-hub.test/",
+      sourceRoot: path.join(ROOT, "assets", "mini-app"),
+      fetchImpl: async (input) => {
+        const pathname = new URL(input).pathname === "/" ? "/index.html" : new URL(input).pathname;
+        try {
+          return new Response(await readFile(path.join(output, ...pathname.slice(1).split("/"))), { status: 200 });
+        } catch {
+          return new Response("Not Found", { status: 404 });
+        }
+      },
+    });
+    assert.ok(deployment.backgrounds > 3);
   } finally {
     await rm(output, { recursive: true, force: true });
   }

@@ -35,7 +35,7 @@ function versionedPathname(pathname, revision) {
   return `${pathname.slice(0, -extension.length)}.${revision}${extension}`;
 }
 
-function rewriteThemeCss(css, stylesheetPathname, publishedPathnames) {
+function rewriteThemeCss(css, stylesheetPathname, publishedPathnames, backgroundVariables) {
   return css.replace(/url\(\s*(["']?)([^"'()]+)\1\s*\)/giu, (match, _quote, reference) => {
     const value = String(reference).trim();
     if (/^(?:data:|https?:|\/\/|#)/iu.test(value)) return match;
@@ -44,7 +44,10 @@ function rewriteThemeCss(css, stylesheetPathname, publishedPathnames) {
       ? path.posix.normalize(clean)
       : path.posix.resolve(path.posix.dirname(stylesheetPathname), clean);
     const published = publishedPathnames.get(pathname);
-    return published ? `url("${published}")` : match;
+    if (!published) return match;
+    const fallback = `url("${published}")`;
+    const variable = backgroundVariables.get(pathname);
+    return variable ? `var(--${variable}-image, ${fallback})` : fallback;
   });
 }
 
@@ -71,16 +74,28 @@ export async function buildWorkerAssets({
   const themeBodies = new Map(await Promise.all([...themeRegistry.resources].map(async ([pathname, resource]) => (
     [pathname, await readFile(resource.file)]
   ))));
+  const backgroundVariables = new Map(themeRegistry.themes.flatMap((theme) => (
+    theme.backgrounds.filter((background) => background.asset).map((background) => [
+      `/themes/${theme.id}/${background.asset}`,
+      background.id,
+    ])
+  )));
   const publishedThemeBodies = new Map();
   const publishedThemePathnames = new Map();
+  const encodedBackgroundPathnames = new Map();
   for (const [pathname, body] of themeBodies) {
     if (path.posix.extname(pathname).toLowerCase() === ".css") continue;
     publishedThemeBodies.set(pathname, body);
-    publishedThemePathnames.set(pathname, versionedPathname(pathname, revisionFor(body)));
+    const revision = revisionFor(body);
+    publishedThemePathnames.set(pathname, versionedPathname(pathname, revision));
+    if (backgroundVariables.has(pathname)) encodedBackgroundPathnames.set(pathname, `${pathname}.${revision}.b64`);
   }
   for (const [pathname, body] of themeBodies) {
     if (path.posix.extname(pathname).toLowerCase() !== ".css") continue;
-    const published = Buffer.from(rewriteThemeCss(body.toString("utf8"), pathname, publishedThemePathnames), "utf8");
+    const published = Buffer.from(
+      rewriteThemeCss(body.toString("utf8"), pathname, publishedThemePathnames, backgroundVariables),
+      "utf8",
+    );
     publishedThemeBodies.set(pathname, published);
     publishedThemePathnames.set(pathname, versionedPathname(pathname, revisionFor(published)));
   }
@@ -93,6 +108,11 @@ export async function buildWorkerAssets({
     const publishedTarget = path.join(output, ...publishedPathname.slice(1).split("/"));
     await mkdir(path.dirname(publishedTarget), { recursive: true });
     await writeFile(publishedTarget, publishedThemeBodies.get(resource.pathname));
+    const encodedPathname = encodedBackgroundPathnames.get(resource.pathname);
+    if (encodedPathname) {
+      const encodedTarget = path.join(output, ...encodedPathname.slice(1).split("/"));
+      await writeFile(encodedTarget, themeBodies.get(resource.pathname).toString("base64"), "ascii");
+    }
   }
   await copyFile(path.join(import.meta.dirname, "_headers"), path.join(output, "_headers"));
 
@@ -116,7 +136,9 @@ export async function buildWorkerAssets({
   }
 
   index = renderThemeHtml(index, themeRegistry, {
-    resourceUrl: (pathname) => publishedThemePathnames.get(pathname) ?? pathname,
+    resourceUrl: (pathname) => encodedBackgroundPathnames.get(pathname)
+      ?? publishedThemePathnames.get(pathname)
+      ?? pathname,
   });
 
   for (const reference of shellReferences) {
@@ -137,7 +159,13 @@ export async function buildWorkerAssets({
   }
 
   await writeFile(path.join(output, "index.html"), index, "utf8");
-  return { output, shellReferences, themeRegistry, publishedThemePathnames };
+  return {
+    output,
+    shellReferences,
+    themeRegistry,
+    publishedThemePathnames,
+    encodedBackgroundPathnames,
+  };
 }
 
 const invokedFile = process.argv[1] ? pathToFileURL(path.resolve(process.argv[1])).href : "";
