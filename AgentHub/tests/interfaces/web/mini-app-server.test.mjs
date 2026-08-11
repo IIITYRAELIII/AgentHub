@@ -428,6 +428,18 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
       assert.match(kashyyyk.headers.get("cache-control"), /immutable/u, asset);
       assert.ok((await kashyyyk.arrayBuffer()).byteLength > 100_000, asset);
     }
+    for (const [asset, minimumBytes] of [
+      ["kashyyyk-dark-wood.webp", 100_000],
+      ["kashyyyk-panel-frame.webp", 30_000],
+      ["kashyyyk-side-rail.webp", 100_000],
+      ["kashyyyk-panel-moss.webp", 100_000],
+    ]) {
+      const kashyyykMaterial = await fetch(`${address.url}themes/kashyyyk/${asset}`);
+      assert.equal(kashyyykMaterial.status, 200, asset);
+      assert.equal(kashyyykMaterial.headers.get("content-type"), "image/webp", asset);
+      assert.match(kashyyykMaterial.headers.get("cache-control"), /immutable/u, asset);
+      assert.ok((await kashyyykMaterial.arrayBuffer()).byteLength > minimumBytes, asset);
+    }
     const magmaFrame = await fetch(`${address.url}themes/magma/magma-forged-frame.png`);
     assert.equal(magmaFrame.status, 200);
     assert.equal(magmaFrame.headers.get("content-type"), "image/png");
