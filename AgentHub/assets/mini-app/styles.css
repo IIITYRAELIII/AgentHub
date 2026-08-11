@@ -4847,14 +4847,20 @@ html[data-surface="mobile"]
 
 .stream-tab-create {
   flex-basis: 2rem;
-  opacity: 1;
+  opacity: 0.58;
   width: 2rem;
 }
 
 .stream-tab-create .stream-tab-card {
   align-items: center;
+  border-style: dashed;
   justify-content: center;
   padding: 0;
+}
+
+.stream-tab-create:hover,
+.stream-tab-create:focus-visible {
+  opacity: 1;
 }
 
 .stream-tab-create-mark {
@@ -5302,11 +5308,13 @@ html[data-surface="mobile"]
   }
 
   html[data-view="chat"]:not([data-surface="mobile"]) .stream-tab-create {
-    max-width: var(--shell-stream-create-width, var(--shell-stream-tab-max-width, 12rem)) !important;
-    width: var(--shell-stream-create-width, var(--shell-stream-tab-width, 12rem)) !important;
+    max-width: var(--shell-stream-create-width, 2rem) !important;
+    width: var(--shell-stream-create-width, 2rem) !important;
   }
 
   html[data-view="chat"]:not([data-surface="mobile"]) .stream-tab-create .stream-tab-card {
+    border: 1px dashed color-mix(in srgb, var(--line) 74%, transparent) !important;
+    border-image: none !important;
     padding: 0 !important;
   }
 
