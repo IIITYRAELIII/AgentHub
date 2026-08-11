@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { buildWorkerAssets } from "../../cloudflare-worker/build-assets.mjs";
+import { deployWorker } from "../../cloudflare-worker/deploy-worker.mjs";
 import { verifyThemeDeployment } from "../../cloudflare-worker/verify-deployment.mjs";
 
 const require = createRequire(import.meta.url);
@@ -81,4 +82,18 @@ test("Worker build packages the same shell and theme resources used by local cli
   } finally {
     await rm(output, { recursive: true, force: true });
   }
+});
+
+test("Worker deploy retries transient Cloudflare failures", async () => {
+  let attempts = 0;
+  await deployWorker({
+    run: async () => (++attempts < 3 ? 1 : 0),
+    pause: async () => {},
+  });
+  assert.equal(attempts, 3);
+  await assert.rejects(() => deployWorker({
+    attempts: 2,
+    run: async () => 1,
+    pause: async () => {},
+  }), /failed after 2 attempts/u);
 });
