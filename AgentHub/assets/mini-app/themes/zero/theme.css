@@ -313,8 +313,7 @@ html[data-theme="zero"] .stream-tab-create .stream-tab-card {
   border: 0;
 }
 
-html[data-theme="zero"] .stream-tab-create-mark,
-html[data-theme="zero"] .stream-tab-create-label {
+html[data-theme="zero"] .stream-tab-create-mark {
   color: var(--text-muted);
 }
 

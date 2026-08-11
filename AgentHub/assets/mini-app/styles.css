@@ -4846,29 +4846,26 @@ html[data-surface="mobile"]
 }
 
 .stream-tab-create {
-  opacity: 0.58;
+  align-self: center;
+  flex-basis: 2rem;
+  height: 2rem;
+  min-height: 2rem;
+  opacity: 1;
+  padding: 0.1rem;
+  width: 2rem;
 }
 
 .stream-tab-create .stream-tab-card {
   align-items: center;
   border-style: dashed;
   justify-content: center;
-}
-
-.stream-tab-create:hover,
-.stream-tab-create:focus-visible {
-  opacity: 1;
+  padding: 0;
 }
 
 .stream-tab-create-mark {
   color: var(--accent);
   font-size: 1.15rem;
   line-height: 1;
-}
-
-.stream-tab-create-label {
-  color: var(--text-muted);
-  font-size: 0.76rem;
 }
 
 .stream-tab-body {
@@ -5306,6 +5303,7 @@ html[data-surface="mobile"]
   html[data-view="chat"]:not([data-surface="mobile"]) .stream-tab-create .stream-tab-card {
     border: 1px dashed color-mix(in srgb, var(--line) 74%, transparent) !important;
     border-image: none !important;
+    padding: 0 !important;
   }
 
   html[data-view="chat"]:not([data-surface="mobile"])

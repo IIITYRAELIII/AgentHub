@@ -2213,7 +2213,6 @@ function renderStreamTabs() {
     "aria-label": "Создать Stream",
   }, [el("span", { class: "stream-tab-card" }, [
     el("span", { class: "stream-tab-create-mark", text: "+" }),
-    el("span", { class: "stream-tab-create-label", text: "Новый Stream" }),
   ])]);
   if (window.AgentHubStreamTabs.streamCreationSide(streamOrderMode, streamActivityDirection) === "start") {
     tabs.unshift(createTab);
