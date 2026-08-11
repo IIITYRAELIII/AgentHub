@@ -380,6 +380,11 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.equal(magma.headers.get("content-type"), "image/jpeg");
     assert.match(magma.headers.get("cache-control"), /immutable/u);
     assert.ok((await magma.arrayBuffer()).byteLength > 100_000);
+    const magmaFrame = await fetch(`${address.url}themes/magma/magma-forged-frame.png`);
+    assert.equal(magmaFrame.status, 200);
+    assert.equal(magmaFrame.headers.get("content-type"), "image/png");
+    assert.match(magmaFrame.headers.get("cache-control"), /immutable/u);
+    assert.ok((await magmaFrame.arrayBuffer()).byteLength > 100_000);
     const pulsar = await fetch(`${address.url}themes/pulsar/pulsar-dead-star.png`);
     assert.equal(pulsar.status, 200);
     assert.equal(pulsar.headers.get("content-type"), "image/png");
@@ -591,6 +596,7 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.match(glass, /function createFogTexture/u);
     assert.match(styles, /url\("\/pulsar-dead-star\.png"\)/u);
     assert.match(styles, /url\("\/themes\/magma\/magma-lava-well\.jpg"\)/u);
+    assert.match(styles, /url\("\/themes\/magma\/magma-forged-frame\.png"\)/u);
     assert.match(styles, /html\[data-theme="magma"\]/u);
     assert.match(styles, /url\("\/meadow-sun\.jpg"\)/u);
     assert.match(styles, /html\[data-theme="meadow"\]/u);

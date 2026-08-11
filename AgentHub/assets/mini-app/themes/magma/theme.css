@@ -20,7 +20,7 @@ html[data-theme="magma"] {
   --line-strong: rgb(135 148 158 / 54%);
 
   --magma-metal-texture: url("/themes/magma/magma-blackened-steel.jpg");
-  --magma-rivet: url("/themes/magma/magma-rivet.png");
+  --magma-forged-frame: url("/themes/magma/magma-forged-frame.png");
   --magma-image: url("/themes/magma/magma-lava-well.jpg");
   --magma-panel:
     linear-gradient(rgb(5 9 12 / 90%), rgb(5 9 12 / 90%)),
@@ -79,9 +79,10 @@ html[data-theme="magma"] {
   --star-opacity: 0;
 
   --shell-header-background: var(--magma-panel);
-  --shell-header-border: 1px solid rgb(57 68 77 / 76%);
-  --shell-header-frame-border: 1px solid rgb(99 112 123 / 54%);
+  --shell-header-border: 0;
+  --shell-header-frame-border: 7px solid transparent;
   --shell-header-frame-content: "";
+  --shell-header-frame-image: var(--magma-forged-frame) 64 / 7px stretch;
   --shell-header-gap: 0.8rem;
   --shell-header-height: 4.5rem;
   --shell-header-padding-left: clamp(0.75rem, 2.2vw, 2rem);
@@ -102,18 +103,24 @@ html[data-theme="magma"] {
   --shell-tab-active-border: 1px solid rgb(105 118 128 / 58%);
   --shell-tab-active-shadow: inset 0 -2px 0 var(--accent), 0 10px 22px -18px rgb(255 82 35 / 76%);
   --shell-workspace-padding-top: 0.45rem;
-  --shell-panel-border: 1px solid rgb(83 96 106 / 56%);
+  --shell-panel-border: 7px solid transparent;
+  --shell-panel-border-image: var(--magma-forged-frame) 64 / 7px stretch;
   --shell-stream-tabs-background: var(--magma-panel);
-  --shell-stream-tabs-border: 1px solid rgb(83 96 106 / 56%);
-  --shell-stream-tabs-border-bottom: 1px solid rgb(46 57 66 / 86%);
-  --shell-stream-tabs-padding: 0.34rem 0.5rem;
+  --shell-stream-tabs-border: 6px solid transparent;
+  --shell-stream-tabs-border-bottom: 6px solid transparent;
+  --shell-stream-tabs-border-image: var(--magma-forged-frame) 64 / 6px stretch;
+  --shell-stream-tabs-padding: 0.1rem 0.16rem;
   --shell-stream-tab-background: transparent;
   --shell-stream-tab-border: 1px solid transparent;
   --shell-stream-tab-hover-background: rgb(26 35 42 / 70%);
   --shell-stream-tab-active-background: rgb(35 22 18 / 78%);
   --shell-stream-card-background: var(--magma-control);
-  --shell-stream-card-border: 1px solid rgb(82 95 105 / 58%);
-  --shell-stream-card-shadow: inset 0 1px 0 rgb(210 224 235 / 6%), inset 0 -1px 0 #020405;
+  --shell-stream-card-border: 5px solid transparent;
+  --shell-stream-card-border-image: var(--magma-forged-frame) 64 / 5px stretch;
+  --shell-stream-card-shadow:
+    inset 0 1px 0 rgb(210 224 235 / 9%),
+    inset 0 -2px 0 #020405,
+    0 12px 24px -18px #000;
 }
 
 html[data-theme="magma"] body::after {
@@ -205,37 +212,45 @@ html[data-theme="magma"] .chat {
   position: relative;
 }
 
-html[data-theme="magma"] .task-rail::before,
-html[data-theme="magma"] .chat::before,
-html[data-theme="magma"] .activity-rail::before {
-  background-image: var(--magma-rivet), var(--magma-rivet), var(--magma-rivet), var(--magma-rivet);
-  background-position: 5px 5px, calc(100% - 5px) 5px, 5px calc(100% - 5px), calc(100% - 5px) calc(100% - 5px);
-  background-repeat: no-repeat;
-  background-size: 12px 12px;
-  content: "";
-  inset: 0;
-  pointer-events: none;
-  position: absolute;
-  z-index: 5;
-}
-
 html[data-theme="magma"] .stream-tabs,
 html[data-theme="magma"] .composer,
 html[data-theme="magma"] .dialog-settings,
 html[data-theme="magma"] .settings-panel {
   background: var(--magma-panel);
-  box-shadow: inset 0 1px 0 rgb(210 224 235 / 6%), inset 0 -1px 0 #020405;
+  border: 7px solid transparent;
+  border-image: var(--magma-forged-frame) 64 / 7px stretch;
+  box-shadow:
+    inset 0 1px 0 rgb(210 224 235 / 8%),
+    inset 0 -1px 0 #020405,
+    0 18px 36px -28px #000;
 }
 
 html[data-theme="magma"] .task-workspace-item,
 html[data-theme="magma"] .activity-stream-item,
-html[data-theme="magma"] .stream-tab-card,
 html[data-theme="magma"] .composer-input,
 html[data-theme="magma"] .chip-button,
 html[data-theme="magma"] .option-chip {
   background: var(--magma-control);
   border-color: rgb(77 91 101 / 54%);
   box-shadow: inset 0 1px 0 rgb(210 224 235 / 6%), inset 0 -1px 0 #020405;
+}
+
+html[data-theme="magma"] .task-workspace-item,
+html[data-theme="magma"] .activity-stream-item {
+  border: 3px solid transparent;
+  border-image: var(--magma-forged-frame) 64 / 3px stretch;
+  border-radius: 0;
+  box-shadow:
+    inset 0 1px 0 rgb(210 224 235 / 8%),
+    inset 0 -1px 0 #020405,
+    0 10px 18px -16px #000;
+}
+
+html[data-theme="magma"] .stream-tab[aria-pressed="true"] .stream-tab-card {
+  box-shadow:
+    inset 0 0 0 1px rgb(255 102 54 / 72%),
+    inset 0 -2px 0 rgb(255 79 32 / 82%),
+    0 0 22px -13px rgb(255 83 34 / 84%);
 }
 
 html[data-theme="magma"] .task-workspace-item:hover,
@@ -253,8 +268,11 @@ html[data-theme="magma"] .activity-stream-item[data-current] {
   background:
     linear-gradient(90deg, rgb(255 82 35 / 14%), rgb(10 15 19 / 90%) 54%),
     var(--magma-metal-texture) center / 18rem 18rem;
-  border-color: var(--accent-line);
-  box-shadow: inset 2px 0 0 var(--accent), inset 0 1px 0 rgb(210 224 235 / 6%), inset 0 -1px 0 #020405;
+  box-shadow:
+    inset 2px 0 0 var(--accent),
+    inset 0 0 0 1px rgb(255 102 54 / 54%),
+    inset 0 1px 0 rgb(210 224 235 / 6%),
+    inset 0 -1px 0 #020405;
 }
 
 html[data-theme="magma"] .msg {
@@ -329,10 +347,12 @@ html[data-theme="magma"] .journal details[data-work-log-turn-details] {
     --hub-background-position: center, center, 50% 52%;
   }
 
-  html[data-theme="magma"] .task-rail::before,
-  html[data-theme="magma"] .chat::before,
-  html[data-theme="magma"] .activity-rail::before {
-    background-size: 10px 10px;
+  html[data-theme="magma"] .stream-tabs,
+  html[data-theme="magma"] .composer,
+  html[data-theme="magma"] .dialog-settings,
+  html[data-theme="magma"] .settings-panel {
+    border-width: 4px;
+    border-image-width: 4px;
   }
 
   html[data-theme="magma"] .journal details[data-work-log-day-section],
