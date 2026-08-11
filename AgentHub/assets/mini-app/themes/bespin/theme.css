@@ -1,0 +1,310 @@
+html[data-theme="bespin"] {
+  color-scheme: light;
+
+  --font-body: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --font-display: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+  --font-title: var(--font-display);
+  --font-numeric: "Cascadia Mono", "Segoe UI Mono", monospace;
+  --display-weight: 650;
+  --display-spacing: -0.018em;
+  --title-weight: 620;
+  --label-spacing: 0.08em;
+
+  --radius-lg: 18px;
+  --radius-md: 10px;
+  --radius-sm: 7px;
+  --radius-chip: 5px;
+  --rail-width: 1px;
+
+  --bg: #ead9c5;
+  --surface-1: rgb(255 250 244 / 78%);
+  --surface-2: rgb(255 248 240 / 70%);
+  --surface-3: rgb(255 252 248 / 86%);
+  --sunken: rgb(104 76 62 / 8%);
+
+  --line: rgb(132 93 67 / 25%);
+  --line-strong: rgb(130 86 58 / 43%);
+
+  --card-bg: linear-gradient(180deg, rgb(255 253 249 / 82%), rgb(248 235 222 / 72%));
+  --card-bg-open: linear-gradient(180deg, rgb(255 254 251 / 92%), rgb(249 237 225 / 84%));
+  --card-texture: none;
+  --card-border: rgb(142 102 75 / 27%);
+  --card-border-open: rgb(192 112 78 / 58%);
+  --card-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 88%),
+    0 16px 36px -28px rgb(91 56 37 / 58%);
+
+  --plate-bg: linear-gradient(180deg, rgb(255 253 249 / 82%), rgb(244 228 212 / 68%));
+  --plate-shadow: inset 0 1px 0 rgb(255 255 255 / 88%);
+  --turn-shadow: 0 12px 30px -25px rgb(93 58 39 / 46%);
+
+  --text: #2f3040;
+  --text-soft: #4f4d59;
+  --text-muted: #736a68;
+  --text-faint: #938782;
+
+  --accent: #c9694c;
+  --accent-soft: rgb(226 119 82 / 15%);
+  --accent-line: rgb(191 91 59 / 52%);
+  --accent-glow: 0 0 0 3px rgb(220 119 83 / 13%);
+  --selection: rgb(226 119 82 / 24%);
+  --brand-gradient: linear-gradient(145deg, rgb(255 250 245 / 88%), rgb(229 183 144 / 46%));
+  --brand-shadow: 0 10px 26px -20px rgb(132 75 47 / 58%);
+
+  --provider-none: #777279;
+  --provider-codex: #477b9f;
+  --provider-claude: #bf674a;
+  --comparison-local: #375c7b;
+  --comparison-deviation: #a76532;
+  --comparison-cost: #8c5c88;
+  --ok: #568469;
+  --pending: #b87a3f;
+
+  --dot-input: #477b9f;
+  --dot-cache: #6c8d7d;
+  --dot-output: #c9694c;
+  --dot-think: #8d719b;
+
+  --space-glow-a: rgb(255 241 223 / 22%);
+  --space-glow-b: rgb(205 218 236 / 20%);
+  --space-base: #ead9c5;
+  --space-star: transparent;
+  --star-opacity: 0;
+
+  --bespin-image: url("./bespin-city.jpg");
+  --bespin-glass: linear-gradient(180deg, rgb(255 252 247 / 83%), rgb(247 233 219 / 74%));
+  --bespin-glass-soft: linear-gradient(180deg, rgb(255 253 249 / 72%), rgb(247 232 218 / 62%));
+  --bespin-metal: rgb(161 115 78 / 48%);
+
+  --shell-header-background: linear-gradient(180deg, rgb(255 246 235 / 94%), rgb(241 220 197 / 92%));
+  --shell-header-border: 1px solid rgb(139 96 67 / 38%);
+  --shell-header-frame-border: 0;
+  --shell-header-frame-content: "";
+  --shell-header-gap: 0.75rem;
+  --shell-header-rule: linear-gradient(90deg, transparent, rgb(184 119 79 / 58%), transparent);
+  --shell-header-rule-opacity: 0.72;
+  --shell-header-shadow: inset 0 1px 0 #fff, 0 12px 30px -25px rgb(94 58 37 / 55%);
+  --shell-control-background: rgb(255 249 242 / 72%);
+  --shell-control-border: 1px solid rgb(139 96 67 / 35%);
+  --shell-control-shadow: inset 0 1px 0 rgb(255 255 255 / 88%);
+  --shell-view-switch-background: rgb(255 249 242 / 54%);
+  --shell-view-switch-border: 1px solid rgb(139 96 67 / 24%);
+  --shell-view-switch-radius: 5px;
+  --shell-view-switch-shadow: inset 0 1px 0 rgb(255 255 255 / 78%);
+  --shell-tab-border: 1px solid transparent;
+  --shell-tab-active-background: rgb(255 248 239 / 78%);
+  --shell-tab-active-border: 1px solid rgb(141 96 67 / 28%);
+  --shell-tab-active-shadow: inset 0 -2px 0 var(--accent), 0 12px 22px -20px rgb(139 74 46 / 62%);
+  --shell-panel-border: 1px solid rgb(146 101 70 / 48%);
+  --shell-stream-tabs-background: rgb(255 249 242 / 62%);
+  --shell-stream-tabs-border: 1px solid rgb(145 99 67 / 38%);
+  --shell-stream-tabs-border-bottom: 1px solid rgb(145 99 67 / 38%);
+  --shell-stream-tabs-padding: 0.22rem;
+  --shell-stream-tab-background: transparent;
+  --shell-stream-tab-border: 1px solid transparent;
+  --shell-stream-tab-hover-background: rgb(255 250 245 / 72%);
+  --shell-stream-tab-active-background: rgb(255 244 233 / 86%);
+  --shell-stream-card-background: linear-gradient(180deg, rgb(255 253 249 / 84%), rgb(242 226 211 / 74%));
+  --shell-stream-card-border: 1px solid rgb(141 96 67 / 42%);
+  --shell-stream-card-shadow: inset 0 1px 0 #fff, 0 8px 20px -18px rgb(92 57 38 / 58%);
+}
+
+html[data-theme="bespin"] body::after {
+  background-color: #ead9c5;
+  background-image:
+    linear-gradient(180deg, rgb(255 247 237 / 18%), transparent 28% 74%, rgb(212 185 159 / 18%)),
+    radial-gradient(92% 84% at 50% 48%, transparent 48%, rgb(151 111 81 / 17%) 100%),
+    var(--bespin-image);
+  background-position: center, center, 50% 50%;
+  background-repeat: no-repeat;
+  background-size: cover;
+  inset: 0;
+  mask-image: none;
+  opacity: 1;
+}
+
+html[data-theme="bespin"] body::before {
+  background-image:
+    radial-gradient(38% 34% at 28% 18%, rgb(255 244 220 / 42%), transparent 78%),
+    radial-gradient(42% 38% at 76% 42%, rgb(223 207 236 / 18%), transparent 76%);
+  background-position: center;
+  background-size: cover;
+  mask-image: none;
+  mix-blend-mode: soft-light;
+  opacity: 0.52;
+}
+
+html[data-background-override="true"][data-background="bespin"] {
+  --hub-background-color: #ead9c5;
+  --hub-background-image:
+    linear-gradient(180deg, rgb(255 247 237 / 18%), transparent 28% 74%, rgb(212 185 159 / 18%)),
+    radial-gradient(92% 84% at 50% 48%, transparent 48%, rgb(151 111 81 / 17%) 100%),
+    url("./bespin-city.jpg");
+  --hub-background-position: center, center, 50% 50%;
+}
+
+html[data-background-override="true"][data-background="bespin-lounge"] {
+  --hub-background-color: #ead5bd;
+  --hub-background-image:
+    linear-gradient(180deg, rgb(255 244 228 / 10%), transparent 34% 76%, rgb(194 148 109 / 16%)),
+    radial-gradient(90% 82% at 50% 44%, transparent 50%, rgb(137 88 56 / 17%) 100%),
+    url("./bespin-lounge.jpg");
+  --hub-background-position: center, center, 50% 50%;
+}
+
+html[data-background-override="true"][data-background="bespin-skybridge"] {
+  --hub-background-color: #e8edf2;
+  --hub-background-image:
+    linear-gradient(180deg, rgb(255 255 255 / 14%), transparent 30% 74%, rgb(174 190 208 / 14%)),
+    radial-gradient(92% 86% at 50% 46%, transparent 54%, rgb(132 147 166 / 15%) 100%),
+    url("./bespin-skybridge.jpg");
+  --hub-background-position: center, center, 50% 50%;
+}
+
+html[data-theme="bespin"] .app-header,
+html[data-theme="bespin"] .task-rail,
+html[data-theme="bespin"] .activity-rail,
+html[data-theme="bespin"] .stream-tabs,
+html[data-theme="bespin"] .composer,
+html[data-theme="bespin"] .settings-panel,
+html[data-theme="bespin"] .dialog-settings,
+html[data-theme="bespin"] .text-dialog,
+html[data-theme="bespin"] .workspace-card-modal {
+  backdrop-filter: blur(18px) saturate(118%);
+  -webkit-backdrop-filter: blur(18px) saturate(118%);
+}
+
+html[data-theme="bespin"] .task-rail,
+html[data-theme="bespin"] .activity-rail {
+  background: var(--bespin-glass);
+  box-shadow: inset 0 1px 0 #fff, 0 16px 42px -32px rgb(85 51 32 / 62%);
+}
+
+html[data-theme="bespin"] .chat {
+  background: rgb(255 249 242 / 48%);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 82%), 0 18px 46px -34px rgb(90 54 35 / 48%);
+}
+
+html[data-theme="bespin"] .stream-chat-columns {
+  background: linear-gradient(180deg, rgb(255 250 244 / 12%), rgb(244 220 200 / 7%));
+}
+
+html[data-theme="bespin"] .task-workspace-item,
+html[data-theme="bespin"] .activity-stream-item {
+  background: rgb(255 251 246 / 34%);
+  border-color: transparent;
+  border-radius: 7px;
+  box-shadow: inset 0 -1px 0 rgb(139 96 67 / 15%);
+}
+
+html[data-theme="bespin"] .task-workspace-item:hover,
+html[data-theme="bespin"] .task-workspace-item:focus-visible,
+html[data-theme="bespin"] .activity-stream-item:hover,
+html[data-theme="bespin"] .activity-stream-item:focus-visible {
+  background: rgb(255 252 248 / 72%);
+  border-color: rgb(149 103 72 / 28%);
+}
+
+html[data-theme="bespin"] .task-workspace-item[data-selected],
+html[data-theme="bespin"] .activity-stream-item[data-current] {
+  background: linear-gradient(90deg, rgb(234 139 103 / 23%), rgb(255 247 239 / 58%));
+  border-color: rgb(191 91 59 / 43%);
+  box-shadow: inset 2px 0 0 var(--accent), inset 0 1px 0 rgb(255 255 255 / 72%);
+}
+
+html[data-theme="bespin"] .stream-tab[aria-pressed="true"] .stream-tab-card {
+  box-shadow: inset 0 0 0 1px rgb(194 104 70 / 54%), inset 0 -2px 0 var(--accent), var(--shell-stream-card-shadow);
+}
+
+html[data-theme="bespin"] .msg {
+  backdrop-filter: blur(11px) saturate(112%);
+  -webkit-backdrop-filter: blur(11px) saturate(112%);
+  background: rgb(255 253 249 / 69%);
+  border-color: rgb(144 101 74 / 24%);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 84%), var(--turn-shadow);
+}
+
+html[data-theme="bespin"] .msg-user {
+  background-color: rgb(255 247 238 / 70%);
+  background-image: linear-gradient(rgb(225 118 81 / 8%), rgb(225 118 81 / 8%));
+  border-color: rgb(192 103 69 / 34%);
+}
+
+html[data-theme="bespin"] .msg-system,
+html[data-theme="bespin"] .queue-item {
+  background: rgb(255 251 246 / 64%);
+  border-color: rgb(143 98 69 / 24%);
+}
+
+html[data-theme="bespin"] .composer {
+  background: rgb(255 248 239 / 78%);
+  border-color: rgb(141 96 67 / 42%);
+  box-shadow: inset 0 1px 0 #fff;
+}
+
+html[data-theme="bespin"] .composer-input,
+html[data-theme="bespin"] .chip-button,
+html[data-theme="bespin"] .option-chip,
+html[data-theme="bespin"] .view-settings {
+  background: rgb(255 252 248 / 58%);
+  border-color: rgb(139 96 67 / 30%);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 80%);
+}
+
+html[data-theme="bespin"] .composer-send:not(:disabled) {
+  background: linear-gradient(180deg, rgb(237 156 122 / 76%), rgb(218 111 76 / 72%));
+  border-color: rgb(177 79 51 / 48%);
+  color: #34282b;
+}
+
+html[data-theme="bespin"] .task-rail-title,
+html[data-theme="bespin"] .activity-rail-toggle,
+html[data-theme="bespin"] .task-project-heading,
+html[data-theme="bespin"] .eyebrow {
+  color: #4e4650;
+  letter-spacing: 0.08em;
+}
+
+html[data-theme="bespin"] pre,
+html[data-theme="bespin"] code,
+html[data-theme="bespin"] .tool-call {
+  background-color: rgb(104 76 62 / 7%);
+  border-color: rgb(135 94 67 / 20%);
+  color: #343442;
+}
+
+html[data-theme="bespin"] ::selection {
+  background: var(--selection);
+  color: #292633;
+}
+
+@media (max-width: 720px) {
+  html[data-theme="bespin"] body::after,
+  html[data-background-override="true"][data-background^="bespin"] {
+    --hub-background-position: center, center, 50% 50%;
+  }
+
+  html[data-theme="bespin"] .task-rail,
+  html[data-theme="bespin"] .activity-rail,
+  html[data-theme="bespin"] .chat,
+  html[data-theme="bespin"] .stream-tabs,
+  html[data-theme="bespin"] .composer {
+    background-color: rgb(255 249 242 / 88%);
+  }
+
+  html[data-theme="bespin"] .msg {
+    background: rgb(255 253 249 / 88%);
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  html[data-theme="bespin"] .task-rail,
+  html[data-theme="bespin"] .activity-rail,
+  html[data-theme="bespin"] .chat,
+  html[data-theme="bespin"] .msg,
+  html[data-theme="bespin"] .composer {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background-color: #fbf2e8;
+  }
+}

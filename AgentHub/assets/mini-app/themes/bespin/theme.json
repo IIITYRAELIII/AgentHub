@@ -1,0 +1,12 @@
+{
+  "id": "bespin",
+  "name": "Bespin",
+  "color": "#f2dfc9",
+  "order": 150,
+  "styles": "theme.css",
+  "backgrounds": [
+    { "id": "bespin", "name": "Облачный город", "asset": "bespin-city.jpg", "preload": true },
+    { "id": "bespin-lounge", "name": "Золотой салон", "asset": "bespin-lounge.jpg", "preload": true },
+    { "id": "bespin-skybridge", "name": "Небесная галерея", "asset": "bespin-skybridge.jpg", "preload": true }
+  ]
+}

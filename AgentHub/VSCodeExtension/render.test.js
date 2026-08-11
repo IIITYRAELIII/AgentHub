@@ -847,6 +847,25 @@ test("BlackHole keeps three scenes around the selected Focus Deck", () => {
   assert.match(styles, /@media \(prefers-reduced-motion: reduce\)/u);
 });
 
+test("Bespin keeps the three selected Cloud City scenes", () => {
+  const theme = THEME_REGISTRY.themes.find((item) => item.id === "bespin");
+  assert.deepEqual(
+    theme.backgrounds.map(({ id, name, asset }) => [id, name, asset]),
+    [
+      ["bespin", "Облачный город", "bespin-city.jpg"],
+      ["bespin-lounge", "Золотой салон", "bespin-lounge.jpg"],
+      ["bespin-skybridge", "Небесная галерея", "bespin-skybridge.jpg"],
+    ],
+  );
+  assert.deepEqual(theme.backgrounds.map(({ preload }) => preload), [true, true, true]);
+  for (const background of theme.backgrounds) {
+    assert.ok(
+      theme.resources.some((resource) => resource.pathname.endsWith(`/${background.asset}`)),
+      background.asset,
+    );
+  }
+});
+
 test("Verdant keeps its signal sweep across three environment scenes", () => {
   const theme = THEME_REGISTRY.themes.find((item) => item.id === "verdant");
   const styles = themeFile("verdant");
