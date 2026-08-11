@@ -4853,7 +4853,6 @@ html[data-surface="mobile"]
 
 .stream-tab-create .stream-tab-card {
   align-items: center;
-  border-style: dashed;
   justify-content: center;
   padding: 0;
 }
@@ -5274,6 +5273,12 @@ html[data-surface="mobile"]
     width: 12rem !important;
   }
 
+  html[data-view="chat"]:not([data-surface="mobile"]) .stream-tab-create {
+    flex-basis: 2rem !important;
+    max-width: 2rem !important;
+    width: 2rem !important;
+  }
+
   html[data-view="chat"]:not([data-surface="mobile"]) .stream-tab:hover,
   html[data-view="chat"]:not([data-surface="mobile"]) .stream-tab:focus-visible {
     background: var(--shell-stream-tab-hover-background, var(--surface-2)) !important;
@@ -5297,8 +5302,6 @@ html[data-surface="mobile"]
   }
 
   html[data-view="chat"]:not([data-surface="mobile"]) .stream-tab-create .stream-tab-card {
-    border: 1px dashed color-mix(in srgb, var(--line) 74%, transparent) !important;
-    border-image: none !important;
     padding: 0 !important;
   }
 
@@ -8613,6 +8616,12 @@ html[data-surface="mobile"] .workspace-message-search {
 html[data-surface="mobile"] .stream-tab {
   min-height: 2.85rem;
   width: min(11rem, 72vw);
+}
+
+html[data-surface="mobile"] .stream-tab-create {
+  flex-basis: 2rem;
+  max-width: 2rem;
+  width: 2rem;
 }
 
 html[data-surface="mobile"] .stream-chat-preview {
