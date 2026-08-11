@@ -3053,6 +3053,12 @@ html[data-view="chat"] body {
   overflow: hidden;
 }
 
+/* В полноэкранном чате корневой документ не прокручивается. Стабильный gutter
+   здесь создавал пустую полосу только справа от верхней панели. */
+html[data-view="chat"] {
+  scrollbar-gutter: auto;
+}
+
 .app-header {
   flex: 0 0 auto;
 }

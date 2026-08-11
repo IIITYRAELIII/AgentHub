@@ -219,7 +219,7 @@ html[data-theme="magma"] .chat {
     border: 10px solid transparent;
     border-image: var(--magma-chat-frame) 34 / 10px stretch;
     box-sizing: border-box;
-    margin: 0.55rem 0 0;
+    margin: 0;
     width: auto;
   }
 
@@ -236,11 +236,11 @@ html[data-theme="magma"] .chat {
   }
 
   html[data-theme="magma"] .workspace::before {
-    left: clamp(-0.8rem, -0.72vw, -0.62rem);
+    left: calc(-1 * var(--shell-header-padding-left));
   }
 
   html[data-theme="magma"] .workspace::after {
-    right: clamp(-0.8rem, -0.72vw, -0.62rem);
+    right: calc(-1 * var(--shell-header-padding-right));
     transform: scaleX(-1);
   }
 }
