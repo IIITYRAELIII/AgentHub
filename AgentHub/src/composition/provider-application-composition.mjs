@@ -299,6 +299,7 @@ export async function createProviderApplicationComposition({
     codexTransportPid: () => late.codexTransport().pid,
     codexModelLabel: late.codexModelLabel,
     reasoningLabels: codexReasoningLabels,
+    invalidateTaskCatalog,
     delay,
   });
   const providerOperations = createProviderOperationComposition({

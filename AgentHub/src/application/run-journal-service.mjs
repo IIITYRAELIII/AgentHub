@@ -1,11 +1,23 @@
 import { stat } from "node:fs/promises";
 
 import { taskRunKey } from "../domain/task-runs.mjs";
+import { displayUserPrompt } from "./task-history.mjs";
 import { conciseTurnTitle } from "./turn-title.mjs";
 
 function normalizedIsoTimestamp(value) {
   const timestamp = Date.parse(String(value ?? ""));
   return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null;
+}
+
+function journalPrompt(completion) {
+  const prompts = Array.isArray(completion?.prompts) && completion.prompts.length
+    ? completion.prompts
+    : [completion?.prompt];
+  return prompts
+    .map((prompt) => displayUserPrompt(prompt))
+    .map((prompt) => String(prompt ?? "").trim())
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 export class RunJournalService {
@@ -111,7 +123,7 @@ export class RunJournalService {
       taskTitle: completion.taskTitle,
       title: title || (body ? conciseTurnTitle(body, completion.status) : ""),
       body,
-      prompt: completion.prompt,
+      prompt: journalPrompt(completion),
       changedFiles: completion.changedFiles,
       diff: completion.diff,
       skillsUsed: completion.skillsUsed,

@@ -5,8 +5,10 @@ import { ClaudeEventService } from "../../../src/providers/claude/claude-event-s
 test("Claude event service binds the provider session without changing logical task identity", () => {
   const selected = [];
   const retargeted = [];
+  let catalogInvalidations = 0;
   const service = new ClaudeEventService({
     isSelectedRun: () => true, reindexRun: () => {}, setSelectedThread: (...args) => selected.push(args),
+    invalidateCatalog: () => { catalogInvalidations += 1; },
     retargetClientSelection: (...args) => retargeted.push(args),
     runTitle: (run) => run.taskTitle, bindRunMessage: async () => {}, saveState: async () => {},
     noteActivity: () => {}, scheduleProgress: () => {}, appendReasoning: () => {}, setStage: () => {},
@@ -18,4 +20,5 @@ test("Claude event service binds the provider session without changing logical t
   assert.equal(run.threadId, "session-12345678");
   assert.deepEqual(selected, [["session-12345678", "Сессия Claude · session-"]]);
   assert.deepEqual(retargeted, [[run, "session-12345678", "Сессия Claude · session-"]]);
+  assert.equal(catalogInvalidations, 1);
 });

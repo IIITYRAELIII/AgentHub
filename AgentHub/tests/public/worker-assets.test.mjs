@@ -7,6 +7,7 @@ import test from "node:test";
 
 import { buildWorkerAssets } from "../../cloudflare-worker/build-assets.mjs";
 import { deployWorker } from "../../cloudflare-worker/deploy-worker.mjs";
+import { publishWorker, workerRouteBaseUrl } from "../../cloudflare-worker/publish-worker.mjs";
 import { verifyThemeDeployment } from "../../cloudflare-worker/verify-deployment.mjs";
 
 const require = createRequire(import.meta.url);
@@ -97,4 +98,25 @@ test("Worker deploy retries transient Cloudflare failures", async () => {
     run: async () => 1,
     pause: async () => {},
   }), /failed after 2 attempts/u);
+});
+
+test("Worker publication holds one transaction through build, deploy and live verification", async () => {
+  const events = [];
+  const result = await publishWorker({
+    exclusive: async (operation) => {
+      events.push("lock");
+      return operation();
+    },
+    before: async () => events.push("guard"),
+    build: async () => events.push("build"),
+    deploy: async () => events.push("deploy"),
+    verify: async ({ baseUrl }) => {
+      events.push(`verify:${baseUrl}`);
+      return { backgrounds: 45 };
+    },
+    readConfig: async () => ({ routes: [{ pattern: "hub.example.test/*" }] }),
+  });
+  assert.deepEqual(events, ["lock", "guard", "build", "deploy", "verify:https://hub.example.test/"]);
+  assert.deepEqual(result, { backgrounds: 45 });
+  assert.equal(workerRouteBaseUrl({ routes: ["https://hub.example.test/*"] }), "https://hub.example.test/");
 });

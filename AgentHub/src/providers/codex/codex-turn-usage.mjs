@@ -261,6 +261,7 @@ function createTurnAccumulator(turnId) {
   let startedAt = "";
   let completedAt = "";
   let prompt = "";
+  const prompts = [];
   let status = "";
   let workspaceRoot = "";
   let latestModel = "";
@@ -367,7 +368,10 @@ function createTurnAccumulator(turnId) {
       && entry.payload?.role === "user") {
       const rawPrompt = messageText(entry.payload);
       const candidate = displayUserPrompt(rawPrompt);
-      if (candidate) prompt = candidate;
+      if (candidate) {
+        prompt ||= candidate;
+        prompts.push(candidate);
+      }
       for (const name of explicitSkillNames(rawPrompt, knownSkills)) skillsUsed.add(name);
     }
     if (entry?.type === "response_item"
@@ -410,6 +414,7 @@ function createTurnAccumulator(turnId) {
       startedAt,
       completedAt,
       prompt,
+      prompts,
       changedFiles: [...changedFiles],
       diff: patches.join("\n\n"),
       skillsUsed: [...skillsUsed],
@@ -631,6 +636,7 @@ function createHistoricalTurn(turnId) {
     completedAt: "",
     lastActivityAt: "",
     prompt: "",
+    prompts: [],
     changedFiles: new Set(),
     patches: [],
     skillsUsed: new Set(),
@@ -798,7 +804,10 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
       && entry.payload?.role === "user") {
       const rawPrompt = messageText(entry.payload);
       const candidate = displayUserPrompt(rawPrompt);
-      if (candidate && !exactTurn.prompt) exactTurn.prompt = candidate;
+      if (candidate) {
+        exactTurn.prompt ||= candidate;
+        exactTurn.prompts.push(candidate);
+      }
       for (const name of explicitSkillNames(rawPrompt, knownSkills)) exactTurn.skillsUsed.add(name);
     }
     if (entry?.type === "response_item"

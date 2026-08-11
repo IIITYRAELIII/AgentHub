@@ -3,6 +3,8 @@ export class TaskCatalogService {
   #refreshedAt = 0;
   #refreshInFlight = null;
   #revision = 0;
+  #invalidationRevision = 0;
+  #builtInvalidationRevision = -1;
 
   constructor({ initialEntries = [], cacheMs = 0, build, now = () => Date.now() } = {}) {
     if (!Array.isArray(initialEntries)) throw new TypeError("initialEntries must be an array");
@@ -22,6 +24,7 @@ export class TaskCatalogService {
   }
 
   invalidate() {
+    this.#invalidationRevision += 1;
     this.#refreshedAt = 0;
   }
 
@@ -29,22 +32,36 @@ export class TaskCatalogService {
     if (!force && !this.stale) {
       return this.#entries;
     }
-    if (this.#refreshInFlight) return this.#refreshInFlight;
+    if (this.#refreshInFlight) {
+      await this.#refreshInFlight;
+      if (this.#builtInvalidationRevision < this.#invalidationRevision) {
+        return this.refresh({ force: true });
+      }
+      return this.#entries;
+    }
+    const buildInvalidationRevision = this.#invalidationRevision;
     const operation = Promise.resolve()
       .then(() => this.build())
       .then((next) => {
         if (!Array.isArray(next)) throw new TypeError("task catalog builder must return an array");
         // Preserve the array identity used by already constructed controllers.
         this.#entries.splice(0, this.#entries.length, ...next);
-        this.#refreshedAt = this.now();
+        this.#builtInvalidationRevision = buildInvalidationRevision;
+        this.#refreshedAt = buildInvalidationRevision === this.#invalidationRevision
+          ? this.now()
+          : 0;
         this.#revision += 1;
         return this.#entries;
       });
     this.#refreshInFlight = operation;
     try {
-      return await operation;
+      await operation;
     } finally {
       if (this.#refreshInFlight === operation) this.#refreshInFlight = null;
     }
+    if (this.#builtInvalidationRevision < this.#invalidationRevision) {
+      return this.refresh({ force: true });
+    }
+    return this.#entries;
   }
 }

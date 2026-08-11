@@ -84,6 +84,31 @@ test("DeferredInputController reschedules while the task is blocked", async () =
   assert.equal(state.timers[0].delay, 2_000);
 });
 
+test("DeferredInputController releases one queued message after a context probe finishes", async () => {
+  let probeRunning = true;
+  const started = [];
+  const state = fixture({
+    isBlocked: async () => probeRunning,
+    start: async (item) => started.push(item.id),
+  });
+  state.queuedInputs.set("after-probe", {
+    id: "after-probe",
+    streamId: "stream-1",
+    taskTitle: "Task",
+    input: "Пользовательское сообщение после замера",
+  });
+
+  await state.controller.process("after-probe");
+  assert.deepEqual(started, []);
+  assert.equal(state.queuedInputs.has("after-probe"), true);
+
+  probeRunning = false;
+  await state.controller.process("after-probe");
+  await state.controller.process("after-probe");
+  assert.deepEqual(started, ["after-probe"]);
+  assert.equal(state.queuedInputs.has("after-probe"), false);
+});
+
 test("DeferredInputController returns a failed launch to pending without losing input", async () => {
   const state = fixture({ start: async () => { throw new Error("launch failed"); } });
   const item = { id: "one", taskTitle: "Task", input: "important", allowForce: true };

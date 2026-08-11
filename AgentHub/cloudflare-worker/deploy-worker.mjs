@@ -2,6 +2,8 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { withPublicationLock } from "../src/infrastructure/process/publication-lock.mjs";
+
 const root = path.resolve(import.meta.dirname, "..");
 
 function runWrangler() {
@@ -39,4 +41,4 @@ export async function deployWorker({
 }
 
 const invokedFile = process.argv[1] ? pathToFileURL(path.resolve(process.argv[1])).href : "";
-if (invokedFile === import.meta.url) await deployWorker();
+if (invokedFile === import.meta.url) await withPublicationLock(() => deployWorker());

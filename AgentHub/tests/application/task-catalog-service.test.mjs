@@ -59,6 +59,38 @@ test("task catalog service caches and coalesces concurrent refreshes", async () 
   assert.equal(builds, 1);
 });
 
+test("task catalog service rebuilds when invalidated during an in-flight refresh", async () => {
+  let catalogSize = 1;
+  let builds = 0;
+  let releaseFirstBuild;
+  let firstBuildStarted;
+  const firstBuildBlocked = new Promise((resolve) => { releaseFirstBuild = resolve; });
+  const firstBuildObserved = new Promise((resolve) => { firstBuildStarted = resolve; });
+  const service = new TaskCatalogService({
+    cacheMs: 10_000,
+    build: async () => {
+      builds += 1;
+      const capturedSize = catalogSize;
+      if (builds === 1) {
+        firstBuildStarted();
+        await firstBuildBlocked;
+      }
+      return Array.from({ length: capturedSize }, (_, index) => ({ id: index + 1 }));
+    },
+  });
+
+  const first = service.refresh();
+  await firstBuildObserved;
+  catalogSize = 2;
+  service.invalidate();
+  const second = service.refresh();
+  releaseFirstBuild();
+
+  assert.deepEqual(await second, [{ id: 1 }, { id: 2 }]);
+  assert.deepEqual(await first, [{ id: 1 }, { id: 2 }]);
+  assert.equal(builds, 2);
+});
+
 test("task catalog service force refresh bypasses cache and recovers after failure", async () => {
   let builds = 0;
   const service = new TaskCatalogService({

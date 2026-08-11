@@ -905,6 +905,7 @@ test("historical rollout keeps the initial prompt when a turn is steered", async
   });
 
   assert.equal(result.turns[0].prompt, "Изначальный запрос");
+  assert.deepEqual(result.turns[0].prompts, ["Изначальный запрос", "Докинутое уточнение"]);
 });
 
 test("terminal event scanner marks the real rollout shape of a context probe", async () => {

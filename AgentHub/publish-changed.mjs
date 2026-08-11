@@ -3,8 +3,10 @@ import path from "node:path";
 
 import { callDesktopControl } from "./desktop-control.mjs";
 import { npmStep, publicationSteps, runStep } from "./publish-all.mjs";
+import { withPublicationLock } from "./src/infrastructure/process/publication-lock.mjs";
 import {
   assertCleanPublicationTree,
+  assertCurrentPublicationRevision,
   changedFiles,
   currentRevision,
   readPublicationState,
@@ -22,6 +24,7 @@ const emptyPlan = () => ({
   desktop: false,
   vscode: false,
   unitTests: false,
+  surfaceTests: false,
   fullTests: false,
   unknown: [],
 });
@@ -41,6 +44,8 @@ export function classifyPublicationChanges(files) {
     if (relative.startsWith("assets/mini-app/") || relative === "work-log.css") {
       plan.runtime = true;
       plan.worker = true;
+      plan.unitTests = true;
+      plan.surfaceTests = true;
       continue;
     }
     if (relative.startsWith("assets/mobile/")) {
@@ -49,6 +54,8 @@ export function classifyPublicationChanges(files) {
     }
     if (relative.startsWith("cloudflare-worker/")) {
       plan.worker = true;
+      plan.unitTests = true;
+      plan.surfaceTests = true;
       continue;
     }
     if (relative.startsWith("AndroidApp/")) {
@@ -64,6 +71,7 @@ export function classifyPublicationChanges(files) {
       plan.runtime = true;
       plan.runtimeRestart = true;
       plan.unitTests = true;
+      plan.surfaceTests = true;
       continue;
     }
     if (relative.startsWith("VSCodeExtension/")) {
@@ -74,6 +82,7 @@ export function classifyPublicationChanges(files) {
       plan.runtime = true;
       plan.runtimeRestart = true;
       plan.unitTests = true;
+      plan.surfaceTests = true;
       continue;
     }
     plan.runtime = true;
@@ -108,6 +117,9 @@ function focusedSteps(plan) {
         ],
       });
     }
+    if (plan.surfaceTests) {
+      steps.push(npmStep("Межповерхностные E2E Agent Hub", ["run", "test:e2e"]));
+    }
   }
   if (plan.vscode || plan.runtime) steps.push(byLabel.get("Тесты расширения VS Code"));
   if (plan.desktop) steps.push(byLabel.get("Сборка и smoke-проверка Agent Hub Desktop"));
@@ -137,30 +149,40 @@ export function parseChangedArguments(args) {
 export async function publishChanged(args = process.argv.slice(2), {
   run = runStep,
   restart = callDesktopControl,
+  before = async () => {},
+  exclusive = withPublicationLock,
   readState = readPublicationState,
   writeState = writePublicationState,
   revision = currentRevision,
   diff = changedFiles,
 } = {}) {
-  const options = parseChangedArguments(args);
-  const state = await readState();
-  const from = options.from || state?.revision;
-  if (!from) throw new Error("Нет исходной точки публикации. Сначала выполните npm run publish:all или укажите --from <commit>.");
-  const files = await diff(from, { cwd: REPOSITORY_ROOT });
-  const plan = classifyPublicationChanges(files);
-  if (options.fullTests) plan.fullTests = true;
-  if (plan.unknown.length) console.warn(`Неизвестные пути требуют полной публикации: ${plan.unknown.join(", ")}`);
-  for (const step of focusedSteps(plan)) await run(step);
-  const head = await revision({ cwd: REPOSITORY_ROOT });
-  await writeState({ revision: head, publishedAt: new Date().toISOString(), files, plan });
-  if (plan.runtimeRestart && !options.skipRestart) await restart("restart-server");
-  console.log(`\nВыборочная публикация завершена: ${files.length} изменённых файлов.`);
-  return { files, plan, revision: head };
+  return exclusive(async () => {
+    await before();
+    const options = parseChangedArguments(args);
+    const state = await readState();
+    const from = options.from || state?.revision;
+    if (!from) throw new Error("Нет исходной точки публикации. Сначала выполните npm run publish:all или укажите --from <commit>.");
+    const files = await diff(from, { cwd: REPOSITORY_ROOT });
+    const plan = classifyPublicationChanges(files);
+    if (options.fullTests) plan.fullTests = true;
+    if (plan.unknown.length) console.warn(`Неизвестные пути требуют полной публикации: ${plan.unknown.join(", ")}`);
+    for (const step of focusedSteps(plan)) await run(step);
+    const head = await revision({ cwd: REPOSITORY_ROOT });
+    await writeState({ revision: head, publishedAt: new Date().toISOString(), files, plan });
+    if (plan.runtimeRestart && !options.skipRestart) await restart("restart-server");
+    console.log(`\nВыборочная публикация завершена: ${files.length} изменённых файлов.`);
+    return { files, plan, revision: head };
+  });
 }
 
 const invokedFile = process.argv[1] ? path.resolve(process.argv[1]) : "";
 if (invokedFile === fileURLToPath(import.meta.url)) {
-  assertCleanPublicationTree({ cwd: REPOSITORY_ROOT }).then(() => publishChanged()).catch((error) => {
+  publishChanged(process.argv.slice(2), {
+    before: async () => {
+      await assertCleanPublicationTree({ cwd: REPOSITORY_ROOT });
+      await assertCurrentPublicationRevision({ cwd: REPOSITORY_ROOT });
+    },
+  }).catch((error) => {
     console.error(`\nПубликация остановлена: ${error.message}`);
     process.exitCode = 1;
   });

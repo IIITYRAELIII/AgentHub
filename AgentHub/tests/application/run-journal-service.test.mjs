@@ -89,6 +89,23 @@ test("RunJournalService selects automatic and explicit journal projection paths"
   assert.equal(calls[1][1].workLogId, "row-1");
 });
 
+test("RunJournalService projects the initial and every steered message", async () => {
+  const { service, calls } = fixture();
+  await service.projectTurn({
+    provider: "codex",
+    projectRoot: "C:/workspace",
+    threadId: "thread",
+    turnId: "turn",
+    prompts: ["Изначальный запрос", "Первое уточнение", "Второе уточнение"],
+    status: "completed",
+  }, { body: "Готово" });
+
+  assert.equal(
+    calls[0][1].prompt,
+    "Изначальный запрос\n\nПервое уточнение\n\nВторое уточнение",
+  );
+});
+
 test("RunJournalService initializes projection before retiring verified legacy storage", async () => {
   const { service, calls } = fixture();
   const retirement = await service.initialize({

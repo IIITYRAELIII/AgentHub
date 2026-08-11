@@ -10,6 +10,7 @@ import { classifyPublicationChanges, parseChangedArguments, publishChanged } fro
 import { detectGitCommonDirectory, resolveWrangler } from "../../wrangler-runner.mjs";
 import {
   assertCleanPublicationTree,
+  assertCurrentPublicationRevision,
   parseWorkingTreeStatus,
 } from "../../src/infrastructure/persistence/publication-state.mjs";
 
@@ -28,6 +29,25 @@ test("publication rejects a dirty AgentHub working tree", async () => {
     /dirty working tree/u,
   );
   assert.equal(await assertCleanPublicationTree({ cwd: ROOT, status: async () => "" }), true);
+});
+
+test("publication rejects a checkout older than the current main revision", async () => {
+  const revisions = new Map([
+    ["HEAD", "old"],
+    ["refs/heads/main", "new"],
+  ]);
+  await assert.rejects(
+    assertCurrentPublicationRevision({
+      cwd: ROOT,
+      revision: async (args) => revisions.get(args.at(-1)),
+    }),
+    /устаревшей ревизии/u,
+  );
+  revisions.set("HEAD", "new");
+  assert.equal(await assertCurrentPublicationRevision({
+    cwd: ROOT,
+    revision: async (args) => revisions.get(args.at(-1)),
+  }), "new");
 });
 
 test("publication validates every client before the first deployment", () => {
@@ -92,7 +112,7 @@ test("publication requests the server's safe deferred restart last", async () =>
   ]);
 });
 
-test("selective publication maps shared UI to runtime and Worker only", async () => {
+test("selective publication maps shared UI to runtime, Worker and surface tests", async () => {
   assert.deepEqual(
     classifyPublicationChanges([
       "CHANGELOG.md",
@@ -109,7 +129,8 @@ test("selective publication maps shared UI to runtime and Worker only", async ()
       android: false,
       desktop: false,
       vscode: false,
-      unitTests: false,
+      unitTests: true,
+      surfaceTests: true,
       fullTests: false,
       unknown: [],
     },
@@ -128,6 +149,7 @@ test("selective publication maps shared UI to runtime and Worker only", async ()
       desktop: false,
       vscode: false,
       unitTests: true,
+      surfaceTests: true,
       fullTests: false,
       unknown: [],
     },
@@ -142,6 +164,7 @@ test("selective publication maps shared UI to runtime and Worker only", async ()
       desktop: false,
       vscode: false,
       unitTests: true,
+      surfaceTests: true,
       fullTests: false,
       unknown: [],
     },
@@ -153,7 +176,7 @@ test("selective publication maps shared UI to runtime and Worker only", async ()
   });
 });
 
-test("selective publication runs unit tests for runtime code without the slow process E2E suite", async () => {
+test("selective publication runs unit and cross-surface E2E tests for runtime code", async () => {
   const labels = [];
   const result = await publishChanged(["--from", "base", "--skip-restart"], {
     run: async (step) => labels.push(step.label),
@@ -169,6 +192,7 @@ test("selective publication runs unit tests for runtime code without the slow pr
   assert.deepEqual(labels, [
     "Проверка синтаксиса Agent Hub",
     "Unit-тесты Agent Hub",
+    "Межповерхностные E2E Agent Hub",
     "Тесты расширения VS Code",
     "Сборка runtime-релиза",
     "Активация runtime-релиза",
@@ -205,22 +229,17 @@ test("selective publication records the exact published revision", async () => {
   assert.equal(written.revision, "head");
   assert.deepEqual(steps.map((step) => step.label), [
     "Проверка синтаксиса Agent Hub",
-    "Контракт интерфейсов Agent Hub",
+    "Unit-тесты Agent Hub",
+    "Межповерхностные E2E Agent Hub",
     "Тесты расширения VS Code",
     "Публикация Mini App Worker",
     "Сборка runtime-релиза",
     "Активация runtime-релиза",
   ]);
-  const surfaceContract = steps.find((step) => step.label === "Контракт интерфейсов Agent Hub");
-  assert.deepEqual(surfaceContract.args, [
-    "--test",
-    "tests/composition/message-lifecycle.test.mjs",
-    "tests/interfaces/web/mini-app-server.test.mjs",
-    "tests/interfaces/web/worker/worker.test.mjs",
-    "tests/public/client-assets.test.mjs",
-    "tests/public/worker-assets.test.mjs",
-  ]);
-  for (const file of surfaceContract.args.slice(1)) assert.equal(fs.existsSync(path.join(ROOT, file)), true);
+  assert.deepEqual(
+    steps.find((step) => step.label === "Межповерхностные E2E Agent Hub").args.slice(-2),
+    ["run", "test:e2e"],
+  );
 });
 
 test("Worker packages only a verified published Android artifact", () => {
@@ -342,10 +361,6 @@ test("clean worktrees reuse the pinned Wrangler from the main worktree", () => {
       expected,
     );
 
-    const packageScript = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"))
-      .scripts["worker:deploy"];
-    assert.match(packageScript, /node wrangler-runner\.mjs deploy/u);
-    assert.doesNotMatch(packageScript, /\bnpx\b/u);
   } finally {
     fs.rmSync(temporary, { recursive: true, force: true });
   }

@@ -40,7 +40,9 @@ export class ManagedRunLifecycleService {
     const project = d.findProject(projectRoot);
     const targetThreadId = target?.threadId ?? current.threadId;
     const taskTitle = target?.taskTitle ?? current.taskTitle;
-    if (provider === "claude") d.clearClaudeCancellation?.(taskRunKey({ provider, projectRoot, threadId: targetThreadId }));
+    if (provider === "claude" && targetThreadId) {
+      d.clearClaudeCancellation?.({ provider, threadId: targetThreadId });
+    }
 
     const savedCodexSettings = provider === "codex" ? d.codexSettings(target) ?? {} : {};
     const preferences = d.currentPreferences(provider);

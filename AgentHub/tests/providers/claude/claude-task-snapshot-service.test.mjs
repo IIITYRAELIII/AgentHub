@@ -8,7 +8,7 @@ test("Claude snapshot service clears an old cancellation after new activity", as
   const service = new ClaudeTaskSnapshotService({
     readSession: async () => ({ sessionId: "session-1", cwd: "D:/workspace", modifiedAtMs: 200 }),
     findProject: () => ({ path: "D:/workspace" }),
-    taskRunKey: () => "claude:session-1",
+    cancellationKey: () => "claude:session-1",
     activityAtMs: (snapshot) => snapshot.modifiedAtMs,
     activityState: () => "active",
     saveState: async () => { saved = true; },
@@ -25,7 +25,7 @@ test("Claude snapshot service masks a cancelled transcript without newer activit
   const service = new ClaudeTaskSnapshotService({
     readSession: async () => ({ sessionId: "session-1", cwd: "D:/workspace", modifiedAtMs: 100, active: true }),
     findProject: () => ({ path: "D:/workspace" }),
-    taskRunKey: () => "claude:session-1",
+    cancellationKey: () => "claude:session-1",
     activityAtMs: (snapshot) => snapshot.modifiedAtMs,
     activityState: (snapshot) => snapshot.cancelled ? "inactive" : "active",
     saveState: async () => {},

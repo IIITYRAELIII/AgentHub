@@ -363,7 +363,7 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
       button.callback_data === `task:l:${run.threadId}`
     ))).length,
     2,
-    "both live Claude tasks must be selectable",
+    `both live Claude tasks must be selectable\nruns: ${JSON.stringify(parallelRuns)}\nbuttons: ${JSON.stringify(runningButtons)}`,
   );
   const firstTaskButton = runningButtons
     .find((button) => button.callback_data === `task:l:${firstRun.threadId}`);

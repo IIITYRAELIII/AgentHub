@@ -226,7 +226,12 @@ export async function buildWorkLogRolloutBackfill({
         taskTitle,
         title: importedTitle(turn),
         body: String(turn.finalAnswer ?? "").trim(),
-        prompt: String(turn.prompt ?? "").trim(),
+        prompt: (Array.isArray(turn.prompts) && turn.prompts.length
+          ? turn.prompts
+          : [turn.prompt])
+          .map((prompt) => String(prompt ?? "").trim())
+          .filter(Boolean)
+          .join("\n\n"),
         changedFiles: turn.changedFiles ?? [],
         diff: String(turn.diff ?? ""),
         skillsUsed: turn.skillsUsed ?? [],

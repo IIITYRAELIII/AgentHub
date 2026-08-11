@@ -1,5 +1,5 @@
 import { appendRunActivity } from "../domain/run-activity.mjs";
-import { taskRunKey } from "../domain/task-runs.mjs";
+import { providerThreadKey } from "../domain/workspace-stream-identity.mjs";
 import { ClaudeEventService } from "../providers/claude/claude-event-service.mjs";
 import { ClaudeTaskSnapshotService } from "../providers/claude/claude-task-snapshot-service.mjs";
 import {
@@ -45,12 +45,13 @@ export function createProviderSnapshotComposition({
   codexTransportPid,
   codexModelLabel,
   reasoningLabels,
+  invalidateTaskCatalog,
   delay,
 }) {
   const claudeTaskSnapshots = new ClaudeTaskSnapshotService({
     readSession: readClaudeSessionSnapshot,
     findProject,
-    taskRunKey,
+    cancellationKey: providerThreadKey,
     activityAtMs: claudeSnapshotActivityAtMs,
     activityState: claudeSnapshotActivityState,
     saveState,
@@ -60,6 +61,7 @@ export function createProviderSnapshotComposition({
   const claudeEventService = new ClaudeEventService({
     isSelectedRun,
     reindexRun: (run, previous) => taskRuns.reindex(run, previous),
+    invalidateCatalog: invalidateTaskCatalog,
     setSelectedThread: (threadId, title) => {
       const streamId = selectionStore.streamId;
       selectionStore.setThread(threadId, { provider: "claude", streamId, title });

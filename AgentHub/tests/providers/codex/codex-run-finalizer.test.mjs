@@ -48,6 +48,7 @@ function run() {
     chatId: null,
     startedAt: "later",
     promptPreview: "later prompt",
+    userMessages: [{ text: "later prompt" }, { text: "follow-up" }],
     latestDiff: "",
   };
 }
@@ -79,6 +80,7 @@ test("CodexRunFinalizer adopts audited start data and completes one durable deli
   assert.equal(recorded.streamId, "stream-1");
   assert.equal(recorded.chatId, 7);
   assert.deepEqual(recorded.changedFiles, ["file.mjs"]);
+  assert.deepEqual(recorded.userMessages, [{ text: "later prompt" }, { text: "follow-up" }]);
   assert.deepEqual(state.events.map(([name]) => name), [
     "diff", "record", "save", "history", "project", "final", "delivered", "save", "complete",
   ]);

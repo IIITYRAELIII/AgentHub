@@ -3,6 +3,7 @@ import { TurnEndDeliveryService } from "../application/turn-end-delivery-service
 import { CodexRunFinalizer } from "../providers/codex/codex-run-finalizer.mjs";
 import { captureTaskGitBaseline } from "../infrastructure/filesystem/task-git-diff.mjs";
 import { taskRunKey } from "../domain/task-runs.mjs";
+import { providerThreadKey } from "../domain/workspace-stream-identity.mjs";
 
 function setBoundedMapValue(map, key, value, limit) {
   if (map.has(key)) map.delete(key);
@@ -63,7 +64,7 @@ export function createRunCompletionComposition({
     modelLabel: codexModelLabel,
     claudeModelLabels,
     reasoningLabels,
-    clearClaudeCancellation: (key) => cancelledManagedClaudeTasks.delete(key),
+    clearClaudeCancellation: (task) => cancelledManagedClaudeTasks.delete(providerThreadKey(task)),
     captureGitBaseline: (projectRoot, runId) => (
       captureTaskGitBaseline(projectRoot, config.dataDir, runId)
     ),

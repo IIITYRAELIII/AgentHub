@@ -8,7 +8,7 @@ export class ClaudeTaskSnapshotService {
 
   constructor(dependencies = {}) {
     for (const name of [
-      "readSession", "findProject", "taskRunKey", "activityAtMs", "activityState", "saveState",
+      "readSession", "findProject", "cancellationKey", "activityAtMs", "activityState", "saveState",
     ]) requiredFunction(dependencies[name], name);
     if (!(dependencies.cancelledTasks instanceof Map)) throw new TypeError("cancelledTasks map is required");
     this.#d = dependencies;
@@ -19,9 +19,8 @@ export class ClaudeTaskSnapshotService {
     if (!snapshot?.sessionId || !snapshot.cwd) return snapshot;
     const project = d.findProject(snapshot.cwd);
     if (!project) return snapshot;
-    const key = d.taskRunKey({
+    const key = d.cancellationKey({
       provider: "claude",
-      projectRoot: project.path,
       threadId: snapshot.sessionId,
     });
     const cancelledAtMs = d.cancelledTasks.get(key);

@@ -191,7 +191,7 @@ export class ProviderCancellationService {
     for (const name of [
       "interruptCodex", "runForTask", "completeRun", "readCodexSnapshot",
       "finishObserved", "completeManaged", "taskExternalActivity", "stopClaudeRun",
-      "processIsAlive", "taskRunKey", "saveState",
+      "processIsAlive", "claudeCancellationKey", "saveState",
     ]) requiredFunction(dependencies[name], name);
     this.#d = dependencies;
   }
@@ -215,7 +215,7 @@ export class ProviderCancellationService {
     if (run.observer) return { accepted: true, stopRequested: false };
     if (run.process || d.processIsAlive(run.pid)) {
       if (!await d.stopClaudeRun(run)) throw new Error("Не удалось остановить дерево процессов Claude");
-      rememberBounded(d.cancelledClaudeTasks, d.taskRunKey(run), Date.now(), 200);
+      rememberBounded(d.cancelledClaudeTasks, d.claudeCancellationKey(run), Date.now(), 200);
       await d.saveState();
       return { accepted: true, stopRequested: true, message: "Запрошена остановка этой задачи." };
     }

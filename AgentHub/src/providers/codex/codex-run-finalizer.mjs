@@ -98,6 +98,7 @@ export class CodexRunFinalizer {
       serviceTier: tracker.serviceTier ?? run.serviceTier ?? "default",
       startedAt: run.startedAt,
       prompt: run.promptPreview,
+      userMessages: run.userMessages,
       finalAnswer: String(answer ?? "").trim(),
       changedFiles: this.changedFiles(run),
       diff: run.latestDiff ?? "",

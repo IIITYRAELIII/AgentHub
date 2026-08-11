@@ -51,17 +51,32 @@ function normalizedMessage(value) {
   };
 }
 
+function normalizedPrompts(value) {
+  const values = [
+    ...(Array.isArray(value?.prompts) ? value.prompts : []),
+    ...(Array.isArray(value?.userMessages)
+      ? value.userMessages.map((message) => message?.text)
+      : []),
+  ]
+    .map((prompt) => String(prompt ?? "").trim())
+    .filter(Boolean);
+  const legacy = String(value?.prompt ?? "").trim();
+  if (legacy && !values.includes(legacy)) values.unshift(legacy);
+  return [...new Set(values)].slice(0, 100);
+}
+
 function normalizedCompletion(value) {
   const base = validBase(value);
   const turnId = String(value?.turnId ?? "").trim();
   const projectRoot = String(value?.projectRoot ?? "").trim();
   if (!base || !turnId || !projectRoot) return null;
   const usageReported = value.usageReported === true;
+  const prompts = normalizedPrompts(value);
   const estimate = base.provider === "codex"
     ? estimateMissingCodexUsage({
       status: value.status,
       usageReported,
-      prompt: value.prompt,
+      prompt: prompts.join("\n\n"),
       imageGenerationCount: value.imageGenerationCount,
     })
     : null;
@@ -110,7 +125,8 @@ function normalizedCompletion(value) {
     deliverySequence: Number.isSafeInteger(value.deliverySequence) ? value.deliverySequence : null,
     startedAt: String(value.startedAt ?? ""),
     completedAt: String(value.completedAt ?? new Date().toISOString()),
-    prompt: String(value.prompt ?? "").trim(),
+    prompt: prompts[0] ?? "",
+    prompts,
     finalAnswer: String(value.finalAnswer ?? "").trim(),
     changedFiles: Array.isArray(value.changedFiles)
       ? value.changedFiles.map((file) => String(file).trim()).filter(Boolean)
@@ -228,7 +244,11 @@ export class TurnEndNotificationRegistry {
     completion.provisional = incoming.provisional === true;
     completion.completedAt = completion.completedAt || incoming.completedAt;
     completion.startedAt = completion.startedAt || incoming.startedAt;
-    completion.prompt = incoming.prompt || completion.prompt;
+    completion.prompts = [...new Set([
+      ...(Array.isArray(completion.prompts) ? completion.prompts : [completion.prompt]),
+      ...incoming.prompts,
+    ].map((prompt) => String(prompt ?? "").trim()).filter(Boolean))].slice(0, 100);
+    completion.prompt = completion.prompts[0] ?? incoming.prompt ?? completion.prompt;
     completion.finalAnswer = incoming.finalAnswer || completion.finalAnswer;
     if (incoming.changedFiles.length) completion.changedFiles = incoming.changedFiles;
     if (incoming.diff) completion.diff = incoming.diff;

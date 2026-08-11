@@ -63,6 +63,24 @@ test("turn-end registry binds a deferred message to the completed turn", () => {
   assert.match(ready.diff, /const ready = true/u);
 });
 
+test("turn-end registry preserves every prompt while merging repeated completion data", () => {
+  const registry = new TurnEndNotificationRegistry();
+  registry.recordCompletion(completion({
+    prompt: "Изначальный запрос",
+    prompts: ["Изначальный запрос", "Первое уточнение"],
+  }));
+  const ready = registry.recordCompletion(completion({
+    prompt: "Второе уточнение",
+    prompts: ["Изначальный запрос", "Первое уточнение", "Второе уточнение"],
+  }));
+  assert.equal(ready.prompt, "Изначальный запрос");
+  assert.deepEqual(ready.prompts, [
+    "Изначальный запрос",
+    "Первое уточнение",
+    "Второе уточнение",
+  ]);
+});
+
 test("late deferred message refreshes the completed task title", () => {
   const registry = new TurnEndNotificationRegistry();
   registry.recordCompletion(completion({ taskTitle: "Старое название" }));

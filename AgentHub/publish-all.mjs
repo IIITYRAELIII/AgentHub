@@ -3,8 +3,10 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 import { callDesktopControl } from "./desktop-control.mjs";
+import { withPublicationLock } from "./src/infrastructure/process/publication-lock.mjs";
 import {
   assertCleanPublicationTree,
+  assertCurrentPublicationRevision,
   currentRevision,
   writePublicationState,
 } from "./src/infrastructure/persistence/publication-state.mjs";
@@ -99,26 +101,36 @@ export function parseArguments(args) {
 export async function publishAll(args = process.argv.slice(2), {
   run = runStep,
   restart = callDesktopControl,
+  before = async () => {},
+  exclusive = withPublicationLock,
   record = async () => writePublicationState({
     revision: await currentRevision({ cwd: REPOSITORY_ROOT }),
     publishedAt: new Date().toISOString(),
     mode: "full",
   }),
 } = {}) {
-  const options = parseArguments(args);
-  for (const step of publicationSteps(options)) await run(step);
-  await record();
-  if (!options.skipRestart) {
-    console.log("\n==> Запрос безопасного перезапуска Agent Hub");
-    const result = await restart("restart-server");
-    console.log(result?.message ?? "Перезапуск запрошен");
-  }
-  console.log("\nПубликация завершена. Интерфейс VS Code подхватит runtime после переоткрытия панели или команды «Обновить Agent Hub»; Reload Window нужен только при изменении моста расширения.");
+  return exclusive(async () => {
+    await before();
+    const options = parseArguments(args);
+    for (const step of publicationSteps(options)) await run(step);
+    await record();
+    if (!options.skipRestart) {
+      console.log("\n==> Запрос безопасного перезапуска Agent Hub");
+      const result = await restart("restart-server");
+      console.log(result?.message ?? "Перезапуск запрошен");
+    }
+    console.log("\nПубликация завершена. Интерфейс VS Code подхватит runtime после переоткрытия панели или команды «Обновить Agent Hub»; Reload Window нужен только при изменении моста расширения.");
+  });
 }
 
 const invokedFile = process.argv[1] ? path.resolve(process.argv[1]) : "";
 if (invokedFile === fileURLToPath(import.meta.url)) {
-  assertCleanPublicationTree({ cwd: REPOSITORY_ROOT }).then(() => publishAll()).catch((error) => {
+  publishAll(process.argv.slice(2), {
+    before: async () => {
+      await assertCleanPublicationTree({ cwd: REPOSITORY_ROOT });
+      await assertCurrentPublicationRevision({ cwd: REPOSITORY_ROOT });
+    },
+  }).catch((error) => {
     console.error(`\nПубликация остановлена: ${error.message}`);
     process.exitCode = 1;
   });

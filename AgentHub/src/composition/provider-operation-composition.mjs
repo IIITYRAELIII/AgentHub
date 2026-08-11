@@ -6,6 +6,7 @@ import {
   upsertRunReasoningBlock,
 } from "../domain/run-activity.mjs";
 import { taskRunKey } from "../domain/task-runs.mjs";
+import { providerThreadKey } from "../domain/workspace-stream-identity.mjs";
 import { ClaudeEventService } from "../providers/claude/claude-event-service.mjs";
 import { isContextCompactionItem } from "../providers/codex/context-compaction-tracker.mjs";
 import { CodexEventService } from "../providers/codex/codex-event-service.mjs";
@@ -201,7 +202,7 @@ export function createProviderOperationComposition({
     taskExternalActivity,
     stopClaudeRun: stopClaudeRunProcess,
     processIsAlive,
-    taskRunKey,
+    claudeCancellationKey: providerThreadKey,
     saveState,
     cancelledClaudeTasks: cancelledManagedClaudeTasks,
     logWarn: (...args) => console.warn(...args),

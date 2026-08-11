@@ -43,6 +43,17 @@ export async function currentRevision({ cwd } = {}) {
   return gitOutput(["rev-parse", "HEAD"], { cwd });
 }
 
+export async function assertCurrentPublicationRevision({ cwd, revision = gitOutput } = {}) {
+  const [head, main] = await Promise.all([
+    revision(["rev-parse", "HEAD"], { cwd }),
+    revision(["rev-parse", "refs/heads/main"], { cwd }),
+  ]);
+  if (head !== main) {
+    throw new Error(`Публикация устаревшей ревизии запрещена: HEAD ${head}, main ${main}`);
+  }
+  return head;
+}
+
 export async function changedFiles(fromRevision, { cwd } = {}) {
   const output = await gitOutput(["diff", "--name-only", "--diff-filter=ACMRTUXB", `${fromRevision}..HEAD`], { cwd });
   return output ? output.split(/\r?\n/u).filter(Boolean) : [];
