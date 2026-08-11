@@ -21,6 +21,8 @@ html[data-theme="magma"] {
 
   --magma-metal-texture: url("/themes/magma/magma-blackened-steel.jpg");
   --magma-forged-frame: url("/themes/magma/magma-forged-frame.png");
+  --magma-chat-frame: url("/themes/magma/magma-chat-frame.png");
+  --magma-side-rail: url("/themes/magma/magma-side-rail.png");
   --magma-image: url("/themes/magma/magma-lava-well.jpg");
   --magma-panel:
     linear-gradient(rgb(5 9 12 / 90%), rgb(5 9 12 / 90%)),
@@ -210,6 +212,37 @@ html[data-theme="magma"] .chat {
     inset 0 0 0 1px rgb(4 7 10 / 70%),
     inset 0 0 56px rgb(0 0 0 / 16%);
   position: relative;
+}
+
+@media (min-width: 860px) {
+  html[data-theme="magma"] .stream-chat-columns {
+    border: 10px solid transparent;
+    border-image: var(--magma-chat-frame) 34 / 10px stretch;
+    box-sizing: border-box;
+    margin: 0.55rem 0.65rem 0;
+    width: auto;
+  }
+
+  html[data-theme="magma"] .workspace::before,
+  html[data-theme="magma"] .workspace::after {
+    background: var(--magma-side-rail) center / 100% 100% no-repeat;
+    bottom: 0;
+    content: "";
+    pointer-events: none;
+    position: absolute;
+    top: 0;
+    width: clamp(1.25rem, 1.45vw, 1.6rem);
+    z-index: 8;
+  }
+
+  html[data-theme="magma"] .workspace::before {
+    left: clamp(-0.8rem, -0.72vw, -0.62rem);
+  }
+
+  html[data-theme="magma"] .workspace::after {
+    right: clamp(-0.8rem, -0.72vw, -0.62rem);
+    transform: scaleX(-1);
+  }
 }
 
 html[data-theme="magma"] .stream-tabs,
