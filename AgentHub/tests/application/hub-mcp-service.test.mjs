@@ -142,6 +142,19 @@ test("HubMcpService supports the first Stream turn before provider Thread assign
   assert.equal((await service.call("hub_context_get", { context_token: token })).streamId, "stream-1");
 });
 
+test("HubMcpService falls back to Stream context while a rotated Thread is not bound yet", async (context) => {
+  const { service } = await fixture(context);
+  const developerContext = service.developerContext({
+    provider: "codex",
+    threadId: "rotated-thread-not-bound-yet",
+    streamId: "stream-1",
+  });
+  const token = /Context capability: (\S+)/u.exec(developerContext)?.[1];
+
+  assert.match(developerContext, /Workspace: Agent Hub \(workspace-1\)/u);
+  assert.equal((await service.call("hub_context_get", { context_token: token })).streamId, "stream-1");
+});
+
 test("HubMcpService starts the current Workspace task in the current Stream", async (context) => {
   const { service, token } = await fixture(context);
   const task = await service.call("hub_task_start", {

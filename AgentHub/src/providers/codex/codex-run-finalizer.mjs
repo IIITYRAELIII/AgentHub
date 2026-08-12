@@ -73,9 +73,11 @@ export class CodexRunFinalizer {
       run.startedAt = turnStart.startedAt || run.startedAt;
       run.promptPreview = turnStart.prompt || run.promptPreview;
     }
-    await this.refreshTaskDiff(run).catch((error) => {
-      this.logger.error(`Cannot capture changed files for turn ${completedTurnId}:`, error.message);
-    });
+    if (run.rolloutChangeTrackingKnown !== true) {
+      await this.refreshTaskDiff(run).catch((error) => {
+        this.logger.error(`Cannot capture changed files for turn ${completedTurnId}:`, error.message);
+      });
+    }
     const identity = {
       provider: "codex",
       threadId: run.threadId,

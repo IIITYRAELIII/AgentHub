@@ -4,13 +4,14 @@ import test from "node:test";
 import { ManagedRunLifecycleService } from "../../src/application/managed-run-lifecycle-service.mjs";
 import { TaskRunRegistry } from "../../src/domain/task-runs.mjs";
 
-function harness() {
+function harness({ provider = "codex" } = {}) {
   const events = [];
+  let baselineCaptures = 0;
   const taskRuns = new TaskRunRegistry();
   const service = new ManagedRunLifecycleService({
     taskRuns,
     currentTarget: () => ({
-      provider: "codex", projectRoot: "D:/Work", streamId: "stream-1", threadId: "thread-1", taskTitle: "Task", chatId: 7,
+      provider, projectRoot: "D:/Work", streamId: "stream-1", threadId: "thread-1", taskTitle: "Task", chatId: 7,
     }),
     findProject: () => ({ name: "Work" }),
     codexSettings: () => ({}),
@@ -19,7 +20,10 @@ function harness() {
     }),
     modelLabel: (value) => value.toUpperCase(),
     claudeModelLabels: {}, reasoningLabels: { high: "High" },
-    captureGitBaseline: async () => ({ repositories: [] }),
+    captureGitBaseline: async () => {
+      baselineCaptures += 1;
+      return { repositories: [] };
+    },
     persistTaskDiff: async () => events.push("diff"),
     syncRun: (_run, options) => events.push(options?.active === false ? "sync-complete" : "sync-start"),
     invalidateCatalog: () => events.push("catalog"),
@@ -33,11 +37,11 @@ function harness() {
     beforeCompletion: async () => events.push("before"),
     afterCompletion: async () => events.push("after"),
   });
-  return { service, taskRuns, events };
+  return { service, taskRuns, events, baselineCaptures: () => baselineCaptures };
 }
 
 test("managed run lifecycle creates and persists one owned run", async () => {
-  const { service, taskRuns, events } = harness();
+  const { service, taskRuns, events, baselineCaptures } = harness();
   const run = await service.begin("hello");
 
   assert.equal(taskRuns.forTask(run), run);
@@ -49,7 +53,16 @@ test("managed run lifecycle creates and persists one owned run", async () => {
   }]);
   assert.equal(run.streamId, "stream-1");
   assert.equal(run.model, "GPT");
+  assert.equal(baselineCaptures(), 0);
   assert.deepEqual(events, ["catalog", "diff", "clear-diff", "sync-start", "save", "progress"]);
+});
+
+test("managed run lifecycle keeps Git baseline fallback for non-Codex providers", async () => {
+  const { service, baselineCaptures } = harness({ provider: "claude" });
+  const run = await service.begin("hello");
+
+  assert.equal(baselineCaptures(), 1);
+  assert.deepEqual(run.gitBaseline, { repositories: [] });
 });
 
 test("managed run lifecycle completes and removes the same run", async () => {

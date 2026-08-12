@@ -4,6 +4,7 @@ import {
   mergeActiveTaskHistory,
   responseAnnotationDetails,
   visibleTaskHistory,
+  withoutCodexInspectionAttachments,
 } from "../../application/task-history.mjs";
 import { taskViewCallbackData } from "./task-view-callback.mjs";
 import { isCodexAutoCompactionTurnId } from "../../domain/codex-internal-turn.mjs";
@@ -33,9 +34,9 @@ function mergeAttachmentSources(currentMessages, rolloutMessages) {
     : [];
   let changed = false;
   for (const rolloutMessage of Array.isArray(rolloutMessages) ? rolloutMessages : []) {
-    const sources = Array.isArray(rolloutMessage?.attachmentSources)
+    const sources = (Array.isArray(rolloutMessage?.attachmentSources)
       ? rolloutMessage.attachmentSources
-      : [];
+      : []).filter((source) => source?.type === "generated-path");
     if (rolloutMessage?.role !== "agent" || !sources.length) continue;
     let targetIndex = messages.findIndex((message) => (
       message?.role === "agent"
@@ -48,9 +49,10 @@ function mergeAttachmentSources(currentMessages, rolloutMessages) {
       continue;
     }
     const target = messages[targetIndex];
-    const mergedSources = Array.isArray(target.attachmentSources)
-      ? target.attachmentSources.map((source) => ({ ...source }))
-      : [];
+    const mergedSources = (Array.isArray(target.attachmentSources)
+      ? target.attachmentSources
+      : []).filter((source) => source?.type === "generated-path")
+      .map((source) => ({ ...source }));
     const known = new Set(mergedSources.map((source) => `${source.type}:${source.value}`));
     for (const source of sources) {
       const key = `${source?.type}:${source?.value}`;
@@ -67,30 +69,26 @@ function mergeAttachmentSources(currentMessages, rolloutMessages) {
 
 function mergeMessageAttachments(target, source) {
   const merged = { ...target };
-  const hasGeneratedOutput = (Array.isArray(target?.attachmentSources)
-    ? target.attachmentSources
-    : []).some((item) => item?.type === "generated-path");
   for (const field of ["attachments", "attachmentSources"]) {
-    const values = Array.isArray(target?.[field])
-      ? target[field].map((item) => ({ ...item }))
-      : [];
+    const publicItem = field === "attachments"
+      ? (item) => !String(item?.id ?? "").startsWith("codex-viewed-")
+      : (item) => item?.type !== "view-path";
+    const values = (Array.isArray(target?.[field]) ? target[field] : [])
+      .filter(publicItem)
+      .map((item) => ({ ...item }));
     const keyFor = field === "attachments"
       ? (item) => String(item?.id ?? item?.path ?? item?.name ?? "")
       : (item) => `${item?.type}:${item?.value}`;
     const known = new Set(values.map(keyFor));
-    const sourceValues = Array.isArray(source?.[field]) ? source[field] : [];
+    const sourceValues = (Array.isArray(source?.[field]) ? source[field] : []).filter(publicItem);
     for (const item of sourceValues) {
-      if (
-        field === "attachments"
-        && hasGeneratedOutput
-        && String(item?.id ?? "").startsWith("codex-viewed-")
-      ) continue;
       const key = keyFor(item);
       if (!key || known.has(key)) continue;
       values.push({ ...item });
       known.add(key);
     }
     if (values.length) merged[field] = values;
+    else delete merged[field];
   }
   return merged;
 }
@@ -141,12 +139,16 @@ async function materializeHistoryAttachments(history, importer) {
   if (typeof importer !== "function") return;
   await Promise.all((Array.isArray(history) ? history : []).flatMap((turn) => (
     (Array.isArray(turn?.messages) ? turn.messages : []).map(async (message) => {
-      const sources = Array.isArray(message?.attachmentSources) ? message.attachmentSources : [];
+      const sources = (Array.isArray(message?.attachmentSources) ? message.attachmentSources : [])
+        .filter((source) => message?.role !== "agent" || source?.type === "generated-path");
       if (!sources.length) return;
       const imported = await importer(sources);
-      const attachments = Array.isArray(message.attachments)
-        ? message.attachments.map((attachment) => ({ ...attachment }))
-        : [];
+      const attachments = (Array.isArray(message.attachments) ? message.attachments : [])
+        .filter((attachment) => (
+          message?.role !== "agent"
+          || !String(attachment?.id ?? "").startsWith("codex-viewed-")
+        ))
+        .map((attachment) => ({ ...attachment }));
       const known = new Set(attachments.map((attachment) => String(attachment?.id ?? "")));
       for (const attachment of Array.isArray(imported) ? imported : []) {
         const id = String(attachment?.id ?? "");
@@ -210,11 +212,9 @@ export function codexRolloutHistory(activity = {}) {
     const finalAnswer = String(finalMessages[id] ?? "").trim();
     const latestAnswer = String(latestMessages[id] ?? "").trim();
     const answer = finalAnswer || latestAnswer;
-    const imageSources = Array.isArray(generatedImageSources[id])
+    const generatedImages = (Array.isArray(generatedImageSources[id])
       ? generatedImageSources[id]
-      : [];
-    const generatedSources = imageSources.filter((item) => item?.type === "generated-path");
-    const generatedImages = (generatedSources.length ? generatedSources : imageSources)
+      : []).filter((item) => item?.type === "generated-path")
       .map((item) => ({ ...item }));
     const trace = Array.isArray(activityGroups[id]) ? structuredClone(activityGroups[id]) : [];
     if (!users.length && !answer && !generatedImages.length && !trace.length) return [];
@@ -345,7 +345,7 @@ function mergeCodexHistory(cachedHistory, sourceHistory, rolloutHistory) {
       };
     }
   }
-  return merged
+  return withoutCodexInspectionAttachments(merged
     .map((item, index) => ({ item, index }))
     .sort((left, right) => {
       const leftId = String(left.item?.id ?? "");
@@ -354,7 +354,7 @@ function mergeCodexHistory(cachedHistory, sourceHistory, rolloutHistory) {
         ? leftId.localeCompare(rightId)
         : left.index - right.index;
     })
-    .map(({ item }) => item);
+    .map(({ item }) => item));
 }
 
 export class TaskViewController {
@@ -383,11 +383,11 @@ export class TaskViewController {
     const task = this.task(binding, binding.chatId);
     if (cachedOnly) {
       return {
-        history: d.taskSyncStore.history(task)
+        history: withoutCodexInspectionAttachments(d.taskSyncStore.history(task)
           .filter((item) => (
             binding.provider !== "codex" || !isCodexAutoCompactionTurnId(item?.id)
           ))
-          .filter((item) => !completedOnly || item.completed),
+          .filter((item) => !completedOnly || item.completed)),
         snapshot: completedOnly ? null : d.taskSyncStore.snapshot(task),
       };
     }
@@ -490,11 +490,11 @@ export class TaskViewController {
       await d.taskSyncStore.save();
       return { history, snapshot: completedOnly ? null : snapshot };
     } catch (error) {
-      const history = d.taskSyncStore.history(task)
+      const history = withoutCodexInspectionAttachments(d.taskSyncStore.history(task)
         .filter((item) => (
           binding.provider !== "codex" || !isCodexAutoCompactionTurnId(item?.id)
         ))
-        .filter((item) => !completedOnly || item.completed);
+        .filter((item) => !completedOnly || item.completed));
       if (!history.length) throw error;
       d.logger.warn(`Using cached local history for ${binding.provider} task ${binding.threadId}:`, error.message);
       return {

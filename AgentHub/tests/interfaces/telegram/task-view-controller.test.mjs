@@ -65,6 +65,7 @@ test("cached task history does not wait for the provider", async () => {
     prompt: "Сохранённый запрос",
     answer: "Сохранённый ответ",
     completed: true,
+    messages: [],
   }];
   let providerReads = 0;
   const view = controller({
@@ -477,15 +478,13 @@ test("generated images replace inspected inputs on the final assistant message",
   assert.deepEqual(recorded, result.history);
 });
 
-test("an inspected image remains visible when a turn has no generated output", () => {
-  const [exchange] = codexRolloutHistory({
+test("inspected images stay internal when a turn has no generated output", () => {
+  const history = codexRolloutHistory({
     generatedImageSources: {
       "turn-view-only": [{ type: "view-path", value: "C:/viewed/result.png" }],
     },
   });
-  assert.deepEqual(exchange.messages.at(-1).attachmentSources, [
-    { type: "view-path", value: "C:/viewed/result.png" },
-  ]);
+  assert.deepEqual(history, []);
 });
 
 test("rollout history keeps an image-only assistant result visible", () => {

@@ -88,7 +88,9 @@ export class ManagedRunLifecycleService {
     d.invalidateCatalog();
     await d.persistTaskDiff(taskRunKey(run), "");
     d.clearSelectedDiff(run);
-    run.gitBaseline = await d.captureGitBaseline(run.projectRoot, run.id);
+    run.gitBaseline = provider === "codex"
+      ? null
+      : await d.captureGitBaseline(run.projectRoot, run.id);
     d.syncRun(run);
     if (target?.deferredInput) target.deferredInput.dispatchingRunId = run.id;
     await d.saveState();

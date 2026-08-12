@@ -50,6 +50,7 @@ function run() {
     promptPreview: "later prompt",
     userMessages: [{ text: "later prompt" }, { text: "follow-up" }],
     latestDiff: "",
+    rolloutChangeTrackingKnown: true,
   };
 }
 
@@ -82,8 +83,18 @@ test("CodexRunFinalizer adopts audited start data and completes one durable deli
   assert.deepEqual(recorded.changedFiles, ["file.mjs"]);
   assert.deepEqual(recorded.userMessages, [{ text: "later prompt" }, { text: "follow-up" }]);
   assert.deepEqual(state.events.map(([name]) => name), [
-    "diff", "record", "save", "history", "project", "final", "delivered", "save", "complete",
+    "record", "save", "history", "project", "final", "delivered", "save", "complete",
   ]);
+});
+
+test("CodexRunFinalizer captures a Git diff when rollout tracking is unavailable", async () => {
+  const state = fixture();
+  const value = run();
+  value.rolloutChangeTrackingKnown = false;
+
+  await state.finalizer.finalize(value, { answer: "Final" });
+
+  assert.equal(state.events[0][0], "diff");
 });
 
 test("CodexRunFinalizer does not treat an audited completion as a Telegram request", async () => {

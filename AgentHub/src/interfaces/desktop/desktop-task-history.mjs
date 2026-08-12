@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import {
   displayUserPrompt,
   isEmptyTurnCompletionPlaceholder,
+  withoutCodexInspectionAttachments,
 } from "../../application/task-history.mjs";
 import { isCodexContextProbeTurn } from "../../domain/codex-context-probe.mjs";
 import { isCodexAutoCompactionTurnId } from "../../domain/codex-internal-turn.mjs";
@@ -80,11 +81,11 @@ export function mergeDurableTaskHistory(hydratedHistory, durableHistory) {
 function visibleProviderHistory(provider, history) {
   const values = Array.isArray(history) ? history : [];
   return provider === "codex"
-    ? values.filter((turn) => (
+    ? withoutCodexInspectionAttachments(values.filter((turn) => (
       !isCodexContextProbeTurn(turn)
       && !isCodexAutoCompactionTurnId(turn?.id)
       && !isEmptyTurnCompletionPlaceholder(turn)
-    ))
+    )))
     : values;
 }
 

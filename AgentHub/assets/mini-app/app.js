@@ -2188,44 +2188,16 @@ function renderStreamTabs() {
     title: orderToggleTitle,
     "aria-label": orderToggleTitle,
   }, [el("span", { class: "stream-tab-card" }, [
-    el("svg", {
+    el("span", {
       class: "stream-order-icon stream-order-icon-activity",
-      viewBox: "0 0 256 256",
       "aria-hidden": "true",
-    }, [
-      el("circle", {
-        cx: "128", cy: "128", r: "80", fill: "none", stroke: "currentColor", "stroke-width": "18",
-      }),
-      el("polyline", {
-        points: "128 80 128 128 164 148",
-        fill: "none", stroke: "currentColor", "stroke-linecap": "round",
-        "stroke-linejoin": "round", "stroke-width": "18",
-      }),
-    ]),
-    el("svg", {
+      text: "◷",
+    }),
+    el("span", {
       class: "stream-order-icon stream-order-icon-manual",
-      viewBox: "0 0 256 256",
       "aria-hidden": "true",
-    }, [
-      el("polyline", {
-        points: "72 88 104 56 136 88",
-        fill: "none", stroke: "currentColor", "stroke-linecap": "round",
-        "stroke-linejoin": "round", "stroke-width": "18",
-      }),
-      el("line", {
-        x1: "104", y1: "56", x2: "104", y2: "200",
-        stroke: "currentColor", "stroke-linecap": "round", "stroke-width": "18",
-      }),
-      el("polyline", {
-        points: "120 168 152 200 184 168",
-        fill: "none", stroke: "currentColor", "stroke-linecap": "round",
-        "stroke-linejoin": "round", "stroke-width": "18",
-      }),
-      el("line", {
-        x1: "152", y1: "56", x2: "152", y2: "200",
-        stroke: "currentColor", "stroke-linecap": "round", "stroke-width": "18",
-      }),
-    ]),
+      text: "↕",
+    }),
   ])]);
   const tabs = ordered.map((stream) => {
     const task = representativeStreamTask(stream);

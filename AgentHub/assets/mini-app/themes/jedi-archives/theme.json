@@ -5,7 +5,10 @@
   "order": 180,
   "styles": "theme.css",
   "assets": {
-    "panel-frame": "jedi-archives-panel-frame.webp"
+    "panel-frame": "jedi-archives-panel-frame.webp",
+    "message-frame": "jedi-archives-message-frame.webp",
+    "stream-frame": "jedi-archives-stream-frame.webp",
+    "enamel-texture": "jedi-archives-enamel-texture.webp"
   },
   "backgrounds": [
     { "id": "jedi-archives", "name": "Высший архив", "asset": "jedi-archives-high-council.webp", "preload": true },

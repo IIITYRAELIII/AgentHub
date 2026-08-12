@@ -123,19 +123,19 @@ export class CodexCompletionService {
   }
 
   async #resolvePricing(run, turnId, tracker) {
-    if (String(tracker?.model ?? "").trim()) return tracker;
+    if (String(tracker?.model ?? "").trim() && run?.rolloutChangeTrackingKnown === true) return tracker;
     try {
       const result = await this.#d.readThread(run.threadId, { fresh: true, includeTurns: false });
       const usageResult = await this.#d.readTurnUsage(result.thread?.path, turnId);
+      this.#d.applyRolloutContext(run, usageResult);
       if (usageResult?.model) {
-        this.#d.applyRolloutContext(run, usageResult);
         const fromRollout = trackerFromUsageResult(usageResult);
         return fromRollout.reported || !tracker?.reported
           ? fromRollout
           : { ...tracker, ...fromRollout, usage: tracker.usage, reported: tracker.reported };
       }
     } catch (error) {
-      this.#d.logError?.(`Cannot resolve pricing for Codex turn ${turnId}:`, error.message);
+      this.#d.logError?.(`Cannot resolve rollout metadata for Codex turn ${turnId}:`, error.message);
     }
     return tracker;
   }

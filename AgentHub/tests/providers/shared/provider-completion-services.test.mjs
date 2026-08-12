@@ -54,3 +54,28 @@ test("observed Codex completion marks a real terminal transition", async () => {
   });
   assert.equal(run.status, "finishing");
 });
+
+test("Codex completion reads rollout changes even when pricing is already known", async () => {
+  const run = { threadId: "thread-1", turnId: "turn-1", status: "running", responseText: "" };
+  let applied = null;
+  const usageResult = {
+    usage: {}, reported: false, model: "gpt-5.6-sol", changedFiles: ["file.mjs"], diff: "patch",
+  };
+  const service = new CodexCompletionService({
+    runForTask: () => run,
+    consumeTracker: () => ({ usage: {}, reported: false, model: "gpt-5.6-sol" }),
+    waitForCompletion: async () => null,
+    readThread: async () => ({ thread: { path: "rollout.jsonl" } }),
+    readTurnUsage: async () => usageResult,
+    applyRolloutContext: (_run, value) => { applied = value; },
+    finalizeDelivery: async () => {},
+    finishProgress: async () => {},
+    completedAnswer: async () => "Done",
+    temporaryFiles: new Map(),
+    speechButtons: new Map(),
+  });
+
+  await service.completeManaged(run, { eventTurn: { id: "turn-1", status: "completed" } });
+
+  assert.equal(applied, usageResult);
+});

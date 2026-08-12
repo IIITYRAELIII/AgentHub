@@ -126,11 +126,14 @@ export function createCodexObservabilityComposition({
     const key = turnEndKey(identity);
     const existing = turnStarts.get(key);
     if (existing?.gitBaseline) return;
-    const gitBaseline = await captureTaskGitBaseline(
-      project.path,
-      config.dataDir,
-      `terminal-audit-${identity.turnId}`,
-    );
+    const run = taskRuns.forEvent({ ...identity, allowThreadFallback: true });
+    const gitBaseline = run?.executionOwner === TASK_EXECUTION_OWNERS.HUB
+      ? null
+      : await captureTaskGitBaseline(
+        project.path,
+        config.dataDir,
+        `terminal-audit-${identity.turnId}`,
+      );
     const record = {
       ...existing,
       ...identity,
@@ -140,7 +143,6 @@ export function createCodexObservabilityComposition({
       gitBaseline: gitBaseline ?? existing?.gitBaseline ?? null,
     };
     setBounded(turnStarts, key, record, 500);
-    const run = taskRuns.forEvent({ ...identity, allowThreadFallback: true });
     if (!run) return;
     run.turnId ||= identity.turnId;
     run.startedAt = record.startedAt || run.startedAt;

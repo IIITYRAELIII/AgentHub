@@ -4915,8 +4915,15 @@ html[data-surface="mobile"]
 }
 
 .stream-order-icon {
+  align-items: center;
   color: var(--accent);
+  display: flex;
+  font-family: "Segoe UI Symbol", "Segoe UI", sans-serif;
+  font-size: 1.15rem;
+  font-weight: 700;
   height: 1.1rem;
+  justify-content: center;
+  line-height: 1;
   width: 1.1rem;
 }
 

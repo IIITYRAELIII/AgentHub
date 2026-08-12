@@ -25,14 +25,18 @@ export function createRunAccountingComposition({
       run.mcpCalls = Array.isArray(usageResult.mcpCalls) ? usageResult.mcpCalls : [];
       run.toolMetricsKnown = true;
     }
-    const changedFiles = [];
-    for (const file of Array.isArray(usageResult.changedFiles) ? usageResult.changedFiles : []) {
-      const absolute = path.isAbsolute(file) ? path.resolve(file) : path.resolve(run.projectRoot, file);
-      const relative = path.relative(run.projectRoot, absolute);
-      if (!relative || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) continue;
-      changedFiles.push(relative.replaceAll(path.sep, "/"));
+    if (Array.isArray(usageResult.changedFiles) && typeof usageResult.diff === "string") {
+      const changedFiles = [];
+      for (const file of usageResult.changedFiles) {
+        const absolute = path.isAbsolute(file) ? path.resolve(file) : path.resolve(run.projectRoot, file);
+        const relative = path.relative(run.projectRoot, absolute);
+        if (!relative || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) continue;
+        changedFiles.push(relative.replaceAll(path.sep, "/"));
+      }
+      run.rolloutChangedFiles = [...new Set(changedFiles)];
+      run.latestDiff = usageResult.diff;
+      run.rolloutChangeTrackingKnown = true;
     }
-    if (changedFiles.length) run.rolloutChangedFiles = [...new Set(changedFiles)];
   }
 
   function changedFilesForRun(run) {

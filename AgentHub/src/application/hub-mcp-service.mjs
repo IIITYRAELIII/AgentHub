@@ -378,7 +378,14 @@ export class HubMcpService {
     const normalizedProvider = requiredText(provider, "provider", 100);
     const normalizedThreadId = String(threadId ?? "").trim();
     if (normalizedThreadId) {
-      return this.workspaceCatalog.resolveThread({ provider: normalizedProvider, threadId: normalizedThreadId });
+      const resolvedThread = this.workspaceCatalog.resolveThread({
+        provider: normalizedProvider,
+        threadId: normalizedThreadId,
+      });
+      const normalizedStreamId = String(streamId ?? "").trim();
+      if (resolvedThread && (!normalizedStreamId || resolvedThread.streamId === normalizedStreamId)) {
+        return resolvedThread;
+      }
     }
     const normalizedStreamId = String(streamId ?? "").trim();
     if (!normalizedStreamId) return null;

@@ -55,3 +55,21 @@ test("Hub developer instructions allow an unbound first provider turn", async ()
   assert.doesNotMatch(result, /<workspace_instructions>/u);
   assert.doesNotMatch(result, /<stream_instructions>/u);
 });
+
+test("Hub developer instructions reject a bound Stream without MCP context", async () => {
+  await assert.rejects(
+    () => resolveHubDeveloperInstructions({
+      provider: "codex",
+      threadId: "thread-1",
+      streamId: "stream-1",
+      workspaceCatalogStore: {
+        developerRulesForStream: () => ({ workspace: { content: "" }, stream: { content: "" } }),
+      },
+      preTurnInstructions: {
+        snapshot: async () => ({ guide: { content: "Guide rule" }, global: { content: "" } }),
+      },
+      hubMcpService: { developerContext: () => "" },
+    }),
+    /could not inject the current Stream MCP context/u,
+  );
+});

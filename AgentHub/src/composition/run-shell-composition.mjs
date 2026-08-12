@@ -9,8 +9,10 @@ export function createRunShellComposition({
 }) {
   async function refreshTaskDiff(run) {
     if (!run) return "";
-    const captured = await diff.capture(run.gitBaseline, diff.dataDir, run.id);
-    if (captured !== null) run.latestDiff = captured;
+    if (run.rolloutChangeTrackingKnown !== true) {
+      const captured = await diff.capture(run.gitBaseline, diff.dataDir, run.id);
+      if (captured !== null) run.latestDiff = captured;
+    }
     await diff.persist(diff.taskKey(run), run.latestDiff ?? "");
     if (diff.isSelected(run)) diff.setSelected(run.latestDiff ?? "");
     return run.latestDiff ?? "";

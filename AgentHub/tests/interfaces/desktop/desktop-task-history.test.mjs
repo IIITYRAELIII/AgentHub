@@ -594,6 +594,22 @@ test("desktop task history imports generated images attached to an assistant mes
   }]);
 });
 
+test("desktop task history hides cached Codex inspection images from assistant answers", async () => {
+  const { desktopTaskHistory, state } = fixture({ run: null });
+  state.history[3].messages[1].attachments = Array.from(
+    { length: 8 },
+    (_, index) => ({ id: `codex-viewed-page-${index + 1}.png`, type: "image/png" }),
+  );
+  state.history[3].messages[1].attachmentSources = Array.from(
+    { length: 8 },
+    (_, index) => ({ type: "view-path", value: `C:/Temp/page-${index + 1}.png` }),
+  );
+
+  const result = await desktopTaskHistory({ limit: 1 });
+
+  assert.deepEqual(result.items[0].messages[1].attachments, []);
+});
+
 test("desktop task history restores screenshot sources lost from the durable cache", async () => {
   const { desktopTaskHistory, state, calls } = fixture({ run: null });
   const providerHistory = structuredClone(state.history);

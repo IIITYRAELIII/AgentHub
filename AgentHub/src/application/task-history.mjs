@@ -65,6 +65,25 @@ function uniquePathAttachments(values) {
   });
 }
 
+export function withoutCodexInspectionAttachments(history) {
+  return (Array.isArray(history) ? history : []).map((turn) => ({
+    ...turn,
+    messages: (Array.isArray(turn?.messages) ? turn.messages : []).map((message) => {
+      if (message?.role !== "agent") return { ...message };
+      const next = { ...message };
+      for (const field of ["attachments", "attachmentSources"]) {
+        const values = (Array.isArray(message?.[field]) ? message[field] : []).filter((item) => (
+          item?.type !== "view-path"
+          && !String(item?.id ?? "").startsWith("codex-viewed-")
+        ));
+        if (values.length) next[field] = values.map((item) => ({ ...item }));
+        else delete next[field];
+      }
+      return next;
+    }),
+  }));
+}
+
 function desktopPromptEnvelope(value) {
   const source = String(value ?? "").trim();
   const heading = /^# Files mentioned by the user:\s*$/im;
