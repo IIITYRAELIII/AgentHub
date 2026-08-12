@@ -420,18 +420,16 @@ def participant_github_login() -> str | None:
         ],
         cwd=ROOT.parent,
         capture_output=True,
-        text=True,
-        encoding="utf-8",
         check=False,
     )
     if result.returncode != 0:
         return None
-    start = result.stdout.find("{")
+    start = result.stdout.find(b"{")
     if start < 0:
         return None
     try:
         value = json.loads(result.stdout[start:])
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, UnicodeDecodeError):
         return None
     login = str(value.get("github_login", "")).strip()
     return login or None

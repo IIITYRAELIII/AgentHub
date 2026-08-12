@@ -152,6 +152,22 @@ class PersonalHistoryBackfillTests(unittest.TestCase):
         self.assertEqual(True, run.call_args.kwargs["check"])
 
 
+class ParticipantProfileTests(unittest.TestCase):
+    @mock.patch("AgentHub.install.subprocess.run")
+    def test_github_login_ignores_legacy_encoded_path_before_json(self, run: mock.Mock) -> None:
+        run.return_value = mock.Mock(
+            returncode=0,
+            stdout=(
+                b"C:\\Users\\\x90\xa0\xa1\xae\xe7\xa0\xef\\.team\\101790935.json\r\n"
+                b'{"github_login":"Holier-Than-Thou","github_user_id":101790935}\r\n'
+            ),
+        )
+
+        self.assertEqual("Holier-Than-Thou", install.participant_github_login())
+        self.assertNotIn("text", run.call_args.kwargs)
+        self.assertNotIn("encoding", run.call_args.kwargs)
+
+
 class SecureInstallationTests(unittest.TestCase):
     @mock.patch("AgentHub.install.subprocess.run")
     @mock.patch("AgentHub.install.os.name", "nt")
