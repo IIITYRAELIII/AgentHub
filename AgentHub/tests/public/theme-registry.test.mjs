@@ -81,6 +81,35 @@ test("theme registry rejects a manifest that escapes its package", async () => {
   }
 });
 
+test("Diablo exposes every scene and stable WebView asset token", () => {
+  const root = path.resolve(import.meta.dirname, "../..", "assets", "mini-app");
+  const theme = loadThemeRegistry(root).themes.find((item) => item.id === "reliquary");
+
+  assert.equal(theme.name, "Diablo");
+  assert.deepEqual(
+    theme.backgrounds.map(({ id, name, asset }) => [id, name, asset]),
+    [
+      ["reliquary", "Забытый портал", "forgotten-waypoint.webp"],
+      ["reliquary-reliquary", "Чёрный реликварий", "cinder-reliquary.webp"],
+      ["reliquary-cathedral", "Кровавый собор", "blood-cathedral.webp"],
+      ["reliquary-archive", "Пепельный архив", "ashen-reliquary.jpg"],
+      ["reliquary-seal", "Ледяная печать", "frozen-seal.webp"],
+    ],
+  );
+  assert.deepEqual(
+    Object.fromEntries(theme.assets.map(({ id, file }) => [id, file])),
+    {
+      "basalt-texture": "basalt-texture.webp",
+      "iron-texture": "forged-iron-texture.webp",
+      "panel-frame": "waypoint-panel-frame.webp",
+      "card-frame": "waypoint-card-frame.webp",
+      "message-flourish": "message-flourish.webp",
+      "stream-divider": "stream-divider.webp",
+      "panel-junction": "panel-junction.webp",
+    },
+  );
+});
+
 test("theme registry rejects root-relative stylesheet assets", async () => {
   const directory = await fixture(manifest);
   try {

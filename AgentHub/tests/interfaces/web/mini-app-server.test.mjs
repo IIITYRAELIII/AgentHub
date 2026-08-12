@@ -519,7 +519,7 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.ok(page.indexOf("data-collapse-all") < page.indexOf("data-theme-select"));
     assert.doesNotMatch(page, /data-connection|Автообновление/u);
     assert.match(page, /<option value="graphite">Графит<\/option>/u);
-    assert.match(page, /<option value="reliquary">Забытый портал<\/option>/u);
+    assert.match(page, /<option value="reliquary">Diablo<\/option>/u);
     assert.match(page, /data-journal-grouping="stream"/u);
     assert.match(page, /data-journal-grouping="workspace"/u);
     assert.match(page, /data-journal-grouping="month"/u);

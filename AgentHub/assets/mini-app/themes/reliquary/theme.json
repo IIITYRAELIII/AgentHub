@@ -1,10 +1,23 @@
 {
   "id": "reliquary",
-  "name": "Забытый портал",
+  "name": "Diablo",
   "color": "#030507",
   "order": 130,
   "styles": "theme.css",
+  "assets": {
+    "basalt-texture": "basalt-texture.webp",
+    "iron-texture": "forged-iron-texture.webp",
+    "panel-frame": "waypoint-panel-frame.webp",
+    "card-frame": "waypoint-card-frame.webp",
+    "message-flourish": "message-flourish.webp",
+    "stream-divider": "stream-divider.webp",
+    "panel-junction": "panel-junction.webp"
+  },
   "backgrounds": [
-    { "id": "reliquary", "name": "Забытый waypoint", "asset": "forgotten-waypoint.webp" }
+    { "id": "reliquary", "name": "Забытый портал", "asset": "forgotten-waypoint.webp", "preload": true },
+    { "id": "reliquary-reliquary", "name": "Чёрный реликварий", "asset": "cinder-reliquary.webp", "preload": true },
+    { "id": "reliquary-cathedral", "name": "Кровавый собор", "asset": "blood-cathedral.webp", "preload": true },
+    { "id": "reliquary-archive", "name": "Пепельный архив", "asset": "ashen-reliquary.jpg", "preload": true },
+    { "id": "reliquary-seal", "name": "Ледяная печать", "asset": "frozen-seal.webp", "preload": true }
   ]
 }

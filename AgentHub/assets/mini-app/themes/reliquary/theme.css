@@ -1,4 +1,4 @@
-/* ============================================= тема «Забытый портал» === */
+/* ====================================================== тема «Diablo» === */
 
 html[data-theme="reliquary"] {
   color-scheme: dark;
@@ -21,11 +21,13 @@ html[data-theme="reliquary"] {
   --sunken: rgb(2 4 6 / 84%);
   --line: rgb(139 130 117 / 27%);
   --line-strong: rgb(183 169 149 / 48%);
-  --reliquary-image: url("./forgotten-waypoint.webp");
-  --reliquary-basalt: url("./basalt-texture.webp");
-  --reliquary-iron: url("./forged-iron-texture.webp");
-  --reliquary-panel-frame: url("./waypoint-panel-frame.webp");
-  --reliquary-card-frame: url("./waypoint-card-frame.webp");
+  --reliquary-basalt: var(--reliquary-basalt-texture-asset, url("./basalt-texture.webp"));
+  --reliquary-iron: var(--reliquary-iron-texture-asset, url("./forged-iron-texture.webp"));
+  --reliquary-panel-frame: var(--reliquary-panel-frame-asset, url("./waypoint-panel-frame.webp"));
+  --reliquary-card-frame: var(--reliquary-card-frame-asset, url("./waypoint-card-frame.webp"));
+  --reliquary-message-flourish: var(--reliquary-message-flourish-asset, url("./message-flourish.webp"));
+  --reliquary-stream-divider: var(--reliquary-stream-divider-asset, url("./stream-divider.webp"));
+  --reliquary-panel-junction: var(--reliquary-panel-junction-asset, url("./panel-junction.webp"));
   --reliquary-stone:
     linear-gradient(rgb(3 5 7 / 76%), rgb(7 8 9 / 80%)),
     var(--reliquary-basalt) center / 38rem 38rem;
@@ -178,6 +180,48 @@ html[data-background-override="true"][data-background="reliquary"] {
   --hub-background-position: center, center, 50% 55%;
 }
 
+html[data-background-override="true"][data-background="reliquary-reliquary"] {
+  --hub-background-color: #030303;
+  --hub-background-image:
+    linear-gradient(180deg, rgb(2 2 2 / 34%), transparent 24% 76%, rgb(0 0 0 / 48%)),
+    radial-gradient(96% 86% at 50% 48%, transparent 44%, rgb(0 0 0 / 52%) 100%),
+    var(--reliquary-reliquary-image, url("./cinder-reliquary.webp"));
+  --hub-background-position: center, center, 50% 52%;
+}
+
+html[data-background-override="true"][data-background="reliquary-cathedral"] {
+  --hub-background-color: #020304;
+  --hub-background-image:
+    linear-gradient(180deg, rgb(1 2 3 / 38%), transparent 24% 76%, rgb(0 0 0 / 46%)),
+    radial-gradient(96% 88% at 50% 48%, transparent 46%, rgb(0 0 0 / 50%) 100%),
+    var(--reliquary-cathedral-image, url("./blood-cathedral.webp"));
+  --hub-background-position: center, center, 50% 50%;
+}
+
+html[data-background-override="true"][data-background="reliquary-archive"] {
+  --hub-background-color: #050403;
+  --hub-background-image:
+    linear-gradient(180deg, rgb(3 3 3 / 28%), transparent 25% 74%, rgb(0 0 0 / 44%)),
+    radial-gradient(96% 86% at 50% 48%, transparent 45%, rgb(0 0 0 / 46%) 100%),
+    var(--reliquary-archive-image, url("./ashen-reliquary.jpg"));
+  --hub-background-position: center, center, 50% 50%;
+}
+
+html[data-background-override="true"][data-background="reliquary-seal"] {
+  --hub-background-color: #030507;
+  --hub-background-image:
+    linear-gradient(180deg, rgb(1 3 5 / 52%), transparent 20% 72%, rgb(1 2 3 / 55%)),
+    radial-gradient(105% 88% at 50% 52%, transparent 40%, rgb(0 0 0 / 55%) 100%),
+    var(--reliquary-seal-image, url("./frozen-seal.webp"));
+  --hub-background-position: center, center, 50% 58%;
+}
+
+html[data-background-override="true"][data-background="reliquary-reliquary"] body::before,
+html[data-background-override="true"][data-background="reliquary-cathedral"] body::before,
+html[data-background-override="true"][data-background="reliquary-archive"] body::before {
+  display: none;
+}
+
 @media (min-width: 860px) {
   html[data-theme="reliquary"][data-view="chat"]:not([data-surface="mobile"]) .chat {
     border-image: var(--shell-chat-border-image) !important;
@@ -223,6 +267,58 @@ html[data-theme="reliquary"] .msg {
   border-image: var(--reliquary-card-frame) 118 / 5px stretch;
   border-radius: 1px;
   box-shadow: var(--reliquary-shadow);
+}
+
+html[data-theme="reliquary"] .msg-agent .msg-head {
+  padding-left: 2.2rem;
+  position: relative;
+}
+
+html[data-theme="reliquary"] .msg-agent .msg-head::before {
+  background: var(--reliquary-message-flourish) center / contain no-repeat;
+  content: "";
+  height: 1.2rem;
+  left: -0.52rem;
+  pointer-events: none;
+  position: absolute;
+  top: -0.22rem;
+  width: 2.55rem;
+}
+
+html[data-theme="reliquary"] .stream-tabs > .stream-tab:not(:last-child)::after {
+  background: var(--reliquary-stream-divider) center / contain no-repeat;
+  content: "";
+  height: calc(100% - 0.34rem);
+  pointer-events: none;
+  position: absolute;
+  right: -0.44rem;
+  top: 0.17rem;
+  width: 0.64rem;
+  z-index: 5;
+}
+
+html[data-theme="reliquary"] .task-rail-head,
+html[data-theme="reliquary"] .activity-rail-head {
+  position: relative;
+}
+
+html[data-theme="reliquary"] .task-rail-head::before,
+html[data-theme="reliquary"] .activity-rail-head::before {
+  background: var(--reliquary-panel-junction) left top / contain no-repeat;
+  content: "";
+  height: 2.65rem;
+  left: -0.18rem;
+  pointer-events: none;
+  position: absolute;
+  top: -0.2rem;
+  width: 2.65rem;
+  z-index: 8;
+}
+
+html[data-theme="reliquary"] .activity-rail-head::before {
+  left: auto;
+  right: -0.18rem;
+  transform: scaleX(-1);
 }
 
 html[data-theme="reliquary"] .task-workspace-item:hover,
@@ -343,6 +439,12 @@ html[data-theme="reliquary"] *::-webkit-scrollbar-thumb {
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
     background-color: rgb(4 7 9 / 91%);
+  }
+
+  html[data-theme="reliquary"] .task-rail-head::before,
+  html[data-theme="reliquary"] .activity-rail-head::before,
+  html[data-theme="reliquary"] .stream-tabs > .stream-tab::after {
+    display: none;
   }
 }
 
