@@ -31,6 +31,7 @@ export function createProviderOperationComposition({
   selectionStore,
   workspaceCatalogStore,
   preTurnInstructions,
+  hubMcpService,
   saveState,
   taskProgress,
   taskObserver,
@@ -200,6 +201,7 @@ export function createProviderOperationComposition({
         global: shared.global.content,
         workspace: rules?.workspace?.content,
         stream: rules?.stream?.content,
+        context: hubMcpService.developerContext({ provider, threadId }),
       });
     },
     speechButtons: turnSpeechButtons,

@@ -8,6 +8,7 @@ export function createAgentHubBootstrapComposition({
   handleDesktopControl,
   forgetDesktopControl,
   runtimeCommandServer,
+  hubMcpServer,
   stopRuntimeTimers,
   taskRuns,
   agentProviders,
@@ -57,6 +58,7 @@ export function createAgentHubBootstrapComposition({
       });
       await desktopControlServer.start();
       await runtimeCommandServer.start();
+      await hubMcpServer.start();
     },
     startMiniApp: () => miniAppLifecycle.start(),
     sanitizeRollouts,

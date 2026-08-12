@@ -40,6 +40,22 @@ export class WorkspaceCatalogService {
     return this.#store.updateWorkspaceDeveloperRules(workspaceId, content);
   }
 
+  releasePlan({ workspaceId } = {}) {
+    return this.#store.releasePlan(workspaceId);
+  }
+
+  releaseRegistry({ workspaceId, limit } = {}) {
+    return this.#store.releaseRegistry(workspaceId, { limit });
+  }
+
+  updateReleaseChangeStatus({ changeId, status } = {}) {
+    return this.#store.updateReleaseChangeStatus(changeId, status);
+  }
+
+  completeRelease({ workspaceId } = {}) {
+    return this.#store.completeRelease(workspaceId);
+  }
+
   createWorkspaceFromStream({ streamId, name } = {}) {
     return this.#store.transaction(() => {
       const workspace = this.#store.createWorkspace({ name });

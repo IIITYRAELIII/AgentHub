@@ -1983,6 +1983,17 @@ agentHub.on("workspace:update", ({
   }
   applySnapshot(snapshot);
 }));
+async function loadWorkspaceReleaseRegistry(workspaceId) {
+  const registry = await control("read-workspace-release-registry", { workspaceId, limit: 50 });
+  agentHub.setWorkspaceReleaseRegistry(workspaceId, registry);
+}
+agentHub.on("workspace-release:open", ({ workspaceId }) => runAction(
+  () => loadWorkspaceReleaseRegistry(workspaceId),
+));
+agentHub.on("workspace-release:status", ({ workspaceId, changeId, status }) => runAction(async () => {
+  const registry = await control("update-release-change-status", { changeId, status });
+  agentHub.setWorkspaceReleaseRegistry(workspaceId, registry);
+}));
 document.addEventListener("agenthub:board-action", (event) => {
   const detail = event.detail ?? {};
   let succeeded = false;

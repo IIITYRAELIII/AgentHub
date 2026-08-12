@@ -70,6 +70,7 @@ export async function createClientRuntimeComposition({
     rateLimitHistoryStore,
     workLogUsageStore,
     taskBoard,
+    hubMcpServer,
     runtimeStateStore,
     turnEndNotifications,
     runJournal,
@@ -315,6 +316,7 @@ export async function createClientRuntimeComposition({
 
   const codexLifecycle = createCodexLifecycleComposition({
     config,
+    hubMcpServer,
     rpcTimeoutMs: codexRpcTimeoutMs,
     runtimeDependencies: {
       getActiveProjectRoot: selectedProjectRoot,

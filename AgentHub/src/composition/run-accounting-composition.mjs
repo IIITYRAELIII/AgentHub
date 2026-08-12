@@ -36,12 +36,16 @@ export function createRunAccountingComposition({
   }
 
   function changedFilesForRun(run) {
+    const rolloutFiles = Array.isArray(run?.rolloutChangedFiles) ? run.rolloutChangedFiles : [];
+    if (rolloutFiles.length) {
+      return [...new Set(rolloutFiles)].sort((left, right) => left.localeCompare(right));
+    }
     const diff = String(run?.latestDiff ?? "");
     const repoRoot = String(
       run?.gitBaseline?.projectRoot ?? run?.gitBaseline?.repoRoot ?? "",
     ).trim();
     if (!diff || !repoRoot) return [];
-    const files = new Set(Array.isArray(run?.rolloutChangedFiles) ? run.rolloutChangedFiles : []);
+    const files = new Set();
     for (const match of diff.matchAll(/^(?:\+\+\+|---) (.+)$/gm)) {
       const token = match[1].trim();
       let gitPath = token;

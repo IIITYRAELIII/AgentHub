@@ -70,6 +70,10 @@ const workspaceCardRules = document.querySelector("[data-workspace-card-rules]")
 const workspaceCardRulesCount = document.querySelector("[data-workspace-card-rules-count]");
 const workspaceCardOrder = document.querySelector("[data-workspace-card-order]");
 const workspaceCardSubmit = document.querySelector("[data-workspace-card-submit]");
+const workspaceReleaseRegistry = document.querySelector("[data-workspace-release-registry]");
+const workspaceReleaseSummary = document.querySelector("[data-workspace-release-summary]");
+const workspaceReleaseList = document.querySelector("[data-workspace-release-list]");
+const workspaceReleaseRegistryByWorkspace = new Map();
 
 const chatPane = document.querySelector("[data-chat-pane]");
 const streamTabs = document.querySelector("[data-stream-tabs]");
@@ -2793,6 +2797,67 @@ function closeWorkspaceCard() {
   if (workspaceCardModal?.open) workspaceCardModal.close();
 }
 
+function releaseChangeStatusLabel(status) {
+  return ({
+    draft: "Черновик", ready: "Готово", blocked: "Заблокировано",
+    released: "Выпущено", discarded: "Исключено",
+  })[status]
+    ?? String(status ?? "");
+}
+
+function renderWorkspaceReleaseRegistry(workspace) {
+  if (!workspaceReleaseRegistry || !workspaceReleaseList || !workspaceReleaseSummary) return;
+  const registry = workspaceReleaseRegistryByWorkspace.get(workspace?.id);
+  const changes = Array.isArray(registry?.changes) ? registry.changes : [];
+  const streamNames = new Map((workspace?.streams ?? []).map((stream) => [stream.id, stream.name]));
+  const conflictingChangeIds = new Set((registry?.conflicts ?? [])
+    .flatMap((conflict) => conflict.changes ?? []).map((change) => change.id));
+  workspaceReleaseRegistry.hidden = workspaceCardMode === "create";
+  if (workspaceCardMode === "create") return;
+  if (!registry) {
+    workspaceReleaseSummary.textContent = "Загрузка…";
+    workspaceReleaseList.replaceChildren(el("p", { class: "workspace-release-empty", text: "Загрузка реестра…" }));
+    return;
+  }
+  const count = (status) => Number(registry.counts?.[status]) || 0;
+  const conflictCount = Array.isArray(registry.conflicts) ? registry.conflicts.length : 0;
+  workspaceReleaseSummary.textContent = `Готово: ${count("ready")} · Черновики: ${count("draft")} · Блокеры: ${count("blocked")} · Конфликты: ${conflictCount}`;
+  workspaceReleaseList.replaceChildren(...changes.map((change) => {
+    const conflictingFiles = (registry.conflicts ?? [])
+      .filter((conflict) => (conflict.changes ?? []).some((item) => item.id === change.id))
+      .map((conflict) => conflict.file);
+    const select = el("select", {
+      "data-release-change-status": change.id,
+      "aria-label": `Статус изменения ${change.summary || change.id}`,
+    }, ["draft", "ready", "blocked", "discarded"].map((status) => el("option", {
+      value: status,
+      text: releaseChangeStatusLabel(status),
+      selected: change.status === status,
+    })));
+    return el("article", {
+      class: `workspace-release-change${conflictingChangeIds.has(change.id) ? " has-conflict" : ""}`,
+    }, [
+      el("div", { class: "workspace-release-change-title" }, [
+        el("strong", { text: change.summary || "Изменения без описания" }),
+        select,
+      ]),
+      el("span", {
+        class: "workspace-release-change-stream",
+        text: `${streamNames.get(change.streamId) ?? change.streamId} · ${change.provider} · ${String(change.turnId ?? "").slice(0, 12)}`,
+      }),
+      conflictingFiles.length
+        ? el("strong", { class: "workspace-release-conflict", text: `Пересечение файлов: ${conflictingFiles.join(", ")}` })
+        : null,
+      el("div", { class: "workspace-release-files" }, (change.files ?? []).map((file) => (
+        el("code", { text: file })
+      ))),
+    ]);
+  }));
+  if (!changes.length) {
+    workspaceReleaseList.append(el("p", { class: "workspace-release-empty", text: "Активных изменений нет." }));
+  }
+}
+
 function openWorkspaceCard(workspaceId) {
   const workspace = workspaceCatalogItem(workspaceId);
   if (!workspace || !workspaceCardModal) return;
@@ -2808,9 +2873,11 @@ function openWorkspaceCard(workspaceId) {
   workspaceCardWorkingDirectory.value = String(workspace.settings?.workingDirectory ?? "");
   workspaceCardRules.value = entityAgentRules(workspace);
   updateAgentRulesLimit(workspaceCardRules, workspaceCardRulesCount);
+  renderWorkspaceReleaseRegistry(workspace);
   workspaceCardOrder.max = String(order.length);
   workspaceCardOrder.value = String(Math.max(1, order.indexOf(columnId) + 1));
   workspaceCardModal.showModal();
+  emit("workspace-release:open", { workspaceId: workspace.id });
   (workspaceCardName.disabled ? workspaceCardComment : workspaceCardName).focus();
 }
 
@@ -2828,6 +2895,7 @@ function openNewWorkspaceCard() {
   workspaceCardWorkingDirectory.value = "";
   workspaceCardRules.value = "";
   updateAgentRulesLimit(workspaceCardRules, workspaceCardRulesCount);
+  renderWorkspaceReleaseRegistry(null);
   workspaceCardOrder.max = String(order.length + 1);
   workspaceCardOrder.value = String((notesIndex < 0 ? order.length : notesIndex) + 1);
   workspaceCardModal.showModal();
@@ -5265,6 +5333,15 @@ workspaceCardForm?.addEventListener("submit", (event) => {
 workspaceCardRules?.addEventListener("input", () => {
   updateAgentRulesLimit(workspaceCardRules, workspaceCardRulesCount);
 });
+workspaceReleaseList?.addEventListener("change", (event) => {
+  const select = event.target.closest("[data-release-change-status]");
+  if (!select || !workspaceCardId) return;
+  emit("workspace-release:status", {
+    workspaceId: workspaceCardId,
+    changeId: String(select.dataset.releaseChangeStatus ?? ""),
+    status: String(select.value ?? "draft"),
+  });
+});
 document.querySelector("[data-workspace-card-close]")?.addEventListener("click", closeWorkspaceCard);
 document.querySelector("[data-workspace-card-cancel]")?.addEventListener("click", closeWorkspaceCard);
 workspaceCardModal?.addEventListener("click", (event) => {
@@ -6202,7 +6279,17 @@ const AgentHub = {
   setWorkspaces(workspaces, columnOrder = []) {
     state.workspaces = Array.isArray(workspaces) ? workspaces.slice() : [];
     state.workspaceColumnOrder = Array.isArray(columnOrder) ? columnOrder.slice() : [];
+    if (workspaceCardModal?.open && workspaceCardId) {
+      renderWorkspaceReleaseRegistry(workspaceCatalogItem(workspaceCardId));
+    }
     if (journalRendered) updateJournalStreamCount();
+  },
+  setWorkspaceReleaseRegistry(workspaceId, registry) {
+    const id = String(workspaceId ?? "");
+    workspaceReleaseRegistryByWorkspace.set(id, registry ?? {});
+    if (workspaceCardModal?.open && workspaceCardId === id) {
+      renderWorkspaceReleaseRegistry(workspaceCatalogItem(id));
+    }
   },
   openDialogSettings,
   /** Точечное обновление задачи (статус, время, непрочитанное). */

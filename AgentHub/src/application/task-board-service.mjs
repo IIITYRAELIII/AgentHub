@@ -99,6 +99,11 @@ export class TaskBoardService {
     return this.store.attachToSourceMessage(payload);
   }
 
+  addAttachment({ id, attachment } = {}) {
+    requiredMethod(this.store, "addAttachment");
+    return this.store.addAttachment(id, attachment);
+  }
+
   appendSourceMessage(payload = {}) {
     const task = this.store.appendSourceMessage({
       ...payload,

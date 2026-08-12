@@ -71,6 +71,7 @@ export async function createProviderApplicationComposition({
     workLogUsageStore,
     workspaceCatalogStore,
     preTurnInstructions,
+    hubMcpService,
     codexRolloutContextSanitizer,
   } = infrastructure;
   const {
@@ -109,6 +110,7 @@ export async function createProviderApplicationComposition({
     findProject,
     canonicalizeProjectRoots,
   });
+  hubMcpService.setActiveRuns(() => runtimeData.taskRuns.values());
 
   const codexObservability = createCodexObservabilityComposition({
     config,
@@ -308,6 +310,7 @@ export async function createProviderApplicationComposition({
     selectionStore,
     workspaceCatalogStore,
     preTurnInstructions,
+    hubMcpService,
     saveState: api.saveState,
     taskProgress: late.taskProgress,
     taskObserver: late.taskObserver,

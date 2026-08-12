@@ -37,7 +37,7 @@ export function resolveCodexThreadSettings(payload, current = {}) {
 }
 
 export function buildCodexDeveloperInstructions({
-  guide = "", global = "", workspace = "", stream = "",
+  guide = "", global = "", workspace = "", stream = "", context = "",
 } = {}) {
   const guideContent = String(guide ?? "");
   if (!guideContent.trim()) throw new Error("Agent Hub Guide is required");
@@ -63,6 +63,8 @@ export function buildCodexDeveloperInstructions({
   if (streamContent.trim()) {
     sections.push(`<stream_instructions>\n${streamContent}\n</stream_instructions>`);
   }
+  const contextContent = String(context ?? "");
+  if (contextContent.trim()) sections.push(contextContent);
   return sections.join("\n\n");
 }
 

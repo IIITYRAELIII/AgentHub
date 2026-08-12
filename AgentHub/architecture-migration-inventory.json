@@ -3,7 +3,7 @@
   "baseline": {
     "serverMaximumLines": 150,
     "compositionMaximumLines": 638,
-    "rootProductionModules": 23,
+    "rootProductionModules": 24,
     "rootTestModules": 0
   },
   "publicRootModules": [
@@ -18,6 +18,7 @@
     "publish-all.mjs",
     "publish-changed.mjs",
     "rate-limit-backfill.mjs",
+    "release-registry-cli.mjs",
     "request-safe-restart.mjs",
     "runtime-manager.mjs",
     "runtime-manifest-verifier.mjs",

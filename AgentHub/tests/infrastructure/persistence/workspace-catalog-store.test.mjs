@@ -98,6 +98,101 @@ test("an empty Stream persists the settings for its future Thread", async (t) =>
   );
 });
 
+test("Workspace release registry keeps ownership, readiness and file conflicts", async (t) => {
+  const store = await fixture(t);
+  const workspace = store.createWorkspace({ name: "Agent HUB" });
+  const firstStream = store.createStream({ workspaceId: workspace.id, name: "One" });
+  const secondStream = store.createStream({ workspaceId: workspace.id, name: "Two" });
+  store.bindThread({ provider: "codex", threadId: "one", streamId: firstStream.id });
+  store.bindThread({ provider: "codex", threadId: "two", streamId: secondStream.id });
+  const first = store.recordReleaseChange({
+    provider: "codex", threadId: "one", turnId: "turn-one", summary: "First",
+    changedFiles: ["AgentHub/app.js", "AgentHub/server.mjs"], diffHash: "first",
+  });
+  const repeated = store.recordReleaseChange({
+    provider: "codex", threadId: "one", turnId: "turn-one", summary: "First updated",
+    changedFiles: ["AgentHub/app.js"], diffHash: "updated",
+  });
+  assert.equal(repeated.id, first.id);
+  assert.equal(store.releaseChanges(workspace.id).length, 1);
+  store.updateReleaseChangeStatus(first.id, "ready");
+  store.recordReleaseChange({
+    provider: "codex", threadId: "one", turnId: "turn-one", summary: "Observed again",
+    changedFiles: ["AgentHub/app.js"], diffHash: "again",
+  });
+  assert.equal(store.releaseChange({ provider: "codex", threadId: "one", turnId: "turn-one" }).status, "ready");
+  const second = store.recordReleaseChange({
+    provider: "codex", threadId: "two", turnId: "turn-two", summary: "Second",
+    changedFiles: ["AgentHub/app.js"], diffHash: "second",
+  });
+  const plan = store.releasePlan(workspace.id);
+  assert.equal(plan.ready.length, 1);
+  const registry = store.releaseRegistry(workspace.id, { limit: 1 });
+  assert.equal(registry.total, 2);
+  assert.equal(registry.changes.length, 1);
+  assert.deepEqual(registry.counts, { draft: 1, ready: 1, blocked: 0, released: 0, discarded: 0 });
+  assert.deepEqual(plan.conflicts, [{
+    projectRoot: "",
+    file: "AgentHub/app.js",
+    changes: [
+      { id: first.id, streamId: firstStream.id, status: "ready" },
+      { id: second.id, streamId: secondStream.id, status: "draft" },
+    ],
+  }]);
+  store.updateReleaseChangeStatus(second.id, "ready");
+  assert.equal(store.releasePlan(workspace.id).conflicts.length, 1);
+  assert.throws(() => store.updateReleaseChangeStatus(first.id, "released"), /reserved/u);
+  store.recordReleaseChange({
+    provider: "codex", threadId: "two", turnId: "turn-two", summary: "Second isolated",
+    changedFiles: ["AgentHub/other.js"], diffHash: "isolated",
+  });
+  const completed = store.completeRelease(workspace.id);
+  assert.equal(completed.released.length, 2);
+  assert.deepEqual(store.releaseChanges(workspace.id), []);
+});
+
+test("MCP mutation audit is idempotent and scoped to its Workspace", async (t) => {
+  const store = await fixture(t);
+  const workspace = store.createWorkspace({ name: "Agent HUB" });
+  const otherWorkspace = store.createWorkspace({ name: "Other project" });
+  const stream = store.createStream({ workspaceId: workspace.id, name: "MCP" });
+  const operation = {
+    requestId: "request-1",
+    workspaceId: workspace.id,
+    streamId: stream.id,
+    provider: "codex",
+    threadId: "thread-1",
+    toolName: "hub_task_update",
+    argumentsHash: "hash-1",
+  };
+
+  assert.equal(store.beginMcpOperation(operation).replayed, false);
+  assert.equal(store.beginMcpOperation(operation).replayed, true);
+  store.completeMcpOperation(operation.requestId, { taskId: "task-1" });
+  assert.deepEqual(store.beginMcpOperation(operation).result, { taskId: "task-1" });
+  assert.equal(store.mcpOperations(workspace.id).length, 1);
+  assert.equal(store.mcpOperations(otherWorkspace.id).length, 0);
+  assert.throws(
+    () => store.beginMcpOperation({ ...operation, argumentsHash: "hash-2" }),
+    /already used/u,
+  );
+});
+
+test("Release registry allows one Stream to own the same file across ready turns", async (t) => {
+  const store = await fixture(t);
+  const workspace = store.createWorkspace({ name: "Agent HUB" });
+  const stream = store.createStream({ workspaceId: workspace.id, name: "One" });
+  store.bindThread({ provider: "codex", threadId: "one", streamId: stream.id });
+  for (const turnId of ["turn-one", "turn-two"]) {
+    const change = store.recordReleaseChange({
+      provider: "codex", threadId: "one", turnId,
+      changedFiles: ["AgentHub/app.js"],
+    });
+    store.updateReleaseChangeStatus(change.id, "ready");
+  }
+  assert.deepEqual(store.releasePlan(workspace.id).conflicts, []);
+});
+
 test("Workspace and Stream developer rules keep versioned revisions", async (t) => {
   const store = await fixture(t);
   const workspace = store.createWorkspace({ name: "Agent HUB" });

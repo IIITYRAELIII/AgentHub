@@ -14,10 +14,11 @@ import {
   streamDisplayName,
 } from "../../domain/workspace-stream-identity.mjs";
 
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 6;
 export const DEVELOPER_RULES_MAX_BYTES = 32 * 1024;
 const SOURCES = new Set(["created", "discovered", "migration", "rebirth"]);
 const DEVELOPER_RULE_SCOPES = new Set(["workspace", "stream"]);
+const RELEASE_CHANGE_STATUSES = new Set(["draft", "ready", "blocked", "released", "discarded"]);
 
 function recoverableDatabaseError(error) {
   return /(?:file is not a database|database disk image is malformed|malformed database schema)/iu
@@ -75,6 +76,46 @@ function configure(database) {
     ) WITHOUT ROWID;
     CREATE INDEX IF NOT EXISTS hub_threads_stream_idx
       ON hub_threads(stream_id, position);
+    CREATE TABLE IF NOT EXISTS hub_release_changes (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      stream_id TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      provider_thread_id TEXT NOT NULL,
+      turn_id TEXT NOT NULL,
+      project_root TEXT NOT NULL DEFAULT '',
+      summary TEXT NOT NULL DEFAULT '',
+      files_json TEXT NOT NULL DEFAULT '[]',
+      diff_hash TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL CHECK (status IN ('draft', 'ready', 'blocked', 'released', 'discarded')),
+      created_at_ms INTEGER NOT NULL,
+      updated_at_ms INTEGER NOT NULL,
+      FOREIGN KEY (workspace_id) REFERENCES hub_workspaces(id) ON DELETE CASCADE,
+      FOREIGN KEY (stream_id) REFERENCES hub_streams(id) ON DELETE CASCADE,
+      UNIQUE (provider, provider_thread_id, turn_id)
+    ) WITHOUT ROWID;
+    CREATE INDEX IF NOT EXISTS hub_release_changes_workspace_status_idx
+      ON hub_release_changes(workspace_id, status, updated_at_ms DESC);
+    CREATE INDEX IF NOT EXISTS hub_release_changes_stream_idx
+      ON hub_release_changes(stream_id, updated_at_ms DESC);
+    CREATE TABLE IF NOT EXISTS hub_mcp_operations (
+      request_id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      stream_id TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      provider_thread_id TEXT NOT NULL,
+      tool_name TEXT NOT NULL,
+      arguments_hash TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('pending', 'succeeded', 'failed')),
+      result_json TEXT,
+      error_text TEXT NOT NULL DEFAULT '',
+      created_at_ms INTEGER NOT NULL,
+      completed_at_ms INTEGER,
+      FOREIGN KEY (workspace_id) REFERENCES hub_workspaces(id) ON DELETE CASCADE,
+      FOREIGN KEY (stream_id) REFERENCES hub_streams(id) ON DELETE CASCADE
+    ) WITHOUT ROWID;
+    CREATE INDEX IF NOT EXISTS hub_mcp_operations_workspace_idx
+      ON hub_mcp_operations(workspace_id, created_at_ms DESC);
     CREATE TABLE IF NOT EXISTS hub_developer_rule_revisions (
       scope_type TEXT NOT NULL CHECK (scope_type IN ('workspace', 'stream')),
       scope_id TEXT NOT NULL,
@@ -193,6 +234,60 @@ function developerRuleFromRow(row) {
     revision: Number(row.revision) || 1,
     content: String(row.content ?? ""),
     createdAtMs: Number(row.created_at_ms) || 0,
+  };
+}
+
+function releaseChangeFromRow(row) {
+  if (!row) return null;
+  let files = [];
+  try { files = JSON.parse(String(row.files_json ?? "[]")); } catch { files = []; }
+  return {
+    id: String(row.id),
+    workspaceId: String(row.workspace_id),
+    streamId: String(row.stream_id),
+    provider: String(row.provider),
+    threadId: String(row.provider_thread_id),
+    turnId: String(row.turn_id),
+    projectRoot: String(row.project_root ?? ""),
+    summary: String(row.summary ?? ""),
+    files: Array.isArray(files) ? files.map((file) => String(file)) : [],
+    diffHash: String(row.diff_hash ?? ""),
+    status: String(row.status),
+    createdAtMs: Number(row.created_at_ms) || 0,
+    updatedAtMs: Number(row.updated_at_ms) || 0,
+  };
+}
+
+function releaseChangeStatus(value) {
+  const status = String(value ?? "").trim().toLowerCase();
+  if (!RELEASE_CHANGE_STATUSES.has(status)) throw new Error(`invalid release change status: ${value}`);
+  if (status === "released") throw new Error("released status is reserved for completed releases");
+  return status;
+}
+
+function releaseChangeFiles(values) {
+  return [...new Set((Array.isArray(values) ? values : [])
+    .map((value) => String(value ?? "").trim().replaceAll("\\", "/"))
+    .filter((value) => value && !value.includes("\0")))].slice(0, 500);
+}
+
+function mcpOperationFromRow(row) {
+  if (!row) return null;
+  let result = null;
+  try { result = row.result_json == null ? null : JSON.parse(String(row.result_json)); } catch { result = null; }
+  return {
+    requestId: String(row.request_id),
+    workspaceId: String(row.workspace_id),
+    streamId: String(row.stream_id),
+    provider: String(row.provider),
+    threadId: String(row.provider_thread_id),
+    toolName: String(row.tool_name),
+    argumentsHash: String(row.arguments_hash),
+    status: String(row.status),
+    result,
+    error: String(row.error_text ?? ""),
+    createdAtMs: Number(row.created_at_ms) || 0,
+    completedAtMs: row.completed_at_ms == null ? null : Number(row.completed_at_ms),
   };
 }
 
@@ -347,6 +442,219 @@ export class WorkspaceCatalogStore {
     const id = safeIdentifier(workspaceId, "workspace id");
     if (!this.workspace(id)) throw new Error(`workspace not found: ${id}`);
     return this.#updateDeveloperRules("workspace", id, content);
+  }
+
+  recordReleaseChange({
+    provider, threadId, turnId, projectRoot = "", summary = "", changedFiles = [], diffHash = "",
+  } = {}) {
+    const identity = normalizedThreadIdentity({ provider, threadId });
+    const resolved = this.resolveThread(identity);
+    const normalizedTurnId = safeIdentifier(turnId, "turn id");
+    const files = releaseChangeFiles(changedFiles);
+    if (!resolved || !files.length) return null;
+    const nowMs = this.#nowMs();
+    this.#database.prepare(`
+      INSERT INTO hub_release_changes (
+        id, workspace_id, stream_id, provider, provider_thread_id, turn_id,
+        project_root, summary, files_json, diff_hash, status, created_at_ms, updated_at_ms
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)
+      ON CONFLICT(provider, provider_thread_id, turn_id) DO UPDATE SET
+        workspace_id = excluded.workspace_id,
+        stream_id = excluded.stream_id,
+        project_root = excluded.project_root,
+        summary = excluded.summary,
+        files_json = excluded.files_json,
+        diff_hash = excluded.diff_hash,
+        updated_at_ms = excluded.updated_at_ms
+    `).run(
+      this.#idFactory(), resolved.workspaceId, resolved.streamId,
+      identity.provider, identity.threadId, normalizedTurnId,
+      String(projectRoot ?? "").trim(), String(summary ?? "").trim().slice(0, 500),
+      JSON.stringify(files), String(diffHash ?? "").trim().slice(0, 128), nowMs, nowMs,
+    );
+    return this.releaseChange({ ...identity, turnId: normalizedTurnId });
+  }
+
+  releaseChange({ provider, threadId, turnId } = {}) {
+    const identity = normalizedThreadIdentity({ provider, threadId });
+    const normalizedTurnId = safeIdentifier(turnId, "turn id");
+    return releaseChangeFromRow(this.#database.prepare(`
+      SELECT * FROM hub_release_changes
+      WHERE provider = ? AND provider_thread_id = ? AND turn_id = ?
+    `).get(identity.provider, identity.threadId, normalizedTurnId));
+  }
+
+  releaseChanges(workspaceId, { includeReleased = false, limit = null } = {}) {
+    const id = safeIdentifier(workspaceId, "workspace id");
+    if (!this.workspace(id)) throw new Error(`workspace not found: ${id}`);
+    const boundedLimit = limit == null ? null : Math.max(1, Math.min(100, Number(limit) || 50));
+    const statusClause = includeReleased ? "" : "AND status NOT IN ('released', 'discarded')";
+    const limitClause = boundedLimit == null ? "" : "LIMIT ?";
+    const statement = this.#database.prepare(`SELECT * FROM hub_release_changes
+      WHERE workspace_id = ? ${statusClause}
+      ORDER BY updated_at_ms DESC, id ${limitClause}`);
+    const rows = boundedLimit == null ? statement.all(id) : statement.all(id, boundedLimit);
+    return rows.map(releaseChangeFromRow);
+  }
+
+  updateReleaseChangeStatus(changeId, status) {
+    const id = safeIdentifier(changeId, "release change id");
+    const result = this.#database.prepare(`
+      UPDATE hub_release_changes SET status = ?, updated_at_ms = ? WHERE id = ?
+    `).run(releaseChangeStatus(status), this.#nowMs(), id);
+    if (!Number(result.changes)) throw new Error(`release change not found: ${id}`);
+    return releaseChangeFromRow(this.#database.prepare(
+      "SELECT * FROM hub_release_changes WHERE id = ?",
+    ).get(id));
+  }
+
+  #releaseConflicts(changes) {
+    const ownersByFile = new Map();
+    for (const change of changes) {
+      for (const file of change.files) {
+        const projectRoot = change.projectRoot.replaceAll("\\", "/").replace(/\/+$/u, "");
+        const key = `${projectRoot}\0${file}`;
+        const owners = ownersByFile.get(key) ?? { projectRoot: change.projectRoot, file, changes: [] };
+        owners.changes.push({ id: change.id, streamId: change.streamId, status: change.status });
+        ownersByFile.set(key, owners);
+      }
+    }
+    const statusOrder = new Map([["ready", 0], ["draft", 1], ["blocked", 2]]);
+    return [...ownersByFile.values()].map((entry) => ({
+      ...entry,
+      changes: entry.changes.toSorted((left, right) => (
+        (statusOrder.get(left.status) ?? 3) - (statusOrder.get(right.status) ?? 3)
+        || left.id.localeCompare(right.id)
+      )),
+    })).filter((entry) => {
+      const streams = new Set(entry.changes.map((change) => change.streamId));
+      const statuses = new Set(entry.changes.map((change) => change.status));
+      return streams.size > 1 || (statuses.has("ready") && statuses.size > 1);
+    });
+  }
+
+  releaseRegistry(workspaceId, { limit = 50 } = {}) {
+    const allChanges = this.releaseChanges(workspaceId);
+    const changes = allChanges.slice(0, Math.max(1, Math.min(100, Number(limit) || 50)));
+    const visibleIds = new Set(changes.map((change) => change.id));
+    return {
+      workspaceId: safeIdentifier(workspaceId, "workspace id"),
+      changes,
+      total: allChanges.length,
+      counts: Object.fromEntries([...RELEASE_CHANGE_STATUSES].map((status) => [
+        status, allChanges.filter((change) => change.status === status).length,
+      ])),
+      conflicts: this.#releaseConflicts(allChanges)
+        .filter((conflict) => conflict.changes.some((change) => visibleIds.has(change.id)))
+        .map((conflict) => ({
+          ...conflict,
+          ownerCount: conflict.changes.length,
+          changes: conflict.changes.filter((change) => visibleIds.has(change.id)),
+        })),
+    };
+  }
+
+  releasePlan(workspaceId) {
+    const changes = this.releaseChanges(workspaceId);
+    const ready = changes.filter((change) => change.status === "ready");
+    return {
+      workspaceId: safeIdentifier(workspaceId, "workspace id"),
+      ready,
+      draft: changes.filter((change) => change.status === "draft"),
+      blocked: changes.filter((change) => change.status === "blocked"),
+      conflicts: this.#releaseConflicts(changes),
+    };
+  }
+
+  completeRelease(workspaceId) {
+    const plan = this.releasePlan(workspaceId);
+    if (!plan.ready.length) throw new Error("release has no ready changes");
+    if (plan.blocked.length) throw new Error("release has blocked changes");
+    if (plan.conflicts.length) throw new Error("release has overlapping files");
+    const nowMs = this.#nowMs();
+    const update = this.#database.prepare(`
+      UPDATE hub_release_changes SET status = 'released', updated_at_ms = ? WHERE id = ?
+    `);
+    this.#transaction(() => {
+      for (const change of plan.ready) update.run(nowMs, change.id);
+    });
+    return {
+      workspaceId: plan.workspaceId,
+      released: plan.ready.map((change) => ({ ...change, status: "released", updatedAtMs: nowMs })),
+    };
+  }
+
+  beginMcpOperation({
+    requestId, workspaceId, streamId, provider, threadId, toolName, argumentsHash,
+  } = {}) {
+    const id = safeIdentifier(requestId, "MCP request id");
+    const workspace = safeIdentifier(workspaceId, "workspace id");
+    const stream = safeIdentifier(streamId, "stream id");
+    const normalizedProvider = safeIdentifier(provider, "provider");
+    const normalizedThreadId = safeIdentifier(threadId, "thread id");
+    const tool = safeIdentifier(toolName, "MCP tool name");
+    const hash = safeIdentifier(argumentsHash, "MCP arguments hash");
+    const existing = mcpOperationFromRow(this.#database.prepare(
+      "SELECT * FROM hub_mcp_operations WHERE request_id = ?",
+    ).get(id));
+    if (existing) {
+      const matches = existing.workspaceId === workspace
+        && existing.streamId === stream
+        && existing.provider === normalizedProvider
+        && existing.threadId === normalizedThreadId
+        && existing.toolName === tool
+        && existing.argumentsHash === hash;
+      if (!matches) throw new Error("MCP request_id was already used for another operation");
+      return { ...existing, replayed: true };
+    }
+    this.#database.prepare(`
+      INSERT INTO hub_mcp_operations (
+        request_id, workspace_id, stream_id, provider, provider_thread_id,
+        tool_name, arguments_hash, status, created_at_ms
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+    `).run(
+      id, workspace, stream, normalizedProvider, normalizedThreadId, tool, hash, this.#nowMs(),
+    );
+    return { ...mcpOperationFromRow(this.#database.prepare(
+      "SELECT * FROM hub_mcp_operations WHERE request_id = ?",
+    ).get(id)), replayed: false };
+  }
+
+  completeMcpOperation(requestId, result) {
+    const id = safeIdentifier(requestId, "MCP request id");
+    const resultJson = JSON.stringify(result ?? null);
+    if (Buffer.byteLength(resultJson, "utf8") > 1024 * 1024) throw new Error("MCP audit result is too large");
+    const updated = this.#database.prepare(`
+      UPDATE hub_mcp_operations
+      SET status = 'succeeded', result_json = ?, error_text = '', completed_at_ms = ?
+      WHERE request_id = ? AND status = 'pending'
+    `).run(resultJson, this.#nowMs(), id);
+    if (!Number(updated.changes)) throw new Error("MCP operation is not pending");
+    return mcpOperationFromRow(this.#database.prepare(
+      "SELECT * FROM hub_mcp_operations WHERE request_id = ?",
+    ).get(id));
+  }
+
+  failMcpOperation(requestId, error) {
+    const id = safeIdentifier(requestId, "MCP request id");
+    this.#database.prepare(`
+      UPDATE hub_mcp_operations
+      SET status = 'failed', result_json = NULL, error_text = ?, completed_at_ms = ?
+      WHERE request_id = ? AND status = 'pending'
+    `).run(String(error?.message ?? error ?? "MCP operation failed").slice(0, 4000), this.#nowMs(), id);
+    return mcpOperationFromRow(this.#database.prepare(
+      "SELECT * FROM hub_mcp_operations WHERE request_id = ?",
+    ).get(id));
+  }
+
+  mcpOperations(workspaceId, { limit = 50 } = {}) {
+    const id = safeIdentifier(workspaceId, "workspace id");
+    if (!this.workspace(id)) throw new Error(`workspace not found: ${id}`);
+    const boundedLimit = Math.max(1, Math.min(100, Number(limit) || 50));
+    return this.#database.prepare(`
+      SELECT * FROM hub_mcp_operations
+      WHERE workspace_id = ? ORDER BY created_at_ms DESC LIMIT ?
+    `).all(id, boundedLimit).map(mcpOperationFromRow);
   }
 
   mergeWorkspaces(sourceWorkspaceId, targetWorkspaceId) {
@@ -510,6 +818,9 @@ export class WorkspaceCatalogStore {
       UPDATE hub_streams
       SET workspace_id = ?, ordinal = ?, updated_at_ms = ? WHERE id = ?
     `).run(targetWorkspaceId, ordinal, this.#nowMs(), id);
+    this.#database.prepare(`
+      UPDATE hub_release_changes SET workspace_id = ?, updated_at_ms = ? WHERE stream_id = ?
+    `).run(targetWorkspaceId, this.#nowMs(), id);
     this.#compactOrdinals(stream.workspaceId);
     this.#removeEmptyWorkspace(stream.workspaceId);
     return this.stream(id);

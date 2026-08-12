@@ -38,6 +38,7 @@ export function createRuntimeRestartComposition({
   miniAppLifecycle,
   desktopControlServer,
   runtimeCommandServer,
+  hubMcpServer,
   instanceGuard,
   workLogUsageStore,
   rateLimitHistoryStore,
@@ -92,6 +93,7 @@ export function createRuntimeRestartComposition({
       { name: "local Mini App", run: () => miniAppLifecycle.closeLocalServer() },
       { name: "Desktop control", run: () => desktopControlServer()?.close() },
       { name: "runtime command", run: () => runtimeCommandServer.close() },
+      { name: "Agent Hub MCP", run: () => hubMcpServer.close() },
       { name: "instance lock", run: () => instanceGuard.release() },
     ],
     finalize: [
@@ -132,6 +134,7 @@ export function createRuntimeRestartComposition({
       acquireLock: () => instanceGuard.acquire(),
       startCommandServer: async () => {
         await runtimeCommandServer.start();
+        await hubMcpServer.start();
         await desktopControlServer()?.start();
         await miniAppLifecycle.start();
       },

@@ -5,6 +5,9 @@ import { RunJournalService } from "../../src/application/run-journal-service.mjs
 
 function fixture({ statImpl = async () => ({}) } = {}) {
   const calls = [];
+  const workspaceCatalogStore = {
+    recordReleaseChange: (value) => { calls.push(["release", value]); return value; },
+  };
   const usageStore = {
     recordAutomaticAndProject: async (value) => { calls.push(["automatic", value]); return value; },
     recordAndProject: async (value) => { calls.push(["explicit", value]); return value; },
@@ -14,6 +17,7 @@ function fixture({ statImpl = async () => ({}) } = {}) {
   };
   const service = new RunJournalService({
     usageStore,
+    workspaceCatalogStore,
     findProject: (root) => root === "C:/workspace" ? { path: root } : null,
     defaultProjectRoot: "C:/workspace",
     projectionProjectRoots: ["C:/workspace"],
@@ -104,6 +108,23 @@ test("RunJournalService projects the initial and every steered message", async (
     calls[0][1].prompt,
     "Изначальный запрос\n\nПервое уточнение\n\nВторое уточнение",
   );
+});
+
+test("RunJournalService registers changed files in the Workspace release registry", async () => {
+  const { service, calls } = fixture();
+  await service.projectTurn({
+    provider: "codex",
+    projectRoot: "C:/workspace",
+    threadId: "thread",
+    turnId: "turn",
+    changedFiles: ["AgentHub/app.js"],
+    diff: "diff --git a/AgentHub/app.js b/AgentHub/app.js",
+    status: "completed",
+  }, { title: "Implemented release registry" });
+  const release = calls.find(([name]) => name === "release")?.[1];
+  assert.equal(release.summary, "Implemented release registry");
+  assert.deepEqual(release.changedFiles, ["AgentHub/app.js"]);
+  assert.match(release.diffHash, /^[a-f0-9]{64}$/u);
 });
 
 test("RunJournalService initializes projection before retiring verified legacy storage", async () => {

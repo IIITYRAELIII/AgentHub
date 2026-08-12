@@ -44,6 +44,8 @@ export function buildClaudeArgs({
   permissionMode = "acceptEdits",
   autoApprove = false,
   additionalDirectories = [],
+  mcpConfig = null,
+  appendSystemPrompt = null,
 }) {
   if (!autoApprove && !CLAUDE_PERMISSION_MODES.has(permissionMode)) {
     throw new Error(`Unsupported Claude permission mode: ${permissionMode}`);
@@ -59,6 +61,10 @@ export function buildClaudeArgs({
     additionalDirectories.filter(Boolean).map((item) => path.resolve(item)),
   )];
   if (directories.length) args.push("--add-dir", ...directories);
+  if (String(mcpConfig ?? "").trim()) args.push("--mcp-config", String(mcpConfig));
+  if (String(appendSystemPrompt ?? "").trim()) {
+    args.push("--append-system-prompt", String(appendSystemPrompt));
+  }
   if (autoApprove) args.push("--permission-mode", "bypassPermissions");
   else args.push("--permission-mode", permissionMode);
   if (model) args.push("--model", model);

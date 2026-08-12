@@ -293,6 +293,25 @@ export class TaskBoardStore {
     });
   }
 
+  addAttachment(id, attachment) {
+    const taskId = String(id ?? "").trim();
+    const file = String(attachment ?? "").trim();
+    if (!taskId || !file) throw new Error("Не удалось определить задачу или вложение");
+    return this.#withDatabase((database) => {
+      const row = database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(taskId);
+      if (!row) throw new Error("Задача не найдена");
+      const details = parseJson(row.source_json);
+      details.attachments = [...new Set([
+        ...(Array.isArray(details.attachments) ? details.attachments : []),
+        file,
+      ])];
+      database.prepare(`
+        UPDATE hub_board_tasks SET source_json = ?, updated_at_ms = ? WHERE id = ?
+      `).run(JSON.stringify(details), this.now(), taskId);
+      return taskFromRow(database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(taskId));
+    });
+  }
+
   appendSourceMessage({
     source = "telegram",
     chatId,

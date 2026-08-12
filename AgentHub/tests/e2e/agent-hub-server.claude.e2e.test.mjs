@@ -453,12 +453,25 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
     false,
     "a live Claude turn must not postpone the restart",
   );
-  await telegram.waitForCall(
-    "editMessageText",
-    (call) => call.body.message_id === restarting.result.message_id
-      && String(call.body.text).includes("AGENT HUB ПЕРЕЗАПУЩЕН"),
-    { after: mark, timeoutMs: 20_000 },
-  );
+  try {
+    await telegram.waitForCall(
+      "editMessageText",
+      (call) => call.body.message_id === restarting.result.message_id
+        && String(call.body.text).includes("AGENT HUB ПЕРЕЗАПУЩЕН"),
+      { after: mark, timeoutMs: 20_000 },
+    );
+  } catch (error) {
+    throw new Error(
+      `${error.message}\nlock:\n${await readFile(lockPath, "utf8").catch(() => "missing")}`
+      + `\nstate:\n${JSON.stringify(await runtimeState().catch(() => null), null, 2)}`
+      + `\nAPI calls:\n${JSON.stringify(
+        telegram.callsAfter(mark).filter((call) => call.method !== "getUpdates").slice(-20),
+        null,
+        2,
+      )}`
+      + `\nstdout:\n${stdout}\nstderr:\n${stderr}`,
+    );
+  }
   bot = null;
   const runAfterRestartCommand = await waitFor(async () => {
     const runs = await activeRuns();

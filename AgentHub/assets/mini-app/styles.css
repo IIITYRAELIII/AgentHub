@@ -4246,6 +4246,81 @@ html[data-view="dashboard"] .task-board-view {
   max-width: 8rem;
 }
 
+.workspace-release-registry {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  display: grid;
+  gap: 0.65rem;
+  padding: 0.8rem;
+}
+
+.workspace-release-heading,
+.workspace-release-change-title {
+  align-items: center;
+  display: flex;
+  gap: 0.75rem;
+  justify-content: space-between;
+}
+
+.workspace-release-heading output,
+.workspace-release-registry > p,
+.workspace-release-change-stream,
+.workspace-release-empty {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  margin: 0;
+}
+
+.workspace-release-list {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.workspace-release-change {
+  background: color-mix(in srgb, var(--surface-2) 82%, transparent);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  display: grid;
+  gap: 0.45rem;
+  padding: 0.65rem;
+}
+
+.workspace-release-change.has-conflict {
+  border-color: var(--danger, #d66);
+}
+
+.workspace-release-change-title strong {
+  font-size: 0.78rem;
+}
+
+.workspace-release-change-title select {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  padding: 0.3rem 0.4rem;
+}
+
+.workspace-release-conflict {
+  color: var(--danger, #d66);
+  font-size: 0.7rem;
+}
+
+.workspace-release-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.workspace-release-files code {
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  font-size: 0.68rem;
+  overflow-wrap: anywhere;
+  padding: 0.18rem 0.3rem;
+}
+
 .workspace-card-fields input:disabled {
   cursor: not-allowed;
   opacity: 0.65;

@@ -5,13 +5,17 @@ import { CodexLifecycleController } from "../providers/codex/codex-lifecycle-con
 
 export function createCodexLifecycleComposition({
   config,
+  hubMcpServer,
   rpcTimeoutMs,
   runtimeDependencies,
   controllerDependencies,
 }) {
   const runtime = new CodexAppServerLifecycle({
     resolveExecutable: () => resolveCodexExecutable({ requested: config.codexExecutable }),
-    unavailableMcpOverrides: unavailableLocalMcpOverrides,
+    unavailableMcpOverrides: async () => {
+      const existing = await unavailableLocalMcpOverrides();
+      return { ...existing, args: [...existing.args, ...hubMcpServer.codexArgs()] };
+    },
     executableArgs: config.codexExecutableArgs,
     projectRoot: runtimeDependencies.getActiveProjectRoot,
     stopProcessTree: runtimeDependencies.stopProcessTree,

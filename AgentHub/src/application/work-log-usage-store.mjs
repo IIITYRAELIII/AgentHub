@@ -173,6 +173,20 @@ export class WorkLogUsageStore {
     });
   }
 
+  threadTurns(identities = [], { limit = 20 } = {}) {
+    return this.#enqueueRead(async () => {
+      const keys = new Set((Array.isArray(identities) ? identities : []).map((identity) => (
+        `${String(identity?.provider ?? "").trim().toLowerCase()}\0${String(identity?.threadId ?? "").trim()}`
+      )));
+      const boundedLimit = Math.max(1, Math.min(50, Number(limit) || 20));
+      const timestamp = (record) => Date.parse(record.completedAt || record.startedAt || "") || 0;
+      return structuredClone(Object.values(this.#ledger.turns)
+        .filter((record) => keys.has(`${record.provider}\0${record.threadId}`))
+        .sort((left, right) => timestamp(right) - timestamp(left))
+        .slice(0, boundedLimit));
+    });
+  }
+
   searchTurns(query, options = {}) {
     return this.#enqueueRead(async () => {
       return structuredClone(searchWorkLogRecords(this.#ledger.turns, query, {

@@ -84,7 +84,7 @@ const localWebSecret = config.miniApp.enabled
 const {
   trustedDeviceStore,
   codexRolloutContextSanitizer,
-  workLogUsageStore, workspaceCatalogStore, preTurnInstructions, taskBoard,
+  workLogUsageStore, workspaceCatalogStore, preTurnInstructions, taskBoard, hubMcpService, hubMcpServer,
   miniAppServer,
   publicMiniAppServer,
   usdRubRateStore,
@@ -268,7 +268,7 @@ const providerApplication = await createProviderApplicationComposition({
   infrastructure: {
     runJournal,
     turnEndNotifications,
-    workLogUsageStore, workspaceCatalogStore, preTurnInstructions,
+    workLogUsageStore, workspaceCatalogStore, preTurnInstructions, hubMcpService,
     codexRolloutContextSanitizer,
   },
   taskServices: {
@@ -434,7 +434,7 @@ const clientRuntime = await createClientRuntimeComposition({
     publicMiniAppServer,
     trustedDeviceStore,
     rateLimitHistoryStore,
-    workLogUsageStore, taskBoard,
+    workLogUsageStore, taskBoard, hubMcpServer,
     runtimeStateStore,
     turnEndNotifications,
     runJournal,
@@ -617,9 +617,7 @@ const executionBootstrap = createExecutionBootstrapPhase({
     runtimeCommandServer,
     runtimeStateStore,
     taskReadStateStore,
-    workLogUsageStore,
-    rateLimitHistoryStore,
-    taskBoard,
+    workLogUsageStore, rateLimitHistoryStore, taskBoard, hubMcpServer, hubMcpService,
   },
   provider: providerApplication,
   clients: clientRuntime,

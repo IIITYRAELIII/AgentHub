@@ -3,6 +3,7 @@ import path from "node:path";
 import process from "node:process";
 
 import { RunJournalService } from "../application/run-journal-service.mjs";
+import { HubMcpService } from "../application/hub-mcp-service.mjs";
 import { TurnEndNotificationRegistry } from "../application/turn-end-notifications.mjs";
 import { createWorkLogUsageStore } from "../application/work-log-usage-store.mjs";
 import { TaskBoardService } from "../application/task-board-service.mjs";
@@ -23,6 +24,8 @@ import { SingleInstanceGuard } from "../infrastructure/process/instance-lock.mjs
 import { captureProcess } from "../infrastructure/process/process-capture.mjs";
 import { RuntimeCommandServer } from "../infrastructure/process/runtime-command.mjs";
 import { MiniAppServer } from "../interfaces/web/mini-app-server.mjs";
+import { HubMcpServer } from "../interfaces/mcp/hub-mcp-server.mjs";
+import { ensureLocalWebSecret } from "../interfaces/web/local-web-auth.mjs";
 import { TrustedDeviceRegistry } from "../interfaces/web/trusted-device-access.mjs";
 import { CodexRolloutContextSanitizer } from "../providers/codex/codex-rollout-context.mjs";
 import {
@@ -115,13 +118,26 @@ export async function createHubInfrastructure({
     defaultProjectRoot: config.projectRoot,
     workspaceCatalogStore,
   });
+  const attachmentDirectory = path.join(runtimeCommandRoot, "DesktopApp", "attachments");
+  const hubMcpSecret = await ensureLocalWebSecret(path.join(runtimeCommandRoot, "hub-mcp.secret"));
+  const hubMcpService = new HubMcpService({
+    workspaceCatalog: workspaceCatalogStore,
+    taskBoard,
+    workLog: workLogUsageStore,
+    attachmentDirectory,
+    secret: hubMcpSecret,
+  });
+  const hubMcpServer = new HubMcpServer({
+    service: hubMcpService,
+    secret: hubMcpSecret,
+  });
   const serverOptions = {
     botToken: config.token,
     allowedUserIds: config.allowedUserIds,
     deviceStore: trustedDeviceStore,
     controlHandler: handleDesktopControl,
     onControlResultDelivered: ({ id }) => forgetDesktopControl(id),
-    attachmentDirectory: path.join(runtimeCommandRoot, "DesktopApp", "attachments"),
+    attachmentDirectory,
     assetBundleProvider: runtimeAssetBundleProvider(runtimeCommandRoot),
     journalDatabaseFile,
   };
@@ -187,6 +203,7 @@ export async function createHubInfrastructure({
   });
   const runJournal = new RunJournalService({
     usageStore: workLogUsageStore,
+    workspaceCatalogStore,
     findProject,
     defaultProjectRoot: config.projectRoot,
     projectionProjectRoots: globalWorkLogProjectRoots,
@@ -218,6 +235,8 @@ export async function createHubInfrastructure({
     workspaceCatalogStore,
     preTurnInstructions,
     taskBoard,
+    hubMcpService,
+    hubMcpServer,
     miniAppServer,
     publicMiniAppServer,
     usdRubRateStore,

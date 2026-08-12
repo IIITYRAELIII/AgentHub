@@ -32,6 +32,7 @@
     "work-log:claude-backfill": "node claude-work-log-backfill-cli.mjs",
     "work-log:title-backfill": "node work-log-title-backfill-cli.mjs",
     "workspace:migrate": "node src/interfaces/cli/workspace-layout-migrate.mjs",
+    "release-registry": "node release-registry-cli.mjs",
     "rate-limits:backfill": "node rate-limit-backfill.mjs",
     "check": "node --no-warnings --experimental-vm-modules syntax-check.mjs",
     "pretest": "node test-suite.mjs architecture",

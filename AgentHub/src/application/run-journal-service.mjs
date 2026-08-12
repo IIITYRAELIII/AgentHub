@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { stat } from "node:fs/promises";
 
 import { taskRunKey } from "../domain/task-runs.mjs";
@@ -23,6 +24,7 @@ function journalPrompt(completion) {
 export class RunJournalService {
   constructor({
     usageStore,
+    workspaceCatalogStore = null,
     findProject,
     defaultProjectRoot,
     projectionProjectRoots,
@@ -34,6 +36,7 @@ export class RunJournalService {
     logger = console,
   }) {
     this.usageStore = usageStore;
+    this.workspaceCatalogStore = workspaceCatalogStore;
     this.findProject = findProject;
     this.defaultProjectRoot = defaultProjectRoot;
     this.projectionProjectRoots = projectionProjectRoots;
@@ -135,8 +138,27 @@ export class RunJournalService {
       projectRoot: project.path,
       projectionProjectRoots: this.projectionProjectRoots,
     };
-    if (!workLogId) return this.usageStore.recordAutomaticAndProject(fields);
-    return this.usageStore.recordAndProject({ ...fields, workLogId });
+    const result = !workLogId
+      ? await this.usageStore.recordAutomaticAndProject(fields)
+      : await this.usageStore.recordAndProject({ ...fields, workLogId });
+    if (Array.isArray(completion.changedFiles) && completion.changedFiles.length) {
+      try {
+        this.workspaceCatalogStore?.recordReleaseChange?.({
+          provider: completion.provider,
+          threadId: completion.threadId,
+          turnId: completion.turnId,
+          projectRoot: project.path,
+          summary: fields.title || body,
+          changedFiles: completion.changedFiles,
+          diffHash: completion.diff
+            ? createHash("sha256").update(String(completion.diff)).digest("hex")
+            : "",
+        });
+      } catch (error) {
+        this.logger.error(`Cannot register release change for ${completion.turnId}:`, error.message);
+      }
+    }
+    return result;
   }
 
   async initialize(restoredTurnEndSnapshot = {}) {

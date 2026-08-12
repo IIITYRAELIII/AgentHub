@@ -24,7 +24,7 @@ export function createApplicationCommandService({ handlers }) {
   const required = [
     "selectTask", "createTask", "rotateStream", "renameTask", "archiveTask",
     "updateSetting", "cancelRun", "resolveApproval",
-    "renameWorkspace", "updateWorkspaceSettings", "updateWorkspaceDeveloperRules", "createWorkspace", "createWorkspaceFromStream", "mergeWorkspaces", "createStream",
+    "renameWorkspace", "updateWorkspaceSettings", "updateWorkspaceDeveloperRules", "readWorkspaceReleaseRegistry", "readWorkspaceReleasePlan", "updateReleaseChangeStatus", "completeWorkspaceRelease", "createWorkspace", "createWorkspaceFromStream", "mergeWorkspaces", "createStream",
     "renameStream", "updateStreamSettings", "updateStreamDeveloperRules", "moveStream",
   ];
   for (const name of required) {
@@ -101,6 +101,22 @@ export function createApplicationCommandService({ handlers }) {
     .register("workspace.developer-rules.update", {
       mutating: true, target: "none", lane: "global",
       handler: ({ payload }) => handlers.updateWorkspaceDeveloperRules(payload),
+    })
+    .register("workspace.release-change.status.update", {
+      mutating: true, target: "none", lane: "global",
+      handler: ({ payload }) => handlers.updateReleaseChangeStatus(payload),
+    })
+    .register("workspace.release-registry.read", {
+      mutating: false, target: "none", lane: "global",
+      handler: ({ payload }) => handlers.readWorkspaceReleaseRegistry(payload),
+    })
+    .register("workspace.release-plan.read", {
+      mutating: false, target: "none", lane: "global",
+      handler: ({ payload }) => handlers.readWorkspaceReleasePlan(payload),
+    })
+    .register("workspace.release.complete", {
+      mutating: true, target: "none", lane: "global",
+      handler: ({ payload }) => handlers.completeWorkspaceRelease(payload),
     })
     .register("workspace.create", {
       mutating: true, target: "none", lane: "global",

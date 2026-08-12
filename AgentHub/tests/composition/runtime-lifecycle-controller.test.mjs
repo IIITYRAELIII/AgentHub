@@ -47,6 +47,9 @@ test("Agent Hub bootstrap starts and stops every boundary without a real process
     runtimeCommandServer: {
       start: async () => events.push("runtime-command:start"),
     },
+    hubMcpServer: {
+      start: async () => events.push("mcp:start"),
+    },
     stopRuntimeTimers: () => events.push("timers:stop"),
     taskRuns: { values: () => [{ provider: "codex" }] },
     agentProviders: { call: (...args) => events.push(["provider:stop", ...args]) },
@@ -86,6 +89,7 @@ test("Agent Hub bootstrap starts and stops every boundary without a real process
   assert.equal(await bootstrap.startAgentHub(), "polling");
   assert.equal(events.filter((item) => item === "desktop:start").length, 1);
   assert.equal(events.filter((item) => item === "runtime-command:start").length, 1);
+  assert.equal(events.filter((item) => item === "mcp:start").length, 1);
   assert.equal(await bootstrap.shutdownAgentHub("test"), true);
   assert.equal(await bootstrap.shutdownAgentHub("test"), false);
   assert.equal(events.includes("resources:finalize"), true);

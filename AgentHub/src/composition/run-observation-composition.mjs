@@ -36,6 +36,8 @@ export function createRunObservationComposition({
   autoApprove,
   persistClaudeRunHistory,
   resolveClaudeInvocation,
+  hubMcpServer,
+  hubMcpService,
   logWarning,
   safelyDeliverRunMessage,
   sendRunMessage,
@@ -101,6 +103,10 @@ export function createRunObservationComposition({
     autoApprove,
     persistHistory: persistClaudeRunHistory,
     resolveInvocation: resolveClaudeInvocation,
+    mcpConfig: () => hubMcpServer.claudeConfig(),
+    developerContext: ({ threadId, streamId }) => hubMcpService.developerContext({
+      provider: "claude", threadId, streamId,
+    }),
     runController: claudeRunController,
     logWarning,
   });

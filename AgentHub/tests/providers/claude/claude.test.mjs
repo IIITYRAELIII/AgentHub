@@ -74,6 +74,18 @@ test("auto approval maps only to bypassPermissions", () => {
   ]);
 });
 
+test("Claude receives the embedded MCP and scoped developer context", () => {
+  const args = buildClaudeArgs({
+    prompt: "run",
+    mcpConfig: '{"mcpServers":{"agent_hub":{"type":"http","url":"http://127.0.0.1/mcp"}}}',
+    appendSystemPrompt: "<agent_hub_context>scope</agent_hub_context>",
+  });
+  assert.deepEqual(args.slice(5, 9), [
+    "--mcp-config", '{"mcpServers":{"agent_hub":{"type":"http","url":"http://127.0.0.1/mcp"}}}',
+    "--append-system-prompt", "<agent_hub_context>scope</agent_hub_context>",
+  ]);
+});
+
 test("resolveClaudeSessionCwd keeps a nested Claude session inside its configured project", () => {
   const projectRoot = path.resolve("project");
   const sessionCwd = path.join(projectRoot, "Utilities", "AgentHub");
