@@ -1,442 +1,363 @@
-/* ========================================= тема «Пепельный реликварий» === */
+/* ============================================= тема «Забытый портал» === */
 
 html[data-theme="reliquary"] {
+  color-scheme: dark;
   --font-display: Georgia, "Times New Roman", serif;
   --font-title: Georgia, "Times New Roman", serif;
   --font-numeric: "Cascadia Mono", "Segoe UI Mono", Consolas, monospace;
-  --display-weight: 560;
-  --display-spacing: 0.055em;
-  --title-weight: 580;
-  --label-spacing: 0.17em;
-
-  --radius-lg: 5px;
-  --radius-md: 3px;
+  --display-weight: 620;
+  --display-spacing: 0.038em;
+  --title-weight: 590;
+  --label-spacing: 0.13em;
+  --radius-lg: 3px;
+  --radius-md: 2px;
   --radius-sm: 2px;
   --radius-chip: 2px;
-  --rail-width: 3px;
-
-  --bg: #090807;
-  --surface-1: rgba(17, 15, 13, 0.91);
-  --surface-2: rgba(27, 23, 19, 0.88);
-  --surface-3: rgba(47, 39, 31, 0.8);
-  --sunken: rgba(4, 4, 3, 0.72);
-  --line: rgba(155, 120, 69, 0.25);
-  --line-strong: rgba(171, 137, 85, 0.49);
-
-  --card-bg: linear-gradient(180deg, rgba(32, 28, 23, 0.91), rgba(12, 12, 10, 0.9));
-  --card-bg-open: linear-gradient(180deg, rgba(39, 32, 25, 0.94), rgba(15, 13, 11, 0.94));
-  --card-texture: repeating-linear-gradient(104deg, transparent 0 13px, rgba(232, 223, 207, 0.012) 14px 15px);
-  --card-border: rgba(139, 109, 69, 0.34);
-  --card-border-open: rgba(177, 139, 83, 0.6);
-  --card-shadow: inset 0 1px 0 rgba(232, 223, 207, 0.045), inset 0 -1px 0 rgba(0, 0, 0, 0.68), 0 16px 36px -30px #000;
-  --plate-bg: linear-gradient(180deg, rgba(37, 31, 25, 0.82), rgba(14, 13, 11, 0.88));
-  --plate-texture: repeating-linear-gradient(103deg, transparent 0 17px, rgba(232, 223, 207, 0.013) 18px 19px);
-  --plate-shadow: inset 0 1px 0 rgba(232, 223, 207, 0.035);
-  --turn-shadow: 0 12px 28px -24px #000;
-
-  --text: #e8dfcf;
-  --text-soft: #c3b7a3;
-  --text-muted: #948a79;
-  --text-faint: #6f675b;
-  --accent: #c7653e;
-  --accent-soft: rgba(182, 64, 35, 0.14);
-  --accent-line: rgba(199, 101, 62, 0.52);
-  --accent-glow: 0 0 24px -9px rgba(182, 64, 35, 0.82);
-  --selection: rgba(182, 64, 35, 0.32);
-  --brand-gradient: linear-gradient(145deg, rgba(155, 120, 69, 0.2), rgba(30, 24, 19, 0.72));
-  --brand-shadow: inset 0 0 0 1px rgba(232, 223, 207, 0.035), 0 0 22px -12px rgba(199, 101, 62, 0.78);
-
-  --provider-none: #8d877e;
-  --provider-codex: #b7c0bd;
-  --provider-claude: #b69263;
-  --ok: #9aaa70;
-  --pending: #c8a15b;
-  --dot-input: #aaa79b;
-  --dot-cache: #9aaa70;
-  --dot-output: #c7653e;
-  --dot-think: #a88e73;
-
-  --space-glow-a: transparent;
-  --space-glow-b: transparent;
-  --space-base: #090807;
+  --rail-width: 2px;
+  --bg: #030507;
+  --surface-1: rgb(8 10 12 / 90%);
+  --surface-2: rgb(14 16 18 / 88%);
+  --surface-3: rgb(27 28 29 / 84%);
+  --sunken: rgb(2 4 6 / 84%);
+  --line: rgb(139 130 117 / 27%);
+  --line-strong: rgb(183 169 149 / 48%);
+  --reliquary-image: url("./forgotten-waypoint.webp");
+  --reliquary-basalt: url("./basalt-texture.webp");
+  --reliquary-iron: url("./forged-iron-texture.webp");
+  --reliquary-panel-frame: url("./waypoint-panel-frame.webp");
+  --reliquary-card-frame: url("./waypoint-card-frame.webp");
+  --reliquary-stone:
+    linear-gradient(rgb(3 5 7 / 76%), rgb(7 8 9 / 80%)),
+    var(--reliquary-basalt) center / 38rem 38rem;
+  --reliquary-stone-soft:
+    linear-gradient(rgb(12 13 14 / 70%), rgb(4 5 6 / 80%)),
+    var(--reliquary-basalt) center / 32rem 32rem;
+  --reliquary-iron-surface:
+    linear-gradient(rgb(5 6 7 / 70%), rgb(2 3 4 / 82%)),
+    var(--reliquary-iron) center / 44rem 44rem;
+  --reliquary-crimson:
+    linear-gradient(180deg, rgb(91 31 24 / 88%), rgb(39 13 12 / 94%)),
+    var(--reliquary-basalt) center / 26rem 26rem;
+  --reliquary-shadow:
+    inset 0 1px 0 rgb(230 222 210 / 8%),
+    inset 0 -1px 0 rgb(0 0 0 / 88%),
+    inset 0 0 28px rgb(0 0 0 / 25%),
+    0 18px 38px -30px #000;
+  --card-bg: var(--reliquary-stone-soft);
+  --card-bg-open: var(--reliquary-crimson);
+  --card-texture: none;
+  --card-border: rgb(143 133 119 / 34%);
+  --card-border-open: rgb(177 79 57 / 66%);
+  --card-shadow: var(--reliquary-shadow);
+  --plate-bg: var(--reliquary-iron-surface);
+  --plate-texture: none;
+  --plate-shadow: inset 0 1px 0 rgb(225 218 205 / 7%), inset 0 -1px 0 #000;
+  --turn-shadow: 0 20px 44px -32px #000;
+  --text: #dfd8ca;
+  --text-soft: #bab2a5;
+  --text-muted: #85817a;
+  --text-faint: #5e6264;
+  --accent: #b54532;
+  --accent-soft: rgb(181 69 50 / 15%);
+  --accent-line: rgb(196 76 55 / 56%);
+  --accent-glow: 0 0 22px -10px rgb(190 62 42 / 82%);
+  --selection: rgb(123 162 180 / 28%);
+  --brand-gradient: linear-gradient(145deg, rgb(113 145 159 / 17%), rgb(83 26 21 / 24%));
+  --brand-shadow: 0 0 22px -12px rgb(113 160 180 / 48%);
+  --provider-none: #868681;
+  --provider-codex: #86b9cc;
+  --provider-claude: #b66c4b;
+  --ok: #8fa67d;
+  --pending: #b88d5b;
+  --dot-input: #89bbce;
+  --dot-cache: #8da07c;
+  --dot-output: #b75a41;
+  --dot-think: #9d91aa;
+  --space-glow-a: rgb(102 154 177 / 8%);
+  --space-glow-b: rgb(153 66 42 / 6%);
+  --space-base: #030507;
   --space-star: transparent;
   --star-opacity: 0;
-  --decor-opacity: 1;
-  --task-rail-width: 22rem;
-}
-
-/* ====================================================== Ashen Reliquary === */
-
-html[data-theme="reliquary"] body {
-  background: #090807;
+  --task-rail-width: clamp(15.5rem, 16.5vw, 18rem);
+  --activity-rail-width: clamp(15.5rem, 16.5vw, 18rem);
+  --shell-header-background: var(--reliquary-iron-surface);
+  --shell-header-border: 0;
+  --shell-header-frame-border: 8px solid transparent;
+  --shell-header-frame-content: "";
+  --shell-header-frame-filter: brightness(0.88) saturate(0.86);
+  --shell-header-frame-image: var(--reliquary-panel-frame) 125 / 8px stretch;
+  --shell-header-gap: 0.55rem;
+  --shell-header-height: 4.25rem;
+  --shell-header-padding-left: 0.32rem;
+  --shell-header-padding-right: 0.32rem;
+  --shell-header-rule: linear-gradient(90deg, transparent 3%, #5d5e5e 15%, #a54432 50%, #5d5e5e 85%, transparent 97%);
+  --shell-header-rule-opacity: 0.66;
+  --shell-header-shadow: var(--reliquary-shadow);
+  --shell-control-background: var(--reliquary-stone-soft);
+  --shell-control-border: 1px solid rgb(145 135 121 / 36%);
+  --shell-control-radius: 3px;
+  --shell-control-shadow: inset 0 1px 0 rgb(226 219 207 / 6%), inset 0 -1px 0 #000;
+  --shell-view-switch-background: rgb(3 5 7 / 58%);
+  --shell-view-switch-border: 1px solid rgb(138 128 116 / 26%);
+  --shell-view-switch-radius: 3px;
+  --shell-view-switch-shadow: inset 0 1px 0 rgb(225 218 204 / 4%);
+  --shell-tab-border: 1px solid transparent;
+  --shell-tab-radius: 3px;
+  --shell-tab-active-background: var(--reliquary-crimson);
+  --shell-tab-active-border: 1px solid rgb(176 74 54 / 58%);
+  --shell-tab-active-shadow: inset 0 -2px 0 #c55139, 0 14px 26px -22px rgb(178 54 37 / 78%);
+  --shell-workspace-gap: 0.28rem;
+  --shell-workspace-padding-bottom: 0.28rem;
+  --shell-workspace-padding-top: 0.28rem;
+  --shell-panel-border: 8px solid transparent;
+  --shell-panel-border-image: var(--reliquary-panel-frame) 125 / 8px stretch;
+  --shell-panel-radius: 2px;
+  --shell-chat-border: 8px solid transparent;
+  --shell-chat-border-image: var(--reliquary-panel-frame) 125 / 8px stretch;
+  --shell-chat-gap: 0.28rem;
+  --shell-chat-radius: 2px;
+  --shell-stream-tabs-background: var(--reliquary-iron-surface);
+  --shell-stream-tabs-border: 7px solid transparent;
+  --shell-stream-tabs-border-bottom: 7px solid transparent;
+  --shell-stream-tabs-border-image: var(--reliquary-panel-frame) 125 / 7px stretch;
+  --shell-stream-tabs-padding: 0.1rem 0.14rem;
+  --shell-stream-tabs-radius: 2px;
+  --shell-stream-tab-background: transparent;
+  --shell-stream-tab-border: 1px solid transparent;
+  --shell-stream-tab-hover-background: rgb(24 25 26 / 76%);
+  --shell-stream-tab-active-background: rgb(67 24 20 / 72%);
+  --shell-stream-tab-radius: 2px;
+  --shell-stream-card-background: var(--reliquary-stone-soft);
+  --shell-stream-card-border: 5px solid transparent;
+  --shell-stream-card-border-image: var(--reliquary-card-frame) 118 / 5px stretch;
+  --shell-stream-card-radius: 1px;
+  --shell-stream-card-shadow: var(--reliquary-shadow);
 }
 
 html[data-theme="reliquary"] body::after {
-  background-color: #090807;
-  background-image: var(--reliquary-image, url("./ashen-reliquary.jpg"));
-  background-position: var(--hub-background-position, 55% 50%);
+  background-color: #030507;
+  background-image:
+    linear-gradient(180deg, rgb(1 3 5 / 54%), transparent 20% 72%, rgb(1 2 3 / 55%)),
+    radial-gradient(105% 88% at 50% 52%, transparent 40%, rgb(0 0 0 / 55%) 100%),
+    var(--reliquary-image);
+  background-position: center, center, 50% 55%;
   background-repeat: no-repeat;
   background-size: cover;
-  filter: none;
+  inset: 0;
+  mask-image: none;
   opacity: 1;
 }
 
+@keyframes reliquary-waypoint-breathe {
+  0%, 100% { opacity: 0.24; transform: scale(1); }
+  50% { opacity: 0.42; transform: scale(1.03); }
+}
+
 html[data-theme="reliquary"] body::before {
-  animation: reliquary-ash-drift 18s linear infinite;
+  animation: reliquary-waypoint-breathe 6.8s ease-in-out infinite;
   background-image:
-    radial-gradient(circle, rgba(199, 101, 62, 0.55) 0 0.7px, transparent 1px),
-    radial-gradient(circle, rgba(232, 223, 207, 0.24) 0 0.55px, transparent 0.9px);
-  background-position: 12% 18%, 73% 42%;
-  background-size: 9rem 13rem, 13rem 17rem;
-  mask-image: linear-gradient(90deg, transparent, #000 34%, #000 88%, transparent);
-  opacity: 0.16;
-  will-change: transform;
+    radial-gradient(20% 24% at 50% 70%, rgb(102 169 195 / 18%), transparent 72%),
+    radial-gradient(9% 18% at 50% 69%, rgb(188 228 240 / 18%), transparent 78%),
+    radial-gradient(circle at 18% 67%, rgb(177 67 36 / 20%) 0 0.8px, transparent 1.3px),
+    radial-gradient(circle at 82% 61%, rgb(177 67 36 / 17%) 0 0.7px, transparent 1.2px);
+  background-position: center, center, center, center;
+  background-repeat: no-repeat, no-repeat, repeat, repeat;
+  background-size: cover, cover, 12rem 16rem, 15rem 19rem;
+  content: "";
+  mask-image: linear-gradient(180deg, transparent 8%, #000 38%, #000 86%, transparent 100%);
+  mix-blend-mode: screen;
+  opacity: 0.28;
 }
 
-@keyframes reliquary-ash-drift {
-  from { transform: translate3d(0, -2.5rem, 0); }
-  to { transform: translate3d(-1rem, 2.5rem, 0); }
+html[data-background-override="true"][data-background="reliquary"] {
+  --hub-background-color: #030507;
+  --hub-background-image:
+    linear-gradient(180deg, rgb(1 3 5 / 54%), transparent 20% 72%, rgb(1 2 3 / 55%)),
+    radial-gradient(105% 88% at 50% 52%, transparent 40%, rgb(0 0 0 / 55%) 100%),
+    var(--reliquary-image, url("./forgotten-waypoint.webp"));
+  --hub-background-position: center, center, 50% 55%;
 }
 
-html[data-theme="reliquary"] .app-header {
-  backdrop-filter: blur(10px) saturate(90%);
-  -webkit-backdrop-filter: blur(10px) saturate(90%);
-  background:
-    linear-gradient(180deg, rgba(20, 18, 15, 0.98), rgba(8, 8, 7, 0.96)),
-    repeating-linear-gradient(92deg, transparent 0 31px, rgba(232, 223, 207, 0.012) 32px 33px);
-  border-bottom-color: rgba(155, 120, 69, 0.54);
-  box-shadow: inset 0 -3px 0 rgba(0, 0, 0, 0.5), 0 12px 30px -26px #000;
-}
-
-html[data-theme="reliquary"] .app-header::after {
-  background: linear-gradient(90deg, transparent 3%, rgba(155, 120, 69, 0.68) 18%, rgba(199, 101, 62, 0.75) 50%, rgba(155, 120, 69, 0.68) 82%, transparent 97%);
-  box-shadow: 0 0 14px -4px rgba(182, 64, 35, 0.7);
-  opacity: 0.72;
-}
-
-html[data-theme="reliquary"] .icon-button,
-html[data-theme="reliquary"] .chip-button,
-html[data-theme="reliquary"] .refresh,
-html[data-theme="reliquary"] .view-switch,
-html[data-theme="reliquary"] .task-search,
-html[data-theme="reliquary"] .composer-main {
-  box-shadow: inset 0 0 0 1px rgba(232, 223, 207, 0.025), inset 0 -1px 0 rgba(0, 0, 0, 0.78);
-}
-
-html[data-theme="reliquary"] .eyebrow {
-  color: #8b7c66;
-  font-family: var(--font-display);
-  letter-spacing: 0.19em;
-}
-
-html[data-theme="reliquary"] h1 {
-  color: #e6d8c0;
-  text-shadow: 0 1px 0 #000, 0 0 18px rgba(155, 120, 69, 0.16);
-}
-
-html[data-theme="reliquary"] .view-switch {
-  background: rgba(10, 10, 8, 0.78);
-  border-color: rgba(155, 120, 69, 0.34);
-  gap: 0;
-  padding: 0;
-}
-
-html[data-theme="reliquary"] .view-tab {
-  border-left: 1px solid rgba(155, 120, 69, 0.2);
-  min-height: 2.15rem;
-  padding-inline: 1rem;
-}
-
-html[data-theme="reliquary"] .view-tab:first-child {
-  border-left: 0;
-}
-
-html[data-theme="reliquary"] .view-tab[aria-pressed="true"] {
-  background: linear-gradient(180deg, rgba(182, 64, 35, 0.2), rgba(52, 24, 17, 0.34));
-  border-color: rgba(199, 101, 62, 0.58);
-  box-shadow: inset 0 -2px 0 #b64023, 0 0 20px -12px rgba(199, 101, 62, 0.95);
-  color: #e7d5be;
-}
-
-html[data-theme="reliquary"] .workspace {
-  border-left: 1px solid rgba(155, 120, 69, 0.25);
-  border-right: 1px solid rgba(155, 120, 69, 0.25);
-  box-shadow: 0 0 80px rgba(0, 0, 0, 0.34);
-}
-
-html[data-theme="reliquary"] .task-rail {
-  background:
-    linear-gradient(90deg, rgba(8, 8, 7, 0.98), rgba(14, 13, 11, 0.94)),
-    repeating-linear-gradient(102deg, transparent 0 23px, rgba(232, 223, 207, 0.012) 24px 25px);
-  border-right-color: rgba(155, 120, 69, 0.48);
-  box-shadow: inset -3px 0 0 rgba(0, 0, 0, 0.45);
-}
-
-html[data-theme="reliquary"] .task-rail-head {
-  border-bottom: 1px solid rgba(155, 120, 69, 0.2);
-}
-
-html[data-theme="reliquary"] .task-rail-title {
-  color: #d3c3aa;
-  font-family: var(--font-display);
-  font-size: 0.78rem;
-  font-weight: 560;
-}
-
-html[data-theme="reliquary"] .task-search {
-  background: rgba(8, 8, 7, 0.76);
-  border-color: rgba(155, 120, 69, 0.38);
-  margin-top: 0.55rem;
-}
-
-html[data-theme="reliquary"] .task-item {
-  background: linear-gradient(180deg, rgba(28, 25, 21, 0.7), rgba(10, 10, 8, 0.82));
-  border-color: rgba(155, 120, 69, 0.18);
-  box-shadow: inset 0 1px 0 rgba(232, 223, 207, 0.025);
-  margin-bottom: 0.42rem;
-}
-
-html[data-theme="reliquary"] .task-item:hover {
-  background: linear-gradient(180deg, rgba(42, 34, 27, 0.78), rgba(13, 12, 10, 0.86));
-  border-color: rgba(155, 120, 69, 0.4);
-}
-
-html[data-theme="reliquary"] .task-item[data-selected] {
-  background: linear-gradient(90deg, rgba(104, 42, 26, 0.32), rgba(21, 18, 15, 0.9) 25%, rgba(11, 10, 9, 0.88));
-  border-color: rgba(199, 101, 62, 0.62);
-  box-shadow: inset 3px 0 0 #b64023, inset 0 0 20px rgba(182, 64, 35, 0.07), 0 0 24px -18px rgba(199, 101, 62, 0.8);
-}
-
-html[data-theme="reliquary"] .task-item[data-selected]::before {
-  background: #d0673f;
-  border-radius: 0;
-  box-shadow: 0 0 11px rgba(199, 101, 62, 0.8);
-  left: -0.5rem;
-  width: 2px;
-}
-
-html[data-theme="reliquary"] .task-agent {
-  background: transparent;
-  border-color: transparent;
-  border-radius: 0;
-  padding-inline: 0;
-}
-
-html[data-theme="reliquary"] .task-item[data-running] .provider-dot,
-html[data-theme="reliquary"] .live-dot {
-  box-shadow: 0 0 0 3px rgba(182, 64, 35, 0.12), 0 0 12px rgba(199, 101, 62, 0.9);
-}
-
-html[data-theme="reliquary"] .chat {
-  background: rgba(7, 7, 6, 0.16);
-}
-
-html[data-theme="reliquary"] .chat-head {
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
-  background: linear-gradient(180deg, rgba(12, 11, 9, 0.88), rgba(12, 11, 9, 0.58));
-  border-bottom-color: rgba(155, 120, 69, 0.33);
-  box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.44);
-}
-
-html[data-theme="reliquary"] .chat-title {
-  color: #e2d2b7;
-  font-family: var(--font-display);
-  font-size: 1.05rem;
-  letter-spacing: 0.025em;
-}
-
-html[data-theme="reliquary"] .chat-live-badge {
-  background: transparent;
-  border: 0;
-  color: #d68a68;
-}
-
-html[data-theme="reliquary"] .chat-scroll {
-  background: linear-gradient(90deg, rgba(8, 8, 7, 0.34), transparent 30%, rgba(8, 8, 7, 0.24));
-  scrollbar-color: rgba(155, 120, 69, 0.42) transparent;
-}
-
-html[data-theme="reliquary"] .chat-log {
-  gap: 0.58rem;
-  padding-block: 0.8rem 1rem;
-}
-
-html[data-theme="reliquary"] .msg {
-  backdrop-filter: blur(5px);
-  -webkit-backdrop-filter: blur(5px);
-  background: linear-gradient(180deg, rgba(31, 27, 23, 0.91), rgba(12, 12, 10, 0.91));
-  border-color: rgba(155, 120, 69, 0.31);
-  box-shadow: inset 0 1px 0 rgba(232, 223, 207, 0.035), 0 12px 28px -26px #000;
-}
-
-html[data-theme="reliquary"] .msg-user {
-  background: linear-gradient(90deg, rgba(70, 43, 29, 0.68), rgba(25, 21, 17, 0.91) 24%, rgba(12, 12, 10, 0.91));
-  border-color: rgba(155, 120, 69, 0.5);
-  box-shadow: inset 2px 0 0 rgba(199, 101, 62, 0.7), 0 12px 28px -26px #000;
-}
-
-html[data-theme="reliquary"] .msg-author {
-  color: #deceb4;
-  font-family: var(--font-display);
-  font-size: 0.86rem;
-  letter-spacing: 0.02em;
-}
-
-html[data-theme="reliquary"] .activity-feed {
-  background: rgba(5, 5, 4, 0.72);
-  border-color: rgba(155, 120, 69, 0.34);
-  box-shadow: inset 0 0 0 1px rgba(232, 223, 207, 0.018);
-}
-
-html[data-theme="reliquary"] .composer {
-  background: linear-gradient(180deg, rgba(9, 8, 7, 0.5), rgba(9, 8, 7, 0.96) 32%);
-  border-top-color: rgba(155, 120, 69, 0.48);
-}
-
-html[data-theme="reliquary"] .composer-main {
-  background: rgba(8, 8, 7, 0.92);
-  border: 1px solid rgba(155, 120, 69, 0.56);
-  outline: 1px solid rgba(0, 0, 0, 0.8);
-  outline-offset: 3px;
-  padding: 0.52rem;
-}
-
-html[data-theme="reliquary"] .composer-input {
-  background: rgba(18, 16, 13, 0.82);
-  border-color: rgba(155, 120, 69, 0.4);
-}
-
-html[data-theme="reliquary"] .composer-input:focus-within {
-  border-color: rgba(199, 101, 62, 0.68);
-  box-shadow: 0 0 0 2px rgba(182, 64, 35, 0.1), inset 0 0 14px rgba(0, 0, 0, 0.36);
-}
-
-html[data-theme="reliquary"] .composer-send {
-  background: linear-gradient(145deg, rgba(134, 50, 27, 0.92), rgba(54, 22, 15, 0.96));
-  border-color: rgba(211, 112, 70, 0.76);
-  box-shadow: inset 0 0 0 1px rgba(232, 223, 207, 0.06), 0 0 18px -10px rgba(199, 101, 62, 0.92);
-  color: #f0d9bd;
-}
-
-html[data-theme="reliquary"] .composer-send:hover:not(:disabled) {
-  background: linear-gradient(145deg, rgba(161, 61, 32, 0.96), rgba(70, 27, 18, 0.98));
-  border-color: #d78762;
-}
-
-html[data-theme="reliquary"] .settings-panel,
-html[data-theme="reliquary"] .dialog-settings,
-html[data-theme="reliquary"] .overflow-menu,
-html[data-theme="reliquary"] .task-new-menu {
-  background: linear-gradient(180deg, rgba(29, 24, 19, 0.98), rgba(9, 9, 7, 0.99));
-  border-color: rgba(155, 120, 69, 0.52);
-  box-shadow: inset 0 0 0 1px rgba(232, 223, 207, 0.025), 0 24px 70px rgba(0, 0, 0, 0.64);
-}
-
-@media (max-width: 860px) {html[data-theme="reliquary"] {
-    --task-rail-width: 100%;
+@media (min-width: 860px) {
+  html[data-theme="reliquary"][data-view="chat"]:not([data-surface="mobile"]) .chat {
+    border-image: var(--shell-chat-border-image) !important;
   }
-
-  html[data-theme="reliquary"] body::after {
-    background-position: var(--hub-background-position, 72% 50%);
-  }
-
-  html[data-theme="reliquary"] body::before {
-    opacity: 0.1;
-  }
-
-  html[data-theme="reliquary"] .app-header {
-    backdrop-filter: none;
-    -webkit-backdrop-filter: none;
-  }
-
-  html[data-theme="reliquary"] .view-tab {
-    min-height: 2.75rem;
-    padding-inline: 0.62rem;
-  }
-
-  html[data-theme="reliquary"] .chat-head,
-  html[data-theme="reliquary"] .msg {
-    backdrop-filter: none;
-    -webkit-backdrop-filter: none;
-  }
-
-  html[data-theme="reliquary"] .chat-head {
-    background: rgba(10, 9, 8, 0.94);
-  }
-
-  html[data-theme="reliquary"] .msg {
-    background: linear-gradient(180deg, rgba(31, 27, 23, 0.96), rgba(11, 11, 9, 0.96));
-  }
-
-  html[data-theme="reliquary"] .msg-user {
-    background: linear-gradient(90deg, rgba(67, 39, 27, 0.94), rgba(17, 15, 12, 0.97) 32%);
-  }
-
-  html[data-theme="reliquary"] .composer-main {
-    outline-offset: 2px;
-    padding: 0.38rem;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {html[data-theme="reliquary"] body::before {
-    animation: none;
-    transform: none;
-  }
-}
-
-/* Единственная сцена «Пепельного реликвария»: собственный ImageGen-фон не
-   предлагается другим темам и сохраняет тёмную область под колонкой задач. */
-html[data-theme="reliquary"][data-background="reliquary"] {
-  --hub-background-color: #090807;
-  --hub-background-image: var(--reliquary-image, url("./ashen-reliquary.jpg"));
-  --hub-background-position: 55% 50%;
-}
-
-@media (max-width: 720px) {html[data-theme="reliquary"][data-background="reliquary"] { --hub-background-position: 72% 50%; }
-}
-
-/* ================================================= облик: архивная опись ===
-   Пепельный архив — это хранилище с бирками: у карточек срезан левый верхний
-   угол, как у ярлыка с отверстием, разделители пунктирные, шифры набраны
-   моноширинным. */
-
-/* Ярлык: срезанный левый верхний угол и пунктир вместо сплошной линии. */
-html[data-theme="reliquary"] .task-item {
-  border-radius: 0;
-  clip-path: polygon(13px 0, 100% 0, 100% 100%, 0 100%, 0 13px);
-}
-
-html[data-theme="reliquary"] .task-item + .task-item {
-  border-top: 1px dashed rgba(155, 120, 69, .3);
 }
 
 html[data-theme="reliquary"] .task-rail,
+html[data-theme="reliquary"] .activity-rail,
+html[data-theme="reliquary"] .stream-tabs,
+html[data-theme="reliquary"] .composer,
+html[data-theme="reliquary"] .dialog-settings,
+html[data-theme="reliquary"] .settings-panel {
+  background: var(--reliquary-stone);
+  border: 8px solid transparent;
+  border-image: var(--reliquary-panel-frame) 125 / 8px stretch;
+  box-shadow: var(--reliquary-shadow);
+}
+
+html[data-theme="reliquary"] .task-rail,
+html[data-theme="reliquary"] .activity-rail,
+html[data-theme="reliquary"] .stream-tabs,
+html[data-theme="reliquary"] .composer,
+html[data-theme="reliquary"] .stream-chat-columns {
+  overflow: hidden;
+}
+
 html[data-theme="reliquary"] .chat {
-  border-radius: 0;
-  clip-path: polygon(22px 0, 100% 0, 100% 100%, 0 100%, 0 22px);
+  background: rgb(1 3 5 / 7%);
+  box-shadow: inset 0 0 80px rgb(0 0 0 / 13%);
 }
 
-/* Штамп: двойная рамка и разрядка, как на оттиске. */
-html[data-theme="reliquary"] .view-tab,
-html[data-theme="reliquary"] .option-chip {
-  border-radius: 0;
-  box-shadow: inset 0 0 0 3px rgba(9, 8, 7, .85), inset 0 0 0 4px rgba(155, 120, 69, .3);
-  letter-spacing: .07em;
+html[data-theme="reliquary"] .stream-chat-columns {
+  background: rgb(1 3 5 / 7%);
+  box-shadow: inset 0 0 54px rgb(0 0 0 / 14%);
 }
 
-html[data-theme="reliquary"] .view-tab[aria-pressed="true"] {
-  box-shadow: inset 0 0 0 3px rgba(9, 8, 7, .85), inset 0 0 0 4px var(--accent);
+html[data-theme="reliquary"] .task-workspace-item,
+html[data-theme="reliquary"] .activity-stream-item,
+html[data-theme="reliquary"] .stream-tab-card,
+html[data-theme="reliquary"] .msg {
+  background: var(--reliquary-stone-soft);
+  border: 5px solid transparent;
+  border-image: var(--reliquary-card-frame) 118 / 5px stretch;
+  border-radius: 1px;
+  box-shadow: var(--reliquary-shadow);
 }
 
-html[data-theme="reliquary"] .task-time,
-html[data-theme="reliquary"] .msg-time,
-html[data-theme="reliquary"] .task-model {
-  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
-  font-variant-numeric: tabular-nums;
+html[data-theme="reliquary"] .task-workspace-item:hover,
+html[data-theme="reliquary"] .task-workspace-item:focus-visible,
+html[data-theme="reliquary"] .activity-stream-item:hover,
+html[data-theme="reliquary"] .activity-stream-item:focus-visible {
+  background:
+    linear-gradient(rgb(24 25 26 / 74%), rgb(5 6 7 / 84%)),
+    var(--reliquary-basalt) center / 24rem 24rem;
+  filter: brightness(1.1);
+}
+
+html[data-theme="reliquary"] .task-workspace-item[data-selected],
+html[data-theme="reliquary"] .activity-stream-item[data-current],
+html[data-theme="reliquary"] .stream-tab[aria-pressed="true"] .stream-tab-card {
+  background: var(--reliquary-crimson);
+  border-color: rgb(181 74 54 / 58%);
+  box-shadow: inset 0 0 0 1px rgb(203 83 59 / 25%), inset 0 -2px 0 var(--accent), var(--reliquary-shadow);
 }
 
 html[data-theme="reliquary"] .msg {
-  border-radius: 0;
-  clip-path: polygon(11px 0, 100% 0, 100% 100%, 0 100%, 0 11px);
+  backdrop-filter: blur(8px) saturate(92%);
+  -webkit-backdrop-filter: blur(8px) saturate(92%);
+  background-color: rgb(6 8 10 / 76%);
+  background-image:
+    linear-gradient(rgb(12 14 16 / 77%), rgb(3 5 7 / 84%)),
+    var(--reliquary-basalt);
+  background-size: auto, 34rem 34rem;
+}
+
+html[data-theme="reliquary"] .msg-user {
+  background-image:
+    linear-gradient(90deg, rgb(108 35 27 / 31%), rgb(6 8 10 / 84%) 58%),
+    var(--reliquary-basalt);
+  background-size: auto, 34rem 34rem;
+  border-color: rgb(176 72 53 / 54%);
+}
+
+html[data-theme="reliquary"] .msg-system,
+html[data-theme="reliquary"] .queue-item {
+  background: rgb(5 8 10 / 78%);
+  border-color: rgb(113 145 157 / 31%);
+}
+
+html[data-theme="reliquary"] .composer-input,
+html[data-theme="reliquary"] .chip-button,
+html[data-theme="reliquary"] .option-chip,
+html[data-theme="reliquary"] .view-settings,
+html[data-theme="reliquary"] .icon-button,
+html[data-theme="reliquary"] .task-search {
+  background: var(--reliquary-iron-surface);
+  border-color: rgb(143 133 119 / 38%);
+  box-shadow: inset 0 1px 0 rgb(225 218 205 / 6%), inset 0 -1px 0 #000;
+}
+
+html[data-theme="reliquary"] .composer-send:not(:disabled) {
+  background: linear-gradient(180deg, #7d3027, #3b1512);
+  border-color: #a64c3b;
+  color: #eadfd0;
+  box-shadow: inset 0 1px 0 rgb(255 219 199 / 15%), 0 0 18px -10px rgb(178 61 43 / 84%);
+}
+
+html[data-theme="reliquary"] .task-rail-title,
+html[data-theme="reliquary"] .activity-rail-toggle,
+html[data-theme="reliquary"] .eyebrow,
+html[data-theme="reliquary"] .msg-author {
+  color: #c7bcaa;
+  font-family: var(--font-display);
+  letter-spacing: 0.1em;
+  text-shadow: 0 1px 0 #000;
+}
+
+html[data-theme="reliquary"] .provider-dot,
+html[data-theme="reliquary"] .live-dot {
+  box-shadow: 0 0 0 2px rgb(71 106 119 / 18%), 0 0 10px currentColor;
+}
+
+html[data-theme="reliquary"] pre,
+html[data-theme="reliquary"] code,
+html[data-theme="reliquary"] .tool-call {
+  background-color: rgb(2 5 8 / 78%);
+  border-color: rgb(108 140 153 / 27%);
+  color: #d8d5ce;
+}
+
+html[data-theme="reliquary"] .journal details[data-work-log-day-section],
+html[data-theme="reliquary"] .journal details[data-work-log-turn-details] {
+  backdrop-filter: blur(7px) saturate(90%);
+  -webkit-backdrop-filter: blur(7px) saturate(90%);
+  background: var(--reliquary-stone-soft);
+  border-color: rgb(136 127 115 / 36%);
+}
+
+html[data-theme="reliquary"] * {
+  scrollbar-color: rgb(111 115 114 / 48%) rgb(2 4 6 / 45%);
+}
+
+html[data-theme="reliquary"] *::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #777976, #303333);
+  border: 1px solid #0b0d0e;
+}
+
+@media (max-width: 720px) {
+  html[data-theme="reliquary"] {
+    --task-rail-width: 100%;
+    --shell-workspace-gap: 0.22rem;
+    --shell-workspace-padding-bottom: 0.22rem;
+    --shell-workspace-padding-top: 0.22rem;
+    --shell-header-height: auto;
+  }
+
+  html[data-theme="reliquary"] body::after,
+  html[data-background-override="true"][data-background="reliquary"] {
+    --hub-background-position: center, center, 50% 54%;
+  }
+
+  html[data-theme="reliquary"] .msg {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background-color: rgb(4 7 9 / 91%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-theme="reliquary"] body::before {
+    animation: none !important;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  html[data-theme="reliquary"] .chat,
+  html[data-theme="reliquary"] .msg,
+  html[data-theme="reliquary"] .queue-item {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background-color: #080a0c;
+  }
 }

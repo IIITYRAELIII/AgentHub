@@ -1015,7 +1015,7 @@ test("VS Code resolves each self-contained theme resource without CSS overrides"
   assert.match(shared, /themeResourceUrls = new Map/u);
   assert.match(shared, /vscode\.Uri\.file\(item\.file\)/u);
   assert.doesNotMatch(shared, /assetOverrides/u);
-  assert.match(reliquary, /url\("\.\/ashen-reliquary\.jpg"\)/u);
+  assert.match(reliquary, /url\("\.\/forgotten-waypoint\.webp"\)/u);
   assert.match(app, /root\.style\.setProperty\(`--\$\{background\}-image`, cssBackgroundUrl\(url\)\)/u);
 });
 

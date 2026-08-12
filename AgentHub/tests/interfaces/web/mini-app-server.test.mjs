@@ -479,9 +479,9 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.equal(stormGlass.headers.get("content-type"), "image/jpeg");
     assert.match(stormGlass.headers.get("cache-control"), /immutable/u);
     assert.ok((await stormGlass.arrayBuffer()).byteLength > 100_000);
-    const reliquary = await fetch(`${address.url}themes/reliquary/ashen-reliquary.jpg`);
+    const reliquary = await fetch(`${address.url}themes/reliquary/forgotten-waypoint.webp`);
     assert.equal(reliquary.status, 200);
-    assert.equal(reliquary.headers.get("content-type"), "image/jpeg");
+    assert.equal(reliquary.headers.get("content-type"), "image/webp");
     assert.match(reliquary.headers.get("cache-control"), /immutable/u);
     assert.ok((await reliquary.arrayBuffer()).byteLength > 100_000);
     assert.ok((await blackHole.arrayBuffer()).byteLength > 100_000);
@@ -519,7 +519,7 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.ok(page.indexOf("data-collapse-all") < page.indexOf("data-theme-select"));
     assert.doesNotMatch(page, /data-connection|Автообновление/u);
     assert.match(page, /<option value="graphite">Графит<\/option>/u);
-    assert.match(page, /<option value="reliquary">Пепельный реликварий<\/option>/u);
+    assert.match(page, /<option value="reliquary">Забытый портал<\/option>/u);
     assert.match(page, /data-journal-grouping="stream"/u);
     assert.match(page, /data-journal-grouping="workspace"/u);
     assert.match(page, /data-journal-grouping="month"/u);
@@ -697,7 +697,7 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.match(styles, /\.server-config-advanced-grid\s*\{[\s\S]*?grid-template-columns: repeat\(3, minmax\(0, 1fr\)\)/u);
     assert.match(styles, /html\[data-surface="mobile"\] \.server-config-primary\s*\{[\s\S]*?display: flex/u);
     assert.match(styles, /html\[data-surface="mobile"\] \.server-config-advanced-grid\s*\{[\s\S]*?grid-template-columns: minmax\(0, 1fr\)/u);
-    assert.match(styles, /url\("\/ashen-reliquary\.jpg"\)/u);
+    assert.match(styles, /url\("\/forgotten-waypoint\.webp"\)/u);
     assert.match(styles, /@media \(prefers-reduced-motion: reduce\)[\s\S]*?html\[data-theme="reliquary"\] body::before/u);
     assert.match(styles, /--ph-mask-caret-right:/u);
     assert.match(styles, /--ph-mask-caret-double-up:/u);

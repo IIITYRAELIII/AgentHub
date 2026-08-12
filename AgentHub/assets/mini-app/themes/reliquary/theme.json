@@ -1,10 +1,10 @@
 {
   "id": "reliquary",
-  "name": "Пепельный реликварий",
-  "color": "#090807",
+  "name": "Забытый портал",
+  "color": "#030507",
   "order": 130,
   "styles": "theme.css",
   "backgrounds": [
-    { "id": "reliquary", "name": "Пепельный архив", "asset": "ashen-reliquary.jpg" }
+    { "id": "reliquary", "name": "Забытый waypoint", "asset": "forgotten-waypoint.webp" }
   ]
 }
