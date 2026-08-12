@@ -158,6 +158,32 @@ export class RunJournalService {
         this.logger.error(`Cannot register release change for ${completion.turnId}:`, error.message);
       }
     }
+    try {
+      const resolved = this.workspaceCatalogStore?.resolveThread?.({
+        provider: completion.provider,
+        threadId: completion.threadId,
+      });
+      if (resolved) {
+        this.workspaceCatalogStore.recordWorkspaceEvent?.({
+          workspaceId: resolved.workspaceId,
+          streamId: resolved.streamId,
+          type: "run.completed",
+          subjectId: completion.turnId,
+          dedupeKey: `run.completed:${createHash("sha256").update([
+            completion.provider, completion.threadId, completion.turnId,
+          ].join("\0")).digest("hex")}`,
+          payload: {
+            provider: completion.provider,
+            threadId: completion.threadId,
+            turnId: completion.turnId,
+            status: completion.status,
+            title: fields.title,
+          },
+        });
+      }
+    } catch (error) {
+      this.logger.error(`Cannot record Workspace event for ${completion.turnId}:`, error.message);
+    }
     return result;
   }
 

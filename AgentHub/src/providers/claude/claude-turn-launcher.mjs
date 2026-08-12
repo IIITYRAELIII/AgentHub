@@ -52,7 +52,7 @@ export class ClaudeTurnLauncher {
       autoApprove: planMode ? false : d.autoApprove(),
       additionalDirectories,
       mcpConfig: d.mcpConfig?.(),
-      appendSystemPrompt: d.developerContext?.({ threadId: run.threadId, streamId: run.streamId }),
+      appendSystemPrompt: await d.developerContext?.({ threadId: run.threadId, streamId: run.streamId }),
     });
     await d.persistHistory(run);
     const invocation = d.resolveInvocation();

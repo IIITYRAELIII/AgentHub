@@ -461,7 +461,7 @@ function applyMessageReceipts(snapshot) {
       threadId,
       turnId: String(receipt.turnId ?? ""),
       itemId: receipt.steered === true ? clientUserMessageId : receipt.id ?? clientUserMessageId,
-      time: receipt.createdAt ?? null,
+      time: receipt.deliveredAt ?? receipt.createdAt ?? null,
       ...nonEmptyAttachmentPatch(receipt.attachments),
       ...(receipt.accepted && !receipt.steered ? { turnUserSlot: "root" } : {}),
       ...(receipt.steered ? { turnUserSlot: "steer" } : {}),

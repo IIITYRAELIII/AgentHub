@@ -7,6 +7,7 @@ import { HubMcpService } from "../application/hub-mcp-service.mjs";
 import { TurnEndNotificationRegistry } from "../application/turn-end-notifications.mjs";
 import { createWorkLogUsageStore } from "../application/work-log-usage-store.mjs";
 import { TaskBoardService } from "../application/task-board-service.mjs";
+import { WorkspaceReleaseService } from "../application/workspace-release-service.mjs";
 import { samePath } from "../infrastructure/filesystem/config.mjs";
 import { runtimeLayout, runtimeReleaseDirectory } from "../infrastructure/filesystem/runtime-layout.mjs";
 import { UsdRubRateStore } from "../infrastructure/network/exchange-rate.mjs";
@@ -20,6 +21,12 @@ import { TrustedDeviceStore } from "../infrastructure/persistence/trusted-device
 import { WorkspaceCatalogStore } from "../infrastructure/persistence/workspace-catalog-store.mjs";
 import { TaskBoardStore } from "../infrastructure/persistence/task-board-store.mjs";
 import { WorkLogUsageRepository } from "../infrastructure/persistence/work-log-usage-repository.mjs";
+import {
+  assertCurrentPublicationRevision,
+  gitOutput,
+  parseWorkingTreeStatus,
+  readPublicationState,
+} from "../infrastructure/persistence/publication-state.mjs";
 import { SingleInstanceGuard } from "../infrastructure/process/instance-lock.mjs";
 import { captureProcess } from "../infrastructure/process/process-capture.mjs";
 import { RuntimeCommandServer } from "../infrastructure/process/runtime-command.mjs";
@@ -81,6 +88,44 @@ export async function createHubInfrastructure({
     databaseFile: journalDatabaseFile,
   });
   await workspaceCatalogStore.load();
+  const repositoryRoot = path.resolve(agentHubRoot, "..");
+  const workspaceReleaseService = new WorkspaceReleaseService({
+    store: workspaceCatalogStore,
+    verifyPublication: async ({ expectedRevision = null, plan } = {}) => {
+      const projectRoots = [...new Set(plan.ready.map((change) => String(change.projectRoot ?? "").trim()))];
+      if (projectRoots.some((value) => !value)) throw new Error("release change has no project root");
+      const repositories = [];
+      for (const projectRoot of projectRoots) {
+        const root = await gitOutput(["rev-parse", "--show-toplevel"], { cwd: projectRoot });
+        if (repositories.some((repository) => path.resolve(repository.root) === path.resolve(root))) continue;
+        const changes = parseWorkingTreeStatus(await gitOutput([
+          "status", "--porcelain=v1", "--untracked-files=all",
+        ], { cwd: root }));
+        if (changes.length) throw new Error(`release repository is dirty: ${root}`);
+        const revision = await assertCurrentPublicationRevision({ cwd: root });
+        repositories.push({ root, revision });
+      }
+      if (expectedRevision && (repositories.length !== 1 || repositories[0].revision !== expectedRevision)) {
+        throw new Error("release revision does not match expected_revision");
+      }
+      const utilitiesRepository = repositories.find(
+        (repository) => path.resolve(repository.root) === path.resolve(repositoryRoot),
+      );
+      let agentHubPublication = null;
+      if (utilitiesRepository) {
+        const publication = await readPublicationState();
+        if (!publication?.revision || publication.revision !== utilitiesRepository.revision) {
+          throw new Error("Utilities revision is not the currently published Agent Hub revision");
+        }
+        agentHubPublication = {
+          revision: publication.revision,
+          publishedAt: publication.publishedAt ?? null,
+          mode: publication.mode ?? null,
+        };
+      }
+      return { repositories, agentHubPublication };
+    },
+  });
   const preTurnInstructions = new PreTurnInstructionStore({
     guideFile: path.join(agentHubRoot, "AGENT_HUB_GUIDE.md"),
     globalFile: path.join(config.dataDir, "global-pre-turn-instructions.md"),
@@ -109,6 +154,7 @@ export async function createHubInfrastructure({
     workspaceCatalog: workspaceCatalogStore,
     classify: taskClassifier ? (input) => taskClassifier.classify(input) : null,
     autoPlaceConfidence: config.taskBoard.autoPlaceConfidence,
+    recordEvent: (event) => workspaceCatalogStore.recordWorkspaceEvent(event),
   });
   taskBoard.recoverPendingTriage();
   const workLogUsageStore = createWorkLogUsageStore({
@@ -126,6 +172,7 @@ export async function createHubInfrastructure({
     workLog: workLogUsageStore,
     attachmentDirectory,
     secret: hubMcpSecret,
+    releaseCompleter: workspaceReleaseService,
   });
   const hubMcpServer = new HubMcpServer({
     service: hubMcpService,

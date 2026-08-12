@@ -33,6 +33,7 @@ export class DeferredInputPresentationService {
         threadId: started?.threadId ?? item.threadId,
         turnId: started?.turnId ?? null,
         clientUserMessageId: item.clientUserMessageId,
+        deliveredAt: started?.startedAt ?? item.dispatchingAt ?? null,
         attachments: item.persistentFiles ? this.describeAttachments(item.temporaryFiles) : [],
       });
     }

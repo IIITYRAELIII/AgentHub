@@ -84,7 +84,7 @@ const localWebSecret = config.miniApp.enabled
 const {
   trustedDeviceStore,
   codexRolloutContextSanitizer,
-  workLogUsageStore, workspaceCatalogStore, preTurnInstructions, taskBoard, hubMcpService, hubMcpServer,
+  workLogUsageStore, workspaceCatalogStore, workspaceReleaseService, preTurnInstructions, taskBoard, hubMcpService, hubMcpServer,
   miniAppServer,
   publicMiniAppServer,
   usdRubRateStore,
@@ -583,6 +583,7 @@ const {
   taskProgress,
   runCoordinator,
 } = interactionShell;
+hubMcpService.setTaskLauncher((params, context) => interactionShell.taskBoardLauncher.start(params, { source: "mcp", clientId: `mcp:${context.provider}:${context.auditThreadId}` }));
 const executionBootstrap = createExecutionBootstrapPhase({
   config,
   root: AGENT_HUB_ROOT,
@@ -618,6 +619,7 @@ const executionBootstrap = createExecutionBootstrapPhase({
     runtimeStateStore,
     taskReadStateStore,
     workLogUsageStore, rateLimitHistoryStore, taskBoard, hubMcpServer, hubMcpService,
+    preTurnInstructions,
   },
   provider: providerApplication,
   clients: clientRuntime,

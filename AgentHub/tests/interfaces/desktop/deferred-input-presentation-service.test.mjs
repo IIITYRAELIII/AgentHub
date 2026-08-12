@@ -33,9 +33,14 @@ const item = {
 
 test("started deferred input becomes one accepted receipt with preserved attachments", () => {
   const setup = fixture();
-  setup.value.updateDesktopReceipt(item, "started", { id: "run-1", turnId: "turn-1" });
+  setup.value.updateDesktopReceipt(item, "started", {
+    id: "run-1",
+    turnId: "turn-1",
+    startedAt: "2026-08-13T01:31:00.000Z",
+  });
   assert.equal(setup.updates[0].result.deferred, false);
   assert.equal(setup.updates[0].result.runId, "run-1");
+  assert.equal(setup.updates[0].result.deliveredAt, "2026-08-13T01:31:00.000Z");
   assert.deepEqual(setup.updates[0].result.attachments, [{ path: "shot.png" }]);
 });
 

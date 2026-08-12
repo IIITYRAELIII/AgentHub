@@ -46,6 +46,7 @@ export function createDesktopSnapshotFactory({
         id: result.id ?? null,
         runId: result.runId ?? null,
         turnId: result.turnId ?? null,
+        deliveredAt: result.deliveredAt ?? null,
         message: result.message ?? null,
         attachments: Array.isArray(result.attachments)
           ? result.attachments.map((attachment) => ({ ...attachment }))
@@ -139,7 +140,7 @@ export function createDesktopSnapshotFactory({
           clientUserMessageId,
           role: "user",
           text,
-          time: message.time ?? receipt?.createdAt ?? run.startedAt ?? null,
+          time: message.time ?? run.startedAt ?? receipt?.createdAt ?? null,
           attachments: (
             receipt?.result?.attachments
             ?? (clientUserMessageId === String(run.clientUserMessageId ?? "")

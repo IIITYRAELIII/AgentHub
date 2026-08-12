@@ -81,6 +81,7 @@ export class ManagedRunLifecycleService {
           ? { clientUserMessageId: run.clientUserMessageId }
           : {}),
         text: run.promptPreview,
+        time: run.startedAt,
       }];
     }
     d.taskRuns.add(run);

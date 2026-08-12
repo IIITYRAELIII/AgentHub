@@ -3,6 +3,7 @@ import { ClaudeTurnLauncher } from "../providers/claude/claude-turn-launcher.mjs
 import { TaskObservationService } from "../application/task-observation-service.mjs";
 import { SelectedTaskWatchService } from "../application/selected-task-watch-service.mjs";
 import { RunRecoveryCoordinator } from "../application/run-recovery-coordinator.mjs";
+import { resolveHubDeveloperInstructions } from "./hub-developer-instructions-composition.mjs";
 
 export function createRunObservationComposition({
   dataDir,
@@ -38,6 +39,8 @@ export function createRunObservationComposition({
   resolveClaudeInvocation,
   hubMcpServer,
   hubMcpService,
+  workspaceCatalogStore,
+  preTurnInstructions,
   logWarning,
   safelyDeliverRunMessage,
   sendRunMessage,
@@ -104,8 +107,13 @@ export function createRunObservationComposition({
     persistHistory: persistClaudeRunHistory,
     resolveInvocation: resolveClaudeInvocation,
     mcpConfig: () => hubMcpServer.claudeConfig(),
-    developerContext: ({ threadId, streamId }) => hubMcpService.developerContext({
-      provider: "claude", threadId, streamId,
+    developerContext: ({ threadId, streamId }) => resolveHubDeveloperInstructions({
+      provider: "claude",
+      threadId,
+      streamId,
+      workspaceCatalogStore,
+      preTurnInstructions,
+      hubMcpService,
     }),
     runController: claudeRunController,
     logWarning,

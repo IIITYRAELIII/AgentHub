@@ -151,6 +151,39 @@ test("Workspace release registry keeps ownership, readiness and file conflicts",
   assert.deepEqual(store.releaseChanges(workspace.id), []);
 });
 
+test("Workspace events are ordered, cursor-based and idempotent by dedupe key", async (t) => {
+  const store = await fixture(t);
+  const workspace = store.createWorkspace({ name: "Agent HUB" });
+  const stream = store.createStream({ workspaceId: workspace.id, name: "Events" });
+  const first = store.recordWorkspaceEvent({
+    workspaceId: workspace.id,
+    streamId: stream.id,
+    type: "task.updated",
+    subjectId: "task-1",
+    payload: { title: "First" },
+    dedupeKey: "task-1:first",
+  });
+  const replay = store.recordWorkspaceEvent({
+    workspaceId: workspace.id,
+    streamId: stream.id,
+    type: "task.updated",
+    subjectId: "task-1",
+    payload: { title: "Ignored replay" },
+    dedupeKey: "task-1:first",
+  });
+  const second = store.recordWorkspaceEvent({
+    workspaceId: workspace.id,
+    type: "release.completed",
+    payload: { changeIds: [] },
+  });
+  assert.equal(replay.sequence, first.sequence);
+  assert.deepEqual(
+    store.workspaceEvents(workspace.id, { afterSequence: first.sequence, limit: 10 })
+      .map((event) => event.sequence),
+    [second.sequence],
+  );
+});
+
 test("MCP mutation audit is idempotent and scoped to its Workspace", async (t) => {
   const store = await fixture(t);
   const workspace = store.createWorkspace({ name: "Agent HUB" });

@@ -23,6 +23,10 @@ test("ClaudeTurnLauncher owns session setup and detached run invocation", async 
     autoApprove: () => true,
     persistHistory: async () => events.push(["persist"]),
     resolveInvocation: () => ({ command: "claude", prefixArgs: ["--shim"] }),
+    developerContext: async ({ threadId, streamId }) => {
+      events.push(["developer-context", threadId, streamId]);
+      return "Inherited rules";
+    },
     runController: { start: async (_run, options) => events.push(["start", options]) },
     logWarning: (...args) => events.push(["warning", ...args]),
   });
@@ -32,8 +36,10 @@ test("ClaudeTurnLauncher owns session setup and detached run invocation", async 
   assert.match(run.turnId, /^[0-9a-f-]{36}$/u);
   assert.deepEqual(temporaryFiles.get(run.turnId), ["temporary.png"]);
   assert.equal(events[0][0], "reindex");
-  assert.equal(events[1][0], "persist");
-  assert.equal(events[2][1].command, "claude");
-  assert.equal(events[2][1].args.includes("--resume"), true);
-  assert.equal(events[2][1].env.MAX_THINKING_TOKENS, "8000");
+  assert.deepEqual(events[1], ["developer-context", run.threadId, undefined]);
+  assert.equal(events[2][0], "persist");
+  assert.equal(events[3][1].command, "claude");
+  assert.equal(events[3][1].args.includes("--resume"), true);
+  assert.equal(events[3][1].args.includes("Inherited rules"), true);
+  assert.equal(events[3][1].env.MAX_THINKING_TOKENS, "8000");
 });

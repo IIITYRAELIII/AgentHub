@@ -24,6 +24,7 @@ export class TaskBoardService {
     classify = null,
     autoPlaceConfidence = 0.82,
     logger = console,
+    recordEvent = null,
   } = {}) {
     for (const name of [
       "create", "task", "list", "move", "markStarted", "orderedColumnIds", "moveColumn",
@@ -38,6 +39,22 @@ export class TaskBoardService {
       ? Math.max(0, Math.min(1, confidence))
       : 0.82;
     this.logger = logger;
+    this.recordEvent = typeof recordEvent === "function" ? recordEvent : null;
+  }
+
+  #event(type, task, payload = {}) {
+    if (!task?.workspaceId || !this.recordEvent) return;
+    try {
+      this.recordEvent({
+        workspaceId: task.workspaceId,
+        streamId: task.streamId ?? null,
+        type,
+        subjectId: task.id,
+        payload: { taskId: task.id, status: task.status, bucket: task.bucket, ...payload },
+      });
+    } catch (error) {
+      this.logger.error(`Cannot record Workspace event for Task ${task.id}:`, error.message);
+    }
   }
 
   task(id) {
@@ -101,7 +118,9 @@ export class TaskBoardService {
 
   addAttachment({ id, attachment } = {}) {
     requiredMethod(this.store, "addAttachment");
-    return this.store.addAttachment(id, attachment);
+    const task = this.store.addAttachment(id, attachment);
+    this.#event("task.attachment_added", task);
+    return task;
   }
 
   appendSourceMessage(payload = {}) {
@@ -129,11 +148,16 @@ export class TaskBoardService {
     if (normalizedBucket === "workspace" && !this.workspaceCatalog.workspace(workspaceId)) {
       throw new Error("Workspace не найден");
     }
-    return this.store.move(id, { bucket: normalizedBucket, workspaceId, beforeId });
+    const previous = this.task(id);
+    const task = this.store.move(id, { bucket: normalizedBucket, workspaceId, beforeId });
+    this.#event("task.moved", task.workspaceId ? task : { ...task, workspaceId: previous.workspaceId });
+    return task;
   }
 
   update({ id, title, description = "" } = {}) {
-    return this.store.updatePresentation(id, { title, description });
+    const task = this.store.updatePresentation(id, { title, description });
+    this.#event("task.updated", task);
+    return task;
   }
 
   reassignWorkspace(sourceWorkspaceId, targetWorkspaceId) {
@@ -163,7 +187,9 @@ export class TaskBoardService {
   }
 
   complete({ id } = {}) {
-    return this.store.complete(id);
+    const task = this.store.complete(id);
+    this.#event("task.completed", task);
+    return task;
   }
 
   remove({ id } = {}) {
@@ -174,7 +200,9 @@ export class TaskBoardService {
   markStarted({ id, workspaceId, streamId } = {}) {
     const stream = this.workspaceCatalog.stream(streamId);
     if (!stream || stream.workspaceId !== workspaceId) throw new Error("Stream не найден в выбранном Workspace");
-    return this.store.markStarted(id, { workspaceId, streamId });
+    const task = this.store.markStarted(id, { workspaceId, streamId });
+    this.#event("task.started", task);
+    return task;
   }
 
   captureEnabled(chatId) {

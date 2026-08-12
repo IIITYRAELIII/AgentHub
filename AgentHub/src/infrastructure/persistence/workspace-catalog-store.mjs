@@ -14,7 +14,7 @@ import {
   streamDisplayName,
 } from "../../domain/workspace-stream-identity.mjs";
 
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 7;
 export const DEVELOPER_RULES_MAX_BYTES = 32 * 1024;
 const SOURCES = new Set(["created", "discovered", "migration", "rebirth"]);
 const DEVELOPER_RULE_SCOPES = new Set(["workspace", "stream"]);
@@ -116,6 +116,20 @@ function configure(database) {
     ) WITHOUT ROWID;
     CREATE INDEX IF NOT EXISTS hub_mcp_operations_workspace_idx
       ON hub_mcp_operations(workspace_id, created_at_ms DESC);
+    CREATE TABLE IF NOT EXISTS hub_workspace_events (
+      sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+      workspace_id TEXT NOT NULL,
+      stream_id TEXT,
+      event_type TEXT NOT NULL,
+      subject_id TEXT,
+      payload_json TEXT NOT NULL DEFAULT '{}',
+      dedupe_key TEXT UNIQUE,
+      created_at_ms INTEGER NOT NULL,
+      FOREIGN KEY (workspace_id) REFERENCES hub_workspaces(id) ON DELETE CASCADE,
+      FOREIGN KEY (stream_id) REFERENCES hub_streams(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS hub_workspace_events_workspace_sequence_idx
+      ON hub_workspace_events(workspace_id, sequence);
     CREATE TABLE IF NOT EXISTS hub_developer_rule_revisions (
       scope_type TEXT NOT NULL CHECK (scope_type IN ('workspace', 'stream')),
       scope_id TEXT NOT NULL,
@@ -291,6 +305,21 @@ function mcpOperationFromRow(row) {
   };
 }
 
+function workspaceEventFromRow(row) {
+  if (!row) return null;
+  let payload = {};
+  try { payload = JSON.parse(String(row.payload_json ?? "{}")); } catch { payload = {}; }
+  return {
+    sequence: Number(row.sequence) || 0,
+    workspaceId: String(row.workspace_id),
+    streamId: row.stream_id ? String(row.stream_id) : null,
+    type: String(row.event_type),
+    subjectId: row.subject_id ? String(row.subject_id) : null,
+    payload,
+    createdAtMs: Number(row.created_at_ms) || 0,
+  };
+}
+
 export class WorkspaceCatalogStore {
   #databaseFile;
   #database = null;
@@ -453,7 +482,8 @@ export class WorkspaceCatalogStore {
     const files = releaseChangeFiles(changedFiles);
     if (!resolved || !files.length) return null;
     const nowMs = this.#nowMs();
-    this.#database.prepare(`
+    return this.#transaction(() => {
+      this.#database.prepare(`
       INSERT INTO hub_release_changes (
         id, workspace_id, stream_id, provider, provider_thread_id, turn_id,
         project_root, summary, files_json, diff_hash, status, created_at_ms, updated_at_ms
@@ -466,13 +496,23 @@ export class WorkspaceCatalogStore {
         files_json = excluded.files_json,
         diff_hash = excluded.diff_hash,
         updated_at_ms = excluded.updated_at_ms
-    `).run(
-      this.#idFactory(), resolved.workspaceId, resolved.streamId,
-      identity.provider, identity.threadId, normalizedTurnId,
-      String(projectRoot ?? "").trim(), String(summary ?? "").trim().slice(0, 500),
-      JSON.stringify(files), String(diffHash ?? "").trim().slice(0, 128), nowMs, nowMs,
-    );
-    return this.releaseChange({ ...identity, turnId: normalizedTurnId });
+      `).run(
+        this.#idFactory(), resolved.workspaceId, resolved.streamId,
+        identity.provider, identity.threadId, normalizedTurnId,
+        String(projectRoot ?? "").trim(), String(summary ?? "").trim().slice(0, 500),
+        JSON.stringify(files), String(diffHash ?? "").trim().slice(0, 128), nowMs, nowMs,
+      );
+      const change = this.releaseChange({ ...identity, turnId: normalizedTurnId });
+      this.recordWorkspaceEvent({
+        workspaceId: change.workspaceId,
+        streamId: change.streamId,
+        type: "release.change_recorded",
+        subjectId: change.id,
+        dedupeKey: `release.change_recorded:${change.id}`,
+        payload: { changeId: change.id, status: change.status, files: change.files },
+      });
+      return change;
+    });
   }
 
   releaseChange({ provider, threadId, turnId } = {}) {
@@ -499,13 +539,23 @@ export class WorkspaceCatalogStore {
 
   updateReleaseChangeStatus(changeId, status) {
     const id = safeIdentifier(changeId, "release change id");
-    const result = this.#database.prepare(`
-      UPDATE hub_release_changes SET status = ?, updated_at_ms = ? WHERE id = ?
-    `).run(releaseChangeStatus(status), this.#nowMs(), id);
-    if (!Number(result.changes)) throw new Error(`release change not found: ${id}`);
-    return releaseChangeFromRow(this.#database.prepare(
-      "SELECT * FROM hub_release_changes WHERE id = ?",
-    ).get(id));
+    return this.#transaction(() => {
+      const result = this.#database.prepare(`
+        UPDATE hub_release_changes SET status = ?, updated_at_ms = ? WHERE id = ?
+      `).run(releaseChangeStatus(status), this.#nowMs(), id);
+      if (!Number(result.changes)) throw new Error(`release change not found: ${id}`);
+      const change = releaseChangeFromRow(this.#database.prepare(
+        "SELECT * FROM hub_release_changes WHERE id = ?",
+      ).get(id));
+      this.recordWorkspaceEvent({
+        workspaceId: change.workspaceId,
+        streamId: change.streamId,
+        type: "release.status_changed",
+        subjectId: change.id,
+        payload: { changeId: change.id, status: change.status },
+      });
+      return change;
+    });
   }
 
   #releaseConflicts(changes) {
@@ -575,13 +625,58 @@ export class WorkspaceCatalogStore {
     const update = this.#database.prepare(`
       UPDATE hub_release_changes SET status = 'released', updated_at_ms = ? WHERE id = ?
     `);
-    this.#transaction(() => {
+    return this.#transaction(() => {
       for (const change of plan.ready) update.run(nowMs, change.id);
+      const result = {
+        workspaceId: plan.workspaceId,
+        released: plan.ready.map((change) => ({ ...change, status: "released", updatedAtMs: nowMs })),
+      };
+      this.recordWorkspaceEvent({
+        workspaceId: plan.workspaceId,
+        type: "release.completed",
+        payload: { changeIds: result.released.map((change) => change.id) },
+      });
+      return result;
     });
-    return {
-      workspaceId: plan.workspaceId,
-      released: plan.ready.map((change) => ({ ...change, status: "released", updatedAtMs: nowMs })),
-    };
+  }
+
+  recordWorkspaceEvent({
+    workspaceId, streamId = null, type, subjectId = null, payload = {}, dedupeKey = null,
+  } = {}) {
+    const workspace = safeIdentifier(workspaceId, "workspace id");
+    if (!this.workspace(workspace)) throw new Error(`workspace not found: ${workspace}`);
+    const stream = streamId == null ? null : safeIdentifier(streamId, "stream id");
+    if (stream) {
+      const stored = this.stream(stream);
+      if (!stored || stored.workspaceId !== workspace) throw new Error("event Stream is outside the Workspace");
+    }
+    const eventType = safeIdentifier(type, "event type");
+    const subject = subjectId == null ? null : safeIdentifier(subjectId, "event subject id");
+    const key = dedupeKey == null ? null : safeIdentifier(dedupeKey, "event dedupe key");
+    const serialized = JSON.stringify(payload ?? {});
+    if (Buffer.byteLength(serialized, "utf8") > 32 * 1024) throw new Error("event payload is too large");
+    const nowMs = this.#nowMs();
+    const result = this.#database.prepare(`
+      INSERT OR IGNORE INTO hub_workspace_events (
+        workspace_id, stream_id, event_type, subject_id, payload_json, dedupe_key, created_at_ms
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(workspace, stream, eventType, subject, serialized, key, nowMs);
+    const row = Number(result.changes)
+      ? this.#database.prepare("SELECT * FROM hub_workspace_events WHERE sequence = ?").get(result.lastInsertRowid)
+      : this.#database.prepare("SELECT * FROM hub_workspace_events WHERE dedupe_key = ?").get(key);
+    return workspaceEventFromRow(row);
+  }
+
+  workspaceEvents(workspaceId, { afterSequence = 0, limit = 50 } = {}) {
+    const workspace = safeIdentifier(workspaceId, "workspace id");
+    if (!this.workspace(workspace)) throw new Error(`workspace not found: ${workspace}`);
+    const after = Math.max(0, Number(afterSequence) || 0);
+    const boundedLimit = Math.max(1, Math.min(100, Number(limit) || 50));
+    return this.#database.prepare(`
+      SELECT * FROM hub_workspace_events
+      WHERE workspace_id = ? AND sequence > ?
+      ORDER BY sequence ASC LIMIT ?
+    `).all(workspace, after, boundedLimit).map(workspaceEventFromRow);
   }
 
   beginMcpOperation({

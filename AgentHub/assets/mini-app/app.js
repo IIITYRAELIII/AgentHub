@@ -145,7 +145,6 @@ const telegramFullscreenButton = document.querySelector("[data-telegram-fullscre
 const claudeGroupToggle = document.querySelector("[data-claude-group-toggle]");
 const streamStatusFillToggle = document.querySelector("[data-stream-status-fill-toggle]");
 const streamStatusEffectSelect = document.querySelector("[data-stream-status-effect-select]");
-const streamOrderModeSelect = document.querySelector("[data-stream-order-mode-select]");
 const activityPeriodHours = document.querySelector("[data-activity-period-hours]");
 const activityPeriodMinutes = document.querySelector("[data-activity-period-minutes]");
 const streamActivityDirectionRow = document.querySelector("[data-stream-activity-direction-row]");
@@ -707,7 +706,6 @@ function savedStreamOrderMode() {
 function applyStreamOrderMode(value, { persist = false, update = false } = {}) {
   streamOrderMode = window.AgentHubStreamTabs.normalizeStreamOrderMode(value);
   root.dataset.streamOrderMode = streamOrderMode;
-  if (streamOrderModeSelect) streamOrderModeSelect.value = streamOrderMode;
   if (streamActivityDirectionRow) streamActivityDirectionRow.hidden = streamOrderMode !== "activity";
   if (streamActivityDirectionSelect) streamActivityDirectionSelect.disabled = streamOrderMode !== "activity";
   if (streamTabs) streamTabs.dataset.orderMode = streamOrderMode;
@@ -878,9 +876,6 @@ streamStatusFillToggle?.addEventListener("change", () => {
 });
 streamStatusEffectSelect?.addEventListener("change", () => {
   applyStreamStatusEffect(streamStatusEffectSelect.value, { persist: true });
-});
-streamOrderModeSelect?.addEventListener("change", () => {
-  applyStreamOrderMode(streamOrderModeSelect.value, { persist: true, update: true });
 });
 activityPeriodHours?.addEventListener("change", applyActivityRecentPeriodInputs);
 activityPeriodMinutes?.addEventListener("change", applyActivityRecentPeriodInputs);
@@ -2181,6 +2176,57 @@ function renderStreamTabs() {
   reconcileOpenStreams(workspaceId, streams);
   const ordered = orderedWorkspaceStreams(streams);
   const open = new Set(state.openStreamsByWorkspace.get(workspaceId) ?? []);
+  const orderIsManual = streamOrderMode === "manual";
+  const orderToggleTitle = orderIsManual
+    ? "Ручной порядок. Переключить на порядок по последней активности."
+    : "Порядок по последней активности. Переключить на ручной порядок.";
+  const orderToggle = el("button", {
+    type: "button",
+    class: "stream-tab stream-tab-order",
+    "data-action": "stream-order-toggle",
+    "data-order-mode": streamOrderMode,
+    title: orderToggleTitle,
+    "aria-label": orderToggleTitle,
+  }, [el("span", { class: "stream-tab-card" }, [
+    el("svg", {
+      class: "stream-order-icon stream-order-icon-activity",
+      viewBox: "0 0 256 256",
+      "aria-hidden": "true",
+    }, [
+      el("circle", {
+        cx: "128", cy: "128", r: "80", fill: "none", stroke: "currentColor", "stroke-width": "18",
+      }),
+      el("polyline", {
+        points: "128 80 128 128 164 148",
+        fill: "none", stroke: "currentColor", "stroke-linecap": "round",
+        "stroke-linejoin": "round", "stroke-width": "18",
+      }),
+    ]),
+    el("svg", {
+      class: "stream-order-icon stream-order-icon-manual",
+      viewBox: "0 0 256 256",
+      "aria-hidden": "true",
+    }, [
+      el("polyline", {
+        points: "72 88 104 56 136 88",
+        fill: "none", stroke: "currentColor", "stroke-linecap": "round",
+        "stroke-linejoin": "round", "stroke-width": "18",
+      }),
+      el("line", {
+        x1: "104", y1: "56", x2: "104", y2: "200",
+        stroke: "currentColor", "stroke-linecap": "round", "stroke-width": "18",
+      }),
+      el("polyline", {
+        points: "120 168 152 200 184 168",
+        fill: "none", stroke: "currentColor", "stroke-linecap": "round",
+        "stroke-linejoin": "round", "stroke-width": "18",
+      }),
+      el("line", {
+        x1: "152", y1: "56", x2: "152", y2: "200",
+        stroke: "currentColor", "stroke-linecap": "round", "stroke-width": "18",
+      }),
+    ]),
+  ])]);
   const tabs = ordered.map((stream) => {
     const task = representativeStreamTask(stream);
     const streamName = streamDisplayName(stream, streams.length);
@@ -2266,6 +2312,7 @@ function renderStreamTabs() {
   } else {
     tabs.push(createTab);
   }
+  tabs.unshift(orderToggle);
   streamTabs.replaceChildren(...tabs);
   streamTabs.hidden = false;
 }
@@ -6094,6 +6141,12 @@ async function handleAction(action, trigger) {
     }
     case "stream-create":
       emit("stream:new", { workspaceId: trigger.dataset.workspaceId });
+      break;
+    case "stream-order-toggle":
+      applyStreamOrderMode(streamOrderMode === "manual" ? "activity" : "manual", {
+        persist: true,
+        update: true,
+      });
       break;
     case "task-settings":
       toggleDialogSettings();

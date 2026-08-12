@@ -44,6 +44,10 @@ async function fixture(context) {
     releaseChanges: () => [],
     releasePlan: () => ({ ready: [], draft: [], blocked: [], conflicts: [] }),
     updateReleaseChangeStatus: () => null,
+    workspaceEvents: (_workspaceId, { afterSequence }) => [{
+      sequence: afterSequence + 1, workspaceId: "workspace-1", streamId: "stream-1",
+      type: "run.completed", subjectId: "turn-1", payload: {}, createdAtMs: 1,
+    }],
     developerRulesForStream: () => ({
       workspace: { revision: 1, content: "Workspace rule" },
       stream: { revision: 2, content: "Stream rule" },
@@ -97,6 +101,13 @@ async function fixture(context) {
   };
   const service = new HubMcpService({
     workspaceCatalog, taskBoard, workLog, attachmentDirectory, secret: "secret",
+    releaseCompleter: {
+      completeRelease: async ({ workspaceId, expectedRevision }) => ({ workspaceId, expectedRevision, released: [] }),
+    },
+  });
+  service.setTaskLauncher(async ({ id, workspaceId, streamId }) => {
+    const task = taskBoard.markStarted({ id, workspaceId, streamId });
+    return { task, target: { streamId, provider: "codex", threadId: "thread-1" } };
   });
   service.setActiveRuns(() => [{
     id: "run-1", provider: "codex", threadId: "thread-1", turnId: "turn-live",
@@ -134,10 +145,23 @@ test("HubMcpService supports the first Stream turn before provider Thread assign
 test("HubMcpService starts the current Workspace task in the current Stream", async (context) => {
   const { service, token } = await fixture(context);
   const task = await service.call("hub_task_start", {
-    context_token: token, request_id: "start-task", task_id: "task-current",
+    context_token: token, request_id: "start-task", task_id: "task-current", confirm_launch: true,
   });
-  assert.equal(task.status, "started");
-  assert.equal(task.streamId, "stream-1");
+  assert.equal(task.task.status, "started");
+  assert.equal(task.target.streamId, "stream-1");
+});
+
+test("HubMcpService exposes cursor events and publication-gated release completion", async (context) => {
+  const { service, token } = await fixture(context);
+  const events = await service.call("hub_events_list", { context_token: token, after_sequence: 4 });
+  assert.equal(events.events[0].sequence, 5);
+  assert.equal(events.nextSequence, 5);
+  const release = await service.call("hub_release_complete", {
+    context_token: token, request_id: "release-1", expected_revision: "abc",
+    deployment_verified: true, verification_summary: "Published and smoke-tested",
+  });
+  assert.equal(release.workspaceId, "workspace-1");
+  assert.equal(release.expectedRevision, "abc");
 });
 
 test("HubMcpService rejects forged context capabilities", async (context) => {

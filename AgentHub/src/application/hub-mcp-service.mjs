@@ -14,7 +14,7 @@ const RELEASE_STATUSES = new Set(["draft", "ready", "blocked", "discarded"]);
 const MUTATING_TOOLS = new Set([
   "hub_task_create", "hub_task_update", "hub_task_move", "hub_task_start", "hub_task_complete",
   "hub_task_attachment_add", "hub_workspace_rules_update", "hub_stream_rules_update",
-  "hub_release_change_status",
+  "hub_release_change_status", "hub_release_complete",
 ]);
 const TEXT_ATTACHMENT_TYPES = new Set([
   "text/plain", "text/markdown", "text/csv", "application/json", "application/xml",
@@ -109,14 +109,15 @@ function tool(name, description, properties = {}, required = []) {
 
 export class HubMcpService {
   #activeRuns = () => [];
+  #taskLauncher = async () => { throw new Error("Agent Hub task launcher is not ready"); };
 
-  constructor({ workspaceCatalog, taskBoard, workLog, attachmentDirectory, secret } = {}) {
+  constructor({ workspaceCatalog, taskBoard, workLog, attachmentDirectory, secret, releaseCompleter } = {}) {
     for (const name of [
       "resolveThread", "workspace", "hierarchy", "releaseRegistry", "releasePlan",
       "updateReleaseChangeStatus", "releaseChanges", "developerRulesForStream",
       "updateWorkspaceDeveloperRules", "updateStreamDeveloperRules",
       "beginMcpOperation", "completeMcpOperation", "failMcpOperation", "mcpOperations",
-      "stream", "activeThread",
+      "stream", "activeThread", "workspaceEvents",
     ]) requiredMethod(workspaceCatalog, name);
     for (const name of [
       "snapshot", "task", "create", "move", "update", "markStarted", "complete", "addAttachment",
@@ -124,16 +125,23 @@ export class HubMcpService {
       requiredMethod(taskBoard, name);
     }
     requiredMethod(workLog, "threadTurns");
+    requiredMethod(releaseCompleter, "completeRelease");
     this.workspaceCatalog = workspaceCatalog;
     this.taskBoard = taskBoard;
     this.workLog = workLog;
     this.attachmentDirectory = path.resolve(requiredText(attachmentDirectory, "attachment directory", 2_000));
     this.secret = requiredText(secret, "MCP secret", 512);
+    this.releaseCompleter = releaseCompleter;
   }
 
   setActiveRuns(value) {
     if (typeof value !== "function") throw new TypeError("active runs provider is required");
     this.#activeRuns = value;
+  }
+
+  setTaskLauncher(value) {
+    if (typeof value !== "function") throw new TypeError("task launcher is required");
+    this.#taskLauncher = value;
   }
 
   tools() {
@@ -175,9 +183,13 @@ export class HubMcpService {
         destination: { type: "string", enum: ["workspace", "backlog", "notes"] },
         before_task_id: { type: "string" },
       }, ["task_id", "destination"]),
-      tool("hub_task_start", "Mark a Dashboard task as started in the current Stream.", {
+      tool("hub_task_start", "Send a Dashboard task into an existing or new Stream through the normal Hub queue, then mark it started.", {
         task_id: { type: "string" },
-      }, ["task_id"]),
+        stream_id: { type: "string", description: "Existing Stream in this Workspace. Defaults to the current Stream." },
+        new_stream_name: { type: "string", description: "Create a new Stream instead of using stream_id." },
+        provider: { type: "string", enum: ["codex", "claude"] },
+        confirm_launch: { type: "boolean", description: "Must be true because this starts or queues another agent turn." },
+      }, ["task_id", "confirm_launch"]),
       tool("hub_task_complete", "Mark a Dashboard task from the current Workspace as completed.", {
         task_id: { type: "string" },
       }, ["task_id"]),
@@ -195,6 +207,15 @@ export class HubMcpService {
         change_id: { type: "string" },
         status: { type: "string", enum: [...RELEASE_STATUSES] },
       }, ["change_id", "status"]),
+      tool("hub_release_complete", "Complete a release only after clean main revisions and explicit deployment verification.", {
+        expected_revision: { type: "string" },
+        deployment_verified: { type: "boolean" },
+        verification_summary: { type: "string" },
+      }, ["deployment_verified", "verification_summary"]),
+      tool("hub_events_list", "Read bounded persistent Workspace events after a cursor; this never holds a long poll.", {
+        after_sequence: { type: "integer", minimum: 0, default: 0 },
+        limit: { type: "integer", minimum: 1, maximum: 100, default: 50 },
+      }),
       tool("hub_mcp_operations_list", "List recent audited MCP mutations for the current Workspace.", {
         limit: { type: "integer", minimum: 1, maximum: 100, default: 50 },
       }),
@@ -274,11 +295,7 @@ export class HubMcpService {
       case "hub_task_move":
         return this.#moveTask(context, args);
       case "hub_task_start":
-        return compactTask(this.taskBoard.markStarted({
-          id: this.#task(context, args.task_id).id,
-          workspaceId: context.workspaceId,
-          streamId: context.streamId,
-        }));
+        return this.#startTask(context, args);
       case "hub_task_complete":
         return compactTask(this.taskBoard.complete({ id: this.#task(context, args.task_id).id }));
       case "hub_task_attachment_read":
@@ -289,6 +306,15 @@ export class HubMcpService {
         return this.workspaceCatalog.releasePlan(context.workspaceId);
       case "hub_release_change_status":
         return this.#setReleaseStatus(context, args);
+      case "hub_release_complete":
+        return this.releaseCompleter.completeRelease({
+          workspaceId: context.workspaceId,
+          expectedRevision: optionalText(args.expected_revision, 128),
+          deploymentVerified: args.deployment_verified === true,
+          verificationSummary: optionalText(args.verification_summary, 2_000) ?? "",
+        });
+      case "hub_events_list":
+        return this.#events(context, args);
       case "hub_mcp_operations_list":
         return {
           workspaceId: context.workspaceId,
@@ -465,6 +491,45 @@ export class HubMcpService {
       throw new Error("release change is outside the current Workspace");
     }
     return this.workspaceCatalog.updateReleaseChangeStatus(normalizedChangeId, normalizedStatus);
+  }
+
+  async #startTask(context, {
+    task_id: taskId, stream_id: streamId = null, new_stream_name: newStreamName = null,
+    provider = null, confirm_launch: confirmLaunch = false,
+  } = {}) {
+    if (confirmLaunch !== true) throw new Error("confirm_launch must be true");
+    const task = this.#task(context, taskId);
+    const requestedStreamId = String(streamId ?? "").trim();
+    const requestedStreamName = String(newStreamName ?? "").trim();
+    if (requestedStreamId && requestedStreamName) {
+      throw new Error("stream_id and new_stream_name are mutually exclusive");
+    }
+    const result = await this.#taskLauncher({
+      id: task.id,
+      workspaceId: context.workspaceId,
+      streamId: requestedStreamName ? null : (requestedStreamId || context.streamId),
+      streamName: requestedStreamName || null,
+      provider: String(provider ?? "").trim() || context.provider,
+      followUpMode: "queue",
+    }, context);
+    return {
+      task: compactTask(result.task),
+      target: {
+        streamId: result.target.streamId,
+        provider: result.target.provider,
+        threadId: result.target.threadId ?? null,
+      },
+      delivery: result.delivery ?? null,
+    };
+  }
+
+  #events(context, { after_sequence: afterSequence = 0, limit = 50 } = {}) {
+    const events = this.workspaceCatalog.workspaceEvents(context.workspaceId, { afterSequence, limit });
+    return {
+      workspaceId: context.workspaceId,
+      events,
+      nextSequence: events.at(-1)?.sequence ?? Math.max(0, Number(afterSequence) || 0),
+    };
   }
 
   #activeRunSummaries(workspaceId) {

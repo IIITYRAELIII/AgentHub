@@ -1,0 +1,18 @@
+{
+  "id": "jedi-archives",
+  "name": "Jedi Archives",
+  "color": "#f3efe7",
+  "order": 180,
+  "styles": "theme.css",
+  "assets": {
+    "panel-frame": "jedi-archives-panel-frame.webp"
+  },
+  "backgrounds": [
+    { "id": "jedi-archives", "name": "Высший архив", "asset": "jedi-archives-high-council.webp", "preload": true },
+    { "id": "jedi-archives-hall", "name": "Светлый зал", "asset": "jedi-archives-hall.webp" },
+    { "id": "jedi-archives-holocron", "name": "Холокронная читальня", "asset": "jedi-archives-holocron.webp" },
+    { "id": "jedi-archives-temple", "name": "Древний храм", "asset": "jedi-archives-temple.webp" },
+    { "id": "jedi-archives-observatory", "name": "Небесная обсерватория", "asset": "jedi-archives-observatory.webp" },
+    { "id": "jedi-archives-conservatory", "name": "Атриум Живой Силы", "asset": "jedi-archives-conservatory.webp" }
+  ]
+}

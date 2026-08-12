@@ -264,9 +264,7 @@ html[data-theme="kashyyyk"] .settings-panel {
 }
 
 html[data-theme="kashyyyk"] .task-rail::after,
-html[data-theme="kashyyyk"] .activity-rail::after,
-html[data-theme="kashyyyk"] .stream-tabs::after,
-html[data-theme="kashyyyk"] .composer::after {
+html[data-theme="kashyyyk"] .activity-rail::after {
   background: var(--kashyyyk-panel-moss) top center / 100% auto no-repeat;
   content: "";
   height: clamp(2.2rem, 4.5vw, 4.75rem);
@@ -277,12 +275,6 @@ html[data-theme="kashyyyk"] .composer::after {
   right: 0;
   top: 0;
   z-index: 3;
-}
-
-html[data-theme="kashyyyk"] .stream-tabs::after,
-html[data-theme="kashyyyk"] .composer::after {
-  height: 1.65rem;
-  opacity: 0.3;
 }
 
 html[data-theme="kashyyyk"] .task-workspace-item,
@@ -427,9 +419,7 @@ html[data-theme="kashyyyk"] *::-webkit-scrollbar-thumb {
     background-color: rgb(4 14 12 / 86%);
   }
   html[data-theme="kashyyyk"] .task-rail::after,
-  html[data-theme="kashyyyk"] .activity-rail::after,
-  html[data-theme="kashyyyk"] .stream-tabs::after,
-  html[data-theme="kashyyyk"] .composer::after {
+  html[data-theme="kashyyyk"] .activity-rail::after {
     opacity: 0.24;
   }
 }

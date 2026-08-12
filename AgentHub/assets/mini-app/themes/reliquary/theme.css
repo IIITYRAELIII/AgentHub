@@ -24,7 +24,7 @@ html[data-theme="reliquary"] {
   --reliquary-basalt: var(--reliquary-basalt-texture-asset, url("./basalt-texture.webp"));
   --reliquary-iron: var(--reliquary-iron-texture-asset, url("./forged-iron-texture.webp"));
   --reliquary-panel-frame: var(--reliquary-panel-frame-asset, url("./waypoint-panel-frame.webp"));
-  --reliquary-panel-frame-2k: var(--reliquary-panel-frame-2k-asset, url("./waypoint-panel-frame-2k.webp"));
+  --reliquary-panel-frame-2k: var(--reliquary-panel-frame-2k-asset, url("./waypoint-panel-frame-2k-v2.webp"));
   --reliquary-card-frame: var(--reliquary-card-frame-asset, url("./waypoint-card-frame.webp"));
   --reliquary-message-flourish: var(--reliquary-message-flourish-asset, url("./message-flourish.webp"));
   --reliquary-stream-divider: var(--reliquary-stream-divider-asset, url("./stream-divider.webp"));
@@ -114,7 +114,7 @@ html[data-theme="reliquary"] {
   --shell-workspace-padding-bottom: 0.28rem;
   --shell-workspace-padding-top: 0.28rem;
   --shell-panel-border: 14px solid transparent;
-  --shell-panel-border-image: var(--reliquary-panel-frame-2k) 142 / 14px stretch;
+  --shell-panel-border-image: var(--reliquary-panel-frame-2k) 36 / 14px stretch;
   --shell-panel-border-width: 14px;
   --shell-panel-border-image-width: 14px;
   --shell-task-panel-border-width: 14px;
@@ -125,7 +125,7 @@ html[data-theme="reliquary"] {
   --shell-activity-panel-border-image-width: 14px;
   --shell-panel-radius: 2px;
   --shell-chat-border: 14px solid transparent;
-  --shell-chat-border-image: var(--reliquary-panel-frame-2k) 142 / 14px stretch;
+  --shell-chat-border-image: var(--reliquary-panel-frame-2k) 36 / 14px stretch;
   --shell-chat-gap: 0.28rem;
   --shell-chat-radius: 2px;
   --shell-stream-tabs-background: var(--reliquary-iron-surface);

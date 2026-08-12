@@ -102,7 +102,7 @@ test("Diablo exposes every scene and stable WebView asset token", () => {
       "basalt-texture": "basalt-texture.webp",
       "iron-texture": "forged-iron-texture.webp",
       "panel-frame": "waypoint-panel-frame.webp",
-      "panel-frame-2k": "waypoint-panel-frame-2k.webp",
+      "panel-frame-2k": "waypoint-panel-frame-2k-v2.webp",
       "card-frame": "waypoint-card-frame.webp",
       "message-flourish": "message-flourish.webp",
       "stream-divider": "stream-divider.webp",

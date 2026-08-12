@@ -45,6 +45,7 @@ test("managed run lifecycle creates and persists one owned run", async () => {
   assert.deepEqual(run.userMessages, [{
     role: "user",
     text: "hello",
+    time: run.startedAt,
   }]);
   assert.equal(run.streamId, "stream-1");
   assert.equal(run.model, "GPT");

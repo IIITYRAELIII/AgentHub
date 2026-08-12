@@ -10,6 +10,7 @@ import { commandClientContext } from "../application/application-command-service
 import { createDesktopRunInputComposition } from "./desktop-run-input-composition.mjs";
 import { createDesktopRouterComposition } from "./desktop-router-composition.mjs";
 import { DesktopTaskBoardController } from "../interfaces/desktop/desktop-task-board-controller.mjs";
+import { TaskBoardLaunchService } from "../application/task-board-launch-service.mjs";
 
 export function createDesktopRunRouterWiring({
   config,
@@ -139,11 +140,19 @@ export function createDesktopRunRouterWiring({
     );
   }
 
-  const taskBoardController = new DesktopTaskBoardController({
+  const taskBoardLauncher = new TaskBoardLaunchService({
     taskBoard: services.taskBoard,
     workspaceCatalog: services.workspaceCatalog,
     dispatchCommand: desktop.dispatchApplicationCommand,
     sendMessage: runInputs.desktopMessageController.sendMessage,
+    recordEvent: typeof services.workspaceCatalog.recordWorkspaceEvent === "function"
+      ? (event) => services.workspaceCatalog.recordWorkspaceEvent(event)
+      : null,
+  });
+  const taskBoardController = new DesktopTaskBoardController({
+    taskBoard: services.taskBoard,
+    workspaceCatalog: services.workspaceCatalog,
+    taskLauncher: taskBoardLauncher,
     snapshot: desktop.snapshot,
   });
 
@@ -198,5 +207,6 @@ export function createDesktopRunRouterWiring({
     telegramMessageCommandContext,
     telegramCallbackCommandContext,
     dispatchTelegramSetting,
+    taskBoardLauncher,
   };
 }

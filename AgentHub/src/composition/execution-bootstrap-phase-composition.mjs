@@ -76,6 +76,7 @@ export function createExecutionBootstrapPhase({
       claudeTaskSnapshots: provider.claudeTaskSnapshots,
       codexTaskSnapshots: provider.codexTaskSnapshots,
       managedRunHistory: provider.managedRunHistory,
+      preTurnInstructions: infrastructure.preTurnInstructions,
       markProgressHeartbeat,
       approvalController: clients.approvalController,
       isSelectedRun: api.isSelectedRun,

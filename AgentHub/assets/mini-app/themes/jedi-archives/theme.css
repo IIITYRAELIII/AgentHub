@@ -1,0 +1,383 @@
+html[data-theme="jedi-archives"] {
+  color-scheme: light;
+
+  --font-body: "Segoe UI", Inter, Arial, sans-serif;
+  --font-display: Georgia, "Times New Roman", serif;
+  --font-title: var(--font-display);
+  --font-numeric: "Cascadia Mono", "Segoe UI Mono", monospace;
+  --display-weight: 650;
+  --display-spacing: 0.035em;
+  --title-weight: 650;
+  --label-spacing: 0.11em;
+
+  --radius-lg: 5px;
+  --radius-md: 4px;
+  --radius-sm: 3px;
+  --radius-chip: 4px;
+  --rail-width: 1px;
+
+  --bg: #e9e5dd;
+  --surface-1: rgb(250 248 243 / 94%);
+  --surface-2: rgb(247 244 238 / 91%);
+  --surface-3: rgb(255 254 251 / 96%);
+  --sunken: rgb(80 91 108 / 7%);
+  --line: rgb(112 104 91 / 25%);
+  --line-strong: rgb(172 139 78 / 48%);
+
+  --card-bg: linear-gradient(180deg, rgb(255 255 253 / 95%), rgb(240 237 231 / 92%));
+  --card-bg-open: linear-gradient(180deg, #fff, #f4f1ea);
+  --card-texture: none;
+  --card-border: rgb(132 122 105 / 28%);
+  --card-border-open: rgb(172 139 78 / 56%);
+  --card-shadow: inset 0 1px 0 #fff, 0 12px 28px -24px rgb(47 53 66 / 38%);
+  --plate-bg: linear-gradient(180deg, rgb(255 255 253 / 94%), rgb(241 238 231 / 91%));
+  --plate-texture: none;
+  --plate-shadow: inset 0 1px 0 #fff;
+  --turn-shadow: 0 14px 34px -26px rgb(45 54 70 / 34%);
+
+  --text: #2d3440;
+  --text-soft: #454b55;
+  --text-muted: #686d74;
+  --text-faint: #8b8d90;
+  --accent: #5c91be;
+  --accent-soft: rgb(93 153 202 / 13%);
+  --accent-line: rgb(82 145 196 / 48%);
+  --accent-glow: 0 0 0 3px rgb(87 151 202 / 12%);
+  --selection: rgb(96 158 207 / 24%);
+  --brand-gradient: linear-gradient(145deg, rgb(251 248 240 / 94%), rgb(223 232 240 / 72%));
+  --brand-shadow: 0 10px 24px -20px rgb(58 79 105 / 44%);
+
+  --provider-none: #73777d;
+  --provider-codex: #4d86b3;
+  --provider-claude: #aa8050;
+  --comparison-local: #4b7091;
+  --comparison-deviation: #a0703e;
+  --comparison-cost: #83718d;
+  --ok: #5f8c78;
+  --pending: #b18a4b;
+  --dot-input: #5b9bd0;
+  --dot-cache: #7d9b91;
+  --dot-output: #b59153;
+  --dot-think: #8d7aa5;
+
+  --space-glow-a: rgb(255 255 255 / 34%);
+  --space-glow-b: rgb(171 205 232 / 18%);
+  --space-base: #ece8e0;
+  --space-star: transparent;
+  --star-opacity: 0;
+
+  --jedi-archives-image: url("./jedi-archives-high-council.webp");
+  --jedi-archives-frame: var(--jedi-archives-panel-frame-asset, url("./jedi-archives-panel-frame.webp"));
+  --jedi-archives-panel:
+    linear-gradient(180deg, rgb(255 255 253 / 95%), rgb(241 238 231 / 93%));
+  --jedi-archives-panel-soft:
+    linear-gradient(180deg, rgb(255 255 253 / 88%), rgb(240 238 232 / 82%));
+  --jedi-archives-control:
+    linear-gradient(180deg, rgb(255 255 253 / 96%), rgb(237 234 228 / 92%));
+  --jedi-archives-shadow:
+    inset 0 1px 0 #fff,
+    inset 0 -1px 0 rgb(121 112 96 / 8%),
+    0 16px 36px -30px rgb(42 52 68 / 44%);
+
+  --shell-header-background: rgb(250 248 244 / 94%);
+  --shell-header-border: 0;
+  --shell-header-frame-border: 0;
+  --shell-header-frame-content: "";
+  --shell-header-gap: 0.55rem;
+  --shell-header-height: 4rem;
+  --shell-header-padding-left: 0.55rem;
+  --shell-header-padding-right: 0.55rem;
+  --shell-header-rule: linear-gradient(90deg, transparent, #b99b64 18% 82%, transparent);
+  --shell-header-rule-opacity: 0.42;
+  --shell-header-shadow: 0 12px 28px -28px rgb(47 53 66 / 44%);
+  --shell-control-background: var(--jedi-archives-control);
+  --shell-control-border: 1px solid rgb(150 135 108 / 32%);
+  --shell-control-radius: 4px;
+  --shell-control-shadow: inset 0 1px 0 #fff;
+  --shell-view-switch-background: rgb(255 255 253 / 48%);
+  --shell-view-switch-border: 1px solid rgb(146 132 106 / 24%);
+  --shell-view-switch-radius: 5px;
+  --shell-view-switch-shadow: inset 0 1px 0 #fff;
+  --shell-tab-border: 1px solid transparent;
+  --shell-tab-radius: 4px;
+  --shell-tab-active-background: rgb(255 255 253 / 92%);
+  --shell-tab-active-border: 1px solid rgb(180 149 91 / 42%);
+  --shell-tab-active-shadow: inset 0 -2px 0 var(--accent), 0 10px 22px -20px rgb(58 88 118 / 54%);
+
+  --shell-workspace-gap: 0.32rem;
+  --shell-workspace-padding-bottom: 0.32rem;
+  --shell-workspace-padding-top: 0.32rem;
+  --shell-panel-border: 9px solid transparent;
+  --shell-panel-border-image: var(--jedi-archives-frame) 50 / 9px stretch;
+  --shell-panel-border-width: 9px;
+  --shell-panel-border-image-width: 9px;
+  --shell-panel-radius: 3px;
+  --shell-chat-border: 9px solid transparent;
+  --shell-chat-border-image: var(--jedi-archives-frame) 50 / 9px stretch;
+  --shell-chat-panel-border-width: 9px;
+  --shell-chat-panel-border-image-width: 9px;
+  --shell-chat-gap: 0.32rem;
+  --shell-chat-radius: 3px;
+
+  --shell-stream-tabs-background: var(--jedi-archives-panel);
+  --shell-stream-tabs-border: 7px solid transparent;
+  --shell-stream-tabs-border-bottom: 7px solid transparent;
+  --shell-stream-tabs-border-image: var(--jedi-archives-frame) 50 / 7px stretch;
+  --shell-stream-tabs-padding: 0.12rem 0.18rem;
+  --shell-stream-tabs-radius: 3px;
+  --shell-stream-tab-background: transparent;
+  --shell-stream-tab-border: 1px solid transparent;
+  --shell-stream-tab-hover-background: rgb(255 255 253 / 74%);
+  --shell-stream-tab-active-background: rgb(243 247 250 / 92%);
+  --shell-stream-tab-radius: 4px;
+  --shell-stream-card-background: var(--jedi-archives-control);
+  --shell-stream-card-border: 6px solid transparent;
+  --shell-stream-card-border-image: var(--jedi-archives-frame) 50 / 6px stretch;
+  --shell-stream-card-radius: 3px;
+  --shell-stream-card-shadow: var(--jedi-archives-shadow);
+}
+
+html[data-theme="jedi-archives"] body::after {
+  background-color: #e9e5dd;
+  background-image:
+    linear-gradient(180deg, rgb(255 255 255 / 8%), transparent 25% 76%, rgb(210 205 195 / 11%)),
+    radial-gradient(110% 96% at 50% 48%, transparent 58%, rgb(104 109 118 / 10%) 100%),
+    var(--jedi-archives-image);
+  background-position: center, center, 50% 50%;
+  background-repeat: no-repeat;
+  background-size: cover;
+  inset: 0;
+  mask-image: none;
+  opacity: 1;
+}
+
+html[data-theme="jedi-archives"] body::before {
+  background-image:
+    radial-gradient(34% 26% at 24% 16%, rgb(255 255 255 / 48%), transparent 78%),
+    radial-gradient(38% 28% at 76% 42%, rgb(171 209 237 / 14%), transparent 78%);
+  background-position: center;
+  background-size: cover;
+  mask-image: none;
+  mix-blend-mode: soft-light;
+  opacity: 0.46;
+}
+
+html[data-background-override="true"][data-background="jedi-archives"] {
+  --hub-background-color: #e9e5dd;
+  --hub-background-image:
+    linear-gradient(180deg, rgb(255 255 255 / 8%), transparent 25% 76%, rgb(210 205 195 / 11%)),
+    radial-gradient(110% 96% at 50% 48%, transparent 58%, rgb(104 109 118 / 10%) 100%),
+    var(--jedi-archives-image, url("./jedi-archives-high-council.webp"));
+  --hub-background-position: center, center, 50% 50%;
+}
+
+html[data-background-override="true"][data-background="jedi-archives-hall"] {
+  --hub-background-color: #e9e5dd;
+  --hub-background-image:
+    linear-gradient(180deg, rgb(255 255 255 / 7%), transparent 28% 76%, rgb(210 205 195 / 10%)),
+    radial-gradient(110% 96% at 50% 48%, transparent 60%, rgb(104 109 118 / 9%) 100%),
+    var(--jedi-archives-hall-image, url("./jedi-archives-hall.webp"));
+  --hub-background-position: center, center, 50% 50%;
+}
+
+html[data-background-override="true"][data-background="jedi-archives-holocron"] {
+  --hub-background-color: #e8e4dc;
+  --hub-background-image:
+    linear-gradient(180deg, rgb(255 255 255 / 6%), transparent 28% 78%, rgb(203 199 190 / 11%)),
+    radial-gradient(110% 96% at 50% 48%, transparent 60%, rgb(104 109 118 / 9%) 100%),
+    var(--jedi-archives-holocron-image, url("./jedi-archives-holocron.webp"));
+  --hub-background-position: center, center, 50% 50%;
+}
+
+html[data-background-override="true"][data-background="jedi-archives-temple"] {
+  --hub-background-color: #dfd7ca;
+  --hub-background-image:
+    linear-gradient(180deg, rgb(255 252 244 / 5%), transparent 28% 76%, rgb(176 153 119 / 10%)),
+    radial-gradient(110% 96% at 50% 48%, transparent 59%, rgb(102 85 62 / 10%) 100%),
+    var(--jedi-archives-temple-image, url("./jedi-archives-temple.webp"));
+  --hub-background-position: center, center, 50% 50%;
+}
+
+html[data-background-override="true"][data-background="jedi-archives-observatory"] {
+  --hub-background-color: #e9edf0;
+  --hub-background-image:
+    linear-gradient(180deg, rgb(255 255 255 / 5%), transparent 28% 78%, rgb(188 199 207 / 10%)),
+    radial-gradient(110% 96% at 50% 48%, transparent 62%, rgb(93 109 122 / 9%) 100%),
+    var(--jedi-archives-observatory-image, url("./jedi-archives-observatory.webp"));
+  --hub-background-position: center, center, 50% 50%;
+}
+
+html[data-background-override="true"][data-background="jedi-archives-conservatory"] {
+  --hub-background-color: #e5e0d6;
+  --hub-background-image:
+    linear-gradient(180deg, rgb(255 255 255 / 5%), transparent 28% 78%, rgb(175 168 151 / 10%)),
+    radial-gradient(110% 96% at 50% 48%, transparent 60%, rgb(83 94 79 / 9%) 100%),
+    var(--jedi-archives-conservatory-image, url("./jedi-archives-conservatory.webp"));
+  --hub-background-position: center, center, 50% 50%;
+}
+
+html[data-theme="jedi-archives"] .app-header,
+html[data-theme="jedi-archives"] .task-rail,
+html[data-theme="jedi-archives"] .activity-rail,
+html[data-theme="jedi-archives"] .stream-tabs,
+html[data-theme="jedi-archives"] .composer,
+html[data-theme="jedi-archives"] .settings-panel,
+html[data-theme="jedi-archives"] .dialog-settings,
+html[data-theme="jedi-archives"] .text-dialog,
+html[data-theme="jedi-archives"] .workspace-card-modal,
+html[data-theme="jedi-archives"] .msg {
+  backdrop-filter: blur(13px) saturate(108%);
+  -webkit-backdrop-filter: blur(13px) saturate(108%);
+}
+
+html[data-theme="jedi-archives"] .app-header-inner {
+  background: rgb(251 249 245 / 95%);
+  border-bottom: 1px solid rgb(172 139 78 / 32%);
+  box-shadow: var(--shell-header-shadow);
+}
+
+html[data-theme="jedi-archives"] .task-rail,
+html[data-theme="jedi-archives"] .activity-rail,
+html[data-theme="jedi-archives"] .stream-tabs,
+html[data-theme="jedi-archives"] .composer,
+html[data-theme="jedi-archives"] .dialog-settings,
+html[data-theme="jedi-archives"] .settings-panel {
+  background: var(--jedi-archives-panel);
+  box-shadow: var(--jedi-archives-shadow);
+}
+
+html[data-theme="jedi-archives"] .chat,
+html[data-theme="jedi-archives"] .stream-chat-columns,
+html[data-theme="jedi-archives"] .stream-chat-columns > .chat-pane,
+html[data-theme="jedi-archives"] .stream-chat-preview {
+  background: transparent;
+}
+
+html[data-theme="jedi-archives"] .task-workspace-item,
+html[data-theme="jedi-archives"] .activity-stream-item {
+  background: rgb(255 255 253 / 48%);
+  border-color: transparent;
+  border-radius: 3px;
+  box-shadow: inset 0 -1px 0 rgb(134 124 107 / 16%);
+}
+
+html[data-theme="jedi-archives"] .task-workspace-item:hover,
+html[data-theme="jedi-archives"] .task-workspace-item:focus-visible,
+html[data-theme="jedi-archives"] .activity-stream-item:hover,
+html[data-theme="jedi-archives"] .activity-stream-item:focus-visible {
+  background: rgb(255 255 253 / 88%);
+  border-color: rgb(165 139 90 / 30%);
+}
+
+html[data-theme="jedi-archives"] .task-workspace-item[data-selected],
+html[data-theme="jedi-archives"] .activity-stream-item[data-current] {
+  background: linear-gradient(90deg, rgb(93 153 202 / 16%), rgb(255 255 253 / 78%));
+  border-color: rgb(84 146 196 / 42%);
+  box-shadow: inset 2px 0 0 var(--accent), inset 0 1px 0 #fff;
+}
+
+html[data-theme="jedi-archives"] .stream-tab[aria-pressed="true"] .stream-tab-card {
+  box-shadow: inset 0 0 0 1px rgb(81 144 195 / 46%), inset 0 -2px 0 var(--accent), var(--shell-stream-card-shadow);
+}
+
+html[data-theme="jedi-archives"] .msg {
+  background: rgb(255 255 253 / 88%);
+  border-color: rgb(134 125 109 / 27%);
+  border-radius: 4px;
+  box-shadow: inset 0 1px 0 #fff, var(--turn-shadow);
+}
+
+html[data-theme="jedi-archives"] .msg-user {
+  background-color: rgb(246 250 253 / 91%);
+  background-image: linear-gradient(rgb(91 153 202 / 7%), rgb(91 153 202 / 7%));
+  border-color: rgb(81 144 195 / 42%);
+}
+
+html[data-theme="jedi-archives"] .msg-system,
+html[data-theme="jedi-archives"] .queue-item {
+  background: rgb(250 248 243 / 85%);
+  border-color: rgb(134 125 109 / 24%);
+}
+
+html[data-theme="jedi-archives"] .composer {
+  border: 7px solid transparent;
+  border-image: var(--jedi-archives-frame) 50 / 7px stretch;
+  border-radius: 3px;
+  margin: 0.35rem;
+  padding: 0.35rem;
+}
+
+html[data-theme="jedi-archives"] .composer-input,
+html[data-theme="jedi-archives"] .chip-button,
+html[data-theme="jedi-archives"] .option-chip,
+html[data-theme="jedi-archives"] .view-settings {
+  background: var(--jedi-archives-control);
+  border-color: rgb(145 133 111 / 32%);
+  border-radius: 3px;
+  box-shadow: inset 0 1px 0 #fff;
+}
+
+html[data-theme="jedi-archives"] .composer-send:not(:disabled) {
+  background: linear-gradient(180deg, rgb(224 236 245 / 96%), rgb(185 211 231 / 92%));
+  border-color: rgb(79 139 187 / 44%);
+  color: #30485d;
+}
+
+html[data-theme="jedi-archives"] .task-rail-title,
+html[data-theme="jedi-archives"] .activity-rail-toggle,
+html[data-theme="jedi-archives"] .eyebrow {
+  color: #555963;
+  letter-spacing: 0.11em;
+}
+
+html[data-theme="jedi-archives"] pre,
+html[data-theme="jedi-archives"] code,
+html[data-theme="jedi-archives"] .tool-call {
+  background-color: rgb(76 88 104 / 7%);
+  border-color: rgb(101 113 127 / 20%);
+  color: #313946;
+}
+
+html[data-theme="jedi-archives"] ::selection {
+  background: var(--selection);
+  color: #27313d;
+}
+
+@media (max-width: 720px) {
+  html[data-theme="jedi-archives"] {
+    --shell-header-height: auto;
+    --shell-panel-border-width: 7px;
+    --shell-panel-border-image-width: 7px;
+    --shell-chat-panel-border-width: 7px;
+    --shell-chat-panel-border-image-width: 7px;
+    --shell-workspace-gap: 0.25rem;
+    --shell-workspace-padding-bottom: 0.25rem;
+    --shell-workspace-padding-top: 0.25rem;
+  }
+
+  html[data-theme="jedi-archives"] body::after,
+  html[data-background-override="true"][data-background^="jedi-archives"] {
+    --hub-background-position: center, center, 50% 50%;
+  }
+
+  html[data-theme="jedi-archives"] .app-header-inner {
+    border: 7px solid transparent;
+    border-image: var(--jedi-archives-frame) 50 / 7px stretch;
+  }
+
+  html[data-theme="jedi-archives"] .msg {
+    background: rgb(255 255 253 / 94%);
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  html[data-theme="jedi-archives"] .task-rail,
+  html[data-theme="jedi-archives"] .activity-rail,
+  html[data-theme="jedi-archives"] .chat,
+  html[data-theme="jedi-archives"] .msg,
+  html[data-theme="jedi-archives"] .composer {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background-color: #f8f5ef;
+  }
+}
