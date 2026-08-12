@@ -20,6 +20,10 @@ function fixture({ activeThread = null, sourceDetails = undefined } = {}) {
         calls.push(["attach", value]);
         return { id: "board-1", rawText: task.rawText };
       },
+      appendSourceMessage: (value) => {
+        calls.push(["append", value]);
+        return { id: "board-1", rawText: `${task.rawText}\n${value.text}` };
+      },
       mergeSourceMessage: (value) => {
         calls.push(["merge", value]);
         return { id: "board-1", rawText: value.text };
@@ -108,6 +112,25 @@ test("a screenshot reply augments the existing dashboard Task", async () => {
     userId: 42,
     messageId: 7,
     attachments: ["D:/runtime/attachments/screenshot.jpg"],
+  }]);
+  assert.equal(calls.some(([name]) => name === "create"), false);
+});
+
+test("a text reply to an own Telegram message clarifies the existing dashboard Task", async () => {
+  const { controller, calls } = fixture();
+  await controller.ingest({
+    replyMessageId: 7,
+    text: "надо сдать..",
+    sourceDetails: { chatId: 42, userId: 42, messageId: 8, replyToMessageId: 7 },
+  });
+  assert.deepEqual(calls[0], ["append", {
+    source: "telegram",
+    chatId: 42,
+    userId: 42,
+    messageId: 7,
+    text: "надо сдать..",
+    sourceDetails: { chatId: 42, userId: 42, messageId: 8, replyToMessageId: 7 },
+    attachments: [],
   }]);
   assert.equal(calls.some(([name]) => name === "create"), false);
 });

@@ -170,9 +170,14 @@ function sourceTaskRow(database, { source, chatId, userId, messageId }) {
     ORDER BY created_at_ms DESC, id DESC
   `).all(String(source)).find((candidate) => {
     const details = parseJson(candidate.source_json);
+    const linkedMessageIds = [
+      details.messageId,
+      ...(Array.isArray(details.messageIds) ? details.messageIds : []),
+      ...(Array.isArray(details.items) ? details.items.map((item) => item?.messageId) : []),
+    ].map((value) => String(value ?? "").trim()).filter(Boolean);
     return String(details.chatId ?? "") === identity[0]
       && String(details.userId ?? "") === identity[1]
-      && String(details.messageId ?? "") === identity[2];
+      && linkedMessageIds.includes(identity[2]);
   }) ?? null;
 }
 
@@ -284,6 +289,69 @@ export class TaskBoardStore {
       database.prepare(`
         UPDATE hub_board_tasks SET source_json = ?, updated_at_ms = ? WHERE id = ?
       `).run(JSON.stringify(details), this.now(), row.id);
+      return taskFromRow(database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(row.id));
+    });
+  }
+
+  appendSourceMessage({
+    source = "telegram",
+    chatId,
+    userId,
+    messageId,
+    text,
+    sourceDetails = {},
+    attachments = [],
+    triageStatus = "pending",
+  } = {}) {
+    const addition = normalizedTaskText(text);
+    const nextTriageStatus = triageStatus === "disabled" ? "disabled" : "pending";
+    return this.#withDatabase((database) => {
+      const row = sourceTaskRow(database, { source, chatId, userId, messageId });
+      if (!row) throw new Error("Задача для исходного сообщения не найдена");
+      const currentDetails = parseJson(row.source_json);
+      const currentBlocks = String(row.raw_text).match(/^--- Сообщение \d+ ·/gmu)?.length ?? 0;
+      const priorText = currentBlocks
+        ? String(row.raw_text)
+        : `--- Сообщение 1 · Вы ---\n${String(row.raw_text).trim()}`;
+      const rawText = `${priorText}\n\n--- Сообщение ${Math.max(1, currentBlocks) + 1} · Вы ---\n${addition}`;
+      const presentation = taskPresentation(rawText);
+      const linkedMessageIds = [...new Set([
+        currentDetails.messageId,
+        ...(Array.isArray(currentDetails.messageIds) ? currentDetails.messageIds : []),
+        sourceDetails?.messageId,
+      ].map((value) => Number(value)).filter(Number.isSafeInteger))];
+      const nextDetails = {
+        ...currentDetails,
+        ...(sourceDetails && typeof sourceDetails === "object" ? sourceDetails : {}),
+        chatId: currentDetails.chatId ?? chatId,
+        userId: currentDetails.userId ?? userId,
+        messageId: currentDetails.messageId ?? messageId,
+        messageIds: linkedMessageIds,
+      };
+      const nextAttachments = [...new Set([
+        ...(Array.isArray(currentDetails.attachments) ? currentDetails.attachments : []),
+        ...(Array.isArray(attachments) ? attachments : []),
+      ].map((value) => String(value ?? "").trim()).filter(Boolean))];
+      if (nextAttachments.length) nextDetails.attachments = nextAttachments;
+      database.prepare(`
+        UPDATE hub_board_tasks SET
+          raw_text = ?,
+          title = CASE WHEN presentation_source = 'manual' THEN title ELSE ? END,
+          description = CASE WHEN presentation_source = 'manual' THEN description ELSE ? END,
+          corrected_text = CASE WHEN presentation_source = 'manual' THEN corrected_text ELSE NULL END,
+          category = CASE WHEN presentation_source = 'manual' THEN category ELSE 'unknown' END,
+          source_json = ?, triage_status = ?, triage_confidence = NULL,
+          triage_reason = NULL, triage_error = NULL, updated_at_ms = ?
+        WHERE id = ?
+      `).run(
+        rawText,
+        presentation.title,
+        presentation.description,
+        JSON.stringify(nextDetails),
+        nextTriageStatus,
+        this.now(),
+        row.id,
+      );
       return taskFromRow(database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(row.id));
     });
   }

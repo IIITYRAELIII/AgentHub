@@ -132,10 +132,9 @@ export class SharedDashboardBotClient {
     const userId = String(command?.userId ?? "").trim();
     const params = command?.params;
     const attachments = params?.attachments ?? [];
-    const replyAttachment = Number.isSafeInteger(params?.replyMessageId)
-      && params.replyMessageId > 0
-      && Array.isArray(attachments)
-      && attachments.length > 0;
+    const replyMessage = Number.isSafeInteger(params?.replyMessageId) && params.replyMessageId > 0;
+    const hasText = Boolean(String(params?.text ?? "").trim());
+    const replyAttachment = replyMessage && Array.isArray(attachments) && attachments.length > 0;
     if (
       !COMMAND_ID_PATTERN.test(id)
       || !userId
@@ -143,8 +142,8 @@ export class SharedDashboardBotClient {
       || !params
       || typeof params !== "object"
       || Array.isArray(params)
-      || (!replyAttachment && !String(params.text ?? "").trim())
-      || (!replyAttachment && !/^shared-dashboard:(?:\d+|[0-9a-f-]{36})(?::\d+)?$/iu.test(String(params.sourceKey ?? "")))
+      || (!hasText && !replyAttachment)
+      || (!replyMessage && !/^shared-dashboard:(?:\d+|[0-9a-f-]{36})(?::\d+)?$/iu.test(String(params.sourceKey ?? "")))
     ) {
       throw new Error("Shared Dashboard bot returned an invalid command");
     }

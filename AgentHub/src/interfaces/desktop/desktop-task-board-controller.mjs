@@ -38,13 +38,24 @@ export class DesktopTaskBoardController {
         sourceDetails,
       });
     } else if (Number.isSafeInteger(params.replyMessageId)) {
-      task = this.taskBoard.attachToSourceMessage({
-        source: "telegram",
-        chatId: params.sourceDetails?.chatId,
-        userId: params.sourceDetails?.userId,
-        messageId: params.replyMessageId,
-        attachments,
-      });
+      const replyText = String(params.text ?? "").trim();
+      task = replyText
+        ? this.taskBoard.appendSourceMessage({
+          source: "telegram",
+          chatId: params.sourceDetails?.chatId,
+          userId: params.sourceDetails?.userId,
+          messageId: params.replyMessageId,
+          text: replyText,
+          sourceDetails,
+          attachments,
+        })
+        : this.taskBoard.attachToSourceMessage({
+          source: "telegram",
+          chatId: params.sourceDetails?.chatId,
+          userId: params.sourceDetails?.userId,
+          messageId: params.replyMessageId,
+          attachments,
+        });
     } else {
       task = this.taskBoard.create({
         text: params.text,

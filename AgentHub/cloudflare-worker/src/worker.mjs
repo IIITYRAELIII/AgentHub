@@ -1341,26 +1341,30 @@ export class JournalStore extends DurableObject {
       : null;
     const repliesToOwnMessage = repliedMessageId != null
       && String(message.reply_to_message?.from?.id ?? "") === String(message.from.id);
-    if (!openBundle && image && repliesToOwnMessage) {
+    if (!openBundle && repliesToOwnMessage && (text || image)) {
       await this.ctx.storage.delete(dashboardBotRecentDirectKey(linked.userId));
       return {
         hubId: linked.hubId,
-        telegramImages: [image],
+        telegramImages: image ? [image] : [],
         command: {
           id: crypto.randomUUID().toLowerCase(),
           action: "board-task-ingest",
           params: {
             replyMessageId: repliedMessageId,
+            ...(text ? { text } : {}),
             sourceDetails: {
               updateId: update.update_id,
               chatId: message.chat.id,
               messageId: message.message_id,
+              replyToMessageId: repliedMessageId,
               userId: message.from.id,
             },
           },
           userId: linked.userId,
         },
-        reply: "Скриншот добавлен к задаче.",
+        reply: text
+          ? image ? "Уточнение и скриншот добавлены к задаче." : "Уточнение добавлено к задаче."
+          : "Скриншот добавлен к задаче.",
       };
     }
     if (source || openBundle || image) {

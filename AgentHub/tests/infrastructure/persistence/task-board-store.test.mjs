@@ -56,6 +56,40 @@ test("Task store attaches a screenshot to the Task addressed by a Telegram reply
   assert.equal(store.list().length, 1);
 });
 
+test("Task store appends Telegram reply clarifications to one Task, including reply chains", async (t) => {
+  const store = await fixture(t);
+  const task = store.create({
+    text: "ЭКЗАМЕНЫ",
+    source: "telegram",
+    sourceKey: "shared-dashboard:101",
+    sourceDetails: { chatId: 42, userId: 42, messageId: 2 },
+  });
+  const firstReply = store.appendSourceMessage({
+    source: "telegram",
+    chatId: 42,
+    userId: 42,
+    messageId: 2,
+    text: "надо сдать..",
+    sourceDetails: { chatId: 42, userId: 42, messageId: 3, replyToMessageId: 2 },
+  });
+  const secondReply = store.appendSourceMessage({
+    source: "telegram",
+    chatId: 42,
+    userId: 42,
+    messageId: 3,
+    text: "до пятницы",
+    sourceDetails: { chatId: 42, userId: 42, messageId: 4, replyToMessageId: 3 },
+  });
+
+  assert.equal(firstReply.id, task.id);
+  assert.equal(secondReply.id, task.id);
+  assert.equal(store.list().length, 1);
+  assert.match(secondReply.rawText, /Сообщение 1 · Вы[\s\S]*ЭКЗАМЕНЫ/u);
+  assert.match(secondReply.rawText, /Сообщение 2 · Вы[\s\S]*надо сдать/u);
+  assert.match(secondReply.rawText, /Сообщение 3 · Вы[\s\S]*до пятницы/u);
+  assert.deepEqual(secondReply.sourceDetails.messageIds, [2, 3, 4]);
+});
+
 test("Task store merges a following forward into the preceding Telegram Task", async (t) => {
   const store = await fixture(t);
   const task = store.create({

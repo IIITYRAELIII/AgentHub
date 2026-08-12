@@ -119,6 +119,43 @@ test("a following forward retriages the preceding Telegram Task instead of creat
   assert.equal(service.snapshot().length, 1);
 });
 
+test("a Telegram text reply retriages the same Task with the clarification", async (t) => {
+  const classifierInputs = [];
+  const service = await fixture(t, async (input) => {
+    classifierInputs.push(input.text);
+    return {
+      title: input.text.includes("надо сдать") ? "Экзамены: надо сдать" : "Экзамены",
+      description: "",
+      correctedText: input.text,
+      category: "task",
+      workspaceId: null,
+      confidence: 0.4,
+      reason: "Workspace не определён",
+    };
+  });
+  const task = service.create({
+    text: "ЭКЗАМЕНЫ",
+    source: "telegram",
+    sourceDetails: { chatId: 42, userId: 42, messageId: 2 },
+  });
+  await service.waitForTriage();
+  const clarified = service.appendSourceMessage({
+    source: "telegram",
+    chatId: 42,
+    userId: 42,
+    messageId: 2,
+    text: "надо сдать..",
+    sourceDetails: { chatId: 42, userId: 42, messageId: 3, replyToMessageId: 2 },
+  });
+  await service.waitForTriage();
+
+  assert.equal(clarified.id, task.id);
+  assert.equal(service.task(task.id).title, "Экзамены: надо сдать");
+  assert.equal(classifierInputs.length, 2);
+  assert.match(classifierInputs[1], /ЭКЗАМЕНЫ[\s\S]*надо сдать/u);
+  assert.equal(service.snapshot().length, 1);
+});
+
 test("disabled Spark leaves new Tasks idle and clears recovered triage", () => {
   let disabled = 0;
   const created = [];

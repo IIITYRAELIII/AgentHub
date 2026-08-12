@@ -1019,6 +1019,35 @@ test("shared Dashboard bot pairs one Telegram user and queues Tasks only for tha
   assert.match(mergeCommand.params.text, /Сообщение 2 · Переслано · Иван/u);
   assert.equal(mergeCommand.params.sourceDetails.messageCount, 2);
 
+  response = await webhook({
+    update_id: 150,
+    message: {
+      message_id: 30,
+      date: 1_786_200_020,
+      chat: { id: 42, type: "private" },
+      from: { id: 42, first_name: "Алиса" },
+      reply_to_message: {
+        message_id: 2,
+        from: { id: 42, first_name: "Алиса" },
+        text: "Исправить фильтр на дашборде",
+      },
+      text: "Нужно закончить до пятницы",
+    },
+  });
+  assert.equal(response.status, 200);
+  assert.equal(telegramCalls.at(-1).body.text, "Уточнение добавлено к задаче.");
+  response = await workerModule.default.fetch(signedServiceRequest(
+    "https://hub.test/api/dashboard-bot/pull",
+    { limit: 10, waitMs: 0 },
+    hubSecret,
+    { "X-Agent-Hub-Dashboard-Id": hubId },
+  ), env);
+  const [clarificationCommand] = (await response.json()).commands;
+  assert.equal(clarificationCommand.params.replyMessageId, 2);
+  assert.equal(clarificationCommand.params.text, "Нужно закончить до пятницы");
+  assert.equal(clarificationCommand.params.sourceKey, undefined);
+  assert.equal(clarificationCommand.params.sourceDetails.messageId, 30);
+
   response = await workerModule.default.fetch(signedServiceRequest(
     "https://hub.test/api/dashboard-bot/pull",
     { limit: 10, waitMs: 0 },

@@ -173,3 +173,37 @@ test("shared Dashboard bot downloads a screenshot reply before augmenting the Ta
   assert.equal(handled[0].params.attachments.length, 1);
   assert.deepEqual(await readFile(handled[0].params.attachments[0]), image);
 });
+
+test("shared Dashboard bot accepts a text reply clarification without a source key", async (context) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-shared-bot-reply-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const secretFile = path.join(directory, "shared-dashboard-bot.secret");
+  await writeFile(secretFile, "s".repeat(64), "utf8");
+  const handled = [];
+  const command = {
+    id: "018f6c86-3f34-7a31-8f27-16f5b96cce66",
+    userId: "42",
+    action: "board-task-ingest",
+    params: {
+      replyMessageId: 7,
+      text: "надо сдать..",
+      sourceDetails: { chatId: 42, userId: 42, messageId: 8, replyToMessageId: 7 },
+    },
+  };
+  const client = new SharedDashboardBotClient({
+    publicUrl: "https://hub.example.com",
+    hubId: "018f6c86-3f34-7a31-8f27-16f5b96cce67",
+    secretFile,
+    fetchImpl: async (url) => {
+      if (url.endsWith("/api/dashboard-bot/pull")) return Response.json({ commands: [command] });
+      if (url.endsWith("/api/dashboard-bot/result")) return Response.json({ ok: true });
+      return Response.json({ error: "unexpected request" }, { status: 500 });
+    },
+    handler: async (request) => { handled.push(request); return { taskId: "task-1" }; },
+  });
+
+  assert.equal(await client.poll(), 1);
+  assert.equal(handled[0].params.replyMessageId, 7);
+  assert.equal(handled[0].params.text, "надо сдать..");
+  assert.equal(handled[0].params.sourceKey, undefined);
+});
