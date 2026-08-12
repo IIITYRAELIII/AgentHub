@@ -315,6 +315,12 @@ html[data-theme="reliquary"] .stream-tabs > .stream-tab:not(:last-child)::after 
 }
 
 @media (min-width: 860px) {
+  html[data-theme="reliquary"]:not([data-surface="mobile"]) .task-new,
+  html[data-theme="reliquary"]:not([data-surface="mobile"]) .task-search {
+    background-color: rgb(10 12 14 / 94%);
+    background-image: none;
+  }
+
   html[data-theme="reliquary"][data-view="chat"]:not([data-surface="mobile"]) .stream-tabs,
   html[data-theme="reliquary"][data-view="chat"]:not([data-surface="mobile"]) .composer {
     background: rgb(5 7 9 / 88%);
