@@ -82,7 +82,7 @@ export async function createHubInfrastructure({
     guideFile: path.join(agentHubRoot, "AGENT_HUB_GUIDE.md"),
     globalFile: path.join(config.dataDir, "global-pre-turn-instructions.md"),
   });
-  await preTurnInstructions.guide();
+  await preTurnInstructions.loadGuide();
   const taskBoardStore = new TaskBoardStore({ databaseFile: journalDatabaseFile });
   const dashBotStream = config.taskBoard.triageEnabled
     ? ensureDashBotStream(workspaceCatalogStore, {

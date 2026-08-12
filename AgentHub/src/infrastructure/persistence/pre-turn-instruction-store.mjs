@@ -29,6 +29,8 @@ async function readOptionalText(file) {
 }
 
 export class PreTurnInstructionStore {
+  #guideDocument = null;
+
   constructor({ guideFile, globalFile } = {}) {
     if (!String(guideFile ?? "").trim()) throw new TypeError("guideFile is required");
     if (!String(globalFile ?? "").trim()) throw new TypeError("globalFile is required");
@@ -36,12 +38,18 @@ export class PreTurnInstructionStore {
     this.globalFile = path.resolve(globalFile);
   }
 
-  async guide() {
+  async loadGuide() {
     const content = await readFile(this.guideFile, "utf8");
     const bytes = byteLength(content);
     if (!content.trim()) throw new Error("Agent Hub Guide is empty");
     if (bytes > AGENT_HUB_GUIDE_MAXIMUM_BYTES) throw new Error("Agent Hub Guide exceeds its size limit");
-    return documentSnapshot(content, AGENT_HUB_GUIDE_MAXIMUM_BYTES);
+    this.#guideDocument = Object.freeze(documentSnapshot(content, AGENT_HUB_GUIDE_MAXIMUM_BYTES));
+    return { ...this.#guideDocument };
+  }
+
+  guide() {
+    if (!this.#guideDocument) throw new Error("Agent Hub Guide is not loaded");
+    return { ...this.#guideDocument };
   }
 
   async global() {
@@ -58,7 +66,8 @@ export class PreTurnInstructionStore {
   }
 
   async snapshot() {
-    const [guide, global] = await Promise.all([this.guide(), this.global()]);
+    const global = await this.global();
+    const guide = this.guide();
     return { guide, global };
   }
 

@@ -15,6 +15,7 @@ test("pre-turn instruction store keeps the release Guide read-only and Global du
   const globalFile = path.join(directory, "data", "global-pre-turn-instructions.md");
   await writeFile(guideFile, "Release guide\n", "utf8");
   const store = new PreTurnInstructionStore({ guideFile, globalFile });
+  await store.loadGuide();
 
   assert.deepEqual(await store.snapshot(), {
     guide: {
@@ -35,7 +36,9 @@ test("pre-turn instruction store keeps the release Guide read-only and Global du
   assert.equal(updated.content, "Общие правила\n");
   assert.equal(await readFile(globalFile, "utf8"), "Общие правила\n");
   assert.equal((await store.snapshot()).global.exists, true);
-  assert.equal((await store.guide()).content, "Release guide\n");
+  await writeFile(guideFile, "Changed after startup\n", "utf8");
+  assert.equal(store.guide().content, "Release guide\n");
+  assert.equal((await store.snapshot()).guide.content, "Release guide\n");
 });
 
 test("pre-turn instruction store requires Guide and bounds Global by UTF-8 bytes", async () => {
@@ -45,8 +48,10 @@ test("pre-turn instruction store requires Guide and bounds Global by UTF-8 bytes
     guideFile,
     globalFile: path.join(directory, "global.md"),
   });
-  await assert.rejects(() => store.guide(), /ENOENT/u);
+  assert.throws(() => store.guide(), /not loaded/u);
+  await assert.rejects(() => store.loadGuide(), /ENOENT/u);
   await writeFile(guideFile, "Guide", "utf8");
+  await store.loadGuide();
   await assert.rejects(
     () => store.updateGlobal("я".repeat((GLOBAL_PRE_TURN_MAXIMUM_BYTES / 2) + 1)),
     /size limit/u,

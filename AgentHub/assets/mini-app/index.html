@@ -1093,7 +1093,7 @@
         <summary class="root-agents-summary">Global pre-turn instructions</summary>
         <div class="root-agents-body">
           <p class="root-agents-note">Глобальные инструкции Agent Hub, применяемые перед каждым новым ходом.</p>
-          <p class="root-agents-note"><strong>Приоритет Agent Hub:</strong> Guide &lt; Global &lt; Workspace &lt; Stream &lt; User Prompt. Системные требования и developer-инструкции платформы остаются выше User Prompt.</p>
+          <p class="root-agents-note"><strong>Порядок developer-слоёв Agent Hub:</strong> Guide &lt; Global &lt; Workspace &lt; Stream. User Prompt задаёт конкретную задачу, но не переопределяет конфликтующие developer-инструкции.</p>
           <textarea class="root-agents-input" data-global-pre-turn-input spellcheck="false"
             aria-label="Global pre-turn instructions" disabled></textarea>
           <div class="root-agents-actions">
