@@ -29,6 +29,7 @@ const {
 } = window.AgentHubMessageDisclosure;
 const chatSurfacePreference = window.AgentHubChatSurfacePreference;
 const backgroundMotionPreference = window.AgentHubBackgroundMotionPreference;
+const backgroundImageResolver = window.AgentHubBackgroundImageResolver;
 const JournalView = window.AgentHubJournalView;
 const expandedUserMessageIds = new Set();
 let messageDisclosureFrame = 0;
@@ -1642,8 +1643,15 @@ function preloadBackgroundAsset(background) {
 }
 
 function commitBackground(selected, persist) {
+  root.style.removeProperty("--hub-background-image");
   root.dataset.background = selected;
   root.dataset.backgroundOverride = String(selected !== root.dataset.theme);
+  if (selected !== root.dataset.theme) {
+    const source = getComputedStyle(root).getPropertyValue("--hub-background-image");
+    const asset = root.style.getPropertyValue(`--${selected}-image`);
+    const resolved = backgroundImageResolver.resolve(source, asset);
+    if (resolved) root.style.setProperty("--hub-background-image", resolved);
+  }
   delete root.dataset.backgroundLoading;
   if (backgroundSelect) backgroundSelect.value = selected;
   sessionBackgrounds.set(root.dataset.theme, selected);
