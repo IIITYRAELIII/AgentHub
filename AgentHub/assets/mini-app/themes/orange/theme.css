@@ -179,13 +179,19 @@ html[data-theme="orange"] .task-workspace-item[data-selected] {
 
 html[data-theme="orange"] .task-workspace-item[data-selected] .task-title,
 html[data-theme="orange"] .task-workspace-item[data-selected] .task-time,
+html[data-theme="orange"] .task-workspace-item[data-selected] .task-workspace-time,
 html[data-theme="orange"] .task-workspace-item[data-selected] .task-status {
   color: #fffdf8;
 }
 
-html[data-theme="orange"] .task-workspace-item[data-selected] .task-time {
-  color: #fff1d5;
+html[data-theme="orange"] .task-workspace-item[data-selected] .task-time,
+html[data-theme="orange"] .task-workspace-item[data-selected] .task-workspace-time {
+  color: #fffdf8;
   font-weight: 700;
+}
+
+html[data-theme="orange"] .journal span[data-kilo-usage] {
+  color: #7a341c !important;
 }
 
 html[data-theme="orange"] .msg {

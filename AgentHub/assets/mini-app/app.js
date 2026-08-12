@@ -3952,6 +3952,7 @@ function renderMarkdown(target, source, fileContext = currentFileLinkContext()) 
     if (list) {
       const ordered = Boolean(list[2]);
       const node = document.createElement(ordered ? "ol" : "ul");
+      if (ordered && Number(list[2]) !== 1) node.start = Number(list[2]);
       while (index < lines.length) {
         const item = lines[index].match(/^\s*(?:([-+*])|(\d+)\.)\s+(.+)$/u);
         if (!item || Boolean(item[2]) !== ordered) break;
@@ -3959,6 +3960,10 @@ function renderMarkdown(target, source, fileContext = currentFileLinkContext()) 
         appendInlineMarkdown(entry, item[3], fileContext);
         node.append(entry);
         index += 1;
+        let nextIndex = index;
+        while (nextIndex < lines.length && !lines[nextIndex].trim()) nextIndex += 1;
+        const nextItem = lines[nextIndex]?.match(/^\s*(?:([-+*])|(\d+)\.)\s+(.+)$/u);
+        if (nextItem && Boolean(nextItem[2]) === ordered) index = nextIndex;
       }
       target.append(node);
       continue;
