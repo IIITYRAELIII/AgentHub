@@ -5215,11 +5215,26 @@ html[data-surface="mobile"]
   html[data-view="chat"]:not([data-surface="mobile"]) .chat {
     border: var(--shell-panel-border, 1px solid var(--line)) !important;
     border-image: var(--shell-panel-border-image, none) !important;
+    border-image-width: var(--shell-panel-border-image-width, var(--shell-panel-border-width, 1px)) !important;
+    border-width: var(--shell-panel-border-width, 1px) !important;
     border-radius: var(--shell-panel-radius, 4px) !important;
+  }
+
+  html[data-view="chat"]:not([data-surface="mobile"]) .task-rail {
+    border-image-width: var(--shell-task-panel-border-image-width, var(--shell-panel-border-image-width, var(--shell-panel-border-width, 1px))) !important;
+    border-width: var(--shell-task-panel-border-width, var(--shell-panel-border-width, 1px)) !important;
+  }
+
+  html[data-view="chat"]:not([data-surface="mobile"]) .activity-rail {
+    border-image-width: var(--shell-activity-panel-border-image-width, var(--shell-panel-border-image-width, var(--shell-panel-border-width, 1px))) !important;
+    border-width: var(--shell-activity-panel-border-width, var(--shell-panel-border-width, 1px)) !important;
   }
 
   html[data-view="chat"]:not([data-surface="mobile"]) .chat {
     border: var(--shell-chat-border, var(--shell-panel-border, 1px solid var(--line))) !important;
+    border-image: var(--shell-chat-border-image, var(--shell-panel-border-image, none)) !important;
+    border-image-width: var(--shell-chat-panel-border-image-width, var(--shell-panel-border-image-width, var(--shell-panel-border-width, 1px))) !important;
+    border-width: var(--shell-chat-panel-border-width, var(--shell-panel-border-width, 1px)) !important;
     border-radius: var(--shell-chat-radius, var(--shell-panel-radius, 4px)) !important;
     gap: var(--shell-chat-gap, 0) !important;
   }

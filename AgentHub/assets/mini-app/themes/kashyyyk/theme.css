@@ -104,6 +104,8 @@ html[data-theme="kashyyyk"] {
   --shell-workspace-padding-top: 0.36rem;
   --shell-panel-border: 8px solid transparent;
   --shell-panel-border-image: var(--kashyyyk-panel-frame) 80 / 8px stretch;
+  --shell-panel-border-width: 8px;
+  --shell-panel-border-image-width: 8px;
   --shell-panel-radius: 5px;
   --shell-chat-border: 8px solid transparent;
   --shell-chat-gap: 0.36rem;

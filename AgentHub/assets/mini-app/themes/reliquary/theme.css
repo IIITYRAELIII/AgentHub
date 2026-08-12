@@ -114,6 +114,14 @@ html[data-theme="reliquary"] {
   --shell-workspace-padding-top: 0.28rem;
   --shell-panel-border: 10px solid transparent;
   --shell-panel-border-image: var(--reliquary-panel-frame) 125 / 10px stretch;
+  --shell-panel-border-width: 10px;
+  --shell-panel-border-image-width: 10px;
+  --shell-task-panel-border-width: 10px 0 10px 10px;
+  --shell-task-panel-border-image-width: 10px 0 10px 10px;
+  --shell-chat-panel-border-width: 10px 0;
+  --shell-chat-panel-border-image-width: 10px 0;
+  --shell-activity-panel-border-width: 10px 10px 10px 0;
+  --shell-activity-panel-border-image-width: 10px 10px 10px 0;
   --shell-panel-radius: 2px;
   --shell-chat-border: 10px solid transparent;
   --shell-chat-border-image: var(--reliquary-panel-frame) 125 / 10px stretch;
@@ -221,24 +229,6 @@ html[data-background-override="true"][data-background="reliquary-reliquary"] bod
 html[data-background-override="true"][data-background="reliquary-cathedral"] body::before,
 html[data-background-override="true"][data-background="reliquary-archive"] body::before {
   display: none;
-}
-
-@media (min-width: 860px) {
-  html[data-theme="reliquary"][data-view="chat"]:not([data-surface="mobile"]) .task-rail {
-    border-image-width: 10px 0 10px 10px !important;
-    border-width: 10px 0 10px 10px !important;
-  }
-
-  html[data-theme="reliquary"][data-view="chat"]:not([data-surface="mobile"]) .chat {
-    border-image: var(--shell-chat-border-image) !important;
-    border-image-width: 10px 0 !important;
-    border-width: 10px 0 !important;
-  }
-
-  html[data-theme="reliquary"][data-view="chat"]:not([data-surface="mobile"]) .activity-rail {
-    border-image-width: 10px 10px 10px 0 !important;
-    border-width: 10px 10px 10px 0 !important;
-  }
 }
 
 html[data-theme="reliquary"] .task-rail,

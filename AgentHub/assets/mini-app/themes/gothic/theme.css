@@ -123,6 +123,8 @@ html[data-theme="gothic"] {
   --shell-workspace-padding-top: 0;
   --shell-panel-border: 6px solid transparent;
   --shell-panel-border-image: var(--gothic-iron-frame) 5% / 6px stretch;
+  --shell-panel-border-width: 6px;
+  --shell-panel-border-image-width: 6px;
   --shell-stream-tabs-background:
     linear-gradient(rgb(7 8 8 / 82%), rgb(7 8 8 / 82%)),
     var(--gothic-iron-texture) center / 24rem 24rem;

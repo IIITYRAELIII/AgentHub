@@ -107,6 +107,8 @@ html[data-theme="magma"] {
   --shell-workspace-padding-top: 0.45rem;
   --shell-panel-border: 7px solid transparent;
   --shell-panel-border-image: var(--magma-forged-frame) 64 / 7px stretch;
+  --shell-panel-border-width: 7px;
+  --shell-panel-border-image-width: 7px;
   --shell-stream-tabs-background: var(--magma-panel);
   --shell-stream-tabs-border: 6px solid transparent;
   --shell-stream-tabs-border-bottom: 6px solid transparent;
