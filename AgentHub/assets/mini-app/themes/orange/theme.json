@@ -4,7 +4,6 @@
   "color": "#211a20",
   "order": 160,
   "styles": "theme.css",
-  "scripts": "focus-mode.js",
   "backgrounds": [
     { "id": "orange", "name": "Апельсин" }
   ]

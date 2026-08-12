@@ -3,20 +3,9 @@ import { createRequire } from "node:module";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import vm from "node:vm";
 
 const require = createRequire(import.meta.url);
 const { loadThemeRegistry } = require("../../theme-registry.cjs");
-
-async function orangeFocusApi() {
-  const source = await readFile(
-    new URL("../../assets/mini-app/themes/orange/focus-mode.js", import.meta.url),
-    "utf8",
-  );
-  const window = {};
-  vm.runInNewContext(source, { window });
-  return window.AgentHubOrangeFocus;
-}
 
 function normalizeHex(value) {
   const trimmed = String(value ?? "").trim().toLowerCase();
@@ -65,13 +54,13 @@ function assertContrast({ foreground, background, minimum = 4.5, label }) {
   );
 }
 
-test("orange theme is discovered with its focus-mode resource", () => {
+test("orange theme is discovered without a theme-owned focus controller", () => {
   const registry = loadThemeRegistry(fileURLToPath(new URL("../../assets/mini-app", import.meta.url)));
   const theme = registry.themes.find((item) => item.id === "orange");
   assert.equal(theme?.name, "Апельсин");
-  assert.deepEqual(theme?.scripts, ["focus-mode.js"]);
+  assert.deepEqual(theme?.scripts, []);
   assert.equal(registry.resources.has("/themes/orange/theme.css"), true);
-  assert.equal(registry.resources.has("/themes/orange/focus-mode.js"), true);
+  assert.equal(registry.resources.has("/themes/orange/focus-mode.js"), false);
 });
 
 test("orange theme text roles meet the AA contrast contract", async () => {
@@ -157,38 +146,6 @@ test("orange theme text roles meet the AA contrast contract", async () => {
       });
     }
   }
-});
-
-test("orange focus defaults on, persists, and only applies inside the orange theme", async () => {
-  const { STORAGE_KEY, apply, persist, stored } = await orangeFocusApi();
-  const values = new Map();
-  const storage = {
-    getItem: (key) => values.get(key) ?? null,
-    setItem: (key, value) => values.set(key, value),
-  };
-  const root = { dataset: {} };
-  const attributes = new Map();
-  const toggle = {
-    hidden: true,
-    setAttribute: (name, value) => attributes.set(name, value),
-  };
-
-  assert.equal(stored(storage), true);
-  assert.equal(apply(root, toggle, "graphite", true), false);
-  assert.equal(root.dataset.focusMode, undefined);
-  assert.equal(toggle.hidden, true);
-
-  assert.equal(apply(root, toggle, "orange", true), true);
-  assert.equal(root.dataset.focusMode, "true");
-  assert.equal(toggle.hidden, false);
-  assert.equal(attributes.get("aria-pressed"), "true");
-
-  assert.equal(persist(storage, false), false);
-  assert.equal(values.get(STORAGE_KEY), "false");
-  assert.equal(stored(storage), false);
-  assert.equal(apply(root, toggle, "orange", false), false);
-  assert.equal(root.dataset.focusMode, undefined);
-  assert.equal(attributes.get("aria-pressed"), "false");
 });
 
 test("orange focus keeps the main menu and draws one selected Stream border", async () => {

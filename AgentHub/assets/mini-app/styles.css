@@ -369,8 +369,15 @@ h1 {
   min-width: 0;
 }
 
-.toolbar .view-settings {
+.toolbar .focus-toggle {
   margin-left: auto;
+}
+
+.focus-toggle[aria-pressed="true"] {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  box-shadow: var(--accent-glow);
+  color: var(--accent);
 }
 
 .theme-picker,
@@ -2648,6 +2655,10 @@ html[data-surface="mobile"] .view-settings-label {
   position: absolute;
   white-space: nowrap;
   width: 1px;
+}
+
+html[data-surface="mobile"] .focus-toggle {
+  display: none;
 }
 
 html[data-surface="mobile"] .collapse-all > span {

@@ -20,6 +20,7 @@
   <script src="/background-motion-preference.js" defer></script>
   <script src="/background-image-resolver.js" defer></script>
   <script src="/navigation-tabs-controller.js" defer></script>
+  <script src="/focus-mode-controller.js" defer></script>
   <script src="/stream-tabs-controller.js" defer></script>
   <script src="/approval-form.js" defer></script>
   <script src="/runtime-reload-controller.js" defer></script>
@@ -160,6 +161,21 @@
       <div class="toolbar">
         <div class="connection-banner" data-restart-banner hidden role="status"
           aria-live="polite"></div>
+        <button class="refresh focus-toggle" type="button" data-focus-toggle
+          title="Включить режим концентрации" aria-label="Включить режим концентрации"
+          aria-pressed="false">
+          <svg data-phosphor-icon="corners-out" viewBox="0 0 256 256" aria-hidden="true">
+            <polyline points="160 40 216 40 216 96" fill="none" stroke="currentColor"
+              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></polyline>
+            <polyline points="96 216 40 216 40 160" fill="none" stroke="currentColor"
+              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></polyline>
+            <line x1="152" y1="104" x2="216" y2="40" fill="none" stroke="currentColor"
+              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+            <line x1="104" y1="152" x2="40" y2="216" fill="none" stroke="currentColor"
+              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+          </svg>
+          <span>Фокус</span>
+        </button>
         <button class="refresh view-settings" type="button" data-panel-open="settings"
           title="Настройки Agent Hub">
           <svg data-phosphor-icon="sliders-horizontal" viewBox="0 0 256 256" aria-hidden="true">
@@ -177,21 +193,6 @@
               stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
           </svg>
           <span class="view-settings-label">Настройки</span>
-        </button>
-        <button class="refresh orange-focus-toggle" type="button" data-orange-focus-toggle
-          title="Включить режим концентрации" aria-label="Включить режим концентрации"
-          aria-pressed="false" hidden>
-          <svg data-phosphor-icon="corners-out" viewBox="0 0 256 256" aria-hidden="true">
-            <polyline points="160 40 216 40 216 96" fill="none" stroke="currentColor"
-              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></polyline>
-            <polyline points="96 216 40 216 40 160" fill="none" stroke="currentColor"
-              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></polyline>
-            <line x1="152" y1="104" x2="216" y2="40" fill="none" stroke="currentColor"
-              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
-            <line x1="104" y1="152" x2="40" y2="216" fill="none" stroke="currentColor"
-              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
-          </svg>
-          <span>Фокус</span>
         </button>
         <button class="refresh view-fullscreen" type="button" data-telegram-fullscreen hidden
           title="Развернуть Mini App" aria-label="Развернуть Mini App" aria-pressed="false">

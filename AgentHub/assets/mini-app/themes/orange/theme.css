@@ -245,13 +245,11 @@ html[data-theme="orange"] .workspace-task-panel .board-task-card:hover {
   border-color: #d9c6b7;
 }
 
-html[data-theme="orange"] .orange-focus-toggle {
-  margin-left: 0;
+html[data-theme="orange"] .focus-toggle {
   min-height: var(--shell-tab-height, 2rem);
 }
 
 html[data-theme="orange"] .toolbar .view-settings {
-  margin-left: auto;
   min-height: var(--shell-tab-height, 2rem);
 }
 
@@ -259,13 +257,13 @@ html[data-theme="orange"] .view-tab[data-view-button="background"] {
   display: none !important;
 }
 
-html[data-theme="orange"] .orange-focus-toggle[aria-pressed="true"] {
+html[data-theme="orange"] .focus-toggle[aria-pressed="true"] {
   background: #bf4822;
   border-color: #df7652;
   color: #fff;
 }
 
-html[data-theme="orange"] .orange-focus-toggle[aria-pressed="true"]:focus-visible {
+html[data-theme="orange"] .focus-toggle[aria-pressed="true"]:focus-visible {
   outline: none;
 }
 
@@ -291,12 +289,6 @@ html[data-theme="orange"][data-focus-mode="true"] .msg-head {
 html[data-theme="orange"][data-focus-mode="true"] .msg-user {
   background: #fff1e8;
   border-color: #edc7b5;
-}
-
-@media (max-width: 859px) {
-  html[data-theme="orange"] .orange-focus-toggle {
-    display: none;
-  }
 }
 
 html[data-background-override="true"][data-background="orange"] {
