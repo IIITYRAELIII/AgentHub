@@ -32,6 +32,7 @@
   <script src="/rate-limit-series.js" defer></script>
   <script src="/usage-burn-rate.js" defer></script>
   <script src="/app.js" defer></script>
+  <script src="/pre-turn-instructions-editor.js" defer></script>
   <script src="/root-agents-editor.js" defer></script>
   <script src="/task-board.js" defer></script>
   <!-- agent-hub-theme-scripts -->
@@ -1075,6 +1076,33 @@
           </button>
         </div>
       </section>
+
+      <details class="server-card root-agents-editor" data-agent-hub-guide>
+        <summary class="root-agents-summary">Agent Hub Guide</summary>
+        <div class="root-agents-body">
+          <p class="root-agents-note">Обязательные инструкции текущей версии Agent Hub. Обновляются вместе с релизом.</p>
+          <textarea class="root-agents-input" data-agent-hub-guide-input spellcheck="false"
+            aria-label="Agent Hub Guide" readonly disabled></textarea>
+          <div class="root-agents-actions">
+            <span class="root-agents-status" data-agent-hub-guide-status>Раскройте блок для загрузки.</span>
+          </div>
+        </div>
+      </details>
+
+      <details class="server-card root-agents-editor" data-global-pre-turn-editor>
+        <summary class="root-agents-summary">Global pre-turn instructions</summary>
+        <div class="root-agents-body">
+          <p class="root-agents-note">Глобальные инструкции Agent Hub, применяемые перед каждым новым ходом.</p>
+          <p class="root-agents-note"><strong>Приоритет Agent Hub:</strong> Guide &lt; Global &lt; Workspace &lt; Stream &lt; User Prompt. Системные требования и developer-инструкции платформы остаются выше User Prompt.</p>
+          <textarea class="root-agents-input" data-global-pre-turn-input spellcheck="false"
+            aria-label="Global pre-turn instructions" disabled></textarea>
+          <div class="root-agents-actions">
+            <button type="button" class="chip-button" data-global-pre-turn-save disabled>Сохранить</button>
+            <button type="button" class="chip-button ghost" data-global-pre-turn-discard disabled>Отменить</button>
+            <span class="root-agents-status" data-global-pre-turn-status>Раскройте редактор для загрузки.</span>
+          </div>
+        </div>
+      </details>
 
       <details class="server-card root-agents-editor" data-root-agents-editor>
         <summary class="root-agents-summary">AGENTS.md</summary>

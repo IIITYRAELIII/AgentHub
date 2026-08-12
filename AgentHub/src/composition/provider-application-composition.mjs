@@ -70,6 +70,7 @@ export async function createProviderApplicationComposition({
     turnEndNotifications,
     workLogUsageStore,
     workspaceCatalogStore,
+    preTurnInstructions,
     codexRolloutContextSanitizer,
   } = infrastructure;
   const {
@@ -306,6 +307,7 @@ export async function createProviderApplicationComposition({
     taskRuns: runtimeData.taskRuns,
     selectionStore,
     workspaceCatalogStore,
+    preTurnInstructions,
     saveState: api.saveState,
     taskProgress: late.taskProgress,
     taskObserver: late.taskObserver,

@@ -20,6 +20,10 @@ test("server control composition binds runtime metadata and deferred Desktop sna
     restartSnapshot: () => ({ pending: true, waiting: false, blockingCount: 1 }),
     desktopSnapshot: async () => ({ refreshed: true }),
     spawnCapture: async () => ({ code: 0, stdout: "", stderr: "" }),
+    preTurnInstructions: {
+      snapshot: async () => ({ guide: {}, global: {} }),
+      updateGlobal: async (content) => ({ content }),
+    },
     controllerOptions: {
       processId: 42,
       readAutostart: async () => ({ supported: true, enabled: false }),

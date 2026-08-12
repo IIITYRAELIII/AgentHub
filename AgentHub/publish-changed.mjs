@@ -33,6 +33,13 @@ export function classifyPublicationChanges(files) {
   const plan = emptyPlan();
   for (const rawFile of files) {
     const file = rawFile.replaceAll("\\", "/");
+    if (file === "AgentHub/AGENT_HUB_GUIDE.md") {
+      plan.runtime = true;
+      plan.runtimeRestart = true;
+      plan.unitTests = true;
+      plan.surfaceTests = true;
+      continue;
+    }
     if (file === "CHANGELOG.md"
       || file === "AgentHub/config.example.json"
       || file === "AgentHub/architecture-migration-inventory.json"

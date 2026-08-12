@@ -23,6 +23,7 @@ import { writeTextAtomic } from "../infrastructure/persistence/state-store.mjs";
 
 const SOURCE_ROOT = path.resolve(import.meta.dirname, "..", "..");
 const TOP_LEVEL_FILES = new Set([
+  "AGENT_HUB_GUIDE.md",
   "package.json",
   "codex-process-ancestry.ps1",
   "codex-rollout-processes.ps1",

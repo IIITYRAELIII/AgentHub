@@ -11,6 +11,7 @@ import { runtimeLayout, runtimeReleaseDirectory } from "../infrastructure/filesy
 import { UsdRubRateStore } from "../infrastructure/network/exchange-rate.mjs";
 import { migrateMessageBindings } from "../infrastructure/persistence/message-bindings.mjs";
 import { RateLimitHistoryStore } from "../infrastructure/persistence/rate-limit-history.mjs";
+import { PreTurnInstructionStore } from "../infrastructure/persistence/pre-turn-instruction-store.mjs";
 import { installRotatingConsole } from "../infrastructure/persistence/rotating-log.mjs";
 import { RuntimeStateStore } from "../infrastructure/persistence/runtime-state-store.mjs";
 import { TaskReadStateStore } from "../infrastructure/persistence/task-read-state-store.mjs";
@@ -77,6 +78,11 @@ export async function createHubInfrastructure({
     databaseFile: journalDatabaseFile,
   });
   await workspaceCatalogStore.load();
+  const preTurnInstructions = new PreTurnInstructionStore({
+    guideFile: path.join(agentHubRoot, "AGENT_HUB_GUIDE.md"),
+    globalFile: path.join(config.dataDir, "global-pre-turn-instructions.md"),
+  });
+  await preTurnInstructions.guide();
   const taskBoardStore = new TaskBoardStore({ databaseFile: journalDatabaseFile });
   const dashBotStream = config.taskBoard.triageEnabled
     ? ensureDashBotStream(workspaceCatalogStore, {
@@ -210,6 +216,7 @@ export async function createHubInfrastructure({
     codexRolloutContextSanitizer,
     workLogUsageStore,
     workspaceCatalogStore,
+    preTurnInstructions,
     taskBoard,
     miniAppServer,
     publicMiniAppServer,

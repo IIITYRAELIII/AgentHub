@@ -25,6 +25,7 @@ export class ServerControlController {
     restartState = () => ({ pending: false, waiting: false, blockingCount: 0 }),
     desktopSnapshot,
     spawnCapture,
+    preTurnInstructions,
     readAutostart = readAgentHubAutostart,
     setAutostart = setAgentHubAutostart,
     readRootAgentsFile = readRootAgents,
@@ -35,6 +36,7 @@ export class ServerControlController {
     if (!config) throw new TypeError("config is required");
     if (typeof desktopSnapshot !== "function") throw new TypeError("desktopSnapshot is required");
     if (typeof spawnCapture !== "function") throw new TypeError("spawnCapture is required");
+    if (!preTurnInstructions) throw new TypeError("preTurnInstructions is required");
     this.config = config;
     this.startedAt = startedAt;
     this.instanceId = instanceId;
@@ -46,6 +48,7 @@ export class ServerControlController {
     this.restartState = restartState;
     this.desktopSnapshot = desktopSnapshot;
     this.spawnCapture = spawnCapture;
+    this.preTurnInstructions = preTurnInstructions;
     this.readAutostart = readAutostart;
     this.setAutostartImpl = setAutostart;
     this.rootAgentsFile = rootAgentsFile(config.projectRoot);
@@ -112,6 +115,19 @@ export class ServerControlController {
 
   async readRootAgents() {
     return this.readRootAgentsFile({ file: this.rootAgentsFile });
+  }
+
+  async readPreTurnInstructions() {
+    return this.preTurnInstructions.snapshot();
+  }
+
+  async updateGlobalPreTurnInstructions(params) {
+    const document = await this.preTurnInstructions.updateGlobal(params?.content);
+    return {
+      accepted: true,
+      message: "Global pre-turn instructions сохранены",
+      document,
+    };
   }
 
   async updateRootAgents(params) {

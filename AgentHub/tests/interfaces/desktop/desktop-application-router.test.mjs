@@ -8,7 +8,8 @@ function router(calls) {
     "snapshot", "taskHistory", "rateLimitHistory", "usageHistory", "search", "workspaceMessageSearch",
     "openTask", "openTurn", "workspaceMessageOpen", "sendMessage", "taskDiff", "deferredInput",
     "statusDetails", "speakLastAnswer", "restartServer", "setAutostart",
-    "updateServerConfiguration", "readRootAgents", "updateRootAgents", "compactContext", "openAttachment", "submitBugReport",
+    "updateServerConfiguration", "readPreTurnInstructions", "updateGlobalPreTurnInstructions",
+    "readRootAgents", "updateRootAgents", "compactContext", "openAttachment", "submitBugReport",
     "trustedDevices", "createDevicePairing", "revokeDevice",
     "renameWorkspace", "createWorkspaceFromStream", "mergeWorkspaces", "renameStream", "moveStream",
     "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
@@ -124,6 +125,16 @@ test("Desktop application router exposes root AGENTS read and serialized update"
   assert.equal((await control.handleDesktopControl({
     action: "update-root-agents", params: { content: "# Rules" },
   })).params.content, "# Rules");
+});
+
+test("Desktop application router exposes pre-turn instructions read and Global update", async () => {
+  const control = router([]);
+  assert.equal((await control.handleDesktopControl({
+    action: "read-pre-turn-instructions", params: {},
+  })).params.constructor, Object);
+  assert.equal((await control.handleDesktopControl({
+    action: "update-global-pre-turn-instructions", params: { content: "Rules" },
+  })).params.content, "Rules");
 });
 
 test("Desktop application router keeps the legacy Workspace move alias", async () => {

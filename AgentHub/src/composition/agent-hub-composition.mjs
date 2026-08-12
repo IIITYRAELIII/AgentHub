@@ -84,7 +84,7 @@ const localWebSecret = config.miniApp.enabled
 const {
   trustedDeviceStore,
   codexRolloutContextSanitizer,
-  workLogUsageStore, workspaceCatalogStore, taskBoard,
+  workLogUsageStore, workspaceCatalogStore, preTurnInstructions, taskBoard,
   miniAppServer,
   publicMiniAppServer,
   usdRubRateStore,
@@ -268,7 +268,7 @@ const providerApplication = await createProviderApplicationComposition({
   infrastructure: {
     runJournal,
     turnEndNotifications,
-    workLogUsageStore, workspaceCatalogStore,
+    workLogUsageStore, workspaceCatalogStore, preTurnInstructions,
     codexRolloutContextSanitizer,
   },
   taskServices: {
@@ -571,7 +571,7 @@ const interactionShell = createInteractionShellPhase({
     isCodex,
   },
   infrastructure: {
-    trustedDeviceStore, workLogUsageStore, workspaceCatalogStore, taskBoard,
+    trustedDeviceStore, workLogUsageStore, workspaceCatalogStore, preTurnInstructions, taskBoard,
     usdRubRateStore, taskReadStateStore, rateLimitHistoryStore, runJournal,
   },
   provider: providerApplication,

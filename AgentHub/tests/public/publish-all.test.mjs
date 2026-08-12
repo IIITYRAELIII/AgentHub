@@ -240,6 +240,21 @@ test("selective publication records the exact published revision", async () => {
     steps.find((step) => step.label === "Межповерхностные E2E Agent Hub").args.slice(-2),
     ["run", "test:e2e"],
   );
+  assert.deepEqual(
+    classifyPublicationChanges(["AgentHub/AGENT_HUB_GUIDE.md"]),
+    {
+      runtime: true,
+      runtimeRestart: true,
+      worker: false,
+      android: false,
+      desktop: false,
+      vscode: false,
+      unitTests: true,
+      surfaceTests: true,
+      fullTests: false,
+      unknown: [],
+    },
+  );
 });
 
 test("Worker packages only a verified published Android artifact", () => {

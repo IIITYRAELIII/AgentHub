@@ -23,11 +23,27 @@ test("buildCodexCollaborationMode preserves selected model and reasoning", () =>
   });
 });
 
-test("developer instructions preserve Workspace then Stream rule order", () => {
+test("developer instructions preserve Guide, Global, Workspace and Stream order", () => {
   assert.equal(buildCodexDeveloperInstructions({
+    guide: "Guide rule",
+    global: "Global rule",
     workspace: "Workspace rule",
     stream: "Stream rule",
   }), [
+    "<agent_hub_instruction_precedence>",
+    "Within Agent Hub-managed instructions, later layers refine earlier layers:",
+    "Agent Hub Guide < Global pre-turn instructions < Workspace < Stream.",
+    "Use the User Prompt as the task-specific intent unless it conflicts with system, safety, or developer requirements.",
+    "</agent_hub_instruction_precedence>",
+    "",
+    "<agent_hub_guide>",
+    "Guide rule",
+    "</agent_hub_guide>",
+    "",
+    "<global_pre_turn_instructions>",
+    "Global rule",
+    "</global_pre_turn_instructions>",
+    "",
     "<workspace_instructions>",
     "Workspace rule",
     "</workspace_instructions>",
@@ -36,7 +52,7 @@ test("developer instructions preserve Workspace then Stream rule order", () => {
     "Stream rule",
     "</stream_instructions>",
   ].join("\n"));
-  assert.equal(buildCodexDeveloperInstructions(), null);
+  assert.throws(() => buildCodexDeveloperInstructions(), /Guide is required/u);
 });
 
 test("collaboration mode carries effective developer instructions", () => {

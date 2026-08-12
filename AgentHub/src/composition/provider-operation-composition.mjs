@@ -30,6 +30,7 @@ export function createProviderOperationComposition({
   taskRuns,
   selectionStore,
   workspaceCatalogStore,
+  preTurnInstructions,
   saveState,
   taskProgress,
   taskObserver,
@@ -189,11 +190,14 @@ export function createProviderOperationComposition({
     finishProgress: (...args) => taskProgress().finish(...args),
     completeRun: (run) => managedRunLifecycle.complete(run),
     readThread: readCodexThread,
-    developerInstructions: ({ provider, threadId, streamId }) => {
+    developerInstructions: async ({ provider, threadId, streamId }) => {
       const rules = streamId
         ? workspaceCatalogStore.developerRulesForStream?.(streamId)
         : workspaceCatalogStore.developerRulesForThread?.({ provider, threadId });
+      const shared = await preTurnInstructions.snapshot();
       return buildCodexDeveloperInstructions({
+        guide: shared.guide.content,
+        global: shared.global.content,
         workspace: rules?.workspace?.content,
         stream: rules?.stream?.content,
       });

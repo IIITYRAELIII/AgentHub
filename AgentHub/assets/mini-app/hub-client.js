@@ -2579,6 +2579,28 @@ document.addEventListener("agenthub:root-agents-read", () => void (async () => {
     agentHub.toast(hubErrorMessage(error));
   }
 })());
+document.addEventListener("agenthub:pre-turn-instructions-read", () => void (async () => {
+  const editor = window.AgentHubPreTurnInstructionsEditor;
+  try {
+    editor?.setSnapshot(await control("read-pre-turn-instructions"));
+  } catch (error) {
+    editor?.setError(hubErrorMessage(error));
+    agentHub.toast(hubErrorMessage(error));
+  }
+})());
+document.addEventListener("agenthub:global-pre-turn-update", (event) => void (async () => {
+  const editor = window.AgentHubPreTurnInstructionsEditor;
+  try {
+    const result = await control("update-global-pre-turn-instructions", {
+      content: String(event.detail?.content ?? ""),
+    });
+    editor?.setGlobalDocument(result?.document ?? {});
+    agentHub.toast(result?.message ?? "Global pre-turn instructions сохранены");
+  } catch (error) {
+    editor?.setError(hubErrorMessage(error));
+    agentHub.toast(hubErrorMessage(error));
+  }
+})());
 document.addEventListener("agenthub:root-agents-update", (event) => void (async () => {
   const editor = window.AgentHubRootAgentsEditor;
   try {

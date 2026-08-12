@@ -15,6 +15,10 @@ function createController(overrides = {}) {
     restartState: () => ({ pending: true, waiting: true, blockingCount: 2 }),
     desktopSnapshot: async () => ({ refreshed: true }),
     spawnCapture: async () => ({ code: 0, stdout: "", stderr: "" }),
+    preTurnInstructions: {
+      snapshot: async () => ({ guide: { content: "Guide" }, global: { content: "" } }),
+      updateGlobal: async (content) => ({ content }),
+    },
     readAutostart: async () => ({ supported: true, enabled: true }),
     ...overrides,
   });
@@ -96,4 +100,21 @@ test("server controller reads and updates only the configured root AGENTS.md", a
   assert.match(calls[0][1].file, /workspace[\\/]AGENTS\.md$/u);
   assert.equal(calls[1][1], "# Updated");
   assert.equal(calls[1][2].file, calls[0][1].file);
+});
+
+test("server controller exposes Guide and updates only Global pre-turn instructions", async () => {
+  const calls = [];
+  const controller = createController({
+    preTurnInstructions: {
+      snapshot: async () => ({ guide: { content: "Guide" }, global: { content: "Global" } }),
+      updateGlobal: async (content) => {
+        calls.push(content);
+        return { content, bytes: 7, maximumBytes: 32_768, exists: true };
+      },
+    },
+  });
+  assert.equal((await controller.readPreTurnInstructions()).guide.content, "Guide");
+  const result = await controller.updateGlobalPreTurnInstructions({ content: "Updated" });
+  assert.deepEqual(calls, ["Updated"]);
+  assert.equal(result.document.content, "Updated");
 });

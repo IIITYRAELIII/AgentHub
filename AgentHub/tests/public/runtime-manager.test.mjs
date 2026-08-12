@@ -46,6 +46,7 @@ async function fixture() {
   );
   await writeFile(path.join(sourceRoot, "start.ps1"), "node agent-hub-server.mjs\n", "utf8");
   await writeFile(path.join(sourceRoot, "package.json"), "{}\n", "utf8");
+  await writeFile(path.join(sourceRoot, "AGENT_HUB_GUIDE.md"), "Guide\n", "utf8");
   await writeFile(path.join(sourceRoot, "config.json"), JSON.stringify({
     telegramBotToken: "123:secret",
     allowedUserIds: [1],
@@ -67,6 +68,7 @@ test("deployRuntime publishes an atomic release without tests or local config", 
     /layered/u,
   );
   assert.match(await readFile(path.join(first.releaseRoot, "work-log.css"), "utf8"), /display: grid/);
+  assert.equal(await readFile(path.join(first.releaseRoot, "AGENT_HUB_GUIDE.md"), "utf8"), "Guide\n");
   if (process.platform === "win32") {
     assert.ok((await readFile(path.join(runtimeRoot, "AgentHub.RuntimeHost.exe"))).length > 0);
     assert.ok((await readFile(path.join(first.releaseRoot, "AgentHub.RuntimeHost.exe"))).length > 0);

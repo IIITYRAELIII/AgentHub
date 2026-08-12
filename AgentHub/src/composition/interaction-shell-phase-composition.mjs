@@ -68,6 +68,7 @@ export function createInteractionShellPhase({
     }),
     desktopSnapshot: api.desktopSnapshot,
     spawnCapture: provider.spawnCapture,
+    preTurnInstructions: infrastructure.preTurnInstructions,
   });
 
   const desktopShell = createDesktopShellComposition({
