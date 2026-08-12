@@ -28,6 +28,7 @@ html[data-theme="reliquary"] {
   --reliquary-message-flourish: var(--reliquary-message-flourish-asset, url("./message-flourish.webp"));
   --reliquary-stream-divider: var(--reliquary-stream-divider-asset, url("./stream-divider.webp"));
   --reliquary-panel-junction: var(--reliquary-panel-junction-asset, url("./panel-junction.webp"));
+  --reliquary-stream-divider-half-gap: 0.175rem;
   --reliquary-stone:
     linear-gradient(rgb(3 5 7 / 76%), rgb(7 8 9 / 80%)),
     var(--reliquary-basalt) center / 38rem 38rem;
@@ -119,9 +120,9 @@ html[data-theme="reliquary"] {
   --shell-chat-gap: 0.28rem;
   --shell-chat-radius: 2px;
   --shell-stream-tabs-background: var(--reliquary-iron-surface);
-  --shell-stream-tabs-border: 9px solid transparent;
-  --shell-stream-tabs-border-bottom: 9px solid transparent;
-  --shell-stream-tabs-border-image: var(--reliquary-panel-frame) 125 / 9px stretch;
+  --shell-stream-tabs-border: 1px solid rgb(135 128 117 / 34%);
+  --shell-stream-tabs-border-bottom: 1px solid rgb(135 128 117 / 34%);
+  --shell-stream-tabs-border-image: none;
   --shell-stream-tabs-padding: 0.1rem 0.14rem;
   --shell-stream-tabs-radius: 2px;
   --shell-stream-tab-background: transparent;
@@ -307,13 +308,47 @@ html[data-theme="reliquary"] .stream-tabs > .stream-tab:not(:last-child)::after 
   height: calc(100% + 0.7rem);
   pointer-events: none;
   position: absolute;
-  right: -0.68rem;
+  right: calc(-0.56rem - var(--reliquary-stream-divider-half-gap));
   top: -0.35rem;
   width: 1.12rem;
   z-index: 5;
 }
 
 @media (min-width: 860px) {
+  html[data-theme="reliquary"][data-view="chat"]:not([data-surface="mobile"]) .stream-tabs,
+  html[data-theme="reliquary"][data-view="chat"]:not([data-surface="mobile"]) .composer {
+    background: rgb(5 7 9 / 88%);
+    border: 1px solid rgb(135 128 117 / 34%);
+    border-image: none;
+    box-shadow: inset 0 1px 0 rgb(229 220 205 / 4%), 0 10px 28px -26px #000;
+  }
+
+  html[data-theme="reliquary"][data-view="chat"]:not([data-surface="mobile"]) .composer-input,
+  html[data-theme="reliquary"][data-view="chat"]:not([data-surface="mobile"]) .composer-main > .chip-button,
+  html[data-theme="reliquary"][data-view="chat"]:not([data-surface="mobile"]) .composer-main > .icon-button,
+  html[data-theme="reliquary"][data-view="chat"]:not([data-surface="mobile"]) .composer-send,
+  html[data-theme="reliquary"][data-view="chat"]:not([data-surface="mobile"]) .context-usage {
+    background-color: rgb(10 12 14 / 94%);
+    background-image: none;
+    border-color: rgb(135 128 117 / 34%);
+    box-shadow: inset 0 1px 0 rgb(229 220 205 / 4%);
+  }
+
+  html[data-theme="reliquary"][data-view="chat"]:not([data-surface="mobile"]) .composer-input:focus-within {
+    border-color: var(--accent-line);
+    box-shadow: 0 0 0 1px rgb(181 69 50 / 14%);
+  }
+
+  html[data-theme="reliquary"][data-view="chat"]:not([data-surface="mobile"]) .composer-send:not(:disabled) {
+    background-color: rgb(58 22 18 / 94%);
+    background-image: none;
+    border-color: #8d3d31;
+  }
+
+  html[data-theme="reliquary"][data-focus-mode="true"] {
+    --reliquary-stream-divider-half-gap: 0.06rem;
+  }
+
   html[data-theme="reliquary"] .workspace::before,
   html[data-theme="reliquary"] .workspace::after,
   html[data-theme="reliquary"] .chat::before,
