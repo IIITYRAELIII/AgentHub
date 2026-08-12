@@ -403,10 +403,14 @@
                   <span class="setting-name">Режим</span>
                   <div class="setting-options" data-dialog-options="mode"></div>
                 </div>
-                <div class="setting-stack" data-setting="project">
-                  <span class="setting-name">Проект</span>
-                  <div class="setting-options setting-options-column" data-dialog-options="project"></div>
-                </div>
+                <label class="setting-stack dialog-working-directory">
+                  <span class="setting-name">Рабочая директория Stream</span>
+                  <input type="text" data-dialog-working-directory
+                    placeholder="Наследуется от Workspace" autocomplete="off" spellcheck="false">
+                  <span class="switch-note" data-dialog-working-directory-note>
+                    Применится при создании следующего Thread.
+                  </span>
+                </label>
                 <label class="setting-switch">
                   <input type="checkbox" data-dialog-toggle="autoApprove">
                   <span class="switch-text">Автоподтверждение</span>
@@ -602,6 +606,11 @@
           <textarea rows="4" maxlength="1000" data-workspace-card-comment></textarea>
         </label>
         <label>
+          <span>Рабочая директория</span>
+          <input type="text" maxlength="1000" data-workspace-card-working-directory
+            placeholder="Например, D:\projects\Utilities\AgentHub" autocomplete="off" spellcheck="false">
+        </label>
+        <label>
           <span>Порядковый номер в Дашборде</span>
           <input type="number" min="1" step="1" data-workspace-card-order required>
         </label>
@@ -629,7 +638,8 @@
           <span><strong data-journal-total-duration>—</strong> работы</span>
         </div>
         <div class="journal-grouping-tabs" role="group" aria-label="Режим журнала">
-          <button type="button" data-journal-grouping="task" aria-pressed="true">Воркспейсы</button>
+          <button type="button" data-journal-grouping="stream" aria-pressed="false">Потоки</button>
+          <button type="button" data-journal-grouping="workspace" aria-pressed="true">Воркспейсы</button>
           <button type="button" data-journal-grouping="date" aria-pressed="false">День</button>
           <button type="button" data-journal-grouping="week" aria-pressed="false">Неделя</button>
           <button type="button" data-journal-grouping="month" aria-pressed="false">Месяц</button>
@@ -695,20 +705,6 @@
             <input type="checkbox" data-toggle="includeClaudeUsage">
             <span class="switch-text">Учитывать расход Claude
               <span class="switch-note">В итогах журнала и на графике расхода.</span>
-            </span>
-            <span class="switch-track" aria-hidden="true"></span>
-          </label>
-          <label class="setting-switch">
-            <input type="checkbox" data-token-breakdown-toggle>
-            <span class="switch-text">Токены в шапке дня
-              <span class="switch-note">Вход, кэш, выход, думы и ImageGen.</span>
-            </span>
-            <span class="switch-track" aria-hidden="true"></span>
-          </label>
-          <label class="setting-switch">
-            <input type="checkbox" data-stream-collapse-toggle>
-            <span class="switch-text">Сворачивать Streams до Workspace
-              <span class="switch-note">В режиме «День» применяется автоматически.</span>
             </span>
             <span class="switch-track" aria-hidden="true"></span>
           </label>

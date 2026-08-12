@@ -127,10 +127,10 @@ html[data-theme="metropolis"] .journal details[data-work-log-turn-details] {
 }
 
 /* Hundreds of independently blurred turn cards exhaust Electron's compositor
-   in task grouping and leave painted frames with missing text. Task groups
+   in stream/workspace grouping and leave painted frames with missing text. Groups
    already sit on a glass panel, so use one denser fill instead of a backdrop
    layer per row. */
-html[data-theme="metropolis"][data-grouping="task"]
+html[data-theme="metropolis"]:is([data-grouping="stream"], [data-grouping="workspace"])
   .journal
   details[data-work-log-turn-details] {
   backdrop-filter: none;

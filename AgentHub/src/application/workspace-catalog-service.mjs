@@ -16,9 +16,9 @@ export class WorkspaceCatalogService {
     return this.#store.hierarchy();
   }
 
-  createWorkspace({ name, comment = "", streamName = null } = {}) {
+  createWorkspace({ name, comment = "", streamName = null, settings = {} } = {}) {
     return this.#store.transaction(() => {
-      const workspace = this.#store.createWorkspace({ name, comment });
+      const workspace = this.#store.createWorkspace({ name, comment, settings });
       const stream = this.#store.createStream({ workspaceId: workspace.id, name: streamName });
       return { workspace, stream };
     });
@@ -26,6 +26,10 @@ export class WorkspaceCatalogService {
 
   renameWorkspace({ workspaceId, name } = {}) {
     return this.#store.renameWorkspace(workspaceId, name);
+  }
+
+  updateWorkspaceSettings({ workspaceId, settings = {} } = {}) {
+    return this.#store.updateWorkspaceSettings(workspaceId, settings);
   }
 
   createWorkspaceFromStream({ streamId, name } = {}) {

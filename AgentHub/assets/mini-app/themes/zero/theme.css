@@ -203,15 +203,13 @@ html[data-theme="zero"] .activity-rail-head {
 
 html[data-theme="zero"] .task-rail-title,
 html[data-theme="zero"] .activity-rail-toggle,
-html[data-theme="zero"] .task-project-heading,
 html[data-theme="zero"] .workspace-task-panel > header strong {
   color: var(--text-soft);
   font-weight: 500;
   letter-spacing: var(--label-spacing);
 }
 
-html[data-theme="zero"] .task-count,
-html[data-theme="zero"] .task-project-count {
+html[data-theme="zero"] .task-count {
   background: transparent;
   color: var(--text-faint);
   padding-inline: 0.2rem;

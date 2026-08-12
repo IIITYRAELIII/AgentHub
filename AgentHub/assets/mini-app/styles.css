@@ -1157,33 +1157,6 @@ main {
   display: none;
 }
 
-/* При включённом объединении потоки исчезают как уровень навигации. Workspace
-   занимает прежнюю компактную колонку задачи, расход раскрывается под ним, а
-   справа остаются последний ход и кнопка догрузки остальных. */
-.journal details[data-work-log-workspace][data-work-log-streams-collapsed][open]
-  > summary[data-work-log-workspace-header] {
-  display: none;
-}
-
-.journal div[data-work-log-workspace-turns] > div[data-work-log-row] {
-  display: grid;
-  grid-template-columns: 17.5rem minmax(0, 1fr);
-}
-
-.journal div[data-work-log-workspace-turns]
-  > div[data-work-log-row]
-  > div[data-work-log-task-cell] {
-  position: static;
-  top: auto;
-  visibility: visible;
-}
-
-.journal div[data-work-log-workspace-turns]
-  > div[data-work-log-row]
-  > div[data-work-log-turn-list] {
-  grid-column: 2;
-}
-
 .journal div[data-work-log-task-content]:empty {
   display: none;
 }
@@ -2040,7 +2013,7 @@ main {
   gap: 0.3rem;
 }
 
-html[data-grouping="task"]
+html:is([data-grouping="stream"], [data-grouping="workspace"])
   .journal
   details[data-work-log-turn-details]
   > summary {
@@ -2792,22 +2765,6 @@ html[data-surface="mobile"] .journal div[data-work-log-row] {
   padding: 0.35rem 0 0.5rem;
 }
 
-html[data-surface="mobile"]
-  .journal
-  div[data-work-log-workspace-turns]
-  > div[data-work-log-row]
-  > div[data-work-log-task-cell] {
-  display: block;
-}
-
-html[data-surface="mobile"]
-  .journal
-  div[data-work-log-workspace-turns]
-  > div[data-work-log-row]
-  > div[data-work-log-turn-list] {
-  grid-column: auto;
-}
-
 html[data-surface="mobile"] .journal div[data-work-log-task-cell] {
   padding: 0.2rem;
   position: static;
@@ -2964,7 +2921,7 @@ html[data-surface="mobile"] .journal [data-work-log-task-group-turns] {
   padding: 0.35rem;
 }
 
-html[data-surface="mobile"][data-grouping="task"]
+html[data-surface="mobile"]:is([data-grouping="stream"], [data-grouping="workspace"])
   .journal
   details[data-work-log-turn-details]
   > summary {
@@ -3402,46 +3359,6 @@ html[data-view="journal"] .settings-body > [data-journal-only] {
   min-height: 0;
   overflow-y: auto;
   padding: 0 0.5rem 0.6rem;
-}
-
-.task-project-group {
-  list-style: none;
-  margin: 0 0 0.45rem;
-}
-
-.task-project-heading {
-  align-items: center;
-  color: var(--text-faint);
-  display: flex;
-  font-size: 0.64rem;
-  font-weight: 700;
-  gap: 0.45rem;
-  letter-spacing: var(--label-spacing);
-  padding: 0.35rem 0.6rem 0.22rem;
-  text-transform: uppercase;
-}
-
-.task-project-name {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.task-project-count {
-  background: var(--surface-2);
-  border-radius: var(--radius-chip);
-  flex: 0 0 auto;
-  font-family: var(--font-numeric);
-  font-size: 0.58rem;
-  letter-spacing: 0;
-  padding: 0.04rem 0.35rem;
-}
-
-.task-project-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
 }
 
 html[data-surface="mobile"] .journal summary[data-work-log-workspace-header] {
@@ -8033,8 +7950,25 @@ html[data-surface="mobile"] .chat-stop-bottom > span {
 }
 
 /* Разбивка по видам токенов включается в общей панели настроек. */
-html[data-token-breakdown="off"] .journal span[data-day-usage-breakdown] {
+.journal span[data-day-usage-breakdown] {
   display: none;
+}
+
+.dialog-working-directory input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 9px 10px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  font: inherit;
+}
+
+.dialog-working-directory input:focus {
+  border-color: var(--accent);
+  outline: 2px solid color-mix(in srgb, var(--accent) 24%, transparent);
+  outline-offset: 1px;
 }
 
 .setting-label {
@@ -9508,7 +9442,8 @@ details[open] > summary[data-journal-ledger-summary] [data-journal-ledger-title]
   box-shadow: none;
 }
 
-html[data-grouping="task"] .journal [data-journal-turn-table]
+html:is([data-grouping="stream"], [data-grouping="workspace"])
+  .journal [data-journal-turn-table]
   details[data-work-log-turn-details] > summary,
 .journal [data-journal-turn-table] details[data-work-log-turn-details] > summary {
   grid-template-columns: 15.5rem minmax(0, 1fr) auto auto;

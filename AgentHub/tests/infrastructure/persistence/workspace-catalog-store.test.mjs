@@ -64,6 +64,19 @@ test("Workspace comment is a persisted catalog property", async (t) => {
   assert.equal(store.hierarchy().find((item) => item.id === workspace.id).comment, "Дашборд и интеграции");
 });
 
+test("Workspace working directory is persisted in settings", async (t) => {
+  const store = await fixture(t);
+  const workspace = store.createWorkspace({ name: "Agent HUB" });
+  const updated = store.updateWorkspaceSettings(workspace.id, {
+    workingDirectory: "D:/work/AgentHub",
+  });
+  assert.deepEqual(updated.settings, { workingDirectory: "D:/work/AgentHub" });
+  assert.deepEqual(
+    store.hierarchy().find((item) => item.id === workspace.id).settings,
+    updated.settings,
+  );
+});
+
 test("an empty Stream persists the settings for its future Thread", async (t) => {
   const store = await fixture(t);
   const workspace = store.createWorkspace({ name: "Agent HUB" });

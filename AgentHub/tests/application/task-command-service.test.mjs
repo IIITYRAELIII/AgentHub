@@ -61,14 +61,16 @@ function fixture({ run = null, createTask = null } = {}) {
     switchProvider: async () => {},
     prepareTaskCreation: async (value) => {
       selected.activeProvider = value.provider;
-      selected.activeProjectRoot = value.project ?? selected.activeProjectRoot;
+      selected.activeProjectRoot = value.workingDirectory ?? value.project ?? selected.activeProjectRoot;
       selected.streamId = value.streamId;
       selected.threadId = null;
       selected.activeThreadTitle = value.title;
       events.push(["prepare", value]);
     },
     workspaceCatalog: {
-      workspace: (id) => id === "workspace-1" ? { id, name: "Existing" } : null,
+      workspace: (id) => id === "workspace-1" ? {
+        id, name: "Existing", settings: { workingDirectory: "D:/work/AgentHub" },
+      } : null,
       stream: (id) => id === "stream-1" ? {
         id,
         workspaceId: "workspace-1",
@@ -178,6 +180,7 @@ test("task command service continues an existing Stream in a new provider Thread
     model: "gpt-5",
     reasoning: "high",
     project: "D:/later",
+    workingDirectory: "D:/work/AgentHub",
     autoApprove: false,
     streamId: "stream-1",
     title: "Existing",
@@ -187,7 +190,9 @@ test("task command service continues an existing Stream in a new provider Thread
 test("task command service rotates inside the same Stream after context transfer", async () => {
   const { service, events } = fixture();
   const result = await service.rotate({ streamId: "stream-1" });
-  assert.equal(events.find(([name]) => name === "rotate")[1].streamId, "stream-1");
+  const target = events.find(([name]) => name === "rotate")[1];
+  assert.equal(target.streamId, "stream-1");
+  assert.equal(target.workingDirectory, "D:/work/AgentHub");
   assert.equal(result.rotation.sourceThreadId, "thread-1");
   assert.equal(result.rotation.threadId, "thread-rotated");
 });

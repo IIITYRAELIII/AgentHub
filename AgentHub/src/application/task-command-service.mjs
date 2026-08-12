@@ -188,9 +188,16 @@ export class TaskCommandService {
         name: params.streamName,
       });
     }
+    const workingDirectory = [
+      params.workingDirectory,
+      streamSettings.workingDirectory,
+      workspace?.settings?.workingDirectory,
+      streamSettings.project,
+    ].map((value) => String(value ?? "").trim()).find(Boolean) ?? "";
     if (typeof this.prepareTaskCreation === "function") {
       await this.prepareTaskCreation({
         ...streamSettings,
+        workingDirectory,
         provider,
         streamId: stream.id,
         title: workspace?.name ?? "",
@@ -263,7 +270,16 @@ export class TaskCommandService {
     const workspace = this.workspaceCatalog.workspace(stream.workspaceId);
     if (!workspace) throw new Error("Workspace не найден");
 
-    const rotated = await this.rotateStream({ ...target, streamId: stream.id });
+    const workingDirectory = [
+      params.workingDirectory,
+      stream.settings?.workingDirectory,
+      workspace.settings?.workingDirectory,
+    ].map((value) => String(value ?? "").trim()).find(Boolean) ?? "";
+    const rotated = await this.rotateStream({
+      ...target,
+      streamId: stream.id,
+      ...(workingDirectory ? { workingDirectory } : {}),
+    });
     const threadId = String(rotated?.thread?.id ?? "").trim();
     if (!threadId) throw new Error("Codex App Server не создал новый Thread");
     return {

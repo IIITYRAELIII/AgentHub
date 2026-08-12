@@ -13,19 +13,58 @@ async function journalViewApi() {
   return window.AgentHubJournalView;
 }
 
-test("journal grouping keeps legacy values and defaults new state to workspaces", async () => {
+test("journal grouping exposes stable stream and workspace modes", async () => {
   const api = await journalViewApi();
-  assert.equal(api.normalizeGrouping("task"), "task");
+  assert.equal(api.normalizeGrouping("task"), "workspace");
+  assert.equal(api.normalizeGrouping("stream"), "stream");
+  assert.equal(api.normalizeGrouping("workspace"), "workspace");
   assert.equal(api.normalizeGrouping("date"), "date");
-  assert.equal(api.normalizeGrouping("unknown"), "task");
-  assert.equal(api.groupingLabel("task"), "Воркспейсы");
+  assert.equal(api.normalizeGrouping("unknown"), "workspace");
+  assert.equal(api.groupingLabel("stream"), "Потоки");
+  assert.equal(api.groupingLabel("workspace"), "Воркспейсы");
   assert.equal(api.primaryColumn("month"), "Месяц");
+});
+
+test("stream and workspace identities use stable catalog ids", async () => {
+  const api = await journalViewApi();
+  const row = {
+    provider: "codex",
+    threadId: "thread-new",
+    workspaceId: "workspace-1",
+    streamId: "stream-1",
+  };
+  assert.deepEqual(
+    { ...api.groupIdentity(row, "stream") },
+    {
+      key: "stream\u001fworkspace-1\u001fstream-1",
+      provider: "stream",
+      threadId: "workspace-1:stream-1",
+    },
+  );
+  assert.deepEqual(
+    { ...api.groupIdentity(row, "workspace") },
+    { key: "workspace\u001fworkspace-1", provider: "workspace", threadId: "workspace-1" },
+  );
+});
+
+test("Claude Work grouping remains available in both hierarchy modes", async () => {
+  const api = await journalViewApi();
+  const row = {
+    provider: "claude",
+    threadId: "thread-1",
+    workspaceId: "workspace-1",
+    streamId: "stream-1",
+  };
+  const expected = { key: "claude\u001fwork", provider: "claude", threadId: "work" };
+  assert.deepEqual({ ...api.groupIdentity(row, "stream", true) }, expected);
+  assert.deepEqual({ ...api.groupIdentity(row, "workspace", true) }, expected);
 });
 
 test("day grouping keeps historical days lazy while aggregate views require them", async () => {
   const api = await journalViewApi();
   assert.equal(api.requiresCompleteHistory("date"), false);
-  assert.equal(api.requiresCompleteHistory("task"), true);
+  assert.equal(api.requiresCompleteHistory("stream"), true);
+  assert.equal(api.requiresCompleteHistory("workspace"), true);
   assert.equal(api.requiresCompleteHistory("week"), true);
   assert.equal(api.requiresCompleteHistory("month"), true);
 });

@@ -378,7 +378,6 @@ html[data-theme="kashyyyk"] .composer-send:not(:disabled) {
 
 html[data-theme="kashyyyk"] .task-rail-title,
 html[data-theme="kashyyyk"] .activity-rail-toggle,
-html[data-theme="kashyyyk"] .task-project-heading,
 html[data-theme="kashyyyk"] .eyebrow {
   color: #b9a77e;
   letter-spacing: 0.12em;

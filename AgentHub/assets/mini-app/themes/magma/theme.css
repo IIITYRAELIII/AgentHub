@@ -348,7 +348,6 @@ html[data-theme="magma"] .view-tab[aria-pressed="true"] {
 
 html[data-theme="magma"] .task-rail-title,
 html[data-theme="magma"] .activity-rail-toggle,
-html[data-theme="magma"] .task-project-heading,
 html[data-theme="magma"] .eyebrow {
   color: #aeb5bb;
   letter-spacing: 0.13em;

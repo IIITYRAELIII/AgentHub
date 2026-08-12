@@ -11,6 +11,7 @@ function fixture() {
     createWorkspace: (value) => (calls.push(["createWorkspace", value]), { id: "workspace-1", ...value }),
     createStream: (value) => (calls.push(["createStream", value]), { id: "stream-1", ...value }),
     renameWorkspace: (...args) => calls.push(["renameWorkspace", ...args]),
+    updateWorkspaceSettings: (...args) => (calls.push(["updateWorkspaceSettings", ...args]), { settings: args[1] }),
     mergeWorkspaces: (...args) => calls.push(["mergeWorkspaces", ...args]),
     renameStream: (...args) => calls.push(["renameStream", ...args]),
     updateStreamSettings: (...args) => (calls.push(["updateStreamSettings", ...args]), { settings: args[1] }),
@@ -31,7 +32,7 @@ test("createWorkspace creates its first empty Stream and comment atomically", ()
   assert.equal(result.workspace.id, "workspace-1");
   assert.equal(result.stream.id, "stream-1");
   assert.deepEqual(calls, [
-    ["createWorkspace", { name: "Agent HUB", comment: "Локальный Hub" }],
+    ["createWorkspace", { name: "Agent HUB", comment: "Локальный Hub", settings: {} }],
     ["createStream", { workspaceId: "workspace-1", name: "Themes" }],
   ]);
 });
@@ -65,6 +66,15 @@ test("Stream settings are stored independently from its future Thread", () => {
     ["createStream", { workspaceId: "workspace-1", name: "Draft", settings }],
     ["updateStreamSettings", "stream-1", settings],
   ]);
+});
+
+test("Workspace settings provide an inherited working directory", () => {
+  const { service, calls } = fixture();
+  const settings = { workingDirectory: "D:/work/AgentHub" };
+  assert.deepEqual(service.updateWorkspaceSettings({
+    workspaceId: "workspace-1", settings,
+  }), { settings });
+  assert.deepEqual(calls.at(-1), ["updateWorkspaceSettings", "workspace-1", settings]);
 });
 
 test("moving a Stream can place it before a sibling in the same transaction", () => {

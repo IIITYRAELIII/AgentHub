@@ -248,7 +248,9 @@ export class CodexContextMaintenanceService {
       await this.ensureTransport();
       const sourceThread = resolvedSource?.thread ?? {};
       const startParams = {
-        cwd: normalizedId(sourceThread.cwd ?? target?.sessionCwd ?? target?.projectRoot) || undefined,
+        cwd: normalizedId(
+          target?.workingDirectory ?? sourceThread.cwd ?? target?.sessionCwd ?? target?.projectRoot,
+        ) || undefined,
         model: normalizedId(target?.model) || undefined,
         modelProvider: normalizedId(sourceThread.modelProvider) || undefined,
         ephemeral: false,

@@ -24,7 +24,7 @@ export function createApplicationCommandService({ handlers }) {
   const required = [
     "selectTask", "createTask", "rotateStream", "renameTask", "archiveTask",
     "updateSetting", "cancelRun", "resolveApproval",
-    "renameWorkspace", "createWorkspace", "createWorkspaceFromStream", "mergeWorkspaces", "createStream",
+    "renameWorkspace", "updateWorkspaceSettings", "createWorkspace", "createWorkspaceFromStream", "mergeWorkspaces", "createStream",
     "renameStream", "updateStreamSettings", "moveStream",
   ];
   for (const name of required) {
@@ -93,6 +93,10 @@ export function createApplicationCommandService({ handlers }) {
     .register("workspace.rename", {
       mutating: true, target: "none", lane: "global",
       handler: ({ payload }) => handlers.renameWorkspace(payload),
+    })
+    .register("workspace.settings.update", {
+      mutating: true, target: "none", lane: "global",
+      handler: ({ payload }) => handlers.updateWorkspaceSettings(payload),
     })
     .register("workspace.create", {
       mutating: true, target: "none", lane: "global",

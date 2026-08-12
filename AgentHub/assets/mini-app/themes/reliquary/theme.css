@@ -407,7 +407,6 @@ html[data-theme="reliquary"] .task-item {
   clip-path: polygon(13px 0, 100% 0, 100% 100%, 0 100%, 0 13px);
 }
 
-html[data-theme="reliquary"] .task-project-group + .task-project-group,
 html[data-theme="reliquary"] .task-item + .task-item {
   border-top: 1px dashed rgba(155, 120, 69, .3);
 }

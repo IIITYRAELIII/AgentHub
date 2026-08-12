@@ -528,9 +528,10 @@ test("general settings and current-dialog settings stay separate", () => {
   assert.match(html, /data-dialog-options="model"/u);
   assert.match(html, /data-dialog-options="reasoning"/u);
   assert.match(html, /data-dialog-options="mode"/u);
-  assert.match(html, /data-dialog-options="project"/u);
+  assert.match(html, /data-dialog-working-directory/u);
+  assert.doesNotMatch(html, /data-dialog-options="project"/u);
   assert.match(app, /chatPane\.toggleAttribute\("data-dialog-settings-open", visible\)/u);
-  assert.match(html, /data-token-breakdown-toggle/u);
+  assert.doesNotMatch(html, /data-token-breakdown-toggle/u);
   assert.match(html, /data-claude-group-toggle/u);
   assert.match(html, /data-usage-unit="rub">₽<\/button>/u);
   assert.match(html, /data-usage-unit="pte"/u);
@@ -557,7 +558,7 @@ test("general settings and current-dialog settings stay separate", () => {
     /data-usage-unit="pte">ПТЭ<\/button>[\s\S]*?data-usage-unit="cr">cr<\/button>[\s\S]*?data-usage-unit="\$">\$<\/button>[\s\S]*?data-usage-unit="rub">₽<\/button>/u,
   );
   assert.match(app, /`курс ЦБ РФ \$\{spacedNumber\(usdRubRate, 4\)\} за \$1/u);
-  assert.match(app, /agent-hub-token-breakdown/u);
+  assert.doesNotMatch(app, /agent-hub-token-breakdown/u);
   assert.match(app, /agent-hub-group-claude/u);
   assert.match(app, /agent-hub-usage-unit/u);
   assert.match(html, /data-toggle="includeClaudeUsage"/u);
@@ -1052,7 +1053,7 @@ test("journal width stays fixed while days and turns are expanded", () => {
   );
 });
 
-test("journal keeps Workspace and Stream groups expandable", () => {
+test("journal keeps explicit Workspace and Stream grouping modes", () => {
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   const styles = fs.readFileSync(
     require.resolve("../assets/mini-app/styles.css"),
@@ -1074,34 +1075,13 @@ test("journal keeps Workspace and Stream groups expandable", () => {
   assert.match(styles, /\.journal summary\[data-work-log-stream-summary\]\s*\{[^}]*cursor:\s*pointer;[^}]*display:\s*grid;/su);
   assert.match(app, /function upgradeLegacyWorkspaceGroups\(scope = journal\)/u);
   assert.match(app, /function decorateLegacyStreamTurns\(scope = journal\)/u);
-  assert.match(app, /function flattenWorkspaceStreams\(scope = journal\)/u);
-  assert.match(
-    app,
-    /flattenWorkspaceStreams\(scope\)[\s\S]*streamContainer\.replaceChildren\(aggregateRow\)/u,
-  );
-  assert.match(
-    app,
-    /entries\.sort[\s\S]*replaceCollapsedTurnList\(turnList, entries\)/u,
-  );
-  assert.match(app, /function applyStreamCollapse\(value,/u);
-  assert.match(app, /function setStreamsCollapsed\(collapsed,/u);
+  assert.doesNotMatch(app, /function flattenWorkspaceStreams\(scope = journal\)/u);
+  assert.doesNotMatch(app, /function applyStreamCollapse\(value,/u);
+  assert.doesNotMatch(app, /function setStreamsCollapsed\(collapsed,/u);
   assert.match(app, /agent-hub-collapse-streams/u);
-  assert.match(
-    styles,
-    /\.journal div\[data-work-log-workspace-turns\] > div\[data-work-log-row\]\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*17\.5rem minmax\(0, 1fr\);/su,
-  );
-  assert.match(
-    styles,
-    /data-work-log-streams-collapsed\]\[open\][\s\S]*summary\[data-work-log-workspace-header\][\s\S]*display:\s*none;/u,
-  );
-  assert.match(app, /if \(collapseStreams\) \{[\s\S]*details\.open = true;/u);
-  assert.match(app, /taskContent\.textContent = workspaceName/u);
-  assert.match(app, /usage\.replaceChildren/u);
-  assert.match(app, /workspace\.dataset\.workLogStreamsCollapsed/u);
-  assert.match(
-    styles,
-    /data-work-log-workspace-turns[\s\S]*?data-work-log-task-cell[\s\S]*?position:\s*static;[\s\S]*?top:\s*auto;/u,
-  );
+  assert.doesNotMatch(styles, /data-work-log-streams-collapsed/u);
+  assert.match(app, /taskGroupsFrom\(source, \{ hierarchy: mode \}\)/u);
+  assert.match(app, /JournalView\.groupIdentity/u);
   assert.match(styles, /span\[data-work-log-duration-summary\][\s\S]*?grid-column:\s*1 \/ -1;/u);
   assert.match(
     styles,
@@ -1120,7 +1100,7 @@ test("task-grouped journal pages large histories without per-row Metropolis blur
   assert.match(app, /details\[data-work-log-task-group\]\[open\][\s\S]*appendTaskGroupTurnPage/u);
   assert.match(
     styles,
-    /html\[data-theme="metropolis"\]\[data-grouping="task"\][\s\S]*details\[data-work-log-turn-details\][\s\S]*backdrop-filter:\s*none/u,
+    /html\[data-theme="metropolis"\]:is\(\[data-grouping="stream"\], \[data-grouping="workspace"\]\)[\s\S]*details\[data-work-log-turn-details\][\s\S]*backdrop-filter:\s*none/u,
   );
 });
 
@@ -1536,13 +1516,12 @@ test("left-edge swipe uses in-app back and prevents browser history navigation",
   assert.match(app, /function navigateBack\(\) \{\s*saveDraft\(\);[\s\S]*root\.dataset\.view !== "chat"[\s\S]*setPane\("tasks"\)/u);
 });
 
-test("task list groups named projects and keeps unassigned tasks visible", () => {
+test("task list no longer exposes legacy Project groups", () => {
   const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
   const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
-  assert.match(app, /const hasProject = visible\.some/u);
-  assert.match(app, /function renderTaskProjectGroup\(/u);
-  assert.match(app, /text: project \|\| "Без проекта"/u);
-  assert.match(styles, /\.task-project-heading\s*\{/u);
+  assert.doesNotMatch(app, /const hasProject = visible\.some/u);
+  assert.doesNotMatch(app, /function renderTaskProjectGroup\(/u);
+  assert.doesNotMatch(styles, /\.task-project-heading\s*\{/u);
 });
 
 test("new Workspace Thread becomes the selected chat before its title is applied", () => {

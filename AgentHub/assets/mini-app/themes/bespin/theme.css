@@ -328,7 +328,6 @@ html[data-theme="bespin"] .composer-send:not(:disabled) {
 
 html[data-theme="bespin"] .task-rail-title,
 html[data-theme="bespin"] .activity-rail-toggle,
-html[data-theme="bespin"] .task-project-heading,
 html[data-theme="bespin"] .eyebrow {
   color: #4e4650;
   letter-spacing: 0.08em;

@@ -1,24 +1,28 @@
 (() => {
   "use strict";
 
-  const GROUPINGS = Object.freeze(["task", "date", "week", "month"]);
+  const GROUPINGS = Object.freeze(["stream", "workspace", "date", "week", "month"]);
   const GROUPING_SET = new Set(GROUPINGS);
   const LABELS = Object.freeze({
-    task: "Воркспейсы",
+    stream: "Потоки",
+    workspace: "Воркспейсы",
     date: "День",
     week: "Неделя",
     month: "Месяц",
   });
   const PRIMARY_COLUMNS = Object.freeze({
-    task: "Workspace",
+    stream: "Поток",
+    workspace: "Workspace",
     date: "День",
     week: "Неделя",
     month: "Месяц",
   });
 
-  function normalizeGrouping(value, fallback = "task") {
-    if (GROUPING_SET.has(String(value ?? ""))) return String(value);
-    return GROUPING_SET.has(String(fallback ?? "")) ? String(fallback) : "task";
+  function normalizeGrouping(value, fallback = "workspace") {
+    const candidate = String(value ?? "");
+    if (candidate === "task") return "workspace";
+    if (GROUPING_SET.has(candidate)) return candidate;
+    return GROUPING_SET.has(String(fallback ?? "")) ? String(fallback) : "workspace";
   }
 
   function parseJournalDate(value) {
@@ -98,6 +102,30 @@
     return normalizeGrouping(value) !== "date";
   }
 
+  function groupIdentity(value, mode, groupClaude = false) {
+    const provider = String(value?.provider ?? "").trim();
+    const threadId = String(value?.threadId ?? "").trim();
+    const workspaceId = String(value?.workspaceId ?? "").trim();
+    const streamId = String(value?.streamId ?? "").trim();
+    const grouping = normalizeGrouping(mode);
+    if (["stream", "workspace"].includes(grouping) && groupClaude && provider === "claude") {
+      return { key: "claude\u001fwork", provider: "claude", threadId: "work" };
+    }
+    if (grouping === "workspace" && workspaceId) {
+      return { key: `workspace\u001f${workspaceId}`, provider: "workspace", threadId: workspaceId };
+    }
+    if (grouping === "stream" && workspaceId && streamId) {
+      return {
+        key: `stream\u001f${workspaceId}\u001f${streamId}`,
+        provider: "stream",
+        threadId: `${workspaceId}:${streamId}`,
+      };
+    }
+    return provider && threadId
+      ? { key: `${provider}\u001f${threadId}`, provider, threadId }
+      : null;
+  }
+
   function streamCount(workspaces) {
     return Array.isArray(workspaces)
       ? workspaces.reduce((count, workspace) => (
@@ -108,6 +136,7 @@
 
   window.AgentHubJournalView = Object.freeze({
     GROUPINGS,
+    groupIdentity,
     groupingLabel: (value) => LABELS[normalizeGrouping(value)],
     normalizeGrouping,
     periodIdentity,

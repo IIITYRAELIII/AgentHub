@@ -273,7 +273,7 @@ test("rotation falls back to the exact rollout compaction when the raw event is 
   ]);
 });
 
-test("deferred rotation injects the compaction and the complete finished turn", async () => {
+test("deferred rotation injects the compaction, finished turn, and requested working directory", async () => {
   const compactionItem = { type: "compaction", encrypted_content: "summary" };
   const turnItems = [
     { type: "message", role: "user", content: [{ type: "input_text", text: "Запрос" }] },
@@ -293,7 +293,10 @@ test("deferred rotation injects the compaction and the complete finished turn", 
       calls.push(["read-turn", ...args]);
       return turnItems;
     },
-    startThread: async () => ({ thread: { id: "thread-2" } }),
+    startThread: async (params) => {
+      calls.push(["start-thread", params]);
+      return { thread: { id: "thread-2" } };
+    },
     injectItems: async (...args) => calls.push(["inject", ...args]),
   });
   service.compactions.waitForRawItem = async () => compactionItem;
@@ -304,7 +307,11 @@ test("deferred rotation injects the compaction and the complete finished turn", 
     startedAt: "2026-08-08T10:00:00.000Z",
   });
 
-  const result = await service.rotateCompacted({ provider: "codex", threadId: "thread-1" }, {
+  const result = await service.rotateCompacted({
+    provider: "codex",
+    threadId: "thread-1",
+    workingDirectory: "D:\\repo\\AgentHub",
+  }, {
     compactionId: "compact-1",
     settlement: entries.get("thread-1"),
     includeTurnId: "turn-1",
@@ -312,6 +319,7 @@ test("deferred rotation injects the compaction and the complete finished turn", 
 
   assert.equal(result.transferredTurnId, "turn-1");
   assert.equal(result.transferredItemCount, 2);
+  assert.equal(calls.find(([name]) => name === "start-thread")[1].cwd, "D:\\repo\\AgentHub");
   assert.deepEqual(calls.find(([name]) => name === "read-turn"), [
     "read-turn",
     "rollout.jsonl",

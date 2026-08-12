@@ -234,6 +234,7 @@ export function createDesktopShellComposition({
   const prepareTaskCreation = async ({
     provider: targetProvider,
     project,
+    workingDirectory,
     model,
     reasoning,
     mode,
@@ -242,12 +243,15 @@ export function createDesktopShellComposition({
     title = "",
   } = {}) => {
     const normalizedProvider = targetProvider === "claude" ? "claude" : "codex";
-    const selectedProject = project
-      ? projects.find((candidate) => samePath(candidate.path, project))
-      : findProject(selectedProjectRoot());
-    if (!selectedProject) throw new Error("Проект не найден");
+    const requestedDirectory = [workingDirectory, project, selectedProjectRoot()]
+      .map((value) => String(value ?? "").trim())
+      .find(Boolean) ?? "";
+    const selectedProject = findProject(requestedDirectory);
+    if (!selectedProject) {
+      throw new Error("Рабочая директория должна находиться внутри настроенного репозитория");
+    }
     selectionStore.selectTask({
-      activeProjectRoot: selectedProject.path,
+      activeProjectRoot: requestedDirectory || selectedProject.path,
       activeProvider: normalizedProvider,
       threadId: null,
       streamId,

@@ -279,6 +279,15 @@ export class WorkspaceCatalogStore {
     return this.workspace(id);
   }
 
+  updateWorkspaceSettings(workspaceId, settings = {}) {
+    const id = safeIdentifier(workspaceId, "workspace id");
+    if (!this.workspace(id)) throw new Error(`workspace not found: ${id}`);
+    this.#database.prepare(`
+      UPDATE hub_workspaces SET settings_json = ?, updated_at_ms = ? WHERE id = ?
+    `).run(JSON.stringify(settings ?? {}), this.#nowMs(), id);
+    return this.workspace(id);
+  }
+
   mergeWorkspaces(sourceWorkspaceId, targetWorkspaceId) {
     const sourceId = safeIdentifier(sourceWorkspaceId, "source workspace id");
     const targetId = safeIdentifier(targetWorkspaceId, "target workspace id");

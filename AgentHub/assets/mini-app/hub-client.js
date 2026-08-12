@@ -824,6 +824,12 @@ function modelTask(task, snapshot, effectiveSelectedId, serverSelectedId) {
   const serverSelected = id === serverSelectedId;
   const executionOwner = task.run?.executionOwner ?? task.executionOwner ?? "";
   const runtimeTitle = task.run?.runtime ?? task.runtime ?? "";
+  const workspace = (snapshot.workspaces ?? []).find((item) => (
+    String(item.id ?? "") === String(task.workspaceId ?? "")
+  ));
+  const catalogStream = (workspace?.streams ?? []).find((item) => (
+    String(item.id ?? "") === String(task.streamId ?? "")
+  ));
   return {
     id,
     title: task.displayTitle || task.title || "Без названия",
@@ -859,6 +865,8 @@ function modelTask(task, snapshot, effectiveSelectedId, serverSelectedId) {
     selected: id === effectiveSelectedId,
     maintenance: task.maintenance ?? null,
     context: task.run?.context ?? task.context ?? null,
+    streamSettings: { ...(catalogStream?.settings ?? {}) },
+    workspaceSettings: { ...(workspace?.settings ?? {}) },
   };
 }
 
@@ -880,6 +888,7 @@ function emptyStreamModels(snapshot, effectiveSelectedId) {
           ?? projects.find((project) => project.selected)?.path
           ?? projects[0]?.path
           ?? "",
+        workingDirectory: String(stream.settings?.workingDirectory ?? "").trim(),
         autoApprove: typeof stream.settings?.autoApprove === "boolean"
           ? stream.settings.autoApprove
           : defaults.approvalMode === "auto",
@@ -914,6 +923,7 @@ function emptyStreamModels(snapshot, effectiveSelectedId) {
         selected: String(stream.id) === effectiveSelectedId,
         draftStream: true,
         streamSettings: settings,
+        workspaceSettings: { ...(workspace.settings ?? {}) },
       });
     }
   }
@@ -1285,10 +1295,6 @@ function applySnapshot(snapshot) {
     modelOptionsByProvider: settings.modelOptionsByProvider ?? {},
     reasoning: settings.reasoningOptions ?? [],
     mode: settings.modeOptions ?? [],
-    project: (settings.projects ?? []).map((project) => ({
-      value: project.path,
-      label: project.name,
-    })),
   });
   const selectedDraft = tasks.find((task) => task.id === effectiveSelectedId && task.draftStream);
   agentHub.setSelection({
@@ -1296,7 +1302,6 @@ function applySnapshot(snapshot) {
     model: settings.model,
     reasoning: settings.reasoning,
     mode: settings.mode,
-    project: (settings.projects ?? []).find((project) => project.selected)?.path ?? "",
     autoApprove: settings.approvalMode === "auto",
     includeClaudeUsage: settings.includeClaudeUsage !== false,
     activityRecentMinutes: settings.activityRecentMinutes,
@@ -1918,8 +1923,12 @@ agentHub.on("task:rename", ({ id, title }) => runAction(async () => {
 agentHub.on("workspace:rename", ({ workspaceId, name }) => runAction(async () => applySnapshot(
   await control("rename-workspace", { workspaceId, name }),
 )));
-agentHub.on("workspace:create", ({ name, comment, beforeColumnId }) => runAction(async () => {
-  let snapshot = await control("create-workspace", { name, comment });
+agentHub.on("workspace:create", ({ name, comment, workingDirectory, beforeColumnId }) => runAction(async () => {
+  let snapshot = await control("create-workspace", {
+    name,
+    comment,
+    settings: { workingDirectory: String(workingDirectory ?? "").trim() },
+  });
   const workspaceId = snapshot.createdWorkspace?.workspace?.id;
   if (workspaceId) {
     snapshot = await control("board-column-move", {
@@ -1929,7 +1938,9 @@ agentHub.on("workspace:create", ({ name, comment, beforeColumnId }) => runAction
   }
   applySnapshot(snapshot);
 }));
-agentHub.on("workspace:update", ({ workspaceId, name, comment, beforeColumnId }) => runAction(async () => {
+agentHub.on("workspace:update", ({
+  workspaceId, name, comment, workingDirectory, beforeColumnId,
+}) => runAction(async () => {
   if (!lastSnapshot?.boardLayout) {
     agentHub.toast("Agent Hub завершает обновление runtime. Повторите действие через минуту.");
     return;
@@ -1941,6 +1952,13 @@ agentHub.on("workspace:update", ({ workspaceId, name, comment, beforeColumnId })
   }
   if (comment !== String(workspace?.comment ?? "")) {
     snapshot = await control("board-column-comment", { columnId: `workspace:${workspaceId}`, comment });
+  }
+  const nextSettings = {
+    ...(workspace?.settings ?? {}),
+    workingDirectory: String(workingDirectory ?? "").trim(),
+  };
+  if (nextSettings.workingDirectory !== String(workspace?.settings?.workingDirectory ?? "")) {
+    snapshot = await control("update-workspace-settings", { workspaceId, settings: nextSettings });
   }
   const columnId = `workspace:${workspaceId}`;
   const currentOrder = snapshot.boardLayout?.columnOrder ?? [];
@@ -2023,7 +2041,7 @@ agentHub.on("stream:new", ({ workspaceId, streamName }) => runAction(async () =>
       model: settings.model ?? "",
       reasoning: settings.reasoning ?? "",
       mode: settings.mode ?? "",
-      project: (settings.projects ?? []).find((project) => project.selected)?.path ?? "",
+      workingDirectory: "",
       autoApprove: settings.approvalMode === "auto",
     },
   });

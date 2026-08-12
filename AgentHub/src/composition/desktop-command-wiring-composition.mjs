@@ -5,6 +5,9 @@ export function createWorkspaceActions(services) {
     renameWorkspace: (params) => services.workspaceMutation(
       () => services.workspaceCatalogService.renameWorkspace(params),
     ),
+    updateWorkspaceSettings: (params) => services.workspaceMutation(
+      () => services.workspaceCatalogService.updateWorkspaceSettings(params),
+    ),
     createWorkspace: (params) => services.workspaceMutation(
       () => services.workspaceCatalogService.createWorkspace(params),
       { resultKey: "createdWorkspace" },

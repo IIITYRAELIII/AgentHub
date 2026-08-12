@@ -157,7 +157,6 @@ html[data-theme="gothic"] body::after {
 }
 
 html[data-theme="gothic"] .eyebrow,
-html[data-theme="gothic"] .task-project-heading,
 html[data-theme="gothic"] .task-rail-title {
   color: #a8a195;
   font-family: var(--font-title);

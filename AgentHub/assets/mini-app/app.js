@@ -64,6 +64,7 @@ const workspaceCardForm = document.querySelector("[data-workspace-card-form]");
 const workspaceCardTitle = document.querySelector("[data-workspace-card-title]");
 const workspaceCardName = document.querySelector("[data-workspace-card-name]");
 const workspaceCardComment = document.querySelector("[data-workspace-card-comment]");
+const workspaceCardWorkingDirectory = document.querySelector("[data-workspace-card-working-directory]");
 const workspaceCardOrder = document.querySelector("[data-workspace-card-order]");
 const workspaceCardSubmit = document.querySelector("[data-workspace-card-submit]");
 
@@ -82,6 +83,8 @@ const chatLive = document.querySelector("[data-chat-live]");
 const chatStops = [...document.querySelectorAll("[data-chat-stop]")];
 const dialogSettings = document.querySelector("[data-dialog-settings]");
 const dialogSettingsToggle = document.querySelector("[data-dialog-settings-toggle]");
+const dialogWorkingDirectory = document.querySelector("[data-dialog-working-directory]");
+const dialogWorkingDirectoryNote = document.querySelector("[data-dialog-working-directory-note]");
 const workspaceMessageSearch = document.querySelector("[data-workspace-message-search]");
 const workspaceMessageSearchToggle = document.querySelector("[data-workspace-message-search-toggle]");
 const workspaceMessageSearchClose = document.querySelector("[data-workspace-message-search-close]");
@@ -126,8 +129,6 @@ const bugReportScreenshots = document.querySelector("[data-bug-report-screenshot
 const bugReportSubmit = document.querySelector("[data-bug-report-submit]");
 const bugReportStatus = document.querySelector("[data-bug-report-status]");
 const telegramFullscreenButton = document.querySelector("[data-telegram-fullscreen]");
-const breakdownToggle = document.querySelector("[data-token-breakdown-toggle]");
-const streamCollapseToggle = document.querySelector("[data-stream-collapse-toggle]");
 const claudeGroupToggle = document.querySelector("[data-claude-group-toggle]");
 const streamStatusFillToggle = document.querySelector("[data-stream-status-fill-toggle]");
 const streamStatusEffectSelect = document.querySelector("[data-stream-status-effect-select]");
@@ -225,16 +226,15 @@ const comparisonViewModeButtons = [...document.querySelectorAll("[data-compariso
 /* --------------------------------------------------------- Telegram / темы */
 
 let journalHtml = "";
-let grouping = "task";
+let grouping = "workspace";
 let usageUnit = "cr";
 let usdRubRate = null;
 let usdRubEffectiveDate = "";
 let exchangeRatesInitialized = false;
 let groupClaudeTasks = false;
-let collapseStreams = false;
 let streamOrderMode = "activity";
 let streamActivityDirection = "start";
-const groupingStates = { date: null, week: null, month: null, task: null };
+const groupingStates = { date: null, week: null, month: null, stream: null, workspace: null };
 const journalDaySelections = new Map();
 const TASK_GROUP_TURN_PAGE_SIZE = 30;
 const taskGroupTurns = new WeakMap();
@@ -625,30 +625,6 @@ function applyChatSurface(value, { persist = false } = {}) {
   if (persist) chatSurfacePreference.persist(localStorage, selected);
 }
 
-/* Разбивка по видам токенов занимала всю правую половину шапки дня и почти
-   всегда была не нужна, поэтому по умолчанию она скрыта, а включается
-   переключателем в панели «Вид». */
-function savedBreakdown() {
-  try {
-    return localStorage.getItem("agent-hub-token-breakdown") === "on" ? "on" : "off";
-  } catch {
-    return "off";
-  }
-}
-
-function applyBreakdown(value, { persist = false } = {}) {
-  const state = value === "on" ? "on" : "off";
-  root.dataset.tokenBreakdown = state;
-  if (breakdownToggle) breakdownToggle.checked = state === "on";
-  if (persist) {
-    try {
-      localStorage.setItem("agent-hub-token-breakdown", state);
-    } catch {
-      // Настройка останется активной до закрытия WebView.
-    }
-  }
-}
-
 function savedStreamStatusStyle() {
   try {
     const value = localStorage.getItem("agent-hub-stream-status-style")
@@ -758,56 +734,17 @@ function applyActivityRecentPeriodInputs() {
   emit("selection:set", { key: "activityRecentMinutes", value });
 }
 
-function savedStreamCollapse() {
-  try {
-    return localStorage.getItem("agent-hub-collapse-streams") === "on";
-  } catch {
-    return false;
-  }
-}
-
-function setStreamsCollapsed(collapsed, scope = journal) {
-  if (collapsed) {
-    flattenWorkspaceStreams(scope);
-    return;
-  }
-  for (const stream of scope.querySelectorAll("details[data-work-log-stream]")) {
-    stream.open = true;
-  }
-}
-
-function applyStreamCollapse(value, { persist = false, update = false } = {}) {
-  collapseStreams = value === true;
-  root.dataset.streamCollapse = collapseStreams ? "on" : "off";
-  if (streamCollapseToggle) streamCollapseToggle.checked = collapseStreams;
-  if (update) {
-    if (journalHtml) {
-      const openState = journalRendered ? captureOpenState() : null;
-      if (openState) {
-        if (!collapseStreams) delete openState.streams;
-        groupingStates[grouping] = openState;
-      }
-      void renderJournal();
-      queueMicrotask(persistOpenState);
-    } else {
-      setStreamsCollapsed(collapseStreams);
-    }
-  }
-  if (persist) {
-    try {
-      localStorage.setItem("agent-hub-collapse-streams", collapseStreams ? "on" : "off");
-    } catch {
-      // Настройка останется активной до закрытия WebView.
-    }
-  }
-}
-
 function savedGrouping() {
   try {
     const value = localStorage.getItem("agent-hub-grouping");
+    if (value === "task") {
+      return localStorage.getItem("agent-hub-collapse-streams") === "on"
+        ? "workspace"
+        : "stream";
+    }
     return JournalView.normalizeGrouping(value);
   } catch {
-    return "task";
+    return "workspace";
   }
 }
 
@@ -916,18 +853,13 @@ telegramFullscreenButton?.addEventListener("click", () => {
 applyBackgroundMotion(backgroundMotionPreference.stored(localStorage));
 applyTheme(savedTheme());
 applyChatSurface(chatSurfacePreference.stored(localStorage));
-applyBreakdown(savedBreakdown());
 applyStreamStatusStyle(savedStreamStatusStyle());
 applyStreamStatusEffect(savedStreamStatusEffect());
 applyStreamOrderMode(savedStreamOrderMode());
 applyActivityRecentPeriod(DEFAULT_ACTIVITY_RECENT_MINUTES);
 applyStreamActivityDirection(savedStreamActivityDirection());
-applyStreamCollapse(savedStreamCollapse());
 selectUsageUnit(savedUsageUnit());
 selectClaudeGrouping(savedClaudeGrouping());
-breakdownToggle?.addEventListener("change", () => {
-  applyBreakdown(breakdownToggle.checked ? "on" : "off", { persist: true });
-});
 streamStatusFillToggle?.addEventListener("change", () => {
   applyStreamStatusStyle(streamStatusFillToggle.checked ? "fill" : "edge", { persist: true });
 });
@@ -941,9 +873,6 @@ activityPeriodHours?.addEventListener("change", applyActivityRecentPeriodInputs)
 activityPeriodMinutes?.addEventListener("change", applyActivityRecentPeriodInputs);
 streamActivityDirectionSelect?.addEventListener("change", () => {
   applyStreamActivityDirection(streamActivityDirectionSelect.value, { persist: true, update: true });
-});
-streamCollapseToggle?.addEventListener("change", () => {
-  applyStreamCollapse(streamCollapseToggle.checked, { persist: true, update: true });
 });
 claudeGroupToggle?.addEventListener("change", () => {
   selectClaudeGrouping(claudeGroupToggle.checked, { persist: true });
@@ -1905,7 +1834,6 @@ function renderTasks() {
   taskList.replaceChildren();
   let visibleCount = visible.length;
   const hasWorkspace = visible.some((task) => String(task.workspaceId ?? "").trim());
-  const hasProject = visible.some((task) => String(task.project ?? "").trim());
   if (hasWorkspace) {
     const groups = new Map();
     for (const task of visible) {
@@ -1923,17 +1851,8 @@ function renderTasks() {
       Number(left.kind === "system") - Number(right.kind === "system")
     ));
     for (const group of orderedGroups) taskList.append(renderTaskWorkspaceItem(group));
-  } else if (!hasProject) {
-    for (const task of visible) taskList.append(renderTaskItem(task));
   } else {
-    const groups = new Map();
-    for (const task of visible) {
-      const project = String(task.project ?? "").trim();
-      const key = project || "\u0000";
-      if (!groups.has(key)) groups.set(key, { project, tasks: [] });
-      groups.get(key).tasks.push(task);
-    }
-    for (const group of groups.values()) taskList.append(renderTaskProjectGroup(group));
+    for (const task of visible) taskList.append(renderTaskItem(task));
   }
 
   const hasTasks = state.tasks.length > 0;
@@ -2474,20 +2393,6 @@ function refreshSupplementaryStreamChat(taskId) {
   renderStreamChatDeck();
 }
 
-function renderTaskProjectGroup({ project, tasks }) {
-  const list = el("ul", { class: "task-project-list" }, tasks.map(renderTaskItem));
-  return el("li", {
-    class: "task-project-group",
-    "data-project": project || null,
-  }, [
-    el("div", { class: "task-project-heading" }, [
-      el("span", { class: "task-project-name", text: project || "Без проекта" }),
-      el("span", { class: "task-project-count", text: String(tasks.length) }),
-    ]),
-    list,
-  ]);
-}
-
 function renderTaskItem(task, { workspaceGrouped = false } = {}) {
   const provider = String(task.provider ?? "none");
   const selected = task.id === state.selectedId;
@@ -2826,6 +2731,7 @@ function openWorkspaceCard(workspaceId) {
   workspaceCardName.value = String(workspace.name ?? "");
   workspaceCardName.disabled = workspace.kind === "system";
   workspaceCardComment.value = String(workspace.comment ?? "");
+  workspaceCardWorkingDirectory.value = String(workspace.settings?.workingDirectory ?? "");
   workspaceCardOrder.max = String(order.length);
   workspaceCardOrder.value = String(Math.max(1, order.indexOf(columnId) + 1));
   workspaceCardModal.showModal();
@@ -2843,6 +2749,7 @@ function openNewWorkspaceCard() {
   workspaceCardName.value = "";
   workspaceCardName.disabled = false;
   workspaceCardComment.value = "";
+  workspaceCardWorkingDirectory.value = "";
   workspaceCardOrder.max = String(order.length + 1);
   workspaceCardOrder.value = String((notesIndex < 0 ? order.length : notesIndex) + 1);
   workspaceCardModal.showModal();
@@ -4467,7 +4374,6 @@ const slashCommands = [
   { command: "/model", label: "Выбрать модель", run: openDialogSettings },
   { command: "/reasoning", label: "Настроить reasoning", run: openDialogSettings },
   { command: "/mode", label: "Выбрать режим", run: openDialogSettings },
-  { command: "/projects", label: "Выбрать проект", run: openDialogSettings },
   { command: "/rename", label: "Переименовать Workspace", action: "task-rename" },
   { command: "/status", label: "Статус и лимиты", action: "task-status" },
   { command: "/diff", label: "Изменения задачи", action: "task-diff" },
@@ -5243,6 +5149,7 @@ workspaceCardForm?.addEventListener("submit", (event) => {
     emit("workspace:create", {
       name,
       comment: workspaceCardComment.value.trim(),
+      workingDirectory: workspaceCardWorkingDirectory.value.trim(),
       beforeColumnId: order[targetIndex] ?? null,
     });
     closeWorkspaceCard();
@@ -5257,6 +5164,7 @@ workspaceCardForm?.addEventListener("submit", (event) => {
     workspaceId: workspace.id,
     name,
     comment: workspaceCardComment.value.trim(),
+    workingDirectory: workspaceCardWorkingDirectory.value.trim(),
     beforeColumnId: remaining[targetIndex] ?? null,
   });
   closeWorkspaceCard();
@@ -5459,7 +5367,6 @@ function renderDialogSettings() {
     model: state.options.modelOptionsByProvider?.[effectiveProvider] ?? state.options.model,
     reasoning: state.options.reasoning,
     mode: state.options.mode,
-    project: state.options.project,
   };
   for (const [group, values] of Object.entries(optionGroups)) {
     const container = dialogSettings.querySelector(`[data-dialog-options='${group}']`);
@@ -5489,6 +5396,20 @@ function renderDialogSettings() {
     const key = toggle.dataset.dialogToggle;
     toggle.checked = Boolean(selection?.[key]);
   }
+  if (dialogWorkingDirectory) {
+    const workspaceDirectory = String(task?.workspaceSettings?.workingDirectory ?? "").trim();
+    const currentDirectory = String(task?.sessionCwd ?? task?.projectRoot ?? "").trim();
+    dialogWorkingDirectory.value = String(task?.streamSettings?.workingDirectory ?? "").trim();
+    dialogWorkingDirectory.disabled = !task?.streamId;
+    dialogWorkingDirectory.placeholder = workspaceDirectory
+      ? `Workspace: ${workspaceDirectory}`
+      : currentDirectory ? `Текущая: ${currentDirectory}` : "Наследуется от Workspace";
+    if (dialogWorkingDirectoryNote) {
+      dialogWorkingDirectoryNote.textContent = task?.draftStream
+        ? "Будет использована при создании Thread; пустое значение наследуется от Workspace."
+        : "Применится при создании следующего Thread; текущий Thread сохраняет свою директорию.";
+    }
+  }
 }
 
 dialogSettings.addEventListener("click", (event) => {
@@ -5516,6 +5437,18 @@ dialogSettings.addEventListener("click", (event) => {
 });
 
 dialogSettings.addEventListener("change", (event) => {
+  const directory = event.target.closest("[data-dialog-working-directory]");
+  if (directory) {
+    const task = currentTask();
+    if (!task?.streamId) return;
+    task.streamSettings = {
+      ...(task.streamSettings ?? {}),
+      workingDirectory: directory.value.trim(),
+    };
+    emit("stream:settings-save", { streamId: task.streamId, settings: { ...task.streamSettings } });
+    renderOptions();
+    return;
+  }
   const toggle = event.target.closest("[data-dialog-toggle]");
   if (!toggle) return;
   const key = toggle.dataset.dialogToggle;
@@ -9585,19 +9518,13 @@ function restoreOpenState(openState) {
     )?.setAttribute("open", "");
   }
   if (Array.isArray(openState.workspaces)) {
-    if (collapseStreams) {
-      for (const details of journal.querySelectorAll("details[data-work-log-workspace]")) {
-        details.open = true;
-      }
-    } else {
-      for (const details of journal.querySelectorAll("details[data-work-log-workspace]")) {
-        details.open = false;
-      }
-      for (const workspaceId of openState.workspaces) {
-        journal.querySelector(
-          `details[data-work-log-workspace-id="${selectorValue(workspaceId)}"]`,
-        )?.setAttribute("open", "");
-      }
+    for (const details of journal.querySelectorAll("details[data-work-log-workspace]")) {
+      details.open = false;
+    }
+    for (const workspaceId of openState.workspaces) {
+      journal.querySelector(
+        `details[data-work-log-workspace-id="${selectorValue(workspaceId)}"]`,
+      )?.setAttribute("open", "");
     }
   }
   if (Array.isArray(openState.streams)) {
@@ -9909,86 +9836,6 @@ function decorateLegacyStreamTurns(scope = journal) {
       badge.textContent = label;
       title.append(badge, heading);
     }
-  }
-}
-
-function flattenWorkspaceStreams(scope = journal) {
-  for (const workspace of scope.querySelectorAll("details[data-work-log-workspace]")) {
-    const workspaceHeader = workspace.querySelector(
-      ":scope > summary[data-work-log-workspace-header]",
-    );
-    const workspaceName = workspaceHeader?.querySelector("strong")?.textContent.trim() ?? "";
-    const collapsedUsage = workspace.querySelector(
-      ":scope > [data-work-log-collapsed-workspace-usage]",
-    );
-    const streamContainer = workspace.querySelector(
-      ":scope > [data-work-log-workspace-streams]",
-    );
-    const streams = streamContainer
-      ? [...streamContainer.querySelectorAll(":scope > details[data-work-log-stream]")]
-      : [];
-    if (!streams.length) continue;
-
-    const previousWasOpen = streams.some((stream) => (
-      stream.querySelector("details[data-work-log-previous-turns][open]")
-    ));
-    const rows = streams.map((stream) => stream.querySelector(
-      ":scope > [data-work-log-stream-turns] > [data-work-log-row]",
-    )).filter(Boolean);
-    const aggregateRow = rows[0];
-    if (!aggregateRow) continue;
-
-    const entries = [];
-    const legacy = [];
-    const seen = new Set();
-    for (const row of rows) {
-      for (const entry of row.querySelectorAll(
-        ":scope > [data-work-log-turn-list] [data-work-log-turn-entry]",
-      )) {
-        if (!isRootTurnEntry(entry)) continue;
-        const key = [
-          entry.dataset.workLogTurnProvider,
-          entry.dataset.workLogTurnThreadId,
-          entry.dataset.workLogTurnId,
-        ].join("\u001f");
-        if (seen.has(key)) continue;
-        seen.add(key);
-        entries.push(entry);
-      }
-      legacy.push(...row.querySelectorAll(
-        ":scope > [data-work-log-turn-list] [data-work-log-legacy-outcome]",
-      ));
-    }
-    entries.sort((left, right) => (
-      (Date.parse(right.dataset.workLogTurnCompletedAt ?? "") || 0)
-        - (Date.parse(left.dataset.workLogTurnCompletedAt ?? "") || 0)
-    ));
-
-    aggregateRow.removeAttribute("data-work-log-provider");
-    aggregateRow.removeAttribute("data-work-log-thread-id");
-    aggregateRow.removeAttribute("data-work-log-stream-id");
-    const taskContent = aggregateRow.querySelector(
-      ":scope > [data-work-log-task-cell] > [data-work-log-task-content]",
-    );
-    if (taskContent) taskContent.textContent = workspaceName;
-    const usage = aggregateRow.querySelector(
-      ":scope > [data-work-log-task-cell] > [data-work-log-usage]",
-    );
-    if (usage) {
-      usage.replaceChildren(...(collapsedUsage ? [...collapsedUsage.childNodes] : []));
-    }
-    const turnList = aggregateRow.querySelector(":scope > [data-work-log-turn-list]");
-    if (!turnList) continue;
-    replaceCollapsedTurnList(turnList, entries);
-    const table = turnList.querySelector(":scope > [data-work-log-turn-table]");
-    if (legacy.length) table?.append(...legacy);
-    if (previousWasOpen) {
-      turnList.querySelector("details[data-work-log-previous-turns]")?.setAttribute("open", "");
-    }
-    workspace.open = true;
-    workspace.dataset.workLogStreamsCollapsed = "";
-    streamContainer.dataset.workLogWorkspaceTurns = "";
-    streamContainer.replaceChildren(aggregateRow);
   }
 }
 
@@ -10454,7 +10301,7 @@ function taskProfile(group, cohort, {
   return section;
 }
 
-function taskGroupsFrom(source, { workspace = null } = {}) {
+function taskGroupsFrom(source, { workspace = null, hierarchy = "" } = {}) {
   const groups = new Map();
   let order = 0;
   const days = source.matches?.("details[data-work-log-day-section]")
@@ -10468,18 +10315,44 @@ function taskGroupsFrom(source, { workspace = null } = {}) {
       if (workspace && row.closest("details[data-work-log-workspace]") !== workspace) continue;
       const provider = String(row.dataset.workLogProvider ?? "").trim();
       const sourceThreadId = String(row.dataset.workLogThreadId ?? "").trim();
+      const workspaceDetails = row.closest("details[data-work-log-workspace]");
+      const streamDetails = row.closest("details[data-work-log-stream]");
+      const workspaceId = String(
+        row.dataset.workLogWorkspaceId ?? workspaceDetails?.dataset.workLogWorkspaceId ?? "",
+      ).trim();
+      const streamId = String(
+        row.dataset.workLogStreamId ?? streamDetails?.dataset.workLogStreamId ?? "",
+      ).trim();
       const groupedClaude = groupClaudeTasks && provider === "claude";
-      const threadId = groupedClaude ? "work" : sourceThreadId;
-      if (!provider || !threadId) continue;
-      const key = `${provider}\u001f${threadId}`;
+      const identity = hierarchy
+        ? JournalView.groupIdentity(
+          { provider, threadId: sourceThreadId, workspaceId, streamId },
+          hierarchy,
+          groupedClaude,
+        )
+        : provider && sourceThreadId
+          ? {
+            key: `${provider}\u001f${groupedClaude ? "work" : sourceThreadId}`,
+            provider,
+            threadId: groupedClaude ? "work" : sourceThreadId,
+          }
+          : null;
+      if (!identity) continue;
+      const { key, provider: groupProvider, threadId } = identity;
       let group = groups.get(key);
       if (!group) {
+        const hierarchyTitle = hierarchy === "workspace"
+          ? workspaceDetails?.querySelector(":scope > summary[data-work-log-workspace-header] strong")
+          : hierarchy === "stream"
+            ? streamDetails?.querySelector(":scope > summary [data-work-log-stream-title]")
+            : null;
         group = {
-          provider,
+          provider: groupProvider,
           threadId,
           title: groupedClaude
             ? el("span", { "data-work-log-claude-work": "", text: "Claude - Work" })
-            : row.querySelector("[data-work-log-task-content]")?.cloneNode(true),
+            : hierarchyTitle?.cloneNode(true)
+              ?? row.querySelector("[data-work-log-task-content]")?.cloneNode(true),
           turns: [],
           turnCount: 0,
           legacy: [],
@@ -10774,8 +10647,8 @@ function journalGroupSection(group, cohort, {
   return details;
 }
 
-function taskGroupingContent(source) {
-  const groups = taskGroupsFrom(source);
+function taskGroupingContent(source, mode) {
+  const groups = taskGroupsFrom(source, { hierarchy: mode });
   if (!groups.length) return source.cloneNode(true);
   const list = document.createElement("div");
   list.dataset.workLogTaskGroups = "";
@@ -11046,8 +10919,8 @@ function applyJournalGrouping() {
       groupClaudeRowsInDay(day);
     }
     journal.replaceChildren(dayGroupingContent(journal));
-  } else if (grouping === "task") {
-    journal.replaceChildren(taskGroupingContent(journal));
+  } else if (grouping === "stream" || grouping === "workspace") {
+    journal.replaceChildren(taskGroupingContent(journal, grouping));
   } else {
     journal.replaceChildren(periodGroupingContent(journal, grouping));
   }
@@ -11058,9 +10931,6 @@ function applyJournalGrouping() {
   const saved = groupingStates[grouping];
   if (saved) {
     restoreOpenState(saved);
-  }
-  if (collapseStreams || !saved || !Array.isArray(saved.streams)) {
-    setStreamsCollapsed(collapseStreams);
   }
   for (const details of journal.querySelectorAll(
     "details[data-work-log-task-group][open]",
