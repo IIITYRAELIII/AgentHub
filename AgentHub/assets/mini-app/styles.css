@@ -4067,7 +4067,6 @@ html[data-view="dashboard"] .task-board-view {
   gap: 0.3rem;
 }
 
-.task-card-editor input,
 .task-card-editor textarea {
   background: var(--surface-2);
   border: 1px solid var(--line);
@@ -4079,17 +4078,19 @@ html[data-view="dashboard"] .task-board-view {
   width: 100%;
 }
 
-.task-card-editor input {
+.task-card-editor [data-task-card-title] {
   font-size: 0.92rem;
   font-weight: 650;
+  min-height: 0;
+  overflow-y: hidden;
+  resize: none;
 }
 
-.task-card-editor textarea {
+.task-card-editor [data-task-card-description] {
   min-height: 8rem;
   resize: vertical;
 }
 
-.task-card-editor input:focus,
 .task-card-editor textarea:focus {
   border-color: var(--accent-line);
   outline: 2px solid var(--accent-soft);

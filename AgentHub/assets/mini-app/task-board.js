@@ -20,6 +20,27 @@
 
   window.AgentHubTaskCardSizing = Object.freeze({ fitWidth: fitTaskCardWidth });
 
+  function createAutoGrowTextarea({ textarea, getStyle = (element) => window.getComputedStyle(element) } = {}) {
+    function resize() {
+      if (!textarea) return 0;
+      textarea.style.height = "auto";
+      const style = getStyle(textarea);
+      const height = Math.max(0, Math.ceil(
+        (Number(textarea.scrollHeight) || 0)
+        + numericCssValue(style?.borderTopWidth)
+        + numericCssValue(style?.borderBottomWidth),
+      ));
+      textarea.style.height = `${height}px`;
+      return height;
+    }
+
+    textarea?.addEventListener("input", resize);
+    resize();
+    return Object.freeze({ resize });
+  }
+
+  window.AgentHubTaskCardEditor = Object.freeze({ createAutoGrowTextarea });
+
   function createDeleteDialog({ dialog, cancelButton, confirmButton, onConfirm } = {}) {
     let pendingTaskId = null;
 
@@ -63,6 +84,7 @@
   const taskCardEditor = document.querySelector("[data-task-card-editor]");
   const taskCardTitle = document.querySelector("[data-task-card-title]");
   const taskCardDescription = document.querySelector("[data-task-card-description]");
+  const taskCardTitleSizer = createAutoGrowTextarea({ textarea: taskCardTitle });
   const taskCardSaveButton = taskCardEditor?.querySelector("button[type='submit']");
   const taskCardAttachments = document.querySelector("[data-task-card-attachments]");
   const taskCardOriginal = document.querySelector("[data-task-card-original]");
@@ -366,6 +388,7 @@
       taskCardDescription.value = String(task.description ?? "").trim();
       state.editingTaskId = task.id;
     }
+    if (taskCardModal.open) taskCardTitleSizer.resize();
     renderTaskCardSaving(task.id);
     const originalText = String(task.rawText ?? "").trim();
     taskCardOriginal.hidden = !originalText;
@@ -413,6 +436,7 @@
     renderOpenTaskCard();
     taskCardModal.showModal?.();
     if (!taskCardModal.open) taskCardModal.setAttribute("open", "");
+    taskCardTitleSizer.resize();
   }
 
   function taskCard(task, { compact = false } = {}) {
@@ -623,6 +647,11 @@
     setTaskCardOriginalExpanded(taskCardOriginalToggle.getAttribute("aria-expanded") !== "true");
   });
   taskCardEditor?.addEventListener("input", () => { state.editDirty = true; });
+  taskCardTitle?.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
+    event.preventDefault();
+    taskCardEditor.requestSubmit?.();
+  });
   taskCardEditor?.addEventListener("submit", (event) => {
     event.preventDefault();
     const task = state.tasks.find((item) => item.id === state.openTaskId);
