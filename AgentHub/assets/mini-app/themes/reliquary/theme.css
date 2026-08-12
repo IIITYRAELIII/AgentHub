@@ -111,17 +111,17 @@ html[data-theme="reliquary"] {
   --shell-workspace-gap: 0.28rem;
   --shell-workspace-padding-bottom: 0.28rem;
   --shell-workspace-padding-top: 0.28rem;
-  --shell-panel-border: 8px solid transparent;
-  --shell-panel-border-image: var(--reliquary-panel-frame) 125 / 8px stretch;
+  --shell-panel-border: 10px solid transparent;
+  --shell-panel-border-image: var(--reliquary-panel-frame) 125 / 10px stretch;
   --shell-panel-radius: 2px;
-  --shell-chat-border: 8px solid transparent;
-  --shell-chat-border-image: var(--reliquary-panel-frame) 125 / 8px stretch;
+  --shell-chat-border: 10px solid transparent;
+  --shell-chat-border-image: var(--reliquary-panel-frame) 125 / 10px stretch;
   --shell-chat-gap: 0.28rem;
   --shell-chat-radius: 2px;
   --shell-stream-tabs-background: var(--reliquary-iron-surface);
-  --shell-stream-tabs-border: 7px solid transparent;
-  --shell-stream-tabs-border-bottom: 7px solid transparent;
-  --shell-stream-tabs-border-image: var(--reliquary-panel-frame) 125 / 7px stretch;
+  --shell-stream-tabs-border: 9px solid transparent;
+  --shell-stream-tabs-border-bottom: 9px solid transparent;
+  --shell-stream-tabs-border-image: var(--reliquary-panel-frame) 125 / 9px stretch;
   --shell-stream-tabs-padding: 0.1rem 0.14rem;
   --shell-stream-tabs-radius: 2px;
   --shell-stream-tab-background: transparent;
@@ -130,8 +130,8 @@ html[data-theme="reliquary"] {
   --shell-stream-tab-active-background: rgb(67 24 20 / 72%);
   --shell-stream-tab-radius: 2px;
   --shell-stream-card-background: var(--reliquary-stone-soft);
-  --shell-stream-card-border: 5px solid transparent;
-  --shell-stream-card-border-image: var(--reliquary-card-frame) 118 / 5px stretch;
+  --shell-stream-card-border: 11px solid transparent;
+  --shell-stream-card-border-image: var(--reliquary-card-frame) 118 / 11px stretch;
   --shell-stream-card-radius: 1px;
   --shell-stream-card-shadow: var(--reliquary-shadow);
 }
@@ -235,17 +235,21 @@ html[data-theme="reliquary"] .composer,
 html[data-theme="reliquary"] .dialog-settings,
 html[data-theme="reliquary"] .settings-panel {
   background: var(--reliquary-stone);
-  border: 8px solid transparent;
-  border-image: var(--reliquary-panel-frame) 125 / 8px stretch;
+  border: 10px solid transparent;
+  border-image: var(--reliquary-panel-frame) 125 / 10px stretch;
   box-shadow: var(--reliquary-shadow);
 }
 
 html[data-theme="reliquary"] .task-rail,
 html[data-theme="reliquary"] .activity-rail,
-html[data-theme="reliquary"] .stream-tabs,
 html[data-theme="reliquary"] .composer,
 html[data-theme="reliquary"] .stream-chat-columns {
   overflow: hidden;
+}
+
+html[data-theme="reliquary"] .stream-tabs {
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 
 html[data-theme="reliquary"] .chat {
@@ -259,14 +263,26 @@ html[data-theme="reliquary"] .stream-chat-columns {
 }
 
 html[data-theme="reliquary"] .task-workspace-item,
-html[data-theme="reliquary"] .activity-stream-item,
+html[data-theme="reliquary"] .activity-stream-item {
+  background: var(--reliquary-stone-soft);
+  border: 7px solid transparent;
+  border-image: var(--reliquary-card-frame) 118 / 7px stretch;
+  border-radius: 1px;
+  box-shadow: var(--reliquary-shadow);
+}
+
 html[data-theme="reliquary"] .stream-tab-card,
 html[data-theme="reliquary"] .msg {
   background: var(--reliquary-stone-soft);
-  border: 5px solid transparent;
-  border-image: var(--reliquary-card-frame) 118 / 5px stretch;
+  border: 9px solid transparent;
+  border-image: var(--reliquary-card-frame) 118 / 9px stretch;
   border-radius: 1px;
   box-shadow: var(--reliquary-shadow);
+}
+
+html[data-theme="reliquary"] .msg {
+  border-width: 10px;
+  border-image-width: 10px;
 }
 
 html[data-theme="reliquary"] .msg-agent .msg-head {
@@ -288,37 +304,47 @@ html[data-theme="reliquary"] .msg-agent .msg-head::before {
 html[data-theme="reliquary"] .stream-tabs > .stream-tab:not(:last-child)::after {
   background: var(--reliquary-stream-divider) center / contain no-repeat;
   content: "";
-  height: calc(100% - 0.34rem);
+  height: calc(100% + 0.7rem);
   pointer-events: none;
   position: absolute;
-  right: -0.44rem;
-  top: 0.17rem;
-  width: 0.64rem;
+  right: -0.68rem;
+  top: -0.35rem;
+  width: 1.12rem;
   z-index: 5;
 }
 
-html[data-theme="reliquary"] .task-rail-head,
-html[data-theme="reliquary"] .activity-rail-head {
-  position: relative;
-}
+@media (min-width: 860px) {
+  html[data-theme="reliquary"] .workspace::before,
+  html[data-theme="reliquary"] .workspace::after,
+  html[data-theme="reliquary"] .chat::before,
+  html[data-theme="reliquary"] .chat::after {
+    background: var(--reliquary-panel-junction) left top / contain no-repeat;
+    content: "";
+    height: 3.35rem;
+    pointer-events: none;
+    position: absolute;
+    top: 0;
+    width: 3.35rem;
+    z-index: 12;
+  }
 
-html[data-theme="reliquary"] .task-rail-head::before,
-html[data-theme="reliquary"] .activity-rail-head::before {
-  background: var(--reliquary-panel-junction) left top / contain no-repeat;
-  content: "";
-  height: 2.65rem;
-  left: -0.18rem;
-  pointer-events: none;
-  position: absolute;
-  top: -0.2rem;
-  width: 2.65rem;
-  z-index: 8;
-}
+  html[data-theme="reliquary"] .workspace::before {
+    left: 0;
+  }
 
-html[data-theme="reliquary"] .activity-rail-head::before {
-  left: auto;
-  right: -0.18rem;
-  transform: scaleX(-1);
+  html[data-theme="reliquary"] .workspace::after {
+    right: 0;
+    transform: scaleX(-1);
+  }
+
+  html[data-theme="reliquary"] .chat::before {
+    left: 0;
+  }
+
+  html[data-theme="reliquary"] .chat::after {
+    right: 0;
+    transform: scaleX(-1);
+  }
 }
 
 html[data-theme="reliquary"] .task-workspace-item:hover,
@@ -441,8 +467,10 @@ html[data-theme="reliquary"] *::-webkit-scrollbar-thumb {
     background-color: rgb(4 7 9 / 91%);
   }
 
-  html[data-theme="reliquary"] .task-rail-head::before,
-  html[data-theme="reliquary"] .activity-rail-head::before,
+  html[data-theme="reliquary"] .workspace::before,
+  html[data-theme="reliquary"] .workspace::after,
+  html[data-theme="reliquary"] .chat::before,
+  html[data-theme="reliquary"] .chat::after,
   html[data-theme="reliquary"] .stream-tabs > .stream-tab::after {
     display: none;
   }
