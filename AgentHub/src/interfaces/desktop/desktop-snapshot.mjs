@@ -1,10 +1,22 @@
 import { createHash } from "node:crypto";
 import { displayUserPrompt } from "../../application/task-history.mjs";
 import { isCodexContextProbeTurn } from "../../domain/codex-context-probe.mjs";
+import { interstreamMessageDetails } from "../../domain/interstream-message.mjs";
 import { taskDisplayTitle } from "../../domain/task-display-title.mjs";
 import { taskRunIsActive } from "../../domain/task-runs.mjs";
 
 const MAX_COMPACT_ACTIVITY_DETAIL_CHARS = 1_200;
+
+function deferredMessageProjection(item, deferred) {
+  const rawText = deferred.editableText?.(item.input) ?? deferred.inputPreview(item.input);
+  const rawPreview = deferred.inputPreview(item.input);
+  const interstream = interstreamMessageDetails(rawText) ?? interstreamMessageDetails(rawPreview);
+  return {
+    text: displayUserPrompt(rawText),
+    preview: displayUserPrompt(rawPreview),
+    ...(interstream ? { author: interstream.author } : {}),
+  };
+}
 
 export function createDesktopSnapshotFactory({
   clock,
@@ -394,9 +406,8 @@ export function createDesktopSnapshotFactory({
           threadId: item.threadId,
           taskTitle: deferredTaskTitle(item),
           clientUserMessageId: item.clientUserMessageId ?? null,
-          text: deferred.editableText?.(item.input) ?? deferred.inputPreview(item.input),
+          ...deferredMessageProjection(item, deferred),
           annotations: deferred.responseAnnotations?.(item.input) ?? [],
-          preview: deferred.inputPreview(item.input),
           allowForce: item.allowForce === true,
           conflictKind: item.conflictKind ?? null,
           lastError: item.lastError ?? null,
@@ -413,9 +424,8 @@ export function createDesktopSnapshotFactory({
           threadId: item.threadId,
           taskTitle: deferredTaskTitle(item),
           clientUserMessageId: item.clientUserMessageId ?? null,
-          text: deferred.editableText?.(item.input) ?? deferred.inputPreview(item.input),
+          ...deferredMessageProjection(item, deferred),
           annotations: deferred.responseAnnotations?.(item.input) ?? [],
-          preview: deferred.inputPreview(item.input),
           allowForce: false,
           conflictKind: item.conflictKind ?? null,
           lastError: item.lastError ?? null,

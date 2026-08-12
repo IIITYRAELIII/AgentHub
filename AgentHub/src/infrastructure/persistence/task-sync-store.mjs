@@ -6,7 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { catalogTaskKey } from "../../domain/task-catalog-identity.mjs";
 
 const FORMAT_VERSION = 1;
-const TASK_SCHEMA_VERSION = 5;
+const TASK_SCHEMA_VERSION = 6;
 const DEFAULT_HISTORY_LIMIT = 50;
 const DEFAULT_RUNNING_FRESHNESS_MS = 10 * 60 * 1000;
 const DEFAULT_TASK_LIMIT = 1_000;
@@ -112,6 +112,7 @@ function cleanHistory(history, limit) {
               : {}),
             role,
             text,
+            ...(cleanText(message?.author, 1_000) ? { author: cleanText(message.author, 1_000) } : {}),
             ...(message?.phase ? { phase: cleanText(message.phase, 40) } : {}),
             ...(message?.time ? { time: cleanText(message.time, 80) } : {}),
             responseAnnotations: cleanResponseAnnotations(message?.responseAnnotations),
@@ -269,6 +270,7 @@ function configure(database) {
       client_user_message_id TEXT,
       role TEXT NOT NULL CHECK (role IN ('user', 'agent')),
       text TEXT NOT NULL,
+      author TEXT NOT NULL DEFAULT '',
       phase TEXT,
       time TEXT,
       response_annotations_json TEXT NOT NULL DEFAULT '[]',
@@ -288,6 +290,7 @@ function configure(database) {
       item_id TEXT NOT NULL,
       role TEXT NOT NULL CHECK (role IN ('user', 'agent')),
       message_text TEXT NOT NULL,
+      author TEXT NOT NULL DEFAULT '',
       annotation_text TEXT NOT NULL DEFAULT '',
       attachment_names TEXT NOT NULL DEFAULT '',
       occurred_at TEXT,
@@ -355,6 +358,15 @@ function configure(database) {
   }
   if (!messageColumns.has("response_annotation_request")) {
     database.exec("ALTER TABLE task_read_model_messages ADD COLUMN response_annotation_request TEXT NOT NULL DEFAULT ''");
+  }
+  if (!messageColumns.has("author")) {
+    database.exec("ALTER TABLE task_read_model_messages ADD COLUMN author TEXT NOT NULL DEFAULT ''");
+  }
+  const searchColumns = new Set(database.prepare(
+    "PRAGMA table_info(task_message_search_documents)",
+  ).all().map((column) => String(column.name)));
+  if (!searchColumns.has("author")) {
+    database.exec("ALTER TABLE task_message_search_documents ADD COLUMN author TEXT NOT NULL DEFAULT ''");
   }
   database.prepare(`
     INSERT INTO task_read_model_meta (key, value) VALUES ('schema_version', ?)
@@ -462,6 +474,7 @@ export class LocalTaskSyncStore {
           : {}),
         role: String(row.role),
         text: String(row.text),
+        ...(row.author ? { author: String(row.author) } : {}),
         ...(row.phase ? { phase: String(row.phase) } : {}),
         ...(row.time ? { time: String(row.time) } : {}),
         responseAnnotations: parseJsonArray(row.response_annotations_json),
@@ -599,9 +612,9 @@ export class LocalTaskSyncStore {
     const insertMessage = this.#database.prepare(`
       INSERT INTO task_read_model_messages (
         provider, thread_id, turn_position, position, item_id,
-        client_user_message_id, role, text, phase, time,
+        client_user_message_id, role, text, author, phase, time,
         response_annotations_json, response_annotation_request, attachments_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     history.forEach((turn, turnPosition) => {
       insertTurn.run(
@@ -632,6 +645,7 @@ export class LocalTaskSyncStore {
           message.clientUserMessageId ?? null,
           message.role,
           message.text,
+          message.author ?? "",
           message.phase ?? null,
           message.time ?? null,
           JSON.stringify(message.responseAnnotations),
@@ -654,6 +668,7 @@ export class LocalTaskSyncStore {
       document.itemId,
       document.role,
       String(document.text ?? "").trim(),
+      String(document.author ?? "").trim(),
       String(document.annotationText ?? "").trim(),
       String(document.attachmentNames ?? "").trim(),
       occurredAt,
@@ -663,6 +678,7 @@ export class LocalTaskSyncStore {
     const conflict = replace ? `DO UPDATE SET
       turn_thread_id = excluded.turn_thread_id,
       message_text = excluded.message_text,
+      author = excluded.author,
       annotation_text = excluded.annotation_text,
       attachment_names = excluded.attachment_names,
       occurred_at = excluded.occurred_at,
@@ -671,9 +687,9 @@ export class LocalTaskSyncStore {
     this.#database.prepare(`
       INSERT INTO task_message_search_documents (
         document_key, provider, thread_id, turn_thread_id, turn_id, item_id,
-        role, message_text, annotation_text, attachment_names,
+        role, message_text, author, annotation_text, attachment_names,
         occurred_at, occurred_at_ms, source
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(document_key) ${conflict}
     `).run(...values);
   }
@@ -735,6 +751,7 @@ export class LocalTaskSyncStore {
           itemId: String(message?.itemId ?? "").trim() || `${turn.id}:${message.role}:${position}`,
           role: message.role,
           text,
+          author: message.author,
           annotationText,
           attachmentNames,
           occurredAt: message?.time
@@ -1041,6 +1058,7 @@ export class LocalTaskSyncStore {
           turnId: String(row.turn_id),
           itemId: String(row.item_id),
           role: String(row.role),
+          ...(row.author ? { author: String(row.author) } : {}),
           matchedField,
           snippet: compactSearchSnippet(source, terms),
           occurredAt: row.occurred_at ? String(row.occurred_at) : null,
@@ -1069,6 +1087,7 @@ export class LocalTaskSyncStore {
       itemId: String(row.item_id),
       role: String(row.role),
       text: String(row.message_text),
+      ...(row.author ? { author: String(row.author) } : {}),
       attachmentNames: String(row.attachment_names ?? "").split(/\s*\n\s*/u).filter(Boolean),
       occurredAt: row.occurred_at ? String(row.occurred_at) : null,
     };

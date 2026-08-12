@@ -257,6 +257,27 @@ test("displayUserPrompt unwraps Telegram replies and removes IDE context", () =>
   assert.equal(displayUserPrompt("<ide_context>служебное</ide_context>\nМой вопрос"), "Мой вопрос");
 });
 
+test("inter-Stream messages retain their source author without exposing the envelope", () => {
+  const prompt = [
+    "<agent-hub-stream-message>",
+    JSON.stringify({
+      workspaceId: "workspace-1",
+      workspaceName: "Agent Hub",
+      streamId: "stream-1",
+      streamName: "Architect",
+    }),
+    "</agent-hub-stream-message>",
+    "Release the ready changes.",
+  ].join("\n");
+  const [exchange] = codexThreadHistory([{
+    id: "turn-stream-message",
+    status: "inProgress",
+    items: [{ type: "userMessage", content: [{ type: "text", text: prompt }] }],
+  }]);
+  assert.equal(displayUserPrompt(prompt), "Release the ready changes.");
+  assert.equal(exchange.messages[0].author, "Agent Hub - Architect");
+});
+
 test("Codex abort marker never replaces the user's original prompt", () => {
   const marker = [
     "<turn_aborted>",

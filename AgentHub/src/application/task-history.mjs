@@ -1,5 +1,6 @@
 import { codexSubagentActivity } from "../domain/run-activity.mjs";
 import { isCodexContextProbeTurn } from "../domain/codex-context-probe.mjs";
+import { interstreamMessageDetails } from "../domain/interstream-message.mjs";
 
 export const EMPTY_TURN_COMPLETION_TEXT = "Ход завершён без текстового ответа.";
 
@@ -255,6 +256,7 @@ function codexTurnMessages(turn) {
   return (Array.isArray(turn?.items) ? turn.items : []).flatMap((item, index) => {
     if (item?.type === "userMessage") {
       const rawText = textContent(item.content);
+      const interstream = interstreamMessageDetails(rawText);
       const envelope = desktopPromptEnvelope(rawText);
       const attachmentSources = codexAttachmentSources(item.content, envelope, rawText);
       const responseAnnotations = responseAnnotationDetails(rawText);
@@ -267,6 +269,7 @@ function codexTurnMessages(turn) {
           : {}),
         role: "user",
         text,
+        ...(interstream ? { author: interstream.author } : {}),
         ...(responseAnnotations?.items.length
           ? {
             responseAnnotations: responseAnnotations.items.map((annotation) => ({ ...annotation })),
@@ -347,6 +350,8 @@ function responseAnnotationPrompt(value) {
 
 export function displayUserPrompt(value) {
   let text = String(value ?? "").trim();
+  const interstream = interstreamMessageDetails(text);
+  if (interstream) text = interstream.text;
   const envelope = desktopPromptEnvelope(text);
   if (envelope) text = envelope.text;
   const telegramReplyMarker = "\nТекст пользователя:\n";
@@ -452,6 +457,11 @@ function claudeUserPrompt(entry) {
   return displayUserPrompt(textContent(entry.message?.content));
 }
 
+function claudeUserAuthor(entry) {
+  if (entry?.type !== "user" || entry.message?.role !== "user") return "";
+  return interstreamMessageDetails(textContent(entry.message?.content))?.author ?? "";
+}
+
 export function claudeTranscriptHistory(text) {
   const entries = claudeEntries(text);
   const userIndexes = entries
@@ -497,6 +507,9 @@ export function claudeTranscriptHistory(text) {
           itemId: String(entries[entryIndex]?.uuid ?? `${entryIndex}:user`),
           role: "user",
           text: claudeUserPrompt(entries[entryIndex]),
+          ...(claudeUserAuthor(entries[entryIndex])
+            ? { author: claudeUserAuthor(entries[entryIndex]) }
+            : {}),
           ...(normalizedTimestamp(entries[entryIndex]?.timestamp)
             ? { time: normalizedTimestamp(entries[entryIndex]?.timestamp) }
             : {}),
@@ -587,6 +600,7 @@ export function mergeActiveTaskHistory(history, activeTurn = {}) {
 
   const turnId = String(activeTurn.turnId ?? activeTurn.id ?? "").trim();
   const rawPrompt = String(activeTurn.prompt ?? "").trim();
+  const rootInterstream = interstreamMessageDetails(rawPrompt);
   const responseAnnotations = responseAnnotationDetails(rawPrompt);
   const visiblePrompt = displayUserPrompt(rawPrompt);
   const attachments = Array.isArray(activeTurn.attachments)
@@ -643,12 +657,17 @@ export function mergeActiveTaskHistory(history, activeTurn = {}) {
   const suppliedUsers = (Array.isArray(activeTurn.userMessages) ? activeTurn.userMessages : [])
     .filter((message) => message?.role === "user")
     .map((message, index) => {
-      const messageText = displayUserPrompt(String(message.text ?? ""));
+      const rawMessageText = String(message.text ?? "");
+      const interstream = interstreamMessageDetails(rawMessageText);
+      const messageText = displayUserPrompt(rawMessageText);
       return {
         itemId: String(message.itemId ?? message.id ?? "").trim(),
         clientUserMessageId: String(message.clientUserMessageId ?? message.clientId ?? "").trim(),
         role: "user",
         text: messageText,
+        ...((interstream?.author ?? String(message.author ?? "").trim())
+          ? { author: interstream?.author ?? String(message.author).trim() }
+          : {}),
         ...(normalizedTimestamp(message.time) ? { time: normalizedTimestamp(message.time) } : {}),
         ...(Array.isArray(message.responseAnnotations)
           ? { responseAnnotations: message.responseAnnotations.map((item) => ({ ...item })) }
@@ -673,6 +692,7 @@ export function mergeActiveTaskHistory(history, activeTurn = {}) {
       clientUserMessageId: rootClientUserMessageId,
       role: "user",
       text: visiblePrompt,
+      ...(rootInterstream ? { author: rootInterstream.author } : {}),
       ...(normalizedTimestamp(activeTurn.startedAt) ? { time: normalizedTimestamp(activeTurn.startedAt) } : {}),
       ...(responseAnnotations?.items.length
         ? {
@@ -719,6 +739,7 @@ export function mergeActiveTaskHistory(history, activeTurn = {}) {
       if (incoming.itemId) user.itemId = incoming.itemId;
       if (incoming.clientUserMessageId) user.clientUserMessageId = incoming.clientUserMessageId;
       if (incoming.text) user.text = incoming.text;
+      if (incoming.author) user.author = incoming.author;
       const timestamp = incoming.time ?? normalizedTimestamp(activeTurn.startedAt);
       if (!user.time && timestamp) user.time = timestamp;
       if (incoming.responseAnnotations?.length) user.responseAnnotations = incoming.responseAnnotations;

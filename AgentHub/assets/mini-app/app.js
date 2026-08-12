@@ -2596,7 +2596,7 @@ function renderWorkspaceMessageSearch() {
         title: "Открыть сообщение",
       }, [
         el("span", { class: "workspace-message-search-hit-meta" }, [
-          el("strong", { text: result.role === "user" ? "Вы" : result.provider === "claude" ? "Claude" : "Codex" }),
+          el("strong", { text: result.author || (result.role === "user" ? "Вы" : result.provider === "claude" ? "Claude" : "Codex") }),
           el("span", { text: occurred && Number.isFinite(occurred.getTime())
             ? occurred.toLocaleString("ru-RU", { dateStyle: "short", timeStyle: "short" })
             : "" }),
@@ -4507,6 +4507,7 @@ function renderQueueForTask(taskId, container) {
       ? rawText
       : (!entryAnnotations.length && rawPreview ? rawPreview : "");
     const content = el("div", { class: "queue-content" }, [
+      entry.author ? el("strong", { class: "queue-author", text: entry.author }) : null,
       visibleText ? el("div", { class: "queue-text", text: visibleText }) : null,
       entry.lastError ? el("div", { class: "queue-error", text: entry.lastError }) : null,
       entryAnnotations.length

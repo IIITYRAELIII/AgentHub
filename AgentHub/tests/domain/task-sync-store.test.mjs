@@ -132,6 +132,7 @@ test("local task sync preserves durable message metadata and attachments", async
       clientUserMessageId: "client-1",
       role: "user",
       text: "Посмотри скриншот",
+      author: "Agent Hub - Architect",
       responseAnnotations: [{ text: "Цитата из ответа", annotation: "Почему так?" }],
       responseAnnotationRequest: "Почему так?",
       time: "2026-07-31T12:00:00.000Z",
@@ -147,6 +148,7 @@ test("local task sync preserves durable message metadata and attachments", async
   assert.equal(entry.completedAt, "2026-07-31T12:01:00.000Z");
   assert.equal(entry.messages[0].clientUserMessageId, "client-1");
   assert.equal(entry.messages[0].time, "2026-07-31T12:00:00.000Z");
+  assert.equal(entry.messages[0].author, "Agent Hub - Architect");
   assert.deepEqual(entry.promptAnnotations, [
     { text: "Цитата из ответа", annotation: "Почему так?" },
   ]);
@@ -161,6 +163,11 @@ test("local task sync preserves durable message metadata and attachments", async
   assert.equal(entry.activities[0].label, "Проверка");
   assert.equal(entry.activityGroups[0].reasoning, "Проверяю входные данные.");
   assert.equal(entry.activityGroups[0].activities[0].label, "Проверка");
+  const search = restored.searchMessages({
+    references: [{ provider: task.provider, threadId: task.threadId }],
+    query: "посмотри скриншот",
+  });
+  assert.equal(search.results[0].author, "Agent Hub - Architect");
 });
 
 test("message search keeps every indexed reply beyond the bounded chat read model", async () => {
@@ -291,12 +298,16 @@ test("local task sync migrates annotation columns in an existing SQLite cache", 
       .all().map((column) => column.name);
     const messageColumns = migrated.prepare("PRAGMA table_info(task_read_model_messages)")
       .all().map((column) => column.name);
+    const searchColumns = migrated.prepare("PRAGMA table_info(task_message_search_documents)")
+      .all().map((column) => column.name);
     migrated.close();
     assert.ok(turnColumns.includes("prompt_annotations_json"));
     assert.ok(turnColumns.includes("prompt_request"));
     assert.ok(turnColumns.includes("activity_groups_json"));
     assert.ok(messageColumns.includes("response_annotations_json"));
     assert.ok(messageColumns.includes("response_annotation_request"));
+    assert.ok(messageColumns.includes("author"));
+    assert.ok(searchColumns.includes("author"));
   } finally {
     store?.close();
     await rm(directory, { recursive: true, force: true });

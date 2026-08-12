@@ -8,12 +8,14 @@ import {
   attachmentMetadataFromId,
   createAttachmentStorageName,
 } from "../domain/attachment-files.mjs";
+import { createInterstreamMessage } from "../domain/interstream-message.mjs";
 
 const CONTEXT_TOKEN_VERSION = 1;
 const RELEASE_STATUSES = new Set(["draft", "ready", "blocked", "discarded"]);
 const MUTATING_TOOLS = new Set([
   "hub_task_create", "hub_task_update", "hub_task_move", "hub_task_start", "hub_task_complete",
   "hub_task_attachment_add", "hub_workspace_rules_update", "hub_stream_rules_update",
+  "hub_stream_message_send",
   "hub_release_change_status", "hub_release_complete",
 ]);
 const TEXT_ATTACHMENT_TYPES = new Set([
@@ -110,6 +112,7 @@ function tool(name, description, properties = {}, required = []) {
 export class HubMcpService {
   #activeRuns = () => [];
   #taskLauncher = async () => { throw new Error("Agent Hub task launcher is not ready"); };
+  #streamMessenger = async () => { throw new Error("Agent Hub Stream messenger is not ready"); };
 
   constructor({ workspaceCatalog, taskBoard, workLog, attachmentDirectory, secret, releaseCompleter } = {}) {
     for (const name of [
@@ -144,6 +147,11 @@ export class HubMcpService {
     this.#taskLauncher = value;
   }
 
+  setStreamMessenger(value) {
+    if (typeof value !== "function") throw new TypeError("Stream messenger is required");
+    this.#streamMessenger = value;
+  }
+
   tools() {
     return [
       tool("hub_context_get", "Return the current Agent Hub Workspace, Stream and Thread context."),
@@ -155,6 +163,17 @@ export class HubMcpService {
         limit: { type: "integer", minimum: 1, maximum: 50, default: 20 },
         include_body: { type: "boolean", default: true },
       }),
+      tool("hub_stream_message_send", "Send a visible message from the current Stream to another Stream in the current Workspace through the normal Hub admission queue.", {
+        stream_id: { type: "string", description: "Target Stream in the current Workspace." },
+        text: { type: "string" },
+        mode: {
+          type: "string",
+          enum: ["queue", "steer"],
+          default: "queue",
+          description: "Queue after the active turn, or steer the active turn and queue if steering is no longer possible.",
+        },
+        confirm_send: { type: "boolean", description: "Must be true because this starts, queues or steers another agent turn." },
+      }, ["stream_id", "text", "confirm_send"]),
       tool("hub_rules_get", "Read effective Workspace and current Stream developer rules."),
       tool("hub_workspace_rules_update", "Replace developer rules for the current Workspace.", {
         content: { type: "string" },
@@ -272,6 +291,8 @@ export class HubMcpService {
         return this.#activeRunsForWorkspace(context);
       case "hub_stream_history":
         return this.#streamHistory(context, args);
+      case "hub_stream_message_send":
+        return this.#sendStreamMessage(context, args);
       case "hub_rules_get":
         return this.workspaceCatalog.developerRulesForStream(context.streamId);
       case "hub_workspace_rules_update":
@@ -527,6 +548,52 @@ export class HubMcpService {
         threadId: result.target.threadId ?? null,
       },
       delivery: result.delivery ?? null,
+    };
+  }
+
+  async #sendStreamMessage(context, {
+    stream_id: streamId,
+    text,
+    mode = "queue",
+    confirm_send: confirmSend = false,
+    request_id: requestId,
+  } = {}) {
+    if (confirmSend !== true) throw new Error("confirm_send must be true");
+    const targetStreamId = requiredText(streamId, "stream id", 300);
+    const targetStream = this.#workspace(context).streams
+      .find((candidate) => candidate.id === targetStreamId);
+    if (!targetStream) throw new Error("Stream is outside the current Workspace");
+    const followUpMode = requiredText(mode, "message mode", 20).toLowerCase();
+    if (!new Set(["queue", "steer"]).has(followUpMode)) throw new Error("invalid message mode");
+    const message = createInterstreamMessage({
+      workspaceId: context.workspaceId,
+      workspaceName: context.workspaceName,
+      streamId: context.streamId,
+      streamName: context.streamName,
+      text: requiredText(text, "message text", 100_000),
+    });
+    const delivery = await this.#streamMessenger({
+      streamId: targetStreamId,
+      text: message,
+      clientUserMessageId: `mcp:${requestId}`,
+      followUpMode,
+    }, {
+      source: "mcp",
+      clientId: `mcp:${context.provider}:${context.auditThreadId}`,
+    });
+    return {
+      source: {
+        workspaceId: context.workspaceId,
+        workspaceName: context.workspaceName,
+        streamId: context.streamId,
+        streamName: context.streamName,
+      },
+      target: {
+        workspaceId: context.workspaceId,
+        streamId: targetStreamId,
+        streamName: targetStream.displayName ?? targetStream.name ?? "",
+      },
+      delivery,
     };
   }
 

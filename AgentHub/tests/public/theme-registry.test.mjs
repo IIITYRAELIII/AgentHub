@@ -106,7 +106,10 @@ test("Diablo exposes every scene and stable WebView asset token", () => {
       "card-frame": "waypoint-card-frame.webp",
       "message-flourish": "message-flourish.webp",
       "stream-divider": "stream-divider.webp",
-      "panel-junction": "panel-junction.webp",
+      "panel-corner-tl": "panel-corner-tl.webp",
+      "panel-corner-tr": "panel-corner-tr.webp",
+      "panel-corner-bl": "panel-corner-bl.webp",
+      "panel-corner-br": "panel-corner-br.webp",
     },
   );
 });

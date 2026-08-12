@@ -38,7 +38,10 @@ async function fixture(context) {
     hierarchy: () => [{
       id: "workspace-1",
       name: "Agent Hub",
-      streams: [{ id: "stream-1", threads: [{ provider: "codex", threadId: "thread-1" }] }],
+      streams: [
+        { id: "stream-1", displayName: "MCP", threads: [{ provider: "codex", threadId: "thread-1" }] },
+        { id: "stream-2", displayName: "Themes", threads: [{ provider: "codex", threadId: "thread-2" }] },
+      ],
     }],
     releaseRegistry: () => ({ changes: [] }),
     releaseChanges: () => [],
@@ -109,6 +112,11 @@ async function fixture(context) {
     const task = taskBoard.markStarted({ id, workspaceId, streamId });
     return { task, target: { streamId, provider: "codex", threadId: "thread-1" } };
   });
+  const sentMessages = [];
+  service.setStreamMessenger(async (params, messageContext) => {
+    sentMessages.push({ params, context: messageContext });
+    return { accepted: false, queued: true, id: "queued-1" };
+  });
   service.setActiveRuns(() => [{
     id: "run-1", provider: "codex", threadId: "thread-1", turnId: "turn-live",
     status: "running", progressStage: "Editing files",
@@ -118,6 +126,7 @@ async function fixture(context) {
     token: service.contextToken({ provider: "codex", threadId: "thread-1" }),
     projectRoot,
     operations,
+    sentMessages,
   };
 }
 
@@ -162,6 +171,24 @@ test("HubMcpService starts the current Workspace task in the current Stream", as
   });
   assert.equal(task.task.status, "started");
   assert.equal(task.target.streamId, "stream-1");
+});
+
+test("HubMcpService sends attributed messages to another current-Workspace Stream", async (context) => {
+  const { service, token, sentMessages } = await fixture(context);
+  const result = await service.call("hub_stream_message_send", {
+    context_token: token,
+    request_id: "message-themes-1",
+    stream_id: "stream-2",
+    text: "Finish the theme.",
+    mode: "queue",
+    confirm_send: true,
+  });
+  assert.equal(result.target.streamName, "Themes");
+  assert.equal(result.delivery.queued, true);
+  assert.equal(sentMessages[0].params.streamId, "stream-2");
+  assert.match(sentMessages[0].params.text, /"workspaceName":"Agent Hub"/u);
+  assert.match(sentMessages[0].params.text, /"streamName":"MCP"/u);
+  assert.match(sentMessages[0].params.text, /Finish the theme\.$/u);
 });
 
 test("HubMcpService exposes cursor events and publication-gated release completion", async (context) => {

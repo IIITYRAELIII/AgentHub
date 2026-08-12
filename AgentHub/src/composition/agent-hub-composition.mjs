@@ -29,7 +29,6 @@ import { createClientRuntimeComposition } from "./client-runtime-composition.mjs
 import { createInteractionShellPhase } from "./interaction-shell-phase-composition.mjs";
 import { createExecutionBootstrapPhase } from "./execution-bootstrap-phase-composition.mjs";
 import { HubSessionState } from "../runtime/hub-session-state.mjs";
-
 if (process.platform === "win32") dns.setDefaultResultOrder("ipv4first");
 
 const agentHubDeferred = createAgentHubDeferredPorts();
@@ -584,6 +583,7 @@ const {
   runCoordinator,
 } = interactionShell;
 hubMcpService.setTaskLauncher((params, context) => interactionShell.taskBoardLauncher.start(params, { source: "mcp", clientId: `mcp:${context.provider}:${context.auditThreadId}` }));
+hubMcpService.setStreamMessenger((params, context) => interactionShell.desktopMessageController.sendMessage(params, context));
 const executionBootstrap = createExecutionBootstrapPhase({
   config,
   root: AGENT_HUB_ROOT,

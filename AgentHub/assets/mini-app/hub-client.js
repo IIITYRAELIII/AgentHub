@@ -1395,9 +1395,11 @@ function historyMessages(history, focusedTurn = null) {
       itemId: String(message.itemId ?? ""),
       clientUserMessageId: String(message.clientUserMessageId ?? ""),
       role: message.role,
-      author: message.role === "user"
-        ? "Вы"
-        : history.provider === "claude" ? "Claude" : "Codex",
+      author: message.author || (
+        message.role === "user"
+          ? "Вы"
+          : history.provider === "claude" ? "Claude" : "Codex"
+      ),
       text: message.text,
       ...(message.role === "user" ? {
         responseAnnotations: message.responseAnnotations,
@@ -1424,9 +1426,11 @@ function historyMessages(history, focusedTurn = null) {
         turnId: focusedTurn.turnId,
         itemId,
         role: message.role,
-        author: message.role === "user"
-          ? "Вы"
-          : focusedTurn.provider === "claude" ? "Claude" : "Codex",
+        author: message.author || (
+          message.role === "user"
+            ? "Вы"
+            : focusedTurn.provider === "claude" ? "Claude" : "Codex"
+        ),
         text: message.text,
         time: message.time ?? null,
         attachments: attachmentViews(message.attachments),

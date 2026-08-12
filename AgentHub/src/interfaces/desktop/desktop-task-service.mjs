@@ -209,6 +209,7 @@ export class DesktopTaskService {
           itemId: indexedMessage.itemId,
           role: indexedMessage.role,
           text: indexedMessage.text,
+          ...(indexedMessage.author ? { author: indexedMessage.author } : {}),
           time: indexedMessage.occurredAt,
           attachments: indexedMessage.attachmentNames.map((name) => ({ name })),
         }],

@@ -28,7 +28,10 @@ html[data-theme="reliquary"] {
   --reliquary-card-frame: var(--reliquary-card-frame-asset, url("./waypoint-card-frame.webp"));
   --reliquary-message-flourish: var(--reliquary-message-flourish-asset, url("./message-flourish.webp"));
   --reliquary-stream-divider: var(--reliquary-stream-divider-asset, url("./stream-divider.webp"));
-  --reliquary-panel-junction: var(--reliquary-panel-junction-asset, url("./panel-junction.webp"));
+  --reliquary-panel-corner-tl: var(--reliquary-panel-corner-tl-asset, url("./panel-corner-tl.webp"));
+  --reliquary-panel-corner-tr: var(--reliquary-panel-corner-tr-asset, url("./panel-corner-tr.webp"));
+  --reliquary-panel-corner-bl: var(--reliquary-panel-corner-bl-asset, url("./panel-corner-bl.webp"));
+  --reliquary-panel-corner-br: var(--reliquary-panel-corner-br-asset, url("./panel-corner-br.webp"));
   --reliquary-stream-divider-half-gap: 0.175rem;
   --reliquary-stone:
     linear-gradient(rgb(3 5 7 / 76%), rgb(7 8 9 / 80%)),
@@ -318,6 +321,27 @@ html[data-theme="reliquary"] .stream-tabs > .stream-tab:not(:last-child)::after 
 }
 
 @media (min-width: 860px) {
+  html[data-theme="reliquary"] .app-header::before,
+  html[data-theme="reliquary"] .task-rail::before,
+  html[data-theme="reliquary"] .activity-rail::before,
+  html[data-theme="reliquary"] .chat::before,
+  html[data-theme="reliquary"] .dialog-settings::before,
+  html[data-theme="reliquary"] .settings-panel::before {
+    background-image:
+      var(--reliquary-panel-corner-tl),
+      var(--reliquary-panel-corner-tr),
+      var(--reliquary-panel-corner-bl),
+      var(--reliquary-panel-corner-br);
+    background-position: left top, right top, left bottom, right bottom;
+    background-repeat: no-repeat;
+    background-size: 3.5rem 3.5rem;
+    content: "";
+    inset: 0;
+    pointer-events: none;
+    position: absolute;
+    z-index: 12;
+  }
+
   html[data-theme="reliquary"]:not([data-surface="mobile"]) .task-new,
   html[data-theme="reliquary"]:not([data-surface="mobile"]) .task-search {
     background-color: rgb(10 12 14 / 94%);
@@ -358,37 +382,6 @@ html[data-theme="reliquary"] .stream-tabs > .stream-tab:not(:last-child)::after 
     --reliquary-stream-divider-half-gap: 0.06rem;
   }
 
-  html[data-theme="reliquary"] .workspace::before,
-  html[data-theme="reliquary"] .workspace::after,
-  html[data-theme="reliquary"] .chat::before,
-  html[data-theme="reliquary"] .chat::after {
-    background: var(--reliquary-panel-junction) left top / contain no-repeat;
-    content: "";
-    height: 3.35rem;
-    pointer-events: none;
-    position: absolute;
-    top: 0;
-    width: 3.35rem;
-    z-index: 12;
-  }
-
-  html[data-theme="reliquary"] .workspace::before {
-    left: 0;
-  }
-
-  html[data-theme="reliquary"] .workspace::after {
-    right: 0;
-    transform: scaleX(-1);
-  }
-
-  html[data-theme="reliquary"] .chat::before {
-    left: 0;
-  }
-
-  html[data-theme="reliquary"] .chat::after {
-    right: 0;
-    transform: scaleX(-1);
-  }
 }
 
 html[data-theme="reliquary"] .task-workspace-item:hover,
@@ -511,10 +504,6 @@ html[data-theme="reliquary"] *::-webkit-scrollbar-thumb {
     background-color: rgb(4 7 9 / 91%);
   }
 
-  html[data-theme="reliquary"] .workspace::before,
-  html[data-theme="reliquary"] .workspace::after,
-  html[data-theme="reliquary"] .chat::before,
-  html[data-theme="reliquary"] .chat::after,
   html[data-theme="reliquary"] .stream-tabs > .stream-tab::after {
     display: none;
   }

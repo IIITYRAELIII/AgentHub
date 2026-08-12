@@ -678,6 +678,33 @@ test("desktopSnapshot exposes an in-flight steer as sending rather than a new de
   assert.equal(snapshot.deferredInputs[0].state, "steering");
 });
 
+test("desktopSnapshot exposes an inter-Stream queue message without its service envelope", async () => {
+  const input = [
+    "<agent-hub-stream-message>",
+    JSON.stringify({
+      workspaceId: "workspace-1",
+      workspaceName: "Agent HUB",
+      streamId: "stream-architect",
+      streamName: "Architect",
+    }),
+    "</agent-hub-stream-message>",
+    "Finish the theme.",
+  ].join("\n");
+  const { desktopSnapshot } = fixture({
+    queued: [{
+      id: "interstream-1",
+      provider: "codex",
+      threadId: "thread-1",
+      taskTitle: "Themes",
+      input,
+    }],
+  });
+  const snapshot = await desktopSnapshot();
+  assert.equal(snapshot.deferredInputs[0].text, "Finish the theme.");
+  assert.equal(snapshot.deferredInputs[0].preview, "Finish the theme.");
+  assert.equal(snapshot.deferredInputs[0].author, "Agent HUB - Architect");
+});
+
 test("desktopSnapshot returns a compact marker for an unchanged version", async () => {
   const { desktopSnapshot } = fixture();
   const snapshot = await desktopSnapshot();
