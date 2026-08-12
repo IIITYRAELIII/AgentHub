@@ -3634,7 +3634,10 @@ html[data-view="dashboard"] .task-board-view {
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
   display: flex;
-  flex: 1 0 clamp(16rem, calc((100vw - 4rem) / var(--board-column-count)), 22rem);
+  flex: 1 0 max(
+    clamp(16rem, calc((100vw - 4rem) / var(--board-column-count)), 22rem),
+    var(--task-column-card-width, 0px)
+  );
   flex-direction: column;
   min-height: 0;
   transition: border-color 0.14s ease, background 0.14s ease;
@@ -3731,6 +3734,7 @@ html[data-view="dashboard"] .task-board-view {
 }
 
 .task-board-column-list {
+  box-sizing: border-box;
   display: grid;
   gap: 0.55rem;
   min-height: 4rem;
@@ -3761,8 +3765,10 @@ html[data-view="dashboard"] .task-board-view {
   background: var(--card-bg-open);
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
+  box-sizing: border-box;
   box-shadow: var(--card-shadow);
   cursor: pointer;
+  max-inline-size: none;
   padding: 0.65rem;
 }
 
@@ -4284,7 +4290,7 @@ html[data-view="dashboard"] .task-board-view {
   }
 
   .task-board-column {
-    flex: 0 0 min(82vw, 19rem);
+    flex: 0 0 max(min(82vw, 19rem), var(--task-column-card-width, 0px));
   }
 
   .task-start-new {

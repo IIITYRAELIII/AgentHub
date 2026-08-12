@@ -1,6 +1,25 @@
 "use strict";
 
 (() => {
+  function fitTaskCardWidth({ baseWidth, maxWidth, maxHeight, measureHeight } = {}) {
+    const minimum = Math.max(1, Math.ceil(Number(baseWidth) || 0));
+    const maximum = Math.max(minimum, Math.floor(Number(maxWidth) || minimum));
+    const heightLimit = Math.max(1, Number(maxHeight) || 0);
+    if (typeof measureHeight !== "function" || measureHeight(minimum) <= heightLimit) return minimum;
+    if (measureHeight(maximum) > heightLimit) return maximum;
+
+    let lower = minimum;
+    let upper = maximum;
+    while (upper - lower > 1) {
+      const candidate = Math.floor((lower + upper) / 2);
+      if (measureHeight(candidate) <= heightLimit) upper = candidate;
+      else lower = candidate;
+    }
+    return upper;
+  }
+
+  window.AgentHubTaskCardSizing = Object.freeze({ fitWidth: fitTaskCardWidth });
+
   function createDeleteDialog({ dialog, cancelButton, confirmButton, onConfirm } = {}) {
     let pendingTaskId = null;
 
@@ -64,6 +83,9 @@
   const TASK_MIME = "application/x-agent-hub-board-task";
   const COLUMN_MIME = "application/x-agent-hub-board-column";
   const COLUMN_TEXT_PREFIX = "agent-hub-column:";
+  const TASK_CARD_MAX_TEXT_LINES = 6;
+  const TASK_CARD_MAX_WIDTH_REM = 42;
+  let taskCardSizingFrame = null;
 
   const state = {
     tasks: [],
@@ -104,6 +126,71 @@
     }
     for (const child of children) element.append(child);
     return element;
+  }
+
+  function numericCssValue(value) {
+    const parsed = Number.parseFloat(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  function resizeTaskCards() {
+    taskCardSizingFrame = null;
+    const columnNodes = Array.from(columns.querySelectorAll(".task-board-column"));
+    for (const column of columnNodes) {
+      column.style.removeProperty("--task-column-card-width");
+      for (const card of column.querySelectorAll(".board-task-card:not(.is-compact)")) {
+        card.style.removeProperty("inline-size");
+        card.removeAttribute("data-width-expanded");
+      }
+    }
+
+    const rootFontSize = numericCssValue(window.getComputedStyle(document.documentElement).fontSize) || 16;
+    const boardStyle = window.getComputedStyle(columns);
+    const boardInnerWidth = Math.max(1, columns.clientWidth
+      - numericCssValue(boardStyle.paddingLeft)
+      - numericCssValue(boardStyle.paddingRight));
+
+    for (const column of columnNodes) {
+      const list = column.querySelector(".task-board-column-list");
+      const cards = Array.from(list?.querySelectorAll(".board-task-card:not(.is-compact)") ?? []);
+      if (!list || !cards.length) continue;
+
+      const baseWidth = Math.max(1, Math.round(cards[0].getBoundingClientRect().width));
+      const maxWidth = Math.max(baseWidth, Math.min(
+        TASK_CARD_MAX_WIDTH_REM * rootFontSize,
+        boardInnerWidth - (2 * rootFontSize),
+      ));
+      let widestCard = baseWidth;
+
+      for (const card of cards) {
+        const title = card.querySelector(".board-task-title");
+        if (!title) continue;
+        const titleStyle = window.getComputedStyle(title);
+        const lineHeight = numericCssValue(titleStyle.lineHeight)
+          || (numericCssValue(titleStyle.fontSize) * 1.35);
+        const desiredWidth = fitTaskCardWidth({
+          baseWidth,
+          maxWidth,
+          maxHeight: lineHeight * TASK_CARD_MAX_TEXT_LINES,
+          measureHeight: (width) => {
+            card.style.setProperty("inline-size", `${width}px`);
+            return title.scrollHeight;
+          },
+        });
+        card.style.setProperty("inline-size", `${desiredWidth}px`);
+        if (desiredWidth > baseWidth + 1) card.setAttribute("data-width-expanded", "");
+        widestCard = Math.max(widestCard, desiredWidth);
+      }
+
+      const listStyle = window.getComputedStyle(list);
+      const listPadding = numericCssValue(listStyle.paddingLeft) + numericCssValue(listStyle.paddingRight);
+      column.style.setProperty("--task-column-card-width", `${Math.ceil(widestCard + listPadding)}px`);
+    }
+  }
+
+  function scheduleTaskCardSizing() {
+    if (taskCardSizingFrame != null) window.cancelAnimationFrame(taskCardSizingFrame);
+    taskCardSizingFrame = window.requestAnimationFrame(resizeTaskCards);
   }
 
   function emit(type, detail = {}) {
@@ -506,6 +593,7 @@
     const orderedIds = ["backlog", ...state.columnOrder.filter((id) => rendered.has(id) && id !== "backlog")];
     for (const id of rendered.keys()) if (!orderedIds.includes(id)) orderedIds.push(id);
     columns.replaceChildren(...orderedIds.map((id) => rendered.get(id)));
+    scheduleTaskCardSizing();
   }
 
   function renderWorkspacePanel() {
@@ -525,6 +613,11 @@
   }
 
   document.querySelector("[data-task-start-close]")?.addEventListener("click", closeStart);
+  window.addEventListener("resize", scheduleTaskCardSizing, { passive: true });
+  if (typeof window.ResizeObserver === "function") {
+    new window.ResizeObserver(scheduleTaskCardSizing).observe(columns);
+  }
+  document.fonts?.ready?.then(scheduleTaskCardSizing).catch(() => {});
   document.querySelector("[data-task-card-close]")?.addEventListener("click", closeTaskCard);
   taskCardOriginalToggle?.addEventListener("click", () => {
     setTaskCardOriginalExpanded(taskCardOriginalToggle.getAttribute("aria-expanded") !== "true");
