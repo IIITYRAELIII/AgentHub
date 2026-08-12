@@ -8,6 +8,7 @@ export class RateLimitTelemetryService {
     readCodexAccount,
     readCodexRateLimits,
     codexRunning,
+    claudePollingEnabled = true,
     historyStore,
     workLogUsageStore,
     timers,
@@ -26,6 +27,7 @@ export class RateLimitTelemetryService {
     this.readCodexAccount = readCodexAccount ?? (async () => null);
     this.readCodexRateLimits = readCodexRateLimits;
     this.codexRunning = codexRunning;
+    this.claudePollingEnabled = claudePollingEnabled;
     this.historyStore = historyStore;
     this.workLogUsageStore = workLogUsageStore;
     this.timers = timers;
@@ -118,13 +120,15 @@ export class RateLimitTelemetryService {
         this.logger.error("Cannot poll Codex rate limits:", error.message);
       }));
     }
-    jobs.push((async () => {
-      const limits = this.parseClaudeLimits(await this.readClaude());
-      if (!limits.length) throw new Error("Claude did not return recognizable limit data");
-      await this.historyStore.record({ limits }, observedAt, "claude");
-    })().catch((error) => {
-      this.logger.error("Cannot poll Claude rate limits:", error.message);
-    }));
+    if (this.claudePollingEnabled) {
+      jobs.push((async () => {
+        const limits = this.parseClaudeLimits(await this.readClaude());
+        if (!limits.length) throw new Error("Claude did not return recognizable limit data");
+        await this.historyStore.record({ limits }, observedAt, "claude");
+      })().catch((error) => {
+        this.logger.error("Cannot poll Claude rate limits:", error.message);
+      }));
+    }
     await Promise.all(jobs);
   }
 

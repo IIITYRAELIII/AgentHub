@@ -161,25 +161,29 @@ def secure_runtime_root(target_root: Path) -> None:
     """Create the private runtime location before any secret is written there."""
     target_root.mkdir(parents=True, exist_ok=True)
     if os.name == "nt":
-        owner = subprocess.run(
-            ["whoami"], check=True, capture_output=True, text=True, encoding="utf-8"
-        ).stdout.strip()
-        if not owner:
-            raise RuntimeError("Cannot resolve the current Windows account for Agent Hub ACLs.")
+        owner_result = subprocess.run(
+            ["whoami", "/user", "/fo", "csv", "/nh"],
+            check=True,
+            capture_output=True,
+        )
+        sid_match = re.search(rb"S-\d+(?:-\d+)+", owner_result.stdout)
+        if sid_match is None:
+            raise RuntimeError("Cannot resolve the current Windows SID for Agent Hub ACLs.")
+        owner_sid = sid_match.group(0).decode("ascii")
         result = subprocess.run(
             [
                 "icacls",
                 str(target_root),
                 "/inheritance:r",
                 "/grant:r",
-                f"{owner}:(OI)(CI)F",
+                f"*{owner_sid}:(OI)(CI)F",
                 "/grant:r",
                 "*S-1-5-18:(OI)(CI)F",
             ],
             check=False,
             capture_output=True,
             text=True,
-            encoding="utf-8",
+            encoding="oem",
         )
         if result.returncode != 0:
             raise RuntimeError(f"Cannot restrict Agent Hub runtime directory: {result.stderr.strip()}")

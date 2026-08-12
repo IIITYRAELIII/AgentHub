@@ -1,10 +1,29 @@
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import path from "node:path";
 import { createInterface } from "node:readline";
 import { callTelegramJson } from "../telegram/telegram-api.mjs";
 import { stopProcessTree } from "./process-tree.mjs";
 
 export function requiresTelegramChecks(config) {
   return config?.telegramEnabled === true;
+}
+
+export function findExecutableOnPath(name, {
+  environment = process.env,
+  platform = process.platform,
+  exists = existsSync,
+} = {}) {
+  const pathValue = String(environment.Path ?? environment.PATH ?? "");
+  const delimiter = platform === "win32" ? ";" : path.delimiter;
+  const join = platform === "win32" ? path.win32.join : path.join;
+  for (const rawDirectory of pathValue.split(delimiter)) {
+    const directory = rawDirectory.trim().replace(/^"|"$/g, "");
+    if (!directory) continue;
+    const candidate = join(directory, name);
+    if (exists(candidate)) return candidate;
+  }
+  return "";
 }
 
 export async function probeTelegramConnectivity({

@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import {
   codexStopHookStatus,
+  installCodexStopHook,
   mergeCodexStopHookConfig,
   removeCodexStopHookConfig,
 } from "../../../src/infrastructure/codex/codex-hook-config.mjs";
@@ -62,10 +63,12 @@ test("Codex hook status reports executable configuration and runtime receipts", 
     const layout = runtimeLayout(root);
     const hooksFile = path.join(root, "hooks.json");
     await mkdir(layout.dataDir, { recursive: true });
-    await writeFile(layout.codexHookLauncherFile, "// launcher\n", "utf8");
+    const launcherFile = path.join(path.dirname(hooksFile), "agent-hub-hooks", "codex-stop-hook-launcher.mjs");
+    await mkdir(path.dirname(launcherFile), { recursive: true });
+    await writeFile(launcherFile, "// launcher\n", "utf8");
     await writeFile(hooksFile, `${JSON.stringify(mergeCodexStopHookConfig({}, {
       nodeExecutable: process.execPath,
-      launcherFile: layout.codexHookLauncherFile,
+      launcherFile,
     }))}\n`, "utf8");
     await writeFile(path.join(layout.dataDir, "state.json"), `${JSON.stringify({
       codexHookReceipts: {
@@ -78,6 +81,27 @@ test("Codex hook status reports executable configuration and runtime receipts", 
     assert.equal(status.launcherAvailable, true);
     assert.equal(status.receipts.start.turnId, "turn-1");
     assert.equal(status.receipts.stop.turnId, "turn-1");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Codex hook installation copies the launcher beside Codex config", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "codex-hook-install-"));
+  try {
+    const runtimeRoot = path.join(root, "runtime");
+    const hooksFile = path.join(root, "codex", "hooks.json");
+    const source = runtimeLayout(runtimeRoot).codexHookLauncherFile;
+    await mkdir(path.dirname(source), { recursive: true });
+    await writeFile(source, "// sandbox-readable launcher\n", "utf8");
+    const installed = await installCodexStopHook({ hooksFile, runtimeRoot });
+    assert.equal(
+      installed.launcherFile,
+      path.join(path.dirname(hooksFile), "agent-hub-hooks", "codex-stop-hook-launcher.mjs"),
+    );
+    assert.equal(await readFile(installed.launcherFile, "utf8"), "// sandbox-readable launcher\n");
+    const config = JSON.parse(await readFile(hooksFile, "utf8"));
+    assert.match(config.hooks.Stop[0].hooks[0].command, /agent-hub-hooks/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

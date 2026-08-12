@@ -7,6 +7,7 @@ import { resolveCodexExecutable } from "./src/providers/codex/codex-invocation.m
 import {
   probeCodexAppServer,
   probeTelegramConnectivity,
+  findExecutableOnPath,
   requiresTelegramChecks,
 } from "./src/infrastructure/process/doctor-probes.mjs";
 import { unavailableLocalMcpOverrides } from "./src/infrastructure/process/local-mcp-preflight.mjs";
@@ -197,9 +198,7 @@ if (config) {
 }
 
 if (process.platform === "win32") {
-  const where = runCommand("where.exe", ["pwsh.exe"]);
-  const candidates = String(where.stdout ?? "").split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
-  const selected = candidates[0] ?? "";
+  const selected = findExecutableOnPath("pwsh.exe");
   const storeAlias = /\\AppData\\Local\\Microsoft\\WindowsApps\\/i.test(selected);
   const version = selected
     ? runCommand(selected, ["-NoProfile", "-NonInteractive", "-Command", "$PSVersionTable.PSVersion.ToString()"])

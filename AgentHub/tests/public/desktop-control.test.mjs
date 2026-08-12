@@ -25,15 +25,22 @@ import { createDesktopControlRouter } from "../../src/interfaces/desktop/desktop
 
 test("desktop control validates endpoint and request shape", () => {
   const endpointId = "a".repeat(64);
-  assert.deepEqual(validateDesktopControlEndpoint({
+  const descriptor = {
     protocol: 2,
     endpointId,
     pipeName: `agent-hub-desktop-${endpointId}`,
-  }), {
+  };
+  assert.deepEqual(validateDesktopControlEndpoint(descriptor), {
     protocol: 2,
     endpointId,
     pipeName: `agent-hub-desktop-${endpointId}`,
   });
+  if (process.platform !== "win32") {
+    const runtimeRoot = "/var/lib/agenthub/.local/state/agent-hub";
+    const endpoint = desktopControlEndpoint(runtimeRoot, descriptor);
+    assert.equal(endpoint, path.join(runtimeRoot, `desktop-${"a".repeat(24)}.sock`));
+    assert.ok(Buffer.byteLength(endpoint, "utf8") < 108);
+  }
   assert.throws(
     () => validateDesktopControlEndpoint({
       protocol: 2,

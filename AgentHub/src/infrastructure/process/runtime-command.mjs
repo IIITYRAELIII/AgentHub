@@ -108,6 +108,7 @@ export class RuntimeCommandServer {
   }
 
   async #handleSpool(request) {
+    const authorized = await this.#authorize(request);
     return this.#spoolReceipts.execute({
       id: request.id,
       fingerprint: commandFingerprint({
@@ -117,7 +118,7 @@ export class RuntimeCommandServer {
         environment: request.environment,
       }),
       action: request.command,
-      effect: () => this.#handle(request),
+      effect: () => this.#handler(authorized ?? request),
       reconcile: this.#reconcile ? (receipt) => this.#reconcile(request, receipt) : null,
     });
   }
@@ -197,6 +198,7 @@ export class RuntimeCommandServer {
   }
 
   async #drainSpool() {
+    await mkdir(this.#spoolDirectory, { recursive: true });
     const allNames = await readdir(this.#spoolDirectory);
     const acknowledgedIds = await this.#retireAcknowledgedSpool(allNames);
     for (const name of allNames.filter((item) => item.endsWith(".response.json"))) {

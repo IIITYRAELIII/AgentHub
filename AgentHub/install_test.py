@@ -14,25 +14,49 @@ class ComponentSelectionTests(unittest.TestCase):
     def test_fresh_install_starts_with_core_only(self) -> None:
         self.assertEqual(
             resolve_components({}, fresh_install=True),
-            {"telegram": False, "miniApp": False, "androidApp": False, "codexContextCleanup": False},
+            {
+                "telegram": False,
+                "miniApp": False,
+                "androidApp": False,
+                "sharedDashboardBot": False,
+                "codexContextCleanup": False,
+            },
         )
 
     def test_legacy_full_profile_enables_all_equivalent_components(self) -> None:
         self.assertEqual(
             resolve_components({"profile": "full"}, fresh_install=False),
-            {"telegram": True, "miniApp": True, "androidApp": True, "codexContextCleanup": False},
+            {
+                "telegram": True,
+                "miniApp": True,
+                "androidApp": True,
+                "sharedDashboardBot": False,
+                "codexContextCleanup": False,
+            },
         )
 
     def test_mini_app_enables_telegram_dependency(self) -> None:
         self.assertEqual(
             resolve_components({}, fresh_install=True, enabled=["mini-app"]),
-            {"telegram": True, "miniApp": True, "androidApp": False, "codexContextCleanup": False},
+            {
+                "telegram": True,
+                "miniApp": True,
+                "androidApp": False,
+                "sharedDashboardBot": False,
+                "codexContextCleanup": False,
+            },
         )
 
     def test_android_app_does_not_require_telegram(self) -> None:
         self.assertEqual(
             resolve_components({}, fresh_install=True, enabled=["android-app"]),
-            {"telegram": False, "miniApp": False, "androidApp": True, "codexContextCleanup": False},
+            {
+                "telegram": False,
+                "miniApp": False,
+                "androidApp": True,
+                "sharedDashboardBot": False,
+                "codexContextCleanup": False,
+            },
         )
 
     def test_telegram_cannot_be_disabled_while_mini_app_remains_enabled(self) -> None:
@@ -129,6 +153,25 @@ class PersonalHistoryBackfillTests(unittest.TestCase):
 
 
 class SecureInstallationTests(unittest.TestCase):
+    @mock.patch("AgentHub.install.subprocess.run")
+    @mock.patch("AgentHub.install.os.name", "nt")
+    def test_windows_acl_uses_sid_without_decoding_localized_account_name(self, run: mock.Mock) -> None:
+        run.side_effect = [
+            mock.Mock(
+                stdout=b'"domain\\\xe0\xa0\xa1\xae\xe7\xa0\xef","S-1-5-21-100-200-300-1001"\r\n',
+                returncode=0,
+            ),
+            mock.Mock(stdout="", stderr="", returncode=0),
+        ]
+
+        with tempfile.TemporaryDirectory() as temp:
+            install.secure_runtime_root(Path(temp) / "runtime")
+
+        self.assertEqual(["whoami", "/user", "/fo", "csv", "/nh"], run.call_args_list[0].args[0])
+        self.assertNotIn("encoding", run.call_args_list[0].kwargs)
+        self.assertEqual("oem", run.call_args_list[1].kwargs["encoding"])
+        self.assertIn("*S-1-5-21-100-200-300-1001:(OI)(CI)F", run.call_args_list[1].args[0])
+
     def test_malformed_existing_config_fails_without_replacing_it(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             config = Path(temp) / "config.json"

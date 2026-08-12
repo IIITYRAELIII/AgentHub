@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { createConnection, createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -15,8 +15,27 @@ import {
   runtimeCommandSpoolDirectory,
   validateRuntimeCommand,
 } from "../../../src/infrastructure/process/runtime-command.mjs";
+import { DurableCommandRetryableError } from "../../../src/infrastructure/persistence/durable-command-receipts.mjs";
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+test("runtime command server recreates a removed spool directory", async () => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "runtime-spool-recreate-runtime-"));
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "runtime-spool-recreate-temp-"));
+  const server = new RuntimeCommandServer({ runtimeRoot, temporaryRoot, handler: async () => "ok" });
+  await server.start();
+  try {
+    const spool = runtimeCommandSpoolDirectory(runtimeRoot, temporaryRoot);
+    await rm(spool, { recursive: true, force: true });
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline && !(await stat(spool).then(() => true, () => false))) await delay(20);
+    assert.equal(await stat(spool).then(() => true, () => false), true);
+  } finally {
+    await server.close();
+    await rm(runtimeRoot, { recursive: true, force: true });
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
 
 test("runtime command forwarding exposes only the narrow notification interface", async () => {
   const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "telegram-command-"));
@@ -178,6 +197,44 @@ test("runtime command can queue a durable fire-and-forget request", async () => 
     assert.equal(received.environment.CODEX_THREAD_ID, "thread-1");
   } finally {
     await server.close();
+  }
+});
+
+test("runtime command spool retries authorization before creating a receipt", async () => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "runtime-command-retry-runtime-"));
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "runtime-command-retry-temp-"));
+  let authorizationAttempts = 0;
+  let handled = 0;
+  await enqueueRuntimeCommandThroughSpool("turn-complete", ["{\"turnId\":\"turn-1\"}"], {
+    runtimeRoot,
+    temporaryRoot,
+    cwd: runtimeRoot,
+  });
+  const server = new RuntimeCommandServer({
+    runtimeRoot,
+    temporaryRoot,
+    authorize: async (request) => {
+      authorizationAttempts += 1;
+      if (authorizationAttempts === 1) {
+        throw new DurableCommandRetryableError("rollout has not reached terminal state");
+      }
+      return request;
+    },
+    handler: async () => { handled += 1; },
+  });
+  await server.start();
+  try {
+    const deadline = Date.now() + 5_000;
+    while (handled === 0 && Date.now() < deadline) await delay(20);
+    assert.equal(handled, 1);
+    assert.ok(authorizationAttempts >= 2);
+    const spool = runtimeCommandSpoolDirectory(runtimeRoot, temporaryRoot);
+    while ((await readdir(spool)).some((name) => name.endsWith(".request.json"))
+      && Date.now() < deadline) await delay(20);
+  } finally {
+    await server.close();
+    await rm(runtimeRoot, { recursive: true, force: true });
+    await rm(temporaryRoot, { recursive: true, force: true });
   }
 });
 

@@ -1,3 +1,5 @@
+import { DurableCommandRetryableError } from "../../infrastructure/persistence/durable-command-receipts.mjs";
+
 export async function authorizeCodexLifecycle(request, {
   identify,
   ensureTransport,
@@ -24,9 +26,11 @@ export async function authorizeCodexLifecycle(request, {
   const usage = await readUsage(rolloutPath, turnId, { attempts: 1 });
   if (request.command === "turn-start") {
     const activity = await readActivity(rolloutPath);
-    if (!activity.activeTurnIds.includes(turnId)) throw new Error("Lifecycle turn is not active in the Codex rollout");
+    if (!activity.activeTurnIds.includes(turnId)) {
+      throw new DurableCommandRetryableError("Lifecycle turn is not active in the Codex rollout");
+    }
   } else if (!usage.terminal) {
-    throw new Error("Lifecycle turn is not terminal in the Codex rollout");
+    throw new DurableCommandRetryableError("Lifecycle turn is not terminal in the Codex rollout");
   }
   const payload = request.command === "turn-start"
     ? {

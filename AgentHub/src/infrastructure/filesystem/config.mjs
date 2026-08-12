@@ -683,6 +683,7 @@ export async function loadConfig() {
     }),
     claudeExecutable: String(process.env.CLAUDE_EXECUTABLE ?? raw.claudeExecutable ?? "claude").trim(),
     claudeExecutableArgs: stringArray(raw.claudeExecutableArgs, "claudeExecutableArgs"),
+    claudeRateLimitPolling: raw.claudeRateLimitPolling !== false,
     claudeModel: String(process.env.CLAUDE_MODEL ?? raw.claudeModel ?? "").trim(),
     claudePermissionMode,
     claudeReasoningEffort: String(

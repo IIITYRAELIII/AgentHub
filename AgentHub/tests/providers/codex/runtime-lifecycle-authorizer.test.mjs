@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { DurableCommandRetryableError } from "../../../src/infrastructure/persistence/durable-command-receipts.mjs";
 import { authorizeCodexLifecycle } from "../../../src/providers/codex/codex-lifecycle-authorizer.mjs";
 
 const requestFor = (turnId) => ({
@@ -21,10 +22,24 @@ const dependencies = {
 };
 
 test("lifecycle authorization rejects fabricated turns and replaces terminal fields from rollout", async () => {
-  await assert.rejects(authorizeCodexLifecycle(requestFor("forged-turn"), dependencies), /not terminal in the Codex rollout/);
+  await assert.rejects(
+    authorizeCodexLifecycle(requestFor("forged-turn"), dependencies),
+    DurableCommandRetryableError,
+  );
   const authorized = await authorizeCodexLifecycle(requestFor("terminal-turn"), dependencies);
   const payload = JSON.parse(authorized.args[0]);
   assert.equal(authorized.cwd, "D:/project");
   assert.equal(payload.finalAnswer, "authoritative answer");
   assert.equal(payload.source, "verified-codex-rollout");
+});
+
+test("lifecycle authorization treats an early turn-start notification as retryable", async () => {
+  const request = {
+    ...requestFor("pending-turn"),
+    command: "turn-start",
+  };
+  await assert.rejects(
+    authorizeCodexLifecycle(request, dependencies),
+    DurableCommandRetryableError,
+  );
 });

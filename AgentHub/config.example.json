@@ -101,6 +101,7 @@
     }
   ],
   "claudeExecutable": "claude",
+  "claudeRateLimitPolling": true,
   "claudeModel": "sonnet",
   "claudePermissionMode": "acceptEdits",
   "autoApproveOnStart": false,

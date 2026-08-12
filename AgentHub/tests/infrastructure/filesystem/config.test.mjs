@@ -30,6 +30,7 @@ test("core-only components need neither Telegram credentials nor Web App", async
       components: { telegram: false, miniApp: false, androidApp: false },
       projectRoot: root,
       miniApp: { enabled: true },
+      claudeRateLimitPolling: false,
     }), "utf8");
     process.env.AGENT_HUB_CONFIG = configFile;
     const config = await loadConfig();
@@ -40,6 +41,7 @@ test("core-only components need neither Telegram credentials nor Web App", async
     assert.equal(config.allowedUserIds.size, 0);
     assert.equal(config.allowedChatIds.size, 0);
     assert.equal(config.miniApp.enabled, false);
+    assert.equal(config.claudeRateLimitPolling, false);
     assert.deepEqual(config.codexRolloutContext, {
       enabled: false,
       keepRecentImages: 4,
@@ -149,6 +151,7 @@ test("Codex sandbox mode is configurable but only accepts App Server policies", 
       codexSandboxMode: "danger-full-access",
     }), "utf8");
     assert.equal((await loadConfig()).codexSandboxMode, "danger-full-access");
+    assert.equal((await loadConfig()).claudeRateLimitPolling, true);
     await writeFile(configFile, JSON.stringify({
       components: { telegram: false, miniApp: false, androidApp: false },
       projectRoot: root,

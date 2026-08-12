@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
+  findExecutableOnPath,
   probeCodexAppServer,
   probeTelegramConnectivity,
   requiresTelegramChecks,
@@ -15,6 +16,15 @@ const FAKE_CODEX = path.join(ROOT, "e2e", "fake-codex-app-server.mjs");
 test("doctor skips Telegram checks when the component is disabled", () => {
   assert.equal(requiresTelegramChecks({ telegramEnabled: false }), false);
   assert.equal(requiresTelegramChecks({ telegramEnabled: true }), true);
+});
+
+test("doctor resolves PowerShell from a Unicode PATH without decoding command output", () => {
+  const expected = "C:\\Users\\Рабочая\\VSCode\\.tools\\powershell\\7\\pwsh.exe";
+  assert.equal(findExecutableOnPath("pwsh.exe", {
+    platform: "win32",
+    environment: { Path: "C:\\Windows;C:\\Users\\Рабочая\\VSCode\\.tools\\powershell\\7" },
+    exists: (candidate) => candidate === expected,
+  }), expected);
 });
 
 test("doctor Telegram probe performs getMe and validates the bot identity", async () => {

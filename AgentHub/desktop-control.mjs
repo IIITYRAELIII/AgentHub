@@ -77,7 +77,7 @@ export function desktopControlEndpoint(runtimeRoot, descriptor) {
   const endpoint = validateDesktopControlEndpoint(descriptor);
   return process.platform === "win32"
     ? `\\\\.\\pipe\\${endpoint.pipeName}`
-    : path.join(runtimeRoot, `${endpoint.pipeName}.sock`);
+    : path.join(runtimeRoot, `desktop-${endpoint.endpointId.slice(0, 24)}.sock`);
 }
 
 export async function readDesktopControlEndpoint(runtimeRoot = defaultRuntimeRoot()) {

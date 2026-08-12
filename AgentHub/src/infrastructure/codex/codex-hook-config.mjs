@@ -1,4 +1,4 @@
-import { access, mkdir, readFile } from "node:fs/promises";
+import { access, copyFile, mkdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -9,6 +9,10 @@ import { writeTextAtomic } from "../persistence/state-store.mjs";
 import { readRuntimeState } from "../persistence/runtime-state-store.mjs";
 
 const HOOK_FILE_NAME = "codex-stop-hook-launcher.mjs";
+
+function installedLauncherFile(hooksFile) {
+  return path.join(path.dirname(hooksFile), "agent-hub-hooks", HOOK_FILE_NAME);
+}
 
 function defaultCodexHome(environment = process.env) {
   return path.resolve(environment.CODEX_HOME || path.join(homedir(), ".codex"));
@@ -85,8 +89,11 @@ export async function installCodexStopHook({
   runtimeRoot = defaultRuntimeRoot(),
   nodeExecutable = process.execPath,
 } = {}) {
-  const launcherFile = runtimeLayout(runtimeRoot).codexHookLauncherFile;
-  await access(launcherFile);
+  const sourceLauncherFile = runtimeLayout(runtimeRoot).codexHookLauncherFile;
+  const launcherFile = installedLauncherFile(hooksFile);
+  await access(sourceLauncherFile);
+  await mkdir(path.dirname(launcherFile), { recursive: true });
+  await copyFile(sourceLauncherFile, launcherFile);
   const current = await readConfig(hooksFile);
   const updated = mergeCodexStopHookConfig(current, { nodeExecutable, launcherFile });
   await mkdir(path.dirname(hooksFile), { recursive: true });
@@ -109,7 +116,7 @@ export async function codexStopHookStatus({
   runtimeRoot = defaultRuntimeRoot(),
 } = {}) {
   const current = await readConfig(hooksFile);
-  const launcherFile = runtimeLayout(runtimeRoot).codexHookLauncherFile;
+  const launcherFile = installedLauncherFile(hooksFile);
   const launcherAvailable = await access(launcherFile).then(() => true, () => false);
   const events = Object.fromEntries(["UserPromptSubmit", "Stop"].map((eventName) => [
     eventName,
