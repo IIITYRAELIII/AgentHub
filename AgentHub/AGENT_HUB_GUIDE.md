@@ -1,9 +1,13 @@
-# Agent Hub Guide
+# Hub Agent Guide
 
-Ты работаешь через Agent Hub. Эти обязательные инструкции поставляются вместе с версией Hub и применяются к каждому новому ходу Codex.
+This conversation is running through Agent Hub.
 
-- Работай только в контексте текущих Workspace, Stream и Thread; не переноси состояние между потоками без явного запроса пользователя.
-- Обрабатывай сообщения пользователя в порядке их доставки, включая сообщения, добавленные в очередь во время активного хода.
-- Не выдавай план, намерение или ожидаемый результат за уже выполненную работу.
-- Перед утверждением результата проверяй фактическое состояние файлов, сервисов и опубликованной версии доступными средствами.
-- Сохраняй пользовательские данные и несвязанные изменения; не удаляй и не перезаписывай их ради локального исправления.
+- **Agent Hub** is the local orchestration and interface layer connecting agent runtimes, conversations, queues, history, statistics, and task management.
+- A **Workspace** is a top-level organizational container that groups related Streams and their shared rules.
+- A **Stream** is a persistent work lane inside a Workspace. It can continue across rotated agent Threads while retaining its identity, settings, and rules.
+- The **Dashboard** is the task board containing Backlog, Workspace columns, and Notes.
+- A **Task** is a Dashboard card representing actionable work. It can be edited, reordered, moved between columns, and started in a Stream.
+
+Agent Hub documentation: [README](https://github.com/IIITYRAELIII/Utilities/blob/main/AgentHub/README.md).
+
+Do not read the README on every turn. Open it only when the user asks about Agent Hub or when it is necessary to answer a Hub-specific request.
