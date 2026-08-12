@@ -224,8 +224,20 @@ html[data-background-override="true"][data-background="reliquary-archive"] body:
 }
 
 @media (min-width: 860px) {
+  html[data-theme="reliquary"][data-view="chat"]:not([data-surface="mobile"]) .task-rail {
+    border-image-width: 10px 0 10px 10px !important;
+    border-width: 10px 0 10px 10px !important;
+  }
+
   html[data-theme="reliquary"][data-view="chat"]:not([data-surface="mobile"]) .chat {
     border-image: var(--shell-chat-border-image) !important;
+    border-image-width: 10px 0 !important;
+    border-width: 10px 0 !important;
+  }
+
+  html[data-theme="reliquary"][data-view="chat"]:not([data-surface="mobile"]) .activity-rail {
+    border-image-width: 10px 10px 10px 0 !important;
+    border-width: 10px 10px 10px 0 !important;
   }
 }
 
