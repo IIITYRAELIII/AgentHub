@@ -10,8 +10,8 @@ const {
   AgentHubBridge,
   webviewHttpMessages,
 } = require("./agent-hub-bridge.js");
+const { openEditorFromActivityBar } = require("./activity-bar-launch.js");
 const { sharedWebviewHtml } = require("./shared-webview.js");
-const { sidebarHtml } = require("./webview.js");
 
 const VIEW_ID = "agentHub.view";
 const THEME_KEY = "agentHub.theme";
@@ -115,7 +115,6 @@ async function resolveAbsoluteWorkspaceFile(file, workspaceFolders) {
 class WorkLogViewProvider {
   constructor(context) {
     this.context = context;
-    this.view = null;
     this.panel = null;
     this.timer = null;
     this.bridge = null;
@@ -128,36 +127,31 @@ class WorkLogViewProvider {
     this.theme = String(context.globalState.get(THEME_KEY) ?? "orbit");
   }
 
-  /* Тема принадлежит расширению, поэтому боковая панель и вкладка журнала
+  /* Тема принадлежит расширению, поэтому редактор и вкладка журнала
      всегда показывают одно оформление — как Mini App в Telegram. */
   async setTheme(value, from) {
     if (!this.themes.has(value) || value === this.theme) return;
     this.theme = value;
     await this.context.globalState.update(THEME_KEY, value);
-    if (from !== "sidebar") await this.view?.webview.postMessage({ type: "theme", theme: value });
     if (from !== "panel") await this.panel?.webview.postMessage({ type: "theme", theme: value });
   }
 
   resolveWebviewView(view) {
-    this.view = view;
-    view.webview.options = {
-      enableScripts: true,
-      localResourceRoots: [this.context.extensionUri],
+    view.webview.options = { enableScripts: false };
+    view.webview.html = "<!doctype html><html><body></body></html>";
+    const openEditor = () => {
+      if (!view.visible) return;
+      void openEditorFromActivityBar({
+        openEditor: () => this.openPanel(),
+        executeCommand: (command) => vscode.commands.executeCommand(command),
+      }).catch((error) => {
+        void vscode.window.showErrorMessage(`Agent Hub: ${error.message}`);
+      });
     };
-    const markUri = view.webview.asWebviewUri(
-      vscode.Uri.joinPath(this.context.extensionUri, "media", "agent-hub-mark.png"),
-    );
-    view.webview.html = sidebarHtml(view.webview, markUri);
-    view.webview.onDidReceiveMessage((message) => {
-      if (message?.type === "open") void this.openPanel();
-    }, null, this.context.subscriptions);
     view.onDidChangeVisibility(() => {
-      if (view.visible) void this.openPanel();
+      openEditor();
     }, null, this.context.subscriptions);
-    view.onDidDispose(() => {
-      if (this.view === view) this.view = null;
-    }, null, this.context.subscriptions);
-    void this.openPanel();
+    openEditor();
   }
 
   async openPanel() {

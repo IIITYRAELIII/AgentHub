@@ -8,7 +8,7 @@ const test = require("node:test");
 const vm = require("node:vm");
 
 const { renderWorkLog, sanitizeWorkLogHtml } = require("./render.js");
-const { sidebarHtml, webviewHtml } = require("./webview.js");
+const { webviewHtml } = require("./webview.js");
 const { loadThemeRegistry } = require("../theme-registry.cjs");
 
 const MINI_APP_ROOT = path.resolve(__dirname, "..", "assets", "mini-app");
@@ -287,21 +287,6 @@ test("panel starts in the theme the extension restored", () => {
     webviewHtml({}, "нет такой", WEBVIEW_THEMES),
     /<html lang="ru" data-theme="orbit" data-surface="desktop">/,
   );
-});
-
-test("sidebar uses one native launch row and the unified Agent Hub mark", () => {
-  const extension = fs.readFileSync(require.resolve("./extension.js"), "utf8");
-  const html = sidebarHtml(
-    { cspSource: "vscode-webview://test" },
-    "vscode-webview-resource:/extension/media/agent-hub-mark.png",
-  );
-  assert.match(html, /<button id="open" class="launch" type="button" title="Открыть Agent Hub">/u);
-  assert.match(html, /<img class="mark" src="vscode-webview-resource:\/extension\/media\/agent-hub-mark\.png"/u);
-  assert.match(html, /<strong>Agent Hub<\/strong>[\s\S]*<span>Открыть в редакторе<\/span>/u);
-  assert.match(html, /img-src vscode-webview:\/\/test/u);
-  assert.doesNotMatch(html, /Локальный|Задачи, диалоги|class="card"|class="primary"|M12 2\.7 20 7\.2/u);
-  assert.match(extension, /vscode\.Uri\.joinPath\(this\.context\.extensionUri, "media", "agent-hub-mark\.png"\)/u);
-  assert.match(extension, /sidebarHtml\(view\.webview, markUri\)/u);
 });
 
 test("panel heading uses the journal path as its title", () => {
