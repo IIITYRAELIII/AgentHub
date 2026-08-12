@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   buildCodexCollaborationMode,
+  buildCodexDeveloperInstructions,
   CODEX_COLLABORATION_MODES,
   CODEX_REASONING_EFFORTS,
   resolveCodexThreadSettings,
@@ -20,6 +21,31 @@ test("buildCodexCollaborationMode preserves selected model and reasoning", () =>
       developer_instructions: null,
     },
   });
+});
+
+test("developer instructions preserve Workspace then Stream rule order", () => {
+  assert.equal(buildCodexDeveloperInstructions({
+    workspace: "Workspace rule",
+    stream: "Stream rule",
+  }), [
+    "<workspace_instructions>",
+    "Workspace rule",
+    "</workspace_instructions>",
+    "",
+    "<stream_instructions>",
+    "Stream rule",
+    "</stream_instructions>",
+  ].join("\n"));
+  assert.equal(buildCodexDeveloperInstructions(), null);
+});
+
+test("collaboration mode carries effective developer instructions", () => {
+  assert.equal(buildCodexCollaborationMode({
+    mode: "default",
+    model: "gpt-5.6-sol",
+    reasoningEffort: "high",
+    developerInstructions: "Inherited rules",
+  }).settings.developer_instructions, "Inherited rules");
 });
 
 test("Codex selectors expose supported values", () => {

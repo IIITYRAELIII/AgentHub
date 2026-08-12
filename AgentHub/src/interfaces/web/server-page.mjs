@@ -1,7 +1,78 @@
-import { access, unlink } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { access, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { serverConfigurationEntries } from "./server-configuration.mjs";
+
+export const ROOT_AGENTS_MAX_BYTES = 128 * 1024;
+
+function requiredRootAgentsTarget(file) {
+  const value = String(file ?? "").trim();
+  if (!value) throw new Error("Путь корневого AGENTS.md не настроен");
+  return path.resolve(value);
+}
+
+export function rootAgentsFile(projectRoot) {
+  const root = String(projectRoot ?? "").trim();
+  if (!root) throw new Error("Корень рабочего пространства Agent Hub не настроен");
+  return path.join(path.resolve(root), "AGENTS.md");
+}
+
+export async function readRootAgents({
+  file,
+  maximumBytes = ROOT_AGENTS_MAX_BYTES,
+  statImpl = stat,
+  readFileImpl = readFile,
+} = {}) {
+  const target = requiredRootAgentsTarget(file);
+  let fileStat;
+  try {
+    fileStat = await statImpl(target);
+  } catch (error) {
+    if (error?.code === "ENOENT") return { content: "", bytes: 0, maximumBytes, exists: false };
+    throw error;
+  }
+  if (!fileStat.isFile()) throw new Error("Корневой AGENTS.md не является файлом");
+  if (fileStat.size > maximumBytes) {
+    throw new Error(`Корневой AGENTS.md превышает лимит ${maximumBytes} байт`);
+  }
+  const body = await readFileImpl(target);
+  if (body.byteLength > maximumBytes) {
+    throw new Error(`Корневой AGENTS.md превышает лимит ${maximumBytes} байт`);
+  }
+  return {
+    content: body.toString("utf8"),
+    bytes: body.byteLength,
+    maximumBytes,
+    exists: true,
+  };
+}
+
+export async function updateRootAgents(content, {
+  file,
+  maximumBytes = ROOT_AGENTS_MAX_BYTES,
+  writeFileImpl = writeFile,
+  renameImpl = rename,
+  unlinkImpl = unlink,
+  createId = randomUUID,
+} = {}) {
+  if (typeof content !== "string") throw new Error("Содержимое AGENTS.md должно быть строкой");
+  const body = Buffer.from(content, "utf8");
+  if (body.byteLength > maximumBytes) {
+    throw new Error(`Корневой AGENTS.md превышает лимит ${maximumBytes} байт`);
+  }
+  const target = requiredRootAgentsTarget(file);
+  const temporary = path.join(path.dirname(target), `.${path.basename(target)}.${createId()}.tmp`);
+  try {
+    await writeFileImpl(temporary, body, { flag: "wx", mode: 0o600 });
+    await renameImpl(temporary, target);
+  } finally {
+    await unlinkImpl(temporary).catch((error) => {
+      if (error?.code !== "ENOENT") throw error;
+    });
+  }
+  return { content, bytes: body.byteLength, maximumBytes, exists: true };
+}
 
 export function agentHubAutostartShortcut({ environment = process.env } = {}) {
   const appData = String(environment.APPDATA ?? "").trim();

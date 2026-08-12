@@ -483,6 +483,8 @@ export function createDesktopShellComposition({
       runForTask: (target) => taskRuns.forTask(target),
       setAutostart: (params) => serverControlController.setAutostart(params),
       updateServerConfiguration: (params) => serverControlController.updateConfiguration(params),
+      readRootAgents: () => serverControlController.readRootAgents(),
+      updateRootAgents: (params) => serverControlController.updateRootAgents(params),
       taskBoard,
       workspaceCatalog: workspaceCatalogStore,
     },

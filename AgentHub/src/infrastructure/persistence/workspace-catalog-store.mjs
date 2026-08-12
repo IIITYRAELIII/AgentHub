@@ -14,8 +14,10 @@ import {
   streamDisplayName,
 } from "../../domain/workspace-stream-identity.mjs";
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
+export const DEVELOPER_RULES_MAX_BYTES = 32 * 1024;
 const SOURCES = new Set(["created", "discovered", "migration", "rebirth"]);
+const DEVELOPER_RULE_SCOPES = new Set(["workspace", "stream"]);
 
 function recoverableDatabaseError(error) {
   return /(?:file is not a database|database disk image is malformed|malformed database schema)/iu
@@ -73,6 +75,28 @@ function configure(database) {
     ) WITHOUT ROWID;
     CREATE INDEX IF NOT EXISTS hub_threads_stream_idx
       ON hub_threads(stream_id, position);
+    CREATE TABLE IF NOT EXISTS hub_developer_rule_revisions (
+      scope_type TEXT NOT NULL CHECK (scope_type IN ('workspace', 'stream')),
+      scope_id TEXT NOT NULL,
+      revision INTEGER NOT NULL CHECK (revision > 0),
+      content TEXT NOT NULL,
+      created_at_ms INTEGER NOT NULL,
+      PRIMARY KEY (scope_type, scope_id, revision)
+    ) WITHOUT ROWID;
+    CREATE INDEX IF NOT EXISTS hub_developer_rule_revisions_latest_idx
+      ON hub_developer_rule_revisions(scope_type, scope_id, revision DESC);
+    CREATE TRIGGER IF NOT EXISTS hub_workspace_developer_rules_delete
+      AFTER DELETE ON hub_workspaces
+      BEGIN
+        DELETE FROM hub_developer_rule_revisions
+        WHERE scope_type = 'workspace' AND scope_id = OLD.id;
+      END;
+    CREATE TRIGGER IF NOT EXISTS hub_stream_developer_rules_delete
+      AFTER DELETE ON hub_streams
+      BEGIN
+        DELETE FROM hub_developer_rule_revisions
+        WHERE scope_type = 'stream' AND scope_id = OLD.id;
+      END;
     INSERT INTO hub_workspace_catalog_meta (key, value) VALUES ('schema_version', '${SCHEMA_VERSION}')
       ON CONFLICT(key) DO UPDATE SET value = excluded.value;
   `);
@@ -145,6 +169,31 @@ function safeIdentifier(value, name) {
   const id = String(value ?? "").trim();
   if (!id || id.length > 200 || id.includes("\0")) throw new Error(`invalid ${name}`);
   return id;
+}
+
+function developerRuleScope(value) {
+  const scope = String(value ?? "").trim().toLowerCase();
+  if (!DEVELOPER_RULE_SCOPES.has(scope)) throw new Error(`invalid developer rule scope: ${value}`);
+  return scope;
+}
+
+function developerRuleContent(value) {
+  const content = String(value ?? "");
+  if (Buffer.byteLength(content, "utf8") > DEVELOPER_RULES_MAX_BYTES) {
+    throw new Error(`developer rules exceed ${DEVELOPER_RULES_MAX_BYTES} UTF-8 bytes`);
+  }
+  return content;
+}
+
+function developerRuleFromRow(row) {
+  if (!row) return null;
+  return {
+    scopeType: String(row.scope_type),
+    scopeId: String(row.scope_id),
+    revision: Number(row.revision) || 1,
+    content: String(row.content ?? ""),
+    createdAtMs: Number(row.created_at_ms) || 0,
+  };
 }
 
 export class WorkspaceCatalogStore {
@@ -288,6 +337,18 @@ export class WorkspaceCatalogStore {
     return this.workspace(id);
   }
 
+  workspaceDeveloperRules(workspaceId) {
+    const id = safeIdentifier(workspaceId, "workspace id");
+    if (!this.workspace(id)) throw new Error(`workspace not found: ${id}`);
+    return this.#developerRules("workspace", id);
+  }
+
+  updateWorkspaceDeveloperRules(workspaceId, content) {
+    const id = safeIdentifier(workspaceId, "workspace id");
+    if (!this.workspace(id)) throw new Error(`workspace not found: ${id}`);
+    return this.#updateDeveloperRules("workspace", id, content);
+  }
+
   mergeWorkspaces(sourceWorkspaceId, targetWorkspaceId) {
     const sourceId = safeIdentifier(sourceWorkspaceId, "source workspace id");
     const targetId = safeIdentifier(targetWorkspaceId, "target workspace id");
@@ -378,6 +439,61 @@ export class WorkspaceCatalogStore {
       UPDATE hub_streams SET settings_json = ?, updated_at_ms = ? WHERE id = ?
     `).run(JSON.stringify(settings ?? {}), this.#nowMs(), id);
     return this.stream(id);
+  }
+
+  streamDeveloperRules(streamId) {
+    const id = safeIdentifier(streamId, "stream id");
+    if (!this.stream(id)) throw new Error(`stream not found: ${id}`);
+    return this.#developerRules("stream", id);
+  }
+
+  updateStreamDeveloperRules(streamId, content) {
+    const id = safeIdentifier(streamId, "stream id");
+    if (!this.stream(id)) throw new Error(`stream not found: ${id}`);
+    return this.#updateDeveloperRules("stream", id, content);
+  }
+
+  developerRulesForThread(value) {
+    const resolved = this.resolveThread(value);
+    if (!resolved) return { workspace: null, stream: null };
+    return this.developerRulesForStream(resolved.streamId);
+  }
+
+  developerRulesForStream(streamId) {
+    const id = safeIdentifier(streamId, "stream id");
+    const stream = this.stream(id);
+    if (!stream) return { workspace: null, stream: null };
+    return {
+      workspace: this.#developerRules("workspace", stream.workspaceId),
+      stream: this.#developerRules("stream", stream.id),
+    };
+  }
+
+  #developerRules(scopeType, scopeId) {
+    const scope = developerRuleScope(scopeType);
+    const id = safeIdentifier(scopeId, `${scope} id`);
+    return developerRuleFromRow(this.#database.prepare(`
+      SELECT scope_type, scope_id, revision, content, created_at_ms
+      FROM hub_developer_rule_revisions
+      WHERE scope_type = ? AND scope_id = ?
+      ORDER BY revision DESC
+      LIMIT 1
+    `).get(scope, id));
+  }
+
+  #updateDeveloperRules(scopeType, scopeId, content) {
+    const scope = developerRuleScope(scopeType);
+    const id = safeIdentifier(scopeId, `${scope} id`);
+    const value = developerRuleContent(content);
+    const current = this.#developerRules(scope, id);
+    if (current?.content === value) return current;
+    const revision = (current?.revision ?? 0) + 1;
+    this.#database.prepare(`
+      INSERT INTO hub_developer_rule_revisions
+        (scope_type, scope_id, revision, content, created_at_ms)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(scope, id, revision, value, this.#nowMs());
+    return this.#developerRules(scope, id);
   }
 
   moveStream(streamId, workspaceId) {
@@ -667,11 +783,16 @@ export class WorkspaceCatalogStore {
     for (const row of streams) {
       const stream = streamFromRow(row, streamCount.get(row.workspace_id) ?? 0);
       const values = streamsByWorkspace.get(stream.workspaceId) ?? [];
-      values.push({ ...stream, threads: threadsByStream.get(stream.id) ?? [] });
+      values.push({
+        ...stream,
+        developerRules: this.#developerRules("stream", stream.id),
+        threads: threadsByStream.get(stream.id) ?? [],
+      });
       streamsByWorkspace.set(stream.workspaceId, values);
     }
     return workspaces.map((workspace) => ({
       ...workspace,
+      developerRules: this.#developerRules("workspace", workspace.id),
       streams: streamsByWorkspace.get(workspace.id) ?? [],
     }));
   }

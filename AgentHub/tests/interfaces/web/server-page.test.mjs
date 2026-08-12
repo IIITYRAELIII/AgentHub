@@ -1,11 +1,17 @@
 import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
   agentHubAutostartShortcut,
   readAgentHubAutostart,
+  readRootAgents,
+  ROOT_AGENTS_MAX_BYTES,
+  rootAgentsFile,
   serverPageSnapshot,
   setAgentHubAutostart,
+  updateRootAgents,
 } from "../../../src/interfaces/web/server-page.mjs";
 
 test("Agent Hub autostart uses only its own Windows Startup shortcut", () => {
@@ -43,6 +49,37 @@ test("Agent Hub autostart enable installs and disable removes only Hub shortcut"
   }), { supported: true, enabled: false });
   assert.equal(removed, "C:/Startup/Agent Hub.lnk");
   await assert.rejects(() => setAgentHubAutostart(true, { platform: "linux" }), /Windows/);
+});
+
+test("root AGENTS editor reads UTF-8 and replaces the fixed file atomically", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-root-agents-"));
+  const file = rootAgentsFile(directory);
+  try {
+    assert.equal(file, path.join(directory, "AGENTS.md"));
+    assert.deepEqual(await readRootAgents({ file }), {
+      content: "", bytes: 0, maximumBytes: ROOT_AGENTS_MAX_BYTES, exists: false,
+    });
+    await writeFile(file, "# Правила\n", "utf8");
+    const initial = await readRootAgents({ file });
+    assert.equal(initial.content, "# Правила\n");
+    assert.equal(initial.bytes, Buffer.byteLength("# Правила\n", "utf8"));
+
+    const updated = await updateRootAgents("# Новые правила\n", { file });
+    assert.equal(updated.bytes, Buffer.byteLength("# Новые правила\n", "utf8"));
+    assert.equal(await readFile(file, "utf8"), "# Новые правила\n");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("root AGENTS editor enforces its byte limit before writing", async () => {
+  let writes = 0;
+  await assert.rejects(() => updateRootAgents("я".repeat(65_537), {
+    file: "C:/workspace/AGENTS.md",
+    writeFileImpl: async () => { writes += 1; },
+  }), /превышает лимит/u);
+  assert.equal(writes, 0);
+  await assert.rejects(() => readRootAgents({ file: "" }), /Путь/u);
 });
 
 test("server page snapshot excludes secrets and absolute filesystem paths", () => {

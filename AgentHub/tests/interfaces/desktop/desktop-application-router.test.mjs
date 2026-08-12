@@ -8,7 +8,7 @@ function router(calls) {
     "snapshot", "taskHistory", "rateLimitHistory", "usageHistory", "search", "workspaceMessageSearch",
     "openTask", "openTurn", "workspaceMessageOpen", "sendMessage", "taskDiff", "deferredInput",
     "statusDetails", "speakLastAnswer", "restartServer", "setAutostart",
-    "updateServerConfiguration", "compactContext", "openAttachment", "submitBugReport",
+    "updateServerConfiguration", "readRootAgents", "updateRootAgents", "compactContext", "openAttachment", "submitBugReport",
     "trustedDevices", "createDevicePairing", "revokeDevice",
     "renameWorkspace", "createWorkspaceFromStream", "mergeWorkspaces", "renameStream", "moveStream",
     "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
@@ -114,6 +114,16 @@ test("Desktop application router enforces Mini App history limits", async () => 
   });
   assert.equal(result.params.limit, 10);
   assert.equal(result.params.maxAnswerChars, 75_000);
+});
+
+test("Desktop application router exposes root AGENTS read and serialized update", async () => {
+  const control = router([]);
+  assert.equal((await control.handleDesktopControl({
+    action: "read-root-agents", params: { path: "C:/ignored" },
+  })).params.path, "C:/ignored");
+  assert.equal((await control.handleDesktopControl({
+    action: "update-root-agents", params: { content: "# Rules" },
+  })).params.content, "# Rules");
 });
 
 test("Desktop application router keeps the legacy Workspace move alias", async () => {

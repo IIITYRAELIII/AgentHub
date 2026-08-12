@@ -83,7 +83,7 @@ export class CodexTurnService {
     for (const name of [
       "sendRpc", "sandboxMode", "compactionRecycle", "resolvedSkillNames", "reindexRun",
       "saveState", "startTyping", "scheduleObservedRun", "finishProgress", "completeRun",
-      "readThread",
+      "readThread", "developerInstructions",
     ]) requiredFunction(dependencies[name], name);
     this.#d = dependencies;
   }
@@ -97,6 +97,11 @@ export class CodexTurnService {
     run.mcpCalls = [];
     run.toolMetricsKnown = true;
     try {
+      const developerInstructions = await d.developerInstructions({
+        provider: "codex",
+        threadId: run.threadId,
+        streamId: run.streamId,
+      });
       const result = await startCodexTurnWithRecovery({
         threadId: run.threadId,
         startTurn: () => d.sendRpc("turn/start", {
@@ -109,6 +114,7 @@ export class CodexTurnService {
             mode: run.collaborationMode,
             model: run.modelId,
             reasoningEffort: run.reasoningId,
+            developerInstructions,
           }),
           ...codexTurnSandboxSettings(d.sandboxMode(), run.projectRoot),
         }),

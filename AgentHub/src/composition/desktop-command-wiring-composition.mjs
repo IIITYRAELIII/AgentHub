@@ -8,6 +8,9 @@ export function createWorkspaceActions(services) {
     updateWorkspaceSettings: (params) => services.workspaceMutation(
       () => services.workspaceCatalogService.updateWorkspaceSettings(params),
     ),
+    updateWorkspaceDeveloperRules: (params) => services.workspaceMutation(
+      () => services.workspaceCatalogService.updateWorkspaceDeveloperRules(params),
+    ),
     createWorkspace: (params) => services.workspaceMutation(
       () => services.workspaceCatalogService.createWorkspace(params),
       { resultKey: "createdWorkspace" },
@@ -41,6 +44,9 @@ export function createWorkspaceActions(services) {
     ),
     updateStreamSettings: (params) => services.workspaceMutation(
       () => services.workspaceCatalogService.updateStreamSettings(params),
+    ),
+    updateStreamDeveloperRules: (params) => services.workspaceMutation(
+      () => services.workspaceCatalogService.updateStreamDeveloperRules(params),
     ),
     moveStream: (params) => services.workspaceMutation(
       () => {

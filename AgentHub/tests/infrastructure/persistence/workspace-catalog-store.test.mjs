@@ -5,7 +5,10 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
-import { WorkspaceCatalogStore } from "../../../src/infrastructure/persistence/workspace-catalog-store.mjs";
+import {
+  DEVELOPER_RULES_MAX_BYTES,
+  WorkspaceCatalogStore,
+} from "../../../src/infrastructure/persistence/workspace-catalog-store.mjs";
 
 async function fixture(t) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-workspaces-"));
@@ -93,6 +96,67 @@ test("an empty Stream persists the settings for its future Thread", async (t) =>
     store.hierarchy().find((item) => item.id === workspace.id).streams[0].settings,
     updated.settings,
   );
+});
+
+test("Workspace and Stream developer rules keep versioned revisions", async (t) => {
+  const store = await fixture(t);
+  const workspace = store.createWorkspace({ name: "Agent HUB" });
+  const stream = store.createStream({ workspaceId: workspace.id, name: "Rules" });
+
+  assert.equal(store.workspaceDeveloperRules(workspace.id), null);
+  assert.equal(store.updateWorkspaceDeveloperRules(workspace.id, "First").revision, 1);
+  assert.equal(store.updateWorkspaceDeveloperRules(workspace.id, "Second").revision, 2);
+  assert.equal(store.updateWorkspaceDeveloperRules(workspace.id, "Second").revision, 2);
+  assert.equal(store.updateStreamDeveloperRules(stream.id, "Stream rule").revision, 1);
+  assert.equal(store.workspaceDeveloperRules(workspace.id).content, "Second");
+  assert.equal(store.streamDeveloperRules(stream.id).content, "Stream rule");
+});
+
+test("developer rules enforce a 32 KiB UTF-8 limit for each scope", async (t) => {
+  const store = await fixture(t);
+  const workspace = store.createWorkspace({ name: "Limits" });
+  const stream = store.createStream({ workspaceId: workspace.id });
+  const allowed = "я".repeat(DEVELOPER_RULES_MAX_BYTES / 2);
+
+  assert.equal(store.updateWorkspaceDeveloperRules(workspace.id, allowed).content, allowed);
+  assert.throws(
+    () => store.updateStreamDeveloperRules(stream.id, `${allowed}я`),
+    /exceed/u,
+  );
+});
+
+test("moving a Stream changes inherited Workspace developer rules", async (t) => {
+  const store = await fixture(t);
+  const firstWorkspace = store.createWorkspace({ name: "First" });
+  const secondWorkspace = store.createWorkspace({ name: "Second" });
+  const moving = store.createStream({ workspaceId: firstWorkspace.id, name: "Moving" });
+  store.createStream({ workspaceId: firstWorkspace.id, name: "Keep source" });
+  store.bindThread({ provider: "codex", threadId: "thread-1", streamId: moving.id });
+  store.updateWorkspaceDeveloperRules(firstWorkspace.id, "First workspace");
+  store.updateWorkspaceDeveloperRules(secondWorkspace.id, "Second workspace");
+  store.updateStreamDeveloperRules(moving.id, "Stream rule");
+
+  assert.equal(store.developerRulesForStream(moving.id).workspace.content, "First workspace");
+  assert.deepEqual(store.developerRulesForThread({ provider: "codex", threadId: "thread-1" }), {
+    workspace: store.workspaceDeveloperRules(firstWorkspace.id),
+    stream: store.streamDeveloperRules(moving.id),
+  });
+  store.moveStream(moving.id, secondWorkspace.id);
+  const effective = store.developerRulesForThread({ provider: "codex", threadId: "thread-1" });
+  assert.equal(effective.workspace.content, "Second workspace");
+  assert.equal(effective.stream.content, "Stream rule");
+});
+
+test("hierarchy exposes current developer rules to clients", async (t) => {
+  const store = await fixture(t);
+  const workspace = store.createWorkspace({ name: "Rules" });
+  const stream = store.createStream({ workspaceId: workspace.id, name: "Inherited" });
+  store.updateWorkspaceDeveloperRules(workspace.id, "Workspace rule");
+  store.updateStreamDeveloperRules(stream.id, "Stream rule");
+
+  const hierarchy = store.hierarchy();
+  assert.equal(hierarchy[0].developerRules.content, "Workspace rule");
+  assert.equal(hierarchy[0].streams[0].developerRules.content, "Stream rule");
 });
 
 test("a Stream can be pinned first without replacing its siblings", async (t) => {

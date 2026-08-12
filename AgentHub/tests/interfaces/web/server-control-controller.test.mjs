@@ -75,3 +75,25 @@ test("server controller accumulates pending safe configuration", async () => {
     autoApproveOnStart: true,
   });
 });
+
+test("server controller reads and updates only the configured root AGENTS.md", async () => {
+  const calls = [];
+  const controller = createController({
+    config: { projectRoot: "C:/workspace", configPath: "C:/runtime/config.json", components: {}, miniApp: {} },
+    readRootAgentsFile: async (options) => {
+      calls.push(["read", options]);
+      return { content: "# Rules\n", bytes: 8, maximumBytes: 131_072, exists: true };
+    },
+    updateRootAgentsFile: async (content, options) => {
+      calls.push(["update", content, options]);
+      return { content, bytes: 9, maximumBytes: 131_072, exists: true };
+    },
+  });
+  assert.equal((await controller.readRootAgents({ path: "C:/escape.md" })).content, "# Rules\n");
+  const result = await controller.updateRootAgents({ content: "# Updated", path: "C:/escape.md" });
+  assert.equal(result.accepted, true);
+  assert.equal(result.document.content, "# Updated");
+  assert.match(calls[0][1].file, /workspace[\\/]AGENTS\.md$/u);
+  assert.equal(calls[1][1], "# Updated");
+  assert.equal(calls[1][2].file, calls[0][1].file);
+});

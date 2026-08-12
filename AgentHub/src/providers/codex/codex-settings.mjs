@@ -36,7 +36,22 @@ export function resolveCodexThreadSettings(payload, current = {}) {
   return { model, reasoningEffort };
 }
 
-export function buildCodexCollaborationMode({ mode, model, reasoningEffort }) {
+export function buildCodexDeveloperInstructions({ workspace = "", stream = "" } = {}) {
+  const sections = [];
+  const workspaceContent = String(workspace ?? "");
+  const streamContent = String(stream ?? "");
+  if (workspaceContent.trim()) {
+    sections.push(`<workspace_instructions>\n${workspaceContent}\n</workspace_instructions>`);
+  }
+  if (streamContent.trim()) {
+    sections.push(`<stream_instructions>\n${streamContent}\n</stream_instructions>`);
+  }
+  return sections.length ? sections.join("\n\n") : null;
+}
+
+export function buildCodexCollaborationMode({
+  mode, model, reasoningEffort, developerInstructions = null,
+}) {
   if (!CODEX_COLLABORATION_MODES.includes(mode)) throw new Error("unknown Codex collaboration mode");
   if (!CODEX_REASONING_EFFORTS.includes(reasoningEffort)) throw new Error("unknown Codex reasoning effort");
   if (!String(model ?? "").trim()) throw new Error("Codex model is required");
@@ -46,7 +61,9 @@ export function buildCodexCollaborationMode({ mode, model, reasoningEffort }) {
     settings: {
       model,
       reasoning_effort: reasoningEffort,
-      developer_instructions: null,
+      developer_instructions: String(developerInstructions ?? "").trim()
+        ? String(developerInstructions)
+        : null,
     },
   };
 }

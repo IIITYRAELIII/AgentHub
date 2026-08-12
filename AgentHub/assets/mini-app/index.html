@@ -32,6 +32,7 @@
   <script src="/rate-limit-series.js" defer></script>
   <script src="/usage-burn-rate.js" defer></script>
   <script src="/app.js" defer></script>
+  <script src="/root-agents-editor.js" defer></script>
   <script src="/task-board.js" defer></script>
   <!-- agent-hub-theme-scripts -->
   <script src="/message-lifecycle.js" defer></script>
@@ -419,6 +420,31 @@
                 </label>
               </div>
             </section>
+            <section class="settings-section stream-agent-rules">
+              <h3 class="settings-section-title">Правила агента</h3>
+              <div class="settings-card agent-rules-card">
+                <label class="setting-stack agent-rules-field">
+                  <span class="setting-name">Собственные правила Stream</span>
+                  <textarea rows="9" maxlength="32768" data-dialog-stream-rules
+                    placeholder="Developer-инструкции только для Threads этого Stream"
+                    spellcheck="false"></textarea>
+                  <span class="agent-rules-meta">
+                    <span>Добавляются после правил Workspace.</span>
+                    <output data-dialog-stream-rules-count>0 / 32 КиБ</output>
+                  </span>
+                </label>
+                <button type="button" class="board-task-primary agent-rules-save"
+                  data-dialog-stream-rules-save>Сохранить правила Stream</button>
+                <details class="agent-rules-disclosure" data-dialog-workspace-rules>
+                  <summary>Унаследовано от Workspace</summary>
+                  <pre data-dialog-workspace-rules-preview></pre>
+                </details>
+                <details class="agent-rules-disclosure" open>
+                  <summary>Итоговые developer-инструкции</summary>
+                  <pre data-dialog-effective-rules-preview></pre>
+                </details>
+              </div>
+            </section>
           </div>
         </aside>
       </div>
@@ -610,6 +636,16 @@
           <span>Рабочая директория</span>
           <input type="text" maxlength="1000" data-workspace-card-working-directory
             placeholder="Например, D:\projects\Utilities\AgentHub" autocomplete="off" spellcheck="false">
+        </label>
+        <label class="agent-rules-field">
+          <span>Правила агента</span>
+          <textarea rows="8" maxlength="32768" data-workspace-card-rules
+            placeholder="Developer-инструкции для всех Streams и Threads этого Workspace"
+            spellcheck="false"></textarea>
+          <span class="agent-rules-meta">
+            <span>Наследуются всеми Streams Workspace.</span>
+            <output data-workspace-card-rules-count>0 / 32 КиБ</output>
+          </span>
         </label>
         <label>
           <span>Порядковый номер в Дашборде</span>
@@ -1039,6 +1075,20 @@
           </button>
         </div>
       </section>
+
+      <details class="server-card root-agents-editor" data-root-agents-editor>
+        <summary class="root-agents-summary">AGENTS.md</summary>
+        <div class="root-agents-body">
+          <p class="root-agents-note">Корневые инструкции рабочего пространства для агентов.</p>
+          <textarea class="root-agents-input" data-root-agents-input spellcheck="false"
+            aria-label="Содержимое корневого AGENTS.md" disabled></textarea>
+          <div class="root-agents-actions">
+            <button type="button" class="chip-button" data-root-agents-save disabled>Сохранить</button>
+            <button type="button" class="chip-button ghost" data-root-agents-discard disabled>Отменить</button>
+            <span class="root-agents-status" data-root-agents-status>Раскройте редактор для загрузки.</span>
+          </div>
+        </div>
+      </details>
     </div>
   </main>
 

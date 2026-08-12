@@ -32,6 +32,14 @@ export class WorkspaceCatalogService {
     return this.#store.updateWorkspaceSettings(workspaceId, settings);
   }
 
+  workspaceDeveloperRules({ workspaceId } = {}) {
+    return this.#store.workspaceDeveloperRules(workspaceId);
+  }
+
+  updateWorkspaceDeveloperRules({ workspaceId, content = "" } = {}) {
+    return this.#store.updateWorkspaceDeveloperRules(workspaceId, content);
+  }
+
   createWorkspaceFromStream({ streamId, name } = {}) {
     return this.#store.transaction(() => {
       const workspace = this.#store.createWorkspace({ name });
@@ -56,6 +64,14 @@ export class WorkspaceCatalogService {
     return this.#store.updateStreamSettings(streamId, settings);
   }
 
+  streamDeveloperRules({ streamId } = {}) {
+    return this.#store.streamDeveloperRules(streamId);
+  }
+
+  updateStreamDeveloperRules({ streamId, content = "" } = {}) {
+    return this.#store.updateStreamDeveloperRules(streamId, content);
+  }
+
   moveStream({ streamId, workspaceId, beforeStreamId = undefined } = {}) {
     return this.#store.transaction(() => {
       const moved = this.#store.moveStream(streamId, workspaceId);
@@ -75,5 +91,13 @@ export class WorkspaceCatalogService {
 
   resolveThread({ provider, threadId } = {}) {
     return this.#store.resolveThread({ provider, threadId });
+  }
+
+  developerRulesForThread({ provider, threadId } = {}) {
+    return this.#store.developerRulesForThread({ provider, threadId });
+  }
+
+  developerRulesForStream({ streamId } = {}) {
+    return this.#store.developerRulesForStream(streamId);
   }
 }

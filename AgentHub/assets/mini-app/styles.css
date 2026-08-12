@@ -4101,7 +4101,8 @@ html[data-view="dashboard"] .task-board-view {
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-lg);
   color: var(--text);
-  max-width: 32rem;
+  max-height: min(90dvh, 56rem);
+  max-width: 42rem;
   padding: 0;
   width: calc(100% - 2rem);
 }
@@ -4113,6 +4114,8 @@ html[data-view="dashboard"] .task-board-view {
 
 .workspace-card-modal form {
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  max-height: inherit;
 }
 
 .workspace-card-modal header,
@@ -4146,6 +4149,7 @@ html[data-view="dashboard"] .task-board-view {
 .workspace-card-fields {
   display: grid;
   gap: 0.8rem;
+  overflow-y: auto;
   padding: 1rem;
 }
 
@@ -4194,6 +4198,48 @@ html[data-view="dashboard"] .task-board-view {
 .workspace-card-fields textarea {
   min-height: 6rem;
   resize: vertical;
+}
+
+.workspace-card-fields [data-workspace-card-rules] {
+  min-height: 11rem;
+}
+
+.agent-rules-field textarea {
+  background: color-mix(in srgb, var(--surface-2) 86%, transparent);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  line-height: 1.45;
+  min-width: 0;
+  padding: 0.6rem 0.65rem;
+  resize: vertical;
+  width: 100%;
+}
+
+.agent-rules-field textarea:focus {
+  border-color: var(--accent-line);
+  box-shadow: var(--accent-glow);
+  outline: none;
+}
+
+.agent-rules-meta {
+  align-items: baseline;
+  color: var(--text-faint);
+  display: flex;
+  font-size: 0.68rem;
+  gap: 0.6rem;
+  justify-content: space-between;
+}
+
+.agent-rules-meta output {
+  flex: 0 0 auto;
+  font-family: var(--font-numeric);
+}
+
+.agent-rules-meta output[data-limit-exceeded] {
+  color: var(--danger);
 }
 
 .workspace-card-fields input[type="number"] {
@@ -5911,6 +5957,47 @@ html[data-surface="mobile"]
   min-height: 0;
   overflow-y: auto;
   padding: 0.85rem 0.8rem max(1rem, env(safe-area-inset-bottom));
+}
+
+.agent-rules-card {
+  gap: 0;
+}
+
+.stream-agent-rules textarea {
+  min-height: 10rem;
+}
+
+.agent-rules-save {
+  align-self: stretch;
+  min-height: 2.2rem;
+}
+
+.agent-rules-save:disabled {
+  cursor: default;
+  opacity: 0.48;
+}
+
+.agent-rules-disclosure summary {
+  color: var(--text-soft);
+  cursor: pointer;
+  font-size: 0.78rem;
+  user-select: none;
+}
+
+.agent-rules-disclosure pre {
+  background: color-mix(in srgb, var(--surface-2) 76%, transparent);
+  border: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  line-height: 1.45;
+  margin: 0.55rem 0 0;
+  max-height: 16rem;
+  overflow: auto;
+  padding: 0.6rem;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .dialog-agent-row {
@@ -9972,6 +10059,61 @@ html[data-view="server"] .server-view {
   display: grid;
   gap: 0.6rem;
   grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+}
+
+.root-agents-editor {
+  padding: 0;
+}
+
+.root-agents-summary {
+  cursor: pointer;
+  font-size: 1rem;
+  font-weight: 700;
+  padding: 1rem 1.15rem;
+}
+
+.root-agents-body {
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 0.75rem;
+  padding: 1rem 1.15rem 1.15rem;
+}
+
+.root-agents-note,
+.root-agents-status {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  margin: 0;
+}
+
+.root-agents-input {
+  background: color-mix(in srgb, var(--surface-2) 78%, transparent);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  color: var(--text);
+  font-family: var(--font-mono, monospace);
+  font-size: 0.82rem;
+  line-height: 1.5;
+  min-height: min(50vh, 28rem);
+  padding: 0.85rem;
+  resize: vertical;
+  width: 100%;
+}
+
+.root-agents-input:focus {
+  border-color: var(--accent-line);
+  outline: 2px solid color-mix(in srgb, var(--accent) 24%, transparent);
+}
+
+.root-agents-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem 0.75rem;
+}
+
+.root-agents-status[data-error] {
+  color: var(--danger, #ff9292);
 }
 
 .server-config-grid {

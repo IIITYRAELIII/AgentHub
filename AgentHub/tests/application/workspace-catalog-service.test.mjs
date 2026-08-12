@@ -12,14 +12,20 @@ function fixture() {
     createStream: (value) => (calls.push(["createStream", value]), { id: "stream-1", ...value }),
     renameWorkspace: (...args) => calls.push(["renameWorkspace", ...args]),
     updateWorkspaceSettings: (...args) => (calls.push(["updateWorkspaceSettings", ...args]), { settings: args[1] }),
+    workspaceDeveloperRules: (...args) => (calls.push(["workspaceDeveloperRules", ...args]), { content: "workspace" }),
+    updateWorkspaceDeveloperRules: (...args) => (calls.push(["updateWorkspaceDeveloperRules", ...args]), { content: args[1] }),
     mergeWorkspaces: (...args) => calls.push(["mergeWorkspaces", ...args]),
     renameStream: (...args) => calls.push(["renameStream", ...args]),
     updateStreamSettings: (...args) => (calls.push(["updateStreamSettings", ...args]), { settings: args[1] }),
+    streamDeveloperRules: (...args) => (calls.push(["streamDeveloperRules", ...args]), { content: "stream" }),
+    updateStreamDeveloperRules: (...args) => (calls.push(["updateStreamDeveloperRules", ...args]), { content: args[1] }),
     moveStream: (...args) => (calls.push(["moveStream", ...args]), { id: args[0] }),
     reorderStream: (...args) => (calls.push(["reorderStream", ...args]), { id: args[0] }),
     bindThread: (value) => (calls.push(["bindThread", value]), value),
     activeThread: (streamId) => ({ streamId }),
     resolveThread: (value) => value,
+    developerRulesForThread: (value) => (calls.push(["developerRulesForThread", value]), value),
+    developerRulesForStream: (value) => (calls.push(["developerRulesForStream", value]), value),
   };
   return { calls, service: new WorkspaceCatalogService({ store }) };
 }
@@ -75,6 +81,26 @@ test("Workspace settings provide an inherited working directory", () => {
     workspaceId: "workspace-1", settings,
   }), { settings });
   assert.deepEqual(calls.at(-1), ["updateWorkspaceSettings", "workspace-1", settings]);
+});
+
+test("Workspace and Stream developer rules use dedicated store methods", () => {
+  const { service, calls } = fixture();
+  assert.deepEqual(service.updateWorkspaceDeveloperRules({
+    workspaceId: "workspace-1", content: "Workspace rule",
+  }), { content: "Workspace rule" });
+  assert.deepEqual(service.updateStreamDeveloperRules({
+    streamId: "stream-1", content: "Stream rule",
+  }), { content: "Stream rule" });
+  assert.deepEqual(service.developerRulesForThread({
+    provider: "codex", threadId: "thread-1",
+  }), { provider: "codex", threadId: "thread-1" });
+  assert.equal(service.developerRulesForStream({ streamId: "stream-1" }), "stream-1");
+  assert.deepEqual(calls.slice(-4), [
+    ["updateWorkspaceDeveloperRules", "workspace-1", "Workspace rule"],
+    ["updateStreamDeveloperRules", "stream-1", "Stream rule"],
+    ["developerRulesForThread", { provider: "codex", threadId: "thread-1" }],
+    ["developerRulesForStream", "stream-1"],
+  ]);
 });
 
 test("moving a Stream can place it before a sibling in the same transaction", () => {

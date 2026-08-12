@@ -166,6 +166,8 @@ export function createDesktopRunRouterWiring({
       restartServer: desktop.restartServer,
       setAutostart: services.setAutostart,
       updateServerConfiguration: services.updateServerConfiguration,
+      readRootAgents: services.readRootAgents,
+      updateRootAgents: services.updateRootAgents,
       compactContext,
       openAttachment: desktop.openAttachment,
       submitBugReport: desktop.submitBugReport,

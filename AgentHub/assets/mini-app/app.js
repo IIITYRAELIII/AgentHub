@@ -66,6 +66,8 @@ const workspaceCardTitle = document.querySelector("[data-workspace-card-title]")
 const workspaceCardName = document.querySelector("[data-workspace-card-name]");
 const workspaceCardComment = document.querySelector("[data-workspace-card-comment]");
 const workspaceCardWorkingDirectory = document.querySelector("[data-workspace-card-working-directory]");
+const workspaceCardRules = document.querySelector("[data-workspace-card-rules]");
+const workspaceCardRulesCount = document.querySelector("[data-workspace-card-rules-count]");
 const workspaceCardOrder = document.querySelector("[data-workspace-card-order]");
 const workspaceCardSubmit = document.querySelector("[data-workspace-card-submit]");
 
@@ -86,6 +88,12 @@ const dialogSettings = document.querySelector("[data-dialog-settings]");
 const dialogSettingsToggle = document.querySelector("[data-dialog-settings-toggle]");
 const dialogWorkingDirectory = document.querySelector("[data-dialog-working-directory]");
 const dialogWorkingDirectoryNote = document.querySelector("[data-dialog-working-directory-note]");
+const dialogStreamRules = document.querySelector("[data-dialog-stream-rules]");
+const dialogStreamRulesCount = document.querySelector("[data-dialog-stream-rules-count]");
+const dialogStreamRulesSave = document.querySelector("[data-dialog-stream-rules-save]");
+const dialogWorkspaceRules = document.querySelector("[data-dialog-workspace-rules]");
+const dialogWorkspaceRulesPreview = document.querySelector("[data-dialog-workspace-rules-preview]");
+const dialogEffectiveRulesPreview = document.querySelector("[data-dialog-effective-rules-preview]");
 const workspaceMessageSearch = document.querySelector("[data-workspace-message-search]");
 const workspaceMessageSearchToggle = document.querySelector("[data-workspace-message-search-toggle]");
 const workspaceMessageSearchClose = document.querySelector("[data-workspace-message-search-close]");
@@ -2690,6 +2698,64 @@ let streamContextMenu = null;
 let workspaceContextMenu = null;
 let workspaceCardId = "";
 let workspaceCardMode = "edit";
+const AGENT_RULES_LIMIT_BYTES = 32 * 1024;
+const agentRulesEncoder = new TextEncoder();
+const streamRulesDrafts = new Map();
+
+function agentRulesText(value) {
+  if (typeof value === "string") return value;
+  if (value && typeof value.content === "string") return value.content;
+  return "";
+}
+
+function entityAgentRules(entity) {
+  return agentRulesText(entity?.developerRules ?? entity?.rules);
+}
+
+function updateAgentRulesLimit(input, output) {
+  if (!input) return true;
+  const bytes = agentRulesEncoder.encode(String(input.value ?? "")).byteLength;
+  const valid = bytes <= AGENT_RULES_LIMIT_BYTES;
+  input.setCustomValidity(valid ? "" : "Правила не должны превышать 32 КиБ в UTF-8.");
+  if (output) {
+    output.textContent = `${(bytes / 1024).toLocaleString("ru-RU", { maximumFractionDigits: 1 })} / 32 КиБ`;
+    output.toggleAttribute("data-limit-exceeded", !valid);
+  }
+  return valid;
+}
+
+function effectiveAgentRules(workspaceRules, streamRules) {
+  const sections = [];
+  const inherited = String(workspaceRules ?? "").trim();
+  const own = String(streamRules ?? "").trim();
+  if (inherited) sections.push(`<workspace_instructions>\n${inherited}\n</workspace_instructions>`);
+  if (own) sections.push(`<stream_instructions>\n${own}\n</stream_instructions>`);
+  return sections.join("\n\n");
+}
+
+function renderStreamRulesPreview() {
+  const task = currentTask();
+  const streamId = String(task?.streamId ?? "");
+  const serverRules = agentRulesText(task?.streamDeveloperRules ?? task?.streamRules);
+  const draft = streamRulesDrafts.get(streamId);
+  if (draft?.value === serverRules) streamRulesDrafts.delete(streamId);
+  const ownRules = streamRulesDrafts.get(streamId)?.value ?? serverRules;
+  const workspaceRules = agentRulesText(task?.workspaceDeveloperRules ?? task?.workspaceRules);
+  if (dialogStreamRules && document.activeElement !== dialogStreamRules) dialogStreamRules.value = ownRules;
+  const valid = updateAgentRulesLimit(dialogStreamRules, dialogStreamRulesCount);
+  if (dialogStreamRules) dialogStreamRules.disabled = !streamId;
+  if (dialogStreamRulesSave) {
+    dialogStreamRulesSave.disabled = !streamId || !valid || ownRules === serverRules;
+  }
+  if (dialogWorkspaceRules) dialogWorkspaceRules.hidden = !workspaceRules;
+  if (dialogWorkspaceRulesPreview) {
+    dialogWorkspaceRulesPreview.textContent = workspaceRules || "Правила Workspace не заданы.";
+  }
+  if (dialogEffectiveRulesPreview) {
+    dialogEffectiveRulesPreview.textContent = effectiveAgentRules(workspaceRules, ownRules)
+      || "Дополнительные developer-инструкции не заданы.";
+  }
+}
 
 function closeStreamContextMenu() {
   if (!streamContextMenu) return;
@@ -2740,6 +2806,8 @@ function openWorkspaceCard(workspaceId) {
   workspaceCardName.disabled = workspace.kind === "system";
   workspaceCardComment.value = String(workspace.comment ?? "");
   workspaceCardWorkingDirectory.value = String(workspace.settings?.workingDirectory ?? "");
+  workspaceCardRules.value = entityAgentRules(workspace);
+  updateAgentRulesLimit(workspaceCardRules, workspaceCardRulesCount);
   workspaceCardOrder.max = String(order.length);
   workspaceCardOrder.value = String(Math.max(1, order.indexOf(columnId) + 1));
   workspaceCardModal.showModal();
@@ -2758,6 +2826,8 @@ function openNewWorkspaceCard() {
   workspaceCardName.disabled = false;
   workspaceCardComment.value = "";
   workspaceCardWorkingDirectory.value = "";
+  workspaceCardRules.value = "";
+  updateAgentRulesLimit(workspaceCardRules, workspaceCardRulesCount);
   workspaceCardOrder.max = String(order.length + 1);
   workspaceCardOrder.value = String((notesIndex < 0 ? order.length : notesIndex) + 1);
   workspaceCardModal.showModal();
@@ -2841,6 +2911,11 @@ function ensureStreamContextMenu() {
       if (name != null) emit("stream:rename", { streamId, name });
       return;
     }
+    if (kind === "edit-stream") {
+      if (taskId && currentTask()?.id !== taskId) selectTaskFromUi(taskId);
+      openDialogSettings();
+      return;
+    }
     if (kind === "edit-workspace") {
       if (workspaceId) openWorkspaceCard(workspaceId);
       return;
@@ -2876,6 +2951,10 @@ function openStreamContextMenu(event, tab) {
   menu.dataset.taskId = String(tab.dataset.streamTaskId ?? "");
   menu.dataset.provider = String(tab.dataset.streamProvider ?? "codex");
   menu.replaceChildren(
+    el("button", {
+      type: "button", role: "menuitem", class: "stream-context-action",
+      "data-stream-menu-action": "edit-stream", text: "Редактировать Stream…",
+    }),
     el("button", {
       type: "button", role: "menuitem", class: "stream-context-action",
       "data-stream-menu-action": "rename", text: "Переименовать Stream…",
@@ -5148,6 +5227,10 @@ document.addEventListener("contextmenu", (event) => {
 });
 workspaceCardForm?.addEventListener("submit", (event) => {
   event.preventDefault();
+  if (!updateAgentRulesLimit(workspaceCardRules, workspaceCardRulesCount)) {
+    workspaceCardRules.reportValidity();
+    return;
+  }
   const name = workspaceCardName.value.trim();
   if (!name) return workspaceCardName.focus();
   const order = dashboardColumnOrder();
@@ -5158,6 +5241,7 @@ workspaceCardForm?.addEventListener("submit", (event) => {
       name,
       comment: workspaceCardComment.value.trim(),
       workingDirectory: workspaceCardWorkingDirectory.value.trim(),
+      rules: workspaceCardRules.value,
       beforeColumnId: order[targetIndex] ?? null,
     });
     closeWorkspaceCard();
@@ -5173,9 +5257,13 @@ workspaceCardForm?.addEventListener("submit", (event) => {
     name,
     comment: workspaceCardComment.value.trim(),
     workingDirectory: workspaceCardWorkingDirectory.value.trim(),
+    rules: workspaceCardRules.value,
     beforeColumnId: remaining[targetIndex] ?? null,
   });
   closeWorkspaceCard();
+});
+workspaceCardRules?.addEventListener("input", () => {
+  updateAgentRulesLimit(workspaceCardRules, workspaceCardRulesCount);
 });
 document.querySelector("[data-workspace-card-close]")?.addEventListener("click", closeWorkspaceCard);
 document.querySelector("[data-workspace-card-cancel]")?.addEventListener("click", closeWorkspaceCard);
@@ -5418,6 +5506,7 @@ function renderDialogSettings() {
         : "Применится при создании следующего Thread; текущий Thread сохраняет свою директорию.";
     }
   }
+  renderStreamRulesPreview();
 }
 
 dialogSettings.addEventListener("click", (event) => {
@@ -5468,6 +5557,29 @@ dialogSettings.addEventListener("change", (event) => {
     state.selection[key] = toggle.checked;
     emit("selection:set", { key, value: toggle.checked });
   }
+});
+
+dialogStreamRules?.addEventListener("input", () => {
+  const task = currentTask();
+  const streamId = String(task?.streamId ?? "");
+  if (!streamId) return;
+  streamRulesDrafts.set(streamId, { value: dialogStreamRules.value });
+  renderStreamRulesPreview();
+});
+
+dialogStreamRulesSave?.addEventListener("click", () => {
+  const task = currentTask();
+  const streamId = String(task?.streamId ?? "");
+  if (!streamId || !updateAgentRulesLimit(dialogStreamRules, dialogStreamRulesCount)) {
+    dialogStreamRules?.reportValidity();
+    return;
+  }
+  const rules = dialogStreamRules.value;
+  task.streamRules = rules;
+  task.streamDeveloperRules = rules;
+  streamRulesDrafts.delete(streamId);
+  renderStreamRulesPreview();
+  emit("stream:rules-save", { streamId, rules });
 });
 
 document.addEventListener("change", (event) => {

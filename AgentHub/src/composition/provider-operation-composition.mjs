@@ -10,6 +10,7 @@ import { providerThreadKey } from "../domain/workspace-stream-identity.mjs";
 import { ClaudeEventService } from "../providers/claude/claude-event-service.mjs";
 import { isContextCompactionItem } from "../providers/codex/context-compaction-tracker.mjs";
 import { CodexEventService } from "../providers/codex/codex-event-service.mjs";
+import { buildCodexDeveloperInstructions } from "../providers/codex/codex-settings.mjs";
 import {
   completeCodexLiveItem,
   reduceCodexLiveItemEvent,
@@ -188,6 +189,15 @@ export function createProviderOperationComposition({
     finishProgress: (...args) => taskProgress().finish(...args),
     completeRun: (run) => managedRunLifecycle.complete(run),
     readThread: readCodexThread,
+    developerInstructions: ({ provider, threadId, streamId }) => {
+      const rules = streamId
+        ? workspaceCatalogStore.developerRulesForStream?.(streamId)
+        : workspaceCatalogStore.developerRulesForThread?.({ provider, threadId });
+      return buildCodexDeveloperInstructions({
+        workspace: rules?.workspace?.content,
+        stream: rules?.stream?.content,
+      });
+    },
     speechButtons: turnSpeechButtons,
     temporaryFiles: turnTemporaryFiles,
     turnTokenUsage,

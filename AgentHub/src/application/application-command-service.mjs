@@ -24,8 +24,8 @@ export function createApplicationCommandService({ handlers }) {
   const required = [
     "selectTask", "createTask", "rotateStream", "renameTask", "archiveTask",
     "updateSetting", "cancelRun", "resolveApproval",
-    "renameWorkspace", "updateWorkspaceSettings", "createWorkspace", "createWorkspaceFromStream", "mergeWorkspaces", "createStream",
-    "renameStream", "updateStreamSettings", "moveStream",
+    "renameWorkspace", "updateWorkspaceSettings", "updateWorkspaceDeveloperRules", "createWorkspace", "createWorkspaceFromStream", "mergeWorkspaces", "createStream",
+    "renameStream", "updateStreamSettings", "updateStreamDeveloperRules", "moveStream",
   ];
   for (const name of required) {
     if (typeof handlers[name] !== "function") throw new TypeError(`${name} handler is required`);
@@ -98,6 +98,10 @@ export function createApplicationCommandService({ handlers }) {
       mutating: true, target: "none", lane: "global",
       handler: ({ payload }) => handlers.updateWorkspaceSettings(payload),
     })
+    .register("workspace.developer-rules.update", {
+      mutating: true, target: "none", lane: "global",
+      handler: ({ payload }) => handlers.updateWorkspaceDeveloperRules(payload),
+    })
     .register("workspace.create", {
       mutating: true, target: "none", lane: "global",
       handler: ({ payload }) => handlers.createWorkspace(payload),
@@ -121,6 +125,10 @@ export function createApplicationCommandService({ handlers }) {
     .register("stream.settings.update", {
       mutating: true, target: "none", lane: "global",
       handler: ({ payload }) => handlers.updateStreamSettings(payload),
+    })
+    .register("stream.developer-rules.update", {
+      mutating: true, target: "none", lane: "global",
+      handler: ({ payload }) => handlers.updateStreamDeveloperRules(payload),
     })
     .register("stream.move", {
       mutating: true, target: "none", lane: "global",

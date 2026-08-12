@@ -24,6 +24,7 @@ function codexTurnService(overrides = {}) {
         turns: [{ id: "turn-1", status: "inProgress", items: [{ type: "userMessage" }] }],
       },
     }),
+    developerInstructions: async () => null,
     speechButtons: new Map(),
     temporaryFiles: new Map(),
     turnTokenUsage: new Map(),
@@ -63,6 +64,44 @@ test("Codex turn service schedules a run only after its exact turn materializes"
 
   assert.equal(run.turnId, "turn-1");
   assert.deepEqual(scheduled, ["turn-1"]);
+});
+
+test("Codex turn service resolves developer instructions for every turn start", async () => {
+  const starts = [];
+  const resolved = [];
+  let instructions = "Workspace rules";
+  const service = codexTurnService({
+    developerInstructions: async (target) => (resolved.push(target), instructions),
+    sendRpc: async (method, params) => {
+      if (method === "turn/start") starts.push(params);
+      return { turn: { id: `turn-${starts.length}` } };
+    },
+    readThread: async () => ({
+      thread: {
+        turns: [{ id: `turn-${starts.length}`, status: "inProgress", items: [{ type: "userMessage" }] }],
+      },
+    }),
+  });
+  const run = {
+    threadId: "thread-1",
+    streamId: "stream-1",
+    projectRoot: "D:\\Work",
+    modelId: "gpt-5.6-codex",
+    reasoningId: "medium",
+    collaborationMode: "default",
+  };
+
+  await service.launch(run, "First");
+  instructions = "Updated rules";
+  await service.launch(run, "Second");
+
+  assert.deepEqual(starts.map((call) => (
+    call.collaborationMode.settings.developer_instructions
+  )), ["Workspace rules", "Updated rules"]);
+  assert.deepEqual(resolved, [
+    { provider: "codex", threadId: "thread-1", streamId: "stream-1" },
+    { provider: "codex", threadId: "thread-1", streamId: "stream-1" },
+  ]);
 });
 
 test("Codex turn service rejects an acknowledged turn without its user input", async () => {

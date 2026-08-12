@@ -2,8 +2,11 @@ import path from "node:path";
 import process from "node:process";
 import {
   readAgentHubAutostart,
+  readRootAgents,
+  rootAgentsFile,
   serverPageSnapshot,
   setAgentHubAutostart,
+  updateRootAgents,
 } from "./server-page.mjs";
 import { updateServerConfiguration } from "./server-configuration.mjs";
 
@@ -24,6 +27,8 @@ export class ServerControlController {
     spawnCapture,
     readAutostart = readAgentHubAutostart,
     setAutostart = setAgentHubAutostart,
+    readRootAgentsFile = readRootAgents,
+    updateRootAgentsFile = updateRootAgents,
     persistConfiguration = updateServerConfiguration,
     createPageSnapshot = serverPageSnapshot,
   } = {}) {
@@ -43,6 +48,9 @@ export class ServerControlController {
     this.spawnCapture = spawnCapture;
     this.readAutostart = readAutostart;
     this.setAutostartImpl = setAutostart;
+    this.rootAgentsFile = rootAgentsFile(config.projectRoot);
+    this.readRootAgentsFile = readRootAgentsFile;
+    this.updateRootAgentsFile = updateRootAgentsFile;
     this.persistConfiguration = persistConfiguration;
     this.createPageSnapshot = createPageSnapshot;
   }
@@ -99,6 +107,19 @@ export class ServerControlController {
       accepted: true,
       message: "Конфигурация сохранена. Перезапустите Hub для применения.",
       snapshot: await this.desktopSnapshot(),
+    };
+  }
+
+  async readRootAgents() {
+    return this.readRootAgentsFile({ file: this.rootAgentsFile });
+  }
+
+  async updateRootAgents(params) {
+    const document = await this.updateRootAgentsFile(params?.content, { file: this.rootAgentsFile });
+    return {
+      accepted: true,
+      message: "Корневой AGENTS.md сохранён",
+      document,
     };
   }
 

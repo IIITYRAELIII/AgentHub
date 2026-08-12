@@ -867,6 +867,8 @@ function modelTask(task, snapshot, effectiveSelectedId, serverSelectedId) {
     context: task.run?.context ?? task.context ?? null,
     streamSettings: { ...(catalogStream?.settings ?? {}) },
     workspaceSettings: { ...(workspace?.settings ?? {}) },
+    streamDeveloperRules: catalogStream?.developerRules ?? null,
+    workspaceDeveloperRules: workspace?.developerRules ?? null,
   };
 }
 
@@ -924,6 +926,8 @@ function emptyStreamModels(snapshot, effectiveSelectedId) {
         draftStream: true,
         streamSettings: settings,
         workspaceSettings: { ...(workspace.settings ?? {}) },
+        streamDeveloperRules: stream.developerRules ?? null,
+        workspaceDeveloperRules: workspace.developerRules ?? null,
       });
     }
   }
@@ -1923,7 +1927,7 @@ agentHub.on("task:rename", ({ id, title }) => runAction(async () => {
 agentHub.on("workspace:rename", ({ workspaceId, name }) => runAction(async () => applySnapshot(
   await control("rename-workspace", { workspaceId, name }),
 )));
-agentHub.on("workspace:create", ({ name, comment, workingDirectory, beforeColumnId }) => runAction(async () => {
+agentHub.on("workspace:create", ({ name, comment, workingDirectory, rules, beforeColumnId }) => runAction(async () => {
   let snapshot = await control("create-workspace", {
     name,
     comment,
@@ -1931,6 +1935,9 @@ agentHub.on("workspace:create", ({ name, comment, workingDirectory, beforeColumn
   });
   const workspaceId = snapshot.createdWorkspace?.workspace?.id;
   if (workspaceId) {
+    if (String(rules ?? "")) {
+      snapshot = await control("update-workspace-rules", { workspaceId, content: String(rules) });
+    }
     snapshot = await control("board-column-move", {
       columnId: `workspace:${workspaceId}`,
       beforeColumnId: beforeColumnId ?? null,
@@ -1939,7 +1946,7 @@ agentHub.on("workspace:create", ({ name, comment, workingDirectory, beforeColumn
   applySnapshot(snapshot);
 }));
 agentHub.on("workspace:update", ({
-  workspaceId, name, comment, workingDirectory, beforeColumnId,
+  workspaceId, name, comment, workingDirectory, rules, beforeColumnId,
 }) => runAction(async () => {
   if (!lastSnapshot?.boardLayout) {
     agentHub.toast("Agent Hub завершает обновление runtime. Повторите действие через минуту.");
@@ -1959,6 +1966,13 @@ agentHub.on("workspace:update", ({
   };
   if (nextSettings.workingDirectory !== String(workspace?.settings?.workingDirectory ?? "")) {
     snapshot = await control("update-workspace-settings", { workspaceId, settings: nextSettings });
+  }
+  const currentRuleValue = workspace?.developerRules ?? workspace?.rules;
+  const currentRules = typeof currentRuleValue === "string"
+    ? currentRuleValue
+    : String(currentRuleValue?.content ?? "");
+  if (String(rules ?? "") !== currentRules) {
+    snapshot = await control("update-workspace-rules", { workspaceId, content: String(rules ?? "") });
   }
   const columnId = `workspace:${workspaceId}`;
   const currentOrder = snapshot.boardLayout?.columnOrder ?? [];
@@ -2058,6 +2072,10 @@ agentHub.on("stream:new", ({ workspaceId, streamName }) => runAction(async () =>
 }));
 agentHub.on("stream:settings-save", ({ streamId, settings }) => runAction(async () => {
   applySnapshot(await control("update-stream-settings", { streamId, settings }));
+}));
+agentHub.on("stream:rules-save", ({ streamId, rules }) => runAction(async () => {
+  applySnapshot(await control("update-stream-rules", { streamId, content: String(rules ?? "") }));
+  agentHub.toast("Правила Stream сохранены");
 }));
 agentHub.on("task:archive", ({ id } = {}) => runAction(async () => applySnapshot(
   await control("archive-task", id ? exactTaskParams(id) : exactSelectedTaskParams()),
@@ -2552,6 +2570,26 @@ agentHub.on("server:config-update", ({ key, value, changes }) => runAction(async
   // leaving the switch visually changed after the error toast.
   if (result == null) agentHub.setServerStatus(lastSnapshot?.server ?? null);
 }));
+document.addEventListener("agenthub:root-agents-read", () => void (async () => {
+  const editor = window.AgentHubRootAgentsEditor;
+  try {
+    editor?.setDocument(await control("read-root-agents"));
+  } catch (error) {
+    editor?.setError(hubErrorMessage(error));
+    agentHub.toast(hubErrorMessage(error));
+  }
+})());
+document.addEventListener("agenthub:root-agents-update", (event) => void (async () => {
+  const editor = window.AgentHubRootAgentsEditor;
+  try {
+    const result = await control("update-root-agents", { content: String(event.detail?.content ?? "") });
+    editor?.setDocument(result?.document ?? {});
+    agentHub.toast(result?.message ?? "Корневой AGENTS.md сохранён");
+  } catch (error) {
+    editor?.setError(hubErrorMessage(error));
+    agentHub.toast(hubErrorMessage(error));
+  }
+})());
 let searchSequence = 0;
 agentHub.on("search:query", ({ query }) => {
   const sequence = ++searchSequence;
