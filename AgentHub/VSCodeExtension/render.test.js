@@ -1478,12 +1478,21 @@ test("focused journal turn reuses the task thread without duplicating its prompt
   );
 });
 
-test("composer send and desktop settings stay pinned to the right edge", () => {
+test("desktop focus and settings stay ordered at the right edge", () => {
+  const html = fs.readFileSync(
+    require.resolve("../assets/mini-app/index.html"),
+    "utf8",
+  );
   const styles = fs.readFileSync(
     require.resolve("../assets/mini-app/styles.css"),
     "utf8",
   );
-  assert.match(styles, /\.toolbar \.view-settings\s*\{[^}]*margin-left:\s*auto;/su);
+  const focus = html.indexOf("data-focus-toggle");
+  const settings = html.indexOf('data-panel-open="settings"');
+  assert.ok(focus >= 0 && focus < settings);
+  assert.match(html, /data-panel-open="settings"[^>]*aria-label="Настройки Agent Hub"/su);
+  assert.doesNotMatch(html, /view-settings-label/u);
+  assert.match(styles, /\.toolbar \.focus-toggle\s*\{[^}]*margin-left:\s*auto;/su);
   assert.match(
     styles,
     /html\[data-surface="mobile"\] \.composer-send\s*\{[^}]*grid-column:\s*-2 \/ -1;[^}]*justify-self:\s*end;/su,
