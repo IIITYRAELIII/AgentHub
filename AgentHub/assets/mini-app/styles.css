@@ -3587,6 +3587,36 @@ html[data-view="dashboard"] .task-board-view {
   overflow: hidden;
 }
 
+.task-board-toolbar {
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  padding: 0.65rem 1.2rem 0;
+}
+
+.task-board-completed-toggle {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-chip);
+  color: var(--text-muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 0.38rem 0.65rem;
+}
+
+.task-board-completed-toggle:hover,
+.task-board-completed-toggle:focus-visible,
+.task-board-completed-toggle[aria-pressed="true"] {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--accent);
+  outline: none;
+}
+
 .task-board-inline-create textarea,
 .task-start-new input,
 .task-start-new select,
@@ -3774,6 +3804,12 @@ html[data-view="dashboard"] .task-board-view {
 
 .board-task-card.is-started {
   border-color: var(--accent-line);
+}
+
+.board-task-card.is-completed {
+  background: color-mix(in srgb, var(--card-bg-open) 72%, var(--surface-1));
+  border-color: color-mix(in srgb, var(--line) 70%, transparent);
+  opacity: 0.78;
 }
 
 .board-task-card.is-dragover {

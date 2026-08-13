@@ -74,8 +74,27 @@
 
   window.AgentHubTaskDeleteDialog = Object.freeze({ create: createDeleteDialog });
 
+  function completedAtMs(task) {
+    const value = Date.parse(String(task?.completedAt ?? ""));
+    return Number.isFinite(value) ? value : 0;
+  }
+
+  function tasksForMode(tasks, { completedOnly = false } = {}) {
+    const source = Array.isArray(tasks) ? tasks : [];
+    if (!completedOnly) return source.filter((task) => task?.status !== "done");
+    return source
+      .filter((task) => task?.status === "done")
+      .map((task, index) => ({ task, index }))
+      .sort((left, right) => completedAtMs(left.task) - completedAtMs(right.task)
+        || left.index - right.index)
+      .map(({ task }) => task);
+  }
+
+  window.AgentHubTaskBoardView = Object.freeze({ tasksForMode });
+
   const board = document.querySelector("[data-task-board]");
   const columns = document.querySelector("[data-task-board-columns]");
+  const completedToggle = document.querySelector("[data-task-board-completed-toggle]");
   const workspacePanel = document.querySelector("[data-workspace-task-panel]");
   const workspacePanelList = document.querySelector("[data-workspace-task-list]");
   const workspacePanelTitle = document.querySelector("[data-workspace-task-title]");
@@ -116,6 +135,7 @@
     notesComment: "Игры, фильмы, сериалы и идеи",
     selectedWorkspaceId: null,
     provider: "codex",
+    completedOnly: false,
     openTaskId: null,
     startingTaskId: null,
     creatingWorkspaceId: null,
@@ -377,7 +397,7 @@
 
   function renderOpenTaskCard() {
     if (!taskCardModal) return;
-    const task = state.tasks.find((item) => item.id === state.openTaskId && item.status !== "done");
+    const task = state.tasks.find((item) => item.id === state.openTaskId);
     if (!task) {
       if (state.openTaskId) closeTaskCard();
       return;
@@ -398,7 +418,7 @@
     taskCardAttachments.hidden = attachments.length === 0;
     taskCardAttachments.replaceChildren(...(attachments.length ? [attachmentStrip(attachments)] : []));
     const actions = [];
-    if (task.bucket === "workspace") {
+    if (task.status !== "done" && task.bucket === "workspace") {
       actions.push(node("button", {
         type: "button",
         class: "board-task-primary",
@@ -406,18 +426,20 @@
         onclick: () => { closeTaskCard(); openStart(task); },
       }));
     }
-    actions.push(destinationSelect(task));
-    if (task.triageStatus === "failed") {
+    if (task.status !== "done") actions.push(destinationSelect(task));
+    if (task.status !== "done" && task.triageStatus === "failed") {
       actions.push(node("button", {
         type: "button", class: "board-task-quiet", text: "Повторить Spark",
         onclick: () => emit("retry-triage", { id: task.id }),
       }));
     }
-    actions.push(node("button", {
-      type: "button", class: "board-task-quiet", text: "Завершить задачу",
-      title: "Убрать задачу с доски как выполненную",
-      onclick: () => { closeTaskCard(); emit("complete", { id: task.id }); },
-    }));
+    if (task.status !== "done") {
+      actions.push(node("button", {
+        type: "button", class: "board-task-quiet", text: "Завершить задачу",
+        title: "Убрать задачу с доски как выполненную",
+        onclick: () => { closeTaskCard(); emit("complete", { id: task.id }); },
+      }));
+    }
     actions.push(node("button", {
       type: "button",
       class: "board-task-remove",
@@ -440,9 +462,11 @@
   }
 
   function taskCard(task, { compact = false } = {}) {
+    const completed = task.status === "done";
+    const movable = !compact && !completed;
     const card = node("article", {
-      class: `board-task-card${task.status === "started" ? " is-started" : ""}${compact ? " is-compact" : ""}`,
-      draggable: compact ? null : "true",
+      class: `board-task-card${task.status === "started" ? " is-started" : ""}${completed ? " is-completed" : ""}${compact ? " is-compact" : ""}`,
+      draggable: movable ? "true" : null,
       role: "button",
       tabindex: "0",
       "aria-label": `Открыть задачу ${task.title || task.text}`,
@@ -459,7 +483,7 @@
         event.dataTransfer.effectAllowed = "move";
       },
     });
-    if (!compact) {
+    if (movable) {
       card.addEventListener("dragover", (event) => {
         if (hasColumnDrag(event.dataTransfer)) return;
         if (!Array.from(event.dataTransfer.types).includes(TASK_MIME)) return;
@@ -518,7 +542,10 @@
     return form;
   }
 
-  function renderColumn({ id, title, subtitle, tasks, accent = "", workspace = null, movable = false }) {
+  function renderColumn({
+    id, title, subtitle, tasks, accent = "", workspace = null, movable = false,
+    emptyText = "Перетащите задачу сюда",
+  }) {
     const column = node("section", {
       class: `task-board-column ${accent}${workspace ? " is-workspace" : ""}`,
       "data-board-destination": id,
@@ -545,7 +572,7 @@
       if (task) moveTask(task, id);
     });
     const controls = node("div", { class: "task-board-column-controls" }, [
-      ...(workspace ? [node("button", {
+      ...(workspace && !state.completedOnly ? [node("button", {
         type: "button",
         class: "task-board-create-button",
         text: "Создать",
@@ -583,7 +610,7 @@
     const list = node("div", { class: "task-board-column-list" });
     if (workspace && state.creatingWorkspaceId === workspace.id) list.append(renderCreateForm(workspace));
     if (!tasks.length && state.creatingWorkspaceId !== workspace?.id) {
-      list.append(node("p", { class: "task-board-empty", text: "Перетащите задачу сюда" }));
+      list.append(node("p", { class: "task-board-empty", text: emptyText }));
     } else {
       for (const task of tasks) list.append(taskCard(task));
     }
@@ -592,12 +619,26 @@
   }
 
   function renderBoard() {
-    const openTasks = state.tasks.filter((task) => task.status !== "done");
+    const visibleTasks = tasksForMode(state.tasks, { completedOnly: state.completedOnly });
+    const emptyText = state.completedOnly ? "Нет выполненных задач" : "Перетащите задачу сюда";
+    const completedCount = state.tasks.filter((task) => task.status === "done").length;
+    const openCount = state.tasks.length - completedCount;
+    if (completedToggle) {
+      completedToggle.textContent = state.completedOnly
+        ? `Текущие · ${openCount}`
+        : `Выполненные · ${completedCount}`;
+      completedToggle.setAttribute("aria-pressed", String(state.completedOnly));
+      completedToggle.setAttribute(
+        "aria-label",
+        state.completedOnly ? "Показать текущие задачи" : "Показать только выполненные задачи",
+      );
+    }
+    board.classList.toggle("is-completed-only", state.completedOnly);
     columns.style.setProperty("--board-column-count", String(state.workspaces.length + 2));
     const rendered = new Map();
     rendered.set("backlog", renderColumn({
       id: "backlog", title: "Бэклог", subtitle: "Неразобранные входящие",
-      tasks: openTasks.filter((task) => task.bucket === "backlog"), accent: "is-backlog",
+      tasks: visibleTasks.filter((task) => task.bucket === "backlog"), accent: "is-backlog", emptyText,
     }));
     for (const workspace of state.workspaces) {
       const id = `workspace:${workspace.id}`;
@@ -605,14 +646,14 @@
         id,
         title: workspace.name,
         subtitle: workspace.comment ?? "",
-        tasks: openTasks.filter((task) => task.bucket === "workspace" && task.workspaceId === workspace.id),
-        workspace, movable: true,
+        tasks: visibleTasks.filter((task) => task.bucket === "workspace" && task.workspaceId === workspace.id),
+        workspace, movable: !state.completedOnly, emptyText,
       }));
     }
     rendered.set("notes", renderColumn({
       id: "notes", title: "Заметки", subtitle: state.notesComment,
-      tasks: openTasks.filter((task) => task.bucket === "notes"),
-      accent: "is-notes", movable: true,
+      tasks: visibleTasks.filter((task) => task.bucket === "notes"),
+      accent: "is-notes", movable: !state.completedOnly, emptyText,
     }));
     const orderedIds = ["backlog", ...state.columnOrder.filter((id) => rendered.has(id) && id !== "backlog")];
     for (const id of rendered.keys()) if (!orderedIds.includes(id)) orderedIds.push(id);
@@ -637,6 +678,11 @@
   }
 
   document.querySelector("[data-task-start-close]")?.addEventListener("click", closeStart);
+  completedToggle?.addEventListener("click", () => {
+    closeTaskCard();
+    state.completedOnly = !state.completedOnly;
+    renderBoard();
+  });
   window.addEventListener("resize", scheduleTaskCardSizing, { passive: true });
   if (typeof window.ResizeObserver === "function") {
     new window.ResizeObserver(scheduleTaskCardSizing).observe(columns);
