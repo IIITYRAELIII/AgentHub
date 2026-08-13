@@ -90,6 +90,7 @@ html[data-theme="jedi-archives"] {
     inset 0 1px 0 #fff,
     inset 0 -1px 0 rgb(121 112 96 / 8%),
     0 16px 36px -30px rgb(42 52 68 / 44%);
+  --jedi-archives-panel-gap: 0.32rem;
 
   --shell-header-background: rgb(250 248 244 / 94%);
   --shell-header-border: 0;
@@ -97,8 +98,8 @@ html[data-theme="jedi-archives"] {
   --shell-header-frame-content: "";
   --shell-header-gap: 0.55rem;
   --shell-header-height: 4rem;
-  --shell-header-padding-left: 0.55rem;
-  --shell-header-padding-right: 0.55rem;
+  --shell-header-padding-left: var(--jedi-archives-panel-gap);
+  --shell-header-padding-right: var(--jedi-archives-panel-gap);
   --shell-header-rule: linear-gradient(90deg, transparent, #b99b64 18% 82%, transparent);
   --shell-header-rule-opacity: 0.42;
   --shell-header-shadow: 0 12px 28px -28px rgb(47 53 66 / 44%);
@@ -116,9 +117,9 @@ html[data-theme="jedi-archives"] {
   --shell-tab-active-border: 1px solid rgb(180 149 91 / 42%);
   --shell-tab-active-shadow: inset 0 -2px 0 var(--accent), 0 10px 22px -20px rgb(58 88 118 / 54%);
 
-  --shell-workspace-gap: 0.32rem;
-  --shell-workspace-padding-bottom: 0.32rem;
-  --shell-workspace-padding-top: 0.32rem;
+  --shell-workspace-gap: var(--jedi-archives-panel-gap);
+  --shell-workspace-padding-bottom: var(--jedi-archives-panel-gap);
+  --shell-workspace-padding-top: var(--jedi-archives-panel-gap);
   --shell-panel-border: 14px solid transparent;
   --shell-panel-border-image: var(--jedi-archives-frame) 126 / 14px stretch;
   --shell-panel-border-width: 14px;
@@ -128,7 +129,7 @@ html[data-theme="jedi-archives"] {
   --shell-chat-border-image: var(--jedi-archives-frame) 126 / 14px stretch;
   --shell-chat-panel-border-width: 14px;
   --shell-chat-panel-border-image-width: 14px;
-  --shell-chat-gap: 0.32rem;
+  --shell-chat-gap: var(--jedi-archives-panel-gap);
   --shell-chat-radius: 3px;
 
   --shell-stream-tabs-background: var(--jedi-archives-panel);
@@ -331,7 +332,7 @@ html[data-theme="jedi-archives"] .composer {
   border: 13px solid transparent;
   border-image: var(--jedi-archives-frame) 126 / 13px stretch;
   border-radius: 3px;
-  margin: 0.35rem;
+  margin: 0;
   padding: 0.25rem;
 }
 
