@@ -79,6 +79,32 @@ test("RunCoordinator queues directly into a Stream under context maintenance", a
   assert.equal(f.calls.some(([name]) => name === "begin"), false);
 });
 
+test("RunCoordinator preserves input when Codex reports an orphaned active writer", async () => {
+  const f = fixture({
+    launchTurn: async () => {
+      throw new Error("thread thread-1 already has an active writer");
+    },
+    deferInput: async (...args) => {
+      f.calls.push(["defer", ...args]);
+      return { id: "queued-provider", item: { id: "queued-provider" } };
+    },
+    scheduleDeferred: (item, delay) => f.calls.push(["schedule", item, delay]),
+  });
+  const result = await f.coordinator.submitClientInput({
+    input: "keep me",
+    attachments: ["image.png"],
+    target: f.target,
+    clientUserMessageId: "message-provider-busy",
+  });
+  assert.equal(result.queued, true);
+  assert.equal(result.reason, "provider-thread-active");
+  assert.match(result.message, /сохранено в очереди/u);
+  assert.equal(f.calls.find(([name]) => name === "defer")[3].persistentFiles, true);
+  assert.deepEqual(f.calls.find(([name]) => name === "schedule").slice(1), [
+    { id: "queued-provider" }, 500,
+  ]);
+});
+
 test("RunCoordinator preserves unknown external activity for explicit action", async () => {
   const f = fixture({
     externalActivity: async () => ({ state: "unknown", executionOwner: "external" }),

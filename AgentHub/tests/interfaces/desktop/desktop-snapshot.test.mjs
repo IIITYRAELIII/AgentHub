@@ -686,6 +686,7 @@ test("desktopSnapshot exposes an inter-Stream queue message without its service 
       workspaceName: "Agent HUB",
       streamId: "stream-architect",
       streamName: "Architect",
+      provider: "codex",
     }),
     "</agent-hub-stream-message>",
     "Finish the theme.",
@@ -702,7 +703,31 @@ test("desktopSnapshot exposes an inter-Stream queue message without its service 
   const snapshot = await desktopSnapshot();
   assert.equal(snapshot.deferredInputs[0].text, "Finish the theme.");
   assert.equal(snapshot.deferredInputs[0].preview, "Finish the theme.");
-  assert.equal(snapshot.deferredInputs[0].author, "Agent HUB - Architect");
+  assert.equal(snapshot.deferredInputs[0].author, "Agent HUB - Architect (Codex)");
+});
+
+test("desktopRunSnapshot attributes a live inter-Stream message to its source agent", () => {
+  const { desktopRunSnapshot, run } = fixture();
+  const input = [
+    "<agent-hub-stream-message>",
+    JSON.stringify({
+      workspaceId: "workspace-1",
+      workspaceName: "Agent HUB",
+      streamId: "stream-architect",
+      streamName: "Architect",
+      provider: "codex",
+    }),
+    "</agent-hub-stream-message>",
+    "MCP smoke test.",
+  ].join("\n");
+  run.promptPreview = input;
+  run.userMessages[0].text = input;
+
+  const snapshot = desktopRunSnapshot(run);
+
+  assert.equal(snapshot.prompt, "MCP smoke test.");
+  assert.equal(snapshot.promptAuthor, "Agent HUB - Architect (Codex)");
+  assert.equal(snapshot.userMessages[0].author, "Agent HUB - Architect (Codex)");
 });
 
 test("desktopSnapshot returns a compact marker for an unchanged version", async () => {

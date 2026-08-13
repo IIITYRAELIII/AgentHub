@@ -593,6 +593,7 @@ export class HubMcpService {
       workspaceName: context.workspaceName,
       streamId: context.streamId,
       streamName: context.streamName,
+      provider: context.provider,
       text: requiredText(text, "message text", 100_000),
     });
     const delivery = await this.#streamMessenger({
@@ -610,6 +611,7 @@ export class HubMcpService {
         workspaceName: context.workspaceName,
         streamId: context.streamId,
         streamName: context.streamName,
+        provider: context.provider,
       },
       target: {
         workspaceId: context.workspaceId,

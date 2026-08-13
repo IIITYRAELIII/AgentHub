@@ -265,6 +265,7 @@ test("inter-Stream messages retain their source author without exposing the enve
       workspaceName: "Agent Hub",
       streamId: "stream-1",
       streamName: "Architect",
+      provider: "codex",
     }),
     "</agent-hub-stream-message>",
     "Release the ready changes.",
@@ -275,6 +276,26 @@ test("inter-Stream messages retain their source author without exposing the enve
     items: [{ type: "userMessage", content: [{ type: "text", text: prompt }] }],
   }]);
   assert.equal(displayUserPrompt(prompt), "Release the ready changes.");
+  assert.equal(exchange.messages[0].author, "Agent Hub - Architect (Codex)");
+});
+
+test("legacy inter-Stream messages remain readable without an agent suffix", () => {
+  const prompt = [
+    "<agent-hub-stream-message>",
+    JSON.stringify({
+      workspaceId: "workspace-1",
+      workspaceName: "Agent Hub",
+      streamId: "stream-1",
+      streamName: "Architect",
+    }),
+    "</agent-hub-stream-message>",
+    "Legacy message.",
+  ].join("\n");
+  const [exchange] = codexThreadHistory([{
+    id: "turn-legacy-stream-message",
+    status: "completed",
+    items: [{ type: "userMessage", content: [{ type: "text", text: prompt }] }],
+  }]);
   assert.equal(exchange.messages[0].author, "Agent Hub - Architect");
 });
 

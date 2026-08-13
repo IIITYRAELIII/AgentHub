@@ -1,5 +1,5 @@
 import { createReadStream, readFileSync, statSync } from "node:fs";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
@@ -17,6 +17,7 @@ import {
   publicJournalPayload,
 } from "./mini-app-journal-data.mjs";
 import { JournalDatabase } from "../../infrastructure/persistence/journal-database.mjs";
+import { pathInsideOrSame } from "../../infrastructure/filesystem/config.mjs";
 
 export { extractWorkLogHtml } from "./mini-app-journal-data.mjs";
 
@@ -83,6 +84,7 @@ function staticAssetBundle({ id = "", assetsDirectory, workLogCssFile }) {
 }
 const MAX_CONTROL_REQUEST_BYTES = 512 * 1024;
 const MAX_MOBILE_UPDATE_BYTES = 100 * 1024 * 1024;
+const MAX_WORKSPACE_FILE_BYTES = 512 * 1024 * 1024;
 const CONTROL_COMMAND_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,199}$/;
 const MOBILE_UPDATE_FILE = "AgentHub-Mobile.apk";
 const MOBILE_UPDATE_MANIFEST = "update.json";
@@ -99,6 +101,39 @@ function attachmentHeaderName(request) {
 
 function downloadDisposition(name) {
   return `attachment; filename*=UTF-8''${encodeURIComponent(String(name ?? "attachment"))}`;
+}
+
+function workspaceFilePath(value) {
+  const source = String(value ?? "").trim();
+  if (!source || source.length > 4_096 || source.includes("\0")) {
+    throw new Error("Некорректный путь файла Workspace");
+  }
+  return path.resolve(source.replace(/:[1-9][0-9]*(?::[1-9][0-9]*)?$/u, ""));
+}
+
+async function resolveWorkspaceFile(value, roots) {
+  const target = await realpath(workspaceFilePath(value));
+  const resolvedRoots = (await Promise.all((roots ?? []).map(async (root) => {
+    try {
+      return await realpath(root);
+    } catch {
+      return null;
+    }
+  }))).filter(Boolean);
+  if (!resolvedRoots.some((root) => pathInsideOrSame(target, root))) {
+    throw new Error("Файл находится вне Workspace");
+  }
+  const info = await stat(target);
+  if (!info.isFile() || info.size < 1 || info.size > MAX_WORKSPACE_FILE_BYTES) {
+    throw new Error("Файл отсутствует, пуст или превышает 512 МБ");
+  }
+  const name = path.basename(target);
+  return {
+    bytes: info.size,
+    name,
+    target,
+    type: attachmentContentType(name),
+  };
 }
 
 async function readJsonBody(request, maxBytes = MAX_CONTROL_REQUEST_BYTES) {
@@ -366,6 +401,7 @@ export class MiniAppServer {
   #botToken;
   #clients = new Set();
   #controlHandler;
+  #copyWorkspaceFile;
   #onControlResultDelivered;
   #deviceStore;
   #changeTimer = null;
@@ -382,6 +418,7 @@ export class MiniAppServer {
   #publicAuthAttempts = new PublicAuthAttemptLimiter();
   #requireTelegramAuth;
   #server = null;
+  #workspaceFileRoots;
 
   constructor({
     host = "127.0.0.1",
@@ -392,6 +429,7 @@ export class MiniAppServer {
     localAccessSecret = "",
     localAccessSecretFile = null,
     controlHandler = null,
+    copyWorkspaceFile = null,
     onControlResultDelivered = null,
     deviceStore = null,
     assetsDirectory = path.join(AGENT_HUB_ROOT, "assets", "mini-app"),
@@ -402,6 +440,7 @@ export class MiniAppServer {
     workLogCssFile = path.join(AGENT_HUB_ROOT, "work-log.css"),
     journalDatabase = null,
     journalDatabaseFile = null,
+    workspaceFileRoots = [],
   } = {}) {
     this.#host = String(host);
     this.#port = Number(port);
@@ -411,6 +450,7 @@ export class MiniAppServer {
     this.#localAccessSecret = String(localAccessSecret);
     this.#localAccessSecretFile = localAccessSecretFile ? path.resolve(localAccessSecretFile) : null;
     this.#controlHandler = typeof controlHandler === "function" ? controlHandler : null;
+    this.#copyWorkspaceFile = typeof copyWorkspaceFile === "function" ? copyWorkspaceFile : null;
     this.#onControlResultDelivered = typeof onControlResultDelivered === "function"
       ? onControlResultDelivered
       : null;
@@ -422,6 +462,10 @@ export class MiniAppServer {
     this.#mobileUpdateDirectory = mobileUpdateDirectory
       ? path.resolve(mobileUpdateDirectory)
       : null;
+    this.#workspaceFileRoots = (workspaceFileRoots ?? [])
+      .map((root) => String(root ?? "").trim())
+      .filter(Boolean)
+      .map((root) => path.resolve(root));
     if (!journalDatabase && !journalDatabaseFile) {
       throw new Error("Mini App journalDatabase or journalDatabaseFile is required");
     }
@@ -784,6 +828,58 @@ export class MiniAppServer {
           }),
           ...(commandId ? { receiptId: commandId } : {}),
         }, method);
+      } catch (error) {
+        json(response, 400, { ok: false, error: String(error?.message ?? error) }, method);
+      }
+      return;
+    }
+    if (url.pathname === "/api/workspace-file") {
+      if (!["GET", "HEAD"].includes(method)) {
+        response.writeHead(405, {
+          Allow: "GET, HEAD",
+          ...responseHeaders("text/plain; charset=utf-8"),
+        });
+        response.end("Method Not Allowed\n");
+        return;
+      }
+      const authorization = await this.#authorize(request, response);
+      if (!authorization) return;
+      if (authorization.source !== "local-mini-app" || !this.#workspaceFileRoots.length) {
+        json(response, 403, { error: "Локальные файлы Workspace доступны только локальному Agent Hub." }, method);
+        return;
+      }
+      try {
+        const file = await resolveWorkspaceFile(url.searchParams.get("path"), this.#workspaceFileRoots);
+        await sendBoundedFile(response, file.target, file.bytes, file.type, method, {
+          "Content-Disposition": downloadDisposition(file.name),
+        });
+      } catch (error) {
+        json(response, 404, { error: String(error?.message ?? error) }, method);
+      }
+      return;
+    }
+    if (url.pathname === "/api/workspace-file/copy") {
+      if (method !== "POST") {
+        response.writeHead(405, {
+          Allow: "POST",
+          ...responseHeaders("text/plain; charset=utf-8"),
+        });
+        response.end("Method Not Allowed\n");
+        return;
+      }
+      const authorization = await this.#authorize(request, response);
+      if (!authorization) return;
+      if (authorization.source !== "local-mini-app"
+        || !this.#workspaceFileRoots.length
+        || !this.#copyWorkspaceFile) {
+        json(response, 403, { error: "Копирование файлов Workspace доступно только локальному Agent Hub." }, method);
+        return;
+      }
+      try {
+        const body = await readJsonBody(request);
+        const file = await resolveWorkspaceFile(body.path, this.#workspaceFileRoots);
+        await this.#copyWorkspaceFile(file.target);
+        json(response, 200, { ok: true }, method);
       } catch (error) {
         json(response, 400, { ok: false, error: String(error?.message ?? error) }, method);
       }

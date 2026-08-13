@@ -9,6 +9,10 @@ export function activeTurnNotSteerable(error) {
     || /текущий ход уже/u.test(String(error?.message ?? "").toLowerCase());
 }
 
+export function providerThreadAlreadyActive(error) {
+  return /thread\s+\S+\s+already has an active writer/iu.test(String(error?.message ?? error ?? ""));
+}
+
 function persistentAttachmentDescriptors(describeAttachments, files, persistentFiles) {
   return persistentFiles ? describeAttachments(files) : [];
 }
@@ -231,7 +235,9 @@ export class RunCoordinator {
         ? "Текущий ход уже нельзя изменить; сообщение сохранено в очереди."
         : reason === "context-maintenance"
           ? "Сообщение поставлено в очередь до завершения свёртки или ротации контекста."
-        : "Сообщение поставлено в очередь и будет отправлено после текущего хода.",
+          : reason === "provider-thread-active"
+            ? "Codex ещё завершает предыдущий ход; сообщение сохранено в очереди."
+            : "Сообщение поставлено в очередь и будет отправлено после текущего хода.",
     };
   }
 
@@ -396,7 +402,17 @@ export class RunCoordinator {
     }
     const run = await this.beginRun(input, { ...target, clientUserMessageId });
     run.messageAttachments = this.describeAttachments(attachments);
-    await this.launchTurn(run, input, []);
+    try {
+      await this.launchTurn(run, input, []);
+    } catch (error) {
+      if (!providerThreadAlreadyActive(error)) throw error;
+      return this.queue(input, attachments, {
+        target,
+        executionOwner: TASK_EXECUTION_OWNERS.EXTERNAL,
+        clientUserMessageId,
+        reason: "provider-thread-active",
+      });
+    }
     return {
       accepted: true,
       runId: run.id,

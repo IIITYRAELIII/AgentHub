@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -895,6 +895,76 @@ test("Mini App forwards authenticated control commands to Agent Hub", async () =
     assert.equal(uploadedDocument.attachment.name, "заметки.txt");
     assert.equal(uploadedDocument.attachment.type, "text/plain");
     assert.deepEqual(await readFile(uploadedDocument.path, "utf8"), "plain text");
+  } finally {
+    await server.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("local Mini App downloads and copies files only from configured Workspace roots", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-workspace-file-"));
+  const workspace = path.join(directory, "workspace");
+  const outside = path.join(directory, "outside.txt");
+  const target = path.join(workspace, "result.cfe");
+  await mkdir(workspace);
+  await writeFile(target, "extension", "utf8");
+  await writeFile(outside, "secret", "utf8");
+  let copied = "";
+  const server = new MiniAppServer({
+    host: "127.0.0.1",
+    port: 0,
+    journalDatabase: memoryJournal(),
+    workspaceFileRoots: [workspace],
+    copyWorkspaceFile: async (file) => { copied = file; },
+  });
+  try {
+    const address = await server.start();
+    const download = await fetch(
+      `${address.url}api/workspace-file?path=${encodeURIComponent(`${target}:12`)}`,
+    );
+    assert.equal(download.status, 200);
+    assert.match(download.headers.get("content-disposition"), /result\.cfe/u);
+    assert.equal(await download.text(), "extension");
+
+    const copy = await fetch(`${address.url}api/workspace-file/copy`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: target }),
+    });
+    assert.equal(copy.status, 200);
+    assert.equal(copied, await realpath(target));
+
+    const denied = await fetch(
+      `${address.url}api/workspace-file?path=${encodeURIComponent(outside)}`,
+    );
+    assert.equal(denied.status, 404);
+  } finally {
+    await server.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("public Mini App cannot read local Workspace files", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-public-workspace-file-"));
+  const target = path.join(directory, "result.cfe");
+  await writeFile(target, "extension", "utf8");
+  const server = new MiniAppServer({
+    host: "127.0.0.1",
+    port: 0,
+    journalDatabase: memoryJournal(),
+    requireTelegramAuth: true,
+    botToken: BOT_TOKEN,
+    allowedUserIds: new Set([42]),
+    workspaceFileRoots: [directory],
+    copyWorkspaceFile: async () => {},
+  });
+  try {
+    const address = await server.start();
+    const response = await fetch(
+      `${address.url}api/workspace-file?path=${encodeURIComponent(target)}`,
+      { headers: { Authorization: `tma ${signedInitData()}` } },
+    );
+    assert.equal(response.status, 403);
   } finally {
     await server.close();
     await rm(directory, { recursive: true, force: true });

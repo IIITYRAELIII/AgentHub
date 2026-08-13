@@ -49,6 +49,9 @@ test("retryable deferred launch errors are limited to transport failures", () =>
   assert.equal(isRetryableDeferredLaunchError(Object.assign(new Error("phantom turn"), {
     code: "ERR_CODEX_TURN_NOT_MATERIALIZED",
   })), true);
+  assert.equal(isRetryableDeferredLaunchError(
+    new Error("thread thread-1 already has an active writer"),
+  ), true);
   assert.equal(isRetryableDeferredLaunchError(new Error("invalid model")), false);
 });
 

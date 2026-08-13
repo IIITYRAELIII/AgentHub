@@ -177,3 +177,36 @@ test("Desktop turn open returns the exact indexed intermediate message", async (
   assert.equal(result.focusedTurn.focusItemId, "assistant-middle");
   assert.equal(result.focusedTurn.messages[0].text, "intermediate answer");
 });
+
+test("Desktop turn open keeps an inter-Stream source agent on its fallback prompt", async () => {
+  const { service } = fixture();
+  service.readTurn = async () => ({
+    taskThreadId: "thread-1",
+    projectRoot: "C:\\repo",
+    prompt: [
+      "<agent-hub-stream-message>",
+      JSON.stringify({
+        workspaceId: "workspace-1",
+        workspaceName: "Agent HUB",
+        streamId: "stream-architect",
+        streamName: "Architect",
+        provider: "claude",
+      }),
+      "</agent-hub-stream-message>",
+      "Review the release.",
+    ].join("\n"),
+    body: "Reviewed.",
+    title: "Turn",
+  });
+
+  const result = await service.openTurn({
+    streamId: "stream-1",
+    provider: "codex",
+    taskThreadId: "thread-1",
+    turnThreadId: "thread-1",
+    turnId: "turn-interstream",
+  });
+
+  assert.equal(result.focusedTurn.prompt, "Review the release.");
+  assert.equal(result.focusedTurn.promptAuthor, "Agent HUB - Architect (Claude)");
+});

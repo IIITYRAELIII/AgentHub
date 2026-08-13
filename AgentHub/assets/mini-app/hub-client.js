@@ -9,6 +9,11 @@ const vscode = window.__agentHubVscode ?? (typeof window.acquireVsCodeApi === "f
   ? window.acquireVsCodeApi()
   : null);
 const pendingBridgeCalls = new Map();
+const localWorkspaceFilesAvailable = window.AgentHubResourceInteractions.localWorkspaceFilesAvailable({
+  vscode: Boolean(vscode),
+  protocol: window.location.protocol,
+  hostname: window.location.hostname,
+});
 const selectedTaskKey = "agent-hub:selected-task:v1";
 const serverIdentityKey = "agent-hub:server-identity:v1";
 const maintenanceEventStorageKey = "agent-hub:maintenance-events:v1";
@@ -333,12 +338,14 @@ function liveUserMessagesSignature(run) {
     String(run?.turnId ?? ""),
     String(run?.clientUserMessageId ?? ""),
     String(run?.prompt ?? "").length,
+    String(run?.promptAuthor ?? ""),
     String(run?.startedAt ?? ""),
     JSON.stringify(run?.attachments ?? []),
     ...messages.map((message) => [
       String(message?.itemId ?? ""),
       String(message?.clientUserMessageId ?? ""),
       String(message?.text ?? "").length,
+      String(message?.author ?? ""),
       String(message?.time ?? ""),
       JSON.stringify(message?.attachments ?? []),
       JSON.stringify(message?.responseAnnotations ?? []),
@@ -1377,6 +1384,7 @@ function historyMessages(history, focusedTurn = null) {
       ...(userMessages.length ? userMessages : item.prompt ? [{
         itemId: `${item.id}:prompt`,
         role: "user",
+        author: item.promptAuthor,
         text: item.prompt,
         responseAnnotations: item.promptAnnotations,
         responseAnnotationRequest: item.promptRequest,
@@ -1446,7 +1454,7 @@ function historyMessages(history, focusedTurn = null) {
       turnId: focusedTurn.turnId,
       itemId: `${focusedTurn.turnId}:focused:user`,
       role: "user",
-      author: "Вы",
+      author: focusedTurn.promptAuthor || "Вы",
       text: focusedTurn.prompt,
       responseAnnotations: focusedTurn.promptAnnotations,
       responseAnnotationRequest: focusedTurn.promptRequest,
@@ -2484,6 +2492,10 @@ function resourceReference(resource) {
 
 function resourceFileName(resource) {
   if (resource?.kind === "attachment") return String(resource.attachment?.name ?? "attachment");
+  const localPath = String(resource?.localPath ?? "").trim()
+    .replace(/:[1-9][0-9]*(?::[1-9][0-9]*)?$/u, "")
+    .replaceAll("\\", "/");
+  if (localPath) return localPath.split("/").filter(Boolean).at(-1) || "download";
   try {
     const url = new URL(String(resource?.href ?? ""));
     return decodeURIComponent(url.pathname.split("/").filter(Boolean).at(-1) || "download");
@@ -2517,6 +2529,22 @@ async function saveLinkResource(resource) {
     });
     return;
   }
+  if (String(resource?.localPath ?? "").trim()) {
+    if (!localWorkspaceFilesAvailable) {
+      throw new Error("Локальный файл Workspace доступен только на этом компьютере");
+    }
+    await localSessionReady;
+    const response = await hubFetch(
+      `/api/workspace-file?path=${encodeURIComponent(resource.localPath)}`,
+      { headers: authorizationHeaders(), cache: "no-store" },
+    );
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(String(payload.error ?? `Не удалось сохранить файл: HTTP ${response.status}`));
+    }
+    await saveBlob(await response.blob(), resourceFileName(resource));
+    return;
+  }
   const target = new URL(String(resource.href ?? ""), window.location.href);
   const sameOrigin = target.origin === window.location.origin;
   const response = await hubFetch(target.href, {
@@ -2543,11 +2571,23 @@ agentHub.on("resource:copy", ({ resource }) => runAction(async () => {
 }));
 
 agentHub.on("resource:copy-object", ({ resource }) => runAction(async () => {
-  if (!vscode || !String(resource?.localPath ?? "").trim()) {
+  const localPath = String(resource?.localPath ?? "").trim();
+  if (!localPath || !localWorkspaceFilesAvailable) {
     throw new Error("Копирование файлового объекта недоступно в этой поверхности");
   }
-  await bridgeCall("copy-link-object", { href: resource.localPath });
-  agentHub.toast("Объект скопирован в буфер обмена");
+  if (vscode) await bridgeCall("copy-link-object", { href: localPath });
+  else {
+    const response = await hubFetch("/api/workspace-file/copy", {
+      method: "POST",
+      headers: { ...authorizationHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify({ path: localPath }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || payload.ok === false) {
+      throw new Error(String(payload.error ?? `Не удалось скопировать файл: HTTP ${response.status}`));
+    }
+  }
+  agentHub.toast("Файл скопирован в буфер обмена");
 }));
 
 agentHub.on("resource:save", ({ resource }) => runAction(async () => {

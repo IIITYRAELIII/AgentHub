@@ -1,4 +1,5 @@
 import { displayUserPrompt } from "../../application/task-history.mjs";
+import { interstreamMessageDetails } from "../../domain/interstream-message.mjs";
 import { taskDisplayTitle } from "../../domain/task-display-title.mjs";
 
 const MAX_DESKTOP_RESPONSE_BYTES = 3_500_000;
@@ -190,13 +191,16 @@ export class DesktopTaskService {
         }),
       },
     );
+    const rawPrompt = String(record?.prompt ?? "");
+    const interstream = interstreamMessageDetails(rawPrompt);
     const focusedTurn = {
       provider: targetProvider,
       taskThreadId: taskThread,
       turnThreadId: turnThread,
       turnId,
       title: String(record?.title ?? ""),
-      prompt: displayUserPrompt(record?.prompt),
+      prompt: displayUserPrompt(rawPrompt),
+      ...(interstream ? { promptAuthor: interstream.author } : {}),
       answer: String(record?.body ?? record?.text ?? "").slice(
         0,
         Math.max(1_000, Math.min(Number(params.maxAnswerChars) || 200_000, 200_000)),

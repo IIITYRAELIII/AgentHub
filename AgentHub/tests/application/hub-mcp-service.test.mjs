@@ -219,7 +219,9 @@ test("HubMcpService sends attributed messages to another current-Workspace Strea
   assert.equal(sentMessages[0].params.streamId, "stream-2");
   assert.match(sentMessages[0].params.text, /"workspaceName":"Agent Hub"/u);
   assert.match(sentMessages[0].params.text, /"streamName":"MCP"/u);
+  assert.match(sentMessages[0].params.text, /"provider":"codex"/u);
   assert.match(sentMessages[0].params.text, /Finish the theme\.$/u);
+  assert.equal(result.source.provider, "codex");
 });
 
 test("HubMcpService exposes cursor events and publication-gated release completion", async (context) => {

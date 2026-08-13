@@ -8,7 +8,7 @@ export function isRetryableDeferredLaunchError(error) {
     "ERR_CODEX_TURN_NOT_MATERIALIZED",
   ].includes(code)) return true;
   const message = String(error?.message ?? error ?? "");
-  return /(?:codex )?app-server (?:stopped|is not running)|write EPIPE|broken pipe/i.test(message);
+  return /(?:codex )?app-server (?:stopped|is not running)|write EPIPE|broken pipe|thread\s+\S+\s+already has an active writer/i.test(message);
 }
 
 export class DeferredInputController {

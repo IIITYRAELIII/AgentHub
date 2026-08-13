@@ -14,6 +14,7 @@ export function createInterstreamMessage({
   workspaceName,
   streamId,
   streamName,
+  provider,
   text,
 } = {}) {
   const source = {
@@ -21,6 +22,7 @@ export function createInterstreamMessage({
     workspaceName: cleanText(workspaceName, "workspace name", 500),
     streamId: cleanText(streamId, "stream id", 300),
     streamName: cleanText(streamName, "stream name", 500),
+    provider: cleanText(provider, "provider", 100).toLowerCase(),
   };
   const body = cleanText(text, "message text", 100_000);
   return `${OPEN_TAG}\n${JSON.stringify(source)}\n${CLOSE_TAG}\n${body}`;
@@ -42,14 +44,19 @@ export function interstreamMessageDetails(value) {
   const workspaceName = String(metadata?.workspaceName ?? "").trim();
   const streamId = String(metadata?.streamId ?? "").trim();
   const streamName = String(metadata?.streamName ?? "").trim();
+  const provider = String(metadata?.provider ?? "").trim().toLowerCase();
   const text = source.slice(closeAt + CLOSE_TAG.length).trim();
   if (!workspaceId || !workspaceName || !streamId || !streamName || !text) return null;
+  const agent = provider === "claude"
+    ? "Claude"
+    : provider === "codex" ? "Codex" : "";
   return {
     workspaceId,
     workspaceName,
     streamId,
     streamName,
-    author: `${workspaceName} - ${streamName}`,
+    ...(provider ? { provider } : {}),
+    author: `${workspaceName} - ${streamName}${agent ? ` (${agent})` : ""}`,
     text,
   };
 }

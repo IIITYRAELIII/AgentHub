@@ -1403,7 +1403,7 @@ namespace AgentHubDesktop
         {
             var menu = ResourceContextMenu(
                 null,
-                "Скопировать объект",
+                "Скопировать файл",
                 delegate
                 {
                     var files = new StringCollection();
@@ -1734,7 +1734,7 @@ namespace AgentHubDesktop
                     var capturedLocalLine = localLine;
                     localLink.ContextMenu = ResourceContextMenu(
                         delegate { OpenWorkspaceFile(capturedLocalFile, capturedLocalLine); },
-                        "Скопировать объект",
+                        "Скопировать файл",
                         delegate
                         {
                             var files = new StringCollection();

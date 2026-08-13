@@ -47,11 +47,18 @@
     return ["open", "copy", "save"];
   }
 
+  function localWorkspaceFilesAvailable({ vscode = false, protocol = "", hostname = "" } = {}) {
+    if (vscode) return true;
+    return ["http:", "https:"].includes(String(protocol).toLowerCase())
+      && ["127.0.0.1", "localhost", "::1"].includes(String(hostname).toLowerCase());
+  }
+
   window.AgentHubResourceInteractions = {
     galleryIndex,
     imageGallery,
     isImageAttachment,
     linkResource,
+    localWorkspaceFilesAvailable,
     moveGalleryIndex,
     resourceActions,
     viewerGallery,

@@ -101,6 +101,7 @@ export function createDesktopSnapshotFactory({
 
   function desktopRunSnapshot(run, { compactSnapshot = false } = {}) {
     if (!run) return null;
+    const promptInterstream = interstreamMessageDetails(run.promptPreview);
     const responseItem = (Array.isArray(run.responseItems) ? run.responseItems : [])
       .find((item) => String(item?.id ?? "") === String(run.responseItemId ?? ""));
     const compactActivity = (activity) => {
@@ -133,11 +134,14 @@ export function createDesktopSnapshotFactory({
       reasoning: run.reasoning ?? null,
       stage: String(run.progressStage ?? "Выполняется…"),
       prompt: displayUserPrompt(run.promptPreview),
+      ...(promptInterstream ? { promptAuthor: promptInterstream.author } : {}),
       attachments: Array.isArray(run.messageAttachments)
         ? run.messageAttachments.map((attachment) => ({ ...attachment }))
         : [],
       userMessages: (Array.isArray(run.userMessages) ? run.userMessages : []).flatMap((message) => {
-        const text = displayUserPrompt(message?.text);
+        const rawText = String(message?.text ?? "");
+        const interstream = interstreamMessageDetails(rawText);
+        const text = displayUserPrompt(rawText);
         if (!text) return [];
         const clientUserMessageId = String(message.clientUserMessageId ?? "");
         const receipt = clientUserMessageId
@@ -152,6 +156,9 @@ export function createDesktopSnapshotFactory({
           clientUserMessageId,
           role: "user",
           text,
+          ...((interstream?.author ?? String(message.author ?? "").trim())
+            ? { author: interstream?.author ?? String(message.author).trim() }
+            : {}),
           time: message.time ?? run.startedAt ?? receipt?.createdAt ?? null,
           attachments: (
             receipt?.result?.attachments
