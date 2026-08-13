@@ -81,8 +81,11 @@ async function fixture(context) {
   const taskBoard = {
     snapshot: () => [...tasks.values()].map((task) => ({ ...task, attachments: task.attachments ?? [] })),
     task: (id) => tasks.get(id) ?? null,
-    create: ({ text }) => {
-      const task = { id: "created", title: text, description: "", bucket: "backlog", status: "open", workspaceId: null };
+    create: ({ text, sourceDetails = {} }) => {
+      const task = {
+        id: "created", title: text, description: "", bucket: "backlog",
+        status: "open", workspaceId: null, sourceDetails,
+      };
       tasks.set(task.id, task);
       return task;
     },
@@ -90,6 +93,7 @@ async function fixture(context) {
     update: ({ id, title, description }) => Object.assign(tasks.get(id), { title, description }),
     markStarted: ({ id, streamId }) => Object.assign(tasks.get(id), { status: "started", streamId }),
     complete: ({ id }) => Object.assign(tasks.get(id), { status: "done" }),
+    remove: ({ id }) => tasks.delete(id),
     addAttachment: ({ id, attachment }) => {
       const task = tasks.get(id);
       task.attachments = [{ id: path.basename(attachment), name: "evidence.txt", type: "text/plain" }];
@@ -146,9 +150,11 @@ test("HubMcpService scopes tools to the capability Workspace", async (context) =
 test("HubMcpService supports the first Stream turn before provider Thread assignment", async (context) => {
   const { service } = await fixture(context);
   const developerContext = service.developerContext({ provider: "claude", streamId: "stream-1" });
-  const token = /Context capability: (\S+)/u.exec(developerContext)?.[1];
+  const token = /Required MCP arguments: (\{.+\})/u.exec(developerContext)?.[1];
+  const { context_token: contextToken } = JSON.parse(token);
   assert.match(developerContext, /pending first Thread/u);
-  assert.equal((await service.call("hub_context_get", { context_token: token })).streamId, "stream-1");
+  assert.match(developerContext, /Do not search environment variables/u);
+  assert.equal((await service.call("hub_context_get", { context_token: contextToken })).streamId, "stream-1");
 });
 
 test("HubMcpService falls back to Stream context while a rotated Thread is not bound yet", async (context) => {
@@ -158,10 +164,11 @@ test("HubMcpService falls back to Stream context while a rotated Thread is not b
     threadId: "rotated-thread-not-bound-yet",
     streamId: "stream-1",
   });
-  const token = /Context capability: (\S+)/u.exec(developerContext)?.[1];
+  const token = /Required MCP arguments: (\{.+\})/u.exec(developerContext)?.[1];
+  const { context_token: contextToken } = JSON.parse(token);
 
   assert.match(developerContext, /Workspace: Agent Hub \(workspace-1\)/u);
-  assert.equal((await service.call("hub_context_get", { context_token: token })).streamId, "stream-1");
+  assert.equal((await service.call("hub_context_get", { context_token: contextToken })).streamId, "stream-1");
 });
 
 test("HubMcpService starts the current Workspace task in the current Stream", async (context) => {
@@ -171,6 +178,30 @@ test("HubMcpService starts the current Workspace task in the current Stream", as
   });
   assert.equal(task.task.status, "started");
   assert.equal(task.target.streamId, "stream-1");
+});
+
+test("HubMcpService keeps ownership across global columns and deletes its task", async (context) => {
+  const { service, token } = await fixture(context);
+  const created = await service.call("hub_task_create", {
+    context_token: token, request_id: "task-create", title: "Owned task",
+  });
+  const notes = await service.call("hub_task_move", {
+    context_token: token, request_id: "task-notes", task_id: created.id, destination: "notes",
+  });
+  const backlog = await service.call("hub_task_move", {
+    context_token: token, request_id: "task-backlog", task_id: created.id, destination: "backlog",
+  });
+  const deleted = await service.call("hub_task_delete", {
+    context_token: token, request_id: "task-delete", task_id: created.id,
+  });
+
+  assert.equal(notes.bucket, "notes");
+  assert.equal(backlog.bucket, "backlog");
+  assert.equal(deleted.deleted, true);
+  await assert.rejects(
+    () => service.call("hub_task_get", { context_token: token, task_id: created.id }),
+    /task not found/u,
+  );
 });
 
 test("HubMcpService sends attributed messages to another current-Workspace Stream", async (context) => {
@@ -209,6 +240,14 @@ test("HubMcpService rejects forged context capabilities", async (context) => {
   await assert.rejects(
     () => service.call("hub_context_get", { context_token: `${token}x` }),
     /invalid Agent Hub context capability/u,
+  );
+});
+
+test("HubMcpService explains how to recover from an empty context capability", async (context) => {
+  const { service } = await fixture(context);
+  await assert.rejects(
+    () => service.call("hub_context_get", { context_token: "" }),
+    /copy the exact value from the current <agent_hub_context>.*do not search environment variables/u,
   );
 });
 

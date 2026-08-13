@@ -248,7 +248,7 @@ const providerApplication = await createProviderApplicationComposition({
     taskCatalogCacheMs: 30_000,
     taskTitleReconcileIntervalMs: 5 * 60_000,
     threadListLimit: THREAD_LIST_LIMIT,
-    claudeModelLabels: CLAUDE_MODEL_LABELS,
+    claudeModelLabels: CLAUDE_MODEL_LABELS, normalizeCodexModel,
     codexReasoningLabels: CODEX_REASONING_LABELS,
     globalWorkLogProjectRoots,
     journalDatabaseFile,

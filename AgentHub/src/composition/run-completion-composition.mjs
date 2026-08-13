@@ -18,6 +18,7 @@ export function createRunCompletionComposition({
   findProject,
   taskMetadata,
   agentPreferences,
+  normalizeCodexModel,
   codexModelLabel,
   claudeModelLabels,
   reasoningLabels,
@@ -61,6 +62,7 @@ export function createRunCompletionComposition({
         ? agentPreferences.defaultCodexReasoningEffort
         : agentPreferences.claudeReasoningEffort,
     }),
+    normalizeCodexModel,
     modelLabel: codexModelLabel,
     claudeModelLabels,
     reasoningLabels,
@@ -106,6 +108,7 @@ export function createRunCompletionComposition({
     saveState,
     persistHistory: persistManagedRunHistory,
     projectTurn: (...args) => runJournal.projectTurn(...args),
+    markRunCompleted: (run) => managedRunLifecycle.markCompleted(run),
     completeRun: (run) => managedRunLifecycle.complete(run),
   });
 

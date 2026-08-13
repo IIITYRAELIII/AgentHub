@@ -29,6 +29,7 @@ function fixture({ existingCompletion = null, discard = false } = {}) {
     saveState: async () => events.push(["save"]),
     persistHistory: async (...args) => events.push(["history", ...args]),
     projectTurn: async (...args) => events.push(["project", ...args]),
+    markRunCompleted: async (run) => events.push(["terminal", run]),
     completeRun: async (run) => events.push(["complete", run]),
     routeFinalDelivery: async ({ deliverStandard }) => ({ result: await deliverStandard() }),
     formatUsage: () => "Usage",
@@ -83,8 +84,10 @@ test("CodexRunFinalizer adopts audited start data and completes one durable deli
   assert.deepEqual(recorded.changedFiles, ["file.mjs"]);
   assert.deepEqual(recorded.userMessages, [{ text: "later prompt" }, { text: "follow-up" }]);
   assert.deepEqual(state.events.map(([name]) => name), [
-    "record", "save", "history", "project", "final", "delivered", "save", "complete",
+    "history", "terminal", "record", "save", "project", "final", "delivered", "save", "complete",
   ]);
+  const final = state.events.find(([name]) => name === "final");
+  assert.equal(final[2].refreshDiff, false);
 });
 
 test("CodexRunFinalizer captures a Git diff when rollout tracking is unavailable", async () => {
@@ -94,7 +97,11 @@ test("CodexRunFinalizer captures a Git diff when rollout tracking is unavailable
 
   await state.finalizer.finalize(value, { answer: "Final" });
 
-  assert.equal(state.events[0][0], "diff");
+  assert.ok(state.events.some(([name]) => name === "diff"));
+  assert.ok(
+    state.events.findIndex(([name]) => name === "terminal")
+      < state.events.findIndex(([name]) => name === "diff"),
+  );
 });
 
 test("CodexRunFinalizer does not treat an audited completion as a Telegram request", async () => {

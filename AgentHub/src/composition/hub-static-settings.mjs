@@ -8,9 +8,12 @@ export function createHubStaticSettings(config, agentHubRoot) {
   const claudeModels = ["sonnet", "opus", "haiku"];
   const claudeModelLabels = { sonnet: "Sonnet", opus: "Opus", haiku: "Haiku" };
   const codexModels = config.codexModels;
-  const codexModelValues = new Set(codexModels.map((model) => model.value));
+  const codexModelAliases = new Map(codexModels.flatMap((model) => ([
+    [String(model.value).toLowerCase(), model.value],
+    [String(model.label).toLowerCase(), model.value],
+  ])));
   const normalizeCodexModel = (value) => (
-    codexModelValues.has(value) ? value : codexModels[0].value
+    codexModelAliases.get(String(value ?? "").toLowerCase()) ?? codexModels[0].value
   );
   const codexModelLabel = (value) => (
     codexModels.find((model) => model.value === value)?.label ?? value

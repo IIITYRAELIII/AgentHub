@@ -17,6 +17,7 @@ export class CodexRunFinalizer {
     saveState,
     persistHistory,
     projectTurn,
+    markRunCompleted,
     completeRun,
     routeFinalDelivery = routeCodexFinalDelivery,
     formatUsage = formatTurnTokenUsage,
@@ -35,6 +36,7 @@ export class CodexRunFinalizer {
     this.saveState = saveState;
     this.persistHistory = persistHistory;
     this.projectTurn = projectTurn;
+    this.markRunCompleted = markRunCompleted;
     this.completeRun = completeRun;
     this.routeFinalDelivery = routeFinalDelivery;
     this.formatUsage = formatUsage;
@@ -73,17 +75,24 @@ export class CodexRunFinalizer {
       run.startedAt = turnStart.startedAt || run.startedAt;
       run.promptPreview = turnStart.prompt || run.promptPreview;
     }
-    if (run.rolloutChangeTrackingKnown !== true) {
-      await this.refreshTaskDiff(run).catch((error) => {
-        this.logger.error(`Cannot capture changed files for turn ${completedTurnId}:`, error.message);
-      });
-    }
     const identity = {
       provider: "codex",
       threadId: run.threadId,
       turnId: completedTurnId,
     };
     const existingCompletion = this.notifications.get(identity);
+    await this.persistHistory(run, {
+      answer,
+      status,
+      active: false,
+      turnId: completedTurnId,
+    });
+    await this.markRunCompleted(run);
+    if (run.rolloutChangeTrackingKnown !== true) {
+      await this.refreshTaskDiff(run).catch((error) => {
+        this.logger.error(`Cannot capture changed files for turn ${completedTurnId}:`, error.message);
+      });
+    }
     const completion = this.notifications.recordCompletion({
       ...identity,
       streamId: run.streamId ?? null,
@@ -121,12 +130,6 @@ export class CodexRunFinalizer {
       : tracker;
     const shouldDeliver = deliver ?? (run.telegramDeliveryRequested !== false);
     const message = [answer, this.formatUsage(resolvedTracker)].filter(Boolean).join("\n\n");
-    await this.persistHistory(run, {
-      answer,
-      status,
-      active: false,
-      turnId: completedTurnId,
-    });
     const delivery = await this.routeFinalDelivery({
       completion,
       deliverStandard: async () => {
@@ -146,6 +149,7 @@ export class CodexRunFinalizer {
           deliver: shouldDeliver,
           silent,
           complete: false,
+          refreshDiff: false,
           description,
         });
         if (completion) {

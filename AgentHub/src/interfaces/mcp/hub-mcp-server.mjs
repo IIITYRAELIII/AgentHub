@@ -150,7 +150,7 @@ export class HubMcpServer {
         protocolVersion: PROTOCOL_VERSIONS.has(requested) ? requested : "2025-03-26",
         capabilities: { tools: { listChanged: false } },
         serverInfo: { name: "agent_hub", title: "Agent Hub", version: "0.1.0" },
-        instructions: "Use the context_token from the current Agent Hub developer context.",
+        instructions: "Copy the exact non-empty context_token from the current <agent_hub_context> developer block into every Agent Hub tool call. It is not an environment variable.",
       };
     }
     if (method === "ping") return {};

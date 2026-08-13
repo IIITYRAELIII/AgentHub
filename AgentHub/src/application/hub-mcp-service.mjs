@@ -13,7 +13,7 @@ import { createInterstreamMessage } from "../domain/interstream-message.mjs";
 const CONTEXT_TOKEN_VERSION = 1;
 const RELEASE_STATUSES = new Set(["draft", "ready", "blocked", "discarded"]);
 const MUTATING_TOOLS = new Set([
-  "hub_task_create", "hub_task_update", "hub_task_move", "hub_task_start", "hub_task_complete",
+  "hub_task_create", "hub_task_update", "hub_task_move", "hub_task_start", "hub_task_complete", "hub_task_delete",
   "hub_task_attachment_add", "hub_workspace_rules_update", "hub_stream_rules_update",
   "hub_stream_message_send",
   "hub_release_change_status", "hub_release_complete",
@@ -94,7 +94,7 @@ function tool(name, description, properties = {}, required = []) {
       properties: {
         context_token: {
           type: "string",
-          description: "Opaque capability from the current <agent_hub_context> developer block.",
+          description: "Copy the exact non-empty context_token value from the current <agent_hub_context> developer block. It is not an environment variable.",
         },
         ...(mutating ? {
           request_id: {
@@ -212,6 +212,9 @@ export class HubMcpService {
       tool("hub_task_complete", "Mark a Dashboard task from the current Workspace as completed.", {
         task_id: { type: "string" },
       }, ["task_id"]),
+      tool("hub_task_delete", "Permanently delete a Dashboard task owned by the current Workspace.", {
+        task_id: { type: "string" },
+      }, ["task_id"]),
       tool("hub_task_attachment_read", "Read metadata and bounded text for one task attachment.", {
         task_id: { type: "string" },
         attachment_id: { type: "string" },
@@ -264,8 +267,9 @@ export class HubMcpService {
       `Workspace: ${resolved.workspaceName} (${resolved.workspaceId})`,
       `Stream: ${resolved.streamDisplayName} (${resolved.streamId})`,
       `Provider Thread: ${threadId ? `${provider}/${threadId}` : "pending first Thread"}`,
-      `Context capability: ${capability}`,
-      "Pass this capability as context_token to Agent Hub MCP tools. The server restricts it to this Workspace.",
+      `Required MCP arguments: ${JSON.stringify({ context_token: capability })}`,
+      "Copy that exact context_token into every agent_hub MCP call. Do not search environment variables and never pass an empty value.",
+      "The server restricts this capability to the current Workspace.",
       "</agent_hub_context>",
     ].join("\n");
   }
@@ -319,6 +323,11 @@ export class HubMcpService {
         return this.#startTask(context, args);
       case "hub_task_complete":
         return compactTask(this.taskBoard.complete({ id: this.#task(context, args.task_id).id }));
+      case "hub_task_delete": {
+        const task = this.#task(context, args.task_id);
+        this.taskBoard.remove({ id: task.id });
+        return { deleted: true, task: compactTask(task) };
+      }
       case "hub_task_attachment_read":
         return this.#readAttachment(context, args);
       case "hub_task_attachment_add":
@@ -362,6 +371,9 @@ export class HubMcpService {
   }
 
   #authorize(value) {
+    if (!String(value ?? "").trim()) {
+      throw new Error("missing Agent Hub context_token: copy the exact value from the current <agent_hub_context> developer block; do not search environment variables");
+    }
     const token = requiredText(value, "context token", 2_000);
     const separator = token.lastIndexOf(".");
     if (separator <= 0) throw new Error("invalid Agent Hub context capability");
@@ -451,7 +463,7 @@ export class HubMcpService {
     return {
       workspaceId: context.workspaceId,
       tasks: this.taskBoard.snapshot()
-        .filter((task) => task.workspaceId === context.workspaceId)
+        .filter((task) => this.#taskBelongsToWorkspace(task, context.workspaceId))
         .filter((task) => includeCompleted || task.status !== "done")
         .slice(0, boundedLimit)
         .map(compactTask),
@@ -462,15 +474,26 @@ export class HubMcpService {
     const id = requiredText(taskId, "task id", 300);
     const task = this.taskBoard.snapshot().find((candidate) => candidate.id === id);
     if (!task) throw new Error("task not found");
-    if (task.workspaceId !== context.workspaceId) throw new Error("task is outside the current Workspace");
+    if (!this.#taskBelongsToWorkspace(task, context.workspaceId)) {
+      throw new Error("task is outside the current Workspace");
+    }
     return task;
+  }
+
+  #taskBelongsToWorkspace(task, workspaceId) {
+    return task?.workspaceId === workspaceId
+      || task?.sourceDetails?.mcpWorkspaceId === workspaceId;
   }
 
   #createTask(context, { title, description = "" } = {}) {
     const normalizedTitle = requiredText(title, "task title", 10_000);
     const normalizedDescription = optionalText(description, 50_000) ?? "";
     const text = normalizedDescription ? `${normalizedTitle}\n\n${normalizedDescription}` : normalizedTitle;
-    const created = this.taskBoard.create({ text, source: "hub-mcp" });
+    const created = this.taskBoard.create({
+      text,
+      source: "hub-mcp",
+      sourceDetails: { mcpWorkspaceId: context.workspaceId },
+    });
     return compactTask(this.taskBoard.move({
       id: created.id,
       bucket: "workspace",
@@ -496,7 +519,7 @@ export class HubMcpService {
     const target = requiredText(destination, "task destination", 30);
     if (!["workspace", "backlog", "notes"].includes(target)) throw new Error("invalid task destination");
     if (beforeTaskId) {
-      const before = this.taskBoard.task(requiredText(beforeTaskId, "before task id", 300));
+      const before = this.#task(context, requiredText(beforeTaskId, "before task id", 300));
       const targetWorkspaceId = target === "workspace" ? context.workspaceId : null;
       if (before.bucket !== target || before.workspaceId !== targetWorkspaceId) {
         throw new Error("before task is outside the destination column");

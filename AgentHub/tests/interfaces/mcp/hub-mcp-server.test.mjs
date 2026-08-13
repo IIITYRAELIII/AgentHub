@@ -22,6 +22,8 @@ test("HubMcpServer serves MCP only through its secret loopback URL", async (cont
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26" } }),
   }).then((response) => response.json());
   assert.equal(initialized.result.serverInfo.name, "agent_hub");
+  assert.match(initialized.result.instructions, /exact non-empty context_token/u);
+  assert.match(initialized.result.instructions, /not an environment variable/u);
 
   const tools = await fetch(server.url, {
     method: "POST",

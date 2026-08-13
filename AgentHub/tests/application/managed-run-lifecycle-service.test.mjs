@@ -18,6 +18,7 @@ function harness({ provider = "codex" } = {}) {
     currentPreferences: () => ({
       model: "gpt", defaultModel: "gpt", reasoningEffort: "high", defaultReasoningEffort: "high", collaborationMode: "default",
     }),
+    normalizeCodexModel: (value) => String(value).toLowerCase(),
     modelLabel: (value) => value.toUpperCase(),
     claudeModelLabels: {}, reasoningLabels: { high: "High" },
     captureGitBaseline: async () => {
@@ -65,6 +66,14 @@ test("managed run lifecycle keeps Git baseline fallback for non-Codex providers"
   assert.deepEqual(run.gitBaseline, { repositories: [] });
 });
 
+test("managed run lifecycle canonicalizes a legacy Codex model label", async () => {
+  const { service } = harness();
+  const run = await service.begin("hello", { modelId: "GPT-5.6-Sol" });
+
+  assert.equal(run.modelId, "gpt-5.6-sol");
+  assert.equal(run.model, "GPT-5.6-SOL");
+});
+
 test("managed run lifecycle completes and removes the same run", async () => {
   const { service, taskRuns, events } = harness();
   const run = await service.begin("hello");
@@ -73,7 +82,18 @@ test("managed run lifecycle completes and removes the same run", async () => {
 
   assert.equal(taskRuns.size, 0);
   assert.equal(run.status, "completed");
-  assert.deepEqual(events, ["before", "approvals", "observer", "claude", "catalog", "sync-complete", "typing", "save", "after"]);
+  assert.deepEqual(events, ["before", "approvals", "observer", "claude", "sync-complete", "catalog", "save", "typing", "save", "after"]);
+});
+
+test("managed run lifecycle exposes terminal state before removing the run", async () => {
+  const { service, taskRuns, events } = harness();
+  const run = await service.begin("hello");
+
+  await service.markCompleted(run);
+
+  assert.equal(run.status, "completed");
+  assert.equal(taskRuns.forTask(run), run);
+  assert.ok(events.includes("sync-complete"));
 });
 
 test("managed run lifecycle keeps a Desktop-started run out of Telegram", async () => {

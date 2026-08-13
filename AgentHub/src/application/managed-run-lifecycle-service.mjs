@@ -21,7 +21,7 @@ export class ManagedRunLifecycleService {
   constructor(dependencies = {}) {
     for (const name of [
       "currentTarget", "findProject", "codexSettings", "currentPreferences",
-      "modelLabel", "captureGitBaseline", "persistTaskDiff", "syncRun",
+      "normalizeCodexModel", "modelLabel", "captureGitBaseline", "persistTaskDiff", "syncRun",
       "invalidateCatalog", "saveState", "scheduleProgressStart", "clearSelectedDiff",
       "clearApprovals", "pauseObservation", "pauseClaude", "stopTyping",
       "beforeCompletion", "afterCompletion",
@@ -46,9 +46,10 @@ export class ManagedRunLifecycleService {
 
     const savedCodexSettings = provider === "codex" ? d.codexSettings(target) ?? {} : {};
     const preferences = d.currentPreferences(provider);
-    const modelId = target?.modelId ?? (provider === "codex"
+    const requestedModelId = target?.modelId ?? (provider === "codex"
       ? savedCodexSettings.model ?? (targetThreadId === current.threadId ? preferences.model : preferences.defaultModel)
       : preferences.model);
+    const modelId = provider === "codex" ? d.normalizeCodexModel(requestedModelId) : requestedModelId;
     const reasoningId = target?.reasoningId ?? (provider === "codex"
       ? savedCodexSettings.reasoningEffort
         ?? (targetThreadId === current.threadId ? preferences.reasoningEffort : preferences.defaultReasoningEffort)
@@ -101,17 +102,25 @@ export class ManagedRunLifecycleService {
   async complete(run) {
     if (!run) return;
     const d = this.#d;
+    await this.markCompleted(run);
+    d.taskRuns.remove(run);
+    if (!d.taskRuns.size) d.stopTyping();
+    await d.saveState();
+    await d.afterCompletion(run);
+  }
+
+  async markCompleted(run) {
+    if (!run || run.completionPrepared === true) return;
+    const d = this.#d;
+    run.completionPrepared = true;
     await d.beforeCompletion(run);
     d.clearApprovals(run);
     d.pauseObservation(run);
     d.pauseClaude(run);
-    d.taskRuns.remove(run);
-    d.invalidateCatalog();
     run.status = "completed";
     run.process = null;
     d.syncRun(run, { active: false });
-    if (!d.taskRuns.size) d.stopTyping();
+    d.invalidateCatalog();
     await d.saveState();
-    await d.afterCompletion(run);
   }
 }

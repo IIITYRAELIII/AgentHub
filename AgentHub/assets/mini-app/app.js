@@ -2182,23 +2182,15 @@ function renderStreamTabs() {
     : "Порядок по последней активности. Переключить на ручной порядок.";
   const orderToggle = el("button", {
     type: "button",
-    class: "stream-tab stream-tab-order",
+    class: "stream-order-toggle",
     "data-action": "stream-order-toggle",
     "data-order-mode": streamOrderMode,
     title: orderToggleTitle,
     "aria-label": orderToggleTitle,
-  }, [el("span", { class: "stream-tab-card" }, [
-    el("span", {
-      class: "stream-order-icon stream-order-icon-activity",
-      "aria-hidden": "true",
-      text: "◷",
-    }),
-    el("span", {
-      class: "stream-order-icon stream-order-icon-manual",
-      "aria-hidden": "true",
-      text: "↕",
-    }),
-  ])]);
+  }, [el("span", {
+    class: `stream-order-icon stream-order-icon-${streamOrderMode}`,
+    "aria-hidden": "true",
+  })]);
   const tabs = ordered.map((stream) => {
     const task = representativeStreamTask(stream);
     const streamName = streamDisplayName(stream, streams.length);

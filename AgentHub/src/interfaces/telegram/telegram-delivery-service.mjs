@@ -360,6 +360,7 @@ export class TelegramDeliveryService {
     deliver,
     silent = false,
     complete = true,
+    refreshDiff = true,
   } = {}) {
     run.finalizing = true;
     await this.deliveryOutbox.discard({ supersedeKey: this.progressOutboxKey(run) }).catch((error) => {
@@ -367,9 +368,11 @@ export class TelegramDeliveryService {
     });
     this.rememberLastMessage(run, answer);
     if (run?.turnId) this.rememberLastSeenTurn(run, run.turnId);
-    await this.refreshTaskDiff(run).catch((error) => {
-      this.logger.error(`Cannot refresh final diff for task ${run?.threadId ?? run?.id ?? "unknown"}:`, error.message);
-    });
+    if (refreshDiff) {
+      await this.refreshTaskDiff(run).catch((error) => {
+        this.logger.error(`Cannot refresh final diff for task ${run?.threadId ?? run?.id ?? "unknown"}:`, error.message);
+      });
+    }
     let deliveryResult = null;
     const deliveryRequested = deliver ?? (run?.telegramDeliveryRequested !== false);
     if (deliveryRequested) {
