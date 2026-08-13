@@ -285,6 +285,13 @@ function releaseChangeFiles(values) {
     .filter((value) => value && !value.includes("\0")))].slice(0, 500);
 }
 
+function sharedReleaseChangelog(projectRoot, file) {
+  const normalizedRoot = String(projectRoot ?? "").trim().replaceAll("\\", "/").replace(/\/+$/u, "").toLowerCase();
+  const normalizedFile = String(file ?? "").trim().replaceAll("\\", "/").replace(/^\.\//u, "").toLowerCase();
+  return normalizedFile === "utilities/changelog.md"
+    || (normalizedRoot.endsWith("/utilities") && normalizedFile === "changelog.md");
+}
+
 function mcpOperationFromRow(row) {
   if (!row) return null;
   let result = null;
@@ -475,19 +482,21 @@ export class WorkspaceCatalogStore {
 
   recordReleaseChange({
     provider, threadId, turnId, projectRoot = "", summary = "", changedFiles = [], diffHash = "",
+    status = "draft",
   } = {}) {
     const identity = normalizedThreadIdentity({ provider, threadId });
     const resolved = this.resolveThread(identity);
     const normalizedTurnId = safeIdentifier(turnId, "turn id");
     const files = releaseChangeFiles(changedFiles);
     if (!resolved || !files.length) return null;
+    const normalizedStatus = releaseChangeStatus(status);
     const nowMs = this.#nowMs();
     return this.#transaction(() => {
       this.#database.prepare(`
       INSERT INTO hub_release_changes (
         id, workspace_id, stream_id, provider, provider_thread_id, turn_id,
         project_root, summary, files_json, diff_hash, status, created_at_ms, updated_at_ms
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(provider, provider_thread_id, turn_id) DO UPDATE SET
         workspace_id = excluded.workspace_id,
         stream_id = excluded.stream_id,
@@ -495,12 +504,16 @@ export class WorkspaceCatalogStore {
         summary = excluded.summary,
         files_json = excluded.files_json,
         diff_hash = excluded.diff_hash,
+        status = CASE
+          WHEN hub_release_changes.status = 'draft' THEN excluded.status
+          ELSE hub_release_changes.status
+        END,
         updated_at_ms = excluded.updated_at_ms
       `).run(
         this.#idFactory(), resolved.workspaceId, resolved.streamId,
         identity.provider, identity.threadId, normalizedTurnId,
         String(projectRoot ?? "").trim(), String(summary ?? "").trim().slice(0, 500),
-        JSON.stringify(files), String(diffHash ?? "").trim().slice(0, 128), nowMs, nowMs,
+        JSON.stringify(files), String(diffHash ?? "").trim().slice(0, 128), normalizedStatus, nowMs, nowMs,
       );
       const change = this.releaseChange({ ...identity, turnId: normalizedTurnId });
       this.recordWorkspaceEvent({
@@ -562,6 +575,7 @@ export class WorkspaceCatalogStore {
     const ownersByFile = new Map();
     for (const change of changes) {
       for (const file of change.files) {
+        if (sharedReleaseChangelog(change.projectRoot, file)) continue;
         const projectRoot = change.projectRoot.replaceAll("\\", "/").replace(/\/+$/u, "");
         const key = `${projectRoot}\0${file}`;
         const owners = ownersByFile.get(key) ?? { projectRoot: change.projectRoot, file, changes: [] };

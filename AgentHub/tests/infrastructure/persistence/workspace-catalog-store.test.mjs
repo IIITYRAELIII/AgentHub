@@ -131,11 +131,11 @@ test("Workspace release registry keeps ownership, readiness and file conflicts",
   });
   const repeated = store.recordReleaseChange({
     provider: "codex", threadId: "one", turnId: "turn-one", summary: "First updated",
-    changedFiles: ["AgentHub/app.js"], diffHash: "updated",
+    changedFiles: ["AgentHub/app.js"], diffHash: "updated", status: "ready",
   });
   assert.equal(repeated.id, first.id);
+  assert.equal(repeated.status, "ready");
   assert.equal(store.releaseChanges(workspace.id).length, 1);
-  store.updateReleaseChangeStatus(first.id, "ready");
   store.recordReleaseChange({
     provider: "codex", threadId: "one", turnId: "turn-one", summary: "Observed again",
     changedFiles: ["AgentHub/app.js"], diffHash: "again",
@@ -243,6 +243,30 @@ test("Release registry allows one Stream to own the same file across ready turns
     });
     store.updateReleaseChangeStatus(change.id, "ready");
   }
+  assert.deepEqual(store.releasePlan(workspace.id).conflicts, []);
+});
+
+test("Release registry does not treat the shared Utilities changelog as owned source", async (t) => {
+  const store = await fixture(t);
+  const workspace = store.createWorkspace({ name: "Agent HUB" });
+  const firstStream = store.createStream({ workspaceId: workspace.id, name: "One" });
+  const secondStream = store.createStream({ workspaceId: workspace.id, name: "Two" });
+  store.bindThread({ provider: "codex", threadId: "one", streamId: firstStream.id });
+  store.bindThread({ provider: "codex", threadId: "two", streamId: secondStream.id });
+  for (const [threadId, turnId, source] of [
+    ["one", "turn-one", "AgentHub/one.mjs"],
+    ["two", "turn-two", "AgentHub/two.mjs"],
+  ]) {
+    store.recordReleaseChange({
+      provider: "codex",
+      threadId,
+      turnId,
+      projectRoot: "D:/VSC_Tyrael",
+      changedFiles: [source, "Utilities/CHANGELOG.md"],
+      status: "ready",
+    });
+  }
+
   assert.deepEqual(store.releasePlan(workspace.id).conflicts, []);
 });
 

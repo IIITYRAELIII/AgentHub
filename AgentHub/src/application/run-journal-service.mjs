@@ -150,6 +150,9 @@ export class RunJournalService {
           projectRoot: project.path,
           summary: fields.title || body,
           changedFiles: completion.changedFiles,
+          status: String(completion.status ?? "").trim().toLowerCase() === "completed"
+            ? "ready"
+            : "blocked",
           diffHash: completion.diff
             ? createHash("sha256").update(String(completion.diff)).digest("hex")
             : "",

@@ -5,9 +5,20 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 
+export class WranglerDependencyError extends Error {}
+
 function packageVersion(root) {
   const manifest = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"));
   return String(manifest.devDependencies?.wrangler ?? "").trim();
+}
+
+function lockedWrangler(root) {
+  const lock = JSON.parse(readFileSync(path.join(root, "package-lock.json"), "utf8"));
+  const entry = lock.packages?.["node_modules/wrangler"];
+  return {
+    version: String(entry?.version ?? "").trim(),
+    integrity: String(entry?.integrity ?? "").trim(),
+  };
 }
 
 function wranglerCandidate(root) {
@@ -67,10 +78,58 @@ export function resolveWrangler({
     const installedVersion = String(JSON.parse(readFileSync(installedManifest, "utf8")).version ?? "").trim();
     if (installedVersion === expectedVersion) return entry;
   }
-  throw new Error(
+  throw new WranglerDependencyError(
     `Не найден локальный wrangler ${expectedVersion}. Выполните npm install в AgentHub `
       + "или задайте AGENT_HUB_DEPENDENCY_ROOT с уже установленной закреплённой версией.",
   );
+}
+
+function installLockedDependencies({ root = ROOT, environment = process.env } = {}) {
+  const npmCli = String(environment.npm_execpath ?? "").trim();
+  const command = npmCli
+    ? { executable: process.execPath, args: [npmCli, "ci", "--ignore-scripts"] }
+    : process.platform === "win32"
+      ? {
+          executable: environment.ComSpec || "cmd.exe",
+          args: ["/d", "/s", "/c", "npm", "ci", "--ignore-scripts"],
+        }
+      : { executable: "npm", args: ["ci", "--ignore-scripts"] };
+  return new Promise((resolve, reject) => {
+    const child = spawn(command.executable, command.args, {
+      cwd: root,
+      env: environment,
+      shell: false,
+      stdio: "inherit",
+      windowsHide: true,
+    });
+    child.once("error", reject);
+    child.once("exit", (code, signal) => {
+      if (code === 0) resolve();
+      else reject(new Error(`npm ci завершён с ${signal ?? `кодом ${code}`}`));
+    });
+  });
+}
+
+export async function ensureWrangler(options = {}) {
+  try {
+    return resolveWrangler(options);
+  } catch (error) {
+    if (!(error instanceof WranglerDependencyError)) throw error;
+  }
+  const root = options.root ?? ROOT;
+  const expectedVersion = packageVersion(root);
+  const locked = lockedWrangler(root);
+  if (locked.version !== expectedVersion || !locked.integrity) {
+    throw new Error(
+      `package-lock.json не закрепляет wrangler ${expectedVersion} с integrity; автоматическая установка остановлена.`,
+    );
+  }
+  console.log(`\n==> Подготовка закреплённого wrangler ${expectedVersion}`);
+  await (options.install ?? installLockedDependencies)({
+    root,
+    environment: options.environment ?? process.env,
+  });
+  return resolveWrangler(options);
 }
 
 export function runWrangler(args = process.argv.slice(2), options = {}) {

@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 
 import { parseArguments, publicationSteps, publishAll } from "../../publish-all.mjs";
 import { classifyPublicationChanges, parseChangedArguments, publishChanged } from "../../publish-changed.mjs";
-import { detectGitCommonDirectory, resolveWrangler } from "../../wrangler-runner.mjs";
+import { detectGitCommonDirectory, ensureWrangler, resolveWrangler } from "../../wrangler-runner.mjs";
 import {
   assertCleanPublicationTree,
   assertCurrentPublicationRevision,
@@ -209,6 +209,7 @@ test("selective publication can request the full Agent Hub test suite explicitly
     writeState: async () => {},
     revision: async () => "head",
     diff: async () => ["AgentHub/assets/web-app/app.js"],
+    ensureWorkerDependency: async () => {},
   });
   assert.ok(labels.includes("Полные тесты Agent Hub"));
   assert.ok(!labels.includes("Контракт интерфейсов Agent Hub"));
@@ -224,6 +225,7 @@ test("selective publication records the exact published revision", async () => {
     writeState: async (value) => { written = value; },
     revision: async () => "head",
     diff: async () => ["AgentHub/assets/web-app/app.js"],
+    ensureWorkerDependency: async () => {},
   });
   assert.equal(result.revision, "head");
   assert.equal(written.revision, "head");
@@ -274,6 +276,7 @@ test("selective frontend publication records state without restarting Hub", asyn
     writeState: async () => events.push("record-publication"),
     revision: async () => "head",
     diff: async () => ["AgentHub/assets/web-app/app.js"],
+    ensureWorkerDependency: async () => {},
   });
   assert.ok(events.includes("record-publication"));
   assert.ok(!events.includes("restart-server"));
@@ -315,6 +318,7 @@ test("every validation failure stops publication before deployment", async () =>
         restart: async () => {
           restartCalled = true;
         },
+        ensureWorkerDependency: async () => {},
       }),
       /synthetic validation failure/u,
     );
@@ -379,6 +383,83 @@ test("clean worktrees reuse the pinned Wrangler from the main worktree", () => {
   } finally {
     fs.rmSync(temporary, { recursive: true, force: true });
   }
+});
+
+test("publication restores the exact locked Wrangler before validation", async () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "agent-hub-wrangler-preflight-"));
+  try {
+    const root = path.join(temporary, "AgentHub");
+    fs.mkdirSync(root, { recursive: true });
+    fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({
+      devDependencies: { wrangler: "4.115.0" },
+    }));
+    fs.writeFileSync(path.join(root, "package-lock.json"), JSON.stringify({
+      packages: {
+        "node_modules/wrangler": {
+          version: "4.115.0",
+          integrity: "sha512-test",
+        },
+      },
+    }));
+    let installs = 0;
+    const entry = await ensureWrangler({
+      root,
+      environment: {},
+      gitCommonDirectory: "",
+      install: async () => {
+        installs += 1;
+        const installedRoot = path.join(root, "node_modules", "wrangler");
+        fs.mkdirSync(path.join(installedRoot, "bin"), { recursive: true });
+        fs.writeFileSync(path.join(installedRoot, "package.json"), JSON.stringify({ version: "4.115.0" }));
+        fs.writeFileSync(path.join(installedRoot, "bin", "wrangler.js"), "");
+      },
+    });
+    assert.equal(installs, 1);
+    assert.equal(entry, path.join(root, "node_modules", "wrangler", "bin", "wrangler.js"));
+  } finally {
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
+test("selective publication resumes after the last successful stage", async () => {
+  let savedCheckpoint = null;
+  const checkpoint = {
+    read: async () => savedCheckpoint,
+    write: async (value) => { savedCheckpoint = value; },
+    clear: async () => { savedCheckpoint = null; },
+  };
+  const common = {
+    restart: async () => assert.fail("restart must be skipped"),
+    readState: async () => null,
+    writeState: async () => {},
+    revision: async () => "head",
+    diff: async () => ["AgentHub/assets/web-app/app.js"],
+    ensureWorkerDependency: async () => {},
+    checkpoint,
+  };
+  const firstRun = [];
+  await assert.rejects(
+    publishChanged(["--from", "base", "--skip-restart"], {
+      ...common,
+      run: async (step) => {
+        firstRun.push(step.label);
+        if (step.label === "Публикация Mini App Worker") throw new Error("deployment failed");
+      },
+    }),
+    /deployment failed/u,
+  );
+  const resumedRun = [];
+  await publishChanged(["--from", "base", "--skip-restart"], {
+    ...common,
+    run: async (step) => resumedRun.push(step.label),
+  });
+  assert.ok(firstRun.includes("Unit-тесты Agent Hub"));
+  assert.deepEqual(resumedRun, [
+    "Публикация Mini App Worker",
+    "Сборка runtime-релиза",
+    "Активация runtime-релиза",
+  ]);
+  assert.equal(savedCheckpoint, null);
 });
 
 test("clean worktrees resolve the common Git directory without invoking Git", () => {

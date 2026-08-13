@@ -98,6 +98,14 @@ test("message delivery keeps the stable Stream identity when a Thread binding is
   );
 });
 
+test("desktop running state ignores a retained completed run object", () => {
+  assert.match(
+    hubClientSource,
+    /agentHub\.setRunning\(stableTaskId, Boolean\(task\.running\)\)/u,
+  );
+  assert.doesNotMatch(hubClientSource, /Boolean\(task\.run \|\| task\.running\)/u);
+});
+
 test("response annotation envelopes become structured user messages", () => {
   const raw = [
     "# Response annotations:",

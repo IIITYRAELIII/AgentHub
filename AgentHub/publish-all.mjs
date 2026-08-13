@@ -3,6 +3,11 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 import { callDesktopControl } from "./desktop-control.mjs";
+import { ensureWrangler } from "./wrangler-runner.mjs";
+import {
+  publicationCheckpointStore,
+  runPublicationSteps,
+} from "./src/infrastructure/persistence/publication-checkpoint.mjs";
 import { withPublicationLock } from "./src/infrastructure/process/publication-lock.mjs";
 import {
   assertCleanPublicationTree,
@@ -108,12 +113,27 @@ export async function publishAll(args = process.argv.slice(2), {
     publishedAt: new Date().toISOString(),
     mode: "full",
   }),
+  revision = currentRevision,
+  ensureWorkerDependency = ensureWrangler,
+  checkpoint = null,
 } = {}) {
   return exclusive(async () => {
     await before();
     const options = parseArguments(args);
-    for (const step of publicationSteps(options)) await run(step);
+    const head = checkpoint ? await revision({ cwd: REPOSITORY_ROOT }) : null;
+    if (!options.skipWorker) await ensureWorkerDependency();
+    const steps = publicationSteps(options);
+    await runPublicationSteps(steps, {
+      run,
+      checkpoint,
+      identity: {
+        mode: "full",
+        revision: head,
+        labels: steps.map((step) => step.label),
+      },
+    });
     await record();
+    if (checkpoint) await checkpoint.clear();
     if (!options.skipRestart) {
       console.log("\n==> Запрос безопасного перезапуска Agent Hub");
       const result = await restart("restart-server");
@@ -126,6 +146,7 @@ export async function publishAll(args = process.argv.slice(2), {
 const invokedFile = process.argv[1] ? path.resolve(process.argv[1]) : "";
 if (invokedFile === fileURLToPath(import.meta.url)) {
   publishAll(process.argv.slice(2), {
+    checkpoint: publicationCheckpointStore(),
     before: async () => {
       await assertCleanPublicationTree({ cwd: REPOSITORY_ROOT });
       await assertCurrentPublicationRevision({ cwd: REPOSITORY_ROOT });

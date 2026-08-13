@@ -3518,7 +3518,7 @@ html[data-surface="mobile"]
 
 .activity-streams {
   display: flex;
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   flex-direction: column;
   min-height: 0;
 }

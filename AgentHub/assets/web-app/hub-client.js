@@ -1296,7 +1296,7 @@ function applySnapshot(snapshot) {
   for (const task of snapshot.tasks ?? []) {
     const stableTaskId = taskId(task.provider, task.threadId, task.streamId);
     agentHub.setLive(stableTaskId, updateLiveMessage(stableTaskId, task));
-    agentHub.setRunning(stableTaskId, Boolean(task.run || task.running));
+    agentHub.setRunning(stableTaskId, Boolean(task.running));
   }
   for (const task of snapshot.tasks ?? []) {
     renderTaskQueue(taskId(task.provider, task.threadId, task.streamId), snapshot);

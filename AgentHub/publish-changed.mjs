@@ -3,7 +3,12 @@ import path from "node:path";
 
 import { callDesktopControl } from "./desktop-control.mjs";
 import { npmStep, publicationSteps, runStep } from "./publish-all.mjs";
+import { ensureWrangler } from "./wrangler-runner.mjs";
 import { withPublicationLock } from "./src/infrastructure/process/publication-lock.mjs";
+import {
+  publicationCheckpointStore,
+  runPublicationSteps,
+} from "./src/infrastructure/persistence/publication-checkpoint.mjs";
 import {
   assertCleanPublicationTree,
   assertCurrentPublicationRevision,
@@ -162,6 +167,8 @@ export async function publishChanged(args = process.argv.slice(2), {
   writeState = writePublicationState,
   revision = currentRevision,
   diff = changedFiles,
+  ensureWorkerDependency = ensureWrangler,
+  checkpoint = null,
 } = {}) {
   return exclusive(async () => {
     await before();
@@ -173,9 +180,22 @@ export async function publishChanged(args = process.argv.slice(2), {
     const plan = classifyPublicationChanges(files);
     if (options.fullTests) plan.fullTests = true;
     if (plan.unknown.length) console.warn(`Неизвестные пути требуют полной публикации: ${plan.unknown.join(", ")}`);
-    for (const step of focusedSteps(plan)) await run(step);
     const head = await revision({ cwd: REPOSITORY_ROOT });
+    if (plan.worker) await ensureWorkerDependency();
+    const steps = focusedSteps(plan);
+    await runPublicationSteps(steps, {
+      run,
+      checkpoint,
+      identity: {
+        mode: "changed",
+        from,
+        revision: head,
+        files,
+        labels: steps.map((step) => step.label),
+      },
+    });
     await writeState({ revision: head, publishedAt: new Date().toISOString(), files, plan });
+    if (checkpoint) await checkpoint.clear();
     if (plan.runtimeRestart && !options.skipRestart) await restart("restart-server");
     console.log(`\nВыборочная публикация завершена: ${files.length} изменённых файлов.`);
     return { files, plan, revision: head };
@@ -185,6 +205,7 @@ export async function publishChanged(args = process.argv.slice(2), {
 const invokedFile = process.argv[1] ? path.resolve(process.argv[1]) : "";
 if (invokedFile === fileURLToPath(import.meta.url)) {
   publishChanged(process.argv.slice(2), {
+    checkpoint: publicationCheckpointStore(),
     before: async () => {
       await assertCleanPublicationTree({ cwd: REPOSITORY_ROOT });
       await assertCurrentPublicationRevision({ cwd: REPOSITORY_ROOT });

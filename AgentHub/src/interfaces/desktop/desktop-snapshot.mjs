@@ -265,7 +265,8 @@ export function createDesktopSnapshotFactory({
       : null;
     const context = desktopContextSnapshot(entry.threadId, run?.turnId);
     const internalMaintenanceObserver = isInternalMaintenanceObserver(run, context);
-    const visibleRun = internalMaintenanceObserver ? null : run;
+    const runActive = taskRunIsActive(run);
+    const visibleRun = internalMaintenanceObserver || !runActive ? null : run;
     const lastMessage = tasks.savedLastMessage(task);
     const unread = Boolean(
       accountId
@@ -299,7 +300,7 @@ export function createDesktopSnapshotFactory({
       selected: tasks.entryIsSelected(entry, selection.selectedTask()),
       running: internalMaintenanceObserver
         ? false
-        : Boolean(taskRunIsActive(visibleRun) || entry.running),
+        : (run ? runActive : Boolean(entry.running)),
       activityUnknown: entry.activityUnknown === true,
       executionOwner: visibleRun?.executionOwner ?? entry.executionOwner ?? null,
       runtime: visibleRun?.appServer ?? (entry.executionOwner

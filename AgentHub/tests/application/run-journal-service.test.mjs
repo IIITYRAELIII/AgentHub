@@ -124,7 +124,19 @@ test("RunJournalService registers changed files in the Workspace release registr
   const release = calls.find(([name]) => name === "release")?.[1];
   assert.equal(release.summary, "Implemented release registry");
   assert.deepEqual(release.changedFiles, ["AgentHub/app.js"]);
+  assert.equal(release.status, "ready");
   assert.match(release.diffHash, /^[a-f0-9]{64}$/u);
+
+  await service.projectTurn({
+    provider: "codex",
+    projectRoot: "C:/workspace",
+    threadId: "thread",
+    turnId: "failed-turn",
+    changedFiles: ["AgentHub/failure.js"],
+    status: "failed",
+  }, { title: "Failed change" });
+  const failedRelease = calls.filter(([name]) => name === "release").at(-1)[1];
+  assert.equal(failedRelease.status, "blocked");
 });
 
 test("RunJournalService initializes projection before retiring verified legacy storage", async () => {

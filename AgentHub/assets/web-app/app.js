@@ -154,8 +154,6 @@ const telegramFullscreenButton = document.querySelector("[data-telegram-fullscre
 const claudeGroupToggle = document.querySelector("[data-claude-group-toggle]");
 const streamStatusFillToggle = document.querySelector("[data-stream-status-fill-toggle]");
 const streamStatusEffectSelect = document.querySelector("[data-stream-status-effect-select]");
-const activityPeriodHours = document.querySelector("[data-activity-period-hours]");
-const activityPeriodMinutes = document.querySelector("[data-activity-period-minutes]");
 const activityRecentHours = document.querySelector("[data-activity-recent-hours]");
 const streamActivityDirectionRow = document.querySelector("[data-stream-activity-direction-row]");
 const streamActivityDirectionSelect = document.querySelector("[data-stream-activity-direction-select]");
@@ -746,19 +744,8 @@ function normalizedActivityRecentMinutes(value) {
 
 function applyActivityRecentPeriod(value, { update = false } = {}) {
   activityRecentPeriodMinutes = normalizedActivityRecentMinutes(value);
-  if (activityPeriodHours) activityPeriodHours.value = String(Math.floor(activityRecentPeriodMinutes / 60));
-  if (activityPeriodMinutes) activityPeriodMinutes.value = String(activityRecentPeriodMinutes % 60);
   if (activityRecentHours) activityRecentHours.value = String(activityRecentPeriodMinutes / 60);
   if (update) renderActivityRail();
-}
-
-function applyActivityRecentPeriodInputs() {
-  const hours = Math.max(0, Number(activityPeriodHours?.value) || 0);
-  const minutes = Math.max(0, Number(activityPeriodMinutes?.value) || 0);
-  const value = normalizedActivityRecentMinutes(hours * 60 + minutes);
-  applyActivityRecentPeriod(value, { update: true });
-  state.selection.activityRecentMinutes = value;
-  emit("selection:set", { key: "activityRecentMinutes", value });
 }
 
 function applyActivityRecentHoursInput() {
@@ -900,8 +887,6 @@ streamStatusFillToggle?.addEventListener("change", () => {
 streamStatusEffectSelect?.addEventListener("change", () => {
   applyStreamStatusEffect(streamStatusEffectSelect.value, { persist: true });
 });
-activityPeriodHours?.addEventListener("change", applyActivityRecentPeriodInputs);
-activityPeriodMinutes?.addEventListener("change", applyActivityRecentPeriodInputs);
 activityRecentHours?.addEventListener("change", applyActivityRecentHoursInput);
 streamActivityDirectionSelect?.addEventListener("change", () => {
   applyStreamActivityDirection(streamActivityDirectionSelect.value, { persist: true, update: true });

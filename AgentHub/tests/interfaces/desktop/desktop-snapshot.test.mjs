@@ -541,12 +541,12 @@ test("desktop snapshot binds a transient selected task to its canonical Workspac
 test("desktopTaskSnapshot does not expose a retained completed run as active", () => {
   const { desktopTaskSnapshot, entry, state } = fixture();
   state.run.status = "completed";
-  entry.running = false;
+  entry.running = true;
 
   const snapshot = desktopTaskSnapshot(entry);
 
   assert.equal(snapshot.running, false);
-  assert.equal(snapshot.run.status, "completed");
+  assert.equal(snapshot.run, null);
 });
 
 test("an inactive catalog entry without a run stays inactive", () => {
