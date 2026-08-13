@@ -220,6 +220,7 @@ export function createDesktopCommandWiring({
       switchProject,
       snapshot: services.snapshot,
       reasoningEfforts: models.reasoningEfforts,
+      claudeReasoningEfforts: models.claudeReasoningEfforts,
       collaborationModes: models.collaborationModes,
     },
     application: {

@@ -808,6 +808,24 @@ function isConnectionFailure(error) {
   return error?.agentHubConnectionFailure === true;
 }
 
+function markCommandRejected(error) {
+  const failure = error && typeof error === "object" && typeof error.message === "string"
+    ? error
+    : new Error(String(error ?? "Команда Agent Hub отклонена"));
+  Object.defineProperty(failure, "agentHubCommandRejected", {
+    configurable: true,
+    enumerable: false,
+    value: true,
+  });
+  return failure;
+}
+
+function messageSendDefinitelyRejected(error) {
+  return error?.agentHubCommandRejected === true
+    || /^(?:Введите сообщение|Сообщение слишком длинное|Сначала выберите|Неизвестный режим|Идентификатор сообщения)/iu
+      .test(String(error?.message ?? error ?? "").trim());
+}
+
 function looksLikeConnectionFailure(error) {
   const code = String(error?.code ?? "").trim().toUpperCase();
   const message = String(error?.message ?? error ?? "").trim();
@@ -846,7 +864,9 @@ globalThis.AgentHubMessageLifecycle = Object.freeze({
   historicalAgentResponseVisible,
   liveCompletionTransition,
   liveMessageMatch,
+  markCommandRejected,
   markConnectionFailure,
+  messageSendDefinitelyRejected,
   mergeDeferredQueueEntries,
   mergeLiveMaintenance,
   mergeLiveUserMessages,

@@ -60,6 +60,8 @@ const activityRailToggle = document.querySelector("[data-activity-rail-toggle]")
 const activityRailCount = document.querySelector("[data-activity-rail-count]");
 const activityStreamList = document.querySelector("[data-activity-stream-list]");
 const activityStreamEmpty = document.querySelector("[data-activity-stream-empty]");
+const activityRecentList = document.querySelector("[data-activity-recent-list]");
+const activityRecentEmpty = document.querySelector("[data-activity-recent-empty]");
 const workspaceCardModal = document.querySelector("[data-workspace-card-modal]");
 const workspaceCardForm = document.querySelector("[data-workspace-card-form]");
 const workspaceCardTitle = document.querySelector("[data-workspace-card-title]");
@@ -147,6 +149,7 @@ const streamStatusFillToggle = document.querySelector("[data-stream-status-fill-
 const streamStatusEffectSelect = document.querySelector("[data-stream-status-effect-select]");
 const activityPeriodHours = document.querySelector("[data-activity-period-hours]");
 const activityPeriodMinutes = document.querySelector("[data-activity-period-minutes]");
+const activityRecentHours = document.querySelector("[data-activity-recent-hours]");
 const streamActivityDirectionRow = document.querySelector("[data-stream-activity-direction-row]");
 const streamActivityDirectionSelect = document.querySelector("[data-stream-activity-direction-select]");
 const usageUnitButtons = [...document.querySelectorAll("[data-usage-unit]")];
@@ -738,6 +741,7 @@ function applyActivityRecentPeriod(value, { update = false } = {}) {
   activityRecentPeriodMinutes = normalizedActivityRecentMinutes(value);
   if (activityPeriodHours) activityPeriodHours.value = String(Math.floor(activityRecentPeriodMinutes / 60));
   if (activityPeriodMinutes) activityPeriodMinutes.value = String(activityRecentPeriodMinutes % 60);
+  if (activityRecentHours) activityRecentHours.value = String(activityRecentPeriodMinutes / 60);
   if (update) renderActivityRail();
 }
 
@@ -745,6 +749,13 @@ function applyActivityRecentPeriodInputs() {
   const hours = Math.max(0, Number(activityPeriodHours?.value) || 0);
   const minutes = Math.max(0, Number(activityPeriodMinutes?.value) || 0);
   const value = normalizedActivityRecentMinutes(hours * 60 + minutes);
+  applyActivityRecentPeriod(value, { update: true });
+  state.selection.activityRecentMinutes = value;
+  emit("selection:set", { key: "activityRecentMinutes", value });
+}
+
+function applyActivityRecentHoursInput() {
+  const value = normalizedActivityRecentMinutes((Number(activityRecentHours?.value) || 0) * 60);
   applyActivityRecentPeriod(value, { update: true });
   state.selection.activityRecentMinutes = value;
   emit("selection:set", { key: "activityRecentMinutes", value });
@@ -884,6 +895,7 @@ streamStatusEffectSelect?.addEventListener("change", () => {
 });
 activityPeriodHours?.addEventListener("change", applyActivityRecentPeriodInputs);
 activityPeriodMinutes?.addEventListener("change", applyActivityRecentPeriodInputs);
+activityRecentHours?.addEventListener("change", applyActivityRecentHoursInput);
 streamActivityDirectionSelect?.addEventListener("change", () => {
   applyStreamActivityDirection(streamActivityDirectionSelect.value, { persist: true, update: true });
 });
@@ -1280,6 +1292,7 @@ const state = {
     model: [],
     modelOptionsByProvider: {},
     reasoning: [],
+    reasoningOptionsByProvider: {},
     mode: [],
     project: [],
   },
@@ -1853,10 +1866,11 @@ function renderTasks() {
   });
   taskList.replaceChildren();
   let visibleCount = visible.length;
-  const hasWorkspace = visible.some((task) => String(task.workspaceId ?? "").trim());
+  const workspaceTasks = visible.filter((task) => String(task.workspaceId ?? "").trim());
+  const hasWorkspace = workspaceTasks.length > 0;
   if (hasWorkspace) {
     const groups = new Map();
-    for (const task of visible) {
+    for (const task of workspaceTasks) {
       const key = workspaceKey(task);
       if (!groups.has(key)) groups.set(key, {
         id: key,
@@ -1867,9 +1881,7 @@ function renderTasks() {
       groups.get(key).tasks.push(task);
     }
     visibleCount = groups.size;
-    const orderedGroups = [...groups.values()].sort((left, right) => (
-      Number(left.kind === "system") - Number(right.kind === "system")
-    ));
+    const orderedGroups = window.AgentHubStreamTabs.orderWorkspaceGroups(groups.values());
     for (const group of orderedGroups) taskList.append(renderTaskWorkspaceItem(group));
   } else {
     for (const task of visible) taskList.append(renderTaskItem(task));
@@ -2010,9 +2022,8 @@ function activityStreamEntries(tasks) {
   const now = Date.now();
   const groups = new Map();
   for (const task of tasks) {
-    if (String(task?.workspaceName ?? "").trim() === "Other") continue;
     const kind = streamAttentionKind(task, now);
-    if (!kind) continue;
+    if (!kind || !window.AgentHubStreamTabs.includeTaskInActivityRail(task, kind)) continue;
     const key = `${workspaceKey(task)}\u0000${streamKey(task)}`;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(task);
@@ -2111,14 +2122,21 @@ function applyActivityRailState({ persist = false } = {}) {
 }
 
 function renderActivityRail() {
-  if (!activityStreamList || !activityRailCount || !activityStreamEmpty) return;
+  if (
+    !activityStreamList
+    || !activityRailCount
+    || !activityStreamEmpty
+    || !activityRecentList
+    || !activityRecentEmpty
+  ) return;
   const selectedWorkspaceId = String(currentTask()?.workspaceId ?? "").trim() || null;
   window.AgentHubTaskBoard?.setSelectedWorkspace(selectedWorkspaceId);
   const entries = activityStreamEntries(state.tasks);
-  const attentionCount = window.AgentHubStreamTabs.attentionStreamCount(entries);
-  activityRailCount.textContent = `Активно: ${attentionCount}`;
-  activityStreamEmpty.hidden = entries.length > 0;
-  activityStreamList.replaceChildren(...entries.map((task) => {
+  const sections = window.AgentHubStreamTabs.activityStreamSections(entries);
+  activityRailCount.textContent = `Активно: ${sections.active.length}`;
+  activityStreamEmpty.hidden = sections.active.length > 0;
+  activityRecentEmpty.hidden = sections.recent.length > 0;
+  const renderEntry = (task) => {
     const presentation = streamPresentation(task);
     const streamName = String(task.streamName || task.streamDisplayName || "").trim()
       || `Stream ${Math.max(1, Number(task.streamOrdinal) || 1)}`;
@@ -2149,7 +2167,9 @@ function renderActivityRail() {
         .filter(Boolean).join(". "),
       title,
     }, [renderStreamStatusCard(task, activityTitle, presentation)]);
-  }));
+  };
+  activityStreamList.replaceChildren(...sections.active.map(renderEntry));
+  activityRecentList.replaceChildren(...sections.recent.map(renderEntry));
   applyActivityRailState();
 }
 
@@ -2275,7 +2295,11 @@ function renderStreamTabs() {
     title: "Создать Stream и настроить будущий чат",
     "aria-label": "Создать Stream",
   }, [el("span", { class: "stream-tab-card" }, [
-    el("span", { class: "stream-tab-create-mark", text: "+" }),
+    window.AgentHubStreamTabs.createPhosphorIcon(
+      document,
+      "plus",
+      "stream-tab-create-mark",
+    ),
   ])]);
   if (window.AgentHubStreamTabs.streamCreationSide(streamOrderMode, streamActivityDirection) === "start") {
     tabs.unshift(createTab);
@@ -3742,13 +3766,6 @@ chatScroll.addEventListener("touchend", () => {
 
 chatScroll.addEventListener("touchcancel", resetHistoryPull);
 
-const knownBareFileExtensions = new Set([
-  "bsl", "c", "cfe", "cf", "cmd", "cpp", "cs", "csproj", "css", "docx", "epf", "erf",
-  "go", "h", "html", "ini", "java", "jpeg", "jpg", "js", "json", "jsx", "md", "mjs",
-  "pdf", "php", "png", "ps1", "py", "rb", "rs", "sh", "sql", "svg", "toml", "ts", "tsx",
-  "txt", "xml", "yaml", "yml",
-]);
-
 function currentFileLinkContext(task = currentTask()) {
   return {
     projectRoot: String(task?.projectRoot ?? "").trim(),
@@ -3775,44 +3792,17 @@ function normalizeWindowsPath(raw) {
   return `${match[1].toUpperCase()}:/${segments.join("/")}`;
 }
 
-function fileReferenceParts(raw) {
-  const source = String(raw ?? "").trim();
-  const value = source.startsWith("<") && source.endsWith(">")
-    ? source.slice(1, -1).trim()
-    : source;
-  if (!value || /^(?:https?|vscode):/iu.test(value)) return null;
-  const positioned = value.match(/^(?<file>.+):(?<line>[1-9][0-9]*):(?<column>[1-9][0-9]*)$/u)
-    ?? value.match(/^(?<file>.+):(?<line>[1-9][0-9]*)$/u);
-  const file = String(positioned?.groups?.file ?? value).trim();
-  const absolute = /^\/?[A-Za-z]:[\\/]/u.test(file);
-  const name = file.replaceAll("\\", "/").split("/").at(-1) ?? "";
-  const extension = name.match(/\.([^./\\\s:]+)$/u)?.[1]?.toLowerCase() ?? "";
-  if (!file || (!absolute && !file.includes("/") && !file.includes("\\")
-    && !knownBareFileExtensions.has(extension))) return null;
-  return {
-    file,
-    line: Number(positioned?.groups?.line) || 0,
-    column: Number(positioned?.groups?.column) || 0,
-  };
-}
-
 function desktopFileLink(raw, fileContext = currentFileLinkContext()) {
   if (!(vscodeMode || surface === "desktop")) return null;
-  const reference = fileReferenceParts(raw);
+  const reference = resourceInteractions.fileReferenceParts(raw);
   if (!reference) return null;
-  const root = normalizeWindowsPath(fileContext?.projectRoot);
-  const base = normalizeWindowsPath(fileContext?.basePath) || root;
+  const base = normalizeWindowsPath(fileContext?.basePath)
+    || normalizeWindowsPath(fileContext?.projectRoot);
   const absolute = /^\/?[A-Za-z]:[\\/]/u.test(reference.file);
   const editorPath = normalizeWindowsPath(absolute
     ? reference.file
     : `${base}/${reference.file}`);
   if (!editorPath) return null;
-  if (root) {
-    const normalizedRoot = root.toLowerCase();
-    const normalizedEditorPath = editorPath.toLowerCase();
-    if (normalizedEditorPath !== normalizedRoot
-      && !normalizedEditorPath.startsWith(`${normalizedRoot}/`)) return null;
-  }
   const location = reference.line
     ? `:${reference.line}${reference.column ? `:${reference.column}` : ""}`
     : "";
@@ -3828,14 +3818,14 @@ function markdownLink(raw, fileContext = currentFileLinkContext()) {
   const value = source.startsWith("<") && source.endsWith(">")
     ? source.slice(1, -1).trim()
     : source;
-  const localLink = desktopFileLink(value, fileContext);
-  if (localLink) return localLink;
-  try {
-    const url = new URL(value, window.location.href);
-    return ["http:", "https:"].includes(url.protocol) ? { href: url.href } : null;
-  } catch {
-    return null;
+  if (/^https?:\/\//iu.test(value)) {
+    try {
+      return { href: new URL(value).href };
+    } catch {
+      return null;
+    }
   }
+  return desktopFileLink(value, fileContext);
 }
 
 function codexFileCitation(raw) {
@@ -4212,15 +4202,13 @@ function renderMessage(message, { readOnly = false, task = currentTask() } = {})
 
 document.addEventListener("click", (event) => {
   const link = event.target.closest("a[data-agent-hub-local-link]");
-  if (!link || !vscodeMode) return;
+  if (!link) return;
   event.preventDefault();
-  emit("resource:open", {
-    resource: resourceInteractions.linkResource({
-      href: link.href,
-      localPath: link.dataset.agentHubLocalLink,
-      name: link.textContent,
-    }),
-  });
+  openResourceContextMenu(event, resourceInteractions.linkResource({
+    href: link.href,
+    localPath: link.dataset.agentHubLocalLink,
+    name: link.textContent,
+  }));
 });
 
 function renderResponseAnnotations(body, message) {
@@ -4997,8 +4985,8 @@ annotationsBox.addEventListener("input", (event) => {
  * агента — так фрагмент однозначно относится к конкретному ответу. */
 function selectedAgentText() {
   const selection = window.getSelection();
-  const text = selection?.toString().trim();
-  if (!text || selection.rangeCount === 0) return "";
+  const text = selection?.toString() || "";
+  if (!text.trim() || selection.rangeCount === 0) return "";
   const container = selection.getRangeAt(0).commonAncestorContainer;
   const host = (container.nodeType === 1 ? container : container.parentElement)
     ?.closest?.("[data-role='agent'] .msg-body");
@@ -5083,10 +5071,12 @@ document.addEventListener("contextmenu", (event) => {
 });
 
 annotationContextMenu.addEventListener("click", (event) => {
-  if (!event.target.closest("[data-action='annotate-selection']")) return;
+  const action = event.target.closest("[data-action]")?.dataset.action;
+  if (!["copy-selection", "annotate-selection"].includes(action)) return;
   const quote = pendingAnnotationQuote;
   closeAnnotationContextMenu();
-  addAnnotation(quote);
+  if (action === "annotate-selection") addAnnotation(quote);
+  else emit("clipboard:write", { text: quote });
 });
 
 document.addEventListener("pointerdown", (event) => {
@@ -5124,6 +5114,7 @@ function openResourceContextMenu(event, resource) {
 }
 
 document.addEventListener("contextmenu", (event) => {
+  if (event.defaultPrevented) return;
   const attachment = event.target.closest?.(".attachment-file, .board-task-attachment")?.__agentHubResource;
   const link = event.target.closest?.("a[href]");
   const resource = attachment ?? (link ? resourceInteractions.linkResource({
@@ -5561,7 +5552,8 @@ function renderDialogSettings() {
       ? state.options.provider
       : [{ value: task?.provider ?? "", label: task?.agentLabel || providerLabels[task?.provider] || "—" }],
     model: state.options.modelOptionsByProvider?.[effectiveProvider] ?? state.options.model,
-    reasoning: state.options.reasoning,
+    reasoning: state.options.reasoningOptionsByProvider?.[effectiveProvider]
+      ?? state.options.reasoning,
     mode: state.options.mode,
   };
   for (const [group, values] of Object.entries(optionGroups)) {
@@ -5623,6 +5615,10 @@ dialogSettings.addEventListener("click", (event) => {
       const models = state.options.modelOptionsByProvider?.[value] ?? [];
       if (!models.some((option) => option.value === task.streamSettings.model)) {
         task.streamSettings.model = models[0]?.value ?? "";
+      }
+      const efforts = state.options.reasoningOptionsByProvider?.[value] ?? [];
+      if (!efforts.some((option) => option.value === task.streamSettings.reasoning)) {
+        task.streamSettings.reasoning = efforts[0]?.value ?? "";
       }
     }
     emit("stream:settings-save", { streamId: task.streamId, settings: { ...task.streamSettings } });

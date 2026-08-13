@@ -910,12 +910,14 @@ test("local Mini App downloads and copies files only from configured Workspace r
   await writeFile(target, "extension", "utf8");
   await writeFile(outside, "secret", "utf8");
   let copied = "";
+  let revealed = "";
   const server = new MiniAppServer({
     host: "127.0.0.1",
     port: 0,
     journalDatabase: memoryJournal(),
     workspaceFileRoots: [workspace],
     copyWorkspaceFile: async (file) => { copied = file; },
+    revealWorkspaceFile: async (file) => { revealed = file; },
   });
   try {
     const address = await server.start();
@@ -933,6 +935,14 @@ test("local Mini App downloads and copies files only from configured Workspace r
     });
     assert.equal(copy.status, 200);
     assert.equal(copied, await realpath(target));
+
+    const reveal = await fetch(`${address.url}api/workspace-file/reveal`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: `${target}:12` }),
+    });
+    assert.equal(reveal.status, 200);
+    assert.equal(revealed, await realpath(target));
 
     const denied = await fetch(
       `${address.url}api/workspace-file?path=${encodeURIComponent(outside)}`,

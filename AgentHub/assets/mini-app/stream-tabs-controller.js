@@ -15,6 +15,7 @@
   const PHOSPHOR_ICON_PATHS = Object.freeze({
     "clock-counter-clockwise": "M136,80v43.47l36.12,21.67a8,8,0,0,1-8.24,13.72l-40-24A8,8,0,0,1,120,128V80a8,8,0,0,1,16,0Zm-8-48A95.44,95.44,0,0,0,60.08,60.15C52.81,67.51,46.35,74.59,40,82V64a8,8,0,0,0-16,0v40a8,8,0,0,0,8,8H72a8,8,0,0,0,0-16H49c7.15-8.42,14.27-16.35,22.39-24.57a80,80,0,1,1,1.66,114.75,8,8,0,1,0-11,11.64A96,96,0,1,0,128,32Z",
     "arrows-down-up": "M117.66,170.34a8,8,0,0,1,0,11.32l-32,32a8,8,0,0,1-11.32,0l-32-32a8,8,0,0,1,11.32-11.32L72,188.69V48a8,8,0,0,1,16,0V188.69l18.34-18.35A8,8,0,0,1,117.66,170.34Zm96-96-32-32a8,8,0,0,0-11.32,0l-32,32a8,8,0,0,0,11.32,11.32L168,67.31V208a8,8,0,0,0,16,0V67.31l18.34,18.35a8,8,0,0,0,11.32-11.32Z",
+    plus: "M216,128a8,8,0,0,1-8,8H136v72a8,8,0,0,1-16,0V136H48a8,8,0,0,1,0-16h72V48a8,8,0,0,1,16,0v72h72A8,8,0,0,1,216,128Z",
   });
 
   function createPhosphorIcon(documentRef, name, className = "") {
@@ -74,6 +75,49 @@
     return (tasks ?? []).reduce((count, task) => (
       count + (task?.running || task?.unread ? 1 : 0)
     ), 0);
+  }
+
+  function activityStreamSections(tasks) {
+    const active = [];
+    const recent = [];
+    for (const task of tasks ?? []) {
+      if (task?.running || task?.unread) active.push(task);
+      else recent.push(task);
+    }
+    return { active, recent };
+  }
+
+  function includeTaskInActivityRail(task, kind) {
+    const workspaceName = String(task?.workspaceName ?? "").trim();
+    return workspaceName !== "Other" || kind === "running" || kind === "completed";
+  }
+
+  function resolveTaskHierarchy(task, workspaces) {
+    const workspaceId = String(task?.workspaceId ?? "").trim();
+    const streamId = String(task?.streamId ?? "").trim();
+    const workspace = (workspaces ?? []).find((candidate) => (
+      (workspaceId && String(candidate?.id ?? "") === workspaceId)
+      || (streamId && (candidate?.streams ?? []).some((stream) => String(stream?.id ?? "") === streamId))
+    )) ?? null;
+    const stream = workspace && streamId
+      ? (workspace.streams ?? []).find((candidate) => String(candidate?.id ?? "") === streamId) ?? null
+      : null;
+    return { workspace, stream };
+  }
+
+  function workspaceGroupLastActivity(group) {
+    return Math.max(0, ...(group?.tasks ?? []).map((task) => (
+      Date.parse(task?.lastActivity || 0) || 0
+    )));
+  }
+
+  function orderWorkspaceGroups(groups) {
+    return [...(groups ?? [])].sort((left, right) => (
+      Number(left?.kind === "system") - Number(right?.kind === "system")
+      || workspaceGroupLastActivity(right) - workspaceGroupLastActivity(left)
+      || String(left?.name ?? "").localeCompare(String(right?.name ?? ""), "ru")
+      || String(left?.id ?? "").localeCompare(String(right?.id ?? ""))
+    ));
   }
 
   function orderWorkspaceStreams(streams, mode, activityDirection = STREAM_ACTIVITY_DIRECTIONS.START) {
@@ -176,9 +220,13 @@
 
   window.AgentHubStreamTabs = Object.freeze({
     archiveStreamIntent,
+    activityStreamSections,
     attentionStreamCount,
     createPhosphorIcon,
     HorizontalPointerScroller,
+    includeTaskInActivityRail,
+    orderWorkspaceGroups,
+    resolveTaskHierarchy,
     STREAM_ACTIVITY_DIRECTIONS,
     STREAM_ORDER_MODES,
     normalizeStreamActivityDirection,

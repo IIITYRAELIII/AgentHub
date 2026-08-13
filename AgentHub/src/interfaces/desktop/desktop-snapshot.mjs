@@ -4,8 +4,35 @@ import { isCodexContextProbeTurn } from "../../domain/codex-context-probe.mjs";
 import { interstreamMessageDetails } from "../../domain/interstream-message.mjs";
 import { taskDisplayTitle } from "../../domain/task-display-title.mjs";
 import { taskRunIsActive } from "../../domain/task-runs.mjs";
+import { claudeModelOptions } from "../../domain/agent-runtime-settings.mjs";
 
 const MAX_COMPACT_ACTIVITY_DETAIL_CHARS = 1_200;
+
+export function workspaceBindingForTask(task, workspaces) {
+  const streamId = String(task?.streamId ?? "").trim();
+  if (!streamId) return {};
+  for (const workspace of workspaces ?? []) {
+    const stream = (workspace?.streams ?? []).find((candidate) => (
+      String(candidate?.id ?? "") === streamId
+    ));
+    if (!stream) continue;
+    const thread = (stream.threads ?? []).find((candidate) => (
+      String(candidate?.provider ?? "") === String(task?.provider ?? "")
+      && String(candidate?.threadId ?? candidate?.id ?? "") === String(task?.threadId ?? "")
+    ));
+    return {
+      workspaceId: workspace.id,
+      workspaceName: workspace.name,
+      workspaceKind: workspace.kind,
+      streamId: stream.id,
+      streamName: stream.name ?? null,
+      streamDisplayName: stream.displayName ?? "",
+      streamOrdinal: Number(stream.ordinal) || 1,
+      threadPosition: Number(thread?.position) || 1,
+    };
+  }
+  return {};
+}
 
 function deferredMessageProjection(item, deferred) {
   const rawText = deferred.editableText?.(item.input) ?? deferred.inputPreview(item.input);
@@ -303,15 +330,17 @@ export function createDesktopSnapshotFactory({
         warn("Cannot refresh desktop task catalog in background:", error.message);
       });
     }
+    const workspaces = board.workspaces?.() ?? catalog.hierarchy?.() ?? [];
     let entries = catalog.entries();
     if (
       !entries.some((entry) => tasks.entryIsSelected(entry, selection.selectedTask()))
       && selection.hasThread()
     ) {
+      const selectedTarget = selection.selectedTurnTarget();
       entries = catalog.merge(entries, [{
-        ...selection.selectedTurnTarget(),
+        ...selectedTarget,
+        ...workspaceBindingForTask(selectedTarget, workspaces),
         projectName: selection.activeProject().name,
-        startedAt: clock.nowIso(),
       }]);
     }
     const taskSnapshots = entries.map((entry) => desktopTaskSnapshot(entry, { accountId, compactSnapshot }));
@@ -319,6 +348,23 @@ export function createDesktopSnapshotFactory({
     const selectedIdentity = selection.selectedTask();
     const current = settings.current();
     const activeProvider = current.activeProvider;
+    const claudeReasoningEfforts = current.claudeReasoningEfforts ?? current.reasoningEfforts;
+    const claudeReasoningLabels = current.claudeReasoningLabels ?? current.reasoningLabels;
+    const claudeLabel = current.claudeModelLabel
+      ?? ((value) => current.claudeModelLabels[value] ?? value);
+    const claudeOptions = claudeModelOptions({
+      aliases: current.claudeModels,
+      observed: taskSnapshots
+        .filter((task) => task.provider === "claude")
+        .map((task) => task.model),
+      selected: current.claudeModel,
+    });
+    const reasoningEfforts = activeProvider === "codex"
+      ? current.reasoningEfforts
+      : claudeReasoningEfforts;
+    const reasoningLabels = activeProvider === "codex"
+      ? current.reasoningLabels
+      : claudeReasoningLabels;
     const activeCount = taskSnapshots.filter((item) => item.running).length;
     const serverSnapshot = typeof server.snapshot === "function"
       ? await server.snapshot({
@@ -336,7 +382,7 @@ export function createDesktopSnapshotFactory({
       : null;
     const snapshot = {
       apiVersion: 3,
-      workspaces: board.workspaces?.() ?? catalog.hierarchy?.() ?? [],
+      workspaces,
       boardTasks: board.snapshot?.() ?? [],
       boardLayout: board.layout?.() ?? { columnOrder: [], notesComment: "" },
       selected: {
@@ -352,12 +398,10 @@ export function createDesktopSnapshotFactory({
         projectName: selection.activeProject().name,
         model: activeProvider === "codex"
           ? current.codexModelLabel(current.codexModel)
-          : current.claudeModelLabels[current.claudeModel],
-        reasoning: current.reasoningLabels[
-          activeProvider === "codex"
-            ? current.codexReasoningEffort
-            : current.claudeReasoningEffort
-        ],
+          : claudeLabel(current.claudeModel),
+        reasoning: reasoningLabels[activeProvider === "codex"
+          ? current.codexReasoningEffort
+          : current.claudeReasoningEffort],
         mode: current.collaborationModeLabels[
           activeProvider === "codex"
             ? current.codexCollaborationMode
@@ -378,21 +422,25 @@ export function createDesktopSnapshotFactory({
         activityRecentMinutes: current.activityRecentMinutes,
         models: activeProvider === "codex"
           ? current.codexModels.map((model) => ({ value: model.value, label: model.label }))
-          : current.claudeModels.map((value) => ({
-            value,
-            label: current.claudeModelLabels[value],
-          })),
+          : claudeOptions,
         modelOptionsByProvider: {
           codex: current.codexModels.map((model) => ({ value: model.value, label: model.label })),
-          claude: current.claudeModels.map((value) => ({
+          claude: claudeOptions,
+        },
+        reasoningOptions: reasoningEfforts.map((value) => ({
+          value,
+          label: reasoningLabels[value],
+        })),
+        reasoningOptionsByProvider: {
+          codex: current.reasoningEfforts.map((value) => ({
             value,
-            label: current.claudeModelLabels[value],
+            label: current.reasoningLabels[value],
+          })),
+          claude: claudeReasoningEfforts.map((value) => ({
+            value,
+            label: claudeReasoningLabels[value],
           })),
         },
-        reasoningOptions: current.reasoningEfforts.map((value) => ({
-          value,
-          label: current.reasoningLabels[value],
-        })),
         modeOptions: current.collaborationModes.map((value) => ({
           value,
           label: current.collaborationModeLabels[value],

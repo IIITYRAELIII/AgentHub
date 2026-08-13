@@ -4,22 +4,6 @@ import { creditsFromUsd, formatCredits } from "../../domain/token-usage.mjs";
 
 export { CLAUDE_PERMISSION_MODES } from "../../domain/agent-runtime-settings.mjs";
 
-// Бюджет «расширенного мышления» Claude Code для каждого уровня «силы дум».
-// Значение передаётся процессу через переменную окружения MAX_THINKING_TOKENS
-// и одновременно включает вывод блоков рассуждения в потоке.
-export const CLAUDE_THINKING_TOKENS = {
-  low: 2000,
-  medium: 4000,
-  high: 8000,
-  xhigh: 16000,
-  max: 24000,
-  ultra: 32000,
-};
-
-export function claudeThinkingTokens(level) {
-  return CLAUDE_THINKING_TOKENS[level] ?? CLAUDE_THINKING_TOKENS.high;
-}
-
 export function buildClaudePrompt(input) {
   if (typeof input === "string") return input;
   if (!Array.isArray(input)) throw new Error("Claude input must be text or an array of content items");
@@ -41,6 +25,7 @@ export function buildClaudeArgs({
   sessionId,
   resumeSession = true,
   model,
+  effort,
   permissionMode = "acceptEdits",
   autoApprove = false,
   additionalDirectories = [],
@@ -68,6 +53,7 @@ export function buildClaudeArgs({
   if (autoApprove) args.push("--permission-mode", "bypassPermissions");
   else args.push("--permission-mode", permissionMode);
   if (model) args.push("--model", model);
+  if (effort) args.push("--effort", effort);
   if (sessionId) {
     args.push(resumeSession ? "--resume" : "--session-id", sessionId);
   }

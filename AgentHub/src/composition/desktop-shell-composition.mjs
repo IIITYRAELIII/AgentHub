@@ -301,6 +301,7 @@ export function createDesktopShellComposition({
   const desktopCommands = createDesktopCommandWiring({
     models: {
       reasoningEfforts: models.reasoningEfforts,
+      claudeReasoningEfforts: models.claudeReasoningEfforts,
       collaborationModes: models.collaborationModes,
     },
     projects,

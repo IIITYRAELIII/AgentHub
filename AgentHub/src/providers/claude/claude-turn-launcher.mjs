@@ -5,7 +5,6 @@ import process from "node:process";
 import {
   buildClaudeArgs,
   buildClaudePrompt,
-  claudeThinkingTokens,
   resolveClaudeSessionCwd,
 } from "./claude.mjs";
 
@@ -48,6 +47,7 @@ export class ClaudeTurnLauncher {
       // of retrying --resume forever or replacing the task identity.
       resumeSession: Boolean(snapshot?.sessionId),
       model: run.modelId,
+      effort: run.reasoningId,
       permissionMode: planMode ? "plan" : d.permissionMode,
       autoApprove: planMode ? false : d.autoApprove(),
       additionalDirectories,
@@ -60,10 +60,7 @@ export class ClaudeTurnLauncher {
       command: invocation.command,
       args: [...invocation.prefixArgs, ...args],
       cwd: sessionCwd,
-      env: {
-        ...process.env,
-        MAX_THINKING_TOKENS: String(claudeThinkingTokens(run.reasoningId)),
-      },
+      env: { ...process.env },
     });
   }
 }

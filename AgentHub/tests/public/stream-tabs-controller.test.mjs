@@ -81,7 +81,7 @@ test("order switch icons are real Phosphor SVG nodes in the SVG namespace", asyn
   const document = {
     createElementNS: (namespaceURI, localName) => new FakeSvgNode(namespaceURI, localName),
   };
-  for (const name of ["clock-counter-clockwise", "arrows-down-up"]) {
+  for (const name of ["clock-counter-clockwise", "arrows-down-up", "plus"]) {
     const icon = createPhosphorIcon(document, name, "stream-order-icon");
     assert.equal(icon.namespaceURI, "http://www.w3.org/2000/svg");
     assert.equal(icon.localName, "svg");
@@ -127,6 +127,61 @@ test("activity rail count excludes merely recent Streams", async () => {
     { id: "both", running: true, unread: true },
     { id: "recent", running: false, unread: false },
   ]), 3);
+});
+
+test("activity rail separates attention from recent Streams and keeps active Other", async () => {
+  const { activityStreamSections, includeTaskInActivityRail } = await streamTabsApi();
+  const tasks = [
+    { id: "running", running: true, unread: false },
+    { id: "unread", running: false, unread: true },
+    { id: "recent", running: false, unread: false },
+  ];
+  const sections = activityStreamSections(tasks);
+  assert.deepEqual(Array.from(sections.active, (item) => item.id), ["running", "unread"]);
+  assert.deepEqual(Array.from(sections.recent, (item) => item.id), ["recent"]);
+  assert.equal(includeTaskInActivityRail({ workspaceName: "Other" }, "running"), true);
+  assert.equal(includeTaskInActivityRail({ workspaceName: "Other" }, "completed"), true);
+  assert.equal(includeTaskInActivityRail({ workspaceName: "Other" }, "recent"), false);
+});
+
+test("task hierarchy is recovered by Stream identity when a transient task lacks Workspace fields", async () => {
+  const { resolveTaskHierarchy } = await streamTabsApi();
+  const workspaces = [{
+    id: "workspace-1",
+    name: "AgentHub",
+    streams: [{ id: "stream-33", name: "Диалоги" }],
+  }];
+  const resolved = resolveTaskHierarchy({ streamId: "stream-33" }, workspaces);
+  assert.equal(resolved.workspace.id, "workspace-1");
+  assert.equal(resolved.stream.name, "Диалоги");
+});
+
+test("Workspace order follows meaningful activity with deterministic ties", async () => {
+  const { orderWorkspaceGroups } = await streamTabsApi();
+  const groups = [
+    { id: "beta", name: "Бета", kind: "user", tasks: [{ lastActivity: "2026-08-10T09:00:00Z" }] },
+    { id: "alpha", name: "Альфа", kind: "user", tasks: [{ lastActivity: "2026-08-10T09:00:00Z" }] },
+    { id: "latest", name: "Новый", kind: "user", tasks: [{ lastActivity: "2026-08-10T10:00:00Z" }] },
+    { id: "other", name: "Other", kind: "system", tasks: [{ lastActivity: "2026-08-10T11:00:00Z" }] },
+  ];
+  assert.deepEqual(
+    Array.from(orderWorkspaceGroups(groups), (item) => item.id),
+    ["latest", "alpha", "beta", "other"],
+  );
+});
+
+test("activity rail markup exposes separate sections and the inline recent-hours setting", async () => {
+  const [html, appSource, clientSource] = await Promise.all([
+    readFile(new URL("../../assets/mini-app/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../../assets/mini-app/app.js", import.meta.url), "utf8"),
+    readFile(new URL("../../assets/mini-app/hub-client.js", import.meta.url), "utf8"),
+  ]);
+  assert.match(html, /data-activity-rail-count>Активно: 0</u);
+  assert.match(html, /<strong>Недавние<\/strong>/u);
+  assert.match(html, /data-activity-recent-hours/u);
+  assert.match(appSource, /activityStreamSections\(entries\)/u);
+  assert.match(appSource, /workspaceTasks = visible\.filter/u);
+  assert.match(clientSource, /resolveTaskHierarchy\(/u);
 });
 
 test("manual mode follows the server-synchronized ordinal order", async () => {

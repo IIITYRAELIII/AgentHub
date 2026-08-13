@@ -402,6 +402,7 @@ export class MiniAppServer {
   #clients = new Set();
   #controlHandler;
   #copyWorkspaceFile;
+  #revealWorkspaceFile;
   #onControlResultDelivered;
   #deviceStore;
   #changeTimer = null;
@@ -430,6 +431,7 @@ export class MiniAppServer {
     localAccessSecretFile = null,
     controlHandler = null,
     copyWorkspaceFile = null,
+    revealWorkspaceFile = null,
     onControlResultDelivered = null,
     deviceStore = null,
     assetsDirectory = path.join(AGENT_HUB_ROOT, "assets", "mini-app"),
@@ -451,6 +453,7 @@ export class MiniAppServer {
     this.#localAccessSecretFile = localAccessSecretFile ? path.resolve(localAccessSecretFile) : null;
     this.#controlHandler = typeof controlHandler === "function" ? controlHandler : null;
     this.#copyWorkspaceFile = typeof copyWorkspaceFile === "function" ? copyWorkspaceFile : null;
+    this.#revealWorkspaceFile = typeof revealWorkspaceFile === "function" ? revealWorkspaceFile : null;
     this.#onControlResultDelivered = typeof onControlResultDelivered === "function"
       ? onControlResultDelivered
       : null;
@@ -879,6 +882,33 @@ export class MiniAppServer {
         const body = await readJsonBody(request);
         const file = await resolveWorkspaceFile(body.path, this.#workspaceFileRoots);
         await this.#copyWorkspaceFile(file.target);
+        json(response, 200, { ok: true }, method);
+      } catch (error) {
+        json(response, 400, { ok: false, error: String(error?.message ?? error) }, method);
+      }
+      return;
+    }
+    if (url.pathname === "/api/workspace-file/reveal") {
+      if (method !== "POST") {
+        response.writeHead(405, {
+          Allow: "POST",
+          ...responseHeaders("text/plain; charset=utf-8"),
+        });
+        response.end("Method Not Allowed\n");
+        return;
+      }
+      const authorization = await this.#authorize(request, response);
+      if (!authorization) return;
+      if (authorization.source !== "local-mini-app"
+        || !this.#workspaceFileRoots.length
+        || !this.#revealWorkspaceFile) {
+        json(response, 403, { error: "Показ файлов доступен только локальному Agent Hub." }, method);
+        return;
+      }
+      try {
+        const body = await readJsonBody(request);
+        const file = await resolveWorkspaceFile(body.path, this.#workspaceFileRoots);
+        await this.#revealWorkspaceFile(file.target);
         json(response, 200, { ok: true }, method);
       } catch (error) {
         json(response, 400, { ok: false, error: String(error?.message ?? error) }, method);

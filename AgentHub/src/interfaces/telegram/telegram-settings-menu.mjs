@@ -8,6 +8,8 @@ export class TelegramSettingsMenu {
     claudeModelLabels,
     reasoningEfforts,
     reasoningLabels,
+    claudeReasoningEfforts,
+    claudeReasoningLabels,
     collaborationModes,
     collaborationModeLabels,
     callbackData,
@@ -19,6 +21,8 @@ export class TelegramSettingsMenu {
     this.claudeModelLabels = claudeModelLabels;
     this.reasoningEfforts = reasoningEfforts;
     this.reasoningLabels = reasoningLabels;
+    this.claudeReasoningEfforts = claudeReasoningEfforts ?? reasoningEfforts;
+    this.claudeReasoningLabels = claudeReasoningLabels ?? reasoningLabels;
     this.collaborationModes = collaborationModes;
     this.collaborationModeLabels = collaborationModeLabels;
     this.callbackData = callbackData;
@@ -73,15 +77,17 @@ export class TelegramSettingsMenu {
 
   async reasoningPicker({ provider, value }) {
     const prefix = provider === "codex" ? "codex-reasoning" : "claude-reasoning";
-    const keyboard = this.reasoningEfforts.map((item) => [{
-      text: `${item === value ? "✓ " : ""}${this.reasoningLabels[item]}`,
+    const efforts = provider === "codex" ? this.reasoningEfforts : this.claudeReasoningEfforts;
+    const labels = provider === "codex" ? this.reasoningLabels : this.claudeReasoningLabels;
+    const keyboard = efforts.map((item) => [{
+      text: `${item === value ? "✓ " : ""}${labels[item]}`,
       callback_data: this.callbackData(`${prefix}:${item}`),
     }]);
     const hint = provider === "codex"
       ? "Выберите уровень для следующих запросов:"
-      : "Выберите уровень (для Claude это бюджет «расширенного мышления»):";
+      : "Выберите уровень effort, который Claude Code передаст модели:";
     await this.sendMessage(
-      `Reasoning ${provider === "codex" ? "Codex" : "Claude Code"}: ${this.reasoningLabels[value]}\n\n${hint}`,
+      `Reasoning ${provider === "codex" ? "Codex" : "Claude Code"}: ${labels[value]}\n\n${hint}`,
       { reply_markup: { inline_keyboard: keyboard } },
     );
   }

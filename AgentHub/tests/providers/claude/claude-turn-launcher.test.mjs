@@ -41,5 +41,9 @@ test("ClaudeTurnLauncher owns session setup and detached run invocation", async 
   assert.equal(events[3][1].command, "claude");
   assert.equal(events[3][1].args.includes("--resume"), true);
   assert.equal(events[3][1].args.includes("Inherited rules"), true);
-  assert.equal(events[3][1].env.MAX_THINKING_TOKENS, "8000");
+  assert.deepEqual(
+    events[3][1].args.slice(events[3][1].args.indexOf("--model"), -1),
+    ["--model", "opus", "--effort", "high", "--resume", run.threadId],
+  );
+  assert.equal(Object.hasOwn(events[3][1].env, "MAX_THINKING_TOKENS"), false);
 });

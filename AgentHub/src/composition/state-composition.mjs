@@ -6,6 +6,7 @@ import {
   CODEX_REASONING_EFFORTS,
   resolveCodexThreadSettings,
 } from "../providers/codex/codex-settings.mjs";
+import { CLAUDE_REASONING_EFFORTS } from "../domain/agent-runtime-settings.mjs";
 
 export function createStateComposition({
   config,
@@ -31,7 +32,8 @@ export function createStateComposition({
     taskMetadata,
     codexModels: codexModels.map((model) => model.value),
     claudeModels,
-    reasoningEfforts: CODEX_REASONING_EFFORTS,
+    codexReasoningEfforts: CODEX_REASONING_EFFORTS,
+    claudeReasoningEfforts: CLAUDE_REASONING_EFFORTS,
     collaborationModes: CODEX_COLLABORATION_MODES,
     defaultCodexModel,
     defaultCodexReasoningEffort,

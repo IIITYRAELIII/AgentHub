@@ -1,12 +1,19 @@
 import path from "node:path";
 
 import { CODEX_REASONING_EFFORTS } from "../providers/codex/codex-settings.mjs";
+import {
+  CLAUDE_MODEL_ALIASES,
+  CLAUDE_MODEL_LABELS,
+  claudeModelLabel,
+  CLAUDE_REASONING_EFFORTS,
+  CLAUDE_REASONING_LABELS,
+} from "../domain/agent-runtime-settings.mjs";
 
 const AGENT_ICONS = ["👾", "🦉", "🐙", "🕶️", "🚀", "⚡", "💻", "🔮", "🛰️", "🔥", "✨"];
 
 export function createHubStaticSettings(config, agentHubRoot) {
-  const claudeModels = ["sonnet", "opus", "haiku"];
-  const claudeModelLabels = { sonnet: "Sonnet", opus: "Opus", haiku: "Haiku" };
+  const claudeModels = CLAUDE_MODEL_ALIASES;
+  const claudeModelLabels = CLAUDE_MODEL_LABELS;
   const codexModels = config.codexModels;
   const codexModelAliases = new Map(codexModels.flatMap((model) => ([
     [String(model.value).toLowerCase(), model.value],
@@ -77,6 +84,9 @@ export function createHubStaticSettings(config, agentHubRoot) {
     legacyWorkLogFile: path.join(config.projectRoot, "WORK_LOG.md"),
     claudeModels,
     claudeModelLabels,
+    claudeModelLabel,
+    claudeReasoningEfforts: CLAUDE_REASONING_EFFORTS,
+    claudeReasoningLabels: CLAUDE_REASONING_LABELS,
     codexModels,
     normalizeCodexModel,
     codexModelLabel,

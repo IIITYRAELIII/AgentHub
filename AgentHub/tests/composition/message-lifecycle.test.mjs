@@ -67,6 +67,13 @@ test("message lifecycle reconciles user messages by the official client id", () 
   assert.equal(result.matches[1].local.clientUserMessageId, "client-2");
 });
 
+test("message delivery distinguishes a server rejection from an unconfirmed transport failure", () => {
+  const rejected = lifecycle.markCommandRejected(new Error("Укажите корректную задачу"));
+  assert.equal(lifecycle.messageSendDefinitelyRejected(rejected), true);
+  assert.equal(lifecycle.messageSendDefinitelyRejected(new Error("Agent Hub не ответил вовремя")), false);
+  assert.equal(rejected.agentHubCommandRejected, true);
+});
+
 test("response annotation envelopes become structured user messages", () => {
   const raw = [
     "# Response annotations:",

@@ -112,6 +112,17 @@ async function resolveAbsoluteWorkspaceFile(file, workspaceFolders) {
   return unique.length === 1 ? unique[0] : null;
 }
 
+async function resolveFileLink(rawHref, workspaceFolders) {
+  const fileTarget = editorFileTarget(rawHref);
+  if (/^[A-Za-z]:[\\/]/u.test(fileTarget.file)) {
+    return firstExisting([vscode.Uri.file(path.resolve(fileTarget.file))]);
+  }
+  return firstExisting(workspaceFolders.map((folder) => vscode.Uri.joinPath(
+    folder.uri,
+    ...relativeSegments(fileTarget.file),
+  )));
+}
+
 class WorkLogViewProvider {
   constructor(context) {
     this.context = context;
@@ -295,13 +306,19 @@ class WorkLogViewProvider {
         });
         return;
       }
-      if (["open-link", "copy-link", "copy-link-object", "save-link"].includes(action)) {
+      if (["open-link", "reveal-link", "copy-link", "copy-link-object", "save-link", "copy-text"].includes(action)) {
         const href = String(message.params?.localPath || message.params?.href || "").trim();
         if (action === "open-link") await this.openLink(href);
+        else if (action === "reveal-link") {
+          const target = await resolveFileLink(href, this.workspaceFolders());
+          if (!target) throw new Error("Файл ссылки не найден");
+          await vscode.commands.executeCommand("revealFileInOS", target);
+        }
         else if (action === "copy-link") await vscode.env.clipboard.writeText(href);
+        else if (action === "copy-text") await vscode.env.clipboard.writeText(String(message.params?.text ?? ""));
         else if (action === "copy-link-object") {
-          const target = await this.resolveWorkspaceLink(href);
-          if (!target) throw new Error("Файл ссылки не найден в Workspace");
+          const target = await resolveFileLink(href, this.workspaceFolders());
+          if (!target) throw new Error("Файл ссылки не найден");
           await copyWindowsFileObject(target.fsPath);
         }
         else await this.saveLink(href, message.params?.name);
@@ -405,15 +422,7 @@ class WorkLogViewProvider {
       return;
     }
     const fileTarget = editorFileTarget(href);
-    const absolute = /^[A-Za-z]:[\\/]/u.test(fileTarget.file);
-    const target = absolute
-      ? await resolveAbsoluteWorkspaceFile(fileTarget.file, this.workspaceFolders())
-      : await firstExisting(
-        this.workspaceFolders().map((folder) => vscode.Uri.joinPath(
-          folder.uri,
-          ...relativeSegments(fileTarget.file),
-        )),
-      );
+    const target = await resolveFileLink(href, this.workspaceFolders());
     if (target) {
       const options = fileTarget.line ? {
         selection: new vscode.Range(
@@ -428,14 +437,7 @@ class WorkLogViewProvider {
   }
 
   async resolveWorkspaceLink(rawHref) {
-    const fileTarget = editorFileTarget(rawHref);
-    const absolute = /^[A-Za-z]:[\\/]/u.test(fileTarget.file);
-    return absolute
-      ? resolveAbsoluteWorkspaceFile(fileTarget.file, this.workspaceFolders())
-      : firstExisting(this.workspaceFolders().map((folder) => vscode.Uri.joinPath(
-        folder.uri,
-        ...relativeSegments(fileTarget.file),
-      )));
+    return resolveFileLink(rawHref, this.workspaceFolders());
   }
 
   async saveLink(rawHref, label) {
@@ -493,4 +495,5 @@ module.exports = {
   editorFileTarget,
   firstExisting,
   resolveAbsoluteWorkspaceFile,
+  resolveFileLink,
 };

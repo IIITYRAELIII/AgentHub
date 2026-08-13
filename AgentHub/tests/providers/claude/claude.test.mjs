@@ -43,6 +43,11 @@ test("buildClaudeArgs recreates a missing local session under the same UUID", ()
   assert.equal(args.includes("--resume"), false);
 });
 
+test("buildClaudeArgs passes Claude's native effort level", () => {
+  const args = buildClaudeArgs({ prompt: "think", model: "claude-opus-5", effort: "xhigh" });
+  assert.deepEqual(args.slice(-5), ["--model", "claude-opus-5", "--effort", "xhigh", "think"]);
+});
+
 test("Claude image directories cannot consume a resumed prompt", () => {
   const imageDirectory = path.resolve("C:/runtime/DesktopApp/attachments");
   const args = buildClaudeArgs({

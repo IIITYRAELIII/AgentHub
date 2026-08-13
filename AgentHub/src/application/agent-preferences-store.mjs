@@ -2,6 +2,15 @@ function oneOf(value, allowed, fallback) {
   return allowed.has(value) ? value : fallback;
 }
 
+function claudeModel(value, fallback) {
+  const model = String(value ?? "").trim();
+  return model.length > 0
+    && model.length <= 256
+    && /^[a-z0-9][a-z0-9._:/@\[\]-]*$/iu.test(model)
+    ? model
+    : fallback;
+}
+
 const DEFAULT_ACTIVITY_RECENT_MINUTES = 3 * 60;
 const MAX_ACTIVITY_RECENT_MINUTES = 30 * 24 * 60;
 
@@ -19,6 +28,8 @@ export class AgentPreferencesStore {
     codexModels,
     claudeModels,
     reasoningEfforts,
+    codexReasoningEfforts = reasoningEfforts,
+    claudeReasoningEfforts = reasoningEfforts,
     collaborationModes,
     defaultCodexModel,
     defaultCodexReasoningEffort,
@@ -33,7 +44,8 @@ export class AgentPreferencesStore {
     this.taskMetadata = taskMetadata;
     this.codexModels = new Set(codexModels);
     this.claudeModels = new Set(claudeModels);
-    this.reasoningEfforts = new Set(reasoningEfforts);
+    this.codexReasoningEfforts = new Set(codexReasoningEfforts);
+    this.claudeReasoningEfforts = new Set(claudeReasoningEfforts);
     this.collaborationModes = new Set(collaborationModes);
     this.normalizeCodexModel = normalizeCodexModel;
     this.resolveCodexThreadSettings = resolveCodexThreadSettings;
@@ -41,19 +53,19 @@ export class AgentPreferencesStore {
       codexModel: normalizeCodexModel(defaultCodexModel),
       codexReasoningEffort: oneOf(
         defaultCodexReasoningEffort,
-        this.reasoningEfforts,
-        [...this.reasoningEfforts][0],
+        this.codexReasoningEfforts,
+        [...this.codexReasoningEfforts][0],
       ),
       codexCollaborationMode: oneOf(
         defaultCodexCollaborationMode,
         this.collaborationModes,
         [...this.collaborationModes][0],
       ),
-      claudeModel: oneOf(defaultClaudeModel, this.claudeModels, [...this.claudeModels][0]),
+      claudeModel: claudeModel(defaultClaudeModel, [...this.claudeModels][0]),
       claudeReasoningEffort: oneOf(
         defaultClaudeReasoningEffort,
-        this.reasoningEfforts,
-        [...this.reasoningEfforts][0],
+        this.claudeReasoningEfforts,
+        [...this.claudeReasoningEfforts][0],
       ),
       claudeCollaborationMode: oneOf(
         defaultClaudeCollaborationMode,
@@ -81,17 +93,20 @@ export class AgentPreferencesStore {
   }
 
   setClaudeModel(value) {
-    if (!this.claudeModels.has(value)) throw new Error("unknown model");
-    return this.#set("claudeModel", value);
+    const model = claudeModel(value, "");
+    if (!model) {
+      throw new Error("unknown Claude model");
+    }
+    return this.#set("claudeModel", model);
   }
 
   setCodexReasoning(value) {
-    if (!this.reasoningEfforts.has(value)) throw new Error("unknown Codex reasoning effort");
+    if (!this.codexReasoningEfforts.has(value)) throw new Error("unknown Codex reasoning effort");
     return this.#set("codexReasoningEffort", value);
   }
 
   setClaudeReasoning(value) {
-    if (!this.reasoningEfforts.has(value)) throw new Error("unknown Claude reasoning effort");
+    if (!this.claudeReasoningEfforts.has(value)) throw new Error("unknown Claude reasoning effort");
     return this.#set("claudeReasoningEffort", value);
   }
 
@@ -145,7 +160,7 @@ export class AgentPreferencesStore {
     this.values.codexModel = this.normalizeCodexModel(values.model ?? this.codexModel);
     this.values.codexReasoningEffort = oneOf(
       values.reasoningEffort,
-      this.reasoningEfforts,
+      this.codexReasoningEfforts,
       this.codexReasoningEffort,
     );
     this.values.codexCollaborationMode = oneOf(
@@ -172,7 +187,7 @@ export class AgentPreferencesStore {
         : this.defaultCodexModel;
     const reasoningEffort = oneOf(
       saved?.reasoningEffort,
-      this.reasoningEfforts,
+      this.codexReasoningEfforts,
       inheritCurrent ? this.codexReasoningEffort : this.defaultCodexReasoningEffort,
     );
     this.restoreCodex({ model, reasoningEffort });
@@ -197,7 +212,7 @@ export class AgentPreferencesStore {
         : this.defaults.codexModel,
       codexReasoningEffort: oneOf(
         snapshot.codexReasoningEffort,
-        this.reasoningEfforts,
+        this.codexReasoningEfforts,
         this.defaults.codexReasoningEffort,
       ),
       codexCollaborationMode: oneOf(
@@ -205,10 +220,10 @@ export class AgentPreferencesStore {
         this.collaborationModes,
         this.defaults.codexCollaborationMode,
       ),
-      claudeModel: oneOf(snapshot.claudeModel, this.claudeModels, this.defaults.claudeModel),
+      claudeModel: claudeModel(snapshot.claudeModel, this.defaults.claudeModel),
       claudeReasoningEffort: oneOf(
         snapshot.claudeReasoningEffort,
-        this.reasoningEfforts,
+        this.claudeReasoningEfforts,
         this.defaults.claudeReasoningEffort,
       ),
       claudeCollaborationMode: oneOf(

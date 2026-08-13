@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createDesktopSnapshotFactory } from "../../../src/interfaces/desktop/desktop-snapshot.mjs";
+import {
+  createDesktopSnapshotFactory,
+  workspaceBindingForTask,
+} from "../../../src/interfaces/desktop/desktop-snapshot.mjs";
 
 function fixture(overrides = {}) {
   const selected = {
     provider: "codex",
     projectRoot: "D:/work",
     threadId: "thread-1",
+    ...(overrides.selected ?? {}),
   };
   const run = {
     id: "run-1",
@@ -100,7 +104,8 @@ function fixture(overrides = {}) {
     },
     board: {
       snapshot: () => [{ id: "board-task-1", text: "Проверить дашборд" }],
-      workspaces: () => [{ id: "workspace-2", name: "Second" }, { id: "workspace-1", name: "First" }],
+      workspaces: () => state.workspaces
+        ?? [{ id: "workspace-2", name: "Second" }, { id: "workspace-1", name: "First" }],
       layout: () => ({
         columnOrder: ["workspace:workspace-2", "notes", "workspace:workspace-1"],
         notesComment: "Кино",
@@ -468,6 +473,47 @@ test("desktopTaskSnapshot exposes catalog start time without an observer run", (
   assert.equal(desktopTaskSnapshot(entry).startedAt, "2026-07-30T09:55:00.000Z");
 });
 
+test("desktop snapshot binds a transient selected task to its canonical Workspace", async () => {
+  const workspaces = [{
+    id: "workspace-1",
+    name: "AgentHub",
+    kind: "user",
+    streams: [{
+      id: "stream-33",
+      name: "Диалоги",
+      displayName: "Stream 33",
+      ordinal: 33,
+      threads: [{ provider: "codex", threadId: "thread-1", position: 2 }],
+    }],
+  }];
+  assert.deepEqual(
+    workspaceBindingForTask({ provider: "codex", threadId: "thread-1", streamId: "stream-33" }, workspaces),
+    {
+      workspaceId: "workspace-1",
+      workspaceName: "AgentHub",
+      workspaceKind: "user",
+      streamId: "stream-33",
+      streamName: "Диалоги",
+      streamDisplayName: "Stream 33",
+      streamOrdinal: 33,
+      threadPosition: 2,
+    },
+  );
+
+  const { desktopSnapshot } = fixture({
+    entries: [],
+    run: null,
+    selected: { streamId: "stream-33" },
+    workspaces,
+  });
+  const snapshot = await desktopSnapshot();
+  assert.equal(snapshot.tasks.length, 1);
+  assert.equal(snapshot.tasks[0].workspaceId, "workspace-1");
+  assert.equal(snapshot.tasks[0].workspaceName, "AgentHub");
+  assert.equal(snapshot.tasks[0].streamOrdinal, 33);
+  assert.equal(snapshot.tasks[0].startedAt, null);
+});
+
 test("desktopTaskSnapshot does not expose a retained completed run as active", () => {
   const { desktopTaskSnapshot, entry, state } = fixture();
   state.run.status = "completed";
@@ -577,12 +623,22 @@ test("desktopSnapshot preserves top-level settings, queues and restart state", a
     models: [{ value: "gpt-test", label: "GPT Test" }],
     modelOptionsByProvider: {
       codex: [{ value: "gpt-test", label: "GPT Test" }],
-      claude: [{ value: "opus", label: "Opus" }],
+      claude: [{ value: "opus", label: "Opus (latest)" }],
     },
     reasoningOptions: [
       { value: "medium", label: "Medium" },
       { value: "high", label: "High" },
     ],
+    reasoningOptionsByProvider: {
+      codex: [
+        { value: "medium", label: "Medium" },
+        { value: "high", label: "High" },
+      ],
+      claude: [
+        { value: "medium", label: "Medium" },
+        { value: "high", label: "High" },
+      ],
+    },
     modeOptions: [
       { value: "default", label: "Default" },
       { value: "plan", label: "Plan" },

@@ -512,6 +512,9 @@
 
         <div class="annotation-context-menu" data-annotation-context-menu hidden role="menu"
           aria-label="Цитирование выделенного текста">
+          <button type="button" role="menuitem" data-action="copy-selection">
+            Копировать
+          </button>
           <button type="button" role="menuitem" data-action="annotate-selection">
             Цитировать выделение
           </button>
@@ -523,7 +526,7 @@
       <header class="activity-rail-head">
         <button type="button" class="activity-rail-toggle" data-activity-rail-toggle
           aria-expanded="true" title="Свернуть активные потоки">
-          <span data-activity-rail-count>Активно: 0</span>
+          <span>Потоки</span>
           <svg data-phosphor-icon="caret-up" viewBox="0 0 256 256" aria-hidden="true">
             <polyline points="48 160 128 80 208 160" fill="none" stroke="currentColor"
               stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></polyline>
@@ -532,8 +535,44 @@
       </header>
       <div class="activity-rail-content">
         <section class="activity-streams" aria-label="Потоки, требующие внимания">
+          <header class="activity-section-head">
+            <strong data-activity-rail-count>Активно: 0</strong>
+          </header>
           <div class="activity-stream-list" data-activity-stream-list></div>
           <p class="activity-stream-empty" data-activity-stream-empty>Нет активных потоков</p>
+        </section>
+        <section class="activity-streams activity-recent-streams" aria-label="Недавние потоки">
+          <header class="activity-section-head">
+            <strong>Недавние</strong>
+            <details class="activity-recent-settings">
+              <summary title="Настроить период недавних потоков" aria-label="Настроить период недавних потоков">
+                <svg data-phosphor-icon="sliders-horizontal" viewBox="0 0 256 256" aria-hidden="true">
+                  <circle cx="104" cy="80" r="24" fill="none" stroke="currentColor"
+                    stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></circle>
+                  <circle cx="168" cy="176" r="24" fill="none" stroke="currentColor"
+                    stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></circle>
+                  <line x1="128" y1="80" x2="216" y2="80" fill="none" stroke="currentColor"
+                    stroke-linecap="round" stroke-width="16"></line>
+                  <line x1="40" y1="80" x2="80" y2="80" fill="none" stroke="currentColor"
+                    stroke-linecap="round" stroke-width="16"></line>
+                  <line x1="192" y1="176" x2="216" y2="176" fill="none" stroke="currentColor"
+                    stroke-linecap="round" stroke-width="16"></line>
+                  <line x1="40" y1="176" x2="144" y2="176" fill="none" stroke="currentColor"
+                    stroke-linecap="round" stroke-width="16"></line>
+                </svg>
+              </summary>
+              <label class="activity-recent-settings-panel">
+                <span>Показывать за</span>
+                <span class="activity-recent-hours-field">
+                  <input type="number" min="0" max="720" step="0.25" inputmode="decimal"
+                    data-activity-recent-hours aria-label="Количество часов для недавних потоков">
+                  <span>ч</span>
+                </span>
+              </label>
+            </details>
+          </header>
+          <div class="activity-stream-list" data-activity-recent-list></div>
+          <p class="activity-stream-empty" data-activity-recent-empty>Нет недавних потоков</p>
         </section>
         <section class="workspace-task-panel" data-workspace-task-panel hidden>
           <header>
@@ -1216,13 +1255,17 @@
       <span>Фон</span>
     </button>
     <button type="button" class="mobile-tab" data-mobile-button="server" aria-pressed="false">
-      <svg data-phosphor-icon="cpu" viewBox="0 0 256 256" aria-hidden="true">
-        <rect x="64" y="64" width="128" height="128" rx="16" fill="none" stroke="currentColor"
+      <svg data-phosphor-icon="hard-drives" viewBox="0 0 256 256" aria-hidden="true">
+        <rect x="24" y="48" width="208" height="64" rx="12" fill="none" stroke="currentColor"
           stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></rect>
-        <rect x="104" y="104" width="48" height="48" rx="6" fill="none" stroke="currentColor"
+        <rect x="24" y="144" width="208" height="64" rx="12" fill="none" stroke="currentColor"
           stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></rect>
-        <line x1="96" y1="24" x2="96" y2="64" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="16"></line>
-        <line x1="160" y1="24" x2="160" y2="64" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="16"></line>
+        <line x1="56" y1="80" x2="128" y2="80" fill="none" stroke="currentColor"
+          stroke-linecap="round" stroke-width="16"></line>
+        <line x1="56" y1="176" x2="128" y2="176" fill="none" stroke="currentColor"
+          stroke-linecap="round" stroke-width="16"></line>
+        <circle cx="192" cy="80" r="8" fill="currentColor"></circle>
+        <circle cx="192" cy="176" r="8" fill="currentColor"></circle>
       </svg>
       <span>Сервер</span>
     </button>
@@ -1308,8 +1351,8 @@
             <span class="switch-track" aria-hidden="true"></span>
           </label>
           <div class="setting-stack">
-            <span class="setting-name">Период отображения активных задач</span>
-            <div class="setting-duration" role="group" aria-label="Период отображения активных задач">
+            <span class="setting-name">Период отображения недавних потоков</span>
+            <div class="setting-duration" role="group" aria-label="Период отображения недавних потоков">
               <label>
                 <input type="number" min="0" max="720" step="1" inputmode="numeric"
                   data-activity-period-hours aria-label="Часы">
@@ -1322,7 +1365,7 @@
               </label>
             </div>
             <span class="switch-note">
-              Завершённые и выполняющиеся показываются всегда; остальные — с момента последней активности.
+              Активные и непрочитанные показываются отдельно; недавние — с момента последней активности.
             </span>
           </div>
         </div>
@@ -1419,7 +1462,10 @@
   <div class="resource-context-menu" data-resource-context-menu hidden role="menu"
     aria-label="Действия с ресурсом">
     <button type="button" role="menuitem" data-resource-action="open">Открыть</button>
+    <button type="button" role="menuitem" data-resource-action="open-editor">Открыть в VS Code</button>
+    <button type="button" role="menuitem" data-resource-action="reveal">Показать в проводнике</button>
     <button type="button" role="menuitem" data-resource-action="copy">Копировать</button>
+    <button type="button" role="menuitem" data-resource-action="copy-path">Копировать путь</button>
     <button type="button" role="menuitem" data-resource-action="copy-object">Скопировать файл</button>
     <button type="button" role="menuitem" data-resource-action="save">Сохранить как…</button>
   </div>

@@ -41,7 +41,10 @@ export class DesktopSettingsService {
         await d.saveState();
       }
     } else if (name === "reasoning") {
-      if (!d.reasoningEfforts.includes(value)) throw new Error("Неизвестный уровень reasoning");
+      const efforts = d.isCodex()
+        ? d.reasoningEfforts
+        : d.claudeReasoningEfforts ?? d.reasoningEfforts;
+      if (!efforts.includes(value)) throw new Error("Неизвестный уровень reasoning");
       if (d.isCodex()) {
         this.#assertNotCompacting("Reasoning");
         changed = d.getCodexReasoning() !== value;

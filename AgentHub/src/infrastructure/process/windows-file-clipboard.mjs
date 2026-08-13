@@ -33,3 +33,22 @@ export function copyWindowsFileObject(file, {
     });
   });
 }
+
+export function revealWindowsFile(file, {
+  platform = process.platform,
+  execFileImpl = execFile,
+} = {}) {
+  if (platform !== "win32") {
+    throw new Error("Показ файла в проводнике поддерживается только в Windows");
+  }
+  const target = path.resolve(String(file ?? ""));
+  return new Promise((resolve, reject) => {
+    execFileImpl("explorer.exe", [`/select,${target}`], {
+      timeout: 10_000,
+      windowsHide: true,
+    }, (error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
+}

@@ -86,6 +86,29 @@ test("file target lookup rejects missing candidates", async () => {
   assert.equal(await firstExisting([{ fsPath: "D:/missing.js" }]), null);
 });
 
+test("absolute file links keep their real location outside the open Workspace", async () => {
+  const vscode = {
+    FileType: { File: 1 },
+    Uri: { file: (fsPath) => ({ fsPath }) },
+    workspace: {
+      fs: {
+        stat: async (uri) => {
+          if (uri.fsPath.replaceAll("\\", "/") === "D:/other/repo/file.js") {
+            return { type: 1 };
+          }
+          throw new Error("missing");
+        },
+      },
+    },
+  };
+  const { resolveFileLink } = loadExtension(vscode);
+  const result = await resolveFileLink(
+    "D:/other/repo/file.js:42",
+    [{ uri: { fsPath: "D:/work" } }],
+  );
+  assert.equal(result.fsPath.replaceAll("\\", "/"), "D:/other/repo/file.js");
+});
+
 test("stale workspace-rooted paths resolve by one exact path suffix", async () => {
   const found = { fsPath: "D:/work/Utilities/AgentHub/VSCodeExtension/extension.js" };
   const vscode = {

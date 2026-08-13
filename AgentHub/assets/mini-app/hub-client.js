@@ -80,7 +80,9 @@ const {
   isConnectionFailure,
   liveCompletionTransition,
   looksLikeConnectionFailure,
+  markCommandRejected,
   markConnectionFailure,
+  messageSendDefinitelyRejected,
   mergeDeferredQueueEntries,
   mergeLiveMaintenance,
   mergeReconciledUserMessage,
@@ -477,11 +479,6 @@ function applyMessageReceipts(snapshot) {
   }
 }
 
-function messageSendDefinitelyRejected(error) {
-  return /^(?:Введите сообщение|Сообщение слишком длинное|Сначала выберите|Неизвестный режим|Идентификатор сообщения)/iu
-    .test(String(error?.message ?? error ?? "").trim());
-}
-
 function promoteLiveCompletion(taskIdValue, selected, incomingTurnId = "") {
   const previous = liveCardsByTask.get(taskIdValue);
   const previousTurnId = String(previous?.turnId ?? "").trim();
@@ -727,7 +724,9 @@ window.addEventListener("message", (event) => {
   if (message.ok) pending.resolve(message.result);
   else {
     const error = new Error(String(message.error ?? "Команда Agent Hub завершилась с ошибкой"));
-    pending.reject(looksLikeConnectionFailure(error) ? markConnectionFailure(error) : error);
+    pending.reject(looksLikeConnectionFailure(error)
+      ? markConnectionFailure(error)
+      : markCommandRejected(error));
   }
 });
 
@@ -748,7 +747,9 @@ async function waitRemoteResult(commandId, timeoutMs = DEFAULT_CONTROL_TIMEOUT_M
       continue;
     }
     if (!response.ok || payload.ok === false) {
-      throw new Error(String(payload.error ?? `Agent Hub: HTTP ${response.status}`));
+      throw markCommandRejected(
+        new Error(String(payload.error ?? `Agent Hub: HTTP ${response.status}`)),
+      );
     }
     return payload.result;
   }
@@ -768,7 +769,9 @@ async function acknowledgeLocalControl(commandId) {
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || payload.ok === false) {
-    throw new Error(String(payload.error ?? `Agent Hub: HTTP ${response.status}`));
+    throw markCommandRejected(
+      new Error(String(payload.error ?? `Agent Hub: HTTP ${response.status}`)),
+    );
   }
 }
 
@@ -805,7 +808,9 @@ async function control(action, params = {}) {
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || payload.ok === false) {
-    throw new Error(String(payload.error ?? `Agent Hub: HTTP ${response.status}`));
+    throw markCommandRejected(
+      new Error(String(payload.error ?? `Agent Hub: HTTP ${response.status}`)),
+    );
   }
   if (payload.receiptId === commandId) {
     await acknowledgeLocalControl(commandId).catch((error) => {
@@ -831,24 +836,22 @@ function modelTask(task, snapshot, effectiveSelectedId, serverSelectedId) {
   const serverSelected = id === serverSelectedId;
   const executionOwner = task.run?.executionOwner ?? task.executionOwner ?? "";
   const runtimeTitle = task.run?.runtime ?? task.runtime ?? "";
-  const workspace = (snapshot.workspaces ?? []).find((item) => (
-    String(item.id ?? "") === String(task.workspaceId ?? "")
-  ));
-  const catalogStream = (workspace?.streams ?? []).find((item) => (
-    String(item.id ?? "") === String(task.streamId ?? "")
-  ));
+  const { workspace, stream: catalogStream } = window.AgentHubStreamTabs.resolveTaskHierarchy(
+    task,
+    snapshot.workspaces,
+  );
   return {
     id,
     title: task.displayTitle || task.title || "Без названия",
     displayTitle: task.displayTitle || task.title || "Без названия",
     threadTitle: task.threadTitle || task.title || "Без названия",
-    workspaceId: task.workspaceId ?? null,
-    workspaceName: task.workspaceName ?? null,
-    workspaceKind: task.workspaceKind ?? null,
+    workspaceId: task.workspaceId ?? workspace?.id ?? null,
+    workspaceName: task.workspaceName ?? workspace?.name ?? null,
+    workspaceKind: task.workspaceKind ?? workspace?.kind ?? null,
     streamId,
-    streamName: task.streamName ?? null,
-    streamDisplayName: task.streamDisplayName ?? "",
-    streamOrdinal: Number(task.streamOrdinal) || 1,
+    streamName: task.streamName ?? catalogStream?.name ?? null,
+    streamDisplayName: task.streamDisplayName ?? catalogStream?.displayName ?? "",
+    streamOrdinal: Number(task.streamOrdinal ?? catalogStream?.ordinal) || 1,
     threadPosition: Number(task.threadPosition) || 1,
     threadId: task.threadId,
     provider: task.provider,
@@ -902,6 +905,10 @@ function emptyStreamModels(snapshot, effectiveSelectedId) {
           ? stream.settings.autoApprove
           : defaults.approvalMode === "auto",
       };
+      const efforts = defaults.reasoningOptionsByProvider?.[settings.provider] ?? [];
+      if (!efforts.some((option) => option.value === settings.reasoning)) {
+        settings.reasoning = efforts[0]?.value ?? settings.reasoning;
+      }
       const model = (modelsByProvider[settings.provider] ?? [])
         .find((option) => option.value === settings.model);
       drafts.push({
@@ -1305,6 +1312,7 @@ function applySnapshot(snapshot) {
     model: settings.models ?? [],
     modelOptionsByProvider: settings.modelOptionsByProvider ?? {},
     reasoning: settings.reasoningOptions ?? [],
+    reasoningOptionsByProvider: settings.reasoningOptionsByProvider ?? {},
     mode: settings.modeOptions ?? [],
   });
   const selectedDraft = tasks.find((task) => task.id === effectiveSelectedId && task.draftStream);
@@ -2566,10 +2574,48 @@ agentHub.on("resource:open", ({ resource }) => runAction(async () => {
   window.open(String(resource.href ?? ""), "_blank", "noopener,noreferrer");
 }));
 
+agentHub.on("resource:open-editor", ({ resource }) => runAction(async () => {
+  const target = String(resource?.localPath ?? "").trim();
+  if (!target) throw new Error("Локальный путь не указан");
+  if (vscode) await bridgeCall("open-link", { href: target });
+  else window.open(`vscode://file/${encodeURI(target)}`, "_blank", "noopener,noreferrer");
+}));
+
+agentHub.on("resource:reveal", ({ resource }) => runAction(async () => {
+  const target = String(resource?.localPath ?? "").trim();
+  if (!target || !localWorkspaceFilesAvailable) {
+    throw new Error("Показ файла в проводнике недоступен в этой поверхности");
+  }
+  if (vscode) await bridgeCall("reveal-link", { href: target });
+  else {
+    const response = await hubFetch("/api/workspace-file/reveal", {
+      method: "POST",
+      headers: { ...authorizationHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify({ path: target }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || payload.ok === false) {
+      throw new Error(String(payload.error ?? `Не удалось показать файл: HTTP ${response.status}`));
+    }
+  }
+}));
+
 agentHub.on("resource:copy", ({ resource }) => runAction(async () => {
   if (resource?.kind === "attachment") await copyAttachmentResource(resource.attachment);
   else if (vscode) await bridgeCall("copy-link", { href: resource.localPath || resource.href });
   else await navigator.clipboard.writeText(resourceReference(resource));
+  agentHub.toast("Скопировано в буфер обмена");
+}));
+
+agentHub.on("resource:copy-path", ({ resource }) => runAction(async () => {
+  await navigator.clipboard.writeText(String(resource?.localPath ?? ""));
+  agentHub.toast("Путь скопирован в буфер обмена");
+}));
+
+agentHub.on("clipboard:write", ({ text }) => runAction(async () => {
+  const value = String(text ?? "");
+  if (vscode) await bridgeCall("copy-text", { text: value });
+  else await navigator.clipboard.writeText(value);
   agentHub.toast("Скопировано в буфер обмена");
 }));
 

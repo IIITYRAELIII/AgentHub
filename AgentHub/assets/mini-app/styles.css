@@ -3523,6 +3523,91 @@ html[data-surface="mobile"]
   min-height: 0;
 }
 
+.activity-recent-streams {
+  border-top: 1px solid var(--line);
+}
+
+.activity-section-head {
+  align-items: center;
+  color: var(--text-muted);
+  display: flex;
+  flex: 0 0 auto;
+  font-size: 0.68rem;
+  justify-content: space-between;
+  letter-spacing: var(--label-spacing);
+  min-height: 2rem;
+  padding: 0.4rem 0.75rem 0.25rem;
+  text-transform: uppercase;
+}
+
+.activity-recent-settings {
+  position: relative;
+}
+
+.activity-recent-settings summary {
+  align-items: center;
+  border: 1px solid transparent;
+  border-radius: var(--radius-chip);
+  cursor: pointer;
+  display: flex;
+  height: 1.75rem;
+  justify-content: center;
+  list-style: none;
+  width: 1.75rem;
+}
+
+.activity-recent-settings summary::-webkit-details-marker {
+  display: none;
+}
+
+.activity-recent-settings summary:hover,
+.activity-recent-settings summary:focus-visible,
+.activity-recent-settings[open] summary {
+  background: var(--surface-2);
+  border-color: var(--line);
+  color: var(--text);
+  outline: none;
+}
+
+.activity-recent-settings summary svg {
+  height: 0.9rem;
+  width: 0.9rem;
+}
+
+.activity-recent-settings-panel {
+  align-items: center;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  box-shadow: var(--card-shadow);
+  display: flex;
+  gap: 0.55rem;
+  letter-spacing: normal;
+  padding: 0.55rem;
+  position: absolute;
+  right: 0;
+  text-transform: none;
+  top: calc(100% + 0.25rem);
+  white-space: nowrap;
+  z-index: 5;
+}
+
+.activity-recent-hours-field {
+  align-items: center;
+  display: flex;
+  gap: 0.25rem;
+}
+
+.activity-recent-hours-field input {
+  background: var(--surface-1);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font: inherit;
+  padding: 0.3rem 0.4rem;
+  width: 4.25rem;
+}
+
 .activity-stream-list {
   display: flex;
   flex: 1 1 auto;
@@ -4988,8 +5073,9 @@ html[data-surface="mobile"]
 
 .stream-tab-create-mark {
   color: var(--accent);
-  font-size: 1.15rem;
-  line-height: 1;
+  display: block;
+  height: 1.15rem;
+  width: 1.15rem;
 }
 
 .stream-tab-body {
@@ -5552,7 +5638,8 @@ html[data-surface="mobile"]
 
   html[data-focus-mode="true"][data-view="chat"]:not([data-surface="mobile"])
     .stream-tab-create-mark {
-    font-size: 1rem;
+    height: 1rem;
+    width: 1rem;
   }
 
   html[data-focus-mode="true"][data-view="chat"]:not([data-surface="mobile"])

@@ -30,7 +30,10 @@ import {
 import { SingleInstanceGuard } from "../infrastructure/process/instance-lock.mjs";
 import { captureProcess } from "../infrastructure/process/process-capture.mjs";
 import { RuntimeCommandServer } from "../infrastructure/process/runtime-command.mjs";
-import { copyWindowsFileObject } from "../infrastructure/process/windows-file-clipboard.mjs";
+import {
+  copyWindowsFileObject,
+  revealWindowsFile,
+} from "../infrastructure/process/windows-file-clipboard.mjs";
 import { MiniAppServer } from "../interfaces/web/mini-app-server.mjs";
 import { HubMcpServer } from "../interfaces/mcp/hub-mcp-server.mjs";
 import { ensureLocalWebSecret } from "../interfaces/web/local-web-auth.mjs";
@@ -197,6 +200,7 @@ export async function createHubInfrastructure({
       localAccessSecretFile: path.join(runtimeCommandRoot, "local-web.secret"),
       workspaceFileRoots: [config.projectRoot, ...config.projects.map((project) => project.path)],
       copyWorkspaceFile: copyWindowsFileObject,
+      revealWorkspaceFile: revealWindowsFile,
     })
     : null;
   const publicMiniAppServer = config.miniApp.enabled && config.miniApp.quickTunnel.enabled
