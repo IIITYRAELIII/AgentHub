@@ -98,7 +98,7 @@ export class MediaController {
     this.stopProcessTree = stopProcessTree;
     this.imageDir = path.join(config.dataDir, "images");
     this.speechTextsFile = path.join(config.dataDir, "speech-texts.json");
-    this.transcribeScript = path.join(import.meta.dirname, "transcribe.py");
+    this.transcribeScript = path.join(this.agentHubRoot, "transcribe.py");
     this.speechTexts = new Map();
     this.writeQueue = Promise.resolve();
     this.ttsWorker = null;

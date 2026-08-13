@@ -28,6 +28,11 @@ function controller(dataDir, overrides = {}) {
   });
 }
 
+test("Whisper script resolves from the packaged Agent Hub root", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "media-controller-whisper-"));
+  assert.equal(controller(dataDir).transcribeScript, path.join(dataDir, "transcribe.py"));
+});
+
 test("speech text store persists and reloads buttons", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "media-controller-"));
   const first = controller(dataDir);
