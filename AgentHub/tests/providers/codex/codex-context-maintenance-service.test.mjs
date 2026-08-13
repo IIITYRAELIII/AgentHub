@@ -185,6 +185,35 @@ test("context probe fails after two empty starts without an unbounded loop", asy
   assert.equal(calls.filter(([name]) => name === "interrupt").length, 2);
 });
 
+test("context probe cleanup waits for stable managed and rollout inactivity", async () => {
+  let now = 0;
+  let run = { turnId: "probe-turn" };
+  let rolloutReads = 0;
+  const { service, calls } = harness({
+    runForTask: () => run,
+    knownRolloutPath: async () => "rollout.jsonl",
+    readRolloutActivity: async () => ({ running: rolloutReads++ < 2 }),
+    now: () => now,
+    sleep: async (milliseconds) => {
+      calls.push(["sleep", milliseconds]);
+      now += milliseconds;
+      run = null;
+    },
+  });
+
+  assert.equal(await service.waitForContextProbeIdle(
+    { provider: "codex", threadId: "thread-compacted" },
+    "probe-turn",
+    { pollMs: 25, quietMs: 50 },
+  ), true);
+  assert.deepEqual(calls, [
+    ["sleep", 25],
+    ["sleep", 25],
+    ["sleep", 25],
+    ["sleep", 25],
+  ]);
+});
+
 test("rotation compacts into a clean Thread and injects only the raw compaction item", async () => {
   const rawItem = { type: "compaction", encrypted_content: "opaque" };
   const { service, calls } = harness({

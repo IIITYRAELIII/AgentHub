@@ -3,6 +3,7 @@ import {
   readCodexTurnResponseItems,
   readLatestCodexCompactionItem,
 } from "./codex-compaction-rollout.mjs";
+import { readCodexRolloutActivity } from "./codex-rollout-activity.mjs";
 import { isCodexContextProbeTurn } from "../../domain/codex-context-probe.mjs";
 
 const DEFAULT_CLEANUP_RETRY_MS = 15_000;
@@ -29,6 +30,7 @@ export class CodexContextMaintenanceService {
     runIsActive = () => false,
     refreshTaskCatalog = async () => [],
     knownRolloutPath = async () => "",
+    readRolloutActivity = readCodexRolloutActivity,
     readThread = async () => null,
     rememberRolloutPath = () => {},
     stopTransport = async () => {},
@@ -70,6 +72,7 @@ export class CodexContextMaintenanceService {
     this.runIsActive = runIsActive;
     this.refreshTaskCatalog = refreshTaskCatalog;
     this.knownRolloutPath = knownRolloutPath;
+    this.readRolloutActivity = readRolloutActivity;
     this.readThread = readThread;
     this.rememberRolloutPath = rememberRolloutPath;
     this.stopTransport = stopTransport;
@@ -168,6 +171,29 @@ export class CodexContextMaintenanceService {
       if (attempt < 2) await this.sleep(Math.max(1, Number(retryDelayMs) || 250));
     }
     throw new Error("Codex App Server дважды принял скрытый замер без фактического запуска");
+  }
+
+  async waitForContextProbeIdle(target, turnId, {
+    timeoutMs = 5_000,
+    pollMs = 25,
+    quietMs = 250,
+  } = {}) {
+    const expectedTurnId = normalizedId(turnId);
+    if (!expectedTurnId) return true;
+    const deadline = this.now() + Math.max(1, Number(timeoutMs) || 5_000);
+    let idleSince = null;
+    while (true) {
+      const run = this.runForTask(target);
+      const rolloutPath = await this.knownRolloutPath(normalizedId(target?.threadId));
+      const activity = rolloutPath ? await this.readRolloutActivity(rolloutPath) : null;
+      const probeBusy = normalizedId(run?.turnId) === expectedTurnId || activity?.running === true;
+      const currentTime = this.now();
+      if (probeBusy) idleSince = null;
+      else if (idleSince === null) idleSince = currentTime;
+      else if (currentTime - idleSince >= Math.max(1, Number(quietMs) || 250)) return true;
+      if (currentTime >= deadline) return false;
+      await this.sleep(Math.max(1, Number(pollMs) || 25));
+    }
   }
 
   async #probeMaterialized(threadId, turnId, { timeoutMs, pollMs }) {

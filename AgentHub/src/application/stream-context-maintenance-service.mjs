@@ -304,6 +304,9 @@ export class StreamContextMaintenanceService {
       if (completion.status !== "completed") {
         throw new Error(`Скрытый замер контекста завершился со статусом ${completion.status}`);
       }
+      if (await this.provider.waitForContextProbeIdle?.(target, probe?.turnId) === false) {
+        throw new Error("Скрытый замер контекста завершён, но его ход всё ещё активен");
+      }
       return measured?.provisional === true || Number(measured?.usedTokens) <= 0
         ? null
         : measured;
@@ -339,6 +342,9 @@ export class StreamContextMaintenanceService {
       if (!completion) throw new Error("Скрытый замер нового Thread не завершился вовремя");
       if (completion.status !== "completed") {
         throw new Error(`Скрытый замер нового Thread завершился со статусом ${completion.status}`);
+      }
+      if (await this.provider.waitForContextProbeIdle?.(target, probe?.turnId) === false) {
+        throw new Error("Скрытый замер нового Thread завершён, но его ход всё ещё активен");
       }
       return measured?.provisional === true || Number(measured?.usedTokens) <= 0
         ? null

@@ -92,6 +92,10 @@ function fixture({
         status: "completed",
       };
     },
+    waitForContextProbeIdle: async (...args) => {
+      events.push(["probe-idle", ...args, registry.isActive(source)]);
+      return true;
+    },
     rotate: async () => ({ thread: { id: "thread-new" } }),
     rotateCompacted: async (...args) => {
       events.push([
@@ -222,6 +226,7 @@ test("post-turn automation probes once when compaction usage is provisional", as
   assert.equal(state.events.filter(([name]) => name === "probe").length, 1);
   assert.equal(state.events.find(([name]) => name === "probe").at(-1), true);
   assert.equal(state.events.filter(([name]) => name === "turn-completed").length, 1);
+  assert.equal(state.events.find(([name]) => name === "probe-idle").at(-1), true);
   assert.equal(
     state.events.filter(([name]) => name === "usage").at(-1).at(-1).turnId,
     "probe-1",
