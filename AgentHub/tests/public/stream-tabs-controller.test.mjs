@@ -180,6 +180,8 @@ test("activity rail markup exposes separate sections and the inline recent-hours
   assert.match(html, /<strong>Недавние<\/strong>/u);
   assert.match(html, /data-activity-recent-hours/u);
   assert.match(appSource, /activityStreamSections\(entries\)/u);
+  assert.match(appSource, /activityStreamList\?\.addEventListener\("click", selectActivityTask\)/u);
+  assert.match(appSource, /activityRecentList\?\.addEventListener\("click", selectActivityTask\)/u);
   assert.match(appSource, /workspaceTasks = visible\.filter/u);
   assert.match(clientSource, /resolveTaskHierarchy\(/u);
 });

@@ -2561,10 +2561,12 @@ activityRailToggle?.addEventListener("click", () => {
   activityRailCollapsed = !activityRailCollapsed;
   applyActivityRailState({ persist: true });
 });
-activityStreamList?.addEventListener("click", (event) => {
+const selectActivityTask = (event) => {
   const item = event.target.closest("[data-activity-task-id]");
   if (item) selectTaskFromUi(String(item.dataset.activityTaskId ?? ""));
-});
+};
+activityStreamList?.addEventListener("click", selectActivityTask);
+activityRecentList?.addEventListener("click", selectActivityTask);
 taskFilter.addEventListener("input", () => {
   renderTasks();
 });

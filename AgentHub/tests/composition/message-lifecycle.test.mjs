@@ -74,6 +74,13 @@ test("message delivery distinguishes a server rejection from an unconfirmed tran
   assert.equal(rejected.agentHubCommandRejected, true);
 });
 
+test("message delivery keeps the stable Stream identity when a Thread binding is stale", () => {
+  assert.match(
+    hubClientSource,
+    /const params = \{[\s\S]*?streamId: identity\?\.streamId \?\? request\.streamId,[\s\S]*?provider: identity\?\.provider,[\s\S]*?threadId: identity\?\.threadId,/u,
+  );
+});
+
 test("response annotation envelopes become structured user messages", () => {
   const raw = [
     "# Response annotations:",

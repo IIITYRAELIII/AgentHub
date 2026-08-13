@@ -1852,6 +1852,7 @@ agentHub.on("message:send", (request) => {
       patchOutgoing(request.taskId, request.requestId, deliveryPatch("sending"));
       const params = {
         text: annotatedText(request.text, request.annotations),
+        streamId: identity?.streamId ?? request.streamId,
         provider: identity?.provider,
         threadId: identity?.threadId,
         clientUserMessageId: request.requestId,
