@@ -9,6 +9,7 @@ import { createWorkLogUsageStore } from "../application/work-log-usage-store.mjs
 import { TaskBoardService } from "../application/task-board-service.mjs";
 import { WorkspaceReleaseService } from "../application/workspace-release-service.mjs";
 import { samePath } from "../infrastructure/filesystem/config.mjs";
+import { resolveTaskGitRepoRootsForFiles } from "../infrastructure/filesystem/task-git-diff.mjs";
 import { runtimeLayout, runtimeReleaseDirectory } from "../infrastructure/filesystem/runtime-layout.mjs";
 import { UsdRubRateStore } from "../infrastructure/network/exchange-rate.mjs";
 import { migrateMessageBindings } from "../infrastructure/persistence/message-bindings.mjs";
@@ -100,14 +101,20 @@ export async function createHubInfrastructure({
       if (projectRoots.some((value) => !value)) throw new Error("release change has no project root");
       const repositories = [];
       for (const projectRoot of projectRoots) {
-        const root = await gitOutput(["rev-parse", "--show-toplevel"], { cwd: projectRoot });
-        if (repositories.some((repository) => path.resolve(repository.root) === path.resolve(root))) continue;
-        const changes = parseWorkingTreeStatus(await gitOutput([
-          "status", "--porcelain=v1", "--untracked-files=all",
-        ], { cwd: root }));
-        if (changes.length) throw new Error(`release repository is dirty: ${root}`);
-        const revision = await assertCurrentPublicationRevision({ cwd: root });
-        repositories.push({ root, revision });
+        const files = plan.ready
+          .filter((change) => String(change.projectRoot ?? "").trim() === projectRoot)
+          .flatMap((change) => change.files ?? []);
+        const roots = await resolveTaskGitRepoRootsForFiles(projectRoot, files);
+        if (!roots.length) throw new Error(`release repository is not found for: ${projectRoot}`);
+        for (const root of roots) {
+          if (repositories.some((repository) => path.resolve(repository.root) === path.resolve(root))) continue;
+          const changes = parseWorkingTreeStatus(await gitOutput([
+            "status", "--porcelain=v1", "--untracked-files=all",
+          ], { cwd: root }));
+          if (changes.length) throw new Error(`release repository is dirty: ${root}`);
+          const revision = await assertCurrentPublicationRevision({ cwd: root });
+          repositories.push({ root, revision });
+        }
       }
       if (expectedRevision && (repositories.length !== 1 || repositories[0].revision !== expectedRevision)) {
         throw new Error("release revision does not match expected_revision");

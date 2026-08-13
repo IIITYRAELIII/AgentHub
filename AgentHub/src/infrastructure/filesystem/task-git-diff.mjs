@@ -183,6 +183,29 @@ export async function resolveTaskGitRepoRoots(projectRoot, { maximumDepth = 5 } 
   return [...new Set(roots)].sort((left, right) => left.localeCompare(right));
 }
 
+export async function resolveTaskGitRepoRootsForFiles(projectRoot, files = []) {
+  const resolvedProjectRoot = path.resolve(projectRoot);
+  const roots = new Set();
+  for (const file of files) {
+    const absoluteFile = path.resolve(resolvedProjectRoot, String(file ?? ""));
+    const relativeFile = path.relative(resolvedProjectRoot, absoluteFile);
+    if (relativeFile.startsWith("..") || path.isAbsolute(relativeFile)) continue;
+    let candidate = absoluteFile;
+    while (true) {
+      const root = await resolveTaskGitRepoRoot(candidate);
+      if (root) {
+        roots.add(root);
+        break;
+      }
+      if (candidate === resolvedProjectRoot) break;
+      const parent = path.dirname(candidate);
+      if (parent === candidate) break;
+      candidate = parent;
+    }
+  }
+  return [...roots].sort((left, right) => left.localeCompare(right));
+}
+
 export async function taskGitDiff(
   baseline,
   dataDir,

@@ -9,6 +9,7 @@ import {
   captureTaskGitBaseline,
   cleanupTaskGitIndexes,
   resolveTaskGitRepoRoots,
+  resolveTaskGitRepoRootsForFiles,
   taskGitDiff,
 } from "../../../src/infrastructure/filesystem/task-git-diff.mjs";
 
@@ -29,6 +30,21 @@ test("repository discovery finds nested repos in a multi-repository workspace", 
       path.resolve(first),
       path.resolve(second),
     ].sort((left, right) => left.localeCompare(right)));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("release repository discovery follows declared files into a nested repo", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "release-repo-roots-"));
+  const repo = path.join(root, "Utilities");
+  await mkdir(path.join(repo, "AgentHub"), { recursive: true });
+  try {
+    await git(repo, "init");
+    assert.deepEqual(await resolveTaskGitRepoRootsForFiles(root, [
+      "Utilities/AgentHub/server.mjs",
+      "Utilities/CHANGELOG.md",
+    ]), [path.resolve(repo)]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
