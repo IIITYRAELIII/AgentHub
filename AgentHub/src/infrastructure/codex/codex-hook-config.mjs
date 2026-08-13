@@ -1,10 +1,14 @@
-import { access, copyFile, mkdir, readFile } from "node:fs/promises";
+import { access, mkdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import process from "node:process";
 
 import { isMainModule } from "../process/main-module.mjs";
-import { defaultRuntimeRoot, runtimeLayout } from "../filesystem/runtime-layout.mjs";
+import {
+  defaultRuntimeRoot,
+  runtimeLayout,
+  runtimeReleaseDirectory,
+} from "../filesystem/runtime-layout.mjs";
 import { writeTextAtomic } from "../persistence/state-store.mjs";
 import { readRuntimeState } from "../persistence/runtime-state-store.mjs";
 
@@ -12,6 +16,19 @@ const HOOK_FILE_NAME = "codex-stop-hook-launcher.mjs";
 
 function installedLauncherFile(hooksFile) {
   return path.join(path.dirname(hooksFile), "agent-hub-hooks", HOOK_FILE_NAME);
+}
+
+async function sourceLauncherFile(runtimeRoot) {
+  const layout = runtimeLayout(runtimeRoot);
+  let pointer;
+  try {
+    pointer = JSON.parse(await readFile(layout.currentFile, "utf8"));
+  } catch (error) {
+    if (error?.code === "ENOENT") return layout.codexHookLauncherFile;
+    throw error;
+  }
+  if (!pointer?.current) return layout.codexHookLauncherFile;
+  return path.join(runtimeReleaseDirectory(runtimeRoot, pointer.current), HOOK_FILE_NAME);
 }
 
 function defaultCodexHome(environment = process.env) {
@@ -37,6 +54,19 @@ function isOurHandler(value) {
     && [value.command, value.commandWindows].some((command) => (
       typeof command === "string" && command.includes(HOOK_FILE_NAME)
     ));
+}
+
+function isExpectedHandler(value, options) {
+  const expected = handlerFor(options);
+  return value?.type === expected.type
+    && value.command === expected.command
+    && value.commandWindows === expected.commandWindows
+    && value.timeout === expected.timeout;
+}
+
+async function sameFileContents(left, right) {
+  const [leftContents, rightContents] = await Promise.all([readFile(left), readFile(right)]);
+  return leftContents.equals(rightContents);
 }
 
 function mergeEventHandler(result, eventName, options) {
@@ -89,16 +119,16 @@ export async function installCodexStopHook({
   runtimeRoot = defaultRuntimeRoot(),
   nodeExecutable = process.execPath,
 } = {}) {
-  const sourceLauncherFile = runtimeLayout(runtimeRoot).codexHookLauncherFile;
+  const sourceLauncher = await sourceLauncherFile(runtimeRoot);
   const launcherFile = installedLauncherFile(hooksFile);
-  await access(sourceLauncherFile);
+  await access(sourceLauncher);
   await mkdir(path.dirname(launcherFile), { recursive: true });
-  await copyFile(sourceLauncherFile, launcherFile);
+  await writeTextAtomic(launcherFile, await readFile(sourceLauncher, "utf8"));
   const current = await readConfig(hooksFile);
   const updated = mergeCodexStopHookConfig(current, { nodeExecutable, launcherFile });
   await mkdir(path.dirname(hooksFile), { recursive: true });
   await writeTextAtomic(hooksFile, `${JSON.stringify(updated, null, 2)}\n`);
-  return { hooksFile, launcherFile };
+  return { hooksFile, launcherFile, sourceLauncherFile: sourceLauncher };
 }
 
 export async function uninstallCodexStopHook({
@@ -114,14 +144,22 @@ export async function uninstallCodexStopHook({
 export async function codexStopHookStatus({
   hooksFile = path.join(defaultCodexHome(), "hooks.json"),
   runtimeRoot = defaultRuntimeRoot(),
+  nodeExecutable = process.execPath,
 } = {}) {
   const current = await readConfig(hooksFile);
   const launcherFile = installedLauncherFile(hooksFile);
+  const sourceLauncher = await sourceLauncherFile(runtimeRoot);
+  const sourceLauncherAvailable = await access(sourceLauncher).then(() => true, () => false);
   const launcherAvailable = await access(launcherFile).then(() => true, () => false);
+  const launcherCurrent = sourceLauncherAvailable && launcherAvailable
+    ? await sameFileContents(sourceLauncher, launcherFile)
+    : false;
+  const expectedHandlerOptions = { nodeExecutable, launcherFile };
   const events = Object.fromEntries(["UserPromptSubmit", "Stop"].map((eventName) => [
     eventName,
     (current.hooks?.[eventName] ?? []).some((group) => (
-      Array.isArray(group?.hooks) && group.hooks.some(isOurHandler)
+      Array.isArray(group?.hooks)
+        && group.hooks.some((hook) => isExpectedHandler(hook, expectedHandlerOptions))
     )),
   ]));
   const dataDir = runtimeLayout(runtimeRoot).dataDir;
@@ -143,8 +181,11 @@ export async function codexStopHookStatus({
   return {
     hooksFile,
     launcherFile,
+    sourceLauncherFile: sourceLauncher,
+    sourceLauncherAvailable,
     launcherAvailable,
-    configured: launcherAvailable && Object.values(events).every(Boolean),
+    launcherCurrent,
+    configured: launcherCurrent && Object.values(events).every(Boolean),
     events,
     receipts,
     activeTurnStarts,

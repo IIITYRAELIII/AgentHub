@@ -63,6 +63,7 @@ test("Codex hook status reports executable configuration and runtime receipts", 
     const layout = runtimeLayout(root);
     const hooksFile = path.join(root, "hooks.json");
     await mkdir(layout.dataDir, { recursive: true });
+    await writeFile(layout.codexHookLauncherFile, "// launcher\n", "utf8");
     const launcherFile = path.join(path.dirname(hooksFile), "agent-hub-hooks", "codex-stop-hook-launcher.mjs");
     await mkdir(path.dirname(launcherFile), { recursive: true });
     await writeFile(launcherFile, "// launcher\n", "utf8");
@@ -79,6 +80,7 @@ test("Codex hook status reports executable configuration and runtime receipts", 
     const status = await codexStopHookStatus({ hooksFile, runtimeRoot: root });
     assert.equal(status.configured, true);
     assert.equal(status.launcherAvailable, true);
+    assert.equal(status.launcherCurrent, true);
     assert.equal(status.receipts.start.turnId, "turn-1");
     assert.equal(status.receipts.stop.turnId, "turn-1");
   } finally {
@@ -102,6 +104,59 @@ test("Codex hook installation copies the launcher beside Codex config", async ()
     assert.equal(await readFile(installed.launcherFile, "utf8"), "// sandbox-readable launcher\n");
     const config = JSON.parse(await readFile(hooksFile, "utf8"));
     assert.match(config.hooks.Stop[0].hooks[0].command, /agent-hub-hooks/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Codex hook installation uses the current immutable release instead of a stale stable copy", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "codex-hook-current-release-"));
+  try {
+    const runtimeRoot = path.join(root, "runtime");
+    const hooksFile = path.join(root, "codex", "hooks.json");
+    const layout = runtimeLayout(runtimeRoot);
+    const releaseLauncher = path.join(
+      layout.releasesDir,
+      "release-2",
+      "codex-stop-hook-launcher.mjs",
+    );
+    await mkdir(path.dirname(releaseLauncher), { recursive: true });
+    await writeFile(layout.codexHookLauncherFile, "// stale stable launcher\n", "utf8");
+    await writeFile(releaseLauncher, "// current release launcher\n", "utf8");
+    await writeFile(layout.currentFile, `${JSON.stringify({ current: "release-2" })}\n`, "utf8");
+
+    const installed = await installCodexStopHook({ hooksFile, runtimeRoot });
+
+    assert.equal(installed.sourceLauncherFile, releaseLauncher);
+    assert.equal(await readFile(installed.launcherFile, "utf8"), "// current release launcher\n");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Codex hook status rejects a stale launcher and an obsolete command", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "codex-hook-stale-status-"));
+  try {
+    const runtimeRoot = path.join(root, "runtime");
+    const hooksFile = path.join(root, "codex", "hooks.json");
+    const layout = runtimeLayout(runtimeRoot);
+    const launcherFile = path.join(path.dirname(hooksFile), "agent-hub-hooks", "codex-stop-hook-launcher.mjs");
+    await mkdir(path.dirname(launcherFile), { recursive: true });
+    await mkdir(path.dirname(layout.codexHookLauncherFile), { recursive: true });
+    await writeFile(layout.codexHookLauncherFile, "// expected launcher\n", "utf8");
+    await writeFile(launcherFile, "// stale launcher\n", "utf8");
+    await writeFile(hooksFile, `${JSON.stringify(mergeCodexStopHookConfig({}, {
+      nodeExecutable: process.execPath,
+      launcherFile: path.join(root, "obsolete", "codex-stop-hook-launcher.mjs"),
+    }))}\n`, "utf8");
+
+    const status = await codexStopHookStatus({ hooksFile, runtimeRoot });
+
+    assert.equal(status.launcherAvailable, true);
+    assert.equal(status.sourceLauncherAvailable, true);
+    assert.equal(status.launcherCurrent, false);
+    assert.deepEqual(status.events, { UserPromptSubmit: false, Stop: false });
+    assert.equal(status.configured, false);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
