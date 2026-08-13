@@ -2397,7 +2397,7 @@ test("full-text work-log search covers prompts, answers, files and local dates",
       title: "Исправлена доставка",
       prompt: "Почему сообщение дублируется?",
       body: "Дедупликация теперь использует точный itemId.",
-      changedFiles: ["assets/mini-app/hub-client.js"],
+      changedFiles: ["assets/web-app/hub-client.js"],
       completedAt: "2026-07-30T03:15:00.000Z",
     },
     second: {

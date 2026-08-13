@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
 const require = createRequire(import.meta.url);
 const { loadThemeRegistry } = require("../theme-registry.cjs");
 const root = path.resolve(import.meta.dirname, "..");
-const themeRoot = path.join(root, "assets", "mini-app");
+const themeRoot = path.join(root, "assets", "web-app");
 
 function sha256(body) {
   return createHash("sha256").update(body).digest("hex");

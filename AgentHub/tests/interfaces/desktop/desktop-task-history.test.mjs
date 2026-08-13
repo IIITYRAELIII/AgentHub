@@ -244,9 +244,11 @@ test("desktop task history removes an already persisted context probe turn", asy
       prompt: CODEX_CONTEXT_PROBE_PROMPT,
       answer: "Рабочий ответ",
       completed: true,
+      clientUserMessageId: "agent-hub-context-probe:persisted",
       messages: [{
         itemId: "probe-user",
         role: "user",
+        clientUserMessageId: "agent-hub-context-probe:persisted",
         text: CODEX_CONTEXT_PROBE_PROMPT,
       }, {
         itemId: "probe-answer",
@@ -259,6 +261,31 @@ test("desktop task history removes an already persisted context probe turn", asy
   const result = await desktopTaskHistory({ includeActive: false, limit: 10 });
 
   assert.deepEqual(result.items.map((item) => item.id), ["real-turn"]);
+});
+
+test("desktop task history preserves real user text equal to the probe prompt", async () => {
+  const { desktopTaskHistory } = fixture({
+    run: null,
+    history: [{
+      id: "user-turn",
+      prompt: CODEX_CONTEXT_PROBE_PROMPT,
+      answer: CODEX_CONTEXT_PROBE_RESPONSE,
+      completed: true,
+      messages: [{
+        itemId: "user-message",
+        role: "user",
+        text: CODEX_CONTEXT_PROBE_PROMPT,
+      }, {
+        itemId: "user-answer",
+        role: "agent",
+        text: CODEX_CONTEXT_PROBE_RESPONSE,
+      }],
+    }],
+  });
+
+  const result = await desktopTaskHistory({ includeActive: false, limit: 10 });
+
+  assert.deepEqual(result.items.map((item) => item.id), ["user-turn"]);
 });
 
 test("desktop task history hides an empty maintenance completion after restart", async () => {

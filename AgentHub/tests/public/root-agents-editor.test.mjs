@@ -5,7 +5,7 @@ import vm from "node:vm";
 
 async function rootAgentsEditorApi() {
   const source = await readFile(
-    new URL("../../assets/mini-app/root-agents-editor.js", import.meta.url),
+    new URL("../../assets/web-app/root-agents-editor.js", import.meta.url),
     "utf8",
   );
   const window = {};

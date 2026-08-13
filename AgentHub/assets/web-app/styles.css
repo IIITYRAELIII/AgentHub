@@ -4070,7 +4070,8 @@ html[data-view="dashboard"] .task-board-view {
 
 .task-start-modal,
 .task-card-modal,
-.task-delete-modal {
+.task-delete-modal,
+.context-usage-modal {
   background: var(--surface-1);
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-lg);
@@ -4083,7 +4084,8 @@ html[data-view="dashboard"] .task-board-view {
 
 .task-start-modal::backdrop,
 .task-card-modal::backdrop,
-.task-delete-modal::backdrop {
+.task-delete-modal::backdrop,
+.context-usage-modal::backdrop {
   background: rgba(2, 5, 10, 0.76);
   backdrop-filter: blur(3px);
 }
@@ -5019,6 +5021,100 @@ html[data-surface="mobile"]
   flex-basis: 2rem;
   opacity: 0.58;
   width: 2rem;
+}
+
+.context-usage-modal > header,
+.context-usage-modal > section,
+.context-usage-modal > footer {
+  padding: 0.9rem 1rem;
+}
+
+.context-usage-modal > header,
+.context-usage-modal > footer {
+  align-items: center;
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+}
+
+.context-usage-modal > header {
+  border-bottom: 1px solid var(--line);
+}
+
+.context-usage-modal > footer {
+  border-top: 1px solid var(--line);
+  justify-content: flex-end;
+}
+
+.context-usage-modal h2,
+.context-usage-modal p {
+  margin: 0;
+}
+
+.context-usage-modal h2 {
+  font-size: 1rem;
+  margin-top: 0.2rem;
+}
+
+.context-usage-modal > section {
+  display: grid;
+  gap: 0.75rem;
+  max-height: min(62dvh, 34rem);
+  overflow-y: auto;
+}
+
+.context-usage-summary,
+.context-usage-category-head {
+  align-items: baseline;
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+}
+
+.context-usage-summary span,
+.context-usage-category-head span:last-child {
+  color: var(--text-muted);
+  font-family: var(--font-numeric);
+  font-size: 0.72rem;
+}
+
+.context-usage-total-bar,
+.context-usage-category-bar {
+  background: var(--line);
+  border-radius: 999px;
+  height: 0.36rem;
+  overflow: hidden;
+}
+
+.context-usage-total-bar > span,
+.context-usage-category-bar > span {
+  background: var(--accent);
+  display: block;
+  height: 100%;
+}
+
+.context-usage-categories {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.context-usage-category {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.context-usage-category-head {
+  font-size: 0.76rem;
+}
+
+.context-usage-category-bar {
+  height: 0.24rem;
+}
+
+.context-usage-note {
+  color: var(--text-faint);
+  font-size: 0.7rem;
+  line-height: 1.45;
 }
 
 .stream-order-toggle {

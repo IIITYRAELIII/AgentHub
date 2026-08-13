@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const app = await readFile(new URL("../../assets/mini-app/app.js", import.meta.url), "utf8");
+const app = await readFile(new URL("../../assets/web-app/app.js", import.meta.url), "utf8");
 
 test("bug report closes optimistically and reopens with its draft after an error", () => {
   const submit = app.match(/bugReportForm\?\.addEventListener\("submit"[\s\S]*?\n\}\);/u)?.[0] ?? "";

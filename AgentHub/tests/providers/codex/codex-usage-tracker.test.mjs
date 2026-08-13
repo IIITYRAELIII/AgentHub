@@ -14,7 +14,15 @@ function usage(totalTokens, {
 
 test("CodexUsageTracker accumulates one turn from thread-total deltas", () => {
   const tracker = new CodexUsageTracker();
-  tracker.turns.set("turn-1", { usage: usage(0), reported: false });
+  tracker.turns.set("turn-1", {
+    usage: usage(0),
+    reported: false,
+    contextBreakdown: {
+      threadId: "thread-1",
+      turnId: "turn-1",
+      categories: [{ id: "messages", label: "Сообщения", estimatedTokens: 12 }],
+    },
+  });
   tracker.track({
     threadId: "thread-1",
     turnId: "turn-1",
@@ -28,6 +36,7 @@ test("CodexUsageTracker accumulates one turn from thread-total deltas", () => {
   const result = tracker.consume("turn-1");
   assert.equal(result.reported, true);
   assert.equal(result.usage.totalTokens, 140);
+  assert.equal(tracker.latestContext("thread-1").breakdown.categories[0].estimatedTokens, 12);
   assert.equal(tracker.turns.has("turn-1"), false);
 });
 

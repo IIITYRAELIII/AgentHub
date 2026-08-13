@@ -409,6 +409,39 @@ function completedConversationTurnVisible(messages, {
   return requireAgent ? agentTexts.length > 0 : true;
 }
 
+function attachmentReceiptSignature(message) {
+  const attachments = Array.isArray(message?.attachments) ? message.attachments : [];
+  return JSON.stringify(attachments.map((attachment) => ({
+    name: String(
+      attachment?.name
+        ?? attachment?.fileName
+        ?? attachment?.filename
+        ?? attachment?.path
+        ?? "",
+    ).replaceAll("\\", "/").split("/").at(-1).toLowerCase(),
+    type: String(attachment?.type ?? attachment?.mimeType ?? "").toLowerCase(),
+  })));
+}
+
+function optimisticReceiptMatch(server, local) {
+  if (server?.role !== "user" || local?.role !== "user") return false;
+  if (!String(local?.deliveryState ?? "").trim()) return false;
+  for (const field of ["provider", "threadId", "turnId"]) {
+    const left = String(server?.[field] ?? "").trim();
+    const right = String(local?.[field] ?? "").trim();
+    if (left && right && left !== right) return false;
+  }
+  const serverText = String(normalizedUserMessage(server)?.text ?? "").trim();
+  const localText = String(normalizedUserMessage(local)?.text ?? "").trim();
+  if (!serverText || serverText !== localText) return false;
+  if (attachmentReceiptSignature(server) !== attachmentReceiptSignature(local)) return false;
+  const serverTime = Date.parse(server?.time ?? "");
+  const localTime = Date.parse(local?.time ?? "");
+  return Number.isFinite(serverTime)
+    && Number.isFinite(localTime)
+    && Math.abs(serverTime - localTime) <= 120_000;
+}
+
 function reconcile(serverMessages, outgoingMessages) {
   const outgoing = Array.isArray(outgoingMessages) ? outgoingMessages : [];
   const clientOutgoing = new Map();
@@ -460,9 +493,23 @@ function reconcile(serverMessages, outgoingMessages) {
     const root = rootMessage
       ? rootOutgoing.get(turnRootUserKey(message))
       : null;
+    const receiptFallback = client || exact || root
+      ? null
+      : outgoing.filter((candidate) => (
+        !matchedIds.has(candidate.clientUserMessageId)
+        && optimisticReceiptMatch(message, candidate)
+      ));
     // A turn can contain several steering messages. A turn+role fallback is safe
     // only when it identifies one local message; text is never an identity.
-    const local = client ?? exact ?? root ?? (fallbackValues.length === 1 ? fallbackValues[0] : null);
+    // A delayed receipt can still lack turnId when durable history already has
+    // the canonical turn and a replacement client id. Content is used only
+    // when exactly one receipt-bearing candidate matches the same task, files
+    // and narrow timestamp window, so repeated real submissions stay separate.
+    const local = client
+      ?? exact
+      ?? root
+      ?? (fallbackValues.length === 1 ? fallbackValues[0] : null)
+      ?? (receiptFallback?.length === 1 ? receiptFallback[0] : null);
     if (!local) return { message, local: null };
     matchedIds.add(local.clientUserMessageId);
     return { message, local };
@@ -557,6 +604,7 @@ function mergeLiveUserMessages(messages, {
   turnId,
   userMessages = [],
   prompt = "",
+  promptAuthor = "",
   clientUserMessageId = "",
   time = null,
   attachments = [],
@@ -575,6 +623,9 @@ function mergeLiveUserMessages(messages, {
     const text = String(message?.text ?? "").trim();
     if (!provider || !threadId || !turnId || !text) continue;
     const turnUserSlot = liveTurnUserSlot(message, index, { prompt, clientUserMessageId });
+    const author = String(message?.author ?? "").trim()
+      || (turnUserSlot === "root" ? String(promptAuthor ?? "").trim() : "")
+      || "Вы";
     const candidate = {
       id: `${provider}:${threadId}:${turnId}:${message.itemId || `live-user-${index}`}:user`,
       provider,
@@ -584,7 +635,7 @@ function mergeLiveUserMessages(messages, {
       clientUserMessageId: String(message.clientUserMessageId ?? ""),
       turnUserSlot,
       role: "user",
-      author: "Вы",
+      author,
       text,
       ...(Array.isArray(message.responseAnnotations) ? {
         responseAnnotations: message.responseAnnotations.map((item) => ({ ...item })),
@@ -625,6 +676,9 @@ function mergeLiveUserMessages(messages, {
       id: existing.id ?? candidate.id,
       itemId: existing.itemId || candidate.itemId,
       clientUserMessageId: existing.clientUserMessageId || candidate.clientUserMessageId,
+      author: candidate.author === "Вы" && String(existing.author ?? "").trim()
+        ? existing.author
+        : candidate.author,
       time: candidate.time ?? existing.time ?? null,
       attachments: candidate.attachments.length
         ? candidate.attachments
@@ -792,6 +846,15 @@ function reusableAttachmentPaths(previousPaths, attachmentCount, { remote = fals
     : [];
 }
 
+function conversationTaskId({ provider, threadId, streamId = "" } = {}, tasks = []) {
+  const stableStreamId = String(streamId ?? "").trim()
+    || String((Array.isArray(tasks) ? tasks : []).find((task) => (
+      String(task?.provider ?? "") === String(provider ?? "")
+      && String(task?.threadId ?? "") === String(threadId ?? "")
+    ))?.streamId ?? "").trim();
+  return stableStreamId || `${String(provider ?? "")}:${String(threadId ?? "")}`;
+}
+
 function markConnectionFailure(error) {
   const failure = error && typeof error === "object" && typeof error.message === "string"
     ? error
@@ -849,6 +912,7 @@ function hubErrorMessage(error) {
 globalThis.AgentHubMessageLifecycle = Object.freeze({
   activeStageLabel,
   chronologicalMessages,
+  conversationTaskId,
   completedConversationTurnVisible,
   confirmedOutgoingMessageIds,
   deduplicateConversationMessages,

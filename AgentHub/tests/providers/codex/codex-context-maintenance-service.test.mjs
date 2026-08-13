@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { CodexContextMaintenanceService } from "../../../src/providers/codex/codex-context-maintenance-service.mjs";
-import { CODEX_CONTEXT_PROBE_PROMPT } from "../../../src/domain/codex-context-probe.mjs";
+import { CODEX_CONTEXT_PROBE_CLIENT_ID_PREFIX } from "../../../src/domain/codex-context-probe.mjs";
+
+const PROBE_CLIENT_ID = `${CODEX_CONTEXT_PROBE_CLIENT_ID_PREFIX}test`;
 
 function harness(overrides = {}) {
   const calls = [];
@@ -99,7 +101,7 @@ test("context probe returns only after its prompt materializes", async () => {
       calls.push(["read", ...args]);
       return {
         thread: {
-          turns: [{ id: "probe-turn", status: "inProgress", prompt: CODEX_CONTEXT_PROBE_PROMPT }],
+          turns: [{ id: "probe-turn", status: "inProgress", clientUserMessageId: PROBE_CLIENT_ID }],
         },
       };
     },
@@ -144,7 +146,7 @@ test("context probe interrupts one empty start and retries once", async () => {
         thread: {
           turns: attempt === 1
             ? [{ id: "probe-1", status: "completed" }]
-            : [{ id: "probe-2", status: "inProgress", prompt: CODEX_CONTEXT_PROBE_PROMPT }],
+            : [{ id: "probe-2", status: "inProgress", clientUserMessageId: PROBE_CLIENT_ID }],
         },
       };
     },
@@ -206,7 +208,11 @@ test("rotation compacts into a clean Thread and injects only the raw compaction 
     calls.push(["wait-raw", ...args]);
     return rawItem;
   };
-  const result = await service.rotate({ provider: "codex", threadId: "thread-1" });
+  const result = await service.rotate({
+    provider: "codex",
+    threadId: "thread-1",
+    model: "gpt-5.6-sol",
+  });
   assert.equal(result.sourceThreadId, "thread-1");
   assert.equal(result.thread.id, "thread-2");
   assert.deepEqual(calls, [
@@ -221,7 +227,9 @@ test("rotation compacts into a clean Thread and injects only the raw compaction 
     ["transport"],
     ["start-thread", {
       cwd: "D:\\repo",
+      model: "gpt-5.6-sol",
       modelProvider: "openai",
+      allowProviderModelFallback: true,
       ephemeral: false,
       sandbox: "danger-full-access",
     }],

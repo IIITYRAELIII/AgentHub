@@ -15,6 +15,29 @@ function contextKey(threadId, turnId) {
   return `${String(threadId ?? "").trim()}\0${String(turnId ?? "").trim()}`;
 }
 
+function normalizedBreakdown(value) {
+  if (!value || typeof value !== "object") return null;
+  const categories = (Array.isArray(value.categories) ? value.categories : []).flatMap((entry) => {
+    const id = String(entry?.id ?? "").trim();
+    const label = String(entry?.label ?? "").trim();
+    if (!id || !label) return [];
+    return [{
+      id,
+      label,
+      estimatedTokens: entry?.estimatedTokens == null
+        ? null
+        : Math.max(0, Number(entry.estimatedTokens) || 0),
+      count: Math.max(0, Number(entry?.count) || 0),
+      tokenEstimateAvailable: entry?.tokenEstimateAvailable !== false,
+    }];
+  });
+  return {
+    version: Math.max(1, Number(value.version) || 1),
+    scope: String(value.scope ?? "current-turn-known-inputs"),
+    categories,
+  };
+}
+
 export class CodexUsageTracker {
   constructor({
     totalLimit = 500,
@@ -42,6 +65,7 @@ export class CodexUsageTracker {
     const threadId = String(params?.threadId ?? "").trim();
     const turnId = String(params?.turnId ?? "").trim();
     if (!threadId || !turnId || !modelContextWindow) return false;
+    const breakdown = normalizedBreakdown(this.turns.get(turnId)?.contextBreakdown);
     const context = {
       threadId,
       turnId,
@@ -49,6 +73,7 @@ export class CodexUsageTracker {
       usedTokens,
       provisional: provisional === true,
       updatedAt: this.now().toISOString(),
+      ...(breakdown ? { breakdown } : {}),
     };
     setBoundedMapValue(this.contexts, contextKey(threadId, turnId), context, this.contextLimit);
     try {
@@ -85,15 +110,20 @@ export class CodexUsageTracker {
       .sort((left, right) => (
         (Date.parse(right.updatedAt) || 0) - (Date.parse(left.updatedAt) || 0)
       ))[0] ?? null;
-    if (!exact || !latest) return exact ?? latest;
-    return (Date.parse(exact.updatedAt) || 0) >= (Date.parse(latest.updatedAt) || 0)
+    const selected = !exact || !latest
+      ? exact ?? latest
+      : (Date.parse(exact.updatedAt) || 0) >= (Date.parse(latest.updatedAt) || 0)
       ? exact
       : latest;
+    const liveBreakdown = normalizedBreakdown(this.turns.get(selected?.turnId)?.contextBreakdown);
+    return selected && liveBreakdown && !selected.breakdown
+      ? { ...selected, breakdown: liveBreakdown }
+      : selected;
   }
 
   latestExactContext(threadId) {
     const normalizedThreadId = String(threadId ?? "").trim();
-    return [...this.contexts.values()]
+    const selected = [...this.contexts.values()]
       .filter((entry) => (
         entry.threadId === normalizedThreadId
         && entry.provisional !== true
@@ -101,6 +131,10 @@ export class CodexUsageTracker {
       .sort((left, right) => (
         (Date.parse(right.updatedAt) || 0) - (Date.parse(left.updatedAt) || 0)
       ))[0] ?? null;
+    const liveBreakdown = normalizedBreakdown(this.turns.get(selected?.turnId)?.contextBreakdown);
+    return selected && liveBreakdown && !selected.breakdown
+      ? { ...selected, breakdown: liveBreakdown }
+      : selected;
   }
 
   waitForContextUpdate(threadId, { after = 0, turnId = "", timeoutMs = 5_000 } = {}) {
@@ -183,6 +217,13 @@ export class CodexUsageTracker {
   consume(turnId) {
     const key = String(turnId ?? "").trim();
     const tracker = this.turns.get(key);
+    const breakdown = normalizedBreakdown(tracker?.contextBreakdown);
+    if (breakdown) {
+      const threadId = String(tracker?.contextBreakdown?.threadId ?? "").trim();
+      const storedKey = contextKey(threadId, key);
+      const context = this.contexts.get(storedKey);
+      if (context && !context.breakdown) this.contexts.set(storedKey, { ...context, breakdown });
+    }
     this.turns.delete(key);
     return tracker
       ? { usage: normalizeTokenUsage(tracker.usage), reported: tracker.reported === true }
@@ -217,6 +258,13 @@ export class CodexUsageTracker {
       this.turns.set(entry[0], {
         usage: normalizeTokenUsage(entry[1].usage),
         reported: entry[1].reported === true,
+        ...(normalizedBreakdown(entry[1].contextBreakdown)
+          ? { contextBreakdown: {
+            ...normalizedBreakdown(entry[1].contextBreakdown),
+            threadId: String(entry[1].contextBreakdown.threadId ?? ""),
+            turnId: String(entry[1].contextBreakdown.turnId ?? entry[0]),
+          } }
+          : {}),
       });
     }
     for (const entry of Array.isArray(snapshot.threadContextUsage)
@@ -233,6 +281,9 @@ export class CodexUsageTracker {
         usedTokens,
         provisional: entry[1].provisional === true,
         updatedAt: String(entry[1].updatedAt ?? ""),
+        ...(normalizedBreakdown(entry[1].breakdown)
+          ? { breakdown: normalizedBreakdown(entry[1].breakdown) }
+          : {}),
       });
     }
   }

@@ -4,18 +4,18 @@ import vm from "node:vm";
 import test from "node:test";
 
 const source = await readFile(
-  new URL("../../assets/mini-app/message-lifecycle.js", import.meta.url),
+  new URL("../../assets/web-app/messages/lifecycle.js", import.meta.url),
   "utf8",
 );
 const context = vm.createContext({});
 vm.runInContext(source, context);
 const lifecycle = context.AgentHubMessageLifecycle;
 const hubClientSource = await readFile(
-  new URL("../../assets/mini-app/hub-client.js", import.meta.url),
+  new URL("../../assets/web-app/hub-client.js", import.meta.url),
   "utf8",
 );
 const miniAppSource = await readFile(
-  new URL("../../assets/mini-app/app.js", import.meta.url),
+  new URL("../../assets/web-app/app.js", import.meta.url),
   "utf8",
 );
 const compositionDirectory = new URL("../../src/composition/", import.meta.url);
@@ -52,6 +52,23 @@ test("chat history fallback preserves the reader position after prepending a pag
     /addedHeight\s*=\s*Math\.max\(0, chatScroll\.scrollHeight - anchor\.scrollHeight\)/u,
   );
   assert.match(miniAppSource, /chatScroll\.scrollTop\s*=\s*anchor\.scrollTop \+ addedHeight/u);
+});
+
+test("rotated Stream history keeps the stable Stream cache key", () => {
+  const tasks = [{
+    streamId: "stream-themes",
+    provider: "codex",
+    threadId: "thread-new",
+  }];
+  assert.equal(lifecycle.conversationTaskId({
+    streamId: "stream-themes",
+    provider: "codex",
+    threadId: "thread-old",
+  }, tasks), "stream-themes");
+  assert.equal(lifecycle.conversationTaskId({
+    provider: "codex",
+    threadId: "thread-new",
+  }, tasks), "stream-themes");
 });
 
 test("message lifecycle reconciles user messages by the official client id", () => {
@@ -539,6 +556,56 @@ test("new-turn root reconciles after App Server replaces its client id", () => {
   assert.deepEqual([...result.matchedIds], ["client-local"]);
 });
 
+test("delayed durable receipt replaces one optimistic card without a duplicate", () => {
+  const local = {
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "",
+    itemId: "local-client",
+    clientUserMessageId: "local-client",
+    role: "user",
+    text: "мимо...\nи под элементами...",
+    time: "2026-08-13T16:33:04.100Z",
+    attachments: [{ name: "screen.png", type: "image/png" }],
+    deliveryState: "accepted",
+  };
+  const server = {
+    ...local,
+    turnId: "turn-1",
+    itemId: "server-item",
+    clientUserMessageId: "server-generated-client",
+    time: "2026-08-13T16:33:05.000Z",
+    deliveryState: undefined,
+  };
+  const result = lifecycle.reconcile([server], [local]);
+  assert.equal(result.matches[0].local, local);
+  assert.deepEqual([...result.matchedIds], ["local-client"]);
+});
+
+test("identical optimistic submissions stay separate when receipt matching is ambiguous", () => {
+  const first = {
+    ...message("client-1", "Повтори"),
+    turnId: "",
+    time: "2026-08-13T16:33:04.100Z",
+    deliveryState: "accepted",
+  };
+  const second = {
+    ...first,
+    itemId: "client-2",
+    clientUserMessageId: "client-2",
+  };
+  const server = {
+    ...first,
+    turnId: "turn-1",
+    itemId: "server-item",
+    clientUserMessageId: "server-generated-client",
+    deliveryState: undefined,
+  };
+  const result = lifecycle.reconcile([server], [first, second]);
+  assert.equal(result.matches[0].local, null);
+  assert.equal(result.matchedIds.size, 0);
+});
+
 test("message lifecycle never merges two steer messages by turn and role fallback", () => {
   const first = { ...message("", "Одинаковый ход 1"), itemId: "" };
   const second = { ...message("", "Одинаковый ход 2"), itemId: "" };
@@ -750,6 +817,48 @@ test("an external live turn contributes its missing VSC user messages", () => {
     merged.map((item) => item.text),
     ["Предыдущий вопрос", "Текущий вопрос из VSC", "Уточнение в том же ходе"],
   );
+});
+
+test("live inter-Stream messages preserve the source agent author", () => {
+  const author = "Agent HUB - Architect (Codex)";
+  const fromUserMessages = lifecycle.mergeLiveUserMessages([], {
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "active-turn",
+    userMessages: [{
+      itemId: "live-user-1",
+      text: "Сообщение из другого Stream",
+      author,
+    }],
+  });
+  const fromPrompt = lifecycle.mergeLiveUserMessages([], {
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "active-turn",
+    prompt: "Сообщение из другого Stream",
+    promptAuthor: author,
+  });
+
+  assert.equal(fromUserMessages[0].author, author);
+  assert.equal(fromPrompt[0].author, author);
+});
+
+test("unattributed live updates do not overwrite a durable inter-Stream author", () => {
+  const merged = lifecycle.mergeLiveUserMessages([{
+    ...message("server-user", "Сообщение из другого Stream"),
+    author: "Agent HUB - Architect (Codex)",
+  }], {
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    userMessages: [{
+      itemId: "server-user",
+      clientUserMessageId: "server-user",
+      text: "Сообщение из другого Stream",
+    }],
+  });
+
+  assert.equal(merged[0].author, "Agent HUB - Architect (Codex)");
 });
 
 test("live VSC user messages do not duplicate official task history", () => {

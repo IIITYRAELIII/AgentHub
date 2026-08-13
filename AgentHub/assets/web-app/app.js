@@ -130,6 +130,13 @@ const slashButton = document.querySelector("[data-action='slash-menu']");
 const contextUsageButton = document.querySelector("[data-context-usage]");
 const contextRing = document.querySelector("[data-context-ring]");
 const contextLabel = document.querySelector("[data-context-label]");
+const contextUsageModal = document.querySelector("[data-context-usage-modal]");
+const contextUsageSummary = document.querySelector("[data-context-usage-summary]");
+const contextUsageSummaryPercent = document.querySelector("[data-context-usage-summary-percent]");
+const contextUsageTotalFill = document.querySelector("[data-context-usage-total-fill]");
+const contextUsageCategories = document.querySelector("[data-context-usage-categories]");
+const contextUsageNote = document.querySelector("[data-context-usage-note]");
+const contextUsageCompact = document.querySelector("[data-context-usage-compact]");
 
 const approvalsBox = document.querySelector("[data-approvals]");
 const queueBox = document.querySelector("[data-queue]");
@@ -3309,9 +3316,64 @@ function renderContextUsage(task) {
       : "Контекст сворачивается…"
     : context.usagePending
       ? "Контекст свёрнут. Ожидается обновлённый объём…"
-    : `Контекст: ${used.toLocaleString("ru-RU")} из ${total.toLocaleString("ru-RU")}. Нажмите, чтобы свернуть.`;
-  contextUsageButton.disabled = Boolean(task.running || context.compacting || context.usagePending);
+    : `Контекст: ${used.toLocaleString("ru-RU")} из ${total.toLocaleString("ru-RU")}. Нажмите для подробностей.`;
+  contextUsageButton.disabled = false;
   contextUsageButton.toggleAttribute("data-compacting", Boolean(context.compacting));
+  if (contextUsageModal?.open) renderContextUsageDetails(task);
+}
+
+function contextTokens(value, estimated = false) {
+  if (value == null) return "учтено в остатке";
+  return `${estimated ? "≈" : ""}${Math.max(0, Number(value) || 0).toLocaleString("ru-RU")}`;
+}
+
+function renderContextUsageDetails(task) {
+  const context = task?.context;
+  if (!context || !Number(context.modelContextWindow)) return;
+  const used = Math.max(0, Number(context.usedTokens) || 0);
+  const total = Math.max(0, Number(context.modelContextWindow) || 0);
+  const percent = Math.max(0, Math.min(100, Number(context.percent) || 0));
+  contextUsageSummary.textContent = `${used.toLocaleString("ru-RU")} из ${total.toLocaleString("ru-RU")} токенов`;
+  contextUsageSummaryPercent.textContent = `${Math.round(percent)}%`;
+  contextUsageTotalFill.style.width = `${percent}%`;
+  contextUsageCategories.replaceChildren();
+  for (const category of Array.isArray(context.breakdown?.categories) ? context.breakdown.categories : []) {
+    const row = document.createElement("div");
+    row.className = "context-usage-category";
+    const head = document.createElement("div");
+    head.className = "context-usage-category-head";
+    const label = document.createElement("span");
+    label.textContent = category.label;
+    const value = document.createElement("span");
+    const count = Math.max(0, Number(category.count) || 0);
+    value.textContent = category.tokens == null && count
+      ? `${count.toLocaleString("ru-RU")} шт. · ${contextTokens(null)}`
+      : contextTokens(category.tokens, category.estimated === true);
+    head.append(label, value);
+    const bar = document.createElement("div");
+    bar.className = "context-usage-category-bar";
+    const fill = document.createElement("span");
+    fill.style.width = `${total && category.tokens != null
+      ? Math.max(0, Math.min(100, (Number(category.tokens) / total) * 100))
+      : 0}%`;
+    bar.append(fill);
+    row.append(head, bar);
+    contextUsageCategories.append(row);
+  }
+  contextUsageNote.textContent = context.breakdown?.note ?? "";
+  contextUsageCompact.disabled = Boolean(task.running || context.compacting || context.usagePending);
+  contextUsageCompact.textContent = context.compacting ? "Контекст сворачивается…" : "Свернуть контекст";
+}
+
+function openContextUsage() {
+  const task = currentTask();
+  if (!task?.context || !Number(task.context.modelContextWindow) || !contextUsageModal) return;
+  renderContextUsageDetails(task);
+  contextUsageModal.showModal();
+}
+
+function closeContextUsage() {
+  if (contextUsageModal?.open) contextUsageModal.close();
 }
 
 function chatIsNearBottom() {
@@ -6204,6 +6266,12 @@ async function handleAction(action, trigger) {
     case "context-compact":
       if (taskId) emit("context:compact", { taskId });
       break;
+    case "context-usage-open":
+      openContextUsage();
+      break;
+    case "context-usage-close":
+      closeContextUsage();
+      break;
     case "pane-tasks":
       setPane("tasks");
       break;
@@ -6214,6 +6282,10 @@ async function handleAction(action, trigger) {
   const overflow = trigger.closest("details[data-overflow]");
   if (overflow) overflow.open = false;
 }
+
+contextUsageModal?.addEventListener("click", (event) => {
+  if (event.target === contextUsageModal) closeContextUsage();
+});
 
 // Закрытие меню «⋯» по клику вне его.
 document.addEventListener("click", (event) => {

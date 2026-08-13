@@ -922,6 +922,7 @@ test("terminal event scanner marks the real rollout shape of a context probe", a
       payload: {
         type: "message",
         role: "user",
+        client_id: "agent-hub-context-probe:test",
         content: [{ type: "input_text", text: CODEX_CONTEXT_PROBE_PROMPT }],
         internal_chat_message_metadata_passthrough: { turn_id: turnId },
       },
@@ -953,6 +954,38 @@ test("terminal event scanner marks the real rollout shape of a context probe", a
     completedAt: "2026-08-07T23:43:52.306Z",
     contextProbe: true,
   }]);
+});
+
+test("terminal event scanner preserves a user turn equal to probe text without probe id", async () => {
+  const turnId = "user-turn";
+  const source = [
+    line({
+      timestamp: "2026-08-07T23:43:44.542Z",
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: turnId },
+    }),
+    line({
+      timestamp: "2026-08-07T23:43:45.744Z",
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: CODEX_CONTEXT_PROBE_PROMPT }],
+        internal_chat_message_metadata_passthrough: { turn_id: turnId },
+      },
+    }),
+    line({
+      timestamp: "2026-08-07T23:43:52.306Z",
+      type: "event_msg",
+      payload: { type: "task_complete", turn_id: turnId },
+    }),
+  ].join("\n");
+
+  const result = await scanCodexTerminalEventsFromOffset("rollout.jsonl", {
+    createReadStreamImpl: () => Readable.from([source]),
+  });
+
+  assert.equal(result.terminals[0].contextProbe, undefined);
 });
 
 test("terminal event scanner preserves turns that started without a lifecycle terminal", async () => {

@@ -434,7 +434,7 @@ export class MiniAppServer {
     revealWorkspaceFile = null,
     onControlResultDelivered = null,
     deviceStore = null,
-    assetsDirectory = path.join(AGENT_HUB_ROOT, "assets", "mini-app"),
+    assetsDirectory = path.join(AGENT_HUB_ROOT, "assets", "web-app"),
     assetBundleProvider = null,
     assetBundleRefreshMs = 1_000,
     attachmentDirectory = null,

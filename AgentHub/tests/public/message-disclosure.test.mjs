@@ -4,7 +4,7 @@ import test from "node:test";
 import vm from "node:vm";
 
 async function disclosureApi() {
-  const source = await readFile(new URL("../../assets/mini-app/message-disclosure.js", import.meta.url), "utf8");
+  const source = await readFile(new URL("../../assets/web-app/messages/disclosure.js", import.meta.url), "utf8");
   const window = {};
   vm.runInNewContext(source, { window });
   return window.AgentHubMessageDisclosure;
@@ -65,8 +65,8 @@ test("live trace keeps reasoning blocks and collects every tool at the bottom", 
 });
 
 test("shared shell keeps full text and limits only the rendered user-message body", async () => {
-  const app = await readFile(new URL("../../assets/mini-app/app.js", import.meta.url), "utf8");
-  const styles = await readFile(new URL("../../assets/mini-app/styles.css", import.meta.url), "utf8");
+  const app = await readFile(new URL("../../assets/web-app/app.js", import.meta.url), "utf8");
+  const styles = await readFile(new URL("../../assets/web-app/styles.css", import.meta.url), "utf8");
   assert.match(app, /body\.scrollHeight, USER_MESSAGE_COLLAPSE_HEIGHT_PX/u);
   assert.match(app, /textContent = expanded \? "Свернуть" : "Показать ещё"/u);
   assert.match(styles, /\.msg-user \.msg-body\.is-collapsed[\s\S]*max-height/u);

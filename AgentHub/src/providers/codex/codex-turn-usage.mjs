@@ -8,7 +8,6 @@ import { uuidV7TimestampMs } from "./codex-subagent-accounting.mjs";
 import { IMAGE_GENERATION_ESTIMATE_CREDITS } from "../../domain/codex-usage-estimate.mjs";
 import {
   isCodexContextProbeClientId,
-  isCodexContextProbeText,
 } from "../../domain/codex-context-probe.mjs";
 import { addTokenUsage, emptyTokenUsage, normalizeTokenUsage } from "../../domain/token-usage.mjs";
 import { displayUserPrompt } from "../../application/task-history.mjs";
@@ -543,13 +542,7 @@ export async function scanCodexTerminalEventsFromOffset(transcriptPath, {
     const active = activeTurns.get(turnId);
     if (active) {
       active.lastActivityAt = timestamp;
-      const responseMessage = entry?.type === "response_item"
-        && entry?.payload?.type === "message"
-        ? messageText(entry.payload)
-        : "";
-      if (isCodexContextProbeClientId(entry?.payload?.client_id)
-        || isCodexContextProbeText(entry?.payload?.message)
-        || isCodexContextProbeText(responseMessage)) {
+      if (isCodexContextProbeClientId(entry?.payload?.client_id)) {
         active.contextProbe = true;
       }
     }

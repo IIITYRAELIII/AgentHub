@@ -51,7 +51,13 @@ test("Codex turn service steers one exact active turn", async () => {
 
 test("Codex turn service schedules a run only after its exact turn materializes", async () => {
   const scheduled = [];
-  const service = codexTurnService({ scheduleObservedRun: (run) => scheduled.push(run.turnId) });
+  const turnTokenUsage = new Map();
+  const service = codexTurnService({
+    scheduleObservedRun: (run) => scheduled.push(run.turnId),
+    turnTokenUsage,
+    developerInstructions: async () => "<workspace_instructions>Work carefully</workspace_instructions>",
+    resolvedSkillNames: async () => ["openai-docs"],
+  });
   const run = {
     threadId: "thread-1",
     projectRoot: "D:\\Work",
@@ -60,10 +66,18 @@ test("Codex turn service schedules a run only after its exact turn materializes"
     collaborationMode: "default",
   };
 
-  await service.launch(run, "Queued user message");
+  await service.launch(run, [
+    { type: "text", text: "Queued user message" },
+    { type: "localImage", path: "screen.png" },
+    { type: "localFile", path: "notes.txt" },
+  ]);
 
   assert.equal(run.turnId, "turn-1");
   assert.deepEqual(scheduled, ["turn-1"]);
+  assert.deepEqual(
+    turnTokenUsage.get("turn-1").contextBreakdown.categories.map((entry) => [entry.id, entry.count]),
+    [["workspace", 0], ["messages", 1], ["images", 1], ["files", 1], ["skills", 1]],
+  );
 });
 
 test("Codex turn service resolves developer instructions for every turn start", async () => {

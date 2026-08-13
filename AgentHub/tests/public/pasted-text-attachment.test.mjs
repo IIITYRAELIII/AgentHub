@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
 
-const app = await readFile(new URL("../../assets/mini-app/app.js", import.meta.url), "utf8");
+const app = await readFile(new URL("../../assets/web-app/app.js", import.meta.url), "utf8");
 const policyStart = app.indexOf("const PASTED_TEXT_ATTACHMENT_THRESHOLD");
 const policyEnd = app.indexOf("function pastedTextFile", policyStart);
 assert.ok(policyStart >= 0 && policyEnd > policyStart, "paste policy must be present in app.js");

@@ -96,9 +96,7 @@ export class SelectedTaskWatchService {
     if (this.inFlight || this.isStopping()) return false;
     this.inFlight = true;
     try {
-      const candidates = this.#candidates().filter(({ task, chatId: targetChatId }) => (
-        targetChatId && !this.taskRuns.forTask(task)
-      ));
+      const candidates = this.#candidates().filter(({ task }) => !this.taskRuns.forTask(task));
       if (!candidates.length) return false;
       const candidate = candidates[this.cursor % candidates.length];
       this.cursor = (this.cursor + 1) % Math.max(1, candidates.length);

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { CodexTerminalReconciliationService } from "../../../src/providers/codex/codex-terminal-reconciliation-service.mjs";
-import { CODEX_CONTEXT_PROBE_PROMPT } from "../../../src/domain/codex-context-probe.mjs";
+import { CODEX_CONTEXT_PROBE_CLIENT_ID_PREFIX } from "../../../src/domain/codex-context-probe.mjs";
 
 function usage(overrides = {}) {
   return {
@@ -90,7 +90,7 @@ test("terminal reconciliation ignores a context probe before any recovery", asyn
     turnId: "probe-turn",
     status: "completed",
     completedAt: "2026-08-04T10:00:00.000Z",
-    prompt: CODEX_CONTEXT_PROBE_PROMPT,
+    clientUserMessageId: `${CODEX_CONTEXT_PROBE_CLIENT_ID_PREFIX}test`,
   });
 
   assert.equal(result, true);

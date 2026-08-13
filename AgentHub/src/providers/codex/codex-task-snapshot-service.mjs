@@ -140,7 +140,11 @@ export class CodexTaskSnapshotService {
       }
     }
 
-    const result = threadResult ?? await d.readThread(run.threadId, { fresh, includeTurns: false });
+    const result = threadResult ?? await d.readThread(run.threadId, {
+      fresh,
+      includeTurns: false,
+      priority: "interactive",
+    });
     const turns = (Array.isArray(result.thread?.turns) ? result.thread.turns : [])
       .filter((turn) => !isCodexContextProbeTurn(turn));
     const exact = run.exactTurnObserver === true;
@@ -240,7 +244,10 @@ export class CodexTaskSnapshotService {
       try {
         answer = await rolloutAnswer({ includeLatest: interrupted });
         if (answer) return answer;
-        const result = await this.#d.readThread(run.threadId, { fresh: true });
+        const result = await this.#d.readThread(run.threadId, {
+          fresh: true,
+          priority: "interactive",
+        });
         const completedTurn = (result.thread?.turns ?? [])
           .find((turn) => String(turn?.id ?? "") === turnId);
         answer = codexFinalTurnAnswer(completedTurn);

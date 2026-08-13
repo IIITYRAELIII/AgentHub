@@ -5,7 +5,7 @@ import vm from "node:vm";
 
 async function tooltipApi() {
   const source = await readFile(
-    new URL("../../assets/mini-app/tooltip-position.js", import.meta.url),
+    new URL("../../assets/web-app/tooltip-position.js", import.meta.url),
     "utf8",
   );
   const window = {};

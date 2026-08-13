@@ -3,7 +3,7 @@
 Фирменный знак Agent Hub — три изогнутые ленты бирюзового, фиолетового и
 кобальтового цветов вокруг круглого просвета. Геометрия, цвета и объём знака
 зафиксированы в исходном мастер-файле
-[`assets/mini-app/agent-hub-mark.png`](assets/mini-app/agent-hub-mark.png).
+[`assets/web-app/agent-hub-mark.png`](assets/web-app/agent-hub-mark.png).
 
 ## Неизменяемая часть
 
@@ -19,7 +19,7 @@
 
 | Поверхность | Файл | Правило |
 | --- | --- | --- |
-| Web, Telegram и страница входа | `assets/mini-app/agent-hub-mark.png` | Прозрачный мастер без подложки |
+| Web, Telegram и страница входа | `assets/web-app/agent-hub-mark.png` | Прозрачный мастер без подложки |
 | VS Code | `VSCodeExtension/media/agent-hub-mark.png` | Тот же знак для Activity Bar, Marketplace и webview |
 | Windows | `DesktopApp/AgentHub.ico` | ICO, созданный из того же мастер-знака |
 | Android launcher | `AndroidApp/app/src/main/res/drawable-nodpi/ic_agent_hub.png` | Тот же знак на тёмной безопасной подложке `#071116` |

@@ -125,6 +125,68 @@ test("Codex history refresh reads the rollout directly without blocking App Serv
   assert.deepEqual(result.history.map((item) => item.id), ["turn-old", "turn-live"]);
 });
 
+test("Codex history removes a context probe turn identified by rollout metadata", async () => {
+  const probeTurnId = "019ffc97-c47f-7de0-aea6-00e1da772d7d";
+  const realTurnId = "019ffc98-65c9-7b02-a2f1-402378bf70e4";
+  let recorded = null;
+  const view = controller({
+    ensureCodex: async () => {},
+    readCodexThread: async () => ({ thread: {
+      path: "C:/rollout.jsonl",
+      turns: [{
+        id: probeTurnId,
+        status: "completed",
+        items: [
+          {
+            type: "userMessage",
+            content: [{ type: "text", text: "<recommended_plugins>service context</recommended_plugins>" }],
+          },
+          {
+            type: "userMessage",
+            content: [{ type: "text", text: "Ответь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1" }],
+          },
+          { type: "agentMessage", phase: "final", text: "AGENT_HUB_CONTEXT_PROBE_OK_V1" },
+        ],
+      }, {
+        id: realTurnId,
+        status: "completed",
+        items: [
+          { type: "userMessage", content: [{ type: "text", text: "Почему я это вижу?" }] },
+          { type: "agentMessage", phase: "final", text: "Исправлено" },
+        ],
+      }],
+    } }),
+    readCodexRolloutActivity: async () => ({
+      internalTurnIds: [probeTurnId],
+      userMessages: {},
+      latestMessages: {},
+      finalMessages: {},
+    }),
+    readCodexSnapshot: async () => ({ active: false }),
+    taskSyncStore: {
+      history: () => [{
+        id: probeTurnId,
+        prompt: "<recommended_plugins>service context</recommended_plugins>",
+        answer: "AGENT_HUB_CONTEXT_PROBE_OK_V1",
+        completed: true,
+      }],
+      recordHistory: (_task, history) => { recorded = structuredClone(history); },
+      save: async () => {},
+    },
+  });
+
+  const result = await view.readHistory({
+    provider: "codex",
+    threadId: "thread-probe",
+    projectRoot: "C:/repo",
+    title: "Probe",
+    chatId: 1,
+  });
+
+  assert.deepEqual(result.history.map((item) => item.id), [realTurnId]);
+  assert.deepEqual(recorded.map((item) => item.id), [realTurnId]);
+});
+
 test("missing Claude transcript keeps the managed exchange in durable history", async () => {
   const cached = [{
     id: "turn-1",

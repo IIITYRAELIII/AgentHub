@@ -48,7 +48,7 @@ class FakeSvgNode {
 }
 
 async function streamTabsApi() {
-  const source = await readFile(new URL("../../assets/mini-app/stream-tabs-controller.js", import.meta.url), "utf8");
+  const source = await readFile(new URL("../../assets/web-app/stream-tabs-controller.js", import.meta.url), "utf8");
   const window = {};
   vm.runInNewContext(source, { window });
   return window.AgentHubStreamTabs;
@@ -172,9 +172,9 @@ test("Workspace order follows meaningful activity with deterministic ties", asyn
 
 test("activity rail markup exposes separate sections and the inline recent-hours setting", async () => {
   const [html, appSource, clientSource] = await Promise.all([
-    readFile(new URL("../../assets/mini-app/index.html", import.meta.url), "utf8"),
-    readFile(new URL("../../assets/mini-app/app.js", import.meta.url), "utf8"),
-    readFile(new URL("../../assets/mini-app/hub-client.js", import.meta.url), "utf8"),
+    readFile(new URL("../../assets/web-app/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../../assets/web-app/app.js", import.meta.url), "utf8"),
+    readFile(new URL("../../assets/web-app/hub-client.js", import.meta.url), "utf8"),
   ]);
   assert.match(html, /data-activity-rail-count>Активно: 0</u);
   assert.match(html, /<strong>Недавние<\/strong>/u);

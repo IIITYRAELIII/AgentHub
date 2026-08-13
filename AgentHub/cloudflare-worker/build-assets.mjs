@@ -8,7 +8,7 @@ const require = createRequire(import.meta.url);
 const { localAssetPathname, localAssetReferences, replaceLocalAssetReference } = require("../client-assets.cjs");
 const { loadThemeRegistry, renderThemeHtml } = require("../theme-registry.cjs");
 const root = path.resolve(import.meta.dirname, "..");
-const source = path.join(root, "assets", "mini-app");
+const source = path.join(root, "assets", "web-app");
 const defaultOutput = path.join(import.meta.dirname, "public");
 const BACKGROUND_CHUNK_CHARACTERS = 20 * 1024;
 

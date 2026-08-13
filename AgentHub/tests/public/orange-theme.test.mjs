@@ -55,7 +55,7 @@ function assertContrast({ foreground, background, minimum = 4.5, label }) {
 }
 
 test("orange theme is discovered without a theme-owned focus controller", () => {
-  const registry = loadThemeRegistry(fileURLToPath(new URL("../../assets/mini-app", import.meta.url)));
+  const registry = loadThemeRegistry(fileURLToPath(new URL("../../assets/web-app", import.meta.url)));
   const theme = registry.themes.find((item) => item.id === "orange");
   assert.equal(theme?.name, "Апельсин");
   assert.deepEqual(theme?.scripts, []);
@@ -67,7 +67,7 @@ test("orange theme text roles meet the AA contrast contract", async () => {
   // The theme is shipped as CSS custom properties consumed by multiple shells.
   // There is no browser CSSOM in the current unit harness, so this test treats
   // the published theme variables as the executable accessibility contract.
-  const css = await readFile(new URL("../../assets/mini-app/themes/orange/theme.css", import.meta.url), "utf8");
+  const css = await readFile(new URL("../../assets/web-app/themes/orange/theme.css", import.meta.url), "utf8");
   const root = parseCssVariables(css, 'html[data-theme="orange"]');
   const dark = {
     ...root,
@@ -149,7 +149,7 @@ test("orange theme text roles meet the AA contrast contract", async () => {
 });
 
 test("orange focus keeps the main menu and draws one selected Stream border", async () => {
-  const shellCss = await readFile(new URL("../../assets/mini-app/styles.css", import.meta.url), "utf8");
+  const shellCss = await readFile(new URL("../../assets/web-app/styles.css", import.meta.url), "utf8");
   const focusBlock = shellCss.match(
     /html\[data-focus-mode="true"\][\s\S]*?\.brand-text\s*\{[\s\S]*?display:\s*none;[\s\S]*?\}/u,
   )?.[0] ?? "";

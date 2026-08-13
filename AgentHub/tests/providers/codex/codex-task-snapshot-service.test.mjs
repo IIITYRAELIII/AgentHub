@@ -46,6 +46,7 @@ test("Codex snapshot service reports an exact rollout observer", async () => {
 
 test("Codex snapshot service never selects a context probe from thread reads", async () => {
   const selected = [];
+  const readOptions = [];
   const userTurn = { id: "user-turn", status: "completed", items: [] };
   const probeTurn = {
     id: "probe-turn",
@@ -69,7 +70,10 @@ test("Codex snapshot service never selects a context probe from thread reads", a
     capturedOwner: () => null,
     runtimeActive: async () => true,
     resolveOwner: async () => "agent-hub",
-    readThread: async () => ({ thread: { turns: [userTurn, probeTurn] } }),
+    readThread: async (_threadId, options) => {
+      readOptions.push(options);
+      return { thread: { turns: [userTurn, probeTurn] } };
+    },
     selectTurn: (turns) => {
       selected.push(...turns);
       return turns[0];
@@ -95,6 +99,7 @@ test("Codex snapshot service never selects a context probe from thread reads", a
 
   assert.equal(snapshot.turnId, "user-turn");
   assert.deepEqual(selected.map((turn) => turn.id), ["user-turn"]);
+  assert.equal(readOptions[0].priority, "interactive");
 });
 
 test("Codex snapshot service reads a delayed final answer and applies runtime projection", async () => {

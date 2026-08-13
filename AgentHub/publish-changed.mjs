@@ -48,7 +48,7 @@ export function classifyPublicationChanges(files) {
     if (!file.startsWith("AgentHub/")) continue;
     const relative = file.slice("AgentHub/".length);
     if (/\.test\.(?:mjs|js)$/u.test(relative) || relative.startsWith("e2e/") || relative.startsWith("ci/")) continue;
-    if (relative.startsWith("assets/mini-app/") || relative === "work-log.css") {
+    if (relative.startsWith("assets/web-app/") || relative === "work-log.css") {
       plan.runtime = true;
       plan.worker = true;
       plan.unitTests = true;

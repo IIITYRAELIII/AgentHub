@@ -24,7 +24,7 @@ class FakeTarget {
 }
 
 async function scrollApi() {
-  const source = await readFile(new URL("../../assets/mini-app/chat-scroll-controller.js", import.meta.url), "utf8");
+  const source = await readFile(new URL("../../assets/web-app/chat-scroll-controller.js", import.meta.url), "utf8");
   const window = {
     requestAnimationFrame: (callback) => { callback(0); return 1; },
     cancelAnimationFrame: () => {},

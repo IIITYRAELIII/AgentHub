@@ -5,7 +5,7 @@ import vm from "node:vm";
 
 async function backgroundMotionPreferenceApi() {
   const source = await readFile(
-    new URL("../../assets/mini-app/background-motion-preference.js", import.meta.url),
+    new URL("../../assets/web-app/background-motion-preference.js", import.meta.url),
     "utf8",
   );
   const window = {};

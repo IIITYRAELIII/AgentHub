@@ -5,7 +5,7 @@ import vm from "node:vm";
 
 async function runtimeReloadApi() {
   const source = await readFile(
-    new URL("../../assets/mini-app/runtime-reload-controller.js", import.meta.url),
+    new URL("../../assets/web-app/runtime-reload-controller.js", import.meta.url),
     "utf8",
   );
   const window = { setTimeout, clearTimeout };

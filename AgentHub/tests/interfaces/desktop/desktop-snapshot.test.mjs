@@ -216,6 +216,14 @@ test("desktopContextSnapshot preserves the context JSON contract", () => {
     compacting: true,
     compaction: { id: "compact-1", status: "running" },
     usagePending: false,
+    breakdown: {
+      precision: "mixed",
+      categories: [
+        { id: "provider-remainder", label: "Системный контекст, инструменты и история", tokens: 250, count: 0, estimated: true },
+        { id: "free", label: "Свободно", tokens: 750, count: 0, estimated: false },
+      ],
+      note: "Общий объём и свободное место сообщает Codex точно. Hub оценивает только известные ему инструкции и содержимое текущего хода; системный prompt, определения tools и предыдущая история остаются объединённым остатком.",
+    },
   });
   state.usage = null;
   assert.deepEqual(desktopContextSnapshot("thread-1"), {
@@ -227,6 +235,14 @@ test("desktopContextSnapshot preserves the context JSON contract", () => {
     compacting: true,
     compaction: { id: "compact-1", status: "running" },
     usagePending: true,
+    breakdown: {
+      precision: "mixed",
+      categories: [
+        { id: "provider-remainder", label: "Системный контекст, инструменты и история", tokens: 0, count: 0, estimated: true },
+        { id: "free", label: "Свободно", tokens: 0, count: 0, estimated: false },
+      ],
+      note: "Общий объём и свободное место сообщает Codex точно. Hub оценивает только известные ему инструкции и содержимое текущего хода; системный prompt, определения tools и предыдущая история остаются объединённым остатком.",
+    },
   });
   state.compaction = null;
   assert.equal(desktopContextSnapshot("thread-1"), null);
@@ -407,6 +423,14 @@ test("desktopRunSnapshot preserves run fields and nested context", () => {
       compacting: true,
       compaction: { id: "compact-1", status: "running" },
       usagePending: false,
+      breakdown: {
+        precision: "mixed",
+        categories: [
+          { id: "provider-remainder", label: "Системный контекст, инструменты и история", tokens: 250, count: 0, estimated: true },
+          { id: "free", label: "Свободно", tokens: 750, count: 0, estimated: false },
+        ],
+        note: "Общий объём и свободное место сообщает Codex точно. Hub оценивает только известные ему инструкции и содержимое текущего хода; системный prompt, определения tools и предыдущая история остаются объединённым остатком.",
+      },
     },
   });
   assert.equal(desktopRunSnapshot(null), null);

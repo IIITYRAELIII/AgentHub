@@ -10,7 +10,7 @@ import {
 } from "../../../src/interfaces/web/trusted-device-access.mjs";
 
 test("public browser pairing clears stale errors and submits a complete pasted code", () => {
-  const auth = readFileSync(new URL("../../../assets/mini-app/browser-device-auth.js", import.meta.url), "utf8");
+  const auth = readFileSync(new URL("../../../assets/web-app/browser-device-auth.js", import.meta.url), "utf8");
   assert.match(auth, /querySelector\("\.browser-auth\[data-browser-auth\]"\)/u);
   assert.doesNotMatch(auth, /querySelector\("\[data-browser-auth\]"\)/u);
   assert.match(auth, /setStatus\(""\);/u);

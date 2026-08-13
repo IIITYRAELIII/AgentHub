@@ -7,7 +7,7 @@ import { MessageReceiptRegistry } from "../../../src/infrastructure/persistence/
 import { RunCoordinator } from "../../../src/application/run-coordinator.mjs";
 
 const EXISTING_IMAGE = fileURLToPath(
-  new URL("../../../assets/mini-app/themes/blackhole/blackhole-blue.jpg", import.meta.url),
+  new URL("../../../assets/web-app/themes/blackhole/blackhole-blue.jpg", import.meta.url),
 );
 
 function controller(overrides = {}) {

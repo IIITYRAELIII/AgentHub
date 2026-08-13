@@ -37,7 +37,7 @@ class Control {
 }
 
 async function loadFactory() {
-  const source = await readFile(new URL("../../assets/mini-app/task-board.js", import.meta.url), "utf8");
+  const source = await readFile(new URL("../../assets/web-app/task-board.js", import.meta.url), "utf8");
   const window = {};
   vm.runInNewContext(source, {
     document: { querySelector: () => null },

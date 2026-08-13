@@ -85,7 +85,7 @@ test("terminal audit does not project an internal context probe", async () => {
         turnId: "probe-turn",
         status: "completed",
         completedAt: "2026-08-08T10:00:30.000Z",
-        prompt: CODEX_CONTEXT_PROBE_PROMPT,
+        contextProbe: true,
       }],
       activeTurns: [],
       nextOffset: 100,

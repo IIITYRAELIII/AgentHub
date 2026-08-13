@@ -5,7 +5,7 @@ import vm from "node:vm";
 
 async function chatSurfacePreferenceApi() {
   const source = await readFile(
-    new URL("../../assets/mini-app/chat-surface-preference.js", import.meta.url),
+    new URL("../../assets/web-app/chat-surface-preference.js", import.meta.url),
     "utf8",
   );
   const window = {};

@@ -4,6 +4,7 @@ import { buildCodexCollaborationMode } from "./codex/codex-settings.mjs";
 import { activeTurnMissing, interruptCodexTurnWithRecovery, startCodexTurnWithRecovery } from "./codex/codex-recovery.mjs";
 import { codexThreadSandboxSettings, codexTurnSandboxSettings } from "./codex/codex-sandbox.mjs";
 import { emptyTokenUsage } from "../domain/token-usage.mjs";
+import { estimateCodexContextBreakdown } from "../domain/context-usage-breakdown.mjs";
 
 function requiredFunction(value, name) {
   if (typeof value !== "function") throw new TypeError(`${name} is required`);
@@ -141,6 +142,15 @@ export class CodexTurnService {
       if (!d.turnTokenUsage.has(run.turnId)) {
         rememberBounded(d.turnTokenUsage, run.turnId, { usage: emptyTokenUsage(), reported: false }, 200);
       }
+      d.turnTokenUsage.get(run.turnId).contextBreakdown = {
+        ...estimateCodexContextBreakdown({
+          developerInstructions,
+          input,
+          skills: run.skillsUsed,
+        }),
+        threadId: run.threadId,
+        turnId: run.turnId,
+      };
       await d.saveState();
       if (run.displayRequested) d.startTyping();
       d.scheduleObservedRun(run);

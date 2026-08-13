@@ -4,7 +4,7 @@ const { randomBytes } = require("node:crypto");
 const path = require("node:path");
 const vscode = require("vscode");
 
-const ASSET_ROOT = ["assets", "mini-app"];
+const ASSET_ROOT = ["assets", "web-app"];
 
 async function existingFile(uri, label) {
   try {

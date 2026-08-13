@@ -19,7 +19,7 @@ test("Worker build packages the same shell and theme resources used by local cli
   const output = await mkdtemp(path.join(os.tmpdir(), "agent-hub-worker-assets-"));
   try {
     const build = await buildWorkerAssets({ output, includeMobile: false });
-    const sourceIndex = await readFile(path.join(ROOT, "assets", "mini-app", "index.html"), "utf8");
+    const sourceIndex = await readFile(path.join(ROOT, "assets", "web-app", "index.html"), "utf8");
     const expectedShell = [
       ...localAssetReferences(sourceIndex),
       "/remote-command-idempotency.js",
@@ -29,7 +29,7 @@ test("Worker build packages the same shell and theme resources used by local cli
       assert.ok((await stat(path.join(output, ...pathname.slice(1).split("/")))).isFile(), pathname);
     }
 
-    const registry = loadThemeRegistry(path.join(ROOT, "assets", "mini-app"));
+    const registry = loadThemeRegistry(path.join(ROOT, "assets", "web-app"));
     for (const resource of registry.resources.values()) {
       const packaged = path.join(output, ...resource.pathname.slice(1).split("/"));
       assert.equal((await stat(packaged)).size, (await stat(resource.file)).size, resource.pathname);
@@ -55,7 +55,7 @@ test("Worker build packages the same shell and theme resources used by local cli
         return chunk;
       }))).join("");
       const sourceName = path.basename(background.assetUrl).replace(/\.[a-f0-9]{12}\.json$/u, "");
-      assert.deepEqual(Buffer.from(encoded, "base64"), await readFile(path.join(ROOT, "assets", "mini-app", "themes", "bespin", sourceName)));
+      assert.deepEqual(Buffer.from(encoded, "base64"), await readFile(path.join(ROOT, "assets", "web-app", "themes", "bespin", sourceName)));
     }
     const bespinStylesheet = build.publishedThemePathnames.get("/themes/bespin/theme.css");
     const bespinCss = await readFile(path.join(output, ...bespinStylesheet.slice(1).split("/")), "utf8");
@@ -70,7 +70,7 @@ test("Worker build packages the same shell and theme resources used by local cli
     assert.equal(wrangler.assets.run_worker_first, false);
     const deployment = await verifyThemeDeployment({
       baseUrl: "https://agent-hub.test/",
-      sourceRoot: path.join(ROOT, "assets", "mini-app"),
+      sourceRoot: path.join(ROOT, "assets", "web-app"),
       fetchImpl: async (input) => {
         const pathname = new URL(input).pathname === "/" ? "/index.html" : new URL(input).pathname;
         try {

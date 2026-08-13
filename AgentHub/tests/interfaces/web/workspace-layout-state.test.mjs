@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const appSource = await readFile(new URL("../../../assets/mini-app/app.js", import.meta.url), "utf8");
+const appSource = await readFile(new URL("../../../assets/web-app/app.js", import.meta.url), "utf8");
 
 test("workspace layout persists open and active Streams per client", () => {
   assert.match(appSource, /activeStreamByWorkspace:\s*new Map\(\)/u);

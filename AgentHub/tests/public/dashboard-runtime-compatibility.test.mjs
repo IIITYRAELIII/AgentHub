@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 const hubClientSource = await readFile(
-  new URL("../../assets/mini-app/hub-client.js", import.meta.url),
+  new URL("../../assets/web-app/hub-client.js", import.meta.url),
   "utf8",
 );
 

@@ -5,7 +5,7 @@ import vm from "node:vm";
 
 async function editorApi() {
   const source = await readFile(
-    new URL("../../assets/mini-app/pre-turn-instructions-editor.js", import.meta.url),
+    new URL("../../assets/web-app/pre-turn-instructions-editor.js", import.meta.url),
     "utf8",
   );
   const window = {};

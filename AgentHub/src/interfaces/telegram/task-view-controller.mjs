@@ -262,9 +262,15 @@ export function codexRolloutHistory(activity = {}) {
   });
 }
 
-function mergeCodexHistory(cachedHistory, sourceHistory, rolloutHistory) {
+function mergeCodexHistory(cachedHistory, sourceHistory, rolloutHistory, internalTurnIds = []) {
+  const hidden = new Set((Array.isArray(internalTurnIds) ? internalTurnIds : [])
+    .map((value) => String(value ?? "").trim())
+    .filter(Boolean));
   const merged = mergeDurableHistory(cachedHistory, sourceHistory)
-    .filter((item) => !isCodexAutoCompactionTurnId(item?.id));
+    .filter((item) => (
+      !isCodexAutoCompactionTurnId(item?.id)
+      && !hidden.has(String(item?.id ?? "").trim())
+    ));
   const positions = new Map(merged.map((item, index) => [String(item?.id ?? ""), index]));
   for (const item of Array.isArray(rolloutHistory) ? rolloutHistory : []) {
     const id = String(item?.id ?? "");
@@ -400,7 +406,12 @@ export class TaskViewController {
             directRolloutPath,
             { freshnessMs: Number.POSITIVE_INFINITY },
           );
-          const history = mergeCodexHistory(cached, [], codexRolloutHistory(rolloutActivity));
+          const history = mergeCodexHistory(
+            cached,
+            [],
+            codexRolloutHistory(rolloutActivity),
+            rolloutActivity?.internalTurnIds,
+          );
           const snapshot = completedOnly ? null : await d.readCodexSnapshot({
             ...task,
             turnId: null,
@@ -425,6 +436,7 @@ export class TaskViewController {
           cached,
           codexThreadHistory(result.thread?.turns),
           codexRolloutHistory(rolloutActivity),
+          rolloutActivity?.internalTurnIds,
         );
         const snapshot = completedOnly ? null : await d.readCodexSnapshot({
           ...task,

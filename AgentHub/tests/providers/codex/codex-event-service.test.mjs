@@ -161,6 +161,34 @@ test("Codex event service never rebinds an existing run to a context probe", asy
   assert.deepEqual(warnings, []);
 });
 
+test("Codex event service completes a real user turn equal to probe text", async () => {
+  const run = { responseText: "", status: "running", observer: false };
+  const completed = [];
+  const service = createService(run, {
+    completeManaged: async (...args) => completed.push(args),
+  });
+  await service.handle({
+    method: "turn/completed",
+    params: {
+      threadId: "thread-1",
+      turn: {
+        id: "user-turn",
+        status: "completed",
+        items: [{
+          type: "userMessage",
+          content: [{ type: "text", text: CODEX_CONTEXT_PROBE_PROMPT }],
+        }, {
+          type: "agentMessage",
+          text: CODEX_CONTEXT_PROBE_RESPONSE,
+        }],
+      },
+    },
+  });
+
+  assert.equal(completed.length, 1);
+  assert.equal(completed[0][1].completedTurnId, "user-turn");
+});
+
 test("Codex event service preserves the raw compaction item for rotation", async () => {
   const captured = [];
   const service = createService(null, {

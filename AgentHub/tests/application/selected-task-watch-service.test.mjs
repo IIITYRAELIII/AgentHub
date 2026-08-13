@@ -3,7 +3,11 @@ import test from "node:test";
 
 import { SelectedTaskWatchService } from "../../src/application/selected-task-watch-service.mjs";
 
-function fixture({ snapshot = { active: true, turnId: "turn-1" }, selectedTasks = null } = {}) {
+function fixture({
+  snapshot = { active: true, turnId: "turn-1" },
+  selectedTasks = null,
+  chatId = 7,
+} = {}) {
   const task = { streamId: "stream-1", provider: "codex", threadId: "thread-1", projectRoot: "C:/work" };
   let selected = task;
   let currentRun = null;
@@ -33,7 +37,7 @@ function fixture({ snapshot = { active: true, turnId: "turn-1" }, selectedTasks 
     isStopping: () => false,
     selectedTask: () => selected,
     selectedTasks: selectedTasks ? () => selectedTasks() : null,
-    chatId: () => 7,
+    chatId: () => chatId,
     activeTaskTitle: () => "Selected title",
     rememberLastTaskMessage: (...args) => events.push(["remember", ...args]),
     createObservedRun: async (...args) => {
@@ -71,6 +75,28 @@ test("SelectedTaskWatchService observes the exact still-selected active task", a
   assert.equal(state.events.filter(([name]) => name === "observe").length, 1);
   assert.equal(state.events.filter(([name]) => name === "save").length, 1);
   assert.equal(state.events.at(-1)[0], "schedule");
+});
+
+test("SelectedTaskWatchService observes a browser-only selection without Telegram chat", async () => {
+  const state = fixture({
+    chatId: null,
+    selectedTasks: () => [{
+      clientId: "telegram-mini-app:browser-1",
+      task: {
+        streamId: "browser-stream",
+        provider: "codex",
+        threadId: "browser-thread",
+        projectRoot: "C:/browser",
+      },
+      chatId: null,
+      taskTitle: "Browser task",
+    }],
+  });
+
+  assert.equal(await state.service.watch(), true);
+  const created = state.events.find(([name]) => name === "create");
+  assert.equal(created[1].threadId, "browser-thread");
+  assert.equal(created[2], null);
 });
 
 test("SelectedTaskWatchService never applies a stale snapshot after task switch", async () => {

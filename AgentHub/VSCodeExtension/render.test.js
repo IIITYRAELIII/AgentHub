@@ -11,18 +11,18 @@ const { renderWorkLog, sanitizeWorkLogHtml } = require("./render.js");
 const { webviewHtml } = require("./webview.js");
 const { loadThemeRegistry } = require("../theme-registry.cjs");
 
-const MINI_APP_ROOT = path.resolve(__dirname, "..", "assets", "mini-app");
-const THEME_REGISTRY = loadThemeRegistry(MINI_APP_ROOT);
+const WEB_APP_ROOT = path.resolve(__dirname, "..", "assets", "web-app");
+const THEME_REGISTRY = loadThemeRegistry(WEB_APP_ROOT);
 const THEMES = THEME_REGISTRY.themes.map((theme) => theme.id);
 const WEBVIEW_THEMES = THEME_REGISTRY.themes.map(({ id, name }) => ({ id, name }));
 
 function themeFile(theme, file = "theme.css") {
-  return fs.readFileSync(path.join(MINI_APP_ROOT, "themes", theme, file), "utf8");
+  return fs.readFileSync(path.join(WEB_APP_ROOT, "themes", theme, file), "utf8");
 }
 
 function allStyles() {
   return [
-    fs.readFileSync(path.join(MINI_APP_ROOT, "styles.css"), "utf8"),
+    fs.readFileSync(path.join(WEB_APP_ROOT, "styles.css"), "utf8"),
     ...THEMES.map((theme) => themeFile(theme)),
   ].join("\n");
 }
@@ -172,9 +172,9 @@ test("shared webview loads the active runtime, never a workspace shadow", async 
   const shadowRoot = path.join(root, "shadow");
   const extensionRoot = path.join(root, "extension");
   const runtimeRoot = path.join(root, "runtime", "releases", "current");
-  const shadowAssets = path.join(shadowRoot, "Utilities", "AgentHub", "assets", "mini-app");
-  const runtimeAssets = path.join(runtimeRoot, "assets", "mini-app");
-  const required = ["message-disclosure.js", "chat-scroll-controller.js", "chat-surface-preference.js", "navigation-tabs-controller.js", "stream-tabs-controller.js", "approval-form.js", "runtime-reload-controller.js", "journal-view-controller.js", "statistics-controls.js", "resource-interactions.js", "future-runtime-module.js", "rate-limit-series.js", "task-board.js", "app.js", "message-lifecycle.js", "hub-client.js", "styles.css", "backgrounds.css", "stream-status.css", "stream-status-visibility.mjs", "agent-hub-mark.png"];
+  const shadowAssets = path.join(shadowRoot, "Utilities", "AgentHub", "assets", "web-app");
+  const runtimeAssets = path.join(runtimeRoot, "assets", "web-app");
+  const required = ["messages/disclosure.js", "chat-scroll-controller.js", "chat-surface-preference.js", "navigation-tabs-controller.js", "stream-tabs-controller.js", "approval-form.js", "runtime-reload-controller.js", "journal-view-controller.js", "statistics-controls.js", "attachments/interactions.js", "future-runtime-module.js", "rate-limit-series.js", "task-board.js", "app.js", "messages/lifecycle.js", "messages/send-transaction.js", "hub-client.js", "styles.css", "backgrounds.css", "stream-status.css", "stream-status-visibility.mjs", "agent-hub-mark.png"];
   try {
     fs.mkdirSync(shadowAssets, { recursive: true });
     fs.mkdirSync(runtimeAssets, { recursive: true });
@@ -184,14 +184,16 @@ test("shared webview loads the active runtime, never a workspace shadow", async 
       <img data-app-mark src="/agent-hub-mark.png" alt="">
       <!-- agent-hub-theme-styles --><select data-theme-select></select>
       <!-- agent-hub-theme-markup --><!-- agent-hub-theme-catalog -->
-      <script src="/browser-device-auth.js" defer></script><script src="/message-disclosure.js" defer></script><script src="/chat-scroll-controller.js" defer></script><script src="/chat-surface-preference.js" defer></script><script src="/navigation-tabs-controller.js" defer></script><script src="/stream-tabs-controller.js" defer></script><script src="/approval-form.js" defer></script><script src="/runtime-reload-controller.js" defer></script><script src="/journal-view-controller.js" defer></script><script src="/statistics-controls.js" defer></script><script src="/resource-interactions.js" defer></script><script src="/future-runtime-module.js" defer></script><script src="/rate-limit-series.js" defer></script><script src="/task-board.js" defer></script>
+      <script src="/browser-device-auth.js" defer></script><script src="/messages/disclosure.js" defer></script><script src="/chat-scroll-controller.js" defer></script><script src="/chat-surface-preference.js" defer></script><script src="/navigation-tabs-controller.js" defer></script><script src="/stream-tabs-controller.js" defer></script><script src="/approval-form.js" defer></script><script src="/runtime-reload-controller.js" defer></script><script src="/journal-view-controller.js" defer></script><script src="/statistics-controls.js" defer></script><script src="/attachments/interactions.js" defer></script><script src="/future-runtime-module.js" defer></script><script src="/rate-limit-series.js" defer></script><script src="/task-board.js" defer></script>
       <script src="/app.js" defer></script><!-- agent-hub-theme-scripts -->
-      <script src="/message-lifecycle.js" defer></script><script src="/hub-client.js" defer></script>`);
+      <script src="/messages/lifecycle.js" defer></script><script src="/messages/send-transaction.js" defer></script><script src="/hub-client.js" defer></script>`);
     for (const file of required) {
+      fs.mkdirSync(path.dirname(path.join(shadowAssets, file)), { recursive: true });
+      fs.mkdirSync(path.dirname(path.join(runtimeAssets, file)), { recursive: true });
       fs.writeFileSync(path.join(shadowAssets, file), "");
       fs.writeFileSync(path.join(runtimeAssets, file), "");
     }
-    fs.cpSync(path.join(MINI_APP_ROOT, "themes"), path.join(runtimeAssets, "themes"), { recursive: true });
+    fs.cpSync(path.join(WEB_APP_ROOT, "themes"), path.join(runtimeAssets, "themes"), { recursive: true });
     fs.copyFileSync(path.resolve(__dirname, "..", "theme-registry.cjs"), path.join(runtimeRoot, "theme-registry.cjs"));
     fs.copyFileSync(path.resolve(__dirname, "..", "client-assets.cjs"), path.join(runtimeRoot, "client-assets.cjs"));
     fs.writeFileSync(path.join(shadowRoot, "Utilities", "AgentHub", "work-log.css"), "");
@@ -217,8 +219,8 @@ test("shared webview loads the active runtime, never a workspace shadow", async 
     assert.doesNotMatch(result.html, /src="\/journal-view-controller\.js"/u);
     assert.match(result.html, /vscode-webview-resource:.*chat-surface-preference\.js/u);
     assert.doesNotMatch(result.html, /src="\/chat-surface-preference\.js"/u);
-    assert.match(result.html, /vscode-webview-resource:.*resource-interactions\.js/u);
-    assert.doesNotMatch(result.html, /src="\/resource-interactions\.js"/u);
+    assert.match(result.html, /vscode-webview-resource:.*attachments[\\/]interactions\.js/u);
+    assert.doesNotMatch(result.html, /src="\/attachments\/interactions\.js"/u);
     assert.match(result.html, /vscode-webview-resource:.*future-runtime-module\.js/u);
     assert.doesNotMatch(result.html, /src="\/future-runtime-module\.js"/u);
     assert.doesNotMatch(result.html, /browser-device-auth\.js/u);
@@ -345,8 +347,8 @@ test("panel handles the duplicate collapse-turns button", () => {
 });
 
 test("grouped Claude work keeps the latest turn visible and collapses previous turns", () => {
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
-  const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
+  const styles = fs.readFileSync(require.resolve("../assets/web-app/styles.css"), "utf8");
   const workLogStyles = fs.readFileSync(require.resolve("../work-log.css"), "utf8");
   assert.match(app, /function replaceCollapsedTurnList\(list, entries\)/u);
   assert.match(app, /data-work-log-previous-turns-closed/u);
@@ -358,9 +360,9 @@ test("grouped Claude work keeps the latest turn visible and collapses previous t
 });
 
 test("chat controls live in the shared composer without a chat header", () => {
-  const index = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
-  const styles = fs.readFileSync(path.join(MINI_APP_ROOT, "styles.css"), "utf8");
+  const index = fs.readFileSync(require.resolve("../assets/web-app/index.html"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
+  const styles = fs.readFileSync(path.join(WEB_APP_ROOT, "styles.css"), "utf8");
   assert.doesNotMatch(index, /class="chat-head"|data-mobile-chat-actions|class="chat-actions"|class="overflow"/u);
   assert.match(index, /class="chat-overlay-actions"[\s\S]*?data-action="task-diff"[\s\S]*?data-action="task-settings"/u);
   assert.doesNotMatch(index, /data-chat-(?:title|subtitle|provider-dot|running)/u);
@@ -394,7 +396,7 @@ test("extension discovers theme assets from the active runtime catalog", () => {
 });
 
 test("background choice is remembered independently for every theme", () => {
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
   assert.match(app, /const backgroundStorageKey = \(theme\) => `\$\{LEGACY_BACKGROUND_STORAGE_KEY\}:\$\{theme\}`/u);
   assert.match(app, /applyTheme\(theme,[\s\S]*populateBackgroundOptions\(selected\);\s*applyBackground\(savedBackground\(selected\)\)/u);
   assert.match(app, /sessionBackgrounds\.set\(root\.dataset\.theme, selected\)/u);
@@ -403,7 +405,7 @@ test("background choice is remembered independently for every theme", () => {
 
 test("theme layers keep the background, effects and content in order", () => {
   const styles = fs.readFileSync(
-    require.resolve("../assets/mini-app/styles.css"),
+    require.resolve("../assets/web-app/styles.css"),
     "utf8",
   );
   assert.match(styles, /body::after\s*\{[^}]*z-index:\s*0;/su);
@@ -442,7 +444,7 @@ test("theme motion is visible, distinct and keeps reduced-motion support", () =>
   assert.match(styles, /\.rain\s*\{[^}]*z-index:\s*1;/u);
   assert.match(styles, /\.rain > span\s*\{[^}]*animation:\s*rain-fall var\(--dur\) linear infinite;/u);
   assert.match(styles, /@media \(prefers-reduced-motion: reduce\)\s*\{[\s\S]*\.rain\s*\{[^}]*display:\s*none;/u);
-  const client = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
   assert.match(client, /function buildRainDrop\(heavy = false\)/u);
   /* «Storm» берёт тот же слой капель, но плотнее и быстрее: ливень, а не
      дождь тайги. */
@@ -525,8 +527,8 @@ test("Magma packages three Obsidian Forge scenes without legacy lava textures", 
 });
 
 test("general settings and current-dialog settings stay separate", () => {
-  const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const html = fs.readFileSync(require.resolve("../assets/web-app/index.html"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
   assert.doesNotMatch(html, /data-panel-open="view"/u);
   assert.equal((html.match(/data-panel-open="settings"/gu) ?? []).length, 1);
   assert.match(html, /data-dialog-settings-toggle/u);
@@ -587,7 +589,7 @@ test("general settings and current-dialog settings stay separate", () => {
 
 test("the active Agent Hub tab survives a page reload", () => {
   const source = fs.readFileSync(
-    require.resolve("../assets/mini-app/navigation-tabs-controller.js"),
+    require.resolve("../assets/web-app/navigation-tabs-controller.js"),
     "utf8",
   );
   const window = {};
@@ -601,9 +603,9 @@ test("the active Agent Hub tab survives a page reload", () => {
 });
 
 test("task list keeps active duration live and metadata badges readable", () => {
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
-  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
-  const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
+  const styles = fs.readFileSync(require.resolve("../assets/web-app/styles.css"), "utf8");
   assert.match(client, /startedAt:\s*running\s*\?\s*task\.run\?\.startedAt/u);
   assert.match(app, /function formatRunningDuration\(/u);
   assert.match(app, /data-task-started-at/u);
@@ -624,7 +626,7 @@ test("task list keeps active duration live and metadata badges readable", () => 
 });
 
 test("rename targets the emitted Thread and upgrades to its Workspace when present", () => {
-  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
   assert.match(client, /task:rename", \(\{ id, title \}\)/u);
   assert.match(client, /const targetId = id \|\| selectedTaskId;/u);
   assert.match(client, /taskId\(candidate\.provider, candidate\.threadId, candidate\.streamId\) === targetId/u);
@@ -633,7 +635,7 @@ test("rename targets the emitted Thread and upgrades to its Workspace when prese
 });
 
 test("clients resynchronize on a new Hub instance and reload only a new release", () => {
-  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
   assert.match(client, /snapshot\?\.server\?\.process/u);
   assert.match(client, /instanceChanged[\s\S]*notifyAndroidAboutRelease/u);
   assert.match(client, /AgentHubAndroid\?\.onHubRestarted/u);
@@ -642,7 +644,7 @@ test("clients resynchronize on a new Hub instance and reload only a new release"
 });
 
 test("shared VS Code webview removes public browser pairing", () => {
-  const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
+  const html = fs.readFileSync(require.resolve("../assets/web-app/index.html"), "utf8");
   const shared = fs.readFileSync(require.resolve("./shared-webview.js"), "utf8");
   assert.match(html, /<script src="\/browser-device-auth\.js" defer><\/script>/u);
   assert.match(shared, /browser-device-auth/u);
@@ -796,7 +798,7 @@ test("«Gothic» offers ten night scenes, each with its own light", () => {
 });
 
 test("large Gothic scenes are decoded before replacing the visible background", () => {
-  const client = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
   const theme = THEME_REGISTRY.themes.find((item) => item.id === "gothic");
   assert.deepEqual(
     theme.backgrounds.filter((background) => background.preload).map((background) => background.id),
@@ -1003,8 +1005,8 @@ test("Verdant turns the wide chat into two floating field-console panels", () =>
 });
 
 test("select popups use the active theme instead of the operating-system menu", () => {
-  const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const styles = fs.readFileSync(require.resolve("../assets/web-app/styles.css"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
   assert.match(styles, /\.themed-select-menu \{[\s\S]*var\(--surface-1\)[\s\S]*var\(--accent\)/u);
   assert.match(styles, /\.themed-select-option\[aria-selected="true"\] \{[\s\S]*var\(--accent-soft\)/u);
   assert.match(app, /function enhanceThemedSelect\(select\)/u);
@@ -1018,7 +1020,7 @@ test("select popups use the active theme instead of the operating-system menu", 
 
 test("VS Code resolves each self-contained theme resource without CSS overrides", () => {
   const shared = fs.readFileSync(require.resolve("./shared-webview.js"), "utf8");
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
   const reliquary = themeFile("reliquary");
   assert.match(shared, /themeResourceUrls = new Map/u);
   assert.match(shared, /vscode\.Uri\.file\(item\.file\)/u);
@@ -1029,7 +1031,7 @@ test("VS Code resolves each self-contained theme resource without CSS overrides"
 
 test("turn header keeps its actions in the trailing columns", () => {
   const styles = fs.readFileSync(
-    require.resolve("../assets/mini-app/styles.css"),
+    require.resolve("../assets/web-app/styles.css"),
     "utf8",
   );
   /* Действий стало два — значок субагентов и «Открыть ход», — поэтому под них
@@ -1042,7 +1044,7 @@ test("turn header keeps its actions in the trailing columns", () => {
 
 test("task rail width does not collide with decorative rail thickness", () => {
   const styles = fs.readFileSync(
-    require.resolve("../assets/mini-app/styles.css"),
+    require.resolve("../assets/web-app/styles.css"),
     "utf8",
   );
   assert.match(styles, /--task-rail-width:\s*clamp\(272px, 24vw, 336px\)/u);
@@ -1051,7 +1053,7 @@ test("task rail width does not collide with decorative rail thickness", () => {
 
 test("journal width stays fixed while days and turns are expanded", () => {
   const styles = fs.readFileSync(
-    require.resolve("../assets/mini-app/styles.css"),
+    require.resolve("../assets/web-app/styles.css"),
     "utf8",
   );
   assert.match(styles, /\.journal-view\s*\{[^}]*box-sizing:\s*border-box;[^}]*width:\s*90%;/su);
@@ -1062,9 +1064,9 @@ test("journal width stays fixed while days and turns are expanded", () => {
 });
 
 test("journal keeps explicit Workspace and Stream grouping modes", () => {
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
   const styles = fs.readFileSync(
-    require.resolve("../assets/mini-app/styles.css"),
+    require.resolve("../assets/web-app/styles.css"),
     "utf8",
   );
   assert.match(
@@ -1111,7 +1113,7 @@ test("journal keeps explicit Workspace and Stream grouping modes", () => {
 });
 
 test("task-grouped journal pages large histories without per-row Metropolis blur", () => {
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
   const styles = themeFile("metropolis");
   assert.match(app, /const TASK_GROUP_TURN_PAGE_SIZE = 30/u);
   assert.match(app, /const taskGroupTurns = new WeakMap\(\)/u);
@@ -1125,9 +1127,9 @@ test("task-grouped journal pages large histories without per-row Metropolis blur
 });
 
 test("day-grouped journal uses Workspace cards and plain credit values", () => {
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
   const styles = fs.readFileSync(
-    require.resolve("../assets/mini-app/styles.css"),
+    require.resolve("../assets/web-app/styles.css"),
     "utf8",
   );
   assert.match(app, /function workspaceGroupsFrom\(day\)/u);
@@ -1149,7 +1151,7 @@ test("day-grouped journal uses Workspace cards and plain credit values", () => {
 
 test("compact desktop header wraps before it can create horizontal overflow", () => {
   const styles = fs.readFileSync(
-    require.resolve("../assets/mini-app/styles.css"),
+    require.resolve("../assets/web-app/styles.css"),
     "utf8",
   );
   assert.match(styles, /@media \(min-width: 860px\) and \(max-width: 1119px\)/u);
@@ -1162,7 +1164,7 @@ test("compact desktop header wraps before it can create horizontal overflow", ()
 
 test("desktop themes share one shell-owned top-panel anchor", () => {
   const styles = fs.readFileSync(
-    require.resolve("../assets/mini-app/styles.css"),
+    require.resolve("../assets/web-app/styles.css"),
     "utf8",
   );
   assert.match(
@@ -1177,7 +1179,7 @@ test("desktop themes share one shell-owned top-panel anchor", () => {
 
 test("mobile task list cannot widen the viewport", () => {
   const styles = fs.readFileSync(
-    require.resolve("../assets/mini-app/styles.css"),
+    require.resolve("../assets/web-app/styles.css"),
     "utf8",
   );
   assert.match(
@@ -1191,7 +1193,7 @@ test("mobile task list cannot widen the viewport", () => {
 });
 
 test("narrow desktop measures the document viewport before host window width", () => {
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
   const resolver = app.match(
     /function layoutViewportWidth\(\) \{[\s\S]*?\r?\n\}\r?\n\r?\nfunction resolveSurface\(\) \{[\s\S]*?\r?\n\}/u,
   )?.[0];
@@ -1218,7 +1220,7 @@ test("narrow desktop measures the document viewport before host window width", (
 });
 
 test("mobile journal task links do not become nested expansion buttons", () => {
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
   assert.match(
     app,
     /if \(title\.querySelector\("\[data-open-task\]"\)\) \{[\s\S]*title\.removeAttribute\("role"\)/u,
@@ -1227,13 +1229,13 @@ test("mobile journal task links do not become nested expansion buttons", () => {
 });
 
 test("chat distinguishes loading history from an empty task", () => {
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
   assert.match(app, /state\.messages\.has\(state\.selectedId\)/u);
   assert.match(app, /Загрузка истории…/u);
 });
 
 test("chat refreshes every visible external run without rebuilding a second snapshot", () => {
-  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
   const refresh = client.match(
     /async function refresh\([^)]*\) \{(?<body>[\s\S]*?)\r?\n\}\r?\n\r?\nvoid runAction/u,
   )?.groups?.body ?? "";
@@ -1248,7 +1250,7 @@ test("chat refreshes every visible external run without rebuilding a second snap
 });
 
 test("completed chat keeps probing briefly for late generated images", () => {
-  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
   const refresh = client.match(
     /async function refresh\([^)]*\) \{(?<body>[\s\S]*?)\r?\n\}\r?\n\r?\nvoid runAction/u,
   )?.groups?.body ?? "";
@@ -1261,7 +1263,7 @@ test("completed chat keeps probing briefly for late generated images", () => {
 });
 
 test("opening a task settles generated images without delaying the cached history", () => {
-  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
   assert.match(client, /if \(selectTask && !result\.focusedTurn\)[\s\S]*void settleOpenedTaskHistory/u);
   assert.match(
     client,
@@ -1271,7 +1273,7 @@ test("opening a task settles generated images without delaying the cached histor
 });
 
 test("background history refresh cannot switch the task or reorder a completed turn", () => {
-  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
   assert.match(client, /selectTask = true/u);
   assert.match(client, /if \(selectTask\) rememberSelectedTaskId\(id\)/u);
   assert.match(client, /if \(selectTask\) agentHub\.selectTask\(id\)/u);
@@ -1281,8 +1283,8 @@ test("background history refresh cannot switch the task or reorder a completed t
 });
 
 test("chat sends with Enter on desktop and keeps Enter as a newline on phones", () => {
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
-  const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
+  const html = fs.readFileSync(require.resolve("../assets/web-app/index.html"), "utf8");
   assert.match(
     app,
     /event\.key !== "Enter" \|\| event\.shiftKey \|\| event\.isComposing \|\| phoneComposerMode\(\)/u,
@@ -1297,11 +1299,10 @@ test("chat sends with Enter on desktop and keeps Enter as a newline on phones", 
 });
 
   test("chat shows sent messages immediately and reconciles them by exact identity", () => {
-    const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+    const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
     assert.match(client, /rememberOutgoing\(request\.taskId, optimistic\);/u);
     assert.match(client, /const queuesOptimistically = request\.followUpMode === "queue"/u);
     assert.match(client, /optimisticDeferredClientUserMessageIds\.add\(request\.requestId\)/u);
-    assert.match(client, /renderTaskQueue\(request\.taskId\)/u);
   assert.match(client, /\.\.\.deliveryPatch\("preparing"\)/u);
   assert.match(client, /delivery: "Отправляется…"/u);
   assert.match(client, /clientUserMessageId: request\.requestId/u);
@@ -1319,8 +1320,8 @@ test("chat sends with Enter on desktop and keeps Enter as a newline on phones", 
 });
 
 test("chat short-polls commands and skips only unchanged loaded history renders", () => {
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
-  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
   assert.match(client, /const REMOTE_WAIT_MS = 0;/u);
   assert.match(client, /control\/result\?id=.*waitMs=.*REMOTE_WAIT_MS[\s\S]*REMOTE_RESULT_FALLBACK_POLL_MS/su);
   assert.doesNotMatch(client, /REMOTE_RESULT_LONG_POLL_MS/u);
@@ -1331,8 +1332,8 @@ test("chat short-polls commands and skips only unchanged loaded history renders"
 });
 
   test("dispatching deferred messages leave the queue and reappear in the active conversation", () => {
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
-  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
   assert.match(app, /\.filter\(\(entry\) => entry\.state !== "dispatching" && entry\.state !== "steering"\)/u);
   assert.match(app, /Date\.parse\(left\.createdAt \|\| 0\)/u);
     assert.match(
@@ -1343,9 +1344,9 @@ test("chat short-polls commands and skips only unchanged loaded history renders"
 });
 
 test("message attachments keep timestamps, previews and an explicit open action", () => {
-  const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
-  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  const html = fs.readFileSync(require.resolve("../assets/web-app/index.html"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
   const extension = fs.readFileSync(require.resolve("./extension.js"), "utf8");
   assert.match(client, /time:\s*message\.time \?\?/u);
   assert.match(client, /attachments:\s*attachmentViews\(message\.attachments\)/u);
@@ -1366,9 +1367,9 @@ test("message attachments keep timestamps, previews and an explicit open action"
 });
 
 test("background navigation is empty and settings expose the bug report flow", () => {
-  const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
-  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  const html = fs.readFileSync(require.resolve("../assets/web-app/index.html"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
   assert.match(html, /data-view-button="background"[\s\S]*?<span>Фон<\/span>/u);
   assert.match(html, /<main class="background-view" data-background-view aria-label="Фон"><\/main>/u);
   assert.match(html, /data-bug-report-toggle[\s\S]*data-phosphor-icon="bug"[\s\S]*Сообщить о баге\./u);
@@ -1387,8 +1388,8 @@ test("background navigation is empty and settings expose the bug report flow", (
 });
 
 test("Codex file citations render as compact local links", () => {
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
-  const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
+  const styles = fs.readFileSync(require.resolve("../assets/web-app/styles.css"), "utf8");
   assert.match(app, /function codexFileCitation\(raw\)/u);
   assert.match(app, /token\.startsWith\(":codex-file-citation\{"\)/u);
   assert.match(app, /link\.dataset\.agentHubLocalLink = targetLink\.localPath/u);
@@ -1396,9 +1397,9 @@ test("Codex file citations render as compact local links", () => {
 });
 
 test("composer accepts documents and renders downloadable file cards", () => {
-  const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
-  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  const html = fs.readFileSync(require.resolve("../assets/web-app/index.html"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
   assert.match(html, /data-file-input/u);
   assert.doesNotMatch(html, /data-file-input[^>]*accept=["']image\/\*/u);
   assert.match(app, /async function readAttachmentFiles\(files\)/u);
@@ -1410,8 +1411,8 @@ test("composer accepts documents and renders downloadable file cards", () => {
 });
 
 test("mobile navigation backs out from image to chat and from chat to tasks", () => {
-  const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const html = fs.readFileSync(require.resolve("../assets/web-app/index.html"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
   const android = fs.readFileSync(
     require.resolve("../AndroidApp/app/src/main/java/app/agenthub/mobile/MainActivity.java"),
     "utf8",
@@ -1425,8 +1426,8 @@ test("mobile navigation backs out from image to chat and from chat to tasks", ()
 });
 
 test("annotation actions preserve native selection and keep per-quote comments", () => {
-  const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const html = fs.readFileSync(require.resolve("../assets/web-app/index.html"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
   const android = fs.readFileSync(
     require.resolve("../AndroidApp/app/src/main/java/app/agenthub/mobile/MainActivity.java"),
     "utf8",
@@ -1445,22 +1446,22 @@ test("annotation actions preserve native selection and keep per-quote comments",
 });
 
 test("lost command results reconcile by durable message receipt without duplicate draft", () => {
-  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
   assert.match(client, /function applyMessageReceipts\(snapshot\)[\s\S]*agentHub\.completeSend\(clientUserMessageId, \{ accepted \}\)/u);
   assert.match(client, /const rejected = messageSendDefinitelyRejected\(error\)[\s\S]*deliveryPatch\(rejected \? "rejected" : "unconfirmed"\)/u);
 });
 
 test("queue actions are single-flight and steer uses the dedicated server action", () => {
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
-  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
   assert.match(app, /case "queue-steer":[\s\S]*emit\("queue:steer"/u);
   assert.match(client, /queueActionsInFlight\.has\(key\)/u);
   assert.match(client, /control\("deferred-input", \{ id, action: "steer" \}\)/u);
 });
 
 test("journal preserves recursive subagent trees in date and task groupings", () => {
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
-  const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
+  const styles = fs.readFileSync(require.resolve("../assets/web-app/styles.css"), "utf8");
   const workLogStyles = fs.readFileSync(require.resolve("../work-log.css"), "utf8");
   assert.match(app, /function isRootTurnEntry\(entry\)/u);
   assert.match(app, /if \(isRootTurnEntry\(entry\)\) group\.turns\.push/u);
@@ -1474,10 +1475,10 @@ test("journal preserves recursive subagent trees in date and task groupings", ()
 });
 
 test("response annotations render as quote cards without the service envelope", () => {
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
-  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
-  const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
-  const lifecycle = fs.readFileSync(require.resolve("../assets/mini-app/message-lifecycle.js"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
+  const styles = fs.readFileSync(require.resolve("../assets/web-app/styles.css"), "utf8");
+  const lifecycle = fs.readFileSync(require.resolve("../assets/web-app/messages/lifecycle.js"), "utf8");
   assert.match(lifecycle, /function embeddedResponseAnnotations\(value\)/u);
   assert.match(lifecycle, /text: embedded \|\| annotations\.length \? request/u);
   assert.match(client, /responseAnnotations: message\.responseAnnotations/u);
@@ -1489,7 +1490,7 @@ test("response annotations render as quote cards without the service envelope", 
 });
 
 test("focused journal turn reuses the task thread without duplicating its prompt", () => {
-  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
   assert.match(client, /!focusedTurnAlreadyVisible\(history, messages, focusedTurn\)/u);
   assert.match(client, /const focusedThreadId = focusedTurnTaskThreadId\(focusedTurn\)/u);
   assert.doesNotMatch(
@@ -1500,11 +1501,11 @@ test("focused journal turn reuses the task thread without duplicating its prompt
 
 test("desktop focus and settings stay ordered at the right edge", () => {
   const html = fs.readFileSync(
-    require.resolve("../assets/mini-app/index.html"),
+    require.resolve("../assets/web-app/index.html"),
     "utf8",
   );
   const styles = fs.readFileSync(
-    require.resolve("../assets/mini-app/styles.css"),
+    require.resolve("../assets/web-app/styles.css"),
     "utf8",
   );
   const focus = html.indexOf("data-focus-toggle");
@@ -1520,12 +1521,12 @@ test("desktop focus and settings stay ordered at the right edge", () => {
 });
 
 test("Telegram mobile chat disables the host vertical collapse gesture", () => {
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
   assert.match(app, /telegram\?\.expand\(\);\s*telegram\?\.disableVerticalSwipes\?\.\(\);/u);
 });
 
 test("composer drafts survive mobile navigation, reconnects and WebView recreation", () => {
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
   assert.match(app, /const DRAFT_STORAGE_VERSION = "agent-hub:composer-drafts:v1";/u);
   assert.match(app, /function draftStorageSurface\(\)[\s\S]*window\.AgentHubAndroid[\s\S]*return "android";/u);
   assert.match(app, /function restorePersistedDrafts\(\)[\s\S]*localStorage\.getItem\(draftStorageKey\(\)\)/u);
@@ -1536,7 +1537,7 @@ test("composer drafts survive mobile navigation, reconnects and WebView recreati
 });
 
 test("left-edge swipe uses in-app back and prevents browser history navigation", () => {
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
   assert.match(app, /const EDGE_SWIPE_ZONE = 32;/u);
   assert.match(app, /fromLeftEdge: touch\.clientX <= EDGE_SWIPE_ZONE/u);
   assert.match(app, /\.markdown-table-scroll/u);
@@ -1546,16 +1547,16 @@ test("left-edge swipe uses in-app back and prevents browser history navigation",
 });
 
 test("task list no longer exposes legacy Project groups", () => {
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
-  const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
+  const styles = fs.readFileSync(require.resolve("../assets/web-app/styles.css"), "utf8");
   assert.doesNotMatch(app, /const hasProject = visible\.some/u);
   assert.doesNotMatch(app, /function renderTaskProjectGroup\(/u);
   assert.doesNotMatch(styles, /\.task-project-heading\s*\{/u);
 });
 
 test("new Workspace Thread becomes the selected chat before its title is applied", () => {
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
-  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
   assert.match(client, /control\("new-task"[\s\S]*const created = \(snapshot\.tasks \?\? \[\]\)\.find\(\(task\) => task\.selected\)/u);
   assert.match(client, /workspaceName: title \|\| undefined/u);
   assert.match(client, /pendingSelectionId = taskId\(created\.provider, created\.threadId, created\.streamId\)/u);
@@ -1566,7 +1567,7 @@ test("new Workspace Thread becomes the selected chat before its title is applied
 
 test("metropolis uses square pixel rain cells on mobile", () => {
   const shader = fs.readFileSync(
-    require.resolve("../assets/mini-app/themes/metropolis/metropolis-glass.js"),
+    require.resolve("../assets/web-app/themes/metropolis/metropolis-glass.js"),
     "utf8",
   );
   assert.match(shader, /cell:\s*\[0, 112\]/u);
@@ -1580,10 +1581,10 @@ test("metropolis uses square pixel rain cells on mobile", () => {
 });
 
 test("chat loads older pages from a button and a cancellable mobile pull gesture", () => {
-  const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
-  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
-  const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
+  const html = fs.readFileSync(require.resolve("../assets/web-app/index.html"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
+  const styles = fs.readFileSync(require.resolve("../assets/web-app/styles.css"), "utf8");
   assert.match(html, /data-history-loader[\s\S]*data-history-load/u);
   assert.match(app, /const HISTORY_PULL_THRESHOLD = 84;/u);
   assert.match(app, /touchmove[\s\S]*historyPull\.armed = damped >= HISTORY_PULL_THRESHOLD/u);
@@ -1597,9 +1598,9 @@ test("chat loads older pages from a button and a cancellable mobile pull gesture
 });
 
 test("chat keeps an active response only in the live card after task switching", () => {
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
-  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
-  const lifecycle = fs.readFileSync(require.resolve("../assets/mini-app/message-lifecycle.js"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
+  const lifecycle = fs.readFileSync(require.resolve("../assets/web-app/messages/lifecycle.js"), "utf8");
   assert.match(
     lifecycle,
     /function visibleConversationMessages\(messages,[\s\S]*const liveTurnRole = identityKey\(liveProbe, \{ withoutItem: true \}\);[\s\S]*identityKey\(message, \{ withoutItem: true \}\) !== liveTurnRole/u,
@@ -1615,8 +1616,8 @@ test("chat keeps an active response only in the live card after task switching",
 });
 
 test("active commentary stays live while interrupted commentary remains in history", () => {
-  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
-  const lifecycle = fs.readFileSync(require.resolve("../assets/mini-app/message-lifecycle.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
+  const lifecycle = fs.readFileSync(require.resolve("../assets/web-app/messages/lifecycle.js"), "utf8");
   assert.match(
     client,
     /const visibleAgent = historicalAgentResponseVisible\(item\)[\s\S]*\?\s*agentMessages\.findLast[\s\S]*:\s*null;/u,
@@ -1629,9 +1630,9 @@ test("active commentary stays live while interrupted commentary remains in histo
 });
 
 test("manual context compaction reports completion and stays on the fast refresh loop", () => {
-  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
-  const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
+  const styles = fs.readFileSync(require.resolve("../assets/web-app/styles.css"), "utf8");
   assert.match(client, /requestedContextCompactions/u);
   assert.match(client, /Свёртка завершена успешно/u);
   assert.match(client, /Началась автосвёртка контекста/u);
@@ -1653,8 +1654,8 @@ test("manual context compaction reports completion and stays on the fast refresh
 });
 
 test("live reasoning renders Markdown separately from the response", () => {
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
-  const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
+  const html = fs.readFileSync(require.resolve("../assets/web-app/index.html"), "utf8");
   assert.match(html, /data-live-reasoning/u);
   assert.match(html, /data-live-body/u);
   assert.match(app, /const reasoning = node\.querySelector\("\[data-live-reasoning\]"\);/u);
@@ -1662,8 +1663,8 @@ test("live reasoning renders Markdown separately from the response", () => {
 });
 
 test("shared chat Markdown renders GFM tables responsively", () => {
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
-  const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
+  const styles = fs.readFileSync(require.resolve("../assets/web-app/styles.css"), "utf8");
   assert.match(app, /function markdownTableCells\(line\)/u);
   assert.match(app, /\^:\?-\{3,\}:\?\$/u);
   assert.match(app, /el\("table", \{ class: "markdown-table" \}/u);
@@ -1672,10 +1673,10 @@ test("shared chat Markdown renders GFM tables responsively", () => {
 });
 
 test("queued messages own steering and editing while the composer always queues", () => {
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
-  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
-  const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
-  const lifecycle = fs.readFileSync(require.resolve("../assets/mini-app/message-lifecycle.js"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
+  const html = fs.readFileSync(require.resolve("../assets/web-app/index.html"), "utf8");
+  const lifecycle = fs.readFileSync(require.resolve("../assets/web-app/messages/lifecycle.js"), "utf8");
   assert.match(app, /const entryAnnotations = Array\.isArray\(entry\.annotations\)/u);
   assert.match(app, /class: "queue-annotation-quote"/u);
   assert.match(app, /class: "queue-annotation-comment"/u);
@@ -1699,9 +1700,9 @@ test("queued messages own steering and editing while the composer always queues"
 });
 
 test("composer restores definite rejection but keeps an ambiguous delivery single", () => {
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
-  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
-  const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
+  const html = fs.readFileSync(require.resolve("../assets/web-app/index.html"), "utf8");
   const submit = app.match(/function submitComposer\(\) \{(?<body>[\s\S]*?)\n\}/u)?.groups?.body ?? "";
   assert.match(submit, /composerInput\.value = ""[\s\S]*emit\("message:send"/u);
   assert.match(app, /function completeComposerSend\(requestId, accepted\)/u);
@@ -1713,7 +1714,6 @@ test("composer restores definite rejection but keeps an ambiguous delivery singl
   assert.match(client, /reusableAttachmentPaths\([\s\S]*\{ remote: !vscode \}/u);
   assert.match(client, /if \(isConnectionFailure\(error\)\) recordTransientConnectionFailure/u);
   assert.match(client, /const rejected = messageSendDefinitelyRejected\(error\)/u);
-  assert.match(client, /agentHub\.completeSend\(request\.requestId, \{ accepted: !rejected \}\)/u);
   assert.match(client, /deliveryPatch\(rejected \? "rejected" : "unconfirmed"\)/u);
   assert.match(client, /snapshot\?\.restartWaiting == null && blockingCount > 0/u);
   assert.match(client, /waiting \? "restart-waiting" : snapshot\?\.restartPending \? "restarting" : idleStatus/u);
@@ -1728,13 +1728,13 @@ test("composer restores definite rejection but keeps an ambiguous delivery singl
 });
 
 test("chat retries an initial history load after the connection recovers", () => {
-  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
   assert.match(client, /const historyMissing = Boolean\(previousTask\) && !historyPageByTask\.has\(id\)/u);
   assert.match(client, /historyMissing[\s\S]*control\("task-history"/u);
 });
 
 test("one transient control failure does not mark the whole Hub offline", () => {
-  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
   assert.match(client, /CONNECTION_OFFLINE_FAILURES = 3/u);
   assert.match(client, /CONNECTION_OFFLINE_GRACE_MS = 6_000/u);
   assert.match(client, /function recordTransientConnectionFailure\(\)/u);
@@ -1744,7 +1744,7 @@ test("one transient control failure does not mark the whole Hub offline", () => 
 });
 
 test("chat keeps refreshing until the ready answer reaches task history", () => {
-  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
   assert.match(client, /function updateHistoryCatchUp\(taskIdValue, history, task\)/u);
   assert.match(client, /historyContainsLatestAnswer\(history, task\)/u);
   assert.match(client, /refreshCaughtUpHistory/u);
@@ -1753,8 +1753,8 @@ test("chat keeps refreshing until the ready answer reaches task history", () => 
 });
 
 test("current limits live in settings and statistics instead of the compact header", () => {
-  const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const html = fs.readFileSync(require.resolve("../assets/web-app/index.html"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
   assert.doesNotMatch(html, /data-rate-limits-slot/u);
   assert.equal(html.match(/data-current-limits=/gu)?.length, 2);
   assert.match(html, /data-current-limits="statistics"/u);
@@ -1768,7 +1768,7 @@ test("current limits live in settings and statistics instead of the compact head
 });
 
 test("server navigation uses a readable rack icon instead of a CPU", () => {
-  const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
+  const html = fs.readFileSync(require.resolve("../assets/web-app/index.html"), "utf8");
   assert.match(
     html,
     /data-view-button="server"[\s\S]*?data-phosphor-icon="hard-drives"[\s\S]*?<span>Сервер<\/span>/u,
@@ -1776,10 +1776,10 @@ test("server navigation uses a readable rack icon instead of a CPU", () => {
 });
 
 test("statistics page offers local usage and full limit history", () => {
-  const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
-  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
-  const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
+  const html = fs.readFileSync(require.resolve("../assets/web-app/index.html"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
+  const styles = fs.readFileSync(require.resolve("../assets/web-app/styles.css"), "utf8");
   assert.match(html, /data-view-button="statistics"/u);
   assert.match(html, /data-usage-chart/u);
   assert.match(html, /data-limits-chart/u);
@@ -1816,10 +1816,10 @@ test("statistics page offers local usage and full limit history", () => {
 });
 
 test("settings choose one turn timestamp for every local usage chart", () => {
-  const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
-  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
-  const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
+  const html = fs.readFileSync(require.resolve("../assets/web-app/index.html"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
+  const styles = fs.readFileSync(require.resolve("../assets/web-app/styles.css"), "utf8");
   for (const mode of ["start", "middle", "end"]) {
     assert.match(html, new RegExp(`data-turn-time-mode="${mode}"`, "u"));
   }
@@ -1831,10 +1831,10 @@ test("settings choose one turn timestamp for every local usage chart", () => {
 });
 
 test("statistics compares one independently selected limit and tracks its price", () => {
-  const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
-  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
-  const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
+  const html = fs.readFileSync(require.resolve("../assets/web-app/index.html"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
+  const styles = fs.readFileSync(require.resolve("../assets/web-app/styles.css"), "utf8");
   assert.match(html, /id="comparison-chart-title">Корреляция расхода</u);
   assert.match(html, /data-comparison-chart role="img"/u);
   assert.match(html, /r — корреляция Пирсона,[\s\S]*?цена — расход лимита в п\.п\. на 1 kcr/u);
@@ -1890,9 +1890,9 @@ test("statistics compares one independently selected limit and tracks its price"
 });
 
 test("statistics switches between combined and split comparison charts", () => {
-  const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
-  const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
+  const html = fs.readFileSync(require.resolve("../assets/web-app/index.html"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
+  const styles = fs.readFileSync(require.resolve("../assets/web-app/styles.css"), "utf8");
   assert.match(html, /data-comparison-view-mode="combined"[^>]*>Общая</u);
   assert.match(html, /data-comparison-view-mode="split"[^>]*>Раздельно</u);
   assert.match(html, /data-comparison-local-chart[\s\S]*?data-comparison-api-chart/u);
@@ -1909,16 +1909,16 @@ test("statistics switches between combined and split comparison charts", () => {
 });
 
 test("local usage chart keeps its range and labels every calendar day", () => {
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
-  const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
+  const styles = fs.readFileSync(require.resolve("../assets/web-app/styles.css"), "utf8");
   assert.match(app, /payload\?\.bucket === "day"/u);
   assert.match(app, /usage-axis-day/u);
   assert.match(styles, /\.usage-chart\s*\{[^}]*overflow-x:\s*auto;/su);
 });
 
 test("history dialog requests periods via limits:open and renders via setRateLimitHistory", () => {
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
-  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
   assert.match(app, /setRateLimitHistory\(payload\) \{\s*applyRateLimitHistory\(payload\);/u);
   assert.match(app, /emit\("limits:open", \{ range: limitsState\.range \}\)/u);
   assert.match(client, /agentHub\.on\("limits:open", \(\{ range \}\) =>/u);
@@ -1933,8 +1933,8 @@ test("history dialog requests periods via limits:open and renders via setRateLim
 });
 
 test("history dialog handles loading, empty and error states", () => {
-  const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const html = fs.readFileSync(require.resolve("../assets/web-app/index.html"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
   for (const slot of ["data-limits-loading", "data-limits-empty", "data-limits-error", "data-limits-retry"]) {
     assert.match(html, new RegExp(slot, "u"));
   }
@@ -1945,9 +1945,9 @@ test("history dialog handles loading, empty and error states", () => {
 });
 
 test("history chart is drawn with inline SVG and no external dependencies", () => {
-  const html = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
-  const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
+  const html = fs.readFileSync(require.resolve("../assets/web-app/index.html"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
+  const styles = fs.readFileSync(require.resolve("../assets/web-app/styles.css"), "utf8");
   assert.match(html, /data-limits-chart role="img"/u);
   assert.match(app, /document\.createElementNS\(SVG_NS, tag\)/u);
   assert.match(app, /function buildLimitsChart\(payload\)/u);
@@ -1968,7 +1968,7 @@ test("history chart is drawn with inline SVG and no external dependencies", () =
 });
 
 test("history dialog is themed with shared variables and adapts to mobile", () => {
-  const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
+  const styles = fs.readFileSync(require.resolve("../assets/web-app/styles.css"), "utf8");
   // Диалог почти непрозрачен: градиент темы лежит поверх сплошной подложки --bg.
   assert.match(styles, /\.limits-dialog\s*\{[^}]*background:\s*var\(--card-bg-open\),\s*var\(--bg\);/su);
   assert.match(styles, /\.limits-range\[aria-pressed="true"\]\s*\{[^}]*color:\s*var\(--accent\);/su);
@@ -1981,7 +1981,7 @@ test("history dialog is themed with shared variables and adapts to mobile", () =
 });
 
 test("history scrim is strong enough to keep the chart readable over chat text", () => {
-  const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
+  const styles = fs.readFileSync(require.resolve("../assets/web-app/styles.css"), "utf8");
   const scrim = styles.match(/\.limits-scrim\s*\{[^}]*background:\s*rgba\(0,\s*0,\s*0,\s*(?<alpha>[0-9.]+)\)/su);
   assert.ok(scrim, "у .limits-scrim задан чёрный фон с прозрачностью");
   const alpha = Number(scrim.groups.alpha);
@@ -1990,8 +1990,8 @@ test("history scrim is strong enough to keep the chart readable over chat text",
 });
 
 test("legend series are real toggle buttons with accessible pressed state", () => {
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
-  const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
+  const styles = fs.readFileSync(require.resolve("../assets/web-app/styles.css"), "utf8");
   // настоящая button с aria-pressed/aria-label и стабильным id серии
   assert.match(app, /el\("button",\s*\{\s*type:\s*"button",\s*class:\s*`limits-legend-toggle/u);
   assert.match(app, /"aria-pressed":\s*String\(!item\.hidden\)/u);
@@ -2003,7 +2003,7 @@ test("legend series are real toggle buttons with accessible pressed state", () =
 });
 
 test("hidden series persist under a versioned key and never re-query the backend", () => {
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
   assert.match(app, /const LIMITS_HIDDEN_KEY = "agent-hub-limits-hidden-v1";/u);
   assert.match(app, /function loadHiddenSeries\(\)/u);
   assert.match(app, /stored\.version === 1 && Array\.isArray\(stored\.ids\)/u);
@@ -2017,7 +2017,7 @@ test("hidden series persist under a versioned key and never re-query the backend
 });
 
 test("chart, tooltip and aria-summary use only the visible series", () => {
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
   // цвет по индексу в полном списке — скрытие не перекрашивает остальные
   assert.match(app, /const allSeries = rawSeries[\s\S]*color:\s*seriesColor\(item, index\),\s*hidden:/u);
   assert.match(app, /const series = allSeries\.filter\(\(item\) => !item\.hidden\)/u);
@@ -2028,9 +2028,9 @@ test("chart, tooltip and aria-summary use only the visible series", () => {
 });
 
 test("all themes keep the unified raster Agent Hub mark", () => {
-  const index = fs.readFileSync(path.join(MINI_APP_ROOT, "index.html"), "utf8");
-  const styles = fs.readFileSync(path.join(MINI_APP_ROOT, "styles.css"), "utf8");
-  const mark = fs.readFileSync(path.join(MINI_APP_ROOT, "agent-hub-mark.png"));
+  const index = fs.readFileSync(path.join(WEB_APP_ROOT, "index.html"), "utf8");
+  const styles = fs.readFileSync(path.join(WEB_APP_ROOT, "styles.css"), "utf8");
+  const mark = fs.readFileSync(path.join(WEB_APP_ROOT, "agent-hub-mark.png"));
   assert.match(index, /<img data-app-mark src="\/agent-hub-mark\.png"/u);
   assert.doesNotMatch(index, /<svg data-app-mark/u);
   assert.match(styles, /\.brand-mark\s*\{[\s\S]*background:\s*none !important;[\s\S]*border:\s*0 !important;/u);
@@ -2057,7 +2057,7 @@ test("native shells package derivatives of the unified Agent Hub mark", () => {
 });
 
 test("composer pastes arbitrary clipboard files and falls back to the files list", () => {
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
   assert.match(app, /function clipboardAttachmentFiles\(clipboardData\)/u);
   assert.match(app, /clipboardData\?\.items/u);
   assert.match(app, /clipboardData\?\.files/u);
@@ -2066,9 +2066,9 @@ test("composer pastes arbitrary clipboard files and falls back to the files list
 });
 
 test("shared shell groups threads under stable Workspace and Stream identities", () => {
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
-  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
-  const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
+  const styles = fs.readFileSync(require.resolve("../assets/web-app/styles.css"), "utf8");
   const tabsStart = app.indexOf("function renderStreamTabs()");
   const tabsEnd = app.indexOf("function publishVisibleStreamTasks", tabsStart);
   const tabs = app.slice(tabsStart, tabsEnd);
@@ -2119,9 +2119,9 @@ test("shared shell groups threads under stable Workspace and Stream identities",
 });
 
 test("Stream menu moves it to an existing or newly created Workspace", () => {
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
-  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
-  const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
+  const styles = fs.readFileSync(require.resolve("../assets/web-app/styles.css"), "utf8");
 
   assert.match(app, /function openStreamContextMenu\(event, tab\)/u);
   assert.match(app, /class: "stream-context-submenu"/u);
@@ -2144,10 +2144,10 @@ test("Stream menu moves it to an existing or newly created Workspace", () => {
 });
 
 test("wide shared shell opens up to four Workspace Streams as chat columns", () => {
-  const index = fs.readFileSync(require.resolve("../assets/mini-app/index.html"), "utf8");
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
-  const client = fs.readFileSync(require.resolve("../assets/mini-app/hub-client.js"), "utf8");
-  const styles = fs.readFileSync(require.resolve("../assets/mini-app/styles.css"), "utf8");
+  const index = fs.readFileSync(require.resolve("../assets/web-app/index.html"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
+  const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
+  const styles = fs.readFileSync(require.resolve("../assets/web-app/styles.css"), "utf8");
 
   assert.match(index, /data-stream-tabs/u);
   assert.match(index, /data-stream-chat-columns/u);
@@ -2175,7 +2175,7 @@ test("wide shared shell opens up to four Workspace Streams as chat columns", () 
 });
 
 test("VS Code stream refresh keeps composer focus and opens history at the bottom", () => {
-  const app = fs.readFileSync(require.resolve("../assets/mini-app/app.js"), "utf8");
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
   const deckStart = app.indexOf("function renderStreamChatDeck()");
   const deckEnd = app.indexOf("function refreshSupplementaryStreamChat", deckStart);
   const deck = app.slice(deckStart, deckEnd);
@@ -2194,8 +2194,8 @@ test("VS Code stream refresh keeps composer focus and opens history at the botto
 });
 
 test("hub status band lives inside the top toolbar instead of covering the stream row", () => {
-  const html = fs.readFileSync(path.join(MINI_APP_ROOT, "index.html"), "utf8");
-  const styles = fs.readFileSync(path.join(MINI_APP_ROOT, "styles.css"), "utf8");
+  const html = fs.readFileSync(path.join(WEB_APP_ROOT, "index.html"), "utf8");
+  const styles = fs.readFileSync(path.join(WEB_APP_ROOT, "styles.css"), "utf8");
   /* Полоса является частью верхней панели, поэтому не создаёт отдельную
      строку над шапкой и не накрывает ряд Stream под ней. */
   const toolbar = html.indexOf('class="toolbar"');
@@ -2212,7 +2212,7 @@ test("hub status band lives inside the top toolbar instead of covering the strea
 
 test("Null keeps a flat monochrome ground without a single coloured token", () => {
   const styles = themeFile("zero");
-  const manifest = JSON.parse(fs.readFileSync(path.join(MINI_APP_ROOT, "themes", "zero", "theme.json"), "utf8"));
+  const manifest = JSON.parse(fs.readFileSync(path.join(WEB_APP_ROOT, "themes", "zero", "theme.json"), "utf8"));
   /* Монохромность — визуальный контракт, а не требование к конкретной записи
      цвета. Проверяем и oklch, и hex, чтобы замена одного CSS-синтаксиса другим
      не ломала тест при сохранении той же grayscale-палитры. */

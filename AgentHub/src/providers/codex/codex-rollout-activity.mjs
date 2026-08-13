@@ -8,7 +8,6 @@ import {
 import { TASK_EXECUTION_OWNERS } from "../../domain/task-execution-owner.mjs";
 import {
   isCodexContextProbeClientId,
-  isCodexContextProbeText,
 } from "../../domain/codex-context-probe.mjs";
 
 const CODEX_ACTIVE_FRESHNESS_MS = 10 * 60 * 1000;
@@ -592,12 +591,8 @@ function withoutCodexContextProbeTurns(activity) {
   const hidden = new Set(Object.entries(activity.userMessages ?? {})
     .filter(([, messages]) => (Array.isArray(messages) ? messages : []).some((message) => (
       isCodexContextProbeClientId(message?.clientUserMessageId)
-      || isCodexContextProbeText(message?.text)
     )))
     .map(([turnId]) => turnId));
-  for (const [turnId, answer] of Object.entries(activity.finalMessages ?? {})) {
-    if (isCodexContextProbeText(answer)) hidden.add(turnId);
-  }
   if (!hidden.size) return activity;
   const withoutHiddenKeys = (value) => Object.fromEntries(
     Object.entries(value ?? {}).filter(([turnId]) => !hidden.has(turnId)),
@@ -626,9 +621,7 @@ function withoutCodexContextProbeTurns(activity) {
     ...(activity.activityGroups
       ? { activityGroups: withoutHiddenKeys(activity.activityGroups) }
       : {}),
-    unscopedLatestMessage: isCodexContextProbeText(activity.unscopedLatestMessage)
-      ? null
-      : activity.unscopedLatestMessage,
+    unscopedLatestMessage: activity.unscopedLatestMessage,
   };
 }
 

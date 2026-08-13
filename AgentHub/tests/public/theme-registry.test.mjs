@@ -82,7 +82,7 @@ test("theme registry rejects a manifest that escapes its package", async () => {
 });
 
 test("Diablo exposes every scene and stable WebView asset token", () => {
-  const root = path.resolve(import.meta.dirname, "../..", "assets", "mini-app");
+  const root = path.resolve(import.meta.dirname, "../..", "assets", "web-app");
   const theme = loadThemeRegistry(root).themes.find((item) => item.id === "reliquary");
 
   assert.equal(theme.name, "Diablo");
@@ -235,11 +235,11 @@ test("theme registry keeps system status visibility under shell ownership", asyn
 
 test("desktop shell owns and tokenizes the shared header and Stream control shapes", async () => {
   const styles = await readFile(
-    new URL("../../assets/mini-app/styles.css", import.meta.url),
+    new URL("../../assets/web-app/styles.css", import.meta.url),
     "utf8",
   );
   const gothic = await readFile(
-    new URL("../../assets/mini-app/themes/gothic/theme.css", import.meta.url),
+    new URL("../../assets/web-app/themes/gothic/theme.css", import.meta.url),
     "utf8",
   );
   assert.match(

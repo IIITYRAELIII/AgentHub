@@ -5,6 +5,7 @@ import { interstreamMessageDetails } from "../../domain/interstream-message.mjs"
 import { taskDisplayTitle } from "../../domain/task-display-title.mjs";
 import { taskRunIsActive } from "../../domain/task-runs.mjs";
 import { claudeModelOptions } from "../../domain/agent-runtime-settings.mjs";
+import { presentContextUsageBreakdown } from "../../domain/context-usage-breakdown.mjs";
 
 const MAX_COMPACT_ACTIVITY_DETAIL_CHARS = 1_200;
 
@@ -123,6 +124,11 @@ export function createDesktopSnapshotFactory({
         && compactionStartedAtMs > 0
         && usageUpdatedAtMs < compactionStartedAtMs
       ),
+      breakdown: presentContextUsageBreakdown({
+        breakdown: usage?.breakdown,
+        usedTokens,
+        modelContextWindow: windowTokens,
+      }),
     };
   }
 

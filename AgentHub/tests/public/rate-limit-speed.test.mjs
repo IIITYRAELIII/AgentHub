@@ -3,9 +3,9 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
 
-const app = await readFile(new URL("../../assets/mini-app/app.js", import.meta.url), "utf8");
+const app = await readFile(new URL("../../assets/web-app/app.js", import.meta.url), "utf8");
 const rateLimitSeriesSource = await readFile(
-  new URL("../../assets/mini-app/rate-limit-series.js", import.meta.url),
+  new URL("../../assets/web-app/rate-limit-series.js", import.meta.url),
   "utf8",
 );
 const rateLimitSeriesContext = {};

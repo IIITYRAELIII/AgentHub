@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
 
-const app = await readFile(new URL("../../assets/mini-app/app.js", import.meta.url), "utf8");
+const app = await readFile(new URL("../../assets/web-app/app.js", import.meta.url), "utf8");
 const start = app.indexOf("function currentLimitSeries");
 const end = app.indexOf("\nfunction renderCurrentLimits", start);
 assert.ok(start >= 0 && end > start, "current limit selection policy must be present");

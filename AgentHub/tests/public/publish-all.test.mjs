@@ -119,7 +119,7 @@ test("selective publication maps shared UI to runtime, Worker and surface tests"
       "1C_ACCESS/access.json",
       "AgentHub/config.example.json",
       "AgentHub/architecture-migration-inventory.json",
-      "AgentHub/assets/mini-app/app.js",
+      "AgentHub/assets/web-app/app.js",
       "AgentHub/message-lifecycle.test.mjs",
     ]),
     {
@@ -208,7 +208,7 @@ test("selective publication can request the full Agent Hub test suite explicitly
     readState: async () => null,
     writeState: async () => {},
     revision: async () => "head",
-    diff: async () => ["AgentHub/assets/mini-app/app.js"],
+    diff: async () => ["AgentHub/assets/web-app/app.js"],
   });
   assert.ok(labels.includes("Полные тесты Agent Hub"));
   assert.ok(!labels.includes("Контракт интерфейсов Agent Hub"));
@@ -223,7 +223,7 @@ test("selective publication records the exact published revision", async () => {
     readState: async () => null,
     writeState: async (value) => { written = value; },
     revision: async () => "head",
-    diff: async () => ["AgentHub/assets/mini-app/app.js"],
+    diff: async () => ["AgentHub/assets/web-app/app.js"],
   });
   assert.equal(result.revision, "head");
   assert.equal(written.revision, "head");
@@ -273,7 +273,7 @@ test("selective frontend publication records state without restarting Hub", asyn
     readState: async () => null,
     writeState: async () => events.push("record-publication"),
     revision: async () => "head",
-    diff: async () => ["AgentHub/assets/mini-app/app.js"],
+    diff: async () => ["AgentHub/assets/web-app/app.js"],
   });
   assert.ok(events.includes("record-publication"));
   assert.ok(!events.includes("restart-server"));

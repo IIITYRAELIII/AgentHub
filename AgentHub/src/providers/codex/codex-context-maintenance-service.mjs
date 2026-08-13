@@ -253,6 +253,7 @@ export class CodexContextMaintenanceService {
         ) || undefined,
         model: normalizedId(target?.model) || undefined,
         modelProvider: normalizedId(sourceThread.modelProvider) || undefined,
+        allowProviderModelFallback: true,
         ephemeral: false,
         ...this.sandboxSettings(),
       };

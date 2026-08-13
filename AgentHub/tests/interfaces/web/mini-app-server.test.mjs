@@ -169,7 +169,7 @@ test("Mini App switches published frontend assets without restarting the server"
   const secondCss = path.join(directory, "second.css");
   await writeFile(firstCss, "first-release\n", "utf8");
   await writeFile(secondCss, "second-release\n", "utf8");
-  let current = { id: "release-1", assetsDirectory: path.resolve(import.meta.dirname, "../../../assets/mini-app"), workLogCssFile: firstCss };
+  let current = { id: "release-1", assetsDirectory: path.resolve(import.meta.dirname, "../../../assets/web-app"), workLogCssFile: firstCss };
   const server = new MiniAppServer({
     host: "127.0.0.1",
     port: 0,
@@ -268,7 +268,7 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     const shellAssets = [...new Set([...shellSource.matchAll(
       /\b(?:src|href)="(\/(?!\/)[^"?#]+)(?:[?#][^"]*)?"/gu,
     )].map((match) => match[1]))];
-    assert.ok(shellAssets.includes("/resource-interactions.js"));
+    assert.ok(shellAssets.includes("/attachments/interactions.js"));
     for (const pathname of shellAssets) {
       const response = await fetch(new URL(pathname, address.url));
       assert.equal(response.status, 200, `index.html resource ${pathname}`);
@@ -300,13 +300,14 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
       "navigation-tabs-controller.js",
       "approval-form.js",
       "journal-view-controller.js",
-      "resource-interactions.js",
+      "attachments/interactions.js",
       "usage-burn-rate.js",
       "app.js",
       "themes/metropolis/metropolis-glass.js",
       "themes/stormglass/storm-glass.js",
       "themes/metropolis/theme.css",
-      "message-lifecycle.js",
+      "messages/lifecycle.js",
+      "messages/send-transaction.js",
       "hub-client.js",
       "styles.css",
       "work-log.css",

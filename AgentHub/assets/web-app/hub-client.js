@@ -69,6 +69,7 @@ const CONTEXT_PROBE_RESPONSE = "AGENT_HUB_CONTEXT_PROBE_OK_V1";
 const {
   activeStageLabel,
   chronologicalMessages,
+  conversationTaskId,
   completedConversationTurnVisible,
   confirmedOutgoingMessageIds,
   deduplicateConversationMessages,
@@ -108,12 +109,7 @@ const runtimeShortLabels = Object.freeze({
 });
 
 function taskId(provider, threadId, streamId = "") {
-  const stableStreamId = String(streamId ?? "").trim()
-    || String((lastSnapshot?.tasks ?? []).find((task) => (
-      String(task.provider) === String(provider)
-      && String(task.threadId) === String(threadId)
-    ))?.streamId ?? "").trim();
-  return stableStreamId || `${String(provider)}:${String(threadId)}`;
+  return conversationTaskId({ provider, threadId, streamId }, lastSnapshot?.tasks ?? []);
 }
 
 function readStoredServerIdentity() {
@@ -325,13 +321,28 @@ function nonEmptyAttachmentPatch(values) {
   return attachments.length ? { attachments } : {};
 }
 
-function patchOutgoing(taskIdValue, clientUserMessageId, patch) {
+function updateOutgoing(taskIdValue, clientUserMessageId, patch) {
   const resolvedTaskId = outgoingTaskId(outgoingByTask, clientUserMessageId, taskIdValue);
-  if (!resolvedTaskId) return;
+  if (!resolvedTaskId) return "";
   const message = outgoingMessages(resolvedTaskId).get(clientUserMessageId);
-  if (!message) return;
+  if (!message) return "";
   Object.assign(message, patch);
+  return resolvedTaskId;
+}
+
+function patchOutgoing(taskIdValue, clientUserMessageId, patch) {
+  const resolvedTaskId = updateOutgoing(taskIdValue, clientUserMessageId, patch);
+  if (!resolvedTaskId) return;
   renderTaskMessages(resolvedTaskId);
+}
+
+function renderOutgoingWithoutBlockingSend(taskIdValue, { queue = false } = {}) {
+  try {
+    if (queue) renderTaskQueue(taskIdValue);
+    renderTaskMessages(taskIdValue);
+  } catch (error) {
+    console.error("Agent Hub outgoing message render failed", error);
+  }
 }
 
 function liveUserMessagesSignature(run) {
@@ -592,6 +603,7 @@ function updateLiveMessage(taskIdValue, selected) {
     turnId: String(run.turnId ?? ""),
     userMessages: run.userMessages ?? [],
     prompt: run.prompt ?? "",
+    promptAuthor: run.promptAuthor ?? "",
     clientUserMessageId: run.clientUserMessageId ?? "",
     time: run.startedAt ?? null,
     attachments: attachmentViews(run.attachments),
@@ -1513,7 +1525,7 @@ function applyOpened(result, {
     applySnapshot(result?.snapshot);
     return;
   }
-  const id = taskId(history.provider, history.threadId);
+  const id = taskId(history.provider, history.threadId, history.streamId);
   if (history.notModified === true) {
     const page = historyPageByTask.get(id);
     if (page) page.version = history.version;
@@ -1781,6 +1793,7 @@ agentHub.on("history:load-older", ({ taskId: id }) => runAction(async () => {
 }));
 
 agentHub.on("message:send", (request) => {
+  const sendTransaction = window.AgentHubMessageSendTransaction;
   const optimisticId = `local:${request.requestId}`;
   let identity = taskIdentity(request.taskId);
   const previousAttempt = outgoingMessages(request.taskId).get(request.requestId);
@@ -1810,13 +1823,10 @@ agentHub.on("message:send", (request) => {
   if (queuesOptimistically) {
     optimisticDeferredClientUserMessageIds.add(request.requestId);
     deferredClientUserMessageIds.add(request.requestId);
-    renderTaskQueue(request.taskId);
-    renderTaskMessages(request.taskId);
-  } else {
-    renderTaskMessages(request.taskId);
   }
-  return runAction(async () => {
-    try {
+  renderOutgoingWithoutBlockingSend(request.taskId, { queue: queuesOptimistically });
+  return runAction(() => sendTransaction.run({
+    send: async () => {
       if (request.draftStream) {
         const createdSnapshot = await control("new-task", {
           streamId: request.streamId,
@@ -1847,9 +1857,11 @@ agentHub.on("message:send", (request) => {
       );
       if (!paths.length) {
         for (const attachment of request.attachments ?? []) paths.push(await uploadAttachment(attachment));
-        patchOutgoing(request.taskId, request.requestId, { uploadedPaths: paths.slice() });
+        updateOutgoing(request.taskId, request.requestId, { uploadedPaths: paths.slice() });
+        renderOutgoingWithoutBlockingSend(request.taskId);
       }
-      patchOutgoing(request.taskId, request.requestId, deliveryPatch("sending"));
+      updateOutgoing(request.taskId, request.requestId, deliveryPatch("sending"));
+      renderOutgoingWithoutBlockingSend(request.taskId);
       const params = {
         text: annotatedText(request.text, request.annotations),
         streamId: identity?.streamId ?? request.streamId,
@@ -1859,23 +1871,18 @@ agentHub.on("message:send", (request) => {
         followUpMode: request.followUpMode,
       };
       if (paths.length) params.attachments = paths;
-      const result = await control("send-message", params);
-      applySnapshot(result?.snapshot);
-      if (!identity?.threadId && result?.threadId) {
-        identity = { ...identity, threadId: result.threadId };
-        replaceRoute(`#/chat/${encodeURIComponent(identity.provider)}/${encodeURIComponent(identity.threadId)}`);
-      }
-      if (!result?.deferred) {
-        optimisticDeferredClientUserMessageIds.delete(request.requestId);
-      }
-      agentHub.completeSend(request.requestId, {
-        accepted: Boolean(result?.accepted || result?.deferred),
-      });
-      patchOutgoing(request.taskId, request.requestId, {
+      return control("send-message", params);
+    },
+    receive: (result) => {
+      const accepted = Boolean(result?.accepted || result?.deferred);
+      if (!result?.deferred) optimisticDeferredClientUserMessageIds.delete(request.requestId);
+      agentHub.completeSend(request.requestId, { accepted });
+      updateOutgoing(request.taskId, request.requestId, {
         provider: identity?.provider ?? "",
         threadId: result?.threadId ?? identity?.threadId ?? "",
         turnId: result?.turnId ?? "",
         itemId: result?.itemId ?? request.requestId,
+        ...nonEmptyAttachmentPatch(result?.attachments),
         ...(result?.accepted && !result?.steered ? { turnUserSlot: "root" } : {}),
         ...(result?.accepted
           ? deliveryPatch("accepted")
@@ -1883,6 +1890,14 @@ agentHub.on("message:send", (request) => {
             ? deliveryPatch(result?.queued ? "queued" : "accepted")
             : deliveryPatch("rejected")),
       });
+    },
+    synchronize: (result) => {
+      applySnapshot(result?.snapshot);
+      if (!identity?.threadId && result?.threadId) {
+        identity = { ...identity, threadId: result.threadId };
+        replaceRoute(`#/chat/${encodeURIComponent(identity.provider)}/${encodeURIComponent(identity.threadId)}`);
+      }
+      renderTaskMessages(request.taskId);
       if (queuesOptimistically) {
         deferredClientUserMessageIds = new Set([
           ...deferredClientUserMessageIds,
@@ -1893,26 +1908,27 @@ agentHub.on("message:send", (request) => {
         renderTaskMessages(request.taskId);
       }
       agentHub.toast(result?.message ?? (result?.accepted ? "Сообщение принято" : "Сообщение сохранено"));
-    } catch (error) {
+    },
+    reject: (error) => {
       // A remote command may finish after its HTTP result is lost. Preserve
-      // the durable optimistic message and let the next snapshot reconcile it
-      // through the exact server receipt instead of restoring a duplicate
-      // draft and labelling an accepted turn as rejected.
+      // its request id for an idempotent retry instead of creating a second
+      // optimistic card for the same user action.
       const rejected = messageSendDefinitelyRejected(error);
-      if (rejected) {
-        optimisticDeferredClientUserMessageIds.delete(request.requestId);
-        deferredClientUserMessageIds.delete(request.requestId);
-        renderTaskQueue(request.taskId);
-      }
-      agentHub.completeSend(request.requestId, { accepted: !rejected });
-      patchOutgoing(
+      optimisticDeferredClientUserMessageIds.delete(request.requestId);
+      deferredClientUserMessageIds.delete(request.requestId);
+      agentHub.completeSend(request.requestId, { accepted: false });
+      updateOutgoing(
         request.taskId,
         request.requestId,
         deliveryPatch(rejected ? "rejected" : "unconfirmed"),
       );
-      throw error;
-    }
-  });
+      renderOutgoingWithoutBlockingSend(request.taskId, { queue: queuesOptimistically });
+    },
+    synchronizationFailed: (error) => {
+      console.error("Agent Hub accepted a message but could not refresh its card", error);
+      agentHub.toast("Сообщение принято. Отображение обновится по квитанции.");
+    },
+  }));
 });
 
 agentHub.on("task:new", ({ title, provider }) => runAction(async () => {

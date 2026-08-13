@@ -5,7 +5,7 @@ import vm from "node:vm";
 
 async function navigationTabsApi() {
   const source = await readFile(
-    new URL("../../assets/mini-app/navigation-tabs-controller.js", import.meta.url),
+    new URL("../../assets/web-app/navigation-tabs-controller.js", import.meta.url),
     "utf8",
   );
   const window = {};

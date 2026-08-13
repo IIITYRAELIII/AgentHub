@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { ManagedRunHistoryService } from "../../src/application/managed-run-history-service.mjs";
-import { CODEX_CONTEXT_PROBE_PROMPT } from "../../src/domain/codex-context-probe.mjs";
+import {
+  CODEX_CONTEXT_PROBE_PROMPT,
+  CODEX_CONTEXT_PROBE_RESPONSE,
+} from "../../src/domain/codex-context-probe.mjs";
 
 function fixture() {
   const history = [];
@@ -77,9 +80,28 @@ test("managed run history never persists an internal context probe", async () =>
     turnId: "probe-turn",
     promptPreview: CODEX_CONTEXT_PROBE_PROMPT,
     responseText: "stale previous answer",
-    userMessages: [{ text: CODEX_CONTEXT_PROBE_PROMPT }],
+    clientUserMessageId: "agent-hub-context-probe:test",
+    userMessages: [{
+      clientUserMessageId: "agent-hub-context-probe:test",
+      text: CODEX_CONTEXT_PROBE_PROMPT,
+    }],
   });
 
   assert.deepEqual(setup.history, []);
   assert.deepEqual(setup.snapshots, []);
+});
+
+test("managed run history preserves a real user message equal to probe text", async () => {
+  const setup = fixture();
+  await setup.service.persist({
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "user-turn",
+    promptPreview: CODEX_CONTEXT_PROBE_PROMPT,
+    responseText: CODEX_CONTEXT_PROBE_RESPONSE,
+    userMessages: [{ text: CODEX_CONTEXT_PROBE_PROMPT }],
+  }, { active: false, status: "completed", answer: CODEX_CONTEXT_PROBE_RESPONSE });
+
+  assert.equal(setup.history.length, 1);
+  assert.equal(setup.snapshots.length, 1);
 });

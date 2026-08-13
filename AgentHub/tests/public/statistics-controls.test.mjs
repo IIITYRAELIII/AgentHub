@@ -5,7 +5,7 @@ import vm from "node:vm";
 
 async function statisticsControlsApi() {
   const source = await readFile(
-    new URL("../../assets/mini-app/statistics-controls.js", import.meta.url),
+    new URL("../../assets/web-app/statistics-controls.js", import.meta.url),
     "utf8",
   );
   const window = {};

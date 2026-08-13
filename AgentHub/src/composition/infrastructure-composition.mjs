@@ -53,7 +53,7 @@ function runtimeAssetBundleProvider(runtimeRoot) {
     const releaseRoot = runtimeReleaseDirectory(runtimeRoot, id);
     return {
       id,
-      assetsDirectory: path.join(releaseRoot, "assets", "mini-app"),
+      assetsDirectory: path.join(releaseRoot, "assets", "web-app"),
       workLogCssFile: path.join(releaseRoot, "work-log.css"),
     };
   };
