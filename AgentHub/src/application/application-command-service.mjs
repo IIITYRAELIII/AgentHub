@@ -25,7 +25,7 @@ export function createApplicationCommandService({ handlers }) {
     "selectTask", "createTask", "rotateStream", "renameTask", "archiveTask",
     "updateSetting", "cancelRun", "resolveApproval",
     "renameWorkspace", "updateWorkspaceSettings", "updateWorkspaceDeveloperRules", "readWorkspaceReleaseRegistry", "readWorkspaceReleasePlan", "updateReleaseChangeStatus", "completeWorkspaceRelease", "createWorkspace", "createWorkspaceFromStream", "mergeWorkspaces", "createStream",
-    "renameStream", "updateStreamSettings", "updateStreamDeveloperRules", "moveStream",
+    "renameStream", "archiveStream", "updateStreamSettings", "updateStreamDeveloperRules", "moveStream",
   ];
   for (const name of required) {
     if (typeof handlers[name] !== "function") throw new TypeError(`${name} handler is required`);
@@ -133,6 +133,10 @@ export function createApplicationCommandService({ handlers }) {
     .register("stream.rename", {
       mutating: true, target: "none", lane: "global",
       handler: ({ payload }) => handlers.renameStream(payload),
+    })
+    .register("stream.archive", {
+      mutating: true, target: "none", lane: "global",
+      handler: ({ payload }) => handlers.archiveStream(payload),
     })
     .register("stream.create", {
       mutating: true, target: "none", lane: "global",

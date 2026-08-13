@@ -49,6 +49,16 @@ export function createWorkspaceActions(services) {
     renameStream: (params) => services.workspaceMutation(
       () => services.workspaceCatalogService.renameStream(params),
     ),
+    archiveStream: (params) => services.workspaceMutation(
+      () => {
+        const streamId = String(params?.streamId ?? "").trim();
+        const running = services.catalogEntries().find((entry) => (
+          entry.streamId === streamId && services.runForTask(entry)
+        ));
+        if (running) throw new Error("Сначала завершите активный ход в этом Stream");
+        return services.workspaceCatalogService.archiveStream({ streamId });
+      },
+    ),
     updateStreamSettings: (params) => services.workspaceMutation(
       () => services.workspaceCatalogService.updateStreamSettings(params),
     ),

@@ -75,6 +75,7 @@ export function createDesktopCommandComposition({
       mergeWorkspaces: workspaceActions.mergeWorkspaces,
       createStream: workspaceActions.createStream,
       renameStream: workspaceActions.renameStream,
+      archiveStream: workspaceActions.archiveStream,
       updateStreamSettings: workspaceActions.updateStreamSettings,
       updateStreamDeveloperRules: workspaceActions.updateStreamDeveloperRules,
       moveStream: workspaceActions.moveStream,

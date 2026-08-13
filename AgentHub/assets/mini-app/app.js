@@ -2192,10 +2192,11 @@ function renderStreamTabs() {
     "data-order-mode": streamOrderMode,
     title: orderToggleTitle,
     "aria-label": orderToggleTitle,
-  }, [el("span", {
-    class: `stream-order-icon stream-order-icon-${streamOrderMode}`,
-    "aria-hidden": "true",
-  })]);
+  }, [window.AgentHubStreamTabs.createPhosphorIcon(
+    document,
+    orderIsManual ? "arrows-down-up" : "clock-counter-clockwise",
+    `stream-order-icon stream-order-icon-${streamOrderMode}`,
+  )]);
   const tabs = ordered.map((stream) => {
     const task = representativeStreamTask(stream);
     const streamName = streamDisplayName(stream, streams.length);
@@ -3009,7 +3010,8 @@ function ensureStreamContextMenu() {
       return;
     }
     if (kind === "archive") {
-      if (taskId) emit("task:archive", { id: taskId });
+      const intent = window.AgentHubStreamTabs.archiveStreamIntent(streamId);
+      emit(intent.type, intent.detail);
       return;
     }
     if (kind === "move") {
@@ -3058,6 +3060,10 @@ function openStreamContextMenu(event, tab) {
     el("button", {
       type: "button", role: "menuitem", class: "stream-context-action stream-context-danger",
       "data-stream-menu-action": "archive", text: "В архив",
+      disabled: tab.hasAttribute("data-running"),
+      title: tab.hasAttribute("data-running")
+        ? "Сначала завершите активный ход в этом Stream"
+        : "Архивировать Stream",
     }),
     el("details", { class: "stream-context-submenu" }, [
       el("summary", { class: "stream-context-action", text: "Перенести в Workspace…" }),
@@ -10571,14 +10577,23 @@ function taskGroupsFrom(source, { workspace = null, hierarchy = "" } = {}) {
       const { key, provider: groupProvider, threadId } = identity;
       let group = groups.get(key);
       if (!group) {
+        const workspaceTitle = workspaceDetails
+          ?.querySelector(":scope > summary[data-work-log-workspace-header] strong")
+          ?.textContent?.replace(/\s+/gu, " ").trim();
+        const streamTitle = streamDetails
+          ?.querySelector(":scope > summary [data-work-log-stream-title]")
+          ?.textContent?.replace(/\s+/gu, " ").trim();
         const hierarchyTitle = hierarchy === "workspace"
           ? workspaceDetails?.querySelector(":scope > summary[data-work-log-workspace-header] strong")
-          : hierarchy === "stream"
-            ? streamDetails?.querySelector(":scope > summary [data-work-log-stream-title]")
-            : null;
+          : hierarchy === "stream" && workspaceTitle && streamTitle
+            ? el("span", { text: `${workspaceTitle} - ${streamTitle}` })
+            : hierarchy === "stream"
+              ? streamDetails?.querySelector(":scope > summary [data-work-log-stream-title]")
+              : null;
         group = {
           provider: groupProvider,
           threadId,
+          hierarchy,
           title: groupedClaude
             ? el("span", { "data-work-log-claude-work": "", text: "Claude - Work" })
             : hierarchyTitle?.cloneNode(true)
@@ -10799,9 +10814,11 @@ function journalGroupTitle(group, label = "", { showStreams = true } = {}) {
       : title.querySelector?.("[data-open-task]") ?? title;
     let text = String(target.textContent ?? "").trim()
       .replace(/^(?:Codex|Claude)\s*[-—]\s*/iu, "");
-    for (const streamLabel of group.streamLabels ?? []) {
-      const escaped = String(streamLabel).replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-      text = text.replace(new RegExp(`\\s*[-—]\\s*${escaped}\\s*$`, "iu"), "");
+    if (showStreams) {
+      for (const streamLabel of group.streamLabels ?? []) {
+        const escaped = String(streamLabel).replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+        text = text.replace(new RegExp(`\\s*[-—]\\s*${escaped}\\s*$`, "iu"), "");
+      }
     }
     target.textContent = text || String(target.textContent ?? "").trim();
     main.append(title);
@@ -10843,6 +10860,7 @@ function journalLedgerSummary(group, { label = "", showStreams = true } = {}) {
 
 function journalGroupSection(group, cohort, {
   label = "",
+  showStreams = true,
   profileTitle = "Профиль задачи",
   profileItemName = "Эта задача",
   profileCohortName = "видимых задач",
@@ -10872,7 +10890,7 @@ function journalGroupSection(group, cohort, {
       cohortName: profileCohortName,
     }),
   );
-  details.append(journalLedgerSummary(group, { label }), expanded);
+  details.append(journalLedgerSummary(group, { label, showStreams }), expanded);
   taskGroupTurns.set(details, [...group.turns, ...group.legacy]);
   return details;
 }
@@ -10883,7 +10901,7 @@ function taskGroupingContent(source, mode) {
   const list = document.createElement("div");
   list.dataset.workLogTaskGroups = "";
   groups.forEach((group, index) => {
-    const details = journalGroupSection(group, groups);
+    const details = journalGroupSection(group, groups, { showStreams: mode !== "stream" });
     details.open = index === 0;
     list.append(details);
   });

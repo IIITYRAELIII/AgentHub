@@ -4969,48 +4969,9 @@ html[data-surface="mobile"]
 }
 
 .stream-order-icon {
-  color: currentColor;
-  display: block;
-  height: 0.9rem;
-  position: relative;
-  width: 0.9rem;
-}
-
-.stream-order-icon-activity {
-  border: 1.5px solid currentColor;
-  border-radius: 50%;
-}
-
-.stream-order-icon-activity::before,
-.stream-order-icon-activity::after {
-  background: currentColor;
-  content: "";
-  left: calc(50% - 0.75px);
-  position: absolute;
-  transform-origin: 0.75px 0.75px;
-  width: 1.5px;
-}
-
-.stream-order-icon-activity::before {
-  height: 0.27rem;
-  top: 0.16rem;
-}
-
-.stream-order-icon-activity::after {
-  height: 0.24rem;
-  top: calc(50% - 0.75px);
-  transform: rotate(120deg);
-}
-
-.stream-order-icon-manual::before {
-  background: currentColor;
-  box-shadow: 0 0.3rem currentColor, 0 0.6rem currentColor;
-  content: "";
-  height: 1.5px;
-  left: 0.08rem;
-  position: absolute;
-  top: 0.08rem;
-  width: 0.74rem;
+  color: var(--accent);
+  height: 1.1rem;
+  width: 1.1rem;
 }
 
 .stream-tab-create .stream-tab-card {
@@ -9537,19 +9498,24 @@ html[data-view="server"] .background-view {
 }
 
 [data-journal-ledger-title]::before {
-  background: var(--text-faint);
   content: "";
+  color: var(--text-faint);
   flex: 0 0 auto;
-  height: 0.72rem;
-  -webkit-mask: var(--ph-mask-caret-right) center / contain no-repeat;
-  mask: var(--ph-mask-caret-right) center / contain no-repeat;
-  transition: background 0.16s ease, transform 0.16s ease;
+  font: 700 0.85rem/1 var(--font-numeric);
+  height: 1em;
+  text-align: center;
+  transition: color 0.16s ease, transform 0.16s ease;
   width: 0.72rem;
 }
 
 details[open] > summary[data-journal-ledger-summary] [data-journal-ledger-title]::before {
-  background: var(--accent);
+  color: var(--accent);
+  content: "›";
   transform: rotate(90deg);
+}
+
+details:not([open]) > summary[data-journal-ledger-summary] [data-journal-ledger-title]::before {
+  content: "›";
 }
 
 [data-journal-ledger-title-text] {
@@ -10147,6 +10113,56 @@ html:is([data-grouping="stream"], [data-grouping="workspace"])
 
   [data-journal-turn-list] {
     margin-top: 0.8rem;
+  }
+}
+
+/* На телефоне строка ledger раскладывается явно в две колонки. Автоматическая
+   четырёхколоночная сетка в Android Chrome могла расширить крайние метрики за
+   внутренний отступ summary, после чего их обрезал overflow карточки. */
+@media (max-width: 520px) {
+  .journal summary[data-journal-ledger-summary] {
+    box-sizing: border-box;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    overflow: hidden;
+    padding: 0.78rem 1rem 0.9rem;
+  }
+
+  .journal summary[data-journal-ledger-summary] > [data-journal-ledger-title] {
+    grid-column: 1 / -1;
+    grid-row: 1;
+  }
+
+  .journal summary[data-journal-ledger-summary] > [data-journal-ledger-metric] {
+    align-items: flex-start;
+    justify-self: stretch;
+    min-width: 0;
+    text-align: left;
+  }
+
+  .journal summary[data-journal-ledger-summary] > [data-journal-ledger-metric="turns"] {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .journal summary[data-journal-ledger-summary] > [data-journal-ledger-metric="credits"] {
+    grid-column: 2;
+    grid-row: 2;
+  }
+
+  .journal summary[data-journal-ledger-summary] > [data-journal-ledger-metric="duration"] {
+    grid-column: 1;
+    grid-row: 3;
+  }
+
+  .journal summary[data-journal-ledger-summary] > [data-journal-ledger-metric="gaps"] {
+    grid-column: 2;
+    grid-row: 3;
+  }
+
+  .journal summary[data-journal-ledger-summary]
+    > :is([data-journal-ledger-metric="credits"], [data-journal-ledger-metric="gaps"]) {
+    align-items: flex-end;
+    text-align: right;
   }
 }
 

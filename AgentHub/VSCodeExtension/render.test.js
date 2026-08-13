@@ -1066,7 +1066,19 @@ test("journal keeps explicit Workspace and Stream grouping modes", () => {
   assert.match(app, /agent-hub-collapse-streams/u);
   assert.doesNotMatch(styles, /data-work-log-streams-collapsed/u);
   assert.match(app, /taskGroupsFrom\(source, \{ hierarchy: mode \}\)/u);
+  assert.match(
+    app,
+    /text: `\$\{workspaceTitle\} - \$\{streamTitle\}`/u,
+  );
+  assert.match(
+    app,
+    /journalGroupSection\(group, groups, \{ showStreams: mode !== "stream" \}\)/u,
+  );
   assert.match(app, /JournalView\.groupIdentity/u);
+  assert.doesNotMatch(
+    styles,
+    /\[data-journal-ledger-title\]::before\s*\{[^}]*mask:/su,
+  );
   assert.match(styles, /span\[data-work-log-duration-summary\][\s\S]*?grid-column:\s*1 \/ -1;/u);
   assert.match(
     styles,

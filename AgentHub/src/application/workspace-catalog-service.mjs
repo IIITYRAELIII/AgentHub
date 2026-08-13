@@ -76,6 +76,10 @@ export class WorkspaceCatalogService {
     return this.#store.renameStream(streamId, name);
   }
 
+  archiveStream({ streamId } = {}) {
+    return this.#store.archiveStream(streamId);
+  }
+
   updateStreamSettings({ streamId, settings = {} } = {}) {
     return this.#store.updateStreamSettings(streamId, settings);
   }

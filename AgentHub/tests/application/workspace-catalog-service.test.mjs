@@ -20,6 +20,7 @@ function fixture() {
     completeRelease: (...args) => (calls.push(["completeRelease", ...args]), { workspaceId: args[0] }),
     mergeWorkspaces: (...args) => calls.push(["mergeWorkspaces", ...args]),
     renameStream: (...args) => calls.push(["renameStream", ...args]),
+    archiveStream: (...args) => (calls.push(["archiveStream", ...args]), { id: args[0] }),
     updateStreamSettings: (...args) => (calls.push(["updateStreamSettings", ...args]), { settings: args[1] }),
     streamDeveloperRules: (...args) => (calls.push(["streamDeveloperRules", ...args]), { content: "stream" }),
     updateStreamDeveloperRules: (...args) => (calls.push(["updateStreamDeveloperRules", ...args]), { content: args[1] }),
@@ -76,6 +77,12 @@ test("Stream settings are stored independently from its future Thread", () => {
     ["createStream", { workspaceId: "workspace-1", name: "Draft", settings }],
     ["updateStreamSettings", "stream-1", settings],
   ]);
+});
+
+test("archiveStream delegates the stable Stream identity to the catalog", () => {
+  const { service, calls } = fixture();
+  assert.deepEqual(service.archiveStream({ streamId: "stream-1" }), { id: "stream-1" });
+  assert.deepEqual(calls.at(-1), ["archiveStream", "stream-1"]);
 });
 
 test("Workspace settings provide an inherited working directory", () => {

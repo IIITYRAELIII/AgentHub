@@ -2048,6 +2048,9 @@ agentHub.on("workspace:create-from-stream", ({ streamId, name }) => runAction(as
 agentHub.on("stream:rename", ({ streamId, name }) => runAction(async () => applySnapshot(
   await control("rename-stream", { streamId, name }),
 )));
+agentHub.on("stream:archive", ({ streamId }) => runAction(async () => applySnapshot(
+  await control("archive-stream", { streamId }),
+)));
 agentHub.on("stream:move", ({ streamId, workspaceId, beforeStreamId }) => runAction(async () => applySnapshot(
   await control("move-stream", { streamId, workspaceId, beforeStreamId }),
 )));

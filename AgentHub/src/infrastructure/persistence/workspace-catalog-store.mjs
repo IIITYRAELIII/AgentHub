@@ -835,6 +835,18 @@ export class WorkspaceCatalogStore {
     return this.stream(id);
   }
 
+  archiveStream(streamId) {
+    const id = safeIdentifier(streamId, "stream id");
+    const stream = this.stream(id);
+    if (!stream) throw new Error(`stream not found: ${id}`);
+    if (stream.archivedAtMs != null) return stream;
+    const nowMs = this.#nowMs();
+    this.#database.prepare(`
+      UPDATE hub_streams SET archived_at_ms = ?, updated_at_ms = ? WHERE id = ?
+    `).run(nowMs, nowMs, id);
+    return this.stream(id);
+  }
+
   updateStreamSettings(streamId, settings = {}) {
     const id = safeIdentifier(streamId, "stream id");
     if (!this.stream(id)) throw new Error(`stream not found: ${id}`);
@@ -1116,6 +1128,8 @@ export class WorkspaceCatalogStore {
   assignCatalogEntries(entries, { source = "discovered" } = {}) {
     return this.#transaction(() => (Array.isArray(entries) ? entries : []).map((entry) => {
       const identity = normalizedThreadIdentity(entry);
+      const boundThread = this.thread(identity);
+      if (boundThread && this.stream(boundThread.streamId)?.archivedAtMs != null) return null;
       let resolved = this.resolveThread(identity);
       const experiments = this.ensureExperiments();
       if (!resolved) {
@@ -1131,7 +1145,7 @@ export class WorkspaceCatalogStore {
         resolved = this.resolveThread(identity);
       }
       return { ...entry, ...resolved };
-    }));
+    }).filter(Boolean));
   }
 
   moveThreadToNewStream(value, { workspaceId, streamName = null } = {}) {

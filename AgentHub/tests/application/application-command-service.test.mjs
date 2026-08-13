@@ -11,7 +11,7 @@ function service(calls) {
     "selectTask", "createTask", "rotateStream", "renameTask", "archiveTask",
     "updateSetting", "cancelRun", "resolveApproval",
     "renameWorkspace", "updateWorkspaceSettings", "updateWorkspaceDeveloperRules", "readWorkspaceReleaseRegistry", "readWorkspaceReleasePlan", "updateReleaseChangeStatus", "completeWorkspaceRelease", "createWorkspace", "createWorkspaceFromStream", "mergeWorkspaces", "createStream",
-    "renameStream", "updateStreamSettings", "updateStreamDeveloperRules", "moveStream",
+    "renameStream", "archiveStream", "updateStreamSettings", "updateStreamDeveloperRules", "moveStream",
   ].map((name) => [name, (...args) => { calls.push({ name, args }); return name; }]));
   return createApplicationCommandService({ handlers });
 }
@@ -76,6 +76,9 @@ test("workspace and stream commands use the shared command path", async () => {
     streamId: "stream-1",
     settings: { model: "gpt-5" },
   }, { source: "desktop", userId: "7" });
+  await commands.dispatch("stream.archive", {
+    streamId: "stream-1",
+  }, { source: "desktop", userId: "7" });
   await commands.dispatch("stream.developer-rules.update", {
     streamId: "stream-1",
     content: "Stream rule",
@@ -113,6 +116,10 @@ test("workspace and stream commands use the shared command path", async () => {
     {
       name: "updateStreamSettings",
       args: [{ streamId: "stream-1", settings: { model: "gpt-5" } }],
+    },
+    {
+      name: "archiveStream",
+      args: [{ streamId: "stream-1" }],
     },
     {
       name: "updateStreamDeveloperRules",

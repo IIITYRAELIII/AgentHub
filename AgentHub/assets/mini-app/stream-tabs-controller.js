@@ -11,6 +11,36 @@
     END: "end",
   });
 
+  const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
+  const PHOSPHOR_ICON_PATHS = Object.freeze({
+    "clock-counter-clockwise": "M136,80v43.47l36.12,21.67a8,8,0,0,1-8.24,13.72l-40-24A8,8,0,0,1,120,128V80a8,8,0,0,1,16,0Zm-8-48A95.44,95.44,0,0,0,60.08,60.15C52.81,67.51,46.35,74.59,40,82V64a8,8,0,0,0-16,0v40a8,8,0,0,0,8,8H72a8,8,0,0,0,0-16H49c7.15-8.42,14.27-16.35,22.39-24.57a80,80,0,1,1,1.66,114.75,8,8,0,1,0-11,11.64A96,96,0,1,0,128,32Z",
+    "arrows-down-up": "M117.66,170.34a8,8,0,0,1,0,11.32l-32,32a8,8,0,0,1-11.32,0l-32-32a8,8,0,0,1,11.32-11.32L72,188.69V48a8,8,0,0,1,16,0V188.69l18.34-18.35A8,8,0,0,1,117.66,170.34Zm96-96-32-32a8,8,0,0,0-11.32,0l-32,32a8,8,0,0,0,11.32,11.32L168,67.31V208a8,8,0,0,0,16,0V67.31l18.34,18.35a8,8,0,0,0,11.32-11.32Z",
+  });
+
+  function createPhosphorIcon(documentRef, name, className = "") {
+    if (typeof documentRef?.createElementNS !== "function") {
+      throw new TypeError("SVG-capable document is required");
+    }
+    const pathData = PHOSPHOR_ICON_PATHS[name];
+    if (!pathData) throw new Error(`unknown Phosphor icon: ${name}`);
+    const svg = documentRef.createElementNS(SVG_NAMESPACE, "svg");
+    svg.setAttribute("data-phosphor-icon", name);
+    svg.setAttribute("viewBox", "0 0 256 256");
+    svg.setAttribute("aria-hidden", "true");
+    if (className) svg.setAttribute("class", className);
+    const path = documentRef.createElementNS(SVG_NAMESPACE, "path");
+    path.setAttribute("d", pathData);
+    path.setAttribute("fill", "currentColor");
+    svg.append(path);
+    return svg;
+  }
+
+  function archiveStreamIntent(streamId) {
+    const id = String(streamId ?? "").trim();
+    if (!id) throw new Error("stream id is required");
+    return { type: "stream:archive", detail: { streamId: id } };
+  }
+
   function normalizeStreamOrderMode(value) {
     return value === STREAM_ORDER_MODES.MANUAL
       ? STREAM_ORDER_MODES.MANUAL
@@ -145,7 +175,9 @@
   }
 
   window.AgentHubStreamTabs = Object.freeze({
+    archiveStreamIntent,
     attentionStreamCount,
+    createPhosphorIcon,
     HorizontalPointerScroller,
     STREAM_ACTIVITY_DIRECTIONS,
     STREAM_ORDER_MODES,

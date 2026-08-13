@@ -98,6 +98,26 @@ test("an empty Stream persists the settings for its future Thread", async (t) =>
   );
 });
 
+test("archiving a Stream hides it without losing its Thread history", async (t) => {
+  const store = await fixture(t);
+  const workspace = store.createWorkspace({ name: "Agent HUB" });
+  const stream = store.createStream({ workspaceId: workspace.id, name: "Old" });
+  store.bindThread({ provider: "codex", threadId: "thread-old", streamId: stream.id });
+
+  const archived = store.archiveStream(stream.id);
+
+  assert.ok(archived.archivedAtMs);
+  assert.deepEqual(store.threadsForStream(stream.id).map((thread) => thread.threadId), ["thread-old"]);
+  assert.equal(
+    store.hierarchy().find((item) => item.id === workspace.id).streams.length,
+    0,
+  );
+  assert.deepEqual(store.assignCatalogEntries([{
+    provider: "codex", threadId: "thread-old", projectRoot: "D:/work",
+  }]), []);
+  assert.equal(store.archiveStream(stream.id).archivedAtMs, archived.archivedAtMs);
+});
+
 test("Workspace release registry keeps ownership, readiness and file conflicts", async (t) => {
   const store = await fixture(t);
   const workspace = store.createWorkspace({ name: "Agent HUB" });

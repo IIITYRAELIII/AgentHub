@@ -48,6 +48,7 @@ const CONTROL_ACTIONS = new Set([
   "update-setting",
   "rename-task",
   "archive-task",
+  "archive-stream",
   "task-diff",
   "cancel-run",
   "resolve-approval",

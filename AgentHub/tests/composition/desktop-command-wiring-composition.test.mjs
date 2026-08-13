@@ -8,6 +8,8 @@ function fixture({ sourceSurvives = false } = {}) {
   const workspaces = new Set(["source", "target"]);
   const services = {
     workspaceMutation: async (run) => run(),
+    catalogEntries: () => [],
+    runForTask: () => null,
     workspaceCatalog: {
       stream: () => ({ workspaceId: "source" }),
       workspace: (id) => (workspaces.has(id) ? { id } : null),
@@ -26,6 +28,7 @@ function fixture({ sourceSurvives = false } = {}) {
         if (!sourceSurvives) workspaces.delete("source");
         return { id: "stream", workspaceId };
       },
+      archiveStream: ({ streamId }) => ({ id: streamId, archivedAtMs: 1 }),
     },
     taskBoard: {
       reassignWorkspace: (...args) => calls.push(args),
@@ -56,4 +59,25 @@ test("creating a Workspace from the last Stream reassigns source cards", async (
   const { actions, calls } = fixture();
   await actions.createWorkspaceFromStream({ streamId: "stream", name: "Created" });
   assert.deepEqual(calls, [["source", "created"]]);
+});
+
+test("archiving a Stream uses the Workspace mutation path", async () => {
+  const { actions } = fixture();
+  assert.deepEqual(await actions.archiveStream({ streamId: "stream" }), {
+    id: "stream",
+    archivedAtMs: 1,
+  });
+});
+
+test("archiving a Stream is blocked while one of its Threads is running", async () => {
+  const actions = createWorkspaceActions({
+    workspaceMutation: async (run) => run(),
+    catalogEntries: () => [{ streamId: "stream", threadId: "thread" }],
+    runForTask: () => ({ id: "run" }),
+    workspaceCatalogService: { archiveStream: () => assert.fail("must not archive") },
+  });
+  await assert.rejects(
+    actions.archiveStream({ streamId: "stream" }),
+    /завершите активный ход/u,
+  );
 });
