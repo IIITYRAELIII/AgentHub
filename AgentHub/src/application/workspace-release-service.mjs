@@ -19,6 +19,7 @@ export class WorkspaceReleaseService {
 
   async completeRelease({
     workspaceId, expectedRevision = null, expectedPlanRevision, deploymentVerified = false, verificationSummary = "",
+    conflictsResolved = false,
   } = {}) {
     const plan = this.store.releasePlan(workspaceId);
     const requestedPlanRevision = requiredPlanRevision(expectedPlanRevision);
@@ -27,7 +28,7 @@ export class WorkspaceReleaseService {
     }
     if (!plan.ready.length) throw new Error("release has no ready changes");
     if (plan.blocked.length) throw new Error("release has blocked changes");
-    if (plan.conflicts.length) throw new Error("release has overlapping files");
+    if (plan.conflicts.length && conflictsResolved !== true) throw new Error("release has overlapping files");
     if (deploymentVerified !== true || !String(verificationSummary ?? "").trim()) {
       throw new Error("release completion requires verified deployment evidence");
     }
@@ -38,10 +39,12 @@ export class WorkspaceReleaseService {
     return {
       ...this.store.completeRelease(workspaceId, {
         expectedPlanRevision: plan.revision,
+        conflictsResolved,
         verificationEvidence: {
           planRevision: plan.revision,
           expectedRevision,
           verificationSummary: normalizedSummary,
+          conflictsResolved: conflictsResolved === true,
         },
       }),
       publication,

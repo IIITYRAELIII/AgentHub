@@ -117,6 +117,20 @@ test("publication requests the server's safe deferred restart last", async () =>
   ]);
 });
 
+test("full publication does not wait on the release turn that blocks its safe restart", async () => {
+  const events = [];
+  await publishAll(["--skip-tests", "--skip-worker"], {
+    run: async (step) => events.push(step.label),
+    restart: async () => {
+      events.push("restart-server");
+      return { accepted: true, waiting: true, message: "waiting for active turn" };
+    },
+    verifyRestart: async () => assert.fail("deferred restart cannot finish before the active release turn"),
+    record: async () => events.push("record-publication"),
+  });
+  assert.deepEqual(events.slice(-2), ["restart-server", "record-publication"]);
+});
+
 test("publication stage timeout terminates the complete process tree", async () => {
   const child = new EventEmitter();
   child.pid = 4242;
@@ -329,6 +343,23 @@ test("selective backend publication records state after verified restart", async
     diff: async () => ["AgentHub/src/interfaces/web/mini-app-server.mjs"],
   });
   assert.ok(events.indexOf("restart-server") < events.indexOf("record-publication"));
+});
+
+test("selective backend publication records an already queued safe restart without waiting", async () => {
+  const events = [];
+  await publishChanged(["--from", "base"], {
+    run: async (step) => events.push(step.label),
+    restart: async () => {
+      events.push("restart-server");
+      return { accepted: false, message: "already queued" };
+    },
+    verifyRestart: async () => assert.fail("an existing safe restart is deferred"),
+    readState: async () => null,
+    writeState: async () => events.push("record-publication"),
+    revision: async () => "head",
+    diff: async () => ["AgentHub/src/interfaces/web/mini-app-server.mjs"],
+  });
+  assert.deepEqual(events.slice(-2), ["restart-server", "record-publication"]);
 });
 
 test("every validation failure stops publication before deployment", async () => {

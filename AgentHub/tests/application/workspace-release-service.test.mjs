@@ -46,12 +46,32 @@ test("release completion verifies repositories before atomically closing ready c
   assert.deepEqual(calls.map(([name]) => name), ["verify", "complete"]);
   assert.deepEqual(calls[1][2], {
     expectedPlanRevision: "plan-1",
+    conflictsResolved: false,
     verificationEvidence: {
       planRevision: "plan-1",
       expectedRevision: "abc",
       verificationSummary: "Published and smoke-tested",
+      conflictsResolved: false,
     },
   });
+});
+
+test("release completion requires and records explicit resolution of overlapping ready changes", async () => {
+  const plan = {
+    revision: "plan-conflict", ready: [{ id: "change-1" }, { id: "change-2" }], draft: [], blocked: [],
+    conflicts: [{ file: "AgentHub/app.js" }],
+  };
+  const { calls, service } = fixture(plan);
+  const request = {
+    workspaceId: "workspace-1",
+    expectedPlanRevision: "plan-conflict",
+    deploymentVerified: true,
+    verificationSummary: "Integrated overlap verified",
+  };
+  await assert.rejects(() => service.completeRelease(request), /overlapping files/u);
+  await service.completeRelease({ ...request, conflictsResolved: true });
+  assert.equal(calls[1][2].conflictsResolved, true);
+  assert.equal(calls[1][2].verificationEvidence.conflictsResolved, true);
 });
 
 test("release completion binds publication evidence to the exact observed plan revision", async () => {

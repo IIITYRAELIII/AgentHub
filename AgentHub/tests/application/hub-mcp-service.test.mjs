@@ -106,10 +106,14 @@ async function fixture(context) {
       prompt: [{ type: "text", text: "Initial prompt" }], body: "Result", status: "completed",
     }],
   };
+  const releaseCalls = [];
   const service = new HubMcpService({
     workspaceCatalog, taskBoard, workLog, attachmentDirectory, secret: "secret",
     releaseCompleter: {
-      completeRelease: async ({ workspaceId, expectedRevision }) => ({ workspaceId, expectedRevision, released: [] }),
+      completeRelease: async (options) => {
+        releaseCalls.push(options);
+        return { ...options, released: [] };
+      },
     },
   });
   service.setTaskLauncher(async ({ id, workspaceId, streamId }) => {
@@ -133,6 +137,7 @@ async function fixture(context) {
     workspaceCatalog,
     tasks,
     operations,
+    releaseCalls,
     sentMessages,
   };
 }
@@ -258,16 +263,17 @@ test("HubMcpService sends attributed messages to another current-Workspace Strea
 });
 
 test("HubMcpService exposes cursor events and publication-gated release completion", async (context) => {
-  const { service, token } = await fixture(context);
+  const { service, token, releaseCalls } = await fixture(context);
   const events = await service.call("hub_events_list", { context_token: token, after_sequence: 4 });
   assert.equal(events.events[0].sequence, 5);
   assert.equal(events.nextSequence, 5);
   const release = await service.call("hub_release_complete", {
     context_token: token, request_id: "release-1", expected_revision: "abc", expected_plan_revision: "plan-1",
-    deployment_verified: true, verification_summary: "Published and smoke-tested",
+    deployment_verified: true, verification_summary: "Published and smoke-tested", conflicts_resolved: true,
   });
   assert.equal(release.workspaceId, "workspace-1");
   assert.equal(release.expectedRevision, "abc");
+  assert.equal(releaseCalls[0].conflictsResolved, true);
 });
 
 test("HubMcpService rejects forged context capabilities", async (context) => {

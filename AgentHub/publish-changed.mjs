@@ -1,10 +1,11 @@
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
-import { callDesktopControl, readDesktopControlEndpoint } from "./desktop-control.mjs";
+import { callDesktopControl } from "./desktop-control.mjs";
 import {
   npmStep,
   publicationSteps,
+  restartRuntimeAndVerify,
   runStep,
   waitForRuntimeReplacement,
 } from "./publish-all.mjs";
@@ -207,9 +208,10 @@ export async function publishChanged(args = process.argv.slice(2), {
       },
     });
     if (plan.runtimeRestart && !options.skipRestart) {
-      const before = await readDesktopControlEndpoint(runtimeRoot).catch(() => null);
-      await restart("restart-server");
-      await verifyRestart({ previousEndpointId: before?.endpointId ?? null, runtimeRoot });
+      const result = await restartRuntimeAndVerify(restart, verifyRestart, runtimeRoot);
+      if (result?.deferred) {
+        console.log(`${result?.message ?? "Перезапуск запрошен"}. Готовность подтвердится после завершения активного хода.`);
+      }
     }
     await writeState({ revision: head, publishedAt: new Date().toISOString(), files, plan });
     if (checkpoint) await checkpoint.clear();

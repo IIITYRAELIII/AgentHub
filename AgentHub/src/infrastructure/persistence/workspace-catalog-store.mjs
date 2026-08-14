@@ -344,6 +344,7 @@ function releaseCompletionEvidence(value, expectedPlanRevision) {
     planRevision,
     expectedRevision: String(value.expectedRevision ?? "").trim() || null,
     verificationSummary: String(value.verificationSummary ?? "").trim().slice(0, 2_000),
+    conflictsResolved: value.conflictsResolved === true,
   };
 }
 
@@ -679,7 +680,9 @@ export class WorkspaceCatalogStore {
     };
   }
 
-  completeRelease(workspaceId, { expectedPlanRevision = null, verificationEvidence = null } = {}) {
+  completeRelease(workspaceId, {
+    expectedPlanRevision = null, verificationEvidence = null, conflictsResolved = false,
+  } = {}) {
     const expected = expectedPlanRevision == null ? null : String(expectedPlanRevision).trim();
     if (expectedPlanRevision != null && !expected) throw new Error("expected release plan revision is required");
     return this.#transaction(() => {
@@ -690,7 +693,10 @@ export class WorkspaceCatalogStore {
       const evidence = expected ? releaseCompletionEvidence(verificationEvidence, expected) : null;
       if (!plan.ready.length) throw new Error("release has no ready changes");
       if (plan.blocked.length) throw new Error("release has blocked changes");
-      if (plan.conflicts.length) throw new Error("release has overlapping files");
+      if (plan.conflicts.length && conflictsResolved !== true) throw new Error("release has overlapping files");
+      if (plan.conflicts.length && (!expected || evidence?.conflictsResolved !== true)) {
+        throw new Error("resolved release conflicts require revision-bound verification evidence");
+      }
       const nowMs = this.#nowMs();
       const update = this.#database.prepare(`
         UPDATE hub_release_changes SET status = 'released', updated_at_ms = ? WHERE id = ?

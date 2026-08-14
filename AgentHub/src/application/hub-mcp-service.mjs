@@ -333,6 +333,7 @@ export class HubMcpService {
         expected_plan_revision: { type: "string", description: "Exact revision returned by hub_release_plan_get." },
         deployment_verified: { type: "boolean" },
         verification_summary: { type: "string" },
+        conflicts_resolved: { type: "boolean", description: "True only after the Architect explicitly resolves every reported overlap." },
       }, ["expected_plan_revision", "deployment_verified", "verification_summary"]),
       tool("hub_events_list", "Read bounded persistent Workspace events after a cursor; this never holds a long poll.", {
         after_sequence: { type: "integer", minimum: 0, default: 0 },
@@ -443,6 +444,7 @@ export class HubMcpService {
           expectedPlanRevision: optionalText(args.expected_plan_revision, 128),
           deploymentVerified: args.deployment_verified === true,
           verificationSummary: optionalText(args.verification_summary, 2_000) ?? "",
+          conflictsResolved: args.conflicts_resolved === true,
         });
       case "hub_events_list":
         return this.#events(context, args);

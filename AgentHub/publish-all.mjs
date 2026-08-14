@@ -137,9 +137,10 @@ export async function waitForRuntimeReplacement({
   throw new Error(`Agent Hub Runtime не подтвердил готовность после перезапуска: ${lastError?.message ?? "timeout"}`);
 }
 
-async function restartRuntimeAndVerify(restart, verifyRestart, runtimeRoot) {
+export async function restartRuntimeAndVerify(restart, verifyRestart, runtimeRoot) {
   const before = await readDesktopControlEndpoint(runtimeRoot).catch(() => null);
   const result = await restart("restart-server");
+  if (result?.waiting === true || result?.accepted === false) return { ...result, deferred: true };
   await verifyRestart({ previousEndpointId: before?.endpointId ?? null, runtimeRoot });
   return result;
 }
@@ -191,7 +192,9 @@ export async function publishAll(args = process.argv.slice(2), {
     if (!options.skipRestart) {
       console.log("\n==> Запрос безопасного перезапуска Agent Hub");
       const result = await restartRuntimeAndVerify(restart, verifyRestart, runtimeRoot);
-      console.log(result?.message ?? "Перезапуск запрошен");
+      console.log(result?.deferred
+        ? `${result?.message ?? "Перезапуск запрошен"}. Готовность подтвердится после завершения активного хода.`
+        : result?.message ?? "Перезапуск запрошен");
     }
     await record();
     if (checkpoint) await checkpoint.clear();

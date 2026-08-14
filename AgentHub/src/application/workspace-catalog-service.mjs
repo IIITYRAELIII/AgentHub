@@ -52,8 +52,10 @@ export class WorkspaceCatalogService {
     return this.#store.updateReleaseChangeStatus(changeId, status);
   }
 
-  completeRelease({ workspaceId } = {}) {
-    return this.#store.completeRelease(workspaceId);
+  completeRelease({ workspaceId, expectedPlanRevision, verificationEvidence, conflictsResolved = false } = {}) {
+    return this.#store.completeRelease(workspaceId, {
+      expectedPlanRevision, verificationEvidence, conflictsResolved,
+    });
   }
 
   createWorkspaceFromStream({ streamId, name } = {}) {

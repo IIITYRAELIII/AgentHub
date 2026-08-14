@@ -184,6 +184,42 @@ test("Workspace release registry keeps ownership, readiness and file conflicts",
   assert.deepEqual(store.releaseChanges(workspace.id), []);
 });
 
+test("release completion binds explicit conflict resolution to the observed plan revision", async (t) => {
+  const store = await fixture(t);
+  const workspace = store.createWorkspace({ name: "Agent HUB" });
+  const firstStream = store.createStream({ workspaceId: workspace.id, name: "One" });
+  const secondStream = store.createStream({ workspaceId: workspace.id, name: "Two" });
+  store.bindThread({ provider: "codex", threadId: "one", streamId: firstStream.id });
+  store.bindThread({ provider: "codex", threadId: "two", streamId: secondStream.id });
+  store.recordReleaseChange({
+    provider: "codex", threadId: "one", turnId: "turn-one", changedFiles: ["AgentHub/app.js"], status: "ready",
+  });
+  store.recordReleaseChange({
+    provider: "codex", threadId: "two", turnId: "turn-two", changedFiles: ["AgentHub/app.js"], status: "ready",
+  });
+  const plan = store.releasePlan(workspace.id);
+  const evidence = {
+    planRevision: plan.revision,
+    expectedRevision: "abc",
+    verificationSummary: "Integrated overlap verified",
+    conflictsResolved: true,
+  };
+  assert.throws(
+    () => store.completeRelease(workspace.id, { expectedPlanRevision: plan.revision, verificationEvidence: evidence }),
+    /overlapping files/u,
+  );
+  assert.throws(
+    () => store.completeRelease(workspace.id, { conflictsResolved: true }),
+    /revision-bound verification evidence/u,
+  );
+  const completed = store.completeRelease(workspace.id, {
+    expectedPlanRevision: plan.revision,
+    verificationEvidence: evidence,
+    conflictsResolved: true,
+  });
+  assert.equal(completed.released.length, 2);
+});
+
 test("Workspace events are ordered, cursor-based and idempotent by dedupe key", async (t) => {
   const store = await fixture(t);
   const workspace = store.createWorkspace({ name: "Agent HUB" });
