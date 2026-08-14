@@ -141,10 +141,7 @@ export class QuickTunnelController {
     }
     await Promise.race([
       exitPromise,
-      new Promise((resolve) => {
-        const timer = setTimeout(resolve, 1_000);
-        timer.unref?.();
-      }),
+      new Promise((resolve) => setTimeout(resolve, 1_000)),
     ]);
     if (exited || child.exitCode != null) return;
     try {
@@ -154,10 +151,7 @@ export class QuickTunnelController {
     }
     await Promise.race([
       exitPromise,
-      new Promise((resolve) => {
-        const timer = setTimeout(resolve, 1_000);
-        timer.unref?.();
-      }),
+      new Promise((resolve) => setTimeout(resolve, 1_000)),
     ]);
   }
 
@@ -186,7 +180,6 @@ export class QuickTunnelController {
       const timeout = setTimeout(() => {
         fail(new Error("Quick Tunnel did not publish an HTTPS URL in time"));
       }, this.#timeoutMs);
-      timeout.unref?.();
       const consume = (chunk) => {
         output = `${output}${String(chunk)}`.slice(-16_384);
         if (
