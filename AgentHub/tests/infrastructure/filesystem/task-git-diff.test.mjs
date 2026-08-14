@@ -44,7 +44,7 @@ test("release repository discovery follows declared files into a nested repo", a
     assert.deepEqual(await resolveTaskGitRepoRootsForFiles(root, [
       "Utilities/AgentHub/server.mjs",
       "Utilities/CHANGELOG.md",
-    ]), [path.resolve(repo)]);
+    ]), [await realpath(repo)]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
