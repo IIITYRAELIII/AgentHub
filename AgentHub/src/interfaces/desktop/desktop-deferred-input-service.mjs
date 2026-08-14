@@ -91,12 +91,16 @@ export class DesktopDeferredInputService {
       d.cancelSchedule(id);
       item.paused = true;
       delete item.dispatchingAt;
+      delete item.lastError;
+      delete item.waitReason;
       await d.saveState();
       return { accepted: true, id, message: "Сообщение в очереди приостановлено" };
     }
     if (action === "resume") {
       if (!d.queuedInputs.has(id)) throw new Error("Сообщение не находится в очереди");
       delete item.paused;
+      delete item.lastError;
+      delete item.waitReason;
       await d.saveState();
       d.scheduleQueued(item, 0);
       return { accepted: true, id, message: "Очередь возобновлена" };
@@ -150,6 +154,7 @@ export class DesktopDeferredInputService {
       d.pendingInputs.delete(id);
       delete item.paused;
       delete item.lastError;
+      delete item.waitReason;
       d.queuedInputs.set(id, item);
       d.updateReceipt(item, "queued");
       await d.saveState();

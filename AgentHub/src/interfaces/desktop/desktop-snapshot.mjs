@@ -6,8 +6,17 @@ import { taskDisplayTitle } from "../../domain/task-display-title.mjs";
 import { taskRunIsActive } from "../../domain/task-runs.mjs";
 import { claudeModelOptions } from "../../domain/agent-runtime-settings.mjs";
 import { presentContextUsageBreakdown } from "../../domain/context-usage-breakdown.mjs";
+import { deferredLaunchWaitReason } from "../../application/deferred-input-controller.mjs";
 
 const MAX_COMPACT_ACTIVITY_DETAIL_CHARS = 1_200;
+
+function deferredWaitProjection(item) {
+  const waitReason = item.waitReason ?? deferredLaunchWaitReason(item.lastError);
+  return {
+    ...(waitReason ? { waitReason } : {}),
+    lastError: waitReason ? null : item.lastError ?? null,
+  };
+}
 
 export function workspaceBindingForTask(task, workspaces) {
   const streamId = String(task?.streamId ?? "").trim();
@@ -506,7 +515,7 @@ export function createDesktopSnapshotFactory({
           annotations: deferred.responseAnnotations?.(item.input) ?? [],
           allowForce: item.allowForce === true,
           conflictKind: item.conflictKind ?? null,
-          lastError: item.lastError ?? null,
+          ...deferredWaitProjection(item),
           attempts: Number(item.attempts) || 0,
           createdAt: item.createdAt ?? null,
           attachments: item.persistentFiles
@@ -524,7 +533,7 @@ export function createDesktopSnapshotFactory({
           annotations: deferred.responseAnnotations?.(item.input) ?? [],
           allowForce: false,
           conflictKind: item.conflictKind ?? null,
-          lastError: item.lastError ?? null,
+          ...deferredWaitProjection(item),
           attempts: Number(item.attempts) || 0,
           queueOrder: Number.isFinite(Number(item.queueOrder)) ? Number(item.queueOrder) : null,
           createdAt: item.createdAt ?? null,

@@ -247,6 +247,46 @@ test("CodexAppServerTransport includes queue wait in the RPC timeout", async () 
   await assert.rejects(first, /stopped/u);
 });
 
+test("CodexAppServerTransport keeps one critical slot free from thread resume", async () => {
+  const { child, transport } = await startedTransport({
+    maxCriticalRequests: 2,
+    maxThreadResumeRequests: 1,
+  });
+  let written = nextWrittenJson(child.stdin);
+  const firstResume = transport.request("thread/resume", { threadId: "thread-1" });
+  const firstRequest = await written;
+  assert.equal(firstRequest.method, "thread/resume");
+
+  const secondResume = transport.request("thread/resume", { threadId: "thread-2" });
+  written = nextWrittenJson(child.stdin);
+  const start = transport.request("turn/start", { threadId: "thread-3" });
+  const startRequest = await written;
+  assert.equal(startRequest.method, "turn/start");
+  child.stdout.write(`${JSON.stringify({ id: startRequest.id, result: {} })}\n`);
+  await start;
+
+  written = nextWrittenJson(child.stdin);
+  child.stdout.write(`${JSON.stringify({ id: firstRequest.id, result: {} })}\n`);
+  const secondRequest = await written;
+  assert.equal(secondRequest.method, "thread/resume");
+  child.stdout.write(`${JSON.stringify({ id: secondRequest.id, result: {} })}\n`);
+  await Promise.all([firstResume, secondResume]);
+});
+
+test("CodexAppServerTransport bounds thread resume independently", async () => {
+  const timeouts = [];
+  const { transport } = await startedTransport({
+    rpcTimeoutMs: 5_000,
+    threadResumeTimeoutMs: 10,
+    onTimeout: (event) => timeouts.push(event),
+  });
+  await assert.rejects(
+    transport.request("thread/resume", { threadId: "occupied" }),
+    /thread\/resume timed out after 10 ms/u,
+  );
+  assert.equal(timeouts.at(-1)?.method, "thread/resume");
+});
+
 test("CodexAppServerTransport applies a thread snapshot before buffered live events", async () => {
   const applied = [];
   const { child, transport } = await startedTransport({

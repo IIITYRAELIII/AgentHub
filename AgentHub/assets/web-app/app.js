@@ -4549,6 +4549,11 @@ function renderQueueForTask(taskId, container) {
     const content = el("div", { class: "queue-content" }, [
       entry.author ? el("strong", { class: "queue-author", text: entry.author }) : null,
       visibleText ? el("div", { class: "queue-text", text: visibleText }) : null,
+      entry.waitReason === "provider-thread-active"
+        ? el("div", { class: "queue-status", text: "Задача занята другим Codex; сообщение сохранено и ждёт освобождения." })
+        : entry.waitReason === "provider-temporarily-unavailable"
+          ? el("div", { class: "queue-status", text: "Связь с Codex временно недоступна; сообщение сохранено и будет отправлено автоматически." })
+          : null,
       entry.lastError ? el("div", { class: "queue-error", text: entry.lastError }) : null,
       entryAnnotations.length
         ? el("div", { class: "queue-annotation-list" }, entryAnnotations.map((annotation, index) => {

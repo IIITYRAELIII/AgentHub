@@ -157,3 +157,33 @@ test("Desktop application router saves Task presentation fields", async () => {
     id: "board-1", title: "Новый заголовок", description: "Описание", maxResponseBytes: 3_500_000,
   });
 });
+
+test("Desktop application router accepts a message beside a blocked mutation", async () => {
+  let releaseBlocked;
+  const blocked = new Promise((resolve) => { releaseBlocked = resolve; });
+  const handlers = Object.fromEntries([
+    "snapshot", "taskHistory", "rateLimitHistory", "usageHistory", "search", "workspaceMessageSearch",
+    "openTask", "openTurn", "workspaceMessageOpen", "sendMessage", "taskDiff", "deferredInput",
+    "statusDetails", "speakLastAnswer", "restartServer", "setAutostart",
+    "updateServerConfiguration", "readPreTurnInstructions", "updateGlobalPreTurnInstructions",
+    "readRootAgents", "updateRootAgents", "compactContext", "openAttachment", "submitBugReport",
+    "trustedDevices", "createDevicePairing", "revokeDevice",
+    "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
+    "boardTaskRetryTriage", "boardTaskStart", "boardColumnMove", "boardColumnComment", "boardWorkspaceMove",
+  ].map((name) => [name, async () => ({ accepted: true, name })]));
+  handlers.restartServer = async () => blocked;
+  const control = createDesktopApplicationRouter({
+    handlers,
+    commands: {
+      dispatch: async () => ({ accepted: true }),
+      settingTarget: () => ({}),
+    },
+  });
+
+  const restart = control.handleDesktopControl({ action: "restart-server", params: {} });
+  await new Promise((resolve) => setImmediate(resolve));
+  const message = await control.handleDesktopControl({ action: "send-message", params: { text: "сейчас" } });
+  assert.deepEqual(message, { accepted: true, name: "sendMessage" });
+  releaseBlocked();
+  await restart;
+});

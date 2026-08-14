@@ -172,6 +172,21 @@ test("DeferredInputController retries a transient app-server failure without los
   );
 });
 
+test("DeferredInputController treats an active writer as a quiet wait", async () => {
+  const state = fixture({
+    start: async () => { throw new Error("thread thread-1 already has an active writer"); },
+  });
+  const item = { id: "occupied", provider: "codex", threadId: "thread-1", taskTitle: "Task" };
+  state.queuedInputs.set(item.id, item);
+
+  await state.controller.process(item.id);
+
+  assert.equal(item.waitReason, "provider-thread-active");
+  assert.equal(item.lastError, undefined);
+  assert.equal(state.timers.at(-1).delay, 30_000);
+  assert.deepEqual(state.transitions.map((entry) => entry.state), ["dispatching", "retrying"]);
+});
+
 test("DeferredInputController retains a message when Codex acknowledges a phantom turn", async () => {
   const error = Object.assign(new Error("turn was not materialized"), {
     code: "ERR_CODEX_TURN_NOT_MATERIALIZED",

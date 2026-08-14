@@ -15,7 +15,7 @@ const MUTATION_ACTIONS = Object.freeze([
 ]);
 
 const CONCURRENT_MUTATION_ACTIONS = Object.freeze([
-  "cancel-run", "deferred-input",
+  "send-message", "cancel-run", "deferred-input",
 ]);
 
 function requiredFunction(value, name) {

@@ -6,6 +6,8 @@ const DEFAULT_THREAD_READ_CACHE_LIMIT = 200;
 const DEFAULT_MAX_CONCURRENT_REQUESTS = 6;
 const DEFAULT_MAX_BACKGROUND_REQUESTS = 2;
 const DEFAULT_MAX_CRITICAL_REQUESTS = 2;
+const DEFAULT_MAX_THREAD_RESUME_REQUESTS = 1;
+const DEFAULT_THREAD_RESUME_TIMEOUT_MS = 5_000;
 const DEFAULT_THREAD_TURN_LIMIT = 200;
 const DEFAULT_THREAD_TURN_PAGE_SIZE = 50;
 const REQUEST_PRIORITIES = Object.freeze(["critical", "interactive", "background"]);
@@ -113,6 +115,8 @@ export class CodexAppServerTransport {
     maxConcurrentRequests = DEFAULT_MAX_CONCURRENT_REQUESTS,
     maxBackgroundRequests = DEFAULT_MAX_BACKGROUND_REQUESTS,
     maxCriticalRequests = DEFAULT_MAX_CRITICAL_REQUESTS,
+    maxThreadResumeRequests = DEFAULT_MAX_THREAD_RESUME_REQUESTS,
+    threadResumeTimeoutMs = Math.min(DEFAULT_THREAD_RESUME_TIMEOUT_MS, rpcTimeoutMs),
     createInterfaceImpl = createInterface,
   }) {
     if (typeof spawnProcess !== "function") throw new TypeError("spawnProcess is required");
@@ -130,6 +134,14 @@ export class CodexAppServerTransport {
     this.maxConcurrentRequests = positiveInteger(maxConcurrentRequests, DEFAULT_MAX_CONCURRENT_REQUESTS);
     this.maxBackgroundRequests = positiveInteger(maxBackgroundRequests, DEFAULT_MAX_BACKGROUND_REQUESTS);
     this.maxCriticalRequests = positiveInteger(maxCriticalRequests, DEFAULT_MAX_CRITICAL_REQUESTS);
+    this.maxThreadResumeRequests = positiveInteger(
+      maxThreadResumeRequests,
+      DEFAULT_MAX_THREAD_RESUME_REQUESTS,
+    );
+    this.threadResumeTimeoutMs = positiveInteger(
+      threadResumeTimeoutMs,
+      Math.min(DEFAULT_THREAD_RESUME_TIMEOUT_MS, rpcTimeoutMs),
+    );
     this.createInterfaceImpl = createInterfaceImpl;
     this.child = null;
     this.startPromise = null;
@@ -200,7 +212,7 @@ export class CodexAppServerTransport {
     await this.stopProcessTree(child.pid).catch(() => child.kill());
   }
 
-  request(method, params = {}, { timeoutMs = this.rpcTimeoutMs, priority = null } = {}) {
+  request(method, params = {}, { timeoutMs = null, priority = null } = {}) {
     if (!this.child) return Promise.reject(new Error("Codex App Server is not running"));
     const id = this.requestSequence++;
     const normalizedPriority = requestPriority(method, priority);
@@ -210,7 +222,9 @@ export class CodexAppServerTransport {
         method,
         params,
         priority: normalizedPriority,
-        timeoutMs: positiveInteger(timeoutMs, this.rpcTimeoutMs),
+        timeoutMs: timeoutMs == null
+          ? method === "thread/resume" ? this.threadResumeTimeoutMs : this.rpcTimeoutMs
+          : positiveInteger(timeoutMs, this.rpcTimeoutMs),
         resolve,
         reject,
         timer: null,
@@ -259,7 +273,11 @@ export class CodexAppServerTransport {
     );
     if (this.requestQueues.critical.length
       && this.activeRequests.critical < this.maxCriticalRequests) {
-      return this.requestQueues.critical.shift();
+      const index = this.requestQueues.critical.findIndex((request) => (
+        request.method !== "thread/resume"
+        || this.#activeMethodCount("thread/resume") < this.maxThreadResumeRequests
+      ));
+      if (index >= 0) return this.requestQueues.critical.splice(index, 1)[0];
     }
     if (totalActive >= this.maxConcurrentRequests) return null;
     const backgroundAvailable = this.requestQueues.background.length
@@ -278,6 +296,14 @@ export class CodexAppServerTransport {
       return this.requestQueues.interactive.shift();
     }
     return null;
+  }
+
+  #activeMethodCount(method) {
+    let count = 0;
+    for (const request of this.pending.values()) {
+      if (request.method === method) count += 1;
+    }
+    return count;
   }
 
   #dispatchRequest(request) {

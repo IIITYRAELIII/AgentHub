@@ -816,6 +816,22 @@ test("desktopRunSnapshot attributes a live inter-Stream message to its source ag
   assert.equal(snapshot.userMessages[0].author, "Agent HUB - Architect (Codex)");
 });
 
+test("desktopSnapshot hides a legacy active-writer error behind a wait reason", async () => {
+  const { desktopSnapshot } = fixture({
+    queued: [{
+      id: "occupied",
+      provider: "codex",
+      threadId: "thread-1",
+      taskTitle: "Task",
+      input: "Подожди",
+      lastError: "thread thread-1 already has an active writer",
+    }],
+  });
+  const snapshot = await desktopSnapshot();
+  assert.equal(snapshot.deferredInputs[0].waitReason, "provider-thread-active");
+  assert.equal(snapshot.deferredInputs[0].lastError, null);
+});
+
 test("desktopRunSnapshot preserves a subagent message role and model", () => {
   const { desktopRunSnapshot, run } = fixture();
   run.userMessages.push({

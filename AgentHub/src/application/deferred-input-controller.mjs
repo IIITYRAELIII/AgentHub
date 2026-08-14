@@ -11,6 +11,14 @@ export function isRetryableDeferredLaunchError(error) {
   return /(?:codex )?app-server (?:stopped|is not running)|write EPIPE|broken pipe|thread\s+\S+\s+already has an active writer/i.test(message);
 }
 
+export function deferredLaunchWaitReason(error) {
+  const message = String(error?.message ?? error ?? "");
+  if (/thread\s+\S+\s+already has an active writer/i.test(message)) {
+    return "provider-thread-active";
+  }
+  return isRetryableDeferredLaunchError(error) ? "provider-temporarily-unavailable" : null;
+}
+
 export class DeferredInputController {
   constructor({
     pendingInputs,
@@ -122,19 +130,25 @@ export class DeferredInputController {
         started = await this.start(item);
       } catch (error) {
         delete item.dispatchingAt;
-        item.lastError = String(error.message ?? error);
         item.lastAttemptAt = new Date(this.now()).toISOString();
         item.attempts = Number(item.attempts ?? 0) + 1;
-        if (this.isRetryableLaunchError(error, item)) {
+        const retryable = this.isRetryableLaunchError(error, item);
+        if (retryable) {
+          delete item.lastError;
+          item.waitReason = deferredLaunchWaitReason(error) ?? "provider-temporarily-unavailable";
           this.onStateChange(item, "retrying", error);
           await this.persist();
-          const retryDelay = Math.min(
-            this.maxRetryDelayMs,
-            this.retryDelayMs * (2 ** Math.min(item.attempts - 1, 4)),
-          );
+          const retryDelay = item.waitReason === "provider-thread-active"
+            ? this.maxRetryDelayMs
+            : Math.min(
+              this.maxRetryDelayMs,
+              this.retryDelayMs * (2 ** Math.min(item.attempts - 1, 4)),
+            );
           this.schedule(item, retryDelay);
           return;
         }
+        delete item.waitReason;
+        item.lastError = String(error.message ?? error);
         this.queuedInputs.delete(id);
         this.pendingInputs.set(id, item);
         this.onStateChange(item, "pending", error);
@@ -151,6 +165,7 @@ export class DeferredInputController {
       delete item.dispatchingAt;
       delete item.lastError;
       delete item.lastAttemptAt;
+      delete item.waitReason;
       this.onStateChange(item, "started", started);
       await this.persist();
       await this.updateMessage(item, `▶️ Сообщение из очереди отправлено в задачу «${item.taskTitle}».`);
