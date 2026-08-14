@@ -787,6 +787,36 @@ async function acknowledgeLocalControl(commandId) {
   }
 }
 
+function observeQueuedRemoteMessage(commandId, params) {
+  void waitRemoteResult(commandId, LONG_CONTROL_TIMEOUT_MS).then((result) => {
+    const clientUserMessageId = String(params?.clientUserMessageId ?? "").trim();
+    if (clientUserMessageId) {
+      const resolvedTaskId = updateOutgoing("", clientUserMessageId, {
+        threadId: result?.threadId ?? params?.threadId ?? "",
+        turnId: result?.turnId ?? "",
+        itemId: result?.itemId ?? clientUserMessageId,
+        ...(result?.accepted
+          ? deliveryPatch("accepted")
+          : result?.deferred
+            ? deliveryPatch(result?.queued ? "queued" : "deferred")
+            : deliveryPatch("rejected")),
+      });
+      if (resolvedTaskId) renderTaskMessages(resolvedTaskId);
+    }
+    if (result?.snapshot) applySnapshot(result.snapshot);
+    else void refresh();
+  }).catch((error) => {
+    console.error("Agent Hub queued message reconciliation failed", error);
+    if (messageSendDefinitelyRejected(error)) {
+      const clientUserMessageId = String(params?.clientUserMessageId ?? "").trim();
+      const resolvedTaskId = updateOutgoing("", clientUserMessageId, deliveryPatch("rejected"));
+      if (resolvedTaskId) renderTaskMessages(resolvedTaskId);
+      agentHub.toast(String(error?.message ?? "Сообщение отклонено локальным Agent Hub"));
+    }
+    void refresh();
+  });
+}
+
 async function readSnapshot(params = {}) {
   await localSessionReady;
   const query = new URLSearchParams({
@@ -828,6 +858,17 @@ async function control(action, params = {}) {
     await acknowledgeLocalControl(commandId).catch((error) => {
       console.warn(`Agent Hub control acknowledgement failed: ${error.message}`);
     });
+  }
+  if (payload.pending && payload.id && action === "send-message") {
+    observeQueuedRemoteMessage(payload.id, params);
+    return {
+      deferred: true,
+      queued: true,
+      remoteQueued: true,
+      threadId: params.threadId,
+      clientUserMessageId: params.clientUserMessageId,
+      message: "Сообщение принято Worker и поставлено в очередь доставки.",
+    };
   }
   return payload.pending && payload.id
     ? waitRemoteResult(

@@ -99,22 +99,33 @@ test("runtime state restoration applies one canonical snapshot to all owners", a
   });
 });
 
-test("state coordinator serializes writes and isolates a missing initial state", async () => {
+test("state coordinator coalesces queued snapshots and isolates a missing initial state", async () => {
   const saved = [];
+  let releaseFirst;
+  const firstBlocked = new Promise((resolve) => { releaseFirst = resolve; });
+  let revision = 0;
   const coordinator = new HubRuntimeStateCoordinator({
     store: {
       load: async () => ({ value: null }),
-      save: async (value) => { saved.push(value); },
+      save: async (value) => {
+        saved.push(value);
+        if (saved.length === 1) await firstBlocked;
+      },
     },
     canonicalize: (value) => value,
     restoreSnapshot: async (value) => value,
-    createSnapshot: () => ({ revision: saved.length + 1 }),
+    createSnapshot: () => ({ revision: ++revision }),
     log: { log() {}, warn() {}, error() {} },
   });
   assert.deepEqual(await coordinator.restore(), { failed: false, value: null });
-  await Promise.all([coordinator.save(), coordinator.save()]);
+  const first = coordinator.save();
+  await new Promise((resolve) => setImmediate(resolve));
+  const second = coordinator.save();
+  const third = coordinator.save();
+  releaseFirst();
+  await Promise.all([first, second, third]);
   await coordinator.flush();
-  assert.deepEqual(saved, [{ revision: 1 }, { revision: 1 }]);
+  assert.deepEqual(saved, [{ revision: 1 }, { revision: 3 }]);
 });
 
 test("runtime snapshot keeps task identity and provider preferences separate", () => {

@@ -984,8 +984,8 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   const externalRun = await waitFor(async () => {
     const runs = (await readJson(statePath)).activeRuns;
     return runs.length === 1 && runs[0].observer === true ? runs[0] : null;
-  }, "silent external VSCode task discovery", 8_000);
-  assert.equal(externalRun.executionOwner, "vscode");
+  }, "silent external task discovery", 8_000);
+  assert.equal(externalRun.executionOwner, "external");
   assert.equal(externalRun.displayRequested, false);
   assert.deepEqual(externalRun.progressMessageIds, [],
     "background discovery must not draw a progress card without an eye-button request");
@@ -996,8 +996,8 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   const restoredExternalRun = await waitFor(async () => {
     const runs = (await readJson(statePath)).activeRuns;
     return runs.length === 1 && runs[0].observer === true ? runs[0] : null;
-  }, "external VSCode task restored after bot restart", 8_000);
-  assert.equal(restoredExternalRun.executionOwner, "vscode",
+  }, "external task restored after bot restart", 8_000);
+  assert.equal(restoredExternalRun.executionOwner, "external",
     "restoring an observed task must preserve its actual runtime owner");
 
   mark = telegram.calls.length;
@@ -1014,7 +1014,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   assert.ok(externalEye);
   mark = telegram.calls.length;
   telegram.pushCallback(externalEye.callback_data, externalSelected.result);
-  await telegram.waitForText("VSCode App Server", { after: mark });
+  await telegram.waitForText("External Codex", { after: mark });
   await waitFor(async () => (await readJson(statePath)).activeRuns[0]?.progressMessageIds.length === 1,
     "external task progress shown on demand");
   mark = telegram.calls.length;

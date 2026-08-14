@@ -122,6 +122,7 @@ export function createProviderOperationComposition({
     finalizeDelivery: finalizeCodexRunDelivery,
     finishProgress: (...args) => taskProgress().finish(...args),
     completedAnswer: completedCodexAnswer,
+    releaseAdmission: (run) => managedRunLifecycle.releaseAdmission(run),
     temporaryFiles: turnTemporaryFiles,
     speechButtons: turnSpeechButtons,
     logError: (...args) => console.error(...args),

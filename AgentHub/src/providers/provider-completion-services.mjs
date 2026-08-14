@@ -29,7 +29,7 @@ export class CodexCompletionService {
     for (const name of [
       "runForTask", "consumeTracker", "waitForCompletion", "readThread",
       "readTurnUsage", "applyRolloutContext", "finalizeDelivery", "finishProgress",
-      "completedAnswer",
+      "completedAnswer", "releaseAdmission",
     ]) requiredFunction(dependencies[name], name);
     this.#d = dependencies;
   }
@@ -72,6 +72,7 @@ export class CodexCompletionService {
   async finishManagedSnapshot(run, snapshot) {
     if (this.#d.runForTask(run) !== run || run.status !== "running") return;
     run.status = "finishing";
+    await this.#d.releaseAdmission(run);
     const completedTurnId = run.turnId;
     let tracker = this.#d.consumeTracker(completedTurnId);
     tracker = await this.#resolvePricing(run, completedTurnId, tracker);
@@ -99,6 +100,7 @@ export class CodexCompletionService {
     if (snapshot) return this.finishManagedSnapshot(run, snapshot);
     if (this.#d.runForTask(run) !== run || run.status !== "running") return;
     run.status = "finishing";
+    await this.#d.releaseAdmission(run);
     let tracker = this.#d.consumeTracker(completedTurnId);
     tracker = await this.#resolvePricing(run, completedTurnId, tracker);
     const forceSpeechButton = await this.#releaseTurnResources(completedTurnId);

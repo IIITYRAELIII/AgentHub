@@ -12,6 +12,9 @@ export class HubRuntimeStateCoordinator {
     this.createSnapshot = createSnapshot;
     this.log = log;
     this.writeQueue = Promise.resolve();
+    this.pendingSnapshot = null;
+    this.pendingSaveWaiters = [];
+    this.draining = false;
   }
 
   async restore() {
@@ -33,14 +36,42 @@ export class HubRuntimeStateCoordinator {
 
   save() {
     const snapshot = this.createSnapshot();
-    this.writeQueue = this.writeQueue
-      .catch(() => {})
-      .then(() => this.store.save(snapshot));
-    return this.writeQueue;
+    const saved = new Promise((resolve, reject) => {
+      this.pendingSnapshot = snapshot;
+      this.pendingSaveWaiters.push({ resolve, reject });
+    });
+    if (!this.draining) this.#startDrain();
+    return saved;
   }
 
   flush() {
     return this.writeQueue;
+  }
+
+  #startDrain() {
+    this.draining = true;
+    this.writeQueue = this.#drain().finally(() => {
+      this.draining = false;
+      if (this.pendingSnapshot) this.#startDrain();
+    });
+  }
+
+  async #drain() {
+    let failure = null;
+    while (this.pendingSnapshot) {
+      const snapshot = this.pendingSnapshot;
+      const waiters = this.pendingSaveWaiters;
+      this.pendingSnapshot = null;
+      this.pendingSaveWaiters = [];
+      try {
+        await this.store.save(snapshot);
+        for (const waiter of waiters) waiter.resolve();
+      } catch (error) {
+        failure ??= error;
+        for (const waiter of waiters) waiter.reject(error);
+      }
+    }
+    if (failure) throw failure;
   }
 }
 

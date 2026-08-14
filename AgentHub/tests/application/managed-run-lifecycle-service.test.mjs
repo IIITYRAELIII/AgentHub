@@ -96,6 +96,20 @@ test("managed run lifecycle exposes terminal state before removing the run", asy
   assert.ok(events.includes("sync-complete"));
 });
 
+test("managed run lifecycle releases admission exactly once", async () => {
+  const { service, taskRuns, events } = harness();
+  const run = await service.begin("hello");
+  events.length = 0;
+
+  await Promise.all([service.releaseAdmission(run), service.releaseAdmission(run)]);
+  await service.complete(run);
+
+  assert.equal(taskRuns.size, 0);
+  assert.equal(run.admissionReleased, true);
+  assert.equal(events.filter((event) => event === "after").length, 1);
+  assert.equal(events.filter((event) => event === "typing").length, 1);
+});
+
 test("managed run lifecycle retries completion preparation after a failed hook", async () => {
   let attempts = 0;
   const { service, taskRuns, events } = harness({

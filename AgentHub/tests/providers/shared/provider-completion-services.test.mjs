@@ -17,6 +17,7 @@ test("Codex completion restores missing model pricing before final delivery", as
     finalizeDelivery: async (_run, value) => delivered.push(value),
     finishProgress: async () => {},
     completedAnswer: async () => "Done",
+    releaseAdmission: async () => {},
     temporaryFiles: new Map(),
     speechButtons: new Map(),
   });
@@ -42,6 +43,7 @@ test("observed Codex completion marks a real terminal transition", async () => {
     finalizeDelivery: async () => {},
     finishProgress: async () => {},
     completedAnswer: async () => "Done",
+    releaseAdmission: async () => {},
     temporaryFiles: new Map(),
     speechButtons: new Map(),
   });
@@ -71,6 +73,7 @@ test("Codex completion reads rollout changes even when pricing is already known"
     finalizeDelivery: async () => {},
     finishProgress: async () => {},
     completedAnswer: async () => "Done",
+    releaseAdmission: async () => {},
     temporaryFiles: new Map(),
     speechButtons: new Map(),
   });
@@ -78,4 +81,32 @@ test("Codex completion reads rollout changes even when pricing is already known"
   await service.completeManaged(run, { eventTurn: { id: "turn-1", status: "completed" } });
 
   assert.equal(applied, usageResult);
+});
+
+test("managed Codex completion releases admission before slow bookkeeping", async () => {
+  const run = { threadId: "thread-1", turnId: "turn-1", status: "running", responseText: "Done" };
+  const events = [];
+  let releaseRead;
+  const blockedRead = new Promise((resolve) => { releaseRead = resolve; });
+  const service = new CodexCompletionService({
+    runForTask: () => run,
+    consumeTracker: () => ({ usage: {}, reported: false }),
+    waitForCompletion: async () => null,
+    readThread: async () => { events.push("read"); await blockedRead; return { thread: {} }; },
+    readTurnUsage: async () => null,
+    applyRolloutContext: () => {},
+    finalizeDelivery: async () => { events.push("finalize"); },
+    finishProgress: async () => {},
+    completedAnswer: async () => "Done",
+    releaseAdmission: async () => { events.push("release"); },
+    temporaryFiles: new Map(),
+    speechButtons: new Map(),
+  });
+
+  const completion = service.completeManaged(run, { eventTurn: { id: "turn-1", status: "completed" } });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(events, ["release", "read"]);
+  releaseRead();
+  await completion;
+  assert.deepEqual(events, ["release", "read", "finalize"]);
 });

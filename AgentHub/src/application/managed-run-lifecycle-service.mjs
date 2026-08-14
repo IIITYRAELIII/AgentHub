@@ -100,13 +100,29 @@ export class ManagedRunLifecycleService {
   }
 
   async complete(run) {
-    if (!run) return;
+    return this.releaseAdmission(run);
+  }
+
+  async releaseAdmission(run) {
+    if (!run || run.admissionReleased === true) return;
+    if (run.admissionReleasing) return run.admissionReleasing;
     const d = this.#d;
-    await this.markCompleted(run);
-    d.taskRuns.remove(run);
-    if (!d.taskRuns.size) d.stopTyping();
-    await d.saveState();
-    await d.afterCompletion(run);
+    run.admissionReleasing = (async () => {
+      await this.markCompleted(run);
+      d.taskRuns.remove(run);
+      if (!d.taskRuns.size) d.stopTyping();
+      run.admissionReleased = true;
+      await d.saveState();
+      if (run.afterCompletionApplied !== true) {
+        run.afterCompletionApplied = true;
+        await d.afterCompletion(run);
+      }
+    })();
+    try {
+      await run.admissionReleasing;
+    } finally {
+      delete run.admissionReleasing;
+    }
   }
 
   async markCompleted(run) {

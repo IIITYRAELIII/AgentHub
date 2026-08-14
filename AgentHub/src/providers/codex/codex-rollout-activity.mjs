@@ -1017,15 +1017,9 @@ export function catalogEntriesWithoutLiveActivity(entries = []) {
 }
 
 export function codexObservedExecutionOwner(activity = {}, turnId = null) {
-  const vscodeTurnIds = new Set(activity.activeVscodeTurnIds ?? []);
-  if (turnId) {
-    return vscodeTurnIds.has(String(turnId))
-      ? TASK_EXECUTION_OWNERS.VSCODE
-      : TASK_EXECUTION_OWNERS.EXTERNAL;
-  }
-  return vscodeTurnIds.size > 0
-    ? TASK_EXECUTION_OWNERS.VSCODE
-    : TASK_EXECUTION_OWNERS.EXTERNAL;
+  void activity;
+  void turnId;
+  return TASK_EXECUTION_OWNERS.EXTERNAL;
 }
 
 export function selectCodexTurn(

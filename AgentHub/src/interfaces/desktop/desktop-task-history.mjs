@@ -12,6 +12,27 @@ import { taskRunIsActive } from "../../domain/task-runs.mjs";
 const MAX_CACHED_HISTORIES = 12;
 const MAX_CACHED_TURNS_PER_HISTORY = 40;
 
+function historyItemTimestamp(item) {
+  const values = [
+    item?.startedAt,
+    ...(Array.isArray(item?.messages) ? item.messages.map((message) => message?.time) : []),
+    item?.completedAt,
+  ].map((value) => Date.parse(String(value ?? ""))).filter(Number.isFinite);
+  return values.length ? Math.min(...values) : Number.NaN;
+}
+
+function sortTaskHistoryChronologically(history) {
+  return history
+    .map((item, index) => ({ item, index, time: historyItemTimestamp(item) }))
+    .sort((left, right) => {
+      if (Number.isFinite(left.time) && Number.isFinite(right.time) && left.time !== right.time) {
+        return left.time - right.time;
+      }
+      return left.index - right.index;
+    })
+    .map(({ item }) => item);
+}
+
 // Builds the bounded Desktop/Mini App history read-model for one task.
 function mergeDurableMessages(hydratedMessages, durableMessages) {
   const values = structuredClone(Array.isArray(hydratedMessages) ? hydratedMessages : []);
@@ -351,7 +372,8 @@ export function createDesktopTaskHistoryFactory({
       }
     }
 
-    const total = history.length;
+    const orderedHistory = sortTaskHistoryChronologically(history);
+    const total = orderedHistory.length;
     const requestedEnd = Number(params.before);
     const end = Number.isSafeInteger(requestedEnd)
       ? Math.max(0, Math.min(requestedEnd, total))
@@ -362,7 +384,7 @@ export function createDesktopTaskHistoryFactory({
       Math.min(Number(params.maxAnswerChars) || 200_000, 200_000),
     );
     const start = Math.max(0, end - limit);
-    const rawPage = history.slice(start, end);
+    const rawPage = orderedHistory.slice(start, end);
     const pageSources = rawPage.map((item) => historySources.get(item));
     const page = await hydrateHistory(rawPage);
     for (let index = 0; index < page.length; index += 1) {

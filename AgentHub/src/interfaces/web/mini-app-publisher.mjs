@@ -584,6 +584,68 @@ export class MiniAppPublisher {
     };
   }
 
+  async #handleControlCommand(rawCommand, secret) {
+    let command;
+    try {
+      command = this.#validateRemoteCommand(rawCommand);
+      command = await this.#prepareRemoteCommand(command, secret);
+      const context = {
+        source: "telegram-mini-app",
+        transport: "worker",
+        userId: command.userId,
+        commandId: command.id,
+      };
+      let result = await this.#controlReceipts.execute({
+        id: command.id,
+        fingerprint: commandFingerprint({
+          action: command.action,
+          params: command.params,
+          userId: command.userId,
+        }),
+        action: command.action,
+        effect: async () => {
+          const value = await this.#controlHandler({ action: command.action, params: command.params, context });
+          await this.#afterControlEffect?.(value, command);
+          this.#scheduleSnapshotChange();
+          return value;
+        },
+        reconcile: this.#controlReconciler
+          ? (receipt) => this.#controlReconciler({ action: command.action, params: command.params, context, receipt })
+          : null,
+      });
+      const serialized = JSON.stringify(result ?? null);
+      if (Buffer.byteLength(serialized, "utf8") > MAX_CONTROL_RESULT_BYTES) {
+        throw new Error("Agent Hub control result is too large");
+      }
+      result = JSON.parse(serialized);
+      await this.#queueControlResult({
+        id: command.id,
+        userId: command.userId,
+        ok: true,
+        result,
+      });
+    } catch (error) {
+      if (error instanceof DurableCommandRetryableError) throw error;
+      const id = String(command?.id ?? rawCommand?.id ?? "");
+      const userId = String(command?.userId ?? rawCommand?.userId ?? "");
+      if (!id || !userId) return { handled: false, deliveryError: null };
+      await this.#queueControlResult({
+        id,
+        userId,
+        ok: false,
+        error: String(error?.message ?? error ?? "Agent Hub control action failed").slice(0, MAX_CONTROL_ERROR_CHARS),
+      });
+    }
+    let deliveryError = null;
+    try {
+      await this.#flushControlResults();
+      if (this.#controlResultOutbox.size) await this.#flushControlResults();
+    } catch (error) {
+      deliveryError = error;
+    }
+    return { handled: true, deliveryError };
+  }
+
   async pollControl() {
     if (this.#closed || !this.#controlHandler) return 0;
     if (this.#controlPolling) return this.#controlPolling;
@@ -601,64 +663,13 @@ export class MiniAppPublisher {
       if (!Array.isArray(response?.commands)) throw new Error("Mini App Worker returned an invalid control response");
       let handled = 0;
       let deliveryError = null;
-      for (const rawCommand of response.commands) {
-        let command;
-        try {
-          command = this.#validateRemoteCommand(rawCommand);
-          command = await this.#prepareRemoteCommand(command, secret);
-          const context = {
-            source: "telegram-mini-app",
-            transport: "worker",
-            userId: command.userId,
-            commandId: command.id,
-          };
-          let result = await this.#controlReceipts.execute({
-            id: command.id,
-            fingerprint: commandFingerprint({
-              action: command.action,
-              params: command.params,
-              userId: command.userId,
-            }),
-            action: command.action,
-            effect: async () => {
-              const result = await this.#controlHandler({ action: command.action, params: command.params, context });
-              await this.#afterControlEffect?.(result, command);
-              this.#scheduleSnapshotChange();
-              return result;
-            },
-            reconcile: this.#controlReconciler
-              ? (receipt) => this.#controlReconciler({ action: command.action, params: command.params, context, receipt })
-              : null,
-          });
-          let serialized = JSON.stringify(result ?? null);
-          if (Buffer.byteLength(serialized, "utf8") > MAX_CONTROL_RESULT_BYTES) {
-            throw new Error("Agent Hub control result is too large");
-          }
-          result = JSON.parse(serialized);
-          await this.#queueControlResult({
-            id: command.id,
-            userId: command.userId,
-            ok: true,
-            result,
-          });
-        } catch (error) {
-          if (error instanceof DurableCommandRetryableError) throw error;
-          const id = String(command?.id ?? rawCommand?.id ?? "");
-          const userId = String(command?.userId ?? rawCommand?.userId ?? "");
-          if (!id || !userId) continue;
-          await this.#queueControlResult({
-            id,
-            userId,
-            ok: false,
-            error: String(error?.message ?? error ?? "Agent Hub control action failed").slice(0, MAX_CONTROL_ERROR_CHARS),
-          });
-        }
-        try {
-          await this.#flushControlResults();
-        } catch (error) {
-          deliveryError ??= error;
-        }
-        handled += 1;
+      const outcomes = await Promise.allSettled(
+        response.commands.map((command) => this.#handleControlCommand(command, secret)),
+      );
+      for (const outcome of outcomes) {
+        if (outcome.status === "rejected") throw outcome.reason;
+        if (outcome.value.handled) handled += 1;
+        deliveryError ??= outcome.value.deliveryError;
       }
       if (deliveryError) throw deliveryError;
       return handled;

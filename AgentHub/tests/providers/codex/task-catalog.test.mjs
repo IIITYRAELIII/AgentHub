@@ -323,12 +323,12 @@ test("parallel active tasks keep their rows while progress timestamps change", (
   assert.deepEqual(statusTaskEntries([first, second], 2), [second, first]);
 });
 
-test("observed ownership follows the active turn instead of historical session metadata", () => {
+test("generic rollout client ids do not claim VSC ownership", () => {
   assert.equal(codexObservedExecutionOwner({
     originator: "telegram_codex_bridge",
     source: "unknown",
     activeVscodeTurnIds: ["vsc-turn"],
-  }), TASK_EXECUTION_OWNERS.VSCODE);
+  }), TASK_EXECUTION_OWNERS.EXTERNAL);
   assert.equal(codexObservedExecutionOwner({
     originator: "Codex Desktop",
     source: "vscode",
@@ -337,7 +337,7 @@ test("observed ownership follows the active turn instead of historical session m
   assert.equal(codexObservedExecutionOwner({
     originator: "Codex Desktop",
     activeVscodeTurnIds: ["vsc-turn"],
-  }, "vsc-turn"), TASK_EXECUTION_OWNERS.VSCODE);
+  }, "vsc-turn"), TASK_EXECUTION_OWNERS.EXTERNAL);
   assert.equal(codexObservedExecutionOwner({
     originator: "Codex Desktop",
     activeVscodeTurnIds: ["vsc-turn"],

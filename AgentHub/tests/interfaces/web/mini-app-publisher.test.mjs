@@ -692,10 +692,59 @@ test("Mini App publisher executes every claimed command when result delivery is 
   });
   try {
     await assert.rejects(() => publisher.pollControl(), /HTTP 503/u);
-    assert.deepEqual(handled, commands.map((command) => command.id));
+    assert.deepEqual(handled.toSorted(), commands.map((command) => command.id).toSorted());
     rejectResults = false;
     assert.equal(await publisher.pollControl(), 0);
-    assert.deepEqual(delivered.map((item) => item.id), commands.map((command) => command.id));
+    assert.deepEqual(
+      delivered.map((item) => item.id).toSorted(),
+      commands.map((command) => command.id).toSorted(),
+    );
+  } finally {
+    await publisher.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Mini App publisher does not let a slow control block a message command", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-control-concurrent-"));
+  const secretFile = path.join(root, "sync.secret");
+  await writeFile(secretFile, "p".repeat(64));
+  const commands = [
+    {
+      id: "018f6c86-3f34-7a31-8f27-16f5b96cce31",
+      userId: "42",
+      action: "open-turn",
+      params: { provider: "codex", threadId: "thread", turnId: "turn" },
+    },
+    {
+      id: "018f6c86-3f34-7a31-8f27-16f5b96cce32",
+      userId: "42",
+      action: "send-message",
+      params: { provider: "codex", threadId: "thread", text: "now" },
+    },
+  ];
+  let releaseSlow;
+  const slow = new Promise((resolve) => { releaseSlow = resolve; });
+  let markMessageHandled;
+  const messageHandled = new Promise((resolve) => { markMessageHandled = resolve; });
+  const publisher = new MiniAppPublisher({
+    dataDirectory: root,
+    publicUrl: "https://hub.example.test",
+    syncSecretFile: secretFile,
+    fetchImpl: async (url) => url.endsWith("/api/control/pull")
+      ? Response.json({ commands })
+      : Response.json({ ok: true }),
+    controlHandler: async ({ action }) => {
+      if (action === "open-turn") await slow;
+      else markMessageHandled();
+      return { accepted: action === "send-message" };
+    },
+  });
+  try {
+    const polling = publisher.pollControl();
+    await messageHandled;
+    releaseSlow();
+    assert.equal(await polling, 2);
   } finally {
     await publisher.close();
     await rm(root, { recursive: true, force: true });

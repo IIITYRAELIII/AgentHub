@@ -379,7 +379,7 @@ test("desktop task history hides a stale auto-compaction transfer after rotation
   assert.deepEqual(result.items.map((item) => item.id), ["real-turn"]);
 });
 
-test("desktop task history combines sequential provider Threads from one Stream", async () => {
+test("desktop task history combines provider Threads in global chronological order", async () => {
   const factory = createDesktopTaskHistoryFactory({
     selection: {
       activeProvider: () => "codex",
@@ -401,7 +401,14 @@ test("desktop task history combines sequential provider Threads from one Stream"
     },
     historyReader: {
       read: async ({ threadId }) => ({
-        history: [{ id: `turn-${threadId}`, prompt: threadId, answer: `answer-${threadId}` }],
+        history: [{
+          id: `turn-${threadId}`,
+          prompt: threadId,
+          answer: `answer-${threadId}`,
+          startedAt: threadId === "thread-1"
+            ? "2026-08-15T01:10:00.000Z"
+            : "2026-08-15T01:00:00.000Z",
+        }],
       }),
     },
     runs: {
@@ -427,7 +434,7 @@ test("desktop task history combines sequential provider Threads from one Stream"
   });
   const result = await factory({ streamId: "stream-1", provider: "codex", threadId: "thread-2" });
   assert.equal(result.streamId, "stream-1");
-  assert.deepEqual(result.items.map((item) => item.id), ["turn-thread-1", "turn-thread-2"]);
+  assert.deepEqual(result.items.map((item) => item.id), ["turn-thread-2", "turn-thread-1"]);
 });
 
 test("desktop task history returns a compact marker for an unchanged completed page", async () => {
