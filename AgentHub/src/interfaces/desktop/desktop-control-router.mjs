@@ -33,6 +33,7 @@ function projectDesktopReceiptResult(value) {
 export function createDesktopControlRouter({
   handlers,
   mutationActions,
+  concurrentMutationActions = [],
   receiptActions = mutationActions,
   miniAppLimits = DEFAULT_MINI_APP_LIMITS,
   desktopMaxResponseBytes = DEFAULT_DESKTOP_MAX_RESPONSE_BYTES,
@@ -41,6 +42,7 @@ export function createDesktopControlRouter({
   reconcileMutation = null,
 }) {
   const mutations = new Set(mutationActions);
+  const concurrentMutations = new Set(concurrentMutationActions);
   const durableMutations = new Set(receiptActions);
   let mutationQueue = Promise.resolve();
   const receipts = receiptFile ? new DurableCommandReceipts({
@@ -99,7 +101,9 @@ export function createDesktopControlRouter({
       resolvedParams.clientUserMessageId = String(context.commandId);
     }
     if (mutations.has(action)) {
-      const execute = () => serializeDesktopMutation(() => handler(resolvedParams, context));
+      const execute = () => concurrentMutations.has(action)
+        ? handler(resolvedParams, context)
+        : serializeDesktopMutation(() => handler(resolvedParams, context));
       const commandId = String(context?.commandId ?? "").trim();
       if (!receipts || !commandId || !durableMutations.has(action)) {
         return mutationResultForClient(await execute(), context);

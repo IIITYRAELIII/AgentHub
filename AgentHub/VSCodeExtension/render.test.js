@@ -251,7 +251,7 @@ test("shared webview loads the active runtime, never a workspace shadow", async 
       extensionUri: vscodeUri(extensionRoot),
     });
     assert.match(result.html, /runtime/u);
-    assert.doesNotMatch(result.html, /shadow/u);
+    assert.equal(result.html.includes(shadowRoot), false);
     assert.match(result.html, /vscode-webview-resource:.*agent-hub-mark\.png/u);
     assert.doesNotMatch(result.html, /(?:href|src)="\/agent-hub-mark\.png"/u);
     assert.match(result.html, /vscode-webview-resource:.*task-board\.js/u);
@@ -264,6 +264,10 @@ test("shared webview loads the active runtime, never a workspace shadow", async 
     assert.doesNotMatch(result.html, /src="\/attachments\/interactions\.js"/u);
     assert.match(result.html, /vscode-webview-resource:.*future-runtime-module\.js/u);
     assert.doesNotMatch(result.html, /src="\/future-runtime-module\.js"/u);
+    assert.match(result.html, /<style data-agent-hub-theme="pulsar" nonce="[^"]+">/u);
+    assert.match(result.html, /url\("vscode-webview-resource:.*themes[\\/]pulsar[\\/]pulsar-beams\.jpg"\)/u);
+    assert.doesNotMatch(result.html, /url\(["']?\.\/pulsar-beams\.jpg/u);
+    assert.match(result.html, /style-src vscode-webview:\/\/test 'nonce-[^']+'/u);
     assert.doesNotMatch(result.html, /browser-device-auth\.js/u);
     assert.ok(result.roots.every((uri) => (
       uri.fsPath.startsWith(runtimeRoot) || uri.fsPath.startsWith(extensionRoot)
@@ -1408,6 +1412,7 @@ test("chat sends with Enter on desktop and keeps Enter as a newline on phones", 
 
   test("chat shows sent messages immediately and reconciles them by exact identity", () => {
     const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
+    const lifecycle = fs.readFileSync(require.resolve("../assets/web-app/messages/lifecycle.js"), "utf8");
     assert.match(client, /rememberOutgoing\(request\.taskId, optimistic\);/u);
     assert.match(client, /const queuesOptimistically = request\.followUpMode === "queue"/u);
     assert.match(client, /optimisticDeferredClientUserMessageIds\.add\(request\.requestId\)/u);
@@ -1423,7 +1428,7 @@ test("chat sends with Enter on desktop and keeps Enter as a newline on phones", 
   assert.match(client, /completedConversationTurnVisible\(durableMessages/u);
   assert.match(client, /const visible = visibleConversationMessages\(result\.map\(normalizedUserMessage\)/u);
   assert.match(client, /chronologicalMessages\(deduplicateConversationMessages\(visible\)\)/u);
-  assert.match(client, /historicalAgentResponseVisible\(item\)/u);
+  assert.match(lifecycle, /historicalAgentResponseVisible\(item\)/u);
   assert.match(client, /historyOrder:\s*\(historyStart \+ itemIndex\) \* 1_000 \+ messageIndex/u);
 });
 
@@ -1727,10 +1732,10 @@ test("active commentary stays live while interrupted commentary remains in histo
   const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
   const lifecycle = fs.readFileSync(require.resolve("../assets/web-app/messages/lifecycle.js"), "utf8");
   assert.match(
-    client,
-    /const visibleAgent = historicalAgentResponseVisible\(item\)[\s\S]*\?\s*agentMessages\.findLast[\s\S]*:\s*null;/u,
+    lifecycle,
+    /const visibleAgent = historicalAgentResponseVisible\(item\)[\s\S]*\?\s*parentAgents\.findLast[\s\S]*:\s*null;/u,
   );
-  assert.match(client, /historicalAgentResponseVisible\(item\) && item\.answer/u);
+  assert.match(lifecycle, /historicalAgentResponseVisible\(item\) && String\(item\?\.answer/u);
   assert.match(
     lifecycle,
     /function historicalAgentResponseVisible\(turn\) \{\s*return turn\?\.completed === true \|\| turn\?\.active !== true;/u,

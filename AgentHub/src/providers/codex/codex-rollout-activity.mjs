@@ -2,6 +2,7 @@ import { createReadStream } from "node:fs";
 import path from "node:path";
 import { open, stat } from "node:fs/promises";
 import {
+  codexSubagentNotificationDetails,
   displayUserPrompt,
   responseAnnotationDetails,
 } from "../../application/task-history.mjs";
@@ -82,20 +83,25 @@ function rememberCodexUserMessage(metadata, turnId, {
   text = "",
   attachmentSources = [],
 } = {}) {
-  const responseAnnotations = responseAnnotationDetails(text);
-  const value = displayUserPrompt(text);
+  const notification = codexSubagentNotificationDetails(text);
+  const responseAnnotations = notification ? null : responseAnnotationDetails(text);
+  const value = notification?.text ?? displayUserPrompt(text);
   if (!turnId || !value) return;
   const clientId = String(clientUserMessageId ?? "").trim();
   const messages = metadata.userMessages.get(turnId) ?? [];
   const duplicateIndex = messages.findIndex((item) => (
     (clientId && item.clientUserMessageId === clientId)
+    || (notification?.agentThreadId && item.agentThreadId === notification.agentThreadId)
     || (item.text === value && (!clientId || !item.clientUserMessageId))
   ));
   const message = {
-    itemId: clientId || `${turnId}:rollout-user:${messages.length}`,
+    itemId: clientId
+      || (notification?.agentThreadId ? `${turnId}:subagent:${notification.agentThreadId}` : "")
+      || `${turnId}:rollout-user:${messages.length}`,
     ...(clientId ? { clientUserMessageId: clientId } : {}),
-    role: "user",
+    role: notification ? "agent" : "user",
     text: value,
+    ...(notification ?? {}),
     ...(responseAnnotations?.items.length
       ? {
         responseAnnotations: responseAnnotations.items.map((annotation) => ({ ...annotation })),

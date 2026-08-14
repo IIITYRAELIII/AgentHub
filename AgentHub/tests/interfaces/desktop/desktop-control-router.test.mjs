@@ -271,6 +271,31 @@ test("desktop control router does not serialize read actions", async () => {
   await first;
 });
 
+test("desktop control router lets urgent mutations bypass a blocked mutation", async () => {
+  const events = [];
+  let releaseSlow;
+  const gate = new Promise((resolve) => { releaseSlow = resolve; });
+  const router = createDesktopControlRouter({
+    handlers: {
+      slow: async () => {
+        events.push("slow-start");
+        await gate;
+        events.push("slow-end");
+      },
+      urgent: async () => { events.push("urgent"); },
+    },
+    mutationActions: ["slow", "urgent"],
+    concurrentMutationActions: ["urgent"],
+  });
+
+  const slow = router.handleDesktopControl({ action: "slow", params: {} });
+  await new Promise((resolve) => setImmediate(resolve));
+  await router.handleDesktopControl({ action: "urgent", params: {} });
+  assert.deepEqual(events, ["slow-start", "urgent"]);
+  releaseSlow();
+  await slow;
+});
+
 test("desktop control router rejects unknown actions", async () => {
   const router = createDesktopControlRouter({
     handlers: {},

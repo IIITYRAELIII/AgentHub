@@ -4,6 +4,49 @@ import { interstreamMessageDetails } from "../domain/interstream-message.mjs";
 
 export const EMPTY_TURN_COMPLETION_TEXT = "Ход завершён без текстового ответа.";
 
+function codexSubagentModelName(value) {
+  const model = String(value ?? "").trim();
+  if (!model) return "";
+  const family = /(?:^|[-_/])(sol|terra|luna)(?:$|[-_/])/iu.exec(model)?.[1];
+  if (family) return `${family[0].toUpperCase()}${family.slice(1).toLowerCase()}`;
+  return model.replace(/^gpt-/iu, "GPT-");
+}
+
+export function codexSubagentAuthor(model) {
+  const name = codexSubagentModelName(model);
+  return name ? `Субагент (${name})` : "Субагент (модель неизвестна)";
+}
+
+export function codexSubagentNotificationDetails(value, { model = "" } = {}) {
+  const text = String(value ?? "").trim();
+  const match = /^<subagent_notification>\s*([\s\S]*?)\s*<\/subagent_notification>$/iu.exec(text);
+  if (!match) return null;
+  let payload;
+  try {
+    payload = JSON.parse(match[1]);
+  } catch {
+    return {
+      agentThreadId: "",
+      author: codexSubagentAuthor(model),
+      kind: "subagent",
+      model: String(model ?? "").trim(),
+      text: "Субагент завершил работу, но его ответ не удалось прочитать.",
+    };
+  }
+  const status = payload?.status && typeof payload.status === "object" ? payload.status : {};
+  const statusText = Object.values(status)
+    .map((item) => typeof item === "string" ? item.trim() : "")
+    .find(Boolean) ?? "Субагент завершил работу без текстового ответа.";
+  const exactModel = String(model || payload?.model || "").trim();
+  return {
+    agentThreadId: String(payload?.agent_path ?? payload?.agent_thread_id ?? "").trim(),
+    author: codexSubagentAuthor(exactModel),
+    kind: "subagent",
+    model: exactModel,
+    text: statusText,
+  };
+}
+
 export function isEmptyTurnCompletionPlaceholder(turn = {}) {
   const prompt = String(turn.prompt ?? turn.promptPreview ?? "").trim();
   const answer = String(turn.answer ?? turn.finalAnswer ?? turn.text ?? "").trim();
@@ -253,9 +296,29 @@ export function codexTurnActivities(turn) {
 function codexTurnMessages(turn, { userAuthor = "" } = {}) {
   if (isCodexContextProbeTurn(turn)) return [];
   const turnId = String(turn?.id ?? "").trim();
-  return (Array.isArray(turn?.items) ? turn.items : []).flatMap((item, index) => {
+  const items = Array.isArray(turn?.items) ? turn.items : [];
+  const subagentModels = new Map(items.flatMap((item) => (
+    item?.type === "collabAgentToolCall" && item?.tool === "spawnAgent"
+      ? (Array.isArray(item.receiverThreadIds) ? item.receiverThreadIds : []).map((threadId) => (
+        [String(threadId ?? "").trim(), String(item.model ?? "").trim()]
+      ))
+      : []
+  )).filter(([threadId]) => threadId));
+  return items.flatMap((item, index) => {
     if (item?.type === "userMessage") {
       const rawText = textContent(item.content);
+      const rawNotification = codexSubagentNotificationDetails(rawText);
+      const notification = rawNotification && codexSubagentNotificationDetails(rawText, {
+        model: subagentModels.get(rawNotification.agentThreadId) ?? rawNotification.model,
+      });
+      if (notification) return [{
+        itemId: messageItemId(turnId, "agent", item, index),
+        role: "agent",
+        ...notification,
+        ...(normalizedTimestamp(item.createdAt ?? turn?.completedAt ?? turn?.updatedAt)
+          ? { time: normalizedTimestamp(item.createdAt ?? turn?.completedAt ?? turn?.updatedAt) }
+          : {}),
+      }];
       const interstream = interstreamMessageDetails(rawText);
       const envelope = desktopPromptEnvelope(rawText);
       const attachmentSources = codexAttachmentSources(item.content, envelope, rawText);
@@ -365,6 +428,7 @@ function isCodexInternalPromptEnvelope(value) {
 
 export function displayUserPrompt(value) {
   let text = String(value ?? "").trim();
+  if (codexSubagentNotificationDetails(text)) return "";
   if (isCodexInternalPromptEnvelope(text)) return "";
   const interstream = interstreamMessageDetails(text);
   if (interstream) text = interstream.text;
@@ -701,6 +765,19 @@ export function mergeActiveTaskHistory(history, activeTurn = {}) {
         index,
       };
     });
+  const suppliedSubagents = (Array.isArray(activeTurn.userMessages) ? activeTurn.userMessages : [])
+    .filter((message) => message?.role === "agent" && message?.kind === "subagent")
+    .map((message, index) => ({
+      itemId: String(message.itemId ?? message.id ?? "").trim(),
+      role: "agent",
+      kind: "subagent",
+      text: String(message.text ?? "").trim(),
+      author: String(message.author ?? "").trim() || codexSubagentAuthor(message.model),
+      agentThreadId: String(message.agentThreadId ?? "").trim(),
+      model: String(message.model ?? "").trim(),
+      ...(normalizedTimestamp(message.time) ? { time: normalizedTimestamp(message.time) } : {}),
+      index,
+    })).filter((message) => message.text);
   const rootClientUserMessageId = String(activeTurn.clientUserMessageId ?? "").trim();
   const hasRootUser = suppliedUsers.some((message) => (
     (rootClientUserMessageId && message.clientUserMessageId === rootClientUserMessageId)
@@ -767,6 +844,31 @@ export function mergeActiveTaskHistory(history, activeTurn = {}) {
       if (incoming.attachments?.length) user.attachments = incoming.attachments;
     }
     if (attachments.length) current.attachments = attachments;
+    current.messages = messages;
+  }
+  if (suppliedSubagents.length) {
+    const messages = Array.isArray(current.messages) ? current.messages : [];
+    for (const incoming of suppliedSubagents) {
+      let message = incoming.itemId
+        ? messages.find((item) => String(item?.itemId ?? "") === incoming.itemId)
+        : null;
+      if (!message && incoming.agentThreadId) {
+        message = messages.find((item) => (
+          item?.kind === "subagent"
+          && String(item?.agentThreadId ?? "") === incoming.agentThreadId
+        ));
+      }
+      if (!message) {
+        message = {
+          itemId: incoming.itemId || `${turnId || current.id || "active-turn"}:subagent:${incoming.index}`,
+          role: "agent",
+          kind: "subagent",
+        };
+        const parentAgent = messages.findIndex((item) => item.role === "agent" && item.kind !== "subagent");
+        messages.splice(parentAgent < 0 ? messages.length : parentAgent, 0, message);
+      }
+      Object.assign(message, incoming);
+    }
     current.messages = messages;
   }
   if (Array.isArray(activeTurn.activities)) current.activities = activeTurn.activities.slice();

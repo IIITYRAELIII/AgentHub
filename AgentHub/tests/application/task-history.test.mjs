@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   codexExplicitFinalTurnAnswer,
   codexFinalTurnAnswer,
+  codexSubagentNotificationDetails,
   codexTurnHasExplicitFinalAnswer,
   claudeTranscriptHistory,
   codexThreadHistory,
@@ -231,6 +232,38 @@ test("completed Codex history shows only the final answer", () => {
     items: [{ type: "agentMessage", phase: "commentary", text: "Промежуточно." }],
   }), false);
   assert.equal(exchange.answer, "Финальный ответ.");
+});
+
+test("Codex history renders subagent notifications as model-authored messages", () => {
+  const notification = `<subagent_notification>\n${JSON.stringify({
+    agent_path: "child-terra",
+    status: { completed: "Проверка завершена.\nНайден дефект." },
+  })}\n</subagent_notification>`;
+  const [exchange] = codexThreadHistory([{
+    id: "turn-subagent",
+    status: "completed",
+    items: [
+      { type: "userMessage", content: [{ type: "text", text: "Проверь архитектуру" }] },
+      {
+        type: "collabAgentToolCall",
+        tool: "spawnAgent",
+        model: "gpt-5.6-terra",
+        receiverThreadIds: ["child-terra"],
+      },
+      { id: "subagent-result", type: "userMessage", content: [{ type: "text", text: notification }] },
+      { type: "agentMessage", phase: "final_answer", text: "Объединил результаты." },
+    ],
+  }]);
+
+  assert.deepEqual(exchange.messages.map(({ role, author, kind, text }) => ({ role, author, kind, text })), [{
+    role: "user", author: undefined, kind: undefined, text: "Проверь архитектуру",
+  }, {
+    role: "agent", author: "Субагент (Terra)", kind: "subagent", text: "Проверка завершена.\nНайден дефект.",
+  }, {
+    role: "agent", author: undefined, kind: undefined, text: "Объединил результаты.",
+  }]);
+  assert.equal(displayUserPrompt(notification), "");
+  assert.equal(codexSubagentNotificationDetails(notification).agentThreadId, "child-terra");
 });
 
 test("completed Codex Plan is shown as the final answer in restored history", () => {

@@ -44,6 +44,37 @@ test("Codex snapshot service reports an exact rollout observer", async () => {
   assert.equal(snapshot.activityGroups[0].reasoning, "Проверяю.");
 });
 
+test("Codex snapshot service hydrates a rollout subagent model", async () => {
+  const service = new CodexTaskSnapshotService({
+    knownRolloutPath: async (threadId) => threadId === "child-terra" ? "child.jsonl" : "parent.jsonl",
+    readRolloutActivity: async (rolloutPath) => rolloutPath === "child.jsonl"
+      ? { model: "gpt-5.6-terra" }
+      : { activeTurnIds: ["turn-1"], activityAtMsByTurnId: {}, running: true },
+    rolloutTurnState: () => ({
+      turnId: "turn-1", active: true, completed: false, latestAnswer: "", finalAnswer: "",
+      userMessages: [
+        { role: "user", text: "Проверь" },
+        {
+          role: "agent",
+          kind: "subagent",
+          author: "Субагент (модель неизвестна)",
+          agentThreadId: "child-terra",
+          text: "Готово",
+        },
+      ],
+    }),
+    capturedOwner: () => null, runtimeActive: async () => true, resolveOwner: async () => "agent-hub",
+    readThread: async () => ({ thread: {} }), selectTurn: () => null, turnSnapshot: () => ({}),
+    turnStartedAt: () => null, describeItem: () => "", hubOwner: () => "agent-hub",
+    agentHubPid: () => 1, modelLabel: (value) => value, runtimeLabel: (value) => value,
+    delay: async () => {}, reindexRun: () => {}, logger: { warn() {} },
+  });
+
+  const snapshot = await service.read({ observer: true, threadId: "parent", exactTurnObserver: true });
+  assert.equal(snapshot.prompt, "Проверь");
+  assert.equal(snapshot.userMessages[1].author, "Субагент (Terra)");
+});
+
 test("Codex snapshot service never selects a context probe from thread reads", async () => {
   const selected = [];
   const readOptions = [];

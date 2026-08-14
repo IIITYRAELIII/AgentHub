@@ -192,11 +192,12 @@ export function createDesktopSnapshotFactory({
         : [],
       userMessages: (Array.isArray(run.userMessages) ? run.userMessages : []).flatMap((message) => {
         const rawText = String(message?.text ?? "");
+        const role = message?.role === "agent" && message?.kind === "subagent" ? "agent" : "user";
         const interstream = interstreamMessageDetails(rawText);
         const text = displayUserPrompt(rawText);
         if (!text) return [];
         const clientUserMessageId = String(message.clientUserMessageId ?? "");
-        const receipt = clientUserMessageId
+        const receipt = role === "user" && clientUserMessageId
           ? receipts.forMessage?.({
             provider: run.provider,
             threadId: run.threadId,
@@ -206,8 +207,11 @@ export function createDesktopSnapshotFactory({
         return [{
           itemId: String(message.itemId ?? ""),
           clientUserMessageId,
-          role: "user",
+          role,
           text,
+          ...(message?.kind ? { kind: String(message.kind) } : {}),
+          ...(message?.agentThreadId ? { agentThreadId: String(message.agentThreadId) } : {}),
+          ...(message?.model ? { model: String(message.model) } : {}),
           ...((interstream?.author ?? String(message.author ?? "").trim())
             ? { author: interstream?.author ?? String(message.author).trim() }
             : {}),

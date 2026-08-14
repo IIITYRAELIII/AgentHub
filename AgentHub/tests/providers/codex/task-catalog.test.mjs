@@ -971,6 +971,35 @@ test("claudeCatalogEntry treats only a fresh incomplete transcript as running", 
   assert.equal(stale.running, false);
 });
 
+test("rollout activity classifies a subagent notification as an agent message", () => {
+  const turnId = "turn-subagent";
+  const notification = `<subagent_notification>\n${JSON.stringify({
+    agent_path: "child-terra",
+    status: { completed: "Готово от Terra" },
+  })}\n</subagent_notification>`;
+  const activity = parseCodexRolloutActivity([
+    JSON.stringify({ timestamp: "2026-08-14T10:00:00.000Z", type: "event_msg", payload: {
+      type: "task_started", turn_id: turnId,
+    } }),
+    JSON.stringify({ timestamp: "2026-08-14T10:00:01.000Z", type: "response_item", payload: {
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: notification }],
+      internal_chat_message_metadata_passthrough: { turn_id: turnId },
+    } }),
+  ].join("\n"));
+
+  assert.deepEqual(activity.userMessages[turnId], [{
+    itemId: `${turnId}:subagent:child-terra`,
+    role: "agent",
+    text: "Готово от Terra",
+    agentThreadId: "child-terra",
+    author: "Субагент (модель неизвестна)",
+    kind: "subagent",
+    model: "",
+  }]);
+});
+
 test("a stale promptless compaction turn is not exposed as a running task", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-promptless-turn-"));
   const rolloutPath = path.join(directory, "rollout.jsonl");

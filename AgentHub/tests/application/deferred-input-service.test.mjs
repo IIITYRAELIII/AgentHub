@@ -74,3 +74,29 @@ test("deferred Desktop input is persisted without a Telegram prompt", async () =
   assert.equal(result.item.messageId, undefined);
   assert.equal(notifications, 0);
 });
+
+test("deferred input service deduplicates a durable client message", async () => {
+  const store = new DeferredInputStore();
+  let persists = 0;
+  const service = new DeferredInputService({
+    store,
+    createId: () => "durable-message",
+    persist: async () => { persists += 1; },
+    removeFiles: async () => {},
+    notify: async () => null,
+  });
+  const options = {
+    target: { streamId: "stream-1", provider: "codex", threadId: "thread-1" },
+    clientUserMessageId: "client-message-1",
+    destination: "queued",
+    notify: false,
+  };
+
+  const first = await service.defer("message", [], options);
+  const duplicate = await service.defer("message", [], options);
+
+  assert.equal(duplicate.duplicate, true);
+  assert.equal(duplicate.id, first.id);
+  assert.equal(store.size, 1);
+  assert.equal(persists, 1);
+});

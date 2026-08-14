@@ -816,6 +816,25 @@ test("desktopRunSnapshot attributes a live inter-Stream message to its source ag
   assert.equal(snapshot.userMessages[0].author, "Agent HUB - Architect (Codex)");
 });
 
+test("desktopRunSnapshot preserves a subagent message role and model", () => {
+  const { desktopRunSnapshot, run } = fixture();
+  run.userMessages.push({
+    itemId: "subagent-terra",
+    role: "agent",
+    kind: "subagent",
+    author: "Субагент (Terra)",
+    agentThreadId: "child-terra",
+    model: "gpt-5.6-terra",
+    text: "Проверка завершена",
+  });
+
+  const message = desktopRunSnapshot(run).userMessages.at(-1);
+  assert.equal(message.role, "agent");
+  assert.equal(message.kind, "subagent");
+  assert.equal(message.author, "Субагент (Terra)");
+  assert.equal(message.model, "gpt-5.6-terra");
+});
+
 test("desktopSnapshot returns a compact marker before rebuilding an unchanged revision", async () => {
   const { desktopSnapshot, state } = fixture();
   const snapshot = await desktopSnapshot();

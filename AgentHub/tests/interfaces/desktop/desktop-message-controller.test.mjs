@@ -72,6 +72,7 @@ function controller(overrides = {}) {
     receipts: overrides.receipts ?? new MessageReceiptRegistry(),
     persistReceipts: overrides.persistReceipts ?? (async () => {}),
     runCoordinator,
+    durableIntake: overrides.durableIntake ?? false,
   });
 }
 
@@ -126,6 +127,35 @@ test("desktop message acknowledgement does not wait for a full snapshot", async 
   assert.equal(result.accepted, true);
   assert.equal(snapshotCalls, 0);
   assert.equal("snapshot" in result, false);
+});
+
+test("desktop message is durably queued before provider launch", async () => {
+  const scheduled = [];
+  const messages = controller({
+    durableIntake: true,
+    deferConflictingInput: async (_input, _attachments, options) => ({
+      id: "durable-queued",
+      item: { id: "durable-queued", destination: options.destination },
+    }),
+    scheduleQueuedInput: (item, delayMs) => scheduled.push({ item, delayMs }),
+    launchTurn: async () => new Promise(() => {}),
+  });
+
+  const result = await messages.sendMessage({
+    text: "принять сразу",
+    clientUserMessageId: "message-durable-intake",
+  });
+
+  assert.equal(result.accepted, true);
+  assert.equal(result.queued, true);
+  assert.equal(result.reason, "message-intake");
+  assert.equal(result.threadId, "thread-1");
+  assert.equal(result.runId, null);
+  assert.equal(result.turnId, null);
+  assert.deepEqual(scheduled, [{
+    item: { id: "durable-queued", destination: "queued" },
+    delayMs: 0,
+  }]);
 });
 
 test("desktop message controller forwards the complete long user message", async () => {

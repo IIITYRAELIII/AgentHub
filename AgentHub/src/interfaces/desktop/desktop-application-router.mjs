@@ -14,6 +14,10 @@ const MUTATION_ACTIONS = Object.freeze([
   "board-workspace-move",
 ]);
 
+const CONCURRENT_MUTATION_ACTIONS = Object.freeze([
+  "cancel-run", "deferred-input",
+]);
+
 function requiredFunction(value, name) {
   if (typeof value !== "function") throw new TypeError(`${name} is required`);
   return value;
@@ -107,6 +111,7 @@ export function createDesktopApplicationRouter({ handlers, commands, receiptFile
       "board-workspace-move": handlers.boardWorkspaceMove,
     },
     mutationActions: MUTATION_ACTIONS,
+    concurrentMutationActions: CONCURRENT_MUTATION_ACTIONS,
     miniAppLimits: {
       source: "telegram-mini-app",
       limit: 10,

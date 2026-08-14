@@ -12,6 +12,7 @@ export function createDesktopMessageController({
   receipts,
   persistReceipts,
   runCoordinator,
+  durableIntake = false,
 }) {
   if (!runCoordinator?.submitClientInput || !runCoordinator?.steer) {
     throw new TypeError("runCoordinator is required");
@@ -59,7 +60,10 @@ export function createDesktopMessageController({
     }
 
     const promise = (async () => {
-      const result = await runCoordinator.submitClientInput({
+      const submit = durableIntake && typeof runCoordinator.acceptClientInput === "function"
+        ? runCoordinator.acceptClientInput.bind(runCoordinator)
+        : runCoordinator.submitClientInput.bind(runCoordinator);
+      const result = await submit({
         input,
         attachments,
         target,

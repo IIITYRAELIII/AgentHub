@@ -76,7 +76,7 @@ const {
   focusedTurnAlreadyVisible,
   focusedTurnTaskThreadId,
   historyContainsLatestAnswer,
-  historicalAgentResponseVisible,
+  historicalMessagesForDisplay,
   hubErrorMessage,
   isConnectionFailure,
   liveCompletionTransition,
@@ -293,7 +293,7 @@ function deliveryPatch(stateName) {
     deferred: { deliveryState: "deferred", delivery: "Отложено", failed: false },
     queued: { deliveryState: "queued", delivery: "В очереди", failed: false },
     delivered: { deliveryState: "delivered", delivery: "", failed: false },
-    unconfirmed: { deliveryState: "unconfirmed", delivery: "Приём не подтверждён", failed: true },
+    unconfirmed: { deliveryState: "unconfirmed", delivery: "Статус приёма уточняется…", failed: false },
     rejected: { deliveryState: "rejected", delivery: "Не принято", failed: true },
   };
   return states[stateName] ?? states.unconfirmed;
@@ -1393,28 +1393,7 @@ function historyMessages(history, focusedTurn = null) {
     ? Number(history.start)
     : 0;
   for (const [itemIndex, item] of (history?.items ?? []).entries()) {
-    const itemMessages = Array.isArray(item.messages) ? item.messages : [];
-    const userMessages = itemMessages.filter((message) => message.role === "user");
-    const agentMessages = itemMessages.filter((message) => message.role === "agent");
-    const visibleAgent = historicalAgentResponseVisible(item)
-      ? agentMessages.findLast((message) => ["final", "final_answer", "finalAnswer"].includes(message.phase))
-        ?? agentMessages.at(-1)
-      : null;
-    const visible = [
-      ...(userMessages.length ? userMessages : item.prompt ? [{
-        itemId: `${item.id}:prompt`,
-        role: "user",
-        author: item.promptAuthor,
-        text: item.prompt,
-        responseAnnotations: item.promptAnnotations,
-        responseAnnotationRequest: item.promptRequest,
-      }] : []),
-      ...(visibleAgent ? [visibleAgent] : historicalAgentResponseVisible(item) && item.answer ? [{
-        itemId: `${item.id}:answer`,
-        role: "agent",
-        text: item.answer,
-      }] : []),
-    ];
+    const visible = historicalMessagesForDisplay(item);
     for (const [messageIndex, message] of visible.entries()) messages.push({
       id: `${history.provider}:${history.threadId}:${item.id}:${message.itemId}:${message.role}`,
       provider: history.provider,
@@ -1423,6 +1402,9 @@ function historyMessages(history, focusedTurn = null) {
       itemId: String(message.itemId ?? ""),
       clientUserMessageId: String(message.clientUserMessageId ?? ""),
       role: message.role,
+      ...(message.kind ? { kind: message.kind } : {}),
+      ...(message.agentThreadId ? { agentThreadId: message.agentThreadId } : {}),
+      ...(message.model ? { model: message.model } : {}),
       author: message.author || (
         message.role === "user"
           ? "Вы"
@@ -1433,8 +1415,8 @@ function historyMessages(history, focusedTurn = null) {
         responseAnnotations: message.responseAnnotations,
         responseAnnotationRequest: message.responseAnnotationRequest,
       } : {}),
-      activities: message.role === "agent" && item.completed ? (item.activities ?? []) : [],
-      activityGroups: message.role === "agent" && item.completed ? (item.activityGroups ?? []) : [],
+      activities: message.role === "agent" && message.kind !== "subagent" && item.completed ? (item.activities ?? []) : [],
+      activityGroups: message.role === "agent" && message.kind !== "subagent" && item.completed ? (item.activityGroups ?? []) : [],
       time: message.time ?? (message.role === "user" ? item.startedAt : item.completedAt) ?? null,
       historyOrder: (historyStart + itemIndex) * 1_000 + messageIndex,
       attachments: attachmentViews(message.attachments),
@@ -1454,6 +1436,9 @@ function historyMessages(history, focusedTurn = null) {
         turnId: focusedTurn.turnId,
         itemId,
         role: message.role,
+        ...(message.kind ? { kind: message.kind } : {}),
+        ...(message.agentThreadId ? { agentThreadId: message.agentThreadId } : {}),
+        ...(message.model ? { model: message.model } : {}),
         author: message.author || (
           message.role === "user"
             ? "Вы"
@@ -2134,12 +2119,12 @@ agentHub.on("task:archive", ({ id } = {}) => runAction(async () => applySnapshot
 agentHub.on("task:stop", ({ id } = {}) => runAction(async () => {
   const targetId = id || selectedTaskId;
   const target = targetId ? exactTaskParams(targetId) : exactSelectedTaskParams();
-  const result = await control("cancel-run", target);
   const queued = (lastSnapshot?.deferredInputs ?? []).filter((item) => (
     item.state === "queued"
     && taskId(item.provider, item.threadId, item.streamId) === targetId
   ));
   await Promise.all(queued.map((item) => control("deferred-input", { id: item.id, action: "pause" })));
+  const result = await control("cancel-run", target);
   applySnapshot(await control("snapshot"));
   agentHub.toast(queued.length
     ? `${result?.message ?? "Остановка запрошена"}. Очередь приостановлена.`

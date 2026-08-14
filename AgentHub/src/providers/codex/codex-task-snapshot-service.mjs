@@ -1,6 +1,7 @@
 import {
   codexExplicitFinalTurnAnswer,
   codexFinalTurnAnswer,
+  codexSubagentAuthor,
   codexTurnHasExplicitFinalAnswer,
 } from "../../application/task-history.mjs";
 import { codexTurnAnswer } from "./codex-turn-answers.mjs";
@@ -57,9 +58,10 @@ export function codexTurnSnapshot(turn, threadStatus = null) {
   const hasExplicitFinalAnswer = codexTurnHasExplicitFinalAnswer(turn);
   const waitingOnApproval = codexThreadWaitingOnApproval(threadStatus);
   const exchange = codexThreadHistory([turn]).at(-1);
-  const userMessages = (exchange?.messages ?? [])
-    .filter((message) => message.role === "user")
+  const turnMessages = (exchange?.messages ?? [])
+    .filter((message) => message.role === "user" || message.kind === "subagent")
     .map((message) => ({ ...message }));
+  const userMessages = turnMessages.filter((message) => message.role === "user");
   const prompt = exchange?.prompt ?? "";
   return {
     answer,
@@ -67,7 +69,7 @@ export function codexTurnSnapshot(turn, threadStatus = null) {
     reasoning: "",
     prompt,
     clientUserMessageId: userMessages[0]?.clientUserMessageId ?? null,
-    userMessages,
+    userMessages: turnMessages,
     activities: exchange?.activities ?? [],
     activityGroups: exchange?.activityGroups ?? [],
     startedAt: codexTurnStartedAt(turn),
@@ -88,6 +90,7 @@ export function codexTurnSnapshot(turn, threadStatus = null) {
 
 export class CodexTaskSnapshotService {
   #d;
+  #subagentAuthors = new Map();
 
   constructor(dependencies = {}) {
     for (const name of [
@@ -114,10 +117,10 @@ export class CodexTaskSnapshotService {
           rolloutPath,
           exact ? { freshnessMs: Number.POSITIVE_INFINITY } : {},
         );
-        const state = d.rolloutTurnState(activity, run.turnId, {
+        const state = await this.#hydrateSubagentMessages(d.rolloutTurnState(activity, run.turnId, {
           exact,
           threadActive: activity.running,
-        });
+        }));
         const capturedOwner = d.capturedOwner(run.threadId, state.turnId);
         const runtimeActive = !state.active || await d.runtimeActive(activity, {
           turnId: state.turnId, rolloutPath, agentHubPid: d.agentHubPid(), capturedOwner,
@@ -154,10 +157,10 @@ export class CodexTaskSnapshotService {
       exact ? { freshnessMs: Number.POSITIVE_INFINITY } : {},
     );
     if (!turns.length) {
-      const state = d.rolloutTurnState(activity, run.turnId, {
+      const state = await this.#hydrateSubagentMessages(d.rolloutTurnState(activity, run.turnId, {
         exact,
         threadActive: result.thread?.status?.type === "active",
-      });
+      }));
       const executionOwner = run?.observer === true
         ? await d.resolveOwner(activity, {
           turnId: state.turnId,
@@ -293,12 +296,13 @@ export class CodexTaskSnapshotService {
   }
 
   #rolloutSnapshot(state, activity, overrides) {
+    const rootUser = state.userMessages.find((message) => message?.role !== "agent");
     return {
       answer: overrides.active ? state.latestAnswer : state.finalAnswer,
       finalAnswer: state.finalAnswer,
       reasoning: "",
-      prompt: state.userMessages[0]?.text ?? "",
-      clientUserMessageId: state.userMessages[0]?.clientUserMessageId ?? null,
+      prompt: rootUser?.text ?? "",
+      clientUserMessageId: rootUser?.clientUserMessageId ?? null,
       userMessages: state.userMessages,
       activityGroups: structuredClone(activity.activityGroups?.[state.turnId] ?? []),
       startedAt: state.startedAt,
@@ -315,5 +319,37 @@ export class CodexTaskSnapshotService {
       reasoningEffort: activity.reasoningEffort,
       executionOwner: overrides.executionOwner,
     };
+  }
+
+  async #hydrateSubagentMessages(state) {
+    const messages = Array.isArray(state?.userMessages) ? state.userMessages : [];
+    const hydrated = await Promise.all(messages.map(async (message) => {
+      if (message?.kind !== "subagent"
+        || String(message.author ?? "") !== codexSubagentAuthor("")) {
+        return { ...message };
+      }
+      const threadId = String(message.agentThreadId ?? "").trim();
+      if (!threadId) return { ...message };
+      let author = this.#subagentAuthors.get(threadId);
+      let model = String(message.model ?? "").trim();
+      if (!author) {
+        try {
+          const rolloutPath = await this.#d.knownRolloutPath(threadId);
+          const activity = rolloutPath ? await this.#d.readRolloutActivity(rolloutPath) : null;
+          model ||= String(activity?.model ?? "").trim();
+          author = codexSubagentAuthor(model);
+          if (model) {
+            this.#subagentAuthors.set(threadId, author);
+            if (this.#subagentAuthors.size > 200) {
+              this.#subagentAuthors.delete(this.#subagentAuthors.keys().next().value);
+            }
+          }
+        } catch {
+          author = codexSubagentAuthor("");
+        }
+      }
+      return { ...message, author: author || codexSubagentAuthor(""), ...(model ? { model } : {}) };
+    }));
+    return { ...state, userMessages: hydrated };
   }
 }

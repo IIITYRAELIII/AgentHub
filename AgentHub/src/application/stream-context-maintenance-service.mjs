@@ -82,6 +82,11 @@ export class StreamContextMaintenanceService {
     let queueTarget = run;
     let compactionId = null;
     try {
+      if (await this.provider.waitForContextProbeIdle?.(run, run.turnId, {
+        timeoutMs: 5_000,
+      }) === false) {
+        return { compacted: false, deferred: true, reason: "turn-still-active" };
+      }
       if (reservation.reason === "automatic-post-turn-rotation") {
         const compaction = this.#completedTurnCompaction(run);
         if (!compaction) throw new Error("Завершённая свёртка текущего хода больше недоступна");

@@ -354,6 +354,22 @@ test("task view keeps message order, authors and message-specific attachments", 
   ]);
 });
 
+test("active task view keeps a completed subagent report", () => {
+  const messages = taskViewMessages({
+    messages: [
+      { role: "user", text: "Проверь" },
+      { role: "agent", text: "Промежуточный ответ" },
+      { role: "agent", kind: "subagent", author: "Субагент (Sol)", text: "Отчёт Sol" },
+    ],
+  }, { includeAgent: false });
+
+  assert.deepEqual(messages.map(({ role, author, text }) => ({ role, author, text })), [{
+    role: "user", author: undefined, text: "Проверь",
+  }, {
+    role: "agent", author: "Субагент (Sol)", text: "Отчёт Sol",
+  }]);
+});
+
 test("task view renders every message and ignores a stale completed registry run", async () => {
   const sent = [];
   const view = controller({

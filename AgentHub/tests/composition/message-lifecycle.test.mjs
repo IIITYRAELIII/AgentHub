@@ -98,6 +98,31 @@ test("message delivery keeps the stable Stream identity when a Thread binding is
   );
 });
 
+test("completed history keeps every subagent result before the parent final", () => {
+  const visible = lifecycle.historicalMessagesForDisplay({
+    id: "turn-1",
+    completed: true,
+    messages: [
+      { role: "user", text: "Проверь" },
+      { role: "agent", kind: "subagent", author: "Субагент (Terra)", text: "Первый отчёт" },
+      { role: "agent", kind: "subagent", author: "Субагент (Sol)", text: "Второй отчёт" },
+      { role: "agent", phase: "final_answer", text: "Общий итог" },
+    ],
+  });
+  assert.deepEqual(Array.from(visible, (message) => message.text), [
+    "Проверь", "Первый отчёт", "Второй отчёт", "Общий итог",
+  ]);
+  const identified = visible.map((message) => ({
+    ...message,
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "turn-1",
+  }));
+  assert.equal(lifecycle.visibleConversationMessages(identified, {
+    liveProbe: { provider: "codex", threadId: "thread-1", turnId: "turn-1", role: "agent" },
+  }).some((message) => message.kind === "subagent"), true);
+});
+
 test("desktop running state ignores a retained completed run object", () => {
   assert.match(
     hubClientSource,

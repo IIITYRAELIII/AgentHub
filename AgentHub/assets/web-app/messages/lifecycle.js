@@ -594,7 +594,8 @@ function visibleConversationMessages(messages, {
   // response gets its stable item id. While that turn is active, the live card
   // is the single renderer for every agent fragment from the exact same turn.
   return visible.filter(
-    (message) => identityKey(message, { withoutItem: true }) !== liveTurnRole,
+    (message) => message?.kind === "subagent"
+      || identityKey(message, { withoutItem: true }) !== liveTurnRole,
   );
 }
 
@@ -622,21 +623,27 @@ function mergeLiveUserMessages(messages, {
   for (const [index, message] of live.entries()) {
     const text = String(message?.text ?? "").trim();
     if (!provider || !threadId || !turnId || !text) continue;
-    const turnUserSlot = liveTurnUserSlot(message, index, { prompt, clientUserMessageId });
+    const role = message?.role === "agent" && message?.kind === "subagent" ? "agent" : "user";
+    const turnUserSlot = role === "user"
+      ? liveTurnUserSlot(message, index, { prompt, clientUserMessageId })
+      : "";
     const author = String(message?.author ?? "").trim()
-      || (turnUserSlot === "root" ? String(promptAuthor ?? "").trim() : "")
+      || (role === "agent" ? "Субагент (модель неизвестна)" : turnUserSlot === "root" ? String(promptAuthor ?? "").trim() : "")
       || "Вы";
     const candidate = {
-      id: `${provider}:${threadId}:${turnId}:${message.itemId || `live-user-${index}`}:user`,
+      id: `${provider}:${threadId}:${turnId}:${message.itemId || `live-${role}-${index}`}:${role}`,
       provider,
       threadId,
       turnId,
-      itemId: String(message.itemId ?? `live-user-${index}`),
+      itemId: String(message.itemId ?? `live-${role}-${index}`),
       clientUserMessageId: String(message.clientUserMessageId ?? ""),
       turnUserSlot,
-      role: "user",
+      role,
       author,
       text,
+      ...(message?.kind ? { kind: String(message.kind) } : {}),
+      ...(message?.agentThreadId ? { agentThreadId: String(message.agentThreadId) } : {}),
+      ...(message?.model ? { model: String(message.model) } : {}),
       ...(Array.isArray(message.responseAnnotations) ? {
         responseAnnotations: message.responseAnnotations.map((item) => ({ ...item })),
         responseAnnotationRequest: String(message.responseAnnotationRequest ?? ""),
@@ -644,14 +651,14 @@ function mergeLiveUserMessages(messages, {
       time: message.time ?? time ?? null,
       attachments: Array.isArray(message.attachments) && message.attachments.length
         ? message.attachments.map((attachment) => ({ ...attachment }))
-        : turnUserSlot === "root"
+        : role === "user" && turnUserSlot === "root"
           ? attachments.map((attachment) => ({ ...attachment }))
           : [],
     };
     const clientKey = clientIdentityKey(candidate);
     const itemKey = identityKey(candidate);
     const sameTurnUsers = values.filter((existing) => (
-      existing?.role === "user"
+      existing?.role === role
       && String(existing?.provider ?? "") === provider
       && String(existing?.threadId ?? "") === threadId
       && String(existing?.turnId ?? "") === turnId
@@ -661,6 +668,7 @@ function mergeLiveUserMessages(messages, {
       || (itemKey && identityKey(existing) === itemKey)
     ));
     const fallbackDuplicateIndex = duplicateIndex < 0
+      && role === "user"
       && turnUserSlot === "root"
       && sameTurnUsers.length > 0
       ? values.indexOf(sameTurnUsers[0])
@@ -831,6 +839,34 @@ function historicalAgentResponseVisible(turn) {
   return turn?.completed === true || turn?.active !== true;
 }
 
+function historicalMessagesForDisplay(item) {
+  const messages = Array.isArray(item?.messages) ? item.messages : [];
+  const parentAgents = messages.filter((message) => message?.role === "agent" && message?.kind !== "subagent");
+  const visibleAgent = historicalAgentResponseVisible(item)
+    ? parentAgents.findLast((message) => ["final", "final_answer", "finalAnswer"].includes(message.phase))
+      ?? parentAgents.at(-1)
+    : null;
+  const visible = messages.filter((message) => (
+    message?.role === "user"
+    || message?.kind === "subagent"
+    || message === visibleAgent
+  ));
+  if (!visible.some((message) => message?.role === "user") && String(item?.prompt ?? "").trim()) {
+    visible.unshift({
+      itemId: `${item.id}:prompt`,
+      role: "user",
+      author: item.promptAuthor,
+      text: item.prompt,
+      responseAnnotations: item.promptAnnotations,
+      responseAnnotationRequest: item.promptRequest,
+    });
+  }
+  if (!visibleAgent && historicalAgentResponseVisible(item) && String(item?.answer ?? "").trim()) {
+    visible.push({ itemId: `${item.id}:answer`, role: "agent", text: item.answer });
+  }
+  return visible;
+}
+
 function activeStageLabel(stage) {
   const value = String(stage ?? "").trim();
   if (!value) return "Ход выполняется";
@@ -926,6 +962,7 @@ globalThis.AgentHubMessageLifecycle = Object.freeze({
   focusedTurnTaskThreadId,
   historyContainsLatestAnswer,
   historicalAgentResponseVisible,
+  historicalMessagesForDisplay,
   liveCompletionTransition,
   liveMessageMatch,
   markCommandRejected,

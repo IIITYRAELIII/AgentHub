@@ -213,6 +213,7 @@ export class RunCoordinator {
     executionOwner,
     clientUserMessageId,
     reason = "task-running",
+    scheduleDelayMs = 500,
   }) {
     const deferred = await this.deferInput(input, attachments, {
       executionOwner,
@@ -223,15 +224,20 @@ export class RunCoordinator {
       notify: false,
       persistentFiles: attachments.length > 0,
     });
-    this.scheduleDeferred(deferred.item, 500);
+    this.scheduleDeferred(deferred.item, scheduleDelayMs);
     return {
-      accepted: false,
+      accepted: reason === "message-intake",
       deferred: true,
       queued: true,
       id: deferred.id,
+      runId: null,
+      threadId: target.threadId,
+      turnId: null,
       clientUserMessageId,
       reason,
-      message: reason === "steer-unavailable"
+      message: reason === "message-intake"
+        ? "Сообщение принято Hub, сохранено и передано на запуск."
+        : reason === "steer-unavailable"
         ? "Текущий ход уже нельзя изменить; сообщение сохранено в очереди."
         : reason === "context-maintenance"
           ? "Сообщение поставлено в очередь до завершения свёртки или ротации контекста."
@@ -239,6 +245,19 @@ export class RunCoordinator {
             ? "Codex ещё завершает предыдущий ход; сообщение сохранено в очереди."
             : "Сообщение поставлено в очередь и будет отправлено после текущего хода.",
     };
+  }
+
+  acceptClientInput(request) {
+    if (String(request?.followUpMode ?? "").trim().toLowerCase() === "steer") {
+      return this.submitClientInput(request);
+    }
+    return this.queue(request.input, request.attachments ?? [], {
+      target: request.target,
+      executionOwner: TASK_EXECUTION_OWNERS.HUB,
+      clientUserMessageId: request.clientUserMessageId,
+      reason: "message-intake",
+      scheduleDelayMs: 0,
+    });
   }
 
   steer(request) {

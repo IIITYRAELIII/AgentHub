@@ -221,6 +221,7 @@ function escapeHtml(value) {
 
 function renderThemeHtml(html, registry, {
   resourceUrl = (pathname) => pathname,
+  styleContent = null,
   nonce = "",
   revision = () => "",
 } = {}) {
@@ -228,8 +229,14 @@ function renderThemeHtml(html, registry, {
     const suffix = revision(pathname);
     return resourceUrl(suffix ? `${pathname}?v=${suffix}` : pathname);
   };
+  const nonceAttribute = nonce ? ` nonce="${escapeHtml(nonce)}"` : "";
   const styles = registry.themes.flatMap((theme) => theme.styles.map((file) => {
     const pathname = `/themes/${theme.id}/${file}`;
+    const content = typeof styleContent === "function" ? styleContent(pathname) : null;
+    if (content != null) {
+      const safeContent = String(content).replaceAll("</style", "<\\/style");
+      return `  <style data-agent-hub-theme="${escapeHtml(theme.id)}"${nonceAttribute}>${safeContent}</style>`;
+    }
     return `  <link rel="stylesheet" href="${escapeHtml(link(pathname))}">`;
   })).join("\n");
   const scripts = registry.themes.flatMap((theme) => theme.scripts.map((file) => {
@@ -240,7 +247,6 @@ function renderThemeHtml(html, registry, {
     fs.readFileSync(path.join(theme.directory, ...file.split("/")), "utf8").trim()
   ))).filter(Boolean).join("\n");
   const catalog = JSON.stringify(publicThemeCatalog(registry, link)).replaceAll("<", "\\u003c");
-  const nonceAttribute = nonce ? ` nonce="${escapeHtml(nonce)}"` : "";
   const options = registry.themes.map((theme) => (
     `<option value="${escapeHtml(theme.id)}">${escapeHtml(theme.name)}</option>`
   )).join("\n              ");

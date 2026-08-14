@@ -83,6 +83,7 @@ export function createDesktopRunRouterWiring({
       resolveTarget: desktop.messageTarget,
       receipts: services.receipts,
       persistReceipts: services.saveState,
+      durableIntake: true,
     },
     desktopDeferredInput: {
       pendingInputs: services.pendingInputs,

@@ -35,6 +35,16 @@ export class DeferredInputService {
   } = {}) {
     const d = this.#d;
     if (!target?.provider) throw new Error("deferred input target requires provider");
+    const normalizedClientUserMessageId = String(clientUserMessageId ?? "").trim() || null;
+    const existing = normalizedClientUserMessageId && typeof d.store.values === "function"
+      ? d.store.values().find((item) => (
+        String(item.clientUserMessageId ?? "").trim() === normalizedClientUserMessageId
+        && String(item.provider ?? "").trim().toLowerCase() === String(target.provider ?? "").trim().toLowerCase()
+        && String(item.threadId ?? "").trim() === String(target.threadId ?? "").trim()
+        && String(item.streamId ?? "").trim() === String(target.streamId ?? "").trim()
+      ))
+      : null;
+    if (existing) return { deferred: true, id: existing.id, item: existing, duplicate: true };
     if (d.store.size >= d.maxItems) {
       await d.removeFiles(temporaryFiles);
       throw new Error("очередь сохранённых сообщений переполнена; сначала обработайте или отмените старые сообщения");
@@ -56,7 +66,7 @@ export class DeferredInputService {
       forceSpeechButton,
       allowForce,
       conflictKind,
-      clientUserMessageId: String(clientUserMessageId ?? "").trim() || null,
+      clientUserMessageId: normalizedClientUserMessageId,
       telegramDeliveryRequested: target.telegramDeliveryRequested !== false,
       clientSource: String(target.clientSource ?? "telegram").trim() || "telegram",
       createdAt: new Date(d.now()).toISOString(),

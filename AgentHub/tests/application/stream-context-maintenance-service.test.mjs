@@ -23,6 +23,7 @@ function fixture({
   observedCompaction = false,
   observedAfterPercent = null,
   observedMeasurementStatus = "",
+  sourceIdle = true,
 } = {}) {
   const events = [];
   const registry = new StreamMaintenanceRegistry();
@@ -94,7 +95,7 @@ function fixture({
     },
     waitForContextProbeIdle: async (...args) => {
       events.push(["probe-idle", ...args, registry.isActive(source)]);
-      return true;
+      return args[1] === source.turnId ? sourceIdle : true;
     },
     rotate: async () => ({ thread: { id: "thread-new" } }),
     rotateCompacted: async (...args) => {
@@ -186,6 +187,21 @@ test("post-turn automation ignores non-terminal observation cleanup", () => {
   assert.equal(state.registry.isActive(state.source), false);
 });
 
+test("post-turn automation waits for the completed writer to become idle", async () => {
+  const state = fixture({ beforePercent: 90, sourceIdle: false });
+  state.service.reserveAfterTurn(state.source);
+
+  const result = await state.service.maintainAfterTurn(state.source);
+
+  assert.deepEqual(result, {
+    compacted: false,
+    deferred: true,
+    reason: "turn-still-active",
+  });
+  assert.equal(state.events.some(([name]) => name === "compact"), false);
+  assert.equal(state.registry.isActive(state.source), false);
+});
+
 test("post-turn automation does not compact at the exact threshold", async () => {
   const state = fixture({ beforePercent: 75 });
   assert.equal(state.service.reserveAfterTurn(state.source), true);
@@ -226,7 +242,9 @@ test("post-turn automation probes once when compaction usage is provisional", as
   assert.equal(state.events.filter(([name]) => name === "probe").length, 1);
   assert.equal(state.events.find(([name]) => name === "probe").at(-1), true);
   assert.equal(state.events.filter(([name]) => name === "turn-completed").length, 1);
-  assert.equal(state.events.find(([name]) => name === "probe-idle").at(-1), true);
+  assert.equal(state.events.find(([name, _target, turnId]) => (
+    name === "probe-idle" && turnId === "probe-1"
+  )).at(-1), true);
   assert.equal(
     state.events.filter(([name]) => name === "usage").at(-1).at(-1).turnId,
     "probe-1",

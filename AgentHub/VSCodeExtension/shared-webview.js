@@ -38,6 +38,34 @@ function resource(webview, uri) {
   return uri ? String(webview.asWebviewUri(uri)) : "";
 }
 
+function rewriteThemeCssUrls(css, stylesheetPathname, themeRegistry, webview) {
+  const base = path.posix.dirname(stylesheetPathname);
+  return String(css).replace(/url\(\s*(["']?)([^"'()]+)\1\s*\)/giu, (match, _quote, rawValue) => {
+    const value = String(rawValue).trim();
+    if (!value || /^(?:data:|blob:|https?:|#)/iu.test(value)) return match;
+    const [rawPathname, suffix = ""] = value.split(/(?=[?#])/u, 2);
+    const pathname = rawPathname.startsWith("/")
+      ? path.posix.normalize(rawPathname)
+      : path.posix.resolve(base, rawPathname);
+    const item = themeRegistry.resources.get(pathname);
+    if (!item) throw new Error(`Не найден ресурс темы Agent Hub: ${value}`);
+    return `url("${resource(webview, vscode.Uri.file(item.file))}${suffix}")`;
+  });
+}
+
+async function themeStyleContent(themeRegistry, webview) {
+  const entries = await Promise.all(themeRegistry.themes.flatMap((theme) => (
+    theme.styles.map(async (file) => {
+      const pathname = `/themes/${theme.id}/${file}`;
+      const item = themeRegistry.resources.get(pathname);
+      if (!item) throw new Error(`Не найден стиль темы Agent Hub: ${pathname}`);
+      const css = Buffer.from(await vscode.workspace.fs.readFile(vscode.Uri.file(item.file))).toString("utf8");
+      return [pathname, rewriteThemeCssUrls(css, pathname, themeRegistry, webview)];
+    })
+  )));
+  return new Map(entries);
+}
+
 async function rewriteRuntimeAssetReferences(html, webview, runtimeUri, clientAssets) {
   const references = clientAssets.localAssetReferences(html);
   const entries = await Promise.all(references.map(async (reference) => {
@@ -59,9 +87,11 @@ async function sharedWebviewHtml(webview, locations) {
   const themeResourceUrls = new Map([...themeRegistry.resources].map(([pathname, item]) => (
     [pathname, resource(webview, vscode.Uri.file(item.file))]
   )));
+  const themeStyles = await themeStyleContent(themeRegistry, webview);
   html = renderThemeHtml(html, themeRegistry, {
     nonce,
     resourceUrl: (pathname) => themeResourceUrls.get(pathname) ?? pathname,
+    styleContent: (pathname) => themeStyles.get(pathname),
   });
   html = html
     .replace(/<script\b[^>]*\bsrc="https:\/\/telegram\.org\/[^"]+"[^>]*><\/script>\s*/iu, "")
@@ -77,7 +107,7 @@ async function sharedWebviewHtml(webview, locations) {
   const csp = [
     "default-src 'none'",
     `img-src ${webview.cspSource} data: blob:`,
-    `style-src ${webview.cspSource}`,
+    `style-src ${webview.cspSource} 'nonce-${nonce}'`,
     `script-src ${webview.cspSource} 'nonce-${nonce}'`,
     "connect-src 'none'",
     "font-src 'none'",

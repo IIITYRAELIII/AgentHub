@@ -295,7 +295,8 @@ export function taskViewMessages(exchange, { includeAgent = true } = {}) {
       ? message.attachments.map((attachment) => ({ ...attachment }))
       : [];
     const text = String(message?.text ?? "").trim();
-    if (!["user", "agent"].includes(role) || (role === "agent" && !includeAgent)) return [];
+    if (!["user", "agent"].includes(role)
+      || (role === "agent" && !includeAgent && message?.kind !== "subagent")) return [];
     if (!text && !attachments.length) return [];
     return [{
       ...message,
@@ -625,7 +626,7 @@ export class TaskViewController {
           task,
           user
             ? `👤 ${author || "Вы"}`
-            : binding.provider === "claude" ? "🤖 Claude" : "🤖 Codex",
+            : `🤖 ${author || (binding.provider === "claude" ? "Claude" : "Codex")}`,
           message.text,
           user ? "task-view-user" : "task-view-assistant",
           message.attachments,
