@@ -91,6 +91,11 @@ export class DeferredInputController {
       if (!this.pendingInputs.has(oldest?.id)) this.schedule(item);
       return;
     }
+    if (item.waitReason === "provider-thread-active" && item.recheckRequested !== true) {
+      await this.pauseForActiveWriter(item);
+      return;
+    }
+    delete item.recheckRequested;
     this.processing.add(id);
     try {
       const createdAt = Date.parse(String(item.createdAt ?? ""));
@@ -117,9 +122,18 @@ export class DeferredInputController {
         await this.persist();
       }
       if (await this.isBlocked(item)) {
-        this.schedule(item);
+        if (item.waitReason === "provider-thread-active") {
+          await this.pauseForActiveWriter(item);
+          return;
+        }
+        item.blockedChecks = Number(item.blockedChecks ?? 0) + 1;
+        this.schedule(item, Math.min(
+          this.maxRetryDelayMs,
+          this.retryDelayMs * (2 ** Math.min(item.blockedChecks - 1, 4)),
+        ));
         return;
       }
+      delete item.blockedChecks;
       // Keep the input durable while launch is in progress, but expose the
       // transition so clients no longer render it as waiting in the queue.
       item.dispatchingAt = new Date(this.now()).toISOString();
@@ -136,14 +150,19 @@ export class DeferredInputController {
         if (retryable) {
           delete item.lastError;
           item.waitReason = deferredLaunchWaitReason(error) ?? "provider-temporarily-unavailable";
+          if (item.waitReason === "provider-thread-active") {
+            item.paused = true;
+            delete item.blockedChecks;
+            this.onStateChange(item, "paused", error);
+            await this.persist();
+            return;
+          }
           this.onStateChange(item, "retrying", error);
           await this.persist();
-          const retryDelay = item.waitReason === "provider-thread-active"
-            ? this.maxRetryDelayMs
-            : Math.min(
-              this.maxRetryDelayMs,
-              this.retryDelayMs * (2 ** Math.min(item.attempts - 1, 4)),
-            );
+          const retryDelay = Math.min(
+            this.maxRetryDelayMs,
+            this.retryDelayMs * (2 ** Math.min(item.attempts - 1, 4)),
+          );
           this.schedule(item, retryDelay);
           return;
         }
@@ -166,6 +185,7 @@ export class DeferredInputController {
       delete item.lastError;
       delete item.lastAttemptAt;
       delete item.waitReason;
+      delete item.blockedChecks;
       this.onStateChange(item, "started", started);
       await this.persist();
       await this.updateMessage(item, `▶️ Сообщение из очереди отправлено в задачу «${item.taskTitle}».`);
@@ -173,6 +193,16 @@ export class DeferredInputController {
     } finally {
       this.processing.delete(id);
     }
+  }
+
+  async pauseForActiveWriter(item) {
+    this.cancelSchedule(item.id);
+    item.paused = true;
+    delete item.dispatchingAt;
+    delete item.recheckRequested;
+    delete item.blockedChecks;
+    this.onStateChange(item, "paused");
+    await this.persist();
   }
 
   taskKey(item) {

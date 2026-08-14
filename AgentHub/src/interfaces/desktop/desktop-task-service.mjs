@@ -74,8 +74,14 @@ export class DesktopTaskService {
 
   async resolveTarget(params, context = null) {
     const reference = normalizedTaskReference(params);
-    const entries = await this.refreshCatalog();
-    const entry = entries.find((candidate) => entryMatchesReference(candidate, reference));
+    let entry = this.#find(params);
+    if (!entry) {
+      entry = this.#find(params, await this.refreshCatalog());
+    } else {
+      void this.refreshCatalog().catch((error) => {
+        this.warn(`Cannot refresh task catalog after message intake: ${error.message}`);
+      });
+    }
     if (!entry) throw new Error("Задача сообщения больше не существует в локальном каталоге");
     return {
       streamId: entry.streamId ?? null,

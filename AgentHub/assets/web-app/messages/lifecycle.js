@@ -931,6 +931,7 @@ function looksLikeConnectionFailure(error) {
   return ["ECONNREFUSED", "ECONNRESET", "ENOENT", "EPIPE"].includes(code)
     || /\b(?:ECONNREFUSED|ECONNRESET|ENOENT|EPIPE)\b[\s\S]*agent-hub-desktop-/iu.test(message)
     || /Agent Hub (?:в VS Code )?не ответил вовремя/iu.test(message)
+    || /Desktop control request timed out/iu.test(message)
     || /Desktop control connection closed without a response/iu.test(message);
 }
 

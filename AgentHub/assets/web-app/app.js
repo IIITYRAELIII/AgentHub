@@ -4516,12 +4516,24 @@ function renderQueueForTask(taskId, container) {
         text: "Изменить",
       }));
       if (["queued", "paused"].includes(entry.state)) {
+        if (entry.waitReason === "provider-thread-active") {
+          actions.push(el("button", {
+            type: "button",
+            class: "queue-new",
+            "data-action": "queue-new",
+            "data-queue-id": entry.id,
+            title: "Создать новую задачу и отправить сообщение туда",
+            text: "В новую задачу",
+          }));
+        }
         actions.push(el("button", {
           type: "button",
           class: "queue-pause",
           "data-action": entry.state === "paused" ? "queue-resume" : "queue-pause",
           "data-queue-id": entry.id,
-          text: entry.state === "paused" ? "Продолжить" : "Пауза",
+          text: entry.state === "paused"
+            ? entry.waitReason === "provider-thread-active" ? "Проверить снова" : "Продолжить"
+            : "Пауза",
         }));
       }
       if (entry.state === "pending") {
@@ -4550,7 +4562,7 @@ function renderQueueForTask(taskId, container) {
       entry.author ? el("strong", { class: "queue-author", text: entry.author }) : null,
       visibleText ? el("div", { class: "queue-text", text: visibleText }) : null,
       entry.waitReason === "provider-thread-active"
-        ? el("div", { class: "queue-status", text: "Задача занята другим Codex; сообщение сохранено и ждёт освобождения." })
+        ? el("div", { class: "queue-status", text: "Thread удерживается другим Codex. Автоповторы остановлены; проверьте снова после закрытия задачи или отправьте сообщение в новую." })
         : entry.waitReason === "provider-temporarily-unavailable"
           ? el("div", { class: "queue-status", text: "Связь с Codex временно недоступна; сообщение сохранено и будет отправлено автоматически." })
           : null,
@@ -6237,6 +6249,9 @@ async function handleAction(action, trigger) {
       break;
     case "queue-resume":
       emit("queue:resume", { taskId, id: trigger.dataset.queueId });
+      break;
+    case "queue-new":
+      emit("queue:new", { taskId, id: trigger.dataset.queueId });
       break;
     case "queue-retry":
       emit("queue:retry", { taskId, id: trigger.dataset.queueId });

@@ -92,7 +92,7 @@ export class DesktopDeferredInputService {
       item.paused = true;
       delete item.dispatchingAt;
       delete item.lastError;
-      delete item.waitReason;
+      delete item.recheckRequested;
       await d.saveState();
       return { accepted: true, id, message: "Сообщение в очереди приостановлено" };
     }
@@ -100,10 +100,16 @@ export class DesktopDeferredInputService {
       if (!d.queuedInputs.has(id)) throw new Error("Сообщение не находится в очереди");
       delete item.paused;
       delete item.lastError;
-      delete item.waitReason;
+      if (item.waitReason === "provider-thread-active") item.recheckRequested = true;
       await d.saveState();
       d.scheduleQueued(item, 0);
-      return { accepted: true, id, message: "Очередь возобновлена" };
+      return {
+        accepted: true,
+        id,
+        message: item.waitReason === "provider-thread-active"
+          ? "Повторная проверка занятости запущена"
+          : "Очередь возобновлена",
+      };
     }
     if (action === "steer") {
       if (item.dispatchingAt || d.isProcessing(id)) {
@@ -162,8 +168,51 @@ export class DesktopDeferredInputService {
       d.scheduleQueued(item, 500);
       return { accepted: true, message: "Сообщение поставлено в очередь" };
     }
-    if (!d.pendingInputs.has(id)) throw new Error("Сообщение уже находится в очереди");
     const binding = this.#binding(item);
+    if (action === "new") {
+      if (item.dispatchingAt || d.isProcessing(id)) {
+        throw new Error("Сообщение уже отправляется и не может быть перенесено");
+      }
+      const destination = d.queuedInputs.has(id) ? "queued" : "pending";
+      d.cancelSchedule(id);
+      d.pendingInputs.delete(id);
+      d.queuedInputs.delete(id);
+      item.manualAction = "new";
+      delete item.paused;
+      delete item.recheckRequested;
+      d.pendingInputs.set(id, item);
+      await d.saveState();
+      try {
+        await d.selectTask(binding, d.clientContext(context, "desktop"));
+        await d.dispatchCommand("task.create", { provider: binding.provider }, d.clientContext(context, "desktop"));
+        const outcome = await d.startTurn(item.input, item.temporaryFiles ?? [], {
+          forceSpeechButton: item.forceSpeechButton === true,
+          persistentFiles: item.persistentFiles === true,
+          telegramDeliveryRequested: false,
+        });
+        if (outcome?.deferred) throw new Error("Новая задача неожиданно оказалась занята");
+        const startedRun = d.runForTask(d.selectedTask());
+        if (startedRun && item.persistentFiles) {
+          startedRun.messageAttachments = d.describeAttachments(item.temporaryFiles);
+        }
+        d.pendingInputs.delete(id);
+        delete item.manualAction;
+        delete item.waitReason;
+        d.updateReceipt(item, "started", startedRun);
+        await d.saveState();
+        await d.updateMessage(item, `🆕 Сообщение отправлено в новую задачу «${d.activeTitle()}».`);
+        d.scheduleNext(item);
+        return { accepted: true, message: "Сообщение отправлено в новую задачу", snapshot: await d.snapshot() };
+      } catch (error) {
+        d.pendingInputs.delete(id);
+        delete item.manualAction;
+        (destination === "queued" ? d.queuedInputs : d.pendingInputs).set(id, item);
+        await d.saveState();
+        if (destination === "queued") d.scheduleQueued(item, 500);
+        throw error;
+      }
+    }
+    if (!d.pendingInputs.has(id)) throw new Error("Сообщение уже находится в очереди");
     if (action === "force") {
       if (item.allowForce !== true) throw new Error("Принудительный запуск для этого сообщения не разрешён");
       await d.selectTask(binding, d.clientContext(context, "desktop"));
@@ -187,24 +236,6 @@ export class DesktopDeferredInputService {
       await d.updateMessage(item, `⚠️ Сообщение отправлено в задачу «${item.taskTitle}».`);
       d.scheduleNext(item);
       return { accepted: true, message: "Сообщение принудительно запущено" };
-    }
-    if (action === "new") {
-      await d.selectTask(binding, d.clientContext(context, "desktop"));
-      await d.dispatchCommand("task.create", { provider: binding.provider }, d.clientContext(context, "desktop"));
-      const outcome = await d.startTurn(item.input, item.temporaryFiles ?? [], {
-        forceSpeechButton: item.forceSpeechButton === true,
-        persistentFiles: item.persistentFiles === true,
-        telegramDeliveryRequested: false,
-      });
-      if (outcome?.deferred) throw new Error("Новая задача неожиданно оказалась занята");
-      const startedRun = d.runForTask(d.selectedTask());
-      if (startedRun && item.persistentFiles) startedRun.messageAttachments = d.describeAttachments(item.temporaryFiles);
-      d.pendingInputs.delete(id);
-      d.updateReceipt(item, "started", startedRun);
-      await d.saveState();
-      await d.updateMessage(item, `🆕 Сообщение отправлено в новую задачу «${d.activeTitle()}».`);
-      d.scheduleNext(item);
-      return { accepted: true, message: "Сообщение отправлено в новую задачу", snapshot: await d.snapshot() };
     }
     throw new Error("Неизвестное действие с сохранённым сообщением");
   }

@@ -172,7 +172,7 @@ test("DeferredInputController retries a transient app-server failure without los
   );
 });
 
-test("DeferredInputController treats an active writer as a quiet wait", async () => {
+test("DeferredInputController pauses an active writer instead of retrying forever", async () => {
   const state = fixture({
     start: async () => { throw new Error("thread thread-1 already has an active writer"); },
   });
@@ -183,8 +183,27 @@ test("DeferredInputController treats an active writer as a quiet wait", async ()
 
   assert.equal(item.waitReason, "provider-thread-active");
   assert.equal(item.lastError, undefined);
-  assert.equal(state.timers.at(-1).delay, 30_000);
-  assert.deepEqual(state.transitions.map((entry) => entry.state), ["dispatching", "retrying"]);
+  assert.equal(item.paused, true);
+  assert.equal(state.timers.length, 0);
+  assert.deepEqual(state.transitions.map((entry) => entry.state), ["dispatching", "paused"]);
+});
+
+test("DeferredInputController pauses a restored active-writer item before another provider call", async () => {
+  let starts = 0;
+  const state = fixture({ start: async () => { starts += 1; } });
+  const item = {
+    id: "restored",
+    provider: "codex",
+    threadId: "thread-1",
+    waitReason: "provider-thread-active",
+  };
+  state.queuedInputs.set(item.id, item);
+
+  await state.controller.process(item.id);
+
+  assert.equal(starts, 0);
+  assert.equal(item.paused, true);
+  assert.deepEqual(state.transitions.map((entry) => entry.state), ["paused"]);
 });
 
 test("DeferredInputController retains a message when Codex acknowledges a phantom turn", async () => {

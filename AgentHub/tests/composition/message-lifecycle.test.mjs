@@ -88,6 +88,7 @@ test("message delivery distinguishes a server rejection from an unconfirmed tran
   const rejected = lifecycle.markCommandRejected(new Error("Укажите корректную задачу"));
   assert.equal(lifecycle.messageSendDefinitelyRejected(rejected), true);
   assert.equal(lifecycle.messageSendDefinitelyRejected(new Error("Agent Hub не ответил вовремя")), false);
+  assert.equal(lifecycle.looksLikeConnectionFailure(new Error("Desktop control request timed out")), true);
   assert.equal(rejected.agentHubCommandRejected, true);
 });
 

@@ -2373,6 +2373,16 @@ agentHub.on("queue:steer", ({ id, taskId: taskIdValue }) => runAction(() => runQ
   }
   agentHub.toast(result?.message ?? "Сообщение добавлено в текущий ход");
 })));
+agentHub.on("queue:new", ({ id, taskId: taskIdValue }) => runAction(() => runQueueAction(
+  id,
+  taskIdValue,
+  async () => {
+    const result = await control("deferred-input", { id, action: "new" });
+    if (result?.snapshot) applySnapshot(result.snapshot);
+    agentHub.toast(result?.message ?? "Сообщение отправлено в новую задачу");
+    return result;
+  },
+)));
 agentHub.on("queue:edit", ({ id, text }) => runAction(async () => {
   const result = await control("deferred-input", { id, action: "edit", text });
   applySnapshot(await control("snapshot"));
