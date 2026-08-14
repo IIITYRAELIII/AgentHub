@@ -83,7 +83,6 @@ test("desktop client survives App Server exit during delayed startup and shares 
     activeThreadTitle: "Saved large task",
   }, null, 2)}\n`, "utf8");
 
-  const startupStartedAt = Date.now();
   const bot = spawn(process.execPath, [BOT_FILE], {
     cwd: ROOT,
     env: {
@@ -114,11 +113,12 @@ test("desktop client survives App Server exit during delayed startup and shares 
     "desktop control startup",
   );
   assert.equal(initial.apiVersion, 3);
-  assert.ok(Date.now() - startupStartedAt < 1_400, "Desktop control waited for Codex initialization");
+  const initialCodexState = await readFile(codexStatePath, "utf8").then(JSON.parse);
+  assert.equal(initialCodexState.initializeCompletedAt ?? null, null,
+    "Desktop control waited for Codex initialization");
   assert.equal(initial.tasks.length, 1);
   const firstThreadId = initial.selected.threadId;
   assert.equal(firstThreadId, savedThreadId);
-  const initialCodexState = await readFile(codexStatePath, "utf8").then(JSON.parse);
   assert.equal(initialCodexState.requestCounts["thread/resume"] ?? 0, 0,
     "startup must not resume the selected saved thread");
   assert.equal(initial.settings.provider, "codex");

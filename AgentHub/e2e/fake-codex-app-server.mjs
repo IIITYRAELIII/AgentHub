@@ -356,6 +356,8 @@ function handleRequest(message) {
   state.requestCounts[method] = Number(state.requestCounts[method] ?? 0) + 1;
   if (method === "initialize") {
     const completeInitialize = () => {
+      state.initializeCompletedAt = Date.now();
+      save();
       reply(id, { userAgent: "fake-codex-e2e" });
       resumeInterruptedTurns();
     };
