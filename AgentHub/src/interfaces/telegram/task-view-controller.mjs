@@ -9,7 +9,7 @@ import {
 import { taskViewCallbackData } from "./task-view-callback.mjs";
 import { isCodexAutoCompactionTurnId } from "../../domain/codex-internal-turn.mjs";
 import { taskDisplayTitle } from "../../domain/task-display-title.mjs";
-import { updateTaskRunTitle } from "../../domain/task-runs.mjs";
+import { taskRunIsActive, updateTaskRunTitle } from "../../domain/task-runs.mjs";
 
 function mergeDurableHistory(cachedHistory, sourceHistory) {
   const merged = (Array.isArray(cachedHistory) ? cachedHistory : [])
@@ -69,6 +69,9 @@ function mergeAttachmentSources(currentMessages, rolloutMessages) {
 
 function mergeMessageAttachments(target, source) {
   const merged = { ...target };
+  if (!String(merged.author ?? "").trim() && String(source?.author ?? "").trim()) {
+    merged.author = String(source.author).trim();
+  }
   for (const field of ["attachments", "attachmentSources"]) {
     const publicItem = field === "attachments"
       ? (item) => !String(item?.id ?? "").startsWith("codex-viewed-")
@@ -165,7 +168,7 @@ async function materializeHistoryAttachments(history, importer) {
 
 const CODEX_TURN_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 
-export function codexRolloutHistory(activity = {}) {
+export function codexRolloutHistory(activity = {}, { userAuthor = "" } = {}) {
   const userMessages = activity?.userMessages ?? {};
   const latestMessages = activity?.latestMessages ?? {};
   const finalMessages = activity?.finalMessages ?? {};
@@ -200,6 +203,7 @@ export function codexRolloutHistory(activity = {}) {
             : {}),
           role: "user",
           text: displayUserPrompt(rawText),
+          ...(String(userAuthor).trim() ? { author: String(userAuthor).trim() } : {}),
           ...(responseAnnotations?.items.length
             ? {
               responseAnnotations: responseAnnotations.items.map((annotation) => ({ ...annotation })),
@@ -218,8 +222,8 @@ export function codexRolloutHistory(activity = {}) {
       .map((item) => ({ ...item }));
     const trace = Array.isArray(activityGroups[id]) ? structuredClone(activityGroups[id]) : [];
     if (!users.length && !answer && !generatedImages.length && !trace.length) return [];
-    const active = activeTurnIds.has(id);
     const completed = Boolean(finalAnswer);
+    const active = !completed && activeTurnIds.has(id);
     const prompt = users[0]?.text ?? "Сообщение с вложением";
     const messages = users.length
     ? [...users]
@@ -260,6 +264,53 @@ export function codexRolloutHistory(activity = {}) {
       ...(trace.length ? { activityGroups: trace } : {}),
     }];
   });
+}
+
+function providerAgentName(provider) {
+  return provider === "claude" ? "Claude" : provider === "codex" ? "Codex" : String(provider ?? "").trim();
+}
+
+function subagentPromptAuthor(binding, parentThreadId, workspaceCatalogStore) {
+  const parentId = String(parentThreadId ?? "").trim();
+  if (!parentId) return "";
+  const provider = String(binding?.provider ?? "").trim();
+  const parentBinding = workspaceCatalogStore?.thread?.({ provider, threadId: parentId })
+    ?? workspaceCatalogStore?.thread?.({ provider, threadId: binding?.threadId });
+  const stream = parentBinding?.streamId
+    ? workspaceCatalogStore?.stream?.(parentBinding.streamId)
+    : null;
+  const workspace = stream?.workspaceId
+    ? workspaceCatalogStore?.workspace?.(stream.workspaceId)
+    : null;
+  const workspaceName = String(workspace?.name ?? binding?.workspaceName ?? "Agent Hub").trim();
+  const streamName = String(stream?.name ?? binding?.streamName ?? "").trim();
+  const agent = providerAgentName(provider);
+  return `${workspaceName}${streamName ? ` - ${streamName}` : ""}${agent ? ` (${agent})` : ""}`;
+}
+
+export function taskViewMessages(exchange, { includeAgent = true } = {}) {
+  const source = (Array.isArray(exchange?.messages) ? exchange.messages : []).flatMap((message) => {
+    const role = String(message?.role ?? "");
+    const attachments = Array.isArray(message?.attachments)
+      ? message.attachments.map((attachment) => ({ ...attachment }))
+      : [];
+    const text = String(message?.text ?? "").trim();
+    if (!["user", "agent"].includes(role) || (role === "agent" && !includeAgent)) return [];
+    if (!text && !attachments.length) return [];
+    return [{
+      ...message,
+      role,
+      text,
+      attachments,
+    }];
+  });
+  if (source.length) return source;
+  const fallback = [];
+  const prompt = String(exchange?.prompt ?? "").trim();
+  const answer = String(exchange?.answer ?? "").trim();
+  if (prompt) fallback.push({ role: "user", text: prompt, attachments: [] });
+  if (includeAgent && answer) fallback.push({ role: "agent", text: answer, attachments: [] });
+  return fallback;
 }
 
 function mergeCodexHistory(cachedHistory, sourceHistory, rolloutHistory, internalTurnIds = []) {
@@ -406,10 +457,15 @@ export class TaskViewController {
             directRolloutPath,
             { freshnessMs: Number.POSITIVE_INFINITY },
           );
+          const userAuthor = subagentPromptAuthor(
+            binding,
+            rolloutActivity?.parentThreadId,
+            d.workspaceCatalogStore,
+          );
           const history = mergeCodexHistory(
             cached,
             [],
-            codexRolloutHistory(rolloutActivity),
+            codexRolloutHistory(rolloutActivity, { userAuthor }),
             rolloutActivity?.internalTurnIds,
           );
           const snapshot = completedOnly ? null : await d.readCodexSnapshot({
@@ -432,10 +488,12 @@ export class TaskViewController {
             freshnessMs: Number.POSITIVE_INFINITY,
           })
           : null;
+        const parentThreadId = result.thread?.parentThreadId || rolloutActivity?.parentThreadId;
+        const userAuthor = subagentPromptAuthor(binding, parentThreadId, d.workspaceCatalogStore);
         const history = mergeCodexHistory(
           cached,
-          codexThreadHistory(result.thread?.turns),
-          codexRolloutHistory(rolloutActivity),
+          codexThreadHistory(result.thread?.turns, { userAuthor }),
+          codexRolloutHistory(rolloutActivity, { userAuthor }),
           rolloutActivity?.internalTurnIds,
         );
         const snapshot = completedOnly ? null : await d.readCodexSnapshot({
@@ -452,7 +510,8 @@ export class TaskViewController {
       const snapshot = await d.readClaudeSnapshot(binding.threadId, { includeHistory: true });
       const cached = d.taskSyncStore.history(task);
       const history = mergeDurableHistory(cached, snapshot?.history ?? []);
-      const running = completedOnly ? null : d.taskRuns.forTask(task);
+      const indexedRun = completedOnly ? null : d.taskRuns.forTask(task);
+      const running = taskRunIsActive(indexedRun) ? indexedRun : null;
       if (running) {
         mergeActiveTaskHistory(history, {
           active: true,
@@ -520,7 +579,8 @@ export class TaskViewController {
     const d = this.deps;
     const task = this.task(binding, targetChatId);
     const { history, snapshot } = await this.readHistory(binding, { completedOnly });
-    const running = d.taskRuns.forTask(task);
+    const indexedRun = d.taskRuns.forTask(task);
+    const running = taskRunIsActive(indexedRun) ? indexedRun : null;
     if (running) {
       mergeActiveTaskHistory(history, {
         active: true,
@@ -551,23 +611,24 @@ export class TaskViewController {
       task,
       `🧵 ${d.runTaskTitle(task)}\n\n`
         + (view.total
-          ? `Показано сообщений: ${view.shown} из ${view.total}.`
+          ? `Показано ходов: ${view.shown} из ${view.total}.`
           : "История этой задачи пока пуста."),
       historyButton,
       { kind: "task-view-navigation" },
     );
     let rendered = false;
     for (const exchange of view.items) {
-      if (exchange.prompt) {
-        await d.sendTaskViewText(task, "👤 Вы", exchange.prompt, "task-view-user");
-        rendered = true;
-      }
-      if (!exchange.active && exchange.answer) {
+      for (const message of taskViewMessages(exchange, { includeAgent: !exchange.active })) {
+        const user = message.role === "user";
+        const author = String(message.author ?? "").trim();
         await d.sendTaskViewText(
           task,
-          binding.provider === "claude" ? "🤖 Claude" : "🤖 Codex",
-          exchange.answer,
-          "task-view-assistant",
+          user
+            ? `👤 ${author || "Вы"}`
+            : binding.provider === "claude" ? "🤖 Claude" : "🤖 Codex",
+          message.text,
+          user ? "task-view-user" : "task-view-assistant",
+          message.attachments,
         );
         rendered = true;
       }
@@ -596,7 +657,8 @@ export class TaskViewController {
     };
     if (d.dismissedExternalTasks.delete(task)) await d.saveState();
     const view = await this.render(binding, targetChatId, { count });
-    const running = d.taskRuns.forTask(task);
+    const indexedRun = d.taskRuns.forTask(task);
+    const running = taskRunIsActive(indexedRun) ? indexedRun : null;
     if (running) {
       const title = d.resolveRunningTitle(running, binding);
       if (updateTaskRunTitle(running, title)) await d.saveState();

@@ -40,6 +40,7 @@ export class MessageReceiptRegistry {
   constructor({ limit = 2_000 } = {}) {
     this.limit = Math.max(1, Number(limit) || 2_000);
     this.receipts = new Map();
+    this.revision = 0;
   }
 
   restore(values) {
@@ -55,6 +56,7 @@ export class MessageReceiptRegistry {
         createdAt: String(value.createdAt ?? ""),
       });
     }
+    this.revision += 1;
   }
 
   find(identity, fingerprint) {
@@ -121,6 +123,7 @@ export class MessageReceiptRegistry {
     while (this.receipts.size > this.limit) {
       this.receipts.delete(this.receipts.keys().next().value);
     }
+    this.revision += 1;
   }
 
   updateResult(identity, result) {
@@ -132,6 +135,7 @@ export class MessageReceiptRegistry {
       ...receipt.result,
       ...structuredClone(result),
     };
+    this.revision += 1;
     return true;
   }
 

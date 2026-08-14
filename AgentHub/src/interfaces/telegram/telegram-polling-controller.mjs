@@ -1,6 +1,9 @@
 import { shouldLogPollingFailure, telegramPollingRetryDelay } from "../../infrastructure/telegram/poll-retry.mjs";
 
 export class TelegramPollingController {
+  #runPromise = null;
+  #generation = 0;
+
   constructor({
     telegram,
     config,
@@ -47,6 +50,7 @@ export class TelegramPollingController {
   }
 
   async process(update) {
+    if (this.stopping()) return false;
     const startedAt = this.now();
     let handledAt = startedAt;
     this.setProcessingUpdateId(update.update_id);
@@ -95,23 +99,69 @@ export class TelegramPollingController {
         + (transportMs === null ? "" : `, transport<=${transportMs} ms`),
       );
     }
+    return true;
   }
 
-  async run() {
+  run() {
+    const generation = this.#generation;
+    this.#runPromise ??= this.#run(generation).finally(() => {
+      this.#runPromise = null;
+    });
+    return this.#runPromise;
+  }
+
+  quiesce() {
+    this.#generation += 1;
+    return this.waitForIdle();
+  }
+
+  resume() {
+    const active = this.#runPromise;
+    if (active) {
+      void active.then(
+        () => this.#resumeAfterIdle(),
+        (error) => {
+          this.logger.error("Telegram polling stopped during recovery:", error.message);
+          this.#resumeAfterIdle();
+        },
+      );
+      return;
+    }
+    this.#resumeAfterIdle();
+  }
+
+  waitForIdle() {
+    return this.#runPromise ?? Promise.resolve();
+  }
+
+  #resumeAfterIdle() {
+    if (this.stopping()) return;
+    void this.run().catch((error) => {
+      this.logger.error("Telegram polling recovery failed:", error.message);
+    });
+  }
+
+  #stopped(generation) {
+    return generation !== this.#generation || this.stopping();
+  }
+
+  async #run(generation) {
     let consecutiveFailures = 0;
-    while (!this.stopping()) {
+    while (!this.#stopped(generation)) {
       try {
         const updates = await this.telegram("getUpdates", {
           offset: this.getOffset(),
           timeout: 30,
           allowed_updates: ["message", "callback_query"],
         });
+        if (this.#stopped(generation)) return;
         consecutiveFailures = 0;
         for (const update of updates) {
+          if (this.#stopped(generation)) return;
           await this.process(update);
-          if (this.stopping()) break;
         }
       } catch (error) {
+        if (this.#stopped(generation)) return;
         consecutiveFailures += 1;
         const retryDelayMs = this.retryDelay(consecutiveFailures);
         if (shouldLogPollingFailure(consecutiveFailures)) {

@@ -12,18 +12,25 @@ import {
 } from "./src/infrastructure/process/doctor-probes.mjs";
 import { unavailableLocalMcpOverrides } from "./src/infrastructure/process/local-mcp-preflight.mjs";
 import { codexStopHookStatus } from "./src/infrastructure/codex/codex-hook-config.mjs";
+import { createRuntimeHealth } from "./src/application/runtime-health.mjs";
 
 let failed = false;
 let config = null;
+const doctorHealth = createRuntimeHealth().begin();
 
-function check(label, ok, detail = "") {
+function check(label, ok, detail = "", capability = null) {
   console.log(`${ok ? "OK" : "ERROR"}  ${label}${detail ? `: ${detail}` : ""}`);
   if (!ok) failed = true;
+  if (capability) doctorHealth.setCapability(capability.name, {
+    critical: capability.critical === true,
+    state: ok ? "ready" : "failed",
+    error: ok ? "" : detail,
+  });
 }
 
 try {
   config = await loadConfig();
-  check("configuration", true, config.configPath);
+  check("configuration", true, config.configPath, { name: "configuration", critical: true });
   check(
     "external control-plane config",
     !pathInsideOrSame(config.configPath, AGENT_HUB_ROOT),
@@ -60,7 +67,7 @@ try {
     );
   }
 } catch (error) {
-  check("configuration", false, error.message);
+  check("configuration", false, error.message, { name: "configuration", critical: true });
 }
 
 function decodeBuffer(value, encoding) {
@@ -137,16 +144,17 @@ const claudeInvocation = resolveClaudeInvocation({
 const codexCommand = await resolveCodexExecutable({ requested: config?.codexExecutable || "" });
 const codexArgs = [...(config?.codexExecutableArgs ?? []), "--version"];
 
-for (const [name, command, args] of [
-  ["Node.js", process.execPath, ["--version"]],
-  ["Codex CLI", codexCommand, codexArgs],
+for (const [name, command, args, capability] of [
+  ["Node.js", process.execPath, ["--version"], { name: "node", critical: true }],
+  ["Codex CLI", codexCommand, codexArgs,
+    config?.provider === "codex" ? { name: "provider:codex", critical: true } : null],
   [`Claude Code CLI (${claudeInvocation.source})`, claudeInvocation.command, [
     ...claudeInvocation.prefixArgs,
     "--version",
-  ]],
+  ], config?.provider === "claude" ? { name: "provider:claude", critical: true } : null],
 ]) {
   const result = runCommand(command, args);
-  check(name, result.status === 0, (result.stdout || result.stderr || result.error?.message || "").trim());
+  check(name, result.status === 0, (result.stdout || result.stderr || result.error?.message || "").trim(), capability);
 }
 
 if (config && requiresTelegramChecks(config)) {
@@ -159,9 +167,10 @@ if (config && requiresTelegramChecks(config)) {
       "Telegram Bot API connectivity",
       true,
       `${telegramBot.username ? `@${telegramBot.username} · ` : ""}id=${telegramBot.id}`,
+      { name: "telegram", critical: false },
     );
   } catch (error) {
-    check("Telegram Bot API connectivity", false, error.message);
+    check("Telegram Bot API connectivity", false, error.message, { name: "telegram", critical: false });
   }
 } else if (config) {
   check("Telegram Bot API connectivity", true, "component disabled");
@@ -180,9 +189,11 @@ if (config) {
       "Codex App Server handshake",
       true,
       `${appServer.userAgent || "initialized"}; thread/list OK${mcp.disabled.length ? `; disabled unavailable local MCP: ${mcp.disabled.length}` : ""}`,
+      config.provider === "codex" ? { name: "provider:codex", critical: true } : null,
     );
   } catch (error) {
-    check("Codex App Server handshake", false, error.message);
+    check("Codex App Server handshake", false, error.message,
+      config.provider === "codex" ? { name: "provider:codex", critical: true } : null);
   }
 
   const claudeUsage = runCommand(claudeInvocation.command, [
@@ -210,6 +221,17 @@ if (process.platform === "win32") {
       ? `${selected}; replace the Windows Store alias with the Program Files PowerShell 7 path`
       : `${selected || "pwsh.exe not found"}${version?.stdout ? ` · ${version.stdout.trim()}` : ""}`,
   );
+}
+
+doctorHealth.complete();
+const doctorStatus = doctorHealth.snapshot();
+console.log(`LIVE  doctor process: ${doctorStatus.live ? "yes" : "no"}`);
+console.log(`READY doctor prerequisites: ${doctorStatus.ready ? "yes" : "no"}`);
+if (doctorStatus.degraded) {
+  console.log(`DEGRADED capabilities: ${doctorStatus.capabilities
+    .filter((capability) => capability.state === "failed")
+    .map((capability) => capability.name)
+    .join(", ")}`);
 }
 
 process.exitCode = failed ? 1 : 0;

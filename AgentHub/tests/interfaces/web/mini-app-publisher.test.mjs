@@ -86,6 +86,110 @@ test("Mini App publisher signs and sends the current journal", async () => {
   }
 });
 
+test("Mini App publisher skips an unchanged journal before rebuilding its snapshot", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-publisher-unchanged-"));
+  const secretFile = path.join(root, "sync.secret");
+  await writeFile(secretFile, "u".repeat(64));
+  let current = {
+    html: "<p>Первая версия</p>",
+    days: {},
+    turns: {},
+    updatedAt: "2026-08-14T12:00:00.000Z",
+    version: "version-1",
+    revision: 1,
+  };
+  let snapshotCalls = 0;
+  const requests = [];
+  const publisher = new MiniAppPublisher({
+    journalDatabase: {
+      payload: async () => ({
+        updatedAt: current.updatedAt,
+        version: current.version,
+        revision: current.revision,
+      }),
+      snapshot: async () => {
+        snapshotCalls += 1;
+        return structuredClone(current);
+      },
+      subscribe: () => () => {},
+      close() {},
+    },
+    dataDirectory: root,
+    publicUrl: "https://hub.example.test",
+    syncSecretFile: secretFile,
+    fetchImpl: async (url, options) => {
+      requests.push({ url, options });
+      return Response.json({ ok: true });
+    },
+  });
+  try {
+    assert.equal(await publisher.sync(), true);
+    assert.equal(snapshotCalls, 1);
+    assert.equal(requests.length, 1);
+    assert.equal(await publisher.sync(), true);
+    assert.equal(snapshotCalls, 1);
+    assert.equal(requests.length, 1);
+
+    current = {
+      ...current,
+      html: "<p>Вторая версия</p>",
+      updatedAt: "2026-08-14T12:01:00.000Z",
+      version: "version-2",
+      revision: 2,
+    };
+    assert.equal(await publisher.sync(), true);
+    assert.equal(snapshotCalls, 2);
+    assert.equal(requests.length, 2);
+  } finally {
+    await publisher.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Mini App publisher retries the same journal after an interrupted upload", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-publisher-retry-"));
+  const secretFile = path.join(root, "sync.secret");
+  await writeFile(secretFile, "r".repeat(64));
+  const payload = {
+    html: "<p>Повтор после сбоя</p>",
+    days: {},
+    turns: {},
+    updatedAt: "2026-08-14T12:00:00.000Z",
+    version: "retry-version",
+    revision: 7,
+  };
+  let requests = 0;
+  let fail = true;
+  const publisher = new MiniAppPublisher({
+    journalDatabase: {
+      payload: async () => structuredClone(payload),
+      snapshot: async () => structuredClone(payload),
+      subscribe: () => () => {},
+      close() {},
+    },
+    dataDirectory: root,
+    publicUrl: "https://hub.example.test",
+    syncSecretFile: secretFile,
+    retrySeconds: 60,
+    fetchImpl: async () => {
+      requests += 1;
+      if (fail) return Response.json({ error: "offline" }, { status: 503 });
+      return Response.json({ ok: true });
+    },
+  });
+  try {
+    await assert.rejects(() => publisher.sync(), /HTTP 503/u);
+    fail = false;
+    assert.equal(await publisher.sync(), true);
+    assert.equal(requests, 2);
+    assert.equal(await publisher.sync(), true);
+    assert.equal(requests, 2);
+  } finally {
+    await publisher.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("Mini App publisher splits a large compressed journal without losing data", async () => {
   const payload = {
     html: Array.from({ length: 10_000 }, (_, index) => `${index}:${"история".repeat(12)}`).join("\n"),

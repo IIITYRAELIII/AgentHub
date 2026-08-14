@@ -1,11 +1,18 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { parseArguments, publicationSteps, publishAll } from "../../publish-all.mjs";
+import {
+  parseArguments,
+  publicationSteps,
+  publishAll,
+  runStep,
+  waitForRuntimeReplacement,
+} from "../../publish-all.mjs";
 import { classifyPublicationChanges, parseChangedArguments, publishChanged } from "../../publish-changed.mjs";
 import { detectGitCommonDirectory, ensureWrangler, resolveWrangler } from "../../wrangler-runner.mjs";
 import {
@@ -54,7 +61,6 @@ test("publication validates every client before the first deployment", () => {
   const steps = publicationSteps();
   assert.deepEqual(steps.map((item) => item.label), [
     "Полные тесты Agent Hub",
-    "Тесты расширения VS Code",
     "Сборка и smoke-проверка Agent Hub Desktop",
     "Сборка Agent Hub Mobile",
     "Публикация Mini App Worker",
@@ -64,12 +70,11 @@ test("publication validates every client before the first deployment", () => {
   ]);
 
   assert.deepEqual(steps[0].args.slice(-2), ["run", "test:all"]);
-  assert.deepEqual(steps[1].args.slice(-3), ["test", "--prefix", "VSCodeExtension"]);
-  assert.match(steps[2].args.at(-1), /ci[\\/]desktop-smoke\.ps1$/u);
-  assert.deepEqual(steps[3].args.slice(-2), ["run", "android:build"]);
+  assert.match(steps[1].args.at(-1), /ci[\\/]desktop-smoke\.ps1$/u);
+  assert.deepEqual(steps[2].args.slice(-2), ["run", "android:build"]);
   assert.equal(
     steps.findIndex((step) => step.label.includes("Публикация")),
-    4,
+    3,
     "deployment must start only after all four validation surfaces pass",
   );
 });
@@ -107,9 +112,39 @@ test("publication requests the server's safe deferred restart last", async () =>
     "Сборка runtime-релиза",
     "Активация runtime-релиза",
     "Установка расширения VS Code",
-    "record-publication",
     "restart-server",
+    "record-publication",
   ]);
+});
+
+test("publication stage timeout terminates the complete process tree", async () => {
+  const child = new EventEmitter();
+  child.pid = 4242;
+  let stoppedPid = null;
+  await assert.rejects(runStep({
+    label: "Зависшая стадия",
+    command: "ignored",
+    args: [],
+    timeoutMs: 1,
+  }, {
+    spawnImpl: () => child,
+    stopTree: async (pid) => { stoppedPid = pid; },
+  }), /превышен таймаут/u);
+  assert.equal(stoppedPid, 4242);
+});
+
+test("runtime readiness requires a replacement endpoint and a successful probe", async () => {
+  const endpoints = [{ endpointId: "old" }, { endpointId: "new" }];
+  const probes = [];
+  const result = await waitForRuntimeReplacement({
+    previousEndpointId: "old",
+    timeoutMs: 100,
+    readEndpoint: async () => endpoints.shift() ?? { endpointId: "new" },
+    probe: async (action) => probes.push(action),
+    delay: async () => {},
+  });
+  assert.equal(result.endpointId, "new");
+  assert.deepEqual(probes, ["snapshot"]);
 });
 
 test("selective publication maps shared UI to runtime, Worker and surface tests", async () => {
@@ -212,6 +247,7 @@ test("selective publication can request the full Agent Hub test suite explicitly
     ensureWorkerDependency: async () => {},
   });
   assert.ok(labels.includes("Полные тесты Agent Hub"));
+  assert.ok(!labels.includes("Тесты расширения VS Code"));
   assert.ok(!labels.includes("Контракт интерфейсов Agent Hub"));
 });
 
@@ -282,7 +318,7 @@ test("selective frontend publication records state without restarting Hub", asyn
   assert.ok(!events.includes("restart-server"));
 });
 
-test("selective backend publication records state before requesting restart", async () => {
+test("selective backend publication records state after verified restart", async () => {
   const events = [];
   await publishChanged(["--from", "base"], {
     run: async (step) => events.push(step.label),
@@ -292,13 +328,12 @@ test("selective backend publication records state before requesting restart", as
     revision: async () => "head",
     diff: async () => ["AgentHub/src/interfaces/web/mini-app-server.mjs"],
   });
-  assert.ok(events.indexOf("record-publication") < events.indexOf("restart-server"));
+  assert.ok(events.indexOf("restart-server") < events.indexOf("record-publication"));
 });
 
 test("every validation failure stops publication before deployment", async () => {
   const validations = [
     "Полные тесты Agent Hub",
-    "Тесты расширения VS Code",
     "Сборка и smoke-проверка Agent Hub Desktop",
     "Сборка Agent Hub Mobile",
   ];

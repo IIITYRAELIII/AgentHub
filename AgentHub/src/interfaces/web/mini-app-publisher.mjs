@@ -132,6 +132,17 @@ export async function journalSyncPayload(journalDatabase) {
   return payload;
 }
 
+function journalPayloadIdentity(payload) {
+  if (!payload || typeof payload !== "object") return "";
+  const version = String(payload.version ?? "").trim();
+  if (version) return `version:${version}`;
+  if (Object.hasOwn(payload, "revision")) {
+    const revision = Number(payload.revision);
+    if (Number.isFinite(revision)) return `revision:${revision}`;
+  }
+  return "";
+}
+
 export class MiniAppPublisher {
   #journalDatabase;
   #ownsJournalDatabase;
@@ -170,6 +181,7 @@ export class MiniAppPublisher {
   #pending = false;
   #snapshotPending = false;
   #published = false;
+  #publishedJournalIdentity = "";
   #closed = false;
 
   constructor({
@@ -693,7 +705,14 @@ export class MiniAppPublisher {
       return this.#syncing;
     }
     this.#syncing = (async () => {
+      const index = typeof this.#journalDatabase?.payload === "function"
+        ? await this.#journalDatabase.payload()
+        : null;
+      const indexIdentity = journalPayloadIdentity(index);
+      if (indexIdentity && indexIdentity === this.#publishedJournalIdentity) return true;
       const payload = await journalSyncPayload(this.#journalDatabase);
+      const payloadIdentity = journalPayloadIdentity(payload);
+      if (payloadIdentity && payloadIdentity === this.#publishedJournalIdentity) return true;
       const secret = await this.#secret();
       const { syncId, chunks } = await compressedJournalChunks(payload);
       for (const [index, body] of chunks.entries()) {
@@ -733,6 +752,7 @@ export class MiniAppPublisher {
         await this.#onPublished?.(this.#publicUrl);
         this.#published = true;
       }
+      this.#publishedJournalIdentity = payloadIdentity;
       return true;
     })();
     try {

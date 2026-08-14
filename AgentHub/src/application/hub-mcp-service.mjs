@@ -1,5 +1,6 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
-import { copyFile, mkdir, readFile, stat, unlink } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, mkdir, open, readFile, realpath, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import {
@@ -54,6 +55,103 @@ function argumentsHash(args) {
 function inside(root, candidate) {
   const relative = path.relative(path.resolve(root), path.resolve(candidate));
   return !relative || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function sameFileIdentity(left, right) {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function sameFileVersion(left, right) {
+  return sameFileIdentity(left, right)
+    && left.size === right.size
+    && left.mtimeNs === right.mtimeNs
+    && left.ctimeNs === right.ctimeNs;
+}
+
+async function rejectLinkTraversal(root, source) {
+  const relative = path.relative(path.resolve(root), source);
+  let current = path.resolve(root);
+  const segments = relative.split(path.sep).filter(Boolean);
+  if (!segments.length) throw new Error("attachment source must be a regular file");
+  for (const [index, segment] of segments.entries()) {
+    current = path.join(current, segment);
+    const details = await lstat(current);
+    if (details.isSymbolicLink()) {
+      throw new Error("attachment source cannot traverse a symlink or reparse point");
+    }
+    const final = index === segments.length - 1;
+    if ((final && !details.isFile()) || (!final && !details.isDirectory())) {
+      throw new Error("attachment source must be a regular file");
+    }
+  }
+}
+
+async function openAttachmentSource(source, roots) {
+  const root = roots.find((candidate) => inside(candidate, source));
+  if (!root) throw new Error("attachment source is outside the current project");
+  const canonicalRoot = await realpath(root);
+  const canonicalSource = await realpath(source);
+  if (!inside(canonicalRoot, canonicalSource)) {
+    throw new Error("attachment source is outside the current project");
+  }
+  await rejectLinkTraversal(root, source);
+  let handle;
+  try {
+    handle = await open(source, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  } catch (error) {
+    if (process.platform !== "win32" || !constants.O_NOFOLLOW || !["EINVAL", "ENOTSUP"].includes(error.code)) {
+      throw error;
+    }
+    handle = await open(source, constants.O_RDONLY);
+  }
+  try {
+    const opened = await handle.stat({ bigint: true });
+    const current = await stat(source, { bigint: true });
+    if (!opened.isFile() || !current.isFile() || !sameFileIdentity(opened, current)) {
+      throw new Error("attachment source is not a stable regular file");
+    }
+    if (opened.size < 1n || opened.size > BigInt(MAX_ATTACHMENT_BYTES)) {
+      throw new Error("attachment size is not supported");
+    }
+    if (await realpath(source) !== canonicalSource) {
+      throw new Error("attachment source changed while it was being opened");
+    }
+    await rejectLinkTraversal(root, source);
+    return { handle, opened, canonicalSource, root };
+  } catch (error) {
+    await handle.close().catch(() => {});
+    throw error;
+  }
+}
+
+async function readStableAttachmentSource(source, roots) {
+  const { handle, opened, canonicalSource, root } = await openAttachmentSource(source, roots);
+  try {
+    const chunks = [];
+    let offset = 0;
+    while (offset <= MAX_ATTACHMENT_BYTES) {
+      const buffer = Buffer.allocUnsafe(Math.min(64 * 1024, MAX_ATTACHMENT_BYTES + 1 - offset));
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, offset);
+      if (!bytesRead) break;
+      chunks.push(buffer.subarray(0, bytesRead));
+      offset += bytesRead;
+    }
+    if (offset < 1 || offset > MAX_ATTACHMENT_BYTES) throw new Error("attachment size is not supported");
+    await rejectLinkTraversal(root, source);
+    const after = await handle.stat({ bigint: true });
+    const current = await stat(source, { bigint: true });
+    if (
+      !sameFileVersion(opened, after)
+      || !sameFileIdentity(after, current)
+      || after.size !== BigInt(offset)
+      || await realpath(source) !== canonicalSource
+    ) {
+      throw new Error("attachment source changed while it was being copied");
+    }
+    return Buffer.concat(chunks, offset);
+  } finally {
+    await handle.close().catch(() => {});
+  }
 }
 
 function compactText(value, maximumLength) {
@@ -113,6 +211,7 @@ export class HubMcpService {
   #activeRuns = () => [];
   #taskLauncher = async () => { throw new Error("Agent Hub task launcher is not ready"); };
   #streamMessenger = async () => { throw new Error("Agent Hub Stream messenger is not ready"); };
+  #pendingMutations = new Map();
 
   constructor({ workspaceCatalog, taskBoard, workLog, attachmentDirectory, secret, releaseCompleter } = {}) {
     for (const name of [
@@ -231,9 +330,10 @@ export class HubMcpService {
       }, ["change_id", "status"]),
       tool("hub_release_complete", "Complete a release only after clean main revisions and explicit deployment verification.", {
         expected_revision: { type: "string" },
+        expected_plan_revision: { type: "string", description: "Exact revision returned by hub_release_plan_get." },
         deployment_verified: { type: "boolean" },
         verification_summary: { type: "string" },
-      }, ["deployment_verified", "verification_summary"]),
+      }, ["expected_plan_revision", "deployment_verified", "verification_summary"]),
       tool("hub_events_list", "Read bounded persistent Workspace events after a cursor; this never holds a long poll.", {
         after_sequence: { type: "integer", minimum: 0, default: 0 },
         limit: { type: "integer", minimum: 1, maximum: 100, default: 50 },
@@ -340,6 +440,7 @@ export class HubMcpService {
         return this.releaseCompleter.completeRelease({
           workspaceId: context.workspaceId,
           expectedRevision: optionalText(args.expected_revision, 128),
+          expectedPlanRevision: optionalText(args.expected_plan_revision, 128),
           deploymentVerified: args.deployment_verified === true,
           verificationSummary: optionalText(args.verification_summary, 2_000) ?? "",
         });
@@ -546,7 +647,7 @@ export class HubMcpService {
 
   async #startTask(context, {
     task_id: taskId, stream_id: streamId = null, new_stream_name: newStreamName = null,
-    provider = null, confirm_launch: confirmLaunch = false,
+    provider = null, confirm_launch: confirmLaunch = false, request_id: requestId,
   } = {}) {
     if (confirmLaunch !== true) throw new Error("confirm_launch must be true");
     const task = this.#task(context, taskId);
@@ -562,6 +663,8 @@ export class HubMcpService {
       streamName: requestedStreamName || null,
       provider: String(provider ?? "").trim() || context.provider,
       followUpMode: "queue",
+      launchRequestId: requiredText(requestId, "request id", 200),
+      clientUserMessageId: `mcp:${requiredText(requestId, "request id", 200)}`,
     }, context);
     return {
       task: compactTask(result.task),
@@ -707,17 +810,11 @@ export class HubMcpService {
     const task = this.#task(context, taskId);
     const source = path.resolve(requiredText(localPath, "local path", 2_000));
     const projectRoot = requiredText(context.projectRoot, "current project root", 2_000);
-    if (!inside(projectRoot, source) && !inside(this.attachmentDirectory, source)) {
-      throw new Error("attachment source is outside the current project");
-    }
-    const details = await stat(source);
-    if (!details.isFile() || details.size < 1 || details.size > MAX_ATTACHMENT_BYTES) {
-      throw new Error("attachment size is not supported");
-    }
     await mkdir(this.attachmentDirectory, { recursive: true });
+    const body = await readStableAttachmentSource(source, [projectRoot, this.attachmentDirectory]);
     const id = createAttachmentStorageName(path.basename(source));
     const target = path.join(this.attachmentDirectory, id);
-    await copyFile(source, target, 1);
+    await writeFile(target, body, { flag: "wx" });
     try {
       this.taskBoard.addAttachment({ id: task.id, attachment: target });
     } catch (error) {
@@ -730,7 +827,7 @@ export class HubMcpService {
       attachment: {
         ...attachmentMetadataFromId(id),
         type: attachmentContentType(path.basename(source)),
-        size: details.size,
+        size: body.length,
       },
     };
   }
@@ -748,14 +845,36 @@ export class HubMcpService {
     });
     if (started.status === "succeeded") return started.result;
     if (started.status === "failed") throw new Error(started.error || "previous MCP operation failed");
-    if (started.replayed) throw new Error("MCP operation with this request_id is still pending");
+    const inFlight = this.#pendingMutations.get(requestId);
+    if (inFlight) return inFlight;
+    if (started.replayed && toolName !== "hub_task_start") {
+      throw new Error("MCP operation with this request_id is still pending");
+    }
+    const pending = (async () => {
+      try {
+        const result = await operation();
+        this.workspaceCatalog.completeMcpOperation(requestId, result);
+        return result;
+      } catch (error) {
+        if (toolName === "hub_task_start" && this.#hasPreparedTaskStart(context, args, requestId)) {
+          throw error;
+        }
+        this.workspaceCatalog.failMcpOperation(requestId, error);
+        throw error;
+      } finally {
+        this.#pendingMutations.delete(requestId);
+      }
+    })();
+    this.#pendingMutations.set(requestId, pending);
+    return pending;
+  }
+
+  #hasPreparedTaskStart(context, args, requestId) {
     try {
-      const result = await operation();
-      this.workspaceCatalog.completeMcpOperation(requestId, result);
-      return result;
-    } catch (error) {
-      this.workspaceCatalog.failMcpOperation(requestId, error);
-      throw error;
+      const task = this.#task(context, args.task_id);
+      return task.startRequestId === requestId && ["starting", "started"].includes(task.status);
+    } catch {
+      return false;
     }
   }
 }

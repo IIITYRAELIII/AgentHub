@@ -54,6 +54,7 @@ export function createTaskStateWiring({
       executionOwner: run.executionOwner,
     });
     if (changed) {
+      invalidateTaskCatalog();
       void taskSyncStore.save().catch((error) => {
         logger.error("Cannot save local task sync:", error.message);
       });

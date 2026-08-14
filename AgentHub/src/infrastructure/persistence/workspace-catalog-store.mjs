@@ -1,5 +1,5 @@
-import { randomUUID } from "node:crypto";
-import { mkdir, rename } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
@@ -14,16 +14,11 @@ import {
   streamDisplayName,
 } from "../../domain/workspace-stream-identity.mjs";
 
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
 export const DEVELOPER_RULES_MAX_BYTES = 32 * 1024;
 const SOURCES = new Set(["created", "discovered", "migration", "rebirth"]);
 const DEVELOPER_RULE_SCOPES = new Set(["workspace", "stream"]);
 const RELEASE_CHANGE_STATUSES = new Set(["draft", "ready", "blocked", "released", "discarded"]);
-
-function recoverableDatabaseError(error) {
-  return /(?:file is not a database|database disk image is malformed|malformed database schema)/iu
-    .test(String(error?.message ?? ""));
-}
 
 function configure(database) {
   database.exec(`
@@ -88,6 +83,7 @@ function configure(database) {
       files_json TEXT NOT NULL DEFAULT '[]',
       diff_hash TEXT NOT NULL DEFAULT '',
       status TEXT NOT NULL CHECK (status IN ('draft', 'ready', 'blocked', 'released', 'discarded')),
+      revision INTEGER NOT NULL DEFAULT 1 CHECK (revision > 0),
       created_at_ms INTEGER NOT NULL,
       updated_at_ms INTEGER NOT NULL,
       FOREIGN KEY (workspace_id) REFERENCES hub_workspaces(id) ON DELETE CASCADE,
@@ -162,6 +158,10 @@ function configure(database) {
   const streamColumns = database.prepare("PRAGMA table_info(hub_streams)").all();
   if (!streamColumns.some((column) => column.name === "settings_json")) {
     database.exec("ALTER TABLE hub_streams ADD COLUMN settings_json TEXT NOT NULL DEFAULT '{}'");
+  }
+  const releaseChangeColumns = database.prepare("PRAGMA table_info(hub_release_changes)").all();
+  if (!releaseChangeColumns.some((column) => column.name === "revision")) {
+    database.exec("ALTER TABLE hub_release_changes ADD COLUMN revision INTEGER NOT NULL DEFAULT 1");
   }
 }
 
@@ -267,6 +267,7 @@ function releaseChangeFromRow(row) {
     files: Array.isArray(files) ? files.map((file) => String(file)) : [],
     diffHash: String(row.diff_hash ?? ""),
     status: String(row.status),
+    revision: Number(row.revision) || 1,
     createdAtMs: Number(row.created_at_ms) || 0,
     updatedAtMs: Number(row.updated_at_ms) || 0,
   };
@@ -285,11 +286,65 @@ function releaseChangeFiles(values) {
     .filter((value) => value && !value.includes("\0")))].slice(0, 500);
 }
 
+function releasePath(value) {
+  return String(value ?? "").trim().replaceAll("\\", "/");
+}
+
+function isWindowsPath(value) {
+  return /^(?:[a-z]:[\\/]|\\\\)/iu.test(String(value ?? ""));
+}
+
+function canonicalReleaseFileIdentity(projectRoot, file) {
+  const root = releasePath(projectRoot);
+  const candidate = releasePath(file);
+  if (!candidate) return "";
+  if (isWindowsPath(root) || isWindowsPath(candidate)) {
+    const absolute = path.win32.isAbsolute(candidate)
+      ? path.win32.normalize(candidate)
+      : root
+        ? path.win32.resolve(root, candidate)
+        : path.win32.normalize(candidate);
+    return `${root || path.win32.isAbsolute(candidate) ? "windows" : "relative"}:${absolute.replaceAll("\\", "/").toLowerCase()}`;
+  }
+  if (!root) return `relative:${path.posix.normalize(candidate)}`;
+  return `posix:${path.posix.resolve(root, candidate)}`;
+}
+
 function sharedReleaseChangelog(projectRoot, file) {
-  const normalizedRoot = String(projectRoot ?? "").trim().replaceAll("\\", "/").replace(/\/+$/u, "").toLowerCase();
-  const normalizedFile = String(file ?? "").trim().replaceAll("\\", "/").replace(/^\.\//u, "").toLowerCase();
-  return normalizedFile === "utilities/changelog.md"
-    || (normalizedRoot.endsWith("/utilities") && normalizedFile === "changelog.md");
+  const identity = canonicalReleaseFileIdentity(projectRoot, file);
+  return identity === "relative:utilities/changelog.md" || identity.endsWith("/utilities/changelog.md");
+}
+
+function releasePlanRevision(workspaceId, changes) {
+  const payload = (Array.isArray(changes) ? changes : [])
+    .map((change) => ({
+      id: change.id,
+      revision: change.revision,
+      status: change.status,
+      projectRoot: canonicalReleaseFileIdentity(change.projectRoot, "."),
+      summary: change.summary,
+      files: change.files.map((file) => canonicalReleaseFileIdentity(change.projectRoot, file)).toSorted(),
+      diffHash: change.diffHash,
+    }))
+    .toSorted((left, right) => left.id.localeCompare(right.id));
+  return createHash("sha256")
+    .update(JSON.stringify({ workspaceId, changes: payload }), "utf8")
+    .digest("hex");
+}
+
+function releaseCompletionEvidence(value, expectedPlanRevision) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("release completion evidence is required");
+  }
+  const planRevision = String(value.planRevision ?? "").trim();
+  if (!planRevision || planRevision !== expectedPlanRevision) {
+    throw new Error("release completion evidence does not match the release plan revision");
+  }
+  return {
+    planRevision,
+    expectedRevision: String(value.expectedRevision ?? "").trim() || null,
+    verificationSummary: String(value.verificationSummary ?? "").trim().slice(0, 2_000),
+  };
 }
 
 function mcpOperationFromRow(row) {
@@ -355,20 +410,7 @@ export class WorkspaceCatalogStore {
       configure(database);
     } catch (error) {
       database?.close();
-      if (!recoverableDatabaseError(error)) throw error;
-      const suffix = `.corrupt-${new Date().toISOString().replaceAll(/[:.]/gu, "-")}`;
-      let preserved = false;
-      for (const candidate of [this.#databaseFile, `${this.#databaseFile}-wal`, `${this.#databaseFile}-shm`]) {
-        try {
-          await rename(candidate, `${candidate}${suffix}`);
-          preserved = true;
-        } catch (renameError) {
-          if (renameError?.code !== "ENOENT") throw renameError;
-        }
-      }
-      if (!preserved) throw error;
-      database = new DatabaseSync(this.#databaseFile);
-      configure(database);
+      throw error;
     }
     this.#database = database;
     return database;
@@ -495,20 +537,21 @@ export class WorkspaceCatalogStore {
       this.#database.prepare(`
       INSERT INTO hub_release_changes (
         id, workspace_id, stream_id, provider, provider_thread_id, turn_id,
-        project_root, summary, files_json, diff_hash, status, created_at_ms, updated_at_ms
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        project_root, summary, files_json, diff_hash, status, revision, created_at_ms, updated_at_ms
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
       ON CONFLICT(provider, provider_thread_id, turn_id) DO UPDATE SET
-        workspace_id = excluded.workspace_id,
-        stream_id = excluded.stream_id,
-        project_root = excluded.project_root,
-        summary = excluded.summary,
-        files_json = excluded.files_json,
-        diff_hash = excluded.diff_hash,
+        workspace_id = CASE WHEN hub_release_changes.status = 'draft' THEN excluded.workspace_id ELSE hub_release_changes.workspace_id END,
+        stream_id = CASE WHEN hub_release_changes.status = 'draft' THEN excluded.stream_id ELSE hub_release_changes.stream_id END,
+        project_root = CASE WHEN hub_release_changes.status = 'draft' THEN excluded.project_root ELSE hub_release_changes.project_root END,
+        summary = CASE WHEN hub_release_changes.status = 'draft' THEN excluded.summary ELSE hub_release_changes.summary END,
+        files_json = CASE WHEN hub_release_changes.status = 'draft' THEN excluded.files_json ELSE hub_release_changes.files_json END,
+        diff_hash = CASE WHEN hub_release_changes.status = 'draft' THEN excluded.diff_hash ELSE hub_release_changes.diff_hash END,
         status = CASE
           WHEN hub_release_changes.status = 'draft' THEN excluded.status
           ELSE hub_release_changes.status
         END,
-        updated_at_ms = excluded.updated_at_ms
+        revision = CASE WHEN hub_release_changes.status = 'draft' THEN hub_release_changes.revision + 1 ELSE hub_release_changes.revision END,
+        updated_at_ms = CASE WHEN hub_release_changes.status = 'draft' THEN excluded.updated_at_ms ELSE hub_release_changes.updated_at_ms END
       `).run(
         this.#idFactory(), resolved.workspaceId, resolved.streamId,
         identity.provider, identity.threadId, normalizedTurnId,
@@ -553,6 +596,11 @@ export class WorkspaceCatalogStore {
   updateReleaseChangeStatus(changeId, status) {
     const id = safeIdentifier(changeId, "release change id");
     return this.#transaction(() => {
+      const current = releaseChangeFromRow(this.#database.prepare(
+        "SELECT * FROM hub_release_changes WHERE id = ?",
+      ).get(id));
+      if (!current) throw new Error(`release change not found: ${id}`);
+      if (current.status === "released") throw new Error("released release change is immutable");
       const result = this.#database.prepare(`
         UPDATE hub_release_changes SET status = ?, updated_at_ms = ? WHERE id = ?
       `).run(releaseChangeStatus(status), this.#nowMs(), id);
@@ -576,8 +624,7 @@ export class WorkspaceCatalogStore {
     for (const change of changes) {
       for (const file of change.files) {
         if (sharedReleaseChangelog(change.projectRoot, file)) continue;
-        const projectRoot = change.projectRoot.replaceAll("\\", "/").replace(/\/+$/u, "");
-        const key = `${projectRoot}\0${file}`;
+        const key = canonicalReleaseFileIdentity(change.projectRoot, file);
         const owners = ownersByFile.get(key) ?? { projectRoot: change.projectRoot, file, changes: [] };
         owners.changes.push({ id: change.id, streamId: change.streamId, status: change.status });
         ownersByFile.set(key, owners);
@@ -620,9 +667,11 @@ export class WorkspaceCatalogStore {
 
   releasePlan(workspaceId) {
     const changes = this.releaseChanges(workspaceId);
+    const normalizedWorkspaceId = safeIdentifier(workspaceId, "workspace id");
     const ready = changes.filter((change) => change.status === "ready");
     return {
-      workspaceId: safeIdentifier(workspaceId, "workspace id"),
+      workspaceId: normalizedWorkspaceId,
+      revision: releasePlanRevision(normalizedWorkspaceId, changes),
       ready,
       draft: changes.filter((change) => change.status === "draft"),
       blocked: changes.filter((change) => change.status === "blocked"),
@@ -630,16 +679,22 @@ export class WorkspaceCatalogStore {
     };
   }
 
-  completeRelease(workspaceId) {
-    const plan = this.releasePlan(workspaceId);
-    if (!plan.ready.length) throw new Error("release has no ready changes");
-    if (plan.blocked.length) throw new Error("release has blocked changes");
-    if (plan.conflicts.length) throw new Error("release has overlapping files");
-    const nowMs = this.#nowMs();
-    const update = this.#database.prepare(`
-      UPDATE hub_release_changes SET status = 'released', updated_at_ms = ? WHERE id = ?
-    `);
+  completeRelease(workspaceId, { expectedPlanRevision = null, verificationEvidence = null } = {}) {
+    const expected = expectedPlanRevision == null ? null : String(expectedPlanRevision).trim();
+    if (expectedPlanRevision != null && !expected) throw new Error("expected release plan revision is required");
     return this.#transaction(() => {
+      const plan = this.releasePlan(workspaceId);
+      if (expected && plan.revision !== expected) {
+        throw new Error("release plan revision conflict; verify the current release plan again");
+      }
+      const evidence = expected ? releaseCompletionEvidence(verificationEvidence, expected) : null;
+      if (!plan.ready.length) throw new Error("release has no ready changes");
+      if (plan.blocked.length) throw new Error("release has blocked changes");
+      if (plan.conflicts.length) throw new Error("release has overlapping files");
+      const nowMs = this.#nowMs();
+      const update = this.#database.prepare(`
+        UPDATE hub_release_changes SET status = 'released', updated_at_ms = ? WHERE id = ?
+      `);
       for (const change of plan.ready) update.run(nowMs, change.id);
       const result = {
         workspaceId: plan.workspaceId,
@@ -648,7 +703,11 @@ export class WorkspaceCatalogStore {
       this.recordWorkspaceEvent({
         workspaceId: plan.workspaceId,
         type: "release.completed",
-        payload: { changeIds: result.released.map((change) => change.id) },
+        payload: {
+          changeIds: result.released.map((change) => change.id),
+          planRevision: plan.revision,
+          ...(evidence ? { verification: evidence } : {}),
+        },
       });
       return result;
     });

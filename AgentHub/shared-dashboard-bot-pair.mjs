@@ -1,20 +1,46 @@
 #!/usr/bin/env node
 
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { pathToFileURL } from "node:url";
+
 import { loadConfig } from "./src/infrastructure/filesystem/config.mjs";
 import { SharedDashboardBotClient } from "./src/interfaces/web/shared-dashboard-bot-client.mjs";
-import { pathToFileURL } from "node:url";
+
+async function sharedDashboardBotConfig(config) {
+  const resolvedConfig = config ?? await loadConfig();
+  if (!resolvedConfig.sharedDashboardBot?.enabled) {
+    throw new Error("Компонент shared-dashboard-bot не включён. Запустите install.py --enable-component shared-dashboard-bot.");
+  }
+  return resolvedConfig.sharedDashboardBot;
+}
+
+export async function createSharedDashboardBotEnrollment({
+  config = null,
+  stdout = process.stdout,
+} = {}) {
+  const sharedBot = await sharedDashboardBotConfig(config);
+  const secret = (await readFile(sharedBot.secretFile, "utf8")).trim();
+  if (secret.length < 32 || secret.length > 256) {
+    throw new Error("Shared Dashboard bot secret must contain 32-256 characters");
+  }
+  const enrollment = {
+    version: 1,
+    hubId: sharedBot.hubId,
+    verifier: `sha256:${createHash("sha256").update(secret).digest("hex")}`,
+  };
+  stdout.write(`${JSON.stringify(enrollment)}\n`);
+  return enrollment;
+}
 
 export async function createSharedDashboardBotPairing({
   config = null,
   fetchImpl = globalThis.fetch,
   stdout = process.stdout,
 } = {}) {
-  const resolvedConfig = config ?? await loadConfig();
-  if (!resolvedConfig.sharedDashboardBot?.enabled) {
-    throw new Error("Компонент shared-dashboard-bot не включён. Запустите install.py --enable-component shared-dashboard-bot.");
-  }
+  const sharedBot = await sharedDashboardBotConfig(config);
   const client = new SharedDashboardBotClient({
-    ...resolvedConfig.sharedDashboardBot,
+    ...sharedBot,
     fetchImpl,
     handler: async () => null,
   });
@@ -29,7 +55,10 @@ export async function createSharedDashboardBotPairing({
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  createSharedDashboardBotPairing().catch((error) => {
+  const operation = process.argv.includes("--enrollment")
+    ? createSharedDashboardBotEnrollment
+    : createSharedDashboardBotPairing;
+  operation().catch((error) => {
     console.error(error.message);
     process.exitCode = 1;
   });

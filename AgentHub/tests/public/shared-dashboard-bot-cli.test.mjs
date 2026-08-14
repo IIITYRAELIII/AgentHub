@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { createSharedDashboardBotPairing } from "../../shared-dashboard-bot-pair.mjs";
+import {
+  createSharedDashboardBotEnrollment,
+  createSharedDashboardBotPairing,
+} from "../../shared-dashboard-bot-pair.mjs";
 import { configureSharedDashboardBotWebhook } from "../../shared-dashboard-bot-webhook.mjs";
 
 test("pairing CLI prints the command returned by the shared bot registry", async (context) => {
@@ -33,6 +37,32 @@ test("pairing CLI prints the command returned by the shared bot registry", async
   assert.equal(pairing.code, "ABCD-2345");
   assert.match(output, /\/link ABCD-2345/u);
   assert.equal(output.includes("s".repeat(32)), false);
+});
+
+test("pairing CLI emits a registry enrollment without the secret or its path", async (context) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-enrollment-cli-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const secret = "e".repeat(64);
+  const secretFile = path.join(directory, "private-secret.txt");
+  const hubId = "018f6c86-3f34-7a31-8f27-16f5b96cce71";
+  await writeFile(secretFile, secret, "utf8");
+  let output = "";
+
+  const enrollment = await createSharedDashboardBotEnrollment({
+    config: {
+      sharedDashboardBot: { enabled: true, hubId, secretFile },
+    },
+    stdout: { write(value) { output += value; } },
+  });
+
+  assert.deepEqual(enrollment, {
+    version: 1,
+    hubId,
+    verifier: `sha256:${createHash("sha256").update(secret).digest("hex")}`,
+  });
+  assert.deepEqual(JSON.parse(output), enrollment);
+  assert.equal(output.includes(secret), false);
+  assert.equal(output.includes(secretFile), false);
 });
 
 test("webhook CLI reads credentials from files and configures Telegram without returning secrets", async (context) => {

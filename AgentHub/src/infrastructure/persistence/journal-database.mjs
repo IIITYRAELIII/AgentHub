@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { mkdir, rename, stat } from "node:fs/promises";
+import { mkdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
@@ -66,11 +66,6 @@ function configure(database) {
     INSERT OR IGNORE INTO journal_store_meta (key, value) VALUES ('revision', '0');
     INSERT OR IGNORE INTO journal_store_meta (key, value) VALUES ('ledger_version', '8');
   `);
-}
-
-function recoverableDatabaseError(error) {
-  return /(?:file is not a database|database disk image is malformed|malformed database schema)/iu
-    .test(String(error?.message ?? ""));
 }
 
 function publicIndex(row, revision = 0) {
@@ -313,20 +308,7 @@ export class JournalDatabase {
         configure(database);
       } catch (error) {
         database?.close();
-        if (!recoverableDatabaseError(error)) throw error;
-        const suffix = `.corrupt-${new Date().toISOString().replaceAll(/[:.]/gu, "-")}`;
-        let preserved = false;
-        for (const candidate of [this.#file, `${this.#file}-wal`, `${this.#file}-shm`]) {
-          try {
-            await rename(candidate, `${candidate}${suffix}`);
-            preserved = true;
-          } catch (renameError) {
-            if (renameError?.code !== "ENOENT") throw renameError;
-          }
-        }
-        if (!preserved) throw error;
-        database = new DatabaseSync(this.#file);
-        configure(database);
+        throw error;
       }
       this.#database = database;
       return database;

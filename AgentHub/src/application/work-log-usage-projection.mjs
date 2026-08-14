@@ -116,6 +116,14 @@ function recordCredits(record) {
   return recordCreditBreakdown(record).total;
 }
 
+function recordCreditsKnown(record, breakdown = recordCreditBreakdown(record)) {
+  const total = breakdown.total;
+  return !(
+    (record?.usageReported === false && total <= 0)
+    || (!breakdown.priced && total <= 0)
+  );
+}
+
 export function normalizedLedger(value = {}, { defaultProjectRoot = "" } = {}) {
   const sourceVersion = Number(value?.version ?? 0);
   const legacyLedger = sourceVersion < 5;
@@ -482,15 +490,13 @@ function formatTurnEntry(
   children = "",
   treeCredits = null,
   descendantCount = 0,
+  treeCreditsKnown = false,
 ) {
   const breakdown = recordCreditBreakdown(record);
   const recordTotal = breakdown.total;
   const displayedTotal = Number.isFinite(treeCredits) ? Math.max(0, treeCredits) : recordTotal;
   const elapsedSeconds = durationSeconds(record?.startedAt, record?.completedAt);
-  const creditsKnown = !(
-    (record?.usageReported === false && recordTotal <= 0)
-    || (!breakdown.priced && recordTotal <= 0)
-  );
+  const creditsKnown = recordCreditsKnown(record, breakdown);
   const ownCredits = record?.usageReported === false && recordTotal <= 0
     ? "нет данных"
     : !breakdown.priced && recordTotal <= 0
@@ -542,6 +548,9 @@ function formatTurnEntry(
   const creditsAttribute = creditsKnown
     ? ` data-work-log-turn-credits="${escapeHtmlAttribute(String(recordTotal))}"`
     : "";
+  const totalCreditsAttribute = treeCreditsKnown
+    ? ` data-work-log-turn-total-credits="${escapeHtmlAttribute(String(displayedTotal))}"`
+    : "";
   const profileAttributes = [
     `data-work-log-turn-file-count="${escapeHtmlAttribute(String(
       Array.isArray(record?.changedFiles) ? record.changedFiles.length : 0
@@ -573,7 +582,7 @@ function formatTurnEntry(
     + `data-work-log-turn-parent-thread-id="${parentThread}" data-work-log-turn-parent-turn-id="${parentTurn}" `
     + `data-work-log-turn-depth="${escapeHtmlAttribute(String(depth))}" `
     + `data-work-log-turn-id="${escapeHtmlAttribute(record?.turnId)}" ${profileAttributes}${toolProfileAttributes}`
-    + `${timingAttributes}${completedAtAttribute}${creditsAttribute}>`
+    + `${timingAttributes}${completedAtAttribute}${creditsAttribute}${totalCreditsAttribute}>`
     + "<details data-work-log-turn-details>"
     + "<summary>"
     + '<span data-work-log-turn-meta>'
@@ -712,6 +721,11 @@ function treeNodeCredits(node) {
     + node.children.reduce((total, child) => total + treeNodeCredits(child), 0);
 }
 
+function treeNodeCreditsKnown(node) {
+  return recordCreditsKnown(node.record)
+    || node.children.some((child) => treeNodeCreditsKnown(child));
+}
+
 function formatTurnTreeNode(node, taskCredits, depth = 0) {
   const children = node.children
     .map((child) => formatTurnTreeNode(child, taskCredits, depth + 1))
@@ -724,6 +738,7 @@ function formatTurnTreeNode(node, taskCredits, depth = 0) {
     children,
     treeNodeCredits(node),
     treeNodeCount(node) - 1,
+    treeNodeCreditsKnown(node),
   );
 }
 

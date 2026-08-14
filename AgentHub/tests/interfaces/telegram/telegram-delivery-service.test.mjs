@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { TelegramDeliveryService } from "../../../src/interfaces/telegram/telegram-delivery-service.mjs";
+import {
+  taskViewTextWithAttachments,
+  TelegramDeliveryService,
+} from "../../../src/interfaces/telegram/telegram-delivery-service.mjs";
 
 function service(overrides = {}) {
   const events = overrides.events ?? [];
@@ -67,6 +70,14 @@ function service(overrides = {}) {
     }),
   };
 }
+
+test("task view attachment labels stay with their own message", () => {
+  assert.equal(taskViewTextWithAttachments("Первое сообщение", [
+    { id: "opaque-1", name: "Снимок.png" },
+    { id: "Отчёт.txt" },
+  ]), "Первое сообщение\n\n📎 Снимок.png\n📎 Отчёт.txt");
+  assert.equal(taskViewTextWithAttachments("Второе сообщение", []), "Второе сообщение");
+});
 
 test("reliable delivery queues a retryable Telegram failure with a stable binding", async () => {
   const setup = service({

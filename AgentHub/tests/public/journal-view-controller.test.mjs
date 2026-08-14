@@ -78,6 +78,17 @@ test("journal header counts current catalog streams instead of historical tasks"
   assert.equal(api.streamCount(null), 0);
 });
 
+test("grouped turn prefers total credits including subagents", async () => {
+  const api = await journalViewApi();
+  assert.equal(api.turnDisplayCredits({
+    workLogTurnCredits: "194.8",
+    workLogTurnTotalCredits: "1258.4",
+  }), 1258.4);
+  assert.equal(api.turnDisplayCredits({ workLogTurnCredits: "194.8" }), 194.8);
+  assert.equal(api.turnDisplayCredits({ workLogTurnTotalCredits: "broken" }), null);
+  assert.equal(api.turnDisplayCredits({}), null);
+});
+
 test("journal periods use Monday weeks and calendar months", async () => {
   const api = await journalViewApi();
   assert.deepEqual(

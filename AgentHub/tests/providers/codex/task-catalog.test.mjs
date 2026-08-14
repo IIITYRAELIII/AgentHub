@@ -378,6 +378,18 @@ test("Codex rollout activity identifies the current VSC turn by client id", () =
   }]);
 });
 
+test("Codex rollout activity preserves nested subagent parent identity", () => {
+  const result = parseCodexRolloutActivity(JSON.stringify({
+    type: "session_meta",
+    payload: {
+      id: "child-thread",
+      source: { subagent: { thread_spawn: { parent_thread_id: "parent-thread" } } },
+    },
+  }));
+
+  assert.equal(result.parentThreadId, "parent-thread");
+});
+
 test("Codex rollout activity preserves response annotations before formatting the prompt", () => {
   const turnId = "annotation-turn";
   const prompt = [

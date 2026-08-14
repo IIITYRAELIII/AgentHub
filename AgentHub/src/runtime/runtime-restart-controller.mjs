@@ -6,7 +6,17 @@ function lifecycleFailure(phase, result) {
     : new Error(String(failure?.error ?? failure?.name ?? `${phase} failed`)));
   const error = new AggregateError(errors, `Restart ${phase} failed`);
   error.failures = failures;
+  error.phase = phase;
   return error;
+}
+
+function failed(result) {
+  return result?.ok === false;
+}
+
+function timedOut(error) {
+  return Array.isArray(error?.failures)
+    && error.failures.some((failure) => failure?.error?.name === "LifecycleOperationTimeoutError");
 }
 
 export class RuntimeRestartController {
@@ -21,6 +31,7 @@ export class RuntimeRestartController {
     beginStopping,
     stopTimers,
     stopMedia,
+    resumeAfterAbort = () => {},
     launchReplacement,
     recoverPrevious,
     abortRestart,
@@ -38,7 +49,7 @@ export class RuntimeRestartController {
     if (!resources) throw new TypeError("resources is required");
     Object.assign(this, {
       getRequest, updateOffset, hasBlockingWork, setWaiting, updateMessage, saveState,
-      resources, beginStopping, stopTimers, stopMedia, launchReplacement,
+      resources, beginStopping, stopTimers, stopMedia, resumeAfterAbort, launchReplacement,
       recoverPrevious, abortRestart, finishSuccessfulReplacement, isStopping, logger,
     });
   }
@@ -58,28 +69,37 @@ export class RuntimeRestartController {
     if (!this.beginStopping()) return { status: "ignored" };
     await this.updateMessage("🔄 Перезапускаю Agent Hub…").catch(() => {});
     try {
-      await this.saveState();
-      const flush = await this.resources.flush({ label: "Restart flush failed" });
-      if (flush?.ok === false) throw lifecycleFailure("flush", flush);
+      const quiesce = await this.resources.quiesce({
+        label: "Restart quiesce failed",
+        timeoutMs: 60_000,
+      });
+      if (failed(quiesce)) throw lifecycleFailure("quiesce", quiesce);
     } catch (error) {
-      this.logger.error("Cannot prepare runtime restart:", error.message);
-      let abortError = null;
-      try {
-        await this.abortRestart(error);
-      } catch (recoveryError) {
-        abortError = recoveryError;
-        this.logger.error("Cannot persist aborted restart state:", recoveryError.message);
-      }
-      return { status: "aborted", phase: "flush", error, ...(abortError ? { abortError } : {}) };
+      if (timedOut(error)) return this.#halt(error, error?.phase ?? "quiesce");
+      return this.#abort(error, error?.phase ?? "quiesce", false);
     }
 
     this.stopTimers();
     this.stopMedia();
     try {
-      const suspend = await this.resources.suspend({ label: "Restart close failed" });
-      if (suspend?.ok === false) throw lifecycleFailure("suspend", suspend);
+      await this.saveState();
+      const drain = await this.resources.drain({ label: "Restart drain failed" });
+      if (failed(drain)) throw lifecycleFailure("drain", drain);
     } catch (error) {
-      return this.#recover(error, "suspend");
+      if (timedOut(error)) return this.#halt(error, error?.phase ?? "prepare");
+      return this.#abort(error, error?.phase ?? "prepare", true);
+    }
+
+    let lockReleased = false;
+    try {
+      const close = await this.resources.close({ label: "Restart close failed" });
+      if (failed(close)) throw lifecycleFailure("close", close);
+      const release = await this.resources.releaseLock({ label: "Restart lock release failed" });
+      if (failed(release)) throw lifecycleFailure("releaseLock", release);
+      lockReleased = true;
+    } catch (error) {
+      if (timedOut(error)) return this.#halt(error, error?.phase ?? "close");
+      return this.#recover(error, error?.phase ?? "close", { lockReleased });
     }
 
     try {
@@ -89,7 +109,7 @@ export class RuntimeRestartController {
           + `${replacement.usedFallback ? " (direct launcher fallback)" : ""}.`,
       );
     } catch (error) {
-      return this.#recover(error, "launch");
+      return this.#recover(error, "launch", { lockReleased: true });
     }
 
     await this.resources.finalize({ label: "Restart finalize failed" });
@@ -97,10 +117,37 @@ export class RuntimeRestartController {
     return { status: "replaced" };
   }
 
-  async #recover(error, phase) {
+  async #abort(error, phase, resumeRuntime) {
+    this.logger.error("Cannot prepare runtime restart:", error.message);
+    let abortError = null;
+    try {
+      await this.abortRestart(error);
+    } catch (recoveryError) {
+      abortError = recoveryError;
+      this.logger.error("Cannot persist aborted restart state:", recoveryError.message);
+    }
+    try {
+      if (resumeRuntime) await this.resumeAfterAbort();
+      const recover = await this.resources.recover({ label: "Restart polling recovery failed" });
+      if (failed(recover)) throw lifecycleFailure("recover", recover);
+    } catch (recoveryError) {
+      abortError ??= recoveryError;
+      this.logger.error("Cannot resume aborted restart:", recoveryError.message);
+    }
+    return { status: "aborted", phase, error, ...(abortError ? { abortError } : {}) };
+  }
+
+  #halt(error, phase) {
+    this.logger.error(`Runtime restart halted after ${phase} timeout; the instance lock remains held.`);
+    return { status: "failed", phase, error };
+  }
+
+  async #recover(error, phase, { lockReleased }) {
     this.logger.error(`Cannot complete runtime restart ${phase}:`, error.message);
     try {
-      await this.recoverPrevious(error);
+      await this.recoverPrevious(error, { lockReleased });
+      const recover = await this.resources.recover({ label: "Restart polling recovery failed" });
+      if (failed(recover)) throw lifecycleFailure("recover", recover);
       return { status: "recovered", phase, error };
     } catch (restoreError) {
       this.logger.error("Cannot restore the previous bot after failed restart:", restoreError.message);

@@ -13,7 +13,7 @@ test("runtime composition passes startup timers through its public contract", as
     stopRuntimeTimers() {},
     stopManagedRuns() {},
     stopMedia() {},
-    runtimeResources: {},
+    runtimeResources: { register() {} },
     startControlPlane: noOp,
     startMiniApp: noOp,
     sanitizeRollouts: noOp,
@@ -55,8 +55,11 @@ test("Agent Hub bootstrap starts and stops every boundary without a real process
     agentProviders: { call: (...args) => events.push(["provider:stop", ...args]) },
     mediaController: { stop: () => events.push("media:stop") },
     runtimeResources: {
-      flush: async () => events.push("resources:flush"),
-      suspend: async () => events.push("resources:suspend"),
+      register() {},
+      quiesce: async () => events.push("resources:quiesce"),
+      drain: async () => events.push("resources:drain"),
+      close: async () => events.push("resources:close"),
+      releaseLock: async () => events.push("resources:lock"),
       finalize: async () => events.push("resources:finalize"),
     },
     miniAppLifecycle: { start: async () => events.push("mini-app:start") },
@@ -110,8 +113,10 @@ test("runtime lifecycle stops once and settles every named component", async () 
     stopManagedRuns: () => events.push("runs"),
     stopMedia: () => events.push("media"),
     resources: {
-      flush: async () => events.push("flush"),
-      suspend: async () => events.push("suspend"),
+      quiesce: async () => events.push("quiesce"),
+      drain: async () => events.push("drain"),
+      close: async () => events.push("close"),
+      releaseLock: async () => events.push("lock"),
       finalize: async () => events.push("finalize"),
     },
     logger: { log: (message) => events.push(message), error: () => {} },
@@ -125,8 +130,10 @@ test("runtime lifecycle stops once and settles every named component", async () 
     "timers",
     "runs",
     "media",
-    "flush",
-    "suspend",
+    "quiesce",
+    "drain",
+    "close",
+    "lock",
     "finalize",
   ]);
 });
@@ -137,16 +144,58 @@ test("runtime lifecycle delegates all phases to the shared resource registry", a
     beginStopping: () => true,
     stopTimers: () => {},
     resources: {
-      flush: async (options) => phases.push(["flush", options.label]),
-      suspend: async (options) => phases.push(["suspend", options.label]),
+      quiesce: async (options) => phases.push(["quiesce", options.label]),
+      drain: async (options) => phases.push(["drain", options.label]),
+      close: async (options) => phases.push(["close", options.label]),
+      releaseLock: async (options) => phases.push(["releaseLock", options.label]),
       finalize: async (options) => phases.push(["finalize", options.label]),
     },
     logger: { log() {}, error() {} },
   });
   assert.equal(await controller.shutdown("test"), true);
   assert.deepEqual(phases, [
-    ["flush", "Shutdown flush failed"],
-    ["suspend", "Shutdown close failed"],
+    ["quiesce", "Shutdown quiesce failed"],
+    ["drain", "Shutdown drain failed"],
+    ["close", "Shutdown close failed"],
+    ["releaseLock", "Shutdown lock release failed"],
     ["finalize", "Shutdown finalize failed"],
   ]);
+});
+
+test("runtime lifecycle retains the instance lock when close fails", async () => {
+  const phases = [];
+  const controller = new RuntimeLifecycleController({
+    beginStopping: () => true,
+    stopTimers() {},
+    resources: {
+      quiesce: async () => ({ ok: true }),
+      drain: async () => ({ ok: true }),
+      close: async () => ({ ok: false }),
+      releaseLock: async () => phases.push("release"),
+      finalize: async () => phases.push("finalize"),
+    },
+    logger: { log() {}, error: (message) => phases.push(message) },
+  });
+
+  assert.equal(await controller.shutdown("test"), true);
+  assert.deepEqual(phases, ["Shutdown stopped after close failure; the instance lock remains held."]);
+});
+
+test("runtime lifecycle does not drain or release after quiesce fails", async () => {
+  const phases = [];
+  const controller = new RuntimeLifecycleController({
+    beginStopping: () => true,
+    stopTimers() {},
+    resources: {
+      quiesce: async () => ({ ok: false }),
+      drain: async () => phases.push("drain"),
+      close: async () => phases.push("close"),
+      releaseLock: async () => phases.push("release"),
+      finalize: async () => phases.push("finalize"),
+    },
+    logger: { log() {}, error: (message) => phases.push(message) },
+  });
+
+  assert.equal(await controller.shutdown("test"), true);
+  assert.deepEqual(phases, ["Shutdown stopped after quiesce failure; the instance lock remains held."]);
 });

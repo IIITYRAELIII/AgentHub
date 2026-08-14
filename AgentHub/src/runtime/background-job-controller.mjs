@@ -7,8 +7,8 @@ const DEFAULT_RETRY_MAX_DELAY_MS = 30_000;
 
 export class PersistentBackgroundJobController {
   #scheduledIds = new Set();
-  #scheduledKinds = new Map();
   #retryTimers = new Map();
+  #pumpPromise = null;
 
   constructor({
     store,
@@ -55,6 +55,7 @@ export class PersistentBackgroundJobController {
     this.scheduleTimer = scheduleTimer;
     this.cancelTimer = cancelTimer;
     const onChange = ({ size }) => {
+      this.#requestPump();
       if (size === 0 && this.size === 0) this.onIdle();
     };
     this.mediaQueue = new Queue({ concurrency: 1, maxJobs: maxMediaJobs, onChange });
@@ -62,13 +63,11 @@ export class PersistentBackgroundJobController {
   }
 
   get mediaSize() {
-    return [...this.#scheduledKinds.values()].filter((kind) => kind !== "speech").length;
+    return this.#persistedCount("media");
   }
-  get speechSize() {
-    return [...this.#scheduledKinds.values()].filter((kind) => kind === "speech").length;
-  }
+  get speechSize() { return this.#persistedCount("speech"); }
   get speechPending() { return this.speechQueue.pending; }
-  get size() { return this.#scheduledIds.size; }
+  get size() { return this.store.size; }
 
   #queue(kind) {
     return kind === "speech" ? this.speechQueue : this.mediaQueue;
@@ -111,7 +110,27 @@ export class PersistentBackgroundJobController {
     if (timer !== undefined) this.cancelTimer(timer);
     this.#retryTimers.delete(itemId);
     this.#scheduledIds.delete(itemId);
-    this.#scheduledKinds.delete(itemId);
+  }
+
+  #requestPump() {
+    if (this.isStopping() || this.#pumpPromise) return;
+    this.#pumpPromise = Promise.resolve()
+      .then(() => this.#pumpPersistedJobs())
+      .catch((error) => {
+        this.logger.error("Cannot schedule persistent background jobs:", error.message);
+      })
+      .finally(() => {
+        this.#pumpPromise = null;
+      });
+  }
+
+  #pumpPersistedJobs() {
+    const fullKinds = new Set();
+    for (const item of this.store.values()) {
+      if (this.isStopping()) return;
+      if (this.#scheduledIds.has(item.id) || fullKinds.has(item.kind)) continue;
+      if (!this.#schedule(item)) fullKinds.add(item.kind);
+    }
   }
 
   async #run(item) {
@@ -175,7 +194,6 @@ export class PersistentBackgroundJobController {
   #schedule(item) {
     if (this.#scheduledIds.has(item.id)) return true;
     this.#scheduledIds.add(item.id);
-    this.#scheduledKinds.set(item.id, item.kind);
     const dueAt = Date.parse(String(item.nextAttemptAt ?? ""));
     const delayMs = Number.isFinite(dueAt) ? Math.max(0, dueAt - this.now()) : 0;
     if (delayMs > 0) {

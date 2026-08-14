@@ -39,6 +39,12 @@ async function waitFor(predicate) {
   assert.fail("condition was not reached");
 }
 
+function deferred() {
+  let resolve;
+  const promise = new Promise((complete) => { resolve = complete; });
+  return { promise, resolve };
+}
+
 function controller(overrides = {}) {
   return new PersistentBackgroundJobController({
     store: new MemoryStore(),
@@ -66,7 +72,7 @@ test("persistent background controller preserves interrupted work during shutdow
   const store = new MemoryStore();
   const jobs = controller({ store, isStopping: () => true });
   const item = await jobs.enqueue("image", { message: {}, target: {} }, 7);
-  await waitFor(() => jobs.size === 0);
+  await waitFor(() => jobs.mediaQueue.size === 0);
   assert.equal(store.items.has(item.id), true);
 });
 
@@ -151,6 +157,33 @@ test("persistent background controller restores a failed retry after restart", a
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("persistent background controller dispatches restored overflow once a queue slot opens", async () => {
+  const store = new MemoryStore([
+    { id: "first", kind: "speech", payload: { chatId: 7, text: "first" }, createdAt: "2026-01-01T00:00:00.000Z" },
+    { id: "second", kind: "speech", payload: { chatId: 7, text: "second" }, createdAt: "2026-01-01T00:00:01.000Z" },
+    { id: "third", kind: "speech", payload: { chatId: 7, text: "third" }, createdAt: "2026-01-01T00:00:02.000Z" },
+  ]);
+  const first = deferred();
+  const calls = [];
+  const jobs = controller({
+    store,
+    media: {
+      processSpeechRequest: async (_chatId, text) => {
+        calls.push(text);
+        if (text === "first") await first.promise;
+      },
+    },
+  });
+
+  assert.deepEqual(await jobs.restore(), { restored: 2, total: 3 });
+  await waitFor(() => calls.length === 1);
+  assert.equal(jobs.size, 3);
+
+  first.resolve();
+  await waitFor(() => store.size === 0);
+  assert.deepEqual(calls, ["first", "second", "third"]);
 });
 
 test("persistent background controller enforces separate durable limits", async () => {

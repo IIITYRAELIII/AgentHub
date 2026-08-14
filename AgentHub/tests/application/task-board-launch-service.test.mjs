@@ -1,0 +1,150 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import { TaskBoardLaunchService } from "../../src/application/task-board-launch-service.mjs";
+
+function fixture({ interruptAfterCreate = false } = {}) {
+  const calls = [];
+  const streams = new Map();
+  const threads = new Map();
+  const task = {
+    id: "board-1",
+    rawText: "Проверить crash recovery",
+    correctedText: "",
+    bucket: "workspace",
+    status: "open",
+    workspaceId: "workspace-1",
+    streamId: null,
+    sourceDetails: {},
+  };
+  const taskBoard = {
+    task: () => ({ ...task, sourceDetails: { ...task.sourceDetails } }),
+    prepareStart: ({ workspaceId, streamId, streamName, requestId }) => {
+      if (task.startRequestId && task.startRequestId !== requestId) {
+        throw new Error("Task launch is already pending; retry it with the original request_id");
+      }
+      Object.assign(task, {
+        bucket: "workspace",
+        status: task.status === "started" ? "started" : "starting",
+        workspaceId,
+        streamId,
+        startRequestId: requestId,
+        startStreamName: streamName,
+      });
+      calls.push(["prepare", requestId, streamId]);
+      return { ...task, sourceDetails: { ...task.sourceDetails } };
+    },
+    cancelPreparedStart: ({ requestId }) => {
+      if (task.status === "starting" && task.startRequestId === requestId) {
+        Object.assign(task, { status: "open", streamId: null, startRequestId: null, startStreamName: null });
+      }
+      calls.push(["cancel", requestId]);
+      return { ...task };
+    },
+    markStarted: ({ workspaceId, streamId, requestId }) => {
+      assert.equal(task.startRequestId, requestId);
+      Object.assign(task, { status: "started", workspaceId, streamId });
+      calls.push(["started", requestId, streamId]);
+      return { ...task, sourceDetails: { ...task.sourceDetails } };
+    },
+  };
+  const workspaceCatalog = {
+    workspace: (id) => id === "workspace-1" ? { id, name: "Agent HUB" } : null,
+    stream: (id) => streams.get(id) ?? null,
+    createStream: ({ id, workspaceId, name }) => {
+      const stream = { id, workspaceId, name };
+      streams.set(id, stream);
+      calls.push(["create-stream", id]);
+      return stream;
+    },
+    activeThread: (streamId) => threads.get(streamId) ?? null,
+  };
+  let shouldInterrupt = interruptAfterCreate;
+  const launch = new TaskBoardLaunchService({
+    taskBoard,
+    workspaceCatalog,
+    dispatchCommand: async (type, payload) => {
+      calls.push(["command", type, payload]);
+      if (type === "task.select") return {};
+      const target = {
+        streamId: payload.streamId,
+        provider: "codex",
+        threadId: "thread-1",
+        projectRoot: "D:/work",
+      };
+      threads.set(payload.streamId, target);
+      if (shouldInterrupt) {
+        shouldInterrupt = false;
+        throw new Error("interrupted after task creation");
+      }
+      return { createdTask: target };
+    },
+    sendMessage: async (params) => {
+      calls.push(["send", params]);
+      return { accepted: true };
+    },
+  });
+  return { launch, task, calls, streams };
+}
+
+test("TaskBoardLaunchService reconciles a crashed MCP start without creating another Stream or Task", async () => {
+  const { launch, task, calls, streams } = fixture({ interruptAfterCreate: true });
+  const params = {
+    id: "board-1",
+    workspaceId: "workspace-1",
+    streamName: "Recovery",
+    provider: "codex",
+    launchRequestId: "mcp-start-1",
+    clientUserMessageId: "mcp:mcp-start-1",
+    followUpMode: "queue",
+  };
+
+  await assert.rejects(() => launch.start(params), /interrupted after task creation/u);
+  assert.equal(task.status, "starting");
+  assert.equal(streams.size, 1);
+  assert.equal(calls.filter(([kind]) => kind === "command").length, 1);
+
+  const resumed = await launch.start(params);
+  assert.equal(resumed.task.status, "started");
+  assert.equal(streams.size, 1);
+  assert.equal(calls.filter(([kind]) => kind === "create-stream").length, 1);
+  assert.equal(calls.filter(([, type]) => type === "task.create").length, 1);
+  assert.equal(calls.filter(([kind]) => kind === "send").length, 1);
+  assert.equal(calls.find(([kind]) => kind === "send")[1].clientUserMessageId, "mcp:mcp-start-1");
+});
+
+test("TaskBoardLaunchService compensates a failed planned Stream before any Task is created", async () => {
+  const { task, calls } = fixture();
+  const broken = new TaskBoardLaunchService({
+    taskBoard: {
+      task: () => task,
+      prepareStart: ({ workspaceId, streamId, streamName, requestId }) => {
+        Object.assign(task, { status: "starting", workspaceId, streamId, startStreamName: streamName, startRequestId: requestId });
+        return { ...task };
+      },
+      cancelPreparedStart: () => {
+        Object.assign(task, { status: "open", streamId: null, startStreamName: null, startRequestId: null });
+        return { ...task };
+      },
+      markStarted: () => { throw new Error("must not mark a failed launch as started"); },
+    },
+    workspaceCatalog: {
+      workspace: (id) => id === "workspace-1" ? { id, name: "Agent HUB" } : null,
+      stream: () => null,
+      activeThread: () => null,
+      createStream: () => { throw new Error("cannot persist planned Stream"); },
+    },
+    dispatchCommand: async () => { throw new Error("must not create a Task without a Stream"); },
+    sendMessage: async () => { throw new Error("must not send without a Task"); },
+  });
+
+  await assert.rejects(() => broken.start({
+    id: "board-1",
+    workspaceId: "workspace-1",
+    streamName: "Recovery",
+    launchRequestId: "mcp-start-2",
+  }), /cannot persist planned Stream/u);
+  assert.equal(task.status, "open");
+  assert.equal(task.streamId, null);
+  assert.equal(calls.filter(([kind]) => kind === "command").length, 0);
+});

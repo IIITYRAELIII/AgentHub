@@ -58,6 +58,7 @@ export function taskHasUnreadAnswer(task, cursor) {
 export class TaskReadStateStore {
   #database;
   #now;
+  #revision = 0;
 
   constructor({ dataDir, now = () => Date.now() } = {}) {
     if (!dataDir) throw new Error("TaskReadStateStore dataDir is required");
@@ -87,6 +88,8 @@ export class TaskReadStateStore {
       WHERE account_id = ? AND provider = ? AND thread_id = ?
     `).get(identity.accountId, identity.provider, identity.threadId));
   }
+
+  get revision() { return this.#revision; }
 
   markRead(value) {
     const identity = normalizedIdentity(value);
@@ -120,6 +123,7 @@ export class TaskReadStateStore {
       readAtMs,
       updatedAt,
     );
+    this.#revision += 1;
     return {
       ...identity,
       answerAtMs: next.atMs,

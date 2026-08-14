@@ -21,8 +21,11 @@ namespace AgentHubDesktop
             WorkspaceFileLinkRejectsWebTarget();
             UserMessageDisclosureRequiresRealOverflow();
             AssistantAttachmentsAreCollectedAndDeduplicated();
+            ConversationMessagesPreserveOrderAuthorAndAttachments();
+            ConversationSignatureTracksMessageSemantics();
             AssistantAttachmentPathIsConfinedToPrivateRoot();
             AttachmentHistorySignatureChangesAfterHydration();
+            CompletedRunReloadsConversationHistory();
             AttachmentStoragePreservesRdpFileName();
             WorkspacePresentationGroupsThreadsByWorkspaceAndStream();
             WorkspacePresentationKeepsAtMostFourOpenStreams();
@@ -222,6 +225,82 @@ namespace AgentHubDesktop
             var userValues = DesktopAttachmentPresentation.UserAttachments(exchange);
             Require(userValues.Count == 1, "user attachments were not collected");
             Require(AgentHubClient.Text(userValues[0], "id") == "user.png", "user attachment order changed");
+        }
+
+        private static void CompletedRunReloadsConversationHistory()
+        {
+            var running = new TaskItem
+            {
+                Running = true,
+                LastAnswerAt = "2026-08-14T10:00:00.000Z",
+                LastAnswerTurnId = "turn-previous"
+            };
+            var completed = new TaskItem
+            {
+                Running = false,
+                LastAnswerAt = "2026-08-14T10:01:00.000Z",
+                LastAnswerTurnId = "turn-final"
+            };
+            Require(DesktopHistoryRefreshPolicy.ShouldReload(running, completed),
+                "completed run did not invalidate conversation history");
+            Require(!DesktopHistoryRefreshPolicy.ShouldReload(completed, completed),
+                "unchanged completed task repeatedly invalidated conversation history");
+        }
+
+        private static void ConversationMessagesPreserveOrderAuthorAndAttachments()
+        {
+            var exchange = new Dictionary<string, object>
+            {
+                { "prompt", "Устаревший prompt" },
+                { "answer", "Устаревший answer" },
+                { "messages", new object[]
+                    {
+                        new Dictionary<string, object>
+                        {
+                            { "role", "user" }, { "author", "Agent HUB · Themes (Codex)" }, { "text", "Первое" },
+                            { "attachments", new object[] { new Dictionary<string, object> { { "id", "first.png" } } } }
+                        },
+                        new Dictionary<string, object>
+                        {
+                            { "role", "user" }, { "text", "Второе" },
+                            { "attachments", new object[] { new Dictionary<string, object> { { "id", "first.png" } } } }
+                        },
+                        new Dictionary<string, object> { { "role", "agent" }, { "text", "Ответ" } }
+                    }
+                }
+            };
+            var messages = DesktopAttachmentPresentation.ConversationMessages(exchange, true);
+            Require(messages.Count == 3, "full message sequence was collapsed to prompt/answer");
+            Require(AgentHubClient.Text(messages[0], "author") == "Agent HUB · Themes (Codex)", "message author was lost");
+            Require(AgentHubClient.Text(messages[1], "text") == "Второе", "message order changed");
+            Require(
+                AgentHubClient.Text(DesktopAttachmentPresentation.MessageAttachments(messages[0])[0], "id") == "first.png",
+                "first message received another message's attachment");
+            Require(
+                AgentHubClient.Text(DesktopAttachmentPresentation.MessageAttachments(messages[1])[0], "id") == "first.png",
+                "the same attachment ID was deduplicated across different messages");
+        }
+
+        private static void ConversationSignatureTracksMessageSemantics()
+        {
+            var message = new Dictionary<string, object>
+            {
+                { "itemId", "message-1" }, { "role", "user" }, { "text", "Первое" }
+            };
+            var exchange = new Dictionary<string, object>
+            {
+                { "id", "turn-1" }, { "active", true }, { "completed", false },
+                { "messages", new object[] { message } }
+            };
+            var history = new[] { exchange };
+            var initial = DesktopAttachmentPresentation.HistorySignature(history);
+            message["text"] = "Второе";
+            var textChanged = DesktopAttachmentPresentation.HistorySignature(history);
+            exchange["active"] = false;
+            exchange["completed"] = true;
+            var phaseChanged = DesktopAttachmentPresentation.HistorySignature(history);
+            Require(initial != textChanged, "message text did not invalidate the render signature");
+            Require(textChanged != phaseChanged, "turn phase did not invalidate the render signature");
         }
 
         private static void AssistantAttachmentPathIsConfinedToPrivateRoot()

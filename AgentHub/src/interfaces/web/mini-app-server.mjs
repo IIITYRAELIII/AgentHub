@@ -5,6 +5,7 @@ import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
+import { agentHubRuntimeHealth } from "../../application/runtime-health.mjs";
 
 import {
   attachmentContentType,
@@ -408,6 +409,7 @@ export class MiniAppServer {
   #changeTimer = null;
   #heartbeatTimer = null;
   #host;
+  #health;
   #journalCache = null;
   #journalDatabase;
   #ownsJournalDatabase;
@@ -443,8 +445,10 @@ export class MiniAppServer {
     journalDatabase = null,
     journalDatabaseFile = null,
     workspaceFileRoots = [],
+    health = agentHubRuntimeHealth,
   } = {}) {
     this.#host = String(host);
+    this.#health = health && typeof health.snapshot === "function" ? health : agentHubRuntimeHealth;
     this.#port = Number(port);
     this.#botToken = String(botToken);
     this.#allowedUserIds = new Set(allowedUserIds);
@@ -991,7 +995,7 @@ export class MiniAppServer {
       return;
     }
     if (url.pathname === "/health") {
-      json(response, 200, { ok: true }, method);
+      json(response, 200, { ok: true, ...this.#health.snapshot() }, method);
       return;
     }
     if (url.pathname === "/api/mobile/update" || url.pathname === "/api/mobile/update.apk") {

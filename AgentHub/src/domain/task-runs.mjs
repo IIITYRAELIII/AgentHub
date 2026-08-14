@@ -103,15 +103,20 @@ export class TaskRunRegistry {
     return run;
   }
 
-  reindex(run, previous = {}) {
-    const oldKey = taskRunKey({ ...run, ...previous });
-    if (this.#byTask.get(oldKey) === run) this.#byTask.delete(oldKey);
-    if (previous.turnId && this.#byTurn.get(previous.turnId) === run) {
-      this.#byTurn.delete(previous.turnId);
-    }
+  reindex(run) {
     const newKey = taskRunKey(run);
-    const existing = this.#byTask.get(newKey);
-    if (existing && existing !== run) throw new Error("this task is already running");
+    const taskCollision = this.#byTask.get(newKey);
+    if (taskCollision && taskCollision !== run) throw new Error("this task is already running");
+    if (run.turnId) {
+      const turnCollision = this.#byTurn.get(run.turnId);
+      if (turnCollision && turnCollision !== run) throw new Error("this turn is already running");
+    }
+    for (const [key, indexedRun] of this.#byTask) {
+      if (indexedRun === run) this.#byTask.delete(key);
+    }
+    for (const [turnId, indexedRun] of this.#byTurn) {
+      if (indexedRun === run) this.#byTurn.delete(turnId);
+    }
     this.#byTask.set(newKey, run);
     if (run.turnId) this.#byTurn.set(run.turnId, run);
     return run;
@@ -129,15 +134,11 @@ export class TaskRunRegistry {
     if (matches.length !== 1) return null;
     const [run] = matches;
     if (String(run.streamId ?? "").trim() === normalizedStreamId) return run;
-    const previous = {
-      streamId: run.streamId,
-      provider: run.provider,
-      projectRoot: run.projectRoot,
-      threadId: run.threadId,
-      turnId: run.turnId,
-    };
+    const nextKey = taskRunKey({ ...run, streamId: normalizedStreamId });
+    const taskCollision = this.#byTask.get(nextKey);
+    if (taskCollision && taskCollision !== run) throw new Error("this task is already running");
     run.streamId = normalizedStreamId;
-    return this.reindex(run, previous);
+    return this.reindex(run);
   }
 
   remove(runOrId) {

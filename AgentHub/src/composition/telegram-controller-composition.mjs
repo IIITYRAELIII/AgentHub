@@ -337,13 +337,20 @@ export function createTelegramControllerComposition({
     preserveFailedUpdate: (update, error) => failedUpdateStore.add(update, error),
     afterUpdate: async (update) => {
       await acknowledgeApplicationCommands(update);
-      if (restartReady()) await performRestart();
+      if (restartReady()) {
+        queueMicrotask(() => void performRestart().catch((error) => {
+          console.error("Telegram-triggered restart failed:", error.message);
+        }));
+      }
     },
     stopping: isStopping,
   });
+  const pollTelegram = () => telegramPollingController.run();
+  pollTelegram.quiesce = () => telegramPollingController.quiesce();
+  pollTelegram.resume = () => telegramPollingController.resume();
 
   return {
     forwardBundleController,
-    pollTelegram: () => telegramPollingController.run(),
+    pollTelegram,
   };
 }

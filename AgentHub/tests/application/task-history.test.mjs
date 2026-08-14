@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  codexExplicitFinalTurnAnswer,
   codexFinalTurnAnswer,
   codexTurnHasExplicitFinalAnswer,
   claudeTranscriptHistory,
@@ -218,6 +219,9 @@ test("completed Codex history shows only the final answer", () => {
   assert.equal(codexFinalTurnAnswer({
     items: [{ type: "agentMessage", phase: "final_answer", text: "Финальный ответ." }],
   }), "Финальный ответ.");
+  assert.equal(codexExplicitFinalTurnAnswer({
+    items: [{ type: "agentMessage", phase: "commentary", text: "Промежуточно." }],
+  }), "");
   assert.equal(codexTurnHasExplicitFinalAnswer({
     status: "interrupted",
     items: [{ type: "agentMessage", phase: "final_answer", text: "Финальный ответ." }],
@@ -255,6 +259,30 @@ test("displayUserPrompt unwraps Telegram replies and removes IDE context", () =>
     "Пользователь отвечает на сообщение:\n> Старый ответ\n\nТекст пользователя:\nПродолжай",
   ), "Продолжай");
   assert.equal(displayUserPrompt("<ide_context>служебное</ide_context>\nМой вопрос"), "Мой вопрос");
+});
+
+test("Codex internal prompt envelopes never become user messages", () => {
+  const internal = [
+    "<skills_instructions>",
+    "## Skills",
+    "Service-only skill catalog.",
+    "</skills_instructions>",
+  ].join("\n");
+  assert.equal(displayUserPrompt(internal), "");
+
+  const [exchange] = codexThreadHistory([{
+    id: "turn-with-delayed-user-item",
+    status: "inProgress",
+    items: [
+      { type: "userMessage", content: [{ type: "input_text", text: internal }] },
+      { type: "userMessage", content: [{ type: "input_text", text: "Настоящий запрос" }] },
+    ],
+  }]);
+
+  assert.equal(exchange.prompt, "Настоящий запрос");
+  assert.deepEqual(exchange.messages.map(({ role, text }) => ({ role, text })), [
+    { role: "user", text: "Настоящий запрос" },
+  ]);
 });
 
 test("inter-Stream messages retain their source author without exposing the envelope", () => {
@@ -408,6 +436,19 @@ test("codexThreadHistory returns user and assistant pairs", () => {
     ],
     activities: [],
   }]);
+});
+
+test("codexThreadHistory attributes a subagent prompt to its parent agent", () => {
+  const [exchange] = codexThreadHistory([{
+    id: "turn-subagent",
+    status: "completed",
+    items: [
+      { id: "prompt", type: "userMessage", content: [{ type: "text", text: "Проверь реализацию" }] },
+      { id: "answer", type: "agentMessage", phase: "final_answer", text: "Проверено" },
+    ],
+  }], { userAuthor: "Agent HUB - Architect (Codex)" });
+
+  assert.equal(exchange.messages[0].author, "Agent HUB - Architect (Codex)");
 });
 
 test("codexThreadHistory preserves item ids and the official user-message client ids", () => {

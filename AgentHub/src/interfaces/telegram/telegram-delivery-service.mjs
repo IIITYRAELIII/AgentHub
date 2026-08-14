@@ -1,3 +1,12 @@
+export function taskViewTextWithAttachments(text, attachments = []) {
+  const body = String(text ?? "").trim();
+  const attachmentLines = (Array.isArray(attachments) ? attachments : []).map((attachment, index) => {
+    const name = String(attachment?.name ?? attachment?.id ?? "").trim();
+    return `📎 ${name || `Вложение ${index + 1}`}`;
+  });
+  return [body, attachmentLines.join("\n")].filter(Boolean).join("\n\n");
+}
+
 export class TelegramDeliveryService {
   constructor({
     dataDir,
@@ -184,8 +193,8 @@ export class TelegramDeliveryService {
     return removed.size;
   }
 
-  async sendTaskViewText(run, heading, text, kind) {
-    const value = `${heading}\n\n${String(text ?? "").trim()}`;
+  async sendTaskViewText(run, heading, text, kind, attachments = []) {
+    const value = `${heading}\n\n${taskViewTextWithAttachments(text, attachments)}`;
     for (let start = 0; start < value.length; start += this.messageLimit) {
       await this.sendRunMessage(
         run,

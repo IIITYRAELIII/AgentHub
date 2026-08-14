@@ -16,6 +16,7 @@ import { RateLimitHistoryStore } from "../infrastructure/persistence/rate-limit-
 import { PreTurnInstructionStore } from "../infrastructure/persistence/pre-turn-instruction-store.mjs";
 import { installRotatingConsole } from "../infrastructure/persistence/rotating-log.mjs";
 import { RuntimeStateStore } from "../infrastructure/persistence/runtime-state-store.mjs";
+import { SharedSqliteRecoveryCoordinator } from "../infrastructure/persistence/shared-sqlite-recovery.mjs";
 import { TaskReadStateStore } from "../infrastructure/persistence/task-read-state-store.mjs";
 import { TrustedDeviceStore } from "../infrastructure/persistence/trusted-device-store.mjs";
 import { WorkspaceCatalogStore } from "../infrastructure/persistence/workspace-catalog-store.mjs";
@@ -75,6 +76,15 @@ export async function createHubInfrastructure({
   handleRuntimeCommand,
   stopProcessTree,
 }) {
+  const instanceGuard = new SingleInstanceGuard({ dataDir: config.dataDir, lockFile: instanceLockFile });
+  await instanceGuard.acquire();
+  const sqliteRecoveryCoordinator = new SharedSqliteRecoveryCoordinator({
+    databaseFile: journalDatabaseFile,
+    instanceId: instanceGuard.instanceToken,
+  });
+  let sqliteRecovery;
+  try {
+    sqliteRecovery = await sqliteRecoveryCoordinator.prepare();
   const localTrustedDeviceStore = new TrustedDeviceStore({
     filePath: path.join(config.dataDir, "trusted-devices.json"),
   });
@@ -195,8 +205,6 @@ export async function createHubInfrastructure({
     console.warn(`Cannot refresh USD/RUB rate from CBR; cached value remains active: ${error.message}`);
   });
 
-  const instanceGuard = new SingleInstanceGuard({ dataDir: config.dataDir, lockFile: instanceLockFile });
-  await instanceGuard.acquire();
   const runtimeStateStore = new RuntimeStateStore({
     dataDir: config.dataDir,
     legacyFile: stateFile,
@@ -263,5 +271,11 @@ export async function createHubInfrastructure({
     runJournal,
     runtimeCommandServer,
     rateLimitHistoryStore,
+    sqliteRecovery,
+    acknowledgeSqliteRecovery: () => sqliteRecoveryCoordinator.acknowledge(sqliteRecovery),
   };
+  } catch (error) {
+    await instanceGuard.release();
+    throw error;
+  }
 }

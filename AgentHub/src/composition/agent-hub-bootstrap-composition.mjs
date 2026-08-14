@@ -31,6 +31,8 @@ export function createAgentHubBootstrapComposition({
   pollTelegram,
   warnUser,
   beginStopping,
+  sqliteRecovery,
+  acknowledgeSqliteRecovery,
   createDesktopControlServer = (options) => new DesktopControlServer(options),
 }) {
   let desktopControlServer = null;
@@ -76,6 +78,8 @@ export function createAgentHubBootstrapComposition({
     readyMessage,
     pollTelegram,
     warnUser,
+    sqliteRecovery,
+    acknowledgeSqliteRecovery,
   });
 
   return {

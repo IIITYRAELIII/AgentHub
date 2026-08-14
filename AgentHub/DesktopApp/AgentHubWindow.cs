@@ -585,6 +585,8 @@ namespace AgentHubDesktop
                 }
             }
             var previous = selectedKey;
+            TaskItem previousSelected = null;
+            if (!String.IsNullOrWhiteSpace(previous)) tasks.TryGetValue(previous, out previousSelected);
             tasks.Clear();
             TaskItem selected = null;
             foreach (var raw in AgentHubClient.Array(snapshot, "tasks"))
@@ -608,6 +610,8 @@ namespace AgentHubDesktop
                     Running = AgentHubClient.Bool(value, "running"),
                     Runtime = AgentHubClient.Text(value, "runtime"),
                     LastAnswer = AgentHubClient.Text(value, "lastAnswer"),
+                    LastAnswerAt = AgentHubClient.Text(value, "lastAnswerAt"),
+                    LastAnswerTurnId = AgentHubClient.Text(value, "lastAnswerTurnId"),
                     OrderingActivityAtMs = value.ContainsKey("orderingActivityAtMs")
                         ? Convert.ToInt64(value["orderingActivityAtMs"])
                         : 0L,
@@ -624,6 +628,8 @@ namespace AgentHubDesktop
                 PruneOpenStreams(selected);
                 EnsureOpenStreamForTask(selected);
                 var next = Key(selected.StreamId, selected.Provider, selected.ThreadId);
+                var historyChanged = next == previous
+                    && DesktopHistoryRefreshPolicy.ShouldReload(previousSelected, selected);
                 if (next != selectedKey)
                 {
                     SaveDraft();
@@ -633,6 +639,12 @@ namespace AgentHubDesktop
                     historyBefore = null;
                     history.Clear();
                     RestoreDraft();
+                    lastRenderSignature = null;
+                }
+                else if (historyChanged)
+                {
+                    historyKey = null;
+                    historyBefore = null;
                     lastRenderSignature = null;
                 }
                 pageTitle.Text = DesktopWorkspacePresentation.WorkspaceLabel(selected);
@@ -979,14 +991,16 @@ namespace AgentHubDesktop
             }
             foreach (var exchange in history)
             {
-                var prompt = AgentHubClient.Text(exchange, "prompt");
-                var answer = AgentHubClient.Text(exchange, "answer");
-                var assistantAttachments = DesktopAttachmentPresentation.AssistantAttachments(exchange);
-                if (!String.IsNullOrWhiteSpace(prompt)) conversation.Children.Add(UserMessage(exchange));
-                if ((!String.IsNullOrWhiteSpace(answer) || assistantAttachments.Count > 0)
-                    && !HistoryAnswerIsCoveredByLiveRun(exchange, run, item.Running))
+                var includeAgent = !HistoryAnswerIsCoveredByLiveRun(exchange, run, item.Running);
+                foreach (var message in DesktopAttachmentPresentation.ConversationMessages(exchange, includeAgent))
                 {
-                    conversation.Children.Add(AssistantMessage(answer, item.Provider, false, assistantAttachments));
+                    var role = AgentHubClient.Text(message, "role");
+                    if (role == "user") conversation.Children.Add(UserMessage(exchange, message));
+                    else if (role == "agent") conversation.Children.Add(AssistantMessage(
+                        AgentHubClient.Text(message, "text"),
+                        item.Provider,
+                        false,
+                        DesktopAttachmentPresentation.MessageAttachments(message)));
                 }
             }
             if (item.Running)
@@ -1021,12 +1035,27 @@ namespace AgentHubDesktop
                 && String.Equals(exchangeTurnId, runTurnId, StringComparison.Ordinal);
         }
 
-        private UIElement UserMessage(Dictionary<string, object> exchange)
+        private UIElement UserMessage(
+            Dictionary<string, object> exchange,
+            Dictionary<string, object> message = null)
         {
-            var text = AgentHubClient.Text(exchange, "prompt");
+            var text = message == null
+                ? AgentHubClient.Text(exchange, "prompt")
+                : AgentHubClient.Text(message, "text");
             var content = new StackPanel();
+            var author = message == null ? "" : AgentHubClient.Text(message, "author").Trim();
+            if (!String.IsNullOrWhiteSpace(author))
+            {
+                var authorText = Theme.Label(author, 10, Theme.Solid(Theme.CodexMint), FontWeights.SemiBold);
+                authorText.Margin = new Thickness(0, 0, 0, 7);
+                content.Children.Add(authorText);
+            }
             var annotationIndex = 0;
-            foreach (var raw in AgentHubClient.Array(exchange, "promptAnnotations"))
+            var annotationOwner = message != null && AgentHubClient.Array(message, "responseAnnotations").Length > 0
+                ? message
+                : exchange;
+            var annotationKey = ReferenceEquals(annotationOwner, message) ? "responseAnnotations" : "promptAnnotations";
+            foreach (var raw in AgentHubClient.Array(annotationOwner, annotationKey))
             {
                 var annotation = raw as Dictionary<string, object>;
                 if (annotation == null) continue;
@@ -1058,14 +1087,20 @@ namespace AgentHubDesktop
                     Child = quoteContent
                 });
             }
-            var request = annotationIndex > 0 ? AgentHubClient.Text(exchange, "promptRequest").Trim() : text;
+            var request = annotationIndex > 0
+                ? AgentHubClient.Text(
+                    annotationOwner,
+                    ReferenceEquals(annotationOwner, message) ? "responseAnnotationRequest" : "promptRequest").Trim()
+                : text;
             if (!String.IsNullOrWhiteSpace(request))
             {
                 var requestText = Theme.Label(request, 13.5, Theme.Solid(Theme.Text), FontWeights.Normal);
                 requestText.Margin = new Thickness(0, annotationIndex > 0 ? 2 : 0, 0, 0);
                 content.Children.Add(requestText);
             }
-            var attachmentStrip = AssistantAttachmentStrip(DesktopAttachmentPresentation.UserAttachments(exchange));
+            var attachmentStrip = AssistantAttachmentStrip(message == null
+                ? DesktopAttachmentPresentation.UserAttachments(exchange)
+                : DesktopAttachmentPresentation.MessageAttachments(message));
             if (attachmentStrip != null) content.Children.Add(attachmentStrip);
             var border = new Border
             {
@@ -1077,7 +1112,9 @@ namespace AgentHubDesktop
                 Margin = new Thickness(100, 5, 0, 10),
                 HorizontalAlignment = HorizontalAlignment.Right,
                 MaxWidth = 760,
-                Child = CollapsibleUserMessageContent(AgentHubClient.Text(exchange, "id"), content)
+                Child = CollapsibleUserMessageContent(
+                    message == null ? AgentHubClient.Text(exchange, "id") : AgentHubClient.Text(message, "itemId"),
+                    content)
             };
             return border;
         }

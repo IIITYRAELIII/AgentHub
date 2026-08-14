@@ -148,6 +148,30 @@ test("reindex follows a Claude session id assigned after startup", () => {
   assert.equal(registry.forTask(provisional), provisional);
 });
 
+test("reindex preserves existing indexes when the next task or turn collides", () => {
+  const first = run({ id: "run-1", threadId: "thread-1", turnId: "turn-1" });
+  const second = run({ id: "run-2", threadId: "thread-2", turnId: "turn-2" });
+  const registry = new TaskRunRegistry([first, second]);
+
+  first.threadId = second.threadId;
+  first.turnId = "turn-3";
+  assert.throws(() => registry.reindex(first), /already running/);
+
+  assert.equal(registry.forTask({ ...first, threadId: "thread-1" }), first);
+  assert.equal(registry.forEvent({ turnId: "turn-1" }), first);
+  assert.equal(registry.forTask(second), second);
+  assert.equal(registry.forEvent({ turnId: "turn-2" }), second);
+
+  first.threadId = "thread-1";
+  first.turnId = second.turnId;
+  assert.throws(() => registry.reindex(first), /this turn is already running/);
+
+  assert.equal(registry.forTask({ ...first, threadId: "thread-1" }), first);
+  assert.equal(registry.forEvent({ turnId: "turn-1" }), first);
+  assert.equal(registry.forTask(second), second);
+  assert.equal(registry.forEvent({ turnId: "turn-2" }), second);
+});
+
 test("run registry promotes a provider-bound run to its stable Stream", () => {
   const provisional = run({ id: "run-1", streamId: null, threadId: "thread-1" });
   const registry = new TaskRunRegistry([provisional]);
@@ -156,6 +180,21 @@ test("run registry promotes a provider-bound run to its stable Stream", () => {
   assert.equal(provisional.streamId, "stream-1");
   assert.equal(registry.forTask({ streamId: "stream-1" }), provisional);
   assert.equal(registry.forTask({ provider: "codex", threadId: "thread-1" }), provisional);
+});
+
+test("bindStream keeps the run and indexes unchanged when the Stream is occupied", () => {
+  const provisional = run({ id: "run-1", streamId: null, threadId: "thread-1" });
+  const occupied = run({ id: "run-2", streamId: "stream-1", threadId: "thread-2" });
+  const registry = new TaskRunRegistry([provisional, occupied]);
+
+  assert.throws(
+    () => registry.bindStream({ provider: "codex", threadId: "thread-1", streamId: "stream-1" }),
+    /already running/,
+  );
+
+  assert.equal(provisional.streamId, null);
+  assert.equal(registry.forTask({ provider: "codex", threadId: "thread-1" }), provisional);
+  assert.equal(registry.forTask({ streamId: "stream-1" }), occupied);
 });
 
 test("stable Stream lookup lazily promotes a provisional provider-bound run", () => {

@@ -111,16 +111,24 @@ export class ManagedRunLifecycleService {
 
   async markCompleted(run) {
     if (!run || run.completionPrepared === true) return;
+    if (run.completionPreparing) return run.completionPreparing;
     const d = this.#d;
-    run.completionPrepared = true;
-    await d.beforeCompletion(run);
-    d.clearApprovals(run);
-    d.pauseObservation(run);
-    d.pauseClaude(run);
-    run.status = "completed";
-    run.process = null;
-    d.syncRun(run, { active: false });
-    d.invalidateCatalog();
-    await d.saveState();
+    run.completionPreparing = (async () => {
+      await d.beforeCompletion(run);
+      run.completionPrepared = true;
+      d.clearApprovals(run);
+      d.pauseObservation(run);
+      d.pauseClaude(run);
+      run.status = "completed";
+      run.process = null;
+      d.syncRun(run, { active: false });
+      d.invalidateCatalog();
+      await d.saveState();
+    })();
+    try {
+      await run.completionPreparing;
+    } finally {
+      delete run.completionPreparing;
+    }
   }
 }

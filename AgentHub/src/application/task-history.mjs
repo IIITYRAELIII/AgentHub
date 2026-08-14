@@ -250,7 +250,7 @@ export function codexTurnActivities(turn) {
     .filter(Boolean);
 }
 
-function codexTurnMessages(turn) {
+function codexTurnMessages(turn, { userAuthor = "" } = {}) {
   if (isCodexContextProbeTurn(turn)) return [];
   const turnId = String(turn?.id ?? "").trim();
   return (Array.isArray(turn?.items) ? turn.items : []).flatMap((item, index) => {
@@ -269,7 +269,9 @@ function codexTurnMessages(turn) {
           : {}),
         role: "user",
         text,
-        ...(interstream ? { author: interstream.author } : {}),
+        ...((interstream?.author ?? String(userAuthor).trim())
+          ? { author: interstream?.author ?? String(userAuthor).trim() }
+          : {}),
         ...(responseAnnotations?.items.length
           ? {
             responseAnnotations: responseAnnotations.items.map((annotation) => ({ ...annotation })),
@@ -348,8 +350,22 @@ function responseAnnotationPrompt(value) {
   return responseAnnotationDetails(value)?.displayText ?? null;
 }
 
+function isCodexInternalPromptEnvelope(value) {
+  const text = String(value ?? "").trim();
+  return [
+    "<skills_instructions>",
+    "<recommended_plugins>",
+    "# AGENTS.md instructions for ",
+    "<permissions instructions>",
+    "<collaboration_mode>",
+    "<apps_instructions>",
+    "<plugins_instructions>",
+  ].some((prefix) => text.startsWith(prefix));
+}
+
 export function displayUserPrompt(value) {
   let text = String(value ?? "").trim();
+  if (isCodexInternalPromptEnvelope(text)) return "";
   const interstream = interstreamMessageDetails(text);
   if (interstream) text = interstream.text;
   const envelope = desktopPromptEnvelope(text);
@@ -368,27 +384,31 @@ export function displayUserPrompt(value) {
   return text;
 }
 
+export function codexExplicitFinalTurnAnswer(turn) {
+  if (isCodexContextProbeTurn(turn)) return "";
+  const explicitFinal = (turn?.items ?? [])
+    .filter((item) => isCodexAnswerItem(item) && String(item.text ?? "").trim());
+  return String(explicitFinal.findLast((item) => (
+    ["final", "final_answer", "finalAnswer"].includes(codexAnswerPhase(item))
+  ))?.text ?? "").trim();
+}
+
 export function codexFinalTurnAnswer(turn) {
+  const explicitFinal = codexExplicitFinalTurnAnswer(turn);
+  if (explicitFinal) return explicitFinal;
   if (isCodexContextProbeTurn(turn)) return "";
   const messages = (turn?.items ?? [])
     .filter((item) => isCodexAnswerItem(item) && String(item.text ?? "").trim());
-  const explicitFinal = messages.findLast((item) => (
-    ["final", "final_answer", "finalAnswer"].includes(codexAnswerPhase(item))
-  ));
-  return String(explicitFinal?.text ?? messages.at(-1)?.text ?? "").trim();
+  return String(messages.at(-1)?.text ?? "").trim();
 }
 
 export function codexTurnHasExplicitFinalAnswer(turn) {
-  return (turn?.items ?? []).some((item) => (
-    isCodexAnswerItem(item)
-      && String(item.text ?? "").trim()
-      && ["final", "final_answer", "finalAnswer"].includes(codexAnswerPhase(item))
-  ));
+  return Boolean(codexExplicitFinalTurnAnswer(turn));
 }
 
-export function codexThreadHistory(turns) {
+export function codexThreadHistory(turns, options = {}) {
   return (Array.isArray(turns) ? turns : []).flatMap((turn) => {
-    const messages = codexTurnMessages(turn);
+    const messages = codexTurnMessages(turn, options);
     const activityGroups = codexTurnActivityGroups(turn);
     const userMessage = messages.find((item) => item.role === "user");
     const prompt = userMessage?.text ?? "";

@@ -4,7 +4,7 @@ import test from "node:test";
 import { ManagedRunLifecycleService } from "../../src/application/managed-run-lifecycle-service.mjs";
 import { TaskRunRegistry } from "../../src/domain/task-runs.mjs";
 
-function harness({ provider = "codex" } = {}) {
+function harness({ provider = "codex", beforeCompletion = null } = {}) {
   const events = [];
   let baselineCaptures = 0;
   const taskRuns = new TaskRunRegistry();
@@ -35,7 +35,7 @@ function harness({ provider = "codex" } = {}) {
     pauseObservation: () => events.push("observer"),
     pauseClaude: () => events.push("claude"),
     stopTyping: () => events.push("typing"),
-    beforeCompletion: async () => events.push("before"),
+    beforeCompletion: beforeCompletion ?? (async () => events.push("before")),
     afterCompletion: async () => events.push("after"),
   });
   return { service, taskRuns, events, baselineCaptures: () => baselineCaptures };
@@ -94,6 +94,30 @@ test("managed run lifecycle exposes terminal state before removing the run", asy
   assert.equal(run.status, "completed");
   assert.equal(taskRuns.forTask(run), run);
   assert.ok(events.includes("sync-complete"));
+});
+
+test("managed run lifecycle retries completion preparation after a failed hook", async () => {
+  let attempts = 0;
+  const { service, taskRuns, events } = harness({
+    beforeCompletion: async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("completion hook failed");
+      events.push("before");
+    },
+  });
+  const run = await service.begin("hello");
+  events.length = 0;
+
+  await assert.rejects(service.markCompleted(run), /completion hook failed/);
+  assert.equal(run.completionPrepared, undefined);
+  assert.equal(run.status, "running");
+  assert.equal(taskRuns.forTask(run), run);
+
+  await service.markCompleted(run);
+  assert.equal(run.completionPrepared, true);
+  assert.equal(run.status, "completed");
+  assert.equal(attempts, 2);
+  assert.deepEqual(events, ["before", "approvals", "observer", "claude", "sync-complete", "catalog", "save"]);
 });
 
 test("managed run lifecycle keeps a Desktop-started run out of Telegram", async () => {

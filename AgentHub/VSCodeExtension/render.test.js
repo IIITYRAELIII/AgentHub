@@ -59,6 +59,47 @@ function loadExtension(vscode) {
   }
 }
 
+function loadJournalView() {
+  const source = fs.readFileSync(path.join(WEB_APP_ROOT, "journal-view-controller.js"), "utf8");
+  const window = {};
+  vm.runInNewContext(source, { window });
+  return window.AgentHubJournalView;
+}
+
+function deferred() {
+  let resolve;
+  const promise = new Promise((complete) => {
+    resolve = complete;
+  });
+  return { promise, resolve };
+}
+
+function providerContext() {
+  return {
+    extensionUri: { fsPath: "D:/extension" },
+    globalState: { get: () => "orbit", update: async () => {} },
+    subscriptions: [],
+  };
+}
+
+function panelHarness() {
+  const handlers = {};
+  const messages = [];
+  return {
+    handlers,
+    messages,
+    panel: {
+      title: "",
+      webview: {
+        onDidReceiveMessage(handler) { handlers.message = handler; },
+        postMessage: async (message) => { messages.push(message); },
+      },
+      onDidDispose(handler) { handlers.dispose = handler; },
+      onDidChangeViewState(handler) { handlers.viewState = handler; },
+    },
+  };
+}
+
 test("file targets separate line and column from Windows paths", () => {
   const { editorFileTarget } = loadExtension({ FileType: { File: 1 } });
   assert.deepEqual(editorFileTarget("D:/work/extension.js:23"), {
@@ -245,6 +286,73 @@ test("extension keeps its shell synchronized with the active runtime", () => {
   );
   assert.match(extension, /runtimeUri,\s*\n\s*extensionUri: this\.context\.extensionUri/u);
   assert.doesNotMatch(shared, /media", "mini-app/u);
+});
+
+test("VS Code ignores rendering and HTTP results for a disposed panel", async () => {
+  const harness = panelHarness();
+  const vscode = {
+    ViewColumn: { Active: 1 },
+    window: { createWebviewPanel: () => harness.panel },
+  };
+  const { WorkLogViewProvider } = loadExtension(vscode);
+  const provider = new WorkLogViewProvider(providerContext());
+  const rendering = deferred();
+  provider.renderPanelShell = () => rendering.promise;
+  provider.scheduleRefresh = () => assert.fail("disposed panel must not schedule a refresh");
+
+  const opening = provider.openPanel();
+  harness.handlers.dispose();
+  rendering.resolve();
+  await opening;
+  assert.equal(provider.panel, null);
+  assert.equal(provider.sharedPanel, false);
+
+  const response = deferred();
+  provider.bridge = { http: () => response.promise };
+  const formerPanel = harness.panel;
+  const pendingResponse = provider.handleHttpMessage({ id: "request" }, formerPanel);
+  response.resolve({ status: 200, headers: {}, body: "ok" });
+  await pendingResponse;
+  assert.deepEqual(harness.messages, []);
+});
+
+test("VS Code forces a retained journal refresh when its panel becomes visible", async () => {
+  const harness = panelHarness();
+  const vscode = {
+    ViewColumn: { Active: 1 },
+    window: { createWebviewPanel: () => harness.panel },
+  };
+  const { WorkLogViewProvider } = loadExtension(vscode);
+  const provider = new WorkLogViewProvider(providerContext());
+  const refreshes = [];
+  provider.renderPanelShell = async () => {};
+  provider.scheduleRefresh = (...args) => { refreshes.push(args); };
+
+  await provider.openPanel();
+  refreshes.length = 0;
+  harness.handlers.viewState({ webviewPanel: { visible: false } });
+  harness.handlers.viewState({ webviewPanel: { visible: true } });
+  assert.deepEqual(refreshes, [[0, true]]);
+});
+
+test("manual journal refresh queues one forced announced request behind an active load", async () => {
+  const first = deferred();
+  const second = deferred();
+  const calls = [];
+  const refresh = loadJournalView().createQueuedJournalRefresh((options) => {
+    calls.push(options);
+    return calls.length === 1 ? first.promise : second.promise;
+  });
+
+  const active = refresh.refresh();
+  assert.equal(refresh.refresh({ force: true, announce: true }), active);
+  first.resolve(true);
+  await active;
+  assert.deepEqual(calls.map(({ force, announce }) => [force, announce]), [
+    [false, false],
+    [true, true],
+  ]);
+  second.resolve(true);
 });
 
 test("VS Code resumes retained infinite theme animations on foreground", () => {

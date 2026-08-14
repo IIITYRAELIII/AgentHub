@@ -1345,6 +1345,10 @@ test("subagent usage is summed into its root task and shown as child turns", () 
   assert.doesNotMatch(projected, /data-work-log-turn-children-details open/);
   assert.match(
     projected,
+    /data-work-log-turn-id="root-turn"[^>]*data-work-log-turn-credits="12\.5"[^>]*data-work-log-turn-total-credits="23\.125"/,
+  );
+  assert.match(
+    projected,
     /root-turn[\s\S]*data-work-log-turn-measure>[^<]+ — <span [^>]*>23,1 cr<\/span>[\s\S]*<strong>Свой расход:<\/strong> <span [^>]*>12,5 cr<\/span>/,
   );
   assert.match(

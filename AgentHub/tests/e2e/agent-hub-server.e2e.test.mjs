@@ -722,7 +722,20 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
     .find((button) => button.callback_data.startsWith("pending:show:"));
   mark = telegram.calls.length;
   telegram.pushCallback(showButton.callback_data, showDeferred.result);
-  await telegram.waitForText("Показано сообщений:", { after: mark });
+  await telegram.waitForText("Показано ходов:", { after: mark }).catch(async (error) => {
+    const failedState = await readJson(statePath).catch(() => null);
+    throw new Error(
+      `${error.message}\nstate=${JSON.stringify({
+        updateOffset: failedState?.updateOffset,
+        processingUpdateId: failedState?.processingUpdateId,
+        pendingInputs: failedState?.pendingInputs,
+        activeRuns: failedState?.activeRuns?.map((run) => ({ id: run.id, threadId: run.threadId, status: run.status })),
+      })}`
+        + `\nnonPollingCalls=${JSON.stringify(telegram.callsAfter(mark).filter((call) => call.method !== "getUpdates"))}`
+        + `\nstdout tail:\n${stdout.slice(-12_000)}\nstderr tail:\n${stderr.slice(-12_000)}`,
+      { cause: error },
+    );
+  });
   const cancelShown = showDeferred.body.reply_markup.inline_keyboard.flat()
     .find((button) => button.callback_data.startsWith("pending:cancel:"));
   telegram.pushCallback(cancelShown.callback_data, showDeferred.result);
@@ -872,7 +885,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   mark = telegram.calls.length;
   telegram.pushCallback("show-last-message", finalSource);
   await telegram.waitForText("[hold] ход для глазок", { after: mark });
-  const historyNavigation = await telegram.waitForText("Показано сообщений: 1", { after: mark });
+  const historyNavigation = await telegram.waitForText("Показано ходов: 1", { after: mark });
   await telegram.waitForText("⚙ Agent Hub Server", { after: mark });
   const lastViewTexts = telegram.callsAfter(mark, "sendMessage").map((call) => String(call.body.text ?? ""));
   assert.equal(lastViewTexts.some((text) => text.includes("[hold] ход для глазок")), true,
@@ -895,7 +908,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   assert.ok(showMore, "live history must expose show-more navigation");
   mark = telegram.calls.length;
   telegram.pushCallback(showMore.callback_data, historyNavigation.result);
-  const secondHistoryNavigation = await telegram.waitForText("Показано сообщений: 2", { after: mark });
+  const secondHistoryNavigation = await telegram.waitForText("Показано ходов: 2", { after: mark });
   await telegram.waitForText("[hold] ход для глазок", { after: mark });
 
   const showThird = secondHistoryNavigation.body.reply_markup.inline_keyboard.flat()
@@ -903,7 +916,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   assert.ok(showThird, "the next history expansion must request exactly one additional exchange");
   mark = telegram.calls.length;
   telegram.pushCallback(showThird.callback_data, secondHistoryNavigation.result);
-  await telegram.waitForText("Показано сообщений: 3", { after: mark });
+  await telegram.waitForText("Показано ходов: 3", { after: mark });
   await telegram.waitForText("[hold] ход для глазок", { after: mark });
 
   telegram.pushMessage("/cancel");

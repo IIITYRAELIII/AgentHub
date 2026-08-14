@@ -1,12 +1,16 @@
 import process from "node:process";
-import { shutdownAgentHub, startAgentHub } from "./agent-hub-server.mjs";
+import {
+  createFatalProcessHandler,
+  shutdownAgentHub,
+  startAgentHub,
+} from "./agent-hub-server.mjs";
 
-process.on("unhandledRejection", (error) => {
-  console.error("Unhandled asynchronous error:", error);
-});
+const handleFatalProcessError = createFatalProcessHandler({ shutdown: shutdownAgentHub });
 
 process.on("SIGINT", () => void shutdownAgentHub("SIGINT"));
 process.on("SIGTERM", () => void shutdownAgentHub("SIGTERM"));
+process.on("unhandledRejection", (error) => void handleFatalProcessError("unhandled rejection", error));
+process.on("uncaughtException", (error) => void handleFatalProcessError("uncaught exception", error));
 
 try {
   await startAgentHub();

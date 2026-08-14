@@ -3525,6 +3525,9 @@ html[data-surface="mobile"]
 
 .activity-recent-streams {
   border-top: 1px solid var(--line);
+  flex-grow: 1;
+  flex-shrink: 1000;
+  min-height: 2rem;
 }
 
 .activity-section-head {
@@ -5754,7 +5757,7 @@ html[data-surface="mobile"]
   html[data-focus-mode="true"][data-view="chat"]:not([data-surface="mobile"])
     .activity-streams {
     flex: 0 1 auto;
-    max-height: 34%;
+    max-height: none;
   }
 
   html[data-focus-mode="true"][data-view="chat"]:not([data-surface="mobile"])

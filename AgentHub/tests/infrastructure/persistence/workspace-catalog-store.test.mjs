@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -25,6 +25,19 @@ async function fixture(t) {
   });
   return store;
 }
+
+test("workspace catalog fails closed on a corrupt shared database", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-workspaces-corrupt-"));
+  const databaseFile = path.join(directory, "journal.sqlite");
+  await writeFile(databaseFile, "not a sqlite database", "utf8");
+  try {
+    const store = new WorkspaceCatalogStore({ databaseFile });
+    await assert.rejects(store.load(), /not a database/iu);
+    assert.equal(await readFile(databaseFile, "utf8"), "not a sqlite database");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test("Other is seeded once and cannot be renamed", async (t) => {
   const store = await fixture(t);
@@ -159,13 +172,13 @@ test("Workspace release registry keeps ownership, readiness and file conflicts",
       { id: second.id, streamId: secondStream.id, status: "draft" },
     ],
   }]);
-  store.updateReleaseChangeStatus(second.id, "ready");
-  assert.equal(store.releasePlan(workspace.id).conflicts.length, 1);
-  assert.throws(() => store.updateReleaseChangeStatus(first.id, "released"), /reserved/u);
   store.recordReleaseChange({
     provider: "codex", threadId: "two", turnId: "turn-two", summary: "Second isolated",
     changedFiles: ["AgentHub/other.js"], diffHash: "isolated",
   });
+  store.updateReleaseChangeStatus(second.id, "ready");
+  assert.equal(store.releasePlan(workspace.id).conflicts.length, 0);
+  assert.throws(() => store.updateReleaseChangeStatus(first.id, "released"), /reserved/u);
   const completed = store.completeRelease(workspace.id);
   assert.equal(completed.released.length, 2);
   assert.deepEqual(store.releaseChanges(workspace.id), []);
@@ -268,6 +281,128 @@ test("Release registry does not treat the shared Utilities changelog as owned so
   }
 
   assert.deepEqual(store.releasePlan(workspace.id).conflicts, []);
+});
+
+test("Release registry canonicalizes project and file aliases before detecting conflicts", async (t) => {
+  const store = await fixture(t);
+  const workspace = store.createWorkspace({ name: "Agent HUB" });
+  const firstStream = store.createStream({ workspaceId: workspace.id, name: "One" });
+  const secondStream = store.createStream({ workspaceId: workspace.id, name: "Two" });
+  store.bindThread({ provider: "codex", threadId: "one", streamId: firstStream.id });
+  store.bindThread({ provider: "codex", threadId: "two", streamId: secondStream.id });
+  store.recordReleaseChange({
+    provider: "codex", threadId: "one", turnId: "turn-one", projectRoot: "D:/VSC_Tyrael",
+    changedFiles: ["Utilities/AgentHub/src/../src/app.mjs"], status: "ready",
+  });
+  store.recordReleaseChange({
+    provider: "codex", threadId: "two", turnId: "turn-two", projectRoot: "d:\\vsc_tyrael\\utilities",
+    changedFiles: ["AgentHub\\src\\app.mjs"], status: "ready",
+  });
+
+  assert.equal(store.releasePlan(workspace.id).conflicts.length, 1);
+});
+
+test("ready and released release payloads are immutable and released status cannot regress", async (t) => {
+  const store = await fixture(t);
+  const workspace = store.createWorkspace({ name: "Agent HUB" });
+  const stream = store.createStream({ workspaceId: workspace.id, name: "One" });
+  store.bindThread({ provider: "codex", threadId: "one", streamId: stream.id });
+  const draft = store.recordReleaseChange({
+    provider: "codex", threadId: "one", turnId: "turn-one", summary: "Draft",
+    changedFiles: ["AgentHub/first.mjs"], diffHash: "first",
+  });
+  const ready = store.updateReleaseChangeStatus(draft.id, "ready");
+  const observed = store.recordReleaseChange({
+    provider: "codex", threadId: "one", turnId: "turn-one", summary: "Changed after ready",
+    changedFiles: ["AgentHub/second.mjs"], diffHash: "second",
+  });
+  assert.deepEqual(observed.files, ["AgentHub/first.mjs"]);
+  assert.equal(observed.summary, "Draft");
+  assert.equal(observed.diffHash, "first");
+  assert.equal(observed.revision, ready.revision);
+
+  const plan = store.releasePlan(workspace.id);
+  store.completeRelease(workspace.id, {
+    expectedPlanRevision: plan.revision,
+    verificationEvidence: {
+      planRevision: plan.revision,
+      expectedRevision: "abc",
+      verificationSummary: "Published and smoke-tested",
+    },
+  });
+  assert.throws(() => store.updateReleaseChangeStatus(draft.id, "draft"), /immutable/u);
+  const released = store.recordReleaseChange({
+    provider: "codex", threadId: "one", turnId: "turn-one", summary: "Changed after release",
+    changedFiles: ["AgentHub/third.mjs"], diffHash: "third",
+  });
+  assert.equal(released.status, "released");
+  assert.deepEqual(released.files, ["AgentHub/first.mjs"]);
+});
+
+test("release completion rejects a plan that changed after verification", async (t) => {
+  const store = await fixture(t);
+  const workspace = store.createWorkspace({ name: "Agent HUB" });
+  const stream = store.createStream({ workspaceId: workspace.id, name: "One" });
+  store.bindThread({ provider: "codex", threadId: "one", streamId: stream.id });
+  const first = store.recordReleaseChange({
+    provider: "codex", threadId: "one", turnId: "turn-one", changedFiles: ["AgentHub/first.mjs"], status: "ready",
+  });
+  const verifiedPlan = store.releasePlan(workspace.id);
+  store.recordReleaseChange({
+    provider: "codex", threadId: "one", turnId: "turn-two", changedFiles: ["AgentHub/second.mjs"], status: "ready",
+  });
+
+  assert.throws(
+    () => store.completeRelease(workspace.id, {
+      expectedPlanRevision: verifiedPlan.revision,
+      verificationEvidence: {
+        planRevision: verifiedPlan.revision,
+        expectedRevision: "abc",
+        verificationSummary: "Published and smoke-tested",
+      },
+    }),
+    /revision conflict/u,
+  );
+  assert.equal(store.releaseChange({ provider: "codex", threadId: "one", turnId: "turn-one" }).status, "ready");
+  assert.equal(first.status, "ready");
+});
+
+test("legacy release registry gains a revision without losing its change", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-workspaces-legacy-release-"));
+  const databaseFile = path.join(directory, "journal.sqlite");
+  const database = new DatabaseSync(databaseFile);
+  database.exec(`
+    CREATE TABLE hub_workspaces (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL, system_key TEXT UNIQUE,
+      created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL, settings_json TEXT NOT NULL DEFAULT '{}'
+    ) WITHOUT ROWID;
+    CREATE TABLE hub_streams (
+      id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, ordinal INTEGER NOT NULL, name TEXT,
+      created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL, archived_at_ms INTEGER
+    ) WITHOUT ROWID;
+    CREATE TABLE hub_release_changes (
+      id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, stream_id TEXT NOT NULL, provider TEXT NOT NULL,
+      provider_thread_id TEXT NOT NULL, turn_id TEXT NOT NULL, project_root TEXT NOT NULL DEFAULT '',
+      summary TEXT NOT NULL DEFAULT '', files_json TEXT NOT NULL DEFAULT '[]', diff_hash TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL,
+      UNIQUE (provider, provider_thread_id, turn_id)
+    ) WITHOUT ROWID;
+    INSERT INTO hub_workspaces VALUES ('workspace', 'Legacy', 'user', NULL, 1, 1, '{}');
+    INSERT INTO hub_streams VALUES ('stream', 'workspace', 1, 'Legacy', 1, 1, NULL);
+    INSERT INTO hub_release_changes VALUES (
+      'change', 'workspace', 'stream', 'codex', 'thread', 'turn', 'D:/repo', 'Legacy',
+      '["AgentHub/app.mjs"]', 'hash', 'ready', 1, 1
+    );
+  `);
+  database.close();
+  const store = new WorkspaceCatalogStore({ databaseFile });
+  await store.load();
+  t.after(async () => {
+    store.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  assert.equal(store.releasePlan("workspace").ready[0].revision, 1);
 });
 
 test("Workspace and Stream developer rules keep versioned revisions", async (t) => {

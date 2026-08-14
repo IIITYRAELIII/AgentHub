@@ -179,16 +179,22 @@ export class DurableCommandReceipts {
     if (!commandId || !requestFingerprint || typeof effect !== "function") {
       throw new Error("durable command receipt requires id, fingerprint and effect");
     }
-    if (this.#inFlight.has(commandId)) return this.#inFlight.get(commandId);
+    const inFlight = this.#inFlight.get(commandId);
+    if (inFlight) {
+      if (inFlight.fingerprint !== requestFingerprint) {
+        throw new Error("durable command receipt fingerprint conflict");
+      }
+      return inFlight.operation;
+    }
     const operation = this.#execute(
       { commandId, requestFingerprint, action, effect, reconcile },
       Date.now() + this.#effectWaitTimeoutMs,
     );
-    this.#inFlight.set(commandId, operation);
+    this.#inFlight.set(commandId, { fingerprint: requestFingerprint, operation });
     try {
       return await operation;
     } finally {
-      this.#inFlight.delete(commandId);
+      if (this.#inFlight.get(commandId)?.operation === operation) this.#inFlight.delete(commandId);
     }
   }
 

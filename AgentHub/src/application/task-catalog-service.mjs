@@ -18,6 +18,7 @@ export class TaskCatalogService {
   get entries() { return this.#entries; }
   get refreshedAt() { return this.#refreshedAt; }
   get revision() { return this.#revision; }
+  get snapshotRevision() { return `${this.#revision}:${this.#invalidationRevision}`; }
   get refreshing() { return this.#refreshInFlight !== null; }
   get stale() {
     return !this.#entries.length || this.now() - this.#refreshedAt >= this.cacheMs;

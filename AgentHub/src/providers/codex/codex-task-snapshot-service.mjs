@@ -1,4 +1,5 @@
 import {
+  codexExplicitFinalTurnAnswer,
   codexFinalTurnAnswer,
   codexTurnHasExplicitFinalAnswer,
 } from "../../application/task-history.mjs";
@@ -237,7 +238,7 @@ export class CodexTaskSnapshotService {
 
     let answer = await rolloutAnswer({ includeLatest: interrupted });
     if (answer) return answer;
-    answer = codexFinalTurnAnswer(eventTurn);
+    answer = codexExplicitFinalTurnAnswer(eventTurn);
     if (answer) return answer;
     for (const waitMs of [0, 100, 250, 500]) {
       if (waitMs) await this.#d.delay(waitMs);
@@ -250,7 +251,7 @@ export class CodexTaskSnapshotService {
         });
         const completedTurn = (result.thread?.turns ?? [])
           .find((turn) => String(turn?.id ?? "") === turnId);
-        answer = codexFinalTurnAnswer(completedTurn);
+        answer = codexExplicitFinalTurnAnswer(completedTurn);
         if (answer) return answer;
       } catch (error) {
         this.#d.logger?.warn?.(
@@ -258,6 +259,7 @@ export class CodexTaskSnapshotService {
         );
       }
     }
+    if (!interrupted) return "";
     return String((await rolloutAnswer({ includeLatest: true })) || run.responseText || "").trim();
   }
 

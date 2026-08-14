@@ -186,10 +186,31 @@ class WorkLogViewProvider {
     );
     this.panel = panel;
     panel.title = "Agent Hub";
+    panel.onDidDispose(() => {
+      if (this.panel !== panel) return;
+      this.panel = null;
+      this.sharedPanel = false;
+      this.panelRuntimeRoot = null;
+      this.panelRuntimePreparationRoot = null;
+    }, null, this.context.subscriptions);
+    panel.onDidChangeViewState(({ webviewPanel }) => {
+      if (this.panel === panel && webviewPanel.visible) this.scheduleRefresh(0, true);
+    }, null, this.context.subscriptions);
+    panel.webview.onDidReceiveMessage((message) => {
+      if (message?.type === "agenthub:control") void this.handleControlMessage(message);
+      if (message?.type === "agenthub:http") void this.handleHttpMessage(message, panel);
+      if (message?.type === "agenthub:runtime-changed") {
+        void this.refreshPanelShellIfReleaseChanged({ clientReady: true }).catch(() => {});
+      }
+      if (message?.type === "open-link") void this.openLink(message.href);
+      if (message?.type === "theme") void this.setTheme(message.theme, "panel");
+    }, null, this.context.subscriptions);
     try {
       await this.renderPanelShell(panel);
+      if (this.panel !== panel) return;
       this.sharedPanel = true;
     } catch (error) {
+      if (this.panel !== panel) return;
       panel.webview.html = `<!doctype html><html lang="ru"><head>
         <meta charset="utf-8">
         <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">
@@ -198,22 +219,7 @@ class WorkLogViewProvider {
       this.sharedPanel = "unavailable";
       void vscode.window.showErrorMessage(`Agent Hub: ${error.message}`);
     }
-    panel.webview.onDidReceiveMessage((message) => {
-      if (message?.type === "agenthub:control") void this.handleControlMessage(message);
-      if (message?.type === "agenthub:http") void this.handleHttpMessage(message);
-      if (message?.type === "agenthub:runtime-changed") {
-        void this.refreshPanelShellIfReleaseChanged({ clientReady: true }).catch(() => {});
-      }
-      if (message?.type === "open-link") void this.openLink(message.href);
-      if (message?.type === "theme") void this.setTheme(message.theme, "panel");
-    }, null, this.context.subscriptions);
-    panel.onDidDispose(() => {
-      if (this.panel === panel) this.panel = null;
-      this.sharedPanel = false;
-      this.panelRuntimeRoot = null;
-      this.panelRuntimePreparationRoot = null;
-    }, null, this.context.subscriptions);
-    this.scheduleRefresh(0, true);
+    if (this.panel === panel) this.scheduleRefresh(0, true);
   }
 
   async currentBridge() {
@@ -371,16 +377,18 @@ class WorkLogViewProvider {
     }
   }
 
-  async handleHttpMessage(message) {
+  async handleHttpMessage(message, panel = this.panel) {
     const id = String(message?.id ?? "");
     try {
       const bridge = await this.currentBridge();
       const result = await bridge.http(message);
+      if (this.panel !== panel) return;
       for (const part of webviewHttpMessages(id, result)) {
-        await this.panel?.webview.postMessage(part);
+        await panel.webview.postMessage(part);
       }
     } catch (error) {
-      await this.panel?.webview.postMessage({
+      if (this.panel !== panel) return;
+      await panel.webview.postMessage({
         type: "agenthub:http-result",
         id,
         status: 503,
@@ -403,7 +411,8 @@ class WorkLogViewProvider {
   }
 
   async refresh(force = false) {
-    if (!this.panel) return;
+    const panel = this.panel;
+    if (!panel) return;
     if (this.sharedPanel === "unavailable") return;
     try {
       await this.currentBridge();
@@ -411,7 +420,8 @@ class WorkLogViewProvider {
     } catch {
       // Обычное обновление журнала не превращаем в ошибку панели.
     }
-    await this.panel.webview.postMessage({ type: "agenthub:journal-changed", force });
+    if (this.panel !== panel) return;
+    await panel.webview.postMessage({ type: "agenthub:journal-changed", force });
   }
 
   async openLink(rawHref) {
@@ -496,4 +506,5 @@ module.exports = {
   firstExisting,
   resolveAbsoluteWorkspaceFile,
   resolveFileLink,
+  WorkLogViewProvider,
 };

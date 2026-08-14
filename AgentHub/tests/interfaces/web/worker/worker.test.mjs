@@ -134,6 +134,16 @@ function signedServiceRequest(url, payload, secret, headers = {}) {
   });
 }
 
+function dashboardBotHubRegistry(entries) {
+  return JSON.stringify({
+    version: 1,
+    hubs: Object.fromEntries(entries.map(([hubId, secret]) => [
+      hubId,
+      `sha256:${createHash("sha256").update(secret).digest("hex")}`,
+    ])),
+  });
+}
+
 function durableNamespace(workerModule) {
   const stores = new Map();
   return {
@@ -796,6 +806,116 @@ test("Worker relay rejects unsupported actions, attachments, and unsigned servic
   assert.equal(response.status, 401);
 });
 
+test("Worker control payload limits reject deep, broad, and oversized commands", async () => {
+  const worker = await loadWorker();
+  const command = (params) => ({
+    id: "018f6c86-3f34-7a31-8f27-16f5b96cce10",
+    action: "send-message",
+    params,
+  });
+  let deeplyNested = "terminal";
+  for (let depth = 0; depth <= 32; depth += 1) deeplyNested = { next: deeplyNested };
+
+  assert.throws(
+    () => worker.validateControlCommand(command(deeplyNested)),
+    /control command payload exceeds depth limit/u,
+  );
+  assert.throws(
+    () => worker.validateControlCommand(command({ values: Array.from({ length: 1_024 }, () => 0) })),
+    /control command payload exceeds node limit/u,
+  );
+  assert.throws(
+    () => worker.validateControlCommand(command({ text: "x".repeat(48 * 1_024) })),
+    /control command payload exceeds byte limit/u,
+  );
+});
+
+test("shared Dashboard bot registration rejects untrusted requests without storing them", async () => {
+  const workerModule = await loadWorker();
+  const { namespace, stores } = durableNamespace(workerModule);
+  const hubId = "018f6c86-3f34-7a31-8f27-16f5b96cce50";
+  const hubSecret = "h".repeat(64);
+  const env = {
+    DASHBOARD_BOT_HUB_REGISTRY: dashboardBotHubRegistry([[hubId, hubSecret]]),
+    JOURNAL: namespace,
+    ASSETS: { fetch: async () => new Response("asset") },
+  };
+  const unknownPayload = {
+    hubId: "018f6c86-3f34-7a31-8f27-16f5b96cce59",
+    name: "Untrusted Hub",
+    secret: hubSecret,
+  };
+
+  let response = await workerModule.default.fetch(new Request(
+    "https://hub.test/api/dashboard-bot/register",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(unknownPayload),
+    },
+  ), env);
+  assert.equal(response.status, 403);
+  const unknownError = await response.json();
+  assert.equal(stores.get("current").ctx.storage.values.size, 0);
+
+  response = await workerModule.default.fetch(new Request(
+    "https://hub.test/api/dashboard-bot/register",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...unknownPayload, hubId, secret: "x".repeat(64) }),
+    },
+  ), env);
+  assert.equal(response.status, 403);
+  assert.deepEqual(await response.json(), unknownError);
+  assert.equal(stores.get("current").ctx.storage.values.size, 0);
+
+  response = await workerModule.default.fetch(new Request(
+    "https://hub.test/api/dashboard-bot/register",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...unknownPayload, hubId, secret: hubSecret }),
+    },
+  ), { JOURNAL: namespace, ASSETS: env.ASSETS });
+  assert.equal(response.status, 503);
+  assert.equal(stores.get("current").ctx.storage.values.size, 0);
+
+  response = await workerModule.default.fetch(new Request(
+    "https://hub.test/api/dashboard-bot/register",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...unknownPayload, hubId, secret: hubSecret }),
+    },
+  ), { ...env, DASHBOARD_BOT_HUB_REGISTRY: "{" });
+  assert.equal(response.status, 503);
+  assert.equal(stores.get("current").ctx.storage.values.size, 0);
+
+  response = await workerModule.default.fetch(new Request(
+    "https://hub.test/api/dashboard-bot/register",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...unknownPayload, hubId, secret: hubSecret }),
+    },
+  ), env);
+  assert.equal(response.status, 200);
+  const storedEntries = stores.get("current").ctx.storage.values.size;
+  assert.ok(storedEntries > 0);
+
+  response = await workerModule.default.fetch(new Request(
+    "https://hub.test/api/dashboard-bot/register",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...unknownPayload, hubId, secret: hubSecret }),
+    },
+  ), env);
+  assert.equal(response.status, 200);
+  assert.equal(stores.get("current").ctx.storage.values.size, storedEntries);
+});
+
 test("shared Dashboard bot pairs one Telegram user and queues Tasks only for that Hub", async (context) => {
   const workerModule = await loadWorker();
   const { namespace, stores } = durableNamespace(workerModule);
@@ -824,6 +944,10 @@ test("shared Dashboard bot pairs one Telegram user and queues Tasks only for tha
   const env = {
     DASHBOARD_BOT_TOKEN: `123456:${"A".repeat(30)}`,
     DASHBOARD_BOT_WEBHOOK_SECRET: webhookSecret,
+    DASHBOARD_BOT_HUB_REGISTRY: dashboardBotHubRegistry([
+      [hubId, hubSecret],
+      [otherHubId, otherSecret],
+    ]),
     JOURNAL: namespace,
     ASSETS: { fetch: async () => new Response("asset") },
   };
@@ -1087,6 +1211,7 @@ test("shared Dashboard bot can send forwards separately with their reply clarifi
   const env = {
     DASHBOARD_BOT_TOKEN: `123456:${"B".repeat(30)}`,
     DASHBOARD_BOT_WEBHOOK_SECRET: webhookSecret,
+    DASHBOARD_BOT_HUB_REGISTRY: dashboardBotHubRegistry([[hubId, hubSecret]]),
     JOURNAL: namespace,
     ASSETS: { fetch: async () => new Response("asset") },
   };

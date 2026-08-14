@@ -263,6 +263,36 @@ test("separate receipt instances wait for a live effect owner and return its res
   assert.equal(sideEffects, 1);
 });
 
+test("an in-flight receipt rejects a different command fingerprint", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-durable-fingerprint-"));
+  const receipts = new DurableCommandReceipts({ file: path.join(root, "receipts.json") });
+  let effectStarted;
+  let release;
+  const started = new Promise((resolve) => { effectStarted = resolve; });
+  const blocked = new Promise((resolve) => { release = resolve; });
+  const first = receipts.execute({
+    id: "command-1",
+    fingerprint: "first-command",
+    effect: async () => {
+      effectStarted();
+      await blocked;
+      return { delivered: true };
+    },
+  });
+  await started;
+
+  await assert.rejects(
+    receipts.execute({
+      id: "command-1",
+      fingerprint: "different-command",
+      effect: async () => assert.fail("conflicting effect must not start"),
+    }),
+    /fingerprint conflict/,
+  );
+  release();
+  assert.deepEqual(await first, { delivered: true });
+});
+
 test("an old receipt with a live reused PID is reconciled after its maximum effect age", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-durable-receipt-pid-reuse-"));
   const file = path.join(root, "receipts.json");

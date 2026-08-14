@@ -134,6 +134,46 @@
       : 0;
   }
 
+  function turnDisplayCredits(dataset) {
+    for (const candidate of [
+      dataset?.workLogTurnTotalCredits,
+      dataset?.workLogTurnCredits,
+    ]) {
+      if (candidate === undefined || candidate === null || candidate === "") continue;
+      const credits = Number(candidate);
+      if (Number.isFinite(credits) && credits >= 0) return credits;
+    }
+    return null;
+  }
+
+  function createQueuedJournalRefresh(request) {
+    if (typeof request !== "function") throw new TypeError("request must be a function");
+
+    let inFlight = null;
+    let queued = false;
+    let queuedAnnouncement = false;
+
+    function refresh({ force = false, announce = false } = {}) {
+      if (inFlight) {
+        if (force) queued = true;
+        if (announce) queuedAnnouncement = true;
+        return inFlight;
+      }
+
+      inFlight = Promise.resolve().then(() => request({ force, announce })).finally(() => {
+        inFlight = null;
+        if (!queued) return;
+        const nextAnnouncement = queuedAnnouncement;
+        queued = false;
+        queuedAnnouncement = false;
+        void refresh({ force: true, announce: nextAnnouncement });
+      });
+      return inFlight;
+    }
+
+    return Object.freeze({ refresh });
+  }
+
   window.AgentHubJournalView = Object.freeze({
     GROUPINGS,
     groupIdentity,
@@ -145,5 +185,7 @@
     requiresCompleteHistory,
     summarizeGroups,
     streamCount,
+    turnDisplayCredits,
+    createQueuedJournalRefresh,
   });
 })();

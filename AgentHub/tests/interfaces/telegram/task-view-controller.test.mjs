@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { codexRolloutHistory, TaskViewController } from "../../../src/interfaces/telegram/task-view-controller.mjs";
+import {
+  codexRolloutHistory,
+  taskViewMessages,
+  TaskViewController,
+} from "../../../src/interfaces/telegram/task-view-controller.mjs";
 
 function controller(overrides = {}) {
   return new TaskViewController({
@@ -275,6 +279,120 @@ test("rollout history represents a final image-only turn", () => {
   assert.equal(exchange.prompt, "Сообщение с вложением");
   assert.equal(exchange.answer, "Ответ на скриншот");
   assert.equal(exchange.completed, true);
+});
+
+test("subagent rollout prompt is attributed to the parent Workspace Stream agent", async () => {
+  let recorded = null;
+  const view = controller({
+    findCodexRolloutPath: async () => "C:/child-rollout.jsonl",
+    readCodexRolloutActivity: async () => ({
+      parentThreadId: "parent-thread",
+      activeTurnIds: [],
+      userMessages: { "child-turn": [{ text: "Проверь SQLite recovery" }] },
+      latestMessages: {},
+      finalMessages: { "child-turn": "Проверено" },
+    }),
+    readCodexSnapshot: async () => null,
+    workspaceCatalogStore: {
+      thread: ({ threadId }) => threadId === "parent-thread" ? { streamId: "architect" } : null,
+      stream: () => ({ id: "architect", workspaceId: "hub", name: "Architect" }),
+      workspace: () => ({ id: "hub", name: "Agent HUB" }),
+    },
+    taskSyncStore: {
+      history: () => [],
+      recordHistory: (_task, history) => { recorded = structuredClone(history); },
+      save: async () => {},
+    },
+  });
+
+  const result = await view.readHistory({
+    provider: "codex",
+    threadId: "child-thread",
+    projectRoot: "C:/repo",
+    title: "Child",
+    chatId: 1,
+  });
+
+  assert.equal(result.history[0].messages[0].author, "Agent HUB - Architect (Codex)");
+  assert.equal(recorded[0].messages[0].author, "Agent HUB - Architect (Codex)");
+});
+
+test("a final rollout answer cannot remain active", () => {
+  const [exchange] = codexRolloutHistory({
+    userMessages: { "turn-1": [{ text: "Вопрос" }] },
+    finalMessages: { "turn-1": "Готово" },
+    activeTurnIds: ["turn-1"],
+  });
+
+  assert.equal(exchange.completed, true);
+  assert.equal(exchange.active, false);
+  assert.equal(exchange.status, "completed");
+});
+
+test("task view keeps message order, authors and message-specific attachments", () => {
+  const messages = taskViewMessages({
+    prompt: "Устаревший prompt",
+    answer: "Устаревший answer",
+    messages: [
+      {
+        role: "user",
+        author: "Agent HUB · Themes (Codex)",
+        text: "Первое",
+        attachments: [{ id: "first.png", name: "Первое.png" }],
+      },
+      { role: "user", text: "Второе", attachments: [{ id: "second.txt", name: "Второе.txt" }] },
+      { role: "agent", text: "Ответ", attachments: [{ id: "answer.png", name: "Ответ.png" }] },
+    ],
+  });
+
+  assert.deepEqual(messages.map((message) => message.text), ["Первое", "Второе", "Ответ"]);
+  assert.equal(messages[0].author, "Agent HUB · Themes (Codex)");
+  assert.deepEqual(messages.map((message) => message.attachments.map((attachment) => attachment.id)), [
+    ["first.png"],
+    ["second.txt"],
+    ["answer.png"],
+  ]);
+});
+
+test("task view renders every message and ignores a stale completed registry run", async () => {
+  const sent = [];
+  const view = controller({
+    taskRuns: {
+      forTask: () => ({
+        status: "completed",
+        turnId: "turn-1",
+        promptPreview: "Устаревший prompt",
+        responseText: "Устаревший промежуточный ответ",
+      }),
+    },
+    deleteTaskMessages: async () => {},
+    sendRunMessage: async () => {},
+    runTaskTitle: () => "Задача",
+    sendTaskViewText: async (...args) => sent.push(args),
+  });
+  view.readHistory = async () => ({
+    history: [{
+      id: "turn-1",
+      active: false,
+      completed: true,
+      messages: [
+        { role: "user", author: "Agent HUB · Themes (Codex)", text: "Первое", attachments: [{ id: "one.png" }] },
+        { role: "agent", text: "Промежуточное", attachments: [{ id: "two.png" }] },
+        { role: "user", text: "Второе", attachments: [{ id: "three.txt" }] },
+        { role: "agent", phase: "final_answer", text: "Финал", attachments: [{ id: "four.png" }] },
+      ],
+    }],
+    snapshot: null,
+  });
+
+  await view.render({ provider: "codex", projectRoot: "D:/repo", threadId: "thread-1" }, 7);
+
+  assert.deepEqual(sent.map((call) => [call[1], call[2], call[4]?.map((item) => item.id)]), [
+    ["👤 Agent HUB · Themes (Codex)", "Первое", ["one.png"]],
+    ["🤖 Codex", "Промежуточное", ["two.png"]],
+    ["👤 Вы", "Второе", ["three.txt"]],
+    ["🤖 Codex", "Финал", ["four.png"]],
+  ]);
 });
 
 test("rollout history carries commentary groups into completed turns", () => {

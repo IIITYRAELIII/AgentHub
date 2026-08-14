@@ -281,19 +281,21 @@ test("ensureFromFile remains a compatibility adapter and replaces stale fragment
   }
 });
 
-test("corrupt SQLite journal is preserved before creating a clean store", async () => {
+test("corrupt SQLite journal fails closed without creating a clean store", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-journal-corrupt-"));
   const databaseFile = path.join(root, "data", "journal.sqlite");
   try {
     await mkdir(path.dirname(databaseFile), { recursive: true });
     await writeFile(databaseFile, "not a sqlite database", "utf8");
     const database = new JournalDatabase(databaseFile);
-    await replaceJournalProjectionFromHtml(database, "<p>Проверка</p>");
-    assert.match((await database.payload()).html, /Проверка/u);
+    await assert.rejects(
+      replaceJournalProjectionFromHtml(database, "<p>Проверка</p>"),
+      /not a database/iu,
+    );
     database.close();
-    assert.ok((await readdir(path.dirname(databaseFile)))
-      .some((name) => name.startsWith("journal.sqlite.corrupt-")));
-    assert.ok((await stat(databaseFile)).size > 0);
+    assert.equal(await readFile(databaseFile, "utf8"), "not a sqlite database");
+    assert.equal((await readdir(path.dirname(databaseFile)))
+      .some((name) => name.startsWith("journal.sqlite.corrupt-")), false);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

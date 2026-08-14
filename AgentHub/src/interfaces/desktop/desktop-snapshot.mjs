@@ -63,8 +63,27 @@ export function createDesktopSnapshotFactory({
   board = {},
   server = {},
   readState = null,
+  revision = null,
   warn,
 }) {
+  const versionCache = new Map();
+
+  function versionCacheKey({ accountId, compactSnapshot }) {
+    return `${String(accountId ?? "")}\u0000${compactSnapshot === true ? "compact" : "full"}`;
+  }
+
+  async function sourceRevision(params) {
+    if (typeof revision !== "function") return null;
+    try {
+      const value = await revision(params);
+      if (value == null) return null;
+      return String(value);
+    } catch (error) {
+      warn?.("Cannot read desktop snapshot revision:", error.message);
+      return null;
+    }
+  }
+
   function desktopMessageReceiptSnapshot() {
     return (receipts.recent?.() ?? []).slice(-100).flatMap((receipt) => {
       const provider = String(receipt?.provider ?? "").trim();
@@ -337,6 +356,17 @@ export function createDesktopSnapshotFactory({
         warn("Cannot refresh desktop task catalog in background:", error.message);
       });
     }
+    const cacheKey = versionCacheKey({ accountId, compactSnapshot });
+    const beforeRevision = refresh ? null : await sourceRevision({ accountId, compactSnapshot });
+    const cached = versionCache.get(cacheKey);
+    if (
+      knownVersion
+      && beforeRevision !== null
+      && cached?.version === knownVersion
+      && cached.revision === beforeRevision
+    ) {
+      return { notModified: true, version: knownVersion };
+    }
     const workspaces = board.workspaces?.() ?? catalog.hierarchy?.() ?? [];
     let entries = catalog.entries();
     if (
@@ -520,6 +550,12 @@ export function createDesktopSnapshotFactory({
       .update(JSON.stringify(snapshot))
       .digest("base64url")
       .slice(0, 22);
+    const afterRevision = await sourceRevision({ accountId, compactSnapshot });
+    if (beforeRevision !== null && beforeRevision === afterRevision) {
+      versionCache.set(cacheKey, { revision: afterRevision, version });
+    } else {
+      versionCache.delete(cacheKey);
+    }
     if (knownVersion && knownVersion === version) return { notModified: true, version };
     return { ...snapshot, generatedAt: clock.nowIso(), version };
   }

@@ -1,9 +1,15 @@
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
-import { callDesktopControl } from "./desktop-control.mjs";
-import { npmStep, publicationSteps, runStep } from "./publish-all.mjs";
+import { callDesktopControl, readDesktopControlEndpoint } from "./desktop-control.mjs";
+import {
+  npmStep,
+  publicationSteps,
+  runStep,
+  waitForRuntimeReplacement,
+} from "./publish-all.mjs";
 import { ensureWrangler } from "./wrangler-runner.mjs";
+import { defaultRuntimeRoot } from "./src/infrastructure/filesystem/runtime-layout.mjs";
 import { withPublicationLock } from "./src/infrastructure/process/publication-lock.mjs";
 import {
   publicationCheckpointStore,
@@ -133,7 +139,9 @@ function focusedSteps(plan) {
       steps.push(npmStep("Межповерхностные E2E Agent Hub", ["run", "test:e2e"]));
     }
   }
-  if (plan.vscode || plan.runtime) steps.push(byLabel.get("Тесты расширения VS Code"));
+  if (!plan.fullTests && (plan.vscode || plan.runtime)) {
+    steps.push(npmStep("Тесты расширения VS Code", ["test", "--prefix", "VSCodeExtension"]));
+  }
   if (plan.desktop) steps.push(byLabel.get("Сборка и smoke-проверка Agent Hub Desktop"));
   if (plan.android) steps.push(byLabel.get("Сборка Agent Hub Mobile"));
   if (plan.worker) steps.push(byLabel.get("Публикация Mini App Worker"));
@@ -169,6 +177,8 @@ export async function publishChanged(args = process.argv.slice(2), {
   diff = changedFiles,
   ensureWorkerDependency = ensureWrangler,
   checkpoint = null,
+  runtimeRoot = defaultRuntimeRoot(),
+  verifyRestart = restart === callDesktopControl ? waitForRuntimeReplacement : async () => {},
 } = {}) {
   return exclusive(async () => {
     await before();
@@ -190,13 +200,19 @@ export async function publishChanged(args = process.argv.slice(2), {
         mode: "changed",
         from,
         revision: head,
+        worktreeRoot: REPOSITORY_ROOT,
+        runtimeRoot,
         files,
         labels: steps.map((step) => step.label),
       },
     });
+    if (plan.runtimeRestart && !options.skipRestart) {
+      const before = await readDesktopControlEndpoint(runtimeRoot).catch(() => null);
+      await restart("restart-server");
+      await verifyRestart({ previousEndpointId: before?.endpointId ?? null, runtimeRoot });
+    }
     await writeState({ revision: head, publishedAt: new Date().toISOString(), files, plan });
     if (checkpoint) await checkpoint.clear();
-    if (plan.runtimeRestart && !options.skipRestart) await restart("restart-server");
     console.log(`\nВыборочная публикация завершена: ${files.length} изменённых файлов.`);
     return { files, plan, revision: head };
   });

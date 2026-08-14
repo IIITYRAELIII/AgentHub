@@ -186,6 +186,44 @@ export function createDesktopShellComposition({
       isCompacting: (contextThreadId) => contextCompactions.isRunning(contextThreadId),
       compactionFor: (contextThreadId) => contextCompactions.get(contextThreadId),
       maintenanceFor: (target) => streamMaintenance.entry(target),
+      desktopSnapshotRevision: async () => {
+        if (
+          taskRuns.values().some(taskRunIsActive)
+          || pendingInputs.size
+          || queuedInputs.size
+          || approvalController.pending.size
+          || hostState.restartRequest
+          || contextCompactions.runningCount()
+        ) return null;
+        const entries = taskCatalogService.entries;
+        if (entries.some((entry) => streamMaintenance.entry(entry))) return null;
+        return JSON.stringify({
+          catalog: taskCatalogService.snapshotRevision,
+          selection: selectionStore.revision,
+          preferences: agentPreferences.snapshot(),
+          autoApprove: hostState.autoApprove,
+          board: {
+            tasks: taskBoard.snapshot(),
+            workspaces: taskBoard.workspaces(),
+            layout: taskBoard.layout(),
+          },
+          messages: entries.map((entry) => {
+            const message = runtime.savedLastTaskMessageRecord(entry);
+            return [
+              entry.provider,
+              entry.projectRoot,
+              entry.threadId,
+              message?.turnId ?? null,
+              message?.updatedAt ?? null,
+              message?.text ?? null,
+            ];
+          }),
+          readState: taskReadStateStore.revision,
+          receipts: desktopMessageReceipts.revision,
+          exchangeRates: usdRubRateStore.snapshot(),
+          server: await serverControlController.snapshot({ activeCount: 0, restart: null }),
+        });
+      },
       runForTask: (task) => taskRuns.forTask(task),
       runTitle: runTaskTitle,
       findProject,

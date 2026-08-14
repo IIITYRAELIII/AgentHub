@@ -25,7 +25,20 @@ export function createRuntimeLifecycleComposition({
   readyMessage,
   pollTelegram,
   warnUser,
+  sqliteRecovery,
+  acknowledgeSqliteRecovery,
 }) {
+  if (telegramEnabled) {
+    runtimeResources.register("quiesce", {
+      name: "Telegram polling",
+      run: () => pollTelegram.quiesce?.(),
+      timeoutMs: 60_000,
+    });
+    runtimeResources.register("recover", {
+      name: "Telegram polling",
+      run: () => pollTelegram.resume?.(),
+    });
+  }
   const runtimeLifecycle = new RuntimeLifecycleController({
     beginStopping,
     stopTimers: stopRuntimeTimers,
@@ -52,6 +65,8 @@ export function createRuntimeLifecycleComposition({
     readyMessage,
     pollTelegram,
     warnUser,
+    sqliteRecovery,
+    acknowledgeSqliteRecovery,
   });
   let startPromise = null;
   return {

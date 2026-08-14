@@ -32,6 +32,8 @@ html[data-theme="reliquary"] {
   --reliquary-panel-corner-tr: var(--reliquary-panel-corner-tr-asset, url("./panel-corner-tr.webp"));
   --reliquary-panel-corner-bl: var(--reliquary-panel-corner-bl-asset, url("./panel-corner-bl.webp"));
   --reliquary-panel-corner-br: var(--reliquary-panel-corner-br-asset, url("./panel-corner-br.webp"));
+  --reliquary-panel-corner-anchor-x: 1.01rem;
+  --reliquary-panel-corner-anchor-y: 1.03rem;
   --reliquary-stream-divider-half-gap: 0.175rem;
   --reliquary-stone:
     linear-gradient(rgb(3 5 7 / 76%), rgb(7 8 9 / 80%)),
@@ -325,6 +327,8 @@ html[data-theme="reliquary"] .stream-tabs > .stream-tab:not(:last-child)::after 
   html[data-theme="reliquary"] .activity-rail,
   html[data-theme="reliquary"] .chat {
     isolation: isolate;
+    overflow: visible;
+    position: relative;
   }
 
   html[data-theme="reliquary"] .task-rail::before,
@@ -335,14 +339,19 @@ html[data-theme="reliquary"] .stream-tabs > .stream-tab:not(:last-child)::after 
       var(--reliquary-panel-corner-tr),
       var(--reliquary-panel-corner-bl),
       var(--reliquary-panel-corner-br);
-    background-position: left top, right top, left bottom, right bottom;
+    background-position:
+      calc(0% - var(--reliquary-panel-corner-anchor-x)) calc(0% - var(--reliquary-panel-corner-anchor-y)),
+      calc(100% + var(--reliquary-panel-corner-anchor-x)) calc(0% - var(--reliquary-panel-corner-anchor-y)),
+      calc(0% - var(--reliquary-panel-corner-anchor-x)) calc(100% + var(--reliquary-panel-corner-anchor-y)),
+      calc(100% + var(--reliquary-panel-corner-anchor-x)) calc(100% + var(--reliquary-panel-corner-anchor-y));
     background-repeat: no-repeat;
     background-size: 8rem auto;
     content: "";
-    inset: 0;
+    inset: -14px;
+    mix-blend-mode: screen;
     pointer-events: none;
     position: absolute;
-    z-index: -1;
+    z-index: 3;
   }
 
   html[data-theme="reliquary"]:not([data-surface="mobile"]) .task-new,

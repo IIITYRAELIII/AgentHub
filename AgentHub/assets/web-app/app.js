@@ -9625,7 +9625,6 @@ document.querySelector("[data-comparison-retry]")?.addEventListener("click", () 
 
 const OPEN_STATE_KEY = "agent-hub:journal-open-state:v1";
 let currentVersion = "";
-let loading = null;
 const loadingDays = new Map();
 const loadingTurns = new Map();
 const journalDayHtmlCache = new Map();
@@ -10040,8 +10039,8 @@ function groupedTurn(entry, date) {
     when.append(day, document.createTextNode(time));
     const cost = document.createElement("span");
     cost.dataset.journalTurnCost = "";
-    const credits = Number(copy.dataset.workLogTurnCredits);
-    if (Number.isFinite(credits)) cost.append(usageBadge(formatUsageValue(credits), credits));
+    const credits = JournalView.turnDisplayCredits(copy.dataset);
+    if (credits !== null) cost.append(usageBadge(formatUsageValue(credits), credits));
     else cost.textContent = "—";
     const share = copy.querySelector("[data-work-log-turn-share]")?.cloneNode(true);
     meta.replaceChildren(when, cost, ...(share ? [share] : []));
@@ -11260,57 +11259,61 @@ async function renderJournal() {
   }
 }
 
-async function loadJournal({ force = false } = {}) {
-  if (loading) return loading;
-  loading = (async () => {
-    refreshButton.disabled = true;
-    try {
-      await localSessionReady;
-      const headers = await authenticatedRequestHeaders();
-      if (!force && currentVersion) headers["If-None-Match"] = `"${currentVersion}"`;
-      const response = await fetch(`/api/journal?now=${Date.now()}`, {
-        cache: "no-store",
-        headers,
-      });
-      if (response.status === 304) return;
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
-      if (force || payload.version !== currentVersion) {
-        const versionChanged = payload.version !== currentVersion;
-        const openState = journalRendered ? captureOpenState() : storedOpenState();
-        if (openState) groupingStates[grouping] = openState;
-        if (versionChanged) journalDayHtmlCache.clear();
-        currentVersion = payload.version;
-        journalHtml = payload.html;
-        await renderJournal();
-        persistOpenState();
-      }
-      const date = new Date(payload.updatedAt);
-      /* На телефоне секунды съедают place в шапке, где рядом стоят лимиты и
-         выбор темы; точное время остаётся в подсказке кнопки. */
-      const stamp = Number.isNaN(date.getTime())
-        ? ""
-        : date.toLocaleTimeString("ru-RU", {
-            hour: "2-digit",
-            minute: "2-digit",
-            ...(surface === "mobile" ? {} : { second: "2-digit" }),
-          });
-      const exact = Number.isNaN(date.getTime())
-        ? ""
-        : date.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-      updatedAt.textContent = stamp || "Обновить";
-      refreshButton.title = exact ? `Журнал обновлён в ${exact}` : "Обновить журнал";
-      journal.setAttribute("aria-busy", "false");
-    } catch (error) {
-      updatedAt.textContent = "Ошибка";
-      refreshButton.title = error.message;
-      journal.setAttribute("aria-busy", "false");
-    } finally {
-      refreshButton.disabled = false;
-      loading = null;
+async function requestJournal({ force = false, announce = false } = {}) {
+  refreshButton.setAttribute("aria-busy", "true");
+  try {
+    await localSessionReady;
+    const headers = await authenticatedRequestHeaders();
+    if (!force && currentVersion) headers["If-None-Match"] = `"${currentVersion}"`;
+    const response = await fetch(`/api/journal?now=${Date.now()}`, {
+      cache: "no-store",
+      headers,
+    });
+    if (response.status === 304) return true;
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+    if (force || payload.version !== currentVersion) {
+      const versionChanged = payload.version !== currentVersion;
+      const openState = journalRendered ? captureOpenState() : storedOpenState();
+      if (openState) groupingStates[grouping] = openState;
+      if (versionChanged) journalDayHtmlCache.clear();
+      currentVersion = payload.version;
+      journalHtml = payload.html;
+      await renderJournal();
+      persistOpenState();
     }
-  })();
-  return loading;
+    const date = new Date(payload.updatedAt);
+    /* На телефоне секунды съедают place в шапке, где рядом стоят лимиты и
+       выбор темы; точное время остаётся в подсказке кнопки. */
+    const stamp = Number.isNaN(date.getTime())
+      ? ""
+      : date.toLocaleTimeString("ru-RU", {
+          hour: "2-digit",
+          minute: "2-digit",
+          ...(surface === "mobile" ? {} : { second: "2-digit" }),
+        });
+    const exact = Number.isNaN(date.getTime())
+      ? ""
+      : date.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    updatedAt.textContent = stamp || "Обновить";
+    refreshButton.title = exact ? `Журнал обновлён в ${exact}` : "Обновить журнал";
+    journal.setAttribute("aria-busy", "false");
+    if (announce) showToast("Журнал обновлён.");
+    return true;
+  } catch (error) {
+    updatedAt.textContent = "Ошибка";
+    refreshButton.title = error.message;
+    journal.setAttribute("aria-busy", "false");
+    return false;
+  } finally {
+    refreshButton.setAttribute("aria-busy", "false");
+  }
+}
+
+const journalRefresh = window.AgentHubJournalView.createQueuedJournalRefresh(requestJournal);
+
+function loadJournal(options = {}) {
+  return journalRefresh.refresh(options);
 }
 
 /* Журнал грузится при первом открытии вкладки; дальше его обновляют SSE или
@@ -11319,9 +11322,14 @@ function ensureJournalLoaded() {
   if (journalRequested) return;
   journalRequested = true;
   void loadJournal({ force: true });
+  journalPolling?.start();
 }
 
-refreshButton.addEventListener("click", () => void loadJournal({ force: true }));
+refreshButton.addEventListener("click", () => {
+  updatedAt.textContent = "Обновление…";
+  refreshButton.title = "Журнал обновляется";
+  void loadJournal({ force: true, announce: true });
+});
 collapseAllButton.addEventListener("click", () => {
   for (const details of journal.querySelectorAll("details[open]")) details.open = false;
   for (const item of journal.querySelectorAll("[data-mobile-expanded], [data-mobile-open]")) {
@@ -11440,8 +11448,19 @@ journal.addEventListener("keydown", (event) => {
   toggleMobileTask(title);
 });
 
-/* Обновления журнала: в Telegram — опрос, в браузере/VS Code — SSE. Загрузка
- * начинается только после первого открытия вкладки журнала. */
+/* Обновления журнала: в Telegram — опрос, в браузере/VS Code — SSE. Android
+ * и public BrowserDevice не получают SSE, поэтому используют bounded polling.
+ * Загрузка начинается только после первого открытия вкладки журнала. */
+const journalPolling = !telegramMode && !vscodeMode
+  && (Boolean(window.AgentHubAndroid) || Boolean(window.AgentHubBrowserDevice))
+  ? window.AgentHubJournalPolling.createBoundedPollingFallback({
+      request: () => loadJournal(),
+      isEnabled: () => journalRequested,
+      isOnline: () => navigator.onLine !== false,
+      isVisible: () => document.visibilityState !== "hidden",
+    })
+  : null;
+
 if (telegramMode) {
   const polling = setInterval(() => {
     if (journalRequested) void loadJournal();
@@ -11457,6 +11476,15 @@ if (telegramMode) {
     if (journalRequested) void loadJournal();
   });
   events.addEventListener("error", () => AgentHub.setConnection("connecting"));
+}
+if (journalPolling) {
+  document.addEventListener("visibilitychange", () => journalPolling.reconcile());
+  window.addEventListener("online", () => journalPolling.reconcile());
+  window.addEventListener("offline", () => journalPolling.reconcile());
+  window.addEventListener("pageshow", () => {
+    if (journalRequested) journalPolling.start();
+  });
+  window.addEventListener("pagehide", () => journalPolling.stop());
 }
 if (vscodeMode) {
   window.addEventListener("message", (event) => {

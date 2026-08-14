@@ -82,6 +82,8 @@ function fixture(overrides = {}) {
     pending: [],
     queued: [],
     receipts: [],
+    revision: "initial",
+    snapshotBuilds: 0,
     restartRequest: null,
     maintenance: null,
     runForTask: null,
@@ -112,8 +114,11 @@ function fixture(overrides = {}) {
       }),
     },
     runs: {
-      forTask: (task) => state.runForTask?.(task)
-        ?? (task.threadId === "thread-1" ? state.run : null),
+      forTask: (task) => {
+        state.snapshotBuilds += 1;
+        return state.runForTask?.(task)
+          ?? (task.threadId === "thread-1" ? state.run : null);
+      },
       titleFor: (item) => item.taskTitle ?? "Задача",
     },
     tasks: {
@@ -197,6 +202,7 @@ function fixture(overrides = {}) {
         restart,
       }),
     },
+    revision: () => state.revision,
     readState: {
       hasUnread: (value) => value.accountId === "owner" && value.answerTurnId !== "turn-previous",
     },
@@ -810,14 +816,29 @@ test("desktopRunSnapshot attributes a live inter-Stream message to its source ag
   assert.equal(snapshot.userMessages[0].author, "Agent HUB - Architect (Codex)");
 });
 
-test("desktopSnapshot returns a compact marker for an unchanged version", async () => {
-  const { desktopSnapshot } = fixture();
+test("desktopSnapshot returns a compact marker before rebuilding an unchanged revision", async () => {
+  const { desktopSnapshot, state } = fixture();
   const snapshot = await desktopSnapshot();
   assert.match(snapshot.version, /^[A-Za-z0-9_-]{22}$/u);
+  const builds = state.snapshotBuilds;
   assert.deepEqual(await desktopSnapshot({ knownVersion: snapshot.version }), {
     notModified: true,
     version: snapshot.version,
   });
+  assert.equal(state.snapshotBuilds, builds);
+});
+
+test("desktopSnapshot rebuilds when a source revision changes", async () => {
+  const { desktopSnapshot, state } = fixture();
+  const snapshot = await desktopSnapshot();
+  state.lastMessage = { ...state.lastMessage, text: "Новый ответ" };
+  state.revision = "after-message";
+
+  const next = await desktopSnapshot({ knownVersion: snapshot.version });
+
+  assert.notEqual(next.notModified, true);
+  assert.equal(next.tasks[0].lastAnswer, "Новый ответ");
+  assert.notEqual(next.version, snapshot.version);
 });
 
 test("compact remote snapshot omits answer text when the turn id is sufficient", async () => {

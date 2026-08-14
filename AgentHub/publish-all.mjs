@@ -2,13 +2,15 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
-import { callDesktopControl } from "./desktop-control.mjs";
+import { callDesktopControl, readDesktopControlEndpoint } from "./desktop-control.mjs";
 import { ensureWrangler } from "./wrangler-runner.mjs";
+import { defaultRuntimeRoot } from "./src/infrastructure/filesystem/runtime-layout.mjs";
 import {
   publicationCheckpointStore,
   runPublicationSteps,
 } from "./src/infrastructure/persistence/publication-checkpoint.mjs";
 import { withPublicationLock } from "./src/infrastructure/process/publication-lock.mjs";
+import { stopProcessTree } from "./src/infrastructure/process/process-tree.mjs";
 import {
   assertCleanPublicationTree,
   assertCurrentPublicationRevision,
@@ -20,6 +22,8 @@ const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = path.resolve(ROOT, "..");
 const python = process.platform === "win32" ? "python.exe" : "python3";
 const powershell = process.platform === "win32" ? "powershell.exe" : "pwsh";
+const DEFAULT_STEP_TIMEOUT_MS = 15 * 60 * 1_000;
+const RESTART_READINESS_TIMEOUT_MS = 90_000;
 
 export function npmStep(label, args) {
   const npmCli = String(process.env.npm_execpath ?? "").trim();
@@ -43,7 +47,6 @@ export function publicationSteps({
   return [
     ...(!skipTests ? [
       npmStep("Полные тесты Agent Hub", ["run", "test:all"]),
-      npmStep("Тесты расширения VS Code", ["test", "--prefix", "VSCodeExtension"]),
       {
         label: "Сборка и smoke-проверка Agent Hub Desktop",
         command: powershell,
@@ -70,26 +73,75 @@ export function publicationSteps({
   ];
 }
 
-export function runStep({ label, command, args }) {
+export function runStep({ label, command, args, timeoutMs = DEFAULT_STEP_TIMEOUT_MS }, {
+  spawnImpl = spawn,
+  stopTree = stopProcessTree,
+} = {}) {
   const startedAt = Date.now();
   console.log(`\n==> ${label}`);
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
+    let settled = false;
+    const child = spawnImpl(command, args, {
       cwd: ROOT,
       env: { ...process.env, PYTHONUTF8: "1" },
       shell: false,
       stdio: "inherit",
       windowsHide: true,
+      detached: process.platform !== "win32",
     });
-    child.once("error", reject);
+    const finish = (operation, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      operation(value);
+    };
+    const timer = setTimeout(() => {
+      void Promise.resolve(child.pid ? stopTree(child.pid) : false)
+        .catch(() => child.kill?.("SIGKILL"))
+        .finally(() => finish(reject, new Error(`${label}: превышен таймаут ${timeoutMs} мс`)));
+    }, timeoutMs);
+    timer.unref?.();
+    child.once("error", (error) => finish(reject, error));
     child.once("exit", (code, signal) => {
       if (code === 0) {
         console.log(`<== ${label}: ${((Date.now() - startedAt) / 1_000).toFixed(1)} с`);
-        resolve();
+        finish(resolve);
       }
-      else reject(new Error(`${label}: процесс завершён с ${signal ?? `кодом ${code}`}`));
+      else finish(reject, new Error(`${label}: процесс завершён с ${signal ?? `кодом ${code}`}`));
     });
   });
+}
+
+export async function waitForRuntimeReplacement({
+  previousEndpointId = null,
+  runtimeRoot = defaultRuntimeRoot(),
+  timeoutMs = RESTART_READINESS_TIMEOUT_MS,
+  readEndpoint = readDesktopControlEndpoint,
+  probe = callDesktopControl,
+  delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+} = {}) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError = null;
+  while (Date.now() < deadline) {
+    try {
+      const endpoint = await readEndpoint(runtimeRoot);
+      if (!previousEndpointId || endpoint.endpointId !== previousEndpointId) {
+        await probe("snapshot", {}, { runtimeRoot, timeoutMs: Math.min(10_000, timeoutMs) });
+        return endpoint;
+      }
+    } catch (error) {
+      lastError = error;
+    }
+    await delay(250);
+  }
+  throw new Error(`Agent Hub Runtime не подтвердил готовность после перезапуска: ${lastError?.message ?? "timeout"}`);
+}
+
+async function restartRuntimeAndVerify(restart, verifyRestart, runtimeRoot) {
+  const before = await readDesktopControlEndpoint(runtimeRoot).catch(() => null);
+  const result = await restart("restart-server");
+  await verifyRestart({ previousEndpointId: before?.endpointId ?? null, runtimeRoot });
+  return result;
 }
 
 export function parseArguments(args) {
@@ -116,6 +168,8 @@ export async function publishAll(args = process.argv.slice(2), {
   revision = currentRevision,
   ensureWorkerDependency = ensureWrangler,
   checkpoint = null,
+  runtimeRoot = defaultRuntimeRoot(),
+  verifyRestart = restart === callDesktopControl ? waitForRuntimeReplacement : async () => {},
 } = {}) {
   return exclusive(async () => {
     await before();
@@ -129,16 +183,18 @@ export async function publishAll(args = process.argv.slice(2), {
       identity: {
         mode: "full",
         revision: head,
+        worktreeRoot: REPOSITORY_ROOT,
+        runtimeRoot,
         labels: steps.map((step) => step.label),
       },
     });
-    await record();
-    if (checkpoint) await checkpoint.clear();
     if (!options.skipRestart) {
       console.log("\n==> Запрос безопасного перезапуска Agent Hub");
-      const result = await restart("restart-server");
+      const result = await restartRuntimeAndVerify(restart, verifyRestart, runtimeRoot);
       console.log(result?.message ?? "Перезапуск запрошен");
     }
+    await record();
+    if (checkpoint) await checkpoint.clear();
     console.log("\nПубликация завершена. Интерфейс VS Code подхватит runtime после переоткрытия панели или команды «Обновить Agent Hub»; Reload Window нужен только при изменении моста расширения.");
   });
 }

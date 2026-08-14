@@ -174,3 +174,88 @@ test("polling controller retries a transient polling failure before accepting up
   assert.deepEqual(retryDelays, [3_000]);
   assert.match(errors[0], /retry in 3000 ms/);
 });
+
+test("polling controller does not process a batch returned after stopping begins", async () => {
+  let stopped = false;
+  let releasePoll;
+  const handled = [];
+  const controller = new TelegramPollingController({
+    telegram: () => new Promise((resolve) => { releasePoll = resolve; }),
+    config: { allowedUserIds: new Set(), allowedChatIds: null, privateChatsOnly: true },
+    getOffset: () => 0,
+    setOffset() {},
+    setProcessingUpdateId() {},
+    handleMessage: async (message) => handled.push(message.text),
+    handleCallback: async () => {},
+    sendMessage: async () => {},
+    saveState: async () => {},
+    afterUpdate: async () => {},
+    stopping: () => stopped,
+  });
+
+  const polling = controller.run();
+  await new Promise((resolve) => setImmediate(resolve));
+  stopped = true;
+  releasePoll([{ update_id: 1, message: { text: "late" } }]);
+  await polling;
+  assert.deepEqual(handled, []);
+});
+
+test("polling controller is single-flight and waitForIdle follows the active poll", async () => {
+  let stopped = false;
+  let calls = 0;
+  let releasePoll;
+  const controller = new TelegramPollingController({
+    telegram: () => {
+      calls += 1;
+      return new Promise((resolve) => { releasePoll = resolve; });
+    },
+    config: { allowedUserIds: new Set(), allowedChatIds: null, privateChatsOnly: true },
+    getOffset: () => 0,
+    setOffset() {},
+    setProcessingUpdateId() {},
+    handleMessage: async () => {},
+    handleCallback: async () => {},
+    sendMessage: async () => {},
+    saveState: async () => {},
+    afterUpdate: async () => {},
+    stopping: () => stopped,
+  });
+
+  const first = controller.run();
+  const second = controller.run();
+  const idle = controller.waitForIdle();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls, 1);
+  stopped = true;
+  releasePoll([]);
+  await Promise.all([first, second, idle]);
+});
+
+test("polling generation rejects a late update after global stopping is reset", async () => {
+  let stopped = false;
+  let releasePoll;
+  const handled = [];
+  const controller = new TelegramPollingController({
+    telegram: () => new Promise((resolve) => { releasePoll = resolve; }),
+    config: { allowedUserIds: new Set(), allowedChatIds: null, privateChatsOnly: true },
+    getOffset: () => 0,
+    setOffset() {},
+    setProcessingUpdateId() {},
+    handleMessage: async (message) => handled.push(message.text),
+    handleCallback: async () => {},
+    sendMessage: async () => {},
+    saveState: async () => {},
+    afterUpdate: async () => {},
+    stopping: () => stopped,
+  });
+
+  const polling = controller.run();
+  await new Promise((resolve) => setImmediate(resolve));
+  stopped = true;
+  const idle = controller.quiesce();
+  stopped = false;
+  releasePoll([{ update_id: 1, message: { text: "stale" } }]);
+  await Promise.all([polling, idle]);
+  assert.deepEqual(handled, []);
+});

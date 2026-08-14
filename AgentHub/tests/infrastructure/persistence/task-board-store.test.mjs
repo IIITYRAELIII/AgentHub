@@ -37,6 +37,18 @@ test("Task store can persist disabled Spark triage", async (t) => {
   assert.equal(store.pendingTriage().length, 0);
 });
 
+test("restarting a completed Task clears its completion timestamp", async (t) => {
+  const store = await fixture(t);
+  const task = store.create({ text: "Исправить запуск" });
+  const completed = store.complete(task.id);
+  const restarted = store.markStarted(task.id, { workspaceId: "workspace-1", streamId: "stream-1" });
+
+  assert.equal(completed.status, "done");
+  assert.notEqual(completed.completedAt, null);
+  assert.equal(restarted.status, "started");
+  assert.equal(restarted.completedAt, null);
+});
+
 test("Task store attaches a screenshot to the Task addressed by a Telegram reply", async (t) => {
   const store = await fixture(t);
   const task = store.create({

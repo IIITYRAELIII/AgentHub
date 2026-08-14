@@ -43,7 +43,9 @@ function configure(database) {
       created_at_ms INTEGER NOT NULL,
       updated_at_ms INTEGER NOT NULL,
       started_at_ms INTEGER,
-      completed_at_ms INTEGER
+      completed_at_ms INTEGER,
+      start_request_id TEXT,
+      start_stream_name TEXT
     );
     CREATE TABLE IF NOT EXISTS hub_board_workspace_order (
       workspace_id TEXT PRIMARY KEY,
@@ -84,6 +86,12 @@ function configure(database) {
   }
   if (!taskColumns.some((column) => column.name === "presentation_source")) {
     database.exec("ALTER TABLE hub_board_tasks ADD COLUMN presentation_source TEXT NOT NULL DEFAULT 'automatic'");
+  }
+  if (!taskColumns.some((column) => column.name === "start_request_id")) {
+    database.exec("ALTER TABLE hub_board_tasks ADD COLUMN start_request_id TEXT");
+  }
+  if (!taskColumns.some((column) => column.name === "start_stream_name")) {
+    database.exec("ALTER TABLE hub_board_tasks ADD COLUMN start_stream_name TEXT");
   }
   const legacyPrefixPattern = `${LEGACY_TELEGRAM_BUNDLE_PREFIX}%`;
   const contentOffset = LEGACY_TELEGRAM_BUNDLE_PREFIX.length + 1;
@@ -209,6 +217,8 @@ function taskFromRow(row) {
     updatedAt: new Date(Number(row.updated_at_ms)).toISOString(),
     startedAt: row.started_at_ms == null ? null : new Date(Number(row.started_at_ms)).toISOString(),
     completedAt: row.completed_at_ms == null ? null : new Date(Number(row.completed_at_ms)).toISOString(),
+    startRequestId: row.start_request_id ?? null,
+    startStreamName: row.start_stream_name ?? null,
     boardOrder: Number(row.board_order) || 0,
   };
 }
@@ -678,13 +688,69 @@ export class TaskBoardStore {
     return value;
   }
 
-  markStarted(id, { workspaceId, streamId } = {}) {
+  prepareStart(id, {
+    workspaceId, streamId, requestId, streamName = null,
+  } = {}) {
+    const taskId = String(id);
+    const normalizedRequestId = String(requestId ?? "").trim();
+    if (!normalizedRequestId) throw new Error("Task launch request id is required");
     const timestamp = this.now();
+    return this.#withDatabase((database) => {
+      const current = database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(taskId);
+      if (!current) throw new Error("Task не найден");
+      const currentRequestId = String(current.start_request_id ?? "").trim();
+      if (currentRequestId && currentRequestId !== normalizedRequestId) {
+        throw new Error("Task launch is already pending; retry it with the original request_id");
+      }
+      if (current.status === "done") throw new Error("Task уже завершена");
+      if (current.status === "started" && !currentRequestId) throw new Error("Task уже запущена");
+      if (!currentRequestId) {
+        database.prepare(`
+          UPDATE hub_board_tasks
+          SET bucket = 'workspace', status = 'starting', workspace_id = ?, stream_id = ?,
+            placement_source = 'manual', start_request_id = ?, start_stream_name = ?,
+            completed_at_ms = NULL, updated_at_ms = ?
+          WHERE id = ?
+        `).run(
+          String(workspaceId), String(streamId), normalizedRequestId,
+          String(streamName ?? "").trim() || null, timestamp, taskId,
+        );
+      }
+      return taskFromRow(database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(taskId));
+    });
+  }
+
+  cancelPreparedStart(id, { requestId } = {}) {
+    const taskId = String(id);
+    const normalizedRequestId = String(requestId ?? "").trim();
+    if (!normalizedRequestId) throw new Error("Task launch request id is required");
     return this.#withDatabase((database) => {
       database.prepare(`
         UPDATE hub_board_tasks
+        SET status = 'open', stream_id = NULL, start_request_id = NULL, start_stream_name = NULL,
+          updated_at_ms = ?
+        WHERE id = ? AND status = 'starting' AND start_request_id = ?
+      `).run(this.now(), taskId, normalizedRequestId);
+      const task = taskFromRow(database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(taskId));
+      if (!task) throw new Error("Task не найден");
+      return task;
+    });
+  }
+
+  markStarted(id, { workspaceId, streamId, requestId = null } = {}) {
+    const timestamp = this.now();
+    return this.#withDatabase((database) => {
+      const normalizedRequestId = String(requestId ?? "").trim();
+      const current = database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(String(id));
+      if (!current) throw new Error("Task не найден");
+      if (normalizedRequestId && String(current.start_request_id ?? "") !== normalizedRequestId) {
+        throw new Error("Task launch request does not match the prepared Task");
+      }
+      database.prepare(`
+        UPDATE hub_board_tasks
         SET bucket = 'workspace', status = 'started', workspace_id = ?, stream_id = ?,
-          placement_source = 'manual', started_at_ms = COALESCE(started_at_ms, ?), updated_at_ms = ?
+          placement_source = 'manual', started_at_ms = COALESCE(started_at_ms, ?),
+          completed_at_ms = NULL, updated_at_ms = ?
         WHERE id = ?
       `).run(String(workspaceId), String(streamId), timestamp, timestamp, String(id));
       const task = taskFromRow(database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(String(id)));

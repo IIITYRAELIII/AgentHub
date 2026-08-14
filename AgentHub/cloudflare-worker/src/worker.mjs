@@ -10,6 +10,9 @@ const MAX_CONTROL_REQUEST_BYTES = 64 * 1024;
 const MAX_CONTROL_RESULT_BYTES = 1024 * 1024;
 const MAX_CONTROL_ERROR_CHARS = 4_096;
 const MAX_CONTROL_COMMANDS = 500;
+const MAX_CONTROL_COMMAND_DEPTH = 32;
+const MAX_CONTROL_COMMAND_NODES = 1_024;
+const MAX_CONTROL_COMMAND_CANONICAL_BYTES = 48 * 1024;
 const CONTROL_EXPIRY_MS = 30 * 60 * 1_000;
 const CONTROL_LEASE_MS = 30 * 1_000;
 const MAX_CONTROL_WAIT_MS = 25 * 1_000;
@@ -24,6 +27,8 @@ const DASHBOARD_BOT_PAIRING_EXPIRY_MS = 10 * 60 * 1_000;
 const DASHBOARD_BOT_COMMAND_EXPIRY_MS = 30 * 24 * 60 * 60 * 1_000;
 const DASHBOARD_BOT_PAIRING_CODE_PATTERN = /^[A-Z2-9]{8}$/u;
 const DASHBOARD_BOT_HUB_NAME_MAX_CHARS = 80;
+const DASHBOARD_BOT_HUB_VERIFIER_PATTERN = /^sha256:[a-f0-9]{64}$/u;
+const DASHBOARD_BOT_HUB_REGISTRY_MAX_ENTRIES = 1_000;
 const DASHBOARD_BOT_BUNDLE_CALLBACK_PATTERN = /^forward-bundle:(send|separate|cancel):([0-9a-f-]{36})$/iu;
 const DASHBOARD_BOT_BUNDLE_MAX_ITEMS = 100;
 const DASHBOARD_BOT_BUNDLE_MAX_CHARS = 50_000;
@@ -117,6 +122,12 @@ async function verifyHmac(key, value, signature) {
   return crypto.subtle.verify("HMAC", cryptoKey, bytesFromHex(signature), encoder.encode(value));
 }
 
+async function constantTimeTextEqual(left, right) {
+  const comparisonKey = "agent-hub-dashboard-registry-v1";
+  const signature = hex(await hmac(comparisonKey, String(left)));
+  return verifyHmac(comparisonKey, String(right), signature);
+}
+
 function isPlainObject(value) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   return Object.prototype.toString.call(value) === "[object Object]";
@@ -172,18 +183,93 @@ function parseJson(body, label) {
   }
 }
 
-function hasAttachments(value, seen = new Set()) {
-  if (value === null || typeof value !== "object") return false;
-  if (seen.has(value)) return false;
-  seen.add(value);
-  if (Array.isArray(value)) return value.some((item) => hasAttachments(item, seen));
-  for (const [key, item] of Object.entries(value)) {
-    if (["attachment", "attachments", "image", "images", "files"].includes(key.toLowerCase())) {
-      if (item != null && (!Array.isArray(item) || item.length > 0)) return true;
+function invalidControlPayloadLimit(limit) {
+  return new Error(`control command payload exceeds ${limit} limit`);
+}
+
+function canonicalControlPayload(value, { serialize = false, inspectAttachments = false } = {}) {
+  const parts = serialize ? [] : null;
+  const active = new Set();
+  const stack = [{ type: "value", value, depth: 0 }];
+  let attachmentFound = false;
+  let byteLength = 0;
+  let nodeCount = 0;
+
+  const append = (part) => {
+    byteLength += encoder.encode(part).byteLength;
+    if (byteLength > MAX_CONTROL_COMMAND_CANONICAL_BYTES) {
+      throw invalidControlPayloadLimit("byte");
     }
-    if (hasAttachments(item, seen)) return true;
+    if (parts) parts.push(part);
+  };
+
+  while (stack.length) {
+    const item = stack.pop();
+    if (item.type === "token") {
+      append(item.value);
+      continue;
+    }
+    if (item.type === "leave") {
+      active.delete(item.value);
+      continue;
+    }
+
+    nodeCount += 1;
+    if (nodeCount > MAX_CONTROL_COMMAND_NODES) throw invalidControlPayloadLimit("node");
+    if (item.depth > MAX_CONTROL_COMMAND_DEPTH) throw invalidControlPayloadLimit("depth");
+    const current = item.value;
+    if (current === null || typeof current !== "object") {
+      let encoded;
+      try {
+        encoded = JSON.stringify(current);
+      } catch {
+        throw new Error("invalid control command payload");
+      }
+      if (typeof encoded !== "string") throw new Error("invalid control command payload");
+      append(encoded);
+      continue;
+    }
+    if (active.has(current)) throw new Error("invalid control command payload");
+    active.add(current);
+
+    if (Array.isArray(current)) {
+      append("[");
+      stack.push({ type: "leave", value: current });
+      stack.push({ type: "token", value: "]" });
+      for (let index = current.length - 1; index >= 0; index -= 1) {
+        if (index < current.length - 1) stack.push({ type: "token", value: "," });
+        stack.push({ type: "value", value: current[index], depth: item.depth + 1 });
+      }
+      continue;
+    }
+    if (!isPlainObject(current)) throw new Error("invalid control command payload");
+
+    const keys = Object.keys(current).sort();
+    append("{");
+    stack.push({ type: "leave", value: current });
+    stack.push({ type: "token", value: "}" });
+    for (let index = keys.length - 1; index >= 0; index -= 1) {
+      const key = keys[index];
+      const nested = current[key];
+      if (
+        inspectAttachments
+        && ["attachment", "attachments", "image", "images", "files"].includes(key.toLowerCase())
+        && nested != null
+        && (!Array.isArray(nested) || nested.length > 0)
+      ) {
+        attachmentFound = true;
+      }
+      if (index < keys.length - 1) stack.push({ type: "token", value: "," });
+      stack.push({ type: "value", value: nested, depth: item.depth + 1 });
+      stack.push({ type: "token", value: `${JSON.stringify(key)}:` });
+    }
   }
-  return false;
+
+  return { attachmentFound, text: parts?.join("") ?? "" };
+}
+
+function hasAttachments(value) {
+  return canonicalControlPayload(value, { inspectAttachments: true }).attachmentFound;
 }
 
 function attachmentIdFromReference(value) {
@@ -273,13 +359,7 @@ async function deterministicAttachmentId(userId, bodyHash, name = "", contentTyp
 }
 
 function stableStringify(value) {
-  if (Array.isArray(value)) return `[${value.map((item) => stableStringify(item)).join(",")}]`;
-  if (value !== null && typeof value === "object") {
-    return `{${Object.keys(value).sort().map((key) => (
-      `${JSON.stringify(key)}:${stableStringify(value[key])}`
-    )).join(",")}}`;
-  }
-  return JSON.stringify(value);
+  return canonicalControlPayload(value, { serialize: true }).text;
 }
 
 export function validateControlCommand(payload) {
@@ -324,6 +404,53 @@ export async function validateControlServiceRequest(request, secret, { now = Dat
     throw new Error("invalid control signature");
   }
   return body;
+}
+
+function dashboardBotHubRegistry(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) throw new Error("dashboard bot hub registry is not configured");
+  let payload;
+  try {
+    payload = JSON.parse(raw);
+  } catch {
+    throw new Error("dashboard bot hub registry is invalid");
+  }
+  if (payload?.version !== 1 || !isPlainObject(payload.hubs)) {
+    throw new Error("dashboard bot hub registry is invalid");
+  }
+  const entries = Object.entries(payload.hubs);
+  if (entries.length > DASHBOARD_BOT_HUB_REGISTRY_MAX_ENTRIES) {
+    throw new Error("dashboard bot hub registry is invalid");
+  }
+  const registry = new Map();
+  for (const [rawHubId, rawVerifier] of entries) {
+    const hubId = String(rawHubId).trim().toLowerCase();
+    const verifier = String(rawVerifier).trim().toLowerCase();
+    if (
+      !CONTROL_ID_PATTERN.test(hubId)
+      || !DASHBOARD_BOT_HUB_VERIFIER_PATTERN.test(verifier)
+      || registry.has(hubId)
+    ) {
+      throw new Error("dashboard bot hub registry is invalid");
+    }
+    registry.set(hubId, verifier);
+  }
+  return registry;
+}
+
+async function authorizeDashboardBotRegistration(body, registryValue) {
+  const payload = parseJson(body, "dashboard bot registration");
+  const hubId = String(payload?.hubId ?? "").trim().toLowerCase();
+  const secret = String(payload?.secret ?? "").trim();
+  if (!CONTROL_ID_PATTERN.test(hubId) || secret.length < 32 || secret.length > 256) {
+    throw new Error("invalid dashboard bot hub registration");
+  }
+  const registry = dashboardBotHubRegistry(registryValue);
+  const expected = registry.get(hubId) ?? `sha256:${"0".repeat(64)}`;
+  const actual = `sha256:${await sha256(secret)}`;
+  if (!registry.has(hubId) || !await constantTimeTextEqual(expected, actual)) {
+    throw new Error("dashboard bot hub is not authorized");
+  }
 }
 
 function allowedUserIds(value) {
@@ -2685,13 +2812,21 @@ export default {
       if (request.method !== "POST") return json({ error: "Method Not Allowed" }, 405);
       try {
         const body = await readBoundedBody(request, 8 * 1024, "dashboard bot registration");
+        await authorizeDashboardBotRegistration(body, env.DASHBOARD_BOT_HUB_REGISTRY);
         return store.fetch(new Request("https://journal.internal/dashboard-bot/register", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body,
         }));
       } catch (error) {
-        return json({ error: error.message }, /too large/iu.test(error.message) ? 413 : 400);
+        const status = /too large/iu.test(error.message)
+          ? 413
+          : /registry/iu.test(error.message)
+            ? 503
+            : /not authorized/iu.test(error.message)
+              ? 403
+              : 400;
+        return json({ error: error.message }, status);
       }
     }
     if (url.pathname === "/api/dashboard-bot/webhook") {

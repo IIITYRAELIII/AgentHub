@@ -109,7 +109,7 @@ test("Codex snapshot service reads a delayed final answer and applies runtime pr
     capturedOwner: () => null, runtimeActive: async () => true, resolveOwner: async () => "agent-hub",
     readThread: async () => ({ thread: { turns: [{ id: "turn-1", status: "completed", items: reads++
       ? [{ type: "agentMessage", text: "final", phase: "final_answer" }]
-      : [] }] } }),
+      : [{ type: "agentMessage", text: "still working", phase: "commentary" }] }] } }),
     selectTurn: () => null, turnSnapshot: () => ({}), turnStartedAt: () => null,
     describeItem: () => "", hubOwner: () => "agent-hub", agentHubPid: () => 1,
     modelLabel: (value) => `model:${value}`,
@@ -128,6 +128,31 @@ test("Codex snapshot service reads a delayed final answer and applies runtime pr
   assert.equal(run.reasoning, "High");
   assert.equal(run.appServer, "runtime:agent-hub");
   assert.equal(run.activeTurnCount, 2);
+});
+
+test("Codex snapshot service never promotes commentary to a completed answer", async () => {
+  const service = new CodexTaskSnapshotService({
+    knownRolloutPath: async () => "", readRolloutActivity: async () => ({}), rolloutTurnState: () => ({}),
+    capturedOwner: () => null, runtimeActive: async () => true, resolveOwner: async () => "agent-hub",
+    readThread: async () => ({ thread: { turns: [{
+      id: "turn-1",
+      status: "completed",
+      items: [{ type: "agentMessage", text: "still working", phase: "commentary" }],
+    }] } }),
+    selectTurn: () => null, turnSnapshot: () => ({}), turnStartedAt: () => null,
+    describeItem: () => "", hubOwner: () => "agent-hub", agentHubPid: () => 1,
+    modelLabel: (value) => value, reasoningLabels: {}, runtimeLabel: (value) => value,
+    delay: async () => {}, reindexRun: () => {}, logger: { warn() {} },
+  });
+
+  assert.equal(await service.completedAnswer({
+    threadId: "thread-1",
+    responseText: "still working",
+  }, "turn-1", {
+    id: "turn-1",
+    status: "completed",
+    items: [{ type: "agentMessage", text: "still working", phase: "commentary" }],
+  }), "");
 });
 
 test("Codex observed snapshot keeps rollout grouping and enriches known tool activity", () => {

@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { settleNamedOperations } from "../../src/runtime/lifecycle-coordinator.mjs";
+import {
+  LifecycleOperationTimeoutError,
+  settleNamedOperations,
+} from "../../src/runtime/lifecycle-coordinator.mjs";
 
 test("lifecycle operations all run even when one close fails", async () => {
   const visited = [];
@@ -13,7 +16,20 @@ test("lifecycle operations all run even when one close fails", async () => {
   ], {
     logError: (name, error) => logged.push(`${name}:${error.message}`),
   });
-  assert.deepEqual(visited.sort(), ["broken", "first", "last"]);
+  assert.deepEqual(visited, ["first", "broken", "last"]);
   assert.equal(result.ok, false);
   assert.deepEqual(logged, ["broken:boom"]);
+});
+
+test("lifecycle timeout stops the phase before later operations start", async () => {
+  const completed = [];
+  const result = await settleNamedOperations([
+    { name: "stuck", run: () => new Promise(() => {}) },
+    { name: "healthy", run: async () => completed.push("healthy") },
+  ], { timeoutMs: 5 });
+
+  assert.deepEqual(completed, []);
+  assert.equal(result.ok, false);
+  assert.equal(result.failures[0].name, "stuck");
+  assert.equal(result.failures[0].error instanceof LifecycleOperationTimeoutError, true);
 });

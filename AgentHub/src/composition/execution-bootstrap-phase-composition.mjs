@@ -358,6 +358,8 @@ export function createExecutionBootstrapPhase({
     pollTelegram: telegramRuntime.pollTelegram,
     warnUser: (message) => clients.sendMessage(message).catch(() => {}),
     beginStopping: () => selection.hostState.beginStopping(),
+    sqliteRecovery: infrastructure.sqliteRecovery,
+    acknowledgeSqliteRecovery: infrastructure.acknowledgeSqliteRecovery,
   });
   ports.bootstrap.bind(bootstrap);
 

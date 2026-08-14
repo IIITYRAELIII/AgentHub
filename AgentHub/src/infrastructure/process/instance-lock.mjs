@@ -68,6 +68,10 @@ export class SingleInstanceGuard {
     this.#releaseId = String(releaseId ?? "").trim() || null;
   }
 
+  get instanceToken() {
+    return this.#token;
+  }
+
   async acquire() {
     await mkdir(this.#dataDir, { recursive: true });
     const endpoint = pipeName(this.#dataDir);

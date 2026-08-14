@@ -23,8 +23,15 @@ function threadId(value) {
   return String(value ?? "").trim();
 }
 
-export function codexParentThreadId(thread) {
-  return threadId(thread?.parentThreadId);
+export function codexParentThreadId(thread, depth = 0) {
+  if (!thread || typeof thread !== "object" || depth > 8) return "";
+  const direct = threadId(thread.parentThreadId ?? thread.parent_thread_id);
+  if (direct) return direct;
+  for (const child of Object.values(thread)) {
+    const parentThreadId = codexParentThreadId(child, depth + 1);
+    if (parentThreadId) return parentThreadId;
+  }
+  return "";
 }
 
 export async function resolveCodexAccountingThread(thread, {

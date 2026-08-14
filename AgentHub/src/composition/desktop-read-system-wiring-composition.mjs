@@ -59,6 +59,7 @@ export function createDesktopReadSystemWiring({
         nowMs: () => Date.now(),
         nowIso: () => new Date().toISOString(),
       },
+      revision: services.desktopSnapshotRevision,
       context: {
         latestUsage: services.latestContextUsage,
         isCompacting: services.isCompacting,

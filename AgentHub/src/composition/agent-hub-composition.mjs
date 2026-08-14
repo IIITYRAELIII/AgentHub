@@ -97,6 +97,7 @@ const {
   runJournal,
   runtimeCommandServer,
   rateLimitHistoryStore,
+  sqliteRecovery, acknowledgeSqliteRecovery,
 } = await createHubInfrastructure({
   config,
   agentHubRoot: AGENT_HUB_ROOT,
@@ -617,7 +618,7 @@ const executionBootstrap = createExecutionBootstrapPhase({
     runtimeCommandServer,
     runtimeStateStore,
     taskReadStateStore,
-    workLogUsageStore, rateLimitHistoryStore, taskBoard, hubMcpServer, hubMcpService,
+    workLogUsageStore, rateLimitHistoryStore, taskBoard, hubMcpServer, hubMcpService, sqliteRecovery, acknowledgeSqliteRecovery,
     preTurnInstructions,
   },
   provider: providerApplication,

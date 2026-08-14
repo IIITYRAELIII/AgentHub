@@ -340,8 +340,21 @@ namespace AgentHubDesktop
         public bool Running;
         public string Runtime;
         public string LastAnswer;
+        public string LastAnswerAt;
+        public string LastAnswerTurnId;
         public long OrderingActivityAtMs;
         public Dictionary<string, object> Run;
         public Dictionary<string, object> Context;
+    }
+
+    internal static class DesktopHistoryRefreshPolicy
+    {
+        internal static bool ShouldReload(TaskItem previous, TaskItem current)
+        {
+            if (previous == null || current == null) return false;
+            if (previous.Running && !current.Running) return true;
+            if (!String.Equals(previous.LastAnswerTurnId, current.LastAnswerTurnId, StringComparison.Ordinal)) return true;
+            return !String.Equals(previous.LastAnswerAt, current.LastAnswerAt, StringComparison.Ordinal);
+        }
     }
 }

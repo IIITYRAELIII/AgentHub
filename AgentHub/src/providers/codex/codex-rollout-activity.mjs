@@ -9,6 +9,7 @@ import { TASK_EXECUTION_OWNERS } from "../../domain/task-execution-owner.mjs";
 import {
   isCodexContextProbeClientId,
 } from "../../domain/codex-context-probe.mjs";
+import { codexParentThreadId } from "./codex-subagent-accounting.mjs";
 
 const CODEX_ACTIVE_FRESHNESS_MS = 10 * 60 * 1000;
 const CODEX_PROMPTLESS_TURN_GRACE_MS = 15 * 1000;
@@ -424,6 +425,9 @@ function assignPendingCodexUserMessages(metadata, turnId) {
 }
 
 function observeCodexEntry(activeTurnIds, lastSeenAtByTurnId, metadata, entry) {
+  if (entry?.type === "session_meta") {
+    metadata.parentThreadId = codexParentThreadId(entry.payload);
+  }
   if (entry?.type === "event_msg" && entry.payload?.type === "thread_settings_applied") {
     metadata.model = String(entry.payload?.thread_settings?.model ?? "").trim();
     metadata.reasoningEffort = String(
@@ -657,6 +661,7 @@ export function parseCodexRolloutActivity(text, options = {}) {
   const lastSeenAtByTurnId = new Map();
   const metadata = {
     latestTurnId: "",
+    parentThreadId: "",
     vscodeTurnIds: new Set(),
     model: "",
     reasoningEffort: "",
@@ -687,6 +692,7 @@ export function parseCodexRolloutActivity(text, options = {}) {
     model: metadata.model || null,
     reasoningEffort: metadata.reasoningEffort || null,
     latestTurnId: metadata.latestTurnId || null,
+    ...(metadata.parentThreadId ? { parentThreadId: metadata.parentThreadId } : {}),
     latestMessages: Object.fromEntries(metadata.latestMessages),
     finalMessages: Object.fromEntries(metadata.finalMessages),
     completedAtMsByTurnId: codexCompletedAtMsByTurnId(metadata.finalMessages, lastSeenAtByTurnId),
@@ -835,6 +841,7 @@ export async function readCodexRolloutActivity(
   const lastSeenAtByTurnId = new Map(appendOnly ? cached.lastSeenAtByTurnId : []);
   const metadata = {
     latestTurnId: appendOnly ? String(cached.latestTurnId ?? "") : "",
+    parentThreadId: appendOnly ? String(cached.parentThreadId ?? "") : "",
     vscodeTurnIds: new Set(appendOnly ? cached.vscodeTurnIds ?? [] : []),
     model: appendOnly ? String(cached.model ?? "") : "",
     reasoningEffort: appendOnly ? String(cached.reasoningEffort ?? "") : "",
@@ -937,6 +944,7 @@ export async function readCodexRolloutActivity(
     startedAtMsByTurnId: [...metadata.startedAtMsByTurnId],
     trailingText,
     latestTurnId: metadata.latestTurnId,
+    parentThreadId: metadata.parentThreadId,
     vscodeTurnIds: [...metadata.vscodeTurnIds],
     model: metadata.model,
     reasoningEffort: metadata.reasoningEffort,
@@ -963,6 +971,7 @@ export async function readCodexRolloutActivity(
     model: metadata.model || null,
     reasoningEffort: metadata.reasoningEffort || null,
     latestTurnId: metadata.latestTurnId || null,
+    ...(metadata.parentThreadId ? { parentThreadId: metadata.parentThreadId } : {}),
     latestMessages: Object.fromEntries(metadata.latestMessages),
     finalMessages: Object.fromEntries(metadata.finalMessages),
     completedAtMsByTurnId: codexCompletedAtMsByTurnId(metadata.finalMessages, lastSeenAtByTurnId),

@@ -288,6 +288,35 @@ test("desktop task history preserves real user text equal to the probe prompt", 
   assert.deepEqual(result.items.map((item) => item.id), ["user-turn"]);
 });
 
+test("desktop task history preserves the author of an interstream message", async () => {
+  const { desktopTaskHistory, state } = fixture();
+  state.history[3].messages[0].author = "Agent HUB · Themes (Codex)";
+
+  const result = await desktopTaskHistory({ provider: "codex", threadId: "thread-1" });
+
+  const turn = result.items.find((item) => item.id === "turn-4");
+  assert.equal(turn.messages[0].author, "Agent HUB · Themes (Codex)");
+});
+
+test("desktop task history does not reactivate a completed registry run", async () => {
+  const { desktopTaskHistory, state } = fixture();
+  state.run.status = "completed";
+  state.run.promptPreview = "Устаревший активный запрос";
+  state.run.responseText = "Устаревший промежуточный ответ";
+  state.history[3].active = false;
+  state.history[3].completed = true;
+  state.history[3].status = "completed";
+  state.history[3].answer = "Сохранённый финальный ответ";
+  state.history[3].messages[1].text = "Сохранённый финальный ответ";
+
+  const result = await desktopTaskHistory({ provider: "codex", threadId: "thread-1" });
+
+  const turn = result.items.find((item) => item.id === "turn-4");
+  assert.equal(turn.active, false);
+  assert.equal(turn.answer, "Сохранённый финальный ответ");
+  assert.equal(turn.messages.at(-1).text, "Сохранённый финальный ответ");
+});
+
 test("desktop task history hides an empty maintenance completion after restart", async () => {
   const { state } = fixture({ run: null });
   state.history = [{
@@ -760,6 +789,34 @@ test("desktop task history returns the preceding page for a supplied cursor", as
   assert.equal(older.start, 7);
   assert.equal(older.end, 17);
   assert.equal(older.nextBefore, 7);
+});
+
+test("desktop task history hydrates only visible turns and evicts old hydrated turns", async () => {
+  const { desktopTaskHistory, state, calls } = fixture({ run: null });
+  state.history = Array.from({ length: 42 }, (_, index) => ({
+    id: `turn-${index + 1}`,
+    prompt: `Вопрос ${index + 1}`,
+    answer: `Ответ ${index + 1}`,
+    status: "completed",
+    completed: true,
+    messages: [{
+      itemId: `user-${index + 1}`,
+      role: "user",
+      text: `Сообщение ${index + 1}`,
+      attachmentSources: [{ type: "data", value: `data:image/png;base64,turn-${index + 1}` }],
+    }],
+  }));
+
+  const newest = await desktopTaskHistory({ includeActive: false, limit: 1 });
+  assert.equal(newest.items[0].id, "turn-42");
+  assert.equal(calls.attachments.length, 1);
+
+  for (let before = 41; before >= 1; before -= 1) {
+    await desktopTaskHistory({ includeActive: false, before, limit: 1 });
+  }
+  await desktopTaskHistory({ includeActive: false, limit: 1 });
+
+  assert.equal(calls.attachments.length, 43);
 });
 
 test("desktop task history rejects invalid and missing tasks", async () => {

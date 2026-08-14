@@ -197,11 +197,25 @@ export class TaskBoardService {
     return true;
   }
 
-  markStarted({ id, workspaceId, streamId } = {}) {
+  markStarted({ id, workspaceId, streamId, requestId = null } = {}) {
     const stream = this.workspaceCatalog.stream(streamId);
     if (!stream || stream.workspaceId !== workspaceId) throw new Error("Stream не найден в выбранном Workspace");
-    const task = this.store.markStarted(id, { workspaceId, streamId });
+    const task = this.store.markStarted(id, { workspaceId, streamId, requestId });
     this.#event("task.started", task);
+    return task;
+  }
+
+  prepareStart({ id, workspaceId, streamId, requestId, streamName = null } = {}) {
+    const workspace = this.workspaceCatalog.workspace(workspaceId);
+    if (!workspace) throw new Error("Workspace не найден");
+    const task = this.store.prepareStart(id, { workspaceId, streamId, requestId, streamName });
+    this.#event("task.starting", task);
+    return task;
+  }
+
+  cancelPreparedStart({ id, requestId } = {}) {
+    const task = this.store.cancelPreparedStart(id, { requestId });
+    this.#event("task.start-cancelled", task);
     return task;
   }
 

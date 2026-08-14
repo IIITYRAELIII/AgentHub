@@ -73,17 +73,17 @@ export function createRuntimeRestartComposition({
   });
 
   const runtimeResources = new RuntimeResourceRegistry({
-    flush: [
+    drain: [
       { name: "journal startup", run: () => journalStartupReady },
       { name: "state writes", run: () => runtimeStateCoordinator.flush() },
       { name: "message binding writes", run: () => telegramDeliveryService.waitForBindingWrites() },
       { name: "media writes", run: () => mediaController.waitForWrites() },
       { name: "task sync", run: () => taskSyncStore.save() },
-      { name: "delivery outbox", run: () => deliveryOutbox.waitForWrites() },
+      { name: "delivery outbox", run: () => deliveryOutbox.waitForIdle({ flush: true }) },
       { name: "background jobs", run: () => backgroundJobStore.waitForWrites() },
       { name: "failed updates", run: () => failedUpdateStore.waitForWrites() },
     ],
-    suspend: [
+    close: [
       { name: "Codex App Server", run: stopCodexAppServerTree },
       { name: "Shared Dashboard bot", run: () => miniAppLifecycle.closeSharedDashboardBot?.() },
       { name: "Mini App publisher", run: () => miniAppLifecycle.closePublisher() },
@@ -94,6 +94,8 @@ export function createRuntimeRestartComposition({
       { name: "Desktop control", run: () => desktopControlServer()?.close() },
       { name: "runtime command", run: () => runtimeCommandServer.close() },
       { name: "Agent Hub MCP", run: () => hubMcpServer.close() },
+    ],
+    releaseLock: [
       { name: "instance lock", run: () => instanceGuard.release() },
     ],
     finalize: [
@@ -118,6 +120,7 @@ export function createRuntimeRestartComposition({
     beginStopping,
     stopTimers: stopRuntimeTimers,
     stopMedia: () => mediaController.stop(),
+    resumeAfterAbort: () => startRuntimeTimers(),
     launchReplacement: async () => {
       const invocation = botReplacementInvocation({
         botFile: path.join(agentHubRoot, "agent-hub-main.mjs"),
@@ -129,9 +132,9 @@ export function createRuntimeRestartComposition({
         : null;
       return launchReplacementAndWait({ invocation, fallbackInvocation, lockFile: instanceLockFile });
     },
-    recoverPrevious: (error) => restorePreviousBotAfterFailedReplacement({
+    recoverPrevious: (error, { lockReleased }) => restorePreviousBotAfterFailedReplacement({
       replacementError: error,
-      acquireLock: () => instanceGuard.acquire(),
+      acquireLock: () => (lockReleased ? instanceGuard.acquire() : undefined),
       startCommandServer: async () => {
         await runtimeCommandServer.start();
         await hubMcpServer.start();

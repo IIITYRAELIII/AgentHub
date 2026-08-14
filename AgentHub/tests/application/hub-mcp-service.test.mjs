@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -128,7 +128,10 @@ async function fixture(context) {
   return {
     service,
     token: service.contextToken({ provider: "codex", threadId: "thread-1" }),
+    attachmentDirectory,
     projectRoot,
+    workspaceCatalog,
+    tasks,
     operations,
     sentMessages,
   };
@@ -178,6 +181,36 @@ test("HubMcpService starts the current Workspace task in the current Stream", as
   });
   assert.equal(task.task.status, "started");
   assert.equal(task.target.streamId, "stream-1");
+});
+
+test("HubMcpService resumes an interrupted pending task start with the same request id", async (context) => {
+  const { service, token, operations, tasks } = await fixture(context);
+  let launches = 0;
+  service.setTaskLauncher(async ({ id, workspaceId, streamId, launchRequestId }) => {
+    launches += 1;
+    if (launches === 1) {
+      Object.assign(tasks.get(id), { status: "starting", startRequestId: launchRequestId, streamId });
+      throw new Error("interrupted before MCP receipt completion");
+    }
+    return {
+      task: { id, status: "started" },
+      target: { streamId, provider: "codex", threadId: "thread-1", workspaceId },
+    };
+  });
+  const input = {
+    context_token: token,
+    request_id: "interrupted-start",
+    task_id: "task-current",
+    confirm_launch: true,
+  };
+
+  await assert.rejects(() => service.call("hub_task_start", input), /interrupted before MCP receipt completion/u);
+  assert.equal(operations.get("interrupted-start").status, "pending");
+
+  const resumed = await service.call("hub_task_start", input);
+  assert.equal(resumed.task.status, "started");
+  assert.equal(launches, 2);
+  assert.equal(operations.get("interrupted-start").status, "succeeded");
 });
 
 test("HubMcpService keeps ownership across global columns and deletes its task", async (context) => {
@@ -230,7 +263,7 @@ test("HubMcpService exposes cursor events and publication-gated release completi
   assert.equal(events.events[0].sequence, 5);
   assert.equal(events.nextSequence, 5);
   const release = await service.call("hub_release_complete", {
-    context_token: token, request_id: "release-1", expected_revision: "abc",
+    context_token: token, request_id: "release-1", expected_revision: "abc", expected_plan_revision: "plan-1",
     deployment_verified: true, verification_summary: "Published and smoke-tested",
   });
   assert.equal(release.workspaceId, "workspace-1");
@@ -293,4 +326,79 @@ test("HubMcpService copies project files into task attachments", async (context)
   });
   assert.equal(read.text, "evidence");
   assert.equal(read.name, "evidence.txt");
+});
+
+test("HubMcpService rejects attachment paths that escape through a link", async (context) => {
+  const { service, token, attachmentDirectory, projectRoot } = await fixture(context);
+  const outsideDirectory = path.join(path.dirname(projectRoot), "outside-link-target");
+  const linkedDirectory = path.join(projectRoot, "linked-outside");
+  await mkdir(outsideDirectory);
+  await writeFile(path.join(outsideDirectory, "secret.txt"), "secret", "utf8");
+  try {
+    await symlink(outsideDirectory, linkedDirectory, process.platform === "win32" ? "junction" : "dir");
+  } catch (error) {
+    if (["EACCES", "EPERM"].includes(error.code)) {
+      context.skip("creating a filesystem link is not permitted on this host");
+      return;
+    }
+    throw error;
+  }
+
+  await assert.rejects(
+    () => service.call("hub_task_attachment_add", {
+      context_token: token,
+      request_id: "linked-outside-file",
+      task_id: "task-current",
+      local_path: path.join(linkedDirectory, "secret.txt"),
+    }),
+    /outside the current project|symlink|reparse/iu,
+  );
+  assert.deepEqual(await readdir(attachmentDirectory), []);
+  assert.deepEqual(
+    (await service.call("hub_task_get", { context_token: token, task_id: "task-current" })).attachments,
+    [],
+  );
+});
+
+test("HubMcpService rejects linked attachment paths that stay inside the project", async (context) => {
+  const { service, token, projectRoot } = await fixture(context);
+  const sourceDirectory = path.join(projectRoot, "source-directory");
+  const linkedDirectory = path.join(projectRoot, "linked-inside");
+  await mkdir(sourceDirectory);
+  await writeFile(path.join(sourceDirectory, "evidence.txt"), "evidence", "utf8");
+  try {
+    await symlink(sourceDirectory, linkedDirectory, process.platform === "win32" ? "junction" : "dir");
+  } catch (error) {
+    if (["EACCES", "EPERM"].includes(error.code)) {
+      context.skip("creating a filesystem link is not permitted on this host");
+      return;
+    }
+    throw error;
+  }
+
+  await assert.rejects(
+    () => service.call("hub_task_attachment_add", {
+      context_token: token,
+      request_id: "linked-inside-file",
+      task_id: "task-current",
+      local_path: path.join(linkedDirectory, "evidence.txt"),
+    }),
+    /symlink|reparse/iu,
+  );
+});
+
+test("HubMcpService rejects non-file attachment sources", async (context) => {
+  const { service, token, projectRoot } = await fixture(context);
+  const sourceDirectory = path.join(projectRoot, "not-a-file");
+  await mkdir(sourceDirectory);
+
+  await assert.rejects(
+    () => service.call("hub_task_attachment_add", {
+      context_token: token,
+      request_id: "directory-source",
+      task_id: "task-current",
+      local_path: sourceDirectory,
+    }),
+    /regular file/u,
+  );
 });

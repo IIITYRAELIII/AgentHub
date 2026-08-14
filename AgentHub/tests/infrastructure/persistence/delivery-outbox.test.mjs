@@ -311,3 +311,243 @@ test("delivery outbox skips an entry superseded during an earlier network delive
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("delivery outbox waitForIdle waits for delivery and its acknowledgement callback", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "telegram-outbox-idle-"));
+  let releaseDelivery;
+  let releaseAcknowledgement;
+  let idleResolved = false;
+  let markDeliveryStarted;
+  const deliveryStarted = new Promise((resolve) => { markDeliveryStarted = resolve; });
+  let markAcknowledgementStarted;
+  const acknowledgementStarted = new Promise((resolve) => { markAcknowledgementStarted = resolve; });
+  try {
+    const outbox = new PersistentDeliveryOutbox({
+      directoryPath: root,
+      deliver: () => {
+        markDeliveryStarted();
+        return new Promise((resolve) => { releaseDelivery = resolve; });
+      },
+      onDelivered: () => {
+        markAcknowledgementStarted();
+        return new Promise((resolve) => { releaseAcknowledgement = resolve; });
+      },
+    });
+    await outbox.enqueue({ method: "sendMessage", body: { text: "pending" } });
+    void outbox.flush();
+    const idle = outbox.waitForIdle().then(() => { idleResolved = true; });
+    await deliveryStarted;
+    assert.equal(idleResolved, false);
+    releaseDelivery({ message_id: 1 });
+    await acknowledgementStarted;
+    assert.equal(idleResolved, false);
+    releaseAcknowledgement();
+    await idle;
+    assert.equal((await readdir(root)).filter((name) => name.endsWith(".json")).length, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("delivery outbox resumes local acknowledgement without repeating confirmed delivery", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "telegram-outbox-pending-ack-"));
+  let deliveries = 0;
+  try {
+    const interrupted = new PersistentDeliveryOutbox({
+      directoryPath: root,
+      deliver: async () => {
+        deliveries += 1;
+        return { message_id: 41 };
+      },
+      onDelivered: async () => {
+        throw new Error("simulated crash before local acknowledgement");
+      },
+    });
+    await interrupted.enqueue({ method: "sendMessage", body: { text: "once" } });
+    await assert.rejects(interrupted.flush(), /simulated crash/);
+    const [pendingAckFile] = (await readdir(root)).filter((name) => name.endsWith(".json"));
+    const pendingAck = JSON.parse(await readFile(path.join(root, pendingAckFile), "utf8"));
+    assert.equal(pendingAck.state, "delivered-pending-ack");
+    assert.deepEqual(pendingAck.deliveryResult, { message_id: 41 });
+
+    const acknowledged = [];
+    const resumed = new PersistentDeliveryOutbox({
+      directoryPath: root,
+      deliver: async () => {
+        deliveries += 1;
+        return { message_id: 42 };
+      },
+      onDelivered: async (item, result) => acknowledged.push([item.body.text, result.message_id]),
+    });
+    await resumed.load();
+    assert.deepEqual(await resumed.flush(), { delivered: 0, remaining: 0 });
+    assert.equal(deliveries, 1);
+    assert.deepEqual(acknowledged, [["once", 41]]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("delivery outbox detects an interrupted uncertain delivery and retries at least once", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "telegram-outbox-uncertain-"));
+  let now = 10_000;
+  try {
+    const producer = new PersistentDeliveryOutbox({
+      directoryPath: root,
+      now: () => now,
+      deliver: async () => ({}),
+    });
+    const queued = await producer.enqueue({ method: "sendMessage", body: { text: "uncertain" } });
+    const [fileName] = (await readdir(root)).filter((name) => name.endsWith(".json"));
+    const filePath = path.join(root, fileName);
+    const interrupted = JSON.parse(await readFile(filePath, "utf8"));
+    interrupted.state = "delivering";
+    interrupted.deliveryAttemptId = "attempt-before-crash";
+    interrupted.deliveryStartedAt = new Date(now).toISOString();
+    await writeFile(filePath, `${JSON.stringify(interrupted, null, 2)}\n`, "utf8");
+
+    const attempts = [];
+    const resumed = new PersistentDeliveryOutbox({
+      directoryPath: root,
+      now: () => now,
+      retryDelay: () => 5_000,
+      deliver: async (_method, body, context) => {
+        attempts.push([body.text, context]);
+        return { message_id: 51 };
+      },
+    });
+    await resumed.load();
+    assert.equal(resumed.uncertainSize, 1);
+    const recovered = JSON.parse(await readFile(filePath, "utf8"));
+    assert.equal(recovered.state, "pending");
+    assert.equal(recovered.uncertain, true);
+    assert.equal(recovered.uncertainAttempts, 1);
+    assert.match(recovered.lastError, /outcome is uncertain/);
+    assert.deepEqual(await resumed.flush(), { delivered: 0, remaining: 1 });
+
+    now += 5_000;
+    assert.deepEqual(await resumed.flush(), { delivered: 1, remaining: 0 });
+    assert.equal(attempts.length, 1);
+    assert.equal(attempts[0][0], "uncertain");
+    assert.equal(attempts[0][1].deliveryId, queued.id);
+    assert.equal(attempts[0][1].idempotencyKey, queued.id);
+    assert.equal(attempts[0][1].uncertain, true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("delivery outbox keeps confirmed delivery when durable removal fails", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "telegram-outbox-remove-failure-"));
+  let deliveries = 0;
+  let acknowledgements = 0;
+  let failRemoval = true;
+  try {
+    const outbox = new PersistentDeliveryOutbox({
+      directoryPath: root,
+      deliver: async () => {
+        deliveries += 1;
+        return { message_id: 61 };
+      },
+      onDelivered: async () => {
+        acknowledgements += 1;
+      },
+      removeFile: async (filePath) => {
+        if (failRemoval) throw new Error("simulated unlink failure");
+        await rm(filePath);
+      },
+    });
+    await outbox.enqueue({ method: "sendMessage", body: { text: "retained" } });
+    await assert.rejects(outbox.flush(), /simulated unlink failure/);
+    const [retainedFile] = (await readdir(root)).filter((name) => name.endsWith(".json"));
+    assert.equal(
+      JSON.parse(await readFile(path.join(root, retainedFile), "utf8")).state,
+      "delivered-pending-ack",
+    );
+
+    failRemoval = false;
+    assert.deepEqual(await outbox.flush(), { delivered: 0, remaining: 0 });
+    assert.equal(deliveries, 1);
+    assert.equal(acknowledgements, 2);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("delivery outbox retains an in-flight superseded item until it is acknowledged", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "telegram-outbox-inflight-supersede-"));
+  let releaseFirst;
+  const firstPending = new Promise((resolve) => { releaseFirst = resolve; });
+  let markFirstStarted;
+  const firstStarted = new Promise((resolve) => { markFirstStarted = resolve; });
+  const delivered = [];
+  try {
+    const outbox = new PersistentDeliveryOutbox({
+      directoryPath: root,
+      deliver: async (_method, body) => {
+        delivered.push(body.text);
+        if (body.text === "old") {
+          markFirstStarted();
+          await firstPending;
+        }
+        return { message_id: delivered.length };
+      },
+    });
+    await outbox.enqueue({
+      method: "sendMessage",
+      body: { text: "old" },
+      supersedeKey: "progress:inflight",
+    });
+    const flushing = outbox.flush();
+    await firstStarted;
+    await outbox.enqueue({
+      method: "sendMessage",
+      body: { text: "new" },
+      supersedeKey: "progress:inflight",
+    });
+    assert.equal(outbox.size, 2);
+    releaseFirst();
+    await flushing;
+    assert.equal(outbox.size, 1);
+    await outbox.flush();
+    assert.deepEqual(delivered, ["old", "new"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("delivery outbox waitForIdle can flush persisted ready deliveries", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "telegram-outbox-drain-"));
+  const delivered = [];
+  try {
+    const outbox = new PersistentDeliveryOutbox({
+      directoryPath: root,
+      deliver: async (_method, body) => delivered.push(body.text),
+    });
+    await outbox.enqueue({ method: "sendMessage", body: { text: "drain" } });
+    await outbox.waitForIdle({ flush: true });
+    assert.deepEqual(delivered, ["drain"]);
+    assert.equal(outbox.size, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("delivery outbox drain does not wait for a delayed retry window", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "telegram-outbox-delayed-drain-"));
+  try {
+    const outbox = new PersistentDeliveryOutbox({
+      directoryPath: root,
+      deliver: async () => {
+        const error = new Error("retry later");
+        error.retryable = true;
+        throw error;
+      },
+    });
+    await outbox.enqueue({ method: "sendMessage", body: { text: "later" } });
+    await outbox.waitForIdle({ flush: true });
+    assert.equal(outbox.size, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

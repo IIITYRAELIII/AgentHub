@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -19,6 +19,19 @@ async function storeFile() {
   const directory = await mkdtemp(path.join(os.tmpdir(), "telegram-task-sync-"));
   return path.join(directory, "task-sync.json");
 }
+
+test("local task sync fails closed on a corrupt shared database", async () => {
+  const filePath = await storeFile();
+  const databaseFile = path.join(path.dirname(filePath), "journal.sqlite");
+  await writeFile(databaseFile, "not a sqlite database", "utf8");
+  try {
+    const store = new LocalTaskSyncStore({ filePath, databaseFile });
+    await assert.rejects(store.load(), /not a database/iu);
+    assert.equal(await readFile(databaseFile, "utf8"), "not a sqlite database");
+  } finally {
+    await rm(path.dirname(filePath), { recursive: true, force: true });
+  }
+});
 
 test("local task sync persists catalog, runtime owner, status and history", async () => {
   const filePath = await storeFile();
@@ -222,6 +235,180 @@ test("message search keeps every indexed reply beyond the bounded chat read mode
       error: "",
     }],
   });
+  store.close();
+});
+
+test("recordHistory no-op leaves the existing search projection untouched", async () => {
+  const filePath = await storeFile();
+  const databaseFile = path.join(path.dirname(filePath), "journal.sqlite");
+  const store = new LocalTaskSyncStore({ filePath, databaseFile });
+  const history = [{
+    id: "stable-turn",
+    prompt: "Стабильный вопрос",
+    answer: "Стабильный ответ",
+    completed: true,
+  }];
+  await store.load();
+  assert.equal(store.recordHistory(task, history, null, 1_000), true);
+
+  const database = new DatabaseSync(databaseFile);
+  database.prepare(`
+    INSERT INTO task_message_search_documents (
+      document_key, provider, thread_id, turn_thread_id, turn_id, item_id,
+      role, message_text, author, annotation_text, attachment_names,
+      occurred_at, occurred_at_ms, source
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    JSON.stringify([task.provider, task.threadId, "stable-turn", "journal-extra", "agent"]),
+    task.provider,
+    task.threadId,
+    task.threadId,
+    "stable-turn",
+    "journal-extra",
+    "agent",
+    "durable search sentinel",
+    "",
+    "",
+    "",
+    "2026-08-14T12:00:00.000Z",
+    1_000,
+    "journal",
+  );
+  database.close();
+
+  assert.equal(store.recordHistory(task, history, null, 1_000), false);
+  assert.equal(store.searchMessages({
+    references: [task],
+    query: "durable search sentinel",
+  }).total, 1);
+  store.close();
+});
+
+test("search projection can grow beyond an unchanged bounded history", async () => {
+  const filePath = await storeFile();
+  const store = new LocalTaskSyncStore({ filePath, historyLimit: 1 });
+  const latest = {
+    id: "latest-turn",
+    prompt: "Последний вопрос",
+    answer: "Последний ответ",
+    completed: true,
+  };
+  await store.load();
+  assert.equal(store.recordHistory(task, [latest], null, 1_000), true);
+  assert.equal(store.recordHistory(task, [{
+    id: "older-turn",
+    prompt: "Скрытый старый вопрос",
+    answer: "Скрытый старый ответ",
+    completed: true,
+  }, latest], null, 1_000), false);
+  assert.equal(store.history(task).length, 1);
+  assert.equal(store.searchMessages({
+    references: [task],
+    query: "скрытый старый ответ",
+  }).total, 1);
+  store.close();
+});
+
+test("startup backfills run once per version and commit their marker atomically", async () => {
+  const filePath = await storeFile();
+  const databaseFile = path.join(path.dirname(filePath), "journal.sqlite");
+  const history = [{
+    id: "recoverable-turn",
+    prompt: "Восстанови поисковый индекс",
+    answer: "Индекс восстановлен",
+    completed: true,
+  }];
+  let store = new LocalTaskSyncStore({ filePath, databaseFile });
+  await store.load();
+  store.recordHistory(task, history, null, 1_000);
+  store.close();
+
+  let database = new DatabaseSync(databaseFile);
+  assert.deepEqual(database.prepare(`
+    SELECT key, value FROM task_read_model_meta
+    WHERE key LIKE 'backfill_%_version'
+    ORDER BY key
+  `).all().map((row) => ({ key: row.key, value: row.value })), [
+    { key: "backfill_task_message_search_version", value: "1" },
+  ]);
+  database.exec(`
+    CREATE TABLE backfill_write_audit (operation TEXT NOT NULL);
+    CREATE TRIGGER audit_search_insert AFTER INSERT ON task_message_search_documents BEGIN
+      INSERT INTO backfill_write_audit VALUES ('insert');
+    END;
+    CREATE TRIGGER audit_search_delete AFTER DELETE ON task_message_search_documents BEGIN
+      INSERT INTO backfill_write_audit VALUES ('delete');
+    END;
+  `);
+  database.close();
+
+  store = new LocalTaskSyncStore({ filePath, databaseFile });
+  await store.load();
+  store.close();
+  database = new DatabaseSync(databaseFile);
+  assert.equal(database.prepare("SELECT COUNT(*) AS count FROM backfill_write_audit").get().count, 0);
+  database.exec(`
+    CREATE TABLE journal_records (
+      provider TEXT NOT NULL,
+      thread_id TEXT NOT NULL,
+      turn_id TEXT NOT NULL,
+      project_root TEXT NOT NULL,
+      task_thread_id TEXT NOT NULL,
+      completed_at_ms INTEGER,
+      record_json TEXT NOT NULL,
+      PRIMARY KEY (provider, thread_id, turn_id)
+    ) WITHOUT ROWID;
+  `);
+  database.prepare(`
+    INSERT INTO journal_records VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    task.provider,
+    task.threadId,
+    "journal-turn",
+    task.projectRoot,
+    task.threadId,
+    2_000,
+    JSON.stringify({ prompt: "Журнал появился позже", body: "Поздняя запись найдена" }),
+  );
+  database.close();
+
+  store = new LocalTaskSyncStore({ filePath, databaseFile });
+  await store.load();
+  assert.equal(store.searchMessages({
+    references: [task],
+    query: "поздняя запись найдена",
+  }).total, 1);
+  store.close();
+  database = new DatabaseSync(databaseFile);
+  assert.equal(database.prepare(`
+    SELECT COUNT(*) AS count FROM task_read_model_meta
+    WHERE key IN ('backfill_models_from_journal_version', 'backfill_journal_message_search_version')
+  `).get().count, 2);
+  database.exec(`
+    DELETE FROM task_message_search_documents;
+    DELETE FROM task_read_model_meta WHERE key = 'backfill_task_message_search_version';
+    CREATE TRIGGER fail_search_backfill BEFORE INSERT ON task_message_search_documents BEGIN
+      SELECT RAISE(ABORT, 'simulated backfill crash');
+    END;
+  `);
+  database.close();
+
+  store = new LocalTaskSyncStore({ filePath, databaseFile });
+  await assert.rejects(() => store.load(), /simulated backfill crash/u);
+  store.close();
+  database = new DatabaseSync(databaseFile);
+  assert.equal(database.prepare(`
+    SELECT value FROM task_read_model_meta WHERE key = 'backfill_task_message_search_version'
+  `).get(), undefined);
+  database.exec("DROP TRIGGER fail_search_backfill");
+  database.close();
+
+  store = new LocalTaskSyncStore({ filePath, databaseFile });
+  await store.load();
+  assert.equal(store.searchMessages({
+    references: [task],
+    query: "индекс восстановлен",
+  }).total, 1);
   store.close();
 });
 

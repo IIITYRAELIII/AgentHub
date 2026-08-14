@@ -7,6 +7,10 @@ import {
 import { isCodexContextProbeTurn } from "../../domain/codex-context-probe.mjs";
 import { isCodexAutoCompactionTurnId } from "../../domain/codex-internal-turn.mjs";
 import { taskDisplayTitle } from "../../domain/task-display-title.mjs";
+import { taskRunIsActive } from "../../domain/task-runs.mjs";
+
+const MAX_CACHED_HISTORIES = 12;
+const MAX_CACHED_TURNS_PER_HISTORY = 40;
 
 // Builds the bounded Desktop/Mini App history read-model for one task.
 function mergeDurableMessages(hydratedMessages, durableMessages) {
@@ -78,6 +82,28 @@ export function mergeDurableTaskHistory(hydratedHistory, durableHistory) {
   return values;
 }
 
+function mergeCachedTaskHistory(cachedHistory, durableHistory) {
+  const cachedById = new Map((Array.isArray(cachedHistory) ? cachedHistory : [])
+    .map((item) => [String(item?.id ?? "").trim(), item])
+    .filter(([id]) => Boolean(id)));
+  if (!cachedById.size) return Array.isArray(durableHistory) ? durableHistory : [];
+
+  const values = [];
+  const durableIds = new Set();
+  for (const durable of Array.isArray(durableHistory) ? durableHistory : []) {
+    const id = String(durable?.id ?? "").trim();
+    if (id) durableIds.add(id);
+    const cached = id ? cachedById.get(id) : null;
+    values.push(cached
+      ? mergeDurableTaskHistory([cached], [durable])[0]
+      : durable);
+  }
+  for (const [id, cached] of cachedById) {
+    if (!durableIds.has(id)) values.push(structuredClone(cached));
+  }
+  return values;
+}
+
 function visibleProviderHistory(provider, history) {
   const values = Array.isArray(history) ? history : [];
   return provider === "codex"
@@ -103,6 +129,7 @@ export function createDesktopTaskHistoryFactory({
 }) {
   const refreshes = new Map();
   const refreshedAt = new Map();
+  const providerHistories = new Map();
   const hydratedHistories = new Map();
   const refreshIntervalMs = 15_000;
   let catalogRefresh = null;
@@ -125,6 +152,33 @@ export function createDesktopTaskHistoryFactory({
     return result;
   }
 
+  function readCachedHistory(cache, key) {
+    const turns = cache.get(key);
+    if (!turns) return [];
+    cache.delete(key);
+    cache.set(key, turns);
+    return [...turns.values()].map((turn) => structuredClone(turn));
+  }
+
+  function cacheHistory(cache, key, history, { replace = false } = {}) {
+    const turns = replace ? new Map() : new Map(cache.get(key) ?? []);
+    for (const turn of Array.isArray(history) ? history : []) {
+      const id = String(turn?.id ?? "").trim();
+      if (!id) continue;
+      turns.delete(id);
+      turns.set(id, structuredClone(turn));
+    }
+    while (turns.size > MAX_CACHED_TURNS_PER_HISTORY) {
+      turns.delete(turns.keys().next().value);
+    }
+    if (!turns.size) return;
+    cache.delete(key);
+    cache.set(key, turns);
+    while (cache.size > MAX_CACHED_HISTORIES) {
+      cache.delete(cache.keys().next().value);
+    }
+  }
+
   function scheduleRefresh(binding, { force = false } = {}) {
     if (typeof historyReader.refresh !== "function") return null;
     const key = `${binding.provider}:${binding.threadId}`;
@@ -135,7 +189,12 @@ export function createDesktopTaskHistoryFactory({
       .then(async () => {
         const refreshed = await historyReader.refresh(binding);
         if (Array.isArray(refreshed?.history)) {
-          hydratedHistories.set(key, await hydrateHistory(refreshed.history));
+          cacheHistory(
+            providerHistories,
+            key,
+            visibleProviderHistory(binding.provider, refreshed.history).slice(-MAX_CACHED_TURNS_PER_HISTORY),
+            { replace: true },
+          );
         }
       })
       .catch((error) => warn(
@@ -194,35 +253,36 @@ export function createDesktopTaskHistoryFactory({
       taskTitle: binding.taskTitle,
       chatId: binding.chatId,
     })) : [binding];
-    let history = [];
+    const historySources = new Map();
+    const history = [];
     for (const threadBinding of threadBindings) {
       const key = `${threadBinding.provider}:${threadBinding.threadId}`;
       if (params.refreshSource === true) {
         await scheduleRefresh(threadBinding, { force: true });
       }
       const cached = await historyReader.read(threadBinding);
-      const cachedHistory = visibleProviderHistory(threadBinding.provider, cached.history);
-      let threadHistory = hydratedHistories.get(key);
-      if (threadHistory) {
-        threadHistory = mergeDurableTaskHistory(
-          structuredClone(visibleProviderHistory(threadBinding.provider, threadHistory)),
-          await hydrateHistory(cachedHistory),
-        );
-      } else {
-        // First open uses durable history; provider hydration stays in background.
-        threadHistory = await hydrateHistory(cachedHistory);
-      }
-      threadHistory = visibleProviderHistory(threadBinding.provider, threadHistory);
-      hydratedHistories.set(key, structuredClone(threadHistory));
+      const durableHistory = visibleProviderHistory(threadBinding.provider, cached.history);
+      let threadHistory = mergeCachedTaskHistory(
+        readCachedHistory(providerHistories, key),
+        durableHistory,
+      );
+      threadHistory = mergeCachedTaskHistory(
+        readCachedHistory(hydratedHistories, key),
+        threadHistory,
+      );
       scheduleRefresh(threadBinding);
-      history.push(...threadHistory.map((item) => ({
-        ...item,
-        provider: threadBinding.provider,
-        threadId: threadBinding.threadId,
-      })));
+      for (const item of threadHistory) {
+        history.push(item);
+        historySources.set(item, {
+          key,
+          provider: threadBinding.provider,
+          threadId: threadBinding.threadId,
+        });
+      }
     }
     const indexedRun = params.includeActive === false ? null : runs.forTask(binding);
     const candidateRun = indexedRun
+      && taskRunIsActive(indexedRun)
       && String(indexedRun.provider ?? "") === String(binding.provider ?? "")
       && String(indexedRun.threadId ?? "") === String(binding.threadId ?? "")
       ? indexedRun
@@ -281,6 +341,16 @@ export function createDesktopTaskHistoryFactory({
       }
     }
 
+    for (const item of history) {
+      if (!historySources.has(item)) {
+        historySources.set(item, {
+          key: `${binding.provider}:${binding.threadId}`,
+          provider: binding.provider,
+          threadId: binding.threadId,
+        });
+      }
+    }
+
     const total = history.length;
     const requestedEnd = Number(params.before);
     const end = Number.isSafeInteger(requestedEnd)
@@ -292,7 +362,13 @@ export function createDesktopTaskHistoryFactory({
       Math.min(Number(params.maxAnswerChars) || 200_000, 200_000),
     );
     const start = Math.max(0, end - limit);
-    const page = history.slice(start, end);
+    const rawPage = history.slice(start, end);
+    const pageSources = rawPage.map((item) => historySources.get(item));
+    const page = await hydrateHistory(rawPage);
+    for (let index = 0; index < page.length; index += 1) {
+      const source = pageSources[index];
+      if (source?.key) cacheHistory(hydratedHistories, source.key, [page[index]]);
+    }
     const payload = {
       ...(binding.streamId ? { streamId: binding.streamId } : {}),
       provider,
@@ -302,30 +378,32 @@ export function createDesktopTaskHistoryFactory({
       start,
       end,
       nextBefore: start > 0 ? start : null,
-      items: page.map((item) => ({
-        id: String(item.id ?? ""),
-        prompt: displayUserPrompt(item.prompt),
-        promptAnnotations: (Array.isArray(item.promptAnnotations) ? item.promptAnnotations : [])
-          .slice(0, 20)
-          .map((annotation) => ({
-            text: String(annotation?.text ?? ""),
-            annotation: String(annotation?.annotation ?? ""),
-          })),
-        promptRequest: String(item.promptRequest ?? ""),
-        answer: String(item.answer ?? "").slice(0, maxAnswerChars),
-        status: String(item.status ?? ""),
-        active: item.active === true,
-        completed: item.completed === true,
-        startedAt: item.startedAt ?? null,
-        completedAt: item.completedAt ?? null,
-        activities: Array.isArray(item.activities) ? item.activities : [],
-        ...(Array.isArray(item.activityGroups) && item.activityGroups.length
-          ? { activityGroups: item.activityGroups }
-          : {}),
-        messages: (Array.isArray(item.messages) ? item.messages : []).flatMap((message) => {
+      items: page.map((item, index) => {
+        const source = pageSources[index];
+        const itemProvider = source?.provider ?? provider;
+        const itemThreadId = source?.threadId ?? selectedThreadId;
+        return {
+          id: String(item.id ?? ""),
+          prompt: displayUserPrompt(item.prompt),
+          promptAnnotations: (Array.isArray(item.promptAnnotations) ? item.promptAnnotations : [])
+            .slice(0, 20)
+            .map((annotation) => ({
+              text: String(annotation?.text ?? ""),
+              annotation: String(annotation?.annotation ?? ""),
+            })),
+          promptRequest: String(item.promptRequest ?? ""),
+          answer: String(item.answer ?? "").slice(0, maxAnswerChars),
+          status: String(item.status ?? ""),
+          active: item.active === true,
+          completed: item.completed === true,
+          startedAt: item.startedAt ?? null,
+          completedAt: item.completedAt ?? null,
+          activities: Array.isArray(item.activities) ? item.activities : [],
+          ...(Array.isArray(item.activityGroups) && item.activityGroups.length
+            ? { activityGroups: item.activityGroups }
+            : {}),
+          messages: (Array.isArray(item.messages) ? item.messages : []).flatMap((message) => {
           const role = String(message?.role ?? "");
-          const itemProvider = String(item.provider ?? provider);
-          const itemThreadId = String(item.threadId ?? selectedThreadId);
           const receipt = role === "user"
             ? (message.clientUserMessageId
               ? receipts.forMessage?.({
@@ -356,6 +434,9 @@ export function createDesktopTaskHistoryFactory({
               : {}),
             role,
             text: role === "agent" ? visibleText.slice(0, maxAnswerChars) : visibleText,
+            ...(String(message?.author ?? "").trim()
+              ? { author: String(message.author).trim() }
+              : {}),
             ...(role === "user" && Array.isArray(message.responseAnnotations)
               ? {
                 responseAnnotations: message.responseAnnotations.slice(0, 20).map((annotation) => ({
@@ -372,8 +453,9 @@ export function createDesktopTaskHistoryFactory({
               ?? null,
             attachments,
           }];
-        }),
-      })),
+          }),
+        };
+      }),
     };
     const fitted = responseBudget.fit(payload, {
       maxBytes: Math.min(

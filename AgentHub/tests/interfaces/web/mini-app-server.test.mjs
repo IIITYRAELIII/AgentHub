@@ -15,6 +15,7 @@ import {
 import { buildLazyJournalPayload } from "../../../src/interfaces/web/mini-app-journal-data.mjs";
 import { createAttachmentStorageName } from "../../../src/domain/attachment-files.mjs";
 import { createDesktopControlRouter } from "../../../src/interfaces/desktop/desktop-control-router.mjs";
+import { createRuntimeHealth } from "../../../src/application/runtime-health.mjs";
 
 const LIMITS_HTML = '<div data-work-log-rate-limits data-sampled-at="2026-07-30T02:55:14.512Z">'
   + '<span data-rate-limit-caption>Лимиты</span>'
@@ -218,22 +219,38 @@ test("Telegram Mini App initData is signed, fresh and allowlisted", () => {
 test("Mini App serves the SQLite journal and announces revision changes", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-mini-app-"));
   const journalDatabase = memoryJournal(DAY_HTML);
+  const health = createRuntimeHealth();
+  health.begin()
+    .setCapability("provider", { critical: true, state: "failed", error: "offline" })
+    .setCapability("telegram", { critical: false, state: "failed", error: "unavailable" })
+    .complete();
   const server = new MiniAppServer({
     host: "127.0.0.1",
     port: 0,
     journalDatabase,
     botToken: BOT_TOKEN,
     allowedUserIds: new Set([42]),
+    health,
   });
   const abort = new AbortController();
   try {
     const address = await server.start();
 
-    const health = await fetch(`${address.url}health`);
-    assert.equal(health.status, 200);
-    assert.deepEqual(await health.json(), { ok: true });
-    assert.equal(health.headers.get("cache-control"), "no-store");
-    assert.match(health.headers.get("content-security-policy"), /default-src 'self'/);
+    const healthResponse = await fetch(`${address.url}health`);
+    assert.equal(healthResponse.status, 200);
+    assert.deepEqual(await healthResponse.json(), {
+      ok: true,
+      live: true,
+      ready: false,
+      degraded: true,
+      status: "unready",
+      capabilities: [
+        { name: "provider", critical: true, state: "failed", error: "offline" },
+        { name: "telegram", critical: false, state: "failed", error: "unavailable" },
+      ],
+    });
+    assert.equal(healthResponse.headers.get("cache-control"), "no-store");
+    assert.match(healthResponse.headers.get("content-security-policy"), /default-src 'self'/);
 
     const journal = await fetch(`${address.url}api/journal`);
     const payload = await journal.json();
@@ -300,6 +317,7 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
       "navigation-tabs-controller.js",
       "approval-form.js",
       "journal-view-controller.js",
+      "journal-polling-policy.js",
       "attachments/interactions.js",
       "usage-burn-rate.js",
       "app.js",

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, rename, stat, unlink } from "node:fs/promises";
+import { mkdir, readFile, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
@@ -7,6 +7,8 @@ import { catalogTaskKey } from "../../domain/task-catalog-identity.mjs";
 
 const FORMAT_VERSION = 1;
 const TASK_SCHEMA_VERSION = 6;
+const MODEL_BACKFILL_VERSION = "1";
+const SEARCH_BACKFILL_VERSION = "1";
 const DEFAULT_HISTORY_LIMIT = 50;
 const DEFAULT_RUNNING_FRESHNESS_MS = 10 * 60 * 1000;
 const DEFAULT_TASK_LIMIT = 1_000;
@@ -201,9 +203,10 @@ function searchDocumentKey({ provider, threadId, turnId, itemId, role }) {
   return JSON.stringify([provider, threadId, turnId, itemId, role]);
 }
 
-function recoverableDatabaseError(error) {
-  return /(?:file is not a database|database disk image is malformed|malformed database schema)/iu
-    .test(String(error?.message ?? ""));
+function searchHistoryFingerprint(history) {
+  return createHash("sha256")
+    .update(JSON.stringify(Array.isArray(history) ? history : []))
+    .digest("hex");
 }
 
 function configure(database) {
@@ -307,6 +310,12 @@ function configure(database) {
       state TEXT NOT NULL CHECK (state IN ('ready', 'failed')),
       completed_at_ms INTEGER NOT NULL,
       last_error TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY (provider, thread_id)
+    ) WITHOUT ROWID;
+    CREATE TABLE IF NOT EXISTS task_message_search_inputs (
+      provider TEXT NOT NULL,
+      thread_id TEXT NOT NULL,
+      fingerprint TEXT NOT NULL,
       PRIMARY KEY (provider, thread_id)
     ) WITHOUT ROWID;
     CREATE VIRTUAL TABLE IF NOT EXISTS task_message_search_fts USING fts5(
@@ -430,20 +439,7 @@ export class LocalTaskSyncStore {
       configure(database);
     } catch (error) {
       database?.close();
-      if (!recoverableDatabaseError(error)) throw error;
-      const suffix = `.corrupt-${new Date().toISOString().replaceAll(/[:.]/gu, "-")}`;
-      let preserved = false;
-      for (const candidate of [this.#databaseFile, `${this.#databaseFile}-wal`, `${this.#databaseFile}-shm`]) {
-        try {
-          await rename(candidate, `${candidate}${suffix}`);
-          preserved = true;
-        } catch (renameError) {
-          if (renameError?.code !== "ENOENT") throw renameError;
-        }
-      }
-      if (!preserved) throw error;
-      database = new DatabaseSync(this.#databaseFile);
-      configure(database);
+      throw error;
     }
     this.#database = database;
     return database;
@@ -514,28 +510,32 @@ export class LocalTaskSyncStore {
     return taskFromRow(row, withHistory ? this.#readHistory(task) : []);
   }
 
-  #latestJournalModel(task) {
+  #latestJournalModel(task, { missingJournalOkay = true } = {}) {
     const provider = cleanText(task?.provider, 20).toLowerCase();
     const threadId = cleanText(task?.threadId, 100);
     if (!provider || !threadId) return null;
+    let rows;
     try {
-      const rows = this.#database.prepare(`
+      rows = this.#database.prepare(`
         SELECT record_json FROM journal_records
         WHERE provider = ? AND thread_id = ?
         ORDER BY completed_at_ms DESC
         LIMIT 100
       `).all(provider, threadId);
-      for (const row of rows) {
-        if (!row?.record_json) continue;
-        const model = cleanText(JSON.parse(String(row.record_json))?.model, 100);
-        if (model) return model;
+    } catch (error) {
+      if (missingJournalOkay && /no such table:\s*journal_records/iu.test(String(error?.message ?? ""))) {
+        return null;
       }
-      return null;
-    } catch {
-      // The task store is also used in isolation in tests and fresh installs,
-      // where the journal projection may not exist yet.
-      return null;
+      throw error;
     }
+    for (const row of rows) {
+      if (!row?.record_json) continue;
+      let record;
+      try { record = JSON.parse(String(row.record_json)); } catch { continue; }
+      const model = cleanText(record?.model, 100);
+      if (model) return model;
+    }
+    return null;
   }
 
   #backfillModelsFromJournal() {
@@ -551,7 +551,7 @@ export class LocalTaskSyncStore {
       const model = this.#latestJournalModel({
         provider: task.provider,
         threadId: task.thread_id,
-      });
+      }, { missingJournalOkay: false });
       if (model) update.run(model, task.provider, task.thread_id);
     }
   }
@@ -694,7 +694,17 @@ export class LocalTaskSyncStore {
     `).run(...values);
   }
 
-  #writeSearchHistory(task, history) {
+  #searchHistoryFingerprint(task) {
+    const provider = cleanText(task?.provider, 20).toLowerCase();
+    const threadId = cleanText(task?.threadId, 100);
+    if (!provider || !threadId) return "";
+    return String(this.#database.prepare(`
+      SELECT fingerprint FROM task_message_search_inputs
+      WHERE provider = ? AND thread_id = ?
+    `).get(provider, threadId)?.fingerprint ?? "");
+  }
+
+  #writeSearchHistory(task, history, fingerprint = searchHistoryFingerprint(history)) {
     const provider = cleanText(task?.provider, 20).toLowerCase();
     const threadId = cleanText(task?.threadId, 100);
     if (!provider || !threadId) return;
@@ -760,9 +770,14 @@ export class LocalTaskSyncStore {
         });
       }
     }
+    this.#database.prepare(`
+      INSERT INTO task_message_search_inputs (provider, thread_id, fingerprint)
+      VALUES (?, ?, ?)
+      ON CONFLICT(provider, thread_id) DO UPDATE SET fingerprint = excluded.fingerprint
+    `).run(provider, threadId, fingerprint);
   }
 
-  #backfillSearchIndex() {
+  #backfillTaskSearchIndex() {
     for (const task of this.#database.prepare(
       "SELECT provider, thread_id FROM task_read_model_tasks",
     ).all()) {
@@ -771,15 +786,13 @@ export class LocalTaskSyncStore {
         threadId: task.thread_id,
       }));
     }
-    let rows = [];
-    try {
-      rows = this.#database.prepare(`
-        SELECT provider, thread_id, task_thread_id, turn_id, record_json
-        FROM journal_records ORDER BY completed_at_ms
-      `).all();
-    } catch {
-      return;
-    }
+  }
+
+  #backfillJournalSearchIndex() {
+    const rows = this.#database.prepare(`
+      SELECT provider, thread_id, task_thread_id, turn_id, record_json
+      FROM journal_records ORDER BY completed_at_ms
+    `).all();
     for (const row of rows) {
       let record;
       try { record = JSON.parse(String(row.record_json ?? "{}")); } catch { continue; }
@@ -804,6 +817,45 @@ export class LocalTaskSyncStore {
         }, { replace: false });
       }
     }
+  }
+
+  #journalBackfillIdentity() {
+    const journalTable = this.#database.prepare(`
+      SELECT 1 AS present FROM sqlite_schema
+      WHERE type = 'table' AND name = 'journal_records'
+    `).get();
+    if (!journalTable) return "";
+    const revisionTable = this.#database.prepare(`
+      SELECT 1 AS present FROM sqlite_schema
+      WHERE type = 'table' AND name = 'journal_store_meta'
+    `).get();
+    if (revisionTable) {
+      const revision = this.#database.prepare(`
+        SELECT value FROM journal_store_meta WHERE key = 'revision'
+      `).get();
+      if (revision) return `revision:${String(revision.value)}`;
+    }
+    const hash = createHash("sha256");
+    for (const row of this.#database.prepare(`
+      SELECT provider, thread_id, turn_id, record_json
+      FROM journal_records ORDER BY provider, thread_id, turn_id
+    `).all()) {
+      hash.update(JSON.stringify([row.provider, row.thread_id, row.turn_id, row.record_json]));
+    }
+    return `legacy:${hash.digest("hex")}`;
+  }
+
+  #runVersionedBackfill(key, version, backfill) {
+    const current = this.#database.prepare(
+      "SELECT value FROM task_read_model_meta WHERE key = ?",
+    ).get(key);
+    if (String(current?.value ?? "") === version) return false;
+    backfill();
+    this.#database.prepare(`
+      INSERT INTO task_read_model_meta (key, value) VALUES (?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    `).run(key, version);
+    return true;
   }
 
   #transaction(run) {
@@ -896,8 +948,23 @@ export class LocalTaskSyncStore {
     await this.#open();
     await this.#migrateLegacyFile();
     this.#transaction(() => {
-      this.#backfillModelsFromJournal();
-      this.#backfillSearchIndex();
+      this.#runVersionedBackfill(
+        "backfill_task_message_search_version",
+        SEARCH_BACKFILL_VERSION,
+        () => this.#backfillTaskSearchIndex(),
+      );
+      const journalIdentity = this.#journalBackfillIdentity();
+      if (!journalIdentity) return;
+      this.#runVersionedBackfill(
+        "backfill_models_from_journal_version",
+        `${MODEL_BACKFILL_VERSION}:${journalIdentity}`,
+        () => this.#backfillModelsFromJournal(),
+      );
+      this.#runVersionedBackfill(
+        "backfill_journal_message_search_version",
+        `${SEARCH_BACKFILL_VERSION}:${journalIdentity}`,
+        () => this.#backfillJournalSearchIndex(),
+      );
     });
     return this;
   }
@@ -1001,18 +1068,17 @@ export class LocalTaskSyncStore {
     }, this.#canonicalizeProjectRoot);
     const metadataChanged = next && taskMetadataChanged(existing, next);
     const historyChanged = JSON.stringify(existing.history ?? []) !== JSON.stringify(cleanedHistory);
+    const searchFingerprint = searchHistoryFingerprint(history);
+    const searchChanged = this.#searchHistoryFingerprint(next) !== searchFingerprint;
     if (!next) return false;
-    if (!metadataChanged && !historyChanged) {
-      this.#transaction(() => this.#writeSearchHistory(next, history));
-      return false;
-    }
+    if (!metadataChanged && !historyChanged && !searchChanged) return false;
     this.#transaction(() => {
-      this.#writeTask(next);
-      this.#writeSearchHistory(next, history);
+      if (metadataChanged || historyChanged) this.#writeTask(next);
+      if (searchChanged) this.#writeSearchHistory(next, history, searchFingerprint);
       if (historyChanged) this.#writeHistory(next, cleanedHistory);
       this.#prune();
     });
-    return true;
+    return Boolean(metadataChanged || historyChanged);
   }
 
   searchMessages({ references = [], query, offset = 0, limit = 40 } = {}) {

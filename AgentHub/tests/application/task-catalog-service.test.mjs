@@ -59,6 +59,19 @@ test("task catalog service caches and coalesces concurrent refreshes", async () 
   assert.equal(builds, 1);
 });
 
+test("task catalog snapshot revision advances before and after a refresh", async () => {
+  const service = new TaskCatalogService({
+    initialEntries: [{ id: "cached" }],
+    build: async () => [{ id: "fresh" }],
+  });
+
+  assert.equal(service.snapshotRevision, "0:0");
+  service.invalidate();
+  assert.equal(service.snapshotRevision, "0:1");
+  await service.refresh();
+  assert.equal(service.snapshotRevision, "1:1");
+});
+
 test("task catalog service rebuilds when invalidated during an in-flight refresh", async () => {
   let catalogSize = 1;
   let builds = 0;
