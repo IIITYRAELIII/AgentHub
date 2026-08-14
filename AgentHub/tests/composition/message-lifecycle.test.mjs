@@ -170,6 +170,49 @@ test("message lifecycle removes a replayed server echo before optimistic reconci
   assert.deepEqual([...result.matchedIds], ["client-1"]);
 });
 
+test("message lifecycle replaces a temporary turn root after its item identity changes", () => {
+  const shared = {
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    role: "user",
+    turnUserSlot: "root",
+    text: "продолжай",
+    time: "2026-08-14T21:12:25.474Z",
+  };
+  const visible = lifecycle.deduplicateConversationMessages([
+    { ...shared, itemId: "temporary-item", clientUserMessageId: "" },
+    { ...shared, itemId: "durable-item", clientUserMessageId: "durable-client" },
+    {
+      ...shared,
+      itemId: "durable-item",
+      clientUserMessageId: "durable-client",
+      deliveryState: "accepted",
+      delivery: "Принято",
+    },
+    { ...shared, itemId: "steer-item", clientUserMessageId: "steer-client", turnUserSlot: "steer" },
+  ]);
+
+  assert.equal(visible.length, 2);
+  assert.equal(visible[0].itemId, "temporary-item");
+  assert.equal(visible[0].clientUserMessageId, "durable-client");
+  assert.equal(visible[0].deliveryState, "accepted");
+  assert.equal(visible[1].turnUserSlot, "steer");
+});
+
+test("historical messages classify one root and preserve distinct steers", () => {
+  const visible = lifecycle.historicalMessagesForDisplay({
+    id: "turn-1",
+    active: true,
+    messages: [
+      { itemId: "root", role: "user", text: "Первое" },
+      { itemId: "steer", role: "user", text: "Второе" },
+    ],
+  });
+
+  assert.deepEqual(visible.map((message) => message.turnUserSlot), ["root", "steer"]);
+});
+
 test("live completion is discarded instead of promoted across a rotated Thread", () => {
   const previous = {
     provider: "codex",

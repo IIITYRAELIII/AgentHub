@@ -234,6 +234,10 @@ export function createCodexObservabilityComposition({
     capturedExecutionOwner,
     knownRolloutPath,
     rememberRolloutPath,
+    async rememberSeenTurn(task, turnId) {
+      setBounded(lastSeenTaskTurnIds, taskRunKey(task), turnId, 500);
+      await saveState();
+    },
     terminalAudit,
   };
 }

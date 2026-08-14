@@ -1442,6 +1442,7 @@ function historyMessages(history, focusedTurn = null) {
       turnId: item.id,
       itemId: String(message.itemId ?? ""),
       clientUserMessageId: String(message.clientUserMessageId ?? ""),
+      turnUserSlot: String(message.turnUserSlot ?? ""),
       role: message.role,
       ...(message.kind ? { kind: message.kind } : {}),
       ...(message.agentThreadId ? { agentThreadId: message.agentThreadId } : {}),
@@ -1500,6 +1501,7 @@ function historyMessages(history, focusedTurn = null) {
       turnId: focusedTurn.turnId,
       itemId: `${focusedTurn.turnId}:focused:user`,
       role: "user",
+      turnUserSlot: "root",
       author: focusedTurn.promptAuthor || "Вы",
       text: focusedTurn.prompt,
       responseAnnotations: focusedTurn.promptAnnotations,
@@ -1524,10 +1526,10 @@ function historyMessages(history, focusedTurn = null) {
 function mergeNewestHistory(previous, newest) {
   const newestById = new Map(newest.map((message) => [message.id, message]));
   const previousIds = new Set(previous.map((message) => message.id));
-  return [
+  return deduplicateConversationMessages([
     ...previous.map((message) => newestById.get(message.id) ?? message),
     ...newest.filter((message) => !previousIds.has(message.id)),
-  ];
+  ]);
 }
 
 function prependOlderHistory(previous, older) {
@@ -1538,7 +1540,7 @@ function prependOlderHistory(previous, older) {
     seen.add(message.id);
     uniqueOlder.push(message);
   }
-  return [...uniqueOlder, ...previous];
+  return deduplicateConversationMessages([...uniqueOlder, ...previous]);
 }
 
 function applyOpened(result, {

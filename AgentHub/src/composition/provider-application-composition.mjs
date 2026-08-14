@@ -337,6 +337,7 @@ export async function createProviderApplicationComposition({
     clearLatestDiff: () => hostState.setLatestDiff(""),
     consumeTurnTokenTracker: api.consumeTurnTokenTracker,
     waitForTurnEndCompletion: api.waitForTurnEndCompletion,
+    rememberCodexSeenTurn: codexObservability.rememberSeenTurn,
     readCodexThread: api.readCodexThread,
     readCodexTurnUsage,
     applyCodexRolloutContext: accounting.applyCodexRolloutContext,

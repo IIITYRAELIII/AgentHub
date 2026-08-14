@@ -29,13 +29,15 @@ export class CodexCompletionService {
     for (const name of [
       "runForTask", "consumeTracker", "waitForCompletion", "readThread",
       "readTurnUsage", "applyRolloutContext", "finalizeDelivery", "finishProgress",
-      "completedAnswer", "releaseAdmission",
+      "completedAnswer", "rememberSeenTurn", "releaseAdmission",
     ]) requiredFunction(dependencies[name], name);
     this.#d = dependencies;
   }
 
   async completeObserved(run, { snapshot, answer, deliver, completedTurnId, tracker }) {
     run.status = "finishing";
+    await this.#d.rememberSeenTurn(run, completedTurnId);
+    await this.#d.releaseAdmission(run);
     let resolvedTracker = tracker ?? this.#d.consumeTracker(completedTurnId);
     if (run.executionOwner !== TASK_EXECUTION_OWNERS.HUB) {
       const hooked = await this.#d.waitForCompletion({

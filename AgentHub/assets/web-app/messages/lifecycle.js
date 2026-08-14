@@ -58,10 +58,14 @@ function deduplicateConversationMessages(messages) {
   for (const message of Array.isArray(messages) ? messages : []) {
     const client = clientIdentityKey(message);
     const item = identityKey(message);
+    const root = String(message?.turnUserSlot ?? "").trim() === "root"
+      ? turnRootUserKey(message)
+      : "";
     const agentTurn = agentTurnKey(message);
     const keys = [
       ...(client ? [`client:${client}`] : []),
       ...(item ? [`item:${item}`] : []),
+      ...(root ? [`root:${root}`] : []),
     ];
     if (agentTurn && agentTurns.has(agentTurn)) {
       values[agentTurns.get(agentTurn)] = message;
@@ -95,6 +99,10 @@ function deduplicateConversationMessages(messages) {
           } : {}),
         };
       }
+      keys.forEach((key) => {
+        seen.add(key);
+        if (Number.isInteger(position)) positions.set(key, position);
+      });
       continue;
     }
     keys.forEach((key) => {
@@ -864,7 +872,14 @@ function historicalMessagesForDisplay(item) {
   if (!visibleAgent && historicalAgentResponseVisible(item) && String(item?.answer ?? "").trim()) {
     visible.push({ itemId: `${item.id}:answer`, role: "agent", text: item.answer });
   }
-  return visible;
+  let userIndex = 0;
+  return visible.map((message) => {
+    if (message?.role !== "user") return message;
+    const turnUserSlot = String(message?.turnUserSlot ?? "").trim()
+      || (userIndex === 0 ? "root" : "steer");
+    userIndex += 1;
+    return { ...message, turnUserSlot };
+  });
 }
 
 function activeStageLabel(stage) {
