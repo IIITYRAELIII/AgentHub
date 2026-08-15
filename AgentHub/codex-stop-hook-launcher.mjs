@@ -22,7 +22,7 @@ function runtimeCommandSpoolDirectory(runtimeRoot, temporaryRoot = os.tmpdir()) 
 }
 
 function workspaceTemporaryRoot(projectRoot) {
-  return path.join(projectRoot, ".codex", "runtime");
+  return path.join(projectRoot, ".agent-hub", "runtime");
 }
 
 function forwardedEnvironment(environment, threadId) {

@@ -67,6 +67,6 @@ test("sandbox launcher returns valid empty JSON after a successful Stop hook", a
   });
   assert.equal(requests.length, 1);
   assert.equal(requests[0].request.command, "turn-complete");
-  assert.equal(requests[0].options.temporaryRoot, `${path.resolve(".")}\\.codex\\runtime`);
+  assert.equal(requests[0].options.temporaryRoot, `${path.resolve(".")}\\.agent-hub\\runtime`);
   assert.equal(writes.join(""), "{}\n");
 });
