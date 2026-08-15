@@ -27,13 +27,13 @@ async function mapConcurrent(values, limit, action) {
   await Promise.all(workers);
 }
 
-async function readWithRetry(fetchImpl, target, read, attempts = 4) {
+async function readWithRetry(fetchImpl, target, read, { attempts = 4, timeoutMs = 30_000 } = {}) {
   let lastError = null;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
       const response = await fetchImpl(target, {
         cache: "no-store",
-        signal: AbortSignal.timeout(8_000),
+        signal: AbortSignal.timeout(timeoutMs),
       });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       return await read(response);
