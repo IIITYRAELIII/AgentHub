@@ -1357,7 +1357,8 @@ test("chat refreshes every visible external run without rebuilding a second snap
   assert.match(client, /const externalLive = currentTask\.running[\s\S]*executionOwner/u);
   assert.match(client, /refreshExternalHistory[\s\S]*control\("task-history"[\s\S]*skipSnapshot: true/u);
   assert.match(client, /includeActive: false[\s\S]*knownVersion: historyPageByTask/u);
-  assert.match(refresh, /await refreshVisibleTaskHistories\(previousSnapshot, snapshot\)/u);
+  assert.match(refresh, /void refreshVisibleTaskHistories\(previousSnapshot, snapshot\)\.catch/u);
+  assert.doesNotMatch(refresh, /await refreshVisibleTaskHistories\(previousSnapshot, snapshot\)/u);
   assert.doesNotMatch(refresh, /control\("open-task"/u);
 });
 
