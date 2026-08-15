@@ -91,7 +91,7 @@ test("DeferredInputController reschedules while the task is blocked", async () =
   assert.equal(state.timers[0].delay, 2_000);
 });
 
-test("DeferredInputController steers ordinary chat intake into an active turn", async () => {
+test("DeferredInputController returns legacy automatic intake to manual choice", async () => {
   const started = [];
   const state = fixture({
     isBlocked: async () => true,
@@ -108,8 +108,10 @@ test("DeferredInputController steers ordinary chat intake into an active turn", 
 
   assert.deepEqual(started, []);
   assert.equal(state.queuedInputs.has("one"), false);
-  assert.deepEqual(state.transitions.map((entry) => entry.state), ["steered"]);
-  assert.match(state.updates[0][1], /добавлено в текущий ход/u);
+  assert.equal(state.pendingInputs.has("one"), true);
+  assert.equal(state.pendingInputs.get("one").conflictKind, "task-running");
+  assert.deepEqual(state.transitions.map((entry) => entry.state), ["pending"]);
+  assert.match(state.updates[0][1], /ручного действия/u);
 });
 
 test("DeferredInputController keeps an explicitly queued follow-up behind the active turn", async () => {

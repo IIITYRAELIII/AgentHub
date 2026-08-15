@@ -1841,7 +1841,8 @@ agentHub.on("message:send", (request) => {
     ...deliveryPatch("preparing"),
   };
   rememberOutgoing(request.taskId, optimistic);
-  const queuesOptimistically = request.followUpMode === "queue";
+  const queuesOptimistically = request.followUpMode === "queue"
+    || request.deferWhileRunning === true;
   if (queuesOptimistically) {
     optimisticDeferredClientUserMessageIds.add(request.requestId);
     deferredClientUserMessageIds.add(request.requestId);
@@ -1897,7 +1898,13 @@ agentHub.on("message:send", (request) => {
     },
     receive: (result) => {
       const accepted = Boolean(result?.accepted || result?.deferred);
-      if (!result?.deferred) optimisticDeferredClientUserMessageIds.delete(request.requestId);
+      if (result?.deferred) {
+        optimisticDeferredClientUserMessageIds.add(request.requestId);
+        deferredClientUserMessageIds.add(request.requestId);
+      } else {
+        optimisticDeferredClientUserMessageIds.delete(request.requestId);
+        deferredClientUserMessageIds.delete(request.requestId);
+      }
       agentHub.completeSend(request.requestId, { accepted });
       if (result?.duplicate) {
         optimisticDeferredClientUserMessageIds.delete(request.requestId);

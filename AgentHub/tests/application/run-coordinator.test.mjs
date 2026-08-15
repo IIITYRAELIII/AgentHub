@@ -79,19 +79,32 @@ test("RunCoordinator queues directly into a Stream under context maintenance", a
   assert.equal(f.calls.some(([name]) => name === "begin"), false);
 });
 
-test("RunCoordinator marks ordinary durable intake for immediate steering", async () => {
-  const f = fixture();
-  await f.coordinator.acceptClientInput({
+test("RunCoordinator keeps ordinary active intake pending for a manual action", async () => {
+  const active = { id: "active", executionOwner: "hub" };
+  const f = fixture({ taskRuns: { forTask: () => active } });
+  const result = await f.coordinator.acceptClientInput({
     input: "next",
     attachments: [],
     target: f.target,
     clientUserMessageId: "message-next",
   });
-  assert.equal(f.calls.find(([name]) => name === "defer")[3].conflictKind, "message-intake");
+  assert.equal(result.deferred, true);
+  assert.equal(result.queued, undefined);
+  assert.equal(result.reason, "task-running");
+  assert.equal(f.calls.find(([name]) => name === "defer")[3].conflictKind, "task-running");
+  assert.equal(f.calls.some(([name]) => name === "provider"), false);
 });
 
 test("RunCoordinator preserves an explicit queue request behind the active turn", async () => {
-  const f = fixture();
+  const active = { id: "active", executionOwner: "hub" };
+  const f = fixture({
+    taskRuns: { forTask: () => active },
+    deferInput: async (...args) => {
+      f.calls.push(["defer", ...args]);
+      return { id: "queued-1", item: { id: "queued-1" } };
+    },
+    scheduleDeferred: (item, delay) => f.calls.push(["schedule", item, delay]),
+  });
   await f.coordinator.acceptClientInput({
     input: "later",
     attachments: [],
@@ -100,6 +113,9 @@ test("RunCoordinator preserves an explicit queue request behind the active turn"
     followUpMode: "queue",
   });
   assert.equal(f.calls.find(([name]) => name === "defer")[3].conflictKind, "task-running");
+  assert.deepEqual(f.calls.find(([name]) => name === "schedule").slice(1), [
+    { id: "queued-1" }, 500,
+  ]);
 });
 
 test("RunCoordinator immediately queues steering for a turn owned by Codex Desktop", async () => {

@@ -129,33 +129,34 @@ test("desktop message acknowledgement does not wait for a full snapshot", async 
   assert.equal("snapshot" in result, false);
 });
 
-test("desktop message is durably queued before provider launch", async () => {
+test("desktop message keeps an active follow-up pending for a manual action", async () => {
   const scheduled = [];
+  let deferredOptions = null;
   const messages = controller({
     durableIntake: true,
-    deferConflictingInput: async (_input, _attachments, options) => ({
-      id: "durable-queued",
-      item: { id: "durable-queued", destination: options.destination },
-    }),
+    taskRuns: { forTask: () => ({ id: "run-active", executionOwner: "hub" }) },
+    deferConflictingInput: async (_input, _attachments, options) => {
+      deferredOptions = options;
+      return {
+        id: "durable-pending",
+        item: { id: "durable-pending", destination: options.destination },
+      };
+    },
     scheduleQueuedInput: (item, delayMs) => scheduled.push({ item, delayMs }),
-    launchTurn: async () => new Promise(() => {}),
   });
 
   const result = await messages.sendMessage({
-    text: "принять сразу",
+    text: "сохранить для ручного действия",
     clientUserMessageId: "message-durable-intake",
   });
 
-  assert.equal(result.accepted, true);
-  assert.equal(result.queued, true);
-  assert.equal(result.reason, "message-intake");
-  assert.equal(result.threadId, "thread-1");
-  assert.equal(result.runId, null);
-  assert.equal(result.turnId, null);
-  assert.deepEqual(scheduled, [{
-    item: { id: "durable-queued", destination: "queued" },
-    delayMs: 0,
-  }]);
+  assert.equal(result.accepted, false);
+  assert.equal(result.deferred, true);
+  assert.equal(result.queued, undefined);
+  assert.equal(result.reason, "task-running");
+  assert.equal(deferredOptions.destination, undefined);
+  assert.equal(deferredOptions.conflictKind, "task-running");
+  assert.deepEqual(scheduled, []);
 });
 
 test("desktop message controller forwards the complete long user message", async () => {

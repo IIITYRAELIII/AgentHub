@@ -1785,7 +1785,7 @@ test("shared chat Markdown renders GFM tables responsively", () => {
   assert.match(styles, /\.markdown-table[\s\S]*border-collapse: collapse;/u);
 });
 
-test("queued messages own manual actions while active chat input steers immediately", () => {
+test("active chat input stays in the manual queue until an explicit action", () => {
   const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
   const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
   const html = fs.readFileSync(require.resolve("../assets/web-app/index.html"), "utf8");
@@ -1796,12 +1796,14 @@ test("queued messages own manual actions while active chat input steers immediat
   assert.match(app, /\(entryAnnotations\.length && annotationEnvelope\.test\(rawText\)\)/u);
   assert.match(app, /data-action": "queue-steer"/u);
   assert.match(app, /data-action": "queue-edit"/u);
-  assert.match(app, /followUpMode: currentTask\(\)\?\.running \? "steer" : null/u);
+  assert.match(app, /followUpMode: null/u);
+  assert.match(app, /deferWhileRunning: currentTask\(\)\?\.running === true/u);
   assert.doesNotMatch(app, /followUpModeButton|renderFollowUpMode|Изменить ход/u);
   assert.doesNotMatch(html, /data-follow-up-mode/u);
   assert.match(client, /control\("deferred-input", \{ id, action: "queue" \}\)/u);
   assert.match(client, /control\("deferred-input", \{ id, action: "steer" \}\)/u);
   assert.match(client, /control\("deferred-input", \{ id, action: "edit", text \}\)/u);
+  assert.match(client, /request\.deferWhileRunning === true/u);
   assert.match(client, /deferredClientUserMessageIds = new Set\(/u);
   assert.match(client, /if \(result\?\.duplicate\)[\s\S]*outgoingMessages\(request\.taskId\)\.delete/u);
   assert.match(client, /function optimisticDeferredEntries\(taskIdValue, serverEntries = \[\]\)/u);

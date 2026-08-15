@@ -123,17 +123,19 @@ export class DeferredInputController {
         await this.persist();
       }
       if (item.conflictKind === "message-intake") {
-        const steered = await this.steer(item);
-        if (steered) {
-          this.queuedInputs.delete(id);
-          delete item.dispatchingAt;
-          delete item.blockedChecks;
-          this.onStateChange(item, "steered", steered);
-          await this.persist();
-          await this.updateMessage(item, `▶️ Сообщение добавлено в текущий ход задачи «${item.taskTitle}».`);
-          this.scheduleNextForTask(item);
-          return;
-        }
+        this.queuedInputs.delete(id);
+        delete item.dispatchingAt;
+        delete item.blockedChecks;
+        item.conflictKind = "task-running";
+        this.pendingInputs.set(id, item);
+        this.onStateChange(item, "pending");
+        await this.persist();
+        await this.updateMessage(
+          item,
+          `⏸ Сообщение сохранено для ручного действия в задаче «${item.taskTitle}».`,
+          this.pendingKeyboard(item),
+        );
+        return;
       }
       if (await this.isBlocked(item)) {
         if (item.waitReason === "provider-thread-active") {

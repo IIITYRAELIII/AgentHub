@@ -258,18 +258,7 @@ export class RunCoordinator {
   }
 
   acceptClientInput(request) {
-    const followUpMode = String(request?.followUpMode ?? "").trim().toLowerCase();
-    if (followUpMode === "steer") {
-      return this.submitClientInput(request);
-    }
-    return this.queue(request.input, request.attachments ?? [], {
-      target: request.target,
-      executionOwner: TASK_EXECUTION_OWNERS.HUB,
-      clientUserMessageId: request.clientUserMessageId,
-      reason: "message-intake",
-      conflictKind: followUpMode === "queue" ? "task-running" : "message-intake",
-      scheduleDelayMs: 0,
-    });
+    return this.submitClientInput(request);
   }
 
   steer(request) {

@@ -292,31 +292,19 @@ test("desktop client survives App Server exit during delayed startup and shares 
   assert.equal(firstStart.accepted, true);
   assert.equal(firstStart.threadId, firstThreadId);
   assert.equal(firstStart.clientUserMessageId, firstMessageId);
-  assert.equal(firstStart.queued, true);
-  assert.equal(firstStart.runId, null);
-  assert.equal(firstStart.turnId, null);
-  const retriedStart = await waitFor(() => callDesktopControl("send-message", {
-      text: "[slow] desktop A",
-      provider: "codex",
-      threadId: firstThreadId,
-      clientUserMessageId: firstMessageId,
-    }, { runtimeRoot }).then((result) => result.turnId ? result : null),
-    "durable Desktop message launch",
-    5_000);
-  assert.equal(retriedStart.accepted, true);
-  assert.ok(retriedStart.runId);
-  assert.ok(retriedStart.turnId);
+  assert.ok(firstStart.runId);
+  assert.ok(firstStart.turnId);
   // A receipt is deliberately a fast acknowledgement and does not persist a
   // whole snapshot. Verify the durable state through its dedicated endpoint.
-  assert.equal("snapshot" in retriedStart, false);
+  assert.equal("snapshot" in firstStart, false);
   const messageSnapshot = await callDesktopControl("snapshot", {}, { runtimeRoot });
   assert.equal(messageSnapshot.selected.threadId, firstThreadId);
   const firstReceipt = messageSnapshot.messageReceipts.find((receipt) => (
     receipt.clientUserMessageId === firstMessageId
   ));
   assert.equal(firstReceipt.accepted, true);
-  assert.equal(firstReceipt.runId, retriedStart.runId);
-  assert.equal(firstReceipt.turnId, retriedStart.turnId);
+  assert.equal(firstReceipt.runId, firstStart.runId);
+  assert.equal(firstReceipt.turnId, firstStart.turnId);
   assert.equal("fingerprint" in firstReceipt, false);
   await assert.rejects(
     callDesktopControl("send-message", {
@@ -336,24 +324,24 @@ test("desktop client survives App Server exit during delayed startup and shares 
   }, { runtimeRoot });
   assert.equal(steered.accepted, true);
   assert.equal(steered.steered, true);
-  assert.equal(steered.turnId, retriedStart.turnId);
+  assert.equal(steered.turnId, firstStart.turnId);
   assert.equal(steered.clientUserMessageId, steerMessageId);
-  const duplicate = await callDesktopControl("send-message", {
-    text: "parallel duplicate",
+  const deferred = await callDesktopControl("send-message", {
+    text: "manual follow-up",
     provider: "codex",
     threadId: firstThreadId,
-    followUpMode: "queue",
   }, { runtimeRoot });
-  assert.equal(duplicate.accepted, true);
-  assert.equal(duplicate.reason, "message-intake");
-  assert.equal(duplicate.deferred, true);
+  assert.equal(deferred.accepted, false);
+  assert.equal(deferred.reason, "task-running");
+  assert.equal(deferred.deferred, true);
+  assert.equal(deferred.queued, undefined);
   const deferredSnapshot = await callDesktopControl("snapshot", {}, { runtimeRoot });
   assert.equal(deferredSnapshot.deferredInputs.length, 1);
   assert.equal(deferredSnapshot.deferredInputs[0].provider, "codex");
   assert.equal(deferredSnapshot.deferredInputs[0].threadId, firstThreadId);
   const completedEdits = [];
   const firstEditPromise = callDesktopControl("deferred-input", {
-      id: duplicate.id,
+      id: deferred.id,
       action: "edit",
       text: "parallel duplicate, first edit",
     }, { runtimeRoot }).then((result) => {
@@ -361,7 +349,7 @@ test("desktop client survives App Server exit during delayed startup and shares 
       return result;
     });
   const editedDeferredPromise = callDesktopControl("deferred-input", {
-      id: duplicate.id,
+      id: deferred.id,
       action: "edit",
       text: "parallel duplicate, edited",
     }, { runtimeRoot }).then((result) => {
@@ -372,28 +360,28 @@ test("desktop client survives App Server exit during delayed startup and shares 
   assert.equal(firstEdit.accepted, true);
   assert.equal(editedDeferred.accepted, true);
   const finalEditedText = (await callDesktopControl("snapshot", {}, { runtimeRoot }))
-    .deferredInputs.find((item) => item.id === duplicate.id)?.text;
+    .deferredInputs.find((item) => item.id === deferred.id)?.text;
   assert.equal(completedEdits.includes(finalEditedText), true,
     "serialized edits must persist one of the two accepted values regardless of IPC response order");
   const queuedOnce = await callDesktopControl("deferred-input", {
-    id: duplicate.id,
+    id: deferred.id,
     action: "queue",
   }, { runtimeRoot });
   const queuedTwice = await callDesktopControl("deferred-input", {
-    id: duplicate.id,
+    id: deferred.id,
     action: "queue",
   }, { runtimeRoot });
   assert.equal(queuedOnce.accepted, true);
   assert.equal(queuedTwice.accepted, true);
   assert.equal(queuedTwice.queued, true);
   const [steeredQueued, duplicateSteer] = await Promise.all([
-    callDesktopControl("deferred-input", { id: duplicate.id, action: "steer" }, { runtimeRoot }),
-    callDesktopControl("deferred-input", { id: duplicate.id, action: "steer" }, { runtimeRoot }),
+    callDesktopControl("deferred-input", { id: deferred.id, action: "steer" }, { runtimeRoot }),
+    callDesktopControl("deferred-input", { id: deferred.id, action: "steer" }, { runtimeRoot }),
   ]);
   assert.equal(steeredQueued.accepted, true);
   assert.equal(duplicateSteer.accepted, true);
-  assert.equal(steeredQueued.clientUserMessageId, duplicate.clientUserMessageId);
-  assert.equal(duplicateSteer.turnId, retriedStart.turnId);
+  assert.equal(steeredQueued.clientUserMessageId, deferred.clientUserMessageId);
+  assert.equal(duplicateSteer.turnId, firstStart.turnId);
   assert.equal((await callDesktopControl("snapshot", {}, { runtimeRoot })).deferredInputs.length, 0);
 
   const secondTask = await callDesktopControl("new-task", { provider: "codex" }, { runtimeRoot });
@@ -470,7 +458,7 @@ test("desktop client survives App Server exit during delayed startup and shares 
   assert.deepEqual(userMessages.map((item) => item.clientUserMessageId), [
     firstMessageId,
     steerMessageId,
-    duplicate.clientUserMessageId,
+    deferred.clientUserMessageId,
   ]);
   assert.ok(userMessages.every((item) => (
     item.itemId && item.itemId !== item.clientUserMessageId
