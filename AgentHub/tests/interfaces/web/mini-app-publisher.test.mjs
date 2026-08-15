@@ -86,6 +86,45 @@ test("Mini App publisher signs and sends the current journal", async () => {
   }
 });
 
+test("Mini App publisher aborts active journal and snapshot uploads during close", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-publisher-close-"));
+  const secretFile = path.join(root, "sync.secret");
+  await writeFile(secretFile, "c".repeat(64));
+  const started = [];
+  const aborted = [];
+  const publisher = new MiniAppPublisher({
+    journalDatabase: memoryJournal(),
+    dataDirectory: root,
+    publicUrl: "https://hub.example.test",
+    syncSecretFile: secretFile,
+    snapshotUserIds: ["95281881"],
+    controlHandler: async () => ({ version: "snapshot-1" }),
+    fetchImpl: (url, options) => new Promise((resolve, reject) => {
+      started.push(url);
+      const signal = options.signal;
+      const stop = () => {
+        aborted.push(url);
+        reject(signal.reason ?? new Error("aborted"));
+      };
+      if (signal.aborted) stop();
+      else signal.addEventListener("abort", stop, { once: true });
+    }),
+  });
+  try {
+    const journalSync = publisher.sync().catch((error) => error);
+    const snapshotSync = publisher.syncSnapshots().catch((error) => error);
+    while (started.length < 2) await new Promise((resolve) => setImmediate(resolve));
+    await publisher.close();
+    await Promise.all([journalSync, snapshotSync]);
+    assert.deepEqual(new Set(aborted), new Set([
+      "https://hub.example.test/api/sync/chunk",
+      "https://hub.example.test/api/snapshot/push",
+    ]));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("Mini App publisher skips an unchanged journal before rebuilding its snapshot", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-publisher-unchanged-"));
   const secretFile = path.join(root, "sync.secret");

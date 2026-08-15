@@ -167,6 +167,8 @@ export class MiniAppPublisher {
   #controlDelayResolve = null;
   #controlLoop = null;
   #controlAbortController = null;
+  #syncAbortController = null;
+  #snapshotAbortController = null;
   #retryTimer = null;
   #debounceTimer = null;
   #syncing = null;
@@ -715,6 +717,8 @@ export class MiniAppPublisher {
       this.#pending = true;
       return this.#syncing;
     }
+    const abortController = new AbortController();
+    this.#syncAbortController = abortController;
     this.#syncing = (async () => {
       const index = typeof this.#journalDatabase?.payload === "function"
         ? await this.#journalDatabase.payload()
@@ -753,7 +757,10 @@ export class MiniAppPublisher {
             "X-Agent-Hub-Journal-Updated-At": payload.updatedAt,
           },
           body,
-          signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
+          signal: AbortSignal.any([
+            abortController.signal,
+            AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
+          ]),
         });
         if (!response.ok) {
           throw new Error(`Mini App Worker sync failed at chunk ${index + 1}/${count} with HTTP ${response.status}`);
@@ -772,6 +779,7 @@ export class MiniAppPublisher {
       this.#scheduleRetry();
       throw error;
     } finally {
+      if (this.#syncAbortController === abortController) this.#syncAbortController = null;
       this.#syncing = null;
       if (this.#pending) {
         this.#pending = false;
@@ -786,6 +794,8 @@ export class MiniAppPublisher {
       this.#snapshotPending = true;
       return this.#snapshotSyncing;
     }
+    const abortController = new AbortController();
+    this.#snapshotAbortController = abortController;
     this.#snapshotSyncing = (async () => {
       const secret = await this.#secret();
       let changed = false;
@@ -799,7 +809,10 @@ export class MiniAppPublisher {
         if (!snapshot || typeof snapshot !== "object" || !String(snapshot.version ?? "")) {
           throw new Error("Agent Hub returned an invalid client snapshot");
         }
-        await this.#signedControlRequest("/api/snapshot/push", { userId, snapshot }, secret);
+        if (this.#closed) return changed;
+        await this.#signedControlRequest("/api/snapshot/push", { userId, snapshot }, secret, {
+          signal: abortController.signal,
+        });
         this.#snapshotVersions.set(userId, String(snapshot.version));
         changed = true;
       }
@@ -811,6 +824,7 @@ export class MiniAppPublisher {
       this.#scheduleRetry();
       throw error;
     } finally {
+      if (this.#snapshotAbortController === abortController) this.#snapshotAbortController = null;
       this.#snapshotSyncing = null;
       if (this.#snapshotPending) {
         this.#snapshotPending = false;
@@ -854,6 +868,8 @@ export class MiniAppPublisher {
     this.#controlDelayResolve?.();
     this.#controlDelayResolve = null;
     this.#controlAbortController?.abort();
+    this.#syncAbortController?.abort();
+    this.#snapshotAbortController?.abort();
     await this.#syncing?.catch(() => {});
     await this.#snapshotSyncing?.catch(() => {});
     await this.#controlLoop?.catch(() => {});
