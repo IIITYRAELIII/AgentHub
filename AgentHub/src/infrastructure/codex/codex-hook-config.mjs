@@ -44,7 +44,7 @@ function handlerFor({ nodeExecutable, launcherFile }) {
   return {
     type: "command",
     command,
-    commandWindows: command,
+    commandWindows: `& ${command}`,
     timeout: 30,
   };
 }

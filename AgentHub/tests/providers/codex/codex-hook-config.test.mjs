@@ -30,6 +30,10 @@ test("Codex hook config preserves unrelated hooks and installs start and stop ha
   assert.equal(updated.hooks.SessionStart.length, 1);
   assert.equal(updated.hooks.Stop.length, 2);
   assert.equal(updated.hooks.UserPromptSubmit.length, 1);
+  assert.equal(
+    updated.hooks.Stop[1].hooks[0].commandWindows,
+    '& "C:\\Program Files\\nodejs\\node.exe" "C:\\Runtime\\codex-stop-hook-launcher.mjs"',
+  );
   assert.match(updated.hooks.Stop[1].hooks[0].commandWindows, /codex-stop-hook-launcher\.mjs/);
   assert.match(
     updated.hooks.UserPromptSubmit[0].hooks[0].commandWindows,
