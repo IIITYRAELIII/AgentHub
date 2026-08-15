@@ -406,6 +406,64 @@ function configure(database) {
   if (!searchColumns.has("author")) {
     database.exec("ALTER TABLE task_message_search_documents ADD COLUMN author TEXT NOT NULL DEFAULT ''");
   }
+  database.exec(`
+    CREATE TRIGGER IF NOT EXISTS task_read_model_subagent_insert
+    AFTER INSERT ON task_read_model_messages
+    WHEN new.provider = 'codex' AND instr(new.item_id, ':subagent:') > 0
+      AND (new.role != 'agent' OR new.kind != 'subagent'
+        OR trim(new.author) = '' OR trim(new.agent_thread_id) = '')
+    BEGIN
+      UPDATE task_read_model_messages
+      SET role = 'agent',
+          author = CASE WHEN trim(author) = '' THEN 'Субагент (модель неизвестна)' ELSE author END,
+          kind = 'subagent',
+          agent_thread_id = CASE
+            WHEN trim(agent_thread_id) = ''
+            THEN substr(item_id, instr(item_id, ':subagent:') + length(':subagent:'))
+            ELSE agent_thread_id
+          END
+      WHERE provider = new.provider AND thread_id = new.thread_id
+        AND turn_position = new.turn_position AND position = new.position;
+    END;
+    CREATE TRIGGER IF NOT EXISTS task_read_model_subagent_update
+    AFTER UPDATE OF item_id, role, author, kind, agent_thread_id ON task_read_model_messages
+    WHEN new.provider = 'codex' AND instr(new.item_id, ':subagent:') > 0
+      AND (new.role != 'agent' OR new.kind != 'subagent'
+        OR trim(new.author) = '' OR trim(new.agent_thread_id) = '')
+    BEGIN
+      UPDATE task_read_model_messages
+      SET role = 'agent',
+          author = CASE WHEN trim(author) = '' THEN 'Субагент (модель неизвестна)' ELSE author END,
+          kind = 'subagent',
+          agent_thread_id = CASE
+            WHEN trim(agent_thread_id) = ''
+            THEN substr(item_id, instr(item_id, ':subagent:') + length(':subagent:'))
+            ELSE agent_thread_id
+          END
+      WHERE provider = new.provider AND thread_id = new.thread_id
+        AND turn_position = new.turn_position AND position = new.position;
+    END;
+    CREATE TRIGGER IF NOT EXISTS task_message_search_subagent_insert
+    AFTER INSERT ON task_message_search_documents
+    WHEN new.provider = 'codex' AND instr(new.item_id, ':subagent:') > 0
+      AND (new.role != 'agent' OR trim(new.author) = '')
+    BEGIN
+      UPDATE task_message_search_documents
+      SET role = 'agent',
+          author = CASE WHEN trim(author) = '' THEN 'Субагент (модель неизвестна)' ELSE author END
+      WHERE id = new.id;
+    END;
+    CREATE TRIGGER IF NOT EXISTS task_message_search_subagent_update
+    AFTER UPDATE OF item_id, role, author ON task_message_search_documents
+    WHEN new.provider = 'codex' AND instr(new.item_id, ':subagent:') > 0
+      AND (new.role != 'agent' OR trim(new.author) = '')
+    BEGIN
+      UPDATE task_message_search_documents
+      SET role = 'agent',
+          author = CASE WHEN trim(author) = '' THEN 'Субагент (модель неизвестна)' ELSE author END
+      WHERE id = new.id;
+    END;
+  `);
   database.prepare(`
     INSERT INTO task_read_model_meta (key, value) VALUES ('schema_version', ?)
     ON CONFLICT(key) DO UPDATE SET value = excluded.value

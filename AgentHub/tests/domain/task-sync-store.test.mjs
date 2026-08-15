@@ -221,7 +221,7 @@ test("local task sync preserves subagent identity through SQLite", async () => {
   store.close();
 });
 
-test("local task sync repairs legacy subagent rows stored as user messages", async () => {
+test("local task sync rejects a legacy writer that stores a subagent as user", async () => {
   const filePath = await storeFile();
   const databaseFile = path.join(path.dirname(filePath), "journal.sqlite");
   let store = new LocalTaskSyncStore({ filePath, databaseFile });
@@ -250,10 +250,25 @@ test("local task sync repairs legacy subagent rows stored as user messages", asy
     WHERE item_id = ?
   `).run("turn-parent:subagent:child-sol");
   database.prepare(`
-    INSERT INTO task_read_model_meta (key, value)
-    VALUES ('backfill_task_message_search_version', '1')
-    ON CONFLICT(key) DO UPDATE SET value = excluded.value
-  `).run();
+    UPDATE task_message_search_documents
+    SET role = 'user', author = ''
+    WHERE item_id = ?
+  `).run("turn-parent:subagent:child-sol");
+  assert.deepEqual({ ...database.prepare(`
+    SELECT role, author, kind, agent_thread_id FROM task_read_model_messages
+    WHERE item_id = ?
+  `).get("turn-parent:subagent:child-sol") }, {
+    role: "agent",
+    author: "Субагент (модель неизвестна)",
+    kind: "subagent",
+    agent_thread_id: "child-sol",
+  });
+  assert.deepEqual({ ...database.prepare(`
+    SELECT role, author FROM task_message_search_documents WHERE item_id = ?
+  `).get("turn-parent:subagent:child-sol") }, {
+    role: "agent",
+    author: "Субагент (модель неизвестна)",
+  });
   database.close();
 
   store = new LocalTaskSyncStore({ filePath, databaseFile });
@@ -263,9 +278,6 @@ test("local task sync repairs legacy subagent rows stored as user messages", asy
   assert.equal(message.kind, "subagent");
   assert.equal(message.agentThreadId, "child-sol");
   assert.equal(message.author, "Субагент (модель неизвестна)");
-  const result = store.searchMessages({ references: [task], query: "отчёт sol" }).results[0];
-  assert.equal(result.role, "agent");
-  assert.equal(result.author, "Субагент (модель неизвестна)");
   store.close();
 });
 
