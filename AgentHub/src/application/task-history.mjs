@@ -134,7 +134,7 @@ function desktopPromptEnvelope(value) {
   const headingMatch = heading.exec(source);
   if (!headingMatch || headingMatch.index !== 0) return null;
 
-  const request = /^## My request for Codex:\s*$/im;
+  const request = /^## My request(?: for Codex)?:\s*$/im;
   const requestMatch = request.exec(source);
   if (!requestMatch || requestMatch.index <= headingMatch.index) return null;
 
@@ -293,6 +293,53 @@ export function codexTurnActivities(turn) {
     .filter(Boolean);
 }
 
+function uniqueMessageValues(values, keyFor) {
+  const known = new Set();
+  return values.filter((value) => {
+    const key = keyFor(value);
+    if (!key || known.has(key)) return false;
+    known.add(key);
+    return true;
+  });
+}
+
+function mergeSyntheticRolloutRoot(messages, turnId) {
+  const syntheticId = `${turnId}:rollout-user:0`;
+  const syntheticIndex = messages.findIndex((message) => (
+    message?.role === "user"
+    && message.itemId === syntheticId
+    && !message.clientUserMessageId
+  ));
+  if (syntheticIndex < 0) return messages;
+
+  const canonicalIndex = messages.findIndex((message, index) => (
+    index < syntheticIndex
+    && message?.role === "user"
+    && Boolean(message.clientUserMessageId)
+  ));
+  if (canonicalIndex < 0) return messages;
+
+  const canonical = messages[canonicalIndex];
+  const synthetic = messages[syntheticIndex];
+  const attachmentSources = uniqueMessageValues([
+    ...(Array.isArray(canonical.attachmentSources) ? canonical.attachmentSources : []),
+    ...(Array.isArray(synthetic.attachmentSources) ? synthetic.attachmentSources : []),
+  ], (item) => `${String(item?.type ?? "")}\0${String(item?.value ?? "").toLowerCase()}`);
+  const attachments = uniqueMessageValues([
+    ...(Array.isArray(canonical.attachments) ? canonical.attachments : []),
+    ...(Array.isArray(synthetic.attachments) ? synthetic.attachments : []),
+  ], (item) => String(item?.id ?? item?.path ?? item?.url ?? "").toLowerCase());
+  const merged = {
+    ...canonical,
+    ...(attachmentSources.length ? { attachmentSources } : {}),
+    ...(attachments.length ? { attachments } : {}),
+  };
+  return messages.flatMap((message, index) => {
+    if (index === canonicalIndex) return [merged];
+    return index === syntheticIndex ? [] : [message];
+  });
+}
+
 function codexTurnMessages(turn, { userAuthor = "" } = {}) {
   if (isCodexContextProbeTurn(turn)) return [];
   const turnId = String(turn?.id ?? "").trim();
@@ -304,7 +351,7 @@ function codexTurnMessages(turn, { userAuthor = "" } = {}) {
       ))
       : []
   )).filter(([threadId]) => threadId));
-  return items.flatMap((item, index) => {
+  const messages = items.flatMap((item, index) => {
     if (item?.type === "userMessage") {
       const rawText = textContent(item.content);
       const rawNotification = codexSubagentNotificationDetails(rawText);
@@ -362,6 +409,7 @@ function codexTurnMessages(turn, { userAuthor = "" } = {}) {
     }
     return [];
   });
+  return mergeSyntheticRolloutRoot(messages, turnId);
 }
 
 export function responseAnnotationDetails(value) {
@@ -387,7 +435,7 @@ export function responseAnnotationDetails(value) {
   ));
   const requestTail = text.slice((block.index ?? 0) + block[0].length);
   const request = requestTail
-    .replace(/^\s*##\s*My request for Codex:\s*/i, "")
+    .replace(/^\s*##\s*My request(?: for Codex)?:\s*/i, "")
     .trim();
   const selections = items
     .map((item) => item.text)

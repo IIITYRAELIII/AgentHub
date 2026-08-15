@@ -133,6 +133,63 @@ function cleanHistory(history, limit) {
   return withoutPromptlessAnswerEchoes(cleaned).slice(-limit);
 }
 
+const TERMINAL_TURN_STATUSES = new Set([
+  "completed",
+  "failed",
+  "stopped",
+  "interrupted",
+  "aborted",
+  "cancelled",
+  "canceled",
+]);
+
+function terminalHistoryTurns(history) {
+  const terminals = new Map();
+  for (const turn of Array.isArray(history) ? history : []) {
+    const id = String(turn?.id ?? "").trim();
+    const status = String(turn?.status ?? "").trim().toLowerCase();
+    if (id && (turn?.completed === true || TERMINAL_TURN_STATUSES.has(status))) {
+      terminals.set(id, structuredClone(turn));
+    }
+  }
+  return terminals;
+}
+
+function preserveTerminalHistory(terminals, history) {
+  return (Array.isArray(history) ? history : []).map((turn) => {
+    const terminal = terminals.get(String(turn?.id ?? "").trim());
+    const status = String(turn?.status ?? "").trim().toLowerCase();
+    const incomingIsTerminal = turn?.completed === true || TERMINAL_TURN_STATUSES.has(status);
+    return terminal && !incomingIsTerminal ? structuredClone(terminal) : turn;
+  });
+}
+
+function terminalSafeSnapshot(existing, snapshot, terminals) {
+  const turnId = String(snapshot?.turnId ?? "").trim();
+  if (snapshot?.active !== true || !turnId || !terminals.has(turnId)) return snapshot;
+
+  const existingTurnId = String(existing?.turnId ?? "").trim();
+  if (existing?.running === true && existingTurnId && !terminals.has(existingTurnId)) {
+    return {
+      active: true,
+      turnId: existingTurnId,
+      executionOwner: existing.executionOwner,
+      activityAtMs: existing.lastActivityAtMs,
+      stage: existing.stage,
+      answer: existing.answer,
+    };
+  }
+
+  return {
+    active: false,
+    turnId: "",
+    executionOwner: null,
+    activityAtMs: existing?.lastActivityAtMs,
+    stage: existing?.stage,
+    answer: existing?.answer,
+  };
+}
+
 function persistedTask(value = {}, canonicalizeProjectRoot = (projectRoot) => projectRoot) {
   const provider = cleanText(value.provider, 20).toLowerCase();
   const threadId = cleanText(value.threadId, 100);
@@ -1144,30 +1201,33 @@ export class LocalTaskSyncStore {
 
   recordHistory(task, history, snapshot = null, nowMs = Date.now()) {
     const existing = this.#readTask(task, true) ?? {};
-    const cleanedHistory = cleanHistory(history, this.#historyLimit);
+    const terminals = terminalHistoryTurns(existing.history);
+    const reconciledHistory = preserveTerminalHistory(terminals, history);
+    const cleanedHistory = cleanHistory(reconciledHistory, this.#historyLimit);
+    const effectiveSnapshot = terminalSafeSnapshot(existing, snapshot, terminals);
     const next = persistedTask({
       ...existing,
       ...task,
       title: task.title ?? task.taskTitle ?? existing.title,
-      model: snapshot?.model ?? task.model ?? existing.model ?? this.#latestJournalModel(task),
-      running: snapshot ? snapshot.active === true : existing.running === true,
-      executionOwner: snapshot?.executionOwner ?? existing.executionOwner,
-      turnId: snapshot?.turnId ?? existing.turnId,
-      lastActivityAtMs: snapshot?.activityAtMs ?? existing.lastActivityAtMs,
-      stage: snapshot?.stage ?? existing.stage,
-      answer: snapshot?.answer ?? existing.answer,
+      model: effectiveSnapshot?.model ?? task.model ?? existing.model ?? this.#latestJournalModel(task),
+      running: effectiveSnapshot ? effectiveSnapshot.active === true : existing.running === true,
+      executionOwner: effectiveSnapshot?.executionOwner ?? existing.executionOwner,
+      turnId: effectiveSnapshot?.turnId ?? existing.turnId,
+      lastActivityAtMs: effectiveSnapshot?.activityAtMs ?? existing.lastActivityAtMs,
+      stage: effectiveSnapshot?.stage ?? existing.stage,
+      answer: effectiveSnapshot?.answer ?? existing.answer,
       syncedAtMs: nowMs,
       history: cleanedHistory,
     }, this.#canonicalizeProjectRoot);
     const metadataChanged = next && taskMetadataChanged(existing, next);
     const historyChanged = JSON.stringify(existing.history ?? []) !== JSON.stringify(cleanedHistory);
-    const searchFingerprint = searchHistoryFingerprint(history);
+    const searchFingerprint = searchHistoryFingerprint(reconciledHistory);
     const searchChanged = this.#searchHistoryFingerprint(next) !== searchFingerprint;
     if (!next) return false;
     if (!metadataChanged && !historyChanged && !searchChanged) return false;
     this.#transaction(() => {
       if (metadataChanged || historyChanged) this.#writeTask(next);
-      if (searchChanged) this.#writeSearchHistory(next, history, searchFingerprint);
+      if (searchChanged) this.#writeSearchHistory(next, reconciledHistory, searchFingerprint);
       if (historyChanged) this.#writeHistory(next, cleanedHistory);
       this.#prune();
     });

@@ -102,6 +102,65 @@ test("RunCoordinator preserves an explicit queue request behind the active turn"
   assert.equal(f.calls.find(([name]) => name === "defer")[3].conflictKind, "task-running");
 });
 
+test("RunCoordinator immediately queues steering for a turn owned by Codex Desktop", async () => {
+  const external = { id: "external", executionOwner: "desktop" };
+  const f = fixture({
+    taskRuns: { forTask: () => external },
+    deferInput: async (...args) => {
+      f.calls.push(["defer", ...args]);
+      return { id: "queued-external", item: { id: "queued-external" } };
+    },
+    scheduleDeferred: (item, delay) => f.calls.push(["schedule", item, delay]),
+  });
+
+  const result = await f.coordinator.submitClientInput({
+    input: "после внешнего хода",
+    attachments: [],
+    target: f.target,
+    clientUserMessageId: "message-external",
+    followUpMode: "steer",
+  });
+
+  assert.equal(result.queued, true);
+  assert.equal(result.reason, "provider-thread-active");
+  assert.equal(f.calls.some(([name]) => name === "provider"), false);
+  assert.equal(f.calls.find(([name]) => name === "defer")[3].executionOwner, "desktop");
+  assert.deepEqual(f.calls.find(([name]) => name === "schedule").slice(1), [
+    { id: "queued-external" }, 500,
+  ]);
+});
+
+test("RunCoordinator preserves steering when provider ownership changes during admission", async () => {
+  const active = { id: "active", executionOwner: "hub" };
+  const f = fixture({
+    taskRuns: { forTask: () => active },
+    providers: {
+      call: async () => {
+        throw new Error("thread thread-1 already has an active writer");
+      },
+    },
+    deferInput: async (...args) => {
+      f.calls.push(["defer", ...args]);
+      return { id: "queued-race", item: { id: "queued-race" } };
+    },
+    scheduleDeferred: (item, delay) => f.calls.push(["schedule", item, delay]),
+  });
+
+  const result = await f.coordinator.submitClientInput({
+    input: "не потерять при смене writer",
+    attachments: [],
+    target: f.target,
+    clientUserMessageId: "message-race",
+    followUpMode: "steer",
+  });
+
+  assert.equal(result.queued, true);
+  assert.equal(result.reason, "steer-unavailable");
+  assert.deepEqual(f.calls.find(([name]) => name === "schedule").slice(1), [
+    { id: "queued-race" }, 500,
+  ]);
+});
+
 test("RunCoordinator preserves input when Codex reports an orphaned active writer", async () => {
   const f = fixture({
     launchTurn: async () => {

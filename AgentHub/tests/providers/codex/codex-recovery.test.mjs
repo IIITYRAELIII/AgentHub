@@ -7,6 +7,7 @@ import {
   needsInterruptedTurnRollback,
   needsThreadResume,
   startCodexTurnWithRecovery,
+  steerCodexTurnWithRecovery,
 } from "../../../src/providers/codex/codex-recovery.mjs";
 
 test("recognizes a turn broken while a custom tool call was pending", () => {
@@ -40,6 +41,24 @@ test("resumes an unloaded thread before retrying an interrupt", async () => {
     "interrupt-thread-1-turn-1",
   ]);
   assert.equal(result.accepted, true);
+});
+
+test("resumes an unloaded thread before retrying a steer exactly once", async () => {
+  const events = [];
+  let attempts = 0;
+  const result = await steerCodexTurnWithRecovery({
+    threadId: "thread-1",
+    steer: async () => {
+      attempts += 1;
+      events.push(`steer-${attempts}`);
+      if (attempts < 3) throw new Error("thread not found: thread-1");
+      return { turnId: "turn-1" };
+    },
+    resume: async ({ threadId }) => events.push(`resume-${threadId}`),
+  }).catch((error) => error);
+
+  assert.deepEqual(events, ["steer-1", "resume-thread-1", "steer-2"]);
+  assert.match(result.message, /thread not found: thread-1/u);
 });
 
 test("rolls back only the broken tail turn and retries once", async () => {

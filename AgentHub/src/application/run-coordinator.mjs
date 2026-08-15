@@ -1,4 +1,7 @@
-import { TASK_EXECUTION_OWNERS } from "../domain/task-execution-owner.mjs";
+import {
+  normalizeTaskExecutionOwner,
+  TASK_EXECUTION_OWNERS,
+} from "../domain/task-execution-owner.mjs";
 
 export function activeTurnNotSteerable(error) {
   const details = `${String(error?.message ?? "")} ${JSON.stringify(error?.data ?? {})}`.toLowerCase();
@@ -6,6 +9,8 @@ export function activeTurnNotSteerable(error) {
     || details.includes("active turn not steerable")
     || details.includes("no active turn")
     || details.includes("expectedturnid")
+    || details.includes("thread not found")
+    || details.includes("already has an active writer")
     || /текущий ход уже/u.test(String(error?.message ?? "").toLowerCase());
 }
 
@@ -279,6 +284,12 @@ export class RunCoordinator {
     if (!existingRun && externalActivity.state === "inactive") {
       throw new Error("Текущий ход уже завершён; сообщение осталось в очереди");
     }
+    const executionOwner = normalizeTaskExecutionOwner(
+      existingRun?.executionOwner ?? externalActivity.executionOwner,
+    );
+    if (executionOwner && executionOwner !== TASK_EXECUTION_OWNERS.HUB) {
+      throw new Error("Active turn not steerable: another Codex runtime owns the writer");
+    }
     let result;
     try {
       result = await this.providers.call(
@@ -352,6 +363,17 @@ export class RunCoordinator {
       : await this.externalActivity(target);
     if (existingRun || externalActivity.state !== "inactive") {
       if (followUpMode === "steer") {
+        const executionOwner = normalizeTaskExecutionOwner(
+          existingRun?.executionOwner ?? externalActivity.executionOwner,
+        );
+        if (executionOwner && executionOwner !== TASK_EXECUTION_OWNERS.HUB) {
+          return this.queue(input, attachments, {
+            target,
+            executionOwner,
+            clientUserMessageId,
+            reason: "provider-thread-active",
+          });
+        }
         try {
           return await this.steerUnlocked({ input, target, clientUserMessageId });
         } catch (error) {

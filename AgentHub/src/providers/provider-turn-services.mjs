@@ -1,7 +1,12 @@
 import { unlink } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import { buildCodexCollaborationMode } from "./codex/codex-settings.mjs";
-import { activeTurnMissing, interruptCodexTurnWithRecovery, startCodexTurnWithRecovery } from "./codex/codex-recovery.mjs";
+import {
+  activeTurnMissing,
+  interruptCodexTurnWithRecovery,
+  startCodexTurnWithRecovery,
+  steerCodexTurnWithRecovery,
+} from "./codex/codex-recovery.mjs";
 import { codexThreadSandboxSettings, codexTurnSandboxSettings } from "./codex/codex-sandbox.mjs";
 import { emptyTokenUsage } from "../domain/token-usage.mjs";
 import { estimateCodexContextBreakdown } from "../domain/context-usage-breakdown.mjs";
@@ -287,11 +292,19 @@ export class CodexTurnService {
   async steer({ run, target, input, clientUserMessageId }) {
     const turnId = await this.#exactTurnId(target, run);
     if (!turnId) throw new Error("Текущий ход уже нельзя изменить; сообщение осталось в очереди");
-    const result = await this.#d.sendRpc("turn/steer", {
+    const request = {
       threadId: target.threadId,
       expectedTurnId: turnId,
       input: codexInputItems(input),
       clientUserMessageId,
+    };
+    const result = await steerCodexTurnWithRecovery({
+      threadId: target.threadId,
+      steer: () => this.#d.sendRpc("turn/steer", request),
+      resume: ({ threadId }) => this.#d.sendRpc("thread/resume", {
+        threadId,
+        ...codexThreadSandboxSettings(this.#d.sandboxMode()),
+      }),
     });
     return { turnId: String(result?.turnId ?? turnId) };
   }

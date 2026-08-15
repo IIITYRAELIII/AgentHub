@@ -223,8 +223,8 @@ test("desktop message controller cannot jump ahead of an older deferred input", 
   assert.equal(beginCount, 0);
 });
 
-test("desktop message controller steers the exact active Codex turn", async () => {
-  const run = { id: "run-active", turnId: "turn-active", executionOwner: "vscode" };
+test("desktop message controller steers the exact Hub-owned Codex turn", async () => {
+  const run = { id: "run-active", turnId: "turn-active", executionOwner: "hub" };
   const stages = [];
   const rpc = [];
   const messages = controller({
@@ -255,7 +255,7 @@ test("desktop message controller steers the exact active Codex turn", async () =
 });
 
 test("a queued image message steers with its stable client id", async () => {
-  const run = { id: "run-active", turnId: "turn-active", executionOwner: "vscode" };
+  const run = { id: "run-active", turnId: "turn-active", executionOwner: "hub" };
   const rpc = [];
   const messages = controller({
     taskRuns: { forTask: () => run },

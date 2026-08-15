@@ -775,6 +775,142 @@ test("completed-only history refresh preserves a live cached status", async () =
   }).active, false);
 });
 
+test("terminal recovered turns remain terminal when a stale Codex live projection reconnects", async () => {
+  const filePath = await storeFile();
+  const databaseFile = path.join(path.dirname(filePath), "journal.sqlite");
+  const store = new LocalTaskSyncStore({ filePath, databaseFile });
+  await store.load();
+  const priorTurns = Array.from({ length: 47 }, (_, index) => ({
+    id: `turn-${index}`,
+    prompt: `Вопрос ${index}`,
+    answer: `Ответ ${index}`,
+    status: "completed",
+    active: false,
+    completed: true,
+  }));
+  const recoveredTurnIds = ["turn-47", "turn-48"];
+  const terminalHistory = [
+    ...priorTurns,
+    ...recoveredTurnIds.map((id) => ({
+      id,
+      prompt: `Вопрос ${id}`,
+      answer: `Финальный ответ ${id}`,
+      status: "completed",
+      active: false,
+      completed: true,
+      completedAt: "2026-08-15T15:00:00.000Z",
+      messages: [{ itemId: `${id}:final`, role: "agent", text: `Финальный ответ ${id}` }],
+    })),
+    {
+      id: "turn-49",
+      prompt: "Текущий вопрос",
+      answer: "Текущий ответ",
+      status: "inProgress",
+      active: true,
+      completed: false,
+    },
+  ];
+  store.recordHistory(task, terminalHistory, {
+    active: true,
+    turnId: "turn-49",
+    executionOwner: TASK_EXECUTION_OWNERS.VSCODE,
+    activityAtMs: 10_000,
+  }, 10_000);
+
+  const staleProjection = terminalHistory.map((turn) => (
+    recoveredTurnIds.includes(turn.id)
+      ? {
+        ...turn,
+        answer: "Старый промежуточный ответ",
+        status: "inProgress",
+        active: true,
+        completed: false,
+      }
+      : turn
+  ));
+  store.recordHistory(task, staleProjection, {
+    active: true,
+    turnId: "turn-47",
+    executionOwner: TASK_EXECUTION_OWNERS.VSCODE,
+    activityAtMs: 9_000,
+  }, 11_000);
+
+  assert.deepEqual(store.history(task).slice(-3).map((turn) => ({
+    id: turn.id,
+    answer: turn.answer,
+    status: turn.status,
+    active: turn.active,
+    completed: turn.completed,
+  })), [
+    { id: "turn-47", answer: "Финальный ответ turn-47", status: "completed", active: false, completed: true },
+    { id: "turn-48", answer: "Финальный ответ turn-48", status: "completed", active: false, completed: true },
+    { id: "turn-49", answer: "Текущий ответ", status: "inProgress", active: true, completed: false },
+  ]);
+  assert.deepEqual(store.snapshot(task, { nowMs: 11_000 }), {
+    active: true,
+    completed: false,
+    turnId: "turn-49",
+    activityAtMs: 10_000,
+    executionOwner: TASK_EXECUTION_OWNERS.VSCODE,
+    stage: "",
+    answer: "",
+  });
+
+  const database = new DatabaseSync(databaseFile);
+  assert.deepEqual(database.prepare(`
+    SELECT position, id, status, active, completed
+    FROM task_read_model_turns
+    WHERE provider = ? AND thread_id = ? AND position >= 47
+    ORDER BY position
+  `).all(task.provider, task.threadId).map((row) => ({ ...row })), [
+    { position: 47, id: "turn-47", status: "completed", active: 0, completed: 1 },
+    { position: 48, id: "turn-48", status: "completed", active: 0, completed: 1 },
+    { position: 49, id: "turn-49", status: "inProgress", active: 1, completed: 0 },
+  ]);
+  database.close();
+  store.close();
+});
+
+test("a stale live snapshot cannot reactivate a recovered terminal task", async () => {
+  const filePath = await storeFile();
+  const databaseFile = path.join(path.dirname(filePath), "journal.sqlite");
+  const store = new LocalTaskSyncStore({ filePath, databaseFile });
+  await store.load();
+  const recovered = {
+    id: "recovered-turn",
+    prompt: "Завершённый вопрос",
+    answer: "Финальный ответ",
+    status: "completed",
+    active: false,
+    completed: true,
+  };
+  store.recordHistory(task, [recovered], { active: false, turnId: "recovered-turn" }, 10_000);
+  store.recordHistory(task, [{
+    ...recovered,
+    answer: "Старый промежуточный ответ",
+    status: "inProgress",
+    active: true,
+    completed: false,
+  }], {
+    active: true,
+    turnId: "recovered-turn",
+    executionOwner: TASK_EXECUTION_OWNERS.VSCODE,
+    activityAtMs: 9_000,
+  }, 11_000);
+
+  assert.equal(store.history(task)[0].status, "completed");
+  assert.equal(store.history(task)[0].active, false);
+  assert.equal(store.catalog({ nowMs: 11_000 })[0].running, false);
+  assert.equal(store.snapshot(task, { nowMs: 11_000 }).turnId, null);
+
+  const database = new DatabaseSync(databaseFile);
+  assert.equal(database.prepare(`
+    SELECT turn_id FROM task_read_model_tasks WHERE provider = ? AND thread_id = ?
+  `).get(task.provider, task.threadId)?.turn_id, null);
+  database.close();
+  store.close();
+});
+
 test("task sync evicts oldest completed cache entries but never active ones", async () => {
   const filePath = await storeFile();
   const store = new LocalTaskSyncStore({ filePath, taskLimit: 3 });

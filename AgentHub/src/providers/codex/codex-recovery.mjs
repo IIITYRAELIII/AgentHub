@@ -25,6 +25,16 @@ export async function interruptCodexTurnWithRecovery({ threadId, turnId, interru
   }
 }
 
+export async function steerCodexTurnWithRecovery({ threadId, steer, resume }) {
+  try {
+    return await steer();
+  } catch (error) {
+    if (!needsThreadResume(error)) throw error;
+    await resume({ threadId });
+    return steer();
+  }
+}
+
 export async function startCodexTurnWithRecovery({
   threadId,
   startTurn,

@@ -728,6 +728,70 @@ test("displayUserPrompt unwraps Codex Desktop file metadata", () => {
     "## My request for Codex:",
     "Почему остановился?",
   ].join("\n")), "Почему остановился?");
+  assert.equal(displayUserPrompt([
+    "# Files mentioned by the user:",
+    "",
+    "## screenshot.png: C:/Temp/screenshot.png",
+    "",
+    "## My request:",
+    "Что видно на скрине?",
+  ].join("\n")), "Что видно на скрине?");
+});
+
+test("Codex Desktop attachment without request text stays a single attachment message", () => {
+  const [exchange] = codexThreadHistory([{
+    id: "turn-with-empty-request",
+    status: "completed",
+    items: [{
+      id: "official-user-item",
+      clientId: "client-message-id",
+      type: "userMessage",
+      content: [{ type: "text", text: [
+        "# Files mentioned by the user:",
+        "## screenshot.png: C:/Temp/screenshot.png",
+        "## My request:",
+      ].join("\n") }],
+    }],
+  }]);
+
+  assert.equal(exchange.prompt, "Вложение");
+  assert.equal(exchange.messages.length, 1);
+  assert.equal(exchange.messages[0].clientUserMessageId, "client-message-id");
+  assert.deepEqual(exchange.messages[0].attachmentSources, [{
+    type: "path",
+    value: "C:/Temp/screenshot.png",
+    name: "screenshot.png",
+  }]);
+});
+
+test("official root message replaces its synthetic rollout root by structural identity", () => {
+  const turnId = "turn-with-rollout-root";
+  const [exchange] = codexThreadHistory([{
+    id: turnId,
+    status: "inProgress",
+    items: [{
+      id: "official-user-item",
+      clientId: "client-message-id",
+      type: "userMessage",
+      content: [
+        { type: "text", text: "Проанализируй изображение" },
+        { type: "localImage", path: "C:/Temp/screenshot.png" },
+      ],
+    }, {
+      id: `${turnId}:rollout-user:0`,
+      type: "userMessage",
+      content: [{ type: "text", text: "Проанализируй изображение" }],
+    }],
+  }]);
+
+  const users = exchange.messages.filter((message) => message.role === "user");
+  assert.equal(users.length, 1);
+  assert.equal(users[0].itemId, "official-user-item");
+  assert.equal(users[0].clientUserMessageId, "client-message-id");
+  assert.deepEqual(users[0].attachmentSources, [{
+    type: "path",
+    value: "C:/Temp/screenshot.png",
+  }]);
 });
 
 test("Codex Desktop screenshots are retained as private attachment references", () => {

@@ -49,6 +49,42 @@ test("Codex turn service steers one exact active turn", async () => {
   assert.throws(() => unsupportedProviderSteer(), /недоступна/u);
 });
 
+test("Codex turn service resumes a recycled app-server thread and retries the same steer identity", async () => {
+  const calls = [];
+  let steerAttempts = 0;
+  const service = codexTurnService({
+    sendRpc: async (method, params) => {
+      calls.push({ method, params });
+      if (method === "turn/steer" && ++steerAttempts === 1) {
+        throw new Error("thread not found: thread-1");
+      }
+      return method === "turn/steer" ? { turnId: params.expectedTurnId } : { thread: { id: params.threadId } };
+    },
+  });
+
+  const result = await service.steer({
+    run: { turnId: "turn-1" },
+    target: { threadId: "thread-1" },
+    input: [{ type: "text", text: "Retry without duplication" }],
+    clientUserMessageId: "message-1",
+  });
+
+  assert.deepEqual(calls.map((call) => call.method), ["turn/steer", "thread/resume", "turn/steer"]);
+  assert.strictEqual(calls[0].params, calls[2].params);
+  assert.deepEqual(calls[0].params, {
+    threadId: "thread-1",
+    expectedTurnId: "turn-1",
+    input: [{ type: "text", text: "Retry without duplication" }],
+    clientUserMessageId: "message-1",
+  });
+  assert.deepEqual(calls[1].params, {
+    threadId: "thread-1",
+    approvalPolicy: "on-request",
+    sandbox: "workspace-write",
+  });
+  assert.deepEqual(result, { turnId: "turn-1" });
+});
+
 test("Codex turn service persists the exact receipt before background materialization", async () => {
   const scheduled = [];
   const turnTokenUsage = new Map();
