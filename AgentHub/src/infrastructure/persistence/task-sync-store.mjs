@@ -790,7 +790,7 @@ export class LocalTaskSyncStore {
         stage: existing.stage,
         answer: existing.answer,
       }, terminals);
-      const next = persistedTask({
+      const next = {
         ...existing,
         running: effectiveSnapshot.active === true,
         executionOwner: effectiveSnapshot.executionOwner,
@@ -799,7 +799,7 @@ export class LocalTaskSyncStore {
         stage: effectiveSnapshot.stage,
         answer: effectiveSnapshot.answer,
         history: repairedHistory,
-      }, this.#canonicalizeProjectRoot);
+      };
       const historyChanged = JSON.stringify(existing.history) !== JSON.stringify(repairedHistory);
       const metadataChanged = taskMetadataChanged(existing, next);
       if (metadataChanged) this.#writeTask(next);

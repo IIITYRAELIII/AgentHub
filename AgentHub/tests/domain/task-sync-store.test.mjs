@@ -997,7 +997,13 @@ test("startup repairs already corrupted terminal rows and synthetic root duplica
     }));
   database.close();
 
-  store = new LocalTaskSyncStore({ filePath, databaseFile });
+  store = new LocalTaskSyncStore({
+    filePath,
+    databaseFile,
+    canonicalizeProjectRoot: () => {
+      throw new Error("task state wiring is not bound");
+    },
+  });
   await store.load();
   const history = store.history(task);
   assert.deepEqual(history.map((turn) => ({
