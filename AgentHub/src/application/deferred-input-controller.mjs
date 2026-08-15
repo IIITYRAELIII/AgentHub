@@ -122,7 +122,10 @@ export class DeferredInputController {
         this.onStateChange(item, "queued");
         await this.persist();
       }
-      if (item.conflictKind === "message-intake") {
+      const intakeBlocked = item.conflictKind === "message-intake"
+        ? await this.isBlocked(item)
+        : null;
+      if (intakeBlocked === true) {
         this.queuedInputs.delete(id);
         delete item.dispatchingAt;
         delete item.blockedChecks;
@@ -137,7 +140,7 @@ export class DeferredInputController {
         );
         return;
       }
-      if (await this.isBlocked(item)) {
+      if (intakeBlocked ?? await this.isBlocked(item)) {
         if (item.waitReason === "provider-thread-active") {
           await this.pauseForActiveWriter(item);
           return;

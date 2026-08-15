@@ -292,20 +292,30 @@ test("desktop client survives App Server exit during delayed startup and shares 
   assert.equal(firstStart.accepted, true);
   assert.equal(firstStart.threadId, firstThreadId);
   assert.equal(firstStart.clientUserMessageId, firstMessageId);
-  assert.ok(firstStart.runId);
-  assert.ok(firstStart.turnId);
+  assert.equal(firstStart.runId, null);
+  assert.equal(firstStart.turnId, null);
+  assert.equal(firstStart.queued, true);
+  assert.equal(firstStart.reason, "message-intake");
   // A receipt is deliberately a fast acknowledgement and does not persist a
-  // whole snapshot. Verify the durable state through its dedicated endpoint.
+  // whole snapshot. Verify durable acceptance, then wait for asynchronous turn
+  // materialization through the dedicated receipt projection.
   assert.equal("snapshot" in firstStart, false);
-  const messageSnapshot = await callDesktopControl("snapshot", {}, { runtimeRoot });
+  const messageSnapshot = await waitFor(async () => {
+    const snapshot = await callDesktopControl("snapshot", {}, { runtimeRoot });
+    const receipt = snapshot.messageReceipts.find((item) => (
+      item.clientUserMessageId === firstMessageId
+    ));
+    return receipt?.runId && receipt?.turnId ? snapshot : null;
+  }, "durably accepted desktop message materialization", 5_000);
   assert.equal(messageSnapshot.selected.threadId, firstThreadId);
   const firstReceipt = messageSnapshot.messageReceipts.find((receipt) => (
     receipt.clientUserMessageId === firstMessageId
   ));
   assert.equal(firstReceipt.accepted, true);
-  assert.equal(firstReceipt.runId, firstStart.runId);
-  assert.equal(firstReceipt.turnId, firstStart.turnId);
+  assert.ok(firstReceipt.runId);
+  assert.ok(firstReceipt.turnId);
   assert.equal("fingerprint" in firstReceipt, false);
+  const firstTurnId = firstReceipt.turnId;
   await assert.rejects(
     callDesktopControl("send-message", {
       text: "Это уже другое сообщение",
@@ -324,7 +334,7 @@ test("desktop client survives App Server exit during delayed startup and shares 
   }, { runtimeRoot });
   assert.equal(steered.accepted, true);
   assert.equal(steered.steered, true);
-  assert.equal(steered.turnId, firstStart.turnId);
+  assert.equal(steered.turnId, firstTurnId);
   assert.equal(steered.clientUserMessageId, steerMessageId);
   const deferred = await callDesktopControl("send-message", {
     text: "manual follow-up",
@@ -381,7 +391,7 @@ test("desktop client survives App Server exit during delayed startup and shares 
   assert.equal(steeredQueued.accepted, true);
   assert.equal(duplicateSteer.accepted, true);
   assert.equal(steeredQueued.clientUserMessageId, deferred.clientUserMessageId);
-  assert.equal(duplicateSteer.turnId, firstStart.turnId);
+  assert.equal(duplicateSteer.turnId, firstTurnId);
   assert.equal((await callDesktopControl("snapshot", {}, { runtimeRoot })).deferredInputs.length, 0);
 
   const secondTask = await callDesktopControl("new-task", { provider: "codex" }, { runtimeRoot });
@@ -393,7 +403,10 @@ test("desktop client survives App Server exit during delayed startup and shares 
     threadId: secondThreadId,
   }, { runtimeRoot });
   assert.equal(secondStart.accepted, true);
-  const parallel = await callDesktopControl("snapshot", {}, { runtimeRoot });
+  const parallel = await waitFor(async () => {
+    const snapshot = await callDesktopControl("snapshot", {}, { runtimeRoot });
+    return snapshot.activeCount === 2 ? snapshot : null;
+  }, "parallel durable desktop message materialization", 5_000);
   assert.equal(parallel.activeCount, 2, JSON.stringify({
     secondSelected: secondTask.selected,
     secondStart,

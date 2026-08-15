@@ -114,6 +114,28 @@ test("DeferredInputController returns legacy automatic intake to manual choice",
   assert.match(state.updates[0][1], /ручного действия/u);
 });
 
+test("DeferredInputController starts durable intake when the task is free", async () => {
+  const started = [];
+  let blockedChecks = 0;
+  const state = fixture({
+    isBlocked: async () => { blockedChecks += 1; return false; },
+    start: async (item) => started.push(item.id),
+  });
+  state.queuedInputs.set("one", {
+    id: "one",
+    taskTitle: "Task",
+    conflictKind: "message-intake",
+  });
+
+  await state.controller.process("one");
+
+  assert.deepEqual(started, ["one"]);
+  assert.equal(state.queuedInputs.has("one"), false);
+  assert.equal(state.pendingInputs.has("one"), false);
+  assert.equal(blockedChecks, 1);
+  assert.deepEqual(state.transitions.map((entry) => entry.state), ["dispatching", "started"]);
+});
+
 test("DeferredInputController keeps an explicitly queued follow-up behind the active turn", async () => {
   let steers = 0;
   const state = fixture({

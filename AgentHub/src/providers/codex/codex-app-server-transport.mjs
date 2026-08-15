@@ -154,6 +154,7 @@ export class CodexAppServerTransport {
     this.threadReadCache = new Map();
     this.threadHydrations = new Map();
     this.initialization = null;
+    this.generation = 0;
   }
 
   get running() {
@@ -191,6 +192,7 @@ export class CodexAppServerTransport {
     }
 
     this.child = child;
+    this.generation += 1;
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (data) => this.onStderr(String(data).trimEnd()));
     child.on("error", (error) => void this.#handleExit(child, null, null, error));
@@ -219,6 +221,7 @@ export class CodexAppServerTransport {
     return new Promise((resolve, reject) => {
       const request = {
         id,
+        generation: this.generation,
         method,
         params,
         priority: normalizedPriority,
@@ -256,6 +259,7 @@ export class CodexAppServerTransport {
       method: request.method,
       params: request.params,
       timeoutMs: request.timeoutMs,
+      generation: request.generation,
       error,
     })).catch(this.onMessageError);
   }

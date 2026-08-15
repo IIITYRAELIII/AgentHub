@@ -258,7 +258,65 @@ export class RunCoordinator {
   }
 
   acceptClientInput(request) {
-    return this.submitClientInput(request);
+    return this.serialize(request.target, () => this.acceptClientInputUnlocked(request));
+  }
+
+  async acceptClientInputUnlocked({
+    input,
+    attachments = [],
+    target,
+    clientUserMessageId,
+    followUpMode = "",
+  }) {
+    const existingRun = this.taskRuns.forTask(target);
+    if (this.isMaintenanceActive(target)) {
+      return this.queue(input, attachments, {
+        target,
+        executionOwner: TASK_EXECUTION_OWNERS.HUB,
+        clientUserMessageId,
+        reason: "context-maintenance",
+      });
+    }
+    if (existingRun) {
+      if (followUpMode === "steer") {
+        return this.submitClientInputUnlocked({
+          input,
+          attachments,
+          target,
+          clientUserMessageId,
+          followUpMode,
+        });
+      }
+      if (followUpMode === "queue") {
+        return this.queue(input, attachments, {
+          target,
+          executionOwner: existingRun.executionOwner ?? TASK_EXECUTION_OWNERS.HUB,
+          clientUserMessageId,
+        });
+      }
+      const deferred = await this.deferInput(input, attachments, {
+        executionOwner: existingRun.executionOwner ?? TASK_EXECUTION_OWNERS.HUB,
+        target,
+        conflictKind: "task-running",
+        clientUserMessageId,
+        persistentFiles: attachments.length > 0,
+      });
+      return {
+        accepted: false,
+        deferred: true,
+        id: deferred.id,
+        clientUserMessageId,
+        reason: "task-running",
+        message: "Сообщение сохранено: выберите новую задачу, очередь или отмену справа.",
+      };
+    }
+    return this.queue(input, attachments, {
+      target,
+      executionOwner: TASK_EXECUTION_OWNERS.HUB,
+      clientUserMessageId,
+      reason: "message-intake",
+      scheduleDelayMs: 0,
+    });
   }
 
   steer(request) {

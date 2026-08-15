@@ -55,9 +55,10 @@ export class CodexAppServerLifecycle {
     if (!this.#restarting) queueMicrotask(() => void this.restartAfterCrash());
   }
 
-  async #handleTimeout({ method, timeoutMs }) {
+  async #handleTimeout({ method, timeoutMs, generation }) {
     const d = this.#d;
     if (d.isStopping() || this.#timeoutRestarting || timeoutMs < d.rpcTimeoutMs) return;
+    if (Number.isSafeInteger(generation) && generation !== this.transport.generation) return;
     if (!["thread/read", "thread/list", "thread/turns/list"].includes(method)) return;
     const managedRunActive = d.activeRuns().some((run) => (
       run.provider === "codex" && run.observer === false && run.status === "running"

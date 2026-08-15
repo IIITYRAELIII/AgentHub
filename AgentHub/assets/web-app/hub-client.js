@@ -58,6 +58,7 @@ const completionOverlaysByTask = new Map();
 const queueActionsInFlight = new Set();
 const optimisticDeferredClientUserMessageIds = new Set();
 const requestedContextCompactions = new Set();
+const streamCreatesInFlight = new Map();
 const observedContextCompactions = new Map();
 const maintenanceEventsByTask = readMaintenanceEvents();
 const activeMaintenanceByTask = new Map();
@@ -2135,31 +2136,41 @@ agentHub.on("stream:rebirth", ({ streamId, provider, taskId: targetTaskId }) => 
   if (created) replaceRoute(`#/chat/${encodeURIComponent(created.provider)}/${encodeURIComponent(created.threadId)}`);
   agentHub.showSelectedTask();
 }));
-agentHub.on("stream:new", ({ workspaceId, streamName }) => runAction(async () => {
-  const settings = lastSnapshot?.settings ?? {};
-  const result = await control("create-stream", {
-    workspaceId,
-    name: streamName,
-    settings: {
-      provider: settings.provider ?? "codex",
-      model: settings.model ?? "",
-      reasoning: settings.reasoning ?? "",
-      mode: settings.mode ?? "",
-      workingDirectory: "",
-      autoApprove: settings.approvalMode === "auto",
-    },
+agentHub.on("stream:new", ({ workspaceId, streamName }) => {
+  const key = String(workspaceId ?? "").trim() || "default";
+  const existing = streamCreatesInFlight.get(key);
+  if (existing) return existing;
+  const operation = runAction(async () => {
+    const settings = lastSnapshot?.settings ?? {};
+    const result = await control("create-stream", {
+      workspaceId,
+      name: streamName,
+      settings: {
+        provider: settings.provider ?? "codex",
+        model: settings.model ?? "",
+        reasoning: settings.reasoning ?? "",
+        mode: settings.mode ?? "",
+        workingDirectory: "",
+        autoApprove: settings.approvalMode === "auto",
+      },
+    });
+    const streamId = String(result?.createdStream?.id ?? "");
+    if (!streamId) throw new Error("Agent Hub не создал Stream");
+    pendingSelectionId = streamId;
+    rememberSelectedTaskId(streamId);
+    applySnapshot(result);
+    pendingSelectionId = "";
+    replaceRoute(`#/chat/stream/${encodeURIComponent(streamId)}`);
+    agentHub.selectTask(streamId);
+    agentHub.showSelectedTask();
+    agentHub.openDialogSettings();
   });
-  const streamId = String(result?.createdStream?.id ?? "");
-  if (!streamId) throw new Error("Agent Hub не создал Stream");
-  pendingSelectionId = streamId;
-  rememberSelectedTaskId(streamId);
-  applySnapshot(result);
-  pendingSelectionId = "";
-  replaceRoute(`#/chat/stream/${encodeURIComponent(streamId)}`);
-  agentHub.selectTask(streamId);
-  agentHub.showSelectedTask();
-  agentHub.openDialogSettings();
-}));
+  streamCreatesInFlight.set(key, operation);
+  void Promise.resolve(operation).finally(() => {
+    if (streamCreatesInFlight.get(key) === operation) streamCreatesInFlight.delete(key);
+  });
+  return operation;
+});
 agentHub.on("stream:settings-save", ({ streamId, settings }) => runAction(async () => {
   applySnapshot(await control("update-stream-settings", { streamId, settings }));
 }));
@@ -2963,21 +2974,26 @@ async function refreshVisibleTaskHistories(previousSnapshot, snapshot) {
     if (!historyMissing && !turnCompleted && !answerChanged
       && !refreshExternalHistory && !refreshCaughtUpHistory && !refreshSettlingAttachments) return;
     historyRefreshAtByTask.set(id, Date.now());
-    const settled = await settleOptionalRead(() => control("task-history", {
-      provider: currentTask.provider,
-      threadId: currentTask.threadId,
-      limit: 20,
-      includeActive: false,
-      refreshSource: turnCompleted || answerChanged,
-      knownVersion: historyPageByTask.get(id)?.version ?? "",
-    }));
-    if (settled.status === "rejected") return;
-    const history = settled.value;
-    applyOpened({ snapshot: lastSnapshot, history }, {
-      preserveScroll: true,
-      skipSnapshot: true,
-      selectTask: false,
-    });
+    visibleHistoryLoads.add(id);
+    try {
+      const settled = await settleOptionalRead(() => control("task-history", {
+        provider: currentTask.provider,
+        threadId: currentTask.threadId,
+        limit: 20,
+        includeActive: false,
+        refreshSource: turnCompleted || answerChanged,
+        knownVersion: historyPageByTask.get(id)?.version ?? "",
+      }));
+      if (settled.status === "rejected") return;
+      const history = settled.value;
+      applyOpened({ snapshot: lastSnapshot, history }, {
+        preserveScroll: true,
+        skipSnapshot: true,
+        selectTask: false,
+      });
+    } finally {
+      visibleHistoryLoads.delete(id);
+    }
   }));
 }
 
@@ -2995,7 +3011,9 @@ async function refresh({ reportError = false } = {}) {
       applySnapshot(snapshot);
     }
     if (!snapshot) return;
-    await refreshVisibleTaskHistories(previousSnapshot, snapshot);
+    void refreshVisibleTaskHistories(previousSnapshot, snapshot).catch((error) => {
+      console.error("Agent Hub visible history refresh failed", error);
+    });
     applySnapshotConnection(snapshot);
   } catch (error) {
     recordTransientConnectionFailure();

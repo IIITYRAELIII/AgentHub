@@ -95,6 +95,37 @@ test("RunCoordinator keeps ordinary active intake pending for a manual action", 
   assert.equal(f.calls.some(([name]) => name === "provider"), false);
 });
 
+test("RunCoordinator durably accepts idle intake before external activity checks", async () => {
+  let externalChecks = 0;
+  const f = fixture({
+    externalActivity: async () => {
+      externalChecks += 1;
+      return new Promise(() => {});
+    },
+    deferInput: async (...args) => {
+      f.calls.push(["defer", ...args]);
+      return { id: "intake-1", item: { id: "intake-1" } };
+    },
+    scheduleDeferred: (item, delay) => f.calls.push(["schedule", item, delay]),
+  });
+
+  const result = await f.coordinator.acceptClientInput({
+    input: "fast durable intake",
+    attachments: [],
+    target: f.target,
+    clientUserMessageId: "message-intake",
+  });
+
+  assert.equal(result.accepted, true);
+  assert.equal(result.queued, true);
+  assert.equal(result.reason, "message-intake");
+  assert.equal(externalChecks, 0);
+  assert.equal(f.calls.find(([name]) => name === "defer")[3].conflictKind, "message-intake");
+  assert.deepEqual(f.calls.find(([name]) => name === "schedule").slice(1), [
+    { id: "intake-1" }, 0,
+  ]);
+});
+
 test("RunCoordinator preserves an explicit queue request behind the active turn", async () => {
   const active = { id: "active", executionOwner: "hub" };
   const f = fixture({

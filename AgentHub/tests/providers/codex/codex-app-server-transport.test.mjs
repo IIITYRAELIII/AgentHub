@@ -151,6 +151,7 @@ test("CodexAppServerTransport times out requests and rejects them on exit", asyn
   assert.equal(timeouts.length, 1);
   assert.equal(timeouts[0].method, "slow");
   assert.equal(timeouts[0].timeoutMs, 10);
+  assert.equal(timeouts[0].generation, transport.generation);
 
   const pending = transport.request("pending", {}, { timeoutMs: 5_000 });
   child.emit("exit", 7, null);
