@@ -100,3 +100,32 @@ test("deferred input service deduplicates a durable client message", async () =>
   assert.equal(store.size, 1);
   assert.equal(persists, 1);
 });
+
+test("deferred input service coalesces a rapid exact chat retry with a new client id", async () => {
+  const store = new DeferredInputStore();
+  let now = Date.parse("2026-08-15T11:17:24.000Z");
+  let sequence = 0;
+  const service = new DeferredInputService({
+    store,
+    createId: () => `message-${++sequence}`,
+    now: () => now,
+    persist: async () => {},
+    removeFiles: async () => {},
+    notify: async () => null,
+  });
+  const target = { streamId: "stream-1", provider: "codex", threadId: "thread-1" };
+  const first = await service.defer("это был не субагент", [], {
+    target, clientUserMessageId: "client-1", destination: "queued",
+    conflictKind: "message-intake", notify: false,
+  });
+  now += 10_000;
+  const duplicate = await service.defer("это был не субагент", [], {
+    target, clientUserMessageId: "client-2", destination: "queued",
+    conflictKind: "message-intake", notify: false,
+  });
+
+  assert.equal(duplicate.duplicate, true);
+  assert.equal(duplicate.id, first.id);
+  assert.equal(duplicate.duplicateOfClientUserMessageId, "client-1");
+  assert.equal(store.size, 1);
+});

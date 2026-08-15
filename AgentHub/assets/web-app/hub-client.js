@@ -1898,6 +1898,12 @@ agentHub.on("message:send", (request) => {
       const accepted = Boolean(result?.accepted || result?.deferred);
       if (!result?.deferred) optimisticDeferredClientUserMessageIds.delete(request.requestId);
       agentHub.completeSend(request.requestId, { accepted });
+      if (result?.duplicate) {
+        optimisticDeferredClientUserMessageIds.delete(request.requestId);
+        deferredClientUserMessageIds.delete(request.requestId);
+        outgoingMessages(request.taskId).delete(request.requestId);
+        return;
+      }
       updateOutgoing(request.taskId, request.requestId, {
         provider: identity?.provider ?? "",
         threadId: result?.threadId ?? identity?.threadId ?? "",

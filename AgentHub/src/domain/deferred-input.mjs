@@ -7,6 +7,30 @@ export function deferredInputText(input) {
       .join("\n");
 }
 
+function deferredTaskIdentity(value) {
+  const streamId = String(value?.streamId ?? "").trim().toLowerCase();
+  if (streamId) return `stream:${streamId}`;
+  return [value?.provider, value?.projectRoot, value?.threadId]
+    .map((part) => String(part ?? "").trim().toLowerCase())
+    .join("\0");
+}
+
+export function rapidDeferredInputDuplicate(left, right, { windowMs = 30_000 } = {}) {
+  if (left?.conflictKind !== "message-intake" || right?.conflictKind !== "message-intake") {
+    return false;
+  }
+  if ((left?.temporaryFiles ?? []).length || (right?.temporaryFiles ?? []).length) return false;
+  if (deferredTaskIdentity(left) !== deferredTaskIdentity(right)) return false;
+  const leftText = deferredInputText(left?.input).trim();
+  const rightText = deferredInputText(right?.input).trim();
+  if (!leftText || leftText !== rightText) return false;
+  const leftAt = Date.parse(String(left?.createdAt ?? ""));
+  const rightAt = Date.parse(String(right?.createdAt ?? ""));
+  return Number.isFinite(leftAt)
+    && Number.isFinite(rightAt)
+    && Math.abs(rightAt - leftAt) <= Math.max(0, Number(windowMs) || 0);
+}
+
 export function deferredInputMatchesRun(item, run) {
   if (!item || !run) return false;
   const dispatchingRunId = String(item.dispatchingRunId ?? "").trim();

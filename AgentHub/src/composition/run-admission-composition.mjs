@@ -4,6 +4,7 @@ import {
   pendingInputKeyboard,
 } from "../domain/deferred-input.mjs";
 import { DeferredInputController } from "../application/deferred-input-controller.mjs";
+import { activeTurnNotSteerable } from "../application/run-coordinator.mjs";
 
 function explicitSkillCandidatesFromInput(input) {
   const text = typeof input === "string"
@@ -169,6 +170,20 @@ export function createRunAdmissionComposition({
     return deferredInputPresentation.updateDesktopReceipt(...args);
   }
 
+  function deferredTarget(item) {
+    return {
+      streamId: item.streamId,
+      provider: item.provider,
+      projectRoot: item.projectRoot,
+      threadId: item.threadId,
+      taskTitle: item.taskTitle,
+      chatId: item.chatId,
+      modelId: item.modelId,
+      reasoningId: item.reasoningId,
+      collaborationMode: item.collaborationMode,
+    };
+  }
+
   const deferredInputController = new DeferredInputController({
     pendingInputs,
     queuedInputs,
@@ -180,18 +195,26 @@ export function createRunAdmissionComposition({
       });
       return deferredInputMatchesRun(item, run) ? run : null;
     },
+    steer: async (item) => {
+      const target = deferredTarget(item);
+      const existingRun = taskRuns.forTask(target);
+      const externalActivity = existingRun
+        ? { state: "active" }
+        : await taskExternalActivity(target);
+      if (!existingRun && externalActivity.state !== "active") return null;
+      try {
+        return await runCoordinator.steer({
+          input: item.input,
+          target,
+          clientUserMessageId: item.clientUserMessageId,
+        });
+      } catch (error) {
+        if (activeTurnNotSteerable(error) || isRetryableDeferredLaunchError(error)) return null;
+        throw error;
+      }
+    },
     isBlocked: async (item) => {
-      const target = {
-        streamId: item.streamId,
-        provider: item.provider,
-        projectRoot: item.projectRoot,
-        threadId: item.threadId,
-        taskTitle: item.taskTitle,
-        chatId: item.chatId,
-        modelId: item.modelId,
-        reasoningId: item.reasoningId,
-        collaborationMode: item.collaborationMode,
-      };
+      const target = deferredTarget(item);
       const externalActivity = taskRuns.forTask(target)
         ? { state: "active" }
         : await taskExternalActivity(target);

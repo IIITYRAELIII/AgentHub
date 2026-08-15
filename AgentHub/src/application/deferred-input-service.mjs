@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { rapidDeferredInputDuplicate } from "../domain/deferred-input.mjs";
 
 function requiredFunction(value, name) {
   if (typeof value !== "function") throw new TypeError(`${name} is required`);
@@ -45,6 +46,30 @@ export class DeferredInputService {
       ))
       : null;
     if (existing) return { deferred: true, id: existing.id, item: existing, duplicate: true };
+    const createdAt = new Date(d.now()).toISOString();
+    const duplicateCandidate = {
+      streamId: String(target.streamId ?? "").trim() || null,
+      provider: target.provider,
+      projectRoot: target.projectRoot,
+      threadId: target.threadId,
+      input,
+      temporaryFiles,
+      conflictKind,
+      createdAt,
+    };
+    const rapidDuplicate = destination === "queued" && typeof d.store.values === "function"
+      ? d.store.values().find((item) => rapidDeferredInputDuplicate(item, duplicateCandidate))
+      : null;
+    if (rapidDuplicate) {
+      await d.removeFiles(temporaryFiles);
+      return {
+        deferred: true,
+        id: rapidDuplicate.id,
+        item: rapidDuplicate,
+        duplicate: true,
+        duplicateOfClientUserMessageId: rapidDuplicate.clientUserMessageId ?? null,
+      };
+    }
     if (d.store.size >= d.maxItems) {
       await d.removeFiles(temporaryFiles);
       throw new Error("очередь сохранённых сообщений переполнена; сначала обработайте или отмените старые сообщения");
@@ -69,7 +94,7 @@ export class DeferredInputService {
       clientUserMessageId: normalizedClientUserMessageId,
       telegramDeliveryRequested: target.telegramDeliveryRequested !== false,
       clientSource: String(target.clientSource ?? "telegram").trim() || "telegram",
-      createdAt: new Date(d.now()).toISOString(),
+      createdAt,
     };
     d.store.put(item, destination);
     await d.persist();

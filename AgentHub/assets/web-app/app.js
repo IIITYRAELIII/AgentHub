@@ -4759,7 +4759,7 @@ function submitComposer() {
     text,
     annotations,
     attachments,
-    followUpMode: currentTask()?.running ? "queue" : null,
+    followUpMode: currentTask()?.running ? "steer" : null,
     draftStream: currentTask()?.draftStream === true,
     streamId: currentTask()?.streamId ?? null,
     settings: currentTask()?.draftStream ? { ...currentTask().streamSettings } : null,

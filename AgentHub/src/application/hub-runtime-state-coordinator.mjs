@@ -1,3 +1,5 @@
+import { rapidDeferredInputDuplicate } from "../domain/deferred-input.mjs";
+
 function setBoundedMapValue(map, key, value, limit) {
   if (map.has(key)) map.delete(key);
   map.set(key, value);
@@ -176,6 +178,7 @@ export async function restoreHubRuntimeSnapshot(saved, context) {
     }
   }
 
+  const restoredDuplicateInputs = [];
   for (const item of Array.isArray(saved.pendingInputs) ? saved.pendingInputs : []) {
     const restored = restoreDeferredInput(item, deferredInputOptions);
     if (!restored) continue;
@@ -188,9 +191,18 @@ export async function restoreHubRuntimeSnapshot(saved, context) {
   }
   for (const item of Array.isArray(saved.queuedInputs) ? saved.queuedInputs : []) {
     const restored = restoreDeferredInput(item, deferredInputOptions);
-    if (restored) queuedInputs.set(restored.item.id, restored.item);
+    if (!restored) continue;
+    const duplicate = [...queuedInputs.values()].find((candidate) => (
+      rapidDeferredInputDuplicate(candidate, restored.item)
+    ));
+    if (duplicate) restoredDuplicateInputs.push(restored.item);
+    else queuedInputs.set(restored.item.id, restored.item);
   }
   desktopMessageReceipts.restore(saved.desktopMessageReceipts);
+  for (const item of restoredDuplicateInputs) updateDeferredDesktopReceipt(item, "cancelled");
+  if (restoredDuplicateInputs.length) {
+    warn(`Discarded ${restoredDuplicateInputs.length} rapid duplicate queued input(s)`);
+  }
   for (const item of pendingInputs.values()) updateDeferredDesktopReceipt(item, "pending");
   for (const item of queuedInputs.values()) {
     updateDeferredDesktopReceipt(item, item.dispatchingAt ? "dispatching" : "queued");

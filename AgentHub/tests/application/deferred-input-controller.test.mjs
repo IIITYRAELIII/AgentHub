@@ -17,6 +17,7 @@ function fixture(overrides = {}) {
     pendingInputs,
     queuedInputs,
     isBlocked: async () => false,
+    steer: async () => null,
     start: async () => {},
     persist: async () => {},
     updateMessage: async (...args) => updates.push(args),
@@ -88,6 +89,41 @@ test("DeferredInputController reschedules while the task is blocked", async () =
   await state.controller.process("one");
   assert.equal(state.queuedInputs.has("one"), true);
   assert.equal(state.timers[0].delay, 2_000);
+});
+
+test("DeferredInputController steers ordinary chat intake into an active turn", async () => {
+  const started = [];
+  const state = fixture({
+    isBlocked: async () => true,
+    steer: async () => ({ accepted: true, steered: true, turnId: "turn-active" }),
+    start: async (item) => started.push(item.id),
+  });
+  state.queuedInputs.set("one", {
+    id: "one",
+    taskTitle: "Task",
+    conflictKind: "message-intake",
+  });
+
+  await state.controller.process("one");
+
+  assert.deepEqual(started, []);
+  assert.equal(state.queuedInputs.has("one"), false);
+  assert.deepEqual(state.transitions.map((entry) => entry.state), ["steered"]);
+  assert.match(state.updates[0][1], /добавлено в текущий ход/u);
+});
+
+test("DeferredInputController keeps an explicitly queued follow-up behind the active turn", async () => {
+  let steers = 0;
+  const state = fixture({
+    isBlocked: async () => true,
+    steer: async () => { steers += 1; return { steered: true }; },
+  });
+  state.queuedInputs.set("one", { id: "one", conflictKind: "task-running" });
+
+  await state.controller.process("one");
+
+  assert.equal(steers, 0);
+  assert.equal(state.queuedInputs.has("one"), true);
 });
 
 test("DeferredInputController releases one queued message after a context probe finishes", async () => {

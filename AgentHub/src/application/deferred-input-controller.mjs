@@ -24,6 +24,7 @@ export class DeferredInputController {
     queuedInputs,
     isBlocked,
     findStarted = async () => null,
+    steer = async () => null,
     start,
     persist,
     updateMessage,
@@ -43,6 +44,7 @@ export class DeferredInputController {
     this.queuedInputs = queuedInputs;
     this.isBlocked = isBlocked;
     this.findStarted = findStarted;
+    this.steer = steer;
     this.start = start;
     this.persist = persist;
     this.updateMessage = updateMessage;
@@ -119,6 +121,19 @@ export class DeferredInputController {
         delete item.dispatchingAt;
         this.onStateChange(item, "queued");
         await this.persist();
+      }
+      if (item.conflictKind === "message-intake") {
+        const steered = await this.steer(item);
+        if (steered) {
+          this.queuedInputs.delete(id);
+          delete item.dispatchingAt;
+          delete item.blockedChecks;
+          this.onStateChange(item, "steered", steered);
+          await this.persist();
+          await this.updateMessage(item, `▶️ Сообщение добавлено в текущий ход задачи «${item.taskTitle}».`);
+          this.scheduleNextForTask(item);
+          return;
+        }
       }
       if (await this.isBlocked(item)) {
         if (item.waitReason === "provider-thread-active") {

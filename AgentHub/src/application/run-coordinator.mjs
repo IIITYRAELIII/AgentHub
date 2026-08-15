@@ -229,13 +229,17 @@ export class RunCoordinator {
       accepted: reason === "message-intake",
       deferred: true,
       queued: true,
+      duplicate: deferred.duplicate === true,
+      duplicateOfClientUserMessageId: deferred.duplicateOfClientUserMessageId ?? null,
       id: deferred.id,
       runId: null,
       threadId: target.threadId,
       turnId: null,
       clientUserMessageId,
       reason,
-      message: reason === "message-intake"
+      message: deferred.duplicate === true
+        ? "Точный повтор уже находится в очереди и не был добавлен второй раз."
+        : reason === "message-intake"
         ? "Сообщение принято Hub, сохранено и передано на запуск."
         : reason === "steer-unavailable"
         ? "Текущий ход уже нельзя изменить; сообщение сохранено в очереди."
