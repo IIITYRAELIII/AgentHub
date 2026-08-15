@@ -124,6 +124,18 @@ test("completed history keeps every subagent result before the parent final", ()
   }).some((message) => message.kind === "subagent"), true);
 });
 
+test("subagent messages never fall back to the user author", () => {
+  assert.equal(lifecycle.conversationMessageAuthor({
+    role: "agent",
+    kind: "subagent",
+  }, "codex"), "Субагент (модель неизвестна)");
+  assert.equal(lifecycle.conversationMessageAuthor({
+    role: "agent",
+    kind: "subagent",
+    author: "Субагент (Terra)",
+  }, "codex"), "Субагент (Terra)");
+});
+
 test("desktop running state ignores a retained completed run object", () => {
   assert.match(
     hubClientSource,

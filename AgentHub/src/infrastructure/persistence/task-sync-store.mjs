@@ -6,9 +6,9 @@ import { DatabaseSync } from "node:sqlite";
 import { catalogTaskKey } from "../../domain/task-catalog-identity.mjs";
 
 const FORMAT_VERSION = 1;
-const TASK_SCHEMA_VERSION = 6;
+const TASK_SCHEMA_VERSION = 7;
 const MODEL_BACKFILL_VERSION = "1";
-const SEARCH_BACKFILL_VERSION = "1";
+const SEARCH_BACKFILL_VERSION = "2";
 const DEFAULT_HISTORY_LIMIT = 50;
 const DEFAULT_RUNNING_FRESHNESS_MS = 10 * 60 * 1000;
 const DEFAULT_TASK_LIMIT = 1_000;
@@ -115,6 +115,11 @@ function cleanHistory(history, limit) {
             role,
             text,
             ...(cleanText(message?.author, 1_000) ? { author: cleanText(message.author, 1_000) } : {}),
+            ...(cleanText(message?.kind, 40) ? { kind: cleanText(message.kind, 40) } : {}),
+            ...(cleanText(message?.agentThreadId, 100)
+              ? { agentThreadId: cleanText(message.agentThreadId, 100) }
+              : {}),
+            ...(cleanText(message?.model, 100) ? { model: cleanText(message.model, 100) } : {}),
             ...(message?.phase ? { phase: cleanText(message.phase, 40) } : {}),
             ...(message?.time ? { time: cleanText(message.time, 80) } : {}),
             responseAnnotations: cleanResponseAnnotations(message?.responseAnnotations),
@@ -274,6 +279,9 @@ function configure(database) {
       role TEXT NOT NULL CHECK (role IN ('user', 'agent')),
       text TEXT NOT NULL,
       author TEXT NOT NULL DEFAULT '',
+      kind TEXT NOT NULL DEFAULT '',
+      agent_thread_id TEXT NOT NULL DEFAULT '',
+      model TEXT NOT NULL DEFAULT '',
       phase TEXT,
       time TEXT,
       response_annotations_json TEXT NOT NULL DEFAULT '[]',
@@ -371,6 +379,27 @@ function configure(database) {
   if (!messageColumns.has("author")) {
     database.exec("ALTER TABLE task_read_model_messages ADD COLUMN author TEXT NOT NULL DEFAULT ''");
   }
+  if (!messageColumns.has("kind")) {
+    database.exec("ALTER TABLE task_read_model_messages ADD COLUMN kind TEXT NOT NULL DEFAULT ''");
+  }
+  if (!messageColumns.has("agent_thread_id")) {
+    database.exec("ALTER TABLE task_read_model_messages ADD COLUMN agent_thread_id TEXT NOT NULL DEFAULT ''");
+  }
+  if (!messageColumns.has("model")) {
+    database.exec("ALTER TABLE task_read_model_messages ADD COLUMN model TEXT NOT NULL DEFAULT ''");
+  }
+  database.exec(`
+    UPDATE task_read_model_messages
+    SET role = 'agent',
+        author = CASE WHEN trim(author) = '' THEN 'Субагент (модель неизвестна)' ELSE author END,
+        kind = 'subagent',
+        agent_thread_id = CASE
+          WHEN trim(agent_thread_id) = ''
+          THEN substr(item_id, instr(item_id, ':subagent:') + length(':subagent:'))
+          ELSE agent_thread_id
+        END
+    WHERE provider = 'codex' AND instr(item_id, ':subagent:') > 0
+  `);
   const searchColumns = new Set(database.prepare(
     "PRAGMA table_info(task_message_search_documents)",
   ).all().map((column) => String(column.name)));
@@ -471,6 +500,9 @@ export class LocalTaskSyncStore {
         role: String(row.role),
         text: String(row.text),
         ...(row.author ? { author: String(row.author) } : {}),
+        ...(row.kind ? { kind: String(row.kind) } : {}),
+        ...(row.agent_thread_id ? { agentThreadId: String(row.agent_thread_id) } : {}),
+        ...(row.model ? { model: String(row.model) } : {}),
         ...(row.phase ? { phase: String(row.phase) } : {}),
         ...(row.time ? { time: String(row.time) } : {}),
         responseAnnotations: parseJsonArray(row.response_annotations_json),
@@ -612,9 +644,9 @@ export class LocalTaskSyncStore {
     const insertMessage = this.#database.prepare(`
       INSERT INTO task_read_model_messages (
         provider, thread_id, turn_position, position, item_id,
-        client_user_message_id, role, text, author, phase, time,
+        client_user_message_id, role, text, author, kind, agent_thread_id, model, phase, time,
         response_annotations_json, response_annotation_request, attachments_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     history.forEach((turn, turnPosition) => {
       insertTurn.run(
@@ -646,6 +678,9 @@ export class LocalTaskSyncStore {
           message.role,
           message.text,
           message.author ?? "",
+          message.kind ?? "",
+          message.agentThreadId ?? "",
+          message.model ?? "",
           message.phase ?? null,
           message.time ?? null,
           JSON.stringify(message.responseAnnotations),

@@ -72,6 +72,7 @@ const {
   conversationTaskId,
   completedConversationTurnVisible,
   confirmedOutgoingMessageIds,
+  conversationMessageAuthor,
   deduplicateConversationMessages,
   focusedTurnAlreadyVisible,
   focusedTurnTaskThreadId,
@@ -1447,11 +1448,7 @@ function historyMessages(history, focusedTurn = null) {
       ...(message.kind ? { kind: message.kind } : {}),
       ...(message.agentThreadId ? { agentThreadId: message.agentThreadId } : {}),
       ...(message.model ? { model: message.model } : {}),
-      author: message.author || (
-        message.role === "user"
-          ? "Вы"
-          : history.provider === "claude" ? "Claude" : "Codex"
-      ),
+      author: conversationMessageAuthor(message, history.provider),
       text: message.text,
       ...(message.role === "user" ? {
         responseAnnotations: message.responseAnnotations,
@@ -1481,11 +1478,7 @@ function historyMessages(history, focusedTurn = null) {
         ...(message.kind ? { kind: message.kind } : {}),
         ...(message.agentThreadId ? { agentThreadId: message.agentThreadId } : {}),
         ...(message.model ? { model: message.model } : {}),
-        author: message.author || (
-          message.role === "user"
-            ? "Вы"
-            : focusedTurn.provider === "claude" ? "Claude" : "Codex"
-        ),
+        author: conversationMessageAuthor(message, focusedTurn.provider),
         text: message.text,
         time: message.time ?? null,
         attachments: attachmentViews(message.attachments),

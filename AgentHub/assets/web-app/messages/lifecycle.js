@@ -607,6 +607,14 @@ function visibleConversationMessages(messages, {
   );
 }
 
+function conversationMessageAuthor(message, provider = "") {
+  const author = String(message?.author ?? "").trim();
+  if (author) return author;
+  if (message?.role === "user") return "Вы";
+  if (message?.kind === "subagent") return "Субагент (модель неизвестна)";
+  return String(provider ?? "").trim() === "claude" ? "Claude" : "Codex";
+}
+
 function mergeLiveUserMessages(messages, {
   provider,
   threadId,
@@ -967,6 +975,7 @@ globalThis.AgentHubMessageLifecycle = Object.freeze({
   conversationTaskId,
   completedConversationTurnVisible,
   confirmedOutgoingMessageIds,
+  conversationMessageAuthor,
   deduplicateConversationMessages,
   embeddedResponseAnnotations,
   hubErrorMessage,

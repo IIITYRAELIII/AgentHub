@@ -183,6 +183,92 @@ test("local task sync preserves durable message metadata and attachments", async
   assert.equal(search.results[0].author, "Agent Hub - Architect");
 });
 
+test("local task sync preserves subagent identity through SQLite", async () => {
+  const filePath = await storeFile();
+  let store = new LocalTaskSyncStore({ filePath });
+  await store.load();
+  store.recordHistory(task, [{
+    id: "turn-parent",
+    prompt: "Проверь двумя субагентами",
+    answer: "Сверил результаты",
+    status: "completed",
+    completed: true,
+    messages: [{
+      itemId: "turn-parent:subagent:child-terra",
+      role: "agent",
+      kind: "subagent",
+      agentThreadId: "child-terra",
+      model: "gpt-5.6-terra",
+      author: "Субагент (Terra)",
+      text: "Независимый отчёт",
+    }],
+  }]);
+  store.close();
+
+  store = new LocalTaskSyncStore({ filePath });
+  await store.load();
+  assert.deepEqual(store.history(task)[0].messages[0], {
+    itemId: "turn-parent:subagent:child-terra",
+    role: "agent",
+    text: "Независимый отчёт",
+    author: "Субагент (Terra)",
+    kind: "subagent",
+    agentThreadId: "child-terra",
+    model: "gpt-5.6-terra",
+    responseAnnotations: [],
+    attachments: [],
+  });
+  store.close();
+});
+
+test("local task sync repairs legacy subagent rows stored as user messages", async () => {
+  const filePath = await storeFile();
+  const databaseFile = path.join(path.dirname(filePath), "journal.sqlite");
+  let store = new LocalTaskSyncStore({ filePath, databaseFile });
+  await store.load();
+  store.recordHistory(task, [{
+    id: "turn-parent",
+    prompt: "Проверь",
+    answer: "Готово",
+    status: "completed",
+    completed: true,
+    messages: [{
+      itemId: "turn-parent:subagent:child-sol",
+      role: "agent",
+      kind: "subagent",
+      agentThreadId: "child-sol",
+      author: "Субагент (Sol)",
+      text: "Отчёт Sol",
+    }],
+  }]);
+  store.close();
+
+  const database = new DatabaseSync(databaseFile);
+  database.prepare(`
+    UPDATE task_read_model_messages
+    SET role = 'user', author = '', kind = '', agent_thread_id = '', model = ''
+    WHERE item_id = ?
+  `).run("turn-parent:subagent:child-sol");
+  database.prepare(`
+    INSERT INTO task_read_model_meta (key, value)
+    VALUES ('backfill_task_message_search_version', '1')
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+  `).run();
+  database.close();
+
+  store = new LocalTaskSyncStore({ filePath, databaseFile });
+  await store.load();
+  const message = store.history(task)[0].messages[0];
+  assert.equal(message.role, "agent");
+  assert.equal(message.kind, "subagent");
+  assert.equal(message.agentThreadId, "child-sol");
+  assert.equal(message.author, "Субагент (модель неизвестна)");
+  const result = store.searchMessages({ references: [task], query: "отчёт sol" }).results[0];
+  assert.equal(result.role, "agent");
+  assert.equal(result.author, "Субагент (модель неизвестна)");
+  store.close();
+});
+
 test("message search keeps every indexed reply beyond the bounded chat read model", async () => {
   const filePath = await storeFile();
   const store = new LocalTaskSyncStore({ filePath, historyLimit: 1 });
@@ -329,7 +415,7 @@ test("startup backfills run once per version and commit their marker atomically"
     WHERE key LIKE 'backfill_%_version'
     ORDER BY key
   `).all().map((row) => ({ key: row.key, value: row.value })), [
-    { key: "backfill_task_message_search_version", value: "1" },
+    { key: "backfill_task_message_search_version", value: "2" },
   ]);
   database.exec(`
     CREATE TABLE backfill_write_audit (operation TEXT NOT NULL);
@@ -494,6 +580,9 @@ test("local task sync migrates annotation columns in an existing SQLite cache", 
     assert.ok(messageColumns.includes("response_annotations_json"));
     assert.ok(messageColumns.includes("response_annotation_request"));
     assert.ok(messageColumns.includes("author"));
+    assert.ok(messageColumns.includes("kind"));
+    assert.ok(messageColumns.includes("agent_thread_id"));
+    assert.ok(messageColumns.includes("model"));
     assert.ok(searchColumns.includes("author"));
   } finally {
     store?.close();
