@@ -55,6 +55,7 @@ export class DeferredInputService {
       input,
       temporaryFiles,
       conflictKind,
+      clientUserMessageId: normalizedClientUserMessageId,
       createdAt,
     };
     const rapidDuplicate = destination === "queued" && typeof d.store.values === "function"

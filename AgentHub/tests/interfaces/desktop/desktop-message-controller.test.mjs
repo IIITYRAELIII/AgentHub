@@ -102,12 +102,12 @@ test("desktop message controller deduplicates an in-flight and persisted client 
   const [firstResult, duplicateResult] = await Promise.all([first, duplicate]);
   assert.equal(firstResult.runId, "run-1");
   assert.equal(duplicateResult.runId, "run-1");
-  assert.equal(persistCount, 1);
+  assert.equal(persistCount, 2);
 
   const replay = await messages.sendMessage(params);
   assert.equal(replay.runId, "run-1");
   assert.equal(beginCount, 1);
-  assert.equal(persistCount, 1);
+  assert.equal(persistCount, 2);
 });
 
 test("desktop message acknowledgement does not wait for a full snapshot", async () => {

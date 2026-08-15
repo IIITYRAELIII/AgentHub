@@ -183,6 +183,46 @@ test("local task sync preserves durable message metadata and attachments", async
   assert.equal(search.results[0].author, "Agent Hub - Architect");
 });
 
+test("local task sync repairs parent finals misattributed as subagents", async () => {
+  const filePath = await storeFile();
+  const store = new LocalTaskSyncStore({ filePath });
+  await store.load();
+  store.recordHistory(task, [{
+    id: "turn-attribution",
+    prompt: "Проверь",
+    answer: "Общий итог",
+    status: "completed",
+    completed: true,
+    messages: [{
+      itemId: "turn-attribution:rollout-agent:final",
+      role: "agent",
+      text: "Общий итог",
+      author: "Субагент (модель неизвестна)",
+      kind: "subagent",
+      model: "gpt-5.6-terra",
+    }, {
+      itemId: "turn-attribution:subagent:child-1",
+      role: "agent",
+      text: "Отчёт",
+      author: "Субагент (Terra)",
+      kind: "subagent",
+      agentThreadId: "child-1",
+      model: "gpt-5.6-terra",
+    }],
+  }]);
+  await store.save();
+
+  const restored = new LocalTaskSyncStore({ filePath });
+  await restored.load();
+  const messages = restored.history(task)[0].messages;
+  assert.equal(messages[0].author, undefined);
+  assert.equal(messages[0].kind, undefined);
+  assert.equal(messages[0].model, undefined);
+  assert.equal(messages[1].author, "Субагент (Terra)");
+  assert.equal(messages[1].kind, "subagent");
+  assert.equal(messages[1].agentThreadId, "child-1");
+});
+
 test("local task sync preserves subagent identity through SQLite", async () => {
   const filePath = await storeFile();
   let store = new LocalTaskSyncStore({ filePath });
@@ -427,7 +467,7 @@ test("startup backfills run once per version and commit their marker atomically"
     WHERE key LIKE 'backfill_%_version'
     ORDER BY key
   `).all().map((row) => ({ key: row.key, value: row.value })), [
-    { key: "backfill_task_message_search_version", value: "2" },
+    { key: "backfill_task_message_search_version", value: "3" },
   ]);
   database.exec(`
     CREATE TABLE backfill_write_audit (operation TEXT NOT NULL);

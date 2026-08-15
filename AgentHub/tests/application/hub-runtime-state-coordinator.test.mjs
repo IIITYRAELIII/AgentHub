@@ -99,7 +99,7 @@ test("runtime state restoration applies one canonical snapshot to all owners", a
   });
 });
 
-test("runtime state restoration removes rapid duplicate queued chat retries", async () => {
+test("runtime state restoration preserves equal chat text with different client ids", async () => {
   const { context } = restorationFixture();
   const transitions = [];
   context.updateDeferredDesktopReceipt = (item, state) => transitions.push([item.id, state]);
@@ -123,8 +123,8 @@ test("runtime state restoration removes rapid duplicate queued chat retries", as
     desktopMessageReceipts: [],
   }, context);
 
-  assert.deepEqual([...context.queuedInputs.keys()], ["first"]);
-  assert.deepEqual(transitions, [["duplicate", "cancelled"], ["first", "queued"]]);
+  assert.deepEqual([...context.queuedInputs.keys()], ["first", "duplicate"]);
+  assert.deepEqual(transitions, [["first", "queued"], ["duplicate", "queued"]]);
 });
 
 test("state coordinator coalesces queued snapshots and isolates a missing initial state", async () => {

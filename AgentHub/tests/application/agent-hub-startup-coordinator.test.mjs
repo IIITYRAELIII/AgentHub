@@ -104,14 +104,14 @@ test("startup remains ready but degraded when an optional capability fails", asy
   });
 });
 
-test("core-only startup skips Telegram recovery and polling", async () => {
+test("core-only startup restores runs but skips Telegram-only work", async () => {
   const { service, calls } = coordinator({
     telegramEnabled: false,
     hasPendingRestart: () => false,
     waitForever: async () => calls.push("wait"),
   });
   await service.start();
-  assert.equal(calls.includes("recover"), false);
+  assert.equal(calls.includes("recover"), true);
   assert.equal(calls.includes("commands"), false);
   assert.equal(calls.includes("poll"), false);
   assert.ok(calls.includes("wait"));

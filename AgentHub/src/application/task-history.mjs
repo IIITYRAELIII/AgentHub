@@ -707,12 +707,21 @@ export function mergeCompletedTaskHistory(history, completedTurn = {}) {
   const completedAt = normalizedTimestamp(completedTurn.completedAt ?? completedTurn.updatedAt);
   if (completedAt && !normalizedTimestamp(current.completedAt)) current.completedAt = completedAt;
   const messages = Array.isArray(current.messages) ? current.messages : [];
-  const agents = messages.filter((message) => message.role === "agent");
-  const agent = agents.find((message) => String(message.itemId ?? "") === `${turnId}:agent:final`)
-    ?? agents.at(-1);
+  const parentAgents = messages.filter((message) => (
+    message.role === "agent"
+    && message.kind !== "subagent"
+    && !String(message.itemId ?? "").includes(":subagent:")
+  ));
+  const agent = parentAgents.find((message) => String(message.itemId ?? "") === `${turnId}:agent:final`)
+    ?? parentAgents.findLast((message) => ["final", "final_answer"].includes(String(message.phase ?? "")))
+    ?? parentAgents.at(-1);
   if (agent) {
     agent.text = answer;
     agent.phase = "final";
+    delete agent.author;
+    delete agent.kind;
+    delete agent.agentThreadId;
+    delete agent.model;
     if (completedAt && !normalizedTimestamp(agent.time)) agent.time = completedAt;
   } else {
     messages.push({

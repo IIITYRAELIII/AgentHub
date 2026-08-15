@@ -101,17 +101,25 @@ export class AgentHubStartupCoordinator {
         this.logError("Cannot backfill provider metadata:", error.message);
       });
     }
-    if (this.telegramEnabled) {
-      this.health.setCapability("telegram", { critical: false });
-      await this.recoverRuns().catch(async (error) => {
+    await this.recoverRuns().catch(async (error) => {
+      if (this.telegramEnabled) {
         this.health.setCapability("telegram", {
           critical: false,
           state: "failed",
           error: error.message,
         });
-        this.logError("Cannot recover active tasks:", error.message);
         await this.warnUser(`⚠️ Не удалось восстановить активные задачи: ${error.message}`);
-      });
+      } else {
+        this.health.setCapability("provider", {
+          critical: true,
+          state: "failed",
+          error: error.message,
+        });
+      }
+      this.logError("Cannot recover active tasks:", error.message);
+    });
+    if (this.telegramEnabled) {
+      this.health.setCapability("telegram", { critical: false });
       await this.retryNotifications();
       await this.restoreBackgroundJobs().catch(async (error) => {
         this.health.setCapability("telegram", {

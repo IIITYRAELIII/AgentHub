@@ -1818,10 +1818,11 @@ agentHub.on("message:send", (request) => {
   const optimisticId = `local:${request.requestId}`;
   let identity = taskIdentity(request.taskId);
   const previousAttempt = outgoingMessages(request.taskId).get(request.requestId);
+  const requestAttachments = request.attachments ?? [];
   const visibleText = String(request.text ?? "").trim()
     || ((request.annotations ?? []).length
       ? `Аннотации к ответу: ${(request.annotations ?? []).length}`
-      : "Изображение");
+      : window.AgentHubMessageLifecycle.attachmentOnlyText(requestAttachments));
   const optimistic = {
     id: optimisticId,
     provider: identity?.provider ?? request.settings?.provider ?? "",
@@ -1835,7 +1836,7 @@ agentHub.on("message:send", (request) => {
     responseAnnotations: normalizedResponseAnnotations(request.annotations),
     responseAnnotationRequest: String(request.text ?? "").trim(),
     time: new Date().toISOString(),
-    attachments: request.attachments ?? [],
+    attachments: requestAttachments,
     uploadedPaths: previousAttempt?.uploadedPaths ?? [],
     ...deliveryPatch("preparing"),
   };
@@ -2165,12 +2166,18 @@ agentHub.on("task:stop", ({ id } = {}) => runAction(async () => {
     item.state === "queued"
     && taskId(item.provider, item.threadId, item.streamId) === targetId
   ));
-  await Promise.all(queued.map((item) => control("deferred-input", { id: item.id, action: "pause" })));
-  const result = await control("cancel-run", target);
+  const stopped = await window.AgentHubMessageLifecycle.stopTaskControls({
+    cancel: () => control("cancel-run", target),
+    pause: (item) => control("deferred-input", { id: item.id, action: "pause" }),
+    queued,
+  });
   applySnapshot(await control("snapshot"));
-  agentHub.toast(queued.length
-    ? `${result?.message ?? "Остановка запрошена"}. Очередь приостановлена.`
-    : result?.message ?? "Остановка запрошена");
+  const stoppedMessage = stopped.result?.message ?? "Остановка запрошена";
+  agentHub.toast(stopped.pauseFailures
+    ? `${stoppedMessage}. Ход остановлен; ${stopped.pauseFailures} сообщений очереди не удалось приостановить.`
+    : queued.length
+      ? `${stoppedMessage}. Очередь приостановлена.`
+      : stoppedMessage);
 }));
 agentHub.on("task:diff", ({ id }) => runAction(async () => {
   const targetId = id || selectedTaskId;
@@ -2380,12 +2387,6 @@ async function runQueueAction(id, taskIdValue, operation) {
   const key = String(id ?? "").trim();
   if (!key || queueActionsInFlight.has(key)) return null;
   queueActionsInFlight.add(key);
-  if (taskIdValue) {
-    const visible = (lastSnapshot?.deferredInputs ?? []).filter((item) => item.id !== key);
-    agentHub.setQueue(taskIdValue, visible.filter((item) => (
-      (!item.provider || taskId(item.provider, item.threadId, item.streamId) === taskIdValue)
-    )));
-  }
   try {
     return await operation();
   } finally {

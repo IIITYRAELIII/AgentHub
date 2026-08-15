@@ -15,20 +15,14 @@ function deferredTaskIdentity(value) {
     .join("\0");
 }
 
-export function rapidDeferredInputDuplicate(left, right, { windowMs = 30_000 } = {}) {
+export function rapidDeferredInputDuplicate(left, right) {
   if (left?.conflictKind !== "message-intake" || right?.conflictKind !== "message-intake") {
     return false;
   }
-  if ((left?.temporaryFiles ?? []).length || (right?.temporaryFiles ?? []).length) return false;
   if (deferredTaskIdentity(left) !== deferredTaskIdentity(right)) return false;
-  const leftText = deferredInputText(left?.input).trim();
-  const rightText = deferredInputText(right?.input).trim();
-  if (!leftText || leftText !== rightText) return false;
-  const leftAt = Date.parse(String(left?.createdAt ?? ""));
-  const rightAt = Date.parse(String(right?.createdAt ?? ""));
-  return Number.isFinite(leftAt)
-    && Number.isFinite(rightAt)
-    && Math.abs(rightAt - leftAt) <= Math.max(0, Number(windowMs) || 0);
+  const leftId = String(left?.clientUserMessageId ?? "").trim();
+  const rightId = String(right?.clientUserMessageId ?? "").trim();
+  return Boolean(leftId && rightId && leftId === rightId);
 }
 
 export function deferredInputMatchesRun(item, run) {

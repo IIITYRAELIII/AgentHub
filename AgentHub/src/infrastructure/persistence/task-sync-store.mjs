@@ -8,8 +8,8 @@ import { catalogTaskKey } from "../../domain/task-catalog-identity.mjs";
 const FORMAT_VERSION = 1;
 const TASK_SCHEMA_VERSION = 7;
 const MODEL_BACKFILL_VERSION = "1";
-const SEARCH_BACKFILL_VERSION = "2";
-const TERMINAL_HISTORY_BACKFILL_VERSION = "2";
+const SEARCH_BACKFILL_VERSION = "3";
+const TERMINAL_HISTORY_BACKFILL_VERSION = "3";
 const DEFAULT_HISTORY_LIMIT = 50;
 const DEFAULT_RUNNING_FRESHNESS_MS = 10 * 60 * 1000;
 const DEFAULT_TASK_LIMIT = 1_000;
@@ -165,19 +165,26 @@ function cleanHistory(history, limit) {
           const role = cleanText(message?.role, 20);
           const text = cleanText(message?.text, role === "agent" ? 40_000 : 12_000);
           if (!["user", "agent"].includes(role) || !text) return [];
+          const itemId = cleanText(message?.itemId, 200);
+          const kind = cleanText(message?.kind, 40);
+          const misattributedSubagent = kind === "subagent" && !itemId.includes(":subagent:");
           return [{
-            itemId: cleanText(message?.itemId, 200),
+            itemId,
             ...(message?.clientUserMessageId
               ? { clientUserMessageId: cleanText(message.clientUserMessageId, 200) }
               : {}),
             role,
             text,
-            ...(cleanText(message?.author, 1_000) ? { author: cleanText(message.author, 1_000) } : {}),
-            ...(cleanText(message?.kind, 40) ? { kind: cleanText(message.kind, 40) } : {}),
-            ...(cleanText(message?.agentThreadId, 100)
+            ...(!misattributedSubagent && cleanText(message?.author, 1_000)
+              ? { author: cleanText(message.author, 1_000) }
+              : {}),
+            ...(!misattributedSubagent && kind ? { kind } : {}),
+            ...(!misattributedSubagent && cleanText(message?.agentThreadId, 100)
               ? { agentThreadId: cleanText(message.agentThreadId, 100) }
               : {}),
-            ...(cleanText(message?.model, 100) ? { model: cleanText(message.model, 100) } : {}),
+            ...(!misattributedSubagent && cleanText(message?.model, 100)
+              ? { model: cleanText(message.model, 100) }
+              : {}),
             ...(message?.phase ? { phase: cleanText(message.phase, 40) } : {}),
             ...(message?.time ? { time: cleanText(message.time, 80) } : {}),
             responseAnnotations: cleanResponseAnnotations(message?.responseAnnotations),
@@ -505,6 +512,9 @@ function configure(database) {
     database.exec("ALTER TABLE task_read_model_messages ADD COLUMN model TEXT NOT NULL DEFAULT ''");
   }
   database.exec(`
+    UPDATE task_read_model_messages
+    SET author = '', kind = '', agent_thread_id = '', model = ''
+    WHERE provider = 'codex' AND kind = 'subagent' AND instr(item_id, ':subagent:') = 0;
     UPDATE task_read_model_messages
     SET role = 'agent',
         author = CASE WHEN trim(author) = '' THEN 'Субагент (модель неизвестна)' ELSE author END,

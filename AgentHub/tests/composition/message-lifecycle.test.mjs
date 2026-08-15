@@ -92,6 +92,27 @@ test("message delivery distinguishes a server rejection from an unconfirmed tran
   assert.equal(rejected.agentHubCommandRejected, true);
 });
 
+test("attachment-only labels distinguish documents from images", () => {
+  assert.equal(lifecycle.attachmentOnlyText([{ type: "application/pdf" }]), "Вложение");
+  assert.equal(lifecycle.attachmentOnlyText([{ type: "image/png" }]), "Изображение");
+  assert.equal(lifecycle.attachmentOnlyText([{ type: "image/png" }, { type: "text/plain" }]), "Вложения");
+});
+
+test("Stop cancels the run even when pausing one queued message fails", async () => {
+  const calls = [];
+  const stopped = await lifecycle.stopTaskControls({
+    cancel: async () => { calls.push("cancel"); return { message: "Остановлено" }; },
+    pause: async (item) => {
+      calls.push(`pause:${item.id}`);
+      if (item.id === "bad") throw new Error("stale queue item");
+    },
+    queued: [{ id: "bad" }, { id: "good" }],
+  });
+  assert.deepEqual(calls, ["cancel", "pause:bad", "pause:good"]);
+  assert.equal(stopped.pauseFailures, 1);
+  assert.equal(stopped.result.message, "Остановлено");
+});
+
 test("message delivery keeps the stable Stream identity when a Thread binding is stale", () => {
   assert.match(
     hubClientSource,

@@ -15,6 +15,11 @@ export function messageReceiptKey(identity) {
   return normalized.clientUserMessageId;
 }
 
+function unresolvedReceipt(receipt) {
+  const result = receipt?.result;
+  return result?.pending === true || result?.deferred === true || result?.dispatching === true;
+}
+
 export async function messageRequestFingerprint({
   text = "",
   attachments = [],
@@ -45,16 +50,26 @@ export class MessageReceiptRegistry {
 
   restore(values) {
     this.receipts.clear();
-    for (const value of Array.isArray(values) ? values.slice(-this.limit) : []) {
+    const restored = [];
+    for (const value of Array.isArray(values) ? values : []) {
       const key = messageReceiptKey(value);
       const fingerprint = String(value?.fingerprint ?? "").trim();
       if (!key || !fingerprint || !value?.result || typeof value.result !== "object") continue;
-      this.receipts.set(key, {
+      restored.push([key, {
         ...normalizedIdentity(value),
         fingerprint,
         result: structuredClone(value.result),
         createdAt: String(value.createdAt ?? ""),
-      });
+      }]);
+    }
+    const unresolved = restored.filter(([, receipt]) => unresolvedReceipt(receipt));
+    const terminalCapacity = Math.max(0, this.limit - unresolved.length);
+    const terminal = restored.filter(([, value]) => !unresolvedReceipt(value));
+    for (const [key, receipt] of [
+      ...unresolved,
+      ...(terminalCapacity > 0 ? terminal.slice(-terminalCapacity) : []),
+    ]) {
+      this.receipts.set(key, receipt);
     }
     this.revision += 1;
   }
@@ -111,19 +126,50 @@ export class MessageReceiptRegistry {
     return null;
   }
 
-  remember(identity, fingerprint, result) {
+  reserve(identity, fingerprint, result = { accepted: false, pending: true }) {
     const key = messageReceiptKey(identity);
     if (!key) throw new Error("Нельзя сохранить квитанцию без точной identity сообщения");
+    const existing = this.receipts.get(key);
+    if (existing) {
+      if (existing.fingerprint !== fingerprint) {
+        const error = new Error("Идентификатор сообщения уже использован для другого содержимого");
+        error.code = "MESSAGE_RECEIPT_FINGERPRINT_MISMATCH";
+        throw error;
+      }
+      return structuredClone(existing.result);
+    }
+    if (this.receipts.size >= this.limit) {
+      const terminalKey = [...this.receipts.entries()]
+        .find(([, receipt]) => !unresolvedReceipt(receipt))?.[0];
+      if (!terminalKey) {
+        const error = new Error("реестр квитанций заполнен незавершёнными сообщениями");
+        error.code = "MESSAGE_RECEIPT_CAPACITY_EXHAUSTED";
+        throw error;
+      }
+      this.receipts.delete(terminalKey);
+    }
     this.receipts.set(key, {
       ...normalizedIdentity(identity),
       fingerprint,
       result: structuredClone(result),
       createdAt: new Date().toISOString(),
     });
-    while (this.receipts.size > this.limit) {
-      this.receipts.delete(this.receipts.keys().next().value);
-    }
     this.revision += 1;
+    return structuredClone(result);
+  }
+
+  remember(identity, fingerprint, result) {
+    const key = messageReceiptKey(identity);
+    const existing = this.receipts.get(key);
+    if (!existing) return this.reserve(identity, fingerprint, result);
+    if (existing.fingerprint !== fingerprint) {
+      const error = new Error("Идентификатор сообщения уже использован для другого содержимого");
+      error.code = "MESSAGE_RECEIPT_FINGERPRINT_MISMATCH";
+      throw error;
+    }
+    existing.result = structuredClone(result);
+    this.revision += 1;
+    return structuredClone(result);
   }
 
   updateResult(identity, result) {

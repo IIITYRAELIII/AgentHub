@@ -958,6 +958,26 @@ function looksLikeConnectionFailure(error) {
     || /Desktop control connection closed without a response/iu.test(message);
 }
 
+function attachmentOnlyText(attachments) {
+  const values = Array.isArray(attachments) ? attachments : [];
+  if (!values.length) return "Вложение";
+  const imageCount = values.filter((attachment) => (
+    String(attachment?.type ?? "").toLowerCase().startsWith("image/")
+  )).length;
+  if (imageCount === values.length) return values.length === 1 ? "Изображение" : "Изображения";
+  return values.length === 1 ? "Вложение" : "Вложения";
+}
+
+async function stopTaskControls({ cancel, pause, queued = [] }) {
+  const result = await cancel();
+  const pauses = await Promise.allSettled((Array.isArray(queued) ? queued : []).map((item) => pause(item)));
+  return {
+    result,
+    paused: pauses.filter((item) => item.status === "fulfilled").length,
+    pauseFailures: pauses.filter((item) => item.status === "rejected").length,
+  };
+}
+
 function hubErrorMessage(error) {
   const message = String(error?.message ?? error ?? "Неизвестная ошибка").trim();
   if (looksLikeConnectionFailure(error)) return "Нет связи с Agent Hub.";
@@ -971,6 +991,7 @@ function hubErrorMessage(error) {
 
 globalThis.AgentHubMessageLifecycle = Object.freeze({
   activeStageLabel,
+  attachmentOnlyText,
   chronologicalMessages,
   conversationTaskId,
   completedConversationTurnVisible,
@@ -1006,6 +1027,7 @@ globalThis.AgentHubMessageLifecycle = Object.freeze({
   reconcile,
   rememberBounded,
   reusableAttachmentPaths,
+  stopTaskControls,
   visibleConversationMessages,
 });
 

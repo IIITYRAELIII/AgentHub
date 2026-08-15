@@ -234,6 +234,34 @@ test("completed Codex history shows only the final answer", () => {
   assert.equal(exchange.answer, "Финальный ответ.");
 });
 
+test("completed history never overwrites a subagent with the parent final", () => {
+  const history = [{
+    id: "turn-1",
+    active: true,
+    messages: [{
+      itemId: "turn-1:subagent:child-1",
+      role: "agent",
+      kind: "subagent",
+      author: "Субагент (Terra)",
+      agentThreadId: "child-1",
+      model: "gpt-5.6-terra",
+      text: "Найден дефект.",
+    }],
+  }];
+
+  mergeCompletedTaskHistory(history, { turnId: "turn-1", answer: "Общий итог." });
+
+  assert.equal(history[0].messages.length, 2);
+  assert.equal(history[0].messages[0].text, "Найден дефект.");
+  assert.equal(history[0].messages[0].kind, "subagent");
+  assert.deepEqual(history[0].messages[1], {
+    itemId: "turn-1:agent:final",
+    role: "agent",
+    phase: "final",
+    text: "Общий итог.",
+  });
+});
+
 test("Codex history renders subagent notifications as model-authored messages", () => {
   const notification = `<subagent_notification>\n${JSON.stringify({
     agent_path: "child-terra",

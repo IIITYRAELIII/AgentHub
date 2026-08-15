@@ -44,9 +44,6 @@ export function createDesktopMessageController({
       clientUserMessageId,
     };
     const fingerprint = await messageRequestFingerprint({ text, attachments, followUpMode });
-    const previous = receipts.find(receiptIdentity, fingerprint);
-    if (previous) return previous;
-
     const receiptKey = messageReceiptKey(receiptIdentity);
     const inflight = inflightReceipts.get(receiptKey);
     if (inflight) {
@@ -58,23 +55,45 @@ export function createDesktopMessageController({
       const result = await inflight.promise;
       return result;
     }
+    const previous = receipts.find(receiptIdentity, fingerprint);
+    if (previous) return previous;
 
     const promise = (async () => {
+      receipts.reserve(receiptIdentity, fingerprint, {
+        accepted: false,
+        pending: true,
+        threadId: target.threadId,
+        clientUserMessageId,
+        message: "Сообщение сохранено Hub и ожидает подтверждения запуска.",
+      });
+      await persistReceipts();
       const submit = durableIntake && typeof runCoordinator.acceptClientInput === "function"
         ? runCoordinator.acceptClientInput.bind(runCoordinator)
         : runCoordinator.submitClientInput.bind(runCoordinator);
-      const result = await submit({
-        input,
-        attachments,
-        target,
-        clientUserMessageId,
-        followUpMode,
-      });
-      const { snapshot: _snapshot, ...storedResult } = result;
-      if (attachments.length) storedResult.attachments = descriptors;
-      receipts.remember(receiptIdentity, fingerprint, storedResult);
-      await persistReceipts();
-      return storedResult;
+      try {
+        const result = await submit({
+          input,
+          attachments,
+          target,
+          clientUserMessageId,
+          followUpMode,
+        });
+        const { snapshot: _snapshot, ...storedResult } = result;
+        storedResult.pending = false;
+        if (attachments.length) storedResult.attachments = descriptors;
+        receipts.updateResult(receiptIdentity, storedResult);
+        await persistReceipts();
+        return storedResult;
+      } catch (error) {
+        receipts.updateResult(receiptIdentity, {
+          accepted: false,
+          pending: false,
+          rejected: true,
+          error: String(error?.message ?? error),
+        });
+        await persistReceipts();
+        throw error;
+      }
     })();
     inflightReceipts.set(receiptKey, { fingerprint, promise });
     try {

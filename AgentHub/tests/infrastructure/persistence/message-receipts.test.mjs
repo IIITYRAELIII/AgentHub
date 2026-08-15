@@ -99,3 +99,28 @@ test("message receipt result can follow a deferred message into an active run", 
   assert.equal(registry.findByResultId("queued-1")?.clientUserMessageId, "client-1");
   assert.equal(registry.updateResult({ ...identity, clientUserMessageId: "missing" }, {}), false);
 });
+
+test("message receipts keep unresolved work and reject admission when only unresolved work remains", async () => {
+  const registry = new MessageReceiptRegistry({ limit: 2 });
+  const fingerprint = await messageRequestFingerprint({ text: "Сообщение" });
+  registry.reserve({ ...identity, clientUserMessageId: "pending-1" }, fingerprint);
+  registry.reserve({ ...identity, clientUserMessageId: "pending-2" }, fingerprint);
+  assert.throws(
+    () => registry.reserve({ ...identity, clientUserMessageId: "pending-3" }, fingerprint),
+    (error) => error.code === "MESSAGE_RECEIPT_CAPACITY_EXHAUSTED",
+  );
+
+  const restored = new MessageReceiptRegistry({ limit: 1 });
+  restored.restore([
+    ...registry.snapshot(),
+    {
+      ...identity,
+      clientUserMessageId: "terminal-1",
+      fingerprint,
+      result: { accepted: true, turnId: "turn-1" },
+    },
+  ]);
+  assert.equal(restored.snapshot().length, 2);
+  assert.equal(restored.get({ clientUserMessageId: "pending-1" })?.result.pending, true);
+  assert.equal(restored.get({ clientUserMessageId: "terminal-1" }), null);
+});
