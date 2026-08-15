@@ -21,6 +21,10 @@ function runtimeCommandSpoolDirectory(runtimeRoot, temporaryRoot = os.tmpdir()) 
   return path.join(temporaryRoot, `agent-hub-command-${runtimeCommandId(runtimeRoot)}`);
 }
 
+function workspaceTemporaryRoot(projectRoot) {
+  return path.join(projectRoot, ".codex", "runtime");
+}
+
 function forwardedEnvironment(environment, threadId) {
   const result = Object.fromEntries(FORWARDED_ENVIRONMENT
     .filter((name) => typeof environment[name] === "string" && environment[name].length <= 32_768)
@@ -57,8 +61,9 @@ async function enqueueThroughSpool(request, runtimeRoot, temporaryRoot = os.tmpd
 
 export async function enqueueLifecycleRequest(request, runtimeRoot, {
   enqueueRequest = enqueueThroughSpool,
+  temporaryRoot = os.tmpdir(),
 } = {}) {
-  await enqueueRequest(request, runtimeRoot);
+  await enqueueRequest(request, runtimeRoot, temporaryRoot);
 }
 
 export function lifecycleRequest(value, environment = process.env) {
@@ -107,8 +112,10 @@ export async function main({
   const chunks = [];
   input.setEncoding("utf8");
   for await (const chunk of input) chunks.push(chunk);
-  const { request } = lifecycleRequest(JSON.parse(chunks.join("")), environment);
-  await enqueueRequest(request, defaultRuntimeRoot(environment));
+  const { input: lifecycleInput, request } = lifecycleRequest(JSON.parse(chunks.join("")), environment);
+  await enqueueRequest(request, defaultRuntimeRoot(environment), {
+    temporaryRoot: workspaceTemporaryRoot(lifecycleInput.projectRoot),
+  });
   output.write("{}\n");
 }
 

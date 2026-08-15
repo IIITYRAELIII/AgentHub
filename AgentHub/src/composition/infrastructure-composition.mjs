@@ -235,6 +235,7 @@ export async function createHubInfrastructure({
   });
   const runtimeCommandServer = new RuntimeCommandServer({
     runtimeRoot: runtimeCommandRoot,
+    temporaryRoot: path.join(config.projectRoot, ".codex", "runtime"),
     authorize: authorizeRuntimeCommand,
     reconcile: reconcileRuntimeCommand,
     handler: handleRuntimeCommand,

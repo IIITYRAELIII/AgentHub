@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import path from "node:path";
 import { Readable } from "node:stream";
 import test from "node:test";
 
@@ -45,8 +46,9 @@ test("sandbox launcher enqueues lifecycle input once without waiting for rollout
   const calls = [];
   await enqueueLifecycleRequest(request, "runtime", {
     enqueueRequest: async (...args) => calls.push(args),
+    temporaryRoot: "workspace-runtime",
   });
-  assert.deepEqual(calls, [[request, "runtime"]]);
+  assert.deepEqual(calls, [[request, "runtime", "workspace-runtime"]]);
 });
 
 test("sandbox launcher returns valid empty JSON after a successful Stop hook", async () => {
@@ -61,9 +63,10 @@ test("sandbox launcher returns valid empty JSON after a successful Stop hook", a
       cwd: ".",
     })]),
     output: { write: (value) => writes.push(value) },
-    enqueueRequest: async (request, runtimeRoot) => requests.push({ request, runtimeRoot }),
+    enqueueRequest: async (request, runtimeRoot, options) => requests.push({ request, runtimeRoot, options }),
   });
   assert.equal(requests.length, 1);
   assert.equal(requests[0].request.command, "turn-complete");
+  assert.equal(requests[0].options.temporaryRoot, `${path.resolve(".")}\\.codex\\runtime`);
   assert.equal(writes.join(""), "{}\n");
 });
