@@ -76,6 +76,19 @@ export function createDesktopSnapshotFactory({
   warn,
 }) {
   const versionCache = new Map();
+  let catalogRefresh = null;
+
+  function scheduleCatalogRefresh(force) {
+    if (catalogRefresh) return;
+    catalogRefresh = Promise.resolve()
+      .then(() => catalog.refresh({ force }))
+      .catch((error) => {
+        warn("Cannot refresh desktop task catalog in background:", error.message);
+      })
+      .finally(() => {
+        catalogRefresh = null;
+      });
+  }
 
   function versionCacheKey({ accountId, compactSnapshot }) {
     return `${String(accountId ?? "")}\u0000${compactSnapshot === true ? "compact" : "full"}`;
@@ -366,9 +379,7 @@ export function createDesktopSnapshotFactory({
       // A Desktop RPC must remain responsive while Codex App Server is slow or
       // recovering. The catalog owns refresh de-duplication; return its last
       // known state now and let the following poll receive the refreshed list.
-      void catalog.refresh({ force: refresh }).catch((error) => {
-        warn("Cannot refresh desktop task catalog in background:", error.message);
-      });
+      scheduleCatalogRefresh(refresh);
     }
     const cacheKey = versionCacheKey({ accountId, compactSnapshot });
     const beforeRevision = refresh ? null : await sourceRevision({ accountId, compactSnapshot });

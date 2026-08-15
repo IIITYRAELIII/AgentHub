@@ -66,6 +66,7 @@ function fixture(overrides = {}) {
     entries: [entry],
     catalogStale: false,
     refreshCalls: [],
+    warnings: [],
     usage: {
       usedTokens: 250,
       modelContextWindow: 1_000,
@@ -87,6 +88,7 @@ function fixture(overrides = {}) {
     restartRequest: null,
     maintenance: null,
     runForTask: null,
+    refreshCatalog: null,
     ...overrides,
   };
   const factory = createDesktopSnapshotFactory({
@@ -138,7 +140,7 @@ function fixture(overrides = {}) {
     catalog: {
       entries: () => state.entries,
       stale: () => state.catalogStale,
-      refresh: async (options) => state.refreshCalls.push(options),
+      refresh: async (options) => state.refreshCatalog?.(options) ?? state.refreshCalls.push(options),
       merge: (current, added) => [...current, ...added],
     },
     selection: {
@@ -206,7 +208,7 @@ function fixture(overrides = {}) {
     readState: {
       hasUnread: (value) => value.accountId === "owner" && value.answerTurnId !== "turn-previous",
     },
-    warn: () => {},
+    warn: (...args) => state.warnings.push(args),
   });
   return { ...factory, state, selected, run, entry };
 }
@@ -962,4 +964,21 @@ test("desktop snapshot refreshes a stale catalog without bypassing its cache pol
   await desktopSnapshot();
 
   assert.deepEqual(state.refreshCalls, [{ force: false }]);
+});
+
+test("desktop snapshot coalesces one failing background catalog refresh", async () => {
+  let rejectRefresh;
+  const refreshWait = new Promise((_, reject) => { rejectRefresh = reject; });
+  const { desktopSnapshot, state } = fixture({ catalogStale: true });
+  state.refreshCatalog = (options) => {
+    state.refreshCalls.push(options);
+    return refreshWait;
+  };
+
+  await Promise.all([desktopSnapshot(), desktopSnapshot(), desktopSnapshot()]);
+  assert.deepEqual(state.refreshCalls, [{ force: false }]);
+  rejectRefresh(new Error("database is locked"));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(state.warnings.length, 1);
+  assert.match(state.warnings[0].join(" "), /database is locked/u);
 });

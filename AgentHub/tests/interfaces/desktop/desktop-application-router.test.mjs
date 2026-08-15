@@ -187,3 +187,32 @@ test("Desktop application router accepts a message beside a blocked mutation", a
   releaseBlocked();
   await restart;
 });
+
+test("Desktop application router accepts a restart beside a blocked mutation", async () => {
+  let releaseBlocked;
+  const blocked = new Promise((resolve) => { releaseBlocked = resolve; });
+  const handlers = Object.fromEntries([
+    "snapshot", "taskHistory", "rateLimitHistory", "usageHistory", "search", "workspaceMessageSearch",
+    "openTask", "openTurn", "workspaceMessageOpen", "sendMessage", "taskDiff", "deferredInput",
+    "statusDetails", "speakLastAnswer", "restartServer", "setAutostart",
+    "updateServerConfiguration", "readPreTurnInstructions", "updateGlobalPreTurnInstructions",
+    "readRootAgents", "updateRootAgents", "compactContext", "openAttachment", "submitBugReport",
+    "trustedDevices", "createDevicePairing", "revokeDevice",
+    "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
+    "boardTaskRetryTriage", "boardTaskStart", "boardColumnMove", "boardColumnComment", "boardWorkspaceMove",
+  ].map((name) => [name, async () => ({ accepted: true, name })]));
+  const control = createDesktopApplicationRouter({
+    handlers,
+    commands: {
+      dispatch: async (type) => (type === "settings.update" ? blocked : { accepted: true }),
+      settingTarget: () => ({}),
+    },
+  });
+
+  const setting = control.handleDesktopControl({ action: "update-setting", params: { name: "model", value: "sol" } });
+  await new Promise((resolve) => setImmediate(resolve));
+  const restart = await control.handleDesktopControl({ action: "restart-server", params: {} });
+  assert.deepEqual(restart, { accepted: true, name: "restartServer" });
+  releaseBlocked();
+  await setting;
+});
