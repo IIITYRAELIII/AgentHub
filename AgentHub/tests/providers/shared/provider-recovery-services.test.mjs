@@ -42,3 +42,53 @@ test("Codex recovery prepares its transport once for a provider batch", async ()
   await service.prepare([{}]);
   assert.deepEqual(calls, ["start", ["initialize", { attachSelectedThread: true }]]);
 });
+
+test("Codex recovery never substitutes another turn for an exact saved receipt", async () => {
+  const calls = [];
+  const noop = async () => {};
+  const service = new CodexRecoveryService({
+    transportRunning: () => true,
+    readTaskSnapshot: noop,
+    startTransport: noop,
+    initialize: noop,
+    isCodex: () => true,
+    finishInterrupted: noop,
+    readThread: async (_threadId, { applySnapshot }) => applySnapshot({
+      thread: {
+        status: { type: "idle" },
+        turns: [{ id: "old-turn", status: "completed", items: [] }],
+      },
+    }),
+    autoApprove: () => true,
+    restartRequested: () => false,
+    finishProgress: async (_run, stage) => calls.push(["finish", stage]),
+    completeRun: async () => calls.push(["complete"]),
+    recoveredAnswer: (turn) => {
+      calls.push(["answer", turn?.id]);
+      return "old answer";
+    },
+    setProgressStage: () => {},
+    launchTurn: noop,
+    reindexRun: () => calls.push(["reindex"]),
+    scheduleObservedRun: () => calls.push(["schedule"]),
+    startTyping: () => {},
+    saveState: noop,
+    telegram: noop,
+    consumeTracker: () => null,
+    finalizeDelivery: async () => calls.push(["deliver"]),
+    turnTokenUsage: new Map(),
+  });
+
+  await service.recover({
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "new-turn",
+    status: "running",
+    responseText: "",
+  });
+
+  assert.deepEqual(calls, [
+    ["finish", "Не удалось найти сохранённый запуск."],
+    ["complete"],
+  ]);
+});

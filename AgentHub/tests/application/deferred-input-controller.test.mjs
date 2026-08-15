@@ -48,7 +48,10 @@ test("retryable deferred launch errors are limited to transport failures", () =>
   assert.equal(isRetryableDeferredLaunchError(Object.assign(new Error("socket closed"), { code: "ECONNRESET" })), true);
   assert.equal(isRetryableDeferredLaunchError(Object.assign(new Error("phantom turn"), {
     code: "ERR_CODEX_TURN_NOT_MATERIALIZED",
-  })), true);
+  })), false);
+  assert.equal(isRetryableDeferredLaunchError(Object.assign(new Error("unknown receipt"), {
+    code: "ERR_CODEX_TURN_START_UNCONFIRMED",
+  })), false);
   assert.equal(isRetryableDeferredLaunchError(
     new Error("thread thread-1 already has an active writer"),
   ), true);
@@ -206,7 +209,7 @@ test("DeferredInputController pauses a restored active-writer item before anothe
   assert.deepEqual(state.transitions.map((entry) => entry.state), ["paused"]);
 });
 
-test("DeferredInputController retains a message when Codex acknowledges a phantom turn", async () => {
+test("DeferredInputController never automatically repeats an ambiguous acknowledged turn", async () => {
   const error = Object.assign(new Error("turn was not materialized"), {
     code: "ERR_CODEX_TURN_NOT_MATERIALIZED",
   });
@@ -222,11 +225,11 @@ test("DeferredInputController retains a message when Codex acknowledges a phanto
 
   await state.controller.process(item.id);
 
-  assert.equal(state.queuedInputs.get(item.id), item);
-  assert.equal(state.pendingInputs.has(item.id), false);
+  assert.equal(state.queuedInputs.has(item.id), false);
+  assert.equal(state.pendingInputs.get(item.id), item);
   assert.equal(item.attempts, 1);
-  assert.equal(state.timers.at(-1).delay, 2_000);
-  assert.deepEqual(state.transitions.map((entry) => entry.state), ["dispatching", "retrying"]);
+  assert.equal(state.timers.length, 0);
+  assert.deepEqual(state.transitions.map((entry) => entry.state), ["dispatching", "pending"]);
 });
 
 test("DeferredInputController preserves FIFO order inside one task", async () => {

@@ -28,6 +28,11 @@
       : { status: value, detail: "" };
   }
 
+  function standaloneLiveStageDetail({ stage = "", traceGroups = [] } = {}) {
+    if (Array.isArray(traceGroups) && traceGroups.length) return "";
+    return liveStageParts(stage).detail;
+  }
+
   function turnTraceContent(groups = []) {
     const reasoningBlocks = [];
     const activities = [];
@@ -50,6 +55,7 @@
     liveActivityDisclosureOpen,
     liveActivityTitle,
     liveStageParts,
+    standaloneLiveStageDetail,
     liveTraceDisclosureOpen,
     turnTraceContent,
   });

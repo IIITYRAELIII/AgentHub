@@ -5,7 +5,6 @@ export function isRetryableDeferredLaunchError(error) {
     "ECONNRESET",
     "ECONNREFUSED",
     "ERR_STREAM_DESTROYED",
-    "ERR_CODEX_TURN_NOT_MATERIALIZED",
   ].includes(code)) return true;
   const message = String(error?.message ?? error ?? "");
   return /(?:codex )?app-server (?:stopped|is not running)|write EPIPE|broken pipe|thread\s+\S+\s+already has an active writer/i.test(message);

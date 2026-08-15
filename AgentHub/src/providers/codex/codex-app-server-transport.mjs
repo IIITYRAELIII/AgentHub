@@ -237,6 +237,7 @@ export class CodexAppServerTransport {
 
   #expireRequest(request) {
     const pending = this.pending.get(request.id);
+    const dispatched = Boolean(pending);
     if (pending) {
       this.pending.delete(request.id);
       this.#releaseRequest(pending);
@@ -247,6 +248,8 @@ export class CodexAppServerTransport {
       queue.splice(index, 1);
     }
     const error = new Error(`Codex RPC ${request.method} timed out after ${request.timeoutMs} ms`);
+    error.deliveryOutcome = dispatched ? "unknown" : "not-sent";
+    error.uncertain = dispatched;
     request.reject(error);
     Promise.resolve(this.onTimeout?.({
       id: request.id,
@@ -314,6 +317,8 @@ export class CodexAppServerTransport {
     } catch (error) {
       this.pending.delete(request.id);
       this.#releaseRequest(request);
+      error.deliveryOutcome = "not-sent";
+      error.uncertain = false;
       request.reject(error);
     }
   }
@@ -538,6 +543,8 @@ export class CodexAppServerTransport {
         if (message.error.code !== undefined) error.code = message.error.code;
         if (message.error.data !== undefined) error.data = message.error.data;
         error.rpcError = message.error;
+        error.deliveryOutcome = "rejected";
+        error.uncertain = false;
         pending.reject(error);
       } else pending.resolve(message.result);
       return;
@@ -560,15 +567,20 @@ export class CodexAppServerTransport {
   async #handleExit(instance, code, signal, cause = null) {
     if (this.child !== instance) return;
     const detail = cause?.message ?? `code=${code}, signal=${signal}`;
-    const error = new Error(`Codex app-server stopped (${detail})`);
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timer);
+      const error = new Error(`Codex app-server stopped (${detail})`);
+      error.deliveryOutcome = "unknown";
+      error.uncertain = true;
       pending.reject(error);
     }
     this.pending.clear();
     for (const priority of REQUEST_PRIORITIES) {
       for (const queued of this.requestQueues[priority]) {
         clearTimeout(queued.timer);
+        const error = new Error(`Codex app-server stopped (${detail})`);
+        error.deliveryOutcome = "not-sent";
+        error.uncertain = false;
         queued.reject(error);
       }
       this.requestQueues[priority] = [];

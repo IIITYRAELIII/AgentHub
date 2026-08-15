@@ -4,6 +4,9 @@ import {
   createManagedTaskRun,
   createObservedTaskRun,
   isRecentDuplicateTaskAnswer,
+  markProviderFirstEvent,
+  markProviderTurnAccepted,
+  markProviderTurnRequested,
   TaskDismissalRegistry,
   TaskRunRegistry,
   serializableTaskRun,
@@ -14,6 +17,59 @@ import {
   updateObservedResponse,
   updateTaskRunTitle,
 } from "../../src/domain/task-runs.mjs";
+
+test("provider start request is durable before the external side effect", () => {
+  const run = { provider: "codex", clientUserMessageId: "message-1" };
+  markProviderTurnRequested(run, { requestedAt: Date.parse("2026-08-15T00:00:00.000Z") });
+  assert.deepEqual(run.providerStart, {
+    state: "requesting",
+    clientUserMessageId: "message-1",
+    requestedAt: "2026-08-15T00:00:00.000Z",
+    turnId: null,
+    acceptedAt: null,
+    firstEventAt: null,
+    firstEventMethod: null,
+  });
+  assert.equal(run.progressStage, "Отправляю запрос Codex…");
+});
+
+test("provider receipt stays explicit until the first exact provider event", () => {
+  const run = { provider: "codex", progressStage: "Задача принята." };
+  markProviderTurnAccepted(run, {
+    turnId: "turn-1",
+    acceptedAt: Date.parse("2026-08-15T00:00:00.000Z"),
+  });
+  assert.deepEqual(run.providerStart, {
+    state: "accepted-awaiting-first-event",
+    clientUserMessageId: null,
+    requestedAt: null,
+    turnId: "turn-1",
+    acceptedAt: "2026-08-15T00:00:00.000Z",
+    firstEventAt: null,
+    firstEventMethod: null,
+  });
+  assert.equal(run.progressStage, "Codex принял ход. Ожидается первый ответ…");
+  assert.equal(markProviderFirstEvent(run, { turnId: "other", method: "item/started" }), false);
+  assert.equal(markProviderFirstEvent(run, {
+    turnId: "turn-1",
+    method: "item/started",
+    occurredAt: Date.parse("2026-08-15T00:03:12.000Z"),
+  }), true);
+  assert.equal(run.providerStart.state, "observed");
+  assert.equal(run.providerStart.firstEventAt, "2026-08-15T00:03:12.000Z");
+  assert.equal(run.progressStage, "Codex начал отвечать…");
+  assert.equal(markProviderTurnAccepted(run, { turnId: "turn-1" }).state, "observed");
+});
+
+test("an inactive run cannot be resurrected by a late reindex", () => {
+  const registry = new TaskRunRegistry();
+  const run = createManagedTaskRun({ id: "run-1", provider: "codex", threadId: "thread-1" });
+  registry.add(run);
+  registry.remove(run);
+  run.turnId = "late-turn";
+  assert.throws(() => registry.reindex(run), /inactive task run/u);
+  assert.deepEqual(registry.values(), []);
+});
 
 test("taskRunIsActive excludes terminal runs kept for final delivery", () => {
   assert.equal(taskRunIsActive(null), false);

@@ -84,7 +84,11 @@ export class CodexRecoveryService {
 
   async #recoverFromThread(run, result) {
     const d = this.#d;
-    const turn = result.thread?.turns?.find((item) => item.id === run.turnId) ?? result.thread?.turns?.at(-1);
+    const turns = Array.isArray(result.thread?.turns) ? result.thread.turns : [];
+    const exactTurnId = String(run.turnId ?? "").trim();
+    const turn = exactTurnId
+      ? turns.find((item) => String(item?.id ?? "").trim() === exactTurnId)
+      : turns.at(-1);
     hydrateCodexAgentMessages(run, turn?.items, { turnId: turn?.id });
     replaceRunActivityGroups(run, codexTurnActivityGroups(turn));
     const recoveryAction = resolveTaskRecoveryAction({

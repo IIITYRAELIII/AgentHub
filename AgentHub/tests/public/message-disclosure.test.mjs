@@ -25,10 +25,17 @@ test("live activity disclosure starts closed and preserves only a manual opening
 });
 
 test("live stage is rendered in the current activity title", async () => {
-  const { liveActivityTitle, liveStageParts } = await disclosureApi();
+  const { liveActivityTitle, liveStageParts, standaloneLiveStageDetail } = await disclosureApi();
   const stage = liveStageParts("Ход выполняется · Анализирую задачу…");
   assert.equal(stage.status, "Ход выполняется");
   assert.equal(stage.detail, "Анализирую задачу…");
+  assert.equal(standaloneLiveStageDetail({
+    stage: "Ход выполняется · Codex принял ход. Ожидается первый ответ…",
+  }), "Codex принял ход. Ожидается первый ответ…");
+  assert.equal(standaloneLiveStageDetail({
+    stage: "Ход выполняется · Анализирую задачу…",
+    traceGroups: [{ id: "reasoning-1" }],
+  }), "");
   assert.equal(
     liveActivityTitle({ count: 3, stage: "Анализирую задачу…" }),
     "Вызовы инструментов (3) · Анализирую задачу…",

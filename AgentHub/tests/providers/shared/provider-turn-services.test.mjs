@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  CODEX_TURN_NOT_MATERIALIZED,
+  CODEX_TURN_START_UNCONFIRMED,
   CodexTurnService,
   unsupportedProviderSteer,
 } from "../../../src/providers/provider-turn-services.mjs";
@@ -49,7 +49,7 @@ test("Codex turn service steers one exact active turn", async () => {
   assert.throws(() => unsupportedProviderSteer(), /недоступна/u);
 });
 
-test("Codex turn service schedules a run only after its exact turn materializes", async () => {
+test("Codex turn service persists the exact receipt before background materialization", async () => {
   const scheduled = [];
   const turnTokenUsage = new Map();
   const service = codexTurnService({
@@ -73,11 +73,209 @@ test("Codex turn service schedules a run only after its exact turn materializes"
   ]);
 
   assert.equal(run.turnId, "turn-1");
+  assert.equal(run.providerStart.state, "accepted-awaiting-first-event");
   assert.deepEqual(scheduled, ["turn-1"]);
   assert.deepEqual(
     turnTokenUsage.get("turn-1").contextBreakdown.categories.map((entry) => [entry.id, entry.count]),
     [["workspace", 0], ["messages", 1], ["images", 1], ["files", 1], ["skills", 1]],
   );
+});
+
+test("Codex turn service does not wait for Thread projection before returning the accepted run", async () => {
+  let finishRead;
+  const readPending = new Promise((resolve) => { finishRead = resolve; });
+  const scheduled = [];
+  const service = codexTurnService({
+    readThread: () => readPending,
+    scheduleObservedRun: (run) => scheduled.push(run.turnId),
+  });
+  const run = {
+    threadId: "thread-1",
+    projectRoot: "D:\\Work",
+    modelId: "gpt-5.6-codex",
+    reasoningId: "medium",
+    collaborationMode: "default",
+  };
+
+  await service.launch(run, "Start immediately");
+
+  assert.equal(run.providerStart.state, "accepted-awaiting-first-event");
+  assert.deepEqual(scheduled, ["turn-1"]);
+  finishRead({
+    thread: { turns: [{ id: "turn-1", items: [{ type: "userMessage" }] }] },
+  });
+});
+
+test("a provider event observed before the RPC response never regresses to awaiting", async () => {
+  const run = {
+    threadId: "thread-1",
+    projectRoot: "D:\\Work",
+    modelId: "gpt-5.6-codex",
+    reasoningId: "medium",
+    collaborationMode: "default",
+  };
+  const service = codexTurnService({
+    sendRpc: async () => {
+      run.turnId = "turn-1";
+      run.providerStart = {
+        ...run.providerStart,
+        state: "observed",
+        turnId: "turn-1",
+        acceptedAt: "2026-08-15T00:00:00.000Z",
+        firstEventAt: "2026-08-15T00:00:01.000Z",
+        firstEventMethod: "item/started",
+      };
+      return { turn: { id: "turn-1" } };
+    },
+  });
+
+  await service.launch(run, "Already producing events");
+
+  assert.equal(run.providerStart.state, "observed");
+  assert.equal(run.providerStart.firstEventMethod, "item/started");
+});
+
+test("an exact provider event prevents retry when the RPC response is lost", async () => {
+  const completed = [];
+  const scheduled = [];
+  const run = {
+    id: "run-1",
+    threadId: "thread-1",
+    projectRoot: "D:\\Work",
+    modelId: "gpt-5.6-codex",
+    reasoningId: "medium",
+    collaborationMode: "default",
+    status: "running",
+    displayRequested: true,
+  };
+  const service = codexTurnService({
+    sendRpc: async () => {
+      run.turnId = "turn-1";
+      run.providerStart = {
+        state: "observed",
+        turnId: "turn-1",
+        acceptedAt: "2026-08-15T00:00:00.000Z",
+        firstEventAt: "2026-08-15T00:00:01.000Z",
+        firstEventMethod: "item/started",
+      };
+      throw Object.assign(new Error("response channel closed after turn/started"), {
+        code: "ECONNRESET",
+        deliveryOutcome: "unknown",
+        uncertain: true,
+      });
+    },
+    completeRun: async (value) => completed.push(value.id),
+    scheduleObservedRun: (value) => scheduled.push(value.turnId),
+  });
+
+  await service.launch(run, "Already accepted");
+
+  assert.deepEqual(completed, []);
+  assert.deepEqual(scheduled, ["turn-1"]);
+  assert.equal(run.status, "running");
+});
+
+test("an ambiguous turn start adopts only the exact client message receipt", async () => {
+  const completed = [];
+  const scheduled = [];
+  const run = {
+    id: "run-1",
+    threadId: "thread-1",
+    clientUserMessageId: "message-1",
+    projectRoot: "D:\\Work",
+    modelId: "gpt-5.6-codex",
+    reasoningId: "medium",
+    collaborationMode: "default",
+    status: "running",
+  };
+  const service = codexTurnService({
+    sendRpc: async () => {
+      throw Object.assign(new Error("response channel closed"), {
+        deliveryOutcome: "unknown",
+        uncertain: true,
+      });
+    },
+    readThread: async () => ({
+      thread: {
+        turns: [
+          { id: "old-turn", items: [{ type: "userMessage", clientId: "old-message" }] },
+          { id: "turn-1", items: [{ type: "userMessage", clientId: "message-1" }] },
+        ],
+      },
+    }),
+    completeRun: async (value) => completed.push(value.id),
+    scheduleObservedRun: (value) => scheduled.push(value.turnId),
+  });
+
+  await service.launch(run, "Ambiguous but accepted");
+
+  assert.equal(run.turnId, "turn-1");
+  assert.equal(run.providerStart.state, "accepted-awaiting-first-event");
+  assert.deepEqual(completed, []);
+  assert.deepEqual(scheduled, ["turn-1"]);
+});
+
+test("an unconfirmed turn start is never retried automatically", async () => {
+  const completed = [];
+  const run = {
+    id: "run-1",
+    threadId: "thread-1",
+    clientUserMessageId: "message-1",
+    projectRoot: "D:\\Work",
+    modelId: "gpt-5.6-codex",
+    reasoningId: "medium",
+    collaborationMode: "default",
+    status: "running",
+  };
+  const service = codexTurnService({
+    sendRpc: async () => {
+      throw Object.assign(new Error("response channel closed"), {
+        deliveryOutcome: "unknown",
+        uncertain: true,
+      });
+    },
+    readThread: async () => ({
+      thread: { turns: [{ id: "old-turn", items: [{ type: "userMessage", clientId: "old-message" }] }] },
+    }),
+    completeRun: async (value) => completed.push(value.id),
+  });
+
+  await assert.rejects(
+    service.launch(run, "Do not duplicate"),
+    (error) => error.code === CODEX_TURN_START_UNCONFIRMED,
+  );
+  assert.deepEqual(completed, ["run-1"]);
+  assert.equal(run.providerStart.state, "unconfirmed");
+});
+
+test("a terminal provider event cannot be resurrected by a late RPC response", async () => {
+  const reindexed = [];
+  const scheduled = [];
+  const run = {
+    id: "run-1",
+    threadId: "thread-1",
+    clientUserMessageId: "message-1",
+    projectRoot: "D:\\Work",
+    modelId: "gpt-5.6-codex",
+    reasoningId: "medium",
+    collaborationMode: "default",
+    status: "running",
+  };
+  const service = codexTurnService({
+    sendRpc: async () => {
+      run.status = "completed";
+      run.admissionReleased = true;
+      return { turn: { id: "turn-1" } };
+    },
+    reindexRun: (value) => reindexed.push(value.id),
+    scheduleObservedRun: (value) => scheduled.push(value.turnId),
+  });
+
+  await service.launch(run, "Already completed");
+
+  assert.deepEqual(reindexed, []);
+  assert.deepEqual(scheduled, []);
+  assert.equal(run.turnId, undefined);
 });
 
 test("Codex turn service resolves developer instructions for every turn start", async () => {
@@ -118,7 +316,7 @@ test("Codex turn service resolves developer instructions for every turn start", 
   ]);
 });
 
-test("Codex turn service rejects an acknowledged turn without its user input", async () => {
+test("Codex turn service never rejects or repeats an acknowledged turn with a delayed Thread projection", async () => {
   const completed = [];
   const scheduled = [];
   const service = codexTurnService({
@@ -142,12 +340,10 @@ test("Codex turn service rejects an acknowledged turn without its user input", a
     collaborationMode: "default",
   };
 
-  await assert.rejects(
-    service.launch(run, "Message that must remain queued"),
-    (error) => error.code === CODEX_TURN_NOT_MATERIALIZED,
-  );
+  await service.launch(run, "Message that must remain queued");
 
-  assert.equal(run.turnId, undefined);
-  assert.deepEqual(scheduled, []);
-  assert.deepEqual(completed, ["run-1"]);
+  assert.equal(run.turnId, "turn-1");
+  assert.equal(run.providerStart.state, "accepted-awaiting-first-event");
+  assert.deepEqual(scheduled, ["turn-1"]);
+  assert.deepEqual(completed, []);
 });

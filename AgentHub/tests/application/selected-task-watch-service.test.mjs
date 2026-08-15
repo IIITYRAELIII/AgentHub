@@ -46,9 +46,6 @@ function fixture({
     },
     scheduleObservedRun: (run) => events.push(["observe", run]),
     saveState: async () => events.push(["save"]),
-    autoObserve: ({ task: captured, selectedTask: current }) => (
-      captured.threadId === current.threadId && snapshot?.active === true
-    ),
     taskKey: (value) => value.streamId,
     logger: {
       log: (...args) => events.push(["log", ...args]),
@@ -136,6 +133,15 @@ test("SelectedTaskWatchService records a new completed answer without observing 
   assert.equal(remembered[1].taskTitle, "Selected title");
   assert.equal(remembered[2], "Final");
   assert.deepEqual(remembered[3], { updatedAt: "2026-08-04T10:09:00.000Z" });
+});
+
+test("SelectedTaskWatchService never reobserves the recorded terminal turn from a stale active snapshot", async () => {
+  const state = fixture({ snapshot: { active: true, turnId: "turn-1" } });
+  state.lastSeen.set("stream-1", "turn-1");
+
+  assert.equal(await state.service.watch(), false);
+  assert.equal(state.events.some(([name]) => name === "create"), false);
+  assert.equal(state.events.some(([name]) => name === "observe"), false);
 });
 
 test("SelectedTaskWatchService clears a dismissal only after external activity ends", async () => {

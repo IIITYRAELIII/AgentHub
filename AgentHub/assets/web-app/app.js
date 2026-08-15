@@ -24,6 +24,7 @@ const {
   liveActivityDisclosureOpen,
   liveActivityTitle,
   liveStageParts,
+  standaloneLiveStageDetail,
   liveTraceDisclosureOpen,
   turnTraceContent,
 } = window.AgentHubMessageDisclosure;
@@ -2388,6 +2389,7 @@ function renderStreamChatPreview(task) {
         el("span", { class: "msg-author", "data-live-author": "" }),
         el("span", { class: "msg-stage", "data-live-stage": "" }),
       ]),
+      el("div", { class: "msg-reasoning msg-stage-detail", "data-live-stage-detail": "", hidden: true }),
       el("div", { class: "msg-reasoning", "data-live-reasoning": "", hidden: true }),
       el("div", { class: "live-turn-trace", "data-live-trace": "", hidden: true }),
       el("details", { class: "activity-feed", "data-activity-feed": "", hidden: true }, [
@@ -4321,8 +4323,12 @@ function populateLiveCard(node, live, fallbackAuthor = "Агент", task = curr
   const stageNode = node.querySelector("[data-live-stage]");
   stageNode.textContent = liveStage.status;
   stageNode.hidden = !liveStage.status;
-  const reasoning = node.querySelector("[data-live-reasoning]");
   const groups = visibleTurnTraceGroups(live.activityGroups);
+  const stageDetail = node.querySelector("[data-live-stage-detail]");
+  const standaloneStageDetail = standaloneLiveStageDetail({ stage: live.stage, traceGroups: groups });
+  stageDetail.textContent = standaloneStageDetail;
+  stageDetail.hidden = !standaloneStageDetail;
+  const reasoning = node.querySelector("[data-live-reasoning]");
   const standaloneReasoning = groups.length ? "" : live.reasoning || "";
   const fileContext = currentFileLinkContext(task);
   renderMarkdown(reasoning, standaloneReasoning, fileContext);

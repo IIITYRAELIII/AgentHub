@@ -141,7 +141,12 @@ test("CodexAppServerTransport times out requests and rejects them on exit", asyn
     rpcTimeoutMs: 10,
     onTimeout: (event) => timeouts.push(event),
   });
-  await assert.rejects(transport.request("slow"), /timed out after 10 ms/);
+  await assert.rejects(transport.request("slow"), (error) => {
+    assert.match(error.message, /timed out after 10 ms/u);
+    assert.equal(error.deliveryOutcome, "unknown");
+    assert.equal(error.uncertain, true);
+    return true;
+  });
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(timeouts.length, 1);
   assert.equal(timeouts[0].method, "slow");
@@ -149,7 +154,12 @@ test("CodexAppServerTransport times out requests and rejects them on exit", asyn
 
   const pending = transport.request("pending", {}, { timeoutMs: 5_000 });
   child.emit("exit", 7, null);
-  await assert.rejects(pending, /stopped \(code=7, signal=null\)/);
+  await assert.rejects(pending, (error) => {
+    assert.match(error.message, /stopped \(code=7, signal=null\)/u);
+    assert.equal(error.deliveryOutcome, "unknown");
+    assert.equal(error.uncertain, true);
+    return true;
+  });
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(transport.running, false);
   assert.equal(exits.length, 1);
@@ -240,7 +250,12 @@ test("CodexAppServerTransport includes queue wait in the RPC timeout", async () 
   const first = transport.request("thread/list", { limit: 1 }, { timeoutMs: 5_000 });
   await assert.rejects(
     transport.request("thread/read", { threadId: "thread-1" }, { timeoutMs: 10 }),
-    /timed out after 10 ms/u,
+    (error) => {
+      assert.match(error.message, /timed out after 10 ms/u);
+      assert.equal(error.deliveryOutcome, "not-sent");
+      assert.equal(error.uncertain, false);
+      return true;
+    },
   );
   assert.equal(timeouts.at(-1)?.method, "thread/read");
   child.emit("exit", 1, null);

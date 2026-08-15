@@ -7,6 +7,13 @@ import {
   hydrateCodexAgentMessages,
   startCodexAgentMessage,
 } from "./codex-agent-message-reducer.mjs";
+import { markProviderFirstEvent, markProviderTurnAccepted } from "../../domain/task-runs.mjs";
+
+function startsProviderResponse(method) {
+  return String(method ?? "").startsWith("item/")
+    || method === "turn/diff/updated"
+    || method === "turn/completed";
+}
 
 function requiredFunction(value, name) {
   if (typeof value !== "function") throw new TypeError(`${name} is required`);
@@ -79,6 +86,15 @@ export class CodexEventService {
         provider: "codex",
         allowThreadFallback: method === "turn/started",
       });
+    if (run && startsProviderResponse(method)) {
+      const firstEvent = markProviderFirstEvent(run, {
+        turnId: eventTurnId,
+        method,
+        occurredAt: params.startedAtMs ?? params.completedAtMs ?? Date.now(),
+        provider: "codex",
+      });
+      if (firstEvent) void d.saveState();
+    }
     if (method === "thread/settings/updated") {
       d.applyThreadSettings(params.threadId, params.threadSettings);
       void d.saveState();
@@ -94,6 +110,11 @@ export class CodexEventService {
         const previous = { turnId: run.turnId, threadId: run.threadId };
         run.turnId = eventTurnId;
         run.threadId = params.threadId ?? run.threadId;
+        markProviderTurnAccepted(run, {
+          turnId: eventTurnId,
+          acceptedAt: params.startedAtMs ?? Date.now(),
+          provider: "codex",
+        });
         d.reindexRun(run, previous);
       }
       if (eventTurnId && !d.turnTokenUsage.has(eventTurnId)) {

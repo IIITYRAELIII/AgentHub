@@ -53,6 +53,96 @@ export function createManagedTaskRun(value) {
   };
 }
 
+function providerLabel(provider) {
+  return String(provider ?? "").trim().toLowerCase() === "claude" ? "Claude" : "Codex";
+}
+
+function eventTimestamp(value = Date.now()) {
+  const timestamp = value instanceof Date
+    ? value.getTime()
+    : typeof value === "string"
+      ? Date.parse(value)
+      : Number(value);
+  return new Date(Number.isFinite(timestamp) ? timestamp : Date.now()).toISOString();
+}
+
+export function markProviderTurnRequested(run, {
+  clientUserMessageId = run?.clientUserMessageId,
+  requestedAt = Date.now(),
+  provider = run?.provider,
+} = {}) {
+  if (!run) return null;
+  const requestedAtIso = eventTimestamp(requestedAt);
+  run.providerStart = {
+    state: "requesting",
+    clientUserMessageId: String(clientUserMessageId ?? "").trim() || null,
+    requestedAt: requestedAtIso,
+    turnId: null,
+    acceptedAt: null,
+    firstEventAt: null,
+    firstEventMethod: null,
+  };
+  run.progressStage = `Отправляю запрос ${providerLabel(provider)}…`;
+  run.lastMeaningfulProgressAt = requestedAtIso;
+  return run.providerStart;
+}
+
+export function markProviderTurnAccepted(run, {
+  turnId,
+  acceptedAt = Date.now(),
+  provider = run?.provider,
+} = {}) {
+  if (!run) return null;
+  const exactTurnId = String(turnId ?? "").trim();
+  if (!exactTurnId) return null;
+  const previous = run.providerStart;
+  const sameTurn = String(previous?.turnId ?? "") === exactTurnId;
+  if (sameTurn && previous?.state === "observed") return previous;
+  const acceptedAtIso = sameTurn && previous?.acceptedAt
+    ? String(previous.acceptedAt)
+    : eventTimestamp(acceptedAt);
+  run.providerStart = {
+    state: "accepted-awaiting-first-event",
+    clientUserMessageId: String(
+      previous?.clientUserMessageId ?? run.clientUserMessageId ?? "",
+    ).trim() || null,
+    requestedAt: previous?.requestedAt ?? null,
+    turnId: exactTurnId,
+    acceptedAt: acceptedAtIso,
+    firstEventAt: null,
+    firstEventMethod: null,
+  };
+  run.progressStage = `${providerLabel(provider)} принял ход. Ожидается первый ответ…`;
+  run.lastMeaningfulProgressAt = acceptedAtIso;
+  return run.providerStart;
+}
+
+export function markProviderFirstEvent(run, {
+  turnId,
+  method,
+  occurredAt = Date.now(),
+  provider = run?.provider,
+} = {}) {
+  const providerStart = run?.providerStart;
+  const exactTurnId = String(turnId ?? "").trim();
+  if (
+    !providerStart
+    || providerStart.state !== "accepted-awaiting-first-event"
+    || !exactTurnId
+    || String(providerStart.turnId ?? "") !== exactTurnId
+  ) return false;
+  const firstEventAt = eventTimestamp(occurredAt);
+  run.providerStart = {
+    ...providerStart,
+    state: "observed",
+    firstEventAt,
+    firstEventMethod: String(method ?? "").trim() || null,
+  };
+  run.progressStage = `${providerLabel(provider)} начал отвечать…`;
+  run.lastMeaningfulProgressAt = firstEventAt;
+  return true;
+}
+
 export function createObservedTaskRun(value, snapshot = {}) {
   const run = {
     id: crypto.randomUUID(),
@@ -104,6 +194,9 @@ export class TaskRunRegistry {
   }
 
   reindex(run) {
+    if (!run?.id || this.#byId.get(run.id) !== run) {
+      throw new Error("cannot reindex an inactive task run");
+    }
     const newKey = taskRunKey(run);
     const taskCollision = this.#byTask.get(newKey);
     if (taskCollision && taskCollision !== run) throw new Error("this task is already running");

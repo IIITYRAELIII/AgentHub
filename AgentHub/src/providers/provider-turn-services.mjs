@@ -5,6 +5,7 @@ import { activeTurnMissing, interruptCodexTurnWithRecovery, startCodexTurnWithRe
 import { codexThreadSandboxSettings, codexTurnSandboxSettings } from "./codex/codex-sandbox.mjs";
 import { emptyTokenUsage } from "../domain/token-usage.mjs";
 import { estimateCodexContextBreakdown } from "../domain/context-usage-breakdown.mjs";
+import { markProviderTurnAccepted, markProviderTurnRequested } from "../domain/task-runs.mjs";
 
 function requiredFunction(value, name) {
   if (typeof value !== "function") throw new TypeError(`${name} is required`);
@@ -30,6 +31,7 @@ function codexTurnHasUserInput(turn) {
 }
 
 export const CODEX_TURN_NOT_MATERIALIZED = "ERR_CODEX_TURN_NOT_MATERIALIZED";
+export const CODEX_TURN_START_UNCONFIRMED = "ERR_CODEX_TURN_START_UNCONFIRMED";
 
 function turnNotMaterializedError(turnId) {
   const error = new Error(
@@ -39,6 +41,58 @@ function turnNotMaterializedError(turnId) {
   );
   error.code = CODEX_TURN_NOT_MATERIALIZED;
   return error;
+}
+
+function acceptedProviderTurn(run) {
+  const turnId = String(run?.turnId ?? "").trim();
+  const receiptTurnId = String(run?.providerStart?.turnId ?? "").trim();
+  return Boolean(
+    turnId
+      && receiptTurnId === turnId
+      && ["accepted-awaiting-first-event", "observed"].includes(run.providerStart?.state),
+  );
+}
+
+function runAcceptsProviderResult(run) {
+  return run?.admissionReleased !== true
+    && !["completed", "failed", "cancelled"].includes(String(run?.status ?? "running"));
+}
+
+function turnClientMessageIds(turn) {
+  return [
+    turn?.clientUserMessageId,
+    turn?.clientId,
+    ...(Array.isArray(turn?.userMessages) ? turn.userMessages.flatMap((message) => [
+      message?.clientUserMessageId,
+      message?.clientId,
+    ]) : []),
+    ...(Array.isArray(turn?.items) ? turn.items.flatMap((item) => (
+      item?.type === "userMessage" ? [item?.clientUserMessageId, item?.clientId] : []
+    )) : []),
+  ].map((value) => String(value ?? "").trim()).filter(Boolean);
+}
+
+function exactTurnForClientMessage(result, clientUserMessageId) {
+  const expected = String(clientUserMessageId ?? "").trim();
+  if (!expected) return null;
+  const thread = result?.thread ?? result;
+  return (Array.isArray(thread?.turns) ? thread.turns : [])
+    .find((turn) => turnClientMessageIds(turn).includes(expected)) ?? null;
+}
+
+function unconfirmedTurnStartError(error) {
+  const failure = new Error(
+    "Codex мог принять сообщение, но подтверждение запуска потеряно. Автоматический повтор запрещён.",
+    { cause: error },
+  );
+  failure.code = CODEX_TURN_START_UNCONFIRMED;
+  failure.deliveryOutcome = "unknown";
+  failure.uncertain = true;
+  return failure;
+}
+
+function ambiguousTurnStart(error) {
+  return error?.deliveryOutcome === "unknown" || error?.uncertain === true;
 }
 
 export async function waitForCodexTurnMaterialization({
@@ -91,6 +145,8 @@ export class CodexTurnService {
 
   async launch(run, input, temporaryFiles = [], { forceSpeechButton = false } = {}) {
     const d = this.#d;
+    let providerAccepted = false;
+    let turnStartAttempted = false;
     const recycle = d.compactionRecycle();
     if (recycle) await recycle;
     const items = codexInputItems(input);
@@ -103,22 +159,27 @@ export class CodexTurnService {
         threadId: run.threadId,
         streamId: run.streamId,
       });
+      markProviderTurnRequested(run, { provider: "codex" });
+      await d.saveState();
       const result = await startCodexTurnWithRecovery({
         threadId: run.threadId,
-        startTurn: () => d.sendRpc("turn/start", {
-          threadId: run.threadId,
-          input: items,
-          clientUserMessageId: run.clientUserMessageId ?? undefined,
-          model: run.modelId,
-          effort: run.reasoningId,
-          collaborationMode: buildCodexCollaborationMode({
-            mode: run.collaborationMode,
+        startTurn: () => {
+          turnStartAttempted = true;
+          return d.sendRpc("turn/start", {
+            threadId: run.threadId,
+            input: items,
+            clientUserMessageId: run.clientUserMessageId ?? undefined,
             model: run.modelId,
-            reasoningEffort: run.reasoningId,
-            developerInstructions,
-          }),
-          ...codexTurnSandboxSettings(d.sandboxMode(), run.projectRoot),
-        }),
+            effort: run.reasoningId,
+            collaborationMode: buildCodexCollaborationMode({
+              mode: run.collaborationMode,
+              model: run.modelId,
+              reasoningEffort: run.reasoningId,
+              developerInstructions,
+            }),
+            ...codexTurnSandboxSettings(d.sandboxMode(), run.projectRoot),
+          });
+        },
         resume: (params) => d.sendRpc("thread/resume", {
           ...params,
           ...codexThreadSandboxSettings(d.sandboxMode()),
@@ -126,16 +187,12 @@ export class CodexTurnService {
         rollback: (params) => d.sendRpc("thread/rollback", params),
       });
       const turnId = String(result?.turn?.id ?? result?.turnId ?? "").trim();
-      await waitForCodexTurnMaterialization({
-        readThread: d.readThread,
-        threadId: run.threadId,
-        turnId,
-        timeoutMs: d.turnMaterializationTimeoutMs,
-        pollMs: d.turnMaterializationPollMs,
-        sleep: d.sleep,
-      });
+      if (!turnId) throw turnNotMaterializedError("");
+      if (!runAcceptsProviderResult(run)) return;
       const previousTurnId = run.turnId;
       run.turnId = turnId;
+      markProviderTurnAccepted(run, { turnId, provider: "codex" });
+      providerAccepted = true;
       d.reindexRun(run, { turnId: previousTurnId });
       d.speechButtons.set(run.turnId, forceSpeechButton);
       if (temporaryFiles.length) d.temporaryFiles.set(run.turnId, temporaryFiles);
@@ -154,7 +211,72 @@ export class CodexTurnService {
       await d.saveState();
       if (run.displayRequested) d.startTyping();
       d.scheduleObservedRun(run);
+      void waitForCodexTurnMaterialization({
+        readThread: d.readThread,
+        threadId: run.threadId,
+        turnId,
+        timeoutMs: d.turnMaterializationTimeoutMs,
+        pollMs: d.turnMaterializationPollMs,
+        sleep: d.sleep,
+      }).then(async () => {
+        if (String(run.providerStart?.turnId ?? "") !== turnId) return;
+        run.providerStart = { ...run.providerStart, materializedAt: new Date().toISOString() };
+        await d.saveState();
+      }).catch((error) => {
+        d.logWarn?.(`Codex Turn ${turnId} принят, но его Thread-проекция пока не подтверждена:`, error);
+      });
     } catch (error) {
+      if (providerAccepted || acceptedProviderTurn(run)) {
+        d.logError?.(`Codex Turn ${run.turnId} уже принят; повторный запуск запрещён:`, error);
+        try {
+          await d.saveState();
+        } catch (saveError) {
+          d.logError?.(`Не удалось повторно сохранить принятый Codex Turn ${run.turnId}:`, saveError);
+        }
+        if (run.status === "running") {
+          if (run.displayRequested) d.startTyping();
+          d.scheduleObservedRun(run);
+        }
+        return;
+      }
+      if (turnStartAttempted && ambiguousTurnStart(error)) {
+        let exactTurn = null;
+        try {
+          exactTurn = exactTurnForClientMessage(
+            await d.readThread(run.threadId, {
+              fresh: true,
+              includeTurns: true,
+              priority: "interactive",
+              turnLimit: 8,
+              turnPageSize: 8,
+            }),
+            run.clientUserMessageId,
+          );
+        } catch (reconciliationError) {
+          d.logWarn?.("Не удалось сверить неопределённый запуск Codex:", reconciliationError);
+        }
+        if (acceptedProviderTurn(run)) {
+          if (run.status === "running") d.scheduleObservedRun(run);
+          return;
+        }
+        if (exactTurn?.id && runAcceptsProviderResult(run)) {
+          const previousTurnId = run.turnId;
+          run.turnId = String(exactTurn.id);
+          markProviderTurnAccepted(run, { turnId: run.turnId, provider: "codex" });
+          d.reindexRun(run, { turnId: previousTurnId });
+          await d.saveState();
+          if (run.displayRequested) d.startTyping();
+          d.scheduleObservedRun(run);
+          return;
+        }
+        run.providerStart = {
+          ...run.providerStart,
+          state: "unconfirmed",
+          failedAt: new Date().toISOString(),
+        };
+        await d.saveState();
+        error = unconfirmedTurnStartError(error);
+      }
       await Promise.all(temporaryFiles.map((file) => unlink(file).catch(() => {})));
       await d.finishProgress(run, `Ошибка запуска: ${error.message}`);
       await d.completeRun(run);

@@ -22,6 +22,11 @@ const BOT_FILE = path.join(AGENT_HUB_ROOT, "agent-hub-main.mjs");
 const FAKE_CODEX_FILE = path.join(AGENT_HUB_ROOT, "e2e", "fake-codex-app-server.mjs");
 const FAKE_CLAUDE_FILE = path.join(AGENT_HUB_ROOT, "e2e", "fake-claude-cli.mjs");
 const FAKE_TTS_FILE = path.join(AGENT_HUB_ROOT, "e2e", "fake-tts-worker.mjs");
+function waitForCodexAccepted(telegram, { after, timeoutMs } = {}) {
+  return telegram.waitForCall("sendMessage", (call) => (
+    /Codex (?:принял ход|начал отвечать)/u.test(String(call.body.text ?? ""))
+  ), { after, timeoutMs });
+}
 
 function callbackAction(value) {
   return String(value ?? "").replace(/:u:[0-9a-f]{12}$/i, "");
@@ -523,10 +528,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   telegram.pushMessage("[slow] обычное завершение");
   let normalProgress;
   try {
-    normalProgress = await telegram.waitForText(
-      "Задача принята.",
-      { after: mark, timeoutMs: 12_000 },
-    );
+    normalProgress = await waitForCodexAccepted(telegram, { after: mark, timeoutMs: 12_000 });
   } catch (error) {
     const failedState = await readJson(statePath).catch(() => null);
     const failedOutbox = await readdir(path.join(dataDir, "delivery-outbox")).catch(() => []);
@@ -698,8 +700,8 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
 
   mark = telegram.calls.length;
   telegram.pushMessage("[hold] основной ход");
-  const progress = await telegram.waitForText("Задача принята.", { after: mark });
-  assert.match(progress.body.text, /Ответ формируется|Задача принята|Проверяю сценарий/);
+  const progress = await waitForCodexAccepted(telegram, { after: mark });
+  assert.match(progress.body.text, /Ответ формируется|Codex принял ход|Проверяю сценарий/);
   await waitFor(async () => (await readJson(statePath)).activeRuns.length === 1, "held run registration");
   const readsBeforeManagedFallback = Number(
     (await readJson(codexStatePath)).requestCounts?.["thread/read"] ?? 0,
@@ -757,7 +759,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
     .find((button) => button.callback_data.startsWith("pending:new:"));
   mark = telegram.calls.length;
   telegram.pushCallback(newButton.callback_data, newDeferred.result);
-  const parallelProgress = await telegram.waitForText("Задача принята.", { after: mark });
+  const parallelProgress = await waitForCodexAccepted(telegram, { after: mark });
   const parallelThreadId = (await readJson(statePath)).threadIds.codex;
   assert.notEqual(parallelThreadId, firstThreadId);
   await waitFor(async () => (await readJson(statePath)).activeRuns.length === 2,
@@ -876,7 +878,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
 
   mark = telegram.calls.length;
   telegram.pushMessage("[hold] ход для глазок");
-  await telegram.waitForText("Задача принята.", { after: mark });
+  await waitForCodexAccepted(telegram, { after: mark });
   const finalSource = queuedFinal.result;
   const progressBeforeView = await waitFor(async () => (
     (await readJson(statePath)).activeRuns[0]?.progressMessageIds?.[0] ?? null
@@ -937,7 +939,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
 
   mark = telegram.calls.length;
   telegram.pushMessage("[hold] восстановление после процесса");
-  await telegram.waitForText("Задача принята.", { after: mark });
+  await waitForCodexAccepted(telegram, { after: mark });
   const oldBot = bot;
   oldBot.kill("SIGTERM");
   await new Promise((resolve) => oldBot.once("exit", resolve));
@@ -958,7 +960,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
 
   mark = telegram.calls.length;
   telegram.pushMessage("[orphan-approval] восстановление потерянного запроса");
-  await telegram.waitForText("Задача принята.", { after: mark });
+  await waitForCodexAccepted(telegram, { after: mark });
   const orphanedBot = bot;
   orphanedBot.kill("SIGTERM");
   await new Promise((resolve) => orphanedBot.once("exit", resolve));

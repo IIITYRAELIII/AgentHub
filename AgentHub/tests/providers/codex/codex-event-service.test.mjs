@@ -79,7 +79,17 @@ test("Codex event service applies canonical completed agent messages", async () 
 });
 
 test("Codex event service exposes commentary as a live reasoning block", async () => {
-  const run = { responseText: "", responseItems: [], status: "running" };
+  const run = {
+    provider: "codex",
+    responseText: "",
+    responseItems: [],
+    status: "running",
+    providerStart: {
+      state: "accepted-awaiting-first-event",
+      turnId: "t1",
+      acceptedAt: "2026-08-15T00:00:00.000Z",
+    },
+  };
   const blocks = [];
   const service = createService(run, {
     upsertReasoningBlock: (_run, block) => blocks.push(block),
@@ -88,6 +98,8 @@ test("Codex event service exposes commentary as a live reasoning block", async (
     method: "item/started",
     params: { turnId: "t1", item: { id: "comment-1", type: "agentMessage", phase: "commentary" } },
   });
+  assert.equal(run.providerStart.state, "observed");
+  assert.equal(run.providerStart.firstEventMethod, "item/started");
   await service.handle({
     method: "item/agentMessage/delta",
     params: { turnId: "t1", itemId: "comment-1", delta: "Проверяю." },

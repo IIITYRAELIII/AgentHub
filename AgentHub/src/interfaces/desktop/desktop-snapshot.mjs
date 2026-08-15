@@ -194,6 +194,7 @@ export function createDesktopSnapshotFactory({
       model: run.model ?? null,
       reasoning: run.reasoning ?? null,
       stage: String(run.progressStage ?? "Выполняется…"),
+      ...(run.providerStart ? { providerStart: structuredClone(run.providerStart) } : {}),
       prompt: displayUserPrompt(run.promptPreview),
       ...(promptInterstream ? { promptAuthor: promptInterstream.author } : {}),
       attachments: Array.isArray(run.messageAttachments)

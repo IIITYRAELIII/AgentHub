@@ -555,6 +555,18 @@ test("desktopTaskSnapshot does not expose a retained completed run as active", (
   assert.equal(snapshot.run, null);
 });
 
+test("desktop task snapshot exposes the durable provider-start phase", () => {
+  const { desktopTaskSnapshot, entry, state } = fixture();
+  state.run.providerStart = {
+    state: "accepted-awaiting-first-event",
+    turnId: "turn-1",
+    acceptedAt: "2026-08-15T00:00:00.000Z",
+    firstEventAt: null,
+    firstEventMethod: null,
+  };
+  assert.deepEqual(desktopTaskSnapshot(entry).run.providerStart, state.run.providerStart);
+});
+
 test("an inactive catalog entry without a run stays inactive", () => {
   const { desktopTaskSnapshot, entry } = fixture({ run: null });
   const snapshot = desktopTaskSnapshot({
