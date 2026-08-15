@@ -9,6 +9,7 @@ const FORMAT_VERSION = 1;
 const TASK_SCHEMA_VERSION = 7;
 const MODEL_BACKFILL_VERSION = "1";
 const SEARCH_BACKFILL_VERSION = "2";
+const TERMINAL_HISTORY_BACKFILL_VERSION = "1";
 const DEFAULT_HISTORY_LIMIT = 50;
 const DEFAULT_RUNNING_FRESHNESS_MS = 10 * 60 * 1000;
 const DEFAULT_TASK_LIMIT = 1_000;
@@ -81,6 +82,43 @@ function withoutPromptlessAnswerEchoes(history) {
   return values;
 }
 
+function mergePersistedSyntheticRoot(turn) {
+  const messages = Array.isArray(turn?.messages) ? turn.messages : [];
+  const syntheticId = `${String(turn?.id ?? "").trim()}:rollout-user:0`;
+  const syntheticIndex = messages.findIndex((message) => (
+    message.role === "user"
+    && message.itemId === syntheticId
+    && !message.clientUserMessageId
+  ));
+  if (syntheticIndex < 0) return turn;
+  const canonicalIndex = messages.findIndex((message, index) => (
+    index < syntheticIndex
+    && message.role === "user"
+    && Boolean(message.clientUserMessageId)
+  ));
+  if (canonicalIndex < 0) return turn;
+  const canonical = messages[canonicalIndex];
+  const knownAttachments = new Set();
+  const attachments = [
+    ...(Array.isArray(canonical.attachments) ? canonical.attachments : []),
+    ...(Array.isArray(messages[syntheticIndex].attachments)
+      ? messages[syntheticIndex].attachments
+      : []),
+  ].filter((attachment) => {
+    const id = String(attachment?.id ?? "").trim().toLowerCase();
+    if (!id || knownAttachments.has(id)) return false;
+    knownAttachments.add(id);
+    return true;
+  });
+  return {
+    ...turn,
+    messages: messages.flatMap((message, index) => {
+      if (index === canonicalIndex) return [{ ...canonical, attachments }];
+      return index === syntheticIndex ? [] : [message];
+    }),
+  };
+}
+
 function cleanHistory(history, limit) {
   const cleaned = (Array.isArray(history) ? history : [])
     .map((item) => ({
@@ -130,7 +168,7 @@ function cleanHistory(history, limit) {
           }];
         }),
     }));
-  return withoutPromptlessAnswerEchoes(cleaned).slice(-limit);
+  return withoutPromptlessAnswerEchoes(cleaned.map(mergePersistedSyntheticRoot)).slice(-limit);
 }
 
 const TERMINAL_TURN_STATUSES = new Set([
@@ -685,6 +723,93 @@ export class LocalTaskSyncStore {
     return null;
   }
 
+  #reconcileHistoryWithJournal(task, history, { missingJournalOkay = true } = {}) {
+    const provider = cleanText(task?.provider, 20).toLowerCase();
+    const threadId = cleanText(task?.threadId, 100);
+    const turns = Array.isArray(history) ? history : [];
+    const turnIds = [...new Set(turns.map((turn) => cleanText(turn?.id, 100)).filter(Boolean))];
+    if (!provider || !threadId || !turnIds.length) return turns;
+    const placeholders = turnIds.map(() => "?").join(", ");
+    let rows;
+    try {
+      rows = this.#database.prepare(`
+        SELECT turn_id, record_json FROM journal_records
+        WHERE provider = ?
+          AND (task_thread_id = ? OR thread_id = ?)
+          AND turn_id IN (${placeholders})
+      `).all(provider, threadId, threadId, ...turnIds);
+    } catch (error) {
+      if (missingJournalOkay && /no such table:\s*journal_records/iu.test(String(error?.message ?? ""))) {
+        return turns;
+      }
+      throw error;
+    }
+    const terminals = new Map();
+    for (const row of rows) {
+      let record;
+      try { record = JSON.parse(String(row.record_json ?? "{}")); } catch { continue; }
+      const status = cleanText(record?.status, 40);
+      if (!TERMINAL_TURN_STATUSES.has(status.toLowerCase())) continue;
+      terminals.set(String(row.turn_id), record);
+    }
+    if (!terminals.size) return turns;
+    return turns.map((turn) => {
+      const record = terminals.get(String(turn?.id ?? "").trim());
+      if (!record) return turn;
+      return {
+        ...turn,
+        prompt: cleanText(record.prompt, 12_000) || turn.prompt,
+        answer: turn.answer || cleanText(record.body ?? record.text, 40_000),
+        status: cleanText(record.status, 40),
+        active: false,
+        completed: true,
+        ...(record.startedAt ? { startedAt: cleanText(record.startedAt, 80) } : {}),
+        ...(record.completedAt ? { completedAt: cleanText(record.completedAt, 80) } : {}),
+      };
+    });
+  }
+
+  #backfillTerminalHistoryFromJournal() {
+    const tasks = this.#database.prepare(
+      "SELECT provider, thread_id FROM task_read_model_tasks",
+    ).all();
+    for (const row of tasks) {
+      const existing = this.#readTask({ provider: row.provider, threadId: row.thread_id }, true);
+      if (!existing) continue;
+      const repairedHistory = cleanHistory(this.#reconcileHistoryWithJournal(
+        existing,
+        existing.history,
+        { missingJournalOkay: false },
+      ), this.#historyLimit);
+      const terminals = terminalHistoryTurns(repairedHistory);
+      const effectiveSnapshot = terminalSafeSnapshot(existing, {
+        active: existing.running === true,
+        turnId: existing.turnId,
+        executionOwner: existing.executionOwner,
+        activityAtMs: existing.lastActivityAtMs,
+        stage: existing.stage,
+        answer: existing.answer,
+      }, terminals);
+      const next = persistedTask({
+        ...existing,
+        running: effectiveSnapshot.active === true,
+        executionOwner: effectiveSnapshot.executionOwner,
+        turnId: effectiveSnapshot.turnId,
+        lastActivityAtMs: effectiveSnapshot.activityAtMs,
+        stage: effectiveSnapshot.stage,
+        answer: effectiveSnapshot.answer,
+        history: repairedHistory,
+      }, this.#canonicalizeProjectRoot);
+      const historyChanged = JSON.stringify(existing.history) !== JSON.stringify(repairedHistory);
+      const metadataChanged = taskMetadataChanged(existing, next);
+      if (metadataChanged) this.#writeTask(next);
+      if (historyChanged) {
+        this.#writeHistory(next, repairedHistory);
+        this.#writeSearchHistory(next, repairedHistory);
+      }
+    }
+  }
+
   #backfillModelsFromJournal() {
     const tasks = this.#database.prepare(`
       SELECT provider, thread_id FROM task_read_model_tasks
@@ -1106,6 +1231,11 @@ export class LocalTaskSyncStore {
       const journalIdentity = this.#journalBackfillIdentity();
       if (!journalIdentity) return;
       this.#runVersionedBackfill(
+        "backfill_terminal_task_history_version",
+        TERMINAL_HISTORY_BACKFILL_VERSION,
+        () => this.#backfillTerminalHistoryFromJournal(),
+      );
+      this.#runVersionedBackfill(
         "backfill_models_from_journal_version",
         `${MODEL_BACKFILL_VERSION}:${journalIdentity}`,
         () => this.#backfillModelsFromJournal(),
@@ -1202,7 +1332,8 @@ export class LocalTaskSyncStore {
   recordHistory(task, history, snapshot = null, nowMs = Date.now()) {
     const existing = this.#readTask(task, true) ?? {};
     const terminals = terminalHistoryTurns(existing.history);
-    const reconciledHistory = preserveTerminalHistory(terminals, history);
+    const journalHistory = this.#reconcileHistoryWithJournal(task, history);
+    const reconciledHistory = preserveTerminalHistory(terminals, journalHistory);
     const cleanedHistory = cleanHistory(reconciledHistory, this.#historyLimit);
     const effectiveSnapshot = terminalSafeSnapshot(existing, snapshot, terminals);
     const next = persistedTask({

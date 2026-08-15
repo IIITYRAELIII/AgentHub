@@ -911,6 +911,123 @@ test("a stale live snapshot cannot reactivate a recovered terminal task", async 
   store.close();
 });
 
+test("startup repairs already corrupted terminal rows and synthetic root duplicates", async () => {
+  const filePath = await storeFile();
+  const databaseFile = path.join(path.dirname(filePath), "journal.sqlite");
+  let store = new LocalTaskSyncStore({ filePath, databaseFile });
+  await store.load();
+  store.recordHistory(task, [
+    {
+      id: "turn-aborted",
+      prompt: "Старый общий prompt",
+      status: "inProgress",
+      active: true,
+      completed: false,
+      messages: [
+        {
+          itemId: "official-root",
+          clientUserMessageId: "client-root",
+          role: "user",
+          text: "Старый общий prompt",
+          attachments: [{ id: "screen.png", name: "screen.png", type: "image/png" }],
+        },
+        {
+          itemId: "turn-aborted:rollout-user:0",
+          role: "user",
+          text: "Старый общий prompt",
+        },
+      ],
+    },
+    {
+      id: "turn-completed",
+      prompt: "Неверный prompt",
+      status: "inProgress",
+      active: true,
+      completed: false,
+    },
+    {
+      id: "turn-current",
+      prompt: "Текущий вопрос",
+      answer: "Работаю",
+      status: "inProgress",
+      active: true,
+      completed: false,
+    },
+  ], {
+    active: true,
+    turnId: "turn-current",
+    executionOwner: TASK_EXECUTION_OWNERS.DESKTOP,
+    activityAtMs: 20_000,
+  }, 20_000);
+  store.close();
+
+  const database = new DatabaseSync(databaseFile);
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS journal_records (
+      provider TEXT NOT NULL,
+      thread_id TEXT NOT NULL,
+      turn_id TEXT NOT NULL,
+      project_root TEXT NOT NULL,
+      task_thread_id TEXT NOT NULL,
+      completed_at_ms INTEGER NOT NULL,
+      record_json TEXT NOT NULL,
+      PRIMARY KEY (provider, thread_id, turn_id)
+    ) WITHOUT ROWID
+  `);
+  const insert = database.prepare(`
+    INSERT INTO journal_records
+      (provider, thread_id, turn_id, project_root, task_thread_id, completed_at_ms, record_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
+  insert.run(task.provider, task.threadId, "turn-aborted", task.projectRoot, task.threadId, 21_000,
+    JSON.stringify({
+      status: "aborted",
+      prompt: "Вопрос со скриншотом",
+      body: "Ход остановлен пользователем.",
+      startedAt: "2026-08-15T15:00:00.000Z",
+      completedAt: "2026-08-15T15:00:01.000Z",
+    }));
+  insert.run(task.provider, task.threadId, "turn-completed", task.projectRoot, task.threadId, 22_000,
+    JSON.stringify({
+      status: "completed",
+      prompt: "Фактический вопрос",
+      body: "Ход завершён.",
+      startedAt: "2026-08-15T15:01:00.000Z",
+      completedAt: "2026-08-15T15:02:00.000Z",
+    }));
+  database.close();
+
+  store = new LocalTaskSyncStore({ filePath, databaseFile });
+  await store.load();
+  const history = store.history(task);
+  assert.deepEqual(history.map((turn) => ({
+    id: turn.id,
+    prompt: turn.prompt,
+    status: turn.status,
+    active: turn.active,
+    completed: turn.completed,
+  })), [
+    { id: "turn-aborted", prompt: "Вопрос со скриншотом", status: "aborted", active: false, completed: true },
+    { id: "turn-completed", prompt: "Фактический вопрос", status: "completed", active: false, completed: true },
+    { id: "turn-current", prompt: "Текущий вопрос", status: "inProgress", active: true, completed: false },
+  ]);
+  assert.equal(history[0].messages.length, 1);
+  assert.equal(history[0].messages[0].clientUserMessageId, "client-root");
+  assert.deepEqual(history[0].messages[0].attachments, [
+    { id: "screen.png", name: "screen.png", type: "image/png" },
+  ]);
+  assert.deepEqual(store.snapshot(task, { nowMs: 20_000 }), {
+    active: true,
+    completed: false,
+    turnId: "turn-current",
+    activityAtMs: 20_000,
+    executionOwner: TASK_EXECUTION_OWNERS.DESKTOP,
+    stage: "",
+    answer: "",
+  });
+  store.close();
+});
+
 test("task sync evicts oldest completed cache entries but never active ones", async () => {
   const filePath = await storeFile();
   const store = new LocalTaskSyncStore({ filePath, taskLimit: 3 });
