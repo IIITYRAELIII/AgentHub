@@ -173,7 +173,7 @@ export async function createProviderApplicationComposition({
     },
     afterCompletion: async (run) => {
       const maintenance = streamContextMaintenance.maintainAfterTurn(run);
-      if (hostState.restartRequest?.waitingForRuns && !hostState.stopping) {
+      if (hostState.restartRequest && !hostState.stopping) {
         void maintenance.finally(() => api.scheduleDeferredRestartIfReady());
       }
     },

@@ -392,6 +392,7 @@ export class PublicAuthAttemptLimiter {
 }
 
 export class MiniAppServer {
+  #activeHandlers = new Set();
   #allowedUserIds;
   #assetBundle;
   #assetBundleProvider;
@@ -421,6 +422,7 @@ export class MiniAppServer {
   #publicAuthAttempts = new PublicAuthAttemptLimiter();
   #requireTelegramAuth;
   #server = null;
+  #closePromise = null;
   #workspaceFileRoots;
 
   constructor({
@@ -1125,15 +1127,18 @@ export class MiniAppServer {
   }
 
   async start() {
+    if (this.#closePromise) await this.#closePromise;
     if (this.#server) return this.address();
     const server = createServer((request, response) => {
-      void this.#handle(request, response).catch((error) => {
+      const handling = this.#handle(request, response).catch((error) => {
         if (!response.headersSent) {
           send(response, 500, "text/plain; charset=utf-8", `Mini App error: ${error.message}\n`);
         } else {
           response.destroy(error);
         }
       });
+      this.#activeHandlers.add(handling);
+      void handling.finally(() => this.#activeHandlers.delete(handling));
     });
     server.headersTimeout = 15_000;
     server.requestTimeout = 30_000;
@@ -1170,17 +1175,33 @@ export class MiniAppServer {
   }
 
   async close() {
+    if (this.#closePromise) return this.#closePromise;
     const server = this.#server;
+    if (!server) return;
     this.#server = null;
-    if (this.#changeTimer) clearTimeout(this.#changeTimer);
-    this.#changeTimer = null;
-    if (this.#heartbeatTimer) clearInterval(this.#heartbeatTimer);
-    this.#heartbeatTimer = null;
-    this.#unsubscribeJournal?.();
-    this.#unsubscribeJournal = null;
-    for (const response of this.#clients) response.end();
-    this.#clients.clear();
-    if (server?.listening) await new Promise((resolve) => server.close(resolve));
-    if (this.#ownsJournalDatabase) this.#journalDatabase.close();
+    this.#closePromise = (async () => {
+      if (this.#changeTimer) clearTimeout(this.#changeTimer);
+      this.#changeTimer = null;
+      if (this.#heartbeatTimer) clearInterval(this.#heartbeatTimer);
+      this.#heartbeatTimer = null;
+      this.#unsubscribeJournal?.();
+      this.#unsubscribeJournal = null;
+      for (const response of this.#clients) response.end();
+      this.#clients.clear();
+      if (server.listening) {
+        await new Promise((resolve, reject) => {
+          server.close((error) => (error ? reject(error) : resolve()));
+          server.closeIdleConnections?.();
+          server.closeAllConnections?.();
+        });
+      }
+      await Promise.allSettled([...this.#activeHandlers]);
+      if (this.#ownsJournalDatabase) this.#journalDatabase.close();
+    })();
+    try {
+      await this.#closePromise;
+    } finally {
+      this.#closePromise = null;
+    }
   }
 }

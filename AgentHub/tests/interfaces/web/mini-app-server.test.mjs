@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { createConnection } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -29,6 +30,37 @@ const DAY_HTML = [
   "</details>",
 ].join("");
 const BOT_TOKEN = "123456789:test-token";
+
+test("Mini App close terminates an incomplete HTTP connection and can restart", async () => {
+  const server = new MiniAppServer({
+    host: "127.0.0.1",
+    port: 0,
+    journalDatabase: memoryJournal(DAY_HTML),
+  });
+  const address = await server.start();
+  const socket = createConnection({ host: address.host, port: address.port });
+  socket.on("error", () => {});
+  await new Promise((resolve) => socket.once("connect", resolve));
+  const socketClosed = new Promise((resolve) => socket.once("close", resolve));
+  socket.write("GET /api/journal HTTP/1.1\r\nHost: localhost\r\n");
+
+  try {
+    await Promise.race([
+      server.close(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("Mini App close timed out")), 1_000)),
+    ]);
+    await Promise.race([
+      socketClosed,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("Mini App socket stayed open")), 1_000)),
+    ]);
+    assert.equal(socket.destroyed, true);
+    const restarted = await server.start();
+    assert.equal((await fetch(`${restarted.url}health`)).status, 200);
+  } finally {
+    socket.destroy();
+    await server.close();
+  }
+});
 
 function memoryJournal(html = "") {
   let revision = 0;

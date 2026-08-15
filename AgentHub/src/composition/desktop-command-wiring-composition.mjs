@@ -160,6 +160,7 @@ export function createDesktopCommandWiring({
       announceDesktop: services.announceDesktopRestart,
       sendTelegram: services.sendTelegram,
       performRestart: services.performRestart,
+      isStopping: state.isStopping,
     },
     navigation: {
       projects,

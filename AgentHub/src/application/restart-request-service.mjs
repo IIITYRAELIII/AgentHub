@@ -10,6 +10,7 @@ export class RestartRequestService {
     announceDesktop,
     sendTelegram,
     performRestart,
+    isStopping = () => false,
     scheduleRestart = (callback) => setTimeout(callback, 0).unref(),
     nowIso = () => new Date().toISOString(),
   }) {
@@ -24,6 +25,7 @@ export class RestartRequestService {
       announceDesktop,
       sendTelegram,
       performRestart,
+      isStopping,
       scheduleRestart,
       nowIso,
     });
@@ -41,7 +43,20 @@ export class RestartRequestService {
   }
 
   async fromDesktop() {
-    if (this.getRequest()) return { accepted: false, message: "Перезапуск уже запрошен" };
+    if (this.getRequest()) {
+      const blockingCount = this.blockingWorkCount();
+      const stopping = this.isStopping();
+      if (!blockingCount && !stopping) this.scheduleRestart(() => void this.performRestart());
+      return {
+        accepted: false,
+        waiting: blockingCount > 0,
+        message: stopping
+          ? "Перезапуск уже выполняется"
+          : blockingCount > 0
+          ? "Перезапуск уже ожидает завершения задач"
+          : "Перезапуск уже запрошен и запущен повторно",
+      };
+    }
     const blockingCount = this.blockingWorkCount();
     const request = this.#request({
       messageId: null,

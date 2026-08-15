@@ -13,6 +13,7 @@ export function createRuntimeRestartWiring({
   runtimeRestart,
 }) {
   let runtimeRestartController;
+  let restartScheduled = false;
 
   function restartBlockingRuns() {
     return taskRuns.values().filter((run) => (
@@ -37,9 +38,13 @@ export function createRuntimeRestartWiring({
   }
 
   function scheduleDeferredRestartIfReady() {
-    if (getRestartRequest()?.waitingForRuns && !restartHasBlockingWork() && !isStopping()) {
-      setTimeout(() => void performRestart(), 0).unref?.();
-    }
+    if (!getRestartRequest() || restartHasBlockingWork() || isStopping() || restartScheduled) return false;
+    restartScheduled = true;
+    setTimeout(() => {
+      restartScheduled = false;
+      void performRestart();
+    }, 0).unref?.();
+    return true;
   }
 
   const composition = createRuntimeRestartComposition({

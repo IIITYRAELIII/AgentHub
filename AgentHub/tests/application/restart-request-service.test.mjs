@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { RestartRequestService } from "../../src/application/restart-request-service.mjs";
 
-function fixture({ blockingCount = 0, processingId = null } = {}) {
+function fixture({ blockingCount = 0, processingId = null, stopping = false } = {}) {
   let request = null;
   const events = [];
   const service = new RestartRequestService({
@@ -20,6 +20,7 @@ function fixture({ blockingCount = 0, processingId = null } = {}) {
       return { message_id: 30 };
     },
     performRestart: async () => events.push("restart"),
+    isStopping: () => stopping,
     scheduleRestart: (callback) => {
       events.push("schedule");
       callback();
@@ -37,6 +38,30 @@ test("desktop restart persists before scheduling replacement", async () => {
   assert.equal(state.request().notifyTelegram, false);
   assert.deepEqual(state.events.slice(0, 2), ["save", "announce"]);
   assert.equal(state.events.includes("schedule"), true);
+});
+
+test("repeated desktop restart re-arms a pending request after work becomes idle", async () => {
+  const state = fixture();
+  await state.service.fromDesktop();
+  state.events.length = 0;
+
+  const result = await state.service.fromDesktop();
+
+  assert.equal(result.accepted, false);
+  assert.equal(result.waiting, false);
+  assert.deepEqual(state.events, ["schedule", "restart"]);
+});
+
+test("repeated desktop restart does not schedule a second cutover while stopping", async () => {
+  const state = fixture({ stopping: true });
+  await state.service.fromDesktop();
+  state.events.length = 0;
+
+  const result = await state.service.fromDesktop();
+
+  assert.equal(result.accepted, false);
+  assert.equal(result.message, "Перезапуск уже выполняется");
+  assert.deepEqual(state.events, []);
 });
 
 test("Telegram restart waits for the current update and active work", async () => {

@@ -355,6 +355,7 @@ export function createDesktopShellComposition({
       processingUpdateId: () => hostState.processingUpdateId,
       restartRequest: () => hostState.restartRequest,
       setRestartRequest: (value) => hostState.setRestartRequest(value),
+      isStopping: () => hostState.stopping,
       latestDiff: () => hostState.latestDiff,
       setLatestDiff: (value) => hostState.setLatestDiff(value),
       isCodex,
