@@ -411,6 +411,7 @@ export class MiniAppServer {
   #heartbeatTimer = null;
   #host;
   #health;
+  #handlerCloseTimeoutMs;
   #journalCache = null;
   #journalDatabase;
   #ownsJournalDatabase;
@@ -448,9 +449,11 @@ export class MiniAppServer {
     journalDatabaseFile = null,
     workspaceFileRoots = [],
     health = agentHubRuntimeHealth,
+    handlerCloseTimeoutMs = 1_000,
   } = {}) {
     this.#host = String(host);
     this.#health = health && typeof health.snapshot === "function" ? health : agentHubRuntimeHealth;
+    this.#handlerCloseTimeoutMs = Math.max(0, Number(handlerCloseTimeoutMs) || 0);
     this.#port = Number(port);
     this.#botToken = String(botToken);
     this.#allowedUserIds = new Set(allowedUserIds);
@@ -1195,7 +1198,17 @@ export class MiniAppServer {
           server.closeAllConnections?.();
         });
       }
-      await Promise.allSettled([...this.#activeHandlers]);
+      const activeHandlers = [...this.#activeHandlers];
+      if (activeHandlers.length > 0 && this.#handlerCloseTimeoutMs > 0) {
+        let handlerCloseTimer;
+        await Promise.race([
+          Promise.allSettled(activeHandlers),
+          new Promise((resolve) => {
+            handlerCloseTimer = setTimeout(resolve, this.#handlerCloseTimeoutMs);
+          }),
+        ]).finally(() => clearTimeout(handlerCloseTimer));
+      }
+      for (const handling of activeHandlers) this.#activeHandlers.delete(handling);
       if (this.#ownsJournalDatabase) this.#journalDatabase.close();
     })();
     try {

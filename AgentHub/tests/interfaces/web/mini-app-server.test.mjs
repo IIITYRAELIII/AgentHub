@@ -62,6 +62,38 @@ test("Mini App close terminates an incomplete HTTP connection and can restart", 
   }
 });
 
+test("Mini App close does not wait forever for a blocked control handler", async () => {
+  let enterHandler;
+  let releaseHandler;
+  const handlerEntered = new Promise((resolve) => { enterHandler = resolve; });
+  const handlerRelease = new Promise((resolve) => { releaseHandler = resolve; });
+  const server = new MiniAppServer({
+    host: "127.0.0.1",
+    port: 0,
+    journalDatabase: memoryJournal(DAY_HTML),
+    handlerCloseTimeoutMs: 20,
+    controlHandler: async () => {
+      enterHandler();
+      await handlerRelease;
+      return { ok: true };
+    },
+  });
+  const address = await server.start();
+  const request = fetch(`${address.url}api/snapshot`).catch(() => null);
+  await handlerEntered;
+
+  try {
+    await Promise.race([
+      server.close(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("Mini App close timed out")), 500)),
+    ]);
+  } finally {
+    releaseHandler();
+    await request;
+    await server.close();
+  }
+});
+
 function memoryJournal(html = "") {
   let revision = 0;
   let current;
