@@ -464,6 +464,7 @@ function responseAnnotationPrompt(value) {
 function isCodexInternalPromptEnvelope(value) {
   const text = String(value ?? "").trim();
   return [
+    "<codex_internal_context",
     "<skills_instructions>",
     "<recommended_plugins>",
     "# AGENTS.md instructions for ",

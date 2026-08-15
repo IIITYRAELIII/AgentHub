@@ -302,6 +302,11 @@ test("Codex internal prompt envelopes never become user messages", () => {
     "</skills_instructions>",
   ].join("\n");
   assert.equal(displayUserPrompt(internal), "");
+  assert.equal(displayUserPrompt([
+    '<codex_internal_context source="goal">',
+    "служебное продолжение цели",
+    "</codex_internal_context>",
+  ].join("\n")), "");
 
   const [exchange] = codexThreadHistory([{
     id: "turn-with-delayed-user-item",

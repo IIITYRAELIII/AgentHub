@@ -9,7 +9,7 @@ const FORMAT_VERSION = 1;
 const TASK_SCHEMA_VERSION = 7;
 const MODEL_BACKFILL_VERSION = "1";
 const SEARCH_BACKFILL_VERSION = "2";
-const TERMINAL_HISTORY_BACKFILL_VERSION = "1";
+const TERMINAL_HISTORY_BACKFILL_VERSION = "2";
 const DEFAULT_HISTORY_LIMIT = 50;
 const DEFAULT_RUNNING_FRESHNESS_MS = 10 * 60 * 1000;
 const DEFAULT_TASK_LIMIT = 1_000;
@@ -119,6 +119,26 @@ function mergePersistedSyntheticRoot(turn) {
   };
 }
 
+function withoutRepeatedClientMessages(history) {
+  const seen = new Set();
+  return history.map((turn) => ({
+    ...turn,
+    messages: turn.messages.filter((message) => {
+      const id = String(message?.clientUserMessageId ?? "").trim();
+      if (!id) return true;
+      if (seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    }),
+  }));
+}
+
+function withoutInternalContextTurns(history) {
+  return history.filter((turn) => (
+    !String(turn?.prompt ?? "").trim().startsWith("<codex_internal_context")
+  ));
+}
+
 function cleanHistory(history, limit) {
   const cleaned = (Array.isArray(history) ? history : [])
     .map((item) => ({
@@ -168,7 +188,8 @@ function cleanHistory(history, limit) {
           }];
         }),
     }));
-  return withoutPromptlessAnswerEchoes(cleaned.map(mergePersistedSyntheticRoot)).slice(-limit);
+  const normalized = withoutRepeatedClientMessages(cleaned.map(mergePersistedSyntheticRoot));
+  return withoutPromptlessAnswerEchoes(withoutInternalContextTurns(normalized)).slice(-limit);
 }
 
 const TERMINAL_TURN_STATUSES = new Set([

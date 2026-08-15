@@ -944,6 +944,19 @@ test("startup repairs already corrupted terminal rows and synthetic root duplica
       status: "inProgress",
       active: true,
       completed: false,
+      messages: [
+        {
+          itemId: "replayed-root",
+          clientUserMessageId: "client-root",
+          role: "user",
+          text: "Старый общий prompt",
+        },
+        {
+          itemId: "turn-completed:rollout-user:1",
+          role: "user",
+          text: "Фактический вопрос",
+        },
+      ],
     },
     {
       id: "turn-current",
@@ -952,6 +965,14 @@ test("startup repairs already corrupted terminal rows and synthetic root duplica
       status: "inProgress",
       active: true,
       completed: false,
+    },
+    {
+      id: "internal-goal",
+      prompt: '<codex_internal_context source="goal">служебное</codex_internal_context>',
+      answer: "Служебное продолжение",
+      status: "completed",
+      active: false,
+      completed: true,
     },
   ], {
     active: true,
@@ -1021,6 +1042,9 @@ test("startup repairs already corrupted terminal rows and synthetic root duplica
   assert.equal(history[0].messages[0].clientUserMessageId, "client-root");
   assert.deepEqual(history[0].messages[0].attachments, [
     { id: "screen.png", name: "screen.png", type: "image/png" },
+  ]);
+  assert.deepEqual(history[1].messages.map((message) => message.itemId), [
+    "turn-completed:rollout-user:1",
   ]);
   assert.deepEqual(store.snapshot(task, { nowMs: 20_000 }), {
     active: true,
