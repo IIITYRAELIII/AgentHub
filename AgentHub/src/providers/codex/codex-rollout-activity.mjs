@@ -443,6 +443,16 @@ function observeCodexEntry(activeTurnIds, lastSeenAtByTurnId, metadata, entry) {
   const lifecycle = entry?.type === "event_msg"
     && ["task_started", "task_complete", "turn_aborted"].includes(entry.payload?.type);
   const turnId = codexEntryTurnId(entry) || (lifecycle ? LEGACY_TURN_ID : "");
+  const terminalLifecycle = entry?.type === "event_msg"
+    && ["task_complete", "turn_aborted"].includes(entry.payload?.type);
+  if (
+    metadata.inferActiveTurns === true
+    && turnId
+    && turnId !== LEGACY_TURN_ID
+    && !terminalLifecycle
+  ) {
+    activeTurnIds.add(turnId);
+  }
   rememberCodexTraceEntry(metadata, turnId, entry);
   const isUserMessage = entry?.type === "event_msg" && entry.payload?.type === "user_message";
   if (
@@ -845,7 +855,11 @@ export async function readCodexRolloutActivity(
   );
   const activeTurnIds = new Set(appendOnly ? cached.activeTurnIds : []);
   const lastSeenAtByTurnId = new Map(appendOnly ? cached.lastSeenAtByTurnId : []);
+  const start = appendOnly
+    ? cached.size
+    : Math.max(0, info.size - Math.max(1, Number(tailBytes) || CODEX_ROLLOUT_TAIL_BYTES));
   const metadata = {
+    inferActiveTurns: !appendOnly && start > 0,
     latestTurnId: appendOnly ? String(cached.latestTurnId ?? "") : "",
     parentThreadId: appendOnly ? String(cached.parentThreadId ?? "") : "",
     vscodeTurnIds: new Set(appendOnly ? cached.vscodeTurnIds ?? [] : []),
@@ -865,9 +879,6 @@ export async function readCodexRolloutActivity(
     unscopedLatestMessage: appendOnly ? String(cached.unscopedLatestMessage ?? "") : "",
     startedAtMsByTurnId: new Map(appendOnly ? cached.startedAtMsByTurnId ?? [] : []),
   };
-  const start = appendOnly
-    ? cached.size
-    : Math.max(0, info.size - Math.max(1, Number(tailBytes) || CODEX_ROLLOUT_TAIL_BYTES));
   const input = createReadStream(normalized, {
     encoding: "utf8",
     ...(start > 0 ? { start } : {}),

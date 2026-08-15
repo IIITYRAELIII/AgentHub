@@ -911,6 +911,42 @@ test("a bounded cold tail keeps an unscoped current message when task_started is
   assert.equal(activity.latestTurnId, null);
 });
 
+test("a bounded cold tail restores an active turn from scoped entries", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-rollout-cold-active-"));
+  const rollout = path.join(root, "rollout.jsonl");
+  const timestamp = new Date().toISOString();
+  const entry = (type, payload) => JSON.stringify({ timestamp, type, payload });
+  await writeFile(rollout, [
+    entry("event_msg", { type: "task_started", turn_id: "active-tail" }),
+    JSON.stringify({ padding: "x".repeat(8_000) }),
+    entry("turn_context", { turn_id: "active-tail" }),
+    entry("response_item", {
+      type: "message",
+      role: "assistant",
+      content: [{ type: "output_text", text: "Продолжаю работу" }],
+      internal_chat_message_metadata_passthrough: { turn_id: "active-tail" },
+    }),
+  ].join("\n") + "\n", "utf8");
+
+  let activity = await readCodexRolloutActivity(rollout, {
+    tailBytes: 2_000,
+    maximumLineBytes: 1_000,
+  });
+  assert.deepEqual(activity.activeTurnIds, ["active-tail"]);
+  assert.equal(activity.latestMessages["active-tail"], "Продолжаю работу");
+
+  await appendFile(rollout, `${entry("event_msg", {
+    type: "task_complete",
+    turn_id: "active-tail",
+    last_agent_message: "Готово",
+  })}\n`, "utf8");
+  activity = await readCodexRolloutActivity(rollout, {
+    tailBytes: 2_000,
+    maximumLineBytes: 1_000,
+  });
+  assert.deepEqual(activity.activeTurnIds, []);
+});
+
 test("cold rollout reads only a bounded tail and skips an oversized line", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-rollout-tail-"));
   const rollout = path.join(root, "rollout.jsonl");
