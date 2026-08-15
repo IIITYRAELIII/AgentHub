@@ -50,8 +50,8 @@ test("provider catalog preserves durable entries when one source fails", async (
   const builder = new ProviderTaskCatalogBuilder({
     durableEntries: () => [{ id: "durable" }],
     sources: [
-      { name: "Codex", discover: async () => { throw new Error("offline"); } },
-      { name: "Claude", discover: () => [{ id: "claude" }] },
+      { provider: "codex", name: "Codex", discover: async () => { throw new Error("offline"); } },
+      { provider: "claude", name: "Claude", discover: () => [{ id: "claude" }] },
     ],
     merge: (entries) => entries,
     onSourceError: (result) => errors.push(`${result.name}:${result.reason.message}`),
@@ -83,9 +83,9 @@ test("provider catalog isolates projection failure and finalizes the merged view
     { id: "claude", finalized: true },
     { id: "run", finalized: true },
   ]);
-  assert.deepEqual(sourceResults.map(({ name, status }) => ({ name, status })), [
-    { name: "Codex", status: "rejected" },
-    { name: "Claude", status: "fulfilled" },
+  assert.deepEqual(sourceResults.map(({ provider, name, status }) => ({ provider, name, status })), [
+    { provider: null, name: "Codex", status: "rejected" },
+    { provider: null, name: "Claude", status: "fulfilled" },
   ]);
 });
 

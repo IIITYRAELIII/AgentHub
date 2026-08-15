@@ -2,7 +2,10 @@ import { samePath } from "../infrastructure/filesystem/config.mjs";
 import {
   taskCatalogTitleSignature,
 } from "../domain/task-catalog-titles.mjs";
-import { taskOrderingActivityAtMs } from "../application/task-catalog-projection.mjs";
+import {
+  preserveUnknownActivityOnSourceFailure,
+  taskOrderingActivityAtMs,
+} from "../application/task-catalog-projection.mjs";
 import { catalogEntryIsSelected } from "../domain/task-catalog-identity.mjs";
 import { statusTaskEntries } from "../interfaces/telegram/task-catalog-presentation.mjs";
 import { taskDisplayTitle } from "../domain/task-display-title.mjs";
@@ -26,8 +29,8 @@ export function createTaskCatalogFinalizationComposition({
   let synchronizedTitleSignature = "";
   let titlesSynchronizedAt = 0;
 
-  async function finalize(mergedEntries) {
-    let nextCatalog = mergedEntries;
+  async function finalize(mergedEntries, { sourceResults = [] } = {}) {
+    let nextCatalog = preserveUnknownActivityOnSourceFailure(mergedEntries, sourceResults);
     for (const entry of nextCatalog) {
       entry.displayTitle = taskDisplayTitle(entry);
       taskRuns.bindStream?.(entry);

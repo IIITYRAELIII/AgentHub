@@ -1021,9 +1021,6 @@ export function catalogEntriesWithoutLiveActivity(entries = []) {
     ...entry,
     running: false,
     activityUnknown: entry?.running === true,
-    executionOwner: null,
-    turnId: null,
-    startedAt: null,
   }));
 }
 

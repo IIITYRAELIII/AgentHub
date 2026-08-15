@@ -96,3 +96,17 @@ export function mergeTaskCatalog(entries, runs = []) {
     || left.title.localeCompare(right.title, "ru")
   ));
 }
+
+export function preserveUnknownActivityOnSourceFailure(entries, sourceResults = []) {
+  const failedProviders = new Set((Array.isArray(sourceResults) ? sourceResults : [])
+    .filter((result) => result?.status === "rejected")
+    .map((result) => String(result?.provider ?? "").trim().toLowerCase())
+    .filter(Boolean));
+  if (!failedProviders.size) return entries;
+  return (Array.isArray(entries) ? entries : []).map((entry) => (
+    entry?.activityUnknown === true
+      && failedProviders.has(String(entry?.provider ?? "").trim().toLowerCase())
+      ? { ...entry, running: true }
+      : entry
+  ));
+}

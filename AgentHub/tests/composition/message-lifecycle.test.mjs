@@ -555,6 +555,63 @@ test("completed mid-turn compaction is embedded into the answer trace", () => {
   assert.equal(live.activityGroups[0].activities[0].detail, "87% → 14%");
 });
 
+test("later successful compaction supersedes an older failure banner", () => {
+  const oldFailure = {
+    id: "maintenance:compaction:failed",
+    threadId: "thread-1",
+    role: "system",
+    kind: "maintenance",
+    text: "Автосвёртка контекста не завершилась",
+    time: "2026-08-14T15:59:09.908Z",
+  };
+  const completed = {
+    id: "maintenance:compaction:completed",
+    threadId: "thread-1",
+    role: "system",
+    kind: "maintenance",
+    maintenanceType: "compaction",
+    maintenanceStatus: "completed",
+    text: "Свёртка завершена успешно 90%>19%",
+    time: "2026-08-14T16:27:16.400Z",
+  };
+  const latestFailure = {
+    ...oldFailure,
+    id: "maintenance:compaction:latest-failure",
+    maintenanceStatus: "failed",
+    time: "2026-08-14T16:30:00.000Z",
+  };
+  const unrelatedFailure = {
+    ...oldFailure,
+    id: "maintenance:compaction:unrelated",
+    provider: "claude",
+  };
+  const undatedFailure = {
+    ...oldFailure,
+    id: "maintenance:compaction:undated",
+    time: null,
+  };
+  const rotation = {
+    id: "maintenance:rotation:1",
+    threadId: "thread-1",
+    role: "system",
+    kind: "maintenance",
+    text: "Ротация завершена успешно 90%>19%",
+    time: "2026-08-14T15:30:00.000Z",
+  };
+
+  assert.deepEqual(
+    lifecycle.withoutSupersededCompactionFailures([
+      oldFailure,
+      unrelatedFailure,
+      undatedFailure,
+      rotation,
+      completed,
+      latestFailure,
+    ]),
+    [unrelatedFailure, undatedFailure, rotation, completed, latestFailure],
+  );
+});
+
 test("completed turn becomes durable only with its prompt and exact final", () => {
   const prompt = {
     provider: "codex",

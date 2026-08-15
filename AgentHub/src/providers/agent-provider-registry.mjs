@@ -73,6 +73,7 @@ export class AgentProviderRegistry {
 
   catalogSources() {
     return [...this.#providers.values()].map((adapter) => Object.freeze({
+      provider: adapter.id,
       name: adapter.name,
       discover: () => adapter.discoverTasks(),
       toEntries: (value) => adapter.projectTasks(value),

@@ -97,6 +97,7 @@ const {
   reconcile: reconcileMessageLifecycle,
   rememberBounded: rememberBoundedMessage,
   reusableAttachmentPaths,
+  withoutSupersededCompactionFailures,
   visibleConversationMessages,
 } = window.AgentHubMessageLifecycle;
 
@@ -220,8 +221,12 @@ function readMaintenanceEvents() {
         afterPercent: null,
         text: String(entry.message?.text ?? "").replace(/>0%$/u, ">?%"),
       } : entry.message);
-      values.set(task, events.slice(-50));
+      values.set(task, withoutSupersededCompactionFailures(events).slice(-50));
     }
+    const normalized = [...values].flatMap(([taskIdValue, messages]) => (
+      messages.map((message) => ({ taskId: taskIdValue, message }))
+    ));
+    localStorage.setItem(maintenanceEventStorageKey, JSON.stringify(normalized));
   } catch {
     // Недоступный localStorage не мешает событиям оставаться в текущей сессии.
   }
@@ -245,12 +250,14 @@ function rememberMaintenanceEvent(taskIdValue, message) {
   const eventId = String(message?.id ?? "").trim();
   if (!stableTaskId || !eventId) return false;
   const events = maintenanceEventsByTask.get(stableTaskId) ?? [];
+  const previous = JSON.stringify(events);
   const index = events.findIndex((entry) => entry.id === eventId);
   const value = { ...message, role: "system", kind: "maintenance" };
-  if (index >= 0 && JSON.stringify(events[index]) === JSON.stringify(value)) return false;
   if (index >= 0) events[index] = value;
   else events.push(value);
-  maintenanceEventsByTask.set(stableTaskId, events.slice(-50));
+  const normalized = withoutSupersededCompactionFailures(events).slice(-50);
+  if (previous === JSON.stringify(normalized)) return false;
+  maintenanceEventsByTask.set(stableTaskId, normalized);
   persistMaintenanceEvents();
   return true;
 }
@@ -1146,6 +1153,8 @@ function observeContextCompactions(tasks) {
         turnId: compaction.turnId ?? null,
         beforePercent,
         afterPercent: null,
+        maintenanceType: "compaction",
+        maintenanceStatus: status,
         text: automatic
           ? "Автосвёртка контекста не завершилась"
           : "Свёртка контекста не завершилась",

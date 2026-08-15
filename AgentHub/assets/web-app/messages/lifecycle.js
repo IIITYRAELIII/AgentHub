@@ -607,6 +607,38 @@ function visibleConversationMessages(messages, {
   );
 }
 
+function withoutSupersededCompactionFailures(messages) {
+  const values = Array.isArray(messages) ? messages : [];
+  const latestCompletedAtByThread = new Map();
+  const threadKey = (message) => (
+    `${String(message?.provider ?? "").trim()}\u0000${String(message?.threadId ?? "").trim()}`
+  );
+  for (const message of values) {
+    const id = String(message?.id ?? message?.itemId ?? "").trim();
+    const completed = id.startsWith("maintenance:compaction:") && (
+      message?.maintenanceStatus === "completed"
+      || String(message?.text ?? "").startsWith("Свёртка завершена успешно")
+    );
+    const time = Date.parse(message?.time ?? "");
+    if (!completed || !Number.isFinite(time)) continue;
+    latestCompletedAtByThread.set(
+      threadKey(message),
+      Math.max(latestCompletedAtByThread.get(threadKey(message)) ?? 0, time),
+    );
+  }
+  return values.filter((message) => {
+    const id = String(message?.id ?? message?.itemId ?? "").trim();
+    const failed = id.startsWith("maintenance:compaction:") && (
+      ["failed", "timeout"].includes(String(message?.maintenanceStatus ?? ""))
+      || /свёртка контекста не завершилась/iu.test(String(message?.text ?? ""))
+    );
+    if (!failed) return true;
+    const completedAt = latestCompletedAtByThread.get(threadKey(message));
+    const failedAt = Date.parse(message?.time ?? "");
+    return !completedAt || !Number.isFinite(failedAt) || failedAt >= completedAt;
+  });
+}
+
 function conversationMessageAuthor(message, provider = "") {
   const author = String(message?.author ?? "").trim();
   if (author) return author;
@@ -1018,6 +1050,7 @@ globalThis.AgentHubMessageLifecycle = Object.freeze({
   mergeLiveMaintenance,
   mergeLiveUserMessages,
   mergeTurnMaintenanceMessages,
+  withoutSupersededCompactionFailures,
   normalizedResponseAnnotations,
   normalizedUserMessage,
   outgoingTaskId,

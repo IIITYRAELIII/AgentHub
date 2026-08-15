@@ -34,6 +34,7 @@ export class ProviderTaskCatalogBuilder {
         throw new TypeError(`${sourceName(source, index)}.toEntries must be a function`);
       }
       return Object.freeze({
+        provider: String(source.provider ?? "").trim().toLowerCase() || null,
         name: sourceName(source, index),
         discover: source.discover,
         toEntries: source.toEntries ?? ((entries) => entries),
@@ -56,7 +57,12 @@ export class ProviderTaskCatalogBuilder {
       const source = this.#sources[index];
       const discovery = discoveries[index];
       if (discovery.status === "rejected") {
-        const result = { name: source.name, status: "rejected", reason: discovery.reason };
+        const result = {
+          provider: source.provider,
+          name: source.name,
+          status: "rejected",
+          reason: discovery.reason,
+        };
         sourceResults.push(result);
         await this.onSourceError(result);
         continue;
@@ -67,9 +73,14 @@ export class ProviderTaskCatalogBuilder {
           `${source.name}.toEntries`,
         );
         entries.push(...projected);
-        sourceResults.push({ name: source.name, status: "fulfilled", count: projected.length });
+        sourceResults.push({
+          provider: source.provider,
+          name: source.name,
+          status: "fulfilled",
+          count: projected.length,
+        });
       } catch (reason) {
-        const result = { name: source.name, status: "rejected", reason };
+        const result = { provider: source.provider, name: source.name, status: "rejected", reason };
         sourceResults.push(result);
         await this.onSourceError(result);
       }

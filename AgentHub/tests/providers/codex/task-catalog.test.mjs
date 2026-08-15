@@ -22,6 +22,7 @@ import {
 } from "../../../src/domain/codex-context-probe.mjs";
 import {
   mergeTaskCatalog,
+  preserveUnknownActivityOnSourceFailure,
   taskOrderingActivityAtMs,
 } from "../../../src/application/task-catalog-projection.mjs";
 import {
@@ -256,10 +257,40 @@ test("durable catalog activity is unknown until a live provider scan confirms it
     title: "Кэшированная задача",
     running: false,
     activityUnknown: true,
-    executionOwner: null,
-    turnId: null,
-    startedAt: null,
+    executionOwner: TASK_EXECUTION_OWNERS.VSCODE,
+    turnId: "cached-turn",
+    startedAt: "2026-08-03T10:00:00.000Z",
   }]);
+});
+
+test("failed provider discovery preserves recent unknown activity", () => {
+  const cached = [{
+    provider: "codex",
+    threadId: "cached-active",
+    running: false,
+    activityUnknown: true,
+    executionOwner: TASK_EXECUTION_OWNERS.DESKTOP,
+    turnId: "cached-turn",
+  }, {
+    provider: "claude",
+    threadId: "claude-idle",
+    running: false,
+    activityUnknown: false,
+  }];
+
+  const projected = preserveUnknownActivityOnSourceFailure(cached, [{
+    provider: "codex",
+    status: "rejected",
+  }, {
+    provider: "claude",
+    status: "fulfilled",
+  }]);
+
+  assert.equal(projected[0].running, true);
+  assert.equal(projected[0].activityUnknown, true);
+  assert.equal(projected[0].executionOwner, TASK_EXECUTION_OWNERS.DESKTOP);
+  assert.equal(projected[0].turnId, "cached-turn");
+  assert.equal(projected[1].running, false);
 });
 
 test("Codex runtime labels distinguish supported app servers", () => {
