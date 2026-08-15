@@ -92,6 +92,19 @@ test("message delivery distinguishes a server rejection from an unconfirmed tran
   assert.equal(rejected.agentHubCommandRejected, true);
 });
 
+test("optional history reads settle without becoming connection failures", async () => {
+  const failure = lifecycle.markConnectionFailure(new Error("history timed out"));
+  const rejected = await lifecycle.settleOptionalRead(async () => {
+    throw failure;
+  });
+  const fulfilled = await lifecycle.settleOptionalRead(async () => ({ version: "history-2" }));
+
+  assert.equal(rejected.status, "rejected");
+  assert.equal(rejected.reason, failure);
+  assert.equal(fulfilled.status, "fulfilled");
+  assert.equal(fulfilled.value.version, "history-2");
+});
+
 test("attachment-only labels distinguish documents from images", () => {
   assert.equal(lifecycle.attachmentOnlyText([{ type: "application/pdf" }]), "Вложение");
   assert.equal(lifecycle.attachmentOnlyText([{ type: "image/png" }]), "Изображение");

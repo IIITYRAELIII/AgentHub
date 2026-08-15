@@ -158,6 +158,85 @@ test("durable history merges equivalent synthetic final-answer copies", () => {
   assert.equal(history[0].messages[0].text, "Готово");
 });
 
+test("durable history coalesces transient rollout users in either source order", () => {
+  const turnId = "turn-root-race";
+  const canonicalRoot = {
+    itemId: "provider-user-item",
+    clientUserMessageId: "client-user-message",
+    role: "user",
+    text: "Сообщение со скринами",
+    attachments: [{ id: "first.png", type: "image/png" }],
+  };
+  const canonicalSteer = {
+    itemId: "provider-steer-item",
+    clientUserMessageId: "client-steer-message",
+    role: "user",
+    text: "Повторный текст",
+  };
+  const syntheticRoot = {
+    itemId: `${turnId}:rollout-user:0`,
+    role: "user",
+    text: "Сообщение со скринами",
+    attachments: [{ id: "second.png", type: "image/png" }],
+  };
+  const syntheticSteer = {
+    itemId: `${turnId}:rollout-user:1`,
+    role: "user",
+    text: "Повторный текст",
+  };
+
+  for (const [hydrated, durable] of [
+    [[canonicalRoot, canonicalSteer], [syntheticRoot, syntheticSteer]],
+    [[syntheticRoot, syntheticSteer], [canonicalRoot, canonicalSteer]],
+  ]) {
+    const [turn] = mergeDurableTaskHistory(
+      [{ id: turnId, messages: hydrated }],
+      [{ id: turnId, messages: durable }],
+    );
+    assert.equal(turn.messages.length, 2);
+    assert.equal(turn.messages[0].itemId, "provider-user-item");
+    assert.equal(turn.messages[0].clientUserMessageId, "client-user-message");
+    assert.deepEqual(turn.messages[0].attachments, [
+      { id: "first.png", type: "image/png" },
+      { id: "second.png", type: "image/png" },
+    ]);
+    assert.equal(turn.messages[1].itemId, "provider-steer-item");
+    assert.equal(turn.messages[1].clientUserMessageId, "client-steer-message");
+  }
+});
+
+test("durable history preserves a real steer beside the root message", () => {
+  const turnId = "turn-with-steer";
+  const [turn] = mergeDurableTaskHistory([{
+    id: turnId,
+    messages: [{
+      itemId: `${turnId}:rollout-user:0`,
+      role: "user",
+      text: "Корневой запрос",
+    }],
+  }], [{
+    id: turnId,
+    messages: [{
+      itemId: "root-client",
+      clientUserMessageId: "root-client",
+      turnUserSlot: "root",
+      role: "user",
+      text: "Корневой запрос",
+    }, {
+      itemId: "steer-client",
+      clientUserMessageId: "steer-client",
+      turnUserSlot: "steer",
+      role: "user",
+      text: "Корневой запрос",
+    }],
+  }]);
+
+  assert.deepEqual(turn.messages.map((message) => message.itemId), [
+    "root-client",
+    "steer-client",
+  ]);
+});
+
 test("provider hydration repairs stale durable turn and message times", () => {
   const history = mergeDurableTaskHistory([{
     id: "turn-new",

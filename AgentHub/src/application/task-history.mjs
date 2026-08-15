@@ -303,40 +303,45 @@ function uniqueMessageValues(values, keyFor) {
   });
 }
 
-function mergeSyntheticRolloutRoot(messages, turnId) {
-  const syntheticId = `${turnId}:rollout-user:0`;
-  const syntheticIndex = messages.findIndex((message) => (
-    message?.role === "user"
-    && message.itemId === syntheticId
-    && !message.clientUserMessageId
-  ));
-  if (syntheticIndex < 0) return messages;
+export function mergeSyntheticRolloutUsers(messages, turnId) {
+  const values = Array.isArray(messages) ? messages : [];
+  const syntheticPattern = new RegExp(`^${turnId}:rollout-user:(\\d+)$`, "u");
+  const synthetic = values.flatMap((message, index) => {
+    if (message?.role !== "user" || message.clientUserMessageId) return [];
+    const match = syntheticPattern.exec(String(message.itemId ?? ""));
+    return match ? [{ index, ordinal: Number(match[1]), message }] : [];
+  });
+  if (!synthetic.length) return values;
 
-  const canonicalIndex = messages.findIndex((message, index) => (
-    index < syntheticIndex
-    && message?.role === "user"
-    && Boolean(message.clientUserMessageId)
+  const canonical = values.flatMap((message, index) => (
+    message?.role === "user" && Boolean(message.clientUserMessageId)
+      ? [{ index, message }]
+      : []
   ));
-  if (canonicalIndex < 0) return messages;
-
-  const canonical = messages[canonicalIndex];
-  const synthetic = messages[syntheticIndex];
-  const attachmentSources = uniqueMessageValues([
-    ...(Array.isArray(canonical.attachmentSources) ? canonical.attachmentSources : []),
-    ...(Array.isArray(synthetic.attachmentSources) ? synthetic.attachmentSources : []),
-  ], (item) => `${String(item?.type ?? "")}\0${String(item?.value ?? "").toLowerCase()}`);
-  const attachments = uniqueMessageValues([
-    ...(Array.isArray(canonical.attachments) ? canonical.attachments : []),
-    ...(Array.isArray(synthetic.attachments) ? synthetic.attachments : []),
-  ], (item) => String(item?.id ?? item?.path ?? item?.url ?? "").toLowerCase());
-  const merged = {
-    ...canonical,
-    ...(attachmentSources.length ? { attachmentSources } : {}),
-    ...(attachments.length ? { attachments } : {}),
-  };
-  return messages.flatMap((message, index) => {
-    if (index === canonicalIndex) return [merged];
-    return index === syntheticIndex ? [] : [message];
+  const replacements = new Map();
+  const removed = new Set();
+  for (const projection of synthetic) {
+    const official = canonical[projection.ordinal];
+    if (!official) continue;
+    const attachmentSources = uniqueMessageValues([
+      ...(Array.isArray(official.message.attachmentSources) ? official.message.attachmentSources : []),
+      ...(Array.isArray(projection.message.attachmentSources) ? projection.message.attachmentSources : []),
+    ], (item) => `${String(item?.type ?? "")}\0${String(item?.value ?? "").toLowerCase()}`);
+    const attachments = uniqueMessageValues([
+      ...(Array.isArray(official.message.attachments) ? official.message.attachments : []),
+      ...(Array.isArray(projection.message.attachments) ? projection.message.attachments : []),
+    ], (item) => String(item?.id ?? item?.path ?? item?.url ?? "").toLowerCase());
+    replacements.set(projection.index, {
+      ...projection.message,
+      ...official.message,
+      ...(attachmentSources.length ? { attachmentSources } : {}),
+      ...(attachments.length ? { attachments } : {}),
+    });
+    removed.add(official.index);
+  }
+  return values.flatMap((message, index) => {
+    if (replacements.has(index)) return [replacements.get(index)];
+    return removed.has(index) ? [] : [message];
   });
 }
 
@@ -409,7 +414,7 @@ function codexTurnMessages(turn, { userAuthor = "" } = {}) {
     }
     return [];
   });
-  return mergeSyntheticRolloutRoot(messages, turnId);
+  return mergeSyntheticRolloutUsers(messages, turnId);
 }
 
 export function responseAnnotationDetails(value) {

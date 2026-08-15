@@ -962,6 +962,14 @@ function isConnectionFailure(error) {
   return error?.agentHubConnectionFailure === true;
 }
 
+async function settleOptionalRead(operation) {
+  try {
+    return { status: "fulfilled", value: await operation() };
+  } catch (reason) {
+    return { status: "rejected", reason };
+  }
+}
+
 function markCommandRejected(error) {
   const failure = error && typeof error === "object" && typeof error.message === "string"
     ? error
@@ -1060,6 +1068,7 @@ globalThis.AgentHubMessageLifecycle = Object.freeze({
   reconcile,
   rememberBounded,
   reusableAttachmentPaths,
+  settleOptionalRead,
   stopTaskControls,
   visibleConversationMessages,
 });

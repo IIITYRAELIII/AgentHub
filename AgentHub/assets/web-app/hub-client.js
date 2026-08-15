@@ -97,6 +97,7 @@ const {
   reconcile: reconcileMessageLifecycle,
   rememberBounded: rememberBoundedMessage,
   reusableAttachmentPaths,
+  settleOptionalRead,
   withoutSupersededCompactionFailures,
   visibleConversationMessages,
 } = window.AgentHubMessageLifecycle;
@@ -1688,25 +1689,21 @@ agentHub.on("task:select", ({ id }) => {
 });
 
 async function settleOpenedTaskHistory(id, identity) {
-  try {
-    const history = await control("task-history", {
-      ...identity,
-      limit: 20,
-      includeActive: false,
-      refreshSource: true,
-      knownVersion: historyPageByTask.get(id)?.version ?? "",
-    });
-    if (selectedTaskId !== id || history?.notModified === true) return;
-    applyOpened({ history }, {
-      preserveScroll: true,
-      skipSnapshot: true,
-      selectTask: false,
-    });
-  } catch (error) {
-    if (isConnectionFailure(error)) recordTransientConnectionFailure();
-    // Быстрое открытие уже показало SQLite-кэш; страховочный refresh повторит
-    // чтение позже, поэтому отдельное пользовательское уведомление не нужно.
-  }
+  const settled = await settleOptionalRead(() => control("task-history", {
+    ...identity,
+    limit: 20,
+    includeActive: false,
+    refreshSource: true,
+    knownVersion: historyPageByTask.get(id)?.version ?? "",
+  }));
+  if (settled.status === "rejected") return;
+  const history = settled.value;
+  if (selectedTaskId !== id || history?.notModified === true) return;
+  applyOpened({ history }, {
+    preserveScroll: true,
+    skipSnapshot: true,
+    selectTask: false,
+  });
 }
 
 agentHub.on("workspace:visible-streams", ({ taskIds }) => void (async () => {
@@ -1721,17 +1718,15 @@ agentHub.on("workspace:visible-streams", ({ taskIds }) => void (async () => {
     const identity = taskIdentity(id);
     if (!identity) return;
     visibleHistoryLoads.add(id);
+    const settled = await settleOptionalRead(() => control("task-history", {
+      ...identity,
+      limit: 20,
+      includeActive: false,
+    }));
     try {
-      const history = await control("task-history", {
-        ...identity,
-        limit: 20,
-        includeActive: false,
-      });
+      if (settled.status === "rejected") return;
+      const history = settled.value;
       applyOpened({ history }, { skipSnapshot: true, selectTask: false });
-    } catch (error) {
-      if (isConnectionFailure(error)) recordTransientConnectionFailure();
-      // Дополнительная read-only колонка не должна отвлекать toast-ошибкой.
-      // При следующем раскрытии Stream она безопасно запросит историю снова.
     } finally {
       visibleHistoryLoads.delete(id);
     }
@@ -2968,14 +2963,16 @@ async function refreshVisibleTaskHistories(previousSnapshot, snapshot) {
     if (!historyMissing && !turnCompleted && !answerChanged
       && !refreshExternalHistory && !refreshCaughtUpHistory && !refreshSettlingAttachments) return;
     historyRefreshAtByTask.set(id, Date.now());
-    const history = await control("task-history", {
+    const settled = await settleOptionalRead(() => control("task-history", {
       provider: currentTask.provider,
       threadId: currentTask.threadId,
       limit: 20,
       includeActive: false,
       refreshSource: turnCompleted || answerChanged,
       knownVersion: historyPageByTask.get(id)?.version ?? "",
-    });
+    }));
+    if (settled.status === "rejected") return;
+    const history = settled.value;
     applyOpened({ snapshot: lastSnapshot, history }, {
       preserveScroll: true,
       skipSnapshot: true,

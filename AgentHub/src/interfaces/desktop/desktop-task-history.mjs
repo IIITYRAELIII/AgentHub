@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import {
   displayUserPrompt,
   isEmptyTurnCompletionPlaceholder,
+  mergeSyntheticRolloutUsers,
   withoutCodexInspectionAttachments,
 } from "../../application/task-history.mjs";
 import { isCodexContextProbeTurn } from "../../domain/codex-context-probe.mjs";
@@ -91,7 +92,10 @@ export function mergeDurableTaskHistory(hydratedHistory, durableHistory) {
       ...structuredClone(durable),
       startedAt: current.startedAt ?? durable?.startedAt ?? null,
       completedAt: current.completedAt ?? durable?.completedAt ?? null,
-      messages: mergeDurableMessages(current.messages, durable?.messages),
+      messages: mergeSyntheticRolloutUsers(
+        mergeDurableMessages(current.messages, durable?.messages),
+        id,
+      ),
       activities: Array.isArray(durable?.activities) && durable.activities.length
         ? structuredClone(durable.activities)
         : current.activities,
