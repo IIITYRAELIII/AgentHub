@@ -213,12 +213,13 @@ export class RunCoordinator {
     executionOwner,
     clientUserMessageId,
     reason = "task-running",
+    conflictKind = reason,
     scheduleDelayMs = 500,
   }) {
     const deferred = await this.deferInput(input, attachments, {
       executionOwner,
       target,
-      conflictKind: reason,
+      conflictKind,
       clientUserMessageId,
       destination: "queued",
       notify: false,
@@ -252,7 +253,8 @@ export class RunCoordinator {
   }
 
   acceptClientInput(request) {
-    if (String(request?.followUpMode ?? "").trim().toLowerCase() === "steer") {
+    const followUpMode = String(request?.followUpMode ?? "").trim().toLowerCase();
+    if (followUpMode === "steer") {
       return this.submitClientInput(request);
     }
     return this.queue(request.input, request.attachments ?? [], {
@@ -260,6 +262,7 @@ export class RunCoordinator {
       executionOwner: TASK_EXECUTION_OWNERS.HUB,
       clientUserMessageId: request.clientUserMessageId,
       reason: "message-intake",
+      conflictKind: followUpMode === "queue" ? "task-running" : "message-intake",
       scheduleDelayMs: 0,
     });
   }

@@ -79,6 +79,29 @@ test("RunCoordinator queues directly into a Stream under context maintenance", a
   assert.equal(f.calls.some(([name]) => name === "begin"), false);
 });
 
+test("RunCoordinator marks ordinary durable intake for immediate steering", async () => {
+  const f = fixture();
+  await f.coordinator.acceptClientInput({
+    input: "next",
+    attachments: [],
+    target: f.target,
+    clientUserMessageId: "message-next",
+  });
+  assert.equal(f.calls.find(([name]) => name === "defer")[3].conflictKind, "message-intake");
+});
+
+test("RunCoordinator preserves an explicit queue request behind the active turn", async () => {
+  const f = fixture();
+  await f.coordinator.acceptClientInput({
+    input: "later",
+    attachments: [],
+    target: f.target,
+    clientUserMessageId: "message-later",
+    followUpMode: "queue",
+  });
+  assert.equal(f.calls.find(([name]) => name === "defer")[3].conflictKind, "task-running");
+});
+
 test("RunCoordinator preserves input when Codex reports an orphaned active writer", async () => {
   const f = fixture({
     launchTurn: async () => {

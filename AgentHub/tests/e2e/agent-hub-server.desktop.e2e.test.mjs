@@ -342,6 +342,7 @@ test("desktop client survives App Server exit during delayed startup and shares 
     text: "parallel duplicate",
     provider: "codex",
     threadId: firstThreadId,
+    followUpMode: "queue",
   }, { runtimeRoot });
   assert.equal(duplicate.accepted, true);
   assert.equal(duplicate.reason, "message-intake");
