@@ -34,6 +34,31 @@ test("Codex agent messages remain separated by item identity", () => {
   assert.equal(run.responseItems[1].turnId, "turn-1");
 });
 
+test("later commentary replaces an earlier final until a newer final arrives", () => {
+  const run = { responseText: "", responseItems: [] };
+  completeCodexAgentMessage(run, {
+    turnId: "turn-1",
+    item: { id: "answer-1", type: "agentMessage", phase: "final_answer", text: "Старый итог." },
+  });
+  startCodexAgentMessage(run, {
+    turnId: "turn-1",
+    item: { id: "commentary-2", type: "agentMessage", phase: "commentary" },
+  });
+  appendCodexAgentMessageDelta(run, {
+    turnId: "turn-1", itemId: "commentary-2", delta: "Продолжаю работу.",
+  });
+
+  assert.equal(run.responseItemId, "commentary-2");
+  assert.equal(run.responseText, "Продолжаю работу.");
+
+  completeCodexAgentMessage(run, {
+    turnId: "turn-1",
+    item: { id: "answer-2", type: "agentMessage", phase: "final_answer", text: "Новый итог." },
+  });
+  assert.equal(run.responseItemId, "answer-2");
+  assert.equal(run.responseText, "Новый итог.");
+});
+
 test("Codex completed agent message replaces streamed text with canonical text", () => {
   const run = { responseText: "", responseItems: [] };
   appendCodexAgentMessageDelta(run, { turnId: "turn-1", itemId: "answer-1", delta: "Гото" });

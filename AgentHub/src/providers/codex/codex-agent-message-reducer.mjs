@@ -48,8 +48,7 @@ function upsertAgentMessage(run, reference, defaults = {}) {
 
 function selectedAgentMessage(items) {
   const populated = items.filter((item) => String(item.text ?? "").length > 0);
-  const final = populated.filter((item) => item.phase === "final_answer" || item.phase === "finalAnswer");
-  return final.at(-1) ?? populated.at(-1) ?? items.at(-1) ?? null;
+  return populated.at(-1) ?? items.at(-1) ?? null;
 }
 
 function synchronizeResponse(run) {
