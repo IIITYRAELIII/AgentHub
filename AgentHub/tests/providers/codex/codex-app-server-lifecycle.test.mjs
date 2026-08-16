@@ -3,6 +3,16 @@ import test from "node:test";
 
 import { CodexAppServerLifecycle } from "../../../src/providers/codex/codex-app-server-lifecycle.mjs";
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 function fixture() {
   const events = [];
   const lifecycle = new CodexAppServerLifecycle({
@@ -77,15 +87,33 @@ test("Codex App Server lifecycle keeps a healthy server after one background rea
   assert.equal(events.some(([name]) => name === "stop"), false);
 });
 
+test("Codex App Server lifecycle ignores unrelated timeouts while its health check is pending", async () => {
+  const { lifecycle, events, timeout } = fixture();
+  const healthCheck = deferred();
+  lifecycle.transport.request = (...args) => {
+    events.push(["request", ...args]);
+    return healthCheck.promise;
+  };
+
+  const checking = timeout({ id: 41, method: "thread/read", timeoutMs: 1_000, generation: 1 });
+  await timeout({ id: 42, method: "thread/turns/list", timeoutMs: 1_000, generation: 1 });
+
+  assert.equal(events.some(([name]) => name === "stop"), false);
+  healthCheck.resolve({});
+  await checking;
+
+  assert.deepEqual(events.map(([name]) => name), ["error", "request", "log"]);
+});
+
 test("Codex App Server lifecycle restarts only after its follow-up health check times out", async () => {
   const { lifecycle, events, timeout } = fixture();
   lifecycle.transport.request = async (...args) => {
     events.push(["request", ...args]);
-    await timeout({ method: "thread/list", timeoutMs: 1_000, generation: 1 });
+    await timeout({ id: 52, method: "thread/list", timeoutMs: 1_000, generation: 1 });
     throw new Error("health check timed out");
   };
 
-  await timeout({ method: "thread/turns/list", timeoutMs: 1_000, generation: 1 });
+  await timeout({ id: 51, method: "thread/turns/list", timeoutMs: 1_000, generation: 1 });
 
   assert.deepEqual(events.map(([name]) => name), ["error", "request", "error", "stop"]);
 });

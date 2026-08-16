@@ -109,6 +109,9 @@ export class RuntimeRestartController {
           + `${replacement.usedFallback ? " (direct launcher fallback)" : ""}.`,
       );
     } catch (error) {
+      if (error?.replacementCleanup?.confirmed === false) {
+        return this.#halt(error, "launch cleanup");
+      }
       return this.#recover(error, "launch", { lockReleased: true });
     }
 

@@ -132,6 +132,45 @@ test("replacement waits for the first owner to become ready without launching du
   assert.equal(result.lock.ready, true);
 });
 
+test("replacement readiness timeout terminates the captured owner tree and releases its lock", async () => {
+  const events = [];
+  let ownerAlive = true;
+  let launcherAlive = true;
+  let lock = JSON.stringify({ pid: 84, instanceToken: "replacement", ready: false });
+  await assert.rejects(launchReplacementAndWait({
+    invocation: { command: "runtime", args: [], options: {} },
+    lockFile: "bot.lock",
+    currentPid: 42,
+    attempts: 1,
+    ownershipTimeoutMs: 1,
+    readinessTimeoutMs: 1,
+    spawnImpl: () => ({ pid: 73, once() {}, unref() {} }),
+    readFileImpl: async () => lock,
+    unlinkImpl: async () => {
+      events.push("unlock");
+      lock = "";
+    },
+    stopTree: async (pid) => {
+      events.push(`stop:${pid}`);
+      if (pid === 84) ownerAlive = false;
+      if (pid === 73) launcherAlive = false;
+      return true;
+    },
+    delayImpl: async () => {},
+    isAlive: (pid) => pid === 84 ? ownerAlive : pid === 73 ? launcherAlive : false,
+  }), (error) => {
+    assert.match(error.message, /did not become ready/);
+    assert.deepEqual(error.replacementCleanup, {
+      confirmed: true,
+      launchedPid: 73,
+      ownerPid: 84,
+      instanceToken: "replacement",
+    });
+    return true;
+  });
+  assert.deepEqual(events, ["stop:84", "stop:73", "unlock"]);
+});
+
 test("legacy restart keeps the current bot entry point", () => {
   const result = botReplacementInvocation({
     environment: {},

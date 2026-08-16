@@ -6,8 +6,7 @@ export class CodexAppServerLifecycle {
   #d;
   #restarting = false;
   #timeoutRestarting = false;
-  #timeoutConfirming = false;
-  #timeoutMethod = null;
+  #timeoutHealthCheck = null;
 
   constructor(dependencies) {
     this.#d = dependencies;
@@ -67,33 +66,44 @@ export class CodexAppServerLifecycle {
       run.provider === "codex" && run.observer === false && run.status === "running"
     ));
     if (managedRunActive) return;
-    if (this.#timeoutConfirming) {
+    if (this.#timeoutHealthCheck) return;
+
+    d.logger.error(`Codex ${method} timed out; checking app-server health before recycling it.`);
+    const healthCheck = {
+      method,
+      generation,
+      promise: null,
+    };
+    this.#timeoutHealthCheck = healthCheck;
+    try {
+      healthCheck.promise = this.request("thread/list", { limit: 1 }, {
+        timeoutMs: d.rpcTimeoutMs,
+        priority: "interactive",
+      });
+      await healthCheck.promise;
+      d.logger.log(`Codex app-server answered the health check after ${method} timed out; keeping it running.`);
+    } catch (error) {
+      if (this.#timeoutHealthCheck !== healthCheck
+        || d.isStopping()
+        || this.#timeoutRestarting
+        || error?.deliveryOutcome === "not-sent"
+        || (Number.isSafeInteger(healthCheck.generation)
+          && healthCheck.generation !== this.transport.generation)) return;
+      const runStartedDuringCheck = d.activeRuns().some((run) => (
+        run.provider === "codex" && run.observer === false && run.status === "running"
+      ));
+      if (runStartedDuringCheck) return;
       this.#timeoutRestarting = true;
       d.logger.error(
-        `Codex app-server did not answer the health check after ${this.#timeoutMethod ?? method} timed out; recycling the Hub-owned process.`,
+        `Codex app-server did not answer the health check after ${healthCheck.method} timed out; recycling the Hub-owned process.`,
       );
       try {
         await this.stop();
       } finally {
         this.#timeoutRestarting = false;
       }
-      return;
-    }
-
-    this.#timeoutConfirming = true;
-    this.#timeoutMethod = method;
-    d.logger.error(`Codex ${method} timed out; checking app-server health before recycling it.`);
-    try {
-      await this.request("thread/list", { limit: 1 }, {
-        timeoutMs: d.rpcTimeoutMs,
-        priority: "interactive",
-      }).then(
-        () => d.logger.log(`Codex app-server answered the health check after ${method} timed out; keeping it running.`),
-        () => undefined,
-      );
     } finally {
-      this.#timeoutConfirming = false;
-      this.#timeoutMethod = null;
+      if (this.#timeoutHealthCheck === healthCheck) this.#timeoutHealthCheck = null;
     }
   }
 

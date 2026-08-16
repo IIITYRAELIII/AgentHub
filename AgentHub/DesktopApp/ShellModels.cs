@@ -17,6 +17,89 @@ namespace AgentHubDesktop
         }
     }
 
+    internal static class DesktopTaskStatePresentation
+    {
+        internal static string Label(TaskItem item)
+        {
+            if (item == null) return "Ожидание";
+            if (item.Running) return "Выполняется";
+            if (item.ActivityUnknown) return "Статус уточняется";
+            if (item.Unread) return "Новый ответ";
+            return "Готов";
+        }
+
+        internal static bool AllowsMutation(TaskItem item)
+        {
+            return item != null && !item.ActivityUnknown;
+        }
+    }
+
+    internal static class DesktopLiveRunPresentation
+    {
+        internal static string PartialText(IDictionary<string, object> run)
+        {
+            var response = AgentHubClient.Text(run, "response").Trim();
+            return response.Length > 0 ? response : AgentHubClient.Text(run, "progress").Trim();
+        }
+    }
+
+    internal static class DesktopDeferredInputPresentation
+    {
+        internal static bool Matches(TaskItem selected, IDictionary<string, object> item)
+        {
+            if (selected == null || item == null) return false;
+            return String.Equals(selected.Provider ?? "", AgentHubClient.Text(item, "provider"), StringComparison.OrdinalIgnoreCase)
+                && String.Equals(selected.ThreadId ?? "", AgentHubClient.Text(item, "threadId"), StringComparison.Ordinal);
+        }
+
+        internal static string StateLabel(IDictionary<string, object> item)
+        {
+            if (!String.IsNullOrWhiteSpace(AgentHubClient.Text(item, "lastError"))) return "Ошибка отправки";
+            switch (AgentHubClient.Text(item, "state"))
+            {
+                case "queued": return "В очереди";
+                case "paused": return "На паузе";
+                case "dispatching": return "Отправляется";
+                case "steering": return "Добавляется в текущий ход";
+                default: return "Ожидает решения";
+            }
+        }
+
+        internal static string[] Actions(IDictionary<string, object> item, TaskItem selected = null)
+        {
+            var state = AgentHubClient.Text(item, "state");
+            if (state == "dispatching" || state == "steering") return new string[0];
+            if (state == "paused") return new[] { "resume", "up", "down", "cancel" };
+            if (state == "queued")
+            {
+                var queuedActions = new List<string>();
+                if (selected != null && selected.Running && !selected.ActivityUnknown) queuedActions.Add("steer");
+                queuedActions.AddRange(new[] { "pause", "up", "down", "cancel" });
+                return queuedActions.ToArray();
+            }
+            var actions = new List<string> { "new", "queue" };
+            if (AgentHubClient.Bool(item, "allowForce")) actions.Add("force");
+            actions.Add("cancel");
+            return actions.ToArray();
+        }
+    }
+
+    internal static class DesktopApprovalPresentation
+    {
+        internal const double MaximumTextHeight = 180;
+
+        internal static ScrollViewer Text(string value)
+        {
+            return new ScrollViewer
+            {
+                MaxHeight = MaximumTextHeight,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+                Content = Theme.Label(value, 11, Theme.Solid(Theme.Text), FontWeights.Normal)
+            };
+        }
+    }
+
     internal static class WorkspaceFileLink
     {
         public static bool TryParse(string target, out string file, out int line)

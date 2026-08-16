@@ -94,9 +94,14 @@ function fixture(overrides = {}) {
       refresh: async () => state.catalogRefresh ? state.catalogRefresh() : state.entries,
     },
     historyReader: {
-      read: async (binding) => {
+      read: async (binding, options = {}) => {
         calls.binding = binding;
-        return { history: structuredClone(state.history) };
+        const history = structuredClone(state.history);
+        return {
+          history: state.honorHistoryReadLimit && Number(options.limit) > 0
+            ? history.slice(-Number(options.limit))
+            : history,
+        };
       },
       refresh: async (binding) => {
         calls.refreshes += 1;
@@ -864,7 +869,10 @@ test("desktop task history hides cached Codex inspection images from assistant a
 });
 
 test("desktop task history restores screenshot sources lost from the durable cache", async () => {
-  const { desktopTaskHistory, state, calls } = fixture({ run: null });
+  const { desktopTaskHistory, state, calls } = fixture({
+    run: null,
+    receipts: { forMessage: () => null, forTurn: () => null },
+  });
   const providerHistory = structuredClone(state.history);
   providerHistory[3].messages[0].attachmentSources = [{
     type: "data",
@@ -956,7 +964,10 @@ test("desktop task history can await provider hydration for a completed image re
 });
 
 test("desktop task history returns the preceding page for a supplied cursor", async () => {
-  const { desktopTaskHistory, state } = fixture({ run: null });
+  const { desktopTaskHistory, state } = fixture({
+    run: null,
+    honorHistoryReadLimit: true,
+  });
   state.history = Array.from({ length: 27 }, (_, index) => ({
     id: `turn-${index + 1}`,
     prompt: `Вопрос ${index + 1}`,
@@ -1024,6 +1035,60 @@ test("desktop task history assigns a turn receipt only to the root user message"
     type: "image/png",
   }]);
   assert.equal(result.items[0].messages[1].clientUserMessageId, "steer-client");
+});
+
+test("desktop task history restores receipt attachments from an explicit empty message list", async () => {
+  const { desktopTaskHistory } = fixture({
+    history: [{
+      id: "turn-attachments",
+      completed: true,
+      messages: [{
+        itemId: "user-attachments",
+        clientUserMessageId: "client-attachments",
+        role: "user",
+        text: "Проверь скриншот",
+        attachments: [],
+      }],
+    }],
+    receipts: {
+      forMessage: () => ({
+        clientUserMessageId: "client-attachments",
+        result: { attachments: [{ id: "screen.png", type: "image/png" }] },
+      }),
+    },
+  });
+
+  const result = await desktopTaskHistory({ limit: 1, includeActive: false });
+  assert.equal(result.items[0].messages[0].attachments[0].id, "screen.png");
+});
+
+test("desktop task history preserves subagent identity metadata", async () => {
+  const { desktopTaskHistory } = fixture({
+    history: [{
+      id: "turn-subagent",
+      completed: true,
+      messages: [{
+        itemId: "agent-child",
+        role: "agent",
+        text: "Проверено",
+        kind: "subagent",
+        agentThreadId: "child-thread",
+        model: "gpt-5.6-terra",
+      }],
+    }],
+  });
+
+  const result = await desktopTaskHistory({ limit: 1, includeActive: false });
+  assert.deepEqual(result.items[0].messages[0], {
+    itemId: "agent-child",
+    role: "agent",
+    text: "Проверено",
+    kind: "subagent",
+    agentThreadId: "child-thread",
+    model: "gpt-5.6-terra",
+    time: null,
+    attachments: [],
+  });
 });
 
 test("desktop task history hydrates only visible turns and evicts old hydrated turns", async () => {

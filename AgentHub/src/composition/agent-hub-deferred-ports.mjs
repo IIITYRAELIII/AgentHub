@@ -67,7 +67,7 @@ export function createAgentHubDeferredPorts() {
   const runtimeFacades = createDeferredCompositionPort("runtime facades", [
     "setBoundedMapValue", "sendTaskSelectionNotification", "sendTaskSwitchNotification",
     "sendTaskAlreadySelectedNotification", "rememberLastTaskMessage", "savedLastTaskMessage",
-    "savedLastTaskMessageRecord", "deferredTaskMessageAtMs", "latestThreadContextUsage",
+    "savedLastTaskMessageRecord", "lastTaskMessageRevision", "deferredTaskMessageAtMs", "latestThreadContextUsage",
     "trackTurnTokenUsage", "consumeTurnTokenTracker", "finalizeCodexRunDelivery",
     "deliverTurnEndNotification", "retryPendingTurnEndNotifications", "waitForTurnEndCompletion",
     "rememberCodexTaskSettings", "restoreCodexTaskSettings", "applyCodexThreadSettings",

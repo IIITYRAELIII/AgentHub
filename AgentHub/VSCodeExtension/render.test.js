@@ -1820,6 +1820,10 @@ test("composer restores definite rejection but keeps an ambiguous delivery singl
   const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
   const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
   const html = fs.readFileSync(require.resolve("../assets/web-app/index.html"), "utf8");
+  const connectionBanner = fs.readFileSync(
+    require.resolve("../assets/web-app/connection-banner.js"),
+    "utf8",
+  );
   const submit = app.match(/function submitComposer\(\) \{(?<body>[\s\S]*?)\n\}/u)?.groups?.body ?? "";
   assert.match(submit, /composerInput\.value = ""[\s\S]*emit\("message:send"/u);
   assert.match(app, /function completeComposerSend\(requestId, accepted\)/u);
@@ -1835,7 +1839,7 @@ test("composer restores definite rejection but keeps an ambiguous delivery singl
   assert.match(client, /snapshot\?\.restartWaiting == null && blockingCount > 0/u);
   assert.match(client, /waiting \? "restart-waiting" : snapshot\?\.restartPending \? "restarting" : idleStatus/u);
   assert.match(html, /data-restart-banner/u);
-  assert.match(app, /Agent Hub ожидает завершения активных задач: \$\{blockingCount\}\./u);
+  assert.match(connectionBanner, /Agent Hub ожидает завершения блокирующей работы: \$\{count\}\./u);
   assert.match(app, /restarting: "Agent Hub перезапускается…"/u);
   assert.match(app, /offline: "Нет связи с Agent Hub\."/u);
   assert.doesNotMatch(
@@ -2313,16 +2317,15 @@ test("VS Code stream refresh keeps composer focus and opens history at the botto
 test("hub status band lives inside the top toolbar instead of covering the stream row", () => {
   const html = fs.readFileSync(path.join(WEB_APP_ROOT, "index.html"), "utf8");
   const styles = fs.readFileSync(path.join(WEB_APP_ROOT, "styles.css"), "utf8");
-  /* Полоса является частью верхней панели, поэтому не создаёт отдельную
-     строку над шапкой и не накрывает ряд Stream под ней. */
+  /* Полоса остаётся визуально связанной с верхней панелью, но выводится
+     поверх оболочки и не меняет геометрию чата при переподключении. */
   const toolbar = html.indexOf('class="toolbar"');
   const banner = html.indexOf("data-restart-banner");
   const settings = html.indexOf('data-panel-open="settings"');
   assert.ok(toolbar < banner && banner < settings);
-  assert.match(styles, /\.connection-banner \{[^}]*position: relative;/u);
-  assert.doesNotMatch(styles, /\.connection-banner \{[^}]*position: fixed;/u);
-  assert.match(styles, /\.connection-banner \{[^}]*border: 0;[^}]*flex: 0 1 auto;[^}]*width: max-content;/u);
-  assert.match(styles, /html\[data-surface="mobile"\] \.connection-banner \{[^}]*flex: 0 1 auto;/u);
+  assert.match(styles, /\.connection-banner \{[^}]*pointer-events: none;[^}]*position: fixed;/u);
+  assert.match(styles, /\.connection-banner \{[^}]*left: 50%;[^}]*transform: translateX\(-50%\);[^}]*width: max-content;/u);
+  assert.match(styles, /html\[data-surface="mobile"\] \.connection-banner \{[^}]*max-width: 100%;/u);
   assert.match(styles, /html:not\(\[data-surface="mobile"\]\) \.connection-banner:not\(\[hidden\]\) \{/u);
   assert.doesNotMatch(styles, /html:not\(\[data-surface="mobile"\]\) \.connection-banner \{[^}]*display:/u);
 });

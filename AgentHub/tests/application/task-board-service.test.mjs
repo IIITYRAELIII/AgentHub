@@ -24,6 +24,36 @@ async function fixture(t, classify) {
   return new TaskBoardService({ store, workspaceCatalog, classify, autoPlaceConfidence: 0.82 });
 }
 
+test("snapshot revision reads owner revisions without building hierarchy or board", () => {
+  let hierarchyCalls = 0;
+  const store = {
+    revision: 7,
+    create: () => null,
+    task: () => null,
+    list: () => { throw new Error("board snapshot must not be built"); },
+    move: () => null,
+    markStarted: () => null,
+    orderedColumnIds: () => { throw new Error("board layout must not be built"); },
+    moveColumn: () => null,
+    reassignWorkspace: () => 0,
+    notesComment: () => { throw new Error("board layout must not be built"); },
+    setNotesComment: () => "",
+  };
+  const service = new TaskBoardService({
+    store,
+    workspaceCatalog: {
+      revision: 11,
+      hierarchy: () => {
+        hierarchyCalls += 1;
+        return [];
+      },
+    },
+  });
+
+  assert.equal(service.snapshotRevision, "7:11");
+  assert.equal(hierarchyCalls, 0);
+});
+
 test("Spark correction and confident Workspace suggestion place a Task automatically", async (t) => {
   const service = await fixture(t, async () => ({
     title: "Исправить дашборд",

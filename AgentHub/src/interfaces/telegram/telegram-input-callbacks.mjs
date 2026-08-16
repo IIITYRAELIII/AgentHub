@@ -78,9 +78,14 @@ export class TelegramInputCallbackService {
     try {
       if (action === "cancel") {
         d.pendingInputs.delete(id);
+        try {
+          await d.saveState();
+        } catch (error) {
+          d.pendingInputs.set(id, item);
+          throw error;
+        }
         d.updateDeferredDesktopReceipt(item, "cancelled");
         await d.cleanupDeferredFiles(item);
-        await d.saveState();
         await d.updateDeferredMessage(item, "❌ Сохранённое сообщение отменено.");
         d.scheduleNextForTask(item);
         return true;

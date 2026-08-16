@@ -52,6 +52,7 @@ namespace AgentHubDesktop
         private readonly TextBlock pageMeta = new TextBlock();
         private readonly TextBlock footer = new TextBlock();
         private readonly Button sendButton;
+        private readonly Button stopButton;
         private readonly Button olderButton;
         private readonly string desktopRoot;
         private readonly string draftFile;
@@ -96,6 +97,7 @@ namespace AgentHubDesktop
             SourceInitialized += delegate { ApplySystemFrameColours(); };
 
             sendButton = Theme.Button("Отправить", "\uE724", true);
+            stopButton = IconButton("\uE71A", "Остановить ход");
             olderButton = Theme.Button("Ранние сообщения", "\uE823", false);
             Resources.MergedDictionaries.Add(Theme.ControlStyles());
             Content = BuildShell();
@@ -403,10 +405,9 @@ namespace AgentHubDesktop
             var headerActions = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
             var diff = IconButton("\uE8A7", "Изменения задачи");
             diff.Click += async delegate { await ShowDiffAsync(); };
-            var stop = IconButton("\uE71A", "Остановить ход");
-            stop.Click += async delegate { await CancelAsync(); };
+            stopButton.Click += async delegate { await CancelAsync(); };
             headerActions.Children.Add(diff);
-            headerActions.Children.Add(stop);
+            headerActions.Children.Add(stopButton);
             Grid.SetColumn(headerActions, 1);
             header.Children.Add(headerActions);
             area.Children.Add(header);
@@ -608,6 +609,8 @@ namespace AgentHubDesktop
                     Title = AgentHubClient.Text(value, "title", "Без названия"),
                     Selected = AgentHubClient.Bool(value, "selected"),
                     Running = AgentHubClient.Bool(value, "running"),
+                    ActivityUnknown = AgentHubClient.Bool(value, "activityUnknown"),
+                    Unread = AgentHubClient.Bool(value, "unread"),
                     Runtime = AgentHubClient.Text(value, "runtime"),
                     LastAnswer = AgentHubClient.Text(value, "lastAnswer"),
                     LastAnswerAt = AgentHubClient.Text(value, "lastAnswerAt"),
@@ -652,7 +655,16 @@ namespace AgentHubDesktop
                 pageMeta.Text = (streamLabel.Length == 0 ? selected.Title : streamLabel + "  ·  " + selected.Title) + "  ·  "
                     + ProviderName(selected.Provider) + "  ·  "
                     + (String.IsNullOrWhiteSpace(selected.Runtime) ? "Ожидание" : selected.Runtime)
-                    + (selected.Running ? "  ·  ход активен" : "  ·  готов");
+                    + "  ·  " + DesktopTaskStatePresentation.Label(selected).ToLowerInvariant();
+                var allowsMutation = DesktopTaskStatePresentation.AllowsMutation(selected);
+                stopButton.IsEnabled = selected.Running && allowsMutation;
+                stopButton.ToolTip = selected.ActivityUnknown
+                    ? "Состояние провайдера уточняется; остановка временно недоступна"
+                    : selected.Running ? "Остановить ход" : "Активного хода нет";
+                sendButton.IsEnabled = allowsMutation;
+                sendButton.ToolTip = selected.ActivityUnknown
+                    ? "Дождитесь подтверждения состояния провайдера"
+                    : "Отправить сообщение";
                 RenderInspector(selected, snapshot);
                 if (historyKey != selectedKey) BeginLoadHistory();
                 else RenderConversation(selected);
@@ -768,10 +780,12 @@ namespace AgentHubDesktop
             {
                 var dot = new Ellipse
                 {
-                    Width = item.Running ? 9 : 7,
-                    Height = item.Running ? 9 : 7,
-                    Fill = item.Running ? Theme.Solid(Theme.Good) : Theme.Provider(item.Provider),
-                    Opacity = item.Running ? 1 : .55,
+                    Width = item.Running || item.ActivityUnknown || item.Unread ? 9 : 7,
+                    Height = item.Running || item.ActivityUnknown || item.Unread ? 9 : 7,
+                    Fill = item.ActivityUnknown
+                        ? Theme.Solid(Theme.Claude)
+                        : item.Running ? Theme.Solid(Theme.Good) : Theme.Provider(item.Provider),
+                    Opacity = item.Running || item.ActivityUnknown || item.Unread ? 1 : .55,
                     Margin = new Thickness(0, 4, 10, 0),
                     VerticalAlignment = VerticalAlignment.Top
                 };
@@ -783,7 +797,11 @@ namespace AgentHubDesktop
             title.MaxHeight = 40;
             text.Children.Add(title);
             var runtime = String.IsNullOrWhiteSpace(item.Runtime) ? "ожидание" : ShortRuntime(item.Runtime);
-            var meta = Theme.Label(ProviderName(item.Provider) + "  ·  " + runtime, 10.5, Theme.Solid(Theme.Muted), FontWeights.Normal);
+            var meta = Theme.Label(
+                ProviderName(item.Provider) + "  ·  " + runtime + "  ·  " + DesktopTaskStatePresentation.Label(item),
+                10.5,
+                Theme.Solid(item.ActivityUnknown ? Theme.Claude : item.Unread ? Theme.CodexMint : Theme.Muted),
+                FontWeights.Normal);
             meta.Margin = new Thickness(0, 4, 0, 0);
             text.Children.Add(meta);
             Grid.SetColumn(text, 1);
@@ -1000,7 +1018,8 @@ namespace AgentHubDesktop
                         AgentHubClient.Text(message, "text"),
                         item.Provider,
                         false,
-                        DesktopAttachmentPresentation.MessageAttachments(message)));
+                        DesktopAttachmentPresentation.MessageAttachments(message),
+                        AgentHubClient.Text(message, "author")));
                 }
             }
             if (item.Running)
@@ -1174,9 +1193,16 @@ namespace AgentHubDesktop
             string text,
             string provider,
             bool live,
-            IList<Dictionary<string, object>> assistantAttachments)
+            IList<Dictionary<string, object>> assistantAttachments,
+            string author = "")
         {
             var body = new StackPanel();
+            if (!String.IsNullOrWhiteSpace(author))
+            {
+                var authorText = Theme.Label(author.Trim(), 10, Theme.Solid(Theme.CodexMint), FontWeights.SemiBold);
+                authorText.Margin = new Thickness(0, 0, 0, 7);
+                body.Children.Add(authorText);
+            }
             if (!String.IsNullOrWhiteSpace(text)) body.Children.Add(SelectableMessage(text, provider));
             var attachmentStrip = AssistantAttachmentStrip(assistantAttachments);
             if (attachmentStrip != null) body.Children.Add(attachmentStrip);
@@ -1209,17 +1235,10 @@ namespace AgentHubDesktop
             });
             top.Children.Add(Theme.Label(AgentHubClient.Text(run, "stage", "Ход выполняется"), 13, Theme.Solid(Theme.Text), FontWeights.SemiBold));
             panel.Children.Add(top);
-            var progress = AgentHubClient.Text(run, "progress");
-            var response = AgentHubClient.Text(run, "response");
-            if (!String.IsNullOrWhiteSpace(progress))
+            var partial = DesktopLiveRunPresentation.PartialText(run);
+            if (!String.IsNullOrWhiteSpace(partial))
             {
-                var progressText = Theme.Label(progress, 12.5, Theme.Solid(Theme.Muted), FontWeights.Normal);
-                progressText.Margin = new Thickness(18, 10, 0, 0);
-                panel.Children.Add(progressText);
-            }
-            if (!String.IsNullOrWhiteSpace(response))
-            {
-                var responseBlock = SelectableMessage(response, item.Provider);
+                var responseBlock = SelectableMessage(partial, item.Provider);
                 responseBlock.Margin = new Thickness(18, 12, 0, 0);
                 panel.Children.Add(responseBlock);
             }
@@ -1940,24 +1959,31 @@ namespace AgentHubDesktop
             inspector.Children.Add(InspectorHero(item));
             var settings = AgentHubClient.Object(snapshot, "settings");
             var contextCompacting = AgentHubClient.Bool(item.Context, "compacting");
+            var allowsTaskMutation = DesktopTaskStatePresentation.AllowsMutation(item);
             inspector.Children.Add(InspectorSection("ИСПОЛНИТЕЛЬ",
                 SettingChoice("Агент", "provider", AgentHubClient.Text(settings, "provider"), new[]
                 {
                     Choice("codex", "Codex"),
                     Choice("claude", "Claude")
-                }),
+                }, allowsTaskMutation),
                 SettingRow("Среда", String.IsNullOrWhiteSpace(item.Runtime) ? "Не запущен" : item.Runtime, Theme.Solid(Theme.Muted)),
-                SettingRow("Состояние", item.Running ? "Выполняется" : "Готов", item.Running ? Theme.Solid(Theme.Good) : Theme.Solid(Theme.Muted))));
+                SettingRow(
+                    "Состояние",
+                    DesktopTaskStatePresentation.Label(item),
+                    item.Running ? Theme.Solid(Theme.Good)
+                        : item.ActivityUnknown ? Theme.Solid(Theme.Claude)
+                        : item.Unread ? Theme.Solid(Theme.CodexMint)
+                        : Theme.Solid(Theme.Muted))));
 
             inspector.Children.Add(InspectorSection("ПАРАМЕТРЫ",
-                SettingChoice("Модель", "model", AgentHubClient.Text(settings, "model"), Choices(settings, "models"), !contextCompacting),
-                SettingChoice("Мощь дум", "reasoning", AgentHubClient.Text(settings, "reasoning"), Choices(settings, "reasoningOptions"), !contextCompacting),
-                SettingChoice("Режим", "mode", AgentHubClient.Text(settings, "mode"), Choices(settings, "modeOptions")),
+                SettingChoice("Модель", "model", AgentHubClient.Text(settings, "model"), Choices(settings, "models"), allowsTaskMutation && !contextCompacting),
+                SettingChoice("Мощь дум", "reasoning", AgentHubClient.Text(settings, "reasoning"), Choices(settings, "reasoningOptions"), allowsTaskMutation && !contextCompacting),
+                SettingChoice("Режим", "mode", AgentHubClient.Text(settings, "mode"), Choices(settings, "modeOptions"), allowsTaskMutation),
                 SettingChoice("Доступ", "approvalMode", AgentHubClient.Text(settings, "approvalMode"), new[]
                 {
                     Choice("manual", "Ручной"),
                     Choice("auto", "Авто")
-                })));
+                }, allowsTaskMutation)));
 
             if (String.Equals(item.Provider, "codex", StringComparison.OrdinalIgnoreCase))
             {
@@ -1969,7 +1995,7 @@ namespace AgentHubDesktop
             {
                 var selectedProject = projects.FirstOrDefault(delegate(ChoiceItem choice) { return samePath(choice.Value, item.ProjectRoot); });
                 inspector.Children.Add(InspectorSection("ПРОЕКТ",
-                    SettingChoice("Папка", "project", selectedProject == null ? item.ProjectRoot : selectedProject.Value, projects)));
+                    SettingChoice("Папка", "project", selectedProject == null ? item.ProjectRoot : selectedProject.Value, projects, allowsTaskMutation)));
             }
 
             var approvalCards = new List<UIElement>();
@@ -1984,7 +2010,8 @@ namespace AgentHubDesktop
             foreach (var raw in AgentHubClient.Array(snapshot, "deferredInputs"))
             {
                 var deferred = raw as Dictionary<string, object>;
-                if (deferred != null) deferredCards.Add(DeferredInputCard(deferred));
+                if (deferred != null && DesktopDeferredInputPresentation.Matches(item, deferred))
+                    deferredCards.Add(DeferredInputCard(deferred));
             }
             if (deferredCards.Count > 0) inspector.Children.Add(InspectorSection("СОХРАНЁННЫЕ СООБЩЕНИЯ", deferredCards.ToArray()));
 
@@ -1995,6 +2022,10 @@ namespace AgentHubDesktop
             rename.Click += async delegate { await RenameAsync(); };
             var archive = Theme.Button("Архивировать", "\uE74D", false);
             archive.HorizontalAlignment = HorizontalAlignment.Stretch;
+            archive.IsEnabled = DesktopTaskStatePresentation.AllowsMutation(item);
+            archive.ToolTip = item.ActivityUnknown
+                ? "Состояние провайдера уточняется; архивирование временно недоступно"
+                : "Архивировать задачу";
             archive.Click += async delegate { await ArchiveAsync(); };
             taskActions.Children.Add(rename);
             taskActions.Children.Add(archive);
@@ -2045,7 +2076,7 @@ namespace AgentHubDesktop
                 "\uE72C",
                 false);
             compact.HorizontalAlignment = HorizontalAlignment.Stretch;
-            compact.IsEnabled = !item.Running && !compacting && !usagePending;
+            compact.IsEnabled = DesktopTaskStatePresentation.AllowsMutation(item) && !item.Running && !compacting && !usagePending;
             compact.ToolTip = item.Running
                 ? "Сначала завершите или остановите текущий ход"
                 : compacting
@@ -2062,9 +2093,8 @@ namespace AgentHubDesktop
         private UIElement ApprovalCard(Dictionary<string, object> approval)
         {
             var panel = new StackPanel();
-            var text = Theme.Label(AgentHubClient.Text(approval, "text", "Требуется подтверждение"), 11, Theme.Solid(Theme.Text), FontWeights.Normal);
-            text.MaxHeight = 120;
-            panel.Children.Add(text);
+            panel.Children.Add(DesktopApprovalPresentation.Text(
+                AgentHubClient.Text(approval, "text", "Требуется подтверждение")));
             var actions = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 9, 0, 0) };
             var allow = Theme.Button("Разрешить", "", true);
             var deny = Theme.Button("Отклонить", "", false);
@@ -2092,21 +2122,38 @@ namespace AgentHubDesktop
         private UIElement DeferredInputCard(Dictionary<string, object> item)
         {
             var panel = new StackPanel();
-            var state = AgentHubClient.Text(item, "state");
-            panel.Children.Add(Theme.Label(state == "queued" ? "В очереди" : "Ожидает решения", 10, Theme.Solid(Theme.Claude), FontWeights.Bold));
+            panel.Children.Add(Theme.Label(
+                DesktopDeferredInputPresentation.StateLabel(item),
+                10,
+                Theme.Solid(Theme.Claude),
+                FontWeights.Bold));
             var preview = Theme.Label(TrimPreview(AgentHubClient.Text(item, "preview"), 220), 11, Theme.Solid(Theme.Text), FontWeights.Normal);
             preview.Margin = new Thickness(0, 5, 0, 8);
             panel.Children.Add(preview);
             var id = AgentHubClient.Text(item, "id");
             var buttons = new WrapPanel();
-            if (state != "queued")
+            TaskItem selected;
+            tasks.TryGetValue(selectedKey ?? "", out selected);
+            foreach (var action in DesktopDeferredInputPresentation.Actions(item, selected))
             {
-                buttons.Children.Add(SmallAction("Новая", async delegate { await ResolveDeferredAsync(id, "new"); }));
-                buttons.Children.Add(SmallAction("В очередь", async delegate { await ResolveDeferredAsync(id, "queue"); }));
-                if (AgentHubClient.Bool(item, "allowForce"))
-                    buttons.Children.Add(SmallAction("Всё равно", async delegate { await ResolveDeferredAsync(id, "force"); }));
+                var exactAction = action;
+                var label = action == "new" ? "Новая задача"
+                    : action == "queue" ? "В очередь"
+                    : action == "force" ? "Всё равно"
+                    : action == "steer" ? "В текущий ход"
+                    : action == "pause" ? "Пауза"
+                    : action == "resume" ? "Продолжить"
+                    : action == "up" ? "Выше"
+                    : action == "down" ? "Ниже"
+                    : "Отменить";
+                buttons.Children.Add(SmallAction(label, async delegate
+                {
+                    await ResolveDeferredAsync(
+                        id,
+                        exactAction == "up" || exactAction == "down" ? "move" : exactAction,
+                        exactAction == "up" || exactAction == "down" ? exactAction : null);
+                }));
             }
-            buttons.Children.Add(SmallAction("Отменить", async delegate { await ResolveDeferredAsync(id, "cancel"); }));
             panel.Children.Add(buttons);
             return new Border
             {
@@ -2145,15 +2192,17 @@ namespace AgentHubDesktop
             catch (Exception error) { footer.Text = error.Message; }
         }
 
-        private async Task ResolveDeferredAsync(string id, string action)
+        private async Task ResolveDeferredAsync(string id, string action, string direction = null)
         {
             try
             {
-                var result = await client.CallAsync("deferred-input", new Dictionary<string, object>
+                var parameters = new Dictionary<string, object>
                 {
                     { "id", id },
                     { "action", action }
-                });
+                };
+                if (!String.IsNullOrWhiteSpace(direction)) parameters["direction"] = direction;
+                var result = await client.CallAsync("deferred-input", parameters);
                 footer.Text = AgentHubClient.Text(result, "message", "Сообщение обработано");
                 await RefreshAsync(true);
             }
@@ -2502,6 +2551,13 @@ namespace AgentHubDesktop
 
         private async Task SendAsync()
         {
+            TaskItem selected;
+            if (!tasks.TryGetValue(selectedKey ?? "", out selected)
+                || !DesktopTaskStatePresentation.AllowsMutation(selected))
+            {
+                footer.Text = "Состояние провайдера уточняется; сообщение не отправлено.";
+                return;
+            }
             var text = (composer.Text ?? "").Trim();
             if (text.Length == 0 && attachments.Count == 0 && annotations.Count == 0) return;
             if (attachments.Count > 0 && desktopApiVersion < 2)
@@ -2553,7 +2609,12 @@ namespace AgentHubDesktop
                 await RefreshAsync(false);
             }
             catch (Exception error) { footer.Text = error.Message; }
-            finally { sendButton.IsEnabled = true; }
+            finally
+            {
+                TaskItem current;
+                sendButton.IsEnabled = tasks.TryGetValue(selectedKey ?? "", out current)
+                    && DesktopTaskStatePresentation.AllowsMutation(current);
+            }
         }
 
         private Dictionary<string, object> SelectedTaskParameters()
@@ -2725,6 +2786,10 @@ namespace AgentHubDesktop
 
         private async Task CancelAsync()
         {
+            TaskItem item;
+            if (!tasks.TryGetValue(selectedKey ?? "", out item)
+                || !item.Running
+                || !DesktopTaskStatePresentation.AllowsMutation(item)) return;
             try
             {
                 var result = await client.CallAsync("cancel-run", SelectedTaskParameters());
@@ -2735,6 +2800,9 @@ namespace AgentHubDesktop
 
         private async Task CompactContextAsync()
         {
+            TaskItem item;
+            if (!tasks.TryGetValue(selectedKey ?? "", out item)
+                || !DesktopTaskStatePresentation.AllowsMutation(item)) return;
             try
             {
                 footer.Text = "Сворачиваю контекст…";
@@ -2780,6 +2848,11 @@ namespace AgentHubDesktop
         {
             TaskItem item;
             if (!tasks.TryGetValue(selectedKey ?? "", out item)) return;
+            if (!DesktopTaskStatePresentation.AllowsMutation(item))
+            {
+                footer.Text = "Состояние провайдера уточняется; архивирование недоступно.";
+                return;
+            }
             if (MessageBox.Show(this, "Архивировать задачу «" + item.Title + "»?", "Agent Hub",
                 MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
             try

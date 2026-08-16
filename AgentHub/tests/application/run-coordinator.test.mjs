@@ -33,6 +33,7 @@ function fixture(overrides = {}) {
       calls.push(["begin", ...args]);
       return run;
     },
+    rollbackAdmission: async (value) => { calls.push(["rollback", value]); },
     launchTurn: async (...args) => { calls.push(["launch", ...args]); },
     describeAttachments: (files) => files.map((file) => ({ id: file })),
     notifyInputStart: (value) => calls.push(["notify", value]),
@@ -232,6 +233,40 @@ test("RunCoordinator preserves input when Codex reports an orphaned active write
   assert.deepEqual(f.calls.find(([name]) => name === "schedule").slice(1), [
     { id: "queued-provider" }, 500,
   ]);
+});
+
+test("RunCoordinator rolls back admission before queueing an active writer", async () => {
+  const activeRuns = new Map();
+  const f = fixture({
+    taskRuns: { forTask: (target) => activeRuns.get(target.threadId) ?? null },
+    beginRun: async (...args) => {
+      f.calls.push(["begin", ...args]);
+      activeRuns.set(f.target.threadId, f.run);
+      return f.run;
+    },
+    launchTurn: async () => {
+      throw new Error("thread thread-1 already has an active writer");
+    },
+    rollbackAdmission: async (run) => {
+      f.calls.push(["rollback", run]);
+      activeRuns.delete(run.threadId);
+    },
+    deferInput: async (...args) => {
+      assert.equal(activeRuns.get(f.target.threadId), undefined);
+      f.calls.push(["defer", ...args]);
+      return { id: "queued-after-rollback", item: { id: "queued-after-rollback" } };
+    },
+    scheduleDeferred: (item, delay) => f.calls.push(["schedule", item, delay]),
+  });
+
+  const result = await f.coordinator.submitClientInput({
+    input: "queue after rollback",
+    target: f.target,
+    clientUserMessageId: "message-rollback",
+  });
+
+  assert.equal(result.queued, true);
+  assert.deepEqual(f.calls.map(([name]) => name), ["begin", "rollback", "defer", "schedule"]);
 });
 
 test("RunCoordinator preserves unknown external activity for explicit action", async () => {

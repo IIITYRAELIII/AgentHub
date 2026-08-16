@@ -22,6 +22,9 @@ namespace AgentHubDesktop
             UserMessageDisclosureRequiresRealOverflow();
             AssistantAttachmentsAreCollectedAndDeduplicated();
             ConversationMessagesPreserveOrderAuthorAndAttachments();
+            ConversationShowsAllUsersAndSubagentsWithOneParentFinal();
+            IncompleteConversationUsesLatestParentPartial();
+            LiveRunUsesResponseAsTheLatestPartial();
             ConversationSignatureTracksMessageSemantics();
             AssistantAttachmentPathIsConfinedToPrivateRoot();
             AttachmentHistorySignatureChangesAfterHydration();
@@ -29,6 +32,9 @@ namespace AgentHubDesktop
             AttachmentStoragePreservesRdpFileName();
             WorkspacePresentationGroupsThreadsByWorkspaceAndStream();
             WorkspacePresentationKeepsAtMostFourOpenStreams();
+            DeferredInputsAreScopedAndStateful();
+            UnknownAndUnreadTasksAreNotPresentedAsReady();
+            LongApprovalTextRemainsScrollable();
             MarkdownTableIsRecognisedOnlyWithSeparator();
             WorkspaceFileLinkAcceptsRelativeTargetAndAnchor();
             ScrollBarStyleReplacesTheSystemTheme();
@@ -279,6 +285,123 @@ namespace AgentHubDesktop
             Require(
                 AgentHubClient.Text(DesktopAttachmentPresentation.MessageAttachments(messages[1])[0], "id") == "first.png",
                 "the same attachment ID was deduplicated across different messages");
+        }
+
+        private static void ConversationShowsAllUsersAndSubagentsWithOneParentFinal()
+        {
+            var exchange = new Dictionary<string, object>
+            {
+                { "completed", true },
+                { "messages", new object[]
+                    {
+                        new Dictionary<string, object> { { "role", "user" }, { "text", "Первое" } },
+                        new Dictionary<string, object> { { "role", "agent" }, { "phase", "commentary" }, { "text", "Промежуточное" } },
+                        new Dictionary<string, object> { { "role", "agent" }, { "kind", "subagent" }, { "author", "Субагент (Terra)" }, { "text", "Проверка" } },
+                        new Dictionary<string, object> { { "role", "user" }, { "text", "Уточнение" } },
+                        new Dictionary<string, object> { { "role", "agent" }, { "phase", "final" }, { "text", "Итог" } },
+                        new Dictionary<string, object> { { "role", "agent" }, { "phase", "commentary" }, { "text", "Устаревший хвост" } }
+                    }
+                }
+            };
+            var messages = DesktopAttachmentPresentation.ConversationMessages(exchange, true);
+            Require(messages.Count == 4, "conversation retained more than one parent answer");
+            Require(AgentHubClient.Text(messages[0], "text") == "Первое", "first user message was lost");
+            Require(AgentHubClient.Text(messages[1], "kind") == "subagent", "subagent message was lost");
+            Require(AgentHubClient.Text(messages[2], "text") == "Уточнение", "follow-up user message was lost");
+            Require(AgentHubClient.Text(messages[3], "text") == "Итог", "parent final was not selected");
+            var withoutParent = DesktopAttachmentPresentation.ConversationMessages(exchange, false);
+            Require(withoutParent.Count == 3 && AgentHubClient.Text(withoutParent[1], "kind") == "subagent",
+                "live run suppression also removed subagent messages");
+            var fallback = DesktopAttachmentPresentation.ConversationMessages(new Dictionary<string, object>
+            {
+                { "completed", true },
+                { "prompt", "Fallback user" },
+                { "answer", "Fallback final" },
+                { "messages", new object[] { new Dictionary<string, object> { { "role", "user" }, { "text", "Stored user" } } } }
+            }, true);
+            Require(fallback.Count == 2 && AgentHubClient.Text(fallback[1], "text") == "Fallback final",
+                "turn answer fallback disappeared when stored user messages existed");
+        }
+
+        private static void IncompleteConversationUsesLatestParentPartial()
+        {
+            var exchange = new Dictionary<string, object>
+            {
+                { "active", true },
+                { "messages", new object[]
+                    {
+                        new Dictionary<string, object> { { "role", "user" }, { "text", "Запрос" } },
+                        new Dictionary<string, object> { { "role", "agent" }, { "phase", "commentary" }, { "text", "Старый partial" } },
+                        new Dictionary<string, object> { { "role", "agent" }, { "phase", "commentary" }, { "text", "Последний partial" } }
+                    }
+                }
+            };
+            var messages = DesktopAttachmentPresentation.ConversationMessages(exchange, true);
+            Require(messages.Count == 2, "incomplete turn rendered every parent partial");
+            Require(AgentHubClient.Text(messages[1], "text") == "Последний partial", "latest parent partial was not selected");
+        }
+
+        private static void LiveRunUsesResponseAsTheLatestPartial()
+        {
+            var run = new Dictionary<string, object>
+            {
+                { "progress", "Старый progress" },
+                { "response", "Последний partial" }
+            };
+            Require(DesktopLiveRunPresentation.PartialText(run) == "Последний partial",
+                "live run rendered progress together with the latest partial");
+            run["response"] = "";
+            Require(DesktopLiveRunPresentation.PartialText(run) == "Старый progress",
+                "live run lost its only partial text");
+        }
+
+        private static void DeferredInputsAreScopedAndStateful()
+        {
+            var selected = new TaskItem { Provider = "codex", ThreadId = "thread-1" };
+            var queued = new Dictionary<string, object>
+            {
+                { "provider", "codex" }, { "threadId", "thread-1" }, { "state", "queued" }
+            };
+            var foreign = new Dictionary<string, object>
+            {
+                { "provider", "codex" }, { "threadId", "thread-2" }, { "state", "queued" }
+            };
+            Require(DesktopDeferredInputPresentation.Matches(selected, queued), "selected task queue item was hidden");
+            Require(!DesktopDeferredInputPresentation.Matches(selected, foreign), "foreign task queue item was shown");
+            Require(DesktopDeferredInputPresentation.StateLabel(queued) == "В очереди", "queued state label changed");
+            selected.Running = true;
+            var queuedActions = DesktopDeferredInputPresentation.Actions(queued, selected);
+            Require(Array.IndexOf(queuedActions, "pause") >= 0 && Array.IndexOf(queuedActions, "steer") >= 0,
+                "queued item lost its valid controls");
+            selected.ActivityUnknown = true;
+            queuedActions = DesktopDeferredInputPresentation.Actions(queued, selected);
+            Require(Array.IndexOf(queuedActions, "steer") < 0,
+                "unknown activity allowed steering into an unconfirmed run");
+            var dispatching = new Dictionary<string, object> { { "state", "dispatching" } };
+            Require(DesktopDeferredInputPresentation.Actions(dispatching).Length == 0,
+                "dispatching item retained unsafe mutations");
+        }
+
+        private static void UnknownAndUnreadTasksAreNotPresentedAsReady()
+        {
+            var unknown = new TaskItem { ActivityUnknown = true };
+            var unread = new TaskItem { Unread = true };
+            Require(DesktopTaskStatePresentation.Label(unknown) == "Статус уточняется", "unknown activity was shown as ready");
+            Require(!DesktopTaskStatePresentation.AllowsMutation(unknown), "unknown activity allowed task mutation");
+            Require(DesktopTaskStatePresentation.Label(unread) == "Новый ответ", "unread task was shown as ready");
+            Require(DesktopTaskStatePresentation.AllowsMutation(unread), "unread state incorrectly blocked safe task use");
+        }
+
+        private static void LongApprovalTextRemainsScrollable()
+        {
+            var text = new string('я', 5000);
+            var scroll = DesktopApprovalPresentation.Text(text);
+            Require(scroll.VerticalScrollBarVisibility == System.Windows.Controls.ScrollBarVisibility.Auto,
+                "long approval has no vertical scroll");
+            Require(scroll.MaxHeight == DesktopApprovalPresentation.MaximumTextHeight,
+                "approval text is not bounded by a scroll viewport");
+            var content = scroll.Content as System.Windows.Controls.TextBlock;
+            Require(content != null && content.Text == text, "approval text was truncated");
         }
 
         private static void ConversationSignatureTracksMessageSemantics()

@@ -205,6 +205,10 @@ export class TaskBoardService {
     return task;
   }
 
+  get snapshotRevision() {
+    return `${Number(this.store.revision) || 0}:${Number(this.workspaceCatalog.revision) || 0}`;
+  }
+
   prepareStart({ id, workspaceId, streamId, requestId, streamName = null } = {}) {
     const workspace = this.workspaceCatalog.workspace(workspaceId);
     if (!workspace) throw new Error("Workspace не найден");

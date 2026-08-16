@@ -162,20 +162,22 @@ export class DeferredInputController {
       try {
         started = await this.start(item);
       } catch (error) {
+        const retryable = this.isRetryableLaunchError(error, item);
+        const waitReason = retryable
+          ? deferredLaunchWaitReason(error) ?? "provider-temporarily-unavailable"
+          : null;
+        if (retryable) {
+          if (waitReason === "provider-thread-active") {
+            await this.pauseForActiveWriter(item, { error, waitReason, attempted: true });
+            return;
+          }
+        }
         delete item.dispatchingAt;
         item.lastAttemptAt = new Date(this.now()).toISOString();
         item.attempts = Number(item.attempts ?? 0) + 1;
-        const retryable = this.isRetryableLaunchError(error, item);
         if (retryable) {
           delete item.lastError;
-          item.waitReason = deferredLaunchWaitReason(error) ?? "provider-temporarily-unavailable";
-          if (item.waitReason === "provider-thread-active") {
-            item.paused = true;
-            delete item.blockedChecks;
-            this.onStateChange(item, "paused", error);
-            await this.persist();
-            return;
-          }
+          item.waitReason = waitReason;
           this.onStateChange(item, "retrying", error);
           await this.persist();
           const retryDelay = Math.min(
@@ -214,14 +216,28 @@ export class DeferredInputController {
     }
   }
 
-  async pauseForActiveWriter(item) {
-    this.cancelSchedule(item.id);
+  async pauseForActiveWriter(item, options = {}) {
+    const previous = Object.getOwnPropertyDescriptors(item);
     item.paused = true;
     delete item.dispatchingAt;
     delete item.recheckRequested;
     delete item.blockedChecks;
-    this.onStateChange(item, "paused");
-    await this.persist();
+    if (options.waitReason) item.waitReason = options.waitReason;
+    if (options.attempted) {
+      item.lastAttemptAt = new Date(this.now()).toISOString();
+      item.attempts = Number(item.attempts ?? 0) + 1;
+      delete item.lastError;
+    }
+    try {
+      await this.persist();
+    } catch (error) {
+      for (const key of Reflect.ownKeys(item)) delete item[key];
+      Object.defineProperties(item, previous);
+      this.schedule(item, this.retryDelayMs);
+      throw error;
+    }
+    this.cancelSchedule(item.id);
+    this.onStateChange(item, "paused", options.error);
   }
 
   taskKey(item) {

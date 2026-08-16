@@ -402,6 +402,11 @@ export class WorkspaceCatalogStore {
     return this;
   }
 
+  get revision() {
+    if (!this.#database) return 0;
+    return Number(this.#database.prepare("SELECT total_changes() AS value").get()?.value) || 0;
+  }
+
   async #open() {
     if (this.#database) return this.#database;
     await mkdir(path.dirname(this.#databaseFile), { recursive: true });

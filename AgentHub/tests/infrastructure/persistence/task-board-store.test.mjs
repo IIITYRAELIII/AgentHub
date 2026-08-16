@@ -17,6 +17,18 @@ async function fixture(t) {
   });
 }
 
+test("Task store revision changes on writes but not reads", async (t) => {
+  const store = await fixture(t);
+  const initial = store.revision;
+
+  store.list();
+  assert.equal(store.revision, initial);
+  store.create({ text: "Revision boundary" });
+  assert.equal(store.revision, initial + 1);
+  store.list();
+  assert.equal(store.revision, initial + 1);
+});
+
 test("Task store deduplicates Telegram updates and persists capture mode", async (t) => {
   const store = await fixture(t);
   const first = store.create({ text: "  Купить молоко ", source: "telegram", sourceKey: "telegram:1:2" });

@@ -129,6 +129,18 @@ test("restart controller restores the old runtime and never finalizes after laun
   ]);
 });
 
+test("restart controller does not restore the old runtime until replacement cleanup is confirmed", async () => {
+  const failure = new Error("replacement lock is still held");
+  failure.replacementCleanup = { confirmed: false, ownerPid: 84 };
+  const { controller, events } = createController({
+    launchReplacement: async () => { throw failure; },
+  });
+  const result = await controller.perform();
+  assert.equal(result.status, "failed");
+  assert.equal(result.phase, "launch cleanup");
+  assert.equal(events.includes("restore:true"), false);
+});
+
 test("restart controller reports unrecoverable replacement failure", async () => {
   const exitCodes = [];
   const { controller } = createController({

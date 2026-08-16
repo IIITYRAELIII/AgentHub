@@ -47,3 +47,49 @@ test("input callback service rejects expired bundles and speech", async () => {
 test("input callback service declines task routes", async () => {
   assert.equal(await service([]).handle(callback, { kind: "task-view" }), false);
 });
+
+test("input callback cancellation keeps the input and attachments when save fails", async () => {
+  const events = [];
+  const item = {
+    id: "deferred-1", chatId: 1, provider: "codex", threadId: "thread-1",
+    temporaryFiles: ["screen.png"],
+  };
+  const pendingInputs = new Map([[item.id, item]]);
+  const cleaned = [];
+  const receipts = [];
+  const callbacks = new TelegramInputCallbackService({
+    telegram: async (method, body) => events.push({ method, body }),
+    sendMessageTo: async () => {},
+    updateDeferredDesktopReceipt: (...args) => receipts.push(args),
+    cleanupDeferredFiles: async (value) => cleaned.push(value),
+    saveState: async () => { throw new Error("disk full"); },
+    updateDeferredMessage: async () => {},
+    scheduleNextForTask: () => {},
+    selectTaskFromBinding: async () => ({ selectionChanged: false }),
+    callbackContext: () => ({}),
+    showTaskMessage: async () => {},
+    scheduleQueuedInput: () => {},
+    startTurn: async () => ({}),
+    runForTask: () => null,
+    describeAttachments: () => [],
+    dispatchApplicationCommand: async () => {},
+    createCurrentTask: async () => {},
+    selectedTurnTarget: () => ({ provider: "codex", threadId: "new-task" }),
+    activeThreadTitle: () => "Task",
+    selectedTask: () => ({}),
+    speechText: () => null,
+    sendTaskSwitchNotification: async () => {},
+    forwardBundleController: { bundleById: () => null },
+    pendingInputs,
+    queuedInputs: new Map(),
+    backgroundJobs: { enqueue: async () => null, speechPending: 0 },
+    maxSpeechJobs: 4,
+  });
+
+  await callbacks.handle(callback, { kind: "pending-input", id: item.id, action: "cancel" });
+
+  assert.equal(pendingInputs.get(item.id), item);
+  assert.deepEqual(receipts, []);
+  assert.deepEqual(cleaned, []);
+  assert.equal(events.at(-1).body.text, "Сообщение отменено");
+});

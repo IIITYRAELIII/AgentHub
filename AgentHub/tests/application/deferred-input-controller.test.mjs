@@ -269,6 +269,28 @@ test("DeferredInputController pauses a restored active-writer item before anothe
   assert.deepEqual(state.transitions.map((entry) => entry.state), ["paused"]);
 });
 
+test("DeferredInputController restores active-writer pause when durable save fails", async () => {
+  const state = fixture({ persist: async () => { throw new Error("disk full"); } });
+  const item = {
+    id: "restored",
+    provider: "codex",
+    threadId: "thread-1",
+    waitReason: "provider-thread-active",
+  };
+  state.queuedInputs.set(item.id, item);
+
+  await assert.rejects(state.controller.process(item.id), /disk full/u);
+
+  assert.deepEqual(item, {
+    id: "restored",
+    provider: "codex",
+    threadId: "thread-1",
+    waitReason: "provider-thread-active",
+  });
+  assert.deepEqual(state.transitions, []);
+  assert.equal(state.timers.at(-1).delay, 2_000);
+});
+
 test("DeferredInputController never automatically repeats an ambiguous acknowledged turn", async () => {
   const error = Object.assign(new Error("turn was not materialized"), {
     code: "ERR_CODEX_TURN_NOT_MATERIALIZED",

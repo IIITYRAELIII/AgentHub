@@ -97,16 +97,20 @@ test("cached task history does not wait for the provider", async () => {
 test("Codex history refresh reads the rollout directly without blocking App Server", async () => {
   let providerReads = 0;
   let snapshotInput = null;
+  let rolloutOptions = null;
   const view = controller({
     findCodexRolloutPath: async () => "C:/rollout.jsonl",
     ensureCodex: async () => { providerReads += 1; },
     readCodexThread: async () => { providerReads += 1; return null; },
-    readCodexRolloutActivity: async () => ({
-      activeTurnIds: ["turn-live"],
-      userMessages: { "turn-live": [{ text: "Новый запрос" }] },
-      latestMessages: { "turn-live": "Промежуточный ответ" },
-      finalMessages: {},
-    }),
+    readCodexRolloutActivity: async (_path, options) => {
+      rolloutOptions = options;
+      return {
+        activeTurnIds: ["turn-live"],
+        userMessages: { "turn-live": [{ text: "Новый запрос" }] },
+        latestMessages: { "turn-live": "Промежуточный ответ" },
+        finalMessages: {},
+      };
+    },
     readCodexSnapshot: async (input) => {
       snapshotInput = input;
       return { active: true, turnId: "turn-live" };
@@ -126,6 +130,7 @@ test("Codex history refresh reads the rollout directly without blocking App Serv
   });
   assert.equal(providerReads, 0);
   assert.equal(snapshotInput.rolloutPath, "C:/rollout.jsonl");
+  assert.equal(rolloutOptions.tailBytes, 16 * 1024 * 1024);
   assert.deepEqual(result.history.map((item) => item.id), ["turn-old", "turn-live"]);
 });
 

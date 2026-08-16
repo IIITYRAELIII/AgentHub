@@ -61,6 +61,7 @@ export function createDesktopRunRouterWiring({
       providers: services.providers,
       externalActivity: services.externalActivity,
       beginRun: services.beginRun,
+      rollbackAdmission: services.rollbackAdmission,
       launchTurn: services.launchTurn,
       describeAttachments: services.describeAttachments,
       hasDeferredBacklog: services.hasDeferredBacklog,

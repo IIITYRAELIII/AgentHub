@@ -63,6 +63,7 @@ function controller(overrides = {}) {
       threadId: target.threadId,
       turnId: "turn-1",
     })),
+    rollbackAdmission: async () => {},
     launchTurn: overrides.launchTurn ?? (async () => {}),
   });
   return createDesktopMessageController({

@@ -139,6 +139,7 @@ export class DesktopTaskService {
         streamId: params.streamId,
         provider: params.provider,
         threadId: params.threadId,
+        refreshSource: true,
         limit: params.limit,
         maxAnswerChars: params.maxAnswerChars,
         maxResponseBytes: historyResponseBudget({ snapshot }, params),

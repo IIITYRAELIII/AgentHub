@@ -167,6 +167,7 @@ async function materializeHistoryAttachments(history, importer) {
 }
 
 const CODEX_TURN_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+const CODEX_HISTORY_REFRESH_TAIL_BYTES = 16 * 1024 * 1024;
 
 export function codexRolloutHistory(activity = {}, { userAuthor = "" } = {}) {
   const userMessages = activity?.userMessages ?? {};
@@ -458,7 +459,10 @@ export class TaskViewController {
           const cached = d.taskSyncStore.history(task);
           const rolloutActivity = await d.readCodexRolloutActivity(
             directRolloutPath,
-            { freshnessMs: Number.POSITIVE_INFINITY },
+            {
+              freshnessMs: Number.POSITIVE_INFINITY,
+              tailBytes: CODEX_HISTORY_REFRESH_TAIL_BYTES,
+            },
           );
           const userAuthor = subagentPromptAuthor(
             binding,
@@ -489,6 +493,7 @@ export class TaskViewController {
         const rolloutActivity = result.thread?.path
           ? await d.readCodexRolloutActivity(result.thread.path, {
             freshnessMs: Number.POSITIVE_INFINITY,
+            tailBytes: CODEX_HISTORY_REFRESH_TAIL_BYTES,
           })
           : null;
         const parentThreadId = result.thread?.parentThreadId || rolloutActivity?.parentThreadId;

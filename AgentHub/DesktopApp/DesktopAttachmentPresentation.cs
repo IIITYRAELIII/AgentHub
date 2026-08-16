@@ -52,27 +52,62 @@ namespace AgentHubDesktop
 
         public static List<Dictionary<string, object>> ConversationMessages(
             Dictionary<string, object> exchange,
-            bool includeAgent)
+            bool includeParentAgent)
         {
             var result = new List<Dictionary<string, object>>();
+            var source = new List<Dictionary<string, object>>();
             foreach (var rawMessage in AgentHubClient.Array(exchange, "messages"))
             {
                 var message = rawMessage as Dictionary<string, object>;
                 if (message == null) continue;
                 var role = AgentHubClient.Text(message, "role");
-                if ((role != "user" && role != "agent") || (role == "agent" && !includeAgent)) continue;
+                if (role != "user" && role != "agent") continue;
                 if (String.IsNullOrWhiteSpace(AgentHubClient.Text(message, "text"))
                     && MessageAttachments(message).Count == 0) continue;
-                result.Add(message);
+                source.Add(message);
             }
-            if (result.Count > 0) return result;
             var prompt = AgentHubClient.Text(exchange, "prompt");
             var answer = AgentHubClient.Text(exchange, "answer");
+            if (!source.Any(message => AgentHubClient.Text(message, "role") == "user")
+                && !String.IsNullOrWhiteSpace(prompt))
+            {
+                source.Insert(0, new Dictionary<string, object> { { "role", "user" }, { "text", prompt } });
+            }
+            Dictionary<string, object> parent = null;
+            if (includeParentAgent)
+            {
+                var parents = source.Where(message =>
+                    AgentHubClient.Text(message, "role") == "agent"
+                    && AgentHubClient.Text(message, "kind") != "subagent").ToList();
+                var completed = AgentHubClient.Bool(exchange, "completed")
+                    || String.Equals(AgentHubClient.Text(exchange, "status"), "completed", StringComparison.OrdinalIgnoreCase);
+                if (completed)
+                {
+                    parent = parents.LastOrDefault(message =>
+                        String.Equals(AgentHubClient.Text(message, "phase"), "final", StringComparison.OrdinalIgnoreCase)
+                        || String.Equals(AgentHubClient.Text(message, "phase"), "final_answer", StringComparison.OrdinalIgnoreCase));
+                }
+                if (parent == null) parent = parents.LastOrDefault();
+                if (parent == null && !String.IsNullOrWhiteSpace(answer))
+                {
+                    parent = new Dictionary<string, object> { { "role", "agent" }, { "text", answer } };
+                    source.Add(parent);
+                }
+            }
+            foreach (var message in source)
+            {
+                var role = AgentHubClient.Text(message, "role");
+                if (role == "user" || AgentHubClient.Text(message, "kind") == "subagent" || ReferenceEquals(message, parent))
+                {
+                    result.Add(message);
+                }
+            }
+            if (result.Count > 0) return result;
             if (!String.IsNullOrWhiteSpace(prompt))
             {
                 result.Add(new Dictionary<string, object> { { "role", "user" }, { "text", prompt } });
             }
-            if (includeAgent && !String.IsNullOrWhiteSpace(answer))
+            if (includeParentAgent && !String.IsNullOrWhiteSpace(answer))
             {
                 result.Add(new Dictionary<string, object> { { "role", "agent" }, { "text", answer } });
             }

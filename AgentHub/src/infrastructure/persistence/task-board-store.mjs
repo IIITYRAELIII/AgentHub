@@ -224,6 +224,8 @@ function taskFromRow(row) {
 }
 
 export class TaskBoardStore {
+  #revision = 0;
+
   constructor({ databaseFile, now = () => Date.now(), idFactory = randomUUID } = {}) {
     if (!databaseFile) throw new TypeError("databaseFile is required");
     this.databaseFile = path.resolve(databaseFile);
@@ -237,10 +239,20 @@ export class TaskBoardStore {
     const database = new DatabaseSync(this.databaseFile);
     try {
       configure(database);
-      return operation(database);
+      const changesBefore = Number(database.prepare("SELECT total_changes() AS value").get()?.value) || 0;
+      try {
+        return operation(database);
+      } finally {
+        const changesAfter = Number(database.prepare("SELECT total_changes() AS value").get()?.value) || 0;
+        if (changesAfter !== changesBefore) this.#revision += 1;
+      }
     } finally {
       database.close();
     }
+  }
+
+  get revision() {
+    return this.#revision;
   }
 
   create({ text, source = "hub", sourceKey = null, sourceDetails = {}, triageStatus = "pending" } = {}) {

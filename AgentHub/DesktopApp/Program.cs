@@ -338,6 +338,8 @@ namespace AgentHubDesktop
         public string ProjectName;
         public bool Selected;
         public bool Running;
+        public bool ActivityUnknown;
+        public bool Unread;
         public string Runtime;
         public string LastAnswer;
         public string LastAnswerAt;

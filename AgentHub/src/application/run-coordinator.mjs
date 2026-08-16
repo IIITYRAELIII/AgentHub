@@ -36,6 +36,7 @@ export class RunCoordinator {
     repositoryConflict,
     deferInput,
     beginRun,
+    rollbackAdmission,
     launchTurn,
     describeAttachments = () => [],
     notifyInputStart = () => {},
@@ -53,6 +54,7 @@ export class RunCoordinator {
       repositoryConflict,
       deferInput,
       beginRun,
+      rollbackAdmission,
       launchTurn,
     })) {
       if (typeof value !== "function") throw new TypeError(`${name} is required`);
@@ -63,6 +65,7 @@ export class RunCoordinator {
     this.repositoryConflict = repositoryConflict;
     this.deferInput = deferInput;
     this.beginRun = beginRun;
+    this.rollbackAdmission = rollbackAdmission;
     this.launchTurn = launchTurn;
     this.describeAttachments = describeAttachments;
     this.notifyInputStart = notifyInputStart;
@@ -513,6 +516,7 @@ export class RunCoordinator {
       await this.launchTurn(run, input, []);
     } catch (error) {
       if (!providerThreadAlreadyActive(error)) throw error;
+      await this.rollbackAdmission(run);
       return this.queue(input, attachments, {
         target,
         executionOwner: TASK_EXECUTION_OWNERS.EXTERNAL,

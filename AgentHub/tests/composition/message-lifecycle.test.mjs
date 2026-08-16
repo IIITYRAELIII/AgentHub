@@ -139,8 +139,14 @@ test("completed history keeps every subagent result before the parent final", ()
     completed: true,
     messages: [
       { role: "user", text: "Проверь" },
-      { role: "agent", kind: "subagent", author: "Субагент (Terra)", text: "Первый отчёт" },
-      { role: "agent", kind: "subagent", author: "Субагент (Sol)", text: "Второй отчёт" },
+      {
+        role: "agent", kind: "subagent", agentThreadId: "terra-thread",
+        author: "Субагент (Terra)", text: "Первый отчёт",
+      },
+      {
+        role: "agent", kind: "subagent", agentThreadId: "sol-thread",
+        author: "Субагент (Sol)", text: "Второй отчёт",
+      },
       { role: "agent", phase: "final_answer", text: "Общий итог" },
     ],
   });
@@ -153,6 +159,10 @@ test("completed history keeps every subagent result before the parent final", ()
     threadId: "thread-1",
     turnId: "turn-1",
   }));
+  const deduplicated = lifecycle.deduplicateConversationMessages(identified);
+  assert.deepEqual(Array.from(deduplicated, (message) => message.text), [
+    "Проверь", "Первый отчёт", "Второй отчёт", "Общий итог",
+  ]);
   assert.equal(lifecycle.visibleConversationMessages(identified, {
     liveProbe: { provider: "codex", threadId: "thread-1", turnId: "turn-1", role: "agent" },
   }).some((message) => message.kind === "subagent"), true);
@@ -311,7 +321,7 @@ test("accepted optimistic message and rebound server echo render as one card", (
   assert.equal(visible[0].delivery, "Принято");
 });
 
-test("a steered optimistic message binds to one unkeyed live echo in its turn", () => {
+test("a steered optimistic message does not bind without a stable identity", () => {
   const optimistic = {
     provider: "codex",
     threadId: "thread-1",
@@ -343,8 +353,8 @@ test("a steered optimistic message binds to one unkeyed live echo in its turn", 
   };
   const result = lifecycle.reconcile([root, liveEcho], [optimistic]);
   assert.equal(result.matches.length, 2);
-  assert.equal(result.matches[1].local, optimistic);
-  assert.deepEqual([...result.matchedIds], ["client-steer"]);
+  assert.equal(result.matches[1].local, null);
+  assert.deepEqual([...result.matchedIds], []);
 });
 
 test("a steered optimistic message never binds to the root user item", () => {
@@ -371,7 +381,7 @@ test("a steered optimistic message never binds to the root user item", () => {
   assert.deepEqual([...result.matchedIds], []);
 });
 
-test("an accepted steer binds when a partial live snapshot exposes only its unkeyed echo", () => {
+test("an accepted steer stays optimistic when a partial live echo has no stable identity", () => {
   const clientUserMessageId = "client-steer";
   const optimistic = {
     provider: "codex",
@@ -400,8 +410,8 @@ test("an accepted steer binds when a partial live snapshot exposes only its unke
   assert.equal(live.length, 1);
   assert.equal(live[0].turnUserSlot, "steer");
   const reconciled = lifecycle.reconcile(live, [optimistic]);
-  assert.equal(reconciled.matches[0].local, optimistic);
-  assert.deepEqual([...reconciled.matchedIds], [clientUserMessageId]);
+  assert.equal(reconciled.matches[0].local, null);
+  assert.deepEqual([...reconciled.matchedIds], []);
 });
 
 test("a partial unkeyed steer neither replaces the root nor inherits its attachments", () => {
@@ -736,7 +746,7 @@ test("new-turn root reconciles after App Server replaces its client id", () => {
   assert.deepEqual([...result.matchedIds], ["client-local"]);
 });
 
-test("delayed durable receipt replaces one optimistic card without a duplicate", () => {
+test("matching text attachments and time never confirm a different stable identity", () => {
   const local = {
     provider: "codex",
     threadId: "thread-1",
@@ -758,8 +768,9 @@ test("delayed durable receipt replaces one optimistic card without a duplicate",
     deliveryState: undefined,
   };
   const result = lifecycle.reconcile([server], [local]);
-  assert.equal(result.matches[0].local, local);
-  assert.deepEqual([...result.matchedIds], ["local-client"]);
+  assert.equal(result.matches[0].local, null);
+  assert.deepEqual([...result.matchedIds], []);
+  assert.deepEqual([...lifecycle.confirmedOutgoingMessageIds([server], [local])], []);
 });
 
 test("identical optimistic submissions stay separate when receipt matching is ambiguous", () => {

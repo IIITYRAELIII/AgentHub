@@ -489,6 +489,10 @@ test("Desktop shell owns read, command and run-router assembly", async () => {
     path.join(ROOT, "src", "composition", "desktop-shell-composition.mjs"),
     "utf8",
   );
+  const runRouter = await readFile(
+    path.join(ROOT, "src", "composition", "desktop-run-router-wiring-composition.mjs"),
+    "utf8",
+  );
   for (const factory of [
     "createDesktopReadSystemWiring",
     "createDesktopCommandWiring",
@@ -502,6 +506,7 @@ test("Desktop shell owns read, command and run-router assembly", async () => {
   const runRouterServices = shell.slice(runRouterStart, runRouterServicesEnd);
   assert.match(runRouterServices, /\n      taskBoard,/u);
   assert.match(runRouterServices, /\n      workspaceCatalog: workspaceCatalogStore,/u);
+  assert.match(runRouter, /rollbackAdmission: services\.rollbackAdmission/u);
   assert.equal((shell.match(/desktopCommandsPort\.bind\s*\(/gu) ?? []).length, 1);
   assert.equal(shell.includes("trustedDeviceUserId: desktopReadSystem.trustedDeviceUserId"), true);
 });

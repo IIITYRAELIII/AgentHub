@@ -26,6 +26,16 @@ async function fixture(t) {
   return store;
 }
 
+test("workspace catalog revision is O(1) state that changes after a write", async (t) => {
+  const store = await fixture(t);
+  const initial = store.revision;
+
+  store.hierarchy();
+  assert.equal(store.revision, initial);
+  store.createWorkspace({ name: "Revision boundary" });
+  assert.ok(store.revision > initial);
+});
+
 test("workspace catalog fails closed on a corrupt shared database", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-workspaces-corrupt-"));
   const databaseFile = path.join(directory, "journal.sqlite");

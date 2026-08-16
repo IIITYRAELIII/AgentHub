@@ -87,6 +87,26 @@
     return { active, recent };
   }
 
+  function taskListSections(tasks) {
+    const workspaceTasks = [];
+    const unassignedTasks = [];
+    for (const task of tasks ?? []) {
+      if (String(task?.workspaceId ?? "").trim()) workspaceTasks.push(task);
+      else unassignedTasks.push(task);
+    }
+    return { workspaceTasks, unassignedTasks };
+  }
+
+  function streamStatusPresentation(task) {
+    const running = Boolean(task?.running);
+    const answerReady = Boolean(task?.unread);
+    const statusLabel = [
+      running ? "Ход выполняется" : "",
+      answerReady ? "Ответ готов" : "",
+    ].filter(Boolean).join(" · ") || String(task?.statusLabel ?? "");
+    return { running, answerReady, statusLabel };
+  }
+
   function includeTaskInActivityRail(task, kind) {
     const workspaceName = String(task?.workspaceName ?? "").trim();
     return workspaceName !== "Other" || kind === "running" || kind === "completed";
@@ -234,6 +254,8 @@
     orderWorkspaceStreams,
     streamCreationSide,
     streamLastActivity,
+    streamStatusPresentation,
     streamsAreDraggable,
+    taskListSections,
   });
 })();

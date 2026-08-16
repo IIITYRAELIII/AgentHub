@@ -463,15 +463,19 @@ h1 {
   flex: 0 1 auto;
   font-size: 0.78rem;
   justify-content: center;
-  margin: 0 0 0 auto;
+  left: 50%;
+  margin: 0;
   max-width: min(42rem, 100%);
   min-height: 2.25rem;
   min-width: 0;
   padding: 0.35rem 0.75rem;
-  position: relative;
+  pointer-events: none;
+  position: fixed;
   text-align: center;
+  top: max(0.75rem, env(safe-area-inset-top));
+  transform: translateX(-50%);
   width: max-content;
-  z-index: 1;
+  z-index: 50;
 }
 
 @keyframes pulse {
@@ -2682,9 +2686,7 @@ html[data-surface="mobile"] .toolbar {
 }
 
 html[data-surface="mobile"] .connection-banner {
-  flex: 0 1 auto;
   max-width: 100%;
-  order: 2;
 }
 
 html[data-surface="mobile"] .theme-picker {

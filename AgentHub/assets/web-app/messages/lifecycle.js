@@ -23,11 +23,17 @@ function clientIdentityKey(message) {
   return `${clientUserMessageId}\0${role}`;
 }
 
-function agentTurnKey(message) {
+function agentCardKey(message) {
   const provider = String(message?.provider ?? "");
   const threadId = String(message?.threadId ?? "");
   const turnId = String(message?.turnId ?? "");
   if (!provider || !threadId || !turnId || message?.role !== "agent") return "";
+  if (message?.kind === "subagent") {
+    const agentThreadId = String(message?.agentThreadId ?? "").trim();
+    return agentThreadId
+      ? `${provider}\0${threadId}\0${turnId}\0subagent\0${agentThreadId}`
+      : "";
+  }
   return `${provider}\0${threadId}\0${turnId}\0agent`;
 }
 
@@ -54,21 +60,21 @@ function deduplicateConversationMessages(messages) {
   const values = [];
   const seen = new Set();
   const positions = new Map();
-  const agentTurns = new Map();
+  const agentCards = new Map();
   for (const message of Array.isArray(messages) ? messages : []) {
     const client = clientIdentityKey(message);
     const item = identityKey(message);
     const root = String(message?.turnUserSlot ?? "").trim() === "root"
       ? turnRootUserKey(message)
       : "";
-    const agentTurn = agentTurnKey(message);
+    const agentCard = agentCardKey(message);
     const keys = [
       ...(client ? [`client:${client}`] : []),
       ...(item ? [`item:${item}`] : []),
       ...(root ? [`root:${root}`] : []),
     ];
-    if (agentTurn && agentTurns.has(agentTurn)) {
-      values[agentTurns.get(agentTurn)] = message;
+    if (agentCard && agentCards.has(agentCard)) {
+      values[agentCards.get(agentCard)] = message;
       keys.forEach((key) => seen.add(key));
       continue;
     }
@@ -109,7 +115,7 @@ function deduplicateConversationMessages(messages) {
       seen.add(key);
       positions.set(key, values.length);
     });
-    if (agentTurn) agentTurns.set(agentTurn, values.length);
+    if (agentCard) agentCards.set(agentCard, values.length);
     values.push(message);
   }
   return values;
@@ -417,56 +423,16 @@ function completedConversationTurnVisible(messages, {
   return requireAgent ? agentTexts.length > 0 : true;
 }
 
-function attachmentReceiptSignature(message) {
-  const attachments = Array.isArray(message?.attachments) ? message.attachments : [];
-  return JSON.stringify(attachments.map((attachment) => ({
-    name: String(
-      attachment?.name
-        ?? attachment?.fileName
-        ?? attachment?.filename
-        ?? attachment?.path
-        ?? "",
-    ).replaceAll("\\", "/").split("/").at(-1).toLowerCase(),
-    type: String(attachment?.type ?? attachment?.mimeType ?? "").toLowerCase(),
-  })));
-}
-
-function optimisticReceiptMatch(server, local) {
-  if (server?.role !== "user" || local?.role !== "user") return false;
-  if (!String(local?.deliveryState ?? "").trim()) return false;
-  for (const field of ["provider", "threadId", "turnId"]) {
-    const left = String(server?.[field] ?? "").trim();
-    const right = String(local?.[field] ?? "").trim();
-    if (left && right && left !== right) return false;
-  }
-  const serverText = String(normalizedUserMessage(server)?.text ?? "").trim();
-  const localText = String(normalizedUserMessage(local)?.text ?? "").trim();
-  if (!serverText || serverText !== localText) return false;
-  if (attachmentReceiptSignature(server) !== attachmentReceiptSignature(local)) return false;
-  const serverTime = Date.parse(server?.time ?? "");
-  const localTime = Date.parse(local?.time ?? "");
-  return Number.isFinite(serverTime)
-    && Number.isFinite(localTime)
-    && Math.abs(serverTime - localTime) <= 120_000;
-}
-
 function reconcile(serverMessages, outgoingMessages) {
   const outgoing = Array.isArray(outgoingMessages) ? outgoingMessages : [];
   const clientOutgoing = new Map();
   const exactOutgoing = new Map();
-  const turnRoleOutgoing = new Map();
   const rootOutgoing = new Map();
   for (const message of outgoing) {
     const client = clientIdentityKey(message);
     if (client) clientOutgoing.set(client, message);
     const exact = identityKey(message);
     if (exact) exactOutgoing.set(exact, message);
-    const turnRole = identityKey(message, { withoutItem: true });
-    if (turnRole) {
-      const values = turnRoleOutgoing.get(turnRole) ?? [];
-      values.push(message);
-      turnRoleOutgoing.set(turnRole, values);
-    }
     // Codex sometimes omits client_id while it is materializing the first
     // user item of a newly started turn. The turn root is still a stable
     // identity: provider + thread + turn + its first user position. Steer
@@ -485,15 +451,6 @@ function reconcile(serverMessages, outgoingMessages) {
     const client = clientOutgoing.get(serverClientIdentity);
     const exact = exactOutgoing.get(serverItemIdentity);
     const rootMessage = isTurnRootUser(server, index);
-    const fallbackValues = client || exact
-      ? []
-      : (turnRoleOutgoing.get(identityKey(message, { withoutItem: true })) ?? [])
-        .filter((candidate) => !matchedIds.has(candidate.clientUserMessageId))
-        .filter((candidate) => (
-          rootMessage
-            ? candidate.turnUserSlot === "root"
-            : candidate.turnUserSlot !== "root"
-        ));
     // A new-turn optimistic message is bound to the exact turn before Codex
     // has finished materializing its user item. Some App Server revisions can
     // replace the supplied client id on that root item. The root position is
@@ -501,23 +458,11 @@ function reconcile(serverMessages, outgoingMessages) {
     const root = rootMessage
       ? rootOutgoing.get(turnRootUserKey(message))
       : null;
-    const receiptFallback = client || exact || root
-      ? null
-      : outgoing.filter((candidate) => (
-        !matchedIds.has(candidate.clientUserMessageId)
-        && optimisticReceiptMatch(message, candidate)
-      ));
-    // A turn can contain several steering messages. A turn+role fallback is safe
-    // only when it identifies one local message; text is never an identity.
-    // A delayed receipt can still lack turnId when durable history already has
-    // the canonical turn and a replacement client id. Content is used only
-    // when exactly one receipt-bearing candidate matches the same task, files
-    // and narrow timestamp window, so repeated real submissions stay separate.
+    // Reconciliation confirms only authoritative identities. Display content,
+    // timestamps and turn-role proximity can coincide across real submissions.
     const local = client
       ?? exact
-      ?? root
-      ?? (fallbackValues.length === 1 ? fallbackValues[0] : null)
-      ?? (receiptFallback?.length === 1 ? receiptFallback[0] : null);
+      ?? root;
     if (!local) return { message, local: null };
     matchedIds.add(local.clientUserMessageId);
     return { message, local };

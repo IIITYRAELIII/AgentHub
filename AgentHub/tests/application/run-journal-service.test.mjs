@@ -63,6 +63,19 @@ test("RunJournalService preserves authoritative answer time during repeated obse
   assert.equal(service.lastMessageRecord(task).text, "Answer");
 });
 
+test("RunJournalService revision changes only when the last-message projection changes", () => {
+  const { service } = fixture();
+  const task = { provider: "codex", projectRoot: "C:/workspace", threadId: "thread", turnId: "turn-1" };
+
+  assert.equal(service.revision, 0);
+  assert.equal(service.rememberLastMessage(task, "Answer", { updatedAt: "2026-08-04T03:52:00.000Z" }), true);
+  assert.equal(service.revision, 1);
+  assert.equal(service.rememberLastMessage(task, "Answer"), false);
+  assert.equal(service.revision, 1);
+  assert.equal(service.rememberLastMessage(task, "Updated"), true);
+  assert.equal(service.revision, 2);
+});
+
 test("RunJournalService restores only valid bounded message records", () => {
   const { service } = fixture();
   const restored = service.restoreLastMessages([

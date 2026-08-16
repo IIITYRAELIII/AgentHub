@@ -358,10 +358,31 @@ function rolloutToolActivity(entry) {
   };
 }
 
+function codexActivityGroupIndex(metadata, turnId, groups) {
+  const cached = metadata.activityGroupIndexes.get(turnId);
+  if (cached?.groups === groups) return cached;
+  const index = {
+    groups,
+    byId: new Map(groups.map((group) => [group.id, group])),
+    activitiesByGroup: new WeakMap(),
+  };
+  metadata.activityGroupIndexes.set(turnId, index);
+  return index;
+}
+
+function codexActivityIndex(index, group) {
+  const cached = index.activitiesByGroup.get(group);
+  if (cached) return cached;
+  const activities = new Map((group.activities ?? []).map((activity, position) => [activity.id, position]));
+  index.activitiesByGroup.set(group, activities);
+  return activities;
+}
+
 function rememberCodexTraceEntry(metadata, turnId, entry) {
   if (entry?.type !== "response_item" || !turnId) return;
   const payload = entry.payload ?? {};
   const groups = metadata.activityGroups.get(turnId) ?? [];
+  const index = codexActivityGroupIndex(metadata, turnId, groups);
   const phase = String(payload.phase ?? "").trim();
   const reasoning = payload.type === "message"
     && payload.role === "assistant"
@@ -372,22 +393,36 @@ function rememberCodexTraceEntry(metadata, turnId, entry) {
       : "";
   if (reasoning) {
     const id = `${payload.type === "message" ? "commentary" : "reasoning"}:${String(payload.id ?? groups.length)}`;
-    const current = groups.find((group) => group.id === id);
+    const current = index.byId.get(id);
     if (current) current.reasoning = reasoning;
-    else groups.push({ id, reasoning, activities: [] });
+    else {
+      const group = { id, reasoning, activities: [] };
+      groups.push(group);
+      index.byId.set(id, group);
+    }
   } else {
     const activity = rolloutToolActivity(entry);
     if (activity) {
-      if (!groups.length) groups.push({ id: `activity:${activity.id}`, reasoning: "", activities: [] });
+      if (!groups.length) {
+        const group = { id: `activity:${activity.id}`, reasoning: "", activities: [] };
+        groups.push(group);
+        index.byId.set(group.id, group);
+      }
       const current = groups.at(-1);
-      const existing = current.activities.findIndex((item) => item.id === activity.id);
+      const activities = codexActivityIndex(index, current);
+      const existing = activities.get(activity.id) ?? -1;
       if (existing >= 0) current.activities[existing] = activity;
-      else current.activities.push(activity);
+      else {
+        activities.set(activity.id, current.activities.length);
+        current.activities.push(activity);
+      }
     }
   }
   if (groups.length) metadata.activityGroups.set(turnId, groups);
   while (metadata.activityGroups.size > 8) {
-    metadata.activityGroups.delete(metadata.activityGroups.keys().next().value);
+    const oldestTurnId = metadata.activityGroups.keys().next().value;
+    metadata.activityGroups.delete(oldestTurnId);
+    metadata.activityGroupIndexes.delete(oldestTurnId);
   }
 }
 
@@ -718,6 +753,7 @@ export function parseCodexRolloutActivity(text, options = {}) {
     userMessages: new Map(),
     generatedImageSources: new Map(),
     activityGroups: new Map(),
+    activityGroupIndexes: new Map(),
     pendingViewImageCalls: new Map(),
     pendingUserMessages: [],
     unscopedLatestMessage: "",
@@ -905,6 +941,7 @@ export async function readCodexRolloutActivity(
     activityGroups: new Map((appendOnly ? cached.activityGroups ?? [] : []).map(([turnId, groups]) => (
       [turnId, structuredClone(groups)]
     ))),
+    activityGroupIndexes: new Map(),
     pendingViewImageCalls: new Map(appendOnly ? cached.pendingViewImageCalls ?? [] : []),
     pendingUserMessages: appendOnly
       ? (cached.pendingUserMessages ?? []).map((message) => ({ ...message }))

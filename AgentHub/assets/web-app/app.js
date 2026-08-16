@@ -1859,7 +1859,7 @@ function renderTasks() {
   });
   taskList.replaceChildren();
   let visibleCount = visible.length;
-  const workspaceTasks = visible.filter((task) => String(task.workspaceId ?? "").trim());
+  const { workspaceTasks, unassignedTasks } = window.AgentHubStreamTabs.taskListSections(visible);
   const hasWorkspace = workspaceTasks.length > 0;
   if (hasWorkspace) {
     const groups = new Map();
@@ -1873,9 +1873,10 @@ function renderTasks() {
       });
       groups.get(key).tasks.push(task);
     }
-    visibleCount = groups.size;
+    visibleCount = groups.size + unassignedTasks.length;
     const orderedGroups = window.AgentHubStreamTabs.orderWorkspaceGroups(groups.values());
     for (const group of orderedGroups) taskList.append(renderTaskWorkspaceItem(group));
+    for (const task of unassignedTasks) taskList.append(renderTaskItem(task));
   } else {
     for (const task of visible) taskList.append(renderTaskItem(task));
   }
@@ -2038,12 +2039,10 @@ function activityStreamEntries(tasks) {
 function streamPresentation(task) {
   const provider = String(task?.provider ?? "none");
   const agentLabel = task?.agentLabel || providerLabels[provider] || "Агент";
-  const running = Boolean(task?.running);
-  const answerReady = Boolean(task?.unread && !running);
+  const { running, answerReady, statusLabel } = window.AgentHubStreamTabs.streamStatusPresentation(task);
   const time = running && task?.startedAt
     ? formatRunningDuration(task.startedAt)
     : formatRelativeTime(task?.lastActivity);
-  const statusLabel = running ? "Ход выполняется" : answerReady ? "Ответ готов" : task?.statusLabel || "";
   return { provider, agentLabel, running, answerReady, time, statusLabel };
 }
 
@@ -2215,12 +2214,10 @@ function renderStreamTabs() {
     const streamName = streamDisplayName(stream, streams.length);
     const provider = String(task?.provider ?? "none");
     const agentLabel = task?.agentLabel || providerLabels[provider] || "Агент";
-    const running = Boolean(task?.running);
-    const answerReady = Boolean(task?.unread && !running);
+    const { running, answerReady, statusLabel } = window.AgentHubStreamTabs.streamStatusPresentation(task);
     const time = task?.running && task.startedAt
       ? formatRunningDuration(task.startedAt)
       : formatRelativeTime(task?.lastActivity);
-    const statusLabel = running ? "Ход выполняется" : answerReady ? "Ответ готов" : task?.statusLabel || "";
     const title = `${statusLabel ? `${statusLabel}. ` : ""}${streamProviderModelTitle({ provider, agentLabel, modelLabel: task?.modelLabel })}. Нажмите, чтобы переключиться. Ctrl+click — добавить или убрать колонку. ${streamOrderMode === "manual" ? "Перетащите, чтобы изменить порядок." : "Потяните горизонтально, чтобы прокрутить."} ПКМ — управление Stream.`;
     const button = el("button", {
       type: "button",
@@ -6331,9 +6328,7 @@ const AgentHub = {
     root.dataset.connection = value;
     const messages = {
       connecting: "Подключение к Agent Hub…",
-      "restart-waiting": blockingCount
-        ? `Agent Hub ожидает завершения активных задач: ${blockingCount}.`
-        : "Agent Hub ожидает завершения активных задач.",
+      "restart-waiting": window.AgentHubConnectionBanner.restartWaitingMessage(blockingCount),
       restarting: "Agent Hub перезапускается…",
       offline: "Нет связи с Agent Hub.",
     };

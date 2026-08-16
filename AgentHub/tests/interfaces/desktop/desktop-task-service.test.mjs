@@ -110,6 +110,7 @@ test("Desktop task open shares one response budget between snapshot and history"
   });
 
   assert.ok(Buffer.byteLength(JSON.stringify(result), "utf8") < 850_000);
+  assert.equal(historyParams.refreshSource, true);
   assert.ok(historyParams.maxResponseBytes >= 64 * 1_024);
   assert.ok(historyParams.maxResponseBytes < 550_000);
 });

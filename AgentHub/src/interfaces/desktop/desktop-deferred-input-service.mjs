@@ -88,12 +88,19 @@ export class DesktopDeferredInputService {
     }
     if (action === "pause") {
       if (!d.queuedInputs.has(id)) throw new Error("Сообщение не находится в очереди");
-      d.cancelSchedule(id);
+      const previous = this.#itemState(item);
+      const wasScheduled = d.cancelSchedule(id);
       item.paused = true;
       delete item.dispatchingAt;
       delete item.lastError;
       delete item.recheckRequested;
-      await d.saveState();
+      try {
+        await d.saveState();
+      } catch (error) {
+        this.#restoreItemState(item, previous);
+        if (wasScheduled) d.scheduleQueued(item, 0);
+        throw error;
+      }
       return { accepted: true, id, message: "Сообщение в очереди приостановлено" };
     }
     if (action === "resume") {
@@ -145,11 +152,19 @@ export class DesktopDeferredInputService {
       }
     }
     if (action === "cancel") {
+      const destination = d.pendingInputs.has(id) ? "pending" : "queued";
+      const wasScheduled = destination === "queued" ? d.cancelSchedule(id) : false;
       d.pendingInputs.delete(id);
       d.queuedInputs.delete(id);
+      try {
+        await d.saveState();
+      } catch (error) {
+        (destination === "queued" ? d.queuedInputs : d.pendingInputs).set(id, item);
+        if (wasScheduled) d.scheduleQueued(item, 0);
+        throw error;
+      }
       d.updateReceipt(item, "cancelled");
       await d.cleanupFiles(item);
-      await d.saveState();
       await d.updateMessage(item, "❌ Сохранённое сообщение отменено.");
       d.scheduleNext(item);
       return { accepted: true, message: "Сохранённое сообщение отменено" };
@@ -254,5 +269,14 @@ export class DesktopDeferredInputService {
     return [binding.provider, binding.projectRoot, binding.threadId]
       .map((value) => String(value ?? "").trim().toLowerCase())
       .join("\0");
+  }
+
+  #itemState(item) {
+    return Object.getOwnPropertyDescriptors(item);
+  }
+
+  #restoreItemState(item, descriptors) {
+    for (const key of Reflect.ownKeys(item)) delete item[key];
+    Object.defineProperties(item, descriptors);
   }
 }

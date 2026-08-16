@@ -22,6 +22,8 @@ function journalPrompt(completion) {
 }
 
 export class RunJournalService {
+  #revision = 0;
+
   constructor({
     usageStore,
     workspaceCatalogStore = null,
@@ -63,8 +65,7 @@ export class RunJournalService {
       && authoritativeUpdatedAt
       && Date.parse(authoritativeUpdatedAt) < Date.parse(String(current.updatedAt ?? ""))
     ) return false;
-    this.lastTaskMessages.delete(key);
-    this.lastTaskMessages.set(key, {
+    const next = {
       text: value,
       provider: String(run.provider ?? "").trim() || null,
       threadId: String(run.threadId ?? "").trim(),
@@ -72,11 +73,26 @@ export class RunJournalService {
         || (sameTurn ? current.updatedAt : null)
         || this.now().toISOString(),
       turnId,
-    });
+    };
+    if (
+      current
+      && current.text === next.text
+      && current.provider === next.provider
+      && current.threadId === next.threadId
+      && current.updatedAt === next.updatedAt
+      && current.turnId === next.turnId
+    ) return false;
+    this.lastTaskMessages.delete(key);
+    this.lastTaskMessages.set(key, next);
     while (this.lastTaskMessages.size > this.messageLimit) {
       this.lastTaskMessages.delete(this.lastTaskMessages.keys().next().value);
     }
+    this.#revision += 1;
     return true;
+  }
+
+  get revision() {
+    return this.#revision;
   }
 
   lastMessage(task) {
@@ -97,6 +113,7 @@ export class RunJournalService {
       this.lastTaskMessages.set(entry[0], { ...entry[1] });
       restored += 1;
     }
+    if (restored) this.#revision += 1;
     return restored;
   }
 

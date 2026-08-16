@@ -43,6 +43,68 @@ test("Desktop deferred queue can pause and resume one message", async () => {
   assert.deepEqual(calls, [["cancel", item.id], ["schedule", item.id, 0]]);
 });
 
+test("Desktop deferred pause restores the queue item when durable save fails", async () => {
+  const item = {
+    id: "message-1", input: "later", temporaryFiles: [], lastError: "retry",
+    dispatchingAt: "2026-08-16T10:00:00.000Z", recheckRequested: true,
+  };
+  const queuedInputs = new Map([[item.id, item]]);
+  const calls = [];
+  const service = createService(item, {
+    pendingInputs: new Map(),
+    queuedInputs,
+    saveState: async () => { throw new Error("disk full"); },
+    cancelSchedule: (id) => calls.push(["cancel", id]),
+    scheduleQueued: (queuedItem, delay) => calls.push(["schedule", queuedItem.id, delay]),
+  });
+
+  await assert.rejects(service.handle({ id: item.id, action: "pause" }), /disk full/u);
+
+  assert.deepEqual(item, {
+    id: "message-1", input: "later", temporaryFiles: [], lastError: "retry",
+    dispatchingAt: "2026-08-16T10:00:00.000Z", recheckRequested: true,
+  });
+  assert.equal(queuedInputs.get(item.id), item);
+  assert.deepEqual(calls, [["cancel", item.id], ["schedule", item.id, 0]]);
+});
+
+test("Desktop deferred cancel retains item and attachments when durable save fails", async () => {
+  const item = { id: "message-1", input: "later", temporaryFiles: ["screen.png"] };
+  const receipts = [];
+  const cleaned = [];
+  const pendingInputs = new Map([[item.id, item]]);
+  const service = createService(item, {
+    pendingInputs,
+    saveState: async () => { throw new Error("disk full"); },
+    updateReceipt: (...args) => receipts.push(args),
+    cleanupFiles: async (value) => cleaned.push(value),
+  });
+
+  await assert.rejects(service.handle({ id: item.id, action: "cancel" }), /disk full/u);
+
+  assert.equal(pendingInputs.get(item.id), item);
+  assert.deepEqual(receipts, []);
+  assert.deepEqual(cleaned, []);
+});
+
+test("Desktop deferred cancel removes attachments only after durable commit", async () => {
+  const item = { id: "message-1", input: "later", temporaryFiles: ["screen.png"] };
+  const events = [];
+  const pendingInputs = new Map([[item.id, item]]);
+  const service = createService(item, {
+    pendingInputs,
+    saveState: async () => events.push("save"),
+    updateReceipt: () => events.push("receipt"),
+    cleanupFiles: async () => events.push("cleanup"),
+    updateMessage: async () => events.push("message"),
+  });
+
+  await service.handle({ id: item.id, action: "cancel" });
+
+  assert.equal(pendingInputs.has(item.id), false);
+  assert.deepEqual(events, ["save", "receipt", "cleanup", "message"]);
+});
+
 test("Desktop deferred active-writer retry keeps its reason and requests one recheck", async () => {
   const item = {
     id: "message-1",

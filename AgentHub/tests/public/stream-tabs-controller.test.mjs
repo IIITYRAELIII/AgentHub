@@ -144,6 +144,25 @@ test("activity rail separates attention from recent Streams and keeps active Oth
   assert.equal(includeTaskInActivityRail({ workspaceName: "Other" }, "recent"), false);
 });
 
+test("task list keeps unassigned Tasks beside Workspace groups", async () => {
+  const { taskListSections } = await streamTabsApi();
+  const sections = taskListSections([
+    { id: "workspace-task", workspaceId: "workspace-1" },
+    { id: "legacy-task", workspaceId: "" },
+    { id: "missing-workspace" },
+  ]);
+  assert.deepEqual(Array.from(sections.workspaceTasks, (task) => task.id), ["workspace-task"]);
+  assert.deepEqual(Array.from(sections.unassignedTasks, (task) => task.id), ["legacy-task", "missing-workspace"]);
+});
+
+test("an active Stream preserves its answer-ready state", async () => {
+  const { streamStatusPresentation } = await streamTabsApi();
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(streamStatusPresentation({ running: true, unread: true }))),
+    { running: true, answerReady: true, statusLabel: "Ход выполняется · Ответ готов" },
+  );
+});
+
 test("task hierarchy is recovered by Stream identity when a transient task lacks Workspace fields", async () => {
   const { resolveTaskHierarchy } = await streamTabsApi();
   const workspaces = [{
@@ -182,7 +201,6 @@ test("activity rail markup exposes separate sections and the inline recent-hours
   assert.match(appSource, /activityStreamSections\(entries\)/u);
   assert.match(appSource, /activityStreamList\?\.addEventListener\("click", selectActivityTask\)/u);
   assert.match(appSource, /activityRecentList\?\.addEventListener\("click", selectActivityTask\)/u);
-  assert.match(appSource, /workspaceTasks = visible\.filter/u);
   assert.match(clientSource, /resolveTaskHierarchy\(/u);
 });
 

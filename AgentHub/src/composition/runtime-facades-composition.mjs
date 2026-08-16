@@ -40,6 +40,9 @@ export function createRuntimeFacadesComposition({
     savedLastTaskMessageRecord(task) {
       return runJournal.lastMessageRecord(task);
     },
+    lastTaskMessageRevision() {
+      return runJournal.revision;
+    },
     deferredTaskMessageAtMs(task) {
       return deferredInputs.latestActivityAt(task);
     },

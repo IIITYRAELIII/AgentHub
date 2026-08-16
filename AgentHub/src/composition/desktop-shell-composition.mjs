@@ -202,22 +202,8 @@ export function createDesktopShellComposition({
           selection: selectionStore.revision,
           preferences: agentPreferences.snapshot(),
           autoApprove: hostState.autoApprove,
-          board: {
-            tasks: taskBoard.snapshot(),
-            workspaces: taskBoard.workspaces(),
-            layout: taskBoard.layout(),
-          },
-          messages: entries.map((entry) => {
-            const message = runtime.savedLastTaskMessageRecord(entry);
-            return [
-              entry.provider,
-              entry.projectRoot,
-              entry.threadId,
-              message?.turnId ?? null,
-              message?.updatedAt ?? null,
-              message?.text ?? null,
-            ];
-          }),
+          board: taskBoard.snapshotRevision,
+          messages: runtime.lastTaskMessageRevision(),
           readState: taskReadStateStore.revision,
           receipts: desktopMessageReceipts.revision,
           exchangeRates: usdRubRateStore.snapshot(),
@@ -498,6 +484,7 @@ export function createDesktopShellComposition({
       providers: agentProviders,
       externalActivity: taskExternalActivity,
       beginRun: (input, target) => managedRunLifecycle.begin(input, target),
+      rollbackAdmission: (run) => managedRunLifecycle.releaseAdmission(run),
       launchTurn,
       describeAttachments: desktopAttachmentDescriptors,
       hasDeferredBacklog: (target) => deferredInputs.hasBacklog(target),

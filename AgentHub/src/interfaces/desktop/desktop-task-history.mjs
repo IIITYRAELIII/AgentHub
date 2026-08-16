@@ -294,7 +294,10 @@ export function createDesktopTaskHistoryFactory({
       if (params.refreshSource === true) {
         await scheduleRefresh(threadBinding, { force: true });
       }
-      const cached = await historyReader.read(threadBinding, { limit });
+      // Pagination is calculated after durable/provider/active histories are
+      // merged. Limiting the durable source here makes its page look like the
+      // complete history and loses the cursor for older turns.
+      const cached = await historyReader.read(threadBinding);
       const durableHistory = visibleProviderHistory(threadBinding.provider, cached.history);
       let threadHistory = mergeCachedTaskHistory(
         readCachedHistory(providerHistories, key),
@@ -468,8 +471,12 @@ export function createDesktopTaskHistoryFactory({
                   ?? (messageIndex === rootUserIndex ? receipt?.clientUserMessageId : "")
                   ?? "",
               ).trim();
-              const attachments = (message.attachments
-                ?? (role === "user" ? receipt?.result?.attachments ?? item.attachments ?? [] : []))
+              const messageAttachments = Array.isArray(message.attachments)
+                ? message.attachments
+                : [];
+              const attachments = (messageAttachments.length
+                ? messageAttachments
+                : (role === "user" ? receipt?.result?.attachments ?? item.attachments ?? [] : []))
                 .map((attachment) => ({ ...attachment }));
               const sourceText = String(message?.text ?? "");
               const interstream = role === "user" ? interstreamMessageDetails(sourceText) : null;
@@ -477,6 +484,9 @@ export function createDesktopTaskHistoryFactory({
                 ? normalizeInterstreamOrigin(message?.origin) ?? interstream?.origin
                 : null;
               const author = interstreamOriginAuthor(origin) || String(message?.author ?? "").trim();
+              const messageKind = origin
+                ? "interstream"
+                : String(message?.kind ?? "").trim();
               const text = role === "user" ? displayUserPrompt(sourceText) : sourceText;
               if (!["user", "agent"].includes(role) || (!text && !attachments.length)) return [];
               const visibleText = text || (attachments.some((attachment) => (
@@ -488,7 +498,14 @@ export function createDesktopTaskHistoryFactory({
                 role,
                 text: role === "agent" ? visibleText.slice(0, maxAnswerChars) : visibleText,
                 ...(author ? { author } : {}),
-                ...(origin ? { kind: "interstream", origin } : {}),
+                ...(messageKind ? { kind: messageKind } : {}),
+                ...(origin ? { origin } : {}),
+                ...(String(message?.agentThreadId ?? "").trim()
+                  ? { agentThreadId: String(message.agentThreadId).trim() }
+                  : {}),
+                ...(String(message?.model ?? "").trim()
+                  ? { model: String(message.model).trim() }
+                  : {}),
                 ...(role === "user" && Array.isArray(message.responseAnnotations)
                   ? {
                     responseAnnotations: message.responseAnnotations.slice(0, 20).map((annotation) => ({

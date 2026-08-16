@@ -85,6 +85,9 @@ function fixture(overrides = {}) {
     receipts: [],
     revision: "initial",
     snapshotBuilds: 0,
+    boardSnapshotBuilds: 0,
+    boardWorkspaceBuilds: 0,
+    boardLayoutBuilds: 0,
     restartRequest: null,
     maintenance: null,
     runForTask: null,
@@ -107,13 +110,22 @@ function fixture(overrides = {}) {
       entryFor: () => state.maintenance,
     },
     board: {
-      snapshot: () => [{ id: "board-task-1", text: "Проверить дашборд" }],
-      workspaces: () => state.workspaces
-        ?? [{ id: "workspace-2", name: "Second" }, { id: "workspace-1", name: "First" }],
-      layout: () => ({
-        columnOrder: ["workspace:workspace-2", "notes", "workspace:workspace-1"],
-        notesComment: "Кино",
-      }),
+      snapshot: () => {
+        state.boardSnapshotBuilds += 1;
+        return [{ id: "board-task-1", text: "Проверить дашборд" }];
+      },
+      workspaces: () => {
+        state.boardWorkspaceBuilds += 1;
+        return state.workspaces
+          ?? [{ id: "workspace-2", name: "Second" }, { id: "workspace-1", name: "First" }];
+      },
+      layout: () => {
+        state.boardLayoutBuilds += 1;
+        return {
+          columnOrder: ["workspace:workspace-2", "notes", "workspace:workspace-1"],
+          notesComment: "Кино",
+        };
+      },
     },
     runs: {
       forTask: (task) => {
@@ -873,11 +885,21 @@ test("desktopSnapshot returns a compact marker before rebuilding an unchanged re
   const snapshot = await desktopSnapshot();
   assert.match(snapshot.version, /^[A-Za-z0-9_-]{22}$/u);
   const builds = state.snapshotBuilds;
+  const boardBuilds = [
+    state.boardSnapshotBuilds,
+    state.boardWorkspaceBuilds,
+    state.boardLayoutBuilds,
+  ];
   assert.deepEqual(await desktopSnapshot({ knownVersion: snapshot.version }), {
     notModified: true,
     version: snapshot.version,
   });
   assert.equal(state.snapshotBuilds, builds);
+  assert.deepEqual([
+    state.boardSnapshotBuilds,
+    state.boardWorkspaceBuilds,
+    state.boardLayoutBuilds,
+  ], boardBuilds);
 });
 
 test("desktopSnapshot rebuilds when a source revision changes", async () => {
