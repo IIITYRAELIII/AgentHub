@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { messageInputWithAttachments } from "../../domain/attachment-files.mjs";
 import {
+  interstreamOriginAuthor,
+  normalizeInterstreamOrigin,
+} from "../../domain/interstream-message.mjs";
+import {
   messageReceiptKey,
   messageRequestFingerprint,
 } from "../../infrastructure/persistence/message-receipts.mjs";
@@ -46,6 +50,8 @@ export function createDesktopMessageController({
       : text;
     const target = await resolveTarget(params, context);
     if (!target.threadId) throw new Error("Сначала выберите или создайте задачу");
+    const messageOrigin = normalizeInterstreamOrigin(target.messageOrigin);
+    const messageAuthor = interstreamOriginAuthor(messageOrigin);
     const receiptIdentity = {
       provider: target.provider,
       threadId: target.threadId,
@@ -76,6 +82,8 @@ export function createDesktopMessageController({
         responseAnnotations,
         responseAnnotationRequest,
         attachments: descriptors,
+        ...(messageAuthor ? { author: messageAuthor } : {}),
+        ...(messageOrigin ? { origin: messageOrigin } : {}),
         message: "Сообщение сохранено Hub и ожидает подтверждения запуска.",
       });
       await persistReceipts();

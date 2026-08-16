@@ -197,6 +197,52 @@ test("local task sync preserves durable message metadata and attachments", async
   restored.close();
 });
 
+test("local task sync preserves interstream origin through SQLite", async () => {
+  const filePath = await storeFile();
+  const origin = {
+    kind: "interstream",
+    workspaceId: "workspace-agent-hub",
+    workspaceName: "Agent HUB",
+    streamId: "stream-themes",
+    streamName: "Themes",
+    provider: "codex",
+    model: "gpt-5.6-sol",
+    sourceThreadId: "thread-themes",
+    requestId: "message-origin-1",
+  };
+  let store = new LocalTaskSyncStore({ filePath });
+  await store.load();
+  store.recordHistory(task, [{
+    id: "turn-interstream",
+    prompt: "Проверь доставку",
+    promptAuthor: "неверная временная подпись",
+    promptOrigin: origin,
+    answer: "Готово",
+    status: "completed",
+    completed: true,
+    messages: [{
+      itemId: "turn-interstream:user",
+      clientUserMessageId: "mcp:message-origin-1",
+      role: "user",
+      kind: "interstream",
+      origin,
+      author: "Вы",
+      text: "Проверь доставку",
+    }],
+  }]);
+  store.close();
+
+  store = new LocalTaskSyncStore({ filePath });
+  await store.load();
+  const [restored] = store.history(task);
+  assert.equal(restored.promptAuthor, "Agent HUB - Themes (Sol)");
+  assert.deepEqual(restored.promptOrigin, origin);
+  assert.equal(restored.messages[0].author, "Agent HUB - Themes (Sol)");
+  assert.equal(restored.messages[0].kind, "interstream");
+  assert.deepEqual(restored.messages[0].origin, origin);
+  store.close();
+});
+
 test("local task sync repairs parent finals misattributed as subagents", async () => {
   const filePath = await storeFile();
   const store = new LocalTaskSyncStore({ filePath });

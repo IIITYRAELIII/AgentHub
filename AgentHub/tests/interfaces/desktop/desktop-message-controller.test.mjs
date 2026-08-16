@@ -129,6 +129,40 @@ test("desktop message acknowledgement does not wait for a full snapshot", async 
   assert.equal("snapshot" in result, false);
 });
 
+test("desktop message receipt preserves the interstream source author", async () => {
+  const receipts = new MessageReceiptRegistry();
+  const messageOrigin = {
+    kind: "interstream",
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-themes",
+    streamName: "Themes",
+    provider: "codex",
+    model: "gpt-5.6-sol",
+    sourceThreadId: "thread-themes",
+    requestId: "request-receipt",
+  };
+  const messages = controller({
+    receipts,
+    resolveTarget: async () => ({
+      provider: "codex",
+      projectRoot: "C:\\Project",
+      threadId: "thread-1",
+      taskTitle: "Task",
+      messageOrigin,
+    }),
+  });
+
+  await messages.sendMessage({
+    text: "проверить receipt",
+    clientUserMessageId: "message-origin-receipt",
+  });
+
+  const receipt = receipts.get({ clientUserMessageId: "message-origin-receipt" });
+  assert.equal(receipt.result.author, "Agent HUB - Themes (Sol)");
+  assert.deepEqual(receipt.result.origin, messageOrigin);
+});
+
 test("desktop message keeps an active follow-up pending for a manual action", async () => {
   const scheduled = [];
   let deferredOptions = null;

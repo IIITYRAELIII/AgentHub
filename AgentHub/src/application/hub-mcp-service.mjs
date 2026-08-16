@@ -9,7 +9,10 @@ import {
   attachmentMetadataFromId,
   createAttachmentStorageName,
 } from "../domain/attachment-files.mjs";
-import { createInterstreamMessage } from "../domain/interstream-message.mjs";
+import {
+  createInterstreamMessage,
+  interstreamMessageDetails,
+} from "../domain/interstream-message.mjs";
 
 const CONTEXT_TOKEN_VERSION = 1;
 const RELEASE_STATUSES = new Set(["draft", "ready", "blocked", "discarded"]);
@@ -693,22 +696,32 @@ export class HubMcpService {
     if (!targetStream) throw new Error("Stream is outside the current Workspace");
     const followUpMode = requiredText(mode, "message mode", 20).toLowerCase();
     if (!new Set(["queue", "steer"]).has(followUpMode)) throw new Error("invalid message mode");
+    const normalizedRequestId = requiredText(requestId, "request id", 200);
+    const sourceRun = this.#activeRuns().find((run) => (
+      String(run?.provider ?? "").trim().toLowerCase() === context.provider
+      && String(run?.threadId ?? "").trim() === String(context.threadId ?? "").trim()
+    ));
     const message = createInterstreamMessage({
       workspaceId: context.workspaceId,
       workspaceName: context.workspaceName,
       streamId: context.streamId,
       streamName: context.streamName,
       provider: context.provider,
+      model: String(sourceRun?.model ?? "").trim(),
+      sourceThreadId: context.threadId ?? context.auditThreadId,
+      requestId: normalizedRequestId,
       text: requiredText(text, "message text", 100_000),
     });
+    const messageOrigin = interstreamMessageDetails(message)?.origin;
     const delivery = await this.#streamMessenger({
       streamId: targetStreamId,
       text: message,
-      clientUserMessageId: `mcp:${requestId}`,
+      clientUserMessageId: `mcp:${normalizedRequestId}`,
       followUpMode,
     }, {
       source: "mcp",
       clientId: `mcp:${context.provider}:${context.auditThreadId}`,
+      messageOrigin,
     });
     return {
       source: {
@@ -717,6 +730,8 @@ export class HubMcpService {
         streamId: context.streamId,
         streamName: context.streamName,
         provider: context.provider,
+        ...(messageOrigin?.model ? { model: messageOrigin.model } : {}),
+        ...(messageOrigin?.sourceThreadId ? { threadId: messageOrigin.sourceThreadId } : {}),
       },
       target: {
         workspaceId: context.workspaceId,

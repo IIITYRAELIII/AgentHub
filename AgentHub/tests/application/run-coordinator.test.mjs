@@ -298,6 +298,27 @@ test("RunCoordinator starts a durable queued item exactly once", async () => {
   assert.deepEqual(f.calls.at(-1).slice(1), [f.run, "queued", [], { forceSpeechButton: true }]);
 });
 
+test("RunCoordinator restores interstream identity from a durable queued item", async () => {
+  const f = fixture();
+  const messageOrigin = {
+    kind: "interstream",
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-themes",
+    streamName: "Themes",
+    provider: "codex",
+    model: "Sol",
+  };
+  await f.coordinator.startDeferred({
+    ...f.target,
+    input: "queued interstream",
+    messageOrigin,
+  });
+
+  const beginTarget = f.calls.find(([name]) => name === "begin")[2];
+  assert.deepEqual(beginTarget.messageOrigin, messageOrigin);
+});
+
 test("RunCoordinator starts a provider session before its external thread id exists", async () => {
   const f = fixture();
   const target = { ...f.target, threadId: null, taskTitle: "Новая задача Claude" };

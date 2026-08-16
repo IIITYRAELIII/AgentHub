@@ -127,7 +127,7 @@ async function fixture(context) {
   });
   service.setActiveRuns(() => [{
     id: "run-1", provider: "codex", threadId: "thread-1", turnId: "turn-live",
-    status: "running", progressStage: "Editing files",
+    status: "running", progressStage: "Editing files", model: "Sol",
   }]);
   return {
     service,
@@ -258,8 +258,21 @@ test("HubMcpService sends attributed messages to another current-Workspace Strea
   assert.match(sentMessages[0].params.text, /"workspaceName":"Agent Hub"/u);
   assert.match(sentMessages[0].params.text, /"streamName":"MCP"/u);
   assert.match(sentMessages[0].params.text, /"provider":"codex"/u);
+  assert.match(sentMessages[0].params.text, /"model":"Sol"/u);
   assert.match(sentMessages[0].params.text, /Finish the theme\.$/u);
+  assert.deepEqual(sentMessages[0].context.messageOrigin, {
+    kind: "interstream",
+    workspaceId: "workspace-1",
+    workspaceName: "Agent Hub",
+    streamId: "stream-1",
+    streamName: "MCP",
+    provider: "codex",
+    model: "Sol",
+    sourceThreadId: "thread-1",
+    requestId: "message-themes-1",
+  });
   assert.equal(result.source.provider, "codex");
+  assert.equal(result.source.model, "Sol");
 });
 
 test("HubMcpService exposes cursor events and publication-gated release completion", async (context) => {

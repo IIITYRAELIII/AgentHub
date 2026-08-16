@@ -2,6 +2,10 @@ import path from "node:path";
 
 import { createManagedTaskRun, taskRunKey } from "../domain/task-runs.mjs";
 import { TASK_EXECUTION_OWNERS, taskExecutionRuntimeLabel } from "../domain/task-execution-owner.mjs";
+import {
+  interstreamOriginAuthor,
+  normalizeInterstreamOrigin,
+} from "../domain/interstream-message.mjs";
 
 function requiredFunction(value, name) {
   if (typeof value !== "function") throw new TypeError(`${name} is required`);
@@ -54,6 +58,7 @@ export class ManagedRunLifecycleService {
       ? savedCodexSettings.reasoningEffort
         ?? (targetThreadId === current.threadId ? preferences.reasoningEffort : preferences.defaultReasoningEffort)
       : preferences.reasoningEffort);
+    const messageOrigin = normalizeInterstreamOrigin(target?.messageOrigin);
     const run = createManagedTaskRun({
       streamId: target?.streamId ?? current.streamId ?? null,
       provider,
@@ -74,6 +79,7 @@ export class ManagedRunLifecycleService {
       collaborationMode: target?.collaborationMode ?? preferences.collaborationMode,
       telegramDeliveryRequested: target?.telegramDeliveryRequested !== false,
       clientSource: String(target?.clientSource ?? "telegram").trim() || "telegram",
+      ...(messageOrigin ? { messageOrigin } : {}),
     });
     if (run.promptPreview) {
       run.userMessages = [{
@@ -82,6 +88,11 @@ export class ManagedRunLifecycleService {
           ? { clientUserMessageId: run.clientUserMessageId }
           : {}),
         text: run.promptPreview,
+        ...(messageOrigin ? {
+          kind: "interstream",
+          origin: structuredClone(messageOrigin),
+          author: interstreamOriginAuthor(messageOrigin),
+        } : {}),
         time: run.startedAt,
       }];
     }

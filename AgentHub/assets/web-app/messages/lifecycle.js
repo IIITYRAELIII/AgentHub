@@ -704,6 +704,7 @@ function mergeLiveUserMessages(messages, {
       ...(message?.kind ? { kind: String(message.kind) } : {}),
       ...(message?.agentThreadId ? { agentThreadId: String(message.agentThreadId) } : {}),
       ...(message?.model ? { model: String(message.model) } : {}),
+      ...(message?.origin ? { origin: structuredClone(message.origin) } : {}),
       ...(Array.isArray(message.responseAnnotations) ? {
         responseAnnotations: message.responseAnnotations.map((item) => ({ ...item })),
         responseAnnotationRequest: String(message.responseAnnotationRequest ?? ""),

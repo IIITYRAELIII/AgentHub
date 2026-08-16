@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { rapidDeferredInputDuplicate } from "../domain/deferred-input.mjs";
+import { normalizeInterstreamOrigin } from "../domain/interstream-message.mjs";
 
 function requiredFunction(value, name) {
   if (typeof value !== "function") throw new TypeError(`${name} is required`);
@@ -61,6 +62,7 @@ export class DeferredInputService {
     const rapidDuplicate = destination === "queued" && typeof d.store.values === "function"
       ? d.store.values().find((item) => rapidDeferredInputDuplicate(item, duplicateCandidate))
       : null;
+    const messageOrigin = normalizeInterstreamOrigin(target.messageOrigin);
     if (rapidDuplicate) {
       await d.removeFiles(temporaryFiles);
       return {
@@ -95,6 +97,7 @@ export class DeferredInputService {
       clientUserMessageId: normalizedClientUserMessageId,
       telegramDeliveryRequested: target.telegramDeliveryRequested !== false,
       clientSource: String(target.clientSource ?? "telegram").trim() || "telegram",
+      ...(messageOrigin ? { messageOrigin } : {}),
       createdAt,
     };
     d.store.put(item, destination);

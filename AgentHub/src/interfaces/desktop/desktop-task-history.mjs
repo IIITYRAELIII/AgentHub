@@ -7,7 +7,11 @@ import {
 } from "../../application/task-history.mjs";
 import { isCodexContextProbeTurn } from "../../domain/codex-context-probe.mjs";
 import { isCodexAutoCompactionTurnId } from "../../domain/codex-internal-turn.mjs";
-import { interstreamMessageDetails } from "../../domain/interstream-message.mjs";
+import {
+  interstreamMessageDetails,
+  interstreamOriginAuthor,
+  normalizeInterstreamOrigin,
+} from "../../domain/interstream-message.mjs";
 import { taskDisplayTitle } from "../../domain/task-display-title.mjs";
 import { taskRunIsActive } from "../../domain/task-runs.mjs";
 
@@ -413,10 +417,14 @@ export function createDesktopTaskHistoryFactory({
         const itemProvider = source?.provider ?? provider;
         const itemThreadId = source?.threadId ?? selectedThreadId;
         const promptInterstream = interstreamMessageDetails(item.prompt);
+        const promptOrigin = normalizeInterstreamOrigin(item.promptOrigin) ?? promptInterstream?.origin;
+        const promptAuthor = interstreamOriginAuthor(promptOrigin)
+          || String(item.promptAuthor ?? "").trim();
         return {
           id: String(item.id ?? ""),
           prompt: displayUserPrompt(item.prompt),
-          ...(promptInterstream ? { promptAuthor: promptInterstream.author } : {}),
+          ...(promptAuthor ? { promptAuthor } : {}),
+          ...(promptOrigin ? { promptOrigin } : {}),
           promptAnnotations: (Array.isArray(item.promptAnnotations) ? item.promptAnnotations : [])
             .slice(0, 20)
             .map((annotation) => ({
@@ -465,6 +473,10 @@ export function createDesktopTaskHistoryFactory({
                 .map((attachment) => ({ ...attachment }));
               const sourceText = String(message?.text ?? "");
               const interstream = role === "user" ? interstreamMessageDetails(sourceText) : null;
+              const origin = role === "user"
+                ? normalizeInterstreamOrigin(message?.origin) ?? interstream?.origin
+                : null;
+              const author = interstreamOriginAuthor(origin) || String(message?.author ?? "").trim();
               const text = role === "user" ? displayUserPrompt(sourceText) : sourceText;
               if (!["user", "agent"].includes(role) || (!text && !attachments.length)) return [];
               const visibleText = text || (attachments.some((attachment) => (
@@ -475,9 +487,8 @@ export function createDesktopTaskHistoryFactory({
                 ...(clientUserMessageId ? { clientUserMessageId } : {}),
                 role,
                 text: role === "agent" ? visibleText.slice(0, maxAnswerChars) : visibleText,
-                ...((interstream?.author ?? String(message?.author ?? "").trim())
-                  ? { author: interstream?.author ?? String(message.author).trim() }
-                  : {}),
+                ...(author ? { author } : {}),
+                ...(origin ? { kind: "interstream", origin } : {}),
                 ...(role === "user" && Array.isArray(message.responseAnnotations)
                   ? {
                     responseAnnotations: message.responseAnnotations.slice(0, 20).map((annotation) => ({

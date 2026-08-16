@@ -1,6 +1,10 @@
 import { codexSubagentActivity } from "../domain/run-activity.mjs";
 import { isCodexContextProbeTurn } from "../domain/codex-context-probe.mjs";
-import { interstreamMessageDetails } from "../domain/interstream-message.mjs";
+import {
+  interstreamMessageDetails,
+  interstreamOriginAuthor,
+  normalizeInterstreamOrigin,
+} from "../domain/interstream-message.mjs";
 
 export const EMPTY_TURN_COMPLETION_TEXT = "Ход завершён без текстового ответа.";
 
@@ -746,6 +750,8 @@ export function mergeActiveTaskHistory(history, activeTurn = {}) {
   const turnId = String(activeTurn.turnId ?? activeTurn.id ?? "").trim();
   const rawPrompt = String(activeTurn.prompt ?? "").trim();
   const rootInterstream = interstreamMessageDetails(rawPrompt);
+  const rootOrigin = normalizeInterstreamOrigin(activeTurn.messageOrigin) ?? rootInterstream?.origin;
+  const rootAuthor = interstreamOriginAuthor(rootOrigin);
   const responseAnnotations = responseAnnotationDetails(rawPrompt);
   const visiblePrompt = displayUserPrompt(rawPrompt);
   const attachments = Array.isArray(activeTurn.attachments)
@@ -770,6 +776,7 @@ export function mergeActiveTaskHistory(history, activeTurn = {}) {
     current = {
       id: turnId || "active-turn",
       prompt: visiblePrompt,
+      ...(rootAuthor ? { promptAuthor: rootAuthor, promptOrigin: structuredClone(rootOrigin) } : {}),
       answer: "",
       ...(responseAnnotations?.items.length
         ? {
@@ -804,15 +811,16 @@ export function mergeActiveTaskHistory(history, activeTurn = {}) {
     .map((message, index) => {
       const rawMessageText = String(message.text ?? "");
       const interstream = interstreamMessageDetails(rawMessageText);
+      const origin = normalizeInterstreamOrigin(message.origin) ?? interstream?.origin;
+      const author = interstreamOriginAuthor(origin) || String(message.author ?? "").trim();
       const messageText = displayUserPrompt(rawMessageText);
       return {
         itemId: String(message.itemId ?? message.id ?? "").trim(),
         clientUserMessageId: String(message.clientUserMessageId ?? message.clientId ?? "").trim(),
         role: "user",
         text: messageText,
-        ...((interstream?.author ?? String(message.author ?? "").trim())
-          ? { author: interstream?.author ?? String(message.author).trim() }
-          : {}),
+        ...(author ? { author } : {}),
+        ...(origin ? { kind: "interstream", origin: structuredClone(origin) } : {}),
         ...(normalizedTimestamp(message.time) ? { time: normalizedTimestamp(message.time) } : {}),
         ...(Array.isArray(message.responseAnnotations)
           ? { responseAnnotations: message.responseAnnotations.map((item) => ({ ...item })) }
@@ -850,7 +858,11 @@ export function mergeActiveTaskHistory(history, activeTurn = {}) {
       clientUserMessageId: rootClientUserMessageId,
       role: "user",
       text: visiblePrompt,
-      ...(rootInterstream ? { author: rootInterstream.author } : {}),
+      ...(rootAuthor ? {
+        author: rootAuthor,
+        kind: "interstream",
+        origin: structuredClone(rootOrigin),
+      } : {}),
       ...(normalizedTimestamp(activeTurn.startedAt) ? { time: normalizedTimestamp(activeTurn.startedAt) } : {}),
       ...(responseAnnotations?.items.length
         ? {
@@ -866,6 +878,10 @@ export function mergeActiveTaskHistory(history, activeTurn = {}) {
   if (suppliedUsers.length) {
     if (visiblePrompt) current.prompt = visiblePrompt;
     else if (!current.prompt && suppliedUsers[0].text) current.prompt = suppliedUsers[0].text;
+    if (rootAuthor) {
+      current.promptAuthor = rootAuthor;
+      current.promptOrigin = structuredClone(rootOrigin);
+    }
     const messages = Array.isArray(current.messages) ? current.messages : [];
     for (const incoming of suppliedUsers) {
       const users = messages.filter((message) => message.role === "user");
@@ -898,6 +914,8 @@ export function mergeActiveTaskHistory(history, activeTurn = {}) {
       if (incoming.clientUserMessageId) user.clientUserMessageId = incoming.clientUserMessageId;
       if (incoming.text) user.text = incoming.text;
       if (incoming.author) user.author = incoming.author;
+      if (incoming.kind) user.kind = incoming.kind;
+      if (incoming.origin) user.origin = structuredClone(incoming.origin);
       const timestamp = incoming.time ?? normalizedTimestamp(activeTurn.startedAt);
       if (!user.time && timestamp) user.time = timestamp;
       if (incoming.responseAnnotations?.length) user.responseAnnotations = incoming.responseAnnotations;

@@ -1,7 +1,11 @@
 import { createHash } from "node:crypto";
 import { displayUserPrompt } from "../../application/task-history.mjs";
 import { isCodexContextProbeTurn } from "../../domain/codex-context-probe.mjs";
-import { interstreamMessageDetails } from "../../domain/interstream-message.mjs";
+import {
+  interstreamMessageDetails,
+  interstreamOriginAuthor,
+  normalizeInterstreamOrigin,
+} from "../../domain/interstream-message.mjs";
 import { taskDisplayTitle } from "../../domain/task-display-title.mjs";
 import { taskRunIsActive } from "../../domain/task-runs.mjs";
 import { claudeModelOptions } from "../../domain/agent-runtime-settings.mjs";
@@ -48,10 +52,11 @@ function deferredMessageProjection(item, deferred) {
   const rawText = deferred.editableText?.(item.input) ?? deferred.inputPreview(item.input);
   const rawPreview = deferred.inputPreview(item.input);
   const interstream = interstreamMessageDetails(rawText) ?? interstreamMessageDetails(rawPreview);
+  const origin = normalizeInterstreamOrigin(item.messageOrigin) ?? interstream?.origin;
   return {
     text: displayUserPrompt(rawText),
     preview: displayUserPrompt(rawPreview),
-    ...(interstream ? { author: interstream.author } : {}),
+    ...(origin ? { author: interstreamOriginAuthor(origin), origin } : {}),
   };
 }
 
@@ -130,6 +135,10 @@ export function createDesktopSnapshotFactory({
         deliveredAt: result.deliveredAt ?? null,
         message: result.message ?? null,
         displayText: String(result.displayText ?? ""),
+        ...(String(result.author ?? "").trim() ? { author: String(result.author).trim() } : {}),
+        ...(normalizeInterstreamOrigin(result.origin)
+          ? { origin: normalizeInterstreamOrigin(result.origin) }
+          : {}),
         responseAnnotations: Array.isArray(result.responseAnnotations)
           ? result.responseAnnotations.map((item) => ({ ...item }))
           : [],
@@ -181,6 +190,7 @@ export function createDesktopSnapshotFactory({
   function desktopRunSnapshot(run, { compactSnapshot = false } = {}) {
     if (!run) return null;
     const promptInterstream = interstreamMessageDetails(run.promptPreview);
+    const promptOrigin = normalizeInterstreamOrigin(run.messageOrigin) ?? promptInterstream?.origin;
     const responseItem = (Array.isArray(run.responseItems) ? run.responseItems : [])
       .find((item) => String(item?.id ?? "") === String(run.responseItemId ?? ""));
     const compactActivity = (activity) => {
@@ -214,7 +224,10 @@ export function createDesktopSnapshotFactory({
       stage: String(run.progressStage ?? "Выполняется…"),
       ...(run.providerStart ? { providerStart: structuredClone(run.providerStart) } : {}),
       prompt: displayUserPrompt(run.promptPreview),
-      ...(promptInterstream ? { promptAuthor: promptInterstream.author } : {}),
+      ...(promptOrigin ? {
+        promptAuthor: interstreamOriginAuthor(promptOrigin),
+        promptOrigin,
+      } : {}),
       attachments: Array.isArray(run.messageAttachments)
         ? run.messageAttachments.map((attachment) => ({ ...attachment }))
         : [],
@@ -222,6 +235,7 @@ export function createDesktopSnapshotFactory({
         const rawText = String(message?.text ?? "");
         const role = message?.role === "agent" && message?.kind === "subagent" ? "agent" : "user";
         const interstream = interstreamMessageDetails(rawText);
+        const origin = normalizeInterstreamOrigin(message?.origin) ?? interstream?.origin;
         const text = displayUserPrompt(rawText);
         if (!text) return [];
         const clientUserMessageId = String(message.clientUserMessageId ?? "");
@@ -240,9 +254,10 @@ export function createDesktopSnapshotFactory({
           ...(message?.kind ? { kind: String(message.kind) } : {}),
           ...(message?.agentThreadId ? { agentThreadId: String(message.agentThreadId) } : {}),
           ...(message?.model ? { model: String(message.model) } : {}),
-          ...((interstream?.author ?? String(message.author ?? "").trim())
-            ? { author: interstream?.author ?? String(message.author).trim() }
+          ...((interstreamOriginAuthor(origin) || String(message.author ?? "").trim())
+            ? { author: interstreamOriginAuthor(origin) || String(message.author).trim() }
             : {}),
+          ...(origin ? { origin } : {}),
           time: message.time ?? run.startedAt ?? receipt?.createdAt ?? null,
           attachments: (
             receipt?.result?.attachments

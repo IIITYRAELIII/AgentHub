@@ -507,7 +507,7 @@ function applyMessageReceipts(snapshot) {
         itemId: receipt.id ?? clientUserMessageId,
         clientUserMessageId,
         role: "user",
-        author: "Вы",
+        author: String(receipt.author ?? "").trim() || "Вы",
         text: restoredText,
         responseAnnotations: restoredAnnotations,
         responseAnnotationRequest: restoredRequest,

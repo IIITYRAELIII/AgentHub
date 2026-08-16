@@ -4,9 +4,13 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import { catalogTaskKey } from "../../domain/task-catalog-identity.mjs";
+import {
+  interstreamOriginAuthor,
+  normalizeInterstreamOrigin,
+} from "../../domain/interstream-message.mjs";
 
 const FORMAT_VERSION = 1;
-const TASK_SCHEMA_VERSION = 7;
+const TASK_SCHEMA_VERSION = 8;
 const MODEL_BACKFILL_VERSION = "1";
 const SEARCH_BACKFILL_VERSION = "3";
 const TERMINAL_HISTORY_BACKFILL_VERSION = "3";
@@ -141,25 +145,31 @@ function withoutInternalContextTurns(history) {
 
 function cleanHistory(history, limit) {
   const cleaned = (Array.isArray(history) ? history : [])
-    .map((item) => ({
-      id: cleanText(item?.id, 100),
-      prompt: cleanText(item?.prompt, 12_000),
-      answer: cleanText(item?.answer, 40_000),
-      status: cleanText(item?.status, 40),
-      active: item?.active === true,
-      completed: item?.completed === true,
-      promptAnnotations: cleanResponseAnnotations(item?.promptAnnotations),
-      ...(cleanText(item?.promptRequest, 12_000)
-        ? { promptRequest: cleanText(item.promptRequest, 12_000) }
-        : {}),
-      ...(item?.startedAt ? { startedAt: cleanText(item.startedAt, 80) } : {}),
-      ...(item?.completedAt ? { completedAt: cleanText(item.completedAt, 80) } : {}),
-      attachments: cleanAttachments(item?.attachments),
-      activities: cleanActivities(item?.activities),
-      ...(cleanActivityGroups(item?.activityGroups).length
-        ? { activityGroups: cleanActivityGroups(item.activityGroups) }
-        : {}),
-      messages: (Array.isArray(item?.messages) ? item.messages : [])
+    .map((item) => {
+      const promptOrigin = normalizeInterstreamOrigin(item?.promptOrigin);
+      const promptAuthor = interstreamOriginAuthor(promptOrigin)
+        || cleanText(item?.promptAuthor, 1_000);
+      return {
+        id: cleanText(item?.id, 100),
+        prompt: cleanText(item?.prompt, 12_000),
+        ...(promptAuthor ? { promptAuthor } : {}),
+        ...(promptOrigin ? { promptOrigin } : {}),
+        answer: cleanText(item?.answer, 40_000),
+        status: cleanText(item?.status, 40),
+        active: item?.active === true,
+        completed: item?.completed === true,
+        promptAnnotations: cleanResponseAnnotations(item?.promptAnnotations),
+        ...(cleanText(item?.promptRequest, 12_000)
+          ? { promptRequest: cleanText(item.promptRequest, 12_000) }
+          : {}),
+        ...(item?.startedAt ? { startedAt: cleanText(item.startedAt, 80) } : {}),
+        ...(item?.completedAt ? { completedAt: cleanText(item.completedAt, 80) } : {}),
+        attachments: cleanAttachments(item?.attachments),
+        activities: cleanActivities(item?.activities),
+        ...(cleanActivityGroups(item?.activityGroups).length
+          ? { activityGroups: cleanActivityGroups(item.activityGroups) }
+          : {}),
+        messages: (Array.isArray(item?.messages) ? item.messages : [])
         .slice(-100)
         .flatMap((message) => {
           const role = cleanText(message?.role, 20);
@@ -168,6 +178,10 @@ function cleanHistory(history, limit) {
           const itemId = cleanText(message?.itemId, 200);
           const kind = cleanText(message?.kind, 40);
           const misattributedSubagent = kind === "subagent" && !itemId.includes(":subagent:");
+          const origin = !misattributedSubagent && role === "user"
+            ? normalizeInterstreamOrigin(message?.origin)
+            : null;
+          const author = interstreamOriginAuthor(origin) || cleanText(message?.author, 1_000);
           return [{
             itemId,
             ...(message?.clientUserMessageId
@@ -175,10 +189,13 @@ function cleanHistory(history, limit) {
               : {}),
             role,
             text,
-            ...(!misattributedSubagent && cleanText(message?.author, 1_000)
-              ? { author: cleanText(message.author, 1_000) }
+            ...(!misattributedSubagent && author
+              ? { author }
               : {}),
-            ...(!misattributedSubagent && kind ? { kind } : {}),
+            ...(!misattributedSubagent && (origin || kind)
+              ? { kind: origin ? "interstream" : kind }
+              : {}),
+            ...(origin ? { origin } : {}),
             ...(!misattributedSubagent && cleanText(message?.agentThreadId, 100)
               ? { agentThreadId: cleanText(message.agentThreadId, 100) }
               : {}),
@@ -194,7 +211,8 @@ function cleanHistory(history, limit) {
             attachments: cleanAttachments(message?.attachments),
           }];
         }),
-    }));
+      };
+    });
   const normalized = withoutRepeatedClientMessages(cleaned.map(mergePersistedSyntheticRoot));
   return withoutPromptlessAnswerEchoes(withoutInternalContextTurns(normalized)).slice(-limit);
 }
@@ -368,6 +386,14 @@ function searchDocumentKey({ provider, threadId, turnId, itemId, role }) {
   return JSON.stringify([provider, threadId, turnId, itemId, role]);
 }
 
+function parseInterstreamOrigin(value) {
+  try {
+    return normalizeInterstreamOrigin(JSON.parse(String(value ?? "{}")));
+  } catch {
+    return null;
+  }
+}
+
 function searchHistoryFingerprint(history) {
   return createHash("sha256")
     .update(JSON.stringify(Array.isArray(history) ? history : []))
@@ -418,6 +444,8 @@ function configure(database) {
       completed INTEGER NOT NULL CHECK (completed IN (0, 1)),
       started_at TEXT,
       completed_at TEXT,
+      prompt_author TEXT NOT NULL DEFAULT '',
+      prompt_origin_json TEXT NOT NULL DEFAULT '{}',
       prompt_annotations_json TEXT NOT NULL DEFAULT '[]',
       prompt_request TEXT NOT NULL DEFAULT '',
       attachments_json TEXT NOT NULL,
@@ -439,6 +467,7 @@ function configure(database) {
       role TEXT NOT NULL CHECK (role IN ('user', 'agent')),
       text TEXT NOT NULL,
       author TEXT NOT NULL DEFAULT '',
+      origin_json TEXT NOT NULL DEFAULT '{}',
       kind TEXT NOT NULL DEFAULT '',
       agent_thread_id TEXT NOT NULL DEFAULT '',
       model TEXT NOT NULL DEFAULT '',
@@ -536,8 +565,17 @@ function configure(database) {
   if (!messageColumns.has("response_annotation_request")) {
     database.exec("ALTER TABLE task_read_model_messages ADD COLUMN response_annotation_request TEXT NOT NULL DEFAULT ''");
   }
+  if (!turnColumns.has("prompt_author")) {
+    database.exec("ALTER TABLE task_read_model_turns ADD COLUMN prompt_author TEXT NOT NULL DEFAULT ''");
+  }
+  if (!turnColumns.has("prompt_origin_json")) {
+    database.exec("ALTER TABLE task_read_model_turns ADD COLUMN prompt_origin_json TEXT NOT NULL DEFAULT '{}'");
+  }
   if (!messageColumns.has("author")) {
     database.exec("ALTER TABLE task_read_model_messages ADD COLUMN author TEXT NOT NULL DEFAULT ''");
+  }
+  if (!messageColumns.has("origin_json")) {
+    database.exec("ALTER TABLE task_read_model_messages ADD COLUMN origin_json TEXT NOT NULL DEFAULT '{}'");
   }
   if (!messageColumns.has("kind")) {
     database.exec("ALTER TABLE task_read_model_messages ADD COLUMN kind TEXT NOT NULL DEFAULT ''");
@@ -713,6 +751,7 @@ export class LocalTaskSyncStore {
     const messagesByTurn = new Map();
     for (const row of messages) {
       const turnMessages = messagesByTurn.get(Number(row.turn_position)) ?? [];
+      const origin = parseInterstreamOrigin(row.origin_json);
       turnMessages.push({
         itemId: String(row.item_id ?? ""),
         ...(row.client_user_message_id
@@ -721,6 +760,7 @@ export class LocalTaskSyncStore {
         role: String(row.role),
         text: String(row.text),
         ...(row.author ? { author: String(row.author) } : {}),
+        ...(origin ? { origin } : {}),
         ...(row.kind ? { kind: String(row.kind) } : {}),
         ...(row.agent_thread_id ? { agentThreadId: String(row.agent_thread_id) } : {}),
         ...(row.model ? { model: String(row.model) } : {}),
@@ -738,9 +778,13 @@ export class LocalTaskSyncStore {
       SELECT * FROM task_read_model_turns
       WHERE provider = ? AND thread_id = ?
       ORDER BY position
-    `).all(provider, threadId).map((row) => ({
+    `).all(provider, threadId).map((row) => {
+      const promptOrigin = parseInterstreamOrigin(row.prompt_origin_json);
+      return {
       id: String(row.id ?? ""),
       prompt: String(row.prompt ?? ""),
+      ...(row.prompt_author ? { promptAuthor: String(row.prompt_author) } : {}),
+      ...(promptOrigin ? { promptOrigin } : {}),
       answer: String(row.answer ?? ""),
       status: String(row.status ?? ""),
       active: Number(row.active) === 1,
@@ -755,7 +799,8 @@ export class LocalTaskSyncStore {
         ? { activityGroups: parseJsonArray(row.activity_groups_json) }
         : {}),
       messages: messagesByTurn.get(Number(row.position)) ?? [],
-    }));
+      };
+    });
   }
 
   #readTask(task, withHistory = false) {
@@ -945,16 +990,17 @@ export class LocalTaskSyncStore {
     const insertTurn = this.#database.prepare(`
       INSERT INTO task_read_model_turns (
         provider, thread_id, position, id, prompt, answer, status, active,
-        completed, started_at, completed_at, prompt_annotations_json, prompt_request,
+        completed, started_at, completed_at, prompt_author, prompt_origin_json,
+        prompt_annotations_json, prompt_request,
         attachments_json, activities_json, activity_groups_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const insertMessage = this.#database.prepare(`
       INSERT INTO task_read_model_messages (
         provider, thread_id, turn_position, position, item_id,
         client_user_message_id, role, text, author, kind, agent_thread_id, model, phase, time,
-        response_annotations_json, response_annotation_request, attachments_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        origin_json, response_annotations_json, response_annotation_request, attachments_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     history.forEach((turn, turnPosition) => {
       insertTurn.run(
@@ -969,6 +1015,8 @@ export class LocalTaskSyncStore {
         turn.completed ? 1 : 0,
         turn.startedAt ?? null,
         turn.completedAt ?? null,
+        turn.promptAuthor ?? "",
+        JSON.stringify(turn.promptOrigin ?? {}),
         JSON.stringify(turn.promptAnnotations),
         turn.promptRequest ?? "",
         JSON.stringify(turn.attachments),
@@ -991,6 +1039,7 @@ export class LocalTaskSyncStore {
           message.model ?? "",
           message.phase ?? null,
           message.time ?? null,
+          JSON.stringify(message.origin ?? {}),
           JSON.stringify(message.responseAnnotations),
           message.responseAnnotationRequest ?? "",
           JSON.stringify(message.attachments),

@@ -448,6 +448,44 @@ test("desktop task history attributes a prompt-only interstream turn", async () 
   assert.equal(result.items[0].promptAuthor, "Agent HUB - Themes (Claude)");
 });
 
+test("desktop task history trusts durable interstream origin after the envelope is removed", async () => {
+  const origin = {
+    kind: "interstream",
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-themes",
+    streamName: "Themes",
+    provider: "codex",
+    model: "gpt-5.6-terra",
+    sourceThreadId: "thread-themes",
+    requestId: "request-1",
+  };
+  const { desktopTaskHistory, state } = fixture({ run: null });
+  state.history = [{
+    id: "durable-interstream",
+    prompt: "Проверь тему.",
+    promptAuthor: "Вы",
+    promptOrigin: origin,
+    answer: "Готово",
+    completed: true,
+    messages: [{
+      itemId: "durable-user",
+      role: "user",
+      kind: "interstream",
+      origin,
+      author: "Вы",
+      text: "Проверь тему.",
+    }],
+  }];
+
+  const result = await desktopTaskHistory({ includeActive: false, limit: 1 });
+
+  assert.equal(result.items[0].promptAuthor, "Agent HUB - Themes (Terra)");
+  assert.deepEqual(result.items[0].promptOrigin, origin);
+  assert.equal(result.items[0].messages[0].author, "Agent HUB - Themes (Terra)");
+  assert.deepEqual(result.items[0].messages[0].origin, origin);
+});
+
 test("desktop task history does not reactivate a completed registry run", async () => {
   const { desktopTaskHistory, state } = fixture();
   state.run.status = "completed";

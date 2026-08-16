@@ -75,6 +75,37 @@ test("deferred Desktop input is persisted without a Telegram prompt", async () =
   assert.equal(notifications, 0);
 });
 
+test("deferred input service persists interstream origin", async () => {
+  const store = new DeferredInputStore();
+  const service = new DeferredInputService({
+    store,
+    createId: () => "interstream-deferred",
+    persist: async () => {},
+    removeFiles: async () => {},
+    notify: async () => null,
+  });
+  const messageOrigin = {
+    kind: "interstream",
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-themes",
+    streamName: "Themes",
+    provider: "codex",
+    model: "Sol",
+  };
+
+  const result = await service.defer("message", [], {
+    target: {
+      provider: "codex",
+      threadId: "thread-1",
+      messageOrigin,
+    },
+    notify: false,
+  });
+
+  assert.deepEqual(result.item.messageOrigin, messageOrigin);
+});
+
 test("deferred input service deduplicates a durable client message", async () => {
   const store = new DeferredInputStore();
   let persists = 0;

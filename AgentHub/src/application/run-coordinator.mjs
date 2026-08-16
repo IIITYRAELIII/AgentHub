@@ -2,6 +2,10 @@ import {
   normalizeTaskExecutionOwner,
   TASK_EXECUTION_OWNERS,
 } from "../domain/task-execution-owner.mjs";
+import {
+  interstreamOriginAuthor,
+  normalizeInterstreamOrigin,
+} from "../domain/interstream-message.mjs";
 
 export function activeTurnNotSteerable(error) {
   const details = `${String(error?.message ?? "")} ${JSON.stringify(error?.data ?? {})}`.toLowerCase();
@@ -183,6 +187,7 @@ export class RunCoordinator {
   }
 
   async startDeferredUnlocked(item) {
+    const messageOrigin = normalizeInterstreamOrigin(item.messageOrigin);
     const target = {
       provider: item.provider,
       streamId: item.streamId,
@@ -196,6 +201,7 @@ export class RunCoordinator {
       clientUserMessageId: item.clientUserMessageId,
       telegramDeliveryRequested: item.telegramDeliveryRequested !== false,
       clientSource: item.clientSource,
+      ...(messageOrigin ? { messageOrigin } : {}),
       deferredInput: item,
     };
     const run = await this.beginRun(item.input, target);
@@ -351,6 +357,7 @@ export class RunCoordinator {
       });
     }
     if (existingRun) {
+      const messageOrigin = normalizeInterstreamOrigin(target?.messageOrigin);
       const userMessages = Array.isArray(existingRun.userMessages)
         ? existingRun.userMessages
         : [];
@@ -366,6 +373,11 @@ export class RunCoordinator {
               .map((item) => String(item.text ?? ""))
               .filter(Boolean)
               .join("\n"),
+          ...(messageOrigin ? {
+            kind: "interstream",
+            origin: structuredClone(messageOrigin),
+            author: interstreamOriginAuthor(messageOrigin),
+          } : {}),
           time: new Date().toISOString(),
         });
         existingRun.userMessages = userMessages;

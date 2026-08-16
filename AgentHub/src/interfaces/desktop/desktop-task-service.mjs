@@ -1,5 +1,8 @@
 import { displayUserPrompt } from "../../application/task-history.mjs";
-import { interstreamMessageDetails } from "../../domain/interstream-message.mjs";
+import {
+  interstreamMessageDetails,
+  normalizeInterstreamOrigin,
+} from "../../domain/interstream-message.mjs";
 import { taskDisplayTitle } from "../../domain/task-display-title.mjs";
 
 const MAX_DESKTOP_RESPONSE_BYTES = 3_500_000;
@@ -83,6 +86,7 @@ export class DesktopTaskService {
       });
     }
     if (!entry) throw new Error("Задача сообщения больше не существует в локальном каталоге");
+    const messageOrigin = normalizeInterstreamOrigin(context?.messageOrigin);
     return {
       streamId: entry.streamId ?? null,
       provider: entry.provider,
@@ -94,6 +98,7 @@ export class DesktopTaskService {
       chatId: this.chatId(),
       telegramDeliveryRequested: false,
       clientSource: String(context?.source ?? "desktop").trim() || "desktop",
+      ...(messageOrigin ? { messageOrigin } : {}),
     };
   }
 

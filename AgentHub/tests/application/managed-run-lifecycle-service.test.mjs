@@ -151,3 +151,30 @@ test("managed run lifecycle keeps a Desktop-started run out of Telegram", async 
   assert.equal(run.clientSource, "desktop");
   assert.equal(events.includes("progress"), false);
 });
+
+test("managed run lifecycle keeps interstream identity on the active user message", async () => {
+  const { service } = harness();
+  const messageOrigin = {
+    kind: "interstream",
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-themes",
+    streamName: "Themes",
+    provider: "codex",
+    model: "gpt-5.6-terra",
+    sourceThreadId: "thread-themes",
+    requestId: "request-run",
+  };
+
+  const run = await service.begin("проверь сообщение", { messageOrigin });
+
+  assert.deepEqual(run.messageOrigin, messageOrigin);
+  assert.deepEqual(run.userMessages[0], {
+    role: "user",
+    kind: "interstream",
+    origin: messageOrigin,
+    author: "Agent HUB - Themes (Terra)",
+    text: "проверь сообщение",
+    time: run.startedAt,
+  });
+});
