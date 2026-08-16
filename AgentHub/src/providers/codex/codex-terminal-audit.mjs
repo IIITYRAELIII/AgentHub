@@ -439,34 +439,34 @@ export class CodexTerminalAudit {
     return madeProgress;
   }
 
-  async #initializeHistoricalSubagentBackfill() {
-    const backfill = this.historicalSubagentBackfill;
-    if (!backfill.pending || backfill.initialized) return false;
-    const candidates = new Map();
+  async #discoverThreads() {
+    if (typeof this.discoverHistoricalThreads === "function") {
+      return await this.discoverHistoricalThreads();
+    }
+    const threads = [];
     let cursor = null;
     const seenCursors = new Set();
     do {
       if (cursor && seenCursors.has(cursor)) {
-        throw new Error(`Codex historical backfill repeated cursor ${cursor}`);
+        throw new Error(`Codex thread/list repeated cursor ${cursor}`);
       }
       if (cursor) seenCursors.add(cursor);
       const page = await this.listPage(cursor, this.pageSize);
-      for (const value of page?.data ?? []) {
-        const thread = threadReference(value);
-        if (!thread.id || !thread.path) continue;
-        if (!await this.#projectFor(thread)) continue;
-        candidates.set(historicalRolloutKey(thread), thread);
-      }
+      threads.push(...(page?.data ?? []));
       cursor = page?.nextCursor ?? null;
     } while (cursor);
+    return threads;
+  }
 
-    if (typeof this.discoverHistoricalThreads === "function") {
-      for (const value of await this.discoverHistoricalThreads()) {
-        const thread = threadReference(value);
-        if (!thread.id || !thread.path) continue;
-        if (!await this.#projectFor(thread)) continue;
-        candidates.set(historicalRolloutKey(thread), thread);
-      }
+  async #initializeHistoricalSubagentBackfill() {
+    const backfill = this.historicalSubagentBackfill;
+    if (!backfill.pending || backfill.initialized) return false;
+    const candidates = new Map();
+    for (const value of await this.#discoverThreads()) {
+      const thread = threadReference(value);
+      if (!thread.id || !thread.path) continue;
+      if (!await this.#projectFor(thread)) continue;
+      candidates.set(historicalRolloutKey(thread), thread);
     }
 
     const queue = [];
@@ -654,8 +654,6 @@ export class CodexTerminalAudit {
       0,
       (this.completedThroughMs || startedAtMs) - this.subagentBackfillWindowMs,
     );
-    let cursor = null;
-    const seenCursors = new Set();
     let madeProgress = false;
     let allHandled = true;
     const supplementalThreads = [];
@@ -676,80 +674,68 @@ export class CodexTerminalAudit {
         }
       }
       const visitedThreadIds = new Set();
-      let includeSupplementalThreads = true;
-      do {
-        if (cursor && seenCursors.has(cursor)) {
-          throw new Error(`Codex thread/list repeated cursor ${cursor}`);
-        }
-        if (cursor) seenCursors.add(cursor);
-        const page = await this.listPage(cursor, this.pageSize);
-        const threads = [
-          ...(page?.data ?? []),
-          ...(includeSupplementalThreads ? supplementalThreads : []),
-        ];
-        includeSupplementalThreads = false;
-
-        for (const thread of threads) {
-          try {
-            const project = await this.#projectFor(thread);
-            if (!project || !thread?.path) continue;
-            const threadId = String(thread.id ?? "").trim();
-            if (!threadId) continue;
-            if (visitedThreadIds.has(threadId)) continue;
-            visitedThreadIds.add(threadId);
-            const transcriptPath = String(thread.path);
-            const info = await this.statFile(transcriptPath);
-            const prior = this.positions.get(threadId);
-            const canResume = prior?.path === transcriptPath && prior.offset <= info.size;
-            const hasUnreadBytes = canResume && prior.offset < info.size;
-            const isSubagent = Boolean(String(thread.parentThreadId ?? "").trim());
-            const activityMs = Number(info.mtimeMs) || timestampMs(thread.updatedAt);
-            const backfillMissingSubagent = isSubagent
-              && !canResume
-              && (
-                supplementalThreadIds.has(threadId)
-                || (this.subagentBackfillPending && activityMs >= subagentBackfillLowerBoundMs)
-              );
-            const olderThanBoundary = activityMs > 0 && activityMs < lowerBoundMs;
-
-            if (this.subagentBackfillPending
-              && isSubagent
-              && !canResume
-              && !backfillMissingSubagent) {
-              this.#setPosition(threadId, {
-                path: transcriptPath,
-                offset: info.size,
-              });
-              madeProgress = true;
-              continue;
-            }
-
-            if (bootstrapping && olderThanBoundary && !backfillMissingSubagent) {
-              this.#setPosition(threadId, {
-                path: transcriptPath,
-                offset: info.size,
-              });
-              madeProgress = true;
-              continue;
-            }
-            if (olderThanBoundary && !hasUnreadBytes && !backfillMissingSubagent) continue;
-            const handled = await this.#auditThread(
-              thread,
-              project,
-              backfillMissingSubagent ? 0 : lowerBoundMs,
-              info,
+      const threads = [
+        ...await this.#discoverThreads(),
+        ...supplementalThreads,
+      ];
+      for (const thread of threads) {
+        try {
+          const project = await this.#projectFor(thread);
+          if (!project || !thread?.path) continue;
+          const threadId = String(thread.id ?? "").trim();
+          if (!threadId) continue;
+          if (visitedThreadIds.has(threadId)) continue;
+          visitedThreadIds.add(threadId);
+          const transcriptPath = String(thread.path);
+          const info = await this.statFile(transcriptPath);
+          const prior = this.positions.get(threadId);
+          const canResume = prior?.path === transcriptPath && prior.offset <= info.size;
+          const hasUnreadBytes = canResume && prior.offset < info.size;
+          const isSubagent = Boolean(String(thread.parentThreadId ?? "").trim());
+          const activityMs = Number(info.mtimeMs) || timestampMs(thread.updatedAt);
+          const backfillMissingSubagent = isSubagent
+            && !canResume
+            && (
+              supplementalThreadIds.has(threadId)
+              || (this.subagentBackfillPending && activityMs >= subagentBackfillLowerBoundMs)
             );
-            madeProgress = madeProgress || handled;
-            allHandled = allHandled && handled;
-          } catch {
-            // Keep the prior cursor for this rollout and retry it on a later pass.
-            // A damaged or disappeared file must not block other independent threads.
-            allHandled = false;
-          }
-        }
+          const olderThanBoundary = activityMs > 0 && activityMs < lowerBoundMs;
 
-        cursor = page?.nextCursor ?? null;
-      } while (cursor);
+          if (this.subagentBackfillPending
+            && isSubagent
+            && !canResume
+            && !backfillMissingSubagent) {
+            this.#setPosition(threadId, {
+              path: transcriptPath,
+              offset: info.size,
+            });
+            madeProgress = true;
+            continue;
+          }
+
+          if (bootstrapping && olderThanBoundary && !backfillMissingSubagent) {
+            this.#setPosition(threadId, {
+              path: transcriptPath,
+              offset: info.size,
+            });
+            madeProgress = true;
+            continue;
+          }
+          if (olderThanBoundary && !hasUnreadBytes && !backfillMissingSubagent) continue;
+          const handled = await this.#auditThread(
+            thread,
+            project,
+            backfillMissingSubagent ? 0 : lowerBoundMs,
+            info,
+          );
+          madeProgress = madeProgress || handled;
+          allHandled = allHandled && handled;
+        } catch {
+          // Keep the prior position for this rollout and retry it on a later pass.
+          // A damaged or disappeared file must not block other independent threads.
+          allHandled = false;
+        }
+      }
 
       if (allHandled) {
         this.subagentBackfillPending = false;

@@ -6,6 +6,35 @@ import { CODEX_CONTEXT_PROBE_PROMPT } from "../../../src/domain/codex-context-pr
 
 const project = { path: "D:\\workspace" };
 
+test("terminal audit uses local rollout discovery without Codex thread/list", async () => {
+  let listCalls = 0;
+  const scans = [];
+  const audit = new CodexTerminalAudit({
+    now: () => Date.parse("2026-08-16T10:00:00.000Z"),
+    listPage: async () => {
+      listCalls += 1;
+      return { data: [], nextCursor: null };
+    },
+    discoverHistoricalThreads: async () => [thread(
+      "local-thread",
+      "2026-08-16T09:59:00.000Z",
+      "local-thread.jsonl",
+    )],
+    resolveProject: () => project,
+    statFile: async () => ({ size: 10, mtimeMs: Date.parse("2026-08-16T09:59:00.000Z") }),
+    scanFile: async (file) => {
+      scans.push(file);
+      return { terminals: [], activeTurns: [], nextOffset: 10 };
+    },
+    reconcile: async () => true,
+  });
+
+  await audit.run();
+
+  assert.equal(listCalls, 0);
+  assert.deepEqual(scans, ["local-thread.jsonl"]);
+});
+
 function thread(id, updatedAt, path = `${id}.jsonl`) {
   return {
     id,
