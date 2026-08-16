@@ -851,6 +851,35 @@ test("readCodexRolloutActivity follows append-only lifecycle updates", async () 
   );
 });
 
+test("an active rollout cache survives a cold historical scan", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-rollout-pinned-"));
+  const rollout = path.join(root, "active.jsonl");
+  const line = (type, turnId) => JSON.stringify({
+    timestamp: new Date().toISOString(),
+    type: "event_msg",
+    payload: { type, turn_id: turnId },
+  });
+  await writeFile(rollout, `${line("task_started", "active")}\n`, "utf8");
+  assert.deepEqual((await readCodexRolloutActivity(rollout, {
+    pinCache: true,
+    tailBytes: 128,
+  })).activeTurnIds, ["active"]);
+
+  for (let index = 0; index < 201; index += 1) {
+    const historical = path.join(root, `historical-${index}.jsonl`);
+    await writeFile(historical, `${line("task_complete", `historical-${index}`)}\n`, "utf8");
+    await readCodexRolloutActivity(historical, { tailBytes: 128 });
+  }
+
+  await appendFile(rollout, `${line("task_complete", "active")}\n`, "utf8");
+  const completed = await readCodexRolloutActivity(rollout, {
+    pinCache: true,
+    tailBytes: 128,
+  });
+  assert.deepEqual(completed.activeTurnIds, []);
+  assert.equal(completed.latestTurnId, "active");
+});
+
 test("readCodexRolloutActivity preserves a JSONL line split across reads", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-rollout-partial-"));
   const rollout = path.join(root, "rollout.jsonl");

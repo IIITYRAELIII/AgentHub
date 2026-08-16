@@ -115,7 +115,10 @@ export class CodexTaskSnapshotService {
         const exact = run.exactTurnObserver === true;
         const activity = await d.readRolloutActivity(
           rolloutPath,
-          exact ? { freshnessMs: Number.POSITIVE_INFINITY } : {},
+          {
+            ...(exact ? { freshnessMs: Number.POSITIVE_INFINITY } : {}),
+            pinCache: true,
+          },
         );
         const state = await this.#hydrateSubagentMessages(d.rolloutTurnState(activity, run.turnId, {
           exact,
@@ -154,7 +157,10 @@ export class CodexTaskSnapshotService {
     const exact = run.exactTurnObserver === true;
     const activity = await d.readRolloutActivity(
       result.thread?.path,
-      exact ? { freshnessMs: Number.POSITIVE_INFINITY } : {},
+      {
+        ...(exact ? { freshnessMs: Number.POSITIVE_INFINITY } : {}),
+        pinCache: run.observer === true,
+      },
     );
     if (!turns.length) {
       const state = await this.#hydrateSubagentMessages(d.rolloutTurnState(activity, run.turnId, {

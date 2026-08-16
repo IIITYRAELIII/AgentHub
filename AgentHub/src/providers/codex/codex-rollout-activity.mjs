@@ -16,8 +16,40 @@ const CODEX_ACTIVE_FRESHNESS_MS = 10 * 60 * 1000;
 const CODEX_PROMPTLESS_TURN_GRACE_MS = 15 * 1000;
 const CODEX_ROLLOUT_TAIL_BYTES = 128 * 1024 * 1024;
 const CODEX_ROLLOUT_LINE_BYTES = 4 * 1024 * 1024;
+const CODEX_ACTIVITY_CACHE_LIMIT = 200;
+const CODEX_ACTIVE_ACTIVITY_CACHE_LIMIT = 16;
 const LEGACY_TURN_ID = "__legacy__";
 const codexActivityCache = new Map();
+const codexActiveActivityCache = new Map();
+
+function retainCachedActivity(cache, key, value, limit) {
+  cache.delete(key);
+  cache.set(key, value);
+  while (cache.size > limit) cache.delete(cache.keys().next().value);
+  return value;
+}
+
+function cachedActivity(key, pinCache) {
+  const active = codexActiveActivityCache.get(key);
+  if (active) {
+    retainCachedActivity(codexActiveActivityCache, key, active, CODEX_ACTIVE_ACTIVITY_CACHE_LIMIT);
+    return active;
+  }
+  const cached = codexActivityCache.get(key);
+  if (!cached) return null;
+  retainCachedActivity(codexActivityCache, key, cached, CODEX_ACTIVITY_CACHE_LIMIT);
+  if (pinCache) {
+    retainCachedActivity(codexActiveActivityCache, key, cached, CODEX_ACTIVE_ACTIVITY_CACHE_LIMIT);
+  }
+  return cached;
+}
+
+function cacheActivity(key, value, pinCache) {
+  retainCachedActivity(codexActivityCache, key, value, CODEX_ACTIVITY_CACHE_LIMIT);
+  if (pinCache || codexActiveActivityCache.has(key)) {
+    retainCachedActivity(codexActiveActivityCache, key, value, CODEX_ACTIVE_ACTIVITY_CACHE_LIMIT);
+  }
+}
 
 async function rolloutSuffix(filePath, size, maximumBytes = 256) {
   const length = Math.min(Math.max(0, Number(size) || 0), maximumBytes);
@@ -734,6 +766,7 @@ export async function readCodexRolloutActivity(
     freshnessMs = CODEX_ACTIVE_FRESHNESS_MS,
     tailBytes = CODEX_ROLLOUT_TAIL_BYTES,
     maximumLineBytes = CODEX_ROLLOUT_LINE_BYTES,
+    pinCache = false,
   } = {},
 ) {
   const normalized = String(rolloutPath ?? "").trim();
@@ -784,7 +817,7 @@ export async function readCodexRolloutActivity(
     throw error;
   }
   if (nowMs - info.mtimeMs > freshnessMs) {
-    const cached = codexActivityCache.get(normalized);
+    const cached = cachedActivity(normalized, pinCache);
     return withoutCodexContextProbeTurns({
       running: false,
       activeTurnIds: [],
@@ -810,7 +843,7 @@ export async function readCodexRolloutActivity(
       unscopedLatestMessage: cached?.unscopedLatestMessage || null,
     });
   }
-  const cached = codexActivityCache.get(normalized);
+  const cached = cachedActivity(normalized, pinCache);
   if (cached?.size === info.size && cached?.mtimeMs === info.mtimeMs) {
     const activity = codexActivity(
         new Set(cached.activeTurnIds),
@@ -953,7 +986,7 @@ export async function readCodexRolloutActivity(
     vscodeTurnIds: metadata.vscodeTurnIds,
     startedAtMsByTurnId: metadata.startedAtMsByTurnId,
   });
-  codexActivityCache.set(normalized, {
+  cacheActivity(normalized, {
     size: info.size,
     mtimeMs: info.mtimeMs,
     activeTurnIds: [...activeTurnIds],
@@ -975,8 +1008,7 @@ export async function readCodexRolloutActivity(
     unscopedLatestMessage: metadata.unscopedLatestMessage,
     discardUntilNewline,
     suffix: await rolloutSuffix(normalized, info.size),
-  });
-  if (codexActivityCache.size > 200) codexActivityCache.delete(codexActivityCache.keys().next().value);
+  }, pinCache);
   return withoutCodexContextProbeTurns({
     ...withoutStalePromptlessTurns(
       activity,
