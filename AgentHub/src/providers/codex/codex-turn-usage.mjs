@@ -702,24 +702,85 @@ function createHistoricalTurn(turnId) {
   };
 }
 
+function restoreHistoricalTurn(value) {
+  const turnId = String(value?.turnId ?? "").trim();
+  if (!turnId) return null;
+  return {
+    ...createHistoricalTurn(turnId),
+    ...value,
+    turnId,
+    usage: {
+      ...emptyTokenUsage(),
+      ...(value?.usage ?? {}),
+    },
+    prompts: Array.isArray(value?.prompts) ? [...value.prompts] : [],
+    changedFiles: new Set(value?.changedFiles ?? []),
+    patches: Array.isArray(value?.patches) ? [...value.patches] : [],
+    skillsUsed: new Set(value?.skillsUsed ?? []),
+    mcpCalls: new Map((value?.mcpCalls ?? []).flatMap((call) => (
+      call?.id ? [[String(call.id), call]] : []
+    ))),
+    spawnedSubagents: new Map((value?.spawnedSubagents ?? []).flatMap((spawned) => (
+      spawned?.threadId ? [[String(spawned.threadId), spawned]] : []
+    ))),
+    imageGenerationCalls: new Set(value?.imageGenerationCalls ?? []),
+  };
+}
+
+function historicalTurnResult(turn, latestModel, latestServiceTier) {
+  const imageGenerationCount = turn.imageGenerationCalls.size;
+  const compactionOnly = turn.contextCompacted
+    && !turn.hasOwnTurnContent
+    && !turn.prompt
+    && !turn.finalAnswer
+    && !turn.changedFiles.size
+    && !turn.patches.length
+    && !turn.mcpCalls.size
+    && !turn.spawnedSubagents.size
+    && !turn.imageGenerationCalls.size;
+  return {
+    ...turn,
+    changedFiles: [...turn.changedFiles],
+    diff: turn.patches.join("\n\n"),
+    skillsUsed: [...turn.skillsUsed],
+    mcpCalls: [...turn.mcpCalls.values()],
+    spawnedSubagents: [...turn.spawnedSubagents.values()],
+    imageGenerationCalls: [...turn.imageGenerationCalls],
+    toolMetricsKnown: true,
+    imageGenerationCount,
+    estimatedCredits: imageGenerationCount * IMAGE_GENERATION_ESTIMATE_CREDITS,
+    estimateKind: imageGenerationCount > 0 ? "imagegen-default" : "",
+    model: turn.model || latestModel,
+    serviceTier: turn.serviceTier || latestServiceTier,
+    compactionOnly,
+  };
+}
+
 /**
- * Streams one rollout once and returns every native turn recorded in it.
- * The caller still decides whether a turn is inherited parent history in a
- * subagent rollout because that needs the session/thread relationship.
+ * Streams a rollout or one bounded byte range and returns its native turns.
+ * resumeState carries unfinished turns across byte checkpoints; the caller
+ * still decides whether a turn is inherited parent history because that needs
+ * the session/thread relationship.
  */
 export async function scanCodexHistoricalRollout(transcriptPath, {
+  startOffset = 0,
+  maxBytes = Number.POSITIVE_INFINITY,
+  resumeState = null,
   createReadStreamImpl = createReadStream,
 } = {}) {
-  const turns = new Map();
-  const activeTurnIds = new Set();
-  const imageGenerationCalls = new Map();
-  const knownSkills = new Set();
-  let latestResponseTurnId = "";
-  let latestStartedTurnId = "";
-  let latestModel = "";
-  let latestServiceTier = "default";
-  let workspaceRoot = "";
-  let session = null;
+  const restoredTurns = (resumeState?.turns ?? [])
+    .map(restoreHistoricalTurn)
+    .filter(Boolean);
+  const turns = new Map(restoredTurns.map((turn) => [turn.turnId, turn]));
+  const activeTurnIds = new Set(resumeState?.activeTurnIds ?? restoredTurns.map((turn) => turn.turnId));
+  const imageGenerationCalls = new Map(resumeState?.imageGenerationCalls ?? []);
+  const knownSkills = new Set(resumeState?.knownSkills ?? []);
+  let latestResponseTurnId = String(resumeState?.latestResponseTurnId ?? "").trim();
+  let latestStartedTurnId = String(resumeState?.latestStartedTurnId ?? "").trim();
+  let latestModel = String(resumeState?.latestModel ?? "").trim();
+  let latestServiceTier = String(resumeState?.latestServiceTier ?? "default").trim() || "default";
+  let workspaceRoot = String(resumeState?.workspaceRoot ?? "").trim();
+  let session = resumeState?.session ?? null;
 
   const ensureTurn = (turnId) => {
     const normalized = String(turnId ?? "").trim();
@@ -888,20 +949,26 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
     latestResponseTurnId = "";
   };
 
-  const input = createReadStreamImpl(transcriptPath, { encoding: "utf8" });
-  const lines = createInterface({ input, crlfDelay: Infinity });
-  try {
-    for await (const line of lines) {
-      if (!line) continue;
-      try {
-        accept(JSON.parse(line));
-      } catch {
-        // One malformed JSONL record must not hide the rest of the history.
-      }
+  const start = Math.max(0, Number(startOffset) || 0);
+  const byteLimit = Number.isFinite(Number(maxBytes))
+    ? Math.max(1, Number(maxBytes))
+    : Number.POSITIVE_INFINITY;
+  const input = createReadStreamImpl(transcriptPath, { start });
+  const { bytesRead, pending } = await scanJsonlChunks(input, accept, byteLimit);
+  let nextOffset = start + bytesRead - pending.length;
+  if (pending.length) {
+    try {
+      accept(JSON.parse(pending.toString("utf8").replace(/\r$/u, "")));
+      nextOffset = start + bytesRead;
+    } catch {
+      // Preserve an incomplete final JSONL record for the next bounded scan.
     }
-  } finally {
-    lines.close();
   }
+
+  const turnResults = [...turns.values()].map((turn) => (
+    historicalTurnResult(turn, latestModel, latestServiceTier)
+  ));
+  const activeResults = turnResults.filter((turn) => turn.terminal !== true);
 
   return {
     session: session ?? {
@@ -911,33 +978,22 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
       createdAt: "",
       source: "",
     },
-    turns: [...turns.values()].map((turn) => {
-      const imageGenerationCount = turn.imageGenerationCalls.size;
-      const compactionOnly = turn.contextCompacted
-        && !turn.hasOwnTurnContent
-        && !turn.prompt
-        && !turn.finalAnswer
-        && !turn.changedFiles.size
-        && !turn.patches.length
-        && !turn.mcpCalls.size
-        && !turn.spawnedSubagents.size
-        && !turn.imageGenerationCalls.size;
-      return {
-        ...turn,
-        changedFiles: [...turn.changedFiles],
-        diff: turn.patches.join("\n\n"),
-        skillsUsed: [...turn.skillsUsed],
-        mcpCalls: [...turn.mcpCalls.values()],
-        spawnedSubagents: [...turn.spawnedSubagents.values()],
-        toolMetricsKnown: true,
-        imageGenerationCount,
-        estimatedCredits: imageGenerationCount * IMAGE_GENERATION_ESTIMATE_CREDITS,
-        estimateKind: imageGenerationCount > 0 ? "imagegen-default" : "",
-        model: turn.model || latestModel,
-        serviceTier: turn.serviceTier || latestServiceTier,
-        compactionOnly,
-      };
-    }),
+    turns: turnResults,
+    nextOffset,
+    resumeState: {
+      turns: activeResults,
+      activeTurnIds: [...activeTurnIds],
+      imageGenerationCalls: [...imageGenerationCalls.entries()].filter(([, turnId]) => (
+        activeTurnIds.has(turnId)
+      )),
+      knownSkills: [...knownSkills],
+      latestResponseTurnId,
+      latestStartedTurnId,
+      latestModel,
+      latestServiceTier,
+      workspaceRoot,
+      session,
+    },
   };
 }
 

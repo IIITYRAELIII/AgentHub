@@ -436,12 +436,14 @@ export class TaskViewController {
         === String(identity?.threadId ?? "").toLowerCase();
   }
 
-  async readHistory(binding, { completedOnly = false, cachedOnly = false } = {}) {
+  async readHistory(binding, { completedOnly = false, cachedOnly = false, limit = null } = {}) {
     const d = this.deps;
     const task = this.task(binding, binding.chatId);
     if (cachedOnly) {
       return {
-        history: withoutCodexInspectionAttachments(d.taskSyncStore.history(task)
+        history: withoutCodexInspectionAttachments(d.taskSyncStore.history(task, {
+          ...(limit == null ? {} : { limit }),
+        })
           .filter((item) => (
             binding.provider !== "codex" || !isCodexAutoCompactionTurnId(item?.id)
           ))

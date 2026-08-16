@@ -6,6 +6,8 @@ export class CodexAppServerLifecycle {
   #d;
   #restarting = false;
   #timeoutRestarting = false;
+  #timeoutConfirming = false;
+  #timeoutMethod = null;
 
   constructor(dependencies) {
     this.#d = dependencies;
@@ -55,21 +57,43 @@ export class CodexAppServerLifecycle {
     if (!this.#restarting) queueMicrotask(() => void this.restartAfterCrash());
   }
 
-  async #handleTimeout({ method, timeoutMs, generation }) {
+  async #handleTimeout({ method, timeoutMs, generation, error }) {
     const d = this.#d;
     if (d.isStopping() || this.#timeoutRestarting || timeoutMs < d.rpcTimeoutMs) return;
     if (Number.isSafeInteger(generation) && generation !== this.transport.generation) return;
+    if (error?.deliveryOutcome === "not-sent") return;
     if (!["thread/read", "thread/list", "thread/turns/list"].includes(method)) return;
     const managedRunActive = d.activeRuns().some((run) => (
       run.provider === "codex" && run.observer === false && run.status === "running"
     ));
     if (managedRunActive) return;
-    this.#timeoutRestarting = true;
-    d.logger.error(`Codex app-server is unresponsive on ${method}; recycling the Hub-owned process.`);
+    if (this.#timeoutConfirming) {
+      this.#timeoutRestarting = true;
+      d.logger.error(
+        `Codex app-server did not answer the health check after ${this.#timeoutMethod ?? method} timed out; recycling the Hub-owned process.`,
+      );
+      try {
+        await this.stop();
+      } finally {
+        this.#timeoutRestarting = false;
+      }
+      return;
+    }
+
+    this.#timeoutConfirming = true;
+    this.#timeoutMethod = method;
+    d.logger.error(`Codex ${method} timed out; checking app-server health before recycling it.`);
     try {
-      await this.stop();
+      await this.request("thread/list", { limit: 1 }, {
+        timeoutMs: d.rpcTimeoutMs,
+        priority: "interactive",
+      }).then(
+        () => d.logger.log(`Codex app-server answered the health check after ${method} timed out; keeping it running.`),
+        () => undefined,
+      );
     } finally {
-      this.#timeoutRestarting = false;
+      this.#timeoutConfirming = false;
+      this.#timeoutMethod = null;
     }
   }
 

@@ -253,6 +253,7 @@ export function createDesktopTaskHistoryFactory({
     if (!["codex", "claude"].includes(provider) || !selectedThreadId) {
       throw new Error("Укажите корректную задачу");
     }
+    const limit = Math.max(1, Math.min(Number(params.limit) || 10, 20));
 
     // Opening a chat must be a local operation. App Server discovery can take
     // tens of seconds when a provider is stuck, while SQLite/taskCatalog is
@@ -293,7 +294,7 @@ export function createDesktopTaskHistoryFactory({
       if (params.refreshSource === true) {
         await scheduleRefresh(threadBinding, { force: true });
       }
-      const cached = await historyReader.read(threadBinding);
+      const cached = await historyReader.read(threadBinding, { limit });
       const durableHistory = visibleProviderHistory(threadBinding.provider, cached.history);
       let threadHistory = mergeCachedTaskHistory(
         readCachedHistory(providerHistories, key),
@@ -390,7 +391,6 @@ export function createDesktopTaskHistoryFactory({
     const end = Number.isSafeInteger(requestedEnd)
       ? Math.max(0, Math.min(requestedEnd, total))
       : total;
-    const limit = Math.max(1, Math.min(Number(params.limit) || 10, 20));
     const maxAnswerChars = Math.max(
       1_000,
       Math.min(Number(params.maxAnswerChars) || 200_000, 200_000),

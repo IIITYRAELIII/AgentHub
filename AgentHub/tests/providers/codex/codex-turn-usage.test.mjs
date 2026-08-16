@@ -845,6 +845,53 @@ test("terminal event scanner resumes from the last complete JSONL byte", async (
   assert.deepEqual(starts, [0, Buffer.byteLength(first)]);
 });
 
+test("historical rollout scanner resumes from a byte offset without losing a partial line", async () => {
+  const prefix = `${line({ type: "event_msg", payload: { type: "unrelated", padding: "x".repeat(2 * 1024 * 1024) } })}\n`;
+  const started = `${line({
+    timestamp: "2026-07-27T03:00:00.000Z",
+    type: "event_msg",
+    payload: { type: "task_started", turn_id: "turn-resumed" },
+  })}\n`;
+  const completed = line({
+    timestamp: "2026-07-27T03:01:00.000Z",
+    type: "event_msg",
+    payload: { type: "task_complete", turn_id: "turn-resumed" },
+  });
+  const prefixBytes = Buffer.byteLength(prefix);
+  const completedBytes = Buffer.from(completed);
+  const partialLength = Math.floor(completedBytes.length / 2);
+  const starts = [];
+  let source = Buffer.concat([
+    Buffer.from(prefix),
+    Buffer.from(started),
+    completedBytes.subarray(0, partialLength),
+  ]);
+  const createReadStreamImpl = (_path, { start }) => {
+    starts.push(start);
+    return Readable.from([source.subarray(start)]);
+  };
+
+  const first = await scanCodexHistoricalRollout("large-rollout.jsonl", {
+    startOffset: prefixBytes,
+    createReadStreamImpl,
+  });
+  assert.equal(first.nextOffset, prefixBytes + Buffer.byteLength(started));
+  assert.deepEqual(first.resumeState.turns.map((turn) => turn.turnId), ["turn-resumed"]);
+
+  source = Buffer.concat([Buffer.from(prefix), Buffer.from(started), completedBytes, Buffer.from("\n")]);
+  const second = await scanCodexHistoricalRollout("large-rollout.jsonl", {
+    startOffset: first.nextOffset,
+    resumeState: first.resumeState,
+    createReadStreamImpl,
+  });
+
+  assert.deepEqual(starts, [prefixBytes, prefixBytes + Buffer.byteLength(started)]);
+  assert.equal(second.nextOffset, source.length);
+  assert.deepEqual(second.turns.filter((turn) => turn.terminal).map((turn) => turn.turnId), [
+    "turn-resumed",
+  ]);
+});
+
 test("terminal event scanner stops at a complete line after its byte budget", async () => {
   const entries = ["turn-1", "turn-2", "turn-3"].map((turnId, index) => `${line({
     timestamp: `2026-07-27T03:0${index}:00.000Z`,

@@ -971,6 +971,28 @@ test("terminal recovered turns remain terminal when a stale Codex live projectio
   store.close();
 });
 
+test("cached history reads only the requested newest turns and their messages", async () => {
+  const filePath = await storeFile();
+  const store = new LocalTaskSyncStore({ filePath });
+  await store.load();
+  store.recordHistory(task, Array.from({ length: 6 }, (_, index) => ({
+    id: `turn-${index}`,
+    prompt: `prompt ${index}`,
+    answer: `answer ${index}`,
+    completed: true,
+    messages: [{ itemId: `message-${index}`, role: "agent", text: `message ${index}` }],
+  })));
+
+  const history = store.history(task, { limit: 2 });
+
+  assert.deepEqual(history.map((turn) => turn.id), ["turn-4", "turn-5"]);
+  assert.deepEqual(history.flatMap((turn) => turn.messages.map((message) => message.itemId)), [
+    "message-4",
+    "message-5",
+  ]);
+  store.close();
+});
+
 test("a stale live snapshot cannot reactivate a recovered terminal task", async () => {
   const filePath = await storeFile();
   const databaseFile = path.join(path.dirname(filePath), "journal.sqlite");

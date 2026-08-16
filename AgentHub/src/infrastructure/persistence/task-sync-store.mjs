@@ -739,15 +739,31 @@ export class LocalTaskSyncStore {
     `).get(cleanText(task?.provider, 20).toLowerCase(), cleanText(task?.threadId, 100));
   }
 
-  #readHistory(task) {
+  #readHistory(task, limit = this.#historyLimit) {
     const provider = cleanText(task?.provider, 20).toLowerCase();
     const threadId = cleanText(task?.threadId, 100);
     if (!provider || !threadId) return [];
+    const safeLimit = Math.max(1, Math.min(
+      Math.floor(Number(limit) || this.#historyLimit),
+      this.#historyLimit,
+    ));
+    const turns = this.#database.prepare(`
+      SELECT * FROM (
+        SELECT * FROM task_read_model_turns
+        WHERE provider = ? AND thread_id = ?
+        ORDER BY position DESC
+        LIMIT ?
+      ) ORDER BY position
+    `).all(provider, threadId, safeLimit);
+    if (!turns.length) return [];
+    const turnPositions = turns.map((row) => Number(row.position));
+    const placeholders = turnPositions.map(() => "?").join(", ");
     const messages = this.#database.prepare(`
       SELECT * FROM task_read_model_messages
       WHERE provider = ? AND thread_id = ?
+        AND turn_position IN (${placeholders})
       ORDER BY turn_position, position
-    `).all(provider, threadId);
+    `).all(provider, threadId, ...turnPositions);
     const messagesByTurn = new Map();
     for (const row of messages) {
       const turnMessages = messagesByTurn.get(Number(row.turn_position)) ?? [];
@@ -774,11 +790,7 @@ export class LocalTaskSyncStore {
       });
       messagesByTurn.set(Number(row.turn_position), turnMessages);
     }
-    return this.#database.prepare(`
-      SELECT * FROM task_read_model_turns
-      WHERE provider = ? AND thread_id = ?
-      ORDER BY position
-    `).all(provider, threadId).map((row) => {
+    return turns.map((row) => {
       const promptOrigin = parseInterstreamOrigin(row.prompt_origin_json);
       return {
       id: String(row.id ?? ""),
@@ -1604,8 +1616,8 @@ export class LocalTaskSyncStore {
     return true;
   }
 
-  history(task) {
-    return cleanHistory(this.#readHistory(task), this.#historyLimit);
+  history(task, { limit = this.#historyLimit } = {}) {
+    return cleanHistory(this.#readHistory(task, limit), limit);
   }
 
   snapshot(task, {

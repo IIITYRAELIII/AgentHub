@@ -28,7 +28,10 @@ export function createTaskInteractionWiring({
     resolveTaskViewBinding: (identity, targetChatId, sourceMessageId) => (
       taskViewController.resolveBinding(identity, targetChatId, sourceMessageId)
     ),
-    readCachedHistory: (binding) => taskViewController.readHistory(binding, { cachedOnly: true }),
+    readCachedHistory: (binding, options = {}) => taskViewController.readHistory(binding, {
+      cachedOnly: true,
+      ...options,
+    }),
     refreshHistory: (binding) => taskViewController.readHistory(binding),
     requestApproval: (rpcId, kind, params, text, run = null) => (
       approvalController.request(rpcId, kind, params, text, run)

@@ -892,7 +892,7 @@ test("historical rollout backfill also restores ordinary Codex threads", async (
   assert.equal(audit.snapshot().historicalSubagentBackfill.totalFiles, 1);
 });
 
-test("historical rollout backfill scans each file once and reuses complete turn data", async () => {
+test("historical rollout backfill resumes large files and deduplicates before reconciliation", async () => {
   const ordinary = thread(
     "ordinary-thread",
     "2026-07-01T00:00:00.000Z",
@@ -900,48 +900,76 @@ test("historical rollout backfill scans each file once and reuses complete turn 
   );
   const scans = [];
   const recovered = [];
-  const usageResult = {
-    turnId: "ordinary-turn",
+  const chunkBytes = 64 * 1024;
+  const fileSize = chunkBytes * 2;
+  let interactive = false;
+  const usageResult = (turnId) => ({
+    turnId,
     terminal: true,
     status: "completed",
     completedAt: "2026-07-01T00:10:00.000Z",
     reported: true,
     usage: { inputTokens: 42 },
-  };
-  const audit = new CodexTerminalAudit({
+  });
+  const options = {
     listPage: async () => ({ data: [], nextCursor: null }),
     discoverHistoricalThreads: async () => [ordinary],
     resolveProject: () => project,
     statFile: async () => ({
-      size: 600 * 1024 * 1024,
+      size: fileSize,
       mtimeMs: Date.parse("2026-07-01T00:10:00.000Z"),
     }),
-    scanHistoricalFile: async (value) => {
-      scans.push(value.path);
-      return { turns: [usageResult] };
+    historicalSubagentBackfillBytes: chunkBytes,
+    scanHistoricalFile: async () => {
+      throw new Error("large rollout must not use the whole-file scanner");
     },
-    scanFile: async () => {
-      throw new Error("chunk scanner must not run");
+    scanHistoricalChunk: async (_path, scanOptions) => {
+      scans.push([scanOptions.startOffset, scanOptions.maxBytes]);
+      if (scanOptions.startOffset === 0) {
+        return {
+          session: { threadId: ordinary.id, parentThreadId: "" },
+          turns: [usageResult("first"), usageResult("second")],
+          nextOffset: chunkBytes,
+          resumeState: { turns: [] },
+        };
+      }
+      return {
+        session: { threadId: ordinary.id, parentThreadId: "" },
+        turns: [usageResult("second"), usageResult("third")],
+        nextOffset: fileSize,
+        resumeState: { turns: [] },
+      };
     },
+    shouldRunHistoricalBackfill: () => !interactive,
     reconcile: async (_thread, _project, terminal) => {
-      recovered.push(terminal);
+      recovered.push(terminal.turnId);
+      if (terminal.turnId === "first") interactive = true;
       return true;
     },
-  });
+  };
+  const audit = new CodexTerminalAudit(options);
   audit.restore({ version: 7, completedThrough: "2026-08-01T13:30:00.000Z" });
 
   await audit.run();
+  assert.deepEqual(scans, [[0, chunkBytes]]);
+  assert.deepEqual(recovered, ["first"]);
+  assert.equal(audit.snapshot().historicalSubagentBackfill.queue[0].offset, 0);
 
-  assert.deepEqual(scans, ["large-ordinary-thread.jsonl"]);
-  assert.deepEqual(recovered, [{
-    turnId: "ordinary-turn",
-    status: "completed",
-    completedAt: "2026-07-01T00:10:00.000Z",
-    historical: true,
-    usageResult,
-  }]);
-  assert.equal(audit.snapshot().historicalSubagentBackfill.completedFiles, 1);
-  assert.equal(audit.snapshot().historicalSubagentBackfill.processedTurns, 1);
+  interactive = false;
+  await audit.run();
+  assert.deepEqual(scans, [[0, chunkBytes]]);
+  assert.deepEqual(recovered, ["first", "second"]);
+  const checkpoint = audit.snapshot();
+  assert.equal(checkpoint.historicalSubagentBackfill.queue[0].offset, chunkBytes);
+
+  const resumedAudit = new CodexTerminalAudit(options);
+  resumedAudit.restore(checkpoint);
+  await resumedAudit.run();
+
+  assert.deepEqual(scans, [[0, chunkBytes], [chunkBytes, chunkBytes]]);
+  assert.deepEqual(recovered, ["first", "second", "third"]);
+  assert.equal(resumedAudit.snapshot().historicalSubagentBackfill.completedFiles, 1);
+  assert.equal(resumedAudit.snapshot().historicalSubagentBackfill.processedTurns, 3);
 });
 
 test("historical rollout backfill yields while interactive work is active", async () => {
