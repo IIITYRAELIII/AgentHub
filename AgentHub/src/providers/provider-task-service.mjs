@@ -20,6 +20,8 @@ export class CodexProviderTaskService {
   #clearLatestDiff;
   #saveState;
   #clock;
+  #discoverLocalTasks;
+  #logWarn;
 
   constructor(options = {}) {
     this.#transportRunning = requiredFunction(options.transportRunning, "transportRunning");
@@ -38,6 +40,11 @@ export class CodexProviderTaskService {
     this.#clearLatestDiff = requiredFunction(options.clearLatestDiff, "clearLatestDiff");
     this.#saveState = requiredFunction(options.saveState, "saveState");
     this.#clock = options.clock ?? (() => new Date());
+    this.#discoverLocalTasks = options.discoverLocalTasks ?? null;
+    if (this.#discoverLocalTasks !== null && typeof this.#discoverLocalTasks !== "function") {
+      throw new TypeError("discoverLocalTasks must be a function");
+    }
+    this.#logWarn = typeof options.logWarn === "function" ? options.logWarn : () => {};
   }
 
   async createTask() {
@@ -82,6 +89,23 @@ export class CodexProviderTaskService {
   }
 
   async discoverTasks() {
+    if (this.#discoverLocalTasks) {
+      try {
+        return (await this.#discoverLocalTasks())
+          .filter((thread) => !String(thread?.parentThreadId ?? "").trim())
+          .map((thread) => {
+            const timestamp = Date.parse(String(thread.updatedAt ?? thread.createdAt ?? ""));
+            return {
+              ...thread,
+              id: String(thread.id ?? thread.threadId ?? "").trim(),
+              updatedAt: Number.isFinite(timestamp) ? timestamp / 1_000 : 0,
+            };
+          })
+          .filter((thread) => thread.id);
+      } catch (error) {
+        this.#logWarn(`Cannot discover local Codex rollouts; using thread/list: ${error.message}`);
+      }
+    }
     if (!this.#transportRunning()) {
       await this.#startTransport();
       await this.#initialize({ attachSelectedThread: false });

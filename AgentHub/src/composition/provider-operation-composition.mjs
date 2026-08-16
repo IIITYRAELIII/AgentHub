@@ -10,6 +10,7 @@ import { providerThreadKey } from "../domain/workspace-stream-identity.mjs";
 import { ClaudeEventService } from "../providers/claude/claude-event-service.mjs";
 import { isContextCompactionItem } from "../providers/codex/context-compaction-tracker.mjs";
 import { CodexEventService } from "../providers/codex/codex-event-service.mjs";
+import { discoverCodexRollouts } from "../providers/codex/codex-turn-usage.mjs";
 import { resolveHubDeveloperInstructions } from "./hub-developer-instructions-composition.mjs";
 import {
   completeCodexLiveItem,
@@ -98,6 +99,8 @@ export function createProviderOperationComposition({
     startTransport: startCodexTransport,
     initialize: initializeCodex,
     sendRpc,
+    discoverLocalTasks: discoverCodexRollouts,
+    logWarn: (...args) => console.warn(...args),
     selection: selectionStore,
     activeProjectRoot,
     sandboxMode: codexSandboxMode,

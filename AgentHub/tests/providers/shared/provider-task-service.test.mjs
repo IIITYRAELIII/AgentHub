@@ -47,6 +47,46 @@ test("Codex task service creates, names and discovers tasks through its port", a
   assert.ok(calls.indexOf("save") < calls.findIndex((call) => Array.isArray(call) && call[0] === "thread/name/set"));
 });
 
+test("Codex task discovery uses root local rollouts without starting thread/list", async () => {
+  const calls = [];
+  const service = new CodexProviderTaskService({
+    transportRunning: () => false,
+    startTransport: async () => calls.push("start"),
+    initialize: async () => calls.push("initialize"),
+    sendRpc: async (...args) => { calls.push(args); return {}; },
+    discoverLocalTasks: async () => [{
+      threadId: "root-thread",
+      cwd: "D:/workspace",
+      createdAt: "2026-08-16T10:00:00.000Z",
+      path: "root.jsonl",
+    }, {
+      threadId: "subagent-thread",
+      parentThreadId: "root-thread",
+      cwd: "D:/workspace",
+      createdAt: "2026-08-16T10:01:00.000Z",
+      path: "subagent.jsonl",
+    }],
+    selection: { streamId: null, setThread() {}, setTitle() {} },
+    activeProjectRoot: () => "D:/workspace",
+    sandboxMode: () => "workspace-write",
+    invalidateCatalog() {},
+    restoreSettings() {},
+    updateSettings: async () => {},
+    clearLatestDiff() {},
+    saveState: async () => {},
+  });
+
+  assert.deepEqual(await service.discoverTasks(), [{
+    threadId: "root-thread",
+    cwd: "D:/workspace",
+    createdAt: "2026-08-16T10:00:00.000Z",
+    path: "root.jsonl",
+    id: "root-thread",
+    updatedAt: Date.parse("2026-08-16T10:00:00.000Z") / 1_000,
+  }]);
+  assert.deepEqual(calls, []);
+});
+
 test("Codex task service persists the created Thread before post-create setup", async () => {
   const state = { streamId: "stream-1", threadId: null, savedThreadId: null };
   const service = new CodexProviderTaskService({
