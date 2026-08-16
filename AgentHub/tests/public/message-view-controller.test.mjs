@@ -51,6 +51,8 @@ test("optimistic confirmation keeps the same message node when content is unchan
     clientUserMessageId: "client-1",
     role: "user",
     text: "Не мигай",
+    responseAnnotations: [],
+    responseAnnotationRequest: "Не мигай",
     delivery: "Отправляется…",
   };
   const durable = {
@@ -58,6 +60,7 @@ test("optimistic confirmation keeps the same message node when content is unchan
     id: "codex:thread:turn:item:user",
     turnId: "turn",
     itemId: "item",
+    responseAnnotationRequest: undefined,
     delivery: "В очереди",
   };
   const firstSpec = {
@@ -82,6 +85,22 @@ test("optimistic confirmation keeps the same message node when content is unchan
   assert.equal(container.children[0], selectedNode);
   assert.equal(container.children[0].delivery, "В очереди");
   assert.equal(created, 1);
+});
+
+test("rendered annotation content still changes the message signature", async () => {
+  const api = await messageViewApi();
+  const message = {
+    id: "local:client-1",
+    clientUserMessageId: "client-1",
+    role: "user",
+    text: "Уточнение",
+    responseAnnotations: [{ text: "Цитата", annotation: "Комментарий" }],
+    responseAnnotationRequest: "Первый запрос",
+  };
+  assert.notEqual(
+    api.messageContentSignature(message),
+    api.messageContentSignature({ ...message, responseAnnotationRequest: "Другой запрос" }),
+  );
 });
 
 test("message reconciliation leaves unchanged sibling nodes attached", async () => {

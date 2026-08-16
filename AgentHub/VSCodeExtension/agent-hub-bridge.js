@@ -163,8 +163,12 @@ class AgentHubBridge {
   async control(action, params = {}) {
     if (action === "upload-attachment") return this.uploadAttachment(params);
     const { callDesktopControl } = await this.desktop();
+    const clientUserMessageId = action === "send-message"
+      ? String(params.clientUserMessageId ?? "").trim()
+      : "";
     return callDesktopControl(action, params, {
       timeoutMs: ["rotate-stream", "submit-bug-report"].includes(action) ? 180_000 : 10_000,
+      ...(clientUserMessageId ? { commandId: clientUserMessageId } : {}),
     });
   }
 

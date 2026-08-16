@@ -92,6 +92,36 @@ test("message delivery distinguishes a server rejection from an unconfirmed tran
   assert.equal(rejected.agentHubCommandRejected, true);
 });
 
+test("VS Code message delivery retries connection failures without changing the operation", async () => {
+  const attempts = [];
+  const waits = [];
+  const result = await lifecycle.retryConnectionFailure(async (attempt) => {
+    attempts.push(attempt);
+    if (attempt < 2) throw lifecycle.markConnectionFailure(new Error("bridge unavailable"));
+    return { accepted: true };
+  }, {
+    delaysMs: [150, 600],
+    wait: async (delayMs) => { waits.push(delayMs); },
+  });
+
+  assert.deepEqual(attempts, [0, 1, 2]);
+  assert.deepEqual(waits, [150, 600]);
+  assert.equal(result.accepted, true);
+});
+
+test("VS Code message delivery does not retry an application rejection", async () => {
+  let attempts = 0;
+  const rejected = lifecycle.markCommandRejected(new Error("Укажите корректную задачу"));
+  await assert.rejects(lifecycle.retryConnectionFailure(async () => {
+    attempts += 1;
+    throw rejected;
+  }, {
+    delaysMs: [0, 0],
+    wait: async () => {},
+  }), /корректную задачу/u);
+  assert.equal(attempts, 1);
+});
+
 test("optional history reads settle without becoming connection failures", async () => {
   const failure = lifecycle.markConnectionFailure(new Error("history timed out"));
   const rejected = await lifecycle.settleOptionalRead(async () => {
@@ -1531,6 +1561,28 @@ test("completed live card uses a newly recorded final even before durable histor
     lastAnswer: "Legacy final",
     lastAnswerAt: "2026-08-02T10:00:01.000Z",
   }), "Legacy final");
+});
+
+test("snapshot completion survives a new run when the previous live card is already gone", () => {
+  const selected = {
+    provider: "codex",
+    threadId: "thread-1",
+    lastAnswer: "Финальный ответ",
+    lastAnswerAt: "2026-08-16T22:29:34.987Z",
+    lastAnswerTurnId: "turn-completed",
+  };
+  assert.deepEqual(
+    { ...lifecycle.snapshotCompletionCandidate(selected, "turn-next") },
+    {
+      provider: "codex",
+      threadId: "thread-1",
+      turnId: "turn-completed",
+      answer: "Финальный ответ",
+      time: "2026-08-16T22:29:34.987Z",
+    },
+  );
+  assert.equal(lifecycle.snapshotCompletionCandidate(selected, "turn-completed"), null);
+  assert.match(hubClientSource, /rememberSnapshotCompletion\(taskIdValue, selected, run\?\.turnId\)/u);
 });
 
 test("run completion starts history catch-up even when answer metadata has not changed yet", () => {

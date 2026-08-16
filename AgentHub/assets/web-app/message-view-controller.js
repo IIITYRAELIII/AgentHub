@@ -18,13 +18,21 @@
   }
 
   function messageContentSignature(message, { withDiff = false, diffText = "" } = {}) {
+    const responseAnnotations = message?.role === "user" && Array.isArray(message?.responseAnnotations)
+      ? message.responseAnnotations
+      : [];
+    const rendersResponseAnnotations = responseAnnotations.some((item) => (
+      String(item?.text ?? "").trim() || String(item?.annotation ?? "").trim()
+    ));
     try {
       return JSON.stringify({
         role: message?.role ?? "",
         kind: message?.kind ?? "",
         text: message?.text ?? "",
-        responseAnnotations: message?.responseAnnotations ?? [],
-        responseAnnotationRequest: message?.responseAnnotationRequest ?? "",
+        responseAnnotations: rendersResponseAnnotations ? responseAnnotations : [],
+        responseAnnotationRequest: rendersResponseAnnotations
+          ? String(message?.responseAnnotationRequest ?? message?.text ?? "").trim()
+          : "",
         activities: message?.activities ?? [],
         activityGroups: message?.activityGroups ?? [],
         attachments: message?.attachments ?? [],

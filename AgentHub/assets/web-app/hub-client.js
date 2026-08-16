@@ -43,6 +43,8 @@ const REMOTE_RESULT_FALLBACK_POLL_MS = 600;
 const DEFAULT_CONTROL_TIMEOUT_MS = 45_000;
 const LONG_CONTROL_TIMEOUT_MS = 180_000;
 const LONG_CONTROL_ACTIONS = new Set(["rotate-stream", "submit-bug-report"]);
+const VSCODE_MESSAGE_CONTROL_TIMEOUT_MS = 15_000;
+const VSCODE_MESSAGE_RETRY_DELAYS_MS = Object.freeze([150, 600]);
 const HISTORY_CATCH_UP_TIMEOUT_MS = 120_000;
 const CONNECTION_OFFLINE_FAILURES = 3;
 const CONNECTION_OFFLINE_GRACE_MS = 6_000;
@@ -100,8 +102,10 @@ const {
   responseAnnotationPrompt,
   reconcile: reconcileMessageLifecycle,
   rememberBounded: rememberBoundedMessage,
+  retryConnectionFailure,
   reusableAttachmentPaths,
   settleOptionalRead,
+  snapshotCompletionCandidate,
   withoutSupersededCompactionFailures,
   visibleConversationMessages,
 } = window.AgentHubMessageLifecycle;
@@ -531,6 +535,37 @@ function applyMessageReceipts(snapshot) {
   }
 }
 
+function rememberSnapshotCompletion(taskIdValue, selected, incomingTurnId = "") {
+  const completion = snapshotCompletionCandidate(selected, incomingTurnId);
+  if (!completion) return false;
+  const durableMessages = historyByTask.get(taskIdValue) ?? [];
+  if (completedConversationTurnVisible(durableMessages, {
+    turnId: completion.turnId,
+    answer: completion.answer,
+    requireAgent: true,
+  })) return false;
+  const overlays = completionOverlaysByTask.get(taskIdValue) ?? new Map();
+  if (overlays.has(completion.turnId)) return false;
+  overlays.set(completion.turnId, {
+    answer: completion.answer,
+    messages: [{
+      id: `${completion.provider}:${completion.threadId}:${completion.turnId}:snapshot-final`,
+      provider: completion.provider,
+      threadId: completion.threadId,
+      turnId: completion.turnId,
+      itemId: `${completion.turnId}:agent:final`,
+      role: "agent",
+      author: completion.provider === "claude" ? "Claude" : "Codex",
+      phase: "final",
+      text: completion.answer,
+      time: completion.time,
+    }],
+  });
+  while (overlays.size > 20) overlays.delete(overlays.keys().next().value);
+  completionOverlaysByTask.set(taskIdValue, overlays);
+  return true;
+}
+
 function promoteLiveCompletion(taskIdValue, selected, incomingTurnId = "") {
   const previous = liveCardsByTask.get(taskIdValue);
   const previousTurnId = String(previous?.turnId ?? "").trim();
@@ -630,10 +665,13 @@ function updateLiveMessage(taskIdValue, selected) {
     return null;
   }
   const promoted = promoteLiveCompletion(taskIdValue, selected, run?.turnId);
+  const snapshotCompletionRemembered = rememberSnapshotCompletion(taskIdValue, selected, run?.turnId);
   if (!run) {
     const removed = liveProbeByTask.delete(taskIdValue);
     const userRemoved = liveUserMessagesByTask.delete(taskIdValue);
-    if (promoted || removed || userRemoved) renderTaskMessages(taskIdValue);
+    if (promoted || snapshotCompletionRemembered || removed || userRemoved) {
+      renderTaskMessages(taskIdValue);
+    }
     return null;
   }
   const nextLiveUsers = {
@@ -667,10 +705,12 @@ function updateLiveMessage(taskIdValue, selected) {
       || previousProbe.turnId !== nextProbe.turnId
       || previousProbe.itemId !== nextProbe.itemId;
     liveProbeByTask.set(taskIdValue, nextProbe);
-    if (probeChanged || liveUsersChanged) renderTaskMessages(taskIdValue);
+    if (snapshotCompletionRemembered || probeChanged || liveUsersChanged) {
+      renderTaskMessages(taskIdValue);
+    }
   } else {
     const removed = liveProbeByTask.delete(taskIdValue);
-    if (removed || liveUsersChanged) renderTaskMessages(taskIdValue);
+    if (snapshotCompletionRemembered || removed || liveUsersChanged) renderTaskMessages(taskIdValue);
   }
   const liveCard = mergeLiveMaintenance({
     author: selected.provider === "claude" ? "Claude" : "Codex",
@@ -736,17 +776,31 @@ function historyAttachmentsNeedSettling(taskIdValue) {
   return Number(historyAttachmentSettleDeadlines.get(taskIdValue)) > now;
 }
 
-function bridgeCall(action, params = {}) {
-  if (!vscode) return null;
+function bridgeCallOnce(action, params = {}) {
   const id = `bridge-${Date.now()}-${++bridgeSequence}`;
   return new Promise((resolve, reject) => {
     const timer = window.setTimeout(() => {
       pendingBridgeCalls.delete(id);
       reject(markConnectionFailure(new Error("Agent Hub в VS Code не ответил вовремя")));
-    }, LONG_CONTROL_ACTIONS.has(action) ? LONG_CONTROL_TIMEOUT_MS : DEFAULT_CONTROL_TIMEOUT_MS);
+    }, LONG_CONTROL_ACTIONS.has(action)
+      ? LONG_CONTROL_TIMEOUT_MS
+      : action === "send-message"
+        ? VSCODE_MESSAGE_CONTROL_TIMEOUT_MS
+        : DEFAULT_CONTROL_TIMEOUT_MS);
     pendingBridgeCalls.set(id, { resolve, reject, timer });
     vscode.postMessage({ type: "agenthub:control", id, action, params });
   });
+}
+
+function bridgeCall(action, params = {}) {
+  if (!vscode) return null;
+  return retryConnectionFailure(
+    () => bridgeCallOnce(action, params),
+    {
+      delaysMs: action === "send-message" ? VSCODE_MESSAGE_RETRY_DELAYS_MS : [],
+      wait: (delayMs) => new Promise((resolve) => window.setTimeout(resolve, delayMs)),
+    },
+  );
 }
 
 async function hubFetch(input, init) {

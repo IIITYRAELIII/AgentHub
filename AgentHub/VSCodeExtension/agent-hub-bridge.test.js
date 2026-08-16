@@ -118,6 +118,15 @@ test("installed VS Code bridge resolves backend modules from the active runtime"
       options: { timeoutMs: 10_000 },
       installedLayout: true,
     });
+    assert.deepEqual(await bridge.control("send-message", {
+      clientUserMessageId: "client-message-1",
+      text: "hello",
+    }), {
+      action: "send-message",
+      params: { clientUserMessageId: "client-message-1", text: "hello" },
+      options: { timeoutMs: 10_000, commandId: "client-message-1" },
+      installedLayout: true,
+    });
     assert.deepEqual(await bridge.control("submit-bug-report", { text: "bug" }), {
       action: "submit-bug-report",
       params: { text: "bug" },

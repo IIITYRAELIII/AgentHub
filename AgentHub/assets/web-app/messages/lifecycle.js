@@ -62,6 +62,22 @@ function completedLiveAnswer(previous, selected) {
   return String(previous?.text ?? "").trim();
 }
 
+function snapshotCompletionCandidate(selected, incomingTurnId = "") {
+  const turnId = String(selected?.lastAnswerTurnId ?? "").trim();
+  const answer = String(selected?.lastAnswer ?? "").trim();
+  if (!turnId || !answer || turnId === String(incomingTurnId ?? "").trim()) return null;
+  const provider = String(selected?.provider ?? "").trim();
+  const threadId = String(selected?.threadId ?? "").trim();
+  if (!provider || !threadId) return null;
+  return {
+    provider,
+    threadId,
+    turnId,
+    answer,
+    time: selected?.lastAnswerAt ?? null,
+  };
+}
+
 function latestAnswerTransition(previous, current) {
   if (!previous || !current) return false;
   if (String(previous.provider ?? "") !== String(current.provider ?? "")
@@ -941,6 +957,21 @@ function isConnectionFailure(error) {
   return error?.agentHubConnectionFailure === true;
 }
 
+async function retryConnectionFailure(operation, {
+  delaysMs = [],
+  wait = (delayMs) => new Promise((resolve) => globalThis.setTimeout(resolve, delayMs)),
+} = {}) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await operation(attempt);
+    } catch (error) {
+      const delayMs = delaysMs[attempt];
+      if (!isConnectionFailure(error) || delayMs == null) throw error;
+      await wait(Math.max(0, Number(delayMs) || 0));
+    }
+  }
+}
+
 async function settleOptionalRead(operation) {
   try {
     return { status: "fulfilled", value: await operation() };
@@ -1048,8 +1079,10 @@ globalThis.AgentHubMessageLifecycle = Object.freeze({
   responseAnnotationPrompt,
   reconcile,
   rememberBounded,
+  retryConnectionFailure,
   reusableAttachmentPaths,
   settleOptionalRead,
+  snapshotCompletionCandidate,
   stopTaskControls,
   visibleConversationMessages,
 });
