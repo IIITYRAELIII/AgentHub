@@ -1512,3 +1512,19 @@ test("outgoing receipt lookup survives a task thread rebind", () => {
     "codex:thread-before",
   );
 });
+
+test("initial routed chat history wins over visible stream prefetch", () => {
+  assert.match(hubClientSource, /let initialRouteOpening = true;/u);
+  assert.match(
+    hubClientSource,
+    /visibleStreamTaskIds = new Set\(ids\);\s*if \(initialRouteOpening\) return;/u,
+  );
+  assert.match(
+    hubClientSource,
+    /if \(directChatRoute\(\)\) \{\s*routed = await openRoute\(\);/u,
+  );
+  assert.match(
+    hubClientSource,
+    /finally \{\s*initialRouteOpening = false;\s*void loadVisibleTaskHistories/u,
+  );
+});

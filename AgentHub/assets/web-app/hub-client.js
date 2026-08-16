@@ -32,6 +32,7 @@ let connectionOfflineTimer = null;
 let pendingSelectionId = "";
 let selectionSequence = 0;
 let selectionTail = Promise.resolve();
+let initialRouteOpening = true;
 const historyRefreshAtByTask = new Map();
 let visibleStreamTaskIds = new Set();
 const EXTERNAL_HISTORY_REFRESH_MS = 2_500;
@@ -1735,11 +1736,12 @@ async function settleOpenedTaskHistory(id, identity) {
   });
 }
 
-agentHub.on("workspace:visible-streams", ({ taskIds }) => void (async () => {
+async function loadVisibleTaskHistories(taskIds) {
   const ids = [...new Set((Array.isArray(taskIds) ? taskIds : [])
     .map((id) => String(id ?? "").trim())
     .filter(Boolean))];
   visibleStreamTaskIds = new Set(ids);
+  if (initialRouteOpening) return;
   await Promise.all(ids.map(async (id) => {
     // История выбранного Thread уже загружается open-task. Остальные колонки
     // подгружаются только после того, как пользователь открыл их Stream.
@@ -1760,7 +1762,9 @@ agentHub.on("workspace:visible-streams", ({ taskIds }) => void (async () => {
       visibleHistoryLoads.delete(id);
     }
   }));
-})());
+}
+
+agentHub.on("workspace:visible-streams", ({ taskIds }) => void loadVisibleTaskHistories(taskIds));
 
 agentHub.on("devices:refresh", () => void runAction(async () => {
   agentHub.setTrustedDevices({ loading: true });
@@ -2976,6 +2980,11 @@ function snapshotTask(snapshot, id) {
   )) ?? null;
 }
 
+function directChatRoute() {
+  const parts = location.hash.split("/").slice(1).map(decodeURIComponent);
+  return parts[0] === "chat" && Boolean(parts[1]) && Boolean(parts[2]) && parts[1] !== "stream";
+}
+
 async function refreshVisibleTaskHistories(previousSnapshot, snapshot) {
   const visibleIds = new Set(visibleStreamTaskIds);
   if (selectedTaskId) visibleIds.add(selectedTaskId);
@@ -3060,11 +3069,21 @@ async function refresh({ reportError = false } = {}) {
 
 void runAction(async () => {
   agentHub.setConnection("connecting");
-  await refresh({ reportError: true });
-  const routed = await openRoute();
-  const identity = !routed ? taskIdentity(selectedTaskId) : null;
-  if (identity) {
-    applyOpened(await control("open-task", { ...identity, limit: 20 }));
+  try {
+    let routed = false;
+    if (directChatRoute()) {
+      routed = await openRoute();
+    } else {
+      await refresh({ reportError: true });
+      routed = await openRoute();
+    }
+    const identity = !routed ? taskIdentity(selectedTaskId) : null;
+    if (identity) {
+      applyOpened(await control("open-task", { ...identity, limit: 20 }));
+    }
+  } finally {
+    initialRouteOpening = false;
+    void loadVisibleTaskHistories([...visibleStreamTaskIds]);
   }
 });
 void refreshRateLimitHistory();
