@@ -41,10 +41,13 @@ export async function readJsonWithBackup(filePath, { backupFile = `${filePath}.b
 
 export async function writeTextAtomic(filePath, content, {
   temporaryFile = `${filePath}.${process.pid}.${randomUUID()}.tmp`,
+  replacementBackupFile = `${filePath}.${process.pid}.${randomUUID()}.replace`,
   renameImpl = rename,
+  unlinkImpl = unlink,
   writeAndSyncImpl = writeAndSync,
   syncParentDirectoryImpl = syncParentDirectory,
   retryDelaysMs = [10, 25, 50, 100, 200, 400],
+  exchangeBlockedTarget = false,
 } = {}) {
   await writeAndSyncImpl(temporaryFile, String(content));
   try {
@@ -55,12 +58,32 @@ export async function writeTextAtomic(filePath, content, {
         break;
       } catch (error) {
         const retryable = ["EPERM", "EACCES", "EBUSY"].includes(error?.code);
-        if (!retryable || attempt >= retryDelaysMs.length) throw error;
+        if (!retryable) throw error;
+        if (attempt >= retryDelaysMs.length) {
+          if (!exchangeBlockedTarget) throw error;
+          await renameImpl(filePath, replacementBackupFile);
+          try {
+            await renameImpl(temporaryFile, filePath);
+          } catch (replacementError) {
+            try {
+              await renameImpl(replacementBackupFile, filePath);
+            } catch (rollbackError) {
+              throw new AggregateError(
+                [replacementError, rollbackError],
+                `Cannot replace or restore atomic target: ${filePath}`,
+              );
+            }
+            throw replacementError;
+          }
+          await unlinkImpl(replacementBackupFile).catch(() => {});
+          await syncParentDirectoryImpl(filePath);
+          break;
+        }
         await new Promise((resolve) => setTimeout(resolve, retryDelaysMs[attempt]));
       }
     }
   } catch (error) {
-    await unlink(temporaryFile).catch(() => {});
+    await unlinkImpl(temporaryFile).catch(() => {});
     throw error;
   }
 }

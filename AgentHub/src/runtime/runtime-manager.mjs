@@ -43,7 +43,10 @@ async function exists(target) {
 async function atomicJson(target, value) {
   await mkdir(path.dirname(target), { recursive: true });
   const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
-  await writeTextAtomic(target, `${JSON.stringify(value, null, 2)}\n`, { temporaryFile: temporary });
+  await writeTextAtomic(target, `${JSON.stringify(value, null, 2)}\n`, {
+    temporaryFile: temporary,
+    exchangeBlockedTarget: process.platform === "win32",
+  });
   await chmod(target, 0o600).catch(() => {});
 }
 

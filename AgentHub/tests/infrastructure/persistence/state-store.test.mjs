@@ -55,6 +55,67 @@ test("writeTextAtomic retries transient Windows sharing violations", async () =>
   }
 });
 
+test("writeTextAtomic exchanges a persistently blocked Windows target when enabled", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "telegram-state-exchange-"));
+  const filePath = path.join(directory, "state.json");
+  const temporaryFile = path.join(directory, "state.tmp");
+  const replacementBackupFile = path.join(directory, "state.replace");
+  let blocked = true;
+  try {
+    await writeFile(filePath, "old", "utf8");
+    await writeTextAtomic(filePath, "new", {
+      temporaryFile,
+      replacementBackupFile,
+      retryDelaysMs: [],
+      exchangeBlockedTarget: true,
+      renameImpl: async (source, target) => {
+        if (source === temporaryFile && target === filePath && blocked) {
+          blocked = false;
+          throw Object.assign(new Error("protected target"), { code: "EPERM" });
+        }
+        const { rename } = await import("node:fs/promises");
+        await rename(source, target);
+      },
+    });
+    assert.equal(await readFile(filePath, "utf8"), "new");
+    await assert.rejects(readFile(replacementBackupFile, "utf8"), { code: "ENOENT" });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("writeTextAtomic restores the prior target when exchange publication fails", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "telegram-state-exchange-rollback-"));
+  const filePath = path.join(directory, "state.json");
+  const temporaryFile = path.join(directory, "state.tmp");
+  const replacementBackupFile = path.join(directory, "state.replace");
+  let publicationAttempts = 0;
+  try {
+    await writeFile(filePath, "old", "utf8");
+    await assert.rejects(writeTextAtomic(filePath, "new", {
+      temporaryFile,
+      replacementBackupFile,
+      retryDelaysMs: [],
+      exchangeBlockedTarget: true,
+      renameImpl: async (source, target) => {
+        if (source === temporaryFile && target === filePath) {
+          publicationAttempts += 1;
+          throw Object.assign(new Error("publication failed"), {
+            code: publicationAttempts === 1 ? "EPERM" : "EIO",
+          });
+        }
+        const { rename } = await import("node:fs/promises");
+        await rename(source, target);
+      },
+    }), { code: "EIO" });
+    assert.equal(await readFile(filePath, "utf8"), "old");
+    await assert.rejects(readFile(temporaryFile, "utf8"), { code: "ENOENT" });
+    await assert.rejects(readFile(replacementBackupFile, "utf8"), { code: "ENOENT" });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("writeTextAtomic syncs content before rename and the parent after rename", async () => {
   const events = [];
   await writeTextAtomic("C:\\state\\state.json", "new", {
