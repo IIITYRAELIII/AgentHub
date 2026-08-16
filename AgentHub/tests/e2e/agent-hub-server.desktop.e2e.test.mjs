@@ -464,8 +464,11 @@ test("desktop client survives App Server exit during delayed startup and shares 
     return result.total === 2 ? result : null;
   }, "background task history hydration", 5_000);
   assert.equal(history.total, 2);
-  const slowExchange = history.items.find((item) => item.prompt === "[slow] desktop A");
+  const slowExchange = history.items.find((item) => item.messages.some((message) => (
+    message.clientUserMessageId === firstMessageId
+  )));
   assert.ok(slowExchange);
+  assert.match(slowExchange.prompt, /^\[slow\] desktop A/u);
   assert.match(slowExchange.answer, /Готово: \[slow\] desktop A/);
   const userMessages = slowExchange.messages.filter((item) => item.role === "user");
   assert.deepEqual(userMessages.map((item) => item.clientUserMessageId), [
