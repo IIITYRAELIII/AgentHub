@@ -7,6 +7,7 @@ import {
 } from "../../application/task-history.mjs";
 import { isCodexContextProbeTurn } from "../../domain/codex-context-probe.mjs";
 import { isCodexAutoCompactionTurnId } from "../../domain/codex-internal-turn.mjs";
+import { interstreamMessageDetails } from "../../domain/interstream-message.mjs";
 import { taskDisplayTitle } from "../../domain/task-display-title.mjs";
 import { taskRunIsActive } from "../../domain/task-runs.mjs";
 
@@ -60,9 +61,12 @@ function mergeDurableMessages(hydratedMessages, durableMessages) {
       continue;
     }
     const current = values[index];
+    const author = String(durable?.author ?? "").trim()
+      || String(current?.author ?? "").trim();
     values[index] = {
       ...current,
       ...structuredClone(durable),
+      ...(author ? { author } : {}),
       time: current.time ?? durable?.time ?? null,
       attachments: Array.isArray(durable?.attachments) && durable.attachments.length
         ? structuredClone(durable.attachments)
@@ -408,9 +412,11 @@ export function createDesktopTaskHistoryFactory({
         const source = pageSources[index];
         const itemProvider = source?.provider ?? provider;
         const itemThreadId = source?.threadId ?? selectedThreadId;
+        const promptInterstream = interstreamMessageDetails(item.prompt);
         return {
           id: String(item.id ?? ""),
           prompt: displayUserPrompt(item.prompt),
+          ...(promptInterstream ? { promptAuthor: promptInterstream.author } : {}),
           promptAnnotations: (Array.isArray(item.promptAnnotations) ? item.promptAnnotations : [])
             .slice(0, 20)
             .map((annotation) => ({
@@ -458,6 +464,7 @@ export function createDesktopTaskHistoryFactory({
                 ?? (role === "user" ? receipt?.result?.attachments ?? item.attachments ?? [] : []))
                 .map((attachment) => ({ ...attachment }));
               const sourceText = String(message?.text ?? "");
+              const interstream = role === "user" ? interstreamMessageDetails(sourceText) : null;
               const text = role === "user" ? displayUserPrompt(sourceText) : sourceText;
               if (!["user", "agent"].includes(role) || (!text && !attachments.length)) return [];
               const visibleText = text || (attachments.some((attachment) => (
@@ -468,8 +475,8 @@ export function createDesktopTaskHistoryFactory({
                 ...(clientUserMessageId ? { clientUserMessageId } : {}),
                 role,
                 text: role === "agent" ? visibleText.slice(0, maxAnswerChars) : visibleText,
-                ...(String(message?.author ?? "").trim()
-                  ? { author: String(message.author).trim() }
+                ...((interstream?.author ?? String(message?.author ?? "").trim())
+                  ? { author: interstream?.author ?? String(message.author).trim() }
                   : {}),
                 ...(role === "user" && Array.isArray(message.responseAnnotations)
                   ? {

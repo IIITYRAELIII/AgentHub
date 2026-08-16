@@ -9,6 +9,7 @@ import {
   CODEX_CONTEXT_PROBE_PROMPT,
   CODEX_CONTEXT_PROBE_RESPONSE,
 } from "../../../src/domain/codex-context-probe.mjs";
+import { createInterstreamMessage } from "../../../src/domain/interstream-message.mjs";
 
 function fixture(overrides = {}) {
   const calls = {
@@ -156,6 +157,23 @@ test("durable history merges equivalent synthetic final-answer copies", () => {
 
   assert.equal(history[0].messages.length, 1);
   assert.equal(history[0].messages[0].text, "Готово");
+});
+
+test("sparse durable history does not erase an already known interstream author", () => {
+  const history = mergeDurableTaskHistory([{
+    id: "turn-1",
+    messages: [{
+      itemId: "turn-1:user",
+      role: "user",
+      text: "Проверь",
+      author: "Agent HUB - Architect (Codex)",
+    }],
+  }], [{
+    id: "turn-1",
+    messages: [{ itemId: "turn-1:user", role: "user", text: "Проверь" }],
+  }]);
+
+  assert.equal(history[0].messages[0].author, "Agent HUB - Architect (Codex)");
 });
 
 test("durable history coalesces transient rollout users in either source order", () => {
@@ -375,6 +393,59 @@ test("desktop task history preserves the author of an interstream message", asyn
 
   const turn = result.items.find((item) => item.id === "turn-4");
   assert.equal(turn.messages[0].author, "Agent HUB · Themes (Codex)");
+});
+
+test("desktop task history recovers an interstream author before cleaning legacy message text", async () => {
+  const input = createInterstreamMessage({
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-architect",
+    streamName: "Architect",
+    provider: "codex",
+    text: "Проверь доставку.",
+  });
+  const { desktopTaskHistory, state } = fixture({ run: null });
+  state.history = [{
+    id: "legacy-interstream",
+    prompt: input,
+    answer: "Готово",
+    completed: true,
+    messages: [
+      { itemId: "legacy-user", role: "user", text: input },
+      { itemId: "legacy-agent", role: "agent", text: "Готово" },
+    ],
+  }];
+
+  const result = await desktopTaskHistory({ includeActive: false, limit: 1 });
+
+  assert.equal(result.items[0].prompt, "Проверь доставку.");
+  assert.equal(result.items[0].promptAuthor, "Agent HUB - Architect (Codex)");
+  assert.equal(result.items[0].messages[0].text, "Проверь доставку.");
+  assert.equal(result.items[0].messages[0].author, "Agent HUB - Architect (Codex)");
+});
+
+test("desktop task history attributes a prompt-only interstream turn", async () => {
+  const input = createInterstreamMessage({
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-themes",
+    streamName: "Themes",
+    provider: "claude",
+    text: "Проверь тему.",
+  });
+  const { desktopTaskHistory, state } = fixture({ run: null });
+  state.history = [{
+    id: "prompt-only-interstream",
+    prompt: input,
+    answer: "Готово",
+    completed: true,
+    messages: [],
+  }];
+
+  const result = await desktopTaskHistory({ includeActive: false, limit: 1 });
+
+  assert.equal(result.items[0].prompt, "Проверь тему.");
+  assert.equal(result.items[0].promptAuthor, "Agent HUB - Themes (Claude)");
 });
 
 test("desktop task history does not reactivate a completed registry run", async () => {
