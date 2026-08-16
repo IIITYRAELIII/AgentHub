@@ -20,4 +20,5 @@ test("interaction phase owns server, Desktop and run shell assembly", async () =
   assert.match(owner, /workspaceCatalogStore: infrastructure\.workspaceCatalogStore/u);
   assert.equal(owner.includes("desktopCommandsPort: ports.desktopCommands"), true);
   assert.equal(owner.includes("runShell: ports.runShell"), true);
+  assert.equal(owner.includes("lastTaskMessageRevision: api.lastTaskMessageRevision"), true);
 });

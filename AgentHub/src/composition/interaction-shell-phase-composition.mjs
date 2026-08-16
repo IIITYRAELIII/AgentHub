@@ -157,6 +157,7 @@ export function createInteractionShellPhase({
       runTaskTitle: api.runTaskTitle,
       trustedDeviceStore: infrastructure.trustedDeviceStore,
       savedLastTaskMessageRecord: api.savedLastTaskMessageRecord,
+      lastTaskMessageRevision: api.lastTaskMessageRevision,
       restartBlockingRuns: api.restartBlockingRuns,
       restartBlockingWorkCount: api.restartBlockingWorkCount,
       expectTaskTitleConfirmation: api.expectTaskTitleConfirmation,
