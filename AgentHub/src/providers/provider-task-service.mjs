@@ -6,6 +6,17 @@ function requiredFunction(value, name) {
   return value;
 }
 
+function normalizedPath(value) {
+  return String(value ?? "").trim().replaceAll("\\", "/").replace(/\/+$/u, "").toLowerCase();
+}
+
+function belongsToProject(candidate, projectRoot) {
+  const candidatePath = normalizedPath(candidate);
+  const rootPath = normalizedPath(projectRoot);
+  return Boolean(candidatePath && rootPath)
+    && (candidatePath === rootPath || candidatePath.startsWith(`${rootPath}/`));
+}
+
 export class CodexProviderTaskService {
   #transportRunning;
   #startTransport;
@@ -91,7 +102,7 @@ export class CodexProviderTaskService {
   async discoverTasks() {
     if (this.#discoverLocalTasks) {
       try {
-        return (await this.#discoverLocalTasks())
+        const localTasks = (await this.#discoverLocalTasks())
           .filter((thread) => !String(thread?.parentThreadId ?? "").trim())
           .map((thread) => {
             const timestamp = Date.parse(String(thread.updatedAt ?? thread.createdAt ?? ""));
@@ -102,6 +113,10 @@ export class CodexProviderTaskService {
             };
           })
           .filter((thread) => thread.id);
+        if (localTasks.some((thread) => belongsToProject(thread.cwd, this.#activeProjectRoot()))) {
+          return localTasks;
+        }
+        this.#logWarn("Local Codex rollout index does not cover the active project; using thread/list");
       } catch (error) {
         this.#logWarn(`Cannot discover local Codex rollouts; using thread/list: ${error.message}`);
       }

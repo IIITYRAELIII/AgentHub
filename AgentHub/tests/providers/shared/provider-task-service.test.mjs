@@ -87,6 +87,31 @@ test("Codex task discovery uses root local rollouts without starting thread/list
   assert.deepEqual(calls, []);
 });
 
+test("Codex task discovery falls back before a project has its first rollout", async () => {
+  const calls = [];
+  const service = new CodexProviderTaskService({
+    transportRunning: () => true,
+    startTransport: async () => calls.push("start"),
+    initialize: async () => calls.push("initialize"),
+    sendRpc: async (method) => {
+      calls.push(method);
+      return { data: [{ id: "new-thread" }], nextCursor: null };
+    },
+    discoverLocalTasks: async () => [{ threadId: "other", cwd: "D:/other" }],
+    selection: { streamId: null, setThread() {}, setTitle() {} },
+    activeProjectRoot: () => "D:/workspace",
+    sandboxMode: () => "workspace-write",
+    invalidateCatalog() {},
+    restoreSettings() {},
+    updateSettings: async () => {},
+    clearLatestDiff() {},
+    saveState: async () => {},
+  });
+
+  assert.deepEqual(await service.discoverTasks(), [{ id: "new-thread" }]);
+  assert.deepEqual(calls, ["thread/list"]);
+});
+
 test("Codex task service persists the created Thread before post-create setup", async () => {
   const state = { streamId: "stream-1", threadId: null, savedThreadId: null };
   const service = new CodexProviderTaskService({
