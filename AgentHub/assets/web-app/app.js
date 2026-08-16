@@ -32,6 +32,7 @@ const chatSurfacePreference = window.AgentHubChatSurfacePreference;
 const backgroundMotionPreference = window.AgentHubBackgroundMotionPreference;
 const backgroundImageResolver = window.AgentHubBackgroundImageResolver;
 const JournalView = window.AgentHubJournalView;
+const MessageView = window.AgentHubMessageView;
 const expandedUserMessageIds = new Set();
 let messageDisclosureFrame = 0;
 const journal = document.querySelector("[data-journal]");
@@ -3654,6 +3655,69 @@ function scheduleUserMessageDisclosureSync() {
 
 window.addEventListener("resize", scheduleUserMessageDisclosureSync, { passive: true });
 
+function messageTimeLabel(value) {
+  return new Date(value).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+}
+
+function patchRenderedMessage(node, message) {
+  const article = node.matches?.("article.msg") ? node : node.querySelector?.("article.msg");
+  if (!article) return;
+  article.dataset.messageId = message.id ?? "";
+  article.dataset.turnId = message.turnId ?? "";
+  article.dataset.itemId = message.itemId ?? "";
+  article.dataset.deliveryState = message.deliveryState ?? "";
+  const role = message.role === "user" ? "user" : message.role === "system" ? "system" : "agent";
+  const author = message.author
+    || (role === "user" ? "Вы" : role === "system" ? "Система" : "Агент");
+  const head = article.querySelector(".msg-head");
+  const authorNode = head?.querySelector(".msg-author");
+  if (authorNode) authorNode.textContent = author;
+  let time = head?.querySelector(".msg-time");
+  if (message.time) {
+    if (!time) {
+      time = el("span", { class: "msg-time" });
+      head?.insertBefore(time, head.querySelector(".msg-delivery"));
+    }
+    time.textContent = messageTimeLabel(message.time);
+  } else {
+    time?.remove();
+  }
+  let delivery = head?.querySelector(".msg-delivery");
+  if (message.delivery) {
+    if (!delivery) {
+      delivery = el("span", { class: "msg-delivery" });
+      head?.append(delivery);
+    }
+    delivery.textContent = message.delivery;
+    delivery.classList.toggle("is-failed", message.failed === true);
+  } else {
+    delivery?.remove();
+  }
+}
+
+function messageRenderSpec(message, index, lastAgentIndex, taskDiff) {
+  const withDiff = index === lastAgentIndex && Boolean(taskDiff);
+  return {
+    key: MessageView.messageKey(message, index),
+    signature: MessageView.messageContentSignature(message, {
+      withDiff,
+      diffText: taskDiff?.text ?? "",
+    }),
+    message,
+    withDiff,
+    taskDiff,
+  };
+}
+
+function createRenderedMessage(spec) {
+  const rendered = renderMessage(spec.message);
+  if (!spec.withDiff) return rendered;
+  return el("div", { class: "message-with-diff" }, [
+    rendered,
+    renderTaskDiff(state.selectedId, spec.taskDiff),
+  ]);
+}
+
 function renderMessages({ forceBottom = false, preserveTop = false } = {}) {
   const scrollController = chatScrollControllers.get(chatScroll);
   const scrollSnapshot = scrollController?.capture();
@@ -3665,14 +3729,16 @@ function renderMessages({ forceBottom = false, preserveTop = false } = {}) {
   const historyLoaded = state.messages.has(state.selectedId);
   const messages = state.messages.get(state.selectedId) ?? [];
   renderHistoryLoader();
-  chatLog.replaceChildren();
   if (messages.length === 0) {
-    chatLog.append(el("p", {
-      class: "chat-log-empty",
-      text: historyLoaded
-        ? "История пуста. Отправьте первое сообщение агенту."
-        : "Загрузка истории…",
-    }));
+    const emptyText = historyLoaded
+      ? "История пуста. Отправьте первое сообщение агенту."
+      : "Загрузка истории…";
+    const existingEmpty = chatLog.querySelector(":scope > .chat-log-empty");
+    if (chatLog.children.length !== 1 || !existingEmpty) {
+      chatLog.replaceChildren(el("p", { class: "chat-log-empty", text: emptyText }));
+    } else {
+      existingEmpty.textContent = emptyText;
+    }
     if (anchor) restoreChatAnchor(anchor);
     else if (stickToBottom) pinChatToBottom();
     else window.requestAnimationFrame(() => scrollController?.afterMutation(scrollSnapshot, { preserveDistance: true }));
@@ -3687,16 +3753,11 @@ function renderMessages({ forceBottom = false, preserveTop = false } = {}) {
     }
   }
   const taskDiff = state.taskDiffs.get(state.selectedId);
-  messages.forEach((message, index) => {
-    const rendered = renderMessage(message);
-    if (index !== lastAgentIndex || !taskDiff) {
-      chatLog.append(rendered);
-      return;
-    }
-    chatLog.append(el("div", { class: "message-with-diff" }, [
-      rendered,
-      renderTaskDiff(state.selectedId, taskDiff),
-    ]));
+  const specs = messages.map((message, index) => (
+    messageRenderSpec(message, index, lastAgentIndex, taskDiff)
+  ));
+  MessageView.reconcileKeyedChildren(chatLog, specs, createRenderedMessage, (node, spec) => {
+    patchRenderedMessage(node, spec.message);
   });
   scheduleUserMessageDisclosureSync();
   if (anchor) restoreChatAnchor(anchor);
@@ -4756,7 +4817,7 @@ function submitComposer() {
     text,
     annotations,
     attachments,
-    followUpMode: null,
+    followUpMode: MessageView.composerFollowUpMode(currentTask()),
     deferWhileRunning: currentTask()?.running === true,
     draftStream: currentTask()?.draftStream === true,
     streamId: currentTask()?.streamId ?? null,
@@ -10705,9 +10766,12 @@ function taskGroupsFrom(source, { workspace = null, hierarchy = "" } = {}) {
         groups.set(key, group);
       }
       for (const entry of row.querySelectorAll("[data-work-log-turn-entry]")) {
-        const turnId = String(entry.dataset.workLogTurnId ?? "").trim();
-        if (turnId && group.seenTurns.has(turnId)) continue;
-        if (turnId) group.seenTurns.add(turnId);
+        const turnIdentity = JournalView.turnIdentity(entry.dataset, {
+          provider,
+          threadId: sourceThreadId,
+        });
+        if (turnIdentity && group.seenTurns.has(turnIdentity)) continue;
+        if (turnIdentity) group.seenTurns.add(turnIdentity);
         const streamLabel = entry.querySelector("[data-work-log-turn-stream]")?.textContent?.trim();
         if (streamLabel) group.streamLabels.add(streamLabel);
         group.turnCount += 1;

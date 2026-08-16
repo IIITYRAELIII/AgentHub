@@ -89,6 +89,26 @@ test("grouped turn prefers total credits including subagents", async () => {
   assert.equal(api.turnDisplayCredits({}), null);
 });
 
+test("journal turn identity keeps root and child Threads with the same turn id distinct", async () => {
+  const api = await journalViewApi();
+  const root = api.turnIdentity({
+    workLogTurnProvider: "codex",
+    workLogTurnThreadId: "thread-root",
+    workLogTurnId: "shared-turn",
+  });
+  const child = api.turnIdentity({
+    workLogTurnProvider: "codex",
+    workLogTurnThreadId: "thread-child",
+    workLogTurnId: "shared-turn",
+  });
+  assert.notEqual(root, child);
+  assert.equal(root, "codex\u001fthread-root\u001fshared-turn");
+  assert.equal(api.turnIdentity({ workLogTurnId: "shared-turn" }, {
+    provider: "codex",
+    threadId: "thread-root",
+  }), root);
+});
+
 test("journal periods use Monday weeks and calendar months", async () => {
   const api = await journalViewApi();
   assert.deepEqual(

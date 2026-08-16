@@ -71,6 +71,7 @@ const CONTEXT_PROBE_RESPONSE = "AGENT_HUB_CONTEXT_PROBE_OK_V1";
 const {
   activeStageLabel,
   chronologicalMessages,
+  completedLiveAnswer,
   conversationTaskId,
   completedConversationTurnVisible,
   confirmedOutgoingMessageIds,
@@ -83,6 +84,7 @@ const {
   hubErrorMessage,
   isConnectionFailure,
   liveCompletionTransition,
+  latestAnswerTransition,
   looksLikeConnectionFailure,
   markCommandRejected,
   markConnectionFailure,
@@ -543,9 +545,7 @@ function promoteLiveCompletion(taskIdValue, selected, incomingTurnId = "") {
   }
   const liveUsers = liveUserMessagesByTask.get(taskIdValue) ?? {};
   const taskAnswerTurnId = String(selected?.lastAnswerTurnId ?? "").trim();
-  const answer = String(
-    taskAnswerTurnId === previousTurnId ? selected?.lastAnswer : previous?.text,
-  ).trim();
+  const answer = completedLiveAnswer(previous, selected);
   const incomingStartedAtMs = Date.parse(selected?.run?.startedAt ?? "");
   const recordedCompletionTime = taskAnswerTurnId === previousTurnId
     ? selected?.lastAnswerAt
@@ -685,6 +685,7 @@ function updateLiveMessage(taskIdValue, selected) {
     itemId: run.responseItemId ?? null,
     provider: selected.provider,
     time: run.lastActivityAt ?? run.startedAt ?? null,
+    snapshotLastAnswerAt: selected.lastAnswerAt ?? null,
   }, maintenanceEventsByTask.get(taskIdValue) ?? []);
   liveCardsByTask.set(taskIdValue, liveCard);
   return liveCard;
@@ -1455,12 +1456,18 @@ function recordTransientConnectionFailure() {
     if (!connectionFailureSince) return;
     applySnapshotConnection(lastSnapshot, "offline");
   };
-  if (connectionFailureCount >= CONNECTION_OFFLINE_FAILURES
-    || now - connectionFailureSince >= CONNECTION_OFFLINE_GRACE_MS) {
+  const decision = window.AgentHubConnectionBanner.transientFailureDecision({
+    hasSnapshot: Boolean(lastSnapshot),
+    failureCount: connectionFailureCount,
+    elapsedMs: now - connectionFailureSince,
+    offlineFailures: CONNECTION_OFFLINE_FAILURES,
+    graceMs: CONNECTION_OFFLINE_GRACE_MS,
+  });
+  if (decision === "offline") {
     markOffline();
     return;
   }
-  applySnapshotConnection(lastSnapshot, "connecting");
+  if (decision === "connecting") applySnapshotConnection(lastSnapshot, "connecting");
   if (connectionOfflineTimer == null) {
     connectionOfflineTimer = window.setTimeout(
       markOffline,
@@ -1946,12 +1953,6 @@ agentHub.on("message:send", (request) => {
         deferredClientUserMessageIds.delete(request.requestId);
       }
       agentHub.completeSend(request.requestId, { accepted });
-      if (result?.duplicate) {
-        optimisticDeferredClientUserMessageIds.delete(request.requestId);
-        deferredClientUserMessageIds.delete(request.requestId);
-        outgoingMessages(request.taskId).delete(request.requestId);
-        return;
-      }
       updateOutgoing(request.taskId, request.requestId, {
         provider: identity?.provider ?? "",
         threadId: result?.threadId ?? identity?.threadId ?? "",
@@ -2993,13 +2994,11 @@ async function refreshVisibleTaskHistories(previousSnapshot, snapshot) {
     const previousTask = snapshotTask(previousSnapshot, id);
     const currentTask = snapshotTask(snapshot, id);
     if (!currentTask) return;
-    const sameTask = previousTask
-      && previousTask.provider === currentTask.provider
-      && previousTask.threadId === currentTask.threadId;
-    const answerChanged = sameTask
-      && String(previousTask.lastAnswerAt ?? "") !== String(currentTask.lastAnswerAt ?? "");
-    const turnCompleted = Boolean(sameTask && previousTask.running && !currentTask.running);
-    if (answerChanged || turnCompleted) scheduleHistoryAttachmentSettle(id);
+    const answerTransition = latestAnswerTransition(previousTask, currentTask);
+    if (answerTransition) {
+      scheduleHistoryAttachmentSettle(id);
+      historyCatchUpDeadlines.set(id, Date.now() + HISTORY_CATCH_UP_TIMEOUT_MS);
+    }
     const historyMissing = Boolean(previousTask) && !historyPageByTask.has(id);
     const externalLive = currentTask.running && !["hub", "telegram"].includes(String(
       currentTask.run?.executionOwner ?? currentTask.executionOwner ?? "",
@@ -3011,7 +3010,7 @@ async function refreshVisibleTaskHistories(previousSnapshot, snapshot) {
       && Date.now() - lastRefreshAt >= EXTERNAL_HISTORY_REFRESH_MS;
     const refreshSettlingAttachments = historyAttachmentsNeedSettling(id)
       && Date.now() - lastRefreshAt >= HISTORY_ATTACHMENT_REFRESH_MS;
-    if (!historyMissing && !turnCompleted && !answerChanged
+    if (!historyMissing && !answerTransition
       && !refreshExternalHistory && !refreshCaughtUpHistory && !refreshSettlingAttachments) return;
     historyRefreshAtByTask.set(id, Date.now());
     visibleHistoryLoads.add(id);
@@ -3021,7 +3020,7 @@ async function refreshVisibleTaskHistories(previousSnapshot, snapshot) {
         threadId: currentTask.threadId,
         limit: 20,
         includeActive: false,
-        refreshSource: turnCompleted || answerChanged,
+        refreshSource: answerTransition,
         knownVersion: historyPageByTask.get(id)?.version ?? "",
       }));
       if (settled.status === "rejected") return;

@@ -146,6 +146,14 @@
     return null;
   }
 
+  function turnIdentity(dataset, row = {}) {
+    const turnId = String(dataset?.workLogTurnId ?? "").trim();
+    if (!turnId) return "";
+    const provider = String(dataset?.workLogTurnProvider ?? row?.provider ?? "").trim();
+    const threadId = String(dataset?.workLogTurnThreadId ?? row?.threadId ?? "").trim();
+    return `${provider}\u001f${threadId}\u001f${turnId}`;
+  }
+
   function createQueuedJournalRefresh(request) {
     if (typeof request !== "function") throw new TypeError("request must be a function");
 
@@ -185,6 +193,7 @@
     requiresCompleteHistory,
     summarizeGroups,
     streamCount,
+    turnIdentity,
     turnDisplayCredits,
     createQueuedJournalRefresh,
   });

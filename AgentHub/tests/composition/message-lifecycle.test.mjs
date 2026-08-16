@@ -1514,6 +1514,37 @@ test("failed context compaction remains as a centered maintenance message", () =
   assert.match(hubClientSource, /"Свёртка контекста не завершилась"/u);
 });
 
+test("completed live card uses a newly recorded final even before durable history catches up", () => {
+  const previous = {
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "turn-2",
+    text: "",
+    snapshotLastAnswerAt: "2026-08-02T09:00:00.000Z",
+  };
+  assert.equal(lifecycle.completedLiveAnswer(previous, {
+    lastAnswer: "Готовый ответ",
+    lastAnswerAt: "2026-08-02T10:00:01.000Z",
+    lastAnswerTurnId: "turn-2",
+  }), "Готовый ответ");
+  assert.equal(lifecycle.completedLiveAnswer(previous, {
+    lastAnswer: "Legacy final",
+    lastAnswerAt: "2026-08-02T10:00:01.000Z",
+  }), "Legacy final");
+});
+
+test("run completion starts history catch-up even when answer metadata has not changed yet", () => {
+  const previous = {
+    provider: "codex",
+    threadId: "thread-1",
+    running: true,
+    lastAnswerAt: "",
+  };
+  const current = { ...previous, running: false };
+  assert.equal(lifecycle.latestAnswerTransition(previous, current), true);
+  assert.equal(lifecycle.latestAnswerTransition(current, current), false);
+});
+
 test("outgoing receipt lookup survives a task thread rebind", () => {
   const outgoingByTask = new Map([
     ["codex:thread-before", new Map([["client-1", { text: "Сообщение" }]])],

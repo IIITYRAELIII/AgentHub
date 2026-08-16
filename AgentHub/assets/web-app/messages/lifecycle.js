@@ -51,6 +51,27 @@ function liveCompletionTransition(previous, selected, incomingTurnId = "") {
   return "promote";
 }
 
+function completedLiveAnswer(previous, selected) {
+  const previousTurnId = String(previous?.turnId ?? "").trim();
+  const answer = String(selected?.lastAnswer ?? "").trim();
+  const answerTurnId = String(selected?.lastAnswerTurnId ?? "").trim();
+  const currentAnswerAt = String(selected?.lastAnswerAt ?? "").trim();
+  const baselineAnswerAt = String(previous?.snapshotLastAnswerAt ?? "").trim();
+  if (answer && answerTurnId && answerTurnId === previousTurnId) return answer;
+  if (answer && !answerTurnId && currentAnswerAt && currentAnswerAt !== baselineAnswerAt) return answer;
+  return String(previous?.text ?? "").trim();
+}
+
+function latestAnswerTransition(previous, current) {
+  if (!previous || !current) return false;
+  if (String(previous.provider ?? "") !== String(current.provider ?? "")
+    || String(previous.threadId ?? "") !== String(current.threadId ?? "")) return false;
+  return Boolean(previous.running && !current.running)
+    || String(previous.lastAnswerAt ?? "") !== String(current.lastAnswerAt ?? "")
+    || String(previous.lastAnswerTurnId ?? "") !== String(current.lastAnswerTurnId ?? "")
+    || String(previous.lastAnswer ?? "") !== String(current.lastAnswer ?? "");
+}
+
 // The App Server may replay a materialized user item while reconnecting. A
 // client id is an idempotency key for one user submission, so two history
 // items with that key must render as one message even when server item ids
@@ -991,6 +1012,7 @@ globalThis.AgentHubMessageLifecycle = Object.freeze({
   activeStageLabel,
   attachmentOnlyText,
   chronologicalMessages,
+  completedLiveAnswer,
   conversationTaskId,
   completedConversationTurnVisible,
   confirmedOutgoingMessageIds,
@@ -1008,6 +1030,7 @@ globalThis.AgentHubMessageLifecycle = Object.freeze({
   historicalAgentResponseVisible,
   historicalMessagesForDisplay,
   liveCompletionTransition,
+  latestAnswerTransition,
   liveMessageMatch,
   markCommandRejected,
   markConnectionFailure,

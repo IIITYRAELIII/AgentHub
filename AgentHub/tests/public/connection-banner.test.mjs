@@ -18,3 +18,22 @@ test("restart banner describes generic blocking work rather than active Tasks", 
   );
   assert.equal(restartWaitingMessage(0), "Agent Hub ожидает завершения блокирующей работы.");
 });
+
+test("one transient failure keeps a healthy snapshot online through the grace period", async () => {
+  const { transientFailureDecision } = await connectionBannerApi();
+  assert.equal(transientFailureDecision({
+    hasSnapshot: true,
+    failureCount: 1,
+    elapsedMs: 400,
+  }), "hold");
+  assert.equal(transientFailureDecision({
+    hasSnapshot: false,
+    failureCount: 1,
+    elapsedMs: 400,
+  }), "connecting");
+  assert.equal(transientFailureDecision({
+    hasSnapshot: true,
+    failureCount: 3,
+    elapsedMs: 1_000,
+  }), "offline");
+});

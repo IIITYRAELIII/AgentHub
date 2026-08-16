@@ -215,7 +215,7 @@ test("shared webview loads the active runtime, never a workspace shadow", async 
   const runtimeRoot = path.join(root, "runtime", "releases", "current");
   const shadowAssets = path.join(shadowRoot, "Utilities", "AgentHub", "assets", "web-app");
   const runtimeAssets = path.join(runtimeRoot, "assets", "web-app");
-  const required = ["messages/disclosure.js", "chat-scroll-controller.js", "chat-surface-preference.js", "navigation-tabs-controller.js", "stream-tabs-controller.js", "approval-form.js", "runtime-reload-controller.js", "journal-view-controller.js", "statistics-controls.js", "attachments/interactions.js", "future-runtime-module.js", "rate-limit-series.js", "task-board.js", "app.js", "messages/lifecycle.js", "messages/send-transaction.js", "hub-client.js", "styles.css", "backgrounds.css", "stream-status.css", "stream-status-visibility.mjs", "agent-hub-mark.png"];
+  const required = ["messages/disclosure.js", "message-view-controller.js", "chat-scroll-controller.js", "chat-surface-preference.js", "navigation-tabs-controller.js", "stream-tabs-controller.js", "approval-form.js", "runtime-reload-controller.js", "journal-view-controller.js", "statistics-controls.js", "attachments/interactions.js", "future-runtime-module.js", "rate-limit-series.js", "task-board.js", "app.js", "messages/lifecycle.js", "messages/send-transaction.js", "hub-client.js", "styles.css", "backgrounds.css", "stream-status.css", "stream-status-visibility.mjs", "agent-hub-mark.png"];
   try {
     fs.mkdirSync(shadowAssets, { recursive: true });
     fs.mkdirSync(runtimeAssets, { recursive: true });
@@ -225,7 +225,7 @@ test("shared webview loads the active runtime, never a workspace shadow", async 
       <img data-app-mark src="/agent-hub-mark.png" alt="">
       <!-- agent-hub-theme-styles --><select data-theme-select></select>
       <!-- agent-hub-theme-markup --><!-- agent-hub-theme-catalog -->
-      <script src="/browser-device-auth.js" defer></script><script src="/messages/disclosure.js" defer></script><script src="/chat-scroll-controller.js" defer></script><script src="/chat-surface-preference.js" defer></script><script src="/navigation-tabs-controller.js" defer></script><script src="/stream-tabs-controller.js" defer></script><script src="/approval-form.js" defer></script><script src="/runtime-reload-controller.js" defer></script><script src="/journal-view-controller.js" defer></script><script src="/statistics-controls.js" defer></script><script src="/attachments/interactions.js" defer></script><script src="/future-runtime-module.js" defer></script><script src="/rate-limit-series.js" defer></script><script src="/task-board.js" defer></script>
+      <script src="/browser-device-auth.js" defer></script><script src="/messages/disclosure.js" defer></script><script src="/message-view-controller.js" defer></script><script src="/chat-scroll-controller.js" defer></script><script src="/chat-surface-preference.js" defer></script><script src="/navigation-tabs-controller.js" defer></script><script src="/stream-tabs-controller.js" defer></script><script src="/approval-form.js" defer></script><script src="/runtime-reload-controller.js" defer></script><script src="/journal-view-controller.js" defer></script><script src="/statistics-controls.js" defer></script><script src="/attachments/interactions.js" defer></script><script src="/future-runtime-module.js" defer></script><script src="/rate-limit-series.js" defer></script><script src="/task-board.js" defer></script>
       <script src="/app.js" defer></script><!-- agent-hub-theme-scripts -->
       <script src="/messages/lifecycle.js" defer></script><script src="/messages/send-transaction.js" defer></script><script src="/hub-client.js" defer></script>`);
     for (const file of required) {
@@ -1370,8 +1370,8 @@ test("completed chat keeps probing briefly for late generated images", () => {
   assert.match(client, /const HISTORY_ATTACHMENT_REFRESH_MS = 10_000/u);
   assert.match(client, /const HISTORY_ATTACHMENT_SETTLE_TIMEOUT_MS = 120_000/u);
   assert.match(client, /function scheduleHistoryAttachmentSettle\(taskIdValue\)/u);
-  assert.match(client, /if \(answerChanged \|\| turnCompleted\) scheduleHistoryAttachmentSettle\(id\)/u);
-  assert.match(client, /refreshSource: turnCompleted \|\| answerChanged/u);
+  assert.match(client, /if \(answerTransition\) \{[\s\S]*scheduleHistoryAttachmentSettle\(id\)[\s\S]*historyCatchUpDeadlines\.set/u);
+  assert.match(client, /refreshSource: answerTransition/u);
   assert.match(client, /refreshSettlingAttachments[\s\S]*control\("task-history"/u);
 });
 
@@ -1797,7 +1797,7 @@ test("active chat input stays in the manual queue until an explicit action", () 
   assert.match(app, /\(entryAnnotations\.length && annotationEnvelope\.test\(rawText\)\)/u);
   assert.match(app, /data-action": "queue-steer"/u);
   assert.match(app, /data-action": "queue-edit"/u);
-  assert.match(app, /followUpMode: null/u);
+  assert.match(app, /followUpMode: MessageView\.composerFollowUpMode\(currentTask\(\)\)/u);
   assert.match(app, /deferWhileRunning: currentTask\(\)\?\.running === true/u);
   assert.doesNotMatch(app, /followUpModeButton|renderFollowUpMode|Изменить ход/u);
   assert.doesNotMatch(html, /data-follow-up-mode/u);
@@ -1806,7 +1806,7 @@ test("active chat input stays in the manual queue until an explicit action", () 
   assert.match(client, /control\("deferred-input", \{ id, action: "edit", text \}\)/u);
   assert.match(client, /request\.deferWhileRunning === true/u);
   assert.match(client, /deferredClientUserMessageIds = new Set\(/u);
-  assert.match(client, /if \(result\?\.duplicate\)[\s\S]*outgoingMessages\(request\.taskId\)\.delete/u);
+  assert.doesNotMatch(client, /if \(result\?\.duplicate\)[\s\S]*outgoingMessages\(request\.taskId\)\.delete/u);
   assert.match(client, /function optimisticDeferredEntries\(taskIdValue, serverEntries = \[\]\)/u);
   assert.match(client, /mergeDeferredQueueEntries\(\s*serverEntries,/u);
   assert.match(lifecycle, /function mergeDeferredQueueEntries\(serverEntries, clientEntries\)/u);
@@ -1859,7 +1859,8 @@ test("one transient control failure does not mark the whole Hub offline", () => 
   assert.match(client, /CONNECTION_OFFLINE_FAILURES = 3/u);
   assert.match(client, /CONNECTION_OFFLINE_GRACE_MS = 6_000/u);
   assert.match(client, /function recordTransientConnectionFailure\(\)/u);
-  assert.match(client, /if \(connectionFailureCount >= CONNECTION_OFFLINE_FAILURES/u);
+  assert.match(client, /transientFailureDecision\(\{[\s\S]*failureCount: connectionFailureCount/u);
+  assert.match(client, /if \(decision === "connecting"\) applySnapshotConnection/u);
   assert.match(client, /function applySnapshot\(snapshot\)[\s\S]*resetConnectionFailures\(\)/u);
   assert.doesNotMatch(client, /catch \(error\) \{\s*if \(isConnectionFailure\(error\)\) applySnapshotConnection/u);
 });

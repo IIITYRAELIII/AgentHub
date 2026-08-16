@@ -377,6 +377,7 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
       "",
       "background-motion-preference.js",
       "browser-device-auth.js",
+      "message-view-controller.js",
       "chat-surface-preference.js",
       "navigation-tabs-controller.js",
       "approval-form.js",
