@@ -230,6 +230,43 @@ function preserveTerminalHistory(terminals, history) {
   });
 }
 
+function preserveDurableAttachments(existingHistory, incomingHistory) {
+  const existingTurns = new Map((Array.isArray(existingHistory) ? existingHistory : []).flatMap((turn) => {
+    const id = String(turn?.id ?? "").trim();
+    return id ? [[id, turn]] : [];
+  }));
+  return (Array.isArray(incomingHistory) ? incomingHistory : []).map((turn) => {
+    const existingTurn = existingTurns.get(String(turn?.id ?? "").trim());
+    if (!existingTurn) return turn;
+    const byItemId = new Map();
+    const byClientId = new Map();
+    for (const message of Array.isArray(existingTurn.messages) ? existingTurn.messages : []) {
+      const itemId = String(message?.itemId ?? "").trim();
+      const clientId = String(message?.clientUserMessageId ?? "").trim();
+      if (itemId) byItemId.set(itemId, message);
+      if (clientId) byClientId.set(clientId, message);
+    }
+    const next = { ...turn };
+    if (!(Array.isArray(turn?.attachments) && turn.attachments.length)
+      && Array.isArray(existingTurn.attachments) && existingTurn.attachments.length) {
+      next.attachments = existingTurn.attachments;
+    }
+    if (Array.isArray(turn?.messages)) {
+      next.messages = turn.messages.map((message) => {
+        const itemId = String(message?.itemId ?? "").trim();
+        const clientId = String(message?.clientUserMessageId ?? "").trim();
+        const existingMessage = (clientId ? byClientId.get(clientId) : null)
+          ?? (itemId ? byItemId.get(itemId) : null);
+        if (!existingMessage || (Array.isArray(message?.attachments) && message.attachments.length)) {
+          return message;
+        }
+        return { ...message, attachments: existingMessage.attachments };
+      });
+    }
+    return next;
+  });
+}
+
 function terminalSafeSnapshot(existing, snapshot, terminals) {
   const turnId = String(snapshot?.turnId ?? "").trim();
   if (snapshot?.active !== true || !turnId || !terminals.has(turnId)) return snapshot;
@@ -1365,7 +1402,8 @@ export class LocalTaskSyncStore {
     const terminals = terminalHistoryTurns(existing.history);
     const journalHistory = this.#reconcileHistoryWithJournal(task, history);
     const reconciledHistory = preserveTerminalHistory(terminals, journalHistory);
-    const cleanedHistory = cleanHistory(reconciledHistory, this.#historyLimit);
+    const durableHistory = preserveDurableAttachments(existing.history, reconciledHistory);
+    const cleanedHistory = cleanHistory(durableHistory, this.#historyLimit);
     const effectiveSnapshot = terminalSafeSnapshot(existing, snapshot, terminals);
     const next = persistedTask({
       ...existing,
@@ -1383,13 +1421,13 @@ export class LocalTaskSyncStore {
     }, this.#canonicalizeProjectRoot);
     const metadataChanged = next && taskMetadataChanged(existing, next);
     const historyChanged = JSON.stringify(existing.history ?? []) !== JSON.stringify(cleanedHistory);
-    const searchFingerprint = searchHistoryFingerprint(reconciledHistory);
+    const searchFingerprint = searchHistoryFingerprint(durableHistory);
     const searchChanged = this.#searchHistoryFingerprint(next) !== searchFingerprint;
     if (!next) return false;
     if (!metadataChanged && !historyChanged && !searchChanged) return false;
     this.#transaction(() => {
       if (metadataChanged || historyChanged) this.#writeTask(next);
-      if (searchChanged) this.#writeSearchHistory(next, reconciledHistory, searchFingerprint);
+      if (searchChanged) this.#writeSearchHistory(next, durableHistory, searchFingerprint);
       if (historyChanged) this.#writeHistory(next, cleanedHistory);
       this.#prune();
     });

@@ -489,6 +489,58 @@ export async function readCodexRecentTerminalTurns(transcriptPath, {
   );
 }
 
+async function scanJsonlChunks(input, acceptEntry, byteLimit = Number.POSITIVE_INFINITY) {
+  let pendingParts = [];
+  let pendingLength = 0;
+  let bytesRead = 0;
+
+  const acceptLine = (parts, length) => {
+    if (!length) return;
+    const buffer = parts.length === 1 ? parts[0] : Buffer.concat(parts, length);
+    const line = buffer.toString("utf8").replace(/\r$/u, "");
+    if (!line) return;
+    try {
+      acceptEntry(JSON.parse(line));
+    } catch {
+      // Ignore one malformed complete line without losing later JSONL records.
+    }
+  };
+
+  for await (const chunk of input) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    bytesRead += buffer.length;
+    let start = 0;
+    let newline = buffer.indexOf(0x0a, start);
+    while (newline >= 0) {
+      const part = buffer.subarray(start, newline);
+      if (pendingLength) {
+        pendingParts.push(part);
+        pendingLength += part.length;
+        acceptLine(pendingParts, pendingLength);
+        pendingParts = [];
+        pendingLength = 0;
+      } else {
+        acceptLine([part], part.length);
+      }
+      start = newline + 1;
+      newline = buffer.indexOf(0x0a, start);
+    }
+    if (start < buffer.length) {
+      const part = buffer.subarray(start);
+      pendingParts.push(part);
+      pendingLength += part.length;
+    }
+    if (bytesRead - pendingLength >= byteLimit) break;
+  }
+
+  return {
+    bytesRead,
+    pending: pendingParts.length === 1
+      ? pendingParts[0]
+      : Buffer.concat(pendingParts, pendingLength),
+  };
+}
+
 export async function scanCodexTerminalEventsFromOffset(transcriptPath, {
   startOffset = 0,
   maxBytes = Number.POSITIVE_INFINITY,
@@ -508,8 +560,6 @@ export async function scanCodexTerminalEventsFromOffset(transcriptPath, {
   }));
   const start = Math.max(0, Number(startOffset) || 0);
   const input = createReadStreamImpl(transcriptPath, { start });
-  let pending = Buffer.alloc(0);
-  let bytesRead = 0;
   let rolloutCreatedAt = uuidV7TimestampMs(rolloutId);
   const byteLimit = Number.isFinite(Number(maxBytes))
     ? Math.max(1, Number(maxBytes))
@@ -557,24 +607,7 @@ export async function scanCodexTerminalEventsFromOffset(transcriptPath, {
     });
   }
 
-  for await (const chunk of input) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    bytesRead += buffer.length;
-    pending = pending.length ? Buffer.concat([pending, buffer]) : buffer;
-    let newline;
-    while ((newline = pending.indexOf(0x0a)) >= 0) {
-      const line = pending.subarray(0, newline).toString("utf8").replace(/\r$/u, "");
-      pending = pending.subarray(newline + 1);
-      if (!line) continue;
-      try {
-        acceptEntry(JSON.parse(line));
-      } catch {
-        // Ignore one malformed complete line without losing later terminal events.
-      }
-    }
-    const completeBytesRead = bytesRead - pending.length;
-    if (completeBytesRead >= byteLimit) break;
-  }
+  const { bytesRead, pending } = await scanJsonlChunks(input, acceptEntry, byteLimit);
 
   if (pending.length) {
     try {
@@ -1095,24 +1128,9 @@ async function scanCodexTurnJsonlFromOffset(
   { createReadStreamImpl = createReadStream } = {},
 ) {
   const input = createReadStreamImpl(transcriptPath, { start });
-  let pending = Buffer.alloc(0);
-  let bytesRead = 0;
-  for await (const chunk of input) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    bytesRead += buffer.length;
-    pending = pending.length ? Buffer.concat([pending, buffer]) : buffer;
-    let newline;
-    while ((newline = pending.indexOf(0x0a)) >= 0) {
-      const line = pending.subarray(0, newline).toString("utf8").replace(/\r$/u, "");
-      pending = pending.subarray(newline + 1);
-      if (!line) continue;
-      try {
-        accumulator.accept(JSON.parse(line));
-      } catch {
-        // Ignore one malformed complete line without losing later exact-turn events.
-      }
-    }
-  }
+  const { bytesRead, pending } = await scanJsonlChunks(input, (entry) => {
+    accumulator.accept(entry);
+  });
   if (pending.length) {
     try {
       accumulator.accept(JSON.parse(pending.toString("utf8").replace(/\r$/u, "")));

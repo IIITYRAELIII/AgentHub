@@ -181,6 +181,20 @@ test("local task sync preserves durable message metadata and attachments", async
     query: "посмотри скриншот",
   });
   assert.equal(search.results[0].author, "Agent Hub - Architect");
+
+  restored.recordHistory(task, [{
+    ...entry,
+    attachments: [],
+    messages: entry.messages.map((message) => ({ ...message, attachments: [] })),
+  }]);
+  const [refreshed] = restored.history(task);
+  assert.deepEqual(refreshed.attachments, [
+    { id: "screen.png", name: "screen.png", type: "image/png" },
+  ]);
+  assert.deepEqual(refreshed.messages[0].attachments, [
+    { id: "screen.png", name: "screen.png", type: "image/png" },
+  ]);
+  restored.close();
 });
 
 test("local task sync repairs parent finals misattributed as subagents", async () => {

@@ -1103,6 +1103,30 @@ test("incremental retries scan only bytes appended after the first large pass", 
   assert.equal(result.usage.inputTokens, 50);
 });
 
+test("incremental scanner handles a large JSONL record split into tiny chunks", async () => {
+  const largeEntry = `${line({
+    type: "event_msg",
+    payload: { type: "unrelated", padding: "x".repeat(2 * 1024 * 1024) },
+  })}\n`;
+  const terminal = `${line({
+    timestamp: "2026-07-27T01:00:00.000Z",
+    type: "event_msg",
+    payload: { type: "task_complete", turn_id: "turn-after-large-line" },
+  })}\n`;
+  const source = Buffer.from(`${largeEntry}${terminal}`);
+  const chunks = [];
+  for (let offset = 0; offset < source.length; offset += 512) {
+    chunks.push(source.subarray(offset, offset + 512));
+  }
+
+  const result = await scanCodexTerminalEventsFromOffset("large-line-rollout.jsonl", {
+    createReadStreamImpl: () => Readable.from(chunks),
+  });
+
+  assert.deepEqual(result.terminals.map((value) => value.turnId), ["turn-after-large-line"]);
+  assert.equal(result.nextOffset, source.length);
+});
+
 test("streaming scan finds an exact turn beyond the former 64 MiB tail boundary", async () => {
   const padding = `${line({
     type: "event_msg",
