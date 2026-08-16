@@ -109,6 +109,7 @@ export class CodexProviderTaskService {
             return {
               ...thread,
               id: String(thread.id ?? thread.threadId ?? "").trim(),
+              discoverySource: "local-rollout",
               updatedAt: Number.isFinite(timestamp) ? timestamp / 1_000 : 0,
             };
           })

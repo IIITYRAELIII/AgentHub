@@ -82,6 +82,7 @@ test("Codex task discovery uses root local rollouts without starting thread/list
     createdAt: "2026-08-16T10:00:00.000Z",
     path: "root.jsonl",
     id: "root-thread",
+    discoverySource: "local-rollout",
     updatedAt: Date.parse("2026-08-16T10:00:00.000Z") / 1_000,
   }]);
   assert.deepEqual(calls, []);

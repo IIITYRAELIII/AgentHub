@@ -74,7 +74,11 @@ export class CodexCatalogProjectionService {
           d.pinnedTitle(entry.provider, entry.threadId),
           d.expectedTitle(entry.provider, entry.threadId),
         );
-        if (discoveredTitle && appServerTitle !== discoveredTitle) {
+        if (
+          thread.discoverySource !== "local-rollout"
+          && discoveredTitle
+          && appServerTitle !== discoveredTitle
+        ) {
           await d.setThreadName(entry.threadId, discoveredTitle);
         }
         const resolvedTitle = d.reconcilePinnedTitle(entry.provider, entry.threadId, discoveredTitle);
