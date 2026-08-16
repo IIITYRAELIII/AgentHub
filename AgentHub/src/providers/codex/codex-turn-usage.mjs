@@ -13,6 +13,29 @@ import { addTokenUsage, emptyTokenUsage, normalizeTokenUsage } from "../../domai
 import { displayUserPrompt } from "../../application/task-history.mjs";
 
 const rolloutPathIndexPromises = new Map();
+const rolloutSessionCache = new Map();
+const DEFAULT_ROLLOUT_SESSION_CACHE_LIMIT = 10_000;
+
+function rolloutSessionCacheKey(file) {
+  return path.resolve(file).toLowerCase();
+}
+
+function trimRolloutSessionCache(cache, limit) {
+  const normalizedLimit = Math.max(1, Number(limit) || DEFAULT_ROLLOUT_SESSION_CACHE_LIMIT);
+  while (cache.size > normalizedLimit) {
+    cache.delete(cache.keys().next().value);
+  }
+}
+
+function pruneRolloutSessionCache(cache, codexHome, seenKeys) {
+  const roots = ["sessions", "archived_sessions"]
+    .map((name) => `${rolloutSessionCacheKey(path.join(codexHome, name))}${path.sep}`);
+  for (const key of cache.keys()) {
+    if (roots.some((root) => key.startsWith(root)) && !seenKeys.has(key)) {
+      cache.delete(key);
+    }
+  }
+}
 
 function nestedParentThreadId(value, depth = 0) {
   if (!value || typeof value !== "object" || depth > 8) return "";
@@ -1041,6 +1064,8 @@ export async function discoverCodexRollouts({
   codexHome = process.env.CODEX_HOME || path.join(homedir(), ".codex"),
   readdirImpl = readdir,
   readSession = readCodexRolloutSession,
+  sessionCache = readSession === readCodexRolloutSession ? rolloutSessionCache : null,
+  sessionCacheLimit = DEFAULT_ROLLOUT_SESSION_CACHE_LIMIT,
 } = {}) {
   const files = [];
   const visit = async (directory) => {
@@ -1063,10 +1088,19 @@ export async function discoverCodexRollouts({
   await visit(path.join(codexHome, "archived_sessions"));
 
   const result = [];
+  const seenKeys = new Set();
   for (const file of files) {
-    const session = await readSession(file);
+    const key = rolloutSessionCacheKey(file);
+    seenKeys.add(key);
+    const cached = sessionCache?.get(key);
+    const session = cached ?? await readSession(file);
+    if (!cached && session?.threadId && sessionCache) {
+      sessionCache.set(key, session);
+      trimRolloutSessionCache(sessionCache, sessionCacheLimit);
+    }
     if (session?.threadId) result.push(session);
   }
+  if (sessionCache) pruneRolloutSessionCache(sessionCache, codexHome, seenKeys);
   return result;
 }
 

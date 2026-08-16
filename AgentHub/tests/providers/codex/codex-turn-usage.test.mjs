@@ -269,6 +269,55 @@ test("subagent rollout discovery includes active and archived sessions", async (
   assert.deepEqual(result.map((value) => value.threadId).sort(), ["active", "archived"]);
 });
 
+test("rollout discovery reuses sessions while tracking new deleted and incomplete files", async () => {
+  const sessionsDirectory = path.join("C:\\Codex", "sessions");
+  const archivedDirectory = path.join("C:\\Codex", "archived_sessions");
+  const activeEntries = [{
+    name: "active.jsonl", isDirectory: () => false, isFile: () => true,
+  }];
+  const directories = new Map([
+    [sessionsDirectory, activeEntries],
+    [archivedDirectory, []],
+  ]);
+  const sessionCache = new Map();
+  const reads = new Map();
+  const readSession = async (file) => {
+    const name = path.basename(file, ".jsonl");
+    reads.set(name, (reads.get(name) ?? 0) + 1);
+    if (name === "incomplete" && reads.get(name) === 1) return null;
+    return {
+      threadId: name,
+      parentThreadId: "parent-thread",
+      cwd: "D:\\workspace",
+      path: file,
+    };
+  };
+  const discover = () => discoverCodexSubagentRollouts({
+    codexHome: "C:\\Codex",
+    readdirImpl: async (directory) => directories.get(directory) ?? [],
+    readSession,
+    sessionCache,
+  });
+
+  assert.deepEqual((await discover()).map((value) => value.threadId), ["active"]);
+  assert.deepEqual((await discover()).map((value) => value.threadId), ["active"]);
+  assert.equal(reads.get("active"), 1);
+
+  activeEntries.push({
+    name: "incomplete.jsonl", isDirectory: () => false, isFile: () => true,
+  });
+  assert.deepEqual((await discover()).map((value) => value.threadId), ["active"]);
+  assert.deepEqual(
+    (await discover()).map((value) => value.threadId).sort(),
+    ["active", "incomplete"],
+  );
+  assert.equal(reads.get("incomplete"), 2);
+
+  activeEntries.shift();
+  assert.deepEqual((await discover()).map((value) => value.threadId), ["incomplete"]);
+  assert.equal(sessionCache.size, 1);
+});
+
 test("historical rollout flags a manual context compaction as non-turn activity", async () => {
   const turnId = "019fc8f7-7215-7760-97a5-13412d91920a";
   const text = [
