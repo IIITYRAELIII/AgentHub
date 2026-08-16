@@ -697,10 +697,6 @@ export function mergeCompletedTaskHistory(history, completedTurn = {}) {
     }
   }
   if (!current) {
-    const previousAnswer = String(values.findLast((item) => item?.completed !== false)?.answer ?? "").trim();
-    if (previousAnswer === answer) return values;
-  }
-  if (!current) {
     current = { id: turnId, prompt: "", answer: "", messages: [] };
     values.push(current);
   }
@@ -709,6 +705,8 @@ export function mergeCompletedTaskHistory(history, completedTurn = {}) {
   current.completed = true;
   current.status = "completed";
   current.answer = answer;
+  current.activities = [];
+  current.activityGroups = [];
   const completedAt = normalizedTimestamp(completedTurn.completedAt ?? completedTurn.updatedAt);
   if (completedAt && !normalizedTimestamp(current.completedAt)) current.completedAt = completedAt;
   const messages = Array.isArray(current.messages) ? current.messages : [];

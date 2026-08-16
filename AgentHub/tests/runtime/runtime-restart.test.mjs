@@ -88,6 +88,7 @@ test("replacement retries WMI and then uses direct fallback until a bot owns the
     lockFile: "bot.lock",
     currentPid: 42,
     attempts: 2,
+    ownershipTimeoutMs: 1,
     readinessTimeoutMs: 1,
     spawnImpl: () => {
       launches += 1;
@@ -102,6 +103,33 @@ test("replacement retries WMI and then uses direct fallback until a bot owns the
   assert.equal(launches, 3);
   assert.equal(result.usedFallback, true);
   assert.equal(result.lock.pid, 84);
+});
+
+test("replacement waits for the first owner to become ready without launching duplicates", async () => {
+  let launches = 0;
+  const locks = [
+    JSON.stringify({ pid: 84, instanceToken: "slow", ready: false }),
+    JSON.stringify({ pid: 84, instanceToken: "slow", ready: false }),
+    JSON.stringify({ pid: 84, instanceToken: "slow", ready: true }),
+  ];
+  const result = await launchReplacementAndWait({
+    invocation: { command: "runtime", args: [], options: {} },
+    lockFile: "bot.lock",
+    currentPid: 42,
+    attempts: 2,
+    ownershipTimeoutMs: 100,
+    readinessTimeoutMs: 100,
+    spawnImpl: () => {
+      launches += 1;
+      return { once() {}, unref() {} };
+    },
+    readFileImpl: async () => locks.shift() ?? locks.at(-1) ?? "",
+    delayImpl: async () => {},
+    isAlive: (pid) => pid === 84,
+  });
+  assert.equal(launches, 1);
+  assert.equal(result.lock.instanceToken, "slow");
+  assert.equal(result.lock.ready, true);
 });
 
 test("legacy restart keeps the current bot entry point", () => {

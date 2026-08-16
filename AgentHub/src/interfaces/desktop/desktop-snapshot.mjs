@@ -129,6 +129,11 @@ export function createDesktopSnapshotFactory({
         turnId: result.turnId ?? null,
         deliveredAt: result.deliveredAt ?? null,
         message: result.message ?? null,
+        displayText: String(result.displayText ?? ""),
+        responseAnnotations: Array.isArray(result.responseAnnotations)
+          ? result.responseAnnotations.map((item) => ({ ...item }))
+          : [],
+        responseAnnotationRequest: String(result.responseAnnotationRequest ?? ""),
         attachments: Array.isArray(result.attachments)
           ? result.attachments.map((attachment) => ({ ...attachment }))
           : [],

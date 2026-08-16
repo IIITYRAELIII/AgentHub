@@ -5,6 +5,7 @@ import {
 } from "../domain/deferred-input.mjs";
 import { DeferredInputController } from "../application/deferred-input-controller.mjs";
 import { activeTurnNotSteerable } from "../application/run-coordinator.mjs";
+import { markProviderTurnAccepted } from "../domain/task-runs.mjs";
 
 function explicitSkillCandidatesFromInput(input) {
   const text = typeof input === "string"
@@ -56,6 +57,7 @@ export function createRunAdmissionComposition({
   managedRunLifecycle,
   agentProviders,
   taskRuns,
+  scheduleObservedRun,
   runCoordinator,
   runConflictPolicy,
   streamMaintenance,
@@ -193,7 +195,40 @@ export function createRunAdmissionComposition({
         projectRoot: item.projectRoot,
         threadId: item.threadId,
       });
-      return deferredInputMatchesRun(item, run) ? run : null;
+      if (deferredInputMatchesRun(item, run)) return run;
+      if (!item.dispatchingAt || !item.clientUserMessageId) return null;
+      const exactTurn = await agentProviders.call(
+        item.provider,
+        "findTurnByClientMessage",
+        deferredTarget(item),
+        item.clientUserMessageId,
+      ).catch((error) => {
+        logger.warn(`Cannot reconcile deferred provider turn ${item.clientUserMessageId}: ${error.message}`);
+        return null;
+      });
+      const turnId = String(exactTurn?.id ?? exactTurn?.turnId ?? "").trim();
+      if (!turnId) return null;
+      let adopted;
+      try {
+        adopted = await managedRunLifecycle.begin(item.input, {
+          ...deferredTarget(item),
+          clientUserMessageId: item.clientUserMessageId,
+          telegramDeliveryRequested: item.telegramDeliveryRequested !== false,
+          clientSource: item.clientSource,
+          deferredInput: item,
+        });
+      } catch (error) {
+        const concurrent = taskRuns.forTask(deferredTarget(item));
+        if (deferredInputMatchesRun(item, concurrent)) return concurrent;
+        throw error;
+      }
+      const previousTurnId = adopted.turnId;
+      adopted.turnId = turnId;
+      markProviderTurnAccepted(adopted, { turnId, provider: item.provider });
+      taskRuns.reindex(adopted, { turnId: previousTurnId });
+      await saveState();
+      scheduleObservedRun(adopted);
+      return adopted;
     },
     steer: async (item) => {
       const target = deferredTarget(item);

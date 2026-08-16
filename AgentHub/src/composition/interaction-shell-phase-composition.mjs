@@ -274,6 +274,7 @@ export function createInteractionShellPhase({
       managedRunLifecycle: provider.managedRunLifecycle,
       agentProviders: provider.agentProviders,
       taskRuns: provider.taskRuns,
+      scheduleObservedRun: provider.scheduleObservedRun,
       runCoordinator: desktopShell.runCoordinator,
       runConflictPolicy: desktopShell.runConflictPolicy,
       streamMaintenance: provider.streamMaintenance,

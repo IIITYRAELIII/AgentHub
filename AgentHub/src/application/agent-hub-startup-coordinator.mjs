@@ -147,10 +147,7 @@ export class AgentHubStartupCoordinator {
       }
     }
     if (this.hasPendingRestart()) {
-      await this.finalizeRestart().catch((error) => {
-        this.logError("Cannot finalize bot restart:", error.message);
-        return false;
-      });
+      await this.finalizeRestart();
     }
     await this.markReady();
     if (this.sqliteRecovery?.degraded) {

@@ -11,7 +11,7 @@ function operations(provider) {
   const names = provider === "codex"
     ? [
         "listAllCodexThreads", "buildCodexTaskCatalogEntries", "createCodexTask",
-        "launchCodexTurn", "steerCodexTurn", "cancelCodexProviderRun",
+        "launchCodexTurn", "steerCodexTurn", "findCodexTurnByClientMessage", "cancelCodexProviderRun",
         "readCodexTaskActivity", "readCodexTaskSnapshot", "completeObservedCodexRun",
         "completeManagedCodexRun", "recoverCodexRun", "readCodexRecoverySnapshot",
         "prepareCodexRecovery", "shouldObserveCodexRun", "applyCodexObservedSnapshot",
@@ -19,7 +19,7 @@ function operations(provider) {
       ]
     : [
         "listClaudeSessionSnapshots", "buildClaudeTaskCatalogEntries", "createClaudeTask",
-        "launchClaudeTurn", "steerClaudeTurn", "cancelClaudeProviderRun",
+        "launchClaudeTurn", "steerClaudeTurn", "findClaudeTurnByClientMessage", "cancelClaudeProviderRun",
         "readClaudeTaskActivity", "readClaudeRunSnapshot", "completeObservedClaudeRun",
         "completeManagedClaudeRun", "recoverClaudeRun", "readClaudeRecoverySnapshot",
         "prepareClaudeRecovery", "shouldObserveClaudeRun", "applyClaudeObservedSnapshot",

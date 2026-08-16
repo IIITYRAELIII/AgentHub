@@ -24,6 +24,7 @@ const CODEX_OPERATIONS = Object.freeze({
   createTask: "createCodexTask",
   launchTurn: "launchCodexTurn",
   steerTurn: "steerCodexTurn",
+  findTurnByClientMessage: "findCodexTurnByClientMessage",
   cancelRun: "cancelCodexProviderRun",
   readTaskActivity: "readCodexTaskActivity",
   readRunSnapshot: "readCodexTaskSnapshot",
@@ -45,6 +46,7 @@ const CLAUDE_OPERATIONS = Object.freeze({
   createTask: "createClaudeTask",
   launchTurn: "launchClaudeTurn",
   steerTurn: "steerClaudeTurn",
+  findTurnByClientMessage: "findClaudeTurnByClientMessage",
   cancelRun: "cancelClaudeProviderRun",
   readTaskActivity: "readClaudeTaskActivity",
   readRunSnapshot: "readClaudeRunSnapshot",
@@ -81,6 +83,7 @@ export function createAgentProviderRegistry({ codex, claude, taskRunIsActive }) 
     }),
     createClaudeProviderAdapter({
       ...claude,
+      findClaudeTurnByClientMessage: async () => null,
       readClaudeRunSnapshot: (run, options) => claude.readClaudeTaskSnapshot(run.threadId, options),
       readClaudeRecoverySnapshot: (run) => claude.readClaudeTaskSnapshot(run.threadId),
       prepareClaudeRecovery: async () => {},

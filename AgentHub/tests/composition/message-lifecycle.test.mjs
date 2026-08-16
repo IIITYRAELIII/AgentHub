@@ -881,6 +881,22 @@ test("deferred outgoing messages stay only in the deferred queue", () => {
   assert.deepEqual(visible, []);
 });
 
+test("empty projected messages never render as blank chat cards", () => {
+  const visible = lifecycle.visibleConversationMessages([
+    { id: "blank-agent", role: "agent", text: "", time: "2026-08-16T10:00:00.000Z" },
+    { id: "blank-user", role: "user", text: "   ", time: "2026-08-16T10:00:01.000Z" },
+    {
+      id: "attachment-only",
+      role: "user",
+      text: "",
+      attachments: [{ id: "screen.png", type: "image/png" }],
+    },
+    { id: "answer", role: "agent", text: "Готово" },
+  ]);
+
+  assert.deepEqual(visible.map((message) => message.id), ["attachment-only", "answer"]);
+});
+
 test("internal context probe messages never reach the rendered conversation", () => {
   const visible = lifecycle.visibleConversationMessages([
     {

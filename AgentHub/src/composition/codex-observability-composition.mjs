@@ -1,3 +1,5 @@
+import path from "node:path";
+
 import { turnEndKey } from "../application/turn-end-notifications.mjs";
 import { fallbackTurnEndMessage } from "../application/turn-end-delivery-service.mjs";
 import { taskRunKey } from "../domain/task-runs.mjs";
@@ -15,7 +17,6 @@ import {
   readCodexRolloutSession,
   readCodexSubagentSpawn,
   readCodexTurnUsage,
-  scanCodexHistoricalRollout,
 } from "../providers/codex/codex-turn-usage.mjs";
 import { CodexUsageTracker } from "../providers/codex/codex-usage-tracker.mjs";
 import { ContextCompactionTracker } from "../providers/codex/context-compaction-tracker.mjs";
@@ -83,7 +84,10 @@ export function createCodexObservabilityComposition({
     findRollout: (providerTaskId) => findCodexRolloutPath(providerTaskId, ""),
     readRolloutSession: readCodexRolloutSession,
     readSubagentSpawn: readCodexSubagentSpawn,
-    scanHistoricalRollout: scanCodexHistoricalRollout,
+    scanHistoricalRollout: (transcriptPath) => scanCodexHistoricalRolloutInWorker({
+      id: path.basename(transcriptPath),
+      path: transcriptPath,
+    }),
   });
   const hookReceipts = { start: null, stop: null };
 

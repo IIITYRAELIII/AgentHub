@@ -18,6 +18,7 @@ export function createRuntimeOrchestrationComposition({
 }) {
   const {
     selectedTaskWatchIntervalMs,
+    terminalAuditIntervalMs,
     externalPollIntervalMs,
     managedPollIntervalMs,
     claudeOutputPollIntervalMs,
@@ -215,6 +216,7 @@ export function createRuntimeOrchestrationComposition({
     isStopping: () => hostState.stopping,
     runtimeTimers,
     selectedTaskWatchIntervalMs,
+    terminalAuditIntervalMs,
     logger: taskObserverLogger,
   }));
   const {

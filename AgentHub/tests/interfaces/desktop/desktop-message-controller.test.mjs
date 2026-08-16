@@ -370,6 +370,33 @@ test("desktop message controller sends documents as named file references", asyn
   assert.deepEqual(launched.input[1], { type: "localFile", path: file });
 });
 
+test("desktop message receipt preserves the visible message before provider launch", async () => {
+  const receipts = new MessageReceiptRegistry();
+  let observedReceipt = null;
+  const messages = controller({
+    receipts,
+    persistReceipts: async () => {
+      observedReceipt ??= receipts.get({ clientUserMessageId: "message-visible" });
+    },
+  });
+
+  await messages.sendMessage({
+    text: "служебный конверт",
+    displayText: "Видимый вопрос",
+    responseAnnotations: [{ text: "Цитата", annotation: "Комментарий" }],
+    responseAnnotationRequest: "Что изменить?",
+    clientUserMessageId: "message-visible",
+  });
+
+  assert.equal(observedReceipt.result.pending, true);
+  assert.equal(observedReceipt.result.displayText, "Видимый вопрос");
+  assert.deepEqual(observedReceipt.result.responseAnnotations, [{
+    text: "Цитата",
+    annotation: "Комментарий",
+  }]);
+  assert.equal(observedReceipt.result.responseAnnotationRequest, "Что изменить?");
+});
+
 test("deferred Desktop images remain persistent and visible in the queue", async () => {
   const file = EXISTING_IMAGE;
   let deferredOptions = null;

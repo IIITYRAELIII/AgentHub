@@ -5,6 +5,7 @@ const REQUIRED_OPERATIONS = Object.freeze([
   "createTask",
   "launchTurn",
   "steerTurn",
+  "findTurnByClientMessage",
   "cancelRun",
   "readTaskActivity",
   "readRunSnapshot",

@@ -280,5 +280,6 @@ export function createProviderOperationComposition({
     codexTurnService,
     providerCancellationService,
     codexEventService,
+    scheduleObservedRun: (...args) => taskObserver().schedule(...args),
   };
 }

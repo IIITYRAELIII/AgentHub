@@ -369,6 +369,9 @@ test("desktop snapshot exposes bounded delivery receipts for client reconciliati
     turnId: "turn-2",
     deliveredAt: "2026-07-30T10:02:00.000Z",
     message: null,
+    displayText: "",
+    responseAnnotations: [],
+    responseAnnotationRequest: "",
     attachments: [],
   }]);
 });

@@ -591,10 +591,22 @@ function visibleConversationMessages(messages, {
     Array.from(deferredClientUserMessageIds ?? [], (value) => String(value ?? "").trim())
       .filter(Boolean),
   );
-  const visible = withoutContextProbeMessages(messages).filter((message) => !(
-    message?.role === "user"
-    && deferredIds.has(String(message?.clientUserMessageId ?? "").trim())
-  ));
+  const visible = withoutContextProbeMessages(messages).filter((message) => {
+    if (
+      message?.role === "user"
+      && deferredIds.has(String(message?.clientUserMessageId ?? "").trim())
+    ) return false;
+    return Boolean(
+      String(message?.text ?? "").trim()
+      || normalizedResponseAnnotations(message?.responseAnnotations).some((item) => (
+        String(item?.text ?? "").trim() || String(item?.annotation ?? "").trim()
+      ))
+      || String(message?.responseAnnotationRequest ?? "").trim()
+      || (Array.isArray(message?.attachments) && message.attachments.length)
+      || (Array.isArray(message?.activities) && message.activities.length)
+      || (Array.isArray(message?.activityGroups) && message.activityGroups.length)
+    );
+  });
   if (!liveProbe) return visible;
   const liveTurnRole = identityKey(liveProbe, { withoutItem: true });
   if (!liveTurnRole) return visible;

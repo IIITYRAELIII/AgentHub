@@ -33,6 +33,7 @@ export function createExecutionBootstrapPhase({
     config,
     constants: {
       selectedTaskWatchIntervalMs: 2_000,
+      terminalAuditIntervalMs: 30_000,
       externalPollIntervalMs: 1_500,
       managedPollIntervalMs: 5_000,
       claudeOutputPollIntervalMs: 250,

@@ -111,7 +111,7 @@ function fixture(overrides = {}) {
         history.push({ id: active.turnId, ...active });
       },
     },
-    receipts: {
+    receipts: overrides.receipts ?? {
       forMessage: (message) => ({
         ...message,
         createdAt: "2026-07-30T09:59:00.000Z",
@@ -563,6 +563,8 @@ test("desktop task history overlays a saved final before provider hydration catc
 
   assert.equal(result.items[0].answer, "Сохранённый финальный ответ");
   assert.equal(result.items[0].messages.at(-1).text, "Сохранённый финальный ответ");
+  assert.deepEqual(result.items[0].activities ?? [], []);
+  assert.deepEqual(result.items[0].activityGroups ?? [], []);
   assert.equal(result.items[0].completed, true);
   assert.equal(typeof desktopTaskHistory, "function");
 });
@@ -875,6 +877,44 @@ test("desktop task history returns the preceding page for a supplied cursor", as
   assert.equal(older.start, 7);
   assert.equal(older.end, 17);
   assert.equal(older.nextBefore, 7);
+});
+
+test("desktop task history assigns a turn receipt only to the root user message", async () => {
+  const { desktopTaskHistory, state } = fixture({
+    run: null,
+    receipts: {
+      forMessage: () => null,
+      forTurn: () => ({
+        clientUserMessageId: "root-receipt",
+        result: { attachments: [{ id: "root.png", type: "image/png" }] },
+      }),
+    },
+  });
+  state.history = [{
+    id: "turn-with-steer",
+    prompt: "Корневой запрос",
+    answer: "Ответ",
+    completed: true,
+    messages: [
+      { itemId: "root", role: "user", text: "Корневой запрос" },
+      {
+        itemId: "steer",
+        clientUserMessageId: "steer-client",
+        role: "user",
+        text: "Уточнение",
+      },
+      { itemId: "final", role: "agent", text: "Ответ" },
+    ],
+  }];
+
+  const result = await desktopTaskHistory({ limit: 1, includeActive: false });
+
+  assert.equal(result.items[0].messages[0].clientUserMessageId, "root-receipt");
+  assert.deepEqual(result.items[0].messages[0].attachments, [{
+    id: "root.png",
+    type: "image/png",
+  }]);
+  assert.equal(result.items[0].messages[1].clientUserMessageId, "steer-client");
 });
 
 test("desktop task history hydrates only visible turns and evicts old hydrated turns", async () => {

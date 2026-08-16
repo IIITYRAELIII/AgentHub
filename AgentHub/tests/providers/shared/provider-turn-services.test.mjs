@@ -251,6 +251,28 @@ test("an ambiguous turn start adopts only the exact client message receipt", asy
   assert.deepEqual(scheduled, ["turn-1"]);
 });
 
+test("Codex turn service finds a persisted turn only by the exact client message id", async () => {
+  const service = codexTurnService({
+    readThread: async () => ({
+      thread: {
+        turns: [
+          { id: "turn-same-text", items: [{ type: "userMessage", clientId: "other-message" }] },
+          { id: "turn-exact", items: [{ type: "userMessage", clientId: "message-exact" }] },
+        ],
+      },
+    }),
+  });
+
+  assert.deepEqual(
+    await service.findByClientMessage({ threadId: "thread-1" }, "message-exact"),
+    { id: "turn-exact", items: [{ type: "userMessage", clientId: "message-exact" }] },
+  );
+  assert.equal(
+    await service.findByClientMessage({ threadId: "thread-1" }, "missing-message"),
+    null,
+  );
+});
+
 test("an unconfirmed turn start is never retried automatically", async () => {
   const completed = [];
   const run = {

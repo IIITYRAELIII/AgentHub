@@ -77,7 +77,7 @@ function turnClientMessageIds(turn) {
   ].map((value) => String(value ?? "").trim()).filter(Boolean);
 }
 
-function exactTurnForClientMessage(result, clientUserMessageId) {
+export function exactTurnForClientMessage(result, clientUserMessageId) {
   const expected = String(clientUserMessageId ?? "").trim();
   if (!expected) return null;
   const thread = result?.thread ?? result;
@@ -307,6 +307,17 @@ export class CodexTurnService {
       }),
     });
     return { turnId: String(result?.turnId ?? turnId) };
+  }
+
+  async findByClientMessage(target, clientUserMessageId) {
+    const result = await this.#d.readThread(target.threadId, {
+      fresh: true,
+      includeTurns: true,
+      priority: "interactive",
+      turnLimit: 8,
+      turnPageSize: 8,
+    });
+    return exactTurnForClientMessage(result, clientUserMessageId);
   }
 
   async interrupt(run) {

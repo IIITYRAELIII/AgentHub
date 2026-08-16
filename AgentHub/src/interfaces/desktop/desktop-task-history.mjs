@@ -45,14 +45,14 @@ function mergeDurableMessages(hydratedMessages, durableMessages) {
       || (clientId && String(message?.clientUserMessageId ?? "").trim() === clientId)
     ));
     if (index < 0 && durable?.role === "agent") {
-      const text = String(durable?.text ?? "").trim();
       const syntheticFinalId = /:(?:rollout-)?agent:(?:live|final)$/u.test(itemId);
-      if (text && syntheticFinalId) {
-        index = values.findIndex((message) => (
-          message?.role === "agent"
-          && String(message?.text ?? "").trim() === text
-          && /:(?:rollout-)?agent:(?:live|final)$/u.test(String(message?.itemId ?? ""))
-        ));
+      if (syntheticFinalId) {
+        const candidates = values.map((message, candidateIndex) => ({ message, candidateIndex }))
+          .filter(({ message }) => (
+            message?.role === "agent"
+            && /:(?:rollout-)?agent:(?:live|final)$/u.test(String(message?.itemId ?? ""))
+          ));
+        if (candidates.length === 1) index = candidates[0].candidateIndex;
       }
     }
     if (index < 0) {
@@ -428,58 +428,67 @@ export function createDesktopTaskHistoryFactory({
           ...(Array.isArray(item.activityGroups) && item.activityGroups.length
             ? { activityGroups: item.activityGroups }
             : {}),
-          messages: (Array.isArray(item.messages) ? item.messages : []).flatMap((message) => {
-          const role = String(message?.role ?? "");
-          const receipt = role === "user"
-            ? (message.clientUserMessageId
-              ? receipts.forMessage?.({
-                provider: itemProvider,
-                threadId: itemThreadId,
-                clientUserMessageId: message.clientUserMessageId,
-              })
-              : null)
-              ?? receipts.forTurn?.({
-                provider: itemProvider,
-                threadId: itemThreadId,
-                turnId: item.id,
-              })
-            : null;
-          const attachments = (message.attachments
-            ?? (role === "user" ? receipt?.result?.attachments ?? item.attachments ?? [] : []))
-            .map((attachment) => ({ ...attachment }));
-          const sourceText = String(message?.text ?? "");
-          const text = role === "user" ? displayUserPrompt(sourceText) : sourceText;
-          if (!["user", "agent"].includes(role) || (!text && !attachments.length)) return [];
-          const visibleText = text || (attachments.some((attachment) => (
-            String(attachment?.type ?? "").toLowerCase().startsWith("image/")
-          )) ? "Изображение" : "Вложение");
-          return [{
-            itemId: String(message.itemId ?? ""),
-            ...(message.clientUserMessageId
-              ? { clientUserMessageId: String(message.clientUserMessageId) }
-              : {}),
-            role,
-            text: role === "agent" ? visibleText.slice(0, maxAnswerChars) : visibleText,
-            ...(String(message?.author ?? "").trim()
-              ? { author: String(message.author).trim() }
-              : {}),
-            ...(role === "user" && Array.isArray(message.responseAnnotations)
-              ? {
-                responseAnnotations: message.responseAnnotations.slice(0, 20).map((annotation) => ({
-                  text: String(annotation?.text ?? ""),
-                  annotation: String(annotation?.annotation ?? ""),
-                })),
-                responseAnnotationRequest: String(message.responseAnnotationRequest ?? ""),
-              }
-              : {}),
-            ...(message.phase ? { phase: String(message.phase) } : {}),
-            time: message.time
-              ?? (role === "user" ? item.startedAt : item.completedAt)
-              ?? receipt?.createdAt
-              ?? null,
-            attachments,
-          }];
-          }),
+          messages: (() => {
+            const sourceMessages = Array.isArray(item.messages) ? item.messages : [];
+            const rootUserIndex = sourceMessages.findIndex((message) => (
+              String(message?.role ?? "") === "user"
+            ));
+            return sourceMessages.flatMap((message, messageIndex) => {
+              const role = String(message?.role ?? "");
+              const receipt = role === "user"
+                ? (message.clientUserMessageId
+                  ? receipts.forMessage?.({
+                    provider: itemProvider,
+                    threadId: itemThreadId,
+                    clientUserMessageId: message.clientUserMessageId,
+                  })
+                  : null)
+                  ?? (messageIndex === rootUserIndex ? receipts.forTurn?.({
+                    provider: itemProvider,
+                    threadId: itemThreadId,
+                    turnId: item.id,
+                  }) : null)
+                : null;
+              const clientUserMessageId = String(
+                message.clientUserMessageId
+                  ?? (messageIndex === rootUserIndex ? receipt?.clientUserMessageId : "")
+                  ?? "",
+              ).trim();
+              const attachments = (message.attachments
+                ?? (role === "user" ? receipt?.result?.attachments ?? item.attachments ?? [] : []))
+                .map((attachment) => ({ ...attachment }));
+              const sourceText = String(message?.text ?? "");
+              const text = role === "user" ? displayUserPrompt(sourceText) : sourceText;
+              if (!["user", "agent"].includes(role) || (!text && !attachments.length)) return [];
+              const visibleText = text || (attachments.some((attachment) => (
+                String(attachment?.type ?? "").toLowerCase().startsWith("image/")
+              )) ? "Изображение" : "Вложение");
+              return [{
+                itemId: String(message.itemId ?? ""),
+                ...(clientUserMessageId ? { clientUserMessageId } : {}),
+                role,
+                text: role === "agent" ? visibleText.slice(0, maxAnswerChars) : visibleText,
+                ...(String(message?.author ?? "").trim()
+                  ? { author: String(message.author).trim() }
+                  : {}),
+                ...(role === "user" && Array.isArray(message.responseAnnotations)
+                  ? {
+                    responseAnnotations: message.responseAnnotations.slice(0, 20).map((annotation) => ({
+                      text: String(annotation?.text ?? ""),
+                      annotation: String(annotation?.annotation ?? ""),
+                    })),
+                    responseAnnotationRequest: String(message.responseAnnotationRequest ?? ""),
+                  }
+                  : {}),
+                ...(message.phase ? { phase: String(message.phase) } : {}),
+                time: message.time
+                  ?? (role === "user" ? item.startedAt : item.completedAt)
+                  ?? receipt?.createdAt
+                  ?? null,
+                attachments,
+              }];
+            });
+          })(),
         };
       }),
     };

@@ -49,7 +49,7 @@ test("completed history overlay replaces a stale live answer immediately", () =>
   assert.equal(history[0].messages[0].phase, "final");
 });
 
-test("completed history ignores a promptless compaction echo", () => {
+test("completed history keeps independent turns with identical answers", () => {
   const history = [{
     id: "turn-user",
     prompt: "Вопрос",
@@ -59,12 +59,13 @@ test("completed history ignores a promptless compaction echo", () => {
   }];
 
   mergeCompletedTaskHistory(history, {
-    turnId: "turn-compaction",
+    turnId: "turn-second",
     answer: "Готово",
   });
 
-  assert.equal(history.length, 1);
+  assert.equal(history.length, 2);
   assert.equal(history[0].id, "turn-user");
+  assert.equal(history[1].id, "turn-second");
 });
 
 test("empty completion placeholder is recognized only without user input", () => {

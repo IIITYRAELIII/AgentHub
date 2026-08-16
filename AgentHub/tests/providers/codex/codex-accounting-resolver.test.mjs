@@ -19,18 +19,27 @@ test("Codex accounting resolver follows a subagent to its durable root", async (
 });
 
 test("Codex accounting resolver recovers a parent turn from historical rollout", async () => {
+  let scans = 0;
   const resolver = new CodexAccountingResolver({
     readThread: async () => null,
     findRollout: async () => "parent.jsonl",
     readRolloutSession: async () => null,
     readSubagentSpawn: async () => null,
-    scanHistoricalRollout: async () => ({
+    scanHistoricalRollout: async () => {
+      scans += 1;
+      return ({
       turns: [{ turnId: "turn-parent", spawnedSubagents: [{ threadId: "child" }] }],
-    }),
+      });
+    },
   });
 
   assert.equal(await resolver.subagentParentTurnId(
     { id: "child" },
     { parentThreadId: "parent" },
   ), "turn-parent");
+  assert.equal(await resolver.subagentParentTurnId(
+    { id: "child" },
+    { parentThreadId: "parent" },
+  ), "turn-parent");
+  assert.equal(scans, 1);
 });

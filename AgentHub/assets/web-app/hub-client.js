@@ -486,7 +486,35 @@ function applyMessageReceipts(snapshot) {
       || receipt.deferred === true
       || receipt.steered === true;
     agentHub.completeSend(clientUserMessageId, { accepted });
-    patchOutgoing(taskId(provider, threadId), clientUserMessageId, {
+    const stableTaskId = taskId(provider, threadId);
+    const restoredText = String(receipt.displayText ?? "");
+    const restoredAnnotations = normalizedResponseAnnotations(receipt.responseAnnotations);
+    const restoredRequest = String(receipt.responseAnnotationRequest ?? "");
+    const restoredAttachments = attachmentViews(receipt.attachments);
+    const hasRestorableMessage = Boolean(
+      restoredText.trim()
+      || restoredAnnotations.length
+      || restoredRequest.trim()
+      || restoredAttachments.length
+    );
+    if (hasRestorableMessage && !outgoingMessages(stableTaskId).has(clientUserMessageId)) {
+      rememberOutgoing(stableTaskId, {
+        id: `local:${clientUserMessageId}`,
+        provider,
+        threadId,
+        turnId: String(receipt.turnId ?? ""),
+        itemId: receipt.id ?? clientUserMessageId,
+        clientUserMessageId,
+        role: "user",
+        author: "Вы",
+        text: restoredText,
+        responseAnnotations: restoredAnnotations,
+        responseAnnotationRequest: restoredRequest,
+        time: receipt.createdAt ?? null,
+        attachments: restoredAttachments,
+      });
+    }
+    patchOutgoing(stableTaskId, clientUserMessageId, {
       provider,
       threadId,
       turnId: String(receipt.turnId ?? ""),
@@ -1465,8 +1493,8 @@ function historyMessages(history, focusedTurn = null) {
         responseAnnotations: message.responseAnnotations,
         responseAnnotationRequest: message.responseAnnotationRequest,
       } : {}),
-      activities: message.role === "agent" && message.kind !== "subagent" && item.completed ? (item.activities ?? []) : [],
-      activityGroups: message.role === "agent" && message.kind !== "subagent" && item.completed ? (item.activityGroups ?? []) : [],
+      activities: [],
+      activityGroups: [],
       time: message.time ?? (message.role === "user" ? item.startedAt : item.completedAt) ?? null,
       historyOrder: (historyStart + itemIndex) * 1_000 + messageIndex,
       attachments: attachmentViews(message.attachments),
@@ -1892,6 +1920,9 @@ agentHub.on("message:send", (request) => {
       renderOutgoingWithoutBlockingSend(request.taskId);
       const params = {
         text: annotatedText(request.text, request.annotations),
+        displayText: visibleText,
+        responseAnnotations: normalizedResponseAnnotations(request.annotations),
+        responseAnnotationRequest: String(request.text ?? "").trim(),
         streamId: identity?.streamId ?? request.streamId,
         provider: identity?.provider,
         threadId: identity?.threadId,

@@ -62,7 +62,6 @@ test("startup isolates recoverable failures and still marks ready", async () => 
     recoverRuns: async () => { throw new Error("runs"); },
     restoreBackgroundJobs: async () => { throw new Error("jobs"); },
     registerTelegramCommands: async () => { throw new Error("commands"); },
-    finalizeRestart: async () => { throw new Error("restart"); },
   });
   await service.start();
   assert.ok(calls.includes("ready"));
@@ -82,6 +81,15 @@ test("startup isolates recoverable failures and still marks ready", async () => 
   });
   assert.ok(calls.some((value) => value.includes("активные задачи: runs")));
   assert.ok(calls.some((value) => value.includes("медиа-задачи: jobs")));
+});
+
+test("startup never marks a replacement ready before restart state is finalized", async () => {
+  const { service, calls } = coordinator({
+    finalizeRestart: async () => { throw new Error("restart state"); },
+  });
+  await assert.rejects(service.start(), /restart state/u);
+  assert.equal(calls.includes("ready"), false);
+  assert.equal(calls.includes("poll"), false);
 });
 
 test("startup remains ready but degraded when an optional capability fails", async () => {

@@ -33,6 +33,14 @@ export function createDesktopMessageController({
       throw new Error("Неизвестный режим следующего сообщения");
     }
     const descriptors = attachments.length ? describeAttachments(attachments) : [];
+    const displayText = String(params.displayText ?? params.text ?? "").trim();
+    const responseAnnotations = Array.isArray(params.responseAnnotations)
+      ? params.responseAnnotations.slice(0, 20).map((item) => ({
+        text: String(item?.text ?? ""),
+        annotation: String(item?.annotation ?? ""),
+      }))
+      : [];
+    const responseAnnotationRequest = String(params.responseAnnotationRequest ?? "").trim();
     const input = attachments.length
       ? messageInputWithAttachments(text, attachments, descriptors)
       : text;
@@ -64,6 +72,10 @@ export function createDesktopMessageController({
         pending: true,
         threadId: target.threadId,
         clientUserMessageId,
+        displayText,
+        responseAnnotations,
+        responseAnnotationRequest,
+        attachments: descriptors,
         message: "Сообщение сохранено Hub и ожидает подтверждения запуска.",
       });
       await persistReceipts();

@@ -66,6 +66,9 @@ export async function waitForReplacementLock({
   currentPid = process.pid,
   timeoutMs = 15_000,
   pollMs = 100,
+  requireReady = true,
+  expectedPid = null,
+  expectedInstanceToken = "",
   readFileImpl = readFile,
   isAlive = processIsAlive,
   delayImpl = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
@@ -75,7 +78,17 @@ export async function waitForReplacementLock({
     const lock = parseReplacementLock(
       await readFileImpl(lockFile, "utf8").catch(() => ""),
     );
-    if (lock?.ready === true && lock.pid !== currentPid && isAlive(lock.pid)) return lock;
+    const expectedProcess = expectedPid == null || lock?.pid === expectedPid;
+    const expectedInstance = !expectedInstanceToken
+      || lock?.instanceToken === expectedInstanceToken;
+    if (
+      lock
+      && lock.pid !== currentPid
+      && expectedProcess
+      && expectedInstance
+      && (!requireReady || lock.ready === true)
+      && isAlive(lock.pid)
+    ) return lock;
     await delayImpl(pollMs);
   }
   return null;
@@ -87,7 +100,8 @@ export async function launchReplacementAndWait({
   lockFile,
   currentPid = process.pid,
   attempts = 2,
-  readinessTimeoutMs = 15_000,
+  ownershipTimeoutMs = 15_000,
+  readinessTimeoutMs = 120_000,
   spawnImpl = spawn,
   readFileImpl = readFile,
   delayImpl,
@@ -108,15 +122,29 @@ export async function launchReplacementAndWait({
     } catch (error) {
       lastError = error;
     }
-    const lock = await waitForReplacementLock({
+    const owner = await waitForReplacementLock({
       lockFile,
       currentPid,
-      timeoutMs: readinessTimeoutMs,
+      timeoutMs: ownershipTimeoutMs,
+      requireReady: false,
       readFileImpl,
       delayImpl,
       isAlive,
     });
-    if (lock) {
+    if (owner) {
+      const lock = owner.ready === true ? owner : await waitForReplacementLock({
+        lockFile,
+        currentPid,
+        timeoutMs: readinessTimeoutMs,
+        expectedPid: owner.pid,
+        expectedInstanceToken: owner.instanceToken,
+        readFileImpl,
+        delayImpl,
+        isAlive,
+      });
+      if (!lock) {
+        throw new Error(`replacement bot ${owner.pid} acquired ${lockFile} but did not become ready`);
+      }
       return {
         lock,
         attempt: index + 1,
