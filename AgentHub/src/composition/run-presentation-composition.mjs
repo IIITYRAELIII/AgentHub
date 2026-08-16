@@ -124,6 +124,7 @@ export function createRunPresentationComposition({
     }),
     persist: saveState,
     retainAfterEditError: retainProgressMessageAfterEditError,
+    onChange: (run) => taskRuns.touch(run),
   });
 
   return { telegramDeliveryService, taskProgress };

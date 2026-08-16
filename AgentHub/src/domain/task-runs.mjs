@@ -177,6 +177,7 @@ export class TaskRunRegistry {
   #byId = new Map();
   #byTask = new Map();
   #byTurn = new Map();
+  #revision = 0;
 
   constructor(runs = []) {
     for (const run of runs) this.add(run);
@@ -190,6 +191,7 @@ export class TaskRunRegistry {
     this.#byId.set(run.id, run);
     this.#byTask.set(key, run);
     if (run.turnId) this.#byTurn.set(run.turnId, run);
+    this.#revision += 1;
     return run;
   }
 
@@ -212,7 +214,14 @@ export class TaskRunRegistry {
     }
     this.#byTask.set(newKey, run);
     if (run.turnId) this.#byTurn.set(run.turnId, run);
+    this.#revision += 1;
     return run;
+  }
+
+  touch(run) {
+    if (!run?.id || this.#byId.get(run.id) !== run) return false;
+    this.#revision += 1;
+    return true;
   }
 
   bindStream({ provider, threadId, streamId }) {
@@ -247,6 +256,7 @@ export class TaskRunRegistry {
     for (const [turnId, indexedRun] of this.#byTurn) {
       if (indexedRun === run) this.#byTurn.delete(turnId);
     }
+    this.#revision += 1;
     return run;
   }
 
@@ -292,6 +302,10 @@ export class TaskRunRegistry {
 
   get size() {
     return this.#byId.size;
+  }
+
+  get revision() {
+    return this.#revision;
   }
 }
 

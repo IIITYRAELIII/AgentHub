@@ -87,9 +87,19 @@ test("TaskProgressController retains a card and schedules retry after a transien
 });
 
 test("TaskProgressController detects stalled activity", () => {
-  const { controller } = fixture();
+  const changed = [];
+  const { controller } = fixture({ onChange: (item) => changed.push(item.lastMeaningfulProgressAt) });
   const item = run();
   assert.equal(controller.heartbeatState(item, Date.parse("2026-07-22T10:02:00.000Z"), 60_000), "stalled");
   controller.noteActivity(item, Date.parse("2026-07-22T10:01:30.000Z"));
   assert.equal(controller.heartbeatState(item, Date.parse("2026-07-22T10:02:00.000Z"), 60_000), "active");
+  assert.deepEqual(changed, ["2026-07-22T10:01:30.000Z"]);
+});
+
+test("TaskProgressController invalidates the presentation when a run finishes", async () => {
+  const changed = [];
+  const { controller } = fixture({ onChange: (item) => changed.push(item.status) });
+  const item = run();
+  await controller.finish(item, "Готово");
+  assert.deepEqual(changed, ["finishing"]);
 });

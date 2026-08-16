@@ -8,6 +8,7 @@ export class TaskProgressController {
     editMessage,
     persist,
     retainAfterEditError,
+    onChange = () => {},
     onWarning = (message, error) => console.warn(message, error?.message ?? error),
     onError = (message, error) => console.error(message, error?.message ?? error),
     setTimeoutImpl = setTimeout,
@@ -23,6 +24,7 @@ export class TaskProgressController {
     this.editMessage = editMessage;
     this.persist = persist;
     this.retainAfterEditError = retainAfterEditError;
+    this.onChange = onChange;
     this.onWarning = onWarning;
     this.onError = onError;
     this.setTimeoutImpl = setTimeoutImpl;
@@ -101,6 +103,7 @@ export class TaskProgressController {
     const previous = Date.parse(String(run.lastMeaningfulProgressAt ?? ""));
     if (!Number.isFinite(previous) || timestamp > previous) {
       run.lastMeaningfulProgressAt = new Date(timestamp).toISOString();
+      this.onChange(run);
     }
   }
 
@@ -166,6 +169,7 @@ export class TaskProgressController {
     this.cancelStart(run);
     this.cancelUpdate(run);
     run.progressStage = stage;
+    this.onChange(run);
     if (!run.progressMessageIds.length) {
       run.progressReasoning = "";
       run.lastProgressText = "";

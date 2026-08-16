@@ -71,6 +71,22 @@ test("an inactive run cannot be resurrected by a late reindex", () => {
   assert.deepEqual(registry.values(), []);
 });
 
+test("task run registry exposes a monotonic presentation revision", () => {
+  const registry = new TaskRunRegistry();
+  const item = createManagedTaskRun({ id: "run-1", provider: "codex", threadId: "thread-1" });
+  assert.equal(registry.revision, 0);
+  registry.add(item);
+  assert.equal(registry.revision, 1);
+  assert.equal(registry.touch(item), true);
+  assert.equal(registry.revision, 2);
+  registry.reindex(item);
+  assert.equal(registry.revision, 3);
+  registry.remove(item);
+  assert.equal(registry.revision, 4);
+  assert.equal(registry.touch(item), false);
+  assert.equal(registry.revision, 4);
+});
+
 test("taskRunIsActive excludes terminal runs kept for final delivery", () => {
   assert.equal(taskRunIsActive(null), false);
   assert.equal(taskRunIsActive(undefined), false);

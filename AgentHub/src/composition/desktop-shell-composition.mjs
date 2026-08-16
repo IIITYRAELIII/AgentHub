@@ -188,8 +188,7 @@ export function createDesktopShellComposition({
       maintenanceFor: (target) => streamMaintenance.entry(target),
       desktopSnapshotRevision: async () => {
         if (
-          taskRuns.values().some(taskRunIsActive)
-          || pendingInputs.size
+          pendingInputs.size
           || queuedInputs.size
           || approvalController.pending.size
           || hostState.restartRequest
@@ -199,6 +198,7 @@ export function createDesktopShellComposition({
         if (entries.some((entry) => streamMaintenance.entry(entry))) return null;
         return JSON.stringify({
           catalog: taskCatalogService.snapshotRevision,
+          runs: taskRuns.revision,
           selection: selectionStore.revision,
           preferences: agentPreferences.snapshot(),
           autoApprove: hostState.autoApprove,
