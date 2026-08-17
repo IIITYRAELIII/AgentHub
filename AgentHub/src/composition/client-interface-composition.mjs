@@ -107,6 +107,29 @@ export async function createClientInterfaceComposition({
     });
     return Promise.resolve(undefined);
   };
+  if (config.components.telegram && typeof trustedDeviceStore?.useNotifier === "function") {
+    // Device names come from the pairing client, so the message stays plain text
+    // without parse_mode: nothing in it can be read as Telegram markup.
+    trustedDeviceStore.useNotifier(async ({ event, device }) => {
+      const title = event === "paired"
+        ? "🔐 Agent Hub: добавлено доверенное устройство"
+        : "🔓 Agent Hub: доверенное устройство отозвано";
+      const name = [device.name, device.platform].map((part) => String(part ?? "").trim())
+        .filter(Boolean)
+        .join(" · ");
+      const text = [
+        title,
+        name,
+        new Date().toLocaleString("ru-RU"),
+        event === "paired" ? "Если это не вы — отзовите устройство в настройках Agent Hub." : "",
+      ].filter(Boolean).join("\n");
+      await Promise.all([...config.allowedUserIds].map((chatId) => telegram("sendMessage", {
+        chat_id: chatId,
+        text,
+        disable_web_page_preview: true,
+      })));
+    });
+  }
   const sharedDashboardBotClient = config.sharedDashboardBot?.enabled
     ? new SharedDashboardBotClient({
       ...config.sharedDashboardBot,

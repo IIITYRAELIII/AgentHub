@@ -56,9 +56,31 @@ export class TrustedDeviceRegistry {
   #localStore;
   #workerStore = null;
   #reconciliation = null;
+  #notify = null;
 
   constructor(store) {
     this.#localStore = requiredStore(store);
+  }
+
+  /**
+   * Enrollment and revocation are reported out of band. Detection is the only
+   * control that still works when the machine running this code is the one under
+   * attack, so a failing notifier must never block or break the operation.
+   */
+  useNotifier(notify) {
+    this.#notify = typeof notify === "function" ? notify : null;
+  }
+
+  #announce(event, device, userId) {
+    if (!this.#notify || !device) return;
+    try {
+      const result = this.#notify({ event, device, userId: String(userId ?? "") });
+      if (result && typeof result.catch === "function") {
+        result.catch((error) => console.warn(`Cannot announce trusted device ${event}: ${error.message}`));
+      }
+    } catch (error) {
+      console.warn(`Cannot announce trusted device ${event}: ${error.message}`);
+    }
   }
 
   /**
@@ -161,6 +183,7 @@ export class TrustedDeviceRegistry {
       if (deviceNotFound(error) && this.#workerStore) return null;
       throw error;
     });
+    if (local) this.#announce("revoked", local.device, userId);
     if (!this.#workerStore) return local ?? { device: { id: deviceId } };
     try {
       const worker = await this.#workerStore.revoke(userId, deviceId, {
@@ -179,7 +202,12 @@ export class TrustedDeviceRegistry {
     }
   }
 
-  pair(payload) { return this.#localStore.pair(payload); }
+  async pair(payload) {
+    const paired = await this.#localStore.pair(payload);
+    this.#announce("paired", paired?.device, paired?.device?.userId);
+    return paired;
+  }
+
   createChallenge(payload) { return this.#localStore.createChallenge(payload); }
   createSession(payload) { return this.#localStore.createSession(payload); }
   resolveSession(token) { return this.#localStore.resolveSession(token); }

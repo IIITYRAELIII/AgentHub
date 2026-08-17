@@ -214,3 +214,37 @@ test("a device the Worker never learned about is not left queued forever", async
   });
   assert.deepEqual(pending, []);
 });
+
+test("enrollment and revocation are announced out of band", async () => {
+  const announced = [];
+  const device = { id: "018f6c86-3f34-7a31-8f27-16f5b96cce14", name: "Pixel", platform: "Android 15" };
+  const registry = new TrustedDeviceRegistry({
+    pair: async () => ({ device }),
+    revoke: async () => ({ device }),
+    confirmFederatedRevocation: async () => ({ confirmed: true }),
+  });
+  registry.useNotifier((event) => announced.push(event));
+
+  await registry.pair({ code: "AAAAA-BBBBB-CCCCC-DDDDD" });
+  await registry.revoke("42", device.id);
+  assert.deepEqual(announced.map(({ event }) => event), ["paired", "revoked"]);
+  assert.equal(announced[0].device.name, "Pixel");
+  assert.equal(announced[1].userId, "42");
+});
+
+test("a failing notifier never breaks device management", async () => {
+  const device = { id: "018f6c86-3f34-7a31-8f27-16f5b96cce15", name: "Pixel" };
+  const registry = new TrustedDeviceRegistry({
+    pair: async () => ({ device }),
+    revoke: async () => ({ device }),
+  });
+  registry.useNotifier(() => {
+    throw new Error("Telegram unreachable");
+  });
+  assert.deepEqual((await registry.pair({})).device.id, device.id);
+
+  registry.useNotifier(async () => {
+    throw new Error("Telegram unreachable");
+  });
+  assert.deepEqual((await registry.revoke("42", device.id)).device.id, device.id);
+});
