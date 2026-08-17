@@ -29,6 +29,7 @@ const DASHBOARD_BOT_PAIRING_CODE_PATTERN = /^[A-Z2-9]{8}$/u;
 const DASHBOARD_BOT_HUB_NAME_MAX_CHARS = 80;
 const DASHBOARD_BOT_HUB_VERIFIER_PATTERN = /^sha256:[a-f0-9]{64}$/u;
 const DASHBOARD_BOT_HUB_REGISTRY_MAX_ENTRIES = 1_000;
+const DASHBOARD_BOT_SERVICE_IDENTITY_KEY = "dashboard-bot:service-identity";
 const DASHBOARD_BOT_BUNDLE_CALLBACK_PATTERN = /^forward-bundle:(send|separate|cancel):([0-9a-f-]{36})$/iu;
 const DASHBOARD_BOT_BUNDLE_MAX_ITEMS = 100;
 const DASHBOARD_BOT_BUNDLE_MAX_CHARS = 50_000;
@@ -385,7 +386,10 @@ export function validateControlCommand(payload) {
   };
 }
 
-export async function validateControlServiceRequest(request, secret, { now = Date.now() } = {}) {
+export async function validateControlServiceRequest(request, secret, {
+  now = Date.now(),
+  pathname = "",
+} = {}) {
   const timestamp = Number(request.headers.get("X-Agent-Hub-Timestamp"));
   const receivedSignature = String(request.headers.get("X-Agent-Hub-Signature") ?? "").toLowerCase();
   if (!Number.isSafeInteger(timestamp) || Math.abs(Math.trunc(now / 1_000) - timestamp) > MAX_SYNC_AGE_SECONDS) {
@@ -397,7 +401,7 @@ export async function validateControlServiceRequest(request, secret, { now = Dat
   const signatureValue = [
     timestamp,
     request.method.toUpperCase(),
-    url.pathname,
+    pathname || url.pathname,
     await sha256(body),
   ].join("\n");
   if (!await verifyHmac(secret, signatureValue, receivedSignature)) {
@@ -1164,7 +1168,9 @@ export class JournalStore extends DurableObject {
   async #authenticateDashboardBotHub(request) {
     const hubId = String(request.headers.get("X-Agent-Hub-Dashboard-Id") ?? "").trim().toLowerCase();
     if (!CONTROL_ID_PATTERN.test(hubId)) throw new Error("invalid dashboard bot hub id");
-    const record = await this.ctx.storage.get(dashboardBotHubKey(hubId));
+    const record = await this.ctx.storage.get(dashboardBotHubKey(hubId))
+      ?? await this.ctx.storage.get(DASHBOARD_BOT_SERVICE_IDENTITY_KEY);
+    if (record?.hubId !== hubId) throw new Error("dashboard bot hub is not registered");
     if (!record?.secret) throw new Error("dashboard bot hub is not registered");
     const body = await validateControlServiceRequest(request, record.secret);
     if (!record.userId || !record.chatId) throw new Error("dashboard bot hub is not paired");
@@ -1174,6 +1180,57 @@ export class JournalStore extends DurableObject {
       userId: String(record.userId),
       chatId: String(record.chatId),
     };
+  }
+
+  async #dashboardBotServiceIdentity(payload) {
+    const hubId = String(payload?.hubId ?? "").trim().toLowerCase();
+    if (!CONTROL_ID_PATTERN.test(hubId)) throw new Error("invalid dashboard bot hub id");
+    const record = await this.ctx.storage.get(dashboardBotHubKey(hubId));
+    if (!record?.secret) throw new Error("dashboard bot hub is not registered");
+    if (!record.userId || !record.chatId) throw new Error("dashboard bot hub is not paired");
+    return {
+      hubId,
+      secret: record.secret,
+      userId: String(record.userId),
+      chatId: String(record.chatId),
+      updatedAt: Number(record.updatedAt) || 0,
+    };
+  }
+
+  async #registerDashboardBotServiceIdentity(payload) {
+    const hubId = String(payload?.hubId ?? "").trim().toLowerCase();
+    const secret = String(payload?.secret ?? "").trim();
+    const userId = String(payload?.userId ?? "").trim();
+    const chatId = String(payload?.chatId ?? "").trim();
+    const updatedAt = Math.max(0, Number(payload?.updatedAt) || 0);
+    if (
+      !CONTROL_ID_PATTERN.test(hubId)
+      || secret.length < 32
+      || secret.length > 256
+      || !userId
+      || !chatId
+    ) {
+      throw new Error("invalid dashboard bot service identity");
+    }
+    const existing = await this.ctx.storage.get(DASHBOARD_BOT_SERVICE_IDENTITY_KEY);
+    if (Number(existing?.updatedAt ?? 0) > updatedAt) return { ok: true, updated: false };
+    const identity = { hubId, secret, userId, chatId, updatedAt };
+    await this.ctx.storage.put(DASHBOARD_BOT_SERVICE_IDENTITY_KEY, identity);
+    return { ok: true, updated: true };
+  }
+
+  async #exportDashboardBotServiceIdentity(request, pathname) {
+    if (![
+      "/api/dashboard-bot/pull",
+      "/api/dashboard-bot/result",
+      "/api/dashboard-bot/attachment/pull",
+    ].includes(pathname)) {
+      throw new Error("invalid dashboard bot service path");
+    }
+    const hubId = String(request.headers.get("X-Agent-Hub-Dashboard-Id") ?? "").trim().toLowerCase();
+    const identity = await this.#dashboardBotServiceIdentity({ hubId });
+    const body = await validateControlServiceRequest(request, identity.secret, { pathname });
+    return { ...identity, body };
   }
 
   async #linkDashboardBotHub(message, code) {
@@ -2112,6 +2169,32 @@ export class JournalStore extends DurableObject {
 
   async fetch(request) {
     const url = new URL(request.url);
+    if (request.method === "POST" && url.pathname === "/dashboard-bot/service-identity") {
+      try {
+        return json(await this.#dashboardBotServiceIdentity(await request.json()));
+      } catch (error) {
+        const status = /not paired/iu.test(error.message) ? 409 : 400;
+        return json({ error: error.message }, status);
+      }
+    }
+    if (request.method === "POST" && url.pathname === "/dashboard-bot/service-register") {
+      try {
+        return json(await this.#registerDashboardBotServiceIdentity(await request.json()));
+      } catch (error) {
+        return json({ error: error.message }, 400);
+      }
+    }
+    if (request.method === "POST" && url.pathname === "/dashboard-bot/service-export") {
+      try {
+        return json(await this.#exportDashboardBotServiceIdentity(
+          request,
+          String(url.searchParams.get("pathname") ?? ""),
+        ));
+      } catch (error) {
+        const status = /not paired/iu.test(error.message) ? 409 : 401;
+        return json({ error: error.message }, status);
+      }
+    }
     if (
       request.method === "POST"
       && ["/dashboard-bot/register", "/dashboard-bot/register-existing"].includes(url.pathname)
@@ -2926,6 +3009,30 @@ export default {
         try {
           for (const routedCommand of routedCommands) {
             const hubStore = env.JOURNAL.getByName(`dashboard-bot:${routedCommand.hubId}`);
+            const identityResponse = await store.fetch(new Request(
+              "https://journal.internal/dashboard-bot/service-identity",
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ hubId: routedCommand.hubId }),
+              },
+            ));
+            if (!identityResponse.ok) {
+              const error = await identityResponse.json().catch(() => ({}));
+              throw new Error(String(error?.error ?? "dashboard bot hub identity is unavailable"));
+            }
+            const serviceRegistration = await hubStore.fetch(new Request(
+              "https://journal.internal/dashboard-bot/service-register",
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(await identityResponse.json()),
+              },
+            ));
+            if (!serviceRegistration.ok) {
+              const error = await serviceRegistration.json().catch(() => ({}));
+              throw new Error(String(error?.error ?? "dashboard bot hub identity was not stored"));
+            }
             let command = routedCommand.command;
             if (Array.isArray(routedCommand.telegramImages) && routedCommand.telegramImages.length) {
               command = {
@@ -3003,16 +3110,42 @@ export default {
       "/api/dashboard-bot/attachment/pull",
     ].includes(url.pathname)) {
       if (request.method !== "POST") return json({ error: "Method Not Allowed" }, 405);
-      const authenticated = await store.fetch(new Request(`https://journal.internal${url.pathname}`, request));
-      if (!authenticated.ok) return authenticated;
-      const identity = await authenticated.json();
+      const hubId = String(request.headers.get("X-Agent-Hub-Dashboard-Id") ?? "").trim().toLowerCase();
+      if (!CONTROL_ID_PATTERN.test(hubId)) return json({ error: "invalid dashboard bot hub id" }, 401);
+      const hubStore = env.JOURNAL.getByName(`dashboard-bot:${hubId}`);
+      let authenticated = await hubStore.fetch(new Request(
+        `https://journal.internal${url.pathname}`,
+        request.clone(),
+      ));
+      let identity;
+      if (authenticated.ok) {
+        identity = await authenticated.json();
+      } else {
+        if (authenticated.status !== 401) return authenticated;
+        authenticated = await store.fetch(new Request(
+          `https://journal.internal/dashboard-bot/service-export?pathname=${encodeURIComponent(url.pathname)}`,
+          request.clone(),
+        ));
+        if (!authenticated.ok) return authenticated;
+        const migratedIdentity = await authenticated.json();
+        const serviceRegistration = await hubStore.fetch(new Request(
+          "https://journal.internal/dashboard-bot/service-register",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(migratedIdentity),
+          },
+        ));
+        if (!serviceRegistration.ok) return serviceRegistration;
+        const { secret: _secret, ...publicIdentity } = migratedIdentity;
+        identity = publicIdentity;
+      }
       let payload;
       try {
         payload = parseJson(identity.body, "dashboard bot service request");
       } catch (error) {
         return json({ error: error.message }, 400);
       }
-      const hubStore = env.JOURNAL.getByName(`dashboard-bot:${identity.hubId}`);
       if (url.pathname.endsWith("/attachment/pull")) {
         const id = String(payload?.id ?? "").toLowerCase();
         const commandId = String(payload?.commandId ?? "").toLowerCase();

@@ -1017,6 +1017,8 @@ test("shared Dashboard bot pairs one Telegram user and queues Tasks only for tha
   assert.equal((await response.json()).ok, true);
   assert.match(telegramCalls.at(-1).body.text, /Поставлено в очередь Agent Hub/u);
 
+  stores.get(`dashboard-bot:${hubId}`).ctx.storage.values.delete("dashboard-bot:service-identity");
+
   response = await workerModule.default.fetch(signedServiceRequest(
     "https://hub.test/api/dashboard-bot/pull",
     { limit: 10, waitMs: 0 },
@@ -1191,17 +1193,27 @@ test("shared Dashboard bot pairs one Telegram user and queues Tasks only for tha
       text: "Нужно закончить до пятницы",
     },
   });
-  assert.equal(response.status, 200);
-  assert.match(telegramCalls.at(-1).body.text, /Уточнение поставлено в очередь Agent Hub/u);
+  assert.equal(
+    stores.get(`dashboard-bot:${hubId}`).ctx.storage.values.get("dashboard-bot:service-identity").hubId,
+    hubId,
+  );
+
+  const globalHubKey = `dashboard-bot:hub:${hubId}`;
+  const globalHub = stores.get("current").ctx.storage.values.get(globalHubKey);
+  stores.get("current").ctx.storage.values.delete(globalHubKey);
   response = await workerModule.default.fetch(signedServiceRequest(
     "https://hub.test/api/dashboard-bot/pull",
     { limit: 10, waitMs: 0 },
     hubSecret,
     { "X-Agent-Hub-Dashboard-Id": hubId },
   ), env);
+  assert.equal(response.status, 200);
   const [clarificationCommand] = (await response.json()).commands;
-  assert.equal(clarificationCommand.params.replyMessageId, 2);
   assert.equal(clarificationCommand.params.text, "Нужно закончить до пятницы");
+  stores.get("current").ctx.storage.values.set(globalHubKey, globalHub);
+  assert.equal(response.status, 200);
+  assert.match(telegramCalls.at(-1).body.text, /Уточнение поставлено в очередь Agent Hub/u);
+  assert.equal(clarificationCommand.params.replyMessageId, 2);
   assert.equal(clarificationCommand.params.sourceKey, undefined);
   assert.equal(clarificationCommand.params.sourceDetails.messageId, 30);
   response = await workerModule.default.fetch(signedServiceRequest(

@@ -577,7 +577,7 @@ function visibleConversationMessages(messages, {
     if (
       message?.role === "user"
       && deferredIds.has(String(message?.clientUserMessageId ?? "").trim())
-    ) return false;
+    ) return true;
     return Boolean(
       String(message?.text ?? "").trim()
       || normalizedResponseAnnotations(message?.responseAnnotations).some((item) => (
