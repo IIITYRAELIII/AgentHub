@@ -76,6 +76,27 @@ test("an automatic compaction is visible from start through completion", () => {
   tracker.dispose();
 });
 
+test("a late compaction item cannot replace the original context baseline", () => {
+  const tracker = new ContextCompactionTracker({ idFactory: () => "hub-compaction" });
+  const started = tracker.begin("thread-baseline", {
+    origin: "automatic",
+    beforePercent: 77.748452,
+    captureRawItem: true,
+  });
+
+  const observed = tracker.begin("thread-baseline", {
+    origin: "automatic",
+    turnId: "compaction-turn",
+    itemId: "compaction-item",
+    beforePercent: 6.87113,
+  });
+
+  assert.equal(observed.id, started.id);
+  assert.equal(observed.itemId, "compaction-item");
+  assert.equal(observed.beforePercent, 77.748452);
+  tracker.dispose();
+});
+
 test("the first exact context after an automatic compaction is immutable", () => {
   let now = Date.parse("2026-08-08T19:58:35.000Z");
   const tracker = new ContextCompactionTracker({

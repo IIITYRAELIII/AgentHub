@@ -115,6 +115,30 @@ test("Desktop task open shares one response budget between snapshot and history"
   assert.ok(historyParams.maxResponseBytes < 550_000);
 });
 
+test("Desktop task open resolves a rotated Thread to the current Stream task", async () => {
+  const { service, calls } = fixture();
+  service.threadsForStream = () => [
+    { provider: "codex", threadId: "thread-old" },
+    { provider: "codex", threadId: "thread-1" },
+  ];
+
+  const result = await service.openTask({
+    provider: "codex",
+    threadId: "thread-old",
+    limit: 20,
+  });
+
+  const dispatch = calls.find(([name]) => name === "dispatch");
+  const history = calls.find(([name]) => name === "history");
+  assert.equal(dispatch[2].streamId, "stream-1");
+  assert.equal(dispatch[2].threadId, "thread-1");
+  assert.equal(dispatch[4].target.streamId, "stream-1");
+  assert.equal(dispatch[4].target.threadId, "thread-1");
+  assert.equal(history[1].streamId, "stream-1");
+  assert.equal(history[1].threadId, "thread-1");
+  assert.equal(result.history.params.threadId, "thread-1");
+});
+
 test("Desktop turn open verifies task ownership before returning the body", async () => {
   const { service, calls } = fixture();
   const result = await service.openTurn({

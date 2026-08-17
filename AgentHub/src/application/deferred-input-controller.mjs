@@ -1,6 +1,9 @@
+import { CONTEXT_MAINTENANCE_ACTIVE_ERROR_CODE } from "../domain/deferred-input.mjs";
+
 export function isRetryableDeferredLaunchError(error) {
   const code = String(error?.code ?? "").trim().toUpperCase();
   if ([
+    CONTEXT_MAINTENANCE_ACTIVE_ERROR_CODE,
     "EPIPE",
     "ECONNRESET",
     "ECONNREFUSED",
@@ -11,6 +14,9 @@ export function isRetryableDeferredLaunchError(error) {
 }
 
 export function deferredLaunchWaitReason(error) {
+  if (String(error?.code ?? "").trim().toUpperCase() === CONTEXT_MAINTENANCE_ACTIVE_ERROR_CODE) {
+    return "context-maintenance";
+  }
   const message = String(error?.message ?? error ?? "");
   if (/thread\s+\S+\s+already has an active writer/i.test(message)) {
     return "provider-thread-active";

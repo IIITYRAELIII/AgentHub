@@ -6,6 +6,7 @@ import {
   interstreamOriginAuthor,
   normalizeInterstreamOrigin,
 } from "../domain/interstream-message.mjs";
+import { contextMaintenanceActiveError } from "../domain/deferred-input.mjs";
 
 export function activeTurnNotSteerable(error) {
   const details = `${String(error?.message ?? "")} ${JSON.stringify(error?.data ?? {})}`.toLowerCase();
@@ -190,6 +191,7 @@ export class RunCoordinator {
   }
 
   async startDeferredUnlocked(item) {
+    if (this.isMaintenanceActive(item)) throw contextMaintenanceActiveError();
     const messageOrigin = normalizeInterstreamOrigin(item.messageOrigin);
     const target = {
       provider: item.provider,
@@ -208,6 +210,10 @@ export class RunCoordinator {
       deferredInput: item,
     };
     const run = await this.beginRun(item.input, target);
+    if (this.isMaintenanceActive(target)) {
+      await this.rollbackAdmission(run);
+      throw contextMaintenanceActiveError();
+    }
     run.messageAttachments = persistentAttachmentDescriptors(
       this.describeAttachments,
       item.temporaryFiles ?? [],

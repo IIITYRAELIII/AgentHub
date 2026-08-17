@@ -1,3 +1,12 @@
+export const CONTEXT_MAINTENANCE_ACTIVE_ERROR_CODE = "ERR_CONTEXT_MAINTENANCE_ACTIVE";
+
+export function contextMaintenanceActiveError() {
+  return Object.assign(
+    new Error("context maintenance is active"),
+    { code: CONTEXT_MAINTENANCE_ACTIVE_ERROR_CODE },
+  );
+}
+
 export function deferredInputText(input) {
   return typeof input === "string"
     ? input

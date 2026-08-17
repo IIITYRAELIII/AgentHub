@@ -333,6 +333,29 @@ test("RunCoordinator starts a durable queued item exactly once", async () => {
   assert.deepEqual(f.calls.at(-1).slice(1), [f.run, "queued", [], { forceSpeechButton: true }]);
 });
 
+test("RunCoordinator rolls back a queued launch when context maintenance wins admission", async () => {
+  let maintenanceChecks = 0;
+  const f = fixture({
+    isMaintenanceActive: () => {
+      maintenanceChecks += 1;
+      return maintenanceChecks > 1;
+    },
+  });
+  const item = {
+    ...f.target,
+    streamId: "stream-1",
+    input: "must wait for measurement",
+    clientUserMessageId: "message-maintenance-race",
+  };
+
+  await assert.rejects(
+    f.coordinator.startDeferred(item),
+    (error) => error?.code === "ERR_CONTEXT_MAINTENANCE_ACTIVE",
+  );
+
+  assert.deepEqual(f.calls.map(([name]) => name), ["begin", "rollback"]);
+});
+
 test("RunCoordinator restores interstream identity from a durable queued item", async () => {
   const f = fixture();
   const messageOrigin = {

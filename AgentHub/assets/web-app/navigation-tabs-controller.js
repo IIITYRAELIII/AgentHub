@@ -41,10 +41,26 @@
     }
   }
 
+  function resolvedChatRoute(opened, fallback = {}) {
+    const history = opened?.history ?? {};
+    const provider = String(history.provider ?? fallback.provider ?? "").trim();
+    const threadId = String(history.threadId ?? fallback.threadId ?? "").trim();
+    const streamId = String(history.streamId ?? fallback.streamId ?? "").trim();
+    return {
+      provider,
+      threadId,
+      streamId,
+      hash: provider && threadId
+        ? `#/chat/${encodeURIComponent(provider)}/${encodeURIComponent(threadId)}`
+        : "",
+    };
+  }
+
   window.AgentHubNavigationTabs = Object.freeze({
     currentNavigationTab,
     isStandaloneNavigationTab,
     normalizeNavigationTab,
+    resolvedChatRoute,
     storedNavigationTab,
   });
 })();

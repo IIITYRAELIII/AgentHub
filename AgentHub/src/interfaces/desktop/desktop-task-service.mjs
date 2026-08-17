@@ -75,6 +75,30 @@ export class DesktopTaskService {
     return entries.find((entry) => entryMatchesReference(entry, reference)) ?? null;
   }
 
+  #findHistoricalThread(params, entries = this.catalog()) {
+    const reference = normalizedTaskReference(params);
+    if (reference.streamId) return null;
+    return entries.find((entry) => entry?.streamId && this.threadsForStream(entry.streamId).some((thread) => (
+      String(thread?.provider ?? "") === reference.provider
+      && String(thread?.threadId ?? "") === reference.threadId
+    ))) ?? null;
+  }
+
+  async #resolveOpenEntry(params) {
+    let entries = this.catalog();
+    let entry = this.#find(params, entries) ?? this.#findHistoricalThread(params, entries);
+    if (!entry) {
+      entries = await this.refreshCatalog();
+      entry = this.#find(params, entries) ?? this.#findHistoricalThread(params, entries);
+    } else {
+      void this.refreshCatalog().catch((error) => {
+        this.warn(`Cannot refresh task catalog after Desktop task open: ${error.message}`);
+      });
+    }
+    if (!entry) throw new Error("Задача не найдена в локальном каталоге");
+    return entry;
+  }
+
   async resolveTarget(params, context = null) {
     const reference = normalizedTaskReference(params);
     let entry = this.#find(params);
@@ -127,18 +151,27 @@ export class DesktopTaskService {
   }
 
   async openTask(params, context = null) {
+    const entry = await this.#resolveOpenEntry(params);
+    const resolvedParams = {
+      ...params,
+      streamId: entry.streamId ?? null,
+      provider: entry.provider,
+      projectRoot: entry.projectRoot,
+      threadId: entry.threadId,
+      taskTitle: taskDisplayTitle(entry),
+    };
     const snapshot = await this.dispatchCommand(
       "task.select",
-      params,
+      resolvedParams,
       context,
-      { target: this.commandTaskTarget(params) },
+      { target: this.commandTaskTarget(resolvedParams) },
     );
     return {
       snapshot,
       history: await this.taskHistory({
-        streamId: params.streamId,
-        provider: params.provider,
-        threadId: params.threadId,
+        streamId: resolvedParams.streamId,
+        provider: resolvedParams.provider,
+        threadId: resolvedParams.threadId,
         refreshSource: true,
         limit: params.limit,
         maxAnswerChars: params.maxAnswerChars,

@@ -269,13 +269,14 @@ export class ContextCompactionTracker {
     const now = new Date(this.clock()).toISOString();
     const existing = this.entries.get(key);
     const initialBeforePercent = boundedPercent(beforePercent);
+    const existingBeforePercent = boundedPercent(existing?.beforePercent);
     const record = existing?.status === "running"
       ? {
         ...existing,
         turnId: String(turnId ?? existing.turnId ?? "").trim() || null,
         itemId: String(itemId ?? existing.itemId ?? "").trim() || null,
         captureRawItem: Boolean(existing.captureRawItem || captureRawItem),
-        ...(initialBeforePercent !== null
+        ...(existingBeforePercent === null && initialBeforePercent !== null
           ? { beforePercent: initialBeforePercent }
           : {}),
       }

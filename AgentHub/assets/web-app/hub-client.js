@@ -3019,13 +3019,19 @@ async function openRoute() {
       limit: 20,
     }));
   } else {
-    applyOpened(await control("open-task", {
+    const opened = await control("open-task", {
       provider: parts[1],
       threadId: parts[2],
       limit: 20,
-    }));
+    });
+    applyOpened(opened);
+    const route = window.AgentHubNavigationTabs.resolvedChatRoute(opened, {
+      provider: parts[1],
+      threadId: parts[2],
+    });
+    rememberSelectedTaskId(taskId(route.provider, route.threadId, route.streamId));
+    if (route.hash && route.hash !== location.hash) replaceRoute(route.hash);
   }
-  rememberSelectedTaskId(taskId(parts[1], parts[2]));
   return true;
 }
 

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  deferredLaunchWaitReason,
   DeferredInputController,
   isRetryableDeferredLaunchError,
 } from "../../src/application/deferred-input-controller.mjs";
@@ -57,6 +58,11 @@ test("retryable deferred launch errors are limited to transport failures", () =>
     new Error("thread thread-1 already has an active writer"),
   ), true);
   assert.equal(isRetryableDeferredLaunchError(new Error("invalid model")), false);
+  const maintenance = Object.assign(new Error("maintenance race"), {
+    code: "ERR_CONTEXT_MAINTENANCE_ACTIVE",
+  });
+  assert.equal(isRetryableDeferredLaunchError(maintenance), true);
+  assert.equal(deferredLaunchWaitReason(maintenance), "context-maintenance");
 });
 
 test("DeferredInputController starts a free queued item exactly once", async () => {
@@ -173,6 +179,28 @@ test("DeferredInputController releases one queued message after a context probe 
   await state.controller.process("after-probe");
   assert.deepEqual(started, ["after-probe"]);
   assert.equal(state.queuedInputs.has("after-probe"), false);
+});
+
+test("DeferredInputController keeps input queued when maintenance wins the launch race", async () => {
+  const state = fixture({
+    isBlocked: async () => false,
+    start: async () => {
+      throw Object.assign(new Error("maintenance race"), {
+        code: "ERR_CONTEXT_MAINTENANCE_ACTIVE",
+      });
+    },
+  });
+  const item = { id: "raced", streamId: "stream-1", taskTitle: "Task" };
+  state.queuedInputs.set(item.id, item);
+
+  await state.controller.process(item.id);
+
+  assert.equal(state.queuedInputs.get(item.id), item);
+  assert.equal(state.pendingInputs.has(item.id), false);
+  assert.equal(item.waitReason, "context-maintenance");
+  assert.equal(item.dispatchingAt, undefined);
+  assert.equal(state.timers.at(-1).delay, 2_000);
+  assert.deepEqual(state.transitions.map((entry) => entry.state), ["dispatching", "retrying"]);
 });
 
 test("DeferredInputController returns a failed launch to pending without losing input", async () => {

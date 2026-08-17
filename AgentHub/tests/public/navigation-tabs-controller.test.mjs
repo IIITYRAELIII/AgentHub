@@ -21,7 +21,6 @@ test("every standalone section remains active after storage restoration", async 
     assert.equal(isStandaloneNavigationTab(restored), true);
   }
 });
-
 test("task and chat panes remain active after storage restoration", async () => {
   const { currentNavigationTab, storedNavigationTab } = await navigationTabsApi();
   for (const tab of ["tasks", "chat"]) {
@@ -35,3 +34,16 @@ test("invalid or unavailable storage safely falls back to tasks", async () => {
   assert.equal(storedNavigationTab({ getItem: () => "unknown" }, "navigation-key"), "tasks");
   assert.equal(storedNavigationTab({ getItem: () => { throw new Error("blocked"); } }), "tasks");
 });
+
+test("a rotated Thread route follows the current history identity", async () => {
+  const { resolvedChatRoute } = await navigationTabsApi();
+  const route = resolvedChatRoute(
+    { history: { provider: "codex", threadId: "thread-current", streamId: "stream-1" } },
+    { provider: "codex", threadId: "thread-old" },
+  );
+  assert.equal(route.provider, "codex");
+  assert.equal(route.threadId, "thread-current");
+  assert.equal(route.streamId, "stream-1");
+  assert.equal(route.hash, "#/chat/codex/thread-current");
+});
+
