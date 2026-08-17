@@ -56,6 +56,43 @@
     return { text, successMessage: "Сообщение скопировано" };
   }
 
+  function extractTechnicalTails(value) {
+    const tokenPattern = /(runtime|коммит)\s*(?:[:—–-]\s*)?(?:`([^`\r\n]+)`|(\d{12,}-[\p{L}\p{N}_-]+|[0-9a-f]{7,40}))/giu;
+    const rows = [];
+    const kept = [];
+    const segments = String(value ?? "").match(/[^.!?\n]+[.!?]?|\n/gu) ?? [];
+    for (const segment of segments) {
+      const matches = Array.from(segment.matchAll(tokenPattern));
+      if (!matches.length) {
+        kept.push(segment);
+        continue;
+      }
+      const note = segment.replace(tokenPattern, "")
+        .replace(/^[\s,;:—–-]+/gu, "")
+        .replace(/[ \t]+/gu, " ")
+        .trim();
+      matches.forEach((match, index) => rows.push({
+        label: String(match[1]).toLocaleUpperCase("ru-RU"),
+        value: String(match[2] ?? match[3] ?? "").trim(),
+        note: index === matches.length - 1 ? note : "",
+      }));
+    }
+    const text = kept.join("")
+      .replace(/[ \t]+\n/gu, "\n")
+      .replace(/\n[ \t]+/gu, "\n")
+      .replace(/[ \t]{2,}/gu, " ")
+      .trim();
+    return { text, rows };
+  }
+
+  function normalizeSystemEventText(value) {
+    const text = String(value ?? "").trim();
+    if (!/св[её]рт/iu.test(text)) return text;
+    const transition = text.match(/(\d+(?:[.,]\d+)?%)\s*(?:->|>|→)\s*(\d+(?:[.,]\d+)?%)/u);
+    if (!transition) return text;
+    return `Свёртка контекста · ${transition[1]} → ${transition[2]}`;
+  }
+
   function reconcileKeyedChildren(container, specs, createNode, updateNode = () => {}) {
     if (!container || typeof container.insertBefore !== "function") {
       throw new TypeError("container must support insertBefore");
@@ -90,9 +127,11 @@
 
   globalThis.AgentHubMessageView = Object.freeze({
     composerFollowUpMode,
+    extractTechnicalTails,
     messageCopyRequest,
     messageContentSignature,
     messageKey,
+    normalizeSystemEventText,
     reconcileKeyedChildren,
   });
 })();

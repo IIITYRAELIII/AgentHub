@@ -21,7 +21,11 @@ test("dialog geometry references semantic tokens without literal colors", async 
   assert.match(styles, /--dialog-canvas: var\(--bg\)/u);
   assert.match(styles, /--dialog-agent-2: hsl\(from var\(--accent\) calc\(h \+ 120\) s l\)/u);
   assert.match(styles, /\.chat-log \{[\s\S]*gap: 28px;/u);
-  assert.match(styles, /\.msg-user \.msg-body \{[\s\S]*max-width: 560px;/u);
+  assert.match(styles, /\.msg-user-bubble \{[\s\S]*max-width: 560px;/u);
+  assert.match(styles, /\.provider-dot\[data-state="idle"\] \{[\s\S]*background: var\(--dialog-agent-color\);[\s\S]*opacity: 0\.8;/u);
+  assert.match(styles, /\.provider-dot\[data-state="failed"\] \{[\s\S]*0 0 0 2px var\(--dialog-chrome\)/u);
+  assert.match(styles, /\.stream-tabs-track \.stream-tab\[data-current\] \{[\s\S]*border: 0 !important;[\s\S]*box-shadow: inset 0 -2px 0 var\(--dialog-accent\) !important;/u);
+  assert.match(styles, /\.stream-tabs-controls \.stream-tab-utility \{[\s\S]*flex: 0 0 26px !important;[\s\S]*width: 26px !important;/u);
   assert.match(styles, /\.chat-scroll > \.msg-live \{[\s\S]*width: min\(var\(--dialog-column-width\), calc\(100% - 32px\)\);/u);
   assert.match(styles, /\.chat-stop-bottom \{[\s\S]*background: color-mix\(in srgb, var\(--dialog-danger\) 10%, transparent\);[\s\S]*width: 30px;/u);
   assert.doesNotMatch(styles, /(?<!track )\.stream-tab-card \{/u);
@@ -65,5 +69,7 @@ test("dialog interactions expose overflow, message actions and anchored context"
   assert.doesNotMatch(app, /contextUsageModal\.showModal\(\)/u);
   assert.match(app, /const major = category\.tokens != null && share >= 2;/u);
   assert.match(app, /class: "msg-technical"/u);
+  assert.match(app, /class: "msg-user-bubble"/u);
+  assert.match(app, /createPhosphorIcon\(document, "caret-right", "activity-disclosure-icon"\)/u);
   assert.match(app, /streamHeaderModel\.textContent = shortModelLabel\(model\)/u);
 });

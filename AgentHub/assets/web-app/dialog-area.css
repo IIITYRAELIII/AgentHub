@@ -39,17 +39,17 @@ html[data-view="chat"][data-surface][data-theme] {
 /* Полоса потоков. */
 .stream-tabs {
   align-items: stretch;
-  background: var(--dialog-chrome);
-  border: 0;
-  border-bottom: 1px solid var(--dialog-hairline);
-  border-radius: 0;
+  background: var(--dialog-chrome) !important;
+  border: 0 !important;
+  border-bottom: 1px solid var(--dialog-hairline) !important;
+  border-radius: 0 !important;
   display: flex;
   flex: 0 0 44px;
-  gap: 0;
+  gap: 0 !important;
   height: 44px;
-  min-height: 44px;
+  min-height: 44px !important;
   overflow: visible;
-  padding: 0;
+  padding: 0 !important;
   scrollbar-width: none;
 }
 
@@ -84,9 +84,26 @@ html[data-view="chat"][data-surface][data-theme] {
   width: 26px;
 }
 
+.stream-tabs-controls .stream-tab-utility {
+  align-self: center !important;
+  border: 0 !important;
+  border-radius: 7px !important;
+  flex: 0 0 26px !important;
+  height: 26px !important;
+  max-width: 26px !important;
+  min-height: 26px !important;
+  min-width: 26px !important;
+  padding: 0 !important;
+  width: 26px !important;
+}
+
 .stream-order-toggle {
   align-self: center;
   background: var(--dialog-sunken);
+}
+
+.stream-tabs-controls .stream-order-toggle {
+  background: var(--dialog-sunken) !important;
 }
 
 .stream-tab-utility:hover,
@@ -98,6 +115,12 @@ html[data-view="chat"][data-surface][data-theme] {
   background: var(--dialog-control-hover);
   color: var(--dialog-text-2);
   outline: 0;
+}
+
+.stream-tabs-controls .stream-tab-utility:hover,
+.stream-tabs-controls .stream-tab-utility:focus-visible {
+  background: var(--dialog-control-hover) !important;
+  border: 0 !important;
 }
 
 .stream-tab-utility svg {
@@ -135,38 +158,40 @@ html[data-view="chat"][data-surface][data-theme] {
 .stream-tabs-track .stream-tab {
   align-items: stretch;
   appearance: none;
-  background: transparent;
-  border: 0;
-  border-radius: 0;
-  box-shadow: none;
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
   color: var(--dialog-text-2);
   cursor: pointer;
   display: flex;
-  flex: 0 0 auto;
+  flex: 0 0 auto !important;
   font: inherit;
   font-size: 13.5px;
   font-weight: 400;
   height: 43px;
-  max-width: none;
-  min-height: 43px;
-  min-width: 0;
-  padding: 0 16px;
+  max-width: none !important;
+  min-height: 43px !important;
+  min-width: 0 !important;
+  padding: 0 16px !important;
   position: relative;
   text-align: left;
-  width: max-content;
+  width: max-content !important;
 }
 
 .stream-tabs-track .stream-tab:hover,
 .stream-tabs-track .stream-tab:focus-visible {
-  background: var(--dialog-control-hover);
+  background: var(--dialog-control-hover) !important;
+  border: 0 !important;
   color: var(--dialog-text);
   outline: 0;
 }
 
 .stream-tabs-track .stream-tab[data-current] {
-  background: var(--dialog-canvas);
-  border: 0;
-  box-shadow: inset 0 -2px 0 var(--dialog-accent);
+  background: var(--dialog-canvas) !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: inset 0 -2px 0 var(--dialog-accent) !important;
   color: var(--dialog-text);
   font-weight: 600;
 }
@@ -180,16 +205,17 @@ html[data-view="chat"][data-surface][data-theme] {
 
 .stream-tabs-track .stream-tab-card {
   align-items: center;
-  background: transparent;
-  border: 0;
-  border-radius: 0;
-  box-shadow: none;
+  background: transparent !important;
+  border: 0 !important;
+  border-image: none !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
   display: flex;
   flex: 0 0 auto;
-  gap: 9px;
+  gap: 9px !important;
   min-width: 0;
   overflow: visible;
-  padding: 0;
+  padding: 0 !important;
 }
 
 .stream-tabs-track .stream-tab-title {
@@ -224,6 +250,7 @@ html[data-view="chat"][data-surface][data-theme] {
   box-shadow: none;
   flex: 0 0 7px;
   height: 7px;
+  margin: 0;
   width: 7px;
 }
 
@@ -239,23 +266,33 @@ html[data-view="chat"][data-surface][data-theme] {
   --dialog-agent-color: var(--dialog-agent-2);
 }
 
+.provider-dot[data-provider="spark"],
+[data-provider="spark"] > .msg-head .msg-author,
+.msg[data-provider="spark"] .msg-author {
+  --dialog-agent-color: var(--dialog-agent-3);
+}
+
 .provider-dot[data-state="running"] {
   background: var(--dialog-agent-color);
   border: 0;
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--dialog-agent-color) 18%, transparent);
+  opacity: 1;
 }
 
 .provider-dot[data-state="idle"] {
-  background: transparent;
-  border: 1.5px solid var(--dialog-agent-color);
+  background: var(--dialog-agent-color);
+  border: 0;
+  box-shadow: none;
+  opacity: 0.8;
 }
 
 .provider-dot[data-state="failed"] {
   background: var(--dialog-agent-color);
   border: 0;
   box-shadow:
-    0 0 0 2px var(--dialog-canvas),
+    0 0 0 2px var(--dialog-chrome),
     0 0 0 3.5px var(--dialog-danger);
+  opacity: 1;
 }
 
 .stream-tabs-overflow {
@@ -473,6 +510,7 @@ html[data-view="chat"][data-surface][data-theme] {
   flex-direction: column;
   max-width: none;
   min-width: 0;
+  position: relative;
   width: 100%;
 }
 
@@ -556,12 +594,43 @@ html[data-view="chat"][data-surface][data-theme] {
   white-space: normal;
 }
 
-.msg-user .msg-body {
+.msg-user-bubble {
   background: var(--dialog-bubble-user);
   border: 0;
   border-radius: 4px 14px 14px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   max-width: 560px;
   padding: 12px 16px;
+}
+
+.msg-user .msg-body {
+  background: transparent;
+  border: 0;
+  max-width: none;
+  padding: 0;
+  position: relative;
+}
+
+.msg-user .msg-body.is-collapsed {
+  max-height: calc(4 * 1.6em);
+  overflow: hidden;
+}
+
+.msg-user .msg-body.is-collapsed::after {
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--dialog-bubble-user) 0%, transparent),
+    var(--dialog-bubble-user)
+  );
+  bottom: 0;
+  content: "";
+  height: 38px;
+  left: 0;
+  pointer-events: none;
+  position: absolute;
+  right: 0;
 }
 
 .msg-agent .msg-body,
@@ -577,10 +646,14 @@ html[data-view="chat"][data-surface][data-theme] {
   display: flex;
   gap: 4px;
   justify-content: flex-start;
-  margin: 2px 0 0;
+  left: 0;
+  margin: 1px 0 0;
   opacity: 0;
   pointer-events: none;
+  position: absolute;
+  top: 100%;
   transition: opacity 120ms ease;
+  z-index: 2;
 }
 
 .msg-stack:hover > .msg-actions,
@@ -622,17 +695,45 @@ html[data-view="chat"][data-surface][data-theme] {
   margin: 12px 0;
 }
 
+.msg-body > :first-child,
+.msg-reasoning > :first-child {
+  margin-top: 0;
+}
+
+.msg-body > :last-child,
+.msg-reasoning > :last-child {
+  margin-bottom: 0;
+}
+
 .msg-body ul,
 .msg-body ol,
 .msg-reasoning ul,
 .msg-reasoning ol {
   margin: 12px 0;
-  padding-left: 20px;
+  padding-left: 18px;
 }
 
-.msg-body li,
-.msg-reasoning li {
-  padding-left: 6px;
+.msg-body ul,
+.msg-reasoning ul {
+  list-style: none;
+  padding-left: 14px;
+}
+
+.msg-body ul > li,
+.msg-reasoning ul > li {
+  position: relative;
+}
+
+.msg-body ul > li::before,
+.msg-reasoning ul > li::before {
+  background: var(--dialog-list-marker);
+  border-radius: 50%;
+  content: "";
+  height: 4px;
+  left: -14px;
+  position: absolute;
+  top: 0.55em;
+  width: 4px;
 }
 
 .msg-body li + li,
@@ -640,10 +741,9 @@ html[data-view="chat"][data-surface][data-theme] {
   margin-top: 6px;
 }
 
-.msg-body li::marker,
-.msg-reasoning li::marker {
-  color: var(--dialog-list-marker);
-  font-size: 0.7em;
+.msg-body ol > li,
+.msg-reasoning ol > li {
+  padding-left: 6px;
 }
 
 .msg-body code,
@@ -694,6 +794,226 @@ html[data-view="chat"][data-surface][data-theme] {
   color: var(--dialog-text-3);
   font-size: 12.5px;
   min-width: 0;
+}
+
+/* Свёрнутый пользовательский текст и вложения остаются одним пузырём. */
+.msg-user-bubble > .attachment-strip {
+  gap: 6px;
+  margin: 0;
+}
+
+.msg-user-bubble .attachment-file {
+  background: var(--dialog-raised);
+  border: 1px solid var(--dialog-hairline);
+  border-radius: 10px;
+  box-shadow: none;
+  color: var(--dialog-text);
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.msg-user-bubble .attachment-file:hover,
+.msg-user-bubble .attachment-file:focus-visible {
+  background: var(--dialog-control-hover);
+  border-color: var(--dialog-hairline);
+  box-shadow: none;
+  outline: 0;
+}
+
+.msg-user-bubble .attachment-file-card {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 26px minmax(0, 1fr) auto;
+  min-height: 0;
+  padding: 7px 12px;
+  width: auto;
+}
+
+.msg-user-bubble .attachment-file-type {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  color: var(--dialog-accent-press);
+  display: flex;
+  font-family: var(--font-numeric);
+  font-size: 8.5px;
+  font-weight: 600;
+  height: 26px;
+  justify-content: center;
+  letter-spacing: 0.04em;
+  padding: 0;
+  width: 26px;
+}
+
+.msg-user-bubble .attachment-file-name {
+  color: var(--dialog-text-2);
+  font-size: 12.5px;
+  min-width: 0;
+}
+
+.attachment-file-size {
+  color: var(--dialog-text-4);
+  font-family: var(--font-numeric);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.msg-disclosure {
+  align-items: center;
+  align-self: flex-start;
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  color: var(--dialog-text-3);
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  font-size: 11.5px;
+  gap: 5px;
+  height: 26px;
+  margin: 0 0 0 -8px;
+  padding: 0 8px;
+}
+
+.msg-disclosure:hover,
+.msg-disclosure:focus-visible {
+  background: color-mix(in srgb, var(--dialog-bubble-user) 88%, var(--dialog-text));
+  color: var(--dialog-text-2);
+  outline: 0;
+  text-decoration: none;
+}
+
+.msg-disclosure svg {
+  height: 10px;
+  width: 10px;
+}
+
+/* Выполненные действия располагаются между мета-строкой и телом ответа. */
+.activity-feed,
+.turn-trace {
+  border: 0;
+  display: block;
+  margin: -1px 0 6px;
+  padding: 0;
+}
+
+.activity-feed > summary,
+.turn-trace > summary,
+.turn-trace-activities > summary {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  color: var(--dialog-text-3);
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 11.5px;
+  gap: 5px;
+  height: 24px;
+  list-style: none;
+  margin-left: -6px;
+  padding: 0 6px;
+}
+
+.activity-feed > summary::-webkit-details-marker,
+.turn-trace > summary::-webkit-details-marker,
+.turn-trace-activities > summary::-webkit-details-marker {
+  display: none;
+}
+
+.activity-feed > summary::before,
+.turn-trace > summary::before,
+.turn-trace-activities > summary::before {
+  content: none;
+}
+
+.activity-feed > summary:hover,
+.activity-feed > summary:focus-visible,
+.turn-trace > summary:hover,
+.turn-trace > summary:focus-visible,
+.turn-trace-activities > summary:hover,
+.turn-trace-activities > summary:focus-visible,
+.activity-feed[open] > summary,
+.turn-trace[open] > summary,
+.turn-trace-activities[open] > summary {
+  background: var(--dialog-control-hover);
+  outline: 0;
+}
+
+.activity-disclosure-icon {
+  height: 10px;
+  transition: transform 120ms ease;
+  width: 10px;
+}
+
+.activity-feed[open] > summary .activity-disclosure-icon,
+.turn-trace[open] > summary .activity-disclosure-icon,
+.turn-trace-activities[open] > summary .activity-disclosure-icon {
+  transform: rotate(90deg);
+}
+
+.activity-disclosure-count {
+  color: var(--dialog-text-4);
+  font-family: var(--font-numeric);
+  font-size: 11px;
+}
+
+.activity-feed > .activity-list,
+.turn-trace-activities > .activity-list,
+.turn-trace > .turn-trace-groups > .activity-list {
+  background: var(--dialog-sunken);
+  border-radius: 10px;
+  display: grid;
+  gap: 6px;
+  margin: 4px 0 0;
+  padding: 10px 14px;
+}
+
+.activity-item {
+  align-items: baseline;
+  display: grid;
+  font-family: var(--font-numeric);
+  font-size: 11.5px;
+  gap: 10px;
+  grid-template-columns: 112px minmax(0, 1fr);
+  min-width: 0;
+}
+
+.activity-marker,
+.activity-time {
+  display: none;
+}
+
+.activity-label {
+  color: var(--dialog-text-4);
+  font: inherit;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-detail {
+  color: var(--dialog-text-2);
+  font: inherit;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.turn-trace-groups {
+  border: 0;
+  display: grid;
+  gap: 8px;
+  margin: 4px 0 0;
+  padding: 0;
+}
+
+.turn-trace-activities {
+  background: transparent;
+  border-radius: 0;
+  padding: 0;
 }
 
 .msg-system,

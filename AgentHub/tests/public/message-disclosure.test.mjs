@@ -73,9 +73,11 @@ test("live trace keeps reasoning blocks and collects every tool at the bottom", 
 
 test("shared shell keeps full text and limits only the rendered user-message body", async () => {
   const app = await readFile(new URL("../../assets/web-app/app.js", import.meta.url), "utf8");
-  const styles = await readFile(new URL("../../assets/web-app/styles.css", import.meta.url), "utf8");
+  const styles = await readFile(new URL("../../assets/web-app/dialog-area.css", import.meta.url), "utf8");
   assert.match(app, /body\.scrollHeight, USER_MESSAGE_COLLAPSE_HEIGHT_PX/u);
-  assert.match(app, /textContent = expanded \? "Свернуть" : "Показать ещё"/u);
+  assert.match(app, /value \? "Свернуть" : "Показать ещё"/u);
+  assert.match(app, /if \(!existing\) bubble\.append\(button\)/u);
   assert.match(styles, /\.msg-user \.msg-body\.is-collapsed[\s\S]*max-height/u);
-  assert.match(styles, /html\[data-surface="mobile"\] \.msg-disclosure[\s\S]*min-height: 2\.75rem/u);
+  assert.match(styles, /\.msg-user \.msg-body\.is-collapsed::after[\s\S]*height: 38px/u);
+  assert.match(styles, /\.msg-disclosure \{[\s\S]*margin: 0 0 0 -8px;/u);
 });

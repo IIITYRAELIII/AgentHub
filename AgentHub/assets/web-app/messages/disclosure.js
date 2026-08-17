@@ -3,7 +3,7 @@
 
   // This is intentionally a visual limit only.  Message text remains intact
   // in the DOM and in every transport payload.
-  const USER_MESSAGE_COLLAPSE_HEIGHT_PX = 264;
+  const USER_MESSAGE_COLLAPSE_HEIGHT_PX = 93;
   const TURN_TRACE_ACTIVITY_GROUP_ID = "trace:activities";
 
   function hasCollapsedOverflow(scrollHeight, collapseHeight = USER_MESSAGE_COLLAPSE_HEIGHT_PX) {

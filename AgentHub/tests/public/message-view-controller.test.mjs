@@ -92,9 +92,32 @@ test("message action rows expose copy, edit and repeat below the content", async
   assert.match(appSource, /onClick: \(\) => emit\("clipboard:write", request\)/u);
   assert.match(appSource, /class: `msg-stack msg-stack-\$\{role\}`/u);
   assert.match(clientSource, /agentHub\.toast\(String\(successMessage \?\? ""\)\.trim\(\) \|\|/u);
-  assert.match(dialogStyles, /\.msg-actions \{[\s\S]*align-self: flex-start;[\s\S]*opacity: 0;/u);
+  assert.match(dialogStyles, /\.msg-actions \{[\s\S]*align-self: flex-start;[\s\S]*opacity: 0;[\s\S]*position: absolute;/u);
   assert.match(dialogStyles, /\.msg-stack:hover > \.msg-actions,[\s\S]*opacity: 1;/u);
   assert.match(dialogStyles, /\.msg-action:hover,[\s\S]*background: var\(--dialog-control-hover\)/u);
+});
+
+test("technical runtime and commit identifiers are extracted from prose", async () => {
+  const api = await messageViewApi();
+  const extracted = api.extractTechnicalTails(
+    "Полный npm test прошёл. Коммит `6a863064` отправлен в main. Runtime 20260817174851-85853e88 развёрнут.",
+  );
+  assert.deepEqual(Array.from(extracted.rows, (row) => ({ ...row })), [
+    { label: "КОММИТ", value: "6a863064", note: "отправлен в main." },
+    { label: "RUNTIME", value: "20260817174851-85853e88", note: "развёрнут." },
+  ]);
+  assert.equal(extracted.text, "Полный npm test прошёл.");
+  assert.equal(extracted.text.includes("6a863064"), false);
+  assert.equal(extracted.text.includes("20260817174851-85853e88"), false);
+});
+
+test("context compaction events use the designed separator and arrow", async () => {
+  const api = await messageViewApi();
+  assert.equal(
+    api.normalizeSystemEventText("Свёртка завершена успешно 35%>12%"),
+    "Свёртка контекста · 35% → 12%",
+  );
+  assert.equal(api.normalizeSystemEventText("Обычное системное событие"), "Обычное системное событие");
 });
 
 test("optimistic confirmation keeps the same message node when content is unchanged", async () => {

@@ -3745,6 +3745,8 @@ function messageDisclosureId(article) {
 function updateUserMessageDisclosure(article) {
   const body = article.querySelector(".msg-body[data-user-message-disclosure]");
   if (!body) return;
+  const bubble = article.querySelector(".msg-user-bubble");
+  if (!bubble) return;
   const id = messageDisclosureId(article);
   const overflows = hasCollapsedOverflow(body.scrollHeight, USER_MESSAGE_COLLAPSE_HEIGHT_PX);
   const existing = article.querySelector("[data-message-disclosure]");
@@ -3762,7 +3764,15 @@ function updateUserMessageDisclosure(article) {
     class: "msg-disclosure",
     "data-message-disclosure": "",
   });
-  button.textContent = expanded ? "Свернуть" : "Показать ещё";
+  const renderButton = (value) => button.replaceChildren(
+    el("span", { text: value ? "Свернуть" : "Показать ещё" }),
+    window.AgentHubStreamTabs.createPhosphorIcon(
+      document,
+      value ? "caret-up" : "caret-down",
+      "msg-disclosure-icon",
+    ),
+  );
+  renderButton(expanded);
   button.setAttribute("aria-expanded", String(expanded));
   button.onclick = () => {
     const nextExpanded = body.classList.contains("is-collapsed");
@@ -3771,10 +3781,10 @@ function updateUserMessageDisclosure(article) {
       if (nextExpanded) expandedUserMessageIds.add(id);
       else expandedUserMessageIds.delete(id);
     }
-    button.textContent = nextExpanded ? "Свернуть" : "Показать ещё";
+    renderButton(nextExpanded);
     button.setAttribute("aria-expanded", String(nextExpanded));
   };
-  if (!existing) article.append(button);
+  if (!existing) bubble.append(button);
 }
 
 function scheduleUserMessageDisclosureSync() {
@@ -4241,6 +4251,18 @@ function technicalTailLine(line) {
   };
 }
 
+function renderTechnicalRows(rows) {
+  const values = Array.isArray(rows) ? rows : [];
+  if (!values.length) return null;
+  return el("div", { class: "msg-technical" }, values.map((row) => el("div", {
+    class: "msg-technical-row",
+  }, [
+    el("span", { class: "msg-technical-label", text: row.label }),
+    el("code", { class: "msg-technical-value", text: row.value }),
+    row.note ? el("span", { class: "msg-technical-note", text: row.note }) : null,
+  ])));
+}
+
 function renderMarkdown(target, source, fileContext = currentFileLinkContext()) {
   target.replaceChildren();
   const lines = String(source ?? "").replace(/\r\n?/gu, "\n").split("\n");
@@ -4268,14 +4290,10 @@ function renderMarkdown(target, source, fileContext = currentFileLinkContext()) 
       while (index < lines.length) {
         const row = technicalTailLine(lines[index]);
         if (!row) break;
-        rows.push(el("div", { class: "msg-technical-row" }, [
-          el("span", { class: "msg-technical-label", text: row.label }),
-          el("code", { class: "msg-technical-value", text: row.value }),
-          row.note ? el("span", { class: "msg-technical-note", text: row.note }) : null,
-        ]));
+        rows.push(row);
         index += 1;
       }
-      target.append(el("div", { class: "msg-technical" }, rows));
+      target.append(renderTechnicalRows(rows));
       continue;
     }
     const heading = line.match(/^\s*(#{1,6})\s+(.+)$/u);
@@ -4329,32 +4347,55 @@ function renderMarkdown(target, source, fileContext = currentFileLinkContext()) 
       && !markdownTableAt(lines, index)) {
       paragraph.push(lines[index++]);
     }
-    const node = el("p");
-    paragraph.forEach((part, lineIndex) => {
-      if (lineIndex) node.append(document.createElement("br"));
-      appendInlineMarkdown(node, part, fileContext);
-    });
-    target.append(node);
+    const extracted = MessageView.extractTechnicalTails(paragraph.join("\n"));
+    if (extracted.text) {
+      const node = el("p");
+      extracted.text.split("\n").forEach((part, lineIndex) => {
+        if (lineIndex) node.append(document.createElement("br"));
+        appendInlineMarkdown(node, part, fileContext);
+      });
+      target.append(node);
+    }
+    const technicalRows = renderTechnicalRows(extracted.rows);
+    if (technicalRows) target.append(technicalRows);
   }
+}
+
+function activityDisclosureSummary({ label = "Выполненные действия", count = 0, stage = "" } = {}) {
+  const summary = el("summary", {}, [
+    window.AgentHubStreamTabs.createPhosphorIcon(document, "caret-right", "activity-disclosure-icon"),
+    el("span", { class: "activity-disclosure-label", text: stage ? `${label} · ${stage}` : label }),
+    el("span", { class: "activity-disclosure-count", text: `(${Math.max(0, Number(count) || 0)})` }),
+  ]);
+  return summary;
+}
+
+function renderActivityDisclosureSummary(summary, options) {
+  const replacement = activityDisclosureSummary(options);
+  summary.replaceChildren(...replacement.childNodes);
+}
+
+function activityItemNode(activity) {
+  return el("div", {
+    class: "activity-item",
+    "data-type": activity.type ?? "stage",
+    "data-status": activity.status ?? "",
+  }, [
+    el("span", { class: "activity-marker", "aria-hidden": "true" }),
+    el("span", { class: "activity-time", text: activity.time
+      ? new Date(activity.time).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+      : "" }),
+    el("span", { class: "activity-label", text: activity.label ?? "Действие" }),
+    el("span", { class: "activity-detail", text: activity.detail ?? "" }),
+  ]);
 }
 
 function activityFeedNode(activities) {
   const values = Array.isArray(activities) ? activities : [];
   if (!values.length) return null;
   return el("details", { class: "activity-feed" }, [
-    el("summary", { text: `Выполненные действия (${values.length})` }),
-    el("div", { class: "activity-list" }, values.map((activity) => el("div", {
-      class: "activity-item",
-      "data-type": activity.type ?? "stage",
-      "data-status": activity.status ?? "",
-    }, [
-      el("span", { class: "activity-marker", "aria-hidden": "true" }),
-      el("span", { class: "activity-time", text: activity.time
-        ? new Date(activity.time).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
-        : "" }),
-      el("span", { class: "activity-label", text: activity.label ?? "Действие" }),
-      activity.detail ? el("span", { class: "activity-detail", text: activity.detail }) : null,
-    ]))),
+    activityDisclosureSummary({ count: values.length }),
+    el("div", { class: "activity-list" }, values.map(activityItemNode)),
   ]);
 }
 
@@ -4385,22 +4426,8 @@ function turnTraceGroupsNode(values, { liveStage = "", openGroupIds = [] } = {})
         openGroupIds,
       }),
     }, [
-      el("summary", {
-        class: "turn-trace-activities-title",
-        text: liveActivityTitle({ count: content.activities.length, stage: liveStage }),
-      }),
-      el("div", { class: "activity-list" }, content.activities.map((activity) => el("div", {
-        class: "activity-item",
-        "data-type": activity.type ?? "stage",
-        "data-status": activity.status ?? "",
-      }, [
-        el("span", { class: "activity-marker", "aria-hidden": "true" }),
-        el("span", { class: "activity-time", text: activity.time
-          ? new Date(activity.time).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
-          : "" }),
-        el("span", { class: "activity-label", text: activity.label ?? "Действие" }),
-        activity.detail ? el("span", { class: "activity-detail", text: activity.detail }) : null,
-      ]))),
+      activityDisclosureSummary({ count: content.activities.length, stage: liveStage }),
+      el("div", { class: "activity-list" }, content.activities.map(activityItemNode)),
     ]));
   }
   return el("div", { class: "turn-trace-groups" }, blocks);
@@ -4410,9 +4437,22 @@ function turnTraceNode(groups) {
   const values = visibleTurnTraceGroups(groups);
   if (!values.length) return null;
   const activityCount = values.reduce((total, group) => total + (group.activities?.length ?? 0), 0);
+  const content = turnTraceContent(values);
+  const expanded = el("div", { class: "turn-trace-groups" });
+  content.reasoningBlocks.forEach((reasoning, index) => {
+    const reasoningNode = el("div", { class: "turn-trace-reasoning" });
+    renderMarkdown(reasoningNode, reasoning);
+    expanded.append(el("section", {
+      class: "turn-trace-block",
+      "data-trace-index": String(index),
+    }, [reasoningNode]));
+  });
+  if (content.activities.length) {
+    expanded.append(el("div", { class: "activity-list" }, content.activities.map(activityItemNode)));
+  }
   return el("details", { class: "turn-trace" }, [
-    el("summary", { text: `Выполненные действия (${activityCount})` }),
-    turnTraceGroupsNode(values),
+    activityDisclosureSummary({ count: activityCount }),
+    expanded,
   ]);
 }
 
@@ -4519,7 +4559,10 @@ function renderMessage(message, { readOnly = false, task = currentTask() } = {})
   });
   // Markdown собирается только безопасными DOM-узлами; сырой HTML не исполняется.
   if (!renderResponseAnnotations(body, message)) {
-    renderMarkdown(body, message.text ?? "", currentFileLinkContext(task));
+    const text = role === "system"
+      ? MessageView.normalizeSystemEventText(message.text ?? "")
+      : message.text ?? "";
+    renderMarkdown(body, text, currentFileLinkContext(task));
   }
 
   if (maintenance) article.append(body);
@@ -4528,10 +4571,14 @@ function renderMessage(message, { readOnly = false, task = currentTask() } = {})
   const activity = trace ? null : activityFeedNode(message.activities);
   if (trace) article.append(trace);
   else if (activity) article.append(activity);
-  if (!maintenance) article.append(body);
-
-  if (Array.isArray(message.attachments) && message.attachments.length > 0) {
-    article.append(renderAttachmentStrip(message.attachments, { readOnly: true }));
+  const attachmentStrip = Array.isArray(message.attachments) && message.attachments.length > 0
+    ? renderAttachmentStrip(message.attachments, { readOnly: true })
+    : null;
+  if (!maintenance && role === "user") {
+    article.append(el("div", { class: "msg-user-bubble" }, [body, attachmentStrip]));
+  } else if (!maintenance) {
+    article.append(body);
+    if (attachmentStrip) article.append(attachmentStrip);
   }
   const actions = readOnly ? null : renderMessageActions(message, role);
   if (!actions) return article;
@@ -4642,23 +4689,12 @@ function populateLiveCard(node, live, fallbackAuthor = "Агент", task = curr
     visible: activityFeedVisible,
   });
   activityFeed.hidden = !activityFeedVisible;
-  node.querySelector("[data-activity-summary]").textContent = liveActivityTitle({
+  renderActivityDisclosureSummary(node.querySelector("[data-activity-summary]"), {
     label: "Выполненные действия",
     count: activities.length,
     stage: liveStage.detail,
   });
-  node.querySelector("[data-activity-list]").replaceChildren(...activities.map((activity) => el("div", {
-    class: "activity-item",
-    "data-type": activity.type ?? "stage",
-    "data-status": activity.status ?? "",
-  }, [
-    el("span", { class: "activity-marker", "aria-hidden": "true" }),
-    el("span", { class: "activity-time", text: activity.time
-      ? new Date(activity.time).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
-      : "" }),
-    el("span", { class: "activity-label", text: activity.label ?? "Действие" }),
-    activity.detail ? el("span", { class: "activity-detail", text: activity.detail }) : null,
-  ])));
+  node.querySelector("[data-activity-list]").replaceChildren(...activities.map(activityItemNode));
   return true;
 }
 
@@ -5138,6 +5174,9 @@ function renderAttachmentStrip(items, { readOnly }) {
               text: String(item.name ?? "").split(".").at(-1)?.slice(0, 5).toUpperCase() || "FILE",
             }),
             el("span", { class: "attachment-file-name", text: item.name || "Вложение" }),
+            Number(item.size) > 0
+              ? el("span", { class: "attachment-file-size", text: formatAttachmentSize(item.size) })
+              : null,
           ])]);
     if (readOnly && !missing) {
       thumb.addEventListener("click", () => emit("attachment:open", {
@@ -5161,6 +5200,13 @@ function renderAttachmentStrip(items, { readOnly }) {
     strip.append(thumb);
   });
   return strip;
+}
+
+function formatAttachmentSize(value) {
+  const bytes = Math.max(0, Number(value) || 0);
+  if (bytes < 1024) return `${Math.round(bytes)} Б`;
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} КБ`;
+  return `${(bytes / (1024 * 1024)).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0)} МБ`;
 }
 
 attachmentsBox.addEventListener("click", (event) => {
