@@ -390,6 +390,10 @@ export function shouldAutoObserveTask({
       && String(selectedTask?.provider ?? "") === String(task.provider)
       && String(selectedTask?.threadId ?? "") === String(task.threadId)
       && snapshot?.active
+      // Codex completion is correlated by turn id. An active transport-level
+      // snapshot without one can be a short-lived context probe or reconnect
+      // state and must not become a task run that blocks normal input.
+      && (String(task.provider).toLowerCase() !== "codex" || snapshot?.turnId)
       && (!snapshot?.turnId || String(snapshot.turnId) !== String(lastSeenTurnId ?? ""))
       && !existingRun
       && !dismissed,

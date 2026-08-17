@@ -124,7 +124,11 @@ test("selected external task is observed automatically only while its turn is ac
     projectRoot: "C:\\Projects\\Main",
     threadId: "thread-1",
   };
-  assert.equal(shouldAutoObserveTask({ task, snapshot: { active: true } }), true);
+  assert.equal(shouldAutoObserveTask({ task, snapshot: { active: true } }), false);
+  assert.equal(shouldAutoObserveTask({
+    task: { ...task, provider: "claude" },
+    snapshot: { active: true },
+  }), true);
   assert.equal(shouldAutoObserveTask({ task, snapshot: { active: false } }), false);
   assert.equal(shouldAutoObserveTask({ task, snapshot: { active: true }, existingRun: {} }), false);
   assert.equal(shouldAutoObserveTask({ task, snapshot: { active: true }, dismissed: true }), false);
@@ -141,12 +145,12 @@ test("selected external task is observed automatically only while its turn is ac
   assert.equal(shouldAutoObserveTask({
     task,
     selectedTask: { ...task, threadId: "thread-2" },
-    snapshot: { active: true },
+    snapshot: { active: true, turnId: "new-external-turn" },
   }), false);
   assert.equal(shouldAutoObserveTask({
     task: { ...task, streamId: "stream-1" },
     selectedTask: { ...task, streamId: "stream-1", threadId: "thread-2" },
-    snapshot: { active: true },
+    snapshot: { active: true, turnId: "new-external-turn" },
   }), false);
 });
 

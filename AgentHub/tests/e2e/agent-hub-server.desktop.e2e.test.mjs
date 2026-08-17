@@ -289,7 +289,7 @@ test("desktop client survives App Server exit during delayed startup and shares 
     threadId: firstThreadId,
     clientUserMessageId: firstMessageId,
   }, { runtimeRoot });
-  assert.equal(firstStart.accepted, true);
+  assert.equal(firstStart.accepted, true, JSON.stringify(firstStart));
   assert.equal(firstStart.threadId, firstThreadId);
   assert.equal(firstStart.clientUserMessageId, firstMessageId);
   assert.equal(firstStart.runId, null);
