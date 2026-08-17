@@ -911,6 +911,17 @@ test("shared Dashboard bot registration rejects untrusted requests without stori
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ...unknownPayload, hubId, secret: hubSecret }),
     },
+  ), { JOURNAL: namespace, ASSETS: env.ASSETS });
+  assert.equal(response.status, 200);
+  assert.equal(stores.get("current").ctx.storage.values.size, storedEntries);
+
+  response = await workerModule.default.fetch(new Request(
+    "https://hub.test/api/dashboard-bot/register",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...unknownPayload, hubId, secret: hubSecret }),
+    },
   ), env);
   assert.equal(response.status, 200);
   assert.equal(stores.get("current").ctx.storage.values.size, storedEntries);
@@ -1004,7 +1015,7 @@ test("shared Dashboard bot pairs one Telegram user and queues Tasks only for tha
   });
   assert.equal(response.status, 200);
   assert.equal((await response.json()).ok, true);
-  assert.equal(telegramCalls.at(-1).body.text, "Принято в Backlog.");
+  assert.match(telegramCalls.at(-1).body.text, /Поставлено в очередь Agent Hub/u);
 
   response = await workerModule.default.fetch(signedServiceRequest(
     "https://hub.test/api/dashboard-bot/pull",
@@ -1042,6 +1053,20 @@ test("shared Dashboard bot pairs one Telegram user and queues Tasks only for tha
     { "X-Agent-Hub-Dashboard-Id": hubId },
   ), env);
   assert.equal(response.status, 200);
+  assert.equal(telegramCalls.at(-1).body.text, "✅ Задача добавлена в Backlog.");
+  const deliveredConfirmations = telegramCalls
+    .filter((call) => call.body.text === "✅ Задача добавлена в Backlog.").length;
+  response = await workerModule.default.fetch(signedServiceRequest(
+    "https://hub.test/api/dashboard-bot/result",
+    { id: command.id, userId: "42", ok: true, result: { taskId: "task-1" } },
+    hubSecret,
+    { "X-Agent-Hub-Dashboard-Id": hubId },
+  ), env);
+  assert.equal(response.status, 200);
+  assert.equal(
+    telegramCalls.filter((call) => call.body.text === "✅ Задача добавлена в Backlog.").length,
+    deliveredConfirmations,
+  );
   assert.ok(stores.has(`dashboard-bot:${hubId}`));
 
   response = await webhook({
@@ -1065,7 +1090,7 @@ test("shared Dashboard bot pairs one Telegram user and queues Tasks only for tha
     },
   });
   assert.equal(response.status, 200);
-  assert.equal(telegramCalls.at(-1).body.text, "Скриншот добавлен к задаче.");
+  assert.match(telegramCalls.at(-1).body.text, /Скриншот поставлен в очередь Agent Hub/u);
 
   response = await workerModule.default.fetch(signedServiceRequest(
     "https://hub.test/api/dashboard-bot/pull",
@@ -1081,6 +1106,14 @@ test("shared Dashboard bot pairs one Telegram user and queues Tasks only for tha
   assert.equal(attachmentCommand.params.sourceKey, undefined);
   assert.equal(attachmentCommand.params.sourceDetails.messageId, 3);
   assert.match(attachmentCommand.params.attachments[0], /^remote-attachment:[0-9a-f-]{36}$/u);
+  response = await workerModule.default.fetch(signedServiceRequest(
+    "https://hub.test/api/dashboard-bot/result",
+    { id: attachmentCommand.id, userId: "42", ok: true, result: { taskId: "task-1" } },
+    hubSecret,
+    { "X-Agent-Hub-Dashboard-Id": hubId },
+  ), env);
+  assert.equal(response.status, 200);
+  assert.equal(telegramCalls.at(-1).body.text, "✅ Изменения сохранены в Dashboard.");
 
   response = await webhook({
     update_id: 103,
@@ -1093,7 +1126,7 @@ test("shared Dashboard bot pairs one Telegram user and queues Tasks only for tha
     },
   });
   assert.equal(response.status, 200);
-  assert.equal(telegramCalls.at(-1).body.text, "Принято в Backlog.");
+  assert.match(telegramCalls.at(-1).body.text, /Поставлено в очередь Agent Hub/u);
   response = await workerModule.default.fetch(signedServiceRequest(
     "https://hub.test/api/dashboard-bot/pull",
     { limit: 10, waitMs: 0 },
@@ -1159,7 +1192,7 @@ test("shared Dashboard bot pairs one Telegram user and queues Tasks only for tha
     },
   });
   assert.equal(response.status, 200);
-  assert.equal(telegramCalls.at(-1).body.text, "Уточнение добавлено к задаче.");
+  assert.match(telegramCalls.at(-1).body.text, /Уточнение поставлено в очередь Agent Hub/u);
   response = await workerModule.default.fetch(signedServiceRequest(
     "https://hub.test/api/dashboard-bot/pull",
     { limit: 10, waitMs: 0 },
@@ -1171,6 +1204,14 @@ test("shared Dashboard bot pairs one Telegram user and queues Tasks only for tha
   assert.equal(clarificationCommand.params.text, "Нужно закончить до пятницы");
   assert.equal(clarificationCommand.params.sourceKey, undefined);
   assert.equal(clarificationCommand.params.sourceDetails.messageId, 30);
+  response = await workerModule.default.fetch(signedServiceRequest(
+    "https://hub.test/api/dashboard-bot/result",
+    { id: clarificationCommand.id, userId: "42", ok: false, error: "Dashboard недоступен" },
+    hubSecret,
+    { "X-Agent-Hub-Dashboard-Id": hubId },
+  ), env);
+  assert.equal(response.status, 200);
+  assert.match(telegramCalls.at(-1).body.text, /Agent Hub не принял задачу: Dashboard недоступен/u);
 
   response = await workerModule.default.fetch(signedServiceRequest(
     "https://hub.test/api/dashboard-bot/pull",
@@ -1352,7 +1393,25 @@ test("shared Dashboard bot can send forwards separately with their reply clarifi
   assert.equal(secondCommand.params.sourceDetails.separate, true);
   assert.equal(secondCommand.params.sourceDetails.separateIndex, 2);
   assert.match(secondCommand.params.sourceKey, /^shared-dashboard:[0-9a-f-]{36}:2$/u);
-  assert.ok(telegramCalls.some((call) => call.method === "editMessageText" && /Создано отдельных задач: 2/u.test(call.body.text)));
+  assert.ok(telegramCalls.some((call) => (
+    call.method === "editMessageText" && /поставлено в очередь: 2/iu.test(call.body.text)
+  )));
+  response = await workerModule.default.fetch(signedServiceRequest(
+    "https://hub.test/api/dashboard-bot/result",
+    { id: firstCommand.id, userId: "42", ok: true, result: { taskId: "task-1" } },
+    hubSecret,
+    { "X-Agent-Hub-Dashboard-Id": hubId },
+  ), env);
+  assert.equal(response.status, 200);
+  assert.equal(telegramCalls.at(-1).body.text, "✅ Задача 1 добавлена в Backlog.");
+  response = await workerModule.default.fetch(signedServiceRequest(
+    "https://hub.test/api/dashboard-bot/result",
+    { id: secondCommand.id, userId: "42", ok: true, result: { taskId: "task-2" } },
+    hubSecret,
+    { "X-Agent-Hub-Dashboard-Id": hubId },
+  ), env);
+  assert.equal(response.status, 200);
+  assert.equal(telegramCalls.at(-1).body.text, "✅ Задача 2 добавлена в Backlog.");
 
   await webhook({
     update_id: 206,
@@ -1389,6 +1448,14 @@ test("shared Dashboard bot can send forwards separately with their reply clarifi
   assert.equal(bundledCommand.params.sourceDetails.separate, false);
   assert.doesNotMatch(bundledCommand.params.text, /Ниже пакет сообщений/u);
   assert.match(bundledCommand.params.sourceKey, /^shared-dashboard:[0-9a-f-]{36}$/u);
+  response = await workerModule.default.fetch(signedServiceRequest(
+    "https://hub.test/api/dashboard-bot/result",
+    { id: bundledCommand.id, userId: "42", ok: true, result: { taskId: "task-bundle" } },
+    hubSecret,
+    { "X-Agent-Hub-Dashboard-Id": hubId },
+  ), env);
+  assert.equal(response.status, 200);
+  assert.equal(telegramCalls.at(-1).body.text, "✅ Пачка сообщений добавлена в Backlog.");
 
   await webhook({
     update_id: 208,

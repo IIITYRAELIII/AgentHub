@@ -17,6 +17,7 @@ export class CodexRunFinalizer {
     saveState,
     persistHistory,
     projectTurn,
+    rememberCompletion,
     markRunCompleted,
     completeRun,
     routeFinalDelivery = routeCodexFinalDelivery,
@@ -36,6 +37,7 @@ export class CodexRunFinalizer {
     this.saveState = saveState;
     this.persistHistory = persistHistory;
     this.projectTurn = projectTurn;
+    this.rememberCompletion = rememberCompletion;
     this.markRunCompleted = markRunCompleted;
     this.completeRun = completeRun;
     this.routeFinalDelivery = routeFinalDelivery;
@@ -117,6 +119,7 @@ export class CodexRunFinalizer {
       mcpCalls: tracker.toolMetricsKnown === true ? tracker.mcpCalls ?? [] : run.mcpCalls ?? [],
       toolMetricsKnown: tracker.toolMetricsKnown === true || run.toolMetricsKnown === true,
     });
+    if (completion) this.rememberCompletion(completion, answer);
     this.turnStarts.delete(startKey);
     await this.saveState();
     const resolvedTracker = completion

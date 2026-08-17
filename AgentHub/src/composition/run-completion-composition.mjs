@@ -108,6 +108,7 @@ export function createRunCompletionComposition({
     saveState,
     persistHistory: persistManagedRunHistory,
     projectTurn: (...args) => runJournal.projectTurn(...args),
+    rememberCompletion: (...args) => turnEndDelivery.rememberCompletion(...args),
     markRunCompleted: (run) => managedRunLifecycle.markCompleted(run),
     completeRun: (run) => managedRunLifecycle.complete(run),
   });

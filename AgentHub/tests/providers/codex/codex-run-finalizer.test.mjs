@@ -29,6 +29,7 @@ function fixture({ existingCompletion = null, discard = false } = {}) {
     saveState: async () => events.push(["save"]),
     persistHistory: async (...args) => events.push(["history", ...args]),
     projectTurn: async (...args) => events.push(["project", ...args]),
+    rememberCompletion: (...args) => events.push(["remember", ...args]),
     markRunCompleted: async (run) => events.push(["terminal", run]),
     completeRun: async (run) => events.push(["complete", run]),
     routeFinalDelivery: async ({ deliverStandard }) => ({ result: await deliverStandard() }),
@@ -84,8 +85,15 @@ test("CodexRunFinalizer adopts audited start data and completes one durable deli
   assert.deepEqual(recorded.changedFiles, ["file.mjs"]);
   assert.deepEqual(recorded.userMessages, [{ text: "later prompt" }, { text: "follow-up" }]);
   assert.deepEqual(state.events.map(([name]) => name), [
-    "history", "terminal", "record", "save", "project", "final", "delivered", "save", "complete",
+    "history", "terminal", "record", "remember", "save", "project", "final", "delivered", "save", "complete",
   ]);
+  const remembered = state.events.find(([name]) => name === "remember");
+  assert.equal(remembered[1].turnId, "turn-1");
+  assert.equal(remembered[2], "Final");
+  assert.ok(
+    state.events.findIndex(([name]) => name === "remember")
+      < state.events.findIndex(([name]) => name === "complete"),
+  );
   const final = state.events.find(([name]) => name === "final");
   assert.equal(final[2].refreshDiff, false);
 });

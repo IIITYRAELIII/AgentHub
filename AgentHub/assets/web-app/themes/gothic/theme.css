@@ -629,3 +629,786 @@ html[data-theme="gothic"] .chip-button.primary {
     animation: none !important;
   }
 }
+
+/* ===== Approved Gothic Theme Lab refinement, 2026-08-17 ===== */
+html[data-theme="gothic"] {
+  --accent: #81251f;
+  --accent-soft: rgb(129 37 31 / 24%);
+  --accent-line: rgb(129 37 31 / 72%);
+  --accent-glow: 0 0 10px rgb(129 37 31 / 34%);
+  --selection: rgb(129 37 31 / 34%);
+  --gothic-blade-frame-preview: url("./gothic-blade-frame.png");
+  --gothic-blade-divider-preview: url("./gothic-blade-divider.png");
+  --gothic-blade-divider-horizontal-preview: url("./gothic-blade-divider-horizontal.png");
+  --gothic-blade-joint-task-top-preview: url("./gothic-blade-joint-top-left-v12.png");
+  --gothic-blade-joint-task-bottom-preview: url("./gothic-blade-joint-bottom-left-v12.png");
+  --gothic-blade-joint-activity-top-preview: url("./gothic-blade-joint-top-right-v12.png");
+  --gothic-blade-joint-activity-bottom-preview: url("./gothic-blade-joint-bottom-right-v12.png");
+  --gothic-panel-texture-preview: url("./gothic-panel-texture-reference.png");
+  --gothic-workspace-card-texture-preview: url("./gothic-workspace-card-texture.png");
+  --gothic-panel-base-color: #0b0c0e;
+  --gothic-panel-base-image:
+    linear-gradient(rgb(8 9 10 / 14%), rgb(8 9 10 / 14%)),
+    var(--gothic-panel-texture-preview);
+  --gothic-panel-base-position: left top, left top;
+  --gothic-panel-base-size: auto, 32rem 32rem;
+  --gothic-preview-background: url("./gothic-xardas-storm.webp");
+  --shell-panel-border: 0;
+  --shell-panel-border-image: none;
+  --shell-panel-border-width: 0;
+  --shell-panel-border-image-width: 0;
+  --shell-chat-border: 0;
+  --shell-chat-border-image: none;
+  --shell-chat-panel-border-width: 0;
+  --shell-chat-panel-border-image-width: 0;
+  --shell-stream-tabs-border: 0;
+  --shell-stream-tabs-border-bottom: 1px solid rgb(116 111 101 / 42%);
+  --shell-tab-active-shadow: inset 0 -2px 0 #81251f;
+}
+
+html[data-theme="gothic"] body::after {
+  background-color: #03070b !important;
+  background-image:
+    linear-gradient(90deg, rgb(2 4 7 / 38%), transparent 30% 72%, rgb(1 2 4 / 12%)),
+    linear-gradient(180deg, rgb(2 3 5 / 8%) 44%, rgb(1 2 3 / 48%)),
+    radial-gradient(110% 92% at 52% 44%, transparent 34%, rgb(0 0 0 / 42%) 100%),
+    var(--gothic-preview-background) !important;
+  background-position: center, center, center, 58% 50% !important;
+  background-repeat: no-repeat !important;
+  background-size: cover !important;
+}
+
+html[data-theme="gothic"] body::before {
+  background-image:
+    radial-gradient(34% 28% at 50% 18%, rgb(150 174 206 / 18%), transparent 78%),
+    radial-gradient(22% 30% at 67% 48%, rgb(108 130 154 / 10%), transparent 80%) !important;
+  mix-blend-mode: screen !important;
+  opacity: 0.38 !important;
+}
+
+@media (min-width: 860px) {
+  html[data-theme="gothic"]:not([data-surface="mobile"]),
+  html[data-theme="gothic"]:not([data-surface="mobile"]) body {
+    background-color: var(--gothic-panel-base-color) !important;
+    background-image: var(--gothic-panel-base-image) !important;
+    background-attachment: fixed, fixed !important;
+    background-position: var(--gothic-panel-base-position) !important;
+    background-repeat: repeat !important;
+    background-size: var(--gothic-panel-base-size) !important;
+    overflow: hidden !important;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .app-header::before {
+    content: none !important;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .app-header,
+  html[data-theme="gothic"][data-view="chat"]:not([data-surface="mobile"]) body > .workspace {
+    background-color: var(--gothic-panel-base-color);
+    background-image: var(--gothic-panel-base-image);
+    background-attachment: fixed, fixed !important;
+    background-position: var(--gothic-panel-base-position);
+    background-repeat: repeat, repeat !important;
+    background-size: var(--gothic-panel-base-size) !important;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .app-header {
+    --shell-header-height: calc(2.82625rem + 2px);
+    z-index: 3 !important;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .app-header-inner {
+    --gothic-header-menu-offset: clamp(1rem, 4vw, 3.925rem);
+    --gothic-header-control-width: clamp(
+      2.2rem,
+      calc(
+        (100vw - var(--task-rail-width) - var(--activity-rail-width) - var(--gothic-header-menu-offset) - 2rem) / 6
+      ),
+      6.7rem
+    );
+    --gothic-toolbar-width: calc(
+      var(--gothic-header-control-width) + var(--gothic-header-control-width) + 0.2rem
+    );
+    justify-content: flex-start !important;
+    transform: translateY(7px);
+  }
+
+  html[data-theme="gothic"]:not([data-view="chat"]):not([data-surface="mobile"]) .app-header {
+    --shell-header-height: calc(3.625rem + 2px);
+  }
+
+  html[data-theme="gothic"]:not([data-view="chat"]):not([data-surface="mobile"]) .app-header-inner {
+    transform: none;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .brand {
+    background: transparent !important;
+    box-shadow: none !important;
+    height: 100% !important;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .brand::before,
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .brand::after,
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .app-header-inner::after,
+  html[data-theme="gothic"][data-view="chat"]:not([data-surface="mobile"]) .chat::before {
+    content: none !important;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .view-tab svg {
+    display: none !important;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .view-switch {
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    gap: 0.2rem;
+    margin-left: var(--gothic-header-menu-offset);
+    padding: 0;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .view-tab {
+    background-color: #100f0f;
+    background-image: url("./gothic-panel-texture-reference.png");
+    background-blend-mode: multiply;
+    background-size: 24rem 24rem !important;
+    border: 1px solid rgb(79 75 79 / 28%);
+    border-radius: 0;
+    box-shadow:
+      inset 0 1px 0 rgb(126 120 116 / 7%),
+      inset 0 -1px 0 rgb(0 0 0 / 42%);
+    color: #a29d98 !important;
+    flex: 0 0 var(--gothic-header-control-width);
+    font-size: clamp(0.4rem, 0.72vw, 0.65rem) !important;
+    justify-content: center;
+    letter-spacing: 0.045em;
+    height: 2rem;
+    min-height: 2rem;
+    padding: 0.34rem 0.86rem;
+    text-shadow: 0 1px 0 #000;
+    text-transform: uppercase;
+    width: var(--gothic-header-control-width);
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .view-tab:hover {
+    color: #c5b9aa !important;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .view-tab[aria-pressed="true"] {
+    background-color: #15100f;
+    background-image: url("./gothic-panel-texture-reference.png");
+    background-blend-mode: multiply;
+    background-size: 24rem 24rem !important;
+    border: 1px solid rgb(79 75 79 / 48%);
+    box-shadow:
+      inset 1px 0 0 rgb(119 111 118 / 12%),
+      inset -1px 0 0 rgb(119 111 118 / 12%),
+      0 5px 10px rgb(0 0 0 / 48%);
+    color: #e1ded9 !important;
+    overflow: hidden;
+    padding: 0.34rem 0.86rem;
+    position: relative;
+    text-shadow: 0 1px 0 #000, 0 0 7px rgb(110 30 26 / 22%);
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .view-tab[aria-pressed="true"]::before,
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .view-tab[aria-pressed="true"]::after {
+    background: linear-gradient(90deg, transparent, rgb(94 25 22 / 42%) 18%, #81251f 50%, rgb(94 25 22 / 42%) 82%, transparent);
+    content: "" !important;
+    height: 1px;
+    left: 3px;
+    pointer-events: none !important;
+    position: absolute;
+    right: 3px;
+    z-index: 2;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .view-tab[aria-pressed="true"]::before {
+    box-shadow: 0 4px 8px rgb(105 27 23 / 42%);
+    top: 1px;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .view-tab[aria-pressed="true"]::after {
+    bottom: 1px;
+    box-shadow: 0 -4px 8px rgb(105 27 23 / 42%);
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .toolbar {
+    gap: 0.2rem !important;
+    margin: 0 !important;
+    position: absolute !important;
+    right: calc(14px + (var(--activity-rail-width) - var(--gothic-toolbar-width)) / 2) !important;
+    top: 50% !important;
+    transform: translateY(-50%);
+    width: auto !important;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .connection-banner:not([hidden]) {
+    height: 2rem !important;
+    left: auto !important;
+    max-width: min(42rem, calc(100vw - var(--task-rail-width) - var(--activity-rail-width) - var(--gothic-toolbar-width) - 2rem)) !important;
+    min-height: 2rem !important;
+    overflow: hidden !important;
+    position: absolute !important;
+    right: calc(100% + 0.75rem) !important;
+    text-overflow: ellipsis;
+    top: 50% !important;
+    transform: translateY(-50%) !important;
+    white-space: nowrap;
+    width: max-content !important;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .toolbar .focus-toggle,
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .toolbar .view-settings {
+    background-color: #100f0f;
+    background-image: url("./gothic-panel-texture-reference.png");
+    background-blend-mode: multiply;
+    background-size: 24rem 24rem !important;
+    border: 1px solid rgb(79 75 79 / 28%);
+    border-radius: 0;
+    box-shadow:
+      inset 0 1px 0 rgb(126 120 116 / 7%),
+      inset 0 -1px 0 rgb(0 0 0 / 42%);
+    color: #a29d98 !important;
+    flex: 0 0 var(--gothic-header-control-width);
+    font-size: clamp(0.4rem, 0.72vw, 0.65rem) !important;
+    justify-content: center;
+    letter-spacing: 0.045em;
+    margin: 0;
+    height: 2rem;
+    min-height: 2rem;
+    padding: 0.34rem 0.86rem;
+    text-shadow: 0 1px 0 #000;
+    text-transform: uppercase;
+    width: var(--gothic-header-control-width);
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .toolbar .focus-toggle:hover,
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .toolbar .view-settings:hover {
+    color: #c5b9aa !important;
+    text-shadow: 0 1px 0 #000, 0 0 7px rgb(184 72 58 / 24%);
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .toolbar .focus-toggle svg,
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .toolbar .view-settings svg {
+    display: none !important;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .toolbar .view-settings::after {
+    content: "Настройки";
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .brand-text .eyebrow {
+    display: none !important;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .brand-text h1 {
+    font-size: 0 !important;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .brand-text h1::after {
+    content: "Agent Hub";
+    font-size: 1.08rem;
+    letter-spacing: 0.08em;
+  }
+
+  html[data-theme="gothic"][data-view="chat"]:not([data-surface="mobile"]) body > .workspace {
+    box-sizing: border-box;
+    isolation: isolate;
+    overflow: visible;
+    padding: 14px;
+  }
+
+  html[data-theme="gothic"][data-view="chat"]:not([data-surface="mobile"]) body > .workspace::before {
+    border: 0 solid transparent;
+    border-image: var(--gothic-blade-frame-preview) 62 / 48px stretch;
+    content: "";
+    filter: brightness(0.78) contrast(1.14) saturate(0.84);
+    inset: 0;
+    pointer-events: none;
+    position: absolute;
+    z-index: 20;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .task-rail,
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .activity-rail,
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .chat {
+    border: 0;
+    border-image: none !important;
+    border-radius: 0;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .task-rail,
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .activity-rail {
+    background-color: var(--gothic-panel-base-color);
+    background-image: var(--gothic-panel-base-image);
+    background-attachment: fixed, fixed !important;
+    background-position: var(--gothic-panel-base-position);
+    background-repeat: repeat, repeat !important;
+    background-size: var(--gothic-panel-base-size) !important;
+    overflow: visible !important;
+    position: relative;
+    z-index: auto !important;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .task-list,
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .activity-rail-content,
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .activity-streams,
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .workspace-task-panel {
+    background-color: var(--gothic-panel-base-color) !important;
+    background-image: var(--gothic-panel-base-image) !important;
+    background-attachment: fixed, fixed !important;
+    background-position: var(--gothic-panel-base-position) !important;
+    background-repeat: repeat, repeat !important;
+    background-size: var(--gothic-panel-base-size) !important;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) {
+    --gothic-rail-content-inset: 1rem;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .task-rail-head,
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .activity-rail-head,
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .activity-section-head {
+    padding-left: var(--gothic-rail-content-inset) !important;
+    padding-right: var(--gothic-rail-content-inset) !important;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .task-rail-head,
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .activity-rail-head {
+    padding-top: var(--gothic-rail-content-inset) !important;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .task-rail-title {
+    margin-left: 0.75rem !important;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .task-search {
+    background-color: #100f0f !important;
+    background-image: var(--gothic-panel-texture-preview) !important;
+    background-blend-mode: multiply !important;
+    background-position: center !important;
+    background-repeat: repeat !important;
+    background-size: 24rem 24rem !important;
+    margin-left: var(--gothic-rail-content-inset) !important;
+    margin-right: var(--gothic-rail-content-inset) !important;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .task-rail .task-new {
+    background-color: #100f0f;
+    background-image: var(--gothic-panel-texture-preview);
+    background-blend-mode: multiply !important;
+    background-position: center;
+    background-repeat: repeat !important;
+    background-size: 24rem 24rem !important;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .dialog-settings {
+    background-color: var(--gothic-panel-base-color) !important;
+    background-image: var(--gothic-panel-base-image) !important;
+    background-attachment: fixed, fixed !important;
+    background-position: var(--gothic-panel-base-position) !important;
+    background-repeat: repeat, repeat !important;
+    background-size: var(--gothic-panel-base-size) !important;
+    background-blend-mode: normal, normal !important;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .task-list,
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .activity-stream-list,
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .workspace-task-list {
+    padding-left: var(--gothic-rail-content-inset) !important;
+    padding-right: var(--gothic-rail-content-inset) !important;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .task-list,
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .activity-rail-content {
+    padding-bottom: var(--gothic-rail-content-inset) !important;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .workspace-task-panel {
+    padding: var(--gothic-rail-content-inset) !important;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .chat {
+    background-color: #03070b;
+    background-image:
+      linear-gradient(90deg, rgb(2 4 7 / 38%), transparent 30% 72%, rgb(1 2 4 / 12%)),
+      linear-gradient(180deg, rgb(2 3 5 / 8%) 44%, rgb(1 2 3 / 48%)),
+      radial-gradient(110% 92% at 52% 44%, transparent 34%, rgb(0 0 0 / 42%) 100%),
+      var(--gothic-preview-background);
+    background-attachment: fixed !important;
+    background-position: center, center, center, 58% 50%;
+    background-repeat: no-repeat !important;
+    background-size: cover !important;
+    z-index: 1;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .stream-tabs {
+    background-color: var(--gothic-panel-base-color);
+    background-image:
+      var(--gothic-panel-base-image),
+      var(--gothic-blade-divider-horizontal-preview);
+    background-attachment: fixed, fixed, scroll !important;
+    background-position: var(--gothic-panel-base-position), left bottom;
+    background-repeat: repeat, repeat, repeat-x !important;
+    background-size: var(--gothic-panel-base-size), 276px 11px !important;
+    border: 0;
+    border-bottom: 1px solid transparent;
+    border-image: none !important;
+    padding: var(--gothic-rail-content-inset);
+    padding-bottom: 4px;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .composer {
+    background: transparent !important;
+    border: 0 !important;
+    border-image: none !important;
+    box-shadow: none !important;
+    padding: var(--gothic-rail-content-inset) !important;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .stream-chat-columns > .chat-pane {
+    border-top-width: 0 !important;
+    border-bottom-width: 0 !important;
+    border-image-width: 0 6px 0 6px !important;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .task-workspace-item,
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .activity-stream-item,
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .stream-tab-card,
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .msg:not(.msg-user) {
+    background-color: #151618;
+    background-image:
+      linear-gradient(rgb(24 25 27 / 24%), rgb(24 25 27 / 24%)),
+      var(--gothic-panel-texture-preview);
+    background-blend-mode: normal, normal !important;
+    background-position: center, center;
+    background-repeat: repeat, repeat !important;
+    background-size: auto, 28rem 28rem !important;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .task-workspace-item[data-selected],
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .activity-stream-item[data-current],
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .stream-tab[aria-pressed="true"] .stream-tab-card {
+    background-color: #281816;
+    background-image:
+      linear-gradient(rgb(48 24 21 / 54%), rgb(31 17 16 / 58%)),
+      var(--gothic-panel-texture-preview);
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .task-workspace-item,
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .activity-stream-item .stream-tab-card {
+    background-color: #111315;
+    background-image:
+      linear-gradient(rgb(17 19 21 / 78%), rgb(10 11 13 / 84%)),
+      var(--gothic-panel-texture-preview);
+    background-blend-mode: normal, normal !important;
+    background-position: center, center;
+    background-repeat: repeat, repeat !important;
+    background-size: auto, 32rem 32rem !important;
+    border: 1px solid rgb(104 108 111 / 34%);
+    border-image: none !important;
+    border-radius: 0;
+    box-shadow:
+      inset 0 1px 0 rgb(185 190 194 / 5%),
+      inset 0 -1px 0 rgb(0 0 0 / 36%);
+    filter: none !important;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .task-workspace-item,
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .activity-stream-item .stream-tab-card {
+    background-color: #15181b;
+    background-image:
+      linear-gradient(180deg, rgb(3 5 7 / 10%), rgb(1 3 5 / 16%)),
+      var(--gothic-workspace-card-texture-preview);
+    background-blend-mode: normal, normal !important;
+    background-position: center, center;
+    background-repeat: no-repeat, repeat !important;
+    background-size: auto, 22rem 22rem !important;
+    border-color: rgb(92 98 104 / 58%);
+    border-radius: 4px;
+    box-shadow:
+      inset 0 0 0 1px rgb(0 0 0 / 68%),
+      inset 0 1px 0 rgb(205 211 216 / 10%),
+      0 0 0 1px rgb(0 0 0 / 42%),
+      0 1px 3px rgb(0 0 0 / 58%);
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .stream-tabs .stream-tab-card {
+    background-color: #15181b;
+    background-image:
+      linear-gradient(180deg, rgb(3 5 7 / 10%), rgb(1 3 5 / 16%)),
+      var(--gothic-workspace-card-texture-preview);
+    background-blend-mode: normal, normal !important;
+    background-position: center, center;
+    background-repeat: no-repeat, repeat !important;
+    background-size: auto, 22rem 22rem !important;
+    border-color: rgb(92 98 104 / 58%);
+    border-image: none !important;
+    border-width: 1px;
+    border-radius: 4px;
+    box-shadow:
+      inset 0 0 0 1px rgb(0 0 0 / 68%),
+      inset 0 1px 0 rgb(205 211 216 / 10%),
+      0 0 0 1px rgb(0 0 0 / 42%),
+      0 1px 3px rgb(0 0 0 / 58%);
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .task-workspace-name {
+    color: rgb(224 226 228 / 94%) !important;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .task-workspace-time {
+    color: rgb(196 200 204 / 72%) !important;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .activity-stream-item {
+    background: transparent !important;
+    box-shadow: none !important;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .task-workspace-item:hover,
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .task-workspace-item:focus-visible,
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .activity-stream-item:hover .stream-tab-card,
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .activity-stream-item:focus-visible .stream-tab-card {
+    background-color: #17191b;
+    border-color: rgb(129 133 136 / 48%);
+    filter: none !important;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .task-workspace-item[data-selected],
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .activity-stream-item[data-current] .stream-tab-card {
+    background-color: #211413;
+    background-image:
+      linear-gradient(rgb(38 20 18 / 58%), rgb(24 15 15 / 68%)),
+      var(--gothic-panel-texture-preview);
+    border-color: rgb(129 37 31 / 72%);
+    box-shadow:
+      inset 2px 0 0 #81251f,
+      inset 0 1px 0 rgb(185 190 194 / 4%),
+      inset 0 -1px 0 rgb(0 0 0 / 42%);
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .stream-tab[aria-pressed="true"] .stream-tab-card {
+    background-color: #15181b;
+    background-image:
+      linear-gradient(180deg, rgb(3 5 7 / 10%), rgb(1 3 5 / 16%)),
+      var(--gothic-workspace-card-texture-preview);
+    border-color: rgb(92 98 104 / 58%);
+    border-width: 1px;
+    box-shadow:
+      inset 0 0 0 1px rgb(0 0 0 / 68%),
+      inset 0 1px 0 rgb(205 211 216 / 10%),
+      0 0 0 1px rgb(0 0 0 / 42%),
+      0 1px 3px rgb(0 0 0 / 58%);
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .stream-tab[aria-pressed="true"]::after {
+    background: linear-gradient(90deg, transparent, rgb(94 25 22 / 42%) 18%, #81251f 50%, rgb(94 25 22 / 42%) 82%, transparent);
+    bottom: 0;
+    box-shadow: 0 -1px 6px rgb(105 27 23 / 50%);
+    content: "" !important;
+    height: 2px;
+    left: 10px;
+    pointer-events: none !important;
+    position: absolute;
+    right: 10px;
+    z-index: 4;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .msg-user {
+    background-color: #151618 !important;
+    background-image:
+      linear-gradient(rgb(24 25 27 / 24%), rgb(24 25 27 / 24%)),
+      var(--gothic-panel-texture-preview) !important;
+    background-blend-mode: normal, normal !important;
+    background-position: center, center !important;
+    background-repeat: repeat, repeat !important;
+    background-size: auto, 28rem 28rem !important;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .chat-log {
+    max-width: 54rem !important;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .msg-agent:not(.msg-live),
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .msg-user,
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .msg-live {
+    border: 1px solid rgb(105 98 90 / 58%) !important;
+    border-image: none !important;
+    border-radius: 2px !important;
+    box-shadow:
+      inset 0 1px 0 rgb(205 211 216 / 6%),
+      0 3px 10px rgb(0 0 0 / 58%) !important;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .msg-agent:not(.msg-live),
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .msg-user {
+    border-color: transparent !important;
+    box-shadow:
+      inset 0 1px 0 rgb(202 168 145 / 12%),
+      0 0 0 1px rgb(0 0 0 / 28%),
+      0 4px 12px rgb(0 0 0 / 48%) !important;
+    overflow: visible !important;
+    position: relative !important;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .msg-agent:not(.msg-live)::before,
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .msg-user::before {
+    background: transparent;
+    border: 1px solid rgb(74 68 61 / 78%);
+    border-radius: 2px;
+    box-sizing: border-box;
+    content: "";
+    inset: -1px;
+    pointer-events: none;
+    position: absolute;
+    z-index: 3;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .msg-agent:not(.msg-live)::after,
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .msg-user::after {
+    background:
+      radial-gradient(circle at 0 0, transparent 0 1px, rgb(84 74 64 / 76%) 1.1px 2.5px, transparent 2.6px) top left / 5px 5px no-repeat,
+      radial-gradient(circle at 100% 0, transparent 0 1px, rgb(84 74 64 / 76%) 1.1px 2.5px, transparent 2.6px) top right / 5px 5px no-repeat,
+      radial-gradient(circle at 0 100%, transparent 0 1px, rgb(84 74 64 / 76%) 1.1px 2.5px, transparent 2.6px) bottom left / 5px 5px no-repeat,
+      radial-gradient(circle at 100% 100%, transparent 0 1px, rgb(84 74 64 / 76%) 1.1px 2.5px, transparent 2.6px) bottom right / 5px 5px no-repeat;
+    content: "";
+    inset: 0;
+    pointer-events: none;
+    position: absolute;
+    z-index: 4;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .msg-agent:not(.msg-live) {
+    max-width: min(28rem, 72%) !important;
+    width: auto !important;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .msg-user {
+    border-color: transparent !important;
+    max-width: min(22rem, 72%) !important;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .msg-live {
+    border-color: rgb(126 64 52 / 72%) !important;
+    margin: 0.7rem auto 0 !important;
+    max-width: min(46rem, 88%) !important;
+    width: auto !important;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .msg-system {
+    border: 0 !important;
+    border-image: none !important;
+    border-radius: 2px !important;
+    box-shadow: none !important;
+    max-width: min(46rem, 88%) !important;
+    padding: 0.22rem 0.75rem !important;
+    width: fit-content !important;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .chat-overlay-actions > .chip-button,
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .chat-overlay-actions > .icon-button,
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .composer-input,
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .composer-main > .icon-button,
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .composer-main > .chip-button,
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .composer-send {
+    background-color: #15181b !important;
+    background-image:
+      linear-gradient(180deg, rgb(3 5 7 / 16%), rgb(1 3 5 / 24%)),
+      var(--gothic-workspace-card-texture-preview) !important;
+    background-blend-mode: normal, normal !important;
+    background-position: center, center !important;
+    background-repeat: no-repeat, repeat !important;
+    background-size: auto, 22rem 22rem !important;
+    border-color: rgb(104 98 90 / 58%) !important;
+    border-radius: 2px !important;
+    box-shadow:
+      inset 0 1px 0 rgb(205 211 216 / 7%),
+      0 1px 3px rgb(0 0 0 / 48%) !important;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .composer-send {
+    border-color: rgb(126 64 52 / 78%) !important;
+    color: #c7bcb0 !important;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) * {
+    scrollbar-color: rgb(118 111 99 / 58%) transparent !important;
+    scrollbar-width: thin !important;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) *::-webkit-scrollbar {
+    height: 4px;
+    width: 4px;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) *::-webkit-scrollbar-thumb {
+    background: rgb(118 111 99 / 58%);
+    border-radius: 0;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) *::-webkit-scrollbar-thumb:hover {
+    background: rgb(142 132 117 / 72%);
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) *::-webkit-scrollbar-track,
+  html[data-theme="gothic"]:not([data-surface="mobile"]) *::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .task-rail::after,
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .activity-rail::before {
+    background-image: var(--gothic-blade-divider-preview);
+    background-position: center top;
+    background-repeat: repeat-y;
+    background-size: 11px 276px;
+    bottom: 0;
+    content: "";
+    pointer-events: none;
+    position: absolute;
+    top: 0;
+    width: 11px;
+    z-index: 22;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .task-rail::after {
+    right: -5.5px;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .activity-rail::before {
+    left: -5.5px;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .task-rail::before,
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .activity-rail::after {
+    bottom: -26px;
+    content: "";
+    pointer-events: none;
+    position: absolute;
+    top: -26px;
+    width: 148px;
+    z-index: 23;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .task-rail::before {
+    background-image:
+      var(--gothic-blade-joint-task-top-preview),
+      var(--gothic-blade-joint-task-bottom-preview);
+    background-position: center -1px, center calc(100% + 1px);
+    background-repeat: no-repeat, no-repeat;
+    background-size: 74px 150px, 74px 150px;
+    right: -74px;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .activity-rail::after {
+    background-image:
+      var(--gothic-blade-joint-activity-top-preview),
+      var(--gothic-blade-joint-activity-bottom-preview);
+    background-position: center -1px, center calc(100% + 1px);
+    background-repeat: no-repeat, no-repeat;
+    background-size: 74px 150px, 74px 150px;
+    left: -74px;
+  }
+}

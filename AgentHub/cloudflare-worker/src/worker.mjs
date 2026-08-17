@@ -438,13 +438,20 @@ function dashboardBotHubRegistry(value) {
   return registry;
 }
 
-async function authorizeDashboardBotRegistration(body, registryValue) {
-  const payload = parseJson(body, "dashboard bot registration");
+function dashboardBotHubRegistration(payload) {
   const hubId = String(payload?.hubId ?? "").trim().toLowerCase();
   const secret = String(payload?.secret ?? "").trim();
+  const name = String(payload?.name ?? "Agent Hub").trim().slice(0, DASHBOARD_BOT_HUB_NAME_MAX_CHARS)
+    || "Agent Hub";
   if (!CONTROL_ID_PATTERN.test(hubId) || secret.length < 32 || secret.length > 256) {
     throw new Error("invalid dashboard bot hub registration");
   }
+  return { hubId, secret, name };
+}
+
+async function authorizeDashboardBotRegistration(body, registryValue) {
+  const payload = parseJson(body, "dashboard bot registration");
+  const { hubId, secret } = dashboardBotHubRegistration(payload);
   const registry = dashboardBotHubRegistry(registryValue);
   const expected = registry.get(hubId) ?? `sha256:${"0".repeat(64)}`;
   const actual = `sha256:${await sha256(secret)}`;
@@ -1108,13 +1115,7 @@ export class JournalStore extends DurableObject {
   }
 
   async #registerDashboardBotHub(payload) {
-    const hubId = String(payload?.hubId ?? "").trim().toLowerCase();
-    const secret = String(payload?.secret ?? "").trim();
-    const name = String(payload?.name ?? "Agent Hub").trim().slice(0, DASHBOARD_BOT_HUB_NAME_MAX_CHARS)
-      || "Agent Hub";
-    if (!CONTROL_ID_PATTERN.test(hubId) || secret.length < 32 || secret.length > 256) {
-      throw new Error("invalid dashboard bot hub registration");
-    }
+    const { hubId, secret, name } = dashboardBotHubRegistration(payload);
     const now = Date.now();
     const key = dashboardBotHubKey(hubId);
     const existing = await this.ctx.storage.get(key);
@@ -1150,6 +1151,14 @@ export class JournalStore extends DurableObject {
       expiresAt,
       name,
     };
+  }
+
+  async #registerExistingDashboardBotHub(payload) {
+    const { hubId, secret } = dashboardBotHubRegistration(payload);
+    const existing = await this.ctx.storage.get(dashboardBotHubKey(hubId));
+    if (!existing) throw new Error("dashboard bot hub is not registered");
+    if (existing.secret !== secret) throw new Error("dashboard bot hub id conflict");
+    return this.#registerDashboardBotHub(payload);
   }
 
   async #authenticateDashboardBotHub(request) {
@@ -1490,8 +1499,10 @@ export class JournalStore extends DurableObject {
           userId: linked.userId,
         },
         reply: text
-          ? image ? "Уточнение и скриншот добавлены к задаче." : "Уточнение добавлено к задаче."
-          : "Скриншот добавлен к задаче.",
+          ? image
+            ? "⏳ Уточнение и скриншот поставлены в очередь Agent Hub."
+            : "⏳ Уточнение поставлено в очередь Agent Hub."
+          : "⏳ Скриншот поставлен в очередь Agent Hub.",
       };
     }
     if (source || openBundle || image) {
@@ -1536,7 +1547,7 @@ export class JournalStore extends DurableObject {
     return {
       hubId: linked.hubId,
       command,
-      reply: "Принято в Backlog.",
+      reply: "⏳ Поставлено в очередь Agent Hub. Подтверждение придёт после создания карточки.",
     };
   }
 
@@ -2101,12 +2112,23 @@ export class JournalStore extends DurableObject {
 
   async fetch(request) {
     const url = new URL(request.url);
-    if (request.method === "POST" && url.pathname === "/dashboard-bot/register") {
+    if (
+      request.method === "POST"
+      && ["/dashboard-bot/register", "/dashboard-bot/register-existing"].includes(url.pathname)
+    ) {
       try {
         const body = await readBoundedBody(request, 8 * 1024, "dashboard bot registration");
-        return json(await this.#registerDashboardBotHub(parseJson(body, "dashboard bot registration")));
+        const payload = parseJson(body, "dashboard bot registration");
+        return json(await (url.pathname.endsWith("register-existing")
+          ? this.#registerExistingDashboardBotHub(payload)
+          : this.#registerDashboardBotHub(payload)));
       } catch (error) {
-        return json({ error: error.message }, /conflict/iu.test(error.message) ? 409 : 400);
+        const status = /conflict/iu.test(error.message)
+          ? 409
+          : /not registered/iu.test(error.message)
+            ? 404
+            : 400;
+        return json({ error: error.message }, status);
       }
     }
     if (
@@ -2577,7 +2599,7 @@ export class JournalStore extends DurableObject {
         const command = await storage.get(key);
         if (!command || command.userId !== userId) return json({ error: "control command not found" }, 404);
         if (command.status === "completed" || command.status === "failed") {
-          return json(this.#controlStatus(command));
+          return json({ ...this.#controlStatus(command), resultAccepted: false });
         }
         if (command.status !== "running") return json({ error: "control command is not running" }, 409);
         const now = Date.now();
@@ -2614,7 +2636,25 @@ export class JournalStore extends DurableObject {
           if (manifest.commandIds.length) await storage.put(attachmentKey, manifest);
           else await this.#deleteAttachment(manifest, storage);
         }
-        return json(this.#controlStatus(command));
+        const sourceDetails = command.params?.sourceDetails;
+        const dashboardBotReceipt = command.action === "board-task-ingest"
+          && sourceDetails && typeof sourceDetails === "object"
+          ? {
+            kind: Number.isSafeInteger(command.params?.replyMessageId)
+              ? "update"
+              : sourceDetails.bundleId
+                ? "bundle"
+                : "task",
+            bundleId: String(sourceDetails.bundleId ?? ""),
+            separate: sourceDetails.separate === true,
+            separateIndex: Number(sourceDetails.separateIndex) || null,
+          }
+          : null;
+        return json({
+          ...this.#controlStatus(command),
+          resultAccepted: true,
+          ...(dashboardBotReceipt ? { dashboardBotReceipt } : {}),
+        });
       });
       if (response.ok) {
         this.#wakeControlResultWaiters(id);
@@ -2812,7 +2852,21 @@ export default {
       if (request.method !== "POST") return json({ error: "Method Not Allowed" }, 405);
       try {
         const body = await readBoundedBody(request, 8 * 1024, "dashboard bot registration");
-        await authorizeDashboardBotRegistration(body, env.DASHBOARD_BOT_HUB_REGISTRY);
+        try {
+          await authorizeDashboardBotRegistration(body, env.DASHBOARD_BOT_HUB_REGISTRY);
+        } catch (error) {
+          if (!/registry is not configured/iu.test(error.message)) throw error;
+          const existing = await store.fetch(new Request(
+            "https://journal.internal/dashboard-bot/register-existing",
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body,
+            },
+          ));
+          if (existing.ok) return existing;
+          throw error;
+        }
         return store.fetch(new Request("https://journal.internal/dashboard-bot/register", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -2927,8 +2981,8 @@ export default {
             ...routed.card,
             mode: "edit",
             text: routed.submittedBundle.separate
-              ? `✅ Создано отдельных задач: ${routed.submittedBundle.taskCount}.`
-              : `✅ Пачка из ${routed.submittedBundle.itemCount} сообщений принята в Backlog.`,
+              ? `⏳ Отдельных задач поставлено в очередь: ${routed.submittedBundle.taskCount}.`
+              : `⏳ Пачка из ${routed.submittedBundle.itemCount} сообщений поставлена в очередь Agent Hub.`,
             replyMarkup: { inline_keyboard: [] },
           });
         }
@@ -2998,7 +3052,7 @@ export default {
       ) {
         return json({ error: "invalid dashboard bot result" }, 400);
       }
-      return hubStore.fetch(new Request("https://journal.internal/control/result", {
+      const resultResponse = await hubStore.fetch(new Request("https://journal.internal/control/result", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -3010,6 +3064,28 @@ export default {
             : { error: String(payload.error ?? "").slice(0, MAX_CONTROL_ERROR_CHARS) }),
         }),
       }));
+      const result = await resultResponse.json().catch(() => ({}));
+      if (resultResponse.ok && result.resultAccepted === true && result.dashboardBotReceipt) {
+        const receipt = result.dashboardBotReceipt;
+        const successText = receipt.kind === "update"
+          ? "✅ Изменения сохранены в Dashboard."
+          : receipt.kind === "bundle"
+            ? receipt.separate
+              ? receipt.separateIndex
+                ? `✅ Задача ${receipt.separateIndex} добавлена в Backlog.`
+                : "✅ Отдельная задача добавлена в Backlog."
+              : "✅ Пачка сообщений добавлена в Backlog."
+            : "✅ Задача добавлена в Backlog.";
+        const failureText = `⚠️ Agent Hub не принял задачу: ${String(payload.error ?? "неизвестная ошибка").slice(0, 300)}`;
+        await dashboardBotTelegramRequest(env, "sendMessage", {
+          chat_id: identity.chatId,
+          text: payload.ok ? successText : failureText,
+          disable_web_page_preview: true,
+        }).catch((error) => {
+          console.warn(`Cannot send Dashboard bot delivery confirmation: ${error.message}`);
+        });
+      }
+      return json(result, resultResponse.status);
     }
     if (url.pathname === "/api/sync") {
       if (request.method !== "POST") return json({ error: "Method Not Allowed" }, 405);

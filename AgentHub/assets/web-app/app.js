@@ -10078,17 +10078,7 @@ async function hydrateOpenLazyNodes() {
 }
 
 function formatTaskDuration(value) {
-  const totalSeconds = Math.max(0, Math.round(Number(value) || 0));
-  const days = Math.floor(totalSeconds / 86_400);
-  const hours = Math.floor(totalSeconds % 86_400 / 3_600);
-  const minutes = Math.floor(totalSeconds % 3_600 / 60);
-  const seconds = totalSeconds % 60;
-  return [
-    days ? `${days} д` : "",
-    hours ? `${hours} ч` : "",
-    minutes ? `${minutes} мин` : "",
-    seconds || (!days && !hours && !minutes) ? `${seconds} с` : "",
-  ].filter(Boolean).join(" ");
+  return JournalView.formatDurationHours(value);
 }
 
 /* Тот же цветовой код, что в журнале по датам: cr — «kilo», kcr — «mega»,

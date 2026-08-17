@@ -93,6 +93,29 @@ test("shared Dashboard bot request signature is stable for an explicit timestamp
   });
 });
 
+test("shared Dashboard bot reports the exact route for a timed out pull", async (context) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-shared-bot-timeout-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const secretFile = path.join(directory, "shared-dashboard-bot.secret");
+  await writeFile(secretFile, "s".repeat(64), "utf8");
+  const client = new SharedDashboardBotClient({
+    publicUrl: "https://hub.example.com",
+    hubId: "018f6c86-3f34-7a31-8f27-16f5b96cce69",
+    secretFile,
+    fetchImpl: async () => {
+      const error = new Error("The operation was aborted due to timeout");
+      error.name = "TimeoutError";
+      throw error;
+    },
+    handler: async () => null,
+  });
+
+  await assert.rejects(
+    client.poll(),
+    /request \/api\/dashboard-bot\/pull failed: The operation was aborted due to timeout/u,
+  );
+});
+
 test("shared Dashboard bot pauses after an empty short poll", async (context) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-shared-bot-idle-"));
   context.after(() => rm(directory, { recursive: true, force: true }));

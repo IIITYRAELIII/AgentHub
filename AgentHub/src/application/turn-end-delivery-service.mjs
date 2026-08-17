@@ -33,6 +33,22 @@ export class TurnEndDeliveryService {
     this.delivering = new Set();
   }
 
+  rememberCompletion(completion, body = "") {
+    if (!completion || completion.aggregateOnly) return false;
+    const notificationBody = String(body || completion.finalAnswer
+      || completion.message?.text || fallbackTurnEndMessage(completion.status)).trim();
+    if (!notificationBody) return false;
+    this.rememberLastMessage({
+      streamId: completion.streamId ?? null,
+      provider: completion.provider,
+      projectRoot: completion.projectRoot,
+      threadId: completion.threadId,
+      turnId: completion.turnId,
+    }, notificationBody, { updatedAt: completion.completedAt });
+    if (completion.turnId) this.rememberSeenTurn(completion, completion.turnId);
+    return true;
+  }
+
   async deliver(completion) {
     if (!completion) return false;
     const key = turnEndKey(completion);
@@ -48,16 +64,7 @@ export class TurnEndDeliveryService {
         title: notificationTitle,
         body: notificationBody,
       });
-      if (!completion.aggregateOnly) {
-        this.rememberLastMessage({
-          streamId: completion.streamId ?? null,
-          provider: completion.provider,
-          projectRoot: completion.projectRoot,
-          threadId: completion.threadId,
-          turnId: completion.turnId,
-        }, notificationBody, { updatedAt: completion.completedAt });
-        if (completion.turnId) this.rememberSeenTurn(completion, completion.turnId);
-      }
+      this.rememberCompletion(completion, notificationBody);
       if (journal?.projectionError) {
         this.logger.error(
           `Journal projection deferred for turn ${completion.turnId}: ${journal.projectionError}`,

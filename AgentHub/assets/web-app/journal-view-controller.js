@@ -146,6 +146,18 @@
     return null;
   }
 
+  function formatDurationHours(value) {
+    const totalSeconds = Math.max(0, Math.round(Number(value) || 0));
+    const hours = Math.floor(totalSeconds / 3_600);
+    const minutes = Math.floor(totalSeconds % 3_600 / 60);
+    const seconds = totalSeconds % 60;
+    return [
+      hours ? `${hours} ч` : "",
+      minutes ? `${minutes} мин` : "",
+      seconds || (!hours && !minutes) ? `${seconds} с` : "",
+    ].filter(Boolean).join(" ");
+  }
+
   function turnIdentity(dataset, row = {}) {
     const turnId = String(dataset?.workLogTurnId ?? "").trim();
     if (!turnId) return "";
@@ -184,6 +196,7 @@
 
   window.AgentHubJournalView = Object.freeze({
     GROUPINGS,
+    formatDurationHours,
     groupIdentity,
     groupingLabel: (value) => LABELS[normalizeGrouping(value)],
     normalizeGrouping,

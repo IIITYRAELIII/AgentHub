@@ -89,6 +89,13 @@ test("grouped turn prefers total credits including subagents", async () => {
   assert.equal(api.turnDisplayCredits({}), null);
 });
 
+test("journal duration keeps totals longer than a day in hours", async () => {
+  const api = await journalViewApi();
+  assert.equal(api.formatDurationHours(106_511), "29 ч 35 мин 11 с");
+  assert.equal(api.formatDurationHours(3_600), "1 ч");
+  assert.equal(api.formatDurationHours(0), "0 с");
+});
+
 test("journal turn identity keeps root and child Threads with the same turn id distinct", async () => {
   const api = await journalViewApi();
   const root = api.turnIdentity({

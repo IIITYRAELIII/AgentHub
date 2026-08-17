@@ -12,6 +12,7 @@ import {
 } from "../../domain/attachment-files.mjs";
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 35_000;
+const DEFAULT_POLL_TIMEOUT_MS = 10_000;
 const DEFAULT_RETRY_MS = 5_000;
 const COMMAND_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const HUB_ID_PATTERN = COMMAND_ID_PATTERN;
@@ -100,20 +101,28 @@ export class SharedDashboardBotClient {
     const secret = await this.#secret();
     const body = JSON.stringify(payload);
     const { timestamp, signature } = signSharedDashboardBotRequest({ body, secret, pathname });
-    const response = await this.#fetch(`${this.#publicUrl}${pathname}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Agent-Hub-Dashboard-Id": this.#hubId,
-        "X-Agent-Hub-Timestamp": String(timestamp),
-        "X-Agent-Hub-Signature": signature,
-      },
-      body,
-      signal: signal
-        ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)])
-        : AbortSignal.timeout(timeoutMs),
-    });
-    return response;
+    try {
+      return await this.#fetch(`${this.#publicUrl}${pathname}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Agent-Hub-Dashboard-Id": this.#hubId,
+          "X-Agent-Hub-Timestamp": String(timestamp),
+          "X-Agent-Hub-Signature": signature,
+        },
+        body,
+        signal: signal
+          ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)])
+          : AbortSignal.timeout(timeoutMs),
+      });
+    } catch (error) {
+      const wrapped = new Error(
+        `Shared Dashboard bot request ${pathname} failed: ${String(error?.message ?? error)}`,
+        { cause: error },
+      );
+      wrapped.name = String(error?.name ?? "Error");
+      throw wrapped;
+    }
   }
 
   async #signedRequest(pathname, payload, options = {}) {
@@ -247,7 +256,7 @@ export class SharedDashboardBotClient {
       const payload = await this.#signedRequest("/api/dashboard-bot/pull", {
         limit: 10,
         waitMs: 0,
-      }, { signal: abortController.signal });
+      }, { signal: abortController.signal, timeoutMs: DEFAULT_POLL_TIMEOUT_MS });
       if (!Array.isArray(payload?.commands)) throw new Error("Shared Dashboard bot returned an invalid queue");
       let handled = 0;
       for (const rawCommand of payload.commands) {
