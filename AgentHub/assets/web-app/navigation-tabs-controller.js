@@ -50,7 +50,9 @@
       provider,
       threadId,
       streamId,
-      hash: provider && threadId
+      hash: streamId
+        ? `#/chat/stream/${encodeURIComponent(streamId)}`
+        : provider && threadId
         ? `#/chat/${encodeURIComponent(provider)}/${encodeURIComponent(threadId)}`
         : "",
     };

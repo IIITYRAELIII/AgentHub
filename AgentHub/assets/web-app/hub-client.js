@@ -438,7 +438,7 @@ function deferredEntriesForTask(snapshot, taskIdValue) {
   return (snapshot?.deferredInputs ?? []).filter((item) => (
     item.state !== "dispatching"
     && item.state !== "steering"
-    && (!item.provider || taskId(item.provider, item.threadId) === taskIdValue)
+    && (!item.provider || taskId(item.provider, item.threadId, item.streamId) === taskIdValue)
   ));
 }
 
@@ -493,7 +493,8 @@ function applyMessageReceipts(snapshot) {
       || receipt.deferred === true
       || receipt.steered === true;
     agentHub.completeSend(clientUserMessageId, { accepted });
-    const stableTaskId = taskId(provider, threadId);
+    const streamId = String(receipt?.streamId ?? "").trim();
+    const stableTaskId = taskId(provider, threadId, streamId);
     const restoredText = String(receipt.displayText ?? "");
     const restoredAnnotations = normalizedResponseAnnotations(receipt.responseAnnotations);
     const restoredRequest = String(receipt.responseAnnotationRequest ?? "");
@@ -509,6 +510,7 @@ function applyMessageReceipts(snapshot) {
         id: `local:${clientUserMessageId}`,
         provider,
         threadId,
+        streamId,
         turnId: String(receipt.turnId ?? ""),
         itemId: receipt.id ?? clientUserMessageId,
         clientUserMessageId,
@@ -524,6 +526,7 @@ function applyMessageReceipts(snapshot) {
     patchOutgoing(stableTaskId, clientUserMessageId, {
       provider,
       threadId,
+      streamId,
       turnId: String(receipt.turnId ?? ""),
       itemId: receipt.steered === true ? clientUserMessageId : receipt.id ?? clientUserMessageId,
       time: receipt.deliveredAt ?? receipt.createdAt ?? null,
@@ -1387,7 +1390,7 @@ function applySnapshot(snapshot) {
     const clientUserMessageId = String(deferred.clientUserMessageId ?? "");
     if (!clientUserMessageId) continue;
     patchOutgoing(
-      taskId(deferred.provider, deferred.threadId),
+      taskId(deferred.provider, deferred.threadId, deferred.streamId),
       clientUserMessageId,
       {
         ...deliveryPatch(
@@ -1405,7 +1408,7 @@ function applySnapshot(snapshot) {
   for (const task of snapshot.tasks ?? []) {
     const clientUserMessageId = String(task.run?.clientUserMessageId ?? "");
     if (!clientUserMessageId) continue;
-    patchOutgoing(taskId(task.provider, task.threadId), clientUserMessageId, {
+    patchOutgoing(taskId(task.provider, task.threadId, task.streamId), clientUserMessageId, {
       provider: task.provider,
       threadId: task.threadId,
       turnId: String(task.run?.turnId ?? ""),
@@ -1419,7 +1422,7 @@ function applySnapshot(snapshot) {
     });
   }
   const selected = (snapshot.tasks ?? []).find(
-    (task) => taskId(task.provider, task.threadId) === effectiveSelectedId,
+    (task) => taskId(task.provider, task.threadId, task.streamId) === effectiveSelectedId,
   );
   rememberSelectedTaskId(effectiveSelectedId);
   for (const task of snapshot.tasks ?? []) {
@@ -1765,7 +1768,8 @@ agentHub.on("task:select", ({ id }) => {
     }
     applyOpened(result);
     pendingSelectionId = "";
-    replaceRoute(`#/chat/${encodeURIComponent(identity.provider)}/${encodeURIComponent(identity.threadId)}`);
+    const route = window.AgentHubNavigationTabs.resolvedChatRoute(result, identity);
+    if (route.hash) replaceRoute(route.hash);
     return result;
   });
   return selectionTail;
@@ -1957,9 +1961,11 @@ agentHub.on("message:send", (request) => {
         rememberSelectedTaskId(request.taskId);
         applySnapshot(createdSnapshot);
         pendingSelectionId = "";
-        if (identity.threadId) {
-          replaceRoute(`#/chat/${encodeURIComponent(identity.provider)}/${encodeURIComponent(identity.threadId)}`);
-        }
+        const route = window.AgentHubNavigationTabs.resolvedChatRoute(
+          { history: identity },
+          identity,
+        );
+        if (route.hash) replaceRoute(route.hash);
       }
       // Worker attachments are deleted after their command finishes. A retry
       // must upload the image again instead of reusing an expired reference.
@@ -2002,6 +2008,7 @@ agentHub.on("message:send", (request) => {
       updateOutgoing(request.taskId, request.requestId, {
         provider: identity?.provider ?? "",
         threadId: result?.threadId ?? identity?.threadId ?? "",
+        streamId: result?.streamId ?? identity?.streamId ?? request.streamId,
         turnId: result?.turnId ?? "",
         itemId: result?.itemId ?? request.requestId,
         ...nonEmptyAttachmentPatch(result?.attachments),
@@ -2016,8 +2023,16 @@ agentHub.on("message:send", (request) => {
     synchronize: (result) => {
       applySnapshot(result?.snapshot);
       if (!identity?.threadId && result?.threadId) {
-        identity = { ...identity, threadId: result.threadId };
-        replaceRoute(`#/chat/${encodeURIComponent(identity.provider)}/${encodeURIComponent(identity.threadId)}`);
+        identity = {
+          ...identity,
+          streamId: result?.streamId ?? identity?.streamId ?? request.streamId,
+          threadId: result.threadId,
+        };
+        const route = window.AgentHubNavigationTabs.resolvedChatRoute(
+          { history: identity },
+          identity,
+        );
+        if (route.hash) replaceRoute(route.hash);
       }
       renderTaskMessages(request.taskId);
       if (queuesOptimistically) {
@@ -2070,7 +2085,10 @@ agentHub.on("task:new", ({ title, provider }) => runAction(async () => {
   pendingSelectionId = "";
   agentHub.showSelectedTask();
   const identity = taskIdentity(selectedTaskId);
-  if (identity) replaceRoute(`#/chat/${encodeURIComponent(identity.provider)}/${encodeURIComponent(identity.threadId)}`);
+  if (identity) {
+    const route = window.AgentHubNavigationTabs.resolvedChatRoute({ history: identity }, identity);
+    if (route.hash) replaceRoute(route.hash);
+  }
 }));
 
 agentHub.on("task:rename", ({ id, title }) => runAction(async () => {
@@ -2480,7 +2498,7 @@ agentHub.on("queue:remove", ({ id }) => runAction(async () => {
   const result = await control("deferred-input", { id, action: "cancel" });
   const clientUserMessageId = String(deferred?.clientUserMessageId ?? "");
   if (clientUserMessageId) {
-    const deferredTaskId = taskId(deferred.provider, deferred.threadId);
+    const deferredTaskId = taskId(deferred.provider, deferred.threadId, deferred.streamId);
     outgoingMessages(deferredTaskId).delete(clientUserMessageId);
     renderTaskMessages(deferredTaskId);
   }
@@ -2508,7 +2526,7 @@ agentHub.on("queue:steer", ({ id, taskId: taskIdValue }) => runAction(() => runQ
   const result = await control("deferred-input", { id, action: "steer" });
   const clientUserMessageId = String(deferred?.clientUserMessageId ?? "").trim();
   if (clientUserMessageId) {
-    const deferredTaskId = taskId(deferred.provider, deferred.threadId);
+    const deferredTaskId = taskId(deferred.provider, deferred.threadId, deferred.streamId);
     optimisticDeferredClientUserMessageIds.delete(clientUserMessageId);
     deferredClientUserMessageIds.delete(clientUserMessageId);
     patchOutgoing(deferredTaskId, clientUserMessageId, {
@@ -2947,9 +2965,11 @@ document.addEventListener("click", (event) => {
     const threadId = openTask.dataset.threadId
       ?? openTask.closest("[data-work-log-thread-id]")?.dataset.workLogThreadId;
     void runAction(async () => {
-      applyOpened(await control("open-task", { provider, threadId, limit: 20 }));
+      const opened = await control("open-task", { provider, threadId, limit: 20 });
+      applyOpened(opened);
       document.querySelector("[data-view-button='chat']")?.click();
-      replaceRoute(`#/chat/${encodeURIComponent(provider)}/${encodeURIComponent(threadId)}`);
+      const route = window.AgentHubNavigationTabs.resolvedChatRoute(opened, { provider, threadId });
+      if (route.hash) replaceRoute(route.hash);
     });
     return;
   }
@@ -2994,7 +3014,18 @@ async function openRoute() {
   if (parts[0] !== "chat" || !parts[1] || !parts[2]) return false;
   if (parts[1] === "stream") {
     const streamId = parts[2];
-    if (!emptyStreamModels(lastSnapshot ?? {}, streamId).some((task) => task.id === streamId)) return false;
+    const task = snapshotTask(lastSnapshot, streamId);
+    if (task) {
+      const opened = await control("open-task", {
+        provider: task.provider,
+        threadId: task.threadId,
+        streamId: task.streamId,
+        limit: 20,
+      });
+      applyOpened(opened);
+      return true;
+    }
+    if (!emptyStreamModels(lastSnapshot ?? {}, streamId).some((draft) => draft.id === streamId)) return false;
     pendingSelectionId = streamId;
     rememberSelectedTaskId(streamId);
     applySnapshot(lastSnapshot);

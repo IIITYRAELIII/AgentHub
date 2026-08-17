@@ -933,11 +933,16 @@ function reusableAttachmentPaths(previousPaths, attachmentCount, { remote = fals
 }
 
 function conversationTaskId({ provider, threadId, streamId = "" } = {}, tasks = []) {
-  const stableStreamId = String(streamId ?? "").trim()
-    || String((Array.isArray(tasks) ? tasks : []).find((task) => (
-      String(task?.provider ?? "") === String(provider ?? "")
-      && String(task?.threadId ?? "") === String(threadId ?? "")
-    ))?.streamId ?? "").trim();
+  const explicitStreamId = String(streamId ?? "").trim();
+  const matches = explicitStreamId ? [] : (Array.isArray(tasks) ? tasks : []).filter((task) => (
+    String(task?.provider ?? "") === String(provider ?? "")
+    && String(task?.threadId ?? "") === String(threadId ?? "")
+    && String(task?.streamId ?? "").trim()
+  ));
+  const inferredStreamId = matches.length === 1
+    ? String(matches[0].streamId ?? "").trim()
+    : "";
+  const stableStreamId = explicitStreamId || inferredStreamId;
   return stableStreamId || `${String(provider ?? "")}:${String(threadId ?? "")}`;
 }
 

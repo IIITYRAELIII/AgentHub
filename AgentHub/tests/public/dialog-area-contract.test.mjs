@@ -22,10 +22,17 @@ test("dialog geometry references semantic tokens without literal colors", async 
   assert.match(styles, /--dialog-agent-2: hsl\(from var\(--accent\) calc\(h \+ 120\) s l\)/u);
   assert.match(styles, /\.chat-log \{[\s\S]*gap: 28px;/u);
   assert.match(styles, /\.msg-user-bubble \{[\s\S]*max-width: 560px;/u);
+  assert.match(styles, /--dialog-stream-tabs-height: 44px;/u);
+  assert.match(styles, /--dialog-stream-tabs-focus-height: 36px;/u);
+  assert.match(styles, /&\[data-focus-mode="true"\] \.stream-tabs \{[\s\S]*height: var\(--dialog-stream-tabs-focus-height\);/u);
+  assert.match(styles, /\.stream-tabs-track \.stream-tab \{[\s\S]*align-items: center;/u);
+  assert.match(styles, /\.activity-stream-list :is\(\.stream-tab-card\) \{[\s\S]*align-items: center;/u);
+  assert.match(styles, /\.activity-stream-list \.provider-dot,[\s\S]*\.activity-stream-list \.task-time \{[\s\S]*align-self: center;/u);
   assert.match(styles, /\.provider-dot\[data-state="idle"\] \{[\s\S]*background: var\(--dialog-agent-color\);[\s\S]*opacity: 0\.8;/u);
   assert.match(styles, /\.provider-dot\[data-state="failed"\] \{[\s\S]*0 0 0 2px var\(--dialog-chrome\)/u);
   assert.match(styles, /\.stream-tabs-track \.stream-tab\[data-current\] \{[\s\S]*border: 0 !important;[\s\S]*box-shadow: inset 0 -2px 0 var\(--dialog-accent\) !important;/u);
   assert.match(styles, /\.stream-tabs-controls \.stream-tab-utility \{[\s\S]*flex: 0 0 26px !important;[\s\S]*width: 26px !important;/u);
+  assert.match(styles, /\.msg-body pre code,[\s\S]*\.msg-reasoning pre code \*,?[\s\S]*\{[\s\S]*background: transparent !important;/u);
   assert.match(styles, /\.chat-scroll > \.msg-live \{[\s\S]*width: min\(var\(--dialog-column-width\), calc\(100% - 32px\)\);/u);
   assert.match(styles, /\.chat-stop-bottom \{[\s\S]*background: color-mix\(in srgb, var\(--dialog-danger\) 10%, transparent\);[\s\S]*width: 30px;/u);
   assert.doesNotMatch(styles, /(?<!track )\.stream-tab-card \{/u);

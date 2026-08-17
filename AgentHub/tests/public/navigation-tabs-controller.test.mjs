@@ -44,5 +44,17 @@ test("a rotated Thread route follows the current history identity", async () => 
   assert.equal(route.provider, "codex");
   assert.equal(route.threadId, "thread-current");
   assert.equal(route.streamId, "stream-1");
+  assert.equal(route.hash, "#/chat/stream/stream-1");
+});
+
+test("chat route falls back to provider and Thread only when Stream is unknown", async () => {
+  const { resolvedChatRoute } = await navigationTabsApi();
+  const route = resolvedChatRoute(
+    { history: { provider: "codex", threadId: "thread-current" } },
+    { provider: "codex", threadId: "thread-old" },
+  );
+  assert.equal(route.provider, "codex");
+  assert.equal(route.threadId, "thread-current");
+  assert.equal(route.streamId, "");
   assert.equal(route.hash, "#/chat/codex/thread-current");
 });
