@@ -1760,7 +1760,7 @@ test("manual context compaction reports completion and stays on the fast refresh
   assert.match(client, /task\.running \|\| task\.context\?\.compacting \|\| task\.maintenance/u);
   assert.match(app, /message\.kind === "maintenance"/u);
   assert.match(styles, /\.msg-maintenance \.msg-body/u);
-  assert.match(app, /context\.compacting \? "↻" : context\.usagePending \? "…"/u);
+  assert.match(app, /contextLabel\.textContent = context\.compacting[\s\S]*\? "свёртка…"[\s\S]*context\.usagePending \? "обновление…"/u);
   assert.match(app, /context\.compaction\?\.stage === "cleaning-images"/u);
   assert.match(app, /Удаляются дубликаты изображений/u);
   assert.match(app, /toggleAttribute\("data-compacting"/u);
@@ -2226,8 +2226,10 @@ test("shared shell groups threads under stable Workspace and Stream identities",
   assert.match(tabs, /class: "stream-tab-card"/u);
   assert.match(tabs, /text: streamName/u);
   assert.doesNotMatch(tabs, /task\?\.threadTitle \|\| task\?\.title/u);
-  assert.match(tabs, /class: "task-agent task-model"/u);
-  assert.match(tabs, /class: "task-runtime"/u);
+  assert.match(tabs, /"data-stream-model": task\?\.modelLabel \?\? ""/u);
+  assert.doesNotMatch(tabs, /class: "task-agent task-model"/u);
+  assert.doesNotMatch(tabs, /class: "task-runtime"/u);
+  assert.match(app, /streamHeaderModel\.textContent = shortModelLabel\(model\)/u);
   assert.match(styles, /\.stream-tab-card\s*\{/u);
   assert.match(tabs, /"data-running": running \? "" : null/u);
   assert.match(tabs, /"data-answer-ready": answerReady \? "" : null/u);
