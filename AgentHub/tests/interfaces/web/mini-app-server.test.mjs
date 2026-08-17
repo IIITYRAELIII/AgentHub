@@ -118,6 +118,7 @@ function memoryJournal(html = "") {
     }),
     snapshot: async () => structuredClone(current),
     fragment: async (kind, key) => current[kind === "day" ? "days" : "turns"]?.[key] ?? null,
+    fragments: async (kind) => structuredClone(current[kind === "day" ? "days" : "turns"] ?? {}),
     subscribe(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);
@@ -1353,6 +1354,15 @@ test("Mini App serves old days and turn bodies through lazy endpoints", async ()
     assert.match(day.html, /Ход turn-01/u);
     assert.doesNotMatch(day.html, /Ответ turn-01/u);
 
+    const daysResponse = await fetch(
+      `${address.url}api/journal/days?version=${encodeURIComponent(index.version)}`,
+    );
+    assert.equal(daysResponse.status, 200);
+    const dayFragments = await daysResponse.json();
+    assert.equal(dayFragments.version, index.version);
+    assert.match(dayFragments.days["01.07.2026"], /Ход turn-01/u);
+    assert.doesNotMatch(dayFragments.days["01.07.2026"], /Ответ turn-01/u);
+
     const turnResponse = await fetch(
       `${address.url}api/journal/turn?id=turn-01&version=${encodeURIComponent(index.version)}`,
     );
@@ -1361,6 +1371,9 @@ test("Mini App serves old days and turn bodies through lazy endpoints", async ()
 
     assert.equal((await fetch(
       `${address.url}api/journal/day?date=01.07.2026&version=old`,
+    )).status, 409);
+    assert.equal((await fetch(
+      `${address.url}api/journal/days?version=old`,
     )).status, 409);
   } finally {
     await server.close();

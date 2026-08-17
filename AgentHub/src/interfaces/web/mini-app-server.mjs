@@ -1067,6 +1067,22 @@ export class MiniAppServer {
       }
       return;
     }
+    if (url.pathname === "/api/journal/days") {
+      if (!await this.#authorize(request, response)) return;
+      try {
+        const journal = await this.#journal();
+        const requestedVersion = String(url.searchParams.get("version") ?? "");
+        if (requestedVersion && requestedVersion !== journal.version) {
+          json(response, 409, { error: "Журнал обновился.", version: journal.version }, method);
+          return;
+        }
+        const days = await this.#journalDatabase.fragments("day");
+        json(response, 200, { days, version: journal.version }, method);
+      } catch (error) {
+        json(response, 503, { error: `Журнал недоступен: ${error.message}` }, method);
+      }
+      return;
+    }
     if (url.pathname === "/api/journal/day" || url.pathname === "/api/journal/turn") {
       if (!await this.#authorize(request, response)) return;
       try {

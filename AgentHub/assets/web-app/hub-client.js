@@ -3126,6 +3126,10 @@ void runAction(async () => {
     let routed = false;
     if (directChatRoute()) {
       routed = await openRoute();
+      // openRoute загружает актуальную историю раньше фонового prefetch, но
+      // сам по себе не запускает периодический refresh. Без этого первый
+      // snapshot остаётся последним до полной перезагрузки страницы.
+      await refresh({ reportError: true });
     } else {
       await refresh({ reportError: true });
       routed = await openRoute();

@@ -723,6 +723,15 @@ export class JournalDatabase {
     return typeof row?.html === "string" ? row.html : null;
   }
 
+  async fragments(kind) {
+    const database = await this.#open();
+    const table = kind === "day" ? "journal_days" : "journal_turns";
+    const column = kind === "day" ? "date" : "id";
+    return Object.fromEntries(database.prepare(
+      `SELECT ${column} AS key, html FROM ${table} ORDER BY ${column}`,
+    ).all().map((row) => [row.key, row.html]));
+  }
+
   close() {
     clearInterval(this.#subscriptionTimer);
     this.#subscriptionTimer = null;

@@ -1607,7 +1607,7 @@ test("outgoing receipt lookup survives a task thread rebind", () => {
   );
 });
 
-test("initial routed chat history wins over visible stream prefetch", () => {
+test("initial routed chat history wins over prefetch and starts snapshot polling", () => {
   assert.match(hubClientSource, /let initialRouteOpening = true;/u);
   assert.match(
     hubClientSource,
@@ -1615,7 +1615,7 @@ test("initial routed chat history wins over visible stream prefetch", () => {
   );
   assert.match(
     hubClientSource,
-    /if \(directChatRoute\(\)\) \{\s*routed = await openRoute\(\);/u,
+    /if \(directChatRoute\(\)\) \{\s*routed = await openRoute\(\);\s*[\s\S]*?await refresh\(\{ reportError: true \}\);/u,
   );
   assert.match(
     hubClientSource,

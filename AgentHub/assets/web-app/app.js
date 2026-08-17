@@ -9976,6 +9976,22 @@ async function fetchJournalFragment(pathname, params) {
   return payload;
 }
 
+async function fetchJournalDayFragments() {
+  await localSessionReady;
+  const query = new URLSearchParams({ version: currentVersion });
+  const response = await fetch(`/api/journal/days?${query}`, {
+    cache: "no-store",
+    headers: await authenticatedRequestHeaders(),
+  });
+  const payload = await response.json();
+  if (response.status === 409 || payload.version && payload.version !== currentVersion) {
+    void loadJournal({ force: true });
+    throw new Error("Журнал обновился.");
+  }
+  if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+  return payload.days && typeof payload.days === "object" ? payload.days : {};
+}
+
 async function loadLazyDay(details) {
   const date = details?.dataset.lazyDay;
   if (!date || !details.isConnected) return;
@@ -11224,6 +11240,15 @@ async function hydrateAllLazyDays() {
   const days = [...journal.querySelectorAll(
     "details[data-work-log-day-section][data-lazy-day]",
   )];
+  const missingDates = days
+    .map((details) => details.dataset.lazyDay)
+    .filter((date) => date && !journalDayHtmlCache.has(date));
+  if (missingDates.length) {
+    const fragments = await fetchJournalDayFragments();
+    for (const [date, html] of Object.entries(fragments)) {
+      if (typeof html === "string") journalDayHtmlCache.set(date, html);
+    }
+  }
   await Promise.all(days.map(loadLazyDay));
 }
 

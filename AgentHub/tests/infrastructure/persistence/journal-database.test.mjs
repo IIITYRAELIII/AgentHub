@@ -227,6 +227,8 @@ test("direct projection snapshot preserves lazy journal HTTP contract without a 
     assert.match(snapshot.days["01.07.2026"], /Старый ход/u);
     assert.match(snapshot.turns[item.reference], /Старый ход body/u);
     assert.match(await database.fragment("turn", item.reference), /Старый ход body/u);
+    const dayFragments = await database.fragments("day");
+    assert.match(dayFragments["01.07.2026"], /Старый ход/u);
     assert.deepEqual(await database.exportPayload(), snapshot);
   } finally {
     database.close();
