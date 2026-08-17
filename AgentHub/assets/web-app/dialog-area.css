@@ -132,7 +132,7 @@ html[data-view="chat"][data-surface][data-theme] {
   width: 1px;
 }
 
-.stream-tab {
+.stream-tabs-track .stream-tab {
   align-items: stretch;
   appearance: none;
   background: transparent;
@@ -156,14 +156,14 @@ html[data-view="chat"][data-surface][data-theme] {
   width: max-content;
 }
 
-.stream-tab:hover,
-.stream-tab:focus-visible {
+.stream-tabs-track .stream-tab:hover,
+.stream-tabs-track .stream-tab:focus-visible {
   background: var(--dialog-control-hover);
   color: var(--dialog-text);
   outline: 0;
 }
 
-.stream-tab[data-current] {
+.stream-tabs-track .stream-tab[data-current] {
   background: var(--dialog-canvas);
   border: 0;
   box-shadow: inset 0 -2px 0 var(--dialog-accent);
@@ -171,14 +171,14 @@ html[data-view="chat"][data-surface][data-theme] {
   font-weight: 600;
 }
 
-.stream-tab[aria-pressed="true"]::after,
-.stream-tab::before,
-.stream-tab-card::before,
-.stream-tab-card::after {
+.stream-tabs-track .stream-tab[aria-pressed="true"]::after,
+.stream-tabs-track .stream-tab::before,
+.stream-tabs-track .stream-tab-card::before,
+.stream-tabs-track .stream-tab-card::after {
   content: none;
 }
 
-.stream-tab-card {
+.stream-tabs-track .stream-tab-card {
   align-items: center;
   background: transparent;
   border: 0;
@@ -192,7 +192,7 @@ html[data-view="chat"][data-surface][data-theme] {
   padding: 0;
 }
 
-.stream-tab-title {
+.stream-tabs-track .stream-tab-title {
   color: inherit;
   font: inherit;
   max-width: min(28rem, 45vw);
@@ -201,7 +201,7 @@ html[data-view="chat"][data-surface][data-theme] {
   white-space: nowrap;
 }
 
-.stream-tab .task-time,
+.stream-tabs-track .stream-tab .task-time,
 .stream-overflow-item .task-time {
   color: var(--dialog-text-3);
   font-family: var(--font-numeric);
@@ -211,7 +211,7 @@ html[data-view="chat"][data-surface][data-theme] {
   white-space: nowrap;
 }
 
-.stream-tab .task-time.is-failed,
+.stream-tabs-track .stream-tab .task-time.is-failed,
 .stream-overflow-item .task-time.is-failed {
   color: var(--dialog-danger);
 }
@@ -392,6 +392,13 @@ html[data-view="chat"][data-surface][data-theme] {
   font-size: 11.5px;
 }
 
+.stream-chat-model {
+  color: var(--dialog-text-3);
+  font-family: var(--font-numeric);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
 .chat-overlay-actions {
   align-items: center;
   display: flex;
@@ -484,6 +491,12 @@ html[data-view="chat"][data-surface][data-theme] {
   max-width: none;
   padding: 0;
   width: 100%;
+}
+
+.chat-scroll > .msg-live {
+  margin-left: auto;
+  margin-right: auto;
+  width: min(var(--dialog-column-width), calc(100% - 32px));
 }
 
 .msg::before,

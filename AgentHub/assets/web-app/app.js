@@ -85,6 +85,8 @@ const streamChatColumns = document.querySelector("[data-stream-chat-columns]");
 const streamChatHeader = document.querySelector("[data-stream-chat-header]");
 const streamHeaderProviderDot = document.querySelector("[data-stream-header-provider-dot]");
 const streamHeaderProvider = document.querySelector("[data-stream-header-provider]");
+const streamHeaderModel = document.querySelector("[data-stream-header-model]");
+const streamHeaderModelSeparator = document.querySelector("[data-stream-header-model-separator]");
 const streamHeaderBranch = document.querySelector("[data-stream-header-branch]");
 const streamHeaderBranchSeparator = document.querySelector("[data-stream-header-branch-separator]");
 const streamHeaderMessageCount = document.querySelector("[data-stream-header-message-count]");
@@ -3327,6 +3329,13 @@ function renderStreamChatHeader(task) {
     streamHeaderProviderDot.dataset.state = statusState;
   }
   if (streamHeaderProvider) streamHeaderProvider.textContent = providerLabel;
+  const model = String(task.modelLabel ?? "").trim();
+  if (streamHeaderModel) {
+    streamHeaderModel.textContent = shortModelLabel(model);
+    streamHeaderModel.title = model;
+    streamHeaderModel.hidden = !model;
+  }
+  if (streamHeaderModelSeparator) streamHeaderModelSeparator.hidden = !model;
   const branch = String(task.branch ?? task.gitBranch ?? task.repositoryBranch ?? "").trim();
   if (streamHeaderBranch) {
     streamHeaderBranch.textContent = branch;

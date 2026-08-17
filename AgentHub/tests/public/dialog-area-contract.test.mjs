@@ -8,6 +8,7 @@ test("dialog area stylesheet is loaded after theme packages", async () => {
   const index = await readFile(new URL("index.html", assets), "utf8");
   assert.ok(index.indexOf("<!-- agent-hub-theme-styles -->") < index.indexOf('href="/dialog-area.css"'));
   assert.match(index, /class="stream-chat-header"[\s\S]*class="chat-scroll"/u);
+  assert.match(index, /data-stream-header-provider[\s\S]*data-stream-header-model[\s\S]*data-stream-header-message-count/u);
   assert.match(index, /class="context-usage-bar" data-context-ring/u);
 });
 
@@ -19,6 +20,8 @@ test("dialog geometry references semantic tokens without literal colors", async 
   assert.match(styles, /--dialog-agent-2: hsl\(from var\(--accent\) calc\(h \+ 120\) s l\)/u);
   assert.match(styles, /\.chat-log \{[\s\S]*gap: 28px;/u);
   assert.match(styles, /\.msg-user \.msg-body \{[\s\S]*max-width: 560px;/u);
+  assert.match(styles, /\.chat-scroll > \.msg-live \{[\s\S]*width: min\(var\(--dialog-column-width\), calc\(100% - 32px\)\);/u);
+  assert.doesNotMatch(styles, /(?<!track )\.stream-tab-card \{/u);
   assert.match(styles, /\.composer \{[\s\S]*width: min\(var\(--dialog-column-width\), calc\(100% - 48px\)\);/u);
 });
 
@@ -59,4 +62,5 @@ test("dialog interactions expose overflow, message actions and anchored context"
   assert.doesNotMatch(app, /contextUsageModal\.showModal\(\)/u);
   assert.match(app, /const major = category\.tokens != null && share >= 2;/u);
   assert.match(app, /class: "msg-technical"/u);
+  assert.match(app, /streamHeaderModel\.textContent = shortModelLabel\(model\)/u);
 });
