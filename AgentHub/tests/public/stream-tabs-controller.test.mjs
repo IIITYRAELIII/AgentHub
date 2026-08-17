@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
 
@@ -81,7 +81,7 @@ test("order switch icons are real Phosphor SVG nodes in the SVG namespace", asyn
   const document = {
     createElementNS: (namespaceURI, localName) => new FakeSvgNode(namespaceURI, localName),
   };
-  for (const name of ["copy", "clock-counter-clockwise", "arrows-down-up", "plus"]) {
+  for (const name of ["caret-down", "copy", "clock-counter-clockwise", "arrows-down-up", "plus"]) {
     const icon = createPhosphorIcon(document, name, "stream-order-icon");
     assert.equal(icon.namespaceURI, "http://www.w3.org/2000/svg");
     assert.equal(icon.localName, "svg");
@@ -92,6 +92,26 @@ test("order switch icons are real Phosphor SVG nodes in the SVG namespace", asyn
     assert.ok(icon.children[0].attributes.get("d"));
     assert.equal(icon.children[0].attributes.get("fill"), "currentColor");
   }
+});
+
+async function productionWebScripts(directory) {
+  const sources = [];
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const child = new URL(entry.isDirectory() ? `${entry.name}/` : entry.name, directory);
+    if (entry.isDirectory()) sources.push(...await productionWebScripts(child));
+    else if (/\.(?:js|mjs)$/u.test(entry.name)) sources.push({
+      name: child.pathname,
+      source: await readFile(child, "utf8"),
+    });
+  }
+  return sources;
+}
+
+test("production Web SVG nodes cannot bypass the namespace-safe factories", async () => {
+  const scripts = await productionWebScripts(new URL("../../assets/web-app/", import.meta.url));
+  const forbidden = /(?:\bel\(\s*["']svg["']|document\.createElement\(\s*["']svg["'])/u;
+  const violations = scripts.filter(({ source }) => forbidden.test(source)).map(({ name }) => name);
+  assert.deepEqual(violations, []);
 });
 
 test("desktop Stream tabs fit their titles and render separators between Streams", async () => {

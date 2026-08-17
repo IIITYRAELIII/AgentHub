@@ -2338,20 +2338,11 @@ function createChatScrollDownButton(scroll, task = null) {
     title: "Прокрутить чат вниз",
     "aria-label": "Прокрутить чат вниз",
   }, [
-    el("svg", {
-      "data-phosphor-icon": "caret-down",
-      viewBox: "0 0 256 256",
-      "aria-hidden": "true",
-    }, [
-      el("polyline", {
-        points: "208 96 128 176 48 96",
-        fill: "none",
-        stroke: "currentColor",
-        "stroke-linecap": "round",
-        "stroke-linejoin": "round",
-        "stroke-width": "20",
-      }),
-    ]),
+    window.AgentHubStreamTabs.createPhosphorIcon(
+      document,
+      "caret-down",
+      "chat-scroll-down-icon",
+    ),
     el("span", { class: "chat-scroll-working", "aria-hidden": "true" }, [
       el("i"), el("i"), el("i"),
     ]),
