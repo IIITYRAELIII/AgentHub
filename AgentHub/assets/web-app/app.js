@@ -1490,7 +1490,14 @@ function reconcileOpenStreams(workspaceId, streams) {
     normalized = [selectedInWorkspace || ordered[0]?.id].filter(Boolean);
   } else {
     const previousSet = new Set(previous.filter((streamId) => available.has(streamId)));
-    normalized = ordered.map((stream) => stream.id).filter((streamId) => previousSet.has(streamId)).slice(0, 4);
+    if (selectedInWorkspace) previousSet.add(selectedInWorkspace);
+    const candidates = ordered.map((stream) => stream.id).filter((streamId) => previousSet.has(streamId));
+    normalized = candidates.slice(0, 4);
+    if (selectedInWorkspace && !normalized.includes(selectedInWorkspace)) {
+      normalized = [...normalized.slice(0, 3), selectedInWorkspace];
+      const normalizedSet = new Set(normalized);
+      normalized = ordered.map((stream) => stream.id).filter((streamId) => normalizedSet.has(streamId));
+    }
     if (!normalized.length) normalized = [selectedInWorkspace || ordered[0]?.id].filter(Boolean);
   }
   state.openStreamsByWorkspace.set(workspaceId, normalized);
@@ -2422,12 +2429,18 @@ function renderStreamChatPreview(task) {
     if (event.target.closest("a, button, input, textarea, select, summary")) return;
     selectTaskFromUi(task.id);
   });
+  const workspaceName = String(task.workspaceName || task.title || "Workspace").trim();
+  const streamName = String(task.streamName || task.streamDisplayName || "Stream").trim();
+  const head = el("header", { class: "stream-chat-preview-head" }, [
+    el("strong", { class: "stream-chat-preview-title", text: streamName }),
+    el("span", { class: "stream-chat-preview-workspace", text: workspaceName }),
+  ]);
   const scroll = el("div", { class: "stream-chat-preview-log chat-scroll" });
   const log = el("div", { class: "stream-chat-preview-messages chat-log" });
   if (!messages) {
     log.append(el("p", { class: "stream-chat-preview-empty", text: "Загрузка истории…" }));
   } else if (!messages.length) {
-    log.append(el("p", { class: "stream-chat-preview-empty", text: "История пуста." }));
+    log.append(el("p", { class: "stream-chat-preview-empty", text: "В этом Stream пока нет сообщений." }));
   } else {
     for (const message of messages.slice(-20)) log.append(renderMessage(message, { readOnly: true, task }));
   }
@@ -2459,7 +2472,7 @@ function renderStreamChatPreview(task) {
   if (!queue.hidden) log.append(queue);
   scroll.append(log);
   const scrollDown = createChatScrollDownButton(scroll, task);
-  preview.append(scroll, scrollDown);
+  preview.append(head, scroll, scrollDown);
   window.requestAnimationFrame(() => {
     chatScrollControllers.get(scroll)?.pinNow();
   });

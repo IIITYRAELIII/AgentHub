@@ -196,6 +196,32 @@ test("installed VS Code bridge follows the next runtime release without Reload W
   }
 });
 
+test("installed VS Code bridge keeps the UI on the running release until cutover", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-vscode-runtime-cutover-"));
+  try {
+    for (const release of ["running", "published"]) {
+      await mkdir(path.join(root, "releases", release), { recursive: true });
+    }
+    await mkdir(path.join(root, "data"), { recursive: true });
+    await writeFile(path.join(root, "current.json"), JSON.stringify({ current: "published" }), "utf8");
+    await writeFile(path.join(root, "data", "bot.lock"), JSON.stringify({
+      pid: 123,
+      releaseId: "running",
+      ready: true,
+    }), "utf8");
+    const bridge = new AgentHubBridge({ runtimeRoot: root, processIsAlive: () => true });
+    assert.equal(await bridge.runtimeReleaseRoot(), path.join(root, "releases", "running"));
+    await writeFile(path.join(root, "data", "bot.lock"), JSON.stringify({
+      pid: 456,
+      releaseId: "published",
+      ready: true,
+    }), "utf8");
+    assert.equal(await bridge.runtimeReleaseRoot(), path.join(root, "releases", "published"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("VS Code bridge observes an atomic active-runtime replacement", async () => {
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "agent-hub-vscode-runtime-watch-")));
   const bridge = new AgentHubBridge({ runtimeRoot: root });

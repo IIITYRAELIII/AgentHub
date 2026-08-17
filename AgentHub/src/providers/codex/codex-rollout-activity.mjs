@@ -121,10 +121,16 @@ function rememberCodexUserMessage(metadata, turnId, {
   if (!turnId || !value) return;
   const clientId = String(clientUserMessageId ?? "").trim();
   const messages = metadata.userMessages.get(turnId) ?? [];
+  const logicalKey = (message) => String(message ?? "")
+    .replace(/\r\n?/gu, "\n")
+    .replace(/[ \t]+/gu, " ")
+    .replace(/\n{3,}/gu, "\n\n")
+    .trim();
+  const valueKey = logicalKey(value);
   const duplicateIndex = messages.findIndex((item) => (
     (clientId && item.clientUserMessageId === clientId)
     || (notification?.agentThreadId && item.agentThreadId === notification.agentThreadId)
-    || (item.text === value && (!clientId || !item.clientUserMessageId))
+    || (logicalKey(item.text) === valueKey && (!clientId || !item.clientUserMessageId))
   ));
   const message = {
     itemId: clientId

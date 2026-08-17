@@ -2298,7 +2298,9 @@ test("wide shared shell opens up to four Workspace Streams as chat columns", () 
   assert.match(app, /chatPane\.toggleAttribute\("data-active-stream", selectedIndex >= 0\)/u);
   assert.match(index, /<\/aside>\s*<\/div>\s*<\/div>\s*<!-- Запросы подтверждений/u);
   assert.doesNotMatch(index, /data-mobile-chat-actions/u);
-  assert.doesNotMatch(index, /class="stream-chat-preview-head"/u);
+  assert.match(app, /class: "stream-chat-preview-head"/u);
+  assert.match(app, /class: "stream-chat-preview-title"/u);
+  assert.match(styles, /\.stream-chat-preview-head\s*\{/u);
   assert.match(app, /class: "stream-chat-preview-log chat-scroll"/u);
   assert.match(app, /class: "stream-chat-preview-messages chat-log"/u);
   assert.match(styles, /\.chat-overlay-actions\s*\{[\s\S]*?position:\s*absolute;[\s\S]*?right:/u);

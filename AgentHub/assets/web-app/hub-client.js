@@ -84,6 +84,7 @@ const {
   focusedTurnAlreadyVisible,
   focusedTurnTaskThreadId,
   historyContainsLatestAnswer,
+  historyMatchesIdentity,
   historicalMessagesForDisplay,
   hubErrorMessage,
   isConnectionFailure,
@@ -289,6 +290,13 @@ function taskIdentity(id) {
     provider: id.slice(0, separator),
     threadId: id.slice(separator + 1),
   };
+}
+
+function verifiedTaskHistory(history, identity) {
+  if (!historyMatchesIdentity(history, identity)) {
+    throw new Error("Agent Hub вернул историю другого Stream. Обновление отклонено.");
+  }
+  return history;
 }
 
 function outgoingMessages(taskIdValue) {
@@ -1767,7 +1775,11 @@ agentHub.on("task:select", ({ id }) => {
   rememberSelectedTaskId(id);
   selectionTail = selectionTail.catch(() => null).then(async () => {
     if (sequence !== selectionSequence) return null;
-    const result = await runAction(() => control("open-task", { ...identity, limit: 20 }));
+    const result = await runAction(async () => {
+      const opened = await control("open-task", { ...identity, limit: 20 });
+      if (opened?.history) verifiedTaskHistory(opened.history, identity);
+      return opened;
+    });
     if (sequence !== selectionSequence) return null;
     if (!result) {
       pendingSelectionId = "";
@@ -1791,7 +1803,7 @@ async function settleOpenedTaskHistory(id, identity) {
     knownVersion: historyPageByTask.get(id)?.version ?? "",
   }));
   if (settled.status === "rejected") return;
-  const history = settled.value;
+  const history = verifiedTaskHistory(settled.value, identity);
   if (selectedTaskId !== id || history?.notModified === true) return;
   applyOpened({ history }, {
     preserveScroll: true,
@@ -1820,7 +1832,7 @@ async function loadVisibleTaskHistories(taskIds) {
     }));
     try {
       if (settled.status === "rejected") return;
-      const history = settled.value;
+      const history = verifiedTaskHistory(settled.value, identity);
       applyOpened({ history }, { skipSnapshot: true, selectTask: false });
     } finally {
       visibleHistoryLoads.delete(id);
@@ -1868,11 +1880,11 @@ agentHub.on("history:load-older", ({ taskId: id }) => runAction(async () => {
   page.loading = true;
   syncHistoryPagination(id);
   try {
-    const history = await control("task-history", {
+    const history = verifiedTaskHistory(await control("task-history", {
       ...identity,
       before: requestedBefore,
       limit: 20,
-    });
+    }), identity);
     // The Worker queue may redeliver an old response after a reconnect.  Do
     // not silently replace the visible page with its duplicate: it looks like
     // the button did nothing and can loop forever on the same cursor.
@@ -3135,6 +3147,7 @@ async function refreshVisibleTaskHistories(previousSnapshot, snapshot) {
     visibleHistoryLoads.add(id);
     try {
       const settled = await settleOptionalRead(() => control("task-history", {
+        streamId: currentTask.streamId,
         provider: currentTask.provider,
         threadId: currentTask.threadId,
         limit: 20,
@@ -3143,7 +3156,12 @@ async function refreshVisibleTaskHistories(previousSnapshot, snapshot) {
         knownVersion: historyPageByTask.get(id)?.version ?? "",
       }));
       if (settled.status === "rejected") return;
-      const history = settled.value;
+      const identity = {
+        streamId: currentTask.streamId,
+        provider: currentTask.provider,
+        threadId: currentTask.threadId,
+      };
+      const history = verifiedTaskHistory(settled.value, identity);
       applyOpened({ snapshot: lastSnapshot, history }, {
         preserveScroll: true,
         skipSnapshot: true,

@@ -23,6 +23,21 @@ function clientIdentityKey(message) {
   return `${clientUserMessageId}\0${role}`;
 }
 
+function historyMatchesIdentity(history, identity) {
+  if (!history || typeof history !== "object" || !identity || typeof identity !== "object") return false;
+  const expectedStreamId = String(identity.streamId ?? "").trim();
+  const actualStreamId = String(history.streamId ?? "").trim();
+  const expectedProvider = String(identity.provider ?? "").trim();
+  const actualProvider = String(history.provider ?? "").trim();
+  if (expectedStreamId) {
+    return actualStreamId === expectedStreamId
+      && (!expectedProvider || actualProvider === expectedProvider);
+  }
+  return Boolean(expectedProvider && String(identity.threadId ?? "").trim())
+    && actualProvider === expectedProvider
+    && String(history.threadId ?? "").trim() === String(identity.threadId).trim();
+}
+
 function agentCardKey(message) {
   const provider = String(message?.provider ?? "");
   const threadId = String(message?.threadId ?? "");
@@ -1068,6 +1083,7 @@ globalThis.AgentHubMessageLifecycle = Object.freeze({
   focusedTurnAlreadyVisible,
   focusedTurnTaskThreadId,
   historyContainsLatestAnswer,
+  historyMatchesIdentity,
   historicalAgentResponseVisible,
   historicalMessagesForDisplay,
   liveCompletionTransition,

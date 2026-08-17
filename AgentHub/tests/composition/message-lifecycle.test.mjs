@@ -256,6 +256,27 @@ test("message lifecycle removes a replayed server echo before optimistic reconci
   assert.deepEqual([...result.matchedIds], ["client-1"]);
 });
 
+test("history identity accepts only the requested Stream", () => {
+  assert.equal(lifecycle.historyMatchesIdentity({
+    streamId: "stream-architect",
+    provider: "codex",
+    threadId: "thread-new",
+  }, {
+    streamId: "stream-architect",
+    provider: "codex",
+    threadId: "thread-old",
+  }), true);
+  assert.equal(lifecycle.historyMatchesIdentity({
+    streamId: "stream-themes",
+    provider: "codex",
+    threadId: "thread-old",
+  }, {
+    streamId: "stream-architect",
+    provider: "codex",
+    threadId: "thread-old",
+  }), false);
+});
+
 test("message lifecycle replaces a temporary turn root after its item identity changes", () => {
   const shared = {
     provider: "codex",

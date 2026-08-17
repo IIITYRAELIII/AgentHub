@@ -84,8 +84,23 @@ function defaultRuntimeRoot() {
     "agent-hub");
 }
 
+function defaultProcessIsAlive(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 class AgentHubBridge {
-  constructor({ moduleRoot = null, runtimeRoot = null, journalDatabase = null } = {}) {
+  constructor({
+    moduleRoot = null,
+    runtimeRoot = null,
+    journalDatabase = null,
+    processIsAlive = defaultProcessIsAlive,
+  } = {}) {
     this.moduleRoot = moduleRoot ? path.resolve(moduleRoot) : null;
     this.runtimeRoot = runtimeRoot ? path.resolve(runtimeRoot) : defaultRuntimeRoot();
     this.journalCache = null;
@@ -94,19 +109,26 @@ class AgentHubBridge {
     this.ownsJournalDatabase = !journalDatabase;
     this.journalDatabaseModule = null;
     this.resolvedModuleRoot = null;
+    this.processIsAlive = processIsAlive;
   }
 
   async backendRoot() {
     return this.runtimeReleaseRoot();
   }
 
-  /* Runtime переключается атомарной заменой current.json. Мост не должен
-     держать старую версию до Reload Window: следующий запрос берёт текущий
-     release, а привязанные к прежнему release импорт-кэши сбрасываются. */
+  /* current.json публикуется до безопасного перезапуска. Пока прежний процесс
+     жив, UI и backend должны оставаться на его release из data/bot.lock. */
   async runtimeReleaseRoot() {
     if (this.moduleRoot) return this.moduleRoot;
     const manifest = JSON.parse(await readFile(path.join(this.runtimeRoot, "current.json"), "utf8"));
-    const release = String(manifest.current ?? "");
+    const lock = JSON.parse(await readFile(
+      path.join(this.runtimeRoot, "data", "bot.lock"),
+      "utf8",
+    ).catch(() => "{}"));
+    const runningRelease = this.processIsAlive(Number(lock.pid))
+      ? String(lock.releaseId ?? "").trim()
+      : "";
+    const release = runningRelease || String(manifest.current ?? "");
     if (!/^[A-Za-z0-9._-]+$/u.test(release)) {
       throw new Error("Активный runtime Agent Hub не определён");
     }
@@ -218,7 +240,7 @@ class AgentHubBridge {
 
   subscribeRuntime(listener, { pollMs = 30_000 } = {}) {
     if (this.moduleRoot) return () => {};
-    let watcher = null;
+    const watchers = [];
     let disposed = false;
     const notify = () => {
       if (disposed) return;
@@ -231,18 +253,28 @@ class AgentHubBridge {
     try {
       /* Наблюдаем каталог, потому что current.json публикуется атомарной
          заменой файла и файловый watcher самого файла после rename устаревает. */
-      watcher = watch(this.runtimeRoot, { persistent: false }, (_event, filename) => {
+      const watcher = watch(this.runtimeRoot, { persistent: false }, (_event, filename) => {
         if (!filename || String(filename).toLowerCase() === "current.json") notify();
       });
       watcher.on("error", () => {});
+      watchers.push(watcher);
     } catch {
       // Резервная сверка ниже восстановит панель после появления runtime.
+    }
+    try {
+      const watcher = watch(path.join(this.runtimeRoot, "data"), { persistent: false }, (_event, filename) => {
+        if (!filename || String(filename).toLowerCase() === "bot.lock") notify();
+      });
+      watcher.on("error", () => {});
+      watchers.push(watcher);
+    } catch {
+      // Polling also covers a data directory created after the subscription.
     }
     const timer = setInterval(notify, Math.max(50, Number(pollMs) || 30_000));
     timer.unref?.();
     return () => {
       disposed = true;
-      watcher?.close();
+      for (const watcher of watchers) watcher.close();
       clearInterval(timer);
     };
   }

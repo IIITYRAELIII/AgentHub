@@ -5912,15 +5912,46 @@ html[data-surface="mobile"]
 .stream-chat-preview {
   background: color-mix(in srgb, var(--card-bg) 86%, transparent);
   border-left: 1px solid var(--line);
-  display: block;
+  display: flex;
+  flex-direction: column;
   min-height: 0;
   overflow: hidden;
   position: relative;
   transition: background 0.18s ease, box-shadow 0.18s ease;
 }
 
+.stream-chat-preview-head {
+  align-items: baseline;
+  background: color-mix(in srgb, var(--surface-2) 90%, transparent);
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  flex: 0 0 auto;
+  gap: 0.55rem;
+  justify-content: space-between;
+  min-width: 0;
+  padding: 0.55rem 0.75rem;
+}
+
+.stream-chat-preview-title,
+.stream-chat-preview-workspace {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stream-chat-preview-title {
+  color: var(--text);
+  font-size: 0.78rem;
+}
+
+.stream-chat-preview-workspace {
+  color: var(--text-faint);
+  font-size: 0.68rem;
+}
+
 .stream-chat-preview-log {
-  height: 100%;
+  flex: 1 1 auto;
+  height: auto;
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior-y: contain;

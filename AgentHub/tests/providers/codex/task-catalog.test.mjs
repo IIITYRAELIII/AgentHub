@@ -1201,6 +1201,40 @@ test("an unscoped Hub message is not duplicated when its provisional turn is con
   assert.deepEqual(result.userMessages.one?.map((message) => message.text), ["Проведи аудит"]);
 });
 
+test("response_item and event_msg whitespace variants remain one user message", () => {
+  const result = parseCodexRolloutActivity([
+    JSON.stringify({ type: "event_msg", payload: { type: "task_started", turn_id: "one" } }),
+    JSON.stringify({
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "user",
+        content: [
+          { type: "input_text", text: "Первая строка" },
+          { type: "input_text", text: "Вторая строка" },
+        ],
+        internal_chat_message_metadata_passthrough: { turn_id: "one" },
+      },
+    }),
+    JSON.stringify({
+      type: "event_msg",
+      payload: {
+        type: "user_message",
+        client_id: "client-one",
+        turn_id: "one",
+        message: "Первая строка\n\n\nВторая строка",
+      },
+    }),
+  ].join("\n"));
+
+  assert.deepEqual(result.userMessages.one, [{
+    itemId: "client-one",
+    clientUserMessageId: "client-one",
+    role: "user",
+    text: "Первая строка\n\n\nВторая строка",
+  }]);
+});
+
 test("Codex rollout activity retains local images on a steering message", () => {
   const result = parseCodexRolloutActivity([
     JSON.stringify({
