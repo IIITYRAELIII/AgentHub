@@ -61,14 +61,18 @@ function fileList(theme, value, kind, extension) {
   });
 }
 
-function validateThemeResource(theme, directory, file) {
+function validateThemeResource(theme, directory, file, { allowShellLayoutOverride = false } = {}) {
   const extension = path.extname(file).toLowerCase();
   if (![".css", ".js", ".html"].includes(extension)) return;
   const source = fs.readFileSync(path.join(directory, ...file.split("/")), "utf8");
   if (PROTECTED_BRAND_REFERENCE.test(source)) {
     fail(theme, `${file} references the shell-owned Agent Hub mark`);
   }
-  if (extension === ".css" && PROTECTED_SHELL_LAYOUT_OVERRIDE.test(source)) {
+  if (
+    extension === ".css"
+    && !allowShellLayoutOverride
+    && PROTECTED_SHELL_LAYOUT_OVERRIDE.test(source)
+  ) {
     fail(theme, `${file} overrides shell-owned top-panel geometry`);
   }
   if (extension === ".css" && PROTECTED_SHELL_STATUS_OVERRIDE.test(source)) {
@@ -112,6 +116,10 @@ function loadThemeRegistry(assetsDirectory) {
     if (!/^#[0-9a-f]{6}$/iu.test(color)) fail(id, "color must be a six-digit hex value");
     const order = Number(manifest.order);
     if (!Number.isSafeInteger(order)) fail(id, "order must be an integer");
+    const shellLayout = String(manifest.shellLayout ?? "shared");
+    if (!["shared", "custom"].includes(shellLayout)) {
+      fail(id, "shellLayout must be shared or custom");
+    }
     const styles = fileList(id, manifest.styles ?? "theme.css", "style", ".css");
     const scripts = fileList(id, manifest.scripts, "script", ".js");
     const markup = fileList(id, manifest.markup, "markup", ".html");
@@ -154,7 +162,11 @@ function loadThemeRegistry(assetsDirectory) {
     for (const file of [...styles, ...scripts, ...markup, ...assets.map((item) => item.file), ...backgrounds.map((item) => item.asset).filter(Boolean)]) {
       if (!available.has(file)) fail(id, `declared file is missing: ${file}`);
     }
-    for (const file of available) validateThemeResource(id, directory, file);
+    for (const file of available) {
+      validateThemeResource(id, directory, file, {
+        allowShellLayoutOverride: shellLayout === "custom",
+      });
+    }
     const themeResources = [];
     for (const file of available) {
       if (file === "theme.json" || file.toLowerCase() === "readme.md") continue;
@@ -171,7 +183,7 @@ function loadThemeRegistry(assetsDirectory) {
       resources.set(pathname, resource);
       themeResources.push(resource);
     }
-    themes.push({ id, name, color: color.toLowerCase(), order, aliases, assets, backgrounds, styles, scripts, markup, directory, resources: themeResources });
+    themes.push({ id, name, color: color.toLowerCase(), order, shellLayout, aliases, assets, backgrounds, styles, scripts, markup, directory, resources: themeResources });
   }
 
   themes.sort((left, right) => left.order - right.order || left.id.localeCompare(right.id));

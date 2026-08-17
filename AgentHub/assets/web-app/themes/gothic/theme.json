@@ -4,6 +4,7 @@
   "color": "#100d0b",
   "order": 40,
   "styles": "theme.css",
+  "shellLayout": "custom",
   "assets": {
     "iron-texture": "gothic-iron-texture.png",
     "iron-frame": "gothic-iron-frame-plain.png",

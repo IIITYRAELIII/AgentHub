@@ -215,6 +215,34 @@ test("theme registry keeps top-panel geometry under shell ownership", async () =
   }
 });
 
+test("theme registry allows an explicitly owned custom shell layout", async () => {
+  const directory = await fixture({ ...manifest, shellLayout: "custom" });
+  try {
+    const stylesheet = path.join(directory, "themes", "aurora", "theme.css");
+    await writeFile(
+      stylesheet,
+      'html[data-theme="aurora"] .app-header { padding-block: 1rem !important; }',
+      "utf8",
+    );
+    const registry = loadThemeRegistry(directory);
+    assert.equal(registry.themes[0].shellLayout, "custom");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("theme registry rejects an unknown shell layout contract", async () => {
+  const directory = await fixture({ ...manifest, shellLayout: "loose" });
+  try {
+    assert.throws(
+      () => loadThemeRegistry(directory),
+      /theme aurora: shellLayout must be shared or custom/iu,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("theme registry keeps system status visibility under shell ownership", async () => {
   const directory = await fixture(manifest);
   try {
