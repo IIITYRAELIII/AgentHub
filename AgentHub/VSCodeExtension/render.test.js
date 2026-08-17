@@ -1797,8 +1797,8 @@ test("active chat input stays in the manual queue until an explicit action", () 
   assert.match(app, /\(entryAnnotations\.length && annotationEnvelope\.test\(rawText\)\)/u);
   assert.match(app, /data-action": "queue-steer"/u);
   assert.match(app, /data-action": "queue-edit"/u);
-  assert.match(app, /followUpMode: MessageView\.composerFollowUpMode\(currentTask\(\)\)/u);
-  assert.match(app, /deferWhileRunning: currentTask\(\)\?\.running === true/u);
+  assert.match(app, /followUpMode: MessageView\.composerFollowUpMode\(task, \{ steerWhileRunning \}\)/u);
+  assert.match(app, /deferWhileRunning: task\?\.running === true && !steerWhileRunning/u);
   assert.doesNotMatch(app, /followUpModeButton|renderFollowUpMode|Изменить ход/u);
   assert.doesNotMatch(html, /data-follow-up-mode/u);
   assert.match(client, /control\("deferred-input", \{ id, action: "queue" \}\)/u);
@@ -1824,7 +1824,9 @@ test("composer restores definite rejection but keeps an ambiguous delivery singl
     require.resolve("../assets/web-app/connection-banner.js"),
     "utf8",
   );
-  const submit = app.match(/function submitComposer\(\) \{(?<body>[\s\S]*?)\n\}/u)?.groups?.body ?? "";
+  const submit = app.match(
+    /function submitComposer\(\{ steerWhileRunning = false \} = \{\}\) \{(?<body>[\s\S]*?)\n\}/u,
+  )?.groups?.body ?? "";
   assert.match(submit, /composerInput\.value = ""[\s\S]*emit\("message:send"/u);
   assert.match(app, /function completeComposerSend\(requestId, accepted\)/u);
   assert.match(app, /if \(accepted\)[\s\S]*else \{[\s\S]*text: pending\.rawText/u);
