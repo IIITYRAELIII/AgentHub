@@ -59,6 +59,10 @@
     return current;
   }
 
+  function shouldDismissViewer(target, viewer, stage) {
+    return target === viewer || target === stage;
+  }
+
   function linkResource({ href = "", localPath = "", name = "" } = {}) {
     return {
       kind: "link",
@@ -93,6 +97,7 @@
     localWorkspaceFilesAvailable,
     moveGalleryIndex,
     resourceActions,
+    shouldDismissViewer,
     viewerGallery,
   };
 })();

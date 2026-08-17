@@ -182,6 +182,7 @@ const dialogTextarea = document.querySelector("[data-text-dialog-textarea]");
 const toast = document.querySelector("[data-toast]");
 const connectionBanner = document.querySelector("[data-restart-banner]");
 const attachmentViewer = document.querySelector("[data-attachment-viewer]");
+const attachmentViewerStage = document.querySelector(".attachment-viewer-stage");
 const attachmentViewerImage = document.querySelector("[data-attachment-viewer-image]");
 const attachmentViewerLoading = document.querySelector("[data-attachment-viewer-loading]");
 const attachmentViewerClose = document.querySelector("[data-attachment-viewer-close]");
@@ -3480,7 +3481,11 @@ attachmentViewerClose.addEventListener("click", closeAttachmentViewer);
 attachmentViewerPrevious.addEventListener("click", () => moveAttachmentViewer(-1));
 attachmentViewerNext.addEventListener("click", () => moveAttachmentViewer(1));
 attachmentViewer.addEventListener("click", (event) => {
-  if (event.target === attachmentViewer) closeAttachmentViewer();
+  if (resourceInteractions.shouldDismissViewer(
+    event.target,
+    attachmentViewer,
+    attachmentViewerStage,
+  )) closeAttachmentViewer();
 });
 window.addEventListener("keydown", (event) => {
   if (!attachmentViewerOpen) return;

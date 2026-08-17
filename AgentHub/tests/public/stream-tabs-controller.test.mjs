@@ -127,6 +127,18 @@ test("desktop Stream tabs fit their titles and render separators between Streams
   assert.match(jediTheme, /--shell-stream-tab-width: max-content/u);
 });
 
+test("Stream create control keeps compact geometry outside regular tab sizing", async () => {
+  const styles = await readFile(new URL("../../assets/web-app/styles.css", import.meta.url), "utf8");
+  assert.match(
+    styles,
+    /\.stream-tab-create \{[\s\S]*?flex: 0 0 2rem;[\s\S]*?max-width: 2rem;[\s\S]*?min-width: 2rem;[\s\S]*?width: 2rem;/u,
+  );
+  assert.match(
+    styles,
+    /html\[data-view="chat"\]:not\(\[data-surface="mobile"\]\) \.stream-tab-create \{[\s\S]*?flex: 0 0 var\(--shell-stream-create-width, 2rem\) !important;[\s\S]*?max-width: var\(--shell-stream-create-width, 2rem\) !important;[\s\S]*?min-width: var\(--shell-stream-create-width, 2rem\) !important;[\s\S]*?width: var\(--shell-stream-create-width, 2rem\) !important;/u,
+  );
+});
+
 test("Stream archive intent keeps the stable Stream identity", async () => {
   const { archiveStreamIntent } = await streamTabsApi();
   assert.deepEqual(
