@@ -76,7 +76,7 @@ html[data-theme="gothic"] {
   --space-base: linear-gradient(176deg, #111313 0, #090a0a 24rem, var(--bg) 100%);
   --space-star: transparent;
   --star-opacity: 0;
-  --gothic-image: url("./gothic-concrete.jpg");
+  --gothic-image: url("./gothic-khorinis-harbor.jpg?v=1f41339934cb");
 
   /* Материалы shell задаются токенами: общая таблица сохраняет единую
      геометрию верхних панелей, а тема меняет только их фактуру и рамку. */
@@ -353,16 +353,16 @@ html[data-theme="gothic"] body::before {
   opacity: 0.42;
 }
 
-html[data-background-override="true"][data-background="gothic"] { --gothic-image: url("./gothic-concrete.jpg"); --hub-background-color: #070604; --hub-background-image: linear-gradient(90deg, rgb(4 4 3 / 26%), transparent 34% 70%, rgb(4 2 1 / 8%)), linear-gradient(180deg, rgb(3 3 2 / 5%) 48%, rgb(3 2 1 / 52%)), radial-gradient(120% 94% at 50% 44%, transparent 38%, rgb(0 0 0 / 46%) 100%), var(--gothic-image); --hub-background-position: center, center, center, 50% 50%; }
-html[data-background-override="true"][data-background="gothic-crypt"] { --hub-background-color: #070604; --hub-background-image: linear-gradient(90deg, rgb(4 4 3 / 34%), rgb(4 4 3 / 0%) 40%), var(--gothic-crypt-image, url("./gothic-crypt.jpg?v=913e132043c0")); --hub-background-position: center, 58% 50%; }
-html[data-background-override="true"][data-background="gothic-tower"] { --hub-background-color: #070a0e; --hub-background-image: linear-gradient(90deg, rgb(4 6 10 / 50%), rgb(4 6 10 / 12%) 38%, rgb(4 6 10 / 0%) 62%), var(--gothic-tower-image, url("./gothic-tower.jpg?v=9fe3303fe558")); --hub-background-position: center, 58% 46%; }
-html[data-background-override="true"][data-background="gothic-harbor"] { --hub-background-color: #06080d; --hub-background-image: linear-gradient(90deg, rgb(3 5 9 / 48%), rgb(3 5 9 / 10%) 40%, rgb(3 5 9 / 0%) 64%), var(--gothic-harbor-image, url("./gothic-harbor.jpg?v=5695c8f9d3db")); --hub-background-position: center, 62% 52%; }
-html[data-background-override="true"][data-background="gothic-chapel"] { --hub-background-color: #080706; --hub-background-image: linear-gradient(90deg, rgb(5 4 3 / 42%), rgb(5 4 3 / 8%) 36%, rgb(5 4 3 / 0%) 60%), var(--gothic-chapel-image, url("./gothic-chapel.jpg?v=eb55ca4ce5f6")); --hub-background-position: center, 60% 50%; }
-html[data-background-override="true"][data-background="gothic-keep"] { --hub-background-color: #070709; --hub-background-image: linear-gradient(90deg, rgb(5 5 7 / 46%), rgb(5 5 7 / 10%) 38%, rgb(5 5 7 / 0%) 62%), var(--gothic-keep-image, url("./gothic-keep.jpg?v=93babdd33bcf")); --hub-background-position: center, 58% 54%; }
-html[data-background-override="true"][data-background="gothic-minental-castle"] { --hub-background-color: #05090d; --hub-background-image: linear-gradient(90deg, rgb(3 6 10 / 42%), rgb(3 6 10 / 8%) 40%, rgb(3 6 10 / 0%) 64%), var(--gothic-minental-castle-image, url("./gothic-minental-castle.jpg?v=f75d937eca90")); --hub-background-position: center, 58% 50%; }
-html[data-background-override="true"][data-background="gothic-minental-fortress"] { --hub-background-color: #05090d; --hub-background-image: linear-gradient(90deg, rgb(3 6 10 / 38%), rgb(3 6 10 / 7%) 40%, rgb(3 6 10 / 0%) 64%), var(--gothic-minental-fortress-image, url("./gothic-minental-fortress.jpg?v=a298113485c7")); --hub-background-position: center, 50% 50%; }
-html[data-background-override="true"][data-background="gothic-finkregh"] { --hub-background-color: #03080c; --hub-background-image: linear-gradient(90deg, rgb(2 6 10 / 18%), rgb(2 6 10 / 4%) 34%, rgb(2 6 10 / 0%) 60%), var(--gothic-finkregh-image, url("./gothic-finkregh.jpg?v=3e54b1cb7aed")); --hub-background-position: center, 50% 50%; }
-html[data-background-override="true"][data-background="gothic-xardas-tower"] { --hub-background-color: #03070b; --hub-background-image: var(--gothic-xardas-tower-image, url("./gothic-xardas-tower.webp")); --hub-background-position: 76% 50%; }
+html[data-background-override="true"][data-background="gothic"] { --hub-background-color: #05080c; --hub-background-image: linear-gradient(90deg, rgb(2 5 9 / 16%), transparent 42% 72%, rgb(0 0 0 / 12%)), var(--gothic-image, url("./gothic-khorinis-harbor.jpg?v=1f41339934cb")); --hub-background-position: center, 50% 52%; }
+html[data-background-override="true"][data-background="gothic-old-camp"] { --hub-background-color: #05080c; --hub-background-image: linear-gradient(90deg, rgb(2 4 8 / 18%), transparent 46% 72%, rgb(0 0 0 / 10%)), var(--gothic-old-camp-image, url("./gothic-old-camp.jpg?v=7699c09177ec")); --hub-background-position: center, 52% 50%; }
+html[data-background-override="true"][data-background="gothic-swamp-camp"] { --hub-background-color: #040807; --hub-background-image: linear-gradient(90deg, rgb(1 5 5 / 16%), transparent 44% 72%, rgb(0 0 0 / 12%)), var(--gothic-swamp-camp-image, url("./gothic-swamp-camp.jpg?v=f8876864b8ba")); --hub-background-position: center, 50% 50%; }
+html[data-background-override="true"][data-background="gothic-new-camp"] { --hub-background-color: #04070b; --hub-background-image: linear-gradient(90deg, rgb(2 5 9 / 14%), transparent 44% 74%, rgb(0 0 0 / 10%)), var(--gothic-new-camp-image, url("./gothic-new-camp.jpg?v=1831dbea170f")); --hub-background-position: center, 54% 50%; }
+html[data-background-override="true"][data-background="gothic-xardas-tower"] { --hub-background-color: #03070b; --hub-background-image: linear-gradient(90deg, rgb(2 5 9 / 12%), transparent 42% 74%, rgb(0 0 0 / 10%)), var(--gothic-xardas-tower-image, url("./gothic-xardas-tower.jpg?v=86928a4c8b38")); --hub-background-position: center, 50% 50%; }
+html[data-background-override="true"][data-background="gothic-sleeper-temple"] { --hub-background-color: #090503; --hub-background-image: linear-gradient(90deg, rgb(8 3 1 / 14%), transparent 44% 72%, rgb(0 0 0 / 12%)), var(--gothic-sleeper-temple-image, url("./gothic-sleeper-temple.jpg?v=fdd63e9f6fd6")); --hub-background-position: center, 50% 50%; }
+html[data-background-override="true"][data-background="gothic-innos-monastery"] { --hub-background-color: #05080b; --hub-background-image: linear-gradient(90deg, rgb(2 5 8 / 16%), transparent 44% 72%, rgb(0 0 0 / 12%)), var(--gothic-innos-monastery-image, url("./gothic-innos-monastery.jpg?v=77863edab3d8")); --hub-background-position: center, 50% 50%; }
+html[data-background-override="true"][data-background="gothic-sun-circle"] { --hub-background-color: #050806; --hub-background-image: linear-gradient(90deg, rgb(2 5 3 / 14%), transparent 44% 72%, rgb(0 0 0 / 10%)), var(--gothic-sun-circle-image, url("./gothic-sun-circle.jpg?v=083a89ad257a")); --hub-background-position: center, 50% 50%; }
+html[data-background-override="true"][data-background="gothic-irdorath"] { --hub-background-color: #070503; --hub-background-image: linear-gradient(90deg, rgb(6 3 1 / 14%), transparent 44% 72%, rgb(0 0 0 / 12%)), var(--gothic-irdorath-image, url("./gothic-irdorath.jpg?v=1ea92b3428f7")); --hub-background-position: center, 50% 52%; }
+html[data-background-override="true"][data-background="gothic-adanos-temple"] { --hub-background-color: #030806; --hub-background-image: linear-gradient(90deg, rgb(1 5 4 / 14%), transparent 44% 72%, rgb(0 0 0 / 12%)), var(--gothic-adanos-temple-image, url("./gothic-adanos-temple.jpg?v=7f3365e4a6e6")); --hub-background-position: center, 50% 50%; }
 
 @keyframes gothic-scene-fog {
   0%, 100% { opacity: 0.34; transform: translate3d(-2%, 0.5%, 0) scale(1.02); }
@@ -385,14 +385,16 @@ html[data-background-override="true"][data-background^="gothic-"] body::before {
   mix-blend-mode: screen !important;
 }
 
-html[data-background-override="true"][data-background="gothic-tower"] body::before { animation: gothic-scene-fog 24s ease-in-out infinite !important; background-image: radial-gradient(60% 42% at 34% 62%, rgb(150 176 208 / 20%), transparent 74%), radial-gradient(16% 12% at 72% 22%, rgb(255 176 88 / 34%), transparent 72%) !important; opacity: 0.5 !important; }
-html[data-background-override="true"][data-background="gothic-harbor"] body::before { animation: gothic-scene-fog 30s ease-in-out infinite !important; background-image: radial-gradient(14% 20% at 65% 12%, rgb(198 222 255 / 30%), transparent 70%), radial-gradient(54% 30% at 30% 66%, rgb(140 168 204 / 18%), transparent 76%) !important; opacity: 0.46 !important; }
-html[data-background-override="true"][data-background="gothic-chapel"] body::before { animation: gothic-scene-glow 9s ease-in-out infinite !important; background-image: radial-gradient(30% 34% at 76% 52%, rgb(255 186 104 / 34%), rgb(190 116 44 / 12%) 52%, transparent 78%) !important; opacity: 0.44 !important; }
-html[data-background-override="true"][data-background="gothic-keep"] body::before { animation: gothic-scene-fog 34s ease-in-out infinite !important; background-image: radial-gradient(70% 34% at 40% 74%, rgb(146 164 190 / 22%), transparent 78%), radial-gradient(20% 16% at 78% 34%, rgb(255 166 84 / 16%), transparent 74%) !important; opacity: 0.5 !important; }
-html[data-background-override="true"][data-background="gothic-minental-castle"] body::before { animation: gothic-scene-fog 32s ease-in-out infinite !important; background-image: radial-gradient(68% 34% at 34% 72%, rgb(142 168 198 / 20%), transparent 78%), radial-gradient(18% 14% at 78% 46%, rgb(255 168 82 / 18%), transparent 74%) !important; opacity: 0.48 !important; }
-html[data-background-override="true"][data-background="gothic-minental-fortress"] body::before { animation: gothic-scene-fog 34s ease-in-out infinite !important; background-image: radial-gradient(62% 34% at 28% 68%, rgb(124 151 184 / 18%), transparent 80%), radial-gradient(22% 16% at 70% 43%, rgb(255 164 74 / 14%), transparent 76%) !important; opacity: 0.44 !important; }
-html[data-background-override="true"][data-background="gothic-finkregh"] body::before { animation: gothic-scene-fog 28s ease-in-out infinite !important; background-image: radial-gradient(58% 28% at 42% 76%, rgb(116 178 222 / 18%), transparent 78%), radial-gradient(34% 30% at 66% 34%, rgb(130 196 236 / 20%), transparent 76%) !important; opacity: 0.44 !important; }
-html[data-background-override="true"][data-background="gothic-xardas-tower"] body::before { animation: gothic-scene-fog 36s ease-in-out infinite !important; background-image: radial-gradient(42% 30% at 52% 66%, rgb(125 151 174 / 18%), transparent 78%), radial-gradient(24% 30% at 79% 48%, rgb(120 141 163 / 12%), transparent 78%) !important; opacity: 0.46 !important; }
+html[data-background-override="true"][data-background="gothic"] body::before { animation: gothic-scene-fog 30s ease-in-out infinite !important; background-image: radial-gradient(58% 30% at 34% 70%, rgb(118 152 190 / 16%), transparent 78%), radial-gradient(18% 16% at 70% 34%, rgb(210 225 244 / 18%), transparent 74%) !important; opacity: 0.42 !important; }
+html[data-background-override="true"][data-background="gothic-old-camp"] body::before { animation: gothic-scene-fog 32s ease-in-out infinite !important; background-image: radial-gradient(62% 34% at 38% 68%, rgb(122 148 178 / 18%), transparent 80%), radial-gradient(18% 14% at 66% 40%, rgb(214 228 244 / 18%), transparent 74%) !important; opacity: 0.44 !important; }
+html[data-background-override="true"][data-background="gothic-swamp-camp"] body::before { animation: gothic-scene-glow 11s ease-in-out infinite !important; background-image: radial-gradient(28% 32% at 40% 72%, rgb(222 151 74 / 18%), transparent 76%), radial-gradient(54% 34% at 46% 66%, rgb(76 126 112 / 14%), transparent 80%) !important; opacity: 0.4 !important; }
+html[data-background-override="true"][data-background="gothic-new-camp"] body::before { animation: gothic-scene-fog 34s ease-in-out infinite !important; background-image: radial-gradient(58% 34% at 52% 70%, rgb(106 145 182 / 18%), transparent 80%), radial-gradient(22% 18% at 52% 58%, rgb(92 139 211 / 16%), transparent 76%) !important; opacity: 0.42 !important; }
+html[data-background-override="true"][data-background="gothic-xardas-tower"] body::before { animation: gothic-scene-fog 36s ease-in-out infinite !important; background-image: radial-gradient(44% 32% at 50% 68%, rgb(116 151 176 / 16%), transparent 80%), radial-gradient(24% 24% at 54% 28%, rgb(117 178 198 / 18%), transparent 78%) !important; opacity: 0.42 !important; }
+html[data-background-override="true"][data-background="gothic-sleeper-temple"] body::before { animation: gothic-scene-glow 8s ease-in-out infinite !important; background-image: radial-gradient(36% 44% at 54% 54%, rgb(236 92 38 / 22%), rgb(132 47 20 / 10%) 54%, transparent 80%) !important; opacity: 0.46 !important; }
+html[data-background-override="true"][data-background="gothic-innos-monastery"] body::before { animation: gothic-scene-fog 34s ease-in-out infinite !important; background-image: radial-gradient(64% 34% at 42% 70%, rgb(112 140 172 / 18%), transparent 80%), radial-gradient(18% 16% at 58% 30%, rgb(211 224 240 / 16%), transparent 74%) !important; opacity: 0.42 !important; }
+html[data-background-override="true"][data-background="gothic-sun-circle"] body::before { animation: gothic-scene-glow 10s ease-in-out infinite !important; background-image: radial-gradient(24% 30% at 50% 60%, rgb(238 164 72 / 20%), transparent 74%), radial-gradient(54% 34% at 48% 66%, rgb(86 130 101 / 14%), transparent 80%) !important; opacity: 0.4 !important; }
+html[data-background-override="true"][data-background="gothic-irdorath"] body::before { animation: gothic-scene-glow 9s ease-in-out infinite !important; background-image: radial-gradient(34% 40% at 50% 72%, rgb(221 105 47 / 18%), transparent 76%), radial-gradient(50% 34% at 46% 64%, rgb(91 108 124 / 12%), transparent 80%) !important; opacity: 0.42 !important; }
+html[data-background-override="true"][data-background="gothic-adanos-temple"] body::before { animation: gothic-scene-fog 36s ease-in-out infinite !important; background-image: radial-gradient(60% 36% at 50% 70%, rgb(74 122 111 / 16%), transparent 80%), radial-gradient(20% 18% at 34% 24%, rgb(180 202 218 / 14%), transparent 76%) !important; opacity: 0.4 !important; }
 
 /* Железная подложка повторяется на всю высоту описи. */
 html[data-theme="gothic"] .task-list {
@@ -611,15 +613,16 @@ html[data-theme="gothic"] .chip-button.primary {
 }
 
 @media (max-width: 720px) {
-  html[data-background-override="true"][data-background="gothic-crypt"] { --hub-background-position: center, 72% 50%; }
-  html[data-background-override="true"][data-background="gothic-tower"] { --hub-background-position: center, 74% 42%; }
-  html[data-background-override="true"][data-background="gothic-harbor"] { --hub-background-position: center, 78% 52%; }
-  html[data-background-override="true"][data-background="gothic-chapel"] { --hub-background-position: center, 74% 50%; }
-  html[data-background-override="true"][data-background="gothic-keep"] { --hub-background-position: center, 76% 46%; }
-  html[data-background-override="true"][data-background="gothic-minental-castle"] { --hub-background-position: center, 76% 50%; }
-  html[data-background-override="true"][data-background="gothic-minental-fortress"] { --hub-background-position: center, 76% 50%; }
-  html[data-background-override="true"][data-background="gothic-finkregh"] { --hub-background-position: center, 78% 50%; }
-  html[data-background-override="true"][data-background="gothic-xardas-tower"] { --hub-background-position: 82% 50%; }
+  html[data-background-override="true"][data-background="gothic"] { --hub-background-position: center, 40% 52%; }
+  html[data-background-override="true"][data-background="gothic-old-camp"] { --hub-background-position: center, 60% 50%; }
+  html[data-background-override="true"][data-background="gothic-swamp-camp"] { --hub-background-position: center, 42% 50%; }
+  html[data-background-override="true"][data-background="gothic-new-camp"] { --hub-background-position: center, 50% 50%; }
+  html[data-background-override="true"][data-background="gothic-xardas-tower"] { --hub-background-position: center, 56% 50%; }
+  html[data-background-override="true"][data-background="gothic-sleeper-temple"] { --hub-background-position: center, 50% 50%; }
+  html[data-background-override="true"][data-background="gothic-innos-monastery"] { --hub-background-position: center, 52% 50%; }
+  html[data-background-override="true"][data-background="gothic-sun-circle"] { --hub-background-position: center, 50% 50%; }
+  html[data-background-override="true"][data-background="gothic-irdorath"] { --hub-background-position: center, 50% 52%; }
+  html[data-background-override="true"][data-background="gothic-adanos-temple"] { --hub-background-position: center, 55% 50%; }
   html[data-theme="gothic"] .task-list { background-image: none; }
 }
 
@@ -652,7 +655,6 @@ html[data-theme="gothic"] {
     var(--gothic-panel-texture-preview);
   --gothic-panel-base-position: left top, left top;
   --gothic-panel-base-size: auto, 32rem 32rem;
-  --gothic-preview-background: url("./gothic-xardas-storm.webp");
   --shell-panel-border: 0;
   --shell-panel-border-image: none;
   --shell-panel-border-width: 0;
@@ -666,16 +668,26 @@ html[data-theme="gothic"] {
   --shell-tab-active-shadow: inset 0 -2px 0 #81251f;
 }
 
-html[data-theme="gothic"] body::after {
-  background-color: #03070b !important;
+html[data-theme="gothic"] .journal details[data-work-log-turn-details] {
+  background-color: #15181b;
   background-image:
-    linear-gradient(90deg, rgb(2 4 7 / 38%), transparent 30% 72%, rgb(1 2 4 / 12%)),
-    linear-gradient(180deg, rgb(2 3 5 / 8%) 44%, rgb(1 2 3 / 48%)),
-    radial-gradient(110% 92% at 52% 44%, transparent 34%, rgb(0 0 0 / 42%) 100%),
-    var(--gothic-preview-background) !important;
-  background-position: center, center, center, 58% 50% !important;
-  background-repeat: no-repeat !important;
-  background-size: cover !important;
+    linear-gradient(180deg, rgb(3 5 7 / 10%), rgb(1 3 5 / 16%)),
+    var(--gothic-workspace-card-texture-preview);
+  background-blend-mode: normal, normal;
+  background-position: center, center;
+  background-repeat: no-repeat, repeat;
+  background-size: auto, 22rem 22rem;
+}
+
+html[data-theme="gothic"] .task-card-modal > header .icon-button {
+  background-color: #15181b;
+  background-image:
+    linear-gradient(180deg, rgb(3 5 7 / 10%), rgb(1 3 5 / 16%)),
+    var(--gothic-workspace-card-texture-preview);
+  background-blend-mode: normal, normal;
+  background-position: center, center;
+  background-repeat: no-repeat, repeat;
+  background-size: auto, 22rem 22rem;
 }
 
 html[data-theme="gothic"] body::before {
@@ -695,6 +707,10 @@ html[data-theme="gothic"] body::before {
     background-position: var(--gothic-panel-base-position) !important;
     background-repeat: repeat !important;
     background-size: var(--gothic-panel-base-size) !important;
+  }
+
+  html[data-theme="gothic"][data-view="chat"]:not([data-surface="mobile"]),
+  html[data-theme="gothic"][data-view="chat"]:not([data-surface="mobile"]) body {
     overflow: hidden !important;
   }
 
@@ -702,8 +718,7 @@ html[data-theme="gothic"] body::before {
     content: none !important;
   }
 
-  html[data-theme="gothic"]:not([data-surface="mobile"]) .app-header,
-  html[data-theme="gothic"][data-view="chat"]:not([data-surface="mobile"]) body > .workspace {
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .app-header {
     background-color: var(--gothic-panel-base-color) !important;
     background-image: var(--gothic-panel-base-image) !important;
     background-attachment: fixed, fixed !important;
@@ -712,8 +727,13 @@ html[data-theme="gothic"] body::before {
     background-size: var(--gothic-panel-base-size) !important;
   }
 
+  html[data-theme="gothic"][data-view="chat"]:not([data-surface="mobile"]) body > .workspace {
+    background-color: transparent !important;
+    background-image: none !important;
+  }
+
   html[data-theme="gothic"]:not([data-surface="mobile"]) .app-header {
-    --shell-header-height: calc(2.82625rem + 2px);
+    --shell-header-height: calc(3.625rem + 2px);
     z-index: 3 !important;
   }
 
@@ -730,15 +750,7 @@ html[data-theme="gothic"] body::before {
       var(--gothic-header-control-width) + var(--gothic-header-control-width) + 0.2rem
     );
     justify-content: flex-start !important;
-    transform: translateY(7px);
-  }
-
-  html[data-theme="gothic"]:not([data-view="chat"]):not([data-surface="mobile"]) .app-header {
-    --shell-header-height: calc(3.625rem + 2px);
-  }
-
-  html[data-theme="gothic"]:not([data-view="chat"]):not([data-surface="mobile"]) .app-header-inner {
-    transform: none;
+    transform: translateY(0.4375rem);
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .brand {
@@ -1015,10 +1027,14 @@ html[data-theme="gothic"] body::before {
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .task-list,
-  html[data-theme="gothic"]:not([data-surface="mobile"]) .activity-stream-list,
-  html[data-theme="gothic"]:not([data-surface="mobile"]) .workspace-task-list {
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .activity-stream-list {
     padding-left: var(--gothic-rail-content-inset) !important;
     padding-right: var(--gothic-rail-content-inset) !important;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .workspace-task-list {
+    padding-left: 0.75rem !important;
+    padding-right: 0.75rem !important;
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .task-list,
@@ -1031,16 +1047,8 @@ html[data-theme="gothic"] body::before {
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .chat {
-    background-color: #03070b !important;
-    background-image:
-      linear-gradient(90deg, rgb(2 4 7 / 38%), transparent 30% 72%, rgb(1 2 4 / 12%)),
-      linear-gradient(180deg, rgb(2 3 5 / 8%) 44%, rgb(1 2 3 / 48%)),
-      radial-gradient(110% 92% at 52% 44%, transparent 34%, rgb(0 0 0 / 42%) 100%),
-      var(--gothic-preview-background) !important;
-    background-attachment: fixed !important;
-    background-position: center, center, center, 58% 50% !important;
-    background-repeat: no-repeat !important;
-    background-size: cover !important;
+    background-color: transparent !important;
+    background-image: none !important;
     z-index: 1;
   }
 
@@ -1069,9 +1077,13 @@ html[data-theme="gothic"] body::before {
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .stream-chat-columns > .chat-pane {
+    background-blend-mode: normal !important;
+    background-color: transparent !important;
+    background-image: none !important;
     border-top-width: 0 !important;
     border-bottom-width: 0 !important;
     border-image-width: 0 6px 0 6px !important;
+    box-shadow: none !important;
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .task-workspace-item,
@@ -1410,5 +1422,154 @@ html[data-theme="gothic"] body::before {
     background-repeat: no-repeat, no-repeat;
     background-size: 74px 150px, 74px 150px;
     left: -74px;
+  }
+}
+
+/* Mobile keeps the compact product layout and approved Gothic materials
+   without the desktop ornamental shell frames. */
+@media (max-width: 859px) {
+  html[data-theme="gothic"][data-surface="mobile"] {
+    --shell-header-background: var(--gothic-panel-base-color) var(--gothic-panel-base-image);
+    --shell-header-frame-border: 0;
+    --shell-header-frame-content: none;
+    --shell-header-frame-filter: none;
+    --shell-header-frame-image: none;
+    --shell-panel-border: 0;
+    --shell-panel-border-image: none;
+    --shell-panel-border-width: 0;
+    --shell-panel-border-image-width: 0;
+    --shell-chat-border: 0;
+    --shell-chat-border-image: none;
+    --shell-chat-panel-border-width: 0;
+    --shell-chat-panel-border-image-width: 0;
+  }
+
+  html[data-theme="gothic"][data-surface="mobile"],
+  html[data-theme="gothic"][data-surface="mobile"] body,
+  html[data-theme="gothic"][data-surface="mobile"] .app-header,
+  html[data-theme="gothic"][data-surface="mobile"] .task-rail,
+  html[data-theme="gothic"][data-surface="mobile"] .activity-rail,
+  html[data-theme="gothic"][data-surface="mobile"] .task-list,
+  html[data-theme="gothic"][data-surface="mobile"] .activity-rail-content,
+  html[data-theme="gothic"][data-surface="mobile"] .activity-streams,
+  html[data-theme="gothic"][data-surface="mobile"] .workspace-task-panel,
+  html[data-theme="gothic"][data-surface="mobile"] .dialog-settings {
+    background-color: var(--gothic-panel-base-color) !important;
+    background-image: var(--gothic-panel-base-image) !important;
+    background-position: var(--gothic-panel-base-position) !important;
+    background-repeat: repeat !important;
+    background-size: var(--gothic-panel-base-size) !important;
+  }
+
+  html[data-theme="gothic"][data-surface="mobile"] .chat {
+    background-color: transparent !important;
+    background-image: none !important;
+  }
+
+  html[data-theme="gothic"][data-surface="mobile"] .stream-chat-columns > .chat-pane {
+    background-blend-mode: normal !important;
+    background-color: transparent !important;
+    background-image: none !important;
+    box-shadow: none !important;
+  }
+
+  html[data-theme="gothic"][data-surface="mobile"] .composer {
+    background-color: var(--gothic-panel-base-color) !important;
+    background-image: var(--gothic-panel-base-image) !important;
+    background-blend-mode: normal, normal !important;
+    background-position: var(--gothic-panel-base-position) !important;
+    background-repeat: repeat !important;
+    background-size: var(--gothic-panel-base-size) !important;
+  }
+
+  html[data-theme="gothic"][data-surface="mobile"] .task-workspace-item,
+  html[data-theme="gothic"][data-surface="mobile"] .activity-stream-item .stream-tab-card,
+  html[data-theme="gothic"][data-surface="mobile"] .stream-tab-card,
+  html[data-theme="gothic"][data-surface="mobile"] .chat-overlay-actions > .chip-button,
+  html[data-theme="gothic"][data-surface="mobile"] .chat-overlay-actions > .icon-button,
+  html[data-theme="gothic"][data-surface="mobile"] .task-search,
+  html[data-theme="gothic"][data-surface="mobile"] .task-rail .task-new,
+  html[data-theme="gothic"][data-surface="mobile"] .composer-input,
+  html[data-theme="gothic"][data-surface="mobile"] .composer-main > .icon-button,
+  html[data-theme="gothic"][data-surface="mobile"] .composer-main > .chip-button,
+  html[data-theme="gothic"][data-surface="mobile"] .composer-send {
+    background-color: #15181b !important;
+    background-image:
+      linear-gradient(180deg, rgb(3 5 7 / 10%), rgb(1 3 5 / 16%)),
+      var(--gothic-workspace-card-texture-preview) !important;
+    background-blend-mode: normal, normal !important;
+    background-position: center, center !important;
+    background-repeat: no-repeat, repeat !important;
+    background-size: auto, 22rem 22rem !important;
+    border-color: rgb(92 98 104 / 58%) !important;
+    border-image: none !important;
+    border-radius: 4px !important;
+    box-shadow:
+      inset 0 0 0 1px rgb(0 0 0 / 68%),
+      inset 0 1px 0 rgb(205 211 216 / 10%),
+      0 0 0 1px rgb(0 0 0 / 42%),
+      0 1px 3px rgb(0 0 0 / 58%) !important;
+  }
+
+  html[data-theme="gothic"][data-surface="mobile"] .task-workspace-item[data-selected],
+  html[data-theme="gothic"][data-surface="mobile"] .activity-stream-item[data-current] .stream-tab-card,
+  html[data-theme="gothic"][data-surface="mobile"] .stream-tab[aria-pressed="true"] .stream-tab-card {
+    background-color: #211413 !important;
+    background-image:
+      linear-gradient(rgb(38 20 18 / 58%), rgb(24 15 15 / 68%)),
+      var(--gothic-panel-texture-preview) !important;
+    border-color: rgb(129 37 31 / 72%) !important;
+  }
+
+  html[data-theme="gothic"][data-surface="mobile"] .msg:not(.msg-user),
+  html[data-theme="gothic"][data-surface="mobile"] .msg-user {
+    background-color: #151618 !important;
+    background-image:
+      linear-gradient(rgb(24 25 27 / 24%), rgb(24 25 27 / 24%)),
+      var(--gothic-panel-texture-preview) !important;
+    background-position: center, center !important;
+    background-repeat: repeat, repeat !important;
+    background-size: auto, 28rem 28rem !important;
+  }
+
+  html[data-theme="gothic"][data-surface="mobile"] .msg-agent:not(.msg-live),
+  html[data-theme="gothic"][data-surface="mobile"] .msg-user,
+  html[data-theme="gothic"][data-surface="mobile"] .msg-live {
+    border: 1px solid transparent !important;
+    border-image: none !important;
+    border-radius: 2px !important;
+    box-shadow:
+      inset 0 1px 0 rgb(202 168 145 / 12%),
+      0 0 0 1px rgb(0 0 0 / 28%),
+      0 4px 12px rgb(0 0 0 / 48%) !important;
+    overflow: visible !important;
+    position: relative !important;
+  }
+
+  html[data-theme="gothic"][data-surface="mobile"] .msg-agent:not(.msg-live)::before,
+  html[data-theme="gothic"][data-surface="mobile"] .msg-user::before {
+    background: transparent;
+    border: 1px solid rgb(74 68 61 / 78%);
+    border-radius: 2px;
+    box-sizing: border-box;
+    content: "";
+    inset: -1px;
+    pointer-events: none;
+    position: absolute;
+    z-index: 3;
+  }
+
+  html[data-theme="gothic"][data-surface="mobile"] .msg-agent:not(.msg-live)::after,
+  html[data-theme="gothic"][data-surface="mobile"] .msg-user::after {
+    background:
+      radial-gradient(circle at 0 0, transparent 0 1px, rgb(84 74 64 / 76%) 1.1px 2.5px, transparent 2.6px) top left / 5px 5px no-repeat,
+      radial-gradient(circle at 100% 0, transparent 0 1px, rgb(84 74 64 / 76%) 1.1px 2.5px, transparent 2.6px) top right / 5px 5px no-repeat,
+      radial-gradient(circle at 0 100%, transparent 0 1px, rgb(84 74 64 / 76%) 1.1px 2.5px, transparent 2.6px) bottom left / 5px 5px no-repeat,
+      radial-gradient(circle at 100% 100%, transparent 0 1px, rgb(84 74 64 / 76%) 1.1px 2.5px, transparent 2.6px) bottom right / 5px 5px no-repeat;
+    content: "";
+    inset: 0;
+    pointer-events: none;
+    position: absolute;
+    z-index: 4;
   }
 }

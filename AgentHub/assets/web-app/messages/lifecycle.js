@@ -78,6 +78,10 @@ function snapshotCompletionCandidate(selected, incomingTurnId = "") {
   };
 }
 
+function activeTaskRun(task) {
+  return task?.running === true && task?.run ? task.run : null;
+}
+
 function latestAnswerTransition(previous, current) {
   if (!previous || !current) return false;
   if (String(previous.provider ?? "") !== String(current.provider ?? "")
@@ -577,7 +581,7 @@ function visibleConversationMessages(messages, {
     if (
       message?.role === "user"
       && deferredIds.has(String(message?.clientUserMessageId ?? "").trim())
-    ) return true;
+    ) return false;
     return Boolean(
       String(message?.text ?? "").trim()
       || normalizedResponseAnnotations(message?.responseAnnotations).some((item) => (
@@ -1046,6 +1050,7 @@ function hubErrorMessage(error) {
 
 globalThis.AgentHubMessageLifecycle = Object.freeze({
   activeStageLabel,
+  activeTaskRun,
   attachmentOnlyText,
   chronologicalMessages,
   completedLiveAnswer,

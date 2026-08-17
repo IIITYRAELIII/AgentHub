@@ -830,7 +830,7 @@ test("Gothic theme packages the Old Camp banner with its Sleeper-temple palette"
   const ironFrame = theme.resources.find((resource) => resource.pathname.endsWith("/gothic-iron-frame.jpg"));
   const forgedFrame = theme.resources.find((resource) => resource.pathname.endsWith("/gothic-forged-frame.png"));
   const matteForgedFrame = theme.resources.find((resource) => resource.pathname.endsWith("/gothic-forged-frame-matte.png"));
-  const xardasTower = theme.resources.find((resource) => resource.pathname.endsWith("/gothic-xardas-tower.webp"));
+  const xardasTower = theme.resources.find((resource) => resource.pathname.endsWith("/gothic-xardas-tower.jpg"));
   /* Знамя — самостоятельный ресурс пакета темы. Это проверяет фактическую
      доступность во Worker и webview вместо снимка конкретных CSS-деклараций.
      Кованая оболочка так же обязана доехать как растровые ресурсы темы. */
@@ -856,7 +856,7 @@ test("Gothic theme packages the Old Camp banner with its Sleeper-temple palette"
   assert.equal(matteForgedFrame.immutable, true);
   assert.ok(fs.statSync(matteForgedFrame.file).size > 50_000);
   assert.ok(xardasTower);
-  assert.equal(xardasTower.contentType, "image/webp");
+  assert.equal(xardasTower.contentType, "image/jpeg");
   assert.equal(xardasTower.immutable, true);
   assert.ok(fs.statSync(xardasTower.file).size > 80_000);
   assert.match(styles, /--radius-lg:\s*0;/u);
@@ -866,18 +866,20 @@ test("«Gothic» offers ten night scenes, each with its own light", () => {
   const theme = THEME_REGISTRY.themes.find((item) => item.id === "gothic");
   const backgrounds = themeFile("gothic");
   assert.deepEqual(theme.backgrounds.map((background) => background.id), [
-    "gothic", "gothic-crypt", "gothic-tower", "gothic-harbor", "gothic-chapel", "gothic-keep",
-    "gothic-minental-castle", "gothic-minental-fortress", "gothic-finkregh", "gothic-xardas-tower",
+    "gothic", "gothic-old-camp", "gothic-swamp-camp", "gothic-new-camp", "gothic-xardas-tower",
+    "gothic-sleeper-temple", "gothic-innos-monastery", "gothic-sun-circle", "gothic-irdorath", "gothic-adanos-temple",
   ]);
   for (const [background, image] of [
-    ["gothic-tower", "gothic-tower\\.jpg"],
-    ["gothic-harbor", "gothic-harbor\\.jpg"],
-    ["gothic-chapel", "gothic-chapel\\.jpg"],
-    ["gothic-keep", "gothic-keep\\.jpg"],
-    ["gothic-minental-castle", "gothic-minental-castle\\.jpg"],
-    ["gothic-minental-fortress", "gothic-minental-fortress\\.jpg"],
-    ["gothic-finkregh", "gothic-finkregh\\.jpg"],
-    ["gothic-xardas-tower", "gothic-xardas-tower\\.webp"],
+    ["gothic", "gothic-khorinis-harbor\\.jpg"],
+    ["gothic-old-camp", "gothic-old-camp\\.jpg"],
+    ["gothic-swamp-camp", "gothic-swamp-camp\\.jpg"],
+    ["gothic-new-camp", "gothic-new-camp\\.jpg"],
+    ["gothic-xardas-tower", "gothic-xardas-tower\\.jpg"],
+    ["gothic-sleeper-temple", "gothic-sleeper-temple\\.jpg"],
+    ["gothic-innos-monastery", "gothic-innos-monastery\\.jpg"],
+    ["gothic-sun-circle", "gothic-sun-circle\\.jpg"],
+    ["gothic-irdorath", "gothic-irdorath\\.jpg"],
+    ["gothic-adanos-temple", "gothic-adanos-temple\\.jpg"],
   ]) {
     assert.match(
       backgrounds,
@@ -892,18 +894,21 @@ test("«Gothic» offers ten night scenes, each with its own light", () => {
       `${background} motion`,
     );
   }
-  assert.equal(theme.backgrounds.find((background) => background.id === "gothic-harbor").particles, "rain");
+  assert.equal(theme.backgrounds[0].name, "Гавань Хориниса");
+  assert.equal(theme.backgrounds[0].particles, "rain");
   assert.match(backgrounds, /@keyframes gothic-scene-fog/u);
   assert.match(backgrounds, /@keyframes gothic-scene-glow/u);
   for (const [image, revision] of [
-    ["gothic-crypt.jpg", "913e132043c0"],
-    ["gothic-tower.jpg", "9fe3303fe558"],
-    ["gothic-harbor.jpg", "5695c8f9d3db"],
-    ["gothic-chapel.jpg", "eb55ca4ce5f6"],
-    ["gothic-keep.jpg", "93babdd33bcf"],
-    ["gothic-minental-castle.jpg", "f75d937eca90"],
-    ["gothic-minental-fortress.jpg", "a298113485c7"],
-    ["gothic-finkregh.jpg", "3e54b1cb7aed"],
+    ["gothic-khorinis-harbor.jpg", "1f41339934cb"],
+    ["gothic-old-camp.jpg", "7699c09177ec"],
+    ["gothic-swamp-camp.jpg", "f8876864b8ba"],
+    ["gothic-new-camp.jpg", "1831dbea170f"],
+    ["gothic-xardas-tower.jpg", "86928a4c8b38"],
+    ["gothic-sleeper-temple.jpg", "fdd63e9f6fd6"],
+    ["gothic-innos-monastery.jpg", "77863edab3d8"],
+    ["gothic-sun-circle.jpg", "083a89ad257a"],
+    ["gothic-irdorath.jpg", "1ea92b3428f7"],
+    ["gothic-adanos-temple.jpg", "7f3365e4a6e6"],
   ]) {
     assert.match(backgrounds, new RegExp(`${image.replace(".", "\\.")}\\?v=${revision}`, "u"), image);
   }
@@ -914,7 +919,7 @@ test("large Gothic scenes are decoded before replacing the visible background", 
   const theme = THEME_REGISTRY.themes.find((item) => item.id === "gothic");
   assert.deepEqual(
     theme.backgrounds.filter((background) => background.preload).map((background) => background.id),
-    ["gothic-minental-castle", "gothic-minental-fortress", "gothic-finkregh", "gothic-xardas-tower"],
+    ["gothic-old-camp", "gothic-swamp-camp", "gothic-new-camp", "gothic-xardas-tower", "gothic-sleeper-temple", "gothic-innos-monastery", "gothic-sun-circle", "gothic-irdorath", "gothic-adanos-temple"],
   );
   assert.match(client, /image\.decode\(\)\.then\(\(\) => finish\(true\)/u);
   assert.match(client, /if \(requestId !== backgroundRequestId\) return;/u);
@@ -1417,7 +1422,7 @@ test("chat sends with Enter on desktop and keeps Enter as a newline on phones", 
     assert.match(client, /rememberOutgoing\(request\.taskId, optimistic\);/u);
     assert.match(client, /const queuesOptimistically = request\.followUpMode === "queue"/u);
     assert.match(client, /optimisticDeferredClientUserMessageIds\.add\(request\.requestId\)/u);
-  assert.match(client, /\.\.\.deliveryPatch\("preparing"\)/u);
+  assert.match(client, /\.\.\.deliveryPatch\(queuesOptimistically \? "queued" : steersOptimistically \? "steering" : "preparing"\)/u);
   assert.match(client, /delivery: "Отправляется…"/u);
   assert.match(client, /clientUserMessageId: request\.requestId/u);
   assert.match(client, /reconcileMessageLifecycle\(serverMessages, outgoing\)/u);
@@ -1569,7 +1574,9 @@ test("queue actions are single-flight and steer uses the dedicated server action
   const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
   const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
   assert.match(app, /case "queue-steer":[\s\S]*emit\("queue:steer"/u);
+  assert.match(app, /entry\.optimistic[\s\S]*queue-optimistic", text: "В очереди"/u);
   assert.match(client, /queueActionsInFlight\.has\(key\)/u);
+  assert.match(client, /optimisticQueueSteerIds\.add[\s\S]*deliveryPatch\("steering"\)[\s\S]*renderTaskQueue/u);
   assert.match(client, /control\("deferred-input", \{ id, action: "steer" \}\)/u);
 });
 

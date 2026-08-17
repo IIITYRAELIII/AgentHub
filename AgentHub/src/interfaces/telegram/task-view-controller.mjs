@@ -36,7 +36,7 @@ function mergeAttachmentSources(currentMessages, rolloutMessages) {
   for (const rolloutMessage of Array.isArray(rolloutMessages) ? rolloutMessages : []) {
     const sources = (Array.isArray(rolloutMessage?.attachmentSources)
       ? rolloutMessage.attachmentSources
-      : []).filter((source) => source?.type === "generated-path");
+      : []).filter((source) => ["generated-path", "display-path"].includes(source?.type));
     if (rolloutMessage?.role !== "agent" || !sources.length) continue;
     let targetIndex = messages.findIndex((message) => (
       message?.role === "agent"
@@ -51,7 +51,7 @@ function mergeAttachmentSources(currentMessages, rolloutMessages) {
     const target = messages[targetIndex];
     const mergedSources = (Array.isArray(target.attachmentSources)
       ? target.attachmentSources
-      : []).filter((source) => source?.type === "generated-path")
+      : []).filter((source) => ["generated-path", "display-path"].includes(source?.type))
       .map((source) => ({ ...source }));
     const known = new Set(mergedSources.map((source) => `${source.type}:${source.value}`));
     for (const source of sources) {
@@ -143,7 +143,10 @@ async function materializeHistoryAttachments(history, importer) {
   await Promise.all((Array.isArray(history) ? history : []).flatMap((turn) => (
     (Array.isArray(turn?.messages) ? turn.messages : []).map(async (message) => {
       const sources = (Array.isArray(message?.attachmentSources) ? message.attachmentSources : [])
-        .filter((source) => message?.role !== "agent" || source?.type === "generated-path");
+        .filter((source) => (
+          message?.role !== "agent"
+          || ["generated-path", "display-path"].includes(source?.type)
+        ));
       if (!sources.length) return;
       const imported = await importer(sources);
       const attachments = (Array.isArray(message.attachments) ? message.attachments : [])
@@ -219,7 +222,7 @@ export function codexRolloutHistory(activity = {}, { userAuthor = "" } = {}) {
     const answer = finalAnswer || latestAnswer;
     const generatedImages = (Array.isArray(generatedImageSources[id])
       ? generatedImageSources[id]
-      : []).filter((item) => item?.type === "generated-path")
+      : []).filter((item) => ["generated-path", "display-path"].includes(item?.type))
       .map((item) => ({ ...item }));
     const trace = Array.isArray(activityGroups[id]) ? structuredClone(activityGroups[id]) : [];
     if (!users.length && !answer && !generatedImages.length && !trace.length) return [];
@@ -327,6 +330,7 @@ function mergeCodexHistory(cachedHistory, sourceHistory, rolloutHistory, interna
   const positions = new Map(merged.map((item, index) => [String(item?.id ?? ""), index]));
   for (const item of Array.isArray(rolloutHistory) ? rolloutHistory : []) {
     const id = String(item?.id ?? "");
+    if (hidden.has(id)) continue;
     const index = id ? positions.get(id) : undefined;
     if (index === undefined) {
       if (id) positions.set(id, merged.length);
@@ -469,11 +473,15 @@ export class TaskViewController {
             rolloutActivity?.parentThreadId,
             d.workspaceCatalogStore,
           );
+          const internalTurnIds = [...new Set([
+            ...(rolloutActivity?.internalTurnIds ?? []),
+            ...(d.contextProbeTurnIds?.(binding.threadId) ?? []),
+          ])];
           const history = mergeCodexHistory(
             cached,
             [],
             codexRolloutHistory(rolloutActivity, { userAuthor }),
-            rolloutActivity?.internalTurnIds,
+            internalTurnIds,
           );
           const snapshot = completedOnly ? null : await d.readCodexSnapshot({
             ...task,
@@ -498,11 +506,15 @@ export class TaskViewController {
           : null;
         const parentThreadId = result.thread?.parentThreadId || rolloutActivity?.parentThreadId;
         const userAuthor = subagentPromptAuthor(binding, parentThreadId, d.workspaceCatalogStore);
+        const internalTurnIds = [...new Set([
+          ...(rolloutActivity?.internalTurnIds ?? []),
+          ...(d.contextProbeTurnIds?.(binding.threadId) ?? []),
+        ])];
         const history = mergeCodexHistory(
           cached,
           codexThreadHistory(result.thread?.turns, { userAuthor }),
           codexRolloutHistory(rolloutActivity, { userAuthor }),
-          rolloutActivity?.internalTurnIds,
+          internalTurnIds,
         );
         const snapshot = completedOnly ? null : await d.readCodexSnapshot({
           ...task,

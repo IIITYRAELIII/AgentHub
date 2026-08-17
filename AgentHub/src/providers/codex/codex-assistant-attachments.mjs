@@ -70,7 +70,8 @@ export function createCodexAssistantAttachmentImporter({
       }
 
       const generated = item?.type === "generated-path";
-      const viewed = item?.type === "view-path";
+      const displayed = item?.type === "display-path";
+      const viewed = item?.type === "view-path" || displayed;
       const clipboard = item?.type === "path";
       if (!generated && !viewed && !clipboard) continue;
       const source = path.resolve(String(item.value ?? ""));
@@ -101,7 +102,9 @@ export function createCodexAssistantAttachmentImporter({
       const privateName = generated || viewed;
       const name = generated
         ? privateFileName("codex-generated", source, extension)
-        : viewed
+        : displayed
+          ? privateFileName("codex-displayed", source, extension)
+          : viewed
           ? privateFileName("codex-viewed", source, extension)
           : sourceName;
       const target = path.join(targetRoot, name);

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { RunCoordinator } from "../../src/application/run-coordinator.mjs";
+import { activeTurnNotSteerable, RunCoordinator } from "../../src/application/run-coordinator.mjs";
 
 function fixture(overrides = {}) {
   const calls = [];
@@ -207,6 +207,12 @@ test("RunCoordinator preserves steering when provider ownership changes during a
   assert.deepEqual(f.calls.find(([name]) => name === "schedule").slice(1), [
     { id: "queued-race" }, 500,
   ]);
+});
+
+test("RunCoordinator recognizes an App Server active-turn identity conflict", () => {
+  assert.equal(activeTurnNotSteerable(
+    new Error("expected active turn id 'turn-old' but found 'turn-new'"),
+  ), true);
 });
 
 test("RunCoordinator preserves input when Codex reports an orphaned active writer", async () => {

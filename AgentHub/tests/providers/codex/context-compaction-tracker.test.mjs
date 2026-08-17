@@ -336,3 +336,16 @@ test("an exact probe restores a compaction result after process restart", () => 
   original.dispose();
   restored.dispose();
 });
+
+test("a later compaction keeps recent probe turn ids for history filtering", () => {
+  let nextId = 0;
+  const tracker = new ContextCompactionTracker({ idFactory: () => `compaction-${++nextId}` });
+  const first = tracker.begin("thread-history");
+  tracker.complete("thread-history");
+  tracker.annotate("thread-history", first.id, { probeTurnId: "probe-old" });
+
+  const second = tracker.begin("thread-history");
+  assert.equal(second.id, "compaction-2");
+  assert.deepEqual(second.probeTurnIds, ["probe-old"]);
+  tracker.dispose();
+});

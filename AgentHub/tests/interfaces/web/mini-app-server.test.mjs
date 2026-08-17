@@ -413,7 +413,7 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.equal(blackHole.status, 200);
     assert.equal(blackHole.headers.get("content-type"), "image/jpeg");
     assert.match(blackHole.headers.get("cache-control"), /immutable/u);
-    const gothicImage = await fetch(`${address.url}themes/gothic/gothic-concrete.jpg`);
+    const gothicImage = await fetch(`${address.url}themes/gothic/gothic-khorinis-harbor.jpg`);
     assert.equal(gothicImage.status, 200);
     assert.equal(gothicImage.headers.get("content-type"), "image/jpeg");
     assert.match(gothicImage.headers.get("cache-control"), /immutable/u);
@@ -458,8 +458,9 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
        впятеро больше при том же виде. */
     for (const name of [
       "lake-summer.jpg", "lake-watercolor.jpg",
-      "gothic-tower.jpg", "gothic-harbor.jpg", "gothic-chapel.jpg", "gothic-keep.jpg",
-      "gothic-minental-castle.jpg", "gothic-minental-fortress.jpg", "gothic-finkregh.jpg",
+      "gothic-old-camp.jpg", "gothic-swamp-camp.jpg", "gothic-new-camp.jpg",
+      "gothic-xardas-tower.jpg", "gothic-sleeper-temple.jpg", "gothic-innos-monastery.jpg",
+      "gothic-sun-circle.jpg", "gothic-irdorath.jpg", "gothic-adanos-temple.jpg",
     ]) {
       const theme = name.startsWith("lake-") ? "lake" : "gothic";
       const lake = await fetch(`${address.url}themes/${theme}/${name}`);
@@ -772,7 +773,7 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.match(styles, /html\[data-theme="meadow"\]/u);
     assert.match(styles, /url\("\/lake-after-rain\.jpg"\)/u);
     assert.match(styles, /html\[data-theme="lake"\]/u);
-    assert.match(styles, /url\("\/gothic-concrete\.jpg"\)/u);
+    assert.match(styles, /url\("\/gothic-khorinis-harbor\.jpg\?v=[a-f0-9]+"\)/u);
     assert.match(styles, /url\("\/nebula-veil\.jpg"\)/u);
     assert.match(styles, /url\("\/orbit-cartography\.jpg"\)/u);
     assert.match(styles, /url\("\/orbit-mark\.png"\)/u);

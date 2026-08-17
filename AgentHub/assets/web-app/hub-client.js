@@ -59,6 +59,7 @@ const liveUserMessagesByTask = new Map();
 const liveCardsByTask = new Map();
 const completionOverlaysByTask = new Map();
 const queueActionsInFlight = new Set();
+const optimisticQueueSteerIds = new Set();
 const optimisticDeferredClientUserMessageIds = new Set();
 const requestedContextCompactions = new Set();
 const streamCreatesInFlight = new Map();
@@ -72,6 +73,7 @@ const CONTEXT_PROBE_PROMPT = "Ответь строго: AGENT_HUB_CONTEXT_PROBE
 const CONTEXT_PROBE_RESPONSE = "AGENT_HUB_CONTEXT_PROBE_OK_V1";
 const {
   activeStageLabel,
+  activeTaskRun,
   chronologicalMessages,
   completedLiveAnswer,
   conversationTaskId,
@@ -306,6 +308,7 @@ function deliveryPatch(stateName) {
   const states = {
     preparing: { deliveryState: "preparing", delivery: "Подготовка…", failed: false },
     sending: { deliveryState: "sending", delivery: "Отправляется…", failed: false },
+    steering: { deliveryState: "steering", delivery: "В текущем ходе", failed: false },
     accepted: { deliveryState: "accepted", delivery: "Принято", failed: false },
     deferred: { deliveryState: "deferred", delivery: "Отложено", failed: false },
     queued: { deliveryState: "queued", delivery: "В очереди", failed: false },
@@ -438,6 +441,7 @@ function deferredEntriesForTask(snapshot, taskIdValue) {
   return (snapshot?.deferredInputs ?? []).filter((item) => (
     item.state !== "dispatching"
     && item.state !== "steering"
+    && !optimisticQueueSteerIds.has(String(item.id ?? ""))
     && (!item.provider || taskId(item.provider, item.threadId, item.streamId) === taskIdValue)
   ));
 }
@@ -662,7 +666,10 @@ function syncHistoryPagination(taskIdValue) {
 }
 
 function updateLiveMessage(taskIdValue, selected) {
-  const run = selected?.run;
+  // A terminal snapshot may retain the completed run for diagnostics. It must
+  // not be treated as an incoming active turn, otherwise its commentary card
+  // masks the final answer until the chat is reopened.
+  const run = activeTaskRun(selected);
   if (internalContextProbeRun(run)) {
     clearInternalContextProbe(taskIdValue);
     return null;
@@ -1913,6 +1920,9 @@ agentHub.on("message:send", (request) => {
   let identity = taskIdentity(request.taskId);
   const previousAttempt = outgoingMessages(request.taskId).get(request.requestId);
   const requestAttachments = request.attachments ?? [];
+  const queuesOptimistically = request.followUpMode === "queue"
+    || request.deferWhileRunning === true;
+  const steersOptimistically = request.followUpMode === "steer" && !queuesOptimistically;
   const visibleText = String(request.text ?? "").trim()
     || ((request.annotations ?? []).length
       ? `Аннотации к ответу: ${(request.annotations ?? []).length}`
@@ -1932,11 +1942,9 @@ agentHub.on("message:send", (request) => {
     time: new Date().toISOString(),
     attachments: requestAttachments,
     uploadedPaths: previousAttempt?.uploadedPaths ?? [],
-    ...deliveryPatch("preparing"),
+    ...deliveryPatch(queuesOptimistically ? "queued" : steersOptimistically ? "steering" : "preparing"),
   };
   rememberOutgoing(request.taskId, optimistic);
-  const queuesOptimistically = request.followUpMode === "queue"
-    || request.deferWhileRunning === true;
   if (queuesOptimistically) {
     optimisticDeferredClientUserMessageIds.add(request.requestId);
     deferredClientUserMessageIds.add(request.requestId);
@@ -1979,7 +1987,11 @@ agentHub.on("message:send", (request) => {
         updateOutgoing(request.taskId, request.requestId, { uploadedPaths: paths.slice() });
         renderOutgoingWithoutBlockingSend(request.taskId);
       }
-      updateOutgoing(request.taskId, request.requestId, deliveryPatch("sending"));
+      updateOutgoing(
+        request.taskId,
+        request.requestId,
+        deliveryPatch(queuesOptimistically ? "queued" : steersOptimistically ? "steering" : "sending"),
+      );
       renderOutgoingWithoutBlockingSend(request.taskId);
       const params = {
         text: annotatedText(request.text, request.annotations),
@@ -2512,8 +2524,14 @@ async function runQueueAction(id, taskIdValue, operation) {
   try {
     return await operation();
   } finally {
-    queueActionsInFlight.delete(key);
-    applySnapshot(await control("snapshot"));
+    try {
+      applySnapshot(await control("snapshot"));
+    } finally {
+      queueActionsInFlight.delete(key);
+      optimisticQueueSteerIds.delete(key);
+      renderTaskQueue(taskIdValue);
+      renderTaskMessages(taskIdValue);
+    }
   }
 }
 
@@ -2523,20 +2541,38 @@ agentHub.on("queue:accept", ({ id, taskId: taskIdValue }) => runAction(() => run
 })));
 agentHub.on("queue:steer", ({ id, taskId: taskIdValue }) => runAction(() => runQueueAction(id, taskIdValue, async () => {
   const deferred = (lastSnapshot?.deferredInputs ?? []).find((item) => item.id === id);
-  const result = await control("deferred-input", { id, action: "steer" });
   const clientUserMessageId = String(deferred?.clientUserMessageId ?? "").trim();
+  optimisticQueueSteerIds.add(String(id ?? ""));
   if (clientUserMessageId) {
     const deferredTaskId = taskId(deferred.provider, deferred.threadId, deferred.streamId);
     optimisticDeferredClientUserMessageIds.delete(clientUserMessageId);
     deferredClientUserMessageIds.delete(clientUserMessageId);
     patchOutgoing(deferredTaskId, clientUserMessageId, {
-      turnId: String(result?.turnId ?? ""),
       itemId: clientUserMessageId,
       turnUserSlot: "steer",
-      ...deliveryPatch("accepted"),
+      ...deliveryPatch("steering"),
     });
   }
-  agentHub.toast(result?.message ?? "Сообщение добавлено в текущий ход");
+  renderTaskQueue(taskIdValue);
+  try {
+    const result = await control("deferred-input", { id, action: "steer" });
+    if (clientUserMessageId) {
+      const deferredTaskId = taskId(deferred.provider, deferred.threadId, deferred.streamId);
+      patchOutgoing(deferredTaskId, clientUserMessageId, {
+        turnId: String(result?.turnId ?? ""),
+        ...deliveryPatch("accepted"),
+      });
+    }
+    agentHub.toast(result?.message ?? "Сообщение добавлено в текущий ход");
+  } catch (error) {
+    if (clientUserMessageId) {
+      const deferredTaskId = taskId(deferred.provider, deferred.threadId, deferred.streamId);
+      optimisticDeferredClientUserMessageIds.add(clientUserMessageId);
+      deferredClientUserMessageIds.add(clientUserMessageId);
+      patchOutgoing(deferredTaskId, clientUserMessageId, deliveryPatch("queued"));
+    }
+    throw error;
+  }
 })));
 agentHub.on("queue:new", ({ id, taskId: taskIdValue }) => runAction(() => runQueueAction(
   id,

@@ -11,6 +11,7 @@ import { codexThreadSandboxSettings, codexTurnSandboxSettings } from "./codex/co
 import { emptyTokenUsage } from "../domain/token-usage.mjs";
 import { estimateCodexContextBreakdown } from "../domain/context-usage-breakdown.mjs";
 import { markProviderTurnAccepted, markProviderTurnRequested } from "../domain/task-runs.mjs";
+import { isCodexContextProbeTurn } from "../domain/codex-context-probe.mjs";
 
 function requiredFunction(value, name) {
   if (typeof value !== "function") throw new TypeError(`${name} is required`);
@@ -98,6 +99,11 @@ function unconfirmedTurnStartError(error) {
 
 function ambiguousTurnStart(error) {
   return error?.deliveryOutcome === "unknown" || error?.uncertain === true;
+}
+
+function activeTurnIdentityChanged(error) {
+  const details = `${String(error?.message ?? "")} ${JSON.stringify(error?.data ?? {})}`.toLowerCase();
+  return details.includes("expected active turn id") || details.includes("expectedturnid");
 }
 
 export async function waitForCodexTurnMaterialization({
@@ -290,15 +296,37 @@ export class CodexTurnService {
   }
 
   async steer({ run, target, input, clientUserMessageId }) {
-    const turnId = await this.#exactTurnId(target, run);
+    let turnId = await this.#exactTurnId(target);
     if (!turnId) throw new Error("Текущий ход уже нельзя изменить; сообщение осталось в очереди");
-    const request = {
+    let request = {
       threadId: target.threadId,
       expectedTurnId: turnId,
       input: codexInputItems(input),
       clientUserMessageId,
     };
-    const result = await steerCodexTurnWithRecovery({
+    let result;
+    try {
+      result = await this.#steerRequest(target, request);
+    } catch (error) {
+      if (!activeTurnIdentityChanged(error)) throw error;
+      const refreshedTurnId = await this.#exactTurnId(target);
+      if (!refreshedTurnId || refreshedTurnId === turnId) throw error;
+      turnId = refreshedTurnId;
+      request = { ...request, expectedTurnId: turnId };
+      result = await this.#steerRequest(target, request);
+    }
+    const acceptedTurnId = String(result?.turnId ?? turnId).trim() || turnId;
+    if (run && String(run.turnId ?? "").trim() !== acceptedTurnId) {
+      const previousTurnId = run.turnId;
+      run.turnId = acceptedTurnId;
+      this.#d.reindexRun(run, { turnId: previousTurnId });
+      await this.#d.saveState();
+    }
+    return { turnId: acceptedTurnId };
+  }
+
+  #steerRequest(target, request) {
+    return steerCodexTurnWithRecovery({
       threadId: target.threadId,
       steer: () => this.#d.sendRpc("turn/steer", request),
       resume: ({ threadId }) => this.#d.sendRpc("thread/resume", {
@@ -306,7 +334,6 @@ export class CodexTurnService {
         ...codexThreadSandboxSettings(this.#d.sandboxMode()),
       }),
     });
-    return { turnId: String(result?.turnId ?? turnId) };
   }
 
   async findByClientMessage(target, clientUserMessageId) {
@@ -332,15 +359,21 @@ export class CodexTurnService {
     });
   }
 
-  async #exactTurnId(target, run) {
-    const registered = String(run?.turnId ?? "").trim();
-    if (registered) return registered;
-    const result = await this.#d.readThread(target.threadId, { fresh: true, priority: "interactive" });
-    const active = (Array.isArray(result.thread?.turns) ? result.thread.turns : [])
-      .filter((turn) => ["inProgress", "in_progress", "running"].includes(String(turn?.status ?? "")))
-      .map((turn) => String(turn.id ?? "").trim())
-      .filter(Boolean);
-    if (active.length === 1) return active[0];
+  async #exactTurnId(target) {
+    const result = await this.#d.readThread(target.threadId, {
+      fresh: true,
+      includeTurns: true,
+      priority: "interactive",
+      turnLimit: 8,
+      turnPageSize: 8,
+    });
+    const thread = result?.thread ?? result;
+    const active = (Array.isArray(thread?.turns) ? thread.turns : [])
+      .filter((turn) => ["inProgress", "in_progress", "running"].includes(String(turn?.status ?? "")));
+    if (active.length === 1) {
+      if (isCodexContextProbeTurn(active[0])) return null;
+      return String(active[0]?.id ?? "").trim() || null;
+    }
     if (active.length > 1) throw new Error("В задаче выполняется несколько ходов; выбрать ход для изменения нельзя");
     return null;
   }

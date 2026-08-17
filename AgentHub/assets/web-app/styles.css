@@ -5633,8 +5633,9 @@ html[data-surface="mobile"]
     border-radius: var(--shell-stream-tab-radius, 3px) !important;
     box-shadow: none !important;
     flex-basis: 2rem !important;
+    margin-block: var(--shell-stream-tab-padding, 0.15rem) !important;
     max-width: 2rem !important;
-    min-height: var(--shell-stream-tab-min-height, 3.05rem) !important;
+    min-height: 0 !important;
     padding: 0 !important;
     transform: none !important;
     width: 2rem !important;

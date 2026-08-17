@@ -288,6 +288,7 @@ export class ContextCompactionTracker {
         turnId: String(turnId ?? "").trim() || null,
         itemId: String(itemId ?? "").trim() || null,
         captureRawItem: Boolean(captureRawItem),
+        probeTurnIds: normalizedProbeTurnIds(existing?.probeTurnIds),
         ...(initialBeforePercent !== null
           ? { beforePercent: initialBeforePercent }
           : {}),

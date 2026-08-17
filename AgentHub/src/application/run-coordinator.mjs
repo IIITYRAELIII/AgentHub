@@ -14,6 +14,7 @@ export function activeTurnNotSteerable(error) {
     || details.includes("active turn not steerable")
     || details.includes("no active turn")
     || details.includes("expectedturnid")
+    || details.includes("expected active turn id")
     || details.includes("thread not found")
     || details.includes("already has an active writer")
     || /текущий ход уже/u.test(String(error?.message ?? "").toLowerCase());

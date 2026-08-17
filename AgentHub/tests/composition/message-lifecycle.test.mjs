@@ -914,7 +914,7 @@ test("live message never falls back across turns or ambiguous agent messages", (
   assert.equal(lifecycle.liveMessageMatch(ambiguous, live), null);
 });
 
-test("deferred outgoing messages stay visible while the queue owns delivery", () => {
+test("deferred outgoing messages render only through the optimistic queue", () => {
   const deferred = {
     ...message("client-deferred", "Будет отправлено после хода"),
     deliveryState: "queued",
@@ -923,7 +923,7 @@ test("deferred outgoing messages stay visible while the queue owns delivery", ()
   const visible = lifecycle.visibleConversationMessages([deferred], {
     deferredClientUserMessageIds: ["client-deferred"],
   });
-  assert.deepEqual(visible, [deferred]);
+  assert.deepEqual(visible, []);
 });
 
 test("empty projected messages never render as blank chat cards", () => {
@@ -1449,7 +1449,7 @@ test("named-pipe transport errors are recognized and hidden from the interface",
   assert.doesNotMatch(lifecycle.hubErrorMessage(error), /pipe|ENOENT/iu);
 });
 
-test("returning to a busy task keeps its deferred user card visible", () => {
+test("returning to a busy task keeps its deferred user card out of chat", () => {
   const activeUser = {
     ...message("active-client", "Первый вопрос"),
     turnId: "active-turn",
@@ -1476,7 +1476,7 @@ test("returning to a busy task keeps its deferred user card visible", () => {
       liveProbe: { ...activeAgent, text: undefined },
     },
   );
-  assert.deepEqual(visible, [activeUser, deferredUser]);
+  assert.deepEqual(visible, [activeUser]);
 });
 
 test("context compaction start identifies the task and completion stays in chat", () => {
@@ -1586,7 +1586,40 @@ test("snapshot completion survives a new run when the previous live card is alre
     },
   );
   assert.equal(lifecycle.snapshotCompletionCandidate(selected, "turn-completed"), null);
-  assert.match(hubClientSource, /rememberSnapshotCompletion\(taskIdValue, selected, run\?\.turnId\)/u);
+});
+
+test("terminal snapshot run cannot mask its own final answer", () => {
+  const terminal = {
+    provider: "codex",
+    threadId: "thread-1",
+    running: false,
+    lastAnswer: "Финальный ответ",
+    lastAnswerAt: "2026-08-17T17:11:43.988Z",
+    lastAnswerTurnId: "turn-completed",
+    run: {
+      turnId: "turn-completed",
+      response: "Промежуточный commentary",
+    },
+  };
+
+  assert.equal(lifecycle.activeTaskRun(terminal), null);
+  assert.deepEqual(
+    { ...lifecycle.snapshotCompletionCandidate(
+      terminal,
+      lifecycle.activeTaskRun(terminal)?.turnId,
+    ) },
+    {
+      provider: "codex",
+      threadId: "thread-1",
+      turnId: "turn-completed",
+      answer: "Финальный ответ",
+      time: "2026-08-17T17:11:43.988Z",
+    },
+  );
+  assert.equal(
+    lifecycle.activeTaskRun({ ...terminal, running: true }),
+    terminal.run,
+  );
 });
 
 test("run completion starts history catch-up even when answer metadata has not changed yet", () => {

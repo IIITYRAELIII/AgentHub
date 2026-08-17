@@ -207,6 +207,13 @@ function viewImagePaths(entry) {
   return [...new Set(paths)];
 }
 
+function viewImageCallIsDisplayed(entry, paths) {
+  if (!paths.length) return false;
+  const input = String(entry?.payload?.input ?? "");
+  const displayed = [...input.matchAll(/(?:^|[^.\w])image\s*\(/gu)].length;
+  return displayed >= paths.length;
+}
+
 function responseItemImageCount(entry) {
   const payload = entry?.payload ?? {};
   if (entry?.type !== "response_item" || ![
@@ -295,7 +302,11 @@ function rememberPendingViewImageCall(metadata, turnId, entry) {
   const callId = String(entry?.payload?.call_id ?? "").trim();
   const paths = viewImagePaths(entry);
   if (!callId || !turnId || !paths.length) return;
-  metadata.pendingViewImageCalls.set(callId, { turnId, paths });
+  metadata.pendingViewImageCalls.set(callId, {
+    turnId,
+    paths,
+    displayed: viewImageCallIsDisplayed(entry, paths),
+  });
   while (metadata.pendingViewImageCalls.size > 32) {
     metadata.pendingViewImageCalls.delete(metadata.pendingViewImageCalls.keys().next().value);
   }
@@ -313,7 +324,12 @@ function completePendingViewImageCall(metadata, turnId, entry) {
   const pending = metadata.pendingViewImageCalls.get(callId);
   if (!pending) return;
   if (responseItemImageCount(entry) > 0) {
-    rememberCodexImagePaths(metadata, turnId || pending.turnId, pending.paths, "view-path");
+    rememberCodexImagePaths(
+      metadata,
+      turnId || pending.turnId,
+      pending.paths,
+      pending.displayed ? "display-path" : "view-path",
+    );
   }
   metadata.pendingViewImageCalls.delete(callId);
 }
@@ -454,7 +470,12 @@ function observeOversizedCodexLine(metadata, activeTurnIds, { head = "", tail = 
     if (pending) {
       const turnId = decodedJsonString(/"turn_id"\s*:\s*"((?:\\.|[^"\\])*)"/u.exec(sample)?.[1])
         || pending.turnId;
-      rememberCodexImagePaths(metadata, turnId, pending.paths, "view-path");
+      rememberCodexImagePaths(
+        metadata,
+        turnId,
+        pending.paths,
+        pending.displayed ? "display-path" : "view-path",
+      );
       metadata.pendingViewImageCalls.delete(callId);
     }
   }
@@ -705,6 +726,7 @@ function withoutCodexContextProbeTurns(activity) {
     latestMessages: withoutHiddenKeys(activity.latestMessages),
     finalMessages: withoutHiddenKeys(activity.finalMessages),
     userMessages: withoutHiddenKeys(activity.userMessages),
+    generatedImageSources: withoutHiddenKeys(activity.generatedImageSources),
     ...(activity.activityGroups
       ? { activityGroups: withoutHiddenKeys(activity.activityGroups) }
       : {}),

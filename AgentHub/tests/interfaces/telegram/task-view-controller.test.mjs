@@ -169,7 +169,10 @@ test("Codex history removes a context probe turn identified by rollout metadata"
       internalTurnIds: [probeTurnId],
       userMessages: {},
       latestMessages: {},
-      finalMessages: {},
+      finalMessages: { [probeTurnId]: "Неверно привязанный ответ" },
+      generatedImageSources: {
+        [probeTurnId]: [{ type: "generated-path", value: "C:/generated/probe.png" }],
+      },
     }),
     readCodexSnapshot: async () => ({ active: false }),
     taskSyncStore: {
@@ -194,6 +197,37 @@ test("Codex history removes a context probe turn identified by rollout metadata"
 
   assert.deepEqual(result.history.map((item) => item.id), [realTurnId]);
   assert.deepEqual(recorded.map((item) => item.id), [realTurnId]);
+});
+
+test("Codex history uses persisted probe ids when the rollout tail no longer contains its prompt", async () => {
+  const probeTurnId = "019ffc97-c47f-7de0-aea6-00e1da772d7d";
+  const view = controller({
+    findCodexRolloutPath: async () => "C:/rollout.jsonl",
+    contextProbeTurnIds: () => [probeTurnId],
+    readCodexRolloutActivity: async () => ({
+      userMessages: {},
+      latestMessages: {},
+      finalMessages: { [probeTurnId]: "Старый служебный ход" },
+      generatedImageSources: {
+        [probeTurnId]: [{ type: "generated-path", value: "C:/generated/probe.png" }],
+      },
+    }),
+    readCodexSnapshot: async () => ({ active: false }),
+    taskSyncStore: {
+      history: () => [],
+      recordHistory: () => {},
+      save: async () => {},
+    },
+  });
+
+  const result = await view.readHistory({
+    provider: "codex",
+    threadId: "thread-probe",
+    projectRoot: "C:/repo",
+    title: "Probe",
+    chatId: 1,
+  });
+  assert.deepEqual(result.history, []);
 });
 
 test("missing Claude transcript keeps the managed exchange in durable history", async () => {
@@ -477,6 +511,21 @@ test("rollout history attaches generated images to the final assistant message",
   assert.deepEqual(assistant.attachmentSources, [{
     type: "generated-path",
     value: "C:/Users/test/.codex/generated_images/thread/call.png",
+  }]);
+});
+
+test("rollout history attaches explicitly displayed local images to the final answer", () => {
+  const [exchange] = codexRolloutHistory({
+    userMessages: { "turn-image": [{ text: "Покажи фон" }] },
+    finalMessages: { "turn-image": "Показал изображение выше." },
+    generatedImageSources: {
+      "turn-image": [{ type: "display-path", value: "D:/work/WIP/final.png" }],
+    },
+  });
+  const assistant = exchange.messages.find((message) => message.role === "agent");
+  assert.deepEqual(assistant.attachmentSources, [{
+    type: "display-path",
+    value: "D:/work/WIP/final.png",
   }]);
 });
 

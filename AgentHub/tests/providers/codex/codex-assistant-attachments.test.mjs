@@ -29,27 +29,33 @@ async function fixture() {
   };
 }
 
-test("assistant image importer creates durable opaque copies for generated and viewed images", async () => {
+test("assistant image importer creates durable opaque copies for generated, displayed and viewed images", async () => {
   const state = await fixture();
   try {
     const generatedFile = path.join(state.generated, "generation.png");
+    const displayedFile = path.join(state.viewed, "displayed.webp");
     const viewedFile = path.join(state.viewed, "preview.jpg");
     await writeFile(generatedFile, Buffer.from("generated"));
+    await writeFile(displayedFile, Buffer.from("displayed"));
     await writeFile(viewedFile, Buffer.from("viewed"));
 
     const result = await state.importer([
       { type: "generated-path", value: generatedFile },
+      { type: "display-path", value: displayedFile },
       { type: "view-path", value: viewedFile },
     ]);
 
-    assert.equal(result.length, 2);
+    assert.equal(result.length, 3);
     assert.equal(result[0].name, "Изображение");
     assert.equal(result[0].type, "image/png");
     assert.match(result[0].id, /^codex-generated-[0-9a-f]{64}\.png$/u);
-    assert.equal(result[1].type, "image/jpeg");
-    assert.match(result[1].id, /^codex-viewed-[0-9a-f]{64}\.jpg$/u);
+    assert.equal(result[1].type, "image/webp");
+    assert.match(result[1].id, /^codex-displayed-[0-9a-f]{64}\.webp$/u);
+    assert.equal(result[2].type, "image/jpeg");
+    assert.match(result[2].id, /^codex-viewed-[0-9a-f]{64}\.jpg$/u);
     assert.equal((await readFile(path.join(state.attachments, result[0].id))).toString(), "generated");
-    assert.equal((await readFile(path.join(state.attachments, result[1].id))).toString(), "viewed");
+    assert.equal((await readFile(path.join(state.attachments, result[1].id))).toString(), "displayed");
+    assert.equal((await readFile(path.join(state.attachments, result[2].id))).toString(), "viewed");
     assert.equal(JSON.stringify(result).includes(generatedFile), false);
     assert.equal(JSON.stringify(result).includes(viewedFile), false);
   } finally {

@@ -15,15 +15,15 @@
     "header-rivet": "gothic-header-rivet.png"
   },
   "backgrounds": [
-    { "id": "gothic", "name": "Склеп", "asset": "gothic-concrete.jpg", "particles": "motes" },
-    { "id": "gothic-crypt", "name": "Крипта", "asset": "gothic-crypt.jpg", "particles": "motes" },
-    { "id": "gothic-tower", "name": "Башня", "asset": "gothic-tower.jpg" },
-    { "id": "gothic-harbor", "name": "Гавань", "asset": "gothic-harbor.jpg", "particles": "rain" },
-    { "id": "gothic-chapel", "name": "Часовня", "asset": "gothic-chapel.jpg", "particles": "motes" },
-    { "id": "gothic-keep", "name": "Крепость", "asset": "gothic-keep.jpg" },
-    { "id": "gothic-minental-castle", "name": "Монастырь", "asset": "gothic-minental-castle.jpg", "preload": true },
-    { "id": "gothic-minental-fortress", "name": "Замок Миненталя", "asset": "gothic-minental-fortress.jpg", "preload": true },
-    { "id": "gothic-finkregh", "name": "Финкрегх", "asset": "gothic-finkregh.jpg", "preload": true },
-    { "id": "gothic-xardas-tower", "name": "Башня Ксардаса", "asset": "gothic-xardas-tower.webp", "preload": true }
+    { "id": "gothic", "name": "Гавань Хориниса", "asset": "gothic-khorinis-harbor.jpg", "particles": "rain" },
+    { "id": "gothic-old-camp", "name": "Старый лагерь", "asset": "gothic-old-camp.jpg", "preload": true },
+    { "id": "gothic-swamp-camp", "name": "Болотный лагерь", "asset": "gothic-swamp-camp.jpg", "particles": "motes", "preload": true },
+    { "id": "gothic-new-camp", "name": "Новый лагерь", "asset": "gothic-new-camp.jpg", "preload": true },
+    { "id": "gothic-xardas-tower", "name": "Башня Ксардаса", "asset": "gothic-xardas-tower.jpg", "preload": true },
+    { "id": "gothic-sleeper-temple", "name": "Храм Спящего", "asset": "gothic-sleeper-temple.jpg", "particles": "motes", "preload": true },
+    { "id": "gothic-innos-monastery", "name": "Монастырь Инноса", "asset": "gothic-innos-monastery.jpg", "preload": true },
+    { "id": "gothic-sun-circle", "name": "Круг Солнца", "asset": "gothic-sun-circle.jpg", "particles": "motes", "preload": true },
+    { "id": "gothic-irdorath", "name": "Чертоги Ирдората", "asset": "gothic-irdorath.jpg", "particles": "motes", "preload": true },
+    { "id": "gothic-adanos-temple", "name": "Храм Аданоса", "asset": "gothic-adanos-temple.jpg", "preload": true }
   ]
 }

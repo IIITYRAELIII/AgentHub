@@ -561,6 +561,11 @@ test("Codex rollout activity hides the internal context probe turn", () => {
       type: "agent_message",
       message: CODEX_CONTEXT_PROBE_RESPONSE,
     }),
+    entry("2026-08-08T10:00:00.250Z", "event_msg", {
+      type: "image_generation_end",
+      turn_id: "probe-turn",
+      saved_path: "C:\\Users\\test\\.codex\\generated_images\\probe.png",
+    }),
     entry("2026-08-08T10:00:00.300Z", "event_msg", {
       type: "task_complete",
       turn_id: "probe-turn",
@@ -574,6 +579,7 @@ test("Codex rollout activity hides the internal context probe turn", () => {
   assert.equal(result.latestTurnId, null);
   assert.deepEqual(result.userMessages, {});
   assert.deepEqual(result.finalMessages, {});
+  assert.deepEqual(result.generatedImageSources, {});
 });
 
 test("an unscoped user message is assigned to a new concurrent VSC turn", () => {
@@ -1322,7 +1328,7 @@ test("Codex rollout activity links a returned view_image to its local source", (
   ].join("\n"));
 
   assert.deepEqual(result.generatedImageSources, {
-    [turnId]: [{ type: "view-path", value: source }],
+    [turnId]: [{ type: "display-path", value: source }],
   });
 });
 
@@ -1460,7 +1466,7 @@ test("rollout reader links an oversized view_image result without retaining its 
       tailBytes: 32 * 1024,
     });
     assert.deepEqual(result.generatedImageSources, {
-      [turnId]: [{ type: "view-path", value: source }],
+      [turnId]: [{ type: "display-path", value: source }],
     });
     assert.doesNotMatch(JSON.stringify(result), /data:image/iu);
   } finally {
