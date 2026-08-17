@@ -44,8 +44,9 @@
     }
   }
 
-  function composerFollowUpMode(task) {
-    return task?.running === true ? "queue" : null;
+  function composerFollowUpMode(task, { steerWhileRunning = false } = {}) {
+    if (task?.running !== true) return null;
+    return steerWhileRunning ? "steer" : "queue";
   }
 
   function reconcileKeyedChildren(container, specs, createNode, updateNode = () => {}) {

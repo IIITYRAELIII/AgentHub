@@ -4767,7 +4767,7 @@ composerInput.addEventListener("keydown", (event) => {
   }
   if (event.key !== "Enter" || event.shiftKey || event.isComposing || phoneComposerMode()) return;
   event.preventDefault();
-  submitComposer();
+  submitComposer({ steerWhileRunning: event.ctrlKey || event.metaKey });
 });
 
 slashMenu.addEventListener("click", (event) => {
@@ -4780,8 +4780,9 @@ composer.addEventListener("submit", (event) => {
   submitComposer();
 });
 
-function submitComposer() {
+function submitComposer({ steerWhileRunning = false } = {}) {
   if (!state.selectedId || pendingComposerRequest) return;
+  const task = currentTask();
   const rawText = composerInput.value;
   const text = rawText.trim();
   const attachments = currentAttachments().slice();
@@ -4817,11 +4818,11 @@ function submitComposer() {
     text,
     annotations,
     attachments,
-    followUpMode: MessageView.composerFollowUpMode(currentTask()),
-    deferWhileRunning: currentTask()?.running === true,
-    draftStream: currentTask()?.draftStream === true,
-    streamId: currentTask()?.streamId ?? null,
-    settings: currentTask()?.draftStream ? { ...currentTask().streamSettings } : null,
+    followUpMode: MessageView.composerFollowUpMode(task, { steerWhileRunning }),
+    deferWhileRunning: task?.running === true && !steerWhileRunning,
+    draftStream: task?.draftStream === true,
+    streamId: task?.streamId ?? null,
+    settings: task?.draftStream ? { ...task.streamSettings } : null,
   });
   updateSendState();
   saveDraft();

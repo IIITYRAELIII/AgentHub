@@ -38,10 +38,30 @@ class FakeContainer {
   }
 }
 
-test("ordinary input during an active turn goes straight to the queue", async () => {
+test("Enter queues active-turn input while Ctrl+Enter steers it into the turn", async () => {
   const api = await messageViewApi();
+  const appSource = await readFile(
+    new URL("../../assets/web-app/app.js", import.meta.url),
+    "utf8",
+  );
   assert.equal(api.composerFollowUpMode({ running: true }), "queue");
+  assert.equal(
+    api.composerFollowUpMode({ running: true }, { steerWhileRunning: true }),
+    "steer",
+  );
   assert.equal(api.composerFollowUpMode({ running: false }), null);
+  assert.equal(
+    api.composerFollowUpMode({ running: false }, { steerWhileRunning: true }),
+    null,
+  );
+  assert.match(
+    appSource,
+    /submitComposer\(\{ steerWhileRunning: event\.ctrlKey \|\| event\.metaKey \}\)/u,
+  );
+  assert.match(
+    appSource,
+    /deferWhileRunning: task\?\.running === true && !steerWhileRunning/u,
+  );
 });
 
 test("optimistic confirmation keeps the same message node when content is unchanged", async () => {
