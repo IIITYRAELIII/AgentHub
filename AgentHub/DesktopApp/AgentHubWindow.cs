@@ -28,6 +28,7 @@ namespace AgentHubDesktop
         private readonly JavaScriptSerializer json = new JavaScriptSerializer { MaxJsonLength = 8 * 1024 * 1024 };
         private readonly DispatcherTimer refreshTimer = new DispatcherTimer();
         private readonly DispatcherTimer draftTimer = new DispatcherTimer();
+        private readonly DispatcherTimer toastTimer = new DispatcherTimer();
         private readonly Dictionary<string, TaskItem> tasks = new Dictionary<string, TaskItem>();
         private readonly Dictionary<string, DesktopDraft> drafts = new Dictionary<string, DesktopDraft>();
         private readonly List<Dictionary<string, object>> history = new List<Dictionary<string, object>>();
@@ -51,12 +52,14 @@ namespace AgentHubDesktop
         private readonly TextBlock pageTitle = new TextBlock();
         private readonly TextBlock pageMeta = new TextBlock();
         private readonly TextBlock footer = new TextBlock();
+        private readonly TextBlock toastText = new TextBlock();
         private readonly Button sendButton;
         private readonly Button stopButton;
         private readonly Button olderButton;
         private readonly string desktopRoot;
         private readonly string draftFile;
         private readonly string attachmentRoot;
+        private Border toast;
 
         private bool refreshing;
         private bool switching;
@@ -107,6 +110,12 @@ namespace AgentHubDesktop
             refreshTimer.Tick += async delegate { await RefreshAsync(false); };
             draftTimer.Interval = TimeSpan.FromMilliseconds(500);
             draftTimer.Tick += delegate { draftTimer.Stop(); SaveDraft(); };
+            toastTimer.Interval = TimeSpan.FromSeconds(2.2);
+            toastTimer.Tick += delegate
+            {
+                toastTimer.Stop();
+                if (toast != null) toast.Visibility = Visibility.Collapsed;
+            };
 
             Loaded += async delegate
             {
@@ -117,6 +126,7 @@ namespace AgentHubDesktop
             {
                 refreshTimer.Stop();
                 draftTimer.Stop();
+                toastTimer.Stop();
                 SaveDraft();
             };
             sendButton.Click += async delegate { await SendAsync(); };
@@ -180,6 +190,26 @@ namespace AgentHubDesktop
             Grid.SetColumn(details, 3);
             body.Children.Add(details);
             root.Children.Add(body);
+
+            toastText.FontSize = 12.5;
+            toastText.Foreground = Theme.Solid(Theme.Text);
+            toastText.FontWeight = FontWeights.SemiBold;
+            toast = new Border
+            {
+                Background = Theme.Solid(Theme.PanelRaised),
+                BorderBrush = Theme.Solid(Theme.Border),
+                BorderThickness = new Thickness(1),
+                CornerRadius = Theme.Radius(9),
+                Padding = new Thickness(13, 8, 13, 8),
+                Margin = new Thickness(0, 0, 0, 24),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Bottom,
+                Visibility = Visibility.Collapsed,
+                Child = toastText
+            };
+            Grid.SetRowSpan(toast, 2);
+            Panel.SetZIndex(toast, 20);
+            root.Children.Add(toast);
 
             return root;
         }
@@ -397,10 +427,16 @@ namespace AgentHubDesktop
             pageMeta.Margin = new Thickness(0, 5, 0, 0);
             titles.Children.Add(pageTitle);
             titles.Children.Add(pageMeta);
-            streamTabs.Margin = new Thickness(0, 10, 0, 0);
+            streamTabs.Margin = new Thickness(0);
             streamTabs.HorizontalAlignment = HorizontalAlignment.Left;
             streamTabs.ToolTip = "Открытые Streams выбранного Workspace. Desktop показывает один Thread за раз; можно держать до четырёх Streams в быстром переключателе.";
-            titles.Children.Add(streamTabs);
+            titles.Children.Add(new ScrollViewer
+            {
+                Content = streamTabs,
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
+                Margin = new Thickness(0, 10, 0, 0)
+            });
             header.Children.Add(titles);
             var headerActions = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
             var diff = IconButton("\uE8A7", "Изменения задачи");
@@ -874,6 +910,7 @@ namespace AgentHubDesktop
             TaskItem selected;
             if (!tasks.TryGetValue(selectedKey, out selected)) return;
             var workspaceKey = DesktopWorkspacePresentation.WorkspaceKey(selected);
+            var renderedTabs = 0;
             foreach (var streamId in openStreamIds)
             {
                 var candidates = tasks.Values.Where(value =>
@@ -888,13 +925,27 @@ namespace AgentHubDesktop
                 var active = String.Equals(DesktopWorkspacePresentation.StreamKey(selected), streamId, StringComparison.Ordinal);
                 var label = DesktopWorkspacePresentation.StreamLabel(item, StreamsInWorkspace(item));
                 if (String.IsNullOrWhiteSpace(label)) label = item.Title;
+                if (renderedTabs > 0)
+                {
+                    streamTabs.Children.Add(new Border
+                    {
+                        Width = 1,
+                        Margin = new Thickness(6, 4, 6, 4),
+                        Background = Theme.Solid(Theme.Border),
+                        IsHitTestVisible = false
+                    });
+                }
+                var title = Theme.Label(label, 12, Theme.Solid(active ? Theme.Text : Theme.Muted), FontWeights.SemiBold);
+                title.TextWrapping = TextWrapping.NoWrap;
+                title.TextTrimming = TextTrimming.CharacterEllipsis;
                 var tab = new Button
                 {
-                    Content = label,
+                    Content = title,
                     Tag = streamId,
-                    MaxWidth = 210,
+                    MinWidth = 96,
+                    MaxWidth = 360,
                     Padding = new Thickness(10, 5, 10, 5),
-                    Margin = new Thickness(0, 0, 6, 0),
+                    Margin = new Thickness(0),
                     Foreground = Theme.Solid(active ? Theme.Text : Theme.Muted),
                     Background = active ? Theme.Solid("#152638") : Theme.Solid(Theme.PanelRaised),
                     BorderBrush = Theme.Solid(active ? Theme.Codex : Theme.Border),
@@ -906,6 +957,7 @@ namespace AgentHubDesktop
                 var selectedStreamId = streamId;
                 tab.Click += async delegate { await OpenStreamAsync(selectedStreamId); };
                 streamTabs.Children.Add(tab);
+                renderedTabs += 1;
             }
         }
 
@@ -1128,14 +1180,84 @@ namespace AgentHubDesktop
                 BorderThickness = new Thickness(1),
                 CornerRadius = new CornerRadius(14, 14, 4, 14),
                 Padding = new Thickness(14, 10, 14, 10),
-                Margin = new Thickness(100, 5, 0, 10),
+                Margin = new Thickness(0),
                 HorizontalAlignment = HorizontalAlignment.Right,
                 MaxWidth = 760,
                 Child = CollapsibleUserMessageContent(
                     message == null ? AgentHubClient.Text(exchange, "id") : AgentHubClient.Text(message, "itemId"),
                     content)
             };
-            return border;
+            var shell = new StackPanel
+            {
+                Margin = new Thickness(100, 5, 0, 10),
+                HorizontalAlignment = HorizontalAlignment.Right,
+                MaxWidth = 760
+            };
+            shell.Children.Add(border);
+            if (!String.IsNullOrWhiteSpace(text))
+            {
+                var actions = new StackPanel
+                {
+                    Orientation = Orientation.Horizontal,
+                    HorizontalAlignment = HorizontalAlignment.Right,
+                    Margin = new Thickness(0, 3, 4, 0)
+                };
+                actions.Children.Add(UserMessageCopyButton(text));
+                shell.Children.Add(actions);
+            }
+            return shell;
+        }
+
+        private Button UserMessageCopyButton(string text)
+        {
+            var button = new Button
+            {
+                Content = "\uE8C8",
+                ToolTip = "Скопировать",
+                FontFamily = new FontFamily("Segoe Fluent Icons"),
+                FontSize = 14,
+                Foreground = Theme.Solid(Theme.Muted),
+                Background = Brushes.Transparent,
+                BorderBrush = Brushes.Transparent,
+                BorderThickness = new Thickness(1),
+                Width = 30,
+                Height = 28,
+                Padding = new Thickness(0),
+                Cursor = Cursors.Hand
+            };
+            Theme.Polish(button, 7);
+            Action syncOutline = delegate
+            {
+                var outlined = button.IsMouseOver || button.IsKeyboardFocusWithin;
+                button.BorderBrush = outlined ? Theme.Solid(Theme.Codex) : Brushes.Transparent;
+                button.Background = outlined ? Theme.Solid(Theme.PanelRaised) : Brushes.Transparent;
+            };
+            button.MouseEnter += delegate { syncOutline(); };
+            button.MouseLeave += delegate { syncOutline(); };
+            button.GotKeyboardFocus += delegate { syncOutline(); };
+            button.LostKeyboardFocus += delegate { syncOutline(); };
+            button.Click += delegate
+            {
+                try
+                {
+                    Clipboard.SetText(text);
+                    ShowToast("Сообщение скопировано");
+                }
+                catch (Exception error)
+                {
+                    footer.Text = "Не удалось скопировать сообщение: " + error.Message;
+                }
+            };
+            return button;
+        }
+
+        private void ShowToast(string message)
+        {
+            if (toast == null) return;
+            toastText.Text = message;
+            toast.Visibility = Visibility.Visible;
+            toastTimer.Stop();
+            toastTimer.Start();
         }
 
         private UIElement CollapsibleUserMessageContent(string messageId, StackPanel content)

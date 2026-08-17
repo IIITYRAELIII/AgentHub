@@ -81,6 +81,11 @@ test("user message copy control is a visible action below the bubble and forward
     readFile(new URL("../../assets/web-app/styles.css", import.meta.url), "utf8"),
   ]);
   assert.match(appSource, /"data-message-copy": ""/u);
+  assert.match(
+    appSource,
+    /AgentHubStreamTabs\.createPhosphorIcon\(document, "copy", "msg-copy-icon"\)/u,
+  );
+  assert.doesNotMatch(appSource, /el\("svg", \{[\s\S]*"data-phosphor-icon": "copy"/u);
   assert.match(appSource, /button\.addEventListener\("click", \(\) => emit\("clipboard:write", request\)\)/u);
   assert.match(
     appSource,

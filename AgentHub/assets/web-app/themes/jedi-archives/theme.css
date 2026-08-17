@@ -151,8 +151,8 @@ html[data-theme="jedi-archives"] {
   --shell-stream-card-shadow: var(--jedi-archives-shadow);
   --shell-stream-card-padding: 0.18rem 0.34rem;
   --shell-stream-tab-min-height: 4.3rem;
-  --shell-stream-tab-width: 12.25rem;
-  --shell-stream-tab-max-width: 12.25rem;
+  --shell-stream-tab-width: max-content;
+  --shell-stream-tab-max-width: 20rem;
 }
 
 html[data-theme="jedi-archives"] body::after {

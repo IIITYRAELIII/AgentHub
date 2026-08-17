@@ -2210,7 +2210,7 @@ function renderStreamTabs() {
     orderIsManual ? "arrows-down-up" : "clock-counter-clockwise",
     `stream-order-icon stream-order-icon-${streamOrderMode}`,
   )]);
-  const tabs = ordered.map((stream) => {
+  const tabs = ordered.flatMap((stream, index) => {
     const task = representativeStreamTask(stream);
     const streamName = streamDisplayName(stream, streams.length);
     const provider = String(task?.provider ?? "none");
@@ -2276,7 +2276,9 @@ function renderStreamTabs() {
         ]),
       ]),
     ]);
-    return button;
+    return index > 0
+      ? [el("span", { class: "stream-tab-divider", "aria-hidden": "true" }), button]
+      : [button];
   });
   const createTab = el("button", {
     type: "button",
@@ -4265,23 +4267,7 @@ function renderMessageCopyAction(message) {
     title: "Скопировать",
     "aria-label": "Скопировать сообщение",
     "data-message-copy": "",
-  }, [
-    el("svg", {
-      "data-phosphor-icon": "copy",
-      viewBox: "0 0 256 256",
-      "aria-hidden": "true",
-    }, [
-      el("rect", {
-        x: "64", y: "64", width: "128", height: "128", rx: "8",
-        fill: "none", stroke: "currentColor", "stroke-width": "16",
-      }),
-      el("path", {
-        d: "M168 64V40a8 8 0 0 0-8-8H40a8 8 0 0 0-8 8v120a8 8 0 0 0 8 8h24",
-        fill: "none", stroke: "currentColor", "stroke-linecap": "round",
-        "stroke-linejoin": "round", "stroke-width": "16",
-      }),
-    ]),
-  ]);
+  }, [window.AgentHubStreamTabs.createPhosphorIcon(document, "copy", "msg-copy-icon")]);
   button.addEventListener("click", () => emit("clipboard:write", request));
   return el("div", { class: "msg-actions" }, [button]);
 }

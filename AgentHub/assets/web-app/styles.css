@@ -4875,7 +4875,17 @@ html[data-surface="mobile"]
   position: relative;
   text-align: left;
   transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease;
-  width: 12rem;
+  max-width: 20rem;
+  min-width: 12rem;
+  width: max-content;
+}
+
+.stream-tab-divider {
+  align-self: stretch;
+  background: color-mix(in srgb, var(--line-strong) 72%, transparent);
+  flex: 0 0 1px;
+  margin: 0.48rem 0.05rem;
+  pointer-events: none;
 }
 
 .stream-tab:hover,
@@ -5598,11 +5608,12 @@ html[data-surface="mobile"]
     border-radius: var(--shell-stream-tab-radius, 3px) !important;
     box-shadow: var(--shell-stream-tab-shadow, none) !important;
     flex: 0 0 auto !important;
-    max-width: var(--shell-stream-tab-max-width, 12rem) !important;
+    max-width: var(--shell-stream-tab-max-width, 20rem) !important;
+    min-width: var(--shell-stream-tab-min-width, 12rem) !important;
     min-height: var(--shell-stream-tab-min-height, 3.05rem) !important;
     padding: var(--shell-stream-tab-padding, 0.15rem) !important;
     transform: none !important;
-    width: var(--shell-stream-tab-width, 12rem) !important;
+    width: var(--shell-stream-tab-width, max-content) !important;
   }
 
   html[data-view="chat"]:not([data-surface="mobile"]) .stream-tab-create {
@@ -5691,10 +5702,11 @@ html[data-surface="mobile"]
     --shell-stream-tabs-gap: 0.12rem;
     --shell-stream-tabs-min-height: 2.45rem;
     --shell-stream-tabs-padding: 0.16rem 0.35rem;
-    --shell-stream-tab-max-width: 9.25rem;
+    --shell-stream-tab-max-width: 18rem;
+    --shell-stream-tab-min-width: 10rem;
     --shell-stream-tab-min-height: 2.05rem;
     --shell-stream-tab-padding: 0.05rem;
-    --shell-stream-tab-width: 9.25rem;
+    --shell-stream-tab-width: max-content;
     --shell-stream-card-gap: 0.34rem;
     --shell-stream-card-padding: 0.22rem 0.38rem;
     --shell-stream-create-width: 2.25rem;

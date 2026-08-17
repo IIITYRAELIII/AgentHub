@@ -81,7 +81,7 @@ test("order switch icons are real Phosphor SVG nodes in the SVG namespace", asyn
   const document = {
     createElementNS: (namespaceURI, localName) => new FakeSvgNode(namespaceURI, localName),
   };
-  for (const name of ["clock-counter-clockwise", "arrows-down-up", "plus"]) {
+  for (const name of ["copy", "clock-counter-clockwise", "arrows-down-up", "plus"]) {
     const icon = createPhosphorIcon(document, name, "stream-order-icon");
     assert.equal(icon.namespaceURI, "http://www.w3.org/2000/svg");
     assert.equal(icon.localName, "svg");
@@ -92,6 +92,19 @@ test("order switch icons are real Phosphor SVG nodes in the SVG namespace", asyn
     assert.ok(icon.children[0].attributes.get("d"));
     assert.equal(icon.children[0].attributes.get("fill"), "currentColor");
   }
+});
+
+test("desktop Stream tabs fit their titles and render separators between Streams", async () => {
+  const [appSource, styles, jediTheme] = await Promise.all([
+    readFile(new URL("../../assets/web-app/app.js", import.meta.url), "utf8"),
+    readFile(new URL("../../assets/web-app/styles.css", import.meta.url), "utf8"),
+    readFile(new URL("../../assets/web-app/themes/jedi-archives/theme.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(appSource, /class: "stream-tab-divider"/u);
+  assert.match(styles, /\.stream-tab-divider \{[\s\S]*flex: 0 0 1px/u);
+  assert.match(styles, /--shell-stream-tab-width, max-content/u);
+  assert.match(styles, /--shell-stream-tab-max-width, 20rem/u);
+  assert.match(jediTheme, /--shell-stream-tab-width: max-content/u);
 });
 
 test("Stream archive intent keeps the stable Stream identity", async () => {
