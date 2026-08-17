@@ -222,7 +222,12 @@ export class SharedSqliteRecoveryCoordinator {
       throw error;
     } finally {
       database?.close();
-      await this.#fileSystem.rm(inspectionDirectory, { recursive: true, force: true });
+      await this.#fileSystem.rm(inspectionDirectory, {
+        recursive: true,
+        force: true,
+        maxRetries: 10,
+        retryDelay: 50,
+      });
     }
   }
 

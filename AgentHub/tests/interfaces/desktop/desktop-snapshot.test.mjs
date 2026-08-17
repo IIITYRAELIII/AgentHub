@@ -559,6 +559,7 @@ test("desktop snapshot binds a transient selected task to its canonical Workspac
   assert.equal(snapshot.tasks[0].workspaceId, "workspace-1");
   assert.equal(snapshot.tasks[0].workspaceName, "AgentHub");
   assert.equal(snapshot.tasks[0].streamOrdinal, 33);
+  assert.equal(snapshot.tasks[0].threadTitle, "Задача");
   assert.equal(snapshot.tasks[0].startedAt, null);
   assert.equal(snapshot.tasks[0].running, false);
   assert.equal(snapshot.activeCount, 0);

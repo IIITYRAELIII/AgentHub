@@ -759,7 +759,26 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
     .find((button) => button.callback_data.startsWith("pending:new:"));
   mark = telegram.calls.length;
   telegram.pushCallback(newButton.callback_data, newDeferred.result);
-  const parallelProgress = await waitForCodexAccepted(telegram, { after: mark });
+  const parallelProgress = await waitForCodexAccepted(telegram, { after: mark }).catch(async (error) => {
+    const failedState = await readJson(statePath).catch(() => null);
+    throw new Error(
+      `${error.message}\nstate=${JSON.stringify({
+        updateOffset: failedState?.updateOffset,
+        processingUpdateId: failedState?.processingUpdateId,
+        threadIds: failedState?.threadIds,
+        pendingInputs: failedState?.pendingInputs,
+        activeRuns: failedState?.activeRuns?.map((run) => ({
+          id: run.id,
+          threadId: run.threadId,
+          status: run.status,
+          providerStart: run.providerStart,
+        })),
+      })}`
+        + `\nnonPollingCalls=${JSON.stringify(telegram.callsAfter(mark).filter((call) => call.method !== "getUpdates"))}`
+        + `\nstdout tail:\n${stdout.slice(-12_000)}\nstderr tail:\n${stderr.slice(-12_000)}`,
+      { cause: error },
+    );
+  });
   const parallelThreadId = (await readJson(statePath)).threadIds.codex;
   assert.notEqual(parallelThreadId, firstThreadId);
   await waitFor(async () => (await readJson(statePath)).activeRuns.length === 2,

@@ -419,10 +419,16 @@ export function createDesktopSnapshotFactory({
       && selection.hasThread()
     ) {
       const selectedTarget = selection.selectedTurnTarget();
+      const transientTitle = String(
+        selectedTarget.taskTitle ?? selection.activeThreadTitle?.() ?? "",
+      ).trim() || `${selectedTarget.provider} · ${String(selectedTarget.threadId).slice(0, 8)}`;
       entries = catalog.merge([...entries, {
         ...selectedTarget,
         ...workspaceBindingForTask(selectedTarget, workspaces),
         projectName: selection.activeProject().name,
+        title: transientTitle,
+        model: selectedTarget.modelId ?? null,
+        updatedAtMs: 0,
         running: false,
       }]);
     }

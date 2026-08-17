@@ -128,3 +128,31 @@ test("a new instance creates one replacement from the committed marker", async (
     await fs.rm(root, { recursive: true, force: true });
   }
 });
+
+test("inspection cleanup retries transient Windows directory races", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "sqlite-recovery-cleanup-"));
+  const databaseFile = path.join(root, "journal.sqlite");
+  const database = new DatabaseSync(databaseFile);
+  database.exec("CREATE TABLE sample (id INTEGER PRIMARY KEY)");
+  database.close();
+  const removals = [];
+  const fileSystem = {
+    ...fs,
+    rm: async (target, options) => {
+      removals.push({ target, options });
+      return fs.rm(target, options);
+    },
+  };
+  try {
+    assert.deepEqual(await coordinator(databaseFile, { fileSystem }).prepare(), { degraded: false });
+    const cleanup = removals.find(({ target }) => target.includes(".recovery-inspection-"));
+    assert.deepEqual(cleanup?.options, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 50,
+    });
+  } finally {
+    await fs.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  }
+});
