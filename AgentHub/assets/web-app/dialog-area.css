@@ -871,8 +871,32 @@ html[data-view="chat"][data-surface][data-theme] {
 }
 
 .chat-stop-bottom {
+  align-items: center;
+  background: color-mix(in srgb, var(--dialog-danger) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--dialog-danger) 38%, var(--dialog-hairline));
+  border-radius: 9px;
+  color: var(--dialog-danger);
+  display: inline-flex;
   grid-column: 5;
   grid-row: 2;
+  height: 30px;
+  justify-content: center;
+  min-width: 30px;
+  padding: 0;
+  width: 30px;
+}
+
+.chat-stop-bottom:hover,
+.chat-stop-bottom:focus-visible {
+  background: color-mix(in srgb, var(--dialog-danger) 16%, transparent);
+  border-color: var(--dialog-danger);
+  color: var(--dialog-danger);
+  outline: 0;
+}
+
+.chat-stop-bottom svg {
+  height: 14px;
+  width: 14px;
 }
 
 .composer-send {

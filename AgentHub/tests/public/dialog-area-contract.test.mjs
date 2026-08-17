@@ -9,6 +9,8 @@ test("dialog area stylesheet is loaded after theme packages", async () => {
   assert.ok(index.indexOf("<!-- agent-hub-theme-styles -->") < index.indexOf('href="/dialog-area.css"'));
   assert.match(index, /class="stream-chat-header"[\s\S]*class="chat-scroll"/u);
   assert.match(index, /data-stream-header-provider[\s\S]*data-stream-header-model[\s\S]*data-stream-header-message-count/u);
+  assert.match(index, /class="chip-button secondary-danger chat-stop-bottom"[^>]*aria-label="Остановить ход"[\s\S]*data-phosphor-icon="stop"/u);
+  assert.doesNotMatch(index, /chat-stop-bottom[^>]*>[\s\S]*<span[^>]*>Стоп<\/span>/u);
   assert.match(index, /class="context-usage-bar" data-context-ring/u);
 });
 
@@ -21,6 +23,7 @@ test("dialog geometry references semantic tokens without literal colors", async 
   assert.match(styles, /\.chat-log \{[\s\S]*gap: 28px;/u);
   assert.match(styles, /\.msg-user \.msg-body \{[\s\S]*max-width: 560px;/u);
   assert.match(styles, /\.chat-scroll > \.msg-live \{[\s\S]*width: min\(var\(--dialog-column-width\), calc\(100% - 32px\)\);/u);
+  assert.match(styles, /\.chat-stop-bottom \{[\s\S]*background: color-mix\(in srgb, var\(--dialog-danger\) 10%, transparent\);[\s\S]*width: 30px;/u);
   assert.doesNotMatch(styles, /(?<!track )\.stream-tab-card \{/u);
   assert.match(styles, /\.composer \{[\s\S]*width: min\(var\(--dialog-column-width\), calc\(100% - 48px\)\);/u);
 });
