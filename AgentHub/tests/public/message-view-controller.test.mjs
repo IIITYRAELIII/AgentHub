@@ -64,6 +64,29 @@ test("Enter queues active-turn input while Ctrl+Enter steers it into the turn", 
   );
 });
 
+test("only a textual user message exposes the exact copy request", async () => {
+  const api = await messageViewApi();
+  assert.deepEqual(
+    { ...api.messageCopyRequest({ role: "user", text: "  Текст сообщения\n" }) },
+    { text: "  Текст сообщения\n", successMessage: "Сообщение скопировано" },
+  );
+  assert.equal(api.messageCopyRequest({ role: "agent", text: "Ответ" }), null);
+  assert.equal(api.messageCopyRequest({ role: "user", text: "   " }), null);
+});
+
+test("user message copy control has an outlined hover and forwards its toast", async () => {
+  const [appSource, clientSource, styles] = await Promise.all([
+    readFile(new URL("../../assets/web-app/app.js", import.meta.url), "utf8"),
+    readFile(new URL("../../assets/web-app/hub-client.js", import.meta.url), "utf8"),
+    readFile(new URL("../../assets/web-app/styles.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(appSource, /"data-message-copy": ""/u);
+  assert.match(appSource, /button\.addEventListener\("click", \(\) => emit\("clipboard:write", request\)\)/u);
+  assert.match(appSource, /if \(actions\) article\.insertBefore\(button, actions\)/u);
+  assert.match(clientSource, /agentHub\.toast\(String\(successMessage \?\? ""\)\.trim\(\) \|\|/u);
+  assert.match(styles, /\.msg-copy:hover,[\s\S]*border-color: var\(--accent-line\)/u);
+});
+
 test("optimistic confirmation keeps the same message node when content is unchanged", async () => {
   const api = await messageViewApi();
   const optimistic = {

@@ -49,6 +49,13 @@
     return steerWhileRunning ? "steer" : "queue";
   }
 
+  function messageCopyRequest(message) {
+    if (message?.role !== "user") return null;
+    const text = String(message?.text ?? "");
+    if (!text.trim()) return null;
+    return { text, successMessage: "Сообщение скопировано" };
+  }
+
   function reconcileKeyedChildren(container, specs, createNode, updateNode = () => {}) {
     if (!container || typeof container.insertBefore !== "function") {
       throw new TypeError("container must support insertBefore");
@@ -83,6 +90,7 @@
 
   globalThis.AgentHubMessageView = Object.freeze({
     composerFollowUpMode,
+    messageCopyRequest,
     messageContentSignature,
     messageKey,
     reconcileKeyedChildren,

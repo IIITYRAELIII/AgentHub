@@ -2779,11 +2779,11 @@ agentHub.on("resource:copy-path", ({ resource }) => runAction(async () => {
   agentHub.toast("Путь скопирован в буфер обмена");
 }));
 
-agentHub.on("clipboard:write", ({ text }) => runAction(async () => {
+agentHub.on("clipboard:write", ({ text, successMessage }) => runAction(async () => {
   const value = String(text ?? "");
   if (vscode) await bridgeCall("copy-text", { text: value });
   else await navigator.clipboard.writeText(value);
-  agentHub.toast("Скопировано в буфер обмена");
+  agentHub.toast(String(successMessage ?? "").trim() || "Скопировано в буфер обмена");
 }));
 
 agentHub.on("resource:copy-object", ({ resource }) => runAction(async () => {

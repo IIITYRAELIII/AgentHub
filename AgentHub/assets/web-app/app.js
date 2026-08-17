@@ -3640,7 +3640,11 @@ function updateUserMessageDisclosure(article) {
     button.textContent = nextExpanded ? "Свернуть" : "Показать ещё";
     button.setAttribute("aria-expanded", String(nextExpanded));
   };
-  if (!existing) article.append(button);
+  if (!existing) {
+    const actions = article.querySelector(".msg-actions");
+    if (actions) article.insertBefore(button, actions);
+    else article.append(button);
+  }
 }
 
 function scheduleUserMessageDisclosureSync() {
@@ -4255,6 +4259,36 @@ function turnTraceNode(groups) {
   ]);
 }
 
+function renderMessageCopyAction(message) {
+  const request = MessageView.messageCopyRequest(message);
+  if (!request) return null;
+  const button = el("button", {
+    type: "button",
+    class: "msg-copy",
+    title: "Скопировать",
+    "aria-label": "Скопировать сообщение",
+    "data-message-copy": "",
+  }, [
+    el("svg", {
+      "data-phosphor-icon": "copy",
+      viewBox: "0 0 256 256",
+      "aria-hidden": "true",
+    }, [
+      el("rect", {
+        x: "64", y: "64", width: "128", height: "128", rx: "8",
+        fill: "none", stroke: "currentColor", "stroke-width": "16",
+      }),
+      el("path", {
+        d: "M168 64V40a8 8 0 0 0-8-8H40a8 8 0 0 0-8 8v120a8 8 0 0 0 8 8h24",
+        fill: "none", stroke: "currentColor", "stroke-linecap": "round",
+        "stroke-linejoin": "round", "stroke-width": "16",
+      }),
+    ]),
+  ]);
+  button.addEventListener("click", () => emit("clipboard:write", request));
+  return el("div", { class: "msg-actions" }, [button]);
+}
+
 function renderMessage(message, { readOnly = false, task = currentTask() } = {}) {
   const role = message.role === "user" ? "user" : message.role === "system" ? "system" : "agent";
   const maintenance = role === "system" && message.kind === "maintenance";
@@ -4305,6 +4339,8 @@ function renderMessage(message, { readOnly = false, task = currentTask() } = {})
   if (Array.isArray(message.attachments) && message.attachments.length > 0) {
     article.append(renderAttachmentStrip(message.attachments, { readOnly: true }));
   }
+  const copyAction = renderMessageCopyAction(message);
+  if (copyAction) article.append(copyAction);
 
   return article;
 }
@@ -9993,6 +10029,38 @@ async function fetchJournalDayFragments() {
   return payload.days && typeof payload.days === "object" ? payload.days : {};
 }
 
+function materializeLazyDay(details, html, {
+  decorate = true,
+  postProcess = true,
+} = {}) {
+  if (!details?.isConnected) return null;
+  const template = document.createElement("template");
+  template.innerHTML = String(html ?? "").trim();
+  const replacement = template.content.firstElementChild;
+  if (!replacement?.matches("details[data-work-log-day-section]")) {
+    throw new Error("Некорректный фрагмент дня.");
+  }
+  replacement.open = true;
+  if (decorate) {
+    upgradeLegacyWorkspaceGroups(replacement);
+    decorateDayHeadings(replacement);
+    decorateLegacyStreamTurns(replacement);
+    groupClaudeRowsInDay(replacement);
+  }
+  const renderedDay = grouping === "date" && details.hasAttribute("data-journal-ledger-row")
+    ? dayGroupingContent(replacement).firstElementChild
+    : replacement;
+  if (!renderedDay) throw new Error("Не удалось собрать день журнала.");
+  renderedDay.open = true;
+  details.replaceWith(renderedDay);
+  if (postProcess) {
+    refreshUsageUnits(renderedDay);
+    disableLocalLinks(renderedDay);
+    syncCollapseTurnButtons(renderedDay);
+  }
+  return renderedDay;
+}
+
 async function loadLazyDay(details) {
   const date = details?.dataset.lazyDay;
   if (!date || !details.isConnected) return;
@@ -10007,26 +10075,7 @@ async function loadLazyDay(details) {
       journalDayHtmlCache.set(date, html);
     }
     if (!details.isConnected) return;
-    const template = document.createElement("template");
-    template.innerHTML = html.trim();
-    const replacement = template.content.firstElementChild;
-    if (!replacement?.matches("details[data-work-log-day-section]")) {
-      throw new Error("Некорректный фрагмент дня.");
-    }
-    replacement.open = true;
-    upgradeLegacyWorkspaceGroups(replacement);
-    decorateDayHeadings(replacement);
-    decorateLegacyStreamTurns(replacement);
-    groupClaudeRowsInDay(replacement);
-    const renderedDay = grouping === "date" && details.hasAttribute("data-journal-ledger-row")
-      ? dayGroupingContent(replacement).firstElementChild
-      : replacement;
-    if (!renderedDay) throw new Error("Не удалось собрать день журнала.");
-    renderedDay.open = true;
-    details.replaceWith(renderedDay);
-    refreshUsageUnits(renderedDay);
-    disableLocalLinks(renderedDay);
-    syncCollapseTurnButtons(renderedDay);
+    materializeLazyDay(details, html);
     prepareMobileControls(journal);
     if (desiredOpenState) restoreOpenState(desiredOpenState);
   })().catch((error) => {
@@ -11240,7 +11289,16 @@ async function hydrateAllLazyDays() {
       if (typeof html === "string") journalDayHtmlCache.set(date, html);
     }
   }
-  await Promise.all(days.map(loadLazyDay));
+  const fallback = [];
+  for (const details of days) {
+    const html = journalDayHtmlCache.get(details.dataset.lazyDay);
+    if (html) {
+      materializeLazyDay(details, html, { decorate: false, postProcess: false });
+    } else {
+      fallback.push(loadLazyDay(details));
+    }
+  }
+  await Promise.all(fallback);
 }
 
 function summarizedLazyDays(source) {
