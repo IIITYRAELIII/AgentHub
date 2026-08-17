@@ -217,7 +217,10 @@ export async function createProviderApplicationComposition({
   const streamContextMaintenance = new StreamContextMaintenanceService({
     registry: runtimeData.streamMaintenance,
     provider: codexContextMaintenance,
-    latestContextUsage: (threadId) => codexObservability.usageTracker.latestExactContext(threadId),
+    latestContextUsage: (threadId) => {
+      const usage = codexObservability.usageTracker.latestExactContext(threadId);
+      return usage?.provider === "claude" ? null : usage;
+    },
     waitForContextUpdate: (threadId, options) => (
       codexObservability.usageTracker.waitForContextUpdate(threadId, options)
     ),
@@ -304,6 +307,15 @@ export async function createProviderApplicationComposition({
     codexTransportPid: () => late.codexTransport().pid,
     codexModelLabel: late.codexModelLabel,
     reasoningLabels: codexReasoningLabels,
+    trackClaudeContextUsage: (run, usage) => codexObservability.usageTracker.rememberContext({
+      provider: "claude",
+      threadId: run.threadId,
+      turnId: run.turnId,
+      tokenUsage: {
+        modelContextWindow: usage.modelContextWindow,
+        last: { totalTokens: usage.usedTokens },
+      },
+    }),
     invalidateTaskCatalog,
     delay,
   });

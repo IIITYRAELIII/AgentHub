@@ -87,6 +87,9 @@ export async function createHubInfrastructure({
     sqliteRecovery = await sqliteRecoveryCoordinator.prepare();
   const localTrustedDeviceStore = new TrustedDeviceStore({
     filePath: path.join(config.dataDir, "trusted-devices.json"),
+    // Signatures without the verifier origin are rejected unless an operator
+    // explicitly keeps a not yet rebuilt Android client working.
+    allowLegacySessions: process.env.AGENT_HUB_LEGACY_DEVICE_SESSIONS === "1",
   });
   await localTrustedDeviceStore.load();
   const trustedDeviceStore = new TrustedDeviceRegistry(localTrustedDeviceStore);
@@ -156,6 +159,7 @@ export async function createHubInfrastructure({
   const serverOptions = {
     botToken: config.token,
     allowedUserIds: config.allowedUserIds,
+    telegramRuntime: config.components.telegram === true,
     deviceStore: trustedDeviceStore,
     controlHandler: handleDesktopControl,
     onControlResultDelivered: ({ id }) => forgetDesktopControl(id),

@@ -553,6 +553,22 @@ test("claudeTranscriptHistory separates consecutive user turns", () => {
   assert.equal(history[1].answer, "Два");
 });
 
+test("claudeTranscriptHistory hides the headless resume prelude", () => {
+  const line = (value) => JSON.stringify(value);
+  const history = claudeTranscriptHistory([
+    line({ type: "user", uuid: "u1", message: { role: "user", content: "Первый" } }),
+    line({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "Ошибка" }] } }),
+    line({ type: "user", uuid: "resume", message: { role: "user", content: "Continue from where you left off." } }),
+    line({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "No response requested." }], stop_reason: "stop_sequence" } }),
+    line({ type: "user", uuid: "u2", message: { role: "user", content: "Второй" } }),
+    line({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "Готово" }], stop_reason: "end_turn" } }),
+  ].join("\n"));
+
+  assert.deepEqual(history.map((turn) => turn.prompt), ["Первый", "Второй"]);
+  assert.equal(history[0].answer, "Ошибка");
+  assert.equal(history[1].answer, "Готово");
+});
+
 test("visibleTaskHistory grows newest-first window without changing chronology", () => {
   const history = [1, 2, 3, 4].map((id) => ({
     id: String(id),

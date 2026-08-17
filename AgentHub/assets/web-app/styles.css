@@ -6601,10 +6601,24 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
   overflow: hidden;
 }
 
+.msg-stack {
+  align-self: flex-end;
+  display: flex;
+  flex-direction: column;
+  max-width: min(46rem, 88%);
+  min-width: 0;
+}
+
+.msg-stack > .msg {
+  align-self: stretch;
+  max-width: 100%;
+}
+
 .msg-actions {
+  align-self: flex-end;
   display: flex;
   justify-content: flex-end;
-  margin: 0.38rem -0.2rem -0.2rem 0;
+  margin: 0.22rem 0.12rem 0 0;
 }
 
 .msg-copy {

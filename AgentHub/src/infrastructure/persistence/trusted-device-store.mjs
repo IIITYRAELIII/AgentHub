@@ -38,8 +38,29 @@ function normalizedDeviceName(value) {
   return name;
 }
 
-function deviceSessionMessage({ deviceId, challengeId, challenge }) {
+export function deviceSessionMessage({ origin, deviceId, challengeId, challenge }) {
+  // The verifier origin is part of the signed statement, so a signature produced
+  // for one Agent Hub endpoint cannot be relayed to another one.
+  return ["agent-hub-device-session-v2", origin, deviceId, challengeId, challenge].join("\n");
+}
+
+export function legacyDeviceSessionMessage({ deviceId, challengeId, challenge }) {
   return ["agent-hub-device-session-v1", deviceId, challengeId, challenge].join("\n");
+}
+
+export function deviceVerifierOrigin(value) {
+  const origin = String(value ?? "").trim();
+  if (!origin) return "";
+  let parsed;
+  try {
+    parsed = new URL(origin);
+  } catch {
+    throw new Error("invalid device verifier origin");
+  }
+  if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password) {
+    throw new Error("invalid device verifier origin");
+  }
+  return parsed.origin;
 }
 
 async function importDevicePublicKey(value) {
@@ -64,14 +85,16 @@ function emptyState() {
 export class TrustedDeviceStore {
   #filePath;
   #now;
+  #allowLegacySessions;
   #state = emptyState();
   #loaded = false;
   #writeQueue = Promise.resolve();
 
-  constructor({ filePath, now = () => Date.now() } = {}) {
+  constructor({ filePath, now = () => Date.now(), allowLegacySessions = false } = {}) {
     if (!filePath) throw new Error("TrustedDeviceStore filePath is required");
     this.#filePath = path.resolve(filePath);
     this.#now = now;
+    this.#allowLegacySessions = allowLegacySessions === true;
   }
 
   async load() {
@@ -198,6 +221,9 @@ export class TrustedDeviceStore {
   async createChallenge(payload) {
     const deviceId = String(payload?.deviceId ?? "").trim().toLowerCase();
     if (!DEVICE_ID_PATTERN.test(deviceId)) throw new Error("invalid device id");
+    // The origin is supplied by the transport from the request it served, never
+    // by the client body, so a relayed challenge keeps the real verifier name.
+    const origin = deviceVerifierOrigin(payload?.origin);
     return this.#mutate(() => {
       const record = this.#state.devices[deviceId];
       if (!record || record.revokedAt) throw new Error("device is not trusted");
@@ -206,7 +232,7 @@ export class TrustedDeviceStore {
       const challengeId = randomUUID().toLowerCase();
       const challenge = base64Url(randomBytes(32));
       const expiresAt = now + DEVICE_CHALLENGE_EXPIRY_MS;
-      this.#state.challenges[challengeId] = { deviceId, challenge, expiresAt };
+      this.#state.challenges[challengeId] = { deviceId, challenge, expiresAt, origin };
       return { value: { challengeId, challenge, expiresAt }, changed: true };
     });
   }
@@ -229,12 +255,20 @@ export class TrustedDeviceStore {
       throw new Error("device challenge is invalid or expired");
     }
     const key = await importDevicePublicKey(snapshot.record.publicKey);
-    const valid = await webcrypto.subtle.verify(
+    const verify = (message) => webcrypto.subtle.verify(
       { name: "ECDSA", hash: "SHA-256" },
       key,
       Buffer.from(signature, "base64url"),
-      Buffer.from(deviceSessionMessage({ deviceId, challengeId, challenge: snapshot.challenge.challenge })),
+      Buffer.from(message),
     );
+    const signed = {
+      origin: String(snapshot.challenge.origin ?? ""),
+      deviceId,
+      challengeId,
+      challenge: snapshot.challenge.challenge,
+    };
+    const valid = await verify(deviceSessionMessage(signed))
+      || (this.#allowLegacySessions && await verify(legacyDeviceSessionMessage(signed)));
     if (!valid) throw new Error("invalid device signature");
     return this.#mutate(() => {
       const challenge = this.#state.challenges[challengeId];
@@ -303,6 +337,29 @@ export class TrustedDeviceStore {
       .map((record) => ({ ...record }));
   }
 
+  /**
+   * Revocations that a federated store has not confirmed yet. A local revoke is
+   * always authoritative, so the pending mark survives restarts until the
+   * federated store acknowledges it.
+   */
+  async exportPendingRevocations() {
+    await this.#writeQueue;
+    return Object.values(this.#state.devices)
+      .filter((record) => record.revokedAt && record.federatedRevokePending)
+      .map((record) => ({ id: record.id, userId: String(record.userId) }));
+  }
+
+  async confirmFederatedRevocation(deviceId) {
+    const normalizedDeviceId = String(deviceId ?? "").trim().toLowerCase();
+    if (!DEVICE_ID_PATTERN.test(normalizedDeviceId)) throw new Error("invalid device revoke request");
+    return this.#mutate(() => {
+      const record = this.#state.devices[normalizedDeviceId];
+      if (!record?.federatedRevokePending) return { value: { confirmed: false }, changed: false };
+      delete record.federatedRevokePending;
+      return { value: { confirmed: true }, changed: true };
+    }, { persistWhenUnchanged: false });
+  }
+
   async revoke(userId, deviceId) {
     const normalizedUserId = String(userId ?? "").trim();
     const normalizedDeviceId = String(deviceId ?? "").trim().toLowerCase();
@@ -313,6 +370,7 @@ export class TrustedDeviceStore {
       const record = this.#state.devices[normalizedDeviceId];
       if (!record || String(record.userId) !== normalizedUserId) throw new Error("device not found");
       record.revokedAt = this.#now();
+      record.federatedRevokePending = true;
       for (const [tokenHash, session] of Object.entries(this.#state.sessions)) {
         if (session.deviceId === normalizedDeviceId) delete this.#state.sessions[tokenHash];
       }

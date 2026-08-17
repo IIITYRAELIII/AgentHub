@@ -733,14 +733,8 @@ function updateLiveMessage(taskIdValue, selected) {
 
 function authorizationHeaders() {
   if (telegramInitData) return { Authorization: `tma ${telegramInitData}` };
-  try {
-    const deviceToken = String(window.AgentHubAndroid?.getAccessToken?.() ?? "").trim();
-    if (deviceToken) return { Authorization: `device ${deviceToken}` };
-  } catch {
-    // The native bridge is optional; local web and VS Code use their existing transport.
-  }
-  const browserToken = String(window.AgentHubBrowserDevice?.getAccessToken?.() ?? "").trim();
-  if (browserToken) return { Authorization: `device ${browserToken}` };
+  // Trusted devices authenticate with the HttpOnly session cookie the Hub set at
+  // /api/device/session, so no credential passes through page JavaScript.
   return {};
 }
 
@@ -805,12 +799,10 @@ function bridgeCall(action, params = {}) {
 
 async function hubFetch(input, init) {
   try {
+    // Refreshing the session re-issues the HttpOnly cookie that the request below
+    // carries automatically as a same-origin request.
     await window.AgentHubBrowserDevice?.ensureSession?.();
-    const browserToken = String(window.AgentHubBrowserDevice?.getAccessToken?.() ?? "").trim();
-    if (!browserToken) return await fetch(input, init);
-    const headers = new Headers(init?.headers);
-    headers.set("Authorization", `device ${browserToken}`);
-    return await fetch(input, { ...init, headers });
+    return await fetch(input, init);
   } catch (error) {
     throw markConnectionFailure(error);
   }

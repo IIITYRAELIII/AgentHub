@@ -53,6 +53,7 @@ export function mergeTaskCatalog(entries, runs = []) {
     merged.turnId = merged.running ? entry.turnId ?? null : null;
     merged.startedAt = merged.running ? entry.startedAt ?? null : null;
     if (entry.lastActivityAtMs != null) merged.lastActivityAtMs = entry.lastActivityAtMs;
+    if (entry.contextUsage) merged.contextUsage = structuredClone(entry.contextUsage);
     byTask.set(key, merged);
   }
   for (const run of runs) {

@@ -196,6 +196,41 @@ test("parseClaudeTranscript uses only the latest user turn and detects completio
   assert.equal(result.active, false);
 });
 
+test("parseClaudeTranscript exposes the latest Claude context usage", () => {
+  const result = parseClaudeTranscript([
+    JSON.stringify({
+      type: "user",
+      uuid: "prompt-context",
+      timestamp: "2026-08-17T10:00:00.000Z",
+      message: { role: "user", content: "Проверить контекст" },
+    }),
+    JSON.stringify({
+      type: "assistant",
+      timestamp: "2026-08-17T10:00:01.000Z",
+      message: {
+        role: "assistant",
+        model: "claude-opus-5",
+        content: [{ type: "text", text: "Проверяю" }],
+        usage: {
+          input_tokens: 2,
+          cache_creation_input_tokens: 182_227,
+          cache_read_input_tokens: 12_725,
+          output_tokens: 448,
+        },
+      },
+    }),
+  ].join("\n"));
+
+  assert.deepEqual(result.contextUsage, {
+    provider: "claude",
+    model: "claude-opus-5",
+    modelContextWindow: 1_000_000,
+    usedTokens: 195_402,
+    turnId: "prompt-context",
+    updatedAt: "2026-08-17T10:00:01.000Z",
+  });
+});
+
 test("readClaudeSessionSnapshot finds a nested session transcript", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "telegram-claude-"));
   const project = path.join(root, "project");

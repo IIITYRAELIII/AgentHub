@@ -216,3 +216,35 @@ test("Desktop application router accepts a restart beside a blocked mutation", a
   releaseBlocked();
   await setting;
 });
+
+test("device enrollment and server configuration stay on the local machine", async () => {
+  const control = router([]);
+  for (const action of ["create-device-pairing", "update-server-configuration"]) {
+    for (const source of ["trusted-device", "telegram-mini-app", "shared-dashboard-bot", ""]) {
+      await assert.rejects(
+        () => control.handleDesktopControl({ action, params: {}, context: { source, userId: "7" } }),
+        /только локальному Agent Hub/u,
+        `${action} must be refused for ${source || "an unnamed source"}`,
+      );
+    }
+    // The Desktop pipe and the loopback Web session remain able to run them.
+    for (const source of ["desktop-control", "local-mini-app"]) {
+      assert.ok(await control.handleDesktopControl({
+        action,
+        params: {},
+        context: { source, userId: "7" },
+      }));
+    }
+  }
+});
+
+test("remote sources keep listing and revoking trusted devices", async () => {
+  const control = router([]);
+  for (const action of ["trusted-devices", "revoke-device"]) {
+    assert.ok(await control.handleDesktopControl({
+      action,
+      params: { deviceId: "018f6c86-3f34-7a31-8f27-16f5b96cce10" },
+      context: { source: "trusted-device", userId: "7" },
+    }));
+  }
+});

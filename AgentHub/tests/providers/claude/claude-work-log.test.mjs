@@ -16,6 +16,19 @@ import { JournalDatabase } from "../../../src/infrastructure/persistence/journal
 
 const line = (value) => JSON.stringify(value);
 
+test("Claude transcript scanner ignores the synthetic resume exchange", () => {
+  const result = scanClaudeHistoricalTranscript([
+    line({ type: "user", uuid: "u1", timestamp: "2026-08-17T09:53:40.000Z", message: { role: "user", content: "Первый" } }),
+    line({ type: "assistant", timestamp: "2026-08-17T09:55:18.000Z", isApiErrorMessage: true, message: { role: "assistant", content: [{ type: "text", text: "Failed" }], stop_reason: "stop_sequence", usage: {} } }),
+    line({ type: "user", uuid: "resume", timestamp: "2026-08-17T09:55:47.000Z", message: { role: "user", content: "Continue from where you left off." } }),
+    line({ type: "assistant", timestamp: "2026-08-17T09:55:47.001Z", message: { role: "assistant", content: [{ type: "text", text: "No response requested." }], stop_reason: "stop_sequence", usage: {} } }),
+    line({ type: "user", uuid: "u2", timestamp: "2026-08-17T09:55:47.002Z", message: { role: "user", content: "Второй" } }),
+    line({ type: "assistant", timestamp: "2026-08-17T09:56:00.000Z", message: { role: "assistant", content: [{ type: "text", text: "Готово" }], stop_reason: "end_turn", usage: {} } }),
+  ].join("\n"), { transcriptPath: "session-resume.jsonl" });
+
+  assert.deepEqual(result.turns.map((turn) => turn.prompt), ["Первый", "Второй"]);
+});
+
 test("Claude transcript scanner returns stable completed turns and deduplicates message updates", () => {
   const text = [
     line({

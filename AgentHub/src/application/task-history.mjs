@@ -5,6 +5,7 @@ import {
   interstreamOriginAuthor,
   normalizeInterstreamOrigin,
 } from "../domain/interstream-message.mjs";
+import { withoutClaudeResumePreludes } from "../domain/claude-transcript.mjs";
 
 export const EMPTY_TURN_COMPLETION_TEXT = "Ход завершён без текстового ответа.";
 
@@ -605,7 +606,7 @@ function claudeUserAuthor(entry) {
 }
 
 export function claudeTranscriptHistory(text) {
-  const entries = claudeEntries(text);
+  const entries = withoutClaudeResumePreludes(claudeEntries(text));
   const userIndexes = entries
     .map((entry, index) => (claudeUserPrompt(entry) ? index : -1))
     .filter((index) => index >= 0);

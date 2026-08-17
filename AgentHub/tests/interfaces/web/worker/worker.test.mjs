@@ -555,7 +555,8 @@ test("Android device pairing creates a revocable signed session", async () => {
   assert.equal(response.status, 200);
   const challenge = await response.json();
   const message = [
-    "agent-hub-device-session-v1",
+    "agent-hub-device-session-v2",
+    "https://hub.test",
     paired.device.id,
     challenge.challengeId,
     challenge.challenge,
@@ -576,6 +577,12 @@ test("Android device pairing creates a revocable signed session", async () => {
   assert.equal(response.status, 200);
   const session = await response.json();
   assert.match(session.token, /^[A-Za-z0-9_-]{43}$/u);
+  // The session also travels as an HttpOnly cookie, so page scripts never need
+  // to hold the bearer token.
+  assert.match(
+    String(response.headers.get("Set-Cookie")),
+    new RegExp(`^agent_hub_device=${session.token}; Max-Age=\\d+; Path=/; HttpOnly; Secure; SameSite=Strict$`, "u"),
+  );
 
   const commandId = "018f6c86-3f34-7a31-8f27-16f5b96cce11";
   response = await workerModule.default.fetch(new Request("https://hub.test/api/control", {
@@ -1763,4 +1770,114 @@ test("Worker serves temporary historical attachment views only to their owner", 
     { method: "POST", headers: { "Content-Type": "image/png" }, body: png },
   ), env);
   assert.equal(response.status, 401);
+});
+
+async function pairedWorkerDevice(workerModule, env, syncSecret) {
+  const pairingResponse = await workerModule.default.fetch(
+    signedServiceRequest("https://hub.test/api/device/pairing", {
+      userId: "42",
+      code: "ABCDE-FGHIJ-KLMNO-PQRST",
+    }, syncSecret),
+    env,
+  );
+  const pairing = await pairingResponse.json();
+  const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  const response = await workerModule.default.fetch(new Request("https://hub.test/api/device/pair", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      code: pairing.code,
+      name: "Pixel test",
+      platform: "Android test",
+      publicKey: base64Url(publicKey.export({ type: "spki", format: "der" })),
+    }),
+  }), env);
+  return { privateKey, device: (await response.json()).device };
+}
+
+function workerEnvironment(store, syncSecret) {
+  return {
+    TELEGRAM_BOT_TOKEN: "123456:test-token",
+    ALLOWED_USER_IDS: "42",
+    SYNC_SECRET: syncSecret,
+    JOURNAL: { getByName: () => store },
+    ASSETS: { fetch: async () => new Response("asset") },
+  };
+}
+
+test("Worker refuses a device signature made for another endpoint", async () => {
+  const workerModule = await loadWorker();
+  const syncSecret = "d".repeat(64);
+  const env = workerEnvironment(new workerModule.JournalStore({ storage: new MemoryStorage() }, {}), syncSecret);
+  const { privateKey, device } = await pairedWorkerDevice(workerModule, env, syncSecret);
+
+  const challengeResponse = await workerModule.default.fetch(new Request("https://hub.test/api/device/challenge", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    // A relaying verifier cannot pick the origin: the Worker overwrites it with
+    // the one it actually served.
+    body: JSON.stringify({ deviceId: device.id, origin: "https://relay.example" }),
+  }), env);
+  const challenge = await challengeResponse.json();
+  const sessionFor = (origin) => workerModule.default.fetch(new Request("https://hub.test/api/device/session", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      deviceId: device.id,
+      challengeId: challenge.challengeId,
+      signature: base64Url(sign("sha256", Buffer.from([
+        "agent-hub-device-session-v2",
+        origin,
+        device.id,
+        challenge.challengeId,
+        challenge.challenge,
+      ].join("\n")), { key: privateKey, dsaEncoding: "ieee-p1363" })),
+    }),
+  }), env);
+
+  assert.equal((await sessionFor("https://relay.example")).status, 401);
+});
+
+test("Worker bounds unauthenticated device authentication attempts", async () => {
+  const workerModule = await loadWorker();
+  const syncSecret = "d".repeat(64);
+  const env = workerEnvironment(new workerModule.JournalStore({ storage: new MemoryStorage() }, {}), syncSecret);
+  const attempt = () => workerModule.default.fetch(new Request("https://hub.test/api/device/challenge", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "CF-Connecting-IP": "203.0.113.7" },
+    body: JSON.stringify({ deviceId: "018f6c86-3f34-7a31-8f27-16f5b96cce10" }),
+  }), env);
+
+  for (let index = 0; index < 30; index += 1) assert.notEqual((await attempt()).status, 429);
+  const limited = await attempt();
+  assert.equal(limited.status, 429);
+  assert.match(String(limited.headers.get("Retry-After")), /^\d+$/u);
+
+  // A different client keeps its own budget.
+  const other = await workerModule.default.fetch(new Request("https://hub.test/api/device/challenge", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "CF-Connecting-IP": "203.0.113.8" },
+    body: JSON.stringify({ deviceId: "018f6c86-3f34-7a31-8f27-16f5b96cce10" }),
+  }), env);
+  assert.notEqual(other.status, 429);
+});
+
+test("Worker relay refuses to carry device enrollment", async () => {
+  const workerModule = await loadWorker();
+  assert.throws(
+    () => workerModule.validateControlCommand({
+      id: "018f6c86-3f34-7a31-8f27-16f5b96cce11",
+      action: "create-device-pairing",
+      params: {},
+    }),
+    /control action is not allowed/u,
+  );
+  assert.equal(
+    workerModule.validateControlCommand({
+      id: "018f6c86-3f34-7a31-8f27-16f5b96cce11",
+      action: "revoke-device",
+      params: {},
+    }).action,
+    "revoke-device",
+  );
 });

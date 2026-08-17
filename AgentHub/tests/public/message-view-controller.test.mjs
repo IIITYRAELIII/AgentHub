@@ -74,7 +74,7 @@ test("only a textual user message exposes the exact copy request", async () => {
   assert.equal(api.messageCopyRequest({ role: "user", text: "   " }), null);
 });
 
-test("user message copy control has an outlined hover and forwards its toast", async () => {
+test("user message copy control is a visible action below the bubble and forwards its toast", async () => {
   const [appSource, clientSource, styles] = await Promise.all([
     readFile(new URL("../../assets/web-app/app.js", import.meta.url), "utf8"),
     readFile(new URL("../../assets/web-app/hub-client.js", import.meta.url), "utf8"),
@@ -82,8 +82,14 @@ test("user message copy control has an outlined hover and forwards its toast", a
   ]);
   assert.match(appSource, /"data-message-copy": ""/u);
   assert.match(appSource, /button\.addEventListener\("click", \(\) => emit\("clipboard:write", request\)\)/u);
-  assert.match(appSource, /if \(actions\) article\.insertBefore\(button, actions\)/u);
+  assert.match(
+    appSource,
+    /return el\("div", \{ class: "msg-stack msg-stack-user" \}, \[article, copyAction\]\)/u,
+  );
+  assert.doesNotMatch(appSource, /article\.append\(copyAction\)/u);
   assert.match(clientSource, /agentHub\.toast\(String\(successMessage \?\? ""\)\.trim\(\) \|\|/u);
+  assert.match(styles, /\.msg-stack > \.msg \{[\s\S]*max-width: 100%/u);
+  assert.match(styles, /\.msg-actions \{[\s\S]*align-self: flex-end;[\s\S]*margin: 0\.22rem/u);
   assert.match(styles, /\.msg-copy:hover,[\s\S]*border-color: var\(--accent-line\)/u);
 });
 

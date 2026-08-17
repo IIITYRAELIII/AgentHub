@@ -55,31 +55,75 @@ function deviceNotFound(error) {
 export class TrustedDeviceRegistry {
   #localStore;
   #workerStore = null;
+  #reconciliation = null;
 
   constructor(store) {
     this.#localStore = requiredStore(store);
+  }
+
+  /**
+   * Replays revocations the Worker has not confirmed yet. A device revoked while
+   * the Worker was unreachable must not stay trusted there, so every attach,
+   * listing and revoke drains the queue again.
+   */
+  async #reconcileRevocations() {
+    if (!this.#workerStore
+      || typeof this.#localStore.exportPendingRevocations !== "function") return { revoked: 0, pending: 0 };
+    const pending = await this.#localStore.exportPendingRevocations();
+    let revoked = 0;
+    let unconfirmed = 0;
+    for (const device of pending) {
+      try {
+        await this.#workerStore.revoke(device.userId, device.id, { timeoutMs: WORKER_DEVICE_TIMEOUT_MS });
+        await this.#localStore.confirmFederatedRevocation(device.id);
+        revoked += 1;
+      } catch (error) {
+        if (deviceNotFound(error)) {
+          // The Worker never learned about this device, so nothing can be trusted there.
+          await this.#localStore.confirmFederatedRevocation(device.id);
+          revoked += 1;
+          continue;
+        }
+        unconfirmed += 1;
+      }
+    }
+    return { revoked, pending: unconfirmed };
+  }
+
+  #reconcileOnce() {
+    this.#reconciliation ??= this.#reconcileRevocations()
+      .catch(() => ({ revoked: 0, pending: 0 }))
+      .finally(() => {
+        this.#reconciliation = null;
+      });
+    return this.#reconciliation;
   }
 
   async use(store) {
     const nextStore = requiredStore(store);
     if (nextStore === this.#workerStore) return { migrated: 0 };
     this.#workerStore = nextStore;
+    const reconciled = await this.#reconcileOnce();
     const devices = typeof this.#localStore.exportActiveDevices === "function"
       ? await this.#localStore.exportActiveDevices()
       : [];
-    if (!devices.length) return { migrated: 0 };
+    const unconfirmed = reconciled.pending > 0
+      ? { warning: `Worker не подтвердил отзыв устройств: ${reconciled.pending}` }
+      : {};
+    if (!devices.length) return { migrated: 0, ...unconfirmed };
     if (typeof nextStore.importDevices !== "function") {
       return { migrated: 0, warning: "Worker не поддерживает импорт доверенных устройств" };
     }
     try {
       const result = await nextStore.importDevices(devices, { timeoutMs: WORKER_DEVICE_TIMEOUT_MS });
-      return { migrated: Number(result?.imported ?? devices.length) };
+      return { migrated: Number(result?.imported ?? devices.length), ...unconfirmed };
     } catch (error) {
       return { migrated: 0, warning: String(error?.message ?? error) };
     }
   }
 
   async list(userId) {
+    void this.#reconcileOnce();
     const requests = [this.#localStore.list(userId)];
     if (this.#workerStore) {
       requests.push(this.#workerStore.list(userId, { timeoutMs: WORKER_DEVICE_TIMEOUT_MS }));
@@ -107,20 +151,32 @@ export class TrustedDeviceRegistry {
     }
   }
 
+  /**
+   * The local store is authoritative: once it has revoked the device the call
+   * succeeds even when the Worker is unreachable, and the queued revocation is
+   * replayed later instead of being reported as a failed revoke.
+   */
   async revoke(userId, deviceId) {
-    const stores = [this.#localStore, this.#workerStore].filter(Boolean);
-    const results = await Promise.allSettled(stores.map((store) => store.revoke(
-      userId,
-      deviceId,
-      { timeoutMs: WORKER_DEVICE_TIMEOUT_MS },
-    )));
-    const unexpectedFailure = results.find(
-      (result) => result.status === "rejected" && !deviceNotFound(result.reason),
-    );
-    if (unexpectedFailure) throw unexpectedFailure.reason;
-    const success = results.find((result) => result.status === "fulfilled");
-    if (!success) throw results[0].reason;
-    return success.value;
+    const local = await this.#localStore.revoke(userId, deviceId).catch((error) => {
+      if (deviceNotFound(error) && this.#workerStore) return null;
+      throw error;
+    });
+    if (!this.#workerStore) return local ?? { device: { id: deviceId } };
+    try {
+      const worker = await this.#workerStore.revoke(userId, deviceId, {
+        timeoutMs: WORKER_DEVICE_TIMEOUT_MS,
+      });
+      if (local) await this.#localStore.confirmFederatedRevocation(deviceId).catch(() => {});
+      return local ?? worker;
+    } catch (error) {
+      if (deviceNotFound(error)) {
+        if (local) await this.#localStore.confirmFederatedRevocation(deviceId).catch(() => {});
+        if (local) return local;
+        throw error;
+      }
+      if (!local) throw error;
+      return { ...local, workerPending: true };
+    }
   }
 
   pair(payload) { return this.#localStore.pair(payload); }
@@ -133,38 +189,16 @@ export function createWorkerTrustedDeviceStore(publisher) {
   const currentPublisher = () => requiredStore(
     typeof publisher === "function" ? publisher() : publisher,
   );
-  const sessions = new Map();
-  const rememberSession = (token, identity, expiresAt) => {
-    sessions.set(String(token), { ...identity, expiresAt: Number(expiresAt) || 0 });
-    return identity;
-  };
   return {
     list: (userId, options) => currentPublisher().trustedDevices(userId, options),
     createPairing: (userId, options) => currentPublisher().createDevicePairing(userId, options),
-    async revoke(userId, deviceId, options) {
-      const result = await currentPublisher().revokeDevice(userId, deviceId, options);
-      for (const [token, session] of sessions) {
-        if (session.deviceId === deviceId) sessions.delete(token);
-      }
-      return result;
-    },
+    revoke: (userId, deviceId, options) => currentPublisher().revokeDevice(userId, deviceId, options),
     pair: (payload) => currentPublisher().pairDevice(payload),
     createChallenge: (payload) => currentPublisher().createDeviceChallenge(payload),
-    async createSession(payload) {
-      const result = await currentPublisher().createDeviceSession(payload);
-      const identity = await currentPublisher().resolveDeviceSession(result.token);
-      rememberSession(result.token, identity, result.expiresAt);
-      return result;
-    },
-    async resolveSession(token) {
-      const cached = sessions.get(String(token));
-      if (cached && cached.expiresAt > Date.now()) {
-        const { expiresAt: _expiresAt, ...identity } = cached;
-        return identity;
-      }
-      const identity = await currentPublisher().resolveDeviceSession(token);
-      return rememberSession(token, identity, Date.now() + 60_000);
-    },
+    createSession: (payload) => currentPublisher().createDeviceSession(payload),
+    // Sessions are never cached locally: a revoked device must lose access at the
+    // next request instead of surviving inside a stale identity window.
+    resolveSession: (token) => currentPublisher().resolveDeviceSession(token),
     async importDevices(devices, options) {
       const grouped = Map.groupBy(devices, (device) => String(device.userId));
       let imported = 0;

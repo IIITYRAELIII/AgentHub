@@ -8,6 +8,13 @@ const DEFAULT_MINI_APP_LIMITS = Object.freeze({
 });
 
 const DEFAULT_DESKTOP_MAX_RESPONSE_BYTES = 3_500_000;
+/**
+ * Sources that reach the Hub over a locally authenticated channel: the Desktop
+ * named pipe guarded by the ACL-protected secret, and the loopback Web session.
+ * Every other source is remote and must not mint credentials or rewrite the
+ * server configuration, however well authenticated it is.
+ */
+const PRIVILEGED_CONTROL_SOURCES = Object.freeze(["desktop-control", "local-mini-app"]);
 const RECEIPT_SHAPE = "__agentHubDesktopReceiptShape";
 const SNAPSHOT_RESULT_KEYS = Object.freeze([
   "apiVersion", "workspaces", "boardTasks", "boardLayout", "selected", "settings",
@@ -35,12 +42,16 @@ export function createDesktopControlRouter({
   mutationActions,
   concurrentMutationActions = [],
   receiptActions = mutationActions,
+  localOnlyActions = [],
+  privilegedSources = PRIVILEGED_CONTROL_SOURCES,
   miniAppLimits = DEFAULT_MINI_APP_LIMITS,
   desktopMaxResponseBytes = DEFAULT_DESKTOP_MAX_RESPONSE_BYTES,
   receiptFile = null,
   receiptOptions = {},
   reconcileMutation = null,
 }) {
+  const localOnly = new Set(localOnlyActions);
+  const privileged = new Set(privilegedSources);
   const mutations = new Set(mutationActions);
   const concurrentMutations = new Set(concurrentMutationActions);
   const durableMutations = new Set(receiptActions);
@@ -95,6 +106,9 @@ export function createDesktopControlRouter({
     const handler = handlers[action];
     if (typeof handler !== "function") {
       throw new Error(`Неизвестная desktop-команда: ${action}`);
+    }
+    if (localOnly.has(action) && !privileged.has(String(context?.source ?? ""))) {
+      throw new Error("Команда доступна только локальному Agent Hub на этом компьютере");
     }
     const resolvedParams = effectiveParams(params, context);
     if (action === "send-message" && context?.commandId && !resolvedParams.clientUserMessageId) {

@@ -135,6 +135,46 @@ export function parseClaudeStreamEvent(line) {
   };
 }
 
+export function claudeModelContextWindow(model) {
+  const normalized = String(model ?? "").trim().toLowerCase();
+  if (!normalized) return 0;
+  if (
+    /^claude-(?:fable|mythos|opus|sonnet)-5(?:-|$)/u.test(normalized)
+    || /^claude-opus-4-(?:6|7|8)(?:-|$)/u.test(normalized)
+    || /^claude-sonnet-4-6(?:-|$)/u.test(normalized)
+  ) return 1_000_000;
+  if (/^claude-/u.test(normalized)) return 200_000;
+  return 0;
+}
+
+function nonNegativeTokens(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : 0;
+}
+
+export function claudeStreamContextUsage(event, { fallbackModel = "" } = {}) {
+  const streamEvent = event?.type === "stream_event" ? event.event : null;
+  const message = streamEvent?.type === "message_start"
+    ? streamEvent.message
+    : event?.type === "assistant"
+      ? event.message
+      : null;
+  const usage = message?.usage
+    ?? (streamEvent?.type === "message_delta" ? streamEvent.usage : null);
+  if (!usage || typeof usage !== "object") return null;
+  const model = String(message?.model ?? fallbackModel ?? "").trim();
+  const modelContextWindow = claudeModelContextWindow(model);
+  if (!modelContextWindow) return null;
+  return {
+    model,
+    modelContextWindow,
+    usedTokens: nonNegativeTokens(usage.input_tokens)
+      + nonNegativeTokens(usage.cache_creation_input_tokens)
+      + nonNegativeTokens(usage.cache_read_input_tokens)
+      + nonNegativeTokens(usage.output_tokens),
+  };
+}
+
 export function parseClaudeLimits(text) {
   const limits = [];
   for (const line of String(text ?? "").split(/\r?\n/)) {

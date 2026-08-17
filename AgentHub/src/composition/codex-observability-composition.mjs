@@ -73,7 +73,9 @@ export function createCodexObservabilityComposition({
     },
   });
   const usageTracker = new CodexUsageTracker({
-    onContext: (context) => compactions.observeContext(context),
+    onContext: (context) => {
+      if (context.provider !== "claude") compactions.observeContext(context);
+    },
   });
   const turnStarts = new Map();
   const accounting = new CodexAccountingResolver({

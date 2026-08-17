@@ -6,12 +6,39 @@ import {
   buildClaudePrompt,
   claudeEstimatedCostUsd,
   claudeFailureMessage,
+  claudeModelContextWindow,
+  claudeStreamContextUsage,
   formatClaudeUsage,
   parseClaudeLimits,
   parseClaudeResult,
   parseClaudeStreamEvent,
   resolveClaudeSessionCwd,
 } from "../../../src/providers/claude/claude.mjs";
+
+test("Claude context usage follows the exact observed model and cache accounting", () => {
+  assert.equal(claudeModelContextWindow("claude-opus-5"), 1_000_000);
+  assert.equal(claudeModelContextWindow("claude-opus-4-7"), 1_000_000);
+  assert.equal(claudeModelContextWindow("claude-haiku-4-5-20251001"), 200_000);
+  assert.deepEqual(claudeStreamContextUsage({
+    type: "stream_event",
+    event: {
+      type: "message_start",
+      message: {
+        model: "claude-opus-5",
+        usage: {
+          input_tokens: 2,
+          cache_creation_input_tokens: 182_227,
+          cache_read_input_tokens: 12_725,
+          output_tokens: 5,
+        },
+      },
+    },
+  }), {
+    model: "claude-opus-5",
+    modelContextWindow: 1_000_000,
+    usedTokens: 194_959,
+  });
+});
 
 test("buildClaudeArgs creates a resumable safe invocation", () => {
   assert.deepEqual(buildClaudeArgs({

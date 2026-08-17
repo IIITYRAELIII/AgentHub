@@ -64,9 +64,11 @@ export class CodexUsageTracker {
     const usedTokens = Math.max(0, Number(params?.tokenUsage?.last?.totalTokens) || 0);
     const threadId = String(params?.threadId ?? "").trim();
     const turnId = String(params?.turnId ?? "").trim();
+    const provider = String(params?.provider ?? "codex").trim().toLowerCase() || "codex";
     if (!threadId || !turnId || !modelContextWindow) return false;
     const breakdown = normalizedBreakdown(this.turns.get(turnId)?.contextBreakdown);
     const context = {
+      ...(provider !== "codex" ? { provider } : {}),
       threadId,
       turnId,
       modelContextWindow,
@@ -275,6 +277,9 @@ export class CodexUsageTracker {
       const usedTokens = Math.max(0, Number(entry[1].usedTokens) || 0);
       if (!modelContextWindow) continue;
       this.contexts.set(entry[0], {
+        ...(String(entry[1].provider ?? "").trim()
+          ? { provider: String(entry[1].provider).trim().toLowerCase() }
+          : {}),
         threadId: String(entry[1].threadId ?? ""),
         turnId: String(entry[1].turnId ?? ""),
         modelContextWindow,

@@ -12,6 +12,7 @@ import { readJsonWithBackup } from "../../infrastructure/persistence/state-store
 import { conciseTurnTitle } from "../../application/turn-title.mjs";
 import { createWorkLogUsageStore } from "../../application/work-log-usage-store.mjs";
 import { workLogTurnKey } from "../../application/work-log-usage-projection.mjs";
+import { withoutClaudeResumePreludes } from "../../domain/claude-transcript.mjs";
 
 function contentBlocks(message) {
   if (Array.isArray(message?.content)) return message.content;
@@ -322,7 +323,7 @@ export function claudeResultEstimatedCredits(result) {
 }
 
 export function scanClaudeHistoricalTranscript(text, { transcriptPath = "" } = {}) {
-  const entries = parseLines(text);
+  const entries = withoutClaudeResumePreludes(parseLines(text));
   const promptIndexes = entries
     .map((entry, index) => (isPromptEntry(entry) ? index : -1))
     .filter((index) => index >= 0);

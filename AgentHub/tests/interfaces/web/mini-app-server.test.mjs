@@ -309,9 +309,11 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
       ready: false,
       degraded: true,
       status: "unready",
+      // The probe is unauthenticated, so it reports state without the startup
+      // error text, which carries local paths and provider messages.
       capabilities: [
-        { name: "provider", critical: true, state: "failed", error: "offline" },
-        { name: "telegram", critical: false, state: "failed", error: "unavailable" },
+        { name: "provider", critical: true, state: "failed" },
+        { name: "telegram", critical: false, state: "failed" },
       ],
     });
     assert.equal(healthResponse.headers.get("cache-control"), "no-store");
@@ -1484,5 +1486,143 @@ test("Android update manifest and APK are served from one bounded runtime artifa
   } finally {
     await server.close();
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("device challenge is bound to the served origin and the session becomes a cookie", async () => {
+  const challenges = [];
+  const server = new MiniAppServer({
+    host: "127.0.0.1",
+    port: 0,
+    journalDatabase: memoryJournal(),
+    requireTelegramAuth: true,
+    deviceStore: {
+      async createChallenge(payload) {
+        challenges.push(payload);
+        return { challengeId: "challenge-id", challenge: "value", expiresAt: Date.now() + 60_000 };
+      },
+      async createSession() {
+        return {
+          token: "z".repeat(43),
+          expiresAt: Date.now() + 3_600_000,
+          device: { id: "device-id" },
+        };
+      },
+    },
+  });
+  try {
+    const address = await server.start();
+    await fetch(`${address.url}api/device/challenge`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Forwarded-For": "203.0.113.9",
+        "X-Forwarded-Proto": "https",
+      },
+      body: JSON.stringify({ deviceId: "device-id", origin: "https://relay.example" }),
+    });
+    // The client cannot choose the verifier name it will have to sign: the server
+    // uses the host and scheme of the request it actually served.
+    assert.equal(challenges[0].origin, `https://${new URL(address.url).host}`);
+
+    const session = await fetch(`${address.url}api/device/session`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Forwarded-For": "203.0.113.9",
+        "X-Forwarded-Proto": "https",
+      },
+      body: JSON.stringify({ deviceId: "device-id", challengeId: "challenge-id", signature: "s" }),
+    });
+    assert.equal(session.status, 200);
+    assert.match(
+      String(session.headers.get("set-cookie")),
+      /^agent_hub_device=z{43}; Max-Age=\d+; Path=\/; HttpOnly; SameSite=Strict; Secure$/u,
+    );
+  } finally {
+    await server.close();
+  }
+});
+
+test("trusted device authenticates with the HttpOnly session cookie", async () => {
+  let receivedContext = null;
+  const server = new MiniAppServer({
+    host: "127.0.0.1",
+    port: 0,
+    journalDatabase: memoryJournal(),
+    deviceStore: {
+      async resolveSession(token) {
+        if (token !== "y".repeat(43)) throw new Error("device session is invalid");
+        return { id: "local-owner", deviceId: "device-id" };
+      },
+    },
+    controlHandler: async ({ context }) => {
+      receivedContext = context;
+      return { connected: true };
+    },
+  });
+  try {
+    const address = await server.start();
+    const response = await fetch(`${address.url}api/control`, {
+      method: "POST",
+      headers: {
+        Cookie: `agent_hub_device=${"y".repeat(43)}`,
+        "CF-Connecting-IP": "203.0.113.10",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ action: "snapshot", params: {} }),
+    });
+    assert.equal(response.status, 200);
+    assert.equal(receivedContext.source, "trusted-device");
+    assert.equal(receivedContext.userId, "local-owner");
+  } finally {
+    await server.close();
+  }
+});
+
+test("local Web is served without the third-party Telegram runtime", async () => {
+  const server = new MiniAppServer({
+    host: "127.0.0.1",
+    port: 0,
+    journalDatabase: memoryJournal(),
+    allowedUserIds: new Set([42]),
+  });
+  try {
+    const address = await server.start();
+    const local = await fetch(address.url);
+    const localBody = await local.text();
+    assert.doesNotMatch(localBody, /telegram\.org/u);
+    assert.match(local.headers.get("content-security-policy"), /script-src 'self';/u);
+
+    // A request that arrived through the public edge may still be a Mini App.
+    const publicPage = await fetch(address.url, {
+      headers: { Host: "hub.example", "X-Forwarded-For": "203.0.113.9" },
+    });
+    assert.match(await publicPage.text(), /telegram\.org/u);
+    assert.match(
+      publicPage.headers.get("content-security-policy"),
+      /script-src 'self' https:\/\/telegram\.org/u,
+    );
+  } finally {
+    await server.close();
+  }
+});
+
+test("a deployment without Telegram never serves the Telegram runtime", async () => {
+  const server = new MiniAppServer({
+    host: "127.0.0.1",
+    port: 0,
+    journalDatabase: memoryJournal(),
+    telegramRuntime: false,
+  });
+  try {
+    const address = await server.start();
+    const response = await fetch(address.url, {
+      headers: { Host: "hub.example", "X-Forwarded-For": "203.0.113.9" },
+    });
+    assert.doesNotMatch(await response.text(), /telegram\.org/u);
+    assert.match(response.headers.get("content-security-policy"), /script-src 'self';/u);
+  } finally {
+    await server.close();
   }
 });

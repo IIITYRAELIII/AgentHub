@@ -18,6 +18,16 @@ const CONCURRENT_MUTATION_ACTIONS = Object.freeze([
   "send-message", "cancel-run", "deferred-input", "restart-server",
 ]);
 
+/**
+ * Enrolling a device mints a credential that outlives the revocation of the
+ * client that requested it, and the server configuration carries the trust
+ * settings themselves. Both stay on the local machine; revoking and listing
+ * devices remain available remotely because they only reduce access.
+ */
+const LOCAL_ONLY_ACTIONS = Object.freeze([
+  "create-device-pairing", "update-server-configuration",
+]);
+
 function requiredFunction(value, name) {
   if (typeof value !== "function") throw new TypeError(`${name} is required`);
   return value;
@@ -112,6 +122,7 @@ export function createDesktopApplicationRouter({ handlers, commands, receiptFile
     },
     mutationActions: MUTATION_ACTIONS,
     concurrentMutationActions: CONCURRENT_MUTATION_ACTIONS,
+    localOnlyActions: LOCAL_ONLY_ACTIONS,
     miniAppLimits: {
       source: "telegram-mini-app",
       limit: 10,

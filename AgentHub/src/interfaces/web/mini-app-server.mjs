@@ -172,6 +172,8 @@ const PUBLIC_AUTH_BUCKET_CAPACITY = 2_000;
 const TELEGRAM_AUTH_MAX_AGE_SECONDS = 86_400;
 const LOCAL_SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
 const LOCAL_SESSION_COOKIE = "agent_hub_local";
+const DEVICE_SESSION_COOKIE = "agent_hub_device";
+const DEVICE_SESSION_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
 
 function safeEqualText(left, right) {
   const leftBytes = Buffer.from(String(left ?? ""), "utf8");
@@ -247,6 +249,40 @@ export function validateTelegramInitData(initData, {
   return { ...user, id: userId };
 }
 
+function forwardedProtocol(request) {
+  const value = String(request.headers["x-forwarded-proto"] ?? "").split(",", 1)[0].trim().toLowerCase();
+  return ["http", "https"].includes(value) ? value : "";
+}
+
+/**
+ * The origin this Hub answered on, derived from the request the proxy actually
+ * routed here. Device challenges are bound to it, so a signature made for
+ * another endpoint cannot be replayed against this one.
+ */
+function requestOrigin(request) {
+  const host = String(request.headers.host ?? "").trim();
+  if (!host) return "";
+  const protocol = forwardedProtocol(request)
+    || (request.headers["cf-connecting-ip"] || request.headers["x-forwarded-for"] ? "https" : "http");
+  try {
+    return new URL(`${protocol}://${host}`).origin;
+  } catch {
+    return "";
+  }
+}
+
+function deviceSessionCookie(token, expiresAt, { secure = false } = {}) {
+  const maxAgeSeconds = Math.max(1, Math.floor((Number(expiresAt) - Date.now()) / 1_000));
+  return `${DEVICE_SESSION_COOKIE}=${token}; Max-Age=${maxAgeSeconds}; Path=/; HttpOnly; SameSite=Strict`
+    + `${secure ? "; Secure" : ""}`;
+}
+
+const TELEGRAM_RUNTIME_SCRIPT = /\s*<script src="https:\/\/telegram\.org\/[^"]*"><\/script>/u;
+
+export function withoutTelegramRuntime(html) {
+  return String(html).replace(TELEGRAM_RUNTIME_SCRIPT, "");
+}
+
 function loopbackHost(hostHeader) {
   const value = String(hostHeader ?? "").trim();
   if (!value) return false;
@@ -276,7 +312,7 @@ export function miniAppMenuButtonRequests({
   ];
 }
 
-function responseHeaders(contentType, { immutable = false } = {}) {
+function responseHeaders(contentType, { immutable = false, telegramRuntime = true } = {}) {
   return {
     "Cache-Control": immutable ? "public, max-age=31536000, immutable" : "no-store",
     "Content-Security-Policy": [
@@ -287,7 +323,7 @@ function responseHeaders(contentType, { immutable = false } = {}) {
       "frame-ancestors 'none'",
       "img-src 'self' data:",
       "object-src 'none'",
-      "script-src 'self' https://telegram.org",
+      `script-src 'self'${telegramRuntime ? " https://telegram.org" : ""}`,
       "style-src 'self'",
     ].join("; "),
     "Content-Type": contentType,
@@ -422,6 +458,7 @@ export class MiniAppServer {
   #port;
   #publicAuthAttempts = new PublicAuthAttemptLimiter();
   #requireTelegramAuth;
+  #telegramRuntime;
   #server = null;
   #closePromise = null;
   #workspaceFileRoots;
@@ -432,6 +469,7 @@ export class MiniAppServer {
     botToken = "",
     allowedUserIds = new Set(),
     requireTelegramAuth = false,
+    telegramRuntime = true,
     localAccessSecret = "",
     localAccessSecretFile = null,
     controlHandler = null,
@@ -458,6 +496,7 @@ export class MiniAppServer {
     this.#botToken = String(botToken);
     this.#allowedUserIds = new Set(allowedUserIds);
     this.#requireTelegramAuth = requireTelegramAuth === true;
+    this.#telegramRuntime = telegramRuntime !== false;
     this.#localAccessSecret = String(localAccessSecret);
     this.#localAccessSecretFile = localAccessSecretFile ? path.resolve(localAccessSecretFile) : null;
     this.#controlHandler = typeof controlHandler === "function" ? controlHandler : null;
@@ -576,6 +615,15 @@ export class MiniAppServer {
     );
   }
 
+  /**
+   * Telegram's runtime is third-party JavaScript, so it is served only where a
+   * Telegram Mini App can actually appear: never on the loopback interface, and
+   * never at all when the deployment has no Telegram component.
+   */
+  #telegramRuntimeAllowed(request) {
+    return this.#telegramRuntime && this.#requestNeedsTelegramAuth(request);
+  }
+
   async #refreshLocalAccessSecret() {
     if (!this.#localAccessSecretFile) return this.#localAccessSecret;
     try {
@@ -602,9 +650,15 @@ export class MiniAppServer {
       return false;
     }
     const authorization = String(request.headers.authorization ?? "");
-    if (authorization.startsWith("device ") && this.#deviceStore) {
+    // An explicit Authorization header always wins; the HttpOnly cookie keeps the
+    // device session out of page JavaScript for clients that stay same-origin.
+    const cookieToken = cookieValue(request, DEVICE_SESSION_COOKIE);
+    const deviceToken = authorization.startsWith("device ")
+      ? authorization.slice(7).trim()
+      : (!authorization && DEVICE_SESSION_TOKEN_PATTERN.test(cookieToken) ? cookieToken : "");
+    if (deviceToken && this.#deviceStore) {
       try {
-        const session = await this.#deviceStore.resolveSession(authorization.slice(7));
+        const session = await this.#deviceStore.resolveSession(deviceToken);
         return {
           source: "trusted-device",
           userId: String(session.id),
@@ -718,12 +772,27 @@ export class MiniAppServer {
       }
       try {
         const body = await readJsonBody(request);
-        const result = url.pathname.endsWith("/pair")
-          ? await this.#deviceStore.pair(body)
-          : url.pathname.endsWith("/challenge")
-            ? await this.#deviceStore.createChallenge(body)
-            : await this.#deviceStore.createSession(body);
-        json(response, url.pathname.endsWith("/pair") ? 201 : 200, result, method);
+        if (url.pathname.endsWith("/pair")) {
+          json(response, 201, await this.#deviceStore.pair(body), method);
+          return;
+        }
+        if (url.pathname.endsWith("/challenge")) {
+          // The verifier origin comes from the served request, never from the body.
+          const challenge = await this.#deviceStore.createChallenge({
+            ...body,
+            origin: requestOrigin(request),
+          });
+          json(response, 200, challenge, method);
+          return;
+        }
+        const session = await this.#deviceStore.createSession(body);
+        json(response, 200, session, method, {
+          headers: {
+            "Set-Cookie": deviceSessionCookie(session.token, session.expiresAt, {
+              secure: forwardedProtocol(request) === "https" || !loopbackHost(request.headers.host),
+            }),
+          },
+        });
       } catch (error) {
         json(response, 400, { error: String(error?.message ?? error) }, method);
       }
@@ -1000,7 +1069,14 @@ export class MiniAppServer {
       return;
     }
     if (url.pathname === "/health") {
-      json(response, 200, { ok: true, ...this.#health.snapshot() }, method);
+      // The probe stays unauthenticated, so it reports liveness and state without
+      // the startup error text, which carries local paths and provider messages.
+      const { capabilities, ...summary } = this.#health.snapshot();
+      json(response, 200, {
+        ok: true,
+        ...summary,
+        capabilities: capabilities.map(({ error: _error, ...capability }) => capability),
+      }, method);
       return;
     }
     if (url.pathname === "/api/mobile/update" || url.pathname === "/api/mobile/update.apk") {
@@ -1131,14 +1207,16 @@ export class MiniAppServer {
       send(response, 404, "text/plain; charset=utf-8", "Not Found\n", method);
       return;
     }
+    const telegramRuntime = this.#telegramRuntimeAllowed(request);
     try {
+      const body = await this.#staticBody(url.pathname, assetBundle);
       send(
         response,
         200,
         descriptor.contentType,
-        await this.#staticBody(url.pathname, assetBundle),
+        url.pathname === "/" && !telegramRuntime ? withoutTelegramRuntime(body) : body,
         method,
-        { immutable: descriptor.immutable },
+        { immutable: descriptor.immutable, telegramRuntime },
       );
     } catch (error) {
       send(response, 500, "text/plain; charset=utf-8", `Cannot load Mini App: ${error.message}\n`, method);

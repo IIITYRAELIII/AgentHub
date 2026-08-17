@@ -4,6 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 import { claudeTranscriptHistory } from "../../application/task-history.mjs";
+import { withoutClaudeResumePreludes } from "../../domain/claude-transcript.mjs";
+import { claudeStreamContextUsage } from "./claude.mjs";
 
 const MAX_TRANSCRIPT_TAIL = 4 * 1024 * 1024;
 const MAX_CATALOG_TRANSCRIPT_TAIL = 512 * 1024;
@@ -111,7 +113,7 @@ function claudeTranscriptTitle(entries) {
 }
 
 export function parseClaudeTranscript(text) {
-  const entries = String(text)
+  const entries = withoutClaudeResumePreludes(String(text)
     .split(/\r?\n/)
     .filter(Boolean)
     .flatMap((line) => {
@@ -120,7 +122,7 @@ export function parseClaudeTranscript(text) {
       } catch {
         return [];
       }
-    });
+    }));
   let promptIndex = -1;
   for (let index = 0; index < entries.length; index += 1) {
     if (isUserPrompt(entries[index])) promptIndex = index;
@@ -130,6 +132,10 @@ export function parseClaudeTranscript(text) {
   const assistantEntries = turnEntries.filter((entry) => (
     entry?.type === "assistant" && entry.message?.role === "assistant"
   ));
+  const contextUsage = assistantEntries
+    .map((entry) => claudeStreamContextUsage(entry))
+    .filter(Boolean)
+    .at(-1) ?? null;
   const answerParts = [];
   const thinkingParts = [];
   let lastTool = "";
@@ -177,6 +183,14 @@ export function parseClaudeTranscript(text) {
     title: transcriptTitle || promptText(promptEntry).replace(/\s+/g, " ").slice(0, 80) || null,
     catalogTitle: transcriptTitle || catalogPromptTitle(entries),
     isSidechain: entries.some((entry) => entry?.isSidechain === true),
+    ...(contextUsage ? {
+      contextUsage: {
+        provider: "claude",
+        ...contextUsage,
+        turnId: String(promptEntry?.uuid ?? ""),
+        updatedAt: turnEntries.map((entry) => entry?.timestamp).filter(Boolean).at(-1) ?? null,
+      },
+    } : {}),
   };
 }
 

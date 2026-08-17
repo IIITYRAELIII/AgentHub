@@ -61,5 +61,6 @@ export function claudeCatalogEntry(snapshot, project, nowMs = Date.now()) {
     startedAt: running && Number.isFinite(Date.parse(String(snapshot?.startedAt ?? "")))
       ? new Date(snapshot.startedAt).toISOString()
       : null,
+    ...(snapshot?.contextUsage ? { contextUsage: structuredClone(snapshot.contextUsage) } : {}),
   };
 }

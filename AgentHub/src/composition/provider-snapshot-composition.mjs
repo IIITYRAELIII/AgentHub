@@ -45,6 +45,7 @@ export function createProviderSnapshotComposition({
   codexTransportPid,
   codexModelLabel,
   reasoningLabels,
+  trackClaudeContextUsage = () => {},
   invalidateTaskCatalog,
   delay,
 }) {
@@ -98,6 +99,7 @@ export function createProviderSnapshotComposition({
     appendReasoning: (...args) => taskProgress().appendReasoning(...args),
     setStage: (...args) => taskProgress().setStage(...args),
     appendActivity: appendRunActivity,
+    trackContextUsage: trackClaudeContextUsage,
     logError: (...args) => console.error(...args),
   });
   const codexTaskSnapshots = new CodexTaskSnapshotService({

@@ -3286,7 +3286,7 @@ function renderChat() {
 function renderContextUsage(task) {
   if (!contextUsageButton) return;
   const context = task?.context;
-  const available = task?.provider === "codex" && Number(context?.modelContextWindow) > 0;
+  const available = Number(context?.modelContextWindow) > 0;
   contextUsageButton.hidden = !available;
   if (!available) return;
   const percent = Math.max(0, Math.min(100, Number(context.percent) || 0));
@@ -3346,6 +3346,7 @@ function renderContextUsageDetails(task) {
     contextUsageCategories.append(row);
   }
   contextUsageNote.textContent = context.breakdown?.note ?? "";
+  contextUsageCompact.hidden = task.provider !== "codex";
   contextUsageCompact.disabled = Boolean(task.running || context.compacting || context.usagePending);
   contextUsageCompact.textContent = context.compacting ? "Контекст сворачивается…" : "Свернуть контекст";
 }
@@ -3640,11 +3641,7 @@ function updateUserMessageDisclosure(article) {
     button.textContent = nextExpanded ? "Свернуть" : "Показать ещё";
     button.setAttribute("aria-expanded", String(nextExpanded));
   };
-  if (!existing) {
-    const actions = article.querySelector(".msg-actions");
-    if (actions) article.insertBefore(button, actions);
-    else article.append(button);
-  }
+  if (!existing) article.append(button);
 }
 
 function scheduleUserMessageDisclosureSync() {
@@ -4340,9 +4337,8 @@ function renderMessage(message, { readOnly = false, task = currentTask() } = {})
     article.append(renderAttachmentStrip(message.attachments, { readOnly: true }));
   }
   const copyAction = renderMessageCopyAction(message);
-  if (copyAction) article.append(copyAction);
-
-  return article;
+  if (!copyAction) return article;
+  return el("div", { class: "msg-stack msg-stack-user" }, [article, copyAction]);
 }
 
 document.addEventListener("click", (event) => {
@@ -5587,8 +5583,21 @@ trustedDevicePairing?.addEventListener("click", (event) => {
   );
 });
 
+/* Сопряжение выпускает учётные данные, поэтому доступно только на самом
+ * компьютере с Agent Hub: локальный Web и панель VS Code. Удалённые поверхности
+ * видят список и могут отозвать устройство, но не добавить новое. */
+const deviceEnrollmentAllowed = !telegramMode
+  && !window.AgentHubAndroid
+  && !window.AgentHubBrowserDevice;
+
 function renderTrustedDevices(payload = {}) {
   if (!trustedDeviceList || !trustedDevicePairing) return;
+  if (trustedDeviceCreate) {
+    trustedDeviceCreate.hidden = !deviceEnrollmentAllowed;
+    trustedDeviceCreate.title = deviceEnrollmentAllowed
+      ? ""
+      : "Новое устройство добавляется только на компьютере с Agent Hub";
+  }
   const devices = Array.isArray(payload.devices) ? payload.devices : [];
   trustedDevicePairing.hidden = !payload.pairing?.code;
   trustedDevicePairing.replaceChildren();
@@ -9754,14 +9763,8 @@ let desiredOpenState = null;
 
 function requestHeaders() {
   if (telegramMode) return { Authorization: `tma ${telegramInitData}` };
-  try {
-    const deviceToken = String(window.AgentHubAndroid?.getAccessToken?.() ?? "").trim();
-    if (deviceToken) return { Authorization: `device ${deviceToken}` };
-  } catch {
-    // The Android bridge is optional for local web and VS Code.
-  }
-  const browserToken = String(window.AgentHubBrowserDevice?.getAccessToken?.() ?? "").trim();
-  if (browserToken) return { Authorization: `device ${browserToken}` };
+  // Trusted devices authenticate with the HttpOnly session cookie the Hub set at
+  // /api/device/session, so no credential passes through page JavaScript.
   return {};
 }
 

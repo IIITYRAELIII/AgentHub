@@ -158,8 +158,8 @@ export function createDesktopSnapshotFactory({
     return taskDisplayTitle(entry, item.taskTitle);
   }
 
-  function desktopContextSnapshot(thread, turn = "") {
-    const usage = context.latestUsage(thread, turn);
+  function desktopContextSnapshot(thread, turn = "", fallbackUsage = null) {
+    const usage = context.latestUsage(thread, turn) ?? fallbackUsage;
     const compaction = context.compactionFor(String(thread ?? "")) ?? null;
     if (!usage && !compaction) return null;
     const windowTokens = Math.max(0, Number(usage?.modelContextWindow) || 0);
@@ -181,6 +181,7 @@ export function createDesktopSnapshotFactory({
       ),
       breakdown: presentContextUsageBreakdown({
         breakdown: usage?.breakdown,
+        provider: usage?.provider,
         usedTokens,
         modelContextWindow: windowTokens,
       }),
@@ -329,7 +330,7 @@ export function createDesktopSnapshotFactory({
       && String(candidateRun.threadId ?? "") === String(entry.threadId ?? "")
       ? candidateRun
       : null;
-    const context = desktopContextSnapshot(entry.threadId, run?.turnId);
+    const context = desktopContextSnapshot(entry.threadId, run?.turnId, entry.contextUsage);
     const internalMaintenanceObserver = isInternalMaintenanceObserver(run, context);
     const runActive = taskRunIsActive(run);
     const visibleRun = internalMaintenanceObserver || !runActive ? null : run;

@@ -23,7 +23,7 @@
   const REQUEST_TIMEOUT_MS = 15_000;
   const STORAGE_TIMEOUT_MS = 10_000;
   const textEncoder = new TextEncoder();
-  let accessToken = "";
+  let sessionActive = false;
   let sessionExpiresAt = 0;
   let credential = null;
   let authentication = null;
@@ -159,7 +159,15 @@
   }
 
   function sessionMessage(deviceId, challengeId, challenge) {
-    return ["agent-hub-device-session-v1", deviceId, challengeId, challenge].join("\n");
+    // The verifier origin is signed too, so this signature cannot be relayed to
+    // another Agent Hub endpoint.
+    return [
+      "agent-hub-device-session-v2",
+      window.location.origin,
+      deviceId,
+      challengeId,
+      challenge,
+    ].join("\n");
   }
 
   function scheduleRefresh() {
@@ -185,9 +193,11 @@
       challengeId: challenge.challengeId,
       signature: base64Url(signature),
     });
-    accessToken = String(session.token ?? "");
+    // The session itself travels back as an HttpOnly cookie; the page keeps only
+    // the expiry so it can refresh in time.
     sessionExpiresAt = Number(session.expiresAt) || 0;
-    if (!accessToken || sessionExpiresAt <= Date.now()) throw new Error("Agent Hub не создал сессию браузера");
+    if (sessionExpiresAt <= Date.now()) throw new Error("Agent Hub не создал сессию браузера");
+    sessionActive = true;
     reportProgress?.("Вход выполнен. Загружаем Agent Hub…");
     hidePairing();
     scheduleRefresh();
@@ -195,7 +205,7 @@
   }
 
   async function ensureSession(force = false, reportProgress = null) {
-    if (!force && accessToken && sessionExpiresAt - Date.now() > SESSION_REFRESH_MARGIN_MS) return;
+    if (!force && sessionActive && sessionExpiresAt - Date.now() > SESSION_REFRESH_MARGIN_MS) return;
     if (!credential) throw new Error("Браузер ещё не добавлен в доверенные устройства");
     if (!authentication) {
       authentication = authenticate(credential, reportProgress).finally(() => {
@@ -305,10 +315,12 @@
   }
 
   window.AgentHubBrowserDevice = Object.freeze({
-    getAccessToken: () => accessToken,
+    // No token accessor: the session lives in an HttpOnly cookie that page
+    // scripts cannot read or forward anywhere.
+    isPaired: () => Boolean(credential),
     ensureSession,
     forget: async () => {
-      accessToken = "";
+      sessionActive = false;
       sessionExpiresAt = 0;
       credential = null;
       if (refreshTimer != null) window.clearTimeout(refreshTimer);

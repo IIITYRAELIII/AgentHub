@@ -107,6 +107,36 @@ test("fresh provider activity overrides a newer stale durable catalog row", () =
   assert.equal(entry.lastActivityAtMs, 1_500);
 });
 
+test("fresh Claude context usage enriches a newer durable catalog row", () => {
+  const contextUsage = {
+    provider: "claude",
+    turnId: "claude-turn",
+    usedTokens: 195_402,
+    modelContextWindow: 1_000_000,
+  };
+  const [entry] = mergeTaskCatalog([{
+    provider: "claude",
+    threadId: "claude-thread",
+    projectRoot: project.path,
+    projectName: project.name,
+    title: "Сохранённое название",
+    updatedAtMs: 2_000,
+    running: false,
+  }, {
+    provider: "claude",
+    threadId: "claude-thread",
+    projectRoot: project.path,
+    projectName: project.name,
+    title: "Claude snapshot",
+    updatedAtMs: 1_000,
+    running: false,
+    contextUsage,
+  }]);
+
+  assert.deepEqual(entry.contextUsage, contextUsage);
+  assert.notEqual(entry.contextUsage, contextUsage);
+});
+
 test("an authoritative provider title overrides a newer durable read-model title", () => {
   const [entry] = mergeTaskCatalog([{
     provider: "codex",

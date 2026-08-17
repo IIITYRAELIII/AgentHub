@@ -23,6 +23,7 @@ import android.view.Menu;
 import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
+import android.webkit.CookieManager;
 import android.webkit.JavascriptInterface;
 import android.webkit.SslErrorHandler;
 import android.webkit.ValueCallback;
@@ -273,18 +274,29 @@ public final class MainActivity extends Activity {
                 JSONObject challenge = post(serverUrl + "/api/device/challenge", new JSONObject().put("deviceId", deviceId));
                 String challengeId = challenge.getString("challengeId");
                 String challengeValue = challenge.getString("challenge");
-                String message = String.join("\n", "agent-hub-device-session-v1", deviceId, challengeId, challengeValue);
+                // The server origin is signed as well, so this signature cannot be
+                // relayed to a different Agent Hub endpoint.
+                String message = String.join(
+                    "\n",
+                    "agent-hub-device-session-v2",
+                    serverUrl,
+                    deviceId,
+                    challengeId,
+                    challengeValue
+                );
                 JSONObject session = post(serverUrl + "/api/device/session", new JSONObject()
                     .put("deviceId", deviceId)
                     .put("challengeId", challengeId)
                     .put("signature", sign(message)));
                 accessToken = session.getString("token");
+                storeSessionCookie(serverUrl, accessToken);
                 runOnUiThread(() -> {
                     showHub(serverUrl);
                     checkForUpdate(serverUrl, true);
                 });
             } catch (Exception error) {
                 accessToken = "";
+                storeSessionCookie(serverUrl, "");
                 runOnUiThread(() -> showPairing(serverUrl, readableError(error)));
             }
         };
@@ -837,6 +849,22 @@ public final class MainActivity extends Activity {
         return Base64.getUrlEncoder().withoutPadding().encodeToString(value);
     }
 
+    /**
+     * Hands the device session to the WebView as an HttpOnly cookie. Page scripts
+     * cannot read it, so a first-party scripting flaw cannot export the session.
+     */
+    private void storeSessionCookie(String serverUrl, String token) {
+        CookieManager cookies = CookieManager.getInstance();
+        cookies.setAcceptCookie(true);
+        cookies.setCookie(
+            serverUrl,
+            token.isBlank()
+                ? "agent_hub_device=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0"
+                : "agent_hub_device=" + token + "; Path=/; Secure; HttpOnly; SameSite=Strict"
+        );
+        cookies.flush();
+    }
+
     private String normalizeUrl(String value) {
         String normalized = value == null ? "" : value.trim();
         while (normalized.endsWith("/")) normalized = normalized.substring(0, normalized.length() - 1);
@@ -892,10 +920,8 @@ public final class MainActivity extends Activity {
     }
 
     public final class DeviceAuthBridge {
-        @JavascriptInterface
-        public String getAccessToken() {
-            return accessToken;
-        }
+        // The session token is deliberately not exposed here: the WebView carries
+        // it as an HttpOnly cookie that page scripts cannot read.
 
         @JavascriptInterface
         public String getDeviceId() {

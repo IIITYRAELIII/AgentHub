@@ -59,7 +59,8 @@ const CONTROL_ACTIONS = new Set([
   "compact-context",
   "open-attachment",
   "trusted-devices",
-  "create-device-pairing",
+  // Device enrollment is deliberately absent: the remote relay must not be able
+  // to mint a pairing code that would survive revoking the client that asked.
   "revoke-device",
 ]);
 const gzipAsync = promisify(gzip);

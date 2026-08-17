@@ -149,3 +149,68 @@ test("trusted device registry keeps local pairing available when Worker is offli
   assert.equal((await registry.createPairing("42")).workerAvailable, false);
   assert.deepEqual(calls, ["local-list"]);
 });
+
+test("revoking with an unreachable Worker succeeds locally and replays later", async () => {
+  const deviceId = "018f6c86-3f34-7a31-8f27-16f5b96cce12";
+  const calls = [];
+  let workerOnline = false;
+  let pending = [{ id: deviceId, userId: "42" }];
+  const localStore = {
+    list: async () => ({ devices: [] }),
+    revoke: async (userId, id) => {
+      calls.push(["local-revoke", userId, id]);
+      return { device: { id, revokedAt: 7 } };
+    },
+    exportActiveDevices: async () => [],
+    exportPendingRevocations: async () => pending,
+    confirmFederatedRevocation: async (id) => {
+      calls.push(["confirm", id]);
+      pending = pending.filter((device) => device.id !== id);
+      return { confirmed: true };
+    },
+  };
+  const workerStore = {
+    importDevices: async () => ({ imported: 0 }),
+    list: async () => ({ devices: [] }),
+    revoke: async (userId, id) => {
+      calls.push(["worker-revoke", userId, id]);
+      if (!workerOnline) throw new Error("fetch failed");
+      return { device: { id } };
+    },
+  };
+  const registry = new TrustedDeviceRegistry(localStore);
+  await registry.use(workerStore);
+
+  // The local store is authoritative, so an unreachable Worker must not turn a
+  // completed revocation into a failure the operator would retry by hand.
+  const result = await registry.revoke("42", deviceId);
+  assert.equal(result.workerPending, true);
+  assert.deepEqual(pending, [{ id: deviceId, userId: "42" }]);
+
+  workerOnline = true;
+  await registry.list("42");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(pending, []);
+  assert.deepEqual(calls.filter(([name]) => name === "confirm"), [["confirm", deviceId]]);
+});
+
+test("a device the Worker never learned about is not left queued forever", async () => {
+  let pending = [{ id: "018f6c86-3f34-7a31-8f27-16f5b96cce13", userId: "42" }];
+  const registry = new TrustedDeviceRegistry({
+    list: async () => ({ devices: [] }),
+    exportActiveDevices: async () => [],
+    exportPendingRevocations: async () => pending,
+    confirmFederatedRevocation: async (id) => {
+      pending = pending.filter((device) => device.id !== id);
+      return { confirmed: true };
+    },
+  });
+  await registry.use({
+    importDevices: async () => ({ imported: 0 }),
+    list: async () => ({ devices: [] }),
+    revoke: async () => {
+      throw new Error("device not found");
+    },
+  });
+  assert.deepEqual(pending, []);
+});

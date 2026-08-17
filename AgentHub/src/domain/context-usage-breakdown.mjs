@@ -111,6 +111,7 @@ export function estimateCodexContextBreakdown({
 
 export function presentContextUsageBreakdown({
   breakdown = null,
+  provider = "codex",
   usedTokens = 0,
   modelContextWindow = 0,
 } = {}) {
@@ -150,6 +151,6 @@ export function presentContextUsageBreakdown({
   return {
     precision: "mixed",
     categories,
-    note: "Общий объём и свободное место сообщает Codex точно. Hub оценивает только известные ему инструкции и содержимое текущего хода; системный prompt, определения tools и предыдущая история остаются объединённым остатком.",
+    note: `Общий объём и свободное место сообщает ${provider === "claude" ? "Claude" : "Codex"} точно. Hub оценивает только известные ему инструкции и содержимое текущего хода; системный prompt, определения tools и предыдущая история остаются объединённым остатком.`,
   };
 }

@@ -1,3 +1,5 @@
+import { claudeStreamContextUsage } from "./claude.mjs";
+
 function requiredFunction(value, name) {
   if (typeof value !== "function") throw new TypeError(`${name} is required`);
   return value;
@@ -10,7 +12,7 @@ export class ClaudeEventService {
     for (const name of [
       "isSelectedRun", "reindexRun", "setSelectedThread", "runTitle", "bindRunMessage",
       "retargetClientSelection", "saveState", "noteActivity", "scheduleProgress", "appendReasoning", "setStage",
-      "appendActivity", "invalidateCatalog",
+      "appendActivity", "invalidateCatalog", "trackContextUsage",
     ]) requiredFunction(dependencies[name], name);
     this.#d = dependencies;
   }
@@ -40,6 +42,13 @@ export class ClaudeEventService {
       run.responseText += parsed.textDelta;
       d.noteActivity(run);
       d.scheduleProgress(run);
+    }
+    const contextUsage = claudeStreamContextUsage(parsed.event, {
+      fallbackModel: run.claudeObservedModel,
+    });
+    if (contextUsage) {
+      run.claudeObservedModel = contextUsage.model;
+      d.trackContextUsage(run, contextUsage);
     }
     if (parsed.thinkingDelta) d.appendReasoning(run, parsed.thinkingDelta);
     if (parsed.thinkingTokens != null) {

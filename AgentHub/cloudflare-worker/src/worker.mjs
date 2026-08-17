@@ -80,7 +80,8 @@ const CONTROL_ACTIONS = new Set([
   "compact-context",
   "open-attachment",
   "trusted-devices",
-  "create-device-pairing",
+  // Device enrollment is deliberately absent: the relay must not be able to mint
+  // a pairing code that would survive revoking the client that asked for it.
   "revoke-device",
   "board-task-ingest",
 ]);
@@ -1003,8 +1004,75 @@ function clientSnapshotKey(userId) {
   return `${CLIENT_SNAPSHOT_PREFIX}${String(userId)}`;
 }
 
-function deviceSessionMessage({ deviceId, challengeId, challenge }) {
+function deviceSessionMessage({ origin, deviceId, challengeId, challenge }) {
+  // The verifier origin is part of the signed statement, so a signature produced
+  // for one Agent Hub endpoint cannot be relayed to another one.
+  return ["agent-hub-device-session-v2", origin, deviceId, challengeId, challenge].join("\n");
+}
+
+function legacyDeviceSessionMessage({ deviceId, challengeId, challenge }) {
   return ["agent-hub-device-session-v1", deviceId, challengeId, challenge].join("\n");
+}
+
+function deviceVerifierOrigin(value) {
+  const origin = String(value ?? "").trim();
+  if (!origin) return "";
+  let parsed;
+  try {
+    parsed = new URL(origin);
+  } catch {
+    throw new Error("invalid device verifier origin");
+  }
+  if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password) {
+    throw new Error("invalid device verifier origin");
+  }
+  return parsed.origin;
+}
+
+/**
+ * Fixed-capacity limiter for the public device endpoints. The Durable Object is
+ * a single instance, so an in-memory map is enough to bound unauthenticated
+ * pairing and challenge traffic without extra storage writes.
+ */
+export class DeviceAuthAttemptLimiter {
+  #buckets = new Map();
+  #capacity;
+  #limit;
+  #windowMs;
+
+  constructor({ capacity = 2_000, limit = 30, windowMs = 60_000 } = {}) {
+    this.#capacity = Math.max(1, Math.floor(Number(capacity) || 2_000));
+    this.#limit = Math.max(1, Math.floor(Number(limit) || 30));
+    this.#windowMs = Math.max(1, Math.floor(Number(windowMs) || 60_000));
+  }
+
+  consume(key, now = Date.now()) {
+    const normalizedKey = String(key ?? "unknown").slice(0, 128);
+    const observedAt = Number.isFinite(Number(now)) ? Number(now) : Date.now();
+    let bucket = this.#buckets.get(normalizedKey);
+    if (bucket && observedAt - bucket.startedAt >= this.#windowMs) {
+      this.#buckets.delete(normalizedKey);
+      bucket = null;
+    }
+    if (!bucket) {
+      if (this.#buckets.size >= this.#capacity) {
+        const oldest = this.#buckets.keys().next().value;
+        if (oldest != null) this.#buckets.delete(oldest);
+      }
+      bucket = { startedAt: observedAt, count: 0 };
+    } else {
+      this.#buckets.delete(normalizedKey);
+    }
+    bucket.count += 1;
+    this.#buckets.set(normalizedKey, bucket);
+    const allowed = bucket.count <= this.#limit;
+    return {
+      allowed,
+      retryAfter: allowed
+        ? 0
+        : Math.max(1, Math.ceil((bucket.startedAt + this.#windowMs - observedAt) / 1_000)),
+    };
+  }
 }
 
 async function importDevicePublicKey(value) {
@@ -1042,6 +1110,7 @@ export class JournalStore extends DurableObject {
   #snapshotWaiters = new Map();
   #controlResultWaiters = new Map();
   #controlWaiters = new Set();
+  #deviceAuthAttempts = new DeviceAuthAttemptLimiter();
 
   #controlWaiter(waitMs) {
     let timer = null;
@@ -1768,6 +1837,9 @@ export class JournalStore extends DurableObject {
   async #createDeviceChallenge(payload) {
     const deviceId = String(payload?.deviceId ?? "").trim().toLowerCase();
     if (!DEVICE_ID_PATTERN.test(deviceId)) throw new Error("invalid device id");
+    // The origin is supplied by the Worker from the request it served, never by
+    // the client body, so a relayed challenge keeps the real verifier name.
+    const origin = deviceVerifierOrigin(payload?.origin);
     const record = await this.ctx.storage.get(`device:record:${deviceId}`);
     if (!record || record.revokedAt) throw new Error("device is not trusted");
     const now = Date.now();
@@ -1775,7 +1847,12 @@ export class JournalStore extends DurableObject {
     const challengeId = crypto.randomUUID().toLowerCase();
     const challenge = base64Url(randomBytes(32));
     const expiresAt = now + DEVICE_CHALLENGE_EXPIRY_MS;
-    await this.ctx.storage.put(`device:challenge:${challengeId}`, { deviceId, challenge, expiresAt });
+    await this.ctx.storage.put(`device:challenge:${challengeId}`, {
+      deviceId,
+      challenge,
+      expiresAt,
+      origin,
+    });
     return { challengeId, challenge, expiresAt };
   }
 
@@ -1799,12 +1876,21 @@ export class JournalStore extends DurableObject {
       throw new Error("device challenge is invalid or expired");
     }
     const key = await importDevicePublicKey(record.publicKey);
-    const valid = await crypto.subtle.verify(
+    const verify = (message) => crypto.subtle.verify(
       { name: "ECDSA", hash: "SHA-256" },
       key,
       bytesFromBase64Url(signature),
-      encoder.encode(deviceSessionMessage({ deviceId, challengeId, challenge: challenge.challenge })),
+      encoder.encode(message),
     );
+    const signed = {
+      origin: String(challenge.origin ?? ""),
+      deviceId,
+      challengeId,
+      challenge: challenge.challenge,
+    };
+    const valid = await verify(deviceSessionMessage(signed))
+      || (String(this.env?.ALLOW_LEGACY_DEVICE_SESSIONS ?? "") === "1"
+        && await verify(legacyDeviceSessionMessage(signed)));
     await this.ctx.storage.delete(challengeKey);
     if (!valid) throw new Error("invalid device signature");
     const token = base64Url(randomBytes(32));
@@ -2264,25 +2350,27 @@ export class JournalStore extends DurableObject {
         return json({ error: error.message }, 400);
       }
     }
-    if (request.method === "POST" && url.pathname === "/device/pair") {
-      try {
-        return json(await this.#pairDevice(await request.json()), 201);
-      } catch (error) {
-        return json({ error: error.message }, 400);
+    if (request.method === "POST" && ["/device/pair", "/device/challenge", "/device/session"].includes(url.pathname)) {
+      const attempt = this.#deviceAuthAttempts.consume(
+        String(request.headers.get("X-Agent-Hub-Client-Key") ?? "unknown"),
+      );
+      if (!attempt.allowed) {
+        return new Response(JSON.stringify({ error: "too many device authentication attempts" }), {
+          status: 429,
+          headers: {
+            "Content-Type": "application/json; charset=utf-8",
+            "Retry-After": String(attempt.retryAfter),
+          },
+        });
       }
-    }
-    if (request.method === "POST" && url.pathname === "/device/challenge") {
       try {
-        return json(await this.#createDeviceChallenge(await request.json()));
-      } catch (error) {
-        return json({ error: error.message }, 401);
-      }
-    }
-    if (request.method === "POST" && url.pathname === "/device/session") {
-      try {
+        if (url.pathname === "/device/pair") return json(await this.#pairDevice(await request.json()), 201);
+        if (url.pathname === "/device/challenge") {
+          return json(await this.#createDeviceChallenge(await request.json()));
+        }
         return json(await this.#createDeviceSession(await request.json()));
       } catch (error) {
-        return json({ error: error.message }, 401);
+        return json({ error: error.message }, url.pathname === "/device/pair" ? 400 : 401);
       }
     }
     if (request.method === "POST" && url.pathname === "/device/session/resolve") {
@@ -2902,6 +2990,34 @@ function secureStaticResponse(response, request) {
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
 
+const DEVICE_SESSION_COOKIE = "agent_hub_device";
+const DEVICE_SESSION_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
+
+function cookieValue(request, name) {
+  for (const part of String(request.headers.get("Cookie") ?? "").split(";")) {
+    const separator = part.indexOf("=");
+    if (separator < 1) continue;
+    if (part.slice(0, separator).trim() === name) return part.slice(separator + 1).trim();
+  }
+  return "";
+}
+
+/**
+ * Hands the device session to the client as an HttpOnly cookie so same-origin
+ * page scripts never have to hold the bearer token to talk to the Hub.
+ */
+async function deviceSessionResponse(response) {
+  const session = await response.json();
+  const maxAgeSeconds = Math.max(1, Math.floor((Number(session?.expiresAt) - Date.now()) / 1_000));
+  const headers = new Headers(response.headers);
+  headers.set("Content-Type", "application/json; charset=utf-8");
+  headers.append(
+    "Set-Cookie",
+    `${DEVICE_SESSION_COOKIE}=${session.token}; Max-Age=${maxAgeSeconds}; Path=/; HttpOnly; Secure; SameSite=Strict`,
+  );
+  return new Response(JSON.stringify(session), { status: response.status, headers });
+}
+
 async function telegramUser(request, env) {
   const authorization = String(request.headers.get("Authorization") ?? "");
   if (!authorization.startsWith("tma ")) throw new Error("Откройте Agent Hub из Telegram.");
@@ -2911,11 +3027,19 @@ async function telegramUser(request, env) {
   });
 }
 
+function deviceSessionToken(request) {
+  const authorization = String(request.headers.get("Authorization") ?? "");
+  if (authorization.startsWith("device ")) return authorization.slice(7).trim();
+  if (authorization) return "";
+  const cookieToken = cookieValue(request, DEVICE_SESSION_COOKIE);
+  return DEVICE_SESSION_TOKEN_PATTERN.test(cookieToken) ? cookieToken : "";
+}
+
 async function clientUser(request, env, store) {
   const authorization = String(request.headers.get("Authorization") ?? "");
   if (authorization.startsWith("tma ")) return telegramUser(request, env);
-  if (!authorization.startsWith("device ")) throw new Error("Откройте Agent Hub из Telegram или приложения.");
-  const token = authorization.slice(7).trim();
+  const token = deviceSessionToken(request);
+  if (!token) throw new Error("Откройте Agent Hub из Telegram или приложения.");
   const response = await store.fetch(new Request("https://journal.internal/device/session/resolve", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -3314,10 +3438,17 @@ export default {
         const payload = parseJson(body, "device request");
         const response = await store.fetch(new Request(`https://journal.internal${url.pathname.replace(/^\/api/u, "")}`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
+          headers: {
+            "Content-Type": "application/json",
+            // Both values come from the edge, never from the client request.
+            "X-Agent-Hub-Client-Key": String(request.headers.get("CF-Connecting-IP") ?? "unknown"),
+          },
+          body: JSON.stringify(
+            url.pathname.endsWith("/challenge") ? { ...payload, origin: url.origin } : payload,
+          ),
         }));
-        return response;
+        if (!url.pathname.endsWith("/session") || !response.ok) return response;
+        return await deviceSessionResponse(response);
       } catch (error) {
         return json({ error: error.message }, 400);
       }
@@ -3327,10 +3458,11 @@ export default {
       const authorization = String(request.headers.get("Authorization") ?? "");
       let identity;
       try {
+        const token = deviceSessionToken(request);
         if (authorization.startsWith("tma ")) {
           identity = { userId: String((await telegramUser(request, env)).id) };
-        } else if (authorization.startsWith("device ")) {
-          identity = { token: authorization.slice(7).trim() };
+        } else if (token) {
+          identity = { token };
         } else {
           throw new Error("Откройте Agent Hub из Telegram или приложения.");
         }

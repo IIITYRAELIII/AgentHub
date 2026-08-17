@@ -565,6 +565,23 @@ test("desktop snapshot binds a transient selected task to its canonical Workspac
   assert.equal(snapshot.activeCount, 0);
 });
 
+test("desktopContextSnapshot falls back to persisted Claude transcript usage", () => {
+  const { desktopContextSnapshot, state } = fixture();
+  state.usage = null;
+  state.compaction = null;
+  const context = desktopContextSnapshot("claude-thread", "", {
+    provider: "claude",
+    turnId: "claude-turn",
+    usedTokens: 195_402,
+    modelContextWindow: 1_000_000,
+    updatedAt: "2026-08-17T10:00:01.000Z",
+  });
+
+  assert.equal(context.percent, 19.5402);
+  assert.equal(context.usagePending, false);
+  assert.match(context.breakdown.note, /сообщает Claude точно/u);
+});
+
 test("desktopTaskSnapshot does not expose a retained completed run as active", () => {
   const { desktopTaskSnapshot, entry, state } = fixture();
   state.run.status = "completed";
