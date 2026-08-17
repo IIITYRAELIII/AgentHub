@@ -419,10 +419,11 @@ export function createDesktopSnapshotFactory({
       && selection.hasThread()
     ) {
       const selectedTarget = selection.selectedTurnTarget();
-      entries = catalog.merge(entries, [{
+      entries = catalog.merge([...entries, {
         ...selectedTarget,
         ...workspaceBindingForTask(selectedTarget, workspaces),
         projectName: selection.activeProject().name,
+        running: false,
       }]);
     }
     const taskSnapshots = entries.map((entry) => desktopTaskSnapshot(entry, { accountId, compactSnapshot }));

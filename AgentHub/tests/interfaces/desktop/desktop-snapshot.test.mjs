@@ -4,6 +4,7 @@ import {
   createDesktopSnapshotFactory,
   workspaceBindingForTask,
 } from "../../../src/interfaces/desktop/desktop-snapshot.mjs";
+import { mergeTaskCatalog } from "../../../src/application/task-catalog-projection.mjs";
 
 function fixture(overrides = {}) {
   const selected = {
@@ -153,7 +154,7 @@ function fixture(overrides = {}) {
       entries: () => state.entries,
       stale: () => state.catalogStale,
       refresh: async (options) => state.refreshCatalog?.(options) ?? state.refreshCalls.push(options),
-      merge: (current, added) => [...current, ...added],
+      merge: mergeTaskCatalog,
     },
     selection: {
       selectedTask: () => selected,
@@ -559,6 +560,8 @@ test("desktop snapshot binds a transient selected task to its canonical Workspac
   assert.equal(snapshot.tasks[0].workspaceName, "AgentHub");
   assert.equal(snapshot.tasks[0].streamOrdinal, 33);
   assert.equal(snapshot.tasks[0].startedAt, null);
+  assert.equal(snapshot.tasks[0].running, false);
+  assert.equal(snapshot.activeCount, 0);
 });
 
 test("desktopTaskSnapshot does not expose a retained completed run as active", () => {
