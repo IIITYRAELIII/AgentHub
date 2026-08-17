@@ -144,18 +144,25 @@ test("Codex task service persists the created Thread before post-create setup", 
   assert.equal(state.streamId, "stream-1");
 });
 
-test("Claude task service creates an unbound logical task", async () => {
-  const state = { args: null, diff: "old", saved: false };
+test("Claude task service reserves a stable Thread before the first message", async () => {
+  const state = { args: null, diff: "old", saved: false, streamId: "stream-claude" };
   const service = new ClaudeProviderTaskService({
-    selection: { setThread: (...args) => { state.args = args; } },
+    selection: {
+      get streamId() { return state.streamId; },
+      setThread: (...args) => { state.args = args; },
+    },
     activeProjectRoot: () => "D:/workspace",
     clearLatestDiff: () => { state.diff = ""; },
     saveState: async () => { state.saved = true; },
   });
   const created = await service.createTask();
-  assert.deepEqual(state.args, [null, { provider: "claude", title: "Новая задача Claude" }]);
+  assert.match(created.threadId, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
+  assert.deepEqual(state.args, [created.threadId, {
+    provider: "claude",
+    streamId: "stream-claude",
+    title: "Новая задача Claude",
+  }]);
   assert.equal(state.diff, "");
   assert.equal(state.saved, true);
-  assert.equal(created.threadId, null);
   assert.equal(created.projectRoot, "D:/workspace");
 });

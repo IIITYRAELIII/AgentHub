@@ -148,6 +148,28 @@ test("task command service creates a Workspace and binds the provider Thread to 
   assert.equal(events.find(([name]) => name === "prepare")[1].streamId, "stream-new");
 });
 
+test("task command service binds a reserved Claude Thread before its first transcript exists", async () => {
+  const { service, events } = fixture({
+    createTask: async () => ({
+      provider: "claude",
+      threadId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+      projectRoot: "D:/work",
+      title: "Новая задача Claude",
+    }),
+  });
+
+  const result = await service.create({ provider: "claude", workspaceName: "Claude Workspace" });
+
+  assert.deepEqual(events.find(([name]) => name === "bind")[1], {
+    provider: "claude",
+    threadId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+    streamId: "stream-new",
+    projectRoot: "D:/work",
+    source: "created",
+  });
+  assert.equal(result.createdTask.threadId, "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee");
+});
+
 test("task command service recovers a persisted provider Thread after post-create failure", async () => {
   const { service, events } = fixture({
     createTask: async (selected) => {

@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import { CODEX_TASK_SOURCE_KINDS } from "./codex/codex-subagent-accounting.mjs";
 import { codexThreadSandboxSettings } from "./codex/codex-sandbox.mjs";
 
@@ -161,12 +163,17 @@ export class ClaudeProviderTaskService {
   }
 
   async createTask() {
-    this.#selection.setThread(null, { provider: "claude", title: "Новая задача Claude" });
+    const threadId = randomUUID();
+    this.#selection.setThread(threadId, {
+      provider: "claude",
+      streamId: this.#selection.streamId,
+      title: "Новая задача Claude",
+    });
     this.#clearLatestDiff();
     await this.#saveState();
     return {
       provider: "claude",
-      threadId: null,
+      threadId,
       projectRoot: this.#activeProjectRoot(),
       title: "Новая задача Claude",
     };
