@@ -46,4 +46,3 @@ test("a rotated Thread route follows the current history identity", async () => 
   assert.equal(route.streamId, "stream-1");
   assert.equal(route.hash, "#/chat/codex/thread-current");
 });
-
