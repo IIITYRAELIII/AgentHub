@@ -82,6 +82,12 @@ const workspaceReleaseRegistryByWorkspace = new Map();
 const chatPane = document.querySelector("[data-chat-pane]");
 const streamTabs = document.querySelector("[data-stream-tabs]");
 const streamChatColumns = document.querySelector("[data-stream-chat-columns]");
+const streamChatHeader = document.querySelector("[data-stream-chat-header]");
+const streamHeaderProviderDot = document.querySelector("[data-stream-header-provider-dot]");
+const streamHeaderProvider = document.querySelector("[data-stream-header-provider]");
+const streamHeaderBranch = document.querySelector("[data-stream-header-branch]");
+const streamHeaderBranchSeparator = document.querySelector("[data-stream-header-branch-separator]");
+const streamHeaderMessageCount = document.querySelector("[data-stream-header-message-count]");
 const chatEmpty = document.querySelector("[data-chat-empty]");
 const chatEmptyText = document.querySelector("[data-chat-empty-text]");
 const chatScroll = document.querySelector("[data-chat-scroll]");
@@ -2182,6 +2188,46 @@ function visibleWorkspaceStreamTasks() {
     .filter(Boolean);
 }
 
+let streamTabsOverflowFrame = 0;
+
+function scheduleStreamTabsOverflow() {
+  window.cancelAnimationFrame(streamTabsOverflowFrame);
+  streamTabsOverflowFrame = window.requestAnimationFrame(syncStreamTabsOverflow);
+}
+
+function syncStreamTabsOverflow() {
+  if (!streamTabs || streamTabs.hidden) return;
+  const track = streamTabs.querySelector("[data-stream-tabs-track]");
+  const overflow = streamTabs.querySelector("[data-stream-tabs-overflow]");
+  const count = streamTabs.querySelector("[data-stream-tabs-overflow-count]");
+  const groups = [...(track?.querySelectorAll(".stream-tab-group") ?? [])];
+  const menuItems = [...(overflow?.querySelectorAll(".stream-overflow-item") ?? [])];
+  if (!track || !overflow || !count) return;
+  groups.forEach((group) => { group.hidden = false; });
+  overflow.hidden = true;
+  if (track.scrollWidth <= track.clientWidth + 1) {
+    menuItems.forEach((item) => { item.hidden = true; });
+    return;
+  }
+  overflow.hidden = false;
+  let used = 0;
+  let visible = 0;
+  let exhausted = false;
+  groups.forEach((group, index) => {
+    const width = group.getBoundingClientRect().width;
+    const fits = !exhausted && (index === 0 || used + width <= track.clientWidth);
+    group.hidden = !fits;
+    if (fits) {
+      used += width;
+      visible += 1;
+    } else exhausted = true;
+  });
+  const hidden = Math.max(0, groups.length - visible);
+  count.textContent = String(hidden);
+  overflow.hidden = hidden === 0;
+  menuItems.forEach((item, index) => { item.hidden = index < visible; });
+}
+
 function renderStreamTabs() {
   if (!streamTabs) return;
   const selected = currentTask();
@@ -2198,10 +2244,10 @@ function renderStreamTabs() {
   const orderIsManual = streamOrderMode === "manual";
   const orderToggleTitle = orderIsManual
     ? "Ручной порядок. Переключить на порядок по последней активности."
-    : "Порядок по последней активности. Переключить на ручной порядок.";
+    : "История активности. Переключить на ручной порядок.";
   const orderToggle = el("button", {
     type: "button",
-    class: "stream-order-toggle",
+    class: "stream-tab-utility stream-order-toggle",
     "data-action": "stream-order-toggle",
     "data-order-mode": streamOrderMode,
     title: orderToggleTitle,
@@ -2211,19 +2257,30 @@ function renderStreamTabs() {
     orderIsManual ? "arrows-down-up" : "clock-counter-clockwise",
     `stream-order-icon stream-order-icon-${streamOrderMode}`,
   )]);
-  const tabs = ordered.flatMap((stream, index) => {
+  const createTab = el("button", {
+    type: "button",
+    class: "stream-tab-utility stream-tab-create",
+    "data-action": "stream-create",
+    "data-workspace-id": workspaceId,
+    title: "Создать Stream и настроить будущий чат",
+    "aria-label": "Создать Stream",
+  }, [window.AgentHubStreamTabs.createPhosphorIcon(document, "plus", "stream-tab-create-mark")]);
+  const overflowItems = [];
+  const groups = ordered.map((stream, index) => {
     const task = representativeStreamTask(stream);
     const streamName = streamDisplayName(stream, streams.length);
     const provider = String(task?.provider ?? "none");
     const agentLabel = task?.agentLabel || providerLabels[provider] || "Агент";
     const { running, answerReady, statusLabel } = window.AgentHubStreamTabs.streamStatusPresentation(task);
-    const time = task?.running && task.startedAt
-      ? formatRunningDuration(task.startedAt)
-      : formatRelativeTime(task?.lastActivity);
-    const title = `${statusLabel ? `${statusLabel}. ` : ""}${streamProviderModelTitle({ provider, agentLabel, modelLabel: task?.modelLabel })}. Нажмите, чтобы переключиться. Ctrl+click — добавить или убрать колонку. ${streamOrderMode === "manual" ? "Перетащите, чтобы изменить порядок." : "Потяните горизонтально, чтобы прокрутить."} ПКМ — управление Stream.`;
-    const button = el("button", {
+    const statusState = window.AgentHubStreamTabs.streamStatusState(task);
+    const time = statusState === "failed"
+      ? "сбой"
+      : task?.running && task.startedAt
+        ? formatRunningDuration(task.startedAt)
+        : formatRelativeTime(task?.lastActivity);
+    const title = `${statusLabel ? `${statusLabel}. ` : ""}${streamProviderModelTitle({ provider, agentLabel, modelLabel: task?.modelLabel })}. Нажмите, чтобы переключиться. Ctrl+click — добавить или убрать колонку. ${streamOrderMode === "manual" ? "Перетащите, чтобы изменить порядок." : ""} ПКМ — управление Stream.`;
+    const attributes = {
       type: "button",
-      class: "stream-tab",
       "data-stream-tab-id": stream.id,
       "data-workspace-id": workspaceId,
       "data-workspace-name": task?.workspaceName ?? "",
@@ -2237,72 +2294,70 @@ function renderStreamTabs() {
       "data-current": task?.id === selected.id ? "" : null,
       "data-running": running ? "" : null,
       "data-answer-ready": answerReady ? "" : null,
+      "data-state": statusState,
       "data-maintenance": streamMaintenanceKind(task) || null,
-      draggable: window.AgentHubStreamTabs.streamsAreDraggable(streamOrderMode, surface) ? "true" : null,
       "aria-label": [streamName, agentLabel, task?.modelLabel, statusLabel].filter(Boolean).join(". "),
       title,
+    };
+    const content = () => [
+      el("span", {
+        class: "provider-dot",
+        "data-provider": provider,
+        "data-state": statusState,
+        "aria-hidden": "true",
+      }),
+      el("span", { class: "stream-tab-title", text: streamName }),
+      el("span", {
+        class: `task-time${statusState === "failed" ? " is-failed" : ""}`,
+        text: time,
+        title: task?.lastActivity ? new Date(task.lastActivity).toLocaleString("ru-RU") : "",
+      }),
+    ];
+    const button = el("button", {
+      ...attributes,
+      class: "stream-tab",
+      draggable: window.AgentHubStreamTabs.streamsAreDraggable(streamOrderMode, surface) ? "true" : null,
+    }, [el("span", { class: "stream-tab-card" }, content())]);
+    overflowItems.push(el("button", {
+      ...attributes,
+      class: "stream-overflow-item",
+      hidden: "",
+    }, content()));
+    return el("span", {
+      class: "stream-tab-group",
+      "data-current": task?.id === selected.id ? "" : null,
     }, [
-      el("span", { class: "stream-tab-card" }, [
-        el("span", { class: "provider-dot", "data-provider": provider, "aria-hidden": "true" }),
-        el("span", { class: "stream-tab-body" }, [
-          el("span", { class: "stream-tab-title-row" }, [
-            el("span", {
-              class: "stream-tab-title",
-              text: streamName,
-            }),
-            el("span", {
-              class: "task-time",
-              text: time,
-              title: task?.lastActivity ? new Date(task.lastActivity).toLocaleString("ru-RU") : "",
-            }),
-          ]),
-          el("span", { class: "stream-tab-meta" }, [
-            el("span", { class: "task-agent", text: agentLabel }),
-            task?.modelLabel
-              ? el("span", {
-                class: "task-agent task-model",
-                "data-model-tier": modelTier(task.modelLabel),
-                text: shortModelLabel(task.modelLabel),
-                title: task.modelLabel,
-              })
-              : null,
-            task?.runtimeLabel
-              ? el("span", {
-                class: "task-runtime",
-                text: task.runtimeLabel,
-                title: task.runtimeTitle || task.runtimeLabel,
-              })
-              : null,
-          ]),
-        ]),
-      ]),
+      index > 0 ? el("span", { class: "stream-tab-divider", "aria-hidden": "true" }) : null,
+      button,
     ]);
-    return index > 0
-      ? [el("span", { class: "stream-tab-divider", "aria-hidden": "true" }), button]
-      : [button];
   });
-  const createTab = el("button", {
+  const leftControls = el("span", { class: "stream-tabs-controls" }, [orderToggle, createTab]);
+  const track = el("span", { class: "stream-tabs-track", "data-stream-tabs-track": "" }, groups);
+  const overflowButton = el("button", {
     type: "button",
-    class: "stream-tab stream-tab-create",
-    "data-action": "stream-create",
-    "data-workspace-id": workspaceId,
-    title: "Создать Stream и настроить будущий чат",
-    "aria-label": "Создать Stream",
-  }, [el("span", { class: "stream-tab-card" }, [
-    window.AgentHubStreamTabs.createPhosphorIcon(
-      document,
-      "plus",
-      "stream-tab-create-mark",
-    ),
-  ])]);
-  if (window.AgentHubStreamTabs.streamCreationSide(streamOrderMode, streamActivityDirection) === "start") {
-    tabs.unshift(createTab);
-  } else {
-    tabs.push(createTab);
-  }
-  tabs.unshift(orderToggle);
-  streamTabs.replaceChildren(...tabs);
+    class: "stream-tabs-more",
+    "data-stream-overflow-toggle": "",
+    "aria-expanded": "false",
+    title: "Остальные потоки",
+  }, [
+    el("span", { text: "ещё " }),
+    el("span", { "data-stream-tabs-overflow-count": "", text: "0" }),
+    window.AgentHubStreamTabs.createPhosphorIcon(document, "caret-down", "stream-tabs-more-icon"),
+  ]);
+  const overflowMenu = el("div", {
+    class: "stream-tabs-overflow-menu",
+    "data-stream-tabs-overflow-menu": "",
+    role: "menu",
+    hidden: "",
+  }, overflowItems);
+  const overflow = el("span", {
+    class: "stream-tabs-overflow",
+    "data-stream-tabs-overflow": "",
+    hidden: "",
+  }, [overflowButton, overflowMenu]);
+  streamTabs.replaceChildren(leftControls, track, overflow);
   streamTabs.hidden = false;
+  scheduleStreamTabsOverflow();
 }
 
 function publishVisibleStreamTasks(tasks) {
@@ -2706,14 +2761,15 @@ document.addEventListener("keydown", (event) => {
 });
 
 let suppressStreamTabClick = false;
-if (streamTabs) new window.AgentHubStreamTabs.HorizontalPointerScroller(streamTabs, {
-  enabled: () => streamOrderMode === "activity",
-  onDragEnd: () => {
-    suppressStreamTabClick = true;
-    window.setTimeout(() => { suppressStreamTabClick = false; }, 0);
-  },
-});
 streamTabs?.addEventListener("click", (event) => {
+  const overflowToggle = event.target.closest("[data-stream-overflow-toggle]");
+  if (overflowToggle) {
+    const menu = streamTabs.querySelector("[data-stream-tabs-overflow-menu]");
+    const open = menu?.hidden !== false;
+    if (menu) menu.hidden = !open;
+    overflowToggle.setAttribute("aria-expanded", String(open));
+    return;
+  }
   if (suppressStreamTabClick) {
     suppressStreamTabClick = false;
     return;
@@ -2726,6 +2782,10 @@ streamTabs?.addEventListener("click", (event) => {
     additive: event.ctrlKey || event.metaKey,
   });
 });
+
+if (streamTabs && typeof ResizeObserver === "function") {
+  new ResizeObserver(scheduleStreamTabsOverflow).observe(streamTabs);
+}
 
 let streamContextMenu = null;
 let workspaceContextMenu = null;
@@ -3148,11 +3208,18 @@ streamTabs?.addEventListener("keydown", (event) => {
 });
 
 document.addEventListener("click", (event) => {
+  const overflowMenu = streamTabs?.querySelector("[data-stream-tabs-overflow-menu]");
+  const overflowToggle = streamTabs?.querySelector("[data-stream-overflow-toggle]");
+  if (overflowMenu && !overflowMenu.hidden && !event.target.closest("[data-stream-tabs-overflow]")) {
+    overflowMenu.hidden = true;
+    overflowToggle?.setAttribute("aria-expanded", "false");
+  }
   if (streamContextMenu && !streamContextMenu.contains(event.target)) closeStreamContextMenu();
   if (workspaceContextMenu && !workspaceContextMenu.contains(event.target)) closeWorkspaceContextMenu();
 });
 window.addEventListener("resize", closeStreamContextMenu);
 window.addEventListener("resize", closeWorkspaceContextMenu);
+window.addEventListener("resize", scheduleStreamTabsOverflow);
 document.addEventListener("scroll", (event) => {
   if (!streamContextMenu?.contains(event.target)) closeStreamContextMenu();
   if (!workspaceContextMenu?.contains(event.target)) closeWorkspaceContextMenu();
@@ -3238,6 +3305,39 @@ function selectTaskFromUi(id) {
 
 let activeChatId = null;
 
+function messageCountLabel(count) {
+  const value = Math.max(0, Number(count) || 0);
+  const mod100 = value % 100;
+  const mod10 = value % 10;
+  const noun = mod100 >= 11 && mod100 <= 14
+    ? "сообщений"
+    : mod10 === 1 ? "сообщение" : mod10 >= 2 && mod10 <= 4 ? "сообщения" : "сообщений";
+  return `${value.toLocaleString("ru-RU")} ${noun}`;
+}
+
+function renderStreamChatHeader(task) {
+  if (!streamChatHeader) return;
+  streamChatHeader.hidden = !task;
+  if (!task) return;
+  const provider = String(task.provider ?? "none");
+  const providerLabel = task.agentLabel || providerLabels[provider] || "Агент";
+  const statusState = window.AgentHubStreamTabs.streamStatusState(task);
+  if (streamHeaderProviderDot) {
+    streamHeaderProviderDot.dataset.provider = provider;
+    streamHeaderProviderDot.dataset.state = statusState;
+  }
+  if (streamHeaderProvider) streamHeaderProvider.textContent = providerLabel;
+  const branch = String(task.branch ?? task.gitBranch ?? task.repositoryBranch ?? "").trim();
+  if (streamHeaderBranch) {
+    streamHeaderBranch.textContent = branch;
+    streamHeaderBranch.hidden = !branch;
+  }
+  if (streamHeaderBranchSeparator) streamHeaderBranchSeparator.hidden = !branch;
+  if (streamHeaderMessageCount) {
+    streamHeaderMessageCount.textContent = messageCountLabel(state.messages.get(task.id)?.length ?? 0);
+  }
+}
+
 function renderChat() {
   const task = currentTask();
   const hasTask = Boolean(task);
@@ -3252,12 +3352,14 @@ function renderChat() {
     streamChatColumns.hidden = true;
     streamChatColumns?.removeAttribute("data-multi-stream");
     publishVisibleStreamTasks([]);
+    renderStreamChatHeader(null);
     setDialogSettingsOpen(false);
     return;
   }
   const taskChanged = activeChatId !== task.id;
 
   renderDialogSettings();
+  renderStreamChatHeader(task);
   for (const stop of chatStops) stop.hidden = !task.running;
   renderContextUsage(task);
   renderStreamTabs();
@@ -3287,7 +3389,9 @@ function renderContextUsage(task) {
   const used = Math.max(0, Number(context.usedTokens) || 0);
   const total = Math.max(0, Number(context.modelContextWindow) || 0);
   const cleaningImages = context.compaction?.stage === "cleaning-images";
-  contextLabel.textContent = context.compacting ? "↻" : context.usagePending ? "…" : `${Math.round(percent)}%`;
+  contextLabel.textContent = context.compacting
+    ? "свёртка…"
+    : context.usagePending ? "обновление…" : `${Math.round(percent)}% контекста`;
   contextRing.style.setProperty("--context-percent", `${percent}%`);
   contextUsageButton.title = context.compacting
     ? cleaningImages
@@ -3329,14 +3433,22 @@ function renderContextUsageDetails(task) {
       ? `${count.toLocaleString("ru-RU")} шт. · ${contextTokens(null)}`
       : contextTokens(category.tokens, category.estimated === true);
     head.append(label, value);
-    const bar = document.createElement("div");
-    bar.className = "context-usage-category-bar";
-    const fill = document.createElement("span");
-    fill.style.width = `${total && category.tokens != null
+    row.append(head);
+    const share = total && category.tokens != null
       ? Math.max(0, Math.min(100, (Number(category.tokens) / total) * 100))
-      : 0}%`;
-    bar.append(fill);
-    row.append(head, bar);
+      : 0;
+    const major = category.tokens != null && share >= 2;
+    if (major) {
+      const bar = document.createElement("div");
+      bar.className = "context-usage-category-bar";
+      if (/свобод/iu.test(String(category.label ?? ""))) bar.dataset.kind = "neutral";
+      const fill = document.createElement("span");
+      fill.style.width = `${share}%`;
+      bar.append(fill);
+      row.append(bar);
+    } else {
+      row.dataset.minor = "";
+    }
     contextUsageCategories.append(row);
   }
   contextUsageNote.textContent = context.breakdown?.note ?? "";
@@ -3348,12 +3460,26 @@ function renderContextUsageDetails(task) {
 function openContextUsage() {
   const task = currentTask();
   if (!task?.context || !Number(task.context.modelContextWindow) || !contextUsageModal) return;
+  if (contextUsageModal.open) {
+    closeContextUsage();
+    return;
+  }
   renderContextUsageDetails(task);
-  contextUsageModal.showModal();
+  contextUsageModal.show();
+  contextUsageButton.setAttribute("aria-expanded", "true");
+  positionContextUsage();
 }
 
 function closeContextUsage() {
   if (contextUsageModal?.open) contextUsageModal.close();
+  contextUsageButton?.setAttribute("aria-expanded", "false");
+}
+
+function positionContextUsage() {
+  if (!contextUsageModal?.open || !contextUsageButton) return;
+  const rect = contextUsageButton.getBoundingClientRect();
+  contextUsageModal.style.setProperty("--context-popover-right", `${Math.max(12, window.innerWidth - rect.right)}px`);
+  contextUsageModal.style.setProperty("--context-popover-bottom", `${Math.max(12, window.innerHeight - rect.top + 8)}px`);
 }
 
 function chatIsNearBottom() {
@@ -3718,6 +3844,7 @@ function createRenderedMessage(spec) {
 }
 
 function renderMessages({ forceBottom = false, preserveTop = false } = {}) {
+  renderStreamChatHeader(currentTask());
   const scrollController = chatScrollControllers.get(chatScroll);
   const scrollSnapshot = scrollController?.capture();
   const stickToBottom = forceBottom || scrollSnapshot?.pinned || chatIsNearBottom();
@@ -4095,6 +4222,16 @@ function renderMarkdownTable(table, fileContext) {
   ]);
 }
 
+function technicalTailLine(line) {
+  const match = String(line ?? "").match(/^\s*(?:[-*]\s+)?(runtime|коммит)\s*[:—-]\s*(?:`([^`]+)`|(\S+))(.*)$/iu);
+  if (!match) return null;
+  return {
+    label: match[1].toLocaleUpperCase("ru-RU"),
+    value: String(match[2] ?? match[3] ?? "").trim(),
+    note: String(match[4] ?? "").replace(/^\s*[,;—-]?\s*/u, "").trim(),
+  };
+}
+
 function renderMarkdown(target, source, fileContext = currentFileLinkContext()) {
   target.replaceChildren();
   const lines = String(source ?? "").replace(/\r\n?/gu, "\n").split("\n");
@@ -4114,6 +4251,22 @@ function renderMarkdown(target, source, fileContext = currentFileLinkContext()) 
       target.append(el("pre", {}, [
         el("code", { class: fence[1] ? `language-${fence[1]}` : "", text: code.join("\n") }),
       ]));
+      continue;
+    }
+    const technical = technicalTailLine(line);
+    if (technical) {
+      const rows = [];
+      while (index < lines.length) {
+        const row = technicalTailLine(lines[index]);
+        if (!row) break;
+        rows.push(el("div", { class: "msg-technical-row" }, [
+          el("span", { class: "msg-technical-label", text: row.label }),
+          el("code", { class: "msg-technical-value", text: row.value }),
+          row.note ? el("span", { class: "msg-technical-note", text: row.note }) : null,
+        ]));
+        index += 1;
+      }
+      target.append(el("div", { class: "msg-technical" }, rows));
       continue;
     }
     const heading = line.match(/^\s*(#{1,6})\s+(.+)$/u);
@@ -4254,18 +4407,70 @@ function turnTraceNode(groups) {
   ]);
 }
 
-function renderMessageCopyAction(message) {
-  const request = MessageView.messageCopyRequest(message);
-  if (!request) return null;
+function messageActionButton({ icon, label, action, onClick }) {
   const button = el("button", {
     type: "button",
-    class: "msg-copy",
-    title: "Скопировать",
-    "aria-label": "Скопировать сообщение",
-    "data-message-copy": "",
-  }, [window.AgentHubStreamTabs.createPhosphorIcon(document, "copy", "msg-copy-icon")]);
-  button.addEventListener("click", () => emit("clipboard:write", request));
-  return el("div", { class: "msg-actions" }, [button]);
+    class: "msg-action",
+    title: label,
+    "aria-label": `${label} сообщение`,
+    [`data-message-${action}`]: "",
+  }, [
+    window.AgentHubStreamTabs.createPhosphorIcon(document, icon, "msg-action-icon"),
+    el("span", { text: label }),
+  ]);
+  button.addEventListener("click", onClick);
+  return button;
+}
+
+function editUserMessage(message) {
+  composerInput.value = String(message?.text ?? "");
+  autosizeComposer();
+  updateSendState();
+  saveDraft();
+  composerInput.focus({ preventScroll: true });
+  composer.scrollIntoView({ block: "nearest", behavior: "smooth" });
+}
+
+function repeatAgentMessage(message) {
+  const messages = state.messages.get(state.selectedId) ?? [];
+  const index = messages.findIndex((candidate) => (
+    candidate === message
+    || (message?.id && candidate?.id === message.id)
+    || (message?.itemId && candidate?.itemId === message.itemId)
+  ));
+  const prompt = messages.slice(0, index < 0 ? messages.length : index)
+    .reverse()
+    .find((candidate) => candidate?.role === "user");
+  if (!prompt) return;
+  composerInput.value = String(prompt.text ?? "");
+  autosizeComposer();
+  updateSendState();
+  submitComposer();
+}
+
+function renderMessageActions(message, role) {
+  if (!["user", "agent"].includes(role)) return null;
+  const actions = [];
+  const request = MessageView.messageCopyRequest(message);
+  if (request) actions.push(messageActionButton({
+    icon: "copy",
+    label: "Копировать",
+    action: "copy",
+    onClick: () => emit("clipboard:write", request),
+  }));
+  if (role === "user") actions.push(messageActionButton({
+    icon: "pencil-simple",
+    label: "Редактировать",
+    action: "edit",
+    onClick: () => editUserMessage(message),
+  }));
+  if (role === "agent") actions.push(messageActionButton({
+    icon: "arrow-clockwise",
+    label: "Повторить",
+    action: "repeat",
+    onClick: () => repeatAgentMessage(message),
+  }));
+  return actions.length ? el("div", { class: "msg-actions" }, actions) : null;
 }
 
 function renderMessage(message, { readOnly = false, task = currentTask() } = {}) {
@@ -4278,6 +4483,7 @@ function renderMessage(message, { readOnly = false, task = currentTask() } = {})
     "data-turn-id": message.turnId ?? "",
     "data-item-id": message.itemId ?? "",
     "data-delivery-state": message.deliveryState ?? "",
+    "data-provider": String(task?.provider ?? "none"),
   });
 
   const author = message.author
@@ -4318,9 +4524,9 @@ function renderMessage(message, { readOnly = false, task = currentTask() } = {})
   if (Array.isArray(message.attachments) && message.attachments.length > 0) {
     article.append(renderAttachmentStrip(message.attachments, { readOnly: true }));
   }
-  const copyAction = renderMessageCopyAction(message);
-  if (!copyAction) return article;
-  return el("div", { class: "msg-stack msg-stack-user" }, [article, copyAction]);
+  const actions = readOnly ? null : renderMessageActions(message, role);
+  if (!actions) return article;
+  return el("div", { class: `msg-stack msg-stack-${role}` }, [article, actions]);
 }
 
 document.addEventListener("click", (event) => {
@@ -6384,6 +6590,12 @@ async function handleAction(action, trigger) {
 contextUsageModal?.addEventListener("click", (event) => {
   if (event.target === contextUsageModal) closeContextUsage();
 });
+document.addEventListener("pointerdown", (event) => {
+  if (!contextUsageModal?.open) return;
+  if (contextUsageModal.contains(event.target) || contextUsageButton?.contains(event.target)) return;
+  closeContextUsage();
+});
+window.addEventListener("resize", positionContextUsage);
 
 // Закрытие меню «⋯» по клику вне его.
 document.addEventListener("click", (event) => {

@@ -1,0 +1,62 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import test from "node:test";
+
+const assets = new URL("../../assets/web-app/", import.meta.url);
+
+test("dialog area stylesheet is loaded after theme packages", async () => {
+  const index = await readFile(new URL("index.html", assets), "utf8");
+  assert.ok(index.indexOf("<!-- agent-hub-theme-styles -->") < index.indexOf('href="/dialog-area.css"'));
+  assert.match(index, /class="stream-chat-header"[\s\S]*class="chat-scroll"/u);
+  assert.match(index, /class="context-usage-bar" data-context-ring/u);
+});
+
+test("dialog geometry references semantic tokens without literal colors", async () => {
+  const styles = await readFile(new URL("dialog-area.css", assets), "utf8");
+  assert.doesNotMatch(styles, /#[0-9a-f]{3,8}\b/iu);
+  assert.doesNotMatch(styles, /\brgba?\(\s*\d/iu);
+  assert.match(styles, /--dialog-canvas: var\(--bg\)/u);
+  assert.match(styles, /--dialog-agent-2: hsl\(from var\(--accent\) calc\(h \+ 120\) s l\)/u);
+  assert.match(styles, /\.chat-log \{[\s\S]*gap: 28px;/u);
+  assert.match(styles, /\.msg-user \.msg-body \{[\s\S]*max-width: 560px;/u);
+  assert.match(styles, /\.composer \{[\s\S]*width: min\(var\(--dialog-column-width\), calc\(100% - 48px\)\);/u);
+});
+
+test("Orange defines the reference dialog palette only as theme tokens", async () => {
+  const orange = await readFile(new URL("themes/orange/theme.css", assets), "utf8");
+  const expected = new Map([
+    ["canvas", "#f7f4ee"],
+    ["chrome", "#efeae1"],
+    ["raised", "#fdfbf7"],
+    ["sunken", "#f2ece2"],
+    ["bubble-user", "#efe7db"],
+    ["code-bg", "#eee7dc"],
+    ["hairline", "#e3dace"],
+    ["text", "#2b2723"],
+    ["text-2", "#56504a"],
+    ["text-3", "#8a8075"],
+    ["text-4", "#a49a8d"],
+    ["accent", "#c2643a"],
+    ["accent-press", "#a8542a"],
+    ["danger", "#b8493c"],
+    ["agent-1", "#c2643a"],
+    ["agent-2", "#8a5fa8"],
+    ["agent-3", "#3f8a7d"],
+    ["neutral-bar", "#b9ac97"],
+  ]);
+  for (const [name, value] of expected) {
+    assert.ok(orange.includes(`--dialog-${name}: ${value};`));
+  }
+});
+
+test("dialog interactions expose overflow, message actions and anchored context", async () => {
+  const app = await readFile(new URL("app.js", assets), "utf8");
+  assert.match(app, /data-stream-tabs-overflow-count/u);
+  assert.match(app, /scheduleStreamTabsOverflow\(\)/u);
+  assert.match(app, /label: "Редактировать"/u);
+  assert.match(app, /label: "Повторить"/u);
+  assert.match(app, /contextUsageModal\.show\(\)/u);
+  assert.doesNotMatch(app, /contextUsageModal\.showModal\(\)/u);
+  assert.match(app, /const major = category\.tokens != null && share >= 2;/u);
+  assert.match(app, /class: "msg-technical"/u);
+});

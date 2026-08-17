@@ -12,6 +12,7 @@
   <link rel="stylesheet" href="/backgrounds.css">
   <link rel="stylesheet" href="/stream-status.css">
   <!-- agent-hub-theme-styles -->
+  <link rel="stylesheet" href="/dialog-area.css">
   <script src="https://telegram.org/js/telegram-web-app.js?63"></script>
   <script src="/browser-device-auth.js" defer></script>
   <script src="/messages/disclosure.js" defer></script>
@@ -306,6 +307,16 @@
 
       <div class="stream-chat-columns" data-stream-chat-columns>
       <div class="chat-pane" data-chat-pane hidden>
+        <header class="stream-chat-header" data-stream-chat-header>
+          <div class="stream-chat-meta">
+            <span class="provider-dot" data-stream-header-provider-dot aria-hidden="true"></span>
+            <strong data-stream-header-provider>Агент</strong>
+            <span class="stream-chat-meta-separator" aria-hidden="true"></span>
+            <span class="stream-chat-branch" data-stream-header-branch hidden></span>
+            <span class="stream-chat-meta-separator" data-stream-header-branch-separator hidden
+              aria-hidden="true"></span>
+            <span data-stream-header-message-count>0 сообщений</span>
+          </div>
         <div class="chat-overlay-actions" aria-label="Действия текущего Stream">
           <button type="button" class="chip-button" data-workspace-message-search-toggle
             title="Поиск по сообщениям всех Streams Workspace">
@@ -356,6 +367,7 @@
             </svg>
           </button>
         </div>
+        </header>
         <div class="chat-scroll" data-chat-scroll>
           <div class="chat-history-loader" data-history-loader hidden>
             <button type="button" class="chat-history-load" data-history-load>
@@ -486,9 +498,13 @@
                 aria-label="Сообщение агенту"></textarea>
             </label>
             <button type="button" class="context-usage" data-action="context-usage-open"
-              data-context-usage hidden title="Заполнение контекста">
-              <span class="context-ring" data-context-ring aria-hidden="true"></span>
-              <span data-context-label>0%</span>
+              data-context-usage hidden title="Заполнение контекста" aria-expanded="false">
+              <span class="context-usage-bar" data-context-ring aria-hidden="true"><i></i></span>
+              <span data-context-label>0% контекста</span>
+              <svg data-phosphor-icon="caret-up" viewBox="0 0 256 256" aria-hidden="true">
+                <polyline points="48 160 128 80 208 160" fill="none" stroke="currentColor"
+                  stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></polyline>
+              </svg>
             </button>
             <button type="button" class="chip-button danger chat-stop-bottom" data-action="task-stop"
               data-chat-stop hidden title="Остановить ход">
@@ -608,7 +624,15 @@
         <p class="eyebrow">Контекст агента</p>
         <h2 id="context-usage-title">Использование контекста</h2>
       </div>
-      <button type="button" class="icon-button" data-action="context-usage-close" aria-label="Закрыть">×</button>
+      <button type="button" class="icon-button context-usage-close" data-action="context-usage-close"
+        aria-label="Закрыть">
+        <svg data-phosphor-icon="x" viewBox="0 0 256 256" aria-hidden="true">
+          <line x1="200" y1="56" x2="56" y2="200" fill="none" stroke="currentColor"
+            stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+          <line x1="200" y1="200" x2="56" y2="56" fill="none" stroke="currentColor"
+            stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+        </svg>
+      </button>
     </header>
     <section>
       <div class="context-usage-summary">

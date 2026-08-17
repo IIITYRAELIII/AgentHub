@@ -81,7 +81,15 @@ test("order switch icons are real Phosphor SVG nodes in the SVG namespace", asyn
   const document = {
     createElementNS: (namespaceURI, localName) => new FakeSvgNode(namespaceURI, localName),
   };
-  for (const name of ["caret-down", "copy", "clock-counter-clockwise", "arrows-down-up", "plus"]) {
+  for (const name of [
+    "arrow-clockwise",
+    "caret-down",
+    "copy",
+    "clock-counter-clockwise",
+    "arrows-down-up",
+    "pencil-simple",
+    "plus",
+  ]) {
     const icon = createPhosphorIcon(document, name, "stream-order-icon");
     assert.equal(icon.namespaceURI, "http://www.w3.org/2000/svg");
     assert.equal(icon.localName, "svg");
@@ -92,6 +100,14 @@ test("order switch icons are real Phosphor SVG nodes in the SVG namespace", asyn
     assert.ok(icon.children[0].attributes.get("d"));
     assert.equal(icon.children[0].attributes.get("fill"), "currentColor");
   }
+});
+
+test("Stream dot state separates execution, idle and failure from provider color", async () => {
+  const { streamStatusState } = await streamTabsApi();
+  assert.equal(streamStatusState({ running: true }), "running");
+  assert.equal(streamStatusState({ running: false }), "idle");
+  assert.equal(streamStatusState({ failed: true, running: true }), "failed");
+  assert.equal(streamStatusState({ statusLabel: "Ошибка доставки" }), "failed");
 });
 
 async function productionWebScripts(directory) {

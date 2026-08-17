@@ -50,7 +50,7 @@
   }
 
   function messageCopyRequest(message) {
-    if (message?.role !== "user") return null;
+    if (!["user", "agent", "assistant"].includes(String(message?.role ?? ""))) return null;
     const text = String(message?.text ?? "");
     if (!text.trim()) return null;
     return { text, successMessage: "Сообщение скопировано" };

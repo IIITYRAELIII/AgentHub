@@ -3,6 +3,28 @@
    каноничным знаком, Phosphor-иконками и геометрией desktop-панелей. */
 
 html[data-theme="orange"] {
+  --dialog-canvas: #f7f4ee;
+  --dialog-chrome: #efeae1;
+  --dialog-raised: #fdfbf7;
+  --dialog-sunken: #f2ece2;
+  --dialog-bubble-user: #efe7db;
+  --dialog-code-bg: #eee7dc;
+  --dialog-hairline: #e3dace;
+  --dialog-text: #2b2723;
+  --dialog-text-2: #56504a;
+  --dialog-text-3: #8a8075;
+  --dialog-text-4: #a49a8d;
+  --dialog-accent: #c2643a;
+  --dialog-accent-press: #a8542a;
+  --dialog-danger: #b8493c;
+  --dialog-agent-1: #c2643a;
+  --dialog-agent-2: #8a5fa8;
+  --dialog-agent-3: #3f8a7d;
+  --dialog-neutral-bar: #b9ac97;
+  --dialog-control-hover: #efe9df;
+  --dialog-list-marker: #c0b5a4;
+  --dialog-shadow-soft: 0 1px 2px rgb(0 0 0 / 4%);
+  --dialog-shadow-popover: 0 14px 34px rgb(60 45 25 / 13%), 0 2px 6px rgb(60 45 25 / 6%);
   --font-body: Inter, "Segoe UI", system-ui, sans-serif;
   --font-title: Inter, "Segoe UI", system-ui, sans-serif;
   --font-numeric: "Cascadia Mono", "Cascadia Code", Consolas, monospace;

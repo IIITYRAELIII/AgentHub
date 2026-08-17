@@ -64,38 +64,37 @@ test("Enter queues active-turn input while Ctrl+Enter steers it into the turn", 
   );
 });
 
-test("only a textual user message exposes the exact copy request", async () => {
+test("textual user and agent messages expose the exact copy request", async () => {
   const api = await messageViewApi();
   assert.deepEqual(
     { ...api.messageCopyRequest({ role: "user", text: "  Текст сообщения\n" }) },
     { text: "  Текст сообщения\n", successMessage: "Сообщение скопировано" },
   );
-  assert.equal(api.messageCopyRequest({ role: "agent", text: "Ответ" }), null);
+  assert.deepEqual(
+    { ...api.messageCopyRequest({ role: "agent", text: "Ответ" }) },
+    { text: "Ответ", successMessage: "Сообщение скопировано" },
+  );
+  assert.equal(api.messageCopyRequest({ role: "system", text: "Событие" }), null);
   assert.equal(api.messageCopyRequest({ role: "user", text: "   " }), null);
 });
 
-test("user message copy control is a visible action below the bubble and forwards its toast", async () => {
-  const [appSource, clientSource, styles] = await Promise.all([
+test("message action rows expose copy, edit and repeat below the content", async () => {
+  const [appSource, clientSource, dialogStyles] = await Promise.all([
     readFile(new URL("../../assets/web-app/app.js", import.meta.url), "utf8"),
     readFile(new URL("../../assets/web-app/hub-client.js", import.meta.url), "utf8"),
-    readFile(new URL("../../assets/web-app/styles.css", import.meta.url), "utf8"),
+    readFile(new URL("../../assets/web-app/dialog-area.css", import.meta.url), "utf8"),
   ]);
-  assert.match(appSource, /"data-message-copy": ""/u);
-  assert.match(
-    appSource,
-    /AgentHubStreamTabs\.createPhosphorIcon\(document, "copy", "msg-copy-icon"\)/u,
-  );
+  assert.match(appSource, /action: "copy"/u);
+  assert.match(appSource, /action: "edit"/u);
+  assert.match(appSource, /action: "repeat"/u);
+  assert.match(appSource, /createPhosphorIcon\(document, icon, "msg-action-icon"\)/u);
   assert.doesNotMatch(appSource, /el\("svg", \{[\s\S]*"data-phosphor-icon": "copy"/u);
-  assert.match(appSource, /button\.addEventListener\("click", \(\) => emit\("clipboard:write", request\)\)/u);
-  assert.match(
-    appSource,
-    /return el\("div", \{ class: "msg-stack msg-stack-user" \}, \[article, copyAction\]\)/u,
-  );
-  assert.doesNotMatch(appSource, /article\.append\(copyAction\)/u);
+  assert.match(appSource, /onClick: \(\) => emit\("clipboard:write", request\)/u);
+  assert.match(appSource, /class: `msg-stack msg-stack-\$\{role\}`/u);
   assert.match(clientSource, /agentHub\.toast\(String\(successMessage \?\? ""\)\.trim\(\) \|\|/u);
-  assert.match(styles, /\.msg-stack > \.msg \{[\s\S]*max-width: 100%/u);
-  assert.match(styles, /\.msg-actions \{[\s\S]*align-self: flex-end;[\s\S]*margin: 0\.22rem/u);
-  assert.match(styles, /\.msg-copy:hover,[\s\S]*border-color: var\(--accent-line\)/u);
+  assert.match(dialogStyles, /\.msg-actions \{[\s\S]*align-self: flex-start;[\s\S]*opacity: 0;/u);
+  assert.match(dialogStyles, /\.msg-stack:hover > \.msg-actions,[\s\S]*opacity: 1;/u);
+  assert.match(dialogStyles, /\.msg-action:hover,[\s\S]*background: var\(--dialog-control-hover\)/u);
 });
 
 test("optimistic confirmation keeps the same message node when content is unchanged", async () => {
