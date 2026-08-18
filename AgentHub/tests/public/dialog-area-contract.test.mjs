@@ -34,7 +34,7 @@ test("dialog geometry references semantic tokens without literal colors", async 
   assert.match(styles, /\.stream-tabs-track \.stream-tab\[data-current\] \{[\s\S]*border: 0 !important;[\s\S]*box-shadow: inset 0 -2px 0 var\(--dialog-accent\) !important;/u);
   assert.match(styles, /\.stream-tabs-controls \.stream-tab-utility \{[\s\S]*flex: 0 0 26px !important;[\s\S]*width: 26px !important;/u);
   assert.match(styles, /\.msg-body pre code,[\s\S]*\.msg-reasoning pre code \*,?[\s\S]*\{[\s\S]*background: transparent !important;/u);
-  assert.match(styles, /\.chat-scroll > \.msg-live \{[\s\S]*width: min\(var\(--dialog-column-width\), calc\(100% - 32px\)\);/u);
+  assert.match(styles, /\.chat-scroll > \.msg-live \{[\s\S]*padding-top: 28px;[\s\S]*width: min\(var\(--dialog-column-width\), calc\(100% - 32px\)\);/u);
   assert.match(styles, /\.chat-stop-bottom \{[\s\S]*background: color-mix\(in srgb, var\(--dialog-danger\) 10%, transparent\);[\s\S]*width: 30px;/u);
   assert.doesNotMatch(styles, /(?<!track )\.stream-tab-card \{/u);
   assert.match(styles, /\.composer \{[\s\S]*width: min\(var\(--dialog-column-width\), calc\(100% - 48px\)\);/u);

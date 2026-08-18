@@ -567,6 +567,7 @@ html[data-view="chat"][data-surface][data-theme] {
 .chat-scroll > .msg-live {
   margin-left: auto;
   margin-right: auto;
+  padding-top: 28px;
   width: min(var(--dialog-column-width), calc(100% - 32px));
 }
 
