@@ -84,6 +84,7 @@ test("order switch icons are real Phosphor SVG nodes in the SVG namespace", asyn
   for (const name of [
     "arrow-clockwise",
     "caret-down",
+    "caret-right",
     "copy",
     "clock-counter-clockwise",
     "arrows-down-up",

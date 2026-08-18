@@ -2305,7 +2305,7 @@ function renderStreamTabs() {
     overflowItems.push(el("button", {
       ...attributes,
       class: "stream-overflow-item",
-      hidden: "",
+      hidden: true,
     }, content()));
     return el("span", {
       class: "stream-tab-group",
@@ -2332,12 +2332,12 @@ function renderStreamTabs() {
     class: "stream-tabs-overflow-menu",
     "data-stream-tabs-overflow-menu": "",
     role: "menu",
-    hidden: "",
+    hidden: true,
   }, overflowItems);
   const overflow = el("span", {
     class: "stream-tabs-overflow",
     "data-stream-tabs-overflow": "",
-    hidden: "",
+    hidden: true,
   }, [overflowButton, overflowMenu]);
   streamTabs.replaceChildren(leftControls, track, overflow);
   streamTabs.hidden = false;

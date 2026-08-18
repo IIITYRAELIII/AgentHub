@@ -26,7 +26,8 @@ test("dialog geometry references semantic tokens without literal colors", async 
   assert.match(styles, /--dialog-stream-tabs-focus-height: 36px;/u);
   assert.match(styles, /&\[data-focus-mode="true"\] \.stream-tabs \{[\s\S]*height: var\(--dialog-stream-tabs-focus-height\);/u);
   assert.match(styles, /\.stream-tabs-track \.stream-tab \{[\s\S]*align-items: center;/u);
-  assert.match(styles, /\.activity-stream-list :is\(\.stream-tab-card\) \{[\s\S]*align-items: center;/u);
+  assert.match(styles, /\.activity-stream-list :is\(\.stream-tab-card\) \{[\s\S]*align-items: center;[\s\S]*width: 100%;/u);
+  assert.doesNotMatch(styles, /\.activity-stream-list \.stream-tab,[\s\S]*?align-items: center;/u);
   assert.match(styles, /\.activity-stream-list \.provider-dot,[\s\S]*\.activity-stream-list \.task-time \{[\s\S]*align-self: center;/u);
   assert.match(styles, /\.provider-dot\[data-state="idle"\] \{[\s\S]*background: var\(--dialog-agent-color\);[\s\S]*opacity: 0\.8;/u);
   assert.match(styles, /\.provider-dot\[data-state="failed"\] \{[\s\S]*0 0 0 2px var\(--dialog-chrome\)/u);
@@ -69,6 +70,9 @@ test("Orange defines the reference dialog palette only as theme tokens", async (
 test("dialog interactions expose overflow, message actions and anchored context", async () => {
   const app = await readFile(new URL("app.js", assets), "utf8");
   assert.match(app, /data-stream-tabs-overflow-count/u);
+  assert.match(app, /class: "stream-tabs-overflow-menu",[\s\S]*hidden: true,/u);
+  assert.match(app, /class: "stream-tabs-overflow",[\s\S]*hidden: true,/u);
+  assert.match(app, /class: "stream-overflow-item",[\s\S]*hidden: true,/u);
   assert.match(app, /scheduleStreamTabsOverflow\(\)/u);
   assert.match(app, /label: "Редактировать"/u);
   assert.match(app, /label: "Повторить"/u);

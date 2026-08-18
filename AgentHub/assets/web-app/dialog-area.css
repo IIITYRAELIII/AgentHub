@@ -395,13 +395,13 @@ html[data-view="chat"][data-surface][data-theme] {
   text-align: left;
 }
 
-.activity-stream-list .stream-tab,
 .activity-stream-list :is(.stream-tab-card) {
   align-items: center;
 }
 
 .activity-stream-list :is(.stream-tab-card) {
   min-height: 32px;
+  width: 100%;
 }
 
 .activity-stream-list .stream-tab-title-row {
