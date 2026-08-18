@@ -83,11 +83,14 @@ export function createDesktopSnapshotFactory({
   const versionCache = new Map();
   let catalogRefresh = null;
 
-  function catalogActiveRun(entry) {
+  function catalogActiveRun(entry, lastMessage) {
     if (entry?.running !== true) return null;
     const provider = String(entry.provider ?? "").trim();
     const threadId = String(entry.threadId ?? "").trim();
     if (!provider || !threadId) return null;
+    const turnId = String(entry.turnId ?? "").trim();
+    const lastAnswerTurnId = String(lastMessage?.turnId ?? "").trim();
+    if (turnId && turnId === lastAnswerTurnId) return null;
     const lastActivityAtMs = Number(entry.lastActivityAtMs);
     const lastMeaningfulProgressAt = Number.isFinite(lastActivityAtMs) && lastActivityAtMs > 0
       ? new Date(lastActivityAtMs).toISOString()
@@ -98,7 +101,7 @@ export function createDesktopSnapshotFactory({
     // advertised as running must still have a current-binding live projection.
     return {
       id: `catalog:${provider}:${threadId}`,
-      turnId: entry.turnId ?? null,
+      turnId: turnId || null,
       provider,
       projectRoot: entry.projectRoot,
       threadId,
@@ -371,12 +374,12 @@ export function createDesktopSnapshotFactory({
     // synthesize only the minimal current-binding projection until its observer
     // is registered. A matching terminal run remains authoritative and is not
     // converted back into an active one.
-    const run = boundRun ?? catalogActiveRun(entry);
+    const lastMessage = tasks.savedLastMessage(task);
+    const run = boundRun ?? catalogActiveRun(entry, lastMessage);
     const context = desktopContextSnapshot(entry.threadId, run?.turnId, entry.contextUsage);
     const internalMaintenanceObserver = isInternalMaintenanceObserver(run, context);
     const runActive = taskRunIsActive(run);
     const visibleRun = internalMaintenanceObserver || !runActive ? null : run;
-    const lastMessage = tasks.savedLastMessage(task);
     const unread = Boolean(
       accountId
       && lastMessage?.updatedAt
@@ -409,7 +412,7 @@ export function createDesktopSnapshotFactory({
       selected: tasks.entryIsSelected(entry, selection.selectedTask()),
       running: internalMaintenanceObserver
         ? false
-        : (run ? runActive : Boolean(entry.running)),
+        : Boolean(run && runActive),
       activityUnknown: entry.activityUnknown === true,
       executionOwner: visibleRun?.executionOwner ?? entry.executionOwner ?? null,
       runtime: visibleRun?.appServer ?? (entry.executionOwner

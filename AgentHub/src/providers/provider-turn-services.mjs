@@ -151,7 +151,10 @@ export class CodexTurnService {
       "saveState", "startTyping", "scheduleObservedRun", "finishProgress", "completeRun",
       "readThread", "developerInstructions",
     ]) requiredFunction(dependencies[name], name);
-    this.#d = dependencies;
+    this.#d = {
+      isContextProbeTurn: () => false,
+      ...dependencies,
+    };
   }
 
   async launch(run, input, temporaryFiles = [], { forceSpeechButton = false } = {}) {
@@ -371,8 +374,9 @@ export class CodexTurnService {
     const active = (Array.isArray(thread?.turns) ? thread.turns : [])
       .filter((turn) => ["inProgress", "in_progress", "running"].includes(String(turn?.status ?? "")));
     if (active.length === 1) {
-      if (isCodexContextProbeTurn(active[0])) return null;
-      return String(active[0]?.id ?? "").trim() || null;
+      const turnId = String(active[0]?.id ?? "").trim();
+      if (isCodexContextProbeTurn(active[0]) || this.#d.isContextProbeTurn(target.threadId, turnId)) return null;
+      return turnId || null;
     }
     if (active.length > 1) throw new Error("В задаче выполняется несколько ходов; выбрать ход для изменения нельзя");
     return null;

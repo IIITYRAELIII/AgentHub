@@ -76,6 +76,27 @@ test("activity mode puts the most recently active Stream first", async () => {
   );
 });
 
+test("Gothic Stream settings keep approved limits and stable geometry", async () => {
+  const {
+    STREAM_CARD_MAX_WIDTH,
+    STREAM_CARD_MIN_WIDTH,
+    calculateOverflowShift,
+    compactStreamActivityValue,
+    resolveStableStreamCardWidth,
+  } = await streamTabsApi();
+  assert.equal(STREAM_CARD_MIN_WIDTH, 90);
+  assert.equal(STREAM_CARD_MAX_WIDTH, 450);
+  assert.equal(compactStreamActivityValue("3 мин 26 с"), "3 мин");
+  assert.equal(compactStreamActivityValue("26 с"), "<1м");
+  assert.equal(calculateOverflowShift(1_838, 1_950, 299), 187);
+  assert.equal(calculateOverflowShift(2_138, 1_950, 0), 188);
+
+  const widths = new Map();
+  assert.equal(resolveStableStreamCardWidth(widths, "themes", 119.25), 119.25);
+  assert.equal(resolveStableStreamCardWidth(widths, "themes", 126.5), 119.25);
+  assert.equal(resolveStableStreamCardWidth(widths, "new-stream"), 0);
+});
+
 test("order switch icons are real Phosphor SVG nodes in the SVG namespace", async () => {
   const { createPhosphorIcon } = await streamTabsApi();
   const document = {

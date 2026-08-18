@@ -160,6 +160,7 @@ const bugReportAttach = document.querySelector("[data-bug-report-attach]");
 const bugReportScreenshots = document.querySelector("[data-bug-report-screenshots]");
 const bugReportSubmit = document.querySelector("[data-bug-report-submit]");
 const bugReportStatus = document.querySelector("[data-bug-report-status]");
+const bugReportFlow = window.AgentHubBugReportFlow;
 const telegramFullscreenButton = document.querySelector("[data-telegram-fullscreen]");
 const claudeGroupToggle = document.querySelector("[data-claude-group-toggle]");
 const streamStatusFillToggle = document.querySelector("[data-stream-status-fill-toggle]");
@@ -5646,11 +5647,19 @@ function setBugReportStatus(message = "", state = "") {
 
 function setBugReportSending(value) {
   bugReportSending = Boolean(value);
-  if (bugReportToggle) bugReportToggle.disabled = bugReportSending;
+  if (bugReportToggle) bugReportToggle.disabled = false;
   if (bugReportSubmit) bugReportSubmit.disabled = bugReportSending;
   if (bugReportAttach) bugReportAttach.disabled = bugReportSending;
   if (bugReportText) bugReportText.disabled = bugReportSending;
   if (bugReportSubmit) bugReportSubmit.textContent = bugReportSending ? "Отправляем…" : "Отправить отчёт";
+}
+
+function applyBugReportFlowState(next) {
+  setBugReportSending(next.sending);
+  setBugReportStatus(next.status, next.statusState);
+  if (bugReportForm) bugReportForm.hidden = next.formHidden;
+  bugReportToggle?.setAttribute("aria-expanded", String(next.expanded));
+  if (next.focus) bugReportText?.focus();
 }
 
 function renderBugReportAttachments() {
@@ -5806,10 +5815,7 @@ bugReportForm?.addEventListener("submit", (event) => {
     setBugReportStatus("Введите описание бага или приложите скриншот.", "error");
     return;
   }
-  setBugReportSending(true);
-  setBugReportStatus("Создаём отчёт и отправляем его в Git…", "pending");
-  if (bugReportForm) bugReportForm.hidden = true;
-  bugReportToggle?.setAttribute("aria-expanded", "false");
+  applyBugReportFlowState(bugReportFlow.pending());
   emit("bug-report:submit", {
     text,
     attachments: bugReportAttachments.slice(),
@@ -6854,20 +6860,13 @@ const AgentHub = {
     completeComposerSend(requestId, accepted);
   },
   completeBugReport(result = {}) {
-    setBugReportSending(false);
+    applyBugReportFlowState(bugReportFlow.complete(result));
     if (result.error) {
-      setBugReportStatus(String(result.error), "error");
-      if (bugReportForm) bugReportForm.hidden = false;
-      bugReportToggle?.setAttribute("aria-expanded", "true");
-      bugReportText?.focus();
       return;
     }
     bugReportAttachments = [];
     if (bugReportText) bugReportText.value = "";
     renderBugReportAttachments();
-    setBugReportStatus();
-    if (bugReportForm) bugReportForm.hidden = true;
-    bugReportToggle?.setAttribute("aria-expanded", "false");
     showToast("Отчёт о баге отправлен");
   },
   /** Живой ход: { author, stage, reasoning, text } или null, чтобы скрыть. */

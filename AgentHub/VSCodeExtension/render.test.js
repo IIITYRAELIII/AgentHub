@@ -1502,8 +1502,8 @@ test("background navigation is empty and settings expose the bug report flow", (
   assert.match(app, /void readBugReportFiles\(screenshots\)/u);
   assert.match(app, /emit\("bug-report:submit"/u);
   assert.match(client, /control\("submit-bug-report"/u);
-  assert.match(app, /if \(bugReportForm\) bugReportForm\.hidden = true/u);
-  assert.match(app, /bugReportToggle\?\.setAttribute\("aria-expanded", "false"\)/u);
+  assert.match(app, /if \(bugReportForm\) bugReportForm\.hidden = next\.formHidden/u);
+  assert.match(app, /bugReportToggle\?\.setAttribute\("aria-expanded", String\(next\.expanded\)\)/u);
   assert.match(client, /LONG_CONTROL_ACTIONS = new Set\(\["rotate-stream", "submit-bug-report"\]\)/u);
   assert.match(client, /LONG_CONTROL_ACTIONS\.has\(action\) \? LONG_CONTROL_TIMEOUT_MS/u);
 });

@@ -560,7 +560,6 @@ function receiptDeliveryPatch(receipt) {
   if (receipt?.deferred === true) {
     return deliveryPatch(receipt?.queued === true ? "queued" : "deferred");
   }
-  if (receipt?.cancelled === true) return deliveryPatch("rejected");
   return null;
 }
 
@@ -569,14 +568,22 @@ function applyMessageReceipts(snapshot) {
     const clientUserMessageId = String(receipt?.clientUserMessageId ?? "").trim();
     const provider = String(receipt?.provider ?? "").trim();
     const threadId = String(receipt?.threadId ?? "").trim();
+    if (!clientUserMessageId || !provider || !threadId) continue;
+    const streamId = String(receipt?.streamId ?? "").trim();
+    const stableTaskId = taskId(provider, threadId, streamId);
+    if (receipt?.cancelled === true) {
+      agentHub.completeSend(clientUserMessageId, { accepted: true });
+      outgoingMessages(stableTaskId).delete(clientUserMessageId);
+      optimisticDeferredClientUserMessageIds.delete(clientUserMessageId);
+      deferredClientUserMessageIds.delete(clientUserMessageId);
+      continue;
+    }
     const patch = receiptDeliveryPatch(receipt);
-    if (!clientUserMessageId || !provider || !threadId || !patch) continue;
+    if (!patch) continue;
     const accepted = receipt.accepted === true
       || receipt.deferred === true
       || receipt.steered === true;
     agentHub.completeSend(clientUserMessageId, { accepted });
-    const streamId = String(receipt?.streamId ?? "").trim();
-    const stableTaskId = taskId(provider, threadId, streamId);
     const restoredText = String(receipt.displayText ?? "");
     const restoredAnnotations = normalizedResponseAnnotations(receipt.responseAnnotations);
     const restoredRequest = String(receipt.responseAnnotationRequest ?? "");
@@ -1365,8 +1372,20 @@ function observeContextCompactions(tasks) {
     const measurementPending = measurementStatus === "running"
       || (!measurementStatus && context?.usagePending);
     if (status === "completed" && !measurementPending) {
-      const visibleBeforePercent = beforePercent ?? "?";
-      const visibleAfterPercent = afterPercent ?? "?";
+      const measurementKnown = beforePercent !== null && afterPercent !== null;
+      const maintenanceLabel = measurementKnown
+        ? "Свёртка завершена успешно"
+        : "Свёртка завершена";
+      const maintenanceDetail = measurementKnown
+        ? `${beforePercent}% → ${afterPercent}%`
+        : beforePercent !== null
+          ? `${beforePercent}% → замер после не получен`
+          : "Замер контекста не получен";
+      const text = measurementKnown
+        ? `Свёртка завершена успешно ${beforePercent}%>${afterPercent}%`
+        : beforePercent !== null
+          ? `Свёртка завершена; до ${beforePercent}%, замер после не получен`
+          : "Свёртка завершена; замер контекста не получен";
       if (rememberMaintenanceEvent(stableTaskId, {
         id: eventId,
         provider: task.provider,
@@ -1375,11 +1394,11 @@ function observeContextCompactions(tasks) {
         turnId: compaction.turnId ?? null,
         maintenanceType: "compaction",
         maintenanceStatus: "completed",
-        maintenanceLabel: "Свёртка завершена успешно",
-        maintenanceDetail: `${visibleBeforePercent}% → ${visibleAfterPercent}%`,
+        maintenanceLabel,
+        maintenanceDetail,
         beforePercent,
         afterPercent,
-        text: `Свёртка завершена успешно ${visibleBeforePercent}%>${visibleAfterPercent}%`,
+        text,
         time: existingEvent?.time ?? compaction.completedAt ?? new Date().toISOString(),
       })) changed.add(stableTaskId);
     }

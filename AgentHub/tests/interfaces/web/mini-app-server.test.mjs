@@ -284,8 +284,12 @@ test("Telegram Mini App initData is signed, fresh and allowlisted", () => {
 test("Mini App serves the SQLite journal and announces revision changes", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-mini-app-"));
   const journalDatabase = memoryJournal(DAY_HTML);
-  const health = createRuntimeHealth();
-  health.begin()
+  const health = createRuntimeHealth({ now: () => 1_000 });
+  health.begin({
+    operations: [
+      { id: "provider", label: "Подключение провайдера", state: "failed", error: "C:/secret/provider.log" },
+    ],
+  })
     .setCapability("provider", { critical: true, state: "failed", error: "offline" })
     .setCapability("telegram", { critical: false, state: "failed", error: "unavailable" })
     .complete();
@@ -315,6 +319,19 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
         { name: "provider", critical: true, state: "failed" },
         { name: "telegram", critical: false, state: "failed" },
       ],
+      startup: {
+        startedAtMs: 1_000,
+        completedAtMs: 1_000,
+        operations: [
+          {
+            id: "provider",
+            label: "Подключение провайдера",
+            state: "failed",
+            startedAtMs: 1_000,
+            completedAtMs: 1_000,
+          },
+        ],
+      },
     });
     assert.equal(healthResponse.headers.get("cache-control"), "no-store");
     assert.match(healthResponse.headers.get("content-security-policy"), /default-src 'self'/);

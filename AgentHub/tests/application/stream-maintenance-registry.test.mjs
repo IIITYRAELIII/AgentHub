@@ -27,3 +27,42 @@ test("unbound maintenance falls back to the provider Thread identity", () => {
   const target = { provider: "codex", projectRoot: "D:/Work", threadId: "thread-1" };
   assert.equal(streamMaintenanceKey(target), "provider:codex:d:/work:thread-1");
 });
+
+test("unbound automatic maintenance blocks the matching Stream target", () => {
+  const registry = new StreamMaintenanceRegistry();
+  const automaticRun = { provider: "codex", projectRoot: "D:/Work", threadId: "thread-1" };
+  const clientTarget = {
+    provider: "codex",
+    projectRoot: "D:/Work",
+    streamId: "stream-1",
+    threadId: "thread-1",
+  };
+
+  const entry = registry.begin(automaticRun, "automatic-compaction");
+
+  assert.ok(entry);
+  assert.equal(registry.isActive(clientTarget), true);
+  assert.equal(registry.begin(clientTarget), null);
+  assert.equal(registry.entry(clientTarget), entry);
+  assert.equal(registry.end(clientTarget), true);
+  assert.equal(registry.activeCount(), 0);
+  assert.equal(registry.isActive(automaticRun), false);
+});
+
+test("Stream maintenance blocks a provider target that lacks Stream metadata", () => {
+  const registry = new StreamMaintenanceRegistry();
+  const streamRun = {
+    provider: "codex",
+    projectRoot: "D:/Work",
+    streamId: "stream-1",
+    threadId: "thread-1",
+  };
+  const providerTarget = { provider: "codex", projectRoot: "D:/Work", threadId: "thread-1" };
+
+  const entry = registry.begin(streamRun, "context-measurement");
+
+  assert.ok(entry);
+  assert.equal(registry.isActive(providerTarget), true);
+  assert.equal(registry.end(entry), true);
+  assert.equal(registry.isActive(providerTarget), false);
+});

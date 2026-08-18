@@ -281,20 +281,27 @@ function historyContainsLatestAnswer(history, task) {
     // durable history contains its user item. With an exact latest turn id,
     // keep refreshing until the whole exchange is present.
     if (expectedTurnId && !hasUserMessage) return false;
+    const agentMessages = (Array.isArray(item?.messages) ? item.messages : [])
+      .filter((message) => message?.role === "agent" && String(message?.text ?? "").trim());
+    const phasedAgentMessages = agentMessages.filter((message) => String(message?.phase ?? "").trim());
+    const finalAgentMessages = phasedAgentMessages.filter((message) => (
+      ["final", "final_answer", "finalAnswer"].includes(String(message?.phase ?? ""))
+    ));
     const texts = [
-      String(item?.answer ?? "").trim(),
-      ...(Array.isArray(item?.messages) ? item.messages : [])
-        .filter((message) => message?.role === "agent")
-        .map((message) => String(message?.text ?? "").trim()),
+      ...(expectedAnswer || !phasedAgentMessages.length
+        ? [String(item?.answer ?? "").trim()]
+        : []),
+      ...finalAgentMessages.map((message) => String(message.text).trim()),
+      ...(!phasedAgentMessages.length
+        ? agentMessages.map((message) => String(message.text).trim())
+        : []),
     ].filter(Boolean);
-    if (expectedTurnId) return texts.length > 0;
-    return expectedAnswer
-      ? texts.some((text) => (
-          text === expectedAnswer
-          || text.startsWith(expectedAnswer)
-          || expectedAnswer.startsWith(text)
-        ))
-      : texts.length > 0;
+    if (!expectedAnswer) return texts.length > 0;
+    return texts.some((text) => (
+      text === expectedAnswer
+      || text.startsWith(expectedAnswer)
+      || expectedAnswer.startsWith(text)
+    ));
   });
 }
 

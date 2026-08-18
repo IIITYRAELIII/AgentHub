@@ -11,6 +11,14 @@
     END: "end",
   });
 
+  const STREAM_CARD_WIDTH_MODES = Object.freeze({
+    AUTO: "auto",
+    FIXED: "fixed",
+  });
+
+  const STREAM_CARD_MIN_WIDTH = 90;
+  const STREAM_CARD_MAX_WIDTH = 450;
+
   const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
   const PHOSPHOR_ICON_PATHS = Object.freeze({
     "caret-down": "M213.66,101.66l-80,80a8,8,0,0,1-11.32,0l-80-80A8,8,0,0,1,53.66,90.34L128,164.69l74.34-74.35a8,8,0,0,1,11.32,11.32Z",
@@ -128,6 +136,26 @@
       || /(?:fail|error|сбой|ошиб)/iu.test(`${String(task?.status ?? "")} ${String(task?.statusLabel ?? "")}`);
     if (failed) return "failed";
     return task?.running ? "running" : "idle";
+  }
+
+  function compactStreamActivityValue(value) {
+    const source = String(value ?? "").trim();
+    const compact = source.replace(/\s*\d+\s*с$/u, "").trim();
+    return compact !== source ? compact || "<1м" : source;
+  }
+
+  function resolveStableStreamCardWidth(widths, streamId, measuredWidth = 0) {
+    const key = String(streamId ?? "").trim();
+    if (!key) return 0;
+    const cached = Number(widths.get(key)) || 0;
+    if (cached > 0) return cached;
+    const width = Number(measuredWidth) || 0;
+    if (width > 0) widths.set(key, width);
+    return width;
+  }
+
+  function calculateOverflowShift(overflowLeft, lastVisibleRight, currentShift = 0) {
+    return Math.max(0, Number(overflowLeft) + Number(currentShift) - Number(lastVisibleRight));
   }
 
   function includeTaskInActivityRail(task, kind) {
@@ -298,6 +326,333 @@
     }
   }
 
+  class StreamCardSettingsController {
+    constructor(documentRef, windowRef) {
+      this.document = documentRef;
+      this.window = windowRef;
+      this.root = documentRef.documentElement;
+      this.tabs = documentRef.querySelector("[data-stream-tabs]");
+      this.widthMode = STREAM_CARD_WIDTH_MODES.AUTO;
+      this.fixedWidth = STREAM_CARD_MIN_WIDTH;
+      this.gapEnabled = false;
+      this.open = false;
+      this.frame = 0;
+      this.autoWidths = new Map();
+      this.tabsObserver = null;
+      this.rootObserver = null;
+      if (!this.tabs) return;
+      this.onDocumentClick = (event) => {
+        const wrapper = this.tabs.querySelector("[data-stream-card-settings]");
+        if (wrapper && !wrapper.contains(event.target)) this.close(wrapper);
+      };
+      this.onDocumentKeydown = (event) => {
+        if (event.key === "Escape") this.close(this.tabs.querySelector("[data-stream-card-settings]"));
+      };
+      this.document.addEventListener("click", this.onDocumentClick);
+      this.document.addEventListener("keydown", this.onDocumentKeydown);
+      this.window.addEventListener("resize", (event) => {
+        if (event.isTrusted) this.autoWidths.clear();
+        this.schedule();
+      });
+      if (typeof this.window.MutationObserver === "function") {
+        this.tabsObserver = new this.window.MutationObserver((mutations) => {
+          const overflowChanged = mutations.some((mutation) => mutation.type === "attributes"
+            && mutation.attributeName === "hidden"
+            && mutation.target.matches?.(".stream-tab-group, .stream-tabs-overflow"));
+          const contentChanged = mutations.some((mutation) => mutation.type !== "attributes"
+            || mutation.attributeName === "data-order-mode");
+          if (contentChanged) this.sync();
+          else if (overflowChanged) this.alignOverflow();
+        });
+        this.tabsObserver.observe(this.tabs, {
+          attributes: true,
+          attributeFilter: ["data-order-mode", "hidden"],
+          characterData: true,
+          childList: true,
+          subtree: true,
+        });
+        this.rootObserver = new this.window.MutationObserver(() => this.schedule());
+        this.rootObserver.observe(this.root, {
+          attributes: true,
+          attributeFilter: ["data-surface", "data-theme"],
+        });
+      }
+      this.schedule();
+    }
+
+    isActive() {
+      const wide = typeof this.window.matchMedia !== "function"
+        || this.window.matchMedia("(min-width: 860px)").matches;
+      return wide
+        && this.root.dataset.theme === "gothic"
+        && this.root.dataset.surface !== "mobile";
+    }
+
+    schedule() {
+      if (this.frame) return;
+      this.frame = this.window.requestAnimationFrame(() => {
+        this.frame = 0;
+        this.sync();
+      });
+    }
+
+    sync() {
+      if (!this.isActive()) {
+        this.root.removeAttribute("data-stream-card-settings");
+        this.tabs.querySelector("[data-stream-card-settings]")?.remove();
+        this.tabs.removeAttribute("data-stream-card-width-mode");
+        this.tabs.removeAttribute("data-stream-card-gap-mode");
+        this.tabs.style.removeProperty("--stream-card-width");
+        this.tabs.style.removeProperty("--stream-overflow-shift");
+        return;
+      }
+      const overflow = this.tabs.querySelector(".stream-tabs-overflow");
+      const orderToggle = this.tabs.querySelector(".stream-order-toggle");
+      if (!overflow || !orderToggle) return;
+      this.root.dataset.streamCardSettings = "true";
+      let wrapper = this.tabs.querySelector("[data-stream-card-settings]");
+      if (!wrapper) wrapper = this.createWrapper(overflow, orderToggle);
+      this.update(wrapper);
+      this.alignOverflow();
+    }
+
+    createWrapper(overflow, orderToggle) {
+      const wrapper = this.document.createElement("span");
+      wrapper.className = "stream-card-settings";
+      wrapper.dataset.streamCardSettings = "true";
+      wrapper.innerHTML = `
+        <button type="button" class="stream-card-settings-toggle" data-stream-card-settings-toggle
+          aria-label="Настройки карточек потоков" aria-expanded="false" title="Настройки карточек потоков"></button>
+        <div class="stream-card-settings-menu" data-stream-card-settings-menu role="dialog"
+          aria-label="Настройки карточек потоков" hidden>
+          <div class="stream-card-settings-section stream-card-settings-order-section">
+            <span class="stream-card-settings-kicker">Порядок потоков</span>
+            <span class="stream-card-settings-segmented" role="group" aria-label="Порядок потоков">
+              <button type="button" data-stream-order-mode="activity" title="По последней активности">Авто</button>
+              <button type="button" data-stream-order-mode="manual">Фикс</button>
+            </span>
+          </div>
+          <div class="stream-card-settings-section">
+            <span class="stream-card-settings-kicker">Ширина карточек потоков</span>
+            <span class="stream-card-settings-segmented" role="group" aria-label="Режим ширины карточек потоков">
+              <button type="button" data-stream-width-mode="auto" aria-pressed="true">Авто</button>
+              <button type="button" data-stream-width-mode="fixed" aria-pressed="false">Фикс</button>
+            </span>
+            <label class="stream-card-settings-range" data-stream-card-range hidden>
+              <span><span data-stream-card-width-value>${this.fixedWidth}</span> px</span>
+              <input type="range" min="${STREAM_CARD_MIN_WIDTH}" max="${STREAM_CARD_MAX_WIDTH}" step="1"
+                value="${this.fixedWidth}" data-stream-card-width aria-label="Ширина карточек потоков">
+              <small>${STREAM_CARD_MIN_WIDTH} — ${STREAM_CARD_MAX_WIDTH} px</small>
+            </label>
+          </div>
+          <div class="stream-card-settings-section stream-card-settings-gap-section">
+            <span class="stream-card-settings-kicker">Отступ</span>
+            <button type="button" class="stream-card-gap-toggle" role="switch" aria-checked="false"
+              aria-label="Отступ между карточками потоков" data-stream-gap-toggle>
+              <span class="switch-track" aria-hidden="true"></span>
+            </button>
+          </div>
+        </div>`;
+      const sourceIcon = this.document.querySelector(".view-settings svg");
+      if (sourceIcon) {
+        const icon = sourceIcon.cloneNode(true);
+        icon.classList.add("stream-card-settings-icon");
+        wrapper.querySelector("[data-stream-card-settings-toggle]").append(icon);
+      }
+      overflow.after(wrapper);
+      const settingsButton = wrapper.querySelector("[data-stream-card-settings-toggle]");
+      const settingsMenu = wrapper.querySelector("[data-stream-card-settings-menu]");
+      settingsMenu.hidden = !this.open;
+      settingsButton.setAttribute("aria-expanded", String(this.open));
+      settingsButton.addEventListener("click", () => {
+        this.open = settingsMenu.hidden;
+        settingsMenu.hidden = !this.open;
+        settingsButton.setAttribute("aria-expanded", String(this.open));
+        if (this.open) this.update(wrapper);
+      });
+      wrapper.querySelectorAll("[data-stream-order-mode]").forEach((button) => {
+        button.addEventListener("click", () => {
+          if (button.dataset.streamOrderMode !== this.orderMode()) orderToggle.click();
+          this.window.setTimeout(() => this.schedule(), 0);
+        });
+      });
+      wrapper.querySelectorAll("[data-stream-width-mode]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const nextMode = button.dataset.streamWidthMode === STREAM_CARD_WIDTH_MODES.FIXED
+            ? STREAM_CARD_WIDTH_MODES.FIXED
+            : STREAM_CARD_WIDTH_MODES.AUTO;
+          if (nextMode !== this.widthMode && nextMode === STREAM_CARD_WIDTH_MODES.AUTO) {
+            this.autoWidths.clear();
+          }
+          this.widthMode = nextMode;
+          this.update(wrapper);
+          this.refreshOverflow();
+        });
+      });
+      wrapper.querySelector("[data-stream-gap-toggle]").addEventListener("click", () => {
+        this.gapEnabled = !this.gapEnabled;
+        this.update(wrapper);
+        this.refreshOverflow();
+      });
+      const range = wrapper.querySelector("[data-stream-card-width]");
+      range.addEventListener("input", (event) => {
+        this.fixedWidth = Math.min(
+          STREAM_CARD_MAX_WIDTH,
+          Math.max(STREAM_CARD_MIN_WIDTH, Number(event.currentTarget.value) || STREAM_CARD_MIN_WIDTH),
+        );
+        wrapper.querySelector("[data-stream-card-width-value]").textContent = String(this.fixedWidth);
+        this.update(wrapper);
+      });
+      range.addEventListener("change", () => this.refreshOverflow());
+      range.addEventListener("pointerup", () => this.refreshOverflow());
+      return wrapper;
+    }
+
+    orderMode() {
+      return this.tabs.dataset.orderMode === STREAM_ORDER_MODES.MANUAL
+        ? STREAM_ORDER_MODES.MANUAL
+        : STREAM_ORDER_MODES.ACTIVITY;
+    }
+
+    update(wrapper) {
+      const orderMode = this.orderMode();
+      wrapper.querySelectorAll("[data-stream-order-mode]").forEach((button) => {
+        button.setAttribute("aria-pressed", String(button.dataset.streamOrderMode === orderMode));
+      });
+      this.tabs.dataset.streamCardWidthMode = this.widthMode;
+      if (this.widthMode === STREAM_CARD_WIDTH_MODES.FIXED) {
+        this.tabs.style.setProperty("--stream-card-width", `${this.fixedWidth}px`);
+      } else {
+        this.tabs.style.removeProperty("--stream-card-width");
+      }
+      wrapper.querySelectorAll("[data-stream-width-mode]").forEach((button) => {
+        button.setAttribute("aria-pressed", String(button.dataset.streamWidthMode === this.widthMode));
+      });
+      this.tabs.dataset.streamCardGapMode = this.gapEnabled ? "on" : "off";
+      wrapper.querySelector("[data-stream-gap-toggle]")
+        ?.setAttribute("aria-checked", String(this.gapEnabled));
+      const rangeWrap = wrapper.querySelector("[data-stream-card-range]");
+      if (rangeWrap) rangeWrap.hidden = this.widthMode !== STREAM_CARD_WIDTH_MODES.FIXED;
+      this.updateCardPresentation();
+    }
+
+    updateCardPresentation() {
+      this.tabs.querySelectorAll(".stream-tab .task-time").forEach((time) => {
+        const value = compactStreamActivityValue(time.textContent);
+        if (value !== time.textContent.trim()) {
+          if (!time.style.getPropertyValue("--stream-task-time-font-size")) {
+            time.style.setProperty(
+              "--stream-task-time-font-size",
+              this.window.getComputedStyle(time).fontSize,
+            );
+          }
+          time.dataset.compactStreamTime = value;
+        } else {
+          delete time.dataset.compactStreamTime;
+        }
+      });
+      this.tabs.querySelectorAll(".stream-tab").forEach((tab) => {
+        const streamId = tab.dataset.streamTabId;
+        if (this.widthMode === STREAM_CARD_WIDTH_MODES.FIXED) {
+          const width = `${this.fixedWidth}px`;
+          tab.style.setProperty("box-sizing", "border-box", "important");
+          tab.style.setProperty("flex", `0 0 ${width}`, "important");
+          tab.style.setProperty("max-width", width, "important");
+          tab.style.setProperty("min-width", width, "important");
+          tab.style.setProperty("padding-inline", "0.5rem", "important");
+          tab.style.setProperty("width", width, "important");
+        } else {
+          const stableWidth = resolveStableStreamCardWidth(this.autoWidths, streamId);
+          if (stableWidth > 0) {
+            const width = `${stableWidth}px`;
+            tab.style.setProperty("box-sizing", "border-box", "important");
+            tab.style.setProperty("flex", `0 0 ${width}`, "important");
+            tab.style.setProperty("max-width", width, "important");
+            tab.style.setProperty("min-width", width, "important");
+            tab.style.removeProperty("padding-inline");
+            tab.style.setProperty("width", width, "important");
+          } else {
+            for (const property of [
+              "box-sizing",
+              "flex",
+              "max-width",
+              "min-width",
+              "padding-inline",
+              "width",
+            ]) tab.style.removeProperty(property);
+          }
+        }
+      });
+      this.window.requestAnimationFrame(() => {
+        this.tabs.querySelectorAll(".stream-tab").forEach((tab) => {
+          if (this.widthMode === STREAM_CARD_WIDTH_MODES.AUTO) {
+            const width = resolveStableStreamCardWidth(
+              this.autoWidths,
+              tab.dataset.streamTabId,
+              tab.getBoundingClientRect().width,
+            );
+            if (width > 0) {
+              tab.style.setProperty("box-sizing", "border-box", "important");
+              tab.style.setProperty("flex", `0 0 ${width}px`, "important");
+              tab.style.setProperty("max-width", `${width}px`, "important");
+              tab.style.setProperty("min-width", `${width}px`, "important");
+              tab.style.setProperty("width", `${width}px`, "important");
+            }
+          }
+          const title = tab.querySelector(".stream-tab-title");
+          if (!title) return;
+          if (title.scrollWidth > title.clientWidth) {
+            title.title = tab.dataset.streamName || title.textContent.trim();
+          } else {
+            title.removeAttribute("title");
+          }
+        });
+      });
+    }
+
+    refreshOverflow() {
+      this.window.requestAnimationFrame(() => {
+        this.window.dispatchEvent(new this.window.Event("resize"));
+      });
+    }
+
+    alignOverflow() {
+      const visibleTabs = [...this.tabs.querySelectorAll(".stream-tabs-track .stream-tab")]
+        .filter((tab) => tab.getBoundingClientRect().width > 0);
+      const lastVisible = visibleTabs.at(-1);
+      const moreButton = this.tabs.querySelector(".stream-tabs-more");
+      if (!lastVisible || !moreButton || moreButton.getBoundingClientRect().width === 0) {
+        this.tabs.style.removeProperty("--stream-overflow-shift");
+        return;
+      }
+      const currentShift = Number.parseFloat(
+        this.tabs.style.getPropertyValue("--stream-overflow-shift") || "0",
+      ) || 0;
+      const shift = calculateOverflowShift(
+        moreButton.getBoundingClientRect().left,
+        lastVisible.getBoundingClientRect().right,
+        currentShift,
+      );
+      const value = `${shift}px`;
+      if (this.tabs.style.getPropertyValue("--stream-overflow-shift") !== value) {
+        this.tabs.style.setProperty("--stream-overflow-shift", value);
+      }
+    }
+
+    close(wrapper) {
+      const button = wrapper?.querySelector("[data-stream-card-settings-toggle]");
+      const menu = wrapper?.querySelector("[data-stream-card-settings-menu]");
+      if (!button || !menu) return;
+      this.open = false;
+      button.setAttribute("aria-expanded", "false");
+      menu.hidden = true;
+    }
+  }
+
+  function installStreamCardSettings(documentRef, windowRef) {
+    return new StreamCardSettingsController(documentRef, windowRef);
+  }
+
   window.AgentHubStreamTabs = Object.freeze({
     archiveStreamIntent,
     activityStreamSections,
@@ -308,12 +663,19 @@
     orderWorkspaceGroups,
     resolveTaskHierarchy,
     STREAM_ACTIVITY_DIRECTIONS,
+    STREAM_CARD_MAX_WIDTH,
+    STREAM_CARD_MIN_WIDTH,
+    STREAM_CARD_WIDTH_MODES,
     STREAM_ORDER_MODES,
+    calculateOverflowShift,
+    compactStreamActivityValue,
+    installStreamCardSettings,
     normalizeStreamActivityDirection,
     normalizeStreamOrderMode,
     applyOpenStreamSelection,
     orderWorkspaceStreams,
     reconcileOpenStreamIds,
+    resolveStableStreamCardWidth,
     streamCreationSide,
     streamDeckRenderKey,
     streamLastActivity,
@@ -322,4 +684,13 @@
     streamsAreDraggable,
     taskListSections,
   });
+
+  if (typeof document !== "undefined") {
+    const start = () => installStreamCardSettings(document, window);
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", start, { once: true });
+    } else {
+      start();
+    }
+  }
 })();

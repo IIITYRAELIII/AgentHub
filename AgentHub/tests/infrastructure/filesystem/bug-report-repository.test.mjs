@@ -60,13 +60,15 @@ test("bug report commit and push contain only one generated report folder", asyn
       screenshots: 1,
       pushed: true,
     });
-    const committed = (await git(repository, "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"))
+    const remoteHead = (await git(root, `--git-dir=${origin}`, "rev-parse", "main")).trim();
+    const committed = (await git(root, `--git-dir=${origin}`, "diff-tree", "--no-commit-id", "--name-only", "-r", remoteHead))
       .trim().split(/\r?\n/u);
     assert.deepEqual(committed, [
       `AgentHub/Bugs/bug-${reportId}/report.md`,
       `AgentHub/Bugs/bug-${reportId}/screenshot-01.png`,
     ]);
     assert.equal((await git(repository, "diff", "--cached", "--name-only")).trim(), "notes.txt");
+    assert.equal((await git(repository, "rev-parse", "HEAD")).trim(), baseline);
     assert.match(
       await git(root, `--git-dir=${origin}`, "show", `main:AgentHub/Bugs/bug-${reportId}/report.md`),
       /Кнопка не отвечает/u,
@@ -76,21 +78,18 @@ test("bug report commit and push contain only one generated report folder", asyn
       reports: [],
       baseline: true,
     });
-    const incoming = await reports.addedSince(baseline);
-    assert.equal(incoming.baseline, false);
-    assert.deepEqual(incoming.reports, [{
-      id: reportId,
-      folder: `AgentHub/Bugs/bug-${reportId}`,
-      text: "Кнопка не отвечает",
-      screenshots: 1,
-    }]);
+    assert.deepEqual(await reports.addedSince(baseline), {
+      head: baseline,
+      reports: [],
+      baseline: false,
+    });
     await assert.rejects(() => readFile(screenshot), /ENOENT/u);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("bug report refuses to push when main already has unpushed commits", async () => {
+test("bug report publishes without pushing existing local commits", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-bug-report-ahead-"));
   const origin = path.join(root, "origin.git");
   const repository = path.join(root, "Utilities");
@@ -109,13 +108,69 @@ test("bug report refuses to push when main already has unpushed commits", async 
     await git(repository, "add", "local.txt");
     await git(repository, "commit", "-m", "Local ahead");
 
+    const localHead = (await git(repository, "rev-parse", "HEAD")).trim();
     const reports = new BugReportRepository({ repository });
+    const result = await reports.submit({
+      text: "Не отправлять соседний commit",
+      reportId: "018f6c86-3f34-7a31-8f27-16f5b96cce62",
+    });
+
+    assert.equal(result.pushed, true);
+    assert.equal((await git(repository, "rev-parse", "HEAD")).trim(), localHead);
     await assert.rejects(
-      () => reports.submit({
-        text: "Не отправлять соседний commit",
-        reportId: "018f6c86-3f34-7a31-8f27-16f5b96cce62",
-      }),
-      /main должна быть синхронизирована/u,
+      () => git(root, `--git-dir=${origin}`, "show", "main:local.txt"),
+      /Command failed/u,
+    );
+    assert.match(
+      await git(root, `--git-dir=${origin}`, "show", `main:AgentHub/Bugs/bug-${result.id}/report.md`),
+      /Не отправлять соседний commit/u,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("bug report publishes when local main is behind upstream", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-bug-report-behind-"));
+  const origin = path.join(root, "origin.git");
+  const repository = path.join(root, "Utilities");
+  const publisher = path.join(root, "publisher");
+  try {
+    await git(root, "init", "--bare", "--initial-branch=main", origin);
+    await git(root, "init", "--initial-branch=main", repository);
+    await git(repository, "config", "user.name", "Agent Hub Test");
+    await git(repository, "config", "user.email", "agent-hub@example.test");
+    await mkdir(path.join(repository, "AgentHub"), { recursive: true });
+    await writeFile(path.join(repository, "AgentHub", "package.json"), "{}\n", "utf8");
+    await git(repository, "add", "AgentHub/package.json");
+    await git(repository, "commit", "-m", "Initial");
+    await git(repository, "remote", "add", "origin", origin);
+    await git(repository, "push", "-u", "origin", "main");
+    const localHead = (await git(repository, "rev-parse", "HEAD")).trim();
+
+    await git(root, "clone", origin, publisher);
+    await git(publisher, "config", "user.name", "Publisher");
+    await git(publisher, "config", "user.email", "publisher@example.test");
+    await writeFile(path.join(publisher, "remote.txt"), "new upstream content\n", "utf8");
+    await git(publisher, "add", "remote.txt");
+    await git(publisher, "commit", "-m", "Advance upstream");
+    await git(publisher, "push", "origin", "main");
+
+    const reports = new BugReportRepository({ repository });
+    const result = await reports.submit({
+      text: "Локальная main отстаёт",
+      reportId: "018f6c86-3f34-7a31-8f27-16f5b96cce63",
+    });
+
+    assert.equal(result.pushed, true);
+    assert.equal((await git(repository, "rev-parse", "HEAD")).trim(), localHead);
+    assert.equal(
+      await git(root, `--git-dir=${origin}`, "show", "main:remote.txt"),
+      "new upstream content\n",
+    );
+    assert.match(
+      await git(root, `--git-dir=${origin}`, "show", `main:AgentHub/Bugs/bug-${result.id}/report.md`),
+      /Локальная main отстаёт/u,
     );
   } finally {
     await rm(root, { recursive: true, force: true });

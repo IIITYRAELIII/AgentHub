@@ -197,6 +197,9 @@ export function createProviderOperationComposition({
     finishProgress: (...args) => taskProgress().finish(...args),
     completeRun: (run) => managedRunLifecycle.complete(run),
     readThread: readCodexThread,
+    isContextProbeTurn: (threadId, turnId) => (
+      contextCompactions.get(threadId)?.probeTurnIds?.includes(String(turnId ?? "").trim()) === true
+    ),
     developerInstructions: ({ provider, threadId, streamId }) => resolveHubDeveloperInstructions({
       provider,
       threadId,

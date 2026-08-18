@@ -1071,11 +1071,17 @@ export class MiniAppServer {
     if (url.pathname === "/health") {
       // The probe stays unauthenticated, so it reports liveness and state without
       // the startup error text, which carries local paths and provider messages.
-      const { capabilities, ...summary } = this.#health.snapshot();
+      const { capabilities, startup, ...summary } = this.#health.snapshot();
       json(response, 200, {
         ok: true,
         ...summary,
         capabilities: capabilities.map(({ error: _error, ...capability }) => capability),
+        ...(startup ? {
+          startup: {
+            ...startup,
+            operations: startup.operations.map(({ error: _error, ...operation }) => operation),
+          },
+        } : {}),
       }, method);
       return;
     }

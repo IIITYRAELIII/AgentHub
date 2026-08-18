@@ -29,6 +29,7 @@ const DASHBOARD_BOT_PAIRING_CODE_PATTERN = /^[A-Z2-9]{8}$/u;
 const DASHBOARD_BOT_HUB_NAME_MAX_CHARS = 80;
 const DASHBOARD_BOT_HUB_VERIFIER_PATTERN = /^sha256:[a-f0-9]{64}$/u;
 const DASHBOARD_BOT_HUB_REGISTRY_MAX_ENTRIES = 1_000;
+const DASHBOARD_BOT_ROUTER_NAME = "dashboard-bot:router";
 const DASHBOARD_BOT_SERVICE_IDENTITY_KEY = "dashboard-bot:service-identity";
 const DASHBOARD_BOT_BUNDLE_CALLBACK_PATTERN = /^forward-bundle:(send|separate|cancel):([0-9a-f-]{36})$/iu;
 const DASHBOARD_BOT_BUNDLE_MAX_ITEMS = 100;
@@ -575,6 +576,7 @@ async function dashboardBotTelegramRequest(env, method, body = {}) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(15_000),
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || payload?.ok !== true) {
@@ -637,24 +639,35 @@ async function updateDashboardBotCard(env, registryStore, card) {
     disable_web_page_preview: true,
     reply_markup: card.replyMarkup,
   };
-  if (card.mode === "edit" && Number.isSafeInteger(card.messageId)) {
+  const clearStoredCard = async () => registryStore.fetch(new Request(
+    "https://journal.internal/dashboard-bot/card",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userId: card.userId, id: card.bundleId, failed: true }),
+    },
+  ));
+  if (card.mode === "replace" && Number.isSafeInteger(card.messageId)) {
+    await dashboardBotTelegramRequest(env, "deleteMessage", {
+      chat_id: card.chatId,
+      message_id: card.messageId,
+    }).catch(() => null);
+    await clearStoredCard();
+  } else if (card.mode === "edit" && Number.isSafeInteger(card.messageId)) {
     body.message_id = card.messageId;
     try {
       return await dashboardBotTelegramRequest(env, "editMessageText", body);
     } catch (error) {
       if (/message is not modified/iu.test(error.message)) return null;
-      throw error;
+      await clearStoredCard();
+      delete body.message_id;
     }
   }
   let sent;
   try {
     sent = await dashboardBotTelegramRequest(env, "sendMessage", body);
   } catch (error) {
-    await registryStore.fetch(new Request("https://journal.internal/dashboard-bot/card", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ userId: card.userId, id: card.bundleId, failed: true }),
-    }));
+    await clearStoredCard();
     throw error;
   }
   if (Number.isSafeInteger(sent?.message_id)) {
@@ -1234,6 +1247,75 @@ export class JournalStore extends DurableObject {
     return this.#registerDashboardBotHub(payload);
   }
 
+  async #exportDashboardBotHub(payload) {
+    const { hubId, secret } = dashboardBotHubRegistration(payload);
+    const record = await this.ctx.storage.get(dashboardBotHubKey(hubId));
+    if (!record) throw new Error("dashboard bot hub is not registered");
+    if (record.secret !== secret) throw new Error("dashboard bot hub id conflict");
+    const userId = String(record.userId ?? "");
+    const [mappedHubId, bundle, recent, pairing] = await Promise.all([
+      userId ? this.ctx.storage.get(dashboardBotUserKey(userId)) : null,
+      userId ? this.ctx.storage.get(dashboardBotBundleKey(userId)) : null,
+      userId ? this.ctx.storage.get(dashboardBotRecentDirectKey(userId)) : null,
+      record.pairingKey ? this.ctx.storage.get(record.pairingKey) : null,
+    ]);
+    return {
+      record,
+      mapped: userId && String(mappedHubId ?? "") === hubId,
+      bundle: bundle?.hubId === hubId ? bundle : null,
+      recent: recent?.hubId === hubId ? recent : null,
+      pairing: pairing?.hubId === hubId ? pairing : null,
+    };
+  }
+
+  async #importDashboardBotHub(payload) {
+    const record = payload?.record;
+    const { hubId, secret, name } = dashboardBotHubRegistration(record);
+    const existing = await this.ctx.storage.get(dashboardBotHubKey(hubId));
+    if (existing && existing.secret !== secret) throw new Error("dashboard bot hub id conflict");
+    const imported = {
+      ...record,
+      hubId,
+      secret,
+      name,
+      userId: record?.userId == null ? null : String(record.userId),
+      chatId: record?.chatId == null ? null : String(record.chatId),
+    };
+    const writes = [[dashboardBotHubKey(hubId), imported]];
+    if (payload?.mapped === true && imported.userId) {
+      writes.push([dashboardBotUserKey(imported.userId), hubId]);
+    }
+    if (payload?.bundle?.hubId === hubId && String(payload.bundle.userId ?? "") === imported.userId) {
+      writes.push([dashboardBotBundleKey(imported.userId), {
+        ...payload.bundle,
+        cardMessageId: null,
+        cardPending: false,
+        items: (Array.isArray(payload.bundle.items) ? payload.bundle.items : [])
+          .filter((item) => String(item?.text ?? "") !== "/diagnostic_link_probe"),
+      }]);
+    }
+    if (payload?.recent?.hubId === hubId && String(payload.recent.userId ?? "") === imported.userId) {
+      writes.push([dashboardBotRecentDirectKey(imported.userId), payload.recent]);
+    }
+    if (imported.pairingKey && payload?.pairing?.hubId === hubId) {
+      writes.push([imported.pairingKey, payload.pairing]);
+    }
+    await putStorageEntries(this.ctx.storage, writes);
+    return { ok: true, hubId, paired: Boolean(imported.userId && imported.chatId) };
+  }
+
+  async #dashboardBotOpenCard(payload) {
+    const hubId = String(payload?.hubId ?? "").trim().toLowerCase();
+    if (!CONTROL_ID_PATTERN.test(hubId)) throw new Error("invalid dashboard bot hub id");
+    const hub = await this.ctx.storage.get(dashboardBotHubKey(hubId));
+    const userId = String(hub?.userId ?? "");
+    if (!userId) return { card: null };
+    const bundle = await this.ctx.storage.get(dashboardBotBundleKey(userId));
+    return {
+      card: bundle?.hubId === hubId ? this.#dashboardBotBundleCard(bundle) : null,
+    };
+  }
+
   async #authenticateDashboardBotHub(request) {
     const hubId = String(request.headers.get("X-Agent-Hub-Dashboard-Id") ?? "").trim().toLowerCase();
     if (!CONTROL_ID_PATTERN.test(hubId)) throw new Error("invalid dashboard bot hub id");
@@ -1377,10 +1459,10 @@ export class JournalStore extends DurableObject {
     return { userId, hubId, hub };
   }
 
-  #dashboardBotBundleCard(bundle, { warning = "", finalText = "" } = {}) {
+  #dashboardBotBundleCard(bundle, { warning = "", finalText = "", replace = false } = {}) {
     const messageId = Number.isSafeInteger(bundle.cardMessageId) ? bundle.cardMessageId : null;
     return {
-      mode: messageId ? "edit" : "send",
+      mode: messageId ? (replace ? "replace" : "edit") : "send",
       userId: bundle.userId,
       bundleId: bundle.id,
       chatId: bundle.chatId,
@@ -1447,7 +1529,9 @@ export class JournalStore extends DurableObject {
     });
     bundle.updatedAt = Date.now();
     let card = null;
-    if (Number.isSafeInteger(bundle.cardMessageId)) card = this.#dashboardBotBundleCard(bundle);
+    if (Number.isSafeInteger(bundle.cardMessageId)) {
+      card = this.#dashboardBotBundleCard(bundle, { replace: true });
+    }
     else if (!bundle.cardPending) {
       bundle.cardPending = true;
       card = this.#dashboardBotBundleCard(bundle);
@@ -1685,6 +1769,7 @@ export class JournalStore extends DurableObject {
     if (!bundle || bundle.id !== id) return { ok: false };
     if (payload?.failed === true) {
       bundle.cardPending = false;
+      bundle.cardMessageId = null;
       await this.ctx.storage.put(key, bundle);
       return { ok: true };
     }
@@ -2279,6 +2364,32 @@ export class JournalStore extends DurableObject {
       } catch (error) {
         const status = /not paired/iu.test(error.message) ? 409 : 401;
         return json({ error: error.message }, status);
+      }
+    }
+    if (request.method === "POST" && url.pathname === "/dashboard-bot/hub-export") {
+      try {
+        return json(await this.#exportDashboardBotHub(await request.json()));
+      } catch (error) {
+        const status = /conflict/iu.test(error.message)
+          ? 409
+          : /not registered/iu.test(error.message)
+            ? 404
+            : 400;
+        return json({ error: error.message }, status);
+      }
+    }
+    if (request.method === "POST" && url.pathname === "/dashboard-bot/hub-import") {
+      try {
+        return json(await this.#importDashboardBotHub(await request.json()));
+      } catch (error) {
+        return json({ error: error.message }, /conflict/iu.test(error.message) ? 409 : 400);
+      }
+    }
+    if (request.method === "POST" && url.pathname === "/dashboard-bot/open-card") {
+      try {
+        return json(await this.#dashboardBotOpenCard(await request.json()));
+      } catch (error) {
+        return json({ error: error.message }, 400);
       }
     }
     if (
@@ -3050,35 +3161,94 @@ async function clientUser(request, env, store) {
   return payload;
 }
 
+async function registerDashboardBotRouter({ body, registry, router, legacy }) {
+  let authorized = false;
+  let registryError = null;
+  try {
+    await authorizeDashboardBotRegistration(body, registry);
+    authorized = true;
+  } catch (error) {
+    registryError = error;
+    if (!/registry is not configured/iu.test(error.message)) throw error;
+  }
+
+  const existing = await router.fetch(new Request(
+    "https://journal.internal/dashboard-bot/register-existing",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body,
+    },
+  ));
+  if (existing.ok || existing.status !== 404) return existing;
+
+  const exported = await legacy.fetch(new Request(
+    "https://journal.internal/dashboard-bot/hub-export",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body,
+    },
+  ));
+  if (exported.ok) {
+    const imported = await router.fetch(new Request(
+      "https://journal.internal/dashboard-bot/hub-import",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(await exported.json()),
+      },
+    ));
+    if (!imported.ok) return imported;
+    return router.fetch(new Request(
+      "https://journal.internal/dashboard-bot/register-existing",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+      },
+    ));
+  }
+  if (!authorized) throw registryError;
+  return router.fetch(new Request("https://journal.internal/dashboard-bot/register", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body,
+  }));
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     const store = env.JOURNAL.getByName("current");
+    const dashboardBotRouter = env.JOURNAL.getByName(DASHBOARD_BOT_ROUTER_NAME);
     if (url.pathname === "/health") return json({ ok: true });
     if (url.pathname === "/api/dashboard-bot/register") {
       if (request.method !== "POST") return json({ error: "Method Not Allowed" }, 405);
       try {
         const body = await readBoundedBody(request, 8 * 1024, "dashboard bot registration");
-        try {
-          await authorizeDashboardBotRegistration(body, env.DASHBOARD_BOT_HUB_REGISTRY);
-        } catch (error) {
-          if (!/registry is not configured/iu.test(error.message)) throw error;
-          const existing = await store.fetch(new Request(
-            "https://journal.internal/dashboard-bot/register-existing",
+        const registration = await registerDashboardBotRouter({
+          body,
+          registry: env.DASHBOARD_BOT_HUB_REGISTRY,
+          router: dashboardBotRouter,
+          legacy: store,
+        });
+        if (registration.ok) {
+          const { hubId } = parseJson(body, "dashboard bot registration");
+          const cardResponse = await dashboardBotRouter.fetch(new Request(
+            "https://journal.internal/dashboard-bot/open-card",
             {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body,
+              body: JSON.stringify({ hubId }),
             },
           ));
-          if (existing.ok) return existing;
-          throw error;
+          const card = (await cardResponse.json().catch(() => ({}))).card;
+          if (card?.mode === "send") {
+            await updateDashboardBotCard(env, dashboardBotRouter, card).catch(() => null);
+          }
         }
-        return store.fetch(new Request("https://journal.internal/dashboard-bot/register", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body,
-        }));
+        return registration;
       } catch (error) {
         const status = /too large/iu.test(error.message)
           ? 413
@@ -3110,7 +3280,7 @@ export default {
       } catch (error) {
         return json({ error: error.message }, /too large/iu.test(error.message) ? 413 : 400);
       }
-      const routedResponse = await store.fetch(new Request("https://journal.internal/dashboard-bot/update", {
+      const routedResponse = await dashboardBotRouter.fetch(new Request("https://journal.internal/dashboard-bot/update", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(update),
@@ -3123,7 +3293,7 @@ export default {
           text: routed.callbackText || undefined,
         });
       }
-      if (routed.card) await updateDashboardBotCard(env, store, routed.card);
+      if (routed.card) await updateDashboardBotCard(env, dashboardBotRouter, routed.card);
       const routedCommands = Array.isArray(routed.commands)
         ? routed.commands
         : (routed.command && routed.hubId
@@ -3133,7 +3303,7 @@ export default {
         try {
           for (const routedCommand of routedCommands) {
             const hubStore = env.JOURNAL.getByName(`dashboard-bot:${routedCommand.hubId}`);
-            const identityResponse = await store.fetch(new Request(
+            const identityResponse = await dashboardBotRouter.fetch(new Request(
               "https://journal.internal/dashboard-bot/service-identity",
               {
                 method: "POST",
@@ -3187,13 +3357,13 @@ export default {
           }
         } catch (error) {
           if (routed.submittedBundle) {
-            const resetResponse = await store.fetch(new Request("https://journal.internal/dashboard-bot/finalize", {
+            const resetResponse = await dashboardBotRouter.fetch(new Request("https://journal.internal/dashboard-bot/finalize", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ ...routed.submittedBundle, submitted: false, error: error.message }),
             }));
             const reset = await resetResponse.json().catch(() => ({}));
-            if (reset.card) await updateDashboardBotCard(env, store, reset.card);
+            if (reset.card) await updateDashboardBotCard(env, dashboardBotRouter, reset.card);
           } else {
             await dashboardBotTelegramRequest(env, "sendMessage", {
               chat_id: update?.message?.chat?.id,
@@ -3203,12 +3373,12 @@ export default {
           return json({ error: error.message }, 503);
         }
         if (routed.submittedBundle) {
-          await store.fetch(new Request("https://journal.internal/dashboard-bot/finalize", {
+          await dashboardBotRouter.fetch(new Request("https://journal.internal/dashboard-bot/finalize", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ ...routed.submittedBundle, submitted: true }),
           }));
-          await updateDashboardBotCard(env, store, {
+          await updateDashboardBotCard(env, dashboardBotRouter, {
             ...routed.card,
             mode: "edit",
             text: routed.submittedBundle.separate
@@ -3246,10 +3416,16 @@ export default {
         identity = await authenticated.json();
       } else {
         if (authenticated.status !== 401) return authenticated;
-        authenticated = await store.fetch(new Request(
+        authenticated = await dashboardBotRouter.fetch(new Request(
           `https://journal.internal/dashboard-bot/service-export?pathname=${encodeURIComponent(url.pathname)}`,
           request.clone(),
         ));
+        if (!authenticated.ok && authenticated.status === 401) {
+          authenticated = await store.fetch(new Request(
+            `https://journal.internal/dashboard-bot/service-export?pathname=${encodeURIComponent(url.pathname)}`,
+            request.clone(),
+          ));
+        }
         if (!authenticated.ok) return authenticated;
         const migratedIdentity = await authenticated.json();
         const serviceRegistration = await hubStore.fetch(new Request(

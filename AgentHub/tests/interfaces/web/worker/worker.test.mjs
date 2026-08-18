@@ -863,7 +863,7 @@ test("shared Dashboard bot registration rejects untrusted requests without stori
   ), env);
   assert.equal(response.status, 403);
   const unknownError = await response.json();
-  assert.equal(stores.get("current").ctx.storage.values.size, 0);
+  assert.equal(stores.get("dashboard-bot:router").ctx.storage.values.size, 0);
 
   response = await workerModule.default.fetch(new Request(
     "https://hub.test/api/dashboard-bot/register",
@@ -875,7 +875,7 @@ test("shared Dashboard bot registration rejects untrusted requests without stori
   ), env);
   assert.equal(response.status, 403);
   assert.deepEqual(await response.json(), unknownError);
-  assert.equal(stores.get("current").ctx.storage.values.size, 0);
+  assert.equal(stores.get("dashboard-bot:router").ctx.storage.values.size, 0);
 
   response = await workerModule.default.fetch(new Request(
     "https://hub.test/api/dashboard-bot/register",
@@ -886,7 +886,7 @@ test("shared Dashboard bot registration rejects untrusted requests without stori
     },
   ), { JOURNAL: namespace, ASSETS: env.ASSETS });
   assert.equal(response.status, 503);
-  assert.equal(stores.get("current").ctx.storage.values.size, 0);
+  assert.equal(stores.get("dashboard-bot:router").ctx.storage.values.size, 0);
 
   response = await workerModule.default.fetch(new Request(
     "https://hub.test/api/dashboard-bot/register",
@@ -897,7 +897,7 @@ test("shared Dashboard bot registration rejects untrusted requests without stori
     },
   ), { ...env, DASHBOARD_BOT_HUB_REGISTRY: "{" });
   assert.equal(response.status, 503);
-  assert.equal(stores.get("current").ctx.storage.values.size, 0);
+  assert.equal(stores.get("dashboard-bot:router").ctx.storage.values.size, 0);
 
   response = await workerModule.default.fetch(new Request(
     "https://hub.test/api/dashboard-bot/register",
@@ -908,7 +908,7 @@ test("shared Dashboard bot registration rejects untrusted requests without stori
     },
   ), env);
   assert.equal(response.status, 200);
-  const storedEntries = stores.get("current").ctx.storage.values.size;
+  const storedEntries = stores.get("dashboard-bot:router").ctx.storage.values.size;
   assert.ok(storedEntries > 0);
 
   response = await workerModule.default.fetch(new Request(
@@ -920,7 +920,7 @@ test("shared Dashboard bot registration rejects untrusted requests without stori
     },
   ), { JOURNAL: namespace, ASSETS: env.ASSETS });
   assert.equal(response.status, 200);
-  assert.equal(stores.get("current").ctx.storage.values.size, storedEntries);
+  assert.equal(stores.get("dashboard-bot:router").ctx.storage.values.size, storedEntries);
 
   response = await workerModule.default.fetch(new Request(
     "https://hub.test/api/dashboard-bot/register",
@@ -931,7 +931,93 @@ test("shared Dashboard bot registration rejects untrusted requests without stori
     },
   ), env);
   assert.equal(response.status, 200);
-  assert.equal(stores.get("current").ctx.storage.values.size, storedEntries);
+  assert.equal(stores.get("dashboard-bot:router").ctx.storage.values.size, storedEntries);
+});
+
+test("shared Dashboard bot migrates an existing paired Hub into its isolated router", async (context) => {
+  const workerModule = await loadWorker();
+  const { namespace, stores } = durableNamespace(workerModule);
+  const hubId = "018f6c86-3f34-7a31-8f27-16f5b96cce49";
+  const hubSecret = "m".repeat(64);
+  const webhookSecret = "w".repeat(64);
+  const registration = { hubId, name: "Legacy Hub", secret: hubSecret };
+  const legacy = namespace.getByName("current");
+  let response = await legacy.fetch(new Request(
+    "https://journal.internal/dashboard-bot/register",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(registration),
+    },
+  ));
+  const pairing = await response.json();
+  response = await legacy.fetch(new Request("https://journal.internal/dashboard-bot/update", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      update_id: 90,
+      message: {
+        message_id: 1,
+        date: 1_786_200_000,
+        chat: { id: 42, type: "private" },
+        from: { id: 42, first_name: "Алиса" },
+        text: `/link ${pairing.code}`,
+      },
+    }),
+  }));
+  assert.equal(response.status, 200);
+
+  const telegramCalls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    telegramCalls.push({ url: String(url), body: JSON.parse(options.body) });
+    return Response.json({ ok: true, result: { message_id: 900 } });
+  };
+  context.after(() => { globalThis.fetch = originalFetch; });
+  const env = {
+    DASHBOARD_BOT_TOKEN: `123456:${"A".repeat(30)}`,
+    DASHBOARD_BOT_WEBHOOK_SECRET: webhookSecret,
+    JOURNAL: namespace,
+    ASSETS: { fetch: async () => new Response("asset") },
+  };
+  response = await workerModule.default.fetch(new Request(
+    "https://hub.test/api/dashboard-bot/register",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(registration),
+    },
+  ), env);
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).paired, true);
+  assert.equal(
+    stores.get("dashboard-bot:router").ctx.storage.values.get(`dashboard-bot:user:42`),
+    hubId,
+  );
+
+  stores.get("current").ctx.storage.values.clear();
+  response = await workerModule.default.fetch(new Request(
+    "https://hub.test/api/dashboard-bot/webhook",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Telegram-Bot-Api-Secret-Token": webhookSecret,
+      },
+      body: JSON.stringify({
+        update_id: 91,
+        message: {
+          message_id: 2,
+          date: 1_786_200_001,
+          chat: { id: 42, type: "private" },
+          from: { id: 42, first_name: "Алиса" },
+          text: "/unknown",
+        },
+      }),
+    },
+  ), env);
+  assert.equal(response.status, 200);
+  assert.match(telegramCalls.at(-1).body.text, /Неизвестная команда/u);
 });
 
 test("shared Dashboard bot pairs one Telegram user and queues Tasks only for that Hub", async (context) => {
@@ -1206,8 +1292,8 @@ test("shared Dashboard bot pairs one Telegram user and queues Tasks only for tha
   );
 
   const globalHubKey = `dashboard-bot:hub:${hubId}`;
-  const globalHub = stores.get("current").ctx.storage.values.get(globalHubKey);
-  stores.get("current").ctx.storage.values.delete(globalHubKey);
+  const globalHub = stores.get("dashboard-bot:router").ctx.storage.values.get(globalHubKey);
+  stores.get("dashboard-bot:router").ctx.storage.values.delete(globalHubKey);
   response = await workerModule.default.fetch(signedServiceRequest(
     "https://hub.test/api/dashboard-bot/pull",
     { limit: 10, waitMs: 0 },
@@ -1217,7 +1303,7 @@ test("shared Dashboard bot pairs one Telegram user and queues Tasks only for tha
   assert.equal(response.status, 200);
   const [clarificationCommand] = (await response.json()).commands;
   assert.equal(clarificationCommand.params.text, "Нужно закончить до пятницы");
-  stores.get("current").ctx.storage.values.set(globalHubKey, globalHub);
+  stores.get("dashboard-bot:router").ctx.storage.values.set(globalHubKey, globalHub);
   assert.equal(response.status, 200);
   assert.match(telegramCalls.at(-1).body.text, /Уточнение поставлено в очередь Agent Hub/u);
   assert.equal(clarificationCommand.params.replyMessageId, 2);
@@ -1337,6 +1423,11 @@ test("shared Dashboard bot can send forwards separately with their reply clarifi
     },
   });
   assert.match(telegramCalls.at(-1).body.text, /переслано: 2/u);
+  assert.ok(telegramCalls.some((call) => call.method === "deleteMessage"));
+  assert.equal(
+    telegramCalls.filter((call) => call.method === "sendMessage" && /Собираю пачку/u.test(call.body.text)).length,
+    2,
+  );
 
   await webhook({
     update_id: 203,

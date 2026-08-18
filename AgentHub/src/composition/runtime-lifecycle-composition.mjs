@@ -8,7 +8,9 @@ export function createRuntimeLifecycleComposition({
   stopManagedRuns,
   stopMedia,
   runtimeResources,
-  startControlPlane,
+  startDesktopControl,
+  startRuntimeCommand,
+  startHubMcp,
   startMiniApp,
   sanitizeRollouts,
   initializeProvider,
@@ -48,7 +50,9 @@ export function createRuntimeLifecycleComposition({
   });
   const startupCoordinator = new AgentHubStartupCoordinator({
     telegramEnabled,
-    startControlPlane,
+    startDesktopControl,
+    startRuntimeCommand,
+    startHubMcp,
     startMiniApp,
     sanitizeRollouts,
     initializeProvider,

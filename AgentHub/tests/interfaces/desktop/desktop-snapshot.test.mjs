@@ -621,6 +621,21 @@ test("desktopTaskSnapshot does not expose a retained completed run as active", (
   assert.equal(snapshot.run, null);
 });
 
+test("desktopTaskSnapshot does not resurrect a catalog run after its final answer", () => {
+  const { desktopTaskSnapshot, entry, state } = fixture({ run: null });
+  entry.turnId = "turn-1";
+  state.lastMessage = {
+    text: "Финальный ответ",
+    updatedAt: "2026-07-30T10:01:30.000Z",
+    turnId: "turn-1",
+  };
+
+  const snapshot = desktopTaskSnapshot(entry);
+
+  assert.equal(snapshot.running, false);
+  assert.equal(snapshot.run, null);
+});
+
 test("desktop task snapshot exposes the durable provider-start phase", () => {
   const { desktopTaskSnapshot, entry, state } = fixture();
   state.run.providerStart = {

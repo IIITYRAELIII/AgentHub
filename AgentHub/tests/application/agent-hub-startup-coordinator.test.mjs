@@ -8,7 +8,9 @@ function coordinator(overrides = {}) {
   const health = createRuntimeHealth();
   const service = new AgentHubStartupCoordinator({
     telegramEnabled: true,
-    startControlPlane: async () => calls.push("control"),
+    startDesktopControl: async () => calls.push("desktop"),
+    startRuntimeCommand: async () => calls.push("runtime-command"),
+    startHubMcp: async () => calls.push("mcp"),
     startMiniApp: async () => ({ url: "http://localhost" }),
     sanitizeRollouts: async () => calls.push("sanitize"),
     initializeProvider: async () => calls.push("provider"),
@@ -34,10 +36,12 @@ function coordinator(overrides = {}) {
 }
 
 test("startup preserves control, recovery and readiness order", async () => {
-  const { service, calls } = coordinator();
+  const { service, calls, health } = coordinator();
   await service.start();
   assert.deepEqual(calls, [
-    "control",
+    "desktop",
+    "runtime-command",
+    "mcp",
     "log:Mini App ready at http://localhost",
     "sanitize",
     "provider",
@@ -52,6 +56,28 @@ test("startup preserves control, recovery and readiness order", async () => {
     "log:ready message",
     "poll",
   ]);
+  assert.deepEqual(
+    health.snapshot().startup.operations.map(({ id, state }) => ({ id, state })),
+    [
+      { id: "release", state: "completed" },
+      { id: "configuration", state: "completed" },
+      { id: "desktop-control", state: "completed" },
+      { id: "runtime-command", state: "completed" },
+      { id: "hub-mcp", state: "completed" },
+      { id: "web", state: "completed" },
+      { id: "history", state: "completed" },
+      { id: "provider", state: "completed" },
+      { id: "provider-metadata", state: "completed" },
+      { id: "runs", state: "completed" },
+      { id: "notifications", state: "completed" },
+      { id: "background-jobs", state: "completed" },
+      { id: "timers", state: "completed" },
+      { id: "telegram", state: "completed" },
+      { id: "restart", state: "completed" },
+      { id: "readiness", state: "completed" },
+      { id: "recovery", state: "skipped" },
+    ],
+  );
 });
 
 test("startup isolates recoverable failures and still marks ready", async () => {
@@ -68,7 +94,8 @@ test("startup isolates recoverable failures and still marks ready", async () => 
   assert.ok(calls.includes("poll"));
   assert.equal(calls.includes("log:ready message"), false);
   assert.match(calls.find((value) => value.startsWith("log:Agent Hub started unready")), /provider/u);
-  assert.deepEqual(health.snapshot(), {
+  const { startup, ...healthSnapshot } = health.snapshot();
+  assert.deepEqual(healthSnapshot, {
     live: true,
     ready: false,
     degraded: true,
@@ -79,6 +106,10 @@ test("startup isolates recoverable failures and still marks ready", async () => 
       { name: "telegram", critical: false, state: "failed", error: "commands" },
     ],
   });
+  assert.deepEqual(
+    startup.operations.filter(({ state }) => state === "failed").map(({ id }) => id),
+    ["web", "provider", "runs", "background-jobs", "telegram"],
+  );
   assert.ok(calls.some((value) => value.includes("активные задачи: runs")));
   assert.ok(calls.some((value) => value.includes("медиа-задачи: jobs")));
 });
@@ -99,7 +130,8 @@ test("startup remains ready but degraded when an optional capability fails", asy
   await service.start();
   assert.equal(calls.includes("log:ready message"), false);
   assert.match(calls.find((value) => value.startsWith("log:Agent Hub started degraded")), /mini_app/u);
-  assert.deepEqual(health.snapshot(), {
+  const { startup, ...healthSnapshot } = health.snapshot();
+  assert.deepEqual(healthSnapshot, {
     live: true,
     ready: true,
     degraded: true,
@@ -110,10 +142,11 @@ test("startup remains ready but degraded when an optional capability fails", asy
       { name: "telegram", critical: false, state: "ready" },
     ],
   });
+  assert.equal(startup.operations.find(({ id }) => id === "web").state, "failed");
 });
 
 test("core-only startup restores runs but skips Telegram-only work", async () => {
-  const { service, calls } = coordinator({
+  const { service, calls, health } = coordinator({
     telegramEnabled: false,
     hasPendingRestart: () => false,
     waitForever: async () => calls.push("wait"),
@@ -123,6 +156,12 @@ test("core-only startup restores runs but skips Telegram-only work", async () =>
   assert.equal(calls.includes("commands"), false);
   assert.equal(calls.includes("poll"), false);
   assert.ok(calls.includes("wait"));
+  assert.deepEqual(
+    health.snapshot().startup.operations
+      .filter(({ state }) => state === "skipped")
+      .map(({ id }) => id),
+    ["notifications", "background-jobs", "telegram", "restart", "recovery"],
+  );
 });
 
 test("replacement startup exposes sqlite recovery as degraded until acknowledgement", async () => {
@@ -143,4 +182,5 @@ test("replacement startup exposes sqlite recovery as degraded until acknowledgem
     error: "journal.sqlite was replaced",
   });
   assert.equal(health.snapshot().status, "degraded");
+  assert.equal(health.snapshot().startup.operations.find(({ id }) => id === "recovery").state, "completed");
 });

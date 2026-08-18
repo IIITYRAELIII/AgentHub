@@ -1,15 +1,42 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import vm from "node:vm";
 
-const app = await readFile(new URL("../../assets/web-app/app.js", import.meta.url), "utf8");
+const source = await readFile(new URL("../../assets/web-app/bug-report-flow.js", import.meta.url), "utf8");
+const context = vm.createContext({ window: {} });
+vm.runInContext(source, context);
+const flow = context.window.AgentHubBugReportFlow;
 
-test("bug report closes optimistically and reopens with its draft after an error", () => {
-  const submit = app.match(/bugReportForm\?\.addEventListener\("submit"[\s\S]*?\n\}\);/u)?.[0] ?? "";
-  const complete = app.match(/completeBugReport\(result = \{\}\) \{[\s\S]*?\n  \},/u)?.[0] ?? "";
-  assert.match(submit, /setBugReportSending\(true\)[\s\S]*bugReportForm\.hidden = true/u);
-  assert.match(submit, /aria-expanded", "false"[\s\S]*emit\("bug-report:submit"/u);
-  assert.match(complete, /if \(result\.error\)[\s\S]*bugReportForm\.hidden = false/u);
-  assert.match(complete, /aria-expanded", "true"[\s\S]*bugReportText\?\.focus\(\)/u);
-  assert.match(complete, /if \(result\.error\)[\s\S]*return;[\s\S]*bugReportAttachments = \[\]/u);
+test("bug report remains visible while Git publication is pending", () => {
+  assert.deepEqual({ ...flow.pending() }, {
+    sending: true,
+    formHidden: false,
+    expanded: true,
+    status: "Создаём отчёт и отправляем его в Git…",
+    statusState: "pending",
+    focus: false,
+  });
+});
+
+test("failed publication keeps the draft form open and focusable", () => {
+  assert.deepEqual({ ...flow.complete({ error: "Сеть недоступна" }) }, {
+    sending: false,
+    formHidden: false,
+    expanded: true,
+    status: "Сеть недоступна",
+    statusState: "error",
+    focus: true,
+  });
+});
+
+test("successful publication closes the form", () => {
+  assert.deepEqual({ ...flow.complete({ pushed: true }) }, {
+    sending: false,
+    formHidden: true,
+    expanded: false,
+    status: "",
+    statusState: "",
+    focus: false,
+  });
 });

@@ -47,9 +47,9 @@ export function createAgentHubBootstrapComposition({
     },
     stopMedia: () => mediaController.stop(),
     runtimeResources,
-    // The control endpoint is intentionally available before provider recovery,
+    // Control endpoints are intentionally available before provider recovery,
     // so clients can show cached state while providers are still reconnecting.
-    startControlPlane: async () => {
+    startDesktopControl: async () => {
       desktopControlServer = createDesktopControlServer({
         runtimeRoot: runtimeCommandRoot,
         handler: handleDesktopControl,
@@ -59,9 +59,9 @@ export function createAgentHubBootstrapComposition({
           : undefined,
       });
       await desktopControlServer.start();
-      await runtimeCommandServer.start();
-      await hubMcpServer.start();
     },
+    startRuntimeCommand: () => runtimeCommandServer.start(),
+    startHubMcp: () => hubMcpServer.start(),
     startMiniApp: () => miniAppLifecycle.start(),
     sanitizeRollouts,
     initializeProvider,

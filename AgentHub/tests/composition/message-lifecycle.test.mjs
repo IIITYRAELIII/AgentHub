@@ -1678,6 +1678,39 @@ test("history catch-up waits for the exact completed answer turn", () => {
   assert.equal(lifecycle.historyContainsLatestAnswer(caughtUp, task), true);
 });
 
+test("compact history catch-up rejects completed commentary until the final phase arrives", () => {
+  const task = {
+    provider: "codex",
+    threadId: "thread-1",
+    lastAnswer: "",
+    lastAnswerAt: "2026-08-18T15:55:34.066Z",
+    lastAnswerTurnId: "turn-2",
+  };
+  const commentary = {
+    provider: "codex",
+    threadId: "thread-1",
+    items: [{
+      id: "turn-2",
+      completed: true,
+      prompt: "Почему?",
+      answer: "Проверяю причину",
+      messages: [
+        { role: "user", text: "Почему?" },
+        { role: "agent", phase: "commentary", text: "Проверяю причину" },
+      ],
+    }],
+  };
+
+  assert.equal(lifecycle.historyContainsLatestAnswer(commentary, task), false);
+  commentary.items[0].answer = "Причина найдена";
+  commentary.items[0].messages.push({
+    role: "agent",
+    phase: "final_answer",
+    text: "Причина найдена",
+  });
+  assert.equal(lifecycle.historyContainsLatestAnswer(commentary, task), true);
+});
+
 test("legacy answer records without a turn id match their completed text", () => {
   const task = {
     lastAnswer: "Старый готовый ответ",
@@ -1801,7 +1834,7 @@ test("context compaction start identifies the task and completion stays in chat"
   assert.doesNotMatch(miniAppSource, /task\.threadTitle \|\| task\.title/u);
   assert.match(
     hubClientSource,
-    /visibleBeforePercent = beforePercent \?\? "\?";[\s\S]*visibleAfterPercent = afterPercent \?\? "\?";[\s\S]*text: `Свёртка завершена успешно \$\{visibleBeforePercent\}%>\$\{visibleAfterPercent\}%`/u,
+    /measurementKnown = beforePercent !== null && afterPercent !== null;[\s\S]*"Свёртка завершена; замер контекста не получен"/u,
   );
   assert.match(hubClientSource, /maintenanceEventStorageKey/u);
   assert.match(hubClientSource, /rememberMaintenanceEvent\(stableTaskId/u);

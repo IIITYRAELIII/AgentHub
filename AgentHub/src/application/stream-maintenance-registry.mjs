@@ -13,12 +13,39 @@ export function streamMaintenanceKey(target) {
   ].join(":");
 }
 
+function streamMaintenanceKeys(target) {
+  const keys = [];
+  const streamId = String(target?.streamId ?? "").trim();
+  const provider = normalized(target?.provider);
+  const projectRoot = normalized(target?.projectRoot);
+  const threadId = normalized(target?.threadId);
+  if (streamId) keys.push(`stream:${streamId}`);
+  if (provider && threadId) {
+    keys.push(`provider:${provider}:${projectRoot}:${threadId}`);
+    keys.push(`provider-thread:${provider}:${threadId}`);
+  }
+  if (!keys.length) keys.push(streamMaintenanceKey(target));
+  return [...new Set(keys)];
+}
+
 export class StreamMaintenanceRegistry {
   #entries = new Map();
+  #aliases = new Map();
+
+  #entryKey(targetOrEntry) {
+    const explicitKey = String(targetOrEntry?.key ?? "").trim();
+    if (explicitKey && this.#entries.has(explicitKey)) return explicitKey;
+    for (const alias of streamMaintenanceKeys(targetOrEntry)) {
+      const key = this.#aliases.get(alias);
+      if (key) return key;
+    }
+    return null;
+  }
 
   begin(target, reason = "context-maintenance") {
+    const aliases = streamMaintenanceKeys(target);
+    if (aliases.some((alias) => this.#aliases.has(alias))) return null;
     const key = streamMaintenanceKey(target);
-    if (this.#entries.has(key)) return null;
     const entry = {
       key,
       reason: String(reason ?? "context-maintenance").trim() || "context-maintenance",
@@ -27,17 +54,21 @@ export class StreamMaintenanceRegistry {
       startedAt: new Date().toISOString(),
     };
     this.#entries.set(key, entry);
+    for (const alias of aliases) this.#aliases.set(alias, key);
     return entry;
   }
 
   end(targetOrEntry) {
-    const key = String(targetOrEntry?.key ?? "").trim()
-      || streamMaintenanceKey(targetOrEntry);
+    const key = this.#entryKey(targetOrEntry);
+    if (!key) return false;
+    for (const [alias, entryKey] of this.#aliases) {
+      if (entryKey === key) this.#aliases.delete(alias);
+    }
     return this.#entries.delete(key);
   }
 
   isActive(target) {
-    return this.#entries.has(streamMaintenanceKey(target));
+    return this.#entryKey(target) !== null;
   }
 
   activeCount() {
@@ -45,14 +76,14 @@ export class StreamMaintenanceRegistry {
   }
 
   entry(target) {
-    return this.#entries.get(streamMaintenanceKey(target)) ?? null;
+    const key = this.#entryKey(target);
+    return key ? this.#entries.get(key) ?? null : null;
   }
 
   update(targetOrEntry, details = {}) {
-    const key = String(targetOrEntry?.key ?? "").trim()
-      || streamMaintenanceKey(targetOrEntry);
+    const key = this.#entryKey(targetOrEntry);
+    if (!key) return null;
     const current = this.#entries.get(key);
-    if (!current) return null;
     const reason = String(details.reason ?? "").trim();
     const entry = {
       ...current,

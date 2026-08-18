@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { copyFile, mkdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 
@@ -156,6 +157,10 @@ export class BugReportRepository {
     return this.#runGit(repository, args);
   }
 
+  async #gitAt(repository, ...args) {
+    return this.#runGit(repository, args);
+  }
+
   async #resolveRepository() {
     this.#repository ??= await findUtilitiesRepository({
       agentHubRoot: this.#agentHubRoot,
@@ -165,7 +170,7 @@ export class BugReportRepository {
     return this.#repository;
   }
 
-  async #synchronizedMain() {
+  async #publicationTarget() {
     const branch = (await this.#git("branch", "--show-current")).stdout.trim();
     if (branch !== "main") throw new Error("Отчёты о багах публикуются только из ветки main");
     const upstream = (await this.#git("rev-parse", "--abbrev-ref", "@{upstream}")).stdout.trim();
@@ -176,12 +181,8 @@ export class BugReportRepository {
     const remote = upstream.slice(0, separator);
     const remoteBranch = upstream.slice(separator + 1);
     await this.#git("fetch", "--quiet", remote);
-    const head = (await this.#git("rev-parse", "HEAD")).stdout.trim();
     const upstreamHead = (await this.#git("rev-parse", "@{upstream}")).stdout.trim();
-    if (head !== upstreamHead) {
-      throw new Error("Локальная main должна быть синхронизирована с upstream перед отправкой бага");
-    }
-    return { head, remote, remoteBranch };
+    return { upstreamHead, remote, remoteBranch };
   }
 
   async addedSince(revision = "") {
@@ -235,11 +236,17 @@ export class BugReportRepository {
       prepared.push({ file, type });
     }
 
+    let stagingRoot = "";
+    let publicationWorktree = "";
+    let worktreeAdded = false;
     try {
-      const repository = await this.#resolveRepository();
-      const sync = await this.#synchronizedMain();
+      const target = await this.#publicationTarget();
+      stagingRoot = await mkdtemp(path.join(tmpdir(), "agent-hub-bug-report-"));
+      publicationWorktree = path.join(stagingRoot, "publish");
+      await this.#git("worktree", "add", "--detach", publicationWorktree, target.upstreamHead);
+      worktreeAdded = true;
       const relativeFolder = `${BUG_REPORTS_RELATIVE_ROOT}/bug-${id}`;
-      const reportDirectory = path.join(repository, ...relativeFolder.split("/"));
+      const reportDirectory = path.join(publicationWorktree, ...relativeFolder.split("/"));
       const screenshotNames = prepared.map((item, index) => (
         `screenshot-${String(index + 1).padStart(2, "0")}${IMAGE_EXTENSIONS.get(item.type)}`
       ));
@@ -256,22 +263,31 @@ export class BugReportRepository {
         { encoding: "utf8", flag: "wx" },
       );
 
-      await this.#git("add", "--", relativeFolder);
-      await this.#git(
+      await this.#gitAt(publicationWorktree, "add", "--", relativeFolder);
+      await this.#gitAt(
+        publicationWorktree,
         "-c", "artifactHooks.autoSync=off",
         "-c", "commit.gpgSign=false",
         "commit", "--only", "-m", `Add Agent Hub bug report ${id.slice(0, 8)}`,
         "--", relativeFolder,
       );
-      const parent = (await this.#git("rev-parse", "HEAD^")).stdout.trim();
-      const committedPaths = (await this.#git(
+      const parent = (await this.#gitAt(publicationWorktree, "rev-parse", "HEAD^")).stdout.trim();
+      const committedPaths = (await this.#gitAt(
+        publicationWorktree,
         "diff-tree", "--no-commit-id", "--name-only", "-r", "-z", "HEAD",
       )).stdout.split("\0").filter(Boolean).map(normalizedGitPath);
       const reportPrefix = `${relativeFolder}/`;
-      if (parent !== sync.head || committedPaths.length === 0 || committedPaths.some((item) => !item.startsWith(reportPrefix))) {
+      if (
+        parent !== target.upstreamHead
+        || committedPaths.length === 0
+        || committedPaths.some((item) => !item.startsWith(reportPrefix))
+      ) {
         throw new Error("Защитная проверка остановила push: commit содержит изменения вне папки отчёта");
       }
-      await this.#git("push", "--porcelain", sync.remote, `HEAD:refs/heads/${sync.remoteBranch}`);
+      await this.#gitAt(
+        publicationWorktree,
+        "push", "--porcelain", target.remote, `HEAD:refs/heads/${target.remoteBranch}`,
+      );
       return {
         id,
         folder: relativeFolder,
@@ -279,6 +295,10 @@ export class BugReportRepository {
         pushed: true,
       };
     } finally {
+      if (worktreeAdded) {
+        await this.#git("worktree", "remove", "--force", publicationWorktree).catch(() => {});
+      }
+      if (stagingRoot) await rm(stagingRoot, { recursive: true, force: true }).catch(() => {});
       await Promise.all(prepared.map(({ file }) => unlink(file).catch(() => {})));
     }
   }
