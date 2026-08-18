@@ -4,19 +4,17 @@
   const DEFAULT_RETRY_DELAY_MS = 500;
 
   function runtimeReloadBlocked({
-    currentDraft = {},
+    draftsPersisted = true,
     drafts = [],
     modalOpen = false,
     requestPending = false,
     bugReportAttachments = [],
     bugReportSending = false,
   } = {}) {
-    const currentDraftActive = Boolean(
-      String(currentDraft?.text ?? "").trim()
-      || (currentDraft?.attachments ?? []).length
-      || (currentDraft?.annotations ?? []).length,
-    );
-    return currentDraftActive
+    // Text and annotations are persisted synchronously before this check and
+    // survive a runtime cutover. Only state that cannot be restored safely is
+    // allowed to keep an old client shell alive.
+    return draftsPersisted !== true
       || Boolean(modalOpen)
       || Boolean(requestPending)
       || [...drafts].some((draft) => (draft?.attachments ?? []).length > 0)

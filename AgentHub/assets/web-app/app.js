@@ -5553,20 +5553,20 @@ function saveDraft() {
 
 function prepareForRuntimeReload() {
   saveDraft();
-  const currentDraft = drafts.get(state.selectedId);
+  const draftsPersisted = persistDrafts();
   const modalOpen = Boolean(
     document.querySelector("dialog[open], [role='dialog']:not([hidden])")
     || dialogSettings?.hidden === false,
   );
   if (window.AgentHubRuntimeReload.runtimeReloadBlocked({
-    currentDraft,
+    draftsPersisted,
     drafts: drafts.values(),
     modalOpen,
     requestPending: Boolean(pendingComposerRequest),
     bugReportAttachments,
     bugReportSending,
   })) return false;
-  return persistDrafts();
+  return true;
 }
 
 function restoreDraft() {

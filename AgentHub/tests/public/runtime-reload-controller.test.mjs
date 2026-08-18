@@ -49,11 +49,12 @@ test("runtime reload applies immediately when the UI is safe", async () => {
   assert.equal(applied, 1);
 });
 
-test("runtime reload blockers cover active drafts, attachments, requests and dialogs", async () => {
+test("runtime reload preserves stored text but blocks non-restorable state", async () => {
   const { runtimeReloadBlocked } = await runtimeReloadApi();
   assert.equal(runtimeReloadBlocked(), false);
-  assert.equal(runtimeReloadBlocked({ currentDraft: { text: "Пишу" } }), true);
-  assert.equal(runtimeReloadBlocked({ currentDraft: { annotations: [{ quote: "x" }] } }), true);
+  assert.equal(runtimeReloadBlocked({ drafts: [{ text: "Пишу" }] }), false);
+  assert.equal(runtimeReloadBlocked({ drafts: [{ annotations: [{ quote: "x" }] }] }), false);
+  assert.equal(runtimeReloadBlocked({ draftsPersisted: false }), true);
   assert.equal(runtimeReloadBlocked({ drafts: [{ attachments: [{ name: "screen.png" }] }] }), true);
   assert.equal(runtimeReloadBlocked({ modalOpen: true }), true);
   assert.equal(runtimeReloadBlocked({ requestPending: true }), true);
