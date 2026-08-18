@@ -3349,7 +3349,12 @@ function renderChat() {
     setDialogSettingsOpen(false);
     return;
   }
-  const taskChanged = activeChatId !== task.id;
+  // activeChatId is logical state; the physical message surface can still lag
+  // behind it after a failed/interrupted render. Treat ownership divergence as
+  // a real task switch so the next render self-heals instead of preserving the
+  // previous Stream forever.
+  const taskChanged = activeChatId !== task.id
+    || String(chatLog.dataset.messageOwnerKey ?? "") !== String(task.id ?? "");
 
   renderDialogSettings();
   renderStreamChatHeader(task);
@@ -3847,7 +3852,9 @@ function createRenderedMessage(spec) {
 }
 
 function renderMessages({ forceBottom = false, preserveTop = false } = {}) {
-  renderStreamChatHeader(currentTask());
+  const task = currentTask();
+  const taskId = String(task?.id ?? "");
+  renderStreamChatHeader(task);
   const scrollController = chatScrollControllers.get(chatScroll);
   const scrollSnapshot = scrollController?.capture();
   const stickToBottom = forceBottom || scrollSnapshot?.pinned || chatIsNearBottom();
@@ -3855,8 +3862,13 @@ function renderMessages({ forceBottom = false, preserveTop = false } = {}) {
   // якорь первого видимого сообщения оставлял зазор после новой карточки.
   // Якорь нужен только читателю, который уже ушёл выше по истории.
   const anchor = preserveTop && !stickToBottom ? captureChatAnchor() : null;
-  const historyLoaded = state.messages.has(state.selectedId);
-  const messages = state.messages.get(state.selectedId) ?? [];
+  // chatLog is a single physical DOM surface shared by every Stream. Claim it
+  // before reading the new history so keyed reconciliation can never reuse a
+  // message node (or its event handlers) owned by the previously selected
+  // Stream, even when providers emit colliding message identifiers.
+  MessageView.claimKeyedChildrenOwner(chatLog, taskId);
+  const historyLoaded = state.messages.has(taskId);
+  const messages = state.messages.get(taskId) ?? [];
   renderHistoryLoader();
   if (messages.length === 0) {
     const emptyText = historyLoaded
@@ -3881,7 +3893,7 @@ function renderMessages({ forceBottom = false, preserveTop = false } = {}) {
       break;
     }
   }
-  const taskDiff = state.taskDiffs.get(state.selectedId);
+  const taskDiff = state.taskDiffs.get(taskId);
   const specs = messages.map((message, index) => (
     messageRenderSpec(message, index, lastAgentIndex, taskDiff)
   ));
@@ -6766,8 +6778,11 @@ const AgentHub = {
    *  attachments }. role: "user" | "agent" | "system". */
   setMessages(taskId, messages) {
     const next = Array.isArray(messages) ? messages.slice() : [];
-    if (state.messages.has(taskId) && sameData(state.messages.get(taskId), next)) return;
-    state.messages.set(taskId, next);
+    const sameMessages = state.messages.has(taskId) && sameData(state.messages.get(taskId), next);
+    const selectedSurfaceOwned = taskId === state.selectedId
+      && String(chatLog.dataset.messageOwnerKey ?? "") === String(taskId ?? "");
+    if (sameMessages && (taskId !== state.selectedId || selectedSurfaceOwned)) return;
+    if (!sameMessages) state.messages.set(taskId, next);
     if (taskId === state.selectedId) {
       renderMessages({ preserveTop: true });
       renderLive();
@@ -6787,8 +6802,11 @@ const AgentHub = {
   },
   setMessagesPreservingScroll(taskId, messages) {
     const next = Array.isArray(messages) ? messages.slice() : [];
-    if (state.messages.has(taskId) && sameData(state.messages.get(taskId), next)) return;
-    state.messages.set(taskId, next);
+    const sameMessages = state.messages.has(taskId) && sameData(state.messages.get(taskId), next);
+    const selectedSurfaceOwned = taskId === state.selectedId
+      && String(chatLog.dataset.messageOwnerKey ?? "") === String(taskId ?? "");
+    if (sameMessages && (taskId !== state.selectedId || selectedSurfaceOwned)) return;
+    if (!sameMessages) state.messages.set(taskId, next);
     if (taskId === state.selectedId) {
       renderMessages({ preserveTop: true });
       renderLive();

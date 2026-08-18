@@ -23,6 +23,7 @@ class FakeNode {
 class FakeContainer {
   constructor(children = []) {
     this.children = children;
+    this.dataset = {};
   }
 
   insertBefore(node, reference) {
@@ -37,6 +38,64 @@ class FakeContainer {
     if (index >= 0) this.children.splice(index, 1);
   }
 }
+
+test("switching Stream ownership discards the previous dialog DOM", async () => {
+  const api = await messageViewApi();
+  const oldMessage = { id: "shared-id", role: "agent", text: "Фрагмент Журнала" };
+  const nextMessage = { id: "shared-id", role: "agent", text: "Фрагмент Дизайна" };
+  const spec = (message) => ({
+    key: api.messageKey(message),
+    signature: api.messageContentSignature(message),
+    message,
+  });
+  const container = new FakeContainer();
+  let created = 0;
+  const create = (value) => {
+    const node = new FakeNode(`node-${++created}`);
+    node.text = value.message.text;
+    return node;
+  };
+
+  api.claimKeyedChildrenOwner(container, "journal");
+  api.reconcileKeyedChildren(container, [spec(oldMessage)], create);
+  const journalNode = container.children[0];
+
+  assert.equal(api.claimKeyedChildrenOwner(container, "design"), true);
+  assert.equal(container.children.length, 0);
+  api.reconcileKeyedChildren(container, [spec(nextMessage)], create);
+
+  assert.notEqual(container.children[0], journalNode);
+  assert.equal(container.children[0].text, "Фрагмент Дизайна");
+  assert.equal(container.dataset.messageOwnerKey, "design");
+});
+
+test("claiming an empty Stream removes the previous Stream fragment immediately", async () => {
+  const api = await messageViewApi();
+  const previous = new FakeNode("previous-dialog-fragment");
+  const container = new FakeContainer([previous]);
+  container.dataset.messageOwnerKey = "journal";
+
+  api.claimKeyedChildrenOwner(container, "empty-stream");
+
+  assert.deepEqual(container.children, []);
+  assert.equal(container.dataset.messageOwnerKey, "empty-stream");
+});
+
+test("selected Stream rerenders when logical chat state and DOM ownership diverge", async () => {
+  const appSource = await readFile(
+    new URL("../../assets/web-app/app.js", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(
+    appSource,
+    /const taskChanged = activeChatId !== task\.id\s*\|\| String\(chatLog\.dataset\.messageOwnerKey \?\? ""\) !== String\(task\.id \?\? ""\)/u,
+  );
+  assert.equal(
+    (appSource.match(/if \(sameMessages && \(taskId !== state\.selectedId \|\| selectedSurfaceOwned\)\) return;/gu) ?? []).length,
+    2,
+  );
+});
 
 test("Enter queues active-turn input while Ctrl+Enter steers it into the turn", async () => {
   const api = await messageViewApi();

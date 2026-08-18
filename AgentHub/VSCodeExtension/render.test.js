@@ -1347,7 +1347,8 @@ test("mobile journal task links do not become nested expansion buttons", () => {
 
 test("chat distinguishes loading history from an empty task", () => {
   const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  assert.match(app, /state\.messages\.has\(state\.selectedId\)/u);
+  assert.match(app, /const historyLoaded = state\.messages\.has\(taskId\)/u);
+  assert.match(app, /MessageView\.claimKeyedChildrenOwner\(chatLog, taskId\)/u);
   assert.match(app, /Загрузка истории…/u);
 });
 

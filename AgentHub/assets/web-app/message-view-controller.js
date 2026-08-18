@@ -93,6 +93,20 @@
     return `Свёртка контекста · ${transition[1]} → ${transition[2]}`;
   }
 
+  function claimKeyedChildrenOwner(container, ownerKey) {
+    if (!container || !container.dataset || typeof container.removeChild !== "function") {
+      throw new TypeError("container must expose dataset and removeChild");
+    }
+    const nextOwnerKey = String(ownerKey ?? "");
+    const previousOwnerKey = String(container.dataset.messageOwnerKey ?? "");
+    if (previousOwnerKey === nextOwnerKey) return false;
+    while ((container.children?.length ?? 0) > 0) {
+      container.removeChild(container.children[container.children.length - 1]);
+    }
+    container.dataset.messageOwnerKey = nextOwnerKey;
+    return true;
+  }
+
   function reconcileKeyedChildren(container, specs, createNode, updateNode = () => {}) {
     if (!container || typeof container.insertBefore !== "function") {
       throw new TypeError("container must support insertBefore");
@@ -126,6 +140,7 @@
   }
 
   globalThis.AgentHubMessageView = Object.freeze({
+    claimKeyedChildrenOwner,
     composerFollowUpMode,
     extractTechnicalTails,
     messageCopyRequest,
