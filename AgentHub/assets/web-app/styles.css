@@ -4832,9 +4832,18 @@ html[data-surface="mobile"]
 }
 
 /* Некоторые минималистичные темы намеренно рисуют ответы агента без карточки,
-   полагаясь на общий dialog-canvas. Когда пользователь убирает этот canvas,
-   возвращаем только тематическую подложку сообщения: фон сцены остаётся виден
-   между карточками, а текст не ложится прямо на изображение. */
+   полагаясь на общий dialog-canvas. Растровая сцена теперь видна и при штатной
+   заливке ленты, поэтому ответу нужна собственная тематическая подложка при
+   любом режиме поверхности. Активный ход получает её только в прозрачном
+   режиме: в обычном состоянии тему продолжает рисовать его отдельная карточка. */
+:root:is(
+  :not([data-theme]),
+  [data-theme="orbit"],
+  [data-theme="blackhole"],
+  [data-theme="lake"],
+  [data-theme="orange"],
+  [data-theme="zero"]
+) .msg-agent,
 :root[data-chat-surface="transparent"]:is(
   :not([data-theme]),
   [data-theme="orbit"],
@@ -4842,7 +4851,7 @@ html[data-surface="mobile"]
   [data-theme="lake"],
   [data-theme="orange"],
   [data-theme="zero"]
-) :is(.msg-agent, .msg-live) {
+) .msg-live {
   background: var(--card-bg);
 }
 

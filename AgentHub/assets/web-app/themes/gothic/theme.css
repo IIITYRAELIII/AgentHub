@@ -943,6 +943,17 @@ html[data-theme="gothic"] body::before {
     z-index: 20;
   }
 
+  html[data-theme="gothic"][data-view="chat"]:not([data-surface="mobile"])
+    body > .workspace::after {
+    border: 14px solid var(--gothic-panel-base-color);
+    box-sizing: border-box;
+    content: "";
+    inset: 0;
+    pointer-events: none;
+    position: absolute;
+    z-index: 19;
+  }
+
   html[data-theme="gothic"]:not([data-surface="mobile"]) .task-rail,
   html[data-theme="gothic"]:not([data-surface="mobile"]) .activity-rail,
   html[data-theme="gothic"]:not([data-surface="mobile"]) .chat {
