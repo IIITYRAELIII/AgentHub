@@ -77,7 +77,9 @@ const streamCreatesInFlight = new Map();
 const observedContextCompactions = new Map();
 const maintenanceEventsByTask = readMaintenanceEvents();
 const activeMaintenanceByTask = new Map();
+const batchedMessageRenders = new Map();
 let deferredClientUserMessageIds = new Set();
+let messageRenderBatchDepth = 0;
 const MAX_OUTGOING_MESSAGES_PER_TASK = 100;
 const CONTEXT_PROBE_CLIENT_ID_PREFIX = "agent-hub-context-probe:";
 const CONTEXT_PROBE_PROMPT = "Ответь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1";
@@ -708,10 +710,42 @@ function exactTaskParams(id) {
   return identity;
 }
 
-function renderTaskMessages(taskIdValue, { preserveScroll = false } = {}) {
+function queueBatchedMessageRender(taskIdValue, { preserveScroll = false } = {}) {
+  const id = String(taskIdValue ?? "").trim();
+  if (!id || messageRenderBatchDepth <= 0) return false;
+  const previous = batchedMessageRenders.get(id);
+  batchedMessageRenders.set(id, {
+    preserveScroll: Boolean(previous?.preserveScroll || preserveScroll),
+  });
+  return true;
+}
+
+function renderTaskMessagesNow(taskIdValue, { preserveScroll = false } = {}) {
   const messages = reconciledMessages(taskIdValue);
   if (preserveScroll) agentHub.setMessagesPreservingScroll(taskIdValue, messages);
   else agentHub.setMessages(taskIdValue, messages);
+}
+
+function renderTaskMessages(taskIdValue, { preserveScroll = false } = {}) {
+  if (queueBatchedMessageRender(taskIdValue, { preserveScroll })) return;
+  renderTaskMessagesNow(taskIdValue, { preserveScroll });
+}
+
+function flushBatchedMessageRenders() {
+  if (messageRenderBatchDepth > 0 || !batchedMessageRenders.size) return;
+  const renders = [...batchedMessageRenders];
+  batchedMessageRenders.clear();
+  for (const [taskIdValue, options] of renders) renderTaskMessagesNow(taskIdValue, options);
+}
+
+function runBatchedMessageRenders(operation) {
+  messageRenderBatchDepth += 1;
+  try {
+    return operation();
+  } finally {
+    messageRenderBatchDepth -= 1;
+    flushBatchedMessageRenders();
+  }
 }
 
 function internalContextProbeRun(run) {
@@ -1403,142 +1437,146 @@ function observeStreamRotations(previousTasks, tasks) {
 function applySnapshot(snapshot) {
   if (!snapshot) return;
   if (observeServerIdentity(snapshot)) return;
-  resetConnectionFailures();
-  const previousTasks = lastSnapshot?.tasks ?? [];
-  lastSnapshot = snapshot;
-  agentHub.setExchangeRates(snapshot.exchangeRates ?? null);
-  agentHub.setServerStatus(snapshot.server ?? null);
-  agentHub.setWorkspaces(snapshot.workspaces ?? [], snapshot.boardLayout?.columnOrder ?? []);
-  const maintenanceChanged = new Set([
-    ...observeContextCompactions(snapshot.tasks),
-    ...observeStreamRotations(previousTasks, snapshot.tasks),
-    ...syncActiveMaintenanceMessages(snapshot.tasks),
-  ]);
-  applyMessageReceipts(snapshot);
-  const serverDeferredClientUserMessageIds = new Set(
-    (snapshot.deferredInputs ?? [])
-      .filter((item) => item.state !== "dispatching")
-      .map((item) => String(item.clientUserMessageId ?? "").trim())
-      .filter(Boolean),
-  );
-  const activeRunClientUserMessageIds = new Set((snapshot.tasks ?? [])
-    .map((task) => String(task.run?.clientUserMessageId ?? "").trim())
-    .filter(Boolean));
-  for (const clientUserMessageId of optimisticDeferredClientUserMessageIds) {
-    if (
-      serverDeferredClientUserMessageIds.has(clientUserMessageId)
-      || activeRunClientUserMessageIds.has(clientUserMessageId)
-    ) optimisticDeferredClientUserMessageIds.delete(clientUserMessageId);
-  }
-  deferredClientUserMessageIds = new Set([
-    ...serverDeferredClientUserMessageIds,
-    ...optimisticDeferredClientUserMessageIds,
-  ]);
-  const serverSelected = (snapshot.tasks ?? []).find((task) => task.selected);
-  const serverSelectedId = serverSelected
-    ? taskId(serverSelected.provider, serverSelected.threadId, serverSelected.streamId)
-    : "";
-  const emptyStreamIds = (snapshot.workspaces ?? []).flatMap((workspace) => (
-    (workspace.streams ?? []).filter((stream) => !(stream.threads ?? []).length).map((stream) => String(stream.id))
-  ));
-  const availableTaskIds = new Set([
-    ...(snapshot.tasks ?? []).map((task) => taskId(task.provider, task.threadId, task.streamId)),
-    ...emptyStreamIds,
-  ]);
-  const pendingExists = pendingSelectionId && availableTaskIds.has(pendingSelectionId);
-  const localExists = selectedTaskId && availableTaskIds.has(selectedTaskId);
-  const effectiveSelectedId = pendingExists
-    ? pendingSelectionId
-    : localExists
-      ? selectedTaskId
-      : serverSelectedId;
-  const tasks = [
-    ...(snapshot.tasks ?? []).map((task) => modelTask(task, snapshot, effectiveSelectedId, serverSelectedId)),
-    ...emptyStreamModels(snapshot, effectiveSelectedId),
-  ].sort((left, right) => Date.parse(right.lastActivity || 0) - Date.parse(left.lastActivity || 0));
-  const selectedWorkspaceId = String(
-    tasks.find((task) => task.id === effectiveSelectedId)?.workspaceId ?? "",
-  ).trim() || null;
-  window.AgentHubTaskBoard?.setSnapshot({
-    tasks: (snapshot.boardTasks ?? []).map((task) => ({
-      ...task,
-      attachments: attachmentViews(task.attachments),
-    })),
-    workspaces: snapshot.workspaces ?? [],
-    columnOrder: snapshot.boardLayout?.columnOrder ?? [],
-    notesComment: snapshot.boardLayout?.notesComment ?? "Игры, фильмы, сериалы и идеи",
-    selectedWorkspaceId,
-    provider: snapshot.settings?.provider ?? "codex",
-  });
-  agentHub.setTasks(tasks);
-  for (const task of tasks.filter((candidate) => candidate.draftStream)) agentHub.setMessages(task.id, []);
-  if (maintenanceChanged.has(effectiveSelectedId)) {
-    renderTaskMessages(effectiveSelectedId, { preserveScroll: true });
-  }
-  for (const deferred of snapshot.deferredInputs ?? []) {
-    const clientUserMessageId = String(deferred.clientUserMessageId ?? "");
-    if (!clientUserMessageId) continue;
-    patchOutgoing(
-      taskId(deferred.provider, deferred.threadId, deferred.streamId),
-      clientUserMessageId,
-      {
-        ...deliveryPatch(
-          deferred.state === "dispatching" || deferred.state === "steering"
-            ? "sending"
-            : deferred.state === "queued"
-              ? "queued"
-              : "deferred",
-        ),
-        time: deferred.createdAt ?? null,
-        ...nonEmptyAttachmentPatch(deferred.attachments),
-      },
+  let effectiveSelectedId = "";
+  let tasks = [];
+  runBatchedMessageRenders(() => {
+    resetConnectionFailures();
+    const previousTasks = lastSnapshot?.tasks ?? [];
+    lastSnapshot = snapshot;
+    agentHub.setExchangeRates(snapshot.exchangeRates ?? null);
+    agentHub.setServerStatus(snapshot.server ?? null);
+    agentHub.setWorkspaces(snapshot.workspaces ?? [], snapshot.boardLayout?.columnOrder ?? []);
+    const maintenanceChanged = new Set([
+      ...observeContextCompactions(snapshot.tasks),
+      ...observeStreamRotations(previousTasks, snapshot.tasks),
+      ...syncActiveMaintenanceMessages(snapshot.tasks),
+    ]);
+    applyMessageReceipts(snapshot);
+    const serverDeferredClientUserMessageIds = new Set(
+      (snapshot.deferredInputs ?? [])
+        .filter((item) => item.state !== "dispatching")
+        .map((item) => String(item.clientUserMessageId ?? "").trim())
+        .filter(Boolean),
     );
-  }
-  for (const task of snapshot.tasks ?? []) {
-    const clientUserMessageId = String(task.run?.clientUserMessageId ?? "");
-    if (!clientUserMessageId) continue;
-    patchOutgoing(taskId(task.provider, task.threadId, task.streamId), clientUserMessageId, {
-      provider: task.provider,
-      threadId: task.threadId,
-      turnId: String(task.run?.turnId ?? ""),
-      time: task.run?.startedAt ?? null,
-      ...nonEmptyAttachmentPatch(task.run?.attachments),
-      // The run-level receipt is assigned only when Agent Hub starts a new
-      // turn. It identifies the first user item even while Codex history has
-      // not yet echoed client_id back to us.
-      turnUserSlot: "root",
-      ...deliveryPatch("accepted"),
+    const activeRunClientUserMessageIds = new Set((snapshot.tasks ?? [])
+      .map((task) => String(task.run?.clientUserMessageId ?? "").trim())
+      .filter(Boolean));
+    for (const clientUserMessageId of optimisticDeferredClientUserMessageIds) {
+      if (
+        serverDeferredClientUserMessageIds.has(clientUserMessageId)
+        || activeRunClientUserMessageIds.has(clientUserMessageId)
+      ) optimisticDeferredClientUserMessageIds.delete(clientUserMessageId);
+    }
+    deferredClientUserMessageIds = new Set([
+      ...serverDeferredClientUserMessageIds,
+      ...optimisticDeferredClientUserMessageIds,
+    ]);
+    const serverSelected = (snapshot.tasks ?? []).find((task) => task.selected);
+    const serverSelectedId = serverSelected
+      ? taskId(serverSelected.provider, serverSelected.threadId, serverSelected.streamId)
+      : "";
+    const emptyStreamIds = (snapshot.workspaces ?? []).flatMap((workspace) => (
+      (workspace.streams ?? []).filter((stream) => !(stream.threads ?? []).length).map((stream) => String(stream.id))
+    ));
+    const availableTaskIds = new Set([
+      ...(snapshot.tasks ?? []).map((task) => taskId(task.provider, task.threadId, task.streamId)),
+      ...emptyStreamIds,
+    ]);
+    const pendingExists = pendingSelectionId && availableTaskIds.has(pendingSelectionId);
+    const localExists = selectedTaskId && availableTaskIds.has(selectedTaskId);
+    effectiveSelectedId = pendingExists
+      ? pendingSelectionId
+      : localExists
+        ? selectedTaskId
+        : serverSelectedId;
+    tasks = [
+      ...(snapshot.tasks ?? []).map((task) => modelTask(task, snapshot, effectiveSelectedId, serverSelectedId)),
+      ...emptyStreamModels(snapshot, effectiveSelectedId),
+    ].sort((left, right) => Date.parse(right.lastActivity || 0) - Date.parse(left.lastActivity || 0));
+    const selectedWorkspaceId = String(
+      tasks.find((task) => task.id === effectiveSelectedId)?.workspaceId ?? "",
+    ).trim() || null;
+    window.AgentHubTaskBoard?.setSnapshot({
+      tasks: (snapshot.boardTasks ?? []).map((task) => ({
+        ...task,
+        attachments: attachmentViews(task.attachments),
+      })),
+      workspaces: snapshot.workspaces ?? [],
+      columnOrder: snapshot.boardLayout?.columnOrder ?? [],
+      notesComment: snapshot.boardLayout?.notesComment ?? "Игры, фильмы, сериалы и идеи",
+      selectedWorkspaceId,
+      provider: snapshot.settings?.provider ?? "codex",
     });
-  }
-  const selected = (snapshot.tasks ?? []).find(
-    (task) => taskId(task.provider, task.threadId, task.streamId) === effectiveSelectedId,
-  );
-  rememberSelectedTaskId(effectiveSelectedId);
-  for (const task of snapshot.tasks ?? []) {
-    const stableTaskId = taskId(task.provider, task.threadId, task.streamId);
-    agentHub.setLive(stableTaskId, updateLiveMessage(stableTaskId, task));
-    agentHub.setRunning(stableTaskId, Boolean(task.running));
-  }
-  for (const task of snapshot.tasks ?? []) {
-    renderTaskQueue(taskId(task.provider, task.threadId, task.streamId), snapshot);
-  }
-  if (selected) {
-    agentHub.setApprovals(selectedTaskId, effectiveSelectedId === serverSelectedId
-      ? (snapshot.pendingApprovals ?? []).map((approval) => ({
-      id: approval.key ?? approval.id,
-      kind: approval.kind ?? "Подтверждение",
-      text: approval.text ?? approval.preview ?? approval.reason ?? "",
-      questions: Array.isArray(approval.questions) ? approval.questions : null,
-      options: approval.kind === "user-input"
-        ? [{ id: "decline", label: "Отменить", kind: "danger" }]
-        : [
-          ...(approval.canAccept === false ? [] : [{ id: "once", label: "Разрешить", kind: "primary" }]),
-          ...(approval.canAllowSession === false ? [] : [{ id: "session", label: "На сессию" }]),
-          { id: "decline", label: "Отклонить", kind: "danger" },
-        ],
-      }))
-      : []);
-  }
+    agentHub.setTasks(tasks);
+    for (const task of tasks.filter((candidate) => candidate.draftStream)) agentHub.setMessages(task.id, []);
+    if (maintenanceChanged.has(effectiveSelectedId)) {
+      renderTaskMessages(effectiveSelectedId, { preserveScroll: true });
+    }
+    for (const deferred of snapshot.deferredInputs ?? []) {
+      const clientUserMessageId = String(deferred.clientUserMessageId ?? "");
+      if (!clientUserMessageId) continue;
+      patchOutgoing(
+        taskId(deferred.provider, deferred.threadId, deferred.streamId),
+        clientUserMessageId,
+        {
+          ...deliveryPatch(
+            deferred.state === "dispatching" || deferred.state === "steering"
+              ? "sending"
+              : deferred.state === "queued"
+                ? "queued"
+                : "deferred",
+          ),
+          time: deferred.createdAt ?? null,
+          ...nonEmptyAttachmentPatch(deferred.attachments),
+        },
+      );
+    }
+    for (const task of snapshot.tasks ?? []) {
+      const clientUserMessageId = String(task.run?.clientUserMessageId ?? "");
+      if (!clientUserMessageId) continue;
+      patchOutgoing(taskId(task.provider, task.threadId, task.streamId), clientUserMessageId, {
+        provider: task.provider,
+        threadId: task.threadId,
+        turnId: String(task.run?.turnId ?? ""),
+        time: task.run?.startedAt ?? null,
+        ...nonEmptyAttachmentPatch(task.run?.attachments),
+        // The run-level receipt is assigned only when Agent Hub starts a new
+        // turn. It identifies the first user item even while Codex history has
+        // not yet echoed client_id back to us.
+        turnUserSlot: "root",
+        ...deliveryPatch("accepted"),
+      });
+    }
+    const selected = (snapshot.tasks ?? []).find(
+      (task) => taskId(task.provider, task.threadId, task.streamId) === effectiveSelectedId,
+    );
+    rememberSelectedTaskId(effectiveSelectedId);
+    for (const task of snapshot.tasks ?? []) {
+      const stableTaskId = taskId(task.provider, task.threadId, task.streamId);
+      agentHub.setLive(stableTaskId, updateLiveMessage(stableTaskId, task));
+      agentHub.setRunning(stableTaskId, Boolean(task.running));
+    }
+    for (const task of snapshot.tasks ?? []) {
+      renderTaskQueue(taskId(task.provider, task.threadId, task.streamId), snapshot);
+    }
+    if (selected) {
+      agentHub.setApprovals(selectedTaskId, effectiveSelectedId === serverSelectedId
+        ? (snapshot.pendingApprovals ?? []).map((approval) => ({
+        id: approval.key ?? approval.id,
+        kind: approval.kind ?? "Подтверждение",
+        text: approval.text ?? approval.preview ?? approval.reason ?? "",
+        questions: Array.isArray(approval.questions) ? approval.questions : null,
+        options: approval.kind === "user-input"
+          ? [{ id: "decline", label: "Отменить", kind: "danger" }]
+          : [
+            ...(approval.canAccept === false ? [] : [{ id: "once", label: "Разрешить", kind: "primary" }]),
+            ...(approval.canAllowSession === false ? [] : [{ id: "session", label: "На сессию" }]),
+            { id: "decline", label: "Отклонить", kind: "danger" },
+          ],
+        }))
+        : []);
+    }
+  });
   const settings = snapshot.settings ?? {};
   agentHub.setOptions({
     provider: [{ value: "codex", label: "Codex" }, { value: "claude", label: "Claude" }],

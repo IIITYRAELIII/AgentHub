@@ -21,3 +21,20 @@ test("hub client keeps Stream identity in routing, receipts, queue and live patc
   assert.doesNotMatch(source, /taskId\(task\.provider, task\.threadId\)/u);
   assert.doesNotMatch(source, /#\/chat\/\$\{encodeURIComponent\(identity\.provider\)\}/u);
 });
+
+test("snapshot message rendering is batched until deferred state and live run are applied", async () => {
+  const source = await readFile(
+    new URL("../../assets/web-app/hub-client.js", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(source, /const batchedMessageRenders = new Map\(\);/u);
+  assert.match(source, /function queueBatchedMessageRender\(taskIdValue/u);
+  assert.match(source, /function renderTaskMessages\(taskIdValue,[\s\S]*?queueBatchedMessageRender/u);
+  assert.match(source, /function flushBatchedMessageRenders\(\)[\s\S]*?renderTaskMessagesNow/u);
+  assert.match(source, /function runBatchedMessageRenders\(operation\)[\s\S]*?flushBatchedMessageRenders\(\);/u);
+  assert.match(
+    source,
+    /function applySnapshot\(snapshot\) \{[\s\S]*?runBatchedMessageRenders\(\(\) => \{[\s\S]*?deferredClientUserMessageIds = new Set\([\s\S]*?patchOutgoing\([\s\S]*?agentHub\.setLive\(stableTaskId, updateLiveMessage\(stableTaskId, task\)\);[\s\S]*?\}\);/u,
+  );
+});
