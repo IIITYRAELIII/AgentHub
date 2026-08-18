@@ -630,6 +630,67 @@ test("desktop task history combines provider Threads in global chronological ord
   assert.deepEqual(result.items.map((item) => item.id), ["turn-thread-2", "turn-thread-1"]);
 });
 
+test("desktop Stream history resolves a stale request and preserves mixed-provider turn provenance", async () => {
+  const factory = createDesktopTaskHistoryFactory({
+    selection: {
+      activeProvider: () => "claude",
+      threadId: () => "thread-new",
+      chatId: () => 42,
+    },
+    catalog: {
+      entries: () => [{
+        streamId: "stream-1",
+        provider: "claude",
+        projectRoot: "D:/work",
+        threadId: "thread-new",
+        title: "Workspace",
+      }],
+      threadsForStream: () => [
+        { provider: "codex", threadId: "thread-old", projectRoot: "D:/work" },
+        { provider: "claude", threadId: "thread-new", projectRoot: "D:/work" },
+      ],
+    },
+    historyReader: {
+      read: async ({ provider, threadId }) => ({
+        history: [{
+          id: `turn-${threadId}`,
+          prompt: `prompt-${provider}`,
+          answer: `answer-${provider}`,
+          completed: true,
+          startedAt: provider === "codex"
+            ? "2026-08-15T01:00:00.000Z"
+            : "2026-08-15T02:00:00.000Z",
+        }],
+      }),
+    },
+    runs: { forTask: () => null },
+    historyMerger: {
+      mergeActive: () => {},
+      mergeCompleted: () => {},
+    },
+    receipts: {
+      forMessage: () => null,
+      forTurn: () => null,
+    },
+    latestMessage: () => null,
+    responseBudget: { fit: (payload) => payload },
+  });
+
+  const result = await factory({
+    streamId: "stream-1",
+    provider: "codex",
+    threadId: "thread-old",
+  });
+
+  assert.equal(result.streamId, "stream-1");
+  assert.equal(result.provider, "claude");
+  assert.equal(result.threadId, "thread-new");
+  assert.deepEqual(result.items.map(({ id, provider, threadId }) => ({ id, provider, threadId })), [
+    { id: "turn-thread-old", provider: "codex", threadId: "thread-old" },
+    { id: "turn-thread-new", provider: "claude", threadId: "thread-new" },
+  ]);
+});
+
 test("desktop task history returns a compact marker for an unchanged completed page", async () => {
   const { desktopTaskHistory, calls } = fixture();
   const first = await desktopTaskHistory({ limit: 2, includeActive: false });

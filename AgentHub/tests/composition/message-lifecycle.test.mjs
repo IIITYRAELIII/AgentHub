@@ -33,6 +33,15 @@ const codexContextMaintenanceSource = await readFile(
   "utf8",
 );
 
+function clientFunctionSource(name, nextMarker) {
+  let start = hubClientSource.indexOf(`function ${name}`);
+  if (hubClientSource.slice(Math.max(0, start - 6), start) === "async ") start -= 6;
+  const end = hubClientSource.indexOf(nextMarker, start);
+  assert.notEqual(start, -1, `${name} source start`);
+  assert.notEqual(end, -1, `${name} source end`);
+  return hubClientSource.slice(start, end);
+}
+
 function message(itemId, text) {
   return {
     provider: "codex",
@@ -44,6 +53,190 @@ function message(itemId, text) {
     text,
   };
 }
+
+test("latest navigation intent wins when responses settle out of order", async () => {
+  const source = clientFunctionSource(
+    "createLatestIntentController",
+    "const navigationIntents",
+  );
+  const sandbox = vm.createContext({ Object });
+  vm.runInContext(`${source}; globalThis.createController = createLatestIntentController;`, sandbox);
+  const intents = sandbox.createController();
+  const committed = [];
+  let releaseFirst;
+  let releaseSecond;
+  const firstGate = new Promise((resolve) => { releaseFirst = resolve; });
+  const secondGate = new Promise((resolve) => { releaseSecond = resolve; });
+  const open = async (gate, value) => {
+    const intent = intents.begin();
+    await gate;
+    if (intents.current(intent)) committed.push(value);
+  };
+
+  const first = open(firstGate, "stream-a");
+  const second = open(secondGate, "stream-b");
+  releaseSecond();
+  await second;
+  releaseFirst();
+  await first;
+
+  assert.deepEqual(committed, ["stream-b"]);
+  assert.match(hubClientSource, /if \(pendingSelectionId === id\) pendingSelectionId = "";/u);
+});
+
+test("a stale navigation failure neither commits nor shows a toast", async () => {
+  const source = clientFunctionSource("runNavigation", "function outgoingMessages");
+  let generation = 0;
+  const committed = [];
+  const toasts = [];
+  let rejectFirst;
+  const firstGate = new Promise((_resolve, reject) => { rejectFirst = reject; });
+  const sandbox = vm.createContext({
+    agentHub: { toast: (message) => toasts.push(message) },
+    beginNavigation: () => ({ generation: ++generation }),
+    currentNavigation: (intent) => intent.generation === generation,
+    hubErrorMessage: (error) => error.message,
+    isConnectionFailure: () => false,
+    recordTransientConnectionFailure: () => {},
+  });
+  vm.runInContext(`${source}; globalThis.navigate = runNavigation;`, sandbox);
+
+  const first = sandbox.navigate({}, () => firstGate, () => committed.push("first"));
+  await sandbox.navigate({}, async () => "second", () => committed.push("second"));
+  rejectFirst(new Error("late failure"));
+  await first;
+
+  assert.deepEqual(committed, ["second"]);
+  assert.deepEqual(toasts, []);
+});
+
+test("every operation that selects a new task invalidates an older navigation", () => {
+  assert.match(
+    hubClientSource,
+    /agentHub\.on\("message:send", \(request\) => \{\s*if \(request\.draftStream\) beginNavigation\(\);/u,
+  );
+  assert.match(
+    hubClientSource,
+    /agentHub\.on\("task:new",[\s\S]*?runAction\(async \(\) => \{\s*beginNavigation\(\);/u,
+  );
+  assert.match(
+    hubClientSource,
+    /agentHub\.on\("stream:rebirth",[\s\S]*?runAction\(async \(\) => \{\s*beginNavigation\(\);/u,
+  );
+  assert.match(
+    hubClientSource,
+    /agentHub\.on\("stream:new",[\s\S]*?if \(existing\) return existing;\s*beginNavigation\(\);/u,
+  );
+});
+
+test("an invalid chat hash invalidates an in-flight navigation intent", async () => {
+  const source = clientFunctionSource("openRoute", "function snapshotTask");
+  let invalidations = 0;
+  const sandbox = vm.createContext({
+    beginNavigation: () => { invalidations += 1; },
+    decodeURIComponent,
+    location: { hash: "#/tasks" },
+  });
+  vm.runInContext(`${source}; globalThis.open = openRoute;`, sandbox);
+
+  assert.equal(await sandbox.open(), false);
+  sandbox.location.hash = "#/chat/codex/%E0%A4%A";
+  assert.equal(await sandbox.open(), false);
+  assert.equal(invalidations, 2);
+});
+
+test("an in-flight completion refresh follows a Stream rotation and discards the old Thread", async () => {
+  const source = clientFunctionSource("mergeHistoryLoadRequest", "async function loadVisibleTaskHistories");
+  const generations = new Map();
+  const responses = [];
+  const applied = [];
+  let currentIdentity = { streamId: "stream-1", provider: "codex", threadId: "thread-1" };
+  let releaseFirst;
+  let releaseSecond;
+  const firstGate = new Promise((resolve) => { releaseFirst = resolve; });
+  const secondGate = new Promise((resolve) => { releaseSecond = resolve; });
+  const sandbox = vm.createContext({
+    Map,
+    historyLoadStates: new Map(),
+    visibleHistoryLoads: new Set(),
+    historyPageByTask: new Map(),
+    beginHistoryRequest: (id, identity) => {
+      const generation = (generations.get(id) ?? 0) + 1;
+      generations.set(id, generation);
+      return { id, identity, generation };
+    },
+    currentHistoryRequest: (request) => generations.get(request.id) === request.generation,
+    stableIdentity: (identity) => ({ ...identity }),
+    settleOptionalRead: async (read) => ({ status: "fulfilled", value: await read() }),
+    control: async () => {
+      const index = responses.length;
+      const responseIdentity = { ...currentIdentity };
+      responses.push(index);
+      await (index === 0 ? firstGate : secondGate);
+      return { ...responseIdentity, items: [], version: String(index + 1) };
+    },
+    verifiedTaskHistory: (history) => history,
+    sameIdentity: (left, right) => left.streamId === right.streamId
+      && left.provider === right.provider && left.threadId === right.threadId,
+    taskIdentity: () => currentIdentity,
+    applyOpened: ({ history }) => applied.push(history.version),
+  });
+  vm.runInContext(`${source}; globalThis.enqueue = enqueueTaskHistoryLoad;`, sandbox);
+  const identity = { ...currentIdentity };
+  const first = sandbox.enqueue("stream-1", identity);
+  currentIdentity = { streamId: "stream-1", provider: "claude", threadId: "thread-2" };
+  const followUp = sandbox.enqueue("stream-1", currentIdentity, { refreshSource: true });
+  releaseFirst();
+  while (responses.length < 2) await new Promise((resolve) => setImmediate(resolve));
+  releaseSecond();
+  await Promise.all([first, followUp]);
+
+  assert.equal(responses.length, 2);
+  assert.deepEqual(applied, ["2"]);
+});
+
+test("background history refresh checks both request generation and current Stream binding", () => {
+  assert.match(
+    hubClientSource,
+    /if \(!sameIdentity\(taskIdentity\(id\), history\)\) continue;/u,
+  );
+  assert.match(
+    hubClientSource,
+    /state\.pending = mergeHistoryLoadRequest\(state\.pending,[\s\S]*?beginHistoryRequest\(id, identity\)/u,
+  );
+  assert.match(
+    hubClientSource,
+    /const bindingTransition = Boolean\(previousTask\) && !sameIdentity\(previousTask, currentTask\);/u,
+  );
+  assert.match(hubClientSource, /refreshSource: answerTransition \|\| bindingTransition/u);
+});
+
+test("aggregated Stream history preserves each item's provider and Thread", () => {
+  const source = clientFunctionSource("historyMessages", "function mergeNewestHistory");
+  const sandbox = vm.createContext({
+    attachmentViews: () => [],
+    conversationMessageAuthor: (_message, provider) => provider,
+    focusedTurnAlreadyVisible: () => true,
+    focusedTurnTaskThreadId: () => "",
+    historicalMessagesForDisplay: (item) => item.messages,
+  });
+  vm.runInContext(`${source}; globalThis.mapHistory = historyMessages;`, sandbox);
+  const messages = sandbox.mapHistory({
+    provider: "claude",
+    threadId: "thread-current",
+    start: 0,
+    items: [{
+      id: "turn-old",
+      provider: "codex",
+      threadId: "thread-old",
+      messages: [{ itemId: "answer", role: "agent", text: "готово" }],
+    }],
+  });
+
+  assert.equal(messages[0].provider, "codex");
+  assert.equal(messages[0].threadId, "thread-old");
+  assert.match(messages[0].id, /^codex:thread-old:/u);
+});
 
 test("chat history fallback preserves the reader position after prepending a page", () => {
   assert.match(miniAppSource, /scrollHeight:\s*chatScroll\.scrollHeight/u);
@@ -265,6 +458,15 @@ test("history identity accepts only the requested Stream", () => {
     streamId: "stream-architect",
     provider: "codex",
     threadId: "thread-old",
+  }), true);
+  assert.equal(lifecycle.historyMatchesIdentity({
+    streamId: "stream-architect",
+    provider: "claude",
+    threadId: "thread-resolved",
+  }, {
+    streamId: "stream-architect",
+    provider: "codex",
+    threadId: "thread-stale-request",
   }), true);
   assert.equal(lifecycle.historyMatchesIdentity({
     streamId: "stream-themes",
@@ -1373,6 +1575,18 @@ test("focused execution turn does not duplicate its task history prompt", () => 
   };
   assert.equal(lifecycle.focusedTurnTaskThreadId(focusedTurn), "task-thread");
   assert.equal(lifecycle.focusedTurnAlreadyVisible(history, official, focusedTurn), true);
+  assert.equal(lifecycle.focusedTurnAlreadyVisible({
+    provider: "claude",
+    threadId: "thread-current",
+  }, [{
+    provider: "codex",
+    threadId: "thread-old",
+    turnId: "turn-old",
+  }], {
+    provider: "codex",
+    taskThreadId: "thread-old",
+    turnId: "turn-old",
+  }), true);
 });
 
 test("history catch-up waits for the exact completed answer turn", () => {
@@ -1418,6 +1632,26 @@ test("legacy answer records without a turn id match their completed text", () =>
   assert.equal(lifecycle.historyContainsLatestAnswer({
     items: [{ id: "turn-legacy", completed: true, answer: "Старый готовый ответ" }],
   }, task), true);
+});
+
+test("history catch-up ignores a matching answer from an old provider Thread", () => {
+  const task = {
+    provider: "claude",
+    threadId: "thread-new",
+    lastAnswer: "Одинаковый финал",
+    lastAnswerAt: "2026-08-18T10:00:00.000Z",
+  };
+  assert.equal(lifecycle.historyContainsLatestAnswer({
+    provider: "claude",
+    threadId: "thread-new",
+    items: [{
+      id: "turn-old",
+      provider: "codex",
+      threadId: "thread-old",
+      completed: true,
+      answer: "Одинаковый финал",
+    }],
+  }, task), false);
 });
 
 test("active stage always identifies the whole turn as running", () => {

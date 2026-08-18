@@ -1321,7 +1321,6 @@ const state = {
   // selects a Thread; a wide shell may keep several Streams from the same
   // Workspace visible without making another device jump to that layout.
   openStreamsByWorkspace: new Map(),
-  savedMultiStreamsByWorkspace: new Map(),
   activeStreamByWorkspace: new Map(),
   configuredOpenStreamWorkspaces: new Set(),
   visibleStreamTaskIds: [],
@@ -1431,16 +1430,8 @@ function restoreOpenStreams() {
         .map((value) => String(value ?? "").trim())
         .filter(Boolean))].slice(-4);
       const activeStreamId = String(entry?.activeStreamId ?? "").trim();
-      const savedMultiStreamIds = [...new Set((Array.isArray(entry?.multiStreamIds)
-        ? entry.multiStreamIds
-        : [])
-        .map((value) => String(value ?? "").trim())
-        .filter(Boolean))].slice(-4);
       if (!workspaceId) continue;
       state.openStreamsByWorkspace.set(workspaceId, streamIds);
-      if (savedMultiStreamIds.length > 1) {
-        state.savedMultiStreamsByWorkspace.set(workspaceId, savedMultiStreamIds);
-      }
       if (activeStreamId) state.activeStreamByWorkspace.set(workspaceId, activeStreamId);
       state.configuredOpenStreamWorkspaces.add(workspaceId);
     }
@@ -1454,7 +1445,6 @@ function persistOpenStreams() {
     const stored = [...state.configuredOpenStreamWorkspaces].slice(-100).map((workspaceId) => ({
       workspaceId,
       streamIds: (state.openStreamsByWorkspace.get(workspaceId) ?? []).slice(-4),
-      multiStreamIds: (state.savedMultiStreamsByWorkspace.get(workspaceId) ?? []).slice(-4),
       activeStreamId: state.activeStreamByWorkspace.get(workspaceId) ?? "",
     }));
     localStorage.setItem(openStreamsStorageKey(), JSON.stringify(stored));
@@ -1474,7 +1464,6 @@ function orderedWorkspaceStreams(streams) {
 function reconcileOpenStreams(workspaceId, streams) {
   restoreOpenStreams();
   const ordered = orderedWorkspaceStreams(streams);
-  const available = new Set(streams.map((stream) => stream.id));
   const selected = currentTask();
   const selectedInWorkspace = selected && workspaceKey(selected) === workspaceId
     ? streamKey(selected)
@@ -1482,23 +1471,21 @@ function reconcileOpenStreams(workspaceId, streams) {
   const previous = state.openStreamsByWorkspace.get(workspaceId) ?? [];
   let normalized;
   if (surface === "mobile") {
-    normalized = [selectedInWorkspace || previous.find((streamId) => available.has(streamId)) || streams[0]?.id]
+    const available = new Set(streams.map((stream) => stream.id));
+    normalized = [selectedInWorkspace || previous.find((streamId) => available.has(streamId)) || ordered[0]?.id]
       .filter(Boolean);
   } else if (!state.configuredOpenStreamWorkspaces.has(workspaceId)) {
     // Обычный режим показывает один Stream. Несколько колонок появляются
     // только после явного Ctrl+click и сохраняются для этого клиента.
     normalized = [selectedInWorkspace || ordered[0]?.id].filter(Boolean);
   } else {
-    const previousSet = new Set(previous.filter((streamId) => available.has(streamId)));
-    if (selectedInWorkspace) previousSet.add(selectedInWorkspace);
-    const candidates = ordered.map((stream) => stream.id).filter((streamId) => previousSet.has(streamId));
-    normalized = candidates.slice(0, 4);
-    if (selectedInWorkspace && !normalized.includes(selectedInWorkspace)) {
-      normalized = [...normalized.slice(0, 3), selectedInWorkspace];
-      const normalizedSet = new Set(normalized);
-      normalized = ordered.map((stream) => stream.id).filter((streamId) => normalizedSet.has(streamId));
-    }
-    if (!normalized.length) normalized = [selectedInWorkspace || ordered[0]?.id].filter(Boolean);
+    // Уже открытые колонки образуют пользовательский layout. Activity order
+    // влияет на ленту и первичный выбор, но не переставляет живые колонки.
+    normalized = window.AgentHubStreamTabs.reconcileOpenStreamIds(
+      previous,
+      streams.map((stream) => stream.id),
+      selectedInWorkspace || ordered[0]?.id,
+    );
   }
   state.openStreamsByWorkspace.set(workspaceId, normalized);
   return new Set(normalized);
@@ -1517,25 +1504,13 @@ function toggleOpenStream(workspaceId, streamId, streams, { additive = false } =
   const available = new Set(streams.map((value) => value.id));
   const selected = (state.openStreamsByWorkspace.get(workspaceId) ?? [])
     .filter((id) => available.has(id));
-  let next;
-  if (!additive) {
-    // Повторный обычный клик по уже видимой колонке только меняет адрес
-    // общего композера. Клик по скрытому Stream возвращает одиночный режим.
-    next = selected.includes(streamId) && selected.length > 1 ? selected : [streamId];
-  } else if (selected.includes(streamId)) {
-    next = selected.length > 1 ? selected.filter((id) => id !== streamId) : selected;
-  } else {
-    if (selected.length >= 4) {
-      showToast("Одновременно можно открыть не больше четырёх Streams.");
-      return;
-    }
-    next = [...selected, streamId];
+  const selection = window.AgentHubStreamTabs.applyOpenStreamSelection(selected, streamId, { additive });
+  if (selection.limitReached) {
+    showToast("Одновременно можно открыть не больше четырёх Streams.");
+    return;
   }
+  const next = selection.ids;
   state.openStreamsByWorkspace.set(workspaceId, next);
-  if (additive) {
-    if (next.length > 1) state.savedMultiStreamsByWorkspace.set(workspaceId, next);
-    else state.savedMultiStreamsByWorkspace.delete(workspaceId);
-  }
   state.configuredOpenStreamWorkspaces.add(workspaceId);
   persistOpenStreams();
   if (next.includes(streamId)) {
@@ -3288,13 +3263,9 @@ function ensureTaskStreamVisible(task) {
   const streamId = streamKey(task);
   const open = state.openStreamsByWorkspace.get(workspaceId) ?? [];
   if (open.includes(streamId)) return;
-  const available = new Set(streams.map((stream) => stream.id));
-  const savedMulti = (state.savedMultiStreamsByWorkspace.get(workspaceId) ?? [])
-    .filter((savedStreamId) => available.has(savedStreamId));
-  const next = savedMulti.length > 1 && savedMulti.includes(streamId)
-    ? savedMulti
-    : [streamId];
-  state.openStreamsByWorkspace.set(workspaceId, next);
+  // Любая обычная навигация к скрытому Stream является новым одиночным
+  // layout. Расширять набор колонок может только явный Ctrl/Cmd+click.
+  state.openStreamsByWorkspace.set(workspaceId, [streamId]);
   state.configuredOpenStreamWorkspaces.add(workspaceId);
   persistOpenStreams();
 }

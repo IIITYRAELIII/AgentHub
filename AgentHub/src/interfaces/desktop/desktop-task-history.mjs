@@ -408,8 +408,11 @@ export function createDesktopTaskHistoryFactory({
     }
     const payload = {
       ...(binding.streamId ? { streamId: binding.streamId } : {}),
-      provider,
-      threadId: selectedThreadId,
+      // A Stream reference is authoritative.  The caller may still carry the
+      // provider/thread pair that was current before a rebirth, so expose the
+      // catalog's resolved current binding at the response envelope.
+      provider: binding.provider,
+      threadId: binding.threadId,
       title: taskDisplayTitle(entry),
       total,
       start,
@@ -425,6 +428,11 @@ export function createDesktopTaskHistoryFactory({
           || String(item.promptAuthor ?? "").trim();
         return {
           id: String(item.id ?? ""),
+          // Stream history is an aggregate of sequential provider Threads.
+          // Preserve each turn's source identity instead of making consumers
+          // infer it from the current response envelope.
+          provider: itemProvider,
+          threadId: itemThreadId,
           prompt: displayUserPrompt(item.prompt),
           ...(promptAuthor ? { promptAuthor } : {}),
           ...(promptOrigin ? { promptOrigin } : {}),
@@ -540,8 +548,8 @@ export function createDesktopTaskHistoryFactory({
     if (params.knownVersion && String(params.knownVersion) === version) {
       return {
         ...(binding.streamId ? { streamId: binding.streamId } : {}),
-        provider,
-        threadId: selectedThreadId,
+        provider: binding.provider,
+        threadId: binding.threadId,
         notModified: true,
         version,
       };

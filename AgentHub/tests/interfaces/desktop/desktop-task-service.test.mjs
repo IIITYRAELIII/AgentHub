@@ -139,6 +139,41 @@ test("Desktop task open resolves a rotated Thread to the current Stream task", a
   assert.equal(result.history.params.threadId, "thread-1");
 });
 
+test("Desktop task open resolves a stale cross-provider Stream request to its current binding", async () => {
+  const { service, calls } = fixture();
+  const current = {
+    streamId: "stream-1",
+    workspaceName: "Agent HUB",
+    streamName: "Themes",
+    provider: "claude",
+    projectRoot: "C:\\repo",
+    threadId: "thread-new",
+    title: "Task",
+  };
+  service.catalog = () => [current];
+  service.refreshCatalog = async () => [current];
+  service.threadsForStream = () => [
+    { provider: "codex", threadId: "thread-old" },
+    { provider: "claude", threadId: "thread-new" },
+  ];
+
+  const result = await service.openTask({
+    streamId: "stream-1",
+    provider: "codex",
+    threadId: "thread-old",
+    limit: 20,
+  });
+
+  const dispatch = calls.find(([name]) => name === "dispatch");
+  const history = calls.find(([name]) => name === "history");
+  assert.equal(dispatch[2].provider, "claude");
+  assert.equal(dispatch[2].threadId, "thread-new");
+  assert.equal(history[1].provider, "claude");
+  assert.equal(history[1].threadId, "thread-new");
+  assert.equal(result.history.params.provider, "claude");
+  assert.equal(result.history.params.threadId, "thread-new");
+});
+
 test("Desktop turn open verifies task ownership before returning the body", async () => {
   const { service, calls } = fixture();
   const result = await service.openTurn({
@@ -149,6 +184,56 @@ test("Desktop turn open verifies task ownership before returning the body", asyn
   });
   assert.equal(result.focusedTurn.answer, "answer");
   assert.equal(calls.some(([name]) => name === "dispatch"), true);
+});
+
+test("Desktop turn deep link resolves a historical Thread after Stream rebirth", async () => {
+  const { service, calls } = fixture();
+  const current = {
+    streamId: "stream-1",
+    workspaceName: "Agent HUB",
+    streamName: "Themes",
+    provider: "claude",
+    projectRoot: "C:\\repo-current",
+    threadId: "thread-new",
+    title: "Task",
+  };
+  service.catalog = () => [current];
+  service.refreshCatalog = async () => [current];
+  service.threadsForStream = () => [
+    { provider: "codex", threadId: "thread-old", projectRoot: "C:\\repo-old" },
+    { provider: "claude", threadId: "thread-new", projectRoot: "C:\\repo-current" },
+  ];
+  service.readTurn = async (params) => {
+    calls.push(["turn", params]);
+    return {
+      taskThreadId: "thread-old",
+      projectRoot: "C:\\repo-old",
+      body: "historical answer",
+      title: "Historical turn",
+    };
+  };
+
+  const result = await service.openTurn({
+    provider: "codex",
+    taskThreadId: "thread-old",
+    turnThreadId: "thread-old",
+    turnId: "turn-old",
+  });
+
+  const dispatch = calls.find(([name]) => name === "dispatch");
+  const history = calls.find(([name]) => name === "history");
+  assert.equal(dispatch[2].streamId, "stream-1");
+  assert.equal(dispatch[2].provider, "claude");
+  assert.equal(dispatch[2].threadId, "thread-new");
+  assert.deepEqual(calls.find(([name]) => name === "turn")[1], {
+    provider: "codex",
+    threadId: "thread-old",
+    turnId: "turn-old",
+  });
+  assert.equal(history[1].streamId, "stream-1");
+  assert.equal(history[1].provider, "codex");
+  assert.equal(history[1].threadId, "thread-old");
+  assert.equal(result.focusedTurn.answer, "historical answer");
 });
 
 test("Desktop turn open forwards compact limits and bounds its history", async () => {

@@ -182,21 +182,25 @@ export class DesktopTaskService {
 
   async openTurn(params, context = null) {
     const reference = normalizedTaskReference(params);
-    const entry = this.#find(params);
+    // Turn routes retain the provider/Thread that owns the historical turn.
+    // After a Stream rebirth that pair is no longer the catalog's current
+    // entry, so resolve it through the same Stream history used by openTask.
+    const entry = await this.#resolveOpenEntry(params);
     const taskThread = String(params.taskThreadId || reference.threadId || entry?.threadId || "").trim();
     const turnThread = String(params.turnThreadId ?? taskThread).trim();
     const turnId = String(params.turnId ?? "").trim();
     const itemId = String(params.itemId ?? "").trim();
     if (!taskThread || !turnThread || !turnId) throw new Error("Укажите корректный ход");
-    void this.refreshCatalog().catch((error) => {
-      this.warn(`Cannot refresh task catalog after Desktop turn open: ${error.message}`);
-    });
-    if (!entry) throw new Error("Задача не найдена в локальном каталоге");
     const targetProvider = String(params.provider ?? entry.provider).trim();
-    if (itemId && entry.streamId && !this.threadsForStream(entry.streamId).some((thread) => (
-      String(thread?.provider ?? "") === targetProvider
-      && String(thread?.threadId ?? "") === taskThread
-    ))) {
+    const currentBindingMatches = entry.provider === targetProvider && entry.threadId === taskThread;
+    const historicalBinding = entry.streamId && !currentBindingMatches
+      ? this.threadsForStream(entry.streamId).find((thread) => (
+        String(thread?.provider ?? "") === targetProvider
+        && String(thread?.threadId ?? "") === taskThread
+      ))
+      : null;
+    const taskBelongsToStream = currentBindingMatches || Boolean(historicalBinding);
+    if (entry.streamId && !taskBelongsToStream) {
       throw new Error("Ход не относится к выбранному Stream");
     }
     const indexedMessage = itemId ? this.searchMessage({
@@ -213,8 +217,9 @@ export class DesktopTaskService {
     });
     if (!record && !indexedMessage) throw new Error("Ход не найден в журнале");
     const recordedTaskThread = String(record?.taskThreadId ?? record?.threadId ?? "").trim();
+    const owningProjectRoot = String(historicalBinding?.projectRoot ?? entry.projectRoot ?? "").trim();
     if (record && (recordedTaskThread !== taskThread
-      || (record.projectRoot && !this.samePath(record.projectRoot, entry.projectRoot)))) {
+      || (record.projectRoot && owningProjectRoot && !this.samePath(record.projectRoot, owningProjectRoot)))) {
       throw new Error("Ход не относится к выбранной задаче");
     }
     const snapshot = await this.dispatchCommand(

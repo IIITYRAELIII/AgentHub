@@ -30,8 +30,7 @@ function historyMatchesIdentity(history, identity) {
   const expectedProvider = String(identity.provider ?? "").trim();
   const actualProvider = String(history.provider ?? "").trim();
   if (expectedStreamId) {
-    return actualStreamId === expectedStreamId
-      && (!expectedProvider || actualProvider === expectedProvider);
+    return actualStreamId === expectedStreamId;
   }
   return Boolean(expectedProvider && String(identity.threadId ?? "").trim())
     && actualProvider === expectedProvider
@@ -220,15 +219,11 @@ function focusedTurnTaskThreadId(focusedTurn) {
   return String(focusedTurn?.taskThreadId ?? focusedTurn?.turnThreadId ?? "");
 }
 
-function focusedTurnAlreadyVisible(history, messages, focusedTurn) {
+function focusedTurnAlreadyVisible(_history, messages, focusedTurn) {
   const provider = String(focusedTurn?.provider ?? "");
   const taskThreadId = focusedTurnTaskThreadId(focusedTurn);
   const turnId = String(focusedTurn?.turnId ?? "");
   if (!provider || !taskThreadId || !turnId) return false;
-  if (
-    String(history?.provider ?? "") !== provider
-    || String(history?.threadId ?? "") !== taskThreadId
-  ) return false;
   return (Array.isArray(messages) ? messages : []).some((message) => (
     String(message?.provider ?? "") === provider
     && String(message?.threadId ?? "") === taskThreadId
@@ -242,9 +237,17 @@ function historyContainsLatestAnswer(history, task) {
   const hasKnownAnswer = Boolean(String(task?.lastAnswerAt ?? "").trim() || expectedAnswer);
   if (!hasKnownAnswer) return true;
   const items = Array.isArray(history?.items) ? history.items : [];
-  const candidates = expectedTurnId
-    ? items.filter((item) => String(item?.id ?? "") === expectedTurnId)
+  const expectedProvider = String(task?.provider ?? "").trim();
+  const expectedThreadId = String(task?.threadId ?? "").trim();
+  const scopedItems = expectedProvider && expectedThreadId
+    ? items.filter((item) => (
+        String(item?.provider ?? history?.provider ?? "").trim() === expectedProvider
+        && String(item?.threadId ?? history?.threadId ?? "").trim() === expectedThreadId
+      ))
     : items;
+  const candidates = expectedTurnId
+    ? scopedItems.filter((item) => String(item?.id ?? "") === expectedTurnId)
+    : scopedItems;
   return candidates.some((item) => {
     if (item?.completed !== true) return false;
     const hasUserMessage = Boolean(String(item?.prompt ?? "").trim())

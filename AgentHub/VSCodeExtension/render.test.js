@@ -1360,7 +1360,8 @@ test("chat refreshes every visible external run without rebuilding a second snap
   assert.match(client, /let visibleStreamTaskIds = new Set\(\)/u);
   assert.match(client, /async function refreshVisibleTaskHistories[\s\S]*Promise\.all\(\[\.\.\.visibleIds\]/u);
   assert.match(client, /const externalLive = currentTask\.running[\s\S]*executionOwner/u);
-  assert.match(client, /refreshExternalHistory[\s\S]*control\("task-history"[\s\S]*skipSnapshot: true/u);
+  assert.match(client, /refreshExternalHistory[\s\S]*enqueueTaskHistoryLoad\(id, identity/u);
+  assert.match(client, /function enqueueTaskHistoryLoad[\s\S]*control\("task-history"[\s\S]*skipSnapshot: true/u);
   assert.match(client, /includeActive: false[\s\S]*knownVersion: historyPageByTask/u);
   assert.match(refresh, /void refreshVisibleTaskHistories\(previousSnapshot, snapshot\)\.catch/u);
   assert.doesNotMatch(refresh, /await refreshVisibleTaskHistories\(previousSnapshot, snapshot\)/u);
@@ -1376,8 +1377,8 @@ test("completed chat keeps probing briefly for late generated images", () => {
   assert.match(client, /const HISTORY_ATTACHMENT_SETTLE_TIMEOUT_MS = 120_000/u);
   assert.match(client, /function scheduleHistoryAttachmentSettle\(taskIdValue\)/u);
   assert.match(client, /if \(answerTransition\) \{[\s\S]*scheduleHistoryAttachmentSettle\(id\)[\s\S]*historyCatchUpDeadlines\.set/u);
-  assert.match(client, /refreshSource: answerTransition/u);
-  assert.match(client, /refreshSettlingAttachments[\s\S]*control\("task-history"/u);
+  assert.match(client, /refreshSource: answerTransition \|\| bindingTransition/u);
+  assert.match(client, /refreshSettlingAttachments[\s\S]*enqueueTaskHistoryLoad\(id, identity/u);
 });
 
 test("opening a task settles generated images without delaying the cached history", () => {
@@ -1385,9 +1386,9 @@ test("opening a task settles generated images without delaying the cached histor
   assert.match(client, /if \(selectTask && !result\.focusedTurn\)[\s\S]*void settleOpenedTaskHistory/u);
   assert.match(
     client,
-    /async function settleOpenedTaskHistory[\s\S]*control\("task-history", \{[\s\S]*refreshSource: true/u,
+    /async function settleOpenedTaskHistory[\s\S]*enqueueTaskHistoryLoad\(id, identity,[\s\S]*refreshSource: true/u,
   );
-  assert.match(client, /selectedTaskId !== id \|\| history\?\.notModified === true/u);
+  assert.match(client, /pending\.onlyWhenSelected && selectedTaskId !== id/u);
 });
 
 test("background history refresh cannot switch the task or reorder a completed turn", () => {
@@ -1395,7 +1396,7 @@ test("background history refresh cannot switch the task or reorder a completed t
   assert.match(client, /selectTask = true/u);
   assert.match(client, /if \(selectTask\) rememberSelectedTaskId\(id\)/u);
   assert.match(client, /if \(selectTask\) agentHub\.selectTask\(id\)/u);
-  assert.match(client, /preserveScroll: true,\s*skipSnapshot: true,\s*selectTask: false/su);
+  assert.match(client, /preserveScroll: pending\.preserveScroll,\s*skipSnapshot: true,\s*selectTask: false/su);
   assert.match(client, /new Date\(incomingStartedAtMs - 1\)\.toISOString\(\)/u);
   assert.match(client, /time: run\.lastActivityAt \?\? run\.startedAt \?\? null/u);
 });
@@ -1860,7 +1861,7 @@ test("composer restores definite rejection but keeps an ambiguous delivery singl
 test("chat retries an initial history load after the connection recovers", () => {
   const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
   assert.match(client, /const historyMissing = Boolean\(previousTask\) && !historyPageByTask\.has\(id\)/u);
-  assert.match(client, /historyMissing[\s\S]*control\("task-history"/u);
+  assert.match(client, /historyMissing[\s\S]*enqueueTaskHistoryLoad\(id, identity/u);
 });
 
 test("one transient control failure does not mark the whole Hub offline", () => {

@@ -102,6 +102,47 @@ test("order switch icons are real Phosphor SVG nodes in the SVG namespace", asyn
   }
 });
 
+test("open Stream layout preserves physical column order when activity changes", async () => {
+  const { reconcileOpenStreamIds } = await streamTabsApi();
+  assert.deepEqual(
+    Array.from(reconcileOpenStreamIds(
+      ["alpha", "beta", "gamma"],
+      ["gamma", "alpha", "beta", "delta"],
+      "gamma",
+    )),
+    ["alpha", "beta", "gamma"],
+  );
+});
+
+test("ordinary hidden Stream selection collapses a four-column layout", async () => {
+  const { applyOpenStreamSelection } = await streamTabsApi();
+  const open = ["alpha", "beta", "gamma", "delta"];
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(applyOpenStreamSelection(open, "epsilon"))),
+    { ids: ["epsilon"], limitReached: false },
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(applyOpenStreamSelection(open, "beta"))),
+    { ids: open, limitReached: false },
+  );
+});
+
+test("only additive selection expands the open Stream layout", async () => {
+  const { applyOpenStreamSelection } = await streamTabsApi();
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(applyOpenStreamSelection(["alpha"], "beta", { additive: true }))),
+    { ids: ["alpha", "beta"], limitReached: false },
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(applyOpenStreamSelection(
+      ["alpha", "beta", "gamma", "delta"],
+      "epsilon",
+      { additive: true },
+    ))),
+    { ids: ["alpha", "beta", "gamma", "delta"], limitReached: true },
+  );
+});
+
 test("Stream dot state separates execution, idle and failure from provider color", async () => {
   const { streamStatusState } = await streamTabsApi();
   assert.equal(streamStatusState({ running: true }), "running");

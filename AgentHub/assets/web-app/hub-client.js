@@ -17,6 +17,16 @@ const localWorkspaceFilesAvailable = window.AgentHubResourceInteractions.localWo
 const selectedTaskKey = "agent-hub:selected-task:v1";
 const serverIdentityKey = "agent-hub:server-identity:v1";
 const maintenanceEventStorageKey = "agent-hub:maintenance-events:v1";
+
+function createLatestIntentController() {
+  let generation = 0;
+  return Object.freeze({
+    begin: () => ++generation,
+    current: (candidate) => candidate === generation,
+  });
+}
+
+const navigationIntents = createLatestIntentController();
 let bridgeSequence = 0;
 let lastSnapshot = null;
 let observedServerIdentity = readStoredServerIdentity();
@@ -30,7 +40,6 @@ let connectionFailureCount = 0;
 let connectionFailureSince = 0;
 let connectionOfflineTimer = null;
 let pendingSelectionId = "";
-let selectionSequence = 0;
 let selectionTail = Promise.resolve();
 let initialRouteOpening = true;
 const historyRefreshAtByTask = new Map();
@@ -53,6 +62,8 @@ const historyPageByTask = new Map();
 const historyCatchUpDeadlines = new Map();
 const historyAttachmentSettleDeadlines = new Map();
 const visibleHistoryLoads = new Set();
+const historyLoadStates = new Map();
+const historyRequestGenerationByTask = new Map();
 const outgoingByTask = new Map();
 const liveProbeByTask = new Map();
 const liveUserMessagesByTask = new Map();
@@ -297,6 +308,63 @@ function verifiedTaskHistory(history, identity) {
     throw new Error("Agent Hub вернул историю другого Stream. Обновление отклонено.");
   }
   return history;
+}
+
+function stableIdentity(identity) {
+  return {
+    streamId: String(identity?.streamId ?? "").trim(),
+    provider: String(identity?.provider ?? "").trim(),
+    threadId: String(identity?.threadId ?? "").trim(),
+  };
+}
+
+function sameIdentity(left, right) {
+  const a = stableIdentity(left);
+  const b = stableIdentity(right);
+  return a.streamId === b.streamId && a.provider === b.provider && a.threadId === b.threadId;
+}
+
+function beginHistoryRequest(id, identity) {
+  const generation = (historyRequestGenerationByTask.get(id) ?? 0) + 1;
+  historyRequestGenerationByTask.set(id, generation);
+  return { id, identity: stableIdentity(identity), generation };
+}
+
+function currentHistoryRequest(request) {
+  return historyRequestGenerationByTask.get(request.id) === request.generation
+    && sameIdentity(taskIdentity(request.id), request.identity);
+}
+
+function beginNavigation(identity = null) {
+  const generation = navigationIntents.begin();
+  return {
+    generation,
+    identity: identity ? stableIdentity(identity) : null,
+  };
+}
+
+function currentNavigation(intent) {
+  return navigationIntents.current(intent.generation);
+}
+
+async function runNavigation(identity, load, commit) {
+  const intent = beginNavigation(identity);
+  try {
+    const result = await load();
+    if (!currentNavigation(intent)) return null;
+    if (result?.history && intent.identity?.streamId) {
+      verifiedTaskHistory(result.history, intent.identity);
+      const currentIdentity = taskIdentity(intent.identity.streamId);
+      if (currentIdentity && !sameIdentity(currentIdentity, result.history)) return null;
+    }
+    commit(result);
+    return result;
+  } catch (error) {
+    if (!currentNavigation(intent)) return null;
+    if (isConnectionFailure(error)) recordTransientConnectionFailure();
+    agentHub.toast(hubErrorMessage(error));
+    return null;
+  }
 }
 
 function outgoingMessages(taskIdValue) {
@@ -1546,11 +1614,13 @@ function historyMessages(history, focusedTurn = null) {
     ? Number(history.start)
     : 0;
   for (const [itemIndex, item] of (history?.items ?? []).entries()) {
+    const itemProvider = String(item?.provider ?? history.provider ?? "");
+    const itemThreadId = String(item?.threadId ?? history.threadId ?? "");
     const visible = historicalMessagesForDisplay(item);
     for (const [messageIndex, message] of visible.entries()) messages.push({
-      id: `${history.provider}:${history.threadId}:${item.id}:${message.itemId}:${message.role}`,
-      provider: history.provider,
-      threadId: history.threadId,
+      id: `${itemProvider}:${itemThreadId}:${item.id}:${message.itemId}:${message.role}`,
+      provider: itemProvider,
+      threadId: itemThreadId,
       turnId: item.id,
       itemId: String(message.itemId ?? ""),
       clientUserMessageId: String(message.clientUserMessageId ?? ""),
@@ -1559,7 +1629,7 @@ function historyMessages(history, focusedTurn = null) {
       ...(message.kind ? { kind: message.kind } : {}),
       ...(message.agentThreadId ? { agentThreadId: message.agentThreadId } : {}),
       ...(message.model ? { model: message.model } : {}),
-      author: conversationMessageAuthor(message, history.provider),
+      author: conversationMessageAuthor(message, itemProvider),
       text: message.text,
       ...(message.role === "user" ? {
         responseAnnotations: message.responseAnnotations,
@@ -1764,52 +1834,102 @@ agentHub.on("task:select", ({ id }) => {
   if (!identity) {
     const draft = emptyStreamModels(lastSnapshot ?? {}, id).find((task) => task.id === id);
     if (!draft) return null;
+    beginNavigation();
     pendingSelectionId = id;
     rememberSelectedTaskId(id);
     replaceRoute(`#/chat/stream/${encodeURIComponent(id)}`);
     agentHub.selectTask(id);
     return null;
   }
-  const sequence = ++selectionSequence;
   pendingSelectionId = id;
   rememberSelectedTaskId(id);
-  selectionTail = selectionTail.catch(() => null).then(async () => {
-    if (sequence !== selectionSequence) return null;
-    const result = await runAction(async () => {
+  selectionTail = runNavigation(
+    identity,
+    async () => {
       const opened = await control("open-task", { ...identity, limit: 20 });
       if (opened?.history) verifiedTaskHistory(opened.history, identity);
       return opened;
-    });
-    if (sequence !== selectionSequence) return null;
-    if (!result) {
+    },
+    (result) => {
+      applyOpened(result);
       pendingSelectionId = "";
-      return null;
-    }
-    applyOpened(result);
-    pendingSelectionId = "";
-    const route = window.AgentHubNavigationTabs.resolvedChatRoute(result, identity);
-    if (route.hash) replaceRoute(route.hash);
-    return result;
+      const route = window.AgentHubNavigationTabs.resolvedChatRoute(result, identity);
+      if (route.hash) replaceRoute(route.hash);
+    },
+  ).finally(() => {
+    if (pendingSelectionId === id) pendingSelectionId = "";
   });
   return selectionTail;
 });
 
 async function settleOpenedTaskHistory(id, identity) {
-  const settled = await settleOptionalRead(() => control("task-history", {
-    ...identity,
-    limit: 20,
-    includeActive: false,
+  await enqueueTaskHistoryLoad(id, identity, {
     refreshSource: true,
-    knownVersion: historyPageByTask.get(id)?.version ?? "",
-  }));
-  if (settled.status === "rejected") return;
-  const history = verifiedTaskHistory(settled.value, identity);
-  if (selectedTaskId !== id || history?.notModified === true) return;
-  applyOpened({ history }, {
-    preserveScroll: true,
-    skipSnapshot: true,
-    selectTask: false,
+    onlyWhenSelected: true,
   });
+}
+
+function mergeHistoryLoadRequest(previous, next) {
+  if (!previous) return next;
+  return {
+    ...next,
+    refreshSource: previous.refreshSource || next.refreshSource,
+    preserveScroll: previous.preserveScroll || next.preserveScroll,
+  };
+}
+
+function enqueueTaskHistoryLoad(id, identity, {
+  refreshSource = false,
+  preserveScroll = true,
+  onlyWhenSelected = false,
+} = {}) {
+  let state = historyLoadStates.get(id);
+  if (!state) {
+    state = { pending: null, running: null };
+    historyLoadStates.set(id, state);
+  }
+  state.pending = mergeHistoryLoadRequest(state.pending, {
+    identity: stableIdentity(identity),
+    request: beginHistoryRequest(id, identity),
+    refreshSource,
+    preserveScroll,
+    onlyWhenSelected,
+  });
+  if (state.running) return state.running;
+  state.running = (async () => {
+    visibleHistoryLoads.add(id);
+    try {
+      while (state.pending) {
+        const pending = state.pending;
+        state.pending = null;
+        const settled = await settleOptionalRead(() => control("task-history", {
+          ...pending.identity,
+          limit: 20,
+          includeActive: false,
+          refreshSource: pending.refreshSource,
+          knownVersion: historyPageByTask.get(id)?.version ?? "",
+        }));
+        if (settled.status === "rejected" || !currentHistoryRequest(pending.request)) continue;
+        const history = verifiedTaskHistory(settled.value, pending.identity);
+        if (!sameIdentity(taskIdentity(id), history)) continue;
+        if (pending.onlyWhenSelected && selectedTaskId !== id) continue;
+        if (history?.notModified === true) {
+          const page = historyPageByTask.get(id);
+          if (page) page.version = history.version;
+          continue;
+        }
+        applyOpened({ history }, {
+          preserveScroll: pending.preserveScroll,
+          skipSnapshot: true,
+          selectTask: false,
+        });
+      }
+    } finally {
+      visibleHistoryLoads.delete(id);
+      if (historyLoadStates.get(id) === state) historyLoadStates.delete(id);
+    }
+  })();
+  return state.running;
 }
 
 async function loadVisibleTaskHistories(taskIds) {
@@ -1821,22 +1941,10 @@ async function loadVisibleTaskHistories(taskIds) {
   await Promise.all(ids.map(async (id) => {
     // История выбранного Thread уже загружается open-task. Остальные колонки
     // подгружаются только после того, как пользователь открыл их Stream.
-    if (id === selectedTaskId || historyPageByTask.has(id) || visibleHistoryLoads.has(id)) return;
+    if (id === selectedTaskId || historyPageByTask.has(id)) return;
     const identity = taskIdentity(id);
     if (!identity) return;
-    visibleHistoryLoads.add(id);
-    const settled = await settleOptionalRead(() => control("task-history", {
-      ...identity,
-      limit: 20,
-      includeActive: false,
-    }));
-    try {
-      if (settled.status === "rejected") return;
-      const history = verifiedTaskHistory(settled.value, identity);
-      applyOpened({ history }, { skipSnapshot: true, selectTask: false });
-    } finally {
-      visibleHistoryLoads.delete(id);
-    }
+    await enqueueTaskHistoryLoad(id, identity, { preserveScroll: false });
   }));
 }
 
@@ -1877,6 +1985,7 @@ agentHub.on("history:load-older", ({ taskId: id }) => runAction(async () => {
   if (!identity || !page || page.nextBefore == null || page.loading) return;
   const requestedBefore = Number(page.nextBefore);
   if (!Number.isSafeInteger(requestedBefore) || requestedBefore < 1) return;
+  const request = beginHistoryRequest(id, identity);
   page.loading = true;
   syncHistoryPagination(id);
   try {
@@ -1885,6 +1994,11 @@ agentHub.on("history:load-older", ({ taskId: id }) => runAction(async () => {
       before: requestedBefore,
       limit: 20,
     }), identity);
+    if (!currentHistoryRequest(request) || !sameIdentity(taskIdentity(id), history)) {
+      page.loading = false;
+      syncHistoryPagination(id);
+      return;
+    }
     // The Worker queue may redeliver an old response after a reconnect.  Do
     // not silently replace the visible page with its duplicate: it looks like
     // the button did nothing and can loop forever on the same cursor.
@@ -1927,6 +2041,7 @@ agentHub.on("history:load-older", ({ taskId: id }) => runAction(async () => {
 }));
 
 agentHub.on("message:send", (request) => {
+  if (request.draftStream) beginNavigation();
   const sendTransaction = window.AgentHubMessageSendTransaction;
   const optimisticId = `local:${request.requestId}`;
   let identity = taskIdentity(request.taskId);
@@ -2093,6 +2208,7 @@ agentHub.on("message:send", (request) => {
 });
 
 agentHub.on("task:new", ({ title, provider }) => runAction(async () => {
+  beginNavigation();
   const selectedProvider = ["codex", "claude"].includes(provider)
     ? provider
     : (lastSnapshot?.settings?.provider ?? "codex");
@@ -2244,6 +2360,7 @@ agentHub.on("stream:move", ({ streamId, workspaceId, beforeStreamId }) => runAct
   await control("move-stream", { streamId, workspaceId, beforeStreamId }),
 )));
 agentHub.on("stream:rebirth", ({ streamId, provider, taskId: targetTaskId }) => runAction(async () => {
+  beginNavigation();
   const identity = exactTaskParams(targetTaskId || selectedTaskId);
   const snapshot = await control("rotate-stream", {
     ...identity,
@@ -2264,6 +2381,7 @@ agentHub.on("stream:new", ({ workspaceId, streamName }) => {
   const key = String(workspaceId ?? "").trim() || "default";
   const existing = streamCreatesInFlight.get(key);
   if (existing) return existing;
+  beginNavigation();
   const operation = runAction(async () => {
     const settings = lastSnapshot?.settings ?? {};
     const result = await control("create-stream", {
@@ -2968,7 +3086,7 @@ agentHub.on("workspace-search:query", ({ workspaceId, query, offset, limit, appe
     agentHub.setWorkspaceMessageSearchResults(result, { append: Boolean(append) });
   });
 });
-agentHub.on("workspace-search:open", (result) => runAction(async () => {
+agentHub.on("workspace-search:open", (result) => {
   const params = {
     workspaceId: result.workspaceId,
     streamId: result.streamId,
@@ -2980,13 +3098,19 @@ agentHub.on("workspace-search:open", (result) => runAction(async () => {
     itemId: result.itemId,
     limit: 20,
   };
-  applyOpened(await control("workspace-message-open", params));
-  agentHub.closeWorkspaceMessageSearch({ restoreFocus: false });
-  document.querySelector("[data-view-button='chat']")?.click();
-  replaceRoute("#/chat/"
-    + `${encodeURIComponent(params.provider)}/${encodeURIComponent(params.taskThreadId)}`
-    + `/turn/${encodeURIComponent(params.turnThreadId)}/${encodeURIComponent(params.turnId)}`);
-}));
+  return runNavigation(
+    { streamId: params.streamId, provider: params.provider, threadId: params.taskThreadId },
+    () => control("workspace-message-open", params),
+    (opened) => {
+      applyOpened(opened);
+      agentHub.closeWorkspaceMessageSearch({ restoreFocus: false });
+      document.querySelector("[data-view-button='chat']")?.click();
+      replaceRoute("#/chat/"
+        + `${encodeURIComponent(params.provider)}/${encodeURIComponent(params.taskThreadId)}`
+        + `/turn/${encodeURIComponent(params.turnThreadId)}/${encodeURIComponent(params.turnId)}`);
+    },
+  );
+});
 agentHub.on("context:compact", () => runAction(async () => {
   const result = await control("compact-context", exactSelectedTaskParams());
   if (result?.accepted && result.compactionId) {
@@ -2995,13 +3119,17 @@ agentHub.on("context:compact", () => runAction(async () => {
   agentHub.toast(result?.message ?? "Свёртка контекста запущена");
   applySnapshot(await control("snapshot"));
 }));
-agentHub.on("turn:open", (params) => runAction(async () => {
-  applyOpened(await control("open-turn", { ...params, limit: 20 }));
-  document.querySelector("[data-view-button='chat']")?.click();
-  replaceRoute("#/chat/"
-    + `${encodeURIComponent(params.provider)}/${encodeURIComponent(params.taskThreadId)}`
-    + `/turn/${encodeURIComponent(params.turnThreadId)}/${encodeURIComponent(params.turnId)}`);
-}));
+agentHub.on("turn:open", (params) => runNavigation(
+  { provider: params.provider, threadId: params.taskThreadId },
+  () => control("open-turn", { ...params, limit: 20 }),
+  (opened) => {
+    applyOpened(opened);
+    document.querySelector("[data-view-button='chat']")?.click();
+    replaceRoute("#/chat/"
+      + `${encodeURIComponent(params.provider)}/${encodeURIComponent(params.taskThreadId)}`
+      + `/turn/${encodeURIComponent(params.turnThreadId)}/${encodeURIComponent(params.turnId)}`);
+  },
+));
 
 document.addEventListener("click", (event) => {
   const openTask = event.target.closest("[data-open-task]");
@@ -3012,13 +3140,16 @@ document.addEventListener("click", (event) => {
       ?? openTask.closest("[data-work-log-provider]")?.dataset.workLogProvider;
     const threadId = openTask.dataset.threadId
       ?? openTask.closest("[data-work-log-thread-id]")?.dataset.workLogThreadId;
-    void runAction(async () => {
-      const opened = await control("open-task", { provider, threadId, limit: 20 });
-      applyOpened(opened);
-      document.querySelector("[data-view-button='chat']")?.click();
-      const route = window.AgentHubNavigationTabs.resolvedChatRoute(opened, { provider, threadId });
-      if (route.hash) replaceRoute(route.hash);
-    });
+    void runNavigation(
+      { provider, threadId },
+      () => control("open-task", { provider, threadId, limit: 20 }),
+      (opened) => {
+        applyOpened(opened);
+        document.querySelector("[data-view-button='chat']")?.click();
+        const route = window.AgentHubNavigationTabs.resolvedChatRoute(opened, { provider, threadId });
+        if (route.hash) replaceRoute(route.hash);
+      },
+    );
     return;
   }
   /* Кнопка субагентов стоит в той же строке, что «Открыть ход», поэтому её клик
@@ -3048,32 +3179,52 @@ document.addEventListener("click", (event) => {
     turnId: entry?.dataset.workLogTurnId,
     limit: 20,
   };
-  void runAction(async () => {
-    applyOpened(await control("open-turn", params));
-    document.querySelector("[data-view-button='chat']")?.click();
-    replaceRoute("#/chat/"
-      + `${encodeURIComponent(params.provider)}/${encodeURIComponent(params.taskThreadId)}`
-      + `/turn/${encodeURIComponent(params.turnThreadId)}/${encodeURIComponent(params.turnId)}`);
-  });
+  void runNavigation(
+    { provider: params.provider, threadId: params.taskThreadId },
+    () => control("open-turn", params),
+    (opened) => {
+      applyOpened(opened);
+      document.querySelector("[data-view-button='chat']")?.click();
+      replaceRoute("#/chat/"
+        + `${encodeURIComponent(params.provider)}/${encodeURIComponent(params.taskThreadId)}`
+        + `/turn/${encodeURIComponent(params.turnThreadId)}/${encodeURIComponent(params.turnId)}`);
+    },
+  );
 });
 
 async function openRoute() {
-  const parts = location.hash.split("/").slice(1).map(decodeURIComponent);
-  if (parts[0] !== "chat" || !parts[1] || !parts[2]) return false;
+  let parts;
+  try {
+    parts = location.hash.split("/").slice(1).map(decodeURIComponent);
+  } catch {
+    beginNavigation();
+    return false;
+  }
+  if (parts[0] !== "chat" || !parts[1] || !parts[2]) {
+    beginNavigation();
+    return false;
+  }
   if (parts[1] === "stream") {
     const streamId = parts[2];
     const task = snapshotTask(lastSnapshot, streamId);
     if (task) {
-      const opened = await control("open-task", {
+      const identity = {
         provider: task.provider,
         threadId: task.threadId,
         streamId: task.streamId,
-        limit: 20,
-      });
-      applyOpened(opened);
-      return true;
+      };
+      const opened = await runNavigation(
+        identity,
+        () => control("open-task", { ...identity, limit: 20 }),
+        applyOpened,
+      );
+      return Boolean(opened);
     }
-    if (!emptyStreamModels(lastSnapshot ?? {}, streamId).some((draft) => draft.id === streamId)) return false;
+    if (!emptyStreamModels(lastSnapshot ?? {}, streamId).some((draft) => draft.id === streamId)) {
+      beginNavigation();
+      return false;
+    }
+    beginNavigation();
     pendingSelectionId = streamId;
     rememberSelectedTaskId(streamId);
     applySnapshot(lastSnapshot);
@@ -3081,21 +3232,35 @@ async function openRoute() {
     agentHub.selectTask(streamId);
     return true;
   }
-  if (parts[3] === "turn" && parts[4] && parts[5]) {
-    applyOpened(await control("open-turn", {
+  if ((parts[3] && parts[3] !== "turn") || (parts[3] === "turn" && (!parts[4] || !parts[5]))) {
+    beginNavigation();
+    return false;
+  }
+  if (parts[3] === "turn") {
+    const params = {
       provider: parts[1],
       taskThreadId: parts[2],
       turnThreadId: parts[4],
       turnId: parts[5],
       limit: 20,
-    }));
+    };
+    const opened = await runNavigation(
+      { provider: params.provider, threadId: params.taskThreadId },
+      () => control("open-turn", params),
+      applyOpened,
+    );
+    if (!opened) return false;
   } else {
-    const opened = await control("open-task", {
+    const identity = {
       provider: parts[1],
       threadId: parts[2],
-      limit: 20,
-    });
-    applyOpened(opened);
+    };
+    const opened = await runNavigation(
+      identity,
+      () => control("open-task", { ...identity, limit: 20 }),
+      applyOpened,
+    );
+    if (!opened) return false;
     const route = window.AgentHubNavigationTabs.resolvedChatRoute(opened, {
       provider: parts[1],
       threadId: parts[2],
@@ -3121,10 +3286,10 @@ async function refreshVisibleTaskHistories(previousSnapshot, snapshot) {
   const visibleIds = new Set(visibleStreamTaskIds);
   if (selectedTaskId) visibleIds.add(selectedTaskId);
   await Promise.all([...visibleIds].map(async (id) => {
-    if (visibleHistoryLoads.has(id)) return;
     const previousTask = snapshotTask(previousSnapshot, id);
     const currentTask = snapshotTask(snapshot, id);
     if (!currentTask) return;
+    const bindingTransition = Boolean(previousTask) && !sameIdentity(previousTask, currentTask);
     const answerTransition = latestAnswerTransition(previousTask, currentTask);
     if (answerTransition) {
       scheduleHistoryAttachmentSettle(id);
@@ -3141,35 +3306,18 @@ async function refreshVisibleTaskHistories(previousSnapshot, snapshot) {
       && Date.now() - lastRefreshAt >= EXTERNAL_HISTORY_REFRESH_MS;
     const refreshSettlingAttachments = historyAttachmentsNeedSettling(id)
       && Date.now() - lastRefreshAt >= HISTORY_ATTACHMENT_REFRESH_MS;
-    if (!historyMissing && !answerTransition
+    if (!historyMissing && !bindingTransition && !answerTransition
       && !refreshExternalHistory && !refreshCaughtUpHistory && !refreshSettlingAttachments) return;
     historyRefreshAtByTask.set(id, Date.now());
-    visibleHistoryLoads.add(id);
-    try {
-      const settled = await settleOptionalRead(() => control("task-history", {
-        streamId: currentTask.streamId,
-        provider: currentTask.provider,
-        threadId: currentTask.threadId,
-        limit: 20,
-        includeActive: false,
-        refreshSource: answerTransition,
-        knownVersion: historyPageByTask.get(id)?.version ?? "",
-      }));
-      if (settled.status === "rejected") return;
-      const identity = {
-        streamId: currentTask.streamId,
-        provider: currentTask.provider,
-        threadId: currentTask.threadId,
-      };
-      const history = verifiedTaskHistory(settled.value, identity);
-      applyOpened({ snapshot: lastSnapshot, history }, {
-        preserveScroll: true,
-        skipSnapshot: true,
-        selectTask: false,
-      });
-    } finally {
-      visibleHistoryLoads.delete(id);
-    }
+    const identity = {
+      streamId: currentTask.streamId,
+      provider: currentTask.provider,
+      threadId: currentTask.threadId,
+    };
+    await enqueueTaskHistoryLoad(id, identity, {
+      refreshSource: answerTransition || bindingTransition,
+      preserveScroll: true,
+    });
   }));
 }
 
@@ -3219,7 +3367,11 @@ void runAction(async () => {
     }
     const identity = !routed ? taskIdentity(selectedTaskId) : null;
     if (identity) {
-      applyOpened(await control("open-task", { ...identity, limit: 20 }));
+      await runNavigation(
+        identity,
+        () => control("open-task", { ...identity, limit: 20 }),
+        applyOpened,
+      );
     }
   } finally {
     initialRouteOpening = false;

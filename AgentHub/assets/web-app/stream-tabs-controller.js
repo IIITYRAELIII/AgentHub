@@ -182,6 +182,43 @@
     return ordered;
   }
 
+  function reconcileOpenStreamIds(previousIds, availableIds, fallbackId, limit = 4) {
+    const available = new Set((availableIds ?? []).map((value) => String(value ?? "").trim()).filter(Boolean));
+    const normalized = [];
+    for (const value of previousIds ?? []) {
+      const id = String(value ?? "").trim();
+      if (!available.has(id) || normalized.includes(id)) continue;
+      normalized.push(id);
+      if (normalized.length >= limit) break;
+    }
+    if (normalized.length) return normalized;
+    const fallback = String(fallbackId ?? "").trim();
+    if (available.has(fallback)) return [fallback];
+    const first = available.values().next().value;
+    return first ? [first] : [];
+  }
+
+  function applyOpenStreamSelection(openIds, streamId, { additive = false, limit = 4 } = {}) {
+    const target = String(streamId ?? "").trim();
+    const current = [...new Set((openIds ?? []).map((value) => String(value ?? "").trim()).filter(Boolean))]
+      .slice(0, limit);
+    if (!target) return { ids: current, limitReached: false };
+    if (!additive) {
+      return {
+        ids: current.includes(target) && current.length > 1 ? current : [target],
+        limitReached: false,
+      };
+    }
+    if (current.includes(target)) {
+      return {
+        ids: current.length > 1 ? current.filter((id) => id !== target) : current,
+        limitReached: false,
+      };
+    }
+    if (current.length >= limit) return { ids: current, limitReached: true };
+    return { ids: [...current, target], limitReached: false };
+  }
+
   class HorizontalPointerScroller {
     constructor(target, options = {}) {
       if (!target) throw new TypeError("target is required");
@@ -262,7 +299,9 @@
     STREAM_ORDER_MODES,
     normalizeStreamActivityDirection,
     normalizeStreamOrderMode,
+    applyOpenStreamSelection,
     orderWorkspaceStreams,
+    reconcileOpenStreamIds,
     streamCreationSide,
     streamLastActivity,
     streamStatusPresentation,
