@@ -1233,11 +1233,14 @@ function activeMaintenanceMessage(task) {
     id: `maintenance:compaction:${compactionId}:active`,
     provider: task.provider,
     threadId: task.threadId,
+    turnId: compaction.turnId ?? null,
     itemId: `maintenance:compaction:${compactionId}:active`,
     role: "system",
     kind: "maintenance",
     text,
-    time: compaction.startedAt ?? null,
+    time: status === "completed"
+      ? compaction.completedAt ?? compaction.startedAt ?? null
+      : compaction.startedAt ?? null,
   };
 }
 
@@ -1406,17 +1409,6 @@ function applySnapshot(snapshot) {
   agentHub.setExchangeRates(snapshot.exchangeRates ?? null);
   agentHub.setServerStatus(snapshot.server ?? null);
   agentHub.setWorkspaces(snapshot.workspaces ?? [], snapshot.boardLayout?.columnOrder ?? []);
-  window.AgentHubTaskBoard?.setSnapshot({
-    tasks: (snapshot.boardTasks ?? []).map((task) => ({
-      ...task,
-      attachments: attachmentViews(task.attachments),
-    })),
-    workspaces: snapshot.workspaces ?? [],
-    columnOrder: snapshot.boardLayout?.columnOrder ?? [],
-    notesComment: snapshot.boardLayout?.notesComment ?? "Игры, фильмы, сериалы и идеи",
-    selectedWorkspaceId: snapshot.selected?.workspaceId ?? null,
-    provider: snapshot.settings?.provider ?? "codex",
-  });
   const maintenanceChanged = new Set([
     ...observeContextCompactions(snapshot.tasks),
     ...observeStreamRotations(previousTasks, snapshot.tasks),
@@ -1464,6 +1456,20 @@ function applySnapshot(snapshot) {
     ...(snapshot.tasks ?? []).map((task) => modelTask(task, snapshot, effectiveSelectedId, serverSelectedId)),
     ...emptyStreamModels(snapshot, effectiveSelectedId),
   ].sort((left, right) => Date.parse(right.lastActivity || 0) - Date.parse(left.lastActivity || 0));
+  const selectedWorkspaceId = String(
+    tasks.find((task) => task.id === effectiveSelectedId)?.workspaceId ?? "",
+  ).trim() || null;
+  window.AgentHubTaskBoard?.setSnapshot({
+    tasks: (snapshot.boardTasks ?? []).map((task) => ({
+      ...task,
+      attachments: attachmentViews(task.attachments),
+    })),
+    workspaces: snapshot.workspaces ?? [],
+    columnOrder: snapshot.boardLayout?.columnOrder ?? [],
+    notesComment: snapshot.boardLayout?.notesComment ?? "Игры, фильмы, сериалы и идеи",
+    selectedWorkspaceId,
+    provider: snapshot.settings?.provider ?? "codex",
+  });
   agentHub.setTasks(tasks);
   for (const task of tasks.filter((candidate) => candidate.draftStream)) agentHub.setMessages(task.id, []);
   if (maintenanceChanged.has(effectiveSelectedId)) {

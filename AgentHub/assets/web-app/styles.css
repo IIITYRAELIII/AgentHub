@@ -4824,7 +4824,8 @@ html[data-surface="mobile"]
 :root[data-chat-surface="transparent"] .chat,
 :root[data-chat-surface="transparent"] .stream-chat-columns,
 :root[data-chat-surface="transparent"] .stream-chat-columns > .chat-pane,
-:root[data-chat-surface="transparent"] .stream-chat-preview {
+:root[data-chat-surface="transparent"] .stream-chat-preview,
+:root[data-chat-surface="transparent"] .chat-scroll {
   background-blend-mode: normal !important;
   background-color: transparent !important;
   background-image: none !important;

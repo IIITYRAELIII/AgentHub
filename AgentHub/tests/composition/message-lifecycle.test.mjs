@@ -1441,6 +1441,24 @@ test("durable turn order wins over an earlier queue timestamp", () => {
   ]);
 });
 
+test("same-turn maintenance stays below the agent answer despite an earlier timestamp", () => {
+  const values = lifecycle.chronologicalMessages([
+    {
+      id: "answer", role: "agent", turnId: "turn-1",
+      time: "2026-08-18T14:59:10.000Z", historyOrder: 1_001,
+    },
+    {
+      id: "measurement", role: "system", kind: "maintenance", turnId: "turn-1",
+      time: "2026-08-18T14:58:00.000Z",
+    },
+    {
+      id: "prompt", role: "user", turnId: "turn-1",
+      time: "2026-08-18T14:57:00.000Z", historyOrder: 1_000,
+    },
+  ]);
+  assert.deepEqual(values.map((item) => item.id), ["prompt", "answer", "measurement"]);
+});
+
 test("an older focused turn keeps its timestamp instead of falling below current history", () => {
   assert.doesNotMatch(hubClientSource, /historyOrder: Number\.MAX_SAFE_INTEGER/u);
   const values = lifecycle.chronologicalMessages([
@@ -1789,6 +1807,10 @@ test("context compaction start identifies the task and completion stays in chat"
   assert.match(hubClientSource, /rememberMaintenanceEvent\(stableTaskId/u);
   assert.match(
     hubClientSource,
+    /id: `maintenance:compaction:\$\{compactionId\}:active`[\s\S]*turnId: compaction\.turnId \?\? null/u,
+  );
+  assert.match(
+    hubClientSource,
     /invalidZeroAfter[\s\S]*id\.startsWith\("maintenance:compaction:"\)[\s\S]*replace\(\/>0%\$\/u, ">\?%"\)/u,
   );
   assert.match(hubClientSource, /position === 2 && percent === 0 \? null : percent/u);
@@ -1796,6 +1818,17 @@ test("context compaction start identifies the task and completion stays in chat"
   assert.match(
     hubClientSource,
     /explicitAfterPercent = contextPercent\(compaction\.afterPercent\)[\s\S]*measurementStatus === "completed"[\s\S]*\? explicitAfterPercent[\s\S]*previous\.afterPercent[\s\S]*storedMaintenancePercent\(existingEvent, 2\)[\s\S]*explicitAfterPercent/u,
+  );
+});
+
+test("workspace task panel follows the effective local Stream selection", () => {
+  assert.doesNotMatch(
+    hubClientSource,
+    /selectedWorkspaceId: snapshot\.selected\?\.workspaceId/u,
+  );
+  assert.match(
+    hubClientSource,
+    /const selectedWorkspaceId = String\([\s\S]*tasks\.find\(\(task\) => task\.id === effectiveSelectedId\)\?\.workspaceId[\s\S]*\)\.trim\(\) \|\| null;[\s\S]*AgentHubTaskBoard\?\.setSnapshot\(\{[\s\S]*selectedWorkspaceId,/u,
   );
 });
 

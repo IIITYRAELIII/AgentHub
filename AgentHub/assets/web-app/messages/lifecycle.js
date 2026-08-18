@@ -912,12 +912,16 @@ function chronologicalMessages(messages) {
         && leftTurnOrder !== rightTurnOrder) {
         return leftTurnOrder - rightTurnOrder;
       }
-      if (left.time !== right.time) return left.time - right.time;
       const sameTurn = String(left.message?.turnId ?? "")
         && String(left.message?.turnId ?? "") === String(right.message?.turnId ?? "");
-      if (sameTurn && left.message?.role !== right.message?.role) {
-        return left.message?.role === "user" ? -1 : right.message?.role === "user" ? 1 : 0;
+      if (sameTurn) {
+        const placement = (message) => (
+          message?.kind === "maintenance" ? 2 : message?.role === "user" ? 0 : 1
+        );
+        const placementDifference = placement(left.message) - placement(right.message);
+        if (placementDifference) return placementDifference;
       }
+      if (left.time !== right.time) return left.time - right.time;
       return left.index - right.index;
     })
     .map(({ message }) => message);
