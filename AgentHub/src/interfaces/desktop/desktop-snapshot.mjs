@@ -83,6 +83,42 @@ export function createDesktopSnapshotFactory({
   const versionCache = new Map();
   let catalogRefresh = null;
 
+  function catalogActiveRun(entry) {
+    if (entry?.running !== true) return null;
+    const provider = String(entry.provider ?? "").trim();
+    const threadId = String(entry.threadId ?? "").trim();
+    if (!provider || !threadId) return null;
+    const lastActivityAtMs = Number(entry.lastActivityAtMs);
+    const lastMeaningfulProgressAt = Number.isFinite(lastActivityAtMs) && lastActivityAtMs > 0
+      ? new Date(lastActivityAtMs).toISOString()
+      : entry.startedAt ?? null;
+    // Provider discovery can observe the current Thread before the external-run
+    // watcher has replaced a pre-rebirth registry entry keyed by the same
+    // Stream. Keep the snapshot contract coherent during that window: a task
+    // advertised as running must still have a current-binding live projection.
+    return {
+      id: `catalog:${provider}:${threadId}`,
+      turnId: entry.turnId ?? null,
+      provider,
+      projectRoot: entry.projectRoot,
+      threadId,
+      status: "running",
+      observer: true,
+      executionOwner: entry.executionOwner ?? null,
+      model: entry.model ?? null,
+      progressStage: String(entry.stage ?? "").trim() || "Ход выполняется",
+      promptPreview: "",
+      userMessages: [],
+      progressReasoning: "",
+      responseText: "",
+      responseItems: [],
+      startedAt: entry.startedAt ?? null,
+      lastMeaningfulProgressAt,
+      activities: [],
+      activityGroups: [],
+    };
+  }
+
   function scheduleCatalogRefresh(force) {
     if (catalogRefresh) return;
     catalogRefresh = Promise.resolve()
@@ -325,11 +361,17 @@ export function createDesktopSnapshotFactory({
       threadId: entry.threadId,
     };
     const candidateRun = runs.forTask(task);
-    const run = candidateRun
+    const boundRun = candidateRun
       && String(candidateRun.provider ?? "") === String(entry.provider ?? "")
       && String(candidateRun.threadId ?? "") === String(entry.threadId ?? "")
       ? candidateRun
       : null;
+    // Do not reuse a retained run from the previous Thread of this Stream.
+    // When the catalog independently confirms that the new binding is active,
+    // synthesize only the minimal current-binding projection until its observer
+    // is registered. A matching terminal run remains authoritative and is not
+    // converted back into an active one.
+    const run = boundRun ?? catalogActiveRun(entry);
     const context = desktopContextSnapshot(entry.threadId, run?.turnId, entry.contextUsage);
     const internalMaintenanceObserver = isInternalMaintenanceObserver(run, context);
     const runActive = taskRunIsActive(run);

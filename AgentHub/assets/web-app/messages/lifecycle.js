@@ -23,6 +23,27 @@ function clientIdentityKey(message) {
   return `${clientUserMessageId}\0${role}`;
 }
 
+function pagedHistoryIdentityKey(message) {
+  if (!Number.isFinite(Number(message?.historyOrder))) return "";
+  const turnId = String(message?.turnId ?? "").trim();
+  const itemId = String(message?.itemId ?? "").trim();
+  const role = String(message?.role ?? "").trim();
+  if (!turnId || !role) return "";
+  // Pagination belongs to one stable Stream cache. Provider and Thread are
+  // provenance, not message identity: after Stream rebirth an overlapping
+  // page can describe the same durable item with a newly resolved source.
+  if (itemId) return `${turnId}\0${itemId}\0${role}`;
+  if (role === "agent" && message?.kind !== "subagent") return `${turnId}\0parent-agent`;
+  const agentThreadId = String(message?.agentThreadId ?? "").trim();
+  if (role === "agent" && message?.kind === "subagent" && agentThreadId) {
+    return `${turnId}\0subagent\0${agentThreadId}`;
+  }
+  if (role === "user" && String(message?.turnUserSlot ?? "").trim() === "root") {
+    return `${turnId}\0root-user`;
+  }
+  return "";
+}
+
 function historyMatchesIdentity(history, identity) {
   if (!history || typeof history !== "object" || !identity || typeof identity !== "object") return false;
   const expectedStreamId = String(identity.streamId ?? "").trim();
@@ -118,6 +139,7 @@ function deduplicateConversationMessages(messages) {
   const agentCards = new Map();
   for (const message of Array.isArray(messages) ? messages : []) {
     const client = clientIdentityKey(message);
+    const pagedHistory = pagedHistoryIdentityKey(message);
     const item = identityKey(message);
     const root = String(message?.turnUserSlot ?? "").trim() === "root"
       ? turnRootUserKey(message)
@@ -125,6 +147,7 @@ function deduplicateConversationMessages(messages) {
     const agentCard = agentCardKey(message);
     const keys = [
       ...(client ? [`client:${client}`] : []),
+      ...(pagedHistory ? [`history:${pagedHistory}`] : []),
       ...(item ? [`item:${item}`] : []),
       ...(root ? [`root:${root}`] : []),
     ];

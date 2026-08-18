@@ -3282,6 +3282,11 @@ function directChatRoute() {
   return parts[0] === "chat" && Boolean(parts[1]) && Boolean(parts[2]) && parts[1] !== "stream";
 }
 
+function streamChatRoute() {
+  const parts = location.hash.split("/").slice(1).map(decodeURIComponent);
+  return parts[0] === "chat" && parts[1] === "stream" && Boolean(parts[2]);
+}
+
 async function refreshVisibleTaskHistories(previousSnapshot, snapshot) {
   const visibleIds = new Set(visibleStreamTaskIds);
   if (selectedTaskId) visibleIds.add(selectedTaskId);
@@ -3355,7 +3360,13 @@ void runAction(async () => {
   agentHub.setConnection("connecting");
   try {
     let routed = false;
-    if (directChatRoute()) {
+    if (streamChatRoute()) {
+      // A stable Stream route needs the first snapshot to resolve its current
+      // provider/Thread binding. Opening it before refresh used to reject the
+      // route and permanently fall back to snapshot.selected for this page.
+      await refresh({ reportError: true });
+      routed = await openRoute();
+    } else if (directChatRoute()) {
       routed = await openRoute();
       // openRoute загружает актуальную историю раньше фонового prefetch, но
       // сам по себе не запускает периодический refresh. Без этого первый

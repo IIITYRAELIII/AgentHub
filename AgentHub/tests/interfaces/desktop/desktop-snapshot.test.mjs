@@ -325,10 +325,38 @@ test("desktop task snapshot rejects a retained run from the pre-rotation Thread"
   state.run.threadId = "thread-before-rotation";
   state.run.responseText = "Старый финальный ответ";
   state.runForTask = () => state.run;
+  entry.running = false;
 
   const snapshot = desktopTaskSnapshot(entry);
 
   assert.equal(snapshot.run, null);
+});
+
+test("desktop task snapshot synthesizes the active current binding while a pre-rotation run is retained", () => {
+  const { desktopTaskSnapshot, entry, state } = fixture();
+  state.run.threadId = "thread-before-rotation";
+  state.run.turnId = "turn-before-rotation";
+  state.run.responseText = "Старый промежуточный ответ";
+  state.runForTask = () => state.run;
+  Object.assign(entry, {
+    threadId: "thread-after-rotation",
+    running: true,
+    turnId: "turn-after-rotation",
+    executionOwner: "external",
+    stage: "Ожидается ответ провайдера",
+  });
+
+  const snapshot = desktopTaskSnapshot(entry);
+
+  assert.equal(snapshot.running, true);
+  assert.equal(snapshot.run.threadId, "thread-after-rotation");
+  assert.equal(snapshot.run.turnId, "turn-after-rotation");
+  assert.equal(snapshot.run.status, "running");
+  assert.equal(snapshot.run.observer, true);
+  assert.equal(snapshot.run.executionOwner, "external");
+  assert.equal(snapshot.run.stage, "Ожидается ответ провайдера");
+  assert.equal(snapshot.run.response, "");
+  assert.doesNotMatch(JSON.stringify(snapshot.run), /Старый промежуточный ответ/u);
 });
 
 test("desktop task snapshot hides a standalone automatic compaction observer", () => {

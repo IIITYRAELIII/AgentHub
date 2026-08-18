@@ -238,6 +238,42 @@ test("aggregated Stream history preserves each item's provider and Thread", () =
   assert.match(messages[0].id, /^codex:thread-old:/u);
 });
 
+test("repeated older pages cannot multiply one durable message after a Thread rebind", () => {
+  const source = clientFunctionSource("prependOlderHistory", "function applyOpened");
+  const sandbox = vm.createContext({
+    Set,
+    deduplicateConversationMessages: lifecycle.deduplicateConversationMessages,
+  });
+  vm.runInContext(`${source}; globalThis.prepend = prependOlderHistory;`, sandbox);
+  const previous = [{
+    id: "codex:thread-old:turn-15:item-18:agent",
+    provider: "codex",
+    threadId: "thread-old",
+    turnId: "turn-15",
+    // Some restored provider finals do not expose an item id. The page still
+    // has one canonical parent answer for this durable turn.
+    itemId: "",
+    role: "agent",
+    text: "Сообщение 15:18",
+    historyOrder: 20_001,
+  }];
+  const overlappingPage = [{
+    ...previous[0],
+    id: "claude:thread-new:turn-15:item-18:agent",
+    provider: "claude",
+    threadId: "thread-new",
+    historyOrder: 19_001,
+  }];
+
+  let merged = previous;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    merged = sandbox.prepend(merged, overlappingPage);
+  }
+
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].text, "Сообщение 15:18");
+});
+
 test("chat history fallback preserves the reader position after prepending a page", () => {
   assert.match(miniAppSource, /scrollHeight:\s*chatScroll\.scrollHeight/u);
   assert.match(
@@ -1912,5 +1948,16 @@ test("initial routed chat history wins over prefetch and starts snapshot polling
   assert.match(
     hubClientSource,
     /finally \{\s*initialRouteOpening = false;\s*void loadVisibleTaskHistories/u,
+  );
+});
+
+test("a cold stable Stream route resolves after the first snapshot instead of server selection", () => {
+  assert.match(
+    hubClientSource,
+    /if \(streamChatRoute\(\)\) \{[\s\S]*?await refresh\(\{ reportError: true \}\);\s*routed = await openRoute\(\);\s*\} else if \(directChatRoute\(\)\)/u,
+  );
+  assert.match(
+    hubClientSource,
+    /function streamChatRoute\(\) \{[\s\S]*?parts\[1\] === "stream" && Boolean\(parts\[2\]\)/u,
   );
 });
