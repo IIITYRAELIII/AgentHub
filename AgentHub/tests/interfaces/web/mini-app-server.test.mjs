@@ -805,6 +805,10 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
       styles,
       /\.composer-main > \.chip-button \{[\s\S]*?height: 2\.4rem;[\s\S]*?padding-block: 0;/u,
     );
+    assert.match(
+      styles,
+      /:root\[data-chat-surface="transparent"\]:is\([\s\S]*?\[data-theme="orbit"\][\s\S]*?\[data-theme="blackhole"\][\s\S]*?\[data-theme="lake"\][\s\S]*?\[data-theme="orange"\][\s\S]*?\[data-theme="zero"\][\s\S]*?\) :is\(\.msg-agent, \.msg-live\) \{[\s\S]*?background: var\(--card-bg\);/u,
+    );
     assert.doesNotMatch(styles, /content:\s*"[▶▼▸▾⌃]"/u);
     assert.doesNotMatch(
       styles,

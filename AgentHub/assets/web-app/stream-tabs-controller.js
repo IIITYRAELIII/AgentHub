@@ -41,6 +41,17 @@
     return svg;
   }
 
+  function streamDeckRenderKey(tasks, selectedTaskId) {
+    return JSON.stringify({
+      selectedTaskId: String(selectedTaskId ?? ""),
+      streams: (Array.isArray(tasks) ? tasks : []).map((task) => [
+        String(task?.id ?? ""),
+        String(task?.workspaceName ?? task?.title ?? ""),
+        String(task?.streamName ?? task?.streamDisplayName ?? ""),
+      ]),
+    });
+  }
+
   function archiveStreamIntent(streamId) {
     const id = String(streamId ?? "").trim();
     if (!id) throw new Error("stream id is required");
@@ -304,6 +315,7 @@
     orderWorkspaceStreams,
     reconcileOpenStreamIds,
     streamCreationSide,
+    streamDeckRenderKey,
     streamLastActivity,
     streamStatusPresentation,
     streamStatusState,

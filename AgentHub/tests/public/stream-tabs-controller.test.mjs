@@ -115,6 +115,24 @@ test("open Stream layout preserves physical column order when activity changes",
   );
 });
 
+test("Stream deck key ignores live status churn but tracks physical chat identity", async () => {
+  const { streamDeckRenderKey } = await streamTabsApi();
+  const first = [{
+    id: "stream-1",
+    workspaceName: "Agent HUB",
+    streamName: "Architect",
+    running: false,
+  }];
+  const active = [{ ...first[0], running: true, statusLabel: "Ход выполняется" }];
+
+  assert.equal(streamDeckRenderKey(first, "stream-1"), streamDeckRenderKey(active, "stream-1"));
+  assert.notEqual(streamDeckRenderKey(first, "stream-1"), streamDeckRenderKey(first, "stream-2"));
+  assert.notEqual(
+    streamDeckRenderKey(first, "stream-1"),
+    streamDeckRenderKey([{ ...first[0], streamName: "Themes" }], "stream-1"),
+  );
+});
+
 test("ordinary hidden Stream selection collapses a four-column layout", async () => {
   const { applyOpenStreamSelection } = await streamTabsApi();
   const open = ["alpha", "beta", "gamma", "delta"];

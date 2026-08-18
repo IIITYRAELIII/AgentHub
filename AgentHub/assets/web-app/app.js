@@ -2454,12 +2454,20 @@ function renderStreamChatPreview(task) {
   return preview;
 }
 
+let renderedStreamChatDeckKey = "";
+
 function renderStreamChatDeck() {
+  const { force = false } = arguments[0] ?? {};
   if (!streamChatColumns) return;
   const selected = currentTask();
   const visible = visibleWorkspaceStreamTasks();
   publishVisibleStreamTasks(visible);
   const shown = surface === "mobile" ? visible.slice(0, 1) : visible.slice(0, 4);
+  const deckKey = window.AgentHubStreamTabs.streamDeckRenderKey(shown, selected?.id);
+  const deckStructureIntact = streamChatColumns.contains(chatPane)
+    && streamChatColumns.querySelectorAll(".stream-chat-preview").length
+      === shown.filter((task) => task.id !== selected?.id).length;
+  if (!force && deckStructureIntact && deckKey === renderedStreamChatDeckKey) return;
   const selectedIndex = shown.findIndex((task) => task.id === selected?.id);
   for (const preview of streamChatColumns.querySelectorAll(".stream-chat-preview")) preview.remove();
   chatPane.hidden = selectedIndex < 0;
@@ -2478,11 +2486,12 @@ function renderStreamChatDeck() {
   if (!hasVisible && chatEmptyText) chatEmptyText.textContent = "Выберите Stream в полосе сверху.";
   streamChatColumns.toggleAttribute("data-multi-stream", shown.length > 1);
   streamChatColumns.style.setProperty("--stream-chat-count", String(Math.max(1, shown.length)));
+  renderedStreamChatDeckKey = deckKey;
 }
 
 function refreshSupplementaryStreamChat(taskId) {
   if (taskId === state.selectedId || !state.visibleStreamTaskIds.includes(taskId)) return;
-  renderStreamChatDeck();
+  renderStreamChatDeck({ force: true });
 }
 
 function renderTaskItem(task, { workspaceGrouped = false } = {}) {
@@ -3341,6 +3350,7 @@ function renderChat() {
     streamTabs.replaceChildren();
     chatPane.hidden = true;
     activeChatId = null;
+    renderedStreamChatDeckKey = "";
     streamChatColumns?.replaceChildren(chatPane);
     streamChatColumns.hidden = true;
     streamChatColumns?.removeAttribute("data-multi-stream");
@@ -6759,7 +6769,7 @@ const AgentHub = {
     Object.assign(task, patch);
     renderTasks();
     if (id === state.selectedId) renderChat();
-    else if (state.visibleStreamTaskIds.includes(id)) renderStreamChatDeck();
+    else if (state.visibleStreamTaskIds.includes(id)) renderStreamChatDeck({ force: true });
   },
   /** Выбор задачи со стороны backend (например, смена из Telegram). */
   selectTask(id) {

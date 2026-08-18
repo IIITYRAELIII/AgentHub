@@ -45,3 +45,27 @@ test("a freshly completed Task lands at the bottom of completed Tasks", async ()
     ["done-unknown", "done-first", "done-latest"],
   );
 });
+
+test("unchanged run snapshots do not rebuild Dashboard columns", async () => {
+  const { taskBoardSnapshotChanges } = await loadBoardView();
+  const current = {
+    tasks: [{ id: "task-1", title: "Task" }],
+    workspaces: [{ id: "workspace-1", name: "Workspace" }],
+    columnOrder: ["backlog", "workspace:workspace-1"],
+    notesComment: "Notes",
+    selectedWorkspaceId: "workspace-1",
+    provider: "codex",
+  };
+
+  const unchanged = taskBoardSnapshotChanges(current, current);
+  assert.equal(unchanged.boardChanged, false);
+  assert.equal(unchanged.panelChanged, false);
+  assert.equal(unchanged.openTaskChanged, false);
+
+  const selection = taskBoardSnapshotChanges(current, {
+    ...current,
+    selectedWorkspaceId: "workspace-2",
+  });
+  assert.equal(selection.boardChanged, false);
+  assert.equal(selection.panelChanged, true);
+});

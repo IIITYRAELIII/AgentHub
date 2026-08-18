@@ -90,7 +90,43 @@
       .map(({ task }) => task);
   }
 
-  window.AgentHubTaskBoardView = Object.freeze({ tasksForMode });
+  function sameSnapshotValue(left, right) {
+    if (Object.is(left, right)) return true;
+    try {
+      return JSON.stringify(left) === JSON.stringify(right);
+    } catch {
+      return false;
+    }
+  }
+
+  function taskBoardSnapshotChanges(current = {}, payload = {}, { initialized = true } = {}) {
+    const next = {
+      tasks: Array.isArray(payload.tasks) ? payload.tasks.slice() : [],
+      workspaces: Array.isArray(payload.workspaces) ? payload.workspaces.slice() : [],
+      columnOrder: Array.isArray(payload.columnOrder) ? payload.columnOrder.slice() : [],
+      notesComment: String(payload.notesComment ?? "Игры, фильмы, сериалы и идеи"),
+      selectedWorkspaceId: payload.selectedWorkspaceId ?? null,
+      provider: payload.provider === "claude" ? "claude" : "codex",
+    };
+    const tasksChanged = !sameSnapshotValue(current.tasks ?? [], next.tasks);
+    const workspacesChanged = !sameSnapshotValue(current.workspaces ?? [], next.workspaces);
+    const boardChanged = !initialized
+      || tasksChanged
+      || workspacesChanged
+      || !sameSnapshotValue(current.columnOrder ?? [], next.columnOrder)
+      || String(current.notesComment ?? "") !== next.notesComment;
+    return {
+      next,
+      boardChanged,
+      panelChanged: !initialized
+        || tasksChanged
+        || workspacesChanged
+        || (current.selectedWorkspaceId ?? null) !== next.selectedWorkspaceId,
+      openTaskChanged: !initialized || tasksChanged,
+    };
+  }
+
+  window.AgentHubTaskBoardView = Object.freeze({ taskBoardSnapshotChanges, tasksForMode });
 
   const board = document.querySelector("[data-task-board]");
   const columns = document.querySelector("[data-task-board-columns]");
@@ -144,6 +180,7 @@
     editDirty: false,
     savingTaskId: null,
     removingTaskId: null,
+    snapshotInitialized: false,
   };
   const taskDeleteDialog = createDeleteDialog({
     dialog: taskDeleteModal,
@@ -739,15 +776,16 @@
       renderWorkspacePanel();
     },
     setSnapshot(payload = {}) {
-      state.tasks = Array.isArray(payload.tasks) ? payload.tasks.slice() : [];
-      state.workspaces = Array.isArray(payload.workspaces) ? payload.workspaces.slice() : [];
-      state.columnOrder = Array.isArray(payload.columnOrder) ? payload.columnOrder.slice() : [];
-      state.notesComment = String(payload.notesComment ?? "Игры, фильмы, сериалы и идеи");
-      state.selectedWorkspaceId = payload.selectedWorkspaceId ?? null;
-      state.provider = payload.provider === "claude" ? "claude" : "codex";
-      renderBoard();
-      renderWorkspacePanel();
-      renderOpenTaskCard();
+      const changes = taskBoardSnapshotChanges(state, payload, {
+        initialized: state.snapshotInitialized,
+      });
+      Object.assign(state, changes.next, { snapshotInitialized: true });
+      // Run snapshots change while an agent is working, but Dashboard data
+      // usually does not. Rebuilding every column also schedules synchronous
+      // card measurements and can stall typing in the chat surface.
+      if (changes.boardChanged) renderBoard();
+      if (changes.panelChanged) renderWorkspacePanel();
+      if (changes.openTaskChanged) renderOpenTaskCard();
     },
     finishAction({ type, id, succeeded } = {}) {
       if (type === "update" && state.savingTaskId === id) {

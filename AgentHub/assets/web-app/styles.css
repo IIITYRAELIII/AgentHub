@@ -4831,6 +4831,21 @@ html[data-surface="mobile"]
   background-image: none !important;
 }
 
+/* Некоторые минималистичные темы намеренно рисуют ответы агента без карточки,
+   полагаясь на общий dialog-canvas. Когда пользователь убирает этот canvas,
+   возвращаем только тематическую подложку сообщения: фон сцены остаётся виден
+   между карточками, а текст не ложится прямо на изображение. */
+:root[data-chat-surface="transparent"]:is(
+  :not([data-theme]),
+  [data-theme="orbit"],
+  [data-theme="blackhole"],
+  [data-theme="lake"],
+  [data-theme="orange"],
+  [data-theme="zero"]
+) :is(.msg-agent, .msg-live) {
+  background: var(--card-bg);
+}
+
 .stream-tabs {
   align-items: stretch;
   background: color-mix(in srgb, var(--surface-1) 88%, transparent);

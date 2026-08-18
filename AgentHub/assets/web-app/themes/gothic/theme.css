@@ -1033,8 +1033,8 @@ html[data-theme="gothic"] body::before {
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .workspace-task-list {
-    padding-left: 0.75rem !important;
-    padding-right: 0.75rem !important;
+    padding-left: 0.05rem !important;
+    padding-right: 0.05rem !important;
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .task-list,
@@ -1161,7 +1161,7 @@ html[data-theme="gothic"] body::before {
   }
 
   html[data-theme="gothic"][data-view="chat"]:not([data-surface="mobile"])
-    .stream-tab[aria-pressed="true"] .stream-tab-card {
+    .stream-tabs .stream-tab[aria-pressed="true"] .stream-tab-card {
     margin-left: -16px !important;
     margin-right: -16px !important;
     padding-left: 16px !important;
