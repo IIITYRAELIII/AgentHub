@@ -1,14 +1,34 @@
 import { createHash, randomUUID } from "node:crypto";
-import { createServer } from "node:net";
+import { connect, createServer } from "node:net";
 import { mkdir, open, readFile, unlink } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { processIsAlive } from "./process-liveness.mjs";
 
 function pipeName(dataDir) {
   const id = createHash("sha256").update(path.resolve(dataDir).toLowerCase()).digest("hex").slice(0, 24);
-  return process.platform === "win32"
-    ? `\\\\.\\pipe\\agent-hub-${id}`
-    : `\0agent-hub-${id}`;
+  if (process.platform === "win32") return `\\\\.\\pipe\\agent-hub-${id}`;
+  if (process.platform === "linux") return `\0agent-hub-${id}`;
+  return path.join(os.tmpdir(), `agent-hub-${id}.sock`);
+}
+
+function isFilesystemSocket(endpoint) {
+  return !endpoint.startsWith("\0") && !endpoint.startsWith("\\\\.\\pipe\\");
+}
+
+function socketHasOwner(endpoint) {
+  return new Promise((resolve, reject) => {
+    const socket = connect(endpoint);
+    socket.once("connect", () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.once("error", (error) => {
+      socket.destroy();
+      if (["ECONNREFUSED", "ENOENT"].includes(error?.code)) resolve(false);
+      else reject(error);
+    });
+  });
 }
 
 function listen(server, endpoint) {
@@ -79,11 +99,19 @@ export class SingleInstanceGuard {
     try {
       await listen(server, endpoint);
     } catch (error) {
-      server.close();
       if (error?.code === "EADDRINUSE") {
-        throw new Error("Telegram bot is already running for this data directory");
+        if (!isFilesystemSocket(endpoint) || await socketHasOwner(endpoint)) {
+          server.close();
+          throw new Error("Telegram bot is already running for this data directory");
+        }
+        await unlink(endpoint).catch((unlinkError) => {
+          if (unlinkError?.code !== "ENOENT") throw unlinkError;
+        });
+        await listen(server, endpoint);
+      } else {
+        server.close();
+        throw error;
       }
-      throw error;
     }
     this.#server = server;
 
@@ -139,5 +167,7 @@ export class SingleInstanceGuard {
     if (current?.instanceToken === this.#token) await unlink(this.#lockFile).catch(() => {});
     await close(this.#server);
     this.#server = null;
+    const endpoint = pipeName(this.#dataDir);
+    if (isFilesystemSocket(endpoint)) await unlink(endpoint).catch(() => {});
   }
 }
