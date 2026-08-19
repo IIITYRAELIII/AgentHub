@@ -185,6 +185,9 @@ export class DesktopDeferredInputService {
     }
     const binding = this.#binding(item);
     if (action === "new") {
+      if (!binding.streamId) {
+        throw new Error("Нельзя безопасно создать новую задачу для сообщения без Stream-привязки");
+      }
       if (item.dispatchingAt || d.isProcessing(id)) {
         throw new Error("Сообщение уже отправляется и не может быть перенесено");
       }
@@ -199,7 +202,10 @@ export class DesktopDeferredInputService {
       await d.saveState();
       try {
         await d.selectTask(binding, d.clientContext(context, "desktop"));
-        await d.dispatchCommand("task.create", { provider: binding.provider }, d.clientContext(context, "desktop"));
+        await d.dispatchCommand("task.create", {
+          provider: binding.provider,
+          streamId: binding.streamId,
+        }, d.clientContext(context, "desktop"));
         const outcome = await d.startTurn(item.input, item.temporaryFiles ?? [], {
           forceSpeechButton: item.forceSpeechButton === true,
           persistentFiles: item.persistentFiles === true,
@@ -257,6 +263,7 @@ export class DesktopDeferredInputService {
 
   #binding(item) {
     return {
+      streamId: item.streamId ?? null,
       provider: item.provider, projectRoot: item.projectRoot,
       threadId: item.threadId, taskTitle: item.taskTitle,
     };

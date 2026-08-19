@@ -125,6 +125,10 @@ test("every operation that selects a new task invalidates an older navigation", 
   );
   assert.match(
     hubClientSource,
+    /agentHub\.on\("stream:continue-provider",[\s\S]*?runAction\(async \(\) => \{\s*beginNavigation\(\);/u,
+  );
+  assert.match(
+    hubClientSource,
     /agentHub\.on\("stream:new",[\s\S]*?if \(existing\) return existing;\s*beginNavigation\(\);/u,
   );
 });
@@ -1977,6 +1981,13 @@ test("rotation completion replaces pending context percentages in place", () => 
     hubClientSource,
     /afterPercent = contextPercent\(existingEvent\?\.afterPercent\)[\s\S]*storedMaintenancePercent\(existingEvent, 2\)[\s\S]*task\.context\?\.percent/u,
   );
+});
+
+test("Stream context menu exposes manual provider continuation without rotating Claude", () => {
+  assert.match(miniAppSource, /const provider = String\(tab\.dataset\.streamProvider \?\? "codex"\);/u);
+  assert.match(miniAppSource, /"data-stream-menu-action": "continue-provider"[\s\S]*"data-provider": "claude"[\s\S]*text: "Продолжить в Claude"/u);
+  assert.match(miniAppSource, /emit\("stream:continue-provider", \{ streamId, provider: targetProvider, taskId \}\)/u);
+  assert.match(miniAppSource, /disabled: tab\.hasAttribute\("data-running"\) \|\| provider !== "codex"/u);
 });
 
 test("Hub compaction delegates targeted completion to its context maintenance owner", () => {

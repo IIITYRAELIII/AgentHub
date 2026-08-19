@@ -183,7 +183,7 @@ test("task command service recovers a persisted provider Thread after post-creat
   assert.equal(events.find(([name]) => name === "bind")[1].threadId, "thread-recovered");
 });
 
-test("task command service continues an existing Stream in a new provider Thread", async () => {
+test("task command service continues an existing Stream in a new Codex Thread", async () => {
   const { service, events } = fixture();
   await service.create({ provider: "codex", streamId: "stream-1" });
   assert.deepEqual(events.find(([name]) => name === "bind")[1], {
@@ -199,6 +199,37 @@ test("task command service continues an existing Stream in a new provider Thread
   ]);
   assert.deepEqual(events.find(([name]) => name === "prepare")[1], {
     provider: "codex",
+    model: "gpt-5",
+    reasoning: "high",
+    project: "D:/later",
+    workingDirectory: "D:/work/AgentHub",
+    autoApprove: false,
+    streamId: "stream-1",
+    title: "Existing",
+  });
+});
+
+test("task command service can manually continue an existing Stream in Claude", async () => {
+  const { service, events } = fixture({
+    createTask: async () => ({
+      provider: "claude",
+      threadId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+      projectRoot: "D:/work",
+      title: "Новая задача Claude",
+    }),
+  });
+  const result = await service.create({ provider: "claude", streamId: "stream-1" });
+
+  assert.equal(result.createdTask.streamId, "stream-1");
+  assert.deepEqual(events.find(([name]) => name === "bind")[1], {
+    provider: "claude",
+    threadId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+    streamId: "stream-1",
+    projectRoot: "D:/work",
+    source: "rebirth",
+  });
+  assert.deepEqual(events.find(([name]) => name === "prepare")[1], {
+    provider: "claude",
     model: "gpt-5",
     reasoning: "high",
     project: "D:/later",

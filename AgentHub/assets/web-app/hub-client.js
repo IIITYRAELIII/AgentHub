@@ -2555,6 +2555,23 @@ agentHub.on("stream:rebirth", ({ streamId, provider, taskId: targetTaskId }) => 
   if (created) replaceRoute(`#/chat/${encodeURIComponent(created.provider)}/${encodeURIComponent(created.threadId)}`);
   agentHub.showSelectedTask();
 }));
+agentHub.on("stream:continue-provider", ({ streamId, provider }) => runAction(async () => {
+  beginNavigation();
+  const selectedProvider = ["codex", "claude"].includes(provider) ? provider : "codex";
+  const snapshot = await control("new-task", {
+    provider: selectedProvider,
+    streamId,
+  });
+  const created = (snapshot.tasks ?? []).find((task) => task.selected && task.streamId === streamId);
+  if (created) {
+    pendingSelectionId = taskId(created.provider, created.threadId, created.streamId);
+    rememberSelectedTaskId(pendingSelectionId);
+  }
+  applySnapshot(snapshot);
+  pendingSelectionId = "";
+  if (created) replaceRoute(`#/chat/${encodeURIComponent(created.provider)}/${encodeURIComponent(created.threadId)}`);
+  agentHub.showSelectedTask();
+}));
 agentHub.on("stream:new", ({ workspaceId, streamName }) => {
   const key = String(workspaceId ?? "").trim() || "default";
   const existing = streamCreatesInFlight.get(key);

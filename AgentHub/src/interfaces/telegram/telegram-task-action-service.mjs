@@ -69,9 +69,14 @@ export class TelegramTaskActionService {
   }
 
   async create(context = {}) {
+    const selected = this.selectedTask();
+    const streamId = String(selected?.streamId ?? "").trim();
     const result = await this.dispatchCommand(
       "task.create",
-      { provider: this.activeProvider() },
+      {
+        provider: this.activeProvider(),
+        ...(streamId ? { streamId } : {}),
+      },
       context,
     );
     if (!result?.createdTask || (!result.createdTask.threadId && result.createdTask.provider !== "claude")) {

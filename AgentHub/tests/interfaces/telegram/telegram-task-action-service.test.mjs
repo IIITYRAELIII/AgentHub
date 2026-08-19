@@ -5,7 +5,13 @@ import { TelegramTaskActionService } from "../../../src/interfaces/telegram/tele
 
 function fixture(overrides = {}) {
   const events = [];
-  const task = { provider: "codex", projectRoot: "D:/repo", threadId: "thread-1", taskTitle: "Task" };
+  const task = {
+    provider: "codex",
+    streamId: "stream-1",
+    projectRoot: "D:/repo",
+    threadId: "thread-1",
+    taskTitle: "Task",
+  };
   const value = new TelegramTaskActionService({
     selectedTask: () => task,
     activeProvider: () => "codex",
@@ -86,6 +92,34 @@ test("create, rename and archive keep the Telegram client selection current", as
     ["thread-1", "Renamed"],
     ["thread-3", "Agent HUB - Themes"],
   ]);
+});
+
+test("create continues the selected Stream instead of creating a detached Workspace", async () => {
+  const dispatched = [];
+  const setup = fixture({
+    activeProvider: () => "claude",
+    dispatchCommand: async (type, params, context) => {
+      dispatched.push({ type, params, context });
+      return {
+        createdTask: {
+          provider: "claude",
+          streamId: "stream-1",
+          projectRoot: "D:/repo",
+          threadId: "thread-claude",
+          taskTitle: "New",
+        },
+      };
+    },
+  });
+  const context = { clientId: "telegram:7" };
+
+  await setup.value.create(context);
+
+  assert.deepEqual(dispatched, [{
+    type: "task.create",
+    params: { provider: "claude", streamId: "stream-1" },
+    context,
+  }]);
 });
 
 test("status snapshot and callback dismissal use current state only", async () => {

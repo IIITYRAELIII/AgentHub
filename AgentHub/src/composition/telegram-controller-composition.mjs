@@ -199,7 +199,7 @@ export function createTelegramControllerComposition({
     startTurn,
     runForTask: (binding) => taskRuns.forTask(binding),
     describeAttachments: desktopAttachmentDescriptors,
-    createCurrentTask,
+    dispatchApplicationCommand,
     activeThreadTitle,
     selectedTask,
     selectedTurnTarget,

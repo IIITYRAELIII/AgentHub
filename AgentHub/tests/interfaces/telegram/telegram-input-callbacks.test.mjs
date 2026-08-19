@@ -20,7 +20,6 @@ function service(events) {
     runForTask: () => null,
     describeAttachments: () => [],
     dispatchApplicationCommand: noop,
-    createCurrentTask: noop,
     selectedTurnTarget: (chatId) => ({ chatId, provider: "codex", threadId: "new-task" }),
     activeThreadTitle: () => "Task",
     selectedTask: () => ({}),
@@ -73,7 +72,6 @@ test("input callback cancellation keeps the input and attachments when save fail
     runForTask: () => null,
     describeAttachments: () => [],
     dispatchApplicationCommand: async () => {},
-    createCurrentTask: async () => {},
     selectedTurnTarget: () => ({ provider: "codex", threadId: "new-task" }),
     activeThreadTitle: () => "Task",
     selectedTask: () => ({}),
@@ -92,4 +90,57 @@ test("input callback cancellation keeps the input and attachments when save fail
   assert.deepEqual(receipts, []);
   assert.deepEqual(cleaned, []);
   assert.equal(events.at(-1).body.text, "Сообщение отменено");
+});
+
+test("input callback new task keeps the deferred message inside its Stream", async () => {
+  const events = [];
+  const item = {
+    id: "deferred-1",
+    chatId: 1,
+    input: "следующее",
+    temporaryFiles: [],
+    streamId: "stream-1",
+    provider: "codex",
+    threadId: "thread-old",
+    taskTitle: "Old",
+  };
+  const calls = [];
+  const pendingInputs = new Map([[item.id, item]]);
+  const callbacks = new TelegramInputCallbackService({
+    telegram: async (method, body) => events.push({ method, body }),
+    sendMessageTo: async () => {},
+    updateDeferredDesktopReceipt: () => {},
+    cleanupDeferredFiles: async () => {},
+    saveState: async () => {},
+    updateDeferredMessage: async () => {},
+    scheduleNextForTask: () => {},
+    selectTaskFromBinding: async (binding) => { calls.push(["select", binding]); return { selectionChanged: false }; },
+    callbackContext: () => ({ clientId: "telegram:1" }),
+    showTaskMessage: async () => {},
+    scheduleQueuedInput: () => {},
+    startTurn: async (input) => { calls.push(["start", input]); return {}; },
+    runForTask: () => null,
+    describeAttachments: () => [],
+    dispatchApplicationCommand: async (command, params) => calls.push(["dispatch", command, params]),
+    selectedTurnTarget: (chatId) => ({ chatId, provider: "codex", threadId: "thread-new", streamId: "stream-1" }),
+    activeThreadTitle: () => "Task",
+    selectedTask: () => ({ provider: "codex", threadId: "thread-new", streamId: "stream-1" }),
+    speechText: () => null,
+    sendTaskSwitchNotification: async () => {},
+    forwardBundleController: { bundleById: () => null },
+    pendingInputs,
+    queuedInputs: new Map(),
+    backgroundJobs: { enqueue: async () => null, speechPending: 0 },
+    maxSpeechJobs: 4,
+  });
+
+  await callbacks.handle(callback, { kind: "pending-input", id: item.id, action: "new" });
+
+  assert.equal(pendingInputs.has(item.id), false);
+  assert.deepEqual(calls.find((call) => call[0] === "dispatch"), [
+    "dispatch",
+    "task.create",
+    { provider: "codex", streamId: "stream-1" },
+  ]);
+  assert.deepEqual(calls.find((call) => call[0] === "start"), ["start", "следующее"]);
 });

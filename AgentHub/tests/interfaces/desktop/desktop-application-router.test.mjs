@@ -83,6 +83,22 @@ test("Desktop application router dispatches Stream rotation to the exact Thread"
   });
 });
 
+test("Desktop application router creates a provider Thread inside an existing Stream", async () => {
+  const calls = [];
+  const control = router(calls);
+  await control.handleDesktopControl({
+    action: "new-task",
+    params: { streamId: "stream-1", provider: "claude" },
+    context: { source: "desktop", userId: "7" },
+  });
+  assert.equal(calls[0][0], "task.create");
+  assert.deepEqual(calls[0][1], {
+    streamId: "stream-1",
+    provider: "claude",
+    maxResponseBytes: 3_500_000,
+  });
+});
+
 test("Desktop application router dispatches settings to the client task identity", async () => {
   const calls = [];
   const control = router(calls);

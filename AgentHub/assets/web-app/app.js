@@ -3043,6 +3043,11 @@ function ensureStreamContextMenu() {
       emit("stream:rebirth", { streamId, provider, taskId });
       return;
     }
+    if (kind === "continue-provider") {
+      const targetProvider = String(action.dataset.provider ?? "").trim();
+      emit("stream:continue-provider", { streamId, provider: targetProvider, taskId });
+      return;
+    }
     if (kind === "archive") {
       const intent = window.AgentHubStreamTabs.archiveStreamIntent(streamId);
       emit(intent.type, intent.detail);
@@ -3064,12 +3069,13 @@ function openStreamContextMenu(event, tab) {
   const menu = ensureStreamContextMenu();
   const streamId = String(tab.dataset.streamTabId ?? "");
   const workspaceId = String(tab.dataset.workspaceId ?? "");
+  const provider = String(tab.dataset.streamProvider ?? "codex");
   menu.dataset.streamId = streamId;
   menu.dataset.workspaceId = workspaceId;
   menu.dataset.workspaceName = String(tab.dataset.workspaceName ?? "");
   menu.dataset.streamName = String(tab.dataset.streamName ?? "");
   menu.dataset.taskId = String(tab.dataset.streamTaskId ?? "");
-  menu.dataset.provider = String(tab.dataset.streamProvider ?? "codex");
+  menu.dataset.provider = provider;
   menu.replaceChildren(
     el("button", {
       type: "button", role: "menuitem", class: "stream-context-action",
@@ -3086,10 +3092,32 @@ function openStreamContextMenu(event, tab) {
     el("button", {
       type: "button", role: "menuitem", class: "stream-context-action",
       "data-stream-menu-action": "replace-thread", text: "Ротация",
+      disabled: tab.hasAttribute("data-running") || provider !== "codex",
+      title: tab.hasAttribute("data-running")
+        ? "Сначала завершите текущий ход"
+        : provider !== "codex"
+          ? "Ротация пока доступна только для Codex"
+          : "Завершить текущий Thread и продолжить Stream в новом Codex Thread",
+    }),
+    el("button", {
+      type: "button", role: "menuitem", class: "stream-context-action",
+      "data-stream-menu-action": "continue-provider",
+      "data-provider": "codex",
+      text: "Продолжить в Codex",
       disabled: tab.hasAttribute("data-running"),
       title: tab.hasAttribute("data-running")
         ? "Сначала завершите текущий ход"
-        : "Завершить текущий Thread и продолжить Stream в новом",
+        : "Создать новый Codex Thread в этом Stream",
+    }),
+    el("button", {
+      type: "button", role: "menuitem", class: "stream-context-action",
+      "data-stream-menu-action": "continue-provider",
+      "data-provider": "claude",
+      text: "Продолжить в Claude",
+      disabled: tab.hasAttribute("data-running"),
+      title: tab.hasAttribute("data-running")
+        ? "Сначала завершите текущий ход"
+        : "Создать новый Claude Thread в этом Stream",
     }),
     el("button", {
       type: "button", role: "menuitem", class: "stream-context-action stream-context-danger",

@@ -129,6 +129,7 @@ test("Desktop deferred queue can move an occupied message to a new task", async 
     input: "deliver",
     temporaryFiles: [],
     provider: "codex",
+    streamId: "stream-1",
     projectRoot: "D:\\Work",
     threadId: "thread-old",
     taskTitle: "Old",
@@ -141,7 +142,7 @@ test("Desktop deferred queue can move an occupied message to a new task", async 
     pendingInputs: new Map(),
     queuedInputs,
     cancelSchedule: (id) => calls.push(["cancel", id]),
-    dispatchCommand: async (command) => calls.push(["dispatch", command]),
+    dispatchCommand: async (command, params) => calls.push(["dispatch", command, params]),
     startTurn: async (input) => calls.push(["start", input]),
     selectedTask: () => ({ provider: "codex", threadId: "thread-new" }),
   });
@@ -152,9 +153,27 @@ test("Desktop deferred queue can move an occupied message to a new task", async 
   assert.equal(queuedInputs.has(item.id), false);
   assert.deepEqual(calls, [
     ["cancel", item.id],
-    ["dispatch", "task.create"],
+    ["dispatch", "task.create", { provider: "codex", streamId: "stream-1" }],
     ["start", "deliver"],
   ]);
+});
+
+test("Desktop deferred new task refuses legacy items without Stream identity", async () => {
+  const item = {
+    id: "message-1",
+    input: "deliver",
+    temporaryFiles: [],
+    provider: "codex",
+    projectRoot: "D:\\Work",
+    threadId: "thread-old",
+    taskTitle: "Old",
+  };
+  const service = createService(item);
+
+  await assert.rejects(
+    service.handle({ id: item.id, action: "new" }),
+    /Stream-привязки/u,
+  );
 });
 
 test("Desktop deferred queue reorders messages inside one Stream across Thread rotation", async () => {

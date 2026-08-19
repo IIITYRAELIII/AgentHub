@@ -14,7 +14,7 @@ export class TelegramInputCallbackService {
       "telegram", "sendMessageTo", "updateDeferredDesktopReceipt", "cleanupDeferredFiles",
       "saveState", "updateDeferredMessage", "scheduleNextForTask", "selectTaskFromBinding",
       "callbackContext", "showTaskMessage", "scheduleQueuedInput", "startTurn", "runForTask",
-      "describeAttachments", "createCurrentTask", "activeThreadTitle", "selectedTask",
+      "describeAttachments", "dispatchApplicationCommand", "activeThreadTitle", "selectedTask",
       "selectedTurnTarget", "speechText", "sendTaskSwitchNotification",
     ]) requiredFunction(dependencies[name], name);
     this.#d = dependencies;
@@ -139,8 +139,14 @@ export class TelegramInputCallbackService {
         d.scheduleNextForTask(item);
         return true;
       }
+      if (!binding.streamId) {
+        throw new Error("нельзя безопасно создать новую задачу для сообщения без Stream-привязки");
+      }
       await d.selectTaskFromBinding(binding, d.callbackContext(callback));
-      await d.createCurrentTask(d.callbackContext(callback));
+      await d.dispatchApplicationCommand("task.create", {
+        provider: binding.provider,
+        streamId: binding.streamId,
+      }, d.callbackContext(callback));
       const newTaskTitle = d.activeThreadTitle();
       const outcome = await d.startTurn(item.input, item.temporaryFiles ?? [], {
         forceSpeechButton: item.forceSpeechButton === true,
