@@ -248,8 +248,10 @@ html[data-view="chat"][data-surface][data-theme] {
 
 .stream-tabs-track .stream-tab-title {
   color: inherit;
+  flex: 0 1 12rem !important;
   font: inherit;
-  max-width: min(28rem, 45vw);
+  max-width: min(12rem, 32vw) !important;
+  min-width: 0 !important;
   overflow: hidden;
   text-align: left !important;
   text-overflow: ellipsis;
@@ -594,19 +596,22 @@ html[data-view="chat"][data-surface][data-theme] {
   width: 100%;
 }
 
-html[data-view="chat"]:not([data-surface="mobile"]) .msg-stack-user {
-  align-items: flex-end;
-}
-
-html[data-view="chat"]:not([data-surface="mobile"]) .msg-stack-user > .msg-user {
+html[data-view="chat"]:not([data-surface="mobile"]) .chat-log .msg-stack-user {
+  align-items: stretch;
   align-self: flex-end;
-  width: min(35.75rem, 78%);
+  max-width: min(35.75rem, 78%) !important;
+  width: min(35.75rem, 78%) !important;
 }
 
-html[data-view="chat"]:not([data-surface="mobile"]) .msg-stack-user > .msg-actions {
-  left: auto;
-  right: 0;
-  width: min(35.75rem, 78%);
+html[data-view="chat"]:not([data-surface="mobile"]) .chat-log .msg-stack-user > .msg-user {
+  align-self: stretch;
+  width: 100% !important;
+}
+
+html[data-view="chat"]:not([data-surface="mobile"]) .chat-log .msg-stack-user > .msg-actions {
+  left: 0;
+  right: auto;
+  width: 100% !important;
 }
 
 .msg,

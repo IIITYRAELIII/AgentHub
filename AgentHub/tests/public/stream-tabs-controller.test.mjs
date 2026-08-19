@@ -117,6 +117,11 @@ test("desktop Stream settings replace duplicate toolbar controls and keep titles
   assert.match(dialogStyles, /\.stream-order-toggle\[hidden\] \{[\s\S]*display: none !important;/u);
   assert.doesNotMatch(dialogStyles, /\.toolbar \.view-settings \{[\s\S]*display: none !important;/u);
   assert.match(dialogStyles, /\.stream-tabs-track \.stream-tab-title \{[\s\S]*text-align: left !important;/u);
+  assert.match(
+    dialogStyles,
+    /html\[data-view="chat"\]:not\(\[data-surface="mobile"\]\) \.chat-log \.msg-stack-user \{/u,
+  );
+  assert.doesNotMatch(dialogStyles, /^&:not\(\[data-surface="mobile"\]\)/mu);
   const strippedPseudoElements = dialogStyles.match(
     /\.stream-tabs-track \.stream-tab\[aria-pressed="true"\]::after,[\s\S]*?\{\s*content:\s*none;\s*\}/u,
   )?.[0] ?? "";
