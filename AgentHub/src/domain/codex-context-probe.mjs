@@ -17,23 +17,27 @@ export function isCodexContextProbeText(value) {
   return text === CODEX_CONTEXT_PROBE_PROMPT || text === CODEX_CONTEXT_PROBE_RESPONSE;
 }
 
-export function isCodexContextProbeTurn(turn) {
+export function isCodexContextProbeTurn(turn, { allowTextFallback = false } = {}) {
   if (turn?.contextProbe === true) return true;
   if (isCodexContextProbeClientId(turn?.clientUserMessageId ?? turn?.clientId)) return true;
-  if (isCodexContextProbeText(turn?.prompt)) return true;
   if ((Array.isArray(turn?.userMessages) ? turn.userMessages : []).some((message) => (
     isCodexContextProbeClientId(message?.clientUserMessageId ?? message?.clientId)
-    || isCodexContextProbeText(message?.text)
   ))) return true;
-  return (Array.isArray(turn?.items) ? turn.items : []).some((item) => (
+  const items = Array.isArray(turn?.items) ? turn.items : [];
+  if (items.some((item) => (
     item?.type === "userMessage"
-    && (
-      isCodexContextProbeClientId(item.clientId)
-      || isCodexContextProbeText(item.text)
-      || (Array.isArray(item.content) ? item.content : []).some((content) => (
-        ["text", "input_text"].includes(content?.type)
-        && isCodexContextProbeText(content?.text)
-      ))
-    )
+    && isCodexContextProbeClientId(item.clientId)
+  ))) return true;
+  if (!allowTextFallback) return false;
+  if (isCodexContextProbeText(turn?.prompt)) return true;
+  if ((Array.isArray(turn?.userMessages) ? turn.userMessages : []).some((message) => (
+    isCodexContextProbeText(message?.text)
+  ))) return true;
+  return items.some((item) => item?.type === "userMessage" && (
+    isCodexContextProbeText(item.text)
+    || (Array.isArray(item.content) ? item.content : []).some((content) => (
+      ["text", "input_text"].includes(content?.type)
+      && isCodexContextProbeText(content?.text)
+    ))
   ));
 }

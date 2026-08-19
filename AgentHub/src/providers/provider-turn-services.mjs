@@ -375,7 +375,7 @@ export class CodexTurnService {
       .filter((turn) => ["inProgress", "in_progress", "running"].includes(String(turn?.status ?? "")))
       .filter((turn) => {
         const turnId = String(turn?.id ?? "").trim();
-        return !isCodexContextProbeTurn(turn)
+        return !isCodexContextProbeTurn(turn, { allowTextFallback: true })
           && !this.#d.isContextProbeTurn(target.threadId, turnId);
       });
     if (active.length === 1) {
