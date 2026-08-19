@@ -39,7 +39,7 @@ function run(command, args) {
 }
 
 async function runWindowsTestFile(file) {
-  const args = ["--test", "--test-concurrency=1", file];
+  const args = ["--test", "--test-concurrency=1", "--test-isolation=none", file];
   const maxAttempts = 4;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
