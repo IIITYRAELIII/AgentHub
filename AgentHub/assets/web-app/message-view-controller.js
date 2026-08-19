@@ -60,7 +60,7 @@
     const tokenPattern = /(runtime|коммит)\s*(?:[:—–-]\s*)?(?:`([^`\r\n]+)`|(\d{12,}-[\p{L}\p{N}_-]+|[0-9a-f]{7,40}))/giu;
     const rows = [];
     const kept = [];
-    const segments = String(value ?? "").match(/[^.!?\n]+[.!?]?|\n/gu) ?? [];
+    const segments = String(value ?? "").match(/[^.!?\n]+[.!?]*|[.!?]+|\n/gu) ?? [];
     for (const segment of segments) {
       const matches = Array.from(segment.matchAll(tokenPattern));
       if (!matches.length) {
@@ -83,6 +83,12 @@
       .replace(/[ \t]{2,}/gu, " ")
       .trim();
     return { text, rows };
+  }
+
+  function messageTechnicalContent(role, value) {
+    const text = String(value ?? "");
+    if (!["agent", "assistant"].includes(String(role ?? ""))) return { text, rows: [] };
+    return extractTechnicalTails(text);
   }
 
   function normalizeSystemEventText(value) {
@@ -219,6 +225,7 @@
     claimKeyedChildrenOwner,
     composerFollowUpMode,
     extractTechnicalTails,
+    messageTechnicalContent,
     messageCopyRequest,
     messageContentSignature,
     messageKey,

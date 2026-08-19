@@ -4276,7 +4276,7 @@ function renderTechnicalRows(rows) {
   ])));
 }
 
-function renderMarkdown(target, source, fileContext = currentFileLinkContext()) {
+function renderMarkdown(target, source, fileContext = currentFileLinkContext(), messageRole = "agent") {
   target.replaceChildren();
   const lines = String(source ?? "").replace(/\r\n?/gu, "\n").split("\n");
   let index = 0;
@@ -4360,7 +4360,7 @@ function renderMarkdown(target, source, fileContext = currentFileLinkContext()) 
       && !markdownTableAt(lines, index)) {
       paragraph.push(lines[index++]);
     }
-    const extracted = MessageView.extractTechnicalTails(paragraph.join("\n"));
+    const extracted = MessageView.messageTechnicalContent(messageRole, paragraph.join("\n"));
     if (extracted.text) {
       const node = el("p");
       extracted.text.split("\n").forEach((part, lineIndex) => {
@@ -4575,7 +4575,7 @@ function renderMessage(message, { readOnly = false, task = currentTask() } = {})
     const text = role === "system"
       ? MessageView.normalizeSystemEventText(message.text ?? "")
       : message.text ?? "";
-    renderMarkdown(body, text, currentFileLinkContext(task));
+    renderMarkdown(body, text, currentFileLinkContext(task), role);
   }
 
   if (maintenance) article.append(body);
@@ -4623,7 +4623,7 @@ function renderResponseAnnotations(body, message) {
     ]);
     if (comment) {
       const commentNode = el("div", { class: "msg-annotation-comment" });
-      renderMarkdown(commentNode, comment);
+      renderMarkdown(commentNode, comment, undefined, "user");
       content.append(commentNode);
     }
     annotations.append(content);
@@ -4633,7 +4633,7 @@ function renderResponseAnnotations(body, message) {
   const request = String(message.responseAnnotationRequest ?? message.text ?? "").trim();
   if (request) {
     const requestNode = el("div", { class: "msg-annotation-request" });
-    renderMarkdown(requestNode, request);
+    renderMarkdown(requestNode, request, undefined, "user");
     body.append(requestNode);
   }
   return true;

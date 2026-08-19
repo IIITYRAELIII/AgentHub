@@ -256,6 +256,26 @@ test("technical runtime and commit identifiers are extracted from prose", async 
   assert.equal(extracted.text.includes("20260817174851-85853e88"), false);
 });
 
+test("user messages bypass technical-tail extraction and preserve punctuation exactly", async () => {
+  const api = await messageViewApi();
+  for (const text of [
+    "...",
+    "!?",
+    "почему ... в моём сообщении превращается в .\nа ? - вообще не отображается иногда..",
+    "Коммит 6a863064 — это часть моего сообщения!?",
+  ]) {
+    const content = api.messageTechnicalContent("user", text);
+    assert.equal(content.text, text);
+    assert.deepEqual(Array.from(content.rows), []);
+  }
+});
+
+test("agent technical-tail extraction preserves repeated and standalone punctuation", async () => {
+  const api = await messageViewApi();
+  assert.equal(api.extractTechnicalTails("Ответ... Правда!? ???").text, "Ответ... Правда!? ???");
+  assert.equal(api.messageTechnicalContent("system", "!?...").text, "!?...");
+});
+
 test("context compaction events use the designed separator and arrow", async () => {
   const api = await messageViewApi();
   assert.equal(
