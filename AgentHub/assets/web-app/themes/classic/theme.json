@@ -1,0 +1,10 @@
+{
+  "id": "classic",
+  "name": "Классика",
+  "color": "#191a1b",
+  "order": 115,
+  "styles": "theme.css",
+  "backgrounds": [
+    { "id": "classic", "name": "Классика" }
+  ]
+}

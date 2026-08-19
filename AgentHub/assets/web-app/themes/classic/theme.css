@@ -1,0 +1,207 @@
+/* ======================================================== тема «Классика» ===
+   Спокойная системная тёмная палитра по образцу классического списка чатов:
+   ровный фон, Segoe UI, обычные начертания и один голубой акцент. */
+
+html[data-theme="classic"] {
+  color-scheme: dark;
+
+  --font-body: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system,
+    Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-display: var(--font-body);
+  --font-title: var(--font-body);
+  --font-numeric: var(--font-body);
+  --display-weight: 400;
+  --display-spacing: 0;
+  --display-transform: none;
+  --title-weight: 400;
+  --label-spacing: 0;
+  --label-transform: none;
+
+  --radius-lg: 8px;
+  --radius-md: 6px;
+  --radius-sm: 4px;
+  --radius-chip: 4px;
+  --rail-width: 1px;
+
+  --bg: #191a1b;
+  --surface-1: #1d1e1f;
+  --surface-2: #222324;
+  --surface-3: #2a2b2c;
+  --sunken: #161718;
+
+  --line: #2a2b2c;
+  --line-strong: #3a3b3c;
+
+  --card-bg: #1d1e1f;
+  --card-bg-open: #222324;
+  --card-texture: none;
+  --card-border: #2a2b2c;
+  --card-border-open: #3a3b3c;
+  --card-shadow: none;
+
+  --plate-bg: #222324;
+  --plate-texture: none;
+  --plate-shadow: none;
+  --turn-shadow: none;
+
+  --text: #bfbfbf;
+  --text-soft: #b3b3b3;
+  --text-muted: #848485;
+  --text-faint: #535454;
+
+  --accent: #48a0c7;
+  --accent-soft: rgb(72 160 199 / 12%);
+  --accent-line: rgb(72 160 199 / 58%);
+  --accent-glow: none;
+  --selection: rgb(72 160 199 / 28%);
+  --brand-gradient: linear-gradient(145deg, #242b2f, #1d2428);
+  --brand-shadow: none;
+
+  --provider-none: #848485;
+  --provider-codex: #48a0c7;
+  --provider-claude: #a7a7a7;
+  --comparison-local: #bfbfbf;
+  --comparison-deviation: #a7a7a7;
+  --comparison-cost: #848485;
+  --ok: #48a0c7;
+  --pending: #9a9a9a;
+
+  --dot-input: #48a0c7;
+  --dot-cache: #9a9a9a;
+  --dot-output: #b3b3b3;
+  --dot-think: #686969;
+
+  --space-glow-a: transparent;
+  --space-glow-b: transparent;
+  --space-base: #191a1b;
+  --space-star: transparent;
+  --star-opacity: 0;
+  --decor-opacity: 0;
+
+  --shell-header-background: #191a1b;
+  --shell-header-border: 1px solid #2a2b2c;
+  --shell-header-rule: none;
+  --shell-header-rule-opacity: 0;
+  --shell-header-shadow: none;
+  --shell-control-background: transparent;
+  --shell-control-border: 1px solid transparent;
+  --shell-control-shadow: none;
+  --shell-view-switch-background: transparent;
+  --shell-view-switch-border: 0;
+  --shell-view-switch-radius: 0;
+  --shell-view-switch-shadow: none;
+  --shell-tab-active-background: transparent;
+  --shell-tab-active-border: 0;
+  --shell-tab-active-shadow: inset 0 -1px 0 var(--accent);
+  --shell-panel-border: 1px solid #2a2b2c;
+  --shell-stream-tabs-background: #191a1b;
+  --shell-stream-tabs-border: 0;
+  --shell-stream-tabs-border-bottom: 1px solid #2a2b2c;
+  --shell-stream-tab-background: transparent;
+  --shell-stream-tab-border: 0;
+  --shell-stream-tab-hover-background: #222324;
+  --shell-stream-tab-active-background: #1d1e1f;
+  --shell-stream-card-background: transparent;
+  --shell-stream-card-border: 0;
+  --shell-stream-card-shadow: none;
+}
+
+html[data-theme="classic"] body,
+html[data-theme="classic"] .app-header {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  background: #191a1b;
+}
+
+html[data-theme="classic"] body {
+  font-size: 16px;
+  font-weight: 400;
+}
+
+html[data-theme="classic"] body::before,
+html[data-theme="classic"] body::after,
+html[data-theme="classic"] .app-header::after {
+  content: none;
+}
+
+html[data-theme="classic"] .theme-atmosphere {
+  display: none;
+}
+
+html[data-background-override="true"][data-background="classic"] {
+  --hub-background-color: #191a1b;
+  --hub-background-image: none;
+}
+
+html[data-theme="classic"] .task-rail,
+html[data-theme="classic"] .activity-rail,
+html[data-theme="classic"] .chat,
+html[data-theme="classic"] .stream-tabs,
+html[data-theme="classic"] .composer,
+html[data-theme="classic"] .settings-panel {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  background-color: #191a1b;
+  box-shadow: none;
+}
+
+html[data-theme="classic"] .task-rail-title,
+html[data-theme="classic"] .activity-rail-toggle,
+html[data-theme="classic"] .settings-section-title {
+  color: var(--text-muted);
+  font-size: 15px !important;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+html[data-theme="classic"] .task-workspace-name,
+html[data-theme="classic"] .activity-stream-name,
+html[data-theme="classic"] .stream-tab-name,
+html[data-theme="classic"] .workspace-task-title {
+  font-size: 17px !important;
+  font-weight: 400;
+}
+
+html[data-theme="classic"] .task-workspace-time,
+html[data-theme="classic"] .activity-stream-time,
+html[data-theme="classic"] .stream-tab-time {
+  color: var(--text-muted);
+  font-size: 13px !important;
+  font-weight: 400;
+}
+
+html[data-theme="classic"] .msg-body,
+html[data-theme="classic"] .msg-reasoning,
+html[data-theme="classic"] .composer-input > textarea,
+html[data-theme="classic"] .composer-input::after {
+  font-size: 16px !important;
+  font-weight: 400;
+}
+
+html[data-theme="classic"] .task-workspace-item,
+html[data-theme="classic"] .activity-stream-item,
+html[data-theme="classic"] .stream-tab-card,
+html[data-theme="classic"] .msg,
+html[data-theme="classic"] .composer-input,
+html[data-theme="classic"] .settings-card {
+  box-shadow: none;
+}
+
+html[data-theme="classic"] .task-workspace-item:hover,
+html[data-theme="classic"] .activity-stream-item:hover,
+html[data-theme="classic"] .stream-tab:hover .stream-tab-card {
+  background: #222324;
+}
+
+html[data-theme="classic"] .task-workspace-item[data-selected],
+html[data-theme="classic"] .activity-stream-item[data-current] {
+  background: rgb(72 160 199 / 9%);
+  border-color: rgb(72 160 199 / 38%);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+html[data-theme="classic"] ::selection {
+  background: var(--selection);
+  color: #fff;
+}
