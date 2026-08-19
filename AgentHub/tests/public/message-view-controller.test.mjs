@@ -22,7 +22,7 @@ class FakeNode {
 
 class FakeContainer {
   constructor(children = []) {
-    this.children = children;
+    this.children = [...children];
     this.dataset = {};
     this.bulkReplacements = 0;
   }
