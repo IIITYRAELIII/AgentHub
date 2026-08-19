@@ -30,6 +30,7 @@ function resumeWebviewMotion() {
 
 window.addEventListener("focus", resumeWebviewMotion);
 window.addEventListener("pageshow", resumeWebviewMotion);
+window.addEventListener("load", resumeWebviewMotion, { once: true });
 document.addEventListener("visibilitychange", resumeWebviewMotion);
 
 window.addEventListener("message", (event) => {

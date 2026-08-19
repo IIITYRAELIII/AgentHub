@@ -66,9 +66,10 @@ function loadJournalView() {
   return window.AgentHubJournalView;
 }
 
-function loadVscodeBootstrap() {
+function loadVscodeBootstrap({ animations = [], hidden = false } = {}) {
   const source = fs.readFileSync(path.join(__dirname, "vscode-bootstrap.js"), "utf8");
   const listeners = new Map();
+  const documentListeners = new Map();
   const messages = [];
   const timeoutDelays = [];
   let nativeFetchCalls = 0;
@@ -88,9 +89,9 @@ function loadVscodeBootstrap() {
     setTimeout: trackedSetTimeout,
   };
   const document = {
-    hidden: false,
-    addEventListener() {},
-    getAnimations: () => [],
+    hidden,
+    addEventListener: (type, listener) => documentListeners.set(type, listener),
+    getAnimations: () => animations,
   };
   vm.runInNewContext(source, {
     Headers,
@@ -101,7 +102,14 @@ function loadVscodeBootstrap() {
     setTimeout: trackedSetTimeout,
     window,
   });
-  return { listeners, messages, nativeFetchCalls: () => nativeFetchCalls, timeoutDelays, window };
+  return {
+    documentListeners,
+    listeners,
+    messages,
+    nativeFetchCalls: () => nativeFetchCalls,
+    timeoutDelays,
+    window,
+  };
 }
 
 function deferred() {
@@ -426,12 +434,28 @@ test("manual journal refresh queues one forced announced request behind an activ
   second.resolve(true);
 });
 
-test("VS Code resumes retained infinite theme animations on foreground", () => {
-  const bootstrap = fs.readFileSync(require.resolve("./vscode-bootstrap.js"), "utf8");
-  assert.match(bootstrap, /document\.getAnimations\?\.\(\)/u);
-  assert.match(bootstrap, /iterations !== Infinity/u);
-  assert.match(bootstrap, /window\.addEventListener\("focus", resumeWebviewMotion\)/u);
-  assert.match(bootstrap, /document\.addEventListener\("visibilitychange", resumeWebviewMotion\)/u);
+test("VS Code resumes infinite theme animations after WebView load", () => {
+  let infinitePlayCalls = 0;
+  let finitePlayCalls = 0;
+  const harness = loadVscodeBootstrap({
+    animations: [
+      {
+        effect: { getTiming: () => ({ iterations: Infinity }) },
+        playState: "paused",
+        play: () => { infinitePlayCalls += 1; },
+      },
+      {
+        effect: { getTiming: () => ({ iterations: 1 }) },
+        playState: "paused",
+        play: () => { finitePlayCalls += 1; },
+      },
+    ],
+  });
+
+  assert.equal(infinitePlayCalls, 0);
+  harness.listeners.get("load")();
+  assert.equal(infinitePlayCalls, 1);
+  assert.equal(finitePlayCalls, 0);
 });
 
 test("missing bundled resources fail closed without workspace-derived fallback", () => {
@@ -969,7 +993,7 @@ test("«Gothic» offers ten night scenes, each with its own light", () => {
     ["gothic-khorinis-harbor.jpg", "1f41339934cb"],
     ["gothic-old-camp.jpg", "7699c09177ec"],
     ["gothic-swamp-camp.jpg", "f8876864b8ba"],
-    ["gothic-new-camp.jpg", "1831dbea170f"],
+    ["gothic-new-camp.jpg", "f193f6efa8d6"],
     ["gothic-xardas-tower.jpg", "86928a4c8b38"],
     ["gothic-sleeper-temple.jpg", "fdd63e9f6fd6"],
     ["gothic-innos-monastery.jpg", "77863edab3d8"],
