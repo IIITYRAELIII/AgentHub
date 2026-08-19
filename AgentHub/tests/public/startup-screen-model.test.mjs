@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  createStartupReconnectModel,
   createStartupScreenModel,
   formatStartupElapsed,
 } from "../../assets/web-app/startup-screen-model.js";
@@ -42,4 +43,14 @@ test("startup screen keeps failures visible and formats long elapsed time", () =
   assert.equal(model.title, "Запуск завершён с ошибкой");
   assert.deepEqual(model.completedOperations.map(({ state }) => state), ["failed"]);
   assert.equal(formatStartupElapsed(0, 3_661_000), "01:01:01");
+});
+
+test("startup screen shows a meaningful reconnect stage before health returns", () => {
+  const model = createStartupReconnectModel(10_000, 14_000);
+  assert.equal(model.available, true);
+  assert.equal(model.ready, false);
+  assert.equal(model.status, "reconnecting");
+  assert.equal(model.title, "Ожидание запуска Agent Hub");
+  assert.equal(model.elapsed, "00:00:04");
+  assert.deepEqual(model.queueOperations.map(({ id }) => id), ["connection"]);
 });

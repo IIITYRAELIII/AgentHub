@@ -81,9 +81,6 @@ const batchedMessageRenders = new Map();
 let deferredClientUserMessageIds = new Set();
 let messageRenderBatchDepth = 0;
 const MAX_OUTGOING_MESSAGES_PER_TASK = 100;
-const CONTEXT_PROBE_CLIENT_ID_PREFIX = "agent-hub-context-probe:";
-const CONTEXT_PROBE_PROMPT = "Ответь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1";
-const CONTEXT_PROBE_RESPONSE = "AGENT_HUB_CONTEXT_PROBE_OK_V1";
 const {
   activeStageLabel,
   activeTaskRun,
@@ -92,6 +89,7 @@ const {
   conversationTaskId,
   completedConversationTurnVisible,
   confirmedOutgoingMessageIds,
+  contextProbeRun,
   conversationMessageAuthor,
   deduplicateConversationMessages,
   focusedTurnAlreadyVisible,
@@ -755,18 +753,6 @@ function runBatchedMessageRenders(operation) {
   }
 }
 
-function internalContextProbeRun(run) {
-  if (!run) return false;
-  const messages = Array.isArray(run.userMessages) ? run.userMessages : [];
-  const clientIds = [run.clientUserMessageId, ...messages.map((message) => (
-    message?.clientUserMessageId ?? message?.clientId
-  ))].map((value) => String(value ?? "").trim());
-  if (clientIds.some((value) => value.startsWith(CONTEXT_PROBE_CLIENT_ID_PREFIX))) return true;
-  const texts = [run.prompt, run.response, ...messages.map((message) => message?.text)]
-    .map((value) => String(value ?? "").trim());
-  return texts.some((value) => value === CONTEXT_PROBE_PROMPT || value === CONTEXT_PROBE_RESPONSE);
-}
-
 function clearInternalContextProbe(taskIdValue) {
   const cardRemoved = liveCardsByTask.delete(taskIdValue);
   const probeRemoved = liveProbeByTask.delete(taskIdValue);
@@ -787,7 +773,7 @@ function updateLiveMessage(taskIdValue, selected) {
   // not be treated as an incoming active turn, otherwise its commentary card
   // masks the final answer until the chat is reopened.
   const run = activeTaskRun(selected);
-  if (internalContextProbeRun(run)) {
+  if (contextProbeRun(run)) {
     clearInternalContextProbe(taskIdValue);
     return null;
   }
@@ -3182,18 +3168,20 @@ agentHub.on("search:query", ({ query }) => {
 let workspaceMessageSearchSequence = 0;
 agentHub.on("workspace-search:query", ({ workspaceId, query, offset, limit, append }) => {
   const sequence = ++workspaceMessageSearchSequence;
-  void runAction(() => control("workspace-message-search", {
+  void control("workspace-message-search", {
     workspaceId,
     query,
     offset,
     limit,
-  })).then((result) => {
+  }).then((result) => {
     if (sequence !== workspaceMessageSearchSequence) return;
-    if (!result) {
-      agentHub.setWorkspaceMessageSearchError("Не удалось выполнить поиск");
-      return;
-    }
     agentHub.setWorkspaceMessageSearchResults(result, { append: Boolean(append) });
+  }).catch((error) => {
+    if (sequence !== workspaceMessageSearchSequence) return;
+    if (isConnectionFailure(error)) recordTransientConnectionFailure();
+    const message = hubErrorMessage(error);
+    agentHub.setWorkspaceMessageSearchError(message);
+    agentHub.toast(message);
   });
 });
 agentHub.on("workspace-search:open", (result) => {

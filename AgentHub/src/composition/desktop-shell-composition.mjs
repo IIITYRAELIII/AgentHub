@@ -54,6 +54,7 @@ export function createDesktopShellComposition({
   } = catalog;
   const {
     taskRuns,
+    taskSyncStore,
     taskRunIsActive,
     backgroundJobs,
     rateLimitTelemetry,

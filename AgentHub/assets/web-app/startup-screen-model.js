@@ -57,3 +57,18 @@ export function createStartupScreenModel(snapshot, nowMs = Date.now()) {
     queueOperations,
   };
 }
+
+export function createStartupReconnectModel(startedAtMs, nowMs = Date.now()) {
+  return createStartupScreenModel({
+    ready: false,
+    status: "reconnecting",
+    startup: {
+      startedAtMs,
+      operations: [{
+        id: "connection",
+        label: "Ожидание запуска Agent Hub",
+        state: "running",
+      }],
+    },
+  }, nowMs);
+}

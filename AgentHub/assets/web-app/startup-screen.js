@@ -1,4 +1,8 @@
-import { createStartupScreenModel, formatStartupElapsed } from "/startup-screen-model.js";
+import {
+  createStartupReconnectModel,
+  createStartupScreenModel,
+  formatStartupElapsed,
+} from "/startup-screen-model.js";
 
 const startupHost = String(globalThis.location?.hostname ?? "").toLowerCase();
 if (["127.0.0.1", "localhost", "::1"].includes(startupHost)) {
@@ -7,6 +11,7 @@ const screen = document.createElement("section");
 screen.className = "hub-startup-screen";
 screen.setAttribute("role", "status");
 screen.setAttribute("aria-live", "polite");
+screen.hidden = true;
 screen.innerHTML = `
   <main class="hub-startup-shell">
     <section class="hub-startup-hero">
@@ -52,7 +57,6 @@ screen.innerHTML = `
 `;
 
 document.body.append(screen);
-root.dataset.hubStartupScreen = "checking";
 
 const eyebrow = screen.querySelector(".hub-startup-eyebrow");
 const title = screen.querySelector(".hub-startup-title");
@@ -84,6 +88,14 @@ let hadStartup = false;
 let hideTimer = 0;
 let pollTimer = 0;
 let stopped = false;
+let observedHealth = false;
+let consecutiveFailures = 0;
+let reconnectStartedAtMs = 0;
+
+const ACTIVE_POLL_MS = 500;
+const READY_POLL_MS = 1_500;
+const RETRY_POLL_MS = 800;
+const RECONNECT_FAILURE_THRESHOLD = 2;
 
 function ensureSegments(count) {
   if (segments.length === count) return;
@@ -235,37 +247,56 @@ function hideScreen() {
   delete root.dataset.hubStartupScreen;
 }
 
+function scheduleRefresh(delayMs) {
+  window.clearTimeout(pollTimer);
+  pollTimer = window.setTimeout(refresh, delayMs);
+}
+
 async function refresh() {
   if (stopped) return;
-  let delay = 500;
+  let delay = ACTIVE_POLL_MS;
   try {
     const response = await fetch("/health", { cache: "no-store" });
     if (!response.ok) throw new Error(`health ${response.status}`);
     const model = createStartupScreenModel(await response.json());
+    observedHealth = true;
+    consecutiveFailures = 0;
+    reconnectStartedAtMs = 0;
     if (!model.available) {
       hideScreen();
-      stopped = true;
-      return;
-    }
-    if (model.ready && !hadStartup) {
+      hadStartup = false;
+      delay = READY_POLL_MS;
+    } else if (model.ready && !hadStartup) {
       hideScreen();
-      stopped = true;
-      return;
-    }
-    hadStartup = true;
-    showModel(model);
-    if (model.ready) {
-      window.clearTimeout(hideTimer);
-      hideTimer = window.setTimeout(() => {
-        hideScreen();
-        stopped = true;
-      }, model.failed ? 2_000 : 1_100);
-      return;
+      delay = READY_POLL_MS;
+    } else {
+      hadStartup = true;
+      showModel(model);
+      if (model.ready) {
+        if (!hideTimer) {
+          hideTimer = window.setTimeout(() => {
+            hideTimer = 0;
+            hideScreen();
+            hadStartup = false;
+          }, model.failed ? 2_000 : 1_100);
+        }
+        delay = READY_POLL_MS;
+      } else {
+        window.clearTimeout(hideTimer);
+        hideTimer = 0;
+      }
     }
   } catch {
-    delay = 800;
+    delay = RETRY_POLL_MS;
+    if (observedHealth && ++consecutiveFailures >= RECONNECT_FAILURE_THRESHOLD) {
+      reconnectStartedAtMs ||= Date.now();
+      window.clearTimeout(hideTimer);
+      hideTimer = 0;
+      hadStartup = true;
+      showModel(createStartupReconnectModel(reconnectStartedAtMs));
+    }
   }
-  pollTimer = window.setTimeout(refresh, delay);
+  scheduleRefresh(delay);
 }
 
 function updateTimer() {

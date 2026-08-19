@@ -1234,6 +1234,37 @@ test("internal context probe messages never reach the rendered conversation", ()
   assert.deepEqual(visible.map((message) => message.turnId), ["ordinary-turn"]);
 });
 
+test("a manually submitted context probe phrase remains visible", () => {
+  const visible = lifecycle.visibleConversationMessages([
+    {
+      provider: "codex",
+      threadId: "thread-1",
+      turnId: "manual-turn",
+      itemId: "manual-user",
+      clientUserMessageId: "client-manual-probe",
+      role: "user",
+      text: "Ответь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1",
+    },
+    {
+      provider: "codex",
+      threadId: "thread-1",
+      turnId: "manual-turn",
+      itemId: "manual-agent",
+      role: "agent",
+      text: "AGENT_HUB_CONTEXT_PROBE_OK_V1",
+    },
+  ]);
+
+  assert.deepEqual(visible.map((message) => message.itemId), ["manual-user", "manual-agent"]);
+  assert.equal(lifecycle.contextProbeRun({
+    clientUserMessageId: "client-manual-probe",
+    prompt: "Ответь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1",
+  }), false);
+  assert.equal(lifecycle.contextProbeRun({
+    clientUserMessageId: "agent-hub-context-probe:automatic",
+  }), true);
+});
+
 test("active agent response is rendered only by the live card after task switching", () => {
   const user = message("client-live", "Текущий вопрос");
   const agent = {

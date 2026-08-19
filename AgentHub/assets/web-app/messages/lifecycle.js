@@ -594,15 +594,23 @@ function liveMessageMatch(messages, probe) {
 }
 
 const CONTEXT_PROBE_CLIENT_ID_PREFIX = "agent-hub-context-probe:";
-const CONTEXT_PROBE_PROMPT = "Ответь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1";
-const CONTEXT_PROBE_RESPONSE = "AGENT_HUB_CONTEXT_PROBE_OK_V1";
+
+function contextProbeClientId(value) {
+  return String(value ?? "").trim().startsWith(CONTEXT_PROBE_CLIENT_ID_PREFIX);
+}
+
+function contextProbeRun(run) {
+  if (!run) return false;
+  return [
+    run.clientUserMessageId,
+    ...(Array.isArray(run.userMessages) ? run.userMessages : []).map((message) => (
+      message?.clientUserMessageId ?? message?.clientId
+    )),
+  ].some(contextProbeClientId);
+}
 
 function contextProbeMessage(message) {
-  const clientId = String(message?.clientUserMessageId ?? message?.clientId ?? "").trim();
-  const text = String(message?.text ?? "").trim();
-  return clientId.startsWith(CONTEXT_PROBE_CLIENT_ID_PREFIX)
-    || text === CONTEXT_PROBE_PROMPT
-    || text === CONTEXT_PROBE_RESPONSE;
+  return contextProbeClientId(message?.clientUserMessageId ?? message?.clientId);
 }
 
 function withoutContextProbeMessages(messages) {
@@ -1109,6 +1117,7 @@ globalThis.AgentHubMessageLifecycle = Object.freeze({
   conversationTaskId,
   completedConversationTurnVisible,
   confirmedOutgoingMessageIds,
+  contextProbeRun,
   conversationMessageAuthor,
   deduplicateConversationMessages,
   embeddedResponseAnnotations,
