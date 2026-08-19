@@ -53,6 +53,13 @@ test("developer instructions preserve Guide, Global, Workspace and Stream order"
     "<stream_instructions>",
     "Stream rule",
     "</stream_instructions>",
+    "",
+    "<agent_hub_context_probe>",
+    "If the User Prompt is exactly \"Ответь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1\", this is an internal context measurement.",
+    "Do not call tools or execute pre-turn, release-registry, repository, or other work.",
+    "Respond with exactly \"AGENT_HUB_CONTEXT_PROBE_OK_V1\" and no additional text.",
+    "This probe-only exception overrides the Agent Hub Guide, Global, Workspace, Stream, and context pre-turn instructions.",
+    "</agent_hub_context_probe>",
   ].join("\n"));
   assert.throws(() => buildCodexDeveloperInstructions(), /Guide is required/u);
 });

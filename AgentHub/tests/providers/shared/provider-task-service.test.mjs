@@ -27,6 +27,7 @@ test("Codex task service creates, names and discovers tasks through its port", a
       },
       setTitle: (title) => { state.title = title; },
     },
+    bindCreatedThread: (binding) => calls.push(["bind", binding]),
     activeProjectRoot: () => "D:/workspace",
     sandboxMode: () => "workspace-write",
     invalidateCatalog: () => calls.push("invalidate"),
@@ -42,8 +43,15 @@ test("Codex task service creates, names and discovers tasks through its port", a
   assert.match(state.title, /^Telegram · /u);
   assert.equal(state.diff, "");
   assert.equal(created.threadId, "thread-1");
+  assert.deepEqual(calls.find((call) => Array.isArray(call) && call[0] === "bind"), ["bind", {
+    provider: "codex",
+    threadId: "thread-1",
+    streamId: "stream-1",
+    projectRoot: "D:/workspace",
+  }]);
   assert.deepEqual((await service.discoverTasks()).map((item) => item.id), ["one", "two"]);
   assert.ok(calls.includes("start"));
+  assert.ok(calls.findIndex((call) => Array.isArray(call) && call[0] === "bind") < calls.indexOf("save"));
   assert.ok(calls.indexOf("save") < calls.findIndex((call) => Array.isArray(call) && call[0] === "thread/name/set"));
 });
 
@@ -67,6 +75,7 @@ test("Codex task discovery uses root local rollouts without starting thread/list
       path: "subagent.jsonl",
     }],
     selection: { streamId: null, setThread() {}, setTitle() {} },
+    bindCreatedThread() {},
     activeProjectRoot: () => "D:/workspace",
     sandboxMode: () => "workspace-write",
     invalidateCatalog() {},
@@ -100,6 +109,7 @@ test("Codex task discovery falls back before a project has its first rollout", a
     },
     discoverLocalTasks: async () => [{ threadId: "other", cwd: "D:/other" }],
     selection: { streamId: null, setThread() {}, setTitle() {} },
+    bindCreatedThread() {},
     activeProjectRoot: () => "D:/workspace",
     sandboxMode: () => "workspace-write",
     invalidateCatalog() {},
@@ -113,8 +123,8 @@ test("Codex task discovery falls back before a project has its first rollout", a
   assert.deepEqual(calls, ["thread/list"]);
 });
 
-test("Codex task service persists the created Thread before post-create setup", async () => {
-  const state = { streamId: "stream-1", threadId: null, savedThreadId: null };
+test("Codex task service binds and persists the created Thread before post-create setup", async () => {
+  const state = { streamId: "stream-1", threadId: null, binding: null, savedThreadId: null };
   const service = new CodexProviderTaskService({
     transportRunning: () => true,
     startTransport: async () => {},
@@ -131,6 +141,7 @@ test("Codex task service persists the created Thread before post-create setup", 
       },
       setTitle() {},
     },
+    bindCreatedThread: (binding) => { state.binding = binding; },
     activeProjectRoot: () => "D:/workspace",
     sandboxMode: () => "workspace-write",
     invalidateCatalog() {},
@@ -140,6 +151,12 @@ test("Codex task service persists the created Thread before post-create setup", 
     saveState: async () => { state.savedThreadId = state.threadId; },
   });
   await assert.rejects(service.createTask(), /post-create failure/);
+  assert.deepEqual(state.binding, {
+    provider: "codex",
+    threadId: "thread-created",
+    streamId: "stream-1",
+    projectRoot: "D:/workspace",
+  });
   assert.equal(state.savedThreadId, "thread-created");
   assert.equal(state.streamId, "stream-1");
 });

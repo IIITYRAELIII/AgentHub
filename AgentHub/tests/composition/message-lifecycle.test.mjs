@@ -1173,7 +1173,7 @@ test("live message never falls back across turns or ambiguous agent messages", (
   assert.equal(lifecycle.liveMessageMatch(ambiguous, live), null);
 });
 
-test("deferred outgoing messages render only through the optimistic queue", () => {
+test("deferred outgoing messages remain visible while the queue owns delivery", () => {
   const deferred = {
     ...message("client-deferred", "Будет отправлено после хода"),
     deliveryState: "queued",
@@ -1182,7 +1182,7 @@ test("deferred outgoing messages render only through the optimistic queue", () =
   const visible = lifecycle.visibleConversationMessages([deferred], {
     deferredClientUserMessageIds: ["client-deferred"],
   });
-  assert.deepEqual(visible, []);
+  assert.deepEqual(visible, [deferred]);
 });
 
 test("empty projected messages never render as blank chat cards", () => {
@@ -1822,7 +1822,7 @@ test("named-pipe transport errors are recognized and hidden from the interface",
   assert.doesNotMatch(lifecycle.hubErrorMessage(error), /pipe|ENOENT/iu);
 });
 
-test("returning to a busy task keeps its deferred user card out of chat", () => {
+test("returning to a busy task keeps its deferred user card visible", () => {
   const activeUser = {
     ...message("active-client", "Первый вопрос"),
     turnId: "active-turn",
@@ -1849,7 +1849,7 @@ test("returning to a busy task keeps its deferred user card out of chat", () => 
       liveProbe: { ...activeAgent, text: undefined },
     },
   );
-  assert.deepEqual(visible, [activeUser]);
+  assert.deepEqual(visible, [activeUser, deferredUser]);
 });
 
 test("context compaction start identifies the task and completion stays in chat", () => {
@@ -1974,6 +1974,26 @@ test("snapshot completion survives a new run when the previous live card is alre
     },
   );
   assert.equal(lifecycle.snapshotCompletionCandidate(selected, "turn-completed"), null);
+});
+
+test("late snapshot final replaces an earlier terminal commentary overlay", () => {
+  const completion = lifecycle.snapshotCompletionCandidate({
+    provider: "codex",
+    threadId: "thread-1",
+    lastAnswer: "Финальный ответ",
+    lastAnswerAt: "2026-08-19T07:06:37.541Z",
+    lastAnswerTurnId: "turn-completed",
+  });
+
+  assert.deepEqual(
+    { ...lifecycle.snapshotCompletionReplacement({
+      answer: "Последний progress перед завершением",
+    }, completion) },
+    { ...completion },
+  );
+  assert.equal(lifecycle.snapshotCompletionReplacement({
+    answer: "Финальный ответ",
+  }, completion), null);
 });
 
 test("terminal snapshot run cannot mask its own final answer", () => {

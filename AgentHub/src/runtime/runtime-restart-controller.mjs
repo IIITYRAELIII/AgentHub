@@ -38,6 +38,7 @@ export class RuntimeRestartController {
     finishSuccessfulReplacement,
     isStopping = () => false,
     logger = console,
+    captureException = () => false,
   } = {}) {
     for (const [name, value] of Object.entries({
       getRequest, updateOffset, hasBlockingWork, setWaiting, updateMessage, saveState,
@@ -51,6 +52,7 @@ export class RuntimeRestartController {
       getRequest, updateOffset, hasBlockingWork, setWaiting, updateMessage, saveState,
       resources, beginStopping, stopTimers, stopMedia, resumeAfterAbort, launchReplacement,
       recoverPrevious, abortRestart, finishSuccessfulReplacement, isStopping, logger,
+      captureException,
     });
   }
 
@@ -121,11 +123,13 @@ export class RuntimeRestartController {
   }
 
   async #abort(error, phase, resumeRuntime) {
+    this.#capture(error, phase);
     this.logger.error("Cannot prepare runtime restart:", error.message);
     let abortError = null;
     try {
       await this.abortRestart(error);
     } catch (recoveryError) {
+      this.#capture(recoveryError, "abort-state");
       abortError = recoveryError;
       this.logger.error("Cannot persist aborted restart state:", recoveryError.message);
     }
@@ -134,6 +138,7 @@ export class RuntimeRestartController {
       const recover = await this.resources.recover({ label: "Restart polling recovery failed" });
       if (failed(recover)) throw lifecycleFailure("recover", recover);
     } catch (recoveryError) {
+      this.#capture(recoveryError, "abort-recovery");
       abortError ??= recoveryError;
       this.logger.error("Cannot resume aborted restart:", recoveryError.message);
     }
@@ -141,11 +146,13 @@ export class RuntimeRestartController {
   }
 
   #halt(error, phase) {
+    this.#capture(error, phase);
     this.logger.error(`Runtime restart halted after ${phase} timeout; the instance lock remains held.`);
     return { status: "failed", phase, error };
   }
 
   async #recover(error, phase, { lockReleased }) {
+    this.#capture(error, phase);
     this.logger.error(`Cannot complete runtime restart ${phase}:`, error.message);
     try {
       await this.recoverPrevious(error, { lockReleased });
@@ -153,8 +160,20 @@ export class RuntimeRestartController {
       if (failed(recover)) throw lifecycleFailure("recover", recover);
       return { status: "recovered", phase, error };
     } catch (restoreError) {
+      this.#capture(restoreError, "restore-previous");
       this.logger.error("Cannot restore the previous bot after failed restart:", restoreError.message);
       return { status: "failed", phase, error, restoreError };
     }
+  }
+
+  #capture(error, action) {
+    try {
+      this.captureException(error, {
+        surface: "server",
+        kind: "runtime-lifecycle",
+        component: "restart-controller",
+        action,
+      });
+    } catch {}
   }
 }

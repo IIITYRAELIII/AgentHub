@@ -37,7 +37,14 @@ export class HubMcpServer {
   #server = null;
   #url = null;
 
-  constructor({ service, secret, host = "127.0.0.1", port = 0, logger = console } = {}) {
+  constructor({
+    service,
+    secret,
+    host = "127.0.0.1",
+    port = 0,
+    logger = console,
+    captureUnexpectedException = () => false,
+  } = {}) {
     if (typeof service?.tools !== "function" || typeof service?.call !== "function") {
       throw new TypeError("Hub MCP service is required");
     }
@@ -51,6 +58,18 @@ export class HubMcpServer {
     this.host = host;
     this.port = Number(port) || 0;
     this.logger = logger;
+    this.captureUnexpectedException = captureUnexpectedException;
+  }
+
+  #capture(error, action) {
+    try {
+      this.captureUnexpectedException(error, {
+        surface: "mcp",
+        kind: "control",
+        component: "hub-mcp-server",
+        action,
+      });
+    } catch {}
   }
 
   get running() {
@@ -81,6 +100,7 @@ export class HubMcpServer {
     if (this.running) return this.url;
     this.#server = createServer((request, response) => {
       void this.#handle(request, response).catch((error) => {
+        this.#capture(error, "request");
         this.logger.error?.("Agent Hub MCP request failed:", error.message);
         if (!response.headersSent) writeJson(response, 500, jsonRpcError(null, -32603, "Internal error"));
         else response.end();
@@ -139,6 +159,7 @@ export class HubMcpServer {
       const result = await this.#dispatch(message.method, message.params ?? {});
       writeJson(response, 200, jsonRpcResult(message.id, result));
     } catch (error) {
+      this.#capture(error, "dispatch");
       writeJson(response, 200, jsonRpcError(message.id, Number(error?.code) || -32603, error.message));
     }
   }

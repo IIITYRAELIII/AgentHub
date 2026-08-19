@@ -84,6 +84,8 @@ export class RuntimeCommandServer {
   #sockets = new Set();
   #spoolReceipts;
   #reconcile;
+  #captureException;
+  #captureUnexpectedException;
 
   constructor({
     runtimeRoot = defaultRuntimeRoot(),
@@ -91,20 +93,40 @@ export class RuntimeCommandServer {
     authorize = async (request) => request,
     reconcile = null,
     temporaryRoot = os.tmpdir(),
+    captureException = () => false,
+    captureUnexpectedException = () => false,
   }) {
     this.#endpoint = runtimeCommandEndpoint(runtimeRoot);
     this.#spoolDirectory = runtimeCommandSpoolDirectory(runtimeRoot, temporaryRoot);
     this.#handler = handler;
     this.#authorize = authorize;
     this.#reconcile = typeof reconcile === "function" ? reconcile : null;
+    this.#captureException = captureException;
+    this.#captureUnexpectedException = captureUnexpectedException;
     this.#spoolReceipts = new DurableCommandReceipts({
       file: path.join(this.#spoolDirectory, "receipts.json"),
     });
   }
 
+  #capture(callback, error, action) {
+    try {
+      callback(error, {
+        surface: "runtime-command",
+        kind: "control",
+        component: "runtime-command-server",
+        action,
+      });
+    } catch {}
+  }
+
   async #handle(request) {
     const authorized = await this.#authorize(request);
-    return this.#handler(authorized ?? request);
+    try {
+      return await this.#handler(authorized ?? request);
+    } catch (error) {
+      this.#capture(this.#captureUnexpectedException, error, "request-handler");
+      throw error;
+    }
   }
 
   async #handleSpool(request) {
@@ -141,8 +163,14 @@ export class RuntimeCommandServer {
           handled = true;
           const requestBody = body.slice(0, newline);
           void (async () => {
+            let request;
             try {
-              const request = validateRuntimeCommand(JSON.parse(requestBody));
+              request = validateRuntimeCommand(JSON.parse(requestBody));
+            } catch (error) {
+              socket.end(`${JSON.stringify({ ok: false, error: error.message })}\n`);
+              return;
+            }
+            try {
               const result = await this.#handle(request);
               socket.end(`${JSON.stringify({ ok: true, result: String(result ?? "") })}\n`);
             } catch (error) {
@@ -163,7 +191,10 @@ export class RuntimeCommandServer {
     this.#server = server;
     await mkdir(this.#spoolDirectory, { recursive: true });
     await this.#retireAcknowledgedSpool(await readdir(this.#spoolDirectory))
-      .catch((error) => console.error("Cannot retire acknowledged runtime commands:", error.message));
+      .catch((error) => {
+        this.#capture(this.#captureException, error, "spool-retire");
+        console.error("Cannot retire acknowledged runtime commands:", error.message);
+      });
     this.#scheduleSpoolDrain();
   }
 
@@ -172,7 +203,10 @@ export class RuntimeCommandServer {
     this.#spoolTimer = setTimeout(() => {
       this.#spoolTimer = null;
       this.#spoolDrain = this.#drainSpool()
-        .catch((error) => console.error("Cannot process runtime command spool:", error.message))
+        .catch((error) => {
+          this.#capture(this.#captureException, error, "spool-drain");
+          console.error("Cannot process runtime command spool:", error.message);
+        })
         .finally(() => {
           this.#spoolDrain = null;
           this.#scheduleSpoolDrain();
@@ -238,6 +272,7 @@ export class RuntimeCommandServer {
         response = { ok: true, result: String(result ?? "") };
       } catch (error) {
         if (error instanceof DurableCommandRetryableError) continue;
+        this.#capture(this.#captureException, error, "spool-command");
         response = { ok: false, error: String(error?.message ?? error) };
       }
       await writeTextAtomic(responsePath, `${JSON.stringify(response)}\n`);

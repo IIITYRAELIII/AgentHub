@@ -1,5 +1,6 @@
 import { AgentHubStartupCoordinator } from "../application/agent-hub-startup-coordinator.mjs";
 import { RuntimeLifecycleController } from "../runtime/runtime-lifecycle-controller.mjs";
+import { sentryDiagnostics } from "../infrastructure/diagnostics/sentry-diagnostics.mjs";
 
 export function createRuntimeLifecycleComposition({
   telegramEnabled,
@@ -42,6 +43,7 @@ export function createRuntimeLifecycleComposition({
     });
   }
   const runtimeLifecycle = new RuntimeLifecycleController({
+    captureException: (error, context) => sentryDiagnostics.captureException(error, context),
     beginStopping,
     stopTimers: stopRuntimeTimers,
     stopManagedRuns,
@@ -49,6 +51,7 @@ export function createRuntimeLifecycleComposition({
     resources: runtimeResources,
   });
   const startupCoordinator = new AgentHubStartupCoordinator({
+    captureException: (error, context) => sentryDiagnostics.captureException(error, context),
     telegramEnabled,
     startDesktopControl,
     startRuntimeCommand,

@@ -1,5 +1,7 @@
 export function createFatalProcessHandler({
   shutdown,
+  captureException = null,
+  flushDiagnostics = null,
   logger = console,
   processRef = process,
 } = {}) {
@@ -11,6 +13,12 @@ export function createFatalProcessHandler({
     handling = true;
     processRef.exitCode = 1;
     logger.error(`Agent Hub ${kind}:`, error);
+    try {
+      captureException?.(error, { surface: "server", kind: "fatal", component: "process" });
+      await flushDiagnostics?.(2_000);
+    } catch (diagnosticsError) {
+      logger.error("Agent Hub fatal diagnostics failed:", diagnosticsError);
+    }
     try {
       await shutdown(kind);
     } catch (shutdownError) {

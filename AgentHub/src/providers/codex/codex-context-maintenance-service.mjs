@@ -134,6 +134,21 @@ export class CodexContextMaintenanceService {
         message: "Свёртка контекста запущена",
       };
     } catch (error) {
+      const observed = this.compactions.get(threadId);
+      if (
+        observed?.id === compaction.id
+        && normalizedId(observed.turnId)
+        && ["running", "completed"].includes(normalizedId(observed.status))
+      ) {
+        this.logger.warn?.(
+          `Compaction RPC confirmation failed after provider start ${observed.turnId}: ${error.message}`,
+        );
+        return {
+          accepted: true,
+          compactionId: compaction.id,
+          message: "Свёртка контекста запущена",
+        };
+      }
       this.compactions.fail(threadId, compaction.id);
       throw error;
     }

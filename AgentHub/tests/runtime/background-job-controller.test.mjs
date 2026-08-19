@@ -159,6 +159,20 @@ test("persistent background controller restores a failed retry after restart", a
   }
 });
 
+test("persistent background controller reports only a terminal job failure", async () => {
+  const store = new MemoryStore();
+  const captured = [];
+  const jobs = controller({
+    store,
+    maxAttempts: 1,
+    media: { processSpeechRequest: async () => { throw new Error("speech failed"); } },
+    captureException: (error, context) => captured.push([error.message, context.action]),
+  });
+  await jobs.enqueue("speech", { chatId: 7, text: "hello" }, 7);
+  await waitFor(() => store.size === 0);
+  assert.deepEqual(captured, [["speech failed", "terminal:speech"]]);
+});
+
 test("persistent background controller dispatches restored overflow once a queue slot opens", async () => {
   const store = new MemoryStore([
     { id: "first", kind: "speech", payload: { chatId: 7, text: "first" }, createdAt: "2026-01-01T00:00:00.000Z" },

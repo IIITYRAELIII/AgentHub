@@ -228,6 +228,7 @@ function protocolError(socket, error) {
 export class DesktopControlServer {
   #runtimeRoot;
   #handler;
+  #reportUnexpectedError;
   #onResultDelivered;
   #server = null;
   #secret = null;
@@ -240,11 +241,13 @@ export class DesktopControlServer {
     handler,
     onResultDelivered = null,
     protectSecret = protectRuntimeConfig,
+    reportUnexpectedError = null,
   }) {
     this.#runtimeRoot = runtimeRoot;
     this.#handler = handler;
     this.#onResultDelivered = typeof onResultDelivered === "function" ? onResultDelivered : null;
     this.#protectSecret = protectSecret;
+    this.#reportUnexpectedError = typeof reportUnexpectedError === "function" ? reportUnexpectedError : null;
   }
 
   async start() {
@@ -379,6 +382,14 @@ export class DesktopControlServer {
             }
           } catch (error) {
             state = "handled";
+            try {
+              this.#reportUnexpectedError?.(error, {
+                surface: "desktop-control",
+                kind: "control",
+                component: "desktop-control-server",
+                action: "request",
+              });
+            } catch {}
             protocolError(socket, error);
           } finally {
             processing = false;

@@ -372,10 +372,14 @@ export class CodexTurnService {
     });
     const thread = result?.thread ?? result;
     const active = (Array.isArray(thread?.turns) ? thread.turns : [])
-      .filter((turn) => ["inProgress", "in_progress", "running"].includes(String(turn?.status ?? "")));
+      .filter((turn) => ["inProgress", "in_progress", "running"].includes(String(turn?.status ?? "")))
+      .filter((turn) => {
+        const turnId = String(turn?.id ?? "").trim();
+        return !isCodexContextProbeTurn(turn)
+          && !this.#d.isContextProbeTurn(target.threadId, turnId);
+      });
     if (active.length === 1) {
       const turnId = String(active[0]?.id ?? "").trim();
-      if (isCodexContextProbeTurn(active[0]) || this.#d.isContextProbeTurn(target.threadId, turnId)) return null;
       return turnId || null;
     }
     if (active.length > 1) throw new Error("В задаче выполняется несколько ходов; выбрать ход для изменения нельзя");

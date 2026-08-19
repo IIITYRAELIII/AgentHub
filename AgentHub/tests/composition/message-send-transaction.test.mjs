@@ -57,3 +57,51 @@ test("receipt callback failure never reclassifies a delivered transport", async 
   assert.equal(result.turnId, "turn-2");
   assert.deepEqual(calls, ["receive", "synchronizationFailed"]);
 });
+
+test("remote message timeout becomes unconfirmed instead of remaining in the optimistic queue", async () => {
+  const calls = [];
+  const result = await transaction.observeRemote({
+    wait: async () => { throw new Error("Agent Hub did not answer"); },
+    receive: async () => calls.push("receive"),
+    reject: async () => calls.push("reject"),
+    unconfirm: async () => calls.push("unconfirm"),
+    refresh: async () => calls.push("refresh"),
+    definitelyRejected: () => false,
+    report: () => calls.push("report"),
+  });
+
+  assert.equal(result, null);
+  assert.deepEqual(calls, ["report", "unconfirm", "refresh"]);
+});
+
+test("remote command rejection leaves the optimistic queue through the rejected path", async () => {
+  const calls = [];
+  await transaction.observeRemote({
+    wait: async () => { throw new Error("Message rejected"); },
+    receive: async () => calls.push("receive"),
+    reject: async () => calls.push("reject"),
+    unconfirm: async () => calls.push("unconfirm"),
+    refresh: async () => calls.push("refresh"),
+    definitelyRejected: () => true,
+  });
+
+  assert.deepEqual(calls, ["reject", "refresh"]);
+});
+
+test("remote receipt rendering failure does not reclassify the confirmed command", async () => {
+  const calls = [];
+  const result = await transaction.observeRemote({
+    wait: async () => ({ accepted: true }),
+    receive: async () => {
+      calls.push("receive");
+      throw new RangeError("render failed");
+    },
+    reject: async () => calls.push("reject"),
+    unconfirm: async () => calls.push("unconfirm"),
+    refresh: async () => calls.push("refresh"),
+    report: () => calls.push("report"),
+  });
+
+  assert.equal(result.accepted, true);
+  assert.deepEqual(calls, ["receive", "report", "refresh"]);
+});

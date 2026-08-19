@@ -9,7 +9,7 @@ function router(calls) {
     "openTask", "openTurn", "workspaceMessageOpen", "sendMessage", "taskDiff", "deferredInput",
     "statusDetails", "speakLastAnswer", "restartServer", "setAutostart",
     "updateServerConfiguration", "readPreTurnInstructions", "updateGlobalPreTurnInstructions",
-    "readRootAgents", "updateRootAgents", "compactContext", "openAttachment", "submitBugReport",
+    "readRootAgents", "updateRootAgents", "compactContext", "openAttachment", "submitBugReport", "reportDiagnostic",
     "trustedDevices", "createDevicePairing", "revokeDevice",
     "renameWorkspace", "createWorkspaceFromStream", "mergeWorkspaces", "renameStream", "moveStream",
     "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
@@ -137,6 +137,16 @@ test("Desktop application router exposes pre-turn instructions read and Global u
   })).params.content, "Rules");
 });
 
+test("Desktop application router forwards diagnostic events", async () => {
+  const control = router([]);
+  const result = await control.handleDesktopControl({
+    action: "report-diagnostic",
+    params: { name: "TypeError", message: "render failed" },
+    context: { source: "vscode", userId: "7" },
+  });
+  assert.equal(result.params.message, "render failed");
+});
+
 test("Desktop application router keeps the legacy Workspace move alias", async () => {
   const control = router([]);
   const result = await control.handleDesktopControl({
@@ -166,7 +176,7 @@ test("Desktop application router accepts a message beside a blocked mutation", a
     "openTask", "openTurn", "workspaceMessageOpen", "sendMessage", "taskDiff", "deferredInput",
     "statusDetails", "speakLastAnswer", "restartServer", "setAutostart",
     "updateServerConfiguration", "readPreTurnInstructions", "updateGlobalPreTurnInstructions",
-    "readRootAgents", "updateRootAgents", "compactContext", "openAttachment", "submitBugReport",
+    "readRootAgents", "updateRootAgents", "compactContext", "openAttachment", "submitBugReport", "reportDiagnostic",
     "trustedDevices", "createDevicePairing", "revokeDevice",
     "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
     "boardTaskRetryTriage", "boardTaskStart", "boardColumnMove", "boardColumnComment", "boardWorkspaceMove",
@@ -196,7 +206,7 @@ test("Desktop application router accepts a restart beside a blocked mutation", a
     "openTask", "openTurn", "workspaceMessageOpen", "sendMessage", "taskDiff", "deferredInput",
     "statusDetails", "speakLastAnswer", "restartServer", "setAutostart",
     "updateServerConfiguration", "readPreTurnInstructions", "updateGlobalPreTurnInstructions",
-    "readRootAgents", "updateRootAgents", "compactContext", "openAttachment", "submitBugReport",
+    "readRootAgents", "updateRootAgents", "compactContext", "openAttachment", "submitBugReport", "reportDiagnostic",
     "trustedDevices", "createDevicePairing", "revokeDevice",
     "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
     "boardTaskRetryTriage", "boardTaskStart", "boardColumnMove", "boardColumnComment", "boardWorkspaceMove",

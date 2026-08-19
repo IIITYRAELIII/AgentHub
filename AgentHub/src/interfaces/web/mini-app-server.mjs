@@ -146,7 +146,13 @@ async function readJsonBody(request, maxBytes = MAX_CONTROL_REQUEST_BYTES) {
     chunks.push(chunk);
   }
   if (!chunks.length) return {};
-  const value = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  let value;
+  try {
+    value = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch (error) {
+    error.diagnosticExpected = true;
+    throw error;
+  }
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("Ожидался JSON-объект");
   }
@@ -441,6 +447,7 @@ export class MiniAppServer {
   #controlHandler;
   #copyWorkspaceFile;
   #revealWorkspaceFile;
+  #reportUnexpectedError;
   #onControlResultDelivered;
   #deviceStore;
   #changeTimer = null;
@@ -475,6 +482,7 @@ export class MiniAppServer {
     controlHandler = null,
     copyWorkspaceFile = null,
     revealWorkspaceFile = null,
+    reportUnexpectedError = null,
     onControlResultDelivered = null,
     deviceStore = null,
     assetsDirectory = path.join(AGENT_HUB_ROOT, "assets", "web-app"),
@@ -502,6 +510,7 @@ export class MiniAppServer {
     this.#controlHandler = typeof controlHandler === "function" ? controlHandler : null;
     this.#copyWorkspaceFile = typeof copyWorkspaceFile === "function" ? copyWorkspaceFile : null;
     this.#revealWorkspaceFile = typeof revealWorkspaceFile === "function" ? revealWorkspaceFile : null;
+    this.#reportUnexpectedError = typeof reportUnexpectedError === "function" ? reportUnexpectedError : null;
     this.#onControlResultDelivered = typeof onControlResultDelivered === "function"
       ? onControlResultDelivered
       : null;
@@ -794,6 +803,7 @@ export class MiniAppServer {
           },
         });
       } catch (error) {
+        this.#reportUnexpected(error, "snapshot");
         json(response, 400, { error: String(error?.message ?? error) }, method);
       }
       return;
@@ -860,6 +870,7 @@ export class MiniAppServer {
         }) === true;
         json(response, 200, { ok: true, retired }, method);
       } catch (error) {
+        this.#reportUnexpected(error, "control-ack");
         json(response, 400, { ok: false, error: String(error?.message ?? error) }, method);
       }
       return;
@@ -910,6 +921,7 @@ export class MiniAppServer {
           ...(commandId ? { receiptId: commandId } : {}),
         }, method);
       } catch (error) {
+        this.#reportUnexpected(error, "control");
         json(response, 400, { ok: false, error: String(error?.message ?? error) }, method);
       }
       return;
@@ -1234,6 +1246,7 @@ export class MiniAppServer {
     if (this.#server) return this.address();
     const server = createServer((request, response) => {
       const handling = this.#handle(request, response).catch((error) => {
+        this.#reportUnexpected(error, "request");
         if (!response.headersSent) {
           send(response, 500, "text/plain; charset=utf-8", `Mini App error: ${error.message}\n`);
         } else {
@@ -1316,5 +1329,16 @@ export class MiniAppServer {
     } finally {
       this.#closePromise = null;
     }
+  }
+
+  #reportUnexpected(error, action) {
+    try {
+      this.#reportUnexpectedError?.(error, {
+        surface: "web",
+        kind: "control",
+        component: "mini-app-server",
+        action,
+      });
+    } catch {}
   }
 }

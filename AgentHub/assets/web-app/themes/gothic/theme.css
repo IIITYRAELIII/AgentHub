@@ -1522,7 +1522,7 @@ html[data-theme="gothic"] body::before {
     padding: 0.75rem !important;
   }
 
-  html[data-theme="gothic"][data-view="chat"][data-surface]:not([data-surface="mobile"]) .app-header .view-tab,
+  html[data-theme="gothic"][data-surface]:not([data-surface="mobile"]) .app-header .view-tab,
   html[data-theme="gothic"][data-view="chat"][data-surface]:not([data-surface="mobile"]) .app-header .refresh,
   html[data-theme="gothic"][data-view="chat"][data-surface]:not([data-surface="mobile"]) .stream-tabs .stream-tab,
   html[data-theme="gothic"][data-view="chat"][data-surface]:not([data-surface="mobile"]) .stream-tabs-controls .stream-tab-utility {

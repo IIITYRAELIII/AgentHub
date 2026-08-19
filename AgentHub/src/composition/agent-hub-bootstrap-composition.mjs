@@ -1,6 +1,7 @@
 import process from "node:process";
 import { DesktopControlServer } from "../../desktop-control.mjs";
 import { createRuntimeLifecycleComposition } from "./runtime-lifecycle-composition.mjs";
+import { sentryDiagnostics } from "../infrastructure/diagnostics/sentry-diagnostics.mjs";
 
 export function createAgentHubBootstrapComposition({
   config,
@@ -57,6 +58,7 @@ export function createAgentHubBootstrapComposition({
         protectSecret: process.env.AGENT_HUB_DISABLE_SECRET_ACL === "1"
           ? async () => {}
           : undefined,
+        reportUnexpectedError: (error, context) => sentryDiagnostics.captureUnexpectedException(error, context),
       });
       await desktopControlServer.start();
     },

@@ -27,6 +27,7 @@ export class PersistentBackgroundJobController {
     now = () => Date.now(),
     scheduleTimer = setTimeout,
     cancelTimer = clearTimeout,
+    captureException = () => false,
   } = {}) {
     if (!store) throw new TypeError("store is required");
     if (typeof sendMessage !== "function") throw new TypeError("sendMessage is required");
@@ -54,6 +55,7 @@ export class PersistentBackgroundJobController {
     this.now = now;
     this.scheduleTimer = scheduleTimer;
     this.cancelTimer = cancelTimer;
+    this.captureException = captureException;
     const onChange = ({ size }) => {
       this.#requestPump();
       if (size === 0 && this.size === 0) this.onIdle();
@@ -68,6 +70,17 @@ export class PersistentBackgroundJobController {
   get speechSize() { return this.#persistedCount("speech"); }
   get speechPending() { return this.speechQueue.pending; }
   get size() { return this.store.size; }
+
+  #capture(error, action) {
+    try {
+      this.captureException(error, {
+        surface: "server",
+        kind: "background-job",
+        component: "persistent-background-jobs",
+        action,
+      });
+    } catch {}
+  }
 
   #queue(kind) {
     return kind === "speech" ? this.speechQueue : this.mediaQueue;
@@ -118,6 +131,7 @@ export class PersistentBackgroundJobController {
       .then(() => this.#pumpPersistedJobs())
       .catch((error) => {
         this.logger.error("Cannot schedule persistent background jobs:", error.message);
+        this.#capture(error, "pump");
       })
       .finally(() => {
         this.#pumpPromise = null;
@@ -154,6 +168,7 @@ export class PersistentBackgroundJobController {
             + ` in ${delayMs} ms: ${error?.message ?? error}`,
         );
       } else {
+        this.#capture(error, `terminal:${item.kind}`);
         this.logger.error(
           `Background ${item.kind} job ${item.id} failed after ${attempts} attempt(s):`,
           error?.message ?? error,
@@ -165,6 +180,7 @@ export class PersistentBackgroundJobController {
             error,
           ).catch((notificationError) => {
             this.logger.error("Cannot mark forwarded image as failed:", notificationError.message);
+            this.#capture(notificationError, "forward-bundle-notification");
           });
         }
         await this.store.remove(item.id);
@@ -182,6 +198,7 @@ export class PersistentBackgroundJobController {
       const job = this.#queue(item.kind).enqueue(() => this.#run(item));
       void job.catch((error) => {
         this.logger.error(`Background ${item.kind} processing failed:`, error.message);
+        this.#capture(error, `queue:${item.kind}`);
       });
       return true;
     } catch (error) {
@@ -207,6 +224,7 @@ export class PersistentBackgroundJobController {
           this.#enqueueScheduled(item);
         } catch (error) {
           this.logger.error(`Cannot schedule background ${item.kind} retry:`, error.message);
+          this.#capture(error, `retry:${item.kind}`);
         }
       }, delayMs);
       timer?.unref?.();
@@ -255,6 +273,7 @@ export class PersistentBackgroundJobController {
           );
         }
       } catch (error) {
+        this.#capture(error, "restore-forward-bundle");
         await this.forwardBundles.failImage(pending.bundleId, pending.messageId, error);
       }
     }

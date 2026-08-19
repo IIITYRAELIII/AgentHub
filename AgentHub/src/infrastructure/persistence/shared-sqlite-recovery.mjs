@@ -118,6 +118,7 @@ export class SharedSqliteRecoveryCoordinator {
   #pid;
   #instanceId;
   #withDatabaseLock;
+  #captureException;
 
   constructor({
     databaseFile,
@@ -130,6 +131,7 @@ export class SharedSqliteRecoveryCoordinator {
     isAlive = processIsAlive,
     pid = process.pid,
     withDatabaseLock = (operation) => withInterprocessLocks([path.resolve(databaseFile)], operation),
+    captureException = () => false,
   } = {}) {
     if (!databaseFile) throw new TypeError("SharedSqliteRecoveryCoordinator databaseFile is required");
     this.#databaseFile = path.resolve(databaseFile);
@@ -145,6 +147,19 @@ export class SharedSqliteRecoveryCoordinator {
     this.#pid = pid;
     this.#instanceId = String(instanceId);
     this.#withDatabaseLock = withDatabaseLock;
+    this.#captureException = captureException;
+  }
+
+  #capture(error, action) {
+    if (error?.code === SQLITE_RECOVERY_RESTART_REQUIRED) return;
+    try {
+      this.#captureException(error, {
+        surface: "server",
+        kind: "persistence-recovery",
+        component: "sqlite-recovery",
+        action,
+      });
+    } catch {}
   }
 
   get markerFile() {
@@ -381,41 +396,51 @@ export class SharedSqliteRecoveryCoordinator {
   }
 
   async prepare() {
-    return this.#withDatabaseLock(async () => {
-      const lock = await this.#acquireLock();
-      try {
-        const marker = await optionalJson(this.#markerFile, this.#fileSystem);
-        if (marker) return await this.#resume(marker);
-        const intent = await optionalJson(this.#intentFile, this.#fileSystem);
-        if (intent) await this.#rollbackIntent(intent);
-        const databaseInfo = await optionalStat(this.#databaseFile, this.#fileSystem);
-        if (!databaseInfo) return { degraded: false };
-        const inspection = await this.#inspectDatabase();
-        if (inspection.healthy) return { degraded: false };
-        return await this.#quarantine(inspection.error);
-      } finally {
-        await this.#releaseLock(lock);
-      }
-    });
+    try {
+      return await this.#withDatabaseLock(async () => {
+        const lock = await this.#acquireLock();
+        try {
+          const marker = await optionalJson(this.#markerFile, this.#fileSystem);
+          if (marker) return await this.#resume(marker);
+          const intent = await optionalJson(this.#intentFile, this.#fileSystem);
+          if (intent) await this.#rollbackIntent(intent);
+          const databaseInfo = await optionalStat(this.#databaseFile, this.#fileSystem);
+          if (!databaseInfo) return { degraded: false };
+          const inspection = await this.#inspectDatabase();
+          if (inspection.healthy) return { degraded: false };
+          return await this.#quarantine(inspection.error);
+        } finally {
+          await this.#releaseLock(lock);
+        }
+      });
+    } catch (error) {
+      this.#capture(error, "prepare");
+      throw error;
+    }
   }
 
   async acknowledge(recovery) {
     if (!recovery?.degraded || !recovery?.recoveryId) return false;
-    const lock = await this.#acquireLock();
     try {
-      const marker = await optionalJson(this.#markerFile, this.#fileSystem);
-      if (!marker) return false;
-      const validatedMarker = validateMarker(marker, this.#databaseFile);
-      if (validatedMarker.recoveryId !== recovery.recoveryId) {
-        throw recoveryError("SQLITE_RECOVERY_MARKER_CHANGED", "SQLite recovery marker changed before acknowledgement");
+      const lock = await this.#acquireLock();
+      try {
+        const marker = await optionalJson(this.#markerFile, this.#fileSystem);
+        if (!marker) return false;
+        const validatedMarker = validateMarker(marker, this.#databaseFile);
+        if (validatedMarker.recoveryId !== recovery.recoveryId) {
+          throw recoveryError("SQLITE_RECOVERY_MARKER_CHANGED", "SQLite recovery marker changed before acknowledgement");
+        }
+        await this.#fileSystem.unlink(this.#markerFile);
+        await this.#fileSystem.unlink(this.#intentFile).catch((error) => {
+          if (error?.code !== "ENOENT") throw error;
+        });
+        return true;
+      } finally {
+        await this.#releaseLock(lock);
       }
-      await this.#fileSystem.unlink(this.#markerFile);
-      await this.#fileSystem.unlink(this.#intentFile).catch((error) => {
-        if (error?.code !== "ENOENT") throw error;
-      });
-      return true;
-    } finally {
-      await this.#releaseLock(lock);
+    } catch (error) {
+      this.#capture(error, "acknowledge");
+      throw error;
     }
   }
 }

@@ -35,6 +35,26 @@ test("runtime resources isolate failures inside a phase", async () => {
   assert.deepEqual(errors, ["Restart close failed (broken): boom"]);
 });
 
+test("runtime resources report the concrete failed component", async () => {
+  const captured = [];
+  const failure = new Error("close failed");
+  const resources = new RuntimeResourceRegistry({
+    close: [{ name: "desktop-control", run: async () => { throw failure; } }],
+    logger: { error() {} },
+    captureException: (error, context) => captured.push({ error, context }),
+  });
+  assert.equal((await resources.close()).ok, false);
+  assert.deepEqual(captured, [{
+    error: failure,
+    context: {
+      surface: "server",
+      kind: "runtime-lifecycle",
+      component: "resource-registry",
+      action: "close:desktop-control",
+    },
+  }]);
+});
+
 test("runtime resources reject malformed registration and unknown phases", async () => {
   assert.throws(() => new RuntimeResourceRegistry({ drain: [{ name: "bad" }] }), /run/u);
   const resources = new RuntimeResourceRegistry();

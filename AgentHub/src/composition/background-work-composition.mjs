@@ -2,6 +2,7 @@ import { BackgroundJobQueue } from "../runtime/background-job-queue.mjs";
 import { PersistentBackgroundJobController } from "../runtime/background-job-controller.mjs";
 import { PersistentBackgroundJobStore } from "../infrastructure/persistence/background-job-store.mjs";
 import { FailedTelegramUpdateStore } from "../infrastructure/persistence/failed-update-store.mjs";
+import { sentryDiagnostics } from "../infrastructure/diagnostics/sentry-diagnostics.mjs";
 
 export async function createBackgroundWorkComposition({
   backgroundDirectory,
@@ -25,6 +26,7 @@ export async function createBackgroundWorkComposition({
     maxItems: maxMediaJobs + maxSpeechJobs,
   });
   const backgroundJobs = new PersistentBackgroundJobController({
+    captureException: (error, context) => sentryDiagnostics.captureException(error, context),
     store: backgroundJobStore,
     maxMediaJobs,
     maxSpeechJobs,

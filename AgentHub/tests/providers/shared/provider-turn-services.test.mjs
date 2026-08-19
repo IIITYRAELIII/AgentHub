@@ -143,6 +143,78 @@ test("Codex turn service recognizes the tracked probe turn when Thread read omit
   assert.equal(steerCalls, 0);
 });
 
+test("Codex turn service recognizes probe text when Thread read omits its client id", async () => {
+  let steerCalls = 0;
+  const service = codexTurnService({
+    readThread: async () => ({
+      thread: {
+        turns: [{
+          id: "probe-turn",
+          status: "inProgress",
+          items: [{
+            type: "userMessage",
+            content: [{
+              type: "input_text",
+              text: "Ответь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1",
+            }],
+          }],
+        }],
+      },
+    }),
+    sendRpc: async () => {
+      steerCalls += 1;
+      return { turnId: "probe-turn" };
+    },
+  });
+
+  await assert.rejects(
+    service.steer({
+      run: { turnId: "probe-turn" },
+      target: { threadId: "thread-1" },
+      input: "Обычное пользовательское сообщение",
+      clientUserMessageId: "message-user",
+    }),
+    /сообщение осталось в очереди/u,
+  );
+  assert.equal(steerCalls, 0);
+});
+
+test("Codex turn service steers the user turn while a tracked context probe is also active", async () => {
+  const steerRequests = [];
+  const service = codexTurnService({
+    isContextProbeTurn: (threadId, turnId) => threadId === "thread-1" && turnId === "probe-turn",
+    readThread: async () => ({
+      thread: {
+        turns: [{
+          id: "user-turn",
+          status: "inProgress",
+          items: [{ type: "userMessage" }],
+        }, {
+          id: "probe-turn",
+          status: "inProgress",
+          items: [{ type: "userMessage" }],
+        }],
+      },
+    }),
+    sendRpc: async (method, params) => {
+      assert.equal(method, "turn/steer");
+      steerRequests.push(params);
+      return { turnId: params.expectedTurnId };
+    },
+  });
+
+  const result = await service.steer({
+    run: { turnId: "user-turn" },
+    target: { threadId: "thread-1" },
+    input: "Добавить в текущий ход",
+    clientUserMessageId: "message-user",
+  });
+
+  assert.deepEqual(result, { turnId: "user-turn" });
+  assert.equal(steerRequests.length, 1);
+  assert.equal(steerRequests[0].expectedTurnId, "user-turn");
+});
+
 test("Codex turn service retries one active-turn transition with the same message identity", async () => {
   const activeTurns = ["turn-first", "turn-second"];
   const steerRequests = [];

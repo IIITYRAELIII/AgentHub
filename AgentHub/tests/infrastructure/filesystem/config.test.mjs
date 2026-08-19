@@ -25,6 +25,9 @@ test("core-only components need neither Telegram credentials nor Web App", async
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-journal-profile-"));
   const configFile = path.join(root, "config.json");
   const previous = process.env.AGENT_HUB_CONFIG;
+  const previousSentryDsn = process.env.SENTRY_DSN;
+  const previousSentryEnvironment = process.env.SENTRY_ENVIRONMENT;
+  const previousSentryRelease = process.env.SENTRY_RELEASE;
   try {
     await writeFile(configFile, JSON.stringify({
       components: { telegram: false, miniApp: false, androidApp: false },
@@ -33,6 +36,9 @@ test("core-only components need neither Telegram credentials nor Web App", async
       claudeRateLimitPolling: false,
     }), "utf8");
     process.env.AGENT_HUB_CONFIG = configFile;
+    delete process.env.SENTRY_DSN;
+    delete process.env.SENTRY_ENVIRONMENT;
+    delete process.env.SENTRY_RELEASE;
     const config = await loadConfig();
     assert.deepEqual(config.components, {
       telegram: false, miniApp: false, androidApp: false, sharedDashboardBot: false, codexContextCleanup: false,
@@ -62,9 +68,24 @@ test("core-only components need neither Telegram credentials nor Web App", async
       autoPlaceConfidence: 0.82,
       bugReportWorkspaceName: "",
     });
+    assert.deepEqual(config.diagnostics.sentry, {
+      enabled: false,
+      dsn: "",
+      environment: "production",
+      release: "",
+      sampleRate: 1,
+      maxEventsPerMinute: 30,
+      roots: [root],
+    });
   } finally {
     if (previous == null) delete process.env.AGENT_HUB_CONFIG;
     else process.env.AGENT_HUB_CONFIG = previous;
+    if (previousSentryDsn == null) delete process.env.SENTRY_DSN;
+    else process.env.SENTRY_DSN = previousSentryDsn;
+    if (previousSentryEnvironment == null) delete process.env.SENTRY_ENVIRONMENT;
+    else process.env.SENTRY_ENVIRONMENT = previousSentryEnvironment;
+    if (previousSentryRelease == null) delete process.env.SENTRY_RELEASE;
+    else process.env.SENTRY_RELEASE = previousSentryRelease;
     await rm(root, { recursive: true, force: true });
   }
 });

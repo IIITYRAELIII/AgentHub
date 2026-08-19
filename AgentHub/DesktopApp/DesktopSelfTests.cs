@@ -38,6 +38,16 @@ namespace AgentHubDesktop
             MarkdownTableIsRecognisedOnlyWithSeparator();
             WorkspaceFileLinkAcceptsRelativeTargetAndAnchor();
             ScrollBarStyleReplacesTheSystemTheme();
+            DesktopDiagnosticPayloadOmitsExceptionMessage();
+        }
+
+        private static void DesktopDiagnosticPayloadOmitsExceptionMessage()
+        {
+            var payload = DesktopDiagnostics.Payload(new InvalidOperationException("private message"), "desktop-domain");
+            Require(AgentHubClient.Text(payload, "message") == "Desktop host unhandled exception",
+                "desktop diagnostics exposed the original exception message");
+            Require(AgentHubClient.Text(payload, "action") == "desktop-domain",
+                "desktop diagnostic source was lost");
         }
 
         private static void ScrollBarStyleReplacesTheSystemTheme()

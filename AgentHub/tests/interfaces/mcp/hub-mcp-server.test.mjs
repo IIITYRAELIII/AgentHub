@@ -57,3 +57,28 @@ test("HubMcpServer closes active HTTP sockets during a runtime restart", async (
   assert.equal(server.running, false);
   socket.destroy();
 });
+
+test("HubMcpServer reports an unexpected dispatch failure", async (context) => {
+  const captured = [];
+  const server = new HubMcpServer({
+    secret: "server-secret",
+    service: {
+      tools: () => { throw new TypeError("broken tool registry"); },
+      call: () => ({}),
+    },
+    captureUnexpectedException: (error, diagnosticContext) => {
+      captured.push([error.message, diagnosticContext.action]);
+    },
+    logger: { log() {}, error() {} },
+  });
+  await server.start();
+  context.after(() => server.close());
+
+  const response = await fetch(server.url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+  }).then((value) => value.json());
+  assert.equal(response.error.code, -32603);
+  assert.deepEqual(captured, [["broken tool registry", "dispatch"]]);
+});

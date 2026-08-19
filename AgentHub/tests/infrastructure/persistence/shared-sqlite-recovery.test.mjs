@@ -46,11 +46,16 @@ test("partial quarantine rename rolls every moved SQLite file back", async () =>
       return fs.rename(source, destination);
     },
   };
+  const captured = [];
   try {
-    await assert.rejects(coordinator(databaseFile, { fileSystem }).prepare(), /rename fault/u);
+    await assert.rejects(coordinator(databaseFile, {
+      fileSystem,
+      captureException: (error, context) => captured.push([error.message, context.action]),
+    }).prepare(), /rename fault/u);
     assert.equal(await fs.readFile(databaseFile, "utf8"), "not a sqlite database");
     assert.equal(await fs.readFile(walFile, "utf8"), "wal");
     await assert.rejects(fs.stat(`${databaseFile}.recovery-marker.json`), { code: "ENOENT" });
+    assert.deepEqual(captured, [["rename fault", "prepare"]]);
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }

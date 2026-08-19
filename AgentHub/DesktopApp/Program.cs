@@ -39,6 +39,7 @@ namespace AgentHubDesktop
                 }
             }
             var application = new Application { ShutdownMode = ShutdownMode.OnMainWindowClose };
+            DesktopDiagnostics.Install(application);
             application.Run(new AgentHubWindow());
             return 0;
         }

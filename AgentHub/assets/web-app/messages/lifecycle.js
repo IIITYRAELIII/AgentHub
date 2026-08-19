@@ -113,6 +113,12 @@ function snapshotCompletionCandidate(selected, incomingTurnId = "") {
   };
 }
 
+function snapshotCompletionReplacement(existing, completion) {
+  const answer = String(completion?.answer ?? "").trim();
+  if (!answer || answer === String(existing?.answer ?? "").trim()) return null;
+  return completion;
+}
+
 function activeTaskRun(task) {
   return task?.running === true && task?.run ? task.run : null;
 }
@@ -626,18 +632,9 @@ function withoutContextProbeMessages(messages) {
 }
 
 function visibleConversationMessages(messages, {
-  deferredClientUserMessageIds = [],
   liveProbe = null,
 } = {}) {
-  const deferredIds = new Set(
-    Array.from(deferredClientUserMessageIds ?? [], (value) => String(value ?? "").trim())
-      .filter(Boolean),
-  );
   const visible = withoutContextProbeMessages(messages).filter((message) => {
-    if (
-      message?.role === "user"
-      && deferredIds.has(String(message?.clientUserMessageId ?? "").trim())
-    ) return false;
     return Boolean(
       String(message?.text ?? "").trim()
       || normalizedResponseAnnotations(message?.responseAnnotations).some((item) => (
@@ -1155,6 +1152,7 @@ globalThis.AgentHubMessageLifecycle = Object.freeze({
   reusableAttachmentPaths,
   settleOptionalRead,
   snapshotCompletionCandidate,
+  snapshotCompletionReplacement,
   stopTaskControls,
   visibleConversationMessages,
 });

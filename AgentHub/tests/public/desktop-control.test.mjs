@@ -114,6 +114,34 @@ test("desktop control exchanges authenticated RPC and rotates endpoint after res
   }
 });
 
+test("desktop control exposes handler failures to the guarded diagnostics boundary", async () => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-desktop-diagnostics-"));
+  const captured = [];
+  const failure = new TypeError("broken desktop invariant");
+  const server = new DesktopControlServer({
+    runtimeRoot,
+    protectSecret: async () => {},
+    handler: async () => { throw failure; },
+    reportUnexpectedError: (error, context) => captured.push({ error, context }),
+  });
+  try {
+    await server.start();
+    await assert.rejects(() => callDesktopControl("snapshot", {}, { runtimeRoot }), /broken desktop invariant/u);
+    assert.deepEqual(captured, [{
+      error: failure,
+      context: {
+        surface: "desktop-control",
+        kind: "control",
+        component: "desktop-control-server",
+        action: "request",
+      },
+    }]);
+  } finally {
+    await server.close();
+    await rm(runtimeRoot, { recursive: true, force: true });
+  }
+});
+
 test("desktop IPC retires delivered receipts and stays available beyond receipt capacity", async () => {
   const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-desktop-capacity-"));
   const receiptFile = path.join(runtimeRoot, "receipts.json");

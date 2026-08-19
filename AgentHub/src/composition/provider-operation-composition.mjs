@@ -102,6 +102,16 @@ export function createProviderOperationComposition({
     discoverLocalTasks: discoverCodexRollouts,
     logWarn: (...args) => console.warn(...args),
     selection: selectionStore,
+    bindCreatedThread: ({ provider, threadId, streamId, projectRoot }) => (
+      streamId
+        ? workspaceCatalogStore.bindThread({
+          provider, threadId, streamId, projectRoot, source: "created",
+        })
+        : workspaceCatalogStore.assignUnknownThread(
+          { provider, threadId, projectRoot },
+          { source: "created" },
+        )
+    ),
     activeProjectRoot,
     sandboxMode: codexSandboxMode,
     invalidateCatalog: invalidateTaskCatalog,

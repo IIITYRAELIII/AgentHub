@@ -52,7 +52,7 @@ const REMOTE_RESULT_FALLBACK_POLL_MS = 600;
 const DEFAULT_CONTROL_TIMEOUT_MS = 45_000;
 const LONG_CONTROL_TIMEOUT_MS = 180_000;
 const LONG_CONTROL_ACTIONS = new Set(["rotate-stream", "submit-bug-report"]);
-const VSCODE_MESSAGE_CONTROL_TIMEOUT_MS = 15_000;
+const VSCODE_MESSAGE_CONTROL_TIMEOUT_MS = LONG_CONTROL_TIMEOUT_MS;
 const VSCODE_MESSAGE_RETRY_DELAYS_MS = Object.freeze([150, 600]);
 const HISTORY_CATCH_UP_TIMEOUT_MS = 120_000;
 const CONNECTION_OFFLINE_FAILURES = 3;
@@ -120,6 +120,7 @@ const {
   reusableAttachmentPaths,
   settleOptionalRead,
   snapshotCompletionCandidate,
+  snapshotCompletionReplacement,
   withoutSupersededCompactionFailures,
   visibleConversationMessages,
 } = window.AgentHubMessageLifecycle;
@@ -388,6 +389,7 @@ function deliveryPatch(stateName) {
     accepted: { deliveryState: "accepted", delivery: "Принято", failed: false },
     deferred: { deliveryState: "deferred", delivery: "Отложено", failed: false },
     queued: { deliveryState: "queued", delivery: "В очереди", failed: false },
+    relaying: { deliveryState: "relaying", delivery: "Доставляется в Hub…", failed: false },
     delivered: { deliveryState: "delivered", delivery: "", failed: false },
     unconfirmed: { deliveryState: "unconfirmed", delivery: "Статус приёма уточняется…", failed: false },
     rejected: { deliveryState: "rejected", delivery: "Не принято", failed: true },
@@ -540,6 +542,9 @@ function optimisticDeferredEntries(taskIdValue, serverEntries = []) {
       annotations: message.responseAnnotations ?? [],
       attachments: message.attachments ?? [],
       createdAt: message.time,
+      delivery: message.delivery,
+      deliveryState: message.deliveryState,
+      remoteCommandId: message.remoteCommandId,
       optimistic: !serverClientIds.has(message.clientUserMessageId),
     }));
 }
@@ -635,20 +640,21 @@ function rememberSnapshotCompletion(taskIdValue, selected, incomingTurnId = "") 
     requireAgent: true,
   })) return false;
   const overlays = completionOverlaysByTask.get(taskIdValue) ?? new Map();
-  if (overlays.has(completion.turnId)) return false;
-  overlays.set(completion.turnId, {
-    answer: completion.answer,
+  const replacement = snapshotCompletionReplacement(overlays.get(completion.turnId), completion);
+  if (!replacement) return false;
+  overlays.set(replacement.turnId, {
+    answer: replacement.answer,
     messages: [{
-      id: `${completion.provider}:${completion.threadId}:${completion.turnId}:snapshot-final`,
-      provider: completion.provider,
-      threadId: completion.threadId,
-      turnId: completion.turnId,
-      itemId: `${completion.turnId}:agent:final`,
+      id: `${replacement.provider}:${replacement.threadId}:${replacement.turnId}:snapshot-final`,
+      provider: replacement.provider,
+      threadId: replacement.threadId,
+      turnId: replacement.turnId,
+      itemId: `${replacement.turnId}:agent:final`,
       role: "agent",
-      author: completion.provider === "claude" ? "Claude" : "Codex",
+      author: replacement.provider === "claude" ? "Claude" : "Codex",
       phase: "final",
-      text: completion.answer,
-      time: completion.time,
+      text: replacement.answer,
+      time: replacement.time,
     }],
   });
   while (overlays.size > 20) overlays.delete(overlays.keys().next().value);
@@ -921,6 +927,16 @@ async function hubFetch(input, init) {
   }
 }
 
+async function hubFetchWithin(input, init, timeoutMs) {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), Math.max(1, Number(timeoutMs) || 1));
+  try {
+    return await hubFetch(input, { ...init, signal: controller.signal });
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
 window.addEventListener("message", (event) => {
   const message = event.data;
   if (message?.type === "agenthub:runtime-published") {
@@ -987,32 +1003,59 @@ async function acknowledgeLocalControl(commandId) {
 }
 
 function observeQueuedRemoteMessage(commandId, params) {
-  void waitRemoteResult(commandId, LONG_CONTROL_TIMEOUT_MS).then((result) => {
+  const releaseOptimisticQueue = (stateName) => {
     const clientUserMessageId = String(params?.clientUserMessageId ?? "").trim();
-    if (clientUserMessageId) {
-      const resolvedTaskId = updateOutgoing("", clientUserMessageId, {
-        threadId: result?.threadId ?? params?.threadId ?? "",
-        turnId: result?.turnId ?? "",
-        itemId: result?.itemId ?? clientUserMessageId,
-        ...(result?.accepted
-          ? deliveryPatch("accepted")
-          : result?.deferred
-            ? deliveryPatch(result?.queued ? "queued" : "deferred")
-            : deliveryPatch("rejected")),
-      });
-      if (resolvedTaskId) renderTaskMessages(resolvedTaskId);
+    if (!clientUserMessageId) return "";
+    optimisticDeferredClientUserMessageIds.delete(clientUserMessageId);
+    deferredClientUserMessageIds.delete(clientUserMessageId);
+    const resolvedTaskId = updateOutgoing("", clientUserMessageId, {
+      remoteQueued: false,
+      remoteCommandId: commandId,
+      ...deliveryPatch(stateName),
+    });
+    if (resolvedTaskId) {
+      renderTaskQueue(resolvedTaskId);
+      renderTaskMessages(resolvedTaskId);
     }
-    if (result?.snapshot) applySnapshot(result.snapshot);
-    else void refresh();
-  }).catch((error) => {
-    console.error("Agent Hub queued message reconciliation failed", error);
-    if (messageSendDefinitelyRejected(error)) {
+    return resolvedTaskId;
+  };
+  void window.AgentHubMessageSendTransaction.observeRemote({
+    wait: () => waitRemoteResult(commandId, LONG_CONTROL_TIMEOUT_MS),
+    receive: (result) => {
       const clientUserMessageId = String(params?.clientUserMessageId ?? "").trim();
-      const resolvedTaskId = updateOutgoing("", clientUserMessageId, deliveryPatch("rejected"));
-      if (resolvedTaskId) renderTaskMessages(resolvedTaskId);
+      if (clientUserMessageId) {
+        if (!result?.deferred) {
+          optimisticDeferredClientUserMessageIds.delete(clientUserMessageId);
+          deferredClientUserMessageIds.delete(clientUserMessageId);
+        }
+        const resolvedTaskId = updateOutgoing("", clientUserMessageId, {
+          threadId: result?.threadId ?? params?.threadId ?? "",
+          turnId: result?.turnId ?? "",
+          itemId: result?.itemId ?? clientUserMessageId,
+          remoteQueued: false,
+          remoteCommandId: commandId,
+          ...(result?.accepted
+            ? deliveryPatch("accepted")
+            : result?.deferred
+              ? deliveryPatch(result?.queued ? "queued" : "deferred")
+              : deliveryPatch("rejected")),
+        });
+        if (resolvedTaskId) renderTaskMessages(resolvedTaskId);
+      }
+      if (result?.snapshot) applySnapshot(result.snapshot);
+      else void refresh();
+    },
+    reject: (error) => {
+      releaseOptimisticQueue("rejected");
       agentHub.toast(String(error?.message ?? "Сообщение отклонено локальным Agent Hub"));
-    }
-    void refresh();
+    },
+    unconfirm: () => {
+      releaseOptimisticQueue("unconfirmed");
+      agentHub.toast("Hub не подтвердил приём сообщения. Статус будет уточнён по snapshot.");
+    },
+    refresh: () => { void refresh(); },
+    definitelyRejected: messageSendDefinitelyRejected,
+    report: (error) => console.error("Agent Hub queued message reconciliation failed", error),
   });
 }
 
@@ -1039,14 +1082,14 @@ async function control(action, params = {}) {
   if (action === "snapshot") return readSnapshot(params);
   await localSessionReady;
   const commandId = crypto.randomUUID();
-  const response = await hubFetch("/api/control", {
+  const response = await hubFetchWithin("/api/control", {
     method: "POST",
     headers: {
       ...authorizationHeaders(),
       "Content-Type": "application/json",
     },
     body: JSON.stringify({ action, params, commandId }),
-  });
+  }, LONG_CONTROL_ACTIONS.has(action) ? LONG_CONTROL_TIMEOUT_MS : DEFAULT_CONTROL_TIMEOUT_MS);
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || payload.ok === false) {
     throw markCommandRejected(
@@ -1064,6 +1107,7 @@ async function control(action, params = {}) {
       deferred: true,
       queued: true,
       remoteQueued: true,
+      remoteCommandId: payload.id,
       threadId: params.threadId,
       clientUserMessageId: params.clientUserMessageId,
       message: "Сообщение принято Worker и поставлено в очередь доставки.",
@@ -1076,6 +1120,8 @@ async function control(action, params = {}) {
       )
     : payload.result;
 }
+
+window.AgentHubWebDiagnostics?.bindReporter?.((event) => control("report-diagnostic", event));
 
 function modelTask(task, snapshot, effectiveSelectedId, serverSelectedId) {
   const id = taskId(task.provider, task.threadId, task.streamId);
@@ -1915,7 +1961,6 @@ async function runAction(operation) {
   try {
     return await operation();
   } catch (error) {
-    if (isConnectionFailure(error)) recordTransientConnectionFailure();
     agentHub.toast(hubErrorMessage(error));
     return null;
   }
@@ -2165,7 +2210,7 @@ agentHub.on("message:send", (request) => {
     time: new Date().toISOString(),
     attachments: requestAttachments,
     uploadedPaths: previousAttempt?.uploadedPaths ?? [],
-    ...deliveryPatch(queuesOptimistically ? "queued" : steersOptimistically ? "steering" : "preparing"),
+    ...deliveryPatch(queuesOptimistically ? "sending" : steersOptimistically ? "steering" : "preparing"),
   };
   rememberOutgoing(request.taskId, optimistic);
   if (queuesOptimistically) {
@@ -2213,7 +2258,7 @@ agentHub.on("message:send", (request) => {
       updateOutgoing(
         request.taskId,
         request.requestId,
-        deliveryPatch(queuesOptimistically ? "queued" : steersOptimistically ? "steering" : "sending"),
+        deliveryPatch(queuesOptimistically ? "sending" : steersOptimistically ? "steering" : "sending"),
       );
       renderOutgoingWithoutBlockingSend(request.taskId);
       const params = {
@@ -2246,14 +2291,19 @@ agentHub.on("message:send", (request) => {
         streamId: result?.streamId ?? identity?.streamId ?? request.streamId,
         turnId: result?.turnId ?? "",
         itemId: result?.itemId ?? request.requestId,
+        remoteQueued: result?.remoteQueued === true,
+        remoteCommandId: result?.remoteCommandId ?? "",
         ...nonEmptyAttachmentPatch(result?.attachments),
         ...(result?.accepted && !result?.steered ? { turnUserSlot: "root" } : {}),
-        ...(result?.accepted
+        ...(result?.remoteQueued
+          ? deliveryPatch("relaying")
+          : result?.accepted
           ? deliveryPatch("accepted")
           : result?.deferred
             ? deliveryPatch(result?.queued ? "queued" : "accepted")
             : deliveryPatch("rejected")),
       });
+      renderOutgoingWithoutBlockingSend(request.taskId, { queue: queuesOptimistically });
     },
     synchronize: (result) => {
       applySnapshot(result?.snapshot);

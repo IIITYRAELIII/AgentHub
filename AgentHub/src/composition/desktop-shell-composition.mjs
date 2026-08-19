@@ -6,6 +6,7 @@ import { ClientTaskSelectionService } from "../application/client-task-selection
 
 export function createDesktopShellComposition({
   config,
+  diagnostics,
   limits,
   models,
   state,
@@ -533,6 +534,7 @@ export function createDesktopShellComposition({
       restartServer: desktopActions.restartServer,
       openAttachment: desktopOpenAttachment,
       submitBugReport: desktopSubmitBugReport,
+      reportDiagnostic: diagnostics.reportClientError,
       trustedDevices: desktopReadSystem.desktopTrustedDevices,
       createDevicePairing: desktopReadSystem.desktopCreateDevicePairing,
       revokeDevice: desktopReadSystem.desktopRevokeDevice,

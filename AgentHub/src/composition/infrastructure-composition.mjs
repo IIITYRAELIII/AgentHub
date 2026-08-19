@@ -40,6 +40,7 @@ import {
   ensureDashBotStream,
 } from "../providers/codex/codex-spark-task-classifier.mjs";
 import { RuntimeNotificationController } from "../runtime/runtime-notification-controller.mjs";
+import { sentryDiagnostics } from "../infrastructure/diagnostics/sentry-diagnostics.mjs";
 
 function runtimeAssetBundleProvider(runtimeRoot) {
   const layout = runtimeLayout(runtimeRoot);
@@ -81,6 +82,7 @@ export async function createHubInfrastructure({
   const sqliteRecoveryCoordinator = new SharedSqliteRecoveryCoordinator({
     databaseFile: journalDatabaseFile,
     instanceId: instanceGuard.instanceToken,
+    captureException: (error, context) => sentryDiagnostics.captureException(error, context),
   });
   let sqliteRecovery;
   try {
@@ -155,6 +157,7 @@ export async function createHubInfrastructure({
   const hubMcpServer = new HubMcpServer({
     service: hubMcpService,
     secret: hubMcpSecret,
+    captureUnexpectedException: (error, context) => sentryDiagnostics.captureUnexpectedException(error, context),
   });
   const serverOptions = {
     botToken: config.token,
@@ -166,6 +169,7 @@ export async function createHubInfrastructure({
     attachmentDirectory,
     assetBundleProvider: runtimeAssetBundleProvider(runtimeCommandRoot),
     journalDatabaseFile,
+    reportUnexpectedError: (error, context) => sentryDiagnostics.captureUnexpectedException(error, context),
   };
   const miniAppServer = config.miniApp.enabled
     ? new MiniAppServer({
@@ -243,6 +247,8 @@ export async function createHubInfrastructure({
     authorize: authorizeRuntimeCommand,
     reconcile: reconcileRuntimeCommand,
     handler: handleRuntimeCommand,
+    captureException: (error, context) => sentryDiagnostics.captureException(error, context),
+    captureUnexpectedException: (error, context) => sentryDiagnostics.captureUnexpectedException(error, context),
   });
   const rateLimitHistoryStore = new RateLimitHistoryStore({
     databaseFile: journalDatabaseFile,
@@ -280,6 +286,12 @@ export async function createHubInfrastructure({
     acknowledgeSqliteRecovery: () => sqliteRecoveryCoordinator.acknowledge(sqliteRecovery),
   };
   } catch (error) {
+    sentryDiagnostics.captureException(error, {
+      surface: "server",
+      kind: "startup",
+      component: "infrastructure-composition",
+      action: "initialize",
+    });
     await instanceGuard.release();
     throw error;
   }

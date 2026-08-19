@@ -90,6 +90,52 @@ test("manual compaction resumes a discovered thread before starting", async () =
   ]);
 });
 
+test("compaction start accepts an RPC timeout after the provider turn was observed", async () => {
+  const { service, calls, entries } = harness({
+    ensureTransport: async () => calls.push(["transport"]),
+    resumeThread: async (...args) => calls.push(["resume", ...args]),
+    startCompaction: async (threadId) => {
+      calls.push(["compact", threadId]);
+      Object.assign(entries.get(threadId), {
+        status: "running",
+        turnId: "compaction-turn",
+      });
+      throw new Error("Codex App Server thread/compact/start timed out after 30000 ms");
+    },
+  });
+
+  const result = await service.startManual({ provider: "codex", threadId: "thread-1" });
+
+  assert.deepEqual(result, {
+    accepted: true,
+    compactionId: "compact-thread-1",
+    message: "Свёртка контекста запущена",
+  });
+  assert.equal(calls.some(([name]) => name === "fail"), false);
+  assert.equal(calls.some(([name, message]) => (
+    name === "warn"
+    && message.includes("after provider start compaction-turn")
+  )), true);
+});
+
+test("compaction start still fails when the provider turn was not observed", async () => {
+  const { service, calls } = harness({
+    startCompaction: async () => {
+      throw new Error("transport failed");
+    },
+  });
+
+  await assert.rejects(
+    service.startManual({ provider: "codex", threadId: "thread-1" }),
+    /transport failed/u,
+  );
+  assert.deepEqual(calls.find(([name]) => name === "fail"), [
+    "fail",
+    "thread-1",
+    "compact-thread-1",
+  ]);
+});
+
 test("context probe returns only after its prompt materializes", async () => {
   const { service, calls } = harness({
     ensureTransport: async () => calls.push(["transport"]),

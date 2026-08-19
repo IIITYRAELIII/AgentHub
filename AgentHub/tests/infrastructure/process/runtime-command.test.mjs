@@ -62,6 +62,27 @@ test("runtime command forwarding exposes only the narrow notification interface"
   }
 });
 
+test("runtime command reports an unexpected handler failure", async () => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "runtime-command-diagnostics-"));
+  const captured = [];
+  const server = new RuntimeCommandServer({
+    runtimeRoot,
+    handler: async () => { throw new TypeError("broken handler invariant"); },
+    captureUnexpectedException: (error, context) => captured.push([error.message, context.action]),
+  });
+  await server.start();
+  try {
+    await assert.rejects(forwardRuntimeCommand("send-message", ["test"], {
+      runtimeRoot,
+      cwd: runtimeRoot,
+    }), /broken handler invariant/u);
+    assert.deepEqual(captured, [["broken handler invariant", "request-handler"]]);
+  } finally {
+    await server.close();
+    await rm(runtimeRoot, { recursive: true, force: true });
+  }
+});
+
 test("runtime command validation rejects arbitrary processes and environment secrets", () => {
   assert.throws(
     () => validateRuntimeCommand({ command: "shell", args: ["whoami"], cwd: "C:\\" }),
@@ -86,6 +107,7 @@ test("runtime command validation rejects arbitrary processes and environment sec
 test("runtime command authorization rejects fabricated lifecycle input before the handler", async () => {
   const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "telegram-command-authority-"));
   const handled = [];
+  const captured = [];
   const server = new RuntimeCommandServer({
     runtimeRoot,
     authorize: async (request) => {
@@ -97,6 +119,7 @@ test("runtime command authorization rejects fabricated lifecycle input before th
       handled.push(request);
       return "accepted";
     },
+    captureUnexpectedException: (error, context) => captured.push([error.message, context.action]),
   });
   await server.start();
   try {
@@ -112,6 +135,7 @@ test("runtime command authorization rejects fabricated lifecycle input before th
       cwd: runtimeRoot,
     }), "accepted");
     assert.equal(handled.length, 1);
+    assert.deepEqual(captured, []);
   } finally {
     await server.close();
   }

@@ -70,6 +70,15 @@
     "autoRotateAfterCompaction": false,
     "autoRotateThresholdPercent": 20
   },
+  "diagnostics": {
+    "sentry": {
+      "enabled": false,
+      "dsn": "",
+      "environment": "production",
+      "sampleRate": 1,
+      "maxEventsPerMinute": 30
+    }
+  },
   "codexModels": [
     {
       "value": "gpt-5.5",

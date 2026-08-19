@@ -72,7 +72,7 @@ test rejects every unregistered root module and every dependency that points in
 the opposite direction.
 
 `infrastructure` содержит только общие технические адаптеры: filesystem,
-SQLite, process и network. Поэтому внешние adapter-слои (`providers`,
+SQLite, process, network и diagnostics. Поэтому внешние adapter-слои (`providers`,
 `interfaces`, `runtime`) могут использовать его напрямую. `domain` и
 `application` такой зависимости не имеют: прикладные сценарии получают внешние
 эффекты через порты и composition. Это явная зависимость от технической

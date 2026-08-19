@@ -20,11 +20,20 @@ export function isCodexContextProbeText(value) {
 export function isCodexContextProbeTurn(turn) {
   if (turn?.contextProbe === true) return true;
   if (isCodexContextProbeClientId(turn?.clientUserMessageId ?? turn?.clientId)) return true;
+  if (isCodexContextProbeText(turn?.prompt)) return true;
   if ((Array.isArray(turn?.userMessages) ? turn.userMessages : []).some((message) => (
     isCodexContextProbeClientId(message?.clientUserMessageId ?? message?.clientId)
+    || isCodexContextProbeText(message?.text)
   ))) return true;
   return (Array.isArray(turn?.items) ? turn.items : []).some((item) => (
     item?.type === "userMessage"
-    && isCodexContextProbeClientId(item.clientId)
+    && (
+      isCodexContextProbeClientId(item.clientId)
+      || isCodexContextProbeText(item.text)
+      || (Array.isArray(item.content) ? item.content : []).some((content) => (
+        ["text", "input_text"].includes(content?.type)
+        && isCodexContextProbeText(content?.text)
+      ))
+    )
   ));
 }

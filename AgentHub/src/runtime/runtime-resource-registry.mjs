@@ -23,6 +23,7 @@ export class RuntimeResourceRegistry {
     recover = [],
     finalize = [],
     logger = console,
+    captureException = () => false,
     settle = settleNamedOperations,
     phaseTimeoutMs = 45_000,
   } = {}) {
@@ -35,6 +36,7 @@ export class RuntimeResourceRegistry {
       finalize: normalizedEntries(finalize),
     };
     this.logger = logger;
+    this.captureException = captureException;
     this.settle = settle;
     this.phaseTimeoutMs = phaseTimeoutMs;
   }
@@ -48,7 +50,17 @@ export class RuntimeResourceRegistry {
   async run(phase, { label = phase, timeoutMs = this.phaseTimeoutMs } = {}) {
     if (!PHASES.includes(phase)) throw new Error(`unsupported runtime resource phase: ${phase}`);
     return this.settle(this.phases[phase], {
-      logError: (name, error) => this.logger.error(`${label} (${name}):`, error.message),
+      logError: (name, error) => {
+        this.logger.error(`${label} (${name}):`, error.message);
+        try {
+          this.captureException(error, {
+            surface: "server",
+            kind: "runtime-lifecycle",
+            component: "resource-registry",
+            action: `${phase}:${name}`,
+          });
+        } catch {}
+      },
       timeoutMs,
     });
   }

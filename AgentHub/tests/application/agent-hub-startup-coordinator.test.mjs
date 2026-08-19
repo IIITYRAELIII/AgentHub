@@ -81,7 +81,9 @@ test("startup preserves control, recovery and readiness order", async () => {
 });
 
 test("startup isolates recoverable failures and still marks ready", async () => {
+  const captured = [];
   const { service, calls, health } = coordinator({
+    captureException: (error, context) => captured.push([error.message, context.action]),
     startMiniApp: async () => { throw new Error("mini"); },
     initializeProvider: async () => { throw new Error("provider"); },
     providerIsRunning: () => false,
@@ -112,15 +114,25 @@ test("startup isolates recoverable failures and still marks ready", async () => 
   );
   assert.ok(calls.some((value) => value.includes("активные задачи: runs")));
   assert.ok(calls.some((value) => value.includes("медиа-задачи: jobs")));
+  assert.deepEqual(captured, [
+    ["mini", "web"],
+    ["provider", "provider"],
+    ["runs", "runs"],
+    ["jobs", "background-jobs"],
+    ["commands", "telegram"],
+  ]);
 });
 
 test("startup never marks a replacement ready before restart state is finalized", async () => {
+  const captured = [];
   const { service, calls } = coordinator({
     finalizeRestart: async () => { throw new Error("restart state"); },
+    captureException: (error, context) => captured.push([error.message, context.action]),
   });
   await assert.rejects(service.start(), /restart state/u);
   assert.equal(calls.includes("ready"), false);
   assert.equal(calls.includes("poll"), false);
+  assert.deepEqual(captured, [["restart state", "restart"]]);
 });
 
 test("startup remains ready but degraded when an optional capability fails", async () => {

@@ -29,6 +29,7 @@ import { createClientRuntimeComposition } from "./client-runtime-composition.mjs
 import { createInteractionShellPhase } from "./interaction-shell-phase-composition.mjs";
 import { createExecutionBootstrapPhase } from "./execution-bootstrap-phase-composition.mjs";
 import { HubSessionState } from "../runtime/hub-session-state.mjs";
+import { sentryDiagnostics } from "../infrastructure/diagnostics/sentry-diagnostics.mjs";
 if (process.platform === "win32") dns.setDefaultResultOrder("ipv4first");
 
 const agentHubDeferred = createAgentHubDeferredPorts();
@@ -36,6 +37,10 @@ const config = await loadConfig();
 const serverStartedAt = new Date().toISOString();
 const serverInstanceId = randomUUID();
 const serverReleaseId = path.basename(AGENT_HUB_ROOT);
+sentryDiagnostics.configure({
+  ...config.diagnostics.sentry,
+  release: config.diagnostics.sentry.release || serverReleaseId,
+});
 const {
   globalWorkLogProjectRoots,
   journalDatabaseFile,
@@ -538,6 +543,9 @@ const {
 } = clientRuntime;
 const interactionShell = createInteractionShellPhase({
   config,
+  diagnostics: {
+    reportClientError: (event, context) => sentryDiagnostics.captureClientEvent(event, context),
+  },
   root: AGENT_HUB_ROOT,
   server: {
     startedAt: serverStartedAt,

@@ -12,6 +12,7 @@ import {
   finalizeSuccessfulReplacement,
   restorePreviousBotAfterFailedReplacement,
 } from "../runtime/restart-recovery.mjs";
+import { sentryDiagnostics } from "../infrastructure/diagnostics/sentry-diagnostics.mjs";
 
 export function createRuntimeRestartComposition({
   getRestartRequest,
@@ -73,6 +74,7 @@ export function createRuntimeRestartComposition({
   });
 
   const runtimeResources = new RuntimeResourceRegistry({
+    captureException: (error, context) => sentryDiagnostics.captureException(error, context),
     drain: [
       { name: "journal startup", run: () => journalStartupReady },
       { name: "state writes", run: () => runtimeStateCoordinator.flush() },
@@ -109,6 +111,7 @@ export function createRuntimeRestartComposition({
   });
 
   const runtimeRestart = new RuntimeRestartController({
+    captureException: (error, context) => sentryDiagnostics.captureException(error, context),
     getRequest: getRestartRequest,
     updateOffset,
     hasBlockingWork,

@@ -9,6 +9,8 @@ test("fatal process handler sets a failing exit code and shuts down once", async
   const handler = createFatalProcessHandler({
     processRef,
     logger: { error: (...args) => calls.push(["error", ...args]) },
+    captureException: (error, context) => calls.push(["capture", error.message, context.kind]),
+    flushDiagnostics: async (timeoutMs) => calls.push(["flush", timeoutMs]),
     shutdown: async (reason) => calls.push(["shutdown", reason]),
   });
 
@@ -18,8 +20,9 @@ test("fatal process handler sets a failing exit code and shuts down once", async
   ]);
 
   assert.equal(processRef.exitCode, 1);
-  assert.deepEqual(calls.map((entry) => entry[0]), ["error", "shutdown"]);
-  assert.deepEqual(calls[1], ["shutdown", "unhandled rejection"]);
+  assert.deepEqual(calls.map((entry) => entry[0]), ["error", "capture", "flush", "shutdown"]);
+  assert.deepEqual(calls[1], ["capture", "first", "fatal"]);
+  assert.deepEqual(calls[3], ["shutdown", "unhandled rejection"]);
 });
 
 test("fatal process handler reports shutdown failure", async () => {

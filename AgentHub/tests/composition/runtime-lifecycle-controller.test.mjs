@@ -201,3 +201,27 @@ test("runtime lifecycle does not drain or release after quiesce fails", async ()
   assert.equal(await controller.shutdown("test"), true);
   assert.deepEqual(phases, ["Shutdown stopped after quiesce failure; the instance lock remains held."]);
 });
+
+test("runtime lifecycle reports an unexpected phase exception before rethrowing", async () => {
+  const failure = new TypeError("registry contract failed");
+  const captured = [];
+  const controller = new RuntimeLifecycleController({
+    beginStopping: () => true,
+    stopTimers() {},
+    resources: {
+      quiesce: async () => { throw failure; },
+    },
+    captureException: (error, context) => captured.push({ error, context }),
+    logger: { log() {}, error() {} },
+  });
+  await assert.rejects(() => controller.shutdown("test"), (error) => error === failure);
+  assert.deepEqual(captured, [{
+    error: failure,
+    context: {
+      surface: "server",
+      kind: "runtime-lifecycle",
+      component: "shutdown-controller",
+      action: "quiesce",
+    },
+  }]);
+});

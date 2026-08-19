@@ -106,6 +106,33 @@ function taskBoardSettings(value) {
   };
 }
 
+function sentrySettings(value, { projectRoot = process.cwd(), release = "" } = {}) {
+  const raw = value ?? {};
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("diagnostics.sentry must be an object");
+  }
+  const environmentDsn = String(process.env.SENTRY_DSN ?? "").trim();
+  const dsn = environmentDsn || String(raw.dsn ?? "").trim();
+  const enabled = Boolean(environmentDsn) || (raw.enabled == null ? Boolean(dsn) : raw.enabled === true);
+  const sampleRate = Number(raw.sampleRate ?? 1);
+  if (!Number.isFinite(sampleRate) || sampleRate < 0 || sampleRate > 1) {
+    throw new Error("diagnostics.sentry.sampleRate must be between 0 and 1");
+  }
+  return {
+    enabled,
+    dsn,
+    environment: String(process.env.SENTRY_ENVIRONMENT ?? raw.environment ?? "production").trim() || "production",
+    release: String(process.env.SENTRY_RELEASE ?? raw.release ?? release).trim(),
+    sampleRate,
+    maxEventsPerMinute: positiveInteger(
+      raw.maxEventsPerMinute,
+      30,
+      "diagnostics.sentry.maxEventsPerMinute",
+    ),
+    roots: [projectRoot],
+  };
+}
+
 function sharedDashboardBotSettings(value, { enabled = false, configDirectory = process.cwd() } = {}) {
   const raw = value ?? {};
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
@@ -643,6 +670,10 @@ export async function loadConfig() {
     miniApp.quickTunnel.enabled = false;
     miniApp.worker.enabled = false;
   }
+  const diagnosticsRaw = raw.diagnostics ?? {};
+  if (!diagnosticsRaw || typeof diagnosticsRaw !== "object" || Array.isArray(diagnosticsRaw)) {
+    throw new Error("diagnostics must be an object");
+  }
 
   return {
     configPath,
@@ -677,6 +708,9 @@ export async function loadConfig() {
     }),
     contextAutomation: contextAutomationSettings(raw.contextAutomation),
     taskBoard: taskBoardSettings(raw.taskBoard),
+    diagnostics: {
+      sentry: sentrySettings(diagnosticsRaw.sentry, { projectRoot }),
+    },
     sharedDashboardBot: sharedDashboardBotSettings(raw.sharedDashboardBot, {
       enabled: components.sharedDashboardBot,
       configDirectory,

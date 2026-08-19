@@ -143,15 +143,18 @@ test("restart controller does not restore the old runtime until replacement clea
 
 test("restart controller reports unrecoverable replacement failure", async () => {
   const exitCodes = [];
+  const captured = [];
   const { controller } = createController({
     launchReplacement: async () => { throw new Error("launch failed"); },
     recoverPrevious: async () => { throw new Error("restore failed"); },
     finishSuccessfulReplacement: async () => exitCodes.push(0),
+    captureException: (error, context) => captured.push([error.message, context.action]),
   });
   const result = await controller.perform();
   assert.equal(result.status, "failed");
   assert.equal(result.restoreError.message, "restore failed");
   assert.deepEqual(exitCodes, []);
+  assert.deepEqual(captured, [["launch failed", "launch"], ["restore failed", "restore-previous"]]);
 });
 
 test("restart controller does not recover or release after a lifecycle timeout", async () => {

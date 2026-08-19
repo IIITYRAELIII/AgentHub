@@ -1010,6 +1010,38 @@ test("Mini App forwards authenticated control commands to Agent Hub", async () =
   }
 });
 
+test("Mini App exposes control failures to the guarded diagnostics boundary", async () => {
+  const captured = [];
+  const failure = new TypeError("broken control invariant");
+  const server = new MiniAppServer({
+    host: "127.0.0.1",
+    port: 0,
+    journalDatabase: memoryJournal(),
+    controlHandler: async () => { throw failure; },
+    reportUnexpectedError: (error, context) => captured.push({ error, context }),
+  });
+  try {
+    const address = await server.start();
+    const response = await fetch(`${address.url}api/control`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "snapshot", params: {} }),
+    });
+    assert.equal(response.status, 400);
+    assert.deepEqual(captured, [{
+      error: failure,
+      context: {
+        surface: "web",
+        kind: "control",
+        component: "mini-app-server",
+        action: "control",
+      },
+    }]);
+  } finally {
+    await server.close();
+  }
+});
+
 test("local Mini App downloads and copies files only from configured Workspace roots", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-workspace-file-"));
   const workspace = path.join(directory, "workspace");

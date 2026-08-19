@@ -25,6 +25,7 @@ export class CodexProviderTaskService {
   #initialize;
   #sendRpc;
   #selection;
+  #bindCreatedThread;
   #activeProjectRoot;
   #sandboxMode;
   #invalidateCatalog;
@@ -45,6 +46,7 @@ export class CodexProviderTaskService {
     if (!this.#selection?.setThread || !this.#selection?.setTitle) {
       throw new TypeError("selection store is required");
     }
+    this.#bindCreatedThread = requiredFunction(options.bindCreatedThread, "bindCreatedThread");
     this.#activeProjectRoot = requiredFunction(options.activeProjectRoot, "activeProjectRoot");
     this.#sandboxMode = requiredFunction(options.sandboxMode, "sandboxMode");
     this.#invalidateCatalog = requiredFunction(options.invalidateCatalog, "invalidateCatalog");
@@ -61,16 +63,24 @@ export class CodexProviderTaskService {
   }
 
   async createTask() {
+    const projectRoot = this.#activeProjectRoot();
+    const streamId = this.#selection.streamId;
     const result = await this.#sendRpc("thread/start", {
-      cwd: this.#activeProjectRoot(),
+      cwd: projectRoot,
       ...codexThreadSandboxSettings(this.#sandboxMode()),
       serviceName: "telegram_codex_bridge",
     });
     const threadId = String(result?.thread?.id ?? "").trim();
     if (!threadId) throw new Error("Codex did not return a thread id");
+    this.#bindCreatedThread({
+      provider: "codex",
+      threadId,
+      streamId,
+      projectRoot,
+    });
     this.#selection.setThread(threadId, {
       provider: "codex",
-      streamId: this.#selection.streamId,
+      streamId,
     });
     this.#clearLatestDiff();
     await this.#saveState();
@@ -83,7 +93,7 @@ export class CodexProviderTaskService {
     return {
       provider: "codex",
       threadId,
-      projectRoot: this.#activeProjectRoot(),
+      projectRoot,
       title,
     };
   }

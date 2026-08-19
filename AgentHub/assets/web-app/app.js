@@ -4829,7 +4829,10 @@ function renderQueueForTask(taskId, container) {
   for (const entry of queued) {
     const actions = [];
     if (entry.optimistic) {
-      actions.push(el("span", { class: "queue-optimistic", text: "В очереди" }));
+      actions.push(el("span", {
+        class: "queue-optimistic",
+        text: String(entry.delivery ?? "").trim() || "Ожидает подтверждения Hub…",
+      }));
     } else {
       const steerAvailable = Boolean(task?.running && task?.provider === "codex");
       actions.push(el("button", {

@@ -46,6 +46,7 @@ export class AgentHubStartupCoordinator {
     health = agentHubRuntimeHealth,
     sqliteRecovery = null,
     acknowledgeSqliteRecovery = async () => false,
+    captureException = () => false,
     log = (...args) => console.log(...args),
     logError = (...args) => console.error(...args),
   }) {
@@ -74,9 +75,21 @@ export class AgentHubStartupCoordinator {
       health,
       sqliteRecovery,
       acknowledgeSqliteRecovery,
+      captureException,
       log,
       logError,
     });
+  }
+
+  #capture(error, action) {
+    try {
+      this.captureException(error, {
+        surface: "server",
+        kind: "startup",
+        component: "startup-coordinator",
+        action,
+      });
+    } catch {}
   }
 
   async #runOperation(id, operation) {
@@ -87,6 +100,7 @@ export class AgentHubStartupCoordinator {
       return result;
     } catch (error) {
       this.health.failOperation(id, error);
+      this.#capture(error, id);
       throw error;
     }
   }
@@ -118,6 +132,7 @@ export class AgentHubStartupCoordinator {
       this.health.completeOperation("web");
     } catch (error) {
       this.health.failOperation("web", error);
+      this.#capture(error, "web");
       this.health.setCapability("mini_app", {
         critical: false,
         state: "failed",
@@ -134,6 +149,7 @@ export class AgentHubStartupCoordinator {
     await this.initializeProvider().catch((error) => {
       providerFailed = true;
       this.health.failOperation("provider", error);
+      this.#capture(error, "provider");
       this.health.setCapability("provider", {
         critical: true,
         state: "failed",
@@ -149,6 +165,7 @@ export class AgentHubStartupCoordinator {
         this.health.completeOperation("provider");
       } catch (error) {
         this.health.failOperation("provider", error);
+        this.#capture(error, "provider-status");
         this.health.setCapability("provider", {
           critical: true,
           state: "failed",
@@ -165,6 +182,7 @@ export class AgentHubStartupCoordinator {
         this.health.completeOperation("provider-metadata");
       }).catch((error) => {
         this.health.failOperation("provider-metadata", error);
+        this.#capture(error, "provider-metadata");
         this.logError("Cannot backfill provider metadata:", error.message);
       });
     }
@@ -174,6 +192,7 @@ export class AgentHubStartupCoordinator {
       this.health.completeOperation("runs");
     }).catch(async (error) => {
       this.health.failOperation("runs", error);
+      this.#capture(error, "runs");
       if (this.telegramEnabled) {
         this.health.setCapability("telegram", {
           critical: false,
@@ -199,6 +218,7 @@ export class AgentHubStartupCoordinator {
         this.health.completeOperation("notifications");
       } catch (error) {
         this.health.failOperation("notifications", error);
+        this.#capture(error, "notifications");
         throw error;
       }
     } else {
@@ -212,6 +232,7 @@ export class AgentHubStartupCoordinator {
       await this.restoreBackgroundJobs().catch(async (error) => {
         backgroundFailed = true;
         this.health.failOperation("background-jobs", error);
+        this.#capture(error, "background-jobs");
         this.health.setCapability("telegram", {
           critical: false,
           state: "failed",
@@ -233,6 +254,7 @@ export class AgentHubStartupCoordinator {
         this.health.completeOperation("telegram");
       }).catch((error) => {
         this.health.failOperation("telegram", error);
+        this.#capture(error, "telegram");
         this.health.setCapability("telegram", {
           critical: false,
           state: "failed",
@@ -261,6 +283,7 @@ export class AgentHubStartupCoordinator {
         this.health.completeOperation("recovery");
       }).catch((error) => {
         this.health.failOperation("recovery", error);
+        this.#capture(error, "recovery");
         this.health.setCapability("sqlite_recovery", {
           critical: false,
           state: "degraded",

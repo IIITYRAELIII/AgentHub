@@ -40,6 +40,7 @@ const {
 
 export function createInteractionShellPhase({
   config,
+  diagnostics,
   root,
   server,
   settings,
@@ -73,6 +74,7 @@ export function createInteractionShellPhase({
 
   const desktopShell = createDesktopShellComposition({
     config,
+    diagnostics,
     limits: {
       projects: settings.projects,
       maxSpeechJobs: settings.maxBackgroundSpeechJobs,
