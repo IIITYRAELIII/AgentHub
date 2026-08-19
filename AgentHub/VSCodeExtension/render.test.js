@@ -157,13 +157,23 @@ test("VS Code bootstrap routes runtime health through the extension bridge", asy
   const responsePromise = harness.window.fetch("/health", { cache: "no-store" });
   assert.equal(harness.nativeFetchCalls(), 0);
   assert.equal(harness.messages.length, 1);
-  assert.equal(harness.messages[0].type, "agenthub:control");
-  assert.equal(harness.messages[0].action, "runtime-health");
-  assert.ok(harness.timeoutDelays[0] > 10_000);
+  assert.equal(harness.messages[0].type, "agenthub:session");
+  harness.listeners.get("message")({
+    data: {
+      type: "agenthub:session-result",
+      id: harness.messages[0].id,
+      ok: false,
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(harness.messages.length, 2);
+  assert.equal(harness.messages[1].type, "agenthub:control");
+  assert.equal(harness.messages[1].action, "runtime-health");
+  assert.ok(harness.timeoutDelays.some((delay) => delay > 10_000));
   harness.listeners.get("message")({
     data: {
       type: "agenthub:control-result",
-      id: harness.messages[0].id,
+      id: harness.messages[1].id,
       ok: true,
       result: { ready: false, startup: { operations: [] } },
     },
@@ -1217,11 +1227,15 @@ test("turn header keeps its actions in the trailing columns", () => {
 });
 
 test("task rail width does not collide with decorative rail thickness", () => {
+  const dialogArea = fs.readFileSync(
+    require.resolve("../assets/web-app/dialog-area.css"),
+    "utf8",
+  );
   const styles = fs.readFileSync(
     require.resolve("../assets/web-app/styles.css"),
     "utf8",
   );
-  assert.match(styles, /--task-rail-width:\s*clamp\(272px, 24vw, 336px\)/u);
+  assert.match(dialogArea, /--task-rail-width:\s*clamp\(230px, 16vw, 280px\)/u);
   assert.match(styles, /grid-template-columns:\s*var\(--task-rail-width\) minmax\(0, 1fr\)/u);
 });
 
