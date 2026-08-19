@@ -3107,7 +3107,7 @@ function openStreamContextMenu(event, tab) {
       disabled: tab.hasAttribute("data-running"),
       title: tab.hasAttribute("data-running")
         ? "Сначала завершите текущий ход"
-        : "Создать новый Codex Thread в этом Stream",
+        : "Создать новый Codex Thread в этом Stream и передать ему handoff-пакет",
     }),
     el("button", {
       type: "button", role: "menuitem", class: "stream-context-action",
@@ -3117,7 +3117,7 @@ function openStreamContextMenu(event, tab) {
       disabled: tab.hasAttribute("data-running"),
       title: tab.hasAttribute("data-running")
         ? "Сначала завершите текущий ход"
-        : "Создать новый Claude Thread в этом Stream",
+        : "Создать новый Claude Thread в этом Stream и передать ему handoff-пакет",
     }),
     el("button", {
       type: "button", role: "menuitem", class: "stream-context-action stream-context-danger",

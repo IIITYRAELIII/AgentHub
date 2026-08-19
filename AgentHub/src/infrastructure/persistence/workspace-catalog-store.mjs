@@ -1316,6 +1316,11 @@ export class WorkspaceCatalogStore {
     `).run(name, String(value));
   }
 
+  deleteMeta(key) {
+    const name = safeIdentifier(key, "workspace catalog meta key");
+    this.#database.prepare("DELETE FROM hub_workspace_catalog_meta WHERE key = ?").run(name);
+  }
+
   transaction(run) {
     if (typeof run !== "function") throw new TypeError("transaction callback is required");
     return this.#transaction(run);

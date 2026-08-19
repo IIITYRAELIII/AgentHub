@@ -31,6 +31,7 @@ export class TaskCommandService {
     selectionStore,
     rotateStream,
     prepareTaskCreation,
+    streamHandoff = null,
   }) {
     Object.assign(this, {
       resolveTarget,
@@ -64,7 +65,26 @@ export class TaskCommandService {
       selectionStore,
       rotateStream,
       prepareTaskCreation,
+      streamHandoff,
     });
+  }
+
+  // A Thread created inside an existing Stream continues that Stream, but no
+  // provider can resume another provider's native context. Request a Hub-built
+  // handoff package so the new Thread does not start blind.
+  #requestStreamHandoff({ stream, provider, previousThread, reason }) {
+    if (!this.streamHandoff || !previousThread) return;
+    try {
+      this.streamHandoff.request({
+        streamId: stream.id,
+        targetProvider: provider,
+        sourceProvider: previousThread.provider,
+        sourceThreadId: previousThread.threadId,
+        reason,
+      });
+    } catch (error) {
+      console.warn(`Cannot prepare Stream handoff for ${stream.id}: ${error.message}`);
+    }
   }
 
   async rename(params) {
@@ -194,6 +214,9 @@ export class TaskCommandService {
       workspace?.settings?.workingDirectory,
       streamSettings.project,
     ].map((value) => String(value ?? "").trim()).find(Boolean) ?? "";
+    const previousThread = params.streamId && typeof this.workspaceCatalog.activeThread === "function"
+      ? this.workspaceCatalog.activeThread(stream.id)
+      : null;
     if (typeof this.prepareTaskCreation === "function") {
       await this.prepareTaskCreation({
         ...streamSettings,
@@ -236,6 +259,14 @@ export class TaskCommandService {
         streamId: stream.id,
         projectRoot: created.projectRoot,
         source: params.streamId ? "rebirth" : "created",
+      });
+    }
+    if (params.streamId && previousThread?.threadId !== created?.threadId) {
+      this.#requestStreamHandoff({
+        stream,
+        provider,
+        previousThread,
+        reason: params.handoffReason,
       });
     }
     this.selectionStore.setThread(created?.threadId ?? null, {

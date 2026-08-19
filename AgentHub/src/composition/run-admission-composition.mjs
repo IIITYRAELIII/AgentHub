@@ -5,6 +5,8 @@ import {
 } from "../domain/deferred-input.mjs";
 import { DeferredInputController } from "../application/deferred-input-controller.mjs";
 import { activeTurnNotSteerable } from "../application/run-coordinator.mjs";
+import { isCodexContextProbeTurn } from "../domain/codex-context-probe.mjs";
+import { prependStreamHandoff } from "../domain/stream-handoff.mjs";
 import { markProviderTurnAccepted } from "../domain/task-runs.mjs";
 
 function explicitSkillCandidatesFromInput(input) {
@@ -70,6 +72,7 @@ export function createRunAdmissionComposition({
   deferredInputPresentation,
   sendMessageTo,
   saveState,
+  streamHandoff = null,
   logger = console,
 }) {
   async function resolvedExplicitSkillNames(input, cwd) {
@@ -117,12 +120,28 @@ export function createRunAdmissionComposition({
     }
   }
 
+  // Internal probe turns carry no user intent, so they must not consume the
+  // package that the first real turn of the receiving Thread is waiting for.
+  async function streamHandoffPrefix(run) {
+    if (!streamHandoff || !run?.streamId || isCodexContextProbeTurn(run)) return "";
+    try {
+      return await streamHandoff.consume({
+        streamId: run.streamId,
+        provider: run.provider,
+        threadId: run.threadId,
+      });
+    } catch (error) {
+      logger.warn(`Cannot build Stream handoff for ${run.streamId}: ${error.message}`);
+      return "";
+    }
+  }
+
   async function launchTurn(run, input, temporaryFiles = [], { forceSpeechButton = false } = {}) {
     return agentProviders.call(
       run.provider,
       "launchTurn",
       run,
-      input,
+      prependStreamHandoff(input, await streamHandoffPrefix(run)),
       temporaryFiles,
       { forceSpeechButton },
     );

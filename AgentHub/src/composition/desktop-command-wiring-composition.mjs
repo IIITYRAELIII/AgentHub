@@ -144,6 +144,7 @@ export function createDesktopCommandWiring({
       createTask: services.createTask,
       rotateStream: (target) => services.streamContextMaintenance.rotate(target),
       workspaceCatalog: services.workspaceCatalog,
+      streamHandoff: services.streamHandoff,
       selectionStore: services.selectionStore,
       activeProvider: state.activeProvider,
       switchProvider,

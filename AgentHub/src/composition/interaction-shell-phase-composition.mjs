@@ -150,6 +150,7 @@ export function createInteractionShellPhase({
       rateLimitHistoryStore: infrastructure.rateLimitHistoryStore,
       workLogUsageStore: infrastructure.workLogUsageStore,
       workspaceCatalogStore: infrastructure.workspaceCatalogStore,
+      streamHandoff: infrastructure.streamHandoff,
       taskBoard: infrastructure.taskBoard,
       taskReadStateStore: infrastructure.taskReadStateStore,
       usdRubRateStore: infrastructure.usdRubRateStore,
@@ -310,6 +311,7 @@ export function createInteractionShellPhase({
       deferredInputPresentation: clients.deferredInputPresentation,
       sendMessageTo: clients.sendMessageTo,
       saveState: api.saveState,
+      streamHandoff: infrastructure.streamHandoff,
     },
     diff: {
       capture: taskGitDiff,

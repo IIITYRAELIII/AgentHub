@@ -86,9 +86,18 @@ function fixture({ run = null, createTask = null } = {}) {
       createStream: ({ workspaceId, name }) => ({ id: "stream-new", workspaceId, name }),
       renameWorkspace: (id, name) => ({ id, name }),
       bindThread: (value) => events.push(["bind", value]),
+      activeThread: (id) => id === "stream-1"
+        ? { provider: "codex", threadId: "thread-1", streamId: "stream-1", projectRoot: "D:/work" }
+        : null,
       thread: (value) => value?.provider === "codex" && value?.threadId === "thread-1"
         ? { provider: "codex", threadId: "thread-1", streamId: "stream-1", projectRoot: "D:/work" }
         : null,
+    },
+    streamHandoff: {
+      request: (value) => {
+        events.push(["handoff", value]);
+        return value;
+      },
     },
     selectionStore: {
       get activeProvider() { return selected.activeProvider; },
@@ -238,6 +247,33 @@ test("task command service can manually continue an existing Stream in Claude", 
     streamId: "stream-1",
     title: "Existing",
   });
+});
+
+test("task command service requests a handoff package for a cross-provider continuation", async () => {
+  const { service, events } = fixture({
+    createTask: async () => ({
+      provider: "claude",
+      threadId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+      projectRoot: "D:/work",
+      title: "Новая задача Claude",
+    }),
+  });
+
+  await service.create({ provider: "claude", streamId: "stream-1" });
+
+  assert.deepEqual(events.find(([name]) => name === "handoff")[1], {
+    streamId: "stream-1",
+    targetProvider: "claude",
+    sourceProvider: "codex",
+    sourceThreadId: "thread-1",
+    reason: undefined,
+  });
+});
+
+test("task command service does not request a handoff for a brand new Workspace", async () => {
+  const { service, events } = fixture();
+  await service.create({ provider: "codex", workspaceName: "Architecture" });
+  assert.equal(events.some(([name]) => name === "handoff"), false);
 });
 
 test("task command service rotates inside the same Stream after context transfer", async () => {

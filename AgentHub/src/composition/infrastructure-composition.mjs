@@ -8,6 +8,7 @@ import { TurnEndNotificationRegistry } from "../application/turn-end-notificatio
 import { createWorkLogUsageStore } from "../application/work-log-usage-store.mjs";
 import { TaskBoardService } from "../application/task-board-service.mjs";
 import { WorkspaceReleaseService } from "../application/workspace-release-service.mjs";
+import { StreamHandoffService } from "../application/stream-handoff-service.mjs";
 import { samePath } from "../infrastructure/filesystem/config.mjs";
 import { runtimeLayout, runtimeReleaseDirectory } from "../infrastructure/filesystem/runtime-layout.mjs";
 import { UsdRubRateStore } from "../infrastructure/network/exchange-rate.mjs";
@@ -148,6 +149,10 @@ export async function createHubInfrastructure({
     defaultProjectRoot: config.projectRoot,
     workspaceCatalogStore,
   });
+  const streamHandoff = new StreamHandoffService({
+    workspaceCatalog: workspaceCatalogStore,
+    workLog: workLogUsageStore,
+  });
   const attachmentDirectory = path.join(runtimeCommandRoot, "attachments");
   const hubMcpSecret = await ensureLocalWebSecret(path.join(runtimeCommandRoot, "hub-mcp.secret"));
   const hubMcpService = new HubMcpService({
@@ -271,6 +276,7 @@ export async function createHubInfrastructure({
     codexRolloutContextSanitizer,
     workLogUsageStore,
     workspaceCatalogStore,
+    streamHandoff,
     preTurnInstructions,
     taskBoard,
     hubMcpService,
