@@ -1424,7 +1424,7 @@ test("chat sends with Enter on desktop and keeps Enter as a newline on phones", 
     assert.match(client, /rememberOutgoing\(request\.taskId, optimistic\);/u);
     assert.match(client, /const queuesOptimistically = request\.followUpMode === "queue"/u);
     assert.match(client, /optimisticDeferredClientUserMessageIds\.add\(request\.requestId\)/u);
-  assert.match(client, /\.\.\.deliveryPatch\(queuesOptimistically \? "queued" : steersOptimistically \? "steering" : "preparing"\)/u);
+  assert.match(client, /\.\.\.deliveryPatch\(queuesOptimistically \? "sending" : steersOptimistically \? "steering" : "preparing"\)/u);
   assert.match(client, /delivery: "Отправляется…"/u);
   assert.match(client, /clientUserMessageId: request\.requestId/u);
   assert.match(client, /reconcileMessageLifecycle\(serverMessages, outgoing\)/u);
@@ -1576,7 +1576,7 @@ test("queue actions are single-flight and steer uses the dedicated server action
   const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
   const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
   assert.match(app, /case "queue-steer":[\s\S]*emit\("queue:steer"/u);
-  assert.match(app, /entry\.optimistic[\s\S]*queue-optimistic", text: "В очереди"/u);
+  assert.match(app, /entry\.optimistic[\s\S]*queue-optimistic"[\s\S]*entry\.delivery[\s\S]*Ожидает подтверждения Hub/u);
   assert.match(client, /queueActionsInFlight\.has\(key\)/u);
   assert.match(client, /optimisticQueueSteerIds\.add[\s\S]*deliveryPatch\("steering"\)[\s\S]*renderTaskQueue/u);
   assert.match(client, /control\("deferred-input", \{ id, action: "steer" \}\)/u);
@@ -1819,7 +1819,7 @@ test("active chat input stays in the manual queue until an explicit action", () 
   assert.match(client, /function optimisticDeferredEntries\(taskIdValue, serverEntries = \[\]\)/u);
   assert.match(client, /mergeDeferredQueueEntries\(\s*serverEntries,/u);
   assert.match(lifecycle, /function mergeDeferredQueueEntries\(serverEntries, clientEntries\)/u);
-  assert.match(
+  assert.doesNotMatch(
     lifecycle,
     /message\?\.role === "user"[\s\S]*deferredIds\.has\(String\(message\?\.clientUserMessageId/u,
   );
