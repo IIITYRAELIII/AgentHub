@@ -78,7 +78,7 @@ export class CodexEventService {
     }
     if (id !== undefined && method) d.logError?.(`Codex server request received: ${method}`);
     const eventTurnId = params.turn?.id ?? params.turnId ?? null;
-    const contextProbe = isCodexContextProbeTurn(params.turn);
+    const contextProbe = isCodexContextProbeTurn(params.turn, { allowTextFallback: false });
     const run = contextProbe
       ? null
       : d.forEvent({
