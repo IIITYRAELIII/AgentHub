@@ -267,50 +267,12 @@ html[data-theme="orange"] .workspace-task-panel .board-task-card:hover {
   border-color: #d9c6b7;
 }
 
-html[data-theme="orange"] .focus-toggle {
-  min-height: var(--shell-tab-height, 2rem);
-}
-
 html[data-theme="orange"] .toolbar .view-settings {
   min-height: var(--shell-tab-height, 2rem);
 }
 
 html[data-theme="orange"] .view-tab[data-view-button="background"] {
   display: none !important;
-}
-
-html[data-theme="orange"] .focus-toggle[aria-pressed="true"] {
-  background: #bf4822;
-  border-color: #df7652;
-  color: #fff;
-}
-
-html[data-theme="orange"] .focus-toggle[aria-pressed="true"]:focus-visible {
-  outline: none;
-}
-
-html[data-theme="orange"][data-focus-mode="true"] .chat-overlay-actions {
-  opacity: 0.72;
-  transition: opacity 0.16s ease;
-}
-
-html[data-theme="orange"][data-focus-mode="true"] .chat-overlay-actions:hover,
-html[data-theme="orange"][data-focus-mode="true"] .chat-overlay-actions:focus-within {
-  opacity: 1;
-}
-
-html[data-theme="orange"][data-focus-mode="true"] .activity-rail-toggle,
-html[data-theme="orange"][data-focus-mode="true"] .workspace-task-panel > header strong {
-  color: #6d5f5b;
-}
-
-html[data-theme="orange"][data-focus-mode="true"] .msg-head {
-  font-size: 0.68rem;
-}
-
-html[data-theme="orange"][data-focus-mode="true"] .msg-user {
-  background: #fff1e8;
-  border-color: #edc7b5;
 }
 
 html[data-background-override="true"][data-background="orange"] {

@@ -1225,7 +1225,7 @@ test("live message never falls back across turns or ambiguous agent messages", (
   assert.equal(lifecycle.liveMessageMatch(ambiguous, live), null);
 });
 
-test("deferred outgoing messages remain visible while the queue owns delivery", () => {
+test("deferred outgoing messages render only in the queue while it owns delivery", () => {
   const deferred = {
     ...message("client-deferred", "Будет отправлено после хода"),
     deliveryState: "queued",
@@ -1234,7 +1234,17 @@ test("deferred outgoing messages remain visible while the queue owns delivery", 
   const visible = lifecycle.visibleConversationMessages([deferred], {
     deferredClientUserMessageIds: ["client-deferred"],
   });
-  assert.deepEqual(visible, [deferred]);
+  assert.deepEqual(visible, []);
+});
+
+test("queued outgoing messages without a client id still render only in the queue", () => {
+  const queued = {
+    role: "user",
+    text: "Будет отправлено после хода",
+    deliveryState: "queued",
+    delivery: "В очереди",
+  };
+  assert.deepEqual(lifecycle.visibleConversationMessages([queued]), []);
 });
 
 test("empty projected messages never render as blank chat cards", () => {
@@ -1604,6 +1614,13 @@ test("deferred queue merges the server row with its optimistic client message", 
   ]));
 });
 
+test("terminal message receipts leave the optimistic deferred queue", () => {
+  assert.equal(lifecycle.receiptLeavesDeferredQueue({ deferred: true, queued: true }), false);
+  assert.equal(lifecycle.receiptLeavesDeferredQueue({ accepted: true, deferred: false }), true);
+  assert.equal(lifecycle.receiptLeavesDeferredQueue({ steered: true }), true);
+  assert.equal(lifecycle.receiptLeavesDeferredQueue({ cancelled: true }), true);
+});
+
 test("live user update enriches a durable duplicate with its attachment and time", () => {
   const merged = lifecycle.mergeLiveUserMessages([{
     id: "durable-user",
@@ -1874,7 +1891,7 @@ test("named-pipe transport errors are recognized and hidden from the interface",
   assert.doesNotMatch(lifecycle.hubErrorMessage(error), /pipe|ENOENT/iu);
 });
 
-test("returning to a busy task keeps its deferred user card visible", () => {
+test("returning to a busy task keeps its deferred user card only in the queue", () => {
   const activeUser = {
     ...message("active-client", "Первый вопрос"),
     turnId: "active-turn",
@@ -1901,7 +1918,7 @@ test("returning to a busy task keeps its deferred user card visible", () => {
       liveProbe: { ...activeAgent, text: undefined },
     },
   );
-  assert.deepEqual(visible, [activeUser, deferredUser]);
+  assert.deepEqual(visible, [activeUser]);
 });
 
 test("context compaction start identifies the task and completion stays in chat", () => {

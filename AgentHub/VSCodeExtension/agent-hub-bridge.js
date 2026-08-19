@@ -109,6 +109,7 @@ class AgentHubBridge {
     this.journalDatabase = journalDatabase;
     this.ownsJournalDatabase = !journalDatabase;
     this.journalDatabaseModule = null;
+    this.webviewSessionModule = null;
     this.resolvedModuleRoot = null;
     this.processIsAlive = processIsAlive;
     this.fetchImpl = fetchImpl;
@@ -140,6 +141,7 @@ class AgentHubBridge {
     if (this.resolvedModuleRoot && this.resolvedModuleRoot !== root) {
       this.desktopModule = null;
       this.journalDatabaseModule = null;
+      this.webviewSessionModule = null;
     }
     this.resolvedModuleRoot = root;
     return root;
@@ -196,8 +198,39 @@ class AgentHubBridge {
     });
   }
 
+  async localWebAddress() {
+    const config = JSON.parse(await readFile(path.join(this.runtimeRoot, "config.json"), "utf8"));
+    if (config?.miniApp?.enabled === false) throw new Error("Локальный Web App Agent Hub отключён");
+    const host = String(config?.miniApp?.host ?? "127.0.0.1").trim().toLowerCase();
+    if (!["127.0.0.1", "localhost", "::1"].includes(host)) {
+      throw new Error("miniApp.host должен быть локальным");
+    }
+    const port = Number(config?.miniApp?.port ?? 8787);
+    if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
+      throw new Error("miniApp.port некорректен");
+    }
+    return `http://${host === "::1" ? `[${host}]` : host}:${port}`;
+  }
+
+  async webviewSession() {
+    const root = await this.backendRoot();
+    const secret = String(await readFile(path.join(this.runtimeRoot, "local-web.secret"), "utf8")).trim();
+    this.webviewSessionModule ??= import(pathToFileURL(path.join(
+      root,
+      "src",
+      "interfaces",
+      "web",
+      "local-webview-session.mjs",
+    )).href);
+    const { createLocalWebviewSession } = await this.webviewSessionModule;
+    return {
+      baseUrl: await this.localWebAddress(),
+      ...createLocalWebviewSession(secret),
+    };
+  }
+
   attachmentDirectory() {
-    return path.join(this.runtimeRoot, "DesktopApp", "attachments");
+    return path.join(this.runtimeRoot, "attachments");
   }
 
   async attachmentPath(id) {
@@ -288,17 +321,7 @@ class AgentHubBridge {
     const url = new URL(requestPath, "https://agent-hub.local");
     if (url.pathname === "/health") {
       try {
-        const config = JSON.parse(await readFile(path.join(this.runtimeRoot, "config.json"), "utf8"));
-        const host = String(config?.miniApp?.host ?? "127.0.0.1").trim().toLowerCase();
-        if (!["127.0.0.1", "localhost", "::1"].includes(host)) {
-          throw new Error("miniApp.host должен быть локальным");
-        }
-        const port = Number(config?.miniApp?.port ?? 8787);
-        if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
-          throw new Error("miniApp.port некорректен");
-        }
-        const address = host === "::1" ? `[${host}]` : host;
-        const response = await this.fetchImpl(`http://${address}:${port}/health`, {
+        const response = await this.fetchImpl(`${await this.localWebAddress()}/health`, {
           headers: { Accept: "application/json" },
           signal: AbortSignal.timeout(10_000),
         });

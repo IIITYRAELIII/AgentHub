@@ -118,6 +118,41 @@ test("compaction start accepts an RPC timeout after the provider turn was observ
   )), true);
 });
 
+test("compaction start reconciles an uncertain RPC timeout from the rollout", async () => {
+  const { service, calls } = harness({
+    knownRolloutPath: async (...args) => {
+      calls.push(["rollout-path", ...args]);
+      return "rollout.jsonl";
+    },
+    readRolloutActivity: async (...args) => {
+      calls.push(["rollout-activity", ...args]);
+      return { activeTurnIds: ["compaction-turn"] };
+    },
+    startCompaction: async () => {
+      const error = new Error("Codex RPC thread/compact/start timed out after 30000 ms");
+      error.uncertain = true;
+      throw error;
+    },
+  });
+
+  const result = await service.startManual({ provider: "codex", threadId: "thread-1" });
+
+  assert.deepEqual(result, {
+    accepted: true,
+    compactionId: "compact-thread-1",
+    message: "Свёртка контекста запущена",
+  });
+  assert.equal(calls.some(([name]) => name === "fail"), false);
+  assert.deepEqual(calls.find(([name]) => name === "rollout-activity"), [
+    "rollout-activity",
+    "rollout.jsonl",
+  ]);
+  assert.equal(calls.some(([name, message]) => (
+    name === "warn"
+    && message.includes("after provider start compaction-turn")
+  )), true);
+});
+
 test("compaction start still fails when the provider turn was not observed", async () => {
   const { service, calls } = harness({
     startCompaction: async () => {

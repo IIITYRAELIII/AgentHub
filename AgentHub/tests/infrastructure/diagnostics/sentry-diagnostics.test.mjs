@@ -104,7 +104,7 @@ test("Sentry diagnostics report only explicitly unexpected control failures", as
   assert.doesNotMatch(requests[0][1].body, /ordinary rejection|broken invariant/u);
 });
 
-test("Sentry diagnostics identify native Desktop host events without leaking messages", async () => {
+test("Sentry diagnostics identify local client events without leaking messages", async () => {
   const requests = [];
   const diagnostics = createSentryDiagnostics({
     fetchImpl: async (...args) => { requests.push(args); return response(); },
@@ -115,14 +115,14 @@ test("Sentry diagnostics identify native Desktop host events without leaking mes
   assert.deepEqual(diagnostics.captureClientEvent({
     kind: "manual",
     name: "InvalidOperationException",
-    message: "private native message",
-    action: "desktop-domain",
-    stack: "InvalidOperationException\n   at AgentHubDesktop.Program.Main() in D:\\Workspace\\Program.cs:line 42",
+    message: "private local message",
+    action: "local-domain",
+    stack: "InvalidOperationException\n   at LocalClient.Main() in D:\\Workspace\\Program.cs:line 42",
   }, { source: "desktop-control" }), { accepted: true });
   await diagnostics.flush();
   const event = JSON.parse(requests[0][1].body.split("\n")[2]);
-  assert.equal(event.tags.component, "desktop-host");
-  assert.equal(event.tags.action, "desktop-domain");
+  assert.equal(event.tags.component, "local-client");
+  assert.equal(event.tags.action, "local-domain");
   assert.equal(event.exception.values[0].stacktrace.frames[0].filename, "<external>");
-  assert.doesNotMatch(requests[0][1].body, /private native message/u);
+  assert.doesNotMatch(requests[0][1].body, /private local message/u);
 });

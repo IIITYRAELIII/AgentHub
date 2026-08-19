@@ -5,14 +5,16 @@ window.__agentHubVscode = vscode;
 const nativeFetch = window.fetch.bind(window);
 const pending = new Map();
 const pendingHealth = new Map();
+const pendingSessions = new Map();
 let sequence = 0;
 const HEALTH_CONTROL_TIMEOUT_MS = 15_000;
+const SESSION_TIMEOUT_MS = 5_000;
+const SESSION_REFRESH_MARGIN_MS = 30_000;
+const EVENT_RECONNECT_MS = 1_500;
+let directSession = null;
+let directSessionRequest = null;
+let eventAbort = null;
 
-/* Retained VS Code WebViews can return from a hidden editor tab with their
-   infinite CSS animations left paused by Electron. Resume only animations
-   that already exist and are meant to repeat forever; reduced-motion rules
-   remove those animations entirely, so the accessibility preference remains
-   authoritative. */
 function resumeWebviewMotion() {
   if (document.hidden) return;
   for (const animation of document.getAnimations?.() ?? []) {
@@ -32,6 +34,14 @@ document.addEventListener("visibilitychange", resumeWebviewMotion);
 
 window.addEventListener("message", (event) => {
   const message = event.data;
+  if (message?.type === "agenthub:session-result") {
+    const request = pendingSessions.get(String(message.id ?? ""));
+    if (!request) return;
+    pendingSessions.delete(String(message.id));
+    window.clearTimeout(request.timer);
+    request.resolve(message.ok ? message.result ?? null : null);
+    return;
+  }
   if (message?.type === "agenthub:control-result") {
     const request = pendingHealth.get(String(message.id ?? ""));
     if (!request) return;
@@ -88,6 +98,57 @@ window.addEventListener("message", (event) => {
   }));
 });
 
+function requestDirectSession() {
+  const id = `session-${Date.now()}-${++sequence}`;
+  return new Promise((resolve) => {
+    const timer = window.setTimeout(() => {
+      pendingSessions.delete(id);
+      resolve(null);
+    }, SESSION_TIMEOUT_MS);
+    pendingSessions.set(id, { resolve, timer });
+    vscode.postMessage({ type: "agenthub:session", id });
+  });
+}
+
+async function ensureDirectSession({ force = false } = {}) {
+  if (
+    !force
+    && directSession
+    && Number(directSession.expiresAt) - Date.now() > SESSION_REFRESH_MARGIN_MS
+  ) return directSession;
+  if (!directSessionRequest) {
+    directSessionRequest = requestDirectSession()
+      .then((value) => {
+        directSession = value?.baseUrl && value?.token ? value : null;
+        return directSession;
+      })
+      .finally(() => { directSessionRequest = null; });
+  }
+  return directSessionRequest;
+}
+
+function directRequestUrl(session, url) {
+  return `${String(session.baseUrl).replace(/\/+$/u, "")}${url.pathname}${url.search}`;
+}
+
+async function directFetch(url, init = {}, retry = true) {
+  const session = await ensureDirectSession();
+  if (!session) return null;
+  const headers = new Headers(init.headers);
+  headers.set("Authorization", `webview ${session.token}`);
+  const response = await nativeFetch(directRequestUrl(session, url), {
+    ...init,
+    headers,
+    credentials: "omit",
+  });
+  if (response.status === 401 && retry) {
+    directSession = null;
+    await ensureDirectSession({ force: true });
+    return directFetch(url, init, false);
+  }
+  return response;
+}
+
 function runtimeHealth() {
   const id = `health-${Date.now()}-${++sequence}`;
   return new Promise((resolve) => {
@@ -108,13 +169,8 @@ function runtimeHealth() {
   });
 }
 
-window.fetch = function agentHubFetch(input, init = {}) {
-  const url = new URL(
-    typeof input === "string" || input instanceof URL ? input : input.url,
-    window.location.href,
-  );
+function fallbackFetch(url, input, init) {
   if (url.pathname === "/health") return runtimeHealth();
-  // Runtime API идёт через расширение: в webview нет собственного HTTP origin.
   if (!url.pathname.startsWith("/api/journal")
     && url.pathname !== "/api/rate-limits") {
     return nativeFetch(input, init);
@@ -134,4 +190,72 @@ window.fetch = function agentHubFetch(input, init = {}) {
       headers: Object.fromEntries(new Headers(init.headers).entries()),
     });
   });
+}
+
+window.fetch = async function agentHubFetch(input, init = {}) {
+  const raw = typeof input === "string" || input instanceof URL ? String(input) : input.url;
+  const url = new URL(raw, window.location.href);
+  const hubRequest = raw.startsWith("/")
+    && (url.pathname === "/health" || url.pathname === "/events" || url.pathname.startsWith("/api/"));
+  if (!hubRequest) return nativeFetch(input, init);
+  return await directFetch(url, init) ?? fallbackFetch(url, input, init);
 };
+
+function parseEventBlock(block) {
+  let type = "message";
+  const data = [];
+  for (const line of block.split(/\r?\n/u)) {
+    if (line.startsWith("event:")) type = line.slice(6).trim() || "message";
+    if (line.startsWith("data:")) data.push(line.slice(5).trimStart());
+  }
+  return { type, data: data.join("\n") };
+}
+
+async function streamDirectEvents() {
+  while (!eventAbort?.signal.aborted) {
+    try {
+      const session = await ensureDirectSession();
+      if (!session) return;
+      const response = await nativeFetch(`${String(session.baseUrl).replace(/\/+$/u, "")}/events`, {
+        headers: { Authorization: `webview ${session.token}` },
+        credentials: "omit",
+        signal: eventAbort.signal,
+      });
+      if (!response.ok || !response.body) throw new Error(`Agent Hub events: HTTP ${response.status}`);
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffered = "";
+      while (!eventAbort.signal.aborted) {
+        const { value, done } = await reader.read();
+        buffered += decoder.decode(value ?? new Uint8Array(), { stream: !done });
+        let boundary = buffered.search(/\r?\n\r?\n/u);
+        while (boundary >= 0) {
+          const separator = buffered.slice(boundary).match(/^\r?\n\r?\n/u)?.[0] ?? "\n\n";
+          const event = parseEventBlock(buffered.slice(0, boundary));
+          buffered = buffered.slice(boundary + separator.length);
+          if (event.type === "journal") {
+            window.postMessage({ type: "agenthub:journal-changed", force: false }, "*");
+          }
+          boundary = buffered.search(/\r?\n\r?\n/u);
+        }
+        if (done) break;
+      }
+    } catch (error) {
+      if (eventAbort?.signal.aborted) return;
+      console.warn("Agent Hub VS Code events disconnected", error);
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, EVENT_RECONNECT_MS));
+  }
+}
+
+window.__agentHubDirectTransport = {
+  available: async () => Boolean(await ensureDirectSession()),
+};
+
+void ensureDirectSession().then((session) => {
+  if (!session) return;
+  eventAbort = new AbortController();
+  void streamDirectEvents();
+});
+
+window.addEventListener("pagehide", () => eventAbort?.abort(), { once: true });

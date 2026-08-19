@@ -26,10 +26,12 @@
   --dialog-shadow-popover: var(--card-shadow);
   --dialog-column-width: 44rem;
   --dialog-stream-tabs-height: 44px;
-  --dialog-stream-tabs-focus-height: 36px;
 }
 
 html[data-view="chat"][data-surface][data-theme] {
+--task-rail-width: clamp(230px, 16vw, 280px);
+--activity-rail-width: clamp(300px, 19vw, 340px);
+
 .chat,
 .stream-chat-columns,
 .stream-chat-columns > .chat-pane,
@@ -53,7 +55,9 @@ html[data-view="chat"][data-surface][data-theme] {
   min-height: var(--dialog-stream-tabs-height) !important;
   overflow: visible;
   padding: 0 !important;
+  position: relative;
   scrollbar-width: none;
+  z-index: 50;
 }
 
 .stream-tabs::-webkit-scrollbar {
@@ -107,6 +111,10 @@ html[data-view="chat"][data-surface][data-theme] {
 
 .stream-tabs-controls .stream-order-toggle {
   background: var(--dialog-sunken) !important;
+}
+
+.stream-order-toggle[hidden] {
+  display: none !important;
 }
 
 .stream-tab-utility:hover,
@@ -206,9 +214,7 @@ html[data-view="chat"][data-surface][data-theme] {
 }
 
 .stream-tabs-track .stream-tab[aria-pressed="true"]::after,
-.stream-tabs-track .stream-tab::before,
-.stream-tabs-track .stream-tab-card::before,
-.stream-tabs-track .stream-tab-card::after {
+.stream-tabs-track .stream-tab::before {
   content: none;
 }
 
@@ -223,9 +229,11 @@ html[data-view="chat"][data-surface][data-theme] {
   flex: 0 0 auto;
   gap: 9px !important;
   height: 100%;
+  justify-content: flex-start !important;
   min-width: 0;
   overflow: visible;
   padding: 0 !important;
+  text-align: left !important;
 }
 
 .stream-tabs-track
@@ -243,6 +251,7 @@ html[data-view="chat"][data-surface][data-theme] {
   font: inherit;
   max-width: min(28rem, 45vw);
   overflow: hidden;
+  text-align: left !important;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -328,17 +337,6 @@ html[data-view="chat"][data-surface][data-theme] {
   flex: 0 0 auto;
   padding: 0 12px 0 18px;
   position: relative;
-}
-
-&[data-focus-mode="true"] .stream-tabs {
-  flex-basis: var(--dialog-stream-tabs-focus-height);
-  height: var(--dialog-stream-tabs-focus-height);
-  min-height: var(--dialog-stream-tabs-focus-height) !important;
-}
-
-&[data-focus-mode="true"] .stream-tabs-track .stream-tab {
-  height: calc(var(--dialog-stream-tabs-focus-height) - 1px);
-  min-height: calc(var(--dialog-stream-tabs-focus-height) - 1px) !important;
 }
 
 .stream-tabs-overflow[hidden] {
@@ -449,7 +447,7 @@ html[data-view="chat"][data-surface][data-theme] {
   height: 42px;
   justify-content: space-between;
   min-width: 0;
-  padding: 0 24px;
+  padding: 0 10px 0 24px;
 }
 
 .stream-chat-meta {
@@ -530,6 +528,38 @@ html[data-view="chat"][data-surface][data-theme] {
   grid-row: 1 / -1;
 }
 
+.dialog-settings-head {
+  min-height: 42px;
+  padding: 0 10px 0 24px;
+}
+
+.dialog-settings-close {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  color: var(--dialog-text-3);
+  display: inline-flex;
+  flex: 0 0 28px;
+  height: 28px;
+  justify-content: center;
+  margin-left: auto;
+  padding: 0;
+  width: 28px;
+}
+
+.dialog-settings-close:hover,
+.dialog-settings-close:focus-visible {
+  background: var(--dialog-control-hover);
+  color: var(--dialog-text-2);
+  outline: 0;
+}
+
+.dialog-settings-close svg {
+  height: 15px;
+  width: 15px;
+}
+
 /* Сообщения одной колонкой. */
 .chat-scroll {
   grid-column: 1;
@@ -596,7 +626,8 @@ html[data-view="chat"]:not([data-surface="mobile"]) .msg-stack-user > .msg-actio
   width: 100%;
 }
 
-.chat-log .msg-agent:not(.msg-live) {
+.chat-log .msg-agent:not(.msg-live),
+.chat-scroll > .msg-live {
   background: var(--dialog-bubble-agent);
   border: 1px solid var(--card-border);
   border-radius: var(--radius-md);
@@ -607,7 +638,7 @@ html[data-view="chat"]:not([data-surface="mobile"]) .msg-stack-user > .msg-actio
 .chat-scroll > .msg-live {
   margin-left: auto;
   margin-right: auto;
-  padding-top: 28px;
+  margin-top: 28px;
   width: min(var(--dialog-column-width), calc(100% - 32px));
 }
 
@@ -1580,7 +1611,37 @@ html[data-view="chat"]:not([data-surface="mobile"]) .msg-stack-user > .msg-actio
   }
 
   .context-usage-bar {
-    width: 32px;
+    background: conic-gradient(
+      var(--dialog-accent) var(--context-percent, 0%),
+      var(--dialog-hairline) 0
+    );
+    border-radius: 50%;
+    height: 16px;
+    overflow: visible;
+    position: relative;
+    width: 16px;
+  }
+
+  .context-usage-bar::after {
+    background: var(--dialog-sunken);
+    border-radius: 50%;
+    content: "";
+    inset: 3px;
+    position: absolute;
+  }
+
+  .context-usage-bar > i,
+  .context-usage > svg {
+    display: none;
+  }
+
+  .context-usage[data-compacting] .context-usage-bar {
+    animation: context-compaction-spin 0.9s linear infinite;
+    background: conic-gradient(
+      transparent 0 24%,
+      var(--dialog-accent) 24% 58%,
+      transparent 58% 100%
+    );
   }
 
   .context-usage-modal {

@@ -19,6 +19,7 @@ import {
 } from "./mini-app-journal-data.mjs";
 import { JournalDatabase } from "../../infrastructure/persistence/journal-database.mjs";
 import { pathInsideOrSame } from "../../infrastructure/filesystem/config.mjs";
+import { validLocalWebviewSession } from "./local-webview-session.mjs";
 
 export { extractWorkLogHtml } from "./mini-app-journal-data.mjs";
 
@@ -180,6 +181,7 @@ const LOCAL_SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
 const LOCAL_SESSION_COOKIE = "agent_hub_local";
 const DEVICE_SESSION_COOKIE = "agent_hub_device";
 const DEVICE_SESSION_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
+const VSCODE_WEBVIEW_ORIGIN = /^(?:vscode-webview:\/\/[a-z0-9-]+|https:\/\/[a-z0-9-]+\.vscode-cdn\.net)$/iu;
 
 function safeEqualText(left, right) {
   const leftBytes = Buffer.from(String(left ?? ""), "utf8");
@@ -647,10 +649,20 @@ export class MiniAppServer {
   async #authorize(request, response) {
     if (!this.#requestNeedsTelegramAuth(request)) {
       if (!this.#localAccessSecret) return { source: "local-mini-app" };
+      const authorization = String(request.headers.authorization ?? "");
+      const webviewToken = authorization.startsWith("webview ")
+        ? authorization.slice(8).trim()
+        : "";
       const cookie = cookieValue(request, LOCAL_SESSION_COOKIE);
       let localAccessSecret = this.#localAccessSecret;
-      if (!validLocalSession(cookie, localAccessSecret)) {
+      if (
+        !validLocalWebviewSession(webviewToken, localAccessSecret)
+        && !validLocalSession(cookie, localAccessSecret)
+      ) {
         localAccessSecret = await this.#refreshLocalAccessSecret();
+      }
+      if (validLocalWebviewSession(webviewToken, localAccessSecret)) {
+        return { source: "local-vscode-webview" };
       }
       if (validLocalSession(cookie, localAccessSecret)) {
         return { source: "local-mini-app" };
@@ -729,6 +741,25 @@ export class MiniAppServer {
   async #handle(request, response) {
     const method = String(request.method ?? "GET").toUpperCase();
     const url = new URL(request.url ?? "/", `http://${this.#host}`);
+    const webviewCors = applyVscodeWebviewCors(
+      request,
+      response,
+      !this.#requireTelegramAuth && Boolean(this.#localAccessSecret),
+    );
+    if (method === "OPTIONS" && webviewCors) {
+      response.writeHead(204, {
+        "Access-Control-Allow-Headers": [
+          "Authorization",
+          "Content-Type",
+          "If-None-Match",
+          "X-Agent-Hub-Attachment-Name",
+        ].join(", "),
+        "Access-Control-Allow-Methods": "GET, HEAD, POST, OPTIONS",
+        "Access-Control-Max-Age": "600",
+      });
+      response.end();
+      return;
+    }
     if (url.pathname === "/api/local-session") {
       if (
         method !== "POST"
@@ -1341,4 +1372,18 @@ export class MiniAppServer {
       });
     } catch {}
   }
+}
+
+function vscodeWebviewCorsOrigin(request, enabled) {
+  const origin = String(request.headers.origin ?? "").trim();
+  return enabled && VSCODE_WEBVIEW_ORIGIN.test(origin) ? origin : "";
+}
+
+function applyVscodeWebviewCors(request, response, enabled) {
+  const origin = vscodeWebviewCorsOrigin(request, enabled);
+  if (!origin) return false;
+  response.setHeader("Access-Control-Allow-Origin", origin);
+  response.setHeader("Access-Control-Expose-Headers", "Content-Type, ETag");
+  response.setHeader("Vary", "Origin");
+  return true;
 }

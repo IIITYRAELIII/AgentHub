@@ -61,7 +61,6 @@ test("publication validates every client before the first deployment", () => {
   const steps = publicationSteps({ fullTestCheckpointId: "release-checkpoint" });
   assert.deepEqual(steps.map((item) => item.label), [
     "Полные тесты Agent Hub",
-    "Сборка и smoke-проверка Agent Hub Desktop",
     "Сборка Agent Hub Mobile",
     "Публикация Mini App Worker",
     "Сборка runtime-релиза",
@@ -71,12 +70,11 @@ test("publication validates every client before the first deployment", () => {
 
   assert.deepEqual(steps[0].args.slice(-2), ["run", "test:all"]);
   assert.equal(steps[0].env.AGENT_HUB_FULL_TEST_CHECKPOINT_ID, "release-checkpoint");
-  assert.match(steps[1].args.at(-1), /ci[\\/]desktop-smoke\.ps1$/u);
-  assert.deepEqual(steps[2].args.slice(-2), ["run", "android:build"]);
+  assert.deepEqual(steps[1].args.slice(-2), ["run", "android:build"]);
   assert.equal(
     steps.findIndex((step) => step.label.includes("Публикация")),
-    3,
-    "deployment must start only after all four validation surfaces pass",
+    2,
+    "deployment must start only after all validation surfaces pass",
   );
 });
 
@@ -196,7 +194,6 @@ test("selective publication maps shared UI to runtime, Worker and surface tests"
       runtimeRestart: true,
       worker: true,
       android: false,
-      desktop: false,
       vscode: false,
       unitTests: true,
       surfaceTests: true,
@@ -215,7 +212,6 @@ test("selective publication maps shared UI to runtime, Worker and surface tests"
       runtimeRestart: true,
       worker: false,
       android: false,
-      desktop: false,
       vscode: false,
       unitTests: true,
       surfaceTests: true,
@@ -230,7 +226,6 @@ test("selective publication maps shared UI to runtime, Worker and surface tests"
       runtimeRestart: true,
       worker: false,
       android: false,
-      desktop: false,
       vscode: false,
       unitTests: true,
       surfaceTests: true,
@@ -324,7 +319,6 @@ test("selective publication records the exact published revision", async () => {
       runtimeRestart: true,
       worker: false,
       android: false,
-      desktop: false,
       vscode: false,
       unitTests: true,
       surfaceTests: true,
@@ -390,7 +384,6 @@ test("selective backend publication records an already queued safe restart witho
 test("every validation failure stops publication before deployment", async () => {
   const validations = [
     "Полные тесты Agent Hub",
-    "Сборка и smoke-проверка Agent Hub Desktop",
     "Сборка Agent Hub Mobile",
   ];
 
@@ -431,19 +424,9 @@ test("CI runs all Agent Hub client checks without deployment", () => {
   assert.match(workflow, /runs-on:\s*windows-latest/u);
   assert.match(workflow, /npm run test:all/u);
   assert.match(workflow, /npm test --prefix VSCodeExtension/u);
-  assert.match(workflow, /ci[\\/]desktop-smoke\.ps1/u);
   assert.match(workflow, /AndroidApp[\\/]build\.ps1/u);
   assert.doesNotMatch(workflow, /worker:deploy|publish:all|runtime:deploy|wrangler deploy/u);
   assert.doesNotMatch(workflow, /\bsecrets\.[A-Za-z0-9_]+/u);
-});
-
-test("Desktop smoke hashes the executable without optional PowerShell cmdlets", () => {
-  const smoke = fs.readFileSync(
-    path.resolve(ROOT, "ci", "desktop-smoke.ps1"),
-    "utf8",
-  );
-  assert.match(smoke, /Security\.Cryptography\.SHA256/u);
-  assert.doesNotMatch(smoke, /Get-FileHash/u);
 });
 
 test("clean worktrees reuse the pinned Wrangler from the main worktree", () => {

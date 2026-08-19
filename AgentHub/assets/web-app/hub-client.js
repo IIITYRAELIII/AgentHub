@@ -106,6 +106,7 @@ const {
   markConnectionFailure,
   messageSendDefinitelyRejected,
   mergeDeferredQueueEntries,
+  receiptLeavesDeferredQueue,
   mergeLiveMaintenance,
   mergeReconciledUserMessage,
   mergeLiveUserMessages,
@@ -574,11 +575,13 @@ function applyMessageReceipts(snapshot) {
     if (!clientUserMessageId || !provider || !threadId) continue;
     const streamId = String(receipt?.streamId ?? "").trim();
     const stableTaskId = taskId(provider, threadId, streamId);
+    if (receiptLeavesDeferredQueue(receipt)) {
+      optimisticDeferredClientUserMessageIds.delete(clientUserMessageId);
+      deferredClientUserMessageIds.delete(clientUserMessageId);
+    }
     if (receipt?.cancelled === true) {
       agentHub.completeSend(clientUserMessageId, { accepted: true });
       outgoingMessages(stableTaskId).delete(clientUserMessageId);
-      optimisticDeferredClientUserMessageIds.delete(clientUserMessageId);
-      deferredClientUserMessageIds.delete(clientUserMessageId);
       continue;
     }
     const patch = receiptDeliveryPatch(receipt);
@@ -1077,7 +1080,11 @@ async function readSnapshot(params = {}) {
 }
 
 async function control(action, params = {}) {
-  const bridged = bridgeCall(action, params);
+  const directTransport = window.__agentHubDirectTransport;
+  const directAvailable = vscode && directTransport
+    ? await directTransport.available()
+    : false;
+  const bridged = directAvailable ? null : bridgeCall(action, params);
   if (bridged) return bridged;
   if (action === "snapshot") return readSnapshot(params);
   await localSessionReady;

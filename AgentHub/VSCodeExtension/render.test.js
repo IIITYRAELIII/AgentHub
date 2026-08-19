@@ -1679,7 +1679,7 @@ test("focused journal turn reuses the task thread without duplicating its prompt
   );
 });
 
-test("desktop focus and settings stay ordered at the right edge", () => {
+test("desktop settings stay available with the mobile composer layout", () => {
   const html = fs.readFileSync(
     require.resolve("../assets/web-app/index.html"),
     "utf8",
@@ -1688,12 +1688,8 @@ test("desktop focus and settings stay ordered at the right edge", () => {
     require.resolve("../assets/web-app/styles.css"),
     "utf8",
   );
-  const focus = html.indexOf("data-focus-toggle");
-  const settings = html.indexOf('data-panel-open="settings"');
-  assert.ok(focus >= 0 && focus < settings);
   assert.match(html, /data-panel-open="settings"[^>]*aria-label="Настройки Agent Hub"/su);
   assert.doesNotMatch(html, /view-settings-label/u);
-  assert.match(styles, /\.toolbar \.focus-toggle\s*\{[^}]*margin-left:\s*auto;/su);
   assert.match(
     styles,
     /html\[data-surface="mobile"\] \.composer-send\s*\{[^}]*grid-column:\s*-2 \/ -1;[^}]*justify-self:\s*end;/su,
@@ -2231,16 +2227,12 @@ test("all themes keep the unified raster Agent Hub mark", () => {
   assert.ok(mark.length > 20_000);
 });
 
-test("native shells package derivatives of the unified Agent Hub mark", () => {
+test("maintained shells package derivatives of the unified Agent Hub mark", () => {
   const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, "package.json"), "utf8"));
-  const desktopBuild = fs.readFileSync(path.resolve(__dirname, "..", "DesktopApp", "build.ps1"), "utf8");
-  const desktopIcon = fs.readFileSync(path.resolve(__dirname, "..", "DesktopApp", "AgentHub.ico"));
   const androidManifest = fs.readFileSync(path.resolve(__dirname, "..", "AndroidApp", "app", "src", "main", "AndroidManifest.xml"), "utf8");
   const androidIcon = fs.readFileSync(path.resolve(__dirname, "..", "AndroidApp", "app", "src", "main", "res", "drawable-nodpi", "ic_agent_hub.png"));
   assert.equal(packageJson.icon, "media/agent-hub-mark.png");
   assert.equal(packageJson.contributes.viewsContainers.activitybar[0].icon, "media/agent-hub-mark.png");
-  assert.match(desktopBuild, /win32icon:[^\r\n]*AgentHub\.ico/u);
-  assert.equal(desktopIcon.subarray(0, 4).toString("hex"), "00000100");
   assert.match(androidManifest, /android:icon="@drawable\/ic_agent_hub"/u);
   assert.match(androidManifest, /android:roundIcon="@drawable\/ic_agent_hub"/u);
   assert.equal(androidIcon.subarray(0, 8).toString("hex"), "89504e470d0a1a0a");

@@ -197,6 +197,7 @@ class WorkLogViewProvider {
       if (this.panel === panel && webviewPanel.visible) this.scheduleRefresh(0, true);
     }, null, this.context.subscriptions);
     panel.webview.onDidReceiveMessage((message) => {
+      if (message?.type === "agenthub:session") void this.handleSessionMessage(message, panel);
       if (message?.type === "agenthub:control") void this.handleControlMessage(message);
       if (message?.type === "agenthub:http") void this.handleHttpMessage(message, panel);
       if (message?.type === "agenthub:runtime-changed") {
@@ -422,6 +423,23 @@ class WorkLogViewProvider {
     }
     if (this.panel !== panel) return;
     await panel.webview.postMessage({ type: "agenthub:journal-changed", force });
+  }
+
+  async handleSessionMessage(message, panel = this.panel) {
+    const id = String(message?.id ?? "");
+    try {
+      const result = await (await this.currentBridge()).webviewSession();
+      if (this.panel !== panel) return;
+      await panel.webview.postMessage({ type: "agenthub:session-result", id, ok: true, result });
+    } catch (error) {
+      if (this.panel !== panel) return;
+      await panel.webview.postMessage({
+        type: "agenthub:session-result",
+        id,
+        ok: false,
+        error: String(error?.message ?? error),
+      });
+    }
   }
 
   async openLink(rawHref) {

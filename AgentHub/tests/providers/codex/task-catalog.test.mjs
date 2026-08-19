@@ -1248,7 +1248,7 @@ test("Codex rollout activity retains local images on a steering message", () => 
         client_id: "steer-with-image",
         message: "Посмотри скрин",
         images: [],
-        local_images: ["C:\\AgentHub\\DesktopApp\\attachments\\screen.png"],
+        local_images: ["C:\\AgentHub\\attachments\\screen.png"],
       },
     }),
   ].join("\n"));
@@ -1260,7 +1260,7 @@ test("Codex rollout activity retains local images on a steering message", () => 
     text: "Посмотри скрин",
     attachmentSources: [{
       type: "path",
-      value: "C:\\AgentHub\\DesktopApp\\attachments\\screen.png",
+      value: "C:\\AgentHub\\attachments\\screen.png",
     }],
   }]);
 });

@@ -134,7 +134,10 @@ export class CodexContextMaintenanceService {
         message: "Свёртка контекста запущена",
       };
     } catch (error) {
-      const observed = this.compactions.get(threadId);
+      const current = this.compactions.get(threadId);
+      const observed = current?.turnId
+        ? current
+        : await this.#reconcileUncertainCompactionStart(threadId, compaction, error);
       if (
         observed?.id === compaction.id
         && normalizedId(observed.turnId)
@@ -152,6 +155,29 @@ export class CodexContextMaintenanceService {
       this.compactions.fail(threadId, compaction.id);
       throw error;
     }
+  }
+
+  async #reconcileUncertainCompactionStart(threadId, compaction, error) {
+    if (error?.uncertain !== true) return this.compactions.get(threadId);
+    let rolloutPath = await this.knownRolloutPath(threadId, compaction.startedAt).catch(() => "");
+    if (!rolloutPath) {
+      const source = await this.readThread(threadId, { fresh: true, includeTurns: false })
+        .catch(() => null);
+      rolloutPath = normalizedId(source?.thread?.path ?? source?.path);
+      if (rolloutPath) this.rememberRolloutPath(threadId, rolloutPath);
+    }
+    if (!rolloutPath) return this.compactions.get(threadId);
+    const activity = await this.readRolloutActivity(rolloutPath).catch(() => null);
+    const turnId = normalizedId(activity?.activeTurnIds?.at(-1));
+    if (!turnId) return this.compactions.get(threadId);
+    return this.compactions.begin(threadId, {
+      origin: compaction.origin,
+      status: "running",
+      turnId,
+      startedAt: compaction.startedAt,
+      captureRawItem: compaction.captureRawItem,
+      beforePercent: compaction.beforePercent,
+    });
   }
 
   startManual(target, options = {}) {

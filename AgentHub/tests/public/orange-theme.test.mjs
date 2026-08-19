@@ -148,12 +148,8 @@ test("orange theme text roles meet the AA contrast contract", async () => {
   }
 });
 
-test("orange focus keeps the main menu and draws one selected Stream border", async () => {
+test("orange draws one selected Stream border", async () => {
   const shellCss = await readFile(new URL("../../assets/web-app/styles.css", import.meta.url), "utf8");
-  const focusBlock = shellCss.match(
-    /html\[data-focus-mode="true"\][\s\S]*?\.brand-text\s*\{[\s\S]*?display:\s*none;[\s\S]*?\}/u,
-  )?.[0] ?? "";
-  assert.doesNotMatch(focusBlock, /\.view-switch/u);
   assert.match(
     shellCss,
     /\.stream-tab\[aria-pressed="true"\]\s+\.stream-tab-card\s*\{\s*border-color:\s*transparent\s*!important;/u,

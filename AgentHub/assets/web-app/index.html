@@ -1,5 +1,6 @@
 <!doctype html>
-<html lang="ru" data-theme="orbit" data-surface="desktop" data-view="chat" data-pane="tasks">
+<html lang="ru" data-theme="orbit" data-surface="desktop" data-view="chat" data-pane="tasks"
+  data-activity-stream-cards="compact">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -24,7 +25,6 @@
   <script src="/background-motion-preference.js" defer></script>
   <script src="/background-image-resolver.js" defer></script>
   <script src="/navigation-tabs-controller.js" defer></script>
-  <script src="/focus-mode-controller.js" defer></script>
   <script src="/stream-tabs-controller.js" defer></script>
   <script src="/connection-banner.js" defer></script>
   <script src="/startup-screen.js" type="module"></script>
@@ -173,21 +173,6 @@
       <div class="toolbar">
         <div class="connection-banner" data-restart-banner hidden role="status"
           aria-live="polite"></div>
-        <button class="refresh focus-toggle" type="button" data-focus-toggle
-          title="Включить режим концентрации" aria-label="Включить режим концентрации"
-          aria-pressed="false">
-          <svg data-phosphor-icon="corners-out" viewBox="0 0 256 256" aria-hidden="true">
-            <polyline points="160 40 216 40 216 96" fill="none" stroke="currentColor"
-              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></polyline>
-            <polyline points="96 216 40 216 40 160" fill="none" stroke="currentColor"
-              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></polyline>
-            <line x1="152" y1="104" x2="216" y2="40" fill="none" stroke="currentColor"
-              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
-            <line x1="104" y1="152" x2="40" y2="216" fill="none" stroke="currentColor"
-              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
-          </svg>
-          <span>Фокус</span>
-        </button>
         <button class="refresh view-settings" type="button" data-panel-open="settings"
           title="Настройки Agent Hub" aria-label="Настройки Agent Hub">
           <svg data-phosphor-icon="sliders-horizontal" viewBox="0 0 256 256" aria-hidden="true">
@@ -410,6 +395,16 @@
         <aside class="dialog-settings" data-dialog-settings hidden aria-label="Настройки диалога">
           <header class="dialog-settings-head">
             <h2>Настройки диалога</h2>
+            <button type="button" class="icon-button dialog-settings-close" data-action="task-settings"
+              data-dialog-settings-close title="Закрыть настройки диалога"
+              aria-label="Закрыть настройки диалога">
+              <svg data-phosphor-icon="x" viewBox="0 0 256 256" aria-hidden="true">
+                <line x1="200" y1="56" x2="56" y2="200" fill="none" stroke="currentColor"
+                  stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+                <line x1="200" y1="200" x2="56" y2="56" fill="none" stroke="currentColor"
+                  stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+              </svg>
+            </button>
           </header>
           <div class="dialog-settings-body">
             <section class="settings-section">
@@ -572,32 +567,6 @@
         <section class="activity-streams activity-recent-streams" aria-label="Недавние потоки">
           <header class="activity-section-head">
             <strong>Недавние</strong>
-            <details class="activity-recent-settings">
-              <summary title="Настроить период недавних потоков" aria-label="Настроить период недавних потоков">
-                <svg data-phosphor-icon="sliders-horizontal" viewBox="0 0 256 256" aria-hidden="true">
-                  <circle cx="104" cy="80" r="24" fill="none" stroke="currentColor"
-                    stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></circle>
-                  <circle cx="168" cy="176" r="24" fill="none" stroke="currentColor"
-                    stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></circle>
-                  <line x1="128" y1="80" x2="216" y2="80" fill="none" stroke="currentColor"
-                    stroke-linecap="round" stroke-width="16"></line>
-                  <line x1="40" y1="80" x2="80" y2="80" fill="none" stroke="currentColor"
-                    stroke-linecap="round" stroke-width="16"></line>
-                  <line x1="192" y1="176" x2="216" y2="176" fill="none" stroke="currentColor"
-                    stroke-linecap="round" stroke-width="16"></line>
-                  <line x1="40" y1="176" x2="144" y2="176" fill="none" stroke="currentColor"
-                    stroke-linecap="round" stroke-width="16"></line>
-                </svg>
-              </summary>
-              <label class="activity-recent-settings-panel">
-                <span>Показывать за</span>
-                <span class="activity-recent-hours-field">
-                  <input type="number" min="0" max="720" step="0.25" inputmode="decimal"
-                    data-activity-recent-hours aria-label="Количество часов для недавних потоков">
-                  <span>ч</span>
-                </span>
-              </label>
-            </details>
           </header>
           <div class="activity-stream-list" data-activity-recent-list></div>
           <p class="activity-stream-empty" data-activity-recent-empty>Нет недавних потоков</p>
@@ -1383,20 +1352,6 @@
             </span>
             <span class="switch-track" aria-hidden="true"></span>
           </label>
-          <label class="setting-row setting-field">
-            <span class="setting-name">Эффект Stream</span>
-            <select data-stream-status-effect-select aria-label="Эффект активности и готового ответа Stream">
-              <option value="calm">Спокойный</option>
-              <option value="impulse">Импульс</option>
-              <option value="scanner">Сканер</option>
-              <option value="energy">Энергия</option>
-              <option value="breath">Дыхание</option>
-              <option value="thread">Нить</option>
-              <option value="sediment">Осадок</option>
-              <option value="echo">Эхо</option>
-              <option value="off">Выключено</option>
-            </select>
-          </label>
           <label class="setting-row setting-field" data-stream-activity-direction-row>
             <span class="setting-name">Новые и активные Stream</span>
             <select data-stream-activity-direction-select
@@ -1404,13 +1359,6 @@
               <option value="start">Начало ленты</option>
               <option value="end">Конец ленты</option>
             </select>
-          </label>
-          <label class="setting-switch">
-            <input type="checkbox" data-stream-status-fill-toggle>
-            <span class="switch-text">Подсвечивать панели Stream целиком
-              <span class="switch-note">Выбранный эффект использует всю поверхность панели вместо одной границы.</span>
-            </span>
-            <span class="switch-track" aria-hidden="true"></span>
           </label>
         </div>
       </section>

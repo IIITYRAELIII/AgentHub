@@ -8,7 +8,7 @@ import { DesktopAttachmentService } from "../../../src/interfaces/desktop/deskto
 test("Desktop attachment service validates, describes and opens local images", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-attachments-"));
   try {
-    const directory = path.join(root, "DesktopApp", "attachments");
+    const directory = path.join(root, "attachments");
     await mkdir(directory, { recursive: true });
     const file = path.join(directory, "image-1.png");
     await writeFile(file, Buffer.from([1, 2, 3]));
@@ -32,7 +32,7 @@ test("Desktop attachment service validates, describes and opens local images", a
 test("Desktop attachment service accepts documents and preserves their names", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-attachments-"));
   try {
-    const directory = path.join(root, "DesktopApp", "attachments");
+    const directory = path.join(root, "attachments");
     await mkdir(directory, { recursive: true });
     const file = path.join(directory, "0123456789abcdef--0J7RgtGH0ZHRgi5wZGY.pdf");
     await writeFile(file, Buffer.from("PDF"));
@@ -56,7 +56,7 @@ test("Desktop attachment service accepts documents and preserves their names", a
 test("Mini App attachment opening delegates to its authenticated publisher", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-attachments-"));
   try {
-    const directory = path.join(root, "DesktopApp", "attachments");
+    const directory = path.join(root, "attachments");
     await mkdir(directory, { recursive: true });
     const file = path.join(directory, "image-2.jpg");
     await writeFile(file, Buffer.from([1]));

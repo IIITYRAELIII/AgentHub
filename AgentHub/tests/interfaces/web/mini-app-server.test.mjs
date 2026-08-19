@@ -17,6 +17,7 @@ import { buildLazyJournalPayload } from "../../../src/interfaces/web/mini-app-jo
 import { createAttachmentStorageName } from "../../../src/domain/attachment-files.mjs";
 import { createDesktopControlRouter } from "../../../src/interfaces/desktop/desktop-control-router.mjs";
 import { createRuntimeHealth } from "../../../src/application/runtime-health.mjs";
+import { createLocalWebviewSession } from "../../../src/interfaces/web/local-webview-session.mjs";
 
 const LIMITS_HTML = '<div data-work-log-rate-limits data-sampled-at="2026-07-30T02:55:14.512Z">'
   + '<span data-rate-limit-caption>Лимиты</span>'
@@ -30,6 +31,45 @@ const DAY_HTML = [
   "</details>",
 ].join("");
 const BOT_TOKEN = "123456789:test-token";
+
+test("local Web App accepts short-lived VS Code WebView CORS sessions", async () => {
+  const secret = "v".repeat(43);
+  const origin = "vscode-webview://agent-hub-test";
+  const server = new MiniAppServer({
+    host: "127.0.0.1",
+    port: 0,
+    journalDatabase: memoryJournal(DAY_HTML),
+    localAccessSecret: secret,
+  });
+  try {
+    const address = await server.start();
+    const preflight = await fetch(`${address.url}api/journal`, {
+      method: "OPTIONS",
+      headers: {
+        Origin: origin,
+        "Access-Control-Request-Method": "GET",
+        "Access-Control-Request-Headers": "authorization",
+      },
+    });
+    assert.equal(preflight.status, 204);
+    assert.equal(preflight.headers.get("access-control-allow-origin"), origin);
+
+    const session = createLocalWebviewSession(secret);
+    const response = await fetch(`${address.url}api/journal`, {
+      headers: { Origin: origin, Authorization: `webview ${session.token}` },
+    });
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("access-control-allow-origin"), origin);
+    assert.match((await response.json()).html, /Пилот/u);
+
+    const expired = createLocalWebviewSession(secret, { now: Date.now() - 60_000, ttlSeconds: 30 });
+    assert.equal((await fetch(`${address.url}api/journal`, {
+      headers: { Origin: origin, Authorization: `webview ${expired.token}` },
+    })).status, 401);
+  } finally {
+    await server.close();
+  }
+});
 
 test("Mini App close terminates an incomplete HTTP connection and can restart", async () => {
   const server = new MiniAppServer({

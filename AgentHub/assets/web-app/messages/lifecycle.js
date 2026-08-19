@@ -635,9 +635,23 @@ function withoutContextProbeMessages(messages) {
 }
 
 function visibleConversationMessages(messages, {
+  deferredClientUserMessageIds = [],
   liveProbe = null,
 } = {}) {
+  const deferredIds = new Set([...deferredClientUserMessageIds]
+    .map((value) => String(value ?? "").trim())
+    .filter(Boolean));
   const visible = withoutContextProbeMessages(messages).filter((message) => {
+    const deliveryState = String(message?.deliveryState ?? "").trim();
+    if (message?.role === "user" && (deliveryState === "queued" || deliveryState === "deferred")) {
+      return false;
+    }
+    const clientUserMessageId = String(
+      message?.clientUserMessageId ?? message?.clientId ?? "",
+    ).trim();
+    if (message?.role === "user" && clientUserMessageId && deferredIds.has(clientUserMessageId)) {
+      return false;
+    }
     return Boolean(
       String(message?.text ?? "").trim()
       || normalizedResponseAnnotations(message?.responseAnnotations).some((item) => (
@@ -806,6 +820,12 @@ function deferredClientMessageId(entry) {
       ?? entry?.requestId
       ?? "",
   ).trim();
+}
+
+function receiptLeavesDeferredQueue(receipt) {
+  return receipt?.cancelled === true
+    || receipt?.accepted === true
+    || receipt?.steered === true;
 }
 
 function mergeDeferredQueueEntries(serverEntries, clientEntries) {
@@ -1139,6 +1159,7 @@ globalThis.AgentHubMessageLifecycle = Object.freeze({
   markConnectionFailure,
   messageSendDefinitelyRejected,
   mergeDeferredQueueEntries,
+  receiptLeavesDeferredQueue,
   mergeLiveMaintenance,
   mergeLiveUserMessages,
   mergeTurnMaintenanceMessages,

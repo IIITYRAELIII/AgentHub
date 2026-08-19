@@ -18,7 +18,20 @@
 
   const STREAM_CARD_MIN_WIDTH = 90;
   const STREAM_CARD_MAX_WIDTH = 450;
+  const DEFAULT_ACTIVITY_RECENT_MINUTES = 3 * 60;
+  const MAX_ACTIVITY_RECENT_MINUTES = 30 * 24 * 60;
+  const ACTIVITY_STREAM_DETAILED_CARDS_KEY = "agent-hub:activity-stream-detailed-cards:v1";
+  const STREAM_STATUS_EFFECT_KEY = "agent-hub-stream-status-effect";
+  const STREAM_STATUS_STYLE_KEY = "agent-hub-stream-status-style";
   const STREAM_CARD_SETTINGS_CHANGE_EVENT = "agenthub:stream-card-settings-change";
+  const STREAM_VIEW_SETTINGS_CHANGE_EVENT = "agenthub:stream-view-settings-change";
+
+  function normalizeActivityRecentMinutes(value) {
+    const minutes = Math.round(Number(value));
+    return Number.isFinite(minutes)
+      ? Math.max(0, Math.min(MAX_ACTIVITY_RECENT_MINUTES, minutes))
+      : DEFAULT_ACTIVITY_RECENT_MINUTES;
+  }
 
   function normalizeStreamCardSettings(value) {
     const widthMode = value?.streamCardWidthMode ?? value?.widthMode;
@@ -173,8 +186,15 @@
 
   function compactStreamActivityValue(value) {
     const source = String(value ?? "").trim();
+    if (source === "только что") return "<1м";
     const compact = source.replace(/\s*\d+\s*с$/u, "").trim();
     return compact !== source ? compact || "<1м" : source;
+  }
+
+  function normalizeImmediateTimeLabels(container) {
+    container?.querySelectorAll?.(".task-workspace-time, .task-time").forEach((label) => {
+      if (label.textContent.trim() === "только что") label.textContent = "<1м";
+    });
   }
 
   function resolveStableStreamCardWidth(widths, streamId, measuredWidth = 0) {
@@ -380,15 +400,35 @@
       this.window = windowRef;
       this.root = documentRef.documentElement;
       this.tabs = documentRef.querySelector("[data-stream-tabs]");
+      this.legacyRecentHours = documentRef.querySelector("[data-activity-recent-hours]");
+      this.themeLabPreview = new this.window.URLSearchParams(this.window.location.search).has("theme-lab");
       this.widthMode = STREAM_CARD_WIDTH_MODES.AUTO;
       this.fixedWidth = STREAM_CARD_MIN_WIDTH;
       this.gapEnabled = false;
+      this.activityRecentMinutes = DEFAULT_ACTIVITY_RECENT_MINUTES;
       this.open = false;
       this.frame = 0;
       this.autoWidths = new Map();
       this.wrapper = null;
       this.tabsObserver = null;
       this.rootObserver = null;
+      this.timeLabelObservers = [];
+      this.document.querySelector("[data-focus-toggle]")?.remove();
+      this.document.querySelector(".activity-recent-settings")?.remove();
+      this.root.removeAttribute("data-focus-mode");
+      if (this.themeLabPreview) this.installDialogSettingsClose();
+      if (this.themeLabPreview) this.installImmediateTimeLabels();
+      if (this.themeLabPreview) {
+        try {
+          if (this.window.localStorage.getItem(ACTIVITY_STREAM_DETAILED_CARDS_KEY) === "true") {
+            this.root.dataset.activityStreamCards = "detailed";
+          } else {
+            delete this.root.dataset.activityStreamCards;
+          }
+        } catch {
+          delete this.root.dataset.activityStreamCards;
+        }
+      }
       if (!this.tabs) return;
       this.onDocumentClick = (event) => {
         const wrapper = this.tabs.querySelector("[data-stream-card-settings]");
@@ -423,10 +463,53 @@
         this.rootObserver = new this.window.MutationObserver(() => this.schedule());
         this.rootObserver.observe(this.root, {
           attributes: true,
-          attributeFilter: ["data-surface", "data-theme"],
+          attributeFilter: [
+            "data-activity-stream-cards",
+            "data-stream-status-effect",
+            "data-stream-status-style",
+            "data-surface",
+            "data-theme",
+          ],
         });
       }
       this.schedule();
+    }
+
+    installDialogSettingsClose() {
+      const head = this.document.querySelector(".dialog-settings-head");
+      if (!head || head.querySelector("[data-dialog-settings-close]")) return;
+      const button = this.document.createElement("button");
+      button.type = "button";
+      button.className = "icon-button dialog-settings-close";
+      button.dataset.action = "task-settings";
+      button.dataset.dialogSettingsClose = "";
+      button.title = "Закрыть настройки диалога";
+      button.setAttribute("aria-label", "Закрыть настройки диалога");
+      button.innerHTML = `
+        <svg data-phosphor-icon="x" viewBox="0 0 256 256" aria-hidden="true">
+          <line x1="200" y1="56" x2="56" y2="200" fill="none" stroke="currentColor"
+            stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+          <line x1="200" y1="200" x2="56" y2="56" fill="none" stroke="currentColor"
+            stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></line>
+        </svg>`;
+      head.append(button);
+    }
+
+    installImmediateTimeLabels() {
+      for (const selector of [
+        "[data-task-list]",
+        "[data-stream-tabs]",
+        "[data-activity-stream-list]",
+        "[data-activity-recent-list]",
+      ]) {
+        const container = this.document.querySelector(selector);
+        if (!container) continue;
+        normalizeImmediateTimeLabels(container);
+        if (typeof this.window.MutationObserver !== "function") continue;
+        const observer = new this.window.MutationObserver(() => normalizeImmediateTimeLabels(container));
+        observer.observe(container, { childList: true, characterData: true, subtree: true });
+        this.timeLabelObservers.push(observer);
+      }
     }
 
     isActive() {
@@ -447,9 +530,11 @@
     }
 
     sync() {
+      const orderToggle = this.tabs.querySelector(".stream-order-toggle");
       if (!this.isActive()) {
         this.root.removeAttribute("data-stream-card-settings");
         this.tabs.querySelector("[data-stream-card-settings]")?.remove();
+        if (orderToggle) orderToggle.hidden = false;
         this.wrapper = null;
         this.tabs.removeAttribute("data-stream-card-width-mode");
         this.tabs.removeAttribute("data-stream-card-gap-mode");
@@ -458,9 +543,9 @@
         return;
       }
       const overflow = this.tabs.querySelector(".stream-tabs-overflow");
-      const orderToggle = this.tabs.querySelector(".stream-order-toggle");
       if (!overflow || !orderToggle) return;
       this.root.dataset.streamCardSettings = "true";
+      orderToggle.hidden = true;
       let wrapper = this.tabs.querySelector("[data-stream-card-settings]");
       if (streamCardSettingsWrapperNeedsReplacement(this.wrapper, wrapper)) {
         wrapper?.remove();
@@ -477,36 +562,88 @@
       wrapper.dataset.streamCardSettings = "true";
       wrapper.innerHTML = `
         <button type="button" class="stream-card-settings-toggle" data-stream-card-settings-toggle
-          aria-label="Настройки карточек потоков" aria-expanded="false" title="Настройки карточек потоков"></button>
+          aria-label="Настройки Streams" aria-expanded="false" title="Настройки Streams"></button>
         <div class="stream-card-settings-menu" data-stream-card-settings-menu role="dialog"
-          aria-label="Настройки карточек потоков" hidden>
-          <div class="stream-card-settings-section stream-card-settings-order-section">
-            <span class="stream-card-settings-kicker">Порядок потоков</span>
-            <span class="stream-card-settings-segmented" role="group" aria-label="Порядок потоков">
-              <button type="button" data-stream-order-mode="activity" title="По последней активности">Авто</button>
-              <button type="button" data-stream-order-mode="manual">Фикс</button>
-            </span>
-          </div>
-          <div class="stream-card-settings-section">
-            <span class="stream-card-settings-kicker">Ширина карточек потоков</span>
-            <span class="stream-card-settings-segmented" role="group" aria-label="Режим ширины карточек потоков">
-              <button type="button" data-stream-width-mode="auto" aria-pressed="true">Авто</button>
-              <button type="button" data-stream-width-mode="fixed" aria-pressed="false">Фикс</button>
-            </span>
-            <label class="stream-card-settings-range" data-stream-card-range hidden>
-              <span><span data-stream-card-width-value>${this.fixedWidth}</span> px</span>
-              <input type="range" min="${STREAM_CARD_MIN_WIDTH}" max="${STREAM_CARD_MAX_WIDTH}" step="1"
-                value="${this.fixedWidth}" data-stream-card-width aria-label="Ширина карточек потоков">
-              <small>${STREAM_CARD_MIN_WIDTH} — ${STREAM_CARD_MAX_WIDTH} px</small>
-            </label>
-          </div>
-          <div class="stream-card-settings-section stream-card-settings-gap-section">
-            <span class="stream-card-settings-kicker">Отступ</span>
-            <button type="button" class="stream-card-gap-toggle" role="switch" aria-checked="false"
-              aria-label="Отступ между карточками потоков" data-stream-gap-toggle>
-              <span class="switch-track" aria-hidden="true"></span>
-            </button>
-          </div>
+          aria-label="Настройки Streams" hidden>
+          <section class="stream-card-settings-group" aria-labelledby="stream-settings-status-title">
+            <h3 class="stream-card-settings-group-title" id="stream-settings-status-title">Потоки</h3>
+            <div class="stream-card-settings-section stream-card-settings-inline-section">
+              <span class="stream-card-settings-kicker">Эффект</span>
+              <select data-stream-status-effect-select
+                aria-label="Эффект активности и готового ответа Stream">
+                <option value="calm">Спокойный</option>
+                <option value="impulse">Импульс</option>
+                <option value="scanner">Сканер</option>
+                <option value="energy">Энергия</option>
+                <option value="breath">Дыхание</option>
+                <option value="thread">Нить</option>
+                <option value="sediment">Осадок</option>
+                <option value="echo">Эхо</option>
+                <option value="off">Выключено</option>
+              </select>
+            </div>
+            <div class="stream-card-settings-section stream-card-settings-gap-section"
+              title="Использовать всю поверхность панели вместо одной границы.">
+              <span class="stream-card-settings-kicker">Подсвечивать целиком</span>
+              <button type="button" class="stream-card-gap-toggle stream-card-settings-switch"
+                role="switch" aria-checked="false" aria-label="Подсвечивать панели Stream целиком"
+                data-stream-status-fill-toggle>
+                <span class="switch-track" aria-hidden="true"></span>
+              </button>
+            </div>
+          </section>
+          <section class="stream-card-settings-group" aria-labelledby="stream-settings-top-title">
+            <h3 class="stream-card-settings-group-title" id="stream-settings-top-title">Верхняя панель</h3>
+            <div class="stream-card-settings-section stream-card-settings-inline-section">
+              <span class="stream-card-settings-kicker">Порядок</span>
+              <span class="stream-card-settings-segmented" role="group" aria-label="Порядок потоков">
+                <button type="button" data-stream-order-mode="activity" title="По последней активности">Авто</button>
+                <button type="button" data-stream-order-mode="manual">Фикс</button>
+              </span>
+            </div>
+            <div class="stream-card-settings-section stream-card-settings-inline-section">
+              <span class="stream-card-settings-kicker">Ширина</span>
+              <span class="stream-card-settings-segmented" role="group" aria-label="Режим ширины карточек потоков">
+                <button type="button" data-stream-width-mode="auto" aria-pressed="true">Авто</button>
+                <button type="button" data-stream-width-mode="fixed" aria-pressed="false">Фикс</button>
+              </span>
+              <label class="stream-card-settings-range" data-stream-card-range hidden>
+                <span><span data-stream-card-width-value>${this.fixedWidth}</span> px</span>
+                <input type="range" min="${STREAM_CARD_MIN_WIDTH}" max="${STREAM_CARD_MAX_WIDTH}" step="1"
+                  value="${this.fixedWidth}" data-stream-card-width aria-label="Ширина карточек потоков">
+                <small>${STREAM_CARD_MIN_WIDTH} — ${STREAM_CARD_MAX_WIDTH} px</small>
+              </label>
+            </div>
+            <div class="stream-card-settings-section stream-card-settings-gap-section">
+              <span class="stream-card-settings-kicker">Отступ</span>
+              <button type="button" class="stream-card-gap-toggle" role="switch" aria-checked="false"
+                aria-label="Отступ между карточками потоков" data-stream-gap-toggle>
+                <span class="switch-track" aria-hidden="true"></span>
+              </button>
+            </div>
+          </section>
+          <section class="stream-card-settings-group" aria-labelledby="stream-settings-right-title">
+            <h3 class="stream-card-settings-group-title" id="stream-settings-right-title">Правая панель</h3>
+            <div class="stream-card-settings-section stream-card-settings-recent-section">
+              <span class="stream-card-settings-kicker">Показывать недавние за</span>
+              <span class="stream-card-settings-duration">
+                <label>
+                  <input type="number" min="0" max="720" step="0.5" inputmode="decimal"
+                    data-stream-recent-hours aria-label="Часы для недавних Streams">
+                  <span>ч</span>
+                </label>
+              </span>
+            </div>
+            <div class="stream-card-settings-section stream-card-settings-gap-section"
+              title="Показывать агента, модель и среду в правой панели.">
+              <span class="stream-card-settings-kicker">Подробные карточки</span>
+              <button type="button" class="stream-card-gap-toggle stream-card-settings-switch"
+                role="switch" aria-checked="false" aria-label="Подробные карточки Streams"
+                data-stream-detailed-toggle>
+                <span class="switch-track" aria-hidden="true"></span>
+              </button>
+            </div>
+          </section>
         </div>`;
       const sourceIcon = this.document.querySelector(".view-settings svg");
       if (sourceIcon) {
@@ -551,6 +688,36 @@
         this.update(wrapper);
         this.refreshOverflow();
       });
+      const updateRecentPeriod = () => {
+        const rawHours = Math.max(0, Number(wrapper.querySelector("[data-stream-recent-hours]")?.value) || 0);
+        const hours = Math.round(rawHours * 2) / 2;
+        this.activityRecentMinutes = normalizeActivityRecentMinutes(hours * 60);
+        if (this.themeLabPreview && this.legacyRecentHours) {
+          this.legacyRecentHours.value = String(hours);
+          this.legacyRecentHours.dispatchEvent(new this.window.Event("change", { bubbles: true }));
+        }
+        this.emitSetting("activityRecentMinutes", this.activityRecentMinutes);
+        this.update(wrapper);
+      };
+      wrapper.querySelector("[data-stream-recent-hours]").addEventListener("change", updateRecentPeriod);
+      wrapper.querySelector("[data-stream-detailed-toggle]").addEventListener("click", () => {
+        this.applyViewSetting(
+          "activityStreamDetailedCards",
+          this.root.dataset.activityStreamCards !== "detailed",
+        );
+        this.update(wrapper);
+      });
+      wrapper.querySelector("[data-stream-status-effect-select]").addEventListener("change", (event) => {
+        this.applyViewSetting("streamStatusEffect", event.currentTarget.value);
+        this.update(wrapper);
+      });
+      wrapper.querySelector("[data-stream-status-fill-toggle]").addEventListener("click", () => {
+        this.applyViewSetting(
+          "streamStatusStyle",
+          this.root.dataset.streamStatusStyle === "fill" ? "edge" : "fill",
+        );
+        this.update(wrapper);
+      });
       const range = wrapper.querySelector("[data-stream-card-width]");
       range.addEventListener("input", (event) => {
         this.fixedWidth = Math.min(
@@ -578,6 +745,9 @@
       this.widthMode = settings.widthMode;
       this.fixedWidth = settings.fixedWidth;
       this.gapEnabled = settings.gapEnabled;
+      if (Object.hasOwn(value ?? {}, "activityRecentMinutes")) {
+        this.activityRecentMinutes = normalizeActivityRecentMinutes(value.activityRecentMinutes);
+      }
       if (this.wrapper?.isConnected) this.update(this.wrapper);
       else this.schedule();
       this.refreshOverflow();
@@ -589,6 +759,39 @@
         STREAM_CARD_SETTINGS_CHANGE_EVENT,
         { detail: { key, value } },
       ));
+    }
+
+    emitViewSetting(key, value) {
+      this.document.dispatchEvent(new this.window.CustomEvent(
+        STREAM_VIEW_SETTINGS_CHANGE_EVENT,
+        { detail: { key, value } },
+      ));
+    }
+
+    applyViewSetting(key, value) {
+      if (!this.themeLabPreview) {
+        this.emitViewSetting(key, value);
+        return;
+      }
+      if (key === "activityStreamDetailedCards") {
+        const detailed = Boolean(value);
+        if (detailed) this.root.dataset.activityStreamCards = "detailed";
+        else delete this.root.dataset.activityStreamCards;
+        try {
+          this.window.localStorage.setItem(ACTIVITY_STREAM_DETAILED_CARDS_KEY, String(detailed));
+        } catch {}
+      } else if (key === "streamStatusEffect") {
+        this.root.dataset.streamStatusEffect = String(value || "impulse");
+        try {
+          this.window.localStorage.setItem(STREAM_STATUS_EFFECT_KEY, this.root.dataset.streamStatusEffect);
+        } catch {}
+      } else if (key === "streamStatusStyle") {
+        this.root.dataset.streamStatusStyle = value === "fill" ? "fill" : "edge";
+        try {
+          this.window.localStorage.setItem(STREAM_STATUS_STYLE_KEY, this.root.dataset.streamStatusStyle);
+        } catch {}
+      }
+      this.emitViewSetting(key, value);
     }
 
     orderMode() {
@@ -618,6 +821,19 @@
       this.tabs.dataset.streamCardGapMode = this.gapEnabled ? "on" : "off";
       wrapper.querySelector("[data-stream-gap-toggle]")
         ?.setAttribute("aria-checked", String(this.gapEnabled));
+      const recentHours = Math.round(this.activityRecentMinutes / 30) / 2;
+      const recentHoursInput = wrapper.querySelector("[data-stream-recent-hours]");
+      if (recentHoursInput) recentHoursInput.value = String(recentHours);
+      wrapper.querySelector("[data-stream-detailed-toggle]")?.setAttribute(
+        "aria-checked",
+        String(this.root.dataset.activityStreamCards === "detailed"),
+      );
+      const effectSelect = wrapper.querySelector("[data-stream-status-effect-select]");
+      if (effectSelect) effectSelect.value = this.root.dataset.streamStatusEffect || "impulse";
+      wrapper.querySelector("[data-stream-status-fill-toggle]")?.setAttribute(
+        "aria-checked",
+        String(this.root.dataset.streamStatusStyle === "fill"),
+      );
       const rangeWrap = wrapper.querySelector("[data-stream-card-range]");
       if (rangeWrap) rangeWrap.hidden = this.widthMode !== STREAM_CARD_WIDTH_MODES.FIXED;
       this.updateCardPresentation();
@@ -745,7 +961,7 @@
 
   function applyStreamCardSettings(settings) {
     const normalized = normalizeStreamCardSettings(settings);
-    installedStreamCardSettings?.applySettings(normalized);
+    installedStreamCardSettings?.applySettings(settings);
     return normalized;
   }
 
@@ -763,6 +979,7 @@
     STREAM_CARD_MIN_WIDTH,
     STREAM_CARD_SETTINGS_CHANGE_EVENT,
     STREAM_CARD_WIDTH_MODES,
+    STREAM_VIEW_SETTINGS_CHANGE_EVENT,
     streamCardSettingsAvailable,
     streamCardSettingsWrapperNeedsReplacement,
     setTextContentIfChanged,
@@ -772,6 +989,7 @@
     applyStreamCardSettings,
     installStreamCardSettings,
     normalizeStreamActivityDirection,
+    normalizeActivityRecentMinutes,
     normalizeStreamCardSettings,
     normalizeStreamOrderMode,
     applyOpenStreamSelection,

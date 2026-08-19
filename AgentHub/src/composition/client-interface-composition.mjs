@@ -133,7 +133,7 @@ export async function createClientInterfaceComposition({
   const sharedDashboardBotClient = config.sharedDashboardBot?.enabled
     ? new SharedDashboardBotClient({
       ...config.sharedDashboardBot,
-      attachmentDirectory: path.join(runtimeCommandRoot, "DesktopApp", "attachments"),
+      attachmentDirectory: path.join(runtimeCommandRoot, "attachments"),
       handler: handleDesktopControl,
     })
     : null;

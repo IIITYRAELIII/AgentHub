@@ -34,7 +34,6 @@ const emptyPlan = () => ({
   runtimeRestart: false,
   worker: false,
   android: false,
-  desktop: false,
   vscode: false,
   unitTests: false,
   surfaceTests: false,
@@ -82,10 +81,6 @@ export function classifyPublicationChanges(files) {
     if (relative.startsWith("AndroidApp/")) {
       plan.android = true;
       plan.worker = true;
-      continue;
-    }
-    if (relative.startsWith("DesktopApp/")) {
-      plan.desktop = true;
       continue;
     }
     if (relative.startsWith("RuntimeHost/")) {
@@ -145,7 +140,6 @@ function focusedSteps(plan, { fullTestCheckpointId = "" } = {}) {
   if (!plan.fullTests && (plan.vscode || plan.runtime)) {
     steps.push(npmStep("Тесты расширения VS Code", ["test", "--prefix", "VSCodeExtension"]));
   }
-  if (plan.desktop) steps.push(byLabel.get("Сборка и smoke-проверка Agent Hub Desktop"));
   if (plan.android) steps.push(byLabel.get("Сборка Agent Hub Mobile"));
   if (plan.worker) steps.push(byLabel.get("Публикация Mini App Worker"));
   if (plan.runtime) {

@@ -86,7 +86,7 @@ export class MiniAppLifecycleService {
         controlReceiptFile: path.join(this.config.dataDir, "mini-app-control-receipts.json"),
         controlReconciler: this.controlReconciler,
         onControlResultDelivered: async ({ id }) => this.forgetControl(id),
-        attachmentDirectory: path.join(this.runtimeCommandRoot, "DesktopApp", "attachments"),
+        attachmentDirectory: path.join(this.runtimeCommandRoot, "attachments"),
         onPublished: async (url) => {
           if (!preferredMenuUrl) await this.configureMenu(url, this.config.miniApp.worker.menuText);
           this.logger.log(`Agent Hub Worker ready at ${url}`);

@@ -86,7 +86,7 @@ test("VS Code bridge stages pasted images in the allowed runtime directory", asy
       type: "image/png",
       dataUrl: `data:image/png;base64,${body.toString("base64")}`,
     });
-    assert.equal(path.dirname(target), path.join(root, "DesktopApp", "attachments"));
+    assert.equal(path.dirname(target), path.join(root, "attachments"));
     assert.deepEqual(await readFile(target), body);
     assert.equal(await bridge.attachmentPath(path.basename(target)), target);
     await assert.rejects(bridge.attachmentPath("../outside.png"), /идентификатор/u);
@@ -293,6 +293,31 @@ test("VS Code bridge proxies runtime health without reading the journal", async 
     assert.equal(requestedUrl, "http://127.0.0.1:9876/health");
     assert.equal(response.status, 200);
     assert.equal(JSON.parse(response.body).startup.operations[0].state, "running");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("VS Code bridge issues a short-lived direct WebView session", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-vscode-session-"));
+  try {
+    await writeFile(path.join(root, "config.json"), JSON.stringify({
+      miniApp: { enabled: true, host: "127.0.0.1", port: 9876 },
+    }), "utf8");
+    const secret = "w".repeat(43);
+    await writeFile(path.join(root, "local-web.secret"), secret, "utf8");
+    const bridge = new AgentHubBridge({
+      moduleRoot: path.resolve(__dirname, ".."),
+      runtimeRoot: root,
+    });
+    const session = await bridge.webviewSession();
+    const { validLocalWebviewSession } = await import(
+      "../src/interfaces/web/local-webview-session.mjs"
+    );
+    assert.equal(session.baseUrl, "http://127.0.0.1:9876");
+    assert.notEqual(session.token, secret);
+    assert.equal(validLocalWebviewSession(session.token, secret), true);
+    assert.ok(session.expiresAt > Date.now());
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -94,20 +94,20 @@ AH-007 существенно уменьшен, 10 обнаруженных пр
 | 55 | P1 | ✅ | Не применять действие клиента к глобально выбранной чужой задаче | Send, rename, archive, cancel, diff, TTS и compaction требуют точные `provider + threadId`; E2E меняет глобальный выбор и проверяет действие над другой адресованной карточкой. |
 | 56 | P1 | ✅ | Не оставлять HUB остановленным из-за ошибки закрытия одного компонента | Flush/close/shutdown выполняются через именованный `allSettled`; отказ одного компонента журналируется и не прерывает остальные операции. |
 | 57 | P1 | ✅ | Ограничить историю реальным лимитом транспорта | Ответ подгоняется по UTF-8-байтам, сохраняет новейший ход и сообщает об усечении; русский текст и emoji не повреждаются. |
-| 58 | P1 | ✅ | Защитить Desktop RPC и сделать отправку идемпотентной | Случайный endpoint, mutual HMAC challenge-response, current-user/exclusive pipe, stable `clientUserMessageId`, bounded timeout и safe retry покрыты Node/C#/process smoke. |
-| 59 | P1 | ✅ | Сделать публикацию проверяемой до deploy | `publish:all` запускает `test:all`, VSC-тесты и Desktop build/smoke до deploy; Windows CI закрепляет тот же контур без production secrets. |
+| 58 | P1 | ✅ | Защитить локальный control RPC и сделать отправку идемпотентной | Случайный endpoint, mutual HMAC challenge-response, current-user/exclusive pipe, stable `clientUserMessageId`, bounded timeout и safe retry покрыты Node/process-тестами. |
+| 59 | P1 | ✅ | Сделать публикацию проверяемой до deploy | `publish:all` запускает `test:all`, VSC-тесты и Android build до deploy; Windows CI закрепляет тот же контур без production secrets. |
 | 60 | P1 | ✅ | Убирать незавершённые Worker sync и сохранять idempotency retry | Staging/chunks имеют TTL/alarm cleanup; команды и повторная синхронизация используют стабильные ID. |
 | 61 | P1 | ✅ | Закрепить Wrangler | Wrangler зафиксирован точной версией и lockfile; deploy использует только локально установленный `npx --no-install`. |
-| 62 | P1 | ✅ | Не допустить случайного коммита runtime secrets/data | `.gitignore` закрывает AgentHub config, data, `.env`, secrets, runtime, Desktop attachments и build artifacts. |
+| 62 | P1 | ✅ | Не допустить случайного коммита runtime secrets/data | `.gitignore` закрывает AgentHub config, data, `.env`, secrets, runtime, attachments и build artifacts. |
 | 63 | P2 | ✅ | Не переписывать большой ledger и backup на каждое событие | Ledger больше 1 МиБ использует append-only delta изменённых записей и периодические checkpoint; малые файлы сохраняют прежний простой формат. |
 | 64 | P1 | ✅ | Убрать исторические runtime-пути и имена | Live runtime работает из `%LOCALAPPDATA%\AgentHub`; старые `%LOCALAPPDATA%\Tyrael\TelegramIntegration`, `%LOCALAPPDATA%\TelegramIntegration` и ярлык `Codex Telegram Bot` удалены. Код, документация, pipes, логи и переменные используют Agent Hub. |
 | 65 | P2 | ✅ | Убрать зависшие visual-QA серверы | Два orphaned Claude preview server на 8799 остановлены; к production Agent Hub они не относились. |
 | 66 | P2 | ⬜ | Подтвердить реальные Codex hook receipts | Hooks нужны для точного старта/остановки хода, но HUB имеет менее точный fallback по rollout. После live cutover требуется reload Codex и проверка обеих квитанций. |
-| 67 | P2 | ⬜ | Добавить настоящий browser UI и WPF UI E2E | Текущие process E2E и Desktop RPC/C# smoke проверяют backend и протокол, но не клики/отрисовку реального браузера и окна WPF. |
+| 67 | P2 | ⬜ | Добавить настоящий browser UI E2E | Текущие process E2E проверяют backend и протокол, но не полный набор кликов и отрисовку реального браузера. |
 | 68 | P2 | ⏸ | Исключить plaintext журнала из Cloudflare Durable Object | Сейчас компонент `web-app` при включённом Worker хранит prompts/answers у Cloudflare в открытом серверу виде, хотя пользовательский доступ защищён Telegram/HMAC. Полная приватность требует отдельного end-to-end encrypted sync. |
 | 69 | P2 | ✅ | Исключить ошибочное reattach Claude при переиспользовании PID | HUB сохраняет fingerprint процесса (PID, время старта, executable и command line) и повторно сверяет его перед reattach/cancel. При недоступной проверке процесс считается чужим и не завершается. |
-| 70 | P1 | ✅ | Не зависеть от отсутствующего `Get-FileHash` в Windows PowerShell | Runtime launcher и Desktop installer считают SHA-256 через .NET `SHA256`, поэтому проверка manifest работает даже в урезанном PowerShell. |
-| 71 | P1 | ✅ | Не блокировать Desktop snapshot полным холодным сканированием задач | Явное обновление и пустой каталог ждут refresh; устаревший непустой каталог возвращается сразу и обновляется в фоне. |
+| 70 | P1 | ✅ | Не зависеть от отсутствующего `Get-FileHash` в Windows PowerShell | Runtime launcher считает SHA-256 через .NET `SHA256`, поэтому проверка manifest работает даже в урезанном PowerShell. |
+| 71 | P1 | ✅ | Не блокировать client snapshot полным холодным сканированием задач | Явное обновление и пустой каталог ждут refresh; устаревший непустой каталог возвращается сразу и обновляется в фоне. |
 | 72 | P1 | ✅ | Не блокировать Telegram после рестарта старой bindings-блокировкой | Обычные append-only события не ждут lock компактации; lock содержит PID и уникальный token, мёртвый владелец снимается немедленно, а живой чужой lock не удаляется. |
 | 73 | P1 | ✅ | Показывать и надёжно подтверждать свёртку контекста | Ручная и автоматическая свёртка отслеживаются по современным `contextCompaction` item-событиям независимо от наличия активного HUB-run. UI показывает начало, завершение и фактический новый процент; синтетические `0%` удалены. Unit, UI и process E2E проверяют оба сценария и reconnect. |
 
@@ -171,9 +171,9 @@ AH-007 существенно уменьшен, 10 обнаруженных пр
 ## Итог
 
 Повторный глобальный аудит и публикация закрыты: исправленные пункты имеют
-регрессионные проверки; `test:all`, VS Code, Desktop smoke, Android build,
+регрессионные проверки; `test:all`, VS Code, Android build,
 Worker deploy, `doctor`, ACL и внешний HTTPS прошли. Новый runtime release
 активирован в `current.json`, а его безопасный перезапуск ожидает завершения
-активных задач. Открыты только реальные browser/WPF UI E2E (67), подтверждение
+активных задач. Открыты только реальные browser UI E2E (67), подтверждение
 hook receipts после reload Codex (66), граница ручного редактирования AH-007 и
 отдельный проект end-to-end encryption облачного журнала (68).

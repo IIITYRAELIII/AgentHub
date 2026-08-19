@@ -20,7 +20,7 @@ export class DesktopAttachmentService {
   #importer = null;
 
   constructor(options = {}) {
-    this.#attachmentRoot = path.join(path.resolve(options.runtimeCommandRoot), "DesktopApp", "attachments");
+    this.#attachmentRoot = path.join(path.resolve(options.runtimeCommandRoot), "attachments");
     this.#projectRoot = path.resolve(options.projectRoot);
     this.#projectRoots = (options.projectRoots ?? []).map((value) => path.resolve(value));
     this.#workerEnabled = Boolean(options.workerEnabled);

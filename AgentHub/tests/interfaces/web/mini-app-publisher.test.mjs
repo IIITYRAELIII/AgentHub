@@ -624,7 +624,7 @@ test("Mini App publisher rejects remote attachments without invoking the handler
 test("Mini App publisher materializes a signed remote bug screenshot inside the allowed attachment directory", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-control-image-"));
   const secretFile = path.join(root, "sync.secret");
-  const attachmentDirectory = path.join(root, "runtime", "DesktopApp", "attachments");
+  const attachmentDirectory = path.join(root, "runtime", "attachments");
   const secret = "e".repeat(64);
   const commandId = "018f6c86-3f34-7a31-8f27-16f5b96cce40";
   const attachmentId = "018f6c86-3f34-7a31-8f27-16f5b96cce41";

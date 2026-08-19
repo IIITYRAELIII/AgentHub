@@ -109,7 +109,7 @@ async function sharedWebviewHtml(webview, locations) {
     `img-src ${webview.cspSource} data: blob:`,
     `style-src ${webview.cspSource} 'nonce-${nonce}'`,
     `script-src ${webview.cspSource} 'nonce-${nonce}'`,
-    "connect-src 'none'",
+    "connect-src http://127.0.0.1:* http://localhost:* http://[::1]:*",
     "font-src 'none'",
   ].join("; ");
   html = html.replace(

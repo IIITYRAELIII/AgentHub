@@ -76,7 +76,7 @@ test("buildClaudeArgs passes Claude's native effort level", () => {
 });
 
 test("Claude image directories cannot consume a resumed prompt", () => {
-  const imageDirectory = path.resolve("C:/runtime/DesktopApp/attachments");
+  const imageDirectory = path.resolve("C:/runtime/attachments");
   const args = buildClaudeArgs({
     prompt: "Проверь приложенное изображение",
     sessionId: "session-image",

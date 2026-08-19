@@ -21,7 +21,6 @@
 | --- | --- | --- |
 | Web, Telegram и страница входа | `assets/web-app/agent-hub-mark.png` | Прозрачный мастер без подложки |
 | VS Code | `VSCodeExtension/media/agent-hub-mark.png` | Тот же знак для Activity Bar, Marketplace и webview |
-| Windows | `DesktopApp/AgentHub.ico` | ICO, созданный из того же мастер-знака |
 | Android launcher | `AndroidApp/app/src/main/res/drawable-nodpi/ic_agent_hub.png` | Тот же знак на тёмной безопасной подложке `#071116` |
 
 Подложка и свободное поле Android-иконки — только адаптация под системные
@@ -38,5 +37,5 @@ node --test tests/public/theme-registry.test.mjs
 node --test VSCodeExtension/render.test.js
 ```
 
-Дополнительно проверьте визуально мастер на прозрачном фоне, Windows ICO и
-Android launcher icon при малом размере и под круглой маской.
+Дополнительно проверьте визуально мастер на прозрачном фоне и Android launcher
+icon при малом размере и под круглой маской.

@@ -20,8 +20,8 @@ const ROOT = path.resolve(import.meta.dirname, "..", "..");
 const BOT_FILE = path.join(ROOT, "agent-hub-main.mjs");
 const FAKE_CODEX_FILE = path.join(ROOT, "e2e", "fake-codex-app-server.mjs");
 
-test("desktop client survives App Server exit during delayed startup and shares tasks", { timeout: 60_000 }, async (t) => {
-  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "telegram-desktop-e2e-"));
+test("local control client survives App Server exit during delayed startup and shares tasks", { timeout: 60_000 }, async (t) => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "telegram-local-control-e2e-"));
   const dataDir = path.join(runtimeRoot, "data");
   const projectRoot = path.join(runtimeRoot, "project");
   const configPath = path.join(runtimeRoot, "config.json");
@@ -40,7 +40,7 @@ test("desktop client survives App Server exit during delayed startup and shares 
     privateChatsOnly: true,
     provider: "codex",
     projectRoot,
-    projects: [{ name: "Desktop E2E", path: projectRoot }],
+    projects: [{ name: "Local control E2E", path: projectRoot }],
     dataDir,
     codexExecutable: process.execPath,
     codexExecutableArgs: [
@@ -60,7 +60,7 @@ test("desktop client survives App Server exit during delayed startup and shares 
     nextThread: 2,
     nextTurn: 1,
     nextMessage: 1,
-    // The delayed initialize models a recovering App Server.  The Desktop
+    // The delayed initialize models a recovering App Server. The local control
     // pipe must be available before that recovery finishes.
     initializeDelayMs: 1_500,
     threads: [{
@@ -513,7 +513,7 @@ test("desktop client survives App Server exit during delayed startup and shares 
     item.itemId && item.itemId !== item.clientUserMessageId
   )));
 
-  const attachmentRoot = path.join(runtimeRoot, "DesktopApp", "attachments");
+  const attachmentRoot = path.join(runtimeRoot, "attachments");
   const imagePath = path.join(attachmentRoot, "desktop.png");
   await mkdir(attachmentRoot, { recursive: true });
   await writeFile(imagePath, Buffer.from("fake-png-for-e2e"));

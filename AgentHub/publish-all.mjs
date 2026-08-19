@@ -21,7 +21,6 @@ import {
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = path.resolve(ROOT, "..");
 const python = process.platform === "win32" ? "python.exe" : "python3";
-const powershell = process.platform === "win32" ? "powershell.exe" : "pwsh";
 const DEFAULT_STEP_TIMEOUT_MS = 15 * 60 * 1_000;
 const RESTART_READINESS_TIMEOUT_MS = 90_000;
 
@@ -52,17 +51,6 @@ export function publicationSteps({
         ...(fullTestCheckpointId ? {
           env: { AGENT_HUB_FULL_TEST_CHECKPOINT_ID: fullTestCheckpointId },
         } : {}),
-      },
-      {
-        label: "Сборка и smoke-проверка Agent Hub Desktop",
-        command: powershell,
-        args: [
-          "-NoProfile",
-          "-ExecutionPolicy",
-          "Bypass",
-          "-File",
-          path.join("ci", "desktop-smoke.ps1"),
-        ],
       },
     ] : []),
     npmStep("Сборка Agent Hub Mobile", ["run", "android:build"]),

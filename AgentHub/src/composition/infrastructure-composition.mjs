@@ -148,7 +148,7 @@ export async function createHubInfrastructure({
     defaultProjectRoot: config.projectRoot,
     workspaceCatalogStore,
   });
-  const attachmentDirectory = path.join(runtimeCommandRoot, "DesktopApp", "attachments");
+  const attachmentDirectory = path.join(runtimeCommandRoot, "attachments");
   const hubMcpSecret = await ensureLocalWebSecret(path.join(runtimeCommandRoot, "hub-mcp.secret"));
   const hubMcpService = new HubMcpService({
     workspaceCatalog: workspaceCatalogStore,

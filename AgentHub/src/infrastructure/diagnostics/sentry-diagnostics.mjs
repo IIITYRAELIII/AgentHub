@@ -11,7 +11,7 @@ const SAFE_ERROR_TYPES = new Set([
 ]);
 const CLIENT_ERROR_KINDS = new Set(["window-error", "unhandled-rejection", "manual"]);
 const CLIENT_ERROR_ACTIONS = new Set([
-  "desktop-dispatcher", "desktop-domain", "desktop-task",
+  "local-dispatcher", "local-domain", "local-task",
 ]);
 const UNEXPECTED_ERROR_TYPES = new Set([
   "TypeError", "ReferenceError", "RangeError", "SyntaxError", "URIError", "EvalError", "AggregateError",
@@ -291,7 +291,7 @@ export function createSentryDiagnostics({
     const accepted = schedule(error, {
       surface: safeTag(context.source) || "web",
       kind: error.kind,
-      component: safeTag(context.source).startsWith("desktop") ? "desktop-host" : "web-client",
+      component: safeTag(context.source).startsWith("desktop") ? "local-client" : "web-client",
       action: error.action,
     });
     return { accepted };

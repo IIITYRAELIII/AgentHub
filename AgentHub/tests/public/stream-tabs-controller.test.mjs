@@ -107,6 +107,22 @@ test("desktop Stream settings are theme-independent and keep stable geometry", a
   assert.equal(resolveStableStreamCardWidth(widths, "new-stream"), 0);
 });
 
+test("desktop Stream settings replace duplicate toolbar controls and keep titles left-aligned", async () => {
+  const app = await readFile(new URL("../../assets/web-app/app.js", import.meta.url), "utf8");
+  const controller = await readFile(new URL("../../assets/web-app/stream-tabs-controller.js", import.meta.url), "utf8");
+  const dialogStyles = await readFile(new URL("../../assets/web-app/dialog-area.css", import.meta.url), "utf8");
+
+  assert.match(app, /hidden: window\.AgentHubStreamTabs\.streamCardSettingsAvailable/u);
+  assert.match(controller, /orderToggle\.hidden = true;/u);
+  assert.match(dialogStyles, /\.stream-order-toggle\[hidden\] \{[\s\S]*display: none !important;/u);
+  assert.doesNotMatch(dialogStyles, /\.toolbar \.view-settings \{[\s\S]*display: none !important;/u);
+  assert.match(dialogStyles, /\.stream-tabs-track \.stream-tab-title \{[\s\S]*text-align: left !important;/u);
+  const strippedPseudoElements = dialogStyles.match(
+    /\.stream-tabs-track \.stream-tab\[aria-pressed="true"\]::after,[\s\S]*?\{\s*content:\s*none;\s*\}/u,
+  )?.[0] ?? "";
+  assert.doesNotMatch(strippedPseudoElements, /\.stream-tab-card::/u);
+});
+
 test("Stream card settings normalize values received from the server snapshot", async () => {
   const {
     normalizeStreamCardSettings,
@@ -416,7 +432,7 @@ test("Workspace order follows meaningful activity with deterministic ties", asyn
   );
 });
 
-test("activity rail markup exposes separate sections and the inline recent-hours setting", async () => {
+test("activity rail markup exposes separate active and recent sections", async () => {
   const [html, appSource, clientSource] = await Promise.all([
     readFile(new URL("../../assets/web-app/index.html", import.meta.url), "utf8"),
     readFile(new URL("../../assets/web-app/app.js", import.meta.url), "utf8"),
@@ -424,7 +440,6 @@ test("activity rail markup exposes separate sections and the inline recent-hours
   ]);
   assert.match(html, /data-activity-rail-count>Активно: 0</u);
   assert.match(html, /<strong>Недавние<\/strong>/u);
-  assert.match(html, /data-activity-recent-hours/u);
   assert.match(appSource, /activityStreamSections\(entries\)/u);
   assert.match(appSource, /activityStreamList\?\.addEventListener\("click", selectActivityTask\)/u);
   assert.match(appSource, /activityRecentList\?\.addEventListener\("click", selectActivityTask\)/u);

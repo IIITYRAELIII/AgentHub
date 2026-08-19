@@ -265,7 +265,7 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
   // Возобновление Claude с изображением обязано передать prompt отдельно от
   // многозначного --add-dir. Иначе реальный CLI поглощает prompt как ещё один
   // каталог и отвечает ошибкой про отсутствующий deferred tool marker.
-  const attachmentDirectory = path.join(temporaryRoot, "DesktopApp", "attachments");
+  const attachmentDirectory = path.join(temporaryRoot, "attachments");
   const imagePath = path.join(attachmentDirectory, "resume-image.png");
   await mkdir(attachmentDirectory, { recursive: true });
   await writeFile(imagePath, Buffer.from("fake-claude-image"));

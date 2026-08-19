@@ -163,9 +163,6 @@ const bugReportStatus = document.querySelector("[data-bug-report-status]");
 const bugReportFlow = window.AgentHubBugReportFlow;
 const telegramFullscreenButton = document.querySelector("[data-telegram-fullscreen]");
 const claudeGroupToggle = document.querySelector("[data-claude-group-toggle]");
-const streamStatusFillToggle = document.querySelector("[data-stream-status-fill-toggle]");
-const streamStatusEffectSelect = document.querySelector("[data-stream-status-effect-select]");
-const activityRecentHours = document.querySelector("[data-activity-recent-hours]");
 const streamActivityDirectionRow = document.querySelector("[data-stream-activity-direction-row]");
 const streamActivityDirectionSelect = document.querySelector("[data-stream-activity-direction-select]");
 const usageUnitButtons = [...document.querySelectorAll("[data-usage-unit]")];
@@ -396,6 +393,7 @@ const backgroundObjectUrls = new Map();
 const sessionBackgrounds = new Map();
 const LEGACY_BACKGROUND_STORAGE_KEY = "agent-hub-background";
 const ACTIVITY_RAIL_COLLAPSED_KEY = "agent-hub:activity-rail-collapsed:v1";
+const ACTIVITY_STREAM_DETAILED_CARDS_KEY = "agent-hub:activity-stream-detailed-cards:v1";
 const DEFAULT_ACTIVITY_RECENT_MINUTES = 3 * 60;
 const MAX_ACTIVITY_RECENT_MINUTES = 30 * 24 * 60;
 let activityRecentPeriodMinutes = DEFAULT_ACTIVITY_RECENT_MINUTES;
@@ -684,7 +682,6 @@ function savedStreamStatusStyle() {
 function applyStreamStatusStyle(value, { persist = false } = {}) {
   const style = value === "fill" ? "fill" : "edge";
   root.dataset.streamStatusStyle = style;
-  if (streamStatusFillToggle) streamStatusFillToggle.checked = style === "fill";
   if (persist) {
     try {
       localStorage.setItem("agent-hub-stream-status-style", style);
@@ -714,10 +711,29 @@ function savedStreamStatusEffect() {
 function applyStreamStatusEffect(value, { persist = false } = {}) {
   const effect = STREAM_STATUS_EFFECTS.has(value) ? value : "impulse";
   root.dataset.streamStatusEffect = effect;
-  if (streamStatusEffectSelect) streamStatusEffectSelect.value = effect;
   if (persist) {
     try {
       localStorage.setItem("agent-hub-stream-status-effect", effect);
+    } catch {
+      // Настройка останется активной до закрытия WebView.
+    }
+  }
+}
+
+function savedActivityStreamDetailedCards() {
+  try {
+    return localStorage.getItem(ACTIVITY_STREAM_DETAILED_CARDS_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function applyActivityStreamDetailedCards(value, { persist = false } = {}) {
+  const detailed = value === true;
+  root.dataset.activityStreamCards = detailed ? "detailed" : "compact";
+  if (persist) {
+    try {
+      localStorage.setItem(ACTIVITY_STREAM_DETAILED_CARDS_KEY, String(detailed));
     } catch {
       // Настройка останется активной до закрытия WebView.
     }
@@ -747,15 +763,7 @@ function normalizedActivityRecentMinutes(value) {
 
 function applyActivityRecentPeriod(value, { update = false } = {}) {
   activityRecentPeriodMinutes = normalizedActivityRecentMinutes(value);
-  if (activityRecentHours) activityRecentHours.value = String(activityRecentPeriodMinutes / 60);
   if (update) renderActivityRail();
-}
-
-function applyActivityRecentHoursInput() {
-  const value = normalizedActivityRecentMinutes((Number(activityRecentHours?.value) || 0) * 60);
-  applyActivityRecentPeriod(value, { update: true });
-  state.selection.activityRecentMinutes = value;
-  emit("selection:set", { key: "activityRecentMinutes", value });
 }
 
 function savedGrouping() {
@@ -879,18 +887,12 @@ applyTheme(savedTheme());
 applyChatSurface(chatSurfacePreference.stored(localStorage));
 applyStreamStatusStyle(savedStreamStatusStyle());
 applyStreamStatusEffect(savedStreamStatusEffect());
+applyActivityStreamDetailedCards(savedActivityStreamDetailedCards());
 applyStreamOrderMode("activity");
 applyActivityRecentPeriod(DEFAULT_ACTIVITY_RECENT_MINUTES);
 applyStreamActivityDirection(savedStreamActivityDirection());
 selectUsageUnit(savedUsageUnit());
 selectClaudeGrouping(savedClaudeGrouping());
-streamStatusFillToggle?.addEventListener("change", () => {
-  applyStreamStatusStyle(streamStatusFillToggle.checked ? "fill" : "edge", { persist: true });
-});
-streamStatusEffectSelect?.addEventListener("change", () => {
-  applyStreamStatusEffect(streamStatusEffectSelect.value, { persist: true });
-});
-activityRecentHours?.addEventListener("change", applyActivityRecentHoursInput);
 streamActivityDirectionSelect?.addEventListener("change", () => {
   applyStreamActivityDirection(streamActivityDirectionSelect.value, { persist: true, update: true });
 });
@@ -1198,7 +1200,7 @@ function formatRelativeTime(input) {
   const minute = 60_000;
   const hour = 60 * minute;
   const day = 24 * hour;
-  if (diff < minute) return "только что";
+  if (diff < minute) return "<1м";
   if (diff < hour) return `${Math.floor(diff / minute)} мин`;
   if (diff < day) return `${Math.floor(diff / hour)} ч`;
   if (diff < 7 * day) return `${Math.floor(diff / day)} дн`;
@@ -2228,6 +2230,11 @@ function renderStreamTabs() {
     "data-order-mode": streamOrderMode,
     title: orderToggleTitle,
     "aria-label": orderToggleTitle,
+    hidden: window.AgentHubStreamTabs.streamCardSettingsAvailable({
+      isWide: typeof window.matchMedia !== "function"
+        || window.matchMedia("(min-width: 860px)").matches,
+      surface: root.dataset.surface,
+    }),
   }, [window.AgentHubStreamTabs.createPhosphorIcon(
     document,
     orderIsManual ? "arrows-down-up" : "clock-counter-clockwise",
@@ -7253,10 +7260,25 @@ function resolvedStatisticsAccountKey(payload = limitsState.payload) {
 
 document.addEventListener("agenthub:stream-card-settings-change", (event) => {
   const key = String(event.detail?.key ?? "");
-  if (!["streamCardWidthMode", "streamCardFixedWidth", "streamCardGapEnabled"].includes(key)) return;
-  const value = event.detail?.value;
+  if (!["activityRecentMinutes", "streamCardWidthMode", "streamCardFixedWidth", "streamCardGapEnabled"].includes(key)) return;
+  const value = key === "activityRecentMinutes"
+    ? normalizedActivityRecentMinutes(event.detail?.value)
+    : event.detail?.value;
+  if (key === "activityRecentMinutes") applyActivityRecentPeriod(value, { update: true });
   state.selection[key] = value;
   emit("selection:set", { key, value });
+});
+
+document.addEventListener("agenthub:stream-view-settings-change", (event) => {
+  const key = String(event.detail?.key ?? "");
+  const value = event.detail?.value;
+  if (key === "streamStatusEffect") {
+    applyStreamStatusEffect(value, { persist: true });
+  } else if (key === "streamStatusStyle") {
+    applyStreamStatusStyle(value, { persist: true });
+  } else if (key === "activityStreamDetailedCards") {
+    applyActivityStreamDetailedCards(value, { persist: true });
+  }
 });
 
 function renderStatisticsAccountSelects(payload = limitsState.payload) {

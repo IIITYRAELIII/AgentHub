@@ -13,7 +13,7 @@ const IGNORED_DIRECTORIES = new Set(["node_modules", "build", "dist", ".wrangler
 const E2E_FILES = [
   "tests/e2e/agent-hub-server.e2e.test.mjs",
   "tests/e2e/agent-hub-server.claude.e2e.test.mjs",
-  "tests/e2e/agent-hub-server.desktop.e2e.test.mjs",
+  "tests/e2e/agent-hub-server.local-control.e2e.test.mjs",
   "tests/e2e/agent-hub-server.journal.e2e.test.mjs",
 ];
 const VSCODE_FILES = [

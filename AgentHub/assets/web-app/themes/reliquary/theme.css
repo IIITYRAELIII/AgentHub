@@ -390,10 +390,6 @@ html[data-theme="reliquary"] .stream-tabs > .stream-tab:not(:last-child)::after 
     border-color: #8d3d31;
   }
 
-  html[data-theme="reliquary"][data-focus-mode="true"] {
-    --reliquary-stream-divider-half-gap: 0.06rem;
-  }
-
 }
 
 html[data-theme="reliquary"] .task-workspace-item:hover,

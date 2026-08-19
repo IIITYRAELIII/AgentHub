@@ -48,7 +48,6 @@ AgentHub/
     unit/                          # структура повторяет src
     process/
   e2e/
-  DesktopApp/
   AndroidApp/
 ```
 
