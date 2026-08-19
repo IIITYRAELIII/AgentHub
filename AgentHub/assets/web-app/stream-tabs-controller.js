@@ -44,6 +44,14 @@
     return !renderedWrapper || renderedWrapper !== currentWrapper;
   }
 
+  function setTextContentIfChanged(element, value) {
+    if (!element) return false;
+    const nextValue = String(value);
+    if (element.textContent === nextValue) return false;
+    element.textContent = nextValue;
+    return true;
+  }
+
   const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
   const PHOSPHOR_ICON_PATHS = Object.freeze({
     "caret-down": "M213.66,101.66l-80,80a8,8,0,0,1-11.32,0l-80-80A8,8,0,0,1,53.66,90.34L128,164.69l74.34-74.35a8,8,0,0,1,11.32,11.32Z",
@@ -549,7 +557,10 @@
           STREAM_CARD_MAX_WIDTH,
           Math.max(STREAM_CARD_MIN_WIDTH, Number(event.currentTarget.value) || STREAM_CARD_MIN_WIDTH),
         );
-        wrapper.querySelector("[data-stream-card-width-value]").textContent = String(this.fixedWidth);
+        setTextContentIfChanged(
+          wrapper.querySelector("[data-stream-card-width-value]"),
+          this.fixedWidth,
+        );
         this.update(wrapper);
       });
       range.addEventListener("change", () => {
@@ -603,7 +614,7 @@
       const range = wrapper.querySelector("[data-stream-card-width]");
       if (range) range.value = String(this.fixedWidth);
       const widthValue = wrapper.querySelector("[data-stream-card-width-value]");
-      if (widthValue) widthValue.textContent = String(this.fixedWidth);
+      setTextContentIfChanged(widthValue, this.fixedWidth);
       this.tabs.dataset.streamCardGapMode = this.gapEnabled ? "on" : "off";
       wrapper.querySelector("[data-stream-gap-toggle]")
         ?.setAttribute("aria-checked", String(this.gapEnabled));
@@ -754,6 +765,7 @@
     STREAM_CARD_WIDTH_MODES,
     streamCardSettingsAvailable,
     streamCardSettingsWrapperNeedsReplacement,
+    setTextContentIfChanged,
     STREAM_ORDER_MODES,
     calculateOverflowShift,
     compactStreamActivityValue,

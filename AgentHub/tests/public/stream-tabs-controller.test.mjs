@@ -130,6 +130,27 @@ test("Stream card settings normalize values received from the server snapshot", 
   );
 });
 
+test("Stream card settings do not rewrite an unchanged width label", async () => {
+  const { setTextContentIfChanged } = await streamTabsApi();
+  let text = "90";
+  let writes = 0;
+  const element = {
+    get textContent() {
+      return text;
+    },
+    set textContent(value) {
+      writes += 1;
+      text = value;
+    },
+  };
+
+  assert.equal(setTextContentIfChanged(element, 90), false);
+  assert.equal(writes, 0);
+  assert.equal(setTextContentIfChanged(element, 120), true);
+  assert.equal(text, "120");
+  assert.equal(writes, 1);
+});
+
 test("order switch icons are real Phosphor SVG nodes in the SVG namespace", async () => {
   const { createPhosphorIcon } = await streamTabsApi();
   const document = {

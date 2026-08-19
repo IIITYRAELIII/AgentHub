@@ -4,6 +4,7 @@ import {
   createStartupReconnectModel,
   createStartupScreenModel,
   formatStartupElapsed,
+  shouldShowStartupScreen,
 } from "../../assets/web-app/startup-screen-model.js";
 
 test("startup screen projects one active operation and ordered surrounding stages", () => {
@@ -53,4 +54,20 @@ test("startup screen shows a meaningful reconnect stage before health returns", 
   assert.equal(model.title, "Ожидание запуска Agent Hub");
   assert.equal(model.elapsed, "00:00:04");
   assert.deepEqual(model.queueOperations.map(({ id }) => id), ["connection"]);
+});
+
+test("startup screen renders each completed startup once", () => {
+  const model = createStartupScreenModel({
+    ready: true,
+    status: "ready",
+    startup: {
+      startedAtMs: 10_000,
+      operations: [{ id: "ready", label: "Ready", state: "completed" }],
+    },
+  }, 12_000);
+
+  assert.equal(shouldShowStartupScreen(model), true);
+  assert.equal(shouldShowStartupScreen(model, { visible: true, lastStartedAtMs: 10_000 }), true);
+  assert.equal(shouldShowStartupScreen(model, { visible: false, lastStartedAtMs: 10_000 }), false);
+  assert.equal(shouldShowStartupScreen({ available: false, ready: false }), false);
 });

@@ -2,10 +2,9 @@ import {
   createStartupReconnectModel,
   createStartupScreenModel,
   formatStartupElapsed,
+  shouldShowStartupScreen,
 } from "/startup-screen-model.js";
 
-const startupHost = String(globalThis.location?.hostname ?? "").toLowerCase();
-if (["127.0.0.1", "localhost", "::1"].includes(startupHost)) {
 const root = document.documentElement;
 const screen = document.createElement("section");
 screen.className = "hub-startup-screen";
@@ -91,6 +90,7 @@ let stopped = false;
 let observedHealth = false;
 let consecutiveFailures = 0;
 let reconnectStartedAtMs = 0;
+let lastStartupStartedAtMs = 0;
 
 const ACTIVE_POLL_MS = 500;
 const READY_POLL_MS = 1_500;
@@ -266,11 +266,15 @@ async function refresh() {
       hideScreen();
       hadStartup = false;
       delay = READY_POLL_MS;
-    } else if (model.ready && !hadStartup) {
+    } else if (!shouldShowStartupScreen(model, {
+      visible: hadStartup,
+      lastStartedAtMs: lastStartupStartedAtMs,
+    })) {
       hideScreen();
       delay = READY_POLL_MS;
     } else {
       hadStartup = true;
+      lastStartupStartedAtMs = model.startedAtMs;
       showModel(model);
       if (model.ready) {
         if (!hideTimer) {
@@ -350,4 +354,3 @@ window.addEventListener("pagehide", () => {
   window.clearTimeout(pollTimer);
   window.clearInterval(timerInterval);
 }, { once: true });
-}

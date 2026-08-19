@@ -72,3 +72,12 @@ export function createStartupReconnectModel(startedAtMs, nowMs = Date.now()) {
     },
   }, nowMs);
 }
+
+export function shouldShowStartupScreen(model, {
+  visible = false,
+  lastStartedAtMs = 0,
+} = {}) {
+  if (!model?.available) return false;
+  if (!model.ready || visible) return true;
+  return Number(model.startedAtMs) !== Number(lastStartedAtMs);
+}
