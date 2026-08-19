@@ -229,7 +229,7 @@ html[data-view="chat"][data-surface][data-theme] {
 
 .stream-tabs-track
   .stream-tab:is([data-maintenance], [data-running], [data-answer-ready], [aria-pressed="true"])
-  .stream-tab-card {
+  [class~="stream-tab-card"] {
   box-sizing: border-box;
   margin-inline: calc(-1 * var(--stream-tab-inline-padding)) !important;
   overflow: visible;
