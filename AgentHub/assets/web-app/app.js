@@ -3291,6 +3291,7 @@ function selectTaskFromUi(id) {
 /* ================================================================== чат */
 
 let activeChatId = null;
+const SWITCH_MESSAGE_RENDER_LIMIT = 80;
 
 function messageCountLabel(count) {
   const value = Math.max(0, Number(count) || 0);
@@ -3369,7 +3370,7 @@ function renderChat() {
 
   if (taskChanged) {
     activeChatId = task.id;
-    renderMessages({ forceBottom: true });
+    renderMessages({ forceBottom: true, tailLimit: SWITCH_MESSAGE_RENDER_LIMIT });
   }
   renderLive();
   renderApprovals();
@@ -3778,11 +3779,27 @@ function updateUserMessageDisclosure(article) {
   if (!existing) bubble.append(button);
 }
 
-function scheduleUserMessageDisclosureSync() {
+const pendingUserMessageDisclosureArticles = new Set();
+let syncAllUserMessageDisclosures = false;
+
+function scheduleUserMessageDisclosureSync(roots = null) {
+  const scopedRoots = Array.isArray(roots) ? roots : null;
+  if (scopedRoots == null) syncAllUserMessageDisclosures = true;
+  else for (const root of scopedRoots) {
+    const article = root?.matches?.(".msg-user[data-message-id]")
+      ? root
+      : root?.querySelector?.(".msg-user[data-message-id]");
+    if (article) pendingUserMessageDisclosureArticles.add(article);
+  }
   if (messageDisclosureFrame) return;
   messageDisclosureFrame = window.requestAnimationFrame(() => {
     messageDisclosureFrame = 0;
-    for (const article of chatLog.querySelectorAll(".msg-user[data-message-id]")) {
+    const articles = syncAllUserMessageDisclosures
+      ? chatLog.querySelectorAll(".msg-user[data-message-id]")
+      : [...pendingUserMessageDisclosureArticles];
+    syncAllUserMessageDisclosures = false;
+    pendingUserMessageDisclosureArticles.clear();
+    for (const article of articles) {
       updateUserMessageDisclosure(article);
     }
   });
@@ -3853,7 +3870,12 @@ function createRenderedMessage(spec) {
   ]);
 }
 
-function renderMessages({ forceBottom = false, preserveTop = false } = {}) {
+function renderMessages({
+  forceBottom = false,
+  preserveTop = false,
+  prependedCount = 0,
+  tailLimit = 0,
+} = {}) {
   const task = currentTask();
   const taskId = String(task?.id ?? "");
   renderStreamChatHeader(task);
@@ -3863,14 +3885,18 @@ function renderMessages({ forceBottom = false, preserveTop = false } = {}) {
   // Обновление истории после финального ответа использует preserveTop. У низа
   // якорь первого видимого сообщения оставлял зазор после новой карточки.
   // Якорь нужен только читателю, который уже ушёл выше по истории.
-  const anchor = preserveTop && !stickToBottom ? captureChatAnchor() : null;
+  const incrementalPrepend = Number(prependedCount) > 0 && !tailLimit;
+  const anchor = preserveTop && !stickToBottom && !incrementalPrepend ? captureChatAnchor() : null;
   // chatLog is a single physical DOM surface shared by every Stream. Claim it
   // before reading the new history so keyed reconciliation can never reuse a
   // message node (or its event handlers) owned by the previously selected
   // Stream, even when providers emit colliding message identifiers.
-  MessageView.claimKeyedChildrenOwner(chatLog, taskId);
+  const ownerChanged = MessageView.claimKeyedChildrenOwner(chatLog, taskId);
   const historyLoaded = state.messages.has(taskId);
-  const messages = state.messages.get(taskId) ?? [];
+  const allMessages = state.messages.get(taskId) ?? [];
+  const messages = tailLimit > 0
+    ? MessageView.messageTailWindow(allMessages, tailLimit)
+    : allMessages;
   renderHistoryLoader();
   if (messages.length === 0) {
     const emptyText = historyLoaded
@@ -3896,13 +3922,31 @@ function renderMessages({ forceBottom = false, preserveTop = false } = {}) {
     }
   }
   const taskDiff = state.taskDiffs.get(taskId);
-  const specs = messages.map((message, index) => (
-    messageRenderSpec(message, index, lastAgentIndex, taskDiff)
-  ));
-  MessageView.reconcileKeyedChildren(chatLog, specs, createRenderedMessage, (node, spec) => {
-    patchRenderedMessage(node, spec.message);
-  });
-  scheduleUserMessageDisclosureSync();
+  let prependedNodes = null;
+  const added = Math.min(messages.length, Math.max(0, Number(prependedCount) || 0));
+  if (!ownerChanged && added > 0 && added < messages.length) {
+    const prefixSpecs = messages.slice(0, added).map((message, index) => (
+      messageRenderSpec(message, index, lastAgentIndex, taskDiff)
+    ));
+    const expectedExistingKeys = messages.slice(added).map((message, index) => (
+      MessageView.messageKey(message, added + index)
+    ));
+    prependedNodes = MessageView.reconcilePrependedKeyedChildren(
+      chatLog,
+      prefixSpecs,
+      expectedExistingKeys,
+      createRenderedMessage,
+    );
+  }
+  if (prependedNodes == null) {
+    const specs = messages.map((message, index) => (
+      messageRenderSpec(message, index, lastAgentIndex, taskDiff)
+    ));
+    MessageView.reconcileKeyedChildren(chatLog, specs, createRenderedMessage, (node, spec) => {
+      patchRenderedMessage(node, spec.message);
+    });
+  }
+  scheduleUserMessageDisclosureSync(prependedNodes);
   if (anchor) restoreChatAnchor(anchor);
   else if (stickToBottom) pinChatToBottom();
   else window.requestAnimationFrame(() => scrollController?.afterMutation(scrollSnapshot, { preserveDistance: true }));
@@ -6811,13 +6855,15 @@ const AgentHub = {
   },
   setMessagesPreservingScroll(taskId, messages) {
     const next = Array.isArray(messages) ? messages.slice() : [];
-    const sameMessages = state.messages.has(taskId) && sameData(state.messages.get(taskId), next);
+    const previous = state.messages.get(taskId) ?? [];
+    const sameMessages = state.messages.has(taskId) && sameData(previous, next);
+    const prependedCount = sameMessages ? 0 : MessageView.prependedMessageCount(previous, next);
     const selectedSurfaceOwned = taskId === state.selectedId
       && String(chatLog.dataset.messageOwnerKey ?? "") === String(taskId ?? "");
     if (sameMessages && (taskId !== state.selectedId || selectedSurfaceOwned)) return;
     if (!sameMessages) state.messages.set(taskId, next);
     if (taskId === state.selectedId) {
-      renderMessages({ preserveTop: true });
+      renderMessages({ preserveTop: true, prependedCount });
       renderLive();
     } else refreshSupplementaryStreamChat(taskId);
   },

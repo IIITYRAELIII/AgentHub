@@ -66,6 +66,39 @@ function loadJournalView() {
   return window.AgentHubJournalView;
 }
 
+function loadVscodeBootstrap() {
+  const source = fs.readFileSync(path.join(__dirname, "vscode-bootstrap.js"), "utf8");
+  const listeners = new Map();
+  const messages = [];
+  let nativeFetchCalls = 0;
+  const window = {
+    location: { href: "https://agent-hub.vscode-webview.test/" },
+    acquireVsCodeApi: () => ({ postMessage: (message) => messages.push(message) }),
+    fetch: async () => {
+      nativeFetchCalls += 1;
+      return new Response("native");
+    },
+    addEventListener: (type, listener) => listeners.set(type, listener),
+    clearTimeout,
+    setTimeout,
+  };
+  const document = {
+    hidden: false,
+    addEventListener() {},
+    getAnimations: () => [],
+  };
+  vm.runInNewContext(source, {
+    Headers,
+    Response,
+    URL,
+    clearTimeout,
+    document,
+    setTimeout,
+    window,
+  });
+  return { listeners, messages, nativeFetchCalls: () => nativeFetchCalls, window };
+}
+
 function deferred() {
   let resolve;
   const promise = new Promise((complete) => {
@@ -112,6 +145,24 @@ test("file targets separate line and column from Windows paths", () => {
     line: 23,
     column: 7,
   });
+});
+
+test("VS Code bootstrap routes runtime health through the extension bridge", async () => {
+  const harness = loadVscodeBootstrap();
+  const responsePromise = harness.window.fetch("/health", { cache: "no-store" });
+  assert.equal(harness.nativeFetchCalls(), 0);
+  assert.equal(harness.messages.length, 1);
+  assert.equal(harness.messages[0].type, "agenthub:http");
+  assert.equal(harness.messages[0].path, "/health");
+  harness.listeners.get("message")({
+    data: {
+      type: "agenthub:http-result",
+      id: harness.messages[0].id,
+      status: 200,
+      body: JSON.stringify({ ready: false, startup: { operations: [] } }),
+    },
+  });
+  assert.equal((await responsePromise).status, 200);
 });
 
 test("file target lookup rejects missing candidates", async () => {

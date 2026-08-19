@@ -9,6 +9,7 @@ function normalizedEntries(entries) {
     return {
       name: String(entry.name ?? "resource"),
       run: entry.run,
+      preserveOnRestart: entry.preserveOnRestart === true,
       ...(entry.timeoutMs === undefined ? {} : { timeoutMs: Number(entry.timeoutMs) }),
     };
   });
@@ -47,9 +48,16 @@ export class RuntimeResourceRegistry {
     return this;
   }
 
-  async run(phase, { label = phase, timeoutMs = this.phaseTimeoutMs } = {}) {
+  async run(phase, {
+    label = phase,
+    timeoutMs = this.phaseTimeoutMs,
+    reason = "shutdown",
+  } = {}) {
     if (!PHASES.includes(phase)) throw new Error(`unsupported runtime resource phase: ${phase}`);
-    return this.settle(this.phases[phase], {
+    const entries = phase === "close" && reason === "restart"
+      ? this.phases[phase].filter((entry) => !entry.preserveOnRestart)
+      : this.phases[phase];
+    return this.settle(entries, {
       logError: (name, error) => {
         this.logger.error(`${label} (${name}):`, error.message);
         try {

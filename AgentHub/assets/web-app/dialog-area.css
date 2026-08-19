@@ -5,6 +5,7 @@
   --dialog-chrome: var(--surface-1);
   --dialog-raised: var(--surface-1);
   --dialog-sunken: var(--surface-2);
+  --dialog-bubble-agent: var(--card-bg);
   --dialog-bubble-user: var(--surface-2);
   --dialog-code-bg: var(--surface-2);
   --dialog-hairline: var(--line);
@@ -593,6 +594,14 @@ html[data-view="chat"]:not([data-surface="mobile"]) .msg-stack-user > .msg-actio
   max-width: none;
   padding: 0;
   width: 100%;
+}
+
+html[data-view="chat"] .chat-log .msg-agent:not(.msg-live) {
+  background: var(--dialog-bubble-agent);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--turn-shadow);
+  padding: 12px 16px;
 }
 
 .chat-scroll > .msg-live {

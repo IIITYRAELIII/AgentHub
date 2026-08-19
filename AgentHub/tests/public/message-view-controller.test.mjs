@@ -24,6 +24,7 @@ class FakeContainer {
   constructor(children = []) {
     this.children = children;
     this.dataset = {};
+    this.bulkReplacements = 0;
   }
 
   insertBefore(node, reference) {
@@ -36,6 +37,11 @@ class FakeContainer {
   removeChild(node) {
     const index = this.children.indexOf(node);
     if (index >= 0) this.children.splice(index, 1);
+  }
+
+  replaceChildren(...children) {
+    this.bulkReplacements += 1;
+    this.children = [...children];
   }
 }
 
@@ -79,6 +85,86 @@ test("claiming an empty Stream removes the previous Stream fragment immediately"
 
   assert.deepEqual(container.children, []);
   assert.equal(container.dataset.messageOwnerKey, "empty-stream");
+  assert.equal(container.bulkReplacements, 1);
+});
+
+test("long Thread switches render a bounded newest-message window", async () => {
+  const api = await messageViewApi();
+  const messages = Array.from({ length: 500 }, (_, index) => ({ id: `message-${index}` }));
+
+  const visible = api.messageTailWindow(messages, 80);
+
+  assert.equal(visible.length, 80);
+  assert.equal(visible[0].id, "message-420");
+  assert.equal(visible.at(-1).id, "message-499");
+  assert.equal(messages.length, 500);
+});
+
+test("older history prepends only new nodes and preserves rendered suffix identity", async () => {
+  const api = await messageViewApi();
+  const previousMessages = [
+    { id: "newer-1", role: "user", text: "Запрос" },
+    { id: "newer-2", role: "agent", text: "Ответ" },
+  ];
+  const olderMessages = [
+    { id: "older-1", role: "user", text: "Старый запрос" },
+    { id: "older-2", role: "agent", text: "Старый ответ" },
+  ];
+  const nextMessages = [...olderMessages, ...previousMessages];
+  assert.equal(api.prependedMessageCount(previousMessages, nextMessages), 2);
+
+  const existing = previousMessages.map((message) => {
+    const node = new FakeNode(api.messageKey(message));
+    node.dataset.messageKey = api.messageKey(message);
+    node.dataset.messageContentSignature = api.messageContentSignature(message);
+    return node;
+  });
+  const container = new FakeContainer(existing);
+  const prefixSpecs = olderMessages.map((message) => ({
+    key: api.messageKey(message),
+    signature: api.messageContentSignature(message),
+    message,
+  }));
+  let created = 0;
+  const prepended = api.reconcilePrependedKeyedChildren(
+    container,
+    prefixSpecs,
+    existing.map((node) => node.dataset.messageKey),
+    (spec) => {
+      created += 1;
+      return new FakeNode(spec.key);
+    },
+  );
+
+  assert.equal(created, 2);
+  assert.equal(prepended.length, 2);
+  assert.equal(container.children.length, 4);
+  assert.equal(container.children[2], existing[0]);
+  assert.equal(container.children[3], existing[1]);
+});
+
+test("prepend optimization rejects changed existing history", async () => {
+  const api = await messageViewApi();
+  const previous = [{ id: "same", role: "agent", text: "Первый ответ" }];
+  const changed = [
+    { id: "older", role: "user", text: "Старый запрос" },
+    { id: "same", role: "agent", text: "Исправленный ответ" },
+  ];
+
+  assert.equal(api.prependedMessageCount(previous, changed), 0);
+});
+
+test("prepend optimization accepts equivalent projections but rejects changed metadata", async () => {
+  const api = await messageViewApi();
+  const previous = [{ id: "same", role: "user", text: "Запрос", delivery: "Доставлено" }];
+  const equivalent = [
+    { id: "older", role: "agent", text: "Старый ответ" },
+    { ...previous[0] },
+  ];
+  const changed = [equivalent[0], { ...previous[0], delivery: "Ошибка", failed: true }];
+
+  assert.equal(api.prependedMessageCount(previous, equivalent), 1);
+  assert.equal(api.prependedMessageCount(previous, changed), 0);
 });
 
 test("selected Stream rerenders when logical chat state and DOM ownership diverge", async () => {

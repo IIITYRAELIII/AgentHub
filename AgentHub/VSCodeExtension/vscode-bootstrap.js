@@ -78,8 +78,10 @@ window.fetch = function agentHubFetch(input, init = {}) {
     typeof input === "string" || input instanceof URL ? input : input.url,
     window.location.href,
   );
-  // журнал и сводка лимитов идут через расширение: в webview нет HTTP-сервера
-  if (!url.pathname.startsWith("/api/journal") && url.pathname !== "/api/rate-limits") {
+  // Runtime API идёт через расширение: в webview нет собственного HTTP origin.
+  if (!url.pathname.startsWith("/api/journal")
+    && url.pathname !== "/api/rate-limits"
+    && url.pathname !== "/health") {
     return nativeFetch(input, init);
   }
   const id = `http-${Date.now()}-${++sequence}`;

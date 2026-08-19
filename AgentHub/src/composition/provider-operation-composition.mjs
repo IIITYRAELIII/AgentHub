@@ -260,6 +260,7 @@ export function createProviderOperationComposition({
     contextUsage: latestContextUsage,
     beginCompaction: (...args) => contextCompactions.begin(...args),
     getCompaction: (providerTaskId) => contextCompactions.get(providerTaskId),
+    settleCompactionTurn: (...args) => contextCompactions.settleProviderTurn(...args),
     rememberRawCompactionItem: (...args) => contextCompactions.rememberRawItem(...args),
     beginCompactionCleanup: (...args) => codexContextMaintenance.beginCompactionCleanup(...args),
     setStage: (...args) => taskProgress().setStage(...args),

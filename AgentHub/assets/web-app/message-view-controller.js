@@ -100,11 +100,87 @@
     const nextOwnerKey = String(ownerKey ?? "");
     const previousOwnerKey = String(container.dataset.messageOwnerKey ?? "");
     if (previousOwnerKey === nextOwnerKey) return false;
-    while ((container.children?.length ?? 0) > 0) {
+    if (typeof container.replaceChildren === "function") container.replaceChildren();
+    else while ((container.children?.length ?? 0) > 0) {
       container.removeChild(container.children[container.children.length - 1]);
     }
     container.dataset.messageOwnerKey = nextOwnerKey;
     return true;
+  }
+
+  function messageTailWindow(messages, limit = 80) {
+    const values = Array.isArray(messages) ? messages : [];
+    const maximum = Math.max(1, Number(limit) || 80);
+    return values.length > maximum ? values.slice(-maximum) : values;
+  }
+
+  function sameRenderedMessage(left, right) {
+    if (left === right) return true;
+    if (messageContentSignature(left) !== messageContentSignature(right)) return false;
+    return [
+      "id",
+      "turnId",
+      "itemId",
+      "deliveryState",
+      "author",
+      "time",
+      "delivery",
+      "failed",
+      "provider",
+      "threadId",
+      "model",
+      "agentThreadId",
+    ].every((field) => left?.[field] === right?.[field]);
+  }
+
+  function prependedMessageCount(previous, next) {
+    const before = Array.isArray(previous) ? previous : [];
+    const after = Array.isArray(next) ? next : [];
+    const added = after.length - before.length;
+    if (added <= 0) return 0;
+    for (let index = 0; index < before.length; index += 1) {
+      const previousMessage = before[index];
+      const nextMessage = after[added + index];
+      if (messageKey(previousMessage, index) !== messageKey(nextMessage, added + index)) return 0;
+      if (!sameRenderedMessage(previousMessage, nextMessage)) return 0;
+    }
+    return added;
+  }
+
+  function reconcilePrependedKeyedChildren(
+    container,
+    prefixSpecs,
+    expectedExistingKeys,
+    createNode,
+  ) {
+    if (!container || typeof container.insertBefore !== "function") {
+      throw new TypeError("container must support insertBefore");
+    }
+    if (typeof createNode !== "function") throw new TypeError("createNode must be a function");
+    const specs = Array.isArray(prefixSpecs) ? prefixSpecs : [];
+    const expected = Array.isArray(expectedExistingKeys) ? expectedExistingKeys : [];
+    const children = Array.from(container.children ?? []);
+    if (!specs.length || children.length !== expected.length) return null;
+    if (children.some((child, index) => (
+      String(child?.dataset?.messageKey ?? "") !== String(expected[index] ?? "")
+    ))) return null;
+    const occupied = new Set(expected.map((key) => String(key ?? "")));
+    for (const spec of specs) {
+      const key = String(spec?.key ?? "");
+      if (!key || occupied.has(key)) return null;
+      occupied.add(key);
+    }
+
+    const reference = children[0] ?? null;
+    const created = [];
+    for (const [index, spec] of specs.entries()) {
+      const node = createNode(spec, index);
+      node.dataset.messageKey = String(spec.key ?? "");
+      node.dataset.messageContentSignature = String(spec.signature ?? "");
+      container.insertBefore(node, reference);
+      created.push(node);
+    }
+    return created;
   }
 
   function reconcileKeyedChildren(container, specs, createNode, updateNode = () => {}) {
@@ -146,7 +222,10 @@
     messageCopyRequest,
     messageContentSignature,
     messageKey,
+    messageTailWindow,
     normalizeSystemEventText,
+    prependedMessageCount,
+    reconcilePrependedKeyedChildren,
     reconcileKeyedChildren,
   });
 })();

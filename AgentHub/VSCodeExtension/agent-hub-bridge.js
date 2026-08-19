@@ -100,6 +100,7 @@ class AgentHubBridge {
     runtimeRoot = null,
     journalDatabase = null,
     processIsAlive = defaultProcessIsAlive,
+    fetchImpl = globalThis.fetch,
   } = {}) {
     this.moduleRoot = moduleRoot ? path.resolve(moduleRoot) : null;
     this.runtimeRoot = runtimeRoot ? path.resolve(runtimeRoot) : defaultRuntimeRoot();
@@ -110,6 +111,7 @@ class AgentHubBridge {
     this.journalDatabaseModule = null;
     this.resolvedModuleRoot = null;
     this.processIsAlive = processIsAlive;
+    this.fetchImpl = fetchImpl;
   }
 
   async backendRoot() {
@@ -284,6 +286,34 @@ class AgentHubBridge {
       return jsonResponse({ error: "Method Not Allowed" }, 405);
     }
     const url = new URL(requestPath, "https://agent-hub.local");
+    if (url.pathname === "/health") {
+      try {
+        const config = JSON.parse(await readFile(path.join(this.runtimeRoot, "config.json"), "utf8"));
+        const host = String(config?.miniApp?.host ?? "127.0.0.1").trim().toLowerCase();
+        if (!["127.0.0.1", "localhost", "::1"].includes(host)) {
+          throw new Error("miniApp.host должен быть локальным");
+        }
+        const port = Number(config?.miniApp?.port ?? 8787);
+        if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
+          throw new Error("miniApp.port некорректен");
+        }
+        const address = host === "::1" ? `[${host}]` : host;
+        const response = await this.fetchImpl(`http://${address}:${port}/health`, {
+          headers: { Accept: "application/json" },
+          signal: AbortSignal.timeout(10_000),
+        });
+        return {
+          status: response.status,
+          headers: {
+            "Cache-Control": "no-store",
+            "Content-Type": response.headers.get("content-type") ?? "application/json; charset=utf-8",
+          },
+          body: await response.text(),
+        };
+      } catch (error) {
+        return jsonResponse({ error: `Состояние Agent Hub недоступно: ${error.message}` }, 503);
+      }
+    }
     try {
       const journal = await this.journal();
       /* Сводка лимитов нужна шапке во всех разделах, а журнал панель отдаёт

@@ -55,6 +55,21 @@ test("runtime resources report the concrete failed component", async () => {
   }]);
 });
 
+test("runtime restart preserves transport resources that own the public listener", async () => {
+  const events = [];
+  const resources = new RuntimeResourceRegistry({
+    close: [
+      { name: "gateway", preserveOnRestart: true, run: async () => events.push("gateway") },
+      { name: "local", run: async () => events.push("local") },
+    ],
+  });
+
+  await resources.close({ reason: "restart" });
+  assert.deepEqual(events, ["local"]);
+  await resources.close({ reason: "shutdown" });
+  assert.deepEqual(events, ["local", "gateway", "local"]);
+});
+
 test("runtime resources reject malformed registration and unknown phases", async () => {
   assert.throws(() => new RuntimeResourceRegistry({ drain: [{ name: "bad" }] }), /run/u);
   const resources = new RuntimeResourceRegistry();

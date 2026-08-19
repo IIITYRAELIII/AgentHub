@@ -88,6 +88,22 @@ export function codexTurnSnapshot(turn, threadStatus = null) {
   };
 }
 
+function withRolloutUserIdentity(snapshot, rolloutState) {
+  const userMessages = Array.isArray(rolloutState?.userMessages)
+    ? rolloutState.userMessages.map((message) => ({ ...message }))
+    : [];
+  if (!userMessages.length) return snapshot;
+  const rootUser = userMessages.find((message) => message?.role !== "agent");
+  const prompt = String(rootUser?.text ?? "").trim();
+  const clientUserMessageId = String(rootUser?.clientUserMessageId ?? "").trim();
+  return {
+    ...snapshot,
+    ...(prompt ? { prompt } : {}),
+    clientUserMessageId: clientUserMessageId || snapshot.clientUserMessageId || null,
+    userMessages,
+  };
+}
+
 export class CodexTaskSnapshotService {
   #d;
   #subagentAuthors = new Map();
@@ -192,7 +208,14 @@ export class CodexTaskSnapshotService {
       strictRequested: exact || run.observer !== true,
     });
     if (!turn) return null;
-    const turnSnapshot = d.turnSnapshot(turn, result.thread?.status);
+    const rolloutState = await this.#hydrateSubagentMessages(d.rolloutTurnState(activity, turn.id, {
+      exact: true,
+      threadActive: result.thread?.status?.type === "active",
+    }));
+    const turnSnapshot = withRolloutUserIdentity(
+      d.turnSnapshot(turn, result.thread?.status),
+      rolloutState,
+    );
     const completedAtMs = Number(activity.completedAtMsByTurnId?.[turn.id]);
     const snapshot = {
       ...turnSnapshot,

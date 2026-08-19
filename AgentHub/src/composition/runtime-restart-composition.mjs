@@ -89,7 +89,11 @@ export function createRuntimeRestartComposition({
       { name: "Codex App Server", run: stopCodexAppServerTree },
       { name: "Shared Dashboard bot", run: () => miniAppLifecycle.closeSharedDashboardBot?.() },
       { name: "Mini App publisher", run: () => miniAppLifecycle.closePublisher() },
-      { name: "direct gateway", run: () => miniAppLifecycle.closeDirectGateway() },
+      {
+        name: "direct gateway",
+        run: () => miniAppLifecycle.closeDirectGateway(),
+        preserveOnRestart: true,
+      },
       { name: "quick tunnel", run: () => miniAppLifecycle.closeQuickTunnel() },
       { name: "public Mini App", run: () => miniAppLifecycle.closePublicServer() },
       { name: "local Mini App", run: () => miniAppLifecycle.closeLocalServer() },

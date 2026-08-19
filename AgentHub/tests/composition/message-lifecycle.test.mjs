@@ -238,6 +238,58 @@ test("aggregated Stream history preserves each item's provider and Thread", () =
   assert.match(messages[0].id, /^codex:thread-old:/u);
 });
 
+test("focused completed turn cannot append commentary after its durable final", () => {
+  const source = clientFunctionSource("historyMessages", "function mergeNewestHistory");
+  const sandbox = vm.createContext({
+    attachmentViews: () => [],
+    conversationMessageAuthor: (_message, provider) => provider,
+    focusedTurnAlreadyVisible: lifecycle.focusedTurnAlreadyVisible,
+    focusedTurnTaskThreadId: lifecycle.focusedTurnTaskThreadId,
+    historicalMessagesForDisplay: lifecycle.historicalMessagesForDisplay,
+  });
+  vm.runInContext(`${source}; globalThis.mapHistory = historyMessages;`, sandbox);
+  const root = { itemId: "user-root", role: "user", text: "Почему?" };
+  const commentary = {
+    itemId: "turn-1:rollout-agent:latest",
+    role: "agent",
+    text: "Проверяю причину",
+  };
+  const final = {
+    itemId: "turn-1:rollout-agent:final",
+    role: "agent",
+    phase: "final_answer",
+    text: "Причина найдена",
+  };
+  const steer = { itemId: "user-steer", role: "user", text: "Где ответ?" };
+  const history = {
+    provider: "codex",
+    threadId: "thread-1",
+    start: 0,
+    items: [{
+      id: "turn-1",
+      provider: "codex",
+      threadId: "thread-1",
+      completed: true,
+      messages: [root, commentary, final, steer],
+    }],
+  };
+  const messages = sandbox.mapHistory(history, {
+    provider: "codex",
+    taskThreadId: "thread-1",
+    turnId: "turn-1",
+    messages: [root, commentary, final, steer],
+  });
+
+  assert.deepEqual(
+    Array.from(messages, (message) => [message.role, message.itemId, message.text]),
+    [
+      ["user", "user-root", "Почему?"],
+      ["agent", "turn-1:rollout-agent:final", "Причина найдена"],
+      ["user", "user-steer", "Где ответ?"],
+    ],
+  );
+});
+
 test("repeated older pages cannot multiply one durable message after a Thread rebind", () => {
   const source = clientFunctionSource("prependOlderHistory", "function applyOpened");
   const sandbox = vm.createContext({

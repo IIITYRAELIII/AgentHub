@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import { request } from "node:https";
 import { isIP } from "node:net";
 import path from "node:path";
 
@@ -129,14 +130,40 @@ ${sites.join("\n\n")}
 `;
 }
 
+function probeExistingDirectGateway({ domain }) {
+  return new Promise((resolve) => {
+    const probe = request({
+      hostname: "127.0.0.1",
+      port: 443,
+      servername: domain,
+      path: "/health",
+      method: "GET",
+      headers: { Accept: "application/json", Host: domain },
+      agent: false,
+      timeout: STARTUP_GRACE_MS,
+    }, (response) => {
+      response.resume();
+      resolve(/\bcaddy\b/iu.test(String(response.headers.via ?? "")));
+    });
+    probe.once("timeout", () => probe.destroy());
+    probe.once("error", () => resolve(false));
+    probe.end();
+  });
+}
+
 export class DirectGatewayController {
   #child = null;
+  #probe;
   #settings;
   #spawn;
 
-  constructor(settings, { spawnImpl = spawn } = {}) {
+  constructor(settings, {
+    spawnImpl = spawn,
+    probeImpl = probeExistingDirectGateway,
+  } = {}) {
     this.#settings = settings;
     this.#spawn = spawnImpl;
+    this.#probe = probeImpl;
   }
 
   async start() {
@@ -144,7 +171,12 @@ export class DirectGatewayController {
     const { executable, workingDirectory } = this.#settings;
     await mkdir(workingDirectory, { recursive: true });
     const caddyfile = path.join(workingDirectory, "Caddyfile");
-    await writeFile(caddyfile, directGatewayCaddyfile(this.#settings), "utf8");
+    const desiredConfig = directGatewayCaddyfile(this.#settings);
+    const existingConfig = await readFile(caddyfile, "utf8").catch(() => "");
+    if (existingConfig === desiredConfig && await this.#probe(this.#settings)) {
+      return this.#settings.publicUrl;
+    }
+    await writeFile(caddyfile, desiredConfig, "utf8");
     const child = this.#spawn(executable, ["run", "--config", caddyfile, "--adapter", "caddyfile"], {
       cwd: workingDirectory,
       env: {

@@ -269,6 +269,35 @@ test("VS Code bridge answers the rate-limit summary without the journal", async 
   }
 });
 
+test("VS Code bridge proxies runtime health without reading the journal", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-vscode-health-"));
+  let requestedUrl = "";
+  try {
+    await writeFile(path.join(root, "config.json"), JSON.stringify({
+      miniApp: { host: "127.0.0.1", port: 9876 },
+    }), "utf8");
+    const bridge = new AgentHubBridge({
+      runtimeRoot: root,
+      journalDatabase: {
+        payload: async () => assert.fail("health must not read the journal"),
+      },
+      fetchImpl: async (url) => {
+        requestedUrl = url;
+        return new Response(JSON.stringify({
+          ready: false,
+          startup: { operations: [{ id: "web", state: "running" }] },
+        }), { headers: { "Content-Type": "application/json; charset=utf-8" } });
+      },
+    });
+    const response = await bridge.http({ path: "/health" });
+    assert.equal(requestedUrl, "http://127.0.0.1:9876/health");
+    assert.equal(response.status, 200);
+    assert.equal(JSON.parse(response.body).startup.operations[0].state, "running");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("VS Code bridge chunks a large journal response for webview IPC", () => {
   const body = JSON.stringify({ html: "Ж".repeat(1_500_000) });
   const messages = webviewHttpMessages("request-1", {

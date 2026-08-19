@@ -190,6 +190,45 @@ test("a missing completion becomes a bounded timeout instead of staying active f
   tracker.dispose();
 });
 
+test("a confirmed provider turn is not failed by the request-start watchdog", () => {
+  let now = Date.parse("2026-08-19T12:11:40.000Z");
+  const scheduled = new Set();
+  const tracker = new ContextCompactionTracker({
+    clock: () => now,
+    idFactory: () => "provider-turn-id",
+    setTimer: (handler) => {
+      scheduled.add(handler);
+      return handler;
+    },
+    clearTimer: (handler) => scheduled.delete(handler),
+  });
+
+  tracker.begin("thread-provider-turn");
+  assert.equal(scheduled.size, 1);
+
+  tracker.begin("thread-provider-turn", { turnId: "compaction-turn" });
+  now += 5 * 60_000;
+
+  assert.equal(scheduled.size, 0);
+  assert.equal(tracker.get("thread-provider-turn").status, "running");
+  assert.equal(tracker.get("thread-provider-turn").turnId, "compaction-turn");
+  tracker.dispose();
+});
+
+test("an interrupted provider turn settles its pending compaction", async () => {
+  const tracker = new ContextCompactionTracker({ idFactory: () => "interrupted-id" });
+  const started = tracker.begin("thread-interrupted", { turnId: "compaction-turn" });
+  const settlement = tracker.waitForSettlement("thread-interrupted", started.id);
+
+  assert.equal(tracker.settleProviderTurn("thread-interrupted", {
+    turnId: "compaction-turn",
+    status: "interrupted",
+  }), true);
+  assert.equal((await settlement)?.status, "failed");
+  assert.equal(tracker.isRunning("thread-interrupted"), false);
+  tracker.dispose();
+});
+
 test("a running compaction becomes a timeout immediately after process restart", () => {
   const now = Date.parse("2026-08-11T00:15:00.000Z");
   let scheduled = 0;

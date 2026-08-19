@@ -193,7 +193,7 @@ test("selective publication maps shared UI to runtime, Worker and surface tests"
     ]),
     {
       runtime: true,
-      runtimeRestart: false,
+      runtimeRestart: true,
       worker: true,
       android: false,
       desktop: false,
@@ -342,7 +342,7 @@ test("Worker packages only a verified published Android artifact", () => {
   assert.doesNotMatch(build, /app["'],\s*"build"/u);
 });
 
-test("selective frontend publication records state without restarting Hub", async () => {
+test("selective frontend publication records state after verified restart", async () => {
   const events = [];
   await publishChanged(["--from", "base"], {
     run: async (step) => events.push(step.label),
@@ -354,7 +354,7 @@ test("selective frontend publication records state without restarting Hub", asyn
     ensureWorkerDependency: async () => {},
   });
   assert.ok(events.includes("record-publication"));
-  assert.ok(!events.includes("restart-server"));
+  assert.ok(events.indexOf("restart-server") < events.indexOf("record-publication"));
 });
 
 test("selective backend publication records state after verified restart", async () => {

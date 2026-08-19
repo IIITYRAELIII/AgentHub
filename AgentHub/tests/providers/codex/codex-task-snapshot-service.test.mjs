@@ -75,6 +75,90 @@ test("Codex snapshot service hydrates a rollout subagent model", async () => {
   assert.equal(snapshot.userMessages[1].author, "Субагент (Terra)");
 });
 
+test("Codex snapshot service uses rollout receipt identities instead of unkeyed App Server echoes", async () => {
+  const service = new CodexTaskSnapshotService({
+    knownRolloutPath: async () => "rollout.jsonl",
+    readRolloutActivity: async () => ({
+      activeTurnIds: ["turn-1"],
+      activityAtMsByTurnId: { "turn-1": 1_000 },
+      startedAtMsByTurnId: {},
+      completedAtMsByTurnId: {},
+      lastActivityAtMs: 1_000,
+    }),
+    rolloutTurnState: () => ({
+      turnId: "turn-1",
+      active: true,
+      completed: false,
+      userMessages: [
+        {
+          itemId: "root-receipt",
+          clientUserMessageId: "root-receipt",
+          role: "user",
+          text: "Исходный запрос",
+        },
+        {
+          itemId: "steer-receipt",
+          clientUserMessageId: "steer-receipt",
+          role: "user",
+          text: "Уточнение в текущий ход",
+        },
+      ],
+    }),
+    capturedOwner: () => null,
+    runtimeActive: async () => true,
+    resolveOwner: async () => "agent-hub",
+    readThread: async () => ({
+      thread: {
+        path: "rollout.jsonl",
+        status: { type: "active" },
+        turns: [{
+          id: "turn-1",
+          status: "inProgress",
+          items: [
+            { id: "msg-root", type: "userMessage", content: [{ type: "text", text: "Исходный запрос" }] },
+            { id: "msg-steer", type: "userMessage", content: [{ type: "text", text: "Уточнение в текущий ход" }] },
+          ],
+        }],
+      },
+    }),
+    selectTurn: (turns) => turns[0],
+    turnSnapshot: codexTurnSnapshot,
+    turnStartedAt: () => null,
+    describeItem: () => "stage",
+    hubOwner: () => "agent-hub",
+    agentHubPid: () => 1,
+    modelLabel: (value) => value,
+    runtimeLabel: (value) => value,
+    delay: async () => {},
+    reindexRun: () => {},
+    logger: { warn() {} },
+  });
+
+  const snapshot = await service.read({
+    observer: false,
+    threadId: "thread-1",
+    turnId: "turn-1",
+  });
+
+  assert.equal(snapshot.clientUserMessageId, "root-receipt");
+  assert.deepEqual(snapshot.userMessages.map((message) => ({
+    itemId: message.itemId,
+    clientUserMessageId: message.clientUserMessageId,
+    text: message.text,
+  })), [
+    {
+      itemId: "root-receipt",
+      clientUserMessageId: "root-receipt",
+      text: "Исходный запрос",
+    },
+    {
+      itemId: "steer-receipt",
+      clientUserMessageId: "steer-receipt",
+      text: "Уточнение в текущий ход",
+    },
+  ]);
+});
+
 test("Codex snapshot service never selects a context probe from thread reads", async () => {
   const selected = [];
   const readOptions = [];

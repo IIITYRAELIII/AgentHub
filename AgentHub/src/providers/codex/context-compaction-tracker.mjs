@@ -296,8 +296,25 @@ export class ContextCompactionTracker {
         completedAt: null,
       };
     this.store(key, record);
-    this.scheduleTimeout(key, record.id);
+    if (record.turnId) this.cancelTimeout(key);
+    else this.scheduleTimeout(key, record.id);
     return record;
+  }
+
+  settleProviderTurn(threadId, { turnId = null, status = null } = {}) {
+    const key = normalizedThreadId(threadId);
+    const expectedTurnId = normalizedThreadId(turnId);
+    const existing = this.entries.get(key);
+    if (
+      !existing
+      || existing.status !== "running"
+      || existing.stage !== "compacting"
+      || !expectedTurnId
+      || normalizedThreadId(existing.turnId) !== expectedTurnId
+    ) return false;
+    const providerStatus = String(status ?? "").trim().toLowerCase();
+    if (!providerStatus || ["inprogress", "running"].includes(providerStatus)) return false;
+    return this.fail(key, existing.id);
   }
 
   beginCleanup(threadId, {

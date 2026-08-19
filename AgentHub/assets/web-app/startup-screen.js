@@ -3,7 +3,7 @@ import {
   createStartupScreenModel,
   formatStartupElapsed,
   shouldShowStartupScreen,
-} from "/startup-screen-model.js";
+} from "./startup-screen-model.js";
 
 const root = document.documentElement;
 const screen = document.createElement("section");

@@ -1790,11 +1790,20 @@ function historyMessages(history, focusedTurn = null) {
   }
   if (focusedTurn && Array.isArray(focusedTurn.messages)) {
     const focusedThreadId = focusedTurnTaskThreadId(focusedTurn);
+    const parentAgentAlreadyVisible = messages.some((message) => (
+      message.provider === focusedTurn.provider
+      && message.threadId === focusedThreadId
+      && message.turnId === focusedTurn.turnId
+      && message.role === "agent"
+      && message.kind !== "subagent"
+    ));
     for (const [index, message] of focusedTurn.messages.entries()) {
       const itemId = String(message?.itemId ?? "").trim();
       if (!itemId || messages.some((candidate) => (
         candidate.turnId === focusedTurn.turnId && candidate.itemId === itemId
-      ))) continue;
+      )) || (parentAgentAlreadyVisible
+        && message.role === "agent"
+        && message.kind !== "subagent")) continue;
       messages.push({
         id: `${focusedTurn.provider}:${focusedThreadId}:${focusedTurn.turnId}:${itemId}:${message.role}`,
         provider: focusedTurn.provider,

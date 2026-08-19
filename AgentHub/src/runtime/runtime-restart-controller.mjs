@@ -94,7 +94,10 @@ export class RuntimeRestartController {
 
     let lockReleased = false;
     try {
-      const close = await this.resources.close({ label: "Restart close failed" });
+      const close = await this.resources.close({
+        label: "Restart close failed",
+        reason: "restart",
+      });
       if (failed(close)) throw lifecycleFailure("close", close);
       const release = await this.resources.releaseLock({ label: "Restart lock release failed" });
       if (failed(release)) throw lifecycleFailure("releaseLock", release);

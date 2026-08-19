@@ -4,7 +4,11 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { directGatewayCaddyfile, loadDirectGatewaySettings } from "../../../src/interfaces/web/direct-gateway.mjs";
+import {
+  DirectGatewayController,
+  directGatewayCaddyfile,
+  loadDirectGatewaySettings,
+} from "../../../src/interfaces/web/direct-gateway.mjs";
 
 test("direct gateway settings keep the Hub backend on loopback", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-gateway-"));
@@ -91,4 +95,25 @@ test("direct gateway rejects duplicate domains and public additional upstreams",
     routes: [{ publicUrl: "https://home.example.test", upstreamUrl: "http://192.168.3.23:8787" }],
   }));
   await assert.rejects(load, /Duplicate direct gateway domain/u);
+});
+
+test("replacement runtime adopts an unchanged live direct gateway", async () => {
+  const workingDirectory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-gateway-adopt-"));
+  const settings = {
+    publicUrl: "https://home.example.test",
+    domain: "home.example.test",
+    executable: path.join(workingDirectory, "caddy.exe"),
+    localUrl: "http://127.0.0.1:8787",
+    routes: [],
+    workingDirectory,
+  };
+  await writeFile(path.join(workingDirectory, "Caddyfile"), directGatewayCaddyfile(settings));
+  let probes = 0;
+  const controller = new DirectGatewayController(settings, {
+    probeImpl: async () => { probes += 1; return true; },
+    spawnImpl: () => { throw new Error("replacement must not spawn a second gateway"); },
+  });
+
+  assert.equal(await controller.start(), settings.publicUrl);
+  assert.equal(probes, 1);
 });

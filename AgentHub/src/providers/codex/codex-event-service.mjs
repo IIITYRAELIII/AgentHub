@@ -55,7 +55,8 @@ export class CodexEventService {
       "trackTokenUsage", "completeTurn", "taskKey", "isSelectedRun", "setSelectedDiff", "appendActivity",
       "noteActivity", "scheduleProgress", "appendReasoning", "isCompactionItem",
       "upsertReasoningBlock", "replaceActivityGroups", "turnActivityGroups",
-      "contextUsage", "beginCompaction", "getCompaction", "rememberRawCompactionItem",
+      "contextUsage", "beginCompaction", "getCompaction", "settleCompactionTurn",
+      "rememberRawCompactionItem",
       "beginCompactionCleanup", "setStage", "describeItem",
       "itemActivity", "requestApproval", "formatCommandApproval", "formatFileApproval",
       "formatPermissionsApproval", "requestMcpElicitation", "discardContextCompaction",
@@ -274,6 +275,10 @@ export class CodexEventService {
       });
       await d.requestUserInput(id, params, run);
     } else if (method === "turn/completed") {
+      d.settleCompactionTurn(params.threadId, {
+        turnId: eventTurnId,
+        status: params.turn?.status,
+      });
       if (run) {
         hydrateCodexAgentMessages(run, params.turn?.items, { turnId: eventTurnId });
         d.replaceActivityGroups(run, d.turnActivityGroups(params.turn));

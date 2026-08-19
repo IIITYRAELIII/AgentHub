@@ -63,6 +63,7 @@ export function classifyPublicationChanges(files) {
     if (/\.test\.(?:mjs|js)$/u.test(relative) || relative.startsWith("e2e/") || relative.startsWith("ci/")) continue;
     if (relative.startsWith("assets/web-app/") || relative === "work-log.css") {
       plan.runtime = true;
+      plan.runtimeRestart = true;
       plan.worker = true;
       plan.unitTests = true;
       plan.surfaceTests = true;

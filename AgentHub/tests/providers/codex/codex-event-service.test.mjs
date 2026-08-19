@@ -16,7 +16,7 @@ function createService(run, overrides = {}) {
     appendActivity: noop, noteActivity: noop, scheduleProgress: noop, appendReasoning: noop,
     upsertReasoningBlock: noop, replaceActivityGroups: noop, turnActivityGroups: () => [],
     isCompactionItem: () => false, contextUsage: () => null,
-    beginCompaction: noop, getCompaction: () => null,
+    beginCompaction: noop, getCompaction: () => null, settleCompactionTurn: noop,
     rememberRawCompactionItem: noop,
     beginCompactionCleanup: noop, setStage: noop, describeItem: () => "stage",
     itemActivity: () => null, requestApproval: async () => {}, formatCommandApproval: () => "",
@@ -114,6 +114,26 @@ test("Codex event service completes a managed run through the coordinator", asyn
   await service.handle({ method: "turn/completed", params: { turn: { id: "turn-1" } } });
   assert.equal(completed.length, 1);
   assert.equal(completed[0][1].completedTurnId, "turn-1");
+});
+
+test("Codex event service settles an interrupted compaction provider turn", async () => {
+  const settled = [];
+  const service = createService(null, {
+    settleCompactionTurn: (...args) => settled.push(args),
+  });
+
+  await service.handle({
+    method: "turn/completed",
+    params: {
+      threadId: "thread-1",
+      turn: { id: "compaction-turn", status: "interrupted", items: [] },
+    },
+  });
+
+  assert.deepEqual(settled, [["thread-1", {
+    turnId: "compaction-turn",
+    status: "interrupted",
+  }]]);
 });
 
 test("Codex event service binds a promptless provider turn before its compaction item starts", async () => {
