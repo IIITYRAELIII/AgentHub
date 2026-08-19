@@ -1500,7 +1500,7 @@ test("chat short-polls commands and skips only unchanged loaded history renders"
   assert.match(client, /control\("snapshot", \{ knownVersion: lastSnapshot\?\.version \?\? "" \}\)/u);
   assert.match(client, /snapshotResult\?\.notModified === true \? lastSnapshot : snapshotResult/u);
   assert.match(app, /setMessages\(taskId, messages\) \{[\s\S]*state\.messages\.has\(taskId\) && sameData\(state\.messages\.get\(taskId\), next\)[\s\S]*return/u);
-  assert.match(app, /setMessagesPreservingScroll\(taskId, messages\) \{[\s\S]*state\.messages\.has\(taskId\) && sameData\(state\.messages\.get\(taskId\), next\)[\s\S]*return/u);
+  assert.match(app, /setMessagesPreservingScroll\(taskId, messages\) \{[\s\S]*const previous = state\.messages\.get\(taskId\) \?\? \[\][\s\S]*state\.messages\.has\(taskId\) && sameData\(previous, next\)[\s\S]*return/u);
 });
 
   test("dispatching deferred messages leave the queue and reappear in the active conversation", () => {
@@ -2378,7 +2378,7 @@ test("VS Code stream refresh keeps composer focus and opens history at the botto
   assert.match(deck, /chatPane\.style\.order/u);
   assert.doesNotMatch(app, /syncChatActionsPlacement/u);
   // Колонки фиксируются до forceBottom, поэтому переносы строк уже учтены.
-  assert.ok(chat.indexOf("renderStreamChatDeck();") < chat.indexOf("renderMessages({ forceBottom: true });"));
+  assert.ok(chat.indexOf("renderStreamChatDeck();") < chat.indexOf("renderMessages({ forceBottom: true, tailLimit: SWITCH_MESSAGE_RENDER_LIMIT });"));
 });
 
 test("hub status band lives inside the top toolbar instead of covering the stream row", () => {
