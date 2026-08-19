@@ -1,7 +1,9 @@
+import { sentryDiagnostics } from "../infrastructure/diagnostics/sentry-diagnostics.mjs";
+
 export function createFatalProcessHandler({
   shutdown,
-  captureException = null,
-  flushDiagnostics = null,
+  captureException = (error, context) => sentryDiagnostics.captureException(error, context),
+  flushDiagnostics = (timeoutMs) => sentryDiagnostics.flush(timeoutMs),
   logger = console,
   processRef = process,
 } = {}) {

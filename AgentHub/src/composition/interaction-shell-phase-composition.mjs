@@ -5,6 +5,7 @@ import {
   taskGitDiff,
 } from "../infrastructure/filesystem/task-git-diff.mjs";
 import { findRepositoryWriteConflict } from "../infrastructure/filesystem/repository-conflict.mjs";
+import { sentryDiagnostics } from "../infrastructure/diagnostics/sentry-diagnostics.mjs";
 import {
   appendMessageBindings,
   readMessageBindings,
@@ -40,7 +41,6 @@ const {
 
 export function createInteractionShellPhase({
   config,
-  diagnostics,
   root,
   server,
   settings,
@@ -74,7 +74,9 @@ export function createInteractionShellPhase({
 
   const desktopShell = createDesktopShellComposition({
     config,
-    diagnostics,
+    diagnostics: {
+      reportClientError: (event, context) => sentryDiagnostics.captureClientEvent(event, context),
+    },
     limits: {
       projects: settings.projects,
       maxSpeechJobs: settings.maxBackgroundSpeechJobs,

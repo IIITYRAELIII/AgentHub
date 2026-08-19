@@ -77,6 +77,10 @@ export async function createHubInfrastructure({
   handleRuntimeCommand,
   stopProcessTree,
 }) {
+  sentryDiagnostics.configure({
+    ...config.diagnostics.sentry,
+    release: config.diagnostics.sentry.release || path.basename(agentHubRoot),
+  });
   const instanceGuard = new SingleInstanceGuard({ dataDir: config.dataDir, lockFile: instanceLockFile });
   await instanceGuard.acquire();
   const sqliteRecoveryCoordinator = new SharedSqliteRecoveryCoordinator({
