@@ -116,6 +116,36 @@ test("Codex event service completes a managed run through the coordinator", asyn
   assert.equal(completed[0][1].completedTurnId, "turn-1");
 });
 
+test("Codex event service binds a promptless provider turn before its compaction item starts", async () => {
+  const started = [];
+  const service = createService(null, {
+    getCompaction: () => ({
+      id: "compaction-1",
+      origin: "automatic",
+      status: "running",
+      turnId: null,
+      beforePercent: 86,
+    }),
+    beginCompaction: (...args) => started.push(args),
+  });
+
+  await service.handle({
+    method: "turn/started",
+    params: {
+      threadId: "thread-1",
+      startedAtMs: 123,
+      turn: { id: "compaction-turn", status: "inProgress", items: [] },
+    },
+  });
+
+  assert.deepEqual(started, [["thread-1", {
+    origin: "automatic",
+    turnId: "compaction-turn",
+    startedAt: 123,
+    beforePercent: 86,
+  }]]);
+});
+
 test("Codex event service never rebinds an existing run to a context probe", async () => {
   const run = {
     threadId: "thread-1",

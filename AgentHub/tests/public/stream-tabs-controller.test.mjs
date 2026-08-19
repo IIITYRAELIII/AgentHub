@@ -76,14 +76,24 @@ test("activity mode puts the most recently active Stream first", async () => {
   );
 });
 
-test("Gothic Stream settings keep approved limits and stable geometry", async () => {
+test("desktop Stream settings are theme-independent and keep stable geometry", async () => {
   const {
     STREAM_CARD_MAX_WIDTH,
     STREAM_CARD_MIN_WIDTH,
     calculateOverflowShift,
     compactStreamActivityValue,
     resolveStableStreamCardWidth,
+    streamCardSettingsAvailable,
+    streamCardSettingsWrapperNeedsReplacement,
   } = await streamTabsApi();
+  assert.equal(streamCardSettingsAvailable({ isWide: true, surface: "desktop" }), true);
+  assert.equal(streamCardSettingsAvailable({ isWide: true, surface: "vscode" }), true);
+  assert.equal(streamCardSettingsAvailable({ isWide: true, surface: "mobile" }), false);
+  assert.equal(streamCardSettingsAvailable({ isWide: false, surface: "desktop" }), false);
+  const currentWrapper = {};
+  assert.equal(streamCardSettingsWrapperNeedsReplacement(currentWrapper, currentWrapper), false);
+  assert.equal(streamCardSettingsWrapperNeedsReplacement(currentWrapper, {}), true);
+  assert.equal(streamCardSettingsWrapperNeedsReplacement(currentWrapper, null), true);
   assert.equal(STREAM_CARD_MIN_WIDTH, 90);
   assert.equal(STREAM_CARD_MAX_WIDTH, 450);
   assert.equal(compactStreamActivityValue("3 мин 26 с"), "3 мин");
@@ -95,6 +105,29 @@ test("Gothic Stream settings keep approved limits and stable geometry", async ()
   assert.equal(resolveStableStreamCardWidth(widths, "themes", 119.25), 119.25);
   assert.equal(resolveStableStreamCardWidth(widths, "themes", 126.5), 119.25);
   assert.equal(resolveStableStreamCardWidth(widths, "new-stream"), 0);
+});
+
+test("Stream card settings normalize values received from the server snapshot", async () => {
+  const {
+    normalizeStreamCardSettings,
+  } = await streamTabsApi();
+
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(normalizeStreamCardSettings({
+      streamCardWidthMode: "fixed",
+      streamCardFixedWidth: 237,
+      streamCardGapEnabled: true,
+    }))),
+    { widthMode: "fixed", fixedWidth: 237, gapEnabled: true },
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(normalizeStreamCardSettings({
+      widthMode: "broken",
+      fixedWidth: 999,
+      gapEnabled: "true",
+    }))),
+    { widthMode: "auto", fixedWidth: 450, gapEnabled: false },
+  );
 });
 
 test("order switch icons are real Phosphor SVG nodes in the SVG namespace", async () => {

@@ -13,12 +13,29 @@ function claudeModel(value, fallback) {
 
 const DEFAULT_ACTIVITY_RECENT_MINUTES = 3 * 60;
 const MAX_ACTIVITY_RECENT_MINUTES = 30 * 24 * 60;
+const STREAM_CARD_MIN_WIDTH = 90;
+const STREAM_CARD_MAX_WIDTH = 450;
 
 function activityRecentMinutes(value, fallback = DEFAULT_ACTIVITY_RECENT_MINUTES) {
   const minutes = Math.round(Number(value));
   return Number.isFinite(minutes)
     ? Math.max(0, Math.min(MAX_ACTIVITY_RECENT_MINUTES, minutes))
     : fallback;
+}
+
+function streamOrderMode(value) {
+  return value === "manual" ? "manual" : "activity";
+}
+
+function streamCardWidthMode(value) {
+  return value === "fixed" ? "fixed" : "auto";
+}
+
+function streamCardFixedWidth(value) {
+  const width = Math.round(Number(value));
+  return Number.isFinite(width)
+    ? Math.max(STREAM_CARD_MIN_WIDTH, Math.min(STREAM_CARD_MAX_WIDTH, width))
+    : STREAM_CARD_MIN_WIDTH;
 }
 
 export class AgentPreferencesStore {
@@ -84,6 +101,10 @@ export class AgentPreferencesStore {
   get claudeCollaborationMode() { return this.values.claudeCollaborationMode; }
   get includeClaudeUsage() { return this.values.includeClaudeUsage; }
   get activityRecentMinutes() { return this.values.activityRecentMinutes; }
+  get streamOrderMode() { return this.values.streamOrderMode; }
+  get streamCardWidthMode() { return this.values.streamCardWidthMode; }
+  get streamCardFixedWidth() { return this.values.streamCardFixedWidth; }
+  get streamCardGapEnabled() { return this.values.streamCardGapEnabled; }
   get defaultCodexModel() { return this.defaults.codexModel; }
   get defaultCodexReasoningEffort() { return this.defaults.codexReasoningEffort; }
 
@@ -126,6 +147,22 @@ export class AgentPreferencesStore {
 
   setActivityRecentMinutes(value) {
     return this.#set("activityRecentMinutes", activityRecentMinutes(value));
+  }
+
+  setStreamOrderMode(value) {
+    return this.#set("streamOrderMode", streamOrderMode(value));
+  }
+
+  setStreamCardWidthMode(value) {
+    return this.#set("streamCardWidthMode", streamCardWidthMode(value));
+  }
+
+  setStreamCardFixedWidth(value) {
+    return this.#set("streamCardFixedWidth", streamCardFixedWidth(value));
+  }
+
+  setStreamCardGapEnabled(value) {
+    return this.#set("streamCardGapEnabled", value === true);
   }
 
   #set(name, value) {
@@ -235,6 +272,10 @@ export class AgentPreferencesStore {
         ? snapshot.includeClaudeUsage
         : true,
       activityRecentMinutes: activityRecentMinutes(snapshot.activityRecentMinutes),
+      streamOrderMode: streamOrderMode(snapshot.streamOrderMode),
+      streamCardWidthMode: streamCardWidthMode(snapshot.streamCardWidthMode),
+      streamCardFixedWidth: streamCardFixedWidth(snapshot.streamCardFixedWidth),
+      streamCardGapEnabled: snapshot.streamCardGapEnabled === true,
     };
     return this.snapshot();
   }

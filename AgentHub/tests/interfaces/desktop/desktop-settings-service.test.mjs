@@ -12,6 +12,10 @@ test("Desktop settings service rejects a stale task-scoped mutation", async () =
     getCodexMode: () => "default", setCodexMode: noop, getClaudeMode: () => "default", setClaudeMode: noop,
     getAutoApprove: () => true, setAutoApprove: noop, getIncludeClaudeUsage: () => true, setIncludeClaudeUsage: noop,
     getActivityRecentMinutes: () => 180, setActivityRecentMinutes: noop,
+    getStreamOrderMode: () => "activity", setStreamOrderMode: noop,
+    getStreamCardWidthMode: () => "auto", setStreamCardWidthMode: noop,
+    getStreamCardFixedWidth: () => 90, setStreamCardFixedWidth: noop,
+    getStreamCardGapEnabled: () => false, setStreamCardGapEnabled: noop,
     projectUsage: async () => {}, findProjectIndex: () => 0, switchProject: async () => ({}), snapshot: async () => ({}),
     reasoningEfforts: ["high"], collaborationModes: ["default"],
   });
@@ -29,6 +33,10 @@ test("Desktop settings service rejects a stale project mutation before switching
     getCodexMode: () => "default", setCodexMode: noop, getClaudeMode: () => "default", setClaudeMode: noop,
     getAutoApprove: () => true, setAutoApprove: noop, getIncludeClaudeUsage: () => true, setIncludeClaudeUsage: noop,
     getActivityRecentMinutes: () => 180, setActivityRecentMinutes: noop,
+    getStreamOrderMode: () => "activity", setStreamOrderMode: noop,
+    getStreamCardWidthMode: () => "auto", setStreamCardWidthMode: noop,
+    getStreamCardFixedWidth: () => 90, setStreamCardFixedWidth: noop,
+    getStreamCardGapEnabled: () => false, setStreamCardGapEnabled: noop,
     projectUsage: async () => {}, findProjectIndex: () => 0, switchProject: async () => { switched = true; return {}; }, snapshot: async () => ({}),
     reasoningEfforts: ["high"], collaborationModes: ["default"],
   });
@@ -54,6 +62,10 @@ test("Desktop settings service persists the shared recent activity period", asyn
     getCodexMode: () => "default", setCodexMode: noop, getClaudeMode: () => "default", setClaudeMode: noop,
     getAutoApprove: () => true, setAutoApprove: noop, getIncludeClaudeUsage: () => true, setIncludeClaudeUsage: noop,
     getActivityRecentMinutes: () => current, setActivityRecentMinutes: (value) => { current = value; },
+    getStreamOrderMode: () => "activity", setStreamOrderMode: noop,
+    getStreamCardWidthMode: () => "auto", setStreamCardWidthMode: noop,
+    getStreamCardFixedWidth: () => 90, setStreamCardFixedWidth: noop,
+    getStreamCardGapEnabled: () => false, setStreamCardGapEnabled: noop,
     projectUsage: async () => {}, findProjectIndex: () => 0, switchProject: async () => ({}),
     snapshot: async () => ({ settings: { activityRecentMinutes: current } }),
     reasoningEfforts: ["high"], collaborationModes: ["default"],
@@ -67,5 +79,54 @@ test("Desktop settings service persists the shared recent activity period", asyn
   await assert.rejects(
     service.update({ name: "activityRecentMinutes", value: "50000" }),
     /Неизвестный период/u,
+  );
+});
+
+test("Desktop settings service persists shared Stream card settings", async () => {
+  const current = {
+    streamOrderMode: "activity",
+    streamCardWidthMode: "auto",
+    streamCardFixedWidth: 90,
+    streamCardGapEnabled: false,
+  };
+  let saveCount = 0;
+  const noop = () => {};
+  const service = new DesktopSettingsService({
+    isSelected: () => true, selectedTask: () => ({}), switchProvider: async () => ({}), isCodex: () => true,
+    threadId: () => "t1", isCompacting: () => false, switchCodexModel: () => ({}), switchClaudeModel: () => ({}),
+    updateCodexThreadSettings: async () => {}, saveState: async () => { saveCount += 1; }, getCodexReasoning: () => "high",
+    setCodexReasoning: noop, getClaudeReasoning: () => "high", setClaudeReasoning: noop,
+    getCodexMode: () => "default", setCodexMode: noop, getClaudeMode: () => "default", setClaudeMode: noop,
+    getAutoApprove: () => true, setAutoApprove: noop, getIncludeClaudeUsage: () => true, setIncludeClaudeUsage: noop,
+    getActivityRecentMinutes: () => 180, setActivityRecentMinutes: noop,
+    getStreamOrderMode: () => current.streamOrderMode,
+    setStreamOrderMode: (value) => { current.streamOrderMode = value; },
+    getStreamCardWidthMode: () => current.streamCardWidthMode,
+    setStreamCardWidthMode: (value) => { current.streamCardWidthMode = value; },
+    getStreamCardFixedWidth: () => current.streamCardFixedWidth,
+    setStreamCardFixedWidth: (value) => { current.streamCardFixedWidth = value; },
+    getStreamCardGapEnabled: () => current.streamCardGapEnabled,
+    setStreamCardGapEnabled: (value) => { current.streamCardGapEnabled = value; },
+    projectUsage: async () => {}, findProjectIndex: () => 0, switchProject: async () => ({}),
+    snapshot: async () => ({ settings: { ...current } }),
+    reasoningEfforts: ["high"], collaborationModes: ["default"],
+  });
+
+  await service.update({ name: "streamOrderMode", value: "manual" });
+  await service.update({ name: "streamCardWidthMode", value: "fixed" });
+  await service.update({ name: "streamCardFixedWidth", value: "237" });
+  const result = await service.update({ name: "streamCardGapEnabled", value: "true" });
+
+  assert.deepEqual(current, {
+    streamOrderMode: "manual",
+    streamCardWidthMode: "fixed",
+    streamCardFixedWidth: 237,
+    streamCardGapEnabled: true,
+  });
+  assert.equal(saveCount, 4);
+  assert.deepEqual(result.settings, current);
+  await assert.rejects(
+    service.update({ name: "streamCardFixedWidth", value: "451" }),
+    /Неизвестная ширина/u,
   );
 });

@@ -299,7 +299,7 @@ export class CodexTurnService {
   }
 
   async steer({ run, target, input, clientUserMessageId }) {
-    let turnId = await this.#exactTurnId(target);
+    let turnId = await this.#exactTurnId(target, run?.turnId);
     if (!turnId) throw new Error("Текущий ход уже нельзя изменить; сообщение осталось в очереди");
     let request = {
       threadId: target.threadId,
@@ -362,7 +362,7 @@ export class CodexTurnService {
     });
   }
 
-  async #exactTurnId(target) {
+  async #exactTurnId(target, preferredTurnId = "") {
     const result = await this.#d.readThread(target.threadId, {
       fresh: true,
       includeTurns: true,
@@ -378,6 +378,10 @@ export class CodexTurnService {
         return !isCodexContextProbeTurn(turn, { allowTextFallback: true })
           && !this.#d.isContextProbeTurn(target.threadId, turnId);
       });
+    const preferred = String(preferredTurnId ?? "").trim();
+    if (preferred && active.some((turn) => String(turn?.id ?? "").trim() === preferred)) {
+      return preferred;
+    }
     if (active.length === 1) {
       const turnId = String(active[0]?.id ?? "").trim();
       return turnId || null;

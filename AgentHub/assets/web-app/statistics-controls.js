@@ -38,6 +38,26 @@
     return !payload?.range || normalizeRange(payload.range) === normalizeRange(selectedRange);
   }
 
+  function resolveStatisticsAccountSelection({
+    availableAccountKeys,
+    selectedAccountKey,
+    currentAccountKey,
+    previousCurrentAccountKey,
+    allAccountsKey = "all",
+  } = {}) {
+    const available = [...new Set((availableAccountKeys ?? []).map((key) => String(key)).filter(Boolean))];
+    const selected = String(selectedAccountKey ?? "");
+    const current = String(currentAccountKey ?? "");
+    const previousCurrent = String(previousCurrentAccountKey ?? "");
+    if (!available.length) return selected;
+    const currentAvailable = current && available.includes(current);
+    if (currentAvailable && (!previousCurrent || (
+      current !== previousCurrent && selected === previousCurrent
+    ))) return current;
+    if (selected === allAccountsKey || available.includes(selected)) return selected;
+    return currentAvailable ? current : available[0];
+  }
+
   function bindDatasetChoice(buttons, datasetKey, select) {
     const listeners = [];
     for (const button of buttons ?? []) {
@@ -60,6 +80,7 @@
     payloadMatchesSelectedRange,
     persistLimitsRange,
     persistRange,
+    resolveStatisticsAccountSelection,
     storedLimitsRange,
     storedRange,
   });

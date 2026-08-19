@@ -1,7 +1,7 @@
 import { DurableCommandReceipts, commandFingerprint } from "../../infrastructure/persistence/durable-command-receipts.mjs";
 
 const DEFAULT_MINI_APP_LIMITS = Object.freeze({
-  source: "telegram-mini-app",
+  sources: Object.freeze(["telegram-mini-app", "trusted-device", "local-mini-app"]),
   limit: 10,
   maxAnswerChars: 75_000,
   maxResponseBytes: 850_000,
@@ -55,6 +55,10 @@ export function createDesktopControlRouter({
   const mutations = new Set(mutationActions);
   const concurrentMutations = new Set(concurrentMutationActions);
   const durableMutations = new Set(receiptActions);
+  const miniAppSources = new Set([
+    ...(Array.isArray(miniAppLimits.sources) ? miniAppLimits.sources : []),
+    miniAppLimits.source,
+  ].map((source) => String(source ?? "").trim()).filter(Boolean));
   let mutationQueue = Promise.resolve();
   const receipts = receiptFile ? new DurableCommandReceipts({
     ...receiptOptions,
@@ -69,7 +73,7 @@ export function createDesktopControlRouter({
   }
 
   function effectiveParams(params, context) {
-    if (context?.source === miniAppLimits.source) {
+    if (miniAppSources.has(String(context?.source ?? ""))) {
       return {
         ...params,
         limit: Math.min(Number(params.limit) || 10, miniAppLimits.limit),
@@ -98,7 +102,7 @@ export function createDesktopControlRouter({
   }
 
   async function mutationResultForClient(value, context) {
-    if (context?.source !== miniAppLimits.source) return value;
+    if (!miniAppSources.has(String(context?.source ?? ""))) return value;
     return hydrateProjectedResult(projectDesktopReceiptResult(value), context);
   }
 

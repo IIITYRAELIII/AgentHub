@@ -215,6 +215,70 @@ test("Codex turn service steers the user turn while a tracked context probe is a
   assert.equal(steerRequests[0].expectedTurnId, "user-turn");
 });
 
+test("Codex turn service prefers the registered run while another user turn is transitioning", async () => {
+  const steerRequests = [];
+  const service = codexTurnService({
+    readThread: async () => ({
+      thread: {
+        turns: [{
+          id: "registered-turn",
+          status: "inProgress",
+          items: [{ type: "userMessage" }],
+        }, {
+          id: "transitioning-turn",
+          status: "inProgress",
+          items: [{ type: "userMessage" }],
+        }],
+      },
+    }),
+    sendRpc: async (method, params) => {
+      assert.equal(method, "turn/steer");
+      steerRequests.push(params);
+      return { turnId: params.expectedTurnId };
+    },
+  });
+
+  const result = await service.steer({
+    run: { turnId: "registered-turn" },
+    target: { threadId: "thread-1" },
+    input: "Добавить в зарегистрированный ход",
+    clientUserMessageId: "message-registered",
+  });
+
+  assert.deepEqual(result, { turnId: "registered-turn" });
+  assert.equal(steerRequests.length, 1);
+  assert.equal(steerRequests[0].expectedTurnId, "registered-turn");
+});
+
+test("Codex turn service keeps ambiguous unregistered user turns in the queue", async () => {
+  let steerCalls = 0;
+  const service = codexTurnService({
+    readThread: async () => ({
+      thread: {
+        turns: [
+          { id: "user-turn-1", status: "inProgress" },
+          { id: "user-turn-2", status: "inProgress" },
+        ],
+      },
+    }),
+    sendRpc: async () => {
+      steerCalls += 1;
+      return {};
+    },
+  });
+
+  await assert.rejects(
+    service.steer({
+      run: {},
+      target: { threadId: "thread-1" },
+      input: "Не выбирать случайный ход",
+      clientUserMessageId: "message-ambiguous",
+    }),
+    /выполняется несколько ходов/u,
+  );
+  assert.equal(steerCalls, 0);
+});
+
 test("Codex turn service retries one active-turn transition with the same message identity", async () => {
   const activeTurns = ["turn-first", "turn-second"];
   const steerRequests = [];

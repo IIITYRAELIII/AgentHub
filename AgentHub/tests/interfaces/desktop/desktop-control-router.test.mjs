@@ -136,7 +136,7 @@ test("desktop control router applies transport-specific response limits", async 
     },
     mutationActions: [],
     miniAppLimits: {
-      source: "telegram-mini-app",
+      sources: ["telegram-mini-app", "trusted-device", "local-mini-app"],
       limit: 10,
       maxAnswerChars: 75_000,
       maxResponseBytes: 850_000,
@@ -157,6 +157,16 @@ test("desktop control router applies transport-specific response limits", async 
   await router.handleDesktopControl({
     action: "snapshot",
     params: { maxResponseBytes: 9_000_000 },
+    context: { source: "trusted-device" },
+  });
+  await router.handleDesktopControl({
+    action: "snapshot",
+    params: { maxResponseBytes: 9_000_000 },
+    context: { source: "local-mini-app" },
+  });
+  await router.handleDesktopControl({
+    action: "snapshot",
+    params: { maxResponseBytes: 9_000_000 },
   });
 
   assert.deepEqual(received, [
@@ -167,41 +177,55 @@ test("desktop control router applies transport-specific response limits", async 
       maxResponseBytes: 850_000,
       compactSnapshot: true,
     },
+    {
+      limit: 10,
+      maxAnswerChars: 75_000,
+      maxResponseBytes: 850_000,
+      compactSnapshot: true,
+    },
+    {
+      limit: 10,
+      maxAnswerChars: 75_000,
+      maxResponseBytes: 850_000,
+      compactSnapshot: true,
+    },
     { maxResponseBytes: 3_500_000 },
   ]);
 });
 
-test("Mini App mutations replace a large live result with a compact fresh snapshot", async () => {
-  const snapshotParams = [];
-  const router = createDesktopControlRouter({
-    handlers: {
-      mutate: async () => ({
-        accepted: true,
-        snapshot: { apiVersion: 3, tasks: [{ output: "x".repeat(1_100_000) }], selected: { threadId: "old" } },
-      }),
-      snapshot: async (params) => {
-        snapshotParams.push(params);
-        return { apiVersion: 3, tasks: [], selected: { threadId: "fresh" } };
+test("Web mutations replace a large live result with a compact fresh snapshot", async () => {
+  for (const source of ["telegram-mini-app", "trusted-device", "local-mini-app"]) {
+    const snapshotParams = [];
+    const router = createDesktopControlRouter({
+      handlers: {
+        mutate: async () => ({
+          accepted: true,
+          snapshot: { apiVersion: 3, tasks: [{ output: "x".repeat(1_100_000) }], selected: { threadId: "old" } },
+        }),
+        snapshot: async (params) => {
+          snapshotParams.push(params);
+          return { apiVersion: 3, tasks: [], selected: { threadId: "fresh" } };
+        },
       },
-    },
-    mutationActions: ["mutate"],
-  });
+      mutationActions: ["mutate"],
+    });
 
-  const result = await router.handleDesktopControl({
-    action: "mutate",
-    params: {},
-    context: { source: "telegram-mini-app", userId: "42" },
-  });
+    const result = await router.handleDesktopControl({
+      action: "mutate",
+      params: {},
+      context: { source, userId: "42" },
+    });
 
-  assert.equal(result.accepted, true);
-  assert.equal(result.snapshot.selected.threadId, "fresh");
-  assert.ok(Buffer.byteLength(JSON.stringify(result), "utf8") < 10_000);
-  assert.deepEqual(snapshotParams, [{
-    limit: 10,
-    maxAnswerChars: 75_000,
-    maxResponseBytes: 850_000,
-    compactSnapshot: true,
-  }]);
+    assert.equal(result.accepted, true);
+    assert.equal(result.snapshot.selected.threadId, "fresh");
+    assert.ok(Buffer.byteLength(JSON.stringify(result), "utf8") < 10_000);
+    assert.deepEqual(snapshotParams, [{
+      limit: 10,
+      maxAnswerChars: 75_000,
+      maxResponseBytes: 850_000,
+      compactSnapshot: true,
+    }]);
+  }
 });
 
 test("desktop control router serializes mutations and continues after a failure", async () => {

@@ -565,6 +565,10 @@ export function createDesktopSnapshotFactory({
         approvalMode: current.autoApprove ? "auto" : "manual",
         includeClaudeUsage: current.includeClaudeUsage !== false,
         activityRecentMinutes: current.activityRecentMinutes,
+        streamOrderMode: current.streamOrderMode,
+        streamCardWidthMode: current.streamCardWidthMode,
+        streamCardFixedWidth: current.streamCardFixedWidth,
+        streamCardGapEnabled: current.streamCardGapEnabled === true,
         models: activeProvider === "codex"
           ? current.codexModels.map((model) => ({ value: model.value, label: model.label }))
           : claudeOptions,

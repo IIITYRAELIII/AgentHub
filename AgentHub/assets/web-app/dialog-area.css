@@ -158,6 +158,7 @@ html[data-view="chat"][data-surface][data-theme] {
 }
 
 .stream-tabs-track .stream-tab {
+  --stream-tab-inline-padding: 16px;
   align-items: center;
   appearance: none;
   background: transparent !important;
@@ -175,10 +176,15 @@ html[data-view="chat"][data-surface][data-theme] {
   max-width: none !important;
   min-height: calc(var(--dialog-stream-tabs-height) - 1px) !important;
   min-width: 0 !important;
+  overflow: hidden;
   padding: 0 16px !important;
   position: relative;
   text-align: left;
   width: max-content !important;
+}
+
+.stream-tabs[data-stream-card-width-mode="fixed"] .stream-tabs-track .stream-tab {
+  --stream-tab-inline-padding: 0.5rem;
 }
 
 .stream-tabs-track .stream-tab:hover,
@@ -219,6 +225,16 @@ html[data-view="chat"][data-surface][data-theme] {
   min-width: 0;
   overflow: visible;
   padding: 0 !important;
+}
+
+.stream-tabs-track
+  .stream-tab:is([data-maintenance], [data-running], [data-answer-ready], [aria-pressed="true"])
+  .stream-tab-card {
+  box-sizing: border-box;
+  margin-inline: calc(-1 * var(--stream-tab-inline-padding)) !important;
+  overflow: visible;
+  padding-inline: var(--stream-tab-inline-padding) !important;
+  width: calc(100% + 2 * var(--stream-tab-inline-padding)) !important;
 }
 
 .stream-tabs-track .stream-tab-title {

@@ -1693,6 +1693,10 @@ function applySnapshot(snapshot) {
     autoApprove: settings.approvalMode === "auto",
     includeClaudeUsage: settings.includeClaudeUsage !== false,
     activityRecentMinutes: settings.activityRecentMinutes,
+    streamOrderMode: settings.streamOrderMode,
+    streamCardWidthMode: settings.streamCardWidthMode,
+    streamCardFixedWidth: settings.streamCardFixedWidth,
+    streamCardGapEnabled: settings.streamCardGapEnabled,
     ...(selectedDraft?.streamSettings ?? {}),
   });
   applySnapshotConnection(snapshot);
@@ -2762,6 +2766,10 @@ agentHub.on("selection:set", ({ key, value }) => runAction(async () => {
     autoApprove: "approvalMode",
     includeClaudeUsage: "includeClaudeUsage",
     activityRecentMinutes: "activityRecentMinutes",
+    streamOrderMode: "streamOrderMode",
+    streamCardWidthMode: "streamCardWidthMode",
+    streamCardFixedWidth: "streamCardFixedWidth",
+    streamCardGapEnabled: "streamCardGapEnabled",
   };
   const name = names[key];
   if (!name) return;

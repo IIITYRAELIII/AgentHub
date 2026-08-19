@@ -423,6 +423,7 @@ const {
   payloadMatchesSelectedRange,
   persistLimitsRange,
   persistRange,
+  resolveStatisticsAccountSelection,
   storedLimitsRange,
   storedRange,
 } = globalThis.AgentHubStatisticsControls;
@@ -455,6 +456,7 @@ const COMPARISON_RANGE_KEY = "agent-hub:comparison-range:v1";
 const COMPARISON_SERIES_KEY = "agent-hub:comparison-series:v2";
 const COMPARISON_VIEW_MODE_KEY = "agent-hub:comparison-view-mode:v1";
 const STATISTICS_ACCOUNT_KEY = "agent-hub:statistics-account:v1";
+const STATISTICS_CURRENT_ACCOUNT_KEY = "agent-hub:statistics-current-account:v1";
 const TURN_TIME_MODE_KEY = "agent-hub:turn-time-mode:v1";
 const ALL_STATISTICS_ACCOUNTS = "all";
 
@@ -510,6 +512,13 @@ const statisticsAccountState = {
   accountKey: (() => {
     try {
       return String(localStorage.getItem(STATISTICS_ACCOUNT_KEY) || "");
+    } catch {
+      return "";
+    }
+  })(),
+  currentAccountKey: (() => {
+    try {
+      return String(localStorage.getItem(STATISTICS_CURRENT_ACCOUNT_KEY) || "");
     } catch {
       return "";
     }
@@ -715,32 +724,14 @@ function applyStreamStatusEffect(value, { persist = false } = {}) {
   }
 }
 
-const STREAM_ORDER_MODE_KEY = "agent-hub-stream-order-mode";
 const STREAM_ACTIVITY_DIRECTION_KEY = "agent-hub-stream-activity-direction";
 
-function savedStreamOrderMode() {
-  try {
-    return window.AgentHubStreamTabs.normalizeStreamOrderMode(
-      localStorage.getItem(STREAM_ORDER_MODE_KEY),
-    );
-  } catch {
-    return "activity";
-  }
-}
-
-function applyStreamOrderMode(value, { persist = false, update = false } = {}) {
+function applyStreamOrderMode(value, { update = false } = {}) {
   streamOrderMode = window.AgentHubStreamTabs.normalizeStreamOrderMode(value);
   root.dataset.streamOrderMode = streamOrderMode;
   if (streamActivityDirectionRow) streamActivityDirectionRow.hidden = streamOrderMode !== "activity";
   if (streamActivityDirectionSelect) streamActivityDirectionSelect.disabled = streamOrderMode !== "activity";
   if (streamTabs) streamTabs.dataset.orderMode = streamOrderMode;
-  if (persist) {
-    try {
-      localStorage.setItem(STREAM_ORDER_MODE_KEY, streamOrderMode);
-    } catch {
-      // Выбор останется активным до закрытия WebView.
-    }
-  }
   if (update) {
     renderStreamTabs();
     renderStreamChatDeck();
@@ -888,7 +879,7 @@ applyTheme(savedTheme());
 applyChatSurface(chatSurfacePreference.stored(localStorage));
 applyStreamStatusStyle(savedStreamStatusStyle());
 applyStreamStatusEffect(savedStreamStatusEffect());
-applyStreamOrderMode(savedStreamOrderMode());
+applyStreamOrderMode("activity");
 applyActivityRecentPeriod(DEFAULT_ACTIVITY_RECENT_MINUTES);
 applyStreamActivityDirection(savedStreamActivityDirection());
 selectUsageUnit(savedUsageUnit());
@@ -6550,10 +6541,9 @@ async function handleAction(action, trigger) {
       emit("stream:new", { workspaceId: trigger.dataset.workspaceId });
       break;
     case "stream-order-toggle":
-      applyStreamOrderMode(streamOrderMode === "manual" ? "activity" : "manual", {
-        persist: true,
-        update: true,
-      });
+      applyStreamOrderMode(streamOrderMode === "manual" ? "activity" : "manual", { update: true });
+      state.selection.streamOrderMode = streamOrderMode;
+      emit("selection:set", { key: "streamOrderMode", value: streamOrderMode });
       break;
     case "task-settings":
       toggleDialogSettings();
@@ -6964,7 +6954,8 @@ const AgentHub = {
     renderOptions();
   },
   /** Текущий выбор: { model, reasoning, mode, project, autoApprove,
-   *  includeClaudeUsage, activityRecentMinutes }. */
+   *  includeClaudeUsage, activityRecentMinutes, streamOrderMode,
+   *  streamCardWidthMode, streamCardFixedWidth, streamCardGapEnabled }. */
   setSelection(selection) {
     const claudeUsageChanged = Object.hasOwn(selection ?? {}, "includeClaudeUsage")
       && state.selection.includeClaudeUsage !== selection.includeClaudeUsage;
@@ -6974,6 +6965,10 @@ const AgentHub = {
     if (Object.hasOwn(selection ?? {}, "activityRecentMinutes")) {
       applyActivityRecentPeriod(selection.activityRecentMinutes, { update: true });
     }
+    if (Object.hasOwn(selection ?? {}, "streamOrderMode")) {
+      applyStreamOrderMode(selection.streamOrderMode, { update: true });
+    }
+    window.AgentHubStreamTabs.applyStreamCardSettings(selection);
     renderOptions();
     if (state.selectedId) renderChat();
     if (claudeUsageChanged && journalHtml) void renderJournal();
@@ -7189,23 +7184,34 @@ function statisticsAccounts(payload = limitsState.payload) {
 
 function resolvedStatisticsAccountKey(payload = limitsState.payload) {
   const accounts = statisticsAccounts(payload);
-  const selected = String(statisticsAccountState.accountKey || "");
-  if (selected === ALL_STATISTICS_ACCOUNTS) return selected;
-  if (accounts.some((account) => account.key === selected)) return selected;
   const current = String(payload?.currentAccount?.key ?? "");
-  const resolved = accounts.some((account) => account.key === current)
-    ? current
-    : String(accounts[0]?.key ?? "");
+  const resolved = resolveStatisticsAccountSelection({
+    availableAccountKeys: accounts.map((account) => account.key),
+    selectedAccountKey: statisticsAccountState.accountKey,
+    currentAccountKey: current,
+    previousCurrentAccountKey: statisticsAccountState.currentAccountKey,
+    allAccountsKey: ALL_STATISTICS_ACCOUNTS,
+  });
   statisticsAccountState.accountKey = resolved;
-  if (resolved) {
-    try {
+  statisticsAccountState.currentAccountKey = current;
+  try {
+    if (resolved) {
       localStorage.setItem(STATISTICS_ACCOUNT_KEY, resolved);
-    } catch {
-      // Выбор останется активным до закрытия WebView.
     }
+    if (current) localStorage.setItem(STATISTICS_CURRENT_ACCOUNT_KEY, current);
+  } catch {
+    // Выбор останется активным до закрытия WebView.
   }
   return resolved;
 }
+
+document.addEventListener("agenthub:stream-card-settings-change", (event) => {
+  const key = String(event.detail?.key ?? "");
+  if (!["streamCardWidthMode", "streamCardFixedWidth", "streamCardGapEnabled"].includes(key)) return;
+  const value = event.detail?.value;
+  state.selection[key] = value;
+  emit("selection:set", { key, value });
+});
 
 function renderStatisticsAccountSelects(payload = limitsState.payload) {
   const accounts = statisticsAccounts(payload);
@@ -7351,14 +7357,17 @@ function statusFromPayload(payload) {
 function applyRateLimitHistory(payload) {
   const data = payload && typeof payload === "object" ? payload : null;
   if (!payloadMatchesSelectedRange(data, limitsState.range)) return;
+  const previousStatisticsAccount = statisticsAccountState.accountKey;
   limitsState.payload = data;
   limitsState.error = data?.error ? String(data.error) : "";
   limitsState.status = statusFromPayload(data);
   renderStatisticsAccountSelects(data);
+  const statisticsAccountChanged = statisticsAccountState.accountKey !== previousStatisticsAccount;
   renderCurrentLimits();
   if (root.dataset.view === "statistics") {
     renderLimitsRanges();
     renderLimits();
+    if (statisticsAccountChanged) requestUsageComparison(comparisonState.range, { force: true });
   }
 }
 

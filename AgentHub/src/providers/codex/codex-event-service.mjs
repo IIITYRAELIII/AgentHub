@@ -106,6 +106,21 @@ export class CodexEventService {
       void d.saveState();
     }
     if (method === "turn/started") {
+      const pendingCompaction = d.getCompaction(params.threadId);
+      if (
+        !contextProbe
+        && !run
+        && eventTurnId
+        && pendingCompaction?.status === "running"
+        && !String(pendingCompaction.turnId ?? "").trim()
+      ) {
+        d.beginCompaction(params.threadId, {
+          origin: pendingCompaction.origin,
+          turnId: eventTurnId,
+          startedAt: params.startedAtMs,
+          beforePercent: pendingCompaction.beforePercent,
+        });
+      }
       if (run && eventTurnId) {
         const previous = { turnId: run.turnId, threadId: run.threadId };
         run.turnId = eventTurnId;

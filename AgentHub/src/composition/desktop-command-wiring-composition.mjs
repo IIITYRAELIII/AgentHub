@@ -214,6 +214,14 @@ export function createDesktopCommandWiring({
       setIncludeClaudeUsage: services.setIncludeClaudeUsage,
       getActivityRecentMinutes: services.getActivityRecentMinutes,
       setActivityRecentMinutes: services.setActivityRecentMinutes,
+      getStreamOrderMode: services.getStreamOrderMode,
+      setStreamOrderMode: services.setStreamOrderMode,
+      getStreamCardWidthMode: services.getStreamCardWidthMode,
+      setStreamCardWidthMode: services.setStreamCardWidthMode,
+      getStreamCardFixedWidth: services.getStreamCardFixedWidth,
+      setStreamCardFixedWidth: services.setStreamCardFixedWidth,
+      getStreamCardGapEnabled: services.getStreamCardGapEnabled,
+      setStreamCardGapEnabled: services.setStreamCardGapEnabled,
       projectUsage: services.projectUsage,
       findProjectIndex: (value) => projects.findIndex((project) => (
         services.samePath(project.path, value)

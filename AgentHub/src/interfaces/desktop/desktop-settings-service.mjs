@@ -15,6 +15,8 @@ export class DesktopSettingsService {
       "getCodexMode", "setCodexMode", "getClaudeMode", "setClaudeMode", "getAutoApprove",
       "setAutoApprove", "getIncludeClaudeUsage", "setIncludeClaudeUsage", "projectUsage",
       "getActivityRecentMinutes", "setActivityRecentMinutes",
+      "getStreamOrderMode", "setStreamOrderMode", "getStreamCardWidthMode", "setStreamCardWidthMode",
+      "getStreamCardFixedWidth", "setStreamCardFixedWidth", "getStreamCardGapEnabled", "setStreamCardGapEnabled",
       "findProjectIndex", "switchProject", "snapshot",
     ]) requiredFunction(dependencies[name], name);
     this.#d = dependencies;
@@ -82,6 +84,30 @@ export class DesktopSettingsService {
       }
       changed = d.getActivityRecentMinutes() !== minutes;
       d.setActivityRecentMinutes(minutes);
+      await d.saveState();
+    } else if (name === "streamOrderMode") {
+      if (!["activity", "manual"].includes(value)) throw new Error("Неизвестный порядок потоков");
+      changed = d.getStreamOrderMode() !== value;
+      d.setStreamOrderMode(value);
+      await d.saveState();
+    } else if (name === "streamCardWidthMode") {
+      if (!["auto", "fixed"].includes(value)) throw new Error("Неизвестный режим ширины потоков");
+      changed = d.getStreamCardWidthMode() !== value;
+      d.setStreamCardWidthMode(value);
+      await d.saveState();
+    } else if (name === "streamCardFixedWidth") {
+      const width = Number(value);
+      if (!Number.isSafeInteger(width) || width < 90 || width > 450) {
+        throw new Error("Неизвестная ширина карточек потоков");
+      }
+      changed = d.getStreamCardFixedWidth() !== width;
+      d.setStreamCardFixedWidth(width);
+      await d.saveState();
+    } else if (name === "streamCardGapEnabled") {
+      if (!["true", "false"].includes(value)) throw new Error("Неизвестный режим отступа потоков");
+      const enabled = value === "true";
+      changed = d.getStreamCardGapEnabled() !== enabled;
+      d.setStreamCardGapEnabled(enabled);
       await d.saveState();
     } else if (name === "project") {
       const index = d.findProjectIndex(value);

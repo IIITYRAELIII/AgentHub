@@ -18,6 +18,31 @@
 
   const STREAM_CARD_MIN_WIDTH = 90;
   const STREAM_CARD_MAX_WIDTH = 450;
+  const STREAM_CARD_SETTINGS_CHANGE_EVENT = "agenthub:stream-card-settings-change";
+
+  function normalizeStreamCardSettings(value) {
+    const widthMode = value?.streamCardWidthMode ?? value?.widthMode;
+    const fixedWidth = value?.streamCardFixedWidth ?? value?.fixedWidth;
+    const gapEnabled = value?.streamCardGapEnabled ?? value?.gapEnabled;
+    const width = Math.round(Number(fixedWidth));
+    return {
+      widthMode: widthMode === STREAM_CARD_WIDTH_MODES.FIXED
+        ? STREAM_CARD_WIDTH_MODES.FIXED
+        : STREAM_CARD_WIDTH_MODES.AUTO,
+      fixedWidth: Number.isFinite(width)
+        ? Math.min(STREAM_CARD_MAX_WIDTH, Math.max(STREAM_CARD_MIN_WIDTH, width))
+        : STREAM_CARD_MIN_WIDTH,
+      gapEnabled: gapEnabled === true,
+    };
+  }
+
+  function streamCardSettingsAvailable({ isWide, surface }) {
+    return Boolean(isWide) && surface !== "mobile";
+  }
+
+  function streamCardSettingsWrapperNeedsReplacement(currentWrapper, renderedWrapper) {
+    return !renderedWrapper || renderedWrapper !== currentWrapper;
+  }
 
   const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
   const PHOSPHOR_ICON_PATHS = Object.freeze({
@@ -353,6 +378,7 @@
       this.open = false;
       this.frame = 0;
       this.autoWidths = new Map();
+      this.wrapper = null;
       this.tabsObserver = null;
       this.rootObserver = null;
       if (!this.tabs) return;
@@ -398,9 +424,10 @@
     isActive() {
       const wide = typeof this.window.matchMedia !== "function"
         || this.window.matchMedia("(min-width: 860px)").matches;
-      return wide
-        && this.root.dataset.theme === "gothic"
-        && this.root.dataset.surface !== "mobile";
+      return streamCardSettingsAvailable({
+        isWide: wide,
+        surface: this.root.dataset.surface,
+      });
     }
 
     schedule() {
@@ -415,6 +442,7 @@
       if (!this.isActive()) {
         this.root.removeAttribute("data-stream-card-settings");
         this.tabs.querySelector("[data-stream-card-settings]")?.remove();
+        this.wrapper = null;
         this.tabs.removeAttribute("data-stream-card-width-mode");
         this.tabs.removeAttribute("data-stream-card-gap-mode");
         this.tabs.style.removeProperty("--stream-card-width");
@@ -426,7 +454,11 @@
       if (!overflow || !orderToggle) return;
       this.root.dataset.streamCardSettings = "true";
       let wrapper = this.tabs.querySelector("[data-stream-card-settings]");
-      if (!wrapper) wrapper = this.createWrapper(overflow, orderToggle);
+      if (streamCardSettingsWrapperNeedsReplacement(this.wrapper, wrapper)) {
+        wrapper?.remove();
+        wrapper = this.createWrapper(overflow, orderToggle);
+        this.wrapper = wrapper;
+      }
       this.update(wrapper);
       this.alignOverflow();
     }
@@ -500,12 +532,14 @@
             this.autoWidths.clear();
           }
           this.widthMode = nextMode;
+          this.emitSetting("streamCardWidthMode", this.widthMode);
           this.update(wrapper);
           this.refreshOverflow();
         });
       });
       wrapper.querySelector("[data-stream-gap-toggle]").addEventListener("click", () => {
         this.gapEnabled = !this.gapEnabled;
+        this.emitSetting("streamCardGapEnabled", this.gapEnabled);
         this.update(wrapper);
         this.refreshOverflow();
       });
@@ -518,9 +552,32 @@
         wrapper.querySelector("[data-stream-card-width-value]").textContent = String(this.fixedWidth);
         this.update(wrapper);
       });
-      range.addEventListener("change", () => this.refreshOverflow());
+      range.addEventListener("change", () => {
+        this.emitSetting("streamCardFixedWidth", this.fixedWidth);
+        this.refreshOverflow();
+      });
       range.addEventListener("pointerup", () => this.refreshOverflow());
       return wrapper;
+    }
+
+    applySettings(value) {
+      const settings = normalizeStreamCardSettings(value);
+      if (settings.widthMode === STREAM_CARD_WIDTH_MODES.AUTO
+        && this.widthMode !== STREAM_CARD_WIDTH_MODES.AUTO) this.autoWidths.clear();
+      this.widthMode = settings.widthMode;
+      this.fixedWidth = settings.fixedWidth;
+      this.gapEnabled = settings.gapEnabled;
+      if (this.wrapper?.isConnected) this.update(this.wrapper);
+      else this.schedule();
+      this.refreshOverflow();
+      return settings;
+    }
+
+    emitSetting(key, value) {
+      this.document.dispatchEvent(new this.window.CustomEvent(
+        STREAM_CARD_SETTINGS_CHANGE_EVENT,
+        { detail: { key, value } },
+      ));
     }
 
     orderMode() {
@@ -543,6 +600,10 @@
       wrapper.querySelectorAll("[data-stream-width-mode]").forEach((button) => {
         button.setAttribute("aria-pressed", String(button.dataset.streamWidthMode === this.widthMode));
       });
+      const range = wrapper.querySelector("[data-stream-card-width]");
+      if (range) range.value = String(this.fixedWidth);
+      const widthValue = wrapper.querySelector("[data-stream-card-width-value]");
+      if (widthValue) widthValue.textContent = String(this.fixedWidth);
       this.tabs.dataset.streamCardGapMode = this.gapEnabled ? "on" : "off";
       wrapper.querySelector("[data-stream-gap-toggle]")
         ?.setAttribute("aria-checked", String(this.gapEnabled));
@@ -664,8 +725,17 @@
     }
   }
 
+  let installedStreamCardSettings = null;
+
   function installStreamCardSettings(documentRef, windowRef) {
-    return new StreamCardSettingsController(documentRef, windowRef);
+    installedStreamCardSettings = new StreamCardSettingsController(documentRef, windowRef);
+    return installedStreamCardSettings;
+  }
+
+  function applyStreamCardSettings(settings) {
+    const normalized = normalizeStreamCardSettings(settings);
+    installedStreamCardSettings?.applySettings(normalized);
+    return normalized;
   }
 
   window.AgentHubStreamTabs = Object.freeze({
@@ -680,12 +750,17 @@
     STREAM_ACTIVITY_DIRECTIONS,
     STREAM_CARD_MAX_WIDTH,
     STREAM_CARD_MIN_WIDTH,
+    STREAM_CARD_SETTINGS_CHANGE_EVENT,
     STREAM_CARD_WIDTH_MODES,
+    streamCardSettingsAvailable,
+    streamCardSettingsWrapperNeedsReplacement,
     STREAM_ORDER_MODES,
     calculateOverflowShift,
     compactStreamActivityValue,
+    applyStreamCardSettings,
     installStreamCardSettings,
     normalizeStreamActivityDirection,
+    normalizeStreamCardSettings,
     normalizeStreamOrderMode,
     applyOpenStreamSelection,
     orderWorkspaceStreams,

@@ -49,6 +49,41 @@ test("a delayed limits response cannot replace the selected range", async () => 
   assert.equal(payloadMatchesSelectedRange({ error: "offline" }, "7d"), true);
 });
 
+test("statistics account follows a changed current account without keeping a stale default", async () => {
+  const { resolveStatisticsAccountSelection } = await statisticsControlsApi();
+  const accounts = ["dark", "baseus"];
+
+  assert.equal(resolveStatisticsAccountSelection({
+    availableAccountKeys: accounts,
+    selectedAccountKey: "baseus",
+    currentAccountKey: "dark",
+    previousCurrentAccountKey: "",
+  }), "dark");
+  assert.equal(resolveStatisticsAccountSelection({
+    availableAccountKeys: accounts,
+    selectedAccountKey: "dark",
+    currentAccountKey: "baseus",
+    previousCurrentAccountKey: "dark",
+  }), "baseus");
+});
+
+test("statistics account preserves an explicit historical account selection", async () => {
+  const { resolveStatisticsAccountSelection } = await statisticsControlsApi();
+
+  assert.equal(resolveStatisticsAccountSelection({
+    availableAccountKeys: ["dark", "baseus", "new"],
+    selectedAccountKey: "baseus",
+    currentAccountKey: "new",
+    previousCurrentAccountKey: "dark",
+  }), "baseus");
+  assert.equal(resolveStatisticsAccountSelection({
+    availableAccountKeys: ["dark", "baseus"],
+    selectedAccountKey: "all",
+    currentAccountKey: "dark",
+    previousCurrentAccountKey: "baseus",
+  }), "all");
+});
+
 test("statistics ranges survive unavailable storage without breaking the session", async () => {
   const { persistRange, storedRange } = await statisticsControlsApi();
   const storage = {

@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { callDesktopControl } from "../../desktop-control.mjs";
+import { readRuntimeState } from "../../src/infrastructure/persistence/runtime-state-store.mjs";
 import {
   CHAT_ID,
   delay,
@@ -143,6 +144,38 @@ test("desktop client survives App Server exit during delayed startup and shares 
   }, { runtimeRoot });
   assert.equal(automatic.settings.approvalMode, "auto");
   await callDesktopControl("update-setting", { name: "approvalMode", value: "manual" }, { runtimeRoot });
+  for (const [name, value] of [
+    ["streamOrderMode", "manual"],
+    ["streamCardWidthMode", "fixed"],
+    ["streamCardFixedWidth", 237],
+    ["streamCardGapEnabled", true],
+  ]) {
+    await callDesktopControl("update-setting", { name, value }, { runtimeRoot });
+  }
+  const streamSettingsSnapshot = await callDesktopControl("snapshot", {}, { runtimeRoot });
+  assert.deepEqual({
+    streamOrderMode: streamSettingsSnapshot.settings.streamOrderMode,
+    streamCardWidthMode: streamSettingsSnapshot.settings.streamCardWidthMode,
+    streamCardFixedWidth: streamSettingsSnapshot.settings.streamCardFixedWidth,
+    streamCardGapEnabled: streamSettingsSnapshot.settings.streamCardGapEnabled,
+  }, {
+    streamOrderMode: "manual",
+    streamCardWidthMode: "fixed",
+    streamCardFixedWidth: 237,
+    streamCardGapEnabled: true,
+  });
+  const persistedStreamSettings = await readRuntimeState(dataDir);
+  assert.deepEqual({
+    streamOrderMode: persistedStreamSettings.streamOrderMode,
+    streamCardWidthMode: persistedStreamSettings.streamCardWidthMode,
+    streamCardFixedWidth: persistedStreamSettings.streamCardFixedWidth,
+    streamCardGapEnabled: persistedStreamSettings.streamCardGapEnabled,
+  }, {
+    streamOrderMode: "manual",
+    streamCardWidthMode: "fixed",
+    streamCardFixedWidth: 237,
+    streamCardGapEnabled: true,
+  });
   const approvalStart = await callDesktopControl("send-message", {
     text: "[approval][auto-compact] desktop",
     provider: "codex",
