@@ -58,6 +58,18 @@ export function createStartupScreenModel(snapshot, nowMs = Date.now()) {
   };
 }
 
+export function createStartupDisconnectedModel(model) {
+  if (!model?.available) return null;
+  return {
+    ...model,
+    connectionLost: true,
+    eyebrow: "Agent Hub перезапускается",
+    title: "Ожидание нового процесса",
+    elapsed: "—",
+    stageLabel: "Соединение временно недоступно",
+  };
+}
+
 export function shouldShowStartupScreen(model, {
   visible = false,
   lastStartedAtMs = 0,

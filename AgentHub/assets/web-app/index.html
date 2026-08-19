@@ -16,6 +16,7 @@
   <link rel="modulepreload" href="/startup-screen-model.js">
   <!-- agent-hub-theme-styles -->
   <link rel="stylesheet" href="/dialog-area.css">
+  <link rel="stylesheet" href="/side-panel-resizer.css">
   <script src="https://telegram.org/js/telegram-web-app.js?63"></script>
   <script src="/browser-device-auth.js" defer></script>
   <script src="/messages/disclosure.js" defer></script>
@@ -40,6 +41,8 @@
   <script src="/usage-burn-rate.js" defer></script>
   <script src="/bug-report-flow.js" defer></script>
   <script src="/web-diagnostics.js" defer></script>
+  <script src="/particle-style-controller.js" defer></script>
+  <script src="/side-panel-resizer.js" defer></script>
   <script src="/app.js" defer></script>
   <script src="/pre-turn-instructions-editor.js" defer></script>
   <script src="/root-agents-editor.js" defer></script>
@@ -1351,14 +1354,6 @@
               <span class="switch-note">Убирает только заливку области сообщений; панели, карточки и рамки остаются.</span>
             </span>
             <span class="switch-track" aria-hidden="true"></span>
-          </label>
-          <label class="setting-row setting-field" data-stream-activity-direction-row>
-            <span class="setting-name">Новые и активные Stream</span>
-            <select data-stream-activity-direction-select
-              aria-label="Положение новых и активных Stream">
-              <option value="start">Начало ленты</option>
-              <option value="end">Конец ленты</option>
-            </select>
           </label>
         </div>
       </section>

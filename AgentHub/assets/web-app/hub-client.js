@@ -39,6 +39,7 @@ let refreshing = false;
 let connectionFailureCount = 0;
 let connectionFailureSince = 0;
 let connectionOfflineTimer = null;
+let connectionOfflineBreadcrumbRecorded = false;
 let pendingSelectionId = "";
 let selectionTail = Promise.resolve();
 let initialRouteOpening = true;
@@ -1726,19 +1727,30 @@ function applySnapshotConnection(snapshot, idleStatus = "online") {
 }
 
 function resetConnectionFailures() {
+  if (connectionFailureCount > 0) {
+    window.AgentHubWebDiagnostics?.recordBreadcrumb?.("hub-connection-restored");
+  }
   connectionFailureCount = 0;
   connectionFailureSince = 0;
+  connectionOfflineBreadcrumbRecorded = false;
   if (connectionOfflineTimer != null) window.clearTimeout(connectionOfflineTimer);
   connectionOfflineTimer = null;
 }
 
 function recordTransientConnectionFailure() {
   const now = Date.now();
-  if (!connectionFailureSince) connectionFailureSince = now;
+  if (!connectionFailureSince) {
+    connectionFailureSince = now;
+    window.AgentHubWebDiagnostics?.recordBreadcrumb?.("hub-connection-failure");
+  }
   connectionFailureCount += 1;
   const markOffline = () => {
     connectionOfflineTimer = null;
     if (!connectionFailureSince) return;
+    if (!connectionOfflineBreadcrumbRecorded) {
+      connectionOfflineBreadcrumbRecorded = true;
+      window.AgentHubWebDiagnostics?.recordBreadcrumb?.("hub-connection-offline");
+    }
     applySnapshotConnection(lastSnapshot, "offline");
   };
   const decision = window.AgentHubConnectionBanner.transientFailureDecision({

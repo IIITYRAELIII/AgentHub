@@ -14,12 +14,21 @@ const EVENT_RECONNECT_MS = 1_500;
 let directSession = null;
 let directSessionRequest = null;
 let eventAbort = null;
+let motionResumeFrame = 0;
+
+const MOTION_TARGET_SELECTOR = [
+  ".rain",
+  ".motes",
+  ".stream-tab[data-running]",
+  ".stream-tab[data-answer-ready]",
+  ".task-workspace-item[data-running]",
+  ".task-workspace-item[data-unread]",
+].join(",");
 
 function resumeWebviewMotion() {
   if (document.hidden) return;
   for (const animation of document.getAnimations?.() ?? []) {
-    const iterations = animation.effect?.getTiming?.().iterations;
-    if (iterations !== Infinity || animation.playState === "running") continue;
+    if (animation.playState !== "paused") continue;
     try {
       animation.play();
     } catch {
@@ -28,10 +37,37 @@ function resumeWebviewMotion() {
   }
 }
 
+function scheduleWebviewMotionResume() {
+  if (document.hidden || motionResumeFrame) return;
+  motionResumeFrame = window.requestAnimationFrame(() => {
+    motionResumeFrame = 0;
+    resumeWebviewMotion();
+  });
+}
+
+function mutationAddsMotion(record) {
+  if (record.type === "attributes") return true;
+  return [...record.addedNodes].some((node) => (
+    node?.matches?.(MOTION_TARGET_SELECTOR)
+    || node?.querySelector?.(MOTION_TARGET_SELECTOR)
+  ));
+}
+
+const motionObserver = new MutationObserver((records) => {
+  if (records.some(mutationAddsMotion)) scheduleWebviewMotionResume();
+});
+motionObserver.observe(document.body, {
+  attributeFilter: ["data-running", "data-answer-ready", "data-unread"],
+  attributes: true,
+  childList: true,
+  subtree: true,
+});
+
 window.addEventListener("focus", resumeWebviewMotion);
 window.addEventListener("pageshow", resumeWebviewMotion);
 window.addEventListener("load", resumeWebviewMotion, { once: true });
 document.addEventListener("visibilitychange", resumeWebviewMotion);
+window.addEventListener("pagehide", () => motionObserver.disconnect(), { once: true });
 
 window.addEventListener("message", (event) => {
   const message = event.data;

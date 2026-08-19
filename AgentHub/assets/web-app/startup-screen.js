@@ -1,4 +1,5 @@
 import {
+  createStartupDisconnectedModel,
   createStartupScreenModel,
   formatStartupElapsed,
   shouldShowStartupScreen,
@@ -86,12 +87,14 @@ let currentOperationId = "";
 let hadStartup = false;
 let hideTimer = 0;
 let pollTimer = 0;
+let connectionTimer = 0;
 let stopped = false;
 let lastStartupStartedAtMs = 0;
 
 const ACTIVE_POLL_MS = 500;
 const READY_POLL_MS = 1_500;
 const RETRY_POLL_MS = 800;
+const CONNECTION_STALE_MS = ACTIVE_POLL_MS * 3;
 
 function ensureSegments(count) {
   if (segments.length === count) return;
@@ -201,10 +204,12 @@ function renderSegments(model) {
 
 function applyModel(model) {
   currentModel = model;
+  screen.classList.toggle("is-disconnected", Boolean(model.connectionLost));
   eyebrow.textContent = model.eyebrow;
   title.textContent = model.title;
   timer.textContent = model.elapsed;
-  stageCount.textContent = `${model.stageNumber} из ${model.stageTotal} этапов`;
+  stageCount.textContent = model.stageLabel
+    ?? `${model.stageNumber} из ${model.stageTotal} этапов`;
   renderCompleted(model);
   renderQueue(model);
   renderSegments(model);
@@ -248,11 +253,24 @@ function scheduleRefresh(delayMs) {
   pollTimer = window.setTimeout(refresh, delayMs);
 }
 
+function clearConnectionTimer() {
+  window.clearTimeout(connectionTimer);
+  connectionTimer = 0;
+}
+
+function showDisconnectedState() {
+  const disconnectedModel = createStartupDisconnectedModel(currentModel);
+  if (disconnectedModel && !screen.hidden) showModel(disconnectedModel);
+}
+
 async function refresh() {
   if (stopped) return;
   let delay = ACTIVE_POLL_MS;
+  clearConnectionTimer();
+  connectionTimer = window.setTimeout(showDisconnectedState, CONNECTION_STALE_MS);
   try {
     const response = await fetch("/health", { cache: "no-store" });
+    clearConnectionTimer();
     if (!response.ok) throw new Error(`health ${response.status}`);
     const model = createStartupScreenModel(await response.json());
     if (!model.available) {
@@ -284,13 +302,15 @@ async function refresh() {
       }
     }
   } catch {
+    clearConnectionTimer();
+    showDisconnectedState();
     delay = RETRY_POLL_MS;
   }
   scheduleRefresh(delay);
 }
 
 function updateTimer() {
-  if (currentModel && !screen.hidden) {
+  if (currentModel && !currentModel.connectionLost && !screen.hidden) {
     timer.textContent = formatStartupElapsed(currentModel.startedAtMs);
   }
 }
@@ -338,5 +358,6 @@ window.addEventListener("pagehide", () => {
   stopped = true;
   window.clearTimeout(hideTimer);
   window.clearTimeout(pollTimer);
+  clearConnectionTimer();
   window.clearInterval(timerInterval);
 }, { once: true });

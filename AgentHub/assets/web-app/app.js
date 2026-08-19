@@ -31,6 +31,7 @@ const {
 const chatSurfacePreference = window.AgentHubChatSurfacePreference;
 const backgroundMotionPreference = window.AgentHubBackgroundMotionPreference;
 const backgroundImageResolver = window.AgentHubBackgroundImageResolver;
+const particleStyle = window.AgentHubParticleStyle;
 const JournalView = window.AgentHubJournalView;
 const MessageView = window.AgentHubMessageView;
 const expandedUserMessageIds = new Set();
@@ -163,8 +164,6 @@ const bugReportStatus = document.querySelector("[data-bug-report-status]");
 const bugReportFlow = window.AgentHubBugReportFlow;
 const telegramFullscreenButton = document.querySelector("[data-telegram-fullscreen]");
 const claudeGroupToggle = document.querySelector("[data-claude-group-toggle]");
-const streamActivityDirectionRow = document.querySelector("[data-stream-activity-direction-row]");
-const streamActivityDirectionSelect = document.querySelector("[data-stream-activity-direction-select]");
 const usageUnitButtons = [...document.querySelectorAll("[data-usage-unit]")];
 const exchangeRateHint = document.querySelector("[data-exchange-rate-hint]");
 const panelScrim = document.querySelector("[data-panel-scrim]");
@@ -262,7 +261,6 @@ let usdRubEffectiveDate = "";
 let exchangeRatesInitialized = false;
 let groupClaudeTasks = false;
 let streamOrderMode = "activity";
-let streamActivityDirection = "start";
 const groupingStates = { date: null, week: null, month: null, stream: null, workspace: null };
 const journalDaySelections = new Map();
 const TASK_GROUP_TURN_PAGE_SIZE = 30;
@@ -575,22 +573,24 @@ function buildRainDrop(heavy = false) {
   if (heavy) {
     /* Ливень: струи длиннее и плотнее, падают вдвое быстрее и почти не
        различаются по глубине — стена воды, а не отдельные капли. */
-    drop.style.setProperty("--x", `${Math.random() * 108 - 4}%`);
-    drop.style.setProperty("--len", `${(34 + near * 58).toFixed(1)}px`);
-    drop.style.setProperty("--thickness", `${(1.1 + near * 1.2).toFixed(2)}px`);
-    drop.style.setProperty("--alpha", (0.3 + near * 0.34).toFixed(2));
-    drop.style.setProperty("--dur", `${(0.62 - near * 0.3).toFixed(2)}s`);
-    drop.style.setProperty("--delay", `-${(Math.random() * 2).toFixed(2)}s`);
-    return drop;
+    return { element: drop, parameters: {
+      "--x": `${Math.random() * 108 - 4}%`,
+      "--len": `${(34 + near * 58).toFixed(1)}px`,
+      "--thickness": `${(1.1 + near * 1.2).toFixed(2)}px`,
+      "--alpha": (0.3 + near * 0.34).toFixed(2),
+      "--dur": `${(0.62 - near * 0.3).toFixed(2)}s`,
+      "--delay": `-${(Math.random() * 2).toFixed(2)}s`,
+    } };
   }
   // ближние капли длиннее, ярче и падают быстрее — этим читается глубина
-  drop.style.setProperty("--x", `${Math.random() * 104 - 2}%`);
-  drop.style.setProperty("--len", `${(8 + near * 14).toFixed(1)}px`);
-  drop.style.setProperty("--thickness", `${(0.8 + near * 0.8).toFixed(2)}px`);
-  drop.style.setProperty("--alpha", (0.2 + near * 0.3).toFixed(2));
-  drop.style.setProperty("--dur", `${(1.45 - near * 0.7).toFixed(2)}s`);
-  drop.style.setProperty("--delay", `-${(Math.random() * 2).toFixed(2)}s`);
-  return drop;
+  return { element: drop, parameters: {
+    "--x": `${Math.random() * 104 - 2}%`,
+    "--len": `${(8 + near * 14).toFixed(1)}px`,
+    "--thickness": `${(0.8 + near * 0.8).toFixed(2)}px`,
+    "--alpha": (0.2 + near * 0.3).toFixed(2),
+    "--dur": `${(1.45 - near * 0.7).toFixed(2)}s`,
+    "--delay": `-${(Math.random() * 2).toFixed(2)}s`,
+  } };
 }
 
 function buildMote() {
@@ -598,13 +598,14 @@ function buildMote() {
   const near = Math.random();
   /* Пыль в свете факела: ближние пылинки крупнее и бледнее, дальние мельче и
      ярче, поднимаются медленно и слегка виляют вбок. */
-  mote.style.setProperty("--x", `${8 + Math.random() * 94}%`);
-  mote.style.setProperty("--size", `${(1.6 + near * 5).toFixed(1)}px`);
-  mote.style.setProperty("--alpha", (0.7 - near * 0.4).toFixed(2));
-  mote.style.setProperty("--drift", `${(Math.random() * 46 - 23).toFixed(0)}px`);
-  mote.style.setProperty("--dur", `${(9 + Math.random() * 12).toFixed(1)}s`);
-  mote.style.setProperty("--delay", `-${(Math.random() * 20).toFixed(1)}s`);
-  return mote;
+  return { element: mote, parameters: {
+    "--x": `${8 + Math.random() * 94}%`,
+    "--size": `${(1.6 + near * 5).toFixed(1)}px`,
+    "--alpha": (0.7 - near * 0.4).toFixed(2),
+    "--drift": `${(Math.random() * 46 - 23).toFixed(0)}px`,
+    "--dur": `${(9 + Math.random() * 12).toFixed(1)}s`,
+    "--delay": `-${(Math.random() * 20).toFixed(1)}s`,
+  } };
 }
 
 function buildParticleLayer(kind) {
@@ -614,7 +615,10 @@ function buildParticleLayer(kind) {
   const build = kind === "motes"
     ? buildMote
     : () => buildRainDrop(kind === "downpour");
-  for (let index = 0; index < particleCount(kind); index += 1) layer.append(build());
+  const particles = Array.from({ length: particleCount(kind) }, build);
+  layer.dataset.agentHubParticles = "";
+  layer.append(...particles.map((particle) => particle.element));
+  particleStyle.install(document, layer, particles.map((particle) => particle.parameters));
   return layer;
 }
 
@@ -740,13 +744,9 @@ function applyActivityStreamDetailedCards(value, { persist = false } = {}) {
   }
 }
 
-const STREAM_ACTIVITY_DIRECTION_KEY = "agent-hub-stream-activity-direction";
-
 function applyStreamOrderMode(value, { update = false } = {}) {
   streamOrderMode = window.AgentHubStreamTabs.normalizeStreamOrderMode(value);
   root.dataset.streamOrderMode = streamOrderMode;
-  if (streamActivityDirectionRow) streamActivityDirectionRow.hidden = streamOrderMode !== "activity";
-  if (streamActivityDirectionSelect) streamActivityDirectionSelect.disabled = streamOrderMode !== "activity";
   if (streamTabs) streamTabs.dataset.orderMode = streamOrderMode;
   if (update) {
     renderStreamTabs();
@@ -777,34 +777,6 @@ function savedGrouping() {
     return JournalView.normalizeGrouping(value);
   } catch {
     return "workspace";
-  }
-}
-
-function savedStreamActivityDirection() {
-  try {
-    return window.AgentHubStreamTabs.normalizeStreamActivityDirection(
-      localStorage.getItem(STREAM_ACTIVITY_DIRECTION_KEY),
-    );
-  } catch {
-    return "start";
-  }
-}
-
-function applyStreamActivityDirection(value, { persist = false, update = false } = {}) {
-  streamActivityDirection = window.AgentHubStreamTabs.normalizeStreamActivityDirection(value);
-  root.dataset.streamActivityDirection = streamActivityDirection;
-  if (streamActivityDirectionSelect) streamActivityDirectionSelect.value = streamActivityDirection;
-  if (streamTabs) streamTabs.dataset.activityDirection = streamActivityDirection;
-  if (persist) {
-    try {
-      localStorage.setItem(STREAM_ACTIVITY_DIRECTION_KEY, streamActivityDirection);
-    } catch {
-      // Выбор останется активным до закрытия WebView.
-    }
-  }
-  if (update) {
-    renderStreamTabs();
-    renderStreamChatDeck();
   }
 }
 
@@ -890,12 +862,8 @@ applyStreamStatusEffect(savedStreamStatusEffect());
 applyActivityStreamDetailedCards(savedActivityStreamDetailedCards());
 applyStreamOrderMode("activity");
 applyActivityRecentPeriod(DEFAULT_ACTIVITY_RECENT_MINUTES);
-applyStreamActivityDirection(savedStreamActivityDirection());
 selectUsageUnit(savedUsageUnit());
 selectClaudeGrouping(savedClaudeGrouping());
-streamActivityDirectionSelect?.addEventListener("change", () => {
-  applyStreamActivityDirection(streamActivityDirectionSelect.value, { persist: true, update: true });
-});
 claudeGroupToggle?.addEventListener("change", () => {
   selectClaudeGrouping(claudeGroupToggle.checked, { persist: true });
   if (journalHtml) void renderJournal();
@@ -1448,11 +1416,7 @@ function persistOpenStreams() {
 }
 
 function orderedWorkspaceStreams(streams) {
-  return window.AgentHubStreamTabs.orderWorkspaceStreams(
-    streams,
-    streamOrderMode,
-    streamActivityDirection,
-  );
+  return window.AgentHubStreamTabs.orderWorkspaceStreams(streams, streamOrderMode);
 }
 
 function reconcileOpenStreams(workspaceId, streams) {

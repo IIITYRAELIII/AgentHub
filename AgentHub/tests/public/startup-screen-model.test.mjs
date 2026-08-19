@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
+  createStartupDisconnectedModel,
   createStartupScreenModel,
   formatStartupElapsed,
   shouldShowStartupScreen,
@@ -67,8 +68,28 @@ test("startup screen renders each completed startup once", () => {
   assert.equal(shouldShowStartupScreen({ available: false, ready: false }), false);
 });
 
+test("startup screen stops attributing a lost connection to the last operation", () => {
+  const active = createStartupScreenModel({
+    ready: false,
+    status: "starting",
+    startup: {
+      startedAtMs: 1_000,
+      operations: [
+        { id: "runs", label: "Восстановление активных ходов", state: "running" },
+        { id: "notifications", label: "Повтор уведомлений", state: "pending" },
+      ],
+    },
+  }, 121_000);
+  const disconnected = createStartupDisconnectedModel(active);
+
+  assert.equal(disconnected.connectionLost, true);
+  assert.equal(disconnected.title, "Ожидание нового процесса");
+  assert.equal(disconnected.elapsed, "—");
+  assert.equal(disconnected.stageLabel, "Соединение временно недоступно");
+  assert.deepEqual(disconnected.queueOperations, active.queueOperations);
+});
+
 test("startup screen uses factual health stages and a webview-safe mark URL", () => {
-  assert.doesNotMatch(startupScreenSource, /createStartupReconnectModel|shouldShowStartupReconnect/u);
   assert.match(startupScreenSource, /new URL\("\.\/agent-hub-mark\.png", import\.meta\.url\)\.href/u);
   assert.doesNotMatch(startupScreenSource, /<img src="\/agent-hub-mark\.png"/u);
 });

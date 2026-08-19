@@ -55,6 +55,7 @@ test("Sentry diagnostics send a redacted envelope through the local runtime", as
   const event = JSON.parse(init.body.split("\n")[2]);
   assert.equal(event.environment, "test");
   assert.equal(event.tags.surface, "server");
+  assert.equal(event.tags.reason, "unclassified");
   assert.equal(event.exception.values[0].stacktrace.frames[0].filename, "<project>\\AgentHub\\app.mjs");
 });
 
@@ -73,6 +74,13 @@ test("Sentry diagnostics accept only bounded client error fields", async () => {
   assert.deepEqual(diagnostics.captureClientEvent({
     name: "TypeError",
     message: "render failed",
+    stack: "TypeError: render failed\n    at render (https://hub.test/assets/app.js?token=private:42:7)",
+    clientState: { surfaceHint: "vscode", online: false, visibility: "hidden", readyState: "complete" },
+    breadcrumbs: [
+      { timestamp: 1_787_175_600, message: "diagnostics-installed" },
+      { timestamp: 1_787_175_601, message: "window-error" },
+      { timestamp: 1_787_175_602, message: "private chat text" },
+    ],
     prompt: "private chat text",
     messages: ["private history"],
   }, { source: "vscode", userId: "must-not-leak" }), { accepted: true });
@@ -81,7 +89,13 @@ test("Sentry diagnostics accept only bounded client error fields", async () => {
   assert.equal(requests.length, 1);
   assert.doesNotMatch(requests[0][1].body, /private chat text|private history|must-not-leak/u);
   assert.doesNotMatch(requests[0][1].body, /render failed/u);
-  assert.match(requests[0][1].body, /Agent Hub captured window-error/u);
+  const event = JSON.parse(requests[0][1].body.split("\n")[2]);
+  assert.equal(event.exception.values[0].value, "Agent Hub captured window-error: unclassified");
+  assert.equal(event.exception.values[0].stacktrace.frames[0].filename, "<url>/app.js");
+  assert.equal(event.tags.surface, "vscode");
+  assert.equal(event.contexts.agent_hub.surface_hint, "vscode");
+  assert.equal(event.contexts.agent_hub.online, false);
+  assert.deepEqual(event.breadcrumbs.map(({ message }) => message), ["diagnostics-installed", "window-error"]);
 });
 
 test("Sentry diagnostics report only explicitly unexpected control failures", async () => {
@@ -123,6 +137,31 @@ test("Sentry diagnostics identify local client events without leaking messages",
   const event = JSON.parse(requests[0][1].body.split("\n")[2]);
   assert.equal(event.tags.component, "local-client");
   assert.equal(event.tags.action, "local-domain");
+  assert.equal(event.tags.reason, "unclassified");
   assert.equal(event.exception.values[0].stacktrace.frames[0].filename, "<external>");
   assert.doesNotMatch(requests[0][1].body, /private local message/u);
+});
+
+test("Sentry diagnostics classify error causes without sending raw messages", async () => {
+  const requests = [];
+  const diagnostics = createSentryDiagnostics({
+    fetchImpl: async (...args) => { requests.push(args); return response(); },
+    processRef: { env: {}, version: "v-test" },
+  });
+  diagnostics.configure({ enabled: true, dsn: "https://public@example.test/42" });
+
+  diagnostics.captureClientEvent({
+    name: "Error",
+    message: "unknown Phosphor icon: private-icon-name",
+    source: "https://hub.test/stream-tabs-controller.js?secret=value",
+    line: 85,
+    column: 26,
+  }, { source: "local-vscode-webview" });
+  await diagnostics.flush();
+
+  const event = JSON.parse(requests[0][1].body.split("\n")[2]);
+  assert.equal(event.tags.reason, "unknown-icon");
+  assert.equal(event.exception.values[0].value, "Agent Hub captured window-error: unknown-icon");
+  assert.equal(event.exception.values[0].stacktrace.frames[0].filename, "<url>/stream-tabs-controller.js");
+  assert.doesNotMatch(requests[0][1].body, /private-icon-name|secret=value/u);
 });

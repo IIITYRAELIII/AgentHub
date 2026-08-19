@@ -1296,7 +1296,7 @@ test("internal context probe messages never reach the rendered conversation", ()
   assert.deepEqual(visible.map((message) => message.turnId), ["ordinary-turn"]);
 });
 
-test("a manually submitted context probe phrase remains visible", () => {
+test("the reserved context probe phrase stays hidden without a service client id", () => {
   const visible = lifecycle.visibleConversationMessages([
     {
       provider: "codex",
@@ -1317,11 +1317,11 @@ test("a manually submitted context probe phrase remains visible", () => {
     },
   ]);
 
-  assert.deepEqual(visible.map((message) => message.itemId), ["manual-user", "manual-agent"]);
+  assert.deepEqual(visible, []);
   assert.equal(lifecycle.contextProbeRun({
     clientUserMessageId: "client-manual-probe",
     prompt: "Ответь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1",
-  }), false);
+  }), true);
   assert.equal(lifecycle.contextProbeRun({
     clientUserMessageId: "agent-hub-context-probe:automatic",
   }), true);

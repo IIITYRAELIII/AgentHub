@@ -315,20 +315,17 @@ test("Stream archive intent keeps the stable Stream identity", async () => {
   assert.throws(() => archiveStreamIntent(" "), /stream id is required/u);
 });
 
-test("activity direction moves new and active Streams together with the create button", async () => {
-  const { orderWorkspaceStreams, streamCreationSide } = await streamTabsApi();
+test("activity order always keeps the latest Streams at the start", async () => {
+  const { orderWorkspaceStreams } = await streamTabsApi();
   const streams = [
     stream("older", 1, "2026-08-10T08:00:00.000Z"),
     stream("latest", 2, "2026-08-10T10:00:00.000Z"),
     stream("middle", 3, "2026-08-10T09:00:00.000Z"),
   ];
   assert.deepEqual(
-    Array.from(orderWorkspaceStreams(streams, "activity", "end"), (item) => item.id),
-    ["older", "middle", "latest"],
+    Array.from(orderWorkspaceStreams(streams, "activity"), (item) => item.id),
+    ["latest", "middle", "older"],
   );
-  assert.equal(streamCreationSide("activity", "start"), "start");
-  assert.equal(streamCreationSide("activity", "end"), "end");
-  assert.equal(streamCreationSide("manual", "start"), "end");
 });
 
 test("activity rail count excludes merely recent Streams", async () => {

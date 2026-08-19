@@ -43,13 +43,16 @@ html[data-hub-startup-screen] body::-webkit-scrollbar,
 
 .hub-startup-shell {
   display: flex;
-  height: calc(100dvh - 36px);
+  width: 100%;
+  max-width: none;
+  height: 100dvh;
   min-height: 0;
   flex-direction: column;
-  margin: 18px;
+  margin: 0;
+  padding: 0;
   overflow: hidden;
-  border: 1px solid var(--startup-line);
-  border-radius: 14px;
+  border: 0;
+  border-radius: 0;
   background: rgba(4, 12, 21, 0.72);
   box-shadow: 0 30px 90px rgba(0, 0, 0, 0.34), inset 0 1px rgba(255, 255, 255, 0.025);
 }
@@ -420,6 +423,29 @@ html[data-hub-startup-screen] body::-webkit-scrollbar,
   background: linear-gradient(90deg, rgba(24, 82, 138, 0.16), rgba(20, 64, 108, 0.07) 62%, transparent);
 }
 
+.hub-startup-screen.is-disconnected .hub-startup-queue-item.is-running {
+  color: #7d8d9f;
+  background: transparent;
+}
+
+.hub-startup-screen.is-disconnected .hub-startup-queue-item.is-running::before,
+.hub-startup-screen.is-disconnected .hub-startup-queue-item.is-running::after {
+  content: none;
+}
+
+.hub-startup-screen.is-disconnected .hub-startup-queue-item.is-running .hub-startup-queue-marker {
+  border-color: rgba(98, 133, 162, 0.32);
+  box-shadow: none;
+}
+
+.hub-startup-screen.is-disconnected .hub-startup-queue-item.is-running .hub-startup-queue-marker::after {
+  content: none;
+}
+
+.hub-startup-screen.is-disconnected .hub-startup-queue-item.is-running .hub-startup-queue-number {
+  color: #5f7285;
+}
+
 .hub-startup-queue-item.is-running::before {
   content: "";
   position: absolute;
@@ -537,7 +563,7 @@ html[data-hub-startup-screen] body::-webkit-scrollbar,
 
 @media (max-width: 680px) {
   .hub-startup-screen { --startup-gutter: 18px; }
-  .hub-startup-shell { height: calc(100dvh - 16px); margin: 8px; border-radius: 10px; }
+  .hub-startup-shell { height: 100dvh; margin: 0; border-radius: 0; }
   .hub-startup-hero { min-height: clamp(268px, 34vh, 372px); }
   .hub-startup-hero-content { padding: 24px 16px; }
   .hub-startup-title { min-height: 40px; margin: 8px 0 20px; font-size: 23px; }

@@ -13,6 +13,14 @@ const CLIENT_ERROR_KINDS = new Set(["window-error", "unhandled-rejection", "manu
 const CLIENT_ERROR_ACTIONS = new Set([
   "local-dispatcher", "local-domain", "local-task",
 ]);
+const CLIENT_BREADCRUMBS = new Set([
+  "diagnostics-installed", "reporter-bound", "window-error", "unhandled-rejection",
+  "online", "offline", "visibility-visible", "visibility-hidden",
+  "hub-connection-failure", "hub-connection-offline", "hub-connection-restored",
+]);
+const CLIENT_SURFACES = new Set(["browser", "vscode", "telegram", "android", "device"]);
+const DOCUMENT_STATES = new Set(["loading", "interactive", "complete"]);
+const VISIBILITY_STATES = new Set(["visible", "hidden", "prerender", "unloaded"]);
 const UNEXPECTED_ERROR_TYPES = new Set([
   "TypeError", "ReferenceError", "RangeError", "SyntaxError", "URIError", "EvalError", "AggregateError",
 ]);
@@ -63,12 +71,66 @@ function safeErrorType(value) {
 }
 
 function safeFrameFilename(value, roots) {
-  const filename = sanitizeText(value, { roots, maxLength: 500 });
+  const rawFilename = trimmed(value);
+  if (/^[a-z][a-z\d+.-]*:\/\//iu.test(rawFilename)) {
+    try {
+      const asset = new URL(rawFilename).pathname.split("/").filter(Boolean).at(-1) ?? "";
+      return /^[A-Za-z0-9._-]{1,100}$/u.test(asset) ? `<url>/${asset}` : "<url>";
+    } catch {
+      return "<url>";
+    }
+  }
+  const filename = sanitizeText(rawFilename, { roots, maxLength: 500 });
   if (filename.startsWith("<project>")) return filename;
   if (filename.startsWith("%USERPROFILE%")) return "%USERPROFILE%";
-  if (/^https?:\/\//iu.test(filename)) return "<url>";
   if (/^(?:[A-Za-z]:[\\/]|\/)/u.test(filename)) return "<external>";
   return filename;
+}
+
+function errorReason(value) {
+  const message = trimmed(value);
+  if (/unknown Phosphor icon:/iu.test(message)) return "unknown-icon";
+  if (/\bis not a function\b/iu.test(message)) return "not-a-function";
+  if (/Cannot read propert(?:y|ies) of (?:undefined|null)/iu.test(message)) return "invalid-property-access";
+  if (/\bis not defined\b/iu.test(message)) return "not-defined";
+  if (/Unexpected token|invalid json|json parse/iu.test(message)) return "invalid-json";
+  if (/timed? out|timeout/iu.test(message)) return "timeout";
+  if (/abort(?:ed)?/iu.test(message)) return "aborted";
+  if (/fetch failed|network|ECONN|ENOTFOUND|EAI_AGAIN/iu.test(message)) return "network";
+  return "unclassified";
+}
+
+function clientBreadcrumbs(value) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(-20).flatMap((entry) => {
+    const source = entry && typeof entry === "object" && !Array.isArray(entry) ? entry : {};
+    const message = trimmed(source.message);
+    if (!CLIENT_BREADCRUMBS.has(message)) return [];
+    const timestamp = Number(source.timestamp);
+    return [{
+      ...(Number.isFinite(timestamp) && timestamp > 0 ? { timestamp } : {}),
+      category: message.startsWith("visibility-")
+        ? "client.visibility"
+        : message.startsWith("hub-connection-") || ["online", "offline"].includes(message)
+          ? "client.connection"
+          : "client.lifecycle",
+      level: ["window-error", "unhandled-rejection"].includes(message) ? "error" : "info",
+      message,
+    }];
+  });
+}
+
+function clientState(value) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const surfaceHint = trimmed(source.surfaceHint);
+  const visibility = trimmed(source.visibility);
+  const readyState = trimmed(source.readyState);
+  return Object.fromEntries(Object.entries({
+    surface_hint: CLIENT_SURFACES.has(surfaceHint) ? surfaceHint : "",
+    visibility: VISIBILITY_STATES.has(visibility) ? visibility : "",
+    ready_state: DOCUMENT_STATES.has(readyState) ? readyState : "",
+    ...(typeof source.online === "boolean" ? { online: source.online } : {}),
+  }).filter(([, item]) => item !== ""));
 }
 
 function parseDsn(value) {
@@ -135,15 +197,18 @@ function clientError(value) {
   const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
   const name = trimmed(source.name) || "Error";
   const message = trimmed(source.message) || "Unknown browser error";
-  const location = [trimmed(source.source), Number(source.line) || 0, Number(source.column) || 0]
+  const location = [stripUrlDetails(trimmed(source.source)), Number(source.line) || 0, Number(source.column) || 0]
     .filter(Boolean)
     .join(":");
+  const stack = [trimmed(source.stack), location ? `    at ${location}` : ""].filter(Boolean).join("\n");
   return {
     name,
     message,
-    stack: trimmed(source.stack) || (location ? `${name}: ${message}\n    at ${location}` : ""),
+    stack: stack || `${name}: ${message}`,
     kind: CLIENT_ERROR_KINDS.has(trimmed(source.kind)) ? trimmed(source.kind) : "window-error",
     action: CLIENT_ERROR_ACTIONS.has(trimmed(source.action)) ? trimmed(source.action) : "",
+    breadcrumbs: clientBreadcrumbs(source.breadcrumbs),
+    clientState: clientState(source.clientState),
   };
 }
 
@@ -228,13 +293,15 @@ export function createSentryDiagnostics({
     if (!admission(nowMs)) return false;
     if (trackable) capturedErrors.add(error);
     const details = errorDetails(error);
-    const stack = sanitizeText(details.stack, { roots: settings.roots, maxLength: MAX_STACK_LENGTH });
+    const reason = errorReason(details.message);
+    const frames = stackFrames(String(details.stack ?? "").slice(0, MAX_STACK_LENGTH), settings.roots);
     const eventId = randomId().replaceAll("-", "").slice(0, 32);
     const tags = Object.fromEntries(Object.entries({
       surface: safeTag(context.surface) || "server",
       kind: safeTag(context.kind) || "error",
       component: safeTag(context.component),
       action: safeTag(context.action),
+      reason,
     }).filter(([, value]) => value));
     const event = {
       event_id: eventId,
@@ -248,14 +315,25 @@ export function createSentryDiagnostics({
       exception: {
         values: [{
           type: safeErrorType(details.name),
-          value: `Agent Hub captured ${tags.kind}`,
-          ...(stack ? { stacktrace: { frames: stackFrames(stack, settings.roots) } } : {}),
+          value: `Agent Hub captured ${tags.kind}: ${reason}`,
+          ...(frames.length ? { stacktrace: { frames } } : {}),
         }],
       },
       contexts: {
         runtime: { name: "node", version: trimmed(processRef.version) },
         app: { app_name: "Agent Hub" },
+        agent_hub: {
+          surface: tags.surface,
+          kind: tags.kind,
+          reason,
+          ...(tags.component ? { component: tags.component } : {}),
+          ...(tags.action ? { action: tags.action } : {}),
+          ...(context.clientState && typeof context.clientState === "object" ? context.clientState : {}),
+        },
       },
+      ...(Array.isArray(context.breadcrumbs) && context.breadcrumbs.length > 0
+        ? { breadcrumbs: context.breadcrumbs }
+        : {}),
     };
     const eventJson = JSON.stringify(event);
     const envelope = [
@@ -293,6 +371,8 @@ export function createSentryDiagnostics({
       kind: error.kind,
       component: safeTag(context.source).startsWith("desktop") ? "local-client" : "web-client",
       action: error.action,
+      breadcrumbs: error.breadcrumbs,
+      clientState: error.clientState,
     });
     return { accepted };
   }

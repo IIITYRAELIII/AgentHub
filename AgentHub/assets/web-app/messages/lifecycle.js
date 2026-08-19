@@ -603,23 +603,34 @@ function liveMessageMatch(messages, probe) {
 }
 
 const CONTEXT_PROBE_CLIENT_ID_PREFIX = "agent-hub-context-probe:";
+const CONTEXT_PROBE_PROMPT = "Ответь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1";
+const CONTEXT_PROBE_RESPONSE = "AGENT_HUB_CONTEXT_PROBE_OK_V1";
 
 function contextProbeClientId(value) {
   return String(value ?? "").trim().startsWith(CONTEXT_PROBE_CLIENT_ID_PREFIX);
 }
 
+function contextProbeText(value) {
+  const text = String(value ?? "").trim();
+  return text === CONTEXT_PROBE_PROMPT || text === CONTEXT_PROBE_RESPONSE;
+}
+
 function contextProbeRun(run) {
   if (!run) return false;
-  return [
+  if ([
     run.clientUserMessageId,
     ...(Array.isArray(run.userMessages) ? run.userMessages : []).map((message) => (
       message?.clientUserMessageId ?? message?.clientId
     )),
-  ].some(contextProbeClientId);
+  ].some(contextProbeClientId)) return true;
+  if (contextProbeText(run.prompt ?? run.promptPreview)) return true;
+  return (Array.isArray(run.userMessages) ? run.userMessages : [])
+    .some((message) => contextProbeText(message?.text));
 }
 
 function contextProbeMessage(message) {
-  return contextProbeClientId(message?.clientUserMessageId ?? message?.clientId);
+  return contextProbeClientId(message?.clientUserMessageId ?? message?.clientId)
+    || contextProbeText(message?.text);
 }
 
 function withoutContextProbeMessages(messages) {

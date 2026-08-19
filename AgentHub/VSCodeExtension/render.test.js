@@ -72,6 +72,8 @@ function loadVscodeBootstrap({ animations = [], hidden = false } = {}) {
   const documentListeners = new Map();
   const messages = [];
   const timeoutDelays = [];
+  const animationFrames = [];
+  let mutationCallback = null;
   let nativeFetchCalls = 0;
   const trackedSetTimeout = (callback, delay) => {
     timeoutDelays.push(delay);
@@ -85,16 +87,27 @@ function loadVscodeBootstrap({ animations = [], hidden = false } = {}) {
       return new Response("native");
     },
     addEventListener: (type, listener) => listeners.set(type, listener),
+    requestAnimationFrame: (callback) => {
+      animationFrames.push(callback);
+      return animationFrames.length;
+    },
     clearTimeout,
     setTimeout: trackedSetTimeout,
   };
   const document = {
+    body: {},
     hidden,
     addEventListener: (type, listener) => documentListeners.set(type, listener),
     getAnimations: () => animations,
   };
+  class MutationObserver {
+    constructor(callback) { mutationCallback = callback; }
+    observe() {}
+    disconnect() {}
+  }
   vm.runInNewContext(source, {
     Headers,
+    MutationObserver,
     Response,
     URL,
     clearTimeout,
@@ -103,9 +116,11 @@ function loadVscodeBootstrap({ animations = [], hidden = false } = {}) {
     window,
   });
   return {
+    animationFrames,
     documentListeners,
     listeners,
     messages,
+    mutationCallback: (records) => mutationCallback(records),
     nativeFetchCalls: () => nativeFetchCalls,
     timeoutDelays,
     window,
@@ -434,7 +449,7 @@ test("manual journal refresh queues one forced announced request behind an activ
   second.resolve(true);
 });
 
-test("VS Code resumes infinite theme animations after WebView load", () => {
+test("VS Code resumes paused theme animations after WebView load", () => {
   let infinitePlayCalls = 0;
   let finitePlayCalls = 0;
   const harness = loadVscodeBootstrap({
@@ -455,7 +470,23 @@ test("VS Code resumes infinite theme animations after WebView load", () => {
   assert.equal(infinitePlayCalls, 0);
   harness.listeners.get("load")();
   assert.equal(infinitePlayCalls, 1);
-  assert.equal(finitePlayCalls, 0);
+  assert.equal(finitePlayCalls, 1);
+});
+
+test("VS Code resumes animations created after asynchronous Stream rendering", () => {
+  let playCalls = 0;
+  const animations = [];
+  const harness = loadVscodeBootstrap({ animations });
+  animations.push({ playState: "paused", play: () => { playCalls += 1; } });
+
+  harness.mutationCallback([{
+    type: "childList",
+    addedNodes: [{ matches: () => true }],
+  }]);
+  assert.equal(playCalls, 0);
+  assert.equal(harness.animationFrames.length, 1);
+  harness.animationFrames.shift()();
+  assert.equal(playCalls, 1);
 });
 
 test("missing bundled resources fail closed without workspace-derived fallback", () => {

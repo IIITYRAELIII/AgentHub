@@ -17,7 +17,7 @@ export function isCodexContextProbeText(value) {
   return text === CODEX_CONTEXT_PROBE_PROMPT || text === CODEX_CONTEXT_PROBE_RESPONSE;
 }
 
-export function isCodexContextProbeTurn(turn, { allowTextFallback = false } = {}) {
+export function isCodexContextProbeTurn(turn, { allowTextFallback = true } = {}) {
   if (turn?.contextProbe === true) return true;
   if (isCodexContextProbeClientId(turn?.clientUserMessageId ?? turn?.clientId)) return true;
   if ((Array.isArray(turn?.userMessages) ? turn.userMessages : []).some((message) => (

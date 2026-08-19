@@ -365,7 +365,7 @@ test("desktop task history removes an already persisted context probe turn", asy
   assert.deepEqual(result.items.map((item) => item.id), ["real-turn"]);
 });
 
-test("desktop task history preserves real user text equal to the probe prompt", async () => {
+test("desktop task history hides the reserved probe text without metadata", async () => {
   const { desktopTaskHistory } = fixture({
     run: null,
     history: [{
@@ -387,7 +387,7 @@ test("desktop task history preserves real user text equal to the probe prompt", 
 
   const result = await desktopTaskHistory({ includeActive: false, limit: 10 });
 
-  assert.deepEqual(result.items.map((item) => item.id), ["user-turn"]);
+  assert.deepEqual(result.items, []);
 });
 
 test("desktop task history preserves the author of an interstream message", async () => {

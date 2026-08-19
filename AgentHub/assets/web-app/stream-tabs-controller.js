@@ -6,11 +6,6 @@
     MANUAL: "manual",
   });
 
-  const STREAM_ACTIVITY_DIRECTIONS = Object.freeze({
-    START: "start",
-    END: "end",
-  });
-
   const STREAM_CARD_WIDTH_MODES = Object.freeze({
     AUTO: "auto",
     FIXED: "fixed",
@@ -118,12 +113,6 @@
       : STREAM_ORDER_MODES.ACTIVITY;
   }
 
-  function normalizeStreamActivityDirection(value) {
-    return value === STREAM_ACTIVITY_DIRECTIONS.END
-      ? STREAM_ACTIVITY_DIRECTIONS.END
-      : STREAM_ACTIVITY_DIRECTIONS.START;
-  }
-
   function streamLastActivity(stream) {
     return Math.max(0, ...(stream?.tasks ?? []).map((task) => (
       Date.parse(task?.lastActivity || 0) || 0
@@ -133,12 +122,6 @@
   function streamsAreDraggable(mode, surface) {
     return normalizeStreamOrderMode(mode) === STREAM_ORDER_MODES.MANUAL
       && surface !== "mobile";
-  }
-
-  function streamCreationSide(mode, activityDirection) {
-    return normalizeStreamOrderMode(mode) === STREAM_ORDER_MODES.ACTIVITY
-      ? normalizeStreamActivityDirection(activityDirection)
-      : STREAM_ACTIVITY_DIRECTIONS.END;
   }
 
   function attentionStreamCount(tasks) {
@@ -259,7 +242,7 @@
     ));
   }
 
-  function orderWorkspaceStreams(streams, mode, activityDirection = STREAM_ACTIVITY_DIRECTIONS.START) {
+  function orderWorkspaceStreams(streams, mode) {
     const uniqueStreams = [];
     const available = new Map();
     for (const stream of streams ?? []) {
@@ -270,11 +253,9 @@
     }
 
     if (normalizeStreamOrderMode(mode) === STREAM_ORDER_MODES.ACTIVITY) {
-      const direction = normalizeStreamActivityDirection(activityDirection)
-        === STREAM_ACTIVITY_DIRECTIONS.END ? 1 : -1;
       return uniqueStreams.sort((left, right) => (
-        direction * (streamLastActivity(left) - streamLastActivity(right))
-        || direction * ((Number(left?.ordinal) || 0) - (Number(right?.ordinal) || 0))
+        streamLastActivity(right) - streamLastActivity(left)
+        || (Number(right?.ordinal) || 0) - (Number(left?.ordinal) || 0)
       ));
     }
 
@@ -974,7 +955,6 @@
     includeTaskInActivityRail,
     orderWorkspaceGroups,
     resolveTaskHierarchy,
-    STREAM_ACTIVITY_DIRECTIONS,
     STREAM_CARD_MAX_WIDTH,
     STREAM_CARD_MIN_WIDTH,
     STREAM_CARD_SETTINGS_CHANGE_EVENT,
@@ -988,7 +968,6 @@
     compactStreamActivityValue,
     applyStreamCardSettings,
     installStreamCardSettings,
-    normalizeStreamActivityDirection,
     normalizeActivityRecentMinutes,
     normalizeStreamCardSettings,
     normalizeStreamOrderMode,
@@ -996,7 +975,6 @@
     orderWorkspaceStreams,
     reconcileOpenStreamIds,
     resolveStableStreamCardWidth,
-    streamCreationSide,
     streamDeckRenderKey,
     streamLastActivity,
     streamStatusPresentation,
