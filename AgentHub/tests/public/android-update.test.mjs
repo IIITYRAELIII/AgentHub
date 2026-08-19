@@ -5,6 +5,11 @@ import test from "node:test";
 
 const ROOT = path.resolve(import.meta.dirname, "..", "..");
 
+test("Android build supports a checkout path with non-ASCII characters", async () => {
+  const properties = await readFile(path.join(ROOT, "AndroidApp", "gradle.properties"), "utf8");
+  assert.match(properties, /^android\.overridePathCheck=true$/mu);
+});
+
 test("Android updater accepts only a newer same-origin APK with the published SHA-256", async () => {
   const [activity, receiver, manifest] = await Promise.all([
     readFile(path.join(
