@@ -3,6 +3,7 @@ import { createDesktopCommandWiring } from "./desktop-command-wiring-composition
 import { createDesktopRunRouterWiring } from "./desktop-run-router-wiring-composition.mjs";
 import { WorkspaceCatalogService } from "../application/workspace-catalog-service.mjs";
 import { ClientTaskSelectionService } from "../application/client-task-selection-service.mjs";
+import { agentHubRuntimeHealth } from "../application/runtime-health.mjs";
 
 export function createDesktopShellComposition({
   config,
@@ -529,6 +530,7 @@ export function createDesktopShellComposition({
     },
     desktop: {
       snapshot: desktopReadSystem.desktopSnapshot,
+      runtimeHealth: () => agentHubRuntimeHealth.snapshot(),
       taskHistory: desktopReadSystem.desktopTaskHistory,
       rateLimitHistory: desktopReadSystem.desktopRateLimitHistory,
       usageHistory: desktopReadSystem.desktopUsageHistory,

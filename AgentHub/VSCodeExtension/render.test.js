@@ -152,14 +152,14 @@ test("VS Code bootstrap routes runtime health through the extension bridge", asy
   const responsePromise = harness.window.fetch("/health", { cache: "no-store" });
   assert.equal(harness.nativeFetchCalls(), 0);
   assert.equal(harness.messages.length, 1);
-  assert.equal(harness.messages[0].type, "agenthub:http");
-  assert.equal(harness.messages[0].path, "/health");
+  assert.equal(harness.messages[0].type, "agenthub:control");
+  assert.equal(harness.messages[0].action, "runtime-health");
   harness.listeners.get("message")({
     data: {
-      type: "agenthub:http-result",
+      type: "agenthub:control-result",
       id: harness.messages[0].id,
-      status: 200,
-      body: JSON.stringify({ ready: false, startup: { operations: [] } }),
+      ok: true,
+      result: { ready: false, startup: { operations: [] } },
     },
   });
   assert.equal((await responsePromise).status, 200);

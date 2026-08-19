@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -116,4 +117,60 @@ test("replacement runtime adopts an unchanged live direct gateway", async () => 
 
   assert.equal(await controller.start(), settings.publicUrl);
   assert.equal(probes, 1);
+});
+
+test("adopted direct gateway is relaunched after its health check fails", async () => {
+  const workingDirectory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-gateway-recover-"));
+  const settings = {
+    publicUrl: "https://home.example.test",
+    domain: "home.example.test",
+    executable: path.join(workingDirectory, "caddy.exe"),
+    localUrl: "http://127.0.0.1:8787",
+    routes: [],
+    workingDirectory,
+  };
+  await writeFile(path.join(workingDirectory, "Caddyfile"), directGatewayCaddyfile(settings));
+  let healthy = true;
+  let scheduled = null;
+  let spawns = 0;
+  const child = new EventEmitter();
+  child.exitCode = null;
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.kill = () => {
+    if (child.exitCode == null) {
+      child.exitCode = 0;
+      queueMicrotask(() => child.emit("exit", 0, null));
+    }
+    return true;
+  };
+  const controller = new DirectGatewayController(settings, {
+    probeImpl: async () => healthy,
+    spawnImpl: () => {
+      spawns += 1;
+      return child;
+    },
+    startupGraceMs: 1,
+    scheduleHealthCheckImpl: (callback, delayMs) => {
+      scheduled = { callback, delayMs, unref() {} };
+      return scheduled;
+    },
+    cancelHealthCheckImpl: (timer) => {
+      if (scheduled === timer) scheduled = null;
+    },
+    logger: { log() {}, warn() {}, error() {} },
+  });
+
+  await controller.start();
+  assert.equal(spawns, 0);
+  assert.ok(scheduled);
+
+  healthy = false;
+  const healthCheck = scheduled.callback;
+  await healthCheck();
+  assert.equal(spawns, 1);
+  assert.ok(scheduled);
+
+  await controller.close();
+  assert.equal(scheduled, null);
 });

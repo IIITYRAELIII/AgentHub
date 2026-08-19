@@ -38,7 +38,7 @@ export function createDesktopApplicationRouter({ handlers, commands, receiptFile
   requiredFunction(commands?.dispatch, "commands.dispatch");
   requiredFunction(commands?.settingTarget, "commands.settingTarget");
   for (const name of [
-    "snapshot", "taskHistory", "rateLimitHistory", "usageHistory", "search", "workspaceMessageSearch",
+    "snapshot", "runtimeHealth", "taskHistory", "rateLimitHistory", "usageHistory", "search", "workspaceMessageSearch",
     "openTask", "openTurn", "workspaceMessageOpen", "sendMessage", "taskDiff", "deferredInput",
     "statusDetails", "speakLastAnswer", "restartServer", "setAutostart",
     "updateServerConfiguration", "readPreTurnInstructions", "updateGlobalPreTurnInstructions",
@@ -58,6 +58,7 @@ export function createDesktopApplicationRouter({ handlers, commands, receiptFile
   return createDesktopControlRouter({
     handlers: {
       snapshot: handlers.snapshot,
+      "runtime-health": handlers.runtimeHealth,
       "task-history": handlers.taskHistory,
       "rate-limit-history": handlers.rateLimitHistory,
       "usage-history": handlers.usageHistory,

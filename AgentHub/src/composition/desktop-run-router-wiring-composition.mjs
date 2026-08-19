@@ -161,6 +161,7 @@ export function createDesktopRunRouterWiring({
   const router = createDesktopRouterComposition({
     handlers: {
       snapshot: desktop.snapshot,
+      runtimeHealth: desktop.runtimeHealth,
       taskHistory: desktop.taskHistory,
       rateLimitHistory: desktop.rateLimitHistory,
       usageHistory: desktop.usageHistory,

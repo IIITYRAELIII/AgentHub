@@ -4,7 +4,9 @@ const vscode = window.acquireVsCodeApi();
 window.__agentHubVscode = vscode;
 const nativeFetch = window.fetch.bind(window);
 const pending = new Map();
+const pendingHealth = new Map();
 let sequence = 0;
+const HEALTH_CONTROL_TIMEOUT_MS = 1_500;
 
 /* Retained VS Code WebViews can return from a hidden editor tab with their
    infinite CSS animations left paused by Electron. Resume only animations
@@ -30,6 +32,19 @@ document.addEventListener("visibilitychange", resumeWebviewMotion);
 
 window.addEventListener("message", (event) => {
   const message = event.data;
+  if (message?.type === "agenthub:control-result") {
+    const request = pendingHealth.get(String(message.id ?? ""));
+    if (!request) return;
+    pendingHealth.delete(String(message.id));
+    window.clearTimeout(request.timer);
+    request.resolve(new Response(`${JSON.stringify(
+      message.ok ? message.result ?? {} : { error: String(message.error ?? "Agent Hub недоступен") },
+    )}\n`, {
+      status: message.ok ? 200 : 503,
+      headers: { "Content-Type": "application/json; charset=utf-8" },
+    }));
+    return;
+  }
   if (!["agenthub:http-start", "agenthub:http-chunk", "agenthub:http-result"].includes(message?.type)) {
     return;
   }
@@ -73,15 +88,35 @@ window.addEventListener("message", (event) => {
   }));
 });
 
+function runtimeHealth() {
+  const id = `health-${Date.now()}-${++sequence}`;
+  return new Promise((resolve) => {
+    const timer = window.setTimeout(() => {
+      pendingHealth.delete(id);
+      resolve(new Response(`${JSON.stringify({ error: "Agent Hub недоступен" })}\n`, {
+        status: 503,
+        headers: { "Content-Type": "application/json; charset=utf-8" },
+      }));
+    }, HEALTH_CONTROL_TIMEOUT_MS);
+    pendingHealth.set(id, { resolve, timer });
+    vscode.postMessage({
+      type: "agenthub:control",
+      id,
+      action: "runtime-health",
+      params: {},
+    });
+  });
+}
+
 window.fetch = function agentHubFetch(input, init = {}) {
   const url = new URL(
     typeof input === "string" || input instanceof URL ? input : input.url,
     window.location.href,
   );
+  if (url.pathname === "/health") return runtimeHealth();
   // Runtime API идёт через расширение: в webview нет собственного HTTP origin.
   if (!url.pathname.startsWith("/api/journal")
-    && url.pathname !== "/api/rate-limits"
-    && url.pathname !== "/health") {
+    && url.pathname !== "/api/rate-limits") {
     return nativeFetch(input, init);
   }
   const id = `http-${Date.now()}-${++sequence}`;

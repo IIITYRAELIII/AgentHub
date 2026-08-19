@@ -2,6 +2,7 @@ import {
   createStartupReconnectModel,
   createStartupScreenModel,
   formatStartupElapsed,
+  shouldShowStartupReconnect,
   shouldShowStartupScreen,
 } from "./startup-screen-model.js";
 
@@ -95,7 +96,6 @@ let lastStartupStartedAtMs = 0;
 const ACTIVE_POLL_MS = 500;
 const READY_POLL_MS = 1_500;
 const RETRY_POLL_MS = 800;
-const RECONNECT_FAILURE_THRESHOLD = 2;
 
 function ensureSegments(count) {
   if (segments.length === count) return;
@@ -292,7 +292,12 @@ async function refresh() {
     }
   } catch {
     delay = RETRY_POLL_MS;
-    if (observedHealth && ++consecutiveFailures >= RECONNECT_FAILURE_THRESHOLD) {
+    consecutiveFailures += 1;
+    if (shouldShowStartupReconnect({
+      surface: window.__agentHubVscode ? "vscode" : "web",
+      observedHealth,
+      consecutiveFailures,
+    })) {
       reconnectStartedAtMs ||= Date.now();
       window.clearTimeout(hideTimer);
       hideTimer = 0;

@@ -5,6 +5,8 @@ import { isIP } from "node:net";
 import path from "node:path";
 
 const STARTUP_GRACE_MS = 1_500;
+const HEALTH_CHECK_INTERVAL_MS = 15_000;
+const RECOVERY_DELAY_MS = 1_000;
 const MAX_ADDITIONAL_ROUTES = 8;
 
 function httpsOrigin(value, label) {
@@ -153,29 +155,71 @@ function probeExistingDirectGateway({ domain }) {
 
 export class DirectGatewayController {
   #child = null;
+  #closing = false;
+  #healthTimer = null;
   #probe;
   #settings;
   #spawn;
+  #startup = null;
 
   constructor(settings, {
     spawnImpl = spawn,
     probeImpl = probeExistingDirectGateway,
+    logger = console,
+    healthCheckIntervalMs = HEALTH_CHECK_INTERVAL_MS,
+    recoveryDelayMs = RECOVERY_DELAY_MS,
+    startupGraceMs = STARTUP_GRACE_MS,
+    scheduleHealthCheckImpl = setTimeout,
+    cancelHealthCheckImpl = clearTimeout,
   } = {}) {
     this.#settings = settings;
     this.#spawn = spawnImpl;
     this.#probe = probeImpl;
+    this.logger = logger;
+    this.healthCheckIntervalMs = Math.max(1, Number(healthCheckIntervalMs) || HEALTH_CHECK_INTERVAL_MS);
+    this.recoveryDelayMs = Math.max(1, Number(recoveryDelayMs) || RECOVERY_DELAY_MS);
+    this.startupGraceMs = Math.max(0, Number(startupGraceMs) || 0);
+    this.scheduleHealthCheck = scheduleHealthCheckImpl;
+    this.cancelHealthCheck = cancelHealthCheckImpl;
   }
 
   async start() {
-    if (this.#child && this.#child.exitCode == null) return this.#settings.publicUrl;
-    const { executable, workingDirectory } = this.#settings;
+    this.#closing = false;
+    if (this.#child && this.#child.exitCode == null) {
+      this.#ensureHealthCheck();
+      return this.#settings.publicUrl;
+    }
+    const { workingDirectory } = this.#settings;
     await mkdir(workingDirectory, { recursive: true });
     const caddyfile = path.join(workingDirectory, "Caddyfile");
     const desiredConfig = directGatewayCaddyfile(this.#settings);
     const existingConfig = await readFile(caddyfile, "utf8").catch(() => "");
     if (existingConfig === desiredConfig && await this.#probe(this.#settings)) {
+      this.#ensureHealthCheck();
       return this.#settings.publicUrl;
     }
+    try {
+      await this.#launch();
+    } finally {
+      this.#ensureHealthCheck(this.recoveryDelayMs);
+    }
+    return this.#settings.publicUrl;
+  }
+
+  async #launch() {
+    if (this.#startup) return this.#startup;
+    this.#startup = this.#launchOnce();
+    try {
+      await this.#startup;
+    } finally {
+      this.#startup = null;
+    }
+  }
+
+  async #launchOnce() {
+    const { executable, workingDirectory } = this.#settings;
+    const caddyfile = path.join(workingDirectory, "Caddyfile");
+    const desiredConfig = directGatewayCaddyfile(this.#settings);
     await writeFile(caddyfile, desiredConfig, "utf8");
     const child = this.#spawn(executable, ["run", "--config", caddyfile, "--adapter", "caddyfile"], {
       cwd: workingDirectory,
@@ -199,7 +243,7 @@ export class DirectGatewayController {
       const timer = setTimeout(() => {
         settled = true;
         resolve();
-      }, STARTUP_GRACE_MS);
+      }, this.startupGraceMs);
       timer.unref?.();
       child.once("error", (error) => {
         if (settled) return;
@@ -208,17 +252,53 @@ export class DirectGatewayController {
         reject(error);
       });
       child.once("exit", (code, signal) => {
-        this.#child = null;
+        if (this.#child === child) this.#child = null;
         if (settled) return;
         settled = true;
         clearTimeout(timer);
         reject(new Error(`Caddy exited during startup (${signal ?? code ?? "unknown"}): ${output.trim()}`));
       });
     });
-    return this.#settings.publicUrl;
+    child.once("exit", (code, signal) => {
+      if (this.#child === child) this.#child = null;
+      if (this.#closing) return;
+      this.logger.warn(`Direct gateway exited (${signal ?? code ?? "unknown"}); scheduling recovery`);
+      this.#ensureHealthCheck(this.recoveryDelayMs, { replace: true });
+    });
+  }
+
+  #ensureHealthCheck(delayMs = this.healthCheckIntervalMs, { replace = false } = {}) {
+    if (this.#closing) return;
+    if (this.#healthTimer) {
+      if (!replace) return;
+      this.cancelHealthCheck(this.#healthTimer);
+      this.#healthTimer = null;
+    }
+    this.#healthTimer = this.scheduleHealthCheck(async () => {
+      this.#healthTimer = null;
+      if (this.#closing) return;
+      try {
+        const healthy = await this.#probe(this.#settings);
+        if (!healthy && (!this.#child || this.#child.exitCode != null)) {
+          this.logger.warn("Direct gateway health check failed; restarting Caddy");
+          await this.#launch();
+          this.logger.log(`Direct Agent Hub gateway recovered at ${this.#settings.publicUrl}`);
+        }
+      } catch (error) {
+        this.logger.error(`Cannot recover direct gateway: ${error.message}`);
+      } finally {
+        this.#ensureHealthCheck();
+      }
+    }, delayMs);
+    this.#healthTimer?.unref?.();
   }
 
   async close() {
+    this.#closing = true;
+    if (this.#healthTimer) {
+      this.cancelHealthCheck(this.#healthTimer);
+      this.#healthTimer = null;
+    }
     const child = this.#child;
     this.#child = null;
     if (!child || child.exitCode != null) return;

@@ -81,3 +81,13 @@ export function shouldShowStartupScreen(model, {
   if (!model.ready || visible) return true;
   return Number(model.startedAtMs) !== Number(lastStartedAtMs);
 }
+
+export function shouldShowStartupReconnect({
+  surface = "web",
+  observedHealth = false,
+  consecutiveFailures = 0,
+} = {}) {
+  const failures = Math.max(0, Number(consecutiveFailures) || 0);
+  if (surface === "vscode") return failures >= 1;
+  return observedHealth && failures >= 2;
+}

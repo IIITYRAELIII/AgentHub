@@ -39,6 +39,22 @@ const {
   showLastMessageReplyMarkup,
 } = telegramStatus;
 
+const DESKTOP_TASK_SYNC_STORE_METHODS = Object.freeze([
+  "searchMessages",
+  "messageSearchStatus",
+  "markMessageSearchThread",
+]);
+
+export function requireDesktopTaskSyncStore(provider) {
+  const taskSyncStore = provider?.taskSyncStore;
+  for (const method of DESKTOP_TASK_SYNC_STORE_METHODS) {
+    if (typeof taskSyncStore?.[method] !== "function") {
+      throw new TypeError(`provider.taskSyncStore.${method} is required`);
+    }
+  }
+  return taskSyncStore;
+}
+
 export function createInteractionShellPhase({
   config,
   root,
@@ -52,6 +68,7 @@ export function createInteractionShellPhase({
 }) {
   const api = deferred.api;
   const ports = deferred.ports;
+  const taskSyncStore = requireDesktopTaskSyncStore(provider);
   const serverControlController = createServerControlComposition({
     config,
     agentHubRoot: root,
@@ -126,6 +143,7 @@ export function createInteractionShellPhase({
     },
     runtime: {
       taskRuns: provider.taskRuns,
+      taskSyncStore,
       taskRunIsActive,
       backgroundJobs: provider.backgroundJobs,
       rateLimitTelemetry: clients.rateLimitTelemetry,

@@ -4,6 +4,7 @@ import {
   createStartupReconnectModel,
   createStartupScreenModel,
   formatStartupElapsed,
+  shouldShowStartupReconnect,
   shouldShowStartupScreen,
 } from "../../assets/web-app/startup-screen-model.js";
 
@@ -70,4 +71,14 @@ test("startup screen renders each completed startup once", () => {
   assert.equal(shouldShowStartupScreen(model, { visible: true, lastStartedAtMs: 10_000 }), true);
   assert.equal(shouldShowStartupScreen(model, { visible: false, lastStartedAtMs: 10_000 }), false);
   assert.equal(shouldShowStartupScreen({ available: false, ready: false }), false);
+});
+
+test("VS Code shows reconnect immediately while Web waits for confirmed health", () => {
+  assert.equal(shouldShowStartupReconnect({ surface: "vscode", consecutiveFailures: 1 }), true);
+  assert.equal(shouldShowStartupReconnect({ surface: "web", consecutiveFailures: 1 }), false);
+  assert.equal(shouldShowStartupReconnect({
+    surface: "web",
+    observedHealth: true,
+    consecutiveFailures: 2,
+  }), true);
 });
