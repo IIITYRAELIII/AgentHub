@@ -317,6 +317,37 @@ test("task hierarchy is recovered by Stream identity when a transient task lacks
   assert.equal(resolved.stream.name, "Диалоги");
 });
 
+test("task hierarchy is recovered by unique provider Thread when Stream identity is absent", async () => {
+  const { resolveTaskHierarchy } = await streamTabsApi();
+  const workspaces = [{
+    id: "workspace-1",
+    name: "AgentHub",
+    streams: [{
+      id: "stream-33",
+      name: "Диалоги",
+      threads: [{ provider: "codex", threadId: "thread-1" }],
+    }],
+  }];
+  const resolved = resolveTaskHierarchy({ provider: "codex", threadId: "thread-1" }, workspaces);
+  assert.equal(resolved.workspace.id, "workspace-1");
+  assert.equal(resolved.stream.id, "stream-33");
+
+  const ambiguous = resolveTaskHierarchy({ provider: "codex", threadId: "thread-1" }, [
+    ...workspaces,
+    {
+      id: "workspace-2",
+      name: "Other",
+      streams: [{
+        id: "stream-44",
+        name: "Stream 1",
+        threads: [{ provider: "codex", threadId: "thread-1" }],
+      }],
+    },
+  ]);
+  assert.equal(ambiguous.workspace, null);
+  assert.equal(ambiguous.stream, null);
+});
+
 test("Workspace order follows meaningful activity with deterministic ties", async () => {
   const { orderWorkspaceGroups } = await streamTabsApi();
   const groups = [

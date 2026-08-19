@@ -166,14 +166,29 @@
   function resolveTaskHierarchy(task, workspaces) {
     const workspaceId = String(task?.workspaceId ?? "").trim();
     const streamId = String(task?.streamId ?? "").trim();
-    const workspace = (workspaces ?? []).find((candidate) => (
-      (workspaceId && String(candidate?.id ?? "") === workspaceId)
-      || (streamId && (candidate?.streams ?? []).some((stream) => String(stream?.id ?? "") === streamId))
-    )) ?? null;
-    const stream = workspace && streamId
-      ? (workspace.streams ?? []).find((candidate) => String(candidate?.id ?? "") === streamId) ?? null
-      : null;
-    return { workspace, stream };
+    const provider = String(task?.provider ?? "");
+    const threadId = String(task?.threadId ?? "");
+    const matches = [];
+    for (const candidate of workspaces ?? []) {
+      for (const stream of candidate?.streams ?? []) {
+        const streamMatches = streamId
+          ? String(stream?.id ?? "") === streamId
+          : (provider && threadId && (stream.threads ?? []).some((thread) => (
+            String(thread?.provider ?? "") === provider
+            && String(thread?.threadId ?? thread?.id ?? "") === threadId
+          )));
+        if (streamMatches || (workspaceId && String(candidate?.id ?? "") === workspaceId)) {
+          matches.push({ workspace: candidate, stream: streamMatches ? stream : null });
+        }
+      }
+      if (workspaceId && !(candidate?.streams ?? []).length && String(candidate?.id ?? "") === workspaceId) {
+        matches.push({ workspace: candidate, stream: null });
+      }
+    }
+    if (!matches.length) return { workspace: null, stream: null };
+    const exact = matches.find((match) => match.stream) ?? matches[0];
+    if (!streamId && !workspaceId && matches.length !== 1) return { workspace: null, stream: null };
+    return exact;
   }
 
   function workspaceGroupLastActivity(group) {

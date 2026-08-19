@@ -291,6 +291,44 @@ test("desktop snapshot exposes Task board state", async () => {
   });
 });
 
+test("workspaceBindingForTask recovers a unique catalog Stream by provider Thread", () => {
+  const workspaces = [{
+    id: "workspace-1",
+    name: "AgentHub",
+    kind: "user",
+    streams: [{
+      id: "stream-1",
+      name: "Диалоги",
+      displayName: "Stream 1",
+      ordinal: 2,
+      threads: [{ provider: "codex", threadId: "thread-1", position: 3 }],
+    }],
+  }];
+  assert.deepEqual(workspaceBindingForTask({ provider: "codex", threadId: "thread-1" }, workspaces), {
+    workspaceId: "workspace-1",
+    workspaceName: "AgentHub",
+    workspaceKind: "user",
+    streamId: "stream-1",
+    streamName: "Диалоги",
+    streamDisplayName: "Stream 1",
+    streamOrdinal: 2,
+    threadPosition: 3,
+  });
+  assert.deepEqual(workspaceBindingForTask({ provider: "codex", threadId: "thread-1" }, [
+    ...workspaces,
+    {
+      id: "workspace-2",
+      name: "Other",
+      kind: "system",
+      streams: [{
+        id: "stream-2",
+        name: "Stream 1",
+        threads: [{ provider: "codex", threadId: "thread-1" }],
+      }],
+    },
+  ]), {});
+});
+
 test("desktop task snapshot exposes a persisted model without a live run", () => {
   const { desktopTaskSnapshot, entry } = fixture({ run: null });
   assert.equal(desktopTaskSnapshot({ ...entry, model: "Sol" }).model, "Sol");

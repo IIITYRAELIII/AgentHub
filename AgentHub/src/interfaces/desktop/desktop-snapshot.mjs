@@ -24,28 +24,38 @@ function deferredWaitProjection(item) {
 
 export function workspaceBindingForTask(task, workspaces) {
   const streamId = String(task?.streamId ?? "").trim();
-  if (!streamId) return {};
+  const provider = String(task?.provider ?? "");
+  const threadId = String(task?.threadId ?? "");
+  if (!streamId && (!provider || !threadId)) return {};
+  const matches = [];
   for (const workspace of workspaces ?? []) {
-    const stream = (workspace?.streams ?? []).find((candidate) => (
-      String(candidate?.id ?? "") === streamId
-    ));
-    if (!stream) continue;
-    const thread = (stream.threads ?? []).find((candidate) => (
-      String(candidate?.provider ?? "") === String(task?.provider ?? "")
-      && String(candidate?.threadId ?? candidate?.id ?? "") === String(task?.threadId ?? "")
-    ));
-    return {
-      workspaceId: workspace.id,
-      workspaceName: workspace.name,
-      workspaceKind: workspace.kind,
-      streamId: stream.id,
-      streamName: stream.name ?? null,
-      streamDisplayName: stream.displayName ?? "",
-      streamOrdinal: Number(stream.ordinal) || 1,
-      threadPosition: Number(thread?.position) || 1,
-    };
+    for (const stream of workspace?.streams ?? []) {
+      const streamMatches = streamId
+        ? String(stream?.id ?? "") === streamId
+        : (stream.threads ?? []).some((candidate) => (
+          String(candidate?.provider ?? "") === provider
+          && String(candidate?.threadId ?? candidate?.id ?? "") === threadId
+        ));
+      if (!streamMatches) continue;
+      matches.push({ workspace, stream });
+    }
   }
-  return {};
+  if (matches.length !== 1) return {};
+  const { workspace, stream } = matches[0];
+  const thread = (stream.threads ?? []).find((candidate) => (
+    String(candidate?.provider ?? "") === provider
+    && String(candidate?.threadId ?? candidate?.id ?? "") === threadId
+  ));
+  return {
+    workspaceId: workspace.id,
+    workspaceName: workspace.name,
+    workspaceKind: workspace.kind,
+    streamId: stream.id,
+    streamName: stream.name ?? null,
+    streamDisplayName: stream.displayName ?? "",
+    streamOrdinal: Number(stream.ordinal) || 1,
+    threadPosition: Number(thread?.position) || 1,
+  };
 }
 
 function deferredMessageProjection(item, deferred) {
