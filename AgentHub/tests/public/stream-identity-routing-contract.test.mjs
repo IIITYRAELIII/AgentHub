@@ -38,3 +38,22 @@ test("snapshot message rendering is batched until deferred state and live run ar
     /function applySnapshot\(snapshot\) \{[\s\S]*?runBatchedMessageRenders\(\(\) => \{[\s\S]*?deferredClientUserMessageIds = new Set\([\s\S]*?patchOutgoing\([\s\S]*?agentHub\.setLive\(stableTaskId, updateLiveMessage\(stableTaskId, task\)\);[\s\S]*?\}\);/u,
   );
 });
+
+test("archiving selected Stream falls back inside the same Workspace before server selection", async () => {
+  const source = await readFile(
+    new URL("../../assets/web-app/hub-client.js", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(source, /function snapshotWorkspaceForSelection\(snapshot, selectionId\)/u);
+  assert.match(source, /function snapshotFallbackSelectionId\(previousSnapshot, snapshot, previousSelectionId\)/u);
+  assert.match(source, /const previousSnapshot = lastSnapshot;/u);
+  assert.match(
+    source,
+    /const workspaceFallbackSelectionId = !pendingExists && !localExists[\s\S]*?snapshotFallbackSelectionId\(previousSnapshot, snapshot, selectedTaskId\)/u,
+  );
+  assert.match(
+    source,
+    /effectiveSelectedId = pendingExists[\s\S]*?\? pendingSelectionId[\s\S]*?: localExists[\s\S]*?\? selectedTaskId[\s\S]*?: workspaceFallbackExists[\s\S]*?\? workspaceFallbackSelectionId[\s\S]*?: serverSelectedId;/u,
+  );
+});

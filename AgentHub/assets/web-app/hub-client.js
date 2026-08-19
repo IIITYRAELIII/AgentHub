@@ -1214,6 +1214,45 @@ function emptyStreamModels(snapshot, effectiveSelectedId) {
   return drafts;
 }
 
+function snapshotTaskStableId(task) {
+  const streamId = String(task?.streamId ?? "").trim();
+  if (streamId) return streamId;
+  return `${String(task?.provider ?? "")}:${String(task?.threadId ?? "")}`;
+}
+
+function snapshotWorkspaceForSelection(snapshot, selectionId) {
+  const id = String(selectionId ?? "").trim();
+  if (!id) return null;
+  const task = (snapshot?.tasks ?? []).find((candidate) => snapshotTaskStableId(candidate) === id);
+  if (task) {
+    const taskWorkspaceId = String(task.workspaceId ?? "").trim();
+    if (taskWorkspaceId) {
+      return (snapshot?.workspaces ?? [])
+        .find((workspace) => String(workspace?.id ?? "").trim() === taskWorkspaceId) ?? null;
+    }
+  }
+  return (snapshot?.workspaces ?? []).find((workspace) => (
+    (workspace?.streams ?? []).some((stream) => String(stream?.id ?? "").trim() === id)
+  )) ?? null;
+}
+
+function snapshotFallbackSelectionId(previousSnapshot, snapshot, previousSelectionId) {
+  const previousWorkspace = snapshotWorkspaceForSelection(previousSnapshot, previousSelectionId);
+  const workspaceId = String(previousWorkspace?.id ?? "").trim();
+  if (!workspaceId) return "";
+  const nextWorkspace = (snapshot?.workspaces ?? [])
+    .find((workspace) => String(workspace?.id ?? "").trim() === workspaceId);
+  const availableStreamIds = (nextWorkspace?.streams ?? [])
+    .map((stream) => String(stream?.id ?? "").trim())
+    .filter(Boolean);
+  if (!availableStreamIds.length) return "";
+  const previousStreamIds = (previousWorkspace?.streams ?? [])
+    .map((stream) => String(stream?.id ?? "").trim())
+    .filter(Boolean);
+  const previousIndex = previousStreamIds.indexOf(String(previousSelectionId ?? "").trim());
+  return availableStreamIds[Math.min(Math.max(0, previousIndex), availableStreamIds.length - 1)] ?? "";
+}
+
 function contextPercent(value) {
   if (value === null || value === undefined || value === "") return null;
   const percent = Number(value);
@@ -1460,7 +1499,8 @@ function applySnapshot(snapshot) {
   let tasks = [];
   runBatchedMessageRenders(() => {
     resetConnectionFailures();
-    const previousTasks = lastSnapshot?.tasks ?? [];
+    const previousSnapshot = lastSnapshot;
+    const previousTasks = previousSnapshot?.tasks ?? [];
     lastSnapshot = snapshot;
     agentHub.setExchangeRates(snapshot.exchangeRates ?? null);
     agentHub.setServerStatus(snapshot.server ?? null);
@@ -1503,11 +1543,18 @@ function applySnapshot(snapshot) {
     ]);
     const pendingExists = pendingSelectionId && availableTaskIds.has(pendingSelectionId);
     const localExists = selectedTaskId && availableTaskIds.has(selectedTaskId);
+    const workspaceFallbackSelectionId = !pendingExists && !localExists
+      ? snapshotFallbackSelectionId(previousSnapshot, snapshot, selectedTaskId)
+      : "";
+    const workspaceFallbackExists = workspaceFallbackSelectionId
+      && availableTaskIds.has(workspaceFallbackSelectionId);
     effectiveSelectedId = pendingExists
       ? pendingSelectionId
       : localExists
         ? selectedTaskId
-        : serverSelectedId;
+        : workspaceFallbackExists
+          ? workspaceFallbackSelectionId
+          : serverSelectedId;
     tasks = [
       ...(snapshot.tasks ?? []).map((task) => modelTask(task, snapshot, effectiveSelectedId, serverSelectedId)),
       ...emptyStreamModels(snapshot, effectiveSelectedId),
