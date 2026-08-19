@@ -563,6 +563,21 @@ html[data-view="chat"][data-surface][data-theme] {
   width: 100%;
 }
 
+html[data-view="chat"]:not([data-surface="mobile"]) .msg-stack-user {
+  align-items: flex-end;
+}
+
+html[data-view="chat"]:not([data-surface="mobile"]) .msg-stack-user > .msg-user {
+  align-self: flex-end;
+  width: min(35.75rem, 78%);
+}
+
+html[data-view="chat"]:not([data-surface="mobile"]) .msg-stack-user > .msg-actions {
+  left: auto;
+  right: 0;
+  width: min(35.75rem, 78%);
+}
+
 .msg,
 .msg-user,
 .msg-agent,

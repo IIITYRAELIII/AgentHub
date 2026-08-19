@@ -1,5 +1,6 @@
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { createHash } from "node:crypto";
 
 import { callDesktopControl } from "./desktop-control.mjs";
 import {
@@ -111,9 +112,9 @@ export function classifyPublicationChanges(files) {
   return plan;
 }
 
-function focusedSteps(plan) {
-  if (plan.unknown.length) return publicationSteps();
-  const full = publicationSteps({ skipWorker: !plan.worker });
+function focusedSteps(plan, { fullTestCheckpointId = "" } = {}) {
+  if (plan.unknown.length) return publicationSteps({ fullTestCheckpointId });
+  const full = publicationSteps({ skipWorker: !plan.worker, fullTestCheckpointId });
   const byLabel = new Map(full.map((step) => [step.label, step]));
   const steps = [];
   if (plan.fullTests) {
@@ -193,7 +194,10 @@ export async function publishChanged(args = process.argv.slice(2), {
     if (plan.unknown.length) console.warn(`Неизвестные пути требуют полной публикации: ${plan.unknown.join(", ")}`);
     const head = await revision({ cwd: REPOSITORY_ROOT });
     if (plan.worker) await ensureWorkerDependency();
-    const steps = focusedSteps(plan);
+    const fullTestCheckpointId = createHash("sha256")
+      .update(JSON.stringify({ mode: "changed", from, files: [...files].toSorted() }))
+      .digest("hex");
+    const steps = focusedSteps(plan, { fullTestCheckpointId });
     await runPublicationSteps(steps, {
       run,
       checkpoint,

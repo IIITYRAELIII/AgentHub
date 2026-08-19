@@ -1482,15 +1482,6 @@ html[data-theme="gothic"] body::before {
     width: 100% !important;
   }
 
-  html[data-theme="gothic"][data-view="chat"]:not([data-surface="mobile"]) .msg-stack-user {
-    align-items: flex-end !important;
-  }
-
-  html[data-theme="gothic"][data-view="chat"]:not([data-surface="mobile"]) .msg-stack-user .msg-actions {
-    left: calc(100% - min(35.75rem, 78%)) !important;
-    right: auto !important;
-  }
-
   html[data-theme="gothic"][data-view="chat"]:not([data-surface="mobile"]) .msg-agent:not(.msg-live) {
     box-sizing: border-box !important;
     max-width: none !important;

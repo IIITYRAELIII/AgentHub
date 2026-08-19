@@ -43,10 +43,16 @@ export function npmStep(label, args) {
 export function publicationSteps({
   skipTests = false,
   skipWorker = false,
+  fullTestCheckpointId = "",
 } = {}) {
   return [
     ...(!skipTests ? [
-      npmStep("Полные тесты Agent Hub", ["run", "test:all"]),
+      {
+        ...npmStep("Полные тесты Agent Hub", ["run", "test:all"]),
+        ...(fullTestCheckpointId ? {
+          env: { AGENT_HUB_FULL_TEST_CHECKPOINT_ID: fullTestCheckpointId },
+        } : {}),
+      },
       {
         label: "Сборка и smoke-проверка Agent Hub Desktop",
         command: powershell,
@@ -73,7 +79,7 @@ export function publicationSteps({
   ];
 }
 
-export function runStep({ label, command, args, timeoutMs = DEFAULT_STEP_TIMEOUT_MS }, {
+export function runStep({ label, command, args, env = {}, timeoutMs = DEFAULT_STEP_TIMEOUT_MS }, {
   spawnImpl = spawn,
   stopTree = stopProcessTree,
 } = {}) {
@@ -83,7 +89,7 @@ export function runStep({ label, command, args, timeoutMs = DEFAULT_STEP_TIMEOUT
     let settled = false;
     const child = spawnImpl(command, args, {
       cwd: ROOT,
-      env: { ...process.env, PYTHONUTF8: "1" },
+      env: { ...process.env, ...env, PYTHONUTF8: "1" },
       shell: false,
       stdio: "inherit",
       windowsHide: true,
@@ -177,7 +183,10 @@ export async function publishAll(args = process.argv.slice(2), {
     const options = parseArguments(args);
     const head = checkpoint ? await revision({ cwd: REPOSITORY_ROOT }) : null;
     if (!options.skipWorker) await ensureWorkerDependency();
-    const steps = publicationSteps(options);
+    const steps = publicationSteps({
+      ...options,
+      fullTestCheckpointId: head ? `full:${head}` : "",
+    });
     await runPublicationSteps(steps, {
       run,
       checkpoint,

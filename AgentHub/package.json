@@ -37,9 +37,10 @@
     "check": "node --no-warnings --experimental-vm-modules syntax-check.mjs",
     "pretest": "node test-suite.mjs architecture",
     "test": "node test-suite.mjs unit",
-    "test:e2e": "node --test --test-concurrency=1 tests/e2e/agent-hub-server.e2e.test.mjs tests/e2e/agent-hub-server.claude.e2e.test.mjs tests/e2e/agent-hub-server.desktop.e2e.test.mjs tests/e2e/agent-hub-server.journal.e2e.test.mjs",
+    "test:e2e": "node test-suite.mjs e2e",
+    "test:vscode": "node test-suite.mjs vscode",
     "test:core": "npm run check && npm test && npm run test:e2e",
-    "test:all": "npm run test:core && npm test --prefix VSCodeExtension",
+    "test:all": "npm run test:core && npm run test:vscode",
     "doctor": "node doctor.mjs",
     "open:web": "node open-local-web.mjs"
   },

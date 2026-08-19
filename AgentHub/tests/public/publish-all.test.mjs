@@ -58,7 +58,7 @@ test("publication rejects a checkout older than the current main revision", asyn
 });
 
 test("publication validates every client before the first deployment", () => {
-  const steps = publicationSteps();
+  const steps = publicationSteps({ fullTestCheckpointId: "release-checkpoint" });
   assert.deepEqual(steps.map((item) => item.label), [
     "Полные тесты Agent Hub",
     "Сборка и smoke-проверка Agent Hub Desktop",
@@ -70,6 +70,7 @@ test("publication validates every client before the first deployment", () => {
   ]);
 
   assert.deepEqual(steps[0].args.slice(-2), ["run", "test:all"]);
+  assert.equal(steps[0].env.AGENT_HUB_FULL_TEST_CHECKPOINT_ID, "release-checkpoint");
   assert.match(steps[1].args.at(-1), /ci[\\/]desktop-smoke\.ps1$/u);
   assert.deepEqual(steps[2].args.slice(-2), ["run", "android:build"]);
   assert.equal(
@@ -145,6 +146,25 @@ test("publication stage timeout terminates the complete process tree", async () 
     stopTree: async (pid) => { stoppedPid = pid; },
   }), /превышен таймаут/u);
   assert.equal(stoppedPid, 4242);
+});
+
+test("publication stage forwards its test checkpoint identity", async () => {
+  const child = new EventEmitter();
+  let spawnedEnvironment = null;
+  const completed = runStep({
+    label: "Полные тесты",
+    command: "ignored",
+    args: [],
+    env: { AGENT_HUB_FULL_TEST_CHECKPOINT_ID: "release-checkpoint" },
+  }, {
+    spawnImpl: (_command, _args, options) => {
+      spawnedEnvironment = options.env;
+      queueMicrotask(() => child.emit("exit", 0, null));
+      return child;
+    },
+  });
+  await completed;
+  assert.equal(spawnedEnvironment.AGENT_HUB_FULL_TEST_CHECKPOINT_ID, "release-checkpoint");
 });
 
 test("runtime readiness requires a replacement endpoint and a successful probe", async () => {
@@ -250,9 +270,9 @@ test("selective publication runs unit and cross-surface E2E tests for runtime co
 });
 
 test("selective publication can request the full Agent Hub test suite explicitly", async () => {
-  const labels = [];
+  const steps = [];
   await publishChanged(["--from", "base", "--skip-restart", "--full-tests"], {
-    run: async (step) => labels.push(step.label),
+    run: async (step) => steps.push(step),
     restart: async () => assert.fail("restart must be skipped"),
     readState: async () => null,
     writeState: async () => {},
@@ -260,9 +280,14 @@ test("selective publication can request the full Agent Hub test suite explicitly
     diff: async () => ["AgentHub/assets/web-app/app.js"],
     ensureWorkerDependency: async () => {},
   });
+  const labels = steps.map((step) => step.label);
   assert.ok(labels.includes("Полные тесты Agent Hub"));
   assert.ok(!labels.includes("Тесты расширения VS Code"));
   assert.ok(!labels.includes("Контракт интерфейсов Agent Hub"));
+  assert.match(
+    steps.find((step) => step.label === "Полные тесты Agent Hub").env.AGENT_HUB_FULL_TEST_CHECKPOINT_ID,
+    /^[0-9a-f]{64}$/u,
+  );
 });
 
 test("selective publication records the exact published revision", async () => {
