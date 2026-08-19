@@ -18,11 +18,12 @@ export class ManagedRunHistoryService {
   } = {}) {
     if (!run?.threadId || !turnId) return;
     if (run.provider === "codex" && isCodexContextProbeTurn({
+      contextProbe: run.contextProbe,
       prompt: run.promptPreview,
       finalAnswer: answer || run.responseText,
       clientUserMessageId: run.clientUserMessageId,
       userMessages: run.userMessages,
-    })) return;
+    }, { allowTextFallback: false })) return;
     try {
       const history = this.taskSyncStore.history(run);
       this.mergeActiveHistory(history, {
