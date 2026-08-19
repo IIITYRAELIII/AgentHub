@@ -1,12 +1,11 @@
 import {
-  createStartupReconnectModel,
   createStartupScreenModel,
   formatStartupElapsed,
-  shouldShowStartupReconnect,
   shouldShowStartupScreen,
 } from "./startup-screen-model.js";
 
 const root = document.documentElement;
+const agentHubMarkUrl = new URL("./agent-hub-mark.png", import.meta.url).href;
 const screen = document.createElement("section");
 screen.className = "hub-startup-screen";
 screen.setAttribute("role", "status");
@@ -35,7 +34,7 @@ screen.innerHTML = `
             <g class="hub-startup-dial-segments"></g>
           </svg>
           <div class="hub-startup-dial-core">
-            <img src="/agent-hub-mark.png" alt="">
+            <img src="${agentHubMarkUrl}" alt="">
           </div>
         </div>
         <div class="hub-startup-meta">
@@ -88,9 +87,6 @@ let hadStartup = false;
 let hideTimer = 0;
 let pollTimer = 0;
 let stopped = false;
-let observedHealth = false;
-let consecutiveFailures = 0;
-let reconnectStartedAtMs = 0;
 let lastStartupStartedAtMs = 0;
 
 const ACTIVE_POLL_MS = 500;
@@ -259,9 +255,6 @@ async function refresh() {
     const response = await fetch("/health", { cache: "no-store" });
     if (!response.ok) throw new Error(`health ${response.status}`);
     const model = createStartupScreenModel(await response.json());
-    observedHealth = true;
-    consecutiveFailures = 0;
-    reconnectStartedAtMs = 0;
     if (!model.available) {
       hideScreen();
       hadStartup = false;
@@ -292,18 +285,6 @@ async function refresh() {
     }
   } catch {
     delay = RETRY_POLL_MS;
-    consecutiveFailures += 1;
-    if (shouldShowStartupReconnect({
-      surface: window.__agentHubVscode ? "vscode" : "web",
-      observedHealth,
-      consecutiveFailures,
-    })) {
-      reconnectStartedAtMs ||= Date.now();
-      window.clearTimeout(hideTimer);
-      hideTimer = 0;
-      hadStartup = true;
-      showModel(createStartupReconnectModel(reconnectStartedAtMs));
-    }
   }
   scheduleRefresh(delay);
 }

@@ -21,6 +21,8 @@ test("dialog geometry references semantic tokens without literal colors", async 
   assert.match(styles, /--dialog-canvas: var\(--bg\)/u);
   assert.match(styles, /--dialog-agent-2: hsl\(from var\(--accent\) calc\(h \+ 120\) s l\)/u);
   assert.match(styles, /\.chat-log \{[\s\S]*gap: 28px;/u);
+  assert.match(styles, /\.chat-log \.msg-agent:not\(\.msg-live\) \{[\s\S]*background: var\(--dialog-bubble-agent\);/u);
+  assert.doesNotMatch(styles, /html\[data-view="chat"\] \.chat-log \.msg-agent:not\(\.msg-live\)/u);
   assert.match(styles, /\.msg-user-bubble \{[\s\S]*max-width: 560px;/u);
   assert.match(styles, /--dialog-stream-tabs-height: 44px;/u);
   assert.match(styles, /--dialog-stream-tabs-focus-height: 36px;/u);

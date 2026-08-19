@@ -6,7 +6,7 @@ const nativeFetch = window.fetch.bind(window);
 const pending = new Map();
 const pendingHealth = new Map();
 let sequence = 0;
-const HEALTH_CONTROL_TIMEOUT_MS = 1_500;
+const HEALTH_CONTROL_TIMEOUT_MS = 15_000;
 
 /* Retained VS Code WebViews can return from a hidden editor tab with their
    infinite CSS animations left paused by Electron. Resume only animations

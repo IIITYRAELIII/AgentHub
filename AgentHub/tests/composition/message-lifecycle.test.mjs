@@ -2007,6 +2007,29 @@ test("completed live card uses a newly recorded final even before durable histor
   }), "Legacy final");
 });
 
+test("compact snapshot never promotes commentary as the final answer", () => {
+  const previous = {
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "turn-2",
+    text: "Последний progress перед завершением",
+    responsePhase: "commentary",
+    snapshotLastAnswerAt: "2026-08-19T14:40:00.000Z",
+  };
+  const compactCompletion = {
+    lastAnswer: "",
+    lastAnswerAt: "2026-08-19T14:51:09.674Z",
+    lastAnswerTurnId: "turn-2",
+  };
+
+  assert.equal(lifecycle.completedLiveAnswer(previous, compactCompletion), "");
+  assert.equal(lifecycle.completedLiveAnswer({
+    ...previous,
+    text: "Финальный ответ",
+    responsePhase: "final_answer",
+  }, compactCompletion), "Финальный ответ");
+});
+
 test("snapshot completion survives a new run when the previous live card is already gone", () => {
   const selected = {
     provider: "codex",
@@ -2092,6 +2115,13 @@ test("run completion starts history catch-up even when answer metadata has not c
   const current = { ...previous, running: false };
   assert.equal(lifecycle.latestAnswerTransition(previous, current), true);
   assert.equal(lifecycle.latestAnswerTransition(current, current), false);
+});
+
+test("every pending compact-history catch-up refreshes the provider source", () => {
+  assert.match(
+    hubClientSource,
+    /const catchUpPending = historyNeedsCatchUp\(id\);[\s\S]*?refreshSource: answerTransition \|\| bindingTransition \|\| catchUpPending/u,
+  );
 });
 
 test("outgoing receipt lookup survives a task thread rebind", () => {

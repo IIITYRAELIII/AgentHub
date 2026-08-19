@@ -3472,7 +3472,8 @@ async function refreshVisibleTaskHistories(previousSnapshot, snapshot) {
     const lastRefreshAt = Number(historyRefreshAtByTask.get(id)) || 0;
     const refreshExternalHistory = externalLive
       && Date.now() - lastRefreshAt >= EXTERNAL_HISTORY_REFRESH_MS;
-    const refreshCaughtUpHistory = historyNeedsCatchUp(id)
+    const catchUpPending = historyNeedsCatchUp(id);
+    const refreshCaughtUpHistory = catchUpPending
       && Date.now() - lastRefreshAt >= EXTERNAL_HISTORY_REFRESH_MS;
     const refreshSettlingAttachments = historyAttachmentsNeedSettling(id)
       && Date.now() - lastRefreshAt >= HISTORY_ATTACHMENT_REFRESH_MS;
@@ -3485,7 +3486,7 @@ async function refreshVisibleTaskHistories(previousSnapshot, snapshot) {
       threadId: currentTask.threadId,
     };
     await enqueueTaskHistoryLoad(id, identity, {
-      refreshSource: answerTransition || bindingTransition,
+      refreshSource: answerTransition || bindingTransition || catchUpPending,
       preserveScroll: true,
     });
   }));

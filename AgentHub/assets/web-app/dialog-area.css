@@ -596,7 +596,7 @@ html[data-view="chat"]:not([data-surface="mobile"]) .msg-stack-user > .msg-actio
   width: 100%;
 }
 
-html[data-view="chat"] .chat-log .msg-agent:not(.msg-live) {
+.chat-log .msg-agent:not(.msg-live) {
   background: var(--dialog-bubble-agent);
   border: 1px solid var(--card-border);
   border-radius: var(--radius-md);

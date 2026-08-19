@@ -94,7 +94,10 @@ function completedLiveAnswer(previous, selected) {
   const baselineAnswerAt = String(previous?.snapshotLastAnswerAt ?? "").trim();
   if (answer && answerTurnId && answerTurnId === previousTurnId) return answer;
   if (answer && !answerTurnId && currentAnswerAt && currentAnswerAt !== baselineAnswerAt) return answer;
-  return String(previous?.text ?? "").trim();
+  const previousPhase = String(previous?.responsePhase ?? "").trim();
+  return ["final", "final_answer", "finalAnswer"].includes(previousPhase)
+    ? String(previous?.text ?? "").trim()
+    : "";
 }
 
 function snapshotCompletionCandidate(selected, incomingTurnId = "") {

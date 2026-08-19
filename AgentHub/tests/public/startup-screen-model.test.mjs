@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
-  createStartupReconnectModel,
   createStartupScreenModel,
   formatStartupElapsed,
-  shouldShowStartupReconnect,
   shouldShowStartupScreen,
 } from "../../assets/web-app/startup-screen-model.js";
+
+const startupScreenSource = readFileSync(
+  new URL("../../assets/web-app/startup-screen.js", import.meta.url),
+  "utf8",
+);
 
 test("startup screen projects one active operation and ordered surrounding stages", () => {
   const model = createStartupScreenModel({
@@ -47,16 +51,6 @@ test("startup screen keeps failures visible and formats long elapsed time", () =
   assert.equal(formatStartupElapsed(0, 3_661_000), "01:01:01");
 });
 
-test("startup screen shows a meaningful reconnect stage before health returns", () => {
-  const model = createStartupReconnectModel(10_000, 14_000);
-  assert.equal(model.available, true);
-  assert.equal(model.ready, false);
-  assert.equal(model.status, "reconnecting");
-  assert.equal(model.title, "Ожидание запуска Agent Hub");
-  assert.equal(model.elapsed, "00:00:04");
-  assert.deepEqual(model.queueOperations.map(({ id }) => id), ["connection"]);
-});
-
 test("startup screen renders each completed startup once", () => {
   const model = createStartupScreenModel({
     ready: true,
@@ -73,12 +67,8 @@ test("startup screen renders each completed startup once", () => {
   assert.equal(shouldShowStartupScreen({ available: false, ready: false }), false);
 });
 
-test("VS Code shows reconnect immediately while Web waits for confirmed health", () => {
-  assert.equal(shouldShowStartupReconnect({ surface: "vscode", consecutiveFailures: 1 }), true);
-  assert.equal(shouldShowStartupReconnect({ surface: "web", consecutiveFailures: 1 }), false);
-  assert.equal(shouldShowStartupReconnect({
-    surface: "web",
-    observedHealth: true,
-    consecutiveFailures: 2,
-  }), true);
+test("startup screen uses factual health stages and a webview-safe mark URL", () => {
+  assert.doesNotMatch(startupScreenSource, /createStartupReconnectModel|shouldShowStartupReconnect/u);
+  assert.match(startupScreenSource, /new URL\("\.\/agent-hub-mark\.png", import\.meta\.url\)\.href/u);
+  assert.doesNotMatch(startupScreenSource, /<img src="\/agent-hub-mark\.png"/u);
 });

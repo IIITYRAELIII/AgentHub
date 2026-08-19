@@ -70,7 +70,12 @@ function loadVscodeBootstrap() {
   const source = fs.readFileSync(path.join(__dirname, "vscode-bootstrap.js"), "utf8");
   const listeners = new Map();
   const messages = [];
+  const timeoutDelays = [];
   let nativeFetchCalls = 0;
+  const trackedSetTimeout = (callback, delay) => {
+    timeoutDelays.push(delay);
+    return setTimeout(callback, delay);
+  };
   const window = {
     location: { href: "https://agent-hub.vscode-webview.test/" },
     acquireVsCodeApi: () => ({ postMessage: (message) => messages.push(message) }),
@@ -80,7 +85,7 @@ function loadVscodeBootstrap() {
     },
     addEventListener: (type, listener) => listeners.set(type, listener),
     clearTimeout,
-    setTimeout,
+    setTimeout: trackedSetTimeout,
   };
   const document = {
     hidden: false,
@@ -93,10 +98,10 @@ function loadVscodeBootstrap() {
     URL,
     clearTimeout,
     document,
-    setTimeout,
+    setTimeout: trackedSetTimeout,
     window,
   });
-  return { listeners, messages, nativeFetchCalls: () => nativeFetchCalls, window };
+  return { listeners, messages, nativeFetchCalls: () => nativeFetchCalls, timeoutDelays, window };
 }
 
 function deferred() {
@@ -154,6 +159,7 @@ test("VS Code bootstrap routes runtime health through the extension bridge", asy
   assert.equal(harness.messages.length, 1);
   assert.equal(harness.messages[0].type, "agenthub:control");
   assert.equal(harness.messages[0].action, "runtime-health");
+  assert.ok(harness.timeoutDelays[0] > 10_000);
   harness.listeners.get("message")({
     data: {
       type: "agenthub:control-result",

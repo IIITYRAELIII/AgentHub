@@ -58,21 +58,6 @@ export function createStartupScreenModel(snapshot, nowMs = Date.now()) {
   };
 }
 
-export function createStartupReconnectModel(startedAtMs, nowMs = Date.now()) {
-  return createStartupScreenModel({
-    ready: false,
-    status: "reconnecting",
-    startup: {
-      startedAtMs,
-      operations: [{
-        id: "connection",
-        label: "Ожидание запуска Agent Hub",
-        state: "running",
-      }],
-    },
-  }, nowMs);
-}
-
 export function shouldShowStartupScreen(model, {
   visible = false,
   lastStartedAtMs = 0,
@@ -80,14 +65,4 @@ export function shouldShowStartupScreen(model, {
   if (!model?.available) return false;
   if (!model.ready || visible) return true;
   return Number(model.startedAtMs) !== Number(lastStartedAtMs);
-}
-
-export function shouldShowStartupReconnect({
-  surface = "web",
-  observedHealth = false,
-  consecutiveFailures = 0,
-} = {}) {
-  const failures = Math.max(0, Number(consecutiveFailures) || 0);
-  if (surface === "vscode") return failures >= 1;
-  return observedHealth && failures >= 2;
 }
