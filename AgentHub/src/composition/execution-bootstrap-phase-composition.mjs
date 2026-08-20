@@ -69,6 +69,7 @@ export function createExecutionBootstrapPhase({
       scheduleDeliveryOutboxFlush: clients.scheduleDeliveryOutboxFlush,
       scheduleCodexTerminalAudit: api.scheduleCodexTerminalAudit,
       rateLimitTelemetry: clients.rateLimitTelemetry,
+      usageSyncAuto: provider.usageSyncAuto,
       taskSyncStore: provider.taskSyncStore,
       workspaceCatalogStore: provider.workspaceCatalogStore,
       dismissedExternalTasks: provider.dismissedExternalTasks,
