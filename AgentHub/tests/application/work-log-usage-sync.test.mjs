@@ -120,6 +120,7 @@ test("usage sync snapshot exports ledger records as minimal remote turns", () =>
   assert.ok(!JSON.stringify(snapshot).includes("turn-1"), "raw turn ids stay on the device");
 
   const [event] = snapshot.events;
+  assert.equal(event.observedAt, "2026-08-20T01:00:00.000Z");
   const turns = syncedUsageEventsToTurns(snapshot.events);
   const key = `codex\u0000sync:device-a:${event.threadKey}\u0000${event.eventId}`;
   assert.deepEqual(Object.keys(turns), [key]);

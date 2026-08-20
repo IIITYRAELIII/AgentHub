@@ -113,6 +113,7 @@ export function usageSyncEventFromLedgerRecord(record, { deviceId, source = "loc
     usageReported: record?.usageReported,
     model: record?.model,
     serviceTier: record?.serviceTier,
+    observedAt: record?.observedAt || record?.completedAt,
   });
 }
 
