@@ -1915,6 +1915,9 @@ test("shared chat Markdown renders GFM tables responsively", () => {
   assert.match(app, /el\("table", \{ class: "markdown-table" \}/u);
   assert.match(styles, /\.markdown-table-scroll[\s\S]*overflow-x: auto;/u);
   assert.match(styles, /\.markdown-table[\s\S]*border-collapse: collapse;/u);
+  assert.match(styles, /\.markdown-table[\s\S]*table-layout: fixed;[\s\S]*width: 100%;/u);
+  assert.match(styles, /\.markdown-table th,[\s\S]*overflow-wrap: anywhere;/u);
+  assert.match(styles, /\.markdown-table tr > :first-child:nth-last-child\(2\)[\s\S]*width: clamp\(9rem, 30%, 18rem\);/u);
 });
 
 test("active chat input stays in the manual queue until an explicit action", () => {

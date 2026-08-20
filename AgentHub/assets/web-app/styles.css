@@ -7753,14 +7753,17 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
   overflow-x: auto;
   overscroll-behavior-inline: contain;
   scrollbar-width: thin;
+  width: 100%;
 }
 
 .msg-body .markdown-table,
 .msg-reasoning .markdown-table {
   border-collapse: collapse;
   font-size: 0.9em;
-  min-width: 100%;
-  width: max-content;
+  max-width: 100%;
+  min-width: 0;
+  table-layout: fixed;
+  width: 100%;
 }
 
 .msg-body .markdown-table th,
@@ -7769,7 +7772,24 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
 .msg-reasoning .markdown-table td {
   border-bottom: 1px solid var(--line);
   border-right: 1px solid var(--line);
+  overflow-wrap: anywhere;
   padding: 0.42em 0.65em;
+  vertical-align: top;
+  white-space: normal;
+  word-break: break-word;
+}
+
+/* В типовой двухколоночной сводке первая колонка остаётся компактной, а
+   описание получает основную ширину. Таблицы с другим числом колонок делят
+   доступное пространство равномерно благодаря fixed layout. */
+.msg-body .markdown-table tr > :first-child:nth-last-child(2),
+.msg-reasoning .markdown-table tr > :first-child:nth-last-child(2) {
+  width: clamp(9rem, 30%, 18rem);
+}
+
+.msg-body .markdown-table :is(a, code),
+.msg-reasoning .markdown-table :is(a, code) {
+  overflow-wrap: anywhere;
   white-space: normal;
 }
 
