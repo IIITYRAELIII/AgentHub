@@ -621,8 +621,41 @@ function formatProviderCounts(providers = {}) {
   return Object.entries(providers)
     .filter(([, count]) => Number(count) > 0)
     .sort(([left], [right]) => left.localeCompare(right))
-    .map(([provider, count]) => `${provider === "codex" ? "Codex" : provider === "claude" ? "Claude" : provider}: ${count}`)
+    .map(([provider, count]) => `${provider === "codex" ? "Codex" : provider === "claude" ? "Claude" : provider} ${count}`)
     .join(" · ");
+}
+
+function pluralizeAccounts(count) {
+  const value = Math.max(0, Math.trunc(Number(count) || 0));
+  const tens = value % 100;
+  const ones = value % 10;
+  if (tens >= 11 && tens <= 14) return `${value} аккаунтов`;
+  if (ones === 1) return `${value} аккаунт`;
+  if (ones >= 2 && ones <= 4) return `${value} аккаунта`;
+  return `${value} аккаунтов`;
+}
+
+/* Цвет аккаунта повторяет палитру серий статистики: один и тот же аккаунт
+   получает один и тот же слот в журнале и на графиках лимитов. */
+const ACCOUNT_COLOR_SLOTS = 6;
+
+function accountColorSlot(accountKey) {
+  const key = String(accountKey ?? "");
+  if (!key) return "none";
+  const hash = [...key]
+    .reduce((value, character) => ((value * 31) + character.codePointAt(0)) >>> 0, 0);
+  return String(hash % ACCOUNT_COLOR_SLOTS);
+}
+
+/* «Сегодня» читается без предлога, остальные периоды — с ним. */
+function accountRangeIdleSuffix(range) {
+  return range.id === "today" ? "сегодня" : `за ${String(range.title).toLowerCase()}`;
+}
+
+function accountUsageAmountParts(credits) {
+  const text = formatCredits(credits);
+  const match = /^(.*?)\s+(Gcr|Mcr|kcr|cr)$/u.exec(text);
+  return match ? { amount: match[1], unit: match[2] } : { amount: text, unit: "" };
 }
 
 function formatAccountQuality(account) {
@@ -638,16 +671,19 @@ function formatDeviceCounts(devices = {}) {
   return Object.entries(devices)
     .filter(([, count]) => Number(count) > 0)
     .sort(([left], [right]) => left.localeCompare(right))
-    .map(([device, count]) => `${device}: ${count}`)
+    .map(([device, count]) => `${device} ${count}`)
     .join(" · ");
 }
 
 function formatAccountUsageRow(account, totalCredits) {
   const share = totalCredits > 0 && account.credits > 0
-    ? `${Math.round(account.credits / totalCredits * 100)}%`
-    : "0%";
-  const plan = [account.type, account.planType].filter(Boolean).join(" · ");
+    ? Math.round(account.credits / totalCredits * 100)
+    : 0;
+  const meta = [formatAccountQuality(account), formatProviderCounts(account.providers)]
+    .filter(Boolean).join(" · ");
+  const devices = account.syncedTurns ? formatDeviceCounts(account.devices) : "";
   return `<div data-work-log-account-row data-account-key="${escapeHtmlAttribute(account.accountKey)}" `
+    + `data-account-color="${escapeHtmlAttribute(accountColorSlot(account.accountKey))}" `
     + `data-account-attribution-exact="${escapeHtmlAttribute(String(account.exactTurns))}" `
     + `data-account-attribution-inferred="${escapeHtmlAttribute(String(account.inferredTurns))}" `
     + `data-account-sync-turns="${escapeHtmlAttribute(String(account.syncedTurns))}" `
@@ -655,54 +691,91 @@ function formatAccountUsageRow(account, totalCredits) {
     + `data-account-credits="${escapeHtmlAttribute(String(account.credits))}">`
     + "<span data-work-log-account-name>"
     + `<span data-work-log-account-label>${escapeHtmlText(account.label)}</span>`
-    + (plan ? `<span data-work-log-account-plan>${escapeHtmlText(plan)}</span>` : "")
+    + `<span data-work-log-account-quality>${escapeHtmlText(meta)}</span>`
+    + (devices ? `<span data-work-log-account-devices>${escapeHtmlText(devices)}</span>` : "")
     + "</span>"
-    + `<span data-work-log-account-credits>${highlightUsageUnits(formatCredits(account.credits), account.credits)}</span>`
-    + `<span data-work-log-account-share>${share}</span>`
-    + `<span data-work-log-account-turns>${account.turns} ход.</span>`
-    + `<span data-work-log-account-quality>${escapeHtmlText(formatAccountQuality(account))}</span>`
-    + `<span data-work-log-account-providers>${escapeHtmlText(formatProviderCounts(account.providers))}</span>`
-    + (account.syncedTurns
-      ? `<span data-work-log-account-devices>${escapeHtmlText(formatDeviceCounts(account.devices))}</span>`
+    + "<span data-work-log-account-provider>"
+    + (account.type
+      ? `<span data-work-log-account-provider-name>${escapeHtmlText(account.type)}</span>`
       : "")
+    + (account.planType
+      ? `<span data-work-log-account-plan>${escapeHtmlText(account.planType)}</span>`
+      : "")
+    + "</span>"
+    + '<span data-work-log-account-bar aria-hidden="true">'
+    + `<span data-work-log-account-bar-fill data-account-share="${share}"></span>`
+    + "</span>"
+    + `<span data-work-log-account-share>${share}%</span>`
+    + `<span data-work-log-account-turns>${account.turns}</span>`
+    + `<span data-work-log-account-credits>${highlightUsageUnits(formatCredits(account.credits), account.credits)}</span>`
     + "</div>";
 }
 
-function formatAccountUsageRange(range) {
-  const quality = [
-    range.exactTurns ? `точно ${range.exactTurns}` : "",
-    range.inferredTurns ? `восстановлено ${range.inferredTurns}` : "",
-    range.unknownTurns ? `без ключа ${range.unknownTurns}` : "",
-    range.syncedTurns ? `sync ${range.syncedTurns}` : "",
-  ].filter(Boolean).join(" · ");
+function formatAccountUsagePeriodTab(range, active) {
+  const { amount, unit } = accountUsageAmountParts(range.totalCredits);
+  return '<button type="button" data-work-log-account-period-tab '
+    + `data-account-range="${escapeHtmlAttribute(range.id)}"${active ? " data-active" : ""} `
+    + `aria-expanded="${active ? "true" : "false"}" `
+    + `aria-controls="work-log-account-period-${escapeHtmlAttribute(range.id)}">`
+    + "<span data-work-log-account-period-name>"
+    + '<span data-work-log-account-period-dot aria-hidden="true"></span>'
+    + `<span data-work-log-account-period-title>${escapeHtmlText(range.title)}</span>`
+    + "</span>"
+    + '<span data-work-log-account-period-value '
+    + `data-account-credits="${escapeHtmlAttribute(String(range.totalCredits))}">`
+    + `<span data-work-log-account-period-amount>${escapeHtmlText(amount)}</span>`
+    + `<span data-work-log-account-period-unit>${escapeHtmlText(unit)}</span>`
+    + "</span>"
+    + `<span data-work-log-account-period-turns>${range.totalTurns} ход.</span>`
+    + `<span data-work-log-account-period-quality>${escapeHtmlText(formatAccountQuality(range))}</span>`
+    + "</button>";
+}
+
+function formatAccountUsagePeriodBody(range, active, accountCount) {
   const rows = range.accounts.length
     ? range.accounts.map((account) => formatAccountUsageRow(account, range.totalCredits)).join("")
     : '<div data-work-log-account-empty>За период нет записанного расхода.</div>';
-  return `<details data-work-log-account-range data-account-range="${escapeHtmlAttribute(range.id)}"${
-    range.id === "today" ? " open" : ""
-  }>`
-    + "<summary>"
-    + `<span data-work-log-account-range-title>${escapeHtmlText(range.title)}</span>`
-    + `<span data-work-log-account-range-total>${highlightUsageUnits(formatCredits(range.totalCredits), range.totalCredits)}</span>`
-    + `<span data-work-log-account-range-turns>${range.totalTurns} ход.</span>`
-    + (quality ? `<span data-work-log-account-range-quality>${escapeHtmlText(quality)}</span>` : "")
-    + "</summary>"
+  const idleCount = Math.max(0, accountCount - range.accounts.length);
+  const idle = idleCount
+    ? `Ещё ${pluralizeAccounts(idleCount)} без расхода ${accountRangeIdleSuffix(range)}`
+    : "";
+  return "<div data-work-log-account-period-body "
+    + `data-account-range="${escapeHtmlAttribute(range.id)}"${active ? " data-active" : ""} `
+    + `id="work-log-account-period-${escapeHtmlAttribute(range.id)}">`
+    + `<div data-work-log-account-period-meta>${escapeHtmlText(formatAccountQuality(range))}</div>`
+    + '<div data-work-log-account-columns aria-hidden="true">'
+    + `<span data-work-log-account-column="account">Аккаунт · ${escapeHtmlText(String(range.title).toLowerCase())}</span>`
+    + '<span data-work-log-account-column="provider">Провайдер</span>'
+    + '<span data-work-log-account-column="share">Доля расхода</span>'
+    + '<span data-work-log-account-column="turns">Ходы</span>'
+    + '<span data-work-log-account-column="credits">Расход</span>'
+    + "</div>"
     + `<div data-work-log-account-rows>${rows}</div>`
-    + "</details>";
+    + "<div data-work-log-account-foot>"
+    + `<span data-work-log-account-idle>${escapeHtmlText(idle)}</span>`
+    + "<span data-work-log-account-total>итого "
+    + highlightUsageUnits(formatCredits(range.totalCredits), range.totalCredits)
+    + ` · ${range.totalTurns} ход.</span>`
+    + "</div>"
+    + "</div>";
 }
 
 function formatAccountUsagePanel(summary) {
   if (!summary.some((range) => range.accounts.some((account) => account.accountKey))) return "";
   const all = summary.find((range) => range.id === "all") ?? summary.at(-1);
   const accountCount = new Set(all?.accounts.map((account) => account.accountKey || "unknown")).size;
+  const activeId = summary[0]?.id;
   return "<!-- work-log-account-panel:start -->"
     + '<section data-work-log-account-panel>'
     + '<div data-work-log-account-panel-head>'
     + '<span data-work-log-account-panel-caption>Расход по аккаунтам</span>'
-    + `<span data-work-log-account-panel-total>${accountCount} аккаунт.</span>`
-    + '<span data-work-log-account-panel-note>exact — текущие записи, inferred — восстановлено; sync — расход с других устройств</span>'
+    + `<span data-work-log-account-panel-total>${pluralizeAccounts(accountCount)}</span>`
+    + '<span data-work-log-account-panel-note>exact — текущие записи · inferred — восстановлено · sync — расход с других устройств</span>'
     + "</div>"
-    + `<div data-work-log-account-ranges>${summary.map(formatAccountUsageRange).join("")}</div>`
+    + '<div data-work-log-account-periods>'
+    + summary.map((range) => formatAccountUsagePeriodTab(range, range.id === activeId)
+      + formatAccountUsagePeriodBody(range, range.id === activeId, accountCount)).join("")
+    + "</div>"
     + "</section>"
     + "<!-- work-log-account-panel:end -->";
 }

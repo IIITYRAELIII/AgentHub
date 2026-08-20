@@ -318,16 +318,47 @@ test("journal projection renders account usage panel with catalog labels", () =>
       accountKey: key,
       accountAttribution: "inferred",
     },
+    retired: {
+      provider: "codex",
+      threadId: "thread-3",
+      turnId: "turn-3",
+      completedAt: "2026-07-01T09:00:00.000Z",
+      estimatedCredits: 4,
+      accountKey: "chatgpt:retired",
+      accountAttribution: "inferred",
+    },
   }, {
     now: Date.parse("2026-08-20T12:00:00.000Z"),
     accountCatalog: [{ key, label: "owner@example.com", type: "chatgpt", planType: "plus" }],
   });
   assert.match(projected, /data-work-log-account-panel/u);
   assert.match(projected, /owner@example\.com/u);
-  assert.match(projected, /data-work-log-account-range data-account-range="today" open/u);
-  assert.match(projected, /data-work-log-account-range-quality>точно 1 · восстановлено 1/u);
-  assert.match(projected, /data-work-log-account-quality>точно 1 · восст\. 1/u);
+  assert.match(projected, /data-work-log-account-panel-total>2 аккаунта</u);
+  assert.match(projected, /data-work-log-account-idle>Ещё 1 аккаунт без расхода сегодня<\/span>/u);
+  assert.match(
+    projected,
+    /data-work-log-account-period-tab data-account-range="today" data-active aria-expanded="true"/u,
+  );
+  assert.match(
+    projected,
+    /data-work-log-account-period-body data-account-range="today" data-active/u,
+  );
+  assert.match(projected, /data-work-log-account-period-amount>8<\/span>/u);
+  assert.match(projected, /data-work-log-account-period-unit>cr<\/span>/u);
+  assert.match(projected, /data-work-log-account-period-quality>точно 1 · восст\. 1</u);
+  assert.match(projected, /data-work-log-account-column="account">Аккаунт · сегодня</u);
+  assert.match(projected, /data-work-log-account-quality>точно 1 · восст\. 1 · Codex 2</u);
+  assert.match(projected, /data-work-log-account-provider-name>chatgpt<\/span>/u);
+  assert.match(projected, /data-work-log-account-plan>plus<\/span>/u);
+  assert.match(projected, /data-work-log-account-bar-fill data-account-share="100"/u);
   assert.match(projected, /data-account-key="chatgpt:/u);
+  assert.match(projected, /data-work-log-account-row [^>]*data-account-color="\d"/u);
+  /* style-src приложения не разрешает 'unsafe-inline', поэтому геометрию полос
+     расставляет клиент, а разметка панели остаётся без инлайновых стилей. */
+  const panel = /<!-- work-log-account-panel:start -->[\s\S]*?<!-- work-log-account-panel:end -->/u
+    .exec(projected)?.[0];
+  assert.ok(panel, "проекция не отдала панель аккаунтов");
+  assert.doesNotMatch(panel, /\sstyle="/u);
   assert.equal((projected.match(/work-log-account-panel:start/gu) ?? []).length, 1);
   const repeated = projectWorkLogUsage(projected, {}, {
     now: Date.parse("2026-08-20T12:00:00.000Z"),
@@ -377,9 +408,13 @@ test("account usage panel includes synced remote devices without duplicating loc
   assert.match(projected, /owner@example\.com/u);
   assert.match(projected, /data-account-key="anthropic:owner"/u);
   assert.match(projected, /data-account-sync-turns="1"/u);
-  assert.match(projected, /data-work-log-account-devices>laptop: 1<\/span>/u);
-  assert.doesNotMatch(projected, /device-local: 1/u);
-  assert.match(projected, /data-work-log-account-range-total><span data-kilo-usage data-usage-credits="10">10 cr<\/span>/u);
+  assert.match(projected, /data-work-log-account-devices>laptop 1<\/span>/u);
+  assert.doesNotMatch(projected, /device-local 1/u);
+  assert.match(
+    projected,
+    /data-work-log-account-total>итого <span data-kilo-usage data-usage-credits="10">10 cr<\/span> · 2 ход\./u,
+  );
+  assert.match(projected, /data-work-log-account-idle><\/span>/u);
 });
 
 test("workspace usage aggregates sequential Threads and retains Stream detail", () => {

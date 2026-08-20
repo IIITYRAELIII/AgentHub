@@ -33,6 +33,7 @@ const backgroundMotionPreference = window.AgentHubBackgroundMotionPreference;
 const backgroundImageResolver = window.AgentHubBackgroundImageResolver;
 const particleStyle = window.AgentHubParticleStyle;
 const JournalView = window.AgentHubJournalView;
+const JournalAccountPanel = window.AgentHubJournalAccountPanel;
 const MessageView = window.AgentHubMessageView;
 const expandedUserMessageIds = new Set();
 let messageDisclosureFrame = 0;
@@ -11700,6 +11701,69 @@ function currentWorkLogAccountPanel() {
   return journal.querySelector(":scope > [data-work-log-account-panel]")?.cloneNode(true) ?? null;
 }
 
+let accountPanelRange = JournalAccountPanel.storedRange(localStorage);
+let accountPanelOpen = true;
+
+function accountPanelRanges(panel) {
+  return [...panel.querySelectorAll("[data-work-log-account-period-tab]")]
+    .map((tab) => tab.dataset.accountRange);
+}
+
+function applyAccountPanelState(panel) {
+  const ranges = accountPanelRanges(panel);
+  accountPanelRange = JournalAccountPanel.normalizeRange(accountPanelRange, ranges);
+  panel.querySelector("[data-work-log-account-periods]")
+    ?.style.setProperty("--account-period-count", String(ranges.length));
+  for (const node of panel.querySelectorAll("[data-account-range]")) {
+    const active = node.dataset.accountRange === accountPanelRange;
+    node.toggleAttribute("data-active", active);
+    node.toggleAttribute("data-open", active && accountPanelOpen);
+    if (node.matches("[data-work-log-account-period-tab]")) {
+      node.setAttribute("aria-expanded", String(active && accountPanelOpen));
+    }
+  }
+}
+
+/* Панель приходит готовой разметкой журнала, поэтому доли и крупные суммы
+   расставляются здесь: CSP запрещает инлайновый style, а единица расхода
+   переключается пользователем уже после проекции. */
+function decorateAccountPanel(scope = journal) {
+  const panel = scope.querySelector("[data-work-log-account-panel]");
+  if (!panel) return;
+  for (const fill of panel.querySelectorAll("[data-work-log-account-bar-fill]")) {
+    const share = Math.min(100, Math.max(0, Number(fill.dataset.accountShare) || 0));
+    fill.style.setProperty("--account-share", `${share}%`);
+  }
+  for (const value of panel.querySelectorAll("[data-work-log-account-period-value]")) {
+    const credits = Number(value.dataset.accountCredits);
+    const { amount, unit } = JournalAccountPanel.splitUsageAmount(
+      Number.isFinite(credits) ? formatUsageValue(credits) : "",
+    );
+    const amountNode = value.querySelector("[data-work-log-account-period-amount]");
+    const unitNode = value.querySelector("[data-work-log-account-period-unit]");
+    if (amountNode) amountNode.textContent = amount;
+    if (unitNode) unitNode.textContent = unit;
+  }
+  applyAccountPanelState(panel);
+}
+
+/* Делегирование переживает пересборку группировки: панель переносится клоном и
+   собственные обработчики на плитках были бы потеряны. */
+journal?.addEventListener("click", (event) => {
+  const tab = event.target?.closest?.("[data-work-log-account-period-tab]");
+  const panel = tab?.closest("[data-work-log-account-panel]");
+  if (!panel) return;
+  const ranges = accountPanelRanges(panel);
+  const next = JournalAccountPanel.nextPanelState(
+    { range: accountPanelRange, open: accountPanelOpen },
+    tab.dataset.accountRange,
+    { mobile: surface === "mobile", available: ranges },
+  );
+  accountPanelRange = JournalAccountPanel.persistRange(localStorage, next.range, ranges);
+  accountPanelOpen = next.open;
+  applyAccountPanelState(panel);
+});
+
 function replaceJournalGroupedContent(content) {
   const accountPanel = currentWorkLogAccountPanel();
   if (accountPanel) journal.replaceChildren(accountPanel, content);
@@ -11722,6 +11786,7 @@ function applyJournalGrouping() {
     replaceJournalGroupedContent(periodGroupingContent(journal, grouping));
   }
   refreshUsageUnits(journal);
+  decorateAccountPanel(journal);
   disableLocalLinks();
   syncCollapseTurnButtons();
   prepareMobileControls();

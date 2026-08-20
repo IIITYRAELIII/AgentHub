@@ -1,8 +1,26 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import vm from "node:vm";
 
 const app = await readFile(new URL("../../assets/web-app/app.js", import.meta.url), "utf8");
+const styles = await readFile(new URL("../../assets/web-app/styles.css", import.meta.url), "utf8");
+
+function accountPanelRules() {
+  return [...styles.matchAll(/([^{}]+)\{([^{}]*)\}/gu)]
+    .map(([, selector, body]) => ({ selector: selector.trim(), body }))
+    .filter(({ selector }) => selector.includes("work-log-account"));
+}
+
+async function accountPanelApi() {
+  const source = await readFile(
+    new URL("../../assets/web-app/journal-account-panel.js", import.meta.url),
+    "utf8",
+  );
+  const window = {};
+  vm.runInNewContext(source, { Array, Object, Set, String, window });
+  return window.AgentHubJournalAccountPanel;
+}
 
 test("journal regrouping preserves the account usage panel", () => {
   assert.match(app, /function currentWorkLogAccountPanel\(\)/u);
@@ -23,4 +41,86 @@ test("journal regrouping preserves the account usage panel", () => {
     app,
     /replaceJournalGroupedContent\(periodGroupingContent\(journal, grouping\)\)/u,
   );
+});
+
+/* Панель переносится клоном, поэтому собственные обработчики на плитках были бы
+   потеряны при каждой смене группировки. */
+test("account panel keeps its interaction after every journal regrouping", () => {
+  assert.match(app, /refreshUsageUnits\(journal\);\s*\n\s*decorateAccountPanel\(journal\);/u);
+  assert.match(app, /journal\?\.addEventListener\("click", \(event\) => \{/u);
+  assert.doesNotMatch(app, /\[data-work-log-account-period-tab\]"\)\)\s*\{\s*tab\.addEventListener/u);
+});
+
+/* Панель живёт во всех темах приложения, поэтому собственных цветов у неё нет:
+   и оформление, и палитра аккаунта берутся только из токенов темы. */
+test("account panel styling stays token-only across themes", () => {
+  const rules = accountPanelRules();
+  assert.ok(rules.length > 40, `нашлось только ${rules.length} правил панели`);
+  for (const { selector, body } of rules) {
+    assert.doesNotMatch(body, /#[0-9a-f]{3,8}\b/iu, `литеральный цвет в «${selector}»`);
+    assert.doesNotMatch(body, /\b(?:rgba?|hsla?|oklch)\(/iu, `литеральный цвет в «${selector}»`);
+  }
+  const rowColors = rules.filter(({ selector }) => /data-account-color="\d"/u.test(selector));
+  assert.equal(rowColors.length, 6, "палитра аккаунтов должна повторять серии статистики");
+});
+
+test("the selected period survives re-render and stays inside the known set", async () => {
+  const api = await accountPanelApi();
+  const values = new Map();
+  const storage = {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, value),
+  };
+
+  assert.deepEqual([...api.RANGE_SEQUENCE], ["today", "24h", "7d", "30d", "all"]);
+  assert.equal(api.storedRange(storage), "today");
+  assert.equal(api.persistRange(storage, "30d"), "30d");
+  assert.equal(api.storedRange(storage), "30d");
+  assert.equal(api.normalizeRange("нет такого"), "today");
+  assert.equal(api.normalizeRange("30d", ["today", "all"]), "today");
+  assert.equal(api.normalizeRange("all", ["today", "all"]), "all");
+
+  const failing = {
+    getItem: () => { throw new Error("storage disabled"); },
+    setItem: () => { throw new Error("storage disabled"); },
+  };
+  assert.equal(api.storedRange(failing), "today");
+  assert.equal(api.persistRange(failing, "7d"), "7d");
+});
+
+test("desktop keeps one period open while the phone folds the accordion", async () => {
+  const api = await accountPanelApi();
+
+  const state = (current, value, options) => ({ ...api.nextPanelState(current, value, options) });
+
+  assert.deepEqual(state({ range: "today", open: true }, "7d"), { range: "7d", open: true });
+  assert.deepEqual(state({ range: "today", open: true }, "today"), { range: "today", open: true });
+  assert.deepEqual(
+    state({ range: "today", open: true }, "today", { mobile: true }),
+    { range: "today", open: false },
+  );
+  assert.deepEqual(
+    state({ range: "today", open: false }, "today", { mobile: true }),
+    { range: "today", open: true },
+  );
+  assert.deepEqual(
+    state({ range: "today", open: false }, "24h", { mobile: true }),
+    { range: "24h", open: true },
+  );
+});
+
+test("period tile splits the amount from its unit for every usage unit", async () => {
+  const api = await accountPanelApi();
+
+  const split = (value) => ({ ...api.splitUsageAmount(value) });
+
+  assert.deepEqual(split("2,6 kcr"), { amount: "2,6", unit: "kcr" });
+  assert.deepEqual(split("829,8 cr"), { amount: "829,8", unit: "cr" });
+  assert.deepEqual(split("1,2 Mcr"), { amount: "1,2", unit: "Mcr" });
+  assert.deepEqual(split("41,6 ПТЭ"), { amount: "41,6", unit: "ПТЭ" });
+  assert.deepEqual(split("41,6 kПТЭ"), { amount: "41,6", unit: "kПТЭ" });
+  assert.deepEqual(split("3,2 MПТЭ"), { amount: "3,2", unit: "MПТЭ" });
+  assert.deepEqual(split("$12,3"), { amount: "$12,3", unit: "" });
+  assert.deepEqual(split("₽1 234,5"), { amount: "₽1 234,5", unit: "" });
+  assert.deepEqual(split(""), { amount: "", unit: "" });
 });
