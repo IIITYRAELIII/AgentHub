@@ -10,6 +10,7 @@ import {
 } from "../../../src/providers/codex/work-log-rollout-backfill.mjs";
 import { JournalDatabase } from "../../../src/infrastructure/persistence/journal-database.mjs";
 import { createWorkLogUsageStore } from "../../../src/application/work-log-usage-store.mjs";
+import { normalizePersistedWorkLog } from "../../../src/application/work-log-usage-projection.mjs";
 import { WorkLogUsageRepository } from "../../../src/infrastructure/persistence/work-log-usage-repository.mjs";
 
 function WorkLogUsageStore(options) {
@@ -177,7 +178,10 @@ test("rollout backfill replaces old ledger history, preserves newer records and 
     const storedLedger = await database.loadLedger();
     const snapshot = await database.snapshot();
     database.close();
-    assert.deepEqual(storedLedger, migration.ledger);
+    assert.deepEqual(storedLedger, normalizePersistedWorkLog(
+      migration.ledger,
+      { defaultProjectRoot: root },
+    ).ledger);
     assert.doesNotMatch(snapshot.html, /Старый длинный итог|Старый текст/u);
     assert.match(snapshot.html, /Историческая задача/u);
     assert.match(snapshot.html, /Новая задача/u);

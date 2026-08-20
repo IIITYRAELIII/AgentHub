@@ -10306,6 +10306,129 @@ html:is([data-grouping="stream"], [data-grouping="workspace"])
   min-width: 0;
 }
 
+[data-work-log-account-panel] {
+  background: color-mix(in srgb, var(--card-bg-open) 88%, var(--accent-soft) 12%);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--card-shadow);
+  display: grid;
+  gap: 0.75rem;
+  margin: 0 0 0.9rem;
+  padding: clamp(0.8rem, 1.6vw, 1rem);
+}
+
+[data-work-log-account-panel-head] {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.75rem;
+}
+
+[data-work-log-account-panel-caption] {
+  color: var(--text);
+  font-family: var(--font-title);
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+[data-work-log-account-panel-total],
+[data-work-log-account-panel-note] {
+  color: var(--text-faint);
+  font-size: 0.72rem;
+}
+
+[data-work-log-account-ranges] {
+  display: grid;
+  gap: 0.55rem;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+[data-work-log-account-range] {
+  background: var(--sunken);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+[data-work-log-account-range] > summary {
+  align-items: center;
+  cursor: pointer;
+  display: grid;
+  gap: 0.28rem 0.55rem;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  list-style: none;
+  padding: 0.58rem 0.65rem;
+}
+
+[data-work-log-account-range] > summary::-webkit-details-marker {
+  display: none;
+}
+
+[data-work-log-account-range-title] {
+  font-weight: 700;
+}
+
+[data-work-log-account-range-total],
+[data-work-log-account-credits],
+[data-work-log-account-share] {
+  font-family: var(--font-numeric);
+  white-space: nowrap;
+}
+
+[data-work-log-account-range-quality] {
+  color: var(--text-faint);
+  font-size: 0.68rem;
+  grid-column: 1 / -1;
+}
+
+[data-work-log-account-rows] {
+  border-top: 1px solid var(--line);
+  display: grid;
+}
+
+[data-work-log-account-row] {
+  align-items: center;
+  display: grid;
+  gap: 0.28rem 0.55rem;
+  grid-template-columns: minmax(0, 1.3fr) auto 3.2rem auto;
+  padding: 0.55rem 0.65rem;
+}
+
+[data-work-log-account-row] + [data-work-log-account-row] {
+  border-top: 1px solid var(--line);
+}
+
+[data-work-log-account-name] {
+  display: grid;
+  min-width: 0;
+}
+
+[data-work-log-account-label] {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-work-log-account-plan],
+[data-work-log-account-quality],
+[data-work-log-account-providers],
+[data-work-log-account-turns],
+[data-work-log-account-empty] {
+  color: var(--text-faint);
+  font-size: 0.68rem;
+}
+
+[data-work-log-account-quality],
+[data-work-log-account-providers] {
+  grid-column: 1 / -1;
+}
+
+[data-work-log-account-empty] {
+  padding: 0.6rem 0.65rem;
+}
+
 [data-journal-day-panel] {
   min-width: 0;
 }

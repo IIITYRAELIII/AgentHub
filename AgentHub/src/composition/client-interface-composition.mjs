@@ -20,6 +20,7 @@ import { miniAppMenuButtonRequests } from "../interfaces/web/mini-app-server.mjs
 import { BugReportRepository } from "../infrastructure/filesystem/bug-report-repository.mjs";
 import { BugReportCaptureCursorStore } from "../infrastructure/persistence/bug-report-capture-cursor-store.mjs";
 import { QuickTunnelController } from "../infrastructure/network/quick-tunnel.mjs";
+import { readClaudeAccount } from "../providers/claude/claude-account.mjs";
 
 const BUG_REPORT_SCAN_INTERVAL_MS = 5 * 60_000;
 
@@ -245,6 +246,7 @@ export async function createClientInterfaceComposition({
     formatCodexRateLimits,
     spawnCapture,
     readCodexAccount: () => sendRpc("account/read", { refreshToken: false }, { timeoutMs: 5_000 }),
+    readClaudeAccount,
     readCodexRateLimits: () => sendRpc("account/rateLimits/read", {}, { timeoutMs: 5_000 }),
     codexRunning: codexTransportRunning,
     claudePollingEnabled: config.claudeRateLimitPolling,
@@ -252,6 +254,14 @@ export async function createClientInterfaceComposition({
     workLogUsageStore,
     timers: runtimeTimers,
     isStopping,
+  });
+  workLogUsageStore.setResolveAccount?.(async (providerName) => {
+    const normalized = String(providerName ?? "").trim().toLowerCase();
+    if (normalized === "codex") {
+      return sendRpc("account/read", { refreshToken: false }, { timeoutMs: 5_000 });
+    }
+    if (normalized === "claude") return readClaudeAccount();
+    return null;
   });
   const telegramStatusController = new TelegramStatusController({
     config,

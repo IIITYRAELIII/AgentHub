@@ -17,7 +17,7 @@ export class WorkLogUsageRepository {
   #normalizePersisted;
   #loaded = false;
   #loadedRevision = -1;
-  #ledger = { version: 8, turns: {} };
+  #ledger = { version: 9, turns: {} };
   #recordSnapshot = new Map();
   #tail = Promise.resolve();
 
@@ -131,6 +131,12 @@ export class WorkLogUsageRepository {
 
   snapshot() {
     return this.#database.snapshot();
+  }
+
+  accountCatalog() {
+    return typeof this.#database.accountCatalog === "function"
+      ? this.#database.accountCatalog()
+      : [];
   }
 
   async replaceProjection(payload, options = {}) {

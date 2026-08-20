@@ -31,6 +31,10 @@ function fixture({
       events.push(["read-account"]);
       return { account: { type: "chatgpt", email: "first@example.test", planType: "pro" } };
     },
+    readClaudeAccount: async () => {
+      events.push(["read-claude-account"]);
+      return { key: "anthropic:account-1", label: "claude@example.test", type: "oauth", planType: "max" };
+    },
     readCodexRateLimits: async () => {
       events.push(["read-codex"]);
       if (delayCodex) return delayedCodex;
@@ -84,6 +88,12 @@ test("RateLimitTelemetryService records Codex and Claude snapshots in one cycle"
   assert.equal(records.length, 2);
   assert.equal(records.every((record) => record[2] === "2026-08-05T00:00:00.000Z"), true);
   assert.equal(records.some((record) => record[3] === "claude"), true);
+  assert.deepEqual(records.find((record) => record[3] === "claude")[4], {
+    key: "anthropic:account-1",
+    label: "claude@example.test",
+    type: "oauth",
+    planType: "max",
+  });
   const codex = records.find((record) => record[3] === "codex");
   assert.deepEqual(codex[4], {
     account: { type: "chatgpt", email: "first@example.test", planType: "pro" },

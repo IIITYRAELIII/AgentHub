@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm as removeFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -6,6 +7,7 @@ import test, { afterEach } from "node:test";
 
 import {
   applyWorkLogUsage,
+  buildWorkLogAccountUsageSummary,
   buildWorkLogUsageHistory,
   groupWorkLogUsageByWorkspace,
   normalizeWorkLogId,
@@ -237,6 +239,100 @@ test("local usage history matches turn completion to exact account activity inte
     now: Date.parse("2026-07-30T12:00:00.000Z"),
     activeIntervals: [],
   }).totalCredits, 0);
+});
+
+test("account usage summary separates exact, inferred and unknown ledger turns", () => {
+  const knownKey = `chatgpt:${createHash("sha256").update("owner@example.com").digest("hex")}`;
+  const summary = buildWorkLogAccountUsageSummary({
+    exact: {
+      provider: "codex",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      completedAt: "2026-08-20T09:00:00.000Z",
+      estimatedCredits: 3,
+      accountKey: knownKey,
+      accountAttribution: "exact",
+    },
+    inferred: {
+      provider: "codex",
+      threadId: "thread-2",
+      turnId: "turn-2",
+      completedAt: "2026-08-20T10:00:00.000Z",
+      estimatedCredits: 5,
+      accountKey: knownKey,
+      accountAttribution: "inferred",
+    },
+    unknown: {
+      provider: "claude",
+      threadId: "thread-3",
+      turnId: "turn-3",
+      completedAt: "2026-08-20T11:00:00.000Z",
+      estimatedCredits: 7,
+    },
+    old: {
+      provider: "codex",
+      threadId: "thread-4",
+      turnId: "turn-4",
+      completedAt: "2026-08-18T11:00:00.000Z",
+      estimatedCredits: 11,
+      accountKey: "chatgpt:old",
+      accountAttribution: "inferred",
+    },
+  }, {
+    now: Date.parse("2026-08-20T12:00:00.000Z"),
+    accountCatalog: [{ key: knownKey, label: "owner@example.com", type: "chatgpt", planType: "plus" }],
+  });
+  const today = summary.find((range) => range.id === "today");
+  assert.equal(today.totalCredits, 15);
+  assert.equal(today.totalTurns, 3);
+  assert.equal(today.exactTurns, 1);
+  assert.equal(today.inferredTurns, 1);
+  assert.equal(today.unknownTurns, 1);
+  assert.equal(today.accounts[0].label, "owner@example.com");
+  assert.equal(today.accounts[0].credits, 8);
+  assert.deepEqual(today.accounts[0].providers, { codex: 2 });
+  assert.equal(today.accounts[1].label, "Неизвестный аккаунт");
+  const all = summary.find((range) => range.id === "all");
+  assert.equal(all.totalCredits, 26);
+  assert.equal(all.accounts.length, 3);
+});
+
+test("journal projection renders account usage panel with catalog labels", () => {
+  const key = `chatgpt:${createHash("sha256").update("owner@example.com").digest("hex")}`;
+  const projected = projectWorkLogUsage("# Глобальный журнал работ\n", {
+    exact: {
+      provider: "codex",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      completedAt: "2026-08-20T09:00:00.000Z",
+      estimatedCredits: 3,
+      accountKey: key,
+      accountAttribution: "exact",
+    },
+    inferred: {
+      provider: "codex",
+      threadId: "thread-2",
+      turnId: "turn-2",
+      completedAt: "2026-08-20T10:00:00.000Z",
+      estimatedCredits: 5,
+      accountKey: key,
+      accountAttribution: "inferred",
+    },
+  }, {
+    now: Date.parse("2026-08-20T12:00:00.000Z"),
+    accountCatalog: [{ key, label: "owner@example.com", type: "chatgpt", planType: "plus" }],
+  });
+  assert.match(projected, /data-work-log-account-panel/u);
+  assert.match(projected, /owner@example\.com/u);
+  assert.match(projected, /data-work-log-account-range data-account-range="today" open/u);
+  assert.match(projected, /data-work-log-account-range-quality>точно 1 · восстановлено 1/u);
+  assert.match(projected, /data-work-log-account-quality>точно 1 · восст\. 1/u);
+  assert.match(projected, /data-account-key="chatgpt:/u);
+  assert.equal((projected.match(/work-log-account-panel:start/gu) ?? []).length, 1);
+  const repeated = projectWorkLogUsage(projected, {}, {
+    now: Date.parse("2026-08-20T12:00:00.000Z"),
+  });
+  assert.equal((repeated.match(/work-log-account-panel:start/gu) ?? []).length, 0);
 });
 
 test("workspace usage aggregates sequential Threads and retains Stream detail", () => {
@@ -1751,6 +1847,74 @@ test("automatic usage attaches to the only row for the thread and is idempotent"
   }
 });
 
+test("automatic single-turn records resolve an exact account key", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "work-log-account-key-"));
+  try {
+    const ledgerFile = path.join(root, "work-log-usage.json");
+    const store = new WorkLogUsageStore({
+      ledgerFile,
+      defaultProjectRoot: root,
+      resolveAccount: async () => ({
+        account: { type: "chatgpt", email: "Private@Example.Test", planType: "pro" },
+      }),
+    });
+    await store.recordAutomaticAndProject({
+      provider: "codex",
+      threadId: "thread-account",
+      turnId: "turn-account",
+      projectRoot: root,
+      usageReported: true,
+      usage: { inputTokens: 10 },
+      completedAt: "2026-08-20T00:00:00.000Z",
+      text: "Accounted",
+      workLogFile: path.join(root, "WORK_LOG.md"),
+    });
+    const record = (await persistedLedger(store)).turns["codex\u0000thread-account\u0000turn-account"];
+    const expected = createHash("sha256").update("private@example.test").digest("hex");
+    assert.equal(record.accountKey, `chatgpt:${expected}`);
+    assert.equal(record.accountAttribution, "exact");
+    assert.equal(Object.hasOwn(record, "accountLabel"), false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("automatic batch does not infer historical turns from the current account", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "work-log-account-batch-"));
+  try {
+    const ledgerFile = path.join(root, "work-log-usage.json");
+    let resolved = 0;
+    const store = new WorkLogUsageStore({
+      ledgerFile,
+      defaultProjectRoot: root,
+      resolveAccount: async () => {
+        resolved += 1;
+        return { key: "codex:current" };
+      },
+    });
+    await store.recordAutomaticBatchAndProject({
+      records: [{
+        provider: "codex",
+        threadId: "thread-old",
+        turnId: "turn-old",
+        projectRoot: root,
+        usageReported: true,
+        usage: { inputTokens: 10 },
+        completedAt: "2026-01-01T00:00:00.000Z",
+        status: "completed",
+      }],
+      projectRoot: root,
+      workLogFile: path.join(root, "WORK_LOG.md"),
+    });
+    const record = (await persistedLedger(store)).turns["codex\u0000thread-old\u0000turn-old"];
+    assert.equal(resolved, 0);
+    assert.equal(record.accountKey, "");
+    assert.equal(record.accountAttribution, "inferred");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("automatic batch records many historical turns and projects once", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "work-log-automatic-batch-"));
   try {
@@ -1975,7 +2139,7 @@ test("legacy synthetic interruptions are provisional and retract from the projec
 
     assert.equal(result.retracted, true);
     const ledger = await persistedLedger(store);
-    assert.equal(ledger.version, 8);
+    assert.equal(ledger.version, 9);
     assert.deepEqual(ledger.turns, {});
     assert.doesNotMatch(await projectedJournal(store), /Живая задача/);
   } finally {
@@ -2036,7 +2200,7 @@ test("usage store recovers a damaged primary ledger from its backup", async () =
     await recovered.project(workLogFile, { projectRoot: root });
     const ledger = await persistedLedger(recovered);
     assert.equal(Object.keys(ledger.turns).length, 1);
-    assert.equal(ledger.version, 8);
+    assert.equal(ledger.version, 9);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -2129,7 +2293,7 @@ test("concurrent read-only recovery instances serialize their repair checkpoint"
     ]);
     assert.equal(turn.turnId, "turn-recovery");
     assert.equal(typeof history.totalCredits, "number");
-    assert.equal((await persistedLedger(first)).version, 8);
+    assert.equal((await persistedLedger(first)).version, 9);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

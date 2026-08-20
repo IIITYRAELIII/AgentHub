@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import path from "node:path";
 
 import {
@@ -20,6 +21,7 @@ import {
 } from "../domain/token-usage.mjs";
 
 const WORK_LOG_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const ACCOUNT_ATTRIBUTIONS = new Set(["exact", "inferred"]);
 
 export function normalizeWorkLogId(value) {
   const id = String(value ?? "").trim().toLowerCase();
@@ -79,6 +81,40 @@ function normalizedMcpCalls(value) {
     });
   }
   return [...calls.values()];
+}
+
+export function normalizeAccountAttribution(value, { hasAccountKey = false } = {}) {
+  const candidate = String(value ?? "").trim().toLowerCase();
+  if (ACCOUNT_ATTRIBUTIONS.has(candidate)) return candidate;
+  return hasAccountKey ? "exact" : "inferred";
+}
+
+function accountKeyFromDimension(account) {
+  const key = String(account?.key ?? account?.accountKey ?? "").trim();
+  if (key) return key;
+  const type = String(account?.type ?? "").trim();
+  const email = String(account?.email ?? "").trim().toLowerCase();
+  if (type === "chatgpt" && email) {
+    return `chatgpt:${createHash("sha256").update(email).digest("hex")}`;
+  }
+  if (type === "apiKey") return "api-key";
+  if (type === "amazonBedrock") return "amazon-bedrock";
+  return "";
+}
+
+export function normalizedAccountFields(value = {}) {
+  const rawAccount = value?.account && typeof value.account === "object" ? value.account : null;
+  const account = rawAccount?.account && typeof rawAccount.account === "object"
+    ? rawAccount.account
+    : rawAccount;
+  const accountKey = String(value?.accountKey ?? accountKeyFromDimension(account) ?? "").trim();
+  return {
+    accountKey,
+    accountAttribution: normalizeAccountAttribution(
+      value?.accountAttribution,
+      { hasAccountKey: Boolean(accountKey) },
+    ),
+  };
 }
 
 function isLegacyEmptyAutoCompactRecord(record, { provider, turnId, status, usageReported }) {
@@ -168,6 +204,7 @@ export function normalizedLedger(value = {}, { defaultProjectRoot = "" } = {}) {
         : null;
       let workLogId = null;
       if (record?.workLogId) workLogId = normalizeWorkLogId(record.workLogId);
+      const account = normalizedAccountFields(record);
       turns[key] = {
         workLogId,
         projectRoot: normalizeProjectRoot(record?.projectRoot, defaultProjectRoot),
@@ -211,6 +248,7 @@ export function normalizedLedger(value = {}, { defaultProjectRoot = "" } = {}) {
         startedAt: String(record?.startedAt ?? ""),
         completedAt: String(record?.completedAt ?? ""),
         status,
+        ...account,
       };
     } catch (error) {
       invalidRecords.push({
@@ -220,7 +258,7 @@ export function normalizedLedger(value = {}, { defaultProjectRoot = "" } = {}) {
       });
     }
   }
-  return { ledger: { version: 8, turns }, invalidRecords };
+  return { ledger: { version: 9, turns }, invalidRecords };
 }
 
 export function normalizePersistedWorkLog(value = {}, { defaultProjectRoot = "" } = {}) {
@@ -242,6 +280,11 @@ export function normalizePersistedWorkLog(value = {}, { defaultProjectRoot = "" 
           !== normalized.ledger.turns[key]?.model
         || normalizeServiceTier(record?.serviceTier ?? record?.service_tier)
           !== normalized.ledger.turns[key]?.serviceTier
+        || String(record?.accountKey ?? "").trim()
+          !== normalized.ledger.turns[key]?.accountKey
+        || normalizeAccountAttribution(record?.accountAttribution, {
+          hasAccountKey: Boolean(String(record?.accountKey ?? "").trim()),
+        }) !== normalized.ledger.turns[key]?.accountAttribution
       ),
     );
   return { ...normalized, migrated };
@@ -378,6 +421,248 @@ function formatDayUsageBreakdown(creditBreakdown) {
       highlightUsageUnits(alignUsagePercent(part), breakdownPartCredits(part, creditBreakdown))
     }</span>`)
     .join("")}</span>`;
+}
+
+function accountCatalogByKey(accounts = []) {
+  const catalog = new Map();
+  for (const account of Array.isArray(accounts) ? accounts : []) {
+    const key = String(account?.key ?? account?.accountKey ?? "").trim();
+    if (!key) continue;
+    catalog.set(key, {
+      key,
+      label: String(account?.label ?? account?.accountLabel ?? "").trim(),
+      type: String(account?.type ?? account?.accountType ?? "").trim(),
+      planType: String(account?.planType ?? account?.accountPlan ?? "").trim(),
+    });
+  }
+  return catalog;
+}
+
+function shortAccountKey(value) {
+  const key = String(value ?? "").trim();
+  if (!key) return "unknown";
+  const [prefix, suffix = ""] = key.split(":", 2);
+  return suffix ? `${prefix}:${suffix.slice(0, 8)}` : key.slice(0, 12);
+}
+
+function accountDisplayName(accountKey, catalog) {
+  if (!accountKey) return "Неизвестный аккаунт";
+  const account = catalog.get(accountKey);
+  const label = String(account?.label ?? "").trim();
+  return label || shortAccountKey(accountKey);
+}
+
+function accountUsageRangeStart(range, nowMs) {
+  const now = Number.isFinite(Number(nowMs)) ? Number(nowMs) : Date.now();
+  if (range === "24h") return now - 24 * 60 * 60 * 1_000;
+  const start = new Date(now);
+  start.setHours(0, 0, 0, 0);
+  if (range === "today") return start.getTime();
+  if (range === "7d") {
+    start.setDate(start.getDate() - 6);
+    return start.getTime();
+  }
+  if (range === "30d") {
+    start.setDate(start.getDate() - 29);
+    return start.getTime();
+  }
+  return Number.NEGATIVE_INFINITY;
+}
+
+const ACCOUNT_USAGE_RANGES = Object.freeze([
+  { id: "today", title: "Сегодня" },
+  { id: "24h", title: "24 часа" },
+  { id: "7d", title: "7 дней" },
+  { id: "30d", title: "30 дней" },
+  { id: "all", title: "Всё время" },
+]);
+
+function emptyAccountUsageBucket(accountKey, catalog) {
+  const catalogAccount = accountKey ? catalog.get(accountKey) : null;
+  return {
+    accountKey,
+    label: accountDisplayName(accountKey, catalog),
+    type: String(catalogAccount?.type ?? "").trim(),
+    planType: String(catalogAccount?.planType ?? "").trim(),
+    credits: 0,
+    turns: 0,
+    exactTurns: 0,
+    inferredTurns: 0,
+    unknownTurns: 0,
+    providers: {},
+  };
+}
+
+export function buildWorkLogAccountUsageSummary(turns = {}, {
+  accountCatalog = [],
+  includeClaudeUsage = true,
+  now = Date.now(),
+  ranges = ACCOUNT_USAGE_RANGES.map((range) => range.id),
+} = {}) {
+  const catalog = accountCatalogByKey(accountCatalog);
+  const normalizedTurns = normalizedLedger({ version: 9, turns }).ledger.turns;
+  const nowMs = Number.isFinite(Number(now)) ? Number(now) : Date.now();
+  const records = Object.values(normalizedTurns)
+    .filter((record) => includeClaudeUsage || String(record?.provider ?? "").toLowerCase() !== "claude")
+    .map((record) => ({
+      record,
+      timestamp: Date.parse(record?.completedAt || record?.startedAt || ""),
+      credits: recordCredits(record),
+    }))
+    .filter((entry) => Number.isFinite(entry.timestamp) && entry.timestamp <= nowMs);
+  const rangeSet = new Set(ranges.map((range) => String(range)));
+  return ACCOUNT_USAGE_RANGES
+    .filter((range) => rangeSet.has(range.id))
+    .map((range) => {
+      const fromMs = accountUsageRangeStart(range.id, nowMs);
+      const accounts = new Map();
+      let totalCredits = 0;
+      let totalTurns = 0;
+      let exactTurns = 0;
+      let inferredTurns = 0;
+      let unknownTurns = 0;
+      for (const entry of records) {
+        if (entry.timestamp < fromMs) continue;
+        const record = entry.record;
+        const accountKey = String(record?.accountKey ?? "").trim();
+        const key = accountKey || "";
+        if (!accounts.has(key)) accounts.set(key, emptyAccountUsageBucket(key, catalog));
+        const bucket = accounts.get(key);
+        bucket.credits += entry.credits;
+        bucket.turns += 1;
+        const provider = String(record?.provider ?? "unknown").trim().toLowerCase() || "unknown";
+        bucket.providers[provider] = (bucket.providers[provider] ?? 0) + 1;
+        const attribution = normalizeAccountAttribution(record?.accountAttribution, {
+          hasAccountKey: Boolean(accountKey),
+        });
+        if (!accountKey) {
+          bucket.unknownTurns += 1;
+          unknownTurns += 1;
+        } else if (attribution === "exact") {
+          bucket.exactTurns += 1;
+          exactTurns += 1;
+        } else {
+          bucket.inferredTurns += 1;
+          inferredTurns += 1;
+        }
+        totalCredits += entry.credits;
+        totalTurns += 1;
+      }
+      return {
+        id: range.id,
+        title: range.title,
+        from: Number.isFinite(fromMs) ? new Date(fromMs).toISOString() : null,
+        to: new Date(nowMs).toISOString(),
+        totalCredits,
+        totalTurns,
+        exactTurns,
+        inferredTurns,
+        unknownTurns,
+        accounts: [...accounts.values()].sort((left, right) => (
+          right.credits - left.credits
+          || right.turns - left.turns
+          || left.label.localeCompare(right.label)
+        )),
+      };
+    });
+}
+
+function formatProviderCounts(providers = {}) {
+  return Object.entries(providers)
+    .filter(([, count]) => Number(count) > 0)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([provider, count]) => `${provider === "codex" ? "Codex" : provider === "claude" ? "Claude" : provider}: ${count}`)
+    .join(" · ");
+}
+
+function formatAccountQuality(account) {
+  const parts = [];
+  if (account.exactTurns) parts.push(`точно ${account.exactTurns}`);
+  if (account.inferredTurns) parts.push(`восст. ${account.inferredTurns}`);
+  if (account.unknownTurns) parts.push(`без ключа ${account.unknownTurns}`);
+  return parts.join(" · ") || "нет данных";
+}
+
+function formatAccountUsageRow(account, totalCredits) {
+  const share = totalCredits > 0 && account.credits > 0
+    ? `${Math.round(account.credits / totalCredits * 100)}%`
+    : "0%";
+  const plan = [account.type, account.planType].filter(Boolean).join(" · ");
+  return `<div data-work-log-account-row data-account-key="${escapeHtmlAttribute(account.accountKey)}" `
+    + `data-account-attribution-exact="${escapeHtmlAttribute(String(account.exactTurns))}" `
+    + `data-account-attribution-inferred="${escapeHtmlAttribute(String(account.inferredTurns))}" `
+    + `data-account-turns="${escapeHtmlAttribute(String(account.turns))}" `
+    + `data-account-credits="${escapeHtmlAttribute(String(account.credits))}">`
+    + "<span data-work-log-account-name>"
+    + `<span data-work-log-account-label>${escapeHtmlText(account.label)}</span>`
+    + (plan ? `<span data-work-log-account-plan>${escapeHtmlText(plan)}</span>` : "")
+    + "</span>"
+    + `<span data-work-log-account-credits>${highlightUsageUnits(formatCredits(account.credits), account.credits)}</span>`
+    + `<span data-work-log-account-share>${share}</span>`
+    + `<span data-work-log-account-turns>${account.turns} ход.</span>`
+    + `<span data-work-log-account-quality>${escapeHtmlText(formatAccountQuality(account))}</span>`
+    + `<span data-work-log-account-providers>${escapeHtmlText(formatProviderCounts(account.providers))}</span>`
+    + "</div>";
+}
+
+function formatAccountUsageRange(range) {
+  const quality = [
+    range.exactTurns ? `точно ${range.exactTurns}` : "",
+    range.inferredTurns ? `восстановлено ${range.inferredTurns}` : "",
+    range.unknownTurns ? `без ключа ${range.unknownTurns}` : "",
+  ].filter(Boolean).join(" · ");
+  const rows = range.accounts.length
+    ? range.accounts.map((account) => formatAccountUsageRow(account, range.totalCredits)).join("")
+    : '<div data-work-log-account-empty>За период нет записанного расхода.</div>';
+  return `<details data-work-log-account-range data-account-range="${escapeHtmlAttribute(range.id)}"${
+    range.id === "today" ? " open" : ""
+  }>`
+    + "<summary>"
+    + `<span data-work-log-account-range-title>${escapeHtmlText(range.title)}</span>`
+    + `<span data-work-log-account-range-total>${highlightUsageUnits(formatCredits(range.totalCredits), range.totalCredits)}</span>`
+    + `<span data-work-log-account-range-turns>${range.totalTurns} ход.</span>`
+    + (quality ? `<span data-work-log-account-range-quality>${escapeHtmlText(quality)}</span>` : "")
+    + "</summary>"
+    + `<div data-work-log-account-rows>${rows}</div>`
+    + "</details>";
+}
+
+function formatAccountUsagePanel(summary) {
+  if (!summary.some((range) => range.accounts.some((account) => account.accountKey))) return "";
+  const all = summary.find((range) => range.id === "all") ?? summary.at(-1);
+  const accountCount = new Set(all?.accounts.map((account) => account.accountKey || "unknown")).size;
+  return "<!-- work-log-account-panel:start -->"
+    + '<section data-work-log-account-panel>'
+    + '<div data-work-log-account-panel-head>'
+    + '<span data-work-log-account-panel-caption>Расход по аккаунтам</span>'
+    + `<span data-work-log-account-panel-total>${accountCount} аккаунт.</span>`
+    + '<span data-work-log-account-panel-note>exact — текущие записи, inferred — восстановлено по timeline лимитов</span>'
+    + "</div>"
+    + `<div data-work-log-account-ranges>${summary.map(formatAccountUsageRange).join("")}</div>`
+    + "</section>"
+    + "<!-- work-log-account-panel:end -->";
+}
+
+function removeAccountUsagePanel(text) {
+  return String(text ?? "").replace(
+    /\n?<!-- work-log-account-panel:start -->[\s\S]*?<!-- work-log-account-panel:end -->\n?/giu,
+    "\n",
+  );
+}
+
+function insertAccountUsagePanel(text, panel) {
+  const source = removeAccountUsagePanel(text);
+  if (!panel) return source;
+  const rateLimits = /<div\b[^>]*data-work-log-rate-limits\b[^>]*>[\s\S]*?<\/div>/iu.exec(source);
+  if (rateLimits) {
+    const insertion = rateLimits.index + rateLimits[0].length;
+    return `${source.slice(0, insertion)}\n${panel}\n${source.slice(insertion)}`;
+  }
+  const heading = /^# [^\r\n]+(?:\r?\n)?/u.exec(source);
+  if (heading) {
+    return `${source.slice(0, heading[0].length)}\n${panel}\n${source.slice(heading[0].length)}`;
+  }
+  return `${panel}\n${source}`;
 }
 
 function ledgerByWorkLogId(turns = {}) {
@@ -1756,9 +2041,16 @@ function projectDaySection(
 export function projectWorkLogUsage(workLogText, turns = {}, {
   includeClaudeUsage = true,
   workspaceResolver = null,
+  accountCatalog = [],
+  now = Date.now(),
 } = {}) {
-  let text = String(workLogText ?? "");
+  let text = removeAccountUsagePanel(String(workLogText ?? ""));
   const normalizedTurns = normalizedLedger({ version: 8, turns }).ledger.turns;
+  const accountPanel = formatAccountUsagePanel(buildWorkLogAccountUsageSummary(normalizedTurns, {
+    accountCatalog,
+    includeClaudeUsage,
+    now,
+  }));
   const records = ledgerByWorkLogId(normalizedTurns);
   const existingDates = new Set(daySectionRanges(text).map((range) => range.date));
   const requiredDates = [...new Set(Object.values(normalizedTurns)
@@ -1799,7 +2091,7 @@ export function projectWorkLogUsage(workLogText, turns = {}, {
     );
     projected = `${projected.slice(0, start)}${replacement}${projected.slice(end)}`;
   }
-  return projected;
+  return insertAccountUsagePanel(projected, accountPanel);
 }
 
 /* Строка одной меры внутри общего облака лимитов. */
@@ -1909,10 +2201,14 @@ export function incomingLedgerRecord({
   skillsUsed,
   mcpCalls,
   toolMetricsKnown,
+  account,
+  accountKey,
+  accountAttribution,
   startedAt,
   completedAt,
   status,
 }) {
+  const accountFields = normalizedAccountFields({ account, accountKey, accountAttribution });
   return {
     workLogId,
     projectRoot: normalizeProjectRoot(projectRoot),
@@ -1942,6 +2238,7 @@ export function incomingLedgerRecord({
     skillsUsed: normalizedSkillsUsed(skillsUsed),
     mcpCalls: normalizedMcpCalls(mcpCalls),
     toolMetricsKnown: toolMetricsKnown === true,
+    ...accountFields,
     startedAt: String(startedAt ?? ""),
     completedAt: String(completedAt ?? new Date().toISOString()),
     status: String(status ?? "completed").trim() || "completed",
@@ -1958,6 +2255,10 @@ export function mergeLedgerRecord(existing, incoming) {
   if (incoming.estimatedCredits > 0) {
     existing.estimatedCredits = incoming.estimatedCredits;
     existing.estimateKind = incoming.estimateKind;
+  }
+  if (incoming.accountKey) {
+    existing.accountKey = incoming.accountKey;
+    existing.accountAttribution = incoming.accountAttribution;
   }
   for (const field of [
     "projectRoot",

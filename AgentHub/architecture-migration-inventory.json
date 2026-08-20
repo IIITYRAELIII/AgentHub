@@ -3,7 +3,7 @@
   "baseline": {
     "serverMaximumLines": 150,
     "compositionMaximumLines": 638,
-    "rootProductionModules": 24,
+    "rootProductionModules": 25,
     "rootTestModules": 0
   },
   "publicRootModules": [
@@ -28,6 +28,7 @@
     "shared-dashboard-bot-webhook.mjs",
     "test-suite.mjs",
     "tts-smoke.mjs",
+    "work-log-account-backfill.mjs",
     "work-log-backfill.mjs",
     "work-log-title-backfill-cli.mjs",
     "wrangler-runner.mjs"

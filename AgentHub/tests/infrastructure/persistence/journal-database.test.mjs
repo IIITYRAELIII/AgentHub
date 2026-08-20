@@ -36,6 +36,16 @@ function day(date, item) {
   ].join("");
 }
 
+function accountPanel() {
+  return [
+    "<!-- work-log-account-panel:start -->",
+    '<section data-work-log-account-panel>',
+    '<div data-work-log-account-panel-head>Расход по аккаунтам</div>',
+    "</section>",
+    "<!-- work-log-account-panel:end -->",
+  ].join("");
+}
+
 function record(turnId, overrides = {}) {
   return {
     provider: "codex",
@@ -216,13 +226,14 @@ test("direct projection snapshot preserves lazy journal HTTP contract without a 
   const dates = ["01.07.2026", "02.07.2026", "03.07.2026", "04.07.2026", "05.07.2026", "06.07.2026"];
   try {
     const change = await replaceJournalProjectionFromMarkdown(database,
-      `# Журнал\n${dates.map((date) => day(date, item)).join("\n")}\n`,
+      `# Журнал\n${accountPanel()}\n${dates.map((date) => day(date, item)).join("\n")}\n`,
       { updatedAt: "2026-08-01T12:00:00.000Z" },
     );
     assert.equal(change.projected, true);
     const snapshot = await database.snapshot();
     assert.equal(snapshot.updatedAt, "2026-08-01T12:00:00.000Z");
     assert.match(snapshot.version, /^sha256:/u);
+    assert.match(snapshot.html, /data-work-log-account-panel/u);
     assert.match(snapshot.html, /data-lazy-day="01\.07\.2026"/u);
     assert.match(snapshot.days["01.07.2026"], /Старый ход/u);
     assert.match(snapshot.turns[item.reference], /Старый ход body/u);

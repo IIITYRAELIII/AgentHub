@@ -7,7 +7,7 @@ import { applyLedgerDelta } from "./incremental-ledger.mjs";
 import { readJsonWithBackup } from "./state-store.mjs";
 
 const SCHEMA_VERSION = 2;
-const LEDGER_VERSION = 8;
+const LEDGER_VERSION = 9;
 const LEGACY_IMPORT_KEY = "work-log-usage-v1";
 
 function configure(database) {
@@ -64,8 +64,14 @@ function configure(database) {
       PRIMARY KEY (import_key, provider, thread_id, turn_id)
     ) WITHOUT ROWID;
     INSERT OR IGNORE INTO journal_store_meta (key, value) VALUES ('revision', '0');
-    INSERT OR IGNORE INTO journal_store_meta (key, value) VALUES ('ledger_version', '8');
+    INSERT OR IGNORE INTO journal_store_meta (key, value) VALUES ('ledger_version', '9');
   `);
+}
+
+function tableExists(database, name) {
+  return Boolean(database.prepare(`
+    SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?
+  `).get(name));
 }
 
 function publicIndex(row, revision = 0) {
@@ -709,6 +715,47 @@ export class JournalDatabase {
         "SELECT id, html FROM journal_turns ORDER BY id",
       ).all().map((row) => [row.id, row.html])),
     };
+  }
+
+  async accountCatalog() {
+    const database = await this.#open();
+    const sources = [];
+    if (tableExists(database, "rate_limit_snapshots")) {
+      sources.push(`
+        SELECT observed_ms, account_key, account_label, account_type, account_plan,
+          0 AS event_priority, id AS stable_order
+        FROM rate_limit_snapshots
+        WHERE account_key <> ''
+      `);
+    }
+    if (tableExists(database, "rate_limit_account_events")) {
+      sources.push(`
+        SELECT observed_ms, account_key, account_label, account_type, account_plan,
+          1 AS event_priority, observed_ms AS stable_order
+        FROM rate_limit_account_events
+        WHERE account_key <> ''
+      `);
+    }
+    if (!sources.length) return [];
+    return database.prepare(`
+      WITH timeline AS (${sources.join(" UNION ALL ")}), ranked AS (
+        SELECT account_key, account_label, account_type, account_plan,
+          ROW_NUMBER() OVER (
+            PARTITION BY account_key
+            ORDER BY observed_ms DESC, event_priority DESC, stable_order DESC
+          ) AS account_sequence
+        FROM timeline
+      )
+      SELECT account_key, account_label, account_type, account_plan
+      FROM ranked
+      WHERE account_sequence = 1
+      ORDER BY account_label, account_key
+    `).all().map((row) => ({
+      key: String(row.account_key ?? "").trim(),
+      label: String(row.account_label ?? "").trim(),
+      type: String(row.account_type ?? "").trim(),
+      planType: String(row.account_plan ?? "").trim(),
+    })).filter((account) => account.key);
   }
 
   exportPayload() {

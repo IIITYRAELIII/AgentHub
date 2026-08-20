@@ -6,6 +6,7 @@ export class RateLimitTelemetryService {
     formatCodexRateLimits,
     spawnCapture,
     readCodexAccount,
+    readClaudeAccount,
     readCodexRateLimits,
     codexRunning,
     claudePollingEnabled = true,
@@ -25,6 +26,7 @@ export class RateLimitTelemetryService {
     this.formatCodexRateLimits = formatCodexRateLimits;
     this.spawnCapture = spawnCapture;
     this.readCodexAccount = readCodexAccount ?? (async () => null);
+    this.readClaudeAccount = readClaudeAccount ?? (async () => null);
     this.readCodexRateLimits = readCodexRateLimits;
     this.codexRunning = codexRunning;
     this.claudePollingEnabled = claudePollingEnabled;
@@ -48,6 +50,10 @@ export class RateLimitTelemetryService {
 
   readAccount() {
     return this.readCodexAccount();
+  }
+
+  readClaudeAccountDimension() {
+    return this.readClaudeAccount();
   }
 
   refreshCodex({ maxAgeMs = 0 } = {}) {
@@ -122,9 +128,16 @@ export class RateLimitTelemetryService {
     }
     if (this.claudePollingEnabled) {
       jobs.push((async () => {
-        const limits = this.parseClaudeLimits(await this.readClaude());
+        const accountPromise = this.readClaudeAccountDimension().catch((error) => {
+          this.logger.error("Cannot identify Claude account:", error.message);
+          return null;
+        });
+        const [account, limits] = await Promise.all([
+          accountPromise,
+          this.parseClaudeLimits(await this.readClaude()),
+        ]);
         if (!limits.length) throw new Error("Claude did not return recognizable limit data");
-        await this.historyStore.record({ limits }, observedAt, "claude");
+        await this.historyStore.record({ limits }, observedAt, "claude", account);
       })().catch((error) => {
         this.logger.error("Cannot poll Claude rate limits:", error.message);
       }));

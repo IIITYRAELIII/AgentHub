@@ -26,8 +26,10 @@ export function createWorkLogUsageStore({
   journalDatabase = null,
   defaultProjectRoot = "",
   includeClaudeUsage = true,
+  resolveAccount = null,
   workspaceCatalogStore = null,
   beforeProjectionWrite = null,
+  logger = console,
 } = {}) {
   if (typeof repositoryFactory !== "function") {
     throw new TypeError("createWorkLogUsageStore requires repositoryFactory");
@@ -45,8 +47,10 @@ export function createWorkLogUsageStore({
     repository,
     defaultProjectRoot: normalizedProjectRoot,
     includeClaudeUsage,
+    resolveAccount,
     workspaceCatalogStore,
     beforeProjectionWrite,
+    logger,
   });
 }
 
@@ -54,15 +58,19 @@ export class WorkLogUsageStore {
   #repository;
   #defaultProjectRoot;
   #includeClaudeUsage = true;
+  #resolveAccount;
   #workspaceCatalogStore;
   #beforeProjectionWrite;
+  #logger;
 
   constructor({
     repository,
     defaultProjectRoot = "",
     includeClaudeUsage = true,
+    resolveAccount = null,
     workspaceCatalogStore = null,
     beforeProjectionWrite = null,
+    logger = console,
   } = {}) {
     if (
       !repository
@@ -76,6 +84,7 @@ export class WorkLogUsageStore {
     this.#defaultProjectRoot = normalizeProjectRoot(defaultProjectRoot);
     this.#repository = repository;
     this.#includeClaudeUsage = includeClaudeUsage !== false;
+    this.#resolveAccount = typeof resolveAccount === "function" ? resolveAccount : null;
     if (workspaceCatalogStore && (
       typeof workspaceCatalogStore.resolveThread !== "function"
       || typeof workspaceCatalogStore.assignUnknownThread !== "function"
@@ -86,6 +95,7 @@ export class WorkLogUsageStore {
     this.#beforeProjectionWrite = typeof beforeProjectionWrite === "function"
       ? beforeProjectionWrite
       : null;
+    this.#logger = logger;
   }
 
   get #ledger() {
@@ -94,6 +104,10 @@ export class WorkLogUsageStore {
 
   setIncludeClaudeUsage(value) {
     this.#includeClaudeUsage = value !== false;
+  }
+
+  setResolveAccount(resolveAccount) {
+    this.#resolveAccount = typeof resolveAccount === "function" ? resolveAccount : null;
   }
 
   #save(options) {
@@ -119,7 +133,10 @@ export class WorkLogUsageStore {
   async #projectDatabase(selectedTurns) {
     const current = await this.#repository.payload();
     const source = await this.#projectionSource();
-    const updated = this.#projectUsage(source, selectedTurns);
+    const accountCatalog = typeof this.#repository.accountCatalog === "function"
+      ? await this.#repository.accountCatalog()
+      : [];
+    const updated = this.#projectUsage(source, selectedTurns, { accountCatalog });
     const version = `sha256:${crypto.createHash("sha256").update(updated, "utf8").digest("hex")}`;
     if (current?.version === version) {
       return { projected: false, reason: "unchanged" };
@@ -368,10 +385,11 @@ export class WorkLogUsageStore {
     );
   }
 
-  #projectUsage(text, turns) {
+  #projectUsage(text, turns, { accountCatalog = [] } = {}) {
     return projectWorkLogUsage(text, turns, {
       includeClaudeUsage: this.#includeClaudeUsage,
       workspaceResolver: this.#workspaceResolver(),
+      accountCatalog,
     });
   }
 
@@ -380,6 +398,20 @@ export class WorkLogUsageStore {
       ? (reference) => this.#workspaceCatalogStore.resolveThread(reference)
         ?? this.#workspaceCatalogStore.assignUnknownThread(reference, { source: "discovered" })
       : null;
+  }
+
+  async #resolvedAccountFields(provider, supplied = {}) {
+    if (supplied?.accountKey || supplied?.account) return supplied;
+    if (!this.#resolveAccount) return supplied;
+    const normalizedProvider = String(provider ?? "").trim().toLowerCase();
+    if (!normalizedProvider) return supplied;
+    try {
+      const account = await this.#resolveAccount(normalizedProvider);
+      return account ? { ...supplied, account } : supplied;
+    } catch (error) {
+      this.#logger?.warn?.(`Cannot identify ${normalizedProvider} account for journal record: ${error.message}`);
+      return supplied;
+    }
   }
 
   project(workLogFile, {
@@ -436,6 +468,9 @@ export class WorkLogUsageStore {
     skillsUsed,
     mcpCalls,
     toolMetricsKnown,
+    account,
+    accountKey,
+    accountAttribution,
     startedAt,
     completedAt,
     status,
@@ -482,6 +517,7 @@ export class WorkLogUsageStore {
         skillsUsed,
         mcpCalls,
         toolMetricsKnown,
+        ...await this.#resolvedAccountFields(provider, { account, accountKey, accountAttribution }),
         startedAt,
         completedAt,
         status,
@@ -536,6 +572,9 @@ export class WorkLogUsageStore {
     skillsUsed,
     mcpCalls,
     toolMetricsKnown,
+    account,
+    accountKey,
+    accountAttribution,
     startedAt,
     completedAt,
     status,
@@ -572,6 +611,7 @@ export class WorkLogUsageStore {
         skillsUsed,
         mcpCalls,
         toolMetricsKnown,
+        ...await this.#resolvedAccountFields(provider, { account, accountKey, accountAttribution }),
         startedAt,
         completedAt,
         status,

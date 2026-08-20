@@ -11706,6 +11706,16 @@ function updateJournalSummary(source) {
   }
 }
 
+function currentWorkLogAccountPanel() {
+  return journal.querySelector(":scope > [data-work-log-account-panel]")?.cloneNode(true) ?? null;
+}
+
+function replaceJournalGroupedContent(content) {
+  const accountPanel = currentWorkLogAccountPanel();
+  if (accountPanel) journal.replaceChildren(accountPanel, content);
+  else journal.replaceChildren(content);
+}
+
 function applyJournalGrouping() {
   decorateDayHeadings(journal);
   upgradeLegacyWorkspaceGroups(journal);
@@ -11715,11 +11725,11 @@ function applyJournalGrouping() {
     for (const day of journal.querySelectorAll("details[data-work-log-day-section]")) {
       groupClaudeRowsInDay(day);
     }
-    journal.replaceChildren(dayGroupingContent(journal));
+    replaceJournalGroupedContent(dayGroupingContent(journal));
   } else if (grouping === "stream" || grouping === "workspace") {
-    journal.replaceChildren(taskGroupingContent(journal, grouping));
+    replaceJournalGroupedContent(taskGroupingContent(journal, grouping));
   } else {
-    journal.replaceChildren(periodGroupingContent(journal, grouping));
+    replaceJournalGroupedContent(periodGroupingContent(journal, grouping));
   }
   refreshUsageUnits(journal);
   disableLocalLinks();

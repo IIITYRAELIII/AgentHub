@@ -14,7 +14,8 @@ export function extractWorkLogHtml(markdown) {
     const rateLimits = source.match(
       /<div\b[^>]*data-work-log-rate-limits\b[^>]*>[\s\S]*?<\/div>/iu,
     )?.[0] ?? "";
-    return [rateLimits, source.slice(firstDay).trim()].filter(Boolean).join("\n");
+    const accountPanel = extractAccountPanelHtml(source).html;
+    return [rateLimits, accountPanel, source.slice(firstDay).trim()].filter(Boolean).join("\n");
   }
   const text = source
     .replace(/^\uFEFF/u, "")
@@ -23,6 +24,13 @@ export function extractWorkLogHtml(markdown) {
   return text
     ? `<pre data-mini-app-fallback>${escapeHtmlText(text)}</pre>`
     : '<p data-mini-app-empty>Журнал пока пуст.</p>';
+}
+
+export function extractAccountPanelHtml(markdown) {
+  const html = String(markdown ?? "").match(
+    /<!-- work-log-account-panel:start -->[\s\S]*?<!-- work-log-account-panel:end -->/iu,
+  )?.[0] ?? "";
+  return { html };
 }
 
 function balancedElementEnd(source, tagName, openingStart) {
@@ -153,6 +161,7 @@ export function buildLazyJournalPayload(markdown, {
   const rateLimits = fullHtml.match(
     /<div\b[^>]*data-work-log-rate-limits\b[^>]*>[\s\S]*?<\/div>/iu,
   )?.[0] ?? "";
+  const accountPanel = extractAccountPanelHtml(fullHtml).html;
   const initialSections = [];
   const days = {};
   const turns = {};
@@ -174,7 +183,7 @@ export function buildLazyJournalPayload(markdown, {
     Object.assign(turns, shallow.turns);
   }
   return {
-    html: [rateLimits, ...initialSections].filter(Boolean).join("\n"),
+    html: [rateLimits, accountPanel, ...initialSections].filter(Boolean).join("\n"),
     days,
     turns,
   };
