@@ -7,9 +7,10 @@ import {
   syncedUsageEventsToTurns,
   usageSyncEventIdentity,
   usageSyncSnapshotFromLedger,
+  usageSyncThreadKey,
 } from "../../src/domain/work-log-usage-sync.mjs";
 
-test("usage sync events get stable device-scoped ids", () => {
+test("usage sync events identify the turn and never keep raw provider ids", () => {
   const event = normalizeUsageSyncEvent({
     deviceId: "device-a",
     provider: "Codex",
@@ -23,7 +24,58 @@ test("usage sync events get stable device-scoped ids", () => {
   assert.equal(event.provider, "codex");
   assert.equal(event.estimatedCredits, 12);
   assert.equal(event.accountAttribution, "exact");
-  assert.equal(event.eventId, usageSyncEventIdentity(event));
+  assert.equal(event.eventId, usageSyncEventIdentity({
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "turn-1",
+  }));
+  assert.equal(event.threadKey, usageSyncThreadKey({ provider: "codex", threadId: "thread-1" }));
+  assert.equal(event.taskKey, event.threadKey);
+  for (const field of ["threadId", "turnId", "taskThreadId"]) {
+    assert.ok(!Object.hasOwn(event, field), `${field} must not survive into a sync event`);
+  }
+  assert.ok(!JSON.stringify(event).includes("thread-1"));
+  assert.ok(!JSON.stringify(event).includes("turn-1"));
+});
+
+test("turn identity is independent of the device that recorded it", () => {
+  const turn = {
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    completedAt: "2026-08-20T01:00:00.000Z",
+  };
+  const first = normalizeUsageSyncEvent({ ...turn, deviceId: "device-a" });
+  const second = normalizeUsageSyncEvent({ ...turn, deviceId: "device-b" });
+
+  assert.equal(first.eventId, second.eventId);
+  assert.equal(mergeUsageSyncEvents([first], [second]).length, 1);
+});
+
+test("a sync event without a resolvable turn identity is rejected", () => {
+  const base = {
+    deviceId: "device-a",
+    provider: "codex",
+    completedAt: "2026-08-20T01:00:00.000Z",
+  };
+  assert.equal(normalizeUsageSyncEvent({ ...base, threadId: "thread-1" }), null);
+  assert.equal(normalizeUsageSyncEvent({ ...base, turnId: "turn-1" }), null);
+  assert.equal(normalizeUsageSyncEvent({ ...base, eventId: "usage:x" }), null);
+});
+
+test("already pseudonymized events are accepted without raw ids", () => {
+  const threadKey = usageSyncThreadKey({ provider: "codex", threadId: "thread-1" });
+  const event = normalizeUsageSyncEvent({
+    deviceId: "device-b",
+    provider: "codex",
+    eventId: "usage:abc",
+    threadKey,
+    completedAt: "2026-08-20T01:00:00.000Z",
+  });
+
+  assert.equal(event.eventId, "usage:abc");
+  assert.equal(event.threadKey, threadKey);
+  assert.equal(event.taskKey, threadKey, "a missing task pseudonym falls back to the thread");
 });
 
 test("usage sync merge deduplicates events and keeps stronger account attribution", () => {
@@ -64,7 +116,30 @@ test("usage sync snapshot exports ledger records as minimal remote turns", () =>
 
   assert.equal(snapshot.version, 1);
   assert.equal(snapshot.events.length, 1);
+  assert.ok(!JSON.stringify(snapshot).includes("thread-1"), "raw thread ids stay on the device");
+  assert.ok(!JSON.stringify(snapshot).includes("turn-1"), "raw turn ids stay on the device");
+
+  const [event] = snapshot.events;
   const turns = syncedUsageEventsToTurns(snapshot.events);
-  assert.deepEqual(Object.keys(turns), ["codex\u0000sync:device-a:thread-1\u0000turn-1"]);
-  assert.equal(turns["codex\u0000sync:device-a:thread-1\u0000turn-1"].syncDeviceId, "device-a");
+  const key = `codex\u0000sync:device-a:${event.threadKey}\u0000${event.eventId}`;
+  assert.deepEqual(Object.keys(turns), [key]);
+  assert.equal(turns[key].syncDeviceId, "device-a");
+  assert.equal(turns[key].taskThreadId, `sync:device-a:${event.taskKey}`);
+});
+
+test("turns of one thread stay grouped after pseudonymization", () => {
+  const record = (turnId) => ({
+    provider: "codex",
+    threadId: "thread-1",
+    turnId,
+    completedAt: "2026-08-20T01:00:00.000Z",
+  });
+  const snapshot = usageSyncSnapshotFromLedger({
+    "codex\u0000thread-1\u0000turn-1": record("turn-1"),
+    "codex\u0000thread-1\u0000turn-2": record("turn-2"),
+  }, { deviceId: "device-a" });
+
+  const turns = Object.values(syncedUsageEventsToTurns(snapshot.events));
+  assert.equal(turns.length, 2);
+  assert.equal(new Set(turns.map((turn) => turn.threadId)).size, 1);
 });

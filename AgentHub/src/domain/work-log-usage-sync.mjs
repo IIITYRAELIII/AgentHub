@@ -28,34 +28,61 @@ function sha256(value) {
   return crypto.createHash("sha256").update(String(value), "utf8").digest("hex");
 }
 
+const PSEUDONYM_PATTERN = /^[0-9a-f]{64}$/u;
+
+/**
+ * Turn identity used for deduplication. Provider thread and turn ids are
+ * globally unique on their own, so the device is deliberately not part of the
+ * identity: the same turn recovered from a restored journal on another
+ * installation must collapse into one event instead of being counted twice.
+ */
 export function usageSyncEventIdentity(event) {
   const provider = normalizedProvider(event?.provider);
-  const deviceId = nonEmpty(event?.deviceId);
   const threadId = nonEmpty(event?.threadId);
   const turnId = nonEmpty(event?.turnId);
-  if (!deviceId || !threadId || !turnId) return "";
-  return `usage:${sha256(JSON.stringify([deviceId, provider, threadId, turnId]))}`;
+  if (!threadId || !turnId) return "";
+  return `usage:${sha256(JSON.stringify([provider, threadId, turnId]))}`;
+}
+
+/**
+ * Stable pseudonym for a provider thread. Raw thread ids never leave the
+ * device: they are correlatable identifiers that carry no accounting value,
+ * because grouping only needs the pseudonym to be stable.
+ */
+export function usageSyncThreadKey({ provider, threadId } = {}) {
+  const id = nonEmpty(threadId);
+  return id ? sha256(JSON.stringify([normalizedProvider(provider), id])) : "";
+}
+
+function pseudonym(value) {
+  const candidate = nonEmpty(value).toLowerCase();
+  return PSEUDONYM_PATTERN.test(candidate) ? candidate : "";
 }
 
 export function normalizeUsageSyncEvent(value = {}) {
   const provider = normalizedProvider(value.provider);
   const deviceId = nonEmpty(value.deviceId);
-  const threadId = nonEmpty(value.threadId);
-  const turnId = nonEmpty(value.turnId);
   const completedAt = nonEmpty(value.completedAt);
-  if (!deviceId || !threadId || !turnId || !completedAt) return null;
+  // Events recorded before pseudonymization still carry raw ids; they are
+  // converted here and the raw values are dropped from the sync model.
+  const eventId = nonEmpty(value.eventId) || usageSyncEventIdentity(value);
+  const threadKey = pseudonym(value.threadKey)
+    || usageSyncThreadKey({ provider, threadId: value.threadId });
+  const taskKey = pseudonym(value.taskKey)
+    || usageSyncThreadKey({ provider, threadId: value.taskThreadId })
+    || threadKey;
+  if (!deviceId || !completedAt || !eventId || !threadKey) return null;
   const accountKey = nonEmpty(value.accountKey);
   const estimatedCredits = positiveNumber(value.estimatedCredits ?? value.credits);
   const usage = normalizeTokenUsage(value.usage);
-  const event = {
+  return {
     version: USAGE_SYNC_SNAPSHOT_VERSION,
-    eventId: nonEmpty(value.eventId),
+    eventId,
     deviceId,
     source: nonEmpty(value.source) || "sync",
     provider,
-    threadId,
-    turnId,
-    taskThreadId: nonEmpty(value.taskThreadId) || threadId,
+    threadKey,
+    taskKey,
     completedAt,
     startedAt: nonEmpty(value.startedAt),
     accountKey,
@@ -67,9 +94,6 @@ export function normalizeUsageSyncEvent(value = {}) {
     serviceTier: value.serviceTier == null ? "" : normalizeServiceTier(value.serviceTier),
     observedAt: nonEmpty(value.observedAt) || new Date().toISOString(),
   };
-  event.eventId ||= usageSyncEventIdentity(event);
-  if (!event.eventId) return null;
-  return event;
 }
 
 export function usageSyncEventFromLedgerRecord(record, { deviceId, source = "local" } = {}) {
@@ -101,7 +125,13 @@ function eventRank(event) {
   ];
 }
 
-function strongerEvent(left, right) {
+/**
+ * Resolves two records of the same turn. Exact account attribution wins over
+ * inferred, then a known account, then reported credits, then the later
+ * observation; the event id breaks the remaining ties so the choice is
+ * deterministic regardless of arrival order.
+ */
+export function strongerUsageSyncEvent(left, right) {
   const leftRank = eventRank(left);
   const rightRank = eventRank(right);
   for (let index = 0; index < leftRank.length; index += 1) {
@@ -122,7 +152,7 @@ export function mergeUsageSyncEvents(...collections) {
       const event = normalizeUsageSyncEvent(value);
       if (!event) continue;
       const existing = byId.get(event.eventId);
-      byId.set(event.eventId, existing ? strongerEvent(existing, event) : event);
+      byId.set(event.eventId, existing ? strongerUsageSyncEvent(existing, event) : event);
     }
   }
   return [...byId.values()].sort((left, right) => (
@@ -150,13 +180,13 @@ export function usageSyncSnapshotFromLedger(turns = {}, {
 export function syncedUsageEventsToTurns(events = []) {
   const turns = {};
   for (const event of mergeUsageSyncEvents(events)) {
-    const threadId = `sync:${event.deviceId}:${event.threadId}`;
-    const key = `${event.provider}\0${threadId}\0${event.turnId}`;
+    const threadId = `sync:${event.deviceId}:${event.threadKey}`;
+    const key = `${event.provider}\0${threadId}\0${event.eventId}`;
     turns[key] = {
       provider: event.provider,
       threadId,
-      taskThreadId: threadId,
-      turnId: event.turnId,
+      taskThreadId: `sync:${event.deviceId}:${event.taskKey}`,
+      turnId: event.eventId,
       completedAt: event.completedAt,
       startedAt: event.startedAt,
       accountKey: event.accountKey,

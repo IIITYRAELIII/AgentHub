@@ -1,6 +1,4 @@
-import { createHash } from "node:crypto";
 import { mkdir, readFile } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 
@@ -26,6 +24,7 @@ import { WorkspaceCatalogStore } from "../infrastructure/persistence/workspace-c
 import { TaskBoardStore } from "../infrastructure/persistence/task-board-store.mjs";
 import { WorkLogUsageRepository } from "../infrastructure/persistence/work-log-usage-repository.mjs";
 import { WorkLogUsageSyncStore } from "../infrastructure/persistence/work-log-usage-sync-store.mjs";
+import { UsageSyncIdentityStore } from "../infrastructure/persistence/usage-sync-identity-store.mjs";
 import { verifyWorkspaceReleasePublication } from "../infrastructure/persistence/release-publication-verifier.mjs";
 import { SingleInstanceGuard } from "../infrastructure/process/instance-lock.mjs";
 import { captureProcess } from "../infrastructure/process/process-capture.mjs";
@@ -60,9 +59,13 @@ function runtimeAssetBundleProvider(runtimeRoot) {
   };
 }
 
-function usageSyncDeviceId(config) {
-  const source = `${os.hostname().toLowerCase()}\0${path.resolve(config.dataDir).toLowerCase()}`;
-  return `agent-hub:${createHash("sha256").update(source, "utf8").digest("hex").slice(0, 16)}`;
+async function usageSyncIdentity(config) {
+  const store = new UsageSyncIdentityStore({
+    file: path.join(config.dataDir, "usage-sync-identity.json"),
+    dataDir: path.resolve(config.dataDir),
+  });
+  await store.load();
+  return store;
 }
 
 export async function createHubInfrastructure({
@@ -150,11 +153,20 @@ export async function createHubInfrastructure({
     recordEvent: (event) => workspaceCatalogStore.recordWorkspaceEvent(event),
   });
   taskBoard.recoverPendingTriage();
-  const workLogUsageSyncDeviceId = usageSyncDeviceId(config);
+  const workLogUsageIdentityStore = await usageSyncIdentity(config);
+  const workLogUsageSyncDeviceId = workLogUsageIdentityStore.deviceId;
   const workLogUsageSyncStore = new WorkLogUsageSyncStore({
-    file: path.join(config.dataDir, "work-log-usage-sync.json"),
+    databaseFile: journalDatabaseFile,
+    legacyFile: path.join(config.dataDir, "work-log-usage-sync.json"),
     deviceId: workLogUsageSyncDeviceId,
   });
+  const adoptedUsageSyncEvents = await workLogUsageSyncStore
+    .adoptDeviceIds(workLogUsageIdentityStore.legacyDeviceIds);
+  if (adoptedUsageSyncEvents.migrated) {
+    console.log(
+      `Adopted ${adoptedUsageSyncEvents.migrated} usage sync event(s) onto device ${workLogUsageSyncDeviceId}`,
+    );
+  }
   const workLogUsageStore = createWorkLogUsageStore({
     repositoryFactory: (options) => new WorkLogUsageRepository(options),
     ledgerFile: legacyWorkLogLedgerFile,
@@ -290,6 +302,7 @@ export async function createHubInfrastructure({
     trustedDeviceStore,
     codexRolloutContextSanitizer,
     workLogUsageStore,
+    workLogUsageIdentityStore,
     workspaceCatalogStore,
     streamHandoff,
     preTurnInstructions,
