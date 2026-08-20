@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { canonicalPath } from "../../src/infrastructure/filesystem/config.mjs";
 import { LoopbackTelegramApi } from "../../src/infrastructure/network/loopback-telegram-api.mjs";
 import {
   assertIsolatedTestContourRoot,
@@ -128,7 +129,7 @@ test("candidate preparation deploys only into the isolated runtime root", async 
       },
     });
     assert.equal(result.releaseId, "candidate-1");
-    assert.equal(calls[0].runtimeRoot, path.resolve(root));
+    assert.equal(calls[0].runtimeRoot, canonicalPath(root));
     assert.equal(calls[0].sourceRoot, sourceRoot);
   } finally {
     await rm(root, { recursive: true, force: true });
