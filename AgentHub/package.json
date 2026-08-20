@@ -30,6 +30,7 @@
     "hook:uninstall": "node src/infrastructure/codex/codex-hook-config.mjs uninstall",
     "work-log:backfill": "node work-log-backfill.mjs",
     "work-log:account-backfill": "node work-log-account-backfill.mjs",
+    "work-log:usage-sync": "node work-log-usage-sync.mjs",
     "work-log:claude-backfill": "node claude-work-log-backfill-cli.mjs",
     "work-log:title-backfill": "node work-log-title-backfill-cli.mjs",
     "workspace:migrate": "node src/interfaces/cli/workspace-layout-migrate.mjs",

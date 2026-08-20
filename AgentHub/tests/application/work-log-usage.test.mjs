@@ -335,6 +335,53 @@ test("journal projection renders account usage panel with catalog labels", () =>
   assert.equal((repeated.match(/work-log-account-panel:start/gu) ?? []).length, 0);
 });
 
+test("account usage panel includes synced remote devices without duplicating local export", () => {
+  const projected = projectWorkLogUsage("# Глобальный журнал работ\n", {
+    local: {
+      provider: "codex",
+      threadId: "thread-local",
+      turnId: "turn-local",
+      completedAt: "2026-08-20T09:00:00.000Z",
+      estimatedCredits: 3,
+      accountKey: "chatgpt:owner",
+      accountAttribution: "exact",
+    },
+  }, {
+    now: Date.parse("2026-08-20T12:00:00.000Z"),
+    localDeviceId: "device-local",
+    accountCatalog: [{ key: "chatgpt:owner", label: "owner@example.com" }],
+    syncedUsageEvents: [
+      {
+        deviceId: "device-local",
+        provider: "codex",
+        threadId: "thread-local",
+        turnId: "turn-local",
+        completedAt: "2026-08-20T09:00:00.000Z",
+        estimatedCredits: 3,
+        accountKey: "chatgpt:owner",
+        accountAttribution: "exact",
+      },
+      {
+        deviceId: "laptop",
+        provider: "claude",
+        threadId: "thread-remote",
+        turnId: "turn-remote",
+        completedAt: "2026-08-20T10:00:00.000Z",
+        estimatedCredits: 7,
+        accountKey: "anthropic:owner",
+        accountAttribution: "inferred",
+      },
+    ],
+  });
+
+  assert.match(projected, /owner@example\.com/u);
+  assert.match(projected, /data-account-key="anthropic:owner"/u);
+  assert.match(projected, /data-account-sync-turns="1"/u);
+  assert.match(projected, /data-work-log-account-devices>laptop: 1<\/span>/u);
+  assert.doesNotMatch(projected, /device-local: 1/u);
+  assert.match(projected, /data-work-log-account-range-total><span data-kilo-usage data-usage-credits="10">10 cr<\/span>/u);
+});
+
 test("workspace usage aggregates sequential Threads and retains Stream detail", () => {
   const resolver = ({ provider, threadId }) => ({
     workspaceId: "workspace-hub",

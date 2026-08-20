@@ -18,6 +18,7 @@ import {
   taskThreadId,
   workLogTurnKey,
 } from "./work-log-usage-projection.mjs";
+import { usageSyncSnapshotFromLedger } from "../domain/work-log-usage-sync.mjs";
 
 export function createWorkLogUsageStore({
   repositoryFactory,
@@ -27,6 +28,8 @@ export function createWorkLogUsageStore({
   defaultProjectRoot = "",
   includeClaudeUsage = true,
   resolveAccount = null,
+  usageSyncStore = null,
+  usageSyncDeviceId = "",
   workspaceCatalogStore = null,
   beforeProjectionWrite = null,
   logger = console,
@@ -48,6 +51,8 @@ export function createWorkLogUsageStore({
     defaultProjectRoot: normalizedProjectRoot,
     includeClaudeUsage,
     resolveAccount,
+    usageSyncStore,
+    usageSyncDeviceId,
     workspaceCatalogStore,
     beforeProjectionWrite,
     logger,
@@ -59,6 +64,8 @@ export class WorkLogUsageStore {
   #defaultProjectRoot;
   #includeClaudeUsage = true;
   #resolveAccount;
+  #usageSyncStore;
+  #usageSyncDeviceId;
   #workspaceCatalogStore;
   #beforeProjectionWrite;
   #logger;
@@ -68,6 +75,8 @@ export class WorkLogUsageStore {
     defaultProjectRoot = "",
     includeClaudeUsage = true,
     resolveAccount = null,
+    usageSyncStore = null,
+    usageSyncDeviceId = "",
     workspaceCatalogStore = null,
     beforeProjectionWrite = null,
     logger = console,
@@ -85,6 +94,10 @@ export class WorkLogUsageStore {
     this.#repository = repository;
     this.#includeClaudeUsage = includeClaudeUsage !== false;
     this.#resolveAccount = typeof resolveAccount === "function" ? resolveAccount : null;
+    this.#usageSyncStore = usageSyncStore && typeof usageSyncStore.events === "function"
+      ? usageSyncStore
+      : null;
+    this.#usageSyncDeviceId = String(usageSyncDeviceId ?? "").trim();
     if (workspaceCatalogStore && (
       typeof workspaceCatalogStore.resolveThread !== "function"
       || typeof workspaceCatalogStore.assignUnknownThread !== "function"
@@ -136,7 +149,13 @@ export class WorkLogUsageStore {
     const accountCatalog = typeof this.#repository.accountCatalog === "function"
       ? await this.#repository.accountCatalog()
       : [];
-    const updated = this.#projectUsage(source, selectedTurns, { accountCatalog });
+    const syncedUsageEvents = this.#usageSyncStore
+      ? await this.#usageSyncStore.events()
+      : [];
+    const updated = this.#projectUsage(source, selectedTurns, {
+      accountCatalog,
+      syncedUsageEvents,
+    });
     const version = `sha256:${crypto.createHash("sha256").update(updated, "utf8").digest("hex")}`;
     if (current?.version === version) {
       return { projected: false, reason: "unchanged" };
@@ -385,12 +404,38 @@ export class WorkLogUsageStore {
     );
   }
 
-  #projectUsage(text, turns, { accountCatalog = [] } = {}) {
+  #projectUsage(text, turns, { accountCatalog = [], syncedUsageEvents = [] } = {}) {
     return projectWorkLogUsage(text, turns, {
       includeClaudeUsage: this.#includeClaudeUsage,
       workspaceResolver: this.#workspaceResolver(),
       accountCatalog,
+      syncedUsageEvents,
+      localDeviceId: this.#usageSyncDeviceId,
     });
+  }
+
+  usageSyncSnapshot({ deviceId = this.#usageSyncDeviceId } = {}) {
+    return this.#enqueueRead(async () => {
+      return usageSyncSnapshotFromLedger(this.#ledger.turns, { deviceId });
+    });
+  }
+
+  importUsageSyncSnapshotAndProject({
+    snapshot,
+    projectRoot = this.#defaultProjectRoot,
+    projectionProjectRoots,
+    workLogFile,
+  } = {}) {
+    if (!this.#usageSyncStore) {
+      throw new Error("Usage sync store is not configured");
+    }
+    const operation = this.#enqueueMutation(workLogFile, async () => {
+      const imported = await this.#usageSyncStore.importSnapshot(snapshot);
+      const selectedTurns = this.#turnsForProjection(projectRoot, projectionProjectRoots);
+      const projection = await this.#projectDatabase(selectedTurns);
+      return { ...imported, projected: projection.projected };
+    });
+    return operation;
   }
 
   #workspaceResolver() {

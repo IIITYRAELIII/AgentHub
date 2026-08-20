@@ -19,6 +19,7 @@ import {
   normalizeTokenUsage,
   turnCreditBreakdown,
 } from "../domain/token-usage.mjs";
+import { normalizeUsageSyncEvent } from "../domain/work-log-usage-sync.mjs";
 
 const WORK_LOG_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ACCOUNT_ATTRIBUTIONS = new Set(["exact", "inferred"]);
@@ -489,25 +490,64 @@ function emptyAccountUsageBucket(accountKey, catalog) {
     exactTurns: 0,
     inferredTurns: 0,
     unknownTurns: 0,
+    localTurns: 0,
+    syncedTurns: 0,
     providers: {},
+    devices: {},
+  };
+}
+
+function syncedUsageRecord(value) {
+  const event = normalizeUsageSyncEvent(value);
+  if (!event) return null;
+  return {
+    usage: event.usage,
+    usageReported: event.usageReported,
+    estimatedCredits: event.estimatedCredits,
+    model: event.model,
+    serviceTier: event.serviceTier,
+    provider: event.provider,
+    threadId: `sync:${event.deviceId}:${event.threadId}`,
+    taskThreadId: `sync:${event.deviceId}:${event.taskThreadId}`,
+    turnId: event.turnId,
+    startedAt: event.startedAt,
+    completedAt: event.completedAt,
+    accountKey: event.accountKey,
+    accountAttribution: event.accountAttribution,
+    syncDeviceId: event.deviceId,
+    syncEventId: event.eventId,
   };
 }
 
 export function buildWorkLogAccountUsageSummary(turns = {}, {
   accountCatalog = [],
   includeClaudeUsage = true,
+  syncedUsageEvents = [],
+  localDeviceId = "",
   now = Date.now(),
   ranges = ACCOUNT_USAGE_RANGES.map((range) => range.id),
 } = {}) {
   const catalog = accountCatalogByKey(accountCatalog);
   const normalizedTurns = normalizedLedger({ version: 9, turns }).ledger.turns;
+  const normalizedLocalDeviceId = String(localDeviceId ?? "").trim();
+  const normalizedSyncedTurns = (Array.isArray(syncedUsageEvents) ? syncedUsageEvents : [])
+    .map(syncedUsageRecord)
+    .filter((record) => record && record.syncDeviceId !== normalizedLocalDeviceId);
   const nowMs = Number.isFinite(Number(now)) ? Number(now) : Date.now();
-  const records = Object.values(normalizedTurns)
-    .filter((record) => includeClaudeUsage || String(record?.provider ?? "").toLowerCase() !== "claude")
-    .map((record) => ({
+  const records = [
+    ...Object.values(normalizedTurns).map((record) => ({ record, source: "local", deviceId: "" })),
+    ...normalizedSyncedTurns.map((record) => ({
       record,
-      timestamp: Date.parse(record?.completedAt || record?.startedAt || ""),
-      credits: recordCredits(record),
+      source: "sync",
+      deviceId: String(record?.syncDeviceId ?? "").trim(),
+    })),
+  ]
+    .filter((entry) => includeClaudeUsage
+      || String(entry.record?.provider ?? "").toLowerCase() !== "claude")
+    .map((entry) => ({
+      ...entry,
+      timestamp: Date.parse(entry.record?.completedAt || entry.record?.startedAt || ""),
+      credits: recordCredits(entry.record),
     }))
     .filter((entry) => Number.isFinite(entry.timestamp) && entry.timestamp <= nowMs);
   const rangeSet = new Set(ranges.map((range) => String(range)));
@@ -521,6 +561,7 @@ export function buildWorkLogAccountUsageSummary(turns = {}, {
       let exactTurns = 0;
       let inferredTurns = 0;
       let unknownTurns = 0;
+      let syncedTurns = 0;
       for (const entry of records) {
         if (entry.timestamp < fromMs) continue;
         const record = entry.record;
@@ -532,6 +573,14 @@ export function buildWorkLogAccountUsageSummary(turns = {}, {
         bucket.turns += 1;
         const provider = String(record?.provider ?? "unknown").trim().toLowerCase() || "unknown";
         bucket.providers[provider] = (bucket.providers[provider] ?? 0) + 1;
+        if (entry.source === "sync") {
+          bucket.syncedTurns += 1;
+          syncedTurns += 1;
+          const device = entry.deviceId || "unknown";
+          bucket.devices[device] = (bucket.devices[device] ?? 0) + 1;
+        } else {
+          bucket.localTurns += 1;
+        }
         const attribution = normalizeAccountAttribution(record?.accountAttribution, {
           hasAccountKey: Boolean(accountKey),
         });
@@ -558,6 +607,7 @@ export function buildWorkLogAccountUsageSummary(turns = {}, {
         exactTurns,
         inferredTurns,
         unknownTurns,
+        syncedTurns,
         accounts: [...accounts.values()].sort((left, right) => (
           right.credits - left.credits
           || right.turns - left.turns
@@ -580,7 +630,16 @@ function formatAccountQuality(account) {
   if (account.exactTurns) parts.push(`точно ${account.exactTurns}`);
   if (account.inferredTurns) parts.push(`восст. ${account.inferredTurns}`);
   if (account.unknownTurns) parts.push(`без ключа ${account.unknownTurns}`);
+  if (account.syncedTurns) parts.push(`sync ${account.syncedTurns}`);
   return parts.join(" · ") || "нет данных";
+}
+
+function formatDeviceCounts(devices = {}) {
+  return Object.entries(devices)
+    .filter(([, count]) => Number(count) > 0)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([device, count]) => `${device}: ${count}`)
+    .join(" · ");
 }
 
 function formatAccountUsageRow(account, totalCredits) {
@@ -591,6 +650,7 @@ function formatAccountUsageRow(account, totalCredits) {
   return `<div data-work-log-account-row data-account-key="${escapeHtmlAttribute(account.accountKey)}" `
     + `data-account-attribution-exact="${escapeHtmlAttribute(String(account.exactTurns))}" `
     + `data-account-attribution-inferred="${escapeHtmlAttribute(String(account.inferredTurns))}" `
+    + `data-account-sync-turns="${escapeHtmlAttribute(String(account.syncedTurns))}" `
     + `data-account-turns="${escapeHtmlAttribute(String(account.turns))}" `
     + `data-account-credits="${escapeHtmlAttribute(String(account.credits))}">`
     + "<span data-work-log-account-name>"
@@ -602,6 +662,9 @@ function formatAccountUsageRow(account, totalCredits) {
     + `<span data-work-log-account-turns>${account.turns} ход.</span>`
     + `<span data-work-log-account-quality>${escapeHtmlText(formatAccountQuality(account))}</span>`
     + `<span data-work-log-account-providers>${escapeHtmlText(formatProviderCounts(account.providers))}</span>`
+    + (account.syncedTurns
+      ? `<span data-work-log-account-devices>${escapeHtmlText(formatDeviceCounts(account.devices))}</span>`
+      : "")
     + "</div>";
 }
 
@@ -610,6 +673,7 @@ function formatAccountUsageRange(range) {
     range.exactTurns ? `точно ${range.exactTurns}` : "",
     range.inferredTurns ? `восстановлено ${range.inferredTurns}` : "",
     range.unknownTurns ? `без ключа ${range.unknownTurns}` : "",
+    range.syncedTurns ? `sync ${range.syncedTurns}` : "",
   ].filter(Boolean).join(" · ");
   const rows = range.accounts.length
     ? range.accounts.map((account) => formatAccountUsageRow(account, range.totalCredits)).join("")
@@ -636,7 +700,7 @@ function formatAccountUsagePanel(summary) {
     + '<div data-work-log-account-panel-head>'
     + '<span data-work-log-account-panel-caption>Расход по аккаунтам</span>'
     + `<span data-work-log-account-panel-total>${accountCount} аккаунт.</span>`
-    + '<span data-work-log-account-panel-note>exact — текущие записи, inferred — восстановлено по timeline лимитов</span>'
+    + '<span data-work-log-account-panel-note>exact — текущие записи, inferred — восстановлено; sync — расход с других устройств</span>'
     + "</div>"
     + `<div data-work-log-account-ranges>${summary.map(formatAccountUsageRange).join("")}</div>`
     + "</section>"
@@ -2042,6 +2106,8 @@ export function projectWorkLogUsage(workLogText, turns = {}, {
   includeClaudeUsage = true,
   workspaceResolver = null,
   accountCatalog = [],
+  syncedUsageEvents = [],
+  localDeviceId = "",
   now = Date.now(),
 } = {}) {
   let text = removeAccountUsagePanel(String(workLogText ?? ""));
@@ -2049,6 +2115,8 @@ export function projectWorkLogUsage(workLogText, turns = {}, {
   const accountPanel = formatAccountUsagePanel(buildWorkLogAccountUsageSummary(normalizedTurns, {
     accountCatalog,
     includeClaudeUsage,
+    syncedUsageEvents,
+    localDeviceId,
     now,
   }));
   const records = ledgerByWorkLogId(normalizedTurns);

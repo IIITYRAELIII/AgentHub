@@ -1,4 +1,6 @@
+import { createHash } from "node:crypto";
 import { mkdir, readFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 
@@ -23,6 +25,7 @@ import { TrustedDeviceStore } from "../infrastructure/persistence/trusted-device
 import { WorkspaceCatalogStore } from "../infrastructure/persistence/workspace-catalog-store.mjs";
 import { TaskBoardStore } from "../infrastructure/persistence/task-board-store.mjs";
 import { WorkLogUsageRepository } from "../infrastructure/persistence/work-log-usage-repository.mjs";
+import { WorkLogUsageSyncStore } from "../infrastructure/persistence/work-log-usage-sync-store.mjs";
 import { verifyWorkspaceReleasePublication } from "../infrastructure/persistence/release-publication-verifier.mjs";
 import { SingleInstanceGuard } from "../infrastructure/process/instance-lock.mjs";
 import { captureProcess } from "../infrastructure/process/process-capture.mjs";
@@ -55,6 +58,11 @@ function runtimeAssetBundleProvider(runtimeRoot) {
       workLogCssFile: path.join(releaseRoot, "work-log.css"),
     };
   };
+}
+
+function usageSyncDeviceId(config) {
+  const source = `${os.hostname().toLowerCase()}\0${path.resolve(config.dataDir).toLowerCase()}`;
+  return `agent-hub:${createHash("sha256").update(source, "utf8").digest("hex").slice(0, 16)}`;
 }
 
 export async function createHubInfrastructure({
@@ -142,11 +150,18 @@ export async function createHubInfrastructure({
     recordEvent: (event) => workspaceCatalogStore.recordWorkspaceEvent(event),
   });
   taskBoard.recoverPendingTriage();
+  const workLogUsageSyncDeviceId = usageSyncDeviceId(config);
+  const workLogUsageSyncStore = new WorkLogUsageSyncStore({
+    file: path.join(config.dataDir, "work-log-usage-sync.json"),
+    deviceId: workLogUsageSyncDeviceId,
+  });
   const workLogUsageStore = createWorkLogUsageStore({
     repositoryFactory: (options) => new WorkLogUsageRepository(options),
     ledgerFile: legacyWorkLogLedgerFile,
     databaseFile: journalDatabaseFile,
     defaultProjectRoot: config.projectRoot,
+    usageSyncStore: workLogUsageSyncStore,
+    usageSyncDeviceId: workLogUsageSyncDeviceId,
     workspaceCatalogStore,
   });
   const streamHandoff = new StreamHandoffService({

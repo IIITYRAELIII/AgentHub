@@ -10414,6 +10414,7 @@ html:is([data-grouping="stream"], [data-grouping="workspace"])
 [data-work-log-account-plan],
 [data-work-log-account-quality],
 [data-work-log-account-providers],
+[data-work-log-account-devices],
 [data-work-log-account-turns],
 [data-work-log-account-empty] {
   color: var(--text-faint);
@@ -10421,7 +10422,8 @@ html:is([data-grouping="stream"], [data-grouping="workspace"])
 }
 
 [data-work-log-account-quality],
-[data-work-log-account-providers] {
+[data-work-log-account-providers],
+[data-work-log-account-devices] {
   grid-column: 1 / -1;
 }
 
