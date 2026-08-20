@@ -132,10 +132,8 @@ const { taskMetadata, selectionStore, agentPreferences } = createStateCompositio
   normalizeCodexModel,
 });
 function selectedProvider() { return selectionStore.activeProvider; }
-function selectedProjectRoot() { return selectionStore.activeProjectRoot; }
-function selectedStreamId() { return selectionStore.streamId; }
-function selectedThreadId() { return selectionStore.threadId; }
-function selectedTaskTitle() { return selectionStore.activeThreadTitle; }
+function selectedProjectRoot() { return selectionStore.activeProjectRoot; } function selectedStreamId() { return selectionStore.streamId; }
+function selectedThreadId() { return selectionStore.threadId; } function selectedTaskTitle() { return selectionStore.activeThreadTitle; }
 function isCodex() { return selectedProvider() === "codex"; }
 function providerTitle() { return isCodex() ? "Codex" : "Claude Code"; }
 const hostState = new HubSessionState({ autoApprove: config.autoApproveOnStart });
