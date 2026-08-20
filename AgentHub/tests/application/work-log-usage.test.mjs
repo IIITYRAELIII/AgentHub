@@ -269,6 +269,20 @@ test("account usage summary separates exact, inferred and unknown ledger turns",
       completedAt: "2026-08-20T11:00:00.000Z",
       estimatedCredits: 7,
     },
+    noCost: {
+      provider: "claude",
+      threadId: "thread-5",
+      turnId: "turn-5",
+      completedAt: "2026-08-20T11:30:00.000Z",
+      model: "<synthetic>",
+      estimatedCredits: 0,
+      usage: {
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        reasoningOutputTokens: 0,
+      },
+    },
     old: {
       provider: "codex",
       threadId: "thread-4",
@@ -284,17 +298,21 @@ test("account usage summary separates exact, inferred and unknown ledger turns",
   });
   const today = summary.find((range) => range.id === "today");
   assert.equal(today.totalCredits, 15);
-  assert.equal(today.totalTurns, 3);
+  assert.equal(today.totalTurns, 4);
   assert.equal(today.exactTurns, 1);
   assert.equal(today.inferredTurns, 1);
   assert.equal(today.unknownTurns, 1);
+  assert.equal(today.noCostTurns, 1);
   assert.equal(today.accounts[0].label, "owner@example.com");
   assert.equal(today.accounts[0].credits, 8);
   assert.deepEqual(today.accounts[0].providers, { codex: 2 });
   assert.equal(today.accounts[1].label, "Неизвестный аккаунт");
+  assert.equal(today.accounts[2].label, "Без расхода");
+  assert.equal(today.accounts[2].credits, 0);
+  assert.equal(today.accounts[2].noCost, true);
   const all = summary.find((range) => range.id === "all");
   assert.equal(all.totalCredits, 26);
-  assert.equal(all.accounts.length, 3);
+  assert.equal(all.accounts.length, 4);
 });
 
 test("journal projection renders account usage panel with catalog labels", () => {
@@ -364,6 +382,40 @@ test("journal projection renders account usage panel with catalog labels", () =>
     now: Date.parse("2026-08-20T12:00:00.000Z"),
   });
   assert.equal((repeated.match(/work-log-account-panel:start/gu) ?? []).length, 0);
+});
+
+test("account usage panel renders zero-token unattributed turns as no-cost", () => {
+  const projected = projectWorkLogUsage("# Глобальный журнал работ\n", {
+    billableUnknown: {
+      provider: "claude",
+      threadId: "thread-unknown",
+      turnId: "turn-unknown",
+      completedAt: "2026-08-20T09:00:00.000Z",
+      estimatedCredits: 7,
+    },
+    noCost: {
+      provider: "claude",
+      threadId: "thread-no-cost",
+      turnId: "turn-no-cost",
+      completedAt: "2026-08-20T10:00:00.000Z",
+      model: "<synthetic>",
+      usage: {
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        reasoningOutputTokens: 0,
+      },
+    },
+  }, {
+    now: Date.parse("2026-08-20T12:00:00.000Z"),
+  });
+
+  assert.match(projected, /data-work-log-account-label>Неизвестный аккаунт<\/span>/u);
+  assert.match(projected, /data-work-log-account-quality>без ключа 1 · Claude 1<\/span>/u);
+  assert.match(projected, /data-work-log-account-label>Без расхода<\/span>/u);
+  assert.match(projected, /data-work-log-account-quality>без расхода 1 · Claude 1<\/span>/u);
+  assert.match(projected, /data-account-key="__no_cost__" data-account-color="[^"]+" data-account-attribution-exact="0" data-account-attribution-inferred="0" data-account-no-cost/u);
+  assert.match(projected, /data-work-log-account-panel-total>1 аккаунт</u);
 });
 
 test("account usage panel includes synced remote devices without duplicating local export", () => {

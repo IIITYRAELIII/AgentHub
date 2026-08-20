@@ -477,19 +477,34 @@ const ACCOUNT_USAGE_RANGES = Object.freeze([
   { id: "30d", title: "30 дней" },
   { id: "all", title: "Всё время" },
 ]);
+const NO_COST_ACCOUNT_KEY = "__no_cost__";
+
+function recordTokenTotal(record) {
+  const usage = normalizeTokenUsage(record?.usage);
+  return Object.values(usage).reduce((sum, value) => sum + Math.max(0, Number(value) || 0), 0);
+}
+
+function recordHasNoCost(record, credits) {
+  return Number(credits) <= 0
+    && normalizeEstimatedCredits(record?.estimatedCredits) <= 0
+    && recordTokenTotal(record) <= 0;
+}
 
 function emptyAccountUsageBucket(accountKey, catalog) {
+  const noCost = accountKey === NO_COST_ACCOUNT_KEY;
   const catalogAccount = accountKey ? catalog.get(accountKey) : null;
   return {
     accountKey,
-    label: accountDisplayName(accountKey, catalog),
+    label: noCost ? "Без расхода" : accountDisplayName(accountKey, catalog),
     type: String(catalogAccount?.type ?? "").trim(),
     planType: String(catalogAccount?.planType ?? "").trim(),
+    noCost,
     credits: 0,
     turns: 0,
     exactTurns: 0,
     inferredTurns: 0,
     unknownTurns: 0,
+    noCostTurns: 0,
     localTurns: 0,
     syncedTurns: 0,
     providers: {},
@@ -561,16 +576,22 @@ export function buildWorkLogAccountUsageSummary(turns = {}, {
       let exactTurns = 0;
       let inferredTurns = 0;
       let unknownTurns = 0;
+      let noCostTurns = 0;
       let syncedTurns = 0;
       for (const entry of records) {
         if (entry.timestamp < fromMs) continue;
         const record = entry.record;
         const accountKey = String(record?.accountKey ?? "").trim();
-        const key = accountKey || "";
+        const noCost = !accountKey && recordHasNoCost(record, entry.credits);
+        const key = accountKey || (noCost ? NO_COST_ACCOUNT_KEY : "");
         if (!accounts.has(key)) accounts.set(key, emptyAccountUsageBucket(key, catalog));
         const bucket = accounts.get(key);
         bucket.credits += entry.credits;
         bucket.turns += 1;
+        if (noCost) {
+          bucket.noCostTurns += 1;
+          noCostTurns += 1;
+        }
         const provider = String(record?.provider ?? "unknown").trim().toLowerCase() || "unknown";
         bucket.providers[provider] = (bucket.providers[provider] ?? 0) + 1;
         if (entry.source === "sync") {
@@ -584,7 +605,10 @@ export function buildWorkLogAccountUsageSummary(turns = {}, {
         const attribution = normalizeAccountAttribution(record?.accountAttribution, {
           hasAccountKey: Boolean(accountKey),
         });
-        if (!accountKey) {
+        if (noCost) {
+          // Keep technical zero-usage turns visible without treating them as
+          // unattributed billable usage.
+        } else if (!accountKey) {
           bucket.unknownTurns += 1;
           unknownTurns += 1;
         } else if (attribution === "exact") {
@@ -607,6 +631,7 @@ export function buildWorkLogAccountUsageSummary(turns = {}, {
         exactTurns,
         inferredTurns,
         unknownTurns,
+        noCostTurns,
         syncedTurns,
         accounts: [...accounts.values()].sort((left, right) => (
           right.credits - left.credits
@@ -659,10 +684,14 @@ function accountUsageAmountParts(credits) {
 }
 
 function formatAccountQuality(account) {
+  if (account.noCost) {
+    return account.noCostTurns ? `без расхода ${account.noCostTurns}` : "без расхода";
+  }
   const parts = [];
   if (account.exactTurns) parts.push(`точно ${account.exactTurns}`);
   if (account.inferredTurns) parts.push(`восст. ${account.inferredTurns}`);
   if (account.unknownTurns) parts.push(`без ключа ${account.unknownTurns}`);
+  if (account.noCostTurns) parts.push(`без расхода ${account.noCostTurns}`);
   if (account.syncedTurns) parts.push(`sync ${account.syncedTurns}`);
   return parts.join(" · ") || "нет данных";
 }
@@ -686,6 +715,7 @@ function formatAccountUsageRow(account, totalCredits) {
     + `data-account-color="${escapeHtmlAttribute(accountColorSlot(account.accountKey))}" `
     + `data-account-attribution-exact="${escapeHtmlAttribute(String(account.exactTurns))}" `
     + `data-account-attribution-inferred="${escapeHtmlAttribute(String(account.inferredTurns))}" `
+    + (account.noCost ? "data-account-no-cost " : "")
     + `data-account-sync-turns="${escapeHtmlAttribute(String(account.syncedTurns))}" `
     + `data-account-turns="${escapeHtmlAttribute(String(account.turns))}" `
     + `data-account-credits="${escapeHtmlAttribute(String(account.credits))}">`
@@ -735,7 +765,8 @@ function formatAccountUsagePeriodBody(range, active, accountCount) {
   const rows = range.accounts.length
     ? range.accounts.map((account) => formatAccountUsageRow(account, range.totalCredits)).join("")
     : '<div data-work-log-account-empty>За период нет записанного расхода.</div>';
-  const idleCount = Math.max(0, accountCount - range.accounts.length);
+  const activeAccountCount = range.accounts.filter((account) => !account.noCost).length;
+  const idleCount = Math.max(0, accountCount - activeAccountCount);
   const idle = idleCount
     ? `Ещё ${pluralizeAccounts(idleCount)} без расхода ${accountRangeIdleSuffix(range)}`
     : "";
@@ -763,7 +794,9 @@ function formatAccountUsagePeriodBody(range, active, accountCount) {
 function formatAccountUsagePanel(summary) {
   if (!summary.some((range) => range.accounts.some((account) => account.accountKey))) return "";
   const all = summary.find((range) => range.id === "all") ?? summary.at(-1);
-  const accountCount = new Set(all?.accounts.map((account) => account.accountKey || "unknown")).size;
+  const accountCount = new Set(all?.accounts
+    .filter((account) => !account.noCost)
+    .map((account) => account.accountKey || "unknown")).size;
   const activeId = summary[0]?.id;
   return "<!-- work-log-account-panel:start -->"
     + '<section data-work-log-account-panel>'
