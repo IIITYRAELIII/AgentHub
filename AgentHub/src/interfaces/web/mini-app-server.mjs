@@ -15,6 +15,7 @@ import {
 } from "../../domain/attachment-files.mjs";
 import {
   extractRateLimitsHtml,
+  journalPayloadEtag,
   publicJournalPayload,
 } from "./mini-app-journal-data.mjs";
 import { JournalDatabase } from "../../infrastructure/persistence/journal-database.mjs";
@@ -459,6 +460,7 @@ export class MiniAppServer {
   #handlerCloseTimeoutMs;
   #journalCache = null;
   #journalDatabase;
+  #usageSyncRemoteConfigStore;
   #ownsJournalDatabase;
   #unsubscribeJournal = null;
   #localAccessSecret;
@@ -495,6 +497,7 @@ export class MiniAppServer {
     workLogCssFile = path.join(AGENT_HUB_ROOT, "work-log.css"),
     journalDatabase = null,
     journalDatabaseFile = null,
+    usageSyncRemoteConfigStore = null,
     workspaceFileRoots = [],
     health = agentHubRuntimeHealth,
     handlerCloseTimeoutMs = 1_000,
@@ -532,6 +535,7 @@ export class MiniAppServer {
       throw new Error("Mini App journalDatabase or journalDatabaseFile is required");
     }
     this.#journalDatabase = journalDatabase ?? new JournalDatabase(journalDatabaseFile);
+    this.#usageSyncRemoteConfigStore = usageSyncRemoteConfigStore;
     this.#ownsJournalDatabase = !journalDatabase;
   }
 
@@ -559,6 +563,22 @@ export class MiniAppServer {
     this.#journalCache = await this.#journalDatabase.payload();
     if (!this.#journalCache) throw new Error("Журнал ещё не создан");
     return this.#journalCache;
+  }
+
+  async #usageSyncStatus() {
+    if (!this.#usageSyncRemoteConfigStore || typeof this.#usageSyncRemoteConfigStore.load !== "function") {
+      return null;
+    }
+    try {
+      return await this.#usageSyncRemoteConfigStore.load();
+    } catch (error) {
+      this.#reportUnexpectedError?.(error, {
+        surface: "mini-app",
+        component: "usage-sync",
+        action: "status",
+      });
+      return null;
+    }
   }
 
   async #mobileUpdate() {
@@ -1177,7 +1197,8 @@ export class MiniAppServer {
       if (!await this.#authorize(request, response)) return;
       try {
         const journal = await this.#journal();
-        const etag = `"${journal.version}"`;
+        const usageSync = await this.#usageSyncStatus();
+        const etag = `"${journalPayloadEtag(journal, usageSync)}"`;
         if (String(request.headers["if-none-match"] ?? "") === etag) {
           response.writeHead(304, {
             ...responseHeaders("application/json; charset=utf-8"),
@@ -1186,7 +1207,7 @@ export class MiniAppServer {
           response.end();
           return;
         }
-        json(response, 200, publicJournalPayload(journal), method, { headers: { ETag: etag } });
+        json(response, 200, publicJournalPayload(journal, { usageSync }), method, { headers: { ETag: etag } });
       } catch (error) {
         json(response, 503, { error: `Журнал недоступен: ${error.message}` }, method);
       }

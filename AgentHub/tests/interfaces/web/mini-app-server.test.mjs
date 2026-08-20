@@ -102,6 +102,56 @@ test("Mini App close terminates an incomplete HTTP connection and can restart", 
   }
 });
 
+test("journal payload exposes usage sync status and varies its ETag", async () => {
+  let usageSync = {
+    serverUrl: "https://sync.example.test/agenthub",
+    deviceId: "device-abcdef123456",
+    lastPushAt: "2026-08-20T11:03:18.295Z",
+    lastPullAt: "2026-08-20T11:03:28.998Z",
+    lastResult: { imported: true, added: 6, updated: 0, projected: true, before: 5757, after: 5763 },
+  };
+  const server = new MiniAppServer({
+    host: "127.0.0.1",
+    port: 0,
+    journalDatabase: memoryJournal(DAY_HTML),
+    usageSyncRemoteConfigStore: {
+      load: async () => structuredClone(usageSync),
+    },
+  });
+  try {
+    const address = await server.start();
+    const first = await fetch(`${address.url}api/journal`);
+    assert.equal(first.status, 200);
+    const firstEtag = first.headers.get("etag");
+    const firstPayload = await first.json();
+    assert.equal(firstPayload.usageSync.configured, true);
+    assert.equal(firstPayload.usageSync.deviceId, "device-abcdef123456");
+    assert.deepEqual(firstPayload.usageSync.lastResult, {
+      added: 6,
+      updated: 0,
+      rejected: 0,
+      projected: true,
+      imported: true,
+      before: 5757,
+      after: 5763,
+    });
+
+    assert.equal((await fetch(`${address.url}api/journal`, {
+      headers: { "If-None-Match": firstEtag },
+    })).status, 304);
+
+    usageSync = { ...usageSync, lastPullAt: "2026-08-20T11:08:28.998Z" };
+    const changed = await fetch(`${address.url}api/journal`, {
+      headers: { "If-None-Match": firstEtag },
+    });
+    assert.equal(changed.status, 200);
+    assert.notEqual(changed.headers.get("etag"), firstEtag);
+    assert.equal((await changed.json()).version, firstPayload.version);
+  } finally {
+    await server.close();
+  }
+});
+
 test("Mini App close does not wait forever for a blocked control handler", async () => {
   let enterHandler;
   let releaseHandler;

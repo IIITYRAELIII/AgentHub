@@ -209,6 +209,7 @@ export async function createHubInfrastructure({
     attachmentDirectory,
     assetBundleProvider: runtimeAssetBundleProvider(runtimeCommandRoot),
     journalDatabaseFile,
+    usageSyncRemoteConfigStore: workLogUsageRemoteConfigStore,
     reportUnexpectedError: (error, context) => sentryDiagnostics.captureUnexpectedException(error, context),
   };
   const miniAppServer = config.miniApp.enabled

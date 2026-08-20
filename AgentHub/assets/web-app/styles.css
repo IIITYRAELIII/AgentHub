@@ -9746,6 +9746,22 @@ html[data-view="server"] .background-view {
   font-style: normal;
 }
 
+.journal-sync-status {
+  background: color-mix(in srgb, var(--surface-2) 84%, transparent);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-chip);
+  color: var(--text-muted);
+  flex: 0 1 auto;
+  font-family: var(--font-numeric);
+  font-size: 0.68rem;
+  max-width: 21rem;
+  min-width: 0;
+  overflow: hidden;
+  padding: 0.34rem 0.62rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .journal-grouping-tabs {
   background: var(--surface-1);
   border: 1px solid var(--line);
@@ -10515,6 +10531,10 @@ html:is([data-grouping="stream"], [data-grouping="workspace"])
     width: 100%;
   }
 
+  .journal-sync-status {
+    order: 2;
+  }
+
   .journal-ledger-head,
   .journal summary[data-journal-ledger-summary] {
     column-gap: 0.8rem;
@@ -10555,6 +10575,12 @@ html:is([data-grouping="stream"], [data-grouping="workspace"])
   .journal-shell-totals {
     font-size: 0.68rem;
     gap: 0.35rem 0.65rem;
+    order: 2;
+  }
+
+  .journal-sync-status {
+    flex: 1 1 100%;
+    max-width: none;
     order: 2;
   }
 

@@ -52,6 +52,7 @@ const journalPrimaryColumn = document.querySelector("[data-journal-primary-colum
 const journalWorkspaceCount = document.querySelector("[data-journal-workspace-count]");
 const journalTotalCredits = document.querySelector("[data-journal-total-credits]");
 const journalTotalDuration = document.querySelector("[data-journal-total-duration]");
+const journalSyncStatus = document.querySelector("[data-journal-sync-status]");
 const themeColor = document.querySelector("[data-theme-color]");
 
 const taskList = document.querySelector("[data-task-list]");
@@ -10074,6 +10075,7 @@ document.querySelector("[data-comparison-retry]")?.addEventListener("click", () 
 
 const OPEN_STATE_KEY = "agent-hub:journal-open-state:v1";
 let currentVersion = "";
+let currentJournalEtag = "";
 const loadingDays = new Map();
 const loadingTurns = new Map();
 const journalDayHtmlCache = new Map();
@@ -11752,12 +11754,53 @@ async function renderJournal() {
   }
 }
 
+function shortDeviceId(value) {
+  const text = String(value ?? "").trim();
+  return text ? text.slice(0, 8) : "";
+}
+
+function formatJournalSyncClock(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+}
+
+function updateJournalSyncStatus(status = null) {
+  if (!journalSyncStatus) return;
+  if (!status?.configured) {
+    journalSyncStatus.hidden = true;
+    journalSyncStatus.textContent = "VDS sync —";
+    journalSyncStatus.title = "Синхронизация расхода не настроена";
+    return;
+  }
+  const lastSync = status.lastPullAt || status.lastPushAt;
+  const clock = formatJournalSyncClock(lastSync);
+  const result = status.lastResult && typeof status.lastResult === "object" ? status.lastResult : {};
+  const added = Number(result.added || 0);
+  const updated = Number(result.updated || 0);
+  const changed = added + updated;
+  const device = shortDeviceId(status.deviceId);
+  journalSyncStatus.hidden = false;
+  journalSyncStatus.textContent = [
+    `VDS sync ${clock || "ожидает"}`,
+    changed ? `+${added} / Δ${updated}` : "без изменений",
+    device ? `device ${device}` : "",
+  ].filter(Boolean).join(" · ");
+  journalSyncStatus.title = [
+    status.serverUrl ? `Сервер: ${status.serverUrl}` : "",
+    status.lastPushAt ? `Последний push: ${new Date(status.lastPushAt).toLocaleString("ru-RU")}` : "",
+    status.lastPullAt ? `Последний pull: ${new Date(status.lastPullAt).toLocaleString("ru-RU")}` : "",
+    Number(result.after || 0) ? `Событий локально: ${Number(result.after || 0)}` : "",
+    result.projected ? "Журнал перепроецирован" : "",
+  ].filter(Boolean).join("\n") || "VDS usage-sync настроен";
+}
+
 async function requestJournal({ force = false, announce = false } = {}) {
   refreshButton.setAttribute("aria-busy", "true");
   try {
     await localSessionReady;
     const headers = await authenticatedRequestHeaders();
-    if (!force && currentVersion) headers["If-None-Match"] = `"${currentVersion}"`;
+    if (!force && currentJournalEtag) headers["If-None-Match"] = currentJournalEtag;
     const response = await fetch(`/api/journal?now=${Date.now()}`, {
       cache: "no-store",
       headers,
@@ -11765,6 +11808,8 @@ async function requestJournal({ force = false, announce = false } = {}) {
     if (response.status === 304) return true;
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+    currentJournalEtag = response.headers.get("etag") || "";
+    updateJournalSyncStatus(payload.usageSync);
     if (force || payload.version !== currentVersion) {
       const versionChanged = payload.version !== currentVersion;
       const openState = journalRendered ? captureOpenState() : storedOpenState();
