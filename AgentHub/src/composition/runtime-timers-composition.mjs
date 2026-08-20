@@ -20,10 +20,12 @@ export function createRuntimeTimersComposition({
   scheduleCodexTerminalAudit,
   scheduleBugReportScan,
   rateLimitTelemetry,
+  usageSyncAuto = null,
 }) {
   function stopRuntimeTimers() {
     stopTyping();
     contextCompactions.dispose();
+    usageSyncAuto?.stop?.();
     runtimeTimers.clearAll();
     deferredInputController.stop();
     for (const run of taskRuns.values()) {
@@ -41,6 +43,7 @@ export function createRuntimeTimersComposition({
     scheduleCodexTerminalAudit(500);
     scheduleBugReportScan(500);
     rateLimitTelemetry.schedule(1_000);
+    usageSyncAuto?.scheduleInitial?.();
   }
 
   return {

@@ -25,6 +25,7 @@ import { TaskBoardStore } from "../infrastructure/persistence/task-board-store.m
 import { WorkLogUsageRepository } from "../infrastructure/persistence/work-log-usage-repository.mjs";
 import { WorkLogUsageSyncStore } from "../infrastructure/persistence/work-log-usage-sync-store.mjs";
 import { UsageSyncIdentityStore } from "../infrastructure/persistence/usage-sync-identity-store.mjs";
+import { UsageSyncRemoteConfigStore } from "../infrastructure/persistence/usage-sync-remote-config-store.mjs";
 import { verifyWorkspaceReleasePublication } from "../infrastructure/persistence/release-publication-verifier.mjs";
 import { SingleInstanceGuard } from "../infrastructure/process/instance-lock.mjs";
 import { captureProcess } from "../infrastructure/process/process-capture.mjs";
@@ -154,6 +155,9 @@ export async function createHubInfrastructure({
   });
   taskBoard.recoverPendingTriage();
   const workLogUsageIdentityStore = await usageSyncIdentity(config);
+  const workLogUsageRemoteConfigStore = new UsageSyncRemoteConfigStore({
+    file: path.join(config.dataDir, "usage-sync-remote.json"),
+  });
   const workLogUsageSyncDeviceId = workLogUsageIdentityStore.deviceId;
   const workLogUsageSyncStore = new WorkLogUsageSyncStore({
     databaseFile: journalDatabaseFile,
@@ -303,6 +307,7 @@ export async function createHubInfrastructure({
     codexRolloutContextSanitizer,
     workLogUsageStore,
     workLogUsageIdentityStore,
+    workLogUsageRemoteConfigStore,
     workspaceCatalogStore,
     streamHandoff,
     preTurnInstructions,

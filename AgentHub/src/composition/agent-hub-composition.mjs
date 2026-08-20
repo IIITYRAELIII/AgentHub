@@ -85,7 +85,7 @@ const localWebSecret = config.miniApp.enabled
 const {
   trustedDeviceStore,
   codexRolloutContextSanitizer,
-  workLogUsageStore, workspaceCatalogStore, workspaceReleaseService, preTurnInstructions, taskBoard, hubMcpService, hubMcpServer,
+  workLogUsageStore, workLogUsageIdentityStore, workLogUsageRemoteConfigStore, workspaceCatalogStore, workspaceReleaseService, preTurnInstructions, taskBoard, hubMcpService, hubMcpServer,
   miniAppServer,
   publicMiniAppServer,
   usdRubRateStore,
@@ -270,7 +270,7 @@ const providerApplication = await createProviderApplicationComposition({
   infrastructure: {
     runJournal,
     turnEndNotifications,
-    workLogUsageStore, workspaceCatalogStore, preTurnInstructions, hubMcpService,
+    workLogUsageStore, workLogUsageIdentityStore, workLogUsageRemoteConfigStore, workspaceCatalogStore, preTurnInstructions, hubMcpService,
     codexRolloutContextSanitizer,
   },
   taskServices: {

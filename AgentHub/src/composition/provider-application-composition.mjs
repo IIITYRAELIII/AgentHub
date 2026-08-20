@@ -1,6 +1,8 @@
 import { taskRunIsActive } from "../domain/task-runs.mjs";
 import { retargetTelegramClientSelections } from "../application/client-task-selection-service.mjs";
 import { StreamContextMaintenanceService } from "../application/stream-context-maintenance-service.mjs";
+import { UsageSyncAutoService } from "../application/usage-sync-auto-service.mjs";
+import { UsageSyncRemoteClient } from "../infrastructure/http/usage-sync-remote-client.mjs";
 import { processIsAlive } from "../providers/claude/claude-run-io.mjs";
 import { readClaudeSessionSnapshot } from "../providers/claude/claude-session-reader.mjs";
 import { readCodexTurnUsage } from "../providers/codex/codex-turn-usage.mjs";
@@ -70,6 +72,8 @@ export async function createProviderApplicationComposition({
     runJournal,
     turnEndNotifications,
     workLogUsageStore,
+    workLogUsageIdentityStore,
+    workLogUsageRemoteConfigStore,
     workspaceCatalogStore,
     preTurnInstructions,
     hubMcpService,
@@ -88,6 +92,16 @@ export async function createProviderApplicationComposition({
     pendingTaskTitle,
   } = taskServices;
   const runtimeTimers = new RuntimeTimerCoordinator();
+  const usageSyncAuto = new UsageSyncAutoService({
+    timers: runtimeTimers,
+    remoteConfigStore: workLogUsageRemoteConfigStore,
+    identityStore: workLogUsageIdentityStore,
+    workLogUsageStore,
+    clientFactory: (options) => new UsageSyncRemoteClient(options),
+    projectRoot: config.projectRoot,
+    projectionProjectRoots: globalWorkLogProjectRoots,
+    isStopping: () => hostState.stopping,
+  });
 
   function defaultNotificationChatId() {
     return config.telegramEnabled ? late.resolveNotificationChatId(config, null) : null;
@@ -452,6 +466,7 @@ export async function createProviderApplicationComposition({
 
   return {
     runtimeTimers,
+    usageSyncAuto,
     defaultNotificationChatId,
     ...providerProcess,
     ...accounting,
