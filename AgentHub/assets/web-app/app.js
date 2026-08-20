@@ -4062,49 +4062,37 @@ chatScroll.addEventListener("touchend", () => {
 chatScroll.addEventListener("touchcancel", resetHistoryPull);
 
 function currentFileLinkContext(task = currentTask()) {
+  const workspaceId = task ? workspaceKey(task) : "";
+  const roots = [];
+  const appendRoot = (value) => {
+    const text = String(value ?? "").trim();
+    if (!text || roots.includes(text)) return;
+    roots.push(text);
+  };
+  appendRoot(task?.sessionCwd);
+  appendRoot(task?.projectRoot);
+  for (const candidate of state.tasks) {
+    if (workspaceId && workspaceKey(candidate) !== workspaceId) continue;
+    appendRoot(candidate?.sessionCwd);
+    appendRoot(candidate?.projectRoot);
+  }
   return {
     projectRoot: String(task?.projectRoot ?? "").trim(),
+    sessionCwd: String(task?.sessionCwd ?? "").trim(),
     basePath: String(task?.sessionCwd ?? task?.projectRoot ?? "").trim(),
+    homePath: String(state.options?.homePath ?? state.selection?.homePath ?? "").trim(),
+    workspaceRoots: roots,
   };
-}
-
-function normalizeWindowsPath(raw) {
-  const source = String(raw ?? "").trim()
-    .replace(/^\/(?=[A-Za-z]:[\\/])/u, "")
-    .replaceAll("\\", "/");
-  const match = source.match(/^([A-Za-z]):\/(.*)$/u);
-  if (!match) return "";
-  const segments = [];
-  for (const segment of match[2].split("/")) {
-    if (!segment || segment === ".") continue;
-    if (segment === "..") {
-      if (!segments.length) return "";
-      segments.pop();
-    } else {
-      segments.push(segment);
-    }
-  }
-  return `${match[1].toUpperCase()}:/${segments.join("/")}`;
 }
 
 function desktopFileLink(raw, fileContext = currentFileLinkContext()) {
   if (!(vscodeMode || surface === "desktop")) return null;
-  const reference = resourceInteractions.fileReferenceParts(raw);
-  if (!reference) return null;
-  const base = normalizeWindowsPath(fileContext?.basePath)
-    || normalizeWindowsPath(fileContext?.projectRoot);
-  const absolute = /^\/?[A-Za-z]:[\\/]/u.test(reference.file);
-  const editorPath = normalizeWindowsPath(absolute
-    ? reference.file
-    : `${base}/${reference.file}`);
-  if (!editorPath) return null;
-  const location = reference.line
-    ? `:${reference.line}${reference.column ? `:${reference.column}` : ""}`
-    : "";
-  const localPath = `${editorPath}${location}`;
+  const resolved = resourceInteractions.resolveFileReference(raw, fileContext);
+  if (!resolved?.localPath) return null;
   return {
-    href: vscodeMode ? "#" : `vscode://file/${encodeURI(localPath)}`,
-    localPath,
+    candidates: resolved.candidates,
+    href: vscodeMode ? "#" : `vscode://file/${encodeURI(resolved.localPath)}`,
+    localPath: resolved.localPath,
   };
 }
 

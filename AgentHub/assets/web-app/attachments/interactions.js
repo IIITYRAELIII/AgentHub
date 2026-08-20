@@ -7,6 +7,97 @@
     "pdf", "php", "png", "ps1", "py", "rb", "rs", "sh", "sql", "svg", "toml", "ts", "tsx",
     "txt", "xml", "yaml", "yml",
   ]);
+  const homeRelativeFolders = new Set([
+    "appdata", "desktop", "documents", "downloads", "music", "pictures", "videos",
+  ]);
+
+  function windowsPathAbsolute(raw) {
+    return /^\/?[A-Za-z]:[\\/]/u.test(String(raw ?? "").trim());
+  }
+
+  function normalizeWindowsPath(raw) {
+    const source = String(raw ?? "").trim()
+      .replace(/^\/(?=[A-Za-z]:[\\/])/u, "")
+      .replaceAll("\\", "/");
+    const match = source.match(/^([A-Za-z]):\/(.*)$/u);
+    if (!match) return "";
+    const segments = [];
+    for (const segment of match[2].split("/")) {
+      if (!segment || segment === ".") continue;
+      if (segment === "..") {
+        if (!segments.length) return "";
+        segments.pop();
+      } else {
+        segments.push(segment);
+      }
+    }
+    return `${match[1].toUpperCase()}:/${segments.join("/")}`;
+  }
+
+  function appendUniquePath(paths, value) {
+    const path = normalizeWindowsPath(value);
+    if (!path) return;
+    const key = path.toLowerCase();
+    if (paths.some((entry) => entry.toLowerCase() === key)) return;
+    paths.push(path);
+  }
+
+  function appendContextPath(paths, value) {
+    if (Array.isArray(value)) {
+      for (const item of value) appendContextPath(paths, item);
+      return;
+    }
+    appendUniquePath(paths, value);
+  }
+
+  function fileReferenceBases(context = {}) {
+    const paths = [];
+    appendContextPath(paths, context.basePath);
+    appendContextPath(paths, context.sessionCwd);
+    appendContextPath(paths, context.projectRoot);
+    appendContextPath(paths, context.workspaceRoots);
+    appendContextPath(paths, context.projectRoots);
+    appendContextPath(paths, context.roots);
+    return paths;
+  }
+
+  function normalizedRelativeFile(file) {
+    return String(file ?? "").trim().replaceAll("\\", "/").replace(/^\/+/u, "");
+  }
+
+  function homeRelativePath(file) {
+    const normalized = normalizedRelativeFile(file);
+    const first = normalized.split("/")[0]?.toLowerCase() ?? "";
+    return homeRelativeFolders.has(first);
+  }
+
+  function resolveFileReference(raw, context = {}) {
+    const reference = fileReferenceParts(raw);
+    if (!reference) return null;
+    const absolute = windowsPathAbsolute(reference.file);
+    const candidates = [];
+    if (absolute) {
+      appendUniquePath(candidates, reference.file);
+    } else if (homeRelativePath(reference.file) && !/^\.{1,2}[\\/]/u.test(reference.file)) {
+      const homePath = normalizeWindowsPath(context.homePath ?? context.userProfile ?? "");
+      if (homePath) appendUniquePath(candidates, `${homePath}/${normalizedRelativeFile(reference.file)}`);
+    } else {
+      for (const base of fileReferenceBases(context)) {
+        appendUniquePath(candidates, `${base}/${normalizedRelativeFile(reference.file)}`);
+      }
+    }
+    if (!candidates.length) return null;
+    const location = reference.line
+      ? `:${reference.line}${reference.column ? `:${reference.column}` : ""}`
+      : "";
+    return {
+      ...reference,
+      absolutePath: candidates[0],
+      candidates,
+      displayPath: reference.file,
+      localPath: `${candidates[0]}${location}`,
+    };
+  }
 
   function fileReferenceParts(raw) {
     const source = String(raw ?? "").trim();
@@ -17,7 +108,7 @@
     const positioned = value.match(/^(?<file>.+):(?<line>[1-9][0-9]*):(?<column>[1-9][0-9]*)$/u)
       ?? value.match(/^(?<file>.+):(?<line>[1-9][0-9]*)$/u);
     const file = String(positioned?.groups?.file ?? value).trim();
-    const absolute = /^\/?[A-Za-z]:[\\/]/u.test(file);
+    const absolute = windowsPathAbsolute(file);
     const explicitlyRelative = /^\.{1,2}[\\/]/u.test(file);
     const name = file.replaceAll("\\", "/").split("/").at(-1) ?? "";
     const extension = name.match(/\.([^./\\\s:]+)$/u)?.[1]?.toLowerCase() ?? "";
@@ -90,14 +181,18 @@
 
   window.AgentHubResourceInteractions = {
     fileReferenceParts,
+    fileReferenceBases,
     galleryIndex,
     imageGallery,
     isImageAttachment,
     linkResource,
     localWorkspaceFilesAvailable,
     moveGalleryIndex,
+    normalizeWindowsPath,
     resourceActions,
+    resolveFileReference,
     shouldDismissViewer,
     viewerGallery,
+    windowsPathAbsolute,
   };
 })();
