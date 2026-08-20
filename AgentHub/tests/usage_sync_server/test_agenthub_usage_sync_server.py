@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from cryptography.hazmat.primitives.serialization import Encoding, PrivateFormat, PublicFormat, NoEncryption
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 import sys
 
@@ -126,6 +126,21 @@ class UsageSyncServerTests(unittest.TestCase):
         row = self.db.execute("SELECT * FROM usage_events").fetchone()
         self.assertEqual(row["device_id"], self.device_id)
         self.assertEqual(row["estimated_credits"], 12.5)
+
+    def test_repeated_same_snapshot_is_unchanged(self):
+        self.enroll()
+        body, signature = self.signed_snapshot([self.event(observedAt="2026-08-20T03:01:00.000Z")])
+        server.ingest_snapshot(self.db, device_id=self.device_id, signature=signature, body=body)
+        result = server.ingest_snapshot(
+            self.db,
+            device_id=self.device_id,
+            signature=signature,
+            body=body,
+        )
+
+        self.assertEqual(result["added"], 0)
+        self.assertEqual(result["updated"], 0)
+        self.assertEqual(result["unchanged"], 1)
 
     def test_rejects_bad_usage_signature(self):
         self.enroll()

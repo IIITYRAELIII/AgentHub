@@ -366,12 +366,13 @@ def event_rank(row_or_event: sqlite3.Row | UsageEvent) -> tuple[int, int, int, i
     attribution = value("account_attribution")
     account_key = value("account_key")
     credits = value("estimated_credits")
+    observed_ms = parse_time_ms(value("observed_at"))
     received = value("received_at_ms")
     return (
         1 if attribution == "exact" else 0,
         1 if account_key else 0,
         1 if float(credits or 0) > 0 else 0,
-        int(received or 0),
+        observed_ms or int(received or 0),
     )
 
 
