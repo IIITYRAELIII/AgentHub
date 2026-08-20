@@ -10474,7 +10474,8 @@ html:is([data-grouping="stream"], [data-grouping="workspace"])
 }
 
 [data-work-log-account-columns],
-[data-work-log-account-row] {
+[data-work-log-account-row],
+[data-work-log-account-device-row] {
   column-gap: 1.25rem;
   display: grid;
   grid-template-columns: 2.1fr 1.3fr minmax(0, 1.5fr) 2.1rem 0.9fr 0.9fr;
@@ -10512,15 +10513,35 @@ html:is([data-grouping="stream"], [data-grouping="workspace"])
   --account-color: var(--provider-none);
 }
 
-[data-work-log-account-row][data-account-color="0"] { --account-color: var(--dot-think); }
-[data-work-log-account-row][data-account-color="1"] { --account-color: var(--dot-cache); }
-[data-work-log-account-row][data-account-color="2"] { --account-color: var(--dot-output); }
-[data-work-log-account-row][data-account-color="3"] { --account-color: var(--accent); }
-[data-work-log-account-row][data-account-color="4"] { --account-color: var(--ok); }
-[data-work-log-account-row][data-account-color="5"] { --account-color: var(--pending); }
+[data-work-log-account-device-row] {
+  align-items: center;
+  background: color-mix(in srgb, var(--card-bg-open) 44%, transparent);
+  border-bottom: 1px solid var(--line);
+  padding: 0.52rem 1.35rem;
+  transition: background 120ms ease;
+
+  --account-color: var(--provider-none);
+}
+
+[data-work-log-account-row][data-account-color="0"],
+[data-work-log-account-device-row][data-account-color="0"] { --account-color: var(--dot-think); }
+[data-work-log-account-row][data-account-color="1"],
+[data-work-log-account-device-row][data-account-color="1"] { --account-color: var(--dot-cache); }
+[data-work-log-account-row][data-account-color="2"],
+[data-work-log-account-device-row][data-account-color="2"] { --account-color: var(--dot-output); }
+[data-work-log-account-row][data-account-color="3"],
+[data-work-log-account-device-row][data-account-color="3"] { --account-color: var(--accent); }
+[data-work-log-account-row][data-account-color="4"],
+[data-work-log-account-device-row][data-account-color="4"] { --account-color: var(--ok); }
+[data-work-log-account-row][data-account-color="5"],
+[data-work-log-account-device-row][data-account-color="5"] { --account-color: var(--pending); }
 
 [data-work-log-account-row]:hover {
   background: var(--card-bg-open);
+}
+
+[data-work-log-account-device-row]:hover {
+  background: var(--surface-1);
 }
 
 [data-work-log-account-name] {
@@ -10550,6 +10571,38 @@ html:is([data-grouping="stream"], [data-grouping="workspace"])
 
 [data-work-log-account-devices]::before {
   content: "· ";
+}
+
+[data-work-log-account-devices-breakdown] {
+  display: grid;
+}
+
+[data-work-log-account-device-name] {
+  padding-left: 1rem;
+  position: relative;
+}
+
+[data-work-log-account-device-label] {
+  color: var(--text-soft);
+  flex: 1 0 100%;
+  font-size: 0.76rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-work-log-account-device-label]::before {
+  color: var(--text-faint);
+  content: "↳";
+  left: 0;
+  position: absolute;
+}
+
+[data-work-log-account-device-quality] {
+  color: var(--text-faint);
+  font-family: var(--font-numeric);
+  font-size: 0.62rem;
 }
 
 [data-work-log-account-provider] {
@@ -10788,8 +10841,15 @@ html[data-surface="mobile"] [data-work-log-account-rows] {
   padding-top: 0.5rem;
 }
 
+html[data-surface="mobile"] [data-work-log-account-group] {
+  display: grid;
+  gap: 0.25rem;
+}
+
 html[data-surface="mobile"] [data-work-log-account-row],
-html[data-surface="mobile"] [data-work-log-account-row]:hover {
+html[data-surface="mobile"] [data-work-log-account-row]:hover,
+html[data-surface="mobile"] [data-work-log-account-device-row],
+html[data-surface="mobile"] [data-work-log-account-device-row]:hover {
   align-items: baseline;
   background: var(--card-bg-open);
   border: 1px solid var(--line);
@@ -10801,6 +10861,14 @@ html[data-surface="mobile"] [data-work-log-account-row]:hover {
   row-gap: 0.37rem;
 }
 
+html[data-surface="mobile"] [data-work-log-account-device-row],
+html[data-surface="mobile"] [data-work-log-account-device-row]:hover {
+  background: var(--surface-1);
+  border-color: var(--line);
+  margin-left: 0.62rem;
+  padding: 0.62rem 0.75rem;
+}
+
 html[data-surface="mobile"] [data-work-log-account-name] {
   flex: 1 1 auto;
   order: 1;
@@ -10808,6 +10876,14 @@ html[data-surface="mobile"] [data-work-log-account-name] {
 
 html[data-surface="mobile"] [data-work-log-account-label] {
   font-size: 0.81rem;
+}
+
+html[data-surface="mobile"] [data-work-log-account-device-label] {
+  font-size: 0.75rem;
+}
+
+html[data-surface="mobile"] [data-work-log-account-device-quality] {
+  font-size: 0.65rem;
 }
 
 html[data-surface="mobile"] [data-work-log-account-quality],

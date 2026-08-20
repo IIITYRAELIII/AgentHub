@@ -453,6 +453,19 @@ function accountDisplayName(accountKey, catalog) {
   return label || shortAccountKey(accountKey);
 }
 
+function shortDeviceKey(value) {
+  const key = String(value ?? "").trim();
+  if (!key) return "unknown";
+  return key.length <= 12 ? key : key.slice(0, 8);
+}
+
+function accountDeviceDisplayName(deviceId, source) {
+  const id = String(deviceId ?? "").trim();
+  if (source === "local") return id && id !== "local" ? `Это устройство · ${shortDeviceKey(id)}` : "Это устройство";
+  if (!id || id === "unknown") return "Неизвестное устройство";
+  return id.length <= 16 ? id : `device ${shortDeviceKey(id)}`;
+}
+
 function accountUsageRangeStart(range, nowMs) {
   const now = Number.isFinite(Number(nowMs)) ? Number(nowMs) : Date.now();
   if (range === "24h") return now - 24 * 60 * 60 * 1_000;
@@ -510,6 +523,53 @@ function emptyAccountUsageBucket(accountKey, catalog) {
     providers: {},
     devices: {},
   };
+}
+
+function emptyAccountDeviceBucket(deviceId, source, { noCost = false } = {}) {
+  return {
+    deviceId,
+    source,
+    label: accountDeviceDisplayName(deviceId, source),
+    noCost,
+    credits: 0,
+    turns: 0,
+    exactTurns: 0,
+    inferredTurns: 0,
+    unknownTurns: 0,
+    noCostTurns: 0,
+    localTurns: 0,
+    syncedTurns: 0,
+    providers: {},
+  };
+}
+
+function accountUsageDeviceKey(entry, localDeviceId) {
+  if (entry.source === "local") return localDeviceId || "local";
+  return String(entry.deviceId ?? "").trim() || "unknown";
+}
+
+function applyAccountUsageStats(target, entry, record, {
+  accountKey = "",
+  attribution = "unknown",
+  noCost = false,
+} = {}) {
+  target.credits += entry.credits;
+  target.turns += 1;
+  if (noCost) target.noCostTurns += 1;
+  const provider = String(record?.provider ?? "unknown").trim().toLowerCase() || "unknown";
+  target.providers[provider] = (target.providers[provider] ?? 0) + 1;
+  if (entry.source === "sync") target.syncedTurns += 1;
+  else target.localTurns += 1;
+  if (noCost) {
+    // Keep technical zero-usage turns visible without treating them as
+    // unattributed billable usage.
+  } else if (!accountKey) {
+    target.unknownTurns += 1;
+  } else if (attribution === "exact") {
+    target.exactTurns += 1;
+  } else {
+    target.inferredTurns += 1;
+  }
 }
 
 function syncedUsageRecord(value) {
@@ -586,36 +646,36 @@ export function buildWorkLogAccountUsageSummary(turns = {}, {
         const key = accountKey || (noCost ? NO_COST_ACCOUNT_KEY : "");
         if (!accounts.has(key)) accounts.set(key, emptyAccountUsageBucket(key, catalog));
         const bucket = accounts.get(key);
-        bucket.credits += entry.credits;
-        bucket.turns += 1;
-        if (noCost) {
-          bucket.noCostTurns += 1;
-          noCostTurns += 1;
-        }
-        const provider = String(record?.provider ?? "unknown").trim().toLowerCase() || "unknown";
-        bucket.providers[provider] = (bucket.providers[provider] ?? 0) + 1;
-        if (entry.source === "sync") {
-          bucket.syncedTurns += 1;
-          syncedTurns += 1;
-          const device = entry.deviceId || "unknown";
-          bucket.devices[device] = (bucket.devices[device] ?? 0) + 1;
-        } else {
-          bucket.localTurns += 1;
-        }
         const attribution = normalizeAccountAttribution(record?.accountAttribution, {
           hasAccountKey: Boolean(accountKey),
         });
+        applyAccountUsageStats(bucket, entry, record, { accountKey, attribution, noCost });
+        const deviceKey = accountUsageDeviceKey(entry, normalizedLocalDeviceId);
+        if (!bucket.devices[deviceKey]) {
+          bucket.devices[deviceKey] = emptyAccountDeviceBucket(deviceKey, entry.source, {
+            noCost: bucket.noCost,
+          });
+        }
+        const deviceBucket = bucket.devices[deviceKey];
+        if (deviceBucket.source !== entry.source) {
+          deviceBucket.source = "mixed";
+          deviceBucket.label = accountDeviceDisplayName(deviceKey, "mixed");
+        }
+        applyAccountUsageStats(deviceBucket, entry, record, { accountKey, attribution, noCost });
+        if (noCost) {
+          noCostTurns += 1;
+        }
+        if (entry.source === "sync") {
+          syncedTurns += 1;
+        }
         if (noCost) {
           // Keep technical zero-usage turns visible without treating them as
           // unattributed billable usage.
         } else if (!accountKey) {
-          bucket.unknownTurns += 1;
           unknownTurns += 1;
         } else if (attribution === "exact") {
-          bucket.exactTurns += 1;
           exactTurns += 1;
         } else {
-          bucket.inferredTurns += 1;
           inferredTurns += 1;
         }
         totalCredits += entry.credits;
@@ -633,7 +693,14 @@ export function buildWorkLogAccountUsageSummary(turns = {}, {
         unknownTurns,
         noCostTurns,
         syncedTurns,
-        accounts: [...accounts.values()].sort((left, right) => (
+        accounts: [...accounts.values()].map((account) => ({
+          ...account,
+          devices: Object.values(account.devices).sort((left, right) => (
+            right.credits - left.credits
+            || right.turns - left.turns
+            || left.label.localeCompare(right.label)
+          )),
+        })).sort((left, right) => (
           right.credits - left.credits
           || right.turns - left.turns
           || left.label.localeCompare(right.label)
@@ -697,10 +764,17 @@ function formatAccountQuality(account) {
 }
 
 function formatDeviceCounts(devices = {}) {
-  return Object.entries(devices)
-    .filter(([, count]) => Number(count) > 0)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([device, count]) => `${device} ${count}`)
+  const list = Array.isArray(devices)
+    ? devices
+    : Object.entries(devices).map(([deviceId, count]) => ({
+      deviceId,
+      label: accountDeviceDisplayName(deviceId, "sync"),
+      turns: count,
+    }));
+  return list
+    .filter((device) => Number(device?.turns) > 0)
+    .sort((left, right) => String(left.label).localeCompare(String(right.label)))
+    .map((device) => `${device.label} ${device.turns}`)
     .join(" · ");
 }
 
@@ -710,7 +784,9 @@ function formatAccountUsageRow(account, totalCredits) {
     : 0;
   const meta = [formatAccountQuality(account), formatProviderCounts(account.providers)]
     .filter(Boolean).join(" · ");
-  const devices = account.syncedTurns ? formatDeviceCounts(account.devices) : "";
+  const devices = Array.isArray(account.devices) && account.devices.length
+    ? formatDeviceCounts(account.devices)
+    : "";
   return `<div data-work-log-account-row data-account-key="${escapeHtmlAttribute(account.accountKey)}" `
     + `data-account-color="${escapeHtmlAttribute(accountColorSlot(account.accountKey))}" `
     + `data-account-attribution-exact="${escapeHtmlAttribute(String(account.exactTurns))}" `
@@ -741,6 +817,54 @@ function formatAccountUsageRow(account, totalCredits) {
     + "</div>";
 }
 
+function deviceSourceLabel(device) {
+  if (device.source === "local") return "local";
+  if (device.source === "sync") return "sync";
+  return "local+sync";
+}
+
+function formatAccountDeviceRow(account, device) {
+  const share = account.credits > 0 && device.credits > 0
+    ? Math.round(device.credits / account.credits * 100)
+    : 0;
+  const providerCounts = formatProviderCounts(device.providers);
+  return `<div data-work-log-account-device-row data-account-key="${escapeHtmlAttribute(account.accountKey)}" `
+    + `data-device-id="${escapeHtmlAttribute(device.deviceId)}" `
+    + `data-device-source="${escapeHtmlAttribute(device.source)}" `
+    + `data-account-color="${escapeHtmlAttribute(accountColorSlot(account.accountKey))}" `
+    + `data-account-turns="${escapeHtmlAttribute(String(device.turns))}" `
+    + `data-account-credits="${escapeHtmlAttribute(String(device.credits))}">`
+    + "<span data-work-log-account-name data-work-log-account-device-name>"
+    + `<span data-work-log-account-device-label>${escapeHtmlText(device.label)}</span>`
+    + `<span data-work-log-account-device-quality>${escapeHtmlText(formatAccountQuality(device))}</span>`
+    + "</span>"
+    + "<span data-work-log-account-provider>"
+    + (providerCounts
+      ? `<span data-work-log-account-provider-name>${escapeHtmlText(providerCounts)}</span>`
+      : "")
+    + `<span data-work-log-account-plan>${escapeHtmlText(deviceSourceLabel(device))}</span>`
+    + "</span>"
+    + '<span data-work-log-account-bar aria-hidden="true">'
+    + `<span data-work-log-account-bar-fill data-account-share="${share}"></span>`
+    + "</span>"
+    + `<span data-work-log-account-share>${share}%</span>`
+    + `<span data-work-log-account-turns>${device.turns}</span>`
+    + `<span data-work-log-account-credits>${highlightUsageUnits(formatCredits(device.credits), device.credits)}</span>`
+    + "</div>";
+}
+
+function formatAccountUsageGroup(account, totalCredits) {
+  const deviceRows = Array.isArray(account.devices) && account.devices.length
+    ? '<div data-work-log-account-devices-breakdown>'
+      + account.devices.map((device) => formatAccountDeviceRow(account, device)).join("")
+      + "</div>"
+    : "";
+  return `<div data-work-log-account-group data-account-key="${escapeHtmlAttribute(account.accountKey)}">`
+    + formatAccountUsageRow(account, totalCredits)
+    + deviceRows
+    + "</div>";
+}
+
 function formatAccountUsagePeriodTab(range, active) {
   const { amount, unit } = accountUsageAmountParts(range.totalCredits);
   return '<button type="button" data-work-log-account-period-tab '
@@ -763,7 +887,7 @@ function formatAccountUsagePeriodTab(range, active) {
 
 function formatAccountUsagePeriodBody(range, active, accountCount) {
   const rows = range.accounts.length
-    ? range.accounts.map((account) => formatAccountUsageRow(account, range.totalCredits)).join("")
+    ? range.accounts.map((account) => formatAccountUsageGroup(account, range.totalCredits)).join("")
     : '<div data-work-log-account-empty>За период нет записанного расхода.</div>';
   const activeAccountCount = range.accounts.filter((account) => !account.noCost).length;
   const idleCount = Math.max(0, accountCount - activeAccountCount);

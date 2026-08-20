@@ -306,6 +306,19 @@ test("account usage summary separates exact, inferred and unknown ledger turns",
   assert.equal(today.accounts[0].label, "owner@example.com");
   assert.equal(today.accounts[0].credits, 8);
   assert.deepEqual(today.accounts[0].providers, { codex: 2 });
+  assert.deepEqual(today.accounts[0].devices.map((device) => ({
+    label: device.label,
+    credits: device.credits,
+    turns: device.turns,
+    localTurns: device.localTurns,
+    syncedTurns: device.syncedTurns,
+  })), [{
+    label: "Это устройство",
+    credits: 8,
+    turns: 2,
+    localTurns: 2,
+    syncedTurns: 0,
+  }]);
   assert.equal(today.accounts[1].label, "Неизвестный аккаунт");
   assert.equal(today.accounts[2].label, "Без расхода");
   assert.equal(today.accounts[2].credits, 0);
@@ -460,8 +473,19 @@ test("account usage panel includes synced remote devices without duplicating loc
   assert.match(projected, /owner@example\.com/u);
   assert.match(projected, /data-account-key="anthropic:owner"/u);
   assert.match(projected, /data-account-sync-turns="1"/u);
+  assert.match(projected, /data-work-log-account-devices>Это устройство · device-local 1<\/span>/u);
   assert.match(projected, /data-work-log-account-devices>laptop 1<\/span>/u);
-  assert.doesNotMatch(projected, /device-local 1/u);
+  assert.match(
+    projected,
+    /data-work-log-account-device-row [^>]*data-device-id="device-local" [^>]*data-device-source="local"/u,
+  );
+  assert.match(projected, /data-work-log-account-device-label>Это устройство · device-local<\/span>/u);
+  assert.match(projected, /data-work-log-account-device-quality>точно 1<\/span>/u);
+  assert.match(
+    projected,
+    /data-work-log-account-device-row [^>]*data-device-id="laptop" [^>]*data-device-source="sync"/u,
+  );
+  assert.match(projected, /data-work-log-account-device-quality>восст\. 1 · sync 1<\/span>/u);
   assert.match(
     projected,
     /data-work-log-account-total>итого <span data-kilo-usage data-usage-credits="10">10 cr<\/span> · 2 ход\./u,
