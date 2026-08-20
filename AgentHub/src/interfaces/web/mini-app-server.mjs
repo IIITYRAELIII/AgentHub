@@ -461,6 +461,7 @@ export class MiniAppServer {
   #journalCache = null;
   #journalDatabase;
   #usageSyncRemoteConfigStore;
+  #usageSyncService;
   #ownsJournalDatabase;
   #unsubscribeJournal = null;
   #localAccessSecret;
@@ -498,6 +499,7 @@ export class MiniAppServer {
     journalDatabase = null,
     journalDatabaseFile = null,
     usageSyncRemoteConfigStore = null,
+    usageSyncService = null,
     workspaceFileRoots = [],
     health = agentHubRuntimeHealth,
     handlerCloseTimeoutMs = 1_000,
@@ -536,7 +538,14 @@ export class MiniAppServer {
     }
     this.#journalDatabase = journalDatabase ?? new JournalDatabase(journalDatabaseFile);
     this.#usageSyncRemoteConfigStore = usageSyncRemoteConfigStore;
+    this.#usageSyncService = usageSyncService && typeof usageSyncService.sync === "function"
+      ? usageSyncService
+      : null;
     this.#ownsJournalDatabase = !journalDatabase;
+  }
+
+  setUsageSyncService(service = null) {
+    this.#usageSyncService = service && typeof service.sync === "function" ? service : null;
   }
 
   async #activeAssetBundle() {
@@ -579,6 +588,13 @@ export class MiniAppServer {
       });
       return null;
     }
+  }
+
+  async #manualUsageSync() {
+    if (!this.#usageSyncService) throw new Error("Синхронизация расхода недоступна");
+    const result = await this.#usageSyncService.sync();
+    this.#journalCache = null;
+    return result;
   }
 
   async #mobileUpdate() {
@@ -1120,6 +1136,34 @@ export class MiniAppServer {
         });
       } catch {
         json(response, 404, { error: "Вложение не найдено." }, method);
+      }
+      return;
+    }
+    if (url.pathname === "/api/journal/usage-sync") {
+      if (!await this.#authorize(request, response)) return;
+      if (method !== "POST") {
+        json(response, 405, { error: "Метод не поддерживается" }, method, {
+          headers: { Allow: "POST" },
+        });
+        return;
+      }
+      try {
+        const result = await this.#manualUsageSync();
+        const usageSync = await this.#usageSyncStatus();
+        const journal = await this.#journal().catch(() => null);
+        json(response, 200, {
+          ok: true,
+          result,
+          usageSync: publicJournalPayload({ html: "", updatedAt: "", version: "" }, { usageSync }).usageSync,
+          journal: journal
+            ? {
+                updatedAt: journal.updatedAt,
+                version: journal.version,
+              }
+            : null,
+        }, method, { headers: { "Cache-Control": "private, no-store" } });
+      } catch (error) {
+        json(response, 503, { error: `Синхронизация расхода недоступна: ${error.message}` }, method);
       }
       return;
     }

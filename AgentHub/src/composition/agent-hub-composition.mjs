@@ -363,6 +363,8 @@ const providerApplication = await createProviderApplicationComposition({
     providerStartup: providerStartupPort,
   },
 });
+miniAppServer?.setUsageSyncService?.(providerApplication.usageSyncAuto);
+publicMiniAppServer?.setUsageSyncService?.(providerApplication.usageSyncAuto);
 const {
   runtimeTimers,
   defaultNotificationChatId,

@@ -54,6 +54,7 @@ const journalWorkspaceCount = document.querySelector("[data-journal-workspace-co
 const journalTotalCredits = document.querySelector("[data-journal-total-credits]");
 const journalTotalDuration = document.querySelector("[data-journal-total-duration]");
 const journalSyncStatus = document.querySelector("[data-journal-sync-status]");
+const journalSyncButton = document.querySelector("[data-journal-sync]");
 const themeColor = document.querySelector("[data-theme-color]");
 
 const taskList = document.querySelector("[data-task-list]");
@@ -11831,11 +11832,19 @@ function formatJournalSyncClock(value) {
 }
 
 function updateJournalSyncStatus(status = null) {
-  if (!journalSyncStatus) return;
+  if (!journalSyncStatus && !journalSyncButton) return;
   if (!status?.configured) {
-    journalSyncStatus.hidden = true;
-    journalSyncStatus.textContent = "VDS sync —";
-    journalSyncStatus.title = "Синхронизация расхода не настроена";
+    if (journalSyncStatus) {
+      journalSyncStatus.hidden = true;
+      journalSyncStatus.textContent = "VDS sync —";
+      journalSyncStatus.title = "Синхронизация расхода не настроена";
+    }
+    if (journalSyncButton) {
+      journalSyncButton.hidden = true;
+      journalSyncButton.disabled = true;
+      journalSyncButton.removeAttribute("aria-busy");
+      journalSyncButton.textContent = "Синхр.";
+    }
     return;
   }
   const lastSync = status.lastPullAt || status.lastPushAt;
@@ -11845,20 +11854,57 @@ function updateJournalSyncStatus(status = null) {
   const updated = Number(result.updated || 0);
   const changed = added + updated;
   const device = shortDeviceId(status.deviceId);
-  journalSyncStatus.hidden = false;
-  journalSyncStatus.textContent = [
-    `VDS sync ${clock || "ожидает"}`,
-    changed ? `+${added} / Δ${updated}` : "без изменений",
-    device ? `device ${device}` : "",
-  ].filter(Boolean).join(" · ");
-  journalSyncStatus.title = [
-    status.serverUrl ? `Сервер: ${status.serverUrl}` : "",
-    status.lastPushAt ? `Последний push: ${new Date(status.lastPushAt).toLocaleString("ru-RU")}` : "",
-    status.lastPullAt ? `Последний pull: ${new Date(status.lastPullAt).toLocaleString("ru-RU")}` : "",
-    Number(result.after || 0) ? `Событий локально: ${Number(result.after || 0)}` : "",
-    result.projected ? "Журнал перепроецирован" : "",
-  ].filter(Boolean).join("\n") || "VDS usage-sync настроен";
+  if (journalSyncStatus) {
+    journalSyncStatus.hidden = false;
+    journalSyncStatus.textContent = [
+      `VDS sync ${clock || "ожидает"}`,
+      changed ? `+${added} / Δ${updated}` : "без изменений",
+      device ? `device ${device}` : "",
+    ].filter(Boolean).join(" · ");
+    journalSyncStatus.title = [
+      status.serverUrl ? `Сервер: ${status.serverUrl}` : "",
+      status.lastPushAt ? `Последний push: ${new Date(status.lastPushAt).toLocaleString("ru-RU")}` : "",
+      status.lastPullAt ? `Последний pull: ${new Date(status.lastPullAt).toLocaleString("ru-RU")}` : "",
+      Number(result.after || 0) ? `Событий локально: ${Number(result.after || 0)}` : "",
+      result.projected ? "Журнал перепроецирован" : "",
+    ].filter(Boolean).join("\n") || "VDS usage-sync настроен";
+  }
+  if (journalSyncButton) {
+    journalSyncButton.hidden = false;
+    journalSyncButton.disabled = false;
+    journalSyncButton.title = "Синхронизировать расход через VDS";
+  }
 }
+
+async function syncJournalUsageNow() {
+  if (!journalSyncButton || journalSyncButton.disabled) return;
+  journalSyncButton.disabled = true;
+  journalSyncButton.setAttribute("aria-busy", "true");
+  journalSyncButton.textContent = "Sync…";
+  try {
+    await localSessionReady;
+    const response = await fetch("/api/journal/usage-sync", {
+      method: "POST",
+      cache: "no-store",
+      headers: await authenticatedRequestHeaders(),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+    updateJournalSyncStatus(payload.usageSync);
+    await requestJournal({ force: true, announce: true });
+    showToast("Расход синхронизирован");
+  } catch (error) {
+    showToast(`Не удалось синхронизировать расход: ${error.message}`);
+  } finally {
+    journalSyncButton.removeAttribute("aria-busy");
+    journalSyncButton.textContent = "Синхр.";
+    journalSyncButton.disabled = journalSyncButton.hidden;
+  }
+}
+
+journalSyncButton?.addEventListener("click", () => {
+  void syncJournalUsageNow();
+});
 
 async function requestJournal({ force = false, announce = false } = {}) {
   refreshButton.setAttribute("aria-busy", "true");

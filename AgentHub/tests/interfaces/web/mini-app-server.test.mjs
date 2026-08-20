@@ -152,6 +152,59 @@ test("journal payload exposes usage sync status and varies its ETag", async () =
   }
 });
 
+test("journal usage sync endpoint runs manual sync and exposes refreshed status", async () => {
+  const journal = memoryJournal(DAY_HTML);
+  let usageSync = {
+    serverUrl: "https://sync.example.test/agenthub",
+    deviceId: "device-manual",
+    lastPullAt: "",
+    lastResult: null,
+  };
+  let syncCalls = 0;
+  const server = new MiniAppServer({
+    host: "127.0.0.1",
+    port: 0,
+    journalDatabase: journal,
+    usageSyncRemoteConfigStore: {
+      load: async () => structuredClone(usageSync),
+    },
+    usageSyncService: {
+      sync: async () => {
+        syncCalls += 1;
+        usageSync = {
+          ...usageSync,
+          lastPullAt: "2026-08-20T13:40:00.000Z",
+          lastResult: { imported: true, added: 2, updated: 1, projected: true, before: 10, after: 13 },
+        };
+        journal.replace(`${LIMITS_HTML}\n${DAY_HTML}`);
+        return { synced: true, pull: { added: 2, updated: 1, projected: true } };
+      },
+    },
+  });
+  try {
+    const address = await server.start();
+    const response = await fetch(`${address.url}api/journal/usage-sync`, { method: "POST" });
+    assert.equal(response.status, 200);
+    const payload = await response.json();
+    assert.equal(syncCalls, 1);
+    assert.equal(payload.ok, true);
+    assert.deepEqual(payload.result, { synced: true, pull: { added: 2, updated: 1, projected: true } });
+    assert.equal(payload.usageSync.deviceId, "device-manual");
+    assert.equal(payload.usageSync.lastResult.added, 2);
+    assert.equal(payload.usageSync.lastResult.updated, 1);
+    assert.equal(payload.usageSync.lastResult.projected, true);
+    assert.equal(payload.journal.version, "sha256:0000000000000000000000000000000000000000000000000000000000000002");
+
+    const journalResponse = await fetch(`${address.url}api/journal`);
+    assert.equal(journalResponse.status, 200);
+    const journalPayload = await journalResponse.json();
+    assert.match(journalPayload.html, /data-work-log-rate-limits/u);
+    assert.equal(journalPayload.usageSync.lastResult.after, 13);
+  } finally {
+    await server.close();
+  }
+});
+
 test("Mini App close does not wait forever for a blocked control handler", async () => {
   let enterHandler;
   let releaseHandler;

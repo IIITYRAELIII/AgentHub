@@ -9762,6 +9762,30 @@ html[data-view="server"] .background-view {
   white-space: nowrap;
 }
 
+.journal-sync-button {
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-chip);
+  color: var(--text-muted);
+  cursor: pointer;
+  flex: 0 0 auto;
+  font-family: var(--font-numeric);
+  font-size: 0.68rem;
+  padding: 0.34rem 0.62rem;
+  transition: background 0.16s ease, border-color 0.16s ease, color 0.16s ease;
+  white-space: nowrap;
+}
+
+.journal-sync-button:hover:not(:disabled) {
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+
+.journal-sync-button:disabled {
+  cursor: progress;
+  opacity: 0.62;
+}
+
 .journal-grouping-tabs {
   background: var(--surface-1);
   border: 1px solid var(--line);
@@ -11050,6 +11074,10 @@ html[data-surface="mobile"] [data-work-log-account-empty] {
     order: 2;
   }
 
+  .journal-sync-button {
+    order: 2;
+  }
+
   .journal-ledger-head,
   .journal summary[data-journal-ledger-summary] {
     column-gap: 0.8rem;
@@ -11096,6 +11124,10 @@ html[data-surface="mobile"] [data-work-log-account-empty] {
   .journal-sync-status {
     flex: 1 1 100%;
     max-width: none;
+    order: 2;
+  }
+
+  .journal-sync-button {
     order: 2;
   }
 
