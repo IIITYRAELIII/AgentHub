@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { TelegramInputCallbackService } from "../../../src/interfaces/telegram/telegram-input-callbacks.mjs";
 
-function service(events) {
+function service(events, overrides = {}) {
   const noop = async () => {};
   return new TelegramInputCallbackService({
     telegram: async (method, body) => events.push({ method, body }),
@@ -30,10 +30,65 @@ function service(events) {
     queuedInputs: new Map(),
     backgroundJobs: { enqueue: noop, speechPending: 0 },
     maxSpeechJobs: 4,
+    ...overrides,
   });
 }
 
 const callback = { id: "cb", message: { chat: { id: 1 }, message_id: 2 } };
+
+function newTaskFixture({ createdStreamId = "stream-new" } = {}) {
+  const events = [];
+  const item = {
+    id: "deferred-1",
+    chatId: 1,
+    input: "следующее",
+    temporaryFiles: [],
+    streamId: "stream-1",
+    provider: "codex",
+    threadId: "thread-old",
+    taskTitle: "Old",
+    clientUserMessageId: "telegram:1:42",
+  };
+  const calls = [];
+  const pendingInputs = new Map([[item.id, item]]);
+  const callbacks = service(events, {
+    sendMessageTo: async (chatId, text) => calls.push(["send", chatId, text]),
+    selectTaskFromBinding: async (binding) => {
+      calls.push(["select", binding]);
+      return { selectionChanged: false };
+    },
+    callbackContext: () => ({ clientId: "telegram:1" }),
+    startTurn: async (input, _files, options) => {
+      calls.push(["start", input, options.target]);
+      return {};
+    },
+    dispatchApplicationCommand: async (command, params) => {
+      calls.push(["dispatch", command, params]);
+      return {
+        createdTask: {
+          provider: "codex",
+          threadId: "thread-new",
+          streamId: createdStreamId,
+          taskTitle: "Task",
+        },
+      };
+    },
+    selectedTurnTarget: (chatId) => ({
+      chatId,
+      provider: "codex",
+      threadId: "thread-new",
+      streamId: createdStreamId,
+    }),
+    activeThreadTitle: () => "Task",
+    selectedTask: () => ({
+      provider: "codex",
+      threadId: "thread-new",
+      streamId: createdStreamId,
+    }),
+    pendingInputs,
+  });
+  return { callbacks, calls, events, item, pendingInputs };
+}
 
 test("input callback service rejects expired bundles and speech", async () => {
   const events = [];
@@ -92,47 +147,8 @@ test("input callback cancellation keeps the input and attachments when save fail
   assert.equal(events.at(-1).body.text, "Сообщение отменено");
 });
 
-test("input callback new task keeps the deferred message inside its Stream", async () => {
-  const events = [];
-  const item = {
-    id: "deferred-1",
-    chatId: 1,
-    input: "следующее",
-    temporaryFiles: [],
-    streamId: "stream-1",
-    provider: "codex",
-    threadId: "thread-old",
-    taskTitle: "Old",
-  };
-  const calls = [];
-  const pendingInputs = new Map([[item.id, item]]);
-  const callbacks = new TelegramInputCallbackService({
-    telegram: async (method, body) => events.push({ method, body }),
-    sendMessageTo: async () => {},
-    updateDeferredDesktopReceipt: () => {},
-    cleanupDeferredFiles: async () => {},
-    saveState: async () => {},
-    updateDeferredMessage: async () => {},
-    scheduleNextForTask: () => {},
-    selectTaskFromBinding: async (binding) => { calls.push(["select", binding]); return { selectionChanged: false }; },
-    callbackContext: () => ({ clientId: "telegram:1" }),
-    showTaskMessage: async () => {},
-    scheduleQueuedInput: () => {},
-    startTurn: async (input) => { calls.push(["start", input]); return {}; },
-    runForTask: () => null,
-    describeAttachments: () => [],
-    dispatchApplicationCommand: async (command, params) => calls.push(["dispatch", command, params]),
-    selectedTurnTarget: (chatId) => ({ chatId, provider: "codex", threadId: "thread-new", streamId: "stream-1" }),
-    activeThreadTitle: () => "Task",
-    selectedTask: () => ({ provider: "codex", threadId: "thread-new", streamId: "stream-1" }),
-    speechText: () => null,
-    sendTaskSwitchNotification: async () => {},
-    forwardBundleController: { bundleById: () => null },
-    pendingInputs,
-    queuedInputs: new Map(),
-    backgroundJobs: { enqueue: async () => null, speechPending: 0 },
-    maxSpeechJobs: 4,
-  });
+test("input callback new task starts the deferred message in a sibling Stream", async () => {
+  const { callbacks, calls, item, pendingInputs } = newTaskFixture();
 
   await callbacks.handle(callback, { kind: "pending-input", id: item.id, action: "new" });
 
@@ -140,7 +156,42 @@ test("input callback new task keeps the deferred message inside its Stream", asy
   assert.deepEqual(calls.find((call) => call[0] === "dispatch"), [
     "dispatch",
     "task.create",
-    { provider: "codex", streamId: "stream-1" },
+    { provider: "codex", sourceStreamId: "stream-1" },
   ]);
-  assert.deepEqual(calls.find((call) => call[0] === "start"), ["start", "следующее"]);
+  assert.deepEqual(calls.filter((call) => call[0] === "select").at(-1), [
+    "select",
+    {
+      provider: "codex",
+      threadId: "thread-new",
+      streamId: "stream-new",
+      taskTitle: "Task",
+    },
+  ]);
+  assert.deepEqual(calls.find((call) => call[0] === "start"), [
+    "start",
+    "следующее",
+    {
+      chatId: 1,
+      provider: "codex",
+      threadId: "thread-new",
+      streamId: "stream-new",
+      clientUserMessageId: "telegram:1:42",
+    },
+  ]);
+});
+
+test("input callback rejects a missing or reused Stream for the new task", async () => {
+  for (const createdStreamId of [null, "stream-1"]) {
+    const { callbacks, calls, item, pendingInputs } = newTaskFixture({ createdStreamId });
+
+    await callbacks.handle(callback, { kind: "pending-input", id: item.id, action: "new" });
+
+    assert.equal(pendingInputs.has(item.id), true);
+    assert.equal(calls.filter(([name]) => name === "select").length, 1);
+    assert.equal(calls.some(([name]) => name === "start"), false);
+    assert.match(
+      calls.find(([name]) => name === "send")[2],
+      /новая задача не вернула отдельную Stream-привязку/u,
+    );
+  }
 });

@@ -172,13 +172,20 @@ export class TaskCommandService {
   }
 
   async create(params = {}, context = {}) {
+    const normalizedSourceStreamId = String(params.sourceStreamId ?? "").trim();
     let workspace = null;
     let stream = null;
+    let sourceStream = null;
     let createdWorkspace = false;
     if (params.streamId) {
       stream = this.workspaceCatalog.stream(params.streamId);
       if (!stream) throw new Error("Stream не найден");
       workspace = this.workspaceCatalog.workspace(stream.workspaceId);
+    } else if (normalizedSourceStreamId) {
+      sourceStream = this.workspaceCatalog.stream(normalizedSourceStreamId);
+      if (!sourceStream) throw new Error("Исходный Stream не найден");
+      workspace = this.workspaceCatalog.workspace(sourceStream.workspaceId);
+      if (!workspace) throw new Error("Workspace исходного Stream не найден");
     } else if (params.workspaceId) {
       workspace = this.workspaceCatalog.workspace(params.workspaceId);
       if (!workspace) throw new Error("Workspace не найден");
@@ -187,7 +194,7 @@ export class TaskCommandService {
       stream = this.workspaceCatalog.updateStreamSettings(stream.id, params.settings);
     }
     const streamSettings = {
-      ...(stream?.settings ?? {}),
+      ...(stream?.settings ?? sourceStream?.settings ?? {}),
       ...(params.settings && typeof params.settings === "object" ? params.settings : {}),
     };
     const provider = String(params.provider ?? streamSettings.provider ?? this.activeProvider()).trim();
@@ -197,6 +204,7 @@ export class TaskCommandService {
       stream = this.workspaceCatalog.createStream({
         workspaceId: workspace.id,
         name: params.streamName,
+        settings: streamSettings,
       });
     } else if (!workspace) {
       workspace = this.workspaceCatalog.createWorkspace({

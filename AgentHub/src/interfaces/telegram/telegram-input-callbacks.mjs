@@ -143,15 +143,24 @@ export class TelegramInputCallbackService {
         throw new Error("нельзя безопасно создать новую задачу для сообщения без Stream-привязки");
       }
       await d.selectTaskFromBinding(binding, d.callbackContext(callback));
-      await d.dispatchApplicationCommand("task.create", {
+      const created = await d.dispatchApplicationCommand("task.create", {
         provider: binding.provider,
-        streamId: binding.streamId,
+        sourceStreamId: binding.streamId,
       }, d.callbackContext(callback));
+      const createdTask = created?.createdTask;
+      if (!createdTask?.threadId) throw new Error("новая задача не вернула Thread-привязку");
+      if (!createdTask.streamId || createdTask.streamId === binding.streamId) {
+        throw new Error("новая задача не вернула отдельную Stream-привязку");
+      }
+      await d.selectTaskFromBinding(createdTask, d.callbackContext(callback));
       const newTaskTitle = d.activeThreadTitle();
       const outcome = await d.startTurn(item.input, item.temporaryFiles ?? [], {
         forceSpeechButton: item.forceSpeechButton === true,
         persistentFiles: item.persistentFiles === true,
-        target: d.selectedTurnTarget(item.chatId),
+        target: {
+          ...d.selectedTurnTarget(item.chatId),
+          clientUserMessageId: item.clientUserMessageId,
+        },
       });
       if (outcome?.deferred) throw new Error("новая задача неожиданно оказалась занята");
       const startedRun = d.runForTask(d.selectedTask());

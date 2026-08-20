@@ -37,7 +37,12 @@ export class DeferredInputService {
   } = {}) {
     const d = this.#d;
     if (!target?.provider) throw new Error("deferred input target requires provider");
-    const normalizedClientUserMessageId = String(clientUserMessageId ?? "").trim() || null;
+    const normalizedTargetClientUserMessageId = String(
+      target.clientUserMessageId ?? "",
+    ).trim() || null;
+    const normalizedClientUserMessageId = String(
+      clientUserMessageId ?? normalizedTargetClientUserMessageId ?? "",
+    ).trim() || null;
     const existing = normalizedClientUserMessageId && typeof d.store.values === "function"
       ? d.store.values().find((item) => (
         String(item.clientUserMessageId ?? "").trim() === normalizedClientUserMessageId

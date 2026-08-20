@@ -132,6 +132,43 @@ test("deferred input service deduplicates a durable client message", async () =>
   assert.equal(persists, 1);
 });
 
+test("deferred input service normalizes the target identity below an explicit identity", async () => {
+  const store = new DeferredInputStore();
+  let persists = 0;
+  let sequence = 0;
+  const service = new DeferredInputService({
+    store,
+    createId: () => `telegram-message-${++sequence}`,
+    persist: async () => { persists += 1; },
+    removeFiles: async () => {},
+    notify: async () => null,
+  });
+  const options = {
+    target: {
+      streamId: "stream-1",
+      provider: "codex",
+      threadId: "thread-1",
+      clientUserMessageId: "  telegram:1:42  ",
+    },
+    destination: "queued",
+    notify: false,
+  };
+
+  const first = await service.defer("message", [], options);
+  const duplicate = await service.defer("message", [], options);
+  const explicit = await service.defer("second message", [], {
+    ...options,
+    clientUserMessageId: "  explicit-message-id  ",
+  });
+
+  assert.equal(first.item.clientUserMessageId, "telegram:1:42");
+  assert.equal(duplicate.duplicate, true);
+  assert.equal(duplicate.id, first.id);
+  assert.equal(explicit.item.clientUserMessageId, "explicit-message-id");
+  assert.equal(store.size, 2);
+  assert.equal(persists, 2);
+});
+
 test("deferred input service preserves equal chat text with different client ids", async () => {
   const store = new DeferredInputStore();
   let now = Date.parse("2026-08-15T11:17:24.000Z");

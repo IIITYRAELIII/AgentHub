@@ -68,12 +68,20 @@ export class TelegramMessageController {
     }
   }
 
+  #messageTarget(message) {
+    const target = this.selectedTurnTarget(message.chat.id);
+    const messageId = Number(message.message_id);
+    return Number.isSafeInteger(messageId)
+      ? { ...target, clientUserMessageId: `telegram:${message.chat.id}:${messageId}` }
+      : target;
+  }
+
   async handleMedia(message) {
     if (message.photo || message.document?.mime_type?.startsWith("image/")) {
       if (this.handleBundleMedia
         && await this.handleBundleMedia(message, { forwardedOnly: true })) return true;
       if (this.handleBundleMedia && await this.handleBundleMedia(message)) return true;
-      const target = this.selectedTurnTarget(message.chat.id);
+      const target = this.#messageTarget(message);
       await this.bindIncomingMessage(message, message.caption?.trim() || "Изображение без подписи", target);
       await this.enqueueMedia("image", { message, target }, target.chatId, {
         dedupeKey: `message:${message.chat.id}:${message.message_id}:image`,
@@ -81,7 +89,7 @@ export class TelegramMessageController {
       return true;
     }
     if (message.voice || message.audio) {
-      const target = this.selectedTurnTarget(message.chat.id);
+      const target = this.#messageTarget(message);
       await this.bindIncomingMessage(message, "Голосовое сообщение", target);
       await this.enqueueMedia("voice", { message, target }, target.chatId, {
         dedupeKey: `message:${message.chat.id}:${message.message_id}:voice`,
@@ -113,7 +121,7 @@ export class TelegramMessageController {
     if (!parsed) {
       if (this.captureTask && await this.captureTask(message, text)) return;
       if (this.handleBundleText && await this.handleBundleText(message, text)) return;
-      const target = this.selectedTurnTarget(message.chat.id);
+      const target = this.#messageTarget(message);
       await this.bindIncomingMessage(message, text, target);
       await this.handleText(message, text, target);
       return;

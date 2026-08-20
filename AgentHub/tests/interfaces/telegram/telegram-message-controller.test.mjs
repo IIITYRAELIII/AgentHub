@@ -42,10 +42,29 @@ test("routes menu aliases and command arguments", async () => {
   ]);
 });
 
-test("routes image before text and binds it to selected task", async () => {
-  const { controller, events } = fixture();
-  await controller.handle({ ...baseMessage, photo: [{ file_id: "x" }], caption: "Смотри" });
-  assert.deepEqual(events.slice(-2), [["bind", "Смотри"], ["media", "image"]]);
+test("routes image with a stable Telegram identity before text", async () => {
+  const target = { chatId: 9, provider: "codex", streamId: "stream-1", threadId: "thread-1" };
+  const calls = [];
+  const { controller } = fixture({
+    selectedTurnTarget: () => target,
+    bindIncomingMessage: async (_message, text, receivedTarget) => {
+      calls.push(["bind", text, receivedTarget]);
+    },
+    enqueueMedia: async (kind, payload) => {
+      calls.push(["media", kind, payload.target]);
+    },
+  });
+  await controller.handle({
+    ...baseMessage,
+    message_id: 41,
+    photo: [{ file_id: "x" }],
+    caption: "Смотри",
+  });
+  const messageTarget = { ...target, clientUserMessageId: "telegram:9:41" };
+  assert.deepEqual(calls, [
+    ["bind", "Смотри", messageTarget],
+    ["media", "image", messageTarget],
+  ]);
 });
 
 test("ordinary text uses the Telegram-selected target for binding and turn start", async () => {
@@ -67,11 +86,16 @@ test("ordinary text uses the Telegram-selected target for binding and turn start
     },
   });
 
-  await controller.handle({ ...baseMessage, text: "Проверка маршрута" });
+  await controller.handle({ ...baseMessage, message_id: 42, text: "Проверка маршрута" });
+
+  const messageTarget = {
+    ...target,
+    clientUserMessageId: "telegram:9:42",
+  };
 
   assert.deepEqual(calls, [
-    ["bind", "Проверка маршрута", target],
-    ["text", "Проверка маршрута", target],
+    ["bind", "Проверка маршрута", messageTarget],
+    ["text", "Проверка маршрута", messageTarget],
   ]);
 });
 

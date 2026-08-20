@@ -83,7 +83,10 @@ function fixture({ run = null, createTask = null } = {}) {
         },
       } : null,
       createWorkspace: ({ name }) => ({ id: "workspace-new", name }),
-      createStream: ({ workspaceId, name }) => ({ id: "stream-new", workspaceId, name }),
+      createStream: ({ workspaceId, name, settings }) => {
+        events.push(["create-stream", { workspaceId, name, settings }]);
+        return { id: "stream-new", workspaceId, name, settings };
+      },
       renameWorkspace: (id, name) => ({ id, name }),
       bindThread: (value) => events.push(["bind", value]),
       activeThread: (id) => id === "stream-1"
@@ -155,6 +158,53 @@ test("task command service creates a Workspace and binds the provider Thread to 
   assert.equal(result.createdTask.streamId, "stream-new");
   assert.equal(result.clientId, "telegram:7");
   assert.equal(events.find(([name]) => name === "prepare")[1].streamId, "stream-new");
+});
+
+test("task command service creates a sibling Stream in the source Workspace", async () => {
+  const { service, events } = fixture();
+  const result = await service.create({ provider: "codex", sourceStreamId: "  stream-1  " });
+
+  assert.equal(result.createdTask.streamId, "stream-new");
+  assert.deepEqual(events.find(([name]) => name === "create-stream")[1].settings, {
+    provider: "codex",
+    model: "gpt-5",
+    reasoning: "high",
+    project: "D:/later",
+    autoApprove: false,
+  });
+  assert.deepEqual(events.find(([name]) => name === "bind")[1], {
+    provider: "codex",
+    threadId: "thread-new",
+    streamId: "stream-new",
+    projectRoot: "D:/work",
+    source: "created",
+  });
+  assert.deepEqual(events.find(([name]) => name === "prepare")[1], {
+    provider: "codex",
+    model: "gpt-5",
+    reasoning: "high",
+    project: "D:/later",
+    workingDirectory: "D:/work/AgentHub",
+    autoApprove: false,
+    streamId: "stream-new",
+    title: "Existing",
+  });
+  assert.equal(events.some(([name]) => name === "handoff"), false);
+});
+
+test("task command service rejects a source Stream without its Workspace", async () => {
+  const { service, events } = fixture();
+  service.workspaceCatalog.workspace = () => null;
+  service.workspaceCatalog.createWorkspace = (...args) => {
+    events.push(["create-workspace", ...args]);
+    return { id: "workspace-new" };
+  };
+
+  await assert.rejects(
+    service.create({ provider: "codex", sourceStreamId: "stream-1" }),
+    { message: "Workspace исходного Stream не найден" },
+  );
+  assert.equal(events.some(([name]) => name === "create-workspace"), false);
 });
 
 test("task command service binds a reserved Claude Thread before its first transcript exists", async () => {
