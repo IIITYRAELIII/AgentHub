@@ -104,10 +104,18 @@ export class ClientTaskSelectionService {
   }
 
   turnTarget(chatId = this.sessionState.chatId) {
-    const binding = this.binding(chatId);
-    const entry = this.catalogEntries().find((candidate) => (
+    const clientId = this.clientId(chatId);
+    const explicitBinding = this.sessionState.clientTaskSelection(clientId);
+    let binding = explicitBinding ?? structuredClone(this.initialFallbackBinding);
+    let entry = this.catalogEntries().find((candidate) => (
       this.catalogEntryIsSelected(candidate, binding)
     ));
+    if (explicitBinding && binding.threadId && !entry) {
+      binding = this.fallbackBinding();
+      entry = this.catalogEntries().find((candidate) => (
+        this.catalogEntryIsSelected(candidate, binding)
+      ));
+    }
     const preferences = this.preferences.current(binding.provider);
     return {
       streamId: binding.streamId ?? entry?.streamId ?? null,
@@ -115,7 +123,7 @@ export class ClientTaskSelectionService {
       projectRoot: binding.projectRoot,
       sessionCwd: entry?.sessionCwd ?? null,
       threadId: binding.threadId,
-      taskTitle: this.title(chatId),
+      taskTitle: String(binding.taskTitle ?? "").trim(),
       chatId,
       modelId: entry?.model ?? preferences.model,
       reasoningId: entry?.reasoning ?? preferences.reasoningEffort,

@@ -12,7 +12,7 @@ export class DesktopDeferredInputService {
     for (const name of [
       "responseAnnotations", "replaceInputText", "saveState", "updateReceipt", "cleanupFiles",
       "updateMessage", "scheduleNext", "scheduleQueued", "selectTask", "clientContext",
-      "startTurn", "runForTask", "describeAttachments", "selectedTask", "dispatchCommand",
+      "startTurn", "startDeferred", "runForTask", "describeAttachments", "selectedTask", "dispatchCommand",
       "activeTitle", "snapshot",
     ]) requiredFunction(dependencies[name], name);
     this.#d = dependencies;
@@ -202,17 +202,30 @@ export class DesktopDeferredInputService {
       await d.saveState();
       try {
         await d.selectTask(binding, d.clientContext(context, "desktop"));
-        await d.dispatchCommand("task.create", {
+        const createResult = await d.dispatchCommand("task.create", {
           provider: binding.provider,
           streamId: binding.streamId,
         }, d.clientContext(context, "desktop"));
-        const outcome = await d.startTurn(item.input, item.temporaryFiles ?? [], {
+        const selectedTask = d.selectedTask();
+        const createdTask = createResult?.createdTask ?? {};
+        const newTarget = {
+          ...selectedTask,
+          ...createdTask,
+          provider: createdTask.provider ?? selectedTask.provider ?? binding.provider,
+          streamId: createdTask.streamId ?? selectedTask.streamId ?? binding.streamId,
+          projectRoot: createdTask.projectRoot ?? selectedTask.projectRoot ?? item.projectRoot,
+          threadId: createdTask.threadId ?? selectedTask.threadId,
+          taskTitle: createdTask.taskTitle ?? createdTask.title ?? d.activeTitle(),
+        };
+        const startedRun = await d.startDeferred({
+          ...item,
+          ...newTarget,
+          input: item.input,
+          temporaryFiles: item.temporaryFiles ?? [],
           forceSpeechButton: item.forceSpeechButton === true,
           persistentFiles: item.persistentFiles === true,
           telegramDeliveryRequested: false,
         });
-        if (outcome?.deferred) throw new Error("Новая задача неожиданно оказалась занята");
-        const startedRun = d.runForTask(d.selectedTask());
         if (startedRun && item.persistentFiles) {
           startedRun.messageAttachments = d.describeAttachments(item.temporaryFiles);
         }

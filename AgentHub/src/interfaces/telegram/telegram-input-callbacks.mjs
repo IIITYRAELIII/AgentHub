@@ -13,7 +13,7 @@ export class TelegramInputCallbackService {
     for (const name of [
       "telegram", "sendMessageTo", "updateDeferredDesktopReceipt", "cleanupDeferredFiles",
       "saveState", "updateDeferredMessage", "scheduleNextForTask", "selectTaskFromBinding",
-      "callbackContext", "showTaskMessage", "scheduleQueuedInput", "startTurn", "runForTask",
+      "callbackContext", "showTaskMessage", "scheduleQueuedInput", "startTurn", "startDeferred", "runForTask",
       "describeAttachments", "dispatchApplicationCommand", "activeThreadTitle", "selectedTask",
       "selectedTurnTarget", "speechText", "sendTaskSwitchNotification",
     ]) requiredFunction(dependencies[name], name);
@@ -143,32 +143,42 @@ export class TelegramInputCallbackService {
         throw new Error("нельзя безопасно создать новую задачу для сообщения без Stream-привязки");
       }
       await d.selectTaskFromBinding(binding, d.callbackContext(callback));
-      const created = await d.dispatchApplicationCommand("task.create", {
+      const createResult = await d.dispatchApplicationCommand("task.create", {
         provider: binding.provider,
         sourceStreamId: binding.streamId,
       }, d.callbackContext(callback));
-      const createdTask = created?.createdTask;
+      const createdTask = createResult?.createdTask ?? {};
       if (!createdTask?.threadId) throw new Error("новая задача не вернула Thread-привязку");
       if (!createdTask.streamId || createdTask.streamId === binding.streamId) {
         throw new Error("новая задача не вернула отдельную Stream-привязку");
       }
       await d.selectTaskFromBinding(createdTask, d.callbackContext(callback));
       const newTaskTitle = d.activeThreadTitle();
-      const outcome = await d.startTurn(item.input, item.temporaryFiles ?? [], {
-        forceSpeechButton: item.forceSpeechButton === true,
+      const selectedTarget = d.selectedTurnTarget(item.chatId);
+      const newTarget = {
+        ...selectedTarget,
+        ...createdTask,
+        provider: createdTask.provider ?? selectedTarget.provider ?? binding.provider,
+        streamId: createdTask.streamId ?? selectedTarget.streamId ?? binding.streamId,
+        projectRoot: createdTask.projectRoot ?? selectedTarget.projectRoot ?? item.projectRoot,
+        threadId: createdTask.threadId ?? selectedTarget.threadId,
+        taskTitle: createdTask.taskTitle ?? createdTask.title ?? newTaskTitle ?? selectedTarget.taskTitle,
+      };
+      const startedRun = await d.startDeferred({
+        ...item,
+        ...newTarget,
+        chatId: item.chatId,
+        input: item.input,
+        temporaryFiles: item.temporaryFiles ?? [],
         persistentFiles: item.persistentFiles === true,
-        target: {
-          ...d.selectedTurnTarget(item.chatId),
-          clientUserMessageId: item.clientUserMessageId,
-        },
+        forceSpeechButton: item.forceSpeechButton === true,
       });
-      if (outcome?.deferred) throw new Error("новая задача неожиданно оказалась занята");
-      const startedRun = d.runForTask(d.selectedTask());
       if (startedRun && item.persistentFiles) {
         startedRun.messageAttachments = d.describeAttachments(item.temporaryFiles);
       }
       d.pendingInputs.delete(id);
       d.updateDeferredDesktopReceipt(item, "started", startedRun);
+      await d.selectTaskFromBinding(newTarget, d.callbackContext(callback));
       await d.saveState();
       await d.updateDeferredMessage(item, `🆕 Сообщение отправлено в новую задачу «${newTaskTitle}».`);
       d.scheduleNextForTask(item);

@@ -269,6 +269,7 @@ export function createExecutionBootstrapPhase({
       deferredInputController: interaction.deferredInputController,
       scheduleQueuedInput: api.scheduleQueuedInput,
       startTurn: api.startTurn,
+      startDeferred: (item) => interaction.runCoordinator.startDeferred(item),
       desktopAttachmentDescriptors: clients.desktopAttachmentDescriptors,
       activeThreadTitle: telegramTasks.activeTaskTitle,
       selectedTask: telegramTasks.selectedTask,

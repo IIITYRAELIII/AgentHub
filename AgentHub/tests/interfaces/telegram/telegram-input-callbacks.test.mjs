@@ -17,6 +17,7 @@ function service(events, overrides = {}) {
     showTaskMessage: noop,
     scheduleQueuedInput: () => {},
     startTurn: async () => ({}),
+    startDeferred: async () => ({}),
     runForTask: () => null,
     describeAttachments: () => [],
     dispatchApplicationCommand: noop,
@@ -45,6 +46,7 @@ function newTaskFixture({ createdStreamId = "stream-new" } = {}) {
     temporaryFiles: [],
     streamId: "stream-1",
     provider: "codex",
+    projectRoot: "D:/Work",
     threadId: "thread-old",
     taskTitle: "Old",
     clientUserMessageId: "telegram:1:42",
@@ -62,6 +64,16 @@ function newTaskFixture({ createdStreamId = "stream-new" } = {}) {
       calls.push(["start", input, options.target]);
       return {};
     },
+    startDeferred: async (deferredItem) => {
+      calls.push([
+        "startDeferred",
+        deferredItem.input,
+        deferredItem.threadId,
+        deferredItem.streamId,
+        deferredItem.clientUserMessageId,
+      ]);
+      return {};
+    },
     dispatchApplicationCommand: async (command, params) => {
       calls.push(["dispatch", command, params]);
       return {
@@ -69,6 +81,7 @@ function newTaskFixture({ createdStreamId = "stream-new" } = {}) {
           provider: "codex",
           threadId: "thread-new",
           streamId: createdStreamId,
+          projectRoot: "D:/Work",
           taskTitle: "Task",
         },
       };
@@ -76,6 +89,7 @@ function newTaskFixture({ createdStreamId = "stream-new" } = {}) {
     selectedTurnTarget: (chatId) => ({
       chatId,
       provider: "codex",
+      projectRoot: "D:/Work",
       threadId: "thread-new",
       streamId: createdStreamId,
     }),
@@ -124,6 +138,7 @@ test("input callback cancellation keeps the input and attachments when save fail
     showTaskMessage: async () => {},
     scheduleQueuedInput: () => {},
     startTurn: async () => ({}),
+    startDeferred: async () => ({}),
     runForTask: () => null,
     describeAttachments: () => [],
     dispatchApplicationCommand: async () => {},
@@ -162,22 +177,21 @@ test("input callback new task starts the deferred message in a sibling Stream", 
     "select",
     {
       provider: "codex",
+      projectRoot: "D:/Work",
       threadId: "thread-new",
       streamId: "stream-new",
       taskTitle: "Task",
-    },
-  ]);
-  assert.deepEqual(calls.find((call) => call[0] === "start"), [
-    "start",
-    "следующее",
-    {
       chatId: 1,
-      provider: "codex",
-      threadId: "thread-new",
-      streamId: "stream-new",
-      clientUserMessageId: "telegram:1:42",
     },
   ]);
+  assert.deepEqual(calls.find((call) => call[0] === "startDeferred"), [
+    "startDeferred",
+    "следующее",
+    "thread-new",
+    "stream-new",
+    "telegram:1:42",
+  ]);
+  assert.equal(calls.some((call) => call[0] === "start"), false);
 });
 
 test("input callback rejects a missing or reused Stream for the new task", async () => {

@@ -29,7 +29,9 @@ import { listClaudeSessionSnapshots } from "../providers/claude/claude-session-r
 export function currentStreamEntries(entries) {
   const byIdentity = new Map();
   for (const entry of entries) {
-    const key = entry.streamId ? `stream:${entry.streamId}` : `${entry.provider}:${entry.threadId}`;
+    const key = entry.streamId && entry.provider && entry.threadId
+      ? `stream:${entry.streamId}:${entry.provider}:${entry.threadId}`
+      : entry.streamId ? `stream:${entry.streamId}` : `${entry.provider}:${entry.threadId}`;
     const previous = byIdentity.get(key);
     if (!previous
       || (entry.running === true && previous.running !== true)

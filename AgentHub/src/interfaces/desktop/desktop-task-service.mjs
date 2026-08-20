@@ -37,6 +37,15 @@ function entryMatchesReference(entry, reference) {
   return entry?.provider === reference.provider && entry?.threadId === reference.threadId;
 }
 
+function entryMatchesExactReference(entry, reference) {
+  if (!reference.streamId || !reference.provider || !reference.threadId) {
+    return entryMatchesReference(entry, reference);
+  }
+  return String(entry?.streamId ?? "") === reference.streamId
+    && entry?.provider === reference.provider
+    && entry?.threadId === reference.threadId;
+}
+
 export class DesktopTaskService {
   constructor({
     catalog,
@@ -75,6 +84,11 @@ export class DesktopTaskService {
     return entries.find((entry) => entryMatchesReference(entry, reference)) ?? null;
   }
 
+  #findExact(params, entries = this.catalog()) {
+    const reference = normalizedTaskReference(params);
+    return entries.find((entry) => entryMatchesExactReference(entry, reference)) ?? null;
+  }
+
   #findHistoricalThread(params, entries = this.catalog()) {
     const reference = normalizedTaskReference(params);
     if (reference.streamId) return null;
@@ -101,9 +115,11 @@ export class DesktopTaskService {
 
   async resolveTarget(params, context = null) {
     const reference = normalizedTaskReference(params);
-    let entry = this.#find(params);
+    const exactReference = Boolean(reference.streamId && reference.provider && reference.threadId);
+    let entry = exactReference ? this.#findExact(params) : this.#find(params);
     if (!entry) {
-      entry = this.#find(params, await this.refreshCatalog());
+      const refreshed = await this.refreshCatalog();
+      entry = exactReference ? this.#findExact(params, refreshed) : this.#find(params, refreshed);
     } else {
       void this.refreshCatalog().catch((error) => {
         this.warn(`Cannot refresh task catalog after message intake: ${error.message}`);

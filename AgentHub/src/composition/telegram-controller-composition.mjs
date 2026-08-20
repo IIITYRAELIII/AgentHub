@@ -60,6 +60,7 @@ export function createTelegramControllerComposition({
   deferredInputController,
   scheduleQueuedInput,
   startTurn,
+  startDeferred,
   desktopAttachmentDescriptors,
   activeThreadTitle,
   selectedTask,
@@ -197,6 +198,7 @@ export function createTelegramControllerComposition({
     showTaskMessage,
     scheduleQueuedInput,
     startTurn,
+    startDeferred,
     runForTask: (binding) => taskRuns.forTask(binding),
     describeAttachments: desktopAttachmentDescriptors,
     dispatchApplicationCommand,
@@ -270,6 +272,7 @@ export function createTelegramControllerComposition({
     prompt: telegramPrompt,
     commandTaskTarget,
     menu: botMenu,
+    selectTaskFromBinding,
   });
 
   const taskCommand = async ({ message, argument }) => {

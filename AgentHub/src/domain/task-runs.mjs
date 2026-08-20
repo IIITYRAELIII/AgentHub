@@ -7,9 +7,12 @@ function normalizedProjectRoot(projectRoot) {
 
 export function taskRunKey({ streamId, provider, projectRoot, threadId }) {
   const normalizedStreamId = String(streamId ?? "").trim();
-  if (normalizedStreamId) return `stream\0${normalizedStreamId}`;
   const normalizedProvider = String(provider ?? "").trim().toLowerCase();
   const normalizedThreadId = String(threadId ?? "").trim();
+  if (normalizedStreamId && normalizedProvider && normalizedThreadId) {
+    return `stream\0${normalizedStreamId}\0${normalizedProvider}\0${normalizedThreadId}`;
+  }
+  if (normalizedStreamId) return `stream\0${normalizedStreamId}`;
   return `${normalizedProvider}\0${normalizedProjectRoot(projectRoot)}\0${normalizedThreadId}`;
 }
 
@@ -263,6 +266,12 @@ export class TaskRunRegistry {
   forTask(task) {
     const exact = this.#byTask.get(taskRunKey(task)) ?? null;
     if (exact) return exact;
+
+    const normalizedStreamId = String(task?.streamId ?? "").trim();
+    if (normalizedStreamId && !String(task?.threadId ?? "").trim()) {
+      const matches = this.values().filter((run) => String(run.streamId ?? "").trim() === normalizedStreamId);
+      return matches.length === 1 ? matches[0] : null;
+    }
 
     const normalizedProvider = String(task?.provider ?? "").trim().toLowerCase();
     const normalizedThreadId = String(task?.threadId ?? "").trim();

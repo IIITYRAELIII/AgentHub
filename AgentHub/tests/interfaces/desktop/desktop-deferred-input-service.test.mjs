@@ -11,6 +11,7 @@ function createService(item, overrides = {}) {
     replaceInputText: (input, text) => text, saveState: async () => {}, updateReceipt: () => {},
     cleanupFiles: async () => {}, updateMessage: async () => {}, scheduleNext: () => {}, scheduleQueued: () => {},
     selectTask: async () => {}, clientContext: (context) => context ?? {}, startTurn: async () => ({}),
+    startDeferred: async () => ({}),
     runForTask: () => null, describeAttachments: () => [], selectedTask: () => ({}),
     dispatchCommand: async () => {}, activeTitle: () => "New", snapshot: async () => ({}),
     ...overrides,
@@ -142,9 +143,27 @@ test("Desktop deferred queue can move an occupied message to a new task", async 
     pendingInputs: new Map(),
     queuedInputs,
     cancelSchedule: (id) => calls.push(["cancel", id]),
-    dispatchCommand: async (command, params) => calls.push(["dispatch", command, params]),
-    startTurn: async (input) => calls.push(["start", input]),
-    selectedTask: () => ({ provider: "codex", threadId: "thread-new" }),
+    dispatchCommand: async (command, params) => {
+      calls.push(["dispatch", command, params]);
+      return {
+        createdTask: {
+          provider: "codex",
+          threadId: "thread-new",
+          streamId: "stream-1",
+          projectRoot: "D:\\Work",
+          taskTitle: "New",
+        },
+      };
+    },
+    startTurn: async (input) => calls.push(["startTurn", input]),
+    startDeferred: async (deferredItem) => calls.push([
+      "startDeferred",
+      deferredItem.input,
+      deferredItem.threadId,
+      deferredItem.streamId,
+      deferredItem.telegramDeliveryRequested,
+    ]),
+    selectedTask: () => ({ provider: "codex", threadId: "thread-old", streamId: "stream-1" }),
   });
 
   const result = await service.handle({ id: item.id, action: "new" });
@@ -154,7 +173,7 @@ test("Desktop deferred queue can move an occupied message to a new task", async 
   assert.deepEqual(calls, [
     ["cancel", item.id],
     ["dispatch", "task.create", { provider: "codex", streamId: "stream-1" }],
-    ["start", "deliver"],
+    ["startDeferred", "deliver", "thread-new", "stream-1", false],
   ]);
 });
 

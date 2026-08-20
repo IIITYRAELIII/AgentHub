@@ -98,3 +98,43 @@ test("Telegram selection is isolated by chat and keeps its startup fallback", as
   assert.equal(await f.service.clear({ clientId: "telegram:42" }), true);
   assert.equal(f.service.selectedTask(42).threadId, "desktop-thread");
 });
+
+test("Telegram turn target falls back to the current task when explicit selection is stale", async () => {
+  const f = fixture();
+  await f.service.select({
+    streamId: "telegram-stream",
+    provider: "codex",
+    projectRoot: "D:/Work",
+    threadId: "telegram-thread",
+    taskTitle: "DevOps",
+  }, { clientId: "telegram:42" });
+  f.setFallback({
+    streamId: "current-stream",
+    provider: "codex",
+    projectRoot: "D:/Work",
+    threadId: "current-thread",
+  });
+
+  assert.equal(f.service.turnTarget(42).threadId, "telegram-thread");
+
+  f.sessionState.setClientTaskSelection("telegram:42", {
+    streamId: "missing-stream",
+    provider: "codex",
+    projectRoot: "D:/Work",
+    threadId: "missing-thread",
+    taskTitle: "Missing",
+  });
+
+  assert.deepEqual(f.service.turnTarget(42), {
+    streamId: "current-stream",
+    provider: "codex",
+    projectRoot: "D:/Work",
+    sessionCwd: null,
+    threadId: "current-thread",
+    taskTitle: "Desktop task",
+    chatId: 42,
+    modelId: "fallback",
+    reasoningId: "medium",
+    collaborationMode: "work",
+  });
+});

@@ -103,6 +103,7 @@ export function createDesktopRunRouterWiring({
       selectTask: desktop.selectTaskFromBinding,
       clientContext: commandClientContext,
       startTurn: services.startTurn,
+      startDeferred: (item) => services.runCoordinator.startDeferred(item),
       runForTask: services.runForTask,
       describeAttachments: services.describeAttachments,
       selectedTask: state.selectedTask,

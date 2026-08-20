@@ -177,6 +177,17 @@ test("different tasks and projects can run at the same time", () => {
   assert.deepEqual(registry.inProject(first.projectRoot), [first, second]);
 });
 
+test("different threads inside one Stream can run at the same time", () => {
+  const first = run({ id: "run-1", streamId: "stream-1", threadId: "thread-1" });
+  const second = run({ id: "run-2", streamId: "stream-1", threadId: "thread-2" });
+  const registry = new TaskRunRegistry([first, second]);
+
+  assert.equal(registry.size, 2);
+  assert.equal(registry.forTask(first), first);
+  assert.equal(registry.forTask(second), second);
+  assert.equal(registry.forTask({ streamId: "stream-1" }), null);
+});
+
 test("a task cannot start a second concurrent turn", () => {
   const registry = new TaskRunRegistry([run({ id: "run-1" })]);
   assert.throws(() => registry.add(run({ id: "run-2" })), /already running/);
@@ -258,19 +269,17 @@ test("run registry promotes a provider-bound run to its stable Stream", () => {
   assert.equal(registry.forTask({ provider: "codex", threadId: "thread-1" }), provisional);
 });
 
-test("bindStream keeps the run and indexes unchanged when the Stream is occupied", () => {
+test("bindStream keeps exact thread identity when the Stream has another active run", () => {
   const provisional = run({ id: "run-1", streamId: null, threadId: "thread-1" });
   const occupied = run({ id: "run-2", streamId: "stream-1", threadId: "thread-2" });
   const registry = new TaskRunRegistry([provisional, occupied]);
 
-  assert.throws(
-    () => registry.bindStream({ provider: "codex", threadId: "thread-1", streamId: "stream-1" }),
-    /already running/,
-  );
+  registry.bindStream({ provider: "codex", threadId: "thread-1", streamId: "stream-1" });
 
-  assert.equal(provisional.streamId, null);
+  assert.equal(provisional.streamId, "stream-1");
   assert.equal(registry.forTask({ provider: "codex", threadId: "thread-1" }), provisional);
-  assert.equal(registry.forTask({ streamId: "stream-1" }), occupied);
+  assert.equal(registry.forTask({ streamId: "stream-1" }), null);
+  assert.equal(registry.forTask({ provider: "codex", threadId: "thread-2", streamId: "stream-1" }), occupied);
 });
 
 test("stable Stream lookup lazily promotes a provisional provider-bound run", () => {

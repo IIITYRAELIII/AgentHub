@@ -16,6 +16,7 @@ import {
   selectCodexTurn,
   selectExactActiveCodexTurnId,
 } from "../../../src/providers/codex/codex-rollout-activity.mjs";
+import { currentStreamEntries } from "../../../src/composition/provider-catalog-composition.mjs";
 import {
   CODEX_CONTEXT_PROBE_PROMPT,
   CODEX_CONTEXT_PROBE_RESPONSE,
@@ -1635,6 +1636,62 @@ test("mergeTaskCatalog adds bot runs and promotes them to the top", () => {
   );
 });
 
+test("mergeTaskCatalog keeps parallel active threads inside one Stream visible", () => {
+  const merged = mergeTaskCatalog([], [{
+    id: "run-1",
+    provider: "claude",
+    streamId: "stream-1",
+    threadId: "claude-1",
+    projectRoot: project.path,
+    projectName: project.name,
+    taskTitle: "Первая",
+  }, {
+    id: "run-2",
+    provider: "claude",
+    streamId: "stream-1",
+    threadId: "claude-2",
+    projectRoot: project.path,
+    projectName: project.name,
+    taskTitle: "Вторая",
+  }]);
+
+  assert.equal(merged.length, 2);
+  assert.deepEqual(
+    merged.map((entry) => entry.threadId).sort(),
+    ["claude-1", "claude-2"],
+  );
+});
+
+test("currentStreamEntries keeps parallel active threads inside one Stream visible", () => {
+  const entries = currentStreamEntries([{
+    provider: "claude",
+    streamId: "stream-1",
+    threadId: "thread-old",
+    title: "Старый",
+    running: false,
+    threadPosition: 1,
+  }, {
+    provider: "claude",
+    streamId: "stream-1",
+    threadId: "thread-alpha",
+    title: "Alpha",
+    running: true,
+    threadPosition: 1,
+  }, {
+    provider: "claude",
+    streamId: "stream-1",
+    threadId: "thread-beta",
+    title: "Beta",
+    running: true,
+    threadPosition: 2,
+  }]);
+
+  assert.deepEqual(
+    entries.map((entry) => entry.threadId).sort(),
+    ["thread-alpha", "thread-beta", "thread-old"],
+  );
+});
+
 test("observer ownership overrides historical catalog ownership", () => {
   const [entry] = mergeTaskCatalog([{
     provider: "codex",
@@ -1784,4 +1841,16 @@ test("catalogEntryIsSelected compares provider, task, and normalized project pat
     threadId: "one",
     projectRoot: "c:\\projects\\main",
   }), process.platform === "win32");
+});
+
+test("catalogEntryIsSelected distinguishes parallel threads inside one Stream", () => {
+  assert.equal(catalogEntryIsSelected({
+    provider: "claude",
+    streamId: "stream-1",
+    threadId: "thread-1",
+  }, {
+    provider: "claude",
+    streamId: "stream-1",
+    threadId: "thread-2",
+  }), false);
 });

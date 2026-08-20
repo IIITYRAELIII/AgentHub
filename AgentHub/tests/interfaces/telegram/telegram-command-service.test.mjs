@@ -19,6 +19,7 @@ function service(overrides = {}) {
     sendLongMessage: noop, sendRunMessage: noop, bindIncomingMessage: noop, startTurn: noop,
     prompt: (_message, text) => `prompt:${text}`, commandTaskTarget: (target) => target,
     selectedTurnTarget: (chatId) => ({ provider: "codex", threadId: "t1", chatId }),
+    selectTaskFromBinding: noop,
     menu: {}, ...overrides,
   };
   return { instance: new TelegramCommandService(dependencies), calls };
@@ -45,4 +46,45 @@ test("Telegram command service sends ordinary text through the task lane", async
   const target = { provider: "codex", threadId: "t1", chatId: 1 };
   assert.deepEqual(bound, [[message, "hello", target]]);
   assert.deepEqual(started, [["prompt:hello", [], { target }]]);
+});
+
+test("Telegram command service cancels the chat-scoped selected task", async () => {
+  const dispatched = [];
+  const globalTask = { provider: "claude", threadId: "global-thread", streamId: "stream-1" };
+  const scopedTask = { provider: "claude", threadId: "chat-thread", streamId: "stream-1", chatId: 1 };
+  const run = { id: "run-1" };
+  const { instance } = service({
+    selectedTask: () => globalTask,
+    selectedTurnTarget: () => scopedTask,
+    runForTask: (target) => (target.threadId === scopedTask.threadId ? run : null),
+    dispatchCommand: async (...args) => {
+      dispatched.push(args);
+      return { message: "Запрошена остановка этой задачи" };
+    },
+  });
+
+  await instance.handle({ chat: { id: 1 } }, "/cancel");
+
+  assert.equal(dispatched[0][3].target.threadId, "chat-thread");
+});
+
+test("Telegram command service renames the chat-scoped selected task", async () => {
+  const dispatched = [];
+  const selected = [];
+  const scopedTask = { provider: "codex", threadId: "chat-thread", streamId: "stream-1", chatId: 1 };
+  const { instance } = service({
+    selectedTask: () => ({ provider: "codex", threadId: "global-thread", streamId: "stream-1" }),
+    selectedTurnTarget: () => scopedTask,
+    dispatchCommand: async (...args) => {
+      dispatched.push(args);
+      return { renamedTitle: "Scoped" };
+    },
+    selectTaskFromBinding: async (...args) => selected.push(args),
+  });
+
+  await instance.handle({ chat: { id: 1 } }, "/rename Scoped");
+
+  assert.equal(dispatched[0][0], "task.rename");
+  assert.equal(dispatched[0][3].target.threadId, "chat-thread");
+  assert.equal(selected[0][0].taskTitle, "Scoped");
 });

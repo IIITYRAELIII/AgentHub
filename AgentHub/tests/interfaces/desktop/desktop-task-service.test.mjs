@@ -73,6 +73,37 @@ test("Desktop task service resolves streamId before provider references", async 
   assert.equal(target.taskTitle, "Agent HUB - Themes");
 });
 
+test("Desktop task service resolves an exact Thread inside a parallel Stream", async () => {
+  const { service } = fixture();
+  const entries = [{
+    streamId: "stream-1",
+    workspaceName: "Agent HUB",
+    streamName: "Themes",
+    provider: "claude",
+    projectRoot: "C:\\repo",
+    threadId: "thread-alpha",
+    title: "Alpha",
+  }, {
+    streamId: "stream-1",
+    workspaceName: "Agent HUB",
+    streamName: "Themes",
+    provider: "claude",
+    projectRoot: "C:\\repo",
+    threadId: "thread-beta",
+    title: "Beta",
+  }];
+  service.catalog = () => entries;
+  service.refreshCatalog = async () => entries;
+
+  const target = await service.resolveTarget({
+    streamId: "stream-1",
+    provider: "claude",
+    threadId: "thread-alpha",
+  });
+
+  assert.equal(target.threadId, "thread-alpha");
+});
+
 test("Desktop task selection activates and marks one exact task", async () => {
   const { service, calls } = fixture();
   const params = {

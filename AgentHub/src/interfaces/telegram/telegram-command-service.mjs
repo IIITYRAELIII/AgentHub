@@ -22,7 +22,7 @@ export class TelegramCommandService {
       "resumeThread", "renameCurrentTask", "archiveCurrentTask", "sendArchiveMessage",
       "selectedTask", "runForTask", "refreshTaskDiff", "storedTaskDiff", "taskKey",
       "sendLongMessage", "sendRunMessage", "bindIncomingMessage", "startTurn", "prompt",
-      "commandTaskTarget", "selectedTurnTarget",
+      "commandTaskTarget", "selectedTurnTarget", "selectTaskFromBinding",
     ]) requiredFunction(dependencies[name], name);
     this.#d = dependencies;
   }
@@ -76,7 +76,16 @@ export class TelegramCommandService {
       await d.sendMessage("Укажите новое постоянное название: /rename Название задачи");
     } else if (text.startsWith("/rename ")) {
       try {
-        const title = await d.renameCurrentTask(text.slice("/rename ".length), d.messageContext(message));
+        const target = d.selectedTurnTarget(message.chat.id);
+        if (!target.threadId) throw new Error("текущая задача не выбрана");
+        const result = await d.dispatchCommand(
+          "task.rename",
+          { title: text.slice("/rename ".length) },
+          d.messageContext(message),
+          { target: d.commandTaskTarget(target) },
+        );
+        const title = result.renamedTitle;
+        await d.selectTaskFromBinding({ ...target, taskTitle: title }, d.messageContext(message));
         await d.sendMessage(`✅ Название закреплено: «${title}». Автозаголовки Codex больше его не изменят.`);
       } catch (error) {
         await d.sendMessage(`Не удалось переименовать задачу: ${error.message}`);
@@ -94,14 +103,14 @@ export class TelegramCommandService {
       const snapshot = d.statusSnapshot(message.chat.id);
       d.scheduleInteractiveJob("Текущая задача", message.chat.id, () => d.sendStatus(snapshot));
     } else if (text === "/diff") {
-      const target = d.selectedTask();
+      const target = d.selectedTurnTarget(message.chat.id);
       const run = d.runForTask(target);
       d.scheduleInteractiveJob("Изменения", message.chat.id, async () => {
         const diff = run ? await d.refreshTaskDiff(run) : d.storedTaskDiff(d.taskKey(target));
         await d.sendLongMessage(diff || "В выбранной задаче изменений файлов нет.", { maxParts: 8 });
       });
     } else if (text === "/cancel") {
-      const target = d.selectedTask();
+      const target = d.selectedTurnTarget(message.chat.id);
       if (!target.threadId) return d.sendMessage("В выбранной задаче сейчас ничего не выполняется.");
       const run = d.runForTask(target);
       const result = await d.dispatchCommand(
