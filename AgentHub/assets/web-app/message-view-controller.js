@@ -56,6 +56,12 @@
     return { text, successMessage: "Сообщение скопировано" };
   }
 
+  function messageDisclosurePresentation(expanded) {
+    return expanded
+      ? { label: "Свернуть", icon: "caret-up" }
+      : { label: "Показать ещё", icon: "caret-down" };
+  }
+
   function extractTechnicalTails(value) {
     const tokenPattern = /(runtime|коммит)\s*(?:[:—–-]\s*)?(?:`([^`\r\n]+)`|(\d{12,}-[\p{L}\p{N}_-]+|[0-9a-f]{7,40}))/giu;
     const rows = [];
@@ -227,6 +233,7 @@
     extractTechnicalTails,
     messageTechnicalContent,
     messageCopyRequest,
+    messageDisclosurePresentation,
     messageContentSignature,
     messageKey,
     messageTailWindow,

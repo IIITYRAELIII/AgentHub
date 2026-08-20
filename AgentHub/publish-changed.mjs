@@ -115,6 +115,7 @@ function focusedSteps(plan, { fullTestCheckpointId = "" } = {}) {
   const steps = [];
   if (plan.fullTests) {
     steps.push(byLabel.get("Полные тесты Agent Hub"));
+    steps.push(byLabel.get("Тестовый контур Agent Hub"));
   } else {
     steps.push(npmStep("Проверка синтаксиса Agent Hub", ["run", "check"]));
     if (plan.unitTests) {

@@ -190,28 +190,39 @@ test("a missing completion becomes a bounded timeout instead of staying active f
   tracker.dispose();
 });
 
-test("a confirmed provider turn is not failed by the request-start watchdog", () => {
+test("a confirmed provider turn replaces the request-start watchdog with a bounded timeout", async () => {
   let now = Date.parse("2026-08-19T12:11:40.000Z");
-  const scheduled = new Set();
+  let nextTimerId = 0;
+  const scheduled = new Map();
   const tracker = new ContextCompactionTracker({
     clock: () => now,
     idFactory: () => "provider-turn-id",
-    setTimer: (handler) => {
-      scheduled.add(handler);
-      return handler;
+    setTimer: (handler, timeoutMs) => {
+      const timer = { id: ++nextTimerId, handler, timeoutMs };
+      scheduled.set(timer.id, timer);
+      return timer;
     },
-    clearTimer: (handler) => scheduled.delete(handler),
+    clearTimer: (timer) => scheduled.delete(timer.id),
   });
 
   tracker.begin("thread-provider-turn");
   assert.equal(scheduled.size, 1);
+  assert.equal([...scheduled.values()][0].timeoutMs, 2 * 60_000);
 
-  tracker.begin("thread-provider-turn", { turnId: "compaction-turn" });
+  const started = tracker.begin("thread-provider-turn", { turnId: "compaction-turn" });
+  const settlement = tracker.waitForSettlement("thread-provider-turn", started.id);
+  assert.equal(scheduled.size, 1);
+  assert.equal([...scheduled.values()][0].timeoutMs, 10 * 60_000);
+
   now += 5 * 60_000;
-
-  assert.equal(scheduled.size, 0);
   assert.equal(tracker.get("thread-provider-turn").status, "running");
   assert.equal(tracker.get("thread-provider-turn").turnId, "compaction-turn");
+
+  now += 5 * 60_000;
+  [...scheduled.values()][0].handler();
+  assert.equal((await settlement)?.status, "timeout");
+  assert.equal(tracker.get("thread-provider-turn").stage, "timeout");
+  assert.equal(tracker.isRunning("thread-provider-turn"), false);
   tracker.dispose();
 });
 

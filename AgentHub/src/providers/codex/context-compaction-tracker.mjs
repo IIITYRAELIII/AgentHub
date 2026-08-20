@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 const DEFAULT_TIMEOUT_MS = 2 * 60 * 1_000;
+const DEFAULT_PROVIDER_TURN_TIMEOUT_MS = 10 * 60 * 1_000;
 const DEFAULT_MAX_ENTRIES = 100;
 
 function normalizedThreadId(value) {
@@ -71,6 +72,7 @@ export class ContextCompactionTracker {
     clock = () => Date.now(),
     idFactory = randomUUID,
     timeoutMs = DEFAULT_TIMEOUT_MS,
+    providerTurnTimeoutMs = DEFAULT_PROVIDER_TURN_TIMEOUT_MS,
     cleanupTimeoutMs = timeoutMs,
     maxEntries = DEFAULT_MAX_ENTRIES,
     setTimer = setTimeout,
@@ -81,6 +83,7 @@ export class ContextCompactionTracker {
     this.clock = clock;
     this.idFactory = idFactory;
     this.timeoutMs = timeoutMs;
+    this.providerTurnTimeoutMs = providerTurnTimeoutMs;
     this.cleanupTimeoutMs = cleanupTimeoutMs;
     this.maxEntries = maxEntries;
     this.setTimer = setTimer;
@@ -296,8 +299,11 @@ export class ContextCompactionTracker {
         completedAt: null,
       };
     this.store(key, record);
-    if (record.turnId) this.cancelTimeout(key);
-    else this.scheduleTimeout(key, record.id);
+    this.scheduleTimeout(
+      key,
+      record.id,
+      record.turnId ? this.providerTurnTimeoutMs : this.timeoutMs,
+    );
     return record;
   }
 
@@ -427,6 +433,7 @@ export class ContextCompactionTracker {
       this.store(key, {
         ...current,
         status: "timeout",
+        stage: "timeout",
         completedAt: new Date(this.clock()).toISOString(),
       });
       this.notifySettled(key, this.entries.get(key));

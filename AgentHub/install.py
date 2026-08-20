@@ -16,11 +16,11 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent
-COMPONENTS = ("telegram", "mini-app", "android-app", "shared-dashboard-bot")
+COMPONENTS = ("telegram", "mini-app", "android-app", "shared-dashboard-bot", "test-contour")
 LEGACY_PROFILE_COMPONENTS = {
-    "full": {"telegram": True, "miniApp": True, "androidApp": True, "sharedDashboardBot": False, "codexContextCleanup": False},
-    "telegram": {"telegram": True, "miniApp": False, "androidApp": False, "sharedDashboardBot": False, "codexContextCleanup": False},
-    "journal": {"telegram": False, "miniApp": False, "androidApp": False, "sharedDashboardBot": False, "codexContextCleanup": False},
+    "full": {"telegram": True, "miniApp": True, "androidApp": True, "sharedDashboardBot": False, "codexContextCleanup": False, "testContour": False},
+    "telegram": {"telegram": True, "miniApp": False, "androidApp": False, "sharedDashboardBot": False, "codexContextCleanup": False, "testContour": False},
+    "journal": {"telegram": False, "miniApp": False, "androidApp": False, "sharedDashboardBot": False, "codexContextCleanup": False, "testContour": False},
 }
 SWAP_TOKEN_PATTERN = re.compile(r"[0-9a-f]{32}\Z")
 
@@ -41,6 +41,7 @@ def resolve_components(
             "miniApp": raw_components.get("miniApp") is True,
             "androidApp": raw_components.get("androidApp") is True,
             "sharedDashboardBot": raw_components.get("sharedDashboardBot") is True,
+            "testContour": raw_components.get("testContour") is True,
             "codexContextCleanup": (
                 raw_components.get("codexContextCleanup") is True
                 if "codexContextCleanup" in raw_components
@@ -60,6 +61,7 @@ def resolve_components(
                 "androidApp": False,
                 "sharedDashboardBot": False,
                 "codexContextCleanup": False,
+                "testContour": False,
             }
         else:
             components = dict(LEGACY_PROFILE_COMPONENTS["full"])
@@ -71,6 +73,7 @@ def resolve_components(
         "mini-app": "miniApp",
         "android-app": "androidApp",
         "shared-dashboard-bot": "sharedDashboardBot",
+        "test-contour": "testContour",
     }
     for name in enabled:
         components[component_names[name]] = True
@@ -84,6 +87,24 @@ def resolve_components(
     # локальное opt-in и не оставляет скрыто работающий компонент.
     components["codexContextCleanup"] = False
     return components
+
+
+def contour_only_component_change(args: argparse.Namespace, *, fresh_install: bool) -> bool:
+    return (
+        not fresh_install
+        and set(args.enable_component + args.disable_component) == {"test-contour"}
+        and not any((
+            args.token_file,
+            args.user_id,
+            args.project_root,
+            args.provider,
+            args.with_voice,
+            args.install_voice,
+            args.rebuild_history,
+            args.extension_only,
+            args.rollout_image_cleanup,
+        ))
+    )
 
 
 def _owned_extension_swap_artifacts(target: Path, kind: str) -> list[Path]:
@@ -535,6 +556,10 @@ def main() -> int:
     config_file = target_root / "config.json"
     fresh_install = not config_file.exists()
     existing = read_existing_config(config_file)
+    previous_test_contour = (
+        isinstance(existing.get("components"), dict)
+        and existing["components"].get("testContour") is True
+    )
     try:
         components = resolve_components(
             existing,
@@ -627,6 +652,20 @@ def main() -> int:
     config = apply_rollout_image_cleanup_choice(config, args.rollout_image_cleanup)
     atomic_private_json(config_file, config)
     print(f"Created {config_file}")
+    if components["testContour"]:
+        subprocess.run(
+            ["node", str(ROOT / "test-contour.mjs"), "install", "--component-approved"],
+            check=True,
+        )
+    elif previous_test_contour:
+        subprocess.run(
+            ["node", str(ROOT / "test-contour.mjs"), "uninstall", "--component-approved"],
+            check=True,
+        )
+    contour_only_change = contour_only_component_change(args, fresh_install=fresh_install)
+    if contour_only_change:
+        print("Agent Hub Test Contour component updated without production deploy or restart.")
+        return 0
     if args.install_voice:
         install_voice(target_root)
     subprocess.run(["node", str(ROOT / "runtime-manager.mjs"), "deploy"], check=True)
@@ -659,6 +698,8 @@ def main() -> int:
     print(f"Agent Hub components: {', '.join(enabled_components) if enabled_components else 'core'}")
     if components["sharedDashboardBot"]:
         print("Pair the shared Dashboard bot: npm run dashboard-bot:pair")
+    if components["testContour"]:
+        print("Start the isolated Test Contour: npm run contour:refresh")
     print("Reload the VS Code window after first extension installation.")
     print("Run: npm run doctor")
     return 0

@@ -4,7 +4,8 @@
     "miniApp": true,
     "androidApp": true,
     "sharedDashboardBot": false,
-    "codexContextCleanup": false
+    "codexContextCleanup": false,
+    "testContour": false
   },
   "telegramBotToken": "123456789:replace_with_your_bot_token",
   "allowedUserIds": [

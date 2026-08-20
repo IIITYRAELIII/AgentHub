@@ -2,12 +2,21 @@ from __future__ import annotations
 
 import unittest
 import json
+import sys
 import tempfile
+from argparse import Namespace
 from pathlib import Path
 from unittest import mock
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from AgentHub import install
-from AgentHub.install import apply_rollout_image_cleanup_choice, request_safe_restart, resolve_components
+from AgentHub.install import (
+    apply_rollout_image_cleanup_choice,
+    contour_only_component_change,
+    request_safe_restart,
+    resolve_components,
+)
 
 
 class ComponentSelectionTests(unittest.TestCase):
@@ -20,6 +29,7 @@ class ComponentSelectionTests(unittest.TestCase):
                 "androidApp": False,
                 "sharedDashboardBot": False,
                 "codexContextCleanup": False,
+                "testContour": False,
             },
         )
 
@@ -32,6 +42,7 @@ class ComponentSelectionTests(unittest.TestCase):
                 "androidApp": True,
                 "sharedDashboardBot": False,
                 "codexContextCleanup": False,
+                "testContour": False,
             },
         )
 
@@ -44,6 +55,7 @@ class ComponentSelectionTests(unittest.TestCase):
                 "androidApp": False,
                 "sharedDashboardBot": False,
                 "codexContextCleanup": False,
+                "testContour": False,
             },
         )
 
@@ -56,8 +68,42 @@ class ComponentSelectionTests(unittest.TestCase):
                 "androidApp": True,
                 "sharedDashboardBot": False,
                 "codexContextCleanup": False,
+                "testContour": False,
             },
         )
+
+    def test_test_contour_is_explicit_opt_in_without_other_dependencies(self) -> None:
+        self.assertEqual(
+            resolve_components({}, fresh_install=True, enabled=["test-contour"]),
+            {
+                "telegram": False,
+                "miniApp": False,
+                "androidApp": False,
+                "sharedDashboardBot": False,
+                "codexContextCleanup": False,
+                "testContour": True,
+            },
+        )
+
+    def test_existing_test_contour_toggle_skips_production_install_side_effects(self) -> None:
+        args = Namespace(
+            enable_component=["test-contour"],
+            disable_component=[],
+            token_file=None,
+            user_id=None,
+            project_root=None,
+            provider=None,
+            with_voice=False,
+            install_voice=False,
+            rebuild_history=False,
+            extension_only=False,
+            rollout_image_cleanup=None,
+        )
+        self.assertTrue(contour_only_component_change(args, fresh_install=False))
+        args.provider = "codex"
+        self.assertFalse(contour_only_component_change(args, fresh_install=False))
+        args.provider = None
+        self.assertFalse(contour_only_component_change(args, fresh_install=True))
 
     def test_telegram_cannot_be_disabled_while_mini_app_remains_enabled(self) -> None:
         with self.assertRaisesRegex(ValueError, "requires telegram"):

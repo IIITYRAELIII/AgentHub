@@ -41,7 +41,7 @@ test("core-only components need neither Telegram credentials nor Web App", async
     delete process.env.SENTRY_RELEASE;
     const config = await loadConfig();
     assert.deepEqual(config.components, {
-      telegram: false, miniApp: false, androidApp: false, sharedDashboardBot: false, codexContextCleanup: false,
+      telegram: false, miniApp: false, androidApp: false, sharedDashboardBot: false, codexContextCleanup: false, testContour: false,
     });
     assert.equal(config.telegramEnabled, false);
     assert.equal(config.allowedUserIds.size, 0);
@@ -255,7 +255,7 @@ test("Telegram and Android App components can be enabled independently", async (
     }), "utf8");
     const telegram = await loadConfig();
     assert.deepEqual(telegram.components, {
-      telegram: true, miniApp: false, androidApp: false, sharedDashboardBot: false, codexContextCleanup: false,
+      telegram: true, miniApp: false, androidApp: false, sharedDashboardBot: false, codexContextCleanup: false, testContour: false,
     });
     assert.equal(telegram.telegramEnabled, true);
     assert.equal(telegram.miniApp.enabled, false);
@@ -266,7 +266,7 @@ test("Telegram and Android App components can be enabled independently", async (
     }), "utf8");
     const web = await loadConfig();
     assert.deepEqual(web.components, {
-      telegram: false, miniApp: false, androidApp: true, sharedDashboardBot: false, codexContextCleanup: false,
+      telegram: false, miniApp: false, androidApp: true, sharedDashboardBot: false, codexContextCleanup: false, testContour: false,
     });
     assert.equal(web.telegramEnabled, false);
     assert.equal(web.miniApp.enabled, true);
@@ -292,7 +292,7 @@ test("legacy profiles migrate to equivalent components", async () => {
     }), "utf8");
     const config = await loadConfig();
     assert.deepEqual(config.components, {
-      telegram: true, miniApp: false, androidApp: false, sharedDashboardBot: false, codexContextCleanup: false,
+      telegram: true, miniApp: false, androidApp: false, sharedDashboardBot: false, codexContextCleanup: false, testContour: false,
     });
     assert.equal(config.miniApp.enabled, false);
   } finally {

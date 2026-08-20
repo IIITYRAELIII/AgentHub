@@ -52,6 +52,7 @@ export function publicationSteps({
           env: { AGENT_HUB_FULL_TEST_CHECKPOINT_ID: fullTestCheckpointId },
         } : {}),
       },
+      npmStep("Тестовый контур Agent Hub", ["run", "contour:verify", "--", "--require-installed"]),
     ] : []),
     npmStep("Сборка Agent Hub Mobile", ["run", "android:build"]),
     ...(!skipWorker ? [

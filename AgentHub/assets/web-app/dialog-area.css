@@ -596,19 +596,19 @@ html[data-view="chat"][data-surface][data-theme] {
   width: 100%;
 }
 
-html[data-view="chat"]:not([data-surface="mobile"]) .chat-log .msg-stack-user {
+&:not([data-surface="mobile"]) .chat-log .msg-stack-user {
   align-items: stretch;
   align-self: flex-end;
   max-width: min(35.75rem, 78%) !important;
   width: min(35.75rem, 78%) !important;
 }
 
-html[data-view="chat"]:not([data-surface="mobile"]) .chat-log .msg-stack-user > .msg-user {
+&:not([data-surface="mobile"]) .chat-log .msg-stack-user > .msg-user {
   align-self: stretch;
   width: 100% !important;
 }
 
-html[data-view="chat"]:not([data-surface="mobile"]) .chat-log .msg-stack-user > .msg-actions {
+&:not([data-surface="mobile"]) .chat-log .msg-stack-user > .msg-actions {
   left: 0;
   right: auto;
   width: 100% !important;

@@ -3,7 +3,7 @@
   "baseline": {
     "serverMaximumLines": 150,
     "compositionMaximumLines": 638,
-    "rootProductionModules": 26,
+    "rootProductionModules": 27,
     "rootTestModules": 0
   },
   "publicRootModules": [
@@ -26,6 +26,7 @@
     "send-message.mjs",
     "shared-dashboard-bot-pair.mjs",
     "shared-dashboard-bot-webhook.mjs",
+    "test-contour.mjs",
     "test-suite.mjs",
     "tts-smoke.mjs",
     "work-log-account-backfill.mjs",

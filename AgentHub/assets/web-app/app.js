@@ -3759,14 +3759,17 @@ function updateUserMessageDisclosure(article) {
     class: "msg-disclosure",
     "data-message-disclosure": "",
   });
-  const renderButton = (value) => button.replaceChildren(
-    el("span", { text: value ? "Свернуть" : "Показать ещё" }),
-    window.AgentHubStreamTabs.createPhosphorIcon(
-      document,
-      value ? "caret-up" : "caret-down",
-      "msg-disclosure-icon",
-    ),
-  );
+  const renderButton = (value) => {
+    const presentation = MessageView.messageDisclosurePresentation(value);
+    button.replaceChildren(
+      el("span", { text: presentation.label }),
+      window.AgentHubStreamTabs.createPhosphorIcon(
+        document,
+        presentation.icon,
+        "msg-disclosure-icon",
+      ),
+    );
+  };
   renderButton(expanded);
   button.setAttribute("aria-expanded", String(expanded));
   button.onclick = () => {

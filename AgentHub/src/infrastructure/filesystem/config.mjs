@@ -579,13 +579,14 @@ export async function loadConfig() {
       androidApp: migratedProfile === "full",
       sharedDashboardBot: false,
       codexContextCleanup: raw.codexRolloutContext?.enabled === true,
+      testContour: false,
     };
   } else {
     if (!raw.components || typeof raw.components !== "object" || Array.isArray(raw.components)) {
       throw new Error("components must be an object");
     }
     for (const name of Object.keys(raw.components)) {
-      if (!["telegram", "miniApp", "androidApp", "sharedDashboardBot", "codexContextCleanup"].includes(name)) {
+      if (!["telegram", "miniApp", "androidApp", "sharedDashboardBot", "codexContextCleanup", "testContour"].includes(name)) {
         throw new Error(`unknown component: ${name}`);
       }
     }
@@ -594,6 +595,7 @@ export async function loadConfig() {
       miniApp: raw.components.miniApp === true,
       androidApp: raw.components.androidApp === true,
       sharedDashboardBot: raw.components.sharedDashboardBot === true,
+      testContour: raw.components.testContour === true,
       codexContextCleanup: raw.components.codexContextCleanup == null
         ? raw.codexRolloutContext?.enabled === true
         : raw.components.codexContextCleanup === true,

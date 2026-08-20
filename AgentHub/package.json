@@ -39,12 +39,20 @@
     "check": "node --no-warnings --experimental-vm-modules syntax-check.mjs",
     "pretest": "node test-suite.mjs architecture",
     "test": "node test-suite.mjs unit",
+    "test:installer": "python -m unittest install_test.py",
     "test:e2e": "node test-suite.mjs e2e",
     "test:vscode": "node test-suite.mjs vscode",
-    "test:core": "npm run check && npm test && npm run test:e2e",
+    "test:core": "npm run check && npm test && npm run test:installer && npm run test:e2e",
     "test:all": "npm run test:core && npm run test:vscode",
     "doctor": "node doctor.mjs",
-    "open:web": "node open-local-web.mjs"
+    "open:web": "node open-local-web.mjs",
+    "contour:install": "node test-contour.mjs install",
+    "contour:start": "node test-contour.mjs start",
+    "contour:refresh": "node test-contour.mjs refresh",
+    "contour:open": "node test-contour.mjs open",
+    "contour:status": "node test-contour.mjs status",
+    "contour:stop": "node test-contour.mjs stop",
+    "contour:verify": "node test-contour.mjs verify"
   },
   "devDependencies": {
     "wrangler": "4.115.0"

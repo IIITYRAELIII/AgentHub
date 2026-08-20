@@ -1,0 +1,526 @@
+import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
+import { closeSync, openSync } from "node:fs";
+import {
+  access,
+  mkdir,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import { homedir } from "node:os";
+import path from "node:path";
+import process from "node:process";
+
+import { deployRuntime } from "./runtime-manager.mjs";
+import {
+  canonicalPath,
+  pathInsideOrSame,
+} from "../infrastructure/filesystem/config.mjs";
+import {
+  defaultRuntimeRoot,
+  runtimeLayout,
+  runtimeReleaseDirectory,
+} from "../infrastructure/filesystem/runtime-layout.mjs";
+import { LoopbackTelegramApi } from "../infrastructure/network/loopback-telegram-api.mjs";
+import { localWebAccessUrl } from "../infrastructure/network/loopback-web-access.mjs";
+import { JournalDatabase } from "../infrastructure/persistence/journal-database.mjs";
+import { processIsAlive } from "../infrastructure/process/process-liveness.mjs";
+import { stopProcessTree } from "../infrastructure/process/process-tree.mjs";
+
+export const TEST_CONTOUR_MODEL = "gpt-5.3-codex-spark";
+export const TEST_CONTOUR_COMPONENT = "testContour";
+export const TEST_CONTOUR_PORT = 8877;
+export const TEST_CONTOUR_WEB_HOST = "localhost";
+export const PLAYWRIGHT_CORE_VERSION = "1.62.1";
+const MARKER_FILE = ".agent-hub-test-contour.json";
+const STATE_FILE = "test-contour-state.json";
+const CONFIG_FILE = "config.json";
+const USER_ID = 42;
+const CHAT_ID = 84;
+
+export function defaultTestContourRoot({
+  environment = process.env,
+  platform = process.platform,
+  home = homedir(),
+} = {}) {
+  if (platform === "win32") {
+    return path.resolve(
+      environment.LOCALAPPDATA ?? path.join(home, "AppData", "Local"),
+      "AgentHub-TestContour",
+    );
+  }
+  return path.resolve(
+    environment.XDG_STATE_HOME ?? path.join(home, ".local", "state"),
+    "agent-hub-test-contour",
+  );
+}
+
+export function testContourPaths(root = defaultTestContourRoot()) {
+  const resolved = path.resolve(root);
+  return {
+    root: resolved,
+    markerFile: path.join(resolved, MARKER_FILE),
+    stateFile: path.join(resolved, STATE_FILE),
+    configFile: path.join(resolved, CONFIG_FILE),
+    projectRoot: path.join(resolved, "project"),
+    dataDir: path.join(resolved, "data"),
+    automationRoot: path.join(resolved, "automation"),
+    artifactsDirectory: path.join(resolved, "artifacts"),
+    stdoutFile: path.join(resolved, "test-contour.log"),
+    stderrFile: path.join(resolved, "test-contour-error.log"),
+  };
+}
+
+export function assertIsolatedTestContourRoot(root, {
+  productionRoot = defaultRuntimeRoot(),
+  sourceRoot = path.resolve(import.meta.dirname, "..", ".."),
+} = {}) {
+  const candidate = canonicalPath(root);
+  const protectedRoots = [productionRoot, sourceRoot].map(canonicalPath);
+  for (const protectedRoot of protectedRoots) {
+    if (pathInsideOrSame(candidate, protectedRoot) || pathInsideOrSame(protectedRoot, candidate)) {
+      throw new Error(`Test Contour root overlaps protected path: ${candidate}`);
+    }
+  }
+  return candidate;
+}
+
+async function readJson(file, fallback = null) {
+  try {
+    return JSON.parse(await readFile(file, "utf8"));
+  } catch (error) {
+    if (error?.code === "ENOENT") return fallback;
+    throw error;
+  }
+}
+
+async function writeJson(file, value) {
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+async function ensureMarker(root) {
+  const paths = testContourPaths(root);
+  const existing = await readJson(paths.markerFile);
+  if (existing?.kind === "agent-hub-test-contour" && existing.id) return existing;
+  if (existing) throw new Error(`Foreign Test Contour marker: ${paths.markerFile}`);
+  const marker = {
+    kind: "agent-hub-test-contour",
+    id: randomUUID(),
+    createdAt: new Date().toISOString(),
+  };
+  await writeJson(paths.markerFile, marker);
+  return marker;
+}
+
+async function requireMarker(root) {
+  const paths = testContourPaths(root);
+  const marker = await readJson(paths.markerFile);
+  if (marker?.kind !== "agent-hub-test-contour" || !marker.id) {
+    throw new Error(`Refusing Test Contour operation without owned marker: ${paths.markerFile}`);
+  }
+  return marker;
+}
+
+export async function testContourComponentEnabled({
+  productionConfigFile = runtimeLayout(defaultRuntimeRoot()).configFile,
+} = {}) {
+  const config = await readJson(productionConfigFile, {});
+  return config?.components?.[TEST_CONTOUR_COMPONENT] === true;
+}
+
+function npmInvocation(args) {
+  if (process.platform === "win32") {
+    return {
+      command: process.env.ComSpec || "cmd.exe",
+      args: ["/d", "/s", "/c", "npm", ...args],
+    };
+  }
+  return { command: "npm", args };
+}
+
+function runProcess(command, args, { cwd, env = {}, stdio = "inherit" } = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd,
+      env: { ...process.env, ...env },
+      stdio,
+      windowsHide: true,
+      shell: false,
+    });
+    child.once("error", reject);
+    child.once("exit", (code, signal) => {
+      if (code === 0) resolve();
+      else reject(new Error(`Process failed with ${signal ?? `code ${code}`}: ${command} ${args.join(" ")}`));
+    });
+  });
+}
+
+export async function installTestContour({
+  root = defaultTestContourRoot(),
+  run = runProcess,
+} = {}) {
+  const isolatedRoot = assertIsolatedTestContourRoot(root);
+  const paths = testContourPaths(isolatedRoot);
+  await Promise.all([
+    mkdir(paths.projectRoot, { recursive: true }),
+    mkdir(paths.automationRoot, { recursive: true }),
+    mkdir(paths.artifactsDirectory, { recursive: true }),
+  ]);
+  const marker = await ensureMarker(isolatedRoot);
+  await writeFile(
+    path.join(paths.projectRoot, "README.md"),
+    "# Agent Hub Test Contour\n\nИзолированная рабочая область для проверок Agent Hub.\n",
+    "utf8",
+  );
+  await writeJson(path.join(paths.automationRoot, "package.json"), {
+    name: "agent-hub-test-contour-automation",
+    private: true,
+    version: "0.0.0",
+    dependencies: { "playwright-core": PLAYWRIGHT_CORE_VERSION },
+  });
+  const npm = npmInvocation([
+    "install",
+    "--ignore-scripts",
+    "--no-audit",
+    "--no-fund",
+    "--save-exact",
+  ]);
+  await run(npm.command, npm.args, { cwd: paths.automationRoot });
+  return { root: isolatedRoot, marker, paths };
+}
+
+export async function uninstallTestContour({ root = defaultTestContourRoot() } = {}) {
+  const isolatedRoot = assertIsolatedTestContourRoot(root);
+  await requireMarker(isolatedRoot);
+  await stopTestContour({ root: isolatedRoot });
+  await rm(isolatedRoot, { recursive: true, force: true });
+  return { root: isolatedRoot, removed: true };
+}
+
+export function testContourConfig({
+  paths,
+  telegramApiBaseUrl,
+  port = TEST_CONTOUR_PORT,
+  model = TEST_CONTOUR_MODEL,
+} = {}) {
+  const parsedTelegramUrl = new URL(String(telegramApiBaseUrl));
+  if (parsedTelegramUrl.protocol !== "http:" || parsedTelegramUrl.hostname !== "127.0.0.1") {
+    throw new Error("Test Contour Telegram API must use 127.0.0.1 over HTTP");
+  }
+  return {
+    components: {
+      telegram: true,
+      miniApp: true,
+      androidApp: false,
+      sharedDashboardBot: false,
+      codexContextCleanup: false,
+      testContour: true,
+    },
+    telegramBotToken: "123:test-contour-token",
+    telegramApiBaseUrl: parsedTelegramUrl.toString().replace(/\/$/u, ""),
+    allowedUserIds: [USER_ID],
+    allowedChatIds: [CHAT_ID],
+    privateChatsOnly: true,
+    provider: "codex",
+    projectRoot: paths.projectRoot,
+    projects: [{ name: "Test Contour", path: paths.projectRoot }],
+    dataDir: paths.dataDir,
+    showProjectButton: false,
+    showTaskProject: false,
+    guardConcurrentRepositoryWrites: false,
+    miniApp: {
+      host: "127.0.0.1",
+      port,
+      quickTunnel: { enabled: false },
+      worker: { enabled: false },
+    },
+    codexModel: model,
+    codexReasoningEffort: "medium",
+    codexSandboxMode: "workspace-write",
+    codexCollaborationMode: "default",
+    codexModels: [{ value: model, label: "GPT-5.3-Codex-Spark" }],
+    taskBoard: {
+      triageEnabled: false,
+      triageModel: model,
+      autoPlaceConfidence: 0.82,
+      bugReportWorkspaceName: "",
+    },
+    diagnostics: {
+      sentry: {
+        enabled: false,
+        dsn: "",
+        environment: "test-contour",
+      },
+    },
+    voiceEnabled: false,
+    ttsEnabled: false,
+    autoApproveOnStart: true,
+    logMaxBytes: 2_000_000,
+    logMaxFiles: 3,
+  };
+}
+
+export function testContourEnvironment({
+  paths,
+  telegramApiBaseUrl,
+  model = TEST_CONTOUR_MODEL,
+  environment = process.env,
+} = {}) {
+  const result = { ...environment };
+  for (const key of [
+    "TELEGRAM_BOT_TOKEN",
+    "TELEGRAM_API_BASE_URL",
+    "SENTRY_DSN",
+    "SENTRY_RELEASE",
+    "AGENT_HUB_PUBLIC_URL",
+    "AGENT_HUB_PROFILE",
+    "CODEX_EXECUTABLE",
+    "CODEX_EXECUTABLE_ARGS",
+  ]) delete result[key];
+  return {
+    ...result,
+    AGENT_HUB_CONFIG: paths.configFile,
+    AGENT_HUB_RUNTIME_ROOT: paths.root,
+    AGENT_HUB_LAUNCHER: "",
+    AGENT_HUB_DISABLE_SECRET_ACL: "1",
+    AGENT_HUB_TEST_CONTOUR: "1",
+    TELEGRAM_API_BASE_URL: telegramApiBaseUrl,
+    AI_PROVIDER: "codex",
+    CODEX_MODEL: model,
+    CODEX_PROJECT_ROOT: paths.projectRoot,
+    CODEX_SANDBOX_MODE: "workspace-write",
+    SENTRY_DSN: "",
+    SENTRY_ENVIRONMENT: "test-contour",
+  };
+}
+
+export async function prepareTestContourCandidate({
+  root = defaultTestContourRoot(),
+  sourceRoot = path.resolve(import.meta.dirname, "..", ".."),
+  deploy = deployRuntime,
+} = {}) {
+  const isolatedRoot = assertIsolatedTestContourRoot(root, { sourceRoot });
+  await ensureMarker(isolatedRoot);
+  const deployed = await deploy({ sourceRoot, runtimeRoot: isolatedRoot });
+  return { root: isolatedRoot, releaseId: deployed.releaseId, releaseRoot: deployed.releaseRoot };
+}
+
+async function currentRelease(root) {
+  const layout = runtimeLayout(root);
+  const pointer = await readJson(layout.currentFile);
+  const releaseId = String(pointer?.current ?? "").trim();
+  if (!releaseId) throw new Error("Test Contour candidate is not built");
+  const releaseRoot = runtimeReleaseDirectory(root, releaseId);
+  await access(path.join(releaseRoot, "agent-hub-main.mjs"));
+  return { releaseId, releaseRoot };
+}
+
+async function waitFor(operation, description, timeoutMs = 120_000) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError = null;
+  while (Date.now() < deadline) {
+    try {
+      const value = await operation();
+      if (value) return value;
+    } catch (error) {
+      lastError = error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`Timeout waiting for ${description}: ${lastError?.message ?? "not ready"}`);
+}
+
+async function readyHealth(port) {
+  const response = await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(2_000) });
+  if (!response.ok) return null;
+  const body = await response.json();
+  return body?.ok === true && body?.live === true && body?.ready === true ? body : null;
+}
+
+export async function serveTestContour({
+  root = defaultTestContourRoot(),
+  port = TEST_CONTOUR_PORT,
+  model = TEST_CONTOUR_MODEL,
+  spawnImpl = spawn,
+} = {}) {
+  const isolatedRoot = assertIsolatedTestContourRoot(root);
+  const marker = await requireMarker(isolatedRoot);
+  const paths = testContourPaths(isolatedRoot);
+  const { releaseId, releaseRoot } = await currentRelease(isolatedRoot);
+  const telegram = new LoopbackTelegramApi({ userId: USER_ID, chatId: CHAT_ID });
+  await telegram.start();
+  await writeJson(paths.configFile, testContourConfig({
+    paths,
+    telegramApiBaseUrl: telegram.baseUrl,
+    port,
+    model,
+  }));
+  await rm(paths.stateFile, { force: true });
+  const runtime = spawnImpl(process.execPath, [path.join(releaseRoot, "agent-hub-main.mjs")], {
+    cwd: releaseRoot,
+    env: testContourEnvironment({ paths, telegramApiBaseUrl: telegram.baseUrl, model }),
+    stdio: "inherit",
+    windowsHide: true,
+  });
+  let runtimeExit = null;
+  runtime.once("exit", (code, signal) => { runtimeExit = { code, signal }; });
+  try {
+    const health = await waitFor(async () => {
+      if (runtimeExit) throw new Error(`candidate exited with ${runtimeExit.signal ?? runtimeExit.code}`);
+      return readyHealth(port);
+    }, "Test Contour runtime readiness");
+    const secret = String(await readFile(path.join(isolatedRoot, "local-web.secret"), "utf8")).trim();
+    const url = localWebAccessUrl(`http://${TEST_CONTOUR_WEB_HOST}:${port}/`, secret);
+    const state = {
+      contourId: marker.id,
+      managerPid: process.pid,
+      runtimePid: runtime.pid,
+      releaseId,
+      model,
+      port,
+      url,
+      health,
+      startedAt: new Date().toISOString(),
+    };
+    await writeJson(paths.stateFile, state);
+    const shutdown = async () => {
+      await stopProcessTree(runtime.pid).catch(() => false);
+      await telegram.stop().catch(() => null);
+      await rm(paths.stateFile, { force: true }).catch(() => null);
+    };
+    await new Promise((resolve) => {
+      process.once("SIGINT", resolve);
+      process.once("SIGTERM", resolve);
+      runtime.once("exit", resolve);
+    });
+    await shutdown();
+    return state;
+  } catch (error) {
+    await stopProcessTree(runtime.pid).catch(() => false);
+    await telegram.stop().catch(() => null);
+    await rm(paths.stateFile, { force: true }).catch(() => null);
+    throw error;
+  }
+}
+
+export async function readTestContourStatus({ root = defaultTestContourRoot() } = {}) {
+  const paths = testContourPaths(root);
+  const state = await readJson(paths.stateFile);
+  if (!state || !processIsAlive(state.managerPid) || !processIsAlive(state.runtimePid)) {
+    return { running: false, root: paths.root, state: state ?? null };
+  }
+  const health = await readyHealth(state.port).catch(() => null);
+  return { running: Boolean(health), root: paths.root, state, health };
+}
+
+export async function stopTestContour({ root = defaultTestContourRoot() } = {}) {
+  const paths = testContourPaths(root);
+  const state = await readJson(paths.stateFile);
+  if (!state) return { stopped: false, reason: "not-running" };
+  await stopProcessTree(state.managerPid).catch(() => false);
+  await waitFor(() => !processIsAlive(state.managerPid), "Test Contour shutdown", 15_000).catch(() => null);
+  await rm(paths.stateFile, { force: true });
+  return { stopped: true, state };
+}
+
+export async function startTestContour({
+  root = defaultTestContourRoot(),
+  entryFile,
+  refresh = false,
+  sourceRoot = path.resolve(import.meta.dirname, "..", ".."),
+  port = TEST_CONTOUR_PORT,
+} = {}) {
+  const isolatedRoot = assertIsolatedTestContourRoot(root, { sourceRoot });
+  const paths = testContourPaths(isolatedRoot);
+  await stopTestContour({ root: isolatedRoot });
+  if (refresh) await prepareTestContourCandidate({ root: isolatedRoot, sourceRoot });
+  else await currentRelease(isolatedRoot).catch(() => prepareTestContourCandidate({ root: isolatedRoot, sourceRoot }));
+  await rm(paths.stateFile, { force: true });
+  const stdout = openSync(paths.stdoutFile, "a");
+  const stderr = openSync(paths.stderrFile, "a");
+  let manager;
+  try {
+    manager = spawn(process.execPath, [entryFile, "serve", "--root", isolatedRoot, "--port", String(port)], {
+      cwd: sourceRoot,
+      detached: true,
+      stdio: ["ignore", stdout, stderr],
+      windowsHide: true,
+    });
+    manager.unref();
+  } finally {
+    closeSync(stdout);
+    closeSync(stderr);
+  }
+  return waitFor(async () => {
+    const state = await readJson(paths.stateFile);
+    if (state && processIsAlive(state.managerPid) && processIsAlive(state.runtimePid)) return state;
+    if (!processIsAlive(manager.pid)) {
+      const errorLog = await readFile(paths.stderrFile, "utf8").catch(() => "");
+      throw new Error(`Test Contour manager exited before readiness\n${errorLog.slice(-4_000)}`);
+    }
+    return null;
+  }, "Test Contour background startup");
+}
+
+export async function openTestContour({ root = defaultTestContourRoot(), spawnImpl = spawn } = {}) {
+  const status = await readTestContourStatus({ root });
+  if (!status.running) throw new Error("Test Contour is not running");
+  const url = status.state.url;
+  const child = process.platform === "win32"
+    ? spawnImpl("rundll32.exe", ["url.dll,FileProtocolHandler", url], {
+        detached: true,
+        stdio: "ignore",
+        windowsHide: true,
+      })
+    : spawnImpl("xdg-open", [url], { detached: true, stdio: "ignore" });
+  child.unref();
+  return { opened: true, url };
+}
+
+export async function verifyTestContour({
+  root = defaultTestContourRoot(),
+  entryFile,
+  sourceRoot = path.resolve(import.meta.dirname, "..", ".."),
+  withAgent = true,
+} = {}) {
+  const paths = testContourPaths(root);
+  const state = await startTestContour({ root, entryFile, refresh: true, sourceRoot });
+  const {
+    runTestContourUiSmoke,
+    TEST_CONTOUR_PROBE,
+    TEST_CONTOUR_PROBE_RESPONSE,
+  } = await import("../infrastructure/browser/test-contour-ui-smoke.mjs");
+  const smoke = await runTestContourUiSmoke({
+    url: state.url,
+    automationRoot: paths.automationRoot,
+    artifactsDirectory: paths.artifactsDirectory,
+    withAgent,
+  });
+  let journal = null;
+  if (withAgent) {
+    journal = await waitFor(async () => {
+      const database = new JournalDatabase(path.join(paths.dataDir, "journal.sqlite"));
+      try {
+        const ledger = await database.loadLedger();
+        const record = Object.values(ledger.turns).find((item) => (
+          item.provider === "codex"
+          && item.model === TEST_CONTOUR_MODEL
+          && item.prompt === TEST_CONTOUR_PROBE
+          && item.body === TEST_CONTOUR_PROBE_RESPONSE
+          && Date.parse(item.completedAt) >= Date.parse(state.startedAt)
+        ));
+        return record ? {
+          provider: record.provider,
+          model: record.model,
+          turnId: record.turnId,
+          completedAt: record.completedAt,
+        } : null;
+      } finally {
+        database.close();
+      }
+    }, "Spark journal confirmation", 30_000);
+  }
+  return { state, smoke, journal };
+}

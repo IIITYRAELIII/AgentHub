@@ -119,9 +119,12 @@ test("desktop Stream settings replace duplicate toolbar controls and keep titles
   assert.match(dialogStyles, /\.stream-tabs-track \.stream-tab-title \{[\s\S]*text-align: left !important;/u);
   assert.match(
     dialogStyles,
-    /html\[data-view="chat"\]:not\(\[data-surface="mobile"\]\) \.chat-log \.msg-stack-user \{/u,
+    /^&:not\(\[data-surface="mobile"\]\) \.chat-log \.msg-stack-user \{/mu,
   );
-  assert.doesNotMatch(dialogStyles, /^&:not\(\[data-surface="mobile"\]\)/mu);
+  assert.doesNotMatch(
+    dialogStyles,
+    /html\[data-view="chat"\][^{]*html\[data-view="chat"\]/u,
+  );
   const strippedPseudoElements = dialogStyles.match(
     /\.stream-tabs-track \.stream-tab\[aria-pressed="true"\]::after,[\s\S]*?\{\s*content:\s*none;\s*\}/u,
   )?.[0] ?? "";
@@ -172,18 +175,19 @@ test("Stream card settings do not rewrite an unchanged width label", async () =>
   assert.equal(writes, 1);
 });
 
-test("order switch icons are real Phosphor SVG nodes in the SVG namespace", async () => {
+test("every production Phosphor icon creates a real namespaced SVG", async () => {
   const { createPhosphorIcon } = await streamTabsApi();
   const document = {
     createElementNS: (namespaceURI, localName) => new FakeSvgNode(namespaceURI, localName),
   };
   for (const name of [
     "arrow-clockwise",
+    "arrows-down-up",
     "caret-down",
     "caret-right",
-    "copy",
+    "caret-up",
     "clock-counter-clockwise",
-    "arrows-down-up",
+    "copy",
     "pencil-simple",
     "plus",
   ]) {
@@ -197,6 +201,18 @@ test("order switch icons are real Phosphor SVG nodes in the SVG namespace", asyn
     assert.ok(icon.children[0].attributes.get("d"));
     assert.equal(icon.children[0].attributes.get("fill"), "currentColor");
   }
+});
+
+test("unknown Phosphor icons fail the registry contract", async () => {
+  const { createPhosphorIcon } = await streamTabsApi();
+  const document = {
+    createElementNS: (namespaceURI, localName) => new FakeSvgNode(namespaceURI, localName),
+  };
+
+  assert.throws(
+    () => createPhosphorIcon(document, "missing-icon"),
+    /unknown Phosphor icon: missing-icon/u,
+  );
 });
 
 test("open Stream layout preserves physical column order when activity changes", async () => {

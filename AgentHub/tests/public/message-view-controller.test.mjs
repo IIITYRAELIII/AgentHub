@@ -223,6 +223,18 @@ test("textual user and agent messages expose the exact copy request", async () =
   assert.equal(api.messageCopyRequest({ role: "user", text: "   " }), null);
 });
 
+test("message disclosure switches between registered collapse and expand icons", async () => {
+  const api = await messageViewApi();
+  assert.deepEqual(
+    { ...api.messageDisclosurePresentation(false) },
+    { label: "Показать ещё", icon: "caret-down" },
+  );
+  assert.deepEqual(
+    { ...api.messageDisclosurePresentation(true) },
+    { label: "Свернуть", icon: "caret-up" },
+  );
+});
+
 test("message action rows expose copy, edit and repeat below the content", async () => {
   const [appSource, clientSource, dialogStyles] = await Promise.all([
     readFile(new URL("../../assets/web-app/app.js", import.meta.url), "utf8"),

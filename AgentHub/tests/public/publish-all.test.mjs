@@ -61,6 +61,7 @@ test("publication validates every client before the first deployment", () => {
   const steps = publicationSteps({ fullTestCheckpointId: "release-checkpoint" });
   assert.deepEqual(steps.map((item) => item.label), [
     "Полные тесты Agent Hub",
+    "Тестовый контур Agent Hub",
     "Сборка Agent Hub Mobile",
     "Публикация Mini App Worker",
     "Сборка runtime-релиза",
@@ -70,10 +71,11 @@ test("publication validates every client before the first deployment", () => {
 
   assert.deepEqual(steps[0].args.slice(-2), ["run", "test:all"]);
   assert.equal(steps[0].env.AGENT_HUB_FULL_TEST_CHECKPOINT_ID, "release-checkpoint");
-  assert.deepEqual(steps[1].args.slice(-2), ["run", "android:build"]);
+  assert.deepEqual(steps[1].args.slice(-4), ["run", "contour:verify", "--", "--require-installed"]);
+  assert.deepEqual(steps[2].args.slice(-2), ["run", "android:build"]);
   assert.equal(
     steps.findIndex((step) => step.label.includes("Публикация")),
-    2,
+    3,
     "deployment must start only after all validation surfaces pass",
   );
 });
@@ -277,6 +279,7 @@ test("selective publication can request the full Agent Hub test suite explicitly
   });
   const labels = steps.map((step) => step.label);
   assert.ok(labels.includes("Полные тесты Agent Hub"));
+  assert.ok(labels.includes("Тестовый контур Agent Hub"));
   assert.ok(!labels.includes("Тесты расширения VS Code"));
   assert.ok(!labels.includes("Контракт интерфейсов Agent Hub"));
   assert.match(
@@ -384,6 +387,7 @@ test("selective backend publication records an already queued safe restart witho
 test("every validation failure stops publication before deployment", async () => {
   const validations = [
     "Полные тесты Agent Hub",
+    "Тестовый контур Agent Hub",
     "Сборка Agent Hub Mobile",
   ];
 
