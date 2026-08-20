@@ -22,8 +22,9 @@ export function publicUsageSyncStatus(value = null) {
       }
     : null;
   const serverUrl = cleanText(value.serverUrl);
+  const enrolled = Boolean(serverUrl && cleanText(value.deviceId, 80) && cleanText(value.enrolledAt, 80));
   return {
-    configured: Boolean(serverUrl),
+    configured: enrolled,
     serverUrl,
     deviceId: cleanText(value.deviceId, 80),
     enrolledAt: cleanText(value.enrolledAt, 80),

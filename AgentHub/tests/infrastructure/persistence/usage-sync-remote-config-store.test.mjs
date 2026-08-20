@@ -35,6 +35,24 @@ test("remote config stores server enrollment state without secrets", async () =>
   }
 });
 
+test("remote config exposes default server URL without marking enrollment", async () => {
+  const root = await temporaryRoot();
+  const file = path.join(root, "usage-sync-remote.json");
+  try {
+    const store = new UsageSyncRemoteConfigStore({
+      file,
+      defaultServerUrl: "https://sync.example.test/default?ignored=1#x",
+    });
+    const state = await store.load();
+
+    assert.equal(state.serverUrl, "https://sync.example.test/default");
+    assert.equal(state.deviceId, "");
+    assert.equal(state.enrolledAt, "");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("remote config records push and pull timestamps", async () => {
   const root = await temporaryRoot();
   const file = path.join(root, "usage-sync-remote.json");

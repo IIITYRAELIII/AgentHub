@@ -11,6 +11,7 @@ import { UsageSyncIdentityStore } from "./src/infrastructure/persistence/usage-s
 import { UsageSyncRemoteConfigStore } from "./src/infrastructure/persistence/usage-sync-remote-config-store.mjs";
 import { WorkLogUsageRepository } from "./src/infrastructure/persistence/work-log-usage-repository.mjs";
 import { WorkLogUsageSyncStore } from "./src/infrastructure/persistence/work-log-usage-sync-store.mjs";
+import { defaultUsageSyncServerUrl } from "./src/domain/default-usage-sync-server.mjs";
 
 function option(name, fallback = "") {
   const index = process.argv.indexOf(name);
@@ -26,6 +27,7 @@ function usage() {
     "Usage:",
     "  node work-log-usage-sync.mjs identity [--set-label <label>]",
     "  node work-log-usage-sync.mjs enroll --server <url> --code <code>",
+    "  node work-log-usage-sync.mjs invite [--ttl-seconds <seconds>]",
     "  node work-log-usage-sync.mjs push [--server <url>]",
     "  node work-log-usage-sync.mjs pull [--server <url>] [--project]",
     "  node work-log-usage-sync.mjs sync [--server <url>] [--project]",
@@ -40,6 +42,7 @@ const command = process.argv[2] ?? "";
 if (![
   "identity",
   "enroll",
+  "invite",
   "push",
   "pull",
   "sync",
@@ -68,7 +71,7 @@ const identityStore = new UsageSyncIdentityStore({
 });
 await identityStore.load();
 const explicitDeviceId = option("--device-id", "");
-if (["enroll", "push", "pull", "sync"].includes(command) && explicitDeviceId) {
+if (["enroll", "invite", "push", "pull", "sync"].includes(command) && explicitDeviceId) {
   throw new Error("Remote usage-sync commands use the durable local identity; --device-id is not supported");
 }
 const deviceId = explicitDeviceId || identityStore.deviceId;
@@ -80,7 +83,10 @@ if (command === "identity") {
   process.exit(0);
 }
 
-const remoteConfigStore = new UsageSyncRemoteConfigStore({ file: remoteConfigFile });
+const remoteConfigStore = new UsageSyncRemoteConfigStore({
+  file: remoteConfigFile,
+  defaultServerUrl: defaultUsageSyncServerUrl(),
+});
 const remoteConfig = await remoteConfigStore.load();
 
 if (command === "remote-status") {
@@ -139,6 +145,15 @@ try {
       ...result,
       serverUrl: configuredServerUrl(),
       config: remoteConfigFile,
+    }, null, 2));
+  } else if (command === "invite") {
+    const result = await remoteClient().createEnrollmentCode({
+      ttlSeconds: Number(option("--ttl-seconds", "900")),
+    });
+    console.log(JSON.stringify({
+      invited: true,
+      ...result,
+      serverUrl: configuredServerUrl(),
     }, null, 2));
   } else if (command === "push") {
     const snapshot = await store.usageSyncSnapshot({ deviceId: identityStore.deviceId });

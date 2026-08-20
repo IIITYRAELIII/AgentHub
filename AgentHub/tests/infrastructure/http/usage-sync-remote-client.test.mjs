@@ -96,3 +96,30 @@ test("push and pull sign the exact transmitted body bytes", async () => {
   assert.equal(calls[1].options.headers["X-AgentHub-Signature"], "sig-2");
   assert.equal(identity.signed[1], Buffer.from(calls[1].options.body).toString("utf8"));
 });
+
+test("createEnrollmentCode signs invite request for enrolled devices", async () => {
+  const identity = identityStore();
+  const calls = [];
+  const client = new UsageSyncRemoteClient({
+    serverUrl: "https://sync.example.test",
+    identityStore: identity,
+    now: () => new Date("2026-08-20T05:00:00.000Z"),
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return response({ ok: true, code: "invite-code", expiresAtMs: 1780000000000 });
+    },
+  });
+
+  const result = await client.createEnrollmentCode({ ttlSeconds: 120 });
+
+  assert.equal(result.code, "invite-code");
+  assert.equal(calls[0].url, "https://sync.example.test/api/enrollment-code");
+  assert.equal(calls[0].options.headers["X-AgentHub-Device-Id"], identity.deviceId);
+  assert.equal(calls[0].options.headers["X-AgentHub-Signature"], "sig-1");
+  assert.equal(identity.signed[0], Buffer.from(calls[0].options.body).toString("utf8"));
+  assert.deepEqual(JSON.parse(calls[0].options.body), {
+    deviceId: identity.deviceId,
+    requestedAt: "2026-08-20T05:00:00.000Z",
+    ttlSeconds: 120,
+  });
+});

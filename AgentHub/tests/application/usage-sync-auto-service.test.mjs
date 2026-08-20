@@ -8,6 +8,7 @@ import {
 
 function fixture({
   serverUrl = "https://sync.example.test/agenthub",
+  enrolledAt = "2026-08-20T00:00:00.000Z",
   delayPush = false,
   failPush = false,
 } = {}) {
@@ -26,7 +27,7 @@ function fixture({
     remoteConfigStore: {
       load: async () => {
         events.push(["load-config"]);
-        return { serverUrl };
+        return { serverUrl, enrolledAt };
       },
       rememberPush: async (result) => events.push(["remember-push", result]),
       rememberPull: async (result) => events.push(["remember-pull", result]),
@@ -85,6 +86,17 @@ test("UsageSyncAutoService quietly skips when no remote is configured and resche
     20,
     { unref: true },
   ]);
+});
+
+test("UsageSyncAutoService keeps default remote URL idle until enrollment", async () => {
+  const state = fixture({ enrolledAt: "" });
+
+  assert.deepEqual(await state.service.sync(), {
+    skipped: true,
+    reason: "not-enrolled",
+    serverUrl: "https://sync.example.test/agenthub",
+  });
+  assert.deepEqual(state.events.map(([name]) => name), ["load-config", "schedule"]);
 });
 
 test("UsageSyncAutoService pushes, pulls, imports and remembers remote results", async () => {

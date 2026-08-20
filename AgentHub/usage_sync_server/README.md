@@ -16,6 +16,7 @@ Public endpoints:
 
 - `GET /health`
 - `POST /api/enroll`
+- `POST /api/enrollment-code`
 - `POST /api/usage`
 - `POST /api/snapshot`
 
@@ -23,11 +24,14 @@ Public endpoints:
 the enrolled Ed25519 public key, then upserts only events owned by that device.
 `/api/snapshot` uses the same headers and returns the shared pseudonymized
 snapshot for import on another Agent Hub installation.
+`/api/enrollment-code` also uses the same signed headers and returns a new
+one-time enrollment code; only an already enrolled device can create it.
 
 Local Agent Hub client flow:
 
 ```bash
 npm run work-log:usage-sync -- identity
+npm run work-log:usage-sync -- invite
 npm run work-log:usage-sync -- enroll --server https://sync.example.test --code <one-time-code>
 npm run work-log:usage-sync -- sync --project
 ```

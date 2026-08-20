@@ -76,6 +76,14 @@ class UsageSyncServerTests(unittest.TestCase):
         ).encode("utf-8")
         return body, self.keys.sign(body)
 
+    def signed_invite_request(self):
+        body = json.dumps(
+            {"deviceId": self.device_id, "requestedAt": "2026-08-20T04:05:00.000Z", "ttlSeconds": 120},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return body, self.keys.sign(body)
+
     def event(self, **extra):
         value = {
             "eventId": "usage:" + "a" * 64,
@@ -206,6 +214,32 @@ class UsageSyncServerTests(unittest.TestCase):
         self.assertEqual(event["deviceId"], self.device_id)
         self.assertEqual(event["usage"]["inputTokens"], 10)
         self.assertNotIn("receivedAtMs", event)
+
+    def test_enrolled_device_can_create_one_time_enrollment_code(self):
+        self.enroll()
+        body, signature = self.signed_invite_request()
+
+        result = server.create_enrollment_code_for_device(
+            self.db,
+            device_id=self.device_id,
+            signature=signature,
+            body=body,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["deviceId"], self.device_id)
+        self.assertTrue(result["code"])
+
+    def test_rejects_bad_enrollment_code_signature(self):
+        self.enroll()
+        body, _signature = self.signed_invite_request()
+        with self.assertRaises(PermissionError):
+            server.create_enrollment_code_for_device(
+                self.db,
+                device_id=self.device_id,
+                signature=self.keys.sign(b"other-body"),
+                body=body,
+            )
 
     def test_rejects_bad_snapshot_signature(self):
         self.enroll()

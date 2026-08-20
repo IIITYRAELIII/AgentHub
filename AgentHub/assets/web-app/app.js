@@ -55,6 +55,7 @@ const journalTotalCredits = document.querySelector("[data-journal-total-credits]
 const journalTotalDuration = document.querySelector("[data-journal-total-duration]");
 const journalSyncStatus = document.querySelector("[data-journal-sync-status]");
 const journalSyncButton = document.querySelector("[data-journal-sync]");
+const journalSyncConnectButton = document.querySelector("[data-journal-sync-connect]");
 const themeColor = document.querySelector("[data-theme-color]");
 
 const taskList = document.querySelector("[data-task-list]");
@@ -11602,6 +11603,7 @@ function dayGroupingContent(source) {
 }
 
 let journalRenderSequence = 0;
+let journalSyncLatestStatus = null;
 
 async function hydrateAllLazyDays() {
   const days = [...journal.querySelectorAll(
@@ -11832,18 +11834,31 @@ function formatJournalSyncClock(value) {
 }
 
 function updateJournalSyncStatus(status = null) {
-  if (!journalSyncStatus && !journalSyncButton) return;
+  journalSyncLatestStatus = status;
+  if (!journalSyncStatus && !journalSyncButton && !journalSyncConnectButton) return;
   if (!status?.configured) {
+    const canConnect = Boolean(status?.serverUrl);
     if (journalSyncStatus) {
-      journalSyncStatus.hidden = true;
-      journalSyncStatus.textContent = "VDS sync —";
-      journalSyncStatus.title = "Синхронизация расхода не настроена";
+      journalSyncStatus.hidden = !canConnect;
+      journalSyncStatus.textContent = canConnect ? "Sync не подключён" : "VDS sync —";
+      journalSyncStatus.title = canConnect
+        ? `Сервер: ${status.serverUrl}\nВведите одноразовый код подключения Sync.`
+        : "Синхронизация расхода не настроена";
     }
     if (journalSyncButton) {
       journalSyncButton.hidden = true;
       journalSyncButton.disabled = true;
       journalSyncButton.removeAttribute("aria-busy");
       journalSyncButton.textContent = "Синхр.";
+    }
+    if (journalSyncConnectButton) {
+      journalSyncConnectButton.hidden = !canConnect;
+      journalSyncConnectButton.disabled = !canConnect;
+      journalSyncConnectButton.removeAttribute("aria-busy");
+      journalSyncConnectButton.textContent = "Подключить Sync";
+      journalSyncConnectButton.title = canConnect
+        ? "Ввести одноразовый код подключения Sync"
+        : "Sync server не задан";
     }
     return;
   }
@@ -11873,6 +11888,12 @@ function updateJournalSyncStatus(status = null) {
     journalSyncButton.hidden = false;
     journalSyncButton.disabled = false;
     journalSyncButton.title = "Синхронизировать расход через VDS";
+  }
+  if (journalSyncConnectButton) {
+    journalSyncConnectButton.hidden = false;
+    journalSyncConnectButton.disabled = false;
+    journalSyncConnectButton.textContent = "Код Sync";
+    journalSyncConnectButton.title = "Создать одноразовый код для подключения другого устройства";
   }
 }
 
@@ -11904,6 +11925,69 @@ async function syncJournalUsageNow() {
 
 journalSyncButton?.addEventListener("click", () => {
   void syncJournalUsageNow();
+});
+
+async function requestUsageSyncInvite() {
+  const response = await fetch("/api/journal/usage-sync/invite", {
+    method: "POST",
+    cache: "no-store",
+    headers: await authenticatedRequestHeaders(),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+  updateJournalSyncStatus(payload.usageSync);
+  const code = String(payload.result?.code ?? "").trim();
+  if (!code) throw new Error("Сервер не вернул код Sync");
+  try {
+    await navigator.clipboard?.writeText?.(code);
+    showToast("Код Sync скопирован");
+  } catch {
+    showToast("Код Sync создан");
+  }
+  window.prompt("Код подключения Sync для другого устройства:", code);
+}
+
+async function enrollJournalSync() {
+  const serverUrl = String(journalSyncLatestStatus?.serverUrl ?? "").trim();
+  const code = window.prompt("Введите код подключения Sync:");
+  if (!code) return;
+  const response = await fetch("/api/journal/usage-sync/enroll", {
+    method: "POST",
+    cache: "no-store",
+    headers: {
+      ...await authenticatedRequestHeaders(),
+      "Content-Type": "application/json; charset=utf-8",
+    },
+    body: JSON.stringify({ serverUrl, code }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+  updateJournalSyncStatus(payload.usageSync);
+  await requestJournal({ force: true, announce: true });
+  showToast("Sync подключён");
+}
+
+async function connectJournalSync() {
+  if (!journalSyncConnectButton || journalSyncConnectButton.disabled) return;
+  journalSyncConnectButton.disabled = true;
+  journalSyncConnectButton.setAttribute("aria-busy", "true");
+  const previousText = journalSyncConnectButton.textContent;
+  journalSyncConnectButton.textContent = journalSyncLatestStatus?.configured ? "Код…" : "Подкл…";
+  try {
+    await localSessionReady;
+    if (journalSyncLatestStatus?.configured) await requestUsageSyncInvite();
+    else await enrollJournalSync();
+  } catch (error) {
+    showToast(`Sync недоступен: ${error.message}`);
+  } finally {
+    journalSyncConnectButton.removeAttribute("aria-busy");
+    journalSyncConnectButton.textContent = previousText;
+    journalSyncConnectButton.disabled = journalSyncConnectButton.hidden;
+  }
+}
+
+journalSyncConnectButton?.addEventListener("click", () => {
+  void connectJournalSync();
 });
 
 async function requestJournal({ force = false, announce = false } = {}) {

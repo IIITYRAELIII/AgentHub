@@ -285,6 +285,44 @@ def enroll_device(db: sqlite3.Connection, payload: dict[str, Any]) -> dict[str, 
     return {"ok": True, "deviceId": identity["deviceId"]}
 
 
+def verified_device_payload(
+    db: sqlite3.Connection, *, device_id: str, signature: str, body: bytes, kind: str
+) -> tuple[str, dict[str, Any]]:
+    init_db(db)
+    device_id = text(device_id, 80).lower()
+    device = db.execute(
+        "SELECT * FROM devices WHERE device_id=? AND revoked_at=''",
+        (device_id,),
+    ).fetchone()
+    if not device:
+        raise PermissionError("unknown or revoked device")
+    if not verify_signature(device["public_key"], signature, body):
+        raise PermissionError(f"invalid {kind} signature")
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("invalid JSON body") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"{kind} request must be an object")
+    if text(payload.get("deviceId"), 80).lower() not in ("", device_id):
+        raise PermissionError(f"{kind} request device does not match signer")
+    return device_id, payload
+
+
+def create_enrollment_code_for_device(
+    db: sqlite3.Connection, *, device_id: str, signature: str, body: bytes
+) -> dict[str, Any]:
+    device_id, payload = verified_device_payload(
+        db,
+        device_id=device_id,
+        signature=signature,
+        body=body,
+        kind="enrollment-code",
+    )
+    result = create_enrollment_code(db, ttl_seconds=integer(payload.get("ttlSeconds")) or 900)
+    return {"ok": True, "deviceId": device_id, **result}
+
+
 @dataclass(frozen=True)
 class UsageEvent:
     event_id: str
@@ -460,24 +498,13 @@ def event_row_to_api(row: sqlite3.Row) -> dict[str, Any]:
 def ingest_snapshot(
     db: sqlite3.Connection, *, device_id: str, signature: str, body: bytes
 ) -> dict[str, Any]:
-    init_db(db)
-    device_id = text(device_id, 80).lower()
-    device = db.execute(
-        "SELECT * FROM devices WHERE device_id=? AND revoked_at=''",
-        (device_id,),
-    ).fetchone()
-    if not device:
-        raise PermissionError("unknown or revoked device")
-    if not verify_signature(device["public_key"], signature, body):
-        raise PermissionError("invalid usage signature")
-    try:
-        payload = json.loads(body.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError("invalid JSON body") from exc
-    if not isinstance(payload, dict):
-        raise ValueError("snapshot must be an object")
-    if text(payload.get("deviceId"), 80).lower() not in ("", device_id):
-        raise PermissionError("snapshot device does not match signer")
+    device_id, payload = verified_device_payload(
+        db,
+        device_id=device_id,
+        signature=signature,
+        body=body,
+        kind="usage",
+    )
     events = payload.get("events")
     if not isinstance(events, list):
         raise ValueError("snapshot events must be an array")
@@ -516,24 +543,13 @@ def ingest_snapshot(
 def export_snapshot(
     db: sqlite3.Connection, *, device_id: str, signature: str, body: bytes
 ) -> dict[str, Any]:
-    init_db(db)
-    device_id = text(device_id, 80).lower()
-    device = db.execute(
-        "SELECT * FROM devices WHERE device_id=? AND revoked_at=''",
-        (device_id,),
-    ).fetchone()
-    if not device:
-        raise PermissionError("unknown or revoked device")
-    if not verify_signature(device["public_key"], signature, body):
-        raise PermissionError("invalid snapshot signature")
-    try:
-        payload = json.loads(body.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError("invalid JSON body") from exc
-    if not isinstance(payload, dict):
-        raise ValueError("snapshot request must be an object")
-    if text(payload.get("deviceId"), 80).lower() not in ("", device_id):
-        raise PermissionError("snapshot request device does not match signer")
+    device_id, _payload = verified_device_payload(
+        db,
+        device_id=device_id,
+        signature=signature,
+        body=body,
+        kind="snapshot",
+    )
     rows = db.execute(
         """
         SELECT * FROM usage_events
@@ -587,6 +603,18 @@ class UsageSyncHandler(BaseHTTPRequestHandler):
                         body=body,
                     )
                     self.send_json(200, result)
+                    return
+                if self.path == "/api/enrollment-code":
+                    body = self.read_body(MAX_ENROLL_BODY_BYTES)
+                    self.send_json(
+                        200,
+                        create_enrollment_code_for_device(
+                            db,
+                            device_id=self.headers.get("X-AgentHub-Device-Id", ""),
+                            signature=self.headers.get("X-AgentHub-Signature", ""),
+                            body=body,
+                        ),
+                    )
                     return
                 if self.path == "/api/snapshot":
                     body = self.read_body(MAX_SNAPSHOT_BODY_BYTES)

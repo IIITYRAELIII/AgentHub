@@ -90,6 +90,24 @@ export class UsageSyncRemoteClient {
     return parseJsonResponse(response);
   }
 
+  async createEnrollmentCode({ ttlSeconds = 900 } = {}) {
+    const body = jsonBody({
+      deviceId: this.#identityStore.deviceId,
+      requestedAt: this.#now().toISOString(),
+      ttlSeconds: Math.max(60, Math.min(86_400, Math.trunc(Number(ttlSeconds) || 900))),
+    });
+    const response = await this.#fetch(`${this.#serverUrl}/api/enrollment-code`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json; charset=utf-8",
+        "X-AgentHub-Device-Id": this.#identityStore.deviceId,
+        "X-AgentHub-Signature": this.#identityStore.sign(body),
+      },
+      body,
+    });
+    return parseJsonResponse(response);
+  }
+
   async push(snapshot) {
     const body = jsonBody(snapshot);
     const response = await this.#fetch(`${this.#serverUrl}/api/usage`, {

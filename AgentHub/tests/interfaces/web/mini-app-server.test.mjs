@@ -106,6 +106,7 @@ test("journal payload exposes usage sync status and varies its ETag", async () =
   let usageSync = {
     serverUrl: "https://sync.example.test/agenthub",
     deviceId: "device-abcdef123456",
+    enrolledAt: "2026-08-20T11:00:00.000Z",
     lastPushAt: "2026-08-20T11:03:18.295Z",
     lastPullAt: "2026-08-20T11:03:28.998Z",
     lastResult: { imported: true, added: 6, updated: 0, projected: true, before: 5757, after: 5763 },
@@ -200,6 +201,69 @@ test("journal usage sync endpoint runs manual sync and exposes refreshed status"
     const journalPayload = await journalResponse.json();
     assert.match(journalPayload.html, /data-work-log-rate-limits/u);
     assert.equal(journalPayload.usageSync.lastResult.after, 13);
+  } finally {
+    await server.close();
+  }
+});
+
+test("journal usage sync invite and enroll endpoints support guided connection", async () => {
+  const journal = memoryJournal(DAY_HTML);
+  let usageSync = {
+    serverUrl: "https://sync.example.test/agenthub",
+    deviceId: "",
+    enrolledAt: "",
+    lastPullAt: "",
+    lastResult: null,
+  };
+  const calls = [];
+  const server = new MiniAppServer({
+    host: "127.0.0.1",
+    port: 0,
+    journalDatabase: journal,
+    usageSyncRemoteConfigStore: {
+      load: async () => structuredClone(usageSync),
+    },
+    usageSyncService: {
+      createEnrollmentCode: async () => {
+        calls.push(["invite"]);
+        return { ok: true, code: "join-code", expiresAtMs: 1780000000000 };
+      },
+      enroll: async ({ serverUrl, code }) => {
+        calls.push(["enroll", serverUrl, code]);
+        usageSync = {
+          ...usageSync,
+          deviceId: "device-new",
+          enrolledAt: "2026-08-20T13:45:00.000Z",
+          lastPullAt: "2026-08-20T13:45:10.000Z",
+          lastResult: { imported: true, added: 1, updated: 0, projected: true, before: 0, after: 1 },
+        };
+        journal.replace(`${LIMITS_HTML}\n${DAY_HTML}`);
+        return { enrolled: true };
+      },
+    },
+  });
+  try {
+    const address = await server.start();
+    const status = await fetch(`${address.url}api/journal`);
+    assert.equal((await status.json()).usageSync.configured, false);
+
+    const invite = await fetch(`${address.url}api/journal/usage-sync/invite`, { method: "POST" });
+    assert.equal(invite.status, 200);
+    assert.equal((await invite.json()).result.code, "join-code");
+
+    const enroll = await fetch(`${address.url}api/journal/usage-sync/enroll`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ serverUrl: "https://sync.example.test/agenthub", code: "join-code" }),
+    });
+    assert.equal(enroll.status, 200);
+    const enrolled = await enroll.json();
+    assert.equal(enrolled.usageSync.configured, true);
+    assert.equal(enrolled.usageSync.deviceId, "device-new");
+    assert.deepEqual(calls, [
+      ["invite"],
+      ["enroll", "https://sync.example.test/agenthub", "join-code"],
+    ]);
   } finally {
     await server.close();
   }

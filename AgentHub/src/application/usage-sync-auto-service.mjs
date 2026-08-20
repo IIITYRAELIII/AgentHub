@@ -88,10 +88,39 @@ export class UsageSyncAutoService {
     return this.syncInFlight;
   }
 
+  async createEnrollmentCode({ ttlSeconds = 900 } = {}) {
+    const remoteConfig = await this.remoteConfigStore.load();
+    const serverUrl = String(remoteConfig?.serverUrl ?? "").trim();
+    if (!serverUrl || !remoteConfig?.enrolledAt) {
+      throw new Error("usage-sync is not enrolled");
+    }
+    const client = this.clientFactory({ serverUrl, identityStore: this.identityStore });
+    return client.createEnrollmentCode({ ttlSeconds });
+  }
+
+  async enroll({ serverUrl = "", code = "" } = {}) {
+    const normalizedServerUrl = String(serverUrl ?? "").trim()
+      || String((await this.remoteConfigStore.load())?.serverUrl ?? "").trim();
+    if (!normalizedServerUrl) throw new Error("Usage sync server URL is required");
+    const client = this.clientFactory({
+      serverUrl: normalizedServerUrl,
+      identityStore: this.identityStore,
+    });
+    const result = await client.enroll(code);
+    await this.remoteConfigStore.rememberEnrollment({
+      serverUrl: normalizedServerUrl,
+      deviceId: this.identityStore.deviceId,
+      result,
+    });
+    const sync = await this.sync();
+    return { enrolled: true, result, sync };
+  }
+
   async #syncOnce() {
     const remoteConfig = await this.remoteConfigStore.load();
     const serverUrl = String(remoteConfig?.serverUrl ?? "").trim();
     if (!serverUrl) return { skipped: true, reason: "not-configured" };
+    if (!remoteConfig?.enrolledAt) return { skipped: true, reason: "not-enrolled", serverUrl };
     const client = this.clientFactory({ serverUrl, identityStore: this.identityStore });
     const snapshot = await this.workLogUsageStore.usageSyncSnapshot({
       deviceId: this.identityStore.deviceId,

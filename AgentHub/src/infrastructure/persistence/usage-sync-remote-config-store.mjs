@@ -19,11 +19,12 @@ function normalizeUrl(value) {
   return url.toString().replace(/\/$/u, "");
 }
 
-function normalizeState(value = {}) {
+function normalizeState(value = {}, { defaultServerUrl = "" } = {}) {
   if (!value || typeof value !== "object") return {};
+  const serverUrl = value.serverUrl ? normalizeUrl(value.serverUrl) : normalizeUrl(defaultServerUrl);
   return {
     version: 1,
-    serverUrl: value.serverUrl ? normalizeUrl(value.serverUrl) : "",
+    serverUrl,
     deviceId: text(value.deviceId, 80),
     enrolledAt: text(value.enrolledAt, 80),
     lastPushAt: text(value.lastPushAt, 80),
@@ -45,13 +46,15 @@ async function readJson(file) {
 
 export class UsageSyncRemoteConfigStore {
   #file;
+  #defaultServerUrl;
   #now;
   #state = null;
   #tail = Promise.resolve();
 
-  constructor({ file, now = () => new Date() } = {}) {
+  constructor({ file, defaultServerUrl = "", now = () => new Date() } = {}) {
     if (!file) throw new TypeError("UsageSyncRemoteConfigStore requires a file");
     this.#file = path.resolve(file);
+    this.#defaultServerUrl = defaultServerUrl ? normalizeUrl(defaultServerUrl) : "";
     this.#now = now;
   }
 
@@ -73,14 +76,16 @@ export class UsageSyncRemoteConfigStore {
   load() {
     return this.#enqueue(async () => {
       if (this.#state) return structuredClone(this.#state);
-      this.#state = normalizeState(await readJson(this.#file));
+      this.#state = normalizeState(await readJson(this.#file), { defaultServerUrl: this.#defaultServerUrl });
       return structuredClone(this.#state);
     });
   }
 
   rememberEnrollment({ serverUrl, deviceId, result = null } = {}) {
     return this.#enqueue(async () => {
-      const current = this.#state ?? normalizeState(await readJson(this.#file));
+      const current = this.#state ?? normalizeState(await readJson(this.#file), {
+        defaultServerUrl: this.#defaultServerUrl,
+      });
       const state = normalizeState({
         ...current,
         serverUrl,
@@ -104,7 +109,9 @@ export class UsageSyncRemoteConfigStore {
 
   #rememberResult(timestampField, result) {
     return this.#enqueue(async () => {
-      const current = this.#state ?? normalizeState(await readJson(this.#file));
+      const current = this.#state ?? normalizeState(await readJson(this.#file), {
+        defaultServerUrl: this.#defaultServerUrl,
+      });
       const state = normalizeState({
         ...current,
         [timestampField]: this.#now().toISOString(),

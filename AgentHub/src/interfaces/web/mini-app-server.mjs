@@ -190,6 +190,14 @@ function safeEqualText(left, right) {
   return leftBytes.length === rightBytes.length && timingSafeEqual(leftBytes, rightBytes);
 }
 
+function validUsageSyncService(service) {
+  return Boolean(service && (
+    typeof service.sync === "function"
+    || typeof service.createEnrollmentCode === "function"
+    || typeof service.enroll === "function"
+  ));
+}
+
 function cookieValue(request, name) {
   for (const part of String(request.headers.cookie ?? "").split(";")) {
     const separator = part.indexOf("=");
@@ -538,14 +546,12 @@ export class MiniAppServer {
     }
     this.#journalDatabase = journalDatabase ?? new JournalDatabase(journalDatabaseFile);
     this.#usageSyncRemoteConfigStore = usageSyncRemoteConfigStore;
-    this.#usageSyncService = usageSyncService && typeof usageSyncService.sync === "function"
-      ? usageSyncService
-      : null;
+    this.#usageSyncService = validUsageSyncService(usageSyncService) ? usageSyncService : null;
     this.#ownsJournalDatabase = !journalDatabase;
   }
 
   setUsageSyncService(service = null) {
-    this.#usageSyncService = service && typeof service.sync === "function" ? service : null;
+    this.#usageSyncService = validUsageSyncService(service) ? service : null;
   }
 
   async #activeAssetBundle() {
@@ -593,6 +599,24 @@ export class MiniAppServer {
   async #manualUsageSync() {
     if (!this.#usageSyncService) throw new Error("Синхронизация расхода недоступна");
     const result = await this.#usageSyncService.sync();
+    this.#journalCache = null;
+    return result;
+  }
+
+  async #createUsageSyncInvite() {
+    if (!this.#usageSyncService?.createEnrollmentCode) {
+      throw new Error("Создание кода Sync недоступно");
+    }
+    return this.#usageSyncService.createEnrollmentCode({ ttlSeconds: 900 });
+  }
+
+  async #enrollUsageSync(request) {
+    if (!this.#usageSyncService?.enroll) throw new Error("Подключение Sync недоступно");
+    const body = await readJsonBody(request, 16 * 1024);
+    const result = await this.#usageSyncService.enroll({
+      serverUrl: body.serverUrl,
+      code: body.code,
+    });
     this.#journalCache = null;
     return result;
   }
@@ -1164,6 +1188,55 @@ export class MiniAppServer {
         }, method, { headers: { "Cache-Control": "private, no-store" } });
       } catch (error) {
         json(response, 503, { error: `Синхронизация расхода недоступна: ${error.message}` }, method);
+      }
+      return;
+    }
+    if (url.pathname === "/api/journal/usage-sync/invite") {
+      if (!await this.#authorize(request, response)) return;
+      if (method !== "POST") {
+        json(response, 405, { error: "Метод не поддерживается" }, method, {
+          headers: { Allow: "POST" },
+        });
+        return;
+      }
+      try {
+        const result = await this.#createUsageSyncInvite();
+        const usageSync = await this.#usageSyncStatus();
+        json(response, 200, {
+          ok: true,
+          result,
+          usageSync: publicJournalPayload({ html: "", updatedAt: "", version: "" }, { usageSync }).usageSync,
+        }, method, { headers: { "Cache-Control": "private, no-store" } });
+      } catch (error) {
+        json(response, 503, { error: `Код Sync недоступен: ${error.message}` }, method);
+      }
+      return;
+    }
+    if (url.pathname === "/api/journal/usage-sync/enroll") {
+      if (!await this.#authorize(request, response)) return;
+      if (method !== "POST") {
+        json(response, 405, { error: "Метод не поддерживается" }, method, {
+          headers: { Allow: "POST" },
+        });
+        return;
+      }
+      try {
+        const result = await this.#enrollUsageSync(request);
+        const usageSync = await this.#usageSyncStatus();
+        const journal = await this.#journal().catch(() => null);
+        json(response, 200, {
+          ok: true,
+          result,
+          usageSync: publicJournalPayload({ html: "", updatedAt: "", version: "" }, { usageSync }).usageSync,
+          journal: journal
+            ? {
+                updatedAt: journal.updatedAt,
+                version: journal.version,
+              }
+            : null,
+        }, method, { headers: { "Cache-Control": "private, no-store" } });
+      } catch (error) {
+        json(response, 503, { error: `Подключение Sync недоступно: ${error.message}` }, method);
       }
       return;
     }

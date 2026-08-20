@@ -26,6 +26,7 @@ import { WorkLogUsageRepository } from "../infrastructure/persistence/work-log-u
 import { WorkLogUsageSyncStore } from "../infrastructure/persistence/work-log-usage-sync-store.mjs";
 import { UsageSyncIdentityStore } from "../infrastructure/persistence/usage-sync-identity-store.mjs";
 import { UsageSyncRemoteConfigStore } from "../infrastructure/persistence/usage-sync-remote-config-store.mjs";
+import { defaultUsageSyncServerUrl } from "../domain/default-usage-sync-server.mjs";
 import { verifyWorkspaceReleasePublication } from "../infrastructure/persistence/release-publication-verifier.mjs";
 import { SingleInstanceGuard } from "../infrastructure/process/instance-lock.mjs";
 import { captureProcess } from "../infrastructure/process/process-capture.mjs";
@@ -157,6 +158,7 @@ export async function createHubInfrastructure({
   const workLogUsageIdentityStore = await usageSyncIdentity(config);
   const workLogUsageRemoteConfigStore = new UsageSyncRemoteConfigStore({
     file: path.join(config.dataDir, "usage-sync-remote.json"),
+    defaultServerUrl: defaultUsageSyncServerUrl(),
   });
   const workLogUsageSyncDeviceId = workLogUsageIdentityStore.deviceId;
   const workLogUsageSyncStore = new WorkLogUsageSyncStore({
