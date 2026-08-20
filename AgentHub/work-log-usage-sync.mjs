@@ -6,7 +6,9 @@ import { createWorkLogUsageStore } from "./src/application/work-log-usage-store.
 import { defaultRuntimeRoot, runtimeLayout } from "./src/infrastructure/filesystem/runtime-layout.mjs";
 import { JournalDatabase } from "./src/infrastructure/persistence/journal-database.mjs";
 import { writeTextAtomic } from "./src/infrastructure/persistence/state-store.mjs";
+import { UsageSyncRemoteClient } from "./src/infrastructure/http/usage-sync-remote-client.mjs";
 import { UsageSyncIdentityStore } from "./src/infrastructure/persistence/usage-sync-identity-store.mjs";
+import { UsageSyncRemoteConfigStore } from "./src/infrastructure/persistence/usage-sync-remote-config-store.mjs";
 import { WorkLogUsageRepository } from "./src/infrastructure/persistence/work-log-usage-repository.mjs";
 import { WorkLogUsageSyncStore } from "./src/infrastructure/persistence/work-log-usage-sync-store.mjs";
 
@@ -23,14 +25,29 @@ function usage() {
   throw new Error([
     "Usage:",
     "  node work-log-usage-sync.mjs identity [--set-label <label>]",
+    "  node work-log-usage-sync.mjs enroll --server <url> --code <code>",
+    "  node work-log-usage-sync.mjs push [--server <url>]",
+    "  node work-log-usage-sync.mjs pull [--server <url>] [--project]",
+    "  node work-log-usage-sync.mjs sync [--server <url>] [--project]",
     "  node work-log-usage-sync.mjs export --out <file> [--device-id <id>]",
     "  node work-log-usage-sync.mjs import --in <file> [--project] [--device-id <id>]",
     "  node work-log-usage-sync.mjs project [--device-id <id>]",
+    "  node work-log-usage-sync.mjs remote-status",
   ].join("\n"));
 }
 
 const command = process.argv[2] ?? "";
-if (!["identity", "export", "import", "project"].includes(command)) usage();
+if (![
+  "identity",
+  "enroll",
+  "push",
+  "pull",
+  "sync",
+  "export",
+  "import",
+  "project",
+  "remote-status",
+].includes(command)) usage();
 
 const runtime = runtimeLayout(defaultRuntimeRoot());
 const workspaceRoot = path.resolve(option("--project-root", path.resolve(import.meta.dirname, "..", "..")));
@@ -40,6 +57,9 @@ const syncFile = path.resolve(option("--sync-file", path.join(runtime.dataDir, "
 const identityFile = path.resolve(
   option("--identity-file", path.join(runtime.dataDir, "usage-sync-identity.json")),
 );
+const remoteConfigFile = path.resolve(
+  option("--remote-config", path.join(runtime.dataDir, "usage-sync-remote.json")),
+);
 const workLogFile = option("--work-log", path.join(workspaceRoot, "WORK_LOG.md"));
 
 const identityStore = new UsageSyncIdentityStore({
@@ -47,13 +67,43 @@ const identityStore = new UsageSyncIdentityStore({
   dataDir: runtime.dataDir,
 });
 await identityStore.load();
-const deviceId = option("--device-id", identityStore.deviceId);
+const explicitDeviceId = option("--device-id", "");
+if (["enroll", "push", "pull", "sync"].includes(command) && explicitDeviceId) {
+  throw new Error("Remote usage-sync commands use the durable local identity; --device-id is not supported");
+}
+const deviceId = explicitDeviceId || identityStore.deviceId;
 
 if (command === "identity") {
   const label = option("--set-label", "");
   if (process.argv.includes("--set-label")) await identityStore.setLabel(label);
   console.log(JSON.stringify({ ...identityStore.toPublic(), file: identityFile }, null, 2));
   process.exit(0);
+}
+
+const remoteConfigStore = new UsageSyncRemoteConfigStore({ file: remoteConfigFile });
+const remoteConfig = await remoteConfigStore.load();
+
+if (command === "remote-status") {
+  console.log(JSON.stringify({
+    ...remoteConfig,
+    file: remoteConfigFile,
+    localDeviceId: identityStore.deviceId,
+  }, null, 2));
+  process.exit(0);
+}
+
+function configuredServerUrl() {
+  const server = option("--server", "");
+  if (server) return server;
+  if (remoteConfig.serverUrl) return remoteConfig.serverUrl;
+  throw new Error("Usage sync server URL is required; pass --server once during enroll");
+}
+
+function remoteClient() {
+  return new UsageSyncRemoteClient({
+    serverUrl: configuredServerUrl(),
+    identityStore,
+  });
 }
 
 const syncStore = new WorkLogUsageSyncStore({
@@ -77,7 +127,69 @@ const store = createWorkLogUsageStore({
 });
 
 try {
-  if (command === "export") {
+  if (command === "enroll") {
+    const result = await remoteClient().enroll(option("--code"));
+    await remoteConfigStore.rememberEnrollment({
+      serverUrl: configuredServerUrl(),
+      deviceId: identityStore.deviceId,
+      result,
+    });
+    console.log(JSON.stringify({
+      enrolled: true,
+      ...result,
+      serverUrl: configuredServerUrl(),
+      config: remoteConfigFile,
+    }, null, 2));
+  } else if (command === "push") {
+    const snapshot = await store.usageSyncSnapshot({ deviceId: identityStore.deviceId });
+    const result = await remoteClient().push(snapshot);
+    await remoteConfigStore.rememberPush(result);
+    console.log(JSON.stringify({
+      pushed: true,
+      exportedEvents: snapshot.events.length,
+      ...result,
+      serverUrl: configuredServerUrl(),
+    }, null, 2));
+  } else if (command === "pull") {
+    const snapshot = await remoteClient().pull();
+    const result = flag("--project")
+      ? await store.importUsageSyncSnapshotAndProject({
+          snapshot,
+          projectRoot: workspaceRoot,
+          projectionProjectRoots: [workspaceRoot],
+          workLogFile,
+        })
+      : await syncStore.importSnapshot(snapshot);
+    await remoteConfigStore.rememberPull(result);
+    console.log(JSON.stringify({
+      pulled: true,
+      remoteEvents: Array.isArray(snapshot.events) ? snapshot.events.length : 0,
+      ...result,
+      serverUrl: configuredServerUrl(),
+    }, null, 2));
+  } else if (command === "sync") {
+    const snapshot = await store.usageSyncSnapshot({ deviceId: identityStore.deviceId });
+    const push = await remoteClient().push(snapshot);
+    await remoteConfigStore.rememberPush(push);
+    const remoteSnapshot = await remoteClient().pull();
+    const pull = flag("--project")
+      ? await store.importUsageSyncSnapshotAndProject({
+          snapshot: remoteSnapshot,
+          projectRoot: workspaceRoot,
+          projectionProjectRoots: [workspaceRoot],
+          workLogFile,
+        })
+      : await syncStore.importSnapshot(remoteSnapshot);
+    await remoteConfigStore.rememberPull(pull);
+    console.log(JSON.stringify({
+      synced: true,
+      exportedEvents: snapshot.events.length,
+      remoteEvents: Array.isArray(remoteSnapshot.events) ? remoteSnapshot.events.length : 0,
+      push,
+      pull,
+      serverUrl: configuredServerUrl(),
+    }, null, 2));
+  } else if (command === "export") {
     const out = option("--out");
     if (!out) usage();
     const snapshot = await store.usageSyncSnapshot({ deviceId });
