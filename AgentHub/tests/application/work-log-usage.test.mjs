@@ -526,10 +526,10 @@ test("account usage panel includes synced remote devices without duplicating loc
   assert.match(projected, /data-work-log-account-device-quality>точно 1<\/span>/u);
   assert.match(
     projected,
-    /data-work-log-account-device-row [^>]*data-device-id="laptop" [^>]*data-device-source="sync"/u,
+    /data-work-log-account-device-row [^>]*data-device-id="sync-label:teammate" [^>]*data-device-source="sync"/u,
   );
   assert.match(projected, /data-work-log-account-device-label>teammate<\/span>/u);
-  assert.match(projected, /data-work-log-account-device-id>laptop<\/span>/u);
+  assert.doesNotMatch(projected, /data-work-log-account-device-id>laptop<\/span>/u);
   assert.match(projected, /data-work-log-account-device-origin>sync<\/span>/u);
   assert.match(projected, /data-work-log-account-device-quality>восст\. 1 · sync 1<\/span>/u);
   assert.match(projected, /data-work-log-account-device-label>SidorukSV-phone<\/span>/u);
@@ -554,6 +554,56 @@ test("account usage panel includes synced remote devices without duplicating loc
     /data-work-log-account-total>итого <span data-kilo-usage data-usage-credits="12">12 cr<\/span> · 3 ход\./u,
   );
   assert.match(projected, /data-work-log-account-idle><\/span>/u);
+});
+
+test("account usage panel collapses unlabeled sync device ids into one remote device", () => {
+  const projected = projectWorkLogUsage("# Глобальный журнал работ\n", {
+    local: {
+      provider: "codex",
+      threadId: "thread-local",
+      turnId: "turn-local",
+      completedAt: "2026-08-20T09:00:00.000Z",
+      estimatedCredits: 1,
+      accountKey: "chatgpt:owner",
+      accountAttribution: "exact",
+    },
+  }, {
+    now: Date.parse("2026-08-20T12:00:00.000Z"),
+    localDeviceId: "device-local",
+    accountCatalog: [{ key: "chatgpt:owner", label: "owner@example.com" }],
+    syncedUsageEvents: [
+      {
+        deviceId: "remote-old-id",
+        provider: "codex",
+        threadId: "thread-remote-a",
+        turnId: "turn-remote-a",
+        completedAt: "2026-08-20T09:30:00.000Z",
+        estimatedCredits: 2,
+        accountKey: "chatgpt:owner",
+        accountAttribution: "inferred",
+      },
+      {
+        deviceId: "remote-new-id",
+        provider: "codex",
+        threadId: "thread-remote-b",
+        turnId: "turn-remote-b",
+        completedAt: "2026-08-20T10:00:00.000Z",
+        estimatedCredits: 3,
+        accountKey: "chatgpt:owner",
+        accountAttribution: "inferred",
+      },
+    ],
+  });
+
+  assert.match(projected, /data-work-log-account-device-count>2 устройства<\/span>/u);
+  assert.match(
+    projected,
+    /data-work-log-account-device-row [^>]*data-device-id="__sync_unlabeled__" [^>]*data-device-source="sync"/u,
+  );
+  assert.match(projected, /data-work-log-account-device-label>Другое устройство<\/span>/u);
+  assert.match(projected, /data-work-log-account-device-quality>восст\. 2 · sync 2<\/span>/u);
+  assert.doesNotMatch(projected, /data-device-id="remote-old-id"/u);
+  assert.doesNotMatch(projected, /data-device-id="remote-new-id"/u);
 });
 
 test("workspace usage aggregates sequential Threads and retains Stream detail", () => {

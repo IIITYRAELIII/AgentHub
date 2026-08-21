@@ -482,6 +482,8 @@ function accountDeviceDisplayName(deviceId, source, label = "") {
   const displayLabel = String(label ?? "").trim();
   if (displayLabel) return displayLabel;
   if (source === "local") return id && id !== "local" ? `Это устройство · ${shortDeviceKey(id)}` : "Это устройство";
+  if (id === "__sync_unlabeled__") return "Другое устройство";
+  if (id.startsWith("sync-label:")) return "Другое устройство";
   if (!id || id === "unknown") return "Неизвестное устройство";
   return id.length <= 16 ? id : `device ${shortDeviceKey(id)}`;
 }
@@ -585,9 +587,15 @@ function emptyAccountDeviceBucket(deviceId, source, { noCost = false, label = ""
   };
 }
 
-function accountUsageDeviceKey(entry, localDeviceId) {
+function normalizedDeviceLabelKey(value) {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+function accountUsageDeviceKey(entry, localDeviceId, record = {}) {
   if (entry.source === "local") return localDeviceId || "local";
-  return String(entry.deviceId ?? "").trim() || "unknown";
+  const labelKey = normalizedDeviceLabelKey(record?.syncDeviceLabel);
+  if (labelKey) return `sync-label:${labelKey}`;
+  return "__sync_unlabeled__";
 }
 
 function applyAccountUsageStats(target, entry, record, {
@@ -697,7 +705,7 @@ export function buildWorkLogAccountUsageSummary(turns = {}, {
         });
         mergeAccountMetadata(bucket, record);
         applyAccountUsageStats(bucket, entry, record, { accountKey, attribution, noCost });
-        const deviceKey = accountUsageDeviceKey(entry, normalizedLocalDeviceId);
+        const deviceKey = accountUsageDeviceKey(entry, normalizedLocalDeviceId, record);
         if (!bucket.devices[deviceKey]) {
           bucket.devices[deviceKey] = emptyAccountDeviceBucket(deviceKey, entry.source, {
             noCost: bucket.noCost,
@@ -865,6 +873,7 @@ function accountDeviceName(device) {
 function accountDeviceShortId(device) {
   const id = String(device?.deviceId ?? "").trim();
   if (!id || id === "unknown" || id === "local") return "";
+  if (id === "__sync_unlabeled__" || id.startsWith("sync-label:")) return "";
   return shortDeviceKey(id);
 }
 
