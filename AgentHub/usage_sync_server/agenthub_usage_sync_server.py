@@ -214,7 +214,7 @@ def enrollment_message(code: str, identity: dict[str, str]) -> bytes:
 
 
 def create_enrollment_code(
-    db: sqlite3.Connection, ttl_seconds: int = 900, code: str | None = None
+    db: sqlite3.Connection, ttl_seconds: int = 10800, code: str | None = None
 ) -> dict[str, Any]:
     init_db(db)
     code = code or secrets.token_urlsafe(18)
@@ -319,7 +319,7 @@ def create_enrollment_code_for_device(
         body=body,
         kind="enrollment-code",
     )
-    result = create_enrollment_code(db, ttl_seconds=integer(payload.get("ttlSeconds")) or 900)
+    result = create_enrollment_code(db, ttl_seconds=integer(payload.get("ttlSeconds")) or 10800)
     return {"ok": True, "deviceId": device_id, **result}
 
 
@@ -653,7 +653,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("init-db")
     code_parser = sub.add_parser("create-code")
-    code_parser.add_argument("--ttl-seconds", type=int, default=900)
+    code_parser.add_argument("--ttl-seconds", type=int, default=10800)
     serve_parser = sub.add_parser("serve")
     serve_parser.add_argument("--host", default=DEFAULT_HOST)
     serve_parser.add_argument("--port", type=int, default=DEFAULT_PORT)

@@ -90,11 +90,11 @@ export class UsageSyncRemoteClient {
     return parseJsonResponse(response);
   }
 
-  async createEnrollmentCode({ ttlSeconds = 900 } = {}) {
+  async createEnrollmentCode({ ttlSeconds = 10_800 } = {}) {
     const body = jsonBody({
       deviceId: this.#identityStore.deviceId,
       requestedAt: this.#now().toISOString(),
-      ttlSeconds: Math.max(60, Math.min(86_400, Math.trunc(Number(ttlSeconds) || 900))),
+      ttlSeconds: Math.max(60, Math.min(86_400, Math.trunc(Number(ttlSeconds) || 10_800))),
     });
     const response = await this.#fetch(`${this.#serverUrl}/api/enrollment-code`, {
       method: "POST",

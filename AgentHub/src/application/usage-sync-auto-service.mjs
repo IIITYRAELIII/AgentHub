@@ -88,7 +88,7 @@ export class UsageSyncAutoService {
     return this.syncInFlight;
   }
 
-  async createEnrollmentCode({ ttlSeconds = 900 } = {}) {
+  async createEnrollmentCode({ ttlSeconds = 10_800 } = {}) {
     const remoteConfig = await this.remoteConfigStore.load();
     const serverUrl = String(remoteConfig?.serverUrl ?? "").trim();
     if (!serverUrl || !remoteConfig?.enrolledAt) {

@@ -224,8 +224,8 @@ test("journal usage sync invite and enroll endpoints support guided connection",
       load: async () => structuredClone(usageSync),
     },
     usageSyncService: {
-      createEnrollmentCode: async () => {
-        calls.push(["invite"]);
+      createEnrollmentCode: async ({ ttlSeconds }) => {
+        calls.push(["invite", ttlSeconds]);
         return { ok: true, code: "join-code", expiresAtMs: 1780000000000 };
       },
       enroll: async ({ serverUrl, code }) => {
@@ -261,7 +261,7 @@ test("journal usage sync invite and enroll endpoints support guided connection",
     assert.equal(enrolled.usageSync.configured, true);
     assert.equal(enrolled.usageSync.deviceId, "device-new");
     assert.deepEqual(calls, [
-      ["invite"],
+      ["invite", 10_800],
       ["enroll", "https://sync.example.test/agenthub", "join-code"],
     ]);
   } finally {

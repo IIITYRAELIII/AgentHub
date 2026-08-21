@@ -607,7 +607,7 @@ export class MiniAppServer {
     if (!this.#usageSyncService?.createEnrollmentCode) {
       throw new Error("Создание кода Sync недоступно");
     }
-    return this.#usageSyncService.createEnrollmentCode({ ttlSeconds: 900 });
+    return this.#usageSyncService.createEnrollmentCode({ ttlSeconds: 10_800 });
   }
 
   async #enrollUsageSync(request) {

@@ -27,7 +27,7 @@ function usage() {
     "Usage:",
     "  node work-log-usage-sync.mjs identity [--set-label <label>]",
     "  node work-log-usage-sync.mjs enroll --server <url> --code <code>",
-    "  node work-log-usage-sync.mjs invite [--ttl-seconds <seconds>]",
+    "  node work-log-usage-sync.mjs invite [--ttl-seconds <seconds>]  # default: 10800",
     "  node work-log-usage-sync.mjs push [--server <url>]",
     "  node work-log-usage-sync.mjs pull [--server <url>] [--project]",
     "  node work-log-usage-sync.mjs sync [--server <url>] [--project]",
@@ -148,7 +148,7 @@ try {
     }, null, 2));
   } else if (command === "invite") {
     const result = await remoteClient().createEnrollmentCode({
-      ttlSeconds: Number(option("--ttl-seconds", "900")),
+      ttlSeconds: Number(option("--ttl-seconds", "10800")),
     });
     console.log(JSON.stringify({
       invited: true,
