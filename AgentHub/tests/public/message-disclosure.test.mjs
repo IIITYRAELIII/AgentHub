@@ -72,6 +72,80 @@ test("live trace keeps reasoning blocks and collects every tool at the bottom", 
   );
 });
 
+test("completed trace names reasoning explicitly and counts all visible entries", async () => {
+  const { turnTraceSummary } = await disclosureApi();
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(turnTraceSummary({ reasoningCount: 2, activityCount: 3 }))),
+    { label: "Рассуждения и действия", count: 5 },
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(turnTraceSummary({ reasoningCount: 2 }))),
+    { label: "Рассуждения", count: 2 },
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(turnTraceSummary({ activityCount: 3 }))),
+    { label: "Выполненные действия", count: 3 },
+  );
+});
+
+test("quoting accepts one word from any surface inside one message", async () => {
+  const { quotableSelectionText } = await disclosureApi();
+  const message = {};
+  assert.equal(quotableSelectionText({
+    text: "runtime",
+    rangeCount: 1,
+    startMessage: message,
+    endMessage: message,
+    startSurface: {},
+    endSurface: {},
+  }), "runtime");
+  assert.equal(quotableSelectionText({
+    text: "два сообщения",
+    rangeCount: 1,
+    startMessage: {},
+    endMessage: {},
+    startSurface: {},
+    endSurface: {},
+  }), "");
+  assert.equal(quotableSelectionText({
+    text: "заголовок",
+    rangeCount: 1,
+    startMessage: message,
+    endMessage: message,
+  }), "");
+});
+
+test("native selection menu is preserved only for an actual touch gesture", async () => {
+  const { nativeSelectionMenuRequired } = await disclosureApi();
+  assert.equal(nativeSelectionMenuRequired({ pointerType: "mouse", recentTouch: false }), false);
+  assert.equal(nativeSelectionMenuRequired({ pointerType: "mouse", recentTouch: true }), false);
+  assert.equal(nativeSelectionMenuRequired({ pointerType: "touch", recentTouch: false }), true);
+  assert.equal(nativeSelectionMenuRequired({ recentTouch: true }), true);
+  assert.equal(nativeSelectionMenuRequired({ recentTouch: false }), false);
+});
+
+test("triple-click selection keeps the message when its range ends after the body", async () => {
+  const { quotableSelectionScope } = await disclosureApi();
+  const message = {};
+  const surface = {};
+  assert.deepEqual(JSON.parse(JSON.stringify(quotableSelectionScope({
+    startMessage: message,
+    intersectedMessage: message,
+    startSurface: surface,
+    intersectedSurface: surface,
+  }))), {
+    message,
+    startSurface: surface,
+    endSurface: surface,
+  });
+  assert.equal(quotableSelectionScope({
+    startMessage: {},
+    endMessage: {},
+    intersectedMessage: message,
+    intersectedSurface: surface,
+  }), null);
+});
+
 test("shared shell keeps full text and limits only the rendered user-message body", async () => {
   const app = await readFile(new URL("../../assets/web-app/app.js", import.meta.url), "utf8");
   const styles = await readFile(new URL("../../assets/web-app/dialog-area.css", import.meta.url), "utf8");

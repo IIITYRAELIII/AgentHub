@@ -1,0 +1,34 @@
+.task-card-modal {
+  max-height: min(calc(100dvh - 2rem), 56rem);
+  max-width: min(calc(100vw - 2rem), 64rem);
+  overflow: hidden;
+  width: min(calc(100vw - 2rem), 34rem);
+}
+
+.task-card-modal[open] {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+.task-card-modal .task-card-content {
+  max-height: none;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.task-card-modal .task-card-editor textarea {
+  box-sizing: border-box;
+}
+
+.task-card-modal .task-card-editor [data-task-card-description] {
+  overflow-y: hidden;
+  resize: none;
+}
+
+@media (max-width: 40rem) {
+  .task-card-modal {
+    max-height: calc(100dvh - 1rem);
+    max-width: calc(100vw - 1rem);
+    width: calc(100vw - 1rem);
+  }
+}

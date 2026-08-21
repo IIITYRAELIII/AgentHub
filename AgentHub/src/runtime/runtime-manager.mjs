@@ -29,6 +29,7 @@ const TOP_LEVEL_FILES = new Set([
   "codex-rollout-processes.ps1",
   "requirements.txt",
   "requirements-tts.txt",
+  "attachment_thumbnail.py",
   "runtime-launch.sh",
   "start.ps1",
   "transcribe.py",

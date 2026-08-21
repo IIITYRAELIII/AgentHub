@@ -340,7 +340,7 @@ function responseHeaders(contentType, { immutable = false, telegramRuntime = tru
       "connect-src 'self'",
       "form-action 'none'",
       "frame-ancestors 'none'",
-      "img-src 'self' data:",
+      "img-src 'self' data: blob:",
       "object-src 'none'",
       `script-src 'self'${telegramRuntime ? " https://telegram.org" : ""}`,
       "style-src 'self'",
@@ -490,6 +490,7 @@ export class MiniAppServer {
   #assetBundleRefreshMs;
   #assetBundleWarning = "";
   #attachmentDirectory;
+  #attachmentThumbnails;
   #botToken;
   #clients = new Set();
   #controlHandler;
@@ -539,6 +540,7 @@ export class MiniAppServer {
     assetBundleProvider = null,
     assetBundleRefreshMs = 1_000,
     attachmentDirectory = null,
+    attachmentThumbnails = null,
     mobileUpdateDirectory = path.join(AGENT_HUB_ROOT, "assets", "mobile"),
     workLogCssFile = path.join(AGENT_HUB_ROOT, "work-log.css"),
     journalDatabase = null,
@@ -571,6 +573,9 @@ export class MiniAppServer {
     this.#assetBundleProvider = typeof assetBundleProvider === "function" ? assetBundleProvider : null;
     this.#assetBundleRefreshMs = Math.max(0, Number(assetBundleRefreshMs) || 0);
     this.#attachmentDirectory = attachmentDirectory ? path.resolve(attachmentDirectory) : null;
+    this.#attachmentThumbnails = attachmentThumbnails && typeof attachmentThumbnails.create === "function"
+      ? attachmentThumbnails
+      : null;
     this.#mobileUpdateDirectory = mobileUpdateDirectory
       ? path.resolve(mobileUpdateDirectory)
       : null;
@@ -1188,6 +1193,29 @@ export class MiniAppServer {
         const metadata = attachmentMetadataFromId(id);
         if (!metadata) throw new Error("Некорректный идентификатор вложения");
         const target = path.join(this.#attachmentDirectory, id);
+        if (url.searchParams.get("preview") === "1") {
+          if (!metadata.isImage || !this.#attachmentThumbnails) {
+            throw new Error("Миниатюра недоступна");
+          }
+          const thumbnail = await this.#attachmentThumbnails.create(target);
+          if (String(request.headers["if-none-match"] ?? "") === thumbnail.etag) {
+            response.writeHead(304, {
+              ...responseHeaders(thumbnail.type),
+              "Cache-Control": "private, max-age=31536000, immutable",
+              ETag: thumbnail.etag,
+            });
+            response.end();
+            return;
+          }
+          send(response, 200, thumbnail.type, await readFile(thumbnail.file), method, {
+            headers: {
+              "Cache-Control": "private, max-age=31536000, immutable",
+              ETag: thumbnail.etag,
+              "X-Content-Type-Options": "nosniff",
+            },
+          });
+          return;
+        }
         const info = await stat(target);
         if (!info.isFile() || info.size < 1 || info.size > MAX_ATTACHMENT_BYTES) {
           throw new Error("Вложение отсутствует или повреждено");

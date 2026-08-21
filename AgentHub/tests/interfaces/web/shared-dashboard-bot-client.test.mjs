@@ -197,6 +197,114 @@ test("shared Dashboard bot downloads a screenshot reply before augmenting the Ta
   assert.deepEqual(await readFile(handled[0].params.attachments[0]), image);
 });
 
+test("shared Dashboard bot retries a timed out screenshot without rejecting the command", async (context) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-shared-bot-image-retry-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const secretFile = path.join(directory, "shared-dashboard-bot.secret");
+  await writeFile(secretFile, "s".repeat(64), "utf8");
+  const image = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
+  const attachmentId = "018f6c86-3f34-7a31-8f27-16f5b96cce72";
+  const command = {
+    id: "018f6c86-3f34-7a31-8f27-16f5b96cce73",
+    userId: "42",
+    action: "board-task-ingest",
+    params: {
+      text: "Сохранить задачу со скриншотом",
+      sourceKey: "shared-dashboard:456",
+      sourceDetails: { chatId: 42, userId: 42, messageId: 9 },
+      attachments: [`remote-attachment:${attachmentId}`],
+    },
+  };
+  let attachmentPulls = 0;
+  const results = [];
+  const client = new SharedDashboardBotClient({
+    publicUrl: "https://hub.example.com",
+    hubId: "018f6c86-3f34-7a31-8f27-16f5b96cce75",
+    secretFile,
+    attachmentDirectory: path.join(directory, "attachments"),
+    fetchImpl: async (url, options) => {
+      if (url.endsWith("/api/dashboard-bot/pull")) return Response.json({ commands: [command] });
+      if (url.endsWith("/api/dashboard-bot/attachment/pull")) {
+        attachmentPulls += 1;
+        if (attachmentPulls === 1) {
+          const timeout = new Error("The operation was aborted due to timeout");
+          timeout.name = "TimeoutError";
+          return new Response(new ReadableStream({ start: (controller) => controller.error(timeout) }), {
+            headers: {
+              "Content-Type": "image/jpeg",
+              "Content-Length": String(image.length),
+              "X-Agent-Hub-Attachment-Hash": createHash("sha256").update(image).digest("hex"),
+              "X-Agent-Hub-File-Name": encodeURIComponent("screenshot.jpg"),
+            },
+          });
+        }
+        return new Response(image, {
+          headers: {
+            "Content-Type": "image/jpeg",
+            "Content-Length": String(image.length),
+            "X-Agent-Hub-Attachment-Hash": createHash("sha256").update(image).digest("hex"),
+            "X-Agent-Hub-File-Name": encodeURIComponent("screenshot.jpg"),
+          },
+        });
+      }
+      if (url.endsWith("/api/dashboard-bot/result")) {
+        results.push(JSON.parse(options.body));
+        return Response.json({ ok: true });
+      }
+      return Response.json({ error: "unexpected request" }, { status: 500 });
+    },
+    handler: async () => ({ taskId: "task-image-retry" }),
+  });
+
+  assert.equal(await client.poll(), 1);
+  assert.equal(attachmentPulls, 2);
+  assert.deepEqual(results, [{
+    id: command.id,
+    userId: "42",
+    ok: true,
+    result: { taskId: "task-image-retry" },
+  }]);
+});
+
+test("shared Dashboard bot leaves an exhausted transient command available for retry", async (context) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-shared-bot-image-deferred-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const secretFile = path.join(directory, "shared-dashboard-bot.secret");
+  await writeFile(secretFile, "s".repeat(64), "utf8");
+  const command = {
+    id: "018f6c86-3f34-7a31-8f27-16f5b96cce83",
+    userId: "42",
+    action: "board-task-ingest",
+    params: {
+      text: "Не потерять задачу при сетевом сбое",
+      sourceKey: "shared-dashboard:789",
+      sourceDetails: { chatId: 42, userId: 42, messageId: 10 },
+      attachments: ["remote-attachment:018f6c86-3f34-7a31-8f27-16f5b96cce82"],
+    },
+  };
+  let resultRequests = 0;
+  const client = new SharedDashboardBotClient({
+    publicUrl: "https://hub.example.com",
+    hubId: "018f6c86-3f34-7a31-8f27-16f5b96cce85",
+    secretFile,
+    attachmentDirectory: path.join(directory, "attachments"),
+    fetchImpl: async (url) => {
+      if (url.endsWith("/api/dashboard-bot/pull")) return Response.json({ commands: [command] });
+      if (url.endsWith("/api/dashboard-bot/attachment/pull")) {
+        const timeout = new Error("The operation was aborted due to timeout");
+        timeout.name = "TimeoutError";
+        throw timeout;
+      }
+      if (url.endsWith("/api/dashboard-bot/result")) resultRequests += 1;
+      return Response.json({ ok: true });
+    },
+    handler: async () => ({ taskId: "must-not-run" }),
+  });
+
+  await assert.rejects(client.poll(), /command will be retried/u);
+  assert.equal(resultRequests, 0);
+});
+
 test("shared Dashboard bot accepts a text reply clarification without a source key", async (context) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-shared-bot-reply-"));
   context.after(() => rm(directory, { recursive: true, force: true }));

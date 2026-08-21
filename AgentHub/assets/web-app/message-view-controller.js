@@ -56,6 +56,12 @@
     return { text, successMessage: "Сообщение скопировано" };
   }
 
+  function codeBlockCopyRequest(value) {
+    const text = String(value ?? "");
+    if (!text) return null;
+    return { text, successMessage: "Блок скопирован" };
+  }
+
   function messageDisclosurePresentation(expanded) {
     return expanded
       ? { label: "Свернуть", icon: "caret-up" }
@@ -239,6 +245,7 @@
 
   globalThis.AgentHubMessageView = Object.freeze({
     claimKeyedChildrenOwner,
+    codeBlockCopyRequest,
     composerFollowUpMode,
     extractTechnicalTails,
     messageTechnicalContent,

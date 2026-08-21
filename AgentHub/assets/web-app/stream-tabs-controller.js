@@ -453,6 +453,8 @@
           attributes: true,
           attributeFilter: [
             "data-activity-stream-cards",
+            "data-activity-tasks-auto-separate",
+            "data-activity-tasks-always-separate",
             "data-stream-status-effect",
             "data-stream-status-style",
             "data-surface",
@@ -631,6 +633,25 @@
                 <span class="switch-track" aria-hidden="true"></span>
               </button>
             </div>
+            <div class="stream-card-settings-section stream-card-settings-gap-section"
+              title="Когда в одну колонку не помещаются и потоки и задачи">
+              <span class="stream-card-settings-kicker">Переносить задачи в отдельную колонку</span>
+              <button type="button" class="stream-card-gap-toggle stream-card-settings-switch"
+                role="switch" aria-checked="true" aria-label="Переносить задачи в отдельную колонку"
+                data-activity-task-separate-toggle>
+                <span class="switch-track" aria-hidden="true"></span>
+              </button>
+            </div>
+            <div class="stream-card-settings-section stream-card-settings-gap-section"
+              title="Всегда показывать задачи и потоки в двух колонках"
+              data-activity-task-always-separate-setting hidden>
+              <span class="stream-card-settings-kicker">Задачи всегда в отдельной колонке</span>
+              <button type="button" class="stream-card-gap-toggle stream-card-settings-switch"
+                role="switch" aria-checked="false" aria-label="Задачи всегда в отдельной колонке"
+                data-activity-task-always-separate-toggle>
+                <span class="switch-track" aria-hidden="true"></span>
+              </button>
+            </div>
           </section>
         </div>`;
       const sourceIcon = this.document.querySelector(".view-settings svg");
@@ -692,6 +713,20 @@
         this.applyViewSetting(
           "activityStreamDetailedCards",
           this.root.dataset.activityStreamCards !== "detailed",
+        );
+        this.update(wrapper);
+      });
+      wrapper.querySelector("[data-activity-task-separate-toggle]").addEventListener("click", () => {
+        this.applyViewSetting(
+          "activityTasksSeparateColumn",
+          !this.root.hasAttribute("data-activity-tasks-auto-separate"),
+        );
+        this.update(wrapper);
+      });
+      wrapper.querySelector("[data-activity-task-always-separate-toggle]").addEventListener("click", () => {
+        this.applyViewSetting(
+          "activityTasksAlwaysSeparateColumn",
+          !this.root.hasAttribute("data-activity-tasks-always-separate"),
         );
         this.update(wrapper);
       });
@@ -815,6 +850,18 @@
       wrapper.querySelector("[data-stream-detailed-toggle]")?.setAttribute(
         "aria-checked",
         String(this.root.dataset.activityStreamCards === "detailed"),
+      );
+      wrapper.querySelector("[data-activity-task-separate-toggle]")?.setAttribute(
+        "aria-checked",
+        String(this.root.hasAttribute("data-activity-tasks-auto-separate")),
+      );
+      const alwaysSeparateSetting = wrapper.querySelector("[data-activity-task-always-separate-setting]");
+      if (alwaysSeparateSetting) {
+        alwaysSeparateSetting.hidden = !this.root.hasAttribute("data-activity-tasks-auto-separate");
+      }
+      wrapper.querySelector("[data-activity-task-always-separate-toggle]")?.setAttribute(
+        "aria-checked",
+        String(this.root.hasAttribute("data-activity-tasks-always-separate")),
       );
       const effectSelect = wrapper.querySelector("[data-stream-status-effect-select]");
       if (effectSelect) effectSelect.value = this.root.dataset.streamStatusEffect || "impulse";

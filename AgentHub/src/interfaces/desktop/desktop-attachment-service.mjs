@@ -17,6 +17,7 @@ export class DesktopAttachmentService {
   #publisher;
   #trustedUserId;
   #assistantAttachmentImporterFactory;
+  #attachmentThumbnails;
   #importer = null;
 
   constructor(options = {}) {
@@ -27,6 +28,7 @@ export class DesktopAttachmentService {
     this.#publisher = typeof options.publisher === "function" ? options.publisher : () => null;
     this.#trustedUserId = typeof options.trustedUserId === "function" ? options.trustedUserId : () => "local";
     this.#assistantAttachmentImporterFactory = options.assistantAttachmentImporterFactory;
+    this.#attachmentThumbnails = options.attachmentThumbnails ?? null;
   }
 
   async paths(values) {
@@ -84,14 +86,20 @@ export class DesktopAttachmentService {
     const id = String(params?.id ?? "").trim();
     const target = await this.pathById(id);
     const metadata = attachmentMetadataFromId(id);
+    const preview = params?.preview === true;
+    if (preview && !metadata.isImage) throw new Error("Миниатюра доступна только для изображения");
     if (context?.source === "telegram-mini-app" && this.#workerEnabled) {
       const publisher = this.#publisher();
       if (!publisher) throw new Error("Вложения доступны только при включённом Mini App Worker");
-      return publisher.publishAttachmentView(this.#trustedUserId(context), target);
+      if (preview && !this.#attachmentThumbnails) throw new Error("Генератор миниатюр не настроен");
+      const publishedTarget = preview
+        ? (await this.#attachmentThumbnails.create(target)).file
+        : target;
+      return publisher.publishAttachmentView(this.#trustedUserId(context), publishedTarget);
     }
     return {
       ...metadata,
-      url: `/api/message-attachment/${encodeURIComponent(id)}`,
+      url: `/api/message-attachment/${encodeURIComponent(id)}${preview ? "?preview=1" : ""}`,
     };
   }
 }

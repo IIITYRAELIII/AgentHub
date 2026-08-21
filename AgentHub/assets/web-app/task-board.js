@@ -148,12 +148,15 @@
   const workspacePanel = document.querySelector("[data-workspace-task-panel]");
   const workspacePanelList = document.querySelector("[data-workspace-task-list]");
   const workspacePanelTitle = document.querySelector("[data-workspace-task-title]");
+  const activityTaskHeading = document.querySelector("[data-activity-task-heading]");
   const taskCardModal = document.querySelector("[data-task-card-modal]");
   const taskCardSource = document.querySelector("[data-task-card-source]");
   const taskCardEditor = document.querySelector("[data-task-card-editor]");
   const taskCardTitle = document.querySelector("[data-task-card-title]");
   const taskCardDescription = document.querySelector("[data-task-card-description]");
   const taskCardTitleSizer = createAutoGrowTextarea({ textarea: taskCardTitle });
+  const taskCardDescriptionSizer = createAutoGrowTextarea({ textarea: taskCardDescription });
+  const taskCardContent = document.querySelector(".task-card-content");
   const taskCardSaveButton = taskCardEditor?.querySelector("button[type='submit']");
   const taskCardAttachments = document.querySelector("[data-task-card-attachments]");
   const taskCardOriginal = document.querySelector("[data-task-card-original]");
@@ -176,7 +179,12 @@
   const COLUMN_TEXT_PREFIX = "agent-hub-column:";
   const TASK_CARD_MAX_TEXT_LINES = 6;
   const TASK_CARD_MAX_WIDTH_REM = 42;
+  const TASK_CARD_MODAL_BASE_WIDTH_REM = 34;
+  const TASK_CARD_MODAL_MAX_WIDTH_REM = 64;
+  const TASK_CARD_MODAL_MAX_HEIGHT_REM = 56;
+  const TASK_CARD_MODAL_VIEWPORT_GAP_PX = 32;
   let taskCardSizingFrame = null;
+  let taskCardEditorSizingFrame = null;
 
   const state = {
     tasks: [],
@@ -284,6 +292,56 @@
   function scheduleTaskCardSizing() {
     if (taskCardSizingFrame != null) window.cancelAnimationFrame(taskCardSizingFrame);
     taskCardSizingFrame = window.requestAnimationFrame(resizeTaskCards);
+  }
+
+  function resizeTaskCardEditor() {
+    taskCardEditorSizingFrame = null;
+    if (!taskCardModal?.open || !taskCardContent) return;
+    taskCardModal.style.removeProperty("inline-size");
+    taskCardModal.removeAttribute("data-width-expanded");
+    taskCardTitleSizer.resize();
+    taskCardDescriptionSizer.resize();
+
+    const rootFontSize = numericCssValue(window.getComputedStyle(document.documentElement).fontSize) || 16;
+    const viewportWidth = Math.max(1, document.documentElement.clientWidth || window.innerWidth);
+    const viewportHeight = Math.max(1, document.documentElement.clientHeight || window.innerHeight);
+    const availableWidth = Math.max(1, viewportWidth - TASK_CARD_MODAL_VIEWPORT_GAP_PX);
+    const baseWidth = Math.min(
+      TASK_CARD_MODAL_BASE_WIDTH_REM * rootFontSize,
+      availableWidth,
+    );
+    const maxWidth = Math.max(baseWidth, Math.min(
+      TASK_CARD_MODAL_MAX_WIDTH_REM * rootFontSize,
+      availableWidth,
+    ));
+    const maxHeight = Math.max(1, Math.min(
+      TASK_CARD_MODAL_MAX_HEIGHT_REM * rootFontSize,
+      viewportHeight - TASK_CARD_MODAL_VIEWPORT_GAP_PX,
+    ));
+    const header = taskCardModal.querySelector(":scope > header");
+    const footer = taskCardModal.querySelector(":scope > footer");
+    const modalStyle = window.getComputedStyle(taskCardModal);
+    const modalBorders = numericCssValue(modalStyle.borderTopWidth)
+      + numericCssValue(modalStyle.borderBottomWidth);
+    const measureHeight = (width) => {
+      taskCardModal.style.setProperty("inline-size", `${width}px`);
+      taskCardTitleSizer.resize();
+      taskCardDescriptionSizer.resize();
+      return (header?.offsetHeight ?? 0)
+        + taskCardContent.scrollHeight
+        + (footer?.offsetHeight ?? 0)
+        + modalBorders;
+    };
+    const desiredWidth = fitTaskCardWidth({ baseWidth, maxWidth, maxHeight, measureHeight });
+    taskCardModal.style.setProperty("inline-size", `${desiredWidth}px`);
+    if (desiredWidth > baseWidth + 1) taskCardModal.setAttribute("data-width-expanded", "");
+    taskCardTitleSizer.resize();
+    taskCardDescriptionSizer.resize();
+  }
+
+  function scheduleTaskCardEditorSizing() {
+    if (taskCardEditorSizingFrame != null) window.cancelAnimationFrame(taskCardEditorSizingFrame);
+    taskCardEditorSizingFrame = window.requestAnimationFrame(resizeTaskCardEditor);
   }
 
   function emit(type, detail = {}) {
@@ -459,7 +517,7 @@
       taskCardDescription.value = String(task.description ?? "").trim();
       state.editingTaskId = task.id;
     }
-    if (taskCardModal.open) taskCardTitleSizer.resize();
+    if (taskCardModal.open) scheduleTaskCardEditorSizing();
     renderTaskCardSaving(task.id);
     const originalText = String(task.rawText ?? "").trim();
     taskCardOriginal.hidden = !originalText;
@@ -509,7 +567,7 @@
     renderOpenTaskCard();
     taskCardModal.showModal?.();
     if (!taskCardModal.open) taskCardModal.setAttribute("open", "");
-    taskCardTitleSizer.resize();
+    scheduleTaskCardEditorSizing();
   }
 
   function taskCard(task, { compact = false } = {}) {
@@ -715,6 +773,12 @@
   function renderWorkspacePanel() {
     const workspace = workspaceById(state.selectedWorkspaceId);
     const tasks = workspaceTasksForPanel(state.tasks, workspace?.id);
+    if (activityTaskHeading) {
+      activityTaskHeading.textContent = window.AgentHubActivityRailLayout.countedActivityHeading(
+        "Задачи",
+        tasks.length,
+      );
+    }
     workspacePanel.hidden = !workspace;
     if (!workspace) return;
     workspacePanelTitle.textContent = `Задачи · ${workspace.name}`;
@@ -733,6 +797,7 @@
     renderBoard();
   });
   window.addEventListener("resize", scheduleTaskCardSizing, { passive: true });
+  window.addEventListener("resize", scheduleTaskCardEditorSizing, { passive: true });
   if (typeof window.ResizeObserver === "function") {
     new window.ResizeObserver(scheduleTaskCardSizing).observe(columns);
   }
@@ -740,8 +805,12 @@
   document.querySelector("[data-task-card-close]")?.addEventListener("click", closeTaskCard);
   taskCardOriginalToggle?.addEventListener("click", () => {
     setTaskCardOriginalExpanded(taskCardOriginalToggle.getAttribute("aria-expanded") !== "true");
+    scheduleTaskCardEditorSizing();
   });
-  taskCardEditor?.addEventListener("input", () => { state.editDirty = true; });
+  taskCardEditor?.addEventListener("input", () => {
+    state.editDirty = true;
+    scheduleTaskCardEditorSizing();
+  });
   taskCardTitle?.addEventListener("keydown", (event) => {
     if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
     event.preventDefault();

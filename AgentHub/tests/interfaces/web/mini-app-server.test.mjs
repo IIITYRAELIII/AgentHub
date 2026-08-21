@@ -456,21 +456,40 @@ test("extractWorkLogHtml escapes an unprojected journal", () => {
 test("Mini App serves only safe persistent message attachment names", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-message-attachment-"));
   const attachments = path.join(directory, "attachments");
+  const thumbnail = path.join(directory, "thumbnail.webp");
   const server = new MiniAppServer({
     host: "127.0.0.1",
     port: 0,
     journalDatabase: memoryJournal(),
     attachmentDirectory: attachments,
+    attachmentThumbnails: {
+      create: async () => ({
+        etag: '"thumbnail-test"',
+        file: thumbnail,
+        type: "image/webp",
+      }),
+    },
   });
   try {
     await mkdir(attachments, { recursive: true });
     const body = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
     await writeFile(path.join(attachments, "message-1.png"), body);
+    await writeFile(thumbnail, Buffer.from("small-preview"));
     const address = await server.start();
     const image = await fetch(`${address.url}api/message-attachment/message-1.png`);
     assert.equal(image.status, 200);
     assert.equal(image.headers.get("content-type"), "image/png");
     assert.deepEqual(Buffer.from(await image.arrayBuffer()), body);
+    const preview = await fetch(`${address.url}api/message-attachment/message-1.png?preview=1`);
+    assert.equal(preview.status, 200);
+    assert.equal(preview.headers.get("content-type"), "image/webp");
+    assert.equal(preview.headers.get("etag"), '"thumbnail-test"');
+    assert.match(preview.headers.get("cache-control"), /immutable/u);
+    assert.equal(await preview.text(), "small-preview");
+    assert.equal((await fetch(
+      `${address.url}api/message-attachment/message-1.png?preview=1`,
+      { headers: { "If-None-Match": '"thumbnail-test"' } },
+    )).status, 304);
     const documentId = createAttachmentStorageName("Требования.pdf", "01234567-89ab-cdef-0123-456789abcdef");
     await writeFile(path.join(attachments, documentId), Buffer.from("document"));
     const document = await fetch(`${address.url}api/message-attachment/${documentId}`);

@@ -36,6 +36,7 @@ export async function createClientInterfaceComposition({
   telegramLimit,
   miniAppServer,
   publicMiniAppServer,
+  attachmentThumbnails,
   runtimeCommandRoot,
   journalDatabaseFile,
   taskBoard,
@@ -164,6 +165,7 @@ export async function createClientInterfaceComposition({
     workerEnabled: config.miniApp.worker.enabled,
     publisher: () => miniAppLifecycle.publisher,
     trustedUserId: trustedDeviceUserId,
+    attachmentThumbnails,
   });
   const bugReports = new BugReportRepository({
     agentHubRoot,

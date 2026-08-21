@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -7,6 +8,7 @@ import test from "node:test";
 
 import { canonicalPath } from "../../src/infrastructure/filesystem/config.mjs";
 import { LoopbackTelegramApi } from "../../src/infrastructure/network/loopback-telegram-api.mjs";
+import { processIsAlive } from "../../src/infrastructure/process/process-liveness.mjs";
 import {
   assertIsolatedTestContourRoot,
   cloneProductionDataToTestContour,
@@ -14,13 +16,17 @@ import {
   installTestContour,
   PLAYWRIGHT_CORE_VERSION,
   prepareTestContourCandidate,
+  republishTestContourPointer,
+  stopTestContour,
   TEST_CONTOUR_MODEL,
   TEST_CONTOUR_WEB_HOST,
   testContourComponentEnabled,
   testContourConfig,
   testContourEnvironment,
+  testContourOperationLockTarget,
   testContourPaths,
   uninstallTestContour,
+  withTestContourOperationLock,
 } from "../../src/runtime/test-contour-manager.mjs";
 
 test("Test Contour uses a sibling runtime instead of production or source", () => {
@@ -43,6 +49,91 @@ test("Test Contour uses a sibling runtime instead of production or source", () =
     }),
     /overlaps protected path/u,
   );
+});
+
+test("Test Contour serializes overlapping lifecycle operations", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-test-contour-lock-"));
+  const entered = [];
+  let releaseFirst;
+  const firstCanFinish = new Promise((resolve) => { releaseFirst = resolve; });
+  try {
+    assert.equal(
+      testContourOperationLockTarget(root),
+      `${path.resolve(root)}-operation`,
+    );
+    const first = withTestContourOperationLock(root, async () => {
+      entered.push("first");
+      await firstCanFinish;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const second = withTestContourOperationLock(root, async () => {
+      entered.push("second");
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.deepEqual(entered, ["first"]);
+    releaseFirst();
+    await Promise.all([first, second]);
+    assert.deepEqual(entered, ["first", "second"]);
+  } finally {
+    releaseFirst?.();
+    await rm(root, { recursive: true, force: true });
+    await rm(`${root}-operation.lock`, { recursive: true, force: true });
+  }
+});
+
+test("Test Contour republishes current.json only after the expected runtime is ready", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-test-contour-pointer-"));
+  const currentFile = path.join(root, "current.json");
+  try {
+    await writeFile(currentFile, JSON.stringify({
+      current: "candidate-2",
+      previous: "candidate-1",
+      updatedAt: "2026-08-21T00:00:00.000Z",
+    }), "utf8");
+    const published = await republishTestContourPointer({
+      root,
+      releaseId: "candidate-2",
+      now: new Date("2026-08-21T12:00:00.000Z"),
+    });
+    assert.equal(published.current, "candidate-2");
+    assert.equal(published.previous, "candidate-1");
+    assert.equal(published.updatedAt, "2026-08-21T12:00:00.000Z");
+    assert.deepEqual(JSON.parse(await readFile(currentFile, "utf8")), published);
+    await assert.rejects(
+      republishTestContourPointer({ root, releaseId: "candidate-1" }),
+      /does not match current\.json/u,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Test Contour stops an orphan runtime from data bot.lock", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-test-contour-orphan-"));
+  const paths = testContourPaths(root);
+  const runtime = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+    stdio: "ignore",
+    windowsHide: true,
+  });
+  try {
+    await mkdir(paths.dataDir, { recursive: true });
+    await writeFile(paths.markerFile, JSON.stringify({
+      kind: "agent-hub-test-contour",
+      id: "test-contour-orphan",
+    }), "utf8");
+    await writeFile(path.join(paths.dataDir, "bot.lock"), JSON.stringify({
+      pid: runtime.pid,
+      releaseId: "candidate-orphan",
+    }), "utf8");
+    const result = await stopTestContour({ root });
+    assert.equal(result.stopped, true);
+    assert.equal(result.recoveredFromLock, true);
+    assert.equal(processIsAlive(runtime.pid), false);
+  } finally {
+    if (processIsAlive(runtime.pid)) runtime.kill("SIGKILL");
+    await rm(root, { recursive: true, force: true });
+    await rm(`${root}-operation.lock`, { recursive: true, force: true });
+  }
 });
 
 test("Test Contour installation is explicit, pinned and removable by owned marker", async () => {

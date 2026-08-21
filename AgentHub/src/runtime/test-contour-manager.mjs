@@ -26,11 +26,13 @@ import {
 import { LoopbackTelegramApi } from "../infrastructure/network/loopback-telegram-api.mjs";
 import { localWebAccessUrl } from "../infrastructure/network/loopback-web-access.mjs";
 import { JournalDatabase } from "../infrastructure/persistence/journal-database.mjs";
+import { writeTextAtomic } from "../infrastructure/persistence/state-store.mjs";
 import {
   cloneAttachmentDirectoryToTestContour,
   cloneJournalToTestContour,
 } from "../infrastructure/persistence/test-contour-data-clone.mjs";
 import { processIsAlive } from "../infrastructure/process/process-liveness.mjs";
+import { withInterprocessLocks } from "../infrastructure/process/interprocess-lock.mjs";
 import { stopProcessTree } from "../infrastructure/process/process-tree.mjs";
 
 export const TEST_CONTOUR_MODEL = "gpt-5.3-codex-spark";
@@ -77,6 +79,20 @@ export function testContourPaths(root = defaultTestContourRoot()) {
     stdoutFile: path.join(resolved, "test-contour.log"),
     stderrFile: path.join(resolved, "test-contour-error.log"),
   };
+}
+
+export function testContourOperationLockTarget(root = defaultTestContourRoot()) {
+  return `${path.resolve(root)}-operation`;
+}
+
+export function withTestContourOperationLock(root, operation, {
+  lock = withInterprocessLocks,
+} = {}) {
+  if (typeof operation !== "function") throw new TypeError("operation is required");
+  return lock([testContourOperationLockTarget(root)], operation, {
+    timeoutMs: 10 * 60_000,
+    retryDelayMs: 100,
+  });
 }
 
 export function assertIsolatedTestContourRoot(root, {
@@ -198,12 +214,20 @@ export async function installTestContour({
   return { root: isolatedRoot, marker, paths };
 }
 
-export async function uninstallTestContour({ root = defaultTestContourRoot() } = {}) {
+async function uninstallTestContourUnlocked({ root }) {
   const isolatedRoot = assertIsolatedTestContourRoot(root);
   await requireMarker(isolatedRoot);
-  await stopTestContour({ root: isolatedRoot });
+  await stopTestContourUnlocked({ root: isolatedRoot });
   await rm(isolatedRoot, { recursive: true, force: true });
   return { root: isolatedRoot, removed: true };
+}
+
+export async function uninstallTestContour({ root = defaultTestContourRoot() } = {}) {
+  const isolatedRoot = assertIsolatedTestContourRoot(root);
+  return withTestContourOperationLock(
+    isolatedRoot,
+    () => uninstallTestContourUnlocked({ root: isolatedRoot }),
+  );
 }
 
 export function testContourConfig({
@@ -378,6 +402,23 @@ async function currentRelease(root) {
   return { releaseId, releaseRoot };
 }
 
+export async function republishTestContourPointer({
+  root = defaultTestContourRoot(),
+  releaseId,
+  now = new Date(),
+} = {}) {
+  const isolatedRoot = assertIsolatedTestContourRoot(root);
+  const layout = runtimeLayout(isolatedRoot);
+  const pointer = await readJson(layout.currentFile);
+  const expectedRelease = String(releaseId ?? "").trim();
+  if (!expectedRelease || String(pointer?.current ?? "").trim() !== expectedRelease) {
+    throw new Error("Test Contour runtime does not match current.json");
+  }
+  const published = { ...pointer, updatedAt: now.toISOString() };
+  await writeTextAtomic(layout.currentFile, `${JSON.stringify(published, null, 2)}\n`);
+  return published;
+}
+
 async function waitFor(operation, description, timeoutMs = 120_000) {
   const deadline = Date.now() + timeoutMs;
   let lastError = null;
@@ -481,10 +522,20 @@ export async function readTestContourStatus({ root = defaultTestContourRoot() } 
   return { running: Boolean(health), root: paths.root, state, health };
 }
 
-export async function stopTestContour({ root = defaultTestContourRoot() } = {}) {
+async function stopTestContourUnlocked({ root }) {
   const paths = testContourPaths(root);
   const state = await readJson(paths.stateFile);
-  if (!state) return { stopped: false, reason: "not-running" };
+  if (!state) {
+    const lock = await readJson(path.join(paths.dataDir, "bot.lock"));
+    const runtimePid = Number(lock?.pid);
+    if (!Number.isInteger(runtimePid) || runtimePid <= 0 || !processIsAlive(runtimePid)) {
+      return { stopped: false, reason: "not-running" };
+    }
+    await requireMarker(root);
+    await stopProcessTree(runtimePid).catch(() => false);
+    await waitFor(() => !processIsAlive(runtimePid), "orphaned Test Contour shutdown", 15_000);
+    return { stopped: true, state: null, recoveredFromLock: true, runtimePid };
+  }
   await stopProcessTree(state.managerPid).catch(() => false);
   if (processIsAlive(state.runtimePid)) await stopProcessTree(state.runtimePid).catch(() => false);
   await waitFor(
@@ -496,7 +547,15 @@ export async function stopTestContour({ root = defaultTestContourRoot() } = {}) 
   return { stopped: true, state };
 }
 
-export async function cloneProductionDataToTestContour({
+export async function stopTestContour({ root = defaultTestContourRoot() } = {}) {
+  const isolatedRoot = assertIsolatedTestContourRoot(root);
+  return withTestContourOperationLock(
+    isolatedRoot,
+    () => stopTestContourUnlocked({ root: isolatedRoot }),
+  );
+}
+
+async function cloneProductionDataToTestContourUnlocked({
   root = defaultTestContourRoot(),
   productionRoot = defaultRuntimeRoot(),
   model = TEST_CONTOUR_MODEL,
@@ -504,7 +563,7 @@ export async function cloneProductionDataToTestContour({
 } = {}) {
   const isolatedRoot = assertIsolatedTestContourRoot(root, { productionRoot });
   await requireMarker(isolatedRoot);
-  await stopTestContour({ root: isolatedRoot });
+  await stopTestContourUnlocked({ root: isolatedRoot });
   const paths = testContourPaths(isolatedRoot);
   const production = runtimeLayout(productionRoot);
   const result = await cloneJournalToTestContour({
@@ -533,7 +592,18 @@ export async function cloneProductionDataToTestContour({
   };
 }
 
-export async function startTestContour({
+export async function cloneProductionDataToTestContour(options = {}) {
+  const root = options.root ?? defaultTestContourRoot();
+  const isolatedRoot = assertIsolatedTestContourRoot(root, {
+    productionRoot: options.productionRoot ?? defaultRuntimeRoot(),
+  });
+  return withTestContourOperationLock(
+    isolatedRoot,
+    () => cloneProductionDataToTestContourUnlocked({ ...options, root: isolatedRoot }),
+  );
+}
+
+async function startTestContourUnlocked({
   root = defaultTestContourRoot(),
   entryFile,
   refresh = false,
@@ -542,7 +612,7 @@ export async function startTestContour({
 } = {}) {
   const isolatedRoot = assertIsolatedTestContourRoot(root, { sourceRoot });
   const paths = testContourPaths(isolatedRoot);
-  await stopTestContour({ root: isolatedRoot });
+  await stopTestContourUnlocked({ root: isolatedRoot });
   if (refresh) await prepareTestContourCandidate({ root: isolatedRoot, sourceRoot });
   else await currentRelease(isolatedRoot).catch(() => prepareTestContourCandidate({ root: isolatedRoot, sourceRoot }));
   await prepareTestContourCodexHome(paths);
@@ -562,7 +632,7 @@ export async function startTestContour({
     closeSync(stdout);
     closeSync(stderr);
   }
-  return waitFor(async () => {
+  const state = await waitFor(async () => {
     const state = await readJson(paths.stateFile);
     if (state && processIsAlive(state.managerPid) && processIsAlive(state.runtimePid)) return state;
     if (!processIsAlive(manager.pid)) {
@@ -571,6 +641,18 @@ export async function startTestContour({
     }
     return null;
   }, "Test Contour background startup");
+  await republishTestContourPointer({ root: isolatedRoot, releaseId: state.releaseId });
+  return state;
+}
+
+export async function startTestContour(options = {}) {
+  const root = options.root ?? defaultTestContourRoot();
+  const sourceRoot = options.sourceRoot ?? path.resolve(import.meta.dirname, "..", "..");
+  const isolatedRoot = assertIsolatedTestContourRoot(root, { sourceRoot });
+  return withTestContourOperationLock(
+    isolatedRoot,
+    () => startTestContourUnlocked({ ...options, root: isolatedRoot, sourceRoot }),
+  );
 }
 
 export async function openTestContour({ root = defaultTestContourRoot(), spawnImpl = spawn } = {}) {
@@ -588,14 +670,14 @@ export async function openTestContour({ root = defaultTestContourRoot(), spawnIm
   return { opened: true, url };
 }
 
-export async function verifyTestContour({
+async function verifyTestContourUnlocked({
   root = defaultTestContourRoot(),
   entryFile,
   sourceRoot = path.resolve(import.meta.dirname, "..", ".."),
   withAgent = true,
 } = {}) {
   const paths = testContourPaths(root);
-  const state = await startTestContour({ root, entryFile, refresh: true, sourceRoot });
+  const state = await startTestContourUnlocked({ root, entryFile, refresh: true, sourceRoot });
   const {
     runTestContourUiSmoke,
     TEST_CONTOUR_PROBE,
@@ -632,4 +714,14 @@ export async function verifyTestContour({
     }, "Spark journal confirmation", 30_000);
   }
   return { state, smoke, journal };
+}
+
+export async function verifyTestContour(options = {}) {
+  const root = options.root ?? defaultTestContourRoot();
+  const sourceRoot = options.sourceRoot ?? path.resolve(import.meta.dirname, "..", "..");
+  const isolatedRoot = assertIsolatedTestContourRoot(root, { sourceRoot });
+  return withTestContourOperationLock(
+    isolatedRoot,
+    () => verifyTestContourUnlocked({ ...options, root: isolatedRoot, sourceRoot }),
+  );
 }

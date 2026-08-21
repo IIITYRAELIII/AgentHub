@@ -44,6 +44,61 @@
     return { reasoningBlocks, activities };
   }
 
+  function turnTraceSummary({ reasoningCount = 0, activityCount = 0 } = {}) {
+    const reasoning = Math.max(0, Number(reasoningCount) || 0);
+    const activities = Math.max(0, Number(activityCount) || 0);
+    const label = reasoning
+      ? (activities ? "Рассуждения и действия" : "Рассуждения")
+      : "Выполненные действия";
+    return { label, count: reasoning + activities };
+  }
+
+  function quotableSelectionText({
+    text = "",
+    rangeCount = 0,
+    startMessage = null,
+    endMessage = null,
+    startSurface = null,
+    endSurface = null,
+  } = {}) {
+    const quote = String(text ?? "").trim();
+    return quote
+      && Number(rangeCount) > 0
+      && startMessage
+      && startMessage === endMessage
+      && startSurface
+      && endSurface
+      ? quote
+      : "";
+  }
+
+  function quotableSelectionScope({
+    startMessage = null,
+    endMessage = null,
+    intersectedMessage = null,
+    startSurface = null,
+    endSurface = null,
+    intersectedSurface = null,
+  } = {}) {
+    const message = startMessage ?? endMessage ?? intersectedMessage;
+    if (!message
+      || (startMessage && startMessage !== message)
+      || (endMessage && endMessage !== message)
+      || (intersectedMessage && intersectedMessage !== message)) return null;
+    const surface = startSurface ?? endSurface ?? intersectedSurface;
+    if (!surface) return null;
+    return {
+      message,
+      startSurface: startSurface ?? surface,
+      endSurface: endSurface ?? surface,
+    };
+  }
+
+  function nativeSelectionMenuRequired({ pointerType = "", recentTouch = false } = {}) {
+    const input = String(pointerType ?? "").trim().toLowerCase();
+    return input === "touch" || (!input && Boolean(recentTouch));
+  }
+
   function liveTraceDisclosureOpen({ groupId = "", openGroupIds = [] } = {}) {
     return Array.from(openGroupIds ?? []).includes(String(groupId));
   }
@@ -57,6 +112,10 @@
     liveStageParts,
     standaloneLiveStageDetail,
     liveTraceDisclosureOpen,
+    nativeSelectionMenuRequired,
+    quotableSelectionScope,
+    quotableSelectionText,
     turnTraceContent,
+    turnTraceSummary,
   });
 })();

@@ -879,6 +879,38 @@ html[data-view="chat"][data-surface][data-theme] {
   padding: 10px 12px;
 }
 
+.markdown-code-block {
+  margin: 12px 0;
+  max-width: 100%;
+  position: relative;
+}
+
+.msg-body .markdown-code-block > pre,
+.msg-reasoning .markdown-code-block > pre {
+  margin: 0;
+  padding-top: 42px;
+}
+
+.markdown-code-copy {
+  align-items: center;
+  background: var(--dialog-control-hover);
+  color: var(--dialog-text-3);
+  justify-content: center;
+  opacity: 0.88;
+  padding: 0;
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  width: 26px;
+  z-index: 1;
+}
+
+.markdown-code-copy:hover,
+.markdown-code-copy:focus-visible {
+  color: var(--dialog-text);
+  opacity: 1;
+}
+
 .msg-body pre code,
 .msg-reasoning pre code,
 .msg-body pre code *,

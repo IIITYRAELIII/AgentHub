@@ -46,7 +46,7 @@ test("extreme task titles stop at the available card width", async () => {
   assert.equal(width, 480);
 });
 
-test("task title editor grows to its wrapped content height", async () => {
+test("task card text editors grow to their wrapped content height", async () => {
   const editor = (await loadBoardExports()).AgentHubTaskCardEditor;
   const listeners = new Map();
   let contentHeight = 42;
@@ -68,4 +68,14 @@ test("task title editor grows to its wrapped content height", async () => {
   listeners.get("input")();
   assert.equal(textarea.style.height, "99px");
   assert.equal(sizer.resize(), 99);
+});
+
+test("task card modal expands only after its content reaches the height limit", async () => {
+  const sizing = (await loadBoardExports()).AgentHubTaskCardSizing;
+  assert.equal(sizing.fitWidth({
+    baseWidth: 544,
+    maxWidth: 1_024,
+    maxHeight: 700,
+    measureHeight: (width) => Math.ceil(510_000 / width),
+  }), 729);
 });

@@ -18,6 +18,8 @@
   <!-- agent-hub-theme-styles -->
   <link rel="stylesheet" href="/dialog-area.css">
   <link rel="stylesheet" href="/side-panel-resizer.css">
+  <link rel="stylesheet" href="/task-card-layout.css">
+  <link rel="stylesheet" href="/activity-rail-layout.css">
   <script src="https://telegram.org/js/telegram-web-app.js?63"></script>
   <script src="/browser-device-auth.js" defer></script>
   <script src="/messages/disclosure.js" defer></script>
@@ -28,6 +30,7 @@
   <script src="/background-image-resolver.js" defer></script>
   <script src="/navigation-tabs-controller.js" defer></script>
   <script src="/stream-tabs-controller.js" defer></script>
+  <script src="/activity-rail-layout.js" defer></script>
   <script src="/connection-banner.js" defer></script>
   <script src="/connection-quality.js" defer></script>
   <script src="/startup-screen.js" type="module"></script>
@@ -380,7 +383,7 @@
             </button>
           </div>
           <div class="chat-log" data-chat-log></div>
-          <article class="msg msg-live" data-chat-live hidden>
+          <article class="msg msg-live" data-chat-live data-role="agent" hidden>
             <div class="msg-head">
               <span class="msg-author" data-live-author>Агент</span>
               <span class="msg-stage" data-live-stage></span>
@@ -563,9 +566,17 @@
 
     <aside class="activity-rail" data-activity-rail aria-label="Активные потоки и задачи">
       <header class="activity-rail-head">
+        <button type="button" class="activity-rail-toggle activity-task-toggle"
+          data-activity-task-toggle aria-expanded="true" title="Свернуть задачи" hidden>
+          <span data-activity-task-heading>Задачи (0)</span>
+          <svg data-phosphor-icon="caret-up" viewBox="0 0 256 256" aria-hidden="true">
+            <polyline points="48 160 128 80 208 160" fill="none" stroke="currentColor"
+              stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></polyline>
+          </svg>
+        </button>
         <button type="button" class="activity-rail-toggle" data-activity-rail-toggle
           aria-expanded="true" title="Свернуть активные потоки">
-          <span>Потоки</span>
+          <span data-activity-stream-heading>Потоки (0)</span>
           <svg data-phosphor-icon="caret-up" viewBox="0 0 256 256" aria-hidden="true">
             <polyline points="48 160 128 80 208 160" fill="none" stroke="currentColor"
               stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></polyline>
@@ -573,20 +584,22 @@
         </button>
       </header>
       <div class="activity-rail-content">
-        <section class="activity-streams" aria-label="Потоки, требующие внимания">
-          <header class="activity-section-head">
-            <strong data-activity-rail-count>Активно: 0</strong>
-          </header>
-          <div class="activity-stream-list" data-activity-stream-list></div>
-          <p class="activity-stream-empty" data-activity-stream-empty>Нет активных потоков</p>
-        </section>
-        <section class="activity-streams activity-recent-streams" aria-label="Недавние потоки">
-          <header class="activity-section-head">
-            <strong>Недавние</strong>
-          </header>
-          <div class="activity-stream-list" data-activity-recent-list></div>
-          <p class="activity-stream-empty" data-activity-recent-empty>Нет недавних потоков</p>
-        </section>
+        <div class="activity-stream-column" data-activity-stream-column>
+          <section class="activity-streams" aria-label="Потоки, требующие внимания">
+            <header class="activity-section-head">
+              <strong data-activity-rail-count>Активно</strong>
+            </header>
+            <div class="activity-stream-list" data-activity-stream-list></div>
+            <p class="activity-stream-empty" data-activity-stream-empty>Нет активных потоков</p>
+          </section>
+          <section class="activity-streams activity-recent-streams" aria-label="Недавние потоки">
+            <header class="activity-section-head">
+              <strong>Недавние</strong>
+            </header>
+            <div class="activity-stream-list" data-activity-recent-list></div>
+            <p class="activity-stream-empty" data-activity-recent-empty>Нет недавних потоков</p>
+          </section>
+        </div>
         <section class="workspace-task-panel" data-workspace-task-panel hidden>
           <header>
             <strong data-workspace-task-title>Задачи</strong>
@@ -594,6 +607,9 @@
           </header>
           <div class="workspace-task-list" data-workspace-task-list></div>
         </section>
+        <div class="activity-column-resizer" data-activity-column-resizer role="separator"
+          aria-label="Изменить ширину колонок задач и потоков" aria-orientation="vertical"
+          aria-valuemin="25" aria-valuemax="75" aria-valuenow="50" tabindex="0" hidden></div>
       </div>
     </aside>
   </div>

@@ -406,15 +406,38 @@ function deliveryPatch(stateName) {
   return states[stateName] ?? states.unconfirmed;
 }
 
+const attachmentThumbnailUrls = new Map();
+const attachmentThumbnailLoads = new Map();
+const MAX_CACHED_ATTACHMENT_THUMBNAILS = 96;
+
+function cacheAttachmentThumbnail(id, url) {
+  const previous = attachmentThumbnailUrls.get(id);
+  if (previous && previous !== url) URL.revokeObjectURL(previous);
+  attachmentThumbnailUrls.delete(id);
+  attachmentThumbnailUrls.set(id, url);
+  while (attachmentThumbnailUrls.size > MAX_CACHED_ATTACHMENT_THUMBNAILS) {
+    const oldestId = attachmentThumbnailUrls.keys().next().value;
+    const oldestUrl = attachmentThumbnailUrls.get(oldestId);
+    attachmentThumbnailUrls.delete(oldestId);
+    if (oldestUrl) URL.revokeObjectURL(oldestUrl);
+  }
+}
+
 function attachmentView(attachment) {
   const value = { ...attachment };
   const id = String(value.id ?? "").trim();
+  const image = value.isImage || String(value.type ?? "").toLowerCase().startsWith("image/");
   const localSurface = !vscode
     && !telegramInitData
     && !window.AgentHubAndroid
     && !window.AgentHubBrowserDevice;
   if (localSurface && id && !value.missing && !String(value.url ?? "").trim()) {
     value.url = `/api/message-attachment/${encodeURIComponent(id)}`;
+  }
+  if (localSurface && image && id && !value.missing && !String(value.thumbnailUrl ?? "").trim()) {
+    value.thumbnailUrl = `/api/message-attachment/${encodeURIComponent(id)}?preview=1`;
+  } else if (image && id && attachmentThumbnailUrls.has(id)) {
+    value.thumbnailUrl = attachmentThumbnailUrls.get(id);
   }
   return value;
 }
@@ -1860,6 +1883,9 @@ function historyMessages(history, focusedTurn = null) {
     const itemProvider = String(item?.provider ?? history.provider ?? "");
     const itemThreadId = String(item?.threadId ?? history.threadId ?? "");
     const visible = historicalMessagesForDisplay(item);
+    const traceMessageIndex = visible.findLastIndex((message) => (
+      message?.role === "agent" && message?.kind !== "subagent"
+    ));
     for (const [messageIndex, message] of visible.entries()) messages.push({
       id: `${itemProvider}:${itemThreadId}:${item.id}:${message.itemId}:${message.role}`,
       provider: itemProvider,
@@ -1878,8 +1904,12 @@ function historyMessages(history, focusedTurn = null) {
         responseAnnotations: message.responseAnnotations,
         responseAnnotationRequest: message.responseAnnotationRequest,
       } : {}),
-      activities: [],
-      activityGroups: [],
+      activities: messageIndex === traceMessageIndex && Array.isArray(item.activities)
+        ? item.activities
+        : [],
+      activityGroups: messageIndex === traceMessageIndex && Array.isArray(item.activityGroups)
+        ? item.activityGroups
+        : [],
       time: message.time ?? (message.role === "user" ? item.startedAt : item.completedAt) ?? null,
       historyOrder: (historyStart + itemIndex) * 1_000 + messageIndex,
       attachments: attachmentViews(message.attachments),
@@ -1887,6 +1917,9 @@ function historyMessages(history, focusedTurn = null) {
   }
   if (focusedTurn && Array.isArray(focusedTurn.messages)) {
     const focusedThreadId = focusedTurnTaskThreadId(focusedTurn);
+    const focusedTraceItemId = String(focusedTurn.messages.findLast((message) => (
+      message?.role === "agent" && message?.kind !== "subagent"
+    ))?.itemId ?? "");
     const parentAgentAlreadyVisible = messages.some((message) => (
       message.provider === focusedTurn.provider
       && message.threadId === focusedThreadId
@@ -1913,6 +1946,12 @@ function historyMessages(history, focusedTurn = null) {
         ...(message.model ? { model: message.model } : {}),
         author: conversationMessageAuthor(message, focusedTurn.provider),
         text: message.text,
+        activities: itemId === focusedTraceItemId && Array.isArray(focusedTurn.activities)
+          ? focusedTurn.activities
+          : [],
+        activityGroups: itemId === focusedTraceItemId && Array.isArray(focusedTurn.activityGroups)
+          ? focusedTurn.activityGroups
+          : [],
         time: message.time ?? null,
         attachments: attachmentViews(message.attachments),
       });
@@ -1943,6 +1982,8 @@ function historyMessages(history, focusedTurn = null) {
       role: "agent",
       author: focusedTurn.provider === "claude" ? "Claude" : "Codex",
       text: focusedTurn.answer || focusedTurn.title || "Ход завершён",
+      activities: Array.isArray(focusedTurn.activities) ? focusedTurn.activities : [],
+      activityGroups: Array.isArray(focusedTurn.activityGroups) ? focusedTurn.activityGroups : [],
       time: focusedTurn.completedAt,
     });
   }
@@ -3062,6 +3103,44 @@ async function attachmentBlob(attachment) {
   };
 }
 
+function attachmentAccessUrl(access) {
+  return String(access?.url ?? "").trim()
+    || `/api/attachment/view?id=${encodeURIComponent(String(access?.id ?? ""))}`;
+}
+
+async function attachmentThumbnailUrl(attachment) {
+  const direct = String(attachment?.thumbnailUrl ?? attachment?.dataUrl ?? "").trim();
+  if (direct) return direct;
+  const id = String(attachment?.id ?? "").trim();
+  if (!id) throw new Error("Миниатюра вложения недоступна");
+  if (attachmentThumbnailUrls.has(id)) return attachmentThumbnailUrls.get(id);
+  if (attachmentThumbnailLoads.has(id)) return attachmentThumbnailLoads.get(id);
+  const operation = (async () => {
+    const access = await control("open-attachment", { id, preview: true });
+    const url = attachmentAccessUrl(access);
+    if (!url || /id=$/u.test(url)) throw new Error("Миниатюра вложения недоступна");
+    await localSessionReady;
+    const response = await hubFetch(url, {
+      headers: authorizationHeaders(),
+      cache: "no-store",
+    });
+    if (!response.ok) throw new Error(`Миниатюра вложения недоступна: HTTP ${response.status}`);
+    const blob = await response.blob();
+    if (!String(blob.type).toLowerCase().startsWith("image/")) {
+      throw new Error("Сервер вернул некорректную миниатюру");
+    }
+    const objectUrl = URL.createObjectURL(blob);
+    cacheAttachmentThumbnail(id, objectUrl);
+    return objectUrl;
+  })();
+  attachmentThumbnailLoads.set(id, operation);
+  try {
+    return await operation;
+  } finally {
+    attachmentThumbnailLoads.delete(id);
+  }
+}
+
 function blobDataUrl(blob) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -3111,6 +3190,16 @@ agentHub.on("attachment:open", ({ attachment, gallery = [], index = 0 }) => runA
   }
   const result = await attachmentBlob(attachment);
   await saveBlob(result.blob, result.name);
+}));
+
+agentHub.on("attachment:thumbnail", ({ attachment, render, fail }) => runAction(async () => {
+  try {
+    const url = await attachmentThumbnailUrl(attachment);
+    if (typeof render === "function") render(url);
+  } catch (error) {
+    if (typeof fail === "function") fail();
+    throw error;
+  }
 }));
 
 agentHub.on("attachment:load", ({ attachment, index }) => runAction(

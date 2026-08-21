@@ -2017,6 +2017,38 @@ test("rotation completion follows only the newest Thread and requires measured p
   assert.match(hubClientSource, /legacyRotation[\s\S]*maintenanceType !== "rotation"[\s\S]*if \(legacyRotation\) continue/u);
 });
 
+test("completed history attaches the turn trace to its visible final answer", () => {
+  const source = clientFunctionSource("historyMessages", "function mergeNewestHistory");
+  const sandbox = vm.createContext({
+    attachmentViews: () => [],
+    conversationMessageAuthor: (_message, provider) => provider,
+    focusedTurnAlreadyVisible: () => true,
+    focusedTurnTaskThreadId: () => "",
+    historicalMessagesForDisplay: lifecycle.historicalMessagesForDisplay,
+  });
+  vm.runInContext(`${source}; globalThis.mapHistory = historyMessages;`, sandbox);
+  const messages = sandbox.mapHistory({
+    provider: "codex",
+    threadId: "thread-1",
+    items: [{
+      id: "turn-1",
+      completed: true,
+      activities: [{ id: "tool-1" }],
+      activityGroups: [{ id: "reasoning-1", reasoning: "Проверяю причину.", activities: [] }],
+      messages: [
+        { itemId: "user-1", role: "user", text: "Почему?" },
+        { itemId: "commentary-1", role: "agent", text: "Проверяю" },
+        { itemId: "final-1", role: "agent", phase: "final_answer", text: "Причина найдена" },
+      ],
+    }],
+  });
+
+  assert.deepEqual(Array.from(messages[0].activityGroups), []);
+  assert.equal(messages[1].text, "Причина найдена");
+  assert.equal(messages[1].activityGroups[0].reasoning, "Проверяю причину.");
+  assert.equal(messages[1].activities[0].id, "tool-1");
+});
+
 test("Stream UI keeps the selected live Thread instead of a historical duplicate", () => {
   assert.match(hubClientSource, /function representativeSnapshotTasks\(tasks\)/u);
   assert.match(

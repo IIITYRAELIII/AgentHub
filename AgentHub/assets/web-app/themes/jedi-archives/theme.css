@@ -91,6 +91,8 @@ html[data-theme="jedi-archives"] {
     inset 0 -1px 0 rgb(121 112 96 / 8%),
     0 16px 36px -30px rgb(42 52 68 / 44%);
   --jedi-archives-panel-gap: 0.32rem;
+  --jedi-archives-panel-frame-width: 22px;
+  --jedi-archives-panel-inset: 0.72rem;
 
   --shell-header-background: rgb(250 248 244 / 94%);
   --shell-header-border: 0;
@@ -122,13 +124,13 @@ html[data-theme="jedi-archives"] {
   --shell-workspace-padding-top: var(--jedi-archives-panel-gap);
   --shell-panel-border: 14px solid transparent;
   --shell-panel-border-image: var(--jedi-archives-frame) 126 / 14px stretch;
-  --shell-panel-border-width: 14px;
-  --shell-panel-border-image-width: 14px;
+  --shell-panel-border-width: var(--jedi-archives-panel-inset);
+  --shell-panel-border-image-width: var(--jedi-archives-panel-frame-width);
   --shell-panel-radius: 3px;
   --shell-chat-border: 14px solid transparent;
   --shell-chat-border-image: var(--jedi-archives-frame) 126 / 14px stretch;
-  --shell-chat-panel-border-width: 14px;
-  --shell-chat-panel-border-image-width: 14px;
+  --shell-chat-panel-border-width: var(--jedi-archives-panel-inset);
+  --shell-chat-panel-border-image-width: var(--jedi-archives-panel-frame-width);
   --shell-chat-gap: var(--jedi-archives-panel-gap);
   --shell-chat-radius: 3px;
 

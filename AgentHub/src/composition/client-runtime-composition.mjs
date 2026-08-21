@@ -68,6 +68,7 @@ export async function createClientRuntimeComposition({
   const {
     miniAppServer,
     publicMiniAppServer,
+    attachmentThumbnails,
     trustedDeviceStore,
     rateLimitHistoryStore,
     workLogUsageStore,
@@ -131,6 +132,7 @@ export async function createClientRuntimeComposition({
     telegramLimit,
     miniAppServer,
     publicMiniAppServer,
+    attachmentThumbnails,
     runtimeCommandRoot,
     journalDatabaseFile,
     taskBoard,

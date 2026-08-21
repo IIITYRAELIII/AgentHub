@@ -17,7 +17,25 @@ const DEFAULT_RETRY_MS = 5_000;
 const COMMAND_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const HUB_ID_PATTERN = COMMAND_ID_PATTERN;
 const REMOTE_ATTACHMENT_PREFIX = "remote-attachment:";
-const ATTACHMENT_TIMEOUT_MS = 60_000;
+const ATTACHMENT_TIMEOUT_MS = 20_000;
+const ATTACHMENT_DOWNLOAD_ATTEMPTS = 3;
+
+function retryableCommandError(error) {
+  const status = Number(error?.status);
+  const name = String(error?.name ?? "");
+  const message = String(error?.message ?? error ?? "");
+  return error?.retryable === true
+    || status >= 500
+    || ["AbortError", "TimeoutError"].includes(name)
+    || /(?:aborted|timeout|timed out|fetch failed|network|socket|econn|etimedout)/iu.test(message);
+}
+
+function persistentRetryableError(error, description) {
+  const wrapped = new Error(`${description}: ${String(error?.message ?? error)}`, { cause: error });
+  wrapped.name = String(error?.name ?? "Error");
+  wrapped.retryable = true;
+  return wrapped;
+}
 
 export function signSharedDashboardBotRequest({
   body,
@@ -170,7 +188,7 @@ export class SharedDashboardBotClient {
     return { id, userId, action: "board-task-ingest", params };
   }
 
-  async #downloadRemoteAttachment(reference, command) {
+  async #downloadRemoteAttachmentOnce(reference, command) {
     if (!this.#attachmentDirectory) throw new Error("Shared Dashboard bot attachment storage is not configured");
     const id = String(reference).toLowerCase().slice(REMOTE_ATTACHMENT_PREFIX.length);
     const response = await this.#signedFetch("/api/dashboard-bot/attachment/pull", {
@@ -180,7 +198,9 @@ export class SharedDashboardBotClient {
     }, { timeoutMs: ATTACHMENT_TIMEOUT_MS });
     if (!response.ok) {
       const payload = await response.json().catch(() => ({}));
-      throw new Error(`Shared Dashboard bot attachment download failed: ${payload?.error ?? `HTTP ${response.status}`}`);
+      const error = new Error(`Shared Dashboard bot attachment download failed: ${payload?.error ?? `HTTP ${response.status}`}`);
+      error.status = response.status;
+      throw error;
     }
     const encodedName = String(response.headers.get("X-Agent-Hub-File-Name") ?? "").trim();
     let originalName = "attachment.bin";
@@ -233,6 +253,22 @@ export class SharedDashboardBotClient {
     return target;
   }
 
+  async #downloadRemoteAttachment(reference, command) {
+    let lastError = null;
+    for (let attempt = 1; attempt <= ATTACHMENT_DOWNLOAD_ATTEMPTS; attempt += 1) {
+      try {
+        return await this.#downloadRemoteAttachmentOnce(reference, command);
+      } catch (error) {
+        if (!retryableCommandError(error)) throw error;
+        lastError = error;
+      }
+    }
+    throw persistentRetryableError(
+      lastError,
+      `Shared Dashboard bot attachment download failed after ${ATTACHMENT_DOWNLOAD_ATTEMPTS} attempts`,
+    );
+  }
+
   async #prepareCommand(command) {
     const references = command.params.attachments ?? [];
     if (!references.length) return command;
@@ -259,6 +295,7 @@ export class SharedDashboardBotClient {
       }, { signal: abortController.signal, timeoutMs: DEFAULT_POLL_TIMEOUT_MS });
       if (!Array.isArray(payload?.commands)) throw new Error("Shared Dashboard bot returned an invalid queue");
       let handled = 0;
+      let retryError = null;
       for (const rawCommand of payload.commands) {
         let command;
         let outcome;
@@ -276,6 +313,10 @@ export class SharedDashboardBotClient {
           });
           outcome = { id: command.id, userId: command.userId, ok: true, result: result ?? null };
         } catch (error) {
+          if (retryableCommandError(error)) {
+            retryError ??= persistentRetryableError(error, "Shared Dashboard bot command will be retried");
+            continue;
+          }
           const id = String(command?.id ?? rawCommand?.id ?? "").trim().toLowerCase();
           const userId = String(command?.userId ?? rawCommand?.userId ?? "").trim();
           if (!COMMAND_ID_PATTERN.test(id) || !userId) continue;
@@ -289,6 +330,7 @@ export class SharedDashboardBotClient {
         await this.#signedRequest("/api/dashboard-bot/result", outcome);
         handled += 1;
       }
+      if (retryError) throw retryError;
       return handled;
     } finally {
       if (this.#abortController === abortController) this.#abortController = null;

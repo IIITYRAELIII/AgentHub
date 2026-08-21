@@ -26,7 +26,11 @@ const {
   liveStageParts,
   standaloneLiveStageDetail,
   liveTraceDisclosureOpen,
+  nativeSelectionMenuRequired,
+  quotableSelectionScope,
+  quotableSelectionText,
   turnTraceContent,
+  turnTraceSummary,
 } = window.AgentHubMessageDisclosure;
 const chatSurfacePreference = window.AgentHubChatSurfacePreference;
 const backgroundMotionPreference = window.AgentHubBackgroundMotionPreference;
@@ -68,6 +72,7 @@ const taskFilter = document.querySelector("[data-task-filter]");
 const activityRail = document.querySelector("[data-activity-rail]");
 const activityRailToggle = document.querySelector("[data-activity-rail-toggle]");
 const activityRailCount = document.querySelector("[data-activity-rail-count]");
+const activityStreamHeading = document.querySelector("[data-activity-stream-heading]");
 const activityStreamList = document.querySelector("[data-activity-stream-list]");
 const activityStreamEmpty = document.querySelector("[data-activity-stream-empty]");
 const activityRecentList = document.querySelector("[data-activity-recent-list]");
@@ -2100,7 +2105,13 @@ function renderActivityRail() {
   window.AgentHubTaskBoard?.setSelectedWorkspace(selectedWorkspaceId);
   const entries = activityStreamEntries(state.tasks);
   const sections = window.AgentHubStreamTabs.activityStreamSections(entries);
-  activityRailCount.textContent = `Активно: ${sections.active.length}`;
+  activityRailCount.textContent = "Активно";
+  if (activityStreamHeading) {
+    activityStreamHeading.textContent = window.AgentHubActivityRailLayout.countedActivityHeading(
+      "Потоки",
+      sections.active.length,
+    );
+  }
   activityStreamEmpty.hidden = sections.active.length > 0;
   activityRecentEmpty.hidden = sections.recent.length > 0;
   const renderEntry = (task) => {
@@ -2416,7 +2427,10 @@ function renderStreamChatPreview(task) {
   }
   const live = state.live.get(task.id);
   if (liveCardHasContent(live)) {
-    const liveNode = el("article", { class: "msg msg-live stream-chat-preview-live-card" }, [
+    const liveNode = el("article", {
+      class: "msg msg-live stream-chat-preview-live-card",
+      "data-role": "agent",
+    }, [
       el("div", { class: "msg-head" }, [
         el("span", { class: "msg-author", "data-live-author": "" }),
         el("span", { class: "msg-stage", "data-live-stage": "" }),
@@ -4363,6 +4377,31 @@ function renderTechnicalRows(rows) {
   ])));
 }
 
+function renderMarkdownCodeBlock(lines, language = "") {
+  const text = lines.join("\n");
+  const request = MessageView.codeBlockCopyRequest(text);
+  const copyButton = request ? el("button", {
+    type: "button",
+    class: "msg-action markdown-code-copy",
+    title: "Копировать блок",
+    "aria-label": "Копировать блок",
+    "data-code-block-copy": "",
+  }, [
+    window.AgentHubStreamTabs.createPhosphorIcon(document, "copy", "msg-action-icon"),
+  ]) : null;
+  copyButton?.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    emit("clipboard:write", request);
+  });
+  return el("div", { class: "markdown-code-block" }, [
+    el("pre", {}, [
+      el("code", { class: language ? `language-${language}` : "", text }),
+    ]),
+    copyButton,
+  ]);
+}
+
 function renderMarkdown(target, source, fileContext = currentFileLinkContext(), messageRole = "agent") {
   target.replaceChildren();
   const lines = String(source ?? "").replace(/\r\n?/gu, "\n").split("\n");
@@ -4379,9 +4418,7 @@ function renderMarkdown(target, source, fileContext = currentFileLinkContext(), 
       index += 1;
       while (index < lines.length && !/^\s*```\s*$/u.test(lines[index])) code.push(lines[index++]);
       if (index < lines.length) index += 1;
-      target.append(el("pre", {}, [
-        el("code", { class: fence[1] ? `language-${fence[1]}` : "", text: code.join("\n") }),
-      ]));
+      target.append(renderMarkdownCodeBlock(code, fence[1]));
       continue;
     }
     const technical = technicalTailLine(line);
@@ -4550,8 +4587,12 @@ function turnTraceNode(groups) {
   if (content.activities.length) {
     expanded.append(el("div", { class: "activity-list" }, content.activities.map(activityItemNode)));
   }
+  const summary = turnTraceSummary({
+    reasoningCount: content.reasoningBlocks.length,
+    activityCount,
+  });
   return el("details", { class: "turn-trace" }, [
-    activityDisclosureSummary({ count: activityCount }),
+    activityDisclosureSummary(summary),
     expanded,
   ]);
 }
@@ -5246,15 +5287,51 @@ function renderAttachments() {
   attachmentsBox.append(renderAttachmentStrip(attachments, { readOnly: false }));
 }
 
+const attachmentThumbnailObserver = typeof window.IntersectionObserver === "function"
+  ? new window.IntersectionObserver((entries, observer) => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue;
+      observer.unobserve(entry.target);
+      entry.target.__agentHubLoadThumbnail?.();
+    }
+  }, { rootMargin: "160px" })
+  : null;
+
+function observeAttachmentThumbnail(node, item) {
+  const load = () => {
+    if (!node.isConnected) return;
+    emit("attachment:thumbnail", {
+      attachment: item,
+      render: (source) => {
+        if (!node.isConnected || !source) return;
+        node.classList.remove("attachment-loading");
+        node.replaceChildren(el("img", {
+          src: source,
+          alt: item.name || "вложение",
+          loading: "lazy",
+        }));
+      },
+      fail: () => {
+        if (!node.isConnected) return;
+        node.classList.remove("attachment-loading");
+        node.replaceChildren(el("span", { class: "attachment-load-label", text: "Открыть" }));
+      },
+    });
+  };
+  node.__agentHubLoadThumbnail = load;
+  if (attachmentThumbnailObserver) attachmentThumbnailObserver.observe(node);
+  else window.queueMicrotask(load);
+}
+
 function renderAttachmentStrip(items, { readOnly }) {
   const strip = el("div", { class: "attachment-strip" });
   const gallery = resourceInteractions.imageGallery(items);
   items.forEach((item, index) => {
-    const source = item.dataUrl || item.url || "";
+    const source = item.dataUrl || item.thumbnailUrl || item.url || "";
     const image = resourceInteractions.isImageAttachment(item);
     const missing = readOnly && (item.missing || (!source && !item.id));
     const thumb = el(readOnly ? "button" : "div", {
-      class: `attachment${image ? " attachment-image" : " attachment-file"}${!missing && (readOnly || image) ? " attachment-open" : ""}${missing ? " attachment-missing" : ""}`,
+      class: `attachment${image ? " attachment-image" : " attachment-file"}${!missing && (readOnly || image) ? " attachment-open" : ""}${missing ? " attachment-missing" : ""}${readOnly && image && !source && item.id ? " attachment-loading" : ""}`,
       title: readOnly
         ? (missing ? "Файл недоступен" : (image ? "Открыть изображение" : `Скачать ${item.name || "файл"}`))
         : item.name || "",
@@ -5270,7 +5347,10 @@ function renderAttachmentStrip(items, { readOnly }) {
       : image && source
         ? [el("img", { src: source, alt: item.name || "вложение", loading: "lazy" })]
         : image
-          ? [el("span", { class: "attachment-load-label", text: "Открыть" })]
+          ? [el("span", {
+            class: "attachment-load-label",
+            text: readOnly && item.id ? "Загрузка" : "Открыть",
+          })]
           : [el("span", { class: "attachment-file-card" }, [
             el("span", {
               class: "attachment-file-type",
@@ -5294,6 +5374,7 @@ function renderAttachmentStrip(items, { readOnly }) {
         openAttachmentViewer({ gallery, index: gallery.indexOf(item) });
       });
     }
+    if (readOnly && image && !source && item.id && !missing) observeAttachmentThumbnail(thumb, item);
     if (!readOnly) {
       thumb.append(el("button", {
         type: "button", class: "attachment-remove", "data-attachment-index": index,
@@ -5432,11 +5513,13 @@ for (const dropTarget of [composer, chatScroll]) {
   });
 }
 
-/* ---- аннотации к выделенному фрагменту ответа ---- */
+/* ---- аннотации к выделенному фрагменту сообщения или рассуждения ---- */
 
 let annotations = [];
 let pendingAnnotationQuote = "";
-let lastAnnotationSelection = "";
+let lastAnnotationSelection = null;
+let lastTouchSelectionAt = 0;
+const TOUCH_CONTEXT_MENU_WINDOW_MS = 3_000;
 
 function currentAnnotations() {
   return annotations;
@@ -5491,16 +5574,78 @@ annotationsBox.addEventListener("input", (event) => {
   saveDraft();
 });
 
-/* Кнопка «Комментировать» активна, только когда выделен текст внутри ответа
- * агента — так фрагмент однозначно относится к конкретному ответу. */
-function selectedAgentText() {
+const QUOTABLE_SURFACE_SELECTOR = ".msg-body, .turn-trace-reasoning, .msg-reasoning";
+
+function selectionBoundary(node) {
+  const element = node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
+  const surface = element?.closest?.(QUOTABLE_SURFACE_SELECTOR) ?? null;
+  return {
+    message: surface?.closest?.("[data-role]") ?? null,
+    surface,
+  };
+}
+
+function intersectedQuotableSelection(range) {
+  const commonElement = range.commonAncestorContainer?.nodeType === Node.ELEMENT_NODE
+    ? range.commonAncestorContainer
+    : range.commonAncestorContainer?.parentElement;
+  const containingMessage = commonElement?.closest?.("[data-role]") ?? null;
+  const messages = containingMessage
+    ? [containingMessage]
+    : [...(commonElement?.querySelectorAll?.("[data-role]") ?? [])];
+  const matches = [];
+  for (const message of messages) {
+    const surface = [...message.querySelectorAll(QUOTABLE_SURFACE_SELECTOR)]
+      .find((candidate) => range.intersectsNode(candidate));
+    if (surface) matches.push({ message, surface });
+    if (matches.length > 1) return null;
+  }
+  return matches[0] ?? null;
+}
+
+function selectedQuotableSelection() {
   const selection = window.getSelection();
-  const text = selection?.toString() || "";
-  if (!text.trim() || selection.rangeCount === 0) return "";
-  const container = selection.getRangeAt(0).commonAncestorContainer;
-  const host = (container.nodeType === 1 ? container : container.parentElement)
-    ?.closest?.("[data-role='agent'] .msg-body");
-  return host ? text : "";
+  if (!selection || selection.rangeCount === 0) return null;
+  const range = selection.getRangeAt(0);
+  const start = selectionBoundary(range.startContainer);
+  const end = selectionBoundary(range.endContainer);
+  const intersected = intersectedQuotableSelection(range);
+  const scope = quotableSelectionScope({
+    startMessage: start.message,
+    endMessage: end.message,
+    intersectedMessage: intersected?.message,
+    startSurface: start.surface,
+    endSurface: end.surface,
+    intersectedSurface: intersected?.surface,
+  });
+  if (!scope) return null;
+  const quote = quotableSelectionText({
+    text: selection.toString(),
+    rangeCount: selection.rangeCount,
+    startMessage: scope.message,
+    endMessage: scope.message,
+    startSurface: scope.startSurface,
+    endSurface: scope.endSurface,
+  });
+  if (!quote) return null;
+  return { quote, message: scope.message };
+}
+
+function selectedQuotableSelectionAt(target) {
+  const selection = window.getSelection();
+  const boundary = selectionBoundary(target);
+  if (!selection || !boundary.message || !boundary.surface) return null;
+  const quote = quotableSelectionText({
+    text: selection.toString(),
+    rangeCount: selection.rangeCount,
+    startMessage: boundary.message,
+    endMessage: boundary.message,
+    startSurface: boundary.surface,
+    endSurface: boundary.surface,
+  });
+  const comparable = (value) => String(value ?? "").replace(/\s+/gu, " ").trim();
+  if (!quote || !comparable(boundary.surface.textContent).includes(comparable(quote))) return null;
+  return { quote, message: boundary.message };
 }
 
 function normalizedAnnotationQuote(value) {
@@ -5509,31 +5654,23 @@ function normalizedAnnotationQuote(value) {
 }
 
 function meaningfulAnnotationSelection(value) {
-  const text = String(value ?? "").replace(/\s+/gu, " ").trim();
-  if (!text) return false;
-  const words = text.match(/[\p{L}\p{N}_]+/gu) ?? [];
-  return words.length > 1 || text.length >= 12 || /[^\p{L}\p{N}_\s-]/u.test(text);
+  return Boolean(String(value ?? "").trim());
 }
 
 document.addEventListener("selectionchange", () => {
   const rawSelection = window.getSelection()?.toString().trim() ?? "";
-  const agentSelection = selectedAgentText();
-  if (meaningfulAnnotationSelection(agentSelection)) {
-    lastAnnotationSelection = agentSelection;
+  const selection = selectedQuotableSelection();
+  if (selection) {
+    lastAnnotationSelection = selection;
   } else if (rawSelection) {
-    // A new selection outside an agent answer must not reuse an older quote.
-    lastAnnotationSelection = "";
+    lastAnnotationSelection = null;
   }
 });
 
 function addAnnotation(value) {
   const quote = normalizedAnnotationQuote(value);
   if (!quote) {
-    showToast("Выделите фрагмент ответа агента.");
-    return false;
-  }
-  if (!meaningfulAnnotationSelection(quote)) {
-    showToast("Выделите фразу, а не одно короткое слово.");
+    showToast("Выделите фрагмент сообщения или рассуждения.");
     return false;
   }
   if (annotations.some((annotation) => annotation.quote === quote)) {
@@ -5541,7 +5678,7 @@ function addAnnotation(value) {
     return false;
   }
   setAnnotations([...annotations, { quote, annotation: "" }]);
-  lastAnnotationSelection = "";
+  lastAnnotationSelection = null;
   window.getSelection()?.removeAllRanges();
   annotationsBox.querySelector(`[data-annotation-comment-index="${annotations.length - 1}"]`)?.focus();
   saveDraft();
@@ -5567,18 +5704,27 @@ function openAnnotationContextMenu(event, quote) {
   annotationContextMenu.style.top = `${Math.min(Math.max(8, event.clientY), maxTop)}px`;
 }
 
-document.addEventListener("contextmenu", (event) => {
-  const quote = selectedAgentText();
+function handleAnnotationContextMenu(event) {
+  const selected = selectedQuotableSelection() ?? selectedQuotableSelectionAt(event.target);
+  const message = event.target.closest?.("[data-role]") ?? null;
+  const quote = selected?.quote
+    || (lastAnnotationSelection?.message === message ? lastAnnotationSelection.quote : "");
   if (!meaningfulAnnotationSelection(quote)) {
     closeAnnotationContextMenu();
     return;
   }
-  // Android WebView adds “Цитировать” to the native selection menu. Keeping
-  // this event untouched on coarse pointers preserves Copy/Share/Search.
-  if (window.matchMedia("(pointer: coarse)").matches) return;
+  // Android WebView adds “Цитировать” to its native touch-selection menu.
+  // A coarse-pointer media query is also true in some VS Code webviews on
+  // hybrid Windows devices, so only a real or recently observed touch keeps it.
+  if (nativeSelectionMenuRequired({
+    pointerType: event.pointerType,
+    recentTouch: Date.now() - lastTouchSelectionAt <= TOUCH_CONTEXT_MENU_WINDOW_MS,
+  })) return;
   event.preventDefault();
   openAnnotationContextMenu(event, quote);
-});
+}
+
+document.addEventListener("contextmenu", handleAnnotationContextMenu, { capture: true });
 
 annotationContextMenu.addEventListener("click", (event) => {
   const action = event.target.closest("[data-action]")?.dataset.action;
@@ -5590,9 +5736,20 @@ annotationContextMenu.addEventListener("click", (event) => {
 });
 
 document.addEventListener("pointerdown", (event) => {
+  if (event.pointerType === "touch") lastTouchSelectionAt = Date.now();
+  if (event.button === 0) lastAnnotationSelection = null;
   if (!annotationContextMenu.hidden && !annotationContextMenu.contains(event.target)) {
     closeAnnotationContextMenu();
   }
+});
+
+document.addEventListener("pointerup", (event) => {
+  if (event.button !== 0) return;
+  const target = event.target;
+  window.requestAnimationFrame(() => {
+    const selection = selectedQuotableSelection() ?? selectedQuotableSelectionAt(target);
+    if (selection) lastAnnotationSelection = selection;
+  });
 });
 
 document.addEventListener("keydown", (event) => {
@@ -7153,7 +7310,7 @@ const AgentHub = {
     setPane("chat");
   },
   addSelectedAnnotation() {
-    return addAnnotation(selectedAgentText() || lastAnnotationSelection);
+    return addAnnotation(selectedQuotableSelection()?.quote || lastAnnotationSelection?.quote);
   },
   navigateBack,
   toast: showToast,

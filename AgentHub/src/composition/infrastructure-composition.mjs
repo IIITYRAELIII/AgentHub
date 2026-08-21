@@ -12,6 +12,7 @@ import { TaskBoardService } from "../application/task-board-service.mjs";
 import { WorkspaceReleaseService } from "../application/workspace-release-service.mjs";
 import { StreamHandoffService } from "../application/stream-handoff-service.mjs";
 import { samePath } from "../infrastructure/filesystem/config.mjs";
+import { AttachmentThumbnailService } from "../infrastructure/media/attachment-thumbnail-service.mjs";
 import { runtimeLayout, runtimeReleaseDirectory } from "../infrastructure/filesystem/runtime-layout.mjs";
 import { UsdRubRateStore } from "../infrastructure/network/exchange-rate.mjs";
 import { migrateMessageBindings } from "../infrastructure/persistence/message-bindings.mjs";
@@ -261,6 +262,10 @@ export async function createHubInfrastructure({
     workLog: workLogUsageStore,
   });
   const attachmentDirectory = path.join(runtimeCommandRoot, "attachments");
+  const attachmentThumbnails = new AttachmentThumbnailService({
+    attachmentRoot: attachmentDirectory,
+    pythonExe: config.pythonExe,
+  });
   const hubMcpSecret = await ensureLocalWebSecret(path.join(runtimeCommandRoot, "hub-mcp.secret"));
   const hubMcpService = new HubMcpService({
     workspaceCatalog: workspaceCatalogStore,
@@ -283,6 +288,7 @@ export async function createHubInfrastructure({
     controlHandler: handleDesktopControl,
     onControlResultDelivered: ({ id }) => forgetDesktopControl(id),
     attachmentDirectory,
+    attachmentThumbnails,
     assetBundleProvider: runtimeAssetBundleProvider(runtimeCommandRoot),
     journalDatabaseFile,
     usageSyncRemoteConfigStore: workLogUsageRemoteConfigStore,
@@ -393,6 +399,7 @@ export async function createHubInfrastructure({
     hubMcpServer,
     miniAppServer,
     publicMiniAppServer,
+    attachmentThumbnails,
     usdRubRateStore,
     instanceGuard,
     runtimeStateStore,

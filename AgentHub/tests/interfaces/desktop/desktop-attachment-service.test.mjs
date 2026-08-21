@@ -59,6 +59,7 @@ test("Mini App attachment opening delegates to its authenticated publisher", asy
     const directory = path.join(root, "attachments");
     await mkdir(directory, { recursive: true });
     const file = path.join(directory, "image-2.jpg");
+    const preview = path.join(directory, ".thumbnails", "preview.webp");
     await writeFile(file, Buffer.from([1]));
     const service = new DesktopAttachmentService({
       runtimeCommandRoot: root,
@@ -66,9 +67,16 @@ test("Mini App attachment opening delegates to its authenticated publisher", asy
       workerEnabled: true,
       trustedUserId: () => "user-1",
       publisher: () => ({ publishAttachmentView: (userId, target) => ({ userId, target }) }),
+      attachmentThumbnails: { create: async () => ({ file: preview }) },
     });
     assert.deepEqual(await service.open({ id: "image-2.jpg" }, { source: "telegram-mini-app" }), {
       userId: "user-1", target: file,
+    });
+    assert.deepEqual(await service.open(
+      { id: "image-2.jpg", preview: true },
+      { source: "telegram-mini-app" },
+    ), {
+      userId: "user-1", target: preview,
     });
   } finally {
     await rm(root, { recursive: true, force: true });

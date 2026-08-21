@@ -231,6 +231,15 @@ test("textual user and agent messages expose the exact copy request", async () =
   assert.equal(api.messageCopyRequest({ role: "user", text: "   " }), null);
 });
 
+test("fenced blocks expose their exact text for clipboard copy", async () => {
+  const api = await messageViewApi();
+  assert.deepEqual(
+    { ...api.codeBlockCopyRequest("SELECT\n  Заказ.Ссылка\nИЗ Заказ") },
+    { text: "SELECT\n  Заказ.Ссылка\nИЗ Заказ", successMessage: "Блок скопирован" },
+  );
+  assert.equal(api.codeBlockCopyRequest(""), null);
+});
+
 test("message disclosure switches between registered collapse and expand icons", async () => {
   const api = await messageViewApi();
   assert.deepEqual(
