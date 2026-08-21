@@ -18,6 +18,10 @@ const miniAppSource = await readFile(
   new URL("../../assets/web-app/app.js", import.meta.url),
   "utf8",
 );
+const streamTabsSource = await readFile(
+  new URL("../../assets/web-app/stream-tabs-controller.js", import.meta.url),
+  "utf8",
+);
 const compositionDirectory = new URL("../../src/composition/", import.meta.url);
 const serverSource = (await Promise.all(
   (await readdir(compositionDirectory))
@@ -1997,26 +2001,6 @@ test("workspace task panel follows the effective local Stream selection", () => 
   );
 });
 
-test("rotation completion follows only the newest Thread and requires measured percentages", () => {
-  assert.match(
-    hubClientSource,
-    /\} = window\.AgentHubMessageLifecycle;\s*const maintenanceEventsByTask = readMaintenanceEvents\(\);/u,
-  );
-  assert.match(hubClientSource, /const pendingStreamRotations = new Map\(\)/u);
-  assert.match(hubClientSource, /function streamHeadTasks\(tasks\)[\s\S]*position > currentPosition/u);
-  assert.match(hubClientSource, /const previousByStream = streamHeadTasks\(previousTasks\)/u);
-  assert.match(hubClientSource, /const currentByStream = streamHeadTasks\(tasks\)/u);
-  assert.match(hubClientSource, /eventId = `maintenance:rotation:\$\{streamId\}:\$\{task\.threadId\}`/u);
-  assert.match(hubClientSource, /beforePercent: contextPercent\(previous\.context\?\.percent\)/u);
-  assert.match(hubClientSource, /if \(beforePercent === null \|\| afterPercent === null\) continue/u);
-  assert.match(
-    hubClientSource,
-    /text: `Ротация завершена успешно \$\{beforePercent\}%>\$\{afterPercent\}%`/u,
-  );
-  assert.match(hubClientSource, /maintenanceType: "rotation"/u);
-  assert.match(hubClientSource, /legacyRotation[\s\S]*maintenanceType !== "rotation"[\s\S]*if \(legacyRotation\) continue/u);
-});
-
 test("completed history attaches the turn trace to its visible final answer", () => {
   const source = clientFunctionSource("historyMessages", "function mergeNewestHistory");
   const sandbox = vm.createContext({
@@ -2050,10 +2034,10 @@ test("completed history attaches the turn trace to its visible final answer", ()
 });
 
 test("Stream UI keeps the selected live Thread instead of a historical duplicate", () => {
-  assert.match(hubClientSource, /function representativeSnapshotTasks\(tasks\)/u);
+  assert.match(streamTabsSource, /function representativeSnapshotTasks\(tasks\)/u);
   assert.match(
-    hubClientSource,
-    /task\.selected[\s\S]*task\.running && String\(task\.run\?\.turnId/u,
+    streamTabsSource,
+    /task\?\.selected[\s\S]*task\?\.running && String\(task\?\.run\?\.turnId/u,
   );
   assert.match(
     hubClientSource,
@@ -2083,7 +2067,7 @@ test("Stream context menu exposes manual provider continuation without rotating 
 test("Hub compaction delegates targeted completion to its context maintenance owner", () => {
   assert.match(
     codexEventSource,
-    /if \(d\.isCompactionItem\(params\.item\)\) \{\s*d\.beginCompactionCleanup/u,
+    /if \(d\.isCompactionItem\(params\.item\)\) \{[\s\S]*?d\.beginCompactionCleanup/u,
   );
   assert.match(
     codexContextMaintenanceSource,

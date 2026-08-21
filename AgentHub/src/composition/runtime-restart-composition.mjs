@@ -43,6 +43,7 @@ export function createRuntimeRestartComposition({
   instanceGuard,
   workLogUsageStore,
   rateLimitHistoryStore,
+  providerTurnTelemetryStore,
   taskReadStateStore,
   runtimeStateStore,
   updateOffset,
@@ -107,6 +108,7 @@ export function createRuntimeRestartComposition({
     finalize: [
       { name: "work log usage", run: () => workLogUsageStore.close() },
       { name: "rate limit history", run: () => rateLimitHistoryStore.close() },
+      { name: "provider turn telemetry", run: () => providerTurnTelemetryStore?.close?.() },
       { name: "task sync store", run: () => taskSyncStore.close() },
       { name: "workspace catalog store", run: () => workspaceCatalogStore.close() },
       { name: "task read-state store", run: () => taskReadStateStore.close() },

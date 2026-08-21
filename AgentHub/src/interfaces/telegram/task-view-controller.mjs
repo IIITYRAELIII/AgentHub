@@ -636,7 +636,7 @@ export class TaskViewController {
       `🧵 ${d.runTaskTitle(task)}\n\n`
         + (view.total
           ? `Показано ходов: ${view.shown} из ${view.total}.`
-          : "История этой задачи пока пуста."),
+          : "История этого потока пока пуста."),
       historyButton,
       { kind: "task-view-navigation" },
     );
@@ -717,7 +717,7 @@ export class TaskViewController {
     if (!view.rendered) {
       await d.sendRunMessage(
         { ...task, chatId: targetChatId, taskTitle: binding.taskTitle },
-        "У этой задачи пока нет выполняющегося хода или сохранённого ответа.",
+        "У этого потока пока нет выполняющегося хода или сохранённого ответа.",
       );
     }
     await d.saveState();
@@ -728,7 +728,7 @@ export class TaskViewController {
     if (!view.rendered) {
       await this.deps.sendRunMessage(
         { ...binding, chatId: targetChatId },
-        "У этой задачи пока нет сохранённого завершённого ответа.",
+        "У этого потока пока нет сохранённого завершённого ответа.",
       );
     }
     await this.deps.saveState();

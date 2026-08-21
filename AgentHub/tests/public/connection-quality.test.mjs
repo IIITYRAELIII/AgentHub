@@ -29,32 +29,48 @@ test("connection quality smooths jitter and exposes a compact tooltip", async ()
   );
 });
 
-test("model response quality uses first provider event timing", async () => {
+test("model response quality follows live event silence and compaction", async () => {
   const { modelResponseMeasurement, modelResponseQuality } = await qualityApi();
   const requestedAt = "2026-08-21T10:00:00.000Z";
-  assert.deepEqual(
-    { ...modelResponseMeasurement({ state: "accepted-awaiting-first-event", requestedAt }, Date.parse(requestedAt) + 4_200) },
-    { waiting: true, latencyMs: 4_200 },
+  const waiting = modelResponseMeasurement(
+    { state: "accepted-awaiting-first-event", requestedAt },
+    Date.parse(requestedAt) + 4_200,
+    { running: true },
   );
-  assert.deepEqual(
-    { ...modelResponseMeasurement({
+  assert.equal(waiting.waiting, true);
+  assert.equal(waiting.latencyMs, 4_200);
+
+  const live = modelResponseMeasurement({
       state: "observed",
       requestedAt,
+      acceptedAt: requestedAt,
       firstEventAt: "2026-08-21T10:00:06.500Z",
-    }) },
-    { waiting: false, latencyMs: 6_500 },
-  );
-  assert.deepEqual(
-    { ...modelResponseMeasurement({
+      lastEventAtMs: Date.parse(requestedAt) + 10_000,
+      lastContentAtMs: Date.parse(requestedAt) + 8_000,
+      maxEventGapMs: 6_500,
+      phase: "reasoning",
+    }, Date.parse(requestedAt) + 140_001, { running: true });
+  assert.equal(live.firstEventMs, 6_500);
+  assert.equal(live.eventSilenceMs, 130_001);
+  assert.equal(modelResponseQuality(live).quality, "poor");
+
+  const failed = modelResponseMeasurement({
       state: "unconfirmed",
       requestedAt,
       failedAt: "2026-08-21T10:00:30.000Z",
-    }) },
-    { failed: true, waiting: false, latencyMs: 30_000 },
-  );
-  assert.equal(modelResponseQuality({ latencyMs: 3_000 }).quality, "excellent");
-  assert.equal(modelResponseQuality({ latencyMs: 3_001 }).quality, "good");
-  assert.equal(modelResponseQuality({ latencyMs: 8_001 }).quality, "weak");
-  assert.equal(modelResponseQuality({ latencyMs: 20_001 }).quality, "poor");
-  assert.equal(modelResponseQuality({ latencyMs: 100, failed: true }).label, "Ошибка");
+    }, Date.parse(requestedAt) + 30_000, { running: false });
+  assert.equal(failed.failed, true);
+  assert.equal(failed.latencyMs, 30_000);
+  assert.equal(modelResponseQuality(failed).label, "Ошибка");
+
+  const compaction = modelResponseMeasurement(null, Date.parse(requestedAt) + 301_000, {
+    running: false,
+    compaction: {
+      status: "running",
+      stage: "compacting",
+      startedAt: requestedAt,
+    },
+  });
+  assert.equal(compaction.compaction.elapsedMs, 301_000);
+  assert.equal(modelResponseQuality(compaction).quality, "poor");
 });

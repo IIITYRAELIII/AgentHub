@@ -13,6 +13,15 @@
     return Number.isFinite(width) && width > 0 ? Math.round(width) : null;
   }
 
+  function normalizedWidthScale(value) {
+    const scale = Number(value);
+    return Number.isFinite(scale) && scale > 0 ? scale : 1;
+  }
+
+  function baseWidthFromVisible(width, scale = 1) {
+    return Math.round(Number(width) / normalizedWidthScale(scale));
+  }
+
   function storedWidths(storage) {
     try {
       const parsed = JSON.parse(storage?.getItem(STORAGE_KEY) || "{}");
@@ -150,6 +159,9 @@
         if (event.button !== 0 || !desktopChatVisible()) return;
         const current = layout();
         const sideRect = current[side];
+        const widthScale = side === "activity"
+          ? normalizedWidthScale(rails.activity.dataset.sidePanelWidthScale)
+          : 1;
         activeDrag = {
           handle,
           maximumWidth: Math.max(PANEL_CONFIG[side].minimumWidth, sideRect.width + current.chat.width - CENTER_MINIMUM_WIDTH),
@@ -157,7 +169,8 @@
           side,
           startWidth: sideRect.width,
           startX: event.clientX,
-          width: sideRect.width,
+          width: baseWidthFromVisible(sideRect.width, widthScale),
+          widthScale,
         };
         handle.setPointerCapture?.(event.pointerId);
         root.dataset.sidePanelResizing = side;
@@ -165,13 +178,14 @@
       });
       handle.addEventListener("pointermove", (event) => {
         if (!activeDrag || event.pointerId !== activeDrag.pointerId) return;
-        activeDrag.width = widthFromPointer({
+        const visibleWidth = widthFromPointer({
           side: activeDrag.side,
           startWidth: activeDrag.startWidth,
           startX: activeDrag.startX,
           pointerX: event.clientX,
           maximumWidth: activeDrag.maximumWidth,
         });
+        activeDrag.width = baseWidthFromVisible(visibleWidth, activeDrag.widthScale);
         applyWidth(workspace, activeDrag.side, activeDrag.width);
         schedulePositions();
       });
@@ -231,7 +245,7 @@
     return Object.freeze({ refreshLayout, restoreWidths, schedulePositions });
   }
 
-  const api = Object.freeze({ CENTER_MINIMUM_WIDTH, PANEL_CONFIG, STORAGE_KEY, applyWidth, clampWidth, clearWidth, createController, fitPanelWidths, forgetWidth, normalizedWidth, persistWidth, storedWidths, widthFromPointer });
+  const api = Object.freeze({ CENTER_MINIMUM_WIDTH, PANEL_CONFIG, STORAGE_KEY, applyWidth, baseWidthFromVisible, clampWidth, clearWidth, createController, fitPanelWidths, forgetWidth, normalizedWidth, normalizedWidthScale, persistWidth, storedWidths, widthFromPointer });
   if (typeof window === "object") window.AgentHubSidePanelResizer = api;
   if (typeof document === "object") {
     const start = () => createController({ document, window, storage: globalThis.localStorage });

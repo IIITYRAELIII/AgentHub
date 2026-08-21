@@ -41,7 +41,7 @@ function restorePersistedTaskRun(savedRun, restoredChatId) {
       ? savedRun.observedInitialResponseText
       : String(savedRun.responseText ?? ""),
     observedResponseChanged: savedRun.observedResponseChanged === true,
-    progressStage: String(savedRun.progressStage ?? "Восстановление задачи…"),
+    progressStage: String(savedRun.progressStage ?? "Восстановление потока…"),
     progressReasoning: String(savedRun.progressReasoning ?? ""),
     lastMeaningfulProgressAt: String(
       savedRun.lastMeaningfulProgressAt

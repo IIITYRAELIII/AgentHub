@@ -551,8 +551,8 @@ export class TelegramForwardBundleController {
         bundle.chatId,
         bundle.cardMessageId,
         outcome?.deferred
-          ? `⏳ Пачка из ${bundle.items.length} сообщений сохранена для задачи «${bundle.target.taskTitle}».`
-          : `✅ Пачка из ${bundle.items.length} сообщений отправлена в задачу «${bundle.target.taskTitle}».`,
+          ? `⏳ Пачка из ${bundle.items.length} сообщений сохранена для потока «${bundle.target.taskTitle}».`
+          : `✅ Пачка из ${bundle.items.length} сообщений отправлена в поток «${bundle.target.taskTitle}».`,
         { inline_keyboard: [] },
       ).catch(() => {});
       return { status: outcome?.deferred ? "deferred" : "started", outcome };

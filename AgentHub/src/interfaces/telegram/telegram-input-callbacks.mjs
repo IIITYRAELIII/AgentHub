@@ -70,7 +70,7 @@ export class TelegramInputCallbackService {
     };
     await this.#answer(
       callback,
-      action === "new" ? "Создаю новую задачу…"
+      action === "new" ? "Создаю новый поток…"
         : action === "queue" ? "Ставлю сообщение в очередь…"
           : action === "force" ? "Запускаю после явного подтверждения…"
             : action === "show" ? "Показываю текущий ход…" : "Сообщение отменено",
@@ -105,7 +105,7 @@ export class TelegramInputCallbackService {
         await d.saveState();
         await d.updateDeferredMessage(
           item,
-          `⏳ Сообщение поставлено в очередь задачи «${item.taskTitle}» и будет отправлено после завершения текущего хода.`,
+          `⏳ Сообщение поставлено в очередь потока «${item.taskTitle}» и будет отправлено после завершения текущего хода.`,
         );
         d.scheduleQueuedInput(item, 500);
         return true;
@@ -135,12 +135,12 @@ export class TelegramInputCallbackService {
         d.pendingInputs.delete(id);
         d.updateDeferredDesktopReceipt(item, "started", startedRun);
         await d.saveState();
-        await d.updateDeferredMessage(item, `⚠️ Сообщение отправлено в задачу «${item.taskTitle}» после явного подтверждения.`);
+        await d.updateDeferredMessage(item, `⚠️ Сообщение отправлено в поток «${item.taskTitle}» после явного подтверждения.`);
         d.scheduleNextForTask(item);
         return true;
       }
       if (!binding.streamId) {
-        throw new Error("нельзя безопасно создать новую задачу для сообщения без Stream-привязки");
+        throw new Error("нельзя безопасно создать новый поток для сообщения без Stream-привязки");
       }
       await d.selectTaskFromBinding(binding, d.callbackContext(callback));
       const createResult = await d.dispatchApplicationCommand("task.create", {
@@ -148,9 +148,9 @@ export class TelegramInputCallbackService {
         sourceStreamId: binding.streamId,
       }, d.callbackContext(callback));
       const createdTask = createResult?.createdTask ?? {};
-      if (!createdTask?.threadId) throw new Error("новая задача не вернула Thread-привязку");
+      if (!createdTask?.threadId) throw new Error("новый поток не вернул Thread-привязку");
       if (!createdTask.streamId || createdTask.streamId === binding.streamId) {
-        throw new Error("новая задача не вернула отдельную Stream-привязку");
+        throw new Error("новый поток не вернул отдельную Stream-привязку");
       }
       await d.selectTaskFromBinding(createdTask, d.callbackContext(callback));
       const newTaskTitle = d.activeThreadTitle();
@@ -180,7 +180,7 @@ export class TelegramInputCallbackService {
       d.updateDeferredDesktopReceipt(item, "started", startedRun);
       await d.selectTaskFromBinding(newTarget, d.callbackContext(callback));
       await d.saveState();
-      await d.updateDeferredMessage(item, `🆕 Сообщение отправлено в новую задачу «${newTaskTitle}».`);
+      await d.updateDeferredMessage(item, `🆕 Сообщение отправлено в новый поток «${newTaskTitle}».`);
       d.scheduleNextForTask(item);
       await d.sendTaskSwitchNotification({ targetChatId: item.chatId });
     } catch (error) {

@@ -323,7 +323,7 @@ export class RunCoordinator {
         id: deferred.id,
         clientUserMessageId,
         reason: "task-running",
-        message: "Сообщение сохранено: выберите новую задачу, очередь или отмену справа.",
+        message: "Сообщение сохранено: выберите новый поток, очередь или отмену справа.",
       };
     }
     return this.queue(input, attachments, {
@@ -486,7 +486,7 @@ export class RunCoordinator {
         reason: externalActivity.state === "unknown" ? "activity-unknown" : "task-running",
         message: externalActivity.state === "unknown"
           ? "Сообщение сохранено: нельзя надёжно определить, завершён ли предыдущий ход."
-          : "Сообщение сохранено: выберите новую задачу, очередь или отмену справа.",
+          : "Сообщение сохранено: выберите новый поток, очередь или отмену справа.",
       };
     }
     if (this.hasDeferredBacklog(target)) {
@@ -514,7 +514,7 @@ export class RunCoordinator {
         id: deferred.id,
         clientUserMessageId,
         reason: "repository-conflict",
-        message: `Сообщение сохранено: задача «${repositoryConflict.taskTitle ?? "Без названия"}» уже изменяет тот же Git-репозиторий.`,
+        message: `Сообщение сохранено: поток «${repositoryConflict.taskTitle ?? "Без названия"}» уже изменяет тот же Git-репозиторий.`,
       };
     }
     const run = await this.beginRun(input, { ...target, clientUserMessageId });

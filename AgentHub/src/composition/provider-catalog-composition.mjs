@@ -112,6 +112,7 @@ export function createProviderCatalogComposition({
   codexTransportRunning,
   ensureCodex,
   resolveCodexTaskActivity,
+  providerTurnTelemetryStore = null,
   persistNow = () => new Date().toISOString(),
   clock = () => Date.now(),
 }) {
@@ -157,6 +158,7 @@ export function createProviderCatalogComposition({
     hubExecutionOwner: TASK_EXECUTION_OWNERS.HUB,
     nowIso: persistNow,
     nowMs: clock,
+    telemetryStore: providerTurnTelemetryStore,
   });
   const providerTaskActivity = new ProviderTaskActivityService({
     knownCodexRolloutPath,

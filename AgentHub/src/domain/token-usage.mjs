@@ -184,7 +184,7 @@ function formatCreditBreakdown(breakdown) {
   ]);
   const creditWithPercent = (value, percent) => `${formatCredits(value)} (${number(percent)}%)`;
   const lines = [
-    `📊 За задачу: ${formatCredits(breakdown.total)}`,
+    `📊 За поток: ${formatCredits(breakdown.total)}`,
     `Вход: ${creditWithPercent(breakdown.input, inputPercent)}`,
     `Кэш: ${creditWithPercent(breakdown.cache, cachePercent)}`,
     `Выход: ${creditWithPercent(breakdown.output, outputPercent)}`,
@@ -200,7 +200,7 @@ export function formatTaskTokenUsage(usage, options = {}) {
   const breakdown = turnCreditBreakdown(usage, options);
   if (!breakdown.priced && breakdown.estimate <= 0) {
     const model = String(options?.model ?? "").trim();
-    return `📊 Кредиты за задачу: нет тарифа${model ? ` для ${model}` : ""}.`;
+    return `📊 Кредиты за поток: нет тарифа${model ? ` для ${model}` : ""}.`;
   }
   return formatCreditBreakdown(breakdown);
 }
@@ -235,7 +235,7 @@ export function addTokenUsage(total, addition) {
 
 export function formatTurnTokenUsage(tracker) {
   const estimatedCredits = Math.max(0, Number(tracker?.estimatedCredits) || 0);
-  if (!tracker?.reported && estimatedCredits <= 0) return "📊 Кредиты за задачу: нет данных.";
+  if (!tracker?.reported && estimatedCredits <= 0) return "📊 Кредиты за поток: нет данных.";
   return formatTaskTokenUsage(tracker?.usage, {
     model: tracker?.model,
     serviceTier: tracker?.serviceTier,

@@ -49,6 +49,9 @@ test("task picker paginates and keeps new/archive actions last", () => {
     archiveCallback: "archive",
   });
   assert.equal(view.page, 1);
+  assert.match(view.text, /Выберите поток:/u);
+  assert.equal(view.replyMarkup.inline_keyboard.at(-2)[0].text, "🆕 Новый поток: Codex · Repo");
+  assert.equal(view.replyMarkup.inline_keyboard.at(-1)[0].text, "❌ Архивировать текущий поток");
   assert.equal(view.replyMarkup.inline_keyboard.at(-2)[0].callback_data, "new");
   assert.equal(view.replyMarkup.inline_keyboard.at(-1)[0].callback_data, "archive");
 });

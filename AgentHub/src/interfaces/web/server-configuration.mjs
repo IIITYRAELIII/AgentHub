@@ -14,7 +14,7 @@ const CHOICE = "choice";
  */
 export const SERVER_CONFIGURATION_FIELDS = Object.freeze([
   { key: "autoApproveOnStart", name: "Автоподтверждение при запуске", hint: "Команды и правки файлов выполняются без запроса. Выключено — Hub спрашивает разрешение на каждое действие агента.", type: BOOLEAN },
-  { key: "guardConcurrentRepositoryWrites", name: "Защита параллельной записи", hint: "Не даёт двум задачам писать в один репозиторий одновременно: вторая ждёт, пока первая закончит ход.", type: BOOLEAN },
+  { key: "guardConcurrentRepositoryWrites", name: "Защита параллельной записи", hint: "Не даёт двум потокам писать в один репозиторий одновременно: второй ждёт, пока первый закончит ход.", type: BOOLEAN },
   {
     key: "contextAutomation.autoCompactAfterTurn",
     name: "Авто-свёртка после хода",
@@ -37,7 +37,7 @@ export const SERVER_CONFIGURATION_FIELDS = Object.freeze([
   {
     key: "contextAutomation.autoRotateAfterCompaction",
     name: "Авто-ротация после свёртки",
-    hint: "«Ротация» — процесс переноса свёрнутого контекста в новый чистый Thread агента. Stream (диалог или задача) при этом сохраняется, визуально ничего не меняется.",
+    hint: "«Ротация» — процесс переноса свёрнутого контекста в новый чистый Thread агента. Stream (поток) при этом сохраняется, визуально ничего не меняется.",
     type: BOOLEAN,
     presentation: "automation",
     inlineValueKey: "contextAutomation.autoRotateThresholdPercent",

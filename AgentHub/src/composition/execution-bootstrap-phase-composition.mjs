@@ -148,6 +148,7 @@ export function createExecutionBootstrapPhase({
       instanceGuard: infrastructure.instanceGuard,
       workLogUsageStore: infrastructure.workLogUsageStore,
       rateLimitHistoryStore: infrastructure.rateLimitHistoryStore,
+      providerTurnTelemetryStore: infrastructure.providerTurnTelemetryStore,
       taskReadStateStore: infrastructure.taskReadStateStore,
       runtimeStateStore: infrastructure.runtimeStateStore,
     },

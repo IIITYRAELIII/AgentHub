@@ -1537,26 +1537,26 @@ function observeContextCompactions(tasks) {
 
 function observeStreamRotations(previousTasks, tasks) {
   const changed = new Set();
-  const previousByStream = streamHeadTasks(previousTasks);
-  const currentByStream = streamHeadTasks(tasks);
+  const currentByStream = window.AgentHubStreamTabs.streamHeadTasks(tasks);
+  for (const transition of window.AgentHubStreamTabs.streamRotationTransitions(previousTasks, tasks)) {
+    pendingStreamRotations.set(transition.streamId, {
+      provider: transition.task.provider,
+      threadId: transition.task.threadId,
+      beforePercent: transition.beforePercent,
+      time: transition.time,
+    });
+  }
   for (const [streamId, task] of currentByStream) {
-    const previous = previousByStream.get(streamId) ?? null;
-    const rotated = previous && String(previous.threadId) !== String(task.threadId);
-    if (rotated) {
-      pendingStreamRotations.set(streamId, {
-        provider: task.provider,
-        threadId: task.threadId,
-        beforePercent: contextPercent(previous.context?.percent),
-        time: task.context?.compaction?.completedAt ?? new Date().toISOString(),
-      });
-    }
     const pending = pendingStreamRotations.get(streamId);
     if (!pending || String(pending.threadId) !== String(task.threadId)) continue;
     const beforePercent = contextPercent(pending.beforePercent);
     const afterPercent = task.context?.usagePending
       ? null
       : contextPercent(task.context?.percent);
-    if (beforePercent === null || afterPercent === null) continue;
+    const presentation = window.AgentHubStreamTabs.rotationMaintenancePresentation(
+      beforePercent,
+      afterPercent,
+    );
     const stableTaskId = taskId(task.provider, task.threadId, streamId);
     const eventId = `maintenance:rotation:${streamId}:${task.threadId}`;
     if (rememberMaintenanceEvent(stableTaskId, {
@@ -1566,12 +1566,14 @@ function observeStreamRotations(previousTasks, tasks) {
       itemId: eventId,
       maintenanceType: "rotation",
       maintenanceStatus: "completed",
+      maintenanceLabel: presentation.maintenanceLabel,
+      maintenanceDetail: presentation.maintenanceDetail,
       beforePercent,
       afterPercent,
-      text: `Ротация завершена успешно ${beforePercent}%>${afterPercent}%`,
+      text: presentation.text,
       time: pending.time,
     })) changed.add(stableTaskId);
-    pendingStreamRotations.delete(streamId);
+    if (afterPercent !== null) pendingStreamRotations.delete(streamId);
   }
   for (const streamId of pendingStreamRotations.keys()) {
     if (currentByStream.has(streamId)) continue;
@@ -1580,56 +1582,8 @@ function observeStreamRotations(previousTasks, tasks) {
   return changed;
 }
 
-function streamHeadTasks(tasks) {
-  const heads = new Map();
-  for (const task of tasks ?? []) {
-    const streamId = String(task.streamId ?? "").trim();
-    if (!streamId) continue;
-    const current = heads.get(streamId);
-    const position = Number(task.threadPosition) || 0;
-    const currentPosition = Number(current?.threadPosition) || 0;
-    if (!current || position > currentPosition) heads.set(streamId, task);
-  }
-  return heads;
-}
-
 function representativeSnapshotTasks(tasks) {
-  const representatives = new Map();
-  for (const task of tasks ?? []) {
-    const streamId = String(task.streamId ?? "").trim();
-    const key = streamId || `${String(task.provider ?? "").trim()}:${String(task.threadId ?? "").trim()}`;
-    const current = representatives.get(key);
-    if (!current || snapshotTaskPreferred(task, current)) representatives.set(key, task);
-  }
-  return [...representatives.values()];
-}
-
-function snapshotTaskPreferred(candidate, current) {
-  const rank = (task) => task.selected
-    ? 3
-    : task.running && String(task.run?.turnId ?? "").trim()
-      ? 2
-      : task.running
-        ? 1
-        : 0;
-  const candidateRank = rank(candidate);
-  const currentRank = rank(current);
-  if (candidateRank !== currentRank) return candidateRank > currentRank;
-  if (candidateRank > 0) {
-    const candidateStartedAt = Date.parse(candidate.run?.startedAt ?? candidate.startedAt ?? "") || 0;
-    const currentStartedAt = Date.parse(current.run?.startedAt ?? current.startedAt ?? "") || 0;
-    if (candidateStartedAt !== currentStartedAt) return candidateStartedAt > currentStartedAt;
-  }
-  const candidatePosition = Number(candidate.threadPosition) || 0;
-  const currentPosition = Number(current.threadPosition) || 0;
-  if (candidatePosition !== currentPosition) return candidatePosition > currentPosition;
-  const candidateActivity = Number(candidate.orderingActivityAtMs)
-    || Date.parse(candidate.lastAnswerAt ?? "")
-    || 0;
-  const currentActivity = Number(current.orderingActivityAtMs)
-    || Date.parse(current.lastAnswerAt ?? "")
-    || 0;
-  return candidateActivity > currentActivity;
+  return window.AgentHubStreamTabs.representativeSnapshotTasks(tasks);
 }
 
 function applySnapshot(snapshot) {
@@ -2461,17 +2415,24 @@ agentHub.on("message:send", (request) => {
     synchronize: async (result) => {
       if (result?.snapshot) applySnapshot(result.snapshot);
       else if (result?.accepted || result?.deferred) await refresh();
-      if (!identity?.threadId && result?.threadId) {
+      if (result?.threadId && (
+        String(result.threadId) !== String(identity?.threadId ?? "")
+        || String(result?.provider ?? identity?.provider ?? "") !== String(identity?.provider ?? "")
+      )) {
         identity = {
           ...identity,
           streamId: result?.streamId ?? identity?.streamId ?? request.streamId,
+          provider: result?.provider ?? identity?.provider,
           threadId: result.threadId,
         };
+        const opened = await control("open-task", { ...identity, limit: 20 });
+        applyOpened(opened);
         const route = window.AgentHubNavigationTabs.resolvedChatRoute(
           { history: identity },
           identity,
         );
         if (route.hash) replaceRoute(route.hash);
+        agentHub.showSelectedTask();
       }
       renderTaskMessages(request.taskId);
       if (queuesOptimistically) {
@@ -2667,7 +2628,11 @@ agentHub.on("stream:rebirth", ({ streamId, provider, taskId: targetTaskId }) => 
     provider: ["codex", "claude"].includes(provider) ? provider : identity.provider,
     streamId,
   });
-  const created = (snapshot.tasks ?? []).find((task) => task.selected && task.streamId === streamId);
+  const rotatedThreadId = String(snapshot.rotation?.threadId ?? "").trim();
+  const created = (snapshot.tasks ?? []).find((task) => (
+    task.streamId === streamId
+    && String(task.threadId ?? "").trim() === rotatedThreadId
+  ));
   if (created) {
     pendingSelectionId = taskId(created.provider, created.threadId, created.streamId);
     rememberSelectedTaskId(pendingSelectionId);

@@ -147,6 +147,150 @@
     return { active, recent };
   }
 
+  function snapshotTaskActivityAtMs(task) {
+    return Number(task?.orderingActivityAtMs)
+      || Date.parse(task?.lastAnswerAt ?? "")
+      || 0;
+  }
+
+  function snapshotTaskPreferred(candidate, current) {
+    const rank = (task) => task?.selected
+      ? 3
+      : task?.running && String(task?.run?.turnId ?? "").trim()
+        ? 2
+        : task?.running
+          ? 1
+          : 0;
+    const candidateRank = rank(candidate);
+    const currentRank = rank(current);
+    if (candidateRank !== currentRank) return candidateRank > currentRank;
+    if (candidateRank > 0) {
+      const candidateStartedAt = Date.parse(candidate?.run?.startedAt ?? candidate?.startedAt ?? "") || 0;
+      const currentStartedAt = Date.parse(current?.run?.startedAt ?? current?.startedAt ?? "") || 0;
+      if (candidateStartedAt !== currentStartedAt) return candidateStartedAt > currentStartedAt;
+    }
+    const candidatePosition = Number(candidate?.threadPosition) || 0;
+    const currentPosition = Number(current?.threadPosition) || 0;
+    if (candidatePosition !== currentPosition) return candidatePosition > currentPosition;
+    return snapshotTaskActivityAtMs(candidate) > snapshotTaskActivityAtMs(current);
+  }
+
+  function representativeSnapshotTasks(tasks) {
+    const groups = new Map();
+    for (const task of tasks ?? []) {
+      const streamId = String(task?.streamId ?? "").trim();
+      const key = streamId || `${String(task?.provider ?? "").trim()}:${String(task?.threadId ?? "").trim()}`;
+      const current = groups.get(key);
+      const maxActivityAtMs = Math.max(
+        current?.maxActivityAtMs ?? 0,
+        snapshotTaskActivityAtMs(task),
+      );
+      groups.set(key, {
+        representative: !current || snapshotTaskPreferred(task, current.representative)
+          ? task
+          : current.representative,
+        maxActivityAtMs,
+      });
+    }
+    return [...groups.values()].map(({ representative, maxActivityAtMs }) => (
+      maxActivityAtMs > snapshotTaskActivityAtMs(representative)
+        ? { ...representative, orderingActivityAtMs: maxActivityAtMs }
+        : representative
+    ));
+  }
+
+  function normalizedContextPercent(value) {
+    if (value === null || value === undefined || value === "") return null;
+    const percent = Number(value);
+    return Number.isFinite(percent) ? Math.round(Math.max(0, Math.min(100, percent))) : null;
+  }
+
+  function streamHeadTasks(tasks) {
+    const heads = new Map();
+    for (const task of tasks ?? []) {
+      const streamId = String(task?.streamId ?? "").trim();
+      if (!streamId) continue;
+      const current = heads.get(streamId);
+      const position = Number(task?.threadPosition) || 0;
+      const currentPosition = Number(current?.threadPosition) || 0;
+      if (!current || position > currentPosition) heads.set(streamId, task);
+    }
+    return heads;
+  }
+
+  function latestRotatedStreamSource(tasks, streamId, targetThreadId) {
+    return [...(tasks ?? [])]
+      .filter((task) => (
+        String(task?.streamId ?? "").trim() === streamId
+        && String(task?.threadId ?? "").trim() !== targetThreadId
+        && task?.context?.compaction?.rotated === true
+      ))
+      .sort((left, right) => (
+        (Date.parse(right?.context?.compaction?.completedAt ?? "") || 0)
+          - (Date.parse(left?.context?.compaction?.completedAt ?? "") || 0)
+        || (Number(right?.threadPosition) || 0) - (Number(left?.threadPosition) || 0)
+      ))[0] ?? null;
+  }
+
+  function streamRotationTransitions(previousTasks, tasks) {
+    const previousByStream = streamHeadTasks(previousTasks);
+    const currentByStream = streamHeadTasks(tasks);
+    const availableTasks = [...(tasks ?? []), ...(previousTasks ?? [])];
+    const transitions = [];
+    for (const [streamId, task] of currentByStream) {
+      const previous = previousByStream.get(streamId) ?? null;
+      if (!previous || String(previous.threadId) === String(task.threadId)) continue;
+      const source = latestRotatedStreamSource(availableTasks, streamId, String(task.threadId));
+      const previousRotationActive = (previousTasks ?? []).some((candidate) => (
+        String(candidate?.streamId ?? "").trim() === streamId
+        && ["manual-rotation", "automatic-rotation"].includes(String(candidate?.maintenance?.reason ?? ""))
+      ));
+      const sourceWasJustRotated = source && !(previousTasks ?? []).some((candidate) => (
+        String(candidate?.streamId ?? "").trim() === streamId
+        && String(candidate?.threadId ?? "").trim() === String(source.threadId ?? "").trim()
+        && candidate?.context?.compaction?.rotated === true
+      ));
+      if (!previousRotationActive && !sourceWasJustRotated) continue;
+      const sourceCompaction = source?.context?.compaction ?? null;
+      transitions.push({
+        streamId,
+        task,
+        sourceThreadId: source?.threadId ?? previous.threadId,
+        beforePercent: normalizedContextPercent(sourceCompaction?.afterPercent)
+          ?? normalizedContextPercent(source?.context?.percent)
+          ?? normalizedContextPercent(previous?.context?.percent),
+        time: sourceCompaction?.completedAt ?? new Date().toISOString(),
+      });
+    }
+    return transitions;
+  }
+
+  function rotationMaintenancePresentation(beforeValue, afterValue) {
+    const beforePercent = normalizedContextPercent(beforeValue);
+    const afterPercent = normalizedContextPercent(afterValue);
+    if (beforePercent !== null && afterPercent !== null) {
+      return {
+        maintenanceLabel: "Ротация завершена",
+        maintenanceDetail: `Новый Thread ${afterPercent}%; источник ${beforePercent}%`,
+        text: `Ротация завершена: новый Thread ${afterPercent}% (источник ${beforePercent}%)`,
+      };
+    }
+    if (beforePercent !== null) {
+      return {
+        maintenanceLabel: "Ротация завершена",
+        maintenanceDetail: `${beforePercent}% → замер нового Thread выполняется`,
+        text: `Ротация завершена; новый Thread создан после ${beforePercent}%`,
+      };
+    }
+    return {
+      maintenanceLabel: "Ротация завершена",
+      maintenanceDetail: afterPercent === null ? "Новый Thread создан" : `Новый Thread: ${afterPercent}%`,
+      text: afterPercent === null
+        ? "Ротация завершена; новый Thread создан"
+        : `Ротация завершена; новый Thread ${afterPercent}%`,
+    };
+  }
+
   function taskListSections(tasks) {
     const workspaceTasks = [];
     const unassignedTasks = [];
@@ -1028,10 +1172,14 @@
     applyOpenStreamSelection,
     orderWorkspaceStreams,
     preserveStreamOverflowMenuOpen,
+    representativeSnapshotTasks,
     reconcileOpenStreamIds,
     resolveStableStreamCardWidth,
+    rotationMaintenancePresentation,
     streamDeckRenderKey,
+    streamHeadTasks,
     streamLastActivity,
+    streamRotationTransitions,
     streamStatusPresentation,
     streamStatusState,
     streamsAreDraggable,

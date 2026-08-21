@@ -2,9 +2,9 @@ const MAX_ALBUM_SIZE = 10;
 
 export const NOTIFICATION_CATEGORIES = Object.freeze({
   action: Object.freeze({ emoji: "🚨", title: "ТРЕБУЕТСЯ ДЕЙСТВИЕ" }),
-  done: Object.freeze({ emoji: "✅", title: "ЗАДАЧА ВЫПОЛНЕНА" }),
+  done: Object.freeze({ emoji: "✅", title: "ПОТОК ЗАВЕРШЁН" }),
   intermediate: Object.freeze({ emoji: "📌", title: "ПРОМЕЖУТОЧНЫЙ РЕЗУЛЬТАТ" }),
-  progress: Object.freeze({ emoji: "⏳", title: "ЗАДАЧА ВЫПОЛНЯЕТСЯ" }),
+  progress: Object.freeze({ emoji: "⏳", title: "ПОТОК ВЫПОЛНЯЕТСЯ" }),
   warning: Object.freeze({ emoji: "⚠️", title: "ВНИМАНИЕ" }),
   info: Object.freeze({ emoji: "ℹ️", title: "ИНФОРМАЦИЯ" }),
 });

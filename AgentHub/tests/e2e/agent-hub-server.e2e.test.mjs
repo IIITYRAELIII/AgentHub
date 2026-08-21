@@ -221,7 +221,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   telegram.pushMessage("/menu");
   const restoredMenu = await telegram.waitForText("Панель кнопок показана", { after: mark });
   assert.equal(restoredMenu.body.reply_markup.is_persistent, true);
-  assert.ok(restoredMenu.body.reply_markup.keyboard.flat().some((button) => button.text === "📋 Задачи"));
+  assert.ok(restoredMenu.body.reply_markup.keyboard.flat().some((button) => button.text === "📋 Потоки"));
 
   mark = telegram.calls.length;
   telegram.pushMessage("/new");
@@ -232,8 +232,8 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   assert.notEqual(secondThreadId, firstThreadId);
 
   mark = telegram.calls.length;
-  telegram.pushMessage("/tasks");
-  const pickerCall = await telegram.waitForText("Выберите задачу:", { after: mark });
+  telegram.pushMessage("/streams");
+  const pickerCall = await telegram.waitForText("Выберите поток:", { after: mark });
   const picker = pickerCall.result;
   const pickerRows = pickerCall.body.reply_markup.inline_keyboard;
   assert.equal(callbackAction(pickerRows.at(-2)[0].callback_data), "thread:new");
@@ -242,14 +242,14 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
 
   mark = telegram.calls.length;
   telegram.pushMessage("/tasks");
-  const currentPickerCall = await telegram.waitForText("Выберите задачу:", { after: mark });
+  const currentPickerCall = await telegram.waitForText("Выберите поток:", { after: mark });
   const selectFirst = currentPickerCall.body.reply_markup.inline_keyboard.flat()
     .find((button) => button.callback_data === `task:c:${firstThreadId}`);
   assert.ok(selectFirst, "first task must be selectable");
 
   mark = telegram.calls.length;
   telegram.pushCallback(selectFirst.callback_data, currentPickerCall.result);
-  const switched = await telegram.waitForText("Текущая задача изменена", { after: mark });
+  const switched = await telegram.waitForText("Текущий поток изменён", { after: mark });
   const switchedState = await readJson(statePath);
   assert.equal(switchedState.threadIds.codex, secondThreadId,
     "Telegram selection must not replace the shared Desktop fallback");
@@ -275,12 +275,12 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
 
   mark = telegram.calls.length;
   telegram.pushMessage("/tasks");
-  const repeatPickerCall = await telegram.waitForText("Выберите задачу:", { after: mark });
+  const repeatPickerCall = await telegram.waitForText("Выберите поток:", { after: mark });
   const repeatButton = repeatPickerCall.body.reply_markup.inline_keyboard
     .flat().find((button) => button.callback_data === `task:c:${firstThreadId}`);
   mark = telegram.calls.length;
   telegram.pushCallback(repeatButton.callback_data, repeatPickerCall.result);
-  await telegram.waitForText("Текущая задача уже выбрана", { after: mark });
+  await telegram.waitForText("Текущий поток уже выбран", { after: mark });
 
   mark = telegram.calls.length;
   telegram.pushMessage("/model");
@@ -439,13 +439,13 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
 
   mark = telegram.calls.length;
   telegram.pushMessage("/tasks");
-  const mediaTaskPicker = await telegram.waitForText("Выберите задачу:", { after: mark, timeoutMs: 1_500 });
+  const mediaTaskPicker = await telegram.waitForText("Выберите поток:", { after: mark, timeoutMs: 1_500 });
   const selectSecondDuringDownload = mediaTaskPicker.body.reply_markup.inline_keyboard.flat()
     .find((button) => button.callback_data === `task:c:${secondThreadId}`);
   assert.ok(selectSecondDuringDownload, "second task must remain selectable during media processing");
   mark = telegram.calls.length;
   telegram.pushCallback(selectSecondDuringDownload.callback_data, mediaTaskPicker.result);
-  await telegram.waitForText("Текущая задача изменена", { after: mark, timeoutMs: 1_500 });
+  await telegram.waitForText("Текущий поток изменён", { after: mark, timeoutMs: 1_500 });
   assert.equal((await readJson(statePath)).threadIds.codex, secondThreadId);
 
   await telegram.waitForText("Готово: [media] медленная картинка", { after: menuMark, timeoutMs: 8_000 });
@@ -457,13 +457,13 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
 
   mark = telegram.calls.length;
   telegram.pushMessage("/tasks");
-  const returnAfterMediaPicker = await telegram.waitForText("Выберите задачу:", { after: mark });
+  const returnAfterMediaPicker = await telegram.waitForText("Выберите поток:", { after: mark });
   const returnToFirstAfterMedia = returnAfterMediaPicker.body.reply_markup.inline_keyboard.flat()
     .find((button) => button.callback_data === `task:c:${firstThreadId}`);
   assert.ok(returnToFirstAfterMedia, "original media task must remain selectable");
   mark = telegram.calls.length;
   telegram.pushCallback(returnToFirstAfterMedia.callback_data, returnAfterMediaPicker.result);
-  await telegram.waitForText("Текущая задача изменена", { after: mark });
+  await telegram.waitForText("Текущий поток изменён", { after: mark });
 
   telegram.fileDownloadDelayMs = 500;
   mark = telegram.calls.length;
@@ -553,7 +553,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   assert.match(normalFinal.body.text, /^✅ Codex · /);
   assert.match(normalFinal.body.text, /\n🧵 /);
   assert.match(normalFinal.body.text, /\n⚙ Agent Hub Server/);
-  assert.match(normalFinal.body.text, /📊 За задачу: 0 cr/);
+  assert.match(normalFinal.body.text, /📊 За поток: 0 cr/);
   const normalProgressDeletion = await telegram.waitForCall("deleteMessage", (call) => (
     call.body.message_id === normalProgressId
   ), { after: mark });
@@ -571,7 +571,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   assert.equal(await journalContains("Готово: [slow] обычное завершение"), true);
   assert.equal(
     telegram.callsAfter(normalFinal.index + 1, "sendPhoto").some((call) => (
-      call.rawBody.includes("Ход завершён.") && call.rawBody.includes("Кредиты за задачу:")
+      call.rawBody.includes("Ход завершён.") && call.rawBody.includes("Кредиты за поток:")
     )),
     false,
     "turn usage must be appended to the final answer instead of a separate card",
@@ -809,11 +809,11 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
 
   mark = telegram.calls.length;
   telegram.pushMessage("/tasks");
-  const activePickerCall = await telegram.waitForText("Выберите задачу:", { after: mark });
+  const activePickerCall = await telegram.waitForText("Выберите поток:", { after: mark });
   const activeRows = activePickerCall.body.reply_markup.inline_keyboard;
   const heldTaskButton = activeRows.flat().find((button) => button.callback_data === `task:c:${firstThreadId}`);
   telegram.pushCallback(heldTaskButton.callback_data, activePickerCall.result);
-  const heldSwitch = await telegram.waitForText("Текущая задача изменена", { after: mark });
+  const heldSwitch = await telegram.waitForText("Текущий поток изменён", { after: mark });
   let scopedState = await readJson(statePath);
   assert.equal(scopedState.threadIds.codex, parallelThreadId);
   assert.equal(
@@ -849,9 +849,9 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
 
   mark = telegram.calls.length;
   telegram.pushMessage("/cancel");
-  await telegram.waitForText("Запрошена остановка этой задачи", { after: mark });
+  await telegram.waitForText("Запрошена остановка этого потока", { after: mark });
   const restoredFinal = await telegram.waitForText("Ход остановлен тестом", { after: mark });
-  assert.match(restoredFinal.body.text, /Кредиты за задачу: нет тарифа для gpt-e2e/);
+  assert.match(restoredFinal.body.text, /Кредиты за поток: нет тарифа для gpt-e2e/);
   assert.match(restoredFinal.body.text, /^✅ Codex · /);
   await waitFor(async () => (await readJson(statePath)).activeRuns.length === 1,
     "cancelling the selected parallel task only");
@@ -864,7 +864,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   assert.equal(await journalContains("Ход остановлен тестом"), true);
   assert.equal(
     telegram.callsAfter(restoredFinal.index + 1, "sendPhoto").some((call) => (
-      call.rawBody.includes("Кредиты за задачу:")
+      call.rawBody.includes("Кредиты за поток:")
     )),
     false,
     "recovered turn usage must stay in the final answer",
@@ -872,15 +872,15 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
 
   mark = telegram.calls.length;
   telegram.pushMessage("/tasks");
-  const remainingPickerCall = await telegram.waitForText("Выберите задачу:", { after: mark });
+  const remainingPickerCall = await telegram.waitForText("Выберите поток:", { after: mark });
   const remainingHeldButton = remainingPickerCall.body.reply_markup.inline_keyboard.flat()
     .find((button) => button.callback_data === `task:c:${firstThreadId}`);
   telegram.pushCallback(remainingHeldButton.callback_data, remainingPickerCall.result);
-  await telegram.waitForText("Текущая задача изменена", { after: mark });
+  await telegram.waitForText("Текущий поток изменён", { after: mark });
 
   mark = telegram.calls.length;
   telegram.pushMessage("/tasks");
-  const archivePickerCall = await telegram.waitForText("Выберите задачу:", { after: mark });
+  const archivePickerCall = await telegram.waitForText("Выберите поток:", { after: mark });
   telegram.pushCallback(callbackButton(archivePickerCall, "thread:archive").callback_data, archivePickerCall.result);
   const blockedArchive = await telegram.waitForCall(
     "answerCallbackQuery",
@@ -891,7 +891,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
 
   mark = telegram.calls.length;
   telegram.pushMessage("/cancel");
-  await telegram.waitForText("Запрошена остановка этой задачи", { after: mark });
+  await telegram.waitForText("Запрошена остановка этого потока", { after: mark });
   const queuedFinal = await telegram.waitForText("Готово: очередь после остановки", { after: mark, timeoutMs: 12_000 });
   await waitFor(async () => (await readJson(statePath)).activeRuns.length === 0, "queued turn completion", 12_000);
 
@@ -984,7 +984,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   orphanedBot.kill("SIGTERM");
   await new Promise((resolve) => orphanedBot.once("exit", resolve));
   await startBot();
-  await telegram.waitForText("Продолжи текущую задачу с места остановки", {
+  await telegram.waitForText("Продолжи текущий поток с места остановки", {
     after: mark,
     timeoutMs: 15_000,
   });
@@ -1023,13 +1023,13 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
 
   mark = telegram.calls.length;
   telegram.pushMessage("/tasks");
-  const externalPicker = await telegram.waitForText("Выберите задачу:", { after: mark });
+  const externalPicker = await telegram.waitForText("Выберите поток:", { after: mark });
   const externalButton = externalPicker.body.reply_markup.inline_keyboard.flat()
     .find((button) => button.callback_data === `task:c:${externalRun.threadId}`);
   assert.ok(externalButton);
   mark = telegram.calls.length;
   telegram.pushCallback(externalButton.callback_data, externalPicker.result);
-  const externalSelected = await telegram.waitForText("Текущая задача уже выбрана", { after: mark });
+  const externalSelected = await telegram.waitForText("Текущий поток уже выбран", { after: mark });
   const externalEye = externalSelected.body.reply_markup.inline_keyboard.flat()
     .find((button) => button.callback_data === `task-view:s:c:${externalRun.threadId}`);
   assert.ok(externalEye);
@@ -1155,7 +1155,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   const statusCard = await telegram.waitForCall("sendPhoto", () => true, { after: mark });
   const statusMarkup = JSON.parse(multipartField(statusCard, "reply_markup"));
   assert.equal(statusMarkup.inline_keyboard.length, 4);
-  assert.match(multipartField(statusCard, "caption"), /🧵НЕДАВНИЕ ЗАДАЧИ \(0\)🧵/);
+  assert.match(multipartField(statusCard, "caption"), /🧵НЕДАВНИЕ ПОТОКИ \(0\)🧵/);
 
   mark = telegram.calls.length;
   telegram.pushMessage("/agent");
@@ -1250,7 +1250,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
 
   mark = telegram.calls.length;
   telegram.pushMessage("/archive");
-  await telegram.waitForText("архивирована", { after: mark });
+  await telegram.waitForText("архивирован", { after: mark });
 
   assert.equal(stderr.includes("Unhandled asynchronous error"), false, stderr);
   assert.equal(stdout.includes("Agent Hub ready"), true, stdout);

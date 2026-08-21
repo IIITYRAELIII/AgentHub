@@ -7,12 +7,37 @@ import {
   hydrateCodexAgentMessages,
   startCodexAgentMessage,
 } from "./codex-agent-message-reducer.mjs";
-import { markProviderFirstEvent, markProviderTurnAccepted } from "../../domain/task-runs.mjs";
+import {
+  markProviderFirstEvent,
+  markProviderTurnAccepted,
+  markProviderTurnCompleted,
+  markProviderTurnCompaction,
+  markProviderTurnContent,
+  markProviderTurnEvent,
+} from "../../domain/task-runs.mjs";
 
 function startsProviderResponse(method) {
   return String(method ?? "").startsWith("item/")
     || method === "turn/diff/updated"
     || method === "turn/completed";
+}
+
+function itemTelemetryPhase(item, compaction = false) {
+  if (compaction) return "compaction";
+  const type = String(item?.type ?? "").toLowerCase();
+  const phase = String(item?.phase ?? "").toLowerCase();
+  if (["analysis", "commentary", "reasoning"].includes(phase)) return "reasoning";
+  if (type === "agentmessage") return "answering";
+  if (/(command|tool|mcp|file|search|browser)/u.test(type)) return "tool";
+  return "working";
+}
+
+function eventTelemetryPhase(method, params, isCompactionItem) {
+  if (method === "turn/diff/updated") return "tool";
+  if (method === "item/reasoning/summaryTextDelta" || method === "item/plan/delta") return "reasoning";
+  if (method === "item/started") return itemTelemetryPhase(params.item, isCompactionItem(params.item));
+  if (/requestApproval|requestUserInput|elicitation\/request/u.test(String(method ?? ""))) return "waiting-user";
+  return "";
 }
 
 function requiredFunction(value, name) {
@@ -131,12 +156,32 @@ export class CodexEventService {
           acceptedAt: params.startedAtMs ?? Date.now(),
           provider: "codex",
         });
+        markProviderTurnEvent(run, {
+          turnId: eventTurnId,
+          method,
+          occurredAt: params.startedAtMs ?? Date.now(),
+          phase: "starting",
+        });
         d.reindexRun(run, previous);
       }
       if (eventTurnId && !d.turnTokenUsage.has(eventTurnId)) {
         rememberBounded(d.turnTokenUsage, eventTurnId, { usage: emptyTokenUsage(), reported: false }, 200);
       }
       if (run && eventTurnId) void d.saveState();
+    }
+    if (
+      run
+      && eventTurnId
+      && method !== "turn/started"
+      && method !== "turn/completed"
+      && params.agentHubHydrationReplay !== true
+    ) {
+      markProviderTurnEvent(run, {
+        turnId: eventTurnId,
+        method,
+        occurredAt: params.startedAtMs ?? params.completedAtMs ?? Date.now(),
+        phase: eventTelemetryPhase(method, params, d.isCompactionItem),
+      });
     }
     if (method === "thread/tokenUsage/updated") {
       const compaction = d.getCompaction(params.threadId);
@@ -172,12 +217,23 @@ export class CodexEventService {
       if (["analysis", "commentary", "reasoning"].includes(String(item?.phase ?? ""))) {
         d.upsertReasoningBlock(run, { id: item.id, text: item.text });
       }
+      if (delta && params.agentHubHydrationReplay !== true) {
+        const reasoning = ["analysis", "commentary", "reasoning"].includes(String(item?.phase ?? ""));
+        markProviderTurnContent(run, {
+          turnId: eventTurnId,
+          kind: reasoning ? "reasoning" : "answer",
+          visible: !reasoning,
+        });
+      }
       if (delta) d.noteActivity(run);
       d.scheduleProgress(run);
     }
     if ((method === "item/reasoning/summaryTextDelta" || method === "item/plan/delta") && run) {
       d.appendReasoning(run, params.delta);
       d.upsertReasoningBlock(run, { id: params.itemId, delta: params.delta });
+      if (params.delta && params.agentHubHydrationReplay !== true) {
+        markProviderTurnContent(run, { turnId: eventTurnId, kind: "reasoning" });
+      }
     }
     if (run) {
       const liveActivity = d.reduceLiveItemEvent(run, method, params);
@@ -189,6 +245,11 @@ export class CodexEventService {
     }
     if (method === "item/started") {
       if (d.isCompactionItem(params.item)) {
+        if (run) markProviderTurnCompaction(run, {
+          turnId: eventTurnId,
+          stage: "started",
+          occurredAt: params.startedAtMs ?? Date.now(),
+        });
         d.beginCompaction(params.threadId, {
           origin: "automatic",
           turnId: eventTurnId,
@@ -210,6 +271,11 @@ export class CodexEventService {
     }
     if (method === "item/completed") {
       if (d.isCompactionItem(params.item)) {
+        if (run) markProviderTurnCompaction(run, {
+          turnId: eventTurnId,
+          stage: "completed",
+          occurredAt: params.completedAtMs ?? Date.now(),
+        });
         d.beginCompactionCleanup(params.threadId, {
           turnId: eventTurnId, itemId: params.item?.id, compactedAt: params.completedAtMs,
         });
@@ -275,6 +341,12 @@ export class CodexEventService {
       });
       await d.requestUserInput(id, params, run);
     } else if (method === "turn/completed") {
+      if (run) {
+        markProviderTurnCompleted(run, {
+          turnId: eventTurnId,
+          completedAt: params.completedAtMs ?? Date.now(),
+        });
+      }
       d.settleCompactionTurn(params.threadId, {
         turnId: eventTurnId,
         status: params.turn?.status,

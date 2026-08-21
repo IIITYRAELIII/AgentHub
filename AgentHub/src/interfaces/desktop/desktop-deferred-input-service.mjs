@@ -179,14 +179,14 @@ export class DesktopDeferredInputService {
       d.queuedInputs.set(id, item);
       d.updateReceipt(item, "queued");
       await d.saveState();
-      await d.updateMessage(item, `⏳ Сообщение поставлено в очередь задачи «${item.taskTitle}».`);
+      await d.updateMessage(item, `⏳ Сообщение поставлено в очередь потока «${item.taskTitle}».`);
       d.scheduleQueued(item, 500);
       return { accepted: true, message: "Сообщение поставлено в очередь" };
     }
     const binding = this.#binding(item);
     if (action === "new") {
       if (!binding.streamId) {
-        throw new Error("Нельзя безопасно создать новую задачу для сообщения без Stream-привязки");
+        throw new Error("Нельзя безопасно создать новый поток для сообщения без Stream-привязки");
       }
       if (item.dispatchingAt || d.isProcessing(id)) {
         throw new Error("Сообщение уже отправляется и не может быть перенесено");
@@ -234,9 +234,9 @@ export class DesktopDeferredInputService {
         delete item.waitReason;
         d.updateReceipt(item, "started", startedRun);
         await d.saveState();
-        await d.updateMessage(item, `🆕 Сообщение отправлено в новую задачу «${d.activeTitle()}».`);
+        await d.updateMessage(item, `🆕 Сообщение отправлено в новый поток «${d.activeTitle()}».`);
         d.scheduleNext(item);
-        return { accepted: true, message: "Сообщение отправлено в новую задачу", snapshot: await d.snapshot() };
+        return { accepted: true, message: "Сообщение отправлено в новый поток", snapshot: await d.snapshot() };
       } catch (error) {
         d.pendingInputs.delete(id);
         delete item.manualAction;
@@ -267,7 +267,7 @@ export class DesktopDeferredInputService {
       d.pendingInputs.delete(id);
       d.updateReceipt(item, "started", startedRun);
       await d.saveState();
-      await d.updateMessage(item, `⚠️ Сообщение отправлено в задачу «${item.taskTitle}».`);
+      await d.updateMessage(item, `⚠️ Сообщение отправлено в поток «${item.taskTitle}».`);
       d.scheduleNext(item);
       return { accepted: true, message: "Сообщение принудительно запущено" };
     }

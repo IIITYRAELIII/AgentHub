@@ -231,7 +231,7 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
   // Fake Claude намеренно отклоняет --resume из другого каталога.
   let mark = telegram.calls.length;
   telegram.pushMessage("/tasks");
-  const nestedPicker = await telegram.waitForText("Выберите задачу:", {
+  const nestedPicker = await telegram.waitForText("Выберите поток:", {
     after: mark,
     timeoutMs: 15_000,
   });
@@ -355,7 +355,7 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
   // Переключение между двумя живыми задачами и «глазки» на первой.
   mark = telegram.calls.length;
   telegram.pushMessage("/tasks");
-  const picker = await telegram.waitForText("Выберите задачу:", { after: mark, timeoutMs: 15_000 });
+  const picker = await telegram.waitForText("Выберите поток:", { after: mark, timeoutMs: 15_000 });
   const runningButtons = picker.body.reply_markup.inline_keyboard.flat()
     .filter((button) => button.callback_data.startsWith("task:l:"));
   assert.equal(
@@ -370,7 +370,7 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
 
   mark = telegram.calls.length;
   telegram.pushCallback(firstTaskButton.callback_data, picker.result);
-  const switched = await telegram.waitForText("Текущая задача", { after: mark, timeoutMs: 15_000 });
+  const switched = await telegram.waitForText("Текущий поток", { after: mark, timeoutMs: 15_000 });
   await waitFor(async () => await telegramSelectedThread() === firstRun.threadId,
     "switch to the first live Claude task");
 
@@ -395,7 +395,7 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
   telegram.pushMessage("/cancel");
   let cancellationCall;
   try {
-    cancellationCall = await telegram.waitForText("Запрошена остановка этой задачи", { after: mark });
+    cancellationCall = await telegram.waitForText("Запрошена остановка этого потока", { after: mark });
   } catch (error) {
     throw new Error(
       `${error.message}\nAPI calls:\n${JSON.stringify(
@@ -526,14 +526,14 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
 
   mark = telegram.calls.length;
   telegram.pushMessage("/tasks");
-  const stalePicker = await telegram.waitForText("Выберите задачу:", { after: mark, timeoutMs: 15_000 });
+  const stalePicker = await telegram.waitForText("Выберите поток:", { after: mark, timeoutMs: 15_000 });
   const staleButton = stalePicker.body.reply_markup.inline_keyboard.flat()
     .find((button) => button.callback_data === `task:l:${staleSessionId}`);
   assert.ok(staleButton, "an abandoned Claude session must still be selectable");
 
   mark = telegram.calls.length;
   telegram.pushCallback(staleButton.callback_data, stalePicker.result);
-  await telegram.waitForText("Текущая задача", { after: mark, timeoutMs: 15_000 });
+  await telegram.waitForText("Текущий поток", { after: mark, timeoutMs: 15_000 });
   await waitFor(async () => await telegramSelectedThread() === staleSessionId,
     "switch to the abandoned Claude session", 15_000);
 

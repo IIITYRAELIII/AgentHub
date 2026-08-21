@@ -1,7 +1,7 @@
 // Dispatches Telegram slash/menu commands into injected application operations.
 const COMMANDS = Object.freeze([
   "menu", "keyboard", "start", "help", "agent", "engine", "model", "reasoning", "mode",
-  "projects", "folders", "folder", "new", "status", "approvals", "restart", "tasks", "resume",
+  "projects", "folders", "folder", "new", "status", "approvals", "restart", "streams", "tasks", "resume",
   "rename", "archive", "current", "thread", "diff", "cancel",
 ]);
 
@@ -41,7 +41,7 @@ export class TelegramCommandService {
     } else if (text === "/start" || text === "/help") {
       await d.sendMessage(
         `Бот подключён к Claude Code и Codex. Текущий агент: ${d.providerTitle()}. Отправьте текст, изображение или голосовое сообщение.\n\n`
-          + "/menu — показать панель кнопок\n/agent — переключить Claude Code/Codex\n/model — сменить модель\n/reasoning — мощь дум Codex/Claude\n/mode — режим Plan/Work Codex/Claude\n/projects — сменить активный проект\n/new — новый контекст\n/tasks — список задач и создание новой\n/resume — выбрать задачу\n/rename — закрепить название текущей задачи\n/archive — архивировать текущую задачу\n/status — статус, текущая задача и лимиты\n/approvals — режим подтверждений\n/restart — перезапустить бота\n/diff — последний diff\n/cancel — остановить задачу",
+          + "/menu — показать панель кнопок\n/agent — переключить Claude Code/Codex\n/model — сменить модель\n/reasoning — мощь дум Codex/Claude\n/mode — режим Plan/Work Codex/Claude\n/projects — сменить активный проект\n/new — новый поток\n/streams — список потоков и создание нового\n/resume — выбрать поток\n/rename — закрепить название текущего потока\n/archive — архивировать текущий поток\n/status — статус, текущий поток и лимиты\n/approvals — режим подтверждений\n/restart — перезапустить бота\n/diff — последний diff\n/cancel — остановить поток",
         { reply_markup: d.menu },
       );
     } else if (text === "/agent" || text === "/engine") {
@@ -64,20 +64,20 @@ export class TelegramCommandService {
       await d.sendMessage(d.approvalModeText(), { reply_markup: d.approvalModeKeyboard() });
     } else if (text === "/restart") {
       await d.restart();
-    } else if (text === "/tasks" || text === "/resume") {
-      d.scheduleInteractiveJob("Список задач", message.chat.id, () => d.sendTaskPicker());
+    } else if (text === "/streams" || text === "/tasks" || text === "/resume") {
+      d.scheduleInteractiveJob("Список потоков", message.chat.id, () => d.sendTaskPicker());
     } else if (text.startsWith("/resume ")) {
       const selectedThreadId = text.slice("/resume ".length).trim();
       if (!/^[0-9a-f-]+$/i.test(selectedThreadId)) {
-        return d.sendMessage("Укажите корректный ID задачи или используйте /resume без параметров.");
+        return d.sendMessage("Укажите корректный ID потока или используйте /resume без параметров.");
       }
       await d.resumeThread(selectedThreadId, { context: d.messageContext(message) });
     } else if (text === "/rename") {
-      await d.sendMessage("Укажите новое постоянное название: /rename Название задачи");
+      await d.sendMessage("Укажите новое постоянное название: /rename Название потока");
     } else if (text.startsWith("/rename ")) {
       try {
         const target = d.selectedTurnTarget(message.chat.id);
-        if (!target.threadId) throw new Error("текущая задача не выбрана");
+        if (!target.threadId) throw new Error("текущий поток не выбран");
         const result = await d.dispatchCommand(
           "task.rename",
           { title: text.slice("/rename ".length) },
@@ -88,30 +88,30 @@ export class TelegramCommandService {
         await d.selectTaskFromBinding({ ...target, taskTitle: title }, d.messageContext(message));
         await d.sendMessage(`✅ Название закреплено: «${title}». Автозаголовки Codex больше его не изменят.`);
       } catch (error) {
-        await d.sendMessage(`Не удалось переименовать задачу: ${error.message}`);
+        await d.sendMessage(`Не удалось переименовать поток: ${error.message}`);
       }
     } else if (text === "/archive") {
       const result = await d.archiveCurrentTask(d.messageContext(message));
       if (!result.archived) {
-        if (result.reason === "active-turn") return d.sendMessage("Сначала завершите или отмените текущую задачу.");
-        if (result.reason === "unsupported") return d.sendMessage("Архивация доступна только для задач Codex.");
-        return d.sendMessage("Текущая задача не выбрана.");
+        if (result.reason === "active-turn") return d.sendMessage("Сначала завершите или отмените текущий поток.");
+        if (result.reason === "unsupported") return d.sendMessage("Архивация доступна только для потоков Codex.");
+        return d.sendMessage("Текущий поток не выбран.");
       }
       await d.sendArchiveMessage(result);
       await d.sendTaskPicker();
     } else if (text === "/current" || text === "/thread") {
       const snapshot = d.statusSnapshot(message.chat.id);
-      d.scheduleInteractiveJob("Текущая задача", message.chat.id, () => d.sendStatus(snapshot));
+      d.scheduleInteractiveJob("Текущий поток", message.chat.id, () => d.sendStatus(snapshot));
     } else if (text === "/diff") {
       const target = d.selectedTurnTarget(message.chat.id);
       const run = d.runForTask(target);
       d.scheduleInteractiveJob("Изменения", message.chat.id, async () => {
         const diff = run ? await d.refreshTaskDiff(run) : d.storedTaskDiff(d.taskKey(target));
-        await d.sendLongMessage(diff || "В выбранной задаче изменений файлов нет.", { maxParts: 8 });
+        await d.sendLongMessage(diff || "В выбранном потоке изменений файлов нет.", { maxParts: 8 });
       });
     } else if (text === "/cancel") {
       const target = d.selectedTurnTarget(message.chat.id);
-      if (!target.threadId) return d.sendMessage("В выбранной задаче сейчас ничего не выполняется.");
+      if (!target.threadId) return d.sendMessage("В выбранном потоке сейчас ничего не выполняется.");
       const run = d.runForTask(target);
       const result = await d.dispatchCommand(
         "run.cancel",

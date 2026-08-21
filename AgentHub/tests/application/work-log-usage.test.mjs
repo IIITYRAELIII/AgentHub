@@ -1138,7 +1138,7 @@ test("projectWorkLogUsage renders turn tables, preserves legacy outcomes and cal
   assert.doesNotMatch(projected, /data-work-log-previous-turn-table/);
   assert.match(
     projected,
-    /<div data-work-log-header><strong>Задача<\/strong><strong>Ходы<\/strong><\/div>/,
+    /<div data-work-log-header><strong>Поток<\/strong><strong>Ходы<\/strong><\/div>/,
   );
   assert.doesNotMatch(projected, /<strong>Расход<\/strong>/);
   assert.match(

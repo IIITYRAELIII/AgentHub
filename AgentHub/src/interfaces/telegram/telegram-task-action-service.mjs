@@ -80,14 +80,14 @@ export class TelegramTaskActionService {
       context,
     );
     if (!result?.createdTask || (!result.createdTask.threadId && result.createdTask.provider !== "claude")) {
-      throw new Error("новая задача не содержит Thread ID");
+      throw new Error("новый поток не содержит Thread ID");
     }
     await this.selectTaskFromBinding(result.createdTask, context);
     return result;
   }
 
   async rename(title, context = {}) {
-    if (!this.currentThreadId()) throw new Error("текущая задача не выбрана");
+    if (!this.currentThreadId()) throw new Error("текущий поток не выбран");
     const result = await this.dispatchCommand(
       "task.rename",
       { title },

@@ -93,7 +93,7 @@ export function pendingInputKeyboard(id, { allowForce = false } = {}) {
     : [];
   return {
     inline_keyboard: [
-      [{ text: "🆕 Отправить в новую задачу", callback_data: `pending:new:${value}` }],
+      [{ text: "🆕 Отправить в новый поток", callback_data: `pending:new:${value}` }],
       [{ text: "⏳ Поставить в очередь", callback_data: `pending:queue:${value}` }],
       ...forceRows,
       [{ text: "👀 Показать текущий ход", callback_data: `pending:show:${value}` }],

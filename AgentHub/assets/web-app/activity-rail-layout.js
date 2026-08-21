@@ -113,9 +113,15 @@
     });
   }
 
-  function activityRailWidthFactor(state, columnRatio = DEFAULT_COLUMN_RATIO) {
-    if (!state?.separate || state.visibleColumns !== 1) return 1;
+  function activityRailWidthFactor(
+    state,
+    columnRatio = DEFAULT_COLUMN_RATIO,
+    { autoCombined = false } = {},
+  ) {
+    if (!state) return 1;
     const ratio = normalizeColumnRatio(columnRatio);
+    if (autoCombined && !state.separate) return Math.max(ratio, 1 - ratio);
+    if (!state.separate || state.visibleColumns !== 1) return 1;
     return state.tasksVisible ? ratio : 1 - ratio;
   }
 
@@ -277,13 +283,18 @@
 
     const syncVisibleRailWidth = (state = currentState) => {
       if (!state) return;
-      const factor = activityRailWidthFactor(state, columnRatio);
-      if ((!state.separate || state.visibleColumns === 2) || root.dataset.surface === "mobile") {
+      const autoCombined = autoSeparate && !alwaysSeparate && !state.separate;
+      const factor = activityRailWidthFactor(state, columnRatio, { autoCombined });
+      if ((!autoCombined && (!state.separate || state.visibleColumns === 2))
+        || root.dataset.surface === "mobile") {
+        delete rail.dataset.sidePanelWidthScale;
         if (workspace.style.getPropertyValue("--activity-rail-visible-width")) {
           workspace.style.removeProperty("--activity-rail-visible-width");
         }
         return;
       }
+      if (state.visibleColumns === 0) delete rail.dataset.sidePanelWidthScale;
+      else rail.dataset.sidePanelWidthScale = String(factor);
       const metrics = headingMetrics();
       const minimumWidth = minimumCollapsedRailWidth(metrics);
       const baseWidth = widthProbe.getBoundingClientRect().width

@@ -60,7 +60,7 @@ export function createManagedTaskRun(value) {
     sessionId: value.provider === "claude" ? value.threadId : null,
     ...value,
     ...progressState({
-      stage: "Задача принята.",
+      stage: "Поток принят.",
       displayRequested: telegramDeliveryRequested,
     }),
     telegramDeliveryRequested,
@@ -79,6 +79,268 @@ function eventTimestamp(value = Date.now()) {
       ? Date.parse(value)
       : Number(value);
   return new Date(Number.isFinite(timestamp) ? timestamp : Date.now()).toISOString();
+}
+
+const PROVIDER_TELEMETRY_SAMPLE_INTERVAL_MS = 250;
+const PROVIDER_TELEMETRY_TIMELINE_LIMIT = 32;
+
+function eventTimeMs(value = Date.now()) {
+  const timestamp = value instanceof Date
+    ? value.getTime()
+    : typeof value === "string"
+      ? Date.parse(value)
+      : Number(value);
+  return Number.isFinite(timestamp) ? timestamp : Date.now();
+}
+
+function providerStartForTurn(run, turnId) {
+  const providerStart = run?.providerStart;
+  const exactTurnId = String(turnId ?? "").trim();
+  if (!providerStart || !exactTurnId || String(providerStart.turnId ?? "") !== exactTurnId) return null;
+  return providerStart;
+}
+
+function baselineTimeMs(providerStart) {
+  const numeric = Number(providerStart?.turnStartedAtMs);
+  if (Number.isFinite(numeric)) return numeric;
+  const timestamp = Date.parse(String(providerStart?.acceptedAt ?? providerStart?.requestedAt ?? ""));
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function recordMaximumGap(providerStart, key, previousAtMs, occurredAtMs) {
+  if (!Number.isFinite(previousAtMs) || occurredAtMs < previousAtMs) return;
+  providerStart[key] = Math.max(Number(providerStart[key]) || 0, occurredAtMs - previousAtMs);
+}
+
+function appendProviderTelemetryMilestone(providerStart, milestone) {
+  if (!providerStart) return;
+  const value = {
+    atMs: eventTimeMs(milestone.atMs),
+    type: String(milestone.type ?? "event").trim() || "event",
+    phase: String(milestone.phase ?? "").trim() || null,
+    method: String(milestone.method ?? "").trim() || null,
+  };
+  const timeline = Array.isArray(providerStart.timeline) ? providerStart.timeline : [];
+  const previous = timeline.at(-1);
+  if (
+    previous
+    && previous.type === value.type
+    && previous.phase === value.phase
+    && previous.method === value.method
+  ) return;
+  timeline.push(value);
+  if (timeline.length > PROVIDER_TELEMETRY_TIMELINE_LIMIT) {
+    timeline.splice(0, timeline.length - PROVIDER_TELEMETRY_TIMELINE_LIMIT);
+  }
+  providerStart.timeline = timeline;
+}
+
+function optionalTimeMs(value) {
+  if (value == null || value === "") return null;
+  const timestamp = value instanceof Date
+    ? value.getTime()
+    : typeof value === "string"
+      ? Date.parse(value)
+      : Number(value);
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+export function markProviderTurnEvent(run, {
+  turnId,
+  method,
+  occurredAt = Date.now(),
+  phase = "",
+} = {}) {
+  const providerStart = providerStartForTurn(run, turnId);
+  if (!providerStart) return false;
+  const occurredAtMs = eventTimeMs(occurredAt);
+  if (method === "turn/started" && !Number.isFinite(Number(providerStart.turnStartedAtMs))) {
+    providerStart.turnStartedAtMs = occurredAtMs;
+  }
+  const previousAtMs = Number(providerStart.lastEventAtMs);
+  const baselineAtMs = Number.isFinite(previousAtMs) ? previousAtMs : baselineTimeMs(providerStart);
+  recordMaximumGap(providerStart, "maxEventGapMs", baselineAtMs, occurredAtMs);
+  const exactPhase = String(phase ?? "").trim();
+  const phaseChanged = exactPhase && exactPhase !== providerStart.phase;
+  if (phaseChanged || method === "turn/started" || method === "turn/completed") {
+    appendProviderTelemetryMilestone(providerStart, {
+      atMs: occurredAtMs,
+      type: method === "turn/completed" ? "completed" : "phase",
+      phase: exactPhase,
+      method,
+    });
+  }
+  if (
+    Number.isFinite(previousAtMs)
+    && occurredAtMs >= previousAtMs
+    && occurredAtMs - previousAtMs < PROVIDER_TELEMETRY_SAMPLE_INTERVAL_MS
+    && !phaseChanged
+  ) return false;
+  if (!Number.isFinite(previousAtMs) || occurredAtMs >= previousAtMs) {
+    providerStart.lastEventAtMs = occurredAtMs;
+    providerStart.lastEventMethod = String(method ?? "").trim() || null;
+  }
+  if (exactPhase) providerStart.phase = exactPhase;
+  return true;
+}
+
+export function markProviderTurnContent(run, {
+  turnId,
+  occurredAt = Date.now(),
+  kind = "reasoning",
+  visible = false,
+} = {}) {
+  const providerStart = providerStartForTurn(run, turnId);
+  if (!providerStart) return false;
+  const occurredAtMs = eventTimeMs(occurredAt);
+  const previousContentAtMs = Number(providerStart.lastContentAtMs);
+  const contentBaselineAtMs = Number.isFinite(previousContentAtMs)
+    ? previousContentAtMs
+    : baselineTimeMs(providerStart);
+  recordMaximumGap(providerStart, "maxContentGapMs", contentBaselineAtMs, occurredAtMs);
+  const firstContent = !Number.isFinite(Number(providerStart.firstContentAtMs));
+  if (firstContent) {
+    providerStart.firstContentAtMs = occurredAtMs;
+    appendProviderTelemetryMilestone(providerStart, {
+      atMs: occurredAtMs,
+      type: "first-content",
+      phase: kind,
+    });
+  }
+  if (
+    !Number.isFinite(previousContentAtMs)
+    || occurredAtMs - previousContentAtMs >= PROVIDER_TELEMETRY_SAMPLE_INTERVAL_MS
+  ) providerStart.lastContentAtMs = occurredAtMs;
+  const exactKind = String(kind ?? "").trim() || "reasoning";
+  providerStart.phase = exactKind === "answer" ? "answering" : exactKind;
+  if (visible) {
+    const previousVisibleAtMs = Number(providerStart.lastVisibleAtMs);
+    const visibleBaselineAtMs = Number.isFinite(previousVisibleAtMs)
+      ? previousVisibleAtMs
+      : baselineTimeMs(providerStart);
+    recordMaximumGap(providerStart, "maxVisibleGapMs", visibleBaselineAtMs, occurredAtMs);
+    const firstVisible = !Number.isFinite(Number(providerStart.firstVisibleAtMs));
+    if (firstVisible) {
+      providerStart.firstVisibleAtMs = occurredAtMs;
+      appendProviderTelemetryMilestone(providerStart, {
+        atMs: occurredAtMs,
+        type: "first-visible",
+        phase: "answering",
+      });
+    }
+    if (
+      !Number.isFinite(previousVisibleAtMs)
+      || occurredAtMs - previousVisibleAtMs >= PROVIDER_TELEMETRY_SAMPLE_INTERVAL_MS
+    ) providerStart.lastVisibleAtMs = occurredAtMs;
+  }
+  return true;
+}
+
+export function markProviderTurnCompaction(run, {
+  turnId,
+  stage,
+  occurredAt = Date.now(),
+} = {}) {
+  const providerStart = providerStartForTurn(run, turnId);
+  if (!providerStart) return false;
+  const occurredAtMs = eventTimeMs(occurredAt);
+  const exactStage = String(stage ?? "").trim().toLowerCase();
+  if (exactStage === "started") {
+    providerStart.compactionStartedAtMs = occurredAtMs;
+    providerStart.compactionCount = Math.max(0, Number(providerStart.compactionCount) || 0) + 1;
+    appendProviderTelemetryMilestone(providerStart, {
+      atMs: occurredAtMs,
+      type: "compaction-started",
+      phase: "compaction",
+    });
+    return true;
+  }
+  if (exactStage === "completed") {
+    const startedAtMs = optionalTimeMs(providerStart.compactionStartedAtMs);
+    const durationMs = startedAtMs == null ? null : Math.max(0, occurredAtMs - startedAtMs);
+    providerStart.compactionCompletedAtMs = occurredAtMs;
+    if (durationMs != null) {
+      providerStart.compactionTotalMs = Math.max(0, Number(providerStart.compactionTotalMs) || 0) + durationMs;
+      providerStart.compactionMaxMs = Math.max(Number(providerStart.compactionMaxMs) || 0, durationMs);
+    }
+    appendProviderTelemetryMilestone(providerStart, {
+      atMs: occurredAtMs,
+      type: "compaction-completed",
+      phase: "compaction",
+    });
+    return true;
+  }
+  return false;
+}
+
+export function providerTurnTelemetrySnapshot(run, {
+  turnId = run?.turnId,
+  status = run?.status,
+  completedAtMs = run?.providerStart?.completedAtMs,
+} = {}) {
+  const providerStart = providerStartForTurn(run, turnId);
+  if (!providerStart) return null;
+  const startedAtMs = optionalTimeMs(run?.startedAt)
+    ?? optionalTimeMs(providerStart.requestedAt)
+    ?? optionalTimeMs(providerStart.acceptedAt);
+  const terminalAtMs = optionalTimeMs(providerStart.completedAtMs) ?? optionalTimeMs(completedAtMs);
+  return {
+    provider: String(run?.provider ?? "").trim().toLowerCase(),
+    threadId: String(run?.threadId ?? "").trim(),
+    turnId: String(turnId ?? "").trim(),
+    workspaceId: String(run?.workspaceId ?? "").trim() || null,
+    streamId: String(run?.streamId ?? "").trim() || null,
+    taskThreadId: String(run?.taskThreadId ?? run?.threadId ?? "").trim(),
+    runId: String(run?.id ?? "").trim() || null,
+    model: String(run?.modelId ?? run?.model ?? "").trim() || null,
+    serviceTier: String(run?.serviceTier ?? "").trim() || null,
+    status: String(status ?? "").trim() || null,
+    finalPhase: String(providerStart.phase ?? "").trim() || null,
+    firstEventMethod: String(providerStart.firstEventMethod ?? "").trim() || null,
+    lastEventMethod: String(providerStart.lastEventMethod ?? "").trim() || null,
+    startedAtMs,
+    requestedAtMs: optionalTimeMs(providerStart.requestedAt),
+    acceptedAtMs: optionalTimeMs(providerStart.acceptedAt),
+    turnStartedAtMs: optionalTimeMs(providerStart.turnStartedAtMs),
+    firstEventAtMs: optionalTimeMs(providerStart.firstEventAt),
+    firstContentAtMs: optionalTimeMs(providerStart.firstContentAtMs),
+    firstVisibleAtMs: optionalTimeMs(providerStart.firstVisibleAtMs),
+    lastEventAtMs: optionalTimeMs(providerStart.lastEventAtMs),
+    lastContentAtMs: optionalTimeMs(providerStart.lastContentAtMs),
+    lastVisibleAtMs: optionalTimeMs(providerStart.lastVisibleAtMs),
+    completedAtMs: terminalAtMs,
+    maxEventGapMs: Math.max(0, Number(providerStart.maxEventGapMs) || 0),
+    maxContentGapMs: Math.max(0, Number(providerStart.maxContentGapMs) || 0),
+    maxVisibleGapMs: Math.max(0, Number(providerStart.maxVisibleGapMs) || 0),
+    compaction: {
+      count: Math.max(0, Number(providerStart.compactionCount) || 0),
+      totalMs: Math.max(0, Number(providerStart.compactionTotalMs) || 0),
+      maxMs: Math.max(0, Number(providerStart.compactionMaxMs) || 0),
+      startedAtMs: optionalTimeMs(providerStart.compactionStartedAtMs),
+      completedAtMs: optionalTimeMs(providerStart.compactionCompletedAtMs),
+    },
+    timeline: Array.isArray(providerStart.timeline)
+      ? providerStart.timeline.map((item) => ({ ...item }))
+      : [],
+  };
+}
+
+export function markProviderTurnCompleted(run, {
+  turnId,
+  completedAt = Date.now(),
+} = {}) {
+  const providerStart = providerStartForTurn(run, turnId);
+  if (!providerStart) return false;
+  const completedAtMs = eventTimeMs(completedAt);
+  markProviderTurnEvent(run, {
+    turnId,
+    method: "turn/completed",
+    occurredAt: completedAtMs,
+    phase: "completed",
+  });
+  providerStart.completedAtMs = completedAtMs;
+  providerStart.phase = "completed";
+  return true;
 }
 
 export function markProviderTurnRequested(run, {
@@ -165,7 +427,7 @@ export function createObservedTaskRun(value, snapshot = {}) {
     sessionId: value.provider === "claude" ? value.threadId : null,
     ...value,
     ...progressState({
-      stage: snapshot.stage ?? "Подключение к выполняющейся задаче…",
+      stage: snapshot.stage ?? "Подключение к выполняющемуся потоку…",
       reasoning: snapshot.reasoning ?? "",
       displayRequested: false,
     }),

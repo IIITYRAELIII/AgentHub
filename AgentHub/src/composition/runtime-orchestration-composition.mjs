@@ -124,6 +124,7 @@ export function createRuntimeOrchestrationComposition({
     instanceGuard,
     workLogUsageStore,
     rateLimitHistoryStore,
+    providerTurnTelemetryStore,
     taskReadStateStore,
     runtimeStateStore,
   } = persistence;
@@ -350,6 +351,7 @@ export function createRuntimeOrchestrationComposition({
       instanceGuard,
       workLogUsageStore,
       rateLimitHistoryStore,
+      providerTurnTelemetryStore,
       taskReadStateStore,
       runtimeStateStore,
       updateOffset: () => hostState.updateOffset,

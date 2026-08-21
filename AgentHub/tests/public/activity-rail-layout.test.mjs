@@ -149,6 +149,16 @@ test("single activity column keeps its share of the expanded rail", async () => 
     separate: true,
     tasksCollapsed: true,
   }), 0.4), 0.6);
+  assert.equal(activityRailWidthFactor(
+    activityRailColumnState({ separate: false }),
+    0.4,
+    { autoCombined: true },
+  ), 0.6);
+  assert.equal(activityRailWidthFactor(
+    activityRailColumnState({ separate: false }),
+    0.7,
+    { autoCombined: true },
+  ), 0.7);
 });
 
 test("activity rail headings show task and attention-stream counts", async () => {

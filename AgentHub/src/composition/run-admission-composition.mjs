@@ -294,7 +294,7 @@ export function createRunAdmissionComposition({
       await cleanupDeferredFiles(item);
       await updateDeferredMessage(
         item,
-        `⌛ Сохранённое сообщение для задачи «${item.taskTitle}» удалено: срок ожидания истёк.`,
+        `⌛ Сохранённое сообщение для потока «${item.taskTitle}» удалено: срок ожидания истёк.`,
       );
     },
     maxAgeMs: config.deferredInputTtlHours * 60 * 60 * 1000,

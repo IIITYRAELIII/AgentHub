@@ -27,7 +27,7 @@ function normalizedTaskReference(params = {}) {
   const threadId = String(params.threadId ?? params.taskThreadId ?? "").trim();
   if (streamId) return { streamId, provider, threadId };
   if (!["codex", "claude"].includes(provider) || !threadId) {
-    throw new Error("Укажите корректную задачу");
+    throw new Error("Укажите корректный поток");
   }
   return { streamId: "", provider, threadId };
 }
@@ -35,15 +35,6 @@ function normalizedTaskReference(params = {}) {
 function entryMatchesReference(entry, reference) {
   if (reference.streamId) return String(entry?.streamId ?? "") === reference.streamId;
   return entry?.provider === reference.provider && entry?.threadId === reference.threadId;
-}
-
-function entryMatchesExactReference(entry, reference) {
-  if (!reference.streamId || !reference.provider || !reference.threadId) {
-    return entryMatchesReference(entry, reference);
-  }
-  return String(entry?.streamId ?? "") === reference.streamId
-    && entry?.provider === reference.provider
-    && entry?.threadId === reference.threadId;
 }
 
 export class DesktopTaskService {
@@ -59,6 +50,7 @@ export class DesktopTaskService {
     readTurn,
     searchMessage = () => null,
     threadsForStream = () => [],
+    currentThread = () => null,
     samePath,
     chatId,
     warn = console.warn,
@@ -74,6 +66,7 @@ export class DesktopTaskService {
     this.readTurn = readTurn;
     this.searchMessage = searchMessage;
     this.threadsForStream = threadsForStream;
+    this.currentThread = currentThread;
     this.samePath = samePath;
     this.chatId = chatId;
     this.warn = warn;
@@ -84,9 +77,14 @@ export class DesktopTaskService {
     return entries.find((entry) => entryMatchesReference(entry, reference)) ?? null;
   }
 
-  #findExact(params, entries = this.catalog()) {
-    const reference = normalizedTaskReference(params);
-    return entries.find((entry) => entryMatchesExactReference(entry, reference)) ?? null;
+  #findCurrentStream(streamId, entries = this.catalog()) {
+    const current = this.currentThread(streamId);
+    if (!current) return null;
+    return entries.find((entry) => (
+      String(entry?.streamId ?? "") === String(streamId)
+      && String(entry?.provider ?? "") === String(current.provider ?? "")
+      && String(entry?.threadId ?? "") === String(current.threadId ?? "")
+    )) ?? null;
   }
 
   #findHistoricalThread(params, entries = this.catalog()) {
@@ -109,23 +107,26 @@ export class DesktopTaskService {
         this.warn(`Cannot refresh task catalog after Desktop task open: ${error.message}`);
       });
     }
-    if (!entry) throw new Error("Задача не найдена в локальном каталоге");
+    if (!entry) throw new Error("Поток не найден в локальном каталоге");
     return entry;
   }
 
   async resolveTarget(params, context = null) {
     const reference = normalizedTaskReference(params);
-    const exactReference = Boolean(reference.streamId && reference.provider && reference.threadId);
-    let entry = exactReference ? this.#findExact(params) : this.#find(params);
+    let entry = reference.streamId
+      ? this.#findCurrentStream(reference.streamId)
+      : this.#find(params);
     if (!entry) {
       const refreshed = await this.refreshCatalog();
-      entry = exactReference ? this.#findExact(params, refreshed) : this.#find(params, refreshed);
+      entry = reference.streamId
+        ? this.#findCurrentStream(reference.streamId, refreshed)
+        : this.#find(params, refreshed);
     } else {
       void this.refreshCatalog().catch((error) => {
         this.warn(`Cannot refresh task catalog after message intake: ${error.message}`);
       });
     }
-    if (!entry) throw new Error("Задача сообщения больше не существует в локальном каталоге");
+    if (!entry) throw new Error("Поток сообщения больше не существует в локальном каталоге");
     const binding = entry.streamId ? this.threadsForStream(entry.streamId).find((thread) => (
       String(thread?.provider ?? "") === String(entry.provider ?? "")
       && String(thread?.threadId ?? "") === String(entry.threadId ?? "")
@@ -158,7 +159,7 @@ export class DesktopTaskService {
         this.warn(`Cannot refresh task catalog after task selection: ${error.message}`);
       });
     }
-    if (!entry) throw new Error("Задача не найдена в локальном каталоге");
+    if (!entry) throw new Error("Поток не найден в локальном каталоге");
     const activation = await this.activateBinding({
       streamId: entry.streamId ?? null,
       provider: entry.provider,
@@ -243,7 +244,7 @@ export class DesktopTaskService {
     const owningProjectRoot = String(historicalBinding?.projectRoot ?? entry.projectRoot ?? "").trim();
     if (record && (recordedTaskThread !== taskThread
       || (record.projectRoot && owningProjectRoot && !this.samePath(record.projectRoot, owningProjectRoot)))) {
-      throw new Error("Ход не относится к выбранной задаче");
+      throw new Error("Ход не относится к выбранному потоку");
     }
     const snapshot = await this.dispatchCommand(
       "task.select",

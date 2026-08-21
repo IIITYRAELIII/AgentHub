@@ -17,6 +17,7 @@ import { runtimeLayout, runtimeReleaseDirectory } from "../infrastructure/filesy
 import { UsdRubRateStore } from "../infrastructure/network/exchange-rate.mjs";
 import { migrateMessageBindings } from "../infrastructure/persistence/message-bindings.mjs";
 import { RateLimitHistoryStore } from "../infrastructure/persistence/rate-limit-history.mjs";
+import { ProviderTurnTelemetryStore } from "../infrastructure/persistence/provider-turn-telemetry-store.mjs";
 import { PreTurnInstructionStore } from "../infrastructure/persistence/pre-turn-instruction-store.mjs";
 import { installRotatingConsole } from "../infrastructure/persistence/rotating-log.mjs";
 import { RuntimeStateStore } from "../infrastructure/persistence/runtime-state-store.mjs";
@@ -378,6 +379,10 @@ export async function createHubInfrastructure({
     rawFile: path.join(config.dataDir, "rate-limits-raw.jsonl"),
     csvFile: path.join(config.dataDir, "rate-limits.csv"),
   });
+  const providerTurnTelemetryStore = new ProviderTurnTelemetryStore({
+    databaseFile: journalDatabaseFile,
+  });
+  await providerTurnTelemetryStore.initialize();
   const retiredRateLimitExports = await rateLimitHistoryStore.retireCompatibilityExports();
   if (retiredRateLimitExports.retired) {
     console.log(
@@ -409,6 +414,7 @@ export async function createHubInfrastructure({
     runJournal,
     runtimeCommandServer,
     rateLimitHistoryStore,
+    providerTurnTelemetryStore,
     sqliteRecovery,
     acknowledgeSqliteRecovery: () => sqliteRecoveryCoordinator.acknowledge(sqliteRecovery),
   };

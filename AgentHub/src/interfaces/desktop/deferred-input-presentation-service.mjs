@@ -70,7 +70,7 @@ export class DeferredInputPresentationService {
       dispatching: state === "dispatching",
       reason: state === "pending" ? "launch-failed" : item.conflictKind ?? "task-running",
       message: state === "dispatching"
-        ? "Сообщение отправляется в задачу."
+        ? "Сообщение отправляется в поток."
         : state === "retrying"
           ? "Запуск временно недоступен; сообщение остаётся первым в очереди."
           : state === "pending"

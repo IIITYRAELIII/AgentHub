@@ -166,7 +166,7 @@ export class TelegramSettingsCallbackService {
   async #syncTaskSelection(callback, result) {
     const selected = result?.selected;
     if (!selected?.provider || !selected?.projectRoot) {
-      throw new Error("новая задача не содержит точной привязки");
+      throw new Error("новый поток не содержит точной привязки");
     }
     await this.#d.selectTaskFromBinding({
       ...selected,

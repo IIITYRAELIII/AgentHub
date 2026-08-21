@@ -143,7 +143,7 @@ export class TaskCommandService {
   async cancel(params) {
     const target = await this.resolveTarget(params);
     const run = this.runForTask(target);
-    if (!run) return { accepted: false, message: "В выбранной задаче сейчас ничего не выполняется" };
+    if (!run) return { accepted: false, message: "В выбранном потоке сейчас ничего не выполняется" };
     const result = await this.providerCancel(run);
     if (result.interruptFailed) {
       if (run.observer) {
@@ -161,7 +161,7 @@ export class TaskCommandService {
       return {
         accepted: true,
         message: result.stopRequested
-          ? "Запрошена остановка этой задачи. Пока внешний ход фактически активен, новые сообщения будут сохранены, а не запущены параллельно."
+          ? "Запрошена остановка этого потока. Пока внешний ход фактически активен, новые сообщения будут сохранены, а не запущены параллельно."
           : "Отключил наблюдение. Внешний Claude продолжает работу; новые сообщения будут сохранены до его завершения.",
       };
     }

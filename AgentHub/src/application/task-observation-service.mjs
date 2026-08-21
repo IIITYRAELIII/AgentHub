@@ -203,7 +203,7 @@ export class TaskObservationService {
       answer,
       savedRecord,
     );
-    await this.finishProgress(run, snapshot?.stage ?? "Задача завершена.");
+    await this.finishProgress(run, snapshot?.stage ?? "Поток завершён.");
     await this.runCoordinator.completeObserved(run, {
       snapshot,
       answer,

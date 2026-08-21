@@ -26,7 +26,7 @@ export function describeCodexItem(item, completed) {
   if (item.type === "dynamicToolCall") return `${mark} Инструмент ${item.tool ?? ""}${completed ? " завершён" : " выполняется…"}`;
   if (item.type === "webSearch") return `${mark} ${completed ? "Поиск завершён" : "Выполняется поиск…"}`;
   if (item.type === "imageView") return `${mark} ${completed ? "Изображение изучено" : "Изучается изображение…"}`;
-  if (item.type === "reasoning") return completed ? "✓ Анализ завершён." : "Анализирую задачу…";
+  if (item.type === "reasoning") return completed ? "✓ Анализ завершён." : "Анализирую поток…";
   if (item.type === "plan") return completed ? "✓ План подготовлен." : "Составляю план…";
   return completed ? "Этап завершён." : "Выполняется следующий этап…";
 }
@@ -83,8 +83,8 @@ export function codexTurnSnapshot(turn, threadStatus = null) {
         ? "🔐 Ожидается подтверждение разрешений."
         : describeCodexItem(lastItem, false)
       : turn?.status === "completed" || hasExplicitFinalAnswer
-        ? "Задача завершена."
-        : `Задача остановлена: ${turn?.status ?? "неизвестно"}.`,
+        ? "Поток завершён."
+        : `Поток остановлен: ${turn?.status ?? "неизвестно"}.`,
   };
 }
 
@@ -156,8 +156,8 @@ export class CodexTaskSnapshotService {
           stage: active
             ? "Выполняется следующий этап…"
             : interrupted
-              ? "Задача прервана вместе с клиентом Codex."
-              : state.finalAnswer ? "Задача завершена." : "Задача остановлена или неактивна.",
+              ? "Поток прерван вместе с клиентом Codex."
+              : state.finalAnswer ? "Поток завершён." : "Поток остановлен или неактивен.",
           executionOwner,
         });
       }
@@ -197,7 +197,7 @@ export class CodexTaskSnapshotService {
         status: state.completed ? "completed" : state.active ? "inProgress" : "stopped",
         stage: state.active
           ? "Выполняется следующий этап…"
-          : state.finalAnswer ? "Задача завершена." : "Задача остановлена или неактивна.",
+          : state.finalAnswer ? "Поток завершён." : "Поток остановлен или неактивен.",
         executionOwner,
       });
     }

@@ -85,7 +85,7 @@ export class RunRecoveryCoordinator {
         await this.recover(run);
       } catch (error) {
         d.logError(`Cannot recover task ${run.id}:`, error);
-        await d.sendRunMessage(run, `⚠️ Не удалось восстановить задачу: ${error.message}`).catch(() => {});
+        await d.sendRunMessage(run, `⚠️ Не удалось восстановить поток: ${error.message}`).catch(() => {});
         await d.completeRun(run);
       }
     }

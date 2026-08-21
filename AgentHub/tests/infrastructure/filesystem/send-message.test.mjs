@@ -245,7 +245,7 @@ test("notificationParts adds a bold underlined category above the task title", (
   assert.equal(notification.caption, "🧵 <b>Задача &lt;1&gt;</b>\n\nГотово");
   assert.equal(
     notification.fallbackMessage,
-    "✅ <b><u>ЗАДАЧА ВЫПОЛНЕНА</u></b> ✅\n\n🧵 <b>Задача &lt;1&gt;</b>\n\nГотово",
+    "✅ <b><u>ПОТОК ЗАВЕРШЁН</u></b> ✅\n\n🧵 <b>Задача &lt;1&gt;</b>\n\nГотово",
   );
   assert.equal(notification.cardPath, notificationCardPath("done"));
 });

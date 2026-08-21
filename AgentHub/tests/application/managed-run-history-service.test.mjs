@@ -10,6 +10,7 @@ import {
 function fixture() {
   const history = [];
   const snapshots = [];
+  const telemetry = [];
   const service = new ManagedRunHistoryService({
     taskSyncStore: {
       history: () => history,
@@ -25,9 +26,10 @@ function fixture() {
     hubExecutionOwner: "telegram",
     nowIso: () => "2026-08-05T12:00:00.000Z",
     nowMs: () => 123,
+    telemetryStore: { upsert: async (value) => telemetry.push(value) },
     logger: { error() {} },
   });
-  return { service, history, snapshots };
+  return { service, history, snapshots, telemetry };
 }
 
 test("managed run history persists one active turn with HUB ownership", async () => {
@@ -70,6 +72,29 @@ test("terminal history replaces the matching agent item without duplicating it",
   assert.equal(setup.history[0].messages[0].text, "final");
   assert.equal(setup.history[0].completedAt, "2026-08-05T12:00:00.000Z");
   assert.equal(setup.snapshots[0].snapshot.executionOwner, null);
+  assert.equal(setup.telemetry.length, 0);
+});
+
+test("terminal history writes one provider telemetry snapshot", async () => {
+  const setup = fixture();
+  await setup.service.persist({
+    id: "run-1",
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    status: "running",
+    providerStart: {
+      turnId: "turn-1",
+      acceptedAt: "2026-08-05T11:59:50.000Z",
+      firstEventAt: "2026-08-05T11:59:52.000Z",
+      completedAtMs: 123,
+      phase: "completed",
+    },
+  }, { active: false, status: "completed" });
+
+  assert.equal(setup.telemetry.length, 1);
+  assert.equal(setup.telemetry[0].turnId, "turn-1");
+  assert.equal(setup.history[0].telemetry.turnId, "turn-1");
 });
 
 test("managed run history never persists an internal context probe", async () => {

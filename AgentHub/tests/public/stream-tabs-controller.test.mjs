@@ -76,6 +76,113 @@ test("activity mode puts the most recently active Stream first", async () => {
   );
 });
 
+test("rotated Stream keeps recent activity while opening its current Thread", async () => {
+  const { representativeSnapshotTasks } = await streamTabsApi();
+  const previousThreadActivity = Date.parse("2026-08-21T12:32:43.462Z");
+  const tasks = [
+    {
+      streamId: "stream-1",
+      provider: "codex",
+      threadId: "previous-thread",
+      threadPosition: 2,
+      lastAnswerAt: "2026-08-21T12:32:43.462Z",
+    },
+    {
+      streamId: "stream-1",
+      provider: "codex",
+      threadId: "current-thread",
+      threadPosition: 3,
+      lastAnswerAt: "2026-08-21T12:03:58.474Z",
+    },
+  ];
+
+  const [representative] = representativeSnapshotTasks(tasks);
+
+  assert.equal(representative.threadId, "current-thread");
+  assert.equal(representative.orderingActivityAtMs, previousThreadActivity);
+});
+
+test("rotation notice follows the actually compacted Thread instead of the previous head", async () => {
+  const {
+    rotationMaintenancePresentation,
+    streamRotationTransitions,
+  } = await streamTabsApi();
+  const previousTasks = [
+    {
+      streamId: "stream-1",
+      threadId: "compacted-thread",
+      threadPosition: 2,
+      context: {
+        percent: 26.315015,
+        compaction: {
+          rotated: true,
+          afterPercent: 26.315015,
+          completedAt: "2026-08-21T12:33:12.575Z",
+        },
+      },
+    },
+    {
+      streamId: "stream-1",
+      threadId: "previous-head-without-context",
+      threadPosition: 3,
+      context: null,
+      maintenance: { reason: "automatic-rotation" },
+    },
+  ];
+  const currentTasks = [
+    ...previousTasks,
+    {
+      streamId: "stream-1",
+      threadId: "current-thread",
+      threadPosition: 4,
+      context: null,
+    },
+  ];
+
+  const [transition] = streamRotationTransitions(previousTasks, currentTasks);
+  const presentation = rotationMaintenancePresentation(transition.beforePercent, null);
+
+  assert.equal(transition.sourceThreadId, "compacted-thread");
+  assert.equal(transition.beforePercent, 26);
+  assert.equal(presentation.maintenanceLabel, "Ротация завершена");
+  assert.match(presentation.text, /новый Thread создан/u);
+});
+
+test("ordinary Thread continuation does not reuse an old rotation event", async () => {
+  const { streamRotationTransitions } = await streamTabsApi();
+  const previousTasks = [
+    {
+      streamId: "stream-1",
+      threadId: "old-rotated-thread",
+      threadPosition: 2,
+      context: {
+        compaction: {
+          rotated: true,
+          afterPercent: 16,
+          completedAt: "2026-08-21T11:00:00.000Z",
+        },
+      },
+    },
+    {
+      streamId: "stream-1",
+      threadId: "previous-head",
+      threadPosition: 3,
+      context: { percent: 16 },
+    },
+  ];
+  const currentTasks = [
+    ...previousTasks,
+    {
+      streamId: "stream-1",
+      threadId: "continued-thread",
+      threadPosition: 4,
+      context: { percent: 45 },
+    },
+  ];
+
+  assert.deepEqual(Array.from(streamRotationTransitions(previousTasks, currentTasks)), []);
+});
+
 test("desktop Stream settings are theme-independent and keep stable geometry", async () => {
   const {
     STREAM_CARD_MAX_WIDTH,

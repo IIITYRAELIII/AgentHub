@@ -100,11 +100,15 @@ test("Codex event service exposes commentary as a live reasoning block", async (
   });
   assert.equal(run.providerStart.state, "observed");
   assert.equal(run.providerStart.firstEventMethod, "item/started");
+  assert.equal(run.providerStart.phase, "reasoning");
+  assert.equal(run.providerStart.lastEventMethod, "item/started");
   await service.handle({
     method: "item/agentMessage/delta",
     params: { turnId: "t1", itemId: "comment-1", delta: "Проверяю." },
   });
   assert.deepEqual(blocks.at(-1), { id: "comment-1", text: "Проверяю." });
+  assert.equal(run.providerStart.phase, "reasoning");
+  assert.equal(Number.isFinite(run.providerStart.firstContentAtMs), true);
 });
 
 test("Codex event service completes a managed run through the coordinator", async () => {

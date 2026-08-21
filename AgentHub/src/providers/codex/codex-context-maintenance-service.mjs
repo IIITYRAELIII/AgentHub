@@ -109,7 +109,7 @@ export class CodexContextMaintenanceService {
   } = {}) {
     if (target?.provider !== "codex") throw new Error("Свёртка контекста доступна только для Codex");
     const threadId = normalizedId(target.threadId);
-    if (!threadId) throw new Error("Укажите корректную задачу Codex");
+    if (!threadId) throw new Error("Укажите корректный поток Codex");
     if (this.runIsActive(this.runForTask(target))) {
       throw new Error("Сначала завершите или остановите текущий ход");
     }
@@ -191,7 +191,7 @@ export class CodexContextMaintenanceService {
     compactionId = null,
   } = {}) {
     const threadId = normalizedId(target?.threadId);
-    if (!threadId) throw new Error("Укажите корректную задачу Codex");
+    if (!threadId) throw new Error("Укажите корректный поток Codex");
     await this.ensureTransport();
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       const result = await this.startContextProbe(threadId);

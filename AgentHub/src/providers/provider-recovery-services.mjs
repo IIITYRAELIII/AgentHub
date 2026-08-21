@@ -106,13 +106,13 @@ export class CodexRecoveryService {
     }
     run.responseText = d.recoveredAnswer(turn) || run.responseText;
     if (recoveryAction === TASK_RECOVERY_ACTIONS.RETRY_LOST_APPROVAL) {
-      const originalPrompt = codexThreadHistory([turn]).at(-1)?.prompt || run.promptPreview || "текущую задачу";
+      const originalPrompt = codexThreadHistory([turn]).at(-1)?.prompt || run.promptPreview || "текущий поток";
       run.responseText = "";
       run.progressReasoning = "";
       d.setProgressStage(run, "Восстанавливаю ход после потерянного запроса подтверждения…");
       await d.launchTurn(
         run,
-        "Продолжи текущую задачу с места остановки. Предыдущий ход завис на запросе подтверждения, "
+        "Продолжи текущий поток с места остановки. Предыдущий ход завис на запросе подтверждения, "
           + "который был потерян при переподключении App Server. Проверь уже выполненные действия и файлы, "
           + `не повторяй завершённую работу. Исходный запрос:\n\n${originalPrompt}`,
       );
@@ -125,7 +125,7 @@ export class CodexRecoveryService {
       if (!d.turnTokenUsage.has(run.turnId)) {
         rememberBounded(d.turnTokenUsage, run.turnId, { usage: emptyTokenUsage(), reported: false }, 200);
       }
-      d.setProgressStage(run, "Подключено к продолжающейся задаче.");
+      d.setProgressStage(run, "Подключено к продолжающемуся потоку.");
       d.scheduleObservedRun(run);
       if (run.displayRequested) d.startTyping();
       await d.saveState();
@@ -148,7 +148,7 @@ export class CodexRecoveryService {
       || `Сохранённый запуск завершён со статусом ${turn.status}.`;
     const tracker = d.consumeTracker(run.turnId);
     const recoveredAsCompleted = turn.status === "completed" || codexTurnHasExplicitFinalAnswer(turn);
-    await d.finishProgress(run, recoveredAsCompleted ? "Задача завершена." : `Задача остановлена: ${turn.status}.`);
+    await d.finishProgress(run, recoveredAsCompleted ? "Поток завершён." : `Поток остановлен: ${turn.status}.`);
     await d.finalizeDelivery(run, {
       answer,
       turnId: run.turnId,

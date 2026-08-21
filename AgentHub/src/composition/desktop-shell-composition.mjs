@@ -361,6 +361,7 @@ export function createDesktopShellComposition({
       readTurn: (identity) => workLogUsageStore.getTurn(identity),
       searchMessage: (identity) => taskSyncStore.searchMessage(identity),
       threadsForStream: (streamId) => workspaceCatalogStore.threadsForStream(streamId),
+      currentThread: (streamId) => workspaceCatalogStore.activeThread(streamId),
       samePath,
       warn: (...args) => console.warn(...args),
       pinTitle: pinTaskTitle,

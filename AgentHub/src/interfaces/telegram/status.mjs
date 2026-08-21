@@ -135,12 +135,12 @@ export function formatStatusMessage({
     ? runningTasks
     : Array.from({ length: Number(runningTasks) || 0 }, () => "");
   const taskHeading = showTaskButtons
-    ? `\n\n<b>🧵НЕДАВНИЕ ЗАДАЧИ (${running.length})🧵</b>`
+    ? `\n\n<b>🧵НЕДАВНИЕ ПОТОКИ (${running.length})🧵</b>`
     : "";
   const projectLine = project ? `\nКаталог: ${escapeTelegramHtml(project)}` : "";
   return `${escapeTelegramHtml(provider)}: ${escapeTelegramHtml(model)} - ${escapeTelegramHtml(reasoning)}\n` +
-    `${escapeTelegramHtml(mode)} | ${busy ? "Выполняет выбранную задачу" : "Готов"}\n\n` +
-    `Текущая задача: ${escapeTelegramHtml(task)}${projectLine}\n\n` +
+    `${escapeTelegramHtml(mode)} | ${busy ? "Выполняет выбранный поток" : "Готов"}\n\n` +
+    `Текущий поток: ${escapeTelegramHtml(task)}${projectLine}\n\n` +
     `Лимиты:\n${escapeTelegramHtml(limits)}${taskHeading}`;
 }
 
@@ -178,15 +178,15 @@ export function formatRestartCompleteMessage({
   const count = Math.max(0, Number(runningTasks) || 0);
   return "✅ <b>AGENT HUB ПЕРЕЗАПУЩЕН</b>\n\n" +
     `Агент: ${escapeTelegramHtml(provider)}\n` +
-    `Текущая задача: ${escapeTelegramHtml(task || "Не выбрана")}\n` +
-    `Активных задач восстановлено: ${count}`;
+    `Текущий поток: ${escapeTelegramHtml(task || "Не выбран")}\n` +
+    `Активных потоков восстановлено: ${count}`;
 }
 
 export function formatArchiveMessage({ archivedTask, activeTask }) {
-  const archived = `❌ Задача "${archivedTask}" архивирована.`;
+  const archived = `❌ Поток "${archivedTask}" архивирован.`;
   const active = activeTask
-    ? `🟢 Задача "${activeTask}" активна.`
-    : "⚪ Активных задач нет.";
+    ? `🟢 Поток "${activeTask}" активен.`
+    : "⚪ Активных потоков нет.";
   return `${archived}\n${active}`;
 }
 
@@ -195,8 +195,8 @@ export function formatTaskSwitchMessage({ task, project, showProject, model, rea
   const settingsText = model && reasoning
     ? `\n${escapeTelegramHtml(model)} - ${escapeTelegramHtml(reasoning)}`
     : "";
-  if (!showProject) return `🔄 Текущая задача изменена.\n\n<b>${taskText}</b>${settingsText}`;
-  return `🔄 Текущая задача изменена.\n\n<b>${escapeTelegramHtml(project)}</b>\n<i>${taskText}</i>${settingsText}`;
+  if (!showProject) return `🔄 Текущий поток изменён.\n\n<b>${taskText}</b>${settingsText}`;
+  return `🔄 Текущий поток изменён.\n\n<b>${escapeTelegramHtml(project)}</b>\n<i>${taskText}</i>${settingsText}`;
 }
 
 export function formatTaskAlreadySelectedMessage({ task, project, showProject, model, reasoning }) {
@@ -204,8 +204,8 @@ export function formatTaskAlreadySelectedMessage({ task, project, showProject, m
   const settingsText = model && reasoning
     ? `\n${escapeTelegramHtml(model)} - ${escapeTelegramHtml(reasoning)}`
     : "";
-  if (!showProject) return `✅ Текущая задача уже выбрана.\n\n<b>${taskText}</b>${settingsText}`;
-  return `✅ Текущая задача уже выбрана.\n\n<b>${escapeTelegramHtml(project)}</b>\n<i>${taskText}</i>${settingsText}`;
+  if (!showProject) return `✅ Текущий поток уже выбран.\n\n<b>${taskText}</b>${settingsText}`;
+  return `✅ Текущий поток уже выбран.\n\n<b>${escapeTelegramHtml(project)}</b>\n<i>${taskText}</i>${settingsText}`;
 }
 
 export function showLastMessageReplyMarkup(binding = null) {

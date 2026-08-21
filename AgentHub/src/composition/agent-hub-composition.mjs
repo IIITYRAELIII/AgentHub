@@ -97,6 +97,7 @@ const {
   runJournal,
   runtimeCommandServer,
   rateLimitHistoryStore,
+  providerTurnTelemetryStore,
   sqliteRecovery, acknowledgeSqliteRecovery,
 } = await createHubInfrastructure({
   config,
@@ -269,6 +270,7 @@ const providerApplication = await createProviderApplicationComposition({
     runJournal,
     turnEndNotifications,
     workLogUsageStore, workLogUsageIdentityStore, workLogUsageRemoteConfigStore, workspaceCatalogStore, preTurnInstructions, hubMcpService,
+    providerTurnTelemetryStore,
     codexRolloutContextSanitizer,
   },
   taskServices: {
@@ -618,7 +620,7 @@ const executionBootstrap = createExecutionBootstrapPhase({
     runtimeCommandServer,
     runtimeStateStore,
     taskReadStateStore,
-    workLogUsageStore, rateLimitHistoryStore, taskBoard, hubMcpServer, hubMcpService, sqliteRecovery, acknowledgeSqliteRecovery,
+    workLogUsageStore, rateLimitHistoryStore, providerTurnTelemetryStore, taskBoard, hubMcpServer, hubMcpService, sqliteRecovery, acknowledgeSqliteRecovery,
     preTurnInstructions,
   },
   provider: providerApplication,

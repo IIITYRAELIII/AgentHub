@@ -99,6 +99,19 @@ const streamChatHeader = document.querySelector("[data-stream-chat-header]");
 const streamHeaderProviderDot = document.querySelector("[data-stream-header-provider-dot]");
 const streamHeaderProvider = document.querySelector("[data-stream-header-provider]");
 const streamHeaderProviderConnection = document.querySelector("[data-provider-connection-quality]");
+const providerTurnTooltip = document.querySelector("[data-provider-turn-tooltip]");
+const providerTurnTooltipText = document.querySelector("[data-provider-turn-tooltip-text]");
+const providerTurnModal = document.querySelector("[data-provider-turn-modal]");
+const providerTurnTelemetry = window.AgentHubProviderTurnTelemetry?.createController({
+  indicator: streamHeaderProviderConnection,
+  tooltip: providerTurnTooltip,
+  tooltipText: providerTurnTooltipText,
+  dialog: providerTurnModal,
+  summary: document.querySelector("[data-provider-turn-summary]"),
+  metrics: document.querySelector("[data-provider-turn-metrics]"),
+  timeline: document.querySelector("[data-provider-turn-timeline]"),
+  close: document.querySelector("[data-provider-turn-close]"),
+}) ?? { update() {} };
 const streamHeaderModel = document.querySelector("[data-stream-header-model]");
 const streamHeaderModelSeparator = document.querySelector("[data-stream-header-model-separator]");
 const streamHeaderBranch = document.querySelector("[data-stream-header-branch]");
@@ -3354,14 +3367,119 @@ function messageCountLabel(count) {
 function providerResponseForTask(task, now = Date.now()) {
   if (!task) return null;
   const key = String(task.id ?? task.streamId ?? task.threadId ?? "");
-  const measurement = window.AgentHubConnectionQuality.modelResponseMeasurement(task.providerStart, now);
-  if (measurement && !measurement.waiting && key) state.providerResponseSamples.set(key, measurement);
-  return measurement ?? state.providerResponseSamples.get(key) ?? null;
+  const measurement = window.AgentHubConnectionQuality.modelResponseMeasurement(task.providerStart, now, {
+    running: task.running,
+    compaction: task.context?.compaction,
+  });
+  if (measurement && key) state.providerResponseSamples.set(key, {
+    measurement,
+    providerStart: task.providerStart ? structuredClone(task.providerStart) : null,
+  });
+  if (measurement) return measurement;
+  const previous = state.providerResponseSamples.get(key) ?? null;
+  return previous?.measurement
+    ? { ...previous.measurement, active: false, waiting: false, phase: "completed" }
+    : null;
+}
+
+function cachedProviderStartForTask(task) {
+  if (task?.providerStart) return task.providerStart;
+  const key = String(task?.id ?? task?.streamId ?? task?.threadId ?? "");
+  return state.providerResponseSamples.get(key)?.providerStart ?? null;
 }
 
 function formatModelResponseLatency(latencyMs) {
-  const seconds = Math.max(0, Number(latencyMs) || 0) / 1_000;
-  return `${seconds.toLocaleString("ru-RU", { minimumFractionDigits: 1, maximumFractionDigits: 1 })} с`;
+  const milliseconds = Math.max(0, Number(latencyMs) || 0);
+  if (milliseconds < 1_000) return `${Math.round(milliseconds)} мс`;
+  const seconds = milliseconds / 1_000;
+  if (seconds < 60) {
+    return `${seconds.toLocaleString("ru-RU", { minimumFractionDigits: 1, maximumFractionDigits: 1 })} с`;
+  }
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`;
+}
+
+function providerPhaseLabel(phase) {
+  return ({
+    starting: "запуск",
+    working: "работа",
+    reasoning: "размышление",
+    answering: "ответ",
+    tool: "инструмент",
+    compaction: "свёртка",
+    "waiting-user": "ожидание пользователя",
+    completed: "завершён",
+  })[String(phase ?? "")] ?? "работа";
+}
+
+function compactionStageLabel(stage) {
+  return ({
+    compacting: "провайдер",
+    "cleaning-images": "очистка изображений",
+    "measuring-context": "замер контекста",
+  })[String(stage ?? "")] ?? String(stage ?? "свёртка");
+}
+
+function providerStallSummary(task, now) {
+  const active = state.tasks.filter((candidate) => (
+    candidate.running && String(candidate.provider ?? "") === String(task.provider ?? "")
+  ));
+  const stalled = active.filter((candidate) => {
+    const measurement = window.AgentHubConnectionQuality.modelResponseMeasurement(candidate.providerStart, now, {
+      running: candidate.running,
+      compaction: candidate.context?.compaction,
+    });
+    if (!measurement || measurement.phase === "waiting-user") return false;
+    return Number(measurement.compaction?.elapsedMs) > 300_000
+      || Number(measurement.eventSilenceMs) > 120_000;
+  });
+  return { active: active.length, stalled: stalled.length };
+}
+
+function providerResponseTitle(task, measurement, presentation, providerLabel, now) {
+  const lines = [`${providerLabel} ↔ модель: ${presentation.label.toLowerCase()}`];
+  lines.push(`Фаза: ${providerPhaseLabel(measurement.phase)}`);
+  if (measurement.requestAcceptedMs != null) {
+    lines.push(`Принятие хода: ${formatModelResponseLatency(measurement.requestAcceptedMs)}`);
+  }
+  if (measurement.firstEventMs != null) {
+    lines.push(`До первого события: ${formatModelResponseLatency(measurement.firstEventMs)}`);
+  } else if (measurement.active) {
+    lines.push(`Первого события ещё нет: ${formatModelResponseLatency(measurement.latencyMs)}`);
+  }
+  if (measurement.firstContentMs != null) {
+    lines.push(`До первого текста: ${formatModelResponseLatency(measurement.firstContentMs)}`);
+  }
+  if (measurement.active && measurement.eventSilenceMs != null) {
+    lines.push(`Тишина событий: ${formatModelResponseLatency(measurement.eventSilenceMs)}`);
+  }
+  if (measurement.active && measurement.contentSilenceMs != null) {
+    lines.push(`Без нового текста: ${formatModelResponseLatency(measurement.contentSilenceMs)}`);
+  }
+  if (measurement.maxEventGapMs != null) {
+    lines.push(`Максимальная пауза: ${formatModelResponseLatency(measurement.maxEventGapMs)}`);
+  }
+  if (measurement.compaction?.active) {
+    lines.push(`Свёртка: ${formatModelResponseLatency(measurement.compaction.elapsedMs)} · ${compactionStageLabel(measurement.compaction.stage)}`);
+  }
+  if (state.connection === "online" && state.connectionLatencyMs != null) {
+    lines.push(`Локальный Hub: ${formatModelResponseLatency(state.connectionLatencyMs)}`);
+  }
+  const correlation = providerStallSummary(task, now);
+  if (correlation.stalled > 0) {
+    lines.push(`Зависание: ${correlation.stalled} из ${correlation.active} активных потоков`);
+    if (correlation.stalled === 1) lines.push("Сигнал: проверить или ротировать этот поток");
+    else if (
+      state.connection === "online"
+      && state.connectionLatencyMs != null
+      && Number(state.connectionLatencyMs) <= 800
+    ) {
+      lines.push("Сигнал: проверить VPN, интернет или провайдера");
+    } else {
+      lines.push("Сигнал: проверить локальный Hub");
+    }
+  }
+  return lines.join("\n");
 }
 
 function renderStreamChatHeader(task, now = Date.now()) {
@@ -3381,16 +3499,19 @@ function renderStreamChatHeader(task, now = Date.now()) {
     streamHeaderProviderConnection.hidden = !measurement;
     if (measurement) {
       const presentation = window.AgentHubConnectionQuality.modelResponseQuality(measurement);
-      const timing = formatModelResponseLatency(presentation.latencyMs);
-      const title = measurement.failed
-        ? `${providerLabel} ↔ модель: ошибка запроса через ${timing}`
-        : measurement.waiting
-          ? `${providerLabel} ↔ модель: ожидание первого ответа · ${timing}`
-          : `${providerLabel} ↔ модель: ${presentation.label.toLowerCase()} · первый ответ за ${timing}`;
+      const title = providerResponseTitle(task, measurement, presentation, providerLabel, now);
       streamHeaderProviderConnection.dataset.quality = presentation.quality;
       streamHeaderProviderConnection.dataset.bars = String(presentation.bars);
-      streamHeaderProviderConnection.title = title;
       streamHeaderProviderConnection.setAttribute("aria-label", title);
+      providerTurnTelemetry.update({
+        task,
+        providerStart: cachedProviderStartForTask(task),
+        measurement,
+        presentation,
+        title,
+      });
+    } else {
+      providerTurnTelemetry.update(null);
     }
   }
   const model = String(task.modelLabel ?? "").trim();

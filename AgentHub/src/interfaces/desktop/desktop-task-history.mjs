@@ -285,7 +285,7 @@ export function createDesktopTaskHistoryFactory({
     const selectedStreamId = String(params.streamId ?? "").trim();
     const selectedThreadId = String(params.threadId ?? selection.threadId() ?? "").trim();
     if (!["codex", "claude"].includes(provider) || !selectedThreadId) {
-      throw new Error("Укажите корректную задачу");
+      throw new Error("Укажите корректный поток");
     }
     const limit = Math.max(1, Math.min(Number(params.limit) || 10, 20));
 
@@ -300,7 +300,7 @@ export function createDesktopTaskHistoryFactory({
       (selectedStreamId && item.streamId === selectedStreamId)
       || (!selectedStreamId && item.provider === provider && item.threadId === selectedThreadId)
     ));
-    if (!entry) throw new Error("Задача не найдена в локальном каталоге");
+    if (!entry) throw new Error("Поток не найден в локальном каталоге");
 
     const binding = {
       ...((entry.streamId ?? selectedStreamId) ? { streamId: entry.streamId ?? selectedStreamId } : {}),

@@ -20,6 +20,7 @@
   <link rel="stylesheet" href="/side-panel-resizer.css">
   <link rel="stylesheet" href="/task-card-layout.css">
   <link rel="stylesheet" href="/activity-rail-layout.css">
+  <link rel="stylesheet" href="/provider-turn-telemetry.css">
   <script src="https://telegram.org/js/telegram-web-app.js?63"></script>
   <script src="/browser-device-auth.js" defer></script>
   <script src="/messages/disclosure.js" defer></script>
@@ -33,6 +34,7 @@
   <script src="/activity-rail-layout.js" defer></script>
   <script src="/connection-banner.js" defer></script>
   <script src="/connection-quality.js" defer></script>
+  <script src="/provider-turn-telemetry.js" defer></script>
   <script src="/startup-screen.js" type="module"></script>
   <script src="/approval-form.js" defer></script>
   <script src="/runtime-reload-controller.js" defer></script>
@@ -310,12 +312,11 @@
           <div class="stream-chat-meta">
             <span class="provider-dot" data-stream-header-provider-dot aria-hidden="true"></span>
             <strong data-stream-header-provider>Агент</strong>
-            <span class="connection-quality provider-connection-quality"
+            <button type="button" class="connection-quality provider-connection-quality"
               data-provider-connection-quality data-quality="connecting" data-bars="0"
-              title="Задержка первого ответа модели"
-              aria-label="Задержка первого ответа модели" hidden>
+              aria-label="История связи с моделью" aria-haspopup="dialog" aria-expanded="false" hidden>
               <i></i><i></i><i></i><i></i>
-            </span>
+            </button>
             <span class="stream-chat-meta-separator" data-stream-header-model-separator hidden
               aria-hidden="true"></span>
             <span class="stream-chat-model" data-stream-header-model hidden></span>
@@ -658,6 +659,25 @@
       <button type="button" class="chip-button primary" data-action="context-compact"
         data-context-usage-compact>Свернуть контекст</button>
     </footer>
+  </dialog>
+
+  <div class="provider-turn-tooltip" data-provider-turn-tooltip role="tooltip" hidden>
+    <p data-provider-turn-tooltip-text></p>
+  </div>
+
+  <dialog class="provider-turn-modal" data-provider-turn-modal aria-labelledby="provider-turn-title">
+    <header>
+      <div>
+        <p class="eyebrow">Связь с моделью</p>
+        <h2 id="provider-turn-title">История хода</h2>
+      </div>
+      <button type="button" class="icon-button" data-provider-turn-close aria-label="Закрыть">×</button>
+    </header>
+    <section>
+      <p class="provider-turn-summary" data-provider-turn-summary></p>
+      <ul class="provider-turn-metrics" data-provider-turn-metrics></ul>
+      <ol class="provider-turn-timeline" data-provider-turn-timeline></ol>
+    </section>
   </dialog>
 
   <dialog class="task-card-modal" data-task-card-modal>

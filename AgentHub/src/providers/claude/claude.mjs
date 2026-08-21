@@ -100,7 +100,7 @@ export function claudeFailureMessage(result, {
   if (Number.isInteger(exitCode) && exitCode !== 0) {
     return `Claude Code завершился с кодом ${exitCode}.`;
   }
-  return "Claude Code завершил задачу с ошибкой.";
+  return "Claude Code завершил поток с ошибкой.";
 }
 
 export function parseClaudeStreamEvent(line) {
@@ -243,6 +243,6 @@ export function claudeEstimatedCostUsd(result) {
 export function formatClaudeUsage(result) {
   const credits = creditsFromUsd(claudeEstimatedCostUsd(result));
   return credits === null
-    ? "📊 Кредиты за задачу: нет данных."
-    : `📊 За задачу: ${formatCredits(credits)}`;
+    ? "📊 Кредиты за поток: нет данных."
+    : `📊 За поток: ${formatCredits(credits)}`;
 }

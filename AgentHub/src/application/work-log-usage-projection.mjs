@@ -312,7 +312,7 @@ export function normalizePersistedWorkLog(value = {}, { defaultProjectRoot = "" 
 export function formatWorkLogUsage(breakdown) {
   const telegramText = formatTaskCreditBreakdown(breakdown)
     .replace(/^📊\s*/, "")
-    .replace(/^За задачу:\s*/u, "Итого ");
+    .replace(/^За (?:задачу|поток):\s*/u, "Итого ");
   return telegramText
     .split("\n")
     .flatMap((line) => line.split(/\s+\|\s+/))
@@ -1650,7 +1650,7 @@ function workLogRowCells(row) {
 function layoutContainer(content, { workspaceHierarchy = false } = {}) {
   return [
     "<div data-work-log-table>",
-    `<div data-work-log-header><strong>${workspaceHierarchy ? "Workspace" : "Задача"}</strong><strong>Ходы</strong></div>`,
+    `<div data-work-log-header><strong>${workspaceHierarchy ? "Workspace" : "Поток"}</strong><strong>Ходы</strong></div>`,
     `<div data-work-log-body>${content}</div>`,
     "</div>",
   ].join("\n");
@@ -2077,7 +2077,7 @@ export function searchWorkLogRecords(turns = {}, query, {
     if (!record || typeof record !== "object") continue;
     if (roots.length && !roots.some((root) => sameProjectRoot(root, record.projectRoot))) continue;
     const fields = [
-      ["Задача", record.taskTitle],
+      ["Поток", record.taskTitle],
       ["Ход", record.title],
       ["Запрос", record.prompt],
       ["Ответ", record.body ?? record.text],

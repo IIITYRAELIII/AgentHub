@@ -50,7 +50,7 @@ test("task callback service reports a missing catalog task", async () => {
     kind: "catalog-task",
     catalogTask: { provider: "codex", threadId: "missing" },
   });
-  assert.ok(events.some((event) => event.body?.text === "Задача больше не найдена" && event.body.show_alert));
+  assert.ok(events.some((event) => event.body?.text === "Поток больше не найден" && event.body.show_alert));
 });
 
 test("task callback service selects a Workspace and Stream title", async () => {

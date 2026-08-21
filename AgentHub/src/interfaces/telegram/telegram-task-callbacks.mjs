@@ -36,19 +36,19 @@ export class TelegramTaskCallbackService {
     if (route.kind === "task-diff") {
       const targetChatId = callback.message?.chat?.id;
       const binding = await d.resolveTaskViewBinding(taskViewAction, targetChatId, callback.message?.message_id);
-      if (!binding) return this.#stale(callback, "Изменения этой задачи уже недоступны");
+      if (!binding) return this.#stale(callback, "Изменения этого потока уже недоступны");
       await this.#answer(callback, "Загружаю изменения…");
       d.scheduleInteractiveJob("Изменения", targetChatId, async () => {
         const run = d.runForTask(binding);
         const diff = run ? await d.refreshTaskDiff(run) : d.storedTaskDiff(d.taskRunKey(binding)) ?? "";
-        await d.sendLongMessage(diff || "В этой задаче изменений файлов нет.", { maxParts: 8, targetChatId });
+        await d.sendLongMessage(diff || "В этом потоке изменений файлов нет.", { maxParts: 8, targetChatId });
       });
       return true;
     }
     if (route.kind === "task-history") {
       const targetChatId = callback.message?.chat?.id;
       const binding = await d.resolveTaskViewBinding(taskViewAction, targetChatId, callback.message?.message_id);
-      if (!binding) return this.#stale(callback, "История этой задачи уже недоступна");
+      if (!binding) return this.#stale(callback, "История этого потока уже недоступна");
       await this.#answer(callback, "Загружаю предыдущие сообщения…");
       const completedOnly = taskViewAction ? taskViewAction.action === "history-last" : historyMatch.scope === "l";
       const count = taskViewAction?.count ?? Math.max(1, Math.min(Number(historyMatch.count) || 1, 50));
@@ -58,15 +58,15 @@ export class TelegramTaskCallbackService {
         else await d.showTaskMessage(binding, targetChatId, { count });
       } catch (error) {
         d.logError?.("Cannot load task history:", error.message);
-        await d.sendMessageTo(targetChatId, `Не удалось загрузить историю задачи: ${error.message}`);
+        await d.sendMessageTo(targetChatId, `Не удалось загрузить историю потока: ${error.message}`);
       }
       return true;
     }
     if (route.kind === "task-view") {
       const targetChatId = callback.message?.chat?.id;
       const binding = await d.resolveTaskViewBinding(taskViewAction, targetChatId, callback.message?.message_id);
-      if (!binding) return this.#stale(callback, "Привязка задачи уже недоступна");
-      await this.#answer(callback, "Открываю задачу…");
+      if (!binding) return this.#stale(callback, "Привязка потока уже недоступна");
+      await this.#answer(callback, "Открываю поток…");
       try {
         const selected = await d.selectTaskFromBinding(binding, d.callbackContext(callback));
         if (selected.selectionChanged) {
@@ -75,13 +75,13 @@ export class TelegramTaskCallbackService {
         await d.showTaskMessage(binding, targetChatId);
       } catch (error) {
         d.logError?.("Cannot show bound task message:", error.message);
-        await d.sendMessageTo(targetChatId, `Не удалось показать сообщение задачи: ${error.message}`);
+        await d.sendMessageTo(targetChatId, `Не удалось показать сообщение потока: ${error.message}`);
       }
       return true;
     }
     if (route.kind === "task-page") {
       await this.#answer(callback);
-      d.scheduleInteractiveJob("Страница списка задач", callback.message.chat.id, () => d.sendThreadPicker({
+      d.scheduleInteractiveJob("Страница списка потоков", callback.message.chat.id, () => d.sendThreadPicker({
         editMessage: callback.message,
         page: route.page,
       }));
@@ -93,22 +93,22 @@ export class TelegramTaskCallbackService {
       if (!entry) {
         entry = (await d.refreshTaskCatalog()).find((item) => item.provider === selected.provider && item.threadId === selected.threadId);
       }
-      if (!entry) return this.#stale(callback, "Задача больше не найдена");
+      if (!entry) return this.#stale(callback, "Поток больше не найден");
       try {
         await this.#selectCatalogTask(callback, entry);
       } catch (error) {
-        await d.sendMessageTo(callback.message.chat.id, `Ошибка выбора задачи: ${error.message}`);
+        await d.sendMessageTo(callback.message.chat.id, `Ошибка выбора потока: ${error.message}`);
       }
       return true;
     }
     if (route.kind === "thread-new") {
       try {
         await d.createCurrentTask(d.callbackContext(callback));
-        await this.#answer(callback, "Новая задача создана");
+        await this.#answer(callback, "Новый поток создан");
         await this.#closeMenu(callback);
-        await d.sendMessage(`Создана новая задача ${d.providerTitle()} в текущем проекте.`);
+        await d.sendMessage(`Создан новый поток ${d.providerTitle()} в текущем проекте.`);
       } catch (error) {
-        await this.#stale(callback, "Не удалось создать задачу");
+        await this.#stale(callback, "Не удалось создать поток");
         d.logError?.("Cannot create thread:", error.message);
       }
       return true;
@@ -116,18 +116,18 @@ export class TelegramTaskCallbackService {
     const blockedReason = d.archiveBlockedReason();
     if (blockedReason) {
       const messages = {
-        "active-turn": "Сначала завершите или отмените текущую задачу",
-        unsupported: "Архивация доступна только для задач Codex",
-        "no-current": "Текущая задача не выбрана",
+        "active-turn": "Сначала завершите или отмените текущий поток",
+        unsupported: "Архивация доступна только для потоков Codex",
+        "no-current": "Текущий поток не выбран",
       };
       await this.#stale(callback, messages[blockedReason] ?? "Архивация недоступна");
       return true;
     }
-    await this.#answer(callback, "Архивирую задачу…");
+    await this.#answer(callback, "Архивирую поток…");
     try {
       const result = await d.archiveCurrentThread(d.callbackContext(callback));
       if (!result.archived) {
-        await d.sendMessageTo(callback.message.chat.id, "Архивация задачи стала недоступна. Обновите список задач.");
+        await d.sendMessageTo(callback.message.chat.id, "Архивация потока стала недоступна. Обновите список потоков.");
         return true;
       }
       const outcomes = await Promise.allSettled([
@@ -140,7 +140,7 @@ export class TelegramTaskCallbackService {
       }
     } catch (error) {
       d.logError?.("Cannot archive thread:", error.message);
-      await d.sendMessageTo(callback.message.chat.id, `Ошибка архивации задачи: ${error.message}`);
+      await d.sendMessageTo(callback.message.chat.id, `Ошибка архивации потока: ${error.message}`);
     }
     return true;
   }
@@ -148,7 +148,7 @@ export class TelegramTaskCallbackService {
   async #selectCatalogTask(callback, entry) {
     const d = this.#d;
     const targetChatId = callback.message.chat.id;
-    await this.#answer(callback, "Переключаю задачу…");
+    await this.#answer(callback, "Переключаю поток…");
     const selected = await d.selectTaskFromBinding({
       provider: entry.provider,
       projectRoot: entry.projectRoot,

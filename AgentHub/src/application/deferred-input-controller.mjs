@@ -119,7 +119,7 @@ export class DeferredInputController {
         delete item.dispatchingAt;
         this.onStateChange(item, "started", recoveredRun);
         await this.persist();
-        await this.updateMessage(item, `▶️ Сообщение из очереди уже выполняется в задаче «${item.taskTitle}».`);
+        await this.updateMessage(item, `▶️ Сообщение из очереди уже выполняется в потоке «${item.taskTitle}».`);
         this.scheduleNextForTask(item);
         return;
       }
@@ -141,7 +141,7 @@ export class DeferredInputController {
         await this.persist();
         await this.updateMessage(
           item,
-          `⏸ Сообщение сохранено для ручного действия в задаче «${item.taskTitle}».`,
+          `⏸ Сообщение сохранено для ручного действия в потоке «${item.taskTitle}».`,
           this.pendingKeyboard(item),
         );
         return;
@@ -215,7 +215,7 @@ export class DeferredInputController {
       delete item.blockedChecks;
       this.onStateChange(item, "started", started);
       await this.persist();
-      await this.updateMessage(item, `▶️ Сообщение из очереди отправлено в задачу «${item.taskTitle}».`);
+      await this.updateMessage(item, `▶️ Сообщение из очереди отправлено в поток «${item.taskTitle}».`);
       this.scheduleNextForTask(item);
     } finally {
       this.processing.delete(id);

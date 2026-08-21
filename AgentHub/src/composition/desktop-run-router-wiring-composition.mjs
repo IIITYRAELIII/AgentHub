@@ -37,10 +37,10 @@ export function createDesktopRunRouterWiring({
             ? services.executionRuntimeLabel(constants.taskExecutionOwners.HUB)
             : "Внешний Claude CLI";
         const conflictText = item.conflictKind === "repository"
-          ? `Задача «${conflictTask?.taskTitle ?? "Без названия"}» уже работает с тем же Git-репозиторием через ${runtime}. Параллельная запись может смешать изменения.`
+          ? `Поток «${conflictTask?.taskTitle ?? "Без названия"}» уже работает с тем же Git-репозиторием через ${runtime}. Параллельная запись может смешать изменения.`
           : item.conflictKind === "activity-unknown"
             ? "Claude оставил незавершённый транскрипт, но давно не записывал новые события. Нельзя надёжно определить, продолжает ли работать внешний процесс."
-            : `Выбранная задача уже выполняется через ${runtime}.`;
+            : `Выбранный поток уже выполняется через ${runtime}.`;
         return services.sendMessageTo(
           item.chatId,
           `${conflictText} Новое сообщение сохранено и не потеряно.`

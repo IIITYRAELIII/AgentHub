@@ -47,20 +47,20 @@ export function buildTaskPicker({
     keyboard.push(navigation);
   }
   keyboard.push([{
-    text: `🆕 Новая задача: ${providerTitle} · ${projectName}`,
+    text: `🆕 Новый поток: ${providerTitle} · ${projectName}`,
     callback_data: newTaskCallback,
   }]);
   if (archiveCallback) {
     keyboard.push([{
-      text: "❌ Архивировать текущую задачу",
+      text: "❌ Архивировать текущий поток",
       callback_data: archiveCallback,
     }]);
   }
   const runningCount = catalog.filter((entry) => entry.running).length;
   return {
     text: catalog.length
-      ? `Все задачи Codex и Claude в разрешённых папках: ${catalog.length}\nВыполняются: ${runningCount}\n\nВыберите задачу:`
-      : "В разрешённых папках пока нет задач Codex или Claude.",
+      ? `Все потоки Codex и Claude в разрешённых папках: ${catalog.length}\nВыполняются: ${runningCount}\n\nВыберите поток:`
+      : "В разрешённых папках пока нет потоков Codex или Claude.",
     replyMarkup: { inline_keyboard: keyboard },
     page: safePage,
     pageCount,

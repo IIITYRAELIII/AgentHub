@@ -79,7 +79,7 @@ test("credit calculation separates uncached input, cache, output and reasoning",
     outputTokens: 3_059,
     reasoningOutputTokens: 974,
   }, { model: SOL });
-  assert.match(formatted, /За задачу: 13,5 cr/);
+  assert.match(formatted, /За поток: 13,5 cr/);
   assert.match(formatted, /Вход: 2,2 cr \(16,3%\)/);
   assert.match(formatted, /Кэш: 9,0 cr \(66,7%\)/);
   assert.match(formatted, /Выход: 1,6 cr \(11,6%\)/);
@@ -189,7 +189,7 @@ test("turn formatting includes a fixed image generation credit estimate", () => 
     usage: emptyTokenUsage(),
     estimatedCredits: 90,
   });
-  assert.match(estimateOnly, /За задачу: 90 cr/);
+  assert.match(estimateOnly, /За поток: 90 cr/);
   assert.match(estimateOnly, /ImageGen: 90 cr \(100%\)/);
   assert.doesNotMatch(estimateOnly, /нет данных/);
 
@@ -203,7 +203,7 @@ test("turn formatting includes a fixed image generation credit estimate", () => 
     }),
     estimatedCredits: 90,
   });
-  assert.match(combined, /За задачу: 110 cr/);
+  assert.match(combined, /За поток: 110 cr/);
   assert.match(combined, /ImageGen: 90 cr \(81,8%\)/);
-  assert.equal(formatTurnTokenUsage(null), "📊 Кредиты за задачу: нет данных.");
+  assert.equal(formatTurnTokenUsage(null), "📊 Кредиты за поток: нет данных.");
 });

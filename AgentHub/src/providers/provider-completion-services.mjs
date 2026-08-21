@@ -83,7 +83,7 @@ export class CodexCompletionService {
       || String(snapshot?.answer ?? "").trim()
       || run.responseText.trim()
       || "Ход завершён без текстового ответа.";
-    await this.#d.finishProgress(run, snapshot?.stage ?? "Задача завершена.");
+    await this.#d.finishProgress(run, snapshot?.stage ?? "Поток завершён.");
     await this.#d.finalizeDelivery(run, {
       answer,
       turnId: completedTurnId,
@@ -109,12 +109,12 @@ export class CodexCompletionService {
     const status = eventTurn?.status ?? "completed";
     const error = eventTurn?.error?.message;
     const answer = await this.#d.completedAnswer(run, completedTurnId, eventTurn)
-      || (error ? `Ошибка: ${error}` : `Задача завершена: ${status}`);
+      || (error ? `Ошибка: ${error}` : `Поток завершён: ${status}`);
     await this.#d.finishProgress(
       run,
       error || status === "failed"
-        ? `Задача завершилась с ошибкой: ${error ?? status}`
-        : "Задача завершена.",
+        ? `Поток завершился с ошибкой: ${error ?? status}`
+        : "Поток завершён.",
     );
     return this.#d.finalizeDelivery(run, {
       answer,
@@ -201,7 +201,7 @@ export class ClaudeCompletionService {
         const wasSelected = this.#d.isSelectedRun(run);
         run.threadId = result.session_id;
         run.sessionId = result.session_id;
-        if (!run.taskTitle || run.taskTitle === "Новая задача Claude") {
+        if (!run.taskTitle || ["Новая задача Claude", "Новый поток Claude"].includes(run.taskTitle)) {
           run.taskTitle = `Сессия Claude · ${result.session_id.slice(0, 8)}`;
         }
         this.#d.reindexRun(run, { threadId: previousThreadId });
@@ -211,9 +211,9 @@ export class ClaudeCompletionService {
       const failed = (exitCode !== null && exitCode !== 0) || result.is_error === true;
       const answer = failed
         ? claudeFailureMessage(result, { streamFailureText: run.claudeFailureText, errorText, exitCode })
-        : String(result.result ?? "").trim() || "Задача завершена.";
+        : String(result.result ?? "").trim() || "Поток завершён.";
       if (failed) this.#d.logError?.(`Claude turn ${run.turnId ?? "unknown"} failed: ${answer}`);
-      await this.#d.finishProgress(run, failed ? `Claude остановлен: ${answer}` : "Задача завершена.");
+      await this.#d.finishProgress(run, failed ? `Claude остановлен: ${answer}` : "Поток завершён.");
       const response = failed ? `Ошибка Claude Code: ${answer}` : answer;
       await this.#persistAndDeliver(run, {
         response,

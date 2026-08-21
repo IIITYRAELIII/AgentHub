@@ -183,7 +183,7 @@ test("parseClaudeResult and formatClaudeUsage convert the whole Claude run to sh
   assert.equal(result.result, "done");
   assert.equal(claudeEstimatedCostUsd(result), 4.5783);
   const formatted = formatClaudeUsage(result);
-  assert.equal(formatted, "📊 За задачу: 114,5 cr");
+  assert.equal(formatted, "📊 За поток: 114,5 cr");
   assert.doesNotMatch(formatted, /кТЭ/);
 });
 
@@ -199,10 +199,10 @@ test("Claude credits fall back to the complete per-model estimate and never gues
     },
   };
   assert.equal(claudeEstimatedCostUsd(result), 2);
-  assert.equal(formatClaudeUsage(result), "📊 За задачу: 50 cr");
+  assert.equal(formatClaudeUsage(result), "📊 За поток: 50 cr");
   assert.equal(
     formatClaudeUsage({ usage: result.usage }),
-    "📊 Кредиты за задачу: нет данных.",
+    "📊 Кредиты за поток: нет данных.",
   );
 });
 

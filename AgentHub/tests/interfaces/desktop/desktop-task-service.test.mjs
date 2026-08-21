@@ -53,6 +53,7 @@ function fixture() {
       attachmentNames: [],
     } : null,
     threadsForStream: () => [{ provider: "codex", threadId: "thread-1" }],
+    currentThread: () => ({ provider: "codex", threadId: "thread-1" }),
     samePath: (left, right) => left.toLowerCase() === right.toLowerCase(),
     chatId: () => 101,
   });
@@ -73,7 +74,7 @@ test("Desktop task service resolves streamId before provider references", async 
   assert.equal(target.taskTitle, "Agent HUB - Themes");
 });
 
-test("Desktop task service resolves an exact Thread inside a parallel Stream", async () => {
+test("Desktop task service retargets a stale Stream reference to its current Thread", async () => {
   const { service } = fixture();
   const entries = [{
     streamId: "stream-1",
@@ -94,6 +95,7 @@ test("Desktop task service resolves an exact Thread inside a parallel Stream", a
   }];
   service.catalog = () => entries;
   service.refreshCatalog = async () => entries;
+  service.currentThread = () => ({ provider: "claude", threadId: "thread-beta" });
 
   const target = await service.resolveTarget({
     streamId: "stream-1",
@@ -101,7 +103,30 @@ test("Desktop task service resolves an exact Thread inside a parallel Stream", a
     threadId: "thread-alpha",
   });
 
-  assert.equal(target.threadId, "thread-alpha");
+  assert.equal(target.threadId, "thread-beta");
+});
+
+test("Desktop task service waits for the rotated Thread to enter the catalog", async () => {
+  const { service } = fixture();
+  const current = {
+    streamId: "stream-1",
+    workspaceName: "Agent HUB",
+    streamName: "Themes",
+    provider: "codex",
+    projectRoot: "C:\\repo",
+    threadId: "thread-new",
+    title: "Task",
+  };
+  service.currentThread = () => ({ provider: "codex", threadId: "thread-new" });
+  service.refreshCatalog = async () => [current];
+
+  const target = await service.resolveTarget({
+    streamId: "stream-1",
+    provider: "codex",
+    threadId: "thread-old",
+  });
+
+  assert.equal(target.threadId, "thread-new");
 });
 
 test("Desktop task service refuses to send into a detached historical Thread", async () => {

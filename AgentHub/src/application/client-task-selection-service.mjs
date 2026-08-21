@@ -138,7 +138,7 @@ export class ClientTaskSelectionService {
       throw new Error("неизвестный агент привязанного сообщения");
     }
     const threadId = String(binding?.threadId ?? "").trim();
-    if (!threadId && binding.provider !== "claude") throw new Error("задача не содержит Thread ID");
+    if (!threadId && binding.provider !== "claude") throw new Error("поток не содержит Thread ID");
     const entry = threadId ? this.catalogEntries().find((candidate) => (
       candidate.provider === binding.provider
       && candidate.threadId === threadId
@@ -157,7 +157,7 @@ export class ClientTaskSelectionService {
         || String(entry?.title ?? "").trim()
         || (threadId
           ? `${binding.provider === "codex" ? "Codex" : "Claude"} · ${threadId.slice(0, 8)}`
-          : "Новая задача Claude"),
+          : "Новый поток Claude"),
     };
     const changed = previous.provider !== next.provider
       || previous.threadId !== next.threadId

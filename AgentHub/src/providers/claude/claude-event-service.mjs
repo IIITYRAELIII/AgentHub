@@ -24,7 +24,7 @@ export class ClaudeEventService {
       const wasSelected = d.isSelectedRun(run);
       run.sessionId = parsed.sessionId;
       run.threadId = parsed.sessionId;
-      if (!run.taskTitle || run.taskTitle === "Новая задача Claude") {
+      if (!run.taskTitle || ["Новая задача Claude", "Новый поток Claude"].includes(run.taskTitle)) {
         run.taskTitle = `Сессия Claude · ${parsed.sessionId.slice(0, 8)}`;
       }
       d.reindexRun(run, { threadId: previousThreadId });

@@ -69,7 +69,7 @@ export class RunProgressPresentation {
     const parts = [this.heading(run, done), run?.progressStage || "Выполняется…"];
     if (done) return parts.join("\n\n").slice(0, this.telegramLimit);
     if (Number(run?.activeTurnCount) > 1) {
-      parts.push(`🔀 Активных ходов в этой задаче: ${Number(run.activeTurnCount)}`);
+      parts.push(`🔀 Активных ходов в этом потоке: ${Number(run.activeTurnCount)}`);
     }
     const heartbeat = this.formatProgressHeartbeat(run);
     if (heartbeat) parts.push(heartbeat);

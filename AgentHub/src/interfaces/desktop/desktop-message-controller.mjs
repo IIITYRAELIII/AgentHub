@@ -49,7 +49,7 @@ export function createDesktopMessageController({
       ? messageInputWithAttachments(text, attachments, descriptors)
       : text;
     const target = await resolveTarget(params, context);
-    if (!target.threadId) throw new Error("Сначала выберите или создайте задачу");
+    if (!target.threadId) throw new Error("Сначала выберите или создайте поток");
     const messageOrigin = normalizeInterstreamOrigin(target.messageOrigin);
     const messageAuthor = interstreamOriginAuthor(messageOrigin);
     const receiptIdentity = {

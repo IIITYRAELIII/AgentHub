@@ -162,12 +162,12 @@ export function parseClaudeTranscript(text) {
   const stage = failed
     ? "Claude завершился с ошибкой."
     : completed
-      ? "Задача завершена."
+      ? "Поток завершён."
     : lastTool
       ? `Claude использует инструмент ${lastTool}…`
       : answer
         ? "Ответ формируется…"
-        : "Claude выполняет задачу…";
+        : "Claude выполняет поток…";
   return {
     answer,
     reasoning,

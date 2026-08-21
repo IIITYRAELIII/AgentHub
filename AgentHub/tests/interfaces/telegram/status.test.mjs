@@ -108,14 +108,14 @@ test("formatStatusMessage matches Telegram status layout", () => {
     "CODEX: GPT-5.3 Codex Spark - High",
     "Work | Готов",
     "",
-    "Текущая задача: Обсуждения",
+    "Текущий поток: Обсуждения",
     "Каталог: VSC_Tyrael",
     "",
     "Лимиты:",
     "CODEX - 94.0% - 6 дн. 7 ч.",
     "Spark - 100.0% - 7 дн.",
     "",
-    "<b>🧵НЕДАВНИЕ ЗАДАЧИ (2)🧵</b>",
+    "<b>🧵НЕДАВНИЕ ПОТОКИ (2)🧵</b>",
   ].join("\n"));
 });
 
@@ -133,16 +133,16 @@ test("formatStatusMessage shows Claude model, reasoning, and Plan mode", () => {
     showTaskButtons: true,
   }), [
     "CLAUDE: Sonnet - XHigh",
-    "Plan | Выполняет выбранную задачу",
+    "Plan | Выполняет выбранный поток",
     "",
-    "Текущая задача: Проверка",
+    "Текущий поток: Проверка",
     "Каталог: VSC_Tyrael",
     "",
     "Лимиты:",
     "CLAUDE",
     "100.0% - 5 ч.",
     "",
-    "<b>🧵НЕДАВНИЕ ЗАДАЧИ (1)🧵</b>",
+    "<b>🧵НЕДАВНИЕ ПОТОКИ (1)🧵</b>",
   ].join("\n"));
 });
 
@@ -165,7 +165,7 @@ test("formatStatusMessage keeps task details in buttons and adds the task headin
   assert.doesNotMatch(result, /Выполняется задач:/);
   assert.doesNotMatch(result, /• Codex/);
   assert.doesNotMatch(result, /Всего найдено задач/);
-  assert.match(result, /<b>🧵НЕДАВНИЕ ЗАДАЧИ \(2\)🧵<\/b>$/);
+  assert.match(result, /<b>🧵НЕДАВНИЕ ПОТОКИ \(2\)🧵<\/b>$/);
 });
 
 test("formatStatusMessage can show recent task buttons when nothing runs", () => {
@@ -181,7 +181,7 @@ test("formatStatusMessage can show recent task buttons when nothing runs", () =>
     limits: "CODEX\n100%",
     showTaskButtons: true,
   });
-  assert.match(result, /<b>🧵НЕДАВНИЕ ЗАДАЧИ \(0\)🧵<\/b>$/);
+  assert.match(result, /<b>🧵НЕДАВНИЕ ПОТОКИ \(0\)🧵<\/b>$/);
   assert.match(result, /Задача &lt;1&gt;/);
   assert.match(result, /VSCode &amp; Main/);
 });
@@ -199,7 +199,7 @@ test("formatStatusMessage omits the project when the project button is hidden", 
     limits: "CODEX - 78.0% - 5 дн. 10 ч.",
   });
 
-  assert.match(result, /^CODEX: GPT-5\.6-Sol - High\nWork \| Выполняет выбранную задачу/);
+  assert.match(result, /^CODEX: GPT-5\.6-Sol - High\nWork \| Выполняет выбранный поток/);
   assert.doesNotMatch(result, /Каталог:/);
 });
 
@@ -255,8 +255,8 @@ test("formatRestartCompleteMessage renders a safe final restart card", () => {
     "✅ <b>AGENT HUB ПЕРЕЗАПУЩЕН</b>",
     "",
     "Агент: Codex",
-    "Текущая задача: Задача &lt;1&gt;",
-    "Активных задач восстановлено: 2",
+    "Текущий поток: Задача &lt;1&gt;",
+    "Активных потоков восстановлено: 2",
   ].join("\n"));
 });
 
@@ -265,8 +265,8 @@ test("formatArchiveMessage names archived and newly active tasks", () => {
     archivedTask: "Такая-то",
     activeTask: "Такая-то2",
   }), [
-    "❌ Задача \"Такая-то\" архивирована.",
-    "🟢 Задача \"Такая-то2\" активна.",
+    "❌ Поток \"Такая-то\" архивирован.",
+    "🟢 Поток \"Такая-то2\" активен.",
   ].join("\n"));
 });
 
@@ -275,8 +275,8 @@ test("formatArchiveMessage reports when no active task remains", () => {
     archivedTask: "Последняя",
     activeTask: null,
   }), [
-    "❌ Задача \"Последняя\" архивирована.",
-    "⚪ Активных задач нет.",
+    "❌ Поток \"Последняя\" архивирован.",
+    "⚪ Активных потоков нет.",
   ].join("\n"));
 });
 
@@ -287,7 +287,7 @@ test("formatTaskSwitchMessage shows project and italic task when project button 
     showProject: true,
     model: "GPT-5.6-Sol",
     reasoning: "Medium",
-  }), "🔄 Текущая задача изменена.\n\n<b>Проект &amp; тест</b>\n<i>Задача &lt;1&gt;</i>\nGPT-5.6-Sol - Medium");
+  }), "🔄 Текущий поток изменён.\n\n<b>Проект &amp; тест</b>\n<i>Задача &lt;1&gt;</i>\nGPT-5.6-Sol - Medium");
 });
 
 test("formatTaskSwitchMessage shows only bold task when project button is disabled", () => {
@@ -297,7 +297,7 @@ test("formatTaskSwitchMessage shows only bold task when project button is disabl
     showProject: false,
     model: "GPT-5.6-Sol",
     reasoning: "Medium",
-  }), "🔄 Текущая задача изменена.\n\n<b>Задача &lt;1&gt;</b>\nGPT-5.6-Sol - Medium");
+  }), "🔄 Текущий поток изменён.\n\n<b>Задача &lt;1&gt;</b>\nGPT-5.6-Sol - Medium");
 });
 
 test("formatTaskAlreadySelectedMessage confirms the current task without changing the card layout", () => {
@@ -307,7 +307,7 @@ test("formatTaskAlreadySelectedMessage confirms the current task without changin
     showProject: true,
     model: "GPT-5.6-Sol",
     reasoning: "Medium",
-  }), "✅ Текущая задача уже выбрана.\n\n<b>Проект &amp; тест</b>\n<i>Задача &lt;1&gt;</i>\nGPT-5.6-Sol - Medium");
+  }), "✅ Текущий поток уже выбран.\n\n<b>Проект &amp; тест</b>\n<i>Задача &lt;1&gt;</i>\nGPT-5.6-Sol - Medium");
 });
 
 test("task switch messages expose the same live-message callback as notifications", () => {

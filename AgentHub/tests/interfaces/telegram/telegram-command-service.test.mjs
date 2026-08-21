@@ -34,6 +34,20 @@ test("Telegram command service dispatches task creation with client context", as
   assert.deepEqual(created[0], [{ clientId: "telegram:1" }]);
 });
 
+test("Telegram command service opens streams through the canonical command and legacy alias", async () => {
+  const opened = [];
+  const { instance } = service({
+    sendTaskPicker: async () => opened.push("picker"),
+  });
+
+  await instance.handle({ chat: { id: 1 } }, "/streams");
+  await instance.handle({ chat: { id: 1 } }, "/tasks");
+
+  assert.deepEqual(opened, ["picker", "picker"]);
+  assert.equal(typeof instance.handlers().streams, "function");
+  assert.equal(typeof instance.handlers().tasks, "function");
+});
+
 test("Telegram command service sends ordinary text through the task lane", async () => {
   const bound = [];
   const started = [];
@@ -59,7 +73,7 @@ test("Telegram command service cancels the chat-scoped selected task", async () 
     runForTask: (target) => (target.threadId === scopedTask.threadId ? run : null),
     dispatchCommand: async (...args) => {
       dispatched.push(args);
-      return { message: "Запрошена остановка этой задачи" };
+      return { message: "Запрошена остановка этого потока" };
     },
   });
 

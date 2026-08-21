@@ -6,8 +6,13 @@ import {
   isRecentDuplicateTaskAnswer,
   legacyTaskRunKeys,
   markProviderFirstEvent,
+  markProviderTurnCompleted,
+  markProviderTurnCompaction,
+  markProviderTurnContent,
+  markProviderTurnEvent,
   markProviderTurnAccepted,
   markProviderTurnRequested,
+  providerTurnTelemetrySnapshot,
   TaskDismissalRegistry,
   TaskRunRegistry,
   serializableTaskRun,
@@ -35,7 +40,7 @@ test("provider start request is durable before the external side effect", () => 
 });
 
 test("provider receipt stays explicit until the first exact provider event", () => {
-  const run = { provider: "codex", progressStage: "Задача принята." };
+  const run = { provider: "codex", progressStage: "Поток принят." };
   markProviderTurnAccepted(run, {
     turnId: "turn-1",
     acceptedAt: Date.parse("2026-08-15T00:00:00.000Z"),
@@ -60,6 +65,68 @@ test("provider receipt stays explicit until the first exact provider event", () 
   assert.equal(run.providerStart.firstEventAt, "2026-08-15T00:03:12.000Z");
   assert.equal(run.progressStage, "Codex начал отвечать…");
   assert.equal(markProviderTurnAccepted(run, { turnId: "turn-1" }).state, "observed");
+});
+
+test("provider telemetry records live gaps and content phases without polling", () => {
+  const run = { provider: "codex" };
+  markProviderTurnAccepted(run, {
+    turnId: "turn-1",
+    acceptedAt: Date.parse("2026-08-15T00:00:00.000Z"),
+  });
+  markProviderTurnEvent(run, {
+    turnId: "turn-1",
+    method: "turn/started",
+    occurredAt: Date.parse("2026-08-15T00:00:01.000Z"),
+    phase: "starting",
+  });
+  markProviderTurnContent(run, {
+    turnId: "turn-1",
+    occurredAt: Date.parse("2026-08-15T00:00:11.000Z"),
+    kind: "reasoning",
+  });
+  markProviderTurnContent(run, {
+    turnId: "turn-1",
+    occurredAt: Date.parse("2026-08-15T00:00:31.000Z"),
+    kind: "answer",
+    visible: true,
+  });
+  markProviderTurnCompaction(run, {
+    turnId: "turn-1",
+    stage: "started",
+    occurredAt: Date.parse("2026-08-15T00:00:32.000Z"),
+  });
+  markProviderTurnCompaction(run, {
+    turnId: "turn-1",
+    stage: "completed",
+    occurredAt: Date.parse("2026-08-15T00:00:38.000Z"),
+  });
+  markProviderTurnCompleted(run, {
+    turnId: "turn-1",
+    completedAt: Date.parse("2026-08-15T00:00:41.000Z"),
+  });
+
+  assert.equal(run.providerStart.turnStartedAtMs, Date.parse("2026-08-15T00:00:01.000Z"));
+  assert.equal(run.providerStart.firstContentAtMs, Date.parse("2026-08-15T00:00:11.000Z"));
+  assert.equal(run.providerStart.firstVisibleAtMs, Date.parse("2026-08-15T00:00:31.000Z"));
+  assert.equal(run.providerStart.maxContentGapMs, 20_000);
+  assert.equal(run.providerStart.completedAtMs, Date.parse("2026-08-15T00:00:41.000Z"));
+  assert.equal(run.providerStart.phase, "completed");
+  assert.equal(run.providerStart.compactionTotalMs, 6_000);
+  assert.deepEqual(
+    run.providerStart.timeline.map((item) => item.type),
+    ["phase", "first-content", "first-visible", "compaction-started", "compaction-completed", "completed"],
+  );
+
+  const telemetry = providerTurnTelemetrySnapshot({
+    ...run,
+    id: "run-1",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    streamId: "stream-1",
+    startedAt: "2026-08-15T00:00:00.000Z",
+  });
+  assert.equal(telemetry.compaction.totalMs, 6_000);
+  assert.equal(telemetry.timeline.at(-1).type, "completed");
 });
 
 test("an inactive run cannot be resurrected by a late reindex", () => {
@@ -102,7 +169,7 @@ test("task run factories initialize managed and observed lifecycle state", () =>
   const managed = createManagedTaskRun({ provider: "claude", threadId: "session-1" });
   assert.equal(managed.sessionId, "session-1");
   assert.equal(managed.observer, false);
-  assert.equal(managed.progressStage, "Задача принята.");
+  assert.equal(managed.progressStage, "Поток принят.");
   const observed = createObservedTaskRun(
     { provider: "codex", threadId: "thread-1", turnId: "turn-1" },
     {

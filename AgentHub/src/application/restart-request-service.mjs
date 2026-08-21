@@ -53,7 +53,7 @@ export class RestartRequestService {
         message: stopping
           ? "Перезапуск уже выполняется"
           : blockingCount > 0
-          ? "Перезапуск уже ожидает завершения задач"
+          ? "Перезапуск уже ожидает завершения потоков"
           : "Перезапуск уже запрошен и запущен повторно",
       };
     }
@@ -72,7 +72,7 @@ export class RestartRequestService {
       accepted: true,
       waiting: blockingCount > 0,
       message: blockingCount > 0
-        ? "Перезапуск ожидает завершения задач"
+        ? "Перезапуск ожидает завершения потоков"
         : "Agent Hub Server перезапускается",
     };
   }
@@ -81,13 +81,13 @@ export class RestartRequestService {
     const existing = this.getRequest();
     if (existing) {
       await this.sendTelegram(existing.waitingForRuns
-        ? "Перезапуск уже ожидает завершения выполняющихся задач."
+        ? "Перезапуск уже ожидает завершения выполняющихся потоков."
         : "Бот уже перезапускается.");
       return { accepted: false };
     }
     const blockingCount = this.blockingWorkCount();
     const message = await this.sendTelegram(blockingCount
-      ? `🔄 Перезапущу бота после завершения выполняющихся задач: ${blockingCount}.`
+      ? `🔄 Перезапущу бота после завершения выполняющихся потоков: ${blockingCount}.`
       : "🔄 Перезапускаю Agent Hub…");
     if (!message?.message_id) throw new Error("Telegram не вернул ID сообщения перезапуска");
     const processingUpdateId = this.processingUpdateId();

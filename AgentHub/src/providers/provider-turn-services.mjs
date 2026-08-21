@@ -386,7 +386,7 @@ export class CodexTurnService {
       const turnId = String(active[0]?.id ?? "").trim();
       return turnId || null;
     }
-    if (active.length > 1) throw new Error("В задаче выполняется несколько ходов; выбрать ход для изменения нельзя");
+    if (active.length > 1) throw new Error("В потоке выполняется несколько ходов; выбрать ход для изменения нельзя");
     return null;
   }
 }
@@ -406,7 +406,7 @@ export class ProviderCancellationService {
   async cancelCodex(run) {
     try {
       await this.#d.interruptCodex(run);
-      return { accepted: true, stopRequested: true, message: "Запрошена остановка этой задачи." };
+      return { accepted: true, stopRequested: true, message: "Запрошена остановка этого потока." };
     } catch (error) {
       this.#d.logWarn?.(`Cannot interrupt Codex task ${run.threadId}:`, error.message);
       return {
@@ -424,7 +424,7 @@ export class ProviderCancellationService {
       if (!await d.stopClaudeRun(run)) throw new Error("Не удалось остановить дерево процессов Claude");
       rememberBounded(d.cancelledClaudeTasks, d.claudeCancellationKey(run), Date.now(), 200);
       await d.saveState();
-      return { accepted: true, stopRequested: true, message: "Запрошена остановка этой задачи." };
+      return { accepted: true, stopRequested: true, message: "Запрошена остановка этого потока." };
     }
     return {
       accepted: false,
@@ -452,7 +452,7 @@ export class ProviderCancellationService {
         message: "Ход выполняется в другом окне Codex. Остановите его в том окне; наблюдение Agent Hub сохранено",
       };
     }
-    return { accepted: false, message: "Codex не подтвердил остановку. Наблюдение и блокировка задачи сохранены" };
+    return { accepted: false, message: "Codex не подтвердил остановку. Наблюдение и блокировка потока сохранены" };
   }
 
   async #reconcileInactiveCodexRun(run) {
@@ -471,7 +471,7 @@ export class ProviderCancellationService {
           active: false,
           completed: true,
           status: snapshot.completed ? snapshot.status : "interrupted",
-          stage: snapshot.completed ? snapshot.stage ?? "Задача завершена." : "Задача остановлена или неактивна.",
+          stage: snapshot.completed ? snapshot.stage ?? "Поток завершён." : "Поток остановлен или неактивен.",
         };
         if (run.observer) await d.finishObserved(run, terminal);
         else await d.completeManaged(run, { snapshot: terminal });

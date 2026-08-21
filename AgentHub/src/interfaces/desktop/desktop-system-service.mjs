@@ -250,7 +250,7 @@ export class DesktopSystemService {
   async speakLastAnswer(params) {
     const target = await this.resolveTask(params);
     const text = String(this.lastTaskMessage(target)?.text ?? "").trim();
-    if (!text) throw new Error("У задачи ещё нет завершённого ответа");
+    if (!text) throw new Error("У потока ещё нет завершённого ответа");
     const job = await this.enqueueSpeech(target, text);
     if (!job) throw new Error(`Очередь озвучивания заполнена (${this.maxSpeechJobs})`);
     return { accepted: true, message: "Озвучивание будет отправлено в Telegram" };

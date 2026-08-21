@@ -35,10 +35,13 @@ test("invalid or unavailable local storage falls back to theme defaults", async 
 });
 
 test("pointer movement changes the matching side and clamps its width", async () => {
-  const { widthFromPointer } = await sidePanelResizerApi();
+  const { baseWidthFromVisible, normalizedWidthScale, widthFromPointer } = await sidePanelResizerApi();
   assert.equal(widthFromPointer({ side: "task", startWidth: 280, startX: 280, pointerX: 350, maximumWidth: 500 }), 350);
   assert.equal(widthFromPointer({ side: "activity", startWidth: 340, startX: 900, pointerX: 840, maximumWidth: 420 }), 400);
   assert.equal(widthFromPointer({ side: "activity", startWidth: 340, startX: 900, pointerX: 100, maximumWidth: 420 }), 420);
+  assert.equal(normalizedWidthScale("0.4"), 0.4);
+  assert.equal(normalizedWidthScale("invalid"), 1);
+  assert.equal(baseWidthFromVisible(320, 0.4), 800);
 });
 
 test("saved widths keep the center and both panels readable", async () => {

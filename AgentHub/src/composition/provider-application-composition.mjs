@@ -80,6 +80,7 @@ export async function createProviderApplicationComposition({
     preTurnInstructions,
     hubMcpService,
     codexRolloutContextSanitizer,
+    providerTurnTelemetryStore,
   } = infrastructure;
   const {
     findProject,
@@ -453,6 +454,7 @@ export async function createProviderApplicationComposition({
       await api.initializeCodex({ attachSelectedThread: false });
     },
     resolveCodexTaskActivity,
+    providerTurnTelemetryStore,
   });
   const providerStartup = ports.providerStartup.bind(createProviderStartupComposition({
     config,

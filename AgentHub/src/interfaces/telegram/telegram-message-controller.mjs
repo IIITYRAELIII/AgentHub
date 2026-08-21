@@ -63,7 +63,7 @@ export class TelegramMessageController {
       if (activated.changed) await this.notifyTaskSwitch();
       return true;
     } catch (error) {
-      await this.sendMessage(`Не удалось открыть задачу из этого сообщения: ${error.message}`);
+      await this.sendMessage(`Не удалось открыть поток из этого сообщения: ${error.message}`);
       return false;
     }
   }

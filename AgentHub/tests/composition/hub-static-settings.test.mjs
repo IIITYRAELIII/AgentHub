@@ -23,3 +23,28 @@ test("Codex model normalization accepts canonical IDs and display labels", () =>
   assert.equal(settings.normalizeCodexModel("GPT-5.6-Sol"), "gpt-5.6-sol");
   assert.equal(settings.defaultCodexModel, "gpt-5.6-sol");
 });
+
+test("Telegram keyboard omits task capture while keeping the legacy command", () => {
+  const settings = createHubStaticSettings({
+    codexModels: [{ value: "gpt-5.6-sol", label: "GPT-5.6-Sol" }],
+    codexModel: "gpt-5.6-sol",
+    codexReasoningEffort: "high",
+    projects: [{ path: "D:/Work" }],
+    dataDir: "D:/Data",
+    projectRoot: "D:/Work",
+    stateFile: "D:/Data/state.json",
+    deliveryOutboxDir: "D:/Data/outbox",
+    showProjectButton: false,
+  }, "D:/AgentHub");
+
+  const buttonLabels = settings.botMenu.keyboard.flat().map((button) => button.text);
+  assert.equal(buttonLabels.includes("📥 Задача"), false);
+  assert.equal(buttonLabels.includes("📋 Потоки"), true);
+  assert.equal(buttonLabels.includes("📋 Задачи"), false);
+  assert.equal(settings.menuCommands.get("📥 Задача"), "/task");
+  assert.equal(settings.menuCommands.get("📋 Потоки"), "/streams");
+  assert.equal(settings.menuCommands.get("📋 Задачи"), "/tasks");
+  assert.equal(settings.botCommands.some(({ command }) => command === "streams"), true);
+  assert.equal(settings.botCommands.some(({ command }) => command === "tasks"), false);
+  assert.equal(settings.botCommands.some(({ command }) => command === "task"), false);
+});

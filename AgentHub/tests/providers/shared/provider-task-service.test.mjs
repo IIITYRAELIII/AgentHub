@@ -177,7 +177,7 @@ test("Claude task service reserves a stable Thread before the first message", as
   assert.deepEqual(state.args, [created.threadId, {
     provider: "claude",
     streamId: "stream-claude",
-    title: "Новая задача Claude",
+    title: "Новый поток Claude",
   }]);
   assert.equal(state.diff, "");
   assert.equal(state.saved, true);

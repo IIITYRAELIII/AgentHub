@@ -180,7 +180,7 @@ export function serverPageSnapshot({
         name: "Telegram Bot",
         enabled: config?.components?.telegram === true,
         note: config?.components?.telegram === true
-          ? "Принимает сообщения и управляет задачами."
+          ? "Принимает сообщения и управляет потоками."
           : "Бот отключён.",
       },
       {

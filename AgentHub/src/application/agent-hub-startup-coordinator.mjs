@@ -12,7 +12,7 @@ export const AGENT_HUB_STARTUP_OPERATIONS = Object.freeze([
   { id: "provider-metadata", label: "Восстановление метаданных провайдера" },
   { id: "runs", label: "Восстановление активных ходов" },
   { id: "notifications", label: "Повтор незавершённых уведомлений" },
-  { id: "background-jobs", label: "Восстановление фоновых задач" },
+  { id: "background-jobs", label: "Восстановление фоновых операций" },
   { id: "timers", label: "Запуск фоновых таймеров" },
   { id: "telegram", label: "Регистрация команд Telegram" },
   { id: "restart", label: "Завершение перезапуска" },
@@ -199,7 +199,7 @@ export class AgentHubStartupCoordinator {
           state: "failed",
           error: error.message,
         });
-        await this.warnUser(`⚠️ Не удалось восстановить активные задачи: ${error.message}`);
+        await this.warnUser(`⚠️ Не удалось восстановить активные потоки: ${error.message}`);
       } else {
         this.health.setCapability("provider", {
           critical: true,

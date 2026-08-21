@@ -177,7 +177,7 @@ export class ClaudeProviderTaskService {
     this.#selection.setThread(threadId, {
       provider: "claude",
       streamId: this.#selection.streamId,
-      title: "Новая задача Claude",
+      title: "Новый поток Claude",
     });
     this.#clearLatestDiff();
     await this.#saveState();
@@ -185,7 +185,7 @@ export class ClaudeProviderTaskService {
       provider: "claude",
       threadId,
       projectRoot: this.#activeProjectRoot(),
-      title: "Новая задача Claude",
+      title: "Новый поток Claude",
     };
   }
 }

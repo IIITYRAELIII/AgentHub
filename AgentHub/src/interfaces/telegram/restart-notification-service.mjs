@@ -37,7 +37,7 @@ export class RestartNotificationService {
     if (request?.notifyTelegram !== true || !Number.isSafeInteger(request.chatId)) return false;
     try {
       const message = await this.sendMessage(request.chatId, blockingWorkCount
-        ? `🔄 Agent Hub Server перезапустится после завершения выполняющихся задач: ${blockingWorkCount}.`
+        ? `🔄 Agent Hub Server перезапустится после завершения выполняющихся потоков: ${blockingWorkCount}.`
         : "🔄 Перезапускаю Agent Hub Server…");
       if (!Number.isSafeInteger(message?.message_id)
         || this.getRequest() !== request

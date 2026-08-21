@@ -349,7 +349,7 @@ export class TelegramDeliveryService {
     }
   }
 
-  async safelyDeliverRunMessage(run, delivery, description = "сообщение задачи") {
+  async safelyDeliverRunMessage(run, delivery, description = "сообщение потока") {
     try {
       return await delivery();
     } catch (error) {

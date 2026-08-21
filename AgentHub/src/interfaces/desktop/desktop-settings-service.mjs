@@ -28,7 +28,7 @@ export class DesktopSettingsService {
     const value = String(params.value ?? "").trim();
     if (["provider", "project", "model", "reasoning", "mode"].includes(name)
       && !d.isSelected(params, d.selectedTask())) {
-      throw new Error("Настройка относится уже не к выбранной задаче; обновите карточку");
+      throw new Error("Настройка относится уже не к выбранному потоку; обновите карточку");
     }
     let changed = false;
     if (name === "provider") {

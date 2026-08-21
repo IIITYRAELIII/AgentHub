@@ -1185,11 +1185,11 @@ test("desktop task history rejects invalid and missing tasks", async () => {
   const { desktopTaskHistory, state } = fixture();
   await assert.rejects(
     desktopTaskHistory({ provider: "other", threadId: "thread-1" }),
-    /Укажите корректную задачу/,
+    /Укажите корректный поток/,
   );
   state.entries = [];
   await assert.rejects(
     desktopTaskHistory({ provider: "codex", threadId: "missing" }),
-    /Задача не найдена/,
+    /Поток не найден/,
   );
 });
