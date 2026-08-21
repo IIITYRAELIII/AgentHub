@@ -331,7 +331,7 @@ test("shared webview loads the active runtime, never a workspace shadow", async 
     fs.writeFileSync(path.join(runtimeRoot, "work-log.css"), "");
     fs.mkdirSync(extensionRoot, { recursive: true });
     fs.writeFileSync(path.join(extensionRoot, "vscode-bootstrap.js"), "");
-    const { sharedWebviewHtml } = loadSharedWebview(webviewVscode([shadowRoot]));
+    const { markTestContourDocument, sharedWebviewHtml } = loadSharedWebview(webviewVscode([shadowRoot]));
     const webview = {
       cspSource: "vscode-webview://test",
       asWebviewUri: (uri) => `vscode-webview-resource:${uri.fsPath}`,
@@ -362,6 +362,11 @@ test("shared webview loads the active runtime, never a workspace shadow", async 
     assert.ok(result.roots.every((uri) => (
       uri.fsPath.startsWith(runtimeRoot) || uri.fsPath.startsWith(extensionRoot)
     )));
+    const marked = markTestContourDocument('<html><head></head><body><main>Hub</main></body></html>');
+    assert.match(marked, /<html data-test-contour="">/u);
+    assert.match(marked, /href="\/test-contour-watermark\.css"/u);
+    assert.match(marked, /<div class="test-contour-watermark" aria-hidden="true">ТЕСТ<\/div>/u);
+    assert.equal(markTestContourDocument(marked), marked);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

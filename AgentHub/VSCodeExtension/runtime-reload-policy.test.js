@@ -13,4 +13,9 @@ test("runtime publication asks the webview to prepare before replacing its shell
     targetRoot: "new",
     clientReady: true,
   }), "apply");
+  assert.equal(runtimeReloadAction({
+    currentRoot: "old",
+    targetRoot: "new",
+    force: true,
+  }), "apply");
 });

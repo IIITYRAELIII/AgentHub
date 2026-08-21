@@ -79,11 +79,28 @@ async function rewriteRuntimeAssetReferences(html, webview, runtimeUri, clientAs
   return { html, uris: entries.map(([, uri]) => uri) };
 }
 
+function markTestContourDocument(source) {
+  const watermarkStylesheet = '<link rel="stylesheet" href="/test-contour-watermark.css">';
+  const watermarkMarkup = '<div class="test-contour-watermark" aria-hidden="true">ТЕСТ</div>';
+  let html = String(source ?? "");
+  if (!/<html\b[^>]*\bdata-test-contour(?:\s|=|>)/iu.test(html)) {
+    html = html.replace(/<html\b/iu, '<html data-test-contour=""');
+  }
+  if (!/href=["']\/test-contour-watermark\.css["']/iu.test(html)) {
+    html = html.replace(/<\/head>/iu, `${watermarkStylesheet}\n</head>`);
+  }
+  if (!/class=["'][^"']*\btest-contour-watermark\b[^"']*["']/iu.test(html)) {
+    html = html.replace(/<\/body>/iu, `${watermarkMarkup}\n</body>`);
+  }
+  return html;
+}
+
 async function sharedWebviewHtml(webview, locations) {
   const { runtimeUri } = locations;
   const { clientAssets, index, bootstrap, themeRegistry, renderThemeHtml } = await resolveSharedAssets(locations);
   const nonce = randomBytes(16).toString("base64");
   let html = Buffer.from(await vscode.workspace.fs.readFile(index)).toString("utf8");
+  if (locations.testContour === true) html = markTestContourDocument(html);
   const themeResourceUrls = new Map([...themeRegistry.resources].map(([pathname, item]) => (
     [pathname, resource(webview, vscode.Uri.file(item.file))]
   )));
@@ -128,4 +145,4 @@ async function sharedWebviewHtml(webview, locations) {
   };
 }
 
-module.exports = { sharedWebviewHtml };
+module.exports = { markTestContourDocument, sharedWebviewHtml };

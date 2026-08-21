@@ -9,6 +9,7 @@ export class RateLimitTelemetryService {
     readClaudeAccount,
     readCodexRateLimits,
     codexRunning,
+    codexPollingEnabled = true,
     claudePollingEnabled = true,
     historyStore,
     workLogUsageStore,
@@ -29,6 +30,7 @@ export class RateLimitTelemetryService {
     this.readClaudeAccount = readClaudeAccount ?? (async () => null);
     this.readCodexRateLimits = readCodexRateLimits;
     this.codexRunning = codexRunning;
+    this.codexPollingEnabled = codexPollingEnabled;
     this.claudePollingEnabled = claudePollingEnabled;
     this.historyStore = historyStore;
     this.workLogUsageStore = workLogUsageStore;
@@ -103,7 +105,7 @@ export class RateLimitTelemetryService {
   }
 
   schedule(delayMs = this.intervalMs) {
-    if (this.isStopping()) return;
+    if (this.isStopping() || (!this.codexPollingEnabled && !this.claudePollingEnabled)) return;
     this.timers.schedule("rate-limit-poll", () => {
       void this.poll();
     }, Math.max(0, Number(delayMs) || 0));
@@ -121,7 +123,7 @@ export class RateLimitTelemetryService {
   async #pollOnce() {
     const observedAt = this.nowIso();
     const jobs = [];
-    if (this.codexRunning()) {
+    if (this.codexPollingEnabled && this.codexRunning()) {
       jobs.push(this.refreshCodex().catch((error) => {
         this.logger.error("Cannot poll Codex rate limits:", error.message);
       }));

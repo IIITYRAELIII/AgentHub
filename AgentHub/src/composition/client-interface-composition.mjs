@@ -249,6 +249,7 @@ export async function createClientInterfaceComposition({
     readClaudeAccount,
     readCodexRateLimits: () => sendRpc("account/rateLimits/read", {}, { timeoutMs: 5_000 }),
     codexRunning: codexTransportRunning,
+    codexPollingEnabled: config.codexRateLimitPolling,
     claudePollingEnabled: config.claudeRateLimitPolling,
     historyStore: rateLimitHistoryStore,
     workLogUsageStore,

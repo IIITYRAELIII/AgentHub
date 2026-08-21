@@ -86,7 +86,8 @@ test("server page snapshot excludes secrets and absolute filesystem paths", () =
   const snapshot = serverPageSnapshot({
     config: {
       components: {
-        telegram: true, miniApp: true, androidApp: true, sharedDashboardBot: true, codexContextCleanup: true,
+        telegram: true, miniApp: true, androidApp: true, sharedDashboardBot: true,
+        codexContextCleanup: true, testContour: true,
       },
       miniApp: { enabled: true, worker: { enabled: true } },
       autoApproveOnStart: true,
@@ -126,6 +127,7 @@ test("server page snapshot excludes secrets and absolute filesystem paths", () =
     { id: "shared-dashboard-bot", name: "Общий бот дашборда", enabled: true },
     { id: "telegram-mini-app", name: "Telegram Mini App", enabled: true },
     { id: "android-app", name: "Android App", enabled: true },
+    { id: "test-contour", name: "Тестовый контур", enabled: true },
     { id: "codex-context-optimization", name: "Оптимизация Codex", enabled: true },
   ]);
   assert.equal(
@@ -138,6 +140,7 @@ test("server page snapshot excludes secrets and absolute filesystem paths", () =
 test("server page derives Web App state from its mobile consumers", () => {
   const disabled = serverPageSnapshot({ config: { components: {}, miniApp: {} } });
   assert.equal(disabled.components.find((component) => component.id === "web-app")?.enabled, false);
+  assert.equal(disabled.components.find((component) => component.id === "test-contour")?.enabled, false);
 
   const androidOnly = serverPageSnapshot({
     config: { components: { androidApp: true }, miniApp: {} },

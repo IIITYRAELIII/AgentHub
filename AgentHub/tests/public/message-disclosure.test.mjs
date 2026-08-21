@@ -12,6 +12,7 @@ async function disclosureApi() {
 
 test("user message disclosure appears only for real visual overflow", async () => {
   const { USER_MESSAGE_COLLAPSE_HEIGHT_PX: height, hasCollapsedOverflow } = await disclosureApi();
+  assert.equal(height, 448);
   assert.equal(hasCollapsedOverflow(height), false);
   assert.equal(hasCollapsedOverflow(height - 1), false);
   assert.equal(hasCollapsedOverflow(height + 1), true);
@@ -76,7 +77,10 @@ test("shared shell keeps full text and limits only the rendered user-message bod
   const styles = await readFile(new URL("../../assets/web-app/dialog-area.css", import.meta.url), "utf8");
   assert.match(app, /body\.scrollHeight, USER_MESSAGE_COLLAPSE_HEIGHT_PX/u);
   assert.match(app, /if \(!existing\) bubble\.append\(button\)/u);
-  assert.match(styles, /\.msg-user \.msg-body\.is-collapsed[\s\S]*max-height/u);
+  assert.match(
+    styles,
+    /\.msg-user \.msg-body\.is-collapsed[\s\S]*max-height: var\(--user-message-collapse-height, 448px\)/u,
+  );
   assert.match(styles, /\.msg-user \.msg-body\.is-collapsed::after[\s\S]*height: 38px/u);
   assert.match(styles, /\.msg-disclosure \{[\s\S]*margin: 0 0 0 -8px;/u);
 });

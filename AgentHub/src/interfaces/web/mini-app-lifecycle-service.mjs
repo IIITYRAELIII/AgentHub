@@ -58,13 +58,13 @@ export class MiniAppLifecycleService {
   }
 
   async start() {
+    const address = this.localServer ? await this.localServer.start() : null;
     if (this.sharedDashboardBotClient) {
       await this.sharedDashboardBotClient.start().catch((error) => {
         this.logger.warn(`Cannot start Shared Dashboard bot: ${error.message}`);
       });
     }
-    if (!this.localServer) return null;
-    const address = await this.localServer.start();
+    if (!address) return null;
     const gatewaySettings = await this.loadGatewaySettings(
       path.join(this.runtimeCommandRoot, "gateway.json"),
       { localUrl: address.url },

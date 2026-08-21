@@ -194,6 +194,52 @@ test("Workspace release registry keeps ownership, readiness and file conflicts",
   assert.deepEqual(store.releaseChanges(workspace.id), []);
 });
 
+test("detached historical Threads remain resolvable but cannot become active", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-workspaces-detached-"));
+  const databaseFile = path.join(directory, "journal.sqlite");
+  try {
+    let store = new WorkspaceCatalogStore({ databaseFile, now: () => 100 });
+    await store.load();
+    const workspace = store.createWorkspace({ name: "Test Contour history" });
+    const stream = store.createStream({ workspaceId: workspace.id });
+    store.bindThread({
+      provider: "codex",
+      threadId: "production-thread",
+      streamId: stream.id,
+      projectRoot: "D:/production",
+      source: "created",
+    });
+    store.close();
+
+    const database = new DatabaseSync(databaseFile);
+    database.prepare("UPDATE hub_threads SET detached_at_ms = ?").run(200);
+    database.close();
+
+    store = new WorkspaceCatalogStore({ databaseFile, now: () => 300 });
+    await store.load();
+    assert.equal(store.activeThread(stream.id), null);
+    assert.equal(store.resolveThread({
+      provider: "codex",
+      threadId: "production-thread",
+    }).thread.detachedAtMs, 200);
+    store.bindThread({
+      provider: "codex",
+      threadId: "contour-thread",
+      streamId: stream.id,
+      projectRoot: "D:/contour",
+      source: "rebirth",
+    });
+    assert.equal(store.activeThread(stream.id).threadId, "contour-thread");
+    assert.deepEqual(
+      store.threadsForStream(stream.id).map((thread) => thread.threadId),
+      ["production-thread", "contour-thread"],
+    );
+    store.close();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("release completion binds explicit conflict resolution to the observed plan revision", async (t) => {
   const store = await fixture(t);
   const workspace = store.createWorkspace({ name: "Agent HUB" });

@@ -156,7 +156,7 @@ class AgentHubBridge {
   }
 
   async journalStore() {
-    if (this.journalDatabase) return this.journalDatabase;
+    if (!this.ownsJournalDatabase && this.journalDatabase) return this.journalDatabase;
     const root = await this.backendRoot();
     const moduleCandidates = [
       path.join(root, "src", "infrastructure", "persistence", "journal-database.mjs"),
@@ -180,10 +180,20 @@ class AgentHubBridge {
       modulePath,
     ).href);
     const { JournalDatabase } = await this.journalDatabaseModule;
-    this.journalDatabase ??= new JournalDatabase(
+    const database = new JournalDatabase(
       path.join(this.runtimeRoot, "data", "journal.sqlite"),
     );
-    return this.journalDatabase;
+    if (!this.ownsJournalDatabase) this.journalDatabase = database;
+    return database;
+  }
+
+  async withJournalStore(operation) {
+    const database = await this.journalStore();
+    try {
+      return await operation(database);
+    } finally {
+      if (this.ownsJournalDatabase) database.close();
+    }
   }
 
   async control(action, params = {}) {
@@ -261,16 +271,67 @@ class AgentHubBridge {
   }
 
   async journal() {
-    this.journalCache = await (await this.journalStore()).payload();
+    this.journalCache = await this.withJournalStore((database) => database.payload());
     if (!this.journalCache) throw new Error("Журнал ещё не создан");
     return this.journalCache;
   }
 
-  async subscribeJournal(listener) {
-    return (await this.journalStore()).subscribe((event) => {
+  async subscribeJournal(listener, { pollMs = 500 } = {}) {
+    if (!this.ownsJournalDatabase) {
+      return (await this.journalStore()).subscribe((event) => {
+        this.journalCache = null;
+        listener(event);
+      });
+    }
+    const dataDirectory = path.join(this.runtimeRoot, "data");
+    const databaseNames = new Set(["journal.sqlite", "journal.sqlite-wal", "journal.sqlite-shm"]);
+    let disposed = false;
+    let observedIdentity = null;
+    let polling = false;
+    const notify = (event) => {
+      if (disposed) return;
       this.journalCache = null;
       listener(event);
-    });
+    };
+    const poll = async () => {
+      if (disposed || polling) return;
+      polling = true;
+      try {
+        const identity = (await Promise.all([...databaseNames].map(async (name) => {
+          try {
+            const info = await stat(path.join(dataDirectory, name));
+            return `${name}:${info.size}:${info.mtimeMs}`;
+          } catch (error) {
+            if (error?.code === "ENOENT") return `${name}:missing`;
+            throw error;
+          }
+        }))).join("|");
+        const initial = observedIdentity === null;
+        if (initial || identity !== observedIdentity) {
+          observedIdentity = identity;
+          notify({ type: "filesystem", initial });
+        }
+      } finally {
+        polling = false;
+      }
+    };
+    let watcher = null;
+    try {
+      watcher = watch(dataDirectory, { persistent: false }, (_event, filename) => {
+        if (!filename || databaseNames.has(String(filename).toLowerCase())) void poll().catch(() => {});
+      });
+      watcher.on("error", () => {});
+    } catch {
+      // Polling covers a data directory that is temporarily unavailable.
+    }
+    const timer = setInterval(() => void poll().catch(() => {}), Math.max(100, Number(pollMs) || 500));
+    timer.unref?.();
+    void poll().catch(() => {});
+    return () => {
+      disposed = true;
+      watcher?.close();
+      clearInterval(timer);
+    };
   }
 
   subscribeRuntime(listener, { pollMs = 30_000 } = {}) {
@@ -369,10 +430,10 @@ class AgentHubBridge {
         const key = url.pathname.endsWith("/day")
           ? String(url.searchParams.get("date") ?? "")
           : String(url.searchParams.get("id") ?? "");
-        const html = await (await this.journalStore()).fragment(
+        const html = await this.withJournalStore((database) => database.fragment(
           url.pathname.endsWith("/day") ? "day" : "turn",
           key,
-        );
+        ));
         return typeof html === "string"
           ? jsonResponse({ html, version: journal.version })
           : jsonResponse({ error: "Фрагмент журнала не найден." }, 404);

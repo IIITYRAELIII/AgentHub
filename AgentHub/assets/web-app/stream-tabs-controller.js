@@ -102,6 +102,12 @@
     });
   }
 
+  function preserveStreamOverflowMenuOpen(previousWorkspaceId, workspaceId, open) {
+    const previous = String(previousWorkspaceId ?? "").trim();
+    const current = String(workspaceId ?? "").trim();
+    return open === true && Boolean(previous) && previous === current;
+  }
+
   function archiveStreamIntent(streamId) {
     const id = String(streamId ?? "").trim();
     if (!id) throw new Error("stream id is required");
@@ -974,6 +980,7 @@
     normalizeStreamOrderMode,
     applyOpenStreamSelection,
     orderWorkspaceStreams,
+    preserveStreamOverflowMenuOpen,
     reconcileOpenStreamIds,
     resolveStableStreamCardWidth,
     streamDeckRenderKey,

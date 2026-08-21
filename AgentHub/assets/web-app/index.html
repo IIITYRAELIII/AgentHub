@@ -10,6 +10,7 @@
   <link rel="icon" type="image/png" href="/agent-hub-mark.png">
   <link rel="stylesheet" href="/work-log.css">
   <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/test-contour-watermark.css">
   <link rel="stylesheet" href="/backgrounds.css">
   <link rel="stylesheet" href="/stream-status.css">
   <link rel="stylesheet" href="/startup-screen.css">
@@ -28,6 +29,7 @@
   <script src="/navigation-tabs-controller.js" defer></script>
   <script src="/stream-tabs-controller.js" defer></script>
   <script src="/connection-banner.js" defer></script>
+  <script src="/connection-quality.js" defer></script>
   <script src="/startup-screen.js" type="module"></script>
   <script src="/approval-form.js" defer></script>
   <script src="/runtime-reload-controller.js" defer></script>
@@ -305,6 +307,12 @@
           <div class="stream-chat-meta">
             <span class="provider-dot" data-stream-header-provider-dot aria-hidden="true"></span>
             <strong data-stream-header-provider>Агент</strong>
+            <span class="connection-quality provider-connection-quality"
+              data-provider-connection-quality data-quality="connecting" data-bars="0"
+              title="Задержка первого ответа модели"
+              aria-label="Задержка первого ответа модели" hidden>
+              <i></i><i></i><i></i><i></i>
+            </span>
             <span class="stream-chat-meta-separator" data-stream-header-model-separator hidden
               aria-hidden="true"></span>
             <span class="stream-chat-model" data-stream-header-model hidden></span>
@@ -499,6 +507,10 @@
                   stroke-linejoin="round" stroke-width="16"></path>
               </svg>
             </button>
+            <span class="connection-quality composer-connection-quality" data-connection-quality data-quality="connecting"
+              data-bars="0" title="Связь: подключение" aria-label="Связь: подключение">
+              <i></i><i></i><i></i><i></i>
+            </span>
             <label class="composer-input" data-composer-grow>
               <textarea data-composer-input rows="1"
                 placeholder="Сообщение агенту…"

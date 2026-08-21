@@ -149,6 +149,10 @@ export function createRunObservationComposition({
     createObservedRun: (...args) => taskObserver.create(...args),
     scheduleObservedRun: (...args) => taskObserver.schedule(...args),
     saveState,
+    shouldWatchTask: (task) => workspaceCatalogStore.thread({
+      provider: task.provider,
+      threadId: task.threadId,
+    })?.detachedAtMs == null,
   });
 
   return {

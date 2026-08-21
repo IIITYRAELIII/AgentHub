@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { closeSync, openSync } from "node:fs";
 import {
   access,
+  copyFile,
   mkdir,
   readFile,
   rm,
@@ -25,6 +26,10 @@ import {
 import { LoopbackTelegramApi } from "../infrastructure/network/loopback-telegram-api.mjs";
 import { localWebAccessUrl } from "../infrastructure/network/loopback-web-access.mjs";
 import { JournalDatabase } from "../infrastructure/persistence/journal-database.mjs";
+import {
+  cloneAttachmentDirectoryToTestContour,
+  cloneJournalToTestContour,
+} from "../infrastructure/persistence/test-contour-data-clone.mjs";
 import { processIsAlive } from "../infrastructure/process/process-liveness.mjs";
 import { stopProcessTree } from "../infrastructure/process/process-tree.mjs";
 
@@ -64,7 +69,9 @@ export function testContourPaths(root = defaultTestContourRoot()) {
     stateFile: path.join(resolved, STATE_FILE),
     configFile: path.join(resolved, CONFIG_FILE),
     projectRoot: path.join(resolved, "project"),
+    codexHome: path.join(resolved, "codex-home"),
     dataDir: path.join(resolved, "data"),
+    dataBackupsDirectory: path.join(resolved, "backups", "data-clones"),
     automationRoot: path.join(resolved, "automation"),
     artifactsDirectory: path.join(resolved, "artifacts"),
     stdoutFile: path.join(resolved, "test-contour.log"),
@@ -171,7 +178,7 @@ export async function installTestContour({
   const marker = await ensureMarker(isolatedRoot);
   await writeFile(
     path.join(paths.projectRoot, "README.md"),
-    "# Agent Hub Test Contour\n\nИзолированная рабочая область для проверок Agent Hub.\n",
+    "# Agent Hub Test\n\nИзолированная рабочая область для проверок Agent Hub.\n",
     "utf8",
   );
   await writeJson(path.join(paths.automationRoot, "package.json"), {
@@ -241,6 +248,9 @@ export function testContourConfig({
     codexSandboxMode: "workspace-write",
     codexCollaborationMode: "default",
     codexModels: [{ value: model, label: "GPT-5.3-Codex-Spark" }],
+    codexRateLimitPolling: false,
+    claudeRateLimitPolling: false,
+    createInitialThreadOnStartup: false,
     taskBoard: {
       triageEnabled: false,
       triageModel: model,
@@ -266,8 +276,13 @@ export function testContourEnvironment({
   paths,
   telegramApiBaseUrl,
   model = TEST_CONTOUR_MODEL,
+  releaseId,
   environment = process.env,
 } = {}) {
+  const normalizedReleaseId = String(releaseId ?? "").trim();
+  if (!/^[A-Za-z0-9._-]+$/u.test(normalizedReleaseId)) {
+    throw new Error("Test Contour releaseId is required");
+  }
   const result = { ...environment };
   for (const key of [
     "TELEGRAM_BOT_TOKEN",
@@ -283,17 +298,59 @@ export function testContourEnvironment({
     ...result,
     AGENT_HUB_CONFIG: paths.configFile,
     AGENT_HUB_RUNTIME_ROOT: paths.root,
+    AGENT_HUB_RELEASE_ID: normalizedReleaseId,
     AGENT_HUB_LAUNCHER: "",
     AGENT_HUB_DISABLE_SECRET_ACL: "1",
     AGENT_HUB_TEST_CONTOUR: "1",
     TELEGRAM_API_BASE_URL: telegramApiBaseUrl,
     AI_PROVIDER: "codex",
     CODEX_MODEL: model,
+    CODEX_HOME: paths.codexHome,
     CODEX_PROJECT_ROOT: paths.projectRoot,
     CODEX_SANDBOX_MODE: "workspace-write",
     SENTRY_DSN: "",
     SENTRY_ENVIRONMENT: "test-contour",
   };
+}
+
+async function prepareTestContourCodexHome(paths, {
+  environment = process.env,
+  home = homedir(),
+} = {}) {
+  const sourceHome = path.resolve(environment.CODEX_HOME || path.join(home, ".codex"));
+  const sourceAuth = path.join(sourceHome, "auth.json");
+  const targetAuth = path.join(paths.codexHome, "auth.json");
+  await mkdir(paths.codexHome, { recursive: true });
+  if (canonicalPath(sourceAuth) === canonicalPath(targetAuth)) return targetAuth;
+  try {
+    await copyFile(sourceAuth, targetAuth);
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      throw new Error(`Codex auth.json is required for Test Contour: ${sourceAuth}`);
+    }
+    throw error;
+  }
+  return targetAuth;
+}
+
+async function markTestContourWebApp(releaseRoot) {
+  const indexFile = path.join(releaseRoot, "assets", "web-app", "index.html");
+  const source = await readFile(indexFile, "utf8");
+  const watermarkMarkup = '<div class="test-contour-watermark" aria-hidden="true">ТЕСТ</div>';
+  const withMarker = source.includes("data-test-contour")
+    ? source
+    : source.replace(/<html\b/u, '<html data-test-contour=""');
+  const marked = withMarker.includes(watermarkMarkup)
+    ? withMarker
+    : withMarker.replace(
+      /<\/body>/u,
+      `${watermarkMarkup}\n</body>`,
+    );
+  if (!marked.includes("data-test-contour") || !marked.includes(watermarkMarkup)) {
+    throw new Error(`Test Contour web app has no expected document roots: ${indexFile}`);
+  }
+  await writeFile(indexFile, marked, "utf8");
+  return indexFile;
 }
 
 export async function prepareTestContourCandidate({
@@ -303,7 +360,11 @@ export async function prepareTestContourCandidate({
 } = {}) {
   const isolatedRoot = assertIsolatedTestContourRoot(root, { sourceRoot });
   await ensureMarker(isolatedRoot);
-  const deployed = await deploy({ sourceRoot, runtimeRoot: isolatedRoot });
+  const deployed = await deploy({
+    sourceRoot,
+    runtimeRoot: isolatedRoot,
+    beforePointerCommit: ({ releaseRoot }) => markTestContourWebApp(releaseRoot),
+  });
   return { root: isolatedRoot, releaseId: deployed.releaseId, releaseRoot: deployed.releaseRoot };
 }
 
@@ -360,7 +421,12 @@ export async function serveTestContour({
   await rm(paths.stateFile, { force: true });
   const runtime = spawnImpl(process.execPath, [path.join(releaseRoot, "agent-hub-main.mjs")], {
     cwd: releaseRoot,
-    env: testContourEnvironment({ paths, telegramApiBaseUrl: telegram.baseUrl, model }),
+    env: testContourEnvironment({
+      paths,
+      telegramApiBaseUrl: telegram.baseUrl,
+      model,
+      releaseId,
+    }),
     stdio: "inherit",
     windowsHide: true,
   });
@@ -420,9 +486,51 @@ export async function stopTestContour({ root = defaultTestContourRoot() } = {}) 
   const state = await readJson(paths.stateFile);
   if (!state) return { stopped: false, reason: "not-running" };
   await stopProcessTree(state.managerPid).catch(() => false);
-  await waitFor(() => !processIsAlive(state.managerPid), "Test Contour shutdown", 15_000).catch(() => null);
+  if (processIsAlive(state.runtimePid)) await stopProcessTree(state.runtimePid).catch(() => false);
+  await waitFor(
+    () => !processIsAlive(state.managerPid) && !processIsAlive(state.runtimePid),
+    "Test Contour shutdown",
+    15_000,
+  );
   await rm(paths.stateFile, { force: true });
   return { stopped: true, state };
+}
+
+export async function cloneProductionDataToTestContour({
+  root = defaultTestContourRoot(),
+  productionRoot = defaultRuntimeRoot(),
+  model = TEST_CONTOUR_MODEL,
+  now = new Date(),
+} = {}) {
+  const isolatedRoot = assertIsolatedTestContourRoot(root, { productionRoot });
+  await requireMarker(isolatedRoot);
+  await stopTestContour({ root: isolatedRoot });
+  const paths = testContourPaths(isolatedRoot);
+  const production = runtimeLayout(productionRoot);
+  const result = await cloneJournalToTestContour({
+    sourceDatabaseFile: path.join(production.dataDir, "journal.sqlite"),
+    destinationDatabaseFile: path.join(paths.dataDir, "journal.sqlite"),
+    backupRoot: paths.dataBackupsDirectory,
+    projectRoot: paths.projectRoot,
+    model,
+    now,
+  });
+  const attachments = await cloneAttachmentDirectoryToTestContour({
+    sourceDirectory: path.join(production.root, "attachments"),
+    destinationDirectory: path.join(paths.root, "attachments"),
+  });
+  await Promise.all([
+    ...["", "-wal", "-shm"].map((suffix) => (
+      rm(path.join(paths.dataDir, `runtime.sqlite${suffix}`), { force: true })
+    )),
+    rm(paths.codexHome, { recursive: true, force: true }),
+  ]);
+  return {
+    ...result,
+    attachmentsCloned: attachments.sourcePresent,
+    runtimeStateReset: true,
+    codexStateReset: true,
+  };
 }
 
 export async function startTestContour({
@@ -437,6 +545,7 @@ export async function startTestContour({
   await stopTestContour({ root: isolatedRoot });
   if (refresh) await prepareTestContourCandidate({ root: isolatedRoot, sourceRoot });
   else await currentRelease(isolatedRoot).catch(() => prepareTestContourCandidate({ root: isolatedRoot, sourceRoot }));
+  await prepareTestContourCodexHome(paths);
   await rm(paths.stateFile, { force: true });
   const stdout = openSync(paths.stdoutFile, "a");
   const stderr = openSync(paths.stderrFile, "a");

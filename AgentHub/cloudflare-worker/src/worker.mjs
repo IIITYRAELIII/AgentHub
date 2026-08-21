@@ -34,6 +34,7 @@ const DASHBOARD_BOT_SERVICE_IDENTITY_KEY = "dashboard-bot:service-identity";
 const DASHBOARD_BOT_BUNDLE_CALLBACK_PATTERN = /^forward-bundle:(send|separate|cancel):([0-9a-f-]{36})$/iu;
 const DASHBOARD_BOT_BUNDLE_MAX_ITEMS = 100;
 const DASHBOARD_BOT_BUNDLE_MAX_CHARS = 50_000;
+const DASHBOARD_BOT_SUBMISSION_LEASE_MS = 5 * 60 * 1_000;
 const DASHBOARD_BOT_PRECEDING_COMMENT_MAX_AGE_MS = 60 * 1_000;
 const DASHBOARD_BOT_PRECEDING_COMMENT_MAX_CHARS = 160;
 const DASHBOARD_BOT_PRECEDING_COMMENT_MAX_MESSAGE_GAP = 4;
@@ -766,6 +767,20 @@ function dashboardBotNonEmpty(value) {
   return text || null;
 }
 
+function dashboardBotSubmissionIsStale(bundle, now = Date.now()) {
+  if (bundle?.submitting !== true) return false;
+  const startedAt = Number(bundle.submissionStartedAt ?? bundle.updatedAt ?? 0);
+  return !Number.isFinite(startedAt) || startedAt <= now - DASHBOARD_BOT_SUBMISSION_LEASE_MS;
+}
+
+function dashboardBotSubmissionFailureMessage(error) {
+  const detail = String(error?.message ?? error ?? "");
+  if (/timeout|timed out|aborted|durable object|storage operation/iu.test(detail)) {
+    return "Agent Hub временно не ответил. Пачка сохранена: повторите отправку или отмените её.";
+  }
+  return `Agent Hub временно не принял пачку: ${detail || "очередь недоступна"}`.slice(0, 300);
+}
+
 function dashboardBotUserLabel(user) {
   const fullName = [dashboardBotNonEmpty(user?.first_name), dashboardBotNonEmpty(user?.last_name)]
     .filter(Boolean)
@@ -1495,7 +1510,21 @@ export class JournalStore extends DurableObject {
       await this.ctx.storage.delete(key);
       return { reply: "Открытая пачка относилась к другой привязке и была отменена. Перешлите сообщения ещё раз." };
     }
-    if (bundle.submitting) return { reply: "Пачка уже отправляется. Дождитесь подтверждения." };
+    if (bundle.submitting) {
+      if (!dashboardBotSubmissionIsStale(bundle)) {
+        return { reply: "Пачка уже отправляется. Дождитесь подтверждения." };
+      }
+      bundle.submitting = false;
+      delete bundle.submissionStartedAt;
+      bundle.updatedAt = Date.now();
+      await this.ctx.storage.put(key, bundle);
+      return {
+        reply: "Предыдущая отправка не была подтверждена. Новое сообщение не добавлено: повторите отправку пачки или отмените её, затем перешлите сообщение ещё раз.",
+        card: this.#dashboardBotBundleCard(bundle, {
+          warning: "Предыдущая отправка не подтверждена. Пачка сохранена: её можно отправить повторно или отменить.",
+        }),
+      };
+    }
     if (bundle.items.some((item) => item.messageId === message.message_id)) {
       if (Number.isSafeInteger(bundle.cardMessageId)) return { card: this.#dashboardBotBundleCard(bundle) };
       if (bundle.cardPending) return { ignored: true };
@@ -1543,11 +1572,17 @@ export class JournalStore extends DurableObject {
   async #dashboardBotSubmitBundle(userId, expectedId = "", { separate = false } = {}) {
     const key = dashboardBotBundleKey(userId);
     const bundle = await this.ctx.storage.get(key);
-    if (!bundle || (expectedId && bundle.id !== expectedId) || bundle.submitting) {
-      return { reply: "Открытая пачка не найдена." };
+    if (!bundle) return { reply: "Открытая пачка не найдена." };
+    if (expectedId && bundle.id !== expectedId) {
+      return { reply: "Эта пачка уже закрыта. Используйте кнопки у последней карточки." };
     }
+    if (bundle.submitting && !dashboardBotSubmissionIsStale(bundle)) {
+      return { reply: "Пачка уже отправляется. Дождитесь подтверждения." };
+    }
+    const now = Date.now();
     bundle.submitting = true;
-    bundle.updatedAt = Date.now();
+    bundle.submissionStartedAt = now;
+    bundle.updatedAt = now;
     await this.ctx.storage.put(key, bundle);
     const groups = separate ? dashboardBotSeparatedGroups(bundle) : [{ items: bundle.items }];
     const commands = groups.map((group, index) => {
@@ -1629,15 +1664,23 @@ export class JournalStore extends DurableObject {
     }
     const key = dashboardBotBundleKey(userId);
     const bundle = await this.ctx.storage.get(key);
-    if (!bundle || bundle.id !== id || bundle.submitting) {
+    if (!bundle || bundle.id !== id) {
       return { callbackQueryId: query.id, callbackText: "Пачка уже закрыта." };
     }
     if (action === "cancel") {
+      if (bundle.submitting && !dashboardBotSubmissionIsStale(bundle)) {
+        return { callbackQueryId: query.id, callbackText: "Отправка ещё выполняется. Дождитесь подтверждения." };
+      }
+      const submissionWasAmbiguous = bundle.submitting === true;
       await this.ctx.storage.delete(key);
       return {
         callbackQueryId: query.id,
-        callbackText: "Пачка отменена.",
-        card: this.#dashboardBotBundleCard(bundle, { finalText: "❌ Сбор пачки отменён." }),
+        callbackText: submissionWasAmbiguous ? "Зависшая пачка закрыта." : "Пачка отменена.",
+        card: this.#dashboardBotBundleCard(bundle, {
+          finalText: submissionWasAmbiguous
+            ? "⚠️ Зависшая пачка закрыта. Её прежняя отправка не была подтверждена и ещё может завершиться отдельно."
+            : "❌ Сбор пачки отменён.",
+        }),
       };
     }
     return { callbackQueryId: query.id, callbackText: "Неизвестное действие." };
@@ -1676,9 +1719,19 @@ export class JournalStore extends DurableObject {
       return this.#dashboardBotSubmitBundle(linked.userId, "", { separate: true });
     }
     if (/^\/cancel(?:@\w+)?(?:\s|$)/iu.test(text)) {
-      if (!openBundle || openBundle.submitting) return { reply: "Открытая пачка не найдена." };
+      if (!openBundle) return { reply: "Открытая пачка не найдена." };
+      if (openBundle.submitting && !dashboardBotSubmissionIsStale(openBundle)) {
+        return { reply: "Отправка ещё выполняется. Дождитесь подтверждения." };
+      }
+      const submissionWasAmbiguous = openBundle.submitting === true;
       await this.ctx.storage.delete(dashboardBotBundleKey(linked.userId));
-      return { card: this.#dashboardBotBundleCard(openBundle, { finalText: "❌ Сбор пачки отменён." }) };
+      return {
+        card: this.#dashboardBotBundleCard(openBundle, {
+          finalText: submissionWasAmbiguous
+            ? "⚠️ Зависшая пачка закрыта. Её прежняя отправка не была подтверждена и ещё может завершиться отдельно."
+            : "❌ Сбор пачки отменён.",
+        }),
+      };
     }
     const source = dashboardBotForwardedMessageSource(message);
     const image = dashboardBotImageDescriptor(message);
@@ -1793,6 +1846,7 @@ export class JournalStore extends DurableObject {
       return { ok: true };
     }
     bundle.submitting = false;
+    delete bundle.submissionStartedAt;
     bundle.updatedAt = Date.now();
     await this.ctx.storage.put(key, bundle);
     return {
@@ -3357,10 +3411,12 @@ export default {
           }
         } catch (error) {
           if (routed.submittedBundle) {
+            const userFacingError = dashboardBotSubmissionFailureMessage(error);
+            console.warn(`Dashboard bot bundle submission failed: ${String(error?.message ?? error)}`);
             const resetResponse = await dashboardBotRouter.fetch(new Request("https://journal.internal/dashboard-bot/finalize", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ ...routed.submittedBundle, submitted: false, error: error.message }),
+              body: JSON.stringify({ ...routed.submittedBundle, submitted: false, error: userFacingError }),
             }));
             const reset = await resetResponse.json().catch(() => ({}));
             if (reset.card) await updateDashboardBotCard(env, dashboardBotRouter, reset.card);

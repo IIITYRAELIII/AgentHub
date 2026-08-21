@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
 import { canonicalPath } from "../../src/infrastructure/filesystem/config.mjs";
 import { LoopbackTelegramApi } from "../../src/infrastructure/network/loopback-telegram-api.mjs";
 import {
   assertIsolatedTestContourRoot,
+  cloneProductionDataToTestContour,
   defaultTestContourRoot,
   installTestContour,
   PLAYWRIGHT_CORE_VERSION,
@@ -79,6 +81,9 @@ test("Test Contour config is loopback-only, Spark-backed and environment-isolate
   assert.equal(config.projectRoot, paths.projectRoot);
   assert.equal(config.diagnostics.sentry.enabled, false);
   assert.equal(config.components.testContour, true);
+  assert.equal(config.codexRateLimitPolling, false);
+  assert.equal(config.claudeRateLimitPolling, false);
+  assert.equal(config.createInitialThreadOnStartup, false);
   assert.throws(
     () => testContourConfig({ paths, telegramApiBaseUrl: "https://api.telegram.org" }),
     /must use 127\.0\.0\.1/u,
@@ -87,11 +92,13 @@ test("Test Contour config is loopback-only, Spark-backed and environment-isolate
   const environment = testContourEnvironment({
     paths,
     telegramApiBaseUrl: "http://127.0.0.1:43210",
+    releaseId: "candidate-1",
     environment: {
       TELEGRAM_BOT_TOKEN: "production-token",
       TELEGRAM_API_BASE_URL: "https://api.telegram.org",
       SENTRY_DSN: "production-dsn",
       CODEX_EXECUTABLE: "fake-codex",
+      AGENT_HUB_RELEASE_ID: "production-release",
       PATH: "safe-path",
     },
   });
@@ -100,7 +107,151 @@ test("Test Contour config is loopback-only, Spark-backed and environment-isolate
   assert.equal(environment.SENTRY_DSN, "");
   assert.equal(environment.CODEX_EXECUTABLE, undefined);
   assert.equal(environment.CODEX_MODEL, TEST_CONTOUR_MODEL);
+  assert.equal(environment.CODEX_HOME, paths.codexHome);
+  assert.equal(environment.AGENT_HUB_RELEASE_ID, "candidate-1");
   assert.equal(environment.PATH, "safe-path");
+});
+
+test("production data clone keeps history but detaches live threads and forces Spark", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-test-contour-clone-"));
+  const productionRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-production-clone-"));
+  try {
+    await installTestContour({ root, run: async () => null });
+    const productionData = path.join(productionRoot, "data");
+    await mkdir(productionData, { recursive: true });
+    const productionAttachments = path.join(productionRoot, "attachments");
+    await mkdir(productionAttachments, { recursive: true });
+    await writeFile(path.join(productionAttachments, "history-image.png"), "production image", "utf8");
+    const sourceFile = path.join(productionData, "journal.sqlite");
+    const source = new DatabaseSync(sourceFile);
+    source.exec(`
+      CREATE TABLE hub_workspaces (id TEXT PRIMARY KEY) WITHOUT ROWID;
+      CREATE TABLE hub_streams (
+        id TEXT PRIMARY KEY, settings_json TEXT NOT NULL, updated_at_ms INTEGER NOT NULL
+      ) WITHOUT ROWID;
+      CREATE TABLE hub_threads (
+        provider TEXT, provider_thread_id TEXT, stream_id TEXT, position INTEGER,
+        project_root TEXT, source TEXT, linked_at_ms INTEGER, updated_at_ms INTEGER
+      );
+      CREATE TABLE task_read_model_tasks (
+        project_root TEXT, session_cwd TEXT, running INTEGER,
+        execution_owner TEXT, turn_id TEXT
+      );
+      CREATE TABLE task_read_model_turns (active INTEGER);
+      CREATE TABLE hub_release_changes (project_root TEXT);
+      CREATE TABLE hub_mcp_operations (
+        status TEXT, error_text TEXT, completed_at_ms INTEGER
+      );
+      CREATE TABLE journal_store_meta (key TEXT PRIMARY KEY, value TEXT) WITHOUT ROWID;
+      CREATE TABLE journal_records (
+        provider TEXT, thread_id TEXT, turn_id TEXT, project_root TEXT,
+        task_thread_id TEXT, completed_at_ms INTEGER, record_json TEXT,
+        PRIMARY KEY (provider, thread_id, turn_id)
+      );
+      INSERT INTO hub_workspaces VALUES ('workspace-1');
+      INSERT INTO hub_streams VALUES (
+        'stream-1', '{"provider":"claude","model":"claude-opus","custom":true}', 1
+      );
+      INSERT INTO hub_threads VALUES (
+        'codex', 'production-thread', 'stream-1', 1,
+        'D:/production', 'created', 1, 1
+      );
+      INSERT INTO task_read_model_tasks VALUES (
+        'D:/production', 'D:/production', 1, 'owner', 'turn-1'
+      );
+      INSERT INTO task_read_model_turns VALUES (1);
+      INSERT INTO hub_release_changes VALUES ('D:/production');
+      INSERT INTO hub_mcp_operations VALUES ('pending', '', NULL);
+      INSERT INTO journal_store_meta VALUES ('revision', '5');
+      INSERT INTO journal_records VALUES (
+        'codex', 'production-thread', 'turn-1', 'D:/production',
+        'production-thread', 1,
+        '{"provider":"codex","threadId":"production-thread","turnId":"turn-1","projectRoot":"D:/production"}'
+      );
+    `);
+    source.close();
+    const contourPaths = testContourPaths(root);
+    await mkdir(contourPaths.dataDir, { recursive: true });
+    await Promise.all(["", "-wal", "-shm"].map((suffix) => (
+      writeFile(path.join(contourPaths.dataDir, `runtime.sqlite${suffix}`), "stale", "utf8")
+    )));
+    await mkdir(contourPaths.codexHome, { recursive: true });
+    await writeFile(path.join(contourPaths.codexHome, "state_5.sqlite"), "stale", "utf8");
+    const contourAttachments = path.join(root, "attachments");
+    await mkdir(contourAttachments, { recursive: true });
+    await writeFile(path.join(contourAttachments, "stale.png"), "stale image", "utf8");
+
+    const result = await cloneProductionDataToTestContour({
+      root,
+      productionRoot,
+      now: new Date("2026-08-21T10:00:00.000Z"),
+    });
+    const clone = new DatabaseSync(result.destinationDatabaseFile, { readOnly: true });
+    try {
+      const settings = JSON.parse(clone.prepare(
+        "SELECT settings_json FROM hub_streams WHERE id = 'stream-1'",
+      ).get().settings_json);
+      assert.equal(settings.provider, "codex");
+      assert.equal(settings.model, TEST_CONTOUR_MODEL);
+      assert.equal(settings.project, testContourPaths(root).projectRoot);
+      assert.equal(settings.custom, true);
+      assert.equal(clone.prepare("SELECT updated_at_ms FROM hub_streams").get().updated_at_ms, 1);
+      assert.deepEqual({ ...clone.prepare(`
+        SELECT project_root, detached_at_ms FROM hub_threads
+      `).get() }, {
+        project_root: contourPaths.projectRoot,
+        detached_at_ms: Date.parse("2026-08-21T10:00:00.000Z"),
+      });
+      assert.deepEqual({ ...clone.prepare(`
+        SELECT project_root, session_cwd, running, execution_owner, turn_id
+        FROM task_read_model_tasks
+      `).get() }, {
+        project_root: contourPaths.projectRoot,
+        session_cwd: contourPaths.projectRoot,
+        running: 0,
+        execution_owner: null,
+        turn_id: null,
+      });
+      assert.equal(clone.prepare("SELECT active FROM task_read_model_turns").get().active, 0);
+      assert.equal(
+        clone.prepare("SELECT project_root FROM hub_release_changes").get().project_root,
+        testContourPaths(root).projectRoot,
+      );
+      assert.equal(clone.prepare("SELECT status FROM hub_mcp_operations").get().status, "failed");
+      assert.equal(clone.prepare("SELECT value FROM journal_store_meta WHERE key = 'revision'").get().value, "6");
+      const journalRecord = clone.prepare(`
+        SELECT project_root, record_json FROM journal_records
+      `).get();
+      assert.equal(journalRecord.project_root, contourPaths.projectRoot);
+      assert.equal(JSON.parse(journalRecord.record_json).projectRoot, contourPaths.projectRoot);
+      assert.equal(result.detachedThreads, 1);
+      assert.equal(result.preservedCatalogTasks, 1);
+      assert.equal(result.remappedJournalRecords, 1);
+      assert.equal(result.journalRecords, 1);
+      assert.equal(result.attachmentsCloned, true);
+      assert.equal(result.runtimeStateReset, true);
+      assert.equal(result.codexStateReset, true);
+      await Promise.all(["", "-wal", "-shm"].map(async (suffix) => {
+        await assert.rejects(
+          readFile(path.join(contourPaths.dataDir, `runtime.sqlite${suffix}`)),
+          { code: "ENOENT" },
+        );
+      }));
+      await assert.rejects(readFile(path.join(contourPaths.codexHome, "state_5.sqlite")), { code: "ENOENT" });
+      assert.equal(
+        await readFile(path.join(contourAttachments, "history-image.png"), "utf8"),
+        "production image",
+      );
+      await assert.rejects(readFile(path.join(contourAttachments, "stale.png")), { code: "ENOENT" });
+    } finally {
+      clone.close();
+    }
+  } finally {
+    await Promise.all([
+      rm(root, { recursive: true, force: true }),
+      rm(productionRoot, { recursive: true, force: true }),
+    ]);
+  }
 });
 
 test("Test Contour component is default-off and read from production config", async () => {
@@ -125,12 +276,33 @@ test("candidate preparation deploys only into the isolated runtime root", async 
       sourceRoot,
       deploy: async (options) => {
         calls.push(options);
-        return { releaseId: "candidate-1", releaseRoot: path.join(root, "releases", "candidate-1") };
+        const releaseRoot = path.join(root, "releases", "candidate-1");
+        const webAppRoot = path.join(releaseRoot, "assets", "web-app");
+        await mkdir(webAppRoot, { recursive: true });
+        await writeFile(
+          path.join(webAppRoot, "index.html"),
+          '<html lang="ru"><head><link rel="stylesheet" href="/test-contour-watermark.css"></head><body></body></html>',
+          "utf8",
+        );
+        await options.beforePointerCommit({ releaseRoot });
+        assert.match(
+          await readFile(path.join(webAppRoot, "index.html"), "utf8"),
+          /<div class="test-contour-watermark" aria-hidden="true">ТЕСТ<\/div>/u,
+        );
+        return { releaseId: "candidate-1", releaseRoot };
       },
     });
     assert.equal(result.releaseId, "candidate-1");
     assert.equal(calls[0].runtimeRoot, canonicalPath(root));
     assert.equal(calls[0].sourceRoot, sourceRoot);
+    assert.match(
+      await readFile(path.join(result.releaseRoot, "assets", "web-app", "index.html"), "utf8"),
+      /<html data-test-contour="" lang="ru">/u,
+    );
+    assert.match(
+      await readFile(path.join(result.releaseRoot, "assets", "web-app", "index.html"), "utf8"),
+      /<div class="test-contour-watermark" aria-hidden="true">ТЕСТ<\/div>/u,
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

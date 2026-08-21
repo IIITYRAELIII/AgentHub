@@ -236,6 +236,7 @@ export async function deployRuntime({
   removeRelease,
   onPruneWarning,
   beforeStableLauncherCommit,
+  beforePointerCommit,
   commitStableFile,
   writePointer = atomicJson,
   protectPointer = protectRuntimeConfig,
@@ -324,6 +325,7 @@ export async function deployRuntime({
       updatedAt: new Date().toISOString(),
     };
     try {
+      await beforePointerCommit?.({ layout, releaseId, releaseRoot, pointer });
       await writePointer(layout.currentFile, pointer);
       await protectPointer(layout.currentFile);
       await stableFiles.cleanup();

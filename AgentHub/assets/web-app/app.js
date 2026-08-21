@@ -90,6 +90,7 @@ const streamChatColumns = document.querySelector("[data-stream-chat-columns]");
 const streamChatHeader = document.querySelector("[data-stream-chat-header]");
 const streamHeaderProviderDot = document.querySelector("[data-stream-header-provider-dot]");
 const streamHeaderProvider = document.querySelector("[data-stream-header-provider]");
+const streamHeaderProviderConnection = document.querySelector("[data-provider-connection-quality]");
 const streamHeaderModel = document.querySelector("[data-stream-header-model]");
 const streamHeaderModelSeparator = document.querySelector("[data-stream-header-model-separator]");
 const streamHeaderBranch = document.querySelector("[data-stream-header-branch]");
@@ -129,6 +130,7 @@ const composer = document.querySelector("[data-composer]");
 const composerGrow = document.querySelector("[data-composer-grow]");
 const composerInput = document.querySelector("[data-composer-input]");
 const composerSend = document.querySelector("[data-composer-send]");
+const connectionQualityIndicator = document.querySelector("[data-connection-quality]");
 const annotationsBox = document.querySelector("[data-annotations]");
 const attachmentsBox = document.querySelector("[data-attachments]");
 const annotationContextMenu = document.querySelector("[data-annotation-context-menu]");
@@ -1205,6 +1207,7 @@ function refreshTaskDurations() {
     lastActivityRailRefreshMinute = minute;
     renderActivityRail();
   }
+  renderStreamChatHeader(currentTask(), now);
 }
 
 let toastTimer = 0;
@@ -1269,6 +1272,8 @@ const state = {
   status: null,
   connection: "",
   connectionBlockingCount: 0,
+  connectionLatencyMs: null,
+  providerResponseSamples: new Map(),
   searchQuery: "",
   searchResults: new Map(),
   searchLoading: false,
@@ -1298,6 +1303,18 @@ const state = {
  * пересоздание WebView или краткая потеря связи не стирали сообщение. */
 const drafts = new Map();
 const DRAFT_STORAGE_VERSION = "agent-hub:composer-drafts:v1";
+
+function renderConnectionQuality() {
+  if (!connectionQualityIndicator) return;
+  const presentation = window.AgentHubConnectionQuality.connectionQualityPresentation({
+    status: state.connection || "connecting",
+    latencyMs: state.connectionLatencyMs,
+  });
+  connectionQualityIndicator.dataset.quality = presentation.quality;
+  connectionQualityIndicator.dataset.bars = String(presentation.bars);
+  connectionQualityIndicator.title = presentation.title;
+  connectionQualityIndicator.setAttribute("aria-label", presentation.title);
+}
 const DRAFT_STORAGE_MAX_TASKS = 100;
 const DRAFT_STORAGE_MAX_TEXT = 100_000;
 let pendingComposerRequest = null;
@@ -2180,9 +2197,15 @@ function renderStreamTabs() {
   if (!selected || !String(selected.workspaceId ?? "").trim()) {
     streamTabs.hidden = true;
     streamTabs.replaceChildren();
+    delete streamTabs.dataset.workspaceId;
     return;
   }
   const workspaceId = workspaceKey(selected);
+  const overflowMenuOpen = window.AgentHubStreamTabs.preserveStreamOverflowMenuOpen(
+    streamTabs.dataset.workspaceId,
+    workspaceId,
+    streamTabs.querySelector("[data-stream-tabs-overflow-menu]")?.hidden === false,
+  );
   const streams = workspaceStreams(state.tasks.filter((task) => workspaceKey(task) === workspaceId));
   reconcileOpenStreams(workspaceId, streams);
   const ordered = orderedWorkspaceStreams(streams);
@@ -2288,7 +2311,7 @@ function renderStreamTabs() {
     type: "button",
     class: "stream-tabs-more",
     "data-stream-overflow-toggle": "",
-    "aria-expanded": "false",
+    "aria-expanded": String(overflowMenuOpen),
     title: "Остальные потоки",
   }, [
     el("span", { text: "ещё " }),
@@ -2299,13 +2322,14 @@ function renderStreamTabs() {
     class: "stream-tabs-overflow-menu",
     "data-stream-tabs-overflow-menu": "",
     role: "menu",
-    hidden: true,
+    hidden: !overflowMenuOpen,
   }, overflowItems);
   const overflow = el("span", {
     class: "stream-tabs-overflow",
     "data-stream-tabs-overflow": "",
     hidden: true,
   }, [overflowButton, overflowMenu]);
+  streamTabs.dataset.workspaceId = workspaceId;
   streamTabs.replaceChildren(leftControls, track, overflow);
   streamTabs.hidden = false;
   scheduleStreamTabsOverflow();
@@ -2742,6 +2766,9 @@ streamTabs?.addEventListener("click", (event) => {
   }
   const tab = event.target.closest("[data-stream-tab-id][data-workspace-id]");
   if (!tab) return;
+  const overflowMenu = streamTabs.querySelector("[data-stream-tabs-overflow-menu]");
+  if (overflowMenu) overflowMenu.hidden = true;
+  streamTabs.querySelector("[data-stream-overflow-toggle]")?.setAttribute("aria-expanded", "false");
   const workspaceId = String(tab.dataset.workspaceId ?? "");
   const streams = workspaceStreams(state.tasks.filter((task) => workspaceKey(task) === workspaceId));
   toggleOpenStream(workspaceId, String(tab.dataset.streamTabId ?? ""), streams, {
@@ -3306,7 +3333,20 @@ function messageCountLabel(count) {
   return `${value.toLocaleString("ru-RU")} ${noun}`;
 }
 
-function renderStreamChatHeader(task) {
+function providerResponseForTask(task, now = Date.now()) {
+  if (!task) return null;
+  const key = String(task.id ?? task.streamId ?? task.threadId ?? "");
+  const measurement = window.AgentHubConnectionQuality.modelResponseMeasurement(task.providerStart, now);
+  if (measurement && !measurement.waiting && key) state.providerResponseSamples.set(key, measurement);
+  return measurement ?? state.providerResponseSamples.get(key) ?? null;
+}
+
+function formatModelResponseLatency(latencyMs) {
+  const seconds = Math.max(0, Number(latencyMs) || 0) / 1_000;
+  return `${seconds.toLocaleString("ru-RU", { minimumFractionDigits: 1, maximumFractionDigits: 1 })} с`;
+}
+
+function renderStreamChatHeader(task, now = Date.now()) {
   if (!streamChatHeader) return;
   streamChatHeader.hidden = !task;
   if (!task) return;
@@ -3318,6 +3358,23 @@ function renderStreamChatHeader(task) {
     streamHeaderProviderDot.dataset.state = statusState;
   }
   if (streamHeaderProvider) streamHeaderProvider.textContent = providerLabel;
+  if (streamHeaderProviderConnection) {
+    const measurement = providerResponseForTask(task, now);
+    streamHeaderProviderConnection.hidden = !measurement;
+    if (measurement) {
+      const presentation = window.AgentHubConnectionQuality.modelResponseQuality(measurement);
+      const timing = formatModelResponseLatency(presentation.latencyMs);
+      const title = measurement.failed
+        ? `${providerLabel} ↔ модель: ошибка запроса через ${timing}`
+        : measurement.waiting
+          ? `${providerLabel} ↔ модель: ожидание первого ответа · ${timing}`
+          : `${providerLabel} ↔ модель: ${presentation.label.toLowerCase()} · первый ответ за ${timing}`;
+      streamHeaderProviderConnection.dataset.quality = presentation.quality;
+      streamHeaderProviderConnection.dataset.bars = String(presentation.bars);
+      streamHeaderProviderConnection.title = title;
+      streamHeaderProviderConnection.setAttribute("aria-label", title);
+    }
+  }
   const model = String(task.modelLabel ?? "").trim();
   if (streamHeaderModel) {
     streamHeaderModel.textContent = shortModelLabel(model);
@@ -3332,7 +3389,10 @@ function renderStreamChatHeader(task) {
   }
   if (streamHeaderBranchSeparator) streamHeaderBranchSeparator.hidden = !branch;
   if (streamHeaderMessageCount) {
-    streamHeaderMessageCount.textContent = messageCountLabel(state.messages.get(task.id)?.length ?? 0);
+    streamHeaderMessageCount.textContent = messageCountLabel(MessageView.resolvedMessageCount(
+      state.messages.get(task.id)?.length ?? 0,
+      state.historyPagination.get(task.id)?.messageTotal,
+    ));
   }
 }
 
@@ -6715,15 +6775,22 @@ const AgentHub = {
     listeners.get(type)?.delete(handler);
   },
   prepareForRuntimeReload,
+  setConnectionQuality({ latencyMs = null } = {}) {
+    const latency = Number(latencyMs);
+    state.connectionLatencyMs = Number.isFinite(latency) && latency >= 0 ? Math.round(latency) : null;
+    renderConnectionQuality();
+  },
   /** Состояние соединения и отложенного перезапуска Agent Hub. */
   setConnection(status, details = {}) {
     const value = ["online", "connecting", "restart-waiting", "restarting", "offline"].includes(status)
       ? status
       : "offline";
     const blockingCount = Math.max(0, Number(details.blockingCount) || 0);
-    if (state.connection === value && state.connectionBlockingCount === blockingCount) return;
+    const unchanged = state.connection === value && state.connectionBlockingCount === blockingCount;
     state.connection = value;
     state.connectionBlockingCount = blockingCount;
+    renderConnectionQuality();
+    if (unchanged) return;
     root.dataset.connection = value;
     const messages = {
       connecting: "Подключение к Agent Hub…",
@@ -6833,6 +6900,7 @@ const AgentHub = {
     if (taskId === state.selectedId) {
       renderMessages({ preserveTop: true });
       renderLive();
+      renderStreamChatHeader(currentTask());
     } else refreshSupplementaryStreamChat(taskId);
   },
   /** Раскрываемый diff выбранной задачи под её последним ответом. */
@@ -6859,16 +6927,23 @@ const AgentHub = {
     if (taskId === state.selectedId) {
       renderMessages({ preserveTop: true, prependedCount });
       renderLive();
+      renderStreamChatHeader(currentTask());
     } else refreshSupplementaryStreamChat(taskId);
   },
   setHistoryPagination(taskId, pagination) {
     const next = {
       hasOlder: pagination?.hasOlder === true,
       loading: pagination?.loading === true,
+      messageTotal: Number.isSafeInteger(Number(pagination?.messageTotal))
+        ? Math.max(0, Number(pagination.messageTotal))
+        : null,
     };
     if (sameData(state.historyPagination.get(taskId) ?? {}, next)) return;
     state.historyPagination.set(taskId, next);
-    if (taskId === state.selectedId) renderHistoryLoader();
+    if (taskId === state.selectedId) {
+      renderHistoryLoader();
+      renderStreamChatHeader(currentTask());
+    }
   },
   appendMessage(taskId, message) {
     const list = state.messages.get(taskId) ?? [];
@@ -6877,6 +6952,7 @@ const AgentHub = {
     if (taskId === state.selectedId) {
       renderMessages({ preserveTop: true });
       renderLive();
+      renderStreamChatHeader(currentTask());
     } else refreshSupplementaryStreamChat(taskId);
   },
   patchMessage(taskId, messageId, patch) {

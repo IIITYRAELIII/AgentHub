@@ -11,10 +11,14 @@ const {
   webviewHttpMessages,
 } = require("./agent-hub-bridge.js");
 const { openEditorFromActivityBar } = require("./activity-bar-launch.js");
+const { loadExtensionProfile } = require("./extension-profile.js");
 const { sharedWebviewHtml } = require("./shared-webview.js");
 
-const VIEW_ID = "agentHub.view";
-const THEME_KEY = "agentHub.theme";
+const EXTENSION_PROFILE = loadExtensionProfile(__dirname);
+const VIEW_ID = EXTENSION_PROFILE.viewId;
+const THEME_KEY = EXTENSION_PROFILE.themeKey;
+const OPEN_COMMAND = `${EXTENSION_PROFILE.commandPrefix}.open`;
+const REFRESH_COMMAND = `${EXTENSION_PROFILE.commandPrefix}.refresh`;
 const FILE_DROP_CLIPBOARD_SCRIPT = Buffer.from([
   "Add-Type -AssemblyName System.Windows.Forms",
   "$files = New-Object System.Collections.Specialized.StringCollection",
@@ -173,8 +177,8 @@ class WorkLogViewProvider {
       return;
     }
     const panel = vscode.window.createWebviewPanel(
-      "agentHub.editor",
-      "Agent Hub",
+      EXTENSION_PROFILE.panelType,
+      EXTENSION_PROFILE.title,
       vscode.ViewColumn.Active,
       {
         enableScripts: true,
@@ -185,7 +189,7 @@ class WorkLogViewProvider {
       },
     );
     this.panel = panel;
-    panel.title = "Agent Hub";
+    panel.title = EXTENSION_PROFILE.title;
     panel.onDidDispose(() => {
       if (this.panel !== panel) return;
       this.panel = null;
@@ -218,19 +222,21 @@ class WorkLogViewProvider {
         <style>body{padding:24px;color:#ddd;background:#10161b;font:14px system-ui}</style>
         </head><body>Ресурсы Agent Hub повреждены. Переустановите расширение.</body></html>`;
       this.sharedPanel = "unavailable";
-      void vscode.window.showErrorMessage(`Agent Hub: ${error.message}`);
+      void vscode.window.showErrorMessage(`${EXTENSION_PROFILE.title}: ${error.message}`);
     }
     if (this.panel === panel) this.scheduleRefresh(0, true);
   }
 
   async currentBridge() {
     if (!this.bridge) {
-      this.bridge = new AgentHubBridge();
+      this.bridge = new AgentHubBridge({ runtimeRoot: EXTENSION_PROFILE.runtimeRoot });
       this.unsubscribeJournal = await this.bridge.subscribeJournal(
         () => this.scheduleRefresh(0),
       );
       this.unsubscribeRuntime = this.bridge.subscribeRuntime(
-        () => this.refreshPanelShellIfReleaseChanged(),
+        () => this.refreshPanelShellIfReleaseChanged({
+          force: EXTENSION_PROFILE.name === "test-contour",
+        }),
       );
     }
     return this.bridge;
@@ -254,6 +260,7 @@ class WorkLogViewProvider {
     const shell = await sharedWebviewHtml(panel.webview, {
       runtimeUri,
       extensionUri: this.context.extensionUri,
+      testContour: EXTENSION_PROFILE.name === "test-contour",
     });
     this.themes = new Set(shell.themeIds);
     if (!this.themes.has(this.theme)) this.theme = "orbit";
@@ -262,7 +269,7 @@ class WorkLogViewProvider {
     this.panelRuntimePreparationRoot = null;
   }
 
-  async refreshPanelShellIfReleaseChanged({ clientReady = false } = {}) {
+  async refreshPanelShellIfReleaseChanged({ clientReady = false, force = false } = {}) {
     if (!this.panel || this.sharedPanel === "unavailable") return false;
     const bridge = await this.currentBridge();
     const runtimeRoot = await bridge.runtimeReleaseRoot();
@@ -270,6 +277,7 @@ class WorkLogViewProvider {
       currentRoot: this.panelRuntimeRoot,
       targetRoot: runtimeRoot,
       clientReady,
+      force,
     });
     if (action === "none") return false;
     if (action === "prepare") {
@@ -508,8 +516,8 @@ function activate(context) {
     vscode.window.registerWebviewViewProvider(VIEW_ID, provider, {
       webviewOptions: { retainContextWhenHidden: true },
     }),
-    vscode.commands.registerCommand("agentHub.open", () => provider.openPanel()),
-    vscode.commands.registerCommand("agentHub.refresh", () => provider.scheduleRefresh(0, true)),
+    vscode.commands.registerCommand(OPEN_COMMAND, () => provider.openPanel()),
+    vscode.commands.registerCommand(REFRESH_COMMAND, () => provider.scheduleRefresh(0, true)),
   );
 
 }

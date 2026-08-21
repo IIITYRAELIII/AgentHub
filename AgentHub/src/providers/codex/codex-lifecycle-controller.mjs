@@ -6,6 +6,7 @@ import {
   taskExecutionRuntimeLabel,
 } from "../../domain/task-execution-owner.mjs";
 import { taskRunKey } from "../../domain/task-runs.mjs";
+import { isCodexContextProbeTurn } from "../../domain/codex-context-probe.mjs";
 import { normalizeTokenUsage } from "../../domain/token-usage.mjs";
 import { turnEndKey } from "../../application/turn-end-notifications.mjs";
 import { conciseTurnTitle } from "../../application/turn-title.mjs";
@@ -165,6 +166,17 @@ export class CodexLifecycleController {
       run.gitBaseline = turnStart.gitBaseline ?? run.gitBaseline;
       run.startedAt = turnStart.startedAt || run.startedAt;
       run.promptPreview = turnStart.prompt || run.promptPreview;
+    }
+    if (isCodexContextProbeTurn({
+      contextProbe: run?.contextProbe,
+      prompt: String(payload.prompt ?? "").trim() || turnStart?.prompt || run?.promptPreview,
+      finalAnswer: payload.finalAnswer ?? run?.responseText,
+      clientUserMessageId: run?.clientUserMessageId,
+      userMessages: payload.userMessages ?? run?.userMessages,
+    })) {
+      d.codexTurnStarts.delete(turnEndKey(deliveredIdentity));
+      await d.saveState();
+      return `Ignored internal Codex context probe ${payload.turnId}.`;
     }
     const alreadyDelivered = d.turnEndNotifications.hasDelivered(deliveredIdentity);
     const taskTitle = await d.taskTitle({ ...identity, run });

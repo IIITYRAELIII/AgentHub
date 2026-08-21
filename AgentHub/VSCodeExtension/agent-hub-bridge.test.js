@@ -73,6 +73,30 @@ test("VS Code bridge serves the same lazy journal contract", async () => {
   }
 });
 
+test("VS Code bridge closes its SQLite reader after each journal request", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-vscode-ephemeral-journal-"));
+  const marker = path.join(root, "closed.txt");
+  let bridge;
+  try {
+    await mkdir(path.join(root, "data"), { recursive: true });
+    await writeFile(path.join(root, "journal-database.mjs"), [
+      'import { appendFileSync } from "node:fs";',
+      "export class JournalDatabase {",
+      "  async payload() { return { html: '', updatedAt: '', version: 'v1', revision: 1 }; }",
+      `  close() { appendFileSync(${JSON.stringify(marker)}, 'closed\\n', 'utf8'); }`,
+      "}",
+    ].join("\n"), "utf8");
+    bridge = new AgentHubBridge({ moduleRoot: root, runtimeRoot: root });
+
+    await bridge.journal();
+
+    assert.equal(await readFile(marker, "utf8"), "closed\n");
+  } finally {
+    bridge?.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("VS Code bridge stages pasted images in the allowed runtime directory", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-vscode-image-"));
   const previousRoot = process.env.AGENT_HUB_RUNTIME_ROOT;

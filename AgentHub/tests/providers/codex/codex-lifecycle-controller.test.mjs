@@ -5,6 +5,10 @@ import path from "node:path";
 import test from "node:test";
 
 import { CodexLifecycleController } from "../../../src/providers/codex/codex-lifecycle-controller.mjs";
+import {
+  CODEX_CONTEXT_PROBE_PROMPT,
+  CODEX_CONTEXT_PROBE_RESPONSE,
+} from "../../../src/domain/codex-context-probe.mjs";
 import { TASK_EXECUTION_OWNERS } from "../../../src/domain/task-execution-owner.mjs";
 
 async function fixture({ delivered = false, completion = { id: "completion" }, run = null } = {}) {
@@ -133,6 +137,25 @@ test("Codex lifecycle duplicate completion updates journal without redelivery", 
   assert.equal(f.remembered.length, 1);
   assert.equal(f.deliveredCompletions.length, 0);
   assert.equal(f.lastSeenTaskTurnIds.size, 1);
+});
+
+test("Codex lifecycle ignores an internal context probe completion", async () => {
+  const f = await fixture();
+  await f.controller.handle(request("turn-start", f.projectRoot, {
+    prompt: CODEX_CONTEXT_PROBE_PROMPT,
+  }));
+
+  const result = await f.controller.handle(request("turn-complete", f.projectRoot, {
+    status: "completed",
+    finalAnswer: CODEX_CONTEXT_PROBE_RESPONSE,
+  }));
+
+  assert.equal(result, "Ignored internal Codex context probe turn-1.");
+  assert.equal(f.codexTurnStarts.size, 0);
+  assert.equal(f.recorded.length, 0);
+  assert.equal(f.projected.length, 0);
+  assert.equal(f.remembered.length, 0);
+  assert.equal(f.deliveredCompletions.length, 0);
 });
 
 test("Codex lifecycle rejects mixed caller identities", async () => {

@@ -14,7 +14,7 @@ import {
   streamDisplayName,
 } from "../../domain/workspace-stream-identity.mjs";
 
-const SCHEMA_VERSION = 8;
+const SCHEMA_VERSION = 9;
 export const DEVELOPER_RULES_MAX_BYTES = 32 * 1024;
 const SOURCES = new Set(["created", "discovered", "migration", "rebirth"]);
 const DEVELOPER_RULE_SCOPES = new Set(["workspace", "stream"]);
@@ -65,6 +65,7 @@ function configure(database) {
       source TEXT NOT NULL CHECK (source IN ('created', 'discovered', 'migration', 'rebirth')),
       linked_at_ms INTEGER NOT NULL,
       updated_at_ms INTEGER NOT NULL,
+      detached_at_ms INTEGER,
       PRIMARY KEY (provider, provider_thread_id),
       FOREIGN KEY (stream_id) REFERENCES hub_streams(id) ON DELETE CASCADE,
       UNIQUE (stream_id, position)
@@ -159,6 +160,10 @@ function configure(database) {
   if (!streamColumns.some((column) => column.name === "settings_json")) {
     database.exec("ALTER TABLE hub_streams ADD COLUMN settings_json TEXT NOT NULL DEFAULT '{}'");
   }
+  const threadColumns = database.prepare("PRAGMA table_info(hub_threads)").all();
+  if (!threadColumns.some((column) => column.name === "detached_at_ms")) {
+    database.exec("ALTER TABLE hub_threads ADD COLUMN detached_at_ms INTEGER");
+  }
   const releaseChangeColumns = database.prepare("PRAGMA table_info(hub_release_changes)").all();
   if (!releaseChangeColumns.some((column) => column.name === "revision")) {
     database.exec("ALTER TABLE hub_release_changes ADD COLUMN revision INTEGER NOT NULL DEFAULT 1");
@@ -211,6 +216,7 @@ function threadFromRow(row) {
     source: String(row.source),
     linkedAtMs: Number(row.linked_at_ms) || 0,
     updatedAtMs: Number(row.updated_at_ms) || 0,
+    detachedAtMs: row.detached_at_ms == null ? null : Number(row.detached_at_ms),
   };
 }
 
@@ -1125,7 +1131,7 @@ export class WorkspaceCatalogStore {
   activeThread(streamId) {
     const id = safeIdentifier(streamId, "stream id");
     return threadFromRow(this.#database.prepare(`
-      SELECT * FROM hub_threads WHERE stream_id = ?
+      SELECT * FROM hub_threads WHERE stream_id = ? AND detached_at_ms IS NULL
       ORDER BY position DESC LIMIT 1
     `).get(id));
   }

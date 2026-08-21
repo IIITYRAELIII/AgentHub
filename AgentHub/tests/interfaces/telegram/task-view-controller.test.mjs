@@ -94,6 +94,39 @@ test("cached task history does not wait for the provider", async () => {
   assert.equal(providerReads, 0);
 });
 
+test("detached Test Contour history never probes the provider", async () => {
+  const cached = [{
+    id: "turn-cached",
+    prompt: "Запрос",
+    answer: "Ответ",
+    completed: true,
+    messages: [],
+  }];
+  let providerReads = 0;
+  const view = controller({
+    workspaceCatalogStore: {
+      thread: () => ({ detachedAtMs: 1 }),
+    },
+    ensureCodex: async () => { providerReads += 1; },
+    readCodexThread: async () => { providerReads += 1; return { thread: { turns: [] } }; },
+    taskSyncStore: {
+      history: () => structuredClone(cached),
+      snapshot: () => ({ active: false }),
+    },
+  });
+
+  const result = await view.readHistory({
+    provider: "codex",
+    threadId: "production-thread",
+    projectRoot: "C:/repo",
+    title: "Historical task",
+    chatId: 1,
+  });
+
+  assert.deepEqual(result.history, cached);
+  assert.equal(providerReads, 0);
+});
+
 test("Codex history refresh reads the rollout directly without blocking App Server", async () => {
   let providerReads = 0;
   let snapshotInput = null;

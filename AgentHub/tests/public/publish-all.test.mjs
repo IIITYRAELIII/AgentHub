@@ -72,7 +72,7 @@ test("publication allows a detached checkout at origin main", async () => {
   }), "origin");
 });
 
-test("publication validates every required client before the first deployment", () => {
+test("publication runs Test Contour only when explicitly requested", () => {
   const steps = publicationSteps({ fullTestCheckpointId: "release-checkpoint" });
   assert.deepEqual(steps.map((item) => item.label), [
     "Полные тесты Agent Hub",
@@ -91,25 +91,14 @@ test("publication validates every required client before the first deployment", 
     2,
     "deployment must start only after all validation surfaces pass",
   );
-});
 
-test("publication verifies optional test contour before deployment when enabled", () => {
-  const steps = publicationSteps({ fullTestCheckpointId: "release-checkpoint", includeTestContour: true });
-  assert.deepEqual(steps.map((item) => item.label), [
+  const withContour = publicationSteps({ testContour: true });
+  assert.deepEqual(withContour.slice(0, 3).map((item) => item.label), [
     "Полные тесты Agent Hub",
     "Тестовый контур Agent Hub",
     "Сборка Agent Hub Mobile",
-    "Публикация Mini App Worker",
-    "Сборка runtime-релиза",
-    "Активация runtime-релиза",
-    "Установка расширения VS Code",
   ]);
-  assert.deepEqual(steps[1].args.slice(-4), ["run", "contour:verify", "--", "--require-installed"]);
-  assert.equal(
-    steps.findIndex((step) => step.label.includes("Публикация")),
-    3,
-    "deployment must start only after every enabled validation surface passes",
-  );
+  assert.deepEqual(withContour[1].args.slice(-4), ["run", "contour:verify", "--", "--require-installed"]);
 });
 
 test("publication arguments reject typos and support bounded skips", () => {
@@ -117,7 +106,9 @@ test("publication arguments reject typos and support bounded skips", () => {
     skipTests: true,
     skipWorker: true,
     skipRestart: true,
+    testContour: false,
   });
+  assert.equal(parseArguments(["--test-contour"]).testContour, true);
   assert.throws(() => parseArguments(["--skip-everything"]), /Неизвестные аргументы/u);
   assert.deepEqual(
     publicationSteps({ skipTests: true, skipWorker: true }).map((step) => step.label),
@@ -288,7 +279,9 @@ test("selective publication maps shared UI to runtime, Worker and surface tests"
     from: "abc",
     skipRestart: true,
     fullTests: true,
+    testContour: false,
   });
+  assert.equal(parseChangedArguments(["--test-contour"]).testContour, true);
 });
 
 test("selective publication runs unit and cross-surface E2E tests for runtime code", async () => {
@@ -315,7 +308,7 @@ test("selective publication runs unit and cross-surface E2E tests for runtime co
   assert.ok(!labels.includes("Полные тесты Agent Hub"));
 });
 
-test("selective publication can request the full Agent Hub test suite explicitly", async () => {
+test("selective publication keeps Test Contour optional with full tests", async () => {
   const steps = [];
   await publishChanged(["--from", "base", "--skip-restart", "--full-tests"], {
     run: async (step) => steps.push(step),
@@ -329,13 +322,29 @@ test("selective publication can request the full Agent Hub test suite explicitly
   });
   const labels = steps.map((step) => step.label);
   assert.ok(labels.includes("Полные тесты Agent Hub"));
-  assert.ok(labels.includes("Тестовый контур Agent Hub"));
+  assert.ok(!labels.includes("Тестовый контур Agent Hub"));
   assert.ok(!labels.includes("Тесты расширения VS Code"));
   assert.ok(!labels.includes("Контракт интерфейсов Agent Hub"));
   assert.match(
     steps.find((step) => step.label === "Полные тесты Agent Hub").env.AGENT_HUB_FULL_TEST_CHECKPOINT_ID,
     /^[0-9a-f]{64}$/u,
   );
+});
+
+test("selective publication can opt into Test Contour without full tests", async () => {
+  const labels = [];
+  await publishChanged(["--from", "base", "--skip-restart", "--test-contour"], {
+    run: async (step) => labels.push(step.label),
+    restart: async () => assert.fail("restart must be skipped"),
+    readState: async () => null,
+    writeState: async () => {},
+    revision: async () => "head",
+    diff: async () => ["AgentHub/assets/web-app/app.js"],
+    ensureWorkerDependency: async () => {},
+  });
+  assert.ok(labels.includes("Unit-тесты Agent Hub"));
+  assert.ok(labels.includes("Тестовый контур Agent Hub"));
+  assert.ok(labels.indexOf("Тестовый контур Agent Hub") < labels.indexOf("Сборка runtime-релиза"));
 });
 
 test("selective publication records the exact published revision", async () => {
@@ -435,18 +444,26 @@ test("selective backend publication records an already queued safe restart witho
 });
 
 test("every validation failure stops publication before deployment", async () => {
-  const validations = [
-    "Полные тесты Agent Hub",
-    "Тестовый контур Agent Hub",
-    "Сборка Agent Hub Mobile",
+  const scenarios = [
+    { args: [], failedLabel: "Полные тесты Agent Hub", expected: ["Полные тесты Agent Hub"] },
+    {
+      args: ["--test-contour"],
+      failedLabel: "Тестовый контур Agent Hub",
+      expected: ["Полные тесты Agent Hub", "Тестовый контур Agent Hub"],
+    },
+    {
+      args: [],
+      failedLabel: "Сборка Agent Hub Mobile",
+      expected: ["Полные тесты Agent Hub", "Сборка Agent Hub Mobile"],
+    },
   ];
 
-  for (const failedLabel of validations) {
+  for (const { args, failedLabel, expected } of scenarios) {
     const events = [];
     let restartCalled = false;
 
     await assert.rejects(
-      publishAll([], {
+      publishAll(args, {
         run: async (step) => {
           events.push(step.label);
           if (step.label === failedLabel) {
@@ -464,7 +481,7 @@ test("every validation failure stops publication before deployment", async () =>
 
     assert.deepEqual(
       events,
-      validations.slice(0, validations.indexOf(failedLabel) + 1),
+      expected,
     );
     assert.equal(restartCalled, false);
   }

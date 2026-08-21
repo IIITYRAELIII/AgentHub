@@ -75,6 +75,12 @@ test("Mini App lifecycle starts the local surface without optional transports", 
   assert.deepEqual(events, ["local:start"]);
 });
 
+test("Mini App lifecycle exposes the local startup screen before the shared bot", async () => {
+  const { service, events } = fixture({ sharedBot: true });
+  assert.deepEqual(await service.start(), { url: "http://127.0.0.1:1/" });
+  assert.deepEqual(events, ["local:start", "shared-bot:start"]);
+});
+
 test("shared Dashboard bot starts without the Web App and closes independently", async () => {
   const { service, events } = fixture({ sharedBot: true });
   service.localServer = null;

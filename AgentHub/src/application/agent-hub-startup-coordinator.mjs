@@ -3,10 +3,10 @@ import { agentHubRuntimeHealth } from "./runtime-health.mjs";
 export const AGENT_HUB_STARTUP_OPERATIONS = Object.freeze([
   { id: "release", label: "Проверка установленного релиза", state: "completed" },
   { id: "configuration", label: "Загрузка конфигурации и хранилищ", state: "completed" },
+  { id: "web", label: "Запуск Web-интерфейса" },
   { id: "desktop-control", label: "Запуск Desktop Control" },
   { id: "runtime-command", label: "Запуск Runtime Command" },
   { id: "hub-mcp", label: "Запуск Hub MCP" },
-  { id: "web", label: "Запуск Web-интерфейса" },
   { id: "history", label: "Проверка истории Codex" },
   { id: "provider", label: "Инициализация провайдера" },
   { id: "provider-metadata", label: "Восстановление метаданных провайдера" },
@@ -115,10 +115,6 @@ export class AgentHubStartupCoordinator {
       });
     }
 
-    await this.#runOperation("desktop-control", this.startDesktopControl);
-    await this.#runOperation("runtime-command", this.startRuntimeCommand);
-    await this.#runOperation("hub-mcp", this.startHubMcp);
-
     this.health.startOperation("web");
     this.health.setCapability("mini_app", { critical: false });
     try {
@@ -140,6 +136,10 @@ export class AgentHubStartupCoordinator {
       });
       this.logError("Cannot start Mini App:", error.message);
     }
+
+    await this.#runOperation("desktop-control", this.startDesktopControl);
+    await this.#runOperation("runtime-command", this.startRuntimeCommand);
+    await this.#runOperation("hub-mcp", this.startHubMcp);
 
     await this.#runOperation("history", this.sanitizeRollouts);
 

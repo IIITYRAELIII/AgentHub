@@ -5,6 +5,7 @@ import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
+import { gzipSync } from "node:zlib";
 import { agentHubRuntimeHealth } from "../../application/runtime-health.mjs";
 
 import {
@@ -183,6 +184,7 @@ const LOCAL_SESSION_COOKIE = "agent_hub_local";
 const DEVICE_SESSION_COOKIE = "agent_hub_device";
 const DEVICE_SESSION_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
 const VSCODE_WEBVIEW_ORIGIN = /^(?:vscode-webview:\/\/[a-z0-9-]+|https:\/\/[a-z0-9-]+\.vscode-cdn\.net)$/iu;
+const JSON_GZIP_MIN_BYTES = 16 * 1_024;
 
 function safeEqualText(left, right) {
   const leftBytes = Buffer.from(String(left ?? ""), "utf8");
@@ -358,14 +360,49 @@ function send(response, statusCode, contentType, body, method = "GET", options =
   response.end(method === "HEAD" ? "" : body);
 }
 
+function acceptedEncodingQuality(value, encoding) {
+  const qualities = new Map();
+  for (const entry of String(value ?? "").toLowerCase().split(",")) {
+    const [name, ...parameters] = entry.trim().split(";").map((item) => item.trim());
+    if (!name) continue;
+    const qualityParameter = parameters.find((item) => item.startsWith("q="));
+    const quality = qualityParameter ? Number(qualityParameter.slice(2)) : 1;
+    qualities.set(name, Number.isFinite(quality) ? quality : 0);
+  }
+  return qualities.get(encoding) ?? qualities.get("*") ?? 0;
+}
+
+function varyHeader(...values) {
+  return [...new Set(values
+    .flatMap((value) => String(value ?? "").split(","))
+    .map((value) => value.trim())
+    .filter(Boolean))]
+    .join(", ");
+}
+
 function json(response, statusCode, value, method = "GET", options = {}) {
+  const { acceptEncoding = "", headers = {}, ...sendOptions } = options;
+  const body = Buffer.from(`${JSON.stringify(value)}\n`, "utf8");
+  const compressed = body.length >= JSON_GZIP_MIN_BYTES
+    && acceptedEncodingQuality(acceptEncoding, "gzip") > 0;
+  const responseBody = compressed ? gzipSync(body) : body;
   send(
     response,
     statusCode,
     "application/json; charset=utf-8",
-    `${JSON.stringify(value)}\n`,
+    responseBody,
     method,
-    options,
+    {
+      ...sendOptions,
+      headers: {
+        ...headers,
+        "Content-Length": String(responseBody.length),
+        ...(compressed ? {
+          "Content-Encoding": "gzip",
+          Vary: varyHeader(response.getHeader("Vary"), headers.Vary, "Accept-Encoding"),
+        } : {}),
+      },
+    },
   );
 }
 
@@ -921,7 +958,9 @@ export class MiniAppServer {
           params: { knownVersion },
           context: authorization,
         });
-        json(response, 200, result, method);
+        json(response, 200, result, method, {
+          acceptEncoding: request.headers["accept-encoding"],
+        });
       } catch (error) {
         json(response, 400, { error: String(error?.message ?? error) }, method);
       }
@@ -1010,7 +1049,9 @@ export class MiniAppServer {
             context: { ...authorization, ...(commandId ? { commandId } : {}) },
           }),
           ...(commandId ? { receiptId: commandId } : {}),
-        }, method);
+        }, method, {
+          acceptEncoding: request.headers["accept-encoding"],
+        });
       } catch (error) {
         this.#reportUnexpected(error, "control");
         json(response, 400, { ok: false, error: String(error?.message ?? error) }, method);
@@ -1324,7 +1365,10 @@ export class MiniAppServer {
           response.end();
           return;
         }
-        json(response, 200, publicJournalPayload(journal, { usageSync }), method, { headers: { ETag: etag } });
+        json(response, 200, publicJournalPayload(journal, { usageSync }), method, {
+          acceptEncoding: request.headers["accept-encoding"],
+          headers: { ETag: etag },
+        });
       } catch (error) {
         json(response, 503, { error: `Журнал недоступен: ${error.message}` }, method);
       }
@@ -1340,7 +1384,9 @@ export class MiniAppServer {
           return;
         }
         const days = await this.#journalDatabase.fragments("day");
-        json(response, 200, { days, version: journal.version }, method);
+        json(response, 200, { days, version: journal.version }, method, {
+          acceptEncoding: request.headers["accept-encoding"],
+        });
       } catch (error) {
         json(response, 503, { error: `Журнал недоступен: ${error.message}` }, method);
       }
@@ -1366,7 +1412,9 @@ export class MiniAppServer {
           json(response, 404, { error: "Фрагмент журнала не найден." }, method);
           return;
         }
-        json(response, 200, { html, version: journal.version }, method);
+        json(response, 200, { html, version: journal.version }, method, {
+          acceptEncoding: request.headers["accept-encoding"],
+        });
       } catch (error) {
         json(response, 503, { error: `Журнал недоступен: ${error.message}` }, method);
       }

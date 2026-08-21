@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 export const CODEX_CONTEXT_PROBE_RESPONSE = "AGENT_HUB_CONTEXT_PROBE_OK_V1";
 export const CODEX_CONTEXT_PROBE_PROMPT = `Ответь строго: ${CODEX_CONTEXT_PROBE_RESPONSE}`;
 export const CODEX_CONTEXT_PROBE_CLIENT_ID_PREFIX = "agent-hub-context-probe:";
+export const CODEX_CONTEXT_PROBE_RESPONSE_PREFIX = "AGENT_HUB_CONTEXT_PROBE";
 
 export function codexContextProbeClientId() {
   return `${CODEX_CONTEXT_PROBE_CLIENT_ID_PREFIX}${randomUUID()}`;
@@ -14,7 +15,11 @@ export function isCodexContextProbeClientId(value) {
 
 export function isCodexContextProbeText(value) {
   const text = String(value ?? "").trim();
-  return text === CODEX_CONTEXT_PROBE_PROMPT || text === CODEX_CONTEXT_PROBE_RESPONSE;
+  return text === CODEX_CONTEXT_PROBE_PROMPT || isCodexContextProbeResponseText(text);
+}
+
+export function isCodexContextProbeResponseText(value) {
+  return String(value ?? "").trim().startsWith(CODEX_CONTEXT_PROBE_RESPONSE_PREFIX);
 }
 
 export function isCodexContextProbeTurn(turn, { allowTextFallback = true } = {}) {
@@ -30,6 +35,9 @@ export function isCodexContextProbeTurn(turn, { allowTextFallback = true } = {})
   ))) return true;
   if (!allowTextFallback) return false;
   if (isCodexContextProbeText(turn?.prompt)) return true;
+  if (isCodexContextProbeResponseText(
+    turn?.finalAnswer ?? turn?.answer ?? turn?.responseText,
+  )) return true;
   if ((Array.isArray(turn?.userMessages) ? turn.userMessages : []).some((message) => (
     isCodexContextProbeText(message?.text)
   ))) return true;

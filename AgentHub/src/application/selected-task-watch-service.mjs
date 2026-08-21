@@ -35,6 +35,7 @@ export class SelectedTaskWatchService {
     scheduleObservedRun,
     saveState,
     autoObserve = shouldAutoObserveTask,
+    shouldWatchTask = () => true,
     taskKey = taskRunKey,
     logger = console,
   }) {
@@ -54,6 +55,7 @@ export class SelectedTaskWatchService {
     this.scheduleObservedRun = scheduleObservedRun;
     this.saveState = saveState;
     this.autoObserve = autoObserve;
+    this.shouldWatchTask = shouldWatchTask;
     this.taskKey = taskKey;
     this.logger = logger;
     this.inFlight = false;
@@ -73,7 +75,7 @@ export class SelectedTaskWatchService {
     for (const candidate of Array.isArray(supplied) ? supplied : []) {
       const task = candidate?.task;
       const identity = taskIdentity(task);
-      if (!task?.threadId || !identity || unique.has(identity)) continue;
+      if (!task?.threadId || !identity || unique.has(identity) || !this.shouldWatchTask(task)) continue;
       unique.set(identity, {
         clientId: String(candidate?.clientId ?? "").trim() || "global",
         task,

@@ -309,6 +309,45 @@ class SecureInstallationTests(unittest.TestCase):
             self.assertTrue(newer_agent_hub.exists())
             self.assertTrue(unrelated.exists())
 
+    def test_test_contour_extension_uses_an_independent_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "agent-hub"
+            source = root / "VSCodeExtension"
+            source.mkdir(parents=True)
+            package = {
+                "publisher": "test",
+                "name": "agent-hub",
+                "displayName": "Agent Hub",
+                "description": "production",
+                "version": "1.0.0",
+                "activationEvents": [],
+                "contributes": {
+                    "viewsContainers": {},
+                    "views": {},
+                    "commands": [],
+                },
+            }
+            (source / "package.json").write_text(json.dumps(package), encoding="utf-8")
+            home = Path(temp) / "home"
+
+            with (
+                mock.patch.object(install, "ROOT", root),
+                mock.patch("AgentHub.install.Path.home", return_value=home),
+            ):
+                target = install.install_vscode_extension("test-contour")
+
+            self.assertEqual("test.agent-hub-test-contour-1.0.0", target.name)
+            installed = json.loads((target / "package.json").read_text(encoding="utf-8"))
+            profile = json.loads((target / "extension-profile.json").read_text(encoding="utf-8"))
+            self.assertEqual("agent-hub-test-contour", installed["name"])
+            self.assertEqual("Agent Hub Test", installed["displayName"])
+            self.assertEqual(
+                "media/agent-hub-test.svg",
+                installed["contributes"]["viewsContainers"]["activitybar"][0]["icon"],
+            )
+            self.assertEqual("agentHubTestContour.open", installed["contributes"]["commands"][0]["command"])
+            self.assertEqual({"profile": "test-contour"}, profile)
+
     def test_extension_install_recovers_crash_after_target_was_moved_to_rollback(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "agent-hub"

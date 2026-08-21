@@ -228,6 +228,31 @@ test("deployRuntime does not publish a pointer before the stable launchers are r
   assert.equal(await readFile(path.join(runtimeRoot, "codex-stop-hook-launcher.mjs"), "utf8"), beforeHook);
 });
 
+test("deployRuntime completes release preparation before publishing current.json", async () => {
+  const { sourceRoot, runtimeRoot } = await fixture();
+  await deployRuntime({ sourceRoot, runtimeRoot, releaseId: "release-1" });
+
+  await deployRuntime({
+    sourceRoot,
+    runtimeRoot,
+    releaseId: "release-2",
+    beforePointerCommit: async ({ releaseRoot }) => {
+      const pointer = JSON.parse(await readFile(path.join(runtimeRoot, "current.json"), "utf8"));
+      assert.equal(pointer.current, "release-1");
+      await writeFile(path.join(releaseRoot, "prepared.marker"), "ready\n", "utf8");
+    },
+  });
+
+  assert.equal(
+    JSON.parse(await readFile(path.join(runtimeRoot, "current.json"), "utf8")).current,
+    "release-2",
+  );
+  assert.equal(
+    await readFile(path.join(runtimeRoot, "releases", "release-2", "prepared.marker"), "utf8"),
+    "ready\n",
+  );
+});
+
 test("deployRuntime rolls stable launchers back when publishing current.json fails", async () => {
   const { sourceRoot, runtimeRoot } = await fixture();
   await deployRuntime({ sourceRoot, runtimeRoot, releaseId: "release-1" });

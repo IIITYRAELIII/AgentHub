@@ -49,6 +49,7 @@
     "contour:install": "node test-contour.mjs install",
     "contour:start": "node test-contour.mjs start",
     "contour:refresh": "node test-contour.mjs refresh",
+    "contour:clone-data": "node test-contour.mjs clone-data",
     "contour:open": "node test-contour.mjs open",
     "contour:status": "node test-contour.mjs status",
     "contour:stop": "node test-contour.mjs stop",

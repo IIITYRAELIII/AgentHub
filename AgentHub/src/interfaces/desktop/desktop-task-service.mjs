@@ -126,6 +126,13 @@ export class DesktopTaskService {
       });
     }
     if (!entry) throw new Error("Задача сообщения больше не существует в локальном каталоге");
+    const binding = entry.streamId ? this.threadsForStream(entry.streamId).find((thread) => (
+      String(thread?.provider ?? "") === String(entry.provider ?? "")
+      && String(thread?.threadId ?? "") === String(entry.threadId ?? "")
+    )) : null;
+    if (binding?.detachedAtMs != null) {
+      throw new Error("Это исторический Thread тестового контура. Сначала создай новый Thread в этом Stream");
+    }
     const messageOrigin = normalizeInterstreamOrigin(context?.messageOrigin);
     return {
       streamId: entry.streamId ?? null,

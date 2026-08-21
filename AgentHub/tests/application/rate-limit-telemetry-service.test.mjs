@@ -10,6 +10,7 @@ import {
 
 function fixture({
   codexRunning = true,
+  codexPollingEnabled = true,
   claudePollingEnabled = true,
   claudeOutput = "Current session: 10% used · resets Aug 5, 5:00pm (Asia/Yekaterinburg)",
 } = {}) {
@@ -41,6 +42,7 @@ function fixture({
       return { rateLimits: { primary: { usedPercent: 25 } } };
     },
     codexRunning: () => codexRunning,
+    codexPollingEnabled,
     claudePollingEnabled,
     historyStore: {
       record: async (...args) => events.push(["record", ...args]),
@@ -109,6 +111,16 @@ test("RateLimitTelemetryService skips Codex when its transport is down", async (
   assert.equal(state.events.some(([name]) => name === "read-codex"), false);
   assert.equal(state.events.some(([name]) => name === "read-account"), false);
   assert.equal(state.events.filter(([name]) => name === "record").length, 1);
+});
+
+test("RateLimitTelemetryService disables background Codex polling", async () => {
+  const state = fixture({ codexPollingEnabled: false, claudePollingEnabled: false });
+  await state.service.poll();
+
+  assert.equal(state.events.some(([name]) => name === "read-codex"), false);
+  assert.equal(state.events.some(([name]) => name === "read-account"), false);
+  assert.equal(state.events.some(([name]) => name === "schedule"), false);
+  assert.equal(state.events.some(([name]) => name === "record"), false);
 });
 
 test("RateLimitTelemetryService skips background Claude polling when disabled", async () => {

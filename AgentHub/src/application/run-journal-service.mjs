@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { stat } from "node:fs/promises";
 
 import { taskRunKey } from "../domain/task-runs.mjs";
+import { isCodexContextProbeResponseText } from "../domain/codex-context-probe.mjs";
 import { displayUserPrompt } from "./task-history.mjs";
 import { conciseTurnTitle } from "./turn-title.mjs";
 
@@ -54,6 +55,7 @@ export class RunJournalService {
   rememberLastMessage(run, text, { updatedAt = null } = {}) {
     const value = String(text ?? "").trim();
     if (!run?.threadId || !value) return false;
+    if (isCodexContextProbeResponseText(value)) return false;
     const key = taskRunKey(run);
     const current = this.lastTaskMessages.get(key) ?? null;
     const turnId = String(run.turnId ?? "").trim() || null;
@@ -110,6 +112,7 @@ export class RunJournalService {
       if (!Array.isArray(entry) || typeof entry[0] !== "string" || typeof entry[1]?.text !== "string") {
         continue;
       }
+      if (isCodexContextProbeResponseText(entry[1].text)) continue;
       this.lastTaskMessages.set(entry[0], { ...entry[1] });
       restored += 1;
     }

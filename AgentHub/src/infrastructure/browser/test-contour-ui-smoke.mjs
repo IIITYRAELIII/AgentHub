@@ -26,7 +26,12 @@ export async function runTestContourUiSmoke({
   const errors = [];
   page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
   page.on("console", (message) => {
-    if (message.type() === "error") errors.push(`console: ${message.text()}`);
+    if (message.type() === "error" && !message.text().startsWith("Failed to load resource:")) {
+      errors.push(`console: ${message.text()}`);
+    }
+  });
+  page.on("response", (response) => {
+    if (response.status() >= 400) errors.push(`response ${response.status()}: ${response.url()}`);
   });
   try {
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: timeoutMs });
@@ -44,13 +49,28 @@ export async function runTestContourUiSmoke({
     await page.locator('html[data-view="chat"]').waitFor({ state: "attached", timeout: 10_000 });
 
     if (withAgent) {
-      const agentMessages = page.locator(".msg-agent .msg-body");
-      const previousAgentMessageCount = await agentMessages.count();
+      const workspace = page.locator("[data-workspace-select]:visible").first();
+      await workspace.waitFor({ state: "visible", timeout: timeoutMs });
+      await workspace.click();
+      const selectedStream = page.locator("[data-stream-tab-id]:visible").first();
+      await selectedStream.waitFor({ state: "visible", timeout: timeoutMs });
+      const previousUrl = page.url();
+      await selectedStream.click({ button: "right" });
+      const continueInCodex = page.locator(
+        '[data-stream-menu-action="continue-provider"][data-provider="codex"]',
+      );
+      await continueInCodex.waitFor({ state: "visible", timeout: timeoutMs });
+      await continueInCodex.click();
+      await page.waitForFunction((previous) => (
+        window.location.href !== previous && window.location.hash.includes("/chat/codex/")
+      ), previousUrl, { timeout: timeoutMs });
       const input = page.locator("[data-composer-input]");
       await input.waitFor({ state: "visible", timeout: timeoutMs });
       await input.fill(TEST_CONTOUR_PROBE);
       await page.locator("[data-composer-send]").click();
-      const response = agentMessages.nth(previousAgentMessageCount);
+      const response = page.locator(".msg-agent .msg-body")
+        .filter({ hasText: TEST_CONTOUR_PROBE_RESPONSE })
+        .last();
       await response.waitFor({ state: "visible", timeout: timeoutMs });
       const responseText = (await response.innerText()).trim();
       if (responseText !== TEST_CONTOUR_PROBE_RESPONSE) {

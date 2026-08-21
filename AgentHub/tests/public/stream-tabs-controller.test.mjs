@@ -245,6 +245,15 @@ test("Stream deck key ignores live status churn but tracks physical chat identit
   );
 });
 
+test("Stream overflow menu survives background rerenders only inside its Workspace", async () => {
+  const { preserveStreamOverflowMenuOpen } = await streamTabsApi();
+
+  assert.equal(preserveStreamOverflowMenuOpen("agent-hub", "agent-hub", true), true);
+  assert.equal(preserveStreamOverflowMenuOpen("agent-hub", "other", true), false);
+  assert.equal(preserveStreamOverflowMenuOpen("agent-hub", "agent-hub", false), false);
+  assert.equal(preserveStreamOverflowMenuOpen("", "agent-hub", true), false);
+});
+
 test("ordinary hidden Stream selection collapses a four-column layout", async () => {
   const { applyOpenStreamSelection } = await streamTabsApi();
   const open = ["alpha", "beta", "gamma", "delta"];

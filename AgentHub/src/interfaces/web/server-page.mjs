@@ -208,6 +208,14 @@ export function serverPageSnapshot({
           : "Android-приложение отключено.",
       },
       {
+        id: "test-contour",
+        name: "Тестовый контур",
+        enabled: config?.components?.testContour === true,
+        note: config?.components?.testContour === true
+          ? "Изолированный runtime и VS Code-профиль для опциональных проверок."
+          : "Опциональный тестовый контур не установлен.",
+      },
+      {
         id: "codex-context-optimization",
         name: "Оптимизация Codex",
         enabled: contextOptimizationEnabled,

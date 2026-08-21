@@ -38,7 +38,9 @@ export function createProviderStartupComposition({
   async function initializeProvider() {
     await startCodex();
     await initializeCodex({ attachSelectedThread: false });
-    if (config.telegramEnabled && !getThreadId()) await createThread();
+    if (config.telegramEnabled && config.createInitialThreadOnStartup !== false && !getThreadId()) {
+      await createThread();
+    }
   }
 
   async function attachCodexThread() {

@@ -46,6 +46,25 @@ test("a freshly completed Task lands at the bottom of completed Tasks", async ()
   );
 });
 
+test("workspace side panel keeps every current Task available for scrolling", async () => {
+  const { workspaceTasksForPanel } = await loadBoardView();
+  const tasks = [
+    ...Array.from({ length: 8 }, (_, index) => ({
+      id: `current-${index + 1}`,
+      status: "open",
+      bucket: "workspace",
+      workspaceId: "workspace-1",
+    })),
+    { id: "completed", status: "done", bucket: "workspace", workspaceId: "workspace-1" },
+    { id: "foreign", status: "open", bucket: "workspace", workspaceId: "workspace-2" },
+  ];
+
+  assert.deepEqual(
+    Array.from(workspaceTasksForPanel(tasks, "workspace-1"), (task) => task.id),
+    Array.from({ length: 8 }, (_, index) => `current-${index + 1}`),
+  );
+});
+
 test("unchanged run snapshots do not rebuild Dashboard columns", async () => {
   const { taskBoardSnapshotChanges } = await loadBoardView();
   const current = {

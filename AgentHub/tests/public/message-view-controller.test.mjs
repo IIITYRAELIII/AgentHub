@@ -100,6 +100,14 @@ test("long Thread switches render a bounded newest-message window", async () => 
   assert.equal(messages.length, 500);
 });
 
+test("message count prefers full history while preserving newer live cards", async () => {
+  const api = await messageViewApi();
+
+  assert.equal(api.resolvedMessageCount(126, 811), 811);
+  assert.equal(api.resolvedMessageCount(126, null), 126);
+  assert.equal(api.resolvedMessageCount(812, 811), 812);
+});
+
 test("older history prepends only new nodes and preserves rendered suffix identity", async () => {
   const api = await messageViewApi();
   const previousMessages = [

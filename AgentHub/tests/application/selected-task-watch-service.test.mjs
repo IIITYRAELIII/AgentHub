@@ -7,6 +7,7 @@ function fixture({
   snapshot = { active: true, turnId: "turn-1" },
   selectedTasks = null,
   chatId = 7,
+  shouldWatchTask = () => true,
 } = {}) {
   const task = { streamId: "stream-1", provider: "codex", threadId: "thread-1", projectRoot: "C:/work" };
   let selected = task;
@@ -46,6 +47,7 @@ function fixture({
     },
     scheduleObservedRun: (run) => events.push(["observe", run]),
     saveState: async () => events.push(["save"]),
+    shouldWatchTask,
     taskKey: (value) => value.streamId,
     logger: {
       log: (...args) => events.push(["log", ...args]),
@@ -94,6 +96,14 @@ test("SelectedTaskWatchService observes a browser-only selection without Telegra
   const created = state.events.find(([name]) => name === "create");
   assert.equal(created[1].threadId, "browser-thread");
   assert.equal(created[2], null);
+});
+
+test("SelectedTaskWatchService skips detached historical threads", async () => {
+  const state = fixture({ shouldWatchTask: () => false });
+
+  assert.equal(await state.service.watch(), false);
+  assert.equal(state.events.some(([name]) => name === "snapshot"), false);
+  assert.equal(state.events.at(-1)[0], "schedule");
 });
 
 test("SelectedTaskWatchService never applies a stale snapshot after task switch", async () => {

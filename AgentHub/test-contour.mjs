@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { isMainModule } from "./src/infrastructure/process/main-module.mjs";
 import {
   defaultTestContourRoot,
+  cloneProductionDataToTestContour,
   installTestContour,
   openTestContour,
   readTestContourStatus,
@@ -88,6 +89,14 @@ export async function main(args = process.argv.slice(2)) {
     await requireComponent(options);
     const result = await openTestContour(common);
     print(`Test Contour открыт: ${result.url}`, options.json);
+    return result;
+  }
+  if (options.command === "clone-data") {
+    await requireComponent(options);
+    const clone = await cloneProductionDataToTestContour(common);
+    const state = await startTestContour({ ...common, entryFile });
+    const result = { ...clone, running: true, url: state.url, releaseId: state.releaseId };
+    print(result, options.json);
     return result;
   }
   if (["start", "refresh"].includes(options.command)) {

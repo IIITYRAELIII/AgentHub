@@ -1331,6 +1331,34 @@ test("the reserved context probe phrase stays hidden without a service client id
   }), true);
 });
 
+test("accepted browser messages refresh immediately without waiting for idle polling", () => {
+  assert.match(
+    hubClientSource,
+    /synchronize: async \(result\) => \{\s*if \(result\?\.snapshot\) applySnapshot\(result\.snapshot\);\s*else if \(result\?\.accepted \|\| result\?\.deferred\) await refresh\(\);/u,
+  );
+  assert.match(
+    hubClientSource,
+    /if \(refreshing\) \{\s*refreshRequested = true;\s*return;\s*\}/u,
+  );
+  assert.match(
+    hubClientSource,
+    /void acknowledgeLocalControl\(commandId\)\.catch/u,
+  );
+});
+
+test("a partial streamed context probe answer never becomes a message card", () => {
+  const visible = lifecycle.visibleConversationMessages([{
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "probe-turn",
+    itemId: "probe-agent-live",
+    role: "agent",
+    text: "AGENT_HUB_CONTEXT_PROBE",
+  }]);
+
+  assert.deepEqual(visible, []);
+});
+
 test("active agent response is rendered only by the live card after task switching", () => {
   const user = message("client-live", "Текущий вопрос");
   const agent = {

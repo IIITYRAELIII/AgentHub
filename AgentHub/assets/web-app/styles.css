@@ -3389,8 +3389,10 @@ html[data-surface="mobile"]
 
 .workspace-task-panel {
   border-top: 1px solid var(--line);
-  flex: 0 0 auto;
-  max-height: 42%;
+  display: flex;
+  flex: 0 1 auto;
+  flex-direction: column;
+  min-height: 0;
   overflow: hidden;
   padding: 0.55rem;
 }
@@ -3398,6 +3400,7 @@ html[data-surface="mobile"]
 .workspace-task-panel > header {
   align-items: center;
   display: flex;
+  flex: 0 0 auto;
   gap: 0.5rem;
   justify-content: space-between;
   margin-bottom: 0.45rem;
@@ -3426,9 +3429,12 @@ html[data-surface="mobile"]
 
 .workspace-task-list {
   display: grid;
+  flex: 1 1 auto;
   gap: 0.35rem;
-  max-height: calc(100% - 1.5rem);
+  min-height: 0;
+  overscroll-behavior: contain;
   overflow-y: auto;
+  scrollbar-gutter: stable;
 }
 
 .workspace-task-empty {
@@ -3566,7 +3572,6 @@ html[data-view="chat"]:not([data-surface="mobile"])
 
 .activity-rail .workspace-task-panel {
   margin-top: auto;
-  max-height: 44%;
 }
 
 /* ======================================================= Task board === */
@@ -6730,7 +6735,7 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
 }
 
 .msg-user .msg-body.is-collapsed {
-  max-height: var(--user-message-collapse-height, 264px);
+  max-height: var(--user-message-collapse-height, 448px);
   overflow: hidden;
 }
 

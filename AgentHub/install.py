@@ -23,6 +23,7 @@ LEGACY_PROFILE_COMPONENTS = {
     "journal": {"telegram": False, "miniApp": False, "androidApp": False, "sharedDashboardBot": False, "codexContextCleanup": False, "testContour": False},
 }
 SWAP_TOKEN_PATTERN = re.compile(r"[0-9a-f]{32}\Z")
+EXTENSION_PROFILES = ("production", "test-contour")
 
 
 def resolve_components(
@@ -327,12 +328,61 @@ def request_safe_restart() -> bool:
     return result.returncode == 0
 
 
-def install_vscode_extension() -> Path | None:
+def vscode_extension_package(source_package: dict, profile: str = "production") -> dict:
+    if profile not in EXTENSION_PROFILES:
+        raise ValueError(f"Unknown VS Code extension profile: {profile}")
+    package = json.loads(json.dumps(source_package))
+    if profile == "production":
+        return package
+    package.update({
+        "name": "agent-hub-test-contour",
+        "displayName": "Agent Hub Test",
+        "description": "Изолированный VS Code-клиент тестового контура Agent Hub.",
+    })
+    package["activationEvents"] = [
+        "onView:agentHubTestContour.view",
+        "onCommand:agentHubTestContour.open",
+        "onCommand:agentHubTestContour.refresh",
+    ]
+    contributes = package["contributes"]
+    contributes["viewsContainers"] = {
+        "activitybar": [{
+            "id": "agentHubTestContour",
+            "title": "Agent Hub Test",
+            "icon": "media/agent-hub-test.svg",
+        }]
+    }
+    contributes["views"] = {
+        "agentHubTestContour": [{
+            "type": "webview",
+            "id": "agentHubTestContour.view",
+            "name": "Agent Hub Test",
+        }]
+    }
+    contributes["commands"] = [
+        {
+            "command": "agentHubTestContour.open",
+            "title": "Открыть Agent Hub Test",
+            "category": "Agent Hub Test",
+            "icon": "$(open-preview)",
+        },
+        {
+            "command": "agentHubTestContour.refresh",
+            "title": "Обновить Agent Hub Test",
+            "category": "Agent Hub Test",
+            "icon": "$(refresh)",
+        },
+    ]
+    return package
+
+
+def install_vscode_extension(profile: str = "production") -> Path | None:
     source = ROOT / "VSCodeExtension"
     if not source.is_dir():
         print("VS Code extension source is not present; skipped.")
         return None
-    package = json.loads((source / "package.json").read_text(encoding="utf-8"))
+    source_package = json.loads((source / "package.json").read_text(encoding="utf-8"))
+    package = vscode_extension_package(source_package, profile)
     extension_id = f"{package['publisher']}.{package['name']}-{package['version']}"
     extensions_root = (Path.home() / ".vscode" / "extensions").resolve()
     target = (extensions_root / extension_id).resolve()
@@ -346,13 +396,25 @@ def install_vscode_extension() -> Path | None:
     # running from a stale checkout must never delete a newer version that VS
     # Code has already registered or loaded; doing so leaves extensions.json
     # pointing at a directory without package.json until the next repair.
-    removable_prefixes = ("tyrael.work-log-view-",)
+    removable_prefixes = ("tyrael.work-log-view-",) if profile == "production" else ()
     try:
         shutil.copytree(
             source,
             staging,
             ignore=shutil.ignore_patterns("*.vsix", "node_modules", "__pycache__"),
         )
+        (staging / "package.json").write_text(
+            json.dumps(package, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        profile_file = staging / "extension-profile.json"
+        if profile == "test-contour":
+            profile_file.write_text(
+                json.dumps({"profile": "test-contour"}, indent=2) + "\n",
+                encoding="utf-8",
+            )
+        elif profile_file.exists():
+            profile_file.unlink()
         staged_package = json.loads((staging / "package.json").read_text(encoding="utf-8"))
         if staged_package != package:
             raise RuntimeError("Staged VS Code extension package does not match source package.")
@@ -379,6 +441,34 @@ def install_vscode_extension() -> Path | None:
             shutil.rmtree(resolved, ignore_errors=True)
     print(f"Installed VS Code extension: {target}")
     return target
+
+
+def uninstall_vscode_extension(profile: str) -> list[Path]:
+    if profile not in EXTENSION_PROFILES:
+        raise ValueError(f"Unknown VS Code extension profile: {profile}")
+    source = ROOT / "VSCodeExtension"
+    source_package = json.loads((source / "package.json").read_text(encoding="utf-8"))
+    package = vscode_extension_package(source_package, profile)
+    extensions_root = (Path.home() / ".vscode" / "extensions").resolve()
+    if not extensions_root.is_dir():
+        return []
+    prefix = f"{package['publisher']}.{package['name']}-"
+    removed = []
+    for candidate in extensions_root.iterdir():
+        if not candidate.name.startswith(prefix):
+            continue
+        resolved = candidate.resolve()
+        if candidate.is_symlink() or not candidate.is_dir() or resolved.parent != extensions_root:
+            raise RuntimeError(f"Refusing to remove unsafe extension path: {candidate}")
+        try:
+            installed = json.loads((candidate / "package.json").read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise RuntimeError(f"Refusing to remove invalid extension: {candidate}") from error
+        if installed.get("publisher") != package["publisher"] or installed.get("name") != package["name"]:
+            raise RuntimeError(f"Refusing to remove foreign extension: {candidate}")
+        shutil.rmtree(resolved)
+        removed.append(resolved)
+    return removed
 
 
 def install_autostart() -> None:
@@ -549,6 +639,9 @@ def main() -> int:
     require_embedded_sqlite()
     if args.extension_only:
         install_vscode_extension()
+        existing = read_existing_config(runtime_root() / "config.json")
+        if isinstance(existing.get("components"), dict) and existing["components"].get("testContour") is True:
+            install_vscode_extension("test-contour")
         return 0
     target_root = runtime_root()
     secure_runtime_root(target_root)
@@ -657,14 +750,18 @@ def main() -> int:
             ["node", str(ROOT / "test-contour.mjs"), "install", "--component-approved"],
             check=True,
         )
+        if not args.skip_extension:
+            install_vscode_extension("test-contour")
     elif previous_test_contour:
         subprocess.run(
             ["node", str(ROOT / "test-contour.mjs"), "uninstall", "--component-approved"],
             check=True,
         )
+        if not args.skip_extension:
+            uninstall_vscode_extension("test-contour")
     contour_only_change = contour_only_component_change(args, fresh_install=fresh_install)
     if contour_only_change:
-        print("Agent Hub Test Contour component updated without production deploy or restart.")
+        print("Agent Hub Test component updated without production deploy or restart.")
         return 0
     if args.install_voice:
         install_voice(target_root)

@@ -39,10 +39,10 @@ test("startup preserves control, recovery and readiness order", async () => {
   const { service, calls, health } = coordinator();
   await service.start();
   assert.deepEqual(calls, [
+    "log:Mini App ready at http://localhost",
     "desktop",
     "runtime-command",
     "mcp",
-    "log:Mini App ready at http://localhost",
     "sanitize",
     "provider",
     "backfill",
@@ -61,10 +61,10 @@ test("startup preserves control, recovery and readiness order", async () => {
     [
       { id: "release", state: "completed" },
       { id: "configuration", state: "completed" },
+      { id: "web", state: "completed" },
       { id: "desktop-control", state: "completed" },
       { id: "runtime-command", state: "completed" },
       { id: "hub-mcp", state: "completed" },
-      { id: "web", state: "completed" },
       { id: "history", state: "completed" },
       { id: "provider", state: "completed" },
       { id: "provider-metadata", state: "completed" },

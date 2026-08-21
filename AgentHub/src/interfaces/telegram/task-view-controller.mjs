@@ -444,7 +444,11 @@ export class TaskViewController {
   async readHistory(binding, { completedOnly = false, cachedOnly = false, limit = null } = {}) {
     const d = this.deps;
     const task = this.task(binding, binding.chatId);
-    if (cachedOnly) {
+    const detachedThread = d.workspaceCatalogStore?.thread?.({
+      provider: binding.provider,
+      threadId: binding.threadId,
+    });
+    if (cachedOnly || detachedThread?.detachedAtMs != null) {
       return {
         history: withoutCodexInspectionAttachments(d.taskSyncStore.history(task, {
           ...(limit == null ? {} : { limit }),

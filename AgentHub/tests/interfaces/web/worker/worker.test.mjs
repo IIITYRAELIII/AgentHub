@@ -1615,6 +1615,98 @@ test("shared Dashboard bot can send forwards separately with their reply clarifi
   assert.match(standaloneImageCommand.params.attachments[0], /^remote-attachment:[0-9a-f-]{36}$/u);
   assert.match(standaloneImageCommand.params.text, /Изображение 1 приложено/u);
   assert.match(standaloneImageCommand.params.text, /FB Миллениум/u);
+
+  await webhook({
+    update_id: 211,
+    message: {
+      message_id: 9,
+      date: 1_786_200_010,
+      chat: { id: 42, type: "private" },
+      from: { id: 42, first_name: "Алиса" },
+      forward_origin: { type: "hidden_user", sender_user_name: "Заказчик" },
+      text: "Пачка перед временным сбоем",
+    },
+  });
+  const stuckCard = telegramCalls
+    .filter((call) => call.method === "sendMessage" && /Собираю пачку/u.test(call.body.text))
+    .at(-1);
+  const bundleKey = "dashboard-bot:bundle:42";
+  const routerStorage = namespace.getByName("dashboard-bot:router").ctx.storage.values;
+  let stuckBundle = routerStorage.get(bundleKey);
+  stuckBundle.submitting = true;
+  stuckBundle.submissionStartedAt = 1;
+  routerStorage.set(bundleKey, stuckBundle);
+
+  await webhook({
+    update_id: 212,
+    message: {
+      message_id: 10,
+      date: 1_786_200_011,
+      chat: { id: 42, type: "private" },
+      from: { id: 42, first_name: "Алиса" },
+      forward_origin: { type: "hidden_user", sender_user_name: "Другой автор" },
+      text: "Не должно молча смешаться с зависшей пачкой",
+    },
+  });
+  assert.match(telegramCalls.at(-1).body.text, /Новое сообщение не добавлено/u);
+  assert.equal(routerStorage.get(bundleKey).items.length, 1);
+  assert.equal(routerStorage.get(bundleKey).submitting, false);
+
+  stuckBundle = routerStorage.get(bundleKey);
+  stuckBundle.submitting = true;
+  stuckBundle.submissionStartedAt = 1;
+  routerStorage.set(bundleKey, stuckBundle);
+  await webhook({
+    update_id: 213,
+    callback_query: {
+      id: "callback-cancel-stuck-bundle",
+      from: { id: 42, first_name: "Алиса" },
+      message: { message_id: 804, chat: { id: 42, type: "private" } },
+      data: stuckCard.body.reply_markup.inline_keyboard[1][1].callback_data,
+    },
+  });
+  assert.equal(routerStorage.has(bundleKey), false);
+  assert.ok(telegramCalls.some((call) => (
+    call.method === "editMessageText" && /Зависшая пачка закрыта/u.test(call.body.text)
+  )));
+
+  await webhook({
+    update_id: 214,
+    message: {
+      message_id: 11,
+      date: 1_786_200_012,
+      chat: { id: 42, type: "private" },
+      from: { id: 42, first_name: "Алиса" },
+      forward_origin: { type: "hidden_user", sender_user_name: "Заказчик" },
+      text: "Новая пачка после отмены",
+    },
+  });
+  const recoveredCard = telegramCalls
+    .filter((call) => call.method === "sendMessage" && /Собираю пачку/u.test(call.body.text))
+    .at(-1);
+  const recoveredBundle = routerStorage.get(bundleKey);
+  recoveredBundle.submitting = true;
+  recoveredBundle.submissionStartedAt = 1;
+  routerStorage.set(bundleKey, recoveredBundle);
+  response = await webhook({
+    update_id: 215,
+    callback_query: {
+      id: "callback-retry-stuck-bundle",
+      from: { id: 42, first_name: "Алиса" },
+      message: { message_id: 805, chat: { id: 42, type: "private" } },
+      data: recoveredCard.body.reply_markup.inline_keyboard[0][0].callback_data,
+    },
+  });
+  assert.equal(response.status, 200);
+  assert.equal(routerStorage.has(bundleKey), false);
+  response = await workerModule.default.fetch(signedServiceRequest(
+    "https://hub.test/api/dashboard-bot/pull",
+    { limit: 10, waitMs: 0 },
+    hubSecret,
+    { "X-Agent-Hub-Dashboard-Id": hubId },
+  ), env);
+  const [recoveredCommand] = (await response.json()).commands;
+  assert.match(recoveredCommand.params.text, /Новая пачка после отмены/u);
 });
 
 test("Worker relay stores user-bound file uploads and serves them only to their command", async () => {

@@ -604,7 +604,7 @@ function liveMessageMatch(messages, probe) {
 
 const CONTEXT_PROBE_CLIENT_ID_PREFIX = "agent-hub-context-probe:";
 const CONTEXT_PROBE_PROMPT = "Ответь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1";
-const CONTEXT_PROBE_RESPONSE = "AGENT_HUB_CONTEXT_PROBE_OK_V1";
+const CONTEXT_PROBE_RESPONSE_PREFIX = "AGENT_HUB_CONTEXT_PROBE";
 
 function contextProbeClientId(value) {
   return String(value ?? "").trim().startsWith(CONTEXT_PROBE_CLIENT_ID_PREFIX);
@@ -612,7 +612,7 @@ function contextProbeClientId(value) {
 
 function contextProbeText(value) {
   const text = String(value ?? "").trim();
-  return text === CONTEXT_PROBE_PROMPT || text === CONTEXT_PROBE_RESPONSE;
+  return text === CONTEXT_PROBE_PROMPT || text.startsWith(CONTEXT_PROBE_RESPONSE_PREFIX);
 }
 
 function contextProbeRun(run) {

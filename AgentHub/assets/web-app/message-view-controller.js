@@ -126,6 +126,16 @@
     return values.length > maximum ? values.slice(-maximum) : values;
   }
 
+  function resolvedMessageCount(loadedCount, totalCount) {
+    const loaded = Number.isSafeInteger(Number(loadedCount))
+      ? Math.max(0, Number(loadedCount))
+      : 0;
+    const total = Number.isSafeInteger(Number(totalCount))
+      ? Math.max(0, Number(totalCount))
+      : 0;
+    return Math.max(loaded, total);
+  }
+
   function sameRenderedMessage(left, right) {
     if (left === right) return true;
     if (messageContentSignature(left) !== messageContentSignature(right)) return false;
@@ -240,6 +250,7 @@
     normalizeSystemEventText,
     prependedMessageCount,
     reconcilePrependedKeyedChildren,
+    resolvedMessageCount,
     reconcileKeyedChildren,
   });
 })();

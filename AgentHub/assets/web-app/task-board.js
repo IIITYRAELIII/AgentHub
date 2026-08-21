@@ -90,6 +90,16 @@
       .map(({ task }) => task);
   }
 
+  function workspaceTasksForPanel(tasks, workspaceId) {
+    const normalizedWorkspaceId = String(workspaceId ?? "").trim();
+    if (!normalizedWorkspaceId) return [];
+    return (Array.isArray(tasks) ? tasks : []).filter((task) => (
+      task?.status !== "done"
+      && task?.bucket === "workspace"
+      && task?.workspaceId === normalizedWorkspaceId
+    ));
+  }
+
   function sameSnapshotValue(left, right) {
     if (Object.is(left, right)) return true;
     try {
@@ -126,7 +136,11 @@
     };
   }
 
-  window.AgentHubTaskBoardView = Object.freeze({ taskBoardSnapshotChanges, tasksForMode });
+  window.AgentHubTaskBoardView = Object.freeze({
+    taskBoardSnapshotChanges,
+    tasksForMode,
+    workspaceTasksForPanel,
+  });
 
   const board = document.querySelector("[data-task-board]");
   const columns = document.querySelector("[data-task-board-columns]");
@@ -700,9 +714,7 @@
 
   function renderWorkspacePanel() {
     const workspace = workspaceById(state.selectedWorkspaceId);
-    const tasks = workspace
-      ? state.tasks.filter((task) => task.status !== "done" && task.bucket === "workspace" && task.workspaceId === workspace.id)
-      : [];
+    const tasks = workspaceTasksForPanel(state.tasks, workspace?.id);
     workspacePanel.hidden = !workspace;
     if (!workspace) return;
     workspacePanelTitle.textContent = `Задачи · ${workspace.name}`;
@@ -711,7 +723,7 @@
       workspacePanelList.append(node("p", { class: "workspace-task-empty", text: "Нет назначенных задач" }));
       return;
     }
-    for (const task of tasks.slice(0, 6)) workspacePanelList.append(taskCard(task, { compact: true }));
+    for (const task of tasks) workspacePanelList.append(taskCard(task, { compact: true }));
   }
 
   document.querySelector("[data-task-start-close]")?.addEventListener("click", closeStart);

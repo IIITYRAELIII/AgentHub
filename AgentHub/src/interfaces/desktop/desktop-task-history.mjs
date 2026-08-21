@@ -39,6 +39,40 @@ function sortTaskHistoryChronologically(history) {
     .map(({ item }) => item);
 }
 
+export function visibleTaskHistoryMessageCount(history) {
+  return (Array.isArray(history) ? history : []).reduce((total, item) => {
+    const sourceMessages = Array.isArray(item?.messages) ? item.messages : [];
+    const messages = sourceMessages.filter((message) => {
+      const role = String(message?.role ?? "");
+      if (!["user", "agent"].includes(role)) return false;
+      const text = role === "user"
+        ? displayUserPrompt(message?.text)
+        : String(message?.text ?? "");
+      const messageAttachments = Array.isArray(message?.attachments) ? message.attachments : [];
+      const attachments = messageAttachments.length
+        ? messageAttachments
+        : (role === "user" && Array.isArray(item?.attachments) ? item.attachments : []);
+      return Boolean(text || attachments.length);
+    });
+    const parentAgents = messages.filter((message) => (
+      message?.role === "agent" && message?.kind !== "subagent"
+    ));
+    const agentResponseVisible = item?.completed === true || item?.active !== true;
+    const visibleAgent = agentResponseVisible
+      ? parentAgents.findLast((message) => ["final", "final_answer", "finalAnswer"].includes(message?.phase))
+        ?? parentAgents.at(-1)
+      : null;
+    let count = messages.filter((message) => (
+      message?.role === "user"
+      || message?.kind === "subagent"
+      || message === visibleAgent
+    )).length;
+    if (!messages.some((message) => message?.role === "user") && displayUserPrompt(item?.prompt)) count += 1;
+    if (!visibleAgent && agentResponseVisible && String(item?.answer ?? "").trim()) count += 1;
+    return total + count;
+  }, 0);
+}
+
 // Builds the bounded Desktop/Mini App history read-model for one task.
 function mergeDurableMessages(hydratedMessages, durableMessages) {
   const values = structuredClone(Array.isArray(hydratedMessages) ? hydratedMessages : []);
@@ -390,6 +424,7 @@ export function createDesktopTaskHistoryFactory({
 
     const orderedHistory = sortTaskHistoryChronologically(history);
     const total = orderedHistory.length;
+    const messageTotal = visibleTaskHistoryMessageCount(orderedHistory);
     const requestedEnd = Number(params.before);
     const end = Number.isSafeInteger(requestedEnd)
       ? Math.max(0, Math.min(requestedEnd, total))
@@ -415,6 +450,7 @@ export function createDesktopTaskHistoryFactory({
       threadId: binding.threadId,
       title: taskDisplayTitle(entry),
       total,
+      messageTotal,
       start,
       end,
       nextBefore: start > 0 ? start : null,

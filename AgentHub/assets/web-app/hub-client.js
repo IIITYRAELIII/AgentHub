@@ -36,10 +36,13 @@ let rateLimitRefreshTimer = null;
 let rateLimitRefreshRange = window.AgentHubStatisticsControls.storedLimitsRange(window.localStorage);
 let rateLimitRefreshInFlight = false;
 let refreshing = false;
+let refreshRequested = false;
 let connectionFailureCount = 0;
 let connectionFailureSince = 0;
 let connectionOfflineTimer = null;
 let connectionOfflineBreadcrumbRecorded = false;
+let connectionLatencyMs = null;
+let snapshotTransportPrepared = false;
 let pendingSelectionId = "";
 let selectionTail = Promise.resolve();
 let initialRouteOpening = true;
@@ -775,6 +778,7 @@ function syncHistoryPagination(taskIdValue) {
   agentHub.setHistoryPagination(taskIdValue, {
     hasOlder: page?.nextBefore != null,
     loading: page?.loading === true,
+    messageTotal: page?.messageTotal,
   });
 }
 
@@ -1080,6 +1084,14 @@ async function readSnapshot(params = {}) {
   return payload;
 }
 
+async function prepareSnapshotTransport() {
+  if (snapshotTransportPrepared) return;
+  snapshotTransportPrepared = true;
+  await localSessionReady;
+  await window.AgentHubBrowserDevice?.ensureSession?.();
+  if (vscode) await window.__agentHubDirectTransport?.available?.();
+}
+
 async function control(action, params = {}) {
   const directTransport = window.__agentHubDirectTransport;
   const directAvailable = vscode && directTransport
@@ -1105,7 +1117,7 @@ async function control(action, params = {}) {
     );
   }
   if (payload.receiptId === commandId) {
-    await acknowledgeLocalControl(commandId).catch((error) => {
+    void acknowledgeLocalControl(commandId).catch((error) => {
       console.warn(`Agent Hub control acknowledgement failed: ${error.message}`);
     });
   }
@@ -1181,6 +1193,7 @@ function modelTask(task, snapshot, effectiveSelectedId, serverSelectedId) {
     selected: id === effectiveSelectedId,
     maintenance: task.maintenance ?? null,
     context: task.run?.context ?? task.context ?? null,
+    providerStart: task.run?.providerStart ?? null,
     streamSettings: { ...(catalogStream?.settings ?? {}) },
     workspaceSettings: { ...(workspace?.settings ?? {}) },
     streamDeveloperRules: catalogStream?.developerRules ?? null,
@@ -1922,6 +1935,7 @@ function applyOpened(result, {
     start: preserveOlder ? previousPage.start : history.start,
     end: history.end,
     total: history.total,
+    messageTotal: history.messageTotal,
     nextBefore: preserveOlder ? previousPage.nextBefore : history.nextBefore,
     loading: false,
     version: history.version ?? "",
@@ -2199,6 +2213,7 @@ agentHub.on("history:load-older", ({ taskId: id }) => runAction(async () => {
     Object.assign(page, {
       start: history.start,
       total: history.total,
+      messageTotal: history.messageTotal,
       nextBefore: Number.isSafeInteger(nextBefore) && nextBefore >= 0 && nextBefore < requestedBefore
         ? nextBefore
         : (returnedStart > 0 ? returnedStart : null),
@@ -2337,8 +2352,9 @@ agentHub.on("message:send", (request) => {
       });
       renderOutgoingWithoutBlockingSend(request.taskId, { queue: queuesOptimistically });
     },
-    synchronize: (result) => {
-      applySnapshot(result?.snapshot);
+    synchronize: async (result) => {
+      if (result?.snapshot) applySnapshot(result.snapshot);
+      else if (result?.accepted || result?.deferred) await refresh();
       if (!identity?.threadId && result?.threadId) {
         identity = {
           ...identity,
@@ -3529,11 +3545,23 @@ async function refreshVisibleTaskHistories(previousSnapshot, snapshot) {
 }
 
 async function refresh({ reportError = false } = {}) {
-  if (refreshing) return;
+  if (refreshing) {
+    refreshRequested = true;
+    return;
+  }
+  window.clearTimeout(refreshTimer);
+  refreshTimer = null;
   refreshing = true;
   try {
     const previousSnapshot = lastSnapshot;
+    await prepareSnapshotTransport();
+    const requestStartedAt = performance.now();
     const snapshotResult = await control("snapshot", { knownVersion: lastSnapshot?.version ?? "" });
+    connectionLatencyMs = window.AgentHubConnectionQuality.smoothLatency(
+      connectionLatencyMs,
+      performance.now() - requestStartedAt,
+    );
+    agentHub.setConnectionQuality({ latencyMs: connectionLatencyMs });
     const snapshot = snapshotResult?.notModified === true ? lastSnapshot : snapshotResult;
     if (snapshotResult?.notModified === true) {
       resetConnectionFailures();
@@ -3551,6 +3579,11 @@ async function refresh({ reportError = false } = {}) {
     if (reportError) throw error;
   } finally {
     refreshing = false;
+    if (refreshRequested) {
+      refreshRequested = false;
+      refreshTimer = window.setTimeout(refresh, 0);
+      return;
+    }
     const active = Boolean(lastSnapshot?.tasks?.some(
       (task) => task.running || task.context?.compacting || task.maintenance,
     )) || [...visibleStreamTaskIds].some(historyNeedsCatchUp) || historyNeedsCatchUp(selectedTaskId);

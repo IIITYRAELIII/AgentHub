@@ -71,6 +71,59 @@ test("local Web App accepts short-lived VS Code WebView CORS sessions", async ()
   }
 });
 
+test("large snapshot responses use gzip when the client accepts it", async () => {
+  const payload = { tasks: [{ id: "large", text: "snapshot".repeat(8_192) }] };
+  const server = new MiniAppServer({
+    host: "127.0.0.1",
+    port: 0,
+    journalDatabase: memoryJournal(),
+    controlHandler: async () => payload,
+  });
+  try {
+    const address = await server.start();
+    const response = await fetch(`${address.url}api/snapshot`, {
+      headers: { "Accept-Encoding": "gzip" },
+    });
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("content-encoding"), "gzip");
+    assert.ok(Number(response.headers.get("content-length")) < JSON.stringify(payload).length);
+    assert.deepEqual(await response.json(), payload);
+  } finally {
+    await server.close();
+  }
+});
+
+test("large journal responses use gzip when the client accepts it", async () => {
+  const largeDay = DAY_HTML.replace("Пилот", "Журнал".repeat(8_192));
+  const journalDatabase = memoryJournal(largeDay);
+  journalDatabase.fragments = async () => ({
+    "27.07.2026": largeDay,
+  });
+  const server = new MiniAppServer({
+    host: "127.0.0.1",
+    port: 0,
+    journalDatabase,
+  });
+  try {
+    const address = await server.start();
+    const journalResponse = await fetch(`${address.url}api/journal`, {
+      headers: { "Accept-Encoding": "gzip" },
+    });
+    assert.equal(journalResponse.status, 200);
+    assert.equal(journalResponse.headers.get("content-encoding"), "gzip");
+    assert.match((await journalResponse.json()).html, /Журнал/u);
+
+    const daysResponse = await fetch(`${address.url}api/journal/days`, {
+      headers: { "Accept-Encoding": "gzip" },
+    });
+    assert.equal(daysResponse.status, 200);
+    assert.equal(daysResponse.headers.get("content-encoding"), "gzip");
+    assert.match((await daysResponse.json()).days["27.07.2026"], /Журнал/u);
+  } finally {
+    await server.close();
+  }
+});
+
 test("Mini App close terminates an incomplete HTTP connection and can restart", async () => {
   const server = new MiniAppServer({
     host: "127.0.0.1",
@@ -829,7 +882,8 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.doesNotMatch(page, /data-rate-limits-slot/u);
     assert.equal(page.match(/data-current-limits=/gu)?.length, 2);
     assert.ok(page.indexOf("data-collapse-all") < page.indexOf("data-theme-select"));
-    assert.doesNotMatch(page, /data-connection|Автообновление/u);
+    assert.match(page, /data-connection-quality/u);
+    assert.doesNotMatch(page, /Автообновление/u);
     assert.match(page, /<option value="graphite">Графит<\/option>/u);
     assert.match(page, /<option value="reliquary">Diablo<\/option>/u);
     assert.match(page, /data-journal-grouping="stream"/u);

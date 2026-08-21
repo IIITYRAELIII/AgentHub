@@ -705,6 +705,7 @@ export async function loadConfig() {
     codexCollaborationMode,
     codexSandboxMode,
     codexModels: loadCodexModels(raw),
+    codexRateLimitPolling: raw.codexRateLimitPolling !== false,
     codexRolloutContext: codexRolloutContextSettings(raw.codexRolloutContext, {
       enabled: false,
     }),
@@ -728,6 +729,7 @@ export async function loadConfig() {
     claudeCollaborationMode: String(
       process.env.CLAUDE_COLLABORATION_MODE ?? raw.claudeCollaborationMode ?? "default",
     ).trim().toLowerCase(),
+    createInitialThreadOnStartup: raw.createInitialThreadOnStartup !== false,
     autoApproveOnStart: raw.autoApproveOnStart === true,
     allowedUserIds,
     allowedChatIds,

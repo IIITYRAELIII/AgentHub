@@ -104,6 +104,20 @@ test("Desktop task service resolves an exact Thread inside a parallel Stream", a
   assert.equal(target.threadId, "thread-alpha");
 });
 
+test("Desktop task service refuses to send into a detached historical Thread", async () => {
+  const { service } = fixture();
+  service.threadsForStream = () => [{
+    provider: "codex",
+    threadId: "thread-1",
+    detachedAtMs: 1_787_256_000_000,
+  }];
+
+  await assert.rejects(
+    service.resolveTarget({ streamId: "stream-1" }),
+    /исторический Thread.*создай новый Thread/iu,
+  );
+});
+
 test("Desktop task selection activates and marks one exact task", async () => {
   const { service, calls } = fixture();
   const params = {

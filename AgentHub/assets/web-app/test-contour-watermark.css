@@ -1,0 +1,19 @@
+.test-contour-watermark {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483646;
+  display: grid;
+  place-items: center;
+  color: rgba(255, 72, 72, 0.13);
+  font-family: Arial, sans-serif;
+  font-size: clamp(7rem, 15vw, 18rem);
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  line-height: 1;
+  white-space: nowrap;
+  pointer-events: none;
+  user-select: none;
+  transform: rotate(-16deg);
+  transform-origin: center;
+  text-shadow: 0 0 0.08em rgba(255, 0, 0, 0.12);
+}
