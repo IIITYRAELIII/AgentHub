@@ -19,7 +19,7 @@ test("Desktop settings service rejects a stale task-scoped mutation", async () =
     projectUsage: async () => {}, findProjectIndex: () => 0, switchProject: async () => ({}), snapshot: async () => ({}),
     reasoningEfforts: ["high"], collaborationModes: ["default"],
   });
-  await assert.rejects(service.update({ name: "model", value: "gpt" }), /уже не к выбранной/u);
+  await assert.rejects(service.update({ name: "model", value: "gpt" }), /уже не к выбранному/u);
 });
 
 test("Desktop settings service rejects a stale project mutation before switching", async () => {
@@ -46,7 +46,7 @@ test("Desktop settings service rejects a stale project mutation before switching
     streamId: "stream-client",
     provider: "codex",
     threadId: "thread-client",
-  }), /уже не к выбранной/u);
+  }), /уже не к выбранному/u);
   assert.equal(switched, false);
 });
 
