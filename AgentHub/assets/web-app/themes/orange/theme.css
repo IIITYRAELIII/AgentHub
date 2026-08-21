@@ -254,6 +254,40 @@ html[data-theme="orange"] .board-task-primary {
   color: #fff;
 }
 
+html[data-theme="orange"] .composer-send svg line {
+  display: none;
+}
+
+html[data-theme="orange"] .composer-send svg path {
+  fill: currentColor;
+  stroke: none;
+}
+
+html[data-theme="orange"] .chat-scroll-down {
+  background: #fff8ec;
+  border-color: #e8d9c7;
+  box-shadow: 0 0.3rem 0.8rem rgb(88 55 26 / 0.12);
+  color: #75685d;
+}
+
+html[data-theme="orange"] .chat-scroll-down:hover,
+html[data-theme="orange"] .chat-scroll-down:focus-visible {
+  background: #fff3e3;
+  border-color: #dfc8b3;
+  color: #5f5147;
+}
+
+html[data-theme="orange"] .chat-scroll-count {
+  background: #c65c37;
+  color: #fffaf4;
+}
+
+html[data-theme="orange"] .chat-scroll-down[data-working] {
+  background: #fff8ec;
+  border-color: #efc7b3;
+  color: #bf6a45;
+}
+
 html[data-theme="orange"] .activity-stream-item,
 html[data-theme="orange"] .workspace-task-panel .board-task-card {
   background: transparent;

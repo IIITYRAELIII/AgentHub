@@ -23,6 +23,27 @@ class FakeTarget {
   }
 }
 
+function fakeScrollButton() {
+  const nodes = new Map([
+    [".chat-scroll-label", { textContent: "" }],
+    [".chat-scroll-count", { hidden: true, textContent: "" }],
+  ]);
+  return Object.assign(new FakeTarget(), {
+    hidden: false,
+    attributes: new Set(),
+    dataset: {},
+    querySelector(selector) {
+      return nodes.get(selector) ?? null;
+    },
+    toggleAttribute(name, enabled) {
+      if (enabled) this.attributes.add(name);
+      else this.attributes.delete(name);
+    },
+    label: nodes.get(".chat-scroll-label"),
+    count: nodes.get(".chat-scroll-count"),
+  });
+}
+
 async function scrollApi() {
   const source = await readFile(new URL("../../assets/web-app/chat-scroll-controller.js", import.meta.url), "utf8");
   const window = {
@@ -116,4 +137,55 @@ test("chat scroll controller requests history near the top and exposes working s
   assert.equal(requests, 1);
   controller.setWorking(true);
   assert.equal(button.attributes.has("data-working"), true);
+});
+
+test("chat scroll controller shows running label while pinned at the bottom", async () => {
+  const { ChatScrollController } = await scrollApi();
+  const scroll = Object.assign(new FakeTarget(), {
+    scrollHeight: 1_000,
+    clientHeight: 200,
+    scrollTop: 800,
+  });
+  const button = fakeScrollButton();
+  const controller = new ChatScrollController(scroll, button, {
+    requestAnimationFrame: (callback) => { callback(0); return 1; },
+    cancelAnimationFrame: () => {},
+    ResizeObserver: null,
+  });
+
+  assert.equal(button.hidden, true);
+  controller.setWorking(true);
+  assert.equal(button.hidden, false);
+  assert.equal(button.attributes.has("data-working"), true);
+  assert.equal(button.label.textContent, "Ход идёт");
+});
+
+test("chat scroll controller counts unseen messages and clears them at the bottom", async () => {
+  const { ChatScrollController } = await scrollApi();
+  const scroll = Object.assign(new FakeTarget(), {
+    scrollHeight: 1_000,
+    clientHeight: 200,
+    scrollTop: 500,
+  });
+  const button = fakeScrollButton();
+  const controller = new ChatScrollController(scroll, button, {
+    reducedMotion: () => true,
+    requestAnimationFrame: (callback) => { callback(0); return 1; },
+    cancelAnimationFrame: () => {},
+    ResizeObserver: null,
+  });
+  const snapshot = controller.capture();
+  scroll.scrollHeight = 1_120;
+  controller.afterMutation(snapshot, { preserveDistance: true, newItemsCount: 2 });
+
+  assert.equal(button.hidden, false);
+  assert.equal(button.attributes.has("data-has-unread"), true);
+  assert.equal(button.dataset.unreadCount, "2");
+  assert.equal(button.count.hidden, false);
+  assert.equal(button.count.textContent, "2");
+
+  button.dispatch("click");
+  assert.equal(button.attributes.has("data-has-unread"), false);
+  assert.equal(button.dataset.unreadCount, "0");
+  assert.equal(button.count.hidden, true);
 });

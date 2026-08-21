@@ -159,3 +159,11 @@ test("orange draws one selected Stream border", async () => {
     /\.stream-tab\[aria-pressed="true"\]:focus-visible\s*\{\s*outline:\s*none\s*!important;/u,
   );
 });
+
+test("orange uses filled send icon and mockup scroll-down states", async () => {
+  const css = await readFile(new URL("../../assets/web-app/themes/orange/theme.css", import.meta.url), "utf8");
+  assert.match(css, /html\[data-theme="orange"\]\s+\.composer-send\s+svg\s+line\s*\{\s*display:\s*none;/u);
+  assert.match(css, /html\[data-theme="orange"\]\s+\.composer-send\s+svg\s+path\s*\{[\s\S]*?fill:\s*currentColor;[\s\S]*?stroke:\s*none;/u);
+  assert.match(css, /html\[data-theme="orange"\]\s+\.chat-scroll-count\s*\{[\s\S]*?background:\s*#c65c37;/u);
+  assert.match(css, /html\[data-theme="orange"\]\s+\.chat-scroll-down\[data-working\]\s*\{[\s\S]*?border-color:\s*#efc7b3;/u);
+});

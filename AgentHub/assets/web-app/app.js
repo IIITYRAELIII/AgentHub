@@ -2457,6 +2457,8 @@ function createChatScrollDownButton(scroll, task = null) {
     el("span", { class: "chat-scroll-working", "aria-hidden": "true" }, [
       el("i"), el("i"), el("i"),
     ]),
+    el("span", { class: "chat-scroll-label", text: "Вниз" }),
+    el("span", { class: "chat-scroll-count", hidden: true, text: "0" }),
   ]);
   bindChatScrollDown(scroll, button);
   chatScrollControllers.get(scroll)?.setWorking(task?.running === true);
@@ -4230,6 +4232,9 @@ function renderMessages({
   // message node (or its event handlers) owned by the previously selected
   // Stream, even when providers emit colliding message identifiers.
   const ownerChanged = MessageView.claimKeyedChildrenOwner(chatLog, taskId);
+  const previousMessageKeys = new Set(Array.from(chatLog.children ?? [])
+    .map((node) => String(node?.dataset?.messageKey ?? ""))
+    .filter(Boolean));
   const historyLoaded = state.messages.has(taskId);
   const allMessages = state.messages.get(taskId) ?? [];
   const messages = tailLimit > 0
@@ -4261,6 +4266,7 @@ function renderMessages({
   }
   const taskDiff = state.taskDiffs.get(taskId);
   let prependedNodes = null;
+  let newTailMessages = 0;
   const added = Math.min(messages.length, Math.max(0, Number(prependedCount) || 0));
   if (!ownerChanged && added > 0 && added < messages.length) {
     const prefixSpecs = messages.slice(0, added).map((message, index) => (
@@ -4280,14 +4286,24 @@ function renderMessages({
     const specs = messages.map((message, index) => (
       messageRenderSpec(message, index, lastAgentIndex, taskDiff)
     ));
+    newTailMessages = !ownerChanged && !tailLimit && !incrementalPrepend && !stickToBottom
+      ? specs.filter((spec, index) => index >= previousMessageKeys.size
+        && !previousMessageKeys.has(String(spec?.key ?? ""))).length
+      : 0;
     MessageView.reconcileKeyedChildren(chatLog, specs, createRenderedMessage, (node, spec) => {
       patchRenderedMessage(node, spec.message);
     });
   }
   scheduleUserMessageDisclosureSync(prependedNodes);
-  if (anchor) restoreChatAnchor(anchor);
+  if (anchor) {
+    restoreChatAnchor(anchor);
+    scrollController?.addUnread(newTailMessages);
+  }
   else if (stickToBottom) pinChatToBottom();
-  else window.requestAnimationFrame(() => scrollController?.afterMutation(scrollSnapshot, { preserveDistance: true }));
+  else window.requestAnimationFrame(() => scrollController?.afterMutation(scrollSnapshot, {
+    preserveDistance: true,
+    newItemsCount: newTailMessages,
+  }));
   scheduleUnderfilledHistoryLoad();
 }
 

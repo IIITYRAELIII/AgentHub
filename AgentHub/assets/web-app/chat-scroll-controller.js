@@ -32,6 +32,8 @@
       this.ResizeObserver = options.ResizeObserver ?? window.ResizeObserver;
       this.animationFrame = 0;
       this.animationGeneration = 0;
+      this.working = false;
+      this.unreadCount = 0;
       this.pinned = this.isNearBottom();
       this.lastDistance = distanceFromBottom(scroll);
       this.lastScrollHeight = Number(scroll.scrollHeight) || 0;
@@ -73,14 +75,41 @@
 
     sync() {
       const nearBottom = this.isNearBottom();
-      if (nearBottom) this.pinned = true;
+      if (nearBottom) {
+        this.pinned = true;
+        this.unreadCount = 0;
+      }
       this.lastDistance = distanceFromBottom(this.scroll);
-      if (this.button) this.button.hidden = nearBottom;
+      this.updateButton(nearBottom);
       this.maybeLoadOlder();
     }
 
+    updateButton(nearBottom = this.isNearBottom()) {
+      if (!this.button) return;
+      this.button.hidden = nearBottom && !this.working;
+      this.button.toggleAttribute?.("data-working", this.working);
+      this.button.toggleAttribute?.("data-has-unread", this.unreadCount > 0);
+      if (this.button.dataset) this.button.dataset.unreadCount = String(this.unreadCount);
+      const label = this.button.querySelector?.(".chat-scroll-label");
+      if (label) label.textContent = this.working ? "Ход идёт" : "Вниз";
+      const counter = this.button.querySelector?.(".chat-scroll-count");
+      if (counter) {
+        counter.hidden = this.unreadCount <= 0;
+        counter.textContent = this.unreadCount > 99 ? "99+" : String(this.unreadCount);
+      }
+    }
+
     setWorking(value) {
-      this.button?.toggleAttribute?.("data-working", Boolean(value));
+      this.working = Boolean(value);
+      this.updateButton();
+    }
+
+    addUnread(count = 1) {
+      const value = Math.max(0, Math.trunc(Number(count) || 0));
+      if (!value || this.isNearBottom()) return;
+      this.unreadCount = Math.min(99, this.unreadCount + value);
+      this.lastScrollHeight = Number(this.scroll.scrollHeight) || 0;
+      this.updateButton(false);
     }
 
     maybeLoadOlder() {
@@ -119,11 +148,12 @@
       this.animationFrame = 0;
       this.scroll.scrollTop = this.scroll.scrollHeight;
       this.lastScrollHeight = Number(this.scroll.scrollHeight) || 0;
+      this.unreadCount = 0;
       this.pinned = true;
       this.sync();
     }
 
-    afterMutation(snapshot, { preserveDistance = false } = {}) {
+    afterMutation(snapshot, { preserveDistance = false, newItemsCount = 0 } = {}) {
       if (snapshot?.pinned) {
         this.pinNow();
         return;
@@ -136,6 +166,7 @@
       }
       this.pinned = false;
       this.lastScrollHeight = Number(this.scroll.scrollHeight) || 0;
+      this.addUnread(newItemsCount);
       this.sync();
     }
 
