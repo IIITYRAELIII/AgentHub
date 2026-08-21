@@ -57,11 +57,10 @@ test("publication rejects a checkout older than the current main revision", asyn
   }), "new");
 });
 
-test("publication validates every client before the first deployment", () => {
+test("publication validates every required client before the first deployment", () => {
   const steps = publicationSteps({ fullTestCheckpointId: "release-checkpoint" });
   assert.deepEqual(steps.map((item) => item.label), [
     "Полные тесты Agent Hub",
-    "Тестовый контур Agent Hub",
     "Сборка Agent Hub Mobile",
     "Публикация Mini App Worker",
     "Сборка runtime-релиза",
@@ -71,12 +70,30 @@ test("publication validates every client before the first deployment", () => {
 
   assert.deepEqual(steps[0].args.slice(-2), ["run", "test:all"]);
   assert.equal(steps[0].env.AGENT_HUB_FULL_TEST_CHECKPOINT_ID, "release-checkpoint");
+  assert.deepEqual(steps[1].args.slice(-2), ["run", "android:build"]);
+  assert.equal(
+    steps.findIndex((step) => step.label.includes("Публикация")),
+    2,
+    "deployment must start only after all validation surfaces pass",
+  );
+});
+
+test("publication verifies optional test contour before deployment when enabled", () => {
+  const steps = publicationSteps({ fullTestCheckpointId: "release-checkpoint", includeTestContour: true });
+  assert.deepEqual(steps.map((item) => item.label), [
+    "Полные тесты Agent Hub",
+    "Тестовый контур Agent Hub",
+    "Сборка Agent Hub Mobile",
+    "Публикация Mini App Worker",
+    "Сборка runtime-релиза",
+    "Активация runtime-релиза",
+    "Установка расширения VS Code",
+  ]);
   assert.deepEqual(steps[1].args.slice(-4), ["run", "contour:verify", "--", "--require-installed"]);
-  assert.deepEqual(steps[2].args.slice(-2), ["run", "android:build"]);
   assert.equal(
     steps.findIndex((step) => step.label.includes("Публикация")),
     3,
-    "deployment must start only after all validation surfaces pass",
+    "deployment must start only after every enabled validation surface passes",
   );
 });
 
@@ -116,6 +133,23 @@ test("publication requests the server's safe deferred restart last", async () =>
     "restart-server",
     "record-publication",
   ]);
+});
+
+test("publication skips optional test contour when the component is disabled", async () => {
+  const events = [];
+  await publishAll([], {
+    run: async (step) => events.push(step.label),
+    restart: async (action) => {
+      events.push(action);
+      return { message: "scheduled" };
+    },
+    record: async () => events.push("record-publication"),
+    ensureWorkerDependency: async () => {},
+    testContourEnabled: async () => false,
+  });
+  assert.ok(events.includes("Полные тесты Agent Hub"));
+  assert.ok(!events.includes("Тестовый контур Agent Hub"));
+  assert.ok(events.indexOf("Полные тесты Agent Hub") < events.indexOf("Сборка Agent Hub Mobile"));
 });
 
 test("full publication does not wait on the release turn that blocks its safe restart", async () => {
@@ -276,6 +310,7 @@ test("selective publication can request the full Agent Hub test suite explicitly
     revision: async () => "head",
     diff: async () => ["AgentHub/assets/web-app/app.js"],
     ensureWorkerDependency: async () => {},
+    testContourEnabled: async () => true,
   });
   const labels = steps.map((step) => step.label);
   assert.ok(labels.includes("Полные тесты Agent Hub"));
@@ -407,6 +442,7 @@ test("every validation failure stops publication before deployment", async () =>
           restartCalled = true;
         },
         ensureWorkerDependency: async () => {},
+        testContourEnabled: async () => true,
       }),
       /synthetic validation failure/u,
     );

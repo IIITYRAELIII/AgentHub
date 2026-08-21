@@ -11,6 +11,7 @@ import {
   waitForRuntimeReplacement,
 } from "./publish-all.mjs";
 import { ensureWrangler } from "./wrangler-runner.mjs";
+import { testContourComponentEnabled } from "./src/runtime/test-contour-manager.mjs";
 import { defaultRuntimeRoot } from "./src/infrastructure/filesystem/runtime-layout.mjs";
 import { withPublicationLock } from "./src/infrastructure/process/publication-lock.mjs";
 import {
@@ -108,9 +109,9 @@ export function classifyPublicationChanges(files) {
   return plan;
 }
 
-function focusedSteps(plan, { fullTestCheckpointId = "" } = {}) {
-  if (plan.unknown.length) return publicationSteps({ fullTestCheckpointId });
-  const full = publicationSteps({ skipWorker: !plan.worker, fullTestCheckpointId });
+function focusedSteps(plan, { fullTestCheckpointId = "", includeTestContour = false } = {}) {
+  if (plan.unknown.length) return publicationSteps({ fullTestCheckpointId, includeTestContour });
+  const full = publicationSteps({ skipWorker: !plan.worker, fullTestCheckpointId, includeTestContour });
   const byLabel = new Map(full.map((step) => [step.label, step]));
   const steps = [];
   if (plan.fullTests) {
@@ -174,6 +175,7 @@ export async function publishChanged(args = process.argv.slice(2), {
   revision = currentRevision,
   diff = changedFiles,
   ensureWorkerDependency = ensureWrangler,
+  testContourEnabled = testContourComponentEnabled,
   checkpoint = null,
   runtimeRoot = defaultRuntimeRoot(),
   verifyRestart = restart === callDesktopControl ? waitForRuntimeReplacement : async () => {},
@@ -190,10 +192,11 @@ export async function publishChanged(args = process.argv.slice(2), {
     if (plan.unknown.length) console.warn(`Неизвестные пути требуют полной публикации: ${plan.unknown.join(", ")}`);
     const head = await revision({ cwd: REPOSITORY_ROOT });
     if (plan.worker) await ensureWorkerDependency();
+    const includeTestContour = await testContourEnabled();
     const fullTestCheckpointId = createHash("sha256")
       .update(JSON.stringify({ mode: "changed", from, files: [...files].toSorted() }))
       .digest("hex");
-    const steps = focusedSteps(plan, { fullTestCheckpointId });
+    const steps = focusedSteps(plan, { fullTestCheckpointId, includeTestContour });
     await runPublicationSteps(steps, {
       run,
       checkpoint,

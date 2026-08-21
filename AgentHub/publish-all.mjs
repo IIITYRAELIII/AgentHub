@@ -4,6 +4,7 @@ import path from "node:path";
 
 import { callDesktopControl, readDesktopControlEndpoint } from "./desktop-control.mjs";
 import { ensureWrangler } from "./wrangler-runner.mjs";
+import { testContourComponentEnabled } from "./src/runtime/test-contour-manager.mjs";
 import { defaultRuntimeRoot } from "./src/infrastructure/filesystem/runtime-layout.mjs";
 import {
   publicationCheckpointStore,
@@ -43,6 +44,7 @@ export function publicationSteps({
   skipTests = false,
   skipWorker = false,
   fullTestCheckpointId = "",
+  includeTestContour = false,
 } = {}) {
   return [
     ...(!skipTests ? [
@@ -52,7 +54,9 @@ export function publicationSteps({
           env: { AGENT_HUB_FULL_TEST_CHECKPOINT_ID: fullTestCheckpointId },
         } : {}),
       },
-      npmStep("Тестовый контур Agent Hub", ["run", "contour:verify", "--", "--require-installed"]),
+      ...(includeTestContour
+        ? [npmStep("Тестовый контур Agent Hub", ["run", "contour:verify", "--", "--require-installed"])]
+        : []),
     ] : []),
     npmStep("Сборка Agent Hub Mobile", ["run", "android:build"]),
     ...(!skipWorker ? [
@@ -163,6 +167,7 @@ export async function publishAll(args = process.argv.slice(2), {
   }),
   revision = currentRevision,
   ensureWorkerDependency = ensureWrangler,
+  testContourEnabled = testContourComponentEnabled,
   checkpoint = null,
   runtimeRoot = defaultRuntimeRoot(),
   verifyRestart = restart === callDesktopControl ? waitForRuntimeReplacement : async () => {},
@@ -172,9 +177,11 @@ export async function publishAll(args = process.argv.slice(2), {
     const options = parseArguments(args);
     const head = checkpoint ? await revision({ cwd: REPOSITORY_ROOT }) : null;
     if (!options.skipWorker) await ensureWorkerDependency();
+    const includeTestContour = !options.skipTests && await testContourEnabled();
     const steps = publicationSteps({
       ...options,
       fullTestCheckpointId: head ? `full:${head}` : "",
+      includeTestContour,
     });
     await runPublicationSteps(steps, {
       run,
