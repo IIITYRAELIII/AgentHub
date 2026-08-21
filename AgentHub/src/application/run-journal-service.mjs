@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { stat } from "node:fs/promises";
 
-import { taskRunKey } from "../domain/task-runs.mjs";
+import { legacyTaskRunKeys, taskRunKey } from "../domain/task-runs.mjs";
 import { isCodexContextProbeResponseText } from "../domain/codex-context-probe.mjs";
 import { displayUserPrompt } from "./task-history.mjs";
 import { conciseTurnTitle } from "./turn-title.mjs";
@@ -20,6 +20,19 @@ function journalPrompt(completion) {
     .map((prompt) => String(prompt ?? "").trim())
     .filter(Boolean)
     .join("\n\n");
+}
+
+function lastMessageMatchesTask(record, task) {
+  const threadId = String(task?.threadId ?? "").trim();
+  const recordThreadId = String(record?.threadId ?? "").trim();
+  if (threadId && recordThreadId !== threadId) return false;
+  const provider = String(task?.provider ?? "").trim().toLowerCase();
+  const recordProvider = String(record?.provider ?? "").trim().toLowerCase();
+  return !provider || !recordProvider || provider === recordProvider;
+}
+
+function lastMessageTimestamp(record) {
+  return Date.parse(String(record?.updatedAt ?? "")) || 0;
 }
 
 export class RunJournalService {
@@ -57,7 +70,7 @@ export class RunJournalService {
     if (!run?.threadId || !value) return false;
     if (isCodexContextProbeResponseText(value)) return false;
     const key = taskRunKey(run);
-    const current = this.lastTaskMessages.get(key) ?? null;
+    const current = this.lastMessageRecord(run);
     const turnId = String(run.turnId ?? "").trim() || null;
     const authoritativeUpdatedAt = normalizedIsoTimestamp(updatedAt);
     const sameTurn = Boolean(turnId) && current?.turnId === turnId;
@@ -102,7 +115,20 @@ export class RunJournalService {
   }
 
   lastMessageRecord(task) {
-    return this.lastTaskMessages.get(taskRunKey(task)) ?? null;
+    const key = taskRunKey(task);
+    const exact = this.lastTaskMessages.get(key) ?? null;
+    if (exact) return exact;
+    const legacyMatches = legacyTaskRunKeys(task)
+      .map((legacyKey) => [legacyKey, this.lastTaskMessages.get(legacyKey) ?? null])
+      .filter(([, record]) => record && lastMessageMatchesTask(record, task));
+    if (!legacyMatches.length) return null;
+    const [, migrated] = legacyMatches.reduce((latest, candidate) => (
+      lastMessageTimestamp(candidate[1]) > lastMessageTimestamp(latest[1]) ? candidate : latest
+    ));
+    for (const [legacyKey] of legacyMatches) this.lastTaskMessages.delete(legacyKey);
+    this.lastTaskMessages.set(key, migrated);
+    this.#revision += 1;
+    return migrated;
   }
 
   restoreLastMessages(entries) {

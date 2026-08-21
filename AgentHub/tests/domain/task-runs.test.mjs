@@ -4,6 +4,7 @@ import {
   createManagedTaskRun,
   createObservedTaskRun,
   isRecentDuplicateTaskAnswer,
+  legacyTaskRunKeys,
   markProviderFirstEvent,
   markProviderTurnAccepted,
   markProviderTurnRequested,
@@ -316,6 +317,14 @@ test("task keys normalize Windows project path casing", () => {
     taskRunKey(run({ projectRoot: "C:\\WORK\\Project" })),
     taskRunKey(run({ projectRoot: "c:\\work\\project" })),
   );
+});
+
+test("legacy task keys cover persisted Stream and provider Thread identities", () => {
+  const task = run({ streamId: "stream-1", projectRoot: "C:/workspace", threadId: "thread-1" });
+  assert.deepEqual(legacyTaskRunKeys(task), [
+    "stream\0stream-1",
+    taskRunKey({ ...task, streamId: null }),
+  ]);
 });
 
 test("serialization excludes process and timer handles", () => {

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { RunJournalService } from "../../src/application/run-journal-service.mjs";
+import { legacyTaskRunKeys, taskRunKey } from "../../src/domain/task-runs.mjs";
 
 function fixture({ statImpl = async () => ({}) } = {}) {
   const calls = [];
@@ -99,6 +100,54 @@ test("RunJournalService restores only valid bounded message records", () => {
   ]);
   assert.equal(restored, 2);
   assert.deepEqual(service.lastMessageSnapshot().map(([key]) => key), ["new-1", "new-2"]);
+});
+
+test("RunJournalService lazily migrates legacy last-message task keys", () => {
+  const { service } = fixture();
+  const task = {
+    streamId: "stream-1",
+    provider: "codex",
+    projectRoot: "C:/workspace",
+    threadId: "thread-2",
+  };
+  const [streamKey, providerThreadKey] = legacyTaskRunKeys(task);
+  service.restoreLastMessages([
+    [providerThreadKey, {
+      provider: "codex",
+      threadId: "thread-2",
+      text: "Older answer",
+      updatedAt: "2026-08-20T22:50:23.628Z",
+    }],
+    [streamKey, {
+      provider: "codex",
+      threadId: "thread-2",
+      text: "Latest answer",
+      updatedAt: "2026-08-20T22:50:40.466Z",
+    }],
+  ]);
+
+  assert.equal(service.lastMessageRecord(task).text, "Latest answer");
+  assert.deepEqual(service.lastMessageSnapshot().map(([key]) => key), [taskRunKey(task)]);
+});
+
+test("RunJournalService does not migrate a previous Thread message into a reborn Thread", () => {
+  const { service } = fixture();
+  const task = {
+    streamId: "stream-1",
+    provider: "codex",
+    projectRoot: "C:/workspace",
+    threadId: "thread-2",
+  };
+  const [streamKey] = legacyTaskRunKeys(task);
+  service.restoreLastMessages([[streamKey, {
+    provider: "codex",
+    threadId: "thread-1",
+    text: "Previous Thread answer",
+    updatedAt: "2026-08-20T22:40:00.000Z",
+  }]]);
+
+  assert.equal(service.lastMessageRecord(task), null);
+  assert.deepEqual(service.lastMessageSnapshot().map(([key]) => key), [streamKey]);
 });
 
 test("RunJournalService selects automatic and explicit journal projection paths", async () => {

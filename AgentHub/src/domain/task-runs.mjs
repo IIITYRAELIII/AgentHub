@@ -16,6 +16,18 @@ export function taskRunKey({ streamId, provider, projectRoot, threadId }) {
   return `${normalizedProvider}\0${normalizedProjectRoot(projectRoot)}\0${normalizedThreadId}`;
 }
 
+export function legacyTaskRunKeys({ streamId, provider, projectRoot, threadId }) {
+  const normalizedStreamId = String(streamId ?? "").trim();
+  const normalizedProvider = String(provider ?? "").trim().toLowerCase();
+  const normalizedThreadId = String(threadId ?? "").trim();
+  return [
+    normalizedStreamId ? `stream\0${normalizedStreamId}` : "",
+    normalizedProvider && normalizedThreadId
+      ? `${normalizedProvider}\0${normalizedProjectRoot(projectRoot)}\0${normalizedThreadId}`
+      : "",
+  ].filter(Boolean);
+}
+
 function progressState({ stage, reasoning = "", displayRequested }) {
   const now = new Date().toISOString();
   return {
