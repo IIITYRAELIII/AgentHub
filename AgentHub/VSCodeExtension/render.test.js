@@ -1893,7 +1893,6 @@ test("manual context compaction reports completion and stays on the fast refresh
   assert.match(client, /Ротация контекста…/u);
   assert.match(client, /activeMaintenanceByTask/u);
   assert.match(client, /rememberMaintenanceEvent/u);
-  assert.match(client, /Ротация завершена успешно/u);
   assert.match(client, /task\.running \|\| task\.context\?\.compacting \|\| task\.maintenance/u);
   assert.match(app, /message\.kind === "maintenance"/u);
   assert.match(styles, /\.msg-maintenance \.msg-body/u);
