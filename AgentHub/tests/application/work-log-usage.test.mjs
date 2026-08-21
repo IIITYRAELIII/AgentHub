@@ -606,6 +606,54 @@ test("account usage panel collapses unlabeled sync device ids into one remote de
   assert.doesNotMatch(projected, /data-device-id="remote-new-id"/u);
 });
 
+test("account usage panel treats raw Windows hostnames as unlabeled sync devices", () => {
+  const projected = projectWorkLogUsage("# Глобальный журнал работ\n", {
+    local: {
+      provider: "codex",
+      threadId: "thread-local",
+      turnId: "turn-local",
+      completedAt: "2026-08-20T09:00:00.000Z",
+      estimatedCredits: 1,
+      accountKey: "chatgpt:owner",
+      accountAttribution: "exact",
+    },
+  }, {
+    now: Date.parse("2026-08-20T12:00:00.000Z"),
+    localDeviceId: "device-local",
+    accountCatalog: [{ key: "chatgpt:owner", label: "owner@example.com" }],
+    syncedUsageEvents: [
+      {
+        deviceId: "remote-host-a",
+        deviceLabel: "DESKTOP-F5OM6BN",
+        provider: "codex",
+        threadId: "thread-remote-a",
+        turnId: "turn-remote-a",
+        completedAt: "2026-08-20T09:30:00.000Z",
+        estimatedCredits: 2,
+        accountKey: "chatgpt:owner",
+        accountAttribution: "inferred",
+      },
+      {
+        deviceId: "remote-host-b",
+        deviceLabel: "DESKTOP-4QPHRPH",
+        provider: "codex",
+        threadId: "thread-remote-b",
+        turnId: "turn-remote-b",
+        completedAt: "2026-08-20T10:00:00.000Z",
+        estimatedCredits: 3,
+        accountKey: "chatgpt:owner",
+        accountAttribution: "inferred",
+      },
+    ],
+  });
+
+  assert.match(projected, /data-work-log-account-device-count>2 устройства<\/span>/u);
+  assert.match(projected, /data-work-log-account-device-label>Другое устройство<\/span>/u);
+  assert.match(projected, /data-work-log-account-device-quality>восст\. 2 · sync 2<\/span>/u);
+  assert.doesNotMatch(projected, /data-work-log-account-device-label>DESKTOP-/u);
+  assert.doesNotMatch(projected, /data-device-id="sync-label:desktop-/u);
+});
+
 test("workspace usage aggregates sequential Threads and retains Stream detail", () => {
   const resolver = ({ provider, threadId }) => ({
     workspaceId: "workspace-hub",
