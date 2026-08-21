@@ -76,9 +76,10 @@ test("Worker build packages the same shell and theme resources used by local cli
       sourceRoot: path.join(ROOT, "assets", "web-app"),
       fetchImpl: async (input) => {
         const target = new URL(input);
-        if (target.hostname !== "agent-hub.test") {
+        if (/^\/themes\/[^/]+\/.+\.(?:avif|gif|jpe?g|png|webp)$/u.test(target.pathname)
+          && /^[a-f0-9]{12}$/u.test(target.searchParams.get("v") ?? "")) {
           directAttempts += 1;
-          return new Response("Direct origin unavailable", { status: 503 });
+          return new Response("Direct Worker asset unavailable", { status: 503 });
         }
         const pathname = target.pathname === "/" ? "/index.html" : target.pathname;
         try {
@@ -97,7 +98,7 @@ test("Worker build packages the same shell and theme resources used by local cli
       },
     });
     assert.ok(deployment.backgrounds > 3);
-    assert.equal(directAttempts, deployment.backgrounds);
+    assert.equal(directAttempts, deployment.backgrounds * 2);
     assert.ok(maximumChunkReads > 1);
     assert.ok(maximumChunkReads <= 6);
   } finally {

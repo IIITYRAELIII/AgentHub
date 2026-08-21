@@ -76,11 +76,12 @@ export async function verifyThemeDeployment({
     const source = await readFile(path.join(theme.directory, ...background.asset.split("/")));
     if (manifest.directUrl) {
       try {
+        const directTarget = new URL(manifest.directUrl);
         const direct = Buffer.from(await readWithRetry(
           fetchImpl,
-          new URL(manifest.directUrl),
+          new URL(`${directTarget.pathname}${directTarget.search}`, base),
           (directResponse) => directResponse.arrayBuffer(),
-          { attempts: 1, timeoutMs: 5_000 },
+          { attempts: 2, timeoutMs: 10_000 },
         ));
         if (direct.length === source.length && sha256(direct) === sha256(source)) {
           bytes += direct.length;
