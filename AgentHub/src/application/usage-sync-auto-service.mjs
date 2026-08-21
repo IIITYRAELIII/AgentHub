@@ -29,6 +29,7 @@ export class UsageSyncAutoService {
     workLogFile = null,
     initialDelayMs = 30_000,
     intervalMs = 5 * 60_000,
+    accountBackfill = null,
     isStopping = () => false,
     logger = console,
   } = {}) {
@@ -57,6 +58,7 @@ export class UsageSyncAutoService {
     this.workLogFile = workLogFile;
     this.initialDelayMs = initialDelayMs;
     this.intervalMs = intervalMs;
+    this.accountBackfill = typeof accountBackfill === "function" ? accountBackfill : null;
     this.isStopping = isStopping;
     this.logger = logger;
     this.syncInFlight = null;
@@ -122,6 +124,7 @@ export class UsageSyncAutoService {
     if (!serverUrl) return { skipped: true, reason: "not-configured" };
     if (!remoteConfig?.enrolledAt) return { skipped: true, reason: "not-enrolled", serverUrl };
     const client = this.clientFactory({ serverUrl, identityStore: this.identityStore });
+    const accountBackfill = await this.#backfillAccounts();
     const snapshot = await this.workLogUsageStore.usageSyncSnapshot({
       deviceId: this.identityStore.deviceId,
     });
@@ -139,6 +142,7 @@ export class UsageSyncAutoService {
       synced: true,
       exportedEvents: Array.isArray(snapshot.events) ? snapshot.events.length : 0,
       remoteEvents: Array.isArray(remoteSnapshot.events) ? remoteSnapshot.events.length : 0,
+      accountBackfill,
       push,
       pull,
       serverUrl,
@@ -151,6 +155,22 @@ export class UsageSyncAutoService {
       );
     }
     return result;
+  }
+
+  async #backfillAccounts() {
+    if (!this.accountBackfill) return { applied: false, reason: "not-configured" };
+    try {
+      const result = await this.accountBackfill();
+      if (result?.applied) {
+        this.logger.info?.(
+          `Usage sync account backfill updated ${numberField(result.updated)} local journal record(s).`,
+        );
+      }
+      return result ?? { applied: false, reason: "empty-result" };
+    } catch (error) {
+      this.logger.warn?.(`Usage sync account backfill failed: ${error.message}`);
+      return { applied: false, failed: true, reason: error.message };
+    }
   }
 }
 

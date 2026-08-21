@@ -23,6 +23,7 @@ import { normalizeUsageSyncEvent } from "../domain/work-log-usage-sync.mjs";
 
 const WORK_LOG_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ACCOUNT_ATTRIBUTIONS = new Set(["exact", "inferred"]);
+const UNKNOWN_ACCOUNT_UI_KEY = "__unknown_account__";
 
 export function normalizeWorkLogId(value) {
   const id = String(value ?? "").trim().toLowerCase();
@@ -505,13 +506,17 @@ function recordHasNoCost(record, credits) {
 
 function emptyAccountUsageBucket(accountKey, catalog) {
   const noCost = accountKey === NO_COST_ACCOUNT_KEY;
-  const catalogAccount = accountKey ? catalog.get(accountKey) : null;
+  const unknown = accountKey === UNKNOWN_ACCOUNT_UI_KEY;
+  const canonicalAccountKey = unknown ? "" : accountKey;
+  const catalogAccount = canonicalAccountKey ? catalog.get(canonicalAccountKey) : null;
   return {
-    accountKey,
-    label: noCost ? "Без расхода" : accountDisplayName(accountKey, catalog),
+    accountKey: canonicalAccountKey,
+    uiAccountKey: unknown ? UNKNOWN_ACCOUNT_UI_KEY : accountKey,
+    label: noCost ? "Без расхода" : accountDisplayName(unknown ? "" : accountKey, catalog),
     type: String(catalogAccount?.type ?? "").trim(),
     planType: String(catalogAccount?.planType ?? "").trim(),
     noCost,
+    unknown,
     credits: 0,
     turns: 0,
     exactTurns: 0,
@@ -643,7 +648,7 @@ export function buildWorkLogAccountUsageSummary(turns = {}, {
         const record = entry.record;
         const accountKey = String(record?.accountKey ?? "").trim();
         const noCost = !accountKey && recordHasNoCost(record, entry.credits);
-        const key = accountKey || (noCost ? NO_COST_ACCOUNT_KEY : "");
+        const key = accountKey || (noCost ? NO_COST_ACCOUNT_KEY : UNKNOWN_ACCOUNT_UI_KEY);
         if (!accounts.has(key)) accounts.set(key, emptyAccountUsageBucket(key, catalog));
         const bucket = accounts.get(key);
         const attribution = normalizeAccountAttribution(record?.accountAttribution, {
@@ -761,7 +766,7 @@ const ACCOUNT_COLOR_SLOTS = 6;
 
 function accountColorSlot(accountKey) {
   const key = String(accountKey ?? "");
-  if (!key) return "none";
+  if (!key || key === UNKNOWN_ACCOUNT_UI_KEY) return "none";
   const hash = [...key]
     .reduce((value, character) => ((value * 31) + character.codePointAt(0)) >>> 0, 0);
   return String(hash % ACCOUNT_COLOR_SLOTS);
@@ -834,13 +839,14 @@ function formatShareSegments(segments, currentIndex = -1) {
 
 function formatAccountUsageRow(account, totalCredits, groupId) {
   const devices = accountDevices(account);
+  const uiAccountKey = String(account.uiAccountKey || account.accountKey || "");
   const share = totalCredits > 0 && account.credits > 0
     ? Math.round(account.credits / totalCredits * 100)
     : 0;
   const segments = shareSegments(devices, totalCredits);
   return '<button type="button" data-work-log-account-row '
-    + `data-account-key="${escapeHtmlAttribute(account.accountKey)}" `
-    + `data-account-color="${escapeHtmlAttribute(accountColorSlot(account.accountKey))}" `
+    + `data-account-key="${escapeHtmlAttribute(uiAccountKey)}" `
+    + `data-account-color="${escapeHtmlAttribute(accountColorSlot(uiAccountKey))}" `
     + `data-account-attribution-exact="${escapeHtmlAttribute(String(account.exactTurns))}" `
     + `data-account-attribution-inferred="${escapeHtmlAttribute(String(account.inferredTurns))}" `
     + (account.noCost ? "data-account-no-cost " : "")
@@ -877,6 +883,7 @@ function formatAccountUsageRow(account, totalCredits, groupId) {
 
 function formatAccountDeviceRow(account, device, index) {
   const devices = accountDevices(account);
+  const uiAccountKey = String(account.uiAccountKey || account.accountKey || "");
   const share = account.credits > 0 && device.credits > 0
     ? Math.round(device.credits / account.credits * 100)
     : 0;
@@ -886,11 +893,11 @@ function formatAccountDeviceRow(account, device, index) {
   // на фоне соседей, а не как одинокие 100 % у каждой строки.
   const segments = shareSegments(devices, account.credits);
   return "<div data-work-log-account-device-row "
-    + `data-account-key="${escapeHtmlAttribute(account.accountKey)}" `
+    + `data-account-key="${escapeHtmlAttribute(uiAccountKey)}" `
     + `data-device-id="${escapeHtmlAttribute(device.deviceId)}" `
     + `data-device-source="${escapeHtmlAttribute(device.source)}" `
     + `data-device-index="${escapeHtmlAttribute(String(Math.min(index, 3)))}" `
-    + `data-account-color="${escapeHtmlAttribute(accountColorSlot(account.accountKey))}" `
+    + `data-account-color="${escapeHtmlAttribute(accountColorSlot(uiAccountKey))}" `
     + `data-account-turns="${escapeHtmlAttribute(String(device.turns))}" `
     + `data-account-credits="${escapeHtmlAttribute(String(device.credits))}">`
     + "<span data-work-log-account-name>"
@@ -919,14 +926,15 @@ function formatAccountDeviceRow(account, device, index) {
 
 function formatAccountUsageGroup(account, totalCredits, rangeId) {
   const devices = accountDevices(account);
-  const accountId = String(account.accountKey || "unknown").replace(/[^a-z0-9]+/giu, "-");
+  const uiAccountKey = String(account.uiAccountKey || account.accountKey || "");
+  const accountId = String(uiAccountKey || "unknown").replace(/[^a-z0-9]+/giu, "-");
   const groupId = `work-log-account-devices-${rangeId}-${accountId}`;
   const deviceRows = devices.length
     ? `<div data-work-log-account-devices-breakdown id="${escapeHtmlAttribute(groupId)}">`
       + devices.map((device, index) => formatAccountDeviceRow(account, device, index)).join("")
       + "</div>"
     : "";
-  return `<div data-work-log-account-group data-account-key="${escapeHtmlAttribute(account.accountKey)}">`
+  return `<div data-work-log-account-group data-account-key="${escapeHtmlAttribute(uiAccountKey)}">`
     + formatAccountUsageRow(account, totalCredits, groupId)
     + deviceRows
     + "</div>";

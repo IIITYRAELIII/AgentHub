@@ -9,6 +9,7 @@ import { writeTextAtomic } from "./src/infrastructure/persistence/state-store.mj
 import { UsageSyncRemoteClient } from "./src/infrastructure/http/usage-sync-remote-client.mjs";
 import { UsageSyncIdentityStore } from "./src/infrastructure/persistence/usage-sync-identity-store.mjs";
 import { UsageSyncRemoteConfigStore } from "./src/infrastructure/persistence/usage-sync-remote-config-store.mjs";
+import { applyWorkLogAccountBackfill } from "./src/infrastructure/persistence/work-log-account-backfill.mjs";
 import { WorkLogUsageRepository } from "./src/infrastructure/persistence/work-log-usage-repository.mjs";
 import { WorkLogUsageSyncStore } from "./src/infrastructure/persistence/work-log-usage-sync-store.mjs";
 import { defaultUsageSyncServerUrl } from "./src/domain/default-usage-sync-server.mjs";
@@ -112,6 +113,15 @@ function remoteClient() {
   });
 }
 
+async function backfillAccountsForSync() {
+  try {
+    return await applyWorkLogAccountBackfill({ databaseFile });
+  } catch (error) {
+    console.error(`Usage sync account backfill failed: ${error.message}`);
+    return { applied: false, failed: true, reason: error.message };
+  }
+}
+
 const syncStore = new WorkLogUsageSyncStore({
   databaseFile,
   legacyFile: syncFile,
@@ -156,12 +166,14 @@ try {
       serverUrl: configuredServerUrl(),
     }, null, 2));
   } else if (command === "push") {
+    const accountBackfill = await backfillAccountsForSync();
     const snapshot = await store.usageSyncSnapshot({ deviceId: identityStore.deviceId });
     const result = await remoteClient().push(snapshot);
     await remoteConfigStore.rememberPush(result);
     console.log(JSON.stringify({
       pushed: true,
       exportedEvents: snapshot.events.length,
+      accountBackfill,
       ...result,
       serverUrl: configuredServerUrl(),
     }, null, 2));
@@ -183,6 +195,7 @@ try {
       serverUrl: configuredServerUrl(),
     }, null, 2));
   } else if (command === "sync") {
+    const accountBackfill = await backfillAccountsForSync();
     const snapshot = await store.usageSyncSnapshot({ deviceId: identityStore.deviceId });
     const push = await remoteClient().push(snapshot);
     await remoteConfigStore.rememberPush(push);
@@ -200,6 +213,7 @@ try {
       synced: true,
       exportedEvents: snapshot.events.length,
       remoteEvents: Array.isArray(remoteSnapshot.events) ? remoteSnapshot.events.length : 0,
+      accountBackfill,
       push,
       pull,
       serverUrl: configuredServerUrl(),
@@ -207,6 +221,7 @@ try {
   } else if (command === "export") {
     const out = option("--out");
     if (!out) usage();
+    const accountBackfill = await backfillAccountsForSync();
     const snapshot = await store.usageSyncSnapshot({ deviceId });
     const target = path.resolve(out);
     await mkdir(path.dirname(target), { recursive: true });
@@ -216,6 +231,7 @@ try {
       file: target,
       deviceId,
       events: snapshot.events.length,
+      accountBackfill,
     }, null, 2));
   } else if (command === "import") {
     const input = option("--in");

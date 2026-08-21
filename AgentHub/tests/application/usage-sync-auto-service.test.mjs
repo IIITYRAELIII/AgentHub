@@ -11,6 +11,7 @@ function fixture({
   enrolledAt = "2026-08-20T00:00:00.000Z",
   delayPush = false,
   failPush = false,
+  failBackfill = false,
 } = {}) {
   const events = [];
   let scheduled = null;
@@ -57,6 +58,11 @@ function fixture({
           return { version: 1, events: [{ id: "remote-1" }] };
         },
       };
+    },
+    accountBackfill: async () => {
+      events.push(["account-backfill"]);
+      if (failBackfill) throw new Error("backfill locked");
+      return { applied: true, updated: 2 };
     },
     projectRoot: "D:/projects/Utilities",
     projectionProjectRoots: ["D:/projects/Utilities"],
@@ -110,6 +116,8 @@ test("UsageSyncAutoService pushes, pulls, imports and remembers remote results",
   assert.deepEqual(state.events.map(([name]) => name), [
     "load-config",
     "client",
+    "account-backfill",
+    "info",
     "snapshot",
     "push",
     "remember-push",
@@ -125,6 +133,33 @@ test("UsageSyncAutoService pushes, pulls, imports and remembers remote results",
   const importProject = state.events.find(([name]) => name === "import-project");
   assert.equal(importProject[1].projectRoot, "D:/projects/Utilities");
   assert.deepEqual(importProject[1].projectionProjectRoots, ["D:/projects/Utilities"]);
+});
+
+test("UsageSyncAutoService warns and still syncs when account backfill fails", async () => {
+  const state = fixture({ failBackfill: true });
+
+  const result = await state.service.sync();
+
+  assert.equal(result.synced, true);
+  assert.deepEqual(result.accountBackfill, {
+    applied: false,
+    failed: true,
+    reason: "backfill locked",
+  });
+  assert.deepEqual(state.events.map(([name]) => name), [
+    "load-config",
+    "client",
+    "account-backfill",
+    "warn",
+    "snapshot",
+    "push",
+    "remember-push",
+    "pull",
+    "import-project",
+    "remember-pull",
+    "info",
+    "schedule",
+  ]);
 });
 
 test("UsageSyncAutoService coalesces overlapping sync runs", async () => {

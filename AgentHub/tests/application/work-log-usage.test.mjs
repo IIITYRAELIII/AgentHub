@@ -405,6 +405,15 @@ test("journal projection renders account usage panel with catalog labels", () =>
 
 test("account usage panel keeps zero-token unattributed turns in the period footnote", () => {
   const projected = projectWorkLogUsage("# Глобальный журнал работ\n", {
+    known: {
+      provider: "codex",
+      threadId: "thread-known",
+      turnId: "turn-known",
+      completedAt: "2026-08-20T08:00:00.000Z",
+      estimatedCredits: 1,
+      accountKey: "chatgpt:owner",
+      accountAttribution: "exact",
+    },
     billableUnknown: {
       provider: "claude",
       threadId: "thread-unknown",
@@ -430,11 +439,14 @@ test("account usage panel keeps zero-token unattributed turns in the period foot
   });
 
   assert.match(projected, /data-work-log-account-label>Неизвестный аккаунт<\/span>/u);
+  assert.match(projected, /data-work-log-account-row [^>]*data-account-key="__unknown_account__"/u);
   assert.match(projected, /data-work-log-account-quality>без ключа 1<\/span>/u);
+  assert.match(projected, /data-work-log-account-device-count>1 устройство<\/span>/u);
+  assert.match(projected, /data-work-log-account-device-row [^>]*data-account-key="__unknown_account__"/u);
   assert.doesNotMatch(projected, /data-work-log-account-label>Без расхода<\/span>/u);
   assert.doesNotMatch(projected, /data-account-key="__no_cost__"/u);
   assert.match(projected, /data-work-log-account-idle>1 ход без стоимости<\/span>/u);
-  assert.match(projected, /data-work-log-account-panel-total>1 аккаунт</u);
+  assert.match(projected, /data-work-log-account-panel-total>2 аккаунта</u);
 });
 
 test("account usage panel includes synced remote devices without duplicating local export", () => {
