@@ -1577,8 +1577,10 @@ test("chat short-polls commands and skips only unchanged loaded history renders"
   assert.match(client, /const REMOTE_WAIT_MS = 0;/u);
   assert.match(client, /control\/result\?id=.*waitMs=.*REMOTE_WAIT_MS[\s\S]*REMOTE_RESULT_FALLBACK_POLL_MS/su);
   assert.doesNotMatch(client, /REMOTE_RESULT_LONG_POLL_MS/u);
-  assert.match(client, /control\("snapshot", \{ knownVersion: lastSnapshot\?\.version \?\? "" \}\)/u);
-  assert.match(client, /snapshotResult\?\.notModified === true \? lastSnapshot : snapshotResult/u);
+  assert.match(client, /control\(\s*"snapshot",\s*window\.AgentHubSnapshotTransport\.requestParams\(lastSnapshot\),\s*\)/u);
+  assert.match(client, /window\.AgentHubSnapshotTransport\.materialize\(lastSnapshot, snapshotResult\)/u);
+  assert.match(client, /window\.AgentHubSnapshotTransport\.isBaselineError\(error\)/u);
+  assert.match(client, /window\.AgentHubSnapshotTransport\.requestParams\(null\)/u);
   assert.match(app, /setMessages\(taskId, messages\) \{[\s\S]*state\.messages\.has\(taskId\) && sameData\(state\.messages\.get\(taskId\), next\)[\s\S]*return/u);
   assert.match(app, /setMessagesPreservingScroll\(taskId, messages\) \{[\s\S]*const previous = state\.messages\.get\(taskId\) \?\? \[\][\s\S]*state\.messages\.has\(taskId\) && sameData\(previous, next\)[\s\S]*return/u);
 });

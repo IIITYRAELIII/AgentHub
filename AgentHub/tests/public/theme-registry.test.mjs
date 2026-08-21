@@ -89,7 +89,8 @@ test("Diablo exposes every scene and stable WebView asset token", () => {
   assert.deepEqual(
     theme.backgrounds.map(({ id, name, asset }) => [id, name, asset]),
     [
-      ["reliquary", "Забытый портал", "forgotten-waypoint.webp"],
+      ["reliquary", "Diablo", "diablo-lord-of-terror.png"],
+      ["reliquary-forgotten-waypoint", "Забытый портал", "forgotten-waypoint.webp"],
       ["reliquary-reliquary", "Чёрный реликварий", "cinder-reliquary.webp"],
       ["reliquary-cathedral", "Кровавый собор", "blood-cathedral.webp"],
       ["reliquary-archive", "Пепельный архив", "ashen-reliquary.jpg"],
@@ -102,14 +103,16 @@ test("Diablo exposes every scene and stable WebView asset token", () => {
       "basalt-texture": "basalt-texture.webp",
       "iron-texture": "forged-iron-texture.webp",
       "panel-frame": "waypoint-panel-frame.webp",
-      "panel-frame-2k": "waypoint-panel-frame-2k-v2.webp",
+      "panel-frame-2k": "waypoint-panel-frame-symmetric.png",
       "card-frame": "waypoint-card-frame.webp",
       "message-flourish": "message-flourish.webp",
+      "message-star": "message-star.png",
       "stream-divider": "stream-divider.webp",
       "panel-corner-tl": "panel-corner-tl.webp",
       "panel-corner-tr": "panel-corner-tr.webp",
       "panel-corner-bl": "panel-corner-bl.webp",
       "panel-corner-br": "panel-corner-br.webp",
+      "panel-corners-triangle": "panel-corners-triangle.png",
     },
   );
 });
@@ -272,7 +275,7 @@ test("desktop shell owns and tokenizes the shared header and Stream control shap
   );
   assert.match(
     styles,
-    /html:not\(\[data-surface="mobile"\]\) \.app-header-inner\s*\{[^}]*max-width:\s*none\s*!important;[^}]*padding-left:\s*var\(--shell-header-padding-left, clamp\(1rem, 4vw, 4\.25rem\)\)\s*!important;[^}]*padding-right:\s*var\(--shell-header-padding-right, clamp\(1rem, 4vw, 4\.25rem\)\)\s*!important;[^}]*width:\s*100%\s*!important;/su,
+    /html:not\(\[data-surface="mobile"\]\) \.app-header-inner\s*\{[^}]*max-width:\s*none\s*!important;[^}]*padding-left:\s*var\(--shell-header-content-padding-left, var\(--shell-header-padding-left, clamp\(1rem, 4vw, 4\.25rem\)\)\)\s*!important;[^}]*padding-right:\s*var\(--shell-header-content-padding-right, var\(--shell-header-padding-right, clamp\(1rem, 4vw, 4\.25rem\)\)\)\s*!important;[^}]*width:\s*100%\s*!important;/su,
   );
   assert.match(
     styles,
