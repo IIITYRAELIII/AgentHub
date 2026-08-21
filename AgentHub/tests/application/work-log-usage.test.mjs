@@ -556,7 +556,7 @@ test("account usage panel includes synced remote devices without duplicating loc
   assert.match(projected, /data-work-log-account-idle><\/span>/u);
 });
 
-test("account usage panel collapses unlabeled sync device ids into one remote device", () => {
+test("account usage panel keeps unlabeled sync device ids separate", () => {
   const projected = projectWorkLogUsage("# Глобальный журнал работ\n", {
     local: {
       provider: "codex",
@@ -595,18 +595,22 @@ test("account usage panel collapses unlabeled sync device ids into one remote de
     ],
   });
 
-  assert.match(projected, /data-work-log-account-device-count>2 устройства<\/span>/u);
+  assert.match(projected, /data-work-log-account-device-count>3 устройства<\/span>/u);
   assert.match(
     projected,
-    /data-work-log-account-device-row [^>]*data-device-id="__sync_unlabeled__" [^>]*data-device-source="sync"/u,
+    /data-work-log-account-device-row [^>]*data-device-id="remote-old-id" [^>]*data-device-source="sync"/u,
   );
-  assert.match(projected, /data-work-log-account-device-label>Другое устройство<\/span>/u);
-  assert.match(projected, /data-work-log-account-device-quality>восст\. 2 · sync 2<\/span>/u);
-  assert.doesNotMatch(projected, /data-device-id="remote-old-id"/u);
-  assert.doesNotMatch(projected, /data-device-id="remote-new-id"/u);
+  assert.match(
+    projected,
+    /data-work-log-account-device-row [^>]*data-device-id="remote-new-id" [^>]*data-device-source="sync"/u,
+  );
+  assert.match(projected, /data-work-log-account-device-label>remote-old-id<\/span>/u);
+  assert.match(projected, /data-work-log-account-device-label>remote-new-id<\/span>/u);
+  assert.match(projected, /data-work-log-account-device-quality>восст\. 1 · sync 1<\/span>/u);
+  assert.doesNotMatch(projected, /data-device-id="__sync_unlabeled__"/u);
 });
 
-test("account usage panel treats raw Windows hostnames as unlabeled sync devices", () => {
+test("account usage panel keeps raw Windows hostname labels visible and separate", () => {
   const projected = projectWorkLogUsage("# Глобальный журнал работ\n", {
     local: {
       provider: "codex",
@@ -647,11 +651,19 @@ test("account usage panel treats raw Windows hostnames as unlabeled sync devices
     ],
   });
 
-  assert.match(projected, /data-work-log-account-device-count>2 устройства<\/span>/u);
-  assert.match(projected, /data-work-log-account-device-label>Другое устройство<\/span>/u);
-  assert.match(projected, /data-work-log-account-device-quality>восст\. 2 · sync 2<\/span>/u);
-  assert.doesNotMatch(projected, /data-work-log-account-device-label>DESKTOP-/u);
-  assert.doesNotMatch(projected, /data-device-id="sync-label:desktop-/u);
+  assert.match(projected, /data-work-log-account-device-count>3 устройства<\/span>/u);
+  assert.match(
+    projected,
+    /data-work-log-account-device-row [^>]*data-device-id="sync-label:desktop-f5om6bn" [^>]*data-device-source="sync"/u,
+  );
+  assert.match(
+    projected,
+    /data-work-log-account-device-row [^>]*data-device-id="sync-label:desktop-4qphrph" [^>]*data-device-source="sync"/u,
+  );
+  assert.match(projected, /data-work-log-account-device-label>DESKTOP-F5OM6BN<\/span>/u);
+  assert.match(projected, /data-work-log-account-device-label>DESKTOP-4QPHRPH<\/span>/u);
+  assert.match(projected, /data-work-log-account-device-quality>восст\. 1 · sync 1<\/span>/u);
+  assert.doesNotMatch(projected, /data-work-log-account-device-label>Другое устройство<\/span>/u);
 });
 
 test("workspace usage aggregates sequential Threads and retains Stream detail", () => {

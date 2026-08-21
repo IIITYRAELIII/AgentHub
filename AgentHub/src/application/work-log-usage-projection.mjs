@@ -480,7 +480,7 @@ function shortDeviceKey(value) {
 function accountDeviceDisplayName(deviceId, source, label = "") {
   const id = String(deviceId ?? "").trim();
   const displayLabel = String(label ?? "").trim();
-  if (displayLabel && meaningfulSyncDeviceLabel(displayLabel)) return displayLabel;
+  if (displayLabel) return displayLabel;
   if (source === "local") return id && id !== "local" ? `Это устройство · ${shortDeviceKey(id)}` : "Это устройство";
   if (id === "__sync_unlabeled__") return "Другое устройство";
   if (id.startsWith("sync-label:")) return "Другое устройство";
@@ -589,21 +589,14 @@ function emptyAccountDeviceBucket(deviceId, source, { noCost = false, label = ""
 
 function normalizedDeviceLabelKey(value) {
   const label = String(value ?? "").trim();
-  return meaningfulSyncDeviceLabel(label) ? label.toLowerCase() : "";
-}
-
-function meaningfulSyncDeviceLabel(value) {
-  const label = String(value ?? "").trim();
-  if (!label) return false;
-  if (/^DESKTOP-[A-Z0-9-]+$/iu.test(label)) return false;
-  return true;
+  return label ? label.toLowerCase() : "";
 }
 
 function accountUsageDeviceKey(entry, localDeviceId, record = {}) {
   if (entry.source === "local") return localDeviceId || "local";
   const labelKey = normalizedDeviceLabelKey(record?.syncDeviceLabel);
   if (labelKey) return `sync-label:${labelKey}`;
-  return "__sync_unlabeled__";
+  return String(record?.syncDeviceId ?? entry?.deviceId ?? "").trim() || "__sync_unlabeled__";
 }
 
 function applyAccountUsageStats(target, entry, record, {
