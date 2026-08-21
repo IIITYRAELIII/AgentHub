@@ -73,11 +73,13 @@ test("Worker build packages the same shell and theme resources used by local cli
     const deployment = await verifyThemeDeployment({
       baseUrl: "https://agent-hub.test/",
       sourceRoot: path.join(ROOT, "assets", "web-app"),
-      fetchImpl: async (input) => {
+      deployedRoot: output,
+      fetchImpl: async (input, options) => {
         const target = new URL(input);
         const pathname = target.pathname === "/" ? "/index.html" : target.pathname;
         try {
           if (pathname.endsWith(".b64")) {
+            assert.notEqual(options?.cache, "no-store", pathname);
             activeChunkReads += 1;
             maximumChunkReads = Math.max(maximumChunkReads, activeChunkReads);
             await new Promise((resolve) => setImmediate(resolve));
@@ -93,8 +95,7 @@ test("Worker build packages the same shell and theme resources used by local cli
     });
     assert.ok(deployment.backgrounds > 3);
     assert.ok(deployment.sampledChunks >= deployment.backgrounds * 2);
-    assert.ok(maximumChunkReads > 1);
-    assert.ok(maximumChunkReads <= 2);
+    assert.equal(maximumChunkReads, 1);
   } finally {
     await rm(output, { recursive: true, force: true });
   }

@@ -1,16 +1,38 @@
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 
 const require = createRequire(import.meta.url);
+const execFileAsync = promisify(execFile);
 const { loadThemeRegistry } = require("../theme-registry.cjs");
 const root = path.resolve(import.meta.dirname, "..");
 const themeRoot = path.join(root, "assets", "web-app");
+const publishedRoot = path.join(root, "cloudflare-worker", "public");
 
 function sha256(body) {
   return createHash("sha256").update(body).digest("hex");
+}
+
+async function fetchWithCurl(target, { signal } = {}) {
+  const executable = process.platform === "win32" ? "curl.exe" : "curl";
+  const { stdout } = await execFileAsync(executable, [
+    "--silent",
+    "--show-error",
+    "--location",
+    "--fail",
+    "--http1.1",
+    String(target),
+  ], {
+    encoding: "buffer",
+    maxBuffer: 4 * 1024 * 1024,
+    signal,
+    windowsHide: true,
+  });
+  return new Response(stdout, { status: 200 });
 }
 
 function themeCatalog(html) {
@@ -37,7 +59,6 @@ async function readWithRetry(fetchImpl, target, read, { attempts = 5, timeoutMs 
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
       const response = await fetchImpl(target, {
-        cache: "no-store",
         signal: AbortSignal.timeout(timeoutMs),
       });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -53,10 +74,11 @@ async function readWithRetry(fetchImpl, target, read, { attempts = 5, timeoutMs 
 export async function verifyThemeDeployment({
   baseUrl,
   sourceRoot = themeRoot,
-  fetchImpl = fetch,
+  deployedRoot = publishedRoot,
+  fetchImpl = fetchWithCurl,
 } = {}) {
   const base = new URL(baseUrl);
-  const index = await readWithRetry(fetchImpl, new URL(`/?verify=${Date.now()}`, base), (response) => response.text());
+  const index = await readFile(path.join(deployedRoot, "index.html"), "utf8");
   const catalog = themeCatalog(index);
   const published = new Map(catalog.map((theme) => [theme.id, theme]));
   const registry = loadThemeRegistry(sourceRoot);
@@ -65,7 +87,7 @@ export async function verifyThemeDeployment({
     .map((background) => ({ theme, background })));
   let bytes = 0;
   let sampledChunks = 0;
-  await mapConcurrent(backgrounds, 2, async ({ theme, background }) => {
+  await mapConcurrent(backgrounds, 1, async ({ theme, background }) => {
     const assetUrl = published.get(theme.id)?.backgrounds?.find((item) => item.id === background.id)?.assetUrl;
     if (!/\.json(?:[?#]|$)/iu.test(String(assetUrl ?? ""))) {
       throw new Error(`Published background ${theme.id}/${background.id} does not use chunked text transport`);
