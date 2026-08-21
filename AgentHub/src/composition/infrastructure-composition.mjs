@@ -1,6 +1,8 @@
+import { execFile } from "node:child_process";
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
+import { promisify } from "node:util";
 
 import { RunJournalService } from "../application/run-journal-service.mjs";
 import { HubMcpService } from "../application/hub-mcp-service.mjs";
@@ -47,6 +49,9 @@ import {
 import { RuntimeNotificationController } from "../runtime/runtime-notification-controller.mjs";
 import { sentryDiagnostics } from "../infrastructure/diagnostics/sentry-diagnostics.mjs";
 
+const execFileAsync = promisify(execFile);
+const GITHUB_LOGIN_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/u;
+
 function runtimeAssetBundleProvider(runtimeRoot) {
   const layout = runtimeLayout(runtimeRoot);
   return async () => {
@@ -77,13 +82,55 @@ function gitConfigValue(text, sectionName, keyName) {
   return "";
 }
 
-async function usageSyncDeviceLabel(agentHubRoot) {
+function normalizeGithubLogin(value) {
+  const login = String(value ?? "").trim();
+  return GITHUB_LOGIN_PATTERN.test(login) ? login : "";
+}
+
+async function usageSyncDeviceLabelFromGitConfig(utilitiesRoot) {
   try {
-    const config = await readFile(path.join(path.dirname(agentHubRoot), ".git", "config"), "utf8");
-    return gitConfigValue(config, "utilities", "participantlogin");
+    const config = await readFile(path.join(utilitiesRoot, ".git", "config"), "utf8");
+    return normalizeGithubLogin(gitConfigValue(config, "utilities", "participantlogin"));
   } catch {
     return "";
   }
+}
+
+function jsonObjectFromCommandOutput(value) {
+  const text = String(value ?? "");
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start < 0 || end < start) return null;
+  try {
+    return JSON.parse(text.slice(start, end + 1));
+  } catch {
+    return null;
+  }
+}
+
+async function usageSyncDeviceLabelFromTeamProfile(utilitiesRoot) {
+  const script = path.join(utilitiesRoot, "AI_INFRA_SETUP", "team_profile.py");
+  try {
+    const { stdout } = await execFileAsync(
+      process.env.PYTHON || "python",
+      [script, "changelog-author"],
+      {
+        cwd: utilitiesRoot,
+        timeout: 5_000,
+        windowsHide: true,
+        maxBuffer: 64 * 1024,
+      },
+    );
+    return normalizeGithubLogin(jsonObjectFromCommandOutput(stdout)?.github_login);
+  } catch {
+    return "";
+  }
+}
+
+export async function usageSyncDeviceLabel(agentHubRoot) {
+  const utilitiesRoot = path.dirname(agentHubRoot);
+  return await usageSyncDeviceLabelFromGitConfig(utilitiesRoot)
+    || await usageSyncDeviceLabelFromTeamProfile(utilitiesRoot);
 }
 
 async function usageSyncIdentity(config, agentHubRoot) {
