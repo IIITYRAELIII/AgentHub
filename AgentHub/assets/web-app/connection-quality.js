@@ -137,9 +137,46 @@
     return { quality: "poor", bars: 1, label: "Зависание", latencyMs: latency, waiting, failed };
   }
 
+  function modelLinkState({ measurement = null, status = "online", latencyMs = null } = {}) {
+    const connection = String(status ?? "online");
+    const measuredLatency = normalizedLatency(measurement?.latencyMs);
+    const fallbackLatency = normalizedLatency(latencyMs);
+    const latency = measuredLatency ?? fallbackLatency;
+    const failed = Boolean(measurement?.failed);
+    if (failed || connection === "offline" || latency == null) {
+      return {
+        bars: 0,
+        label: "Нет связи",
+        latencyMs: latency,
+        quality: "offline",
+        retry: true,
+        state: "offline",
+      };
+    }
+    if (latency > 1_000) {
+      return {
+        bars: 2,
+        label: "Плохая связь",
+        latencyMs: latency,
+        quality: "weak",
+        retry: false,
+        state: "weak",
+      };
+    }
+    return {
+      bars: 3,
+      label: "Связь нормальная",
+      latencyMs: latency,
+      quality: "good",
+      retry: false,
+      state: "normal",
+    };
+  }
+
   window.AgentHubConnectionQuality = Object.freeze({
     connectionQuality,
     connectionQualityPresentation,
+    modelLinkState,
     modelResponseMeasurement,
     modelResponseQuality,
     measureLatency,

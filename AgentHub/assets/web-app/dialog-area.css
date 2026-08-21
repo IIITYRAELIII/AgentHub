@@ -1360,11 +1360,97 @@ html[data-view="chat"][data-surface][data-theme] {
 }
 
 .provider-connection-quality {
+  --provider-link-active: var(--provider-link-color);
+  --provider-link-bg: transparent;
+  --provider-link-color: var(--dialog-text-3);
+  --provider-link-inactive: var(--dialog-hairline);
+
+  align-items: center;
+  background: var(--provider-link-bg);
+  border-radius: 6px;
+  color: var(--provider-link-color);
   flex: 0 0 auto;
-  height: 16px;
-  margin-left: -5px;
-  padding: 1px;
-  width: 18px;
+  font-family: var(--font-numeric);
+  font-size: 11px;
+  gap: 7px;
+  height: 22px;
+  line-height: 1;
+  min-width: 62px;
+  padding: 0 7px;
+  width: auto;
+}
+
+.provider-connection-quality:hover {
+  background: var(--dialog-control-hover);
+}
+
+.provider-connection-bars {
+  align-items: flex-end;
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 2px;
+  height: 11px;
+}
+
+.provider-connection-bars > i {
+  background: var(--provider-link-inactive);
+  border-radius: 2px;
+  display: block;
+  width: 3px;
+}
+
+.provider-connection-bars > i:nth-child(1) { height: 4px; }
+.provider-connection-bars > i:nth-child(2) { height: 6.5px; }
+.provider-connection-bars > i:nth-child(3) { height: 9px; }
+.provider-connection-bars > i:nth-child(4) { height: 11px; }
+
+.provider-connection-label {
+  white-space: nowrap;
+}
+
+.provider-connection-retry {
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  white-space: nowrap;
+}
+
+.provider-connection-retry:focus-visible {
+  border-radius: 4px;
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
+.provider-connection-quality[data-link-state="normal"] {
+  --provider-link-color: var(--dialog-text-3);
+  --provider-link-inactive: var(--dialog-hairline);
+}
+
+.provider-connection-quality[data-link-state="weak"] {
+  --provider-link-bg: color-mix(in srgb, var(--dialog-accent) 10%, transparent);
+  --provider-link-color: var(--dialog-accent-press);
+  --provider-link-inactive: color-mix(in srgb, var(--dialog-accent) 24%, var(--dialog-hairline));
+}
+
+.provider-connection-quality[data-link-state="offline"] {
+  --provider-link-bg: color-mix(in srgb, var(--dialog-danger) 11%, transparent);
+  --provider-link-color: var(--dialog-danger);
+  --provider-link-inactive: color-mix(in srgb, var(--dialog-danger) 22%, var(--dialog-hairline));
+  min-width: 116px;
+  padding-left: 7px;
+  padding-right: 8px;
+}
+
+.provider-connection-quality[data-bars="1"] .provider-connection-bars > i:nth-child(1),
+.provider-connection-quality[data-bars="2"] .provider-connection-bars > i:nth-child(-n + 2),
+.provider-connection-quality[data-bars="3"] .provider-connection-bars > i:nth-child(-n + 3),
+.provider-connection-quality[data-bars="4"] .provider-connection-bars > i {
+  background: var(--provider-link-active);
 }
 
 .connection-quality > i {
@@ -1387,12 +1473,33 @@ html[data-view="chat"][data-surface][data-theme] {
 }
 .connection-quality[data-quality="poor"],
 .connection-quality[data-quality="offline"] { color: var(--dialog-danger); }
+.provider-connection-quality[data-link-state] { color: var(--provider-link-color); }
 .connection-quality[data-bars="1"] > i:nth-child(1),
 .connection-quality[data-bars="2"] > i:nth-child(-n + 2),
 .connection-quality[data-bars="3"] > i:nth-child(-n + 3),
 .connection-quality[data-bars="4"] > i { opacity: 1; }
 .connection-quality[data-quality="connecting"] > i {
   animation: connection-quality-pulse 1s ease-in-out infinite alternate;
+}
+
+html[data-theme="orange"] .provider-connection-quality[data-link-state="normal"] {
+  --provider-link-active: #8a8075;
+  --provider-link-color: #8a8075;
+  --provider-link-inactive: #d9cfc0;
+}
+
+html[data-theme="orange"] .provider-connection-quality[data-link-state="weak"] {
+  --provider-link-active: #c2643a;
+  --provider-link-bg: #f7efe7;
+  --provider-link-color: #a8542a;
+  --provider-link-inactive: #e6cbb8;
+}
+
+html[data-theme="orange"] .provider-connection-quality[data-link-state="offline"] {
+  --provider-link-active: #b8493c;
+  --provider-link-bg: #f8eae8;
+  --provider-link-color: #b8493c;
+  --provider-link-inactive: #e3c4c0;
 }
 
 @keyframes connection-quality-pulse {

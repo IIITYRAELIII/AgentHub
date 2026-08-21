@@ -80,3 +80,42 @@ test("connection latency measures the lightweight Hub probe roundtrip", async ()
   const timestamps = [1_000, 1_086];
   assert.equal(await measureLatency(async () => {}, () => timestamps.shift()), 86);
 });
+
+test("model link state exposes the three header states", async () => {
+  const { modelLinkState } = await qualityApi();
+  assert.deepEqual(
+    { ...modelLinkState({ measurement: { latencyMs: 240 } }) },
+    {
+      bars: 3,
+      label: "Связь нормальная",
+      latencyMs: 240,
+      quality: "good",
+      retry: false,
+      state: "normal",
+    },
+  );
+  assert.deepEqual(
+    { ...modelLinkState({ measurement: { latencyMs: 1_900 } }) },
+    {
+      bars: 2,
+      label: "Плохая связь",
+      latencyMs: 1_900,
+      quality: "weak",
+      retry: false,
+      state: "weak",
+    },
+  );
+  assert.deepEqual(
+    { ...modelLinkState({ measurement: { latencyMs: 2_000, failed: true } }) },
+    {
+      bars: 0,
+      label: "Нет связи",
+      latencyMs: 2_000,
+      quality: "offline",
+      retry: true,
+      state: "offline",
+    },
+  );
+  assert.equal(modelLinkState({ status: "offline", latencyMs: 80 }).state, "offline");
+  assert.equal(modelLinkState({ status: "online" }).retry, true);
+});

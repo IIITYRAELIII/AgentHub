@@ -322,11 +322,6 @@
           <div class="stream-chat-meta">
             <span class="provider-dot" data-stream-header-provider-dot aria-hidden="true"></span>
             <strong data-stream-header-provider>Агент</strong>
-            <button type="button" class="connection-quality provider-connection-quality"
-              data-provider-connection-quality data-quality="connecting" data-bars="0"
-              aria-label="История связи с моделью" aria-haspopup="dialog" aria-expanded="false" hidden>
-              <i></i><i></i><i></i><i></i>
-            </button>
             <span class="stream-chat-meta-separator" data-stream-header-model-separator hidden
               aria-hidden="true"></span>
             <span class="stream-chat-model" data-stream-header-model hidden></span>
@@ -335,6 +330,15 @@
             <span class="stream-chat-branch" data-stream-header-branch hidden></span>
             <span class="stream-chat-meta-separator" aria-hidden="true"></span>
             <span data-stream-header-message-count>0 сообщений</span>
+            <span class="connection-quality provider-connection-quality"
+              data-provider-connection-quality data-quality="offline" data-link-state="offline" data-bars="0"
+              title="Связь с моделью: нет связи"
+              aria-label="Связь с моделью: нет связи" aria-haspopup="dialog" aria-expanded="false" tabindex="0">
+              <span class="provider-connection-bars" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+              <span class="provider-connection-label" data-provider-connection-label>нет связи</span>
+              <button type="button" class="provider-connection-retry"
+                data-provider-connection-retry hidden>повторить</button>
+            </span>
           </div>
         <div class="chat-overlay-actions" aria-label="Действия текущего Stream">
           <button type="button" class="chip-button" data-workspace-message-search-toggle

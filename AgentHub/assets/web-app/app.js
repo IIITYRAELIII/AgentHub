@@ -99,6 +99,8 @@ const streamChatHeader = document.querySelector("[data-stream-chat-header]");
 const streamHeaderProviderDot = document.querySelector("[data-stream-header-provider-dot]");
 const streamHeaderProvider = document.querySelector("[data-stream-header-provider]");
 const streamHeaderProviderConnection = document.querySelector("[data-provider-connection-quality]");
+const streamHeaderProviderConnectionLabel = document.querySelector("[data-provider-connection-label]");
+const streamHeaderProviderConnectionRetry = document.querySelector("[data-provider-connection-retry]");
 const providerTurnTooltip = document.querySelector("[data-provider-turn-tooltip]");
 const providerTurnTooltipText = document.querySelector("[data-provider-turn-tooltip-text]");
 const providerTurnModal = document.querySelector("[data-provider-turn-modal]");
@@ -3602,6 +3604,18 @@ function providerResponseTitle(task, measurement, presentation, providerLabel, n
   return lines.join("\n");
 }
 
+function providerConnectionTitle(providerLabel, presentation, measurement) {
+  if (presentation.state === "offline") {
+    if (measurement?.failed && presentation.latencyMs != null) {
+      return `${providerLabel} ↔ модель: нет связи, ошибка через ${formatModelResponseLatency(presentation.latencyMs)}`;
+    }
+    return `${providerLabel} ↔ модель: нет связи`;
+  }
+  const timing = formatModelResponseLatency(presentation.latencyMs);
+  if (measurement?.waiting) return `${providerLabel} ↔ модель: ожидание первого ответа · ${timing}`;
+  return `${providerLabel} ↔ модель: ${presentation.label.toLowerCase()} · ${timing}`;
+}
+
 function renderStreamChatHeader(task, now = Date.now()) {
   if (!streamChatHeader) return;
   streamChatHeader.hidden = !task;
@@ -3616,19 +3630,30 @@ function renderStreamChatHeader(task, now = Date.now()) {
   if (streamHeaderProvider) streamHeaderProvider.textContent = providerLabel;
   if (streamHeaderProviderConnection) {
     const measurement = providerResponseForTask(task, now);
-    streamHeaderProviderConnection.hidden = !measurement;
+    const presentation = window.AgentHubConnectionQuality.modelLinkState({
+      measurement,
+      status: state.connection || "offline",
+    });
+    const label = presentation.state === "offline"
+      ? "нет связи"
+      : formatModelResponseLatency(presentation.latencyMs);
+    const title = providerConnectionTitle(providerLabel, presentation, measurement);
+    streamHeaderProviderConnection.hidden = false;
+    streamHeaderProviderConnection.dataset.quality = presentation.quality;
+    streamHeaderProviderConnection.dataset.linkState = presentation.state;
+    streamHeaderProviderConnection.dataset.bars = String(presentation.bars);
+    streamHeaderProviderConnection.title = title;
+    streamHeaderProviderConnection.setAttribute("aria-label", title);
+    if (streamHeaderProviderConnectionLabel) streamHeaderProviderConnectionLabel.textContent = label;
+    if (streamHeaderProviderConnectionRetry) streamHeaderProviderConnectionRetry.hidden = !presentation.retry;
     if (measurement) {
-      const presentation = window.AgentHubConnectionQuality.modelResponseQuality(measurement);
-      const title = providerResponseTitle(task, measurement, presentation, providerLabel, now);
-      streamHeaderProviderConnection.dataset.quality = presentation.quality;
-      streamHeaderProviderConnection.dataset.bars = String(presentation.bars);
-      streamHeaderProviderConnection.setAttribute("aria-label", title);
+      const telemetryPresentation = window.AgentHubConnectionQuality.modelResponseQuality(measurement);
       providerTurnTelemetry.update({
         task,
         providerStart: cachedProviderStartForTask(task),
         measurement,
-        presentation,
-        title,
+        presentation: telemetryPresentation,
+        title: providerResponseTitle(task, measurement, telemetryPresentation, providerLabel, now),
       });
     } else {
       providerTurnTelemetry.update(null);
@@ -6497,6 +6522,11 @@ bugReportForm?.addEventListener("submit", (event) => {
 });
 
 trustedDeviceCreate?.addEventListener("click", () => emit("devices:create"));
+streamHeaderProviderConnectionRetry?.addEventListener("click", (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  emit("connection:retry", { taskId: state.selectedId });
+});
 trustedDeviceList?.addEventListener("click", (event) => {
   const revoke = event.target.closest("[data-device-revoke]");
   if (revoke) emit("devices:revoke", { deviceId: revoke.dataset.deviceRevoke });
@@ -7373,6 +7403,7 @@ const AgentHub = {
     if (state.connectionLatencyMs === nextLatency) return;
     state.connectionLatencyMs = nextLatency;
     renderConnectionQuality();
+    renderStreamChatHeader(currentTask());
   },
   /** Состояние соединения и отложенного перезапуска Agent Hub. */
   setConnection(status, details = {}) {
@@ -7385,6 +7416,7 @@ const AgentHub = {
     state.connection = value;
     state.connectionBlockingCount = blockingCount;
     renderConnectionQuality();
+    renderStreamChatHeader(currentTask());
     root.dataset.connection = value;
     const messages = {
       connecting: "Подключение к Agent Hub…",

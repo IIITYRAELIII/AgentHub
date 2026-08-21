@@ -3860,6 +3860,8 @@ async function refresh({ reportError = false } = {}) {
   }
 }
 
+agentHub.on("connection:retry", () => void refresh({ reportError: false }));
+
 void runAction(async () => {
   agentHub.setConnection("connecting");
   try {
