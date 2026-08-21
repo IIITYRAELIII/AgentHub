@@ -116,7 +116,7 @@ test("production data clone keeps history but detaches live threads and forces S
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-test-contour-clone-"));
   const productionRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-production-clone-"));
   try {
-    await installTestContour({ root, run: async () => null });
+    const { paths: contourPaths } = await installTestContour({ root, run: async () => null });
     const productionData = path.join(productionRoot, "data");
     await mkdir(productionData, { recursive: true });
     const productionAttachments = path.join(productionRoot, "attachments");
@@ -170,7 +170,6 @@ test("production data clone keeps history but detaches live threads and forces S
       );
     `);
     source.close();
-    const contourPaths = testContourPaths(root);
     await mkdir(contourPaths.dataDir, { recursive: true });
     await Promise.all(["", "-wal", "-shm"].map((suffix) => (
       writeFile(path.join(contourPaths.dataDir, `runtime.sqlite${suffix}`), "stale", "utf8")
@@ -193,7 +192,7 @@ test("production data clone keeps history but detaches live threads and forces S
       ).get().settings_json);
       assert.equal(settings.provider, "codex");
       assert.equal(settings.model, TEST_CONTOUR_MODEL);
-      assert.equal(settings.project, testContourPaths(root).projectRoot);
+      assert.equal(settings.project, contourPaths.projectRoot);
       assert.equal(settings.custom, true);
       assert.equal(clone.prepare("SELECT updated_at_ms FROM hub_streams").get().updated_at_ms, 1);
       assert.deepEqual({ ...clone.prepare(`
@@ -215,7 +214,7 @@ test("production data clone keeps history but detaches live threads and forces S
       assert.equal(clone.prepare("SELECT active FROM task_read_model_turns").get().active, 0);
       assert.equal(
         clone.prepare("SELECT project_root FROM hub_release_changes").get().project_root,
-        testContourPaths(root).projectRoot,
+        contourPaths.projectRoot,
       );
       assert.equal(clone.prepare("SELECT status FROM hub_mcp_operations").get().status, "failed");
       assert.equal(clone.prepare("SELECT value FROM journal_store_meta WHERE key = 'revision'").get().value, "6");
