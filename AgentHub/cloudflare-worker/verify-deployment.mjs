@@ -32,7 +32,7 @@ async function mapConcurrent(values, limit, action) {
   return results;
 }
 
-async function readWithRetry(fetchImpl, target, read, { attempts = 4, timeoutMs = 30_000 } = {}) {
+async function readWithRetry(fetchImpl, target, read, { attempts = 5, timeoutMs = 15_000 } = {}) {
   let lastError = null;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
@@ -65,7 +65,7 @@ export async function verifyThemeDeployment({
     .map((background) => ({ theme, background })));
   let bytes = 0;
   let sampledChunks = 0;
-  await mapConcurrent(backgrounds, 6, async ({ theme, background }) => {
+  await mapConcurrent(backgrounds, 2, async ({ theme, background }) => {
     const assetUrl = published.get(theme.id)?.backgrounds?.find((item) => item.id === background.id)?.assetUrl;
     if (!/\.json(?:[?#]|$)/iu.test(String(assetUrl ?? ""))) {
       throw new Error(`Published background ${theme.id}/${background.id} does not use chunked text transport`);
