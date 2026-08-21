@@ -205,7 +205,7 @@ test("input callback rejects a missing or reused Stream for the new task", async
     assert.equal(calls.some(([name]) => name === "start"), false);
     assert.match(
       calls.find(([name]) => name === "send")[2],
-      /новая задача не вернула отдельную Stream-привязку/u,
+      /новый поток не вернул отдельную Stream-привязку/u,
     );
   }
 });
