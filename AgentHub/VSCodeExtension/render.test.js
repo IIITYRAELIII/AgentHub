@@ -1685,13 +1685,14 @@ test("annotation actions preserve native selection and keep per-quote comments",
     "utf8",
   );
   assert.doesNotMatch(html, /data-action="annotate"/u);
-  assert.match(app, /showToast\("Выделите фрагмент ответа агента\."\)/u);
+  assert.match(app, /showToast\("Выделите фрагмент сообщения или рассуждения\."\)/u);
   assert.match(html, /data-annotation-context-menu[\s\S]*Цитировать выделение/u);
   assert.match(app, /function addAnnotation\(value\)/u);
   assert.match(app, /data-annotation-comment-index/u);
   assert.match(app, /pointer: coarse/u);
-  assert.match(app, /document\.addEventListener\("contextmenu"[\s\S]*openAnnotationContextMenu/u);
-  assert.match(app, /lastAnnotationSelection[\s\S]*selectedAgentText\(\) \|\| lastAnnotationSelection/u);
+  assert.match(app, /function handleAnnotationContextMenu\(event\)[\s\S]*openAnnotationContextMenu\(event, quote\)/u);
+  assert.match(app, /document\.addEventListener\("contextmenu", handleAnnotationContextMenu, \{ capture: true \}\)/u);
+  assert.match(app, /selectedQuotableSelection\(\)\?\.quote \|\| lastAnnotationSelection\?\.quote/u);
   assert.match(android, /MENU_ANNOTATE_SELECTION[\s\S]*"Цитировать"/u);
   assert.match(android, /SHOW_AS_ACTION_ALWAYS \| MenuItem\.SHOW_AS_ACTION_WITH_TEXT/u);
   assert.match(android, /ActionMode\.Callback2[\s\S]*onGetContentRect/u);
