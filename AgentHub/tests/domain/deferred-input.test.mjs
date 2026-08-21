@@ -62,7 +62,7 @@ test("pendingInputKeyboard preserves every deferred-message action", () => {
   const id = "019f7152-726b-7b62-a595-62a3fccef0bf";
   assert.deepEqual(pendingInputKeyboard(id), {
     inline_keyboard: [
-      [{ text: "🆕 Отправить в новую задачу", callback_data: `pending:new:${id}` }],
+      [{ text: "🆕 Отправить в новый поток", callback_data: `pending:new:${id}` }],
       [{ text: "⏳ Поставить в очередь", callback_data: `pending:queue:${id}` }],
     [{ text: "👀 Показать текущий ход", callback_data: `pending:show:${id}` }],
       [{ text: "❌ Отменить сообщение", callback_data: `pending:cancel:${id}` }],
