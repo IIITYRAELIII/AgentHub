@@ -465,7 +465,7 @@ test("activity rail markup exposes separate active and recent sections", async (
     readFile(new URL("../../assets/web-app/app.js", import.meta.url), "utf8"),
     readFile(new URL("../../assets/web-app/hub-client.js", import.meta.url), "utf8"),
   ]);
-  assert.match(html, /data-activity-rail-count>Активно: 0</u);
+  assert.match(html, /data-activity-rail-count>Активно</u);
   assert.match(html, /<strong>Недавние<\/strong>/u);
   assert.match(appSource, /activityStreamSections\(entries\)/u);
   assert.match(appSource, /activityStreamList\?\.addEventListener\("click", selectActivityTask\)/u);
