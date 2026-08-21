@@ -1527,6 +1527,7 @@ function persistNavigationTab() {
 function activateView(view) {
   if (view === "journal") ensureJournalLoaded();
   if (view === "statistics") {
+    ensureJournalLoaded();
     requestUsageHistory(usageState.range);
     requestLimits(limitsState.range);
     requestUsageComparison(comparisonState.range);
@@ -12212,8 +12213,8 @@ function loadJournal(options = {}) {
   return journalRefresh.refresh(options);
 }
 
-/* Журнал грузится при первом открытии вкладки; дальше его обновляют SSE или
- * опрос. Ленивая подгрузка старых дней сохраняется. */
+/* Journal payload грузится при первом открытии Журнала или Статистики: сама
+ * таблица остаётся ленивой, но Статистике нужны account panel и Sync status. */
 function ensureJournalLoaded() {
   if (journalRequested) return;
   journalRequested = true;

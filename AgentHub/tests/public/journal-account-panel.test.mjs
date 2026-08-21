@@ -60,6 +60,17 @@ test("usage sync controls live in Statistics instead of the Journal header", () 
   );
 });
 
+test("statistics view eagerly loads journal data for account usage and Sync controls", () => {
+  assert.match(
+    app,
+    /if \(view === "statistics"\) \{\s*\n\s*ensureJournalLoaded\(\);/u,
+  );
+  assert.match(
+    app,
+    /Статистике нужны account panel и Sync status/u,
+  );
+});
+
 /* Панель переносится клоном, поэтому собственные обработчики на плитках были бы
    потеряны при каждой смене группировки. */
 test("account panel keeps its interaction after every journal regrouping", () => {
