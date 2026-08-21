@@ -20,11 +20,16 @@ function themeCatalog(html) {
 }
 
 async function mapConcurrent(values, limit, action) {
-  const pending = [...values];
+  const pending = [...values].map((value, index) => ({ index, value }));
+  const results = new Array(pending.length);
   const workers = Array.from({ length: Math.min(limit, pending.length) }, async () => {
-    while (pending.length) await action(pending.shift());
+    while (pending.length) {
+      const { index, value } = pending.shift();
+      results[index] = await action(value);
+    }
   });
   await Promise.all(workers);
+  return results;
 }
 
 async function readWithRetry(fetchImpl, target, read, { attempts = 4, timeoutMs = 30_000 } = {}) {
@@ -75,6 +80,7 @@ export async function verifyThemeDeployment({
           fetchImpl,
           new URL(manifest.directUrl),
           (directResponse) => directResponse.arrayBuffer(),
+          { attempts: 1, timeoutMs: 5_000 },
         ));
         if (direct.length === source.length && sha256(direct) === sha256(source)) {
           bytes += direct.length;
@@ -84,12 +90,11 @@ export async function verifyThemeDeployment({
         // The Worker chunk transport remains the bounded fallback.
       }
     }
-    const chunks = [];
-    for (const part of manifest.parts) {
+    const chunks = await mapConcurrent(manifest.parts, 4, async (part) => {
       const chunk = (await readWithRetry(fetchImpl, new URL(part, base), (response) => response.text())).trim();
       if (Buffer.byteLength(chunk) > 20 * 1024) throw new Error(`Published background part ${part} exceeds 20 KiB`);
-      chunks.push(chunk);
-    }
+      return chunk;
+    });
     const decoded = Buffer.from(chunks.join(""), "base64");
     if (Number(manifest.bytes) !== source.length || manifest.sha256 !== sha256(source)
       || decoded.length !== source.length || sha256(decoded) !== sha256(source)) {

@@ -68,19 +68,38 @@ test("Worker build packages the same shell and theme resources used by local cli
     assert.match(headers, /Cache-Control: no-store/u);
     const wrangler = JSON.parse(await readFile(path.join(ROOT, "cloudflare-worker", "wrangler.jsonc"), "utf8"));
     assert.equal(wrangler.assets.run_worker_first, false);
+    let directAttempts = 0;
+    let activeChunkReads = 0;
+    let maximumChunkReads = 0;
     const deployment = await verifyThemeDeployment({
       baseUrl: "https://agent-hub.test/",
       sourceRoot: path.join(ROOT, "assets", "web-app"),
       fetchImpl: async (input) => {
-        const pathname = new URL(input).pathname === "/" ? "/index.html" : new URL(input).pathname;
+        const target = new URL(input);
+        if (target.hostname !== "agent-hub.test") {
+          directAttempts += 1;
+          return new Response("Direct origin unavailable", { status: 503 });
+        }
+        const pathname = target.pathname === "/" ? "/index.html" : target.pathname;
         try {
-          return new Response(await readFile(path.join(output, ...pathname.slice(1).split("/"))), { status: 200 });
+          if (pathname.endsWith(".b64")) {
+            activeChunkReads += 1;
+            maximumChunkReads = Math.max(maximumChunkReads, activeChunkReads);
+            await new Promise((resolve) => setImmediate(resolve));
+          }
+          const body = await readFile(path.join(output, ...pathname.slice(1).split("/")));
+          return new Response(body, { status: 200 });
         } catch {
           return new Response("Not Found", { status: 404 });
+        } finally {
+          if (pathname.endsWith(".b64")) activeChunkReads -= 1;
         }
       },
     });
     assert.ok(deployment.backgrounds > 3);
+    assert.equal(directAttempts, deployment.backgrounds);
+    assert.ok(maximumChunkReads > 6);
+    assert.ok(maximumChunkReads <= 24);
   } finally {
     await rm(output, { recursive: true, force: true });
   }
