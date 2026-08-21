@@ -386,6 +386,10 @@ test("journal projection renders account usage panel with catalog labels", () =>
     projected,
     /data-work-log-account-bar-segment data-device-index="0" data-account-share="100\.00"/u,
   );
+  assert.match(
+    projected,
+    /data-work-log-account-bar-device-fill data-device-index="0" data-account-offset="0\.00" data-account-share="100\.00"/u,
+  );
   assert.match(projected, /data-work-log-account-device-label>Это устройство<\/span>/u);
   assert.match(projected, /data-work-log-account-provider-name>Codex<\/span>/u);
   assert.match(projected, /data-account-key="chatgpt:/u);
@@ -531,11 +535,19 @@ test("account usage panel includes synced remote devices without duplicating loc
   assert.match(projected, /data-work-log-account-device-label>SidorukSV-phone<\/span>/u);
   assert.match(
     projected,
-    /data-work-log-account-bar-segment data-device-index="0" data-current data-account-share="60\.00"/u,
+    /data-work-log-account-bar-segment data-device-index="0" data-account-share="25\.00"/u,
   );
   assert.match(
     projected,
-    /data-work-log-account-bar-segment data-device-index="1" data-muted data-account-share="40\.00"/u,
+    /data-work-log-account-bar-segment data-device-index="1" data-account-share="16\.67"/u,
+  );
+  assert.match(
+    projected,
+    /data-work-log-account-bar-device-fill data-device-index="0" data-account-offset="0\.00" data-account-share="60\.00"/u,
+  );
+  assert.match(
+    projected,
+    /data-work-log-account-bar-device-fill data-device-index="1" data-account-offset="60\.00" data-account-share="40\.00"/u,
   );
   assert.match(
     projected,

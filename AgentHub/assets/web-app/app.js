@@ -41,6 +41,8 @@ const journal = document.querySelector("[data-journal]");
 const journalView = document.querySelector("[data-journal-view]");
 const statisticsView = document.querySelector("[data-statistics-view]");
 const statisticsAccountPanelHost = document.querySelector("[data-statistics-account-panel-host]");
+const statisticsSyncCard = document.querySelector("[data-statistics-sync-card]");
+const statisticsSyncHost = document.querySelector("[data-statistics-sync-host]");
 const serverView = document.querySelector("[data-server-view]");
 const updatedAt = document.querySelector("[data-updated-at]");
 const refreshButton = document.querySelector("[data-refresh]");
@@ -11840,9 +11842,15 @@ function applyAccountPanelState(panel) {
 function decorateAccountPanel(scope = journal) {
   const panel = scope.querySelector("[data-work-log-account-panel]");
   if (!panel) return;
-  for (const segment of panel.querySelectorAll("[data-work-log-account-bar-segment]")) {
+  for (const segment of panel.querySelectorAll(
+    "[data-work-log-account-bar-segment], [data-work-log-account-bar-device-fill]",
+  )) {
     const share = Math.min(100, Math.max(0, Number(segment.dataset.accountShare) || 0));
     segment.style.setProperty("--account-share", `${share}%`);
+    if ("accountOffset" in segment.dataset) {
+      const offset = Math.min(100, Math.max(0, Number(segment.dataset.accountOffset) || 0));
+      segment.style.setProperty("--account-offset", `${offset}%`);
+    }
   }
   for (const value of panel.querySelectorAll("[data-work-log-account-period-value]")) {
     const credits = Number(value.dataset.accountCredits);
@@ -11971,14 +11979,29 @@ function formatJournalSyncClock(value) {
   return date.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
 }
 
+function mountStatisticsSyncControls() {
+  if (!statisticsSyncHost) return;
+  for (const control of [journalSyncStatus, journalSyncButton, journalSyncConnectButton]) {
+    if (control && control.parentElement !== statisticsSyncHost) statisticsSyncHost.append(control);
+  }
+}
+
+function updateStatisticsSyncCardVisibility() {
+  if (!statisticsSyncCard) return;
+  const visible = [journalSyncStatus, journalSyncButton, journalSyncConnectButton]
+    .some((control) => control && !control.hidden);
+  statisticsSyncCard.hidden = !visible;
+}
+
 function updateJournalSyncStatus(status = null) {
+  mountStatisticsSyncControls();
   journalSyncLatestStatus = status;
   if (!journalSyncStatus && !journalSyncButton && !journalSyncConnectButton) return;
   if (!status?.configured) {
     const canConnect = Boolean(status?.serverUrl);
     if (journalSyncStatus) {
       journalSyncStatus.hidden = !canConnect;
-      journalSyncStatus.textContent = canConnect ? "Sync не подключён" : "VDS sync —";
+      journalSyncStatus.textContent = canConnect ? "Sync не подключён" : "Sync —";
       journalSyncStatus.title = canConnect
         ? `Сервер: ${status.serverUrl}\nВведите одноразовый код подключения Sync.`
         : "Синхронизация расхода не настроена";
@@ -11998,6 +12021,7 @@ function updateJournalSyncStatus(status = null) {
         ? "Ввести одноразовый код подключения Sync"
         : "Sync server не задан";
     }
+    updateStatisticsSyncCardVisibility();
     return;
   }
   const lastSync = status.lastPullAt || status.lastPushAt;
@@ -12010,7 +12034,7 @@ function updateJournalSyncStatus(status = null) {
   if (journalSyncStatus) {
     journalSyncStatus.hidden = false;
     journalSyncStatus.textContent = [
-      `VDS sync ${clock || "ожидает"}`,
+      `Sync ${clock || "ожидает"}`,
       changed ? `+${added} / Δ${updated}` : "без изменений",
       device ? `device ${device}` : "",
     ].filter(Boolean).join(" · ");
@@ -12020,12 +12044,12 @@ function updateJournalSyncStatus(status = null) {
       status.lastPullAt ? `Последний pull: ${new Date(status.lastPullAt).toLocaleString("ru-RU")}` : "",
       Number(result.after || 0) ? `Событий локально: ${Number(result.after || 0)}` : "",
       result.projected ? "Журнал перепроецирован" : "",
-    ].filter(Boolean).join("\n") || "VDS usage-sync настроен";
+    ].filter(Boolean).join("\n") || "Sync настроен";
   }
   if (journalSyncButton) {
     journalSyncButton.hidden = false;
     journalSyncButton.disabled = false;
-    journalSyncButton.title = "Синхронизировать расход через VDS";
+    journalSyncButton.title = "Синхронизировать расход через Sync";
   }
   if (journalSyncConnectButton) {
     journalSyncConnectButton.hidden = false;
@@ -12033,6 +12057,7 @@ function updateJournalSyncStatus(status = null) {
     journalSyncConnectButton.textContent = "Код Sync";
     journalSyncConnectButton.title = "Создать одноразовый код для подключения другого устройства";
   }
+  updateStatisticsSyncCardVisibility();
 }
 
 async function syncJournalUsageNow() {

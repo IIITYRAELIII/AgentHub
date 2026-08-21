@@ -868,8 +868,9 @@ function accountDeviceShortId(device) {
   return shortDeviceKey(id);
 }
 
-/* Полоса аккаунта разложена по его устройствам, поэтому одна и та же ширина
-   читается и как доля аккаунта в периоде, и как вклад каждого устройства. */
+/* Полоса аккаунта разложена по его устройствам. В строке аккаунта сегменты
+   показывают вклад в общий период, в строке устройства — только область этого
+   устройства внутри аккаунта. */
 function shareSegments(devices, total) {
   return devices.map((device, index) => ({
     index,
@@ -883,6 +884,25 @@ function formatShareSegments(segments, currentIndex = -1) {
     + (segment.index === currentIndex ? " data-current" : "")
     + `${currentIndex >= 0 && segment.index !== currentIndex ? " data-muted" : ""} `
     + `data-account-share="${escapeHtmlAttribute(segment.share.toFixed(2))}"></span>`).join("");
+}
+
+function formatDeviceShareFill(devices, currentIndex, total) {
+  let offset = 0;
+  let share = 0;
+  for (let index = 0; index < devices.length; index += 1) {
+    const deviceShare = total > 0 && devices[index]?.credits > 0
+      ? devices[index].credits / total * 100
+      : 0;
+    if (index === currentIndex) {
+      share = deviceShare;
+      break;
+    }
+    offset += deviceShare;
+  }
+  return "<span data-work-log-account-bar-device-fill "
+    + `data-device-index="${escapeHtmlAttribute(String(Math.min(currentIndex, 3)))}" `
+    + `data-account-offset="${escapeHtmlAttribute(offset.toFixed(2))}" `
+    + `data-account-share="${escapeHtmlAttribute(share.toFixed(2))}"></span>`;
 }
 
 function formatAccountUsageRow(account, totalCredits, groupId) {
@@ -937,9 +957,7 @@ function formatAccountDeviceRow(account, device, index) {
     : 0;
   const providers = formatProviderNames(device.providers);
   const shortId = accountDeviceShortId(device);
-  // Полоса устройства повторяет раскладку всего аккаунта, поэтому вклад видно
-  // на фоне соседей, а не как одинокие 100 % у каждой строки.
-  const segments = shareSegments(devices, account.credits);
+  const deviceFill = formatDeviceShareFill(devices, index, account.credits);
   return "<div data-work-log-account-device-row "
     + `data-account-key="${escapeHtmlAttribute(uiAccountKey)}" `
     + `data-device-id="${escapeHtmlAttribute(device.deviceId)}" `
@@ -965,7 +983,7 @@ function formatAccountDeviceRow(account, device, index) {
       ? `<span data-work-log-account-provider-name>${escapeHtmlText(providers)}</span>`
       : "")
     + "</span>"
-    + `<span data-work-log-account-bar aria-hidden="true">${formatShareSegments(segments, index)}</span>`
+    + `<span data-work-log-account-bar aria-hidden="true">${deviceFill}</span>`
     + `<span data-work-log-account-share>${share}%</span>`
     + `<span data-work-log-account-turns>${device.turns}</span>`
     + `<span data-work-log-account-credits>${highlightUsageUnits(formatCredits(device.credits), device.credits)}</span>`

@@ -45,6 +45,21 @@ test("journal regrouping moves the account usage panel to Statistics", () => {
   );
 });
 
+test("usage sync controls live in Statistics instead of the Journal header", () => {
+  assert.match(app, /const statisticsSyncCard = document\.querySelector/u);
+  assert.match(app, /const statisticsSyncHost = document\.querySelector/u);
+  assert.match(app, /function mountStatisticsSyncControls\(\)/u);
+  assert.match(app, /function updateStatisticsSyncCardVisibility\(\)/u);
+  assert.match(
+    app,
+    /statisticsSyncHost\.append\(control\)/u,
+  );
+  assert.match(
+    app,
+    /updateStatisticsSyncCardVisibility\(\);\s*\n\s*return;/u,
+  );
+});
+
 /* Панель переносится клоном, поэтому собственные обработчики на плитках были бы
    потеряны при каждой смене группировки. */
 test("account panel keeps its interaction after every journal regrouping", () => {
@@ -64,6 +79,8 @@ test("account panel styling stays token-only across themes", () => {
   }
   const rowColors = rules.filter(({ selector }) => /data-account-color="\d"/u.test(selector));
   assert.equal(rowColors.length, 6, "палитра аккаунтов должна повторять серии статистики");
+  assert.match(styles, /\[data-work-log-account-bar-device-fill\] \{[\s\S]*left: var\(--account-offset, 0%\);[\s\S]*width: var\(--account-share, 0%\);/u);
+  assert.doesNotMatch(styles, /\[data-work-log-account-device-row\] \[data-work-log-account-bar-segment\]\[data-muted\]/u);
 });
 
 test("the selected period survives re-render and stays inside the known set", async () => {

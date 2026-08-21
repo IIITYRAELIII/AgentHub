@@ -778,10 +778,10 @@
           <span><strong data-journal-total-duration>—</strong> работы</span>
         </div>
         <div class="journal-sync-status" data-journal-sync-status hidden title="Синхронизация расхода не настроена">
-          VDS sync —
+          Sync —
         </div>
         <button class="journal-sync-button" type="button" data-journal-sync hidden
-          title="Синхронизировать расход через VDS">
+          title="Синхронизировать расход через Sync">
           Синхр.
         </button>
         <button class="journal-sync-button" type="button" data-journal-sync-connect hidden
@@ -884,6 +884,16 @@
         <div class="current-limits-row" data-current-limits="statistics">
           <span class="current-limits-empty">Загрузка…</span>
         </div>
+      </section>
+      <section class="statistics-card statistics-sync-card" data-statistics-sync-card
+        aria-labelledby="statistics-sync-title" hidden>
+        <header class="statistics-card-head">
+          <div>
+            <h2 id="statistics-sync-title">Sync расхода</h2>
+            <p>Подключение, ручная синхронизация и код для другого устройства.</p>
+          </div>
+        </header>
+        <div class="statistics-sync-controls" data-statistics-sync-host></div>
       </section>
       <section data-statistics-account-panel-host></section>
       <section class="statistics-card statistics-preferences-card" aria-labelledby="statistics-preferences-title">

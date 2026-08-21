@@ -9811,6 +9811,22 @@ html[data-view="server"] .background-view {
   opacity: 0.62;
 }
 
+.statistics-sync-card .statistics-card-head {
+  margin-bottom: 0.75rem;
+}
+
+.statistics-sync-controls {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.statistics-sync-controls .journal-sync-status {
+  flex: 1 1 18rem;
+  max-width: none;
+}
+
 .journal-grouping-tabs {
   background: var(--surface-1);
   border: 1px solid var(--line);
@@ -10714,6 +10730,7 @@ html:is([data-grouping="stream"], [data-grouping="workspace"])
   height: 7px;
   margin-right: -0.62rem;
   overflow: hidden;
+  position: relative;
 }
 
 /* Ширина сегмента приезжает скриптом уже после разбора разметки, а строки
@@ -10731,6 +10748,17 @@ html:is([data-grouping="stream"], [data-grouping="workspace"])
   border-right: 0;
 }
 
+[data-work-log-account-bar-device-fill] {
+  background: var(--account-color);
+  border-radius: inherit;
+  bottom: 0;
+  left: var(--account-offset, 0%);
+  min-width: 4px;
+  position: absolute;
+  top: 0;
+  width: var(--account-share, 0%);
+}
+
 /* Устройства аккаунта разведены по насыщенности, чтобы читаться на полосе 7px
    и оставаться цветом одного аккаунта. */
 [data-work-log-account-group][data-open] [data-work-log-account-bar-segment][data-device-index="1"] {
@@ -10742,6 +10770,18 @@ html:is([data-grouping="stream"], [data-grouping="workspace"])
 }
 
 [data-work-log-account-group][data-open] [data-work-log-account-bar-segment][data-device-index="3"] {
+  background: color-mix(in srgb, var(--account-color) 30%, var(--text-faint));
+}
+
+[data-work-log-account-group][data-open] [data-work-log-account-bar-device-fill][data-device-index="1"] {
+  background: color-mix(in srgb, var(--account-color) 70%, var(--text-faint));
+}
+
+[data-work-log-account-group][data-open] [data-work-log-account-bar-device-fill][data-device-index="2"] {
+  background: color-mix(in srgb, var(--account-color) 45%, var(--text-faint));
+}
+
+[data-work-log-account-group][data-open] [data-work-log-account-bar-device-fill][data-device-index="3"] {
   background: color-mix(in srgb, var(--account-color) 30%, var(--text-faint));
 }
 
@@ -10771,9 +10811,9 @@ html:is([data-grouping="stream"], [data-grouping="workspace"])
 }
 
 /* Внутри панели расход читается как число: цвет несёт аккаунт, а не badge. */
-.journal [data-work-log-account-panel] span[data-kilo-usage],
-.journal [data-work-log-account-panel] span[data-mega-usage],
-.journal [data-work-log-account-panel] span[data-high-usage] {
+[data-work-log-account-panel] span[data-kilo-usage],
+[data-work-log-account-panel] span[data-mega-usage],
+[data-work-log-account-panel] span[data-high-usage] {
   background: transparent;
   box-shadow: none;
   color: inherit;
@@ -10789,8 +10829,8 @@ html:is([data-grouping="stream"], [data-grouping="workspace"])
   display: block;
 }
 
-/* Строка устройства не повторяет родительскую: вместо стрелки — рельс, вместо
-   собственного прогресса — раскладка всего аккаунта с подсветкой своей доли. */
+/* Строка устройства не повторяет родительскую: вместо стрелки — рельс, а на
+   полосе закрашена только собственная область устройства внутри аккаунта. */
 [data-work-log-account-device-row] {
   align-items: center;
   padding: 0.56rem 1.35rem;
@@ -10872,15 +10912,6 @@ html:is([data-grouping="stream"], [data-grouping="workspace"])
   background: var(--line);
   border-radius: 3px;
   height: 6px;
-}
-
-[data-work-log-account-device-row] [data-work-log-account-bar-segment] {
-  border-right-color: var(--card-bg-open);
-  min-width: 4px;
-}
-
-[data-work-log-account-device-row] [data-work-log-account-bar-segment][data-muted] {
-  background: var(--line-strong);
 }
 
 [data-work-log-account-device-row] [data-work-log-account-share] {
