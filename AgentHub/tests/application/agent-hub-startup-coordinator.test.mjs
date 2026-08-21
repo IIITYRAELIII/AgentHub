@@ -112,7 +112,7 @@ test("startup isolates recoverable failures and still marks ready", async () => 
     startup.operations.filter(({ state }) => state === "failed").map(({ id }) => id),
     ["web", "provider", "runs", "background-jobs", "telegram"],
   );
-  assert.ok(calls.some((value) => value.includes("активные задачи: runs")));
+  assert.ok(calls.some((value) => value.includes("активные потоки: runs")));
   assert.ok(calls.some((value) => value.includes("медиа-задачи: jobs")));
   assert.deepEqual(captured, [
     ["mini", "web"],
