@@ -90,11 +90,12 @@ export async function verifyThemeDeployment({
         // The Worker chunk transport remains the bounded fallback.
       }
     }
-    const chunks = await mapConcurrent(manifest.parts, 4, async (part) => {
+    const chunks = [];
+    for (const part of manifest.parts) {
       const chunk = (await readWithRetry(fetchImpl, new URL(part, base), (response) => response.text())).trim();
       if (Buffer.byteLength(chunk) > 20 * 1024) throw new Error(`Published background part ${part} exceeds 20 KiB`);
-      return chunk;
-    });
+      chunks.push(chunk);
+    }
     const decoded = Buffer.from(chunks.join(""), "base64");
     if (Number(manifest.bytes) !== source.length || manifest.sha256 !== sha256(source)
       || decoded.length !== source.length || sha256(decoded) !== sha256(source)) {

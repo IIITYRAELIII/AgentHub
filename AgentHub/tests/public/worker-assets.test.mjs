@@ -98,8 +98,8 @@ test("Worker build packages the same shell and theme resources used by local cli
     });
     assert.ok(deployment.backgrounds > 3);
     assert.equal(directAttempts, deployment.backgrounds);
-    assert.ok(maximumChunkReads > 6);
-    assert.ok(maximumChunkReads <= 24);
+    assert.ok(maximumChunkReads > 1);
+    assert.ok(maximumChunkReads <= 6);
   } finally {
     await rm(output, { recursive: true, force: true });
   }
