@@ -149,7 +149,18 @@ test("local task sync preserves durable message metadata and attachments", async
       responseAnnotations: [{ text: "Цитата из ответа", annotation: "Почему так?" }],
       responseAnnotationRequest: "Почему так?",
       time: "2026-07-31T12:00:00.000Z",
-      attachments: [{ id: "screen.png", name: "screen.png", type: "image/png" }],
+      attachments: [
+        { id: "screen.png", name: "screen.png", type: "image/png" },
+        {
+          kind: "task",
+          taskId: "board-1",
+          title: "Исправить Dashboard",
+          workflowStatus: "testing",
+          workspaceId: "workspace-1",
+          intent: "context",
+          description: "не должно сохраняться во вложении",
+        },
+      ],
     }],
   }]);
   await store.save();
@@ -172,6 +183,14 @@ test("local task sync preserves durable message metadata and attachments", async
   assert.equal(entry.messages[0].responseAnnotationRequest, "Почему так?");
   assert.deepEqual(entry.messages[0].attachments, [
     { id: "screen.png", name: "screen.png", type: "image/png" },
+    {
+      kind: "task",
+      taskId: "board-1",
+      title: "Исправить Dashboard",
+      workflowStatus: "testing",
+      workspaceId: "workspace-1",
+      intent: "context",
+    },
   ]);
   assert.equal(entry.activities[0].label, "Проверка");
   assert.equal(entry.activityGroups[0].reasoning, "Проверяю входные данные.");
@@ -193,6 +212,14 @@ test("local task sync preserves durable message metadata and attachments", async
   ]);
   assert.deepEqual(refreshed.messages[0].attachments, [
     { id: "screen.png", name: "screen.png", type: "image/png" },
+    {
+      kind: "task",
+      taskId: "board-1",
+      title: "Исправить Dashboard",
+      workflowStatus: "testing",
+      workspaceId: "workspace-1",
+      intent: "context",
+    },
   ]);
   restored.close();
 });

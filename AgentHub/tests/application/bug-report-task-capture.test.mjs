@@ -73,7 +73,7 @@ test("bug report Task text stays bounded and always contains its report path", (
   assert.match(text, /…\n\nОтчёт: AgentHub\/Bugs\/bug-12345678-1234-4234-8234-123456789abc\/report\.md$/u);
 });
 
-test("first personal bug report scan records a baseline without importing old reports", async () => {
+test("first personal bug report scan imports existing reports before recording its baseline", async () => {
   const { calls, taskBoard } = fixture([{ id: "agent-hub", name: "Agent HUB" }]);
   const saved = [];
   const capture = new BugReportTaskCapture({
@@ -82,7 +82,16 @@ test("first personal bug report scan records a baseline without importing old re
     reports: {
       addedSince: async (revision) => {
         assert.equal(revision, "");
-        return { head: "a".repeat(40), reports: [], baseline: true };
+        return {
+          head: "a".repeat(40),
+          baseline: true,
+          reports: [{
+            id: "12345678-1234-4234-8234-123456789abc",
+            folder: "AgentHub/Bugs/bug-12345678-1234-4234-8234-123456789abc",
+            text: "Уже был в Git",
+            screenshots: 0,
+          }],
+        };
       },
     },
     cursorStore: {
@@ -92,10 +101,14 @@ test("first personal bug report scan records a baseline without importing old re
   });
 
   assert.deepEqual(await capture.scan(), {
-    captured: 0, baseline: true, head: "a".repeat(40),
+    captured: 1, baseline: true, head: "a".repeat(40),
   });
   assert.deepEqual(saved, ["a".repeat(40)]);
-  assert.deepEqual(calls, []);
+  assert.equal(calls[0][1].sourceKey, "bug-report:12345678-1234-4234-8234-123456789abc");
+  assert.match(calls[0][1].text, /^Уже был в Git/u);
+  assert.deepEqual(calls[1], ["move", {
+    id: "task-1", bucket: "workspace", workspaceId: "agent-hub",
+  }]);
 });
 
 test("personal bug report scan captures reports added by a later Git pull", async () => {

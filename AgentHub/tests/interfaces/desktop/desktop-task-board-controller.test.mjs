@@ -29,6 +29,7 @@ function fixture({ activeThread = null, sourceDetails = undefined } = {}) {
         return { id: "board-1", rawText: value.text };
       },
       update: (value) => calls.push(["update", value]),
+      setWorkflowStatus: (value) => calls.push(["status", value]),
       move: (value) => calls.push(["move", value]),
       moveColumn: (value) => calls.push(["move-column", value]),
       setNotesComment: (value) => calls.push(["notes-comment", value]),
@@ -170,6 +171,13 @@ test("dashboard saves edited Task fields", async () => {
   assert.deepEqual(calls[1], ["snapshot", { refresh: true }]);
 });
 
+test("dashboard changes a Task workflow status manually", async () => {
+  const { controller, calls } = fixture();
+  await controller.status({ id: "board-1", status: "testing" });
+  assert.deepEqual(calls[0], ["status", { id: "board-1", status: "testing" }]);
+  assert.deepEqual(calls[1], ["snapshot", { refresh: true }]);
+});
+
 test("legacy Workspace move adapts to the shared column contract", async () => {
   const { controller, calls } = fixture();
   await controller.moveWorkspace({ workspaceId: "workspace-2", beforeWorkspaceId: "workspace-1" });
@@ -188,16 +196,23 @@ test("dashboard updates Notes and Workspace comments", async () => {
   ]);
 });
 
-test("starting a Task in an existing Stream selects it and sends the Task text", async () => {
+test("starting a Task in an existing Stream sends a uniquely identified reference instead of its raw text", async () => {
   const { controller, calls } = fixture({
     activeThread: { provider: "codex", threadId: "thread-1", projectRoot: "D:/work" },
     sourceDetails: { attachments: ["D:/runtime/attachments/screenshot.jpg"] },
   });
-  await controller.start({ id: "board-1", workspaceId: "workspace-1", streamId: "stream-1" });
+  await controller.start({
+    id: "board-1",
+    workspaceId: "workspace-1",
+    streamId: "stream-1",
+    clientUserMessageId: "board-task:board-1:launch-2",
+  });
   assert.equal(calls[0][1], "task.select");
   assert.equal(calls[1][0], "message");
-  assert.equal(calls[1][1].text, "Исправить Task dashboard");
-  assert.deepEqual(calls[1][1].attachments, ["D:/runtime/attachments/screenshot.jpg"]);
+  assert.equal(calls[1][1].text, "");
+  assert.equal(calls[1][1].clientUserMessageId, "board-task:board-1:launch-2");
+  assert.deepEqual(calls[1][1].taskReferences, [{ taskId: "board-1", intent: "start" }]);
+  assert.equal("attachments" in calls[1][1], false);
   assert.deepEqual(calls[2], ["started", {
     id: "board-1", workspaceId: "workspace-1", streamId: "stream-1",
   }]);

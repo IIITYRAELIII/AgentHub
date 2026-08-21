@@ -110,7 +110,11 @@ test("TaskBoardLaunchService reconciles a crashed MCP start without creating ano
   assert.equal(calls.filter(([kind]) => kind === "create-stream").length, 1);
   assert.equal(calls.filter(([, type]) => type === "task.create").length, 1);
   assert.equal(calls.filter(([kind]) => kind === "send").length, 1);
-  assert.equal(calls.find(([kind]) => kind === "send")[1].clientUserMessageId, "mcp:mcp-start-1");
+  const sent = calls.find(([kind]) => kind === "send")[1];
+  assert.equal(sent.clientUserMessageId, "mcp:mcp-start-1");
+  assert.equal(sent.text, "");
+  assert.deepEqual(sent.taskReferences, [{ taskId: "board-1", intent: "start" }]);
+  assert.equal("attachments" in sent, false);
 });
 
 test("TaskBoardLaunchService compensates a failed planned Stream before any Task is created", async () => {

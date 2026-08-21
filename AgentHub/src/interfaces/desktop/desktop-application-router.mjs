@@ -9,7 +9,7 @@ const MUTATION_ACTIONS = Object.freeze([
   "revoke-device", "submit-bug-report",
   "rename-workspace", "update-workspace-settings", "update-workspace-rules", "update-release-change-status", "complete-workspace-release", "create-workspace", "create-workspace-from-stream", "merge-workspaces", "rename-stream",
   "archive-stream", "update-stream-settings", "update-stream-rules", "move-stream",
-  "board-task-create", "board-task-ingest", "board-task-update", "board-task-move", "board-task-complete", "board-task-remove",
+  "board-task-create", "board-task-ingest", "board-task-update", "board-task-status", "board-task-move", "board-task-complete", "board-task-remove",
   "board-task-retry-triage", "board-task-start", "board-column-move", "board-column-comment",
   "board-workspace-move",
 ]);
@@ -44,7 +44,7 @@ export function createDesktopApplicationRouter({ handlers, commands, receiptFile
     "updateServerConfiguration", "readPreTurnInstructions", "updateGlobalPreTurnInstructions",
     "readRootAgents", "updateRootAgents", "compactContext", "openAttachment",
     "submitBugReport", "reportDiagnostic", "trustedDevices", "createDevicePairing", "revokeDevice",
-    "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
+    "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskStatus", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
     "boardTaskRetryTriage", "boardTaskStart", "boardColumnMove", "boardColumnComment",
     "boardWorkspaceMove",
   ]) requiredFunction(handlers[name], name);
@@ -113,6 +113,7 @@ export function createDesktopApplicationRouter({ handlers, commands, receiptFile
       "board-task-create": handlers.boardTaskCreate,
       "board-task-ingest": handlers.boardTaskIngest,
       "board-task-update": handlers.boardTaskUpdate,
+      "board-task-status": handlers.boardTaskStatus,
       "board-task-move": handlers.boardTaskMove,
       "board-task-complete": handlers.boardTaskComplete,
       "board-task-remove": handlers.boardTaskRemove,

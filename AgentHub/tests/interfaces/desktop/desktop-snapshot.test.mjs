@@ -91,6 +91,8 @@ function fixture(overrides = {}) {
     boardLayoutBuilds: 0,
     restartRequest: null,
     maintenance: null,
+    telemetry: [],
+    telemetryCalls: [],
     runForTask: null,
     refreshCatalog: null,
     ...overrides,
@@ -110,10 +112,16 @@ function fixture(overrides = {}) {
     maintenance: {
       entryFor: () => state.maintenance,
     },
+    telemetry: {
+      recent: async (params) => {
+        state.telemetryCalls.push(params);
+        return state.telemetry;
+      },
+    },
     board: {
       snapshot: () => {
         state.boardSnapshotBuilds += 1;
-        return [{ id: "board-task-1", text: "Проверить дашборд" }];
+        return state.boardTasks ?? [{ id: "board-task-1", text: "Проверить дашборд" }];
       },
       workspaces: () => {
         state.boardWorkspaceBuilds += 1;
@@ -591,6 +599,24 @@ test("desktopTaskSnapshot exposes catalog start time without an observer run", (
   assert.equal(desktopTaskSnapshot(entry).startedAt, "2026-07-30T09:55:00.000Z");
 });
 
+test("desktop snapshot exposes latest completed telemetry for the selected inactive Stream", async () => {
+  const telemetry = {
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "turn-previous",
+    completedAtMs: 6_000,
+    timeline: [{ atMs: 6_000, type: "completed", phase: "completed" }],
+  };
+  const { desktopSnapshot, state, entry } = fixture({
+    run: null,
+    telemetry: [telemetry],
+  });
+  state.entries = [{ ...entry, running: false }];
+  const snapshot = await desktopSnapshot();
+  assert.deepEqual(snapshot.tasks[0].providerTurnTelemetry, telemetry);
+  assert.deepEqual(state.telemetryCalls, [{ provider: "codex", threadId: "thread-1", limit: 1 }]);
+});
+
 test("desktop snapshot binds a transient selected task to its canonical Workspace", async () => {
   const workspaces = [{
     id: "workspace-1",
@@ -1051,6 +1077,84 @@ test("compact remote snapshot keeps one bounded live activity representation", a
   assert.ok(Buffer.byteLength(JSON.stringify(snapshot), "utf8") < 100_000);
 });
 
+test("snapshot protocol v4 renames conversations and sends collection deltas", async () => {
+  const { desktopSnapshot, state } = fixture();
+  const first = await desktopSnapshot({ snapshotProtocol: 4, compactSnapshot: true });
+
+  assert.equal(first.apiVersion, 4);
+  assert.equal(first.tasks, undefined);
+  assert.equal(first.conversations, undefined);
+  assert.equal(first.collectionDeltas.conversations.reset.length, 1);
+  assert.deepEqual(first.collectionDeltas.workspaces.reset.map((item) => item.id), [
+    "workspace-2",
+    "workspace-1",
+  ]);
+  assert.deepEqual(first.collectionDeltas.boardTasks.reset, [{
+    id: "board-task-1",
+    text: "Проверить дашборд",
+  }]);
+  assert.deepEqual(first.collectionDeltas.messageReceipts.reset, []);
+  assert.equal(first.workspaces, undefined);
+  assert.equal(first.boardTasks, undefined);
+  assert.equal(first.messageReceipts, undefined);
+
+  const recovered = await desktopSnapshot({
+    snapshotProtocol: 4,
+    compactSnapshot: true,
+    knownVersion: first.version,
+    conversationsVersion: first.collectionDeltas.conversations.version,
+    workspacesVersion: first.collectionDeltas.workspaces.version,
+    boardTasksVersion: "",
+    messageReceiptsVersion: first.collectionDeltas.messageReceipts.version,
+  });
+  assert.notEqual(recovered.notModified, true);
+  assert.deepEqual(recovered.collectionDeltas.boardTasks.reset, [{
+    id: "board-task-1",
+    text: "Проверить дашборд",
+  }]);
+
+  state.boardTasks = [
+    { id: "board-task-1", text: "Обновлено" },
+    { id: "board-task-2", text: "Добавлено" },
+  ];
+  state.revision = "board-updated";
+  const next = await desktopSnapshot({
+    snapshotProtocol: 4,
+    compactSnapshot: true,
+    knownVersion: first.version,
+    conversationsVersion: first.collectionDeltas.conversations.version,
+    workspacesVersion: first.collectionDeltas.workspaces.version,
+    boardTasksVersion: first.collectionDeltas.boardTasks.version,
+    messageReceiptsVersion: first.collectionDeltas.messageReceipts.version,
+  });
+
+  assert.equal(next.collectionDeltas.workspaces.reset, undefined);
+  assert.deepEqual(next.collectionDeltas.conversations, {
+    baseVersion: first.collectionDeltas.conversations.version,
+    version: first.collectionDeltas.conversations.version,
+  });
+  assert.equal(next.collectionDeltas.workspaces.upserts, undefined);
+  assert.deepEqual(next.collectionDeltas.boardTasks.upserts, state.boardTasks);
+  assert.deepEqual(next.collectionDeltas.boardTasks.removed, []);
+  assert.deepEqual(next.collectionDeltas.boardTasks.order, ["board-task-1", "board-task-2"]);
+  assert.deepEqual(next.collectionDeltas.messageReceipts, {
+    baseVersion: first.collectionDeltas.messageReceipts.version,
+    version: first.collectionDeltas.messageReceipts.version,
+  });
+});
+
+test("snapshot protocol v3 remains wire-compatible", async () => {
+  const { desktopSnapshot } = fixture();
+  const snapshot = await desktopSnapshot({ snapshotProtocol: 3 });
+  assert.equal(snapshot.apiVersion, 3);
+  assert.equal(snapshot.conversations, undefined);
+  assert.equal(snapshot.collectionDeltas, undefined);
+  assert.equal(snapshot.tasks.length, 1);
+  assert.equal(snapshot.workspaces.length, 2);
+  assert.equal(snapshot.boardTasks.length, 1);
+  assert.deepEqual(snapshot.messageReceipts, []);
+});
+
 test("live snapshot hides the Codex Desktop file envelope", async () => {
   const { desktopSnapshot, state } = fixture();
   const prompt = [
@@ -1068,6 +1172,38 @@ test("live snapshot hides the Codex Desktop file envelope", async () => {
 
   assert.equal(snapshot.tasks[0].run.prompt, "Проверь содержимое файла");
   assert.equal(snapshot.tasks[0].run.userMessages[0].text, "Проверь содержимое файла");
+});
+
+test("live snapshot exposes only a Task card when its provider prompt has no user text", async () => {
+  const { desktopSnapshot, state } = fixture();
+  const prompt = [
+    "# Attached Agent Hub Tasks",
+    "",
+    "- [Dashboard Task: Проверка](agent-hub://task/board-1) · status: new · intent: context",
+    "",
+    "Открой актуальное содержимое Task командой MCP `hub_task_get` по `taskId` из ссылки.",
+    "",
+    "# My request",
+    "",
+    "Учти прикреплённые Dashboard Task как контекст; само прикрепление не является просьбой выполнять их.",
+  ].join("\n");
+  const reference = {
+    kind: "task",
+    taskId: "board-1",
+    title: "Проверка",
+    workflowStatus: "new",
+    workspaceId: null,
+    intent: "context",
+  };
+  state.run.promptPreview = prompt;
+  state.run.userMessages[0].text = prompt;
+  state.run.messageAttachments = [];
+
+  const snapshot = await desktopSnapshot({ compactSnapshot: true });
+
+  assert.equal(snapshot.tasks[0].run.prompt, "");
+  assert.equal(snapshot.tasks[0].run.userMessages[0].text, "");
+  assert.deepEqual(snapshot.tasks[0].run.userMessages[0].attachments, [reference]);
 });
 
 test("forced desktop snapshot returns cached tasks while catalog refreshes", async () => {

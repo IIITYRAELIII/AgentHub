@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import vm from "node:vm";
 
 import {
   createTrustedDeviceManager,
@@ -8,6 +9,83 @@ import {
   resolveTrustedDeviceUserId,
   TrustedDeviceRegistry,
 } from "../../../src/interfaces/web/trusted-device-access.mjs";
+
+function localSessionAuth({ hash = "", managed = false, existingSession = false } = {}) {
+  const source = readFileSync(
+    new URL("../../../assets/web-app/browser-device-auth.js", import.meta.url),
+    "utf8",
+  );
+  const requests = [];
+  const listeners = new Map();
+  const replaced = [];
+  let reloads = 0;
+  const location = {
+    hash,
+    origin: "http://localhost:8877",
+    pathname: "/",
+    protocol: "http:",
+    search: "?qa=1",
+    reload: () => { reloads += 1; },
+  };
+  const window = {
+    location,
+    history: { replaceState: (...args) => replaced.push(args) },
+    addEventListener: (type, listener) => listeners.set(type, listener),
+    isSecureContext: true,
+    indexedDB: {},
+    ...(managed ? { __agentHubVscode: {} } : {}),
+  };
+  vm.runInNewContext(source, {
+    window,
+    fetch: async (url, options) => {
+      requests.push({ url, options });
+      return options?.method === "HEAD"
+        ? { ok: existingSession, status: existingSession ? 204 : 401 }
+        : { ok: true, status: 200 };
+    },
+    console,
+    crypto: { subtle: {} },
+    document: {
+      addEventListener: () => {},
+      documentElement: { dataset: {} },
+      querySelector: () => null,
+      visibilityState: "visible",
+    },
+    TextEncoder,
+  });
+  return { listeners, location, reloads: () => reloads, replaced, requests, window };
+}
+
+test("protected local access establishes a cookie session before managed UI starts", async () => {
+  const secret = "a".repeat(43);
+  const state = localSessionAuth({ hash: `#access=${secret}` });
+  await state.window.AgentHubProtectedLocalSessionReady;
+  assert.equal(state.requests.length, 1);
+  assert.equal(state.requests[0].url, "/api/local-session");
+  assert.equal(state.requests[0].options.headers.Authorization, `local ${secret}`);
+  assert.deepEqual(state.replaced, [[null, "", "/?qa=1"]]);
+  await state.window.AgentHubBrowserDeviceReady;
+});
+
+test("protected local access re-authenticates an already open managed tab", async () => {
+  const secret = "b".repeat(43);
+  const state = localSessionAuth({ managed: true });
+  state.location.hash = `#access=${secret}`;
+  state.listeners.get("hashchange")();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(state.requests.length, 1);
+  assert.equal(state.requests[0].options.headers.Authorization, `local ${secret}`);
+  assert.deepEqual(state.replaced, [[null, "", "/?qa=1"]]);
+  assert.equal(state.reloads(), 1);
+});
+
+test("an existing local HttpOnly session survives a browser reload", async () => {
+  const state = localSessionAuth({ existingSession: true });
+  await state.window.AgentHubBrowserDeviceReady;
+  assert.equal(state.requests.length, 1);
+  assert.equal(state.requests[0].url, "/api/local-session");
+  assert.equal(state.requests[0].options.method, "HEAD");
+});
 
 test("public browser pairing clears stale errors and submits a complete pasted code", () => {
   const auth = readFileSync(new URL("../../../assets/web-app/browser-device-auth.js", import.meta.url), "utf8");

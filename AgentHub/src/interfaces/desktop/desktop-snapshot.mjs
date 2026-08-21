@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
-import { displayUserPrompt } from "../../application/task-history.mjs";
+import {
+  displayUserPrompt,
+  userTaskReferencePromptDetails,
+} from "../../application/task-history.mjs";
 import { isCodexContextProbeTurn } from "../../domain/codex-context-probe.mjs";
 import {
   interstreamMessageDetails,
@@ -11,6 +14,7 @@ import { taskRunIsActive } from "../../domain/task-runs.mjs";
 import { claudeModelOptions } from "../../domain/agent-runtime-settings.mjs";
 import { presentContextUsageBreakdown } from "../../domain/context-usage-breakdown.mjs";
 import { deferredLaunchWaitReason } from "../../application/deferred-input-controller.mjs";
+import { createSnapshotCollectionDelta } from "./snapshot-collection-delta.mjs";
 
 const MAX_COMPACT_ACTIVITY_DETAIL_CHARS = 1_200;
 
@@ -84,6 +88,7 @@ export function createDesktopSnapshotFactory({
   restart,
   exchangeRates,
   maintenance = {},
+  telemetry = {},
   board = {},
   server = {},
   readState = null,
@@ -91,6 +96,14 @@ export function createDesktopSnapshotFactory({
   warn,
 }) {
   const versionCache = new Map();
+  const conversationDelta = createSnapshotCollectionDelta({
+    keyOf: (item) => [item?.streamId, item?.provider, item?.threadId].join("\u0000"),
+  });
+  const workspaceDelta = createSnapshotCollectionDelta({ keyOf: (item) => item?.id });
+  const boardTaskDelta = createSnapshotCollectionDelta({ keyOf: (item) => item?.id });
+  const messageReceiptDelta = createSnapshotCollectionDelta({
+    keyOf: (item) => [item?.provider, item?.threadId, item?.clientUserMessageId].join("\u0000"),
+  });
   let catalogRefresh = null;
 
   function catalogActiveRun(entry, lastMessage) {
@@ -144,8 +157,12 @@ export function createDesktopSnapshotFactory({
       });
   }
 
-  function versionCacheKey({ accountId, compactSnapshot }) {
-    return `${String(accountId ?? "")}\u0000${compactSnapshot === true ? "compact" : "full"}`;
+  function versionCacheKey({ accountId, compactSnapshot, snapshotProtocol }) {
+    return [
+      String(accountId ?? ""),
+      compactSnapshot === true ? "compact" : "full",
+      Number(snapshotProtocol) >= 4 ? "v4" : "v3",
+    ].join("\u0000");
   }
 
   async function sourceRevision(params) {
@@ -287,7 +304,6 @@ export function createDesktopSnapshotFactory({
         const interstream = interstreamMessageDetails(rawText);
         const origin = normalizeInterstreamOrigin(message?.origin) ?? interstream?.origin;
         const text = displayUserPrompt(rawText);
-        if (!text) return [];
         const clientUserMessageId = String(message.clientUserMessageId ?? "");
         const receipt = role === "user" && clientUserMessageId
           ? receipts.forMessage?.({
@@ -296,6 +312,24 @@ export function createDesktopSnapshotFactory({
             clientUserMessageId,
           })
           : null;
+        const receiptAttachments = Array.isArray(receipt?.result?.attachments)
+          ? receipt.result.attachments
+          : [];
+        const runAttachments = clientUserMessageId === String(run.clientUserMessageId ?? "")
+          && Array.isArray(run.messageAttachments)
+          ? run.messageAttachments
+          : [];
+        const promptTaskReferences = role === "user"
+          ? userTaskReferencePromptDetails(rawText)?.references ?? []
+          : [];
+        const attachments = (
+          receiptAttachments.length
+            ? receiptAttachments
+            : runAttachments.length
+              ? runAttachments
+              : promptTaskReferences
+        ).map((attachment) => ({ ...attachment }));
+        if (!text && !attachments.length) return [];
         return [{
           itemId: String(message.itemId ?? ""),
           clientUserMessageId,
@@ -309,13 +343,7 @@ export function createDesktopSnapshotFactory({
             : {}),
           ...(origin ? { origin } : {}),
           time: message.time ?? run.startedAt ?? receipt?.createdAt ?? null,
-          attachments: (
-            receipt?.result?.attachments
-            ?? (clientUserMessageId === String(run.clientUserMessageId ?? "")
-              ? run.messageAttachments
-              : [])
-            ?? []
-          ).map((attachment) => ({ ...attachment })),
+          attachments,
         }];
       }),
       progress: String(run.progressReasoning ?? ""),
@@ -450,21 +478,41 @@ export function createDesktopSnapshotFactory({
     accountId = "",
     knownVersion = "",
     compactSnapshot = false,
+    snapshotProtocol = 3,
+    conversationsVersion = "",
+    workspacesVersion = "",
+    boardTasksVersion = "",
+    messageReceiptsVersion = "",
   } = {}) {
+    const protocol = Number(snapshotProtocol) >= 4 ? 4 : 3;
     if (refresh || catalog.stale()) {
       // A Desktop RPC must remain responsive while Codex App Server is slow or
       // recovering. The catalog owns refresh de-duplication; return its last
       // known state now and let the following poll receive the refreshed list.
       scheduleCatalogRefresh(refresh);
     }
-    const cacheKey = versionCacheKey({ accountId, compactSnapshot });
-    const beforeRevision = refresh ? null : await sourceRevision({ accountId, compactSnapshot });
+    const cacheKey = versionCacheKey({ accountId, compactSnapshot, snapshotProtocol: protocol });
+    const revisionParams = { accountId, compactSnapshot, snapshotProtocol: protocol };
+    const requestedCollectionVersions = {
+      conversations: String(conversationsVersion),
+      workspaces: String(workspacesVersion),
+      boardTasks: String(boardTasksVersion),
+      messageReceipts: String(messageReceiptsVersion),
+    };
+    const beforeRevision = refresh ? null : await sourceRevision(revisionParams);
     const cached = versionCache.get(cacheKey);
+    const collectionVersionsMatch = (versions) => protocol < 4 || (
+      versions
+      && Object.entries(requestedCollectionVersions).every(([name, value]) => (
+        value && value === versions[name]
+      ))
+    );
     if (
       knownVersion
       && beforeRevision !== null
       && cached?.version === knownVersion
       && cached.revision === beforeRevision
+      && collectionVersionsMatch(cached.collectionVersions)
     ) {
       return { notModified: true, version: knownVersion };
     }
@@ -490,6 +538,20 @@ export function createDesktopSnapshotFactory({
     }
     const taskSnapshots = entries.map((entry) => desktopTaskSnapshot(entry, { accountId, compactSnapshot }));
     const selectedTaskSnapshot = taskSnapshots.find((task) => task.selected) ?? null;
+    if (selectedTaskSnapshot && !selectedTaskSnapshot.running && telemetry.recent) {
+      try {
+        const [latestTelemetry] = await telemetry.recent({
+          provider: selectedTaskSnapshot.provider,
+          threadId: selectedTaskSnapshot.threadId,
+          limit: 1,
+        });
+        if (latestTelemetry) {
+          selectedTaskSnapshot.providerTurnTelemetry = structuredClone(latestTelemetry);
+        }
+      } catch (error) {
+        warn?.("Cannot read latest provider turn telemetry:", error.message);
+      }
+    }
     const selectedIdentity = selection.selectedTask();
     const current = settings.current();
     const activeProvider = current.activeProvider;
@@ -525,10 +587,12 @@ export function createDesktopSnapshotFactory({
         },
       })
       : null;
+    const boardTasks = board.snapshot?.() ?? [];
+    const messageReceipts = desktopMessageReceiptSnapshot();
     const snapshot = {
-      apiVersion: 3,
+      apiVersion: protocol,
       workspaces,
-      boardTasks: board.snapshot?.() ?? [],
+      boardTasks,
       boardLayout: board.layout?.() ?? { columnOrder: [], notesComment: "" },
       selected: {
         ...selectedIdentity,
@@ -601,7 +665,7 @@ export function createDesktopSnapshotFactory({
         })),
       },
       pendingApprovals: approvals.snapshot(),
-      messageReceipts: desktopMessageReceiptSnapshot(),
+      messageReceipts,
       deferredInputs: [
         ...deferred.pendingValues().map((item) => ({
           id: item.id,
@@ -656,20 +720,46 @@ export function createDesktopSnapshotFactory({
       exchangeRates: exchangeRates?.snapshot?.() ?? null,
       activeCount,
       server: serverSnapshot,
-      tasks: taskSnapshots,
+      ...(protocol >= 4 ? { conversations: taskSnapshots } : { tasks: taskSnapshots }),
     };
     const version = createHash("sha256")
       .update(JSON.stringify(snapshot))
       .digest("base64url")
       .slice(0, 22);
-    const afterRevision = await sourceRevision({ accountId, compactSnapshot });
+    const collectionDeltas = protocol >= 4 ? {
+      conversations: conversationDelta(taskSnapshots, conversationsVersion),
+      workspaces: workspaceDelta(workspaces, workspacesVersion),
+      boardTasks: boardTaskDelta(boardTasks, boardTasksVersion),
+      messageReceipts: messageReceiptDelta(messageReceipts, messageReceiptsVersion),
+    } : null;
+    const collectionVersions = collectionDeltas ? Object.fromEntries(
+      Object.entries(collectionDeltas).map(([name, delta]) => [name, delta.version]),
+    ) : null;
+    const afterRevision = await sourceRevision(revisionParams);
     if (beforeRevision !== null && beforeRevision === afterRevision) {
-      versionCache.set(cacheKey, { revision: afterRevision, version });
+      versionCache.set(cacheKey, { revision: afterRevision, version, collectionVersions });
     } else {
       versionCache.delete(cacheKey);
     }
-    if (knownVersion && knownVersion === version) return { notModified: true, version };
-    return { ...snapshot, generatedAt: clock.nowIso(), version };
+    if (
+      knownVersion
+      && knownVersion === version
+      && collectionVersionsMatch(collectionVersions)
+    ) return { notModified: true, version };
+    if (protocol < 4) return { ...snapshot, generatedAt: clock.nowIso(), version };
+    const {
+      workspaces: _workspaces,
+      boardTasks: _boardTasks,
+      messageReceipts: _messageReceipts,
+      conversations: _conversations,
+      ...transportSnapshot
+    } = snapshot;
+    return {
+      ...transportSnapshot,
+      collectionDeltas,
+      generatedAt: clock.nowIso(),
+      version,
+    };
   }
 
   return {

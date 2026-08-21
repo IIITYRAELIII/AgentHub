@@ -51,6 +51,8 @@ export class StreamMaintenanceRegistry {
       reason: String(reason ?? "context-maintenance").trim() || "context-maintenance",
       streamId: String(target?.streamId ?? "").trim() || null,
       threadId: String(target?.threadId ?? "").trim() || null,
+      ownerRunId: String(target?.id ?? target?.runId ?? "").trim() || null,
+      ownerTurnId: String(target?.turnId ?? "").trim() || null,
       startedAt: new Date().toISOString(),
     };
     this.#entries.set(key, entry);

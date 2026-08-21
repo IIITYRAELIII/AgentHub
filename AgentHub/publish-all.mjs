@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { createWriteStream, mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
@@ -9,6 +10,7 @@ import {
   publicationCheckpointStore,
   runPublicationSteps,
 } from "./src/infrastructure/persistence/publication-checkpoint.mjs";
+import { publicationRunStore } from "./src/infrastructure/persistence/publication-run-store.mjs";
 import { withPublicationLock } from "./src/infrastructure/process/publication-lock.mjs";
 import { stopProcessTree } from "./src/infrastructure/process/process-tree.mjs";
 import {
@@ -44,13 +46,19 @@ export function publicationSteps({
   skipWorker = false,
   testContour = false,
   fullTestCheckpointId = "",
+  fullTestSourceFingerprint = "",
 } = {}) {
   return [
     ...(!skipTests ? [
       {
         ...npmStep("Полные тесты Agent Hub", ["run", "test:all"]),
-        ...(fullTestCheckpointId ? {
-          env: { AGENT_HUB_FULL_TEST_CHECKPOINT_ID: fullTestCheckpointId },
+        ...(fullTestCheckpointId || fullTestSourceFingerprint ? {
+          env: {
+            ...(fullTestCheckpointId ? { AGENT_HUB_FULL_TEST_CHECKPOINT_ID: fullTestCheckpointId } : {}),
+            ...(fullTestSourceFingerprint ? {
+              AGENT_HUB_FULL_TEST_SOURCE_FINGERPRINT: fullTestSourceFingerprint,
+            } : {}),
+          },
         } : {}),
       },
     ] : []),
@@ -71,7 +79,14 @@ export function publicationSteps({
   ];
 }
 
-export function runStep({ label, command, args, env = {}, timeoutMs = DEFAULT_STEP_TIMEOUT_MS }, {
+export function runStep({
+  label,
+  command,
+  args,
+  env = {},
+  timeoutMs = DEFAULT_STEP_TIMEOUT_MS,
+  logFile = "",
+}, {
   spawnImpl = spawn,
   stopTree = stopProcessTree,
 } = {}) {
@@ -79,18 +94,33 @@ export function runStep({ label, command, args, env = {}, timeoutMs = DEFAULT_ST
   console.log(`\n==> ${label}`);
   return new Promise((resolve, reject) => {
     let settled = false;
+    const log = logFile ? (() => {
+      mkdirSync(path.dirname(logFile), { recursive: true });
+      const stream = createWriteStream(logFile, { flags: "a" });
+      stream.write(`\n==> ${label}\n`);
+      return stream;
+    })() : null;
     const child = spawnImpl(command, args, {
       cwd: ROOT,
       env: { ...process.env, ...env, PYTHONUTF8: "1" },
       shell: false,
-      stdio: "inherit",
+      stdio: log ? ["inherit", "pipe", "pipe"] : "inherit",
       windowsHide: true,
       detached: process.platform !== "win32",
+    });
+    child.stdout?.on("data", (chunk) => {
+      process.stdout.write(chunk);
+      log.write(chunk);
+    });
+    child.stderr?.on("data", (chunk) => {
+      process.stderr.write(chunk);
+      log.write(chunk);
     });
     const finish = (operation, value) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      log?.end();
       operation(value);
     };
     const timer = setTimeout(() => {
@@ -102,10 +132,16 @@ export function runStep({ label, command, args, env = {}, timeoutMs = DEFAULT_ST
     child.once("error", (error) => finish(reject, error));
     child.once("exit", (code, signal) => {
       if (code === 0) {
-        console.log(`<== ${label}: ${((Date.now() - startedAt) / 1_000).toFixed(1)} с`);
+        const completed = `<== ${label}: ${((Date.now() - startedAt) / 1_000).toFixed(1)} с`;
+        console.log(completed);
+        log?.write(`${completed}\n`);
         finish(resolve);
       }
-      else finish(reject, new Error(`${label}: процесс завершён с ${signal ?? `кодом ${code}`}`));
+      else {
+        const error = new Error(`${label}: процесс завершён с ${signal ?? `кодом ${code}`}`);
+        log?.write(`${error.message}\n`);
+        finish(reject, error);
+      }
     });
   });
 }
@@ -168,6 +204,7 @@ export async function publishAll(args = process.argv.slice(2), {
   revision = currentRevision,
   ensureWorkerDependency = ensureWrangler,
   checkpoint = null,
+  journal = null,
   runtimeRoot = defaultRuntimeRoot(),
   verifyRestart = restart === callDesktopControl ? waitForRuntimeReplacement : async () => {},
 } = {}) {
@@ -180,26 +217,33 @@ export async function publishAll(args = process.argv.slice(2), {
       ...options,
       fullTestCheckpointId: head ? `full:${head}` : "",
     });
-    await runPublicationSteps(steps, {
-      run,
-      checkpoint,
-      identity: {
-        mode: "full",
-        revision: head,
-        worktreeRoot: REPOSITORY_ROOT,
-        runtimeRoot,
-        labels: steps.map((step) => step.label),
-      },
-    });
-    if (!options.skipRestart) {
-      console.log("\n==> Запрос безопасного перезапуска Agent Hub");
-      const result = await restartRuntimeAndVerify(restart, verifyRestart, runtimeRoot);
-      console.log(result?.deferred
-        ? `${result?.message ?? "Перезапуск запрошен"}. Готовность подтвердится после завершения активного хода.`
-        : result?.message ?? "Перезапуск запрошен");
+    try {
+      await runPublicationSteps(steps, {
+        run,
+        checkpoint,
+        identity: {
+          mode: "full",
+          revision: head,
+          worktreeRoot: REPOSITORY_ROOT,
+          runtimeRoot,
+          labels: steps.map((step) => step.label),
+        },
+        journal,
+      });
+      if (!options.skipRestart) {
+        console.log("\n==> Запрос безопасного перезапуска Agent Hub");
+        const result = await restartRuntimeAndVerify(restart, verifyRestart, runtimeRoot);
+        console.log(result?.deferred
+          ? `${result?.message ?? "Перезапуск запрошен"}. Готовность подтвердится после завершения активного хода.`
+          : result?.message ?? "Перезапуск запрошен");
+      }
+      await record();
+      if (checkpoint) await checkpoint.clear();
+      await journal?.finish("succeeded");
+    } catch (error) {
+      await journal?.finish("failed", error);
+      throw error;
     }
-    await record();
-    if (checkpoint) await checkpoint.clear();
     console.log("\nПубликация завершена. Интерфейс VS Code подхватит runtime после переоткрытия панели или команды «Обновить Agent Hub»; Reload Window нужен только при изменении моста расширения.");
   });
 }
@@ -208,6 +252,7 @@ const invokedFile = process.argv[1] ? path.resolve(process.argv[1]) : "";
 if (invokedFile === fileURLToPath(import.meta.url)) {
   publishAll(process.argv.slice(2), {
     checkpoint: publicationCheckpointStore(),
+    journal: publicationRunStore(),
     before: async () => {
       await assertCleanPublicationTree({ cwd: REPOSITORY_ROOT });
       await assertCurrentPublicationRevision({ cwd: REPOSITORY_ROOT });

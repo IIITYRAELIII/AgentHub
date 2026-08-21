@@ -134,9 +134,6 @@ const dialogWorkingDirectoryNote = document.querySelector("[data-dialog-working-
 const dialogStreamRules = document.querySelector("[data-dialog-stream-rules]");
 const dialogStreamRulesCount = document.querySelector("[data-dialog-stream-rules-count]");
 const dialogStreamRulesSave = document.querySelector("[data-dialog-stream-rules-save]");
-const dialogWorkspaceRules = document.querySelector("[data-dialog-workspace-rules]");
-const dialogWorkspaceRulesPreview = document.querySelector("[data-dialog-workspace-rules-preview]");
-const dialogEffectiveRulesPreview = document.querySelector("[data-dialog-effective-rules-preview]");
 const workspaceMessageSearch = document.querySelector("[data-workspace-message-search]");
 const workspaceMessageSearchToggle = document.querySelector("[data-workspace-message-search-toggle]");
 const workspaceMessageSearchClose = document.querySelector("[data-workspace-message-search-close]");
@@ -154,6 +151,7 @@ const composerSend = document.querySelector("[data-composer-send]");
 const connectionQualityIndicator = document.querySelector("[data-connection-quality]");
 const annotationsBox = document.querySelector("[data-annotations]");
 const attachmentsBox = document.querySelector("[data-attachments]");
+const TaskReferences = window.AgentHubTaskReferences;
 const annotationContextMenu = document.querySelector("[data-annotation-context-menu]");
 const resourceContextMenu = document.querySelector("[data-resource-context-menu]");
 // Theme panels may clip their children (for example Lake uses overflow:hidden
@@ -295,21 +293,7 @@ const taskGroupTurns = new WeakMap();
 const telegram = window.Telegram?.WebApp;
 const telegramInitData = String(telegram?.initData ?? "");
 const telegramMode = Boolean(telegramInitData);
-const localAccessMatch = /^#access=([A-Za-z0-9_-]{43,128})$/u.exec(window.location.hash);
-const protectedLocalSessionReady = !telegramMode && localAccessMatch
-  ? fetch("/api/local-session", {
-      method: "POST",
-      headers: {
-        Authorization: `local ${localAccessMatch[1]}`,
-        "Content-Type": "application/json",
-      },
-      body: "{}",
-      cache: "no-store",
-    }).then(async (response) => {
-      if (!response.ok) throw new Error("Не удалось открыть защищённую локальную сессию Agent Hub.");
-      history.replaceState(null, "", `${location.pathname}${location.search}`);
-    })
-  : Promise.resolve();
+const protectedLocalSessionReady = window.AgentHubProtectedLocalSessionReady ?? Promise.resolve();
 const localSessionReady = Promise.all([
   protectedLocalSessionReady,
   window.AgentHubBrowserDeviceReady ?? Promise.resolve(),
@@ -969,7 +953,9 @@ function enhanceThemedSelect(select) {
   menu.setAttribute("role", "listbox");
   menu.setAttribute("aria-label", button.getAttribute("aria-label"));
   button.setAttribute("aria-controls", menu.id);
-  document.body.append(menu);
+  const supportsPopover = typeof menu.showPopover === "function";
+  if (supportsPopover) menu.setAttribute("popover", "manual");
+  (supportsPopover ? document.body : select.closest("dialog") ?? document.body).append(menu);
 
   const state = { button, menu, select, shell, value };
   select.__themedSelect = state;
@@ -1013,6 +999,7 @@ function enhanceThemedSelect(select) {
   };
   const close = ({ restoreFocus = false } = {}) => {
     if (menu.hidden) return;
+    if (menu.matches?.(":popover-open")) menu.hidePopover();
     menu.hidden = true;
     menu.removeAttribute("aria-activedescendant");
     shell.removeAttribute("data-open");
@@ -1052,12 +1039,11 @@ function enhanceThemedSelect(select) {
   const open = () => {
     if (button.disabled) return;
     if (openThemedSelect && openThemedSelect !== state) {
-      openThemedSelect.menu.hidden = true;
-      openThemedSelect.shell.removeAttribute("data-open");
-      openThemedSelect.button.setAttribute("aria-expanded", "false");
+      openThemedSelect.close();
     }
     render();
     menu.hidden = false;
+    if (supportsPopover) menu.showPopover();
     shell.dataset.open = "true";
     button.setAttribute("aria-expanded", "true");
     openThemedSelect = state;
@@ -1188,9 +1174,16 @@ function sameData(left, right) {
 }
 
 /* Компактное «сколько прошло» для последней активности задачи. */
+function activityTimestamp(input) {
+  if (input == null || input === "" || input === 0 || input === "0") return 0;
+  const value = input instanceof Date ? input.getTime() : Date.parse(String(input));
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
 function formatRelativeTime(input) {
-  const date = input instanceof Date ? input : new Date(input);
-  if (Number.isNaN(date.getTime())) return "";
+  const timestamp = activityTimestamp(input);
+  if (!timestamp) return "";
+  const date = new Date(timestamp);
   const diff = Date.now() - date.getTime();
   const minute = 60_000;
   const hour = 60 * minute;
@@ -1377,18 +1370,26 @@ function restorePersistedDrafts() {
     if (!taskId) continue;
     const text = normalizedDraftText(entry.text);
     const annotations = normalizedDraftAnnotations(entry.annotations);
-    if (!text && annotations.length === 0) continue;
-    drafts.set(taskId, { text, attachments: [], annotations });
+    const taskReferences = (Array.isArray(entry?.taskReferences) ? entry.taskReferences : [])
+      .map((reference) => TaskReferences.normalize(reference))
+      .filter(Boolean);
+    if (!text && annotations.length === 0 && taskReferences.length === 0) continue;
+    drafts.set(taskId, { text, attachments: [], taskReferences, annotations });
   }
 }
 
 function persistDrafts() {
   const persisted = [...drafts.entries()]
-    .filter(([taskId, draft]) => String(taskId).trim() && (draft?.text || draft?.annotations?.length))
+    .filter(([taskId, draft]) => String(taskId).trim() && (
+      draft?.text || draft?.annotations?.length || draft?.taskReferences?.length
+    ))
     .slice(-DRAFT_STORAGE_MAX_TASKS)
     .map(([taskId, draft]) => ({
       taskId,
       text: normalizedDraftText(draft.text),
+      taskReferences: (draft.taskReferences ?? [])
+        .map((reference) => TaskReferences.normalize(reference))
+        .filter(Boolean),
       annotations: normalizedDraftAnnotations(draft.annotations),
     }));
   try {
@@ -1904,14 +1905,14 @@ function workspaceStreams(tasks) {
   return [...byStream.values()]
     .sort((left, right) => (
       left.ordinal - right.ordinal
-      || Math.max(...right.tasks.map((task) => Date.parse(task.lastActivity || 0) || 0))
-        - Math.max(...left.tasks.map((task) => Date.parse(task.lastActivity || 0) || 0))
+      || Math.max(...right.tasks.map((task) => activityTimestamp(task.lastActivity)))
+        - Math.max(...left.tasks.map((task) => activityTimestamp(task.lastActivity)))
     ));
 }
 
 function workspaceLastActivity(tasks) {
   return tasks.reduce((latest, task) => {
-    const value = Date.parse(task.lastActivity || 0) || 0;
+    const value = activityTimestamp(task.lastActivity);
     return value > latest ? value : latest;
   }, 0);
 }
@@ -1932,7 +1933,7 @@ function representativeWorkspaceTask(tasks) {
     if (active) return active;
   }
   return [...tasks].sort((left, right) => (
-    Date.parse(right.lastActivity || 0) - Date.parse(left.lastActivity || 0)
+    activityTimestamp(right.lastActivity) - activityTimestamp(left.lastActivity)
   ))[0] ?? null;
 }
 
@@ -1990,8 +1991,7 @@ function representativeStreamTask(stream) {
 }
 
 function streamActivityTime(task) {
-  const value = Date.parse(String(task?.lastActivity ?? ""));
-  return Number.isFinite(value) ? value : 0;
+  return activityTimestamp(task?.lastActivity);
 }
 
 function streamAttentionKind(task, now = Date.now()) {
@@ -2807,6 +2807,75 @@ streamTabs?.addEventListener("click", (event) => {
   });
 });
 
+function streamTaskDropTarget(event) {
+  return event.target.closest?.(
+    "[data-stream-task-id], [data-activity-task-id]",
+  ) ?? null;
+}
+
+function streamDropConversationTaskId(target) {
+  return String(target?.dataset?.streamTaskId ?? target?.dataset?.activityTaskId ?? "").trim();
+}
+
+function attachTaskReferenceToComposer(targetTaskId, reference) {
+  if (!targetTaskId || !reference) return false;
+  if (state.selectedId !== targetTaskId) selectTaskFromUi(targetTaskId);
+  const draft = drafts.get(targetTaskId) ?? {
+    text: "", attachments: [], taskReferences: [], annotations: [],
+  };
+  const alreadyAttached = (draft.taskReferences ?? [])
+    .some((item) => String(item?.taskId ?? "") === reference.taskId);
+  if (!alreadyAttached && (draft.taskReferences ?? []).length >= 8) {
+    showToast("К одному сообщению можно приложить не больше восьми Task");
+    return false;
+  }
+  const nextReferences = TaskReferences.merge(draft.taskReferences, reference);
+  drafts.set(targetTaskId, { ...draft, taskReferences: nextReferences });
+  if (state.selectedId === targetTaskId) restoreDraft();
+  persistDrafts();
+  composerInput.focus({ preventScroll: true });
+  composer.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  showToast(`Task «${reference.title}» прикреплена к сообщению`);
+  return true;
+}
+
+function bindTaskReferenceDrop(container, {
+  targetFromEvent = streamTaskDropTarget,
+  conversationTaskId = streamDropConversationTaskId,
+} = {}) {
+  container?.addEventListener("dragover", (event) => {
+    if (!TaskReferences.hasTransfer(event.dataTransfer)) return;
+    const target = targetFromEvent(event);
+    if (!conversationTaskId(target, event)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    target.classList.add("is-task-drop-target");
+  });
+  container?.addEventListener("dragleave", (event) => {
+    const target = targetFromEvent(event);
+    if (!target?.contains?.(event.relatedTarget)) target?.classList.remove("is-task-drop-target");
+  });
+  container?.addEventListener("drop", (event) => {
+    if (!TaskReferences.hasTransfer(event.dataTransfer)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const target = targetFromEvent(event);
+    const targetTaskId = conversationTaskId(target, event);
+    const reference = TaskReferences.fromTransfer(event.dataTransfer, { intent: "context" });
+    target?.classList.remove("is-task-drop-target");
+    if (!targetTaskId || !reference) return;
+    attachTaskReferenceToComposer(targetTaskId, reference);
+  });
+}
+
+bindTaskReferenceDrop(streamTabs);
+bindTaskReferenceDrop(activityStreamList);
+bindTaskReferenceDrop(activityRecentList);
+bindTaskReferenceDrop(chatPane, {
+  targetFromEvent: () => chatPane,
+  conversationTaskId: () => String(state.selectedId ?? "").trim(),
+});
+
 if (streamTabs && typeof ResizeObserver === "function") {
   new ResizeObserver(scheduleStreamTabsOverflow).observe(streamTabs);
 }
@@ -2841,15 +2910,6 @@ function updateAgentRulesLimit(input, output) {
   return valid;
 }
 
-function effectiveAgentRules(workspaceRules, streamRules) {
-  const sections = [];
-  const inherited = String(workspaceRules ?? "").trim();
-  const own = String(streamRules ?? "").trim();
-  if (inherited) sections.push(`<workspace_instructions>\n${inherited}\n</workspace_instructions>`);
-  if (own) sections.push(`<stream_instructions>\n${own}\n</stream_instructions>`);
-  return sections.join("\n\n");
-}
-
 function renderStreamRulesPreview() {
   const task = currentTask();
   const streamId = String(task?.streamId ?? "");
@@ -2857,20 +2917,11 @@ function renderStreamRulesPreview() {
   const draft = streamRulesDrafts.get(streamId);
   if (draft?.value === serverRules) streamRulesDrafts.delete(streamId);
   const ownRules = streamRulesDrafts.get(streamId)?.value ?? serverRules;
-  const workspaceRules = agentRulesText(task?.workspaceDeveloperRules ?? task?.workspaceRules);
   if (dialogStreamRules && document.activeElement !== dialogStreamRules) dialogStreamRules.value = ownRules;
   const valid = updateAgentRulesLimit(dialogStreamRules, dialogStreamRulesCount);
   if (dialogStreamRules) dialogStreamRules.disabled = !streamId;
   if (dialogStreamRulesSave) {
     dialogStreamRulesSave.disabled = !streamId || !valid || ownRules === serverRules;
-  }
-  if (dialogWorkspaceRules) dialogWorkspaceRules.hidden = !workspaceRules;
-  if (dialogWorkspaceRulesPreview) {
-    dialogWorkspaceRulesPreview.textContent = workspaceRules || "Правила Workspace не заданы.";
-  }
-  if (dialogEffectiveRulesPreview) {
-    dialogEffectiveRulesPreview.textContent = effectiveAgentRules(workspaceRules, ownRules)
-      || "Дополнительные developer-инструкции не заданы.";
   }
 }
 
@@ -3289,10 +3340,12 @@ streamTabs?.addEventListener("dragstart", (event) => {
   else event.dataTransfer?.setData("text/plain", draggedStreamId);
 });
 streamTabs?.addEventListener("dragover", (event) => {
+  if (TaskReferences.hasTransfer(event.dataTransfer)) return;
   if (!draggedStreamId || !event.target.closest("[data-stream-tab-id]")) return;
   event.preventDefault();
 });
 streamTabs?.addEventListener("drop", (event) => {
+  if (TaskReferences.hasTransfer(event.dataTransfer)) return;
   if (streamOrderMode !== "manual") return;
   const target = event.target.closest("[data-stream-tab-id][data-workspace-id]");
   const streamId = draggedStreamId || event.dataTransfer?.getData("text/plain") || "";
@@ -3367,13 +3420,16 @@ function messageCountLabel(count) {
 function providerResponseForTask(task, now = Date.now()) {
   if (!task) return null;
   const key = String(task.id ?? task.streamId ?? task.threadId ?? "");
-  const measurement = window.AgentHubConnectionQuality.modelResponseMeasurement(task.providerStart, now, {
+  const providerStart = task.providerStart ?? (!task.running
+    ? window.AgentHubProviderTurnTelemetry.providerStartFromTelemetry(task.providerTurnTelemetry)
+    : null);
+  const measurement = window.AgentHubConnectionQuality.modelResponseMeasurement(providerStart, now, {
     running: task.running,
     compaction: task.context?.compaction,
   });
   if (measurement && key) state.providerResponseSamples.set(key, {
     measurement,
-    providerStart: task.providerStart ? structuredClone(task.providerStart) : null,
+    providerStart: providerStart ? structuredClone(providerStart) : null,
   });
   if (measurement) return measurement;
   const previous = state.providerResponseSamples.get(key) ?? null;
@@ -3384,6 +3440,9 @@ function providerResponseForTask(task, now = Date.now()) {
 
 function cachedProviderStartForTask(task) {
   if (task?.providerStart) return task.providerStart;
+  if (!task?.running && task?.providerTurnTelemetry) {
+    return window.AgentHubProviderTurnTelemetry.providerStartFromTelemetry(task.providerTurnTelemetry);
+  }
   const key = String(task?.id ?? task?.streamId ?? task?.threadId ?? "");
   return state.providerResponseSamples.get(key)?.providerStart ?? null;
 }
@@ -4012,10 +4071,6 @@ function scheduleUserMessageDisclosureSync(roots = null) {
 
 window.addEventListener("resize", scheduleUserMessageDisclosureSync, { passive: true });
 
-function messageTimeLabel(value) {
-  return new Date(value).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
-}
-
 function patchRenderedMessage(node, message) {
   const article = node.matches?.("article.msg") ? node : node.querySelector?.("article.msg");
   if (!article) return;
@@ -4035,7 +4090,7 @@ function patchRenderedMessage(node, message) {
       time = el("span", { class: "msg-time" });
       head?.insertBefore(time, head.querySelector(".msg-delivery"));
     }
-    time.textContent = messageTimeLabel(message.time);
+    time.textContent = MessageView.messageTimestampLabel(message.time);
   } else {
     time?.remove();
   }
@@ -4049,6 +4104,23 @@ function patchRenderedMessage(node, message) {
     delivery.classList.toggle("is-failed", message.failed === true);
   } else {
     delivery?.remove();
+  }
+  let duration = head?.querySelector(".msg-turn-duration");
+  const durationLabel = role === "agent"
+    ? MessageView.turnDurationLabel(message.turnStartedAt, message.turnCompletedAt)
+    : "";
+  if (durationLabel) {
+    if (!duration) {
+      duration = el("span", {
+        class: "msg-turn-duration",
+        title: "Длительность хода",
+        "aria-label": "Длительность хода",
+      });
+      head?.append(duration);
+    }
+    duration.textContent = durationLabel;
+  } else {
+    duration?.remove();
   }
 }
 
@@ -4804,13 +4876,21 @@ function renderMessage(message, { readOnly = false, task = currentTask() } = {})
     message.time
       ? el("span", {
           class: "msg-time",
-          text: new Date(message.time).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }),
+          text: MessageView.messageTimestampLabel(message.time),
         })
       : null,
     message.delivery
       ? el("span", {
           class: `msg-delivery${message.failed ? " is-failed" : ""}`,
           text: message.delivery,
+        })
+      : null,
+    role === "agent" && MessageView.turnDurationLabel(message.turnStartedAt, message.turnCompletedAt)
+      ? el("span", {
+          class: "msg-turn-duration",
+          title: "Длительность хода",
+          "aria-label": "Длительность хода",
+          text: MessageView.turnDurationLabel(message.turnStartedAt, message.turnCompletedAt),
         })
       : null,
   ]);
@@ -5263,6 +5343,7 @@ function autosizeComposer() {
 function updateSendState() {
   const draftFilled = composerInput.value.trim().length > 0
     || currentAttachments().length > 0
+    || currentTaskReferences().length > 0
     || currentAnnotations().length > 0;
   composerSend.disabled = !draftFilled || !state.selectedId || Boolean(pendingComposerRequest);
 }
@@ -5316,12 +5397,14 @@ function submitComposer({ steerWhileRunning = false } = {}) {
   const rawText = composerInput.value;
   const text = rawText.trim();
   const attachments = currentAttachments().slice();
+  const taskReferences = currentTaskReferences().slice();
   const annotations = currentAnnotations().slice();
-  if (!text && attachments.length === 0 && annotations.length === 0) return;
+  if (!text && attachments.length === 0 && taskReferences.length === 0 && annotations.length === 0) return;
   const fingerprint = JSON.stringify({
     taskId: state.selectedId,
     rawText,
     attachments,
+    taskReferences,
     annotations,
   });
   const retry = retryComposerRequests.get(state.selectedId);
@@ -5335,11 +5418,13 @@ function submitComposer({ steerWhileRunning = false } = {}) {
     taskId: state.selectedId,
     rawText,
     attachments,
+    taskReferences,
     annotations,
   };
-  drafts.set(state.selectedId, { text: "", attachments: [], annotations: [] });
+  drafts.set(state.selectedId, { text: "", attachments: [], taskReferences: [], annotations: [] });
   composerInput.value = "";
   setAttachments([]);
+  setTaskReferences([]);
   setAnnotations([]);
   autosizeComposer();
   emit("message:send", {
@@ -5348,6 +5433,7 @@ function submitComposer({ steerWhileRunning = false } = {}) {
     text,
     annotations,
     attachments,
+    taskReferences,
     followUpMode: MessageView.composerFollowUpMode(task, { steerWhileRunning }),
     deferWhileRunning: task?.running === true && !steerWhileRunning,
     draftStream: task?.draftStream === true,
@@ -5373,11 +5459,13 @@ function completeComposerSend(requestId, accepted) {
     const untouched = draft
       && !draft.text
       && (draft.attachments ?? []).length === 0
+      && (draft.taskReferences ?? []).length === 0
       && (draft.annotations ?? []).length === 0;
     if (untouched) {
       drafts.set(pending.taskId, {
         text: pending.rawText,
         attachments: pending.attachments,
+        taskReferences: pending.taskReferences,
         annotations: pending.annotations,
       });
       if (state.selectedId === pending.taskId) restoreDraft();
@@ -5390,6 +5478,7 @@ function completeComposerSend(requestId, accepted) {
 /* ---- вложения (превью через data:-URL, blob: закрыт CSP) ---- */
 
 let attachments = [];
+let taskReferences = [];
 
 function currentAttachments() {
   return attachments;
@@ -5401,11 +5490,28 @@ function setAttachments(next) {
   updateSendState();
 }
 
+function currentTaskReferences() {
+  return taskReferences;
+}
+
+function setTaskReferences(next) {
+  taskReferences = (Array.isArray(next) ? next : [])
+    .map((reference) => TaskReferences.normalize(reference))
+    .filter(Boolean);
+  renderAttachments();
+  updateSendState();
+}
+
 function renderAttachments() {
   attachmentsBox.replaceChildren();
-  attachmentsBox.hidden = attachments.length === 0;
-  if (attachments.length === 0) return;
-  attachmentsBox.append(renderAttachmentStrip(attachments, { readOnly: false }));
+  attachmentsBox.hidden = attachments.length === 0 && taskReferences.length === 0;
+  if (taskReferences.length) {
+    attachmentsBox.append(renderAttachmentStrip(taskReferences, {
+      readOnly: false,
+      taskReferenceList: true,
+    }));
+  }
+  if (attachments.length) attachmentsBox.append(renderAttachmentStrip(attachments, { readOnly: false }));
 }
 
 const attachmentThumbnailObserver = typeof window.IntersectionObserver === "function"
@@ -5444,10 +5550,48 @@ function observeAttachmentThumbnail(node, item) {
   else window.queueMicrotask(load);
 }
 
-function renderAttachmentStrip(items, { readOnly }) {
+function renderAttachmentStrip(items, { readOnly, taskReferenceList = false }) {
   const strip = el("div", { class: "attachment-strip" });
   const gallery = resourceInteractions.imageGallery(items);
   items.forEach((item, index) => {
+    if (TaskReferences.isTaskReference(item)) {
+      const reference = TaskReferences.normalize(item);
+      const status = ({
+        new: "New",
+        in_progress: "InProg",
+        testing: "Test",
+        awaiting_implementation: "AwImpl",
+        done: "Done",
+      })[reference.workflowStatus] ?? "New";
+      const card = el(readOnly ? "button" : "div", {
+        class: "attachment attachment-task-reference",
+        title: readOnly ? "Открыть карточку Dashboard Task" : reference.title,
+        ...(readOnly ? { type: "button" } : {}),
+      }, [el("span", { class: "attachment-task-card" }, [
+        el("span", { class: "attachment-file-type", text: "TASK" }),
+        el("span", { class: "attachment-task-copy" }, [
+          el("span", { class: "attachment-file-name", text: reference.title }),
+          el("span", { class: "attachment-task-status", text: status }),
+        ]),
+      ])]);
+      if (readOnly) {
+        card.addEventListener("click", () => document.dispatchEvent(new CustomEvent(
+          "agenthub:task-reference-open",
+          { detail: { taskId: reference.taskId } },
+        )));
+      } else {
+        card.append(el("button", {
+          type: "button",
+          class: "attachment-remove",
+          "data-task-reference-index": taskReferenceList ? index : null,
+          title: "Убрать Task из сообщения",
+          "aria-label": "Убрать Task из сообщения",
+          text: "×",
+        }));
+      }
+      strip.append(card);
+      return;
+    }
     const source = item.dataUrl || item.thumbnailUrl || item.url || "";
     const image = resourceInteractions.isImageAttachment(item);
     const missing = readOnly && (item.missing || (!source && !item.id));
@@ -5515,6 +5659,13 @@ function formatAttachmentSize(value) {
 }
 
 attachmentsBox.addEventListener("click", (event) => {
+  const taskReferenceRemove = event.target.closest("[data-task-reference-index]");
+  if (taskReferenceRemove) {
+    const index = Number(taskReferenceRemove.dataset.taskReferenceIndex);
+    setTaskReferences(taskReferences.filter((_, itemIndex) => itemIndex !== index));
+    saveDraft();
+    return;
+  }
   const remove = event.target.closest("[data-attachment-index]");
   if (!remove) return;
   const index = Number(remove.dataset.attachmentIndex);
@@ -5943,6 +6094,7 @@ function saveDraft() {
   drafts.set(state.selectedId, {
     text: composerInput.value,
     attachments: attachments.slice(),
+    taskReferences: taskReferences.slice(),
     annotations: annotations.slice(),
   });
   persistDrafts();
@@ -5967,9 +6119,14 @@ function prepareForRuntimeReload() {
 }
 
 function restoreDraft() {
-  const draft = drafts.get(state.selectedId) ?? { text: "", attachments: [], annotations: [] };
+  const draft = drafts.get(state.selectedId) ?? {
+    text: "", attachments: [], taskReferences: [], annotations: [],
+  };
   composerInput.value = draft.text ?? "";
   attachments = draft.attachments ?? [];
+  taskReferences = (draft.taskReferences ?? [])
+    .map((reference) => TaskReferences.normalize(reference))
+    .filter(Boolean);
   annotations = draft.annotations ?? [];
   renderAttachments();
   renderAnnotations();
@@ -6367,23 +6524,31 @@ function renderDialogSettings() {
     if (!container) continue;
     container.replaceChildren();
     if (!Array.isArray(values) || values.length === 0) {
-      container.append(el("span", { class: "setting-empty", text: "—" }));
+      if (container instanceof HTMLSelectElement) {
+        container.append(el("option", { value: "", selected: true, text: "—" }));
+        container.disabled = true;
+      } else {
+        container.append(el("span", { class: "setting-empty", text: "—" }));
+      }
       continue;
     }
+    if (container instanceof HTMLSelectElement) container.disabled = false;
     for (const option of values) {
       const value = typeof option === "string" ? option : option.value;
       const label = typeof option === "string" ? option : (option.label ?? option.value);
       const active = selection?.[group] === value;
-      container.append(el("button", {
-        type: "button",
-        class: "option-chip",
-        "data-select-group": group,
-        "data-select-value": value,
-        "aria-pressed": String(active),
-        "data-active": active ? "" : null,
-        disabled: group === "provider" && !task?.draftStream,
-        text: label,
-      }));
+      container.append(container instanceof HTMLSelectElement
+        ? el("option", { value, selected: active, text: label })
+        : el("button", {
+          type: "button",
+          class: "option-chip",
+          "data-select-group": group,
+          "data-select-value": value,
+          "aria-pressed": String(active),
+          "data-active": active ? "" : null,
+          disabled: group === "provider" && !task?.draftStream,
+          text: label,
+        }));
     }
   }
   for (const toggle of dialogSettings.querySelectorAll("[data-dialog-toggle]")) {
@@ -6407,11 +6572,7 @@ function renderDialogSettings() {
   renderStreamRulesPreview();
 }
 
-dialogSettings.addEventListener("click", (event) => {
-  const chip = event.target.closest("[data-select-group]");
-  if (!chip) return;
-  const group = chip.dataset.selectGroup;
-  const value = chip.dataset.selectValue;
+function selectDialogSetting(group, value) {
   const task = currentTask();
   if (task?.draftStream) {
     task.streamSettings[group] = value;
@@ -6433,9 +6594,20 @@ dialogSettings.addEventListener("click", (event) => {
     emit("selection:set", { key: group, value });
   }
   renderOptions();
+}
+
+dialogSettings.addEventListener("click", (event) => {
+  const chip = event.target.closest("[data-select-group]");
+  if (!chip) return;
+  selectDialogSetting(chip.dataset.selectGroup, chip.dataset.selectValue);
 });
 
 dialogSettings.addEventListener("change", (event) => {
+  const setting = event.target.closest("select[data-dialog-options]");
+  if (setting) {
+    selectDialogSetting(setting.dataset.dialogOptions, setting.value);
+    return;
+  }
   const directory = event.target.closest("[data-dialog-working-directory]");
   if (directory) {
     const task = currentTask();

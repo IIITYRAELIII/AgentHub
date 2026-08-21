@@ -1224,7 +1224,7 @@ test("Mini App forwards authenticated control commands to Agent Hub", async () =
       result: { generatedAt: "now" },
       receiptId: "local-command-1",
     });
-    const snapshot = await fetch(`${address.url}api/snapshot?knownVersion=version-1`);
+    const snapshot = await fetch(`${address.url}api/snapshot?knownVersion=version-1&compactSnapshot=1&snapshotProtocol=4&conversationsVersion=conversations-1&workspacesVersion=workspaces-1&boardTasksVersion=board-1&messageReceiptsVersion=receipts-1`);
     assert.equal(snapshot.status, 200);
     assert.deepEqual(await snapshot.json(), { generatedAt: "now" });
     assert.deepEqual(calls, [
@@ -1235,7 +1235,15 @@ test("Mini App forwards authenticated control commands to Agent Hub", async () =
       },
       {
         action: "snapshot",
-        params: { knownVersion: "version-1" },
+        params: {
+          knownVersion: "version-1",
+          compactSnapshot: true,
+          snapshotProtocol: 4,
+          conversationsVersion: "conversations-1",
+          workspacesVersion: "workspaces-1",
+          boardTasksVersion: "board-1",
+          messageReceiptsVersion: "receipts-1",
+        },
         context: { source: "local-mini-app" },
       },
     ]);
@@ -1592,6 +1600,11 @@ test("local Mini App requires a protected session and rejects CSRF-shaped contro
     assert.equal(session.status, 200);
     const cookie = String(session.headers.get("set-cookie") ?? "").split(";", 1)[0];
     assert.match(cookie, /^agent_hub_local=/u);
+    assert.equal((await fetch(`${address.url}api/local-session`, {
+      method: "HEAD",
+      headers: { Cookie: cookie },
+    })).status, 204);
+    assert.equal((await fetch(`${address.url}api/local-session`, { method: "HEAD" })).status, 401);
 
     assert.equal((await fetch(`${address.url}api/control`, {
       method: "POST",

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { messageWithTaskReferences } from "../../src/domain/task-board-task.mjs";
 import {
   codexExplicitFinalTurnAnswer,
   codexFinalTurnAnswer,
@@ -460,6 +461,49 @@ test("displayUserPrompt extracts comments and requests from response annotations
 test("displayUserPrompt retains a complete long user message", () => {
   const prompt = "Полный текст ".repeat(2_000);
   assert.equal(displayUserPrompt(prompt), prompt.trim());
+});
+
+test("displayUserPrompt keeps Task instructions private while preserving the user's request", () => {
+  const reference = {
+    kind: "task",
+    taskId: "board-1",
+    title: "Исправить Dashboard",
+    workflowStatus: "new",
+    intent: "context",
+  };
+
+  assert.equal(displayUserPrompt(messageWithTaskReferences("Сравни с текущим решением", [reference])),
+    "Сравни с текущим решением");
+  assert.equal(displayUserPrompt(messageWithTaskReferences("", [reference])), "");
+});
+
+test("Codex history retains a Task-only turn as a structured attachment", () => {
+  const reference = {
+    kind: "task",
+    taskId: "board-1",
+    title: "Исправить Dashboard",
+    workflowStatus: "new",
+    workspaceId: null,
+    intent: "context",
+  };
+  const [exchange] = codexThreadHistory([{
+    id: "turn-task-only",
+    status: "completed",
+    items: [{
+      id: "user-task-only",
+      type: "userMessage",
+      content: [{ type: "text", text: messageWithTaskReferences("", [reference]) }],
+    }, {
+      id: "answer-task-only",
+      type: "agentMessage",
+      phase: "final_answer",
+      text: "Принято",
+    }],
+  }]);
+
+  assert.equal(exchange.prompt, "");
+  assert.equal(exchange.messages[0].text, "");
+  assert.deepEqual(exchange.messages[0].attachments, [reference]);
 });
 
 test("codex history preserves response annotations as structured prompt data", () => {

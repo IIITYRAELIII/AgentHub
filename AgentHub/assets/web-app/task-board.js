@@ -79,6 +79,52 @@
     return Number.isFinite(value) ? value : 0;
   }
 
+  const TASK_WORKFLOW_STATUSES = Object.freeze([
+    "new", "in_progress", "testing", "awaiting_implementation", "done",
+  ]);
+  const TASK_STATUS_PRESENTATION = Object.freeze({
+    en: Object.freeze({
+      new: Object.freeze({ short: "New", full: "New" }),
+      in_progress: Object.freeze({ short: "InProg", full: "In progress" }),
+      testing: Object.freeze({ short: "Test", full: "Testing" }),
+      awaiting_implementation: Object.freeze({ short: "AwImpl", full: "Awaiting implementation" }),
+      done: Object.freeze({ short: "Done", full: "Done" }),
+    }),
+    ru: Object.freeze({
+      new: Object.freeze({ short: "Новая", full: "Новая" }),
+      in_progress: Object.freeze({ short: "ВРаботе", full: "В работе" }),
+      testing: Object.freeze({ short: "Тест", full: "Тестируется" }),
+      awaiting_implementation: Object.freeze({ short: "Прим", full: "К применению" }),
+      done: Object.freeze({ short: "Готово", full: "Готово" }),
+    }),
+  });
+  const TASK_STATUS_LANGUAGE_STORAGE_KEY = "agent-hub.task-status-language";
+
+  function normalizedTaskStatusLanguage(value) {
+    return value === "ru" ? "ru" : "en";
+  }
+
+  function taskWorkflowStatus(task) {
+    const explicit = String(task?.workflowStatus ?? "").trim().toLowerCase();
+    if (TASK_WORKFLOW_STATUSES.includes(explicit)) return explicit;
+    if (task?.status === "done") return "done";
+    if (["starting", "started"].includes(task?.status)) return "in_progress";
+    return "new";
+  }
+
+  function taskWorkflowPresentation(task, language = "en") {
+    const status = taskWorkflowStatus(task);
+    return { status, ...TASK_STATUS_PRESENTATION[normalizedTaskStatusLanguage(language)][status] };
+  }
+
+  function storedTaskStatusLanguage() {
+    try {
+      return normalizedTaskStatusLanguage(window.localStorage?.getItem(TASK_STATUS_LANGUAGE_STORAGE_KEY));
+    } catch {
+      return "en";
+    }
+  }
+
   function tasksForMode(tasks, { completedOnly = false } = {}) {
     const source = Array.isArray(tasks) ? tasks : [];
     if (!completedOnly) return source.filter((task) => task?.status !== "done");
@@ -137,7 +183,9 @@
   }
 
   window.AgentHubTaskBoardView = Object.freeze({
+    normalizedTaskStatusLanguage,
     taskBoardSnapshotChanges,
+    taskWorkflowPresentation,
     tasksForMode,
     workspaceTasksForPanel,
   });
@@ -145,6 +193,7 @@
   const board = document.querySelector("[data-task-board]");
   const columns = document.querySelector("[data-task-board-columns]");
   const completedToggle = document.querySelector("[data-task-board-completed-toggle]");
+  const statusLanguageButtons = Array.from(document.querySelectorAll?.("[data-task-status-language]") ?? []);
   const workspacePanel = document.querySelector("[data-workspace-task-panel]");
   const workspacePanelList = document.querySelector("[data-workspace-task-list]");
   const workspacePanelTitle = document.querySelector("[data-workspace-task-title]");
@@ -159,6 +208,7 @@
   const taskCardContent = document.querySelector(".task-card-content");
   const taskCardSaveButton = taskCardEditor?.querySelector("button[type='submit']");
   const taskCardAttachments = document.querySelector("[data-task-card-attachments]");
+  const taskCardStatus = document.querySelector("[data-task-card-status]");
   const taskCardOriginal = document.querySelector("[data-task-card-original]");
   const taskCardOriginalToggle = document.querySelector("[data-task-card-original-toggle]");
   const taskCardOriginalText = document.querySelector("[data-task-card-original-text]");
@@ -174,7 +224,7 @@
   const startProvider = document.querySelector("[data-task-start-provider]");
   if (!board || !columns) return;
 
-  const TASK_MIME = "application/x-agent-hub-board-task";
+  const TaskReferences = window.AgentHubTaskReferences;
   const COLUMN_MIME = "application/x-agent-hub-board-column";
   const COLUMN_TEXT_PREFIX = "agent-hub-column:";
   const TASK_CARD_MAX_TEXT_LINES = 6;
@@ -193,6 +243,7 @@
     notesComment: "Игры, фильмы, сериалы и идеи",
     selectedWorkspaceId: null,
     provider: "codex",
+    statusLanguage: storedTaskStatusLanguage(),
     completedOnly: false,
     openTaskId: null,
     startingTaskId: null,
@@ -201,6 +252,7 @@
     editingTaskId: null,
     editDirty: false,
     savingTaskId: null,
+    savingStatusTaskId: null,
     removingTaskId: null,
     snapshotInitialized: false,
   };
@@ -433,6 +485,23 @@
     return select;
   }
 
+  function taskStatusBadge(task) {
+    const presentation = taskWorkflowPresentation(task, state.statusLanguage);
+    return node("span", {
+      class: "board-task-status",
+      "data-workflow-status": presentation.status,
+      text: presentation.short,
+      title: presentation.full,
+      "aria-label": `Статус: ${presentation.full}`,
+    });
+  }
+
+  function taskLaunchMessageId(taskId) {
+    const suffix = window.crypto?.randomUUID?.()
+      ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    return `board-task:${taskId}:${suffix}`;
+  }
+
   function openStart(task) {
     const workspace = workspaceById(task.workspaceId);
     if (!workspace) return;
@@ -450,6 +519,7 @@
             workspaceId: workspace.id,
             streamId: stream.id,
             provider: state.provider,
+            clientUserMessageId: taskLaunchMessageId(task.id),
           });
         },
       }, [
@@ -495,8 +565,10 @@
 
   function renderTaskCardSaving(taskId) {
     const saving = state.savingTaskId === taskId;
+    const savingStatus = state.savingStatusTaskId === taskId;
     if (taskCardTitle) taskCardTitle.disabled = saving;
     if (taskCardDescription) taskCardDescription.disabled = saving;
+    if (taskCardStatus) taskCardStatus.disabled = savingStatus;
     if (taskCardSaveButton) {
       taskCardSaveButton.disabled = saving;
       taskCardSaveButton.setAttribute("aria-busy", String(saving));
@@ -512,6 +584,13 @@
       return;
     }
     taskCardSource.textContent = task.source === "telegram" ? "Telegram" : "Hub";
+    if (taskCardStatus) {
+      taskCardStatus.replaceChildren(...TASK_WORKFLOW_STATUSES.map((status) => node("option", {
+        value: status,
+        text: TASK_STATUS_PRESENTATION[state.statusLanguage][status].full,
+      })));
+      taskCardStatus.value = taskWorkflowStatus(task);
+    }
     if (state.editingTaskId !== task.id || !state.editDirty) {
       taskCardTitle.value = task.title || task.text;
       taskCardDescription.value = String(task.description ?? "").trim();
@@ -573,9 +652,10 @@
   function taskCard(task, { compact = false } = {}) {
     const completed = task.status === "done";
     const movable = !compact && !completed;
+    const attachable = true;
     const card = node("article", {
       class: `board-task-card${task.status === "started" ? " is-started" : ""}${completed ? " is-completed" : ""}${compact ? " is-compact" : ""}`,
-      draggable: movable ? "true" : null,
+      draggable: attachable ? "true" : null,
       role: "button",
       tabindex: "0",
       "aria-label": `Открыть задачу ${task.title || task.text}`,
@@ -587,15 +667,14 @@
         openTaskCard(task);
       },
       ondragstart: (event) => {
-        event.dataTransfer.setData(TASK_MIME, task.id);
-        event.dataTransfer.setData("text/plain", task.id);
-        event.dataTransfer.effectAllowed = "move";
+        TaskReferences.beginDrag(event.dataTransfer, task);
       },
+      ondragend: () => TaskReferences.endDrag(),
     });
     if (movable) {
       card.addEventListener("dragover", (event) => {
         if (hasColumnDrag(event.dataTransfer)) return;
-        if (!Array.from(event.dataTransfer.types).includes(TASK_MIME)) return;
+        if (!TaskReferences.hasTransfer(event.dataTransfer)) return;
         event.preventDefault();
         event.stopPropagation();
         card.classList.add("is-dragover");
@@ -603,7 +682,7 @@
       card.addEventListener("dragleave", () => card.classList.remove("is-dragover"));
       card.addEventListener("drop", (event) => {
         if (draggedColumnId(event.dataTransfer)) return;
-        const draggedId = event.dataTransfer.getData(TASK_MIME) || event.dataTransfer.getData("text/plain");
+        const draggedId = TaskReferences.fromTransfer(event.dataTransfer)?.taskId;
         if (!draggedId || draggedId === task.id) return;
         const draggedTask = state.tasks.find((item) => item.id === draggedId);
         if (!draggedTask) return;
@@ -613,7 +692,10 @@
         moveTask(draggedTask, destinationValue(task), task.id);
       });
     }
-    card.append(node("h3", { class: "board-task-title", text: task.title || task.text }));
+    card.append(node("div", { class: "board-task-summary" }, [
+      node("h3", { class: "board-task-title", text: task.title || task.text }),
+      taskStatusBadge(task),
+    ]));
     if (task.attachments?.length) card.append(attachmentStrip(task.attachments, { compact: true }));
     return card;
   }
@@ -676,9 +758,9 @@
         }
         return;
       }
-      const taskId = event.dataTransfer.getData(TASK_MIME) || event.dataTransfer.getData("text/plain");
+      const taskId = TaskReferences.fromTransfer(event.dataTransfer)?.taskId;
       const task = state.tasks.find((item) => item.id === taskId);
-      if (task) moveTask(task, id);
+      if (task && task.status !== "done") moveTask(task, id);
     });
     const controls = node("div", { class: "task-board-column-controls" }, [
       ...(workspace && !state.completedOnly ? [node("button", {
@@ -732,6 +814,10 @@
     const emptyText = state.completedOnly ? "Нет выполненных задач" : "Перетащите задачу сюда";
     const completedCount = state.tasks.filter((task) => task.status === "done").length;
     const openCount = state.tasks.length - completedCount;
+    for (const button of statusLanguageButtons) {
+      const selected = button.dataset.taskStatusLanguage === state.statusLanguage;
+      button.setAttribute("aria-pressed", String(selected));
+    }
     if (completedToggle) {
       completedToggle.textContent = state.completedOnly
         ? `Текущие · ${openCount}`
@@ -796,6 +882,19 @@
     state.completedOnly = !state.completedOnly;
     renderBoard();
   });
+  for (const button of statusLanguageButtons) {
+    button.addEventListener("click", () => {
+      state.statusLanguage = normalizedTaskStatusLanguage(button.dataset.taskStatusLanguage);
+      try {
+        window.localStorage?.setItem(TASK_STATUS_LANGUAGE_STORAGE_KEY, state.statusLanguage);
+      } catch {
+        // Language remains active for the current page when storage is unavailable.
+      }
+      renderBoard();
+      renderWorkspacePanel();
+      renderOpenTaskCard();
+    });
+  }
   window.addEventListener("resize", scheduleTaskCardSizing, { passive: true });
   window.addEventListener("resize", scheduleTaskCardEditorSizing, { passive: true });
   if (typeof window.ResizeObserver === "function") {
@@ -810,6 +909,13 @@
   taskCardEditor?.addEventListener("input", () => {
     state.editDirty = true;
     scheduleTaskCardEditorSizing();
+  });
+  taskCardStatus?.addEventListener("change", () => {
+    const task = state.tasks.find((item) => item.id === state.openTaskId);
+    if (!task || state.savingStatusTaskId != null) return;
+    state.savingStatusTaskId = task.id;
+    renderTaskCardSaving(task.id);
+    emit("status", { id: task.id, status: taskCardStatus.value });
   });
   taskCardTitle?.addEventListener("keydown", (event) => {
     if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
@@ -843,6 +949,7 @@
       workspaceId: task.workspaceId,
       streamName,
       provider: startProvider.value,
+      clientUserMessageId: taskLaunchMessageId(task.id),
     });
   });
   document.querySelector("[data-workspace-task-dashboard]")?.addEventListener("click", () => {
@@ -884,6 +991,16 @@
         if (succeeded) closeTaskCard();
         else renderOpenTaskCard();
       }
+      if (type === "status" && state.savingStatusTaskId === id) {
+        state.savingStatusTaskId = null;
+        renderOpenTaskCard();
+      }
     },
+  });
+  document.addEventListener("agenthub:task-reference-open", (event) => {
+    const task = state.tasks.find((item) => item.id === String(event.detail?.taskId ?? ""));
+    if (!task) return;
+    document.querySelector("[data-view-button='dashboard']")?.click();
+    openTaskCard(task);
   });
 })();

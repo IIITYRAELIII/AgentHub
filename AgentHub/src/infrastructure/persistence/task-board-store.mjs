@@ -10,6 +10,8 @@ import {
   normalizedTaskDescription,
   normalizedTaskText,
   normalizedTaskTitle,
+  normalizedTaskWorkflowStatus,
+  TASK_WORKFLOW_STATUSES,
   taskPresentation,
 } from "../../domain/task-board-task.mjs";
 
@@ -29,6 +31,7 @@ function configure(database) {
       category TEXT NOT NULL DEFAULT 'unknown',
       bucket TEXT NOT NULL DEFAULT 'backlog',
       status TEXT NOT NULL DEFAULT 'open',
+      workflow_status TEXT NOT NULL DEFAULT 'new',
       workspace_id TEXT,
       stream_id TEXT,
       source TEXT NOT NULL DEFAULT 'hub',
@@ -92,6 +95,16 @@ function configure(database) {
   }
   if (!taskColumns.some((column) => column.name === "start_stream_name")) {
     database.exec("ALTER TABLE hub_board_tasks ADD COLUMN start_stream_name TEXT");
+  }
+  if (!taskColumns.some((column) => column.name === "workflow_status")) {
+    database.exec("ALTER TABLE hub_board_tasks ADD COLUMN workflow_status TEXT NOT NULL DEFAULT 'new'");
+    database.exec(`
+      UPDATE hub_board_tasks SET workflow_status = CASE
+        WHEN status = 'done' THEN 'done'
+        WHEN status IN ('starting', 'started') THEN 'in_progress'
+        ELSE 'new'
+      END
+    `);
   }
   const legacyPrefixPattern = `${LEGACY_TELEGRAM_BUNDLE_PREFIX}%`;
   const contentOffset = LEGACY_TELEGRAM_BUNDLE_PREFIX.length + 1;
@@ -194,6 +207,9 @@ function taskFromRow(row) {
   const presentation = String(row.title ?? "").trim()
     ? { title: row.title, description: row.description ?? "" }
     : taskPresentation(row.corrected_text ?? row.raw_text);
+  const workflowStatus = TASK_WORKFLOW_STATUSES.includes(row.workflow_status)
+    ? row.workflow_status
+    : (row.status === "done" ? "done" : (["starting", "started"].includes(row.status) ? "in_progress" : "new"));
   return {
     id: row.id,
     rawText: row.raw_text,
@@ -203,6 +219,7 @@ function taskFromRow(row) {
     category: row.category,
     bucket: row.bucket,
     status: row.status,
+    workflowStatus,
     workspaceId: row.workspace_id ?? null,
     streamId: row.stream_id ?? null,
     source: row.source,
@@ -761,7 +778,8 @@ export class TaskBoardStore {
       database.prepare(`
         UPDATE hub_board_tasks
         SET bucket = 'workspace', status = 'started', workspace_id = ?, stream_id = ?,
-          placement_source = 'manual', started_at_ms = COALESCE(started_at_ms, ?),
+          workflow_status = 'in_progress', placement_source = 'manual',
+          started_at_ms = COALESCE(started_at_ms, ?),
           completed_at_ms = NULL, updated_at_ms = ?
         WHERE id = ?
       `).run(String(workspaceId), String(streamId), timestamp, timestamp, String(id));
@@ -776,11 +794,38 @@ export class TaskBoardStore {
     return this.#withDatabase((database) => {
       database.prepare(`
         UPDATE hub_board_tasks
-        SET status = 'done', completed_at_ms = ?, updated_at_ms = ? WHERE id = ?
+        SET status = 'done', workflow_status = 'done', completed_at_ms = ?, updated_at_ms = ? WHERE id = ?
       `).run(timestamp, timestamp, String(id));
       const task = taskFromRow(database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(String(id)));
       if (!task) throw new Error("Task не найден");
       return task;
+    });
+  }
+
+  setWorkflowStatus(id, status) {
+    const workflowStatus = normalizedTaskWorkflowStatus(status);
+    const timestamp = this.now();
+    return this.#withDatabase((database) => {
+      const taskId = String(id);
+      const current = database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(taskId);
+      if (!current) throw new Error("Задача не найдена");
+      if (workflowStatus === "done") {
+        database.prepare(`
+          UPDATE hub_board_tasks
+          SET status = 'done', workflow_status = 'done', completed_at_ms = ?, updated_at_ms = ?
+          WHERE id = ?
+        `).run(timestamp, timestamp, taskId);
+      } else {
+        const lifecycleStatus = current.status === "done"
+          ? (current.stream_id ? "started" : "open")
+          : current.status;
+        database.prepare(`
+          UPDATE hub_board_tasks
+          SET status = ?, workflow_status = ?, completed_at_ms = NULL, updated_at_ms = ?
+          WHERE id = ?
+        `).run(lifecycleStatus, workflowStatus, timestamp, taskId);
+      }
+      return taskFromRow(database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(taskId));
     });
   }
 

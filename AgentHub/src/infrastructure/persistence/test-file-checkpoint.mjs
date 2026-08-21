@@ -43,39 +43,45 @@ export async function runCheckpointedTestFiles(files, {
   identity = "",
   run,
   checkpoint = null,
+  fingerprint = async () => "unchanged",
   log = console.log,
 } = {}) {
-  if (!checkpoint || !identity) {
-    for (const file of files) await run(file);
-    return;
-  }
-
-  const saved = await checkpoint.read();
-  const state = saved?.identity === identity
-    ? saved
-    : { identity, suites: {} };
+  const saved = checkpoint && identity ? await checkpoint.read() : null;
+  const state = saved?.identity === identity ? saved : { identity, suites: {} };
   const savedSuite = state.suites?.[suite];
-  const completed = new Set(
-    JSON.stringify(savedSuite?.files) === JSON.stringify(files)
-      ? savedSuite.completedFiles ?? []
-      : [],
-  );
+  const completedFingerprints = { ...(savedSuite?.completedFingerprints ?? {}) };
+  const failures = [];
 
   for (const file of files) {
-    if (completed.has(file)) {
+    const currentFingerprint = await fingerprint(file);
+    if (checkpoint && identity && completedFingerprints[file] === currentFingerprint) {
       log(`Тест уже пройден, продолжаю: ${file}`);
       continue;
     }
-    await run(file);
-    completed.add(file);
+    delete completedFingerprints[file];
+    try {
+      await run(file);
+      completedFingerprints[file] = currentFingerprint;
+    } catch (error) {
+      failures.push({ file, error });
+    }
     state.suites = {
       ...state.suites,
       [suite]: {
         files,
-        completedFiles: [...completed],
+        completedFingerprints,
+        failedFiles: failures.map((failure) => failure.file),
       },
     };
     state.updatedAt = new Date().toISOString();
-    await checkpoint.write(state);
+    if (checkpoint && identity) await checkpoint.write(state);
+  }
+
+  if (failures.length) {
+    const summary = failures.map(({ file, error }) => `${file}: ${error.message}`).join("\n");
+    throw new AggregateError(
+      failures.map(({ error }) => error),
+      `${suite}: не пройдено файлов: ${failures.length}\n${summary}`,
+    );
   }
 }

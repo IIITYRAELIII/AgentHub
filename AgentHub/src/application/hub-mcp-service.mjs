@@ -15,9 +15,10 @@ import {
 } from "../domain/interstream-message.mjs";
 
 const CONTEXT_TOKEN_VERSION = 1;
+const MAX_REGISTERED_CONTEXT_CAPABILITIES = 1_000;
 const RELEASE_STATUSES = new Set(["draft", "ready", "blocked", "discarded"]);
 const MUTATING_TOOLS = new Set([
-  "hub_task_create", "hub_task_update", "hub_task_move", "hub_task_start", "hub_task_complete", "hub_task_delete",
+  "hub_task_create", "hub_task_update", "hub_task_move", "hub_task_start", "hub_task_status_update", "hub_task_complete", "hub_task_delete",
   "hub_task_attachment_add", "hub_workspace_rules_update", "hub_stream_rules_update",
   "hub_stream_message_send",
   "hub_release_change_status", "hub_release_complete",
@@ -172,6 +173,7 @@ function compactTask(task) {
     text: task.text,
     bucket: task.bucket,
     status: task.status,
+    workflowStatus: task.workflowStatus,
     workspaceId: task.workspaceId,
     streamId: task.streamId,
     boardOrder: task.boardOrder,
@@ -215,6 +217,7 @@ export class HubMcpService {
   #taskLauncher = async () => { throw new Error("Agent Hub task launcher is not ready"); };
   #streamMessenger = async () => { throw new Error("Agent Hub Stream messenger is not ready"); };
   #pendingMutations = new Map();
+  #contextCapabilities = new Map();
 
   constructor({ workspaceCatalog, taskBoard, workLog, attachmentDirectory, secret, releaseCompleter } = {}) {
     for (const name of [
@@ -283,23 +286,23 @@ export class HubMcpService {
       tool("hub_stream_rules_update", "Replace developer rules for the current Stream.", {
         content: { type: "string" },
       }, ["content"]),
-      tool("hub_tasks_list", "List Dashboard tasks assigned to the current Workspace.", {
+      tool("hub_tasks_list", "List Dashboard tasks across all Workspaces and Backlog.", {
         include_completed: { type: "boolean", default: false },
         limit: { type: "integer", minimum: 1, maximum: 100, default: 50 },
       }),
-      tool("hub_task_get", "Read one Dashboard task from the current Workspace.", {
+      tool("hub_task_get", "Read one Dashboard task by id, including a Task attached from Backlog or another Workspace.", {
         task_id: { type: "string" },
       }, ["task_id"]),
-      tool("hub_task_create", "Create a Dashboard task in the current Workspace without automatic triage.", {
+      tool("hub_task_create", "Create a Dashboard task in the current Workspace with workflow status New and without automatic triage.", {
         title: { type: "string" },
         description: { type: "string", default: "" },
       }, ["title"]),
-      tool("hub_task_update", "Update the title or description of a Dashboard task in the current Workspace.", {
+      tool("hub_task_update", "Update the title or description of any Dashboard task by id.", {
         task_id: { type: "string" },
         title: { type: "string" },
         description: { type: "string" },
       }, ["task_id"]),
-      tool("hub_task_move", "Move or reorder a current-Workspace task on the Dashboard.", {
+      tool("hub_task_move", "Move or reorder any Dashboard task. Destination workspace means the current Workspace.", {
         task_id: { type: "string" },
         destination: { type: "string", enum: ["workspace", "backlog", "notes"] },
         before_task_id: { type: "string" },
@@ -311,18 +314,22 @@ export class HubMcpService {
         provider: { type: "string", enum: ["codex", "claude"] },
         confirm_launch: { type: "boolean", description: "Must be true because this starts or queues another agent turn." },
       }, ["task_id", "confirm_launch"]),
-      tool("hub_task_complete", "Mark a Dashboard task from the current Workspace as completed.", {
+      tool("hub_task_status_update", "Change the workflow status of any Dashboard task. Done also completes and hides the task.", {
+        task_id: { type: "string" },
+        status: { type: "string", enum: ["new", "in_progress", "testing", "awaiting_implementation", "done"] },
+      }, ["task_id", "status"]),
+      tool("hub_task_complete", "Mark any Dashboard task as completed.", {
         task_id: { type: "string" },
       }, ["task_id"]),
-      tool("hub_task_delete", "Permanently delete a Dashboard task owned by the current Workspace.", {
+      tool("hub_task_delete", "Permanently delete any Dashboard task by id.", {
         task_id: { type: "string" },
       }, ["task_id"]),
-      tool("hub_task_attachment_read", "Read metadata and bounded text for one task attachment.", {
+      tool("hub_task_attachment_read", "Read metadata and bounded text for one attachment of a Dashboard task referenced by id.", {
         task_id: { type: "string" },
         attachment_id: { type: "string" },
         max_text_bytes: { type: "integer", minimum: 1, maximum: 131072, default: 65536 },
       }, ["task_id", "attachment_id"]),
-      tool("hub_task_attachment_add", "Copy a local project file into a current-Workspace task.", {
+      tool("hub_task_attachment_add", "Copy a local project file into any Dashboard task by id.", {
         task_id: { type: "string" },
         local_path: { type: "string" },
       }, ["task_id", "local_path"]),
@@ -352,13 +359,16 @@ export class HubMcpService {
     const normalizedThreadId = String(threadId ?? "").trim();
     const normalizedStreamId = String(streamId ?? "").trim();
     if (!normalizedThreadId && !normalizedStreamId) throw new Error("Thread or Stream context is required");
-    const payload = Buffer.from(JSON.stringify({
+    const identity = {
       v: CONTEXT_TOKEN_VERSION,
       provider: requiredText(provider, "provider", 100),
       ...(normalizedThreadId ? { threadId: requiredText(normalizedThreadId, "thread id", 300) } : {}),
       ...(normalizedStreamId ? { streamId: requiredText(normalizedStreamId, "stream id", 300) } : {}),
-    }), "utf8").toString("base64url");
-    return `${payload}.${this.#signature(payload)}`;
+    };
+    const payload = Buffer.from(JSON.stringify(identity), "utf8").toString("base64url");
+    const signature = this.#signature(payload);
+    this.#rememberContextCapability(signature, identity);
+    return `${payload}.${signature}`;
   }
 
   developerContext({ provider, threadId = null, streamId = null } = {}) {
@@ -416,7 +426,7 @@ export class HubMcpService {
       case "hub_tasks_list":
         return this.#tasks(context, args);
       case "hub_task_get":
-        return compactTask(this.#task(context, args.task_id));
+        return compactTask(this.#taskById(args.task_id));
       case "hub_task_create":
         return this.#createTask(context, args);
       case "hub_task_update":
@@ -425,6 +435,11 @@ export class HubMcpService {
         return this.#moveTask(context, args);
       case "hub_task_start":
         return this.#startTask(context, args);
+      case "hub_task_status_update":
+        return compactTask(this.taskBoard.setWorkflowStatus({
+          id: this.#task(context, args.task_id).id,
+          status: requiredText(args.status, "task workflow status", 40),
+        }));
       case "hub_task_complete":
         return compactTask(this.taskBoard.complete({ id: this.#task(context, args.task_id).id }));
       case "hub_task_delete": {
@@ -476,6 +491,14 @@ export class HubMcpService {
     return createHmac("sha256", this.secret).update(payload).digest("base64url");
   }
 
+  #rememberContextCapability(signature, identity) {
+    this.#contextCapabilities.delete(signature);
+    this.#contextCapabilities.set(signature, identity);
+    while (this.#contextCapabilities.size > MAX_REGISTERED_CONTEXT_CAPABILITIES) {
+      this.#contextCapabilities.delete(this.#contextCapabilities.keys().next().value);
+    }
+  }
+
   #authorize(value) {
     if (!String(value ?? "").trim()) {
       throw new Error("missing Agent Hub context_token: copy the exact value from the current <agent_hub_context> developer block; do not search environment variables");
@@ -484,17 +507,25 @@ export class HubMcpService {
     const separator = token.lastIndexOf(".");
     if (separator <= 0) throw new Error("invalid Agent Hub context capability");
     const payload = token.slice(0, separator);
-    const supplied = Buffer.from(token.slice(separator + 1), "base64url");
+    const signature = token.slice(separator + 1);
+    const supplied = Buffer.from(signature, "base64url");
     const expected = Buffer.from(this.#signature(payload), "base64url");
-    if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
-      throw new Error("invalid Agent Hub context capability");
+    const exactPayload = supplied.length === expected.length && timingSafeEqual(supplied, expected);
+    let identity = null;
+    if (exactPayload) {
+      try {
+        identity = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+      } catch {
+        throw new Error("invalid Agent Hub context capability");
+      }
+    } else {
+      // The signature is itself an unforgeable bearer capability. Resolve it
+      // to the canonical identity registered when the current instructions
+      // were built, so a model copy error in the visible payload cannot alter
+      // scope or strand an otherwise valid capability.
+      identity = this.#contextCapabilities.get(signature) ?? null;
     }
-    let identity;
-    try {
-      identity = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
-    } catch {
-      throw new Error("invalid Agent Hub context capability");
-    }
+    if (!identity) throw new Error("invalid Agent Hub context capability");
     if (identity?.v !== CONTEXT_TOKEN_VERSION) throw new Error("unsupported Agent Hub context capability");
     const provider = requiredText(identity.provider, "provider", 100);
     const threadId = String(identity.threadId ?? "").trim() || null;
@@ -569,26 +600,21 @@ export class HubMcpService {
     return {
       workspaceId: context.workspaceId,
       tasks: this.taskBoard.snapshot()
-        .filter((task) => this.#taskBelongsToWorkspace(task, context.workspaceId))
         .filter((task) => includeCompleted || task.status !== "done")
         .slice(0, boundedLimit)
         .map(compactTask),
     };
   }
 
-  #task(context, taskId) {
+  #task(_context, taskId) {
+    return this.#taskById(taskId);
+  }
+
+  #taskById(taskId) {
     const id = requiredText(taskId, "task id", 300);
     const task = this.taskBoard.snapshot().find((candidate) => candidate.id === id);
     if (!task) throw new Error("task not found");
-    if (!this.#taskBelongsToWorkspace(task, context.workspaceId)) {
-      throw new Error("task is outside the current Workspace");
-    }
     return task;
-  }
-
-  #taskBelongsToWorkspace(task, workspaceId) {
-    return task?.workspaceId === workspaceId
-      || task?.sourceDetails?.mcpWorkspaceId === workspaceId;
   }
 
   #createTask(context, { title, description = "" } = {}) {
@@ -798,8 +824,8 @@ export class HubMcpService {
     };
   }
 
-  #taskAttachment(context, taskId, attachmentId) {
-    const task = compactTask(this.#task(context, taskId));
+  #taskAttachment(taskId, attachmentId) {
+    const task = compactTask(this.#taskById(taskId));
     const id = requiredText(attachmentId, "attachment id", 300);
     const attachment = task.attachments.find((candidate) => candidate.id === id);
     if (!attachment) throw new Error("attachment is outside the selected task");
@@ -808,10 +834,10 @@ export class HubMcpService {
     return { task, attachment: metadata, file: path.join(this.attachmentDirectory, metadata.id) };
   }
 
-  async #readAttachment(context, {
+  async #readAttachment(_context, {
     task_id: taskId, attachment_id: attachmentId, max_text_bytes: maxTextBytes = 65_536,
   } = {}) {
-    const { attachment, file } = this.#taskAttachment(context, taskId, attachmentId);
+    const { attachment, file } = this.#taskAttachment(taskId, attachmentId);
     const details = await stat(file);
     if (!details.isFile() || details.size > MAX_ATTACHMENT_BYTES) throw new Error("attachment is unavailable");
     const result = { ...attachment, size: details.size, localPath: file };

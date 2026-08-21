@@ -56,9 +56,32 @@ test("restarting a completed Task clears its completion timestamp", async (t) =>
   const restarted = store.markStarted(task.id, { workspaceId: "workspace-1", streamId: "stream-1" });
 
   assert.equal(completed.status, "done");
+  assert.equal(completed.workflowStatus, "done");
   assert.notEqual(completed.completedAt, null);
   assert.equal(restarted.status, "started");
+  assert.equal(restarted.workflowStatus, "in_progress");
   assert.equal(restarted.completedAt, null);
+});
+
+test("Task workflow status follows delivery, testing, implementation, and completion", async (t) => {
+  const store = await fixture(t);
+  const created = store.create({ text: "Провести задачу по статусам" });
+  assert.equal(created.workflowStatus, "new");
+
+  const started = store.markStarted(created.id, { workspaceId: "workspace-1", streamId: "stream-1" });
+  assert.equal(started.workflowStatus, "in_progress");
+  assert.equal(store.setWorkflowStatus(created.id, "testing").workflowStatus, "testing");
+  assert.equal(
+    store.setWorkflowStatus(created.id, "awaiting_implementation").workflowStatus,
+    "awaiting_implementation",
+  );
+  assert.equal(store.setWorkflowStatus(created.id, "done").status, "done");
+
+  const reopened = store.setWorkflowStatus(created.id, "testing");
+  assert.equal(reopened.status, "started");
+  assert.equal(reopened.workflowStatus, "testing");
+  assert.equal(reopened.completedAt, null);
+  assert.throws(() => store.setWorkflowStatus(created.id, "unknown"), /Неизвестный статус/u);
 });
 
 test("Task store attaches a screenshot to the Task addressed by a Telegram reply", async (t) => {

@@ -124,6 +124,7 @@ export async function main(args = process.argv.slice(2)) {
       model: result.state.model,
       screenshot: result.smoke.screenshot,
       withAgent: result.smoke.withAgent,
+      sameTabAuth: result.smoke.sameTabAuth,
       journal: result.journal,
     }, options.json);
     return result;

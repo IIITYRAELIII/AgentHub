@@ -38,9 +38,28 @@ export function publicationCheckpointStore(file = publicationCheckpointFile()) {
   };
 }
 
-export async function runPublicationSteps(steps, { run, checkpoint = null, identity = null } = {}) {
+export async function runPublicationSteps(steps, {
+  run,
+  checkpoint = null,
+  identity = null,
+  journal = null,
+} = {}) {
+  await journal?.start(identity, steps);
   if (!checkpoint) {
-    for (const step of steps) await run(step);
+    try {
+      for (const step of steps) {
+        await journal?.stepStarted(step.label);
+        try {
+          await run({ ...step, logFile: journal?.logFile ?? "" });
+          await journal?.stepFinished(step.label, { status: "completed" });
+        } catch (error) {
+          await journal?.stepFinished(step.label, { status: "failed", error });
+          throw error;
+        }
+      }
+    } catch (error) {
+      throw error;
+    }
     return;
   }
   const serializedIdentity = JSON.stringify(identity);
@@ -48,17 +67,29 @@ export async function runPublicationSteps(steps, { run, checkpoint = null, ident
   const completed = new Set(
     JSON.stringify(saved?.identity) === serializedIdentity ? saved.completedLabels ?? [] : [],
   );
-  for (const step of steps) {
-    if (completed.has(step.label)) {
-      console.log(`\n==> ${step.label}: уже выполнено, продолжаю публикацию`);
-      continue;
+  try {
+    for (const step of steps) {
+      if (completed.has(step.label)) {
+        console.log(`\n==> ${step.label}: уже выполнено, продолжаю публикацию`);
+        await journal?.stepFinished(step.label, { status: "reused" });
+        continue;
+      }
+      await journal?.stepStarted(step.label);
+      try {
+        await run({ ...step, logFile: journal?.logFile ?? "" });
+      } catch (error) {
+        await journal?.stepFinished(step.label, { status: "failed", error });
+        throw error;
+      }
+      await journal?.stepFinished(step.label, { status: "completed" });
+      completed.add(step.label);
+      await checkpoint.write({
+        identity,
+        completedLabels: [...completed],
+        updatedAt: new Date().toISOString(),
+      });
     }
-    await run(step);
-    completed.add(step.label);
-    await checkpoint.write({
-      identity,
-      completedLabels: [...completed],
-      updatedAt: new Date().toISOString(),
-    });
+  } catch (error) {
+    throw error;
   }
 }

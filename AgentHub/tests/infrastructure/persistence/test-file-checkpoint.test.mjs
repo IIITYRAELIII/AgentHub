@@ -13,7 +13,7 @@ function memoryCheckpoint() {
   };
 }
 
-test("test files resume from the first file that did not complete", async () => {
+test("test files report every failure and resume only failed files", async () => {
   const checkpoint = memoryCheckpoint();
   const firstRun = [];
   await assert.rejects(
@@ -38,8 +38,8 @@ test("test files resume from the first file that did not complete", async () => 
     log: () => {},
   });
 
-  assert.deepEqual(firstRun, ["a.test.mjs", "b.test.mjs"]);
-  assert.deepEqual(resumedRun, ["b.test.mjs", "c.test.mjs"]);
+  assert.deepEqual(firstRun, ["a.test.mjs", "b.test.mjs", "c.test.mjs"]);
+  assert.deepEqual(resumedRun, ["b.test.mjs"]);
 });
 
 test("a different release identity starts the suite from the beginning", async () => {
@@ -78,4 +78,27 @@ test("suite manifests are checkpointed independently", async () => {
   });
 
   assert.deepEqual(Object.keys(checkpoint.value().suites).toSorted(), ["architecture", "unit"]);
+});
+
+test("changed fingerprints rerun only affected test files", async () => {
+  const checkpoint = memoryCheckpoint();
+  const fingerprints = new Map([["a.test.mjs", "a1"], ["b.test.mjs", "b1"]]);
+  await runCheckpointedTestFiles([...fingerprints.keys()], {
+    suite: "unit",
+    identity: "release-base",
+    checkpoint,
+    fingerprint: async (file) => fingerprints.get(file),
+    run: async () => {},
+  });
+  fingerprints.set("b.test.mjs", "b2");
+  const rerun = [];
+  await runCheckpointedTestFiles([...fingerprints.keys()], {
+    suite: "unit",
+    identity: "release-base",
+    checkpoint,
+    fingerprint: async (file) => fingerprints.get(file),
+    run: async (file) => rerun.push(file),
+    log: () => {},
+  });
+  assert.deepEqual(rerun, ["b.test.mjs"]);
 });

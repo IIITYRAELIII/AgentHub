@@ -79,6 +79,10 @@ export class DesktopTaskBoardController {
     return this.#mutate(() => this.taskBoard.update(params));
   }
 
+  status(params) {
+    return this.#mutate(() => this.taskBoard.setWorkflowStatus(params));
+  }
+
   moveColumn(params) {
     return this.#mutate(() => this.taskBoard.moveColumn(params));
   }

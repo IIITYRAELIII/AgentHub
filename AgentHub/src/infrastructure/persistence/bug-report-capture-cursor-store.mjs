@@ -4,6 +4,7 @@ import path from "node:path";
 import { writeTextAtomic } from "./state-store.mjs";
 
 const REVISION_PATTERN = /^[0-9a-f]{40,64}$/u;
+const CURSOR_VERSION = 2;
 
 export class BugReportCaptureCursorStore {
   constructor({ filePath } = {}) {
@@ -13,6 +14,7 @@ export class BugReportCaptureCursorStore {
   async load() {
     try {
       const state = JSON.parse(await readFile(this.filePath, "utf8"));
+      if (state?.version !== CURSOR_VERSION) return "";
       const revision = String(state?.revision ?? "").trim().toLowerCase();
       return REVISION_PATTERN.test(revision) ? revision : "";
     } catch (error) {
@@ -25,6 +27,6 @@ export class BugReportCaptureCursorStore {
     const normalized = String(revision ?? "").trim().toLowerCase();
     if (!REVISION_PATTERN.test(normalized)) throw new Error("Invalid bug report capture revision");
     await mkdir(path.dirname(this.filePath), { recursive: true });
-    await writeTextAtomic(this.filePath, `${JSON.stringify({ version: 1, revision: normalized }, null, 2)}\n`);
+    await writeTextAtomic(this.filePath, `${JSON.stringify({ version: CURSOR_VERSION, revision: normalized }, null, 2)}\n`);
   }
 }

@@ -148,6 +148,7 @@ export function createInteractionShellPhase({
       backgroundJobs: provider.backgroundJobs,
       rateLimitTelemetry: clients.rateLimitTelemetry,
       rateLimitHistoryStore: infrastructure.rateLimitHistoryStore,
+      providerTurnTelemetryStore: infrastructure.providerTurnTelemetryStore,
       workLogUsageStore: infrastructure.workLogUsageStore,
       workspaceCatalogStore: infrastructure.workspaceCatalogStore,
       streamHandoff: infrastructure.streamHandoff,

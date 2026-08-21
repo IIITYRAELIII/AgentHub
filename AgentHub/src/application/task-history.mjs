@@ -6,6 +6,7 @@ import {
   normalizeInterstreamOrigin,
 } from "../domain/interstream-message.mjs";
 import { withoutClaudeResumePreludes } from "../domain/claude-transcript.mjs";
+import { taskReferencePromptDetails } from "../domain/task-board-task.mjs";
 
 export const EMPTY_TURN_COMPLETION_TEXT = "Ход завершён без текстового ответа.";
 
@@ -378,11 +379,12 @@ function codexTurnMessages(turn, { userAuthor = "" } = {}) {
       }];
       const interstream = interstreamMessageDetails(rawText);
       const envelope = desktopPromptEnvelope(rawText);
+      const taskReferences = userTaskReferencePromptDetails(rawText)?.references ?? [];
       const attachmentSources = codexAttachmentSources(item.content, envelope, rawText);
       const responseAnnotations = responseAnnotationDetails(rawText);
       const text = displayUserPrompt(rawText)
         || (attachmentSources.length ? (envelope ? "Вложение" : "Изображение") : "");
-      return text ? [{
+      return text || taskReferences.length ? [{
         itemId: messageItemId(turnId, "user", item, index),
         ...(String(item.clientId ?? "").trim()
           ? { clientUserMessageId: String(item.clientId).trim() }
@@ -400,6 +402,9 @@ function codexTurnMessages(turn, { userAuthor = "" } = {}) {
           : {}),
         ...(attachmentSources.length
           ? { attachmentSources }
+          : {}),
+        ...(taskReferences.length
+          ? { attachments: taskReferences.map((reference) => ({ ...reference })) }
           : {}),
         ...(normalizedTimestamp(item.createdAt ?? turn?.startedAt ?? turn?.createdAt)
           ? { time: normalizedTimestamp(item.createdAt ?? turn?.startedAt ?? turn?.createdAt) }
@@ -486,13 +491,11 @@ function isCodexInternalPromptEnvelope(value) {
 }
 
 export function displayUserPrompt(value) {
-  let text = String(value ?? "").trim();
+  let text = unwrappedUserPrompt(value);
   if (codexSubagentNotificationDetails(text)) return "";
   if (isCodexInternalPromptEnvelope(text)) return "";
-  const interstream = interstreamMessageDetails(text);
-  if (interstream) text = interstream.text;
-  const envelope = desktopPromptEnvelope(text);
-  if (envelope) text = envelope.text;
+  const taskReferencePrompt = taskReferencePromptDetails(text);
+  if (taskReferencePrompt) text = taskReferencePrompt.displayText;
   const telegramReplyMarker = "\nТекст пользователя:\n";
   const telegramReplyAt = text.lastIndexOf(telegramReplyMarker);
   if (telegramReplyAt >= 0) text = text.slice(telegramReplyAt + telegramReplyMarker.length).trim();
@@ -505,6 +508,19 @@ export function displayUserPrompt(value) {
   const annotated = responseAnnotationPrompt(text);
   if (annotated !== null) return annotated;
   return text;
+}
+
+function unwrappedUserPrompt(value) {
+  let text = String(value ?? "").trim();
+  const interstream = interstreamMessageDetails(text);
+  if (interstream) text = interstream.text;
+  const envelope = desktopPromptEnvelope(text);
+  if (envelope) text = envelope.text;
+  return text;
+}
+
+export function userTaskReferencePromptDetails(value) {
+  return taskReferencePromptDetails(unwrappedUserPrompt(value));
 }
 
 export function codexExplicitFinalTurnAnswer(turn) {
@@ -535,7 +551,7 @@ export function codexThreadHistory(turns, options = {}) {
     const activityGroups = codexTurnActivityGroups(turn);
     const userMessage = messages.find((item) => item.role === "user");
     const prompt = userMessage?.text ?? "";
-    if (!prompt) return [];
+    if (!userMessage) return [];
     const visibleAnswer = messages
       .filter((item) => item.role === "agent")
       .map((item) => item.text)
@@ -595,9 +611,17 @@ function claudeAssistantText(entries) {
     .trim();
 }
 
+function claudeUserPromptDetails(entry) {
+  if (entry?.type !== "user" || entry.message?.role !== "user") return null;
+  const rawText = textContent(entry.message?.content);
+  return {
+    text: displayUserPrompt(rawText),
+    taskReferences: userTaskReferencePromptDetails(rawText)?.references ?? [],
+  };
+}
+
 function claudeUserPrompt(entry) {
-  if (entry?.type !== "user" || entry.message?.role !== "user") return "";
-  return displayUserPrompt(textContent(entry.message?.content));
+  return claudeUserPromptDetails(entry)?.text ?? "";
 }
 
 function claudeUserAuthor(entry) {
@@ -608,9 +632,13 @@ function claudeUserAuthor(entry) {
 export function claudeTranscriptHistory(text) {
   const entries = withoutClaudeResumePreludes(claudeEntries(text));
   const userIndexes = entries
-    .map((entry, index) => (claudeUserPrompt(entry) ? index : -1))
+    .map((entry, index) => {
+      const details = claudeUserPromptDetails(entry);
+      return details && (details.text || details.taskReferences.length) ? index : -1;
+    })
     .filter((index) => index >= 0);
   return userIndexes.map((entryIndex, historyIndex) => {
+    const userPrompt = claudeUserPromptDetails(entries[entryIndex]);
     const nextUserIndex = userIndexes[historyIndex + 1] ?? entries.length;
     const turnEntries = entries.slice(entryIndex + 1, nextUserIndex);
     const completed = turnEntries.some((entry) => entry?.type === "last-prompt")
@@ -629,7 +657,7 @@ export function claudeTranscriptHistory(text) {
     });
     return {
       id: String(entries[entryIndex]?.uuid ?? entryIndex),
-      prompt: claudeUserPrompt(entries[entryIndex]),
+      prompt: userPrompt?.text ?? "",
       answer: claudeAssistantText(turnEntries),
       status: completed ? "completed" : "inProgress",
       active: !completed,
@@ -649,7 +677,10 @@ export function claudeTranscriptHistory(text) {
         {
           itemId: String(entries[entryIndex]?.uuid ?? `${entryIndex}:user`),
           role: "user",
-          text: claudeUserPrompt(entries[entryIndex]),
+          text: userPrompt?.text ?? "",
+          ...(userPrompt?.taskReferences.length
+            ? { attachments: userPrompt.taskReferences.map((reference) => ({ ...reference })) }
+            : {}),
           ...(claudeUserAuthor(entries[entryIndex])
             ? { author: claudeUserAuthor(entries[entryIndex]) }
             : {}),

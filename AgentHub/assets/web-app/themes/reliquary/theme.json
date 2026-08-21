@@ -8,17 +8,20 @@
     "basalt-texture": "basalt-texture.webp",
     "iron-texture": "forged-iron-texture.webp",
     "panel-frame": "waypoint-panel-frame.webp",
-    "panel-frame-2k": "waypoint-panel-frame-2k-v2.webp",
+    "panel-frame-2k": "waypoint-panel-frame-symmetric.png",
     "card-frame": "waypoint-card-frame.webp",
     "message-flourish": "message-flourish.webp",
+    "message-star": "message-star.png",
     "stream-divider": "stream-divider.webp",
     "panel-corner-tl": "panel-corner-tl.webp",
     "panel-corner-tr": "panel-corner-tr.webp",
     "panel-corner-bl": "panel-corner-bl.webp",
-    "panel-corner-br": "panel-corner-br.webp"
+    "panel-corner-br": "panel-corner-br.webp",
+    "panel-corners-triangle": "panel-corners-triangle.png"
   },
   "backgrounds": [
-    { "id": "reliquary", "name": "Забытый портал", "asset": "forgotten-waypoint.webp", "preload": true },
+    { "id": "reliquary", "name": "Diablo", "asset": "diablo-lord-of-terror.png", "preload": true },
+    { "id": "reliquary-forgotten-waypoint", "name": "Забытый портал", "asset": "forgotten-waypoint.webp", "preload": true },
     { "id": "reliquary-reliquary", "name": "Чёрный реликварий", "asset": "cinder-reliquary.webp", "preload": true },
     { "id": "reliquary-cathedral", "name": "Кровавый собор", "asset": "blood-cathedral.webp", "preload": true },
     { "id": "reliquary-archive", "name": "Пепельный архив", "asset": "ashen-reliquary.jpg", "preload": true },

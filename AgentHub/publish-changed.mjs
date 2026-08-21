@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
 
 import { callDesktopControl } from "./desktop-control.mjs";
 import {
@@ -17,6 +18,7 @@ import {
   publicationCheckpointStore,
   runPublicationSteps,
 } from "./src/infrastructure/persistence/publication-checkpoint.mjs";
+import { publicationRunStore } from "./src/infrastructure/persistence/publication-run-store.mjs";
 import {
   assertCleanPublicationTree,
   assertCurrentPublicationRevision,
@@ -108,9 +110,20 @@ export function classifyPublicationChanges(files) {
   return plan;
 }
 
-function focusedSteps(plan, { fullTestCheckpointId = "", testContour = false } = {}) {
-  if (plan.unknown.length) return publicationSteps({ fullTestCheckpointId, testContour });
-  const full = publicationSteps({ skipWorker: !plan.worker, fullTestCheckpointId, testContour });
+function focusedSteps(plan, {
+  fullTestCheckpointId = "",
+  fullTestSourceFingerprint = "",
+  testContour = false,
+} = {}) {
+  if (plan.unknown.length) {
+    return publicationSteps({ fullTestCheckpointId, fullTestSourceFingerprint, testContour });
+  }
+  const full = publicationSteps({
+    skipWorker: !plan.worker,
+    fullTestCheckpointId,
+    fullTestSourceFingerprint,
+    testContour,
+  });
   const byLabel = new Map(full.map((step) => [step.label, step]));
   const steps = [];
   if (plan.fullTests) {
@@ -151,6 +164,29 @@ function focusedSteps(plan, { fullTestCheckpointId = "", testContour = false } =
   return steps.filter(Boolean);
 }
 
+async function changedSourceFingerprint(files) {
+  const sourceFiles = files.filter((file) => {
+    const normalized = file.replaceAll("\\", "/");
+    return normalized.startsWith("AgentHub/")
+      && !normalized.startsWith("AgentHub/tests/")
+      && !normalized.startsWith("AgentHub/e2e/")
+      && !/\.test\.(?:mjs|js)$/u.test(normalized)
+      && normalized !== "AgentHub/install_test.py";
+  }).toSorted();
+  const hash = createHash("sha256").update("release-source-v1\0");
+  for (const file of sourceFiles) {
+    hash.update(file).update("\0");
+    try {
+      hash.update(await readFile(path.resolve(REPOSITORY_ROOT, file)));
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      hash.update("<deleted>");
+    }
+    hash.update("\0");
+  }
+  return hash.digest("hex");
+}
+
 export function parseChangedArguments(args) {
   let from = "";
   let skipRestart = false;
@@ -177,6 +213,7 @@ export async function publishChanged(args = process.argv.slice(2), {
   diff = changedFiles,
   ensureWorkerDependency = ensureWrangler,
   checkpoint = null,
+  journal = null,
   runtimeRoot = defaultRuntimeRoot(),
   verifyRestart = restart === callDesktopControl ? waitForRuntimeReplacement : async () => {},
 } = {}) {
@@ -193,33 +230,42 @@ export async function publishChanged(args = process.argv.slice(2), {
     const head = await revision({ cwd: REPOSITORY_ROOT });
     if (plan.worker) await ensureWorkerDependency();
     const fullTestCheckpointId = createHash("sha256")
-      .update(JSON.stringify({ mode: "changed", from, files: [...files].toSorted() }))
+      .update(JSON.stringify({ mode: "changed", from }))
       .digest("hex");
+    const fullTestSourceFingerprint = await changedSourceFingerprint(files);
     const steps = focusedSteps(plan, {
       fullTestCheckpointId,
+      fullTestSourceFingerprint,
       testContour: options.testContour,
     });
-    await runPublicationSteps(steps, {
-      run,
-      checkpoint,
-      identity: {
-        mode: "changed",
-        from,
-        revision: head,
-        worktreeRoot: REPOSITORY_ROOT,
-        runtimeRoot,
-        files,
-        labels: steps.map((step) => step.label),
-      },
-    });
-    if (plan.runtimeRestart && !options.skipRestart) {
-      const result = await restartRuntimeAndVerify(restart, verifyRestart, runtimeRoot);
-      if (result?.deferred) {
-        console.log(`${result?.message ?? "Перезапуск запрошен"}. Готовность подтвердится после завершения активного хода.`);
+    try {
+      await runPublicationSteps(steps, {
+        run,
+        checkpoint,
+        identity: {
+          mode: "changed",
+          from,
+          revision: head,
+          worktreeRoot: REPOSITORY_ROOT,
+          runtimeRoot,
+          files,
+          labels: steps.map((step) => step.label),
+        },
+        journal,
+      });
+      if (plan.runtimeRestart && !options.skipRestart) {
+        const result = await restartRuntimeAndVerify(restart, verifyRestart, runtimeRoot);
+        if (result?.deferred) {
+          console.log(`${result?.message ?? "Перезапуск запрошен"}. Готовность подтвердится после завершения активного хода.`);
+        }
       }
+      await writeState({ revision: head, publishedAt: new Date().toISOString(), files, plan });
+      if (checkpoint) await checkpoint.clear();
+      await journal?.finish("succeeded");
+    } catch (error) {
+      await journal?.finish("failed", error);
+      throw error;
     }
-    await writeState({ revision: head, publishedAt: new Date().toISOString(), files, plan });
-    if (checkpoint) await checkpoint.clear();
     console.log(`\nВыборочная публикация завершена: ${files.length} изменённых файлов.`);
     return { files, plan, revision: head };
   });
@@ -229,6 +275,7 @@ const invokedFile = process.argv[1] ? path.resolve(process.argv[1]) : "";
 if (invokedFile === fileURLToPath(import.meta.url)) {
   publishChanged(process.argv.slice(2), {
     checkpoint: publicationCheckpointStore(),
+    journal: publicationRunStore(),
     before: async () => {
       await assertCleanPublicationTree({ cwd: REPOSITORY_ROOT });
       await assertCurrentPublicationRevision({ cwd: REPOSITORY_ROOT });

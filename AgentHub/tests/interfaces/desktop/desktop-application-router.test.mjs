@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createDesktopApplicationRouter } from "../../../src/interfaces/desktop/desktop-application-router.mjs";
 
-function router(calls) {
+function router(calls, { omit = [] } = {}) {
   const handler = async (params) => ({ params });
   const handlers = Object.fromEntries([
     "snapshot", "runtimeHealth", "taskHistory", "rateLimitHistory", "usageHistory", "search", "workspaceMessageSearch",
@@ -12,10 +12,11 @@ function router(calls) {
     "readRootAgents", "updateRootAgents", "compactContext", "openAttachment", "submitBugReport", "reportDiagnostic",
     "trustedDevices", "createDevicePairing", "revokeDevice",
     "renameWorkspace", "createWorkspaceFromStream", "mergeWorkspaces", "renameStream", "moveStream",
-    "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
+    "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskStatus", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
     "boardTaskRetryTriage", "boardTaskStart", "boardColumnMove", "boardColumnComment",
     "boardWorkspaceMove",
   ].map((name) => [name, handler]));
+  for (const name of omit) delete handlers[name];
   return createDesktopApplicationRouter({
     handlers,
     commands: {
@@ -28,6 +29,13 @@ function router(calls) {
     },
   });
 }
+
+test("Desktop application router requires the Task workflow status handler", () => {
+  assert.throws(
+    () => router([], { omit: ["boardTaskStatus"] }),
+    /boardTaskStatus is required/u,
+  );
+});
 
 test("Desktop application router addresses mutations explicitly", async () => {
   const calls = [];
@@ -190,6 +198,16 @@ test("Desktop application router saves Task presentation fields", async () => {
   });
 });
 
+test("Desktop application router changes a Task workflow status", async () => {
+  const control = router([]);
+  const result = await control.handleDesktopControl({
+    action: "board-task-status",
+    params: { id: "board-1", status: "awaiting_implementation" },
+  });
+  assert.equal(result.params.id, "board-1");
+  assert.equal(result.params.status, "awaiting_implementation");
+});
+
 test("Desktop application router accepts a message beside a blocked mutation", async () => {
   let releaseBlocked;
   const blocked = new Promise((resolve) => { releaseBlocked = resolve; });
@@ -200,7 +218,7 @@ test("Desktop application router accepts a message beside a blocked mutation", a
     "updateServerConfiguration", "readPreTurnInstructions", "updateGlobalPreTurnInstructions",
     "readRootAgents", "updateRootAgents", "compactContext", "openAttachment", "submitBugReport", "reportDiagnostic",
     "trustedDevices", "createDevicePairing", "revokeDevice",
-    "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
+    "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskStatus", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
     "boardTaskRetryTriage", "boardTaskStart", "boardColumnMove", "boardColumnComment", "boardWorkspaceMove",
   ].map((name) => [name, async () => ({ accepted: true, name })]));
   handlers.restartServer = async () => blocked;
@@ -230,7 +248,7 @@ test("Desktop application router accepts a restart beside a blocked mutation", a
     "updateServerConfiguration", "readPreTurnInstructions", "updateGlobalPreTurnInstructions",
     "readRootAgents", "updateRootAgents", "compactContext", "openAttachment", "submitBugReport", "reportDiagnostic",
     "trustedDevices", "createDevicePairing", "revokeDevice",
-    "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
+    "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskStatus", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
     "boardTaskRetryTriage", "boardTaskStart", "boardColumnMove", "boardColumnComment", "boardWorkspaceMove",
   ].map((name) => [name, async () => ({ accepted: true, name })]));
   const control = createDesktopApplicationRouter({

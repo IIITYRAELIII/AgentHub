@@ -2,7 +2,45 @@
 
 (() => {
   const telegramInitData = String(window.Telegram?.WebApp?.initData ?? "");
-  const localAccess = /^#access=[A-Za-z0-9_-]{43,128}$/u.test(window.location.hash);
+  const LOCAL_ACCESS_PATTERN = /^#access=([A-Za-z0-9_-]{43,128})$/u;
+  const localAccessSecret = () => LOCAL_ACCESS_PATTERN.exec(window.location.hash)?.[1] ?? "";
+
+  async function establishLocalSession(secret) {
+    const response = await fetch("/api/local-session", {
+      method: "POST",
+      headers: {
+        Authorization: `local ${secret}`,
+        "Content-Type": "application/json",
+      },
+      body: "{}",
+      cache: "no-store",
+    });
+    if (!response.ok) throw new Error("Не удалось открыть защищённую локальную сессию Agent Hub.");
+    window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+  }
+
+  async function existingLocalSession() {
+    const response = await fetch("/api/local-session", {
+      method: "HEAD",
+      cache: "no-store",
+    });
+    return response.status === 204;
+  }
+
+  const initialLocalAccessSecret = telegramInitData ? "" : localAccessSecret();
+  const protectedLocalSessionReady = initialLocalAccessSecret
+    ? establishLocalSession(initialLocalAccessSecret)
+    : Promise.resolve();
+  window.AgentHubProtectedLocalSessionReady = protectedLocalSessionReady;
+  window.addEventListener("hashchange", () => {
+    const secret = telegramInitData ? "" : localAccessSecret();
+    if (!secret) return;
+    void establishLocalSession(secret)
+      .then(() => window.location.reload())
+      .catch((error) => console.error("Agent Hub local session activation failed", error));
+  });
+
+  const localAccess = Boolean(initialLocalAccessSecret);
   const managedSurface = Boolean(
     telegramInitData
     || window.AgentHubAndroid
@@ -11,7 +49,7 @@
     || window.location.protocol === "vscode-webview:",
   );
   if (managedSurface) {
-    window.AgentHubBrowserDeviceReady = Promise.resolve();
+    window.AgentHubBrowserDeviceReady = protectedLocalSessionReady;
     return;
   }
 
@@ -344,12 +382,17 @@
         }, 0);
       }
     });
-    if (!window.isSecureContext || !crypto?.subtle || !window.indexedDB) {
-      showPairing("Этот браузер не поддерживает безопасное хранилище ключей.");
-      return;
-    }
     showChecking();
     try {
+      if (await existingLocalSession()) {
+        hidePairing();
+        resolveReady();
+        return;
+      }
+      if (!window.isSecureContext || !crypto?.subtle || !window.indexedDB) {
+        showPairing("Этот браузер не поддерживает безопасное хранилище ключей.");
+        return;
+      }
       credential = await withTimeout(
         storedCredential(),
         STORAGE_TIMEOUT_MS,

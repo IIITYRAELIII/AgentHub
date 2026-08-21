@@ -23,6 +23,7 @@ function unresolvedReceipt(receipt) {
 export async function messageRequestFingerprint({
   text = "",
   attachments = [],
+  taskReferences = [],
   followUpMode = "",
 } = {}, {
   readAttachment = readFile,
@@ -36,6 +37,10 @@ export async function messageRequestFingerprint({
     .update(JSON.stringify({
       text: String(text).trim(),
       attachmentDigests,
+      taskReferences: (Array.isArray(taskReferences) ? taskReferences : []).map((reference) => ({
+        taskId: String(reference?.taskId ?? "").trim(),
+        intent: String(reference?.intent ?? "context").trim().toLowerCase(),
+      })),
       followUpMode: String(followUpMode).trim().toLowerCase(),
     }))
     .digest("hex");

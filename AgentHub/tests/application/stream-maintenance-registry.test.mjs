@@ -8,11 +8,19 @@ import {
 
 test("stream maintenance follows the Stream while its Thread rotates", () => {
   const registry = new StreamMaintenanceRegistry();
-  const source = { provider: "codex", streamId: "stream-1", threadId: "thread-old" };
+  const source = {
+    id: "run-1",
+    provider: "codex",
+    streamId: "stream-1",
+    threadId: "thread-old",
+    turnId: "turn-1",
+  };
   const target = { provider: "codex", streamId: "stream-1", threadId: "thread-new" };
 
   const entry = registry.begin(source, "automatic-compaction");
   assert.ok(entry);
+  assert.equal(entry.ownerRunId, "run-1");
+  assert.equal(entry.ownerTurnId, "turn-1");
   assert.equal(registry.activeCount(), 1);
   assert.equal(registry.isActive(target), true);
   assert.equal(registry.begin(target), null);

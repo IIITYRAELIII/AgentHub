@@ -82,12 +82,8 @@ export class BugReportTaskCapture {
   async #scan() {
     const revision = await this.cursorStore.load();
     const batch = await this.reports.addedSince(revision);
-    if (!revision || batch.baseline) {
-      await this.cursorStore.save(batch.head);
-      return { captured: 0, baseline: true, head: batch.head };
-    }
     for (const report of batch.reports) this.capture(report, { text: report.text });
     await this.cursorStore.save(batch.head);
-    return { captured: batch.reports.length, baseline: false, head: batch.head };
+    return { captured: batch.reports.length, baseline: Boolean(batch.baseline), head: batch.head };
   }
 }

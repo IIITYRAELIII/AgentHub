@@ -863,6 +863,19 @@ export class MiniAppServer {
       return;
     }
     if (url.pathname === "/api/local-session") {
+      if (method === "HEAD" && !this.#requireTelegramAuth && loopbackHost(request.headers.host)) {
+        const cookie = cookieValue(request, LOCAL_SESSION_COOKIE);
+        let localAccessSecret = this.#localAccessSecret;
+        if (localAccessSecret && !validLocalSession(cookie, localAccessSecret)) {
+          localAccessSecret = await this.#refreshLocalAccessSecret();
+        }
+        response.writeHead(
+          !localAccessSecret || validLocalSession(cookie, localAccessSecret) ? 204 : 401,
+          responseHeaders("text/plain; charset=utf-8"),
+        );
+        response.end();
+        return;
+      }
       if (
         method !== "POST"
         || this.#requireTelegramAuth
@@ -958,9 +971,18 @@ export class MiniAppServer {
       }
       try {
         const knownVersion = String(url.searchParams.get("knownVersion") ?? "").slice(0, 128);
+        const boundedVersion = (name) => String(url.searchParams.get(name) ?? "").slice(0, 128);
         const result = await this.#controlHandler({
           action: "snapshot",
-          params: { knownVersion },
+          params: {
+            knownVersion,
+            compactSnapshot: url.searchParams.get("compactSnapshot") === "1",
+            snapshotProtocol: Math.min(4, Math.max(3, Number(url.searchParams.get("snapshotProtocol")) || 3)),
+            conversationsVersion: boundedVersion("conversationsVersion"),
+            workspacesVersion: boundedVersion("workspacesVersion"),
+            boardTasksVersion: boundedVersion("boardTasksVersion"),
+            messageReceiptsVersion: boundedVersion("messageReceiptsVersion"),
+          },
           context: authorization,
         });
         json(response, 200, result, method, {

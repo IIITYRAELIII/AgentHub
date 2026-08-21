@@ -428,6 +428,26 @@ test("attachment-only labels distinguish documents from images", () => {
   assert.equal(lifecycle.attachmentOnlyText([{ type: "application/pdf" }]), "Вложение");
   assert.equal(lifecycle.attachmentOnlyText([{ type: "image/png" }]), "Изображение");
   assert.equal(lifecycle.attachmentOnlyText([{ type: "image/png" }, { type: "text/plain" }]), "Вложения");
+  assert.equal(lifecycle.attachmentOnlyText([{ kind: "task", taskId: "board-1" }]), "");
+});
+
+test("attachment-only Task messages count as complete conversation content", () => {
+  const prompt = {
+    role: "user",
+    turnId: "turn-task",
+    text: "",
+    attachments: [{ kind: "task", taskId: "board-1" }],
+  };
+  const final = {
+    role: "agent",
+    turnId: "turn-task",
+    text: "Принято",
+  };
+
+  assert.equal(lifecycle.completedConversationTurnVisible([prompt, final], {
+    turnId: "turn-task",
+    answer: "Принято",
+  }), true);
 });
 
 test("Stop cancels the run even when pausing one queued message fails", async () => {
@@ -1978,6 +1998,8 @@ test("context compaction start identifies the task and completion stays in chat"
     hubClientSource,
     /id: `maintenance:compaction:\$\{compactionId\}:active`[\s\S]*turnId: compaction\.turnId \?\? null/u,
   );
+  assert.match(hubClientSource, /syncActiveMaintenanceMessages\(representativeTasks\)/u);
+  assert.doesNotMatch(hubClientSource, /syncActiveMaintenanceMessages\(snapshot\.tasks\)/u);
   assert.match(
     hubClientSource,
     /invalidZeroAfter[\s\S]*id\.startsWith\("maintenance:compaction:"\)[\s\S]*replace\(\/>0%\$\/u, ">\?%"\)/u,

@@ -1124,6 +1124,50 @@ test("desktop task history restores receipt attachments from an explicit empty m
   assert.equal(result.items[0].messages[0].attachments[0].id, "screen.png");
 });
 
+test("desktop task history renders a Task-only message without a service label", async () => {
+  const taskPrompt = [
+    "# Attached Agent Hub Tasks",
+    "",
+    "- [Dashboard Task: Проверка](agent-hub://task/board-1) · status: new · intent: context",
+    "",
+    "Открой актуальное содержимое Task командой MCP `hub_task_get` по `taskId` из ссылки.",
+    "",
+    "# My request",
+    "",
+    "Учти прикреплённые Dashboard Task как контекст; само прикрепление не является просьбой выполнять их.",
+  ].join("\n");
+  const reference = {
+    kind: "task",
+    taskId: "board-1",
+    title: "Проверка",
+    workflowStatus: "new",
+    workspaceId: null,
+    intent: "context",
+  };
+  const { desktopTaskHistory } = fixture({
+    run: null,
+    history: [{
+      id: "turn-task",
+      completed: true,
+      messages: [{
+        itemId: "user-task",
+        clientUserMessageId: "client-task",
+        role: "user",
+        text: taskPrompt,
+      }],
+    }],
+    receipts: {
+      forMessage: () => ({ result: { attachments: [] } }),
+      forTurn: () => null,
+    },
+  });
+
+  const result = await desktopTaskHistory({ limit: 1, includeActive: false });
+
+  assert.equal(result.items[0].messages[0].text, "");
+  assert.deepEqual(result.items[0].messages[0].attachments, [reference]);
+});
+
 test("desktop task history preserves subagent identity metadata", async () => {
   const { desktopTaskHistory } = fixture({
     history: [{

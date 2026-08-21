@@ -14,6 +14,8 @@ test("bug report capture cursor is local, persistent, and tolerates invalid stat
     assert.equal(await store.load(), "");
     await store.save("a".repeat(40));
     assert.equal(await new BugReportCaptureCursorStore({ filePath }).load(), "a".repeat(40));
+    await writeFile(filePath, `${JSON.stringify({ version: 1, revision: "b".repeat(40) })}\n`, "utf8");
+    assert.equal(await store.load(), "");
     await writeFile(filePath, "not-json", "utf8");
     assert.equal(await store.load(), "");
   } finally {

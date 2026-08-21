@@ -69,6 +69,7 @@ function controller(overrides = {}) {
   return createDesktopMessageController({
     attachmentPaths: overrides.attachmentPaths ?? (async () => []),
     describeAttachments,
+    resolveTaskReferences: overrides.resolveTaskReferences ?? (async () => []),
     resolveTarget: overrides.resolveTarget ?? (async () => target),
     receipts: overrides.receipts ?? new MessageReceiptRegistry(),
     persistReceipts: overrides.persistReceipts ?? (async () => {}),
@@ -403,6 +404,33 @@ test("desktop message controller sends documents as named file references", asyn
   assert.match(launched.input[0].text, /## Требования\.pdf:/u);
   assert.match(launched.input[0].text, /проверь документ/u);
   assert.deepEqual(launched.input[1], { type: "localFile", path: file });
+});
+
+test("desktop message controller resolves Dashboard Task references into links", async () => {
+  let launchedInput = null;
+  const reference = {
+    kind: "task",
+    taskId: "board-1",
+    title: "Исправить Dashboard",
+    workflowStatus: "testing",
+    workspaceId: "workspace-1",
+    intent: "context",
+  };
+  const messages = controller({
+    resolveTaskReferences: async () => [reference],
+    launchTurn: async (_run, input) => { launchedInput = input; },
+  });
+
+  const result = await messages.sendMessage({
+    text: "Сравни с текущим решением",
+    taskReferences: [{ taskId: "board-1", intent: "context" }],
+    clientUserMessageId: "message-with-task",
+  });
+
+  assert.match(launchedInput, /\[Dashboard Task: Исправить Dashboard\]\(agent-hub:\/\/task\/board-1\)/u);
+  assert.match(launchedInput, /intent: context/u);
+  assert.match(launchedInput, /Сравни с текущим решением/u);
+  assert.deepEqual(result.attachments, [reference]);
 });
 
 test("desktop message receipt preserves the visible message before provider launch", async () => {

@@ -398,3 +398,19 @@ test("message reconciliation leaves unchanged sibling nodes attached", async () 
   assert.equal(container.children[0], selectedNode);
   assert.equal(container.children.length, 2);
 });
+
+test("message timestamp includes the date only outside the current local day", async () => {
+  const api = await messageViewApi();
+  const now = new Date(2026, 7, 22, 12, 0);
+
+  assert.equal(api.messageTimestampLabel(new Date(2026, 7, 22, 9, 5), now), "09:05");
+  assert.equal(api.messageTimestampLabel(new Date(2026, 7, 21, 22, 47), now), "21.08.2026 22:47");
+});
+
+test("completed turn duration is formatted in hours and minutes", async () => {
+  const api = await messageViewApi();
+
+  assert.equal(api.turnDurationLabel("2026-08-22T10:00:00.000Z", "2026-08-22T10:00:42.000Z"), "<1 мин");
+  assert.equal(api.turnDurationLabel("2026-08-22T10:00:00.000Z", "2026-08-22T11:08:00.000Z"), "1 ч 8 мин");
+  assert.equal(api.turnDurationLabel("", "2026-08-22T11:08:00.000Z"), "");
+});

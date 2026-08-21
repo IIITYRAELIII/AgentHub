@@ -374,6 +374,7 @@ export async function createProviderApplicationComposition({
     consumeTurnTokenTracker: api.consumeTurnTokenTracker,
     waitForTurnEndCompletion: api.waitForTurnEndCompletion,
     rememberCodexSeenTurn: codexObservability.rememberSeenTurn,
+    rememberLastTaskMessage: api.rememberLastTaskMessage,
     readCodexThread: api.readCodexThread,
     readCodexTurnUsage,
     applyCodexRolloutContext: accounting.applyCodexRolloutContext,

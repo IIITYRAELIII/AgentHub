@@ -29,7 +29,7 @@ export class CodexCompletionService {
     for (const name of [
       "runForTask", "consumeTracker", "waitForCompletion", "readThread",
       "readTurnUsage", "applyRolloutContext", "finalizeDelivery", "finishProgress",
-      "completedAnswer", "rememberSeenTurn", "releaseAdmission",
+      "completedAnswer", "rememberSeenTurn", "rememberLastMessage", "releaseAdmission",
     ]) requiredFunction(dependencies[name], name);
     this.#d = dependencies;
   }
@@ -37,6 +37,7 @@ export class CodexCompletionService {
   async completeObserved(run, { snapshot, answer, deliver, completedTurnId, tracker }) {
     run.status = "finishing";
     await this.#d.rememberSeenTurn(run, completedTurnId);
+    this.#rememberTerminalAnswer(run, completedTurnId, answer, snapshot);
     await this.#d.releaseAdmission(run);
     let resolvedTracker = tracker ?? this.#d.consumeTracker(completedTurnId);
     if (run.executionOwner !== TASK_EXECUTION_OWNERS.HUB) {
@@ -74,15 +75,16 @@ export class CodexCompletionService {
   async finishManagedSnapshot(run, snapshot) {
     if (this.#d.runForTask(run) !== run || run.status !== "running") return;
     run.status = "finishing";
-    await this.#d.releaseAdmission(run);
     const completedTurnId = run.turnId;
-    let tracker = this.#d.consumeTracker(completedTurnId);
-    tracker = await this.#resolvePricing(run, completedTurnId, tracker);
-    const forceSpeechButton = await this.#releaseTurnResources(completedTurnId);
     const answer = String(snapshot?.finalAnswer ?? "").trim()
       || String(snapshot?.answer ?? "").trim()
       || run.responseText.trim()
       || "Ход завершён без текстового ответа.";
+    this.#rememberTerminalAnswer(run, completedTurnId, answer, snapshot);
+    await this.#d.releaseAdmission(run);
+    let tracker = this.#d.consumeTracker(completedTurnId);
+    tracker = await this.#resolvePricing(run, completedTurnId, tracker);
+    const forceSpeechButton = await this.#releaseTurnResources(completedTurnId);
     await this.#d.finishProgress(run, snapshot?.stage ?? "Поток завершён.");
     await this.#d.finalizeDelivery(run, {
       answer,
@@ -102,14 +104,15 @@ export class CodexCompletionService {
     if (snapshot) return this.finishManagedSnapshot(run, snapshot);
     if (this.#d.runForTask(run) !== run || run.status !== "running") return;
     run.status = "finishing";
-    await this.#d.releaseAdmission(run);
-    let tracker = this.#d.consumeTracker(completedTurnId);
-    tracker = await this.#resolvePricing(run, completedTurnId, tracker);
-    const forceSpeechButton = await this.#releaseTurnResources(completedTurnId);
     const status = eventTurn?.status ?? "completed";
     const error = eventTurn?.error?.message;
     const answer = await this.#d.completedAnswer(run, completedTurnId, eventTurn)
       || (error ? `Ошибка: ${error}` : `Поток завершён: ${status}`);
+    this.#rememberTerminalAnswer(run, completedTurnId, answer, eventTurn);
+    await this.#d.releaseAdmission(run);
+    let tracker = this.#d.consumeTracker(completedTurnId);
+    tracker = await this.#resolvePricing(run, completedTurnId, tracker);
+    const forceSpeechButton = await this.#releaseTurnResources(completedTurnId);
     await this.#d.finishProgress(
       run,
       error || status === "failed"
@@ -124,6 +127,13 @@ export class CodexCompletionService {
       forceSpeechButton,
       description: "финальный ответ Codex",
     });
+  }
+
+  #rememberTerminalAnswer(run, turnId, answer, completion = null) {
+    const completedAtMs = Number(run?.providerStart?.completedAtMs);
+    const updatedAt = completion?.completedAt
+      ?? (Number.isFinite(completedAtMs) ? new Date(completedAtMs).toISOString() : null);
+    this.#d.rememberLastMessage({ ...run, turnId }, answer, { updatedAt });
   }
 
   async #resolvePricing(run, turnId, tracker) {

@@ -34,6 +34,7 @@
   <script src="/activity-rail-layout.js" defer></script>
   <script src="/connection-banner.js" defer></script>
   <script src="/connection-quality.js" defer></script>
+  <script src="/snapshot-transport.js" defer></script>
   <script src="/provider-turn-telemetry.js" defer></script>
   <script src="/startup-screen.js" type="module"></script>
   <script src="/approval-form.js" defer></script>
@@ -51,6 +52,7 @@
   <script src="/web-diagnostics.js" defer></script>
   <script src="/particle-style-controller.js" defer></script>
   <script src="/side-panel-resizer.js" defer></script>
+  <script src="/task-references.js" defer></script>
   <script src="/app.js" defer></script>
   <script src="/pre-turn-instructions-editor.js" defer></script>
   <script src="/root-agents-editor.js" defer></script>
@@ -223,6 +225,10 @@
     <!-- Левая колонка задач. Элементы задач вставляет renderTasks() из app.js;
          демонстрационные данные не заводятся — до подключения backend пусто. -->
     <aside class="task-rail" data-task-rail aria-label="Задачи">
+      <span class="reliquary-panel-corner reliquary-panel-corner--tl" aria-hidden="true"></span>
+      <span class="reliquary-panel-corner reliquary-panel-corner--tr" aria-hidden="true"></span>
+      <span class="reliquary-panel-corner reliquary-panel-corner--bl" aria-hidden="true"></span>
+      <span class="reliquary-panel-corner reliquary-panel-corner--br" aria-hidden="true"></span>
       <div class="task-rail-head">
         <div class="task-rail-title">
           <span>Workspaces</span>
@@ -255,6 +261,10 @@
 
     <!-- Чат выбранной задачи. -->
     <section class="chat" data-chat aria-label="Диалог задачи">
+      <span class="reliquary-panel-corner reliquary-panel-corner--tl" aria-hidden="true"></span>
+      <span class="reliquary-panel-corner reliquary-panel-corner--tr" aria-hidden="true"></span>
+      <span class="reliquary-panel-corner reliquary-panel-corner--bl" aria-hidden="true"></span>
+      <span class="reliquary-panel-corner reliquary-panel-corner--br" aria-hidden="true"></span>
       <nav class="stream-tabs" data-stream-tabs aria-label="Потоки Workspace" hidden></nav>
       <section class="workspace-message-search" data-workspace-message-search hidden
         aria-label="Поиск по сообщениям Workspace">
@@ -426,22 +436,23 @@
             <section class="settings-section">
               <h3 class="settings-section-title">Текущая задача</h3>
               <div class="settings-card">
-                <div class="setting-stack dialog-agent-row">
+                <div class="setting-row dialog-agent-row">
                   <span class="setting-name">Агент</span>
-                  <div class="setting-options" data-dialog-agent data-dialog-options="provider"></div>
+                  <div class="setting-options dialog-agent-options" data-dialog-agent
+                    data-dialog-options="provider"></div>
                 </div>
-                <div class="setting-stack" data-setting="model">
+                <label class="setting-row" data-setting="model">
                   <span class="setting-name">Модель</span>
-                  <div class="setting-options" data-dialog-options="model"></div>
-                </div>
-                <div class="setting-stack" data-setting="reasoning">
+                  <select data-dialog-options="model" aria-label="Модель"></select>
+                </label>
+                <label class="setting-row" data-setting="reasoning">
                   <span class="setting-name">Reasoning</span>
-                  <div class="setting-options" data-dialog-options="reasoning"></div>
-                </div>
-                <div class="setting-stack" data-setting="mode">
+                  <select data-dialog-options="reasoning" aria-label="Reasoning"></select>
+                </label>
+                <label class="setting-row" data-setting="mode">
                   <span class="setting-name">Режим</span>
-                  <div class="setting-options" data-dialog-options="mode"></div>
-                </div>
+                  <select data-dialog-options="mode" aria-label="Режим"></select>
+                </label>
                 <label class="setting-stack dialog-working-directory">
                   <span class="setting-name">Рабочая директория Stream</span>
                   <input type="text" data-dialog-working-directory
@@ -472,14 +483,6 @@
                 </label>
                 <button type="button" class="board-task-primary agent-rules-save"
                   data-dialog-stream-rules-save>Сохранить правила Stream</button>
-                <details class="agent-rules-disclosure" data-dialog-workspace-rules>
-                  <summary>Унаследовано от Workspace</summary>
-                  <pre data-dialog-workspace-rules-preview></pre>
-                </details>
-                <details class="agent-rules-disclosure" open>
-                  <summary>Итоговые developer-инструкции</summary>
-                  <pre data-dialog-effective-rules-preview></pre>
-                </details>
               </div>
             </section>
           </div>
@@ -566,6 +569,10 @@
     </section>
 
     <aside class="activity-rail" data-activity-rail aria-label="Активные потоки и задачи">
+      <span class="reliquary-panel-corner reliquary-panel-corner--tl" aria-hidden="true"></span>
+      <span class="reliquary-panel-corner reliquary-panel-corner--tr" aria-hidden="true"></span>
+      <span class="reliquary-panel-corner reliquary-panel-corner--bl" aria-hidden="true"></span>
+      <span class="reliquary-panel-corner reliquary-panel-corner--br" aria-hidden="true"></span>
       <header class="activity-rail-head">
         <button type="button" class="activity-rail-toggle activity-task-toggle"
           data-activity-task-toggle aria-expanded="true" title="Свернуть задачи" hidden>
@@ -617,6 +624,13 @@
 
   <main class="task-board-view" data-task-board>
     <header class="task-board-toolbar">
+      <div class="task-board-status-language" role="group" aria-label="Язык статусов задач">
+        <span>Статусы</span>
+        <div class="task-board-status-language-options">
+          <button type="button" data-task-status-language="en" aria-pressed="true">en</button>
+          <button type="button" data-task-status-language="ru" aria-pressed="false">ru</button>
+        </div>
+      </div>
       <button
         type="button"
         class="task-board-completed-toggle"
@@ -700,6 +714,10 @@
         </label>
         <button type="submit" class="board-task-primary">Сохранить изменения</button>
       </form>
+      <label class="task-card-status-field">
+        <span>Статус</span>
+        <select data-task-card-status aria-label="Статус задачи"></select>
+      </label>
       <div class="board-task-card-attachments" data-task-card-attachments hidden></div>
       <div class="board-task-original" data-task-card-original>
         <button type="button" class="board-task-original-toggle" data-task-card-original-toggle

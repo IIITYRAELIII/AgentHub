@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { taskDisplayText } from "../domain/task-board-task.mjs";
+import { taskDisplayText, taskDisplayTitle } from "../domain/task-board-task.mjs";
 
 function requiredMethod(value, name) {
   if (typeof value?.[name] !== "function") throw new TypeError(`${name} is required`);
@@ -78,13 +78,15 @@ export class TaskBoardLaunchService {
       target = created.createdTask;
     }
     const delivery = await this.sendMessage({
-      text: taskDisplayText(task),
-      attachments: Array.isArray(task.sourceDetails?.attachments) ? task.sourceDetails.attachments : [],
+      text: "",
+      displayText: `Task: ${taskDisplayTitle(task)}`,
+      taskReferences: [{ taskId: task.id, intent: "start" }],
       streamId: target.streamId,
       provider: target.provider,
       threadId: target.threadId,
       projectRoot: target.projectRoot,
-      clientUserMessageId: `board-task:${task.id}`,
+      clientUserMessageId: String(params.clientUserMessageId ?? context?.commandId ?? "").trim()
+        || `board-task:${task.id}`,
       followUpMode: String(params.followUpMode ?? "").trim(),
     }, context);
     const started = this.taskBoard.markStarted({
@@ -172,13 +174,15 @@ export class TaskBoardLaunchService {
       target = created.createdTask;
     }
     const delivery = await this.sendMessage({
-      text: taskDisplayText(prepared),
-      attachments: Array.isArray(prepared.sourceDetails?.attachments) ? prepared.sourceDetails.attachments : [],
+      text: "",
+      displayText: `Task: ${taskDisplayTitle(prepared)}`,
+      taskReferences: [{ taskId: prepared.id, intent: "start" }],
       streamId: target.streamId,
       provider: target.provider,
       threadId: target.threadId,
       projectRoot: target.projectRoot,
-      clientUserMessageId: String(params.clientUserMessageId ?? "").trim() || `board-task:${prepared.id}`,
+      clientUserMessageId: String(params.clientUserMessageId ?? context?.commandId ?? "").trim()
+        || `board-task:${prepared.id}:${launchRequestId}`,
       followUpMode: String(params.followUpMode ?? "").trim(),
     }, context);
     const started = this.taskBoard.markStarted({

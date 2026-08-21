@@ -34,14 +34,14 @@
 }
 
 @keyframes stream-breath {
-  0%, 100% { opacity: 0.015; }
-  50% { opacity: 0.075; }
+  0%, 100% { opacity: 0.05; }
+  50% { opacity: 0.24; }
 }
 
 @keyframes stream-breath-ready {
-  0% { opacity: 0.02; }
-  55% { opacity: 0.18; }
-  100% { opacity: 0.1; }
+  0% { opacity: 0.06; }
+  55% { opacity: 0.46; }
+  100% { opacity: 0.28; }
 }
 
 /* ================================================================= Нить ===
@@ -52,12 +52,14 @@
 :root[data-stream-status-effect="thread"]
   .task-workspace-item[data-unread]:not([data-running])::after,
 :root[data-stream-status-effect="thread"] .stream-tab[data-answer-ready] .stream-tab-card::after {
-  background: linear-gradient(180deg, transparent, var(--accent) 30%, var(--accent) 70%, transparent);
+  background: linear-gradient(180deg, transparent, var(--accent) 24%, var(--accent) 76%, transparent);
+  box-shadow: 0 0 14px color-mix(in srgb, var(--accent) 62%, transparent),
+    18px 0 26px -12px color-mix(in srgb, var(--accent) 52%, transparent);
   content: "";
   inset: 0 auto 0 0;
   pointer-events: none;
   position: absolute;
-  width: 2px;
+  width: 7px;
 }
 
 :root[data-stream-status-effect="thread"] .task-workspace-item[data-running]::after,
@@ -70,8 +72,9 @@
   .task-workspace-item[data-unread]:not([data-running])::after,
 :root[data-stream-status-effect="thread"] .stream-tab[data-answer-ready] .stream-tab-card::after {
   background: var(--accent);
-  inset: 34% auto 34% 0;
-  width: 3px;
+  border-radius: 0 4px 4px 0;
+  inset: 18% auto 18% 0;
+  width: 8px;
 }
 
 @keyframes stream-thread-wind {
@@ -88,11 +91,12 @@
 :root[data-stream-status-effect="sediment"]
   .task-workspace-item[data-unread]:not([data-running])::after,
 :root[data-stream-status-effect="sediment"] .stream-tab[data-answer-ready] .stream-tab-card::after {
-  background: linear-gradient(0deg, var(--accent), transparent);
+  background:
+    linear-gradient(0deg, color-mix(in srgb, var(--accent) 92%, transparent) 0 62%, var(--accent) 82%, transparent);
   border-radius: inherit;
   content: "";
   inset: 0;
-  opacity: 0.16;
+  opacity: 0.34;
   pointer-events: none;
   position: absolute;
   transform-origin: bottom center;
@@ -106,7 +110,7 @@
 :root[data-stream-status-effect="sediment"]
   .task-workspace-item[data-unread]:not([data-running])::after,
 :root[data-stream-status-effect="sediment"] .stream-tab[data-answer-ready] .stream-tab-card::after {
-  opacity: 0.22;
+  opacity: 0.5;
   transform: scaleY(1);
 }
 
@@ -121,22 +125,31 @@
    тогда, когда появился ответ: движение означает новость, а не занятость. */
 :root[data-stream-status-effect="echo"] .task-workspace-item[data-running]::after,
 :root[data-stream-status-effect="echo"] .stream-tab[data-running] .stream-tab-card::after {
+  animation: stream-echo-dot 2.6s ease-in-out infinite;
   background: var(--accent);
   border-radius: 50%;
+  box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 24%, transparent),
+    0 0 20px 4px color-mix(in srgb, var(--accent) 62%, transparent);
   content: "";
-  height: 6px;
-  inset: auto 0.5rem 0.5rem auto;
+  height: 12px;
+  inset: auto 0.6rem 0.6rem auto;
   pointer-events: none;
   position: absolute;
-  width: 6px;
+  width: 12px;
+}
+
+@keyframes stream-echo-dot {
+  0%, 100% { opacity: 0.55; transform: scale(0.86); }
+  50% { opacity: 1; transform: scale(1.06); }
 }
 
 :root[data-stream-status-effect="echo"]
   .task-workspace-item[data-unread]:not([data-running])::after,
 :root[data-stream-status-effect="echo"] .stream-tab[data-answer-ready] .stream-tab-card::after {
-  animation: stream-echo-ring 1.15s ease-out 2;
-  border: 1px solid var(--accent);
+  animation: stream-echo-ring 1.15s ease-out 3;
+  border: 2px solid var(--accent);
   border-radius: inherit;
+  box-shadow: 0 0 12px color-mix(in srgb, var(--accent) 40%, transparent);
   content: "";
   inset: 0;
   pointer-events: none;
@@ -144,8 +157,8 @@
 }
 
 @keyframes stream-echo-ring {
-  0% { opacity: 0.85; transform: scale(0.97); }
-  100% { opacity: 0; transform: scale(1.06); }
+  0% { opacity: 1; transform: scale(0.94); }
+  100% { opacity: 0; transform: scale(1.13); }
 }
 
 /* Карточки вне окна не анимируются: при двух десятках идущих потоков это
@@ -172,7 +185,7 @@
 
   :root[data-stream-status-effect="breath"] .task-workspace-item[data-running]::after,
   :root[data-stream-status-effect="breath"] .stream-tab[data-running] .stream-tab-card::after {
-    opacity: 0.06;
+    opacity: 0.2;
   }
 
   :root[data-stream-status-effect="thread"] .task-workspace-item[data-running]::after,
@@ -227,28 +240,28 @@
 }
 
 @keyframes stream-breath-fill {
-  0%, 100% { opacity: 0.04; }
-  50% { opacity: 0.16; }
+  0%, 100% { opacity: 0.09; }
+  50% { opacity: 0.36; }
 }
 
 @keyframes stream-breath-ready-fill {
-  0% { opacity: 0.05; }
-  55% { opacity: 0.3; }
-  100% { opacity: 0.19; }
+  0% { opacity: 0.12; }
+  55% { opacity: 0.58; }
+  100% { opacity: 0.38; }
 }
 
 :root[data-stream-status-style="fill"][data-stream-status-effect="sediment"]
   .task-workspace-item[data-running]::after,
 :root[data-stream-status-style="fill"][data-stream-status-effect="sediment"]
   .stream-tab[data-running] .stream-tab-card::after {
-  opacity: 0.3;
+  opacity: 0.48;
 }
 
 :root[data-stream-status-style="fill"][data-stream-status-effect="sediment"]
   .task-workspace-item[data-unread]:not([data-running])::after,
 :root[data-stream-status-style="fill"][data-stream-status-effect="sediment"]
   .stream-tab[data-answer-ready] .stream-tab-card::after {
-  opacity: 0.38;
+  opacity: 0.6;
 }
 
 /* Нить в заливке разворачивается в занавес: та же анимация по вертикали, но
@@ -261,10 +274,11 @@
   .task-workspace-item[data-unread]:not([data-running])::after,
 :root[data-stream-status-style="fill"][data-stream-status-effect="thread"]
   .stream-tab[data-answer-ready] .stream-tab-card::after {
-  background: linear-gradient(180deg, transparent, var(--accent) 40%, var(--accent) 60%, transparent);
+  background: linear-gradient(180deg, transparent, var(--accent) 34%, var(--accent) 66%, transparent);
   border-radius: inherit;
+  box-shadow: none;
   inset: 0;
-  opacity: 0.16;
+  opacity: 0.32;
   width: auto;
 }
 
@@ -273,7 +287,7 @@
 :root[data-stream-status-style="fill"][data-stream-status-effect="thread"]
   .stream-tab[data-answer-ready] .stream-tab-card::after {
   background: var(--accent);
-  opacity: 0.2;
+  opacity: 0.38;
 }
 
 /* Эхо в заливке: во время хода панель едва подсвечена ровным светом вместо
@@ -282,12 +296,18 @@
   .task-workspace-item[data-running]::after,
 :root[data-stream-status-style="fill"][data-stream-status-effect="echo"]
   .stream-tab[data-running] .stream-tab-card::after {
+  animation-name: stream-echo-dot-fill;
   background: var(--accent);
   border-radius: inherit;
+  box-shadow: none;
   height: auto;
   inset: 0;
-  opacity: 0.07;
   width: auto;
+}
+
+@keyframes stream-echo-dot-fill {
+  0%, 100% { opacity: 0.1; }
+  50% { opacity: 0.26; }
 }
 
 :root[data-stream-status-style="fill"][data-stream-status-effect="echo"]
@@ -302,8 +322,8 @@
 }
 
 @keyframes stream-echo-fill {
-  0% { opacity: 0.28; }
-  100% { opacity: 0.06; }
+  0% { opacity: 0.55; }
+  100% { opacity: 0.14; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -312,6 +332,6 @@
   :root[data-stream-status-style="fill"][data-stream-status-effect="echo"]
     .stream-tab[data-answer-ready] .stream-tab-card::after {
     animation: none;
-    opacity: 0.14;
+    opacity: 0.3;
   }
 }

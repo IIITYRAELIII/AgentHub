@@ -115,7 +115,7 @@ html[data-theme="gothic"] {
   --shell-tab-active-shadow: inset 0 -2px 0 #a14438;
   --shell-view-switch-background: transparent;
   --shell-view-switch-border: 0;
-  --shell-view-switch-gap: 0.2rem;
+  --shell-view-switch-gap: 3px;
   --shell-view-switch-padding: 0 0.45rem;
   --shell-view-switch-radius: 0;
   --shell-view-switch-shadow: none;
@@ -780,7 +780,7 @@ html[data-theme="gothic"] body::before {
     border: 0 !important;
     border-radius: 0 !important;
     box-shadow: none !important;
-    gap: 0.2rem !important;
+    gap: var(--shell-view-switch-gap) !important;
     left: 50% !important;
     margin-left: 0 !important;
     padding: 0 !important;
@@ -1918,7 +1918,7 @@ html[data-theme="gothic"][data-surface="mobile"] .stream-tab[aria-pressed="true"
 
   html[data-theme="gothic"]:not([data-surface="mobile"])
     .stream-tabs[data-stream-card-gap-mode="on"] .stream-tabs-track {
-    column-gap: 0.2rem !important;
+    column-gap: var(--shell-view-switch-gap) !important;
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .stream-tab-group {

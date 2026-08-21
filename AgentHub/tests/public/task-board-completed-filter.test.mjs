@@ -4,12 +4,15 @@ import test from "node:test";
 import vm from "node:vm";
 
 async function loadBoardView() {
+  const referencesSource = await readFile(new URL("../../assets/web-app/task-references.js", import.meta.url), "utf8");
   const source = await readFile(new URL("../../assets/web-app/task-board.js", import.meta.url), "utf8");
   const window = {};
-  vm.runInNewContext(source, {
+  const context = {
     document: { querySelector: () => null },
     window,
-  });
+  };
+  vm.runInNewContext(referencesSource, context);
+  vm.runInNewContext(source, context);
   return window.AgentHubTaskBoardView;
 }
 
@@ -44,6 +47,22 @@ test("a freshly completed Task lands at the bottom of completed Tasks", async ()
     Array.from(view.tasksForMode(tasks, { completedOnly: true }), (task) => task.id),
     ["done-unknown", "done-first", "done-latest"],
   );
+});
+
+test("Dashboard presents every workflow status in the selected language", async () => {
+  const view = await loadBoardView();
+  const statuses = ["new", "in_progress", "testing", "awaiting_implementation", "done"];
+
+  assert.deepEqual(
+    statuses.map((workflowStatus) => view.taskWorkflowPresentation({ workflowStatus }, "en").short),
+    ["New", "InProg", "Test", "AwImpl", "Done"],
+  );
+  assert.deepEqual(
+    statuses.map((workflowStatus) => view.taskWorkflowPresentation({ workflowStatus }, "ru").short),
+    ["Новая", "ВРаботе", "Тест", "Прим", "Готово"],
+  );
+  assert.equal(view.taskWorkflowPresentation({ status: "started" }, "ru").status, "in_progress");
+  assert.equal(view.normalizedTaskStatusLanguage("unknown"), "en");
 });
 
 test("workspace side panel keeps every current Task available for scrolling", async () => {

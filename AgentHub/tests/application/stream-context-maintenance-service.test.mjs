@@ -187,6 +187,25 @@ test("post-turn automation ignores non-terminal observation cleanup", () => {
   assert.equal(state.registry.isActive(state.source), false);
 });
 
+test("post-turn automation cannot consume another run's reservation", async () => {
+  const state = fixture({ beforePercent: 90 });
+  state.source.id = "run-owner";
+  assert.equal(state.service.reserveAfterTurn(state.source), true);
+
+  const recoveredInternalRun = {
+    ...state.source,
+    id: "run-recovered",
+    turnId: "turn-compaction",
+  };
+  assert.equal(await state.service.maintainAfterTurn(recoveredInternalRun), null);
+  assert.equal(state.registry.isActive(state.source), true);
+  assert.equal(state.events.some(([name]) => name === "compact"), false);
+
+  const result = await state.service.maintainAfterTurn(state.source);
+  assert.equal(result.compacted, true);
+  assert.equal(state.registry.isActive(state.source), false);
+});
+
 test("post-turn automation waits for the completed writer to become idle", async () => {
   const state = fixture({ beforePercent: 90, sourceIdle: false });
   state.service.reserveAfterTurn(state.source);

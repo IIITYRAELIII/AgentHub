@@ -15,11 +15,11 @@ async function fixture(context) {
   const tasks = new Map([
     ["task-current", {
       id: "task-current", title: "Current", description: "", bucket: "workspace",
-      status: "open", workspaceId: "workspace-1", streamId: null, boardOrder: 0,
+      status: "open", workflowStatus: "new", workspaceId: "workspace-1", streamId: null, boardOrder: 0,
     }],
     ["task-foreign", {
       id: "task-foreign", title: "Foreign", description: "", bucket: "workspace",
-      status: "open", workspaceId: "workspace-2", streamId: null, boardOrder: 0,
+      status: "open", workflowStatus: "new", workspaceId: "workspace-2", streamId: null, boardOrder: 0,
     }],
   ]);
   const workspaceCatalog = {
@@ -84,15 +84,20 @@ async function fixture(context) {
     create: ({ text, sourceDetails = {} }) => {
       const task = {
         id: "created", title: text, description: "", bucket: "backlog",
-        status: "open", workspaceId: null, sourceDetails,
+        status: "open", workflowStatus: "new", workspaceId: null, sourceDetails,
       };
       tasks.set(task.id, task);
       return task;
     },
     move: ({ id, bucket, workspaceId = null }) => Object.assign(tasks.get(id), { bucket, workspaceId }),
     update: ({ id, title, description }) => Object.assign(tasks.get(id), { title, description }),
-    markStarted: ({ id, streamId }) => Object.assign(tasks.get(id), { status: "started", streamId }),
-    complete: ({ id }) => Object.assign(tasks.get(id), { status: "done" }),
+    markStarted: ({ id, streamId }) => Object.assign(tasks.get(id), {
+      status: "started", workflowStatus: "in_progress", streamId,
+    }),
+    setWorkflowStatus: ({ id, status }) => Object.assign(tasks.get(id), {
+      workflowStatus: status, status: status === "done" ? "done" : tasks.get(id).status,
+    }),
+    complete: ({ id }) => Object.assign(tasks.get(id), { status: "done", workflowStatus: "done" }),
     remove: ({ id }) => tasks.delete(id),
     addAttachment: ({ id, attachment }) => {
       const task = tasks.get(id);
@@ -142,17 +147,24 @@ async function fixture(context) {
   };
 }
 
-test("HubMcpService scopes tools to the capability Workspace", async (context) => {
+test("HubMcpService lists and changes Dashboard Tasks across Workspaces", async (context) => {
   const { service, token } = await fixture(context);
   assert.equal((await service.call("hub_context_get", { context_token: token })).workspaceId, "workspace-1");
   assert.deepEqual(
     (await service.call("hub_tasks_list", { context_token: token })).tasks.map((task) => task.id),
-    ["task-current"],
+    ["task-current", "task-foreign"],
   );
-  await assert.rejects(
-    () => service.call("hub_task_get", { context_token: token, task_id: "task-foreign" }),
-    /outside the current Workspace/u,
+  assert.equal(
+    (await service.call("hub_task_get", { context_token: token, task_id: "task-foreign" })).id,
+    "task-foreign",
   );
+  const updated = await service.call("hub_task_update", {
+    context_token: token,
+    request_id: "foreign-task-update",
+    task_id: "task-foreign",
+    title: "Updated from another Workspace",
+  });
+  assert.equal(updated.title, "Updated from another Workspace");
 });
 
 test("HubMcpService supports the first Stream turn before provider Thread assignment", async (context) => {
@@ -185,7 +197,28 @@ test("HubMcpService starts the current Workspace task in the current Stream", as
     context_token: token, request_id: "start-task", task_id: "task-current", confirm_launch: true,
   });
   assert.equal(task.task.status, "started");
+  assert.equal(task.task.workflowStatus, "in_progress");
   assert.equal(task.target.streamId, "stream-1");
+});
+
+test("HubMcpService changes Task workflow status and Done completes it", async (context) => {
+  const { service, token } = await fixture(context);
+  const testing = await service.call("hub_task_status_update", {
+    context_token: token,
+    request_id: "task-testing",
+    task_id: "task-current",
+    status: "testing",
+  });
+  const done = await service.call("hub_task_status_update", {
+    context_token: token,
+    request_id: "task-done",
+    task_id: "task-current",
+    status: "done",
+  });
+
+  assert.equal(testing.workflowStatus, "testing");
+  assert.equal(done.workflowStatus, "done");
+  assert.equal(done.status, "done");
 });
 
 test("HubMcpService resumes an interrupted pending task start with the same request id", async (context) => {
@@ -297,6 +330,20 @@ test("HubMcpService rejects forged context capabilities", async (context) => {
   );
 });
 
+test("HubMcpService recovers a registered capability when the model damages only its payload", async (context) => {
+  const { service, token } = await fixture(context);
+  const separator = token.lastIndexOf(".");
+  const payload = token.slice(0, separator);
+  const signature = token.slice(separator + 1);
+  const damagedToken = `${payload.slice(0, 40)}${payload.slice(43)}.${signature}`;
+
+  const resolved = await service.call("hub_context_get", { context_token: damagedToken });
+
+  assert.equal(resolved.workspaceId, "workspace-1");
+  assert.equal(resolved.streamId, "stream-1");
+  assert.equal(resolved.threadId, "thread-1");
+});
+
 test("HubMcpService explains how to recover from an empty context capability", async (context) => {
   const { service } = await fixture(context);
   await assert.rejects(
@@ -345,6 +392,27 @@ test("HubMcpService copies project files into task attachments", async (context)
   });
   assert.equal(read.text, "evidence");
   assert.equal(read.name, "evidence.txt");
+});
+
+test("HubMcpService reads attachments of an exact Task reference after it leaves the Workspace", async (context) => {
+  const { service, token, projectRoot, tasks } = await fixture(context);
+  const projectFile = path.join(projectRoot, "foreign-evidence.txt");
+  await writeFile(projectFile, "foreign evidence", "utf8");
+  const added = await service.call("hub_task_attachment_add", {
+    context_token: token,
+    request_id: "foreign-attachment-add",
+    task_id: "task-current",
+    local_path: projectFile,
+  });
+  tasks.get("task-current").workspaceId = "workspace-2";
+
+  const read = await service.call("hub_task_attachment_read", {
+    context_token: token,
+    task_id: "task-current",
+    attachment_id: added.attachment.id,
+  });
+
+  assert.equal(read.text, "foreign evidence");
 });
 
 test("HubMcpService rejects attachment paths that escape through a link", async (context) => {

@@ -188,17 +188,19 @@ export class BugReportRepository {
   async addedSince(revision = "") {
     const head = (await this.#git("rev-parse", "HEAD")).stdout.trim().toLowerCase();
     const previous = String(revision ?? "").trim().toLowerCase();
-    if (!previous) return { head, reports: [], baseline: true };
-    if (!/^[0-9a-f]{40,64}$/u.test(previous)) return { head, reports: [], baseline: true };
-    try {
-      await this.#git("cat-file", "-e", `${previous}^{commit}`);
-    } catch {
-      return { head, reports: [], baseline: true };
+    let baseline = !/^[0-9a-f]{40,64}$/u.test(previous);
+    if (!baseline) {
+      try {
+        await this.#git("cat-file", "-e", `${previous}^{commit}`);
+      } catch {
+        baseline = true;
+      }
     }
-    if (previous === head) return { head, reports: [], baseline: false };
-    const changed = (await this.#git(
-      "diff", "--name-only", "--diff-filter=A", "-z", previous, head, "--", BUG_REPORTS_RELATIVE_ROOT,
-    )).stdout.split("\0").map(normalizedGitPath).filter(Boolean).sort();
+    if (!baseline && previous === head) return { head, reports: [], baseline: false };
+    const changed = (await this.#git(...(baseline
+      ? ["ls-tree", "-r", "--name-only", "-z", head, "--", BUG_REPORTS_RELATIVE_ROOT]
+      : ["diff", "--name-only", "--diff-filter=A", "-z", previous, head, "--", BUG_REPORTS_RELATIVE_ROOT]
+    ))).stdout.split("\0").map(normalizedGitPath).filter(Boolean).sort();
     const reports = [];
     for (const reportFile of changed) {
       const match = /^AgentHub\/Bugs\/bug-([0-9a-f-]{36})\/report\.md$/iu.exec(reportFile);
@@ -207,7 +209,7 @@ export class BugReportRepository {
       const markdown = (await this.#git("show", `${head}:${reportFile}`)).stdout;
       reports.push(reportFromMarkdown({ id: match[1].toLowerCase(), folder, markdown }));
     }
-    return { head, reports, baseline: false };
+    return { head, reports, baseline };
   }
 
   async submit({ text = "", screenshots = [], reportId = "", source = "unknown" } = {}) {

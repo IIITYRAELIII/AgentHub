@@ -45,11 +45,21 @@ test("message receipts survive persistence and reject changed content", async ()
   );
 });
 
-test("message receipt identity survives a provider thread rebind", () => {
+test("message receipt identity survives a provider thread rebind", async () => {
   assert.equal(
     messageReceiptKey(identity),
     messageReceiptKey({ ...identity, threadId: "thread-2" }),
   );
+
+  const taskReferenceFingerprint = await messageRequestFingerprint({
+    text: "Проверь",
+    taskReferences: [{ taskId: "board-1", intent: "context" }],
+  });
+  const anotherTaskReferenceFingerprint = await messageRequestFingerprint({
+    text: "Проверь",
+    taskReferences: [{ taskId: "board-2", intent: "context" }],
+  });
+  assert.notEqual(taskReferenceFingerprint, anotherTaskReferenceFingerprint);
 });
 
 test("message receipts deduplicate the same client message after a thread rebind", async () => {

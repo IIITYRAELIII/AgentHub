@@ -25,12 +25,26 @@ function cleanText(value, limit) {
 function cleanAttachments(attachments) {
   return (Array.isArray(attachments) ? attachments : [])
     .slice(-8)
-    .map((attachment) => ({
-      id: cleanText(attachment?.id, 300),
-      name: cleanText(attachment?.name, 300),
-      type: cleanText(attachment?.type, 100),
-    }))
-    .filter((attachment) => attachment.id);
+    .flatMap((attachment) => {
+      if (attachment?.kind === "task") {
+        const taskId = cleanText(attachment.taskId, 300);
+        if (!taskId) return [];
+        return [{
+          kind: "task",
+          taskId,
+          title: cleanText(attachment.title, 160) || "Task",
+          workflowStatus: cleanText(attachment.workflowStatus, 40) || "new",
+          workspaceId: cleanText(attachment.workspaceId, 300) || null,
+          intent: cleanText(attachment.intent, 20) || "context",
+        }];
+      }
+      const id = cleanText(attachment?.id, 300);
+      return id ? [{
+        id,
+        name: cleanText(attachment?.name, 300),
+        type: cleanText(attachment?.type, 100),
+      }] : [];
+    });
 }
 
 function cleanResponseAnnotations(annotations) {

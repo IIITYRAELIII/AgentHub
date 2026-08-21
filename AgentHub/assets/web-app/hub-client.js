@@ -733,6 +733,8 @@ function promoteLiveCompletion(taskIdValue, selected, incomingTurnId = "") {
       phase: "final",
       text: answer,
       time: completionTime,
+      turnStartedAt: previous.turnStartedAt ?? null,
+      turnCompletedAt: completionTime,
     });
   }
   if (messages.length) {
@@ -879,6 +881,7 @@ function updateLiveMessage(taskIdValue, selected) {
     itemId: run.responseItemId ?? null,
     provider: selected.provider,
     time: run.lastActivityAt ?? run.startedAt ?? null,
+    turnStartedAt: run.startedAt ?? null,
     snapshotLastAnswerAt: selected.lastAnswerAt ?? null,
   }, maintenanceEventsByTask.get(taskIdValue) ?? []);
   liveCardsByTask.set(taskIdValue, liveCard);
@@ -1098,6 +1101,12 @@ async function readSnapshot(params = {}) {
   await localSessionReady;
   const query = new URLSearchParams({
     knownVersion: String(params?.knownVersion ?? ""),
+    compactSnapshot: params?.compactSnapshot === true ? "1" : "0",
+    snapshotProtocol: String(params?.snapshotProtocol ?? 3),
+    conversationsVersion: String(params?.conversationsVersion ?? ""),
+    workspacesVersion: String(params?.workspacesVersion ?? ""),
+    boardTasksVersion: String(params?.boardTasksVersion ?? ""),
+    messageReceiptsVersion: String(params?.messageReceiptsVersion ?? ""),
     waitMs: String(REMOTE_WAIT_MS),
   });
   const response = await hubFetch(`/api/snapshot?${query}`, {
@@ -1221,6 +1230,7 @@ function modelTask(task, snapshot, effectiveSelectedId, serverSelectedId) {
     maintenance: task.maintenance ?? null,
     context: task.run?.context ?? task.context ?? null,
     providerStart: task.run?.providerStart ?? null,
+    providerTurnTelemetry: task.providerTurnTelemetry ?? null,
     streamSettings: { ...(catalogStream?.settings ?? {}) },
     workspaceSettings: { ...(workspace?.settings ?? {}) },
     streamDeveloperRules: catalogStream?.developerRules ?? null,
@@ -1588,6 +1598,7 @@ function representativeSnapshotTasks(tasks) {
 
 function applySnapshot(snapshot) {
   if (!snapshot) return;
+  snapshot = window.AgentHubSnapshotTransport.materialize(lastSnapshot, snapshot);
   if (observeServerIdentity(snapshot)) return;
   let effectiveSelectedId = "";
   let tasks = [];
@@ -1603,7 +1614,7 @@ function applySnapshot(snapshot) {
     const maintenanceChanged = new Set([
       ...observeContextCompactions(snapshot.tasks),
       ...observeStreamRotations(previousTasks, snapshot.tasks),
-      ...syncActiveMaintenanceMessages(snapshot.tasks),
+      ...syncActiveMaintenanceMessages(representativeTasks),
     ]);
     applyMessageReceipts(snapshot);
     const serverDeferredClientUserMessageIds = new Set(
@@ -1865,6 +1876,10 @@ function historyMessages(history, focusedTurn = null) {
         ? item.activityGroups
         : [],
       time: message.time ?? (message.role === "user" ? item.startedAt : item.completedAt) ?? null,
+      ...(messageIndex === traceMessageIndex ? {
+        turnStartedAt: item.startedAt ?? null,
+        turnCompletedAt: item.completedAt ?? null,
+      } : {}),
       historyOrder: (historyStart + itemIndex) * 1_000 + messageIndex,
       attachments: attachmentViews(message.attachments),
     });
@@ -1907,6 +1922,10 @@ function historyMessages(history, focusedTurn = null) {
           ? focusedTurn.activityGroups
           : [],
         time: message.time ?? null,
+        ...(itemId === focusedTraceItemId ? {
+          turnStartedAt: focusedTurn.startedAt ?? null,
+          turnCompletedAt: focusedTurn.completedAt ?? null,
+        } : {}),
         attachments: attachmentViews(message.attachments),
       });
     }
@@ -1939,6 +1958,8 @@ function historyMessages(history, focusedTurn = null) {
       activities: Array.isArray(focusedTurn.activities) ? focusedTurn.activities : [],
       activityGroups: Array.isArray(focusedTurn.activityGroups) ? focusedTurn.activityGroups : [],
       time: focusedTurn.completedAt,
+      turnStartedAt: focusedTurn.startedAt ?? null,
+      turnCompletedAt: focusedTurn.completedAt ?? null,
     });
   }
   return messages;
@@ -2295,13 +2316,17 @@ agentHub.on("message:send", (request) => {
   let identity = taskIdentity(request.taskId);
   const previousAttempt = outgoingMessages(request.taskId).get(request.requestId);
   const requestAttachments = request.attachments ?? [];
+  const requestTaskReferences = (request.taskReferences ?? [])
+    .map((reference) => window.AgentHubTaskReferences.normalize(reference))
+    .filter(Boolean);
+  const visibleAttachments = [...requestAttachments, ...requestTaskReferences];
   const queuesOptimistically = request.followUpMode === "queue"
     || request.deferWhileRunning === true;
   const steersOptimistically = request.followUpMode === "steer" && !queuesOptimistically;
   const visibleText = String(request.text ?? "").trim()
     || ((request.annotations ?? []).length
       ? `Аннотации к ответу: ${(request.annotations ?? []).length}`
-      : window.AgentHubMessageLifecycle.attachmentOnlyText(requestAttachments));
+      : window.AgentHubMessageLifecycle.attachmentOnlyText(visibleAttachments));
   const optimistic = {
     id: optimisticId,
     provider: identity?.provider ?? request.settings?.provider ?? "",
@@ -2315,7 +2340,7 @@ agentHub.on("message:send", (request) => {
     responseAnnotations: normalizedResponseAnnotations(request.annotations),
     responseAnnotationRequest: String(request.text ?? "").trim(),
     time: new Date().toISOString(),
-    attachments: requestAttachments,
+    attachments: visibleAttachments,
     uploadedPaths: previousAttempt?.uploadedPaths ?? [],
     ...deliveryPatch(queuesOptimistically ? "sending" : steersOptimistically ? "steering" : "preparing"),
   };
@@ -2380,6 +2405,12 @@ agentHub.on("message:send", (request) => {
         followUpMode: request.followUpMode,
       };
       if (paths.length) params.attachments = paths;
+      if (requestTaskReferences.length) {
+        params.taskReferences = requestTaskReferences.map((reference) => ({
+          taskId: reference.taskId,
+          intent: reference.intent,
+        }));
+      }
       return control("send-message", params);
     },
     receive: (result) => {
@@ -2583,6 +2614,7 @@ document.addEventListener("agenthub:board-action", (event) => {
     const actions = {
       create: "board-task-create",
       update: "board-task-update",
+      status: "board-task-status",
       move: "board-task-move",
       complete: "board-task-complete",
       remove: "board-task-remove",
@@ -2599,6 +2631,7 @@ document.addEventListener("agenthub:board-action", (event) => {
     applySnapshot(result);
     if (detail.type === "start") agentHub.showSelectedTask();
     if (detail.type === "update") agentHub.toast("Изменения сохранены");
+    if (detail.type === "status") agentHub.toast("Статус задачи изменён");
     if (detail.type === "remove") agentHub.toast("Задача удалена");
   }).finally(() => {
     window.AgentHubTaskBoard?.finishAction?.({
@@ -3675,13 +3708,31 @@ async function refresh({ reportError = false } = {}) {
     const previousSnapshot = lastSnapshot;
     await prepareSnapshotTransport();
     const requestStartedAt = performance.now();
-    const snapshotResult = await control("snapshot", { knownVersion: lastSnapshot?.version ?? "" });
+    let snapshotResult = await control(
+      "snapshot",
+      window.AgentHubSnapshotTransport.requestParams(lastSnapshot),
+    );
     connectionLatencyMs = window.AgentHubConnectionQuality.smoothLatency(
       connectionLatencyMs,
       performance.now() - requestStartedAt,
     );
     agentHub.setConnectionQuality({ latencyMs: connectionLatencyMs });
-    const snapshot = snapshotResult?.notModified === true ? lastSnapshot : snapshotResult;
+    let snapshot = lastSnapshot;
+    if (snapshotResult?.notModified !== true) {
+      try {
+        snapshot = window.AgentHubSnapshotTransport.materialize(lastSnapshot, snapshotResult);
+      } catch (error) {
+        if (!window.AgentHubSnapshotTransport.isBaselineError(error)) throw error;
+        snapshotResult = await control(
+          "snapshot",
+          window.AgentHubSnapshotTransport.requestParams(null),
+        );
+        if (snapshotResult?.notModified === true) {
+          throw new Error("Agent Hub returned notModified without a snapshot baseline");
+        }
+        snapshot = window.AgentHubSnapshotTransport.materialize(null, snapshotResult);
+      }
+    }
     if (snapshotResult?.notModified === true) {
       resetConnectionFailures();
       applySnapshotConnection(snapshot);

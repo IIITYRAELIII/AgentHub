@@ -20,7 +20,7 @@ const SNAPSHOT_RESULT_KEYS = Object.freeze([
   "apiVersion", "workspaces", "boardTasks", "boardLayout", "selected", "settings",
   "pendingApprovals", "messageReceipts", "deferredInputs", "restartPending",
   "restartWaiting", "restartBlockingCount", "exchangeRates", "activeCount", "server",
-  "tasks", "generatedAt", "version", "notModified",
+  "tasks", "conversations", "collectionDeltas", "generatedAt", "version", "notModified",
 ]);
 
 function projectDesktopReceiptResult(value) {
@@ -31,7 +31,12 @@ function projectDesktopReceiptResult(value) {
     delete projected.history;
     return projected;
   }
-  if (!Array.isArray(value.tasks) || !value.selected) return value;
+  if (
+    !Array.isArray(value.tasks)
+    && !Array.isArray(value.conversations)
+    && !value.collectionDeltas?.conversations
+  ) return value;
+  if (!value.selected) return value;
   const projected = { ...value, [RECEIPT_SHAPE]: "snapshot" };
   for (const key of SNAPSHOT_RESULT_KEYS) delete projected[key];
   return projected;

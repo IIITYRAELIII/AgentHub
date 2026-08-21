@@ -11,6 +11,7 @@ import { createDesktopRunInputComposition } from "./desktop-run-input-compositio
 import { createDesktopRouterComposition } from "./desktop-router-composition.mjs";
 import { DesktopTaskBoardController } from "../interfaces/desktop/desktop-task-board-controller.mjs";
 import { TaskBoardLaunchService } from "../application/task-board-launch-service.mjs";
+import { taskReferenceDescriptor } from "../domain/task-board-task.mjs";
 
 export function createDesktopRunRouterWiring({
   config,
@@ -81,6 +82,25 @@ export function createDesktopRunRouterWiring({
     messageController: {
       attachmentPaths: services.attachmentPaths,
       describeAttachments: services.describeAttachments,
+      resolveTaskReferences: async (values, target) => {
+        if (values == null) return [];
+        if (!Array.isArray(values) || values.length > 8) {
+          throw new Error("Можно приложить не более восьми Dashboard Task");
+        }
+        if (!services.workspaceCatalog.stream(target.streamId)) {
+          throw new Error("Stream для Task-вложения не найден");
+        }
+        const result = [];
+        const seen = new Set();
+        for (const value of values) {
+          const taskId = String(value?.taskId ?? "").trim();
+          if (!taskId || seen.has(taskId)) continue;
+          const task = services.taskBoard.task(taskId);
+          seen.add(taskId);
+          result.push(taskReferenceDescriptor(task, { intent: value?.intent }));
+        }
+        return result;
+      },
       resolveTarget: desktop.messageTarget,
       receipts: services.receipts,
       persistReceipts: services.saveState,
@@ -193,6 +213,7 @@ export function createDesktopRunRouterWiring({
       boardTaskCreate: (params) => taskBoardController.create(params),
       boardTaskIngest: (params) => taskBoardController.ingest(params),
       boardTaskUpdate: (params) => taskBoardController.update(params),
+      boardTaskStatus: (params) => taskBoardController.status(params),
       boardTaskMove: (params) => taskBoardController.move(params),
       boardTaskComplete: (params) => taskBoardController.complete(params),
       boardTaskRemove: (params) => taskBoardController.remove(params),

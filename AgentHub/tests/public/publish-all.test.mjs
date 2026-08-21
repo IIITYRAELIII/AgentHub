@@ -73,7 +73,10 @@ test("publication allows a detached checkout at origin main", async () => {
 });
 
 test("publication runs Test Contour only when explicitly requested", () => {
-  const steps = publicationSteps({ fullTestCheckpointId: "release-checkpoint" });
+  const steps = publicationSteps({
+    fullTestCheckpointId: "release-checkpoint",
+    fullTestSourceFingerprint: "source-fingerprint",
+  });
   assert.deepEqual(steps.map((item) => item.label), [
     "Полные тесты Agent Hub",
     "Сборка Agent Hub Mobile",
@@ -85,6 +88,7 @@ test("publication runs Test Contour only when explicitly requested", () => {
 
   assert.deepEqual(steps[0].args.slice(-2), ["run", "test:all"]);
   assert.equal(steps[0].env.AGENT_HUB_FULL_TEST_CHECKPOINT_ID, "release-checkpoint");
+  assert.equal(steps[0].env.AGENT_HUB_FULL_TEST_SOURCE_FINGERPRINT, "source-fingerprint");
   assert.deepEqual(steps[1].args.slice(-2), ["run", "android:build"]);
   assert.equal(
     steps.findIndex((step) => step.label.includes("Публикация")),
@@ -327,6 +331,10 @@ test("selective publication keeps Test Contour optional with full tests", async 
   assert.ok(!labels.includes("Контракт интерфейсов Agent Hub"));
   assert.match(
     steps.find((step) => step.label === "Полные тесты Agent Hub").env.AGENT_HUB_FULL_TEST_CHECKPOINT_ID,
+    /^[0-9a-f]{64}$/u,
+  );
+  assert.match(
+    steps.find((step) => step.label === "Полные тесты Agent Hub").env.AGENT_HUB_FULL_TEST_SOURCE_FINGERPRINT,
     /^[0-9a-f]{64}$/u,
   );
 });

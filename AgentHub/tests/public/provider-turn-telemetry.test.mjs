@@ -68,6 +68,26 @@ test("turn timeline stays ordered and uses the provider baseline", async () => {
   assert.deepEqual(rows.map((row) => row.label), ["Первый текст от модели", "Первый видимый ответ"]);
 });
 
+test("persisted telemetry restores the provider-start timeline after reload", async () => {
+  const { providerStartFromTelemetry, derivedTimeline } = await telemetryApi();
+  const providerStart = providerStartFromTelemetry({
+    turnId: "turn-1",
+    requestedAtMs: 1_000,
+    acceptedAtMs: 1_100,
+    turnStartedAtMs: 1_200,
+    firstEventAtMs: 1_500,
+    completedAtMs: 3_000,
+    finalPhase: "completed",
+    timeline: [
+      { atMs: 1_500, type: "phase", phase: "reasoning" },
+      { atMs: 3_000, type: "completed", phase: "completed" },
+    ],
+  });
+  assert.equal(providerStart.state, "completed");
+  assert.equal(providerStart.firstEventAt, 1_500);
+  assert.deepEqual(derivedTimeline(providerStart, {}).map((item) => item.elapsed), [300, 1_800]);
+});
+
 test("turn history is populated immediately when the indicator opens it", async () => {
   const indicator = fakeElement();
   const tooltip = fakeElement({ hidden: true });

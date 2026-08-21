@@ -19,6 +19,46 @@ async function git(cwd, ...args) {
   return result.stdout;
 }
 
+test("initial bug report scan returns every report already present at HEAD", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-existing-bug-report-"));
+  const reportId = "018f6c86-3f34-7a31-8f27-16f5b96cce60";
+  const reportFolder = `AgentHub/Bugs/bug-${reportId}`;
+  try {
+    await git(root, "init", "--initial-branch=main");
+    await git(root, "config", "user.name", "Agent Hub Test");
+    await git(root, "config", "user.email", "agent-hub@example.test");
+    await mkdir(path.join(root, reportFolder), { recursive: true });
+    await writeFile(path.join(root, reportFolder, "report.md"), [
+      "# Bug report",
+      "",
+      "## Description",
+      "",
+      "Уже загружен через Git",
+      "",
+      "## Screenshots",
+      "",
+      "- screenshot-01.png",
+      "",
+    ].join("\n"), "utf8");
+    await git(root, "add", ".");
+    await git(root, "commit", "-m", "Existing bug report");
+
+    const head = (await git(root, "rev-parse", "HEAD")).trim();
+    assert.deepEqual(await new BugReportRepository({ repository: root }).addedSince(""), {
+      head,
+      baseline: true,
+      reports: [{
+        id: reportId,
+        folder: reportFolder,
+        text: "Уже загружен через Git",
+        screenshots: 1,
+      }],
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("bug report commit and push contain only one generated report folder", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-bug-report-"));
   const origin = path.join(root, "origin.git");

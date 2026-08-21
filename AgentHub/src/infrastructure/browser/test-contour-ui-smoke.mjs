@@ -10,6 +10,39 @@ function playwrightRuntime(automationRoot) {
   return require("playwright-core");
 }
 
+async function verifySameTabLocalAccess(browser, protectedUrl, timeoutMs) {
+  const target = new URL(protectedUrl);
+  const accessHash = target.hash;
+  if (!/^#access=[A-Za-z0-9_-]{43,128}$/u.test(accessHash)) {
+    throw new Error("Test Contour URL has no protected local access secret");
+  }
+  target.hostname = target.hostname === "localhost" ? "127.0.0.1" : "localhost";
+  target.hash = "";
+  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  try {
+    await page.goto(target.href, { waitUntil: "domcontentloaded", timeout: timeoutMs });
+    await page.locator(".browser-auth[data-browser-auth]")
+      .waitFor({ state: "visible", timeout: timeoutMs });
+    await page.evaluate((hash) => { window.location.hash = hash; }, accessHash);
+    await page.waitForFunction(
+      () => !window.location.hash.startsWith("#access="),
+      null,
+      { timeout: timeoutMs },
+    );
+    await page.locator("[data-workspace]").waitFor({ state: "visible", timeout: timeoutMs });
+    if (page.url().includes("#access=")) {
+      throw new Error("Test Contour kept the local access secret in the address bar");
+    }
+    await page.reload({ waitUntil: "domcontentloaded", timeout: timeoutMs });
+    await page.locator("[data-workspace]").waitFor({ state: "visible", timeout: timeoutMs });
+    if (await page.locator(".browser-auth[data-browser-auth]").isVisible()) {
+      throw new Error("Test Contour lost the local session after a browser reload");
+    }
+  } finally {
+    await page.close();
+  }
+}
+
 export async function runTestContourUiSmoke({
   url,
   automationRoot,
@@ -34,6 +67,7 @@ export async function runTestContourUiSmoke({
     if (response.status() >= 400) errors.push(`response ${response.status()}: ${response.url()}`);
   });
   try {
+    await verifySameTabLocalAccess(browser, url, timeoutMs);
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: timeoutMs });
     await page.locator("[data-workspace]").waitFor({ state: "visible", timeout: timeoutMs });
     const title = await page.title();
@@ -81,7 +115,7 @@ export async function runTestContourUiSmoke({
     const screenshot = path.join(artifactsDirectory, "ui-smoke.png");
     await page.screenshot({ path: screenshot, fullPage: false });
     if (errors.length) throw new Error(`Browser errors:\n${errors.join("\n")}`);
-    return { title, screenshot, withAgent, errors: [] };
+    return { title, screenshot, withAgent, sameTabAuth: true, errors: [] };
   } finally {
     await browser.close();
   }

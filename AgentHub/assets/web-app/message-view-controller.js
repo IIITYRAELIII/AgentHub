@@ -44,6 +44,35 @@
     }
   }
 
+  function messageTimestampLabel(value, nowValue = Date.now()) {
+    const date = new Date(value);
+    if (!Number.isFinite(date.getTime())) return "";
+    const time = date.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+    const now = new Date(nowValue);
+    const today = Number.isFinite(now.getTime())
+      && date.getFullYear() === now.getFullYear()
+      && date.getMonth() === now.getMonth()
+      && date.getDate() === now.getDate();
+    if (today) return time;
+    const day = String(date.getDate()).padStart(2, "0");
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    return `${day}.${month}.${date.getFullYear()} ${time}`;
+  }
+
+  function turnDurationLabel(startedAt, completedAt) {
+    const startedAtMs = Date.parse(String(startedAt ?? ""));
+    const completedAtMs = Date.parse(String(completedAt ?? ""));
+    if (!Number.isFinite(startedAtMs) || !Number.isFinite(completedAtMs) || completedAtMs < startedAtMs) {
+      return "";
+    }
+    const totalMinutes = Math.floor((completedAtMs - startedAtMs) / 60_000);
+    if (totalMinutes < 1) return "<1 мин";
+    const hours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+    if (!hours) return `${minutes} мин`;
+    return minutes ? `${hours} ч ${minutes} мин` : `${hours} ч`;
+  }
+
   function composerFollowUpMode(task, { steerWhileRunning = false } = {}) {
     if (task?.running !== true) return null;
     return steerWhileRunning ? "steer" : "queue";
@@ -253,11 +282,13 @@
     messageDisclosurePresentation,
     messageContentSignature,
     messageKey,
+    messageTimestampLabel,
     messageTailWindow,
     normalizeSystemEventText,
     prependedMessageCount,
     reconcilePrependedKeyedChildren,
     resolvedMessageCount,
     reconcileKeyedChildren,
+    turnDurationLabel,
   });
 })();

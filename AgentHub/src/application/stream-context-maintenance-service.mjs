@@ -2,6 +2,15 @@ function normalized(value) {
   return String(value ?? "").trim();
 }
 
+function automaticReservationOwnsRun(reservation, run) {
+  const ownerRunId = normalized(reservation?.ownerRunId);
+  const ownerTurnId = normalized(reservation?.ownerTurnId);
+  if (!ownerRunId && !ownerTurnId) return false;
+  if (ownerRunId && ownerRunId !== normalized(run?.id ?? run?.runId)) return false;
+  if (ownerTurnId && ownerTurnId !== normalized(run?.turnId)) return false;
+  return true;
+}
+
 export function contextUsagePercent(context) {
   const used = Math.max(0, Number(context?.usedTokens) || 0);
   const window = Math.max(0, Number(context?.modelContextWindow) || 0);
@@ -76,7 +85,10 @@ export class StreamContextMaintenanceService {
 
   async maintainAfterTurn(run) {
     const reservation = this.registry.entry(run);
-    if (!["automatic-post-turn", "automatic-post-turn-rotation"].includes(reservation?.reason)) {
+    if (
+      !["automatic-post-turn", "automatic-post-turn-rotation"].includes(reservation?.reason)
+      || !automaticReservationOwnsRun(reservation, run)
+    ) {
       return null;
     }
     let queueTarget = run;

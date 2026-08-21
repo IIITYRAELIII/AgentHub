@@ -205,6 +205,13 @@ export class TaskBoardService {
     return task;
   }
 
+  setWorkflowStatus({ id, status } = {}) {
+    requiredMethod(this.store, "setWorkflowStatus");
+    const task = this.store.setWorkflowStatus(id, status);
+    this.#event("task.workflow-status.updated", task, { workflowStatus: task.workflowStatus });
+    return task;
+  }
+
   get snapshotRevision() {
     return `${Number(this.store.revision) || 0}:${Number(this.workspaceCatalog.revision) || 0}`;
   }

@@ -43,7 +43,7 @@
     "test:e2e": "node test-suite.mjs e2e",
     "test:vscode": "node test-suite.mjs vscode",
     "test:core": "npm run check && npm test && npm run test:installer && npm run test:e2e",
-    "test:all": "npm run test:core && npm run test:vscode",
+    "test:all": "node test-suite.mjs all",
     "doctor": "node doctor.mjs",
     "open:web": "node open-local-web.mjs",
     "contour:install": "node test-contour.mjs install",

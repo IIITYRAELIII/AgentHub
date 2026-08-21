@@ -3,6 +3,7 @@ import {
   displayUserPrompt,
   isEmptyTurnCompletionPlaceholder,
   mergeSyntheticRolloutUsers,
+  userTaskReferencePromptDetails,
   withoutCodexInspectionAttachments,
 } from "../../application/task-history.mjs";
 import { isCodexContextProbeTurn } from "../../domain/codex-context-probe.mjs";
@@ -518,11 +519,24 @@ export function createDesktopTaskHistoryFactory({
               const messageAttachments = Array.isArray(message.attachments)
                 ? message.attachments
                 : [];
+              const receiptAttachments = role === "user" && Array.isArray(receipt?.result?.attachments)
+                ? receipt.result.attachments
+                : [];
+              const itemAttachments = role === "user" && Array.isArray(item.attachments)
+                ? item.attachments
+                : [];
+              const sourceText = String(message?.text ?? "");
+              const promptTaskReferences = role === "user"
+                ? userTaskReferencePromptDetails(sourceText)?.references ?? []
+                : [];
               const attachments = (messageAttachments.length
                 ? messageAttachments
-                : (role === "user" ? receipt?.result?.attachments ?? item.attachments ?? [] : []))
+                : receiptAttachments.length
+                  ? receiptAttachments
+                  : itemAttachments.length
+                    ? itemAttachments
+                    : promptTaskReferences)
                 .map((attachment) => ({ ...attachment }));
-              const sourceText = String(message?.text ?? "");
               const interstream = role === "user" ? interstreamMessageDetails(sourceText) : null;
               const origin = role === "user"
                 ? normalizeInterstreamOrigin(message?.origin) ?? interstream?.origin
@@ -533,9 +547,13 @@ export function createDesktopTaskHistoryFactory({
                 : String(message?.kind ?? "").trim();
               const text = role === "user" ? displayUserPrompt(sourceText) : sourceText;
               if (!["user", "agent"].includes(role) || (!text && !attachments.length)) return [];
-              const visibleText = text || (attachments.some((attachment) => (
-                String(attachment?.type ?? "").toLowerCase().startsWith("image/")
-              )) ? "Изображение" : "Вложение");
+              const taskReferencesOnly = attachments.length > 0
+                && attachments.every((attachment) => attachment?.kind === "task");
+              const visibleText = text || (taskReferencesOnly
+                ? ""
+                : attachments.some((attachment) => (
+                  String(attachment?.type ?? "").toLowerCase().startsWith("image/")
+                )) ? "Изображение" : "Вложение");
               return [{
                 itemId: String(message.itemId ?? ""),
                 ...(clientUserMessageId ? { clientUserMessageId } : {}),

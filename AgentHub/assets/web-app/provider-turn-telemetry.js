@@ -65,6 +65,35 @@
       .map((row) => ({ ...row, elapsed: baseline == null ? null : Math.max(0, row.atMs - baseline) }));
   }
 
+  function providerStartFromTelemetry(record) {
+    if (!record || typeof record !== "object") return null;
+    const status = String(record.status ?? "").toLowerCase();
+    const failed = ["failed", "error", "cancelled", "canceled"].includes(status);
+    return {
+      state: failed ? "unconfirmed" : "completed",
+      turnId: String(record.turnId ?? ""),
+      requestedAt: timestampMs(record.requestedAtMs),
+      acceptedAt: timestampMs(record.acceptedAtMs),
+      turnStartedAtMs: timestampMs(record.turnStartedAtMs),
+      firstEventAt: timestampMs(record.firstEventAtMs),
+      firstContentAtMs: timestampMs(record.firstContentAtMs),
+      firstVisibleAtMs: timestampMs(record.firstVisibleAtMs),
+      lastEventAtMs: timestampMs(record.lastEventAtMs),
+      lastContentAtMs: timestampMs(record.lastContentAtMs),
+      lastVisibleAtMs: timestampMs(record.lastVisibleAtMs),
+      completedAtMs: timestampMs(record.completedAtMs),
+      ...(failed ? { failedAt: timestampMs(record.completedAtMs) } : {}),
+      phase: String(record.finalPhase ?? "completed") || "completed",
+      maxEventGapMs: Number(record.maxEventGapMs) || 0,
+      maxContentGapMs: Number(record.maxContentGapMs) || 0,
+      maxVisibleGapMs: Number(record.maxVisibleGapMs) || 0,
+      compactionCount: Number(record.compaction?.count) || 0,
+      compactionTotalMs: Number(record.compaction?.totalMs) || 0,
+      compactionMaxMs: Number(record.compaction?.maxMs) || 0,
+      timeline: Array.isArray(record.timeline) ? record.timeline.map((item) => ({ ...item })) : [],
+    };
+  }
+
   function positionTooltip(indicator, tooltip) {
     if (!indicator || !tooltip || tooltip.hidden) return;
     const rect = indicator.getBoundingClientRect();
@@ -163,5 +192,9 @@
     };
   }
 
-  window.AgentHubProviderTurnTelemetry = Object.freeze({ createController, derivedTimeline });
+  window.AgentHubProviderTurnTelemetry = Object.freeze({
+    createController,
+    derivedTimeline,
+    providerStartFromTelemetry,
+  });
 })();

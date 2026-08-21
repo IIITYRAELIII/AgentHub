@@ -283,9 +283,7 @@ function historyContainsLatestAnswer(history, task) {
   return candidates.some((item) => {
     if (item?.completed !== true) return false;
     const hasUserMessage = Boolean(String(item?.prompt ?? "").trim())
-      || (Array.isArray(item?.messages) ? item.messages : []).some((message) => (
-        message?.role === "user" && String(message?.text ?? "").trim()
-      ));
+      || (Array.isArray(item?.messages) ? item.messages : []).some(userMessageHasVisibleContent);
     // A temporary completion overlay can expose the final answer before the
     // durable history contains its user item. With an exact latest turn id,
     // keep refreshing until the whole exchange is present.
@@ -312,6 +310,15 @@ function historyContainsLatestAnswer(history, task) {
       || expectedAnswer.startsWith(text)
     ));
   });
+}
+
+function userMessageHasVisibleContent(message) {
+  return message?.role === "user" && Boolean(
+    String(message?.text ?? "").trim()
+    || String(message?.responseAnnotationRequest ?? "").trim()
+    || normalizedResponseAnnotations(message?.responseAnnotations).length
+    || (Array.isArray(message?.attachments) && message.attachments.length)
+  );
 }
 
 function normalizedResponseAnnotations(values) {
@@ -502,9 +509,7 @@ function completedConversationTurnVisible(messages, {
   const turnMessages = (Array.isArray(messages) ? messages : []).filter((message) => (
     String(message?.turnId ?? "").trim() === exactTurnId
   ));
-  const hasUser = turnMessages.some((message) => (
-    message?.role === "user" && String(message?.text ?? "").trim()
-  ));
+  const hasUser = turnMessages.some(userMessageHasVisibleContent);
   if (!hasUser) return false;
   const agentTexts = turnMessages
     .filter((message) => message?.role === "agent")
@@ -1111,6 +1116,8 @@ function looksLikeConnectionFailure(error) {
 function attachmentOnlyText(attachments) {
   const values = Array.isArray(attachments) ? attachments : [];
   if (!values.length) return "Вложение";
+  const taskCount = values.filter((attachment) => attachment?.kind === "task").length;
+  if (taskCount === values.length) return "";
   const imageCount = values.filter((attachment) => (
     String(attachment?.type ?? "").toLowerCase().startsWith("image/")
   )).length;

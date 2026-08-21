@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { messageInputWithAttachments } from "../../domain/attachment-files.mjs";
+import { messageWithTaskReferences } from "../../domain/task-board-task.mjs";
 import {
   interstreamOriginAuthor,
   normalizeInterstreamOrigin,
@@ -12,6 +13,10 @@ import {
 export function createDesktopMessageController({
   attachmentPaths,
   describeAttachments = (files) => files.map((file) => ({ id: String(file) })),
+  resolveTaskReferences = async (values) => {
+    if (Array.isArray(values) && values.length) throw new Error("Task references are not configured");
+    return [];
+  },
   resolveTarget,
   receipts,
   persistReceipts,
@@ -26,7 +31,12 @@ export function createDesktopMessageController({
   async function sendMessage(params, context = null) {
     const text = String(params.text ?? "").trim();
     const attachments = await attachmentPaths(params.attachments);
-    if (!text && !attachments.length) throw new Error("Введите сообщение или добавьте файл");
+    const target = await resolveTarget(params, context);
+    if (!target.threadId) throw new Error("Сначала выберите или создайте поток");
+    const taskReferences = await resolveTaskReferences(params.taskReferences, target, context);
+    if (!text && !attachments.length && !taskReferences.length) {
+      throw new Error("Введите сообщение или добавьте вложение");
+    }
     if (text.length > 100_000) throw new Error("Сообщение слишком длинное");
     const clientUserMessageId = String(
       params.clientUserMessageId ?? params.requestId ?? randomUUID(),
@@ -37,6 +47,7 @@ export function createDesktopMessageController({
       throw new Error("Неизвестный режим следующего сообщения");
     }
     const descriptors = attachments.length ? describeAttachments(attachments) : [];
+    const messageAttachments = [...descriptors, ...taskReferences];
     const displayText = String(params.displayText ?? params.text ?? "").trim();
     const responseAnnotations = Array.isArray(params.responseAnnotations)
       ? params.responseAnnotations.slice(0, 20).map((item) => ({
@@ -45,11 +56,10 @@ export function createDesktopMessageController({
       }))
       : [];
     const responseAnnotationRequest = String(params.responseAnnotationRequest ?? "").trim();
+    const referencedInput = messageWithTaskReferences(text, taskReferences);
     const input = attachments.length
-      ? messageInputWithAttachments(text, attachments, descriptors)
-      : text;
-    const target = await resolveTarget(params, context);
-    if (!target.threadId) throw new Error("Сначала выберите или создайте поток");
+      ? messageInputWithAttachments(referencedInput, attachments, descriptors)
+      : referencedInput;
     const messageOrigin = normalizeInterstreamOrigin(target.messageOrigin);
     const messageAuthor = interstreamOriginAuthor(messageOrigin);
     const receiptIdentity = {
@@ -57,7 +67,9 @@ export function createDesktopMessageController({
       threadId: target.threadId,
       clientUserMessageId,
     };
-    const fingerprint = await messageRequestFingerprint({ text, attachments, followUpMode });
+    const fingerprint = await messageRequestFingerprint({
+      text, attachments, taskReferences, followUpMode,
+    });
     const receiptKey = messageReceiptKey(receiptIdentity);
     const inflight = inflightReceipts.get(receiptKey);
     if (inflight) {
@@ -81,7 +93,7 @@ export function createDesktopMessageController({
         displayText,
         responseAnnotations,
         responseAnnotationRequest,
-        attachments: descriptors,
+        attachments: messageAttachments,
         ...(messageAuthor ? { author: messageAuthor } : {}),
         ...(messageOrigin ? { origin: messageOrigin } : {}),
         message: "Сообщение сохранено Hub и ожидает подтверждения запуска.",
@@ -100,7 +112,7 @@ export function createDesktopMessageController({
         });
         const { snapshot: _snapshot, ...storedResult } = result;
         storedResult.pending = false;
-        if (attachments.length) storedResult.attachments = descriptors;
+        if (messageAttachments.length) storedResult.attachments = messageAttachments;
         receipts.updateResult(receiptIdentity, storedResult);
         await persistReceipts();
         return storedResult;
