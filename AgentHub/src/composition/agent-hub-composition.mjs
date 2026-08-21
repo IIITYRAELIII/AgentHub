@@ -96,8 +96,7 @@ const {
   runtimeNotificationController,
   runJournal,
   runtimeCommandServer,
-  rateLimitHistoryStore,
-  providerTurnTelemetryStore,
+  rateLimitHistoryStore, providerTurnTelemetryStore,
   sqliteRecovery, acknowledgeSqliteRecovery,
 } = await createHubInfrastructure({
   config,
@@ -270,8 +269,7 @@ const providerApplication = await createProviderApplicationComposition({
     runJournal,
     turnEndNotifications,
     workLogUsageStore, workLogUsageIdentityStore, workLogUsageRemoteConfigStore, workspaceCatalogStore, preTurnInstructions, hubMcpService,
-    providerTurnTelemetryStore,
-    codexRolloutContextSanitizer,
+    providerTurnTelemetryStore, codexRolloutContextSanitizer,
   },
   taskServices: {
     findProject,
