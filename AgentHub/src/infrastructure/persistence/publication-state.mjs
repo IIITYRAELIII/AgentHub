@@ -43,13 +43,27 @@ export async function currentRevision({ cwd } = {}) {
   return gitOutput(["rev-parse", "HEAD"], { cwd });
 }
 
+async function optionalGitOutput(args, { cwd, revision }) {
+  try {
+    return await revision(args, { cwd });
+  } catch {
+    return null;
+  }
+}
+
 export async function assertCurrentPublicationRevision({ cwd, revision = gitOutput } = {}) {
-  const [head, main] = await Promise.all([
+  const [head, currentBranch, main, originMain] = await Promise.all([
     revision(["rev-parse", "HEAD"], { cwd }),
-    revision(["rev-parse", "refs/heads/main"], { cwd }),
+    optionalGitOutput(["symbolic-ref", "-q", "HEAD"], { cwd, revision }),
+    optionalGitOutput(["rev-parse", "refs/heads/main"], { cwd, revision }),
+    optionalGitOutput(["rev-parse", "refs/remotes/origin/main"], { cwd, revision }),
   ]);
-  if (head !== main) {
-    throw new Error(`Публикация устаревшей ревизии запрещена: HEAD ${head}, main ${main}`);
+  const expected = currentBranch === "refs/heads/main" ? main : originMain ?? main;
+  if (!expected || head !== expected) {
+    throw new Error(
+      `Публикация устаревшей ревизии запрещена: HEAD ${head}, `
+      + `main ${main ?? "missing"}, origin/main ${originMain ?? "missing"}`,
+    );
   }
   return head;
 }

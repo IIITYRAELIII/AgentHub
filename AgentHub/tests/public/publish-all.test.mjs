@@ -57,6 +57,21 @@ test("publication rejects a checkout older than the current main revision", asyn
   }), "new");
 });
 
+test("publication allows a detached checkout at origin main", async () => {
+  const revisions = new Map([
+    ["HEAD", "origin"],
+    ["refs/heads/main", "stale-local"],
+    ["refs/remotes/origin/main", "origin"],
+  ]);
+  assert.equal(await assertCurrentPublicationRevision({
+    cwd: ROOT,
+    revision: async (args) => {
+      if (args[0] === "symbolic-ref") throw new Error("detached");
+      return revisions.get(args.at(-1));
+    },
+  }), "origin");
+});
+
 test("publication validates every required client before the first deployment", () => {
   const steps = publicationSteps({ fullTestCheckpointId: "release-checkpoint" });
   assert.deepEqual(steps.map((item) => item.label), [
