@@ -110,9 +110,12 @@ test("usage sync snapshot exports ledger records as minimal remote turns", () =>
       completedAt: "2026-08-20T01:00:00.000Z",
       estimatedCredits: 12,
       accountKey: "chatgpt:owner",
+      accountLabel: "owner@example.com",
+      accountType: "chatgpt",
+      accountPlan: "plus",
       accountAttribution: "exact",
     },
-  }, { deviceId: "device-a" });
+  }, { deviceId: "device-a", deviceLabel: "SidorukSV" });
 
   assert.equal(snapshot.version, 1);
   assert.equal(snapshot.events.length, 1);
@@ -121,10 +124,16 @@ test("usage sync snapshot exports ledger records as minimal remote turns", () =>
 
   const [event] = snapshot.events;
   assert.equal(event.observedAt, "2026-08-20T01:00:00.000Z");
+  assert.equal(event.deviceLabel, "SidorukSV");
+  assert.equal(event.accountLabel, "owner@example.com");
+  assert.equal(event.accountType, "chatgpt");
+  assert.equal(event.accountPlan, "plus");
   const turns = syncedUsageEventsToTurns(snapshot.events);
   const key = `codex\u0000sync:device-a:${event.threadKey}\u0000${event.eventId}`;
   assert.deepEqual(Object.keys(turns), [key]);
   assert.equal(turns[key].syncDeviceId, "device-a");
+  assert.equal(turns[key].syncDeviceLabel, "SidorukSV");
+  assert.equal(turns[key].accountLabel, "owner@example.com");
   assert.equal(turns[key].taskThreadId, `sync:device-a:${event.taskKey}`);
 });
 

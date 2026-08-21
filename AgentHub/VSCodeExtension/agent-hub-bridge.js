@@ -375,11 +375,43 @@ class AgentHubBridge {
     };
   }
 
-  async http({ method = "GET", path: requestPath = "", headers = {} }) {
-    if (String(method).toUpperCase() !== "GET") {
+  async http({ method = "GET", path: requestPath = "", headers = {}, body = "" }) {
+    const requestMethod = String(method).toUpperCase();
+    const url = new URL(requestPath, "https://agent-hub.local");
+    const proxyPaths = new Set([
+      "/api/journal/usage-sync",
+      "/api/journal/usage-sync/invite",
+      "/api/journal/usage-sync/enroll",
+    ]);
+    if (requestMethod === "POST" && proxyPaths.has(url.pathname)) {
+      try {
+        const session = await this.webviewSession();
+        const requestHeaders = new Headers(headers);
+        requestHeaders.set("Authorization", `webview ${session.token}`);
+        if (body && !requestHeaders.has("Content-Type")) {
+          requestHeaders.set("Content-Type", "application/json; charset=utf-8");
+        }
+        const response = await this.fetchImpl(`${session.baseUrl.replace(/\/+$/u, "")}${url.pathname}${url.search}`, {
+          method: requestMethod,
+          headers: requestHeaders,
+          body: String(body ?? ""),
+          signal: AbortSignal.timeout(30_000),
+        });
+        return {
+          status: response.status,
+          headers: {
+            "Cache-Control": "no-store",
+            "Content-Type": response.headers.get("content-type") ?? "application/json; charset=utf-8",
+          },
+          body: await response.text(),
+        };
+      } catch (error) {
+        return jsonResponse({ error: `Sync в VS Code недоступен: ${error.message}` }, 503);
+      }
+    }
+    if (requestMethod !== "GET") {
       return jsonResponse({ error: "Method Not Allowed" }, 405);
     }
-    const url = new URL(requestPath, "https://agent-hub.local");
     if (url.pathname === "/health") {
       try {
         const response = await this.fetchImpl(`${await this.localWebAddress()}/health`, {

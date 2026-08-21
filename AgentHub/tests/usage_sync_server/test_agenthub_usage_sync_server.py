@@ -94,10 +94,14 @@ class UsageSyncServerTests(unittest.TestCase):
             "completedAt": "2026-08-20T03:00:00.000Z",
             "estimatedCredits": 12.5,
             "accountKey": "chatgpt:owner",
+            "accountLabel": "owner@example.com",
+            "accountType": "chatgpt",
+            "accountPlan": "plus",
             "accountAttribution": "exact",
             "usage": {"inputTokens": 10, "outputTokens": 20},
             "model": "gpt-5.6-sol",
             "serviceTier": "fast",
+            "deviceLabel": "SidorukSV",
         }
         value.update(extra)
         return value
@@ -134,6 +138,8 @@ class UsageSyncServerTests(unittest.TestCase):
         row = self.db.execute("SELECT * FROM usage_events").fetchone()
         self.assertEqual(row["device_id"], self.device_id)
         self.assertEqual(row["estimated_credits"], 12.5)
+        self.assertEqual(row["account_label"], "owner@example.com")
+        self.assertEqual(row["device_label"], "SidorukSV")
 
     def test_repeated_same_snapshot_is_unchanged(self):
         self.enroll()
@@ -212,6 +218,10 @@ class UsageSyncServerTests(unittest.TestCase):
         self.assertEqual(len(snapshot["events"]), 1)
         event = snapshot["events"][0]
         self.assertEqual(event["deviceId"], self.device_id)
+        self.assertEqual(event["deviceLabel"], "SidorukSV")
+        self.assertEqual(event["accountLabel"], "owner@example.com")
+        self.assertEqual(event["accountType"], "chatgpt")
+        self.assertEqual(event["accountPlan"], "plus")
         self.assertEqual(event["usage"]["inputTokens"], 10)
         self.assertNotIn("receivedAtMs", event)
 

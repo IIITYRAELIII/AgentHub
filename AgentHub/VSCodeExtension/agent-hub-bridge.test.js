@@ -193,6 +193,51 @@ test("installed VS Code bridge resolves the journal from the decomposed runtime 
   }
 });
 
+test("VS Code bridge proxies usage sync POST requests with a local webview session", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-vscode-sync-post-"));
+  const calls = [];
+  let bridge;
+  try {
+    await mkdir(path.join(root, "src", "interfaces", "web"), { recursive: true });
+    await writeFile(path.join(root, "config.json"), JSON.stringify({ miniApp: { host: "127.0.0.1", port: 8787 } }), "utf8");
+    await writeFile(path.join(root, "local-web.secret"), "secret", "utf8");
+    await writeFile(path.join(root, "src", "interfaces", "web", "local-webview-session.mjs"), [
+      "export function createLocalWebviewSession() {",
+      "  return { token: 'session-token', expiresAt: Date.now() + 60000 };",
+      "}",
+    ].join("\n"), "utf8");
+    bridge = new AgentHubBridge({
+      moduleRoot: root,
+      runtimeRoot: root,
+      fetchImpl: async (url, options) => {
+        calls.push({ url, options });
+        return {
+          status: 200,
+          ok: true,
+          headers: new Map([["content-type", "application/json; charset=utf-8"]]),
+          text: async () => `${JSON.stringify({ ok: true })}\n`,
+        };
+      },
+    });
+
+    const result = await bridge.http({
+      method: "POST",
+      path: "/api/journal/usage-sync/enroll",
+      headers: { "Content-Type": "application/json; charset=utf-8" },
+      body: JSON.stringify({ serverUrl: "https://sync.example.test", code: "code-1" }),
+    });
+
+    assert.equal(result.status, 200);
+    assert.equal(calls[0].url, "http://127.0.0.1:8787/api/journal/usage-sync/enroll");
+    assert.equal(calls[0].options.method, "POST");
+    assert.equal(calls[0].options.headers.get("Authorization"), "webview session-token");
+    assert.equal(JSON.parse(calls[0].options.body).code, "code-1");
+  } finally {
+    bridge?.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("installed VS Code bridge follows the next runtime release without Reload Window", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-vscode-runtime-switch-"));
   async function writeRelease(name) {

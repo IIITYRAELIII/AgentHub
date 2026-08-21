@@ -90,15 +90,45 @@ function accountAt(timeline, timestampMs) {
   return active;
 }
 
-function updatedRecord(record, provider, completedAtMs, timeline) {
+function accountByProvider(accounts = []) {
+  const byProvider = new Map();
+  for (const account of Array.isArray(accounts) ? accounts : []) {
+    const provider = String(account?.provider ?? "").trim().toLowerCase();
+    const key = String(account?.key ?? account?.accountKey ?? "").trim();
+    if (!provider || !key) continue;
+    byProvider.set(provider, {
+      key,
+      label: String(account?.label ?? account?.accountLabel ?? "").trim(),
+      type: String(account?.type ?? account?.accountType ?? "").trim(),
+      planType: String(account?.planType ?? account?.accountPlan ?? "").trim(),
+    });
+  }
+  return byProvider;
+}
+
+function applyAccountToRecord(record, account, attribution = "inferred") {
+  if (!account?.key) return record;
+  return {
+    ...record,
+    accountKey: account.key,
+    accountLabel: account.label,
+    accountType: account.type,
+    accountPlan: account.planType,
+    accountAttribution: attribution,
+  };
+}
+
+function updatedRecord(record, provider, completedAtMs, timeline, providerAccounts) {
   const next = { ...record, ...normalizeRecordAccountFields(record) };
-  if (provider !== "codex") return next;
+  if (next.accountKey && next.accountAttribution === "exact") return next;
+  const providerAccount = providerAccounts.get(provider);
+  if (provider !== "codex") {
+    return providerAccount ? applyAccountToRecord(next, providerAccount) : next;
+  }
   if (next.accountKey && next.accountAttribution === "exact") return next;
   const account = accountAt(timeline, completedAtMs);
-  if (!account?.key) return next;
-  next.accountKey = account.key;
-  next.accountAttribution = "inferred";
-  return next;
+  if (account?.key) return applyAccountToRecord(next, account);
+  return providerAccount ? applyAccountToRecord(next, providerAccount) : next;
 }
 
 function sameJson(left, right) {
@@ -129,6 +159,7 @@ function advanceRevision(database) {
 export async function applyWorkLogAccountBackfill({
   databaseFile,
   backupRoot = null,
+  providerAccounts = [],
   now = new Date(),
 } = {}) {
   if (!databaseFile) throw new Error("Work-log account backfill requires a SQLite database");
@@ -148,6 +179,7 @@ export async function applyWorkLogAccountBackfill({
       return { applied: false, reason: "no-journal-records" };
     }
     const timeline = readAccountTimeline(database);
+    const providers = accountByProvider(providerAccounts);
     const rows = database.prepare(`
       SELECT provider, thread_id, turn_id, completed_at_ms, record_json
       FROM journal_records
@@ -173,8 +205,8 @@ export async function applyWorkLogAccountBackfill({
       if (provider === "codex" && before.accountKey && before.accountAttribution === "exact") {
         exactPreserved += 1;
       }
-      const next = updatedRecord(record, provider, Number(row.completed_at_ms), timeline);
-      if (provider === "codex" && next.accountKey && next.accountAttribution === "inferred"
+      const next = updatedRecord(record, provider, Number(row.completed_at_ms), timeline, providers);
+      if (next.accountKey && next.accountAttribution === "inferred"
         && next.accountKey !== before.accountKey) {
         inferredAssigned += 1;
       }

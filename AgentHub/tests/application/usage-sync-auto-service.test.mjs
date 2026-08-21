@@ -33,7 +33,7 @@ function fixture({
       rememberPush: async (result) => events.push(["remember-push", result]),
       rememberPull: async (result) => events.push(["remember-pull", result]),
     },
-    identityStore: { deviceId: "device-local" },
+    identityStore: { deviceId: "device-local", label: "SidorukSV" },
     workLogUsageStore: {
       usageSyncSnapshot: async (options) => {
         events.push(["snapshot", options]);
@@ -129,6 +129,7 @@ test("UsageSyncAutoService pushes, pulls, imports and remembers remote results",
   ]);
   assert.deepEqual(state.events.find(([name]) => name === "snapshot")?.[1], {
     deviceId: "device-local",
+    deviceLabel: "SidorukSV",
   });
   const importProject = state.events.find(([name]) => name === "import-project");
   assert.equal(importProject[1].projectRoot, "D:/projects/Utilities");

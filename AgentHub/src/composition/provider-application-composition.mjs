@@ -4,6 +4,7 @@ import { StreamContextMaintenanceService } from "../application/stream-context-m
 import { UsageSyncAutoService } from "../application/usage-sync-auto-service.mjs";
 import { UsageSyncRemoteClient } from "../infrastructure/http/usage-sync-remote-client.mjs";
 import { applyWorkLogAccountBackfill } from "../infrastructure/persistence/work-log-account-backfill.mjs";
+import { readClaudeAccount } from "../providers/claude/claude-account.mjs";
 import { processIsAlive } from "../providers/claude/claude-run-io.mjs";
 import { readClaudeSessionSnapshot } from "../providers/claude/claude-session-reader.mjs";
 import { readCodexTurnUsage } from "../providers/codex/codex-turn-usage.mjs";
@@ -101,7 +102,13 @@ export async function createProviderApplicationComposition({
     clientFactory: (options) => new UsageSyncRemoteClient(options),
     projectRoot: config.projectRoot,
     projectionProjectRoots: globalWorkLogProjectRoots,
-    accountBackfill: () => applyWorkLogAccountBackfill({ databaseFile: journalDatabaseFile }),
+    accountBackfill: async () => {
+      const claudeAccount = await readClaudeAccount();
+      return applyWorkLogAccountBackfill({
+        databaseFile: journalDatabaseFile,
+        providerAccounts: claudeAccount ? [{ provider: "claude", ...claudeAccount }] : [],
+      });
+    },
     isStopping: () => hostState.stopping,
   });
 

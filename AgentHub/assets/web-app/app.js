@@ -40,6 +40,7 @@ let messageDisclosureFrame = 0;
 const journal = document.querySelector("[data-journal]");
 const journalView = document.querySelector("[data-journal-view]");
 const statisticsView = document.querySelector("[data-statistics-view]");
+const statisticsAccountPanelHost = document.querySelector("[data-statistics-account-panel-host]");
 const serverView = document.querySelector("[data-server-view]");
 const updatedAt = document.querySelector("[data-updated-at]");
 const refreshButton = document.querySelector("[data-refresh]");
@@ -11780,7 +11781,9 @@ function updateJournalSummary(source) {
 }
 
 function currentWorkLogAccountPanel() {
-  return journal.querySelector(":scope > [data-work-log-account-panel]")?.cloneNode(true) ?? null;
+  return statisticsAccountPanelHost?.querySelector("[data-work-log-account-panel]")?.cloneNode(true)
+    ?? journal.querySelector(":scope > [data-work-log-account-panel]")?.cloneNode(true)
+    ?? null;
 }
 
 let accountPanelRange = JournalAccountPanel.storedRange(localStorage);
@@ -11854,6 +11857,16 @@ function decorateAccountPanel(scope = journal) {
   applyAccountPanelState(panel);
 }
 
+function mountStatisticsAccountPanel() {
+  if (!statisticsAccountPanelHost) return;
+  const panel = journal.querySelector(":scope > [data-work-log-account-panel]");
+  if (panel) statisticsAccountPanelHost.replaceChildren(panel);
+  else if (!statisticsAccountPanelHost.querySelector("[data-work-log-account-panel]")) {
+    statisticsAccountPanelHost.replaceChildren();
+  }
+  decorateAccountPanel(statisticsAccountPanelHost);
+}
+
 function rememberAccountPanelDevices(panel, keys) {
   accountPanelDevices = JournalAccountPanel.persistExpandedAccounts(localStorage, keys);
   applyAccountPanelState(panel);
@@ -11861,7 +11874,7 @@ function rememberAccountPanelDevices(panel, keys) {
 
 /* Делегирование переживает пересборку группировки: панель переносится клоном и
    собственные обработчики на плитках были бы потеряны. */
-journal?.addEventListener("click", (event) => {
+document.addEventListener("click", (event) => {
   const panel = event.target?.closest?.("[data-work-log-account-panel]");
   if (!panel) return;
   const tab = event.target.closest("[data-work-log-account-period-tab]");
@@ -11895,6 +11908,7 @@ function replaceJournalGroupedContent(content) {
   const accountPanel = currentWorkLogAccountPanel();
   if (accountPanel) journal.replaceChildren(accountPanel, content);
   else journal.replaceChildren(content);
+  mountStatisticsAccountPanel();
 }
 
 function applyJournalGrouping() {
@@ -11913,7 +11927,7 @@ function applyJournalGrouping() {
     replaceJournalGroupedContent(periodGroupingContent(journal, grouping));
   }
   refreshUsageUnits(journal);
-  decorateAccountPanel(journal);
+  mountStatisticsAccountPanel();
   disableLocalLinks();
   syncCollapseTurnButtons();
   prepareMobileControls();

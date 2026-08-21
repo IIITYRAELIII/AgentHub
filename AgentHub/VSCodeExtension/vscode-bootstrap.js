@@ -206,6 +206,13 @@ function runtimeHealth() {
   });
 }
 
+function fallbackRequestBody(init) {
+  if (init.body == null) return "";
+  if (typeof init.body === "string") return init.body;
+  if (init.body instanceof URLSearchParams) return init.body.toString();
+  return "";
+}
+
 function fallbackFetch(url, input, init) {
   if (url.pathname === "/health") return runtimeHealth();
   if (!url.pathname.startsWith("/api/journal")
@@ -225,6 +232,7 @@ function fallbackFetch(url, input, init) {
       method: String(init.method ?? "GET"),
       path: `${url.pathname}${url.search}`,
       headers: Object.fromEntries(new Headers(init.headers).entries()),
+      body: fallbackRequestBody(init),
     });
   });
 }

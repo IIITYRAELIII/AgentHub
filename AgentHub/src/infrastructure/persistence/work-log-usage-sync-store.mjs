@@ -35,6 +35,9 @@ function configureUsageSyncDatabase(database) {
       completed_ms INTEGER NOT NULL,
       started_at TEXT NOT NULL DEFAULT '',
       account_key TEXT NOT NULL DEFAULT '',
+      account_label TEXT NOT NULL DEFAULT '',
+      account_type TEXT NOT NULL DEFAULT '',
+      account_plan TEXT NOT NULL DEFAULT '',
       account_attribution TEXT NOT NULL DEFAULT 'inferred',
       estimated_credits REAL NOT NULL DEFAULT 0,
       input_tokens INTEGER NOT NULL DEFAULT 0,
@@ -45,6 +48,7 @@ function configureUsageSyncDatabase(database) {
       usage_reported INTEGER NOT NULL DEFAULT 1,
       model TEXT NOT NULL DEFAULT '',
       service_tier TEXT NOT NULL DEFAULT '',
+      device_label TEXT NOT NULL DEFAULT '',
       observed_at TEXT NOT NULL
     ) WITHOUT ROWID;
     CREATE INDEX IF NOT EXISTS usage_sync_events_device_idx
@@ -56,6 +60,16 @@ function configureUsageSyncDatabase(database) {
       value TEXT NOT NULL
     ) WITHOUT ROWID;
   `);
+  const columns = new Set(database.prepare("PRAGMA table_info(usage_sync_events)").all()
+    .map((row) => row.name));
+  for (const [name, definition] of [
+    ["account_label", "TEXT NOT NULL DEFAULT ''"],
+    ["account_type", "TEXT NOT NULL DEFAULT ''"],
+    ["account_plan", "TEXT NOT NULL DEFAULT ''"],
+    ["device_label", "TEXT NOT NULL DEFAULT ''"],
+  ]) {
+    if (!columns.has(name)) database.exec(`ALTER TABLE usage_sync_events ADD COLUMN ${name} ${definition}`);
+  }
 }
 
 function rowToEvent(row) {
@@ -69,6 +83,9 @@ function rowToEvent(row) {
     completedAt: row.completed_at,
     startedAt: row.started_at,
     accountKey: row.account_key,
+    accountLabel: row.account_label,
+    accountType: row.account_type,
+    accountPlan: row.account_plan,
     accountAttribution: row.account_attribution,
     estimatedCredits: row.estimated_credits,
     usage: {
@@ -81,6 +98,7 @@ function rowToEvent(row) {
     usageReported: row.usage_reported !== 0,
     model: row.model,
     serviceTier: row.service_tier,
+    deviceLabel: row.device_label,
     observedAt: row.observed_at,
   });
 }
@@ -97,6 +115,9 @@ function eventParameters(event) {
     Date.parse(event.completedAt) || 0,
     event.startedAt,
     event.accountKey,
+    event.accountLabel,
+    event.accountType,
+    event.accountPlan,
     event.accountAttribution,
     event.estimatedCredits,
     event.usage.inputTokens,
@@ -107,6 +128,7 @@ function eventParameters(event) {
     event.usageReported ? 1 : 0,
     event.model,
     event.serviceTier,
+    event.deviceLabel,
     event.observedAt,
   ];
 }
@@ -253,11 +275,12 @@ export class WorkLogUsageSyncStore {
     const statement = database.prepare(`
       INSERT INTO usage_sync_events (
         event_id, device_id, source, provider, thread_key, task_key,
-        completed_at, completed_ms, started_at, account_key, account_attribution,
+        completed_at, completed_ms, started_at, account_key,
+        account_label, account_type, account_plan, account_attribution,
         estimated_credits, input_tokens, cached_input_tokens, output_tokens,
         reasoning_output_tokens, total_tokens, usage_reported, model, service_tier,
-        observed_at
-      ) VALUES (${new Array(21).fill("?").join(", ")})
+        device_label, observed_at
+      ) VALUES (${new Array(25).fill("?").join(", ")})
       ON CONFLICT(event_id) DO UPDATE SET
         device_id = excluded.device_id,
         source = excluded.source,
@@ -268,6 +291,9 @@ export class WorkLogUsageSyncStore {
         completed_ms = excluded.completed_ms,
         started_at = excluded.started_at,
         account_key = excluded.account_key,
+        account_label = excluded.account_label,
+        account_type = excluded.account_type,
+        account_plan = excluded.account_plan,
         account_attribution = excluded.account_attribution,
         estimated_credits = excluded.estimated_credits,
         input_tokens = excluded.input_tokens,
@@ -278,6 +304,7 @@ export class WorkLogUsageSyncStore {
         usage_reported = excluded.usage_reported,
         model = excluded.model,
         service_tier = excluded.service_tier,
+        device_label = excluded.device_label,
         observed_at = excluded.observed_at
     `);
     database.exec("BEGIN IMMEDIATE");
@@ -369,9 +396,10 @@ export class WorkLogUsageSyncStore {
     });
   }
 
-  exportSnapshot(turns = {}, { exportedAt = new Date().toISOString() } = {}) {
+  exportSnapshot(turns = {}, { exportedAt = new Date().toISOString(), deviceLabel = "" } = {}) {
     return usageSyncSnapshotFromLedger(turns, {
       deviceId: this.#deviceId,
+      deviceLabel,
       exportedAt,
     });
   }

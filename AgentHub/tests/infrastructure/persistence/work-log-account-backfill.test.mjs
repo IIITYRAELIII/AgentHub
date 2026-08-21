@@ -94,3 +94,32 @@ test("work-log account backfill infers Codex account from rate-limit account tim
     await rm(state.directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   }
 });
+
+test("work-log account backfill attaches the current Claude account when available", async () => {
+  const state = await fixture();
+  try {
+    const result = await applyWorkLogAccountBackfill({
+      databaseFile: state.databaseFile,
+      backupRoot: path.join(state.directory, "migrations"),
+      providerAccounts: [{
+        provider: "claude",
+        key: "anthropic:account-1",
+        label: "owner@anthropic.example",
+        type: "oauth",
+        planType: "pro",
+      }],
+      now: new Date("2026-08-01T02:00:00.000Z"),
+    });
+
+    assert.equal(result.applied, true);
+    assert.equal(result.inferredAssigned, 2);
+    const after = records(state.databaseFile);
+    assert.equal(after["claude\0thread-b\0turn-1"].accountKey, "anthropic:account-1");
+    assert.equal(after["claude\0thread-b\0turn-1"].accountLabel, "owner@anthropic.example");
+    assert.equal(after["claude\0thread-b\0turn-1"].accountType, "oauth");
+    assert.equal(after["claude\0thread-b\0turn-1"].accountPlan, "pro");
+    assert.equal(after["claude\0thread-b\0turn-1"].accountAttribution, "inferred");
+  } finally {
+    await rm(state.directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
+});

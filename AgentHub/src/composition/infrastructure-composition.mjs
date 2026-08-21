@@ -61,12 +61,39 @@ function runtimeAssetBundleProvider(runtimeRoot) {
   };
 }
 
-async function usageSyncIdentity(config) {
+function gitConfigValue(text, sectionName, keyName) {
+  let section = "";
+  for (const rawLine of String(text ?? "").split(/\r?\n/u)) {
+    const line = rawLine.trim();
+    const sectionMatch = /^\[([^\]]+)\]$/u.exec(line);
+    if (sectionMatch) {
+      section = sectionMatch[1].trim().toLowerCase();
+      continue;
+    }
+    const assignment = /^([A-Za-z0-9_.-]+)\s*=\s*(.*)$/u.exec(line);
+    if (!assignment || section !== sectionName) continue;
+    if (assignment[1].trim().toLowerCase() === keyName) return assignment[2].trim();
+  }
+  return "";
+}
+
+async function usageSyncDeviceLabel(agentHubRoot) {
+  try {
+    const config = await readFile(path.join(path.dirname(agentHubRoot), ".git", "config"), "utf8");
+    return gitConfigValue(config, "utilities", "participantlogin");
+  } catch {
+    return "";
+  }
+}
+
+async function usageSyncIdentity(config, agentHubRoot) {
   const store = new UsageSyncIdentityStore({
     file: path.join(config.dataDir, "usage-sync-identity.json"),
     dataDir: path.resolve(config.dataDir),
   });
   await store.load();
+  const label = await usageSyncDeviceLabel(agentHubRoot);
+  if (label && label !== store.label) await store.setLabel(label);
   return store;
 }
 
@@ -155,7 +182,7 @@ export async function createHubInfrastructure({
     recordEvent: (event) => workspaceCatalogStore.recordWorkspaceEvent(event),
   });
   taskBoard.recoverPendingTriage();
-  const workLogUsageIdentityStore = await usageSyncIdentity(config);
+  const workLogUsageIdentityStore = await usageSyncIdentity(config, agentHubRoot);
   const workLogUsageRemoteConfigStore = new UsageSyncRemoteConfigStore({
     file: path.join(config.dataDir, "usage-sync-remote.json"),
     defaultServerUrl: defaultUsageSyncServerUrl(),

@@ -21,6 +21,10 @@ test("usage sync SQLite store imports snapshots through a deduplicating cache", 
         completedAt: "2026-08-20T00:00:00.000Z",
         estimatedCredits: 4,
         accountKey: "chatgpt:owner",
+        accountLabel: "owner@example.com",
+        accountType: "chatgpt",
+        accountPlan: "plus",
+        deviceLabel: "teammate",
       }],
     });
     const second = await store.importSnapshot(await store.events());
@@ -30,6 +34,10 @@ test("usage sync SQLite store imports snapshots through a deduplicating cache", 
     const events = await store.events();
     assert.equal(events.length, 1);
     assert.equal(events[0].deviceId, "remote");
+    assert.equal(events[0].deviceLabel, "teammate");
+    assert.equal(events[0].accountLabel, "owner@example.com");
+    assert.equal(events[0].accountType, "chatgpt");
+    assert.equal(events[0].accountPlan, "plus");
   } finally {
     await store?.close();
     await rm(root, { recursive: true, force: true });

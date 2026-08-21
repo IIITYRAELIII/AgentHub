@@ -127,6 +127,7 @@ export class UsageSyncAutoService {
     const accountBackfill = await this.#backfillAccounts();
     const snapshot = await this.workLogUsageStore.usageSyncSnapshot({
       deviceId: this.identityStore.deviceId,
+      deviceLabel: this.identityStore.label,
     });
     const push = await client.push(snapshot);
     await this.remoteConfigStore.rememberPush(push);

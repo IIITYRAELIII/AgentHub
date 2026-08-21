@@ -110,8 +110,25 @@ export function normalizedAccountFields(value = {}) {
     ? rawAccount.account
     : rawAccount;
   const accountKey = String(value?.accountKey ?? accountKeyFromDimension(account) ?? "").trim();
+  const accountLabel = String(
+    value?.accountLabel
+      ?? account?.label
+      ?? account?.email
+      ?? "",
+  ).trim();
+  const accountType = String(value?.accountType ?? account?.type ?? "").trim();
+  const accountPlan = String(
+    value?.accountPlan
+      ?? value?.accountPlanType
+      ?? account?.planType
+      ?? account?.plan
+      ?? "",
+  ).trim();
   return {
     accountKey,
+    accountLabel,
+    accountType,
+    accountPlan,
     accountAttribution: normalizeAccountAttribution(
       value?.accountAttribution,
       { hasAccountKey: Boolean(accountKey) },
@@ -460,8 +477,10 @@ function shortDeviceKey(value) {
   return key.length <= 12 ? key : key.slice(0, 8);
 }
 
-function accountDeviceDisplayName(deviceId, source) {
+function accountDeviceDisplayName(deviceId, source, label = "") {
   const id = String(deviceId ?? "").trim();
+  const displayLabel = String(label ?? "").trim();
+  if (displayLabel) return displayLabel;
   if (source === "local") return id && id !== "local" ? `Это устройство · ${shortDeviceKey(id)}` : "Это устройство";
   if (!id || id === "unknown") return "Неизвестное устройство";
   return id.length <= 16 ? id : `device ${shortDeviceKey(id)}`;
@@ -530,11 +549,29 @@ function emptyAccountUsageBucket(accountKey, catalog) {
   };
 }
 
-function emptyAccountDeviceBucket(deviceId, source, { noCost = false } = {}) {
+function accountMetadataFromRecord(record) {
+  return {
+    label: String(record?.accountLabel ?? "").trim(),
+    type: String(record?.accountType ?? "").trim(),
+    planType: String(record?.accountPlan ?? "").trim(),
+  };
+}
+
+function mergeAccountMetadata(bucket, record) {
+  if (!bucket?.accountKey) return;
+  const metadata = accountMetadataFromRecord(record);
+  if (!bucket.label || bucket.label === shortAccountKey(bucket.accountKey)) {
+    if (metadata.label) bucket.label = metadata.label;
+  }
+  if (!bucket.type && metadata.type) bucket.type = metadata.type;
+  if (!bucket.planType && metadata.planType) bucket.planType = metadata.planType;
+}
+
+function emptyAccountDeviceBucket(deviceId, source, { noCost = false, label = "" } = {}) {
   return {
     deviceId,
     source,
-    label: accountDeviceDisplayName(deviceId, source),
+    label: accountDeviceDisplayName(deviceId, source, label),
     noCost,
     credits: 0,
     turns: 0,
@@ -594,7 +631,11 @@ function syncedUsageRecord(value) {
     completedAt: event.completedAt,
     accountKey: event.accountKey,
     accountAttribution: event.accountAttribution,
+    accountLabel: event.accountLabel,
+    accountType: event.accountType,
+    accountPlan: event.accountPlan,
     syncDeviceId: event.deviceId,
+    syncDeviceLabel: event.deviceLabel,
     syncEventId: event.eventId,
   };
 }
@@ -654,17 +695,19 @@ export function buildWorkLogAccountUsageSummary(turns = {}, {
         const attribution = normalizeAccountAttribution(record?.accountAttribution, {
           hasAccountKey: Boolean(accountKey),
         });
+        mergeAccountMetadata(bucket, record);
         applyAccountUsageStats(bucket, entry, record, { accountKey, attribution, noCost });
         const deviceKey = accountUsageDeviceKey(entry, normalizedLocalDeviceId);
         if (!bucket.devices[deviceKey]) {
           bucket.devices[deviceKey] = emptyAccountDeviceBucket(deviceKey, entry.source, {
             noCost: bucket.noCost,
+            label: entry.source === "local" ? "" : record?.syncDeviceLabel,
           });
         }
         const deviceBucket = bucket.devices[deviceKey];
         if (deviceBucket.source !== entry.source) {
           deviceBucket.source = "mixed";
-          deviceBucket.label = accountDeviceDisplayName(deviceKey, "mixed");
+          deviceBucket.label = accountDeviceDisplayName(deviceKey, "mixed", record?.syncDeviceLabel);
         }
         applyAccountUsageStats(deviceBucket, entry, record, { accountKey, attribution, noCost });
         if (noCost) {
@@ -808,6 +851,11 @@ function deviceSourceLabel(device) {
 
 function accountDeviceName(device) {
   const id = String(device?.deviceId ?? "").trim();
+  const label = String(device?.label ?? "").trim();
+  if (label) {
+    if (device?.source === "local" && label.startsWith("Это устройство ·")) return "Это устройство";
+    return label;
+  }
   if (device?.source === "sync") {
     return !id || id === "unknown" ? "Неизвестное устройство" : "Другое устройство";
   }
@@ -1013,7 +1061,9 @@ function formatAccountUsagePeriodBody(range, active, accountCount) {
 }
 
 function formatAccountUsagePanel(summary) {
-  if (!summary.some((range) => range.accounts.some((account) => account.accountKey))) return "";
+  if (!summary.some((range) => range.accounts.some((account) => (
+    !account.noCost && (account.accountKey || account.credits >= 1)
+  )))) return "";
   const all = summary.find((range) => range.id === "all") ?? summary.at(-1);
   const accountCount = new Set(all?.accounts
     .filter((account) => !account.noCost)
@@ -2655,6 +2705,9 @@ export function mergeLedgerRecord(existing, incoming) {
   }
   if (incoming.accountKey) {
     existing.accountKey = incoming.accountKey;
+    if (incoming.accountLabel) existing.accountLabel = incoming.accountLabel;
+    if (incoming.accountType) existing.accountType = incoming.accountType;
+    if (incoming.accountPlan) existing.accountPlan = incoming.accountPlan;
     existing.accountAttribution = incoming.accountAttribution;
   }
   for (const field of [

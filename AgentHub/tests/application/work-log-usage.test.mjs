@@ -477,6 +477,7 @@ test("account usage panel includes synced remote devices without duplicating loc
       },
       {
         deviceId: "laptop",
+        deviceLabel: "teammate",
         provider: "codex",
         threadId: "thread-remote-same-account",
         turnId: "turn-remote-same-account",
@@ -487,18 +488,23 @@ test("account usage panel includes synced remote devices without duplicating loc
       },
       {
         deviceId: "phone",
+        deviceLabel: "SidorukSV-phone",
         provider: "claude",
         threadId: "thread-remote",
         turnId: "turn-remote",
         completedAt: "2026-08-20T10:00:00.000Z",
         estimatedCredits: 7,
         accountKey: "anthropic:owner",
+        accountLabel: "owner@anthropic.example",
+        accountType: "oauth",
+        accountPlan: "pro",
         accountAttribution: "inferred",
       },
     ],
   });
 
   assert.match(projected, /owner@example\.com/u);
+  assert.match(projected, /owner@anthropic\.example/u);
   assert.match(projected, /data-account-key="anthropic:owner"/u);
   assert.match(projected, /data-account-sync-turns="1"/u);
   assert.match(projected, /data-work-log-account-device-count>2 устройства<\/span>/u);
@@ -518,10 +524,11 @@ test("account usage panel includes synced remote devices without duplicating loc
     projected,
     /data-work-log-account-device-row [^>]*data-device-id="laptop" [^>]*data-device-source="sync"/u,
   );
-  assert.match(projected, /data-work-log-account-device-label>Другое устройство<\/span>/u);
+  assert.match(projected, /data-work-log-account-device-label>teammate<\/span>/u);
   assert.match(projected, /data-work-log-account-device-id>laptop<\/span>/u);
   assert.match(projected, /data-work-log-account-device-origin>sync<\/span>/u);
   assert.match(projected, /data-work-log-account-device-quality>восст\. 1 · sync 1<\/span>/u);
+  assert.match(projected, /data-work-log-account-device-label>SidorukSV-phone<\/span>/u);
   assert.match(
     projected,
     /data-work-log-account-bar-segment data-device-index="0" data-current data-account-share="60\.00"/u,
@@ -2075,7 +2082,9 @@ test("automatic single-turn records resolve an exact account key", async () => {
     const expected = createHash("sha256").update("private@example.test").digest("hex");
     assert.equal(record.accountKey, `chatgpt:${expected}`);
     assert.equal(record.accountAttribution, "exact");
-    assert.equal(Object.hasOwn(record, "accountLabel"), false);
+    assert.equal(record.accountLabel, "Private@Example.Test");
+    assert.equal(record.accountType, "chatgpt");
+    assert.equal(record.accountPlan, "pro");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -22,8 +22,10 @@ async function accountPanelApi() {
   return window.AgentHubJournalAccountPanel;
 }
 
-test("journal regrouping preserves the account usage panel", () => {
+test("journal regrouping moves the account usage panel to Statistics", () => {
+  assert.match(app, /const statisticsAccountPanelHost = document\.querySelector/u);
   assert.match(app, /function currentWorkLogAccountPanel\(\)/u);
+  assert.match(app, /function mountStatisticsAccountPanel\(\)/u);
   assert.match(app, /function replaceJournalGroupedContent\(content\)/u);
   assert.doesNotMatch(
     app,
@@ -46,8 +48,8 @@ test("journal regrouping preserves the account usage panel", () => {
 /* Панель переносится клоном, поэтому собственные обработчики на плитках были бы
    потеряны при каждой смене группировки. */
 test("account panel keeps its interaction after every journal regrouping", () => {
-  assert.match(app, /refreshUsageUnits\(journal\);\s*\n\s*decorateAccountPanel\(journal\);/u);
-  assert.match(app, /journal\?\.addEventListener\("click", \(event\) => \{/u);
+  assert.match(app, /refreshUsageUnits\(journal\);\s*\n\s*mountStatisticsAccountPanel\(\);/u);
+  assert.match(app, /document\.addEventListener\("click", \(event\) => \{/u);
   assert.doesNotMatch(app, /\[data-work-log-account-period-tab\]"\)\)\s*\{\s*tab\.addEventListener/u);
 });
 

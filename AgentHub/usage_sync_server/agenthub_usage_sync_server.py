@@ -149,6 +149,9 @@ def init_db(db: sqlite3.Connection) -> None:
             completed_ms INTEGER NOT NULL,
             started_at TEXT NOT NULL DEFAULT '',
             account_key TEXT NOT NULL DEFAULT '',
+            account_label TEXT NOT NULL DEFAULT '',
+            account_type TEXT NOT NULL DEFAULT '',
+            account_plan TEXT NOT NULL DEFAULT '',
             account_attribution TEXT NOT NULL DEFAULT 'inferred',
             estimated_credits REAL NOT NULL DEFAULT 0,
             input_tokens INTEGER NOT NULL DEFAULT 0,
@@ -159,6 +162,7 @@ def init_db(db: sqlite3.Connection) -> None:
             usage_reported INTEGER NOT NULL DEFAULT 1,
             model TEXT NOT NULL DEFAULT '',
             service_tier TEXT NOT NULL DEFAULT '',
+            device_label TEXT NOT NULL DEFAULT '',
             observed_at TEXT NOT NULL DEFAULT '',
             received_at_ms INTEGER NOT NULL
         );
@@ -175,6 +179,18 @@ def init_db(db: sqlite3.Connection) -> None:
         );
         """
     )
+    columns = {
+        row["name"]
+        for row in db.execute("PRAGMA table_info(usage_events)").fetchall()
+    }
+    for name, definition in (
+        ("account_label", "TEXT NOT NULL DEFAULT ''"),
+        ("account_type", "TEXT NOT NULL DEFAULT ''"),
+        ("account_plan", "TEXT NOT NULL DEFAULT ''"),
+        ("device_label", "TEXT NOT NULL DEFAULT ''"),
+    ):
+        if name not in columns:
+            db.execute(f"ALTER TABLE usage_events ADD COLUMN {name} {definition}")
 
 
 def public_key_from_b64(public_key: str) -> Ed25519PublicKey:
@@ -334,6 +350,9 @@ class UsageEvent:
     completed_ms: int
     started_at: str
     account_key: str
+    account_label: str
+    account_type: str
+    account_plan: str
     account_attribution: str
     estimated_credits: float
     input_tokens: int
@@ -344,6 +363,7 @@ class UsageEvent:
     usage_reported: int
     model: str
     service_tier: str
+    device_label: str
     observed_at: str
     received_at_ms: int
 
@@ -380,6 +400,12 @@ def normalize_event(value: Any, received_at_ms: int) -> UsageEvent:
         completed_ms=completed_ms,
         started_at=text(value.get("startedAt"), 80),
         account_key=account_key,
+        account_label=text(value.get("accountLabel"), 256),
+        account_type=text(value.get("accountType"), 80),
+        account_plan=text(
+            value.get("accountPlan") or value.get("accountPlanType") or value.get("planType"),
+            80,
+        ),
         account_attribution=attribution,
         estimated_credits=positive_number(value.get("estimatedCredits") or value.get("credits")),
         input_tokens=integer(usage.get("inputTokens")),
@@ -390,6 +416,7 @@ def normalize_event(value: Any, received_at_ms: int) -> UsageEvent:
         usage_reported=0 if value.get("usageReported") is False else 1,
         model=text(value.get("model"), 120).lower(),
         service_tier=text(value.get("serviceTier"), 60).lower(),
+        device_label=text(value.get("deviceLabel"), 80),
         observed_at=text(value.get("observedAt"), 80),
         received_at_ms=received_at_ms,
     )
@@ -422,9 +449,10 @@ def should_replace(existing: sqlite3.Row | None, incoming: UsageEvent) -> bool:
 
 EVENT_COLUMNS = (
     "event_id, device_id, provider, thread_key, task_key, completed_at, completed_ms, "
-    "started_at, account_key, account_attribution, estimated_credits, input_tokens, "
+    "started_at, account_key, account_label, account_type, account_plan, "
+    "account_attribution, estimated_credits, input_tokens, "
     "cached_input_tokens, output_tokens, reasoning_output_tokens, total_tokens, "
-    "usage_reported, model, service_tier, observed_at, received_at_ms"
+    "usage_reported, model, service_tier, device_label, observed_at, received_at_ms"
 )
 
 
@@ -449,6 +477,9 @@ def insert_or_update_event(db: sqlite3.Connection, event: UsageEvent) -> str:
             completed_ms=excluded.completed_ms,
             started_at=excluded.started_at,
             account_key=excluded.account_key,
+            account_label=excluded.account_label,
+            account_type=excluded.account_type,
+            account_plan=excluded.account_plan,
             account_attribution=excluded.account_attribution,
             estimated_credits=excluded.estimated_credits,
             input_tokens=excluded.input_tokens,
@@ -459,6 +490,7 @@ def insert_or_update_event(db: sqlite3.Connection, event: UsageEvent) -> str:
             usage_reported=excluded.usage_reported,
             model=excluded.model,
             service_tier=excluded.service_tier,
+            device_label=excluded.device_label,
             observed_at=excluded.observed_at,
             received_at_ms=excluded.received_at_ms
         """,
@@ -479,6 +511,9 @@ def event_row_to_api(row: sqlite3.Row) -> dict[str, Any]:
         "completedAt": row["completed_at"],
         "startedAt": row["started_at"],
         "accountKey": row["account_key"],
+        "accountLabel": row["account_label"],
+        "accountType": row["account_type"],
+        "accountPlan": row["account_plan"],
         "accountAttribution": row["account_attribution"],
         "estimatedCredits": row["estimated_credits"],
         "usage": {
@@ -491,6 +526,7 @@ def event_row_to_api(row: sqlite3.Row) -> dict[str, Any]:
         "usageReported": row["usage_reported"] != 0,
         "model": row["model"],
         "serviceTier": row["service_tier"],
+        "deviceLabel": row["device_label"] or row["device_device_label"],
         "observedAt": row["observed_at"],
     }
 
@@ -552,8 +588,10 @@ def export_snapshot(
     )
     rows = db.execute(
         """
-        SELECT * FROM usage_events
-        ORDER BY completed_ms, device_id, event_id
+        SELECT usage_events.*, devices.label AS device_device_label
+        FROM usage_events
+        LEFT JOIN devices ON devices.device_id = usage_events.device_id
+        ORDER BY completed_ms, usage_events.device_id, event_id
         """
     ).fetchall()
     return {

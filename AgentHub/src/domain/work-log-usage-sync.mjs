@@ -8,6 +8,10 @@ function nonEmpty(value) {
   return String(value ?? "").trim();
 }
 
+function boundedText(value, limit = 256) {
+  return nonEmpty(value).replaceAll(/[\p{Cc}\p{Cf}]/gu, " ").replaceAll(/\s+/gu, " ").slice(0, limit);
+}
+
 function normalizedProvider(value) {
   const provider = nonEmpty(value).toLowerCase();
   return provider || "unknown";
@@ -86,12 +90,16 @@ export function normalizeUsageSyncEvent(value = {}) {
     completedAt,
     startedAt: nonEmpty(value.startedAt),
     accountKey,
+    accountLabel: boundedText(value.accountLabel),
+    accountType: boundedText(value.accountType, 80),
+    accountPlan: boundedText(value.accountPlan ?? value.accountPlanType ?? value.planType, 80),
     accountAttribution: normalizeAttribution(value.accountAttribution, Boolean(accountKey)),
     estimatedCredits,
     usage,
     usageReported: value.usageReported === false ? false : true,
     model: nonEmpty(value.model).toLowerCase(),
     serviceTier: value.serviceTier == null ? "" : normalizeServiceTier(value.serviceTier),
+    deviceLabel: boundedText(value.deviceLabel, 80),
     observedAt: nonEmpty(value.observedAt) || new Date().toISOString(),
   };
 }
@@ -107,12 +115,16 @@ export function usageSyncEventFromLedgerRecord(record, { deviceId, source = "loc
     completedAt: record?.completedAt,
     startedAt: record?.startedAt,
     accountKey: record?.accountKey,
+    accountLabel: record?.accountLabel,
+    accountType: record?.accountType,
+    accountPlan: record?.accountPlan,
     accountAttribution: record?.accountAttribution,
     estimatedCredits: record?.estimatedCredits,
     usage: record?.usage,
     usageReported: record?.usageReported,
     model: record?.model,
     serviceTier: record?.serviceTier,
+    deviceLabel: record?.deviceLabel,
     observedAt: record?.observedAt || record?.completedAt,
   });
 }
@@ -165,14 +177,17 @@ export function mergeUsageSyncEvents(...collections) {
 
 export function usageSyncSnapshotFromLedger(turns = {}, {
   deviceId,
+  deviceLabel = "",
   exportedAt = new Date().toISOString(),
 } = {}) {
   const events = Object.values(turns)
     .map((record) => usageSyncEventFromLedgerRecord(record, { deviceId }))
+    .map((event) => event ? { ...event, deviceLabel: boundedText(deviceLabel, 80) || event.deviceLabel } : null)
     .filter(Boolean);
   return {
     version: USAGE_SYNC_SNAPSHOT_VERSION,
     deviceId: nonEmpty(deviceId),
+    deviceLabel: boundedText(deviceLabel, 80),
     exportedAt,
     events: mergeUsageSyncEvents(events),
   };
@@ -191,12 +206,16 @@ export function syncedUsageEventsToTurns(events = []) {
       completedAt: event.completedAt,
       startedAt: event.startedAt,
       accountKey: event.accountKey,
+      accountLabel: event.accountLabel,
+      accountType: event.accountType,
+      accountPlan: event.accountPlan,
       accountAttribution: event.accountAttribution,
       estimatedCredits: event.estimatedCredits,
       usage: event.usage,
       usageReported: event.usageReported,
       model: event.model,
       serviceTier: event.serviceTier,
+      syncDeviceLabel: event.deviceLabel,
       syncDeviceId: event.deviceId,
       syncSource: event.source,
       syncEventId: event.eventId,
