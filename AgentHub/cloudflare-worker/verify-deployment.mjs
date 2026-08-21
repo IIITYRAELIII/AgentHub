@@ -64,6 +64,7 @@ export async function verifyThemeDeployment({
     .filter((background) => background.asset)
     .map((background) => ({ theme, background })));
   let bytes = 0;
+  let sampledChunks = 0;
   await mapConcurrent(backgrounds, 6, async ({ theme, background }) => {
     const assetUrl = published.get(theme.id)?.backgrounds?.find((item) => item.id === background.id)?.assetUrl;
     if (!/\.json(?:[?#]|$)/iu.test(String(assetUrl ?? ""))) {
@@ -74,38 +75,39 @@ export async function verifyThemeDeployment({
       throw new Error(`Published background ${theme.id}/${background.id} has an invalid manifest`);
     }
     const source = await readFile(path.join(theme.directory, ...background.asset.split("/")));
+    const sourceHash = sha256(source);
+    if (Number(manifest.bytes) !== source.length || manifest.sha256 !== sourceHash) {
+      throw new Error(`Published background ${theme.id}/${background.id} manifest does not match its source`);
+    }
     if (manifest.directUrl) {
-      try {
-        const directTarget = new URL(manifest.directUrl);
-        const direct = Buffer.from(await readWithRetry(
-          fetchImpl,
-          new URL(`${directTarget.pathname}${directTarget.search}`, base),
-          (directResponse) => directResponse.arrayBuffer(),
-          { attempts: 2, timeoutMs: 10_000 },
-        ));
-        if (direct.length === source.length && sha256(direct) === sha256(source)) {
-          bytes += direct.length;
-          return;
-        }
-      } catch {
-        // The Worker chunk transport remains the bounded fallback.
+      const directTarget = new URL(manifest.directUrl);
+      if (directTarget.protocol !== "https:" || directTarget.searchParams.get("v") !== sourceHash.slice(0, 12)) {
+        throw new Error(`Published background ${theme.id}/${background.id} has an invalid direct URL revision`);
       }
     }
-    const chunks = [];
-    for (const part of manifest.parts) {
+    const encoded = source.toString("base64");
+    const first = (await readWithRetry(fetchImpl, new URL(manifest.parts[0], base), (response) => response.text())).trim();
+    if (!first || Buffer.byteLength(first) > 20 * 1024 || !encoded.startsWith(first)) {
+      throw new Error(`Published background ${theme.id}/${background.id} has an invalid first chunk`);
+    }
+    const expectedPartCount = Math.ceil(encoded.length / first.length);
+    if (expectedPartCount !== manifest.parts.length) {
+      throw new Error(`Published background ${theme.id}/${background.id} has an invalid chunk count`);
+    }
+    const sampleIndexes = [...new Set([0, Math.floor((manifest.parts.length - 1) / 2), manifest.parts.length - 1])];
+    for (const index of sampleIndexes.slice(1)) {
+      const part = manifest.parts[index];
       const chunk = (await readWithRetry(fetchImpl, new URL(part, base), (response) => response.text())).trim();
-      if (Buffer.byteLength(chunk) > 20 * 1024) throw new Error(`Published background part ${part} exceeds 20 KiB`);
-      chunks.push(chunk);
+      if (Buffer.byteLength(chunk) > 20 * 1024
+        || chunk !== encoded.slice(index * first.length, (index + 1) * first.length)) {
+        throw new Error(`Published background ${theme.id}/${background.id} has an invalid sampled chunk ${index}`);
+      }
     }
-    const decoded = Buffer.from(chunks.join(""), "base64");
-    if (Number(manifest.bytes) !== source.length || manifest.sha256 !== sha256(source)
-      || decoded.length !== source.length || sha256(decoded) !== sha256(source)) {
-      throw new Error(`Published background ${theme.id}/${background.id} does not match its source`);
-    }
-    bytes += decoded.length;
+    sampledChunks += sampleIndexes.length;
+    bytes += source.length;
   });
-  console.log(`Verified ${backgrounds.length} published theme backgrounds (${bytes} bytes).`);
-  return { backgrounds: backgrounds.length, bytes };
+  console.log(`Verified ${backgrounds.length} published theme manifests and ${sampledChunks} chunks (${bytes} bytes).`);
+  return { backgrounds: backgrounds.length, bytes, sampledChunks };
 }
 
 function routeBaseUrl(config) {

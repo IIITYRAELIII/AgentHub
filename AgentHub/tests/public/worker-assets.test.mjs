@@ -68,7 +68,6 @@ test("Worker build packages the same shell and theme resources used by local cli
     assert.match(headers, /Cache-Control: no-store/u);
     const wrangler = JSON.parse(await readFile(path.join(ROOT, "cloudflare-worker", "wrangler.jsonc"), "utf8"));
     assert.equal(wrangler.assets.run_worker_first, false);
-    let directAttempts = 0;
     let activeChunkReads = 0;
     let maximumChunkReads = 0;
     const deployment = await verifyThemeDeployment({
@@ -76,11 +75,6 @@ test("Worker build packages the same shell and theme resources used by local cli
       sourceRoot: path.join(ROOT, "assets", "web-app"),
       fetchImpl: async (input) => {
         const target = new URL(input);
-        if (/^\/themes\/[^/]+\/.+\.(?:avif|gif|jpe?g|png|webp)$/u.test(target.pathname)
-          && /^[a-f0-9]{12}$/u.test(target.searchParams.get("v") ?? "")) {
-          directAttempts += 1;
-          return new Response("Direct Worker asset unavailable", { status: 503 });
-        }
         const pathname = target.pathname === "/" ? "/index.html" : target.pathname;
         try {
           if (pathname.endsWith(".b64")) {
@@ -98,7 +92,7 @@ test("Worker build packages the same shell and theme resources used by local cli
       },
     });
     assert.ok(deployment.backgrounds > 3);
-    assert.equal(directAttempts, deployment.backgrounds * 2);
+    assert.ok(deployment.sampledChunks >= deployment.backgrounds * 2);
     assert.ok(maximumChunkReads > 1);
     assert.ok(maximumChunkReads <= 6);
   } finally {
