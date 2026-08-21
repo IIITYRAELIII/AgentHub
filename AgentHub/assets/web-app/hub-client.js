@@ -79,7 +79,7 @@ const optimisticDeferredClientUserMessageIds = new Set();
 const requestedContextCompactions = new Set();
 const streamCreatesInFlight = new Map();
 const observedContextCompactions = new Map();
-const maintenanceEventsByTask = readMaintenanceEvents();
+const pendingStreamRotations = new Map();
 const activeMaintenanceByTask = new Map();
 const batchedMessageRenders = new Map();
 let deferredClientUserMessageIds = new Set();
@@ -129,6 +129,7 @@ const {
   withoutSupersededCompactionFailures,
   visibleConversationMessages,
 } = window.AgentHubMessageLifecycle;
+const maintenanceEventsByTask = readMaintenanceEvents();
 
 const runtimeShortLabels = Object.freeze({
   hub: "HUB",
@@ -236,6 +237,9 @@ function readMaintenanceEvents() {
       const task = String(entry?.taskId ?? "").trim();
       const id = String(entry?.message?.id ?? "").trim();
       if (!task || !id) continue;
+      const legacyRotation = id.startsWith("maintenance:rotation:")
+        && entry.message?.maintenanceType !== "rotation";
+      if (legacyRotation) continue;
       const events = values.get(task) ?? [];
       const match = /(\?|\d+)%>(\?|\d+)%/u.exec(String(entry.message?.text ?? ""));
       const explicitAfter = entry.message?.afterPercent;
@@ -293,7 +297,7 @@ function rememberMaintenanceEvent(taskIdValue, message) {
 
 function taskIdentity(id) {
   const stableId = String(id ?? "").trim();
-  const task = (lastSnapshot?.tasks ?? []).find((candidate) => (
+  const task = representativeSnapshotTasks(lastSnapshot?.tasks).find((candidate) => (
     taskId(candidate.provider, candidate.threadId, candidate.streamId) === stableId
   ));
   if (task) return {
@@ -1510,39 +1514,99 @@ function observeContextCompactions(tasks) {
 
 function observeStreamRotations(previousTasks, tasks) {
   const changed = new Set();
-  const previousByStream = new Map((previousTasks ?? []).flatMap((task) => (
-    task.streamId ? [[String(task.streamId), task]] : []
-  )));
-  for (const task of tasks ?? []) {
-    const streamId = String(task.streamId ?? "").trim();
-    const previous = previousByStream.get(streamId);
-    if (!streamId) continue;
+  const previousByStream = streamHeadTasks(previousTasks);
+  const currentByStream = streamHeadTasks(tasks);
+  for (const [streamId, task] of currentByStream) {
+    const previous = previousByStream.get(streamId) ?? null;
+    const rotated = previous && String(previous.threadId) !== String(task.threadId);
+    if (rotated) {
+      pendingStreamRotations.set(streamId, {
+        provider: task.provider,
+        threadId: task.threadId,
+        beforePercent: contextPercent(previous.context?.percent),
+        time: task.context?.compaction?.completedAt ?? new Date().toISOString(),
+      });
+    }
+    const pending = pendingStreamRotations.get(streamId);
+    if (!pending || String(pending.threadId) !== String(task.threadId)) continue;
+    const beforePercent = contextPercent(pending.beforePercent);
+    const afterPercent = task.context?.usagePending
+      ? null
+      : contextPercent(task.context?.percent);
+    if (beforePercent === null || afterPercent === null) continue;
     const stableTaskId = taskId(task.provider, task.threadId, streamId);
     const eventId = `maintenance:rotation:${streamId}:${task.threadId}`;
-    const existingEvent = (maintenanceEventsByTask.get(stableTaskId) ?? [])
-      .find((event) => event.id === eventId);
-    const rotated = previous && String(previous.threadId) !== String(task.threadId);
-    if (!rotated && !existingEvent) continue;
-    const beforePercent = contextPercent(existingEvent?.beforePercent)
-      ?? storedMaintenancePercent(existingEvent, 1)
-      ?? (rotated ? contextPercent(previous.context?.percent) : null);
-    const afterPercent = contextPercent(existingEvent?.afterPercent)
-      ?? storedMaintenancePercent(existingEvent, 2)
-      ?? (task.context?.usagePending ? null : contextPercent(task.context?.percent));
-    const visibleBeforePercent = beforePercent ?? "?";
-    const visibleAfterPercent = afterPercent ?? "?";
     if (rememberMaintenanceEvent(stableTaskId, {
       id: eventId,
-      provider: task.provider,
+      provider: pending.provider,
       threadId: task.threadId,
       itemId: eventId,
+      maintenanceType: "rotation",
+      maintenanceStatus: "completed",
       beforePercent,
       afterPercent,
-      text: `Ротация завершена успешно ${visibleBeforePercent}%>${visibleAfterPercent}%`,
-      time: existingEvent?.time ?? new Date().toISOString(),
+      text: `Ротация завершена успешно ${beforePercent}%>${afterPercent}%`,
+      time: pending.time,
     })) changed.add(stableTaskId);
+    pendingStreamRotations.delete(streamId);
+  }
+  for (const streamId of pendingStreamRotations.keys()) {
+    if (currentByStream.has(streamId)) continue;
+    pendingStreamRotations.delete(streamId);
   }
   return changed;
+}
+
+function streamHeadTasks(tasks) {
+  const heads = new Map();
+  for (const task of tasks ?? []) {
+    const streamId = String(task.streamId ?? "").trim();
+    if (!streamId) continue;
+    const current = heads.get(streamId);
+    const position = Number(task.threadPosition) || 0;
+    const currentPosition = Number(current?.threadPosition) || 0;
+    if (!current || position > currentPosition) heads.set(streamId, task);
+  }
+  return heads;
+}
+
+function representativeSnapshotTasks(tasks) {
+  const representatives = new Map();
+  for (const task of tasks ?? []) {
+    const streamId = String(task.streamId ?? "").trim();
+    const key = streamId || `${String(task.provider ?? "").trim()}:${String(task.threadId ?? "").trim()}`;
+    const current = representatives.get(key);
+    if (!current || snapshotTaskPreferred(task, current)) representatives.set(key, task);
+  }
+  return [...representatives.values()];
+}
+
+function snapshotTaskPreferred(candidate, current) {
+  const rank = (task) => task.selected
+    ? 3
+    : task.running && String(task.run?.turnId ?? "").trim()
+      ? 2
+      : task.running
+        ? 1
+        : 0;
+  const candidateRank = rank(candidate);
+  const currentRank = rank(current);
+  if (candidateRank !== currentRank) return candidateRank > currentRank;
+  if (candidateRank > 0) {
+    const candidateStartedAt = Date.parse(candidate.run?.startedAt ?? candidate.startedAt ?? "") || 0;
+    const currentStartedAt = Date.parse(current.run?.startedAt ?? current.startedAt ?? "") || 0;
+    if (candidateStartedAt !== currentStartedAt) return candidateStartedAt > currentStartedAt;
+  }
+  const candidatePosition = Number(candidate.threadPosition) || 0;
+  const currentPosition = Number(current.threadPosition) || 0;
+  if (candidatePosition !== currentPosition) return candidatePosition > currentPosition;
+  const candidateActivity = Number(candidate.orderingActivityAtMs)
+    || Date.parse(candidate.lastAnswerAt ?? "")
+    || 0;
+  const currentActivity = Number(current.orderingActivityAtMs)
+    || Date.parse(current.lastAnswerAt ?? "")
+    || 0;
+  return candidateActivity > currentActivity;
 }
 
 function applySnapshot(snapshot) {
@@ -1555,6 +1619,7 @@ function applySnapshot(snapshot) {
     const previousSnapshot = lastSnapshot;
     const previousTasks = previousSnapshot?.tasks ?? [];
     lastSnapshot = snapshot;
+    const representativeTasks = representativeSnapshotTasks(snapshot.tasks);
     agentHub.setExchangeRates(snapshot.exchangeRates ?? null);
     agentHub.setServerStatus(snapshot.server ?? null);
     agentHub.setWorkspaces(snapshot.workspaces ?? [], snapshot.boardLayout?.columnOrder ?? []);
@@ -1609,7 +1674,7 @@ function applySnapshot(snapshot) {
           ? workspaceFallbackSelectionId
           : serverSelectedId;
     tasks = [
-      ...(snapshot.tasks ?? []).map((task) => modelTask(task, snapshot, effectiveSelectedId, serverSelectedId)),
+      ...representativeTasks.map((task) => modelTask(task, snapshot, effectiveSelectedId, serverSelectedId)),
       ...emptyStreamModels(snapshot, effectiveSelectedId),
     ].sort((left, right) => Date.parse(right.lastActivity || 0) - Date.parse(left.lastActivity || 0));
     const selectedWorkspaceId = String(
@@ -1666,16 +1731,16 @@ function applySnapshot(snapshot) {
         ...deliveryPatch("accepted"),
       });
     }
-    const selected = (snapshot.tasks ?? []).find(
+    const selected = representativeTasks.find(
       (task) => taskId(task.provider, task.threadId, task.streamId) === effectiveSelectedId,
     );
     rememberSelectedTaskId(effectiveSelectedId);
-    for (const task of snapshot.tasks ?? []) {
+    for (const task of representativeTasks) {
       const stableTaskId = taskId(task.provider, task.threadId, task.streamId);
       agentHub.setLive(stableTaskId, updateLiveMessage(stableTaskId, task));
       agentHub.setRunning(stableTaskId, Boolean(task.running));
     }
-    for (const task of snapshot.tasks ?? []) {
+    for (const task of representativeTasks) {
       renderTaskQueue(taskId(task.provider, task.threadId, task.streamId), snapshot);
     }
     if (selected) {
@@ -3489,7 +3554,7 @@ async function openRoute() {
 }
 
 function snapshotTask(snapshot, id) {
-  return (snapshot?.tasks ?? []).find((task) => (
+  return representativeSnapshotTasks(snapshot?.tasks).find((task) => (
     taskId(task.provider, task.threadId, task.streamId) === id
   )) ?? null;
 }

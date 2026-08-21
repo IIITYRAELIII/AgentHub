@@ -1997,17 +1997,47 @@ test("workspace task panel follows the effective local Stream selection", () => 
   );
 });
 
-test("rotation completion replaces pending context percentages in place", () => {
-  assert.match(hubClientSource, /eventId = `maintenance:rotation:\$\{streamId\}:\$\{task\.threadId\}`/u);
-  assert.match(hubClientSource, /beforePercent = contextPercent\(existingEvent\?\.beforePercent\)[\s\S]*previous\.context\?\.percent/u);
+test("rotation completion follows only the newest Thread and requires measured percentages", () => {
   assert.match(
     hubClientSource,
-    /text: `Ротация завершена успешно \$\{visibleBeforePercent\}%>\$\{visibleAfterPercent\}%`/u,
+    /\} = window\.AgentHubMessageLifecycle;\s*const maintenanceEventsByTask = readMaintenanceEvents\(\);/u,
   );
-  assert.match(hubClientSource, /time: existingEvent\?\.time \?\? new Date\(\)\.toISOString\(\)/u);
+  assert.match(hubClientSource, /const pendingStreamRotations = new Map\(\)/u);
+  assert.match(hubClientSource, /function streamHeadTasks\(tasks\)[\s\S]*position > currentPosition/u);
+  assert.match(hubClientSource, /const previousByStream = streamHeadTasks\(previousTasks\)/u);
+  assert.match(hubClientSource, /const currentByStream = streamHeadTasks\(tasks\)/u);
+  assert.match(hubClientSource, /eventId = `maintenance:rotation:\$\{streamId\}:\$\{task\.threadId\}`/u);
+  assert.match(hubClientSource, /beforePercent: contextPercent\(previous\.context\?\.percent\)/u);
+  assert.match(hubClientSource, /if \(beforePercent === null \|\| afterPercent === null\) continue/u);
   assert.match(
     hubClientSource,
-    /afterPercent = contextPercent\(existingEvent\?\.afterPercent\)[\s\S]*storedMaintenancePercent\(existingEvent, 2\)[\s\S]*task\.context\?\.percent/u,
+    /text: `Ротация завершена успешно \$\{beforePercent\}%>\$\{afterPercent\}%`/u,
+  );
+  assert.match(hubClientSource, /maintenanceType: "rotation"/u);
+  assert.match(hubClientSource, /legacyRotation[\s\S]*maintenanceType !== "rotation"[\s\S]*if \(legacyRotation\) continue/u);
+});
+
+test("Stream UI keeps the selected live Thread instead of a historical duplicate", () => {
+  assert.match(hubClientSource, /function representativeSnapshotTasks\(tasks\)/u);
+  assert.match(
+    hubClientSource,
+    /task\.selected[\s\S]*task\.running && String\(task\.run\?\.turnId/u,
+  );
+  assert.match(
+    hubClientSource,
+    /const representativeTasks = representativeSnapshotTasks\(snapshot\.tasks\)/u,
+  );
+  assert.match(
+    hubClientSource,
+    /representativeTasks\.map\(\(task\) => modelTask/u,
+  );
+  assert.match(
+    hubClientSource,
+    /for \(const task of representativeTasks\) \{\s*const stableTaskId[\s\S]*agentHub\.setLive/u,
+  );
+  assert.match(
+    hubClientSource,
+    /function taskIdentity\(id\)[\s\S]*representativeSnapshotTasks\(lastSnapshot\?\.tasks\)/u,
   );
 });
 
