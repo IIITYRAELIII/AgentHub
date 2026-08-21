@@ -88,24 +88,48 @@ test("the selected period survives re-render and stays inside the known set", as
   assert.equal(api.persistRange(failing, "7d"), "7d");
 });
 
-test("desktop keeps one period open while the phone folds the accordion", async () => {
+test("expanded account devices survive re-render and support one expand-all toggle", async () => {
   const api = await accountPanelApi();
+  const values = new Map();
+  const storage = {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, value),
+  };
 
-  const state = (current, value, options) => ({ ...api.nextPanelState(current, value, options) });
+  assert.deepEqual([...api.storedExpandedAccounts(storage)], []);
+  assert.deepEqual([...api.toggleExpandedAccount([], "chatgpt:owner")], ["chatgpt:owner"]);
+  assert.deepEqual([...api.toggleExpandedAccount(["chatgpt:owner"], "chatgpt:owner")], []);
 
-  assert.deepEqual(state({ range: "today", open: true }, "7d"), { range: "7d", open: true });
-  assert.deepEqual(state({ range: "today", open: true }, "today"), { range: "today", open: true });
-  assert.deepEqual(
-    state({ range: "today", open: true }, "today", { mobile: true }),
-    { range: "today", open: false },
+  const expanded = api.toggleAllAccounts(["retired"], ["chatgpt:owner", "anthropic:owner"]);
+  assert.deepEqual([...expanded], ["retired", "chatgpt:owner", "anthropic:owner"]);
+  assert.equal(api.allAccountsExpanded(expanded, ["chatgpt:owner", "anthropic:owner"]), true);
+  assert.equal(
+    api.devicesToggleLabel(expanded, ["chatgpt:owner", "anthropic:owner"]),
+    "Свернуть устройства",
   );
   assert.deepEqual(
-    state({ range: "today", open: false }, "today", { mobile: true }),
-    { range: "today", open: true },
+    [...api.toggleAllAccounts(expanded, ["chatgpt:owner", "anthropic:owner"])],
+    ["retired"],
   );
+  assert.equal(
+    api.devicesToggleLabel(["chatgpt:owner"], ["chatgpt:owner", "anthropic:owner"]),
+    "Показать устройства",
+  );
+
   assert.deepEqual(
-    state({ range: "today", open: false }, "24h", { mobile: true }),
-    { range: "24h", open: true },
+    [...api.persistExpandedAccounts(storage, ["chatgpt:owner", "chatgpt:owner", ""])],
+    ["chatgpt:owner"],
+  );
+  assert.deepEqual([...api.storedExpandedAccounts(storage)], ["chatgpt:owner"]);
+
+  const failing = {
+    getItem: () => { throw new Error("storage disabled"); },
+    setItem: () => { throw new Error("storage disabled"); },
+  };
+  assert.deepEqual([...api.storedExpandedAccounts(failing)], []);
+  assert.deepEqual(
+    [...api.persistExpandedAccounts(failing, ["chatgpt:owner"])],
+    ["chatgpt:owner"],
   );
 });
 

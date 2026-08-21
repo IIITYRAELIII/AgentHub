@@ -378,10 +378,16 @@ test("journal projection renders account usage panel with catalog labels", () =>
   assert.match(projected, /data-work-log-account-period-unit>cr<\/span>/u);
   assert.match(projected, /data-work-log-account-period-quality>точно 1 · восст\. 1</u);
   assert.match(projected, /data-work-log-account-column="account">Аккаунт · сегодня</u);
-  assert.match(projected, /data-work-log-account-quality>точно 1 · восст\. 1 · Codex 2</u);
+  assert.match(projected, /data-work-log-account-quality>точно 1 · восст\. 1</u);
+  assert.match(projected, /data-work-log-account-device-count>1 устройство</u);
   assert.match(projected, /data-work-log-account-provider-name>chatgpt<\/span>/u);
   assert.match(projected, /data-work-log-account-plan>plus<\/span>/u);
-  assert.match(projected, /data-work-log-account-bar-fill data-account-share="100"/u);
+  assert.match(
+    projected,
+    /data-work-log-account-bar-segment data-device-index="0" data-account-share="100\.00"/u,
+  );
+  assert.match(projected, /data-work-log-account-device-label>Это устройство<\/span>/u);
+  assert.match(projected, /data-work-log-account-provider-name>Codex<\/span>/u);
   assert.match(projected, /data-account-key="chatgpt:/u);
   assert.match(projected, /data-work-log-account-row [^>]*data-account-color="\d"/u);
   /* style-src приложения не разрешает 'unsafe-inline', поэтому геометрию полос
@@ -397,7 +403,7 @@ test("journal projection renders account usage panel with catalog labels", () =>
   assert.equal((repeated.match(/work-log-account-panel:start/gu) ?? []).length, 0);
 });
 
-test("account usage panel renders zero-token unattributed turns as no-cost", () => {
+test("account usage panel keeps zero-token unattributed turns in the period footnote", () => {
   const projected = projectWorkLogUsage("# Глобальный журнал работ\n", {
     billableUnknown: {
       provider: "claude",
@@ -424,10 +430,10 @@ test("account usage panel renders zero-token unattributed turns as no-cost", () 
   });
 
   assert.match(projected, /data-work-log-account-label>Неизвестный аккаунт<\/span>/u);
-  assert.match(projected, /data-work-log-account-quality>без ключа 1 · Claude 1<\/span>/u);
-  assert.match(projected, /data-work-log-account-label>Без расхода<\/span>/u);
-  assert.match(projected, /data-work-log-account-quality>без расхода 1 · Claude 1<\/span>/u);
-  assert.match(projected, /data-account-key="__no_cost__" data-account-color="[^"]+" data-account-attribution-exact="0" data-account-attribution-inferred="0" data-account-no-cost/u);
+  assert.match(projected, /data-work-log-account-quality>без ключа 1<\/span>/u);
+  assert.doesNotMatch(projected, /data-work-log-account-label>Без расхода<\/span>/u);
+  assert.doesNotMatch(projected, /data-account-key="__no_cost__"/u);
+  assert.match(projected, /data-work-log-account-idle>1 ход без стоимости<\/span>/u);
   assert.match(projected, /data-work-log-account-panel-total>1 аккаунт</u);
 });
 
@@ -459,6 +465,16 @@ test("account usage panel includes synced remote devices without duplicating loc
       },
       {
         deviceId: "laptop",
+        provider: "codex",
+        threadId: "thread-remote-same-account",
+        turnId: "turn-remote-same-account",
+        completedAt: "2026-08-20T09:30:00.000Z",
+        estimatedCredits: 2,
+        accountKey: "chatgpt:owner",
+        accountAttribution: "inferred",
+      },
+      {
+        deviceId: "phone",
         provider: "claude",
         threadId: "thread-remote",
         turnId: "turn-remote",
@@ -473,22 +489,38 @@ test("account usage panel includes synced remote devices without duplicating loc
   assert.match(projected, /owner@example\.com/u);
   assert.match(projected, /data-account-key="anthropic:owner"/u);
   assert.match(projected, /data-account-sync-turns="1"/u);
-  assert.match(projected, /data-work-log-account-devices>Это устройство · device-local 1<\/span>/u);
-  assert.match(projected, /data-work-log-account-devices>laptop 1<\/span>/u);
+  assert.match(projected, /data-work-log-account-device-count>2 устройства<\/span>/u);
+  assert.match(
+    projected,
+    /data-work-log-account-devices-toggle aria-pressed="false">Показать устройства<\/button>/u,
+  );
   assert.match(
     projected,
     /data-work-log-account-device-row [^>]*data-device-id="device-local" [^>]*data-device-source="local"/u,
   );
-  assert.match(projected, /data-work-log-account-device-label>Это устройство · device-local<\/span>/u);
+  assert.match(projected, /data-work-log-account-device-label>Это устройство<\/span>/u);
+  assert.match(projected, /data-work-log-account-device-id>device-local<\/span>/u);
+  assert.match(projected, /data-work-log-account-device-origin>local<\/span>/u);
   assert.match(projected, /data-work-log-account-device-quality>точно 1<\/span>/u);
   assert.match(
     projected,
     /data-work-log-account-device-row [^>]*data-device-id="laptop" [^>]*data-device-source="sync"/u,
   );
+  assert.match(projected, /data-work-log-account-device-label>Другое устройство<\/span>/u);
+  assert.match(projected, /data-work-log-account-device-id>laptop<\/span>/u);
+  assert.match(projected, /data-work-log-account-device-origin>sync<\/span>/u);
   assert.match(projected, /data-work-log-account-device-quality>восст\. 1 · sync 1<\/span>/u);
   assert.match(
     projected,
-    /data-work-log-account-total>итого <span data-kilo-usage data-usage-credits="10">10 cr<\/span> · 2 ход\./u,
+    /data-work-log-account-bar-segment data-device-index="0" data-current data-account-share="60\.00"/u,
+  );
+  assert.match(
+    projected,
+    /data-work-log-account-bar-segment data-device-index="1" data-muted data-account-share="40\.00"/u,
+  );
+  assert.match(
+    projected,
+    /data-work-log-account-total>итого <span data-kilo-usage data-usage-credits="12">12 cr<\/span> · 3 ход\./u,
   );
   assert.match(projected, /data-work-log-account-idle><\/span>/u);
 });

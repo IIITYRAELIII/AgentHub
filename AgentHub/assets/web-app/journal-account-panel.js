@@ -4,6 +4,7 @@
   const RANGE_SEQUENCE = Object.freeze(["today", "24h", "7d", "30d", "all"]);
   const RANGE_SET = new Set(RANGE_SEQUENCE);
   const RANGE_STORAGE_KEY = "agent-hub:journal-account-range:v1";
+  const DEVICES_STORAGE_KEY = "agent-hub:journal-account-devices:v1";
   const AMOUNT_PATTERN = /^(.*?)\s+([GMk]?(?:ПТЭ|cr))$/u;
 
   function availableRanges(available) {
@@ -37,16 +38,55 @@
     return range;
   }
 
-  /* Десктоп всегда держит ровно один раскрытый период, поэтому повторный клик
-     по активной плитке ничего не сворачивает. На телефоне это аккордеон:
-     повторный тап закрывает период и оставляет только ленту заголовков. */
-  function nextPanelState(state, value, { mobile = false, available } = {}) {
-    const range = normalizeRange(value, available);
-    const current = normalizeRange(state?.range, available);
-    const open = state?.open !== false;
-    if (!mobile) return { range, open: true };
-    if (current === range && open) return { range, open: false };
-    return { range, open: true };
+  function normalizeAccountKeys(value) {
+    return [...new Set((Array.isArray(value) ? value : [])
+      .map((key) => String(key ?? ""))
+      .filter(Boolean))];
+  }
+
+  function storedExpandedAccounts(storage) {
+    try {
+      const raw = storage?.getItem(DEVICES_STORAGE_KEY);
+      return normalizeAccountKeys(raw ? JSON.parse(raw) : []);
+    } catch {
+      return [];
+    }
+  }
+
+  function persistExpandedAccounts(storage, keys) {
+    const list = normalizeAccountKeys(keys);
+    try {
+      storage?.setItem(DEVICES_STORAGE_KEY, JSON.stringify(list));
+    } catch {
+      // Раскрытые аккаунты останутся раскрытыми до закрытия WebView.
+    }
+    return list;
+  }
+
+  function toggleExpandedAccount(current, accountKey) {
+    const key = String(accountKey ?? "");
+    const list = normalizeAccountKeys(current);
+    if (!key) return list;
+    return list.includes(key) ? list.filter((value) => value !== key) : [...list, key];
+  }
+
+  function allAccountsExpanded(current, accountKeys) {
+    const keys = normalizeAccountKeys(accountKeys);
+    const list = normalizeAccountKeys(current);
+    return keys.length > 0 && keys.every((key) => list.includes(key));
+  }
+
+  /* Кнопка в шапке — один переключатель: пока раскрыт не каждый аккаунт
+     периода, она раскрывает все, и только после этого сворачивает. */
+  function toggleAllAccounts(current, accountKeys) {
+    const keys = normalizeAccountKeys(accountKeys);
+    const list = normalizeAccountKeys(current);
+    if (allAccountsExpanded(list, keys)) return list.filter((key) => !keys.includes(key));
+    return normalizeAccountKeys([...list, ...keys]);
+  }
+
+  function devicesToggleLabel(current, accountKeys) {
+    return allAccountsExpanded(current, accountKeys) ? "Свернуть устройства" : "Показать устройства";
   }
 
   /* Плитка периода показывает число крупно, а единицу — мелко, поэтому
@@ -59,12 +99,18 @@
   }
 
   window.AgentHubJournalAccountPanel = Object.freeze({
+    DEVICES_STORAGE_KEY,
     RANGE_SEQUENCE,
     RANGE_STORAGE_KEY,
+    allAccountsExpanded,
+    devicesToggleLabel,
     normalizeRange,
-    nextPanelState,
+    persistExpandedAccounts,
     persistRange,
     splitUsageAmount,
+    storedExpandedAccounts,
     storedRange,
+    toggleAllAccounts,
+    toggleExpandedAccount,
   });
 })();

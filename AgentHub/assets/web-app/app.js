@@ -11708,11 +11708,20 @@ function currentWorkLogAccountPanel() {
 }
 
 let accountPanelRange = JournalAccountPanel.storedRange(localStorage);
-let accountPanelOpen = true;
+let accountPanelDevices = JournalAccountPanel.storedExpandedAccounts(localStorage);
 
 function accountPanelRanges(panel) {
   return [...panel.querySelectorAll("[data-work-log-account-period-tab]")]
     .map((tab) => tab.dataset.accountRange);
+}
+
+/* Кнопка шапки работает с аккаунтами показанного периода: в остальных периодах
+   набор аккаунтов другой, а состояние раскрытия у аккаунта общее. */
+function accountPanelAccountKeys(panel) {
+  const body = panel.querySelector("[data-work-log-account-period-body][data-active]");
+  return [...(body?.querySelectorAll("[data-work-log-account-row]:not([disabled])") ?? [])]
+    .map((row) => row.dataset.accountKey)
+    .filter(Boolean);
 }
 
 function applyAccountPanelState(panel) {
@@ -11723,10 +11732,26 @@ function applyAccountPanelState(panel) {
   for (const node of panel.querySelectorAll("[data-account-range]")) {
     const active = node.dataset.accountRange === accountPanelRange;
     node.toggleAttribute("data-active", active);
-    node.toggleAttribute("data-open", active && accountPanelOpen);
     if (node.matches("[data-work-log-account-period-tab]")) {
-      node.setAttribute("aria-expanded", String(active && accountPanelOpen));
+      node.setAttribute("aria-expanded", String(active));
     }
+  }
+  for (const group of panel.querySelectorAll("[data-work-log-account-group]")) {
+    const row = group.querySelector("[data-work-log-account-row]");
+    const expanded = Boolean(row) && !row.disabled
+      && accountPanelDevices.includes(String(group.dataset.accountKey ?? ""));
+    group.toggleAttribute("data-open", expanded);
+    row?.setAttribute("aria-expanded", String(expanded));
+  }
+  const toggle = panel.querySelector("[data-work-log-account-devices-toggle]");
+  if (toggle) {
+    const keys = accountPanelAccountKeys(panel);
+    toggle.textContent = JournalAccountPanel.devicesToggleLabel(accountPanelDevices, keys);
+    toggle.setAttribute(
+      "aria-pressed",
+      String(JournalAccountPanel.allAccountsExpanded(accountPanelDevices, keys)),
+    );
+    toggle.disabled = keys.length === 0;
   }
 }
 
@@ -11736,9 +11761,9 @@ function applyAccountPanelState(panel) {
 function decorateAccountPanel(scope = journal) {
   const panel = scope.querySelector("[data-work-log-account-panel]");
   if (!panel) return;
-  for (const fill of panel.querySelectorAll("[data-work-log-account-bar-fill]")) {
-    const share = Math.min(100, Math.max(0, Number(fill.dataset.accountShare) || 0));
-    fill.style.setProperty("--account-share", `${share}%`);
+  for (const segment of panel.querySelectorAll("[data-work-log-account-bar-segment]")) {
+    const share = Math.min(100, Math.max(0, Number(segment.dataset.accountShare) || 0));
+    segment.style.setProperty("--account-share", `${share}%`);
   }
   for (const value of panel.querySelectorAll("[data-work-log-account-period-value]")) {
     const credits = Number(value.dataset.accountCredits);
@@ -11753,21 +11778,41 @@ function decorateAccountPanel(scope = journal) {
   applyAccountPanelState(panel);
 }
 
+function rememberAccountPanelDevices(panel, keys) {
+  accountPanelDevices = JournalAccountPanel.persistExpandedAccounts(localStorage, keys);
+  applyAccountPanelState(panel);
+}
+
 /* Делегирование переживает пересборку группировки: панель переносится клоном и
    собственные обработчики на плитках были бы потеряны. */
 journal?.addEventListener("click", (event) => {
-  const tab = event.target?.closest?.("[data-work-log-account-period-tab]");
-  const panel = tab?.closest("[data-work-log-account-panel]");
+  const panel = event.target?.closest?.("[data-work-log-account-panel]");
   if (!panel) return;
-  const ranges = accountPanelRanges(panel);
-  const next = JournalAccountPanel.nextPanelState(
-    { range: accountPanelRange, open: accountPanelOpen },
-    tab.dataset.accountRange,
-    { mobile: surface === "mobile", available: ranges },
-  );
-  accountPanelRange = JournalAccountPanel.persistRange(localStorage, next.range, ranges);
-  accountPanelOpen = next.open;
-  applyAccountPanelState(panel);
+  const tab = event.target.closest("[data-work-log-account-period-tab]");
+  if (tab) {
+    const ranges = accountPanelRanges(panel);
+    accountPanelRange = JournalAccountPanel.persistRange(
+      localStorage,
+      tab.dataset.accountRange,
+      ranges,
+    );
+    applyAccountPanelState(panel);
+    return;
+  }
+  const row = event.target.closest("[data-work-log-account-row]");
+  if (row && !row.disabled) {
+    rememberAccountPanelDevices(
+      panel,
+      JournalAccountPanel.toggleExpandedAccount(accountPanelDevices, row.dataset.accountKey),
+    );
+    return;
+  }
+  if (event.target.closest("[data-work-log-account-devices-toggle]")) {
+    rememberAccountPanelDevices(
+      panel,
+      JournalAccountPanel.toggleAllAccounts(accountPanelDevices, accountPanelAccountKeys(panel)),
+    );
+  }
 });
 
 function replaceJournalGroupedContent(content) {

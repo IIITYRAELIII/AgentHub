@@ -709,22 +709,50 @@ export function buildWorkLogAccountUsageSummary(turns = {}, {
     });
 }
 
-function formatProviderCounts(providers = {}) {
+function providerTitle(provider) {
+  if (provider === "codex") return "Codex";
+  if (provider === "claude") return "Claude";
+  return provider;
+}
+
+function sortedProviders(providers = {}) {
   return Object.entries(providers)
     .filter(([, count]) => Number(count) > 0)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([provider, count]) => `${provider === "codex" ? "Codex" : provider === "claude" ? "Claude" : provider} ${count}`)
+    .sort(([left], [right]) => left.localeCompare(right));
+}
+
+function formatProviderCounts(providers = {}) {
+  return sortedProviders(providers)
+    .map(([provider, count]) => `${providerTitle(provider)} ${count}`)
     .join(" · ");
 }
 
-function pluralizeAccounts(count) {
+/* В строке устройства колонка провайдера несёт только модель: число ходов у
+   устройства уже стоит в собственной колонке. */
+function formatProviderNames(providers = {}) {
+  return sortedProviders(providers).map(([provider]) => providerTitle(provider)).join(" · ");
+}
+
+function pluralize(count, [one, few, many]) {
   const value = Math.max(0, Math.trunc(Number(count) || 0));
   const tens = value % 100;
   const ones = value % 10;
-  if (tens >= 11 && tens <= 14) return `${value} аккаунтов`;
-  if (ones === 1) return `${value} аккаунт`;
-  if (ones >= 2 && ones <= 4) return `${value} аккаунта`;
-  return `${value} аккаунтов`;
+  if (tens >= 11 && tens <= 14) return `${value} ${many}`;
+  if (ones === 1) return `${value} ${one}`;
+  if (ones >= 2 && ones <= 4) return `${value} ${few}`;
+  return `${value} ${many}`;
+}
+
+function pluralizeAccounts(count) {
+  return pluralize(count, ["аккаунт", "аккаунта", "аккаунтов"]);
+}
+
+function pluralizeDevices(count) {
+  return pluralize(count, ["устройство", "устройства", "устройств"]);
+}
+
+function pluralizeTurns(count) {
+  return pluralize(count, ["ход", "хода", "ходов"]);
 }
 
 /* Цвет аккаунта повторяет палитру серий статистики: один и тот же аккаунт
@@ -763,42 +791,74 @@ function formatAccountQuality(account) {
   return parts.join(" · ") || "нет данных";
 }
 
-function formatDeviceCounts(devices = {}) {
-  const list = Array.isArray(devices)
-    ? devices
-    : Object.entries(devices).map(([deviceId, count]) => ({
-      deviceId,
-      label: accountDeviceDisplayName(deviceId, "sync"),
-      turns: count,
-    }));
-  return list
-    .filter((device) => Number(device?.turns) > 0)
-    .sort((left, right) => String(left.label).localeCompare(String(right.label)))
-    .map((device) => `${device.label} ${device.turns}`)
-    .join(" · ");
+function accountDevices(account) {
+  return Array.isArray(account?.devices) ? account.devices : [];
 }
 
-function formatAccountUsageRow(account, totalCredits) {
+function deviceSourceLabel(device) {
+  if (device.source === "local") return "local";
+  if (device.source === "sync") return "sync";
+  return "local+sync";
+}
+
+function accountDeviceName(device) {
+  const id = String(device?.deviceId ?? "").trim();
+  if (device?.source === "sync") {
+    return !id || id === "unknown" ? "Неизвестное устройство" : "Другое устройство";
+  }
+  return "Это устройство";
+}
+
+function accountDeviceShortId(device) {
+  const id = String(device?.deviceId ?? "").trim();
+  if (!id || id === "unknown" || id === "local") return "";
+  return shortDeviceKey(id);
+}
+
+/* Полоса аккаунта разложена по его устройствам, поэтому одна и та же ширина
+   читается и как доля аккаунта в периоде, и как вклад каждого устройства. */
+function shareSegments(devices, total) {
+  return devices.map((device, index) => ({
+    index,
+    share: total > 0 && device.credits > 0 ? device.credits / total * 100 : 0,
+  })).filter((segment) => segment.share > 0);
+}
+
+function formatShareSegments(segments, currentIndex = -1) {
+  return segments.map((segment) => "<span data-work-log-account-bar-segment "
+    + `data-device-index="${escapeHtmlAttribute(String(Math.min(segment.index, 3)))}"`
+    + (segment.index === currentIndex ? " data-current" : "")
+    + `${currentIndex >= 0 && segment.index !== currentIndex ? " data-muted" : ""} `
+    + `data-account-share="${escapeHtmlAttribute(segment.share.toFixed(2))}"></span>`).join("");
+}
+
+function formatAccountUsageRow(account, totalCredits, groupId) {
+  const devices = accountDevices(account);
   const share = totalCredits > 0 && account.credits > 0
     ? Math.round(account.credits / totalCredits * 100)
     : 0;
-  const meta = [formatAccountQuality(account), formatProviderCounts(account.providers)]
-    .filter(Boolean).join(" · ");
-  const devices = Array.isArray(account.devices) && account.devices.length
-    ? formatDeviceCounts(account.devices)
-    : "";
-  return `<div data-work-log-account-row data-account-key="${escapeHtmlAttribute(account.accountKey)}" `
+  const segments = shareSegments(devices, totalCredits);
+  return '<button type="button" data-work-log-account-row '
+    + `data-account-key="${escapeHtmlAttribute(account.accountKey)}" `
     + `data-account-color="${escapeHtmlAttribute(accountColorSlot(account.accountKey))}" `
     + `data-account-attribution-exact="${escapeHtmlAttribute(String(account.exactTurns))}" `
     + `data-account-attribution-inferred="${escapeHtmlAttribute(String(account.inferredTurns))}" `
     + (account.noCost ? "data-account-no-cost " : "")
     + `data-account-sync-turns="${escapeHtmlAttribute(String(account.syncedTurns))}" `
     + `data-account-turns="${escapeHtmlAttribute(String(account.turns))}" `
-    + `data-account-credits="${escapeHtmlAttribute(String(account.credits))}">`
+    + `data-account-credits="${escapeHtmlAttribute(String(account.credits))}" `
+    + `aria-expanded="false" aria-controls="${escapeHtmlAttribute(groupId)}"`
+    + (devices.length ? "" : " disabled")
+    + ">"
     + "<span data-work-log-account-name>"
+    + '<span data-work-log-account-caret aria-hidden="true"></span>'
+    + "<span data-work-log-account-identity>"
     + `<span data-work-log-account-label>${escapeHtmlText(account.label)}</span>`
-    + `<span data-work-log-account-quality>${escapeHtmlText(meta)}</span>`
-    + (devices ? `<span data-work-log-account-devices>${escapeHtmlText(devices)}</span>` : "")
+    + `<span data-work-log-account-quality>${escapeHtmlText(formatAccountQuality(account))}</span>`
+    + (devices.length
+      ? `<span data-work-log-account-device-count>${escapeHtmlText(pluralizeDevices(devices.length))}</span>`
+      : "")
+    + "</span>"
     + "</span>"
     + "<span data-work-log-account-provider>"
     + (account.type
@@ -808,59 +868,66 @@ function formatAccountUsageRow(account, totalCredits) {
       ? `<span data-work-log-account-plan>${escapeHtmlText(account.planType)}</span>`
       : "")
     + "</span>"
-    + '<span data-work-log-account-bar aria-hidden="true">'
-    + `<span data-work-log-account-bar-fill data-account-share="${share}"></span>`
-    + "</span>"
+    + `<span data-work-log-account-bar aria-hidden="true">${formatShareSegments(segments)}</span>`
     + `<span data-work-log-account-share>${share}%</span>`
     + `<span data-work-log-account-turns>${account.turns}</span>`
     + `<span data-work-log-account-credits>${highlightUsageUnits(formatCredits(account.credits), account.credits)}</span>`
-    + "</div>";
+    + "</button>";
 }
 
-function deviceSourceLabel(device) {
-  if (device.source === "local") return "local";
-  if (device.source === "sync") return "sync";
-  return "local+sync";
-}
-
-function formatAccountDeviceRow(account, device) {
+function formatAccountDeviceRow(account, device, index) {
+  const devices = accountDevices(account);
   const share = account.credits > 0 && device.credits > 0
     ? Math.round(device.credits / account.credits * 100)
     : 0;
-  const providerCounts = formatProviderCounts(device.providers);
-  return `<div data-work-log-account-device-row data-account-key="${escapeHtmlAttribute(account.accountKey)}" `
+  const providers = formatProviderNames(device.providers);
+  const shortId = accountDeviceShortId(device);
+  // Полоса устройства повторяет раскладку всего аккаунта, поэтому вклад видно
+  // на фоне соседей, а не как одинокие 100 % у каждой строки.
+  const segments = shareSegments(devices, account.credits);
+  return "<div data-work-log-account-device-row "
+    + `data-account-key="${escapeHtmlAttribute(account.accountKey)}" `
     + `data-device-id="${escapeHtmlAttribute(device.deviceId)}" `
     + `data-device-source="${escapeHtmlAttribute(device.source)}" `
+    + `data-device-index="${escapeHtmlAttribute(String(Math.min(index, 3)))}" `
     + `data-account-color="${escapeHtmlAttribute(accountColorSlot(account.accountKey))}" `
     + `data-account-turns="${escapeHtmlAttribute(String(device.turns))}" `
     + `data-account-credits="${escapeHtmlAttribute(String(device.credits))}">`
-    + "<span data-work-log-account-name data-work-log-account-device-name>"
-    + `<span data-work-log-account-device-label>${escapeHtmlText(device.label)}</span>`
+    + "<span data-work-log-account-name>"
+    + '<span data-work-log-account-device-rail aria-hidden="true"></span>'
+    + '<span data-work-log-account-device-swatch aria-hidden="true"></span>'
+    + "<span data-work-log-account-identity>"
+    + "<span data-work-log-account-device-head>"
+    + `<span data-work-log-account-device-label>${escapeHtmlText(accountDeviceName(device))}</span>`
+    + (shortId ? `<span data-work-log-account-device-id>${escapeHtmlText(shortId)}</span>` : "")
+    + `<span data-work-log-account-device-origin>${escapeHtmlText(deviceSourceLabel(device))}</span>`
+    + "</span>"
     + `<span data-work-log-account-device-quality>${escapeHtmlText(formatAccountQuality(device))}</span>`
     + "</span>"
+    + "</span>"
     + "<span data-work-log-account-provider>"
-    + (providerCounts
-      ? `<span data-work-log-account-provider-name>${escapeHtmlText(providerCounts)}</span>`
+    + (providers
+      ? `<span data-work-log-account-provider-name>${escapeHtmlText(providers)}</span>`
       : "")
-    + `<span data-work-log-account-plan>${escapeHtmlText(deviceSourceLabel(device))}</span>`
     + "</span>"
-    + '<span data-work-log-account-bar aria-hidden="true">'
-    + `<span data-work-log-account-bar-fill data-account-share="${share}"></span>`
-    + "</span>"
+    + `<span data-work-log-account-bar aria-hidden="true">${formatShareSegments(segments, index)}</span>`
     + `<span data-work-log-account-share>${share}%</span>`
     + `<span data-work-log-account-turns>${device.turns}</span>`
     + `<span data-work-log-account-credits>${highlightUsageUnits(formatCredits(device.credits), device.credits)}</span>`
     + "</div>";
 }
 
-function formatAccountUsageGroup(account, totalCredits) {
-  const deviceRows = Array.isArray(account.devices) && account.devices.length
-    ? '<div data-work-log-account-devices-breakdown>'
-      + account.devices.map((device) => formatAccountDeviceRow(account, device)).join("")
+function formatAccountUsageGroup(account, totalCredits, rangeId) {
+  const devices = accountDevices(account);
+  const accountId = String(account.accountKey || "unknown").replace(/[^a-z0-9]+/giu, "-");
+  const groupId = `work-log-account-devices-${rangeId}-${accountId}`;
+  const deviceRows = devices.length
+    ? `<div data-work-log-account-devices-breakdown id="${escapeHtmlAttribute(groupId)}">`
+      + devices.map((device, index) => formatAccountDeviceRow(account, device, index)).join("")
       + "</div>"
     : "";
   return `<div data-work-log-account-group data-account-key="${escapeHtmlAttribute(account.accountKey)}">`
-    + formatAccountUsageRow(account, totalCredits)
+    + formatAccountUsageRow(account, totalCredits, groupId)
     + deviceRows
     + "</div>";
 }
@@ -885,19 +952,41 @@ function formatAccountUsagePeriodTab(range, active) {
     + "</button>";
 }
 
+/* Телефон показывает активный период отдельным блоком, поэтому те же заголовок,
+   сумма и качество живут и в плитке десктопа, и в шапке тела периода. */
+function formatAccountUsagePeriodHeadline(range) {
+  const { amount, unit } = accountUsageAmountParts(range.totalCredits);
+  return "<div data-work-log-account-period-headline>"
+    + `<span data-work-log-account-period-headline-title>${escapeHtmlText(range.title)}</span>`
+    + `<span data-work-log-account-period-headline-quality>${escapeHtmlText(formatAccountQuality(range))}</span>`
+    + '<span data-work-log-account-period-value data-work-log-account-period-headline-value '
+    + `data-account-credits="${escapeHtmlAttribute(String(range.totalCredits))}">`
+    + `<span data-work-log-account-period-amount>${escapeHtmlText(amount)}</span>`
+    + `<span data-work-log-account-period-unit>${escapeHtmlText(unit)}</span>`
+    + "</span>"
+    + `<span data-work-log-account-period-headline-turns>${range.totalTurns} ход.</span>`
+    + "</div>";
+}
+
+function formatAccountUsageFootNote(range, accountCount) {
+  const billable = range.accounts.filter((account) => !account.noCost);
+  const idleCount = Math.max(0, accountCount - billable.length);
+  return [
+    idleCount ? `Ещё ${pluralizeAccounts(idleCount)} без расхода ${accountRangeIdleSuffix(range)}` : "",
+    range.noCostTurns ? `${pluralizeTurns(range.noCostTurns)} без стоимости` : "",
+  ].filter(Boolean).join(" · ");
+}
+
 function formatAccountUsagePeriodBody(range, active, accountCount) {
-  const rows = range.accounts.length
-    ? range.accounts.map((account) => formatAccountUsageGroup(account, range.totalCredits)).join("")
+  // Ходы без стоимости не занимают отдельную строку с нулём: их место в подвале.
+  const billable = range.accounts.filter((account) => !account.noCost);
+  const rows = billable.length
+    ? billable.map((account) => formatAccountUsageGroup(account, range.totalCredits, range.id)).join("")
     : '<div data-work-log-account-empty>За период нет записанного расхода.</div>';
-  const activeAccountCount = range.accounts.filter((account) => !account.noCost).length;
-  const idleCount = Math.max(0, accountCount - activeAccountCount);
-  const idle = idleCount
-    ? `Ещё ${pluralizeAccounts(idleCount)} без расхода ${accountRangeIdleSuffix(range)}`
-    : "";
   return "<div data-work-log-account-period-body "
     + `data-account-range="${escapeHtmlAttribute(range.id)}"${active ? " data-active" : ""} `
     + `id="work-log-account-period-${escapeHtmlAttribute(range.id)}">`
-    + `<div data-work-log-account-period-meta>${escapeHtmlText(formatAccountQuality(range))}</div>`
+    + formatAccountUsagePeriodHeadline(range)
     + '<div data-work-log-account-columns aria-hidden="true">'
     + `<span data-work-log-account-column="account">Аккаунт · ${escapeHtmlText(String(range.title).toLowerCase())}</span>`
     + '<span data-work-log-account-column="provider">Провайдер</span>'
@@ -907,7 +996,7 @@ function formatAccountUsagePeriodBody(range, active, accountCount) {
     + "</div>"
     + `<div data-work-log-account-rows>${rows}</div>`
     + "<div data-work-log-account-foot>"
-    + `<span data-work-log-account-idle>${escapeHtmlText(idle)}</span>`
+    + `<span data-work-log-account-idle>${escapeHtmlText(formatAccountUsageFootNote(range, accountCount))}</span>`
     + "<span data-work-log-account-total>итого "
     + highlightUsageUnits(formatCredits(range.totalCredits), range.totalCredits)
     + ` · ${range.totalTurns} ход.</span>`
@@ -927,7 +1016,9 @@ function formatAccountUsagePanel(summary) {
     + '<div data-work-log-account-panel-head>'
     + '<span data-work-log-account-panel-caption>Расход по аккаунтам</span>'
     + `<span data-work-log-account-panel-total>${pluralizeAccounts(accountCount)}</span>`
-    + '<span data-work-log-account-panel-note>exact — текущие записи · inferred — восстановлено · sync — расход с других устройств</span>'
+    + '<span data-work-log-account-panel-note>exact — текущие записи · inferred — восстановлено · sync — другие устройства</span>'
+    + '<button type="button" data-work-log-account-devices-toggle aria-pressed="false">'
+    + "Показать устройства</button>"
     + "</div>"
     + '<div data-work-log-account-periods>'
     + summary.map((range) => formatAccountUsagePeriodTab(range, range.id === activeId)
