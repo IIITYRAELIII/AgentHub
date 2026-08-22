@@ -36,6 +36,47 @@ async function fetchWithCurl(target, { signal } = {}) {
   return new Response(stdout, { status: 200 });
 }
 
+async function fetchBuffered(fetchImpl, target, signal) {
+  const response = await fetchImpl(target, { signal, cache: "no-store" });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  const body = await response.arrayBuffer();
+  return new Response(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
+}
+
+export async function fetchWithTransportRace(target, {
+  signal,
+  nativeFetch = fetch,
+  curlFetch = fetchWithCurl,
+} = {}) {
+  const nativeController = new AbortController();
+  const curlController = new AbortController();
+  const abortTransports = () => {
+    nativeController.abort(signal?.reason);
+    curlController.abort(signal?.reason);
+  };
+  if (signal?.aborted) abortTransports();
+  else signal?.addEventListener("abort", abortTransports, { once: true });
+  try {
+    return await Promise.any([
+      fetchBuffered(nativeFetch, target, nativeController.signal),
+      fetchBuffered(curlFetch, target, curlController.signal),
+    ]);
+  } catch (error) {
+    if (signal?.aborted && signal.reason) throw signal.reason;
+    const failures = error instanceof AggregateError ? error.errors : [error];
+    throw new Error(`All Worker verification transports failed: ${failures
+      .map((failure) => failure?.message ?? String(failure))
+      .join("; ")}`);
+  } finally {
+    abortTransports();
+    signal?.removeEventListener("abort", abortTransports);
+  }
+}
+
 function themeCatalog(html) {
   const source = html.match(/<script type="application\/json" data-theme-catalog>([^<]+)<\/script>/u)?.[1];
   if (!source) throw new Error("Published theme catalog is missing");
@@ -111,7 +152,7 @@ export async function verifyThemeDeployment({
   baseUrl,
   sourceRoot = themeRoot,
   deployedRoot = publishedRoot,
-  fetchImpl = fetchWithCurl,
+  fetchImpl = fetchWithTransportRace,
   changedFiles = null,
   requestTimeoutMs = WORKER_VERIFY_REQUEST_TIMEOUT_MS,
   log = console.log,

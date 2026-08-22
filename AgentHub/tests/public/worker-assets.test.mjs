@@ -15,6 +15,7 @@ import {
 } from "../../cloudflare-worker/publish-worker.mjs";
 import {
   changedBackgrounds,
+  fetchWithTransportRace,
   verifyThemeDeployment,
   WORKER_VERIFY_REQUEST_TIMEOUT_MS,
 } from "../../cloudflare-worker/verify-deployment.mjs";
@@ -180,4 +181,27 @@ test("Worker verification selects only changed manifests and uses a five-minute 
     "AgentHub/assets/web-app/themes/diablo/theme.json",
   ]), [backgrounds[1]]);
   assert.equal(WORKER_VERIFY_REQUEST_TIMEOUT_MS, 300_000);
+});
+
+test("Worker verification accepts the first complete transport and aborts a stalled fallback", async () => {
+  let curlAborted = false;
+  const response = await fetchWithTransportRace("https://agent-hub.test/", {
+    nativeFetch: async () => new Response("native response"),
+    curlFetch: async (_target, { signal }) => new Promise((_resolve, reject) => {
+      signal.addEventListener("abort", () => {
+        curlAborted = true;
+        reject(signal.reason);
+      }, { once: true });
+    }),
+  });
+  assert.equal(await response.text(), "native response");
+  assert.equal(curlAborted, true);
+});
+
+test("Worker verification ignores a fast failed transport when the fallback succeeds", async () => {
+  const response = await fetchWithTransportRace("https://agent-hub.test/", {
+    nativeFetch: async () => new Response("unavailable", { status: 503 }),
+    curlFetch: async () => new Response("curl response"),
+  });
+  assert.equal(await response.text(), "curl response");
 });
