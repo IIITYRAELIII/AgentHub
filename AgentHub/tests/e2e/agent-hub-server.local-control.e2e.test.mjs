@@ -349,6 +349,37 @@ test("local control client survives App Server exit during delayed startup and s
   assert.ok(firstReceipt.turnId);
   assert.equal("fingerprint" in firstReceipt, false);
   const firstTurnId = firstReceipt.turnId;
+
+  const secondTask = await callDesktopControl("new-task", { provider: "codex" }, { runtimeRoot });
+  assert.notEqual(secondTask.selected.threadId, firstThreadId);
+  const secondThreadId = secondTask.selected.threadId;
+  const secondStart = await callDesktopControl("send-message", {
+    text: "[slow] desktop B",
+    provider: "codex",
+    threadId: secondThreadId,
+  }, { runtimeRoot });
+  assert.equal(secondStart.accepted, true);
+  const parallel = await waitFor(async () => {
+    const snapshot = await callDesktopControl("snapshot", {}, { runtimeRoot });
+    return snapshot.activeCount === 2 ? snapshot : null;
+  }, "parallel durable desktop message materialization", 5_000);
+  assert.equal(parallel.activeCount, 2, JSON.stringify({
+    secondSelected: secondTask.selected,
+    secondStart,
+    activeRuns: parallel.runs,
+  }));
+  assert.equal(
+    parallel.tasks.filter((item) => item.running).length,
+    2,
+    JSON.stringify(parallel.tasks.map((item) => ({
+      workspaceId: item.workspaceId,
+      streamId: item.streamId,
+      threadId: item.threadId,
+      selected: item.selected,
+      running: item.running,
+    }))),
+  );
+
   await assert.rejects(
     callDesktopControl("send-message", {
       text: "Это уже другое сообщение",
@@ -426,36 +457,6 @@ test("local control client survives App Server exit during delayed startup and s
   assert.equal(steeredQueued.clientUserMessageId, deferred.clientUserMessageId);
   assert.equal(duplicateSteer.turnId, firstTurnId);
   assert.equal((await callDesktopControl("snapshot", {}, { runtimeRoot })).deferredInputs.length, 0);
-
-  const secondTask = await callDesktopControl("new-task", { provider: "codex" }, { runtimeRoot });
-  assert.notEqual(secondTask.selected.threadId, firstThreadId);
-  const secondThreadId = secondTask.selected.threadId;
-  const secondStart = await callDesktopControl("send-message", {
-    text: "[slow] desktop B",
-    provider: "codex",
-    threadId: secondThreadId,
-  }, { runtimeRoot });
-  assert.equal(secondStart.accepted, true);
-  const parallel = await waitFor(async () => {
-    const snapshot = await callDesktopControl("snapshot", {}, { runtimeRoot });
-    return snapshot.activeCount === 2 ? snapshot : null;
-  }, "parallel durable desktop message materialization", 5_000);
-  assert.equal(parallel.activeCount, 2, JSON.stringify({
-    secondSelected: secondTask.selected,
-    secondStart,
-    activeRuns: parallel.runs,
-  }));
-  assert.equal(
-    parallel.tasks.filter((item) => item.running).length,
-    2,
-    JSON.stringify(parallel.tasks.map((item) => ({
-      workspaceId: item.workspaceId,
-      streamId: item.streamId,
-      threadId: item.threadId,
-      selected: item.selected,
-      running: item.running,
-    }))),
-  );
 
   const selectedFirst = await callDesktopControl("select-task", {
     provider: "codex",
