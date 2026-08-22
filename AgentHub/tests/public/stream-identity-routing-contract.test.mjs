@@ -35,7 +35,7 @@ test("snapshot message rendering is batched until deferred state and live run ar
   assert.match(source, /function runBatchedMessageRenders\(operation\)[\s\S]*?flushBatchedMessageRenders\(\);/u);
   assert.match(
     source,
-    /function applySnapshot\(snapshot\) \{[\s\S]*?runBatchedMessageRenders\(\(\) => \{[\s\S]*?deferredClientUserMessageIds = new Set\([\s\S]*?patchOutgoing\([\s\S]*?agentHub\.setLive\(stableTaskId, updateLiveMessage\(stableTaskId, task\)\);[\s\S]*?\}\);/u,
+    /function applySnapshot\(snapshot, \{ materialized = false \} = \{\}\) \{[\s\S]*?runBatchedMessageRenders\(\(\) => \{[\s\S]*?deferredClientUserMessageIds = new Set\([\s\S]*?patchOutgoing\([\s\S]*?agentHub\.setLive\(stableTaskId, updateLiveMessage\(stableTaskId, task\)\);[\s\S]*?\}\);/u,
   );
 });
 
