@@ -1644,7 +1644,7 @@ test("background navigation is empty and settings expose the bug report flow", (
   const html = fs.readFileSync(require.resolve("../assets/web-app/index.html"), "utf8");
   const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
   const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
-  assert.match(html, /data-view-button="background"[\s\S]*?<span>Фон<\/span>/u);
+  assert.match(html, /data-view-button="background"[\s\S]*?<span>Ничё<\/span>/u);
   assert.match(html, /<main class="background-view" data-background-view aria-label="Фон"><\/main>/u);
   assert.match(html, /data-bug-report-toggle[\s\S]*data-phosphor-icon="bug"[\s\S]*Сообщить о баге\./u);
   assert.match(html, /<input[^>]*multiple[^>]*data-bug-report-files/u);
@@ -2126,7 +2126,7 @@ test("statistics compares one independently selected limit and tracks its price"
   assert.match(app, /function pearsonCorrelation\(left, right\)/u);
   assert.match(app, /function limitDeltasByBucket\(series, buckets\)/u);
   assert.match(app, /agent-hub:comparison-series:v2/u);
-  assert.match(html, /(data-statistics-account-select[\s\S]*?){2}/u);
+  assert.equal((html.match(/data-statistics-account-select/gu) ?? []).length, 1);
   assert.match(app, /function selectStatisticsAccount\(accountKey\)/u);
   assert.match(app, /function comparisonLimitPrice\(localValues, apiValues, buckets\)/u);
   assert.match(app, /function selectComparisonSeries\(id\)/u);

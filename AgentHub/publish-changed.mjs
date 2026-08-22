@@ -96,6 +96,14 @@ export function classifyPublicationChanges(files) {
       plan.vscode = true;
       continue;
     }
+    if (relative === "client-assets.cjs" || relative === "theme-registry.cjs") {
+      plan.runtime = true;
+      plan.runtimeRestart = true;
+      plan.worker = true;
+      plan.unitTests = true;
+      plan.surfaceTests = true;
+      continue;
+    }
     if (relative === "package.json" || relative.endsWith(".mjs") || relative.endsWith(".cjs") || relative.endsWith(".ps1") || relative.endsWith(".vbs") || relative.endsWith(".py")) {
       plan.runtime = true;
       plan.runtimeRestart = true;
@@ -112,17 +120,17 @@ export function classifyPublicationChanges(files) {
 
 function focusedSteps(plan, {
   fullTestCheckpointId = "",
-  fullTestSourceFingerprint = "",
   testContour = false,
+  workerChangedFiles = null,
 } = {}) {
   if (plan.unknown.length) {
-    return publicationSteps({ fullTestCheckpointId, fullTestSourceFingerprint, testContour });
+    return publicationSteps({ fullTestCheckpointId, testContour, workerChangedFiles });
   }
   const full = publicationSteps({
     skipWorker: !plan.worker,
     fullTestCheckpointId,
-    fullTestSourceFingerprint,
     testContour,
+    workerChangedFiles,
   });
   const byLabel = new Map(full.map((step) => [step.label, step]));
   const steps = [];
@@ -155,7 +163,10 @@ function focusedSteps(plan, {
   }
   if (testContour) steps.push(byLabel.get("Тестовый контур Agent Hub"));
   if (plan.android) steps.push(byLabel.get("Сборка Agent Hub Mobile"));
-  if (plan.worker) steps.push(byLabel.get("Публикация Mini App Worker"));
+  if (plan.worker) {
+    steps.push(byLabel.get("Развёртывание Mini App Worker"));
+    steps.push(byLabel.get("Проверка Mini App Worker"));
+  }
   if (plan.runtime) {
     steps.push(byLabel.get("Сборка runtime-релиза"));
     steps.push(byLabel.get("Активация runtime-релиза"));
@@ -164,17 +175,9 @@ function focusedSteps(plan, {
   return steps.filter(Boolean);
 }
 
-async function changedSourceFingerprint(files) {
-  const sourceFiles = files.filter((file) => {
-    const normalized = file.replaceAll("\\", "/");
-    return normalized.startsWith("AgentHub/")
-      && !normalized.startsWith("AgentHub/tests/")
-      && !normalized.startsWith("AgentHub/e2e/")
-      && !/\.test\.(?:mjs|js)$/u.test(normalized)
-      && normalized !== "AgentHub/install_test.py";
-  }).toSorted();
-  const hash = createHash("sha256").update("release-source-v1\0");
-  for (const file of sourceFiles) {
+async function contentFingerprint(namespace, files) {
+  const hash = createHash("sha256").update(`publication-step-v1\0${namespace}\0`);
+  for (const file of files.toSorted()) {
     hash.update(file).update("\0");
     try {
       hash.update(await readFile(path.resolve(REPOSITORY_ROOT, file)));
@@ -185,6 +188,54 @@ async function changedSourceFingerprint(files) {
     hash.update("\0");
   }
   return hash.digest("hex");
+}
+
+function workerDeploymentFile(file) {
+  return file.startsWith("AgentHub/assets/web-app/")
+    || file.startsWith("AgentHub/assets/mobile/")
+    || file.startsWith("AgentHub/AndroidApp/")
+    || file === "AgentHub/client-assets.cjs"
+    || file === "AgentHub/theme-registry.cjs"
+    || (file.startsWith("AgentHub/cloudflare-worker/")
+      && file !== "AgentHub/cloudflare-worker/verify-deployment.mjs");
+}
+
+function runtimeFile(file) {
+  return file.startsWith("AgentHub/")
+    && !file.startsWith("AgentHub/tests/")
+    && !file.startsWith("AgentHub/e2e/")
+    && !file.startsWith("AgentHub/cloudflare-worker/")
+    && !file.startsWith("AgentHub/AndroidApp/")
+    && !file.startsWith("AgentHub/VSCodeExtension/");
+}
+
+function filesForStep(label, files) {
+  if (label === "Развёртывание Mini App Worker") return files.filter(workerDeploymentFile);
+  if (label === "Проверка Mini App Worker") {
+    return files.filter((file) => workerDeploymentFile(file)
+      || file === "AgentHub/cloudflare-worker/verify-deployment.mjs");
+  }
+  if (label === "Сборка Agent Hub Mobile") {
+    return files.filter((file) => file.startsWith("AgentHub/AndroidApp/")
+      || file.startsWith("AgentHub/assets/mobile/"));
+  }
+  if (label === "Установка расширения VS Code") {
+    return files.filter((file) => file.startsWith("AgentHub/VSCodeExtension/"));
+  }
+  if (label === "Сборка runtime-релиза" || label === "Активация runtime-релиза") {
+    return files.filter(runtimeFile);
+  }
+  return files;
+}
+
+async function withStepFingerprints(steps, files) {
+  return Promise.all(steps.map(async (step) => ({
+    ...step,
+    fingerprint: await contentFingerprint(
+      JSON.stringify({ label: step.label, command: step.command, args: step.args, env: step.env ?? {} }),
+      filesForStep(step.label, files),
+    ),
+  })));
 }
 
 export function parseChangedArguments(args) {
@@ -232,16 +283,22 @@ export async function publishChanged(args = process.argv.slice(2), {
     const fullTestCheckpointId = createHash("sha256")
       .update(JSON.stringify({ mode: "changed", from }))
       .digest("hex");
-    const fullTestSourceFingerprint = await changedSourceFingerprint(files);
-    const steps = focusedSteps(plan, {
+    const workerChangedFiles = files.filter((file) => workerDeploymentFile(file)
+      || file === "AgentHub/cloudflare-worker/verify-deployment.mjs");
+    const steps = await withStepFingerprints(focusedSteps(plan, {
       fullTestCheckpointId,
-      fullTestSourceFingerprint,
       testContour: options.testContour,
-    });
+      workerChangedFiles,
+    }), files);
     try {
       await runPublicationSteps(steps, {
         run,
         checkpoint,
+        checkpointScope: {
+          mode: "changed",
+          from,
+          runtimeRoot,
+        },
         identity: {
           mode: "changed",
           from,

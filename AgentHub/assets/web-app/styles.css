@@ -13686,3 +13686,310 @@ html[data-browser-auth] {
     border-radius: 20px;
   }
 }
+
+/* ============================================ Статистика: две колонки ===
+   Лимиты, sync и настройки не зависят от выбранного графика и стоят справа,
+   а три полотна больше не идут друг под другом: активна одна страница.
+   Неактивные страницы остаются в рамке абсолютом и сохраняют ширину, поэтому
+   SVG строится по фактической ширине карточки и не требует перерисовки при
+   переключении вкладок. */
+.statistics-view {
+  margin: 0 auto;
+  max-width: min(120rem, 100%);
+  width: 100%;
+}
+
+.statistics-main {
+  display: grid;
+  gap: 0.85rem;
+  min-width: 0;
+}
+
+.statistics-aside {
+  align-content: start;
+  display: grid;
+  gap: 0.85rem;
+  min-width: 0;
+}
+
+@media (min-width: 1180px) {
+  html:not([data-surface="mobile"]) .statistics-content {
+    align-items: start;
+    grid-template-columns: minmax(0, 1fr) clamp(18rem, 18vw, 22rem);
+  }
+
+  /* Правая колонка выше экрана из-за панели аккаунтов, поэтому прокручивается
+     сама, а графики остаются на месте. */
+  html:not([data-surface="mobile"]) .statistics-aside {
+    max-height: calc(100dvh - 5.5rem);
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    position: sticky;
+    scrollbar-width: none;
+    top: 1rem;
+  }
+
+  html:not([data-surface="mobile"]) .statistics-aside::-webkit-scrollbar {
+    display: none;
+    width: 0;
+  }
+}
+
+.statistics-pager {
+  display: flex;
+  gap: 0.25rem;
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+  padding-bottom: 0.5rem;
+  scrollbar-width: none;
+}
+
+.statistics-pager::-webkit-scrollbar {
+  display: none;
+  height: 0;
+}
+
+.statistics-pager-tab {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-chip);
+  color: var(--text-muted);
+  cursor: pointer;
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: 0.86rem;
+  padding: 0.42rem 0.9rem;
+  transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+  white-space: nowrap;
+}
+
+.statistics-pager-tab:hover {
+  color: var(--text);
+}
+
+.statistics-pager-tab[aria-selected="true"] {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 44%, transparent);
+  color: var(--text);
+}
+
+.statistics-pager-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.statistics-pages {
+  min-width: 0;
+  position: relative;
+}
+
+.statistics-page {
+  min-width: 0;
+}
+
+.statistics-page:not(.is-active) {
+  inset: 0 0 auto;
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
+  visibility: hidden;
+}
+
+/* Управление графиком стоит вертикальным рельсом слева: полотну достаётся вся
+   оставшаяся ширина, а страница перестала расти вниз рядами чипов. */
+.chart-layout {
+  display: grid;
+  gap: 1.1rem;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+@media (min-width: 900px) {
+  html:not([data-surface="mobile"]) .chart-layout {
+    grid-template-columns: clamp(8.5rem, 11vw, 10.5rem) minmax(0, 1fr);
+  }
+}
+
+.chart-rail {
+  display: grid;
+  align-content: start;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.chart-rail-group {
+  display: grid;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.chart-rail-label {
+  color: var(--text-faint);
+  font-family: var(--font-title);
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.chart-rail .limits-ranges {
+  display: grid;
+  gap: 0.3rem;
+  grid-template-columns: repeat(auto-fit, minmax(3.4rem, 1fr));
+}
+
+@media (min-width: 900px) {
+  html:not([data-surface="mobile"]) .chart-rail .limits-ranges {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* Периоды короткие, поэтому идут в две колонки: столбец из шести кнопок
+     делал рельс выше полотна и оставлял пустоту рядом с графиком. */
+  html:not([data-surface="mobile"]) .chart-rail [data-usage-ranges],
+  html:not([data-surface="mobile"]) .chart-rail [data-limits-ranges],
+  html:not([data-surface="mobile"]) .chart-rail [data-comparison-ranges] {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.chart-rail .limits-range {
+  text-align: center;
+  width: 100%;
+}
+
+.chart-rail-switch {
+  margin: 0.15rem 0 0;
+}
+
+.chart-rail-switch .switch-text {
+  font-size: 0.74rem;
+}
+
+.chart-rail-switch .switch-note {
+  font-size: 0.68rem;
+}
+
+.chart-main {
+  min-width: 0;
+}
+
+/* Переключатель периода в расходе по аккаунтам тоже встаёт колонкой: пять
+   широких плиток в ряд занимали всю ширину и ломали ритм страницы. */
+.statistics-account-panel [data-work-log-account-periods] {
+  /* Строки объявлены явно: без них `grid-row: 1 / -1` у тела периода
+     схлопывается в первую строку и растягивает её вместо колонки. */
+  grid-template-columns: clamp(9rem, 12vw, 11.5rem) minmax(0, 1fr);
+  grid-template-rows: repeat(var(--account-period-count, 5), auto);
+}
+
+/* Плитка периода в колонке остаётся компактной: название, сумма и ходы.
+   Строка качества записей длинная и в узком рельсе занимала три строки —
+   она переехала в шапку выбранного периода. */
+.statistics-account-panel [data-work-log-account-period-tab] {
+  border-left: 0;
+  border-top: 1px solid var(--line);
+  gap: 0.1rem;
+  grid-column: 1;
+  grid-row: auto;
+  padding: 0.5rem 0.75rem;
+}
+
+.statistics-account-panel [data-work-log-account-period-name] {
+  font-size: 0.6rem;
+  letter-spacing: 0.1em;
+}
+
+.statistics-account-panel [data-work-log-account-period-amount] {
+  font-size: 0.98rem;
+}
+
+.statistics-account-panel [data-work-log-account-period-unit] {
+  font-size: 0.66rem;
+}
+
+.statistics-account-panel [data-work-log-account-period-turns] {
+  font-size: 0.66rem;
+}
+
+.statistics-account-panel [data-work-log-account-period-quality] {
+  display: none;
+}
+
+.statistics-account-panel [data-work-log-account-periods]
+  > [data-work-log-account-period-tab]:first-of-type {
+  border-top: 0;
+}
+
+.statistics-account-panel [data-work-log-account-period-body][data-active] {
+  border-left: 1px solid var(--line-strong);
+  border-top: 0;
+  grid-column: 2;
+  grid-row: 1 / -1;
+}
+
+/* Шапка периода нужна здесь как подпись выбранного столбца рельса. */
+.statistics-account-panel [data-work-log-account-period-headline] {
+  align-items: baseline;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem 0.8rem;
+  padding: 0.55rem 0.9rem;
+}
+
+.statistics-account-panel [data-work-log-account-period-headline-title] {
+  color: var(--text-faint);
+  font-family: var(--font-title);
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
+
+.statistics-account-panel [data-work-log-account-period-headline-quality],
+.statistics-account-panel [data-work-log-account-period-headline-turns] {
+  color: var(--text-faint);
+  font-size: 0.68rem;
+}
+
+.statistics-account-panel [data-work-log-account-period-headline-value] {
+  margin-left: auto;
+}
+
+.chart-head {
+  margin-bottom: 0.7rem;
+}
+
+/* В узкой колонке лимиты выстраиваются списком, а не в четыре столбца. */
+.statistics-aside .current-limits-card .current-limits-row {
+  grid-template-columns: minmax(0, 1fr);
+  row-gap: 12px;
+}
+
+.statistics-aside .current-limits-card .current-limit {
+  border-left: 0;
+  gap: 8px;
+  padding: 0;
+}
+
+.statistics-aside .current-limits-card .current-limit + .current-limit {
+  border-top: 1px solid #222e3d;
+  padding-top: 12px;
+}
+
+.statistics-aside .statistics-preferences-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.statistics-aside .statistics-account-control {
+  width: 100%;
+}
+
+.statistics-aside .statistics-account-control .themed-select {
+  min-width: 0;
+  width: 100%;
+}
+
+.statistics-scope-card .statistics-card-head {
+  margin-bottom: 0.6rem;
+}

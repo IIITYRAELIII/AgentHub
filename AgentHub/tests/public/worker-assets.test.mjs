@@ -7,8 +7,17 @@ import test from "node:test";
 
 import { buildWorkerAssets } from "../../cloudflare-worker/build-assets.mjs";
 import { deployWorker } from "../../cloudflare-worker/deploy-worker.mjs";
-import { publishWorker, workerRouteBaseUrl } from "../../cloudflare-worker/publish-worker.mjs";
-import { verifyThemeDeployment } from "../../cloudflare-worker/verify-deployment.mjs";
+import {
+  deployWorkerRelease,
+  publishWorker,
+  verifyWorkerRelease,
+  workerRouteBaseUrl,
+} from "../../cloudflare-worker/publish-worker.mjs";
+import {
+  changedBackgrounds,
+  verifyThemeDeployment,
+  WORKER_VERIFY_REQUEST_TIMEOUT_MS,
+} from "../../cloudflare-worker/verify-deployment.mjs";
 
 const require = createRequire(import.meta.url);
 const { localAssetPathname, localAssetReferences } = require("../../client-assets.cjs");
@@ -134,4 +143,41 @@ test("Worker publication holds one transaction through build, deploy and live ve
   assert.deepEqual(events, ["lock", "guard", "build", "deploy", "verify:https://hub.example.test/"]);
   assert.deepEqual(result, { backgrounds: 45 });
   assert.equal(workerRouteBaseUrl({ routes: ["https://hub.example.test/*"] }), "https://hub.example.test/");
+});
+
+test("Worker deployment and live verification are independently retryable", async () => {
+  const events = [];
+  const common = {
+    exclusive: async (operation) => operation(),
+    before: async () => events.push("guard"),
+  };
+  await deployWorkerRelease({
+    ...common,
+    build: async () => events.push("build"),
+    deploy: async () => events.push("deploy"),
+  });
+  await verifyWorkerRelease({
+    ...common,
+    changedFiles: ["AgentHub/assets/web-app/themes/bespin/portal.jpg"],
+    readConfig: async () => ({ routes: ["hub.example.test/*"] }),
+    verify: async ({ baseUrl, changedFiles }) => events.push(`verify:${baseUrl}:${changedFiles.length}`),
+  });
+  assert.deepEqual(events, ["guard", "build", "deploy", "guard", "verify:https://hub.example.test/:1"]);
+});
+
+test("Worker verification selects only changed manifests and uses a five-minute request bound", () => {
+  const backgrounds = [{
+    theme: { id: "bespin" },
+    background: { asset: "portal.jpg" },
+  }, {
+    theme: { id: "diablo" },
+    background: { asset: "sanctuary.png" },
+  }];
+  assert.deepEqual(changedBackgrounds(backgrounds, [
+    "AgentHub/assets/web-app/themes/bespin/portal.jpg",
+  ]), [backgrounds[0]]);
+  assert.deepEqual(changedBackgrounds(backgrounds, [
+    "AgentHub/assets/web-app/themes/diablo/theme.json",
+  ]), [backgrounds[1]]);
+  assert.equal(WORKER_VERIFY_REQUEST_TIMEOUT_MS, 300_000);
 });

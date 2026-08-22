@@ -460,11 +460,11 @@ html[data-theme="reliquary"] .stream-tab[aria-pressed="true"] .stream-tab-card {
 }
 
 html[data-theme="reliquary"] .msg {
-  backdrop-filter: blur(8px) saturate(92%);
-  -webkit-backdrop-filter: blur(8px) saturate(92%);
-  background-color: rgb(6 8 10 / 76%);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  background-color: rgb(6 8 10 / 94%);
   background-image:
-    linear-gradient(rgb(12 14 16 / 77%), rgb(3 5 7 / 84%)),
+    linear-gradient(rgb(12 14 16 / 94%), rgb(3 5 7 / 96%)),
     var(--reliquary-basalt);
   background-size: auto, 34rem 34rem;
 }

@@ -44,12 +44,61 @@ export async function publishWorker({
   });
 }
 
+export async function deployWorkerRelease({
+  build = buildWorkerAssets,
+  deploy = deployWorker,
+  before = async () => {},
+  exclusive = withPublicationLock,
+} = {}) {
+  return exclusive(async () => {
+    await before();
+    await build();
+    await deploy();
+  });
+}
+
+export async function verifyWorkerRelease({
+  verify = verifyThemeDeployment,
+  before = async () => {},
+  exclusive = withPublicationLock,
+  changedFiles = null,
+  readConfig = async () => JSON.parse(await readFile(
+    path.join(import.meta.dirname, "wrangler.jsonc"),
+    "utf8",
+  )),
+} = {}) {
+  return exclusive(async () => {
+    await before();
+    return verify({
+      baseUrl: workerRouteBaseUrl(await readConfig()),
+      changedFiles,
+    });
+  });
+}
+
+function changedFilesFromEnvironment(environment = process.env) {
+  const source = String(environment.AGENT_HUB_WORKER_CHANGED_FILES ?? "").trim();
+  if (!source) return null;
+  const files = JSON.parse(source);
+  if (!Array.isArray(files) || files.some((file) => typeof file !== "string")) {
+    throw new Error("AGENT_HUB_WORKER_CHANGED_FILES must contain a JSON string array");
+  }
+  return files;
+}
+
 const invokedFile = process.argv[1] ? pathToFileURL(path.resolve(process.argv[1])).href : "";
 if (invokedFile === import.meta.url) {
-  await publishWorker({
-    before: async () => {
-      await assertCleanPublicationTree({ cwd: repositoryRoot });
-      await assertCurrentPublicationRevision({ cwd: repositoryRoot });
-    },
-  });
+  const action = String(process.argv[2] ?? "all").trim().toLowerCase();
+  const before = async () => {
+    await assertCleanPublicationTree({ cwd: repositoryRoot });
+    await assertCurrentPublicationRevision({ cwd: repositoryRoot });
+  };
+  if (action === "deploy") await deployWorkerRelease({ before });
+  else if (action === "verify") {
+    await verifyWorkerRelease({
+      before,
+      changedFiles: changedFilesFromEnvironment(),
+    });
+  } else if (action === "all") await publishWorker({ before });
+  else throw new Error(`Unknown Worker publication action: ${action}`);
 }

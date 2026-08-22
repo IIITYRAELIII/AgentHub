@@ -14,6 +14,7 @@ import {
   waitForRuntimeReplacement,
 } from "../../publish-all.mjs";
 import { classifyPublicationChanges, parseChangedArguments, publishChanged } from "../../publish-changed.mjs";
+import { runPublicationSteps } from "../../src/infrastructure/persistence/publication-checkpoint.mjs";
 import { detectGitCommonDirectory, ensureWrangler, resolveWrangler } from "../../wrangler-runner.mjs";
 import {
   assertCleanPublicationTree,
@@ -75,12 +76,12 @@ test("publication allows a detached checkout at origin main", async () => {
 test("publication runs Test Contour only when explicitly requested", () => {
   const steps = publicationSteps({
     fullTestCheckpointId: "release-checkpoint",
-    fullTestSourceFingerprint: "source-fingerprint",
   });
   assert.deepEqual(steps.map((item) => item.label), [
     "Полные тесты Agent Hub",
     "Сборка Agent Hub Mobile",
-    "Публикация Mini App Worker",
+    "Развёртывание Mini App Worker",
+    "Проверка Mini App Worker",
     "Сборка runtime-релиза",
     "Активация runtime-релиза",
     "Установка расширения VS Code",
@@ -88,10 +89,9 @@ test("publication runs Test Contour only when explicitly requested", () => {
 
   assert.deepEqual(steps[0].args.slice(-2), ["run", "test:all"]);
   assert.equal(steps[0].env.AGENT_HUB_FULL_TEST_CHECKPOINT_ID, "release-checkpoint");
-  assert.equal(steps[0].env.AGENT_HUB_FULL_TEST_SOURCE_FINGERPRINT, "source-fingerprint");
   assert.deepEqual(steps[1].args.slice(-2), ["run", "android:build"]);
   assert.equal(
-    steps.findIndex((step) => step.label.includes("Публикация")),
+    steps.findIndex((step) => step.label.includes("Развёртывание")),
     2,
     "deployment must start only after all validation surfaces pass",
   );
@@ -256,7 +256,7 @@ test("selective publication maps shared UI to runtime, Worker and surface tests"
     {
       runtime: true,
       runtimeRestart: true,
-      worker: false,
+      worker: true,
       android: false,
       vscode: false,
       unitTests: true,
@@ -333,9 +333,9 @@ test("selective publication keeps Test Contour optional with full tests", async 
     steps.find((step) => step.label === "Полные тесты Agent Hub").env.AGENT_HUB_FULL_TEST_CHECKPOINT_ID,
     /^[0-9a-f]{64}$/u,
   );
-  assert.match(
+  assert.equal(
     steps.find((step) => step.label === "Полные тесты Agent Hub").env.AGENT_HUB_FULL_TEST_SOURCE_FINGERPRINT,
-    /^[0-9a-f]{64}$/u,
+    undefined,
   );
 });
 
@@ -374,7 +374,8 @@ test("selective publication records the exact published revision", async () => {
     "Unit-тесты Agent Hub",
     "Межповерхностные E2E Agent Hub",
     "Тесты расширения VS Code",
-    "Публикация Mini App Worker",
+    "Развёртывание Mini App Worker",
+    "Проверка Mini App Worker",
     "Сборка runtime-релиза",
     "Активация runtime-релиза",
   ]);
@@ -597,10 +598,10 @@ test("selective publication resumes after the last successful stage", async () =
       ...common,
       run: async (step) => {
         firstRun.push(step.label);
-        if (step.label === "Публикация Mini App Worker") throw new Error("deployment failed");
+        if (step.label === "Проверка Mini App Worker") throw new Error("verification failed");
       },
     }),
-    /deployment failed/u,
+    /verification failed/u,
   );
   const resumedRun = [];
   await publishChanged(["--from", "base", "--skip-restart"], {
@@ -609,11 +610,45 @@ test("selective publication resumes after the last successful stage", async () =
   });
   assert.ok(firstRun.includes("Unit-тесты Agent Hub"));
   assert.deepEqual(resumedRun, [
-    "Публикация Mini App Worker",
+    "Проверка Mini App Worker",
     "Сборка runtime-релиза",
     "Активация runtime-релиза",
   ]);
   assert.equal(savedCheckpoint, null);
+});
+
+test("publication reuses content-identical stages across correction revisions", async () => {
+  let savedCheckpoint = null;
+  const checkpoint = {
+    read: async () => savedCheckpoint,
+    write: async (value) => { savedCheckpoint = structuredClone(value); },
+  };
+  const first = [];
+  await assert.rejects(runPublicationSteps([
+    { label: "deploy", fingerprint: "payload-v1" },
+    { label: "verify", fingerprint: "verifier-v1" },
+  ], {
+    checkpoint,
+    checkpointScope: { mode: "changed", from: "base" },
+    identity: { revision: "correction-1" },
+    run: async (step) => {
+      first.push(step.label);
+      if (step.label === "verify") throw new Error("network");
+    },
+  }), /network/u);
+
+  const second = [];
+  await runPublicationSteps([
+    { label: "deploy", fingerprint: "payload-v1" },
+    { label: "verify", fingerprint: "verifier-v2" },
+  ], {
+    checkpoint,
+    checkpointScope: { mode: "changed", from: "base" },
+    identity: { revision: "correction-2" },
+    run: async (step) => second.push(step.label),
+  });
+  assert.deepEqual(first, ["deploy", "verify"]);
+  assert.deepEqual(second, ["verify"]);
 });
 
 test("clean worktrees resolve the common Git directory without invoking Git", () => {

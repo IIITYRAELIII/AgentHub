@@ -164,7 +164,7 @@
             <path d="M32 176l48-48 40 40 32-32 72 72" fill="none" stroke="currentColor"
               stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></path>
           </svg>
-          <span>Фон</span>
+          <span>Ничё</span>
         </button>
         <button type="button" class="view-tab" data-view-button="server" aria-pressed="false">
           <svg data-phosphor-icon="hard-drives" viewBox="0 0 256 256" aria-hidden="true">
@@ -486,7 +486,17 @@
               </div>
             </section>
           </div>
-        </aside>
+          <section class="statistics-card statistics-sync-card" data-statistics-sync-card
+          aria-labelledby="statistics-sync-title" hidden>
+          <header class="statistics-card-head">
+            <div>
+              <h2 id="statistics-sync-title">Sync расхода</h2>
+              <p>Подключение, ручная синхронизация и код для другого устройства.</p>
+            </div>
+          </header>
+          <div class="statistics-sync-controls" data-statistics-sync-host></div>
+        </section>
+      </aside>
       </div>
       </div>
 
@@ -931,250 +941,314 @@
   <!-- =============================================== Статистика расхода === -->
   <main class="statistics-view" data-statistics-view>
     <div class="statistics-content">
-      <section class="current-limits-card" aria-labelledby="current-limits-title">
-        <header class="current-limits-head">
-          <h2 id="current-limits-title">Текущие лимиты</h2>
-        </header>
-        <div class="current-limits-row" data-current-limits="statistics">
-          <span class="current-limits-empty">Загрузка…</span>
-        </div>
-      </section>
-      <section class="statistics-card statistics-sync-card" data-statistics-sync-card
-        aria-labelledby="statistics-sync-title" hidden>
-        <header class="statistics-card-head">
-          <div>
-            <h2 id="statistics-sync-title">Sync расхода</h2>
-            <p>Подключение, ручная синхронизация и код для другого устройства.</p>
-          </div>
-        </header>
-        <div class="statistics-sync-controls" data-statistics-sync-host></div>
-      </section>
-      <section data-statistics-account-panel-host></section>
-      <section class="statistics-card statistics-preferences-card" aria-labelledby="statistics-preferences-title">
-        <header class="statistics-card-head">
-          <div>
-            <h2 id="statistics-preferences-title">Настройки статистики</h2>
-          </div>
-        </header>
-        <div class="statistics-preferences-grid">
-          <div class="setting-stack">
-            <span class="setting-name">Учитывать расход по времени хода</span>
-            <div class="setting-options turn-time-options" role="group"
-              aria-label="Временная привязка расхода">
-              <button type="button" class="option-chip" data-turn-time-mode="start">Начало</button>
-              <button type="button" class="option-chip" data-turn-time-mode="middle">Середина</button>
-              <button type="button" class="option-chip" data-turn-time-mode="end">Окончание</button>
-            </div>
-            <span class="switch-note">
-              Определяет, в какую точку графика попадёт расход завершённого хода.
-            </span>
-          </div>
-          <div class="setting-stack">
-            <span class="setting-name">Единица расхода</span>
-            <div class="setting-options compact-options" role="group" aria-label="Единица расхода в статистике">
-              <button type="button" class="option-chip" data-usage-unit="pte">ПТЭ</button>
-              <button type="button" class="option-chip" data-usage-unit="cr">cr</button>
-              <button type="button" class="option-chip" data-usage-unit="$">$</button>
-              <button type="button" class="option-chip" data-usage-unit="rub">₽</button>
-            </div>
-          </div>
-        </div>
-      </section>
-      <section class="statistics-card" aria-labelledby="usage-chart-title">
-        <header class="statistics-card-head">
-          <div>
-            <h2 id="usage-chart-title" data-usage-title>Локальный расход</h2>
-            <p data-usage-subtitle>По завершённым ходам локального журнала.</p>
-          </div>
-          <strong class="statistics-total" data-usage-total></strong>
-        </header>
-        <!-- Расход и скорость — две проекции одних данных, поэтому живут в
-             одной карточке и переключаются, а не занимают два экрана. -->
-        <div class="limits-ranges usage-modes" role="group" aria-label="Показатель"
-          data-usage-modes>
-          <button type="button" class="limits-range" data-usage-mode="total"
-            aria-pressed="true">Расход</button>
-          <button type="button" class="limits-range" data-usage-mode="rate"
-            aria-pressed="false">Скорость</button>
-          <button type="button" class="limits-range" data-usage-mode="intensity"
-            aria-pressed="false">Поглощение</button>
-        </div>
-        <div class="limits-ranges" role="group" aria-label="Период расхода" data-usage-ranges>
-          <button type="button" class="limits-range" data-range="6h" aria-pressed="false">6&nbsp;ч</button>
-          <button type="button" class="limits-range" data-range="24h" aria-pressed="false">24&nbsp;ч</button>
-          <button type="button" class="limits-range" data-range="7d" aria-pressed="false">7&nbsp;д</button>
-          <button type="button" class="limits-range" data-range="15d" aria-pressed="false">15&nbsp;д</button>
-          <button type="button" class="limits-range" data-range="30d" aria-pressed="false">30&nbsp;д</button>
-          <button type="button" class="limits-range" data-range="all" aria-pressed="false">Все</button>
-        </div>
-        <div class="limits-body">
-          <div class="limits-state limits-loading" data-usage-loading hidden aria-live="polite">
-            <span class="limits-spinner" aria-hidden="true"></span>
-            <span>Загрузка локального расхода…</span>
-          </div>
-          <div class="limits-state limits-error" data-usage-error hidden role="alert">
-            <p data-usage-error-text>Не удалось загрузить локальный расход.</p>
-            <button type="button" class="chip-button" data-usage-retry>Повторить</button>
-          </div>
-          <div class="limits-state limits-empty" data-usage-empty hidden>
-            <p>За выбранный период нет тарифицированных ходов.</p>
-          </div>
-          <div class="limits-chart-wrap" data-usage-chart-wrap hidden>
-            <div class="usage-burn-summary" data-usage-burn-summary hidden
-              aria-live="polite"></div>
-            <figure class="limits-chart usage-chart" data-usage-chart role="img"
-              aria-label="График локального расхода"></figure>
-            <div class="limits-tooltip" data-usage-tooltip hidden role="status"
-              aria-live="polite"></div>
-            <p class="statistics-note" data-usage-note></p>
-          </div>
-        </div>
-      </section>
+      <!-- Графики переключаются страницами, а управление вынесено в левый
+           рельс: полотно получает всю оставшуюся ширину, и страница целиком
+           помещается в экран. -->
+      <div class="statistics-main">
+        <nav class="statistics-pager" role="tablist" aria-label="Разделы статистики"
+          data-statistics-pager>
+          <button type="button" class="statistics-pager-tab" role="tab"
+            data-statistics-page-button="usage" aria-selected="true"
+            aria-controls="statistics-page-usage" id="statistics-tab-usage">Локальный расход</button>
+          <button type="button" class="statistics-pager-tab" role="tab"
+            data-statistics-page-button="limits" aria-selected="false"
+            aria-controls="statistics-page-limits" id="statistics-tab-limits">Лимиты API</button>
+          <button type="button" class="statistics-pager-tab" role="tab"
+            data-statistics-page-button="comparison" aria-selected="false"
+            aria-controls="statistics-page-comparison" id="statistics-tab-comparison">Корреляция</button>
+        </nav>
 
-      <section class="statistics-card" aria-labelledby="limits-chart-title">
-        <header class="statistics-card-head limits-head-main">
-          <div>
-            <h2 id="limits-chart-title">Лимиты API</h2>
-            <p class="limits-subtitle" data-limits-subtitle></p>
-          </div>
-          <div class="limits-head-controls">
-            <div class="limits-mode-switch" role="group" aria-label="Режим графика лимитов"
-              data-limits-modes>
-              <button type="button" data-limits-mode="usage" aria-pressed="true">Расход</button>
-              <button type="button" data-limits-mode="speed" aria-pressed="false">Скорость</button>
-            </div>
-            <label class="statistics-account-control">
-              <span>Аккаунт</span>
-              <select data-statistics-account-select aria-label="Аккаунт статистики"></select>
-            </label>
-          </div>
-        </header>
-        <div class="limits-ranges" role="group" aria-label="Период истории" data-limits-ranges>
-          <button type="button" class="limits-range" data-range="6h" aria-pressed="false">6&nbsp;ч</button>
-          <button type="button" class="limits-range" data-range="24h" aria-pressed="false">24&nbsp;ч</button>
-          <button type="button" class="limits-range" data-range="7d" aria-pressed="false">7&nbsp;д</button>
-          <button type="button" class="limits-range" data-range="15d" aria-pressed="false">15&nbsp;д</button>
-          <button type="button" class="limits-range" data-range="30d" aria-pressed="false">30&nbsp;д</button>
-          <button type="button" class="limits-range" data-range="all" aria-pressed="false">Все</button>
-        </div>
-        <label class="setting-switch limits-speed-window-setting" data-limits-speed-window-setting hidden>
-          <input type="checkbox" data-limits-speed-full-window checked>
-          <span class="switch-text">Ждать полный интервал для скорости
-            <span class="switch-note">Отключите, чтобы показывать предварительный темп сразу после сброса лимита.</span>
-          </span>
-          <span class="switch-track" aria-hidden="true"></span>
-        </label>
-        <div class="limits-body" data-limits-body>
-          <div class="limits-state limits-loading" data-limits-loading hidden aria-live="polite">
-            <span class="limits-spinner" aria-hidden="true"></span>
-            <span>Загрузка истории лимитов…</span>
-          </div>
-          <div class="limits-state limits-error" data-limits-error hidden role="alert">
-            <p data-limits-error-text>Не удалось загрузить историю лимитов.</p>
-            <button type="button" class="chip-button" data-limits-retry>Повторить</button>
-          </div>
-          <div class="limits-state limits-empty" data-limits-empty hidden>
-            <p>За выбранный период нет данных о лимитах.</p>
-          </div>
-          <div class="limits-chart-wrap" data-limits-chart-wrap hidden>
-            <div class="limits-speed-summary" data-limits-speed-summary hidden
-              aria-live="polite"></div>
-            <figure class="limits-chart" data-limits-chart role="img"
-              aria-label="График расхода лимитов"></figure>
-            <div class="limits-tooltip" data-limits-tooltip hidden role="status"
-              aria-live="polite"></div>
-            <ul class="limits-legend" data-limits-legend></ul>
-            <p class="statistics-note limits-speed-note" data-limits-speed-note hidden>
-              На диапазонах 6 и 24 часа скорость считается по последнему часу, на длинных —
-              по последним суткам. Пунктир показывает допустимый темп, горизонтальная линия —
-              ровный расход 100% за неделю. Реальный сброс начинает новый участок графика.
-            </p>
-            <div class="limits-credits" data-limits-credits hidden></div>
-          </div>
-        </div>
-      </section>
-      <section class="statistics-card" aria-labelledby="comparison-chart-title">
-        <header class="statistics-card-head comparison-card-head">
-          <div>
-            <h2 id="comparison-chart-title">Корреляция расхода</h2>
-            <p data-comparison-subtitle>Локальный расход и изменение лимитов API.</p>
-          </div>
-          <div class="comparison-head-controls">
-            <label class="statistics-account-control">
-              <span>Аккаунт</span>
-              <select data-statistics-account-select aria-label="Аккаунт статистики"></select>
-            </label>
-            <div class="comparison-summary" data-comparison-summary hidden aria-live="polite"></div>
-          </div>
-        </header>
-        <div class="comparison-view-control">
-          <span class="setting-name">Вид диаграммы</span>
-          <div class="setting-options comparison-view-options" role="group"
-            aria-label="Вид диаграммы сопоставления расхода">
-            <button type="button" class="option-chip" data-comparison-view-mode="combined">Общая</button>
-            <button type="button" class="option-chip" data-comparison-view-mode="split">Раздельно</button>
-          </div>
-        </div>
-        <div class="limits-ranges" role="group" aria-label="Период сопоставления"
-          data-comparison-ranges>
-          <button type="button" class="limits-range" data-range="6h" aria-pressed="false">6&nbsp;ч</button>
-          <button type="button" class="limits-range" data-range="24h" aria-pressed="false">24&nbsp;ч</button>
-          <button type="button" class="limits-range" data-range="7d" aria-pressed="false">7&nbsp;д</button>
-          <button type="button" class="limits-range" data-range="15d" aria-pressed="false">15&nbsp;д</button>
-          <button type="button" class="limits-range" data-range="30d" aria-pressed="false">30&nbsp;д</button>
-          <button type="button" class="limits-range" data-range="all" aria-pressed="false">Все</button>
-        </div>
-        <div class="limits-body">
-          <div class="limits-state limits-loading" data-comparison-loading hidden aria-live="polite">
-            <span class="limits-spinner" aria-hidden="true"></span>
-            <span>Сопоставляем локальный расход и лимиты…</span>
-          </div>
-          <div class="limits-state limits-error" data-comparison-error hidden role="alert">
-            <p data-comparison-error-text>Не удалось сопоставить расход.</p>
-            <button type="button" class="chip-button" data-comparison-retry>Повторить</button>
-          </div>
-          <div class="limits-state limits-empty" data-comparison-empty hidden>
-            <p>За выбранный период недостаточно совпадающих данных.</p>
-          </div>
-          <div class="limits-chart-wrap" data-comparison-chart-wrap hidden>
-            <div data-comparison-combined-view>
-              <figure class="limits-chart comparison-chart" data-comparison-chart role="img"
-                aria-label="Общий график корреляции локального расхода и лимитов API"></figure>
-            </div>
-            <div class="comparison-split-view" data-comparison-split-view hidden>
-              <section class="comparison-split-section" aria-labelledby="comparison-time-title">
-                <h3 id="comparison-time-title">Расход по времени</h3>
-                <figure class="limits-chart comparison-compact-chart" data-comparison-local-chart role="img"
-                  aria-label="Локальный расход по времени в исходных единицах"></figure>
-                <figure class="limits-chart comparison-compact-chart" data-comparison-api-chart role="img"
-                  aria-label="Расход выбранного лимита по времени в процентных пунктах"></figure>
-              </section>
-              <div class="comparison-analysis-grid">
-                <section class="comparison-split-section" aria-labelledby="comparison-scatter-title">
-                  <h3 id="comparison-scatter-title">Связь расходов</h3>
-                  <figure class="limits-chart comparison-analysis-chart" data-comparison-scatter-chart role="img"
-                    aria-label="Точечная диаграмма связи локального расхода и расхода лимита"></figure>
-                </section>
-                <section class="comparison-split-section" aria-labelledby="comparison-difference-title">
-                  <h3 id="comparison-difference-title">Разность: аккаунт − локально</h3>
-                  <figure class="limits-chart comparison-analysis-chart" data-comparison-difference-chart role="img"
-                    aria-label="Разность нормированных расходов аккаунта и локального расхода по времени"></figure>
-                </section>
+        <div class="statistics-pages" data-statistics-pages>
+          <section class="statistics-page is-active" data-statistics-page="usage" role="tabpanel"
+            id="statistics-page-usage" aria-labelledby="statistics-tab-usage">
+            <section class="statistics-card chart-card" aria-labelledby="usage-chart-title">
+              <header class="statistics-card-head chart-head">
+                <div>
+                  <h2 id="usage-chart-title" data-usage-title>Локальный расход</h2>
+                  <p data-usage-subtitle>По завершённым ходам локального журнала.</p>
+                </div>
+                <strong class="statistics-total" data-usage-total></strong>
+              </header>
+              <div class="chart-layout">
+                <aside class="chart-rail">
+            <div class="chart-rail-group">
+              <span class="chart-rail-label">Показатель</span>
+              <div class="limits-ranges" role="group" aria-label="Показатель"
+                data-usage-modes>
+                <button type="button" class="limits-range" data-usage-mode="total" aria-pressed="true">Расход</button>
+                <button type="button" class="limits-range" data-usage-mode="rate" aria-pressed="false">Скорость</button>
+                <button type="button" class="limits-range" data-usage-mode="intensity" aria-pressed="false">Поглощение</button>
               </div>
             </div>
-            <div class="limits-tooltip" data-comparison-tooltip hidden role="status"
-              aria-live="polite"></div>
-            <ul class="limits-legend comparison-legend" data-comparison-legend></ul>
-            <p class="statistics-note comparison-note" data-comparison-note>
-              При выборе аккаунта локальный расход учитывает только ходы, завершённые в интервалах его активности.
-              Пункт «Все» снимает отбор аккаунта.
-              Линии расхода приведены к собственному пику. r — корреляция Пирсона,
-              Δ — среднее знаковое отклонение «аккаунт − локально», цена — расход лимита в п.п. на 1 kcr.
-              Изменение цены сравнивает первую и вторую половины периода.
-            </p>
-          </div>
+            <div class="chart-rail-group">
+              <span class="chart-rail-label">Период</span>
+              <div class="limits-ranges" role="group" aria-label="Период расхода"
+                data-usage-ranges>
+                <button type="button" class="limits-range" data-range="6h" aria-pressed="false">6&nbsp;ч</button>
+                <button type="button" class="limits-range" data-range="24h" aria-pressed="false">24&nbsp;ч</button>
+                <button type="button" class="limits-range" data-range="7d" aria-pressed="false">7&nbsp;д</button>
+                <button type="button" class="limits-range" data-range="15d" aria-pressed="false">15&nbsp;д</button>
+                <button type="button" class="limits-range" data-range="30d" aria-pressed="false">30&nbsp;д</button>
+                <button type="button" class="limits-range" data-range="all" aria-pressed="false">Все</button>
+              </div>
+            </div>
+                </aside>
+                <div class="chart-main">
+              <div class="limits-body">
+                <div class="limits-state limits-loading" data-usage-loading hidden aria-live="polite">
+                  <span class="limits-spinner" aria-hidden="true"></span>
+                  <span>Загрузка локального расхода…</span>
+                </div>
+                <div class="limits-state limits-error" data-usage-error hidden role="alert">
+                  <p data-usage-error-text>Не удалось загрузить локальный расход.</p>
+                  <button type="button" class="chip-button" data-usage-retry>Повторить</button>
+                </div>
+                <div class="limits-state limits-empty" data-usage-empty hidden>
+                  <p>За выбранный период нет тарифицированных ходов.</p>
+                </div>
+                <div class="limits-chart-wrap" data-usage-chart-wrap hidden>
+                  <div class="usage-burn-summary" data-usage-burn-summary hidden
+                    aria-live="polite"></div>
+                  <figure class="limits-chart usage-chart" data-usage-chart role="img"
+                    aria-label="График локального расхода"></figure>
+                  <div class="limits-tooltip" data-usage-tooltip hidden role="status"
+                    aria-live="polite"></div>
+                  <p class="statistics-note" data-usage-note></p>
+                </div>
+              </div>
+                </div>
+              </div>
+            </section>
+          </section>
+
+          <section class="statistics-page" data-statistics-page="limits" role="tabpanel"
+            id="statistics-page-limits" aria-labelledby="statistics-tab-limits">
+            <section class="statistics-card chart-card" aria-labelledby="limits-chart-title">
+              <header class="statistics-card-head chart-head limits-head-main">
+                <div>
+                  <h2 id="limits-chart-title">Лимиты API</h2>
+                  <p class="limits-subtitle" data-limits-subtitle></p>
+                </div>
+              </header>
+              <div class="chart-layout">
+                <aside class="chart-rail">
+            <div class="chart-rail-group">
+              <span class="chart-rail-label">Режим</span>
+              <div class="limits-ranges" role="group" aria-label="Режим графика лимитов"
+                data-limits-modes>
+                <button type="button" class="limits-range" data-limits-mode="usage" aria-pressed="true">Расход</button>
+                <button type="button" class="limits-range" data-limits-mode="speed" aria-pressed="false">Скорость</button>
+              </div>
+              <label class="setting-switch chart-rail-switch limits-speed-window-setting"
+                data-limits-speed-window-setting hidden>
+                <input type="checkbox" data-limits-speed-full-window checked>
+                <span class="switch-text">Ждать полный интервал
+                  <span class="switch-note">Отключите, чтобы показывать предварительный темп сразу после сброса лимита.</span>
+                </span>
+                <span class="switch-track" aria-hidden="true"></span>
+              </label>
+            </div>
+            <div class="chart-rail-group">
+              <span class="chart-rail-label">Период</span>
+              <div class="limits-ranges" role="group" aria-label="Период истории"
+                data-limits-ranges>
+                <button type="button" class="limits-range" data-range="6h" aria-pressed="false">6&nbsp;ч</button>
+                <button type="button" class="limits-range" data-range="24h" aria-pressed="false">24&nbsp;ч</button>
+                <button type="button" class="limits-range" data-range="7d" aria-pressed="false">7&nbsp;д</button>
+                <button type="button" class="limits-range" data-range="15d" aria-pressed="false">15&nbsp;д</button>
+                <button type="button" class="limits-range" data-range="30d" aria-pressed="false">30&nbsp;д</button>
+                <button type="button" class="limits-range" data-range="all" aria-pressed="false">Все</button>
+              </div>
+            </div>
+                </aside>
+                <div class="chart-main">
+              <div class="limits-body" data-limits-body>
+                <div class="limits-state limits-loading" data-limits-loading hidden aria-live="polite">
+                  <span class="limits-spinner" aria-hidden="true"></span>
+                  <span>Загрузка истории лимитов…</span>
+                </div>
+                <div class="limits-state limits-error" data-limits-error hidden role="alert">
+                  <p data-limits-error-text>Не удалось загрузить историю лимитов.</p>
+                  <button type="button" class="chip-button" data-limits-retry>Повторить</button>
+                </div>
+                <div class="limits-state limits-empty" data-limits-empty hidden>
+                  <p>За выбранный период нет данных о лимитах.</p>
+                </div>
+                <div class="limits-chart-wrap" data-limits-chart-wrap hidden>
+                  <div class="limits-speed-summary" data-limits-speed-summary hidden
+                    aria-live="polite"></div>
+                  <figure class="limits-chart" data-limits-chart role="img"
+                    aria-label="График расхода лимитов"></figure>
+                  <div class="limits-tooltip" data-limits-tooltip hidden role="status"
+                    aria-live="polite"></div>
+                  <ul class="limits-legend" data-limits-legend></ul>
+                  <p class="statistics-note limits-speed-note" data-limits-speed-note hidden>
+                    На диапазонах 6 и 24 часа скорость считается по последнему часу, на длинных —
+                    по последним суткам. Пунктир показывает допустимый темп, горизонтальная линия —
+                    ровный расход 100% за неделю. Реальный сброс начинает новый участок графика.
+                  </p>
+                  <div class="limits-credits" data-limits-credits hidden></div>
+                </div>
+              </div>
+                </div>
+              </div>
+            </section>
+          </section>
+
+          <section class="statistics-page" data-statistics-page="comparison" role="tabpanel"
+            id="statistics-page-comparison" aria-labelledby="statistics-tab-comparison">
+            <section class="statistics-card chart-card" aria-labelledby="comparison-chart-title">
+              <header class="statistics-card-head chart-head comparison-card-head">
+                <div>
+                  <h2 id="comparison-chart-title">Корреляция расхода</h2>
+                  <p data-comparison-subtitle>Локальный расход и изменение лимитов API.</p>
+                </div>
+                <div class="comparison-summary" data-comparison-summary hidden aria-live="polite"></div>
+              </header>
+              <div class="chart-layout">
+                <aside class="chart-rail">
+            <div class="chart-rail-group">
+              <span class="chart-rail-label">Вид</span>
+              <div class="limits-ranges" role="group" aria-label="Вид диаграммы сопоставления расхода"
+                data-comparison-view-modes>
+                <button type="button" class="limits-range" data-comparison-view-mode="combined" aria-pressed="true">Общая</button>
+                <button type="button" class="limits-range" data-comparison-view-mode="split" aria-pressed="false">Раздельно</button>
+              </div>
+            </div>
+            <div class="chart-rail-group">
+              <span class="chart-rail-label">Период</span>
+              <div class="limits-ranges" role="group" aria-label="Период сопоставления"
+                data-comparison-ranges>
+                <button type="button" class="limits-range" data-range="6h" aria-pressed="false">6&nbsp;ч</button>
+                <button type="button" class="limits-range" data-range="24h" aria-pressed="false">24&nbsp;ч</button>
+                <button type="button" class="limits-range" data-range="7d" aria-pressed="false">7&nbsp;д</button>
+                <button type="button" class="limits-range" data-range="15d" aria-pressed="false">15&nbsp;д</button>
+                <button type="button" class="limits-range" data-range="30d" aria-pressed="false">30&nbsp;д</button>
+                <button type="button" class="limits-range" data-range="all" aria-pressed="false">Все</button>
+              </div>
+            </div>
+                </aside>
+                <div class="chart-main">
+              <div class="limits-body">
+                <div class="limits-state limits-loading" data-comparison-loading hidden aria-live="polite">
+                  <span class="limits-spinner" aria-hidden="true"></span>
+                  <span>Сопоставляем локальный расход и лимиты…</span>
+                </div>
+                <div class="limits-state limits-error" data-comparison-error hidden role="alert">
+                  <p data-comparison-error-text>Не удалось сопоставить расход.</p>
+                  <button type="button" class="chip-button" data-comparison-retry>Повторить</button>
+                </div>
+                <div class="limits-state limits-empty" data-comparison-empty hidden>
+                  <p>За выбранный период недостаточно совпадающих данных.</p>
+                </div>
+                <div class="limits-chart-wrap" data-comparison-chart-wrap hidden>
+                  <div data-comparison-combined-view>
+                    <figure class="limits-chart comparison-chart" data-comparison-chart role="img"
+                      aria-label="Общий график корреляции локального расхода и лимитов API"></figure>
+                  </div>
+                  <div class="comparison-split-view" data-comparison-split-view hidden>
+                    <section class="comparison-split-section" aria-labelledby="comparison-time-title">
+                      <h3 id="comparison-time-title">Расход по времени</h3>
+                      <figure class="limits-chart comparison-compact-chart" data-comparison-local-chart role="img"
+                        aria-label="Локальный расход по времени в исходных единицах"></figure>
+                      <figure class="limits-chart comparison-compact-chart" data-comparison-api-chart role="img"
+                        aria-label="Расход выбранного лимита по времени в процентных пунктах"></figure>
+                    </section>
+                    <div class="comparison-analysis-grid">
+                      <section class="comparison-split-section" aria-labelledby="comparison-scatter-title">
+                        <h3 id="comparison-scatter-title">Связь расходов</h3>
+                        <figure class="limits-chart comparison-analysis-chart" data-comparison-scatter-chart role="img"
+                          aria-label="Точечная диаграмма связи локального расхода и расхода лимита"></figure>
+                      </section>
+                      <section class="comparison-split-section" aria-labelledby="comparison-difference-title">
+                        <h3 id="comparison-difference-title">Разность: аккаунт − локально</h3>
+                        <figure class="limits-chart comparison-analysis-chart" data-comparison-difference-chart role="img"
+                          aria-label="Разность нормированных расходов аккаунта и локального расхода по времени"></figure>
+                      </section>
+                    </div>
+                  </div>
+                  <div class="limits-tooltip" data-comparison-tooltip hidden role="status"
+                    aria-live="polite"></div>
+                  <ul class="limits-legend comparison-legend" data-comparison-legend></ul>
+                  <p class="statistics-note comparison-note" data-comparison-note>
+                    При выборе аккаунта локальный расход учитывает только ходы, завершённые в интервалах его активности.
+                    Пункт «Все» снимает отбор аккаунта.
+                    Линии расхода приведены к собственному пику. r — корреляция Пирсона,
+                    Δ — среднее знаковое отклонение «аккаунт − локально», цена — расход лимита в п.п. на 1 kcr.
+                    Изменение цены сравнивает первую и вторую половины периода.
+                  </p>
+                </div>
+              </div>
+                </div>
+              </div>
+            </section>
+          </section>
         </div>
-      </section>
+        <section class="statistics-account-panel" data-statistics-account-panel-host></section>
+      </div>
+
+      <!-- Лимиты, аккаунт и настройки не зависят от выбранного графика,
+           поэтому стоят отдельной колонкой и остаются на виду. -->
+      <aside class="statistics-aside">
+        <section class="current-limits-card" aria-labelledby="current-limits-title">
+          <header class="current-limits-head">
+            <h2 id="current-limits-title">Текущие лимиты</h2>
+          </header>
+          <div class="current-limits-row" data-current-limits="statistics">
+            <span class="current-limits-empty">Загрузка…</span>
+          </div>
+        </section>
+        <section class="statistics-card statistics-scope-card" aria-labelledby="statistics-scope-title">
+          <header class="statistics-card-head">
+            <div>
+              <h2 id="statistics-scope-title">Аккаунт</h2>
+            </div>
+          </header>
+          <label class="statistics-account-control">
+            <select data-statistics-account-select aria-label="Аккаунт статистики"></select>
+          </label>
+        </section>
+        <section class="statistics-card statistics-preferences-card" aria-labelledby="statistics-preferences-title">
+          <header class="statistics-card-head">
+            <div>
+              <h2 id="statistics-preferences-title">Настройки</h2>
+            </div>
+          </header>
+          <div class="statistics-preferences-grid">
+            <div class="setting-stack">
+              <span class="setting-name">Единица расхода</span>
+              <div class="setting-options compact-options" role="group" aria-label="Единица расхода в статистике">
+                <button type="button" class="option-chip" data-usage-unit="pte">ПТЭ</button>
+                <button type="button" class="option-chip" data-usage-unit="cr">cr</button>
+                <button type="button" class="option-chip" data-usage-unit="$">$</button>
+                <button type="button" class="option-chip" data-usage-unit="rub">₽</button>
+              </div>
+            </div>
+            <div class="setting-stack">
+              <span class="setting-name">Расход по времени хода</span>
+              <div class="setting-options turn-time-options" role="group"
+                aria-label="Временная привязка расхода">
+                <button type="button" class="option-chip" data-turn-time-mode="start">Начало</button>
+                <button type="button" class="option-chip" data-turn-time-mode="middle">Середина</button>
+                <button type="button" class="option-chip" data-turn-time-mode="end">Окончание</button>
+              </div>
+              <span class="switch-note">
+                Определяет, в какую точку графика попадёт расход завершённого хода.
+              </span>
+            </div>
+          </div>
+        </section>
+        <section class="statistics-card statistics-sync-card" data-statistics-sync-card
+          aria-labelledby="statistics-sync-title" hidden>
+          <header class="statistics-card-head">
+            <div>
+              <h2 id="statistics-sync-title">Sync расхода</h2>
+              <p>Подключение, ручная синхронизация и код для другого устройства.</p>
+            </div>
+          </header>
+          <div class="statistics-sync-controls" data-statistics-sync-host></div>
+        </section>
+      </aside>
     </div>
   </main>
 

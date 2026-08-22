@@ -46,18 +46,15 @@ export function publicationSteps({
   skipWorker = false,
   testContour = false,
   fullTestCheckpointId = "",
-  fullTestSourceFingerprint = "",
+  workerChangedFiles = null,
 } = {}) {
   return [
     ...(!skipTests ? [
       {
         ...npmStep("Полные тесты Agent Hub", ["run", "test:all"]),
-        ...(fullTestCheckpointId || fullTestSourceFingerprint ? {
+        ...(fullTestCheckpointId ? {
           env: {
-            ...(fullTestCheckpointId ? { AGENT_HUB_FULL_TEST_CHECKPOINT_ID: fullTestCheckpointId } : {}),
-            ...(fullTestSourceFingerprint ? {
-              AGENT_HUB_FULL_TEST_SOURCE_FINGERPRINT: fullTestSourceFingerprint,
-            } : {}),
+            AGENT_HUB_FULL_TEST_CHECKPOINT_ID: fullTestCheckpointId,
           },
         } : {}),
       },
@@ -67,7 +64,13 @@ export function publicationSteps({
       : []),
     npmStep("Сборка Agent Hub Mobile", ["run", "android:build"]),
     ...(!skipWorker ? [
-      npmStep("Публикация Mini App Worker", ["run", "worker:deploy"]),
+      npmStep("Развёртывание Mini App Worker", ["run", "worker:deploy"]),
+      {
+        ...npmStep("Проверка Mini App Worker", ["run", "worker:verify"]),
+        ...(Array.isArray(workerChangedFiles) ? {
+          env: { AGENT_HUB_WORKER_CHANGED_FILES: JSON.stringify(workerChangedFiles) },
+        } : {}),
+      },
     ] : []),
     npmStep("Сборка runtime-релиза", ["run", "runtime:deploy"]),
     npmStep("Активация runtime-релиза", ["run", "runtime:activate"]),

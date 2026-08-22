@@ -72,16 +72,92 @@
     };
   }
 
+  const PAGE_SEQUENCE = Object.freeze(["usage", "limits", "comparison"]);
+  const PAGE_STORAGE_KEY = "agent-hub:statistics-page:v1";
+
+  function normalizeStatisticsPage(value) {
+    return PAGE_SEQUENCE.includes(String(value)) ? String(value) : PAGE_SEQUENCE[0];
+  }
+
+  function storedStatisticsPage(storage) {
+    try {
+      return normalizeStatisticsPage(storage?.getItem(PAGE_STORAGE_KEY));
+    } catch {
+      return PAGE_SEQUENCE[0];
+    }
+  }
+
+  function persistStatisticsPage(storage, value) {
+    const page = normalizeStatisticsPage(value);
+    try {
+      storage?.setItem(PAGE_STORAGE_KEY, page);
+    } catch {
+      // Выбранная страница останется активной до закрытия WebView.
+    }
+    return page;
+  }
+
   window.AgentHubStatisticsControls = Object.freeze({
     LIMITS_RANGE_STORAGE_KEY,
+    PAGE_SEQUENCE,
+    PAGE_STORAGE_KEY,
     RANGE_SEQUENCE,
     bindDatasetChoice,
     normalizeRange,
+    normalizeStatisticsPage,
     payloadMatchesSelectedRange,
     persistLimitsRange,
     persistRange,
+    persistStatisticsPage,
     resolveStatisticsAccountSelection,
     storedLimitsRange,
     storedRange,
+    storedStatisticsPage,
   });
+
+  /* Переключение страниц графиков. Скрытая страница остаётся в рамке абсолютом
+     и сохраняет ширину, поэтому перерисовывать SVG при переключении не нужно.
+     Модуль читается и тестами в Node, где документа нет. */
+  if (typeof document === "undefined") return;
+
+  function bindStatisticsPager() {
+    const pager = document.querySelector("[data-statistics-pager]");
+    const pages = [...document.querySelectorAll("[data-statistics-page]")];
+    if (!pager || !pages.length) return;
+    const tabs = [...pager.querySelectorAll("[data-statistics-page-button]")];
+
+    function activate(value, persist = true) {
+      const page = normalizeStatisticsPage(value);
+      for (const section of pages) {
+        section.classList.toggle("is-active", section.dataset.statisticsPage === page);
+      }
+      for (const tab of tabs) {
+        tab.setAttribute(
+          "aria-selected",
+          String(tab.dataset.statisticsPageButton === page),
+        );
+      }
+      if (persist) persistStatisticsPage(window.localStorage, page);
+    }
+
+    for (const tab of tabs) {
+      tab.addEventListener("click", () => activate(tab.dataset.statisticsPageButton));
+    }
+    pager.addEventListener("keydown", (event) => {
+      const step = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
+      if (!step) return;
+      event.preventDefault();
+      const current = tabs.findIndex((tab) => tab.getAttribute("aria-selected") === "true");
+      const next = tabs[(current + step + tabs.length) % tabs.length];
+      next?.focus();
+      activate(next?.dataset.statisticsPageButton);
+    });
+    activate(storedStatisticsPage(window.localStorage), false);
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", bindStatisticsPager, { once: true });
+  } else {
+    bindStatisticsPager();
+  }
 })();

@@ -12,6 +12,7 @@ const { loadThemeRegistry } = require("../theme-registry.cjs");
 const root = path.resolve(import.meta.dirname, "..");
 const themeRoot = path.join(root, "assets", "web-app");
 const publishedRoot = path.join(root, "cloudflare-worker", "public");
+export const WORKER_VERIFY_REQUEST_TIMEOUT_MS = 5 * 60 * 1_000;
 
 function sha256(body) {
   return createHash("sha256").update(body).digest("hex");
@@ -54,21 +55,56 @@ async function mapConcurrent(values, limit, action) {
   return results;
 }
 
-async function readWithRetry(fetchImpl, target, read, { attempts = 5, timeoutMs = 15_000 } = {}) {
+async function readWithRetry(fetchImpl, target, read, {
+  attempts = 5,
+  timeoutMs = WORKER_VERIFY_REQUEST_TIMEOUT_MS,
+  log = console.log,
+} = {}) {
   let lastError = null;
+  const pathname = new URL(target).pathname;
+  const deadline = Date.now() + timeoutMs;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) break;
+    const startedAt = Date.now();
+    log(`[Worker verify] ${pathname}: запрос ${attempt + 1}/${attempts}`);
     try {
       const response = await fetchImpl(target, {
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: AbortSignal.timeout(remainingMs),
       });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      return await read(response);
+      const result = await read(response);
+      log(`[Worker verify] ${pathname}: готово за ${Date.now() - startedAt} мс`);
+      return result;
     } catch (error) {
       lastError = error;
-      if (attempt < attempts - 1) await new Promise((resolve) => setTimeout(resolve, 200 * (2 ** attempt)));
+      log(`[Worker verify] ${pathname}: ошибка ${attempt + 1}/${attempts} за ${Date.now() - startedAt} мс — ${error.message}`);
+      if (attempt < attempts - 1 && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, Math.min(200 * (2 ** attempt), deadline - Date.now())));
+      }
     }
   }
-  throw new Error(`${new URL(target).pathname}: ${lastError?.message ?? "request failed"}`);
+  throw new Error(`${pathname}: ${lastError?.message ?? `request timed out after ${timeoutMs} ms`}`);
+}
+
+function normalizedChangedFiles(changedFiles) {
+  return new Set((Array.isArray(changedFiles) ? changedFiles : [])
+    .map((file) => String(file).replaceAll("\\", "/").replace(/^\.\//u, "")));
+}
+
+export function changedBackgrounds(backgrounds, changedFiles) {
+  if (!Array.isArray(changedFiles)) return backgrounds;
+  const changed = normalizedChangedFiles(changedFiles);
+  const verifyAll = changed.has("AgentHub/cloudflare-worker/build-assets.mjs")
+    || changed.has("AgentHub/theme-registry.cjs");
+  if (verifyAll) return backgrounds;
+  return backgrounds.filter(({ theme, background }) => {
+    const prefix = `AgentHub/assets/web-app/themes/${theme.id}/`;
+    return changed.has(`${prefix}theme.json`)
+      || changed.has(`${prefix}${background.asset}`)
+      || changed.has(`themes/${theme.id}/theme.json`)
+      || changed.has(`themes/${theme.id}/${background.asset}`);
+  });
 }
 
 export async function verifyThemeDeployment({
@@ -76,15 +112,28 @@ export async function verifyThemeDeployment({
   sourceRoot = themeRoot,
   deployedRoot = publishedRoot,
   fetchImpl = fetchWithCurl,
+  changedFiles = null,
+  requestTimeoutMs = WORKER_VERIFY_REQUEST_TIMEOUT_MS,
+  log = console.log,
 } = {}) {
   const base = new URL(baseUrl);
   const index = await readFile(path.join(deployedRoot, "index.html"), "utf8");
-  const catalog = themeCatalog(index);
+  const remoteIndex = await readWithRetry(
+    fetchImpl,
+    base,
+    (response) => response.text(),
+    { timeoutMs: requestTimeoutMs, log },
+  );
+  if (sha256(remoteIndex) !== sha256(index)) {
+    throw new Error("Published Worker index does not match the built release");
+  }
+  const catalog = themeCatalog(remoteIndex);
   const published = new Map(catalog.map((theme) => [theme.id, theme]));
   const registry = loadThemeRegistry(sourceRoot);
-  const backgrounds = registry.themes.flatMap((theme) => theme.backgrounds
+  const availableBackgrounds = registry.themes.flatMap((theme) => theme.backgrounds
     .filter((background) => background.asset)
     .map((background) => ({ theme, background })));
+  const backgrounds = changedBackgrounds(availableBackgrounds, changedFiles);
   let bytes = 0;
   let sampledChunks = 0;
   await mapConcurrent(backgrounds, 1, async ({ theme, background }) => {
@@ -92,7 +141,12 @@ export async function verifyThemeDeployment({
     if (!/\.json(?:[?#]|$)/iu.test(String(assetUrl ?? ""))) {
       throw new Error(`Published background ${theme.id}/${background.id} does not use chunked text transport`);
     }
-    const manifest = await readWithRetry(fetchImpl, new URL(assetUrl, base), (response) => response.json());
+    const manifest = await readWithRetry(
+      fetchImpl,
+      new URL(assetUrl, base),
+      (response) => response.json(),
+      { timeoutMs: requestTimeoutMs, log },
+    );
     if (!Array.isArray(manifest.parts) || !manifest.parts.length || manifest.parts.length > 512) {
       throw new Error(`Published background ${theme.id}/${background.id} has an invalid manifest`);
     }
@@ -108,7 +162,12 @@ export async function verifyThemeDeployment({
       }
     }
     const encoded = source.toString("base64");
-    const first = (await readWithRetry(fetchImpl, new URL(manifest.parts[0], base), (response) => response.text())).trim();
+    const first = (await readWithRetry(
+      fetchImpl,
+      new URL(manifest.parts[0], base),
+      (response) => response.text(),
+      { timeoutMs: requestTimeoutMs, log },
+    )).trim();
     if (!first || Buffer.byteLength(first) > 20 * 1024 || !encoded.startsWith(first)) {
       throw new Error(`Published background ${theme.id}/${background.id} has an invalid first chunk`);
     }
@@ -119,7 +178,12 @@ export async function verifyThemeDeployment({
     const sampleIndexes = [...new Set([0, Math.floor((manifest.parts.length - 1) / 2), manifest.parts.length - 1])];
     for (const index of sampleIndexes.slice(1)) {
       const part = manifest.parts[index];
-      const chunk = (await readWithRetry(fetchImpl, new URL(part, base), (response) => response.text())).trim();
+      const chunk = (await readWithRetry(
+        fetchImpl,
+        new URL(part, base),
+        (response) => response.text(),
+        { timeoutMs: requestTimeoutMs, log },
+      )).trim();
       if (Buffer.byteLength(chunk) > 20 * 1024
         || chunk !== encoded.slice(index * first.length, (index + 1) * first.length)) {
         throw new Error(`Published background ${theme.id}/${background.id} has an invalid sampled chunk ${index}`);
@@ -128,8 +192,13 @@ export async function verifyThemeDeployment({
     sampledChunks += sampleIndexes.length;
     bytes += source.length;
   });
-  console.log(`Verified ${backgrounds.length} published theme manifests and ${sampledChunks} chunks (${bytes} bytes).`);
-  return { backgrounds: backgrounds.length, bytes, sampledChunks };
+  log(`Verified ${backgrounds.length}/${availableBackgrounds.length} changed theme manifests and ${sampledChunks} chunks (${bytes} bytes).`);
+  return {
+    backgrounds: backgrounds.length,
+    availableBackgrounds: availableBackgrounds.length,
+    bytes,
+    sampledChunks,
+  };
 }
 
 function routeBaseUrl(config) {

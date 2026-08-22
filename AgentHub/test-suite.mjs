@@ -10,6 +10,7 @@ import {
 } from "./src/infrastructure/persistence/test-file-checkpoint.mjs";
 
 const ROOT = import.meta.dirname;
+const TEST_RUNNER_FILE = fileURLToPath(import.meta.url);
 const IGNORED_DIRECTORIES = new Set(["node_modules", "build", "dist", ".wrangler"]);
 const E2E_FILES = [
   "tests/e2e/agent-hub-server.e2e.test.mjs",
@@ -50,9 +51,27 @@ function run(command, args, { cwd = ROOT } = {}) {
   });
 }
 
-async function testFingerprint(file, { cwd, sourceFingerprint = "" } = {}) {
+async function discoverModuleFiles(directory = ROOT) {
+  const result = [];
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const absolute = path.join(directory, entry.name);
+    if (entry.isDirectory()) {
+      if (!IGNORED_DIRECTORIES.has(entry.name)) result.push(...await discoverModuleFiles(absolute));
+      continue;
+    }
+    if (entry.name.endsWith(".mjs")) {
+      result.push(path.relative(ROOT, absolute).split(path.sep).join("/"));
+    }
+  }
+  return result.toSorted();
+}
+
+export async function testFingerprint(file, { cwd = ROOT } = {}) {
   const visited = new Set();
-  const hash = createHash("sha256").update(`runner-v2\0${sourceFingerprint}\0`);
+  const hash = createHash("sha256")
+    .update("runner-v3\0")
+    .update(await readFile(TEST_RUNNER_FILE))
+    .update("\0");
   async function visit(absolute) {
     const normalized = path.resolve(absolute);
     if (visited.has(normalized)) return false;
@@ -64,14 +83,22 @@ async function testFingerprint(file, { cwd, sourceFingerprint = "" } = {}) {
       if (error.code === "ENOENT") return false;
       throw error;
     }
-    hash.update(normalized).update("\0").update(source).update("\0");
+    hash.update(path.relative(cwd, normalized).split(path.sep).join("/")).update("\0").update(source).update("\0");
     const text = source.toString("utf8");
-    const imports = text.matchAll(/(?:from\s*|import\s*\(|require\s*\()\s*["'](\.{1,2}\/[^"']+)["']/gu);
+    const imports = text.matchAll(/(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|\bimport\s*)["'](\.{1,2}\/[^"']+)["']/gu);
     for (const match of imports) {
       const base = path.resolve(path.dirname(normalized), match[1]);
       const candidates = path.extname(base)
         ? [base]
-        : [`${base}.mjs`, `${base}.js`, `${base}.cjs`, `${base}.json`, path.join(base, "index.mjs")];
+        : [
+          `${base}.mjs`,
+          `${base}.js`,
+          `${base}.cjs`,
+          `${base}.json`,
+          path.join(base, "index.mjs"),
+          path.join(base, "index.js"),
+          path.join(base, "index.cjs"),
+        ];
       for (const candidate of candidates) {
         if (await visit(candidate)) break;
       }
@@ -104,7 +131,6 @@ async function runWindowsTestFile(file, {
 export async function runTestSuite(mode, {
   checkpointIdentity = String(process.env.AGENT_HUB_FULL_TEST_CHECKPOINT_ID ?? "").trim(),
   checkpoint = checkpointIdentity ? testFileCheckpointStore() : null,
-  sourceFingerprint = String(process.env.AGENT_HUB_FULL_TEST_SOURCE_FINGERPRINT ?? "").trim(),
 } = {}) {
   if (mode === "all") {
     const failures = [];
@@ -113,24 +139,31 @@ export async function runTestSuite(mode, {
         suite: "syntax",
         identity: checkpointIdentity,
         checkpoint,
-        fingerprint: (file) => testFingerprint(file, { cwd: ROOT, sourceFingerprint }),
+        fingerprint: async (file) => {
+          const modules = await discoverModuleFiles(ROOT);
+          const hash = createHash("sha256").update(await testFingerprint(file, { cwd: ROOT }));
+          for (const module of modules) {
+            hash.update(module).update("\0").update(await readFile(path.join(ROOT, module))).update("\0");
+          }
+          return hash.digest("hex");
+        },
         run: () => run(process.execPath, ["--no-warnings", "--experimental-vm-modules", "syntax-check.mjs"]),
       })],
-      ["architecture", () => runTestSuite("architecture", { checkpointIdentity, checkpoint, sourceFingerprint })],
-      ["unit", () => runTestSuite("unit", { checkpointIdentity, checkpoint, sourceFingerprint })],
+      ["architecture", () => runTestSuite("architecture", { checkpointIdentity, checkpoint })],
+      ["unit", () => runTestSuite("unit", { checkpointIdentity, checkpoint })],
       ["installer", () => runCheckpointedTestFiles(["install_test.py"], {
         suite: "installer",
         identity: checkpointIdentity,
         checkpoint,
         fingerprint: async (file) => {
-          const hash = createHash("sha256").update(sourceFingerprint);
+          const hash = createHash("sha256").update("installer-v2\0");
           for (const dependency of [file, "install.py"]) hash.update(await readFile(path.join(ROOT, dependency)));
           return hash.digest("hex");
         },
         run: () => run(python, ["-m", "unittest", "install_test.py"]),
       })],
-      ["e2e", () => runTestSuite("e2e", { checkpointIdentity, checkpoint, sourceFingerprint })],
-      ["vscode", () => runTestSuite("vscode", { checkpointIdentity, checkpoint, sourceFingerprint })],
+      ["e2e", () => runTestSuite("e2e", { checkpointIdentity, checkpoint })],
+      ["vscode", () => runTestSuite("vscode", { checkpointIdentity, checkpoint })],
     ];
     for (const [stage, execute] of stages) {
       try {
@@ -164,10 +197,7 @@ export async function runTestSuite(mode, {
       suite: mode,
       identity: checkpointIdentity,
       checkpoint,
-      fingerprint: (file) => testFingerprint(file, {
-        cwd: selected.cwd,
-        sourceFingerprint,
-      }),
+      fingerprint: (file) => testFingerprint(file, { cwd: selected.cwd }),
       run: (file) => runWindowsTestFile(file, selected),
     });
     return;

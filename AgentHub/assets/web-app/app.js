@@ -1399,8 +1399,13 @@ function taskNavigationData(task) {
 
 function taskChatData(task) {
   if (!task) return null;
+  const {
+    providerStart: _providerStart,
+    providerTurnTelemetry: _providerTurnTelemetry,
+    ...chat
+  } = task;
   return {
-    ...task,
+    ...chat,
     lastActivity: task.running ? task.startedAt ?? null : task.lastActivity ?? null,
   };
 }
@@ -1770,7 +1775,7 @@ function setView(view, { persist = true, activate = true } = {}) {
       : next === "statistics"
         ? "Stats"
         : next === "background"
-          ? "Ground"
+          ? "Null"
           : next === "server"
             ? "Server"
             : "Chat";
@@ -7350,10 +7355,12 @@ const AgentHub = {
     const previousSelectedTask = state.tasks.find((task) => task.id === state.selectedId) ?? null;
     const nextSelectedTask = nextTasks.find((task) => task.id === nextSelectedId) ?? null;
     const selectionChanged = nextSelectedId !== state.selectedId;
+    const taskDataChanged = !sameData(previousTasks, nextTasks);
     const navigationChangedIds = changedTaskIds(previousTasks, nextTasks, taskNavigationData);
     const chatChangedIds = changedTaskIds(previousTasks, nextTasks, taskChatData);
     const tasksChanged = chatChangedIds.size > 0;
     const navigationChanged = navigationChangedIds.size > 0;
+    const selectedTaskDataChanged = !sameData(previousSelectedTask, nextSelectedTask);
     const selectedTaskChanged = chatChangedIds.has(nextSelectedId)
       || !sameData(taskChatData(previousSelectedTask), taskChatData(nextSelectedTask));
     const selectedTaskLocationChanged = Boolean(previousSelectedTask && nextSelectedTask) && (
@@ -7375,7 +7382,7 @@ const AgentHub = {
       });
       if (workspaceMessageSearchInput) workspaceMessageSearchInput.value = "";
     }
-    if (!tasksChanged && !selectionChanged) return;
+    if (!taskDataChanged && !selectionChanged) return;
     if (selectionChanged && state.selectedId) saveDraft();
     state.tasks = nextTasks;
     state.selectedId = nextSelectedId;
@@ -7391,6 +7398,7 @@ const AgentHub = {
       && state.visibleStreamTaskIds.includes(task.id)
       && chatChangedIds.has(task.id)
     ))) renderChat();
+    else if (selectedTaskDataChanged) renderStreamChatHeader(nextSelectedTask);
   },
   setWorkspaces(workspaces, columnOrder = []) {
     const nextWorkspaces = Array.isArray(workspaces) ? workspaces.slice() : [];

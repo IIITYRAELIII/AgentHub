@@ -42,6 +42,7 @@ export async function runPublicationSteps(steps, {
   run,
   checkpoint = null,
   identity = null,
+  checkpointScope = identity,
   journal = null,
 } = {}) {
   await journal?.start(identity, steps);
@@ -62,14 +63,19 @@ export async function runPublicationSteps(steps, {
     }
     return;
   }
-  const serializedIdentity = JSON.stringify(identity);
   const saved = await checkpoint.read();
-  const completed = new Set(
-    JSON.stringify(saved?.identity) === serializedIdentity ? saved.completedLabels ?? [] : [],
-  );
+  const exactIdentity = JSON.stringify(saved?.identity) === JSON.stringify(identity);
+  const matchingScope = JSON.stringify(saved?.checkpointScope ?? saved?.identity)
+    === JSON.stringify(checkpointScope);
+  const completed = new Set(exactIdentity ? saved?.completedLabels ?? [] : []);
+  const completedFingerprints = matchingScope ? { ...(saved?.completedFingerprints ?? {}) } : {};
   try {
     for (const step of steps) {
-      if (completed.has(step.label)) {
+      const fingerprint = String(step.fingerprint ?? "").trim();
+      const reusable = fingerprint
+        ? completedFingerprints[step.label] === fingerprint
+        : completed.has(step.label);
+      if (reusable) {
         console.log(`\n==> ${step.label}: уже выполнено, продолжаю публикацию`);
         await journal?.stepFinished(step.label, { status: "reused" });
         continue;
@@ -83,9 +89,12 @@ export async function runPublicationSteps(steps, {
       }
       await journal?.stepFinished(step.label, { status: "completed" });
       completed.add(step.label);
+      if (fingerprint) completedFingerprints[step.label] = fingerprint;
       await checkpoint.write({
         identity,
+        checkpointScope,
         completedLabels: [...completed],
+        completedFingerprints,
         updatedAt: new Date().toISOString(),
       });
     }

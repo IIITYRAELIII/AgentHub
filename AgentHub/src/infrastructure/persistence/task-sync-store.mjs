@@ -12,6 +12,7 @@ import {
 const FORMAT_VERSION = 1;
 const TASK_SCHEMA_VERSION = 8;
 const MODEL_BACKFILL_VERSION = "1";
+const SUBAGENT_MODEL_BACKFILL_VERSION = "1";
 const SEARCH_BACKFILL_VERSION = "3";
 const TERMINAL_HISTORY_BACKFILL_VERSION = "3";
 const DEFAULT_HISTORY_LIMIT = 50;
@@ -20,6 +21,16 @@ const DEFAULT_TASK_LIMIT = 1_000;
 
 function cleanText(value, limit) {
   return String(value ?? "").trim().slice(0, limit);
+}
+
+function persistedCodexSubagentAuthor(model) {
+  const value = cleanText(model, 100);
+  if (!value) return "Субагент (модель неизвестна)";
+  const family = /(?:^|[-_/])(sol|terra|luna)(?:$|[-_/])/iu.exec(value)?.[1];
+  const name = family
+    ? `${family[0].toUpperCase()}${family.slice(1).toLowerCase()}`
+    : value.replace(/^gpt-/iu, "GPT-");
+  return `Субагент (${name})`;
 }
 
 function cleanAttachments(attachments) {
@@ -191,11 +202,18 @@ function cleanHistory(history, limit) {
           if (!["user", "agent"].includes(role) || !text) return [];
           const itemId = cleanText(message?.itemId, 200);
           const kind = cleanText(message?.kind, 40);
-          const misattributedSubagent = kind === "subagent" && !itemId.includes(":subagent:");
+          const rawAuthor = cleanText(message?.author, 1_000);
+          const agentThreadId = cleanText(message?.agentThreadId, 100);
+          const hasSubagentMetadata = kind === "subagent"
+            || agentThreadId
+            || /^Субагент(?:\s*·|\s*\()/iu.test(rawAuthor);
+          const misattributedSubagent = role === "agent"
+            && hasSubagentMetadata
+            && !itemId.includes(":subagent:");
           const origin = !misattributedSubagent && role === "user"
             ? normalizeInterstreamOrigin(message?.origin)
             : null;
-          const author = interstreamOriginAuthor(origin) || cleanText(message?.author, 1_000);
+          const author = interstreamOriginAuthor(origin) || rawAuthor;
           return [{
             itemId,
             ...(message?.clientUserMessageId
@@ -210,8 +228,8 @@ function cleanHistory(history, limit) {
               ? { kind: origin ? "interstream" : kind }
               : {}),
             ...(origin ? { origin } : {}),
-            ...(!misattributedSubagent && cleanText(message?.agentThreadId, 100)
-              ? { agentThreadId: cleanText(message.agentThreadId, 100) }
+            ...(!misattributedSubagent && agentThreadId
+              ? { agentThreadId }
               : {}),
             ...(!misattributedSubagent && cleanText(message?.model, 100)
               ? { model: cleanText(message.model, 100) }
@@ -603,7 +621,14 @@ function configure(database) {
   database.exec(`
     UPDATE task_read_model_messages
     SET author = '', kind = '', agent_thread_id = '', model = ''
-    WHERE provider = 'codex' AND kind = 'subagent' AND instr(item_id, ':subagent:') = 0;
+    WHERE provider = 'codex'
+      AND instr(item_id, ':subagent:') = 0
+      AND (
+        kind = 'subagent'
+        OR trim(agent_thread_id) <> ''
+        OR author LIKE 'Субагент (%'
+        OR author LIKE 'Субагент ·%'
+      );
     UPDATE task_read_model_messages
     SET role = 'agent',
         author = CASE WHEN trim(author) = '' THEN 'Субагент (модель неизвестна)' ELSE author END,
@@ -860,6 +885,37 @@ export class LocalTaskSyncStore {
       if (model) return model;
     }
     return null;
+  }
+
+  #withJournalSubagentModels(task, history, { missingJournalOkay = true } = {}) {
+    const provider = cleanText(task?.provider, 20).toLowerCase();
+    if (!provider) return history;
+    const models = new Map();
+    let changed = false;
+    const hydrated = (Array.isArray(history) ? history : []).map((turn) => ({
+      ...turn,
+      messages: (Array.isArray(turn?.messages) ? turn.messages : []).map((message) => {
+        if (message?.kind !== "subagent") return message;
+        const threadId = cleanText(message?.agentThreadId, 100);
+        if (!threadId) return message;
+        let model = cleanText(message?.model, 100);
+        if (!model) {
+          if (!models.has(threadId)) {
+            models.set(threadId, this.#latestJournalModel(
+              { provider, threadId },
+              { missingJournalOkay },
+            ));
+          }
+          model = cleanText(models.get(threadId), 100);
+        }
+        if (!model) return message;
+        const author = persistedCodexSubagentAuthor(model);
+        if (message.model === model && message.author === author) return message;
+        changed = true;
+        return { ...message, model, author };
+      }),
+    }));
+    return changed ? hydrated : history;
   }
 
   #reconcileHistoryWithJournal(task, history, { missingJournalOkay = true } = {}) {
@@ -1120,6 +1176,28 @@ export class LocalTaskSyncStore {
       SELECT fingerprint FROM task_message_search_inputs
       WHERE provider = ? AND thread_id = ?
     `).get(provider, threadId)?.fingerprint ?? "");
+  }
+
+  #backfillSubagentModelsFromJournal() {
+    const tasks = this.#database.prepare(`
+      SELECT DISTINCT provider, thread_id FROM task_read_model_messages
+      WHERE kind = 'subagent'
+        AND trim(agent_thread_id) <> ''
+        AND (trim(model) = '' OR trim(author) = '' OR author = 'Субагент (модель неизвестна)')
+    `).all();
+    for (const task of tasks) {
+      const existing = this.#readTask({ provider: task.provider, threadId: task.thread_id }, true);
+      if (!existing) continue;
+      const repairedHistory = cleanHistory(this.#withJournalSubagentModels(
+        existing,
+        existing.history,
+        { missingJournalOkay: false },
+      ), this.#historyLimit);
+      if (JSON.stringify(existing.history) === JSON.stringify(repairedHistory)) continue;
+      const next = { ...existing, history: repairedHistory };
+      this.#writeHistory(next, repairedHistory);
+      this.#writeSearchHistory(next, repairedHistory);
+    }
   }
 
   #writeSearchHistory(task, history, fingerprint = searchHistoryFingerprint(history)) {
@@ -1384,6 +1462,11 @@ export class LocalTaskSyncStore {
         () => this.#backfillModelsFromJournal(),
       );
       this.#runVersionedBackfill(
+        "backfill_subagent_models_from_journal_version",
+        `${SUBAGENT_MODEL_BACKFILL_VERSION}:${journalIdentity}`,
+        () => this.#backfillSubagentModelsFromJournal(),
+      );
+      this.#runVersionedBackfill(
         "backfill_journal_message_search_version",
         `${SEARCH_BACKFILL_VERSION}:${journalIdentity}`,
         () => this.#backfillJournalSearchIndex(),
@@ -1478,7 +1561,8 @@ export class LocalTaskSyncStore {
     const journalHistory = this.#reconcileHistoryWithJournal(task, history);
     const reconciledHistory = preserveTerminalHistory(terminals, journalHistory);
     const durableHistory = preserveDurableAttachments(existing.history, reconciledHistory);
-    const cleanedHistory = cleanHistory(durableHistory, this.#historyLimit);
+    const enrichedHistory = this.#withJournalSubagentModels(task, durableHistory);
+    const cleanedHistory = cleanHistory(enrichedHistory, this.#historyLimit);
     const effectiveSnapshot = terminalSafeSnapshot(existing, snapshot, terminals);
     const next = persistedTask({
       ...existing,
@@ -1496,13 +1580,13 @@ export class LocalTaskSyncStore {
     }, this.#canonicalizeProjectRoot);
     const metadataChanged = next && taskMetadataChanged(existing, next);
     const historyChanged = JSON.stringify(existing.history ?? []) !== JSON.stringify(cleanedHistory);
-    const searchFingerprint = searchHistoryFingerprint(durableHistory);
+    const searchFingerprint = searchHistoryFingerprint(enrichedHistory);
     const searchChanged = this.#searchHistoryFingerprint(next) !== searchFingerprint;
     if (!next) return false;
     if (!metadataChanged && !historyChanged && !searchChanged) return false;
     this.#transaction(() => {
       if (metadataChanged || historyChanged) this.#writeTask(next);
-      if (searchChanged) this.#writeSearchHistory(next, durableHistory, searchFingerprint);
+      if (searchChanged) this.#writeSearchHistory(next, enrichedHistory, searchFingerprint);
       if (historyChanged) this.#writeHistory(next, cleanedHistory);
       this.#prune();
     });

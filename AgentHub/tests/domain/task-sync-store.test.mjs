@@ -272,7 +272,8 @@ test("local task sync preserves interstream origin through SQLite", async () => 
 
 test("local task sync repairs parent finals misattributed as subagents", async () => {
   const filePath = await storeFile();
-  const store = new LocalTaskSyncStore({ filePath });
+  const databaseFile = path.join(path.dirname(filePath), "journal.sqlite");
+  const store = new LocalTaskSyncStore({ filePath, databaseFile });
   await store.load();
   store.recordHistory(task, [{
     id: "turn-attribution",
@@ -285,8 +286,6 @@ test("local task sync repairs parent finals misattributed as subagents", async (
       role: "agent",
       text: "Общий итог",
       author: "Субагент (модель неизвестна)",
-      kind: "subagent",
-      model: "gpt-5.6-terra",
     }, {
       itemId: "turn-attribution:subagent:child-1",
       role: "agent",
@@ -297,9 +296,18 @@ test("local task sync repairs parent finals misattributed as subagents", async (
       model: "gpt-5.6-terra",
     }],
   }]);
-  await store.save();
+  assert.equal(store.history(task)[0].messages[0].author, undefined);
+  store.close();
 
-  const restored = new LocalTaskSyncStore({ filePath });
+  const database = new DatabaseSync(databaseFile);
+  database.prepare(`
+    UPDATE task_read_model_messages
+    SET author = 'Субагент (модель неизвестна)', kind = '', model = 'gpt-5.6-terra'
+    WHERE item_id = ?
+  `).run("turn-attribution:rollout-agent:final");
+  database.close();
+
+  const restored = new LocalTaskSyncStore({ filePath, databaseFile });
   await restored.load();
   const messages = restored.history(task)[0].messages;
   assert.equal(messages[0].author, undefined);
@@ -308,6 +316,68 @@ test("local task sync repairs parent finals misattributed as subagents", async (
   assert.equal(messages[1].author, "Субагент (Terra)");
   assert.equal(messages[1].kind, "subagent");
   assert.equal(messages[1].agentThreadId, "child-1");
+  restored.close();
+});
+
+test("local task sync restores subagent models from their exact journal threads", async () => {
+  const filePath = await storeFile();
+  const databaseFile = path.join(path.dirname(filePath), "journal.sqlite");
+  let store = new LocalTaskSyncStore({ filePath, databaseFile });
+  await store.load();
+  store.recordHistory(task, [{
+    id: "turn-parent-model",
+    prompt: "Проверь",
+    answer: "Готово",
+    completed: true,
+    messages: [{
+      itemId: "turn-parent-model:subagent:child-sol",
+      role: "agent",
+      kind: "subagent",
+      agentThreadId: "child-sol",
+      author: "Субагент (модель неизвестна)",
+      text: "Отчёт Sol",
+    }],
+  }]);
+  store.close();
+
+  const database = new DatabaseSync(databaseFile);
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS journal_records (
+      provider TEXT NOT NULL,
+      thread_id TEXT NOT NULL,
+      turn_id TEXT NOT NULL,
+      project_root TEXT NOT NULL,
+      task_thread_id TEXT NOT NULL,
+      completed_at_ms INTEGER NOT NULL,
+      record_json TEXT NOT NULL,
+      PRIMARY KEY (provider, thread_id, turn_id)
+    ) WITHOUT ROWID
+  `);
+  database.prepare(`
+    INSERT INTO journal_records
+      (provider, thread_id, turn_id, project_root, task_thread_id, completed_at_ms, record_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    task.provider,
+    "child-sol",
+    "child-turn",
+    task.projectRoot,
+    task.threadId,
+    1_000,
+    JSON.stringify({ model: "gpt-5.6-sol", parentThreadId: task.threadId }),
+  );
+  database.close();
+
+  store = new LocalTaskSyncStore({ filePath, databaseFile });
+  await store.load();
+  const message = store.history(task)[0].messages[0];
+  assert.equal(message.model, "gpt-5.6-sol");
+  assert.equal(message.author, "Субагент (Sol)");
+  assert.equal(store.searchMessages({
+    references: [task],
+    query: "отчёт sol",
+  }).results[0].author, "Субагент (Sol)");
+  store.close();
 });
 
 test("local task sync preserves subagent identity through SQLite", async () => {
