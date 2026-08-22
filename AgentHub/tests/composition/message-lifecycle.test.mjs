@@ -1608,6 +1608,24 @@ test("same-turn maintenance stays below the agent answer despite an earlier time
   assert.deepEqual(values.map((item) => item.id), ["prompt", "answer", "measurement"]);
 });
 
+test("late subagent results stay above their parent final", () => {
+  const values = lifecycle.chronologicalMessages([
+    {
+      id: "answer", role: "agent", turnId: "turn-1",
+      time: "2026-08-22T15:04:00.000Z", historyOrder: 1_001,
+    },
+    {
+      id: "subagent-late", role: "agent", kind: "subagent", turnId: "turn-1",
+      time: "2026-08-22T15:04:05.000Z",
+    },
+    {
+      id: "prompt", role: "user", turnId: "turn-1",
+      time: "2026-08-22T15:03:00.000Z", historyOrder: 1_000,
+    },
+  ]);
+  assert.deepEqual(values.map((item) => item.id), ["prompt", "subagent-late", "answer"]);
+});
+
 test("an older focused turn keeps its timestamp instead of falling below current history", () => {
   assert.doesNotMatch(hubClientSource, /historyOrder: Number\.MAX_SAFE_INTEGER/u);
   const values = lifecycle.chronologicalMessages([
@@ -1672,9 +1690,17 @@ test("deferred queue merges the server row with its optimistic client message", 
 
 test("terminal message receipts leave the optimistic deferred queue", () => {
   assert.equal(lifecycle.receiptLeavesDeferredQueue({ deferred: true, queued: true }), false);
+  assert.equal(lifecycle.receiptLeavesDeferredQueue({ deferred: true, queued: true, dispatching: true }), true);
   assert.equal(lifecycle.receiptLeavesDeferredQueue({ accepted: true, deferred: false }), true);
   assert.equal(lifecycle.receiptLeavesDeferredQueue({ steered: true }), true);
   assert.equal(lifecycle.receiptLeavesDeferredQueue({ cancelled: true }), true);
+});
+
+test("only receipts still owned by the deferred queue hide their chat card", () => {
+  assert.equal(lifecycle.receiptUsesDeferredQueue({ deferred: true, queued: true }), true);
+  assert.equal(lifecycle.receiptUsesDeferredQueue({ accepted: true, deferred: true, queued: true, reason: "message-intake" }), false);
+  assert.equal(lifecycle.receiptUsesDeferredQueue({ deferred: true, queued: true, dispatching: true }), false);
+  assert.equal(lifecycle.receiptUsesDeferredQueue({ accepted: true, deferred: false }), false);
 });
 
 test("live user update enriches a durable duplicate with its attachment and time", () => {
@@ -1975,6 +2001,24 @@ test("returning to a busy task keeps its deferred user card only in the queue", 
     },
   );
   assert.deepEqual(visible, [activeUser]);
+});
+
+test("live completion never borrows the next turn start time", () => {
+  assert.doesNotMatch(hubClientSource, /incomingStartedAtMs/u);
+  assert.match(
+    hubClientSource,
+    /const completionTime = taskAnswerTurnId === previousTurnId[\s\S]*selected\?\.lastAnswerAt[\s\S]*previous\?\.time/u,
+  );
+});
+
+test("rotation completion waits for maintenance and keeps its post-answer position", () => {
+  assert.match(
+    hubClientSource,
+    /pendingStreamRotations\.set\([\s\S]*time: new Date\(\)\.toISOString\(\)/u,
+  );
+  assert.match(hubClientSource, /if \(rotationMaintenanceActive\(task\)\) continue;/u);
+  assert.match(hubClientSource, /placement: "after-source-turn"/u);
+  assert.match(hubClientSource, /entry\.message\?\.placement !== "after-source-turn"/u);
 });
 
 test("context compaction start identifies the task and completion stays in chat", () => {

@@ -10,7 +10,7 @@ async function qualityApi() {
   return window.AgentHubConnectionQuality;
 }
 
-test("connection quality classifies real snapshot latency", async () => {
+test("connection quality classifies Hub control latency", async () => {
   const { connectionQuality } = await qualityApi();
   assert.equal(connectionQuality({ status: "online", latencyMs: 120 }).quality, "excellent");
   assert.equal(connectionQuality({ status: "online", latencyMs: 121 }).quality, "good");
@@ -73,4 +73,10 @@ test("model response quality follows live event silence and compaction", async (
   });
   assert.equal(compaction.compaction.elapsedMs, 301_000);
   assert.equal(modelResponseQuality(compaction).quality, "poor");
+});
+
+test("connection latency measures the lightweight Hub probe roundtrip", async () => {
+  const { measureLatency } = await qualityApi();
+  const timestamps = [1_000, 1_086];
+  assert.equal(await measureLatency(async () => {}, () => timestamps.shift()), 86);
 });

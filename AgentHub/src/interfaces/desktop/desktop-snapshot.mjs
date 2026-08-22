@@ -93,6 +93,7 @@ export function createDesktopSnapshotFactory({
   server = {},
   readState = null,
   revision = null,
+  monotonicNow = () => performance.now(),
   warn,
 }) {
   const versionCache = new Map();
@@ -484,6 +485,16 @@ export function createDesktopSnapshotFactory({
     boardTasksVersion = "",
     messageReceiptsVersion = "",
   } = {}) {
+    const snapshotStartedAt = monotonicNow();
+    const snapshotTiming = {};
+    const finishTiming = (result, cacheHit = false) => ({
+      ...result,
+      snapshotTiming: {
+        cacheHit,
+        ...snapshotTiming,
+        totalMs: Math.round((monotonicNow() - snapshotStartedAt) * 10) / 10,
+      },
+    });
     const protocol = Number(snapshotProtocol) >= 4 ? 4 : 3;
     if (refresh || catalog.stale()) {
       // A Desktop RPC must remain responsive while Codex App Server is slow or
@@ -499,7 +510,9 @@ export function createDesktopSnapshotFactory({
       boardTasks: String(boardTasksVersion),
       messageReceipts: String(messageReceiptsVersion),
     };
+    let phaseStartedAt = monotonicNow();
     const beforeRevision = refresh ? null : await sourceRevision(revisionParams);
+    snapshotTiming.revisionBeforeMs = Math.round((monotonicNow() - phaseStartedAt) * 10) / 10;
     const cached = versionCache.get(cacheKey);
     const collectionVersionsMatch = (versions) => protocol < 4 || (
       versions
@@ -514,8 +527,9 @@ export function createDesktopSnapshotFactory({
       && cached.revision === beforeRevision
       && collectionVersionsMatch(cached.collectionVersions)
     ) {
-      return { notModified: true, version: knownVersion };
+      return finishTiming({ notModified: true, version: knownVersion }, true);
     }
+    phaseStartedAt = monotonicNow();
     const workspaces = board.workspaces?.() ?? catalog.hierarchy?.() ?? [];
     let entries = catalog.entries();
     if (
@@ -537,7 +551,9 @@ export function createDesktopSnapshotFactory({
       }]);
     }
     const taskSnapshots = entries.map((entry) => desktopTaskSnapshot(entry, { accountId, compactSnapshot }));
+    snapshotTiming.taskProjectionMs = Math.round((monotonicNow() - phaseStartedAt) * 10) / 10;
     const selectedTaskSnapshot = taskSnapshots.find((task) => task.selected) ?? null;
+    phaseStartedAt = monotonicNow();
     if (selectedTaskSnapshot && !selectedTaskSnapshot.running && telemetry.recent) {
       try {
         const [latestTelemetry] = await telemetry.recent({
@@ -552,6 +568,7 @@ export function createDesktopSnapshotFactory({
         warn?.("Cannot read latest provider turn telemetry:", error.message);
       }
     }
+    snapshotTiming.telemetryMs = Math.round((monotonicNow() - phaseStartedAt) * 10) / 10;
     const selectedIdentity = selection.selectedTask();
     const current = settings.current();
     const activeProvider = current.activeProvider;
@@ -573,6 +590,7 @@ export function createDesktopSnapshotFactory({
       ? current.reasoningLabels
       : claudeReasoningLabels;
     const activeCount = taskSnapshots.filter((item) => item.running).length;
+    phaseStartedAt = monotonicNow();
     const serverSnapshot = typeof server.snapshot === "function"
       ? await server.snapshot({
         activeCount,
@@ -587,6 +605,8 @@ export function createDesktopSnapshotFactory({
         },
       })
       : null;
+    snapshotTiming.serverStateMs = Math.round((monotonicNow() - phaseStartedAt) * 10) / 10;
+    phaseStartedAt = monotonicNow();
     const boardTasks = board.snapshot?.() ?? [];
     const messageReceipts = desktopMessageReceiptSnapshot();
     const snapshot = {
@@ -722,10 +742,8 @@ export function createDesktopSnapshotFactory({
       server: serverSnapshot,
       ...(protocol >= 4 ? { conversations: taskSnapshots } : { tasks: taskSnapshots }),
     };
-    const version = createHash("sha256")
-      .update(JSON.stringify(snapshot))
-      .digest("base64url")
-      .slice(0, 22);
+    snapshotTiming.stateAssemblyMs = Math.round((monotonicNow() - phaseStartedAt) * 10) / 10;
+    phaseStartedAt = monotonicNow();
     const collectionDeltas = protocol >= 4 ? {
       conversations: conversationDelta(taskSnapshots, conversationsVersion),
       workspaces: workspaceDelta(workspaces, workspacesVersion),
@@ -735,7 +753,23 @@ export function createDesktopSnapshotFactory({
     const collectionVersions = collectionDeltas ? Object.fromEntries(
       Object.entries(collectionDeltas).map(([name, delta]) => [name, delta.version]),
     ) : null;
+    const {
+      workspaces: _workspaces,
+      boardTasks: _boardTasks,
+      messageReceipts: _messageReceipts,
+      conversations: _conversations,
+      ...transportSnapshot
+    } = protocol >= 4 ? snapshot : {};
+    const version = createHash("sha256")
+      .update(JSON.stringify(protocol >= 4
+        ? { ...transportSnapshot, collectionVersions }
+        : snapshot))
+      .digest("base64url")
+      .slice(0, 22);
+    snapshotTiming.versioningMs = Math.round((monotonicNow() - phaseStartedAt) * 10) / 10;
+    phaseStartedAt = monotonicNow();
     const afterRevision = await sourceRevision(revisionParams);
+    snapshotTiming.revisionAfterMs = Math.round((monotonicNow() - phaseStartedAt) * 10) / 10;
     if (beforeRevision !== null && beforeRevision === afterRevision) {
       versionCache.set(cacheKey, { revision: afterRevision, version, collectionVersions });
     } else {
@@ -745,21 +779,14 @@ export function createDesktopSnapshotFactory({
       knownVersion
       && knownVersion === version
       && collectionVersionsMatch(collectionVersions)
-    ) return { notModified: true, version };
-    if (protocol < 4) return { ...snapshot, generatedAt: clock.nowIso(), version };
-    const {
-      workspaces: _workspaces,
-      boardTasks: _boardTasks,
-      messageReceipts: _messageReceipts,
-      conversations: _conversations,
-      ...transportSnapshot
-    } = snapshot;
-    return {
+    ) return finishTiming({ notModified: true, version });
+    if (protocol < 4) return finishTiming({ ...snapshot, generatedAt: clock.nowIso(), version });
+    return finishTiming({
       ...transportSnapshot,
       collectionDeltas,
       generatedAt: clock.nowIso(),
       version,
-    };
+    });
   }
 
   return {

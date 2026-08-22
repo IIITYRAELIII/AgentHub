@@ -16,6 +16,12 @@
     return Math.round(current * (1 - ratio) + next * ratio);
   }
 
+  async function measureLatency(probe, now = () => performance.now()) {
+    const startedAt = now();
+    await probe();
+    return normalizedLatency(now() - startedAt);
+  }
+
   function connectionQuality({ status = "connecting", latencyMs = null } = {}) {
     const connection = String(status ?? "connecting");
     const latency = normalizedLatency(latencyMs);
@@ -136,6 +142,7 @@
     connectionQualityPresentation,
     modelResponseMeasurement,
     modelResponseQuality,
+    measureLatency,
     smoothLatency,
   });
 })();

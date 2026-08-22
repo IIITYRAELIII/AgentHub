@@ -841,7 +841,14 @@ function deferredClientMessageId(entry) {
 function receiptLeavesDeferredQueue(receipt) {
   return receipt?.cancelled === true
     || receipt?.accepted === true
-    || receipt?.steered === true;
+    || receipt?.steered === true
+    || receipt?.dispatching === true;
+}
+
+function receiptUsesDeferredQueue(receipt) {
+  return receipt?.deferred === true
+    && receipt?.accepted !== true
+    && receipt?.dispatching !== true;
 }
 
 function mergeDeferredQueueEntries(serverEntries, clientEntries) {
@@ -967,7 +974,10 @@ function chronologicalMessages(messages) {
         && String(left.message?.turnId ?? "") === String(right.message?.turnId ?? "");
       if (sameTurn) {
         const placement = (message) => (
-          message?.kind === "maintenance" ? 2 : message?.role === "user" ? 0 : 1
+          message?.kind === "maintenance" ? 3
+            : message?.role === "user" ? 0
+              : message?.kind === "subagent" ? 1
+                : 2
         );
         const placementDifference = placement(left.message) - placement(right.message);
         if (placementDifference) return placementDifference;
@@ -1178,6 +1188,7 @@ globalThis.AgentHubMessageLifecycle = Object.freeze({
   messageSendDefinitelyRejected,
   mergeDeferredQueueEntries,
   receiptLeavesDeferredQueue,
+  receiptUsesDeferredQueue,
   mergeLiveMaintenance,
   mergeLiveUserMessages,
   mergeTurnMaintenanceMessages,

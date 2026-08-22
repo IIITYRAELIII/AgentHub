@@ -103,3 +103,25 @@ test("structured user input waits even in auto mode and resolves from Desktop", 
     answers: { choice: { answers: ["Продолжить"] } },
   }]]);
 });
+
+test("URL MCP elicitation stays explicit and disappears after Desktop consent", async () => {
+  const { controller, responses, calls } = fixture({ auto: true });
+  await controller.requestMcp("rpc-url", {
+    mode: "url",
+    url: "https://example.test/sign-in",
+    message: "Войдите в сервис",
+  });
+
+  const [pending] = controller.snapshot();
+  assert.equal(pending.canAccept, true);
+  assert.equal(pending.canAllowSession, false);
+  assert.equal(pending.url, "https://example.test/sign-in");
+  const keyboard = calls[0][1].reply_markup.inline_keyboard;
+  assert.equal(keyboard[0][0].url, "https://example.test/sign-in");
+  assert.match(keyboard[1][0].callback_data, /:once$/);
+  assert.equal(responses.length, 0, "URL consent must never be automatic");
+
+  await controller.resolveFromDesktop(pending.key, "once");
+  assert.deepEqual(responses, [["rpc-url", { action: "accept" }]]);
+  assert.equal(controller.snapshot().length, 0);
+});

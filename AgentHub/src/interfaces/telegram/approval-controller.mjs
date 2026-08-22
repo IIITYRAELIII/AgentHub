@@ -68,20 +68,25 @@ export class ApprovalController {
       approvalCallbackData,
       createApprovalKey,
       formatMcpElicitation,
+      mcpElicitationAcceptResponse,
       mcpElicitationAutoResponse,
+      mcpElicitationUrl,
     } = this.approvalProtocol;
-    const acceptResponse = mcpElicitationAutoResponse(params);
-    if (this.autoApprove() && acceptResponse) {
-      this.respond(rpcId, acceptResponse);
+    const autoResponse = mcpElicitationAutoResponse(params);
+    if (this.autoApprove() && autoResponse) {
+      this.respond(rpcId, autoResponse);
       if (run) this.setProgressStage(run, "MCP-запрос подтверждён автоматически. Продолжаю…");
       return;
     }
+    const acceptResponse = mcpElicitationAcceptResponse(params);
+    const url = mcpElicitationUrl(params);
     const key = createApprovalKey();
     const approval = {
       rpcId,
       kind: "mcp-elicitation",
       params,
       acceptResponse,
+      url,
       runId: run?.id ?? null,
       chatId: run?.chatId ?? this.currentChatId(),
       text: formatMcpElicitation(params),
@@ -89,11 +94,11 @@ export class ApprovalController {
     this.pending.set(key, approval);
     if (run?.telegramDeliveryRequested === false) return;
     const decisions = [];
-    if (acceptResponse) {
+    if (url) {
+      decisions.push([{ text: "🌐 Открыть ссылку", url }]);
+      decisions.push([{ text: "✅ Продолжить", callback_data: approvalCallbackData(key, "once") }]);
+    } else if (acceptResponse) {
       decisions.push([{ text: "✅ Принять", callback_data: approvalCallbackData(key, "once") }]);
-    }
-    if (params.mode === "url" && params.url) {
-      decisions.push([{ text: "🌐 Открыть ссылку", url: params.url }]);
     }
     decisions.push([{ text: "❌ Отклонить", callback_data: approvalCallbackData(key, "decline") }]);
     const text = formatMcpElicitation(params)
@@ -201,6 +206,7 @@ export class ApprovalController {
       text: String(approval.text ?? "Требуется подтверждение"),
       canAllowSession: approval.kind !== "mcp-elicitation",
       canAccept: approval.kind !== "mcp-elicitation" || Boolean(approval.acceptResponse),
+      url: approval.kind === "mcp-elicitation" ? approval.url : "",
       questions: approval.kind === "user-input"
         ? approval.questions.map((question) => ({
           id: String(question?.id ?? ""),

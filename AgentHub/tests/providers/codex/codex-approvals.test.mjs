@@ -10,7 +10,9 @@ import {
   formatMcpElicitation,
   formatPermissionsApproval,
   formatToolRequestUserInput,
+  mcpElicitationAcceptResponse,
   mcpElicitationAutoResponse,
+  mcpElicitationUrl,
   parseApprovalCallback,
 } from "../../../src/providers/codex/codex-approvals.mjs";
 
@@ -111,4 +113,13 @@ test("MCP forms requiring invented text are never auto-filled", () => {
     },
   }), null);
   assert.equal(mcpElicitationAutoResponse({ mode: "url", url: "https://example.test" }), null);
+});
+
+test("URL MCP elicitation requires explicit consent and accepts only web links", () => {
+  const params = { mode: "url", url: "https://example.test/sign-in" };
+  assert.equal(mcpElicitationAutoResponse(params), null);
+  assert.equal(mcpElicitationUrl(params), "https://example.test/sign-in");
+  assert.deepEqual(mcpElicitationAcceptResponse(params), { action: "accept" });
+  assert.equal(mcpElicitationUrl({ mode: "url", url: "javascript:alert(1)" }), "");
+  assert.equal(mcpElicitationAcceptResponse({ mode: "url", url: "not-a-url" }), null);
 });

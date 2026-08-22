@@ -1286,6 +1286,15 @@ test("turn header keeps its actions in the trailing columns", () => {
   );
 });
 
+test("subagent responses render collapsed with a readable title", () => {
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
+  const styles = fs.readFileSync(require.resolve("../assets/web-app/styles.css"), "utf8");
+  assert.match(app, /el\(subagent \? "details" : "article"/u);
+  assert.match(app, /"data-subagent-response": true/u);
+  assert.match(app, /function subagentResponseTitle\(message\)/u);
+  assert.match(styles, /\.msg-subagent\[open\] \.msg-subagent-chevron-icon/u);
+});
+
 test("task rail width does not collide with decorative rail thickness", () => {
   const dialogArea = fs.readFileSync(
     require.resolve("../assets/web-app/dialog-area.css"),
@@ -1529,7 +1538,8 @@ test("background history refresh cannot switch the task or reorder a completed t
   assert.match(client, /if \(selectTask\) rememberSelectedTaskId\(id\)/u);
   assert.match(client, /if \(selectTask\) agentHub\.selectTask\(id\)/u);
   assert.match(client, /preserveScroll: pending\.preserveScroll,\s*skipSnapshot: true,\s*selectTask: false/su);
-  assert.match(client, /new Date\(incomingStartedAtMs - 1\)\.toISOString\(\)/u);
+  assert.match(client, /const completionTime = taskAnswerTurnId === previousTurnId[\s\S]*selected\?\.lastAnswerAt[\s\S]*previous\?\.time/u);
+  assert.doesNotMatch(client, /incomingStartedAtMs|new Date\(incomingStartedAtMs - 1\)/u);
   assert.match(client, /time: run\.lastActivityAt \?\? run\.startedAt \?\? null/u);
 });
 
@@ -1577,12 +1587,22 @@ test("chat short-polls commands and skips only unchanged loaded history renders"
   assert.match(client, /const REMOTE_WAIT_MS = 0;/u);
   assert.match(client, /control\/result\?id=.*waitMs=.*REMOTE_WAIT_MS[\s\S]*REMOTE_RESULT_FALLBACK_POLL_MS/su);
   assert.doesNotMatch(client, /REMOTE_RESULT_LONG_POLL_MS/u);
+  assert.match(client, /async function probeSnapshotTransport\(\)[\s\S]*method: "HEAD"/u);
+  assert.match(client, /vscode \? control\("runtime-health"\) : probeSnapshotTransport\(\)/u);
   assert.match(client, /control\(\s*"snapshot",\s*window\.AgentHubSnapshotTransport\.requestParams\(lastSnapshot\),\s*\)/u);
   assert.match(client, /window\.AgentHubSnapshotTransport\.materialize\(lastSnapshot, snapshotResult\)/u);
+  assert.match(client, /applySnapshot\(snapshot, \{ materialized: true \}\)/u);
+  assert.match(client, /if \(!materialized\) snapshot = window\.AgentHubSnapshotTransport\.materialize/u);
+  assert.equal((client.match(/applySnapshotConnection\(snapshot\);/gu) ?? []).length, 2);
   assert.match(client, /window\.AgentHubSnapshotTransport\.isBaselineError\(error\)/u);
   assert.match(client, /window\.AgentHubSnapshotTransport\.requestParams\(null\)/u);
   assert.match(app, /setMessages\(taskId, messages\) \{[\s\S]*state\.messages\.has\(taskId\) && sameData\(state\.messages\.get\(taskId\), next\)[\s\S]*return/u);
   assert.match(app, /setMessagesPreservingScroll\(taskId, messages\) \{[\s\S]*const previous = state\.messages\.get\(taskId\) \?\? \[\][\s\S]*state\.messages\.has\(taskId\) && sameData\(previous, next\)[\s\S]*return/u);
+  assert.match(app, /function taskNavigationData\(task\)[\s\S]*lastActivity: task\.running \? task\.startedAt/u);
+  assert.match(app, /const navigationChangedIds = changedTaskIds\(previousTasks, nextTasks, taskNavigationData\)/u);
+  assert.match(app, /state\.visibleStreamTaskIds\.includes\(task\.id\)[\s\S]*chatChangedIds\.has\(task\.id\)/u);
+  assert.match(app, /setConnection\(status, details = \{\}\)[\s\S]*if \(unchanged\) return;[\s\S]*renderConnectionQuality\(\)/u);
+  assert.match(app, /setServerStatus\(payload\)[\s\S]*root\.dataset\.view === "server"/u);
 });
 
   test("dispatching deferred messages leave the queue and reappear in the active conversation", () => {
@@ -2004,7 +2024,7 @@ test("one transient control failure does not mark the whole Hub offline", () => 
   assert.match(client, /function recordTransientConnectionFailure\(\)/u);
   assert.match(client, /transientFailureDecision\(\{[\s\S]*failureCount: connectionFailureCount/u);
   assert.match(client, /if \(decision === "connecting"\) applySnapshotConnection/u);
-  assert.match(client, /function applySnapshot\(snapshot\)[\s\S]*resetConnectionFailures\(\)/u);
+  assert.match(client, /function applySnapshot\(snapshot, \{ materialized = false \} = \{\}\)[\s\S]*resetConnectionFailures\(\)/u);
   assert.doesNotMatch(client, /catch \(error\) \{\s*if \(isConnectionFailure\(error\)\) applySnapshotConnection/u);
 });
 

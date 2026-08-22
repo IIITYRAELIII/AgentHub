@@ -233,6 +233,7 @@ function fixture(overrides = {}) {
     readState: {
       hasUnread: (value) => value.accountId === "owner" && value.answerTurnId !== "turn-previous",
     },
+    monotonicNow: overrides.monotonicNow,
     warn: (...args) => state.warnings.push(args),
   });
   return { ...factory, state, selected, run, entry };
@@ -1026,10 +1027,13 @@ test("desktopSnapshot returns a compact marker before rebuilding an unchanged re
     state.boardWorkspaceBuilds,
     state.boardLayoutBuilds,
   ];
-  assert.deepEqual(await desktopSnapshot({ knownVersion: snapshot.version }), {
+  const unchanged = await desktopSnapshot({ knownVersion: snapshot.version });
+  assert.deepEqual({ notModified: unchanged.notModified, version: unchanged.version }, {
     notModified: true,
     version: snapshot.version,
   });
+  assert.equal(unchanged.snapshotTiming.cacheHit, true);
+  assert.equal(Number.isFinite(unchanged.snapshotTiming.totalMs), true);
   assert.equal(state.snapshotBuilds, builds);
   assert.deepEqual([
     state.boardSnapshotBuilds,
@@ -1097,6 +1101,9 @@ test("snapshot protocol v4 renames conversations and sends collection deltas", a
   assert.equal(first.workspaces, undefined);
   assert.equal(first.boardTasks, undefined);
   assert.equal(first.messageReceipts, undefined);
+  assert.equal(first.snapshotTiming.cacheHit, false);
+  assert.equal(typeof first.snapshotTiming.totalMs, "number");
+  assert.equal(typeof first.snapshotTiming.versioningMs, "number");
 
   const recovered = await desktopSnapshot({
     snapshotProtocol: 4,
@@ -1141,6 +1148,24 @@ test("snapshot protocol v4 renames conversations and sends collection deltas", a
     baseVersion: first.collectionDeltas.messageReceipts.version,
     version: first.collectionDeltas.messageReceipts.version,
   });
+});
+
+test("unchanged snapshot reports a measured revision cache hit", async () => {
+  let now = 10;
+  const { desktopSnapshot } = fixture({ monotonicNow: () => now += 0.25 });
+  const first = await desktopSnapshot({ snapshotProtocol: 4, compactSnapshot: true });
+  const unchanged = await desktopSnapshot({
+    snapshotProtocol: 4,
+    compactSnapshot: true,
+    knownVersion: first.version,
+    conversationsVersion: first.collectionDeltas.conversations.version,
+    workspacesVersion: first.collectionDeltas.workspaces.version,
+    boardTasksVersion: first.collectionDeltas.boardTasks.version,
+    messageReceiptsVersion: first.collectionDeltas.messageReceipts.version,
+  });
+  assert.equal(unchanged.notModified, true);
+  assert.equal(unchanged.snapshotTiming.cacheHit, true);
+  assert.equal(typeof unchanged.snapshotTiming.revisionBeforeMs, "number");
 });
 
 test("snapshot protocol v3 remains wire-compatible", async () => {

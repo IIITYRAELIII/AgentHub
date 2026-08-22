@@ -64,7 +64,7 @@ export function createAgentHubBootstrapComposition({
     },
     startRuntimeCommand: () => runtimeCommandServer.start(),
     startHubMcp: () => hubMcpServer.start(),
-    startMiniApp: () => miniAppLifecycle.start(),
+    startMiniApp: () => miniAppLifecycle.start({ waitForTransports: false }),
     sanitizeRollouts,
     initializeProvider,
     providerIsRunning,

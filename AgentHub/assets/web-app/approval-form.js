@@ -18,5 +18,21 @@
     return answers;
   }
 
-  window.AgentHubApprovalForm = Object.freeze({ approvalContainer, collectAnswers });
+  function approvalOptions(approval = {}) {
+    if (approval.kind === "user-input") {
+      return [{ id: "decline", label: "Отменить", kind: "danger" }];
+    }
+    const url = String(approval.url ?? "").trim();
+    return [
+      ...(url
+        ? [{ id: "once", label: "Открыть и продолжить", kind: "primary", href: url }]
+        : approval.canAccept === false
+          ? []
+          : [{ id: "once", label: "Разрешить", kind: "primary" }]),
+      ...(approval.canAllowSession === false ? [] : [{ id: "session", label: "На сессию" }]),
+      { id: "decline", label: "Отклонить", kind: "danger" },
+    ];
+  }
+
+  window.AgentHubApprovalForm = Object.freeze({ approvalContainer, approvalOptions, collectAnswers });
 })();

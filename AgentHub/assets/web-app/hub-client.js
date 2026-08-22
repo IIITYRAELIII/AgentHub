@@ -42,6 +42,8 @@ let connectionFailureSince = 0;
 let connectionOfflineTimer = null;
 let connectionOfflineBreadcrumbRecorded = false;
 let connectionLatencyMs = null;
+let connectionLatencyProbe = null;
+let connectionLatencyProbedAt = 0;
 let snapshotTransportPrepared = false;
 let pendingSelectionId = "";
 let selectionTail = Promise.resolve();
@@ -61,6 +63,7 @@ const VSCODE_MESSAGE_RETRY_DELAYS_MS = Object.freeze([150, 600]);
 const HISTORY_CATCH_UP_TIMEOUT_MS = 120_000;
 const CONNECTION_OFFLINE_FAILURES = 3;
 const CONNECTION_OFFLINE_GRACE_MS = 6_000;
+const CONNECTION_LATENCY_PROBE_INTERVAL_MS = 5_000;
 const historyByTask = new Map();
 const historyPageByTask = new Map();
 const historyCatchUpDeadlines = new Map();
@@ -111,6 +114,7 @@ const {
   messageSendDefinitelyRejected,
   mergeDeferredQueueEntries,
   receiptLeavesDeferredQueue,
+  receiptUsesDeferredQueue,
   mergeLiveMaintenance,
   mergeReconciledUserMessage,
   mergeLiveUserMessages,
@@ -237,8 +241,10 @@ function readMaintenanceEvents() {
       const task = String(entry?.taskId ?? "").trim();
       const id = String(entry?.message?.id ?? "").trim();
       if (!task || !id) continue;
-      const legacyRotation = id.startsWith("maintenance:rotation:")
-        && entry.message?.maintenanceType !== "rotation";
+      const legacyRotation = id.startsWith("maintenance:rotation:") && (
+        entry.message?.maintenanceType !== "rotation"
+        || entry.message?.placement !== "after-source-turn"
+      );
       if (legacyRotation) continue;
       const events = values.get(task) ?? [];
       const match = /(\?|\d+)%>(\?|\d+)%/u.exec(String(entry.message?.text ?? ""));
@@ -592,6 +598,7 @@ function renderTaskQueue(taskIdValue, snapshot = lastSnapshot) {
 
 function receiptDeliveryPatch(receipt) {
   if (receipt?.accepted === true || receipt?.steered === true) return deliveryPatch("accepted");
+  if (receipt?.dispatching === true) return deliveryPatch("sending");
   if (receipt?.deferred === true) {
     return deliveryPatch(receipt?.queued === true ? "queued" : "deferred");
   }
@@ -711,15 +718,11 @@ function promoteLiveCompletion(taskIdValue, selected, incomingTurnId = "") {
   const liveUsers = liveUserMessagesByTask.get(taskIdValue) ?? {};
   const taskAnswerTurnId = String(selected?.lastAnswerTurnId ?? "").trim();
   const answer = completedLiveAnswer(previous, selected);
-  const incomingStartedAtMs = Date.parse(selected?.run?.startedAt ?? "");
-  const recordedCompletionTime = taskAnswerTurnId === previousTurnId
+  const completionTime = taskAnswerTurnId === previousTurnId
     ? selected?.lastAnswerAt
-    : previous?.time;
-  const recordedCompletionAtMs = Date.parse(recordedCompletionTime ?? "");
-  const completionTime = Number.isFinite(incomingStartedAtMs)
-    && (!Number.isFinite(recordedCompletionAtMs) || recordedCompletionAtMs >= incomingStartedAtMs)
-    ? new Date(incomingStartedAtMs - 1).toISOString()
-    : recordedCompletionTime ?? null;
+      ?? previous?.time
+      ?? null
+    : previous?.time ?? null;
   const messages = mergeLiveUserMessages([], liveUsers);
   if (answer) {
     messages.push({
@@ -1099,16 +1102,7 @@ function observeQueuedRemoteMessage(commandId, params) {
 
 async function readSnapshot(params = {}) {
   await localSessionReady;
-  const query = new URLSearchParams({
-    knownVersion: String(params?.knownVersion ?? ""),
-    compactSnapshot: params?.compactSnapshot === true ? "1" : "0",
-    snapshotProtocol: String(params?.snapshotProtocol ?? 3),
-    conversationsVersion: String(params?.conversationsVersion ?? ""),
-    workspacesVersion: String(params?.workspacesVersion ?? ""),
-    boardTasksVersion: String(params?.boardTasksVersion ?? ""),
-    messageReceiptsVersion: String(params?.messageReceiptsVersion ?? ""),
-    waitMs: String(REMOTE_WAIT_MS),
-  });
+  const query = snapshotQuery(params);
   const response = await hubFetch(`/api/snapshot?${query}`, {
     headers: authorizationHeaders(),
     cache: "no-store",
@@ -1118,6 +1112,32 @@ async function readSnapshot(params = {}) {
     throw new Error(String(payload.error ?? `Agent Hub: HTTP ${response.status}`));
   }
   return payload;
+}
+
+function snapshotQuery(params = {}) {
+  return new URLSearchParams({
+    knownVersion: String(params?.knownVersion ?? ""),
+    compactSnapshot: params?.compactSnapshot === true ? "1" : "0",
+    snapshotProtocol: String(params?.snapshotProtocol ?? 3),
+    conversationsVersion: String(params?.conversationsVersion ?? ""),
+    workspacesVersion: String(params?.workspacesVersion ?? ""),
+    boardTasksVersion: String(params?.boardTasksVersion ?? ""),
+    messageReceiptsVersion: String(params?.messageReceiptsVersion ?? ""),
+    waitMs: String(REMOTE_WAIT_MS),
+  });
+}
+
+async function probeSnapshotTransport() {
+  await localSessionReady;
+  const query = snapshotQuery(window.AgentHubSnapshotTransport.requestParams(lastSnapshot));
+  const response = await hubFetch(`/api/snapshot?${query}`, {
+    method: "HEAD",
+    headers: authorizationHeaders(),
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    throw new Error(`Agent Hub: HTTP ${response.status}`);
+  }
 }
 
 async function prepareSnapshotTransport() {
@@ -1367,10 +1387,15 @@ function taskDisplayTitle(task) {
   return String(task?.title ?? "").trim() || "Без названия";
 }
 
+function rotationMaintenanceActive(task) {
+  return ["manual-rotation", "automatic-rotation"].includes(
+    String(task?.maintenance?.reason ?? ""),
+  );
+}
+
 function activeMaintenanceMessage(task) {
   const stableTaskId = taskId(task.provider, task.threadId, task.streamId);
-  const maintenanceReason = String(task.maintenance?.reason ?? "");
-  if (["manual-rotation", "automatic-rotation"].includes(maintenanceReason)) {
+  if (rotationMaintenanceActive(task)) {
     return {
       id: `maintenance:rotation:${stableTaskId}:active`,
       provider: task.provider,
@@ -1553,12 +1578,13 @@ function observeStreamRotations(previousTasks, tasks) {
       provider: transition.task.provider,
       threadId: transition.task.threadId,
       beforePercent: transition.beforePercent,
-      time: transition.time,
+      time: new Date().toISOString(),
     });
   }
   for (const [streamId, task] of currentByStream) {
     const pending = pendingStreamRotations.get(streamId);
     if (!pending || String(pending.threadId) !== String(task.threadId)) continue;
+    if (rotationMaintenanceActive(task)) continue;
     const beforePercent = contextPercent(pending.beforePercent);
     const afterPercent = task.context?.usagePending
       ? null
@@ -1578,6 +1604,7 @@ function observeStreamRotations(previousTasks, tasks) {
       maintenanceStatus: "completed",
       maintenanceLabel: presentation.maintenanceLabel,
       maintenanceDetail: presentation.maintenanceDetail,
+      placement: "after-source-turn",
       beforePercent,
       afterPercent,
       text: presentation.text,
@@ -1596,9 +1623,9 @@ function representativeSnapshotTasks(tasks) {
   return window.AgentHubStreamTabs.representativeSnapshotTasks(tasks);
 }
 
-function applySnapshot(snapshot) {
+function applySnapshot(snapshot, { materialized = false } = {}) {
   if (!snapshot) return;
-  snapshot = window.AgentHubSnapshotTransport.materialize(lastSnapshot, snapshot);
+  if (!materialized) snapshot = window.AgentHubSnapshotTransport.materialize(lastSnapshot, snapshot);
   if (observeServerIdentity(snapshot)) return;
   let effectiveSelectedId = "";
   let tasks = [];
@@ -1616,7 +1643,7 @@ function applySnapshot(snapshot) {
       ...observeStreamRotations(previousTasks, snapshot.tasks),
       ...syncActiveMaintenanceMessages(representativeTasks),
     ]);
-    applyMessageReceipts(snapshot);
+    if (snapshot.messageReceipts !== previousSnapshot?.messageReceipts) applyMessageReceipts(snapshot);
     const serverDeferredClientUserMessageIds = new Set(
       (snapshot.deferredInputs ?? [])
         .filter((item) => item.state !== "dispatching")
@@ -1738,13 +1765,7 @@ function applySnapshot(snapshot) {
         kind: approval.kind ?? "Подтверждение",
         text: approval.text ?? approval.preview ?? approval.reason ?? "",
         questions: Array.isArray(approval.questions) ? approval.questions : null,
-        options: approval.kind === "user-input"
-          ? [{ id: "decline", label: "Отменить", kind: "danger" }]
-          : [
-            ...(approval.canAccept === false ? [] : [{ id: "once", label: "Разрешить", kind: "primary" }]),
-            ...(approval.canAllowSession === false ? [] : [{ id: "session", label: "На сессию" }]),
-            { id: "decline", label: "Отклонить", kind: "danger" },
-          ],
+        options: window.AgentHubApprovalForm.approvalOptions(approval),
         }))
         : []);
     }
@@ -2415,7 +2436,8 @@ agentHub.on("message:send", (request) => {
     },
     receive: (result) => {
       const accepted = Boolean(result?.accepted || result?.deferred);
-      if (result?.deferred) {
+      const deferredToQueue = receiptUsesDeferredQueue(result);
+      if (deferredToQueue) {
         optimisticDeferredClientUserMessageIds.add(request.requestId);
         deferredClientUserMessageIds.add(request.requestId);
       } else {
@@ -2437,7 +2459,9 @@ agentHub.on("message:send", (request) => {
           ? deliveryPatch("relaying")
           : result?.accepted
           ? deliveryPatch("accepted")
-          : result?.deferred
+          : result?.dispatching
+            ? deliveryPatch("sending")
+            : result?.deferred
             ? deliveryPatch(result?.queued ? "queued" : "accepted")
             : deliveryPatch("rejected")),
       });
@@ -2951,9 +2975,10 @@ agentHub.on("selection:set", ({ key, value }) => runAction(async () => {
     void loadJournal({ force: true });
   }
 }));
-agentHub.on("approval:respond", ({ id, decision, answers }) => runAction(
-  () => control("resolve-approval", { key: id, decision, ...(answers ? { answers } : {}) }),
-));
+agentHub.on("approval:respond", ({ id, decision, answers }) => runAction(async () => {
+  await control("resolve-approval", { key: id, decision, ...(answers ? { answers } : {}) });
+  applySnapshot(await control("snapshot"));
+}));
 agentHub.on("queue:remove", ({ id }) => runAction(async () => {
   const deferred = (lastSnapshot?.deferredInputs ?? []).find((item) => item.id === id);
   const result = await control("deferred-input", { id, action: "cancel" });
@@ -3696,6 +3721,22 @@ async function refreshVisibleTaskHistories(previousSnapshot, snapshot) {
   }));
 }
 
+function refreshConnectionLatency() {
+  const now = Date.now();
+  if (connectionLatencyProbe) return connectionLatencyProbe;
+  if (now - connectionLatencyProbedAt < CONNECTION_LATENCY_PROBE_INTERVAL_MS) return null;
+  connectionLatencyProbedAt = now;
+  connectionLatencyProbe = window.AgentHubConnectionQuality.measureLatency(
+    () => (vscode ? control("runtime-health") : probeSnapshotTransport()),
+  ).then((sample) => {
+    connectionLatencyMs = window.AgentHubConnectionQuality.smoothLatency(connectionLatencyMs, sample);
+    agentHub.setConnectionQuality({ latencyMs: connectionLatencyMs });
+  }).catch(() => {}).finally(() => {
+    connectionLatencyProbe = null;
+  });
+  return connectionLatencyProbe;
+}
+
 async function refresh({ reportError = false } = {}) {
   if (refreshing) {
     refreshRequested = true;
@@ -3707,16 +3748,10 @@ async function refresh({ reportError = false } = {}) {
   try {
     const previousSnapshot = lastSnapshot;
     await prepareSnapshotTransport();
-    const requestStartedAt = performance.now();
     let snapshotResult = await control(
       "snapshot",
       window.AgentHubSnapshotTransport.requestParams(lastSnapshot),
     );
-    connectionLatencyMs = window.AgentHubConnectionQuality.smoothLatency(
-      connectionLatencyMs,
-      performance.now() - requestStartedAt,
-    );
-    agentHub.setConnectionQuality({ latencyMs: connectionLatencyMs });
     let snapshot = lastSnapshot;
     if (snapshotResult?.notModified !== true) {
       try {
@@ -3733,17 +3768,17 @@ async function refresh({ reportError = false } = {}) {
         snapshot = window.AgentHubSnapshotTransport.materialize(null, snapshotResult);
       }
     }
+    void refreshConnectionLatency();
     if (snapshotResult?.notModified === true) {
       resetConnectionFailures();
       applySnapshotConnection(snapshot);
     } else {
-      applySnapshot(snapshot);
+      applySnapshot(snapshot, { materialized: true });
     }
     if (!snapshot) return;
     void refreshVisibleTaskHistories(previousSnapshot, snapshot).catch((error) => {
       console.error("Agent Hub visible history refresh failed", error);
     });
-    applySnapshotConnection(snapshot);
   } catch (error) {
     recordTransientConnectionFailure();
     if (reportError) throw error;

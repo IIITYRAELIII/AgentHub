@@ -117,3 +117,36 @@ test("Mini App lifecycle publishes the Worker menu without a direct gateway", as
     "setChatMenuButton:42:https://worker.example/",
   ]);
 });
+
+test("Mini App lifecycle exposes local UI before optional transports finish", async () => {
+  const { service, events } = fixture({ gateway: true, worker: true, tunnel: true });
+  assert.deepEqual(await service.start({ waitForTransports: false }), {
+    url: "http://127.0.0.1:1/",
+  });
+  assert.equal(events[0], "local:start");
+  assert.deepEqual(await service.waitForTransports(), {
+    url: "http://127.0.0.1:1/",
+    publicUrl: "https://public.example/",
+  });
+  assert.ok(events.includes("publisher:start"));
+  assert.ok(events.includes("public:start"));
+});
+
+test("closing local UI prevents later optional transport stages", async () => {
+  let releaseGateway;
+  const { service, events } = fixture({ gateway: true, worker: true, tunnel: true });
+  service.DirectGatewayControllerClass = class {
+    async start() {
+      events.push("gateway:waiting");
+      return new Promise((resolve) => { releaseGateway = resolve; });
+    }
+    async close() { events.push("gateway:close"); }
+  };
+  await service.start({ waitForTransports: false });
+  await new Promise((resolve) => setImmediate(resolve));
+  await service.closeLocalServer();
+  releaseGateway("https://gateway.example/");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(events.includes("publisher:start"), false);
+  assert.equal(events.includes("public:start"), false);
+});

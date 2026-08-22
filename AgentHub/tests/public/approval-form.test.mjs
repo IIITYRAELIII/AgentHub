@@ -49,3 +49,21 @@ test("Plan clarification answers are collected from the approval card around the
     { interface: ["Web"], scope: ["Полный план"] },
   );
 });
+
+test("URL MCP approval exposes one action that opens the link and continues", async () => {
+  const { approvalOptions } = await approvalFormApi();
+  assert.deepEqual(JSON.parse(JSON.stringify(approvalOptions({
+    kind: "mcp-elicitation",
+    canAccept: true,
+    canAllowSession: false,
+    url: "https://example.test/sign-in",
+  }))), [
+    {
+      id: "once",
+      label: "Открыть и продолжить",
+      kind: "primary",
+      href: "https://example.test/sign-in",
+    },
+    { id: "decline", label: "Отклонить", kind: "danger" },
+  ]);
+});

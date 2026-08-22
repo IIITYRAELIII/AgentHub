@@ -1378,6 +1378,45 @@ function restorePersistedDrafts() {
   }
 }
 
+function taskNavigationData(task) {
+  if (!task) return null;
+  const {
+    context,
+    providerStart: _providerStart,
+    providerTurnTelemetry: _providerTurnTelemetry,
+    streamSettings: _streamSettings,
+    workspaceSettings: _workspaceSettings,
+    streamDeveloperRules: _streamDeveloperRules,
+    workspaceDeveloperRules: _workspaceDeveloperRules,
+    ...navigation
+  } = task;
+  return {
+    ...navigation,
+    lastActivity: task.running ? task.startedAt ?? null : task.lastActivity ?? null,
+    compactionStatus: context?.compaction?.status ?? null,
+  };
+}
+
+function taskChatData(task) {
+  if (!task) return null;
+  return {
+    ...task,
+    lastActivity: task.running ? task.startedAt ?? null : task.lastActivity ?? null,
+  };
+}
+
+function changedTaskIds(previousTasks, nextTasks, project) {
+  const previousById = new Map(previousTasks.map((task) => [task.id, task]));
+  const nextIds = new Set(nextTasks.map((task) => task.id));
+  const changed = new Set(previousTasks
+    .filter((task) => !nextIds.has(task.id))
+    .map((task) => task.id));
+  for (const task of nextTasks) {
+    if (!sameData(project(previousById.get(task.id)), project(task))) changed.add(task.id);
+  }
+  return changed;
+}
+
 function persistDrafts() {
   const persisted = [...drafts.entries()]
     .filter(([taskId, draft]) => String(taskId).trim() && (
@@ -1551,7 +1590,10 @@ function activateView(view) {
     requestLimits(limitsState.range);
     requestUsageComparison(comparisonState.range);
   }
-  if (view === "server") emit("devices:refresh");
+  if (view === "server") {
+    if (lastServerPayload) renderServerStatus(lastServerPayload);
+    emit("devices:refresh");
+  }
 }
 
 function savedBackground(theme) {
@@ -4072,7 +4114,9 @@ function scheduleUserMessageDisclosureSync(roots = null) {
 window.addEventListener("resize", scheduleUserMessageDisclosureSync, { passive: true });
 
 function patchRenderedMessage(node, message) {
-  const article = node.matches?.("article.msg") ? node : node.querySelector?.("article.msg");
+  const article = node.matches?.("article.msg, details.msg")
+    ? node
+    : node.querySelector?.("article.msg, details.msg");
   if (!article) return;
   article.dataset.messageId = message.id ?? "";
   article.dataset.turnId = message.turnId ?? "";
@@ -4859,20 +4903,35 @@ function renderMessageActions(message, role) {
 function renderMessage(message, { readOnly = false, task = currentTask() } = {}) {
   const role = message.role === "user" ? "user" : message.role === "system" ? "system" : "agent";
   const maintenance = role === "system" && message.kind === "maintenance";
-  const article = el("article", {
-    class: `msg msg-${role}${maintenance ? " msg-maintenance" : ""}`,
+  const subagent = role === "agent" && message.kind === "subagent";
+  const subagentTitle = subagent ? subagentResponseTitle(message) : "";
+  const article = el(subagent ? "details" : "article", {
+    class: `msg msg-${role}${maintenance ? " msg-maintenance" : ""}${subagent ? " msg-subagent" : ""}`,
     "data-role": role,
     "data-message-id": message.id ?? "",
     "data-turn-id": message.turnId ?? "",
     "data-item-id": message.itemId ?? "",
     "data-delivery-state": message.deliveryState ?? "",
     "data-provider": String(task?.provider ?? "none"),
+    ...(subagent ? { "data-subagent-response": true } : {}),
   });
 
   const author = message.author
     || (role === "user" ? "Вы" : role === "system" ? "Система" : "Агент");
-  const head = el("div", { class: "msg-head" }, [
+  const head = el(subagent ? "summary" : "div", { class: "msg-head" }, [
+    subagent
+      ? el("span", { class: "msg-subagent-chevron", "aria-hidden": "true" }, [
+          window.AgentHubStreamTabs.createPhosphorIcon(
+            document,
+            "caret-right",
+            "msg-subagent-chevron-icon",
+          ),
+        ])
+      : null,
     el("span", { class: "msg-author", text: author }),
+    subagent
+      ? el("span", { class: "msg-subagent-title", text: subagentTitle, title: subagentTitle })
+      : null,
     message.time
       ? el("span", {
           class: "msg-time",
@@ -4923,8 +4982,27 @@ function renderMessage(message, { readOnly = false, task = currentTask() } = {})
     if (attachmentStrip) article.append(attachmentStrip);
   }
   const actions = readOnly ? null : renderMessageActions(message, role);
+  if (subagent) {
+    if (actions) article.append(actions);
+    return article;
+  }
   if (!actions) return article;
   return el("div", { class: `msg-stack msg-stack-${role}` }, [article, actions]);
+}
+
+function subagentResponseTitle(message) {
+  const firstLine = String(message?.text ?? "")
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .find(Boolean)
+    ?? "Ответ субагента";
+  const title = firstLine
+    .replace(/^#{1,6}\s+/u, "")
+    .replace(/^[-*+]\s+/u, "")
+    .replace(/^(?:\*\*|__)(.*)(?:\*\*|__)$/u, "$1")
+    .trim()
+    || "Ответ субагента";
+  return title.length > 120 ? `${title.slice(0, 117).trimEnd()}…` : title;
 }
 
 document.addEventListener("click", (event) => {
@@ -5114,15 +5192,18 @@ function renderApprovals() {
       ]),
       el("div", { class: "approval-text", text: approval.text || "" }),
       ...questionFields,
-      el("div", { class: "approval-actions" }, options.map((option) =>
-        el("button", {
-          type: "button",
+      el("div", { class: "approval-actions" }, options.map((option) => {
+        const attributes = {
           class: `chip-button ${option.kind === "primary" ? "primary" : option.kind === "danger" ? "danger" : ""}`,
           "data-action": "approval-respond",
           "data-approval-id": approval.id,
           "data-decision": option.id,
           text: option.label,
-        })).concat(questions.length ? [el("button", {
+        };
+        return option.href
+          ? el("a", { ...attributes, href: option.href, target: "_blank", rel: "noopener noreferrer" })
+          : el("button", { ...attributes, type: "button" });
+      }).concat(questions.length ? [el("button", {
           type: "button",
           class: "chip-button primary",
           "data-action": "approval-submit",
@@ -7231,7 +7312,9 @@ const AgentHub = {
   prepareForRuntimeReload,
   setConnectionQuality({ latencyMs = null } = {}) {
     const latency = Number(latencyMs);
-    state.connectionLatencyMs = Number.isFinite(latency) && latency >= 0 ? Math.round(latency) : null;
+    const nextLatency = Number.isFinite(latency) && latency >= 0 ? Math.round(latency) : null;
+    if (state.connectionLatencyMs === nextLatency) return;
+    state.connectionLatencyMs = nextLatency;
     renderConnectionQuality();
   },
   /** Состояние соединения и отложенного перезапуска Agent Hub. */
@@ -7241,10 +7324,10 @@ const AgentHub = {
       : "offline";
     const blockingCount = Math.max(0, Number(details.blockingCount) || 0);
     const unchanged = state.connection === value && state.connectionBlockingCount === blockingCount;
+    if (unchanged) return;
     state.connection = value;
     state.connectionBlockingCount = blockingCount;
     renderConnectionQuality();
-    if (unchanged) return;
     root.dataset.connection = value;
     const messages = {
       connecting: "Подключение к Agent Hub…",
@@ -7260,14 +7343,19 @@ const AgentHub = {
    *  lastActivity, unread, running, selected }. */
   setTasks(tasks) {
     const nextTasks = Array.isArray(tasks) ? tasks.slice() : [];
+    const previousTasks = state.tasks;
     const selected = nextTasks.find((task) => task.selected);
     const nextSelectedId = selected?.id
       ?? (nextTasks.some((task) => task.id === state.selectedId) ? state.selectedId : null);
     const previousSelectedTask = state.tasks.find((task) => task.id === state.selectedId) ?? null;
     const nextSelectedTask = nextTasks.find((task) => task.id === nextSelectedId) ?? null;
     const selectionChanged = nextSelectedId !== state.selectedId;
-    const tasksChanged = !sameData(state.tasks, nextTasks);
-    const selectedTaskChanged = !sameData(previousSelectedTask, nextSelectedTask);
+    const navigationChangedIds = changedTaskIds(previousTasks, nextTasks, taskNavigationData);
+    const chatChangedIds = changedTaskIds(previousTasks, nextTasks, taskChatData);
+    const tasksChanged = chatChangedIds.size > 0;
+    const navigationChanged = navigationChangedIds.size > 0;
+    const selectedTaskChanged = chatChangedIds.has(nextSelectedId)
+      || !sameData(taskChatData(previousSelectedTask), taskChatData(nextSelectedTask));
     const selectedTaskLocationChanged = Boolean(previousSelectedTask && nextSelectedTask) && (
       workspaceKey(previousSelectedTask) !== workspaceKey(nextSelectedTask)
       || streamKey(previousSelectedTask) !== streamKey(nextSelectedTask)
@@ -7297,14 +7385,20 @@ const AgentHub = {
       ensureTaskStreamVisible(current);
       persistOpenStreams();
     }
-    renderTasks();
+    if (navigationChanged || selectionChanged) renderTasks();
     if (selectionChanged || selectedTaskChanged || nextTasks.some((task) => (
-      task.id !== nextSelectedId && state.visibleStreamTaskIds.includes(task.id)
+      task.id !== nextSelectedId
+      && state.visibleStreamTaskIds.includes(task.id)
+      && chatChangedIds.has(task.id)
     ))) renderChat();
   },
   setWorkspaces(workspaces, columnOrder = []) {
-    state.workspaces = Array.isArray(workspaces) ? workspaces.slice() : [];
-    state.workspaceColumnOrder = Array.isArray(columnOrder) ? columnOrder.slice() : [];
+    const nextWorkspaces = Array.isArray(workspaces) ? workspaces.slice() : [];
+    const nextColumnOrder = Array.isArray(columnOrder) ? columnOrder.slice() : [];
+    if (sameData(state.workspaces, nextWorkspaces)
+      && sameData(state.workspaceColumnOrder, nextColumnOrder)) return;
+    state.workspaces = nextWorkspaces;
+    state.workspaceColumnOrder = nextColumnOrder;
     if (workspaceCardModal?.open && workspaceCardId) {
       renderWorkspaceReleaseRegistry(workspaceCatalogItem(workspaceCardId));
     }
@@ -7593,7 +7687,8 @@ const AgentHub = {
   },
   /** Безопасная сводка и управление локальным Agent Hub Server. */
   setServerStatus(payload) {
-    renderServerStatus(payload);
+    lastServerPayload = payload ?? {};
+    if (root.dataset.view === "server") renderServerStatus(lastServerPayload);
   },
   openAttachmentViewer,
   showAttachmentViewer,

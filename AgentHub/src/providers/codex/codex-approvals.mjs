@@ -95,6 +95,21 @@ export function mcpElicitationAutoResponse(params = {}) {
   return { action: "accept", content };
 }
 
+export function mcpElicitationUrl(params = {}) {
+  if (params.mode !== "url") return "";
+  try {
+    const url = new URL(String(params.url ?? "").trim());
+    return url.protocol === "https:" || url.protocol === "http:" ? url.href : "";
+  } catch {
+    return "";
+  }
+}
+
+export function mcpElicitationAcceptResponse(params = {}) {
+  if (mcpElicitationUrl(params)) return { action: "accept" };
+  return mcpElicitationAutoResponse(params);
+}
+
 export function formatMcpElicitation(params = {}) {
   const parts = ["MCP запрашивает подтверждение или дополнительные данные."];
   if (params.serverName) parts.push(`Сервер: ${params.serverName}`);
