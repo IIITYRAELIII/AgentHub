@@ -33,6 +33,7 @@ test("server controller composes live process, restart and autostart state", asy
     instanceId: "instance",
     releaseId: "release",
     activeCount: 3,
+    version: "2026.8.23",
   });
   assert.deepEqual(snapshot.restart, { pending: true, waiting: true, blockingCount: 2 });
   assert.deepEqual(snapshot.autostart, { supported: true, enabled: true });

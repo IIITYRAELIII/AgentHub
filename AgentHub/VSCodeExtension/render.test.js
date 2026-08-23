@@ -2097,7 +2097,7 @@ test("statistics page offers local usage and full limit history", () => {
   assert.match(app, /class: `limits-burn-rate-segment \$\{right\.overTarget/u);
   assert.match(styles, /\.limits-burn-rate-segment\.is-over-target\s*\{[^}]*stroke:\s*var\(--danger/su);
   assert.match(styles, /\.limits-burn-rate-segment\.is-safe\s*\{[^}]*stroke:\s*var\(--ok\);/su);
-  assert.match(client, /readHistoryWithRangeCompatibility\("usage-history", range, \{\s*maxPoints: 600,\s*turnTimeMode,/u);
+  assert.match(client, /readHistoryWithRangeCompatibility\("usage-history", range, \{\s*maxPoints: 600,\s*accountActivity,\s*turnTimeMode,/u);
   assert.match(client, /function trimHistoryToFifteenDays\(payload\)/u);
   assert.match(styles, /\.current-limits-row\s*\{[^}]*flex-wrap:\s*nowrap;/su);
   assert.match(styles, /\.current-limits-row\s*\{[^}]*overflow-x:\s*auto;/su);
@@ -2138,7 +2138,7 @@ test("statistics compares one independently selected limit and tracks its price"
   assert.match(app, /select\.addEventListener\("change", \(\) => selectComparisonSeries\(select\.value\)\)/u);
   assert.match(
     app,
-    /const entries = \[\s*comparisonSeriesPicker\(model\),\s*comparisonLegendItem\("Локальный расход"/u,
+    /const entries = \[\s*comparisonSeriesPicker\(model\),\s*comparisonLegendItem\("Учётный расход"/u,
   );
   assert.match(app, /seriesId: comparisonState\.seriesId/u);
   assert.match(app, /class: "comparison-deviation-line"/u);

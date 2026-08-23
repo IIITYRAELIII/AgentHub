@@ -77,7 +77,12 @@ test("Desktop usage history forwards provider and turn-time filters", async () =
     range: "30d", maxPoints: 600, provider: "codex", turnTimeMode: "middle",
   });
   assert.deepEqual(result.params, {
-    range: "30d", maxPoints: 600, provider: "codex", turnTimeMode: "middle",
+    range: "30d",
+    maxPoints: 600,
+    provider: "codex",
+    accountKey: undefined,
+    accountActivity: undefined,
+    turnTimeMode: "middle",
   });
 });
 
