@@ -203,13 +203,15 @@ function observeServerIdentity(snapshot) {
     rememberServerIdentity(identity);
     return false;
   }
-  const instanceChanged = identity.instanceId !== observedServerIdentity.instanceId;
-  const releaseChanged = identity.releaseId !== observedServerIdentity.releaseId;
+  const transition = window.AgentHubRuntimeReload.runtimeIdentityTransition(
+    observedServerIdentity,
+    identity,
+  );
   let reloadStarted = false;
-  if (instanceChanged || releaseChanged) {
+  if (transition.reloadRequired) {
     rememberServerIdentity(identity);
-    if (instanceChanged) notifyAndroidAboutRelease(identity);
-    if (releaseChanged) reloadStarted = reloadForPublishedRuntime();
+    if (transition.instanceChanged) notifyAndroidAboutRelease(identity);
+    reloadStarted = reloadForPublishedRuntime();
   }
   return reloadStarted;
 }

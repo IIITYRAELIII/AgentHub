@@ -1,0 +1,298 @@
+/* ====================================================== theme Ephemeris === */
+
+html[data-theme="ephemeris"] {
+  --font-numeric: ui-monospace, "Cascadia Mono", "Cascadia Code", Consolas,
+    "SF Mono", "Roboto Mono", monospace;
+  --display-weight: 620;
+  --display-spacing: 0.09em;
+  --display-transform: uppercase;
+  --title-weight: 590;
+  --label-spacing: 0.2em;
+
+  --radius-lg: 4px;
+  --radius-md: 3px;
+  --radius-sm: 2px;
+  --radius-chip: 2px;
+  --rail-width: 2px;
+
+  --bg: #020b16;
+  --surface-1: rgba(3, 17, 30, 0.78);
+  --surface-2: rgba(5, 24, 40, 0.88);
+  --surface-3: rgba(7, 34, 52, 0.94);
+  --sunken: rgba(1, 8, 16, 0.72);
+
+  --line: rgba(38, 126, 153, 0.32);
+  --line-strong: rgba(53, 166, 190, 0.56);
+
+  --card-bg: linear-gradient(180deg, rgba(5, 24, 40, 0.92), rgba(2, 14, 26, 0.94));
+  --card-bg-open: linear-gradient(180deg, rgba(7, 31, 49, 0.95), rgba(3, 18, 31, 0.96));
+  --card-texture: none;
+  --card-border: rgba(37, 128, 153, 0.38);
+  --card-border-open: rgba(53, 166, 190, 0.62);
+  --card-shadow: inset 0 1px 0 rgba(116, 207, 218, 0.05), 0 12px 28px rgba(0, 0, 0, 0.18);
+
+  --plate-bg: linear-gradient(180deg, rgba(7, 29, 46, 0.88), rgba(3, 17, 29, 0.9));
+  --plate-texture: none;
+  --plate-shadow: inset 0 1px 0 rgba(116, 207, 218, 0.05);
+  --turn-shadow: 0 12px 30px rgba(0, 0, 0, 0.18);
+
+  --text: #d9e9ec;
+  --text-soft: #a9c4ca;
+  --text-muted: #6f969f;
+  --text-faint: #496d77;
+
+  --accent: #e2a04a;
+  --accent-soft: rgba(226, 160, 74, 0.11);
+  --accent-line: rgba(226, 160, 74, 0.58);
+  --accent-glow: 0 0 18px -8px rgba(226, 160, 74, 0.8);
+  --selection: rgba(226, 160, 74, 0.24);
+  --brand-gradient: linear-gradient(145deg, rgba(226, 160, 74, 0.24), rgba(36, 139, 165, 0.3));
+  --brand-shadow: 0 0 18px -9px rgba(226, 160, 74, 0.72);
+
+  --provider-none: #6f969f;
+  --provider-codex: #43bdd1;
+  --provider-claude: #d79451;
+
+  --ok: #51b9a8;
+  --pending: #e2a04a;
+  --dot-input: #39a8c1;
+  --dot-cache: #6c8ed3;
+  --dot-output: #e2a04a;
+  --dot-think: #9d79c9;
+
+  --space-glow-a: rgba(28, 120, 151, 0.1);
+  --space-glow-b: rgba(226, 160, 74, 0.07);
+  --space-base: #020b16;
+  --space-star: rgba(86, 179, 197, 0.22);
+  --star-opacity: 0.14;
+
+  --ephemeris-panel-left: url("./ephemeris-panel-left.png");
+  --ephemeris-panel-center: url("./ephemeris-panel-center.png");
+  --ephemeris-panel-right: url("./ephemeris-panel-right.png");
+
+  --shell-header-background: rgba(1, 8, 15, 0.94);
+  --shell-header-border: 1px solid rgba(39, 126, 151, 0.36);
+  --shell-header-shadow: inset 0 -1px 0 rgba(61, 164, 181, 0.08), 0 8px 24px rgba(0, 0, 0, 0.24);
+  --shell-header-rule: linear-gradient(90deg, transparent 2%, rgba(39, 151, 176, 0.5) 48%, rgba(226, 160, 74, 0.34) 80%, transparent 98%);
+  --shell-header-rule-opacity: 0.78;
+
+  --shell-view-switch-background: rgba(3, 15, 26, 0.9);
+  --shell-view-switch-border: 1px solid rgba(36, 115, 140, 0.34);
+  --shell-view-switch-radius: 3px;
+  --shell-view-switch-padding: 0.14rem;
+  --shell-tab-radius: 2px;
+  --shell-tab-active-background: rgba(77, 50, 20, 0.28);
+  --shell-tab-active-border: 1px solid rgba(226, 160, 74, 0.6);
+  --shell-tab-active-shadow: inset 0 -2px 0 var(--accent), 0 0 18px -12px var(--accent);
+  --shell-tab-active-color: #f2bd70;
+  --shell-control-background: rgba(3, 17, 29, 0.92);
+  --shell-control-border: 1px solid rgba(36, 115, 140, 0.34);
+  --shell-control-radius: 3px;
+
+  --shell-workspace-gap: 0.5rem;
+  --shell-workspace-padding-top: 0.72rem;
+  --shell-panel-border: 1px solid rgba(38, 126, 153, 0.34);
+  --shell-panel-radius: 3px;
+  --shell-chat-gap: 0;
+
+  --shell-stream-tabs-background: rgba(2, 12, 22, 0.93);
+  --shell-stream-tabs-border: 0;
+  --shell-stream-tabs-border-bottom: 1px solid rgba(38, 126, 153, 0.3);
+  --shell-stream-tabs-gap: 0.32rem;
+  --shell-stream-tab-radius: 2px;
+  --shell-stream-tab-active-background: rgba(82, 53, 20, 0.28);
+  --shell-stream-card-background: rgba(4, 20, 34, 0.88);
+  --shell-stream-card-border: 1px solid rgba(37, 112, 136, 0.3);
+  --shell-stream-card-radius: 2px;
+  --shell-stream-card-shadow: inset 0 1px 0 rgba(112, 196, 207, 0.04);
+}
+
+html[data-theme="ephemeris"][data-background-override="true"][data-background="ephemeris-spectral"] {
+  --ephemeris-panel-left: url("./ephemeris-spectral-left.png");
+  --ephemeris-panel-center: url("./ephemeris-spectral-center.png");
+  --ephemeris-panel-right: url("./ephemeris-spectral-right.png");
+}
+
+html[data-theme="ephemeris"][data-background-override="true"][data-background="ephemeris-vector"] {
+  --ephemeris-panel-left: url("./ephemeris-vector-left.png");
+  --ephemeris-panel-center: url("./ephemeris-vector-center.png");
+  --ephemeris-panel-right: url("./ephemeris-vector-right.png");
+}
+
+html[data-theme="ephemeris"] body::after {
+  background: #020b16;
+  inset: 0;
+  mask-image: none;
+  opacity: 1;
+}
+
+html[data-theme="ephemeris"] .app-header {
+  backdrop-filter: blur(10px) saturate(112%);
+  -webkit-backdrop-filter: blur(10px) saturate(112%);
+}
+
+html[data-theme="ephemeris"]:not([data-surface="mobile"]) .task-rail {
+  background-color: #03101e;
+  background-image:
+    linear-gradient(180deg, rgba(2, 11, 21, 0.3), rgba(2, 11, 21, 0.1) 58%, rgba(2, 11, 21, 0.26)),
+    var(--ephemeris-panel-left);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: cover;
+}
+
+html[data-theme="ephemeris"][data-view="chat"]:not([data-surface="mobile"]) .chat {
+  overflow: hidden;
+  position: relative;
+}
+
+html[data-theme="ephemeris"][data-view="chat"]:not([data-surface="mobile"]) .chat::before {
+  background-color: #03101e;
+  background-image:
+    linear-gradient(90deg, rgba(2, 11, 21, 0.12), transparent 28% 72%, rgba(2, 11, 21, 0.12)),
+    linear-gradient(180deg, rgba(2, 11, 21, 0.08), rgba(2, 11, 21, 0.2)),
+    var(--ephemeris-panel-center);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: cover;
+  content: "";
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+  z-index: 0;
+}
+
+html[data-theme="ephemeris"][data-view="chat"]:not([data-surface="mobile"]) .chat > * {
+  position: relative;
+  z-index: 1;
+}
+
+html[data-theme="ephemeris"]:not([data-surface="mobile"]) .activity-rail {
+  background-color: #03101e;
+  background-image:
+    linear-gradient(180deg, rgba(2, 11, 21, 0.28), rgba(2, 11, 21, 0.12) 58%, rgba(2, 11, 21, 0.28)),
+    var(--ephemeris-panel-right);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: cover;
+}
+
+html[data-theme="ephemeris"] .task-rail-head,
+html[data-theme="ephemeris"] .activity-rail > header,
+html[data-theme="ephemeris"] .workspace-task-panel > header,
+html[data-theme="ephemeris"] .stream-chat-header {
+  background: rgba(2, 13, 23, 0.88);
+  border-bottom-color: rgba(38, 126, 153, 0.3);
+}
+
+html[data-theme="ephemeris"] .task-workspace-item,
+html[data-theme="ephemeris"] .activity-stream-item .stream-tab-card,
+html[data-theme="ephemeris"] .workspace-task-item {
+  background: rgba(4, 19, 32, 0.72);
+  border-color: rgba(36, 111, 135, 0.28);
+  border-radius: 2px;
+  box-shadow: inset 0 1px 0 rgba(110, 193, 204, 0.035);
+}
+
+html[data-theme="ephemeris"] .task-workspace-item:hover,
+html[data-theme="ephemeris"] .activity-stream-item:hover .stream-tab-card,
+html[data-theme="ephemeris"] .workspace-task-item:hover {
+  background: rgba(7, 28, 44, 0.84);
+  border-color: rgba(49, 144, 165, 0.48);
+}
+
+html[data-theme="ephemeris"] .task-workspace-item[data-selected],
+html[data-theme="ephemeris"] .activity-stream-item[data-current] .stream-tab-card {
+  background: rgba(67, 44, 19, 0.3);
+  border-color: rgba(226, 160, 74, 0.7);
+  box-shadow: inset 2px 0 0 var(--accent), 0 0 18px -12px rgba(226, 160, 74, 0.9);
+}
+
+html[data-theme="ephemeris"] .stream-tab[aria-pressed="true"] .stream-tab-card {
+  border-color: rgba(226, 160, 74, 0.56);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+html[data-theme="ephemeris"] .chat-scroll {
+  background-color: rgba(1, 8, 16, 0.12);
+}
+
+html[data-theme="ephemeris"] .chat-log .msg-agent:not(.msg-live),
+html[data-theme="ephemeris"] .chat-scroll > .msg-live {
+  background: rgba(3, 18, 31, 0.9);
+  border-color: rgba(37, 128, 153, 0.4);
+  border-radius: 3px;
+  box-shadow: inset 0 1px 0 rgba(100, 184, 198, 0.045), 0 12px 26px rgba(0, 0, 0, 0.16);
+}
+
+html[data-theme="ephemeris"] .msg-user .msg-body {
+  background: rgba(8, 28, 43, 0.88);
+  border-radius: 3px;
+}
+
+html[data-theme="ephemeris"] .msg-author,
+html[data-theme="ephemeris"] .msg-agent .msg-author {
+  color: #50bfd0;
+}
+
+html[data-theme="ephemeris"] .composer {
+  background: rgba(2, 14, 25, 0.94) !important;
+  border-color: rgba(40, 132, 156, 0.46) !important;
+  border-radius: 4px !important;
+  box-shadow: inset 0 1px 0 rgba(112, 196, 207, 0.05), 0 18px 38px rgba(0, 0, 0, 0.26) !important;
+}
+
+html[data-theme="ephemeris"] .composer-input {
+  background: rgba(1, 9, 17, 0.86) !important;
+  border-color: rgba(35, 110, 133, 0.34) !important;
+  border-radius: 2px !important;
+}
+
+html[data-theme="ephemeris"] .composer-input:focus-within {
+  border-color: rgba(226, 160, 74, 0.6);
+  box-shadow: 0 0 0 1px rgba(226, 160, 74, 0.1);
+}
+
+html[data-theme="ephemeris"] .composer-send {
+  background: #d99743;
+  border-color: #eab366;
+  border-radius: 2px !important;
+  color: #08111a;
+}
+
+html[data-theme="ephemeris"] .composer-send:hover:not(:disabled),
+html[data-theme="ephemeris"] .composer-send:focus-visible:not(:disabled) {
+  background: #e8ae60;
+}
+
+html[data-theme="ephemeris"] .task-time,
+html[data-theme="ephemeris"] .task-agent,
+html[data-theme="ephemeris"] .task-model,
+html[data-theme="ephemeris"] .msg-time,
+html[data-theme="ephemeris"] .chat-meta {
+  font-family: var(--font-numeric);
+  font-variant-numeric: tabular-nums;
+}
+
+html[data-background-override="true"][data-background="ephemeris"],
+html[data-background-override="true"][data-background="ephemeris-spectral"],
+html[data-background-override="true"][data-background="ephemeris-vector"] {
+  --hub-background-color: #020b16;
+  --hub-background-image: none;
+  --hub-background-repeat: no-repeat;
+  --hub-background-size: auto;
+}
+
+@media (max-width: 720px) {
+  html[data-theme="ephemeris"] .task-rail,
+  html[data-theme="ephemeris"] .activity-rail,
+  html[data-theme="ephemeris"] .chat {
+    background-image: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-theme="ephemeris"] body::before {
+    animation: none;
+  }
+}

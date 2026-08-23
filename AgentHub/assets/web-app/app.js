@@ -1216,6 +1216,11 @@ function refreshTaskDurations() {
   for (const node of document.querySelectorAll(".task-time[data-task-started-at]")) {
     node.textContent = formatRunningDuration(node.dataset.taskStartedAt, now);
   }
+  for (const node of document.querySelectorAll("[data-live-turn-duration][data-turn-started-at]")) {
+    const label = MessageView.turnDurationLabel(node.dataset.turnStartedAt, now);
+    node.textContent = label;
+    node.hidden = !label;
+  }
   const minute = Math.floor(now / 60_000);
   if (minute !== lastActivityRailRefreshMinute) {
     lastActivityRailRefreshMinute = minute;
@@ -2494,6 +2499,13 @@ function renderStreamChatPreview(task) {
       el("div", { class: "msg-head" }, [
         el("span", { class: "msg-author", "data-live-author": "" }),
         el("span", { class: "msg-stage", "data-live-stage": "" }),
+        el("span", {
+          class: "msg-turn-duration",
+          "data-live-turn-duration": "",
+          title: "Длительность хода",
+          "aria-label": "Длительность хода",
+          hidden: true,
+        }),
       ]),
       el("div", { class: "msg-reasoning msg-stage-detail", "data-live-stage-detail": "", hidden: true }),
       el("div", { class: "msg-reasoning", "data-live-reasoning": "", hidden: true }),
@@ -5082,6 +5094,15 @@ function populateLiveCard(node, live, fallbackAuthor = "Агент", task = curr
   const stageNode = node.querySelector("[data-live-stage]");
   stageNode.textContent = liveStage.status;
   stageNode.hidden = !liveStage.status;
+  const durationNode = node.querySelector("[data-live-turn-duration]");
+  if (durationNode) {
+    const startedAt = String(live.turnStartedAt ?? "").trim();
+    if (startedAt) durationNode.dataset.turnStartedAt = startedAt;
+    else delete durationNode.dataset.turnStartedAt;
+    const durationLabel = MessageView.turnDurationLabel(startedAt, Date.now());
+    durationNode.textContent = durationLabel;
+    durationNode.hidden = !durationLabel;
+  }
   const groups = visibleTurnTraceGroups(live.activityGroups);
   const stageDetail = node.querySelector("[data-live-stage-detail]");
   const standaloneStageDetail = standaloneLiveStageDetail({ stage: live.stage, traceGroups: groups });

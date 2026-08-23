@@ -1,0 +1,12 @@
+{
+  "id": "ephemeris",
+  "name": "Ephemeris",
+  "color": "#020b16",
+  "order": 35,
+  "styles": "theme.css",
+  "backgrounds": [
+    { "id": "ephemeris", "name": "Orbital Survey" },
+    { "id": "ephemeris-spectral", "name": "Spectral Drift" },
+    { "id": "ephemeris-vector", "name": "Vector Cartography" }
+  ]
+}

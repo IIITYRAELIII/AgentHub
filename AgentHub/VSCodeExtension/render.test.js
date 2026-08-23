@@ -873,10 +873,13 @@ test("rename targets the emitted Thread and upgrades to its Workspace when prese
   assert.match(client, /task\?\.workspaceId \? \{ workspaceId: task\.workspaceId, name: title \} : \{ \.\.\.identity, title \}/u);
 });
 
-test("clients resynchronize on a new Hub instance and reload only a new release", () => {
+test("web clients reload after any Hub runtime identity change", () => {
   const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
   assert.match(client, /snapshot\?\.server\?\.process/u);
+  assert.match(client, /runtimeIdentityTransition/u);
+  assert.match(client, /transition\.reloadRequired/u);
   assert.match(client, /instanceChanged[\s\S]*notifyAndroidAboutRelease/u);
+  assert.match(client, /reloadForPublishedRuntime\(\)/u);
   assert.match(client, /AgentHubAndroid\?\.onHubRestarted/u);
   assert.match(client, /prepareForRuntimeReload/u);
   assert.match(client, /window\.location\.reload\(\)/u);

@@ -59,9 +59,15 @@
     return `${day}.${month}.${date.getFullYear()} ${time}`;
   }
 
+  function timestampMs(value) {
+    if (value instanceof Date) return value.getTime();
+    if (typeof value === "number") return Number.isFinite(value) ? value : Number.NaN;
+    return Date.parse(String(value ?? ""));
+  }
+
   function turnDurationLabel(startedAt, completedAt) {
-    const startedAtMs = Date.parse(String(startedAt ?? ""));
-    const completedAtMs = Date.parse(String(completedAt ?? ""));
+    const startedAtMs = timestampMs(startedAt);
+    const completedAtMs = timestampMs(completedAt);
     if (!Number.isFinite(startedAtMs) || !Number.isFinite(completedAtMs) || completedAtMs < startedAtMs) {
       return "";
     }

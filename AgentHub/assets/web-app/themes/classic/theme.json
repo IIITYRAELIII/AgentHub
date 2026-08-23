@@ -5,6 +5,8 @@
   "order": 115,
   "styles": "theme.css",
   "backgrounds": [
-    { "id": "classic", "name": "Классика" }
+    { "id": "classic", "name": "Классика" },
+    { "id": "classic-fiber", "name": "Тихая фактура" },
+    { "id": "classic-grid", "name": "Тихая сетка" }
   ]
 }

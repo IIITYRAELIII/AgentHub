@@ -414,3 +414,12 @@ test("completed turn duration is formatted in hours and minutes", async () => {
   assert.equal(api.turnDurationLabel("2026-08-22T10:00:00.000Z", "2026-08-22T11:08:00.000Z"), "1 ч 8 мин");
   assert.equal(api.turnDurationLabel("", "2026-08-22T11:08:00.000Z"), "");
 });
+
+test("running turn duration accepts the live clock timestamp", async () => {
+  const api = await messageViewApi();
+
+  assert.equal(
+    api.turnDurationLabel("2026-08-22T10:00:00.000Z", Date.parse("2026-08-22T10:27:42.000Z")),
+    "27 мин",
+  );
+});

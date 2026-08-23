@@ -78,6 +78,10 @@ html[data-theme="classic"] {
   --star-opacity: 0;
   --decor-opacity: 0;
 
+  --classic-panel-left: none;
+  --classic-panel-center: none;
+  --classic-panel-right: none;
+
   --shell-header-background: #191a1b;
   --shell-header-border: 1px solid #2a2b2c;
   --shell-header-rule: none;
@@ -106,6 +110,18 @@ html[data-theme="classic"] {
   --shell-stream-card-shadow: none;
 }
 
+html[data-theme="classic"][data-background-override="true"][data-background="classic-fiber"] {
+  --classic-panel-left: url("./classic-fiber-left.png");
+  --classic-panel-center: url("./classic-fiber-center.png");
+  --classic-panel-right: url("./classic-fiber-right.png");
+}
+
+html[data-theme="classic"][data-background-override="true"][data-background="classic-grid"] {
+  --classic-panel-left: url("./classic-grid-left.png");
+  --classic-panel-center: url("./classic-grid-center.png");
+  --classic-panel-right: url("./classic-grid-right.png");
+}
+
 html[data-theme="classic"] body,
 html[data-theme="classic"] .app-header {
   backdrop-filter: none;
@@ -128,7 +144,9 @@ html[data-theme="classic"] .theme-atmosphere {
   display: none;
 }
 
-html[data-background-override="true"][data-background="classic"] {
+html[data-background-override="true"][data-background="classic"],
+html[data-background-override="true"][data-background="classic-fiber"],
+html[data-background-override="true"][data-background="classic-grid"] {
   --hub-background-color: #191a1b;
   --hub-background-image: none;
 }
@@ -143,6 +161,42 @@ html[data-theme="classic"] .settings-panel {
   -webkit-backdrop-filter: none;
   background-color: #191a1b;
   box-shadow: none;
+}
+
+html[data-theme="classic"]:not([data-surface="mobile"]) .task-rail {
+  background-image: var(--classic-panel-left);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: cover;
+}
+
+html[data-theme="classic"][data-view="chat"]:not([data-surface="mobile"]) .chat {
+  overflow: hidden;
+  position: relative;
+}
+
+html[data-theme="classic"][data-view="chat"]:not([data-surface="mobile"]) .chat::before {
+  background-image: var(--classic-panel-center);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: cover;
+  content: "";
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+  z-index: 0;
+}
+
+html[data-theme="classic"][data-view="chat"]:not([data-surface="mobile"]) .chat > * {
+  position: relative;
+  z-index: 1;
+}
+
+html[data-theme="classic"]:not([data-surface="mobile"]) .activity-rail {
+  background-image: var(--classic-panel-right);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: cover;
 }
 
 html[data-theme="classic"] .task-rail-title,

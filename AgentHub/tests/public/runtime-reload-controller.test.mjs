@@ -61,3 +61,29 @@ test("runtime reload preserves stored text but blocks non-restorable state", asy
   assert.equal(runtimeReloadBlocked({ bugReportAttachments: [{ name: "screen.png" }] }), true);
   assert.equal(runtimeReloadBlocked({ bugReportSending: true }), true);
 });
+
+test("runtime identity change reloads the client after an ordinary restart", async () => {
+  const { runtimeIdentityTransition } = await runtimeReloadApi();
+
+  assert.deepEqual(
+    { ...runtimeIdentityTransition(
+      { instanceId: "instance-1", releaseId: "release-1" },
+      { instanceId: "instance-2", releaseId: "release-1" },
+    ) },
+    { instanceChanged: true, releaseChanged: false, reloadRequired: true },
+  );
+  assert.deepEqual(
+    { ...runtimeIdentityTransition(
+      { instanceId: "instance-1", releaseId: "release-1" },
+      { instanceId: "instance-1", releaseId: "release-2" },
+    ) },
+    { instanceChanged: false, releaseChanged: true, reloadRequired: true },
+  );
+  assert.deepEqual(
+    { ...runtimeIdentityTransition(
+      { instanceId: "instance-1", releaseId: "release-1" },
+      { instanceId: "instance-1", releaseId: "release-1" },
+    ) },
+    { instanceChanged: false, releaseChanged: false, reloadRequired: false },
+  );
+});

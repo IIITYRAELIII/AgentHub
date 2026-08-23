@@ -22,6 +22,23 @@
       || Boolean(bugReportSending);
   }
 
+  function runtimeIdentityTransition(previous, current) {
+    const previousInstanceId = String(previous?.instanceId ?? "").trim();
+    const previousReleaseId = String(previous?.releaseId ?? "").trim();
+    const currentInstanceId = String(current?.instanceId ?? "").trim();
+    const currentReleaseId = String(current?.releaseId ?? "").trim();
+    if (!previousInstanceId || !previousReleaseId || !currentInstanceId || !currentReleaseId) {
+      return { instanceChanged: false, releaseChanged: false, reloadRequired: false };
+    }
+    const instanceChanged = previousInstanceId !== currentInstanceId;
+    const releaseChanged = previousReleaseId !== currentReleaseId;
+    return {
+      instanceChanged,
+      releaseChanged,
+      reloadRequired: instanceChanged || releaseChanged,
+    };
+  }
+
   class RuntimeReloadController {
     constructor({
       prepare,
@@ -79,6 +96,7 @@
   window.AgentHubRuntimeReload = Object.freeze({
     DEFAULT_RETRY_DELAY_MS,
     RuntimeReloadController,
+    runtimeIdentityTransition,
     runtimeReloadBlocked,
   });
 })();
