@@ -1,6 +1,8 @@
 import { createHmac } from "node:crypto";
 import { createServer } from "node:http";
 
+import { AGENT_HUB_VERSION } from "../../infrastructure/filesystem/agent-hub-package.mjs";
+
 const MAX_REQUEST_BYTES = 1024 * 1024;
 const PROTOCOL_VERSIONS = new Set(["2024-11-05", "2025-03-26", "2025-06-18"]);
 
@@ -170,7 +172,7 @@ export class HubMcpServer {
       return {
         protocolVersion: PROTOCOL_VERSIONS.has(requested) ? requested : "2025-03-26",
         capabilities: { tools: { listChanged: false } },
-        serverInfo: { name: "agent_hub", title: "Agent Hub", version: "0.1.0" },
+        serverInfo: { name: "agent_hub", title: "Agent Hub", version: AGENT_HUB_VERSION },
         instructions: "Copy the exact non-empty context_token from the current <agent_hub_context> developer block into every Agent Hub tool call. It is not an environment variable.",
       };
     }

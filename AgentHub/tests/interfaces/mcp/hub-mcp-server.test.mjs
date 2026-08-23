@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { connect } from "node:net";
 import test from "node:test";
+import { AGENT_HUB_VERSION } from "../../../src/infrastructure/filesystem/agent-hub-package.mjs";
 
 import { HubMcpServer } from "../../../src/interfaces/mcp/hub-mcp-server.mjs";
 
@@ -22,6 +23,7 @@ test("HubMcpServer serves MCP only through its secret loopback URL", async (cont
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26" } }),
   }).then((response) => response.json());
   assert.equal(initialized.result.serverInfo.name, "agent_hub");
+  assert.equal(initialized.result.serverInfo.version, AGENT_HUB_VERSION);
   assert.match(initialized.result.instructions, /exact non-empty context_token/u);
   assert.match(initialized.result.instructions, /not an environment variable/u);
 

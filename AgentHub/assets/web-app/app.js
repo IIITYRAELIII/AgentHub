@@ -3,7 +3,7 @@
  * Оболочка объединяет четыре представления над одними данными и темами:
  *   • «Диалоги» — слева компактный список задач, справа чат выбранной задачи;
  *   • «Журнал» — SQLite-представление журнала с ленивой подгрузкой;
- *   • «Статистика» — локальный расход журнала и история лимитов API.
+ *   • «Статистика» — учётный расход журнала и история лимитов API.
  *   • «Сервер» — состояние и безопасное управление локальным Agent Hub.
  *
  * Frontend не хранит собственных задач и сообщений: до подключения backend
@@ -6841,6 +6841,7 @@ function renderServerStatus(payload = {}) {
       : "Состояние процесса пока недоступно.";
   serverStateDot?.toggleAttribute("data-online", active);
   serverFacts.replaceChildren(
+    serverFact("Версия", processInfo.version ? `v${processInfo.version}` : "—"),
     serverFact("PID", processInfo.pid ? String(processInfo.pid) : "—"),
     serverFact("Запущен", formatServerStartedAt(processInfo.startedAt)),
     serverFact("Работает", formatRunningDuration(processInfo.startedAt)),
@@ -7678,11 +7679,11 @@ const AgentHub = {
   setRateLimitHistory(payload) {
     applyRateLimitHistory(payload);
   },
-  /** Локальный расход завершённых ходов из ledger Agent Hub. */
+  /** Учётный расход завершённых ходов из ledger Agent Hub и синхронизации устройств. */
   setUsageHistory(payload) {
     applyUsageHistory(payload);
   },
-  /** Сопоставление локального расхода с изменением лимитов API. */
+  /** Сопоставление учётного расхода с изменением лимитов API. */
   setUsageComparison(payload) {
     applyUsageComparison(payload);
   },
@@ -7737,7 +7738,7 @@ window.AgentHub = AgentHub;
 
 /* ============================================= статистика и история лимитов */
 /* Страница открывается отдельной вкладкой или по сводке лимитов в шапке и
- * показывает локальный расход вместе с SVG-графиком лимитов. Данные о
+ * показывает учётный расход вместе с SVG-графиком лимитов. Данные о
  * периодах запрашиваются событием `limits:open`, а приходят обратно через
  * `AgentHub.setRateLimitHistory(payload)`. Ничего внешнего: график рисуется
  * встроенным SVG на переменных темы, без canvas, шрифтов и CDN. */
@@ -9152,7 +9153,7 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
-/* ------------------------------------------------ локальный расход / единицы */
+/* ------------------------------------------------ учётный расход / единицы */
 
 function parseCreditsText(text) {
   const match = String(text ?? "").trim().match(
@@ -9343,6 +9344,59 @@ function usageBurnRateAnalysis(payload) {
   return typeof calculator === "function" ? calculator(payload) : null;
 }
 
+function usageHistoryDevices(source) {
+  const devices = (Array.isArray(source?.devices) ? source.devices : [])
+    .map((device) => ({
+      deviceId: String(device?.deviceId ?? "").trim(),
+      label: String(device?.label ?? "").trim() || "Устройство",
+      source: device?.source === "local" ? "local" : "sync",
+      credits: Math.max(0, Number(device?.credits) || 0),
+      timedCredits: Math.max(0, Number(device?.timedCredits) || 0),
+      durationSeconds: Math.max(0, Number(device?.durationSeconds) || 0),
+    }))
+    .filter((device) => device.deviceId);
+  if (devices.length) return devices;
+  return [{
+    deviceId: "local",
+    label: "Это устройство",
+    source: "local",
+    credits: Math.max(0, Number(source?.localCredits ?? source?.credits ?? source?.totalCredits) || 0),
+    timedCredits: Math.max(0, Number(source?.localTimedCredits ?? source?.timedCredits) || 0),
+    durationSeconds: Math.max(0, Number(source?.localDurationSeconds ?? source?.durationSeconds) || 0),
+  }];
+}
+
+function usageDeviceColor(device) {
+  if (device?.source === "local") return "var(--accent)";
+  let hash = 0;
+  for (const character of String(device?.deviceId ?? "")) {
+    hash = ((hash * 31) + character.codePointAt(0)) >>> 0;
+  }
+  return `hsl(${(hash * 137.508) % 360} 68% 58%)`;
+}
+
+function usageDeviceBurnRateAnalysis(payload, deviceId) {
+  const calculator = globalThis.AgentHubUsageBurnRate?.buildUsageBurnRate;
+  if (typeof calculator !== "function") return null;
+  const total = usageHistoryDevices(payload).find((device) => device.deviceId === deviceId);
+  return calculator({
+    ...payload,
+    totalCredits: total?.credits ?? 0,
+    totalTimedCredits: total?.timedCredits ?? 0,
+    totalDurationSeconds: total?.durationSeconds ?? 0,
+    points: (Array.isArray(payload?.points) ? payload.points : []).map((point) => {
+      const device = usageHistoryDevices(point).find((entry) => entry.deviceId === deviceId);
+      return {
+        ...point,
+        credits: device?.credits ?? 0,
+        timedCredits: device?.timedCredits ?? 0,
+        durationSeconds: device?.durationSeconds ?? 0,
+        taskDurationSeconds: device?.durationSeconds ?? 0,
+      };
+    }),
+  });
+}
+
 function usagePayloadPeriodMinutes(payload) {
   const from = Date.parse(payload?.from ?? "");
   const to = Date.parse(payload?.to ?? "");
@@ -9429,18 +9483,26 @@ function renderUsageBurnSummary(payload, analysis = usageBurnRateAnalysis(payloa
   );
 }
 
+function usagePointMetric(value) {
+  if (usageState.mode === "rate") return `${formatUsageValue(value)}/ч`;
+  if (usageState.mode === "intensity") return `${formatUsageValue(value)}/мин`;
+  return formatUsageValue(value);
+}
+
 function showUsageTooltip(point, fx, fy, daily = false, hours = 0) {
   if (!usageTooltip) return;
+  const total = usageChartValue(point, hours);
+  const deviceValues = usageChartDeviceValues(point, hours).filter((device) => device.value > 0);
   usageTooltip.replaceChildren(
     el("span", { class: "limits-tooltip-time", text: formatUsagePointDate(point, daily) }),
     el("span", {
       class: "limits-tooltip-row",
-      text: usageState.mode === "rate"
-        ? formatUsageRate(usageRateCredits(point), usageRateHours(point, hours))
-        : usageState.mode === "intensity"
-          ? `EMA ${formatUsageMinuteRate(point.emaRate)} · bucket ${formatUsageMinuteRate(point.rawRate)}`
-          : formatUsageValue(point.credits),
+      text: `Всего: ${usagePointMetric(total)}`,
     }),
+    ...deviceValues.map((device) => el("span", { class: "limits-tooltip-row" }, [
+      el("i", { class: "usage-device-swatch", style: `background: ${device.color}` }),
+      document.createTextNode(`${device.label}: ${usagePointMetric(device.value)}`),
+    ])),
   );
   positionChartTooltip(usageTooltip, fx, fy);
   usageTooltip.hidden = false;
@@ -9463,9 +9525,36 @@ function usageAxisTicks(fromMs, toMs, plotW) {
   return ticks;
 }
 
+function usageChartValue(point, hours) {
+  if (usageState.mode === "rate") {
+    const rateHours = usageRateHours(point, hours);
+    return rateHours > 0 ? usageRateCredits(point) / rateHours : 0;
+  }
+  return usageState.mode === "intensity" ? point.emaRate : point.credits;
+}
+
+function usageChartDeviceValues(point, hours) {
+  const rateHours = usageRateHours(point, hours);
+  return (Array.isArray(point?.devices) ? point.devices : []).map((device) => ({
+    ...device,
+    value: usageState.mode === "rate"
+      ? (rateHours > 0
+        ? (usageState.rateBasis === "task" ? device.timedCredits : device.credits) / rateHours
+        : 0)
+      : usageState.mode === "intensity" ? device.emaRate : device.credits,
+  }));
+}
+
 function buildUsageChart(payload) {
   const burnAnalysis = usageState.mode === "intensity" ? usageBurnRateAnalysis(payload) : null;
+  const devices = usageHistoryDevices(payload);
   const burnPointsByTime = new Map((burnAnalysis?.points ?? []).map((point) => [point.time, point]));
+  const deviceBurnPoints = new Map(devices.map((device) => [
+    device.deviceId,
+    new Map((usageState.mode === "intensity"
+      ? usageDeviceBurnRateAnalysis(payload, device.deviceId)?.points ?? []
+      : []).map((point) => [point.time, point])),
+  ]));
   const points = (Array.isArray(payload?.points) ? payload.points : [])
     .map((point) => {
       const time = Date.parse(point.at);
@@ -9477,6 +9566,17 @@ function buildUsageChart(payload) {
         timedCredits: Math.max(0, Number(point.timedCredits) || 0),
         durationSeconds: Math.max(0, Number(point.durationSeconds) || 0),
         taskDurationSeconds: Math.max(0, Number(point.taskDurationSeconds ?? point.durationSeconds) || 0),
+        devices: devices.map((device, index) => {
+          const bucket = usageHistoryDevices(point).find((entry) => entry.deviceId === device.deviceId);
+          return {
+            ...device,
+            credits: bucket?.credits ?? 0,
+            timedCredits: bucket?.timedCredits ?? 0,
+            durationSeconds: bucket?.durationSeconds ?? 0,
+            emaRate: Math.max(0, Number(deviceBurnPoints.get(device.deviceId)?.get(time)?.emaRate) || 0),
+            color: usageDeviceColor(device, index),
+          };
+        }),
         rawRate: Math.max(0, Number(burnPoint?.rawRate) || 0),
         emaRate: Math.max(0, Number(burnPoint?.emaRate) || 0),
       };
@@ -9486,15 +9586,7 @@ function buildUsageChart(payload) {
   const rate = usageState.mode === "rate";
   const intensity = usageState.mode === "intensity";
   const hours = usageBucketHours(payload);
-  const valueOf = (point) => {
-    if (rate) {
-      const rateHours = usageRateHours(point, hours);
-      return rateHours > 0 ? usageRateCredits(point) / rateHours : 0;
-    }
-    return intensity
-      ? point.emaRate
-      : point.credits;
-  };
+  const valueOf = (point) => usageChartValue(point, hours);
   const formatValue = (value) => (
     rate ? `${formatUsageValue(value)}/ч` : intensity ? `${formatUsageValue(value)}/мин` : formatUsageValue(value)
   );
@@ -9540,33 +9632,51 @@ function buildUsageChart(payload) {
        помещаться в карточку целиком, без горизонтальной прокрутки. */
     const labelStep = Math.max(1, Math.ceil(30 / Math.max(barStep, 1)));
     points.forEach((point, index) => {
-      const height = valueOf(point) / max * plotH;
+      const totalValue = valueOf(point);
+      const deviceValues = usageChartDeviceValues(point, hours);
+      const height = totalValue / max * plotH;
       const x = padL + index * barStep + (barStep - barWidth) / 2;
       const y = padT + plotH - height;
-      const bar = svgEl("rect", {
+      const group = svgEl("g", { class: "usage-bar-group" });
+      let stackedValue = 0;
+      for (const device of deviceValues) {
+        if (!(device.value > 0)) continue;
+        const segmentHeight = device.value / max * plotH;
+        stackedValue += device.value;
+        group.append(svgEl("rect", {
+          x: x.toFixed(1),
+          y: (padT + plotH - (stackedValue / max * plotH)).toFixed(1),
+          width: barWidth.toFixed(1),
+          height: Math.max(1, segmentHeight).toFixed(1),
+          rx: Math.min(4, barWidth / 3).toFixed(1),
+          class: "usage-bar usage-bar-device",
+          style: `fill: ${device.color}`,
+        }));
+      }
+      const deviceAria = deviceValues
+        .filter((device) => device.value > 0)
+        .map((device) => `${device.label} ${usagePointMetric(device.value)}`)
+        .join(", ");
+      const hit = svgEl("rect", {
         x: x.toFixed(1),
         y: y.toFixed(1),
         width: barWidth.toFixed(1),
         height: Math.max(1, height).toFixed(1),
-        rx: Math.min(4, barWidth / 3).toFixed(1),
-        class: "usage-bar",
+        class: "usage-bar-hit",
         tabindex: 0,
         role: "img",
-          "aria-label": `${formatLimitsDateTime(point.at)}: ${
-          rate
-            ? formatUsageRate(usageRateCredits(point), usageRateHours(point, hours))
-            : intensity
-              ? `EMA ${formatUsageMinuteRate(point.emaRate)} · bucket ${formatUsageMinuteRate(point.rawRate)}`
-              : formatUsageValue(point.credits)
+        "aria-label": `${formatLimitsDateTime(point.at)}: всего ${usagePointMetric(totalValue)}${
+          deviceAria ? `, ${deviceAria}` : ""
         }`,
       });
       const fx = (x + barWidth / 2) / W;
       const fy = y / H;
-      bar.addEventListener("pointerenter", () => showUsageTooltip(point, fx, fy, daily, hours));
-      bar.addEventListener("pointerleave", hideUsageTooltip);
-      bar.addEventListener("focus", () => showUsageTooltip(point, fx, fy, daily, hours));
-      bar.addEventListener("blur", hideUsageTooltip);
-      svg.append(bar);
+      hit.addEventListener("pointerenter", () => showUsageTooltip(point, fx, fy, daily, hours));
+      hit.addEventListener("pointerleave", hideUsageTooltip);
+      hit.addEventListener("focus", () => showUsageTooltip(point, fx, fy, daily, hours));
+      hit.addEventListener("blur", hideUsageTooltip);
+      group.append(hit);
+      svg.append(group);
       if (index % labelStep) return;
       const center = (x + barWidth / 2).toFixed(1);
       svg.append(svgEl("text", {
@@ -9590,20 +9700,35 @@ function buildUsageChart(payload) {
     const span = Math.max(1, toMs - fromMs);
     const xOf = (time) => padL + ((time - fromMs) / span) * plotW;
     const yOf = (value) => padT + (1 - value / max) * plotH;
-    const baseline = (padT + plotH).toFixed(1);
-    const line = points
+    const lineFor = (valueGetter) => points
       .map((point, index) => {
         const command = index ? "L" : "M";
-        return `${command}${xOf(point.time).toFixed(1)} ${yOf(valueOf(point)).toFixed(1)}`;
+        return `${command}${xOf(point.time).toFixed(1)} ${yOf(valueGetter(point)).toFixed(1)}`;
       })
       .join(" ");
-    const first = xOf(points[0].time).toFixed(1);
-    const last = xOf(points.at(-1).time).toFixed(1);
-    svg.append(svgEl("path", {
-      d: `${line} L${last} ${baseline} L${first} ${baseline} Z`,
-      class: "usage-area",
-    }));
-    svg.append(svgEl("path", { d: line, class: "usage-line", fill: "none" }));
+    const cumulativeValue = (point, lastDeviceIndex) => usageChartDeviceValues(point, hours)
+      .slice(0, lastDeviceIndex + 1)
+      .reduce((sum, device) => sum + device.value, 0);
+    for (const [deviceIndex, device] of devices.entries()) {
+      if (!points.some((point) => usageChartDeviceValues(point, hours)[deviceIndex]?.value > 0)) continue;
+      const upperValue = (point) => cumulativeValue(point, deviceIndex);
+      const lowerValue = (point) => deviceIndex ? cumulativeValue(point, deviceIndex - 1) : 0;
+      const upperLine = lineFor(upperValue);
+      const reverseLowerLine = [...points].reverse().map((point) => (
+        `L${xOf(point.time).toFixed(1)} ${yOf(lowerValue(point)).toFixed(1)}`
+      )).join(" ");
+      svg.append(svgEl("path", {
+        d: `${upperLine} ${reverseLowerLine} Z`,
+        class: "usage-device-area",
+        style: `fill: ${usageDeviceColor(device, deviceIndex)}`,
+      }));
+      svg.append(svgEl("path", {
+        d: upperLine,
+        class: "usage-device-line",
+        fill: "none",
+        style: `stroke: ${usageDeviceColor(device, deviceIndex)}`,
+      }));
+    }
     for (const tick of usageAxisTicks(fromMs, toMs, plotW)) {
       const x = xOf(tick);
       svg.append(svgEl("line", {
@@ -9624,7 +9749,14 @@ function buildUsageChart(payload) {
       if (valueOf(point) <= 0) continue;
       const cx = xOf(point.time);
       const cy = yOf(valueOf(point));
-      const dot = svgEl("circle", { cx, cy, r: 2.6, class: "usage-dot" });
+      const topDevice = usageChartDeviceValues(point, hours).filter((device) => device.value > 0).at(-1);
+      const dot = svgEl("circle", {
+        cx,
+        cy,
+        r: 2.6,
+        class: "usage-dot",
+        style: `fill: ${topDevice?.color ?? "var(--accent)"}`,
+      });
       const fx = cx / W;
       const fy = cy / H;
       dot.addEventListener("pointerenter", () => showUsageTooltip(point, fx, fy, daily, hours));
@@ -9639,7 +9771,7 @@ function buildUsageChart(payload) {
       ? `Скорость расхода ${usageRateBasisLabel()} за ${formatUsagePeriod(payload)}.`
       : intensity
         ? `EMA-поглощение расхода за ${formatUsagePeriod(payload)}.`
-        : `Локальный расход: ${formatUsageValue(payload.totalCredits)} за ${formatUsagePeriod(payload)}.`,
+        : `Учётный расход: ${formatUsageValue(payload.totalCredits)} за ${formatUsagePeriod(payload)}.`,
   );
   svg.style.width = "100%";
   usageChart.replaceChildren(svg);
@@ -9654,7 +9786,7 @@ function renderUsageHistory() {
   usageChartWrap.hidden = status !== "ready";
   hideUsageTooltip();
   if (status === "error") {
-    usageErrorText.textContent = usageState.error || "Не удалось загрузить локальный расход.";
+    usageErrorText.textContent = usageState.error || "Не удалось загрузить учётный расход.";
   }
   const payload = usageState.payload;
   const rate = usageState.mode === "rate";
@@ -9662,10 +9794,10 @@ function renderUsageHistory() {
   const burnAnalysis = intensity && payload && !payload.error ? usageBurnRateAnalysis(payload) : null;
   if (usageTitle) {
     usageTitle.textContent = rate
-      ? "Скорость расхода"
+      ? "Скорость учётного расхода"
       : intensity
-        ? "Поглощение cr"
-        : "Локальный расход";
+        ? "Поглощение учётного расхода"
+        : "Учётный расход";
   }
   for (const button of usageModes?.querySelectorAll("[data-usage-mode]") ?? []) {
     const active = button.dataset.usageMode === usageState.mode;
@@ -9700,6 +9832,13 @@ function renderUsageHistory() {
       const unpriced = Math.max(0, Number(payload.unpricedCount) || 0);
       const untimed = Math.max(0, Number(payload.untimedCount ?? payload.untimedCreditCount) || 0);
       const notes = [];
+      const syncedDevices = usageHistoryDevices(payload)
+        .filter((device) => device.source === "sync" && device.credits > 0);
+      if (syncedDevices.length) {
+        notes.push(`Отдельные цвета устройств: ${syncedDevices.map((device) => (
+          `${device.label} — ${formatUsageValue(device.credits)}`
+        )).join("; ")}.`);
+      }
       if (unpriced) notes.push(`Без тарифа и вне суммы: ${unpriced}.`);
       if (rate && usageState.rateBasis === "task" && untimed) {
         notes.push(`Без длительности и вне скорости по времени задач: ${untimed}.`);
@@ -9755,7 +9894,7 @@ document.querySelector("[data-usage-retry]")?.addEventListener("click", () => {
   requestUsageHistory(usageState.range, { force: true });
 });
 
-/* --------------------------------------- сопоставление локального и API расхода */
+/* --------------------------------------- сопоставление учётного и API расхода */
 
 function comparisonPayloadStatus(payload) {
   if (!payload || payload.error) return payload?.error ? "error" : "empty";
@@ -10226,7 +10365,7 @@ function buildUsageComparisonChart(model) {
   appendComparisonMarkers(svg, model.local.values, model.buckets.map((bucket) => bucket.credits), model, {
     W, H, xOf, yOf,
   }, {
-    name: "Локальный расход",
+    name: "Учётный расход",
     kind: "local",
     color: "var(--comparison-local)",
   });
@@ -10254,7 +10393,7 @@ function buildUsageComparisonChart(model) {
     : "не рассчитана";
   comparisonChart.setAttribute(
     "aria-label",
-    `Сопоставление локального и API-расхода. Корреляция ${correlation}; среднее отклонение ${
+    `Сопоставление учётного и API-расхода. Корреляция ${correlation}; среднее отклонение ${
       Number.isFinite(model.deviation) ? `${formatComparisonNumber(model.deviation, 1, true)} процентного пункта` : "не рассчитано"
     }; изменение цены ${
       Number.isFinite(model.price.changePercent)
@@ -10442,7 +10581,7 @@ function buildComparisonScatterChart(model) {
   }, ["Расход лимита, п.п."]));
   svg.append(svgEl("text", {
     x: padL, y: 13, class: "comparison-panel-label",
-  }, [`Локальный расход, ${comparisonUsageUnitLabel()}`]));
+  }, [`Учётный расход, ${comparisonUsageUnitLabel()}`]));
   svg.append(svgEl("text", {
     x: W - padR, y: 13, class: "comparison-correlation-label", "text-anchor": "end",
   }, [`r ${Number.isFinite(model.correlation) ? formatComparisonNumber(model.correlation, 2, true) : "—"}`]));
@@ -10465,7 +10604,7 @@ function buildComparisonScatterChart(model) {
     const info = {
       ...point,
       name: "Связь расходов",
-      detail: `лимит +${formatComparisonNumber(point.x, 1)} п.п.; локально ${formatUsageValue(point.y)}`,
+      detail: `лимит +${formatComparisonNumber(point.x, 1)} п.п.; учётный ${formatUsageValue(point.y)}`,
     };
     circle.addEventListener("pointerenter", () => showComparisonTooltip(info, xOf(point.x) / W, yOf(point.y) / H, svg));
     circle.addEventListener("pointerleave", hideComparisonTooltip);
@@ -10532,9 +10671,9 @@ function buildComparisonDifferenceChart(model) {
     });
     const at = new Date(model.buckets[index].time).toISOString();
     const info = {
-      name: "Разность аккаунт − локально",
+      name: "Разность аккаунт − учётный",
       at,
-      detail: `${formatComparisonNumber(value, 1, true)} п.п.; ${value >= 0 ? "аккаунт выше" : "локальный расход выше"}`,
+      detail: `${formatComparisonNumber(value, 1, true)} п.п.; ${value >= 0 ? "аккаунт выше" : "учётный расход выше"}`,
     };
     rect.addEventListener("pointerenter", () => showComparisonTooltip(info, x / W, valueY / H, svg));
     rect.addEventListener("pointerleave", hideComparisonTooltip);
@@ -10543,7 +10682,7 @@ function buildComparisonDifferenceChart(model) {
   const largest = Math.max(0, ...values.filter(Number.isFinite).map(Math.abs));
   comparisonDifferenceChart.setAttribute(
     "aria-label",
-    `Разность нормированных расходов аккаунта и локального расхода. Максимальное расхождение ${formatComparisonNumber(largest, 1)} процентного пункта.`,
+    `Разность нормированных расходов аккаунта и учётного расхода. Максимальное расхождение ${formatComparisonNumber(largest, 1)} процентного пункта.`,
   );
   comparisonDifferenceChart.replaceChildren(svg);
 }
@@ -10552,10 +10691,10 @@ function buildUsageComparisonSplitCharts(model) {
   const series = model.selectedSeries;
   buildComparisonTimeChart(comparisonLocalChart, model, {
     values: model.local.rawValues,
-    axisTitle: `Локальный расход, ${comparisonUsageUnitLabel()}`,
+    axisTitle: `Учётный расход, ${comparisonUsageUnitLabel()}`,
     color: "var(--comparison-local)",
     lineClass: "comparison-local-line",
-    name: "Локальный расход",
+    name: "Учётный расход",
     kind: "local-raw",
     formatTick: (value) => formatUsageValue(value),
     format: (value) => formatUsageValue(value),
@@ -10632,7 +10771,7 @@ function renderComparisonLegend(model) {
   if (!comparisonLegend) return;
   const entries = [
     comparisonSeriesPicker(model),
-    comparisonLegendItem("Локальный расход", "var(--comparison-local)", `пик ${formatUsageValue(model.local.peak)}`),
+    comparisonLegendItem("Учётный расход", "var(--comparison-local)", `пик ${formatUsageValue(model.local.peak)}`),
   ];
   entries.push(comparisonLegendItem(
     "Отклонение",
@@ -10712,8 +10851,8 @@ function renderUsageComparison() {
   else buildUsageComparisonChart(model);
   if (comparisonNote) {
     comparisonNote.textContent = split
-      ? "Временные графики используют исходные единицы и общую ось дат. Точки показывают совпадающие интервалы. Разность считается как нормированный расход аккаунта минус локальный: выше нуля — больше расход лимита, ниже нуля — больше локальный расход. Изменение лимита между соседними замерами равномерно распределяется по их интервалу. Цена остаётся в итоговом показателе."
-      : "При выборе аккаунта локальный расход учитывает только ходы, завершённые в интервалах его активности. Пункт «Все» снимает отбор аккаунта. Изменение лимита между соседними замерами равномерно распределяется по их интервалу; неизменное значение считается нулевым расходом. Линии расхода приведены к собственному пику. r — корреляция Пирсона, Δ — среднее знаковое отклонение «аккаунт − локально»: минусы и плюсы взаимно компенсируются. Цена — расход лимита в п.п. на 1 kcr. Изменение цены сравнивает первую и вторую половины периода.";
+      ? "Временные графики используют исходные единицы и общую ось дат. Точки показывают совпадающие интервалы. Разность считается как нормированный расход аккаунта минус учётный: выше нуля — больше расход лимита, ниже нуля — больше учётный расход. Изменение лимита между соседними замерами равномерно распределяется по их интервалу. Цена остаётся в итоговом показателе."
+      : "При выборе аккаунта учётный расход учитывает только ходы, завершённые в интервалах его активности. Пункт «Все» снимает отбор аккаунта. Изменение лимита между соседними замерами равномерно распределяется по их интервалу; неизменное значение считается нулевым расходом. Линии расхода приведены к собственному пику. r — корреляция Пирсона, Δ — среднее знаковое отклонение «аккаунт − учётный»: минусы и плюсы взаимно компенсируются. Цена — расход лимита в п.п. на 1 kcr. Изменение цены сравнивает первую и вторую половины периода.";
   }
   renderComparisonLegend(model);
   renderComparisonSummary(model);

@@ -2889,14 +2889,24 @@ agentHub.on("limits:open", ({ range }) => runAction(
 ));
 agentHub.on("usage:open", ({ range, turnTimeMode }) => runAction(async () => {
   try {
+    let accountActivity = [];
+    try {
+      const limits = await readHistoryWithRangeCompatibility("rate-limit-history", range, {
+        maxPointsPerSeries: 600,
+      });
+      accountActivity = Array.isArray(limits?.accountActivity) ? limits.accountActivity : [];
+    } catch {
+      // Старый runtime или временно недоступная телеметрия: остаётся строгий отбор по ключу аккаунта.
+    }
     agentHub.setUsageHistory(await readHistoryWithRangeCompatibility("usage-history", range, {
       maxPoints: 600,
+      accountActivity,
       turnTimeMode,
     }));
   } catch (error) {
     agentHub.setUsageHistory({
       range,
-      error: error?.message || "Не удалось загрузить локальный расход.",
+      error: error?.message || "Не удалось загрузить учётный расход.",
     });
   }
 }));
@@ -2933,6 +2943,7 @@ agentHub.on("comparison:open", ({ range, seriesId, accountKey, turnTimeMode }) =
     usage = await readHistoryWithRangeCompatibility("usage-history", requestedRange, {
       maxPoints: 600,
       provider,
+      accountKey: allAccounts ? "" : resolvedAccountKey,
       turnTimeMode,
       ...(activeIntervals ? { activeIntervals } : {}),
     });

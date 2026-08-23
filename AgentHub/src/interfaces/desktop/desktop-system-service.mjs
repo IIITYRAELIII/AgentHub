@@ -96,6 +96,8 @@ export class DesktopSystemService {
       range: params.range,
       maxPoints: params.maxPoints,
       provider: params.provider,
+      accountKey: params.accountKey,
+      accountActivity: params.accountActivity,
       turnTimeMode: params.turnTimeMode,
       ...(Array.isArray(params.activeIntervals) ? { activeIntervals: params.activeIntervals } : {}),
     });

@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
 import process from "node:process";
 
+import { AGENT_HUB_VERSION } from "../filesystem/agent-hub-package.mjs";
+
 const DEFAULT_TIMEOUT_MS = 5_000;
 const DEFAULT_MAX_EVENTS_PER_MINUTE = 30;
 const MAX_MESSAGE_LENGTH = 1_000;
 const MAX_STACK_LENGTH = 8_000;
-const SDK = Object.freeze({ name: "agent-hub", version: "1.0.0" });
+const SDK = Object.freeze({ name: "agent-hub", version: AGENT_HUB_VERSION });
 const SAFE_ERROR_TYPES = new Set([
   "Error", "TypeError", "ReferenceError", "RangeError", "SyntaxError", "URIError", "EvalError", "AggregateError",
 ]);

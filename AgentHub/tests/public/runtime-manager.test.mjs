@@ -45,7 +45,10 @@ async function fixture() {
     "utf8",
   );
   await writeFile(path.join(sourceRoot, "start.ps1"), "node agent-hub-server.mjs\n", "utf8");
-  await writeFile(path.join(sourceRoot, "package.json"), "{}\n", "utf8");
+  await writeFile(path.join(sourceRoot, "package.json"), JSON.stringify({
+    name: "agent-hub",
+    version: "2026.8.23",
+  }), "utf8");
   await writeFile(path.join(sourceRoot, "AGENT_HUB_GUIDE.md"), "Guide\n", "utf8");
   await writeFile(path.join(sourceRoot, "config.json"), JSON.stringify({
     telegramBotToken: "123:secret",
@@ -61,6 +64,10 @@ test("deployRuntime publishes an atomic release without tests or local config", 
   const { sourceRoot, runtimeRoot } = await fixture();
   const first = await deployRuntime({ sourceRoot, runtimeRoot, releaseId: "release-1" });
   assert.equal(JSON.parse(await readFile(path.join(runtimeRoot, "current.json"), "utf8")).current, "release-1");
+  assert.equal(
+    JSON.parse(await readFile(path.join(first.releaseRoot, "runtime-manifest.json"), "utf8")).version,
+    "2026.8.23",
+  );
   assert.match(await readFile(path.join(first.releaseRoot, "agent-hub-server.mjs"), "utf8"), /ready/);
   assert.match(await readFile(path.join(first.releaseRoot, "helper.cjs"), "utf8"), /module\.exports/u);
   assert.match(

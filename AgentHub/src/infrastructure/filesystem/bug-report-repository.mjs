@@ -10,6 +10,7 @@ import {
   imageMatchesContentType,
   MAX_MESSAGE_ATTACHMENTS,
 } from "../../domain/attachment-files.mjs";
+import { AGENT_HUB_VERSION } from "./agent-hub-package.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -41,6 +42,7 @@ function reportMarkdown({ text, source, submittedAt, screenshotNames }) {
     "",
     `- Submitted: ${submittedAt}`,
     `- Surface: ${cleanSource(source)}`,
+    `- Agent Hub: ${AGENT_HUB_VERSION}`,
     "",
     "## Description",
     "",

@@ -951,7 +951,7 @@
           data-statistics-pager>
           <button type="button" class="statistics-pager-tab" role="tab"
             data-statistics-page-button="usage" aria-selected="true"
-            aria-controls="statistics-page-usage" id="statistics-tab-usage">Локальный расход</button>
+            aria-controls="statistics-page-usage" id="statistics-tab-usage">Учётный расход</button>
           <button type="button" class="statistics-pager-tab" role="tab"
             data-statistics-page-button="limits" aria-selected="false"
             aria-controls="statistics-page-limits" id="statistics-tab-limits">Лимиты API</button>
@@ -966,8 +966,8 @@
             <section class="statistics-card chart-card" aria-labelledby="usage-chart-title">
               <header class="statistics-card-head chart-head">
                 <div>
-                  <h2 id="usage-chart-title" data-usage-title>Локальный расход</h2>
-                  <p data-usage-subtitle>По завершённым ходам локального журнала.</p>
+                  <h2 id="usage-chart-title" data-usage-title>Учётный расход</h2>
+                  <p data-usage-subtitle>По завершённым ходам этого и синхронизированных устройств.</p>
                 </div>
                 <strong class="statistics-total" data-usage-total></strong>
               </header>
@@ -999,10 +999,10 @@
               <div class="limits-body">
                 <div class="limits-state limits-loading" data-usage-loading hidden aria-live="polite">
                   <span class="limits-spinner" aria-hidden="true"></span>
-                  <span>Загрузка локального расхода…</span>
+                  <span>Загрузка учётного расхода…</span>
                 </div>
                 <div class="limits-state limits-error" data-usage-error hidden role="alert">
-                  <p data-usage-error-text>Не удалось загрузить локальный расход.</p>
+                  <p data-usage-error-text>Не удалось загрузить учётный расход.</p>
                   <button type="button" class="chip-button" data-usage-retry>Повторить</button>
                 </div>
                 <div class="limits-state limits-empty" data-usage-empty hidden>
@@ -1012,7 +1012,7 @@
                   <div class="usage-burn-summary" data-usage-burn-summary hidden
                     aria-live="polite"></div>
                   <figure class="limits-chart usage-chart" data-usage-chart role="img"
-                    aria-label="График локального расхода"></figure>
+                    aria-label="График учётного расхода"></figure>
                   <div class="limits-tooltip" data-usage-tooltip hidden role="status"
                     aria-live="polite"></div>
                   <p class="statistics-note" data-usage-note></p>
@@ -1103,7 +1103,7 @@
               <header class="statistics-card-head chart-head comparison-card-head">
                 <div>
                   <h2 id="comparison-chart-title">Корреляция расхода</h2>
-                  <p data-comparison-subtitle>Локальный расход и изменение лимитов API.</p>
+                  <p data-comparison-subtitle>Учётный расход и изменение лимитов API.</p>
                 </div>
                 <div class="comparison-summary" data-comparison-summary hidden aria-live="polite"></div>
               </header>
@@ -1134,7 +1134,7 @@
               <div class="limits-body">
                 <div class="limits-state limits-loading" data-comparison-loading hidden aria-live="polite">
                   <span class="limits-spinner" aria-hidden="true"></span>
-                  <span>Сопоставляем локальный расход и лимиты…</span>
+                  <span>Сопоставляем учётный расход и лимиты…</span>
                 </div>
                 <div class="limits-state limits-error" data-comparison-error hidden role="alert">
                   <p data-comparison-error-text>Не удалось сопоставить расход.</p>
@@ -1146,13 +1146,13 @@
                 <div class="limits-chart-wrap" data-comparison-chart-wrap hidden>
                   <div data-comparison-combined-view>
                     <figure class="limits-chart comparison-chart" data-comparison-chart role="img"
-                      aria-label="Общий график корреляции локального расхода и лимитов API"></figure>
+                      aria-label="Общий график корреляции учётного расхода и лимитов API"></figure>
                   </div>
                   <div class="comparison-split-view" data-comparison-split-view hidden>
                     <section class="comparison-split-section" aria-labelledby="comparison-time-title">
                       <h3 id="comparison-time-title">Расход по времени</h3>
                       <figure class="limits-chart comparison-compact-chart" data-comparison-local-chart role="img"
-                        aria-label="Локальный расход по времени в исходных единицах"></figure>
+                        aria-label="Учётный расход по времени в исходных единицах"></figure>
                       <figure class="limits-chart comparison-compact-chart" data-comparison-api-chart role="img"
                         aria-label="Расход выбранного лимита по времени в процентных пунктах"></figure>
                     </section>
@@ -1160,12 +1160,12 @@
                       <section class="comparison-split-section" aria-labelledby="comparison-scatter-title">
                         <h3 id="comparison-scatter-title">Связь расходов</h3>
                         <figure class="limits-chart comparison-analysis-chart" data-comparison-scatter-chart role="img"
-                          aria-label="Точечная диаграмма связи локального расхода и расхода лимита"></figure>
+                          aria-label="Точечная диаграмма связи учётного расхода и расхода лимита"></figure>
                       </section>
                       <section class="comparison-split-section" aria-labelledby="comparison-difference-title">
-                        <h3 id="comparison-difference-title">Разность: аккаунт − локально</h3>
+                        <h3 id="comparison-difference-title">Разность: аккаунт − учётный</h3>
                         <figure class="limits-chart comparison-analysis-chart" data-comparison-difference-chart role="img"
-                          aria-label="Разность нормированных расходов аккаунта и локального расхода по времени"></figure>
+                          aria-label="Разность нормированных расходов аккаунта и учётного расхода по времени"></figure>
                       </section>
                     </div>
                   </div>
@@ -1173,10 +1173,10 @@
                     aria-live="polite"></div>
                   <ul class="limits-legend comparison-legend" data-comparison-legend></ul>
                   <p class="statistics-note comparison-note" data-comparison-note>
-                    При выборе аккаунта локальный расход учитывает только ходы, завершённые в интервалах его активности.
+                    При выборе аккаунта учётный расход учитывает только ходы, завершённые в интервалах его активности.
                     Пункт «Все» снимает отбор аккаунта.
                     Линии расхода приведены к собственному пику. r — корреляция Пирсона,
-                    Δ — среднее знаковое отклонение «аккаунт − локально», цена — расход лимита в п.п. на 1 kcr.
+                    Δ — среднее знаковое отклонение «аккаунт − учётный», цена — расход лимита в п.п. на 1 kcr.
                     Изменение цены сравнивает первую и вторую половины периода.
                   </p>
                 </div>

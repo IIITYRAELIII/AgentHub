@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 
+import { AGENT_HUB_VERSION } from "../../../src/infrastructure/filesystem/agent-hub-package.mjs";
 import { BugReportRepository } from "../../../src/infrastructure/filesystem/bug-report-repository.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -109,10 +110,14 @@ test("bug report commit and push contain only one generated report folder", asyn
     ]);
     assert.equal((await git(repository, "diff", "--cached", "--name-only")).trim(), "notes.txt");
     assert.equal((await git(repository, "rev-parse", "HEAD")).trim(), baseline);
-    assert.match(
-      await git(root, `--git-dir=${origin}`, "show", `main:AgentHub/Bugs/bug-${reportId}/report.md`),
-      /Кнопка не отвечает/u,
+    const publishedReport = await git(
+      root,
+      `--git-dir=${origin}`,
+      "show",
+      `main:AgentHub/Bugs/bug-${reportId}/report.md`,
     );
+    assert.match(publishedReport, /Кнопка не отвечает/u);
+    assert.match(publishedReport, new RegExp(`Agent Hub: ${AGENT_HUB_VERSION.replaceAll(".", "\\.")}`, "u"));
     assert.deepEqual(await reports.addedSince(""), {
       head: (await git(repository, "rev-parse", "HEAD")).trim(),
       reports: [],

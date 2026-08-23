@@ -14,6 +14,7 @@ import {
 import path from "node:path";
 import process from "node:process";
 
+import { readAgentHubVersion } from "../infrastructure/filesystem/agent-hub-package.mjs";
 import { defaultRuntimeRoot, runtimeLayout, runtimeReleaseDirectory } from "../infrastructure/filesystem/runtime-layout.mjs";
 import { verifyRuntimeImportClosure } from "../infrastructure/filesystem/runtime-manifest-verifier.mjs";
 import { protectRuntimeConfig, protectRuntimeDirectory } from "../infrastructure/filesystem/runtime-security.mjs";
@@ -297,6 +298,7 @@ export async function deployRuntime({
     }
     const manifest = {
       releaseId,
+      version: readAgentHubVersion({ packageFile: path.join(sourceRoot, "package.json") }),
       createdAt: new Date().toISOString(),
       sourceRoot: path.resolve(sourceRoot),
       files: await releaseManifest(staging, names),

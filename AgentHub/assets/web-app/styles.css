@@ -12800,6 +12800,17 @@ html[data-surface="mobile"] .server-config-inline-label {
   transition: opacity 120ms ease, filter 120ms ease;
 }
 
+.usage-bar-hit {
+  fill: transparent;
+  outline: none;
+}
+
+.usage-bar-group:hover .usage-bar,
+.usage-bar-group:focus-within .usage-bar {
+  filter: drop-shadow(0 0 5px color-mix(in srgb, var(--accent) 75%, transparent));
+  opacity: 1;
+}
+
 .usage-bar:hover,
 .usage-bar:focus {
   filter: drop-shadow(0 0 5px color-mix(in srgb, var(--accent) 75%, transparent));
@@ -12830,6 +12841,26 @@ html[data-surface="mobile"] .server-config-inline-label {
 .usage-area {
   fill: color-mix(in srgb, var(--accent) 18%, transparent);
   stroke: none;
+}
+
+.usage-device-area {
+  opacity: 0.26;
+  stroke: none;
+}
+
+.usage-device-line {
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.6;
+}
+
+.usage-device-swatch {
+  border-radius: 50%;
+  display: inline-block;
+  flex: 0 0 auto;
+  height: 0.55rem;
+  margin-right: 0.4rem;
+  width: 0.55rem;
 }
 
 .usage-dot {

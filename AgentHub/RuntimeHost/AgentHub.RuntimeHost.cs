@@ -124,6 +124,11 @@ namespace AgentHub.RuntimeHost
             {
                 throw new InvalidOperationException("Agent Hub runtime manifest does not match current.json");
             }
+            Dictionary<string, object> package = ReadJsonObject(Path.Combine(releaseRoot, "package.json"));
+            if (!String.Equals(RequiredString(manifest, "version"), RequiredString(package, "version"), StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("Agent Hub runtime manifest version does not match package.json");
+            }
 
             object filesValue;
             if (!manifest.TryGetValue("files", out filesValue))

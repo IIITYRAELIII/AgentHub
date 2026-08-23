@@ -11,6 +11,7 @@ import { createWorkLogUsageStore } from "../application/work-log-usage-store.mjs
 import { TaskBoardService } from "../application/task-board-service.mjs";
 import { WorkspaceReleaseService } from "../application/workspace-release-service.mjs";
 import { StreamHandoffService } from "../application/stream-handoff-service.mjs";
+import { AGENT_HUB_VERSION } from "../infrastructure/filesystem/agent-hub-package.mjs";
 import { samePath } from "../infrastructure/filesystem/config.mjs";
 import { AttachmentThumbnailService } from "../infrastructure/media/attachment-thumbnail-service.mjs";
 import { runtimeLayout, runtimeReleaseDirectory } from "../infrastructure/filesystem/runtime-layout.mjs";
@@ -169,7 +170,7 @@ export async function createHubInfrastructure({
 }) {
   sentryDiagnostics.configure({
     ...config.diagnostics.sentry,
-    release: config.diagnostics.sentry.release || path.basename(agentHubRoot),
+    release: config.diagnostics.sentry.release || `agent-hub@${AGENT_HUB_VERSION}`,
   });
   const instanceGuard = new SingleInstanceGuard({ dataDir: config.dataDir, lockFile: instanceLockFile });
   await instanceGuard.acquire();

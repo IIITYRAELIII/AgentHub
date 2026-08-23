@@ -151,14 +151,24 @@ test("Windows RuntimeHost verifies, launches and retires legacy scripts", async 
   const releaseRoot = path.join(runtimeRoot, "releases", releaseId);
   await mkdir(releaseRoot, { recursive: true });
   const server = "process.exit(0);\n";
+  const packageContents = `${JSON.stringify({ name: "agent-hub", version: "2026.8.23" })}\n`;
   await writeFile(path.join(releaseRoot, "agent-hub-main.mjs"), server, "utf8");
+  await writeFile(path.join(releaseRoot, "package.json"), packageContents, "utf8");
   await writeFile(path.join(releaseRoot, "runtime-manifest.json"), JSON.stringify({
     releaseId,
-    files: [{
-      path: "agent-hub-main.mjs",
-      bytes: Buffer.byteLength(server),
-      sha256: createHash("sha256").update(server).digest("hex"),
-    }],
+    version: "2026.8.23",
+    files: [
+      {
+        path: "agent-hub-main.mjs",
+        bytes: Buffer.byteLength(server),
+        sha256: createHash("sha256").update(server).digest("hex"),
+      },
+      {
+        path: "package.json",
+        bytes: Buffer.byteLength(packageContents),
+        sha256: createHash("sha256").update(packageContents).digest("hex"),
+      },
+    ],
   }), "utf8");
   await writeFile(path.join(runtimeRoot, "current.json"), JSON.stringify({ current: releaseId }), "utf8");
   for (const legacy of ["launch.vbs", "runtime-launch.vbs", "launch.ps1"]) {
@@ -179,16 +189,34 @@ test("Windows RuntimeHost verifies, launches and retires legacy scripts", async 
 test("shared runtime manifest verifier rejects a modified release file", async () => {
   const releaseRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-manifest-"));
   const contents = "export const verified = true;\n";
+  const packageContents = `${JSON.stringify({ name: "agent-hub", version: "2026.8.23" })}\n`;
   await writeFile(path.join(releaseRoot, "agent-hub-server.mjs"), contents, "utf8");
-  await writeFile(path.join(releaseRoot, "runtime-manifest.json"), JSON.stringify({
+  await writeFile(path.join(releaseRoot, "package.json"), packageContents, "utf8");
+  const manifest = {
     releaseId: "release-1",
-    files: [{
-      path: "agent-hub-server.mjs",
-      bytes: Buffer.byteLength(contents),
-      sha256: createHash("sha256").update(contents).digest("hex"),
-    }],
-  }), "utf8");
+    version: "2026.8.23",
+    files: [
+      {
+        path: "agent-hub-server.mjs",
+        bytes: Buffer.byteLength(contents),
+        sha256: createHash("sha256").update(contents).digest("hex"),
+      },
+      {
+        path: "package.json",
+        bytes: Buffer.byteLength(packageContents),
+        sha256: createHash("sha256").update(packageContents).digest("hex"),
+      },
+    ],
+  };
+  await writeFile(path.join(releaseRoot, "runtime-manifest.json"), JSON.stringify(manifest), "utf8");
   await verifyRuntimeManifest(releaseRoot, "release-1");
+  await writeFile(
+    path.join(releaseRoot, "runtime-manifest.json"),
+    JSON.stringify({ ...manifest, version: "2026.8.24" }),
+    "utf8",
+  );
+  await assert.rejects(verifyRuntimeManifest(releaseRoot, "release-1"), /version does not match/u);
+  await writeFile(path.join(releaseRoot, "runtime-manifest.json"), JSON.stringify(manifest), "utf8");
   await writeFile(path.join(releaseRoot, "agent-hub-server.mjs"), "tampered\n", "utf8");
   await assert.rejects(verifyRuntimeManifest(releaseRoot, "release-1"), /size mismatch|hash mismatch/);
 });

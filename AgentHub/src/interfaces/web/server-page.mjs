@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { access, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
+
+import { AGENT_HUB_VERSION } from "../../infrastructure/filesystem/agent-hub-package.mjs";
 import { serverConfigurationEntries } from "./server-configuration.mjs";
 
 export const ROOT_AGENTS_MAX_BYTES = 128 * 1024;
@@ -131,6 +133,7 @@ export function serverPageSnapshot({
   startedAt,
   instanceId = "",
   releaseId = "",
+  version = AGENT_HUB_VERSION,
   activeCount = 0,
   restart = {},
   autostart = { supported: false, enabled: false },
@@ -149,6 +152,7 @@ export function serverPageSnapshot({
       startedAt: startedAt ?? null,
       instanceId: String(instanceId ?? "").trim() || null,
       releaseId: String(releaseId ?? "").trim() || null,
+      version: String(version ?? "").trim() || null,
       activeCount: Math.max(0, Number(activeCount) || 0),
     },
     autostart: {

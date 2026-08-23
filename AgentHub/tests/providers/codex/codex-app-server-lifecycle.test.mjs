@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { AGENT_HUB_VERSION } from "../../../src/infrastructure/filesystem/agent-hub-package.mjs";
 import { CodexAppServerLifecycle } from "../../../src/providers/codex/codex-app-server-lifecycle.mjs";
 
 function deferred() {
@@ -67,6 +68,7 @@ test("Codex App Server lifecycle initializes the transport and selected thread",
   assert.equal(lifecycle.running, true);
   assert.equal(lifecycle.pid, 17);
   assert.deepEqual(events.map(([name]) => name), ["initialize", "notify", "attach"]);
+  assert.equal(events[0][1].clientInfo.version, AGENT_HUB_VERSION);
 });
 
 test("Codex App Server lifecycle owns crash recovery", async () => {

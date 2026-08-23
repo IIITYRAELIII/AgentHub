@@ -2,6 +2,8 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { createInterface } from "node:readline";
+
+import { AGENT_HUB_VERSION } from "../filesystem/agent-hub-package.mjs";
 import { callTelegramJson } from "../telegram/telegram-api.mjs";
 import { stopProcessTree } from "./process-tree.mjs";
 
@@ -116,7 +118,7 @@ export async function probeCodexAppServer({
       }
     });
     const initialized = await rpc("initialize", {
-      clientInfo: { name: "agent_hub_doctor", title: "Agent Hub Doctor", version: "0.1.0" },
+      clientInfo: { name: "agent_hub_doctor", title: "Agent Hub Doctor", version: AGENT_HUB_VERSION },
       capabilities: { experimentalApi: true },
     });
     child.stdin.write(`${JSON.stringify({ method: "initialized", params: {} })}\n`);

@@ -241,6 +241,97 @@ test("local usage history matches turn completion to exact account activity inte
   }).totalCredits, 0);
 });
 
+test("usage history stacks synced usage from other devices with the same account", () => {
+  const now = Date.parse("2026-07-30T12:00:00.000Z");
+  const accountKey = "chatgpt:shared";
+  const history = buildWorkLogUsageHistory({
+    local: {
+      provider: "codex",
+      threadId: "local-thread",
+      turnId: "local-turn",
+      completedAt: "2026-07-30T10:10:00.000Z",
+      estimatedCredits: 5,
+      estimateKind: "model",
+      accountKey,
+    },
+  }, {
+    range: "6h",
+    now,
+    localDeviceId: "this-device",
+    accountActivity: [{
+      accountKey,
+      intervals: [{ from: "2026-07-30T10:00:00.000Z", to: "2026-07-30T11:00:00.000Z" }],
+    }],
+    syncedUsageEvents: [{
+      deviceId: "other-device",
+      provider: "codex",
+      threadId: "remote-thread",
+      turnId: "remote-turn",
+      completedAt: "2026-07-30T10:20:00.000Z",
+      estimatedCredits: 7,
+      accountKey,
+      deviceLabel: "Ноутбук",
+    }, {
+      deviceId: "third-device",
+      provider: "codex",
+      threadId: "third-thread",
+      turnId: "third-turn",
+      completedAt: "2026-07-30T10:25:00.000Z",
+      estimatedCredits: 3,
+      accountKey,
+      deviceLabel: "Телефон",
+    }, {
+      deviceId: "late-device",
+      provider: "codex",
+      threadId: "late-thread",
+      turnId: "late-turn",
+      completedAt: "2026-07-30T11:30:00.000Z",
+      estimatedCredits: 17,
+      accountKey,
+      deviceLabel: "Старый аккаунт после переключения",
+    }, {
+      deviceId: "other-device",
+      provider: "codex",
+      threadId: "wrong-account-thread",
+      turnId: "wrong-account-turn",
+      completedAt: "2026-07-30T10:30:00.000Z",
+      estimatedCredits: 11,
+      accountKey: "chatgpt:other",
+    }, {
+      deviceId: "this-device",
+      provider: "codex",
+      threadId: "same-device-thread",
+      turnId: "same-device-turn",
+      completedAt: "2026-07-30T10:40:00.000Z",
+      estimatedCredits: 13,
+      accountKey,
+    }],
+  });
+
+  assert.equal(history.totalCredits, 15);
+  assert.equal(history.localCredits, 5);
+  assert.equal(history.otherDeviceCredits, 10);
+  assert.deepEqual(history.devices.map((device) => ({
+    deviceId: device.deviceId,
+    label: device.label,
+    credits: device.credits,
+  })), [{
+    deviceId: "this-device",
+    label: "Это устройство",
+    credits: 5,
+  }, {
+    deviceId: "other-device",
+    label: "Ноутбук · other-device",
+    credits: 7,
+  }, {
+    deviceId: "third-device",
+    label: "Телефон · third-device",
+    credits: 3,
+  }]);
+  assert.equal(history.points.reduce((sum, point) => sum + point.localCredits, 0), 5);
+  assert.equal(history.points.reduce((sum, point) => sum + point.otherDeviceCredits, 0), 10);
+});
+
 test("account usage summary separates exact, inferred and unknown ledger turns", () => {
   const knownKey = `chatgpt:${createHash("sha256").update("owner@example.com").digest("hex")}`;
   const summary = buildWorkLogAccountUsageSummary({

@@ -234,10 +234,15 @@ export class WorkLogUsageStore {
 
   usageHistory(options = {}) {
     return this.#enqueueRead(async () => {
+      const syncedUsageEvents = this.#usageSyncStore
+        ? await this.#usageSyncStore.events()
+        : [];
       return structuredClone(buildWorkLogUsageHistory(this.#ledger.turns, {
         includeClaudeUsage: this.#includeClaudeUsage,
         ...options,
         workspaceResolver: this.#workspaceResolver(),
+        syncedUsageEvents,
+        localDeviceId: this.#usageSyncDeviceId,
       }));
     });
   }

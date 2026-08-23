@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 
+import { AGENT_HUB_VERSION } from "../../infrastructure/filesystem/agent-hub-package.mjs";
 import { CodexAppServerTransport } from "./codex-app-server-transport.mjs";
 
 export class CodexAppServerLifecycle {
@@ -124,7 +125,7 @@ export class CodexAppServerLifecycle {
       clientInfo: {
         name: "agent_hub",
         title: "Agent Hub",
-        version: "0.1.0",
+        version: AGENT_HUB_VERSION,
       },
       capabilities: { experimentalApi: true },
     });

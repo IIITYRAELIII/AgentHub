@@ -19,7 +19,10 @@ import {
   normalizeTokenUsage,
   turnCreditBreakdown,
 } from "../domain/token-usage.mjs";
-import { normalizeUsageSyncEvent } from "../domain/work-log-usage-sync.mjs";
+import {
+  normalizeUsageSyncEvent,
+  usageSyncEventIdentity,
+} from "../domain/work-log-usage-sync.mjs";
 
 const WORK_LOG_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ACCOUNT_ATTRIBUTIONS = new Set(["exact", "inferred"]);
@@ -2809,6 +2812,20 @@ function usageHistoryBucket(value = {}) {
     credits: Math.max(0, Number(value?.credits) || 0),
     timedCredits: Math.max(0, Number(value?.timedCredits) || 0),
     durationSeconds: Math.max(0, Number(value?.durationSeconds) || 0),
+    localCredits: Math.max(0, Number(value?.localCredits) || 0),
+    localTimedCredits: Math.max(0, Number(value?.localTimedCredits) || 0),
+    localDurationSeconds: Math.max(0, Number(value?.localDurationSeconds) || 0),
+    otherDeviceCredits: Math.max(0, Number(value?.otherDeviceCredits) || 0),
+    otherDeviceTimedCredits: Math.max(0, Number(value?.otherDeviceTimedCredits) || 0),
+    otherDeviceDurationSeconds: Math.max(0, Number(value?.otherDeviceDurationSeconds) || 0),
+    devices: (Array.isArray(value?.devices) ? value.devices : []).map((device) => ({
+      deviceId: String(device?.deviceId ?? "").trim(),
+      label: String(device?.label ?? "").trim(),
+      source: device?.source === "local" ? "local" : "sync",
+      credits: Math.max(0, Number(device?.credits) || 0),
+      timedCredits: Math.max(0, Number(device?.timedCredits) || 0),
+      durationSeconds: Math.max(0, Number(device?.durationSeconds) || 0),
+    })).filter((device) => device.deviceId),
   };
 }
 
@@ -2863,6 +2880,10 @@ export function buildWorkLogUsageHistory(turns = {}, {
   streamId = null,
   activeIntervals = null,
   turnTimeMode = "end",
+  syncedUsageEvents = [],
+  localDeviceId = "",
+  accountKey = "",
+  accountActivity = [],
 } = {}) {
   const normalizedRange = range === "all" || Object.hasOwn(USAGE_HISTORY_RANGES, range)
     ? range
@@ -2871,7 +2892,19 @@ export function buildWorkLogUsageHistory(turns = {}, {
   const requestedWorkspaceId = String(workspaceId ?? "").trim();
   const requestedStreamId = String(streamId ?? "").trim();
   const requestedProvider = String(provider ?? "").trim().toLowerCase();
+  const requestedAccountKey = String(accountKey ?? "").trim();
   const normalizedTimeMode = normalizedTurnTimeMode(turnTimeMode);
+  const accountActivityIntervals = new Map((Array.isArray(accountActivity) ? accountActivity : [])
+    .map((entry) => [
+      String(entry?.accountKey ?? "").trim(),
+      (Array.isArray(entry?.intervals) ? entry.intervals : []).map((interval) => ({
+        from: Date.parse(interval?.from ?? ""),
+        to: Date.parse(interval?.to ?? ""),
+      })).filter((interval) => (
+        Number.isFinite(interval.from) && Number.isFinite(interval.to) && interval.to > interval.from
+      )),
+    ])
+    .filter(([key]) => key));
   const filterByActiveIntervals = Array.isArray(activeIntervals);
   const intervals = (filterByActiveIntervals ? activeIntervals : [])
     .map((interval) => ({
@@ -2883,14 +2916,48 @@ export function buildWorkLogUsageHistory(turns = {}, {
   const insideActiveInterval = (pointMs) => !filterByActiveIntervals || intervals.some((interval) => (
     pointMs >= interval.from && pointMs < interval.to
   ));
-  const records = Object.values(turns ?? {})
-    .filter((record) => (
+  const localTurns = Object.values(turns ?? {});
+  const localUsageEventIds = new Set(localTurns.map(usageSyncEventIdentity).filter(Boolean));
+  const localAccountKeys = new Map();
+  for (const record of localTurns) {
+    const recordAccountKey = String(record?.accountKey ?? "").trim();
+    const recordProvider = String(record?.provider ?? "").trim().toLowerCase();
+    if (!recordAccountKey || !recordProvider) continue;
+    if (!localAccountKeys.has(recordProvider)) localAccountKeys.set(recordProvider, new Set());
+    localAccountKeys.get(recordProvider).add(recordAccountKey);
+  }
+  const normalizedLocalDeviceId = String(localDeviceId ?? "").trim();
+  const syncedTurns = (Array.isArray(syncedUsageEvents) ? syncedUsageEvents : [])
+    .map(syncedUsageRecord)
+    .filter((record) => {
+      if (!record || record.syncDeviceId === normalizedLocalDeviceId) return false;
+      if (localUsageEventIds.has(record.syncEventId)) return false;
+      const recordProvider = String(record.provider ?? "").trim().toLowerCase();
+      const recordAccountKey = String(record.accountKey ?? "").trim();
+      if (!recordAccountKey) return false;
+      const matchesAccount = requestedAccountKey
+        ? recordAccountKey === requestedAccountKey
+        : localAccountKeys.get(recordProvider)?.has(recordAccountKey) === true;
+      if (!matchesAccount) return false;
+      const activity = accountActivityIntervals.get(recordAccountKey);
+      if (!activity) return true;
+      const pointMs = turnUsageTimeMs(record, normalizedTimeMode);
+      return activity.some((interval) => pointMs >= interval.from && pointMs < interval.to);
+    });
+  const records = [
+    ...localTurns.map((record) => ({ record, source: "local" })),
+    ...syncedTurns.map((record) => ({ record, source: "other-device" })),
+  ]
+    .filter((entry) => (
       requestedProvider
-        ? String(record?.provider ?? "").trim().toLowerCase() === requestedProvider
-        : includeClaudeUsage || String(record?.provider ?? "").toLowerCase() !== "claude"
+        ? String(entry.record?.provider ?? "").trim().toLowerCase() === requestedProvider
+        : includeClaudeUsage || String(entry.record?.provider ?? "").toLowerCase() !== "claude"
     ))
-    .map((record) => {
-      const workspace = workspaceResolutionForRecord(record, workspaceResolver);
+    .map(({ record, source }) => {
+      const workspace = source === "local"
+        ? workspaceResolutionForRecord(record, workspaceResolver)
+        : null;
+      if (source !== "local" && (requestedWorkspaceId || requestedStreamId)) return null;
       if (requestedWorkspaceId && workspace?.workspaceId !== requestedWorkspaceId) return null;
       if (requestedStreamId && workspace?.streamId !== requestedStreamId) return null;
       const pointMs = turnUsageTimeMs(record, normalizedTimeMode);
@@ -2904,6 +2971,14 @@ export function buildWorkLogUsageHistory(turns = {}, {
         credits: Math.max(0, Number(breakdown.total) || 0),
         priced,
         durationSeconds: durationSeconds(record?.startedAt, record?.completedAt),
+        source,
+        deviceId: source === "local"
+          ? normalizedLocalDeviceId || "local"
+          : String(record?.syncDeviceId ?? "").trim(),
+        deviceLabel: source === "local"
+          ? "Это устройство"
+          : `${String(record?.syncDeviceLabel ?? "").trim() || "Другое устройство"}`
+            + ` · ${shortDeviceKey(record?.syncDeviceId)}`,
       };
     }).filter((record) => (
       record
@@ -2939,6 +3014,13 @@ export function buildWorkLogUsageHistory(turns = {}, {
   let totalCredits = 0;
   let totalTimedCredits = 0;
   let totalDurationSeconds = 0;
+  let localCredits = 0;
+  let localTimedCredits = 0;
+  let localDurationSeconds = 0;
+  let otherDeviceCredits = 0;
+  let otherDeviceTimedCredits = 0;
+  let otherDeviceDurationSeconds = 0;
+  const deviceTotals = new Map();
   let untimedCreditCount = 0;
   let unpricedCount = 0;
   for (const record of records) {
@@ -2962,16 +3044,61 @@ export function buildWorkLogUsageHistory(turns = {}, {
     } else {
       totalCredits += record.credits;
       bucketValue.credits += record.credits;
+      const otherDevice = record.source === "other-device";
+      const device = deviceTotals.get(record.deviceId) ?? {
+        deviceId: record.deviceId,
+        label: record.deviceLabel,
+        source: otherDevice ? "sync" : "local",
+        credits: 0,
+        timedCredits: 0,
+        durationSeconds: 0,
+      };
+      const bucketDevice = bucketValue.devices.find((entry) => entry.deviceId === record.deviceId) ?? {
+        deviceId: record.deviceId,
+        label: record.deviceLabel,
+        source: otherDevice ? "sync" : "local",
+        credits: 0,
+        timedCredits: 0,
+        durationSeconds: 0,
+      };
+      if (!bucketValue.devices.some((entry) => entry.deviceId === record.deviceId)) {
+        bucketValue.devices.push(bucketDevice);
+      }
+      device.credits += record.credits;
+      bucketDevice.credits += record.credits;
+      if (otherDevice) {
+        otherDeviceCredits += record.credits;
+        bucketValue.otherDeviceCredits += record.credits;
+      } else {
+        localCredits += record.credits;
+        bucketValue.localCredits += record.credits;
+      }
       if (record.credits > 0) {
         if (Number.isFinite(record.durationSeconds) && record.durationSeconds > 0) {
           totalTimedCredits += record.credits;
           bucketValue.timedCredits += record.credits;
           totalDurationSeconds += record.durationSeconds;
           bucketValue.durationSeconds += record.durationSeconds;
+          if (otherDevice) {
+            otherDeviceTimedCredits += record.credits;
+            otherDeviceDurationSeconds += record.durationSeconds;
+            bucketValue.otherDeviceTimedCredits += record.credits;
+            bucketValue.otherDeviceDurationSeconds += record.durationSeconds;
+          } else {
+            localTimedCredits += record.credits;
+            localDurationSeconds += record.durationSeconds;
+            bucketValue.localTimedCredits += record.credits;
+            bucketValue.localDurationSeconds += record.durationSeconds;
+          }
+          device.timedCredits += record.credits;
+          device.durationSeconds += record.durationSeconds;
+          bucketDevice.timedCredits += record.credits;
+          bucketDevice.durationSeconds += record.durationSeconds;
         } else {
           untimedCreditCount += 1;
         }
       }
+      deviceTotals.set(record.deviceId, device);
     }
     buckets.set(bucket, bucketValue);
   }
@@ -3012,6 +3139,17 @@ export function buildWorkLogUsageHistory(turns = {}, {
     totalCredits,
     totalTimedCredits,
     totalDurationSeconds,
+    localCredits,
+    localTimedCredits,
+    localDurationSeconds,
+    otherDeviceCredits,
+    otherDeviceTimedCredits,
+    otherDeviceDurationSeconds,
+    devices: [...deviceTotals.values()].sort((left, right) => (
+      Number(right.source === "local") - Number(left.source === "local")
+      || left.label.localeCompare(right.label, "ru")
+      || left.deviceId.localeCompare(right.deviceId)
+    )),
     untimedCreditCount,
     // Compatibility aliases used by the selectable hourly-rate basis.
     timedCredits: totalTimedCredits,
