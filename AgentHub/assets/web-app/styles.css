@@ -12060,7 +12060,8 @@ html[data-view="server"] .server-view {
 .trusted-devices-summary {
   cursor: pointer;
   list-style: none;
-  padding: 1rem 1.15rem;
+  padding: 1rem 2.75rem 1rem 1.15rem;
+  position: relative;
 }
 
 .trusted-devices-summary::-webkit-details-marker {
@@ -12085,14 +12086,22 @@ html[data-view="server"] .server-view {
 }
 
 .trusted-devices-summary::before {
-  color: var(--text-faint);
-  content: "▸";
-  float: right;
-  margin-left: 0.75rem;
+  background: var(--text-faint);
+  content: "";
+  height: 0.72rem;
+  -webkit-mask: var(--ph-mask-caret-right) center / contain no-repeat;
+  mask: var(--ph-mask-caret-right) center / contain no-repeat;
+  position: absolute;
+  right: 1.15rem;
+  top: 50%;
+  transform: translateY(-50%);
+  transform-origin: center;
+  transition: transform 0.18s ease;
+  width: 0.72rem;
 }
 
 .trusted-devices-panel[open] > .trusted-devices-summary::before {
-  content: "▾";
+  transform: translateY(-50%) rotate(90deg);
 }
 
 .root-agents-editor {

@@ -2089,7 +2089,7 @@ test("statistics page offers local usage and full limit history", () => {
   assert.match(app, /resetCredits/u);
   assert.match(app, /availableCount/u);
   assert.match(app, /nearestExpiresAt/u);
-  assert.match(app, /emit\("usage:open", \{ range: usageState\.range, turnTimeMode \}\)/u);
+  assert.match(app, /emit\("usage:open", \{ range: usageState\.range, accountKey, turnTimeMode \}\)/u);
   assert.match(app, /function formatUsageValue\(credits, unit = usageUnit\)/u);
   assert.match(app, /const LIMITS_MODE_KEY = "agent-hub-limits-mode-v1";/u);
   assert.match(app, /function weeklyBurnRatePoints\(series,/u);
@@ -2097,7 +2097,7 @@ test("statistics page offers local usage and full limit history", () => {
   assert.match(app, /class: `limits-burn-rate-segment \$\{right\.overTarget/u);
   assert.match(styles, /\.limits-burn-rate-segment\.is-over-target\s*\{[^}]*stroke:\s*var\(--danger/su);
   assert.match(styles, /\.limits-burn-rate-segment\.is-safe\s*\{[^}]*stroke:\s*var\(--ok\);/su);
-  assert.match(client, /readHistoryWithRangeCompatibility\("usage-history", range, \{\s*maxPoints: 600,\s*accountActivity,\s*turnTimeMode,/u);
+  assert.match(client, /readHistoryWithRangeCompatibility\("usage-history", range, \{\s*maxPoints: 600,\s*accountKey: String\(accountKey \|\| ""\),\s*turnTimeMode,/u);
   assert.match(client, /function trimHistoryToFifteenDays\(payload\)/u);
   assert.match(styles, /\.current-limits-row\s*\{[^}]*flex-wrap:\s*nowrap;/su);
   assert.match(styles, /\.current-limits-row\s*\{[^}]*overflow-x:\s*auto;/su);
@@ -2129,7 +2129,7 @@ test("statistics compares one independently selected limit and tracks its price"
   assert.match(app, /function pearsonCorrelation\(left, right\)/u);
   assert.match(app, /function limitDeltasByBucket\(series, buckets\)/u);
   assert.match(app, /agent-hub:comparison-series:v2/u);
-  assert.equal((html.match(/data-statistics-account-select/gu) ?? []).length, 1);
+  assert.equal((html.match(/data-statistics-account-select/gu) ?? []).length, 2);
   assert.match(app, /function selectStatisticsAccount\(accountKey\)/u);
   assert.match(app, /function comparisonLimitPrice\(localValues, apiValues, buckets\)/u);
   assert.match(app, /function selectComparisonSeries\(id\)/u);
@@ -2161,9 +2161,9 @@ test("statistics compares one independently selected limit and tracks its price"
   );
   assert.doesNotMatch(comparisonChart, /svgEl\("rect"/u);
   assert.match(client, /agentHub\.on\("comparison:open"/u);
-  assert.match(client, /const activeIntervals = [\s\S]*?limits\?\.accountActivity/u);
+  assert.match(client, /const resolvedAccountKey = allAccounts[\s\S]*?limits\?\.currentAccount\?\.key/u);
   assert.match(client, /const provider = "codex"/u);
-  assert.match(client, /readHistoryWithRangeCompatibility\("usage-history", requestedRange, \{[\s\S]*?provider,[\s\S]*?activeIntervals/u);
+  assert.match(client, /readHistoryWithRangeCompatibility\("usage-history", requestedRange, \{[\s\S]*?provider,[\s\S]*?accountKey: allAccounts \? "" : resolvedAccountKey/u);
   assert.match(client, /agentHub\.setUsageComparison\(\{/u);
   assert.match(app, /data-statistics-account-select/u);
   assert.match(app, /ALL_STATISTICS_ACCOUNTS = "all"/u);
