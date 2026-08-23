@@ -108,6 +108,14 @@ test("unchanged run snapshots do not rebuild Dashboard columns", async () => {
   assert.equal(selection.panelChanged, true);
 });
 
+test("Dashboard Notes have no default subtitle", async () => {
+  const { taskBoardSnapshotChanges } = await loadBoardView();
+
+  const snapshot = taskBoardSnapshotChanges({}, {}, { initialized: false });
+
+  assert.equal(snapshot.next.notesComment, "");
+});
+
 test("Dashboard pins Backlog first and Notes last regardless of saved order", async () => {
   const { orderedDashboardColumnIds } = await loadBoardView();
 

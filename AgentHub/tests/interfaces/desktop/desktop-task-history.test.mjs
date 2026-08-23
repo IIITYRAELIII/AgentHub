@@ -768,6 +768,11 @@ test("desktop task history returns a compact marker for an unchanged completed p
 
 test("desktop task history overlays a saved final before provider hydration catches up", async () => {
   const { desktopTaskHistory, state } = fixture({ run: null });
+  state.history[3].activityGroups = [{
+    id: "group-1",
+    reasoning: "Проверяю.",
+    activities: [{ id: "tool-1", type: "command" }],
+  }];
   const factory = createDesktopTaskHistoryFactory({
     selection: {
       activeProvider: () => state.activeProvider,
@@ -795,8 +800,8 @@ test("desktop task history overlays a saved final before provider hydration catc
 
   assert.equal(result.items[0].answer, "Сохранённый финальный ответ");
   assert.equal(result.items[0].messages.at(-1).text, "Сохранённый финальный ответ");
-  assert.deepEqual(result.items[0].activities ?? [], []);
-  assert.deepEqual(result.items[0].activityGroups ?? [], []);
+  assert.equal(result.items[0].activities.length, 105);
+  assert.deepEqual(result.items[0].activityGroups, state.history[3].activityGroups);
   assert.equal(result.items[0].completed, true);
   assert.equal(typeof desktopTaskHistory, "function");
 });

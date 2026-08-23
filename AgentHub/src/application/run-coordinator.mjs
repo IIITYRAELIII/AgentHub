@@ -30,6 +30,7 @@ function persistentAttachmentDescriptors(describeAttachments, files, persistentF
 
 export class RunCoordinator {
   #lanes = new Map();
+  #intakeLanes = new Map();
 
   constructor({
     taskRuns,
@@ -90,17 +91,25 @@ export class RunCoordinator {
     ].join(":");
   }
 
-  async serialize(target, operation) {
+  async serializeIn(lanes, target, operation) {
     const lane = this.taskLane(target);
-    const previous = this.#lanes.get(lane) ?? Promise.resolve();
+    const previous = lanes.get(lane) ?? Promise.resolve();
     const current = previous.catch(() => {}).then(operation);
     const settled = current.catch(() => {});
-    this.#lanes.set(lane, settled);
+    lanes.set(lane, settled);
     try {
       return await current;
     } finally {
-      if (this.#lanes.get(lane) === settled) this.#lanes.delete(lane);
+      if (lanes.get(lane) === settled) lanes.delete(lane);
     }
+  }
+
+  serialize(target, operation) {
+    return this.serializeIn(this.#lanes, target, operation);
+  }
+
+  serializeIntake(target, operation) {
+    return this.serializeIn(this.#intakeLanes, target, operation);
   }
 
   start(input, temporaryFiles = [], options = {}) {
@@ -274,7 +283,7 @@ export class RunCoordinator {
   }
 
   acceptClientInput(request) {
-    return this.serialize(request.target, () => this.acceptClientInputUnlocked(request));
+    return this.serializeIntake(request.target, () => this.acceptClientInputUnlocked(request));
   }
 
   async acceptClientInputUnlocked({

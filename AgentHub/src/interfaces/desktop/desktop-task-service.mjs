@@ -184,23 +184,36 @@ export class DesktopTaskService {
       threadId: entry.threadId,
       taskTitle: taskDisplayTitle(entry),
     };
-    const snapshot = await this.dispatchCommand(
+    const selectedSnapshot = await this.dispatchCommand(
       "task.select",
       resolvedParams,
       context,
       { target: this.commandTaskTarget(resolvedParams) },
     );
+    const history = await this.taskHistory({
+      streamId: resolvedParams.streamId,
+      provider: resolvedParams.provider,
+      threadId: resolvedParams.threadId,
+      refreshSource: true,
+      limit: params.limit,
+      maxAnswerChars: params.maxAnswerChars,
+      maxResponseBytes: historyResponseBudget({ snapshot: selectedSnapshot }, params),
+    });
+    this.markRead(entry, context);
+    const reconciledSnapshot = selectedSnapshot?.version
+      ? await this.snapshot({ ...params, knownVersion: selectedSnapshot.version }, context)
+      : null;
+    const snapshot = reconciledSnapshot?.notModified === true || !reconciledSnapshot
+      ? selectedSnapshot
+      : {
+          ...reconciledSnapshot,
+          ...(Object.hasOwn(selectedSnapshot, "selectionChanged")
+            ? { selectionChanged: selectedSnapshot.selectionChanged }
+            : {}),
+        };
     return {
       snapshot,
-      history: await this.taskHistory({
-        streamId: resolvedParams.streamId,
-        provider: resolvedParams.provider,
-        threadId: resolvedParams.threadId,
-        refreshSource: true,
-        limit: params.limit,
-        maxAnswerChars: params.maxAnswerChars,
-        maxResponseBytes: historyResponseBudget({ snapshot }, params),
-      }),
+      history,
     };
   }
 

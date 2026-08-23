@@ -270,6 +270,7 @@ test("Task card order persists within and between columns", async (t) => {
 
 test("Workspace and Notes column order persists after reordering", async (t) => {
   const store = await fixture(t);
+  assert.equal(store.notesComment(), "");
   assert.deepEqual(store.orderedColumnIds(["one", "two", "three"]), ["one", "two", "three", "notes"]);
   store.moveColumn(["one", "two", "three"], { columnId: "notes", beforeColumnId: "two" });
   store.setNotesComment("Книги и фильмы");

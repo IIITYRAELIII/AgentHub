@@ -1921,6 +1921,64 @@ html[data-theme="gothic"][data-surface="mobile"] .stream-tab[aria-pressed="true"
     column-gap: var(--shell-view-switch-gap) !important;
   }
 
+  html[data-theme="gothic"][data-view="chat"][data-stream-status-style="edge"][data-stream-status-effect="impulse"]:not([data-surface="mobile"])
+    .stream-tabs .stream-tab[data-running]::before,
+  html[data-theme="gothic"][data-view="chat"][data-stream-status-style="edge"][data-stream-status-effect="impulse"]:not([data-surface="mobile"])
+    .stream-tabs .stream-tab[data-running]::after,
+  html[data-theme="gothic"][data-view="chat"][data-stream-status-style="edge"][data-stream-status-effect="scanner"]:not([data-surface="mobile"])
+    .stream-tabs .stream-tab[data-running]::before,
+  html[data-theme="gothic"][data-view="chat"][data-stream-status-style="edge"][data-stream-status-effect="scanner"]:not([data-surface="mobile"])
+    .stream-tabs .stream-tab[data-running]::after {
+    background: linear-gradient(90deg, transparent 0%, var(--accent) 44%, var(--accent) 56%, transparent 100%) !important;
+    content: "" !important;
+    display: block !important;
+    filter: drop-shadow(0 0 5px color-mix(in srgb, var(--accent) 70%, transparent)) !important;
+    height: 2px !important;
+    left: 0 !important;
+    pointer-events: none !important;
+    position: absolute !important;
+    right: auto !important;
+    width: 58% !important;
+    -webkit-mask: none !important;
+    mask: none !important;
+    z-index: 20 !important;
+  }
+
+  html[data-theme="gothic"][data-view="chat"][data-stream-status-style="edge"]:is([data-stream-status-effect="impulse"], [data-stream-status-effect="scanner"]):not([data-surface="mobile"])
+    .stream-tabs .stream-tab[data-running]::before {
+    bottom: auto !important;
+    top: 2px !important;
+  }
+
+  html[data-theme="gothic"][data-view="chat"][data-stream-status-style="edge"]:is([data-stream-status-effect="impulse"], [data-stream-status-effect="scanner"]):not([data-surface="mobile"])
+    .stream-tabs .stream-tab[data-running]::after {
+    bottom: 1px !important;
+    top: auto !important;
+  }
+
+  html[data-theme="gothic"][data-view="chat"][data-stream-status-style="edge"][data-stream-status-effect="impulse"]:not([data-surface="mobile"])
+    .stream-tabs .stream-tab[data-running]::before,
+  html[data-theme="gothic"][data-view="chat"][data-stream-status-style="edge"][data-stream-status-effect="impulse"]:not([data-surface="mobile"])
+    .stream-tabs .stream-tab[data-running]::after {
+    animation: gothic-stream-running-wave 2.2s linear infinite !important;
+  }
+
+  html[data-theme="gothic"][data-view="chat"][data-stream-status-style="edge"][data-stream-status-effect="scanner"]:not([data-surface="mobile"])
+    .stream-tabs .stream-tab[data-running]::before,
+  html[data-theme="gothic"][data-view="chat"][data-stream-status-style="edge"][data-stream-status-effect="scanner"]:not([data-surface="mobile"])
+    .stream-tabs .stream-tab[data-running]::after {
+    animation: gothic-stream-scanner-pass 1.85s linear infinite !important;
+    background: linear-gradient(90deg, transparent 0%, var(--accent) 40%, var(--accent) 60%, transparent 100%) !important;
+    filter: drop-shadow(0 0 6px color-mix(in srgb, var(--accent) 78%, transparent)) !important;
+    width: 30% !important;
+  }
+
+  html[data-theme="gothic"][data-view="chat"][data-stream-status-style="edge"]:is([data-stream-status-effect="impulse"], [data-stream-status-effect="scanner"]):not([data-surface="mobile"])
+    .stream-tabs .stream-tab[data-running] .stream-tab-card::after {
+    content: none !important;
+    display: none !important;
+  }
+
   html[data-theme="gothic"]:not([data-surface="mobile"]) .stream-tab-group {
     align-items: stretch !important;
   }
@@ -2007,4 +2065,14 @@ html[data-theme="gothic"][data-surface="mobile"] .stream-tab[aria-pressed="true"
     content: attr(data-compact-stream-time);
     font-size: var(--stream-task-time-font-size, 0.62rem);
   }
+}
+
+@keyframes gothic-stream-running-wave {
+  from { transform: translateX(-70%); }
+  to { transform: translateX(140%); }
+}
+
+@keyframes gothic-stream-scanner-pass {
+  from { transform: translateX(-50%); }
+  to { transform: translateX(280%); }
 }

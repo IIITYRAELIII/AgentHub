@@ -3,6 +3,8 @@
 
   const DEFAULT_SAMPLE_INTERVAL_MS = 5 * 60_000;
   const DEFAULT_MAXIMUM_POINTS = 10_000;
+  const RESET_WINDOW_SHIFT_TOLERANCE_MS = 30 * 60_000;
+  const RESET_USED_DROP_THRESHOLD = 10;
 
   function normalizedPoints(points) {
     const sorted = (Array.isArray(points) ? points : [])
@@ -26,12 +28,27 @@
     return String(point?.accountKey ?? "").trim();
   }
 
-  function canInferInterval(left, right) {
+  function sameAccount(left, right) {
     const leftAccount = accountKey(left.point);
     const rightAccount = accountKey(right.point);
+    return !leftAccount || !rightAccount || leftAccount === rightAccount;
+  }
+
+  function crossesReset(left, right) {
+    if (!(right.time > left.time) || !sameAccount(left, right)) return false;
+    if (left.used - right.used >= RESET_USED_DROP_THRESHOLD) return true;
+    const leftReset = Date.parse(left.point?.resetsAt ?? "");
+    const rightReset = Date.parse(right.point?.resetsAt ?? "");
+    return Number.isFinite(leftReset)
+      && Number.isFinite(rightReset)
+      && Math.abs(rightReset - leftReset) > RESET_WINDOW_SHIFT_TOLERANCE_MS;
+  }
+
+  function canInferInterval(left, right) {
     return right.time > left.time
       && right.used >= left.used
-      && (!leftAccount || !rightAccount || leftAccount === rightAccount);
+      && sameAccount(left, right)
+      && !crossesReset(left, right);
   }
 
   function interpolatedResetAt(left, right, ratio) {
@@ -129,6 +146,117 @@
     return values;
   }
 
+  function bucketRanges(buckets) {
+    return (Array.isArray(buckets) ? buckets : []).map((bucket) => ({
+      start: Number(bucket?.start),
+      end: Number(bucket?.end),
+    }));
+  }
+
+  function intervalOverlap(left, right, range) {
+    if (!Number.isFinite(range.start) || !Number.isFinite(range.end)) return 0;
+    return Math.max(0, Math.min(right.time, range.end) - Math.max(left.time, range.start));
+  }
+
+  function nearbyObservedPrice(observedValues, accountingValues, ranges, blocked, gap) {
+    const usable = ranges.map((range, index) => ({
+      index,
+      range,
+      credits: Math.max(0, Number(accountingValues[index]) || 0),
+      limitPoints: observedValues[index] == null ? null : Number(observedValues[index]),
+    })).filter((item) => (
+      !blocked[item.index]
+      && item.credits > 0
+      && Number.isFinite(item.limitPoints)
+      && item.limitPoints >= 0
+    ));
+    const before = usable
+      .filter((item) => item.range.end <= gap.left.time)
+      .sort((left, right) => right.range.end - left.range.end)
+      .slice(0, 3);
+    const after = usable
+      .filter((item) => item.range.start >= gap.right.time)
+      .sort((left, right) => left.range.start - right.range.start)
+      .slice(0, 3);
+    const neighbors = [...before, ...after];
+    const sample = neighbors.length ? neighbors : usable;
+    const credits = sample.reduce((sum, item) => sum + item.credits, 0);
+    const limitPoints = sample.reduce((sum, item) => sum + item.limitPoints, 0);
+    return credits > 0 && limitPoints > 0 ? limitPoints / (credits / 1_000) : null;
+  }
+
+  function accountingSegments(ranges, accountingValues, reconstructionBuckets) {
+    const reconstructed = (Array.isArray(reconstructionBuckets) ? reconstructionBuckets : [])
+      .map((bucket) => ({
+        start: Number(bucket?.start),
+        end: Number(bucket?.end),
+        credits: Math.max(0, Number(bucket?.credits) || 0),
+      }))
+      .filter((bucket) => (
+        Number.isFinite(bucket.start)
+        && Number.isFinite(bucket.end)
+        && bucket.end > bucket.start
+        && bucket.credits > 0
+      ));
+    return reconstructed.length
+      ? reconstructed
+      : ranges.map((range, index) => ({ ...range, credits: accountingValues[index] }));
+  }
+
+  function recoverRateLimitResetGaps(points, buckets, accountingValues, reconstructionBuckets = []) {
+    const normalized = normalizedPoints(points);
+    const ranges = bucketRanges(buckets);
+    const accounting = ranges.map((_, index) => Math.max(0, Number(accountingValues?.[index]) || 0));
+    const observedValues = rateLimitDeltasByBuckets(points, buckets);
+    const inferredValues = ranges.map(() => 0);
+    const values = [...observedValues];
+    if (normalized.length < 2 || !ranges.length) {
+      return { values, observedValues, inferredValues, recoveredIntervals: 0, estimatedLimitPoints: 0 };
+    }
+    const gaps = [];
+    for (let index = 1; index < normalized.length; index += 1) {
+      const left = normalized[index - 1];
+      const right = normalized[index];
+      if (crossesReset(left, right)) gaps.push({ left, right });
+    }
+    if (!gaps.length) {
+      return { values, observedValues, inferredValues, recoveredIntervals: 0, estimatedLimitPoints: 0 };
+    }
+    const blocked = ranges.map((range) => gaps.some((gap) => intervalOverlap(gap.left, gap.right, range) > 0));
+    const segments = accountingSegments(ranges, accounting, reconstructionBuckets);
+    let recoveredIntervals = 0;
+    for (const gap of gaps) {
+      const limitPrice = nearbyObservedPrice(observedValues, accounting, ranges, blocked, gap);
+      if (!(limitPrice > 0)) continue;
+      let recovered = false;
+      for (const segment of segments) {
+        const segmentSpan = segment.end - segment.start;
+        const gapStart = Math.max(gap.left.time, segment.start);
+        const gapEnd = Math.min(gap.right.time, segment.end);
+        if (!(segmentSpan > 0) || !(gapEnd > gapStart)) continue;
+        ranges.forEach((range, bucketIndex) => {
+          const overlap = Math.max(0, Math.min(gapEnd, range.end) - Math.max(gapStart, range.start));
+          if (!(overlap > 0)) return;
+          const inferred = segment.credits * Math.min(1, overlap / segmentSpan) / 1_000 * limitPrice;
+          if (!(inferred > 0)) return;
+          inferredValues[bucketIndex] += inferred;
+          recovered = true;
+        });
+      }
+      if (recovered) recoveredIntervals += 1;
+    }
+    inferredValues.forEach((inferred, index) => {
+      if (inferred > 0) values[index] = (values[index] ?? 0) + inferred;
+    });
+    return {
+      values,
+      observedValues,
+      inferredValues,
+      recoveredIntervals,
+      estimatedLimitPoints: inferredValues.reduce((sum, value) => sum + value, 0),
+    };
+  }
+
   function signedComparisonDeviations(accountValues, localValues) {
     const account = Array.isArray(accountValues) ? accountValues : [];
     const local = Array.isArray(localValues) ? localValues : [];
@@ -151,6 +279,7 @@
     interpolateRateLimitGaps,
     meanSignedComparisonDeviation,
     rateLimitDeltasByBuckets,
+    recoverRateLimitResetGaps,
     signedComparisonDeviations,
   });
 })();

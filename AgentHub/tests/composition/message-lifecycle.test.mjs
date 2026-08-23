@@ -216,7 +216,6 @@ test("background history refresh checks both request generation and current Stre
     hubClientSource,
     /const bindingTransition = Boolean\(previousTask\) && !sameIdentity\(previousTask, currentTask\);/u,
   );
-  assert.match(hubClientSource, /refreshSource: answerTransition \|\| bindingTransition/u);
 });
 
 test("aggregated Stream history preserves each item's provider and Thread", () => {
@@ -378,6 +377,17 @@ test("message delivery distinguishes a server rejection from an unconfirmed tran
   assert.equal(lifecycle.messageSendDefinitelyRejected(rejected), true);
   assert.equal(lifecycle.messageSendDefinitelyRejected(new Error("Agent Hub не ответил вовремя")), false);
   assert.equal(lifecycle.looksLikeConnectionFailure(new Error("Desktop control request timed out")), true);
+  const abort = new Error("Signal is aborted without a reason");
+  abort.name = "AbortError";
+  assert.equal(lifecycle.looksLikeConnectionFailure(abort), true);
+  const timeout = new Error("Agent Hub не подтвердил команду за 45 с.");
+  timeout.name = "TimeoutError";
+  timeout.code = "AGENT_HUB_CONTROL_TIMEOUT";
+  assert.equal(
+    lifecycle.hubErrorMessage(timeout),
+    "Agent Hub не подтвердил приём вовремя. Статус сообщения уточняется.",
+  );
+  assert.match(hubClientSource, /timeout\.code = "AGENT_HUB_CONTROL_TIMEOUT"/u);
   assert.equal(rejected.agentHubCommandRejected, true);
 });
 
@@ -1608,6 +1618,41 @@ test("same-turn maintenance stays below the agent answer despite an earlier time
   assert.deepEqual(values.map((item) => item.id), ["prompt", "answer", "measurement"]);
 });
 
+test("rotation completion stays between the source Thread and the new live turn", () => {
+  const source = [
+    {
+      id: "source-user", role: "user", threadId: "thread-old", turnId: "turn-old",
+      time: "2026-08-24T00:30:00.000Z", historyOrder: 1_000,
+    },
+    {
+      id: "source-agent", role: "agent", threadId: "thread-old", turnId: "turn-old",
+      time: "2026-08-24T00:34:00.000Z", historyOrder: 1_001,
+    },
+    {
+      id: "rotation", role: "system", kind: "maintenance", threadId: "thread-new",
+      sourceThreadId: "thread-old", placement: "after-source-turn",
+      time: "2026-08-24T00:34:01.000Z",
+    },
+    {
+      id: "new-user", role: "user", threadId: "thread-new", turnId: "turn-new",
+      time: "2026-08-24T00:35:00.000Z", historyOrder: 2_000,
+    },
+    {
+      id: "new-live-agent", role: "agent", threadId: "thread-new", turnId: "turn-new",
+      time: "2026-08-24T00:36:00.000Z",
+    },
+  ];
+  assert.deepEqual(
+    lifecycle.chronologicalMessages(source).map((item) => item.id),
+    ["source-user", "source-agent", "rotation", "new-user", "new-live-agent"],
+  );
+  source.at(-1).time = "2026-08-24T00:40:00.000Z";
+  assert.deepEqual(
+    lifecycle.chronologicalMessages(source).map((item) => item.id),
+    ["source-user", "source-agent", "rotation", "new-user", "new-live-agent"],
+  );
+});
+
 test("late subagent results stay above their parent final", () => {
   const values = lifecycle.chronologicalMessages([
     {
@@ -2003,22 +2048,14 @@ test("returning to a busy task keeps its deferred user card only in the queue", 
   assert.deepEqual(visible, [activeUser]);
 });
 
-test("live completion never borrows the next turn start time", () => {
-  assert.doesNotMatch(hubClientSource, /incomingStartedAtMs/u);
-  assert.match(
-    hubClientSource,
-    /const completionTime = taskAnswerTurnId === previousTurnId[\s\S]*selected\?\.lastAnswerAt[\s\S]*previous\?\.time/u,
-  );
-});
-
 test("rotation completion waits for maintenance and keeps its post-answer position", () => {
   assert.match(
     hubClientSource,
-    /pendingStreamRotations\.set\([\s\S]*time: new Date\(\)\.toISOString\(\)/u,
+    /pendingStreamRotations\.set\([\s\S]*sourceThreadId: transition\.sourceThreadId[\s\S]*time: transition\.time/u,
   );
   assert.match(hubClientSource, /if \(rotationMaintenanceActive\(task\)\) continue;/u);
   assert.match(hubClientSource, /placement: "after-source-turn"/u);
-  assert.match(hubClientSource, /entry\.message\?\.placement !== "after-source-turn"/u);
+  assert.match(hubClientSource, /!String\(entry\.message\?\.sourceThreadId \?\? ""\)\.trim\(\)/u);
 });
 
 test("context compaction start identifies the task and completion stays in chat", () => {
@@ -2175,6 +2212,44 @@ test("completed live card uses a newly recorded final even before durable histor
   }), "Legacy final");
 });
 
+test("terminal live promotion keeps the complete activity trace", () => {
+  const activities = [{ id: "tool-1", type: "command" }];
+  const activityGroups = [{ id: "group-1", reasoning: "Проверяю.", activities }];
+  const message = lifecycle.completedLiveAgentMessage({
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "turn-2",
+    itemId: "agent-live",
+    author: "Codex",
+    text: "Финальный ответ",
+    responsePhase: "final_answer",
+    activities,
+    activityGroups,
+    turnStartedAt: "2026-08-24T01:00:00.000Z",
+  }, {
+    lastAnswer: "",
+    lastAnswerAt: "2026-08-24T01:01:00.000Z",
+    lastAnswerTurnId: "turn-2",
+  });
+
+  assert.equal(message.text, "Финальный ответ");
+  assert.equal(message.time, "2026-08-24T01:01:00.000Z");
+  assert.equal(message.turnCompletedAt, "2026-08-24T01:01:00.000Z");
+  assert.deepEqual(message.activities, activities);
+  assert.deepEqual(message.activityGroups, activityGroups);
+});
+
+test("terminal catch-up reads local history before waiting for provider hydration", () => {
+  assert.equal(lifecycle.historyRefreshSourceRequired({
+    answerTransition: true,
+    catchUpPending: true,
+  }), false);
+  assert.equal(lifecycle.historyRefreshSourceRequired({
+    answerTransition: false,
+    catchUpPending: true,
+  }), true);
+});
+
 test("compact snapshot never promotes commentary as the final answer", () => {
   const previous = {
     provider: "codex",
@@ -2283,13 +2358,6 @@ test("run completion starts history catch-up even when answer metadata has not c
   const current = { ...previous, running: false };
   assert.equal(lifecycle.latestAnswerTransition(previous, current), true);
   assert.equal(lifecycle.latestAnswerTransition(current, current), false);
-});
-
-test("every pending compact-history catch-up refreshes the provider source", () => {
-  assert.match(
-    hubClientSource,
-    /const catchUpPending = historyNeedsCatchUp\(id\);[\s\S]*?refreshSource: answerTransition \|\| bindingTransition \|\| catchUpPending/u,
-  );
 });
 
 test("a stale provider history keeps automatic catch-up active after restart", () => {

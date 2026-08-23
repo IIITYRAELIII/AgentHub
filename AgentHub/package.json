@@ -24,6 +24,7 @@
     "dashboard-bot:webhook": "node shared-dashboard-bot-webhook.mjs",
     "android:build": "powershell -NoProfile -ExecutionPolicy Bypass -File AndroidApp/build.ps1",
     "gateway:install": "node direct-gateway-cli.mjs install",
+    "release:version": "node release-version.mjs",
     "publish:all": "node publish-all.mjs",
     "publish:changed": "node publish-changed.mjs",
     "hook:install": "node src/infrastructure/codex/codex-hook-config.mjs install",
@@ -57,6 +58,7 @@
     "contour:verify": "node test-contour.mjs verify"
   },
   "devDependencies": {
+    "playwright": "1.62.1",
     "wrangler": "4.115.0"
   }
 }

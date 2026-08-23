@@ -178,7 +178,8 @@ test("deployRuntime does not replace unchanged stable runtime files", async () =
   }
 });
 
-test("deployRuntime defers a locked stable launcher without blocking release cutover", async () => {
+test("deployRuntime replaces a locked Windows stable launcher before release cutover", async (t) => {
+  if (process.platform !== "win32") return t.skip("locked executable replacement is Windows-only");
   const { sourceRoot, runtimeRoot } = await fixture();
   await deployRuntime({ sourceRoot, runtimeRoot, releaseId: "release-1" });
   const stableHook = path.join(runtimeRoot, "codex-stop-hook-launcher.mjs");
@@ -194,7 +195,8 @@ test("deployRuntime defers a locked stable launcher without blocking release cut
     runtimeRoot,
     releaseId: "release-2",
     commitStableFile: async (source, target) => {
-      if (path.resolve(target) === path.resolve(stableHook)) {
+      const targetExists = await stat(target).then(() => true, () => false);
+      if (path.resolve(target) === path.resolve(stableHook) && targetExists) {
         const error = new Error("locked stable launcher");
         error.code = "EPERM";
         throw error;
@@ -203,21 +205,14 @@ test("deployRuntime defers a locked stable launcher without blocking release cut
     },
   });
 
-  assert.equal(deferred.stableUpdateDeferred, true);
-  assert.equal(path.resolve(deferred.blockedStableTarget), path.resolve(stableHook));
-  assert.equal(await readFile(stableHook, "utf8"), originalHook);
+  assert.equal(deferred.stableUpdateDeferred, false);
+  assert.equal(deferred.blockedStableTarget, null);
+  assert.notEqual(await readFile(stableHook, "utf8"), originalHook);
+  assert.match(await readFile(stableHook, "utf8"), /changed/u);
   assert.equal(
     JSON.parse(await readFile(path.join(runtimeRoot, "current.json"), "utf8")).current,
     "release-2",
   );
-
-  const applied = await deployRuntime({
-    sourceRoot,
-    runtimeRoot,
-    releaseId: "release-3",
-  });
-  assert.equal(applied.stableUpdateDeferred, false);
-  assert.match(await readFile(stableHook, "utf8"), /changed/u);
 });
 
 test("deployRuntime does not publish a pointer before the stable launchers are ready", async () => {

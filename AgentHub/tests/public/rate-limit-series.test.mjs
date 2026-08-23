@@ -13,6 +13,7 @@ const {
   interpolateRateLimitGaps,
   meanSignedComparisonDeviation,
   rateLimitDeltasByBuckets,
+  recoverRateLimitResetGaps,
   signedComparisonDeviations,
 } = context.AgentHubRateLimitSeries;
 
@@ -77,6 +78,75 @@ test("correlation leaves reset gaps unknown", () => {
     [...rateLimitDeltasByBuckets([point(0, 95), point(2 * hour, 5)], buckets)],
     [null, null],
   );
+});
+
+test("correlation recovers reset gaps from accounting usage and neighboring prices", () => {
+  const threeBuckets = [
+    { start: 0, end: hour },
+    { start: hour, end: 2 * hour },
+    { start: 2 * hour, end: 3 * hour },
+  ];
+  const result = recoverRateLimitResetGaps([
+    point(0, 5),
+    point(hour, 15),
+    point(2 * hour, 5),
+    point(3 * hour, 15),
+  ], threeBuckets, [1_000, 1_000, 1_000]);
+
+  assert.deepEqual([...result.observedValues], [10, null, 10]);
+  assert.deepEqual([...result.values], [10, 10, 10]);
+  assert.deepEqual([...result.inferredValues], [0, 10, 0]);
+  assert.equal(result.recoveredIntervals, 1);
+  assert.equal(result.estimatedLimitPoints, 10);
+});
+
+test("correlation keeps reset gaps unknown without accounting usage", () => {
+  const result = recoverRateLimitResetGaps([
+    point(0, 95),
+    point(2 * hour, 5),
+  ], buckets, [0, 0]);
+
+  assert.deepEqual([...result.values], [null, null]);
+  assert.equal(result.recoveredIntervals, 0);
+});
+
+test("correlation does not recover a used-percent correction below ten points", () => {
+  const result = recoverRateLimitResetGaps([
+    point(0, 0),
+    point(hour, 10),
+    point(2 * hour, 5),
+    point(3 * hour, 15),
+  ], [
+    { start: 0, end: hour },
+    { start: hour, end: 2 * hour },
+    { start: 2 * hour, end: 3 * hour },
+  ], [1_000, 1_000, 1_000]);
+
+  assert.deepEqual([...result.values], [10, null, 10]);
+  assert.equal(result.recoveredIntervals, 0);
+  assert.equal(result.estimatedLimitPoints, 0);
+});
+
+test("correlation uses fine accounting buckets inside a partial reset gap", () => {
+  const result = recoverRateLimitResetGaps([
+    point(-hour, 0),
+    point(0, 10),
+    point(hour, 20),
+    point(3 * hour, 5),
+    point(4 * hour, 15),
+    point(5 * hour, 25),
+  ], [
+    { start: -hour, end: 0 },
+    { start: 0, end: 2 * hour },
+    { start: 2 * hour, end: 4 * hour },
+    { start: 4 * hour, end: 5 * hour },
+  ], [1_000, 2_000, 2_000, 1_000], [
+    { start: hour, end: 2 * hour, credits: 1_000 },
+    { start: 3 * hour, end: 4 * hour, credits: 1_000 },
+  ]);
+
+  assert.deepEqual([...result.inferredValues], [0, 10, 0, 0]);
+  assert.equal(result.estimatedLimitPoints, 10);
 });
 
 test("signed comparison deviations cancel opposite differences in the mean", () => {

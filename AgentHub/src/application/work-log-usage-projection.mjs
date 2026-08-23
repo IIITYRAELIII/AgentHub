@@ -2859,6 +2859,12 @@ function allHistoryBucketMs(spanMs, maxPoints) {
     ?? Math.ceil(spanMs / maxPoints / day) * day;
 }
 
+function reconstructionBucketMs(spanMs, maxPoints) {
+  const halfHour = 30 * 60 * 1_000;
+  const minimum = 60 * 60 * 1_000;
+  return Math.max(minimum, Math.ceil(spanMs / maxPoints / halfHour) * halfHour);
+}
+
 function localDayOrdinal(value) {
   const date = new Date(value);
   return Math.floor(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / (24 * 60 * 60 * 1_000));
@@ -3015,6 +3021,10 @@ export function buildWorkLogUsageHistory(turns = {}, {
   // ось суток доходит до полуночи, даже если день ещё не прожит
   const axisToMs = configured?.wholeDay ? localDayStart(toMs, 1) : toMs;
   const buckets = new Map();
+  const reconstructionStepMs = requestedProvider && (dayBuckets || groupedCalendarDays)
+    ? reconstructionBucketMs(spanMs, pointLimit)
+    : 0;
+  const reconstructionBuckets = new Map();
   let totalCredits = 0;
   let totalTimedCredits = 0;
   let totalDurationSeconds = 0;
@@ -3048,6 +3058,13 @@ export function buildWorkLogUsageHistory(turns = {}, {
     } else {
       totalCredits += record.credits;
       bucketValue.credits += record.credits;
+      if (reconstructionStepMs > 0 && record.credits > 0) {
+        const reconstructionBucket = Math.floor(record.pointMs / reconstructionStepMs) * reconstructionStepMs;
+        reconstructionBuckets.set(
+          reconstructionBucket,
+          (reconstructionBuckets.get(reconstructionBucket) ?? 0) + record.credits,
+        );
+      }
       const otherDevice = record.source === "other-device";
       const device = deviceTotals.get(record.deviceId) ?? {
         deviceId: record.deviceId,
@@ -3161,6 +3178,14 @@ export function buildWorkLogUsageHistory(turns = {}, {
     taskDurationSeconds: totalDurationSeconds,
     unpricedCount,
     untimedCount: untimedCreditCount,
+    ...(reconstructionStepMs > 0 ? {
+      reconstruction: {
+        bucketMs: reconstructionStepMs,
+        points: [...reconstructionBuckets.entries()]
+          .sort(([left], [right]) => left - right)
+          .map(([at, credits]) => ({ at: new Date(at).toISOString(), credits })),
+      },
+    } : {}),
     points: points.map((point) => ({
       ...point,
       taskDurationSeconds: point.durationSeconds,

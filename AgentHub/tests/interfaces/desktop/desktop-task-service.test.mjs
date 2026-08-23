@@ -185,6 +185,53 @@ test("Desktop task open shares one response budget between snapshot and history"
   assert.ok(historyParams.maxResponseBytes < 550_000);
 });
 
+test("Desktop task open marks an answer discovered by canonical history refresh as read", async () => {
+  const { service, calls } = fixture();
+  let latestTurnId = "turn-before-refresh";
+  service.dispatchCommand = async () => {
+    calls.push(["dispatch-read", latestTurnId]);
+    return {
+      version: "snapshot-before-refresh",
+      selectionChanged: true,
+      tasks: [{ threadId: "thread-1", unread: true }],
+    };
+  };
+  service.taskHistory = async () => {
+    calls.push(["history-refresh"]);
+    latestTurnId = "turn-after-refresh";
+    return { turns: [{ id: latestTurnId }] };
+  };
+  service.markRead = (entry, context) => {
+    calls.push(["read-after-history", latestTurnId, entry.threadId, context]);
+  };
+  service.snapshot = async (params, context) => {
+    calls.push(["snapshot-after-read", params, context]);
+    return {
+      version: "snapshot-after-refresh",
+      tasks: [{ threadId: "thread-1", unread: false }],
+    };
+  };
+  const context = { source: "trusted-device", userId: "42" };
+
+  const result = await service.openTask({
+    streamId: "stream-1",
+    provider: "codex",
+    threadId: "thread-1",
+    compactSnapshot: true,
+  }, context);
+
+  assert.deepEqual(calls.map(([name]) => name), [
+    "dispatch-read",
+    "history-refresh",
+    "read-after-history",
+    "snapshot-after-read",
+  ]);
+  assert.equal(calls[2][1], "turn-after-refresh");
+  assert.equal(calls[3][1].knownVersion, "snapshot-before-refresh");
+  assert.equal(result.snapshot.tasks[0].unread, false);
+  assert.equal(result.snapshot.selectionChanged, true);
+});
+
 test("Desktop task open resolves a rotated Thread to the current Stream task", async () => {
   const { service, calls } = fixture();
   service.threadsForStream = () => [

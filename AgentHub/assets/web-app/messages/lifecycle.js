@@ -100,6 +100,32 @@ function completedLiveAnswer(previous, selected) {
     : "";
 }
 
+function completedLiveAgentMessage(previous, selected) {
+  const turnId = String(previous?.turnId ?? "").trim();
+  const answer = completedLiveAnswer(previous, selected);
+  if (!turnId || !answer) return null;
+  const taskAnswerTurnId = String(selected?.lastAnswerTurnId ?? "").trim();
+  const completionTime = taskAnswerTurnId === turnId
+    ? selected?.lastAnswerAt ?? previous?.time ?? null
+    : previous?.time ?? null;
+  return {
+    id: `${previous.provider}:${previous.threadId}:${turnId}:completion-overlay:agent`,
+    provider: previous.provider,
+    threadId: previous.threadId,
+    turnId,
+    itemId: previous.itemId || `${turnId}:agent:final`,
+    role: "agent",
+    author: previous.author,
+    phase: "final",
+    text: answer,
+    time: completionTime,
+    activities: Array.isArray(previous.activities) ? previous.activities : [],
+    activityGroups: Array.isArray(previous.activityGroups) ? previous.activityGroups : [],
+    turnStartedAt: previous.turnStartedAt ?? null,
+    turnCompletedAt: completionTime,
+  };
+}
+
 function snapshotCompletionCandidate(selected, incomingTurnId = "") {
   const turnId = String(selected?.lastAnswerTurnId ?? "").trim();
   const answer = String(selected?.lastAnswer ?? "").trim();
@@ -324,6 +350,10 @@ function nextHistoryCatchUpDeadline({
   if (sourceFresh === false) return next;
   if (containsLatestAnswer) return null;
   return deadline || next;
+}
+
+function historyRefreshSourceRequired({ answerTransition = false, catchUpPending = false } = {}) {
+  return Boolean(catchUpPending && !answerTransition);
 }
 
 function userMessageHasVisibleContent(message) {
@@ -976,7 +1006,7 @@ function chronologicalMessages(messages) {
     const turnId = String(item.message?.turnId ?? "");
     item.time = turnTimes.get(turnId) ?? Number.POSITIVE_INFINITY;
   }
-  return decorated
+  const ordered = decorated
     .sort((left, right) => {
       const leftTurnOrder = historyTurnOrders.get(String(left.message?.turnId ?? ""));
       const rightTurnOrder = historyTurnOrders.get(String(right.message?.turnId ?? ""));
@@ -1000,6 +1030,29 @@ function chronologicalMessages(messages) {
       return left.index - right.index;
     })
     .map(({ message }) => message);
+  for (const event of ordered.filter((message) => (
+    message?.kind === "maintenance"
+    && message?.placement === "after-source-turn"
+    && String(message?.sourceThreadId ?? "").trim()
+  ))) {
+    const currentIndex = ordered.indexOf(event);
+    ordered.splice(currentIndex, 1);
+    const sourceThreadId = String(event.sourceThreadId).trim();
+    let anchorIndex = ordered.findLastIndex((message) => (
+      String(message?.threadId ?? "").trim() === sourceThreadId
+    ));
+    if (anchorIndex < 0) {
+      ordered.splice(currentIndex, 0, event);
+      continue;
+    }
+    while (
+      ordered[anchorIndex + 1]?.kind === "maintenance"
+      && ordered[anchorIndex + 1]?.placement === "after-source-turn"
+      && String(ordered[anchorIndex + 1]?.sourceThreadId ?? "").trim() === sourceThreadId
+    ) anchorIndex += 1;
+    ordered.splice(anchorIndex + 1, 0, event);
+  }
+  return ordered;
 }
 
 function historicalAgentResponseVisible(turn) {
@@ -1129,8 +1182,10 @@ function messageSendDefinitelyRejected(error) {
 
 function looksLikeConnectionFailure(error) {
   const code = String(error?.code ?? "").trim().toUpperCase();
+  const name = String(error?.name ?? "").trim();
   const message = String(error?.message ?? error ?? "").trim();
-  return ["ECONNREFUSED", "ECONNRESET", "ENOENT", "EPIPE"].includes(code)
+  return ["ECONNREFUSED", "ECONNRESET", "ENOENT", "EPIPE", "AGENT_HUB_CONTROL_TIMEOUT"].includes(code)
+    || ["AbortError", "TimeoutError"].includes(name)
     || /\b(?:ECONNREFUSED|ECONNRESET|ENOENT|EPIPE)\b[\s\S]*agent-hub-desktop-/iu.test(message)
     || /Agent Hub (?:в VS Code )?не ответил вовремя/iu.test(message)
     || /Desktop control request timed out/iu.test(message)
@@ -1161,6 +1216,9 @@ async function stopTaskControls({ cancel, pause, queued = [] }) {
 
 function hubErrorMessage(error) {
   const message = String(error?.message ?? error ?? "Неизвестная ошибка").trim();
+  if (String(error?.code ?? "").trim().toUpperCase() === "AGENT_HUB_CONTROL_TIMEOUT") {
+    return "Agent Hub не подтвердил приём вовремя. Статус сообщения уточняется.";
+  }
   if (looksLikeConnectionFailure(error)) return "Нет связи с Agent Hub.";
   const translations = new Map([
     ["remote attachment not found", "Вложение недоступно. Повторите отправку."],
@@ -1176,6 +1234,7 @@ globalThis.AgentHubMessageLifecycle = Object.freeze({
   attachmentOnlyText,
   chronologicalMessages,
   completedLiveAnswer,
+  completedLiveAgentMessage,
   conversationTaskId,
   completedConversationTurnVisible,
   confirmedOutgoingMessageIds,
@@ -1191,6 +1250,7 @@ globalThis.AgentHubMessageLifecycle = Object.freeze({
   focusedTurnAlreadyVisible,
   focusedTurnTaskThreadId,
   historyContainsLatestAnswer,
+  historyRefreshSourceRequired,
   historyMatchesIdentity,
   historicalAgentResponseVisible,
   historicalMessagesForDisplay,

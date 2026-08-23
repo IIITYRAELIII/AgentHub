@@ -150,6 +150,45 @@ test("RunCoordinator preserves an explicit queue request behind the active turn"
   ]);
 });
 
+test("RunCoordinator acknowledges queued intake while turn launch is still pending", async () => {
+  let active = null;
+  let releaseLaunch;
+  const launchGate = new Promise((resolve) => { releaseLaunch = resolve; });
+  const f = fixture({
+    taskRuns: { forTask: () => active },
+    beginRun: async () => {
+      active = { ...f.run, executionOwner: "hub" };
+      return active;
+    },
+    launchTurn: async () => launchGate,
+    deferInput: async (...args) => {
+      f.calls.push(["defer", ...args]);
+      return { id: "queued-during-launch", item: { id: "queued-during-launch" } };
+    },
+    scheduleDeferred: (item, delay) => f.calls.push(["schedule", item, delay]),
+  });
+
+  const launch = f.coordinator.start("current", [], { target: f.target });
+  await new Promise((resolve) => setImmediate(resolve));
+  const intake = f.coordinator.acceptClientInput({
+    input: "next",
+    attachments: [],
+    target: f.target,
+    clientUserMessageId: "message-during-launch",
+    followUpMode: "queue",
+  });
+  const state = await Promise.race([
+    intake.then((result) => ({ status: "accepted", result })),
+    new Promise((resolve) => setImmediate(() => resolve({ status: "blocked" }))),
+  ]);
+
+  assert.equal(state.status, "accepted");
+  assert.equal(state.result.queued, true);
+  assert.equal(state.result.id, "queued-during-launch");
+  releaseLaunch();
+  await launch;
+});
+
 test("RunCoordinator immediately queues steering for a turn owned by Codex Desktop", async () => {
   const external = { id: "external", executionOwner: "desktop" };
   const f = fixture({

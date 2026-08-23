@@ -50,6 +50,24 @@ test("completed history overlay replaces a stale live answer immediately", () =>
   assert.equal(history[0].messages[0].phase, "final");
 });
 
+test("completed history overlay preserves the live activity trace", () => {
+  const activities = [{ id: "tool-1", type: "command" }];
+  const activityGroups = [{ id: "group-1", reasoning: "Проверяю.", activities }];
+  const history = [{
+    id: "turn-1",
+    active: true,
+    answer: "Промежуточный текст",
+    activities,
+    activityGroups,
+    messages: [{ itemId: "turn-1:agent:live", role: "agent", text: "Промежуточный текст" }],
+  }];
+
+  mergeCompletedTaskHistory(history, { turnId: "turn-1", answer: "Финальный ответ" });
+
+  assert.deepEqual(history[0].activities, activities);
+  assert.deepEqual(history[0].activityGroups, activityGroups);
+});
+
 test("completed history keeps independent turns with identical answers", () => {
   const history = [{
     id: "turn-user",

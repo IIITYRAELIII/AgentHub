@@ -168,9 +168,20 @@ function directRequestUrl(session, url) {
   return `${String(session.baseUrl).replace(/\/+$/u, "")}${url.pathname}${url.search}`;
 }
 
+function activeDirectSession() {
+  if (!directSession?.baseUrl || !directSession?.token) return null;
+  return Number(directSession.expiresAt) > Date.now() ? directSession : null;
+}
+
 async function directFetch(url, init = {}, retry = true) {
-  const session = await ensureDirectSession();
-  if (!session) return null;
+  const session = activeDirectSession();
+  if (!session) {
+    void ensureDirectSession();
+    return null;
+  }
+  if (Number(session.expiresAt) - Date.now() <= SESSION_REFRESH_MARGIN_MS) {
+    void ensureDirectSession();
+  }
   const headers = new Headers(init.headers);
   headers.set("Authorization", `webview ${session.token}`);
   const response = await nativeFetch(directRequestUrl(session, url), {
@@ -294,7 +305,11 @@ async function streamDirectEvents() {
 }
 
 window.__agentHubDirectTransport = {
-  available: async () => Boolean(await ensureDirectSession()),
+  available: () => {
+    const available = Boolean(activeDirectSession());
+    if (!available) void ensureDirectSession();
+    return available;
+  },
 };
 
 void ensureDirectSession().then((session) => {

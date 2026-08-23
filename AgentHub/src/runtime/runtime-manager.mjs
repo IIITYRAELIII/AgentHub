@@ -141,6 +141,13 @@ async function pruneRuntimeReleases(layout, keep, {
   }
 }
 
+async function pruneReplacedStableFiles(layout) {
+  const entries = await readdir(layout.root, { withFileTypes: true });
+  await Promise.all(entries
+    .filter((entry) => entry.isFile() && entry.name.startsWith(".stable-runtime-replaced-"))
+    .map((entry) => rm(path.join(layout.root, entry.name), { force: true }).catch(() => {})));
+}
+
 function stableRuntimeFiles(layout, releaseRoot) {
   const files = [{
     source: path.join(releaseRoot, "codex-stop-hook-launcher.mjs"),
@@ -181,13 +188,24 @@ async function installStableRuntimeFiles(layout, releaseRoot, {
   const rollback = async () => {
     await Promise.all(files.map(async (file) => {
       if (!file.changed) return;
+      if (file.displaced) {
+        await rm(file.target, { force: true }).catch(() => {});
+        const restored = await rename(file.displaced, file.target).then(() => true, () => false);
+        if (restored) file.displaced = null;
+        return;
+      }
       if (file.existed) await cp(file.backup, file.target, { force: true }).catch(() => {});
       else await rm(file.target, { force: true }).catch(() => {});
     }));
   };
-  const cleanup = async () => {
+  const cleanup = async ({ removeDisplaced = true } = {}) => {
     if (settled) return;
     settled = true;
+    if (removeDisplaced) {
+      await Promise.all(files.map((file) => (
+        file.displaced ? rm(file.displaced, { force: true }).catch(() => {}) : undefined
+      )));
+    }
     await rm(staging, { recursive: true, force: true });
   };
   try {
@@ -209,13 +227,20 @@ async function installStableRuntimeFiles(layout, releaseRoot, {
           await commitFile(file.staged, file.target);
         } catch (error) {
           if (!["EBUSY", "EPERM", "EACCES"].includes(error?.code)) throw error;
-          await rollback();
-          return {
-            rollback: async () => {},
-            cleanup,
-            deferred: true,
-            blockedTarget: file.target,
-          };
+          if (process.platform !== "win32" || !file.existed) throw error;
+          file.displaced = path.join(
+            layout.root,
+            `.stable-runtime-replaced-${randomUUID()}${path.extname(file.target)}`,
+          );
+          try {
+            await rename(file.target, file.displaced);
+            await commitFile(file.staged, file.target);
+          } catch (replacementError) {
+            await rm(file.target, { force: true }).catch(() => {});
+            await rename(file.displaced, file.target).catch(() => {});
+            file.displaced = null;
+            throw replacementError;
+          }
         }
         if (file.executable) await chmod(file.target, 0o700);
         else await protectRuntimeConfig(file.target);
@@ -224,9 +249,9 @@ async function installStableRuntimeFiles(layout, releaseRoot, {
       await rollback();
       throw error;
     }
-    return { rollback, cleanup, deferred: false, blockedTarget: null };
+    return { rollback, cleanup };
   } catch (error) {
-    await cleanup();
+    await cleanup({ removeDisplaced: false });
     throw error;
   }
 }
@@ -248,6 +273,7 @@ export async function deployRuntime({
   const staging = `${releaseRoot}.staging-${randomUUID()}`;
   await mkdir(layout.root, { recursive: true });
   await protectRuntimeDirectory(layout.root);
+  await pruneReplacedStableFiles(layout);
   await mkdir(layout.releasesDir, { recursive: true });
   await protectRuntimeDirectory(layout.releasesDir);
   await mkdir(staging, { recursive: true });
@@ -334,6 +360,7 @@ export async function deployRuntime({
       await stableFiles.cleanup();
     } catch (error) {
       await stableFiles.rollback();
+      await stableFiles.cleanup({ removeDisplaced: false });
       if (priorPointerText === null) await rm(layout.currentFile, { force: true }).catch(() => {});
       else await writeTextAtomic(layout.currentFile, priorPointerText).catch(() => {});
       throw error;
@@ -352,8 +379,8 @@ export async function deployRuntime({
       layout,
       releaseId,
       releaseRoot,
-      stableUpdateDeferred: stableFiles.deferred,
-      blockedStableTarget: stableFiles.blockedTarget,
+      stableUpdateDeferred: false,
+      blockedStableTarget: null,
     };
   } catch (error) {
     await rm(staging, { recursive: true, force: true });
@@ -530,9 +557,6 @@ export async function main(args = process.argv.slice(2)) {
     const result = await deployRuntime({ runtimeRoot });
     await prepareRuntimeConfig({ runtimeRoot });
     console.log(`Runtime release deployed: ${result.releaseId}`);
-    if (result.stableUpdateDeferred) {
-      console.warn(`Stable launcher update deferred while in use: ${result.blockedStableTarget}`);
-    }
   } else if (command === "activate") {
     const result = await activateRuntime({ runtimeRoot });
     console.log(`Runtime activated: ${result.releaseId}`);

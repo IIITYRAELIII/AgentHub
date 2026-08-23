@@ -92,7 +92,7 @@ const {
   activeStageLabel,
   activeTaskRun,
   chronologicalMessages,
-  completedLiveAnswer,
+  completedLiveAgentMessage,
   conversationTaskId,
   completedConversationTurnVisible,
   confirmedOutgoingMessageIds,
@@ -102,6 +102,7 @@ const {
   focusedTurnAlreadyVisible,
   focusedTurnTaskThreadId,
   historyContainsLatestAnswer,
+  historyRefreshSourceRequired,
   historyMatchesIdentity,
   historicalMessagesForDisplay,
   hubErrorMessage,
@@ -247,6 +248,7 @@ function readMaintenanceEvents() {
       const legacyRotation = id.startsWith("maintenance:rotation:") && (
         entry.message?.maintenanceType !== "rotation"
         || entry.message?.placement !== "after-source-turn"
+        || !String(entry.message?.sourceThreadId ?? "").trim()
       );
       if (legacyRotation) continue;
       const events = values.get(task) ?? [];
@@ -693,8 +695,11 @@ function rememberSnapshotCompletion(taskIdValue, selected, incomingTurnId = "") 
     requireAgent: true,
   })) return false;
   const overlays = completionOverlaysByTask.get(taskIdValue) ?? new Map();
-  const replacement = snapshotCompletionReplacement(overlays.get(completion.turnId), completion);
+  const existing = overlays.get(completion.turnId);
+  const replacement = snapshotCompletionReplacement(existing, completion);
   if (!replacement) return false;
+  const existingAgent = (Array.isArray(existing?.messages) ? existing.messages : [])
+    .findLast((message) => message?.role === "agent" && message?.kind !== "subagent");
   overlays.set(replacement.turnId, {
     answer: replacement.answer,
     messages: [{
@@ -708,6 +713,10 @@ function rememberSnapshotCompletion(taskIdValue, selected, incomingTurnId = "") 
       phase: "final",
       text: replacement.answer,
       time: replacement.time,
+      activities: Array.isArray(existingAgent?.activities) ? existingAgent.activities : [],
+      activityGroups: Array.isArray(existingAgent?.activityGroups) ? existingAgent.activityGroups : [],
+      turnStartedAt: existingAgent?.turnStartedAt ?? null,
+      turnCompletedAt: replacement.time,
     }],
   });
   while (overlays.size > 20) overlays.delete(overlays.keys().next().value);
@@ -728,38 +737,31 @@ function promoteLiveCompletion(taskIdValue, selected, incomingTurnId = "") {
     return true;
   }
   const liveUsers = liveUserMessagesByTask.get(taskIdValue) ?? {};
-  const taskAnswerTurnId = String(selected?.lastAnswerTurnId ?? "").trim();
-  const answer = completedLiveAnswer(previous, selected);
-  const completionTime = taskAnswerTurnId === previousTurnId
-    ? selected?.lastAnswerAt
-      ?? previous?.time
-      ?? null
-    : previous?.time ?? null;
+  const agentMessage = completedLiveAgentMessage(previous, selected);
+  if (!agentMessage) return false;
+  const answer = agentMessage.text;
   const messages = mergeLiveUserMessages([], liveUsers);
-  if (answer) {
-    messages.push({
-      id: `${previous.provider}:${previous.threadId}:${previousTurnId}:completion-overlay:agent`,
-      provider: previous.provider,
-      threadId: previous.threadId,
-      turnId: previousTurnId,
-      itemId: previous.itemId || `${previousTurnId}:agent:final`,
-      role: "agent",
-      author: previous.author,
-      phase: "final",
-      text: answer,
-      time: completionTime,
-      turnStartedAt: previous.turnStartedAt ?? null,
-      turnCompletedAt: completionTime,
-    });
-  }
-  if (messages.length) {
-    const overlays = completionOverlaysByTask.get(taskIdValue) ?? new Map();
-    overlays.set(previousTurnId, { answer, messages });
-    while (overlays.size > 20) overlays.delete(overlays.keys().next().value);
-    completionOverlaysByTask.set(taskIdValue, overlays);
-  }
+  messages.push(agentMessage);
+  const overlays = completionOverlaysByTask.get(taskIdValue) ?? new Map();
+  overlays.set(previousTurnId, { answer, messages });
+  while (overlays.size > 20) overlays.delete(overlays.keys().next().value);
+  completionOverlaysByTask.set(taskIdValue, overlays);
   liveCardsByTask.delete(taskIdValue);
-  return messages.length > 0;
+  return true;
+}
+
+function clearDurablyCompletedLiveCard(taskIdValue) {
+  const liveCard = liveCardsByTask.get(taskIdValue);
+  const turnId = String(liveCard?.turnId ?? "").trim();
+  if (!turnId || !completedConversationTurnVisible(historyByTask.get(taskIdValue) ?? [], {
+    turnId,
+    requireAgent: true,
+  })) return false;
+  liveCardsByTask.delete(taskIdValue);
+  liveProbeByTask.delete(taskIdValue);
+  liveUserMessagesByTask.delete(taskIdValue);
+  agentHub.setLive(taskIdValue, null);
+  return true;
 }
 
 function exactSelectedTaskParams() {
@@ -843,7 +845,7 @@ function updateLiveMessage(taskIdValue, selected) {
     if (promoted || snapshotCompletionRemembered || removed || userRemoved) {
       renderTaskMessages(taskIdValue);
     }
-    return null;
+    return liveCardsByTask.get(taskIdValue) ?? null;
   }
   const nextLiveUsers = {
     provider: selected.provider,
@@ -986,9 +988,20 @@ async function hubFetch(input, init) {
 
 async function hubFetchWithin(input, init, timeoutMs) {
   const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), Math.max(1, Number(timeoutMs) || 1));
+  const effectiveTimeoutMs = Math.max(1, Number(timeoutMs) || 1);
+  let timedOut = false;
+  const timer = window.setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, effectiveTimeoutMs);
   try {
     return await hubFetch(input, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (!timedOut) throw error;
+    const timeout = new Error(`Agent Hub не подтвердил команду за ${Math.ceil(effectiveTimeoutMs / 1_000)} с.`);
+    timeout.name = "TimeoutError";
+    timeout.code = "AGENT_HUB_CONTROL_TIMEOUT";
+    throw markConnectionFailure(timeout);
   } finally {
     window.clearTimeout(timer);
   }
@@ -1593,8 +1606,9 @@ function observeStreamRotations(previousTasks, tasks) {
     pendingStreamRotations.set(transition.streamId, {
       provider: transition.task.provider,
       threadId: transition.task.threadId,
+      sourceThreadId: transition.sourceThreadId,
       beforePercent: transition.beforePercent,
-      time: new Date().toISOString(),
+      time: transition.time,
     });
   }
   for (const [streamId, task] of currentByStream) {
@@ -1615,6 +1629,7 @@ function observeStreamRotations(previousTasks, tasks) {
       id: eventId,
       provider: pending.provider,
       threadId: task.threadId,
+      sourceThreadId: pending.sourceThreadId,
       itemId: eventId,
       maintenanceType: "rotation",
       maintenanceStatus: "completed",
@@ -1718,7 +1733,7 @@ function applySnapshot(snapshot, { materialized = false } = {}) {
       })),
       workspaces: snapshot.workspaces ?? [],
       columnOrder: snapshot.boardLayout?.columnOrder ?? [],
-      notesComment: snapshot.boardLayout?.notesComment ?? "Игры, фильмы, сериалы и идеи",
+      notesComment: snapshot.boardLayout?.notesComment ?? "",
       selectedWorkspaceId,
       provider: snapshot.settings?.provider ?? "codex",
     });
@@ -2049,6 +2064,7 @@ function applyOpened(result, {
       ? mergeNewestHistory(historyByTask.get(id) ?? [], newest)
       : newest,
   );
+  clearDurablyCompletedLiveCard(id);
   historyPageByTask.set(id, {
     start: preserveOlder ? previousPage.start : history.start,
     end: history.end,
@@ -3147,7 +3163,7 @@ function attachmentAccessUrl(access) {
 }
 
 async function attachmentThumbnailUrl(attachment) {
-  const direct = String(attachment?.thumbnailUrl ?? attachment?.dataUrl ?? "").trim();
+  const direct = window.AgentHubResourceInteractions.attachmentPreviewSource(attachment, Boolean(vscode));
   if (direct) return direct;
   const id = String(attachment?.id ?? "").trim();
   if (!id) throw new Error("Миниатюра вложения недоступна");
@@ -3738,7 +3754,7 @@ async function refreshVisibleTaskHistories(previousSnapshot, snapshot) {
       threadId: currentTask.threadId,
     };
     await enqueueTaskHistoryLoad(id, identity, {
-      refreshSource: answerTransition || bindingTransition || catchUpPending,
+      refreshSource: historyRefreshSourceRequired({ answerTransition, catchUpPending }),
       preserveScroll: true,
     });
   }));

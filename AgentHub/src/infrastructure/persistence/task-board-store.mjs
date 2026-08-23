@@ -704,7 +704,7 @@ export class TaskBoardStore {
   notesComment() {
     return this.#withDatabase((database) => String(database.prepare(
       "SELECT value FROM hub_board_settings WHERE key = 'notes_comment'",
-    ).get()?.value ?? "Игры, фильмы, сериалы и идеи"));
+    ).get()?.value ?? ""));
   }
 
   setNotesComment(comment) {

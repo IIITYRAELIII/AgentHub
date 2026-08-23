@@ -6,6 +6,7 @@ import path from "node:path";
 import { callDesktopControl, readDesktopControlEndpoint } from "./desktop-control.mjs";
 import { ensureWrangler } from "./wrangler-runner.mjs";
 import { defaultRuntimeRoot } from "./src/infrastructure/filesystem/runtime-layout.mjs";
+import { prepareCommittedAgentHubReleaseVersion } from "./src/infrastructure/filesystem/release-version.mjs";
 import {
   publicationCheckpointStore,
   runPublicationSteps,
@@ -206,14 +207,16 @@ export async function publishAll(args = process.argv.slice(2), {
   }),
   revision = currentRevision,
   ensureWorkerDependency = ensureWrangler,
+  prepareVersion = async () => ({ changed: false }),
   checkpoint = null,
   journal = null,
   runtimeRoot = defaultRuntimeRoot(),
   verifyRestart = restart === callDesktopControl ? waitForRuntimeReplacement : async () => {},
 } = {}) {
   return exclusive(async () => {
-    await before();
     const options = parseArguments(args);
+    await before();
+    await prepareVersion();
     const head = checkpoint ? await revision({ cwd: REPOSITORY_ROOT }) : null;
     if (!options.skipWorker) await ensureWorkerDependency();
     const steps = publicationSteps({
@@ -260,6 +263,7 @@ if (invokedFile === fileURLToPath(import.meta.url)) {
       await assertCleanPublicationTree({ cwd: REPOSITORY_ROOT });
       await assertCurrentPublicationRevision({ cwd: REPOSITORY_ROOT });
     },
+    prepareVersion: prepareCommittedAgentHubReleaseVersion,
   }).catch((error) => {
     console.error(`\nПубликация остановлена: ${error.message}`);
     process.exitCode = 1;

@@ -343,6 +343,34 @@ test("usage history stacks every device of the selected account without local ac
   assert.equal(history.points.reduce((sum, point) => sum + point.otherDeviceCredits, 0), 27);
 });
 
+test("provider history adds fine accounting buckets beside a daily chart", () => {
+  const history = buildWorkLogUsageHistory({
+    first: {
+      provider: "codex",
+      completedAt: "2026-07-30T10:10:00.000Z",
+      estimatedCredits: 5,
+      estimateKind: "model",
+      accountKey: "chatgpt:shared",
+    },
+    second: {
+      provider: "codex",
+      completedAt: "2026-07-30T10:20:00.000Z",
+      estimatedCredits: 7,
+      estimateKind: "model",
+      accountKey: "chatgpt:shared",
+    },
+  }, {
+    range: "7d",
+    now: Date.parse("2026-07-30T12:00:00.000Z"),
+    provider: "codex",
+    accountKey: "chatgpt:shared",
+  });
+
+  assert.equal(history.bucket, "day");
+  assert.equal(history.reconstruction.bucketMs, 60 * 60 * 1_000);
+  assert.deepEqual(history.reconstruction.points.map((point) => point.credits), [12]);
+});
+
 test("account usage summary separates exact, inferred and unknown ledger turns", () => {
   const knownKey = `chatgpt:${createHash("sha256").update("owner@example.com").digest("hex")}`;
   const summary = buildWorkLogAccountUsageSummary({

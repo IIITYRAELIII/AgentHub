@@ -140,6 +140,15 @@
     return (Array.isArray(values) ? values : []).filter(isImageAttachment);
   }
 
+  function attachmentPreviewSource(value, preferResourceUrl = false) {
+    return String(
+      value?.thumbnailUrl
+      ?? value?.dataUrl
+      ?? (preferResourceUrl ? value?.url : "")
+      ?? "",
+    ).trim();
+  }
+
   function viewerGallery(values, preferResourceUrl = false) {
     return imageGallery(values).map((item) => {
       const resourceUrl = String(item?.url ?? "").trim();
@@ -190,6 +199,7 @@
   }
 
   window.AgentHubResourceInteractions = {
+    attachmentPreviewSource,
     fileReferenceParts,
     fileReferenceBases,
     galleryIndex,

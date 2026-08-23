@@ -165,6 +165,7 @@ test("publication skips optional test contour when the component is disabled", a
 test("full publication does not wait on the release turn that blocks its safe restart", async () => {
   const events = [];
   await publishAll(["--skip-tests", "--skip-worker"], {
+    prepareVersion: async () => events.push("release-version"),
     run: async (step) => events.push(step.label),
     restart: async () => {
       events.push("restart-server");
@@ -173,6 +174,7 @@ test("full publication does not wait on the release turn that blocks its safe re
     verifyRestart: async () => assert.fail("deferred restart cannot finish before the active release turn"),
     record: async () => events.push("record-publication"),
   });
+  assert.equal(events[0], "release-version");
   assert.deepEqual(events.slice(-2), ["restart-server", "record-publication"]);
 });
 
@@ -267,6 +269,20 @@ test("selective publication maps shared UI to runtime, Worker and surface tests"
   );
   assert.deepEqual(
     classifyPublicationChanges(["AgentHub/RuntimeHost/AgentHub.RuntimeHost.cs"]),
+    {
+      runtime: true,
+      runtimeRestart: true,
+      worker: false,
+      android: false,
+      vscode: false,
+      unitTests: true,
+      surfaceTests: true,
+      fullTests: false,
+      unknown: [],
+    },
+  );
+  assert.deepEqual(
+    classifyPublicationChanges(["AgentHub/package-lock.json"]),
     {
       runtime: true,
       runtimeRestart: true,
@@ -615,6 +631,25 @@ test("selective publication resumes after the last successful stage", async () =
     "Активация runtime-релиза",
   ]);
   assert.equal(savedCheckpoint, null);
+});
+
+test("selective publication prepares the committed product version before validation", async () => {
+  const events = [];
+  await publishChanged(["--from", "base", "--skip-restart"], {
+    before: async () => events.push("clean-tree"),
+    prepareVersion: async () => events.push("release-version"),
+    run: async (step) => events.push(step.label),
+    restart: async () => assert.fail("restart must be skipped"),
+    readState: async () => null,
+    writeState: async () => {},
+    revision: async () => "head",
+    diff: async () => ["AgentHub/task-catalog.mjs"],
+  });
+  assert.deepEqual(events.slice(0, 3), [
+    "clean-tree",
+    "release-version",
+    "Проверка синтаксиса Agent Hub",
+  ]);
 });
 
 test("publication reuses content-identical stages across correction revisions", async () => {

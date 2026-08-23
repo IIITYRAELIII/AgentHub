@@ -13,6 +13,7 @@ import {
 } from "./publish-all.mjs";
 import { ensureWrangler } from "./wrangler-runner.mjs";
 import { defaultRuntimeRoot } from "./src/infrastructure/filesystem/runtime-layout.mjs";
+import { prepareCommittedAgentHubReleaseVersion } from "./src/infrastructure/filesystem/release-version.mjs";
 import { withPublicationLock } from "./src/infrastructure/process/publication-lock.mjs";
 import {
   publicationCheckpointStore,
@@ -104,7 +105,7 @@ export function classifyPublicationChanges(files) {
       plan.surfaceTests = true;
       continue;
     }
-    if (relative === "package.json" || relative.endsWith(".mjs") || relative.endsWith(".cjs") || relative.endsWith(".ps1") || relative.endsWith(".vbs") || relative.endsWith(".py")) {
+    if (relative === "package.json" || relative === "package-lock.json" || relative.endsWith(".mjs") || relative.endsWith(".cjs") || relative.endsWith(".ps1") || relative.endsWith(".vbs") || relative.endsWith(".py")) {
       plan.runtime = true;
       plan.runtimeRestart = true;
       plan.unitTests = true;
@@ -263,14 +264,16 @@ export async function publishChanged(args = process.argv.slice(2), {
   revision = currentRevision,
   diff = changedFiles,
   ensureWorkerDependency = ensureWrangler,
+  prepareVersion = async () => ({ changed: false }),
   checkpoint = null,
   journal = null,
   runtimeRoot = defaultRuntimeRoot(),
   verifyRestart = restart === callDesktopControl ? waitForRuntimeReplacement : async () => {},
 } = {}) {
   return exclusive(async () => {
-    await before();
     const options = parseChangedArguments(args);
+    await before();
+    await prepareVersion();
     const state = await readState();
     const from = options.from || state?.revision;
     if (!from) throw new Error("Нет исходной точки публикации. Сначала выполните npm run publish:all или укажите --from <commit>.");
@@ -337,6 +340,7 @@ if (invokedFile === fileURLToPath(import.meta.url)) {
       await assertCleanPublicationTree({ cwd: REPOSITORY_ROOT });
       await assertCurrentPublicationRevision({ cwd: REPOSITORY_ROOT });
     },
+    prepareVersion: prepareCommittedAgentHubReleaseVersion,
   }).catch((error) => {
     console.error(`\nПубликация остановлена: ${error.message}`);
     process.exitCode = 1;

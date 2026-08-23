@@ -106,6 +106,7 @@ function loadVscodeBootstrap({ animations = [], hidden = false } = {}) {
     disconnect() {}
   }
   vm.runInNewContext(source, {
+    AbortController,
     Headers,
     MutationObserver,
     Response,
@@ -178,18 +179,10 @@ test("file targets separate line and column from Windows paths", () => {
 test("VS Code bootstrap routes runtime health through the extension bridge", async () => {
   const harness = loadVscodeBootstrap();
   const responsePromise = harness.window.fetch("/health", { cache: "no-store" });
+  await Promise.resolve();
   assert.equal(harness.nativeFetchCalls(), 0);
-  assert.equal(harness.messages.length, 1);
-  assert.equal(harness.messages[0].type, "agenthub:session");
-  harness.listeners.get("message")({
-    data: {
-      type: "agenthub:session-result",
-      id: harness.messages[0].id,
-      ok: false,
-    },
-  });
-  await new Promise((resolve) => setImmediate(resolve));
   assert.equal(harness.messages.length, 2);
+  assert.equal(harness.messages[0].type, "agenthub:session");
   assert.equal(harness.messages[1].type, "agenthub:control");
   assert.equal(harness.messages[1].action, "runtime-health");
   assert.ok(harness.timeoutDelays.some((delay) => delay > 10_000));
@@ -202,6 +195,29 @@ test("VS Code bootstrap routes runtime health through the extension bridge", asy
     },
   });
   assert.equal((await responsePromise).status, 200);
+});
+
+test("VS Code direct transport never blocks controls on session negotiation", async () => {
+  const harness = loadVscodeBootstrap();
+  assert.equal(await harness.window.__agentHubDirectTransport.available(), false);
+  assert.equal(harness.messages.length, 1);
+  assert.equal(harness.messages[0].type, "agenthub:session");
+
+  harness.listeners.get("message")({
+    data: {
+      type: "agenthub:session-result",
+      id: harness.messages[0].id,
+      ok: true,
+      result: {
+        baseUrl: "http://127.0.0.1:8787",
+        token: "temporary-webview-token",
+        expiresAt: Date.now() + 300_000,
+      },
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(await harness.window.__agentHubDirectTransport.available(), true);
+  harness.listeners.get("pagehide")();
 });
 
 test("file target lookup rejects missing candidates", async () => {
@@ -1521,7 +1537,6 @@ test("completed chat keeps probing briefly for late generated images", () => {
   assert.match(client, /const HISTORY_ATTACHMENT_SETTLE_TIMEOUT_MS = 120_000/u);
   assert.match(client, /function scheduleHistoryAttachmentSettle\(taskIdValue\)/u);
   assert.match(client, /if \(answerTransition\) \{[\s\S]*scheduleHistoryAttachmentSettle\(id\)[\s\S]*historyCatchUpDeadlines\.set/u);
-  assert.match(client, /refreshSource: answerTransition \|\| bindingTransition/u);
   assert.match(client, /refreshSettlingAttachments[\s\S]*enqueueTaskHistoryLoad\(id, identity/u);
 });
 
@@ -1541,7 +1556,6 @@ test("background history refresh cannot switch the task or reorder a completed t
   assert.match(client, /if \(selectTask\) rememberSelectedTaskId\(id\)/u);
   assert.match(client, /if \(selectTask\) agentHub\.selectTask\(id\)/u);
   assert.match(client, /preserveScroll: pending\.preserveScroll,\s*skipSnapshot: true,\s*selectTask: false/su);
-  assert.match(client, /const completionTime = taskAnswerTurnId === previousTurnId[\s\S]*selected\?\.lastAnswerAt[\s\S]*previous\?\.time/u);
   assert.doesNotMatch(client, /incomingStartedAtMs|new Date\(incomingStartedAtMs - 1\)/u);
   assert.match(client, /time: run\.lastActivityAt \?\? run\.startedAt \?\? null/u);
 });
@@ -2127,7 +2141,6 @@ test("statistics compares one independently selected limit and tracks its price"
   assert.match(html, /data-comparison-chart role="img"/u);
   assert.match(html, /r — корреляция Пирсона,[\s\S]*?цена — расход лимита в п\.п\. на 1 kcr/u);
   assert.match(app, /function pearsonCorrelation\(left, right\)/u);
-  assert.match(app, /function limitDeltasByBucket\(series, buckets\)/u);
   assert.match(app, /agent-hub:comparison-series:v2/u);
   assert.equal((html.match(/data-statistics-account-select/gu) ?? []).length, 2);
   assert.match(app, /function selectStatisticsAccount\(accountKey\)/u);

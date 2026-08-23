@@ -160,7 +160,7 @@
       tasks: Array.isArray(payload.tasks) ? payload.tasks.slice() : [],
       workspaces: Array.isArray(payload.workspaces) ? payload.workspaces.slice() : [],
       columnOrder: Array.isArray(payload.columnOrder) ? payload.columnOrder.slice() : [],
-      notesComment: String(payload.notesComment ?? "Игры, фильмы, сериалы и идеи"),
+      notesComment: String(payload.notesComment ?? ""),
       selectedWorkspaceId: payload.selectedWorkspaceId ?? null,
       provider: payload.provider === "claude" ? "claude" : "codex",
     };
@@ -294,7 +294,7 @@
     tasks: [],
     workspaces: [],
     columnOrder: [],
-    notesComment: "Игры, фильмы, сериалы и идеи",
+    notesComment: "",
     selectedWorkspaceId: null,
     provider: "codex",
     statusLanguage: storedTaskStatusLanguage(),

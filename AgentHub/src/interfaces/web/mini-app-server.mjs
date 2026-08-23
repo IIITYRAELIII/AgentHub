@@ -749,29 +749,6 @@ export class MiniAppServer {
   }
 
   async #authorize(request, response) {
-    if (!this.#requestNeedsTelegramAuth(request)) {
-      if (!this.#localAccessSecret) return { source: "local-mini-app" };
-      const authorization = String(request.headers.authorization ?? "");
-      const webviewToken = authorization.startsWith("webview ")
-        ? authorization.slice(8).trim()
-        : "";
-      const cookie = cookieValue(request, LOCAL_SESSION_COOKIE);
-      let localAccessSecret = this.#localAccessSecret;
-      if (
-        !validLocalWebviewSession(webviewToken, localAccessSecret)
-        && !validLocalSession(cookie, localAccessSecret)
-      ) {
-        localAccessSecret = await this.#refreshLocalAccessSecret();
-      }
-      if (validLocalWebviewSession(webviewToken, localAccessSecret)) {
-        return { source: "local-vscode-webview" };
-      }
-      if (validLocalSession(cookie, localAccessSecret)) {
-        return { source: "local-mini-app" };
-      }
-      json(response, 401, { error: "Откройте локальный Agent Hub через защищённый ярлык." });
-      return false;
-    }
     const authorization = String(request.headers.authorization ?? "");
     // An explicit Authorization header always wins; the HttpOnly cookie keeps the
     // device session out of page JavaScript for clients that stay same-origin.
@@ -791,6 +768,28 @@ export class MiniAppServer {
         json(response, 403, { error: "Авторизация устройства недействительна." });
         return false;
       }
+    }
+    if (!this.#requestNeedsTelegramAuth(request)) {
+      if (!this.#localAccessSecret) return { source: "local-mini-app" };
+      const webviewToken = authorization.startsWith("webview ")
+        ? authorization.slice(8).trim()
+        : "";
+      const cookie = cookieValue(request, LOCAL_SESSION_COOKIE);
+      let localAccessSecret = this.#localAccessSecret;
+      if (
+        !validLocalWebviewSession(webviewToken, localAccessSecret)
+        && !validLocalSession(cookie, localAccessSecret)
+      ) {
+        localAccessSecret = await this.#refreshLocalAccessSecret();
+      }
+      if (validLocalWebviewSession(webviewToken, localAccessSecret)) {
+        return { source: "local-vscode-webview" };
+      }
+      if (validLocalSession(cookie, localAccessSecret)) {
+        return { source: "local-mini-app" };
+      }
+      json(response, 401, { error: "Откройте локальный Agent Hub через защищённый ярлык." });
+      return false;
     }
     if (!authorization.startsWith("tma ")) {
       json(response, 401, { error: "Откройте Agent Hub из Telegram или доверенного приложения." });

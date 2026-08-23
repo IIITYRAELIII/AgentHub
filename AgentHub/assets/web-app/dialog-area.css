@@ -218,6 +218,29 @@ html[data-view="chat"][data-surface][data-theme] {
   content: none;
 }
 
+.stream-tabs[data-stream-card-gap-mode="on"]
+  .stream-tab-group:first-child > .stream-tab::before,
+.stream-tabs[data-stream-card-gap-mode="on"]
+  .stream-tabs-track .stream-tab::after {
+  background: var(--dialog-hairline);
+  bottom: 0;
+  content: "";
+  pointer-events: none;
+  position: absolute;
+  top: 0;
+  width: 1px;
+}
+
+.stream-tabs[data-stream-card-gap-mode="on"]
+  .stream-tab-group:first-child > .stream-tab::before {
+  left: 0;
+}
+
+.stream-tabs[data-stream-card-gap-mode="on"]
+  .stream-tabs-track .stream-tab::after {
+  right: 0;
+}
+
 .stream-tabs-track .stream-tab-card {
   align-items: center;
   background: transparent !important;

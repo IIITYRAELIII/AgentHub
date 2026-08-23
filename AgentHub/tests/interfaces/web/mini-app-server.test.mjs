@@ -1927,6 +1927,42 @@ test("trusted device authenticates with the HttpOnly session cookie", async () =
   }
 });
 
+test("trusted device cookie authenticates on protected loopback Web", async () => {
+  let receivedContext = null;
+  const server = new MiniAppServer({
+    host: "127.0.0.1",
+    port: 0,
+    journalDatabase: memoryJournal(),
+    localAccessSecret: "a".repeat(43),
+    deviceStore: {
+      async resolveSession(token) {
+        if (token !== "y".repeat(43)) throw new Error("device session is invalid");
+        return { id: "local-owner", deviceId: "device-id" };
+      },
+    },
+    controlHandler: async ({ context }) => {
+      receivedContext = context;
+      return { connected: true };
+    },
+  });
+  try {
+    const address = await server.start();
+    const response = await fetch(`${address.url}api/control`, {
+      method: "POST",
+      headers: {
+        Cookie: `agent_hub_device=${"y".repeat(43)}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ action: "snapshot", params: {} }),
+    });
+    assert.equal(response.status, 200);
+    assert.equal(receivedContext.source, "trusted-device");
+    assert.equal(receivedContext.userId, "local-owner");
+  } finally {
+    await server.close();
+  }
+});
+
 test("local Web is served without the third-party Telegram runtime", async () => {
   const server = new MiniAppServer({
     host: "127.0.0.1",

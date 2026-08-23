@@ -6779,12 +6779,9 @@ document.addEventListener("change", (event) => {
   emit("selection:set", { key, value: toggle.checked });
 });
 
-settingsPanel.addEventListener("click", (event) => {
-  const turnTimeButton = event.target.closest("[data-turn-time-mode]");
-  if (turnTimeButton) {
-    selectTurnTimeMode(turnTimeButton.dataset.turnTimeMode);
-  }
-});
+for (const button of turnTimeModeButtons) {
+  button.addEventListener("click", () => selectTurnTimeMode(button.dataset.turnTimeMode));
+}
 
 function renderStatus() {
   if (!state.status) {
@@ -8129,7 +8126,7 @@ const BURN_RATE_CHART_MAX = 400;
 const {
   interpolateRateLimitGaps,
   meanSignedComparisonDeviation,
-  rateLimitDeltasByBuckets,
+  recoverRateLimitResetGaps,
   signedComparisonDeviations,
 } = globalThis.AgentHubRateLimitSeries;
 
@@ -10046,8 +10043,26 @@ function pearsonCorrelation(left, right) {
   return denominator > 0 ? clampNumber(numerator / denominator, -1, 1) : null;
 }
 
-function limitDeltasByBucket(series, buckets) {
-  return rateLimitDeltasByBuckets(series?.points, buckets);
+function comparisonReconstructionBuckets(payload, extent) {
+  const step = Math.max(1, Number(payload?.bucketMs) || 0);
+  if (!(step > 1)) return [];
+  return (Array.isArray(payload?.points) ? payload.points : []).map((point) => {
+    const start = Date.parse(point?.at ?? "");
+    return {
+      start,
+      end: start + step,
+      credits: Math.max(0, Number(point?.credits) || 0),
+    };
+  }).filter((bucket) => (
+    Number.isFinite(bucket.start)
+    && bucket.end > extent.from
+    && bucket.start < extent.to
+    && bucket.credits > 0
+  ));
+}
+
+function limitDeltasByBucket(series, buckets, accountingValues = [], reconstructionBuckets = []) {
+  return recoverRateLimitResetGaps(series?.points, buckets, accountingValues, reconstructionBuckets);
 }
 
 function normalizeComparisonValues(values) {
@@ -10099,6 +10114,7 @@ function buildUsageComparisonModel(payload) {
   const buckets = comparisonBuckets(payload.usage, extent);
   if (!buckets.length) return null;
   const localRaw = buckets.map((bucket) => bucket.credits);
+  const reconstructionBuckets = comparisonReconstructionBuckets(payload?.usage?.reconstruction, extent);
   const local = normalizeComparisonValues(localRaw);
   if (!(local.peak > 0)) return null;
   const accountKey = resolvedStatisticsAccountKey(payload?.limits);
@@ -10109,7 +10125,8 @@ function buildUsageComparisonModel(payload) {
     .filter((item) => Array.isArray(item.points) && item.points.length > 1)
     .map((item, index) => {
       const id = seriesId(item);
-      const rawValues = limitDeltasByBucket(item, buckets);
+      const recovery = limitDeltasByBucket(item, buckets, localRaw, reconstructionBuckets);
+      const rawValues = recovery.values;
       const normalized = normalizeComparisonValues(rawValues);
       return {
         ...item,
@@ -10117,6 +10134,7 @@ function buildUsageComparisonModel(payload) {
         color: seriesColor(item, index),
         peak: normalized.peak,
         rawValues,
+        recovery,
         values: normalized.values,
         correlation: normalized.peak > 0
           ? pearsonCorrelation(local.values, normalized.values)
@@ -10866,9 +10884,14 @@ function renderUsageComparison() {
   if (split) buildUsageComparisonSplitCharts(model);
   else buildUsageComparisonChart(model);
   if (comparisonNote) {
-    comparisonNote.textContent = split
+    const baseNote = split
       ? "Временные графики используют исходные единицы и общую ось дат. Точки показывают совпадающие интервалы. Разность считается как нормированный расход аккаунта минус учётный: выше нуля — больше расход лимита, ниже нуля — больше учётный расход. Изменение лимита между соседними замерами равномерно распределяется по их интервалу. Цена остаётся в итоговом показателе."
       : "При выборе аккаунта учётный расход включает его ходы на этом и всех синхронизированных устройствах. Пункт «Все» снимает отбор аккаунта. Изменение лимита между соседними замерами равномерно распределяется по их интервалу; неизменное значение считается нулевым расходом. Линии расхода приведены к собственному пику. r — корреляция Пирсона, Δ — среднее знаковое отклонение «аккаунт − учётный»: минусы и плюсы взаимно компенсируются. Цена — расход лимита в п.п. на 1 kcr. Изменение цены сравнивает первую и вторую половины периода.";
+    const recovery = model.selectedSeries?.recovery;
+    const recoveryNote = recovery?.estimatedLimitPoints > 0
+      ? ` Разрыв${recovery.recoveredIntervals === 1 ? "" : "ы"} со сбросом восстановлен${recovery.recoveredIntervals === 1 ? "" : "ы"} по учётному расходу и цене соседних полных интервалов: ${formatComparisonNumber(recovery.estimatedLimitPoints, 1)} п.п.`
+      : " Разрывы со сбросом без учётного расхода остаются неизвестными.";
+    comparisonNote.textContent = baseNote + recoveryNote;
   }
   renderComparisonLegend(model);
   renderComparisonSummary(model);
