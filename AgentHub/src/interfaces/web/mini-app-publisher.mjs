@@ -59,10 +59,10 @@ const CONTROL_ACTIONS = new Set([
   "compact-context",
   "open-attachment",
   "trusted-devices",
-  // Device enrollment is deliberately absent: the remote relay must not be able
-  // to mint a pairing code that would survive revoking the client that asked.
+  "create-device-pairing",
   "revoke-device",
 ]);
+const CONTROL_SOURCES = new Set(["telegram-mini-app", "trusted-device", "shared-dashboard-bot"]);
 const gzipAsync = promisify(gzip);
 
 export function signMiniAppSync(body, secret, timestamp = Math.trunc(Date.now() / 1_000)) {
@@ -474,8 +474,9 @@ export class MiniAppPublisher {
     const id = String(command?.id ?? "").trim();
     const userId = String(command?.userId ?? "").trim();
     const action = String(command?.action ?? "").trim();
+    const source = String(command?.source ?? "telegram-mini-app").trim();
     const params = command?.params ?? {};
-    if (!id || !userId || !CONTROL_ACTIONS.has(action) || params === null || typeof params !== "object" || Array.isArray(params)) {
+    if (!id || !userId || !CONTROL_ACTIONS.has(action) || !CONTROL_SOURCES.has(source) || params === null || typeof params !== "object" || Array.isArray(params)) {
       throw new Error("Mini App Worker returned an invalid control command");
     }
     const attachments = params.attachments ?? [];
@@ -491,7 +492,7 @@ export class MiniAppPublisher {
     ) {
       throw new Error("Mini App Worker returned invalid remote attachments");
     }
-    return { id, userId, action, params };
+    return { id, userId, action, source, params };
   }
 
   async #downloadRemoteAttachment(reference, command, secret) {
@@ -593,7 +594,7 @@ export class MiniAppPublisher {
       command = this.#validateRemoteCommand(rawCommand);
       command = await this.#prepareRemoteCommand(command, secret);
       const context = {
-        source: "telegram-mini-app",
+        source: command.source,
         transport: "worker",
         userId: command.userId,
         commandId: command.id,

@@ -43,7 +43,13 @@ export class DesktopAttachmentService {
         throw new Error("Файл находится вне каталога вложений Agent Hub");
       }
       if (!attachmentMetadataFromId(path.basename(file))) throw new Error("Некорректный идентификатор вложения");
-      const info = await stat(file);
+      let info;
+      try {
+        info = await stat(file);
+      } catch (error) {
+        if (error?.code === "ENOENT") throw new Error("Файл вложения недоступен");
+        throw error;
+      }
       if (!info.isFile() || info.size <= 0 || info.size > MAX_ATTACHMENT_BYTES) {
         throw new Error("Файл отсутствует или превышает 20 МБ");
       }

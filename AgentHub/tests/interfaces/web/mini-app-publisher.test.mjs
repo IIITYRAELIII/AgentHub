@@ -461,6 +461,7 @@ test("Mini App publisher polls signed controls and posts their result", async ()
           commands: [{
             id,
             userId: "42",
+            source: "trusted-device",
             action: "open-turn",
             params: { provider: "codex", taskThreadId: "thread", turnId: "turn" },
           }],
@@ -476,7 +477,7 @@ test("Mini App publisher polls signed controls and posts their result", async ()
   try {
     assert.equal(await publisher.pollControl(), 1);
     assert.equal(handled.length, 1);
-    assert.equal(handled[0].context.source, "telegram-mini-app");
+    assert.equal(handled[0].context.source, "trusted-device");
     assert.equal(handled[0].context.transport, "worker");
     assert.equal(handled[0].context.userId, "42");
     assert.equal(requests.length, 2);

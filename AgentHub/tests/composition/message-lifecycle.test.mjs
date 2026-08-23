@@ -2292,6 +2292,30 @@ test("every pending compact-history catch-up refreshes the provider source", () 
   );
 });
 
+test("a stale provider history keeps automatic catch-up active after restart", () => {
+  assert.equal(lifecycle.nextHistoryCatchUpDeadline({
+    sourceFresh: false,
+    containsLatestAnswer: false,
+    currentDeadline: 1_200,
+    now: 2_000,
+    timeoutMs: 30_000,
+  }), 32_000);
+  assert.equal(lifecycle.nextHistoryCatchUpDeadline({
+    sourceFresh: true,
+    containsLatestAnswer: true,
+    currentDeadline: 1_200,
+    now: 2_000,
+    timeoutMs: 30_000,
+  }), null);
+  assert.equal(lifecycle.nextHistoryCatchUpDeadline({
+    sourceFresh: true,
+    containsLatestAnswer: false,
+    currentDeadline: 1_200,
+    now: 2_000,
+    timeoutMs: 30_000,
+  }), 1_200);
+});
+
 test("outgoing receipt lookup survives a task thread rebind", () => {
   const outgoingByTask = new Map([
     ["codex:thread-before", new Map([["client-1", { text: "Сообщение" }]])],

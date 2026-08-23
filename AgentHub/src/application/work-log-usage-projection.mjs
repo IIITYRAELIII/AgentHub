@@ -2953,6 +2953,10 @@ export function buildWorkLogUsageHistory(turns = {}, {
         ? String(entry.record?.provider ?? "").trim().toLowerCase() === requestedProvider
         : includeClaudeUsage || String(entry.record?.provider ?? "").toLowerCase() !== "claude"
     ))
+    .filter((entry) => (
+      !requestedAccountKey
+      || String(entry.record?.accountKey ?? "").trim() === requestedAccountKey
+    ))
     .map(({ record, source }) => {
       const workspace = source === "local"
         ? workspaceResolutionForRecord(record, workspaceResolver)
@@ -3133,6 +3137,7 @@ export function buildWorkLogUsageHistory(turns = {}, {
     bucketMs,
     bucket: dayBuckets || groupedCalendarDays ? "day" : "fixed",
     turnTimeMode: normalizedTimeMode,
+    accountKey: requestedAccountKey,
     ...(requestedProvider ? { provider: requestedProvider } : {}),
     ...(requestedWorkspaceId ? { workspaceId: requestedWorkspaceId } : {}),
     ...(requestedStreamId ? { streamId: requestedStreamId } : {}),

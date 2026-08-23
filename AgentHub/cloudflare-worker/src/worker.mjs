@@ -82,11 +82,11 @@ const CONTROL_ACTIONS = new Set([
   "compact-context",
   "open-attachment",
   "trusted-devices",
-  // Device enrollment is deliberately absent: the relay must not be able to mint
-  // a pairing code that would survive revoking the client that asked for it.
+  "create-device-pairing",
   "revoke-device",
   "board-task-ingest",
 ]);
+const CONTROL_SOURCES = new Set(["telegram-mini-app", "trusted-device", "shared-dashboard-bot"]);
 
 function hex(bytes) {
   return [...new Uint8Array(bytes)].map((value) => value.toString(16).padStart(2, "0")).join("");
@@ -370,9 +370,11 @@ export function validateControlCommand(payload) {
   if (!isPlainObject(payload)) throw new Error("invalid control command");
   const id = String(payload.id ?? payload.commandId ?? "").trim().toLowerCase();
   const action = String(payload.action ?? "").trim();
+  const source = String(payload.source ?? "").trim();
   const params = payload.params ?? {};
   if (!CONTROL_ID_PATTERN.test(id)) throw new Error("invalid control command id");
   if (!CONTROL_ACTIONS.has(action)) throw new Error("control action is not allowed");
+  if (source && !CONTROL_SOURCES.has(source)) throw new Error("control source is not allowed");
   if (!isPlainObject(params)) throw new Error("invalid control command params");
   const attachmentIds = attachmentIdsFromParams(action, params);
   const remainingParams = { ...params };
@@ -383,6 +385,7 @@ export function validateControlCommand(payload) {
   return {
     id,
     action,
+    ...(source ? { source } : {}),
     params: attachmentIds.length
       ? { ...params, attachments: attachmentIds.map((attachmentId) => `${REMOTE_ATTACHMENT_PREFIX}${attachmentId}`) }
       : params,
@@ -3761,10 +3764,14 @@ export default {
       try {
         const body = await readBoundedBody(request, MAX_CONTROL_REQUEST_BYTES, "control command");
         const command = validateControlCommand(parseJson(body, "control command"));
+        const source = user.deviceId ? "trusted-device" : "telegram-mini-app";
+        if (command.action === "create-device-pairing" && source !== "trusted-device") {
+          return json({ error: "Только доверенное устройство может делегировать доступ." }, 403);
+        }
         const response = await store.fetch(new Request("https://journal.internal/control/enqueue", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ...command, userId: String(user.id) }),
+          body: JSON.stringify({ ...command, userId: String(user.id), source }),
         }));
         if (!response.ok) return response;
         return json({ ok: true, pending: true, id: command.id }, response.status);

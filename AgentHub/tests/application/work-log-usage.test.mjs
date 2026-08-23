@@ -241,7 +241,7 @@ test("local usage history matches turn completion to exact account activity inte
   }).totalCredits, 0);
 });
 
-test("usage history stacks synced usage from other devices with the same account", () => {
+test("usage history stacks every device of the selected account without local activity clipping", () => {
   const now = Date.parse("2026-07-30T12:00:00.000Z");
   const accountKey = "chatgpt:shared";
   const history = buildWorkLogUsageHistory({
@@ -254,14 +254,20 @@ test("usage history stacks synced usage from other devices with the same account
       estimateKind: "model",
       accountKey,
     },
+    wrongLocal: {
+      provider: "codex",
+      threadId: "wrong-local-thread",
+      turnId: "wrong-local-turn",
+      completedAt: "2026-07-30T10:15:00.000Z",
+      estimatedCredits: 19,
+      estimateKind: "model",
+      accountKey: "chatgpt:other",
+    },
   }, {
     range: "6h",
     now,
     localDeviceId: "this-device",
-    accountActivity: [{
-      accountKey,
-      intervals: [{ from: "2026-07-30T10:00:00.000Z", to: "2026-07-30T11:00:00.000Z" }],
-    }],
+    accountKey,
     syncedUsageEvents: [{
       deviceId: "other-device",
       provider: "codex",
@@ -288,7 +294,7 @@ test("usage history stacks synced usage from other devices with the same account
       completedAt: "2026-07-30T11:30:00.000Z",
       estimatedCredits: 17,
       accountKey,
-      deviceLabel: "Старый аккаунт после переключения",
+      deviceLabel: "Ноутбук вне активности этого устройства",
     }, {
       deviceId: "other-device",
       provider: "codex",
@@ -308,17 +314,18 @@ test("usage history stacks synced usage from other devices with the same account
     }],
   });
 
-  assert.equal(history.totalCredits, 15);
+  assert.equal(history.accountKey, accountKey);
+  assert.equal(history.totalCredits, 32);
   assert.equal(history.localCredits, 5);
-  assert.equal(history.otherDeviceCredits, 10);
+  assert.equal(history.otherDeviceCredits, 27);
   assert.deepEqual(history.devices.map((device) => ({
     deviceId: device.deviceId,
     label: device.label,
     credits: device.credits,
-  })), [{
-    deviceId: "this-device",
-    label: "Это устройство",
-    credits: 5,
+  })).sort((left, right) => left.deviceId.localeCompare(right.deviceId)), [{
+    deviceId: "late-device",
+    label: "Ноутбук вне активности этого устройства · late-device",
+    credits: 17,
   }, {
     deviceId: "other-device",
     label: "Ноутбук · other-device",
@@ -327,9 +334,13 @@ test("usage history stacks synced usage from other devices with the same account
     deviceId: "third-device",
     label: "Телефон · third-device",
     credits: 3,
+  }, {
+    deviceId: "this-device",
+    label: "Это устройство",
+    credits: 5,
   }]);
   assert.equal(history.points.reduce((sum, point) => sum + point.localCredits, 0), 5);
-  assert.equal(history.points.reduce((sum, point) => sum + point.otherDeviceCredits, 0), 10);
+  assert.equal(history.points.reduce((sum, point) => sum + point.otherDeviceCredits, 0), 27);
 });
 
 test("account usage summary separates exact, inferred and unknown ledger turns", () => {

@@ -107,3 +107,66 @@ test("unchanged run snapshots do not rebuild Dashboard columns", async () => {
   assert.equal(selection.boardChanged, false);
   assert.equal(selection.panelChanged, true);
 });
+
+test("Dashboard pins Backlog first and Notes last regardless of saved order", async () => {
+  const { orderedDashboardColumnIds } = await loadBoardView();
+
+  assert.deepEqual(
+    Array.from(orderedDashboardColumnIds(
+      ["notes", "workspace:two", "backlog", "workspace:one"],
+      ["backlog", "workspace:one", "workspace:two", "workspace:new", "notes"],
+    )),
+    ["backlog", "workspace:two", "workspace:one", "workspace:new", "notes"],
+  );
+});
+
+test("Dashboard confines Workspace columns between fixed edges and preserves their scroll", async () => {
+  const { replaceBoardColumnRegionsPreservingScroll } = await loadBoardView();
+  const region = (scrollLeft = 0) => ({
+    scrollLeft,
+    children: [],
+    replaceChildren(...children) {
+      this.children = children;
+      this.scrollLeft = 0;
+    },
+  });
+  const regions = {
+    backlog: region(),
+    workspaces: region(480),
+    notes: region(),
+  };
+  const rendered = new Map([
+    ["backlog", "backlog-column"],
+    ["workspace:one", "workspace-one-column"],
+    ["workspace:two", "workspace-two-column"],
+    ["notes", "notes-column"],
+  ]);
+
+  replaceBoardColumnRegionsPreservingScroll(
+    regions,
+    ["backlog", "workspace:two", "workspace:one", "notes"],
+    rendered,
+  );
+
+  assert.deepEqual(regions.backlog.children, ["backlog-column"]);
+  assert.deepEqual(regions.workspaces.children, ["workspace-two-column", "workspace-one-column"]);
+  assert.deepEqual(regions.notes.children, ["notes-column"]);
+  assert.equal(regions.workspaces.scrollLeft, 480);
+});
+
+test("Dashboard column replacement preserves horizontal scroll", async () => {
+  const { replaceBoardColumnsPreservingScroll } = await loadBoardView();
+  const container = {
+    scrollLeft: 480,
+    children: [],
+    replaceChildren(...children) {
+      this.children = children;
+      this.scrollLeft = 0;
+    },
+  };
+
+  replaceBoardColumnsPreservingScroll(container, ["backlog", "workspace", "notes"]);
+
+  assert.equal(container.scrollLeft, 480);
+  assert.deepEqual(container.children, ["backlog", "workspace", "notes"]);
+});

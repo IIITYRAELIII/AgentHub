@@ -631,6 +631,62 @@ test("desktop task history combines provider Threads in global chronological ord
   assert.deepEqual(result.items.map((item) => item.id), ["turn-thread-2", "turn-thread-1"]);
 });
 
+test("desktop Stream history refreshes only its current Thread and exposes a failed refresh", async () => {
+  const refreshes = [];
+  const factory = createDesktopTaskHistoryFactory({
+    selection: {
+      activeProvider: () => "codex",
+      threadId: () => "thread-current",
+      chatId: () => 42,
+    },
+    catalog: {
+      entries: () => [{
+        streamId: "stream-1",
+        provider: "codex",
+        projectRoot: "D:/work",
+        threadId: "thread-current",
+        title: "Workspace",
+      }],
+      threadsForStream: () => [
+        { provider: "codex", threadId: "thread-old", projectRoot: "D:/work" },
+        { provider: "codex", threadId: "thread-current", projectRoot: "D:/work" },
+      ],
+    },
+    historyReader: {
+      read: async ({ threadId }) => ({
+        history: [{
+          id: `turn-${threadId}`,
+          prompt: `prompt-${threadId}`,
+          answer: `answer-${threadId}`,
+          completed: true,
+        }],
+      }),
+      refresh: async ({ threadId }) => {
+        refreshes.push(threadId);
+        throw new Error("provider is starting");
+      },
+    },
+    runs: { forTask: () => null },
+    historyMerger: {
+      mergeActive: () => {},
+      mergeCompleted: () => {},
+    },
+    latestMessage: () => null,
+    responseBudget: { fit: (payload) => payload },
+  });
+
+  const result = await factory({
+    streamId: "stream-1",
+    provider: "codex",
+    threadId: "thread-current",
+    refreshSource: true,
+  });
+
+  assert.deepEqual(refreshes, ["thread-current"]);
+  assert.equal(result.sourceFresh, false);
+  assert.deepEqual(result.items.map((item) => item.id), ["turn-thread-old", "turn-thread-current"]);
+});
+
 test("desktop Stream history resolves a stale request and preserves mixed-provider turn provenance", async () => {
   const factory = createDesktopTaskHistoryFactory({
     selection: {

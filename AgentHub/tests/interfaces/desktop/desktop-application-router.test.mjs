@@ -267,24 +267,34 @@ test("Desktop application router accepts a restart beside a blocked mutation", a
   await setting;
 });
 
-test("device enrollment and server configuration stay on the local machine", async () => {
+test("trusted devices may delegate enrollment while server configuration stays local", async () => {
   const control = router([]);
-  for (const action of ["create-device-pairing", "update-server-configuration"]) {
-    for (const source of ["trusted-device", "telegram-mini-app", "shared-dashboard-bot", ""]) {
-      await assert.rejects(
-        () => control.handleDesktopControl({ action, params: {}, context: { source, userId: "7" } }),
-        /только локальному Agent Hub/u,
-        `${action} must be refused for ${source || "an unnamed source"}`,
-      );
-    }
-    // The Desktop pipe and the loopback Web session remain able to run them.
-    for (const source of ["desktop-control", "local-mini-app"]) {
-      assert.ok(await control.handleDesktopControl({
-        action,
-        params: {},
-        context: { source, userId: "7" },
-      }));
-    }
+  for (const source of ["telegram-mini-app", "shared-dashboard-bot", ""]) {
+    await assert.rejects(
+      () => control.handleDesktopControl({ action: "create-device-pairing", params: {}, context: { source, userId: "7" } }),
+      /локальному Hub или доверенному устройству/u,
+      `device enrollment must be refused for ${source || "an unnamed source"}`,
+    );
+  }
+  for (const source of ["desktop-control", "local-mini-app", "trusted-device"]) {
+    assert.ok(await control.handleDesktopControl({
+      action: "create-device-pairing",
+      params: {},
+      context: { source, userId: "7" },
+    }));
+  }
+  for (const source of ["trusted-device", "telegram-mini-app", "shared-dashboard-bot", ""]) {
+    await assert.rejects(
+      () => control.handleDesktopControl({ action: "update-server-configuration", params: {}, context: { source, userId: "7" } }),
+      /только локальному Agent Hub/u,
+    );
+  }
+  for (const source of ["desktop-control", "local-mini-app"]) {
+    assert.ok(await control.handleDesktopControl({
+      action: "update-server-configuration",
+      params: {},
+      context: { source, userId: "7" },
+    }));
   }
 });
 

@@ -126,6 +126,16 @@
       || String(value?.type ?? "").toLowerCase().startsWith("image/");
   }
 
+  function unavailableAttachmentError(error) {
+    if (error?.attachmentUnavailable === true) return true;
+    const code = String(error?.code ?? "").trim().toUpperCase();
+    const message = String(error?.message ?? error ?? "").trim();
+    return code === "ENOENT"
+      || /\bENOENT\b/iu.test(message)
+      || /\bHTTP 404\b/iu.test(message)
+      || /(?:Файл|Миниатюра|Вложение)[^\r\n]*(?:недоступ|не найден)/iu.test(message);
+  }
+
   function imageGallery(values) {
     return (Array.isArray(values) ? values : []).filter(isImageAttachment);
   }
@@ -192,6 +202,7 @@
     resourceActions,
     resolveFileReference,
     shouldDismissViewer,
+    unavailableAttachmentError,
     viewerGallery,
     windowsPathAbsolute,
   };

@@ -182,8 +182,45 @@
     };
   }
 
+  function orderedDashboardColumnIds(columnOrder = [], availableColumnIds = []) {
+    const available = new Set(availableColumnIds);
+    const result = [];
+    if (available.has("backlog")) result.push("backlog");
+    for (const id of columnOrder) {
+      if (id === "backlog" || id === "notes" || !available.has(id) || result.includes(id)) continue;
+      result.push(id);
+    }
+    for (const id of available) {
+      if (id === "backlog" || id === "notes" || result.includes(id)) continue;
+      result.push(id);
+    }
+    if (available.has("notes")) result.push("notes");
+    return result;
+  }
+
+  function replaceBoardColumnsPreservingScroll(container, columnNodes) {
+    const scrollLeft = Math.max(0, Number(container?.scrollLeft) || 0);
+    container.replaceChildren(...columnNodes);
+    container.scrollLeft = scrollLeft;
+  }
+
+  function replaceBoardColumnRegionsPreservingScroll(regions, orderedIds, renderedColumns) {
+    const backlog = renderedColumns.get("backlog");
+    const notes = renderedColumns.get("notes");
+    const workspaceColumns = orderedIds
+      .filter((id) => id !== "backlog" && id !== "notes")
+      .map((id) => renderedColumns.get(id))
+      .filter(Boolean);
+    regions.backlog.replaceChildren(...(backlog ? [backlog] : []));
+    replaceBoardColumnsPreservingScroll(regions.workspaces, workspaceColumns);
+    regions.notes.replaceChildren(...(notes ? [notes] : []));
+  }
+
   window.AgentHubTaskBoardView = Object.freeze({
     normalizedTaskStatusLanguage,
+    orderedDashboardColumnIds,
+    replaceBoardColumnRegionsPreservingScroll,
+    replaceBoardColumnsPreservingScroll,
     taskBoardSnapshotChanges,
     taskWorkflowPresentation,
     tasksForMode,
@@ -224,16 +261,33 @@
   const startProvider = document.querySelector("[data-task-start-provider]");
   if (!board || !columns) return;
 
+  const boardColumnRegions = {
+    backlog: node("div", {
+      class: "task-board-edge is-backlog-edge",
+      "data-task-board-backlog": "",
+    }),
+    workspaces: node("div", {
+      class: "task-board-workspace-columns",
+      "data-task-board-workspace-columns": "",
+    }),
+    notes: node("div", {
+      class: "task-board-edge is-notes-edge",
+      "data-task-board-notes": "",
+    }),
+  };
+  columns.replaceChildren(
+    boardColumnRegions.backlog,
+    boardColumnRegions.workspaces,
+    boardColumnRegions.notes,
+  );
+
   const TaskReferences = window.AgentHubTaskReferences;
   const COLUMN_MIME = "application/x-agent-hub-board-column";
   const COLUMN_TEXT_PREFIX = "agent-hub-column:";
-  const TASK_CARD_MAX_TEXT_LINES = 6;
-  const TASK_CARD_MAX_WIDTH_REM = 42;
   const TASK_CARD_MODAL_BASE_WIDTH_REM = 34;
   const TASK_CARD_MODAL_MAX_WIDTH_REM = 64;
   const TASK_CARD_MODAL_MAX_HEIGHT_REM = 56;
   const TASK_CARD_MODAL_VIEWPORT_GAP_PX = 32;
-  let taskCardSizingFrame = null;
   let taskCardEditorSizingFrame = null;
 
   const state = {
@@ -284,66 +338,6 @@
   function numericCssValue(value) {
     const parsed = Number.parseFloat(value);
     return Number.isFinite(parsed) ? parsed : 0;
-  }
-
-  function resizeTaskCards() {
-    taskCardSizingFrame = null;
-    const columnNodes = Array.from(columns.querySelectorAll(".task-board-column"));
-    for (const column of columnNodes) {
-      column.style.removeProperty("--task-column-card-width");
-      for (const card of column.querySelectorAll(".board-task-card:not(.is-compact)")) {
-        card.style.removeProperty("inline-size");
-        card.removeAttribute("data-width-expanded");
-      }
-    }
-
-    const rootFontSize = numericCssValue(window.getComputedStyle(document.documentElement).fontSize) || 16;
-    const boardStyle = window.getComputedStyle(columns);
-    const boardInnerWidth = Math.max(1, columns.clientWidth
-      - numericCssValue(boardStyle.paddingLeft)
-      - numericCssValue(boardStyle.paddingRight));
-
-    for (const column of columnNodes) {
-      const list = column.querySelector(".task-board-column-list");
-      const cards = Array.from(list?.querySelectorAll(".board-task-card:not(.is-compact)") ?? []);
-      if (!list || !cards.length) continue;
-
-      const baseWidth = Math.max(1, Math.round(cards[0].getBoundingClientRect().width));
-      const maxWidth = Math.max(baseWidth, Math.min(
-        TASK_CARD_MAX_WIDTH_REM * rootFontSize,
-        boardInnerWidth - (2 * rootFontSize),
-      ));
-      let widestCard = baseWidth;
-
-      for (const card of cards) {
-        const title = card.querySelector(".board-task-title");
-        if (!title) continue;
-        const titleStyle = window.getComputedStyle(title);
-        const lineHeight = numericCssValue(titleStyle.lineHeight)
-          || (numericCssValue(titleStyle.fontSize) * 1.35);
-        const desiredWidth = fitTaskCardWidth({
-          baseWidth,
-          maxWidth,
-          maxHeight: lineHeight * TASK_CARD_MAX_TEXT_LINES,
-          measureHeight: (width) => {
-            card.style.setProperty("inline-size", `${width}px`);
-            return title.scrollHeight;
-          },
-        });
-        card.style.setProperty("inline-size", `${desiredWidth}px`);
-        if (desiredWidth > baseWidth + 1) card.setAttribute("data-width-expanded", "");
-        widestCard = Math.max(widestCard, desiredWidth);
-      }
-
-      const listStyle = window.getComputedStyle(list);
-      const listPadding = numericCssValue(listStyle.paddingLeft) + numericCssValue(listStyle.paddingRight);
-      column.style.setProperty("--task-column-card-width", `${Math.ceil(widestCard + listPadding)}px`);
-    }
-  }
-
-  function scheduleTaskCardSizing() {
-    if (taskCardSizingFrame != null) window.cancelAnimationFrame(taskCardSizingFrame);
-    taskCardSizingFrame = window.requestAnimationFrame(resizeTaskCards);
   }
 
   function resizeTaskCardEditor() {
@@ -850,10 +844,8 @@
       tasks: visibleTasks.filter((task) => task.bucket === "notes"),
       accent: "is-notes", movable: !state.completedOnly, emptyText,
     }));
-    const orderedIds = ["backlog", ...state.columnOrder.filter((id) => rendered.has(id) && id !== "backlog")];
-    for (const id of rendered.keys()) if (!orderedIds.includes(id)) orderedIds.push(id);
-    columns.replaceChildren(...orderedIds.map((id) => rendered.get(id)));
-    scheduleTaskCardSizing();
+    const orderedIds = orderedDashboardColumnIds(state.columnOrder, rendered.keys());
+    replaceBoardColumnRegionsPreservingScroll(boardColumnRegions, orderedIds, rendered);
   }
 
   function renderWorkspacePanel() {
@@ -895,12 +887,7 @@
       renderOpenTaskCard();
     });
   }
-  window.addEventListener("resize", scheduleTaskCardSizing, { passive: true });
   window.addEventListener("resize", scheduleTaskCardEditorSizing, { passive: true });
-  if (typeof window.ResizeObserver === "function") {
-    new window.ResizeObserver(scheduleTaskCardSizing).observe(columns);
-  }
-  document.fonts?.ready?.then(scheduleTaskCardSizing).catch(() => {});
   document.querySelector("[data-task-card-close]")?.addEventListener("click", closeTaskCard);
   taskCardOriginalToggle?.addEventListener("click", () => {
     setTaskCardOriginalExpanded(taskCardOriginalToggle.getAttribute("aria-expanded") !== "true");

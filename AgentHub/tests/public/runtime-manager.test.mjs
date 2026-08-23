@@ -23,6 +23,11 @@ async function fixture() {
   await cp(path.join(ROOT, "RuntimeHost"), path.join(sourceRoot, "RuntimeHost"), {
     recursive: true,
   });
+  await mkdir(path.join(sourceRoot, "VSCodeExtension", "media"), { recursive: true });
+  await cp(
+    path.join(ROOT, "VSCodeExtension", "media", "agent-hub-mark.png"),
+    path.join(sourceRoot, "VSCodeExtension", "media", "agent-hub-mark.png"),
+  );
   await writeFile(path.join(sourceRoot, "agent-hub-server.mjs"), "export const ready = true;\n", "utf8");
   await writeFile(path.join(sourceRoot, "helper.mjs"), "export const value = 1;\n", "utf8");
   await writeFile(path.join(sourceRoot, "helper.cjs"), "module.exports = { value: 1 };\n", "utf8");

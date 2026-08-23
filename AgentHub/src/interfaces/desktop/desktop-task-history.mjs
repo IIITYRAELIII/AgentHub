@@ -264,10 +264,12 @@ export function createDesktopTaskHistoryFactory({
             { replace: true },
           );
         }
+        return true;
       })
-      .catch((error) => warn(
-        `Cannot refresh ${binding.provider} history ${binding.threadId}: ${error?.message ?? error}`,
-      ))
+      .catch((error) => {
+        warn(`Cannot refresh ${binding.provider} history ${binding.threadId}: ${error?.message ?? error}`);
+        return false;
+      })
       .finally(() => refreshes.delete(key));
     refreshes.set(key, operation);
     return operation;
@@ -324,10 +326,13 @@ export function createDesktopTaskHistoryFactory({
     })) : [binding];
     const historySources = new Map();
     const history = [];
+    let sourceRefreshFailed = false;
     for (const threadBinding of threadBindings) {
       const key = `${threadBinding.provider}:${threadBinding.threadId}`;
-      if (params.refreshSource === true) {
-        await scheduleRefresh(threadBinding, { force: true });
+      const currentThread = threadBinding.provider === binding.provider
+        && threadBinding.threadId === binding.threadId;
+      if (params.refreshSource === true && currentThread) {
+        sourceRefreshFailed = await scheduleRefresh(threadBinding, { force: true }) === false;
       }
       // Pagination is calculated after durable/provider/active histories are
       // merged. Limiting the durable source here makes its page look like the
@@ -342,7 +347,7 @@ export function createDesktopTaskHistoryFactory({
         readCachedHistory(hydratedHistories, key),
         threadHistory,
       );
-      scheduleRefresh(threadBinding);
+      if (currentThread) scheduleRefresh(threadBinding);
       for (const item of threadHistory) {
         history.push(item);
         historySources.set(item, {
@@ -452,6 +457,7 @@ export function createDesktopTaskHistoryFactory({
       title: taskDisplayTitle(entry),
       total,
       messageTotal,
+      ...(sourceRefreshFailed ? { sourceFresh: false } : {}),
       start,
       end,
       nextBefore: start > 0 ? start : null,

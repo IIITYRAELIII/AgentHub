@@ -19,14 +19,14 @@ const CONCURRENT_MUTATION_ACTIONS = Object.freeze([
 ]);
 
 /**
- * Enrolling a device mints a credential that outlives the revocation of the
- * client that requested it, and the server configuration carries the trust
- * settings themselves. Both stay on the local machine; revoking and listing
- * devices remain available remotely because they only reduce access.
+ * Server configuration remains local. Device enrollment may also be delegated
+ * by an already trusted device; Telegram and unnamed remote sources cannot mint
+ * credentials.
  */
 const LOCAL_ONLY_ACTIONS = Object.freeze([
-  "create-device-pairing", "update-server-configuration",
+  "update-server-configuration",
 ]);
+const DEVICE_PAIRING_SOURCES = new Set(["desktop-control", "local-mini-app", "trusted-device"]);
 
 function requiredFunction(value, name) {
   if (typeof value !== "function") throw new TypeError(`${name} is required`);
@@ -92,7 +92,12 @@ export function createDesktopApplicationRouter({ handlers, commands, receiptFile
       "submit-bug-report": handlers.submitBugReport,
       "report-diagnostic": handlers.reportDiagnostic,
       "trusted-devices": handlers.trustedDevices,
-      "create-device-pairing": handlers.createDevicePairing,
+      "create-device-pairing": (params, context) => {
+        if (!DEVICE_PAIRING_SOURCES.has(String(context?.source ?? ""))) {
+          throw new Error("Добавление устройства доступно только локальному Hub или доверенному устройству");
+        }
+        return handlers.createDevicePairing(params, context);
+      },
       "revoke-device": handlers.revokeDevice,
       "rename-workspace": (params, context) => dispatch("workspace.rename", params, context),
       "update-workspace-settings": (params, context) => dispatch("workspace.settings.update", params, context),

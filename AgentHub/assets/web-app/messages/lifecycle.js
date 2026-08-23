@@ -312,6 +312,20 @@ function historyContainsLatestAnswer(history, task) {
   });
 }
 
+function nextHistoryCatchUpDeadline({
+  sourceFresh,
+  containsLatestAnswer,
+  currentDeadline = 0,
+  now = Date.now(),
+  timeoutMs,
+} = {}) {
+  const deadline = Math.max(0, Number(currentDeadline) || 0);
+  const next = Math.max(0, Number(now) || 0) + Math.max(0, Number(timeoutMs) || 0);
+  if (sourceFresh === false) return next;
+  if (containsLatestAnswer) return null;
+  return deadline || next;
+}
+
 function userMessageHasVisibleContent(message) {
   return message?.role === "user" && Boolean(
     String(message?.text ?? "").trim()
@@ -1182,6 +1196,7 @@ globalThis.AgentHubMessageLifecycle = Object.freeze({
   historicalMessagesForDisplay,
   liveCompletionTransition,
   latestAnswerTransition,
+  nextHistoryCatchUpDeadline,
   liveMessageMatch,
   markCommandRejected,
   markConnectionFailure,

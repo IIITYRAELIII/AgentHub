@@ -24,6 +24,10 @@ test("Desktop attachment service validates, describes and opens local images", a
     assert.equal((await service.open({ id: "image-1.png" })).url, "/api/message-attachment/image-1.png");
     assert.equal(service.isLegacyFile(file), true);
     await assert.rejects(() => service.paths([path.join(root, "outside.png")]), /вне каталога/u);
+    await assert.rejects(
+      () => service.open({ id: "missing.png" }),
+      (error) => error.message === "Файл вложения недоступен" && !error.message.includes(root),
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

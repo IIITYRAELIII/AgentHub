@@ -108,6 +108,7 @@ const {
   isConnectionFailure,
   liveCompletionTransition,
   latestAnswerTransition,
+  nextHistoryCatchUpDeadline,
   looksLikeConnectionFailure,
   markCommandRejected,
   markConnectionFailure,
@@ -416,7 +417,16 @@ function deliveryPatch(stateName) {
 
 const attachmentThumbnailUrls = new Map();
 const attachmentThumbnailLoads = new Map();
+const unavailableAttachmentThumbnailIds = new Set();
 const MAX_CACHED_ATTACHMENT_THUMBNAILS = 96;
+
+function rememberUnavailableAttachmentThumbnail(id) {
+  unavailableAttachmentThumbnailIds.delete(id);
+  unavailableAttachmentThumbnailIds.add(id);
+  while (unavailableAttachmentThumbnailIds.size > MAX_CACHED_ATTACHMENT_THUMBNAILS) {
+    unavailableAttachmentThumbnailIds.delete(unavailableAttachmentThumbnailIds.values().next().value);
+  }
+}
 
 function cacheAttachmentThumbnail(id, url) {
   const previous = attachmentThumbnailUrls.get(id);
@@ -909,13 +919,17 @@ function historyNeedsCatchUp(taskIdValue) {
 }
 
 function updateHistoryCatchUp(taskIdValue, history, task) {
-  if (historyContainsLatestAnswer(history, task)) {
+  const deadline = nextHistoryCatchUpDeadline({
+    sourceFresh: history?.sourceFresh,
+    containsLatestAnswer: historyContainsLatestAnswer(history, task),
+    currentDeadline: historyCatchUpDeadlines.get(taskIdValue),
+    timeoutMs: HISTORY_CATCH_UP_TIMEOUT_MS,
+  });
+  if (deadline == null) {
     historyCatchUpDeadlines.delete(taskIdValue);
     return;
   }
-  if (!historyCatchUpDeadlines.has(taskIdValue)) {
-    historyCatchUpDeadlines.set(taskIdValue, Date.now() + HISTORY_CATCH_UP_TIMEOUT_MS);
-  }
+  historyCatchUpDeadlines.set(taskIdValue, deadline);
 }
 
 function scheduleHistoryAttachmentSettle(taskIdValue) {
@@ -2887,25 +2901,18 @@ async function refreshRateLimitHistory(range = rateLimitRefreshRange, { reportEr
 agentHub.on("limits:open", ({ range }) => runAction(
   () => refreshRateLimitHistory(range, { reportError: true }),
 ));
-agentHub.on("usage:open", ({ range, turnTimeMode }) => runAction(async () => {
+agentHub.on("usage:open", ({ range, accountKey, turnTimeMode }) => runAction(async () => {
   try {
-    let accountActivity = [];
-    try {
-      const limits = await readHistoryWithRangeCompatibility("rate-limit-history", range, {
-        maxPointsPerSeries: 600,
-      });
-      accountActivity = Array.isArray(limits?.accountActivity) ? limits.accountActivity : [];
-    } catch {
-      // Старый runtime или временно недоступная телеметрия: остаётся строгий отбор по ключу аккаунта.
-    }
     agentHub.setUsageHistory(await readHistoryWithRangeCompatibility("usage-history", range, {
       maxPoints: 600,
-      accountActivity,
+      accountKey: String(accountKey || ""),
       turnTimeMode,
     }));
   } catch (error) {
     agentHub.setUsageHistory({
       range,
+      accountKey: String(accountKey || ""),
+      turnTimeMode,
       error: error?.message || "Не удалось загрузить учётный расход.",
     });
   }
@@ -2934,10 +2941,6 @@ agentHub.on("comparison:open", ({ range, seriesId, accountKey, turnTimeMode }) =
   const resolvedAccountKey = allAccounts
     ? "all"
     : requestedAccountKey || String(limits?.currentAccount?.key ?? "");
-  const activeIntervals = allAccounts
-    ? null
-    : (Array.isArray(limits?.accountActivity) ? limits.accountActivity : [])
-      .find((entry) => String(entry?.accountKey ?? "") === resolvedAccountKey)?.intervals ?? [];
   let usage;
   try {
     usage = await readHistoryWithRangeCompatibility("usage-history", requestedRange, {
@@ -2945,7 +2948,6 @@ agentHub.on("comparison:open", ({ range, seriesId, accountKey, turnTimeMode }) =
       provider,
       accountKey: allAccounts ? "" : resolvedAccountKey,
       turnTimeMode,
-      ...(activeIntervals ? { activeIntervals } : {}),
     });
   } catch (error) {
     usage = { range: requestedRange, error: String(error?.message ?? error) };
@@ -3149,6 +3151,11 @@ async function attachmentThumbnailUrl(attachment) {
   if (direct) return direct;
   const id = String(attachment?.id ?? "").trim();
   if (!id) throw new Error("Миниатюра вложения недоступна");
+  if (unavailableAttachmentThumbnailIds.has(id)) {
+    const error = new Error("Миниатюра вложения недоступна");
+    error.attachmentUnavailable = true;
+    throw error;
+  }
   if (attachmentThumbnailUrls.has(id)) return attachmentThumbnailUrls.get(id);
   if (attachmentThumbnailLoads.has(id)) return attachmentThumbnailLoads.get(id);
   const operation = (async () => {
@@ -3228,15 +3235,18 @@ agentHub.on("attachment:open", ({ attachment, gallery = [], index = 0 }) => runA
   await saveBlob(result.blob, result.name);
 }));
 
-agentHub.on("attachment:thumbnail", ({ attachment, render, fail }) => runAction(async () => {
+agentHub.on("attachment:thumbnail", ({ attachment, render, fail }) => void (async () => {
   try {
     const url = await attachmentThumbnailUrl(attachment);
     if (typeof render === "function") render(url);
   } catch (error) {
-    if (typeof fail === "function") fail();
-    throw error;
+    const unavailable = window.AgentHubResourceInteractions.unavailableAttachmentError(error);
+    const id = String(attachment?.id ?? "").trim();
+    if (unavailable && id) rememberUnavailableAttachmentThumbnail(id);
+    if (typeof fail === "function") fail({ missing: unavailable });
+    if (!unavailable) console.warn(`Cannot load attachment thumbnail: ${error.message}`);
   }
-}));
+})());
 
 agentHub.on("attachment:load", ({ attachment, index }) => runAction(
   () => loadAttachmentImage(attachment, index),

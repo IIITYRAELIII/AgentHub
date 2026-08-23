@@ -6,7 +6,10 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
-import { buildWindowsRuntimeHost } from "../../../src/infrastructure/process/runtime-host-builder.mjs";
+import {
+  buildWindowsRuntimeHost,
+  windowsIconFromPng,
+} from "../../../src/infrastructure/process/runtime-host-builder.mjs";
 import { verifyRuntimeManifest } from "../../../runtime-manifest-verifier.mjs";
 import {
   protectRuntimeConfig,
@@ -96,6 +99,20 @@ test("runtime launchers verify the manifest on every platform", async () => {
   assert.match(unixLauncher, /agent-hub-main\.mjs/);
   assert.match(verifier, /createHash\("sha256"\)/);
   assert.match(launcher, /SHA256\.Create/);
+  assert.match(launcher, /AssemblyTitle\("Agent Hub Server"\)/u);
+  assert.match(launcher, /SetCurrentProcessExplicitAppUserModelID/u);
+  assert.match(launcher, /CreateJobObject/u);
+  assert.match(launcher, /AssignProcessToJobObject/u);
+});
+
+test("RuntimeHost icon wraps the Agent Hub PNG as a Windows icon resource", async () => {
+  const png = await readFile(path.join(ROOT, "VSCodeExtension", "media", "agent-hub-mark.png"));
+  const icon = windowsIconFromPng(png);
+  assert.equal(icon.readUInt16LE(0), 0);
+  assert.equal(icon.readUInt16LE(2), 1);
+  assert.equal(icon.readUInt16LE(4), 1);
+  assert.equal(icon.readUInt32LE(14), png.length);
+  assert.deepEqual(icon.subarray(22), png);
 });
 
 test("runtime launchers reject dot releases and resolve the release only inside releases", async () => {

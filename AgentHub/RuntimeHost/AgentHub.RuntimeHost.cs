@@ -12,8 +12,8 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Web.Script.Serialization;
 
-[assembly: AssemblyTitle("Agent Hub Runtime Host")]
-[assembly: AssemblyDescription("Verified background launcher for Agent Hub Server")]
+[assembly: AssemblyTitle("Agent Hub Server")]
+[assembly: AssemblyDescription("Agent Hub local server and process host")]
 [assembly: AssemblyCompany("Dark Sanctuary Utilities")]
 [assembly: AssemblyProduct("Agent Hub")]
 [assembly: AssemblyVersion("1.0.0.0")]
@@ -24,9 +24,25 @@ namespace AgentHub.RuntimeHost
     internal static class Program
     {
         private const string AutostartShortcutName = "Agent Hub.lnk";
+        private const string AppUserModelId = "IIITYRAELIII.AgentHub";
         private static readonly Regex ReleaseIdPattern = new Regex(
             "^[A-Za-z0-9][A-Za-z0-9._-]*$",
             RegexOptions.CultureInvariant);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern IntPtr CreateJobObject(IntPtr jobAttributes, string name);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+
+        [DllImport("kernel32.dll")]
+        private static extern IntPtr GetCurrentProcess();
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool CloseHandle(IntPtr handle);
+
+        [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+        private static extern int SetCurrentProcessExplicitAppUserModelID(string appId);
 
         [STAThread]
         private static int Main(string[] args)
@@ -91,6 +107,9 @@ namespace AgentHub.RuntimeHost
                 return 0;
             }
 
+            SetCurrentProcessExplicitAppUserModelID(AppUserModelId);
+            IntPtr runtimeJob = CreateRuntimeJob();
+
             ProcessStartInfo start = new ProcessStartInfo();
             start.FileName = node;
             start.Arguments = QuoteArgument(server);
@@ -103,15 +122,46 @@ namespace AgentHub.RuntimeHost
             start.EnvironmentVariables["AGENT_HUB_RUNTIME_ROOT"] = runtimeRoot;
             start.EnvironmentVariables["AGENT_HUB_RELEASE_ID"] = current;
 
-            using (Process process = Process.Start(start))
+            try
             {
-                if (process == null)
+                using (Process process = Process.Start(start))
                 {
-                    throw new InvalidOperationException("Node.js did not start");
+                    if (process == null)
+                    {
+                        throw new InvalidOperationException("Node.js did not start");
+                    }
+                    DeleteLegacyLaunchers(runtimeRoot);
+                    process.WaitForExit();
+                    return process.ExitCode;
                 }
-                DeleteLegacyLaunchers(runtimeRoot);
-                process.WaitForExit();
-                return process.ExitCode;
+            }
+            finally
+            {
+                if (runtimeJob != IntPtr.Zero) CloseHandle(runtimeJob);
+            }
+        }
+
+        private static IntPtr CreateRuntimeJob()
+        {
+            string name = "Local\\IIITYRAELIII.AgentHub." + Process.GetCurrentProcess().Id.ToString(CultureInfo.InvariantCulture);
+            IntPtr job = CreateJobObject(IntPtr.Zero, name);
+            if (job == IntPtr.Zero)
+            {
+                throw new InvalidOperationException("Agent Hub process job could not be created: " + Marshal.GetLastWin32Error());
+            }
+            try
+            {
+                if (!AssignProcessToJobObject(job, GetCurrentProcess()))
+                {
+                    CloseHandle(job);
+                    return IntPtr.Zero;
+                }
+                return job;
+            }
+            catch
+            {
+                CloseHandle(job);
+                throw;
             }
         }
 
@@ -329,7 +379,8 @@ namespace AgentHub.RuntimeHost
                 shortcutType.InvokeMember("Arguments", BindingFlags.SetProperty, null, shortcut, new object[] { String.Empty });
                 shortcutType.InvokeMember("WorkingDirectory", BindingFlags.SetProperty, null, shortcut, new object[] { runtimeRoot });
                 shortcutType.InvokeMember("WindowStyle", BindingFlags.SetProperty, null, shortcut, new object[] { 7 });
-                shortcutType.InvokeMember("Description", BindingFlags.SetProperty, null, shortcut, new object[] { "Agent Hub runtime" });
+                shortcutType.InvokeMember("Description", BindingFlags.SetProperty, null, shortcut, new object[] { "Agent Hub" });
+                shortcutType.InvokeMember("IconLocation", BindingFlags.SetProperty, null, shortcut, new object[] { executable + ",0" });
                 shortcutType.InvokeMember("Save", BindingFlags.InvokeMethod, null, shortcut, null);
             }
             finally

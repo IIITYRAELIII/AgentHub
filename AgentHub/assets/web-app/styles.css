@@ -3705,14 +3705,42 @@ html[data-view="dashboard"] .task-board-view {
 }
 
 .task-board-columns {
+  --task-board-column-base-width: clamp(
+    16rem,
+    calc((100vw - 4rem) / var(--board-column-count)),
+    22rem
+  );
+  --board-column-count: 2;
   align-items: stretch;
-  display: flex;
+  display: grid;
   flex: 1 1 auto;
   gap: 0.75rem;
+  grid-template-columns:
+    var(--task-board-column-base-width)
+    minmax(0, 1fr)
+    var(--task-board-column-base-width);
   min-height: 0;
-  overflow-x: auto;
+  overflow: hidden;
   padding: 1rem 1.2rem 1.1rem;
-  --board-column-count: 2;
+}
+
+.task-board-edge,
+.task-board-workspace-columns {
+  min-height: 0;
+  min-width: 0;
+}
+
+.task-board-edge {
+  display: flex;
+}
+
+.task-board-workspace-columns {
+  align-items: stretch;
+  display: flex;
+  gap: 0.75rem;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-inline: contain;
 }
 
 .task-board-column {
@@ -3720,13 +3748,16 @@ html[data-view="dashboard"] .task-board-view {
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
   display: flex;
-  flex: 1 0 max(
-    clamp(16rem, calc((100vw - 4rem) / var(--board-column-count)), 22rem),
-    var(--task-column-card-width, 0px)
-  );
+  flex: 0 0 var(--task-board-column-base-width);
   flex-direction: column;
   min-height: 0;
   transition: border-color 0.14s ease, background 0.14s ease;
+}
+
+.task-board-edge .task-board-column {
+  flex: 1 1 100%;
+  inline-size: 100%;
+  min-width: 0;
 }
 
 .task-board-column.is-dragover {
@@ -3735,11 +3766,15 @@ html[data-view="dashboard"] .task-board-view {
 }
 
 .task-board-column.is-backlog {
+  background: color-mix(in srgb, var(--surface-1) 96%, var(--surface-2));
   border-top-color: color-mix(in srgb, var(--pending) 70%, var(--line));
+  box-shadow: 0.65rem 0 0.9rem -0.75rem color-mix(in srgb, var(--text) 24%, transparent);
 }
 
 .task-board-column.is-notes {
+  background: color-mix(in srgb, var(--surface-1) 96%, var(--surface-2));
   border-top-color: color-mix(in srgb, var(--provider-claude) 70%, var(--line));
+  box-shadow: -0.65rem 0 0.9rem -0.75rem color-mix(in srgb, var(--text) 24%, transparent);
 }
 
 .task-board-column-head {
@@ -4562,11 +4597,35 @@ html[data-view="dashboard"] .task-board-view {
   }
 
   .task-board-columns {
+    display: flex;
+    overflow-x: auto;
     padding: 0.8rem;
   }
 
+  .task-board-edge,
+  .task-board-workspace-columns {
+    display: contents;
+  }
+
+  .task-board-column.is-backlog {
+    left: 0.8rem;
+    position: sticky;
+    z-index: 3;
+  }
+
+  .task-board-column.is-notes {
+    position: sticky;
+    right: 0.8rem;
+    z-index: 3;
+  }
+
   .task-board-column {
-    flex: 0 0 max(min(82vw, 19rem), var(--task-column-card-width, 0px));
+    flex-basis: min(82vw, 19rem);
+  }
+
+  .task-board-edge .task-board-column {
+    flex-basis: min(82vw, 19rem);
+    inline-size: auto;
   }
 
   .task-start-new {
@@ -9875,6 +9934,8 @@ html[data-view="background"] .background-view {
   box-sizing: border-box;
   display: none;
   flex: 1 1 auto;
+  margin: 0 auto;
+  max-width: min(120rem, 100%);
   width: 100%;
 }
 
@@ -11830,6 +11891,40 @@ html[data-view="server"] .server-view {
   width: 100%;
 }
 
+.server-overview-grid {
+  align-items: start;
+  display: grid;
+  gap: 1.15rem;
+  grid-template-columns: minmax(0, 1fr) clamp(18rem, 18vw, 22rem);
+  min-width: 0;
+  width: 100%;
+}
+
+.server-overview-column {
+  display: grid;
+  gap: 1.15rem;
+  min-width: 0;
+}
+
+@media (max-width: 82rem) {
+  .server-overview-grid {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .server-overview-column {
+    display: contents;
+  }
+
+  .server-health-card { order: 1; }
+  .server-card[aria-labelledby="server-config-title"] { order: 2; }
+  .root-agents-editor[data-agent-hub-guide] { order: 3; }
+  .root-agents-editor[data-global-pre-turn-editor] { order: 4; }
+  .root-agents-editor[data-root-agents-editor] { order: 5; }
+  .server-card[aria-labelledby="server-components-title"] { order: 6; }
+  .trusted-devices-panel { order: 7; }
+}
+
 .server-health-card,
 .server-card {
   background: var(--card-bg-open), color-mix(in srgb, var(--bg) 94%, transparent);
@@ -11954,11 +12049,55 @@ html[data-view="server"] .server-view {
 .server-component-grid {
   display: grid;
   gap: 0.6rem;
-  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.trusted-devices-panel {
+  padding: 0;
+  width: 100%;
+}
+
+.trusted-devices-summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 1rem 1.15rem;
+}
+
+.trusted-devices-summary::-webkit-details-marker {
+  display: none;
+}
+
+.trusted-devices-summary > span {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.trusted-devices-summary strong {
+  color: var(--text);
+  font-family: var(--font-title);
+  font-size: clamp(1.05rem, 2vw, 1.28rem);
+}
+
+.trusted-devices-summary small {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+.trusted-devices-summary::before {
+  color: var(--text-faint);
+  content: "▸";
+  float: right;
+  margin-left: 0.75rem;
+}
+
+.trusted-devices-panel[open] > .trusted-devices-summary::before {
+  content: "▾";
 }
 
 .root-agents-editor {
   padding: 0;
+  width: 100%;
 }
 
 .root-agents-summary {
@@ -12354,9 +12493,11 @@ html[data-view="server"] .server-view {
 }
 
 .server-card .trusted-devices-card {
+  border-top: 1px solid var(--line);
   display: flex;
   flex-direction: column;
   gap: 0.65rem;
+  padding: 1rem 1.15rem 1.15rem;
 }
 
 /* На странице сервера устройства держат тот же ритм плиток, что компоненты и
@@ -12376,6 +12517,10 @@ html[data-surface="mobile"][data-view="server"] .server-view {
 html[data-surface="mobile"] .server-content {
   gap: 0.8rem;
   padding: 0.75rem 0.65rem 1rem;
+}
+
+html[data-surface="mobile"] .server-overview-grid {
+  gap: 0.8rem;
 }
 
 html[data-surface="mobile"] .server-health-card,
@@ -13780,13 +13925,16 @@ html[data-browser-auth] {
     grid-template-columns: minmax(0, 1fr) clamp(18rem, 18vw, 22rem);
   }
 
-  /* Правая колонка выше экрана из-за панели аккаунтов, поэтому прокручивается
+  /* Правая колонка выше экрана из-за панели статистики, поэтому прокручивается
      сама, а графики остаются на месте. */
   html:not([data-surface="mobile"]) .statistics-aside {
     max-height: calc(100dvh - 5.5rem);
     overflow-x: hidden;
     overflow-y: auto;
     overscroll-behavior: contain;
+    /* Высота вкладок с нижним отступом и gap основного столбца: карточка
+       лимитов начинается на одной линии с активным графиком. */
+    padding-top: 3.55rem;
     position: sticky;
     scrollbar-width: none;
     top: 1rem;
@@ -13919,6 +14067,12 @@ html[data-browser-auth] {
   width: 100%;
 }
 
+.chart-rail-account-control,
+.chart-rail-account-control .themed-select {
+  min-width: 0;
+  width: 100%;
+}
+
 .chart-rail-switch {
   margin: 0.15rem 0 0;
 }
@@ -14041,17 +14195,4 @@ html[data-browser-auth] {
 
 .statistics-aside .statistics-preferences-grid {
   grid-template-columns: minmax(0, 1fr);
-}
-
-.statistics-aside .statistics-account-control {
-  width: 100%;
-}
-
-.statistics-aside .statistics-account-control .themed-select {
-  min-width: 0;
-  width: 100%;
-}
-
-.statistics-scope-card .statistics-card-head {
-  margin-bottom: 0.6rem;
 }

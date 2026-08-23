@@ -5645,10 +5645,20 @@ function observeAttachmentThumbnail(node, item) {
           loading: "lazy",
         }));
       },
-      fail: () => {
+      fail: ({ missing = false } = {}) => {
         if (!node.isConnected) return;
         node.classList.remove("attachment-loading");
-        node.replaceChildren(el("span", { class: "attachment-load-label", text: "Открыть" }));
+        if (missing) {
+          node.classList.remove("attachment-open");
+          node.classList.add("attachment-missing");
+          node.disabled = true;
+          node.title = "Файл недоступен";
+          node.setAttribute("aria-label", `${item.name || "Файл"} недоступен`);
+        }
+        node.replaceChildren(el("span", {
+          class: missing ? "attachment-missing-label" : "attachment-load-label",
+          text: missing ? "Файл недоступен" : "Открыть",
+        }));
       },
     });
   };
@@ -6476,12 +6486,10 @@ trustedDevicePairing?.addEventListener("click", (event) => {
   );
 });
 
-/* Сопряжение выпускает учётные данные, поэтому доступно только на самом
- * компьютере с Agent Hub: локальный Web и панель VS Code. Удалённые поверхности
- * видят список и могут отозвать устройство, но не добавить новое. */
+/* Telegram и Android не выпускают новые учётные данные. Доверенный браузер
+ * может делегировать доступ другому устройству через локальный Hub. */
 const deviceEnrollmentAllowed = !telegramMode
-  && !window.AgentHubAndroid
-  && !window.AgentHubBrowserDevice;
+  && !window.AgentHubAndroid;
 
 function renderTrustedDevices(payload = {}) {
   if (!trustedDeviceList || !trustedDevicePairing) return;
@@ -6489,7 +6497,7 @@ function renderTrustedDevices(payload = {}) {
     trustedDeviceCreate.hidden = !deviceEnrollmentAllowed;
     trustedDeviceCreate.title = deviceEnrollmentAllowed
       ? ""
-      : "Новое устройство добавляется только на компьютере с Agent Hub";
+      : "Новое устройство добавляется через доверенный браузер Agent Hub";
   }
   const devices = Array.isArray(payload.devices) ? payload.devices : [];
   trustedDevicePairing.hidden = !payload.pairing?.code;
@@ -7955,6 +7963,7 @@ function selectStatisticsAccount(accountKey) {
   }
   renderStatisticsAccountSelects();
   renderLimits();
+  requestUsageHistory(usageState.range, { force: true });
   requestUsageComparison(comparisonState.range, { force: true });
 }
 
@@ -8077,7 +8086,10 @@ function applyRateLimitHistory(payload) {
   if (root.dataset.view === "statistics") {
     renderLimitsRanges();
     renderLimits();
-    if (statisticsAccountChanged) requestUsageComparison(comparisonState.range, { force: true });
+    if (statisticsAccountChanged) {
+      requestUsageHistory(usageState.range, { force: true });
+      requestUsageComparison(comparisonState.range, { force: true });
+    }
   }
 }
 
@@ -9228,6 +9240,9 @@ function statusFromUsagePayload(payload) {
 function applyUsageHistory(payload) {
   const data = payload && typeof payload === "object" ? payload : null;
   if (data?.turnTimeMode && normalizeTurnTimeMode(data.turnTimeMode) !== turnTimeMode) return;
+  const selectedAccount = resolvedStatisticsAccountKey();
+  const requestedAccount = selectedAccount === ALL_STATISTICS_ACCOUNTS ? "" : selectedAccount;
+  if (String(data?.accountKey ?? "") !== requestedAccount) return;
   usageState.payload = data;
   usageState.error = data?.error ? String(data.error) : "";
   if (data?.range) usageState.range = normalizeRange(data.range);
@@ -9238,15 +9253,18 @@ function applyUsageHistory(payload) {
 
 function requestUsageHistory(range, { force = false } = {}) {
   usageState.range = persistRange(localStorage, USAGE_RANGE_KEY, range);
+  const selectedAccount = resolvedStatisticsAccountKey();
+  const accountKey = selectedAccount === ALL_STATISTICS_ACCOUNTS ? "" : selectedAccount;
   const cached = usageState.payload
     && !usageState.payload.error
     && normalizeRange(usageState.payload.range) === usageState.range
+    && String(usageState.payload.accountKey ?? "") === accountKey
     && normalizeTurnTimeMode(usageState.payload.turnTimeMode) === turnTimeMode;
   usageState.status = cached && !force ? statusFromUsagePayload(usageState.payload) : "loading";
   usageState.error = "";
   renderUsageRanges();
   renderUsageHistory();
-  emit("usage:open", { range: usageState.range, turnTimeMode });
+  emit("usage:open", { range: usageState.range, accountKey, turnTimeMode });
 }
 
 function renderUsageRanges() {
@@ -10850,7 +10868,7 @@ function renderUsageComparison() {
   if (comparisonNote) {
     comparisonNote.textContent = split
       ? "Временные графики используют исходные единицы и общую ось дат. Точки показывают совпадающие интервалы. Разность считается как нормированный расход аккаунта минус учётный: выше нуля — больше расход лимита, ниже нуля — больше учётный расход. Изменение лимита между соседними замерами равномерно распределяется по их интервалу. Цена остаётся в итоговом показателе."
-      : "При выборе аккаунта учётный расход учитывает только ходы, завершённые в интервалах его активности. Пункт «Все» снимает отбор аккаунта. Изменение лимита между соседними замерами равномерно распределяется по их интервалу; неизменное значение считается нулевым расходом. Линии расхода приведены к собственному пику. r — корреляция Пирсона, Δ — среднее знаковое отклонение «аккаунт − учётный»: минусы и плюсы взаимно компенсируются. Цена — расход лимита в п.п. на 1 kcr. Изменение цены сравнивает первую и вторую половины периода.";
+      : "При выборе аккаунта учётный расход включает его ходы на этом и всех синхронизированных устройствах. Пункт «Все» снимает отбор аккаунта. Изменение лимита между соседними замерами равномерно распределяется по их интервалу; неизменное значение считается нулевым расходом. Линии расхода приведены к собственному пику. r — корреляция Пирсона, Δ — среднее знаковое отклонение «аккаунт − учётный»: минусы и плюсы взаимно компенсируются. Цена — расход лимита в п.п. на 1 kcr. Изменение цены сравнивает первую и вторую половины периода.";
   }
   renderComparisonLegend(model);
   renderComparisonSummary(model);

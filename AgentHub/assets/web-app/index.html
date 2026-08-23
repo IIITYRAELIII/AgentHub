@@ -488,16 +488,6 @@
               </div>
             </section>
           </div>
-          <section class="statistics-card statistics-sync-card" data-statistics-sync-card
-          aria-labelledby="statistics-sync-title" hidden>
-          <header class="statistics-card-head">
-            <div>
-              <h2 id="statistics-sync-title">Sync расхода</h2>
-              <p>Подключение, ручная синхронизация и код для другого устройства.</p>
-            </div>
-          </header>
-          <div class="statistics-sync-controls" data-statistics-sync-host></div>
-        </section>
       </aside>
       </div>
       </div>
@@ -1035,6 +1025,12 @@
               <div class="chart-layout">
                 <aside class="chart-rail">
             <div class="chart-rail-group">
+              <span class="chart-rail-label">Аккаунт</span>
+              <label class="statistics-account-control chart-rail-account-control">
+                <select data-statistics-account-select aria-label="Аккаунт графика лимитов"></select>
+              </label>
+            </div>
+            <div class="chart-rail-group">
               <span class="chart-rail-label">Режим</span>
               <div class="limits-ranges" role="group" aria-label="Режим графика лимитов"
                 data-limits-modes>
@@ -1110,6 +1106,12 @@
               <div class="chart-layout">
                 <aside class="chart-rail">
             <div class="chart-rail-group">
+              <span class="chart-rail-label">Аккаунт</span>
+              <label class="statistics-account-control chart-rail-account-control">
+                <select data-statistics-account-select aria-label="Аккаунт графика корреляции"></select>
+              </label>
+            </div>
+            <div class="chart-rail-group">
               <span class="chart-rail-label">Вид</span>
               <div class="limits-ranges" role="group" aria-label="Вид диаграммы сопоставления расхода"
                 data-comparison-view-modes>
@@ -1173,7 +1175,7 @@
                     aria-live="polite"></div>
                   <ul class="limits-legend comparison-legend" data-comparison-legend></ul>
                   <p class="statistics-note comparison-note" data-comparison-note>
-                    При выборе аккаунта учётный расход учитывает только ходы, завершённые в интервалах его активности.
+                    При выборе аккаунта учётный расход включает его ходы на этом и всех синхронизированных устройствах.
                     Пункт «Все» снимает отбор аккаунта.
                     Линии расхода приведены к собственному пику. r — корреляция Пирсона,
                     Δ — среднее знаковое отклонение «аккаунт − учётный», цена — расход лимита в п.п. на 1 kcr.
@@ -1189,7 +1191,7 @@
         <section class="statistics-account-panel" data-statistics-account-panel-host></section>
       </div>
 
-      <!-- Лимиты, аккаунт и настройки не зависят от выбранного графика,
+      <!-- Текущие лимиты и общие настройки не зависят от выбранного графика,
            поэтому стоят отдельной колонкой и остаются на виду. -->
       <aside class="statistics-aside">
         <section class="current-limits-card" aria-labelledby="current-limits-title">
@@ -1199,16 +1201,6 @@
           <div class="current-limits-row" data-current-limits="statistics">
             <span class="current-limits-empty">Загрузка…</span>
           </div>
-        </section>
-        <section class="statistics-card statistics-scope-card" aria-labelledby="statistics-scope-title">
-          <header class="statistics-card-head">
-            <div>
-              <h2 id="statistics-scope-title">Аккаунт</h2>
-            </div>
-          </header>
-          <label class="statistics-account-control">
-            <select data-statistics-account-select aria-label="Аккаунт статистики"></select>
-          </label>
         </section>
         <section class="statistics-card statistics-preferences-card" aria-labelledby="statistics-preferences-title">
           <header class="statistics-card-head">
@@ -1259,118 +1251,123 @@
   <!-- ===================================================== Agent Hub Server === -->
   <main class="server-view" data-server-view>
     <div class="server-content">
-      <section class="server-health-card" aria-labelledby="server-health-title">
-        <header class="server-card-head">
-          <div>
-            <p class="server-kicker">Agent Hub Server</p>
-            <h2 id="server-health-title" data-server-state>Подключение…</h2>
-            <p data-server-state-note>Получаем состояние локального процесса.</p>
-          </div>
-          <span class="server-state-dot" data-server-state-dot aria-hidden="true"></span>
-        </header>
-        <dl class="server-facts" data-server-facts></dl>
+      <div class="server-overview-grid">
+        <div class="server-overview-column server-overview-main">
+          <section class="server-health-card" aria-labelledby="server-health-title">
+            <header class="server-card-head">
+              <div>
+                <p class="server-kicker">Agent Hub Server</p>
+                <h2 id="server-health-title" data-server-state>Подключение…</h2>
+                <p data-server-state-note>Получаем состояние локального процесса.</p>
+              </div>
+              <span class="server-state-dot" data-server-state-dot aria-hidden="true"></span>
+            </header>
+            <dl class="server-facts" data-server-facts></dl>
+          </section>
 
-      </section>
+          <section class="server-card" aria-labelledby="server-config-title">
+            <header class="server-card-head compact">
+              <div>
+                <h2 id="server-config-title">Конфигурация</h2>
+              </div>
+            </header>
+            <div class="server-config-grid" data-server-config>
+              <span class="setting-empty">Загрузка…</span>
+            </div>
+            <div class="server-config-actions" data-server-config-actions>
+              <button type="button" class="chip-button" data-server-config-save disabled>Сохранить</button>
+              <button type="button" class="chip-button ghost" data-server-config-discard hidden>Отменить</button>
+              <button type="button" class="chip-button" data-action="hub-restart">
+                <svg data-phosphor-icon="arrows-clockwise" viewBox="0 0 256 256" aria-hidden="true">
+                  <polyline points="168 96 216 96 216 48" fill="none" stroke="currentColor"
+                    stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></polyline>
+                  <path d="M216,96,187.72,67.72A88,88,0,0,0,64,67" fill="none" stroke="currentColor"
+                    stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></path>
+                  <polyline points="88 160 40 160 40 208" fill="none" stroke="currentColor"
+                    stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></polyline>
+                  <path d="M40,160l28.28,28.28A88,88,0,0,0,192,189" fill="none" stroke="currentColor"
+                    stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></path>
+                </svg>
+                <span>Перезапустить</span>
+              </button>
+              <span class="server-config-actions-note">Настройки применяются кнопкой «Сохранить».</span>
+            </div>
+          </section>
 
+          <details class="server-card root-agents-editor" data-agent-hub-guide>
+            <summary class="root-agents-summary">Hub Agent Guide</summary>
+            <div class="root-agents-body">
+              <p class="root-agents-note">Обязательные инструкции текущей версии Agent Hub. Обновляются вместе с релизом.</p>
+              <textarea class="root-agents-input" data-agent-hub-guide-input spellcheck="false"
+                aria-label="Hub Agent Guide" readonly disabled></textarea>
+              <div class="root-agents-actions">
+                <span class="root-agents-status" data-agent-hub-guide-status>Раскройте блок для загрузки.</span>
+              </div>
+            </div>
+          </details>
 
-      <section class="server-card" aria-labelledby="server-config-title">
-        <header class="server-card-head compact">
-          <div>
-            <h2 id="server-config-title">Конфигурация</h2>
-          </div>
-        </header>
-        <div class="server-config-grid" data-server-config>
-          <span class="setting-empty">Загрузка…</span>
+          <details class="server-card root-agents-editor" data-global-pre-turn-editor>
+            <summary class="root-agents-summary">Global pre-turn instructions</summary>
+            <div class="root-agents-body">
+              <p class="root-agents-note">Глобальные инструкции Agent Hub, применяемые перед каждым новым ходом.</p>
+              <p class="root-agents-note"><strong>Порядок developer-слоёв Agent Hub:</strong> Guide &lt; Global &lt; Workspace &lt; Stream. User Prompt задаёт конкретную задачу, но не переопределяет конфликтующие developer-инструкции.</p>
+              <textarea class="root-agents-input" data-global-pre-turn-input spellcheck="false"
+                aria-label="Global pre-turn instructions" disabled></textarea>
+              <div class="root-agents-actions">
+                <button type="button" class="chip-button" data-global-pre-turn-save disabled>Сохранить</button>
+                <button type="button" class="chip-button ghost" data-global-pre-turn-discard disabled>Отменить</button>
+                <span class="root-agents-status" data-global-pre-turn-status>Раскройте редактор для загрузки.</span>
+              </div>
+            </div>
+          </details>
+
+          <details class="server-card root-agents-editor" data-root-agents-editor>
+            <summary class="root-agents-summary">AGENTS.md</summary>
+            <div class="root-agents-body">
+              <p class="root-agents-note">Корневые инструкции рабочего пространства для агентов.</p>
+              <textarea class="root-agents-input" data-root-agents-input spellcheck="false"
+                aria-label="Содержимое корневого AGENTS.md" disabled></textarea>
+              <div class="root-agents-actions">
+                <button type="button" class="chip-button" data-root-agents-save disabled>Сохранить</button>
+                <button type="button" class="chip-button ghost" data-root-agents-discard disabled>Отменить</button>
+                <span class="root-agents-status" data-root-agents-status>Раскройте редактор для загрузки.</span>
+              </div>
+            </div>
+          </details>
         </div>
-        <div class="server-config-actions" data-server-config-actions>
-          <button type="button" class="chip-button" data-server-config-save disabled>Сохранить</button>
-          <button type="button" class="chip-button ghost" data-server-config-discard hidden>Отменить</button>
-          <button type="button" class="chip-button" data-action="hub-restart">
-            <svg data-phosphor-icon="arrows-clockwise" viewBox="0 0 256 256" aria-hidden="true">
-              <polyline points="168 96 216 96 216 48" fill="none" stroke="currentColor"
-                stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></polyline>
-              <path d="M216,96,187.72,67.72A88,88,0,0,0,64,67" fill="none" stroke="currentColor"
-                stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></path>
-              <polyline points="88 160 40 160 40 208" fill="none" stroke="currentColor"
-                stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></polyline>
-              <path d="M40,160l28.28,28.28A88,88,0,0,0,192,189" fill="none" stroke="currentColor"
-                stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></path>
-            </svg>
-            <span>Перезапустить</span>
-          </button>
-          <span class="server-config-actions-note">Настройки применяются кнопкой «Сохранить».</span>
-        </div>
-      </section>
 
-      <section class="server-card" aria-labelledby="server-components-title">
-        <header class="server-card-head compact">
-          <div>
-            <h2 id="server-components-title">Компоненты</h2>
-          </div>
-        </header>
-        <div class="server-component-grid" data-server-components>
-          <span class="setting-empty">Загрузка…</span>
-        </div>
-      </section>
+        <div class="server-overview-column server-overview-side">
+          <section class="server-card" aria-labelledby="server-components-title">
+            <header class="server-card-head compact">
+              <div>
+                <h2 id="server-components-title">Компоненты</h2>
+              </div>
+            </header>
+            <div class="server-component-grid" data-server-components>
+              <span class="setting-empty">Загрузка…</span>
+            </div>
+          </section>
 
-      <section class="server-card" aria-labelledby="server-devices-title">
-        <header class="server-card-head compact">
-          <div>
-            <h2 id="server-devices-title">Доверенные устройства</h2>
-            <p>Android-клиенты и браузеры с собственным ключом устройства.</p>
-          </div>
-        </header>
-        <div class="trusted-devices-card">
-          <div data-trusted-device-pairing hidden></div>
-          <div class="trusted-device-list" data-trusted-device-list>
-            <span class="setting-empty">Откройте страницу, чтобы загрузить устройства.</span>
-          </div>
-          <button type="button" class="chip-button trusted-device-add" data-device-create>
-            Добавить устройство
-          </button>
+          <details class="server-card trusted-devices-panel" aria-labelledby="server-devices-title">
+            <summary class="trusted-devices-summary">
+              <span>
+                <strong id="server-devices-title">Доверенные устройства</strong>
+                <small>Android-клиенты и браузеры с собственным ключом устройства.</small>
+              </span>
+            </summary>
+            <div class="trusted-devices-card">
+              <button type="button" class="chip-button trusted-device-add" data-device-create>
+                Добавить устройство
+              </button>
+              <div data-trusted-device-pairing hidden></div>
+              <div class="trusted-device-list" data-trusted-device-list>
+                <span class="setting-empty">Откройте страницу, чтобы загрузить устройства.</span>
+              </div>
+            </div>
+          </details>
         </div>
-      </section>
+      </div>
 
-      <details class="server-card root-agents-editor" data-agent-hub-guide>
-        <summary class="root-agents-summary">Hub Agent Guide</summary>
-        <div class="root-agents-body">
-          <p class="root-agents-note">Обязательные инструкции текущей версии Agent Hub. Обновляются вместе с релизом.</p>
-          <textarea class="root-agents-input" data-agent-hub-guide-input spellcheck="false"
-            aria-label="Hub Agent Guide" readonly disabled></textarea>
-          <div class="root-agents-actions">
-            <span class="root-agents-status" data-agent-hub-guide-status>Раскройте блок для загрузки.</span>
-          </div>
-        </div>
-      </details>
-
-      <details class="server-card root-agents-editor" data-global-pre-turn-editor>
-        <summary class="root-agents-summary">Global pre-turn instructions</summary>
-        <div class="root-agents-body">
-          <p class="root-agents-note">Глобальные инструкции Agent Hub, применяемые перед каждым новым ходом.</p>
-          <p class="root-agents-note"><strong>Порядок developer-слоёв Agent Hub:</strong> Guide &lt; Global &lt; Workspace &lt; Stream. User Prompt задаёт конкретную задачу, но не переопределяет конфликтующие developer-инструкции.</p>
-          <textarea class="root-agents-input" data-global-pre-turn-input spellcheck="false"
-            aria-label="Global pre-turn instructions" disabled></textarea>
-          <div class="root-agents-actions">
-            <button type="button" class="chip-button" data-global-pre-turn-save disabled>Сохранить</button>
-            <button type="button" class="chip-button ghost" data-global-pre-turn-discard disabled>Отменить</button>
-            <span class="root-agents-status" data-global-pre-turn-status>Раскройте редактор для загрузки.</span>
-          </div>
-        </div>
-      </details>
-
-      <details class="server-card root-agents-editor" data-root-agents-editor>
-        <summary class="root-agents-summary">AGENTS.md</summary>
-        <div class="root-agents-body">
-          <p class="root-agents-note">Корневые инструкции рабочего пространства для агентов.</p>
-          <textarea class="root-agents-input" data-root-agents-input spellcheck="false"
-            aria-label="Содержимое корневого AGENTS.md" disabled></textarea>
-          <div class="root-agents-actions">
-            <button type="button" class="chip-button" data-root-agents-save disabled>Сохранить</button>
-            <button type="button" class="chip-button ghost" data-root-agents-discard disabled>Отменить</button>
-            <span class="root-agents-status" data-root-agents-status>Раскройте редактор для загрузки.</span>
-          </div>
-        </div>
-      </details>
     </div>
   </main>
 

@@ -233,6 +233,21 @@ test("Worker relay authenticates, isolates, executes once, and returns results",
   assert.equal(response.status, 202);
   assert.deepEqual(await response.json(), { ok: true, pending: true, id });
 
+  const deniedPairingId = "018f6c86-3f34-7a31-8f27-16f5b96cce12";
+  response = await workerModule.default.fetch(new Request("https://hub.test/api/control", {
+    method: "POST",
+    headers: { Authorization: authorization, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      commandId: deniedPairingId,
+      action: "create-device-pairing",
+      source: "trusted-device",
+      params: {},
+    }),
+  }), env);
+  assert.equal(response.status, 403);
+  assert.deepEqual(await response.json(), { error: "Только доверенное устройство может делегировать доступ." });
+  assert.equal(await storage.get(`control:command:${deniedPairingId}`), undefined);
+
   response = await workerModule.default.fetch(new Request("https://hub.test/api/control/enqueue", {
     method: "POST",
     headers: { Authorization: authorization, "Content-Type": "application/json" },
@@ -591,10 +606,15 @@ test("Android device pairing creates a revocable signed session", async () => {
       Authorization: `device ${session.token}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ commandId, action: "snapshot", params: {} }),
+    body: JSON.stringify({ commandId, action: "create-device-pairing", params: {} }),
   }), env);
   assert.equal(response.status, 202);
-  assert.equal((await storage.get(`control:command:${commandId}`)).userId, "42");
+  assert.deepEqual(
+    (({ action, source, userId }) => ({ action, source, userId }))(
+      await storage.get(`control:command:${commandId}`),
+    ),
+    { action: "create-device-pairing", source: "trusted-device", userId: "42" },
+  );
 
   response = await workerModule.default.fetch(
     signedServiceRequest("https://hub.test/api/device/list", { userId: "42" }, syncSecret),
@@ -2045,15 +2065,15 @@ test("Worker bounds unauthenticated device authentication attempts", async () =>
   assert.notEqual(other.status, 429);
 });
 
-test("Worker relay refuses to carry device enrollment", async () => {
+test("Worker relay validates device enrollment as a control action", async () => {
   const workerModule = await loadWorker();
-  assert.throws(
-    () => workerModule.validateControlCommand({
+  assert.equal(
+    workerModule.validateControlCommand({
       id: "018f6c86-3f34-7a31-8f27-16f5b96cce11",
       action: "create-device-pairing",
       params: {},
-    }),
-    /control action is not allowed/u,
+    }).action,
+    "create-device-pairing",
   );
   assert.equal(
     workerModule.validateControlCommand({
