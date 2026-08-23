@@ -9366,13 +9366,8 @@ function usageHistoryDevices(source) {
   }];
 }
 
-function usageDeviceColor(device) {
-  if (device?.source === "local") return "var(--accent)";
-  let hash = 0;
-  for (const character of String(device?.deviceId ?? "")) {
-    hash = ((hash * 31) + character.codePointAt(0)) >>> 0;
-  }
-  return `hsl(${(hash * 137.508) % 360} 68% 58%)`;
+function usageDeviceColorSlot(index) {
+  return Math.max(0, Number(index) || 0) % SERIES_PALETTE.length;
 }
 
 function usageDeviceBurnRateAnalysis(payload, deviceId) {
@@ -9500,7 +9495,10 @@ function showUsageTooltip(point, fx, fy, daily = false, hours = 0) {
       text: `Всего: ${usagePointMetric(total)}`,
     }),
     ...deviceValues.map((device) => el("span", { class: "limits-tooltip-row" }, [
-      el("i", { class: "usage-device-swatch", style: `background: ${device.color}` }),
+      el("i", {
+        class: "usage-device-swatch",
+        "data-device-color": device.colorSlot,
+      }),
       document.createTextNode(`${device.label}: ${usagePointMetric(device.value)}`),
     ])),
   );
@@ -9574,7 +9572,7 @@ function buildUsageChart(payload) {
             timedCredits: bucket?.timedCredits ?? 0,
             durationSeconds: bucket?.durationSeconds ?? 0,
             emaRate: Math.max(0, Number(deviceBurnPoints.get(device.deviceId)?.get(time)?.emaRate) || 0),
-            color: usageDeviceColor(device, index),
+            colorSlot: usageDeviceColorSlot(index),
           };
         }),
         rawRate: Math.max(0, Number(burnPoint?.rawRate) || 0),
@@ -9650,7 +9648,7 @@ function buildUsageChart(payload) {
           height: Math.max(1, segmentHeight).toFixed(1),
           rx: Math.min(4, barWidth / 3).toFixed(1),
           class: "usage-bar usage-bar-device",
-          style: `fill: ${device.color}`,
+          "data-device-color": device.colorSlot,
         }));
       }
       const deviceAria = deviceValues
@@ -9720,13 +9718,13 @@ function buildUsageChart(payload) {
       svg.append(svgEl("path", {
         d: `${upperLine} ${reverseLowerLine} Z`,
         class: "usage-device-area",
-        style: `fill: ${usageDeviceColor(device, deviceIndex)}`,
+        "data-device-color": usageDeviceColorSlot(deviceIndex),
       }));
       svg.append(svgEl("path", {
         d: upperLine,
         class: "usage-device-line",
         fill: "none",
-        style: `stroke: ${usageDeviceColor(device, deviceIndex)}`,
+        "data-device-color": usageDeviceColorSlot(deviceIndex),
       }));
     }
     for (const tick of usageAxisTicks(fromMs, toMs, plotW)) {
@@ -9755,7 +9753,7 @@ function buildUsageChart(payload) {
         cy,
         r: 2.6,
         class: "usage-dot",
-        style: `fill: ${topDevice?.color ?? "var(--accent)"}`,
+        "data-device-color": topDevice?.colorSlot ?? 0,
       });
       const fx = cx / W;
       const fy = cy / H;

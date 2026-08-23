@@ -12800,6 +12800,30 @@ html[data-surface="mobile"] .server-config-inline-label {
   transition: opacity 120ms ease, filter 120ms ease;
 }
 
+.usage-chart-svg [data-device-color],
+.usage-device-swatch[data-device-color] {
+  --usage-device-color: var(--accent);
+}
+
+.usage-chart-svg [data-device-color="1"],
+.usage-device-swatch[data-device-color="1"] { --usage-device-color: var(--dot-think); }
+
+.usage-chart-svg [data-device-color="2"],
+.usage-device-swatch[data-device-color="2"] { --usage-device-color: var(--dot-cache); }
+
+.usage-chart-svg [data-device-color="3"],
+.usage-device-swatch[data-device-color="3"] { --usage-device-color: var(--dot-output); }
+
+.usage-chart-svg [data-device-color="4"],
+.usage-device-swatch[data-device-color="4"] { --usage-device-color: var(--ok); }
+
+.usage-chart-svg [data-device-color="5"],
+.usage-device-swatch[data-device-color="5"] { --usage-device-color: var(--pending); }
+
+.usage-bar-device {
+  fill: var(--usage-device-color);
+}
+
 .usage-bar-hit {
   fill: transparent;
   outline: none;
@@ -12844,17 +12868,20 @@ html[data-surface="mobile"] .server-config-inline-label {
 }
 
 .usage-device-area {
+  fill: var(--usage-device-color);
   opacity: 0.26;
   stroke: none;
 }
 
 .usage-device-line {
+  stroke: var(--usage-device-color);
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-width: 1.6;
 }
 
 .usage-device-swatch {
+  background: var(--usage-device-color);
   border-radius: 50%;
   display: inline-block;
   flex: 0 0 auto;
@@ -12866,6 +12893,10 @@ html[data-surface="mobile"] .server-config-inline-label {
 .usage-dot {
   fill: var(--accent);
   opacity: 0.85;
+}
+
+.usage-dot[data-device-color] {
+  fill: var(--usage-device-color);
 }
 
 .limits-burn-target-line {
