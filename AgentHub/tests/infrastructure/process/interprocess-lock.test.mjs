@@ -4,7 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { withInterprocessLocks } from "../../../src/infrastructure/process/interprocess-lock.mjs";
+import {
+  releaseInterprocessLock,
+  withInterprocessLocks,
+} from "../../../src/infrastructure/process/interprocess-lock.mjs";
 
 test("interprocess lock recovers a stale dead owner", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-lock-stale-"));
@@ -111,6 +114,40 @@ test("an old owner cannot remove a replacement lock", async () => {
     releaseFirst();
     await first;
     assert.equal(JSON.parse(await readFile(path.join(lock, "owner.json"), "utf8")).token, "replacement-owner");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("failed Windows lock removal cannot leave a live owner forever", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-lock-release-"));
+  const target = path.join(root, "ledger.json");
+  const lock = `${target}.lock`;
+  const ownerFile = path.join(lock, "owner.json");
+  try {
+    await mkdir(lock);
+    await writeFile(ownerFile, JSON.stringify({
+      token: "release-owner",
+      pid: process.pid,
+      createdAt: Date.now(),
+    }));
+    const busyError = Object.assign(new Error("busy"), { code: "EBUSY" });
+    await releaseInterprocessLock(lock, "release-owner", {
+      renamePath: async () => { throw busyError; },
+      removePath: async () => { throw busyError; },
+      retryDelaysMs: [0],
+    });
+    const retiredOwner = JSON.parse(await readFile(ownerFile, "utf8"));
+    assert.equal(retiredOwner.token, "release-owner");
+    assert.equal(retiredOwner.pid, 0);
+
+    let entered = false;
+    await withInterprocessLocks([target], async () => { entered = true; }, {
+      timeoutMs: 250,
+      retryDelayMs: 1,
+      staleMs: 60_000,
+    });
+    assert.equal(entered, true);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

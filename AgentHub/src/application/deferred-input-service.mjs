@@ -106,7 +106,11 @@ export class DeferredInputService {
       createdAt,
     };
     d.store.put(item, destination);
-    await d.persist();
+    if (conflictKind === "message-intake" && typeof d.persistIntake === "function") {
+      await d.persistIntake(item, destination);
+    } else {
+      await d.persist();
+    }
     if (notify && item.telegramDeliveryRequested) {
       const message = await d.notify(item, { executionOwner, conflictTask });
       item.messageId = message?.message_id ?? null;

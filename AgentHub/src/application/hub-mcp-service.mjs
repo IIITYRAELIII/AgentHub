@@ -314,11 +314,11 @@ export class HubMcpService {
         provider: { type: "string", enum: ["codex", "claude"] },
         confirm_launch: { type: "boolean", description: "Must be true because this starts or queues another agent turn." },
       }, ["task_id", "confirm_launch"]),
-      tool("hub_task_status_update", "Change the workflow status of any Dashboard task. Done also completes and hides the task.", {
+      tool("hub_task_status_update", "Change the workflow status of any Dashboard task. Done means ready on production and remains visible; it does not close the task.", {
         task_id: { type: "string" },
         status: { type: "string", enum: ["new", "in_progress", "testing", "awaiting_implementation", "done"] },
       }, ["task_id", "status"]),
-      tool("hub_task_complete", "Mark any Dashboard task as completed.", {
+      tool("hub_task_complete", "Close and hide a Dashboard task after customer acceptance or when delivery is not required.", {
         task_id: { type: "string" },
       }, ["task_id"]),
       tool("hub_task_delete", "Permanently delete any Dashboard task by id.", {

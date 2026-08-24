@@ -405,7 +405,7 @@ test("Desktop turn open returns the exact indexed intermediate message", async (
   assert.equal(result.focusedTurn.messages[0].text, "intermediate answer");
 });
 
-test("Desktop message intake resolves a cached task without waiting for catalog refresh", async () => {
+test("Desktop message intake does not start catalog refresh for a cached task", async () => {
   const { service } = fixture();
   let refreshStarted = false;
   service.refreshCatalog = async () => {
@@ -416,7 +416,7 @@ test("Desktop message intake resolves a cached task without waiting for catalog 
   const target = await service.resolveTarget({ streamId: "stream-1" });
 
   assert.equal(target.threadId, "thread-1");
-  assert.equal(refreshStarted, true);
+  assert.equal(refreshStarted, false);
 });
 
 test("Desktop turn open keeps an inter-Stream source agent on its fallback prompt", async () => {

@@ -44,6 +44,7 @@ export class TurnEndDeliveryService {
       projectRoot: completion.projectRoot,
       threadId: completion.threadId,
       turnId: completion.turnId,
+      startedAt: completion.startedAt,
     }, notificationBody, { updatedAt: completion.completedAt });
     if (completion.turnId) this.rememberSeenTurn(completion, completion.turnId);
     return true;

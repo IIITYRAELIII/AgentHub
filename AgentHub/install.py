@@ -272,7 +272,9 @@ def install_voice(target_root: Path) -> None:
     )
     whisper_environment = {
         **os.environ,
+        "WHISPER_MODEL": "large-v3-turbo",
         "WHISPER_MODEL_DIR": str(target_root / "data" / "models" / "whisper"),
+        "WHISPER_DEVICE": "cuda",
     }
     subprocess.run(
         [str(python), str(ROOT / "transcribe.py"), "--download"],
@@ -726,7 +728,8 @@ def main() -> int:
         "miniApp": existing_mini_app,
         "sharedDashboardBot": shared_bot,
         "voiceEnabled": bool(existing.get("voiceEnabled")) or args.with_voice or args.install_voice,
-        "whisperModel": "small",
+        "whisperModel": "large-v3-turbo",
+        "whisperDevice": "cuda",
         "ttsEnabled": bool(existing.get("ttsEnabled")) or args.with_voice or args.install_voice,
         "ttsModel": "v5_5_ru",
         "ttsSpeaker": "xenia",

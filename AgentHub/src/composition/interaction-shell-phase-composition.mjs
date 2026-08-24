@@ -55,6 +55,14 @@ export function requireDesktopTaskSyncStore(provider) {
   return taskSyncStore;
 }
 
+export function requireRuntimeStateStore(infrastructure) {
+  const runtimeStateStore = infrastructure?.runtimeStateStore;
+  if (typeof runtimeStateStore?.saveDeferredIntake !== "function") {
+    throw new TypeError("infrastructure.runtimeStateStore.saveDeferredIntake is required");
+  }
+  return runtimeStateStore;
+}
+
 export function createInteractionShellPhase({
   config,
   root,
@@ -68,6 +76,7 @@ export function createInteractionShellPhase({
 }) {
   const api = deferred.api;
   const ports = deferred.ports;
+  const runtimeStateStore = requireRuntimeStateStore(infrastructure);
   const taskSyncStore = requireDesktopTaskSyncStore(provider);
   const serverControlController = createServerControlComposition({
     config,
@@ -152,7 +161,9 @@ export function createInteractionShellPhase({
       workLogUsageStore: infrastructure.workLogUsageStore,
       workspaceCatalogStore: infrastructure.workspaceCatalogStore,
       streamHandoff: infrastructure.streamHandoff,
+      runtimeStateStore,
       taskBoard: infrastructure.taskBoard,
+      taskVoiceTranscriber: infrastructure.taskVoiceTranscriber,
       taskReadStateStore: infrastructure.taskReadStateStore,
       usdRubRateStore: infrastructure.usdRubRateStore,
       pendingInputs: provider.pendingInputs,

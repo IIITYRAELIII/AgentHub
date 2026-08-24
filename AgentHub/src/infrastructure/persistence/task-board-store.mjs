@@ -731,7 +731,7 @@ export class TaskBoardStore {
       if (currentRequestId && currentRequestId !== normalizedRequestId) {
         throw new Error("Task launch is already pending; retry it with the original request_id");
       }
-      if (current.status === "done") throw new Error("Task уже завершена");
+      if (current.status === "done") throw new Error("Task уже закрыта");
       if (current.status === "started" && !currentRequestId) throw new Error("Task уже запущена");
       if (!currentRequestId) {
         database.prepare(`
@@ -809,22 +809,14 @@ export class TaskBoardStore {
       const taskId = String(id);
       const current = database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(taskId);
       if (!current) throw new Error("Задача не найдена");
-      if (workflowStatus === "done") {
-        database.prepare(`
-          UPDATE hub_board_tasks
-          SET status = 'done', workflow_status = 'done', completed_at_ms = ?, updated_at_ms = ?
-          WHERE id = ?
-        `).run(timestamp, timestamp, taskId);
-      } else {
-        const lifecycleStatus = current.status === "done"
-          ? (current.stream_id ? "started" : "open")
-          : current.status;
-        database.prepare(`
-          UPDATE hub_board_tasks
-          SET status = ?, workflow_status = ?, completed_at_ms = NULL, updated_at_ms = ?
-          WHERE id = ?
-        `).run(lifecycleStatus, workflowStatus, timestamp, taskId);
-      }
+      const lifecycleStatus = current.status === "done"
+        ? (current.stream_id ? "started" : "open")
+        : current.status;
+      database.prepare(`
+        UPDATE hub_board_tasks
+        SET status = ?, workflow_status = ?, completed_at_ms = NULL, updated_at_ms = ?
+        WHERE id = ?
+      `).run(lifecycleStatus, workflowStatus, timestamp, taskId);
       return taskFromRow(database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(taskId));
     });
   }

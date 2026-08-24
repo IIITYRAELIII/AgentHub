@@ -41,6 +41,7 @@ test("TurnEndDeliveryService projects and marks one exact completion", async () 
     threadId: "thread-1",
     turnId: "turn-1",
     status: "completed",
+    startedAt: "2026-08-04T10:08:00.000Z",
     completedAt: "2026-08-04T10:09:00.000Z",
     finalAnswer: "Final answer",
   };
@@ -48,6 +49,7 @@ test("TurnEndDeliveryService projects and marks one exact completion", async () 
   assert.equal(await state.service.deliver(completion), true);
   assert.deepEqual(state.events.map(([name]) => name), ["project", "message", "seen", "delivered", "save"]);
   assert.equal(state.events[1][1].streamId, "stream-1");
+  assert.equal(state.events[1][1].startedAt, "2026-08-04T10:08:00.000Z");
   assert.deepEqual(state.events[1][3], { updatedAt: "2026-08-04T10:09:00.000Z" });
   assert.equal(await state.service.deliver(completion), false);
 });

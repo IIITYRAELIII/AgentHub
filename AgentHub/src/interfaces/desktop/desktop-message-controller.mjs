@@ -98,8 +98,9 @@ export function createDesktopMessageController({
         ...(messageOrigin ? { origin: messageOrigin } : {}),
         message: "Сообщение сохранено Hub и ожидает подтверждения запуска.",
       });
-      await persistReceipts();
-      const submit = durableIntake && typeof runCoordinator.acceptClientInput === "function"
+      const usesDurableIntake = durableIntake && typeof runCoordinator.acceptClientInput === "function";
+      if (!usesDurableIntake) await persistReceipts();
+      const submit = usesDurableIntake
         ? runCoordinator.acceptClientInput.bind(runCoordinator)
         : runCoordinator.submitClientInput.bind(runCoordinator);
       try {
@@ -114,7 +115,7 @@ export function createDesktopMessageController({
         storedResult.pending = false;
         if (messageAttachments.length) storedResult.attachments = messageAttachments;
         receipts.updateResult(receiptIdentity, storedResult);
-        await persistReceipts();
+        if (!usesDurableIntake) await persistReceipts();
         return storedResult;
       } catch (error) {
         receipts.updateResult(receiptIdentity, {

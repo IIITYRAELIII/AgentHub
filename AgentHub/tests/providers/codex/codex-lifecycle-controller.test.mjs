@@ -130,11 +130,13 @@ test("Codex lifecycle duplicate completion updates journal without redelivery", 
   const result = await f.controller.handle(request("turn-complete", f.projectRoot, {
     status: "completed",
     finalAnswer: "Already delivered",
+    startedAt: "2026-08-04T10:08:00.000Z",
   }));
 
   assert.equal(result, "Turn was already delivered.");
   assert.equal(f.projected.length, 1);
   assert.equal(f.remembered.length, 1);
+  assert.equal(f.remembered[0][0].startedAt, "2026-08-04T10:08:00.000Z");
   assert.equal(f.deliveredCompletions.length, 0);
   assert.equal(f.lastSeenTaskTurnIds.size, 1);
 });

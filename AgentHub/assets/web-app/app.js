@@ -4675,6 +4675,12 @@ function renderMarkdown(target, source, fileContext = currentFileLinkContext(), 
       target.append(renderMarkdownCodeBlock(code, fence[1]));
       continue;
     }
+    const standaloneCode = MessageView.standaloneInlineCode(line);
+    if (standaloneCode !== null) {
+      target.append(renderMarkdownCodeBlock([standaloneCode]));
+      index += 1;
+      continue;
+    }
     const technical = technicalTailLine(line);
     if (technical) {
       const rows = [];
@@ -4724,8 +4730,11 @@ function renderMarkdown(target, source, fileContext = currentFileLinkContext(), 
     if (/^\s*>\s?/u.test(line)) {
       const quote = el("blockquote");
       while (index < lines.length && /^\s*>\s?/u.test(lines[index])) {
+        const quoteLine = lines[index].replace(/^\s*>\s?/u, "");
+        const quoteCode = MessageView.standaloneInlineCode(quoteLine);
         if (quote.childNodes.length) quote.append(document.createElement("br"));
-        appendInlineMarkdown(quote, lines[index].replace(/^\s*>\s?/u, ""), fileContext);
+        if (quoteCode !== null) quote.append(renderMarkdownCodeBlock([quoteCode]));
+        else appendInlineMarkdown(quote, quoteLine, fileContext);
         index += 1;
       }
       target.append(quote);

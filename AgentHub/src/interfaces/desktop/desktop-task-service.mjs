@@ -121,10 +121,6 @@ export class DesktopTaskService {
       entry = reference.streamId
         ? this.#findCurrentStream(reference.streamId, refreshed)
         : this.#find(params, refreshed);
-    } else {
-      void this.refreshCatalog().catch((error) => {
-        this.warn(`Cannot refresh task catalog after message intake: ${error.message}`);
-      });
     }
     if (!entry) throw new Error("Поток сообщения больше не существует в локальном каталоге");
     const binding = entry.streamId ? this.threadsForStream(entry.streamId).find((thread) => (

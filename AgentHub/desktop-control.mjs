@@ -553,7 +553,9 @@ async function callDesktopControlOnce(action, params, {
         else if (value.ackRequired === true && String(value.commandId ?? "") === commandId) {
           deliveredResult = value.result;
           state = "retirement";
-          socket.write(`${JSON.stringify({ type: "result-ack", commandId })}\n`);
+          socket.write(`${JSON.stringify({ type: "result-ack", commandId })}\n`, () => {
+            finish(resolve, deliveredResult);
+          });
         } else finish(resolve, value.result);
       } catch (error) {
         finish(reject, error);

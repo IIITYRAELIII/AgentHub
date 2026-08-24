@@ -153,6 +153,8 @@ export class CodexAppServerTransport {
     this.interactiveDispatchStreak = 0;
     this.threadReadCache = new Map();
     this.threadHydrations = new Map();
+    this.messageQueue = [];
+    this.messageDrainScheduled = false;
     this.initialization = null;
     this.generation = 0;
   }
@@ -563,9 +565,23 @@ export class CodexAppServerTransport {
   }
 
   #dispatchMessage(message) {
-    Promise.resolve()
-      .then(() => this.onMessage?.(message))
-      .catch(this.onMessageError);
+    this.messageQueue.push(message);
+    this.#scheduleMessageDrain();
+  }
+
+  #scheduleMessageDrain() {
+    if (this.messageDrainScheduled) return;
+    this.messageDrainScheduled = true;
+    setImmediate(() => {
+      this.messageDrainScheduled = false;
+      const messages = coalesceHydrationMessages(this.messageQueue.splice(0));
+      for (const queued of messages) {
+        Promise.resolve()
+          .then(() => this.onMessage?.(queued))
+          .catch(this.onMessageError);
+      }
+      if (this.messageQueue.length) this.#scheduleMessageDrain();
+    });
   }
 
   async #handleExit(instance, code, signal, cause = null) {
@@ -593,6 +609,8 @@ export class CodexAppServerTransport {
     this.interactiveDispatchStreak = 0;
     this.threadReadCache.clear();
     this.threadHydrations.clear();
+    this.messageQueue.length = 0;
+    this.messageDrainScheduled = false;
     this.initialization = null;
     this.lines?.close?.();
     this.lines = null;

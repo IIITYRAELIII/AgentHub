@@ -1205,7 +1205,7 @@ test("shared Dashboard bot pairs one Telegram user and queues Tasks only for tha
     },
   });
   assert.equal(response.status, 200);
-  assert.match(telegramCalls.at(-1).body.text, /Скриншот поставлен в очередь Agent Hub/u);
+  assert.match(telegramCalls.at(-1).body.text, /Файл поставлен в очередь Agent Hub/u);
 
   response = await workerModule.default.fetch(signedServiceRequest(
     "https://hub.test/api/dashboard-bot/pull",
@@ -1229,6 +1229,83 @@ test("shared Dashboard bot pairs one Telegram user and queues Tasks only for tha
   ), env);
   assert.equal(response.status, 200);
   assert.equal(telegramCalls.at(-1).body.text, "✅ Изменения сохранены в Dashboard.");
+
+  response = await webhook({
+    update_id: 1021,
+    message: {
+      message_id: 31,
+      date: 1_786_200_003,
+      chat: { id: 42, type: "private" },
+      from: { id: 42, first_name: "Алиса" },
+      voice: {
+        file_id: "voice-ogg",
+        mime_type: "audio/ogg",
+        file_size: 4,
+      },
+      reply_to_message: {
+        message_id: 2,
+        from: { id: 42, first_name: "Алиса" },
+        text: "Исправить фильтр на дашборде",
+      },
+    },
+  });
+  assert.equal(response.status, 200);
+  assert.match(telegramCalls.at(-1).body.text, /Файл поставлен в очередь Agent Hub/u);
+  response = await workerModule.default.fetch(signedServiceRequest(
+    "https://hub.test/api/dashboard-bot/pull",
+    { limit: 10, waitMs: 0 },
+    hubSecret,
+    { "X-Agent-Hub-Dashboard-Id": hubId },
+  ), env);
+  const [voiceCommand] = (await response.json()).commands;
+  assert.equal(voiceCommand.params.replyMessageId, 2);
+  assert.deepEqual(voiceCommand.params.sourceDetails.attachmentKinds, ["voice"]);
+  assert.match(voiceCommand.params.attachments[0], /^remote-attachment:[0-9a-f-]{36}$/u);
+  response = await workerModule.default.fetch(signedServiceRequest(
+    "https://hub.test/api/dashboard-bot/result",
+    { id: voiceCommand.id, userId: "42", ok: true, result: { taskId: "task-1" } },
+    hubSecret,
+    { "X-Agent-Hub-Dashboard-Id": hubId },
+  ), env);
+  assert.equal(response.status, 200);
+
+  response = await webhook({
+    update_id: 1022,
+    message: {
+      message_id: 32,
+      date: 1_786_200_004,
+      chat: { id: 42, type: "private" },
+      from: { id: 42, first_name: "Алиса" },
+      document: {
+        file_id: "requirements-pdf",
+        file_name: "requirements.pdf",
+        mime_type: "application/pdf",
+        file_size: 4,
+      },
+      reply_to_message: {
+        message_id: 2,
+        from: { id: 42, first_name: "Алиса" },
+        text: "Исправить фильтр на дашборде",
+      },
+    },
+  });
+  assert.equal(response.status, 200);
+  response = await workerModule.default.fetch(signedServiceRequest(
+    "https://hub.test/api/dashboard-bot/pull",
+    { limit: 10, waitMs: 0 },
+    hubSecret,
+    { "X-Agent-Hub-Dashboard-Id": hubId },
+  ), env);
+  const [fileCommand] = (await response.json()).commands;
+  assert.deepEqual(fileCommand.params.sourceDetails.attachmentKinds, ["document"]);
+  assert.match(fileCommand.params.attachments[0], /^remote-attachment:[0-9a-f-]{36}$/u);
+  response = await workerModule.default.fetch(signedServiceRequest(
+    "https://hub.test/api/dashboard-bot/result",
+    { id: fileCommand.id, userId: "42", ok: true, result: { taskId: "task-1" } },
+    hubSecret,
+    { "X-Agent-Hub-Dashboard-Id": hubId },
+  ), env);
+  assert.equal(response.status, 200);
 
   response = await webhook({
     update_id: 103,
@@ -1600,7 +1677,7 @@ test("shared Dashboard bot can send forwards separately with their reply clarifi
   const standaloneImageCard = telegramCalls
     .filter((call) => call.method === "sendMessage" && /Собираю пачку/u.test(call.body.text))
     .at(-1);
-  assert.match(standaloneImageCard.body.text, /изображений: 1/u);
+  assert.match(standaloneImageCard.body.text, /файлов: 1/u);
 
   await webhook({
     update_id: 209,
@@ -1631,7 +1708,8 @@ test("shared Dashboard bot can send forwards separately with their reply clarifi
   ), env);
   const [standaloneImageCommand] = (await response.json()).commands;
   assert.equal(standaloneImageCommand.params.sourceDetails.messageCount, 2);
-  assert.equal(standaloneImageCommand.params.sourceDetails.imageCount, 1);
+  assert.equal(standaloneImageCommand.params.sourceDetails.attachmentCount, 1);
+  assert.deepEqual(standaloneImageCommand.params.sourceDetails.attachmentKinds, ["image"]);
   assert.match(standaloneImageCommand.params.attachments[0], /^remote-attachment:[0-9a-f-]{36}$/u);
   assert.match(standaloneImageCommand.params.text, /Изображение 1 приложено/u);
   assert.match(standaloneImageCommand.params.text, /FB Миллениум/u);

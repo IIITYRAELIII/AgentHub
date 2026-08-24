@@ -391,6 +391,44 @@ test("message delivery distinguishes a server rejection from an unconfirmed tran
   assert.equal(rejected.agentHubCommandRejected, true);
 });
 
+test("focused turn without message times keeps its startedAt chronology", () => {
+  const source = clientFunctionSource("historyMessages", "function mergeNewestHistory");
+  const sandbox = vm.createContext({
+    attachmentViews: () => [],
+    conversationMessageAuthor: (_message, provider) => provider,
+    focusedTurnAlreadyVisible: () => false,
+    focusedTurnTaskThreadId: (turn) => turn.threadId,
+    historicalMessagesForDisplay: (item) => item.messages,
+  });
+  vm.runInContext(`${source}; globalThis.mapHistory = historyMessages;`, sandbox);
+  const current = sandbox.mapHistory({
+    provider: "codex",
+    threadId: "thread-1",
+    start: 10,
+    items: [{
+      id: "turn-current",
+      startedAt: "2026-08-24T11:32:05.975Z",
+      messages: [{
+        itemId: "current-user",
+        role: "user",
+        text: "Повтори",
+        time: "2026-08-24T11:32:05.975Z",
+      }],
+    }],
+  }, {
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "turn-old",
+    startedAt: "2026-08-24T10:27:26.000Z",
+    messages: [{ itemId: "old-user", role: "user", text: "Запусти проверку" }],
+  });
+
+  assert.deepEqual(
+    lifecycle.chronologicalMessages(Array.from(current)).map((message) => message.itemId),
+    ["old-user", "turn-old:focused:agent", "current-user"],
+  );
+});
+
 test("VS Code message delivery retries connection failures without changing the operation", async () => {
   const attempts = [];
   const waits = [];
@@ -419,6 +457,29 @@ test("VS Code message delivery does not retry an application rejection", async (
     wait: async () => {},
   }), /корректную задачу/u);
   assert.equal(attempts, 1);
+});
+
+test("Web control retries only blank gateway failures", async () => {
+  const gateway = lifecycle.httpControlError(502, {});
+  const application = lifecycle.httpControlError(503, { error: "Управление Agent Hub недоступно." });
+  assert.equal(gateway.code, "AGENT_HUB_HTTP_GATEWAY");
+  assert.equal(lifecycle.isConnectionFailure(gateway), true);
+  assert.equal(lifecycle.messageSendDefinitelyRejected(gateway), false);
+  assert.equal(lifecycle.messageSendDefinitelyRejected(application), true);
+
+  const attempts = [];
+  const result = await lifecycle.retryConnectionFailure(async (attempt) => {
+    attempts.push(attempt);
+    if (attempt < 2) throw lifecycle.httpControlError(502, {});
+    return "accepted";
+  }, {
+    delaysMs: [0, 0],
+    wait: async () => {},
+    shouldRetry: (error) => error.code === "AGENT_HUB_HTTP_GATEWAY",
+  });
+  assert.equal(result, "accepted");
+  assert.deepEqual(attempts, [0, 1, 2]);
+  assert.match(hubClientSource, /const commandId = crypto\.randomUUID\(\);[\s\S]*retryConnectionFailure[\s\S]*JSON\.stringify\(\{ action, params, commandId \}\)/u);
 });
 
 test("optional history reads settle without becoming connection failures", async () => {
@@ -2358,6 +2419,43 @@ test("run completion starts history catch-up even when answer metadata has not c
   const current = { ...previous, running: false };
   assert.equal(lifecycle.latestAnswerTransition(previous, current), true);
   assert.equal(lifecycle.latestAnswerTransition(current, current), false);
+});
+
+test("history catch-up waits for the completed turn instead of accepting the previous answer", () => {
+  const previous = {
+    provider: "codex",
+    threadId: "thread-1",
+    running: true,
+    run: { turnId: "turn-current" },
+    lastAnswerTurnId: "turn-old",
+    lastAnswer: "Старый финал",
+    lastAnswerAt: "2026-08-24T11:30:00.000Z",
+  };
+  const current = { ...previous, running: false, run: null };
+  const history = {
+    provider: "codex",
+    threadId: "thread-1",
+    items: [{
+      id: "turn-old",
+      completed: true,
+      prompt: "Старый вопрос",
+      answer: "Старый финал",
+      messages: [{ role: "agent", phase: "final_answer", text: "Старый финал" }],
+    }],
+  };
+
+  const expectedTurnId = lifecycle.completionCatchUpTurnId(previous, current);
+  assert.equal(expectedTurnId, "turn-current");
+  assert.equal(lifecycle.historyContainsLatestAnswer(history, current), true);
+  assert.equal(lifecycle.historyContainsLatestAnswer(history, current, { expectedTurnId }), false);
+  history.items.push({
+    id: "turn-current",
+    completed: true,
+    prompt: "Новый вопрос",
+    answer: "Новый финал",
+    messages: [{ role: "agent", phase: "final_answer", text: "Новый финал" }],
+  });
+  assert.equal(lifecycle.historyContainsLatestAnswer(history, current, { expectedTurnId }), true);
 });
 
 test("a stale provider history keeps automatic catch-up active after restart", () => {

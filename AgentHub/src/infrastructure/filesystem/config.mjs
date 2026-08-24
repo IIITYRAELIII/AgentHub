@@ -63,6 +63,14 @@ function integerInRange(value, fallback, name, min, max) {
   return number;
 }
 
+function whisperDevice(value) {
+  const device = String(value ?? "cuda").trim().toLowerCase() || "cuda";
+  if (!["auto", "cpu", "cuda"].includes(device)) {
+    throw new Error("whisperDevice must be auto, cpu or cuda");
+  }
+  return device;
+}
+
 function contextAutomationSettings(value) {
   const raw = value ?? {};
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
@@ -735,7 +743,8 @@ export async function loadConfig() {
     allowedChatIds,
     privateChatsOnly: raw.privateChatsOnly !== false,
     voiceEnabled: raw.voiceEnabled !== false,
-    whisperModel: String(raw.whisperModel ?? "small"),
+    whisperModel: String(raw.whisperModel ?? "large-v3-turbo").trim() || "large-v3-turbo",
+    whisperDevice: whisperDevice(process.env.WHISPER_DEVICE ?? raw.whisperDevice),
     ttsEnabled: raw.ttsEnabled !== false,
     ttsModel: String(raw.ttsModel ?? "v5_5_ru").trim(),
     ttsSpeaker: String(raw.ttsSpeaker ?? "xenia").trim(),

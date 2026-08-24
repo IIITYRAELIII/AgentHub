@@ -85,7 +85,7 @@ const localWebSecret = config.miniApp.enabled
 const {
   trustedDeviceStore,
   codexRolloutContextSanitizer,
-  workLogUsageStore, workLogUsageIdentityStore, workLogUsageRemoteConfigStore, workspaceCatalogStore, workspaceReleaseService, preTurnInstructions, taskBoard, hubMcpService, hubMcpServer,
+  workLogUsageStore, workLogUsageIdentityStore, workLogUsageRemoteConfigStore, workspaceCatalogStore, workspaceReleaseService, preTurnInstructions, taskBoard, taskVoiceTranscriber, hubMcpService, hubMcpServer,
   miniAppServer,
   publicMiniAppServer,
   usdRubRateStore,
@@ -570,8 +570,8 @@ const interactionShell = createInteractionShellPhase({
     isCodex,
   },
   infrastructure: {
-    trustedDeviceStore, workLogUsageStore, workspaceCatalogStore, preTurnInstructions, taskBoard,
-    usdRubRateStore, taskReadStateStore, rateLimitHistoryStore, runJournal,
+    trustedDeviceStore, workLogUsageStore, workspaceCatalogStore, preTurnInstructions, taskBoard, taskVoiceTranscriber,
+    usdRubRateStore, runtimeStateStore, taskReadStateStore, rateLimitHistoryStore, runJournal,
   },
   provider: providerApplication,
   clients: clientRuntime,

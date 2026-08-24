@@ -200,7 +200,7 @@ test("local control client survives App Server exit during delayed startup and s
     (await readFile(codexStatePath, "utf8").then(JSON.parse)).requestCounts["turn/steer"] ?? 0,
   );
   const compactingInput = await callDesktopControl("send-message", {
-    text: "must wait for context maintenance",
+    text: "[long-final] must wait for context maintenance",
     provider: "codex",
     threadId: firstThreadId,
     clientUserMessageId: "desktop-message-during-compaction",
@@ -215,11 +215,6 @@ test("local control client survives App Server exit during delayed startup and s
     steerCountBeforeCompactionInput,
     "input during compaction must not be steered into the compacting turn",
   );
-  const cancelledCompactingInput = await callDesktopControl("deferred-input", {
-    id: compactingInput.id,
-    action: "cancel",
-  }, { runtimeRoot });
-  assert.equal(cancelledCompactingInput.accepted, true);
   await waitFor(async () => {
     const snapshot = await callDesktopControl("snapshot", {}, { runtimeRoot });
     const context = snapshot.tasks.find((item) => item.threadId === firstThreadId)?.context;
@@ -232,21 +227,73 @@ test("local control client survives App Server exit during delayed startup and s
     key: approvalSnapshot.pendingApprovals[0].key,
     decision: "once",
   }, { runtimeRoot });
-  await waitFor(async () => {
+  const compactionQueuedCompletion = await waitFor(async () => {
     const snapshot = await callDesktopControl("snapshot", {}, { runtimeRoot });
-    return snapshot.activeCount === 0 ? snapshot : null;
-  }, "desktop approval completion", 15_000).catch(async (error) => {
+    const receipt = snapshot.messageReceipts.find((item) => (
+      item.clientUserMessageId === "desktop-message-during-compaction"
+    ));
+    const task = snapshot.tasks.find((item) => item.threadId === firstThreadId);
+    const stillQueued = snapshot.deferredInputs.some((item) => (
+      item.clientUserMessageId === "desktop-message-during-compaction"
+    ));
+    return receipt?.runId
+      && receipt?.turnId
+      && !stillQueued
+      && snapshot.activeCount === 0
+      && task?.running === false
+      && task?.run == null
+      && String(task?.lastAnswer ?? "").endsWith("ФИНАЛ_НЕ_ОБРЕЗАН")
+      ? snapshot
+      : null;
+  }, "queued message completion after context compaction", 15_000).catch(async (error) => {
     const snapshot = await callDesktopControl("snapshot", {}, { runtimeRoot }).catch(() => null);
     throw new Error(`${error.message}; snapshot=${JSON.stringify({
       activeCount: snapshot?.activeCount,
+      deferredInputs: snapshot?.deferredInputs,
+      messageReceipts: snapshot?.messageReceipts,
       tasks: snapshot?.tasks?.map((task) => ({
         threadId: task.threadId,
         running: task.running,
+        run: task.run,
+        lastAnswer: task.lastAnswer,
         title: task.title,
         context: task.context,
       })),
     })}`);
   });
+  const compactionQueuedTask = compactionQueuedCompletion.tasks.find((item) => (
+    item.threadId === firstThreadId
+  ));
+  assert.equal(compactionQueuedTask.running, false);
+  assert.equal(compactionQueuedTask.run, null);
+  assert.ok(compactionQueuedTask.lastAnswer.length > 6_000);
+  assert.match(compactionQueuedTask.lastAnswer, /ФИНАЛ_НЕ_ОБРЕЗАН$/u);
+  const compactionQueuedReceipt = compactionQueuedCompletion.messageReceipts.find((item) => (
+    item.clientUserMessageId === "desktop-message-during-compaction"
+  ));
+  assert.equal(compactionQueuedReceipt.accepted, true);
+  assert.ok(compactionQueuedReceipt.runId);
+  assert.ok(compactionQueuedReceipt.turnId);
+  const stateAfterCompactionQueue = await readFile(codexStatePath, "utf8").then(JSON.parse);
+  const compactionQueuedProviderItems = stateAfterCompactionQueue.threads
+    .flatMap((thread) => thread.turns)
+    .flatMap((turn) => turn.items)
+    .filter((item) => item.clientId === "desktop-message-during-compaction");
+  assert.equal(compactionQueuedProviderItems.length, 1, "deferred input reached the provider more than once");
+  const compactionQueuedHistory = await waitFor(async () => {
+    const result = await callDesktopControl("task-history", {
+      provider: "codex",
+      threadId: firstThreadId,
+      limit: 10,
+    }, { runtimeRoot });
+    const exchange = result.items.find((item) => item.messages.some((message) => (
+      message.clientUserMessageId === "desktop-message-during-compaction"
+    )));
+    return exchange?.answer?.endsWith("ФИНАЛ_НЕ_ОБРЕЗАН") ? { result, exchange } : null;
+  }, "full queued answer history after context compaction", 5_000);
+  assert.equal(compactionQueuedHistory.result.total, 2);
+  assert.ok(compactionQueuedHistory.exchange.answer.length > 6_000);
+  assert.match(compactionQueuedHistory.exchange.answer, /ФИНАЛ_НЕ_ОБРЕЗАН$/u);
   const beforeCompaction = await callDesktopControl("snapshot", {}, { runtimeRoot });
   const contextBefore = beforeCompaction.tasks.find((item) => item.threadId === firstThreadId)?.context;
   assert.equal(contextBefore.usedTokens, 130);
@@ -495,9 +542,14 @@ test("local control client survives App Server exit during delayed startup and s
       threadId: firstThreadId,
       limit: 10,
     }, { runtimeRoot });
-    return result.total === 2 ? result : null;
+    const slowExchange = result.items.find((item) => item.messages.some((message) => (
+      message.clientUserMessageId === firstMessageId
+    )));
+    return result.total === 3 && /Готово: \[slow\] desktop A/u.test(slowExchange?.answer ?? "")
+      ? result
+      : null;
   }, "background task history hydration", 5_000);
-  assert.equal(history.total, 2);
+  assert.equal(history.total, 3);
   const slowExchange = history.items.find((item) => item.messages.some((message) => (
     message.clientUserMessageId === firstMessageId
   )));
@@ -572,6 +624,145 @@ test("local control client survives App Server exit during delayed startup and s
     const snapshot = await callDesktopControl("snapshot", {}, { runtimeRoot });
     return snapshot.activeCount === 0 ? snapshot : null;
   }, "desktop cancellation", 15_000);
+
+  const loadTasks = [];
+  for (let index = 0; index < 5; index += 1) {
+    const created = await callDesktopControl("new-task", { provider: "codex" }, { runtimeRoot });
+    loadTasks.push({
+      provider: created.selected.provider,
+      streamId: created.selected.streamId,
+      threadId: created.selected.threadId,
+      index,
+    });
+  }
+  assert.equal(new Set(loadTasks.map((task) => task.streamId)).size, 5);
+  const acknowledgementLatenciesMs = [];
+  const sendMeasured = async (params) => {
+    const startedAtMs = performance.now();
+    const result = await callDesktopControl("send-message", params, { runtimeRoot });
+    acknowledgementLatenciesMs.push(performance.now() - startedAtMs);
+    return result;
+  };
+  const loadRoots = await Promise.all(loadTasks.map((task) => sendMeasured({
+    text: `[slow] load root ${task.index}`,
+    provider: task.provider,
+    threadId: task.threadId,
+    clientUserMessageId: `load-${task.index}-root`,
+  })));
+  assert.ok(loadRoots.every((result) => result.accepted && result.queued));
+  await waitFor(async () => {
+    const snapshot = await callDesktopControl("snapshot", {}, { runtimeRoot });
+    const runningLoadTasks = snapshot.tasks.filter((task) => (
+      loadTasks.some((candidate) => candidate.threadId === task.threadId) && task.running
+    ));
+    return runningLoadTasks.length === 5 ? snapshot : null;
+  }, "five parallel desktop runs", 5_000);
+
+  const loadDeferredPairs = await Promise.all(loadTasks.map(async (task) => {
+    const [first, second] = await Promise.all([
+      sendMeasured({
+        text: `load queued A ${task.index}`,
+        provider: task.provider,
+        threadId: task.threadId,
+        clientUserMessageId: `load-${task.index}-queue-a`,
+      }),
+      sendMeasured({
+        text: `load queued B ${task.index}`,
+        provider: task.provider,
+        threadId: task.threadId,
+        clientUserMessageId: `load-${task.index}-queue-b`,
+      }),
+    ]);
+    assert.equal(first.deferred, true);
+    assert.equal(second.deferred, true);
+    return { task, first, second };
+  }));
+  await Promise.all(loadDeferredPairs.flatMap(({ first, second }) => [
+    callDesktopControl("deferred-input", { id: first.id, action: "queue" }, { runtimeRoot }),
+    callDesktopControl("deferred-input", { id: second.id, action: "queue" }, { runtimeRoot }),
+  ]));
+  const loadSteers = await Promise.all(loadDeferredPairs.map(({ first }) => (
+    callDesktopControl("deferred-input", { id: first.id, action: "steer" }, { runtimeRoot })
+  )));
+  assert.ok(loadSteers.every((result) => result.accepted && result.turnId));
+
+  const loadClientIds = loadTasks.flatMap((task) => [
+    `load-${task.index}-root`,
+    `load-${task.index}-queue-a`,
+    `load-${task.index}-queue-b`,
+  ]);
+  const completedLoad = await waitFor(async () => {
+    const snapshot = await callDesktopControl("snapshot", {}, { runtimeRoot });
+    const receiptIds = new Set(snapshot.messageReceipts
+      .filter((receipt) => receipt.runId && receipt.turnId)
+      .map((receipt) => receipt.clientUserMessageId));
+    const loadQueueIsEmpty = !snapshot.deferredInputs.some((input) => (
+      loadClientIds.includes(input.clientUserMessageId)
+    ));
+    const loadTasksAreIdle = loadTasks.every((candidate) => {
+      const task = snapshot.tasks.find((item) => item.threadId === candidate.threadId);
+      return task && !task.running && task.run == null;
+    });
+    return loadQueueIsEmpty
+      && loadTasksAreIdle
+      && loadClientIds.every((clientUserMessageId) => receiptIds.has(clientUserMessageId))
+      ? snapshot
+      : null;
+  }, "five-stream queued message completion", 20_000);
+  assert.equal(completedLoad.deferredInputs.some((input) => (
+    loadClientIds.includes(input.clientUserMessageId)
+  )), false);
+  const maxAcknowledgementLatencyMs = Math.max(...acknowledgementLatenciesMs);
+  assert.ok(maxAcknowledgementLatencyMs < 2_000,
+    `local acknowledgement exceeded 2 seconds: ${JSON.stringify(acknowledgementLatenciesMs)}`);
+  t.diagnostic(`five-stream local ACK max ${maxAcknowledgementLatencyMs.toFixed(1)}ms`);
+
+  const providerStateAfterLoad = await readFile(codexStatePath, "utf8").then(JSON.parse);
+  const providerClientIdCounts = new Map();
+  for (const item of providerStateAfterLoad.threads
+    .flatMap((thread) => thread.turns)
+    .flatMap((turn) => turn.items)) {
+    if (!loadClientIds.includes(item.clientId)) continue;
+    providerClientIdCounts.set(item.clientId, (providerClientIdCounts.get(item.clientId) ?? 0) + 1);
+  }
+  assert.deepEqual(
+    loadClientIds.map((clientUserMessageId) => providerClientIdCounts.get(clientUserMessageId) ?? 0),
+    Array.from({ length: loadClientIds.length }, () => 1),
+  );
+  for (const task of loadTasks) {
+    const expectedHistoryClientIds = [
+      `load-${task.index}-queue-a`,
+      `load-${task.index}-queue-b`,
+      `load-${task.index}-root`,
+    ];
+    const hydratedHistory = await waitFor(async () => {
+      const result = await callDesktopControl("task-history", {
+        provider: task.provider,
+        threadId: task.threadId,
+        limit: 10,
+      }, { runtimeRoot });
+      const historyClientIds = result.items
+        .flatMap((exchange) => exchange.messages)
+        .filter((message) => message.role === "user")
+        .map((message) => message.clientUserMessageId)
+        .filter((clientUserMessageId) => loadClientIds.includes(clientUserMessageId))
+        .sort();
+      const queuedExchange = result.items.find((exchange) => exchange.messages.some((message) => (
+        message.clientUserMessageId === `load-${task.index}-queue-b`
+      )));
+      return result.total === 2
+        && JSON.stringify(historyClientIds) === JSON.stringify(expectedHistoryClientIds)
+        && new RegExp(`Готово: load queued B ${task.index}$`, "u").test(queuedExchange?.answer ?? "")
+        ? { result, historyClientIds, queuedExchange }
+        : null;
+    }, `load history ${task.index}`, 5_000);
+    assert.deepEqual(hydratedHistory.historyClientIds, expectedHistoryClientIds);
+    assert.match(
+      hydratedHistory.queuedExchange.answer,
+      new RegExp(`Готово: load queued B ${task.index}$`, "u"),
+    );
+  }
+
   const archived = await callDesktopControl("archive-task", {
     provider: "codex",
     threadId: firstThreadId,

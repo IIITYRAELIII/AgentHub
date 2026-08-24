@@ -206,6 +206,22 @@ html[data-theme="bespin"] .workspace-card-modal {
     box-shadow: var(--bespin-panel-shadow);
   }
 
+  html[data-theme="bespin"]:not([data-surface="mobile"]) .brand-text {
+    align-items: center;
+    display: flex;
+    justify-content: center;
+    text-align: center;
+  }
+
+  html[data-theme="bespin"]:not([data-surface="mobile"]) .brand .eyebrow {
+    font-size: 14px;
+    font-weight: 600;
+  }
+
+  html[data-theme="bespin"]:not([data-surface="mobile"]) .brand-text h1 {
+    display: none;
+  }
+
   html[data-theme="bespin"][data-view="chat"]:not([data-surface="mobile"]) .task-rail,
   html[data-theme="bespin"][data-view="chat"]:not([data-surface="mobile"]) .activity-rail {
     box-shadow: var(--bespin-panel-shadow);

@@ -92,9 +92,16 @@
   }
 
   function codeBlockCopyRequest(value) {
-    const text = String(value ?? "");
+    const source = String(value ?? "");
+    const fenced = source.match(/^\s*```[^\r\n]*\r?\n([\s\S]*?)(?:\r?\n\s*```\s*)?$/u);
+    const text = fenced ? fenced[1] : source;
     if (!text) return null;
     return { text, successMessage: "Блок скопирован" };
+  }
+
+  function standaloneInlineCode(value) {
+    const match = String(value ?? "").match(/^\s*`([^`\r\n]+)`\s*$/u);
+    return match ? match[1] : null;
   }
 
   function messageDisclosurePresentation(expanded) {
@@ -295,6 +302,7 @@
     reconcilePrependedKeyedChildren,
     resolvedMessageCount,
     reconcileKeyedChildren,
+    standaloneInlineCode,
     turnDurationLabel,
   });
 })();

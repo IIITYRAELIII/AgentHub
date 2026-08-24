@@ -238,9 +238,12 @@ function startTurn(params) {
     return turn;
   }
   const failed = prompt.includes("[fail]");
+  const completedAnswer = prompt.includes("[long-final]")
+    ? `Готово: ${prompt}\n${"длинный-фрагмент ".repeat(400)}\nФИНАЛ_НЕ_ОБРЕЗАН`
+    : null;
   schedule(() => finishTurn(thread, turn, {
     status: failed ? "failed" : "completed",
-    answer: failed ? "Имитированная ошибка хода" : null,
+    answer: failed ? "Имитированная ошибка хода" : completedAnswer,
   }), prompt.includes("[slow]") ? 3_000 : 120);
   return turn;
 }

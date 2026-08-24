@@ -1,14 +1,15 @@
 import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 import {
+  buildWindowsIcon,
   buildWindowsRuntimeHost,
-  windowsIconFromPng,
+  windowsIconEntries,
 } from "../../../src/infrastructure/process/runtime-host-builder.mjs";
 import { verifyRuntimeManifest } from "../../../runtime-manifest-verifier.mjs";
 import {
@@ -105,14 +106,23 @@ test("runtime launchers verify the manifest on every platform", async () => {
   assert.match(launcher, /AssignProcessToJobObject/u);
 });
 
-test("RuntimeHost icon wraps the Agent Hub PNG as a Windows icon resource", async () => {
-  const png = await readFile(path.join(ROOT, "VSCodeExtension", "media", "agent-hub-mark.png"));
-  const icon = windowsIconFromPng(png);
-  assert.equal(icon.readUInt16LE(0), 0);
-  assert.equal(icon.readUInt16LE(2), 1);
-  assert.equal(icon.readUInt16LE(4), 1);
-  assert.equal(icon.readUInt32LE(14), png.length);
-  assert.deepEqual(icon.subarray(22), png);
+test("RuntimeHost icon provides native layers for Windows task sizes", async (t) => {
+  if (process.platform !== "win32") return t.skip("RuntimeHost icon builder runs on Windows only");
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-icon-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const outputFile = path.join(directory, "AgentHub.RuntimeHost.ico");
+  await buildWindowsIcon({ sourceRoot: ROOT, outputFile });
+  const icon = await readFile(outputFile);
+  const entries = windowsIconEntries(icon);
+  assert.deepEqual(entries.map(({ width }) => width), [16, 20, 24, 32, 48, 64, 128, 256]);
+  assert.deepEqual(entries.map(({ height }) => height), [16, 20, 24, 32, 48, 64, 128, 256]);
+  assert.ok(entries.every(({ bitsPerPixel }) => bitsPerPixel === 32));
+  for (const entry of entries) {
+    const png = icon.subarray(entry.offset, entry.offset + entry.bytes);
+    assert.deepEqual(png.subarray(0, 8), Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+    assert.equal(png.readUInt32BE(16), entry.width);
+    assert.equal(png.readUInt32BE(20), entry.height);
+  }
 });
 
 test("runtime launchers reject dot releases and resolve the release only inside releases", async () => {

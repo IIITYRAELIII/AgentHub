@@ -705,6 +705,23 @@ test("desktopTaskSnapshot does not resurrect a catalog run after its final answe
   assert.equal(snapshot.run, null);
 });
 
+test("desktopTaskSnapshot rejects a timestamped catalog ghost without a turn id", () => {
+  const { desktopTaskSnapshot, entry, state } = fixture({ run: null });
+  entry.turnId = null;
+  entry.startedAt = "2026-07-30T10:00:00.000Z";
+  entry.lastActivityAtMs = Date.parse("2026-07-30T10:01:00.000Z");
+  state.lastMessage = {
+    text: "Финальный ответ уже показан",
+    updatedAt: "2026-07-30T10:01:30.000Z",
+    turnId: "turn-1",
+  };
+
+  const snapshot = desktopTaskSnapshot(entry);
+
+  assert.equal(snapshot.running, false);
+  assert.equal(snapshot.run, null);
+});
+
 test("desktop task snapshot exposes the durable provider-start phase", () => {
   const { desktopTaskSnapshot, entry, state } = fixture();
   state.run.providerStart = {

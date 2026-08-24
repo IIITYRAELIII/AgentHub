@@ -1,7 +1,7 @@
 import { TaskBoardLaunchService } from "../../application/task-board-launch-service.mjs";
 
 export class DesktopTaskBoardController {
-  constructor({ taskBoard, workspaceCatalog, dispatchCommand, sendMessage, taskLauncher = null, snapshot } = {}) {
+  constructor({ taskBoard, workspaceCatalog, dispatchCommand, sendMessage, taskLauncher = null, voiceTranscriber = null, snapshot, logger = console } = {}) {
     this.taskBoard = taskBoard;
     this.workspaceCatalog = workspaceCatalog;
     this.dispatchCommand = dispatchCommand;
@@ -9,7 +9,9 @@ export class DesktopTaskBoardController {
     this.taskLauncher = taskLauncher ?? new TaskBoardLaunchService({
       taskBoard, workspaceCatalog, dispatchCommand, sendMessage,
     });
+    this.voiceTranscriber = voiceTranscriber;
     this.snapshot = snapshot;
+    this.logger = logger;
   }
 
   async #mutate(operation) {
@@ -27,9 +29,12 @@ export class DesktopTaskBoardController {
 
   async ingest(params) {
     const attachments = Array.isArray(params.attachments) ? params.attachments : [];
-    const sourceDetails = attachments.length
-      ? { ...(params.sourceDetails ?? {}), attachments }
-      : params.sourceDetails;
+    const transcription = await this.#voiceTranscript(params, attachments);
+    const sourceDetails = {
+      ...(params.sourceDetails ?? {}),
+      ...(attachments.length ? { attachments } : {}),
+      ...(transcription.failures.length ? { voiceTranscriptionFailures: transcription.failures } : {}),
+    };
     let task;
     if (Number.isSafeInteger(params.mergeMessageId)) {
       task = this.taskBoard.mergeSourceMessage({
@@ -37,11 +42,11 @@ export class DesktopTaskBoardController {
         chatId: params.sourceDetails?.chatId,
         userId: params.sourceDetails?.userId,
         messageId: params.mergeMessageId,
-        text: params.text,
+        text: transcription.text,
         sourceDetails,
       });
     } else if (Number.isSafeInteger(params.replyMessageId)) {
-      const replyText = String(params.text ?? "").trim();
+      const replyText = transcription.text;
       task = replyText
         ? this.taskBoard.appendSourceMessage({
           source: "telegram",
@@ -61,7 +66,7 @@ export class DesktopTaskBoardController {
         });
     } else {
       task = this.taskBoard.create({
-        text: params.text,
+        text: transcription.text,
         source: "telegram",
         sourceKey: params.sourceKey,
         sourceDetails,
@@ -69,6 +74,28 @@ export class DesktopTaskBoardController {
     }
     await this.snapshot({ refresh: true });
     return { taskId: task.id, rawText: task.rawText };
+  }
+
+  async #voiceTranscript(params, attachments) {
+    const text = String(params.text ?? "").trim();
+    if (!this.voiceTranscriber?.transcribe || !attachments.length) return { text, failures: [] };
+    const kinds = Array.isArray(params.sourceDetails?.attachmentKinds)
+      ? params.sourceDetails.attachmentKinds
+      : [];
+    const blocks = [];
+    const failures = [];
+    for (let index = 0; index < attachments.length; index += 1) {
+      if (!["voice", "audio"].includes(String(kinds[index] ?? "").toLowerCase())) continue;
+      try {
+        const transcript = String(await this.voiceTranscriber.transcribe(attachments[index])).trim();
+        if (transcript) blocks.push(`--- Расшифровка голосового сообщения ${index + 1} ---\n${transcript}`);
+      } catch (error) {
+        failures.push({ index, error: String(error?.message ?? error).slice(0, 500) });
+        this.logger.warn(`Cannot transcribe Dashboard Task attachment ${index + 1}: ${error.message}`);
+      }
+    }
+    const combined = [text, ...blocks].filter(Boolean).join("\n\n");
+    return { text: combined.slice(0, 20_000), failures };
   }
 
   move(params) {

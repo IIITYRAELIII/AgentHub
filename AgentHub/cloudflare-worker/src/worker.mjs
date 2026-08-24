@@ -589,30 +589,30 @@ async function dashboardBotTelegramRequest(env, method, body = {}) {
   return payload.result;
 }
 
-async function dashboardBotTelegramFile(env, image) {
+async function dashboardBotTelegramFile(env, attachment) {
   const token = String(env.DASHBOARD_BOT_TOKEN ?? "").trim();
-  const file = await dashboardBotTelegramRequest(env, "getFile", { file_id: image.fileId });
+  const file = await dashboardBotTelegramRequest(env, "getFile", { file_id: attachment.fileId });
   const filePath = String(file?.file_path ?? "").trim();
-  if (!filePath || Number(file?.file_size ?? image.fileSize ?? 0) > MAX_ATTACHMENT_BYTES) {
-    throw new Error("Telegram returned an invalid or oversized image");
+  if (!filePath || Number(file?.file_size ?? attachment.fileSize ?? 0) > MAX_ATTACHMENT_BYTES) {
+    throw new Error("Telegram returned an invalid or oversized attachment");
   }
   const response = await fetch(`https://api.telegram.org/file/bot${token}/${filePath}`);
   if (!response.ok) throw new Error(`Telegram file download failed: HTTP ${response.status}`);
-  const body = await readBoundedBinary(response, MAX_ATTACHMENT_BYTES, "dashboard bot image");
-  const contentType = attachmentContentType(image.contentType ?? response.headers.get("Content-Type"));
-  if (!attachmentMatchesContentType(body, contentType)) throw new Error("Telegram returned a damaged image");
+  const body = await readBoundedBinary(response, MAX_ATTACHMENT_BYTES, "dashboard bot attachment");
+  const contentType = attachmentContentType(attachment.contentType ?? response.headers.get("Content-Type"));
+  if (!attachmentMatchesContentType(body, contentType)) throw new Error("Telegram returned a damaged attachment");
   return {
     body,
     contentType,
-    name: attachmentFileName(image.fileName ?? filePath.split("/").at(-1)),
+    name: attachmentFileName(attachment.fileName ?? filePath.split("/").at(-1)),
     bodyHash: await sha256(body),
   };
 }
 
-async function uploadDashboardBotImages(env, hubStore, userId, images) {
+async function uploadDashboardBotAttachments(env, hubStore, userId, attachments) {
   const references = [];
-  for (const image of images) {
-    const downloaded = await dashboardBotTelegramFile(env, image);
+  for (const attachment of attachments) {
+    const downloaded = await dashboardBotTelegramFile(env, attachment);
     const id = crypto.randomUUID().toLowerCase();
     const response = await hubStore.fetch(new Request("https://journal.internal/attachment/upload", {
       method: "POST",
@@ -628,7 +628,7 @@ async function uploadDashboardBotImages(env, hubStore, userId, images) {
     }));
     const payload = await response.json().catch(() => ({}));
     if (!response.ok || !attachmentIdFromReference(payload?.path)) {
-      throw new Error(`Agent Hub rejected an image: ${String(payload?.error ?? `HTTP ${response.status}`).slice(0, 300)}`);
+      throw new Error(`Agent Hub rejected an attachment: ${String(payload?.error ?? `HTTP ${response.status}`).slice(0, 300)}`);
     }
     references.push(payload.path);
   }
@@ -863,7 +863,7 @@ export function dashboardBotForwardedMessageSource(message) {
   return null;
 }
 
-function dashboardBotImageDescriptor(message) {
+function dashboardBotAttachmentDescriptor(message) {
   const photo = Array.isArray(message?.photo) ? message.photo.at(-1) : null;
   if (dashboardBotNonEmpty(photo?.file_id)) {
     return {
@@ -874,30 +874,44 @@ function dashboardBotImageDescriptor(message) {
       contentType: "image/jpeg",
     };
   }
-  const document = message?.document;
-  const fileName = attachmentFileName(document?.file_name ?? `telegram-${message.message_id}.bin`);
-  const declaredType = attachmentContentType(document?.mime_type);
-  const extensionType = ({
-    ".bmp": "image/bmp",
-    ".gif": "image/gif",
-    ".jpeg": "image/jpeg",
-    ".jpg": "image/jpeg",
-    ".png": "image/png",
-    ".webp": "image/webp",
-  })[/\.[a-z0-9]{1,16}$/u.exec(fileName.toLowerCase())?.[0]];
-  const contentType = [
-    "image/bmp", "image/gif", "image/jpeg", "image/png", "image/webp",
-  ].includes(declaredType) ? declaredType : extensionType;
-  if (dashboardBotNonEmpty(document?.file_id) && contentType) {
+  const candidates = [
+    ["voice", message?.voice, ".ogg", "audio/ogg"],
+    ["audio", message?.audio, ".audio", "audio/mpeg"],
+    ["document", message?.document, ".bin", "application/octet-stream"],
+    ["video", message?.video, ".mp4", "video/mp4"],
+    ["video-note", message?.video_note, ".mp4", "video/mp4"],
+    ["animation", message?.animation, ".mp4", "video/mp4"],
+    ["sticker", message?.sticker, ".webp", "image/webp"],
+  ];
+  for (const [kind, file, extension, fallbackType] of candidates) {
+    if (!dashboardBotNonEmpty(file?.file_id)) continue;
+    const fileName = attachmentFileName(file.file_name ?? `telegram-${message.message_id}${extension}`);
+    const declaredType = attachmentContentType(file.mime_type ?? fallbackType);
+    const extensionType = ({
+      ".bmp": "image/bmp",
+      ".gif": "image/gif",
+      ".jpeg": "image/jpeg",
+      ".jpg": "image/jpeg",
+      ".png": "image/png",
+      ".webp": "image/webp",
+    })[/\.[a-z0-9]{1,16}$/u.exec(fileName.toLowerCase())?.[0]];
+    const contentType = declaredType === "application/octet-stream" && extensionType
+      ? extensionType
+      : declaredType;
     return {
-      type: "image",
-      fileId: String(document.file_id),
-      fileSize: Math.max(0, Number(document.file_size) || 0),
+      type: contentType.startsWith("image/") ? "image" : kind,
+      fileId: String(file.file_id),
+      fileSize: Math.max(0, Number(file.file_size) || 0),
       fileName,
       contentType,
     };
   }
   return null;
+}
+
+function dashboardBotItemAttachments(item) {
+  if (Array.isArray(item?.attachments)) return item.attachments;
+  return Array.isArray(item?.images) ? item.images : [];
 }
 
 function dashboardBotBundleCallbackData(action, id) {
@@ -919,27 +933,34 @@ function dashboardBotBundleKeyboard(bundle) {
 function dashboardBotBundleCardText(bundle, warning = "") {
   const forwards = bundle.items.filter((item) => item.kind === "forward").length;
   const comments = bundle.items.length - forwards;
-  const images = bundle.items.reduce((count, item) => count + (item.images?.length ?? 0), 0);
+  const attachments = bundle.items.flatMap(dashboardBotItemAttachments);
+  const voices = attachments.filter((item) => ["voice", "audio"].includes(item.type)).length;
   return [
     "📥 Собираю пачку для Dashboard",
     "",
-    `Сообщений: ${bundle.items.length} · переслано: ${forwards} · ваших: ${comments} · изображений: ${images}`,
+    `Сообщений: ${bundle.items.length} · переслано: ${forwards} · ваших: ${comments} · файлов: ${attachments.length} · голосовых: ${voices}`,
     "Добавляйте следующие сообщения и свои комментарии, затем нажмите «Отправить пачку».",
     warning ? `⚠️ ${warning}` : null,
   ].filter(Boolean).join("\n");
 }
 
 function dashboardBotBundleText(bundle) {
-  let imageNumber = 0;
+  let attachmentNumber = 0;
   const blocks = bundle.items.map((item, index) => {
     const heading = item.kind === "forward"
       ? `Переслано · ${dashboardBotNonEmpty(item.source?.label) ?? "источник скрыт"}`
       : "Вы";
     const lines = [`--- Сообщение ${index + 1} · ${heading} ---`];
     if (dashboardBotNonEmpty(item.text)) lines.push(String(item.text).trim());
-    for (const _image of item.images ?? []) {
-      imageNumber += 1;
-      lines.push(`[Изображение ${imageNumber} приложено следом за этим сообщением]`);
+    for (const attachment of dashboardBotItemAttachments(item)) {
+      attachmentNumber += 1;
+      if (attachment.type === "image") {
+        lines.push(`[Изображение ${attachmentNumber} приложено следом за этим сообщением]`);
+      } else if (["voice", "audio"].includes(attachment.type)) {
+        lines.push(`[Голосовое сообщение ${attachmentNumber} приложено следом за этим сообщением]`);
+      } else {
+        lines.push(`[Файл ${attachmentNumber} «${attachmentFileName(attachment.fileName)}» приложен следом за этим сообщением]`);
+      }
     }
     return lines.join("\n");
   });
@@ -1490,10 +1511,10 @@ export class JournalStore extends DurableObject {
     };
   }
 
-  async #dashboardBotAppendBundle(update, message, linked, { source, image, precedingComment = null }) {
+  async #dashboardBotAppendBundle(update, message, linked, { source, attachment, precedingComment = null }) {
     const key = dashboardBotBundleKey(linked.userId);
     let bundle = await this.ctx.storage.get(key);
-    if (!bundle && !source && !image) return null;
+    if (!bundle && !source && !attachment) return null;
     if (!bundle) {
       const now = Date.now();
       bundle = {
@@ -1537,14 +1558,17 @@ export class JournalStore extends DurableObject {
     }
     const text = String(message.text ?? message.caption ?? "").trim();
     const totalChars = bundle.items.reduce((sum, item) => sum + String(item.text ?? "").length, 0);
-    const totalImages = bundle.items.reduce((sum, item) => sum + (item.images?.length ?? 0), 0);
+    const totalAttachments = bundle.items.reduce(
+      (sum, item) => sum + dashboardBotItemAttachments(item).length,
+      0,
+    );
     if (
       bundle.items.length >= DASHBOARD_BOT_BUNDLE_MAX_ITEMS
       || totalChars + text.length > DASHBOARD_BOT_BUNDLE_MAX_CHARS
-      || totalImages + (image ? 1 : 0) > MAX_ATTACHMENTS_PER_COMMAND
+      || totalAttachments + (attachment ? 1 : 0) > MAX_ATTACHMENTS_PER_COMMAND
     ) {
       return { card: this.#dashboardBotBundleCard(bundle, {
-        warning: "Лимит пачки достигнут (до 100 сообщений и 8 изображений). Отправьте её или отмените.",
+        warning: "Лимит пачки достигнут (до 100 сообщений и 8 файлов). Отправьте её или отмените.",
       }) };
     }
     bundle.items.push({
@@ -1556,7 +1580,7 @@ export class JournalStore extends DurableObject {
       kind: source ? "forward" : "comment",
       source,
       text,
-      images: image ? [image] : [],
+      attachments: attachment ? [attachment] : [],
       createdAt: Number(message.date) > 0 ? Number(message.date) * 1_000 : Date.now(),
     });
     bundle.updatedAt = Date.now();
@@ -1589,10 +1613,10 @@ export class JournalStore extends DurableObject {
     await this.ctx.storage.put(key, bundle);
     const groups = separate ? dashboardBotSeparatedGroups(bundle) : [{ items: bundle.items }];
     const commands = groups.map((group, index) => {
-      const telegramImages = group.items.flatMap((item) => item.images ?? []);
+      const telegramAttachments = group.items.flatMap(dashboardBotItemAttachments);
       return {
         hubId: bundle.hubId,
-        telegramImages,
+        telegramAttachments,
         command: {
           id: crypto.randomUUID().toLowerCase(),
           action: "board-task-ingest",
@@ -1609,7 +1633,8 @@ export class JournalStore extends DurableObject {
               userId: Number(bundle.userId),
               messageCount: group.items.length,
               bundleMessageCount: bundle.items.length,
-              imageCount: telegramImages.length,
+              attachmentCount: telegramAttachments.length,
+              attachmentKinds: telegramAttachments.map((item) => item.type),
               separate,
               separateIndex: separate ? index + 1 : null,
               items: group.items.map((item) => ({
@@ -1618,7 +1643,7 @@ export class JournalStore extends DurableObject {
                 replyToMessageId: item.replyToMessageId,
                 kind: item.kind,
                 source: item.source,
-                imageCount: item.images?.length ?? 0,
+                attachmentCount: dashboardBotItemAttachments(item).length,
               })),
             },
           },
@@ -1707,7 +1732,7 @@ export class JournalStore extends DurableObject {
       return { reply: "Это общий бот Dashboard. В Agent Hub создайте код привязки и отправьте /link КОД." };
     }
     if (/^\/help(?:@\w+)?(?:\s|$)/iu.test(text)) {
-      return { reply: "Перешлите сообщения и изображения: бот соберёт их в одну пачку. Ваши ответы до отправки станут уточнениями. Завершите её кнопкой «Отправить пачку» (/done) либо создайте отдельные задачи кнопкой «Отправить раздельно» (/separate); /cancel отменяет пачку." };
+      return { reply: "Перешлите сообщения, голосовые или любые файлы: бот соберёт их в одну пачку. Ваши ответы до отправки станут уточнениями. Завершите её кнопкой «Отправить пачку» (/done) либо создайте отдельные задачи кнопкой «Отправить раздельно» (/separate); /cancel отменяет пачку." };
     }
     const link = text.match(/^\/link(?:@\w+)?\s+(.+)$/iu);
     if (link) return this.#linkDashboardBotHub(message, link[1]);
@@ -1737,17 +1762,17 @@ export class JournalStore extends DurableObject {
       };
     }
     const source = dashboardBotForwardedMessageSource(message);
-    const image = dashboardBotImageDescriptor(message);
+    const attachment = dashboardBotAttachmentDescriptor(message);
     const repliedMessageId = Number.isSafeInteger(message.reply_to_message?.message_id)
       ? message.reply_to_message.message_id
       : null;
     const repliesToOwnMessage = repliedMessageId != null
       && String(message.reply_to_message?.from?.id ?? "") === String(message.from.id);
-    if (!openBundle && repliesToOwnMessage && (text || image)) {
+    if (!openBundle && repliesToOwnMessage && (text || attachment)) {
       await this.ctx.storage.delete(dashboardBotRecentDirectKey(linked.userId));
       return {
         hubId: linked.hubId,
-        telegramImages: image ? [image] : [],
+        telegramAttachments: attachment ? [attachment] : [],
         command: {
           id: crypto.randomUUID().toLowerCase(),
           action: "board-task-ingest",
@@ -1760,27 +1785,28 @@ export class JournalStore extends DurableObject {
               messageId: message.message_id,
               replyToMessageId: repliedMessageId,
               userId: message.from.id,
+              attachmentKinds: attachment ? [attachment.type] : [],
             },
           },
           userId: linked.userId,
         },
         reply: text
-          ? image
-            ? "⏳ Уточнение и скриншот поставлены в очередь Agent Hub."
+          ? attachment
+            ? "⏳ Уточнение и файл поставлены в очередь Agent Hub."
             : "⏳ Уточнение поставлено в очередь Agent Hub."
-          : "⏳ Скриншот поставлен в очередь Agent Hub.",
+          : "⏳ Файл поставлен в очередь Agent Hub.",
       };
     }
-    if (source || openBundle || image) {
-      if (!text && !image) return { reply: "В пачку можно добавить текст или изображение." };
+    if (source || openBundle || attachment) {
+      if (!text && !attachment) return { reply: "В пачку можно добавить текст, голосовое сообщение или файл." };
       let precedingComment = null;
-      if (!openBundle && (source || image)) {
+      if (!openBundle && (source || attachment)) {
         const recentKey = dashboardBotRecentDirectKey(linked.userId);
         const recent = await this.ctx.storage.get(recentKey);
         precedingComment = dashboardBotPrecedingComment(recent, message, linked);
         await this.ctx.storage.delete(recentKey);
       }
-      return this.#dashboardBotAppendBundle(update, message, linked, { source, image, precedingComment });
+      return this.#dashboardBotAppendBundle(update, message, linked, { source, attachment, precedingComment });
     }
     const task = text.match(/^\/task(?:@\w+)?\s+(.+)$/iu);
     const taskText = String(task?.[1] ?? text).trim();
@@ -3354,7 +3380,7 @@ export default {
       const routedCommands = Array.isArray(routed.commands)
         ? routed.commands
         : (routed.command && routed.hubId
-          ? [{ command: routed.command, hubId: routed.hubId, telegramImages: routed.telegramImages }]
+          ? [{ command: routed.command, hubId: routed.hubId, telegramAttachments: routed.telegramAttachments ?? routed.telegramImages }]
           : []);
       if (routedCommands.length) {
         try {
@@ -3385,16 +3411,16 @@ export default {
               throw new Error(String(error?.error ?? "dashboard bot hub identity was not stored"));
             }
             let command = routedCommand.command;
-            if (Array.isArray(routedCommand.telegramImages) && routedCommand.telegramImages.length) {
+            if (Array.isArray(routedCommand.telegramAttachments) && routedCommand.telegramAttachments.length) {
               command = {
                 ...command,
                 params: {
                   ...command.params,
-                  attachments: await uploadDashboardBotImages(
+                  attachments: await uploadDashboardBotAttachments(
                     env,
                     hubStore,
                     command.userId,
-                    routedCommand.telegramImages,
+                    routedCommand.telegramAttachments,
                   ),
                 },
               };

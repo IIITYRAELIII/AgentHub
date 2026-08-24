@@ -4893,6 +4893,10 @@ html[data-surface="mobile"]
 
 /* ======================================================= чат задачи === */
 
+.reliquary-panel-corner {
+  display: none;
+}
+
 .chat {
   display: flex;
   flex-direction: column;
@@ -5750,6 +5754,12 @@ html[data-surface="mobile"]
     margin-top: var(--shell-stream-tabs-margin-top, 0) !important;
     min-height: var(--shell-stream-tabs-min-height, 3.7rem) !important;
     padding: var(--shell-stream-tabs-padding, 0.3rem 0.55rem) !important;
+  }
+
+  html[data-theme="bespin"][data-view="chat"][data-surface]:not([data-surface="mobile"]) .stream-tabs {
+    border: var(--shell-stream-tabs-border, 0) !important;
+    border-bottom: var(--shell-stream-tabs-border-bottom, 1px solid var(--line)) !important;
+    border-radius: var(--shell-stream-tabs-radius, 0) !important;
   }
 
   html[data-view="chat"]:not([data-surface="mobile"]) .stream-tabs::before {

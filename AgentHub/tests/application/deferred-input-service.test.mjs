@@ -75,6 +75,29 @@ test("deferred Desktop input is persisted without a Telegram prompt", async () =
   assert.equal(notifications, 0);
 });
 
+test("message intake uses its bounded durable write instead of a full runtime snapshot", async () => {
+  const store = new DeferredInputStore();
+  const events = [];
+  const service = new DeferredInputService({
+    store,
+    createId: () => "desktop-intake",
+    persist: async () => events.push("full"),
+    persistIntake: async (item, destination) => events.push(`intake:${item.id}:${destination}`),
+    removeFiles: async () => {},
+    notify: async () => null,
+  });
+
+  await service.defer("message", [], {
+    target: { provider: "codex", threadId: "thread-1", clientSource: "desktop" },
+    clientUserMessageId: "client-message-1",
+    destination: "queued",
+    conflictKind: "message-intake",
+    notify: false,
+  });
+
+  assert.deepEqual(events, ["intake:desktop-intake:queued"]);
+});
+
 test("deferred input service persists interstream origin", async () => {
   const store = new DeferredInputStore();
   const service = new DeferredInputService({

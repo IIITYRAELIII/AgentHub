@@ -73,12 +73,19 @@ export class RunJournalService {
     const current = this.lastMessageRecord(run);
     const turnId = String(run.turnId ?? "").trim() || null;
     const authoritativeUpdatedAt = normalizedIsoTimestamp(updatedAt);
+    const startedAt = normalizedIsoTimestamp(run.startedAt);
     const sameTurn = Boolean(turnId) && current?.turnId === turnId;
+    const currentStartedAt = normalizedIsoTimestamp(current?.startedAt);
     if (
       current
       && !sameTurn
-      && authoritativeUpdatedAt
-      && Date.parse(authoritativeUpdatedAt) < Date.parse(String(current.updatedAt ?? ""))
+      && (
+        (startedAt && currentStartedAt && Date.parse(startedAt) < Date.parse(currentStartedAt))
+        || (
+          authoritativeUpdatedAt
+          && Date.parse(authoritativeUpdatedAt) < Date.parse(String(current.updatedAt ?? ""))
+        )
+      )
     ) return false;
     const next = {
       text: value,
@@ -87,6 +94,7 @@ export class RunJournalService {
       updatedAt: authoritativeUpdatedAt
         || (sameTurn ? current.updatedAt : null)
         || this.now().toISOString(),
+      startedAt: startedAt || (sameTurn ? current.startedAt : null) || null,
       turnId,
     };
     if (
@@ -95,6 +103,7 @@ export class RunJournalService {
       && current.provider === next.provider
       && current.threadId === next.threadId
       && current.updatedAt === next.updatedAt
+      && current.startedAt === next.startedAt
       && current.turnId === next.turnId
     ) return false;
     this.lastTaskMessages.delete(key);

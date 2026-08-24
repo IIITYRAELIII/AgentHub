@@ -60,6 +60,7 @@ const LONG_CONTROL_TIMEOUT_MS = 180_000;
 const LONG_CONTROL_ACTIONS = new Set(["rotate-stream", "submit-bug-report"]);
 const VSCODE_MESSAGE_CONTROL_TIMEOUT_MS = LONG_CONTROL_TIMEOUT_MS;
 const VSCODE_MESSAGE_RETRY_DELAYS_MS = Object.freeze([150, 600]);
+const HTTP_CONTROL_RETRY_DELAYS_MS = Object.freeze([150, 600, 1_500]);
 const HISTORY_CATCH_UP_TIMEOUT_MS = 120_000;
 const CONNECTION_OFFLINE_FAILURES = 3;
 const CONNECTION_OFFLINE_GRACE_MS = 6_000;
@@ -67,6 +68,7 @@ const CONNECTION_LATENCY_PROBE_INTERVAL_MS = 5_000;
 const historyByTask = new Map();
 const historyPageByTask = new Map();
 const historyCatchUpDeadlines = new Map();
+const historyCatchUpTurnIds = new Map();
 const historyAttachmentSettleDeadlines = new Map();
 const visibleHistoryLoads = new Set();
 const historyLoadStates = new Map();
@@ -92,6 +94,7 @@ const {
   activeStageLabel,
   activeTaskRun,
   chronologicalMessages,
+  completionCatchUpTurnId,
   completedLiveAgentMessage,
   conversationTaskId,
   completedConversationTurnVisible,
@@ -106,6 +109,7 @@ const {
   historyMatchesIdentity,
   historicalMessagesForDisplay,
   hubErrorMessage,
+  httpControlError,
   isConnectionFailure,
   liveCompletionTransition,
   latestAnswerTransition,
@@ -917,18 +921,22 @@ function historyNeedsCatchUp(taskIdValue) {
   if (!deadline) return false;
   if (deadline > Date.now()) return true;
   historyCatchUpDeadlines.delete(taskIdValue);
+  historyCatchUpTurnIds.delete(taskIdValue);
   return false;
 }
 
 function updateHistoryCatchUp(taskIdValue, history, task) {
   const deadline = nextHistoryCatchUpDeadline({
     sourceFresh: history?.sourceFresh,
-    containsLatestAnswer: historyContainsLatestAnswer(history, task),
+    containsLatestAnswer: historyContainsLatestAnswer(history, task, {
+      expectedTurnId: historyCatchUpTurnIds.get(taskIdValue),
+    }),
     currentDeadline: historyCatchUpDeadlines.get(taskIdValue),
     timeoutMs: HISTORY_CATCH_UP_TIMEOUT_MS,
   });
   if (deadline == null) {
     historyCatchUpDeadlines.delete(taskIdValue);
+    historyCatchUpTurnIds.delete(taskIdValue);
     return;
   }
   historyCatchUpDeadlines.set(taskIdValue, deadline);
@@ -1187,20 +1195,23 @@ async function control(action, params = {}) {
   if (action === "snapshot") return readSnapshot(params);
   await localSessionReady;
   const commandId = crypto.randomUUID();
-  const response = await hubFetchWithin("/api/control", {
-    method: "POST",
-    headers: {
-      ...authorizationHeaders(),
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ action, params, commandId }),
-  }, LONG_CONTROL_ACTIONS.has(action) ? LONG_CONTROL_TIMEOUT_MS : DEFAULT_CONTROL_TIMEOUT_MS);
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok || payload.ok === false) {
-    throw markCommandRejected(
-      new Error(String(payload.error ?? `Agent Hub: HTTP ${response.status}`)),
-    );
-  }
+  const payload = await retryConnectionFailure(async () => {
+    const response = await hubFetchWithin("/api/control", {
+      method: "POST",
+      headers: {
+        ...authorizationHeaders(),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ action, params, commandId }),
+    }, LONG_CONTROL_ACTIONS.has(action) ? LONG_CONTROL_TIMEOUT_MS : DEFAULT_CONTROL_TIMEOUT_MS);
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || result.ok === false) throw httpControlError(response.status, result);
+    return result;
+  }, {
+    delaysMs: HTTP_CONTROL_RETRY_DELAYS_MS,
+    wait: (delayMs) => new Promise((resolve) => window.setTimeout(resolve, delayMs)),
+    shouldRetry: (error) => String(error?.code ?? "") === "AGENT_HUB_HTTP_GATEWAY",
+  });
   if (payload.receiptId === commandId) {
     void acknowledgeLocalControl(commandId).catch((error) => {
       console.warn(`Agent Hub control acknowledgement failed: ${error.message}`);
@@ -1973,7 +1984,10 @@ function historyMessages(history, focusedTurn = null) {
         activityGroups: itemId === focusedTraceItemId && Array.isArray(focusedTurn.activityGroups)
           ? focusedTurn.activityGroups
           : [],
-        time: message.time ?? null,
+        time: message.time
+          ?? (message.role === "user" ? focusedTurn.startedAt : focusedTurn.completedAt)
+          ?? focusedTurn.startedAt
+          ?? null,
         ...(itemId === focusedTraceItemId ? {
           turnStartedAt: focusedTurn.startedAt ?? null,
           turnCompletedAt: focusedTurn.completedAt ?? null,
@@ -3732,6 +3746,8 @@ async function refreshVisibleTaskHistories(previousSnapshot, snapshot) {
     if (answerTransition) {
       scheduleHistoryAttachmentSettle(id);
       historyCatchUpDeadlines.set(id, Date.now() + HISTORY_CATCH_UP_TIMEOUT_MS);
+      const completedTurnId = completionCatchUpTurnId(previousTask, currentTask);
+      if (completedTurnId) historyCatchUpTurnIds.set(id, completedTurnId);
     }
     const historyMissing = Boolean(previousTask) && !historyPageByTask.has(id);
     const externalLive = currentTask.running && !["hub", "telegram"].includes(String(

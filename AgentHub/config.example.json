@@ -127,7 +127,8 @@
     }
   ],
   "voiceEnabled": true,
-  "whisperModel": "small",
+  "whisperModel": "large-v3-turbo",
+  "whisperDevice": "cuda",
   "whisperModelDir": "data/models/whisper",
   "ttsEnabled": true,
   "ttsModel": "v5_5_ru",

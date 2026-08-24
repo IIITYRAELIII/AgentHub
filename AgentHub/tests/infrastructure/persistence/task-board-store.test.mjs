@@ -63,7 +63,7 @@ test("restarting a completed Task clears its completion timestamp", async (t) =>
   assert.equal(restarted.completedAt, null);
 });
 
-test("Task workflow status follows delivery, testing, implementation, and completion", async (t) => {
+test("Task workflow Done remains visible until the Task is explicitly closed", async (t) => {
   const store = await fixture(t);
   const created = store.create({ text: "Провести задачу по статусам" });
   assert.equal(created.workflowStatus, "new");
@@ -75,7 +75,15 @@ test("Task workflow status follows delivery, testing, implementation, and comple
     store.setWorkflowStatus(created.id, "awaiting_implementation").workflowStatus,
     "awaiting_implementation",
   );
-  assert.equal(store.setWorkflowStatus(created.id, "done").status, "done");
+  const productionReady = store.setWorkflowStatus(created.id, "done");
+  assert.equal(productionReady.status, "started");
+  assert.equal(productionReady.workflowStatus, "done");
+  assert.equal(productionReady.completedAt, null);
+
+  const completed = store.complete(created.id);
+  assert.equal(completed.status, "done");
+  assert.equal(completed.workflowStatus, "done");
+  assert.notEqual(completed.completedAt, null);
 
   const reopened = store.setWorkflowStatus(created.id, "testing");
   assert.equal(reopened.status, "started");

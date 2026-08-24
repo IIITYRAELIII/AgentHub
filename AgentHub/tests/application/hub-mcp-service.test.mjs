@@ -95,7 +95,7 @@ async function fixture(context) {
       status: "started", workflowStatus: "in_progress", streamId,
     }),
     setWorkflowStatus: ({ id, status }) => Object.assign(tasks.get(id), {
-      workflowStatus: status, status: status === "done" ? "done" : tasks.get(id).status,
+      workflowStatus: status,
     }),
     complete: ({ id }) => Object.assign(tasks.get(id), { status: "done", workflowStatus: "done" }),
     remove: ({ id }) => tasks.delete(id),
@@ -201,7 +201,7 @@ test("HubMcpService starts the current Workspace task in the current Stream", as
   assert.equal(task.target.streamId, "stream-1");
 });
 
-test("HubMcpService changes Task workflow status and Done completes it", async (context) => {
+test("HubMcpService keeps workflow Done visible until explicit completion", async (context) => {
   const { service, token } = await fixture(context);
   const testing = await service.call("hub_task_status_update", {
     context_token: token,
@@ -215,10 +215,17 @@ test("HubMcpService changes Task workflow status and Done completes it", async (
     task_id: "task-current",
     status: "done",
   });
+  const completed = await service.call("hub_task_complete", {
+    context_token: token,
+    request_id: "task-complete",
+    task_id: "task-current",
+  });
 
   assert.equal(testing.workflowStatus, "testing");
   assert.equal(done.workflowStatus, "done");
-  assert.equal(done.status, "done");
+  assert.notEqual(done.status, "done");
+  assert.equal(completed.workflowStatus, "done");
+  assert.equal(completed.status, "done");
 });
 
 test("HubMcpService resumes an interrupted pending task start with the same request id", async (context) => {

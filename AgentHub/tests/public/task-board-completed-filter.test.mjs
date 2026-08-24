@@ -20,6 +20,7 @@ test("Dashboard switches between current and completed Tasks", async () => {
   const view = await loadBoardView();
   const tasks = [
     { id: "open", status: "open" },
+    { id: "production-ready", status: "open", workflowStatus: "done" },
     { id: "done-new", status: "done", completedAt: "2026-08-13T12:00:00.000Z" },
     { id: "started", status: "started" },
     { id: "done-old", status: "done", completedAt: "2026-08-13T10:00:00.000Z" },
@@ -27,7 +28,7 @@ test("Dashboard switches between current and completed Tasks", async () => {
 
   assert.deepEqual(
     Array.from(view.tasksForMode(tasks), (task) => task.id),
-    ["open", "started"],
+    ["open", "production-ready", "started"],
   );
   assert.deepEqual(
     Array.from(view.tasksForMode(tasks, { completedOnly: true }), (task) => task.id),

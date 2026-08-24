@@ -289,10 +289,17 @@ function focusedTurnAlreadyVisible(_history, messages, focusedTurn) {
   ));
 }
 
-function historyContainsLatestAnswer(history, task) {
-  const expectedTurnId = String(task?.lastAnswerTurnId ?? "").trim();
-  const expectedAnswer = String(task?.lastAnswer ?? "").trim();
-  const hasKnownAnswer = Boolean(String(task?.lastAnswerAt ?? "").trim() || expectedAnswer);
+function historyContainsLatestAnswer(history, task, { expectedTurnId: pendingTurnId = "" } = {}) {
+  const taskAnswerTurnId = String(task?.lastAnswerTurnId ?? "").trim();
+  const expectedTurnId = String(pendingTurnId ?? "").trim() || taskAnswerTurnId;
+  const expectedAnswer = expectedTurnId && taskAnswerTurnId !== expectedTurnId
+    ? ""
+    : String(task?.lastAnswer ?? "").trim();
+  const hasKnownAnswer = Boolean(
+    expectedTurnId
+    || String(task?.lastAnswerAt ?? "").trim()
+    || expectedAnswer,
+  );
   if (!hasKnownAnswer) return true;
   const items = Array.isArray(history?.items) ? history.items : [];
   const expectedProvider = String(task?.provider ?? "").trim();
@@ -336,6 +343,16 @@ function historyContainsLatestAnswer(history, task) {
       || expectedAnswer.startsWith(text)
     ));
   });
+}
+
+function completionCatchUpTurnId(previous, current) {
+  if (!previous || !current) return "";
+  if (String(previous.provider ?? "") !== String(current.provider ?? "")
+    || String(previous.threadId ?? "") !== String(current.threadId ?? "")) return "";
+  if (previous.running && !current.running) {
+    return String(previous.run?.turnId ?? previous.turnId ?? "").trim();
+  }
+  return String(current.lastAnswerTurnId ?? "").trim();
 }
 
 function nextHistoryCatchUpDeadline({
@@ -1142,16 +1159,28 @@ function isConnectionFailure(error) {
 async function retryConnectionFailure(operation, {
   delaysMs = [],
   wait = (delayMs) => new Promise((resolve) => globalThis.setTimeout(resolve, delayMs)),
+  shouldRetry = isConnectionFailure,
 } = {}) {
   for (let attempt = 0; ; attempt += 1) {
     try {
       return await operation(attempt);
     } catch (error) {
       const delayMs = delaysMs[attempt];
-      if (!isConnectionFailure(error) || delayMs == null) throw error;
+      if (!shouldRetry(error) || delayMs == null) throw error;
       await wait(Math.max(0, Number(delayMs) || 0));
     }
   }
+}
+
+function httpControlError(status, payload = {}) {
+  const responseStatus = Number(status) || 0;
+  const payloadError = String(payload?.error ?? "").trim();
+  const error = new Error(payloadError || `Agent Hub: HTTP ${responseStatus}`);
+  if ([502, 503, 504].includes(responseStatus) && !payloadError) {
+    error.code = "AGENT_HUB_HTTP_GATEWAY";
+    return markConnectionFailure(error);
+  }
+  return markCommandRejected(error);
 }
 
 async function settleOptionalRead(operation) {
@@ -1233,6 +1262,7 @@ globalThis.AgentHubMessageLifecycle = Object.freeze({
   activeTaskRun,
   attachmentOnlyText,
   chronologicalMessages,
+  completionCatchUpTurnId,
   completedLiveAnswer,
   completedLiveAgentMessage,
   conversationTaskId,
@@ -1243,6 +1273,7 @@ globalThis.AgentHubMessageLifecycle = Object.freeze({
   deduplicateConversationMessages,
   embeddedResponseAnnotations,
   hubErrorMessage,
+  httpControlError,
   identityKey,
   isConnectionFailure,
   looksLikeConnectionFailure,

@@ -1,35 +1,37 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 
 const runFile = promisify(execFile);
 const ICON_SOURCE = path.join("VSCodeExtension", "media", "agent-hub-mark.png");
+const ICON_BUILDER_SOURCE = path.join("RuntimeHost", "AgentHub.IconBuilder.cs");
 
-export function windowsIconFromPng(png) {
-  if (!Buffer.isBuffer(png) || png.length < 24
-    || !png.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) {
-    throw new Error("Agent Hub RuntimeHost icon must be a PNG image");
+export function windowsIconEntries(icon) {
+  if (!Buffer.isBuffer(icon) || icon.length < 6
+    || icon.readUInt16LE(0) !== 0 || icon.readUInt16LE(2) !== 1) {
+    throw new Error("Agent Hub RuntimeHost icon must be a Windows ICO image");
   }
-  const width = png.readUInt32BE(16);
-  const height = png.readUInt32BE(20);
-  if (width !== 256 || height !== 256) {
-    throw new Error(`Agent Hub RuntimeHost icon must be 256x256, received ${width}x${height}`);
+  const count = icon.readUInt16LE(4);
+  if (icon.length < 6 + (16 * count)) {
+    throw new Error("Agent Hub RuntimeHost icon directory is truncated");
   }
-  const header = Buffer.alloc(22);
-  header.writeUInt16LE(0, 0);
-  header.writeUInt16LE(1, 2);
-  header.writeUInt16LE(1, 4);
-  header.writeUInt8(0, 6);
-  header.writeUInt8(0, 7);
-  header.writeUInt8(0, 8);
-  header.writeUInt8(0, 9);
-  header.writeUInt16LE(1, 10);
-  header.writeUInt16LE(32, 12);
-  header.writeUInt32LE(png.length, 14);
-  header.writeUInt32LE(header.length, 18);
-  return Buffer.concat([header, png]);
+  return Array.from({ length: count }, (_, index) => {
+    const entry = 6 + (16 * index);
+    const bytes = icon.readUInt32LE(entry + 8);
+    const offset = icon.readUInt32LE(entry + 12);
+    if (offset + bytes > icon.length) {
+      throw new Error("Agent Hub RuntimeHost icon layer is truncated");
+    }
+    return {
+      width: icon[entry] || 256,
+      height: icon[entry + 1] || 256,
+      bitsPerPixel: icon.readUInt16LE(entry + 6),
+      bytes,
+      offset,
+    };
+  });
 }
 
 async function firstExisting(candidates) {
@@ -50,8 +52,8 @@ export function runtimeHostCompilerCandidates(environment = process.env) {
 export async function runtimeHostSourceHash(sourceRoot) {
   const hostRoot = path.join(sourceRoot, "RuntimeHost");
   const hash = createHash("sha256");
-  hash.update("agent-hub-runtime-host-build-v2\0", "utf8");
-  for (const name of ["AgentHub.RuntimeHost.cs", "app.manifest"]) {
+  hash.update("agent-hub-runtime-host-build-v3\0", "utf8");
+  for (const name of ["AgentHub.RuntimeHost.cs", "AgentHub.IconBuilder.cs", "app.manifest"]) {
     hash.update(name, "utf8");
     hash.update("\0", "utf8");
     hash.update(await readFile(path.join(hostRoot, name)));
@@ -62,6 +64,42 @@ export async function runtimeHostSourceHash(sourceRoot) {
   hash.update(await readFile(path.join(sourceRoot, ICON_SOURCE)));
   hash.update("\0", "utf8");
   return hash.digest("hex");
+}
+
+export async function buildWindowsIcon({
+  sourceRoot,
+  outputFile,
+  environment = process.env,
+  execute = runFile,
+} = {}) {
+  if (!sourceRoot || !outputFile) throw new TypeError("sourceRoot and outputFile are required");
+  const compiler = await firstExisting(runtimeHostCompilerCandidates(environment));
+  if (!compiler) throw new Error("System C# compiler for Agent Hub RuntimeHost was not found");
+  const source = path.join(sourceRoot, ICON_BUILDER_SOURCE);
+  const iconSource = path.join(sourceRoot, ICON_SOURCE);
+  const builder = path.join(path.dirname(outputFile), `AgentHub.IconBuilder-${randomUUID()}.exe`);
+  await access(source);
+  await access(iconSource);
+  await mkdir(path.dirname(outputFile), { recursive: true });
+  try {
+    await execute(compiler, [
+      "/nologo",
+      "/target:exe",
+      "/optimize+",
+      `/out:${builder}`,
+      "/reference:System.dll",
+      "/reference:System.Drawing.dll",
+      source,
+    ], { windowsHide: true, maxBuffer: 1024 * 1024 });
+    await execute(builder, [iconSource, outputFile], {
+      windowsHide: true,
+      maxBuffer: 1024 * 1024,
+    });
+  } finally {
+    await rm(builder, { force: true });
+  }
+  await access(outputFile);
+  return outputFile;
 }
 
 export async function buildWindowsRuntimeHost({
@@ -82,7 +120,7 @@ export async function buildWindowsRuntimeHost({
   await access(manifest);
   await access(iconSource);
   await mkdir(path.dirname(outputFile), { recursive: true });
-  await writeFile(icon, windowsIconFromPng(await readFile(iconSource)));
+  await buildWindowsIcon({ sourceRoot, outputFile: icon, environment, execute });
   try {
     await execute(compiler, [
       "/nologo",

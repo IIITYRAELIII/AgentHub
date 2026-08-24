@@ -65,6 +65,7 @@ export function createDesktopShellComposition({
     workLogUsageStore,
     workspaceCatalogStore,
     streamHandoff,
+    runtimeStateStore,
     taskReadStateStore,
     usdRubRateStore,
     pendingInputs,
@@ -89,6 +90,7 @@ export function createDesktopShellComposition({
     streamContextMaintenance,
     streamMaintenance,
     taskBoard,
+    taskVoiceTranscriber,
   } = runtime;
   const {
     agentProviders,
@@ -490,6 +492,15 @@ export function createDesktopShellComposition({
       startManualCompaction: (target) => streamContextMaintenance.compact(target),
       deferredInputs,
       saveState,
+      persistDeferredIntake: (item, destination) => runtimeStateStore.saveDeferredIntake({
+        item,
+        destination,
+        receipt: desktopMessageReceipts.get({
+          provider: item.provider,
+          threadId: item.threadId,
+          clientUserMessageId: item.clientUserMessageId,
+        }),
+      }),
       executionRuntimeLabel: taskExecutionRuntimeLabel,
       sendMessageTo,
       resolveRepoRoots: resolveTaskGitRepoRoots,
@@ -531,6 +542,7 @@ export function createDesktopShellComposition({
       readRootAgents: () => serverControlController.readRootAgents(),
       updateRootAgents: (params) => serverControlController.updateRootAgents(params),
       taskBoard,
+      taskVoiceTranscriber,
       workspaceCatalog: workspaceCatalogStore,
     },
     desktop: {

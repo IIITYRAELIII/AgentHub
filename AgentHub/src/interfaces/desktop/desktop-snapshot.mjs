@@ -116,6 +116,13 @@ export function createDesktopSnapshotFactory({
     const lastAnswerTurnId = String(lastMessage?.turnId ?? "").trim();
     if (turnId && turnId === lastAnswerTurnId) return null;
     const lastActivityAtMs = Number(entry.lastActivityAtMs);
+    const startedAtMs = Date.parse(String(entry.startedAt ?? ""));
+    const lastAnswerAtMs = Date.parse(String(lastMessage?.updatedAt ?? ""));
+    const catalogActivityAtMs = Math.max(
+      Number.isFinite(lastActivityAtMs) ? lastActivityAtMs : 0,
+      Number.isFinite(startedAtMs) ? startedAtMs : 0,
+    );
+    if (!turnId && catalogActivityAtMs > 0 && lastAnswerAtMs >= catalogActivityAtMs) return null;
     const lastMeaningfulProgressAt = Number.isFinite(lastActivityAtMs) && lastActivityAtMs > 0
       ? new Date(lastActivityAtMs).toISOString()
       : entry.startedAt ?? null;

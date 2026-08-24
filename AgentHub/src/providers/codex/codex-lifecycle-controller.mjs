@@ -263,6 +263,7 @@ export class CodexLifecycleController {
           threadId: identity.threadId,
           projectRoot: project.path,
           turnId: payload.turnId,
+          startedAt: payload.startedAt ?? turnStart?.startedAt ?? run?.startedAt,
         }, finalAnswer, { updatedAt: payload.completedAt });
         d.setBoundedMapValue(d.lastSeenTaskTurnIds, taskRunKey({
           provider: "codex",

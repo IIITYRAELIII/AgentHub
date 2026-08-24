@@ -272,6 +272,7 @@ export class MediaController {
           PYTHONUTF8: "1",
           WHISPER_MODEL: this.config.whisperModel,
           WHISPER_MODEL_DIR: this.config.whisperModelDir,
+          WHISPER_DEVICE: this.config.whisperDevice,
         },
       },
       stopProcessTree: this.stopProcessTree,

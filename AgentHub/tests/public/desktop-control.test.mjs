@@ -167,8 +167,47 @@ test("desktop IPC retires delivered receipts and stays available beyond receipt 
       }), { index, effect: index + 1 });
     }
     assert.equal(effects, 110);
-    assert.deepEqual(JSON.parse(await readFile(receiptFile, "utf8")).records, []);
+    let records = null;
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline) {
+      records = JSON.parse(await readFile(receiptFile, "utf8")).records;
+      if (records.length === 0) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.deepEqual(records, []);
   } finally {
+    await server.close();
+    await rm(runtimeRoot, { recursive: true, force: true });
+  }
+});
+
+test("desktop IPC returns a durable result before receipt retirement finishes", async () => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-desktop-ack-latency-"));
+  let releaseRetirement;
+  const retirement = new Promise((resolve) => { releaseRetirement = resolve; });
+  let acknowledgedCommandId = null;
+  const server = new DesktopControlServer({
+    runtimeRoot,
+    protectSecret: async () => {},
+    handler: async () => ({ accepted: true }),
+    onResultDelivered: async ({ id }) => {
+      acknowledgedCommandId = id;
+      await retirement;
+      return true;
+    },
+  });
+  try {
+    await server.start();
+    const startedAtMs = performance.now();
+    assert.deepEqual(await callDesktopControl("send-message", {}, {
+      runtimeRoot,
+      commandId: "non-blocking-retirement",
+      timeoutMs: 500,
+    }), { accepted: true });
+    assert.ok(performance.now() - startedAtMs < 500);
+    assert.equal(acknowledgedCommandId, "non-blocking-retirement");
+  } finally {
+    releaseRetirement();
     await server.close();
     await rm(runtimeRoot, { recursive: true, force: true });
   }

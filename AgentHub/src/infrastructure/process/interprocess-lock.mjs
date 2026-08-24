@@ -3,6 +3,33 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+const RELEASE_RETRY_DELAYS_MS = [0, 10, 25, 50, 100, 200];
+const TRANSIENT_LOCK_ERROR_CODES = new Set(["EEXIST", "EPERM", "EACCES", "EBUSY", "ENOTEMPTY"]);
+const inProcessLocks = new Map();
+
+async function acquireInProcessLock(lockPath) {
+  let state = inProcessLocks.get(lockPath);
+  if (!state) {
+    state = { pending: 0, tail: Promise.resolve() };
+    inProcessLocks.set(lockPath, state);
+  }
+  const previous = state.tail.catch(() => {});
+  let releaseTurn;
+  const turn = new Promise((resolve) => { releaseTurn = resolve; });
+  state.tail = previous.then(() => turn);
+  state.pending += 1;
+  await previous;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    state.pending -= 1;
+    releaseTurn();
+    if (state.pending === 0 && inProcessLocks.get(lockPath) === state) {
+      inProcessLocks.delete(lockPath);
+    }
+  };
+}
 
 function defaultProcessAlive(pid) {
   if (!Number.isSafeInteger(pid) || pid < 1) return false;
@@ -27,10 +54,66 @@ async function readOwner(lockPath) {
   }
 }
 
-async function release(lockPath, token) {
+async function retryTransientLockOperation(operation, {
+  retryDelaysMs = RELEASE_RETRY_DELAYS_MS,
+  wait = delay,
+} = {}) {
+  let lastError = null;
+  for (const retryDelayMs of retryDelaysMs) {
+    if (retryDelayMs > 0) await wait(retryDelayMs);
+    try {
+      await operation();
+      return { completed: true, missing: false };
+    } catch (error) {
+      if (error?.code === "ENOENT") return { completed: true, missing: true };
+      if (!TRANSIENT_LOCK_ERROR_CODES.has(error?.code)) throw error;
+      lastError = error;
+    }
+  }
+  return { completed: false, missing: false, error: lastError };
+}
+
+export async function releaseInterprocessLock(lockPath, token, {
+  renamePath = rename,
+  removePath = rm,
+  writeOwner = writeFile,
+  retryDelaysMs = RELEASE_RETRY_DELAYS_MS,
+  wait = delay,
+} = {}) {
   const owner = await readOwner(lockPath);
-  if (owner?.token !== token) return;
-  await rm(lockPath, { recursive: true, force: true }).catch(() => {});
+  if (owner?.token !== token) return false;
+
+  const safeToken = String(token || "unknown").replace(/[^A-Za-z0-9_-]/gu, "_").slice(0, 64);
+  const retiredPath = `${lockPath}.released-${Date.now()}-${safeToken}`;
+  const retirement = await retryTransientLockOperation(
+    () => renamePath(lockPath, retiredPath),
+    { retryDelaysMs, wait },
+  );
+  if (retirement.completed) {
+    if (!retirement.missing) {
+      await removePath(retiredPath, { recursive: true, force: true }).catch(() => {});
+    }
+    return true;
+  }
+
+  const currentOwner = await readOwner(lockPath);
+  if (currentOwner?.token !== token) return false;
+  const recoverableOwner = `${JSON.stringify({
+    token,
+    pid: 0,
+    createdAt: 0,
+    releasedAt: Date.now(),
+  })}\n`;
+  const fallback = await retryTransientLockOperation(
+    () => writeOwner(path.join(lockPath, "owner.json"), recoverableOwner, {
+      encoding: "utf8",
+      flag: "w",
+      mode: 0o600,
+    }),
+    { retryDelaysMs, wait },
+  );
+  if (!fallback.completed) throw fallback.error;
+  return true;
 }
 
 async function quarantineStaleLock(lockPath, token) {
@@ -104,13 +187,23 @@ async function acquire(lockPath, {
 
 export async function withInterprocessLocks(paths, operation, options = {}) {
   const lockPaths = [...new Set(paths.filter(Boolean).map((value) => `${value}.lock`))].sort();
+  const localReleases = [];
   const acquired = [];
   try {
+    for (const lockPath of lockPaths) {
+      localReleases.push(await acquireInProcessLock(lockPath));
+    }
     for (const lockPath of lockPaths) {
       acquired.push({ lockPath, token: await acquire(lockPath, options) });
     }
     return await operation();
   } finally {
-    await Promise.all(acquired.reverse().map(({ lockPath, token }) => release(lockPath, token)));
+    try {
+      await Promise.all(acquired.reverse().map(
+        ({ lockPath, token }) => releaseInterprocessLock(lockPath, token),
+      ));
+    } finally {
+      localReleases.reverse().forEach((releaseLocal) => releaseLocal());
+    }
   }
 }

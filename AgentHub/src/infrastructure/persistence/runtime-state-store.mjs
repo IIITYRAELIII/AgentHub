@@ -2,6 +2,7 @@ import { renameSync } from "node:fs";
 import { copyFile, mkdir, readFile, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { Worker } from "node:worker_threads";
 
 import { readJsonWithBackup } from "./state-store.mjs";
 
@@ -60,6 +61,14 @@ export function configureRuntimeDatabase(database) {
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
     ) WITHOUT ROWID;
+    CREATE TABLE IF NOT EXISTS runtime_deferred_intake (
+      id TEXT PRIMARY KEY,
+      destination TEXT NOT NULL CHECK (destination IN ('pending', 'queued')),
+      item_json TEXT NOT NULL,
+      receipt_json TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    ) WITHOUT ROWID;
   `);
 }
 
@@ -80,13 +89,130 @@ function parseStateRow(row) {
   return JSON.parse(row.value_json);
 }
 
+function readDeferredIntakeRows(database) {
+  try {
+    return database.prepare(`
+      SELECT id, destination, item_json, receipt_json
+      FROM runtime_deferred_intake
+      ORDER BY created_at, id
+    `).all();
+  } catch (error) {
+    if (/no such table/iu.test(String(error?.message ?? error))) return [];
+    throw error;
+  }
+}
+
+function mergeDeferredIntake(value, rows) {
+  if (!rows.length) return value;
+  const state = value && typeof value === "object" ? value : {};
+  const pendingInputs = Array.isArray(state.pendingInputs) ? state.pendingInputs : [];
+  const queuedInputs = Array.isArray(state.queuedInputs) ? state.queuedInputs : [];
+  const receipts = Array.isArray(state.desktopMessageReceipts) ? state.desktopMessageReceipts : [];
+  const inputIds = new Set([...pendingInputs, ...queuedInputs].map((item) => String(item?.id ?? "")));
+  const receiptIds = new Set(receipts.map((receipt) => String(receipt?.clientUserMessageId ?? "")));
+  for (const row of rows) {
+    const item = JSON.parse(row.item_json);
+    const itemId = String(item?.id ?? row.id ?? "");
+    if (itemId && !inputIds.has(itemId)) {
+      (row.destination === "queued" ? queuedInputs : pendingInputs).push(item);
+      inputIds.add(itemId);
+    }
+    if (!row.receipt_json) continue;
+    const receipt = JSON.parse(row.receipt_json);
+    const receiptId = String(receipt?.clientUserMessageId ?? "");
+    if (receiptId && !receiptIds.has(receiptId)) {
+      receipts.push(receipt);
+      receiptIds.add(receiptId);
+    }
+  }
+  state.pendingInputs = pendingInputs;
+  state.queuedInputs = queuedInputs;
+  state.desktopMessageReceipts = receipts;
+  return state;
+}
+
+function readMergedRuntimeState(database) {
+  return mergeDeferredIntake(
+    parseStateRow(database.prepare("SELECT value_json FROM runtime_state WHERE key = 'main'").get()),
+    readDeferredIntakeRows(database),
+  );
+}
+
+class RuntimeStateWriter {
+  constructor(dataDir) {
+    this.sequence = 0;
+    this.pending = new Map();
+    this.closed = false;
+    this.failure = null;
+    this.worker = new Worker(new URL("./runtime-state-writer-worker.mjs", import.meta.url), {
+      workerData: { dataDir },
+    });
+    this.exit = new Promise((resolve) => {
+      this.worker.once("exit", (code) => {
+        this.closed = true;
+        if (code !== 0) this.failure ??= new Error(`runtime state writer exited with code ${code}`);
+        else if (this.pending.size) this.failure ??= new Error("runtime state writer exited before completing requests");
+        if (this.failure) this.#rejectPending(this.failure);
+        resolve(code);
+      });
+    });
+    this.worker.on("message", (message) => {
+      const request = this.pending.get(message?.id);
+      if (!request) return;
+      this.pending.delete(message.id);
+      if (message.error) {
+        const error = new Error(message.error.message);
+        error.code = message.error.code;
+        error.stack = message.error.stack ?? error.stack;
+        request.reject(error);
+      } else {
+        request.resolve(message.value);
+      }
+    });
+    this.worker.on("error", (error) => {
+      this.failure ??= error;
+      this.closed = true;
+      this.#rejectPending(error);
+    });
+  }
+
+  request(type, payload = {}) {
+    if (this.closed) return Promise.reject(this.failure ?? new Error("runtime state writer is closed"));
+    const id = ++this.sequence;
+    return new Promise((resolve, reject) => {
+      this.pending.set(id, { resolve, reject });
+      try {
+        this.worker.postMessage({ id, type, payload });
+      } catch (error) {
+        this.pending.delete(id);
+        reject(error);
+      }
+    });
+  }
+
+  async close() {
+    if (this.closed) {
+      await this.exit;
+      if (this.failure) throw this.failure;
+      return;
+    }
+    const closing = this.request("close");
+    this.closed = true;
+    await closing;
+    await this.exit;
+  }
+
+  #rejectPending(error) {
+    for (const request of this.pending.values()) request.reject(error);
+    this.pending.clear();
+  }
+}
+
 export function readRuntimeStateSync(dataDir) {
   let database;
   try {
     database = openRuntimeDatabase(dataDir, { readOnly: true });
-    return parseStateRow(database.prepare(
-      "SELECT value_json FROM runtime_state WHERE key = 'main'",
-    ).get());
+    return readMergedRuntimeState(database);
   } catch (error) {
     if (/unable to open database file|no such table/iu.test(String(error?.message ?? error))) return null;
     throw error;
@@ -146,6 +272,7 @@ async function archiveLegacyFiles(dataDir, files, label) {
 
 export class RuntimeStateStore {
   #database;
+  #writer;
   #dataDir;
   #legacyFile;
   #legacyBackupFile;
@@ -162,12 +289,11 @@ export class RuntimeStateStore {
       this.#database = openRuntimeDatabase(this.#dataDir);
       this.#recoveredDatabase = true;
     }
+    this.#writer = new RuntimeStateWriter(this.#dataDir);
   }
 
   async load() {
-    const current = parseStateRow(this.#database.prepare(
-      "SELECT value_json FROM runtime_state WHERE key = 'main'",
-    ).get());
+    const current = readMergedRuntimeState(this.#database);
     if (current) {
       await archiveLegacyFiles(
         this.#dataDir,
@@ -183,7 +309,7 @@ export class RuntimeStateStore {
 
     const legacy = await readJsonWithBackup(this.#legacyFile, { backupFile: this.#legacyBackupFile });
     if (!legacy.value) return { value: null, source: null, recovered: this.#recoveredDatabase };
-    this.save(legacy.value);
+    await this.save(legacy.value);
     await archiveLegacyFiles(
       this.#dataDir,
       [this.#legacyFile, this.#legacyBackupFile],
@@ -198,25 +324,24 @@ export class RuntimeStateStore {
   }
 
   read() {
-    return parseStateRow(this.#database.prepare(
-      "SELECT value_json FROM runtime_state WHERE key = 'main'",
-    ).get());
+    return readMergedRuntimeState(this.#database);
   }
 
   save(value) {
-    const content = JSON.stringify(value);
-    const now = new Date().toISOString();
-    this.#database.prepare(`
-      INSERT INTO runtime_state (key, value_json, updated_at)
-      VALUES ('main', ?, ?)
-      ON CONFLICT(key) DO UPDATE SET
-        value_json = excluded.value_json,
-        updated_at = excluded.updated_at
-    `).run(content, now);
+    return this.#writer.request("save-state", { content: JSON.stringify(value) });
   }
 
-  close() {
-    this.#database?.close();
-    this.#database = null;
+  saveDeferredIntake({ item, destination = "pending", receipt = null }) {
+    return this.#writer.request("save-intake", { item, destination, receipt });
+  }
+
+  async close() {
+    try {
+      await this.#writer?.close();
+    } finally {
+      this.#writer = null;
+      this.#database?.close();
+      this.#database = null;
+    }
   }
 }

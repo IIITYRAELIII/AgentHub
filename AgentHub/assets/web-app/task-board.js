@@ -600,7 +600,7 @@
     taskCardAttachments.hidden = attachments.length === 0;
     taskCardAttachments.replaceChildren(...(attachments.length ? [attachmentStrip(attachments)] : []));
     const actions = [];
-    if (task.status !== "done" && task.bucket === "workspace") {
+    if (task.status !== "done" && taskWorkflowStatus(task) !== "done" && task.bucket === "workspace") {
       actions.push(node("button", {
         type: "button",
         class: "board-task-primary",
@@ -617,8 +617,8 @@
     }
     if (task.status !== "done") {
       actions.push(node("button", {
-        type: "button", class: "board-task-quiet", text: "Завершить задачу",
-        title: "Убрать задачу с доски как выполненную",
+        type: "button", class: "board-task-quiet", text: "Закрыть задачу",
+        title: "Скрыть после приёмки заказчиком или когда сдача работ не требуется",
         onclick: () => { closeTaskCard(); emit("complete", { id: task.id }); },
       }));
     }
@@ -805,7 +805,7 @@
 
   function renderBoard() {
     const visibleTasks = tasksForMode(state.tasks, { completedOnly: state.completedOnly });
-    const emptyText = state.completedOnly ? "Нет выполненных задач" : "Перетащите задачу сюда";
+    const emptyText = state.completedOnly ? "Нет закрытых задач" : "Перетащите задачу сюда";
     const completedCount = state.tasks.filter((task) => task.status === "done").length;
     const openCount = state.tasks.length - completedCount;
     for (const button of statusLanguageButtons) {
@@ -815,11 +815,11 @@
     if (completedToggle) {
       completedToggle.textContent = state.completedOnly
         ? `Текущие · ${openCount}`
-        : `Выполненные · ${completedCount}`;
+        : `Закрытые · ${completedCount}`;
       completedToggle.setAttribute("aria-pressed", String(state.completedOnly));
       completedToggle.setAttribute(
         "aria-label",
-        state.completedOnly ? "Показать текущие задачи" : "Показать только выполненные задачи",
+        state.completedOnly ? "Показать текущие задачи" : "Показать только закрытые задачи",
       );
     }
     board.classList.toggle("is-completed-only", state.completedOnly);

@@ -131,6 +131,40 @@ test("desktop message acknowledgement does not wait for a full snapshot", async 
   assert.equal("snapshot" in result, false);
 });
 
+test("durable desktop intake reuses the queue persistence boundary", async () => {
+  const receipts = new MessageReceiptRegistry();
+  let controllerPersistenceCalls = 0;
+  let receiptCapturedByQueue = null;
+  const messages = controller({
+    durableIntake: true,
+    receipts,
+    persistReceipts: async () => { controllerPersistenceCalls += 1; },
+    runCoordinator: {
+      submitClientInput: async () => assert.fail("durable intake must use acceptClientInput"),
+      steer: async () => ({}),
+      acceptClientInput: async () => {
+        receiptCapturedByQueue = receipts.get({ clientUserMessageId: "message-one-boundary" });
+        return {
+          accepted: true,
+          queued: true,
+          threadId: "thread-1",
+          clientUserMessageId: "message-one-boundary",
+        };
+      },
+    },
+  });
+
+  const result = await messages.sendMessage({
+    text: "не ждать три записи",
+    clientUserMessageId: "message-one-boundary",
+  });
+
+  assert.equal(receiptCapturedByQueue.result.pending, true);
+  assert.equal(controllerPersistenceCalls, 0);
+  assert.equal(result.accepted, true);
+  assert.equal(receipts.get({ clientUserMessageId: "message-one-boundary" }).result.pending, false);
+});
+
 test("desktop message receipt preserves the interstream source author", async () => {
   const receipts = new MessageReceiptRegistry();
   const messageOrigin = {

@@ -29,6 +29,7 @@ export function createDesktopRunRouterWiring({
       store: services.deferredInputs,
       maxItems: constants.maxDeferredInputs,
       persist: services.saveState,
+      persistIntake: services.persistDeferredIntake,
       removeFiles: (files) => Promise.all(files.map((file) => unlink(file).catch(() => {}))),
       notify: async (item, { executionOwner, conflictTask }) => {
         const preview = runInputPreview(item.input);
@@ -174,6 +175,7 @@ export function createDesktopRunRouterWiring({
   });
   const taskBoardController = new DesktopTaskBoardController({
     taskBoard: services.taskBoard,
+    voiceTranscriber: services.taskVoiceTranscriber,
     workspaceCatalog: services.workspaceCatalog,
     taskLauncher: taskBoardLauncher,
     snapshot: desktop.snapshot,

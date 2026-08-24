@@ -60,6 +60,28 @@ test("CodexAppServerTransport routes RPC responses and notifications", async () 
   assert.deepEqual(messages, [{ method: "turn/started", params: { turnId: "t1" } }]);
 });
 
+test("CodexAppServerTransport coalesces live answer deltas before dispatch", async () => {
+  const { child, messages } = await startedTransport();
+  const lines = Array.from({ length: 600 }, (_, index) => JSON.stringify({
+    method: "item/agentMessage/delta",
+    params: {
+      threadId: "thread-1",
+      turnId: "turn-1",
+      itemId: "answer-1",
+      delta: `${String(index + 1).padStart(4, "0")}\n`,
+    },
+  }));
+
+  child.stdout.write(`${lines.join("\n")}\n`);
+  assert.equal(messages.length, 0);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].params.delta.split("\n").filter(Boolean).length, 600);
+  assert.ok(messages[0].params.delta.startsWith("0001\n"));
+  assert.ok(messages[0].params.delta.endsWith("0600\n"));
+});
+
 test("CodexAppServerTransport initializes each live process once", async () => {
   const { child, transport } = await startedTransport();
   const written = nextWrittenJson(child.stdin);

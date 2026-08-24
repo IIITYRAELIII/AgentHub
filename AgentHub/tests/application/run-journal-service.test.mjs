@@ -64,6 +64,26 @@ test("RunJournalService preserves authoritative answer time during repeated obse
   assert.equal(service.lastMessageRecord(task).text, "Answer");
 });
 
+test("RunJournalService rejects an older turn that finishes projection after a newer turn", () => {
+  const { service } = fixture();
+  const task = { provider: "codex", projectRoot: "C:/workspace", threadId: "thread" };
+
+  service.rememberLastMessage({
+    ...task,
+    turnId: "turn-2",
+    startedAt: "2026-08-04T12:00:02.000Z",
+  }, "New answer");
+  service.rememberLastMessage({
+    ...task,
+    turnId: "turn-1",
+    startedAt: "2026-08-04T12:00:01.000Z",
+  }, "Old answer", { updatedAt: "2026-08-04T12:00:04.000Z" });
+
+  assert.equal(service.lastMessageRecord(task).text, "New answer");
+  assert.equal(service.lastMessageRecord(task).turnId, "turn-2");
+  assert.equal(service.lastMessageRecord(task).startedAt, "2026-08-04T12:00:02.000Z");
+});
+
 test("RunJournalService revision changes only when the last-message projection changes", () => {
   const { service } = fixture();
   const task = { provider: "codex", projectRoot: "C:/workspace", threadId: "thread", turnId: "turn-1" };

@@ -58,6 +58,8 @@ test("core-only components need neither Telegram credentials nor Web App", async
       maxFilesPerPass: 8,
     });
     assert.equal(config.codexSandboxMode, "workspace-write");
+    assert.equal(config.whisperModel, "large-v3-turbo");
+    assert.equal(config.whisperDevice, "cuda");
     assert.deepEqual(config.contextAutomation, {
       autoCompactAfterTurn: false,
       autoCompactThresholdPercent: 75,

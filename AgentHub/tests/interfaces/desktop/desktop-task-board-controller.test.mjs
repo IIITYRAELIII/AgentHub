@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { DesktopTaskBoardController } from "../../../src/interfaces/desktop/desktop-task-board-controller.mjs";
 
-function fixture({ activeThread = null, sourceDetails = undefined } = {}) {
+function fixture({ activeThread = null, sourceDetails = undefined, voiceTranscriber = null } = {}) {
   const calls = [];
   const task = {
     id: "board-1",
@@ -53,6 +53,7 @@ function fixture({ activeThread = null, sourceDetails = undefined } = {}) {
       };
     },
     sendMessage: async (params) => calls.push(["message", params]),
+    voiceTranscriber,
     snapshot: async (value) => { calls.push(["snapshot", value]); return { boardTasks: [] }; },
   });
   return { controller, calls };
@@ -115,6 +116,27 @@ test("a screenshot reply augments the existing dashboard Task", async () => {
     attachments: ["D:/runtime/attachments/screenshot.jpg"],
   }]);
   assert.equal(calls.some(([name]) => name === "create"), false);
+});
+
+test("shared Telegram bot adds a Terra-refined voice transcript and keeps the audio attachment", async () => {
+  const transcribed = [];
+  const { controller, calls } = fixture({
+    voiceTranscriber: {
+      transcribe: async (file) => {
+        transcribed.push(file);
+        return "Нужно исправить фильтр до пятницы.";
+      },
+    },
+  });
+  await controller.ingest({
+    text: "--- Сообщение 1 · Переслано · Иван ---\n[Голосовое сообщение 1 приложено следом за этим сообщением]",
+    sourceKey: "shared-dashboard:voice",
+    sourceDetails: { attachmentKinds: ["voice"] },
+    attachments: ["D:/runtime/attachments/voice.ogg"],
+  });
+  assert.deepEqual(transcribed, ["D:/runtime/attachments/voice.ogg"]);
+  assert.match(calls[0][1].text, /Расшифровка голосового сообщения 1[\s\S]*исправить фильтр/u);
+  assert.deepEqual(calls[0][1].sourceDetails.attachments, ["D:/runtime/attachments/voice.ogg"]);
 });
 
 test("a text reply to an own Telegram message clarifies the existing dashboard Task", async () => {

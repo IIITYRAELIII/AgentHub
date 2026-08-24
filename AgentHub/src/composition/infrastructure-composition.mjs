@@ -49,6 +49,10 @@ import {
   CodexSparkTaskClassifier,
   ensureDashBotStream,
 } from "../providers/codex/codex-spark-task-classifier.mjs";
+import {
+  CodexTerraVoiceTranscriber,
+  ensureDashBotTerraStream,
+} from "../providers/codex/codex-terra-voice-transcriber.mjs";
 import { RuntimeNotificationController } from "../runtime/runtime-notification-controller.mjs";
 import { sentryDiagnostics } from "../infrastructure/diagnostics/sentry-diagnostics.mjs";
 
@@ -213,6 +217,26 @@ export async function createHubInfrastructure({
       projectRoot: config.projectRoot,
     })
     : null;
+  const existingDashBotStream = dashBotStream ?? workspaceCatalogStore.hierarchy()
+    .find((workspace) => workspace.name === "Other")?.streams
+    .find((stream) => stream.name === "DashBot") ?? null;
+  const dashBotTerraStream = ensureDashBotTerraStream(workspaceCatalogStore, {
+    firstStreamId: existingDashBotStream?.id ?? null,
+    projectRoot: config.projectRoot,
+  });
+  const taskVoiceTranscriber = new CodexTerraVoiceTranscriber({
+    requestedExecutable: config.codexExecutable,
+    executableArgs: config.codexExecutableArgs,
+    projectRoot: config.projectRoot,
+    pythonExe: config.pythonExe,
+    transcribeScript: path.join(agentHubRoot, "transcribe.py"),
+    whisperModel: config.whisperModel,
+    whisperModelDir: config.whisperModelDir,
+    whisperDevice: config.whisperDevice,
+    stopProcess: (worker) => stopProcessTree(worker.pid),
+    workspaceCatalog: workspaceCatalogStore,
+    streamId: dashBotTerraStream.id,
+  });
   const taskClassifier = config.taskBoard.triageEnabled
     ? new CodexSparkTaskClassifier({
       requestedExecutable: config.codexExecutable,
@@ -401,6 +425,7 @@ export async function createHubInfrastructure({
     streamHandoff,
     preTurnInstructions,
     taskBoard,
+    taskVoiceTranscriber,
     hubMcpService,
     hubMcpServer,
     miniAppServer,
