@@ -9,6 +9,11 @@ import {
   usageSyncSnapshotFromLedger,
   usageSyncThreadKey,
 } from "../../src/domain/work-log-usage-sync.mjs";
+import {
+  incomingLedgerRecord,
+  mergeLedgerRecord,
+  normalizedLedger,
+} from "../../src/application/work-log-usage-projection.mjs";
 
 test("usage sync events identify the turn and never keep raw provider ids", () => {
   const event = normalizeUsageSyncEvent({
@@ -50,6 +55,45 @@ test("turn identity is independent of the device that recorded it", () => {
 
   assert.equal(first.eventId, second.eventId);
   assert.equal(mergeUsageSyncEvents([first], [second]).length, 1);
+});
+
+test("corrected ledger usage advances the same sync event without touching unchanged turns", () => {
+  const fields = {
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    completedAt: "2026-08-20T01:00:00.000Z",
+    accountKey: "chatgpt:owner",
+    usageReported: false,
+  };
+  const original = incomingLedgerRecord({
+    ...fields,
+    observedAt: "2026-08-20T01:01:00.000Z",
+  });
+  const unchanged = incomingLedgerRecord({
+    ...fields,
+    observedAt: "2026-08-25T01:00:00.000Z",
+  });
+
+  mergeLedgerRecord(original, unchanged);
+  assert.equal(original.observedAt, "2026-08-20T01:01:00.000Z");
+
+  const corrected = incomingLedgerRecord({
+    ...fields,
+    usageReported: true,
+    usage: { inputTokens: 100, outputTokens: 25, totalTokens: 125 },
+    observedAt: "2026-08-25T01:02:00.000Z",
+  });
+  mergeLedgerRecord(original, corrected);
+  assert.equal(original.observedAt, "2026-08-25T01:02:00.000Z");
+
+  const snapshot = usageSyncSnapshotFromLedger({ turn: original }, { deviceId: "device-a" });
+  assert.equal(snapshot.events.length, 1);
+  assert.equal(snapshot.events[0].observedAt, "2026-08-25T01:02:00.000Z");
+  assert.equal(snapshot.events[0].usage.totalTokens, 125);
+
+  const restored = normalizedLedger({ version: 9, turns: { turn: original } });
+  assert.equal(restored.ledger.turns.turn.observedAt, "2026-08-25T01:02:00.000Z");
 });
 
 test("a sync event without a resolvable turn identity is rejected", () => {
@@ -109,6 +153,9 @@ test("usage sync snapshot exports ledger records as minimal remote turns", () =>
       turnId: "turn-1",
       completedAt: "2026-08-20T01:00:00.000Z",
       estimatedCredits: 12,
+      estimateKind: "imagegen-default",
+      imageGenerationCount: 2,
+      contextProbe: true,
       accountKey: "chatgpt:owner",
       accountLabel: "owner@example.com",
       accountType: "chatgpt",
@@ -128,6 +175,9 @@ test("usage sync snapshot exports ledger records as minimal remote turns", () =>
   assert.equal(event.accountLabel, "owner@example.com");
   assert.equal(event.accountType, "chatgpt");
   assert.equal(event.accountPlan, "plus");
+  assert.equal(event.estimateKind, "imagegen-default");
+  assert.equal(event.imageGenerationCount, 2);
+  assert.equal(event.contextProbe, true);
   const turns = syncedUsageEventsToTurns(snapshot.events);
   const key = `codex\u0000sync:device-a:${event.threadKey}\u0000${event.eventId}`;
   assert.deepEqual(Object.keys(turns), [key]);
@@ -135,6 +185,9 @@ test("usage sync snapshot exports ledger records as minimal remote turns", () =>
   assert.equal(turns[key].syncDeviceLabel, "SidorukSV");
   assert.equal(turns[key].accountLabel, "owner@example.com");
   assert.equal(turns[key].taskThreadId, `sync:device-a:${event.taskKey}`);
+  assert.equal(turns[key].estimateKind, "imagegen-default");
+  assert.equal(turns[key].imageGenerationCount, 2);
+  assert.equal(turns[key].contextProbe, true);
 });
 
 test("turns of one thread stay grouped after pseudonymization", () => {

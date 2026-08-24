@@ -3,6 +3,20 @@ import path from "node:path";
 import { turnEndKey } from "../../application/turn-end-notifications.mjs";
 import { conciseTurnTitle } from "../../application/turn-title.mjs";
 import { isCodexContextProbeTurn } from "../../domain/codex-context-probe.mjs";
+import { normalizeServiceTier, normalizeTokenUsage } from "../../domain/token-usage.mjs";
+
+function sameHistoricalUsage(record, usageResult, contextProbe) {
+  if (!record || record.provisional === true) return false;
+  return record.usageReported === (usageResult.reported === true)
+    && JSON.stringify(normalizeTokenUsage(record.usage)) === JSON.stringify(normalizeTokenUsage(usageResult.usage))
+    && (Number(record.estimatedCredits) || 0) === (Number(usageResult.estimatedCredits) || 0)
+    && String(record.estimateKind ?? "") === String(usageResult.estimateKind ?? "")
+    && Math.max(0, Math.floor(Number(record.imageGenerationCount) || 0))
+      === Math.max(0, Math.floor(Number(usageResult.imageGenerationCount) || 0))
+    && String(record.model ?? "").trim().toLowerCase() === String(usageResult.model ?? "").trim().toLowerCase()
+    && normalizeServiceTier(record.serviceTier) === normalizeServiceTier(usageResult.serviceTier)
+    && (record.contextProbe === true) === contextProbe;
+}
 
 export class CodexTerminalReconciliationService {
   constructor({
@@ -51,7 +65,8 @@ export class CodexTerminalReconciliationService {
   }
 
   async reconcile(thread, project, terminal) {
-    if (isCodexContextProbeTurn(terminal)) return true;
+    const terminalContextProbe = isCodexContextProbeTurn(terminal);
+    if (terminalContextProbe && terminal?.historical !== true) return true;
     const completedAtMs = Date.parse(String(terminal?.completedAt ?? ""));
     if (terminal?.status === "completed"
       && Number.isFinite(completedAtMs)
@@ -72,9 +87,12 @@ export class CodexTerminalReconciliationService {
     if (this.reconciling.has(key)) return false;
     this.reconciling.add(key);
     try {
+      const usageResult = terminal?.usageResult
+        ?? await this.readTurnUsage(thread.path, identity.turnId);
+      const contextProbe = terminalContextProbe || isCodexContextProbeTurn(usageResult);
       if (terminal?.historical === true) {
         const existingJournalTurn = await this.workLogStore.getTurn(identity);
-        if (existingJournalTurn && existingJournalTurn.provisional !== true) {
+        if (sameHistoricalUsage(existingJournalTurn, usageResult, contextProbe)) {
           this.turnStarts.delete(key);
           return true;
         }
@@ -83,8 +101,6 @@ export class CodexTerminalReconciliationService {
       const parentTurnId = accountingThread.isSubagent
         ? await this.subagentParentTurnId(thread, accountingThread)
         : "";
-      const usageResult = terminal?.usageResult
-        ?? await this.readTurnUsage(thread.path, identity.turnId);
       const authoritativeStatus = terminal?.authoritative === true;
       if (!usageResult.terminal && !authoritativeStatus) return false;
       const resolvedStatus = usageResult.terminal
@@ -123,6 +139,7 @@ export class CodexTerminalReconciliationService {
           project,
           terminal,
           usageResult,
+          contextProbe,
           accountingThread,
           parentTurnId,
           resolvedStatus,
@@ -194,7 +211,9 @@ export class CodexTerminalReconciliationService {
   async #projectHistorical({
     identity,
     project,
+    terminal,
     usageResult,
+    contextProbe,
     accountingThread,
     parentTurnId,
     resolvedStatus,
@@ -220,8 +239,11 @@ export class CodexTerminalReconciliationService {
       provisional,
       usage: usageResult.usage,
       usageReported: usageResult.reported === true,
+      imageGenerationCount: usageResult.imageGenerationCount,
       estimatedCredits: usageResult.estimatedCredits,
       estimateKind: usageResult.estimateKind,
+      contextProbe,
+      resolveAccount: terminal?.historical !== true || terminal?.resolveCurrentAccount === true,
       model: usageResult.model,
       serviceTier: usageResult.serviceTier,
       startedAt: usageResult.startedAt,

@@ -41,6 +41,9 @@ export function createExecutionBootstrapPhase({
       agentHubRoot: root,
       instanceLockFile: settings.instanceLockFile,
       botMenu: settings.botMenu,
+      globalWorkLogProjectRoots: settings.globalWorkLogProjectRoots,
+      journalDatabaseFile: settings.journalDatabaseFile,
+      testContourJournalDatabaseFile: settings.testContourJournalDatabaseFile,
     },
     state: {
       hostState: selection.hostState,

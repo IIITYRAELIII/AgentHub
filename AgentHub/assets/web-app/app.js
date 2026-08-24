@@ -8134,6 +8134,7 @@ const BURN_RATE_HOURLY_MINIMUM_SPAN_MS = 45 * 60_000;
 const BURN_RATE_CHART_MAX = 400;
 const {
   interpolateRateLimitGaps,
+  limitPriceStatistics,
   meanSignedComparisonDeviation,
   recoverRateLimitResetGaps,
   signedComparisonDeviations,
@@ -10014,6 +10015,7 @@ function comparisonBuckets(payload, extent) {
       at: point.at,
       time: Date.parse(point.at),
       credits: Math.max(0, Number(point.credits) || 0),
+      tokenCredits: Math.max(0, Number(point.tokenCredits ?? point.credits) || 0),
     }))
     .filter((point) => Number.isFinite(point.time))
     .sort((left, right) => left.time - right.time);
@@ -10061,6 +10063,7 @@ function comparisonReconstructionBuckets(payload, extent) {
       start,
       end: start + step,
       credits: Math.max(0, Number(point?.credits) || 0),
+      tokenCredits: Math.max(0, Number(point?.tokenCredits ?? point?.credits) || 0),
     };
   }).filter((bucket) => (
     Number.isFinite(bucket.start)
@@ -10085,36 +10088,11 @@ function normalizeComparisonValues(values) {
 }
 
 function comparisonLimitPrice(localValues, apiValues, buckets) {
-  const sample = (from, to) => {
-    let credits = 0;
-    let limitPoints = 0;
-    let count = 0;
-    for (let index = from; index < to; index += 1) {
-      const local = localValues[index];
-      const api = apiValues[index];
-      if (!(local > 0) || !Number.isFinite(api)) continue;
-      credits += local;
-      limitPoints += Math.max(0, api);
-      count += 1;
-    }
-    return credits > 0 && count > 0
-      ? { value: limitPoints / (credits / 1_000), credits, limitPoints, count }
-      : null;
-  };
-  const windowSize = clampNumber(Math.round(buckets.length / 10), 2, 5);
-  const values = buckets.map((_, index) => (
-    sample(Math.max(0, index - windowSize + 1), index + 1)?.value ?? null
-  ));
   const midpoint = buckets.findIndex((bucket) => bucket.time >= (
     buckets[0].time + (buckets.at(-1).time - buckets[0].time) / 2
   ));
   const split = midpoint > 0 ? midpoint : Math.ceil(buckets.length / 2);
-  const early = sample(0, split);
-  const late = sample(split, buckets.length);
-  const changePercent = early?.value > 0 && Number.isFinite(late?.value)
-    ? (late.value / early.value - 1) * 100
-    : null;
-  return { values, early, late, changePercent, windowSize };
+  return limitPriceStatistics(localValues, apiValues, { splitIndex: split });
 }
 
 function buildUsageComparisonModel(payload) {
@@ -10123,7 +10101,9 @@ function buildUsageComparisonModel(payload) {
   const buckets = comparisonBuckets(payload.usage, extent);
   if (!buckets.length) return null;
   const localRaw = buckets.map((bucket) => bucket.credits);
-  const reconstructionBuckets = comparisonReconstructionBuckets(payload?.usage?.reconstruction, extent);
+  const priceLocalRaw = buckets.map((bucket) => bucket.tokenCredits);
+  const reconstructionBuckets = comparisonReconstructionBuckets(payload?.usage?.reconstruction, extent)
+    .map((bucket) => ({ ...bucket, credits: bucket.tokenCredits }));
   const local = normalizeComparisonValues(localRaw);
   if (!(local.peak > 0)) return null;
   const accountKey = resolvedStatisticsAccountKey(payload?.limits);
@@ -10134,7 +10114,7 @@ function buildUsageComparisonModel(payload) {
     .filter((item) => Array.isArray(item.points) && item.points.length > 1)
     .map((item, index) => {
       const id = seriesId(item);
-      const recovery = limitDeltasByBucket(item, buckets, localRaw, reconstructionBuckets);
+      const recovery = limitDeltasByBucket(item, buckets, priceLocalRaw, reconstructionBuckets);
       const rawValues = recovery.values;
       const normalized = normalizeComparisonValues(rawValues);
       return {
@@ -10170,7 +10150,7 @@ function buildUsageComparisonModel(payload) {
   const deviationValues = signedComparisonDeviations(aggregate, local.values);
   const differenceValues = [...deviationValues];
   const price = selectedSeries
-    ? comparisonLimitPrice(localRaw, selectedSeries.rawValues, buckets)
+    ? comparisonLimitPrice(priceLocalRaw, selectedSeries.rawValues, buckets)
     : comparisonLimitPrice([], [], buckets);
   return {
     extent,
@@ -10438,6 +10418,14 @@ function buildUsageComparisonChart(model) {
     "aria-label",
     `Сопоставление учётного и API-расхода. Корреляция ${correlation}; среднее отклонение ${
       Number.isFinite(model.deviation) ? `${formatComparisonNumber(model.deviation, 1, true)} процентного пункта` : "не рассчитано"
+    }; средняя цена ${
+      Number.isFinite(model.price.overall?.value)
+        ? `${formatComparisonNumber(model.price.overall.value, 2)} процентного пункта на kcr`
+        : "не рассчитана"
+    }; расчётный недельный лимит ${
+      Number.isFinite(model.price.weeklyCredits)
+        ? formatUsageValue(model.price.weeklyCredits)
+        : "не рассчитан"
     }; изменение цены ${
       Number.isFinite(model.price.changePercent)
         ? `${formatComparisonNumber(model.price.changePercent, 0, true)} процента`
@@ -10803,11 +10791,13 @@ function comparisonSeriesPicker(model) {
 }
 
 function comparisonPriceText(price) {
-  if (!Number.isFinite(price?.early?.value) || !Number.isFinite(price?.late?.value)) return "недостаточно данных";
+  if (!Number.isFinite(price?.overall?.value)) return "недостаточно данных";
+  const average = `${formatComparisonNumber(price.overall.value, 2)} п.п./kcr в среднем`;
+  if (!Number.isFinite(price?.early?.value) || !Number.isFinite(price?.late?.value)) return average;
   const change = Number.isFinite(price.changePercent)
     ? ` · ${formatComparisonNumber(price.changePercent, 0, true)}%`
     : "";
-  return `${formatComparisonNumber(price.early.value, 2)} → ${formatComparisonNumber(price.late.value, 2)} п.п./kcr${change}`;
+  return `${average} · ${formatComparisonNumber(price.early.value, 2)} → ${formatComparisonNumber(price.late.value, 2)}${change}`;
 }
 
 function renderComparisonLegend(model) {
@@ -10835,8 +10825,11 @@ function renderComparisonSummary(model) {
     ? formatComparisonNumber(model.correlation, 2, true)
     : "—";
   const deviation = Number.isFinite(model?.deviation) ? `${formatComparisonNumber(model.deviation, 1, true)} п.п.` : "—";
-  const priceChange = Number.isFinite(model?.price?.changePercent)
-    ? `${formatComparisonNumber(model.price.changePercent, 0, true)}%`
+  const averagePrice = Number.isFinite(model?.price?.overall?.value)
+    ? `${formatComparisonNumber(model.price.overall.value, 2)} п.п./kcr`
+    : "—";
+  const weeklyLimit = Number.isFinite(model?.price?.weeklyCredits)
+    ? `≈ ${formatUsageValue(model.price.weeklyCredits)}/нед.`
     : "—";
   const priceClass = model?.price?.changePercent > 0
     ? " is-costlier"
@@ -10853,10 +10846,17 @@ function renderComparisonSummary(model) {
     ]),
     el("span", {
       class: `comparison-metric${priceClass}`,
-      title: `Цена лимита, первая → вторая половина: ${comparisonPriceText(model?.price)}`,
+      title: `Средняя цена лимита и первая → вторая половина: ${comparisonPriceText(model?.price)}`,
     }, [
       el("span", { text: "Цена" }),
-      el("strong", { text: priceChange }),
+      el("strong", { text: averagePrice }),
+    ]),
+    el("span", {
+      class: "comparison-metric",
+      title: "Расчётный недельный лимит: 100 п.п. делятся на среднюю цену лимита",
+    }, [
+      el("span", { text: "Лимит" }),
+      el("strong", { text: weeklyLimit }),
     ]),
   );
 }
@@ -10894,11 +10894,11 @@ function renderUsageComparison() {
   else buildUsageComparisonChart(model);
   if (comparisonNote) {
     const baseNote = split
-      ? "Временные графики используют исходные единицы и общую ось дат. Точки показывают совпадающие интервалы. Разность считается как нормированный расход аккаунта минус учётный: выше нуля — больше расход лимита, ниже нуля — больше учётный расход. Изменение лимита между соседними замерами равномерно распределяется по их интервалу. Цена остаётся в итоговом показателе."
-      : "При выборе аккаунта учётный расход включает его ходы на этом и всех синхронизированных устройствах. Пункт «Все» снимает отбор аккаунта. Изменение лимита между соседними замерами равномерно распределяется по их интервалу; неизменное значение считается нулевым расходом. Линии расхода приведены к собственному пику. r — корреляция Пирсона, Δ — среднее знаковое отклонение «аккаунт − учётный»: минусы и плюсы взаимно компенсируются. Цена — расход лимита в п.п. на 1 kcr. Изменение цены сравнивает первую и вторую половины периода.";
+      ? "Временные графики используют исходные единицы и общую ось дат. Точки показывают совпадающие интервалы. Разность считается как нормированный расход аккаунта минус учётный: выше нуля — больше расход лимита, ниже нуля — больше учётный расход. Изменение лимита между соседними замерами равномерно распределяется по их интервалу. Цена — взвешенная средняя по токенному расходу без фиксированных оценок ImageGen; расчётный недельный лимит равен 100 п.п., делённым на эту цену."
+      : "При выборе аккаунта учётный расход включает его ходы на этом и всех синхронизированных устройствах. Пункт «Все» снимает отбор аккаунта. Изменение лимита между соседними замерами равномерно распределяется по их интервалу; неизменное значение считается нулевым расходом. Линии расхода приведены к собственному пику. r — корреляция Пирсона, Δ — среднее знаковое отклонение «аккаунт − учётный»: минусы и плюсы взаимно компенсируются. Цена — взвешенная средняя: весь расход лимита делится на весь токенный расход; фиксированные оценки ImageGen не учитываются. Расчётный недельный лимит равен 100 п.п., делённым на эту цену. Изменение цены сравнивает первую и вторую половины периода.";
     const recovery = model.selectedSeries?.recovery;
     const recoveryNote = recovery?.estimatedLimitPoints > 0
-      ? ` Разрыв${recovery.recoveredIntervals === 1 ? "" : "ы"} со сбросом восстановлен${recovery.recoveredIntervals === 1 ? "" : "ы"} по учётному расходу и цене соседних полных интервалов: ${formatComparisonNumber(recovery.estimatedLimitPoints, 1)} п.п.`
+      ? ` Разрыв${recovery.recoveredIntervals === 1 ? "" : "ы"} со сбросом восстановлен${recovery.recoveredIntervals === 1 ? "" : "ы"} по токенному учётному расходу и цене соседних полных интервалов: ${formatComparisonNumber(recovery.estimatedLimitPoints, 1)} п.п.`
       : " Разрывы со сбросом без учётного расхода остаются неизвестными.";
     comparisonNote.textContent = baseNote + recoveryNote;
   }

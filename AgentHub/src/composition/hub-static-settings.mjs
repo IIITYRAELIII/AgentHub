@@ -1,5 +1,6 @@
 import path from "node:path";
 
+import { defaultTestContourRoot } from "../infrastructure/filesystem/runtime-layout.mjs";
 import { CODEX_REASONING_EFFORTS } from "../providers/codex/codex-settings.mjs";
 import {
   CLAUDE_MODEL_ALIASES,
@@ -76,9 +77,14 @@ export function createHubStaticSettings(config, agentHubRoot) {
     ["❓ Помощь", "/help"],
   ]);
 
+  const testContourProjectRoot = path.join(defaultTestContourRoot(), "project");
   return {
-    globalWorkLogProjectRoots: config.projects.map((project) => project.path),
+    globalWorkLogProjectRoots: [
+      ...config.projects.map((project) => project.path),
+      ...(config.components?.testContour === true ? [testContourProjectRoot] : []),
+    ],
     journalDatabaseFile: path.join(config.dataDir, "journal.sqlite"),
+    testContourJournalDatabaseFile: path.join(defaultTestContourRoot(), "data", "journal.sqlite"),
     legacyWorkLogLedgerFile: path.join(config.dataDir, "work-log-usage.json"),
     legacyWorkLogFile: path.join(config.projectRoot, "WORK_LOG.md"),
     claudeModels,

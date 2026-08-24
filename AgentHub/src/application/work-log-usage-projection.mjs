@@ -3,8 +3,10 @@ import path from "node:path";
 
 import {
   estimateMissingCodexUsage,
+  IMAGE_GENERATION_ESTIMATE_CREDITS,
   looksLikeImageGenerationPrompt,
 } from "../domain/codex-usage-estimate.mjs";
+import { isCodexContextProbeTurn } from "../domain/codex-context-probe.mjs";
 import { isCodexAutoCompactionTurnId } from "../domain/codex-internal-turn.mjs";
 import { isInheritedSubagentTurn } from "../domain/subagent-turn-identity.mjs";
 import { taskDisplayTitle } from "../domain/task-display-title.mjs";
@@ -22,6 +24,7 @@ import {
 import {
   normalizeUsageSyncEvent,
   usageSyncEventIdentity,
+  usageSyncEventFromLedgerRecord,
 } from "../domain/work-log-usage-sync.mjs";
 
 const WORK_LOG_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -63,6 +66,23 @@ export function sameProjectRoot(left, right) {
 export function normalizeEstimatedCredits(value) {
   const credits = Number(value ?? 0);
   return Number.isFinite(credits) && credits > 0 ? credits : 0;
+}
+
+function normalizeImageGenerationCount(value, { estimatedCredits = 0, estimateKind = "" } = {}) {
+  const explicit = Math.max(0, Math.floor(Number(value) || 0));
+  if (explicit) return explicit;
+  if (String(estimateKind ?? "").trim() !== "imagegen-default") return 0;
+  return Math.max(0, Math.round(normalizeEstimatedCredits(estimatedCredits) / IMAGE_GENERATION_ESTIMATE_CREDITS));
+}
+
+function effectiveEstimatedCredits(record) {
+  return String(record?.estimateKind ?? "").trim() === "imagegen-default"
+    ? 0
+    : normalizeEstimatedCredits(record?.estimatedCredits);
+}
+
+function isContextProbeRecord(record) {
+  return record?.contextProbe === true || isCodexContextProbeTurn(record);
 }
 
 function normalizedSkillsUsed(value) {
@@ -165,7 +185,7 @@ function recordCreditBreakdown(record) {
       // model and Fast tier from each rollout.
       model: record?.model || "gpt-5.6-sol",
       serviceTier: record?.serviceTier,
-      estimatedCredits: normalizeEstimatedCredits(record?.estimatedCredits),
+      estimatedCredits: effectiveEstimatedCredits(record),
     },
   );
 }
@@ -227,18 +247,25 @@ export function normalizedLedger(value = {}, { defaultProjectRoot = "" } = {}) {
       let workLogId = null;
       if (record?.workLogId) workLogId = normalizeWorkLogId(record.workLogId);
       const account = normalizedAccountFields(record);
+      const estimatedCredits = normalizeEstimatedCredits(
+        record?.estimatedCredits
+          ?? (sourceVersion < 6 && record?.estimatedUnits != null
+            ? Number(record.estimatedUnits) / 8_000
+            : estimate?.estimatedCredits),
+      );
+      const estimateKind = String(record?.estimateKind ?? estimate?.estimateKind ?? "").trim();
       turns[key] = {
         workLogId,
         projectRoot: normalizeProjectRoot(record?.projectRoot, defaultProjectRoot),
         usage: normalizeTokenUsage(record?.usage),
         usageReported,
-        estimatedCredits: normalizeEstimatedCredits(
-          record?.estimatedCredits
-            ?? (sourceVersion < 6 && record?.estimatedUnits != null
-              ? Number(record.estimatedUnits) / 8_000
-              : estimate?.estimatedCredits),
-        ),
-        estimateKind: String(record?.estimateKind ?? estimate?.estimateKind ?? "").trim(),
+        estimatedCredits,
+        estimateKind,
+        imageGenerationCount: normalizeImageGenerationCount(record?.imageGenerationCount, {
+          estimatedCredits,
+          estimateKind,
+        }),
+        contextProbe: isContextProbeRecord(record),
         model: String(record?.model ?? "").trim().toLowerCase(),
         serviceTier: normalizeServiceTier(record?.serviceTier ?? record?.service_tier),
         pricingMetadataResolved: sourceVersion >= 7
@@ -269,6 +296,7 @@ export function normalizedLedger(value = {}, { defaultProjectRoot = "" } = {}) {
         toolMetricsKnown: sourceVersion >= 8 && record?.toolMetricsKnown === true,
         startedAt: String(record?.startedAt ?? ""),
         completedAt: String(record?.completedAt ?? ""),
+        observedAt: String(record?.observedAt ?? ""),
         status,
         ...account,
       };
@@ -501,6 +529,10 @@ function accountUsageRangeStart(range, nowMs) {
     start.setDate(start.getDate() - 6);
     return start.getTime();
   }
+  if (range === "15d") {
+    start.setDate(start.getDate() - 14);
+    return start.getTime();
+  }
   if (range === "30d") {
     start.setDate(start.getDate() - 29);
     return start.getTime();
@@ -512,6 +544,7 @@ const ACCOUNT_USAGE_RANGES = Object.freeze([
   { id: "today", title: "Сегодня" },
   { id: "24h", title: "24 часа" },
   { id: "7d", title: "7 дней" },
+  { id: "15d", title: "15 дней" },
   { id: "30d", title: "30 дней" },
   { id: "all", title: "Всё время" },
 ]);
@@ -1914,6 +1947,7 @@ function automaticRecordsForDay(turns, date, claimedWorkLogIds = new Set()) {
       recordLocalDate(record.completedAt) === date
       && record.provider
       && record.threadId
+      && !isContextProbeRecord(record)
       && (!record.workLogId || !claimedWorkLogIds.has(record.workLogId))
     ));
 }
@@ -2078,6 +2112,7 @@ export function searchWorkLogRecords(turns = {}, query, {
   const groups = new Map();
   for (const record of Object.values(turns ?? {})) {
     if (!record || typeof record !== "object") continue;
+    if (isContextProbeRecord(record)) continue;
     if (roots.length && !roots.some((root) => sameProjectRoot(root, record.projectRoot))) continue;
     const fields = [
       ["Поток", record.taskTitle],
@@ -2662,6 +2697,8 @@ export function incomingLedgerRecord({
   usageReported,
   estimatedCredits,
   estimateKind,
+  imageGenerationCount,
+  contextProbe,
   model,
   serviceTier,
   taskTitle,
@@ -2684,16 +2721,24 @@ export function incomingLedgerRecord({
   accountAttribution,
   startedAt,
   completedAt,
+  observedAt,
   status,
 }) {
   const accountFields = normalizedAccountFields({ account, accountKey, accountAttribution });
+  const normalizedEstimatedCredits = normalizeEstimatedCredits(estimatedCredits);
+  const normalizedEstimateKind = String(estimateKind ?? "").trim();
   return {
     workLogId,
     projectRoot: normalizeProjectRoot(projectRoot),
     usage: normalizeTokenUsage(usage),
     usageReported: usageReported === true,
-    estimatedCredits: normalizeEstimatedCredits(estimatedCredits),
-    estimateKind: String(estimateKind ?? "").trim(),
+    estimatedCredits: normalizedEstimatedCredits,
+    estimateKind: normalizedEstimateKind,
+    imageGenerationCount: normalizeImageGenerationCount(imageGenerationCount, {
+      estimatedCredits: normalizedEstimatedCredits,
+      estimateKind: normalizedEstimateKind,
+    }),
+    contextProbe: contextProbe === true,
     model: String(model ?? "").trim().toLowerCase(),
     serviceTier: serviceTier == null ? "" : normalizeServiceTier(serviceTier),
     pricingMetadataResolved: Boolean(String(model ?? "").trim() && serviceTier != null),
@@ -2719,12 +2764,28 @@ export function incomingLedgerRecord({
     ...accountFields,
     startedAt: String(startedAt ?? ""),
     completedAt: String(completedAt ?? new Date().toISOString()),
+    observedAt: String(observedAt ?? new Date().toISOString()),
     status: String(status ?? "completed").trim() || "completed",
   };
 }
 
+function usageSyncContent(record) {
+  const event = usageSyncEventFromLedgerRecord(record, { deviceId: "ledger-content" });
+  if (!event) return "";
+  const {
+    deviceId: _deviceId,
+    deviceLabel: _deviceLabel,
+    observedAt: _observedAt,
+    source: _source,
+    ...content
+  } = event;
+  return JSON.stringify(content);
+}
+
 export function mergeLedgerRecord(existing, incoming) {
   if (!existing) return incoming;
+  const previousSyncContent = usageSyncContent(existing);
+  const previousObservedAt = String(existing.observedAt ?? "");
   if (incoming.workLogId) existing.workLogId = incoming.workLogId;
   if (incoming.usageReported || !existing.usageReported) {
     existing.usage = incoming.usage;
@@ -2734,6 +2795,8 @@ export function mergeLedgerRecord(existing, incoming) {
     existing.estimatedCredits = incoming.estimatedCredits;
     existing.estimateKind = incoming.estimateKind;
   }
+  if (incoming.imageGenerationCount > 0) existing.imageGenerationCount = incoming.imageGenerationCount;
+  if (incoming.contextProbe) existing.contextProbe = true;
   if (incoming.accountKey) {
     existing.accountKey = incoming.accountKey;
     if (incoming.accountLabel) existing.accountLabel = incoming.accountLabel;
@@ -2779,6 +2842,9 @@ export function mergeLedgerRecord(existing, incoming) {
   if (incoming.status && (incoming.status !== "unknown" || !existing.status || existing.status === "unknown")) {
     existing.status = incoming.status;
   }
+  existing.observedAt = usageSyncContent(existing) === previousSyncContent
+    ? previousObservedAt
+    : String(incoming.observedAt ?? new Date().toISOString());
   return existing;
 }
 
@@ -2810,6 +2876,7 @@ function turnUsageTimeMs(record, mode) {
 function usageHistoryBucket(value = {}) {
   return {
     credits: Math.max(0, Number(value?.credits) || 0),
+    tokenCredits: Math.max(0, Number(value?.tokenCredits) || 0),
     timedCredits: Math.max(0, Number(value?.timedCredits) || 0),
     durationSeconds: Math.max(0, Number(value?.durationSeconds) || 0),
     localCredits: Math.max(0, Number(value?.localCredits) || 0),
@@ -2979,6 +3046,7 @@ export function buildWorkLogUsageHistory(turns = {}, {
       return {
         pointMs,
         credits: Math.max(0, Number(breakdown.total) || 0),
+        tokenCredits: Math.max(0, Number(breakdown.total - breakdown.estimate) || 0),
         priced,
         durationSeconds: durationSeconds(record?.startedAt, record?.completedAt),
         source,
@@ -3026,6 +3094,7 @@ export function buildWorkLogUsageHistory(turns = {}, {
     : 0;
   const reconstructionBuckets = new Map();
   let totalCredits = 0;
+  let totalTokenCredits = 0;
   let totalTimedCredits = 0;
   let totalDurationSeconds = 0;
   let localCredits = 0;
@@ -3057,13 +3126,16 @@ export function buildWorkLogUsageHistory(turns = {}, {
       unpricedCount += 1;
     } else {
       totalCredits += record.credits;
+      totalTokenCredits += record.tokenCredits;
       bucketValue.credits += record.credits;
+      bucketValue.tokenCredits += record.tokenCredits;
       if (reconstructionStepMs > 0 && record.credits > 0) {
         const reconstructionBucket = Math.floor(record.pointMs / reconstructionStepMs) * reconstructionStepMs;
-        reconstructionBuckets.set(
-          reconstructionBucket,
-          (reconstructionBuckets.get(reconstructionBucket) ?? 0) + record.credits,
-        );
+        const reconstructionValue = reconstructionBuckets.get(reconstructionBucket)
+          ?? { credits: 0, tokenCredits: 0 };
+        reconstructionValue.credits += record.credits;
+        reconstructionValue.tokenCredits += record.tokenCredits;
+        reconstructionBuckets.set(reconstructionBucket, reconstructionValue);
       }
       const otherDevice = record.source === "other-device";
       const device = deviceTotals.get(record.deviceId) ?? {
@@ -3159,6 +3231,7 @@ export function buildWorkLogUsageHistory(turns = {}, {
     ...(requestedWorkspaceId ? { workspaceId: requestedWorkspaceId } : {}),
     ...(requestedStreamId ? { streamId: requestedStreamId } : {}),
     totalCredits,
+    totalTokenCredits,
     totalTimedCredits,
     totalDurationSeconds,
     localCredits,
@@ -3183,7 +3256,7 @@ export function buildWorkLogUsageHistory(turns = {}, {
         bucketMs: reconstructionStepMs,
         points: [...reconstructionBuckets.entries()]
           .sort(([left], [right]) => left - right)
-          .map(([at, credits]) => ({ at: new Date(at).toISOString(), credits })),
+          .map(([at, value]) => ({ at: new Date(at).toISOString(), ...value })),
       },
     } : {}),
     points: points.map((point) => ({

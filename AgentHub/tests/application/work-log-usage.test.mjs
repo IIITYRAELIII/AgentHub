@@ -82,9 +82,68 @@ test("local usage history buckets priced ledger turns and reports unpriced ones"
   }, { range: "6h", now });
   assert.equal(history.range, "6h");
   assert.equal(history.totalCredits, 5);
+  assert.equal(history.totalTokenCredits, 0);
   assert.equal(history.unpricedCount, 1);
   assert.equal(history.points.length, 25);
   assert.equal(history.points.reduce((sum, point) => sum + point.credits, 0), 5);
+  assert.equal(history.points.reduce((sum, point) => sum + point.tokenCredits, 0), 0);
+});
+
+test("usage history keeps the raw ImageGen estimate but excludes it from accounting", () => {
+  const history = buildWorkLogUsageHistory({
+    imageTurn: {
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      completedAt: "2026-07-30T10:10:00.000Z",
+      usage: { inputTokens: 1_000_000 },
+      estimatedCredits: 90,
+      estimateKind: "imagegen-default",
+    },
+  }, { range: "6h", now: Date.parse("2026-07-30T12:00:00.000Z"), provider: "codex" });
+
+  assert.ok(Math.abs(history.totalCredits - history.totalTokenCredits) < 1e-9);
+  assert.ok(Math.abs(
+    history.points.reduce((sum, point) => sum + point.credits - point.tokenCredits, 0),
+  ) < 1e-9);
+});
+
+test("context probes count in statistics but stay hidden from journal and search", () => {
+  const turns = {
+    probe: {
+      provider: "codex",
+      threadId: "thread-probe",
+      turnId: "turn-probe",
+      taskTitle: "Probe",
+      title: "AGENT_HUB_CONTEXT_PROBE_OK_V1",
+      body: "AGENT_HUB_CONTEXT_PROBE_OK_V1",
+      contextProbe: true,
+      model: "gpt-5.6-sol",
+      usageReported: true,
+      usage: { inputTokens: 1_000_000 },
+      completedAt: "2026-07-30T10:10:00.000Z",
+    },
+    legacyProbeWithoutFlag: {
+      provider: "codex",
+      threadId: "thread-legacy-probe",
+      turnId: "turn-legacy-probe",
+      taskTitle: "Legacy probe",
+      title: "AGENTHUBCONTEXTPROBEOKV1",
+      body: "AGENT_HUB_CONTEXT_PROBE_OK_V1",
+      prompt: "Ответь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1",
+      model: "gpt-5.6-sol",
+      usageReported: true,
+      usage: { inputTokens: 1_000_000 },
+      completedAt: "2026-07-30T10:20:00.000Z",
+    },
+  };
+  const history = buildWorkLogUsageHistory(turns, {
+    range: "6h",
+    now: Date.parse("2026-07-30T12:00:00.000Z"),
+    provider: "codex",
+  });
+  assert.ok(history.totalCredits > 0);
+  assert.doesNotMatch(projectWorkLogUsage("# Глобальный журнал работ\n", turns), /AGENT_HUB_CONTEXT_PROBE_OK_V1/u);
+  assert.deepEqual(searchWorkLogRecords(turns, "AGENT_HUB_CONTEXT_PROBE_OK_V1"), []);
 });
 
 test("local usage history derives credit intensity from exact turn duration", () => {
@@ -458,6 +517,39 @@ test("account usage summary separates exact, inferred and unknown ledger turns",
   assert.equal(all.accounts.length, 4);
 });
 
+test("account usage summary includes fifteen calendar days", () => {
+  const now = new Date(2026, 7, 20, 12, 0, 0, 0).getTime();
+  const completedAt = (daysAgo) => {
+    const date = new Date(now);
+    date.setDate(date.getDate() - daysAgo);
+    date.setHours(9, 0, 0, 0);
+    return date.toISOString();
+  };
+  const summary = buildWorkLogAccountUsageSummary({
+    firstIncludedDay: {
+      provider: "codex",
+      completedAt: completedAt(14),
+      estimatedCredits: 3,
+      accountKey: "chatgpt:owner",
+    },
+    dayBeforeRange: {
+      provider: "codex",
+      completedAt: completedAt(15),
+      estimatedCredits: 7,
+      accountKey: "chatgpt:owner",
+    },
+    today: {
+      provider: "codex",
+      completedAt: completedAt(0),
+      estimatedCredits: 5,
+      accountKey: "chatgpt:owner",
+    },
+  }, { now });
+
+  assert.deepEqual(summary.map((range) => range.id), ["today", "24h", "7d", "15d", "30d", "all"]);
+  assert.equal(summary.find((range) => range.id === "15d")?.totalCredits, 8);
+});
+
 test("journal projection renders account usage panel with catalog labels", () => {
   const key = `chatgpt:${createHash("sha256").update("owner@example.com").digest("hex")}`;
   const projected = projectWorkLogUsage("# Глобальный журнал работ\n", {
@@ -504,6 +596,7 @@ test("journal projection renders account usage panel with catalog labels", () =>
     projected,
     /data-work-log-account-period-body data-account-range="today" data-active/u,
   );
+  assert.match(projected, /data-account-range="15d"[^>]*>[\s\S]*?15 дней/u);
   assert.match(projected, /data-work-log-account-period-amount>8<\/span>/u);
   assert.match(projected, /data-work-log-account-period-unit>cr<\/span>/u);
   assert.match(projected, /data-work-log-account-period-quality>точно 1 · восст\. 1</u);
@@ -2219,8 +2312,11 @@ test("usage store backfills a verified image generation estimate and reprojects 
       updated: 1,
       projected: true,
     });
+    const stored = await store.getTurn({ provider: "codex", threadId: "thread-image", turnId });
+    assert.equal(stored.estimatedCredits, 90);
+    assert.equal(stored.imageGenerationCount, 1);
     const projected = await projectedJournal(store);
-    assert.match(projected, /ImageGen: <span data-kilo-usage data-usage-credits="90">90 cr<\/span>/);
+    assert.doesNotMatch(projected, /ImageGen:/u);
     assert.deepEqual(await store.missingImageGenerationEstimateTurns(), []);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -2960,9 +3056,9 @@ test("automatic journal marks only the image-generated turn while task and day t
       workLogFile,
     });
     const projected = await projectedJournal(store);
-    assert.match(projected, /Итого<\/span> <span [^>]*data-kilo-usage[^>]*>102,5 cr<\/span>/);
-    assert.match(projected, /ImageGen: <span data-kilo-usage data-usage-credits="90">90 cr<\/span> <span data-usage-percent>\(87,8%\)<\/span>/);
-    assert.match(projected, /12:03 — <span data-kilo-usage data-usage-credits="102.5">102,5 cr<\/span>/);
+    assert.match(projected, /Итого<\/span> <span [^>]*data-kilo-usage[^>]*>12,5 cr<\/span>/);
+    assert.doesNotMatch(projected, /ImageGen:/u);
+    assert.match(projected, /12:03 — <span data-kilo-usage data-usage-credits="12.5">12,5 cr<\/span>/);
     assert.doesNotMatch(projected, /≈/u);
     assert.doesNotMatch(projected, /Итого<\/span> ≈/);
   } finally {

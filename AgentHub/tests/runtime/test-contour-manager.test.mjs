@@ -8,6 +8,7 @@ import test from "node:test";
 
 import { canonicalPath } from "../../src/infrastructure/filesystem/config.mjs";
 import { LoopbackTelegramApi } from "../../src/infrastructure/network/loopback-telegram-api.mjs";
+import { WorkLogUsageSyncStore } from "../../src/infrastructure/persistence/work-log-usage-sync-store.mjs";
 import { processIsAlive } from "../../src/infrastructure/process/process-liveness.mjs";
 import {
   assertIsolatedTestContourRoot,
@@ -262,6 +263,47 @@ test("production data clone keeps history but detaches live threads and forces S
     `);
     source.close();
     await mkdir(contourPaths.dataDir, { recursive: true });
+    const productionDeviceId = "11111111-1111-4111-8111-111111111111";
+    const contourDeviceId = "22222222-2222-4222-8222-222222222222";
+    const identity = (deviceId) => ({
+      version: 1,
+      deviceId,
+      label: "Device",
+      platform: "win32",
+      publicKey: "cHVibGlj",
+      privateKey: "cHJpdmF0ZQ",
+      createdAt: "2026-08-21T00:00:00.000Z",
+      updatedAt: "2026-08-21T00:00:00.000Z",
+      legacyDeviceIds: [],
+    });
+    await writeFile(
+      path.join(productionData, "usage-sync-identity.json"),
+      `${JSON.stringify(identity(productionDeviceId), null, 2)}\n`,
+      "utf8",
+    );
+    await writeFile(
+      path.join(contourPaths.dataDir, "usage-sync-identity.json"),
+      `${JSON.stringify(identity(contourDeviceId), null, 2)}\n`,
+      "utf8",
+    );
+    const usageSyncStore = new WorkLogUsageSyncStore({
+      databaseFile: sourceFile,
+      deviceId: productionDeviceId,
+    });
+    await usageSyncStore.importSnapshot({
+      events: [{
+        deviceId: productionDeviceId,
+        provider: "codex",
+        threadId: "production-thread",
+        turnId: "turn-1",
+        completedAt: "2026-08-21T09:00:00.000Z",
+        accountKey: "chatgpt:local",
+        accountAttribution: "exact",
+        usageReported: true,
+        usage: { inputTokens: 1_000 },
+      }],
+    });
+    await usageSyncStore.close();
     await Promise.all(["", "-wal", "-shm"].map((suffix) => (
       writeFile(path.join(contourPaths.dataDir, `runtime.sqlite${suffix}`), "stale", "utf8")
     )));
@@ -309,6 +351,10 @@ test("production data clone keeps history but detaches live threads and forces S
       );
       assert.equal(clone.prepare("SELECT status FROM hub_mcp_operations").get().status, "failed");
       assert.equal(clone.prepare("SELECT value FROM journal_store_meta WHERE key = 'revision'").get().value, "6");
+      assert.equal(
+        clone.prepare("SELECT value FROM journal_store_meta WHERE key = 'test_contour_clone_at_ms'").get().value,
+        String(Date.parse("2026-08-21T10:00:00.000Z")),
+      );
       const journalRecord = clone.prepare(`
         SELECT project_root, record_json FROM journal_records
       `).get();
@@ -318,6 +364,11 @@ test("production data clone keeps history but detaches live threads and forces S
       assert.equal(result.preservedCatalogTasks, 1);
       assert.equal(result.remappedJournalRecords, 1);
       assert.equal(result.journalRecords, 1);
+      assert.equal(result.remappedUsageSyncEvents, 1);
+      assert.equal(
+        clone.prepare("SELECT device_id FROM usage_sync_events").get().device_id,
+        contourDeviceId,
+      );
       assert.equal(result.attachmentsCloned, true);
       assert.equal(result.runtimeStateReset, true);
       assert.equal(result.codexStateReset, true);

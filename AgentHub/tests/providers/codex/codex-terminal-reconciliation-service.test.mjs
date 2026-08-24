@@ -98,6 +98,50 @@ test("terminal reconciliation ignores a context probe before any recovery", asyn
   assert.deepEqual(completions, []);
 });
 
+test("historical context probe is projected for accounting without notification", async () => {
+  const { service, calls, completions } = harness();
+  const result = await service.reconcile(thread, project, {
+    turnId: "probe-turn",
+    status: "completed",
+    completedAt: "2026-08-04T10:00:00.000Z",
+    clientUserMessageId: `${CODEX_CONTEXT_PROBE_CLIENT_ID_PREFIX}historical`,
+    historical: true,
+    usageResult: usage({
+      clientUserMessageId: `${CODEX_CONTEXT_PROBE_CLIENT_ID_PREFIX}historical`,
+    }),
+  });
+
+  assert.equal(result, true);
+  assert.deepEqual(completions, []);
+  const projection = calls.find(([name]) => name === "project");
+  assert.equal(projection[1].contextProbe, true);
+  assert.equal(projection[1].usageReported, true);
+  assert.equal(calls.some(([name]) => name === "deliver"), false);
+});
+
+test("historical reconciliation refreshes an existing turn when rollout usage changed", async () => {
+  const { service, calls } = harness({
+    workLogStore: {
+      getTurn: async () => ({
+        provisional: false,
+        usageReported: true,
+        usage: { totalTokens: 5 },
+        serviceTier: "default",
+      }),
+    },
+  });
+  const result = await service.reconcile(thread, project, {
+    turnId: "turn-1",
+    status: "completed",
+    completedAt: "2026-08-04T10:00:00.000Z",
+    historical: true,
+    usageResult: usage({ usage: { totalTokens: 10 }, serviceTier: "default" }),
+  });
+
+  assert.equal(result, true);
+  assert.equal(calls.some(([name]) => name === "project"), true);
+});
+
 test("unhooked terminal Codex turn is recorded, saved and delivered once", async () => {
   const { service, calls, completions } = harness();
   const result = await service.reconcile(thread, project, {

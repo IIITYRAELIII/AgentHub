@@ -11,6 +11,7 @@ const context = {};
 vm.runInNewContext(source, context);
 const {
   interpolateRateLimitGaps,
+  limitPriceStatistics,
   meanSignedComparisonDeviation,
   rateLimitDeltasByBuckets,
   recoverRateLimitResetGaps,
@@ -147,6 +148,16 @@ test("correlation uses fine accounting buckets inside a partial reset gap", () =
 
   assert.deepEqual([...result.inferredValues], [0, 10, 0, 0]);
   assert.equal(result.estimatedLimitPoints, 10);
+});
+
+test("limit price uses a volume-weighted mean and derives weekly capacity", () => {
+  const result = limitPriceStatistics([1_000, 9_000], [5, 9], { splitIndex: 1 });
+
+  assert.equal(result.overall.value, 1.4);
+  assert.equal(result.early.value, 5);
+  assert.equal(result.late.value, 1);
+  assert.equal(result.changePercent, -80);
+  assert.ok(Math.abs(result.weeklyCredits - 71_428.57142857143) < 1e-9);
 });
 
 test("signed comparison deviations cancel opposite differences in the mean", () => {

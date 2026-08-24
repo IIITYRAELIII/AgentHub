@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const RANGE_SEQUENCE = Object.freeze(["today", "24h", "7d", "30d", "all"]);
+  const RANGE_SEQUENCE = Object.freeze(["today", "24h", "7d", "15d", "30d", "all"]);
   const RANGE_SET = new Set(RANGE_SEQUENCE);
   const RANGE_STORAGE_KEY = "agent-hub:journal-account-range:v1";
   const DEVICES_STORAGE_KEY = "agent-hub:journal-account-devices:v1";

@@ -37,8 +37,7 @@ const serverStartedAt = new Date().toISOString();
 const serverInstanceId = randomUUID();
 const serverReleaseId = path.basename(AGENT_HUB_ROOT);
 const {
-  globalWorkLogProjectRoots,
-  journalDatabaseFile,
+  globalWorkLogProjectRoots, journalDatabaseFile, testContourJournalDatabaseFile,
   legacyWorkLogLedgerFile,
   legacyWorkLogFile,
   claudeModels: CLAUDE_MODELS,
@@ -590,6 +589,7 @@ const executionBootstrap = createExecutionBootstrapPhase({
   runtimeCommandRoot,
   settings: {
     instanceLockFile: INSTANCE_LOCK_FILE,
+    globalWorkLogProjectRoots, journalDatabaseFile, testContourJournalDatabaseFile,
     botMenu: BOT_MENU,
     botCommands: BOT_COMMANDS,
     menuCommands: MENU_COMMANDS,

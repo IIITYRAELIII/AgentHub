@@ -1,6 +1,9 @@
 import crypto from "node:crypto";
 
-import { looksLikeImageGenerationPrompt } from "../domain/codex-usage-estimate.mjs";
+import {
+  IMAGE_GENERATION_ESTIMATE_CREDITS,
+  looksLikeImageGenerationPrompt,
+} from "../domain/codex-usage-estimate.mjs";
 import { normalizeServiceTier } from "../domain/token-usage.mjs";
 import { replaceJournalProjectionFromMarkdown } from "./journal-projection-service.mjs";
 import {
@@ -309,9 +312,19 @@ export class WorkLogUsageStore {
         const record = this.#ledger.turns[workLogTurnKey({ provider, threadId, turnId })];
         if (!record || !sameProjectRoot(record.projectRoot, projectRoot)) continue;
         const estimateKind = String(item?.estimateKind ?? "").trim();
-        if (record.estimatedCredits === estimatedCredits && record.estimateKind === estimateKind) continue;
+        const imageGenerationCount = Math.max(
+          0,
+          Math.floor(Number(item?.imageGenerationCount) || 0),
+          estimateKind === "imagegen-default"
+            ? Math.round(estimatedCredits / IMAGE_GENERATION_ESTIMATE_CREDITS)
+            : 0,
+        );
+        if (record.estimatedCredits === estimatedCredits
+          && record.estimateKind === estimateKind
+          && record.imageGenerationCount === imageGenerationCount) continue;
         record.estimatedCredits = estimatedCredits;
         record.estimateKind = estimateKind;
+        record.imageGenerationCount = imageGenerationCount;
         updated += 1;
       }
       if (!updated) return { updated: 0, projected: false, reason: "unchanged" };
@@ -502,6 +515,8 @@ export class WorkLogUsageStore {
     usageReported,
     estimatedCredits,
     estimateKind,
+    imageGenerationCount,
+    contextProbe,
     model,
     serviceTier,
     taskThreadId,
@@ -521,6 +536,7 @@ export class WorkLogUsageStore {
     account,
     accountKey,
     accountAttribution,
+    resolveAccount = true,
     startedAt,
     completedAt,
     status,
@@ -550,6 +566,8 @@ export class WorkLogUsageStore {
         usageReported,
         estimatedCredits,
         estimateKind,
+        imageGenerationCount,
+        contextProbe,
         model,
         serviceTier,
         taskThreadId,
@@ -567,7 +585,9 @@ export class WorkLogUsageStore {
         skillsUsed,
         mcpCalls,
         toolMetricsKnown,
-        ...await this.#resolvedAccountFields(provider, { account, accountKey, accountAttribution }),
+        ...(resolveAccount === false
+          ? { account, accountKey, accountAttribution }
+          : await this.#resolvedAccountFields(provider, { account, accountKey, accountAttribution })),
         startedAt,
         completedAt,
         status,
@@ -606,6 +626,8 @@ export class WorkLogUsageStore {
     usageReported,
     estimatedCredits,
     estimateKind,
+    imageGenerationCount,
+    contextProbe,
     model,
     serviceTier,
     taskThreadId,
@@ -625,6 +647,7 @@ export class WorkLogUsageStore {
     account,
     accountKey,
     accountAttribution,
+    resolveAccount = true,
     startedAt,
     completedAt,
     status,
@@ -644,6 +667,8 @@ export class WorkLogUsageStore {
         usageReported,
         estimatedCredits,
         estimateKind,
+        imageGenerationCount,
+        contextProbe,
         model,
         serviceTier,
         taskThreadId,
@@ -661,7 +686,9 @@ export class WorkLogUsageStore {
         skillsUsed,
         mcpCalls,
         toolMetricsKnown,
-        ...await this.#resolvedAccountFields(provider, { account, accountKey, accountAttribution }),
+        ...(resolveAccount === false
+          ? { account, accountKey, accountAttribution }
+          : await this.#resolvedAccountFields(provider, { account, accountKey, accountAttribution })),
         startedAt,
         completedAt,
         status,

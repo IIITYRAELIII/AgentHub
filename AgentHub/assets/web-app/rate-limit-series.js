@@ -257,6 +257,48 @@
     };
   }
 
+  function limitPriceSample(accountingValues, limitValues, from, to) {
+    let credits = 0;
+    let limitPoints = 0;
+    let count = 0;
+    for (let index = from; index < to; index += 1) {
+      const accounting = Number(accountingValues?.[index]);
+      const rawLimit = limitValues?.[index];
+      if (!(accounting > 0) || !Number.isFinite(rawLimit)) continue;
+      const limit = Number(rawLimit);
+      credits += accounting;
+      limitPoints += Math.max(0, limit);
+      count += 1;
+    }
+    return credits > 0 && count > 0
+      ? { value: limitPoints / (credits / 1_000), credits, limitPoints, count }
+      : null;
+  }
+
+  function limitPriceStatistics(accountingValues, limitValues, { splitIndex } = {}) {
+    const length = Math.max(
+      Array.isArray(accountingValues) ? accountingValues.length : 0,
+      Array.isArray(limitValues) ? limitValues.length : 0,
+    );
+    const windowSize = Math.min(5, Math.max(2, Math.round(length / 10)));
+    const values = Array.from({ length }, (_, index) => (
+      limitPriceSample(accountingValues, limitValues, Math.max(0, index - windowSize + 1), index + 1)?.value
+        ?? null
+    ));
+    const split = Math.min(length, Math.max(
+      1,
+      Number.isInteger(splitIndex) ? splitIndex : Math.ceil(length / 2),
+    ));
+    const overall = limitPriceSample(accountingValues, limitValues, 0, length);
+    const early = limitPriceSample(accountingValues, limitValues, 0, split);
+    const late = limitPriceSample(accountingValues, limitValues, split, length);
+    const changePercent = early?.value > 0 && Number.isFinite(late?.value)
+      ? (late.value / early.value - 1) * 100
+      : null;
+    const weeklyCredits = overall?.value > 0 ? 100 / overall.value * 1_000 : null;
+    return { values, overall, early, late, changePercent, weeklyCredits, windowSize };
+  }
+
   function signedComparisonDeviations(accountValues, localValues) {
     const account = Array.isArray(accountValues) ? accountValues : [];
     const local = Array.isArray(localValues) ? localValues : [];
@@ -277,6 +319,7 @@
   globalThis.AgentHubRateLimitSeries = Object.freeze({
     DEFAULT_SAMPLE_INTERVAL_MS,
     interpolateRateLimitGaps,
+    limitPriceStatistics,
     meanSignedComparisonDeviation,
     rateLimitDeltasByBuckets,
     recoverRateLimitResetGaps,

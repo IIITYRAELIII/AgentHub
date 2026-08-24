@@ -217,6 +217,22 @@ test("VS Code direct transport never blocks controls on session negotiation", as
   });
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(await harness.window.__agentHubDirectTransport.available(), true);
+  const nativeFetchCalls = harness.nativeFetchCalls();
+  const healthResponse = harness.window.__agentHubIpcRuntimeHealth();
+  await Promise.resolve();
+  const healthMessage = harness.messages.at(-1);
+  assert.equal(healthMessage.type, "agenthub:control");
+  assert.equal(healthMessage.action, "runtime-health");
+  assert.equal(harness.nativeFetchCalls(), nativeFetchCalls);
+  harness.listeners.get("message")({
+    data: {
+      type: "agenthub:control-result",
+      id: healthMessage.id,
+      ok: true,
+      result: { ready: true },
+    },
+  });
+  assert.equal((await healthResponse).status, 200);
   harness.listeners.get("pagehide")();
 });
 
@@ -1605,7 +1621,7 @@ test("chat short-polls commands and skips only unchanged loaded history renders"
   assert.match(client, /control\/result\?id=.*waitMs=.*REMOTE_WAIT_MS[\s\S]*REMOTE_RESULT_FALLBACK_POLL_MS/su);
   assert.doesNotMatch(client, /REMOTE_RESULT_LONG_POLL_MS/u);
   assert.match(client, /async function probeSnapshotTransport\(\)[\s\S]*method: "HEAD"/u);
-  assert.match(client, /vscode \? control\("runtime-health"\) : probeSnapshotTransport\(\)/u);
+  assert.match(client, /vscode \? probeVscodeRuntimeHealth\(\) : probeSnapshotTransport\(\)/u);
   assert.match(client, /control\(\s*"snapshot",\s*window\.AgentHubSnapshotTransport\.requestParams\(lastSnapshot\),\s*\)/u);
   assert.match(client, /window\.AgentHubSnapshotTransport\.materialize\(lastSnapshot, snapshotResult\)/u);
   assert.match(client, /applySnapshot\(snapshot, \{ materialized: true \}\)/u);

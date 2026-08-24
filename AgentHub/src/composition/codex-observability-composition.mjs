@@ -4,6 +4,9 @@ import { turnEndKey } from "../application/turn-end-notifications.mjs";
 import { fallbackTurnEndMessage } from "../application/turn-end-delivery-service.mjs";
 import { taskRunKey } from "../domain/task-runs.mjs";
 import { captureTaskGitBaseline, taskGitDiff } from "../infrastructure/filesystem/task-git-diff.mjs";
+import {
+  backupCodexHistoricalReconciliation,
+} from "../infrastructure/persistence/codex-historical-reconciliation-backup.mjs";
 import { CodexAccountingResolver } from "../providers/codex/codex-accounting-resolver.mjs";
 import { scanCodexHistoricalRolloutInWorker } from "../providers/codex/codex-historical-backfill.mjs";
 import { resolveCodexJournalProject } from "../providers/codex/codex-journal-project.mjs";
@@ -225,6 +228,15 @@ export function createCodexObservabilityComposition({
     discoverSupplementalThreads: () => discoverCodexSubagentRollouts(),
     scanHistoricalFile: scanCodexHistoricalRolloutInWorker,
     shouldRunHistoricalBackfill: isHistoricalBackfillIdle,
+    prepareHistoricalBackfill: async () => {
+      const result = await backupCodexHistoricalReconciliation({
+        databaseFile: path.join(config.dataDir, "journal.sqlite"),
+      });
+      if (result.applied) {
+        console.log(`Backed up journal before Codex rollout reconciliation: ${result.backupFile}`);
+      }
+      return result;
+    },
   });
 
   return {

@@ -78,6 +78,8 @@ export function normalizeUsageSyncEvent(value = {}) {
   if (!deviceId || !completedAt || !eventId || !threadKey) return null;
   const accountKey = nonEmpty(value.accountKey);
   const estimatedCredits = positiveNumber(value.estimatedCredits ?? value.credits);
+  const estimateKind = nonEmpty(value.estimateKind);
+  const imageGenerationCount = Math.max(0, Math.floor(Number(value.imageGenerationCount) || 0));
   const usage = normalizeTokenUsage(value.usage);
   return {
     version: USAGE_SYNC_SNAPSHOT_VERSION,
@@ -95,6 +97,9 @@ export function normalizeUsageSyncEvent(value = {}) {
     accountPlan: boundedText(value.accountPlan ?? value.accountPlanType ?? value.planType, 80),
     accountAttribution: normalizeAttribution(value.accountAttribution, Boolean(accountKey)),
     estimatedCredits,
+    estimateKind,
+    imageGenerationCount,
+    contextProbe: value.contextProbe === true,
     usage,
     usageReported: value.usageReported === false ? false : true,
     model: nonEmpty(value.model).toLowerCase(),
@@ -120,6 +125,9 @@ export function usageSyncEventFromLedgerRecord(record, { deviceId, source = "loc
     accountPlan: record?.accountPlan,
     accountAttribution: record?.accountAttribution,
     estimatedCredits: record?.estimatedCredits,
+    estimateKind: record?.estimateKind,
+    imageGenerationCount: record?.imageGenerationCount,
+    contextProbe: record?.contextProbe,
     usage: record?.usage,
     usageReported: record?.usageReported,
     model: record?.model,
@@ -134,6 +142,7 @@ function eventRank(event) {
     event.accountAttribution === "exact" ? 1 : 0,
     event.accountKey ? 1 : 0,
     positiveNumber(event.estimatedCredits) > 0 ? 1 : 0,
+    event.estimateKind || event.imageGenerationCount > 0 || event.contextProbe ? 1 : 0,
     Date.parse(event.observedAt) || 0,
   ];
 }
@@ -211,6 +220,9 @@ export function syncedUsageEventsToTurns(events = []) {
       accountPlan: event.accountPlan,
       accountAttribution: event.accountAttribution,
       estimatedCredits: event.estimatedCredits,
+      estimateKind: event.estimateKind,
+      imageGenerationCount: event.imageGenerationCount,
+      contextProbe: event.contextProbe,
       usage: event.usage,
       usageReported: event.usageReported,
       model: event.model,

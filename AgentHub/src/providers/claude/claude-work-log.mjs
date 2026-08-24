@@ -6,6 +6,7 @@ import path from "node:path";
 import { findContainingProject } from "../../infrastructure/filesystem/config.mjs";
 import { applyLedgerDelta } from "../../infrastructure/persistence/incremental-ledger.mjs";
 import { JournalDatabase } from "../../infrastructure/persistence/journal-database.mjs";
+import { openWorkLogProjectionSync } from "../../infrastructure/persistence/work-log-projection-sync.mjs";
 import { WorkLogUsageRepository } from "../../infrastructure/persistence/work-log-usage-repository.mjs";
 import { creditsFromUsd } from "../../domain/token-usage.mjs";
 import { readJsonWithBackup } from "../../infrastructure/persistence/state-store.mjs";
@@ -565,6 +566,7 @@ export async function applyClaudeWorkLogBackfill({
       if (error?.code !== "ENOENT") throw error;
     }
   }
+  const projectionSync = await openWorkLogProjectionSync({ databaseFile });
   const database = new JournalDatabase(databaseFile);
   try {
     await database.importLegacyLedger(legacyLedgerFile);
@@ -595,6 +597,8 @@ export async function applyClaudeWorkLogBackfill({
       databaseFile,
       journalDatabase: database,
       defaultProjectRoot: resolvedProjectRoot,
+      usageSyncStore: projectionSync.usageSyncStore,
+      usageSyncDeviceId: projectionSync.usageSyncDeviceId,
     });
     try {
       await store.project(null, {
@@ -607,5 +611,6 @@ export async function applyClaudeWorkLogBackfill({
     return { backupDirectory, databaseFile: path.resolve(databaseFile), ...applied };
   } finally {
     database.close();
+    await projectionSync.close();
   }
 }

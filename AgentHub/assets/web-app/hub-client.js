@@ -1177,6 +1177,15 @@ async function probeSnapshotTransport() {
   }
 }
 
+async function probeVscodeRuntimeHealth() {
+  const probe = window.__agentHubIpcRuntimeHealth;
+  if (typeof probe !== "function") throw new Error("Agent Hub: IPC health недоступен");
+  const response = await probe();
+  if (!response.ok) {
+    throw new Error(`Agent Hub: HTTP ${response.status}`);
+  }
+}
+
 async function prepareSnapshotTransport() {
   if (snapshotTransportPrepared) return;
   snapshotTransportPrepared = true;
@@ -3782,7 +3791,7 @@ function refreshConnectionLatency() {
   if (now - connectionLatencyProbedAt < CONNECTION_LATENCY_PROBE_INTERVAL_MS) return null;
   connectionLatencyProbedAt = now;
   connectionLatencyProbe = window.AgentHubConnectionQuality.measureLatency(
-    () => (vscode ? control("runtime-health") : probeSnapshotTransport()),
+    () => (vscode ? probeVscodeRuntimeHealth() : probeSnapshotTransport()),
   ).then((sample) => {
     connectionLatencyMs = window.AgentHubConnectionQuality.smoothLatency(connectionLatencyMs, sample);
     agentHub.setConnectionQuality({ latencyMs: connectionLatencyMs });

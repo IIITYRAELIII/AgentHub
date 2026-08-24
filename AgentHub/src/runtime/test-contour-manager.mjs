@@ -14,12 +14,14 @@ import path from "node:path";
 import process from "node:process";
 
 import { deployRuntime } from "./runtime-manager.mjs";
+import { normalizeUsageSyncIdentity } from "../domain/usage-sync-identity.mjs";
 import {
   canonicalPath,
   pathInsideOrSame,
 } from "../infrastructure/filesystem/config.mjs";
 import {
   defaultRuntimeRoot,
+  defaultTestContourRoot,
   runtimeLayout,
   runtimeReleaseDirectory,
 } from "../infrastructure/filesystem/runtime-layout.mjs";
@@ -31,6 +33,8 @@ import {
   cloneAttachmentDirectoryToTestContour,
   cloneJournalToTestContour,
 } from "../infrastructure/persistence/test-contour-data-clone.mjs";
+import { UsageSyncIdentityStore } from "../infrastructure/persistence/usage-sync-identity-store.mjs";
+import { WorkLogUsageSyncStore } from "../infrastructure/persistence/work-log-usage-sync-store.mjs";
 import { processIsAlive } from "../infrastructure/process/process-liveness.mjs";
 import { withInterprocessLocks } from "../infrastructure/process/interprocess-lock.mjs";
 import { stopProcessTree } from "../infrastructure/process/process-tree.mjs";
@@ -46,22 +50,7 @@ const CONFIG_FILE = "config.json";
 const USER_ID = 42;
 const CHAT_ID = 84;
 
-export function defaultTestContourRoot({
-  environment = process.env,
-  platform = process.platform,
-  home = homedir(),
-} = {}) {
-  if (platform === "win32") {
-    return path.resolve(
-      environment.LOCALAPPDATA ?? path.join(home, "AppData", "Local"),
-      "AgentHub-TestContour",
-    );
-  }
-  return path.resolve(
-    environment.XDG_STATE_HOME ?? path.join(home, ".local", "state"),
-    "agent-hub-test-contour",
-  );
-}
+export { defaultTestContourRoot };
 
 export function testContourPaths(root = defaultTestContourRoot()) {
   const resolved = path.resolve(root);
@@ -555,6 +544,30 @@ export async function stopTestContour({ root = defaultTestContourRoot() } = {}) 
   );
 }
 
+async function remapClonedUsageSyncEvents({ productionDataDir, contourDataDir, databaseFile }) {
+  const productionIdentity = normalizeUsageSyncIdentity(
+    await readJson(path.join(productionDataDir, "usage-sync-identity.json")),
+  );
+  if (!productionIdentity) return { migrated: 0, reason: "production-identity-unavailable" };
+  const contourIdentity = new UsageSyncIdentityStore({
+    file: path.join(contourDataDir, "usage-sync-identity.json"),
+    dataDir: contourDataDir,
+  });
+  await contourIdentity.load();
+  const syncStore = new WorkLogUsageSyncStore({
+    databaseFile,
+    deviceId: contourIdentity.deviceId,
+  });
+  try {
+    return await syncStore.adoptDeviceIds([
+      productionIdentity.deviceId,
+      ...productionIdentity.legacyDeviceIds,
+    ]);
+  } finally {
+    await syncStore.close();
+  }
+}
+
 async function cloneProductionDataToTestContourUnlocked({
   root = defaultTestContourRoot(),
   productionRoot = defaultRuntimeRoot(),
@@ -574,6 +587,11 @@ async function cloneProductionDataToTestContourUnlocked({
     model,
     now,
   });
+  const usageSyncRemap = await remapClonedUsageSyncEvents({
+    productionDataDir: production.dataDir,
+    contourDataDir: paths.dataDir,
+    databaseFile: result.destinationDatabaseFile,
+  });
   const attachments = await cloneAttachmentDirectoryToTestContour({
     sourceDirectory: path.join(production.root, "attachments"),
     destinationDirectory: path.join(paths.root, "attachments"),
@@ -586,6 +604,7 @@ async function cloneProductionDataToTestContourUnlocked({
   ]);
   return {
     ...result,
+    remappedUsageSyncEvents: usageSyncRemap.migrated,
     attachmentsCloned: attachments.sourcePresent,
     runtimeStateReset: true,
     codexStateReset: true,

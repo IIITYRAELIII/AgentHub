@@ -156,6 +156,39 @@ class UsageSyncServerTests(unittest.TestCase):
         self.assertEqual(result["updated"], 0)
         self.assertEqual(result["unchanged"], 1)
 
+    def test_newer_observation_updates_usage_without_adding_an_event(self):
+        self.enroll()
+        first_body, first_signature = self.signed_snapshot([
+            self.event(observedAt="2026-08-20T03:01:00.000Z")
+        ])
+        server.ingest_snapshot(
+            self.db,
+            device_id=self.device_id,
+            signature=first_signature,
+            body=first_body,
+        )
+        corrected_body, corrected_signature = self.signed_snapshot([
+            self.event(
+                observedAt="2026-08-25T01:02:00.000Z",
+                usage={"inputTokens": 100, "outputTokens": 25, "totalTokens": 125},
+            )
+        ])
+
+        result = server.ingest_snapshot(
+            self.db,
+            device_id=self.device_id,
+            signature=corrected_signature,
+            body=corrected_body,
+        )
+
+        self.assertEqual(result["added"], 0)
+        self.assertEqual(result["updated"], 1)
+        self.assertEqual(result["unchanged"], 0)
+        rows = self.db.execute("SELECT * FROM usage_events").fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["total_tokens"], 125)
+        self.assertEqual(rows[0]["observed_at"], "2026-08-25T01:02:00.000Z")
+
     def test_rejects_bad_usage_signature(self):
         self.enroll()
         body, _signature = self.signed_snapshot([self.event()])

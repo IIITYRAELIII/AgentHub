@@ -3,8 +3,10 @@ import path from "node:path";
 
 import { isInheritedSubagentTurn } from "./codex-subagent-accounting.mjs";
 import { scanCodexHistoricalRollout } from "./codex-turn-usage.mjs";
+import { isCodexContextProbeTurn } from "../../domain/codex-context-probe.mjs";
 import { applyLedgerDelta } from "../../infrastructure/persistence/incremental-ledger.mjs";
 import { JournalDatabase } from "../../infrastructure/persistence/journal-database.mjs";
+import { openWorkLogProjectionSync } from "../../infrastructure/persistence/work-log-projection-sync.mjs";
 import { WorkLogUsageRepository } from "../../infrastructure/persistence/work-log-usage-repository.mjs";
 import { readJsonWithBackup } from "../../infrastructure/persistence/state-store.mjs";
 import { conciseTurnTitle } from "../../application/turn-title.mjs";
@@ -212,6 +214,8 @@ export async function buildWorkLogRolloutBackfill({
         usageReported: turn.reported === true,
         estimatedCredits: Number(turn.estimatedCredits ?? 0) || 0,
         estimateKind: String(turn.estimateKind ?? ""),
+        imageGenerationCount: Math.max(0, Math.floor(Number(turn.imageGenerationCount) || 0)),
+        contextProbe: isCodexContextProbeTurn(turn),
         model: String(turn.model ?? "").trim().toLowerCase(),
         serviceTier: String(turn.serviceTier ?? "default").trim().toLowerCase() || "default",
         pricingMetadataResolved: true,
@@ -307,6 +311,7 @@ export async function applyWorkLogRolloutBackfill({
     }
   }
 
+  const projectionSync = await openWorkLogProjectionSync({ databaseFile });
   const database = new JournalDatabase(databaseFile);
   try {
     await database.importLegacyLedger(legacyLedgerFile);
@@ -335,6 +340,8 @@ export async function applyWorkLogRolloutBackfill({
       databaseFile,
       journalDatabase: database,
       defaultProjectRoot: projectRoot,
+      usageSyncStore: projectionSync.usageSyncStore,
+      usageSyncDeviceId: projectionSync.usageSyncDeviceId,
     });
     try {
       await store.project(null, { projectRoot, projectionProjectRoots });
@@ -344,5 +351,6 @@ export async function applyWorkLogRolloutBackfill({
     return { backupDirectory, databaseFile: path.resolve(databaseFile), ...applied };
   } finally {
     database.close();
+    await projectionSync.close();
   }
 }

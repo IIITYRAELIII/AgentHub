@@ -1,8 +1,12 @@
+import process from "node:process";
+
 import { createProviderRuntimeWiring } from "./provider-runtime-wiring-composition.mjs";
 import { createRuntimeTimersComposition } from "./runtime-timers-composition.mjs";
 import { createTaskInteractionWiring } from "./task-interaction-wiring-composition.mjs";
 import { createRuntimeRestartWiring } from "./runtime-restart-wiring-composition.mjs";
 import { taskDisplayTitle } from "../domain/task-display-title.mjs";
+import { TestContourJournalSyncService } from "../application/test-contour-journal-sync-service.mjs";
+import { readMissingTestContourJournalRecords } from "../infrastructure/persistence/test-contour-journal-source.mjs";
 
 export function createRuntimeOrchestrationComposition({
   config,
@@ -26,6 +30,9 @@ export function createRuntimeOrchestrationComposition({
     agentHubRoot,
     instanceLockFile,
     botMenu,
+    globalWorkLogProjectRoots,
+    journalDatabaseFile,
+    testContourJournalDatabaseFile,
   } = constants;
   const {
     hostState,
@@ -139,6 +146,17 @@ export function createRuntimeOrchestrationComposition({
     taskObserverLogger,
   } = lifecycle;
 
+  const testContourJournalSync = new TestContourJournalSyncService({
+    timers: runtimeTimers,
+    workLogUsageStore,
+    sourceDatabaseFile: testContourJournalDatabaseFile,
+    targetDatabaseFile: journalDatabaseFile,
+    projectionProjectRoots: globalWorkLogProjectRoots,
+    readRecords: readMissingTestContourJournalRecords,
+    enabled: config.components?.testContour === true
+      && process.env.AGENT_HUB_TEST_CONTOUR !== "1",
+  });
+
   const selectedTaskCandidates = () => {
     const candidates = hostState.clientTaskSelectionsSnapshot().map(([clientId, binding]) => {
       const telegramMatch = /^telegram:(-?\d+)$/.exec(String(clientId));
@@ -247,6 +265,7 @@ export function createRuntimeOrchestrationComposition({
     scheduleBugReportScan,
     rateLimitTelemetry,
     usageSyncAuto,
+    testContourJournalSync,
   });
 
   ports.taskInteraction.bind(createTaskInteractionWiring({

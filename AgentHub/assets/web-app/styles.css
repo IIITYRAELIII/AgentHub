@@ -10768,7 +10768,7 @@ html:is([data-grouping="stream"], [data-grouping="workspace"])
 
 [data-work-log-account-periods] {
   display: grid;
-  grid-template-columns: repeat(var(--account-period-count, 5), minmax(0, 1fr));
+  grid-template-columns: repeat(var(--account-period-count, 6), minmax(0, 1fr));
 }
 
 [data-work-log-account-period-tab] {
@@ -14127,13 +14127,13 @@ html[data-browser-auth] {
   min-width: 0;
 }
 
-/* Переключатель периода в расходе по аккаунтам тоже встаёт колонкой: пять
+/* Переключатель периода в расходе по аккаунтам тоже встаёт колонкой: шесть
    широких плиток в ряд занимали всю ширину и ломали ритм страницы. */
 .statistics-account-panel [data-work-log-account-periods] {
   /* Строки объявлены явно: без них `grid-row: 1 / -1` у тела периода
      схлопывается в первую строку и растягивает её вместо колонки. */
   grid-template-columns: clamp(9rem, 12vw, 11.5rem) minmax(0, 1fr);
-  grid-template-rows: repeat(var(--account-period-count, 5), auto);
+  grid-template-rows: repeat(var(--account-period-count, 6), auto);
 }
 
 /* Плитка периода в колонке остаётся компактной: название, сумма и ходы.

@@ -102,8 +102,10 @@ test("the selected period survives re-render and stays inside the known set", as
     setItem: (key, value) => values.set(key, value),
   };
 
-  assert.deepEqual([...api.RANGE_SEQUENCE], ["today", "24h", "7d", "30d", "all"]);
+  assert.deepEqual([...api.RANGE_SEQUENCE], ["today", "24h", "7d", "15d", "30d", "all"]);
   assert.equal(api.storedRange(storage), "today");
+  assert.equal(api.persistRange(storage, "15d"), "15d");
+  assert.equal(api.storedRange(storage), "15d");
   assert.equal(api.persistRange(storage, "30d"), "30d");
   assert.equal(api.storedRange(storage), "30d");
   assert.equal(api.normalizeRange("нет такого"), "today");

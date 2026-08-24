@@ -21,11 +21,13 @@ export function createRuntimeTimersComposition({
   scheduleBugReportScan,
   rateLimitTelemetry,
   usageSyncAuto = null,
+  testContourJournalSync = null,
 }) {
   function stopRuntimeTimers() {
     stopTyping();
     contextCompactions.dispose();
     usageSyncAuto?.stop?.();
+    testContourJournalSync?.stop?.();
     runtimeTimers.clearAll();
     deferredInputController.stop();
     for (const run of taskRuns.values()) {
@@ -44,6 +46,7 @@ export function createRuntimeTimersComposition({
     scheduleBugReportScan(500);
     rateLimitTelemetry.schedule(1_000);
     usageSyncAuto?.scheduleInitial?.();
+    testContourJournalSync?.scheduleInitial?.();
   }
 
   return {

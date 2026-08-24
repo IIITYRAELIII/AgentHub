@@ -763,6 +763,56 @@ test("desktopTaskSnapshot keeps a manual context compaction out of the live turn
   assert.equal(snapshot.context.compacting, true);
 });
 
+test("desktopTaskSnapshot hides an anonymous post-compaction measurement observer", () => {
+  const { desktopTaskSnapshot, entry, state } = fixture({ run: null });
+  entry.turnId = "measurement-turn";
+  state.compaction = {
+    id: "compact-1",
+    origin: "automatic",
+    status: "completed",
+    turnId: "compaction-turn",
+    startedAt: "2026-07-30T10:00:30.000Z",
+    completedAt: "2026-07-30T10:00:40.000Z",
+  };
+  state.usage = {
+    usedTokens: 220,
+    modelContextWindow: 1_000,
+    turnId: "measurement-turn",
+    updatedAt: "2026-07-30T10:00:45.000Z",
+  };
+
+  const snapshot = desktopTaskSnapshot(entry);
+
+  assert.equal(snapshot.running, false);
+  assert.equal(snapshot.run, null);
+  assert.equal(snapshot.context.turnId, "measurement-turn");
+});
+
+test("desktopTaskSnapshot keeps a real post-compaction turn when content arrives", () => {
+  const { desktopTaskSnapshot, entry, state } = fixture();
+  state.run.turnId = "real-turn";
+  state.compaction = {
+    id: "compact-1",
+    origin: "automatic",
+    status: "completed",
+    turnId: "compaction-turn",
+    startedAt: "2026-07-30T10:00:30.000Z",
+    completedAt: "2026-07-30T10:00:40.000Z",
+  };
+  state.usage = {
+    usedTokens: 230,
+    modelContextWindow: 1_000,
+    turnId: "real-turn",
+    updatedAt: "2026-07-30T10:00:45.000Z",
+  };
+
+  const snapshot = desktopTaskSnapshot({ ...entry, turnId: "real-turn" });
+
+  assert.equal(snapshot.running, true);
+  assert.equal(snapshot.run.turnId, "real-turn");
+  assert.equal(snapshot.run.prompt, "Вопрос");
+});
+
 test("desktopSnapshot preserves top-level settings, queues and restart state", async () => {
   const pending = [{
     id: "pending-1",

@@ -40,6 +40,9 @@ function configureUsageSyncDatabase(database) {
       account_plan TEXT NOT NULL DEFAULT '',
       account_attribution TEXT NOT NULL DEFAULT 'inferred',
       estimated_credits REAL NOT NULL DEFAULT 0,
+      estimate_kind TEXT NOT NULL DEFAULT '',
+      image_generation_count INTEGER NOT NULL DEFAULT 0,
+      context_probe INTEGER NOT NULL DEFAULT 0,
       input_tokens INTEGER NOT NULL DEFAULT 0,
       cached_input_tokens INTEGER NOT NULL DEFAULT 0,
       output_tokens INTEGER NOT NULL DEFAULT 0,
@@ -67,6 +70,9 @@ function configureUsageSyncDatabase(database) {
     ["account_type", "TEXT NOT NULL DEFAULT ''"],
     ["account_plan", "TEXT NOT NULL DEFAULT ''"],
     ["device_label", "TEXT NOT NULL DEFAULT ''"],
+    ["estimate_kind", "TEXT NOT NULL DEFAULT ''"],
+    ["image_generation_count", "INTEGER NOT NULL DEFAULT 0"],
+    ["context_probe", "INTEGER NOT NULL DEFAULT 0"],
   ]) {
     if (!columns.has(name)) database.exec(`ALTER TABLE usage_sync_events ADD COLUMN ${name} ${definition}`);
   }
@@ -88,6 +94,9 @@ function rowToEvent(row) {
     accountPlan: row.account_plan,
     accountAttribution: row.account_attribution,
     estimatedCredits: row.estimated_credits,
+    estimateKind: row.estimate_kind,
+    imageGenerationCount: row.image_generation_count,
+    contextProbe: row.context_probe !== 0,
     usage: {
       inputTokens: row.input_tokens,
       cachedInputTokens: row.cached_input_tokens,
@@ -120,6 +129,9 @@ function eventParameters(event) {
     event.accountPlan,
     event.accountAttribution,
     event.estimatedCredits,
+    event.estimateKind,
+    event.imageGenerationCount,
+    event.contextProbe ? 1 : 0,
     event.usage.inputTokens,
     event.usage.cachedInputTokens,
     event.usage.outputTokens,
@@ -277,10 +289,11 @@ export class WorkLogUsageSyncStore {
         event_id, device_id, source, provider, thread_key, task_key,
         completed_at, completed_ms, started_at, account_key,
         account_label, account_type, account_plan, account_attribution,
-        estimated_credits, input_tokens, cached_input_tokens, output_tokens,
+        estimated_credits, estimate_kind, image_generation_count, context_probe,
+        input_tokens, cached_input_tokens, output_tokens,
         reasoning_output_tokens, total_tokens, usage_reported, model, service_tier,
         device_label, observed_at
-      ) VALUES (${new Array(25).fill("?").join(", ")})
+      ) VALUES (${new Array(28).fill("?").join(", ")})
       ON CONFLICT(event_id) DO UPDATE SET
         device_id = excluded.device_id,
         source = excluded.source,
@@ -296,6 +309,9 @@ export class WorkLogUsageSyncStore {
         account_plan = excluded.account_plan,
         account_attribution = excluded.account_attribution,
         estimated_credits = excluded.estimated_credits,
+        estimate_kind = excluded.estimate_kind,
+        image_generation_count = excluded.image_generation_count,
+        context_probe = excluded.context_probe,
         input_tokens = excluded.input_tokens,
         cached_input_tokens = excluded.cached_input_tokens,
         output_tokens = excluded.output_tokens,

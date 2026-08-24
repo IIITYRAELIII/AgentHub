@@ -60,6 +60,10 @@ html[data-view="chat"][data-surface][data-theme] {
   z-index: 50;
 }
 
+.stream-tabs[data-stream-card-gap-mode="on"] {
+  column-gap: 3px !important;
+}
+
 .stream-tabs::-webkit-scrollbar {
   display: none;
 }

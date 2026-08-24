@@ -200,6 +200,11 @@ function sanitizeTestContourDatabase(databaseFile, {
           INSERT OR IGNORE INTO journal_store_meta (key, value) VALUES ('revision', '0')
         `).run();
         database.prepare(`
+          INSERT INTO journal_store_meta (key, value)
+          VALUES ('test_contour_clone_at_ms', ?)
+          ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        `).run(String(nowMs));
+        database.prepare(`
           UPDATE journal_store_meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'revision'
         `).run();
       }

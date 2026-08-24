@@ -3,6 +3,7 @@ import { copyFile, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
 import { JournalDatabase } from "../../infrastructure/persistence/journal-database.mjs";
+import { openWorkLogProjectionSync } from "../../infrastructure/persistence/work-log-projection-sync.mjs";
 import { WorkLogUsageRepository } from "../../infrastructure/persistence/work-log-usage-repository.mjs";
 import { displayUserPrompt } from "../../application/task-history.mjs";
 import { createWorkLogUsageStore } from "../../application/work-log-usage-store.mjs";
@@ -183,6 +184,7 @@ export async function applyWorkLogTitleBackfill({
       if (error?.code !== "ENOENT") throw error;
     }
   }
+  const projectionSync = await openWorkLogProjectionSync({ databaseFile });
   const database = new JournalDatabase(databaseFile);
   try {
     await database.importLegacyLedger(legacyLedgerFile);
@@ -208,6 +210,8 @@ export async function applyWorkLogTitleBackfill({
       databaseFile,
       journalDatabase: database,
       defaultProjectRoot: resolvedProjectRoot,
+      usageSyncStore: projectionSync.usageSyncStore,
+      usageSyncDeviceId: projectionSync.usageSyncDeviceId,
     });
     try {
       await store.project(null, {
@@ -220,6 +224,7 @@ export async function applyWorkLogTitleBackfill({
     return { ...result, backupDirectory, databaseFile: path.resolve(databaseFile) };
   } finally {
     database.close();
+    await projectionSync.close();
   }
 }
 

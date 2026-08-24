@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { JournalDatabase } from "../../../src/infrastructure/persistence/journal-database.mjs";
+import { WorkLogUsageSyncStore } from "../../../src/infrastructure/persistence/work-log-usage-sync-store.mjs";
 import {
   applyWorkLogTitleBackfill,
   applyCachedTitles,
@@ -101,6 +102,36 @@ test("title backfill updates SQLite and leaves legacy files unchanged", async ()
   };
   try {
     await mkdir(dataDir, { recursive: true });
+    await writeFile(path.join(dataDir, "usage-sync-identity.json"), `${JSON.stringify({
+      version: 1,
+      deviceId: "11111111-1111-4111-8111-111111111111",
+      label: "Local",
+      platform: "win32",
+      publicKey: "cHVibGlj",
+      privateKey: "cHJpdmF0ZQ",
+      createdAt: "2026-07-26T00:00:00.000Z",
+      updatedAt: "2026-07-26T00:00:00.000Z",
+      legacyDeviceIds: [],
+    }, null, 2)}\n`, "utf8");
+    const usageSyncStore = new WorkLogUsageSyncStore({
+      databaseFile,
+      deviceId: "11111111-1111-4111-8111-111111111111",
+    });
+    await usageSyncStore.importSnapshot({
+      events: [{
+        deviceId: "22222222-2222-4222-8222-222222222222",
+        provider: "codex",
+        threadId: "remote-thread",
+        turnId: "remote-turn",
+        completedAt: "2026-07-25T10:00:00.000Z",
+        accountKey: "chatgpt:remote",
+        accountLabel: "remote@example.com",
+        accountAttribution: "exact",
+        usageReported: true,
+        usage: { inputTokens: 1_000_000 },
+      }],
+    });
+    await usageSyncStore.close();
     await writeFile(ledgerFile, `${JSON.stringify(ledger, null, 2)}\n`, "utf8");
     await writeFile(workLogFile, "# Старый журнал\n", "utf8");
     const jobs = buildTitleJobs(ledger);
@@ -126,6 +157,7 @@ test("title backfill updates SQLite and leaves legacy files unchanged", async ()
     database.close();
     assert.equal(stored.turns[key].title, "Отчёт сформирован");
     assert.match(snapshot.html, /Отчёт сформирован/u);
+    assert.match(snapshot.html, /remote@example\.com/u);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

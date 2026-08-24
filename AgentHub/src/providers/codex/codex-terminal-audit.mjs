@@ -15,8 +15,8 @@ const DEFAULT_SUBAGENT_BACKFILL_WINDOW_MS = 24 * 60 * 60_000;
 const DEFAULT_HISTORICAL_SUBAGENT_BACKFILL_BYTES = 32 * 1024 * 1024;
 const DEFAULT_HISTORICAL_ACTIVE_STALE_MS = 30 * 60_000;
 const DEFAULT_SUPPLEMENTAL_DISCOVERY_INTERVAL_MS = 30_000;
-const SNAPSHOT_VERSION = 10;
-const COMPATIBLE_SNAPSHOT_VERSIONS = new Set([4, 5, 6, 7, 8, 9, SNAPSHOT_VERSION]);
+const SNAPSHOT_VERSION = 11;
+const COMPATIBLE_SNAPSHOT_VERSIONS = new Set([4, 5, 6, 7, 8, 9, 10, SNAPSHOT_VERSION]);
 
 function timestampMs(value) {
   const numeric = Number(value);
@@ -108,6 +108,8 @@ function emptyHistoricalSubagentBackfill(pending = false) {
   return {
     pending,
     initialized: false,
+    prepared: false,
+    backupFile: "",
     totalFiles: 0,
     completedFiles: 0,
     processedTurns: 0,
@@ -118,6 +120,8 @@ function emptyHistoricalSubagentBackfill(pending = false) {
 function restoredHistoricalSubagentBackfill(value) {
   const restored = emptyHistoricalSubagentBackfill(value?.pending === true);
   restored.initialized = value?.initialized === true;
+  restored.prepared = value?.prepared === true;
+  restored.backupFile = String(value?.backupFile ?? "").trim();
   restored.totalFiles = Math.max(0, Number(value?.totalFiles) || 0);
   restored.completedFiles = Math.max(0, Number(value?.completedFiles) || 0);
   restored.processedTurns = Math.max(0, Number(value?.processedTurns) || 0);
@@ -163,6 +167,7 @@ export class CodexTerminalAudit {
     scanHistoricalFile = null,
     scanHistoricalChunk = scanCodexHistoricalRollout,
     shouldRunHistoricalBackfill = () => true,
+    prepareHistoricalBackfill = async () => null,
     statFile = stat,
     scanFile = scanCodexTerminalEventsFromOffset,
     now = Date.now,
@@ -189,6 +194,7 @@ export class CodexTerminalAudit {
     this.scanHistoricalFile = scanHistoricalFile;
     this.scanHistoricalChunk = scanHistoricalChunk;
     this.shouldRunHistoricalBackfill = shouldRunHistoricalBackfill;
+    this.prepareHistoricalBackfill = prepareHistoricalBackfill;
     this.statFile = statFile;
     this.scanFile = scanFile;
     this.now = now;
@@ -234,6 +240,10 @@ export class CodexTerminalAudit {
     this.pendingTurns.clear();
     this.subagentBackfillPending = snapshotVersion === 4
       || (compatibleSnapshot && snapshot?.subagentBackfillPending === true);
+    // Snapshot v10 may have completed the previous historical pass before
+    // context probes and exact rollout usage were eligible for reconciliation.
+    // Treating v10 as compatible preserves live cursors, while deliberately
+    // rebuilding only the resumable historical queue once under v11.
     this.historicalSubagentBackfill = [8, 9, SNAPSHOT_VERSION].includes(snapshotVersion)
       ? restoredHistoricalSubagentBackfill(snapshot?.historicalSubagentBackfill)
       : emptyHistoricalSubagentBackfill(compatibleSnapshot);
@@ -356,11 +366,11 @@ export class CodexTerminalAudit {
     const canResume = prior?.path === transcriptPath && prior.offset <= info.size;
     const startOffset = canResume ? prior.offset : 0;
     const result = await this.scanFile(transcriptPath, { startOffset });
-    const terminals = (canResume
+    const terminals = canResume
       ? result.terminals
       : result.terminals.filter((terminal) => (
         timestampMs(terminal.completedAt) >= lowerBoundMs
-      ))).filter((terminal) => !isCodexContextProbeTurn(terminal));
+      ));
     const activityMs = this.now();
     if (result.nextOffset > startOffset) {
       const pending = this.pendingTurns.get(threadId);
@@ -383,7 +393,10 @@ export class CodexTerminalAudit {
 
     let allHandled = true;
     for (const terminal of terminals) {
-      if (await this.reconcile(thread, project, terminal) === false) {
+      const candidate = isCodexContextProbeTurn(terminal)
+        ? { ...terminal, historical: true, resolveCurrentAccount: true }
+        : terminal;
+      if (await this.reconcile(thread, project, candidate) === false) {
         allHandled = false;
       } else {
         this.#removePendingTurn(threadId, terminal.turnId);
@@ -437,10 +450,7 @@ export class CodexTerminalAudit {
             continue;
           }
           const exactTurn = turns.get(turn.turnId);
-          if (isCodexContextProbeTurn(exactTurn)) {
-            this.#removePendingTurn(threadId, turn.turnId);
-            continue;
-          }
+          const contextProbe = isCodexContextProbeTurn(exactTurn);
           const status = terminalTurnStatus(exactTurn?.status);
           if (!status) continue;
           const handled = await this.reconcile(fullThread, project, {
@@ -453,6 +463,7 @@ export class CodexTerminalAudit {
               || nowMs,
             ).toISOString(),
             authoritative: true,
+            ...(contextProbe ? { historical: true, resolveCurrentAccount: true } : {}),
           });
           if (handled === false) continue;
           this.#removePendingTurn(threadId, turn.turnId);
@@ -489,6 +500,11 @@ export class CodexTerminalAudit {
   async #initializeHistoricalSubagentBackfill() {
     const backfill = this.historicalSubagentBackfill;
     if (!backfill.pending || backfill.initialized) return false;
+    if (!backfill.prepared) {
+      const preparation = await this.prepareHistoricalBackfill();
+      backfill.prepared = true;
+      backfill.backupFile = String(preparation?.backupFile ?? "").trim();
+    }
     const candidates = new Map();
     for (const value of await this.#discoverThreads()) {
       const thread = threadReference(value);
@@ -564,9 +580,7 @@ export class CodexTerminalAudit {
         this.historicalScanCache.set(cacheKey, historical);
       }
       const turns = Array.isArray(historical?.turns) ? historical.turns : [];
-      const terminalTurns = turns.filter((turn) => (
-        turn?.terminal === true && !isCodexContextProbeTurn(turn)
-      ));
+      const terminalTurns = turns.filter((turn) => turn?.terminal === true);
       while (item.terminalTurnIndex < terminalTurns.length) {
         if (!this.shouldRunHistoricalBackfill()) return changed;
         const turn = terminalTurns[item.terminalTurnIndex];
@@ -589,9 +603,7 @@ export class CodexTerminalAudit {
 
       const stale = this.now() - Number(info.mtimeMs || 0) >= this.historicalActiveStaleMs;
       if (stale) {
-        const staleTurns = turns.filter((turn) => (
-          turn?.terminal !== true && turn?.startedAt && !isCodexContextProbeTurn(turn)
-        ));
+        const staleTurns = turns.filter((turn) => turn?.terminal !== true && turn?.startedAt);
         while (item.staleTurnIndex < staleTurns.length) {
           if (!this.shouldRunHistoricalBackfill()) return changed;
           const turn = staleTurns[item.staleTurnIndex];
@@ -634,9 +646,7 @@ export class CodexTerminalAudit {
         this.historicalScanCache.set(cacheKey, cached);
       }
       const historical = cached.result;
-      const terminalTurns = (historical?.turns ?? []).filter((turn) => (
-        turn?.terminal === true && !isCodexContextProbeTurn(turn)
-      ));
+      const terminalTurns = (historical?.turns ?? []).filter((turn) => turn?.terminal === true);
       for (const turn of terminalTurns) {
         if (!this.shouldRunHistoricalBackfill()) return changed;
         const identity = historicalTurnIdentity(item.thread, turn.turnId, historical?.session);
@@ -661,8 +671,7 @@ export class CodexTerminalAudit {
       item.offset = historical.nextOffset;
       item.size = Number(info.size) || item.size;
       item.resumeState = historical.resumeState ?? null;
-      item.activeTurns = (historical.resumeState?.turns ?? [])
-        .filter((turn) => !isCodexContextProbeTurn(turn));
+      item.activeTurns = historical.resumeState?.turns ?? [];
       cached.startOffset = item.offset;
       cached.result = null;
       changed = true;
@@ -703,9 +712,7 @@ export class CodexTerminalAudit {
       initialActiveTurns: item.activeTurns,
     });
     let allHandled = true;
-    const visibleTerminals = (result.terminals ?? [])
-      .filter((terminal) => !isCodexContextProbeTurn(terminal));
-    for (const terminal of visibleTerminals) {
+    for (const terminal of result.terminals ?? []) {
       const identity = historicalTurnIdentity(item.thread, terminal.turnId);
       if (this.historicalTurnIdentities.has(identity)) continue;
       if (await this.reconcile(item.thread, project, {
@@ -726,8 +733,7 @@ export class CodexTerminalAudit {
 
     item.offset = result.nextOffset;
     item.size = Number(info.size) || item.size;
-    item.activeTurns = (result.activeTurns ?? [])
-      .filter((turn) => !isCodexContextProbeTurn(turn));
+    item.activeTurns = result.activeTurns ?? [];
     changed = true;
     if (item.offset >= info.size) {
       if (item.activeTurns.length) {

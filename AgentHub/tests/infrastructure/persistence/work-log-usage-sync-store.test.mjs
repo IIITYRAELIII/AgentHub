@@ -20,6 +20,9 @@ test("usage sync SQLite store imports snapshots through a deduplicating cache", 
         turnId: "turn-1",
         completedAt: "2026-08-20T00:00:00.000Z",
         estimatedCredits: 4,
+        estimateKind: "imagegen-default",
+        imageGenerationCount: 2,
+        contextProbe: true,
         accountKey: "chatgpt:owner",
         accountLabel: "owner@example.com",
         accountType: "chatgpt",
@@ -38,6 +41,9 @@ test("usage sync SQLite store imports snapshots through a deduplicating cache", 
     assert.equal(events[0].accountLabel, "owner@example.com");
     assert.equal(events[0].accountType, "chatgpt");
     assert.equal(events[0].accountPlan, "plus");
+    assert.equal(events[0].estimateKind, "imagegen-default");
+    assert.equal(events[0].imageGenerationCount, 2);
+    assert.equal(events[0].contextProbe, true);
   } finally {
     await store?.close();
     await rm(root, { recursive: true, force: true });

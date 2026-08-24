@@ -18,6 +18,23 @@ export function defaultRuntimeRoot({
   );
 }
 
+export function defaultTestContourRoot({
+  environment = process.env,
+  platform = process.platform,
+  home = homedir(),
+} = {}) {
+  if (platform === "win32") {
+    return path.resolve(
+      environment.LOCALAPPDATA ?? path.join(home, "AppData", "Local"),
+      "AgentHub-TestContour",
+    );
+  }
+  return path.resolve(
+    environment.XDG_STATE_HOME ?? path.join(home, ".local", "state"),
+    "agent-hub-test-contour",
+  );
+}
+
 export function runtimeLayout(runtimeRoot = defaultRuntimeRoot()) {
   const root = path.resolve(runtimeRoot);
   return {

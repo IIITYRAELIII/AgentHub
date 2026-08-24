@@ -390,9 +390,36 @@ export function createDesktopSnapshotFactory({
       && !String(run.responseText ?? "").trim();
   }
 
+  function isPostCompactionMeasurementObserver(run, context) {
+    if (run?.observer !== true || context?.compaction?.status !== "completed") return false;
+    const hasVisibleContent = Boolean(
+      String(run.promptPreview ?? "").trim()
+      || String(run.responseText ?? "").trim()
+      || String(run.progressReasoning ?? "").trim()
+      || (Array.isArray(run.userMessages) && run.userMessages.some((message) => (
+        String(message?.text ?? "").trim()
+        || (Array.isArray(message?.attachments) && message.attachments.length)
+      )))
+      || (Array.isArray(run.messageAttachments) && run.messageAttachments.length)
+      || (Array.isArray(run.activities) && run.activities.length)
+      || (Array.isArray(run.activityGroups) && run.activityGroups.length)
+    );
+    if (hasVisibleContent) return false;
+    if (context.usagePending === true) return true;
+    const runTurnId = String(run.turnId ?? "").trim();
+    const usageTurnId = String(context.turnId ?? "").trim();
+    const compactionTurnId = String(context.compaction.turnId ?? "").trim();
+    return Boolean(
+      runTurnId
+      && runTurnId === usageTurnId
+      && runTurnId !== compactionTurnId
+    );
+  }
+
   function isInternalMaintenanceObserver(run, context) {
     if (!run) return false;
     return isCompactionOnlyObserver(run, context)
+      || isPostCompactionMeasurementObserver(run, context)
       || (run.provider === "codex" && isCodexContextProbeTurn({
         prompt: run.promptPreview,
         finalAnswer: run.responseText,

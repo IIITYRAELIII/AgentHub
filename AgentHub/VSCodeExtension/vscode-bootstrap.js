@@ -217,6 +217,8 @@ function runtimeHealth() {
   });
 }
 
+window.__agentHubIpcRuntimeHealth = runtimeHealth;
+
 function fallbackRequestBody(init) {
   if (init.body == null) return "";
   if (typeof init.body === "string") return init.body;
