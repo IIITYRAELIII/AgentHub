@@ -238,7 +238,7 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
   const nestedTaskButton = nestedPicker.body.reply_markup.inline_keyboard.flat()
     .find((button) => button.callback_data === `task:l:${nestedSessionId}`);
   assert.ok(nestedTaskButton, "nested Claude session must be present in the task catalog");
-  assert.match(nestedTaskButton.text, /Other - Stream 2/);
+  assert.match(nestedTaskButton.text, /Other - Stream 3/);
   telegram.pushCallback(nestedTaskButton.callback_data, nestedPicker.result);
   await waitFor(async () => await telegramSelectedThread() === nestedSessionId,
     "select nested Claude session");

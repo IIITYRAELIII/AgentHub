@@ -2048,7 +2048,10 @@ test("one transient control failure does not mark the whole Hub offline", () => 
 test("chat keeps refreshing until the ready answer reaches task history", () => {
   const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
   assert.match(client, /function updateHistoryCatchUp\(taskIdValue, history, task\)/u);
-  assert.match(client, /historyContainsLatestAnswer\(history, task\)/u);
+  assert.match(
+    client,
+    /historyContainsLatestAnswer\(history, task, \{\s*expectedTurnId: historyCatchUpTurnIds\.get\(taskIdValue\),\s*\}\)/u,
+  );
   assert.match(client, /refreshCaughtUpHistory/u);
   assert.match(client, /\|\| historyNeedsCatchUp\(selectedTaskId\)/u);
   assert.doesNotMatch(client, /\n\s*markAnswerSeen\(task\);\n\}/u);
