@@ -163,7 +163,7 @@ export class RunJournalService {
     return [...this.lastTaskMessages.entries()].slice(-this.messageLimit);
   }
 
-  async projectTurn(completion, { title = "", body = "" } = {}) {
+  async projectTurn(completion, { title = "", body = "", deferProjection = false } = {}) {
     const workLogId = completion?.message?.workLogId;
     const project = this.findProject(completion.projectRoot);
     if (!project) throw new Error(`Cannot find journal project for ${completion.projectRoot}`);
@@ -198,6 +198,7 @@ export class RunJournalService {
       startedAt: completion.startedAt,
       completedAt: completion.completedAt,
       status: completion.status,
+      deferProjection,
       projectRoot: project.path,
       projectionProjectRoots: this.projectionProjectRoots,
     };

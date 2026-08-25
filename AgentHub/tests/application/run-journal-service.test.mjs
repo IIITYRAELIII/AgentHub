@@ -248,6 +248,20 @@ test("RunJournalService registers changed files in the Workspace release registr
   assert.equal(failedObservation.status, "failed");
 });
 
+test("RunJournalService forwards deferred projection for historical accounting", async () => {
+  const { service, calls } = fixture();
+  await service.projectTurn({
+    provider: "codex",
+    projectRoot: "C:/workspace",
+    threadId: "thread",
+    turnId: "historical-turn",
+    status: "completed",
+  }, { deferProjection: true });
+
+  assert.equal(calls[0][0], "automatic");
+  assert.equal(calls[0][1].deferProjection, true);
+});
+
 test("RunJournalService initializes projection before retiring verified legacy storage", async () => {
   const { service, calls } = fixture();
   const retirement = await service.initialize({

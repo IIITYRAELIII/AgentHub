@@ -655,7 +655,7 @@ test("terminal audit migrates v7 and imports an external parent with four subage
   );
   assert.ok(recovered.every((value) => value.project === project));
   assert.ok(recovered.every((value) => value.turnId.startsWith("turn-")));
-  assert.equal(audit.snapshot().version, 11);
+  assert.equal(audit.snapshot().version, 12);
   assert.equal(audit.snapshot().historicalSubagentBackfill.pending, false);
   assert.equal(audit.snapshot().historicalSubagentBackfill.completedFiles, 5);
 });
@@ -972,7 +972,7 @@ test("historical rollout backfill resumes large files and deduplicates before re
   assert.equal(resumedAudit.snapshot().historicalSubagentBackfill.processedTurns, 3);
 });
 
-test("terminal audit reruns v10 historical reconciliation once after preparing a backup", async () => {
+test("terminal audit reruns v11 historical reconciliation once after preparing a backup", async () => {
   const preparations = [];
   const scans = [];
   const options = {
@@ -996,7 +996,7 @@ test("terminal audit reruns v10 historical reconciliation once after preparing a
   };
   const audit = new CodexTerminalAudit(options);
   audit.restore({
-    version: 10,
+    version: 11,
     completedThrough: "2026-08-03T11:58:00.000Z",
     historicalSubagentBackfill: { pending: false, initialized: true, queue: [] },
   });
@@ -1006,7 +1006,7 @@ test("terminal audit reruns v10 historical reconciliation once after preparing a
   assert.deepEqual(preparations, ["prepared"]);
   assert.deepEqual(scans, ["previously-completed.jsonl"]);
   const checkpoint = audit.snapshot();
-  assert.equal(checkpoint.version, 11);
+  assert.equal(checkpoint.version, 12);
   assert.equal(checkpoint.historicalSubagentBackfill.pending, false);
   assert.equal(checkpoint.historicalSubagentBackfill.prepared, true);
   assert.equal(
@@ -1102,6 +1102,50 @@ test("historical rollout backfill pauses inside a scanned file and resumes at th
   assert.deepEqual(recovered, ["first", "second", "third"]);
   assert.deepEqual(scans, ["large-thread.jsonl"]);
   assert.equal(audit.snapshot().historicalSubagentBackfill.pending, false);
+});
+
+test("historical rollout backfill bounds each pass and flushes projection once", async () => {
+  const recovered = [];
+  let projections = 0;
+  const audit = new CodexTerminalAudit({
+    listPage: async () => ({ data: [], nextCursor: null }),
+    discoverHistoricalThreads: async () => [{
+      id: "bounded-thread",
+      cwd: "C:\\Project",
+      path: "bounded-thread.jsonl",
+      updatedAt: "2026-07-01T00:00:00.000Z",
+    }],
+    resolveProject: async () => project,
+    statFile: async () => ({ size: 10, mtimeMs: Date.parse("2026-07-01T00:00:00.000Z") }),
+    scanHistoricalFile: async () => ({
+      turns: ["first", "second", "third"].map((turnId) => ({
+        turnId,
+        terminal: true,
+        status: "completed",
+        completedAt: "2026-07-01T00:00:00.000Z",
+      })),
+    }),
+    reconcile: async (_thread, _project, terminal) => {
+      recovered.push(terminal.turnId);
+      return true;
+    },
+    flushHistoricalProjection: async () => { projections += 1; },
+    historicalTurnsPerRun: 2,
+  });
+  audit.restore({
+    version: 11,
+    completedThrough: "2026-08-03T11:58:00.000Z",
+  });
+
+  await audit.run();
+  assert.deepEqual(recovered, ["first", "second"]);
+  assert.equal(projections, 0);
+  assert.equal(audit.snapshot().historicalSubagentBackfill.projectionPending, true);
+
+  await audit.run();
+  assert.deepEqual(recovered, ["first", "second", "third"]);
+  assert.equal(projections, 1);
+  assert.equal(audit.snapshot().historicalSubagentBackfill.projectionPending, false);
 });
 
 test("historical subagent backfill records a stale unterminated turn as aborted", async () => {

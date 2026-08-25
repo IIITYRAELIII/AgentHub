@@ -662,6 +662,7 @@ export class WorkLogUsageStore {
     text,
     workLogFile,
     projectionProjectRoots,
+    deferProjection = false,
   }) {
     return this.#enqueueMutation(workLogFile, async () => {
       const key = workLogTurnKey({ provider, threadId, turnId });
@@ -703,6 +704,16 @@ export class WorkLogUsageStore {
       });
       this.#ledger.turns[key] = mergeLedgerRecord(existing, incoming);
       await this.#save();
+      if (deferProjection) {
+        return {
+          recorded: !existing,
+          usage: this.#ledger.turns[key].usage,
+          workLogId: null,
+          target: "thread-day-row",
+          projected: false,
+          projectionDeferred: true,
+        };
+      }
       try {
         const selectedTurns = this.#turnsForProjection(projectRoot, projectionProjectRoots);
         const projection = await this.#projectDatabase(selectedTurns);

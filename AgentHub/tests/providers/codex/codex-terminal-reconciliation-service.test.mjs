@@ -116,6 +116,7 @@ test("historical context probe is projected for accounting without notification"
   const projection = calls.find(([name]) => name === "project");
   assert.equal(projection[1].contextProbe, true);
   assert.equal(projection[1].usageReported, true);
+  assert.equal(projection[2].deferProjection, true);
   assert.equal(calls.some(([name]) => name === "deliver"), false);
 });
 

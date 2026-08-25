@@ -258,6 +258,7 @@ export class CodexTerminalReconciliationService {
     }, {
       title: conciseTurnTitle(finalAnswer, resolvedStatus),
       body: finalAnswer,
+      deferProjection: true,
     });
     if (journal?.projectionError) {
       this.logger.error(

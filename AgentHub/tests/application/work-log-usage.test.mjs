@@ -2404,6 +2404,37 @@ test("automatic usage attaches to the only row for the thread and is idempotent"
   }
 });
 
+test("historical automatic usage can defer the expensive journal projection", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "work-log-deferred-projection-"));
+  try {
+    const store = new WorkLogUsageStore({
+      ledgerFile: path.join(root, "work-log-usage.json"),
+      defaultProjectRoot: root,
+    });
+    const result = await store.recordAutomaticAndProject({
+      provider: "codex",
+      threadId: "historical-thread",
+      turnId: "historical-turn",
+      projectRoot: root,
+      usageReported: true,
+      usage: { inputTokens: 10 },
+      completedAt: "2026-08-20T00:00:00.000Z",
+      text: "Historical",
+      workLogFile: path.join(root, "WORK_LOG.md"),
+      deferProjection: true,
+    });
+
+    assert.equal(result.recorded, true);
+    assert.equal(result.projected, false);
+    assert.equal(result.projectionDeferred, true);
+    const ledger = await persistedLedger(store);
+    assert.ok(ledger.turns["codex\u0000historical-thread\u0000historical-turn"]);
+    assert.doesNotMatch(await projectedJournal(store), /historical-turn/u);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("automatic single-turn records resolve an exact account key", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "work-log-account-key-"));
   try {

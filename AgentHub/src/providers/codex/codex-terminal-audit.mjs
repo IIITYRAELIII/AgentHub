@@ -15,8 +15,9 @@ const DEFAULT_SUBAGENT_BACKFILL_WINDOW_MS = 24 * 60 * 60_000;
 const DEFAULT_HISTORICAL_SUBAGENT_BACKFILL_BYTES = 32 * 1024 * 1024;
 const DEFAULT_HISTORICAL_ACTIVE_STALE_MS = 30 * 60_000;
 const DEFAULT_SUPPLEMENTAL_DISCOVERY_INTERVAL_MS = 30_000;
-const SNAPSHOT_VERSION = 11;
-const COMPATIBLE_SNAPSHOT_VERSIONS = new Set([4, 5, 6, 7, 8, 9, 10, SNAPSHOT_VERSION]);
+const DEFAULT_HISTORICAL_TURNS_PER_RUN = 25;
+const SNAPSHOT_VERSION = 12;
+const COMPATIBLE_SNAPSHOT_VERSIONS = new Set([4, 5, 6, 7, 8, 9, 10, 11, SNAPSHOT_VERSION]);
 
 function timestampMs(value) {
   const numeric = Number(value);
@@ -113,6 +114,7 @@ function emptyHistoricalSubagentBackfill(pending = false) {
     totalFiles: 0,
     completedFiles: 0,
     processedTurns: 0,
+    projectionPending: false,
     queue: [],
   };
 }
@@ -125,6 +127,7 @@ function restoredHistoricalSubagentBackfill(value) {
   restored.totalFiles = Math.max(0, Number(value?.totalFiles) || 0);
   restored.completedFiles = Math.max(0, Number(value?.completedFiles) || 0);
   restored.processedTurns = Math.max(0, Number(value?.processedTurns) || 0);
+  restored.projectionPending = value?.projectionPending === true;
   for (const item of Array.isArray(value?.queue) ? value.queue : []) {
     const thread = threadReference(item?.thread);
     const offset = Number(item?.offset);
@@ -168,6 +171,7 @@ export class CodexTerminalAudit {
     scanHistoricalChunk = scanCodexHistoricalRollout,
     shouldRunHistoricalBackfill = () => true,
     prepareHistoricalBackfill = async () => null,
+    flushHistoricalProjection = async () => {},
     statFile = stat,
     scanFile = scanCodexTerminalEventsFromOffset,
     now = Date.now,
@@ -180,6 +184,7 @@ export class CodexTerminalAudit {
     historicalSubagentBackfillBytes = DEFAULT_HISTORICAL_SUBAGENT_BACKFILL_BYTES,
     historicalActiveStaleMs = DEFAULT_HISTORICAL_ACTIVE_STALE_MS,
     supplementalDiscoveryIntervalMs = DEFAULT_SUPPLEMENTAL_DISCOVERY_INTERVAL_MS,
+    historicalTurnsPerRun = DEFAULT_HISTORICAL_TURNS_PER_RUN,
     maxPositions = 5_000,
   }) {
     this.listPage = listPage;
@@ -195,6 +200,7 @@ export class CodexTerminalAudit {
     this.scanHistoricalChunk = scanHistoricalChunk;
     this.shouldRunHistoricalBackfill = shouldRunHistoricalBackfill;
     this.prepareHistoricalBackfill = prepareHistoricalBackfill;
+    this.flushHistoricalProjection = flushHistoricalProjection;
     this.statFile = statFile;
     this.scanFile = scanFile;
     this.now = now;
@@ -220,6 +226,10 @@ export class CodexTerminalAudit {
       1_000,
       Number(supplementalDiscoveryIntervalMs) || DEFAULT_SUPPLEMENTAL_DISCOVERY_INTERVAL_MS,
     );
+    this.historicalTurnsPerRun = Math.max(
+      1,
+      Math.floor(Number(historicalTurnsPerRun) || DEFAULT_HISTORICAL_TURNS_PER_RUN),
+    );
     this.maxPositions = Math.max(100, Number(maxPositions) || 5_000);
     this.completedThroughMs = 0;
     this.positions = new Map();
@@ -240,10 +250,9 @@ export class CodexTerminalAudit {
     this.pendingTurns.clear();
     this.subagentBackfillPending = snapshotVersion === 4
       || (compatibleSnapshot && snapshot?.subagentBackfillPending === true);
-    // Snapshot v10 may have completed the previous historical pass before
-    // context probes and exact rollout usage were eligible for reconciliation.
-    // Treating v10 as compatible preserves live cursors, while deliberately
-    // rebuilding only the resumable historical queue once under v11.
+    // Snapshots v10 and v11 may have completed or interrupted the old
+    // per-turn projection pass. Treat them as compatible for live cursors,
+    // while rebuilding only the resumable historical queue once under v12.
     this.historicalSubagentBackfill = [8, 9, SNAPSHOT_VERSION].includes(snapshotVersion)
       ? restoredHistoricalSubagentBackfill(snapshot?.historicalSubagentBackfill)
       : emptyHistoricalSubagentBackfill(compatibleSnapshot);
@@ -547,6 +556,7 @@ export class CodexTerminalAudit {
     // Historical migration is maintenance work.  Never let it contend with
     // interactive turns for the App Server, SQLite writer or event loop.
     if (!this.shouldRunHistoricalBackfill()) return false;
+    let handledTurns = 0;
     let changed = await this.#initializeHistoricalSubagentBackfill();
     const item = backfill.queue[0];
     if (!item) {
@@ -596,9 +606,12 @@ export class CodexTerminalAudit {
           if (handled === false) return changed;
           this.historicalTurnIdentities.add(identity);
           backfill.processedTurns += 1;
+          backfill.projectionPending = true;
           changed = true;
         }
         item.terminalTurnIndex += 1;
+        handledTurns += 1;
+        if (handledTurns >= this.historicalTurnsPerRun) return changed;
       }
 
       const stale = this.now() - Number(info.mtimeMs || 0) >= this.historicalActiveStaleMs;
@@ -620,9 +633,12 @@ export class CodexTerminalAudit {
             if (handled === false) return changed;
             this.historicalTurnIdentities.add(identity);
             backfill.processedTurns += 1;
+            backfill.projectionPending = true;
             changed = true;
           }
           item.staleTurnIndex += 1;
+          handledTurns += 1;
+          if (handledTurns >= this.historicalTurnsPerRun) return changed;
         }
       }
       this.historicalScanCache.delete(cacheKey);
@@ -661,7 +677,10 @@ export class CodexTerminalAudit {
         if (handled === false) return changed;
         this.historicalTurnIdentities.add(identity);
         backfill.processedTurns += 1;
+        backfill.projectionPending = true;
         changed = true;
+        handledTurns += 1;
+        if (handledTurns >= this.historicalTurnsPerRun) return changed;
       }
       if (historical.nextOffset < startOffset
         || (historical.nextOffset === startOffset && startOffset < info.size)) {
@@ -697,6 +716,9 @@ export class CodexTerminalAudit {
           if (handled === false) return changed;
           this.historicalTurnIdentities.add(identity);
           backfill.processedTurns += 1;
+          backfill.projectionPending = true;
+          handledTurns += 1;
+          if (handledTurns >= this.historicalTurnsPerRun) return changed;
         }
       }
       this.historicalScanCache.delete(cacheKey);
@@ -723,6 +745,9 @@ export class CodexTerminalAudit {
       } else {
         this.historicalTurnIdentities.add(identity);
         backfill.processedTurns += 1;
+        backfill.projectionPending = true;
+        handledTurns += 1;
+        if (handledTurns >= this.historicalTurnsPerRun) return changed;
       }
     }
     if (!allHandled) return changed;
@@ -761,6 +786,9 @@ export class CodexTerminalAudit {
           else {
             this.historicalTurnIdentities.add(identity);
             backfill.processedTurns += 1;
+            backfill.projectionPending = true;
+            handledTurns += 1;
+            if (handledTurns >= this.historicalTurnsPerRun) return true;
           }
         }
         if (!activeHandled) return true;
@@ -792,6 +820,12 @@ export class CodexTerminalAudit {
 
     try {
       madeProgress = await this.#runHistoricalSubagentBackfill();
+      if (!this.historicalSubagentBackfill.pending
+        && this.historicalSubagentBackfill.projectionPending) {
+        await this.flushHistoricalProjection();
+        this.historicalSubagentBackfill.projectionPending = false;
+        madeProgress = true;
+      }
       madeProgress = await this.#pollPendingTurns(lowerBoundMs) || madeProgress;
       if (typeof this.discoverSupplementalThreads === "function"
         && startedAtMs - this.lastSupplementalDiscoveryMs >= this.supplementalDiscoveryIntervalMs) {

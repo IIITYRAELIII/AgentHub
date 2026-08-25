@@ -241,6 +241,10 @@ export function createCodexObservabilityComposition({
       }
       return result;
     },
+    flushHistoricalProjection: () => workLogUsageStore.project(null, {
+      projectRoot: config.projectRoot,
+      projectionProjectRoots: globalWorkLogProjectRoots,
+    }),
   });
 
   return {
