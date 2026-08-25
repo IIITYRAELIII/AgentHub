@@ -9,6 +9,7 @@ import { parseClaudeLimits } from "../providers/claude/claude.mjs";
 import { readCodexRolloutActivity } from "../providers/codex/codex-rollout-activity.mjs";
 import { readCodexTurnUsage } from "../providers/codex/codex-turn-usage.mjs";
 import { catalogEntryIsSelected } from "../domain/task-catalog-identity.mjs";
+import { restartRequestProjection } from "../domain/maintenance-operation.mjs";
 import { readCodexThreadTitleHistory } from "../../send-message.mjs";
 import { createClientInterfaceComposition } from "./client-interface-composition.mjs";
 import { createCodexLifecycleComposition } from "./codex-lifecycle-composition.mjs";
@@ -98,6 +99,7 @@ export async function createClientRuntimeComposition({
     lastSeenTaskTurnIds,
     codexUsageTracker,
     contextCompactions,
+    maintenanceOperations,
     codexTurnStarts,
     codexTerminalAudit,
     codexHookReceipts,
@@ -106,6 +108,7 @@ export async function createClientRuntimeComposition({
     projectTurnUsageToWorkLog,
     codexRunFinalizer,
     turnEndDelivery,
+    terminalCommits,
     journalBackfill,
     claudeTranscriptAudit,
     taskCatalogFinalization,
@@ -195,8 +198,23 @@ export async function createClientRuntimeComposition({
       const { photo_path: photoPath, ...telegramBody } = body;
       return clients.telegramMultipart("sendPhoto", telegramBody, "photo", photoPath);
     },
-    onDelivered: (item, result) => late.telegramDeliveryService().recordDeliveredOutbox(item, result),
+    onUncertain: async (item) => {
+      if (!item.intent?.terminalRevision) return;
+      await terminalCommits?.markChannelUncertain(item.intent, { deliveryId: item.id });
+    },
+    onDelivered: async (item, result) => {
+      await late.telegramDeliveryService().recordDeliveredOutbox(item, result);
+      if (item.intent?.final === true) {
+        await terminalCommits?.acknowledgeChannel(item.intent, { deliveryId: item.id });
+      }
+    },
     onPermanentFailure: async (item, error) => {
+      if (item.intent?.terminalRevision) {
+        await terminalCommits?.failChannel(item.intent, {
+          deliveryId: item.id,
+          error: String(error?.message ?? error),
+        });
+      }
       console.error(`Quarantined permanent Telegram delivery ${item.id}:`, error.message);
     },
   });
@@ -291,6 +309,25 @@ export async function createClientRuntimeComposition({
     },
     applyRestoredState: (restoredState) => {
       hostState.restore(restoredState);
+      const restartTarget = {
+        streamId: selectionStore.snapshot().streamId,
+        threadId: selectedThreadId(),
+      };
+      const migratedRestart = maintenanceOperations.migrateLegacyRestart(
+        restoredState.restartRequest,
+        restartTarget,
+      );
+      const interruptedRestart = migratedRestart ?? maintenanceOperations.latestRestart(restartTarget);
+      if (interruptedRestart) {
+        maintenanceOperations.recoverInterrupted({
+          operationIds: [interruptedRestart.operationId],
+        });
+        hostState.setRestartRequest(restartRequestProjection(
+          maintenanceOperations.get(interruptedRestart.operationId),
+        ));
+      } else {
+        hostState.setRestartRequest(null);
+      }
       replaceCodexHookReceipts(restoredState.codexHookReceipts);
       const restoredThreadId = selectedThreadId();
       if (isCodex() && restoredThreadId) {

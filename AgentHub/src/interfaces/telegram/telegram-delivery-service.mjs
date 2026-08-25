@@ -211,7 +211,9 @@ export class TelegramDeliveryService {
 
   async sendReliableRunMessage(run, text, extra = {}, bindingMetadata = {}, delivery = {}) {
     const body = { chat_id: run.chatId, text: String(text), ...extra };
-    if (delivery.supersedeKey) await this.deliveryOutbox.discard({ supersedeKey: delivery.supersedeKey });
+    if (delivery.supersedeKey && !delivery.intentKey) {
+      await this.deliveryOutbox.discard({ supersedeKey: delivery.supersedeKey });
+    }
     if (!delivery.forceQueue) {
       try {
         const message = await this.telegram("sendMessage", body);
@@ -231,6 +233,8 @@ export class TelegramDeliveryService {
       groupId: delivery.groupId ?? null,
       sequence: delivery.sequence ?? 0,
       supersedeKey: delivery.supersedeKey ?? null,
+      intentKey: delivery.intentKey ?? null,
+      intent: delivery.intent ?? null,
     });
     this.scheduleDeliveryFlush(0);
     return { queued: true, outboxId: queued.id };
@@ -244,6 +248,7 @@ export class TelegramDeliveryService {
     silent = false,
     deliveryGroupId = this.randomId(),
     replaceProgressMessageIds = [],
+    terminalIntent = null,
   } = {}) {
     const value = `${this.progressHeading(run, true)}\n\n${String(text)}`;
     const speechId = this.rememberSpeechText(speechText, forceSpeechButton);
@@ -275,7 +280,18 @@ export class TelegramDeliveryService {
           isLast && replaceProgressMessageIds.length
             ? { replacesProgressMessageIds: [...replaceProgressMessageIds] }
             : {},
-          { forceQueue: queued, groupId: deliveryGroupId, sequence },
+          {
+            forceQueue: queued,
+            groupId: deliveryGroupId,
+            sequence,
+            supersedeKey: terminalIntent?.supersedeKey ?? null,
+            intentKey: terminalIntent?.id ? `${terminalIntent.id}:${sequence}` : null,
+            intent: terminalIntent ? {
+              ...terminalIntent,
+              sequence,
+              final: isLast,
+            } : null,
+          },
         );
         queued ||= result?.queued === true;
       } else {
@@ -370,6 +386,7 @@ export class TelegramDeliveryService {
     silent = false,
     complete = true,
     refreshDiff = true,
+    terminalIntent = null,
   } = {}) {
     run.finalizing = true;
     await this.deliveryOutbox.discard({ supersedeKey: this.progressOutboxKey(run) }).catch((error) => {
@@ -391,7 +408,9 @@ export class TelegramDeliveryService {
         reliable: true,
         durable: true,
         silent,
+        deliveryGroupId: terminalIntent?.id,
         replaceProgressMessageIds: run.finishedProgressMessageIds ?? [],
+        terminalIntent,
       });
     }
     if (complete) await this.completeRun(run);

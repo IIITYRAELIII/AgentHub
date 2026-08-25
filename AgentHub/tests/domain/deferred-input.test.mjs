@@ -137,6 +137,17 @@ test("restart turns an interrupted manual steer back into an actionable pending 
   });
 });
 
+test("restart preserves a provisional Stream-scoped queued command", () => {
+  const item = {
+    id: "019f7152-726b-7b62-a595-62a3fccef0bf",
+    streamId: "stream-1",
+    provider: "claude",
+    threadId: null,
+    clientUserMessageId: "message-provisional",
+  };
+  assert.deepEqual(restoreDeferredInput(item), { destination: "pending", item });
+});
+
 test("legacy Desktop attachments become persistent while other temporary files stay temporary", () => {
   const desktopItem = {
     id: "019f7152-726b-7b62-a595-62a3fccef0bf",

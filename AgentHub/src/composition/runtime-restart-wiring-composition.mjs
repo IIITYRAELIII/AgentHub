@@ -32,13 +32,18 @@ export function createRuntimeRestartWiring({
   }
 
   async function performRestart() {
+    if (!restartRequestService.canPerform(getRestartRequest()?.operationId)) {
+      return { status: "reconciling" };
+    }
     const result = await runtimeRestartController.perform();
     if (result.status === "failed") process.exitCode = 1;
     return result;
   }
 
   function scheduleDeferredRestartIfReady() {
-    if (!getRestartRequest() || restartHasBlockingWork() || isStopping() || restartScheduled) return false;
+    const request = getRestartRequest();
+    if (!request || !restartRequestService.canPerform(request.operationId)
+      || restartHasBlockingWork() || isStopping() || restartScheduled) return false;
     restartScheduled = true;
     setTimeout(() => {
       restartScheduled = false;

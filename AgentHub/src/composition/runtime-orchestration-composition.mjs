@@ -134,6 +134,7 @@ export function createRuntimeOrchestrationComposition({
     providerTurnTelemetryStore,
     taskReadStateStore,
     runtimeStateStore,
+    commandTrace,
   } = persistence;
   const {
     restartRequestService,
@@ -330,6 +331,8 @@ export function createRuntimeOrchestrationComposition({
     runtimeRestart: {
       getRestartRequest: () => hostState.restartRequest,
       setRestartRequest: (value) => hostState.setRestartRequest(value),
+      completeRestartOperation: (operationId) => restartRequestService.complete(operationId),
+      failRestartOperation: (error) => restartRequestService.fail(undefined, error),
       isStopping: () => hostState.stopping,
       setStopping: (value) => hostState.setStopping(value),
       beginStopping: () => hostState.beginStopping(),
@@ -373,8 +376,9 @@ export function createRuntimeOrchestrationComposition({
       providerTurnTelemetryStore,
       taskReadStateStore,
       runtimeStateStore,
+      commandTrace,
       updateOffset: () => hostState.updateOffset,
-      setWaiting: (value) => hostState.setRestartWaiting(value),
+      setWaiting: (value) => restartRequestService.setWaiting(value),
       stopRuntimeTimers: timers.stopRuntimeTimers,
       agentHubRoot,
       instanceLockFile,

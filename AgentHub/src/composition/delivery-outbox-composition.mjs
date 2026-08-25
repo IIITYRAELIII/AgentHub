@@ -6,6 +6,7 @@ export async function createDeliveryOutboxComposition({
   runtimeTimers,
   isStopping,
   deliver,
+  onUncertain,
   onDelivered,
   onPermanentFailure,
   logger = console,
@@ -13,6 +14,7 @@ export async function createDeliveryOutboxComposition({
   const deliveryOutbox = new PersistentDeliveryOutbox({
     directoryPath,
     deliver,
+    onUncertain,
     onDelivered,
     onPermanentFailure,
   });

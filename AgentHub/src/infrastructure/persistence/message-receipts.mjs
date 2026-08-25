@@ -23,15 +23,20 @@ function unresolvedReceipt(receipt) {
 export async function messageRequestFingerprint({
   text = "",
   attachments = [],
+  attachmentIdentities = null,
   taskReferences = [],
   followUpMode = "",
 } = {}, {
   readAttachment = readFile,
 } = {}) {
-  const attachmentDigests = [];
-  for (const attachment of attachments) {
-    const content = await readAttachment(attachment);
-    attachmentDigests.push(createHash("sha256").update(content).digest("hex"));
+  const attachmentDigests = Array.isArray(attachmentIdentities)
+    ? attachmentIdentities.map((attachment) => String(attachment?.id ?? attachment ?? "").trim())
+    : [];
+  if (!Array.isArray(attachmentIdentities)) {
+    for (const attachment of attachments) {
+      const content = await readAttachment(attachment);
+      attachmentDigests.push(createHash("sha256").update(content).digest("hex"));
+    }
   }
   return createHash("sha256")
     .update(JSON.stringify({

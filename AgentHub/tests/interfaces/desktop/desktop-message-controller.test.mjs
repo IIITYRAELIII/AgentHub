@@ -131,6 +131,22 @@ test("desktop message acknowledgement does not wait for a full snapshot", async 
   assert.equal("snapshot" in result, false);
 });
 
+test("desktop message acknowledgement does not hash attachment content", async () => {
+  const missingFile = path.resolve("missing-upload.png");
+  const messages = controller({
+    attachmentPaths: async () => [missingFile],
+    describeAttachments: () => [{ id: "upload-id--missing-upload.png", name: "missing-upload.png" }],
+  });
+
+  const result = await messages.sendMessage({
+    text: "принять без чтения файла",
+    attachments: [missingFile],
+    clientUserMessageId: "message-no-content-hash",
+  });
+
+  assert.equal(result.accepted, true);
+});
+
 test("durable desktop intake reuses the queue persistence boundary", async () => {
   const receipts = new MessageReceiptRegistry();
   let controllerPersistenceCalls = 0;

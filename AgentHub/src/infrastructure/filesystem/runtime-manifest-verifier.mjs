@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 
-import { readAgentHubVersion } from "./agent-hub-package.mjs";
+import { agentHubReleaseSequence, readAgentHubVersion } from "./agent-hub-package.mjs";
 import { relativeModuleSpecifiers } from "./module-import-specifiers.mjs";
 
 const MODULE_FILE_PATTERN = /\.(?:cjs|mjs)$/iu;
@@ -51,6 +51,9 @@ export async function verifyRuntimeManifest(releaseRoot, releaseId) {
   const packageVersion = readAgentHubVersion({ packageFile: path.join(releaseRoot, "package.json") });
   if (manifest.version !== packageVersion) {
     throw new Error("Agent Hub runtime manifest version does not match package.json");
+  }
+  if (manifest.releaseVersion != null) {
+    agentHubReleaseSequence(packageVersion, manifest.releaseVersion);
   }
   if (!Array.isArray(manifest.files)) throw new Error("Agent Hub runtime manifest has no file list");
   await verifyRuntimeImportClosure(releaseRoot, manifest.files);

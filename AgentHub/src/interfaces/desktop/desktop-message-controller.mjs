@@ -22,6 +22,7 @@ export function createDesktopMessageController({
   persistReceipts,
   runCoordinator,
   durableIntake = false,
+  commandTrace = null,
 }) {
   if (!runCoordinator?.submitClientInput || !runCoordinator?.steer) {
     throw new TypeError("runCoordinator is required");
@@ -30,18 +31,32 @@ export function createDesktopMessageController({
 
   async function sendMessage(params, context = null) {
     const text = String(params.text ?? "").trim();
-    const attachments = await attachmentPaths(params.attachments);
-    const target = await resolveTarget(params, context);
+    const clientUserMessageId = String(
+      params.clientUserMessageId ?? params.requestId ?? randomUUID(),
+    ).trim().slice(0, 200);
+    if (!clientUserMessageId) throw new Error("Сообщение не содержит идентификатор доставки");
+    const transport = String(context?.source ?? "desktop-control").trim().toLowerCase()
+      || "desktop-control";
+    const preparation = commandTrace?.startBestEffortSpan?.({
+      commandId: clientUserMessageId,
+      stage: "attachment-preparation",
+      transport,
+    });
+    let attachments;
+    let target;
+    try {
+      attachments = await attachmentPaths(params.attachments);
+      target = await resolveTarget(params, context);
+    } catch (error) {
+      preparation?.finish({ outcome: "failed", metadata: { errorCode: error?.code ?? null } });
+      throw error;
+    }
     if (!target.threadId) throw new Error("Сначала выберите или создайте поток");
     const taskReferences = await resolveTaskReferences(params.taskReferences, target, context);
     if (!text && !attachments.length && !taskReferences.length) {
       throw new Error("Введите сообщение или добавьте вложение");
     }
     if (text.length > 100_000) throw new Error("Сообщение слишком длинное");
-    const clientUserMessageId = String(
-      params.clientUserMessageId ?? params.requestId ?? randomUUID(),
-    ).trim().slice(0, 200);
-    if (!clientUserMessageId) throw new Error("Сообщение не содержит идентификатор доставки");
     const followUpMode = String(params.followUpMode ?? "").trim().toLowerCase();
     if (followUpMode && !["queue", "steer"].includes(followUpMode)) {
       throw new Error("Неизвестный режим следующего сообщения");
@@ -68,7 +83,11 @@ export function createDesktopMessageController({
       clientUserMessageId,
     };
     const fingerprint = await messageRequestFingerprint({
-      text, attachments, taskReferences, followUpMode,
+      text, attachmentIdentities: descriptors, taskReferences, followUpMode,
+    });
+    preparation?.finish({
+      outcome: "succeeded",
+      metadata: { attachmentCount: attachments.length, taskReferenceCount: taskReferences.length },
     });
     const receiptKey = messageReceiptKey(receiptIdentity);
     const inflight = inflightReceipts.get(receiptKey);

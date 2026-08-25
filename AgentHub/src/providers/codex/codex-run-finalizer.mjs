@@ -1,4 +1,3 @@
-import { routeCodexFinalDelivery } from "./codex-final-delivery.mjs";
 import { emptyTokenUsage, formatTurnTokenUsage } from "../../domain/token-usage.mjs";
 import { turnEndKey } from "../../application/turn-end-notifications.mjs";
 import { conciseTurnTitle } from "../../application/turn-title.mjs";
@@ -15,12 +14,10 @@ export class CodexRunFinalizer {
     defaultNotificationChatId,
     changedFiles,
     saveState,
-    persistHistory,
-    projectTurn,
-    rememberCompletion,
+    commitTerminal,
+    deliverTerminal,
     markRunCompleted,
     completeRun,
-    routeFinalDelivery = routeCodexFinalDelivery,
     formatUsage = formatTurnTokenUsage,
     titleForAnswer = conciseTurnTitle,
     logger = console,
@@ -35,12 +32,10 @@ export class CodexRunFinalizer {
     this.defaultNotificationChatId = defaultNotificationChatId;
     this.changedFiles = changedFiles;
     this.saveState = saveState;
-    this.persistHistory = persistHistory;
-    this.projectTurn = projectTurn;
-    this.rememberCompletion = rememberCompletion;
+    this.commitTerminal = commitTerminal;
+    this.deliverTerminal = deliverTerminal;
     this.markRunCompleted = markRunCompleted;
     this.completeRun = completeRun;
-    this.routeFinalDelivery = routeFinalDelivery;
     this.formatUsage = formatUsage;
     this.titleForAnswer = titleForAnswer;
     this.logger = logger;
@@ -77,25 +72,18 @@ export class CodexRunFinalizer {
       run.startedAt = turnStart.startedAt || run.startedAt;
       run.promptPreview = turnStart.prompt || run.promptPreview;
     }
+    if (run.rolloutChangeTrackingKnown !== true) {
+      await this.refreshTaskDiff(run).catch((error) => {
+        this.logger.error(`Cannot capture changed files for turn ${completedTurnId}:`, error.message);
+      });
+    }
     const identity = {
       provider: "codex",
       threadId: run.threadId,
       turnId: completedTurnId,
     };
     const existingCompletion = this.notifications.get(identity);
-    await this.persistHistory(run, {
-      answer,
-      status,
-      active: false,
-      turnId: completedTurnId,
-    });
-    await this.markRunCompleted(run);
-    if (run.rolloutChangeTrackingKnown !== true) {
-      await this.refreshTaskDiff(run).catch((error) => {
-        this.logger.error(`Cannot capture changed files for turn ${completedTurnId}:`, error.message);
-      });
-    }
-    const completion = this.notifications.recordCompletion({
+    const completionInput = {
       ...identity,
       streamId: run.streamId ?? null,
       projectRoot: run.projectRoot,
@@ -111,6 +99,7 @@ export class CodexRunFinalizer {
       serviceTier: tracker.serviceTier ?? run.serviceTier ?? "default",
       startedAt: run.startedAt,
       prompt: run.promptPreview,
+      clientUserMessageId: run.clientUserMessageId ?? null,
       userMessages: run.userMessages,
       finalAnswer: String(answer ?? "").trim(),
       changedFiles: this.changedFiles(run),
@@ -118,51 +107,61 @@ export class CodexRunFinalizer {
       skillsUsed: tracker.toolMetricsKnown === true ? tracker.skillsUsed ?? [] : run.skillsUsed ?? [],
       mcpCalls: tracker.toolMetricsKnown === true ? tracker.mcpCalls ?? [] : run.mcpCalls ?? [],
       toolMetricsKnown: tracker.toolMetricsKnown === true || run.toolMetricsKnown === true,
-    });
-    if (completion) this.rememberCompletion(completion, answer);
-    this.turnStarts.delete(startKey);
-    await this.saveState();
-    const resolvedTracker = completion
-      ? {
-        usage: completion.usage,
-        reported: completion.usageReported,
-        estimatedCredits: completion.estimatedCredits,
-        model: completion.model,
-        serviceTier: completion.serviceTier,
-      }
-      : tracker;
+    };
+    const completion = this.notifications.recordCompletion(completionInput)
+      ?? existingCompletion
+      ?? completionInput;
+    const resolvedTracker = {
+      usage: completion.usage,
+      reported: completion.usageReported,
+      estimatedCredits: completion.estimatedCredits,
+      model: completion.model,
+      serviceTier: completion.serviceTier,
+    };
     const shouldDeliver = deliver ?? (run.telegramDeliveryRequested !== false);
     const message = [answer, this.formatUsage(resolvedTracker)].filter(Boolean).join("\n\n");
-    const delivery = await this.routeFinalDelivery({
-      completion,
-      deliverStandard: async () => {
-        if (completion) {
-          await this.projectTurn(completion, {
-            title: this.titleForAnswer(answer, status),
-            body: answer,
-          }).catch((error) => {
-            this.logger.error(`Cannot update journal usage for turn ${completedTurnId}:`, error.message);
-          });
-        }
-        const result = await this.finalizeRunDelivery(run, {
-          answer,
+    const telegramRequested = shouldDeliver && Number.isSafeInteger(completion.chatId);
+    const committed = await this.commitTerminal(completion, {
+      run,
+      channelIntents: {
+        telegram: {
+          requested: telegramRequested,
+          run: {
+            id: run.id ?? null,
+            streamId: run.streamId ?? null,
+            provider: "codex",
+            projectRoot: run.projectRoot,
+            threadId: run.threadId,
+            turnId: completedTurnId,
+            taskTitle: completion.taskTitle,
+            chatId: completion.chatId,
+            modelId: run.modelId ?? null,
+            serviceTier: run.serviceTier ?? null,
+            finishedProgressMessageIds: [...(run.finishedProgressMessageIds ?? [])],
+          },
+          answer: String(answer ?? ""),
           message,
-          speechText: answer,
+          speechText: String(answer ?? ""),
           forceSpeechButton,
-          deliver: shouldDeliver,
           silent,
-          complete: false,
-          refreshDiff: false,
           description,
-        });
-        if (completion) {
-          this.notifications.markDelivered(completion);
-          await this.saveState();
-        }
-        return result;
+        },
       },
     });
-    await this.completeRun(run);
-    return delivery.result;
+    await this.markRunCompleted(run);
+    this.turnStarts.delete(startKey);
+    await this.saveState();
+    let deliveryResult = null;
+    try {
+      deliveryResult = await this.deliverTerminal(committed.outbox);
+    } catch (error) {
+      this.logger.error(
+        `Terminal revision ${committed.terminal.terminalRevision} remains pending for ${completedTurnId}:`,
+        error.message,
+      );
+    } finally {
+      await this.completeRun(run);
+    }
+    return deliveryResult?.telegram ?? deliveryResult;
   }
 }

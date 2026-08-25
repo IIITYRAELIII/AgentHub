@@ -105,12 +105,32 @@ export class DeferredInputService {
       ...(messageOrigin ? { messageOrigin } : {}),
       createdAt,
     };
-    d.store.put(item, destination);
-    if (conflictKind === "message-intake" && typeof d.persistIntake === "function") {
-      await d.persistIntake(item, destination);
+    const usesDurableIntake = conflictKind === "message-intake"
+      && typeof d.persistIntake === "function";
+    if (usesDurableIntake) {
+      d.commandTrace?.recordBestEffort?.({
+        commandId: normalizedClientUserMessageId,
+        stage: "durable-intake-enqueue",
+        outcome: "queued",
+        transport: String(target.clientSource ?? "desktop-control").trim().toLowerCase() || "desktop-control",
+        metadata: { destination, itemId: item.id },
+      });
+      const intake = await d.persistIntake(item, destination);
+      if (intake?.duplicate) {
+        return {
+          deferred: Boolean(intake.record?.item),
+          id: intake.record?.item?.id ?? null,
+          item: intake.record?.item ?? null,
+          duplicate: true,
+          durableResult: intake.retryResult ?? null,
+        };
+      }
+      if (intake?.record?.item) Object.assign(item, intake.record.item);
     } else {
+      d.store.put(item, destination);
       await d.persist();
     }
+    if (usesDurableIntake) d.store.put(item, destination);
     if (notify && item.telegramDeliveryRequested) {
       const message = await d.notify(item, { executionOwner, conflictTask });
       item.messageId = message?.message_id ?? null;

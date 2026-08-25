@@ -51,6 +51,7 @@ export class PersistentDeliveryOutbox {
   constructor({
     directoryPath,
     deliver,
+    onUncertain = async () => {},
     onDelivered = async () => {},
     onPermanentFailure = async () => {},
     removeFile = unlink,
@@ -60,6 +61,7 @@ export class PersistentDeliveryOutbox {
   }) {
     this.directoryPath = directoryPath;
     this.deliver = deliver;
+    this.onUncertain = onUncertain;
     this.onDelivered = onDelivered;
     this.onPermanentFailure = onPermanentFailure;
     this.removeFile = removeFile;
@@ -137,10 +139,26 @@ export class PersistentDeliveryOutbox {
     groupId = null,
     sequence = 0,
     supersedeKey = null,
+    intentKey = null,
+    intent = null,
   }) {
     return this.#serialize(async () => {
       await this.#load();
-      if (supersedeKey) await this.#discardLoaded((item) => item.supersedeKey === supersedeKey);
+      const normalizedIntentKey = String(intentKey ?? "").trim() || null;
+      if (supersedeKey) {
+        await this.#discardLoaded((item) => (
+          item.supersedeKey === supersedeKey
+          && (
+            !normalizedIntentKey
+            || !intent?.terminalRevision
+            || item.intent?.terminalRevision !== intent.terminalRevision
+          )
+        ));
+      }
+      if (normalizedIntentKey) {
+        const existing = [...this.#items.values()].find((item) => item.intentKey === normalizedIntentKey);
+        if (existing) return existing;
+      }
       if (this.#items.size >= this.maxItems) {
         throw new Error(`delivery outbox limit reached (${this.maxItems})`);
       }
@@ -153,6 +171,8 @@ export class PersistentDeliveryOutbox {
         groupId,
         sequence,
         supersedeKey,
+        intentKey: normalizedIntentKey,
+        intent,
         createdAt: new Date(timestamp).toISOString(),
         attempts: 0,
         nextAttemptAt: timestamp,
@@ -223,6 +243,19 @@ export class PersistentDeliveryOutbox {
         deliveryStartedAt: new Date(this.now()).toISOString(),
       });
       if (!started) continue;
+      try {
+        await this.onUncertain(item, { attemptId });
+      } catch (error) {
+        const attempts = item.attempts + 1;
+        await this.#transition(filePath, item, {
+          state: DELIVERY_PENDING,
+          attempts,
+          lastError: `cannot persist uncertain delivery state: ${String(error.message ?? error)}`,
+          nextAttemptAt: this.now() + this.retryDelay(attempts),
+        });
+        if (item.groupId) blockedGroups.add(item.groupId);
+        continue;
+      }
       let result;
       try {
         result = await this.deliver(item.method, item.body, {

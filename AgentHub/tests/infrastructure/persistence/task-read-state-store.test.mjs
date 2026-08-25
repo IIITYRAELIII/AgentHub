@@ -16,6 +16,7 @@ test("read cursor is shared by account, not trusted device", async () => {
       threadId: "thread-1",
       answerAt: "2026-08-02T10:00:00.000Z",
       answerTurnId: "turn-1",
+      answerRevision: 1,
     };
     assert.equal(taskHasUnreadAnswer(task, store.get(task)), true);
     store.markRead(task);
@@ -35,7 +36,7 @@ test("read cursor is shared by account, not trusted device", async () => {
   }
 });
 
-test("read cursor does not hide a later answer or a different equal-time turn", async () => {
+test("read cursor stays monotonic across stale exact acknowledgements and reorder", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-read-state-"));
   const store = new TaskReadStateStore({ dataDir: directory });
   const base = {
@@ -44,9 +45,11 @@ test("read cursor does not hide a later answer or a different equal-time turn", 
     threadId: "thread-1",
     answerAt: "2026-08-02T10:00:00.000Z",
     answerTurnId: "turn-1",
+    answerRevision: 1,
   };
   try {
     store.markRead(base);
+    assert.equal(taskHasUnreadAnswer({ ...base, answerRevision: 2 }, store.get(base)), true);
     assert.equal(taskHasUnreadAnswer({ ...base, answerTurnId: "turn-2" }, store.get(base)), true);
     assert.equal(taskHasUnreadAnswer({
       ...base,
@@ -54,8 +57,53 @@ test("read cursor does not hide a later answer or a different equal-time turn", 
       answerTurnId: "turn-2",
     }, store.get(base)), true);
     const before = store.get(base);
-    store.markRead({ ...base, answerAt: "2026-08-02T09:59:59.000Z", answerTurnId: "old" });
+    const revisionBeforeRetry = store.revision;
+    store.markRead(base);
+    assert.equal(store.revision, revisionBeforeRetry);
+    store.markRead({
+      ...base,
+      answerAt: "2026-08-02T09:59:59.000Z",
+      answerTurnId: "",
+      answerRevision: 0,
+    });
     assert.deepEqual(store.get(base), before);
+    store.markRead({
+      ...base,
+      answerAt: "2026-08-02T09:59:59.000Z",
+      answerTurnId: "server-verified-turn",
+      answerRevision: 2,
+    });
+    assert.deepEqual(store.get(base), before);
+
+    const newer = {
+      ...base,
+      answerAt: "2026-08-02T10:00:01.000Z",
+      answerTurnId: "turn-2",
+      answerRevision: 1,
+    };
+    store.markRead(newer);
+    const afterNewer = store.get(base);
+    const revisionAfterNewer = store.revision;
+    assert.equal(afterNewer.answerTurnId, "turn-2");
+    assert.deepEqual(store.markRead(base), afterNewer);
+    assert.equal(store.revision, revisionAfterNewer);
+    assert.equal(taskHasUnreadAnswer(base, afterNewer), false);
+
+    const equalTimeA = {
+      ...base,
+      threadId: "thread-equal-a",
+      answerTurnId: "turn-a",
+    };
+    const equalTimeB = { ...equalTimeA, answerTurnId: "turn-b" };
+    store.markRead(equalTimeB);
+    store.markRead(equalTimeA);
+    assert.equal(store.get(equalTimeA).answerTurnId, "turn-b");
+
+    const reverseA = { ...equalTimeA, threadId: "thread-equal-reverse" };
+    const reverseB = { ...equalTimeB, threadId: "thread-equal-reverse" };
+    store.markRead(reverseA);
+    store.markRead(reverseB);
+    assert.equal(store.get(reverseA).answerTurnId, "turn-b");
   } finally {
     store.close();
     await rm(directory, { recursive: true, force: true });

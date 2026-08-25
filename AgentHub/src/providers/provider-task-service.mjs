@@ -28,6 +28,7 @@ export class CodexProviderTaskService {
   #bindCreatedThread;
   #activeProjectRoot;
   #sandboxMode;
+  #model;
   #invalidateCatalog;
   #restoreSettings;
   #updateSettings;
@@ -49,6 +50,7 @@ export class CodexProviderTaskService {
     this.#bindCreatedThread = requiredFunction(options.bindCreatedThread, "bindCreatedThread");
     this.#activeProjectRoot = requiredFunction(options.activeProjectRoot, "activeProjectRoot");
     this.#sandboxMode = requiredFunction(options.sandboxMode, "sandboxMode");
+    this.#model = typeof options.model === "function" ? options.model : () => undefined;
     this.#invalidateCatalog = requiredFunction(options.invalidateCatalog, "invalidateCatalog");
     this.#restoreSettings = requiredFunction(options.restoreSettings, "restoreSettings");
     this.#updateSettings = requiredFunction(options.updateSettings, "updateSettings");
@@ -67,6 +69,7 @@ export class CodexProviderTaskService {
     const streamId = this.#selection.streamId;
     const result = await this.#sendRpc("thread/start", {
       cwd: projectRoot,
+      model: this.#model() || undefined,
       ...codexThreadSandboxSettings(this.#sandboxMode()),
       serviceName: "telegram_codex_bridge",
     });

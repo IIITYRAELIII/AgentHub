@@ -7,6 +7,11 @@ import {
   normalizeInterstreamOrigin,
 } from "../domain/interstream-message.mjs";
 import { contextMaintenanceActiveError } from "../domain/deferred-input.mjs";
+import {
+  taskOccupancyIdentity,
+  taskRunIsActive,
+  taskRunKey,
+} from "../domain/task-runs.mjs";
 
 export function activeTurnNotSteerable(error) {
   const details = `${String(error?.message ?? "")} ${JSON.stringify(error?.data ?? {})}`.toLowerCase();
@@ -49,6 +54,7 @@ export class RunCoordinator {
     setProgressStage = () => {},
     noteRunActivity = () => {},
     scheduleProgressUpdate = () => {},
+    rekeyDeferredOccupancy = null,
   }) {
     if (!taskRuns?.forTask) throw new TypeError("taskRuns.forTask is required");
     if (!providers?.call) throw new TypeError("providers.call is required");
@@ -78,17 +84,76 @@ export class RunCoordinator {
     this.setProgressStage = setProgressStage;
     this.noteRunActivity = noteRunActivity;
     this.scheduleProgressUpdate = scheduleProgressUpdate;
+    this.rekeyDeferredOccupancy = rekeyDeferredOccupancy;
   }
 
   taskLane(target) {
-    const streamId = String(target?.streamId ?? "").trim();
-    if (streamId) return `stream:${streamId}`;
-    return [
-      "provider",
-      String(target?.provider ?? "").trim().toLowerCase(),
-      String(target?.projectRoot ?? "").trim().toLowerCase(),
-      String(target?.threadId ?? "").trim(),
-    ].join(":");
+    return taskOccupancyIdentity(target)?.key ?? taskRunKey(target ?? {});
+  }
+
+  activeRun(target) {
+    const run = this.taskRuns.forTask(target);
+    return taskRunIsActive(run) ? run : null;
+  }
+
+  async deferredOccupancy(target) {
+    const identity = taskOccupancyIdentity(target);
+    const run = this.activeRun(target);
+    if (run) {
+      return {
+        key: this.taskLane(run),
+        binding: taskOccupancyIdentity(run)?.binding ?? identity?.binding ?? "provisional",
+        occupied: true,
+        state: "active",
+        waitReason: "provider-thread-active",
+        run,
+      };
+    }
+    if (identity?.binding !== "exact") {
+      return {
+        key: identity?.key ?? this.taskLane(target),
+        binding: identity?.binding ?? "provisional",
+        occupied: false,
+        state: "inactive",
+        waitReason: null,
+        run: null,
+      };
+    }
+    const external = await this.externalActivity(target);
+    return {
+      key: identity.key,
+      binding: identity.binding,
+      occupied: external.state !== "inactive",
+      state: external.state,
+      waitReason: external.state === "active"
+        ? "provider-thread-active"
+        : external.state === "unknown" ? "provider-temporarily-unavailable" : null,
+      run: null,
+      executionOwner: external.executionOwner ?? null,
+    };
+  }
+
+  async bindDeferredOccupancy(item) {
+    const identity = taskOccupancyIdentity(item);
+    if (!identity || identity.binding !== "exact") return { changed: false, item };
+    const clientUserMessageId = String(item?.clientUserMessageId ?? "").trim();
+    if (!clientUserMessageId || typeof this.rekeyDeferredOccupancy !== "function") {
+      item.occupancyKey = identity.key;
+      item.occupancyBinding = identity.binding;
+      return { changed: false, item };
+    }
+    const result = await this.rekeyDeferredOccupancy({
+      clientUserMessageId,
+      expectedOccupancyKey: item.occupancyKey ?? null,
+      target: item,
+    });
+    if (result?.conflict) throw new Error("message command occupancy binding conflict");
+    if (result?.record?.item) Object.assign(item, result.record.item);
+    else {
+      item.occupancyKey = identity.key;
+      item.occupancyBinding = identity.binding;
+    }
+    return { ...result, item };
   }
 
   async serializeIn(lanes, target, operation) {
@@ -136,7 +201,7 @@ export class RunCoordinator {
         persistentFiles,
       });
     }
-    const existingRun = this.taskRuns.forTask(target);
+    const existingRun = this.activeRun(target);
     const [externalActivity, repositoryConflict] = existingRun
       ? [{ state: "active", executionOwner: existingRun.executionOwner }, null]
       : await Promise.all([
@@ -173,7 +238,7 @@ export class RunCoordinator {
     try {
       run = await this.beginRun(input, target);
     } catch (error) {
-      const concurrentRun = this.taskRuns.forTask(target);
+      const concurrentRun = this.activeRun(target);
       if (error.message !== "this task is already running" || !concurrentRun) throw error;
       return this.deferInput(input, temporaryFiles, {
         forceSpeechButton,
@@ -202,6 +267,7 @@ export class RunCoordinator {
 
   async startDeferredUnlocked(item) {
     if (this.isMaintenanceActive(item)) throw contextMaintenanceActiveError();
+    await this.bindDeferredOccupancy(item);
     const messageOrigin = normalizeInterstreamOrigin(item.messageOrigin);
     const target = {
       provider: item.provider,
@@ -255,7 +321,14 @@ export class RunCoordinator {
       notify: false,
       persistentFiles: attachments.length > 0,
     });
-    this.scheduleDeferred(deferred.item, scheduleDelayMs);
+    if (deferred.duplicate && deferred.durableResult) {
+      return {
+        ...deferred.durableResult,
+        duplicate: true,
+        clientUserMessageId,
+      };
+    }
+    if (!deferred.duplicate) this.scheduleDeferred(deferred.item, scheduleDelayMs);
     return {
       accepted: reason === "message-intake",
       deferred: true,
@@ -293,7 +366,7 @@ export class RunCoordinator {
     clientUserMessageId,
     followUpMode = "",
   }) {
-    const existingRun = this.taskRuns.forTask(target);
+    const existingRun = this.activeRun(target);
     if (this.isMaintenanceActive(target)) {
       return this.queue(input, attachments, {
         target,
@@ -349,7 +422,7 @@ export class RunCoordinator {
   }
 
   async steerUnlocked({ input, target, clientUserMessageId }) {
-    const existingRun = this.taskRuns.forTask(target);
+    const existingRun = this.activeRun(target);
     const externalActivity = existingRun
       ? { state: "active", executionOwner: existingRun.executionOwner }
       : await this.externalActivity(target);
@@ -435,7 +508,7 @@ export class RunCoordinator {
         reason: "context-maintenance",
       });
     }
-    const existingRun = this.taskRuns.forTask(target);
+    const existingRun = this.activeRun(target);
     const externalActivity = existingRun
       ? { state: "active", executionOwner: existingRun.executionOwner }
       : await this.externalActivity(target);

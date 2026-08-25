@@ -43,6 +43,75 @@ test("PersistentDeliveryOutbox persists and delivers queued messages in order", 
   }
 });
 
+test("terminal channel intent materializes idempotently and becomes uncertain before delivery", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "telegram-outbox-intent-"));
+  const states = [];
+  try {
+    const outbox = new PersistentDeliveryOutbox({
+      directoryPath: directory,
+      onUncertain: async (item) => states.push(["uncertain", item.intent.id]),
+      onDelivered: async (item) => states.push(["acked", item.intent.id]),
+      deliver: async () => ({ message_id: 7 }),
+    });
+    const intent = { id: "terminal-1", terminalRevision: 1, final: true };
+    const first = await outbox.enqueue({
+      method: "sendMessage",
+      body: { chat_id: 7, text: "Final" },
+      intentKey: "terminal-1:0",
+      intent,
+    });
+    const duplicate = await outbox.enqueue({
+      method: "sendMessage",
+      body: { chat_id: 7, text: "Final" },
+      intentKey: "terminal-1:0",
+      intent,
+    });
+    assert.equal(duplicate.id, first.id);
+    assert.equal(outbox.size, 1);
+
+    await outbox.flush();
+    assert.deepEqual(states, [["uncertain", "terminal-1"], ["acked", "terminal-1"]]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a newer terminal revision supersedes every queued chunk of the older revision", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "telegram-outbox-revision-"));
+  try {
+    const outbox = new PersistentDeliveryOutbox({
+      directoryPath: directory,
+      deliver: async () => ({ message_id: 7 }),
+    });
+    const supersedeKey = "codex\0thread-1\0turn-1\0telegram";
+    for (const sequence of [0, 1]) {
+      await outbox.enqueue({
+        method: "sendMessage",
+        body: { chat_id: 7, text: `old-${sequence}` },
+        groupId: "terminal-revision-1",
+        sequence,
+        supersedeKey,
+        intentKey: `terminal-revision-1:${sequence}`,
+        intent: { terminalRevision: 1, sequence, final: sequence === 1 },
+      });
+    }
+    assert.equal(outbox.size, 2);
+
+    await outbox.enqueue({
+      method: "sendMessage",
+      body: { chat_id: 7, text: "new" },
+      groupId: "terminal-revision-2",
+      sequence: 0,
+      supersedeKey,
+      intentKey: "terminal-revision-2:0",
+      intent: { terminalRevision: 2, sequence: 0, final: true },
+    });
+    assert.equal(outbox.size, 1);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("PersistentDeliveryOutbox retains a temporary failure for a later retry", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "telegram-outbox-retry-"));
   const outboxDirectory = path.join(directory, "outbox");

@@ -245,6 +245,44 @@ test("Codex snapshot service reads a delayed final answer and applies runtime pr
   assert.equal(run.activeTurnCount, 2);
 });
 
+test("Codex snapshot service does not freeze a partial turn completed payload", async () => {
+  let rolloutReads = 0;
+  const delays = [];
+  const service = new CodexTaskSnapshotService({
+    knownRolloutPath: async () => "rollout.jsonl",
+    readRolloutActivity: async () => ({
+      finalMessages: rolloutReads++ >= 2
+        ? { "turn-1": "Полный финальный ответ после materialization" }
+        : {},
+    }),
+    rolloutTurnState: () => ({}), capturedOwner: () => null,
+    runtimeActive: async () => true, resolveOwner: async () => "agent-hub",
+    readThread: async () => ({ thread: { turns: [{
+      id: "turn-1",
+      status: "completed",
+      items: [{ type: "agentMessage", text: "Обрезанный финал", phase: "final_answer" }],
+    }] } }),
+    selectTurn: () => null, turnSnapshot: () => ({}), turnStartedAt: () => null,
+    describeItem: () => "", hubOwner: () => "agent-hub", agentHubPid: () => 1,
+    modelLabel: (value) => value, reasoningLabels: {}, runtimeLabel: (value) => value,
+    delay: async (waitMs) => { delays.push(waitMs); },
+    reindexRun: () => {}, logger: { warn() {} },
+  });
+
+  const answer = await service.completedAnswer(
+    { threadId: "thread-1", responseText: "Обрезанный финал" },
+    "turn-1",
+    {
+      id: "turn-1",
+      status: "completed",
+      items: [{ type: "agentMessage", text: "Обрезанный финал", phase: "final_answer" }],
+    },
+  );
+
+  assert.equal(answer, "Полный финальный ответ после materialization");
+  assert.deepEqual(delays, [100]);
+});
+
 test("Codex snapshot service never promotes commentary to a completed answer", async () => {
   const service = new CodexTaskSnapshotService({
     knownRolloutPath: async () => "", readRolloutActivity: async () => ({}), rolloutTurnState: () => ({}),

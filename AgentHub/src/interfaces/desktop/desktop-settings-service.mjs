@@ -10,7 +10,7 @@ export class DesktopSettingsService {
   constructor(dependencies = {}) {
     for (const name of [
       "isSelected", "selectedTask", "switchProvider", "isCodex", "threadId", "isCompacting",
-      "switchCodexModel", "switchClaudeModel", "updateCodexThreadSettings", "saveState",
+      "switchCodexModel", "switchClaudeModel", "updateCodexThreadSettings", "createCodexThread", "saveState",
       "getCodexReasoning", "setCodexReasoning", "getClaudeReasoning", "setClaudeReasoning",
       "getCodexMode", "setCodexMode", "getClaudeMode", "setClaudeMode", "getAutoApprove",
       "setAutoApprove", "getIncludeClaudeUsage", "setIncludeClaudeUsage", "projectUsage",
@@ -38,7 +38,12 @@ export class DesktopSettingsService {
       if (d.isCodex()) {
         this.#assertNotCompacting("модели");
         ({ changed } = d.switchCodexModel(value));
-        await d.updateCodexThreadSettings();
+        try {
+          await d.updateCodexThreadSettings();
+        } catch (error) {
+          if (error?.data?.kind !== "threadBackendChangeRequiresNewThread") throw error;
+          await d.createCodexThread();
+        }
       } else {
         ({ changed } = d.switchClaudeModel(value));
         await d.saveState();

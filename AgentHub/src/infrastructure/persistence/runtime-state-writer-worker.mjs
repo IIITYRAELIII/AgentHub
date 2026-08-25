@@ -27,23 +27,6 @@ async function retryBusy(operation) {
   }
 }
 
-function messageIntakeRows(value) {
-  const receipts = new Map((Array.isArray(value?.desktopMessageReceipts)
-    ? value.desktopMessageReceipts
-    : []).map((receipt) => [String(receipt?.clientUserMessageId ?? ""), receipt]));
-  return [
-    ["pending", value?.pendingInputs],
-    ["queued", value?.queuedInputs],
-  ].flatMap(([destination, items]) => (Array.isArray(items) ? items : [])
-    .filter((item) => item?.conflictKind === "message-intake")
-    .map((item) => ({
-      id: String(item.id),
-      destination,
-      item,
-      receipt: receipts.get(String(item.clientUserMessageId ?? "")) ?? null,
-    })));
-}
-
 function inTransaction(operation) {
   let active = false;
   try {
@@ -64,8 +47,6 @@ function inTransaction(operation) {
 }
 
 async function saveState(content) {
-  const value = JSON.parse(content);
-  const rows = messageIntakeRows(value);
   const now = new Date().toISOString();
   await retryBusy(() => inTransaction(() => {
     database.prepare(`
@@ -75,53 +56,11 @@ async function saveState(content) {
         value_json = excluded.value_json,
         updated_at = excluded.updated_at
     `).run(content, now);
-    database.prepare("DELETE FROM runtime_deferred_intake").run();
-    const insert = database.prepare(`
-      INSERT INTO runtime_deferred_intake (
-        id, destination, item_json, receipt_json, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?)
-    `);
-    for (const row of rows) {
-      insert.run(
-        row.id,
-        row.destination,
-        JSON.stringify(row.item),
-        row.receipt ? JSON.stringify(row.receipt) : null,
-        String(row.item.createdAt ?? now),
-        now,
-      );
-    }
   }));
-}
-
-async function saveIntake({ item, destination, receipt }) {
-  if (!item?.id) throw new TypeError("deferred input id is required");
-  const normalizedDestination = destination === "queued" ? "queued" : "pending";
-  const now = new Date().toISOString();
-  const itemJson = JSON.stringify(item);
-  const receiptJson = receipt ? JSON.stringify(receipt) : null;
-  await retryBusy(() => database.prepare(`
-    INSERT INTO runtime_deferred_intake (
-      id, destination, item_json, receipt_json, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?)
-    ON CONFLICT(id) DO UPDATE SET
-      destination = excluded.destination,
-      item_json = excluded.item_json,
-      receipt_json = excluded.receipt_json,
-      updated_at = excluded.updated_at
-  `).run(
-    String(item.id),
-    normalizedDestination,
-    itemJson,
-    receiptJson,
-    String(item.createdAt ?? now),
-    now,
-  ));
 }
 
 async function handle(message) {
   if (message.type === "save-state") return saveState(message.payload.content);
-  if (message.type === "save-intake") return saveIntake(message.payload);
   if (message.type === "close") {
     database.close();
     return null;

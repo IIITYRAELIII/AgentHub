@@ -17,6 +17,7 @@ import process from "node:process";
 import { readAgentHubVersion } from "../infrastructure/filesystem/agent-hub-package.mjs";
 import { defaultRuntimeRoot, runtimeLayout, runtimeReleaseDirectory } from "../infrastructure/filesystem/runtime-layout.mjs";
 import { verifyRuntimeImportClosure } from "../infrastructure/filesystem/runtime-manifest-verifier.mjs";
+import { nextRuntimeReleaseVersion } from "../infrastructure/filesystem/runtime-release-version.mjs";
 import { protectRuntimeConfig, protectRuntimeDirectory } from "../infrastructure/filesystem/runtime-security.mjs";
 import { buildWindowsRuntimeHost, runtimeHostSourceHash } from "../infrastructure/process/runtime-host-builder.mjs";
 import { processIsAlive } from "../infrastructure/process/process-liveness.mjs";
@@ -34,6 +35,7 @@ const TOP_LEVEL_FILES = new Set([
   "runtime-launch.sh",
   "start.ps1",
   "transcribe.py",
+  "whisper_runtime.py",
   "tts_worker.py",
   "work-log.css",
 ]);
@@ -322,9 +324,14 @@ export async function deployRuntime({
       );
       names.sort();
     }
+    const packageVersion = readAgentHubVersion({ packageFile: path.join(sourceRoot, "package.json") });
     const manifest = {
       releaseId,
-      version: readAgentHubVersion({ packageFile: path.join(sourceRoot, "package.json") }),
+      version: packageVersion,
+      releaseVersion: await nextRuntimeReleaseVersion({
+        releasesDir: layout.releasesDir,
+        packageVersion,
+      }),
       createdAt: new Date().toISOString(),
       sourceRoot: path.resolve(sourceRoot),
       files: await releaseManifest(staging, names),

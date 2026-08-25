@@ -30,4 +30,33 @@ export function readAgentHubVersion(options = {}) {
   return readAgentHubPackage(options).version;
 }
 
-export const AGENT_HUB_VERSION = readAgentHubVersion();
+export function agentHubReleaseSequence(packageVersion, releaseVersion) {
+  const prefix = `${packageVersion}.`;
+  const sequenceText = String(releaseVersion ?? "").trim().slice(prefix.length);
+  if (!String(releaseVersion ?? "").startsWith(prefix)
+    || !/^[1-9]\d*$/u.test(sequenceText)
+    || !Number.isSafeInteger(Number(sequenceText))) {
+    throw new Error(`Agent Hub runtime manifest has an invalid release version: ${releaseVersion ?? "missing"}`);
+  }
+  return Number(sequenceText);
+}
+
+export function readAgentHubReleaseVersion({
+  packageFile = AGENT_HUB_PACKAGE_FILE,
+  manifestFile = path.join(path.dirname(packageFile), "runtime-manifest.json"),
+  readFileImpl = readFileSync,
+} = {}) {
+  const packageVersion = readAgentHubVersion({ packageFile, readFileImpl });
+  let manifest;
+  try {
+    manifest = JSON.parse(readFileImpl(manifestFile, "utf8"));
+  } catch (error) {
+    if (error?.code === "ENOENT") return packageVersion;
+    throw error;
+  }
+  if (manifest?.releaseVersion == null) return packageVersion;
+  agentHubReleaseSequence(packageVersion, manifest.releaseVersion);
+  return manifest.releaseVersion;
+}
+
+export const AGENT_HUB_VERSION = readAgentHubReleaseVersion();

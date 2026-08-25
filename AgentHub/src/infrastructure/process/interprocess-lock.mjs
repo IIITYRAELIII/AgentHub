@@ -1,5 +1,6 @@
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
+import { performance } from "node:perf_hooks";
 import path from "node:path";
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -186,6 +187,7 @@ async function acquire(lockPath, {
 }
 
 export async function withInterprocessLocks(paths, operation, options = {}) {
+  const waitStartedAt = performance.now();
   const lockPaths = [...new Set(paths.filter(Boolean).map((value) => `${value}.lock`))].sort();
   const localReleases = [];
   const acquired = [];
@@ -195,6 +197,14 @@ export async function withInterprocessLocks(paths, operation, options = {}) {
     }
     for (const lockPath of lockPaths) {
       acquired.push({ lockPath, token: await acquire(lockPath, options) });
+    }
+    try {
+      options.onAcquired?.({
+        waitMs: Math.max(0, performance.now() - waitStartedAt),
+        lockCount: lockPaths.length,
+      });
+    } catch {
+      // Lock diagnostics are advisory and cannot change the protected operation.
     }
     return await operation();
   } finally {

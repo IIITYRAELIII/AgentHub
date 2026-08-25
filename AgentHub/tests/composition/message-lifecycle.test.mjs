@@ -10,6 +10,13 @@ const source = await readFile(
 const context = vm.createContext({});
 vm.runInContext(source, context);
 const lifecycle = context.AgentHubMessageLifecycle;
+const projectionSource = await readFile(
+  new URL("../../assets/web-app/messages/projection.js", import.meta.url),
+  "utf8",
+);
+const projectionContext = vm.createContext({});
+vm.runInContext(projectionSource, projectionContext);
+const projection = projectionContext.AgentHubMessageProjection;
 const hubClientSource = await readFile(
   new URL("../../assets/web-app/hub-client.js", import.meta.url),
   "utf8",
@@ -297,11 +304,11 @@ test("focused completed turn cannot append commentary after its durable final", 
   );
 });
 
-test("repeated older pages cannot multiply one durable message after a Thread rebind", () => {
+test("repeated older pages retain each exact provider entity once after a Thread rebind", () => {
   const source = clientFunctionSource("prependOlderHistory", "function applyOpened");
   const sandbox = vm.createContext({
     Set,
-    deduplicateConversationMessages: lifecycle.deduplicateConversationMessages,
+    projectCanonicalMessages: projection.projectCanonicalMessages,
   });
   vm.runInContext(`${source}; globalThis.prepend = prependOlderHistory;`, sandbox);
   const previous = [{
@@ -329,8 +336,11 @@ test("repeated older pages cannot multiply one durable message after a Thread re
     merged = sandbox.prepend(merged, overlappingPage);
   }
 
-  assert.equal(merged.length, 1);
-  assert.equal(merged[0].text, "Сообщение 15:18");
+  assert.equal(merged.length, 2);
+  assert.deepEqual(Array.from(merged, (message) => [message.provider, message.threadId]), [
+    ["claude", "thread-new"],
+    ["codex", "thread-old"],
+  ]);
 });
 
 test("chat history fallback preserves the reader position after prepending a page", () => {
@@ -1102,6 +1112,13 @@ test("completed turn becomes durable only with its prompt and exact final", () =
     turnId: "turn-1",
     answer: "Готовый ответ",
   }), true);
+  assert.equal(lifecycle.completedConversationTurnVisible([prompt, {
+    ...final,
+    text: "Готовый",
+  }], {
+    turnId: "turn-1",
+    answer: "Готовый ответ",
+  }), false);
 });
 
 test("agent finals from different turns remain separate", () => {
@@ -1336,7 +1353,7 @@ test("deferred outgoing messages render only in the queue while it owns delivery
   assert.deepEqual(visible, []);
 });
 
-test("an unacknowledged optimistic steer collapses with its canonical submission item", () => {
+test("an item id alone never collapses an unacknowledged optimistic steer", () => {
   const values = lifecycle.deduplicateConversationMessages([
     {
       id: "codex:thread-1:turn-1:client-steer:user",
@@ -1364,10 +1381,10 @@ test("an unacknowledged optimistic steer collapses with its canonical submission
     },
   ]);
 
-  assert.equal(values.length, 1);
-  assert.equal(values[0].clientUserMessageId, "client-steer");
+  assert.equal(values.length, 2);
+  assert.equal(values[1].clientUserMessageId, "client-steer");
   assert.equal(values[0].time, "2026-08-25T08:11:00.000Z");
-  assert.deepEqual(JSON.parse(JSON.stringify(values[0].responseAnnotations)), [
+  assert.deepEqual(JSON.parse(JSON.stringify(values[1].responseAnnotations)), [
     { text: "Скрин, похоже, из Test Contour", annotation: "нет" },
   ]);
 });
@@ -2000,6 +2017,9 @@ test("history catch-up waits for the exact completed answer turn", () => {
     }],
   };
   assert.equal(lifecycle.historyContainsLatestAnswer(caughtUp, task), true);
+  caughtUp.items[0].answer = "Готовый";
+  caughtUp.items[0].messages[1].text = "Готовый";
+  assert.equal(lifecycle.historyContainsLatestAnswer(caughtUp, task), false);
 });
 
 test("compact history catch-up rejects completed commentary until the final phase arrives", () => {
@@ -2455,6 +2475,52 @@ test("run completion starts history catch-up even when answer metadata has not c
   const current = { ...previous, running: false };
   assert.equal(lifecycle.latestAnswerTransition(previous, current), true);
   assert.equal(lifecycle.latestAnswerTransition(current, current), false);
+});
+
+test("snapshot before history cannot acknowledge a final before render", () => {
+  const taskId = "codex:thread-1";
+  const final = {
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    revision: 2,
+  };
+  const terminal = {
+    ...final,
+    role: "agent",
+    terminalRevision: 2,
+    projectionState: "completed",
+  };
+  assert.equal(lifecycle.displayedFinalAcknowledgement({
+    messages: [],
+    final,
+    selectTask: true,
+    taskId,
+  }), false);
+  assert.equal(lifecycle.displayedFinalAcknowledgement({
+    messages: [terminal],
+    final,
+    selectTask: true,
+    taskId,
+  }), true);
+  assert.equal(lifecycle.displayedFinalAcknowledgement({
+    messages: [terminal],
+    final,
+    selectedTaskId: taskId,
+    taskId,
+  }), true);
+  assert.equal(lifecycle.displayedFinalAcknowledgement({
+    messages: [terminal],
+    final,
+    selectedTaskId: "codex:thread-2",
+    taskId,
+  }), false);
+  assert.equal(lifecycle.displayedFinalAcknowledgement({
+    messages: [{ ...terminal, terminalRevision: 1 }],
+    final,
+    selectTask: true,
+    taskId,
+  }), false);
 });
 
 test("an active run is authoritative acceptance evidence for its client message", () => {

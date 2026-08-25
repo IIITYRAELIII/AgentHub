@@ -54,6 +54,7 @@ export function createDesktopControlRouter({
   receiptFile = null,
   receiptOptions = {},
   reconcileMutation = null,
+  commandTrace = null,
 }) {
   const localOnly = new Set(localOnlyActions);
   const privileged = new Set(privilegedSources);
@@ -69,6 +70,16 @@ export function createDesktopControlRouter({
     ...receiptOptions,
     file: receiptFile,
     projectResult: projectDesktopReceiptResult,
+    onTrace: ({ commandId, waitMs, lockCount, retryCount, transport, action }) => {
+      commandTrace?.recordBestEffort?.({
+        commandId,
+        stage: "receipt-lock-wait",
+        outcome: "succeeded",
+        transport: transport || "desktop-control",
+        lockWaitMs: waitMs,
+        metadata: { action, lockCount, retryCount },
+      });
+    },
   }) : null;
 
   function serializeDesktopMutation(operation) {
@@ -123,6 +134,20 @@ export function createDesktopControlRouter({
     if (action === "send-message" && context?.commandId && !resolvedParams.clientUserMessageId) {
       resolvedParams.clientUserMessageId = String(context.commandId);
     }
+    const traceCommandId = String(
+      resolvedParams.clientUserMessageId ?? context?.commandId ?? "",
+    ).trim();
+    const traceTransport = String(context?.source ?? "desktop-control").trim().toLowerCase()
+      || "desktop-control";
+    if (traceCommandId) {
+      commandTrace?.recordBestEffort?.({
+        commandId: traceCommandId,
+        stage: "hub-receive",
+        outcome: "succeeded",
+        transport: traceTransport,
+        metadata: { action },
+      });
+    }
     if (mutations.has(action)) {
       const execute = () => concurrentMutations.has(action)
         ? handler(resolvedParams, context)
@@ -149,6 +174,7 @@ export function createDesktopControlRouter({
         reconcile: typeof reconcileMutation === "function"
           ? (receipt) => reconcileMutation({ action, params: resolvedParams, context, receipt })
           : null,
+        traceContext: { commandId: traceCommandId || commandId, transport: traceTransport, action },
       });
       if (liveResult !== noLiveResult) return mutationResultForClient(liveResult, context);
       return hydrateProjectedResult(durableResult, context);

@@ -19,6 +19,7 @@ import {
   shouldAutoObserveTask,
   shouldDeliverObservedCompletion,
   taskRunIsActive,
+  taskOccupancyIdentity,
   taskRunKey,
   updateObservedResponse,
   updateTaskRunTitle,
@@ -254,6 +255,34 @@ test("different threads inside one Stream can run at the same time", () => {
   assert.equal(registry.forTask(first), first);
   assert.equal(registry.forTask(second), second);
   assert.equal(registry.forTask({ streamId: "stream-1" }), null);
+});
+
+test("occupancy promotes a Stream lane to exact provider Thread identity", () => {
+  assert.deepEqual(taskOccupancyIdentity({ streamId: "stream-1" }), {
+    key: "stream\0stream-1",
+    binding: "provisional",
+  });
+  assert.deepEqual(taskOccupancyIdentity({
+    streamId: "stream-1",
+    provider: "codex",
+    threadId: "thread-1",
+  }), {
+    key: "stream\0stream-1\0codex\0thread-1",
+    binding: "exact",
+  });
+});
+
+test("a terminal indexed run does not occupy admission", () => {
+  const completed = run({ id: "run-completed", turnId: "turn-completed", status: "completed" });
+  const registry = new TaskRunRegistry([completed]);
+  assert.equal(registry.forTask(completed), null);
+
+  const active = run({ id: "run-next", turnId: "turn-next" });
+  registry.add(active);
+
+  assert.equal(registry.forTask(active), active);
+  assert.equal(registry.forEvent({ turnId: completed.turnId }), completed);
+  assert.equal(registry.size, 2);
 });
 
 test("a task cannot start a second concurrent turn", () => {

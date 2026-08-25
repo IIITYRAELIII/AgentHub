@@ -387,47 +387,47 @@ export function createDesktopTaskHistoryFactory({
         startedAt: running.startedAt,
         attachments: running.messageAttachments ?? [],
       });
-    } else {
-      const savedCompletion = latestMessage(binding);
-      const completed = savedCompletion?.threadId
-        && String(savedCompletion.threadId) !== String(binding.threadId)
-        ? null
-        : savedCompletion;
-      const completedTurnId = String(completed?.turnId ?? "").trim();
-      const matchingTurnVisible = completedTurnId && history.some((item) => (
-        String(item?.id ?? "").trim() === completedTurnId
-      ));
-      const unrelatedActiveTurnVisible = history.some((item) => (
-        item?.active === true && String(item?.id ?? "").trim() !== completedTurnId
-      ));
-      const unrelatedUserTurnVisible = history.some((item) => (
-        item?.active === true
-        && String(item?.id ?? "").trim() !== completedTurnId
-        && (
-          String(item?.prompt ?? "").trim()
-          || (Array.isArray(item?.messages) && item.messages.some((message) => (
-            message?.role === "user" && String(message?.text ?? "").trim()
-          )))
-        )
-      ));
-      if (completed?.turnId && completed?.text && !(
-        binding.provider === "codex" && isCodexContextProbeTurn({
-          turnId: completed.turnId,
-          finalAnswer: completed.text,
-        })
-      ) && !(
-        binding.provider === "codex" && isEmptyTurnCompletionPlaceholder({
-          answer: completed.text,
-        })
-      ) && (matchingTurnVisible || !unrelatedActiveTurnVisible || unrelatedUserTurnVisible)) {
-        historyMerger.mergeCompleted(history, {
-          turnId: completed.turnId,
-          answer: completed.text,
-          completedAt: completed.updatedAt,
-        }, {
-          matchSingleActive: !unrelatedActiveTurnVisible,
-        });
-      }
+    }
+    const savedCompletion = latestMessage(binding);
+    const completed = savedCompletion?.threadId
+      && String(savedCompletion.threadId) !== String(binding.threadId)
+      ? null
+      : savedCompletion;
+    const completedTurnId = String(completed?.turnId ?? "").trim();
+    const matchingTurnVisible = completedTurnId && history.some((item) => (
+      String(item?.id ?? "").trim() === completedTurnId
+    ));
+    const unrelatedActiveTurnVisible = history.some((item) => (
+      item?.active === true && String(item?.id ?? "").trim() !== completedTurnId
+    ));
+    const unrelatedUserTurnVisible = history.some((item) => (
+      item?.active === true
+      && String(item?.id ?? "").trim() !== completedTurnId
+      && (
+        String(item?.prompt ?? "").trim()
+        || (Array.isArray(item?.messages) && item.messages.some((message) => (
+          message?.role === "user" && String(message?.text ?? "").trim()
+        )))
+      )
+    ));
+    if (completed?.turnId && completed?.text && !(
+      binding.provider === "codex" && isCodexContextProbeTurn({
+        turnId: completed.turnId,
+        finalAnswer: completed.text,
+      })
+    ) && !(
+      binding.provider === "codex" && isEmptyTurnCompletionPlaceholder({
+        answer: completed.text,
+      })
+    ) && (matchingTurnVisible || !unrelatedActiveTurnVisible || unrelatedUserTurnVisible)) {
+      historyMerger.mergeCompleted(history, {
+        turnId: completed.turnId,
+        answer: completed.text,
+        completedAt: completed.updatedAt,
+        terminalRevision: completed.terminalRevision,
+      }, {
+        matchSingleActive: !unrelatedActiveTurnVisible,
+      });
     }
 
     for (const item of history) {
@@ -502,6 +502,9 @@ export function createDesktopTaskHistoryFactory({
           status: String(item.status ?? ""),
           active: item.active === true,
           completed: item.completed === true,
+          terminalRevision: Number(item.terminalRevision) || null,
+          operationKind: String(item.operationKind ?? "user-turn"),
+          ...(!item.operationKind ? { operationKindMigrationGuard: "legacy-history-user-turn" } : {}),
           startedAt: item.startedAt ?? null,
           completedAt: item.completedAt ?? null,
           activities: Array.isArray(item.activities) ? item.activities : [],
@@ -596,10 +599,15 @@ export function createDesktopTaskHistoryFactory({
                   }
                   : {}),
                 ...(message.phase ? { phase: String(message.phase) } : {}),
-                time: message.time
-                  ?? (role === "user" ? item.startedAt : item.completedAt)
-                  ?? receipt?.createdAt
-                  ?? null,
+                ...(role === "user" && messageIndex === rootUserIndex && message.time
+                  ? { submittedAt: message.time }
+                  : {}),
+                time: role === "user" && messageIndex === rootUserIndex
+                  ? item.startedAt ?? message.time ?? receipt?.createdAt ?? null
+                  : message.time
+                    ?? (role === "user" ? item.startedAt : item.completedAt)
+                    ?? receipt?.createdAt
+                    ?? null,
                 attachments,
               }];
             });

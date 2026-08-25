@@ -215,15 +215,27 @@ test("DeferredInputController returns a failed launch to pending without losing 
   assert.match(state.updates[0][1], /сохранено/);
 });
 
-test("DeferredInputController skips paused messages and honors queue order", async () => {
+test("DeferredInputController keeps a paused head in FIFO until occupancy clears", async () => {
   const started = [];
-  const state = fixture({ start: async (item) => started.push(item.id) });
-  state.queuedInputs.set("paused", { id: "paused", taskTitle: "Task", paused: true, queueOrder: 0 });
-  state.queuedInputs.set("next", { id: "next", taskTitle: "Task", queueOrder: 1 });
+  let occupied = true;
+  const state = fixture({
+    occupancy: async () => ({ occupied, waitReason: occupied ? "provider-thread-active" : null }),
+    start: async (item) => started.push(item.id),
+  });
+  const lane = { streamId: "stream-1", provider: "codex", threadId: "thread-1" };
+  state.queuedInputs.set("paused", {
+    ...lane, id: "paused", taskTitle: "Task", paused: true,
+    waitReason: "provider-thread-active", queueOrder: 0,
+  });
+  state.queuedInputs.set("next", { ...lane, id: "next", taskTitle: "Task", queueOrder: 1 });
   await state.controller.process("paused");
   await state.controller.process("next");
-  assert.deepEqual(started, ["next"]);
+  assert.deepEqual(started, []);
   assert.equal(state.queuedInputs.has("paused"), true);
+  occupied = false;
+  await state.controller.process("paused");
+  await state.controller.process("next");
+  assert.deepEqual(started, ["paused", "next"]);
 });
 
 test("DeferredInputController retries a transient app-server failure without losing FIFO", async () => {
@@ -275,13 +287,16 @@ test("DeferredInputController pauses an active writer instead of retrying foreve
   assert.equal(item.waitReason, "provider-thread-active");
   assert.equal(item.lastError, undefined);
   assert.equal(item.paused, true);
-  assert.equal(state.timers.length, 0);
+  assert.equal(state.timers.at(-1).delay, 2_000);
   assert.deepEqual(state.transitions.map((entry) => entry.state), ["dispatching", "paused"]);
 });
 
 test("DeferredInputController pauses a restored active-writer item before another provider call", async () => {
   let starts = 0;
-  const state = fixture({ start: async () => { starts += 1; } });
+  const state = fixture({
+    occupancy: async () => ({ occupied: true, waitReason: "provider-thread-active" }),
+    start: async () => { starts += 1; },
+  });
   const item = {
     id: "restored",
     provider: "codex",
@@ -294,7 +309,31 @@ test("DeferredInputController pauses a restored active-writer item before anothe
 
   assert.equal(starts, 0);
   assert.equal(item.paused, true);
+  assert.equal(state.timers.at(-1).delay, 2_000);
   assert.deepEqual(state.transitions.map((entry) => entry.state), ["paused"]);
+});
+
+test("DeferredInputController self-heals stale provider-thread-active state", async () => {
+  const started = [];
+  const state = fixture({
+    occupancy: async () => ({ occupied: false, state: "inactive", waitReason: null }),
+    start: async (item) => started.push(item.id),
+  });
+  const item = {
+    id: "stale-paused",
+    streamId: "stream-1",
+    provider: "codex",
+    threadId: "thread-1",
+    paused: true,
+    waitReason: "provider-thread-active",
+  };
+  state.queuedInputs.set(item.id, item);
+
+  await state.controller.process(item.id);
+
+  assert.deepEqual(started, [item.id]);
+  assert.equal(state.queuedInputs.has(item.id), false);
+  assert.deepEqual(state.transitions.map((entry) => entry.state), ["queued", "dispatching", "started"]);
 });
 
 test("DeferredInputController restores active-writer pause when durable save fails", async () => {
@@ -371,23 +410,40 @@ test("DeferredInputController preserves FIFO order inside one task", async () =>
   assert.deepEqual(started, ["old", "new"]);
 });
 
-test("DeferredInputController preserves FIFO by Stream across Thread rotation", async () => {
+test("DeferredInputController keeps different Threads in one Stream independent", async () => {
   const started = [];
   const state = fixture({ start: async (item) => started.push(item.id) });
   state.queuedInputs.set("old", {
-    id: "old", streamId: "stream-1", threadId: "thread-old",
+    id: "old", streamId: "stream-1", provider: "codex", threadId: "thread-old",
     createdAt: "2026-07-30T08:00:00.000Z",
   });
   state.queuedInputs.set("new", {
-    id: "new", streamId: "stream-1", threadId: "thread-new",
+    id: "new", streamId: "stream-1", provider: "codex", threadId: "thread-new",
     createdAt: "2026-07-30T08:01:00.000Z",
   });
 
   await state.controller.process("new");
-  assert.deepEqual(started, []);
+  assert.deepEqual(started, ["new"]);
   await state.controller.process("old");
-  await state.controller.process("new");
-  assert.deepEqual(started, ["old", "new"]);
+  assert.deepEqual(started, ["new", "old"]);
+});
+
+test("DeferredInputController preserves exact-lane reorder after restart", async () => {
+  const started = [];
+  const lane = { streamId: "stream-1", provider: "codex", threadId: "thread-1" };
+  const restored = [
+    { ...lane, id: "second", queueOrder: 20, createdAt: "2026-07-30T08:00:00.000Z" },
+    { ...lane, id: "first", queueOrder: 10, createdAt: "2026-07-30T08:01:00.000Z" },
+  ];
+  const state = fixture({ start: async (item) => started.push(item.id) });
+  for (const item of restored) state.queuedInputs.set(item.id, structuredClone(item));
+
+  await state.controller.process("second");
+  assert.deepEqual(started, []);
+  await state.controller.process("first");
+  await state.controller.process("second");
+
+  assert.deepEqual(started, ["first", "second"]);
 });
 
 test("DeferredInputController does not pass an older pending input in the same task", async () => {
@@ -409,6 +465,43 @@ test("DeferredInputController does not pass an older pending input in the same t
   assert.deepEqual(started, []);
   assert.equal(state.queuedInputs.has("queued"), true);
   assert.equal(state.timers.length, 0);
+});
+
+test("DeferredInputController releases a stale task-running decision before later queued input", async () => {
+  let blocked = true;
+  const started = [];
+  const state = fixture({
+    isBlocked: async () => blocked,
+    start: async (item) => started.push(item.id),
+  });
+  const task = { provider: "codex", projectRoot: "D:\\Work", threadId: "thread", taskTitle: "Task" };
+  state.pendingInputs.set("pending", {
+    ...task,
+    id: "pending",
+    conflictKind: "task-running",
+    allowForce: false,
+    createdAt: "2026-07-30T08:00:00.000Z",
+  });
+  state.queuedInputs.set("queued", {
+    ...task,
+    id: "queued",
+    createdAt: "2026-07-30T08:01:00.000Z",
+  });
+
+  await state.controller.process("queued");
+  assert.equal(state.pendingInputs.has("pending"), true);
+  assert.equal(state.timers.at(-1).delay, 2_000);
+
+  blocked = false;
+  await state.controller.process("queued");
+  assert.equal(state.pendingInputs.has("pending"), false);
+  assert.equal(state.queuedInputs.get("pending").conflictKind, null);
+  assert.equal(state.timers.at(-1).delay, 0);
+  assert.match(state.updates.at(-1)[1], /Предыдущий ход завершён/u);
+
+  await state.controller.process("pending");
+  await state.controller.process("queued");
+  assert.deepEqual(started, ["pending", "queued"]);
 });
 
 test("DeferredInputController adopts a run started before restart instead of duplicating it", async () => {
@@ -439,6 +532,7 @@ test("DeferredInputController does not serialize unrelated tasks", async () => {
   const state = fixture({ start: async (item) => started.push(item.id) });
   state.queuedInputs.set("a", {
     id: "a",
+    streamId: "stream-1",
     provider: "codex",
     projectRoot: "D:\\Work",
     threadId: "thread-a",
@@ -446,6 +540,7 @@ test("DeferredInputController does not serialize unrelated tasks", async () => {
   });
   state.queuedInputs.set("b", {
     id: "b",
+    streamId: "stream-1",
     provider: "codex",
     projectRoot: "D:\\Work",
     threadId: "thread-b",

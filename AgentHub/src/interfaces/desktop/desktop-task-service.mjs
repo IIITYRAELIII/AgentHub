@@ -42,7 +42,6 @@ export class DesktopTaskService {
     catalog,
     refreshCatalog,
     activateBinding,
-    markRead,
     snapshot,
     taskHistory,
     dispatchCommand,
@@ -58,7 +57,6 @@ export class DesktopTaskService {
     this.catalog = catalog;
     this.refreshCatalog = refreshCatalog;
     this.activateBinding = activateBinding;
-    this.markRead = markRead;
     this.snapshot = snapshot;
     this.taskHistory = taskHistory;
     this.dispatchCommand = dispatchCommand;
@@ -163,7 +161,6 @@ export class DesktopTaskService {
       threadId: entry.threadId,
       taskTitle: taskDisplayTitle(entry),
     });
-    this.markRead(entry, context);
     return {
       ...await this.snapshot(params, context),
       selectionChanged: activation.changed,
@@ -190,25 +187,13 @@ export class DesktopTaskService {
       streamId: resolvedParams.streamId,
       provider: resolvedParams.provider,
       threadId: resolvedParams.threadId,
-      refreshSource: true,
+      refreshSource: false,
       limit: params.limit,
       maxAnswerChars: params.maxAnswerChars,
       maxResponseBytes: historyResponseBudget({ snapshot: selectedSnapshot }, params),
     });
-    this.markRead(entry, context);
-    const reconciledSnapshot = selectedSnapshot?.version
-      ? await this.snapshot({ ...params, knownVersion: selectedSnapshot.version }, context)
-      : null;
-    const snapshot = reconciledSnapshot?.notModified === true || !reconciledSnapshot
-      ? selectedSnapshot
-      : {
-          ...reconciledSnapshot,
-          ...(Object.hasOwn(selectedSnapshot, "selectionChanged")
-            ? { selectionChanged: selectedSnapshot.selectionChanged }
-            : {}),
-        };
     return {
-      snapshot,
+      snapshot: selectedSnapshot,
       history,
     };
   }

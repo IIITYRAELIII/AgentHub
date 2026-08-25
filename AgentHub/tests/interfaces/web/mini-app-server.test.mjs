@@ -689,6 +689,7 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
       "themes/stormglass/storm-glass.js",
       "themes/metropolis/theme.css",
       "messages/lifecycle.js",
+      "messages/projection.js",
       "messages/send-transaction.js",
       "hub-client.js",
       "styles.css",

@@ -2,23 +2,32 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { DesktopReadModelService } from "../../../src/interfaces/desktop/desktop-read-model-service.mjs";
 
-function serviceFixture({ allowed = false, android = false } = {}) {
+function serviceFixture({ allowed = false, android = false, snapshot = null } = {}) {
   const snapshots = [];
   const reads = [];
   const service = new DesktopReadModelService({
-    snapshot: (params) => { snapshots.push(params); return params; },
-    readStateStore: { markRead: (value) => { reads.push(value); return value; } },
+    snapshot: (params) => { snapshots.push(params); return snapshot ?? params; },
+    readStateStore: {
+      get: () => null,
+      markRead: (value) => { reads.push(value); return value; },
+    },
     trustedDeviceUserId: (context) => context?.userId ? `user:${context.userId}` : "owner",
     hasAllowedUsers: () => allowed,
     androidEnabled: () => android,
-    lastTaskMessage: () => ({ updatedAt: "2026-08-05T10:00:00.000Z", turnId: "turn-1" }),
+    lastTaskMessage: () => ({
+      provider: "codex",
+      threadId: "thread-1",
+      updatedAt: "2026-08-05T10:00:00.000Z",
+      turnId: "turn-1",
+      terminalRevision: 2,
+    }),
   });
   return { service, snapshots, reads };
 }
 
-test("Desktop read model binds snapshots to the authenticated account", () => {
+test("Desktop read model binds snapshots to the authenticated account", async () => {
   const { service, snapshots } = serviceFixture();
-  assert.deepEqual(service.snapshot({ accountId: "forged", value: 1 }, { userId: "42" }), {
+  assert.deepEqual(await service.snapshot({ accountId: "forged", value: 1 }, { userId: "42" }), {
     accountId: "user:42",
     value: 1,
   });
@@ -31,15 +40,89 @@ test("Desktop read model uses the owner account for configured remote clients", 
   assert.equal(serviceFixture({ android: true }).service.accountId(), "owner");
 });
 
-test("Desktop read model records the latest completed answer", () => {
-  const { service, reads } = serviceFixture();
-  const entry = { provider: "codex", threadId: "thread-1" };
-  assert.deepEqual(service.markTaskRead(entry), {
+test("Desktop read model records only the exact displayed final revision", async () => {
+  const { service, reads } = serviceFixture({ snapshot: { tasks: [{
+    provider: "codex",
+    threadId: "thread-1",
+  }] } });
+  assert.deepEqual(await service.markTaskRead({ final: {
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "turn-old",
+    revision: 1,
+  } }), {
+    marked: false,
+    reason: "stale-final",
+    latestFinal: {
+      provider: "codex",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      revision: 2,
+      completedAt: "2026-08-05T10:00:00.000Z",
+    },
+  });
+  assert.equal(reads.length, 0);
+  const result = await service.markTaskRead({ final: {
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    revision: 2,
+  } });
+  assert.equal(result.marked, true);
+  assert.deepEqual(reads[0], {
     accountId: "local",
     provider: "codex",
     threadId: "thread-1",
     answerAt: "2026-08-05T10:00:00.000Z",
     answerTurnId: "turn-1",
+    answerRevision: 2,
   });
   assert.equal(reads.length, 1);
+});
+
+test("Desktop read model keeps probes, measurements and unknown activity out of running", async () => {
+  const tasks = [{
+    provider: "codex",
+    threadId: "thread-1",
+    running: true,
+    run: { turnId: "probe", operationKind: "probe" },
+  }, {
+    provider: "codex",
+    threadId: "thread-2",
+    running: true,
+    run: { turnId: "measurement", observer: true },
+    context: { usagePending: true },
+  }, {
+    provider: "codex",
+    threadId: "thread-3",
+    running: true,
+    run: { turnId: "unknown" },
+  }, {
+    provider: "codex",
+    threadId: "thread-4",
+    running: true,
+    run: { turnId: "user", clientUserMessageId: "client-1" },
+  }];
+  const { service } = serviceFixture({ snapshot: { tasks } });
+  service.lastTaskMessage = () => null;
+  const result = await service.snapshot();
+  assert.deepEqual(result.tasks.map((task) => [task.running, task.activityUnknown, task.run?.operationKind]), [
+    [false, false, undefined],
+    [false, false, undefined],
+    [false, true, undefined],
+    [true, false, "user-turn"],
+  ]);
+});
+
+test("Desktop read model terminal revision absorbs a late active snapshot", async () => {
+  const { service } = serviceFixture({ snapshot: { tasks: [{
+    provider: "codex",
+    threadId: "thread-1",
+    running: true,
+    run: { turnId: "turn-1", clientUserMessageId: "client-1", progress: "late" },
+  }] } });
+  const [task] = (await service.snapshot()).tasks;
+  assert.equal(task.running, false);
+  assert.equal(task.run, null);
+  assert.equal(task.latestFinal.revision, 2);
 });

@@ -4,6 +4,7 @@ export function createDesktopRouterComposition({
   handlers,
   commands,
   receiptFile,
+  commandTrace = null,
 }) {
   const {
     handleDesktopControl: dispatchDesktopControl,
@@ -17,6 +18,7 @@ export function createDesktopRouterComposition({
       terminal: true,
       error: `Outcome of interrupted ${action} command is unknown; it was not repeated`,
     }),
+    commandTrace,
   });
 
   async function reconcileRemoteDesktopControl({ action, params, context }) {

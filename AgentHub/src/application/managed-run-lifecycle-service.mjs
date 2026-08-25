@@ -38,6 +38,12 @@ export class ManagedRunLifecycleService {
 
   async begin(input, target = null) {
     const d = this.#d;
+    const commandId = String(target?.clientUserMessageId ?? "").trim();
+    const admissionSpan = d.commandTrace?.startBestEffortSpan?.({
+      commandId,
+      stage: "admission",
+      transport: String(target?.clientSource ?? "desktop-control").trim().toLowerCase() || "desktop-control",
+    });
     const current = d.currentTarget();
     const provider = target?.provider ?? current.provider;
     const projectRoot = target?.projectRoot ?? current.projectRoot;
@@ -106,6 +112,10 @@ export class ManagedRunLifecycleService {
     d.syncRun(run);
     if (target?.deferredInput) target.deferredInput.dispatchingRunId = run.id;
     await d.saveState();
+    admissionSpan?.finish({
+      outcome: "succeeded",
+      metadata: { runId: run.id, provider: run.provider, threadId: run.threadId },
+    });
     if (run.displayRequested) d.scheduleProgressStart(run);
     return run;
   }

@@ -4,6 +4,7 @@ import { StreamContextMaintenanceService } from "../application/stream-context-m
 import { UsageSyncAutoService } from "../application/usage-sync-auto-service.mjs";
 import { UsageSyncRemoteClient } from "../infrastructure/http/usage-sync-remote-client.mjs";
 import { applyWorkLogAccountBackfill } from "../infrastructure/persistence/work-log-account-backfill.mjs";
+import { MaintenanceOperationStore } from "../infrastructure/persistence/maintenance-operation-store.mjs";
 import { readClaudeAccount } from "../providers/claude/claude-account.mjs";
 import { processIsAlive } from "../providers/claude/claude-run-io.mjs";
 import { readClaudeSessionSnapshot } from "../providers/claude/claude-session-reader.mjs";
@@ -81,6 +82,8 @@ export async function createProviderApplicationComposition({
     hubMcpService,
     codexRolloutContextSanitizer,
     providerTurnTelemetryStore,
+    runtimeStateStore,
+    commandTraceService,
   } = infrastructure;
   const {
     findProject,
@@ -135,6 +138,7 @@ export async function createProviderApplicationComposition({
     findProject,
     canonicalizeProjectRoots,
   });
+  const maintenanceOperations = new MaintenanceOperationStore({ dataDir: config.dataDir });
   hubMcpService.setActiveRuns(() => runtimeData.taskRuns.values());
 
   const codexObservability = createCodexObservabilityComposition({
@@ -158,6 +162,11 @@ export async function createProviderApplicationComposition({
     )),
     globalWorkLogProjectRoots,
     isHistoricalBackfillIdle: () => runtimeData.taskRuns.size === 0 && !hostState.restartRequest,
+    operationStore: maintenanceOperations,
+    streamIdForThread: (threadId) => workspaceCatalogStore.thread({
+      provider: "codex",
+      threadId,
+    })?.streamId ?? null,
   });
 
   const completion = createRunCompletionComposition({
@@ -213,6 +222,8 @@ export async function createProviderApplicationComposition({
     defaultNotificationChatId,
     changedFilesForRun: accounting.changedFilesForRun,
     persistManagedRunHistory: api.persistManagedRunHistory,
+    runtimeStateStore,
+    commandTrace: commandTraceService,
   });
 
   const codexContextMaintenance = createCodexContextMaintenanceComposition({
@@ -356,6 +367,7 @@ export async function createProviderApplicationComposition({
     runRecovery: late.runRecovery,
     runCoordinator: late.runCoordinator,
     turnTemporaryFiles: runtimeData.turnTemporaryFiles,
+    commandTrace: commandTraceService,
     turnSpeechButtons: runtimeData.turnSpeechButtons,
     turnTokenUsage: codexObservability.turnTokenUsage,
     cancelledManagedClaudeTasks: runtimeData.cancelledManagedClaudeTasks,
@@ -367,6 +379,7 @@ export async function createProviderApplicationComposition({
     sendRpc: api.sendRpc,
     activeProjectRoot: selectedProjectRoot,
     codexSandboxMode: () => config.codexSandboxMode,
+    codexModel: () => agentPreferences.codexModel,
     invalidateTaskCatalog,
     restoreCodexTaskSettings: api.restoreCodexTaskSettings,
     updateActiveCodexThreadSettings: api.updateActiveCodexThreadSettings,
@@ -456,6 +469,8 @@ export async function createProviderApplicationComposition({
     },
     resolveCodexTaskActivity,
     providerTurnTelemetryStore,
+    terminalCommits: completion.terminalCommits,
+    commandTrace: commandTraceService,
   });
   const providerStartup = ports.providerStartup.bind(createProviderStartupComposition({
     config,
@@ -478,6 +493,7 @@ export async function createProviderApplicationComposition({
 
   return {
     runtimeTimers,
+    commandTraceService,
     usageSyncAuto,
     defaultNotificationChatId,
     ...providerProcess,
@@ -488,6 +504,7 @@ export async function createProviderApplicationComposition({
     codexUsageTracker: codexObservability.usageTracker,
     turnTokenUsage: codexObservability.turnTokenUsage,
     contextCompactions: codexObservability.compactions,
+    maintenanceOperations,
     codexTurnStarts: codexObservability.turnStarts,
     codexHookReceipts: codexObservability.hookReceipts,
     replaceCodexHookReceipts: codexObservability.replaceHookReceipts,

@@ -7,7 +7,7 @@ import {
   CODEX_CONTEXT_PROBE_RESPONSE,
 } from "../../src/domain/codex-context-probe.mjs";
 
-function fixture() {
+function fixture({ terminalCommits = null } = {}) {
   const history = [];
   const snapshots = [];
   const telemetry = [];
@@ -27,6 +27,7 @@ function fixture() {
     nowIso: () => "2026-08-05T12:00:00.000Z",
     nowMs: () => 123,
     telemetryStore: { upsert: async (value) => telemetry.push(value) },
+    terminalCommits,
     logger: { error() {} },
   });
   return { service, history, snapshots, telemetry };
@@ -73,6 +74,25 @@ test("terminal history replaces the matching agent item without duplicating it",
   assert.equal(setup.history[0].completedAt, "2026-08-05T12:00:00.000Z");
   assert.equal(setup.snapshots[0].snapshot.executionOwner, null);
   assert.equal(setup.telemetry.length, 0);
+});
+
+test("late active history is absorbed by the committed terminal revision", async () => {
+  const setup = fixture({
+    terminalCommits: {
+      get: async () => ({ terminalRevision: 4, status: "completed" }),
+    },
+  });
+
+  const result = await setup.service.persist({
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    responseText: "late progress",
+  });
+
+  assert.deepEqual(result, { absorbed: true, terminalRevision: 4 });
+  assert.deepEqual(setup.history, []);
+  assert.deepEqual(setup.snapshots, []);
 });
 
 test("terminal history writes one provider telemetry snapshot", async () => {

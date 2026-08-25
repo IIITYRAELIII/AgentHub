@@ -10,6 +10,7 @@ import { TurnEndNotificationRegistry } from "../application/turn-end-notificatio
 import { createWorkLogUsageStore } from "../application/work-log-usage-store.mjs";
 import { TaskBoardService } from "../application/task-board-service.mjs";
 import { WorkspaceReleaseService } from "../application/workspace-release-service.mjs";
+import { ReleaseChangeSetService } from "../application/release-change-set-service.mjs";
 import { StreamHandoffService } from "../application/stream-handoff-service.mjs";
 import { AGENT_HUB_VERSION } from "../infrastructure/filesystem/agent-hub-package.mjs";
 import { samePath } from "../infrastructure/filesystem/config.mjs";
@@ -33,6 +34,8 @@ import { UsageSyncIdentityStore } from "../infrastructure/persistence/usage-sync
 import { UsageSyncRemoteConfigStore } from "../infrastructure/persistence/usage-sync-remote-config-store.mjs";
 import { defaultUsageSyncServerUrl } from "../domain/default-usage-sync-server.mjs";
 import { verifyWorkspaceReleasePublication } from "../infrastructure/persistence/release-publication-verifier.mjs";
+import { inspectLegacyReleaseFile } from "../infrastructure/filesystem/legacy-release-file-probe.mjs";
+import { verifyReleaseChangeSetGitEvidence } from "../infrastructure/filesystem/release-change-set-git-verifier.mjs";
 import { SingleInstanceGuard } from "../infrastructure/process/instance-lock.mjs";
 import { captureProcess } from "../infrastructure/process/process-capture.mjs";
 import { RuntimeCommandServer } from "../infrastructure/process/runtime-command.mjs";
@@ -55,6 +58,7 @@ import {
 } from "../providers/codex/codex-terra-voice-transcriber.mjs";
 import { RuntimeNotificationController } from "../runtime/runtime-notification-controller.mjs";
 import { sentryDiagnostics } from "../infrastructure/diagnostics/sentry-diagnostics.mjs";
+import { createCommandTraceComposition } from "./command-trace-composition.mjs";
 
 const execFileAsync = promisify(execFile);
 const GITHUB_LOGIN_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/u;
@@ -184,6 +188,7 @@ export async function createHubInfrastructure({
     captureException: (error, context) => sentryDiagnostics.captureException(error, context),
   });
   let sqliteRecovery;
+  let commandTrace;
   try {
     sqliteRecovery = await sqliteRecoveryCoordinator.prepare();
   const localTrustedDeviceStore = new TrustedDeviceStore({
@@ -204,6 +209,12 @@ export async function createHubInfrastructure({
   const workspaceReleaseService = new WorkspaceReleaseService({
     store: workspaceCatalogStore,
     verifyPublication: verifyWorkspaceReleasePublication,
+  });
+  const releaseChangeSetService = new ReleaseChangeSetService({
+    store: workspaceCatalogStore,
+    legacyStore: workspaceCatalogStore,
+    inspectLegacyFile: inspectLegacyReleaseFile,
+    verifyFreezeEvidence: verifyReleaseChangeSetGitEvidence,
   });
   const preTurnInstructions = new PreTurnInstructionStore({
     guideFile: path.join(agentHubRoot, "AGENT_HUB_GUIDE.md"),
@@ -300,6 +311,7 @@ export async function createHubInfrastructure({
     attachmentDirectory,
     secret: hubMcpSecret,
     releaseCompleter: workspaceReleaseService,
+    releaseChangeSets: releaseChangeSetService,
   });
   const hubMcpServer = new HubMcpServer({
     service: hubMcpService,
@@ -352,6 +364,8 @@ export async function createHubInfrastructure({
   });
 
   await mkdir(path.dirname(stateFile), { recursive: true });
+  commandTrace = createCommandTraceComposition({ dataDir: config.dataDir });
+  await commandTrace.initialize();
   const usdRubRateStore = new UsdRubRateStore({ cacheFile: exchangeRatesFile });
   await usdRubRateStore.load().catch((error) => {
     console.warn(`Cannot load cached exchange rate: ${error.message}`);
@@ -366,6 +380,7 @@ export async function createHubInfrastructure({
     dataDir: config.dataDir,
     legacyFile: stateFile,
     legacyBackupFile: stateBackupFile,
+    commandTrace: commandTrace.service,
   });
   const taskReadStateStore = new TaskReadStateStore({ dataDir: config.dataDir });
   const bindingsMigration = await migrateMessageBindings(config.dataDir);
@@ -384,6 +399,7 @@ export async function createHubInfrastructure({
   const runJournal = new RunJournalService({
     usageStore: workLogUsageStore,
     workspaceCatalogStore,
+    releaseChangeSetService,
     findProject,
     defaultProjectRoot: config.projectRoot,
     projectionProjectRoots: globalWorkLogProjectRoots,
@@ -441,6 +457,8 @@ export async function createHubInfrastructure({
     runtimeCommandServer,
     rateLimitHistoryStore,
     providerTurnTelemetryStore,
+    commandTrace,
+    commandTraceService: commandTrace.service,
     sqliteRecovery,
     acknowledgeSqliteRecovery: () => sqliteRecoveryCoordinator.acknowledge(sqliteRecovery),
   };
@@ -451,6 +469,7 @@ export async function createHubInfrastructure({
       component: "infrastructure-composition",
       action: "initialize",
     });
+    await commandTrace?.close?.().catch(() => {});
     await instanceGuard.release();
     throw error;
   }

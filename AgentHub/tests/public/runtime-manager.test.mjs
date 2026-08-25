@@ -69,10 +69,9 @@ test("deployRuntime publishes an atomic release without tests or local config", 
   const { sourceRoot, runtimeRoot } = await fixture();
   const first = await deployRuntime({ sourceRoot, runtimeRoot, releaseId: "release-1" });
   assert.equal(JSON.parse(await readFile(path.join(runtimeRoot, "current.json"), "utf8")).current, "release-1");
-  assert.equal(
-    JSON.parse(await readFile(path.join(first.releaseRoot, "runtime-manifest.json"), "utf8")).version,
-    "2026.8.23",
-  );
+  const firstManifest = JSON.parse(await readFile(path.join(first.releaseRoot, "runtime-manifest.json"), "utf8"));
+  assert.equal(firstManifest.version, "2026.8.23");
+  assert.equal(firstManifest.releaseVersion, "2026.8.23.1");
   assert.match(await readFile(path.join(first.releaseRoot, "agent-hub-server.mjs"), "utf8"), /ready/);
   assert.match(await readFile(path.join(first.releaseRoot, "helper.cjs"), "utf8"), /module\.exports/u);
   assert.match(
@@ -99,7 +98,11 @@ test("deployRuntime publishes an atomic release without tests or local config", 
   const firstRuntimeHost = process.platform === "win32"
     ? await readFile(path.join(runtimeRoot, "AgentHub.RuntimeHost.exe"))
     : null;
-  await deployRuntime({ sourceRoot, runtimeRoot, releaseId: "release-2" });
+  const second = await deployRuntime({ sourceRoot, runtimeRoot, releaseId: "release-2" });
+  assert.equal(
+    JSON.parse(await readFile(path.join(second.releaseRoot, "runtime-manifest.json"), "utf8")).releaseVersion,
+    "2026.8.23.2",
+  );
   if (firstRuntimeHost) {
     assert.deepEqual(await readFile(path.join(runtimeRoot, "AgentHub.RuntimeHost.exe")), firstRuntimeHost);
   }
@@ -108,8 +111,28 @@ test("deployRuntime publishes an atomic release without tests or local config", 
     current: "release-2",
     previous: "release-1",
   });
-  await deployRuntime({ sourceRoot, runtimeRoot, releaseId: "release-3" });
+  const third = await deployRuntime({ sourceRoot, runtimeRoot, releaseId: "release-3" });
+  assert.equal(
+    JSON.parse(await readFile(path.join(third.releaseRoot, "runtime-manifest.json"), "utf8")).releaseVersion,
+    "2026.8.23.3",
+  );
   await assert.rejects(readFile(path.join(runtimeRoot, "releases", "release-1", "agent-hub-server.mjs"), "utf8"), /ENOENT/);
+});
+
+test("deployRuntime treats a legacy same-day release as sequence one", async () => {
+  const { sourceRoot, runtimeRoot } = await fixture();
+  const legacyRoot = path.join(runtimeRoot, "releases", "legacy-release");
+  await mkdir(legacyRoot, { recursive: true });
+  await writeFile(
+    path.join(legacyRoot, "runtime-manifest.json"),
+    JSON.stringify({ releaseId: "legacy-release", version: "2026.8.23", files: [] }),
+    "utf8",
+  );
+  const deployed = await deployRuntime({ sourceRoot, runtimeRoot, releaseId: "release-2" });
+  assert.equal(
+    JSON.parse(await readFile(path.join(deployed.releaseRoot, "runtime-manifest.json"), "utf8")).releaseVersion,
+    "2026.8.23.2",
+  );
 });
 
 test("deployRuntime rejects a release with a missing relative import before cutover", async () => {

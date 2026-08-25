@@ -112,8 +112,36 @@ async function fixture(context) {
     }],
   };
   const releaseCalls = [];
+  const changeSetCalls = [];
+  const releaseChangeSets = {
+    list: (options) => {
+      changeSetCalls.push(["list", options]);
+      return [{ id: "change-1", status: "draft", ownerStreamId: "stream-1" }];
+    },
+    freeze: (options) => {
+      changeSetCalls.push(["freeze", options]);
+      return { id: options.changeSetId, status: "ready", manifestHash: "a".repeat(64) };
+    },
+    setStatus: (options) => {
+      changeSetCalls.push(["status", options]);
+      return { id: options.changeSetId, status: options.status };
+    },
+    architectOverride: (options) => {
+      changeSetCalls.push(["override", options]);
+      return { id: options.changeSetId, status: options.status };
+    },
+    classifyLegacy: async (options) => {
+      changeSetCalls.push(["classify", options]);
+      return { total: 1, entries: [{ id: "legacy-1" }] };
+    },
+    releaseBatches: (options) => {
+      changeSetCalls.push(["batches", options]);
+      return [{ id: "batch-1" }];
+    },
+  };
   const service = new HubMcpService({
     workspaceCatalog, taskBoard, workLog, attachmentDirectory, secret: "secret",
+    releaseChangeSets,
     releaseCompleter: {
       completeRelease: async (options) => {
         releaseCalls.push(options);
@@ -143,6 +171,7 @@ async function fixture(context) {
     tasks,
     operations,
     releaseCalls,
+    changeSetCalls,
     sentMessages,
   };
 }
@@ -327,6 +356,37 @@ test("HubMcpService exposes cursor events and publication-gated release completi
   assert.equal(release.workspaceId, "workspace-1");
   assert.equal(release.expectedRevision, "abc");
   assert.equal(releaseCalls[0].conflictsResolved, true);
+});
+
+test("HubMcpService exposes the compatible REL-001 ChangeSet API", async (context) => {
+  const { service, token, changeSetCalls } = await fixture(context);
+  const listed = await service.call("hub_changesets_list", { context_token: token });
+  assert.equal(listed.changeSets[0].id, "change-1");
+
+  const frozen = await service.call("hub_changeset_freeze", {
+    context_token: token,
+    request_id: "freeze-1",
+    change_set_id: "change-1",
+    repositories: [{
+      project_root: "D:/repo",
+      base_revision: "a".repeat(40),
+      result_revision: "b".repeat(40),
+    }],
+    files: [{
+      project_root: "D:/repo",
+      path: "src/app.mjs",
+      operation: "modified",
+      base_blob: "c".repeat(40),
+      result_blob: "d".repeat(40),
+    }],
+  });
+  assert.equal(frozen.status, "ready");
+  assert.equal(changeSetCalls.find(([name]) => name === "freeze")[1].actorStreamId, "stream-1");
+
+  const report = await service.call("hub_legacy_release_classifier", { context_token: token });
+  assert.equal(report.entries[0].id, "legacy-1");
+  const batches = await service.call("hub_release_batches_list", { context_token: token, limit: 10 });
+  assert.equal(batches.releaseBatches[0].id, "batch-1");
 });
 
 test("HubMcpService rejects forged context capabilities", async (context) => {

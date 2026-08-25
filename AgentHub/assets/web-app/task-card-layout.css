@@ -1,4 +1,5 @@
 .task-card-modal {
+  box-sizing: border-box;
   max-height: min(calc(100dvh - 2rem), 56rem);
   max-width: min(calc(100vw - 2rem), 64rem);
   overflow: hidden;

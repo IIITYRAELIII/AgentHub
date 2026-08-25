@@ -57,12 +57,12 @@ export function createCodexTaskSettingsComposition({
     if (contextCompactions.isRunning(threadId)) {
       throw new Error("Дождитесь завершения свёртки контекста перед сменой модели или Reasoning");
     }
-    agentPreferences.rememberCodexTaskSettings();
     await sendRpc("thread/settings/update", {
       threadId,
       model: agentPreferences.codexModel,
       effort: agentPreferences.codexReasoningEffort,
     });
+    agentPreferences.rememberCodexTaskSettings();
     await saveState();
   }
 

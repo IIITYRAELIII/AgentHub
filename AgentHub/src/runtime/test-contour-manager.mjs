@@ -15,6 +15,7 @@ import process from "node:process";
 
 import { deployRuntime } from "./runtime-manager.mjs";
 import { normalizeUsageSyncIdentity } from "../domain/usage-sync-identity.mjs";
+import { resolveCodexExecutable } from "../providers/codex/codex-invocation.mjs";
 import {
   canonicalPath,
   pathInsideOrSame,
@@ -40,6 +41,13 @@ import { withInterprocessLocks } from "../infrastructure/process/interprocess-lo
 import { stopProcessTree } from "../infrastructure/process/process-tree.mjs";
 
 export const TEST_CONTOUR_MODEL = "gpt-5.3-codex-spark";
+export const TEST_CONTOUR_TERRA_MODEL = "gpt-5.6-terra";
+export const TEST_CONTOUR_FAKE_MODEL = "fake-codex";
+export const TEST_CONTOUR_MODELS = Object.freeze([
+  Object.freeze({ value: TEST_CONTOUR_MODEL, label: "GPT-5.3-Codex-Spark" }),
+  Object.freeze({ value: TEST_CONTOUR_TERRA_MODEL, label: "GPT-5.6-Terra" }),
+  Object.freeze({ value: TEST_CONTOUR_FAKE_MODEL, label: "Fake Codex · Принято" }),
+]);
 export const TEST_CONTOUR_COMPONENT = "testContour";
 export const TEST_CONTOUR_PORT = 8877;
 export const TEST_CONTOUR_WEB_HOST = "localhost";
@@ -61,6 +69,10 @@ export function testContourPaths(root = defaultTestContourRoot()) {
     configFile: path.join(resolved, CONFIG_FILE),
     projectRoot: path.join(resolved, "project"),
     codexHome: path.join(resolved, "codex-home"),
+    fakeCodexExecutable: path.join(resolved, "providers", "fake-codex-app-server.mjs"),
+    codexMultiplexerExecutable: path.join(resolved, "providers", "test-contour-codex-multiplexer.mjs"),
+    fakeCodexStateFile: path.join(resolved, "data", "fake-codex-state.json"),
+    codexMultiplexerStateFile: path.join(resolved, "data", "codex-multiplexer-state.json"),
     dataDir: path.join(resolved, "data"),
     dataBackupsDirectory: path.join(resolved, "backups", "data-clones"),
     automationRoot: path.join(resolved, "automation"),
@@ -224,7 +236,11 @@ export function testContourConfig({
   telegramApiBaseUrl,
   port = TEST_CONTOUR_PORT,
   model = TEST_CONTOUR_MODEL,
+  realCodexExecutable = "codex",
 } = {}) {
+  if (!TEST_CONTOUR_MODELS.some((item) => item.value === model)) {
+    throw new Error(`Model ${model} is not available in Test Contour`);
+  }
   const parsedTelegramUrl = new URL(String(telegramApiBaseUrl));
   if (parsedTelegramUrl.protocol !== "http:" || parsedTelegramUrl.hostname !== "127.0.0.1") {
     throw new Error("Test Contour Telegram API must use 127.0.0.1 over HTTP");
@@ -260,7 +276,19 @@ export function testContourConfig({
     codexReasoningEffort: "medium",
     codexSandboxMode: "workspace-write",
     codexCollaborationMode: "default",
-    codexModels: [{ value: model, label: "GPT-5.3-Codex-Spark" }],
+    codexModels: TEST_CONTOUR_MODELS.map((item) => ({ ...item })),
+    codexExecutable: process.execPath,
+    codexExecutableArgs: [
+      paths.codexMultiplexerExecutable,
+      "--real-executable",
+      realCodexExecutable,
+      "--fake-executable",
+      paths.fakeCodexExecutable,
+      "--fake-state",
+      paths.fakeCodexStateFile,
+      "--routing-state",
+      paths.codexMultiplexerStateFile,
+    ],
     codexRateLimitPolling: false,
     claudeRateLimitPolling: false,
     createInitialThreadOnStartup: false,
@@ -323,6 +351,27 @@ export function testContourEnvironment({
     CODEX_SANDBOX_MODE: "workspace-write",
     SENTRY_DSN: "",
     SENTRY_ENVIRONMENT: "test-contour",
+  };
+}
+
+export async function prepareTestContourCodexProviders({
+  root = defaultTestContourRoot(),
+  sourceRoot = path.resolve(import.meta.dirname, "..", ".."),
+} = {}) {
+  const isolatedRoot = assertIsolatedTestContourRoot(root, { sourceRoot });
+  await requireMarker(isolatedRoot);
+  const paths = testContourPaths(isolatedRoot);
+  const sources = [
+    [path.join(sourceRoot, "e2e", "fake-codex-app-server.mjs"), paths.fakeCodexExecutable],
+    [path.join(sourceRoot, "e2e", "test-contour-codex-multiplexer.mjs"), paths.codexMultiplexerExecutable],
+  ];
+  await mkdir(path.dirname(paths.fakeCodexExecutable), { recursive: true });
+  await Promise.all(sources.map(async ([sourceFile, targetFile]) => {
+    await writeTextAtomic(targetFile, await readFile(sourceFile, "utf8"));
+  }));
+  return {
+    fakeCodexExecutable: paths.fakeCodexExecutable,
+    codexMultiplexerExecutable: paths.codexMultiplexerExecutable,
   };
 }
 
@@ -440,6 +489,11 @@ export async function serveTestContour({
   const marker = await requireMarker(isolatedRoot);
   const paths = testContourPaths(isolatedRoot);
   const { releaseId, releaseRoot } = await currentRelease(isolatedRoot);
+  await Promise.all([
+    access(paths.fakeCodexExecutable),
+    access(paths.codexMultiplexerExecutable),
+  ]);
+  const realCodexExecutable = await resolveCodexExecutable();
   const telegram = new LoopbackTelegramApi({ userId: USER_ID, chatId: CHAT_ID });
   await telegram.start();
   await writeJson(paths.configFile, testContourConfig({
@@ -447,6 +501,7 @@ export async function serveTestContour({
     telegramApiBaseUrl: telegram.baseUrl,
     port,
     model,
+    realCodexExecutable,
   }));
   await rm(paths.stateFile, { force: true });
   const runtime = spawnImpl(process.execPath, [path.join(releaseRoot, "agent-hub-main.mjs")], {
@@ -475,6 +530,7 @@ export async function serveTestContour({
       runtimePid: runtime.pid,
       releaseId,
       model,
+      models: TEST_CONTOUR_MODELS,
       port,
       url,
       health,
@@ -601,6 +657,8 @@ async function cloneProductionDataToTestContourUnlocked({
       rm(path.join(paths.dataDir, `runtime.sqlite${suffix}`), { force: true })
     )),
     rm(paths.codexHome, { recursive: true, force: true }),
+    rm(paths.fakeCodexStateFile, { force: true }),
+    rm(paths.codexMultiplexerStateFile, { force: true }),
   ]);
   return {
     ...result,
@@ -628,19 +686,30 @@ async function startTestContourUnlocked({
   refresh = false,
   sourceRoot = path.resolve(import.meta.dirname, "..", ".."),
   port = TEST_CONTOUR_PORT,
+  model = TEST_CONTOUR_MODEL,
 } = {}) {
   const isolatedRoot = assertIsolatedTestContourRoot(root, { sourceRoot });
   const paths = testContourPaths(isolatedRoot);
   await stopTestContourUnlocked({ root: isolatedRoot });
   if (refresh) await prepareTestContourCandidate({ root: isolatedRoot, sourceRoot });
   else await currentRelease(isolatedRoot).catch(() => prepareTestContourCandidate({ root: isolatedRoot, sourceRoot }));
+  await prepareTestContourCodexProviders({ root: isolatedRoot, sourceRoot });
   await prepareTestContourCodexHome(paths);
   await rm(paths.stateFile, { force: true });
   const stdout = openSync(paths.stdoutFile, "a");
   const stderr = openSync(paths.stderrFile, "a");
   let manager;
   try {
-    manager = spawn(process.execPath, [entryFile, "serve", "--root", isolatedRoot, "--port", String(port)], {
+    manager = spawn(process.execPath, [
+      entryFile,
+      "serve",
+      "--root",
+      isolatedRoot,
+      "--port",
+      String(port),
+      "--model",
+      model,
+    ], {
       cwd: sourceRoot,
       detached: true,
       stdio: ["ignore", stdout, stderr],
@@ -694,9 +763,16 @@ async function verifyTestContourUnlocked({
   entryFile,
   sourceRoot = path.resolve(import.meta.dirname, "..", ".."),
   withAgent = true,
+  model = TEST_CONTOUR_MODEL,
 } = {}) {
   const paths = testContourPaths(root);
-  const state = await startTestContourUnlocked({ root, entryFile, refresh: true, sourceRoot });
+  const state = await startTestContourUnlocked({
+    root,
+    entryFile,
+    refresh: true,
+    sourceRoot,
+    model,
+  });
   const {
     runTestContourUiSmoke,
     TEST_CONTOUR_PROBE,
@@ -716,7 +792,7 @@ async function verifyTestContourUnlocked({
         const ledger = await database.loadLedger();
         const record = Object.values(ledger.turns).find((item) => (
           item.provider === "codex"
-          && item.model === TEST_CONTOUR_MODEL
+          && item.model === state.model
           && item.prompt === TEST_CONTOUR_PROBE
           && item.body === TEST_CONTOUR_PROBE_RESPONSE
           && Date.parse(item.completedAt) >= Date.parse(state.startedAt)

@@ -98,6 +98,55 @@ test("message intake uses its bounded durable write instead of a full runtime sn
   assert.deepEqual(events, ["intake:desktop-intake:queued"]);
 });
 
+test("failed durable message intake does not leave an executable ghost item", async () => {
+  const store = new DeferredInputStore();
+  const service = new DeferredInputService({
+    store,
+    createId: () => "failed-intake",
+    persist: async () => assert.fail("full persistence must not run"),
+    persistIntake: async () => { throw new Error("ledger unavailable"); },
+    removeFiles: async () => {},
+    notify: async () => assert.fail("failed intake must not notify"),
+  });
+
+  await assert.rejects(service.defer("message", [], {
+    target: { provider: "codex", threadId: "thread-1", clientSource: "desktop" },
+    clientUserMessageId: "failed-client-message",
+    destination: "queued",
+    conflictKind: "message-intake",
+    notify: false,
+  }), /ledger unavailable/u);
+
+  assert.equal(store.size, 0);
+});
+
+test("durable same-id retry returns its tombstone result without restoring work", async () => {
+  const store = new DeferredInputStore();
+  const service = new DeferredInputService({
+    store,
+    persist: async () => assert.fail("full persistence must not run"),
+    persistIntake: async () => ({
+      duplicate: true,
+      record: { state: "completed", item: null },
+      retryResult: { accepted: true, completed: true, turnId: "turn-existing" },
+    }),
+    removeFiles: async () => {},
+    notify: async () => assert.fail("durable retry must not notify"),
+  });
+
+  const result = await service.defer("message", [], {
+    target: { provider: "codex", threadId: "thread-1", clientSource: "desktop" },
+    clientUserMessageId: "existing-message",
+    destination: "queued",
+    conflictKind: "message-intake",
+    notify: false,
+  });
+
+  assert.equal(result.duplicate, true);
+  assert.equal(result.durableResult.completed, true);
+  assert.equal(store.size, 0);
+});
+
 test("deferred input service persists interstream origin", async () => {
   const store = new DeferredInputStore();
   const service = new DeferredInputService({

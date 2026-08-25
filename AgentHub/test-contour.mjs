@@ -27,6 +27,7 @@ function parseArguments(args) {
     requireInstalled: false,
     withAgent: true,
     json: false,
+    model: undefined,
   };
   for (let index = 1; index < args.length; index += 1) {
     const argument = args[index];
@@ -35,6 +36,7 @@ function parseArguments(args) {
     else if (argument === "--allow-uninstalled" || argument === "--component-approved") options.allowUninstalled = true;
     else if (argument === "--require-installed") options.requireInstalled = true;
     else if (argument === "--no-agent") options.withAgent = false;
+    else if (argument === "--model" && args[index + 1]) options.model = args[++index];
     else if (argument === "--json") options.json = true;
     else throw new Error(`Unknown Test Contour argument: ${argument}`);
   }
@@ -73,7 +75,11 @@ export async function main(args = process.argv.slice(2)) {
     return result;
   }
   if (options.command === "serve") {
-    return serveTestContour({ ...common, ...(options.port ? { port: options.port } : {}) });
+    return serveTestContour({
+      ...common,
+      ...(options.model ? { model: options.model } : {}),
+      ...(options.port ? { port: options.port } : {}),
+    });
   }
   if (options.command === "status") {
     const result = await readTestContourStatus(common);
@@ -93,8 +99,13 @@ export async function main(args = process.argv.slice(2)) {
   }
   if (options.command === "clone-data") {
     await requireComponent(options);
-    const clone = await cloneProductionDataToTestContour(common);
-    const state = await startTestContour({ ...common, entryFile });
+    const launch = {
+      ...common,
+      entryFile,
+      ...(options.model ? { model: options.model } : {}),
+    };
+    const clone = await cloneProductionDataToTestContour(launch);
+    const state = await startTestContour(launch);
     const result = { ...clone, running: true, url: state.url, releaseId: state.releaseId };
     print(result, options.json);
     return result;
@@ -105,6 +116,7 @@ export async function main(args = process.argv.slice(2)) {
       ...common,
       entryFile,
       refresh: options.command === "refresh",
+      ...(options.model ? { model: options.model } : {}),
       ...(options.port ? { port: options.port } : {}),
     });
     print(`Test Contour готов: ${state.url}`, options.json);
@@ -116,6 +128,7 @@ export async function main(args = process.argv.slice(2)) {
       ...common,
       entryFile,
       withAgent: options.withAgent,
+      ...(options.model ? { model: options.model } : {}),
     });
     print({
       ok: true,

@@ -161,6 +161,7 @@ export class CodexTurnService {
     const d = this.#d;
     let providerAccepted = false;
     let turnStartAttempted = false;
+    let rpcSpan = null;
     const recycle = d.compactionRecycle();
     if (recycle) await recycle;
     const items = codexInputItems(input);
@@ -175,6 +176,12 @@ export class CodexTurnService {
       });
       markProviderTurnRequested(run, { provider: "codex" });
       await d.saveState();
+      rpcSpan = d.commandTrace?.startBestEffortSpan?.({
+        commandId: String(run.clientUserMessageId ?? ""),
+        stage: "provider-rpc",
+        transport: "codex-app-server",
+        metadata: { provider: "codex", runId: run.id, threadId: run.threadId },
+      });
       const result = await startCodexTurnWithRecovery({
         threadId: run.threadId,
         startTurn: () => {
@@ -202,10 +209,18 @@ export class CodexTurnService {
       });
       const turnId = String(result?.turn?.id ?? result?.turnId ?? "").trim();
       if (!turnId) throw turnNotMaterializedError("");
+      rpcSpan?.finish({ outcome: "succeeded", metadata: { turnId } });
       if (!runAcceptsProviderResult(run)) return;
       const previousTurnId = run.turnId;
       run.turnId = turnId;
       markProviderTurnAccepted(run, { turnId, provider: "codex" });
+      d.commandTrace?.recordBestEffort?.({
+        commandId: String(run.clientUserMessageId ?? ""),
+        stage: "provider-accept",
+        outcome: "succeeded",
+        transport: "codex-app-server",
+        metadata: { provider: "codex", runId: run.id, threadId: run.threadId, turnId },
+      });
       providerAccepted = true;
       d.reindexRun(run, { turnId: previousTurnId });
       d.speechButtons.set(run.turnId, forceSpeechButton);
@@ -240,6 +255,10 @@ export class CodexTurnService {
         d.logWarn?.(`Codex Turn ${turnId} принят, но его Thread-проекция пока не подтверждена:`, error);
       });
     } catch (error) {
+      rpcSpan?.finish({
+        outcome: turnStartAttempted && ambiguousTurnStart(error) ? "unknown" : "failed",
+        metadata: { errorCode: error?.code ?? null },
+      });
       if (providerAccepted || acceptedProviderTurn(run)) {
         d.logError?.(`Codex Turn ${run.turnId} уже принят; повторный запуск запрещён:`, error);
         try {
@@ -277,6 +296,13 @@ export class CodexTurnService {
           const previousTurnId = run.turnId;
           run.turnId = String(exactTurn.id);
           markProviderTurnAccepted(run, { turnId: run.turnId, provider: "codex" });
+          d.commandTrace?.recordBestEffort?.({
+            commandId: String(run.clientUserMessageId ?? ""),
+            stage: "provider-accept",
+            outcome: "succeeded",
+            transport: "codex-app-server",
+            metadata: { provider: "codex", runId: run.id, threadId: run.threadId, turnId: run.turnId, reconciled: true },
+          });
           d.reindexRun(run, { turnId: previousTurnId });
           await d.saveState();
           if (run.displayRequested) d.startTyping();

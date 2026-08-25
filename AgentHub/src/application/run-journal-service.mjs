@@ -41,6 +41,7 @@ export class RunJournalService {
   constructor({
     usageStore,
     workspaceCatalogStore = null,
+    releaseChangeSetService = null,
     findProject,
     defaultProjectRoot,
     projectionProjectRoots,
@@ -53,6 +54,7 @@ export class RunJournalService {
   }) {
     this.usageStore = usageStore;
     this.workspaceCatalogStore = workspaceCatalogStore;
+    this.releaseChangeSetService = releaseChangeSetService;
     this.findProject = findProject;
     this.defaultProjectRoot = defaultProjectRoot;
     this.projectionProjectRoots = projectionProjectRoots;
@@ -65,7 +67,7 @@ export class RunJournalService {
     this.lastTaskMessages = new Map();
   }
 
-  rememberLastMessage(run, text, { updatedAt = null } = {}) {
+  rememberLastMessage(run, text, { updatedAt = null, terminalRevision = null } = {}) {
     const value = String(text ?? "").trim();
     if (!run?.threadId || !value) return false;
     if (isCodexContextProbeResponseText(value)) return false;
@@ -96,6 +98,7 @@ export class RunJournalService {
         || this.now().toISOString(),
       startedAt: startedAt || (sameTurn ? current.startedAt : null) || null,
       turnId,
+      terminalRevision: Number(terminalRevision) || (sameTurn ? current?.terminalRevision : null) || null,
     };
     if (
       current
@@ -105,6 +108,7 @@ export class RunJournalService {
       && current.updatedAt === next.updatedAt
       && current.startedAt === next.startedAt
       && current.turnId === next.turnId
+      && current.terminalRevision === next.terminalRevision
     ) return false;
     this.lastTaskMessages.delete(key);
     this.lastTaskMessages.set(key, next);
@@ -167,6 +171,7 @@ export class RunJournalService {
       provider: completion.provider,
       threadId: completion.threadId,
       turnId: completion.turnId,
+      terminalRevision: completion.terminalRevision,
       usage: completion.usage,
       usageReported: completion.usageReported,
       estimatedCredits: completion.estimatedCredits,
@@ -200,8 +205,12 @@ export class RunJournalService {
       ? await this.usageStore.recordAutomaticAndProject(fields)
       : await this.usageStore.recordAndProject({ ...fields, workLogId });
     if (Array.isArray(completion.changedFiles) && completion.changedFiles.length) {
+      const diffHash = completion.diff
+        ? createHash("sha256").update(String(completion.diff)).digest("hex")
+        : "";
+      let legacyChange = null;
       try {
-        this.workspaceCatalogStore?.recordReleaseChange?.({
+        legacyChange = this.workspaceCatalogStore?.recordReleaseChange?.({
           provider: completion.provider,
           threadId: completion.threadId,
           turnId: completion.turnId,
@@ -211,12 +220,28 @@ export class RunJournalService {
           status: String(completion.status ?? "").trim().toLowerCase() === "completed"
             ? "ready"
             : "blocked",
-          diffHash: completion.diff
-            ? createHash("sha256").update(String(completion.diff)).digest("hex")
-            : "",
+          diffHash,
         });
       } catch (error) {
         this.logger.error(`Cannot register release change for ${completion.turnId}:`, error.message);
+      }
+      try {
+        this.releaseChangeSetService?.observeTurn?.({
+          provider: completion.provider,
+          threadId: completion.threadId,
+          turnId: completion.turnId,
+          projectRoot: project.path,
+          summary: fields.title || body,
+          status: completion.status,
+          changedFiles: completion.changedFiles,
+          diffHash,
+          legacyChangeId: legacyChange?.id ?? null,
+          prompts: completion.prompts,
+          taskId: completion.dashboardTaskId ?? null,
+          changeSetId: completion.changeSetId ?? null,
+        });
+      } catch (error) {
+        this.logger.error(`Cannot append ChangeSet observation for ${completion.turnId}:`, error.message);
       }
     }
     try {

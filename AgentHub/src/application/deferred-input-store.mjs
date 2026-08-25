@@ -1,16 +1,7 @@
-function normalized(value) {
-  return String(value ?? "").trim().toLowerCase();
-}
+import { taskOccupancyIdentity } from "../domain/task-runs.mjs";
 
 export function deferredInputTaskKey(value) {
-  const streamId = String(value?.streamId ?? "").trim();
-  if (streamId) return `stream:${streamId}`;
-  return [
-    "provider",
-    normalized(value?.provider),
-    normalized(value?.projectRoot),
-    normalized(value?.threadId),
-  ].join(":");
+  return taskOccupancyIdentity(value)?.key ?? "unbound";
 }
 
 export class DeferredInputStore {

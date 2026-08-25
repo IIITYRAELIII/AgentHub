@@ -91,6 +91,8 @@ let deferredClientUserMessageIds = new Set();
 let activeRunClientUserMessageIds = new Set();
 let messageRenderBatchDepth = 0;
 const MAX_OUTGOING_MESSAGES_PER_TASK = 100;
+const acknowledgedFinalByTask = new Map();
+const { projectCanonicalMessages } = window.AgentHubMessageProjection;
 const {
   activeRunMessageReceipts,
   activeStageLabel,
@@ -104,6 +106,7 @@ const {
   contextProbeRun,
   conversationMessageAuthor,
   deduplicateConversationMessages,
+  displayedFinalAcknowledgement,
   focusedTurnAlreadyVisible,
   focusedTurnTaskThreadId,
   historyContainsLatestAnswer,
@@ -302,7 +305,12 @@ function rememberMaintenanceEvent(taskIdValue, message) {
   const events = maintenanceEventsByTask.get(stableTaskId) ?? [];
   const previous = JSON.stringify(events);
   const index = events.findIndex((entry) => entry.id === eventId);
-  const value = { ...message, role: "system", kind: "maintenance" };
+  const value = {
+    ...message,
+    role: "system",
+    kind: "maintenance",
+    operationKind: String(message?.operationKind ?? "maintenance"),
+  };
   if (index >= 0) events[index] = value;
   else events.push(value);
   const normalized = withoutSupersededCompactionFailures(events).slice(-50);
@@ -523,7 +531,7 @@ function liveUserMessagesSignature(run) {
 }
 
 function reconciledMessages(taskIdValue) {
-  const durableMessages = deduplicateConversationMessages(historyByTask.get(taskIdValue) ?? []);
+  const durableMessages = projectCanonicalMessages(historyByTask.get(taskIdValue) ?? []);
   const overlays = completionOverlaysByTask.get(taskIdValue);
   if (overlays) {
     for (const [turnId, overlay] of overlays) {
@@ -539,7 +547,7 @@ function reconciledMessages(taskIdValue) {
     .flatMap((overlay) => overlay.messages);
   const maintenanceMessages = maintenanceEventsByTask.get(taskIdValue) ?? [];
   const activeMaintenance = activeMaintenanceByTask.get(taskIdValue);
-  const serverMessages = deduplicateConversationMessages(mergeLiveUserMessages(
+  const serverMessages = projectCanonicalMessages(mergeLiveUserMessages(
     mergeTurnMaintenanceMessages([
       ...durableMessages,
       ...overlayMessages,
@@ -570,7 +578,7 @@ function reconciledMessages(taskIdValue) {
   });
   // Live snapshots, durable history and the optimistic receipt can arrive in
   // either order. Re-run idempotent deduplication after all three were merged.
-  return chronologicalMessages(deduplicateConversationMessages(visible));
+  return chronologicalMessages(projectCanonicalMessages(visible));
 }
 
 function deferredEntriesForTask(snapshot, taskIdValue) {
@@ -667,6 +675,9 @@ function applyMessageReceipts(snapshot) {
         turnId: String(receipt.turnId ?? ""),
         itemId: receipt.id ?? clientUserMessageId,
         clientUserMessageId,
+        submissionId: String(receipt.submissionId ?? clientUserMessageId),
+        operationKind: "user-turn",
+        projectionAuthority: "canonical",
         role: "user",
         author: String(receipt.author ?? "").trim() || "Вы",
         text: restoredText,
@@ -682,6 +693,9 @@ function applyMessageReceipts(snapshot) {
       streamId,
       turnId: String(receipt.turnId ?? ""),
       itemId: receipt.steered === true ? clientUserMessageId : receipt.id ?? clientUserMessageId,
+      submissionId: String(receipt.submissionId ?? clientUserMessageId),
+      operationKind: "user-turn",
+      projectionAuthority: "canonical",
       time: receipt.deliveredAt ?? receipt.createdAt ?? null,
       ...nonEmptyAttachmentPatch(receipt.attachments),
       ...(receipt.accepted && !receipt.steered ? { turnUserSlot: "root" } : {}),
@@ -715,6 +729,13 @@ function rememberSnapshotCompletion(taskIdValue, selected, incomingTurnId = "") 
       turnId: replacement.turnId,
       itemId: `${replacement.turnId}:agent:final`,
       role: "agent",
+      operationKind: "user-turn",
+      projectionAuthority: "terminal",
+      projectionState: "completed",
+      terminalRevision: Number(selected?.lastAnswerRevision) || 1,
+      ...(selected?.latestFinal?.migrationGuard
+        ? { terminalRevisionMigrationGuard: String(selected.latestFinal.migrationGuard) }
+        : {}),
       author: replacement.provider === "claude" ? "Claude" : "Codex",
       phase: "final",
       text: replacement.answer,
@@ -794,11 +815,12 @@ function renderTaskMessagesNow(taskIdValue, { preserveScroll = false } = {}) {
   const messages = reconciledMessages(taskIdValue);
   if (preserveScroll) agentHub.setMessagesPreservingScroll(taskIdValue, messages);
   else agentHub.setMessages(taskIdValue, messages);
+  return messages;
 }
 
 function renderTaskMessages(taskIdValue, { preserveScroll = false } = {}) {
-  if (queueBatchedMessageRender(taskIdValue, { preserveScroll })) return;
-  renderTaskMessagesNow(taskIdValue, { preserveScroll });
+  if (queueBatchedMessageRender(taskIdValue, { preserveScroll })) return null;
+  return renderTaskMessagesNow(taskIdValue, { preserveScroll });
 }
 
 function flushBatchedMessageRenders() {
@@ -903,6 +925,12 @@ function updateLiveMessage(taskIdValue, selected) {
     turnId: run.turnId,
     itemId: run.responseItemId ?? null,
     provider: selected.provider,
+    operationKind: String(run.operationKind ?? "unknown"),
+    ...(run.operationKindMigrationGuard
+      ? { operationKindMigrationGuard: String(run.operationKindMigrationGuard) }
+      : {}),
+    projectionAuthority: "live",
+    projectionState: "active",
     time: run.lastActivityAt ?? run.startedAt ?? null,
     turnStartedAt: run.startedAt ?? null,
     snapshotLastAnswerAt: selected.lastAnswerAt ?? null,
@@ -1454,6 +1482,7 @@ function activeMaintenanceMessage(task) {
       itemId: `maintenance:rotation:${stableTaskId}:active`,
       role: "system",
       kind: "maintenance",
+      operationKind: "maintenance",
       text: "Ротация контекста…",
       time: task.maintenance?.startedAt ?? null,
     };
@@ -1483,6 +1512,7 @@ function activeMaintenanceMessage(task) {
     itemId: `maintenance:compaction:${compactionId}:active`,
     role: "system",
     kind: "maintenance",
+    operationKind: status === "completed" ? "measurement" : "compaction",
     text,
     time: status === "completed"
       ? compaction.completedAt ?? compaction.startedAt ?? null
@@ -1931,6 +1961,20 @@ function historyMessages(history, focusedTurn = null) {
       clientUserMessageId: String(message.clientUserMessageId ?? ""),
       turnUserSlot: String(message.turnUserSlot ?? ""),
       role: message.role,
+      operationKind: String(item.operationKind ?? "user-turn"),
+      ...(item.operationKindMigrationGuard
+        ? { operationKindMigrationGuard: String(item.operationKindMigrationGuard) }
+        : {}),
+      projectionAuthority: "canonical",
+      projectionState: item.completed === true
+        ? (["failed", "cancelled"].includes(String(item.status ?? "").toLowerCase())
+          ? String(item.status).toLowerCase()
+          : "completed")
+        : item.active === true ? "active" : "unknown",
+      terminalRevision: item.completed === true ? Number(item.terminalRevision) || 1 : 0,
+      ...(item.completed === true && !Number(item.terminalRevision)
+        ? { terminalRevisionMigrationGuard: "legacy-terminal-revision" }
+        : {}),
       ...(message.kind ? { kind: message.kind } : {}),
       ...(message.agentThreadId ? { agentThreadId: message.agentThreadId } : {}),
       ...(message.model ? { model: message.model } : {}),
@@ -2042,7 +2086,7 @@ function historyMessages(history, focusedTurn = null) {
 function mergeNewestHistory(previous, newest) {
   const newestById = new Map(newest.map((message) => [message.id, message]));
   const previousIds = new Set(previous.map((message) => message.id));
-  return deduplicateConversationMessages([
+  return projectCanonicalMessages([
     ...previous.map((message) => newestById.get(message.id) ?? message),
     ...newest.filter((message) => !previousIds.has(message.id)),
   ]);
@@ -2056,7 +2100,7 @@ function prependOlderHistory(previous, older) {
     seen.add(message.id);
     uniqueOlder.push(message);
   }
-  return deduplicateConversationMessages([...uniqueOlder, ...previous]);
+  return projectCanonicalMessages([...uniqueOlder, ...previous]);
 }
 
 function applyOpened(result, {
@@ -2100,7 +2144,21 @@ function applyOpened(result, {
   if (!skipSnapshot) applySnapshot(result?.snapshot);
   if (selectTask) agentHub.selectTask(id);
   syncHistoryPagination(id);
-  renderTaskMessages(id, { preserveScroll });
+  const renderedMessages = renderTaskMessages(id, { preserveScroll });
+  const acknowledgementSnapshot = result?.snapshot ?? lastSnapshot;
+  const acknowledgementTask = (acknowledgementSnapshot?.tasks ?? []).find((item) => taskId(
+    item.provider,
+    item.threadId,
+    item.streamId,
+  ) === id);
+  if (displayedFinalAcknowledgement({
+    messages: renderedMessages,
+    final: acknowledgementTask?.latestFinal,
+    focusedTurn: result.focusedTurn,
+    selectTask,
+    selectedTaskId,
+    taskId: id,
+  })) acknowledgeDisplayedFinal(id, acknowledgementSnapshot);
   if (result.focusedMessage) {
     window.requestAnimationFrame(() => agentHub.focusMessage?.({
       turnId: result.focusedMessage.turnId,
@@ -2118,6 +2176,33 @@ function applyOpened(result, {
     (item) => item.provider === history.provider && item.threadId === history.threadId,
   );
   updateHistoryCatchUp(id, history, task);
+}
+
+function acknowledgeDisplayedFinal(id, snapshot) {
+  if (document.visibilityState !== "visible") return;
+  const task = (snapshot?.tasks ?? []).find((item) => taskId(
+    item.provider,
+    item.threadId,
+    item.streamId,
+  ) === id);
+  const final = task?.latestFinal;
+  if (!final?.provider || !final?.threadId || !final?.turnId || !Number(final?.revision)) return;
+  const identity = [final.provider, final.threadId, final.turnId, final.revision].join("\0");
+  if (acknowledgedFinalByTask.get(id) === identity) return;
+  acknowledgedFinalByTask.set(id, identity);
+  const acknowledge = () => {
+    void control("mark-task-read", { final }).then((result) => {
+      if (result?.marked === true && acknowledgedFinalByTask.get(id) === identity) {
+        agentHub.patchTask(id, { unread: false, status: "idle", statusLabel: "" });
+        return;
+      }
+      if (acknowledgedFinalByTask.get(id) === identity) acknowledgedFinalByTask.delete(id);
+      if (result?.reason === "stale-final") void refresh();
+    }).catch(() => {
+      if (acknowledgedFinalByTask.get(id) === identity) acknowledgedFinalByTask.delete(id);
+    });
+  };
+  window.requestAnimationFrame(() => window.requestAnimationFrame(acknowledge));
 }
 
 function annotatedText(text, annotations) {
@@ -2409,6 +2494,10 @@ agentHub.on("message:send", (request) => {
     turnId: "",
     itemId: request.requestId,
     clientUserMessageId: request.requestId,
+    submissionId: request.requestId,
+    operationKind: "user-turn",
+    projectionAuthority: "optimistic",
+    projectionState: "optimistic",
     role: "user",
     author: "Вы",
     text: visibleText,

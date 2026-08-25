@@ -316,6 +316,73 @@
     return Math.abs(mean) < 1e-9 ? 0 : mean;
   }
 
+  function currentLimitWindowLabel(series) {
+    const durationMinutes = Number(series?.point?.windowDurationMins);
+    if (Number.isFinite(durationMinutes) && durationMinutes > 0) {
+      if (durationMinutes % 1440 === 0) return `${durationMinutes / 1440} д.`;
+      if (durationMinutes % 60 === 0) return `${durationMinutes / 60} ч.`;
+      return `${durationMinutes} мин.`;
+    }
+    if (series?.window === "primary") return "основное";
+    if (series?.window === "secondary") return "дополнительное";
+    return "";
+  }
+
+  function selectCurrentLimitSeries(payload) {
+    const currentAccountKey = String(payload?.currentAccount?.key ?? "");
+    const available = (Array.isArray(payload?.series) ? payload.series : [])
+      .filter((series) => Array.isArray(series.points) && series.points.length)
+      .map((series) => {
+        const provider = String(series.name ?? "").toLowerCase();
+        const codex = provider === "codex" || provider === "spark";
+        if (!codex || !currentAccountKey) return { ...series, point: series.points.at(-1) };
+        const point = series.points.findLast((item) => (
+          String(item?.accountKey ?? "") === currentAccountKey
+        )) ?? (series.accountKey === currentAccountKey ? series.points.at(-1) : null);
+        return point ? { ...series, point } : null;
+      })
+      .filter(Boolean);
+    const pickCodex = (name) => available
+      .filter((series) => (
+        String(series.name).toLowerCase() === name
+        && (series.window === "primary" || series.window === "secondary")
+      ))
+      .sort((left, right) => (
+        (left.window === "primary" ? 0 : 1) - (right.window === "primary" ? 0 : 1)
+      ));
+    const claudeWeek = available.find((series) => series.id === "claude:week");
+    return [
+      ...pickCodex("codex"),
+      ...pickCodex("spark"),
+      ...available
+        .filter((series) => String(series.name).toLowerCase() === "claude")
+        .sort((left, right) => {
+          const order = (series) => (
+            series.window === "week" ? 0 : series.window === "session" ? 1 : 2
+          );
+          return order(left) - order(right)
+            || String(left.window).localeCompare(String(right.window), "ru");
+        }),
+    ].map((series) => {
+      const id = String(series.id ?? "");
+      const provider = String(series.name ?? "").toLowerCase();
+      const label = id.startsWith("claude:model:")
+        ? String(series.window || "Claude")
+        : id === "claude:session"
+          ? "Claude session"
+          : id === "claude:week"
+            ? "Claude"
+            : String(series.name || series.id || "");
+      const point = id.startsWith("claude:model:") && !series.point?.resetsText
+        ? { ...series.point, resetsText: claudeWeek?.point?.resetsText ?? "" }
+        : series.point;
+      const windowLabel = provider === "codex" || provider === "spark"
+        ? currentLimitWindowLabel({ ...series, point })
+        : "";
+      return { ...series, label, point, windowLabel };
+    });
+  }
+
   globalThis.AgentHubRateLimitSeries = Object.freeze({
     DEFAULT_SAMPLE_INTERVAL_MS,
     interpolateRateLimitGaps,
@@ -323,6 +390,7 @@
     meanSignedComparisonDeviation,
     rateLimitDeltasByBuckets,
     recoverRateLimitResetGaps,
+    selectCurrentLimitSeries,
     signedComparisonDeviations,
   });
 })();

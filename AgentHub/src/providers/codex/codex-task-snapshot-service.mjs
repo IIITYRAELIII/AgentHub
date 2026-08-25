@@ -270,8 +270,7 @@ export class CodexTaskSnapshotService {
 
     let answer = await rolloutAnswer({ includeLatest: interrupted });
     if (answer) return answer;
-    answer = codexExplicitFinalTurnAnswer(eventTurn);
-    if (answer) return answer;
+    let fallbackAnswer = codexExplicitFinalTurnAnswer(eventTurn);
     for (const waitMs of [0, 100, 250, 500]) {
       if (waitMs) await this.#d.delay(waitMs);
       try {
@@ -284,13 +283,14 @@ export class CodexTaskSnapshotService {
         const completedTurn = (result.thread?.turns ?? [])
           .find((turn) => String(turn?.id ?? "") === turnId);
         answer = codexExplicitFinalTurnAnswer(completedTurn);
-        if (answer) return answer;
+        if (answer) fallbackAnswer = answer;
       } catch (error) {
         this.#d.logger?.warn?.(
           `Cannot read completed Codex turn ${completedTurnId ?? "unknown"}: ${error.message}`,
         );
       }
     }
+    if (fallbackAnswer) return fallbackAnswer;
     if (!interrupted) return "";
     return String((await rolloutAnswer({ includeLatest: true })) || run.responseText || "").trim();
   }

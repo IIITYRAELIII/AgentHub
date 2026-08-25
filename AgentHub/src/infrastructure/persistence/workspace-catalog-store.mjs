@@ -13,8 +13,15 @@ import {
   providerThreadKey,
   streamDisplayName,
 } from "../../domain/workspace-stream-identity.mjs";
+import {
+  changeSetLogicalKey,
+  normalizedChangeSetId,
+  normalizedChangeSetStatus,
+  normalizedDashboardTaskId,
+  normalizedReleaseBatch,
+} from "../../domain/release-change-set.mjs";
 
-const SCHEMA_VERSION = 9;
+const SCHEMA_VERSION = 10;
 export const DEVELOPER_RULES_MAX_BYTES = 32 * 1024;
 const SOURCES = new Set(["created", "discovered", "migration", "rebirth"]);
 const DEVELOPER_RULE_SCOPES = new Set(["workspace", "stream"]);
@@ -95,6 +102,100 @@ function configure(database) {
       ON hub_release_changes(workspace_id, status, updated_at_ms DESC);
     CREATE INDEX IF NOT EXISTS hub_release_changes_stream_idx
       ON hub_release_changes(stream_id, updated_at_ms DESC);
+    CREATE TABLE IF NOT EXISTS hub_release_batches (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      plan_revision TEXT NOT NULL,
+      change_set_ids_json TEXT NOT NULL,
+      repository_revisions_json TEXT NOT NULL,
+      publication_evidence_json TEXT NOT NULL DEFAULT '{}',
+      deployment_evidence_json TEXT NOT NULL DEFAULT '{}',
+      status TEXT NOT NULL CHECK (status IN ('prepared', 'completed')),
+      created_at_ms INTEGER NOT NULL,
+      completed_at_ms INTEGER,
+      FOREIGN KEY (workspace_id) REFERENCES hub_workspaces(id) ON DELETE CASCADE
+    ) WITHOUT ROWID;
+    CREATE INDEX IF NOT EXISTS hub_release_batches_workspace_idx
+      ON hub_release_batches(workspace_id, created_at_ms DESC);
+    CREATE TABLE IF NOT EXISTS hub_release_change_sets (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      owner_stream_id TEXT NOT NULL,
+      task_id TEXT,
+      logical_key TEXT NOT NULL,
+      title TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL CHECK (status IN ('draft', 'ready', 'released', 'discarded')),
+      revision INTEGER NOT NULL DEFAULT 1 CHECK (revision > 0),
+      manifest_hash TEXT NOT NULL DEFAULT '',
+      repository_evidence_json TEXT NOT NULL DEFAULT '[]',
+      frozen_at_ms INTEGER,
+      release_batch_id TEXT,
+      created_at_ms INTEGER NOT NULL,
+      updated_at_ms INTEGER NOT NULL,
+      released_at_ms INTEGER,
+      FOREIGN KEY (workspace_id) REFERENCES hub_workspaces(id) ON DELETE CASCADE,
+      FOREIGN KEY (owner_stream_id) REFERENCES hub_streams(id) ON DELETE CASCADE,
+      FOREIGN KEY (release_batch_id) REFERENCES hub_release_batches(id) ON DELETE SET NULL,
+      UNIQUE (workspace_id, logical_key)
+    ) WITHOUT ROWID;
+    CREATE INDEX IF NOT EXISTS hub_release_change_sets_workspace_status_idx
+      ON hub_release_change_sets(workspace_id, status, updated_at_ms DESC);
+    CREATE INDEX IF NOT EXISTS hub_release_change_sets_owner_idx
+      ON hub_release_change_sets(owner_stream_id, updated_at_ms DESC);
+    CREATE TABLE IF NOT EXISTS hub_release_turn_observations (
+      id TEXT PRIMARY KEY,
+      change_set_id TEXT NOT NULL,
+      legacy_release_change_id TEXT,
+      provider TEXT NOT NULL,
+      provider_thread_id TEXT NOT NULL,
+      turn_id TEXT NOT NULL,
+      project_root TEXT NOT NULL DEFAULT '',
+      summary TEXT NOT NULL DEFAULT '',
+      observed_status TEXT NOT NULL,
+      diff_hash TEXT NOT NULL DEFAULT '',
+      created_at_ms INTEGER NOT NULL,
+      FOREIGN KEY (change_set_id) REFERENCES hub_release_change_sets(id) ON DELETE CASCADE,
+      FOREIGN KEY (legacy_release_change_id) REFERENCES hub_release_changes(id) ON DELETE SET NULL,
+      UNIQUE (provider, provider_thread_id, turn_id)
+    ) WITHOUT ROWID;
+    CREATE INDEX IF NOT EXISTS hub_release_turn_observations_change_set_idx
+      ON hub_release_turn_observations(change_set_id, created_at_ms);
+    CREATE TABLE IF NOT EXISTS hub_release_change_set_files (
+      change_set_id TEXT NOT NULL,
+      project_root TEXT NOT NULL,
+      file_path TEXT NOT NULL,
+      evidence_state TEXT NOT NULL CHECK (evidence_state IN ('observed', 'frozen')),
+      operation TEXT NOT NULL CHECK (operation IN ('observed', 'added', 'modified', 'deleted')),
+      base_blob TEXT,
+      result_blob TEXT,
+      patch_hash TEXT NOT NULL DEFAULT '',
+      source_observation_id TEXT,
+      updated_at_ms INTEGER NOT NULL,
+      PRIMARY KEY (change_set_id, project_root, file_path),
+      FOREIGN KEY (change_set_id) REFERENCES hub_release_change_sets(id) ON DELETE CASCADE,
+      FOREIGN KEY (source_observation_id) REFERENCES hub_release_turn_observations(id) ON DELETE SET NULL
+    ) WITHOUT ROWID;
+    CREATE TABLE IF NOT EXISTS hub_release_change_set_bindings (
+      stream_id TEXT PRIMARY KEY,
+      change_set_id TEXT NOT NULL UNIQUE,
+      updated_at_ms INTEGER NOT NULL,
+      FOREIGN KEY (stream_id) REFERENCES hub_streams(id) ON DELETE CASCADE,
+      FOREIGN KEY (change_set_id) REFERENCES hub_release_change_sets(id) ON DELETE CASCADE
+    ) WITHOUT ROWID;
+    CREATE TABLE IF NOT EXISTS hub_release_change_set_events (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      change_set_id TEXT NOT NULL,
+      actor_stream_id TEXT,
+      event_type TEXT NOT NULL,
+      payload_json TEXT NOT NULL DEFAULT '{}',
+      created_at_ms INTEGER NOT NULL,
+      FOREIGN KEY (workspace_id) REFERENCES hub_workspaces(id) ON DELETE CASCADE,
+      FOREIGN KEY (change_set_id) REFERENCES hub_release_change_sets(id) ON DELETE CASCADE,
+      FOREIGN KEY (actor_stream_id) REFERENCES hub_streams(id) ON DELETE SET NULL
+    ) WITHOUT ROWID;
+    CREATE INDEX IF NOT EXISTS hub_release_change_set_events_change_set_idx
+      ON hub_release_change_set_events(change_set_id, created_at_ms);
     CREATE TABLE IF NOT EXISTS hub_mcp_operations (
       request_id TEXT PRIMARY KEY,
       workspace_id TEXT NOT NULL,
@@ -279,6 +380,107 @@ function releaseChangeFromRow(row) {
   };
 }
 
+function jsonArray(value) {
+  try {
+    const parsed = JSON.parse(String(value ?? "[]"));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function jsonObject(value) {
+  try {
+    const parsed = JSON.parse(String(value ?? "{}"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function changeSetFromRow(row) {
+  if (!row) return null;
+  return {
+    id: String(row.id),
+    workspaceId: String(row.workspace_id),
+    ownerStreamId: String(row.owner_stream_id),
+    taskId: row.task_id == null ? null : String(row.task_id),
+    logicalKey: String(row.logical_key),
+    title: String(row.title ?? ""),
+    status: String(row.status),
+    revision: Number(row.revision) || 1,
+    manifestHash: String(row.manifest_hash ?? ""),
+    repositories: jsonArray(row.repository_evidence_json),
+    frozenAtMs: row.frozen_at_ms == null ? null : Number(row.frozen_at_ms),
+    releaseBatchId: row.release_batch_id == null ? null : String(row.release_batch_id),
+    createdAtMs: Number(row.created_at_ms) || 0,
+    updatedAtMs: Number(row.updated_at_ms) || 0,
+    releasedAtMs: row.released_at_ms == null ? null : Number(row.released_at_ms),
+  };
+}
+
+function turnObservationFromRow(row) {
+  if (!row) return null;
+  return {
+    id: String(row.id),
+    changeSetId: String(row.change_set_id),
+    legacyChangeId: row.legacy_release_change_id == null ? null : String(row.legacy_release_change_id),
+    provider: String(row.provider),
+    threadId: String(row.provider_thread_id),
+    turnId: String(row.turn_id),
+    projectRoot: String(row.project_root ?? ""),
+    summary: String(row.summary ?? ""),
+    observedStatus: String(row.observed_status),
+    diffHash: String(row.diff_hash ?? ""),
+    createdAtMs: Number(row.created_at_ms) || 0,
+  };
+}
+
+function changeSetFileFromRow(row) {
+  if (!row) return null;
+  return {
+    changeSetId: String(row.change_set_id),
+    projectRoot: String(row.project_root),
+    path: String(row.file_path),
+    evidenceState: String(row.evidence_state),
+    operation: String(row.operation),
+    baseBlob: row.base_blob == null ? null : String(row.base_blob),
+    resultBlob: row.result_blob == null ? null : String(row.result_blob),
+    patchHash: String(row.patch_hash ?? ""),
+    sourceObservationId: row.source_observation_id == null ? null : String(row.source_observation_id),
+    updatedAtMs: Number(row.updated_at_ms) || 0,
+  };
+}
+
+function releaseBatchFromRow(row) {
+  if (!row) return null;
+  return {
+    id: String(row.id),
+    workspaceId: String(row.workspace_id),
+    planRevision: String(row.plan_revision),
+    changeSetIds: jsonArray(row.change_set_ids_json).map(String),
+    repositoryRevisions: jsonArray(row.repository_revisions_json),
+    publicationEvidence: jsonObject(row.publication_evidence_json),
+    deploymentEvidence: jsonObject(row.deployment_evidence_json),
+    status: String(row.status),
+    createdAtMs: Number(row.created_at_ms) || 0,
+    completedAtMs: row.completed_at_ms == null ? null : Number(row.completed_at_ms),
+  };
+}
+
+function changeSetEventFromRow(row) {
+  if (!row) return null;
+  return {
+    id: String(row.id),
+    workspaceId: String(row.workspace_id),
+    changeSetId: String(row.change_set_id),
+    actorStreamId: row.actor_stream_id == null ? null : String(row.actor_stream_id),
+    type: String(row.event_type),
+    payload: jsonObject(row.payload_json),
+    createdAtMs: Number(row.created_at_ms) || 0,
+  };
+}
+
 function releaseChangeStatus(value) {
   const status = String(value ?? "").trim().toLowerCase();
   if (!RELEASE_CHANGE_STATUSES.has(status)) throw new Error(`invalid release change status: ${value}`);
@@ -445,6 +647,33 @@ export class WorkspaceCatalogStore {
     return Number.isSafeInteger(value) && value > 0 ? value : Date.now();
   }
 
+  #changeSetWithDetails(row) {
+    const changeSet = changeSetFromRow(row);
+    if (!changeSet) return null;
+    return {
+      ...changeSet,
+      observations: this.#database.prepare(`
+        SELECT * FROM hub_release_turn_observations
+        WHERE change_set_id = ? ORDER BY created_at_ms, id
+      `).all(changeSet.id).map(turnObservationFromRow),
+      files: this.#database.prepare(`
+        SELECT * FROM hub_release_change_set_files
+        WHERE change_set_id = ? ORDER BY project_root, file_path
+      `).all(changeSet.id).map(changeSetFileFromRow),
+    };
+  }
+
+  #recordChangeSetEvent({ workspaceId, changeSetId, actorStreamId = null, type, payload = {} }) {
+    this.#database.prepare(`
+      INSERT INTO hub_release_change_set_events
+        (id, workspace_id, change_set_id, actor_stream_id, event_type, payload_json, created_at_ms)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      this.#idFactory(), workspaceId, changeSetId, actorStreamId,
+      String(type), JSON.stringify(payload ?? {}), this.#nowMs(),
+    );
+  }
+
   ensureExperiments() {
     const existing = this.#database.prepare(
       "SELECT * FROM hub_workspaces WHERE system_key = ?",
@@ -532,6 +761,339 @@ export class WorkspaceCatalogStore {
     const id = safeIdentifier(workspaceId, "workspace id");
     if (!this.workspace(id)) throw new Error(`workspace not found: ${id}`);
     return this.#updateDeveloperRules("workspace", id, content);
+  }
+
+  recordChangeSetObservation({
+    workspaceId, ownerStreamId, taskId = null, changeSetId = null, generatedChangeSetId,
+    provider, threadId, turnId, projectRoot = "", summary = "", observedStatus = "completed",
+    files = [], diffHash = "", legacyChangeId = null,
+  } = {}) {
+    const normalizedWorkspaceId = safeIdentifier(workspaceId, "workspace id");
+    const normalizedOwnerStreamId = safeIdentifier(ownerStreamId, "owner Stream id");
+    const owner = this.stream(normalizedOwnerStreamId);
+    if (!owner || owner.workspaceId !== normalizedWorkspaceId) throw new Error("ChangeSet owner is outside the Workspace");
+    const normalizedProviderIdentity = normalizedThreadIdentity({ provider, threadId });
+    const normalizedTurnId = safeIdentifier(turnId, "turn id");
+    const normalizedTaskId = normalizedDashboardTaskId(taskId);
+    const requestedChangeSetId = changeSetId == null || String(changeSetId).trim() === ""
+      ? null
+      : normalizedChangeSetId(changeSetId);
+    const fallbackChangeSetId = normalizedChangeSetId(generatedChangeSetId);
+    const normalizedFiles = releaseChangeFiles(files);
+    if (!normalizedFiles.length) return null;
+    const nowMs = this.#nowMs();
+    return this.#transaction(() => {
+      const replay = this.#database.prepare(`
+        SELECT change_set_id FROM hub_release_turn_observations
+        WHERE provider = ? AND provider_thread_id = ? AND turn_id = ?
+      `).get(normalizedProviderIdentity.provider, normalizedProviderIdentity.threadId, normalizedTurnId);
+      if (replay) return this.changeSet(replay.change_set_id);
+
+      let row = null;
+      if (normalizedTaskId) {
+        row = this.#database.prepare(`
+          SELECT * FROM hub_release_change_sets WHERE workspace_id = ? AND logical_key = ?
+        `).get(normalizedWorkspaceId, changeSetLogicalKey({ taskId: normalizedTaskId, changeSetId: fallbackChangeSetId }));
+      } else if (requestedChangeSetId) {
+        row = this.#database.prepare("SELECT * FROM hub_release_change_sets WHERE id = ?")
+          .get(requestedChangeSetId);
+      } else {
+        row = this.#database.prepare(`
+          SELECT change_set.* FROM hub_release_change_set_bindings binding
+          JOIN hub_release_change_sets change_set ON change_set.id = binding.change_set_id
+          WHERE binding.stream_id = ? AND change_set.status = 'draft'
+        `).get(normalizedOwnerStreamId);
+      }
+      if (row && (String(row.workspace_id) !== normalizedWorkspaceId || String(row.owner_stream_id) !== normalizedOwnerStreamId)) {
+        throw new Error("ChangeSet belongs to another Workspace or owner Stream");
+      }
+      if (!row) {
+        const id = requestedChangeSetId ?? fallbackChangeSetId;
+        const logicalKey = changeSetLogicalKey({ taskId: normalizedTaskId, changeSetId: id });
+        this.#database.prepare(`
+          INSERT INTO hub_release_change_sets (
+            id, workspace_id, owner_stream_id, task_id, logical_key, title, status,
+            revision, manifest_hash, repository_evidence_json, created_at_ms, updated_at_ms
+          ) VALUES (?, ?, ?, ?, ?, ?, 'draft', 1, '', '[]', ?, ?)
+        `).run(
+          id, normalizedWorkspaceId, normalizedOwnerStreamId, normalizedTaskId, logicalKey,
+          String(summary ?? "").trim().slice(0, 500), nowMs, nowMs,
+        );
+        row = this.#database.prepare("SELECT * FROM hub_release_change_sets WHERE id = ?").get(id);
+        this.#recordChangeSetEvent({
+          workspaceId: normalizedWorkspaceId,
+          changeSetId: id,
+          actorStreamId: normalizedOwnerStreamId,
+          type: "changeset.created",
+          payload: { logicalKey, taskId: normalizedTaskId },
+        });
+      }
+      if (row.status !== "draft") throw new Error("frozen or closed ChangeSet cannot receive a new TurnObservation");
+
+      const observationId = this.#idFactory();
+      this.#database.prepare(`
+        INSERT INTO hub_release_turn_observations (
+          id, change_set_id, legacy_release_change_id, provider, provider_thread_id, turn_id,
+          project_root, summary, observed_status, diff_hash, created_at_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        observationId, row.id, legacyChangeId, normalizedProviderIdentity.provider,
+        normalizedProviderIdentity.threadId, normalizedTurnId, String(projectRoot ?? "").trim(),
+        String(summary ?? "").trim().slice(0, 500), String(observedStatus ?? "completed").trim().slice(0, 40),
+        String(diffHash ?? "").trim().slice(0, 128), nowMs,
+      );
+      const insertFile = this.#database.prepare(`
+        INSERT INTO hub_release_change_set_files (
+          change_set_id, project_root, file_path, evidence_state, operation,
+          base_blob, result_blob, patch_hash, source_observation_id, updated_at_ms
+        ) VALUES (?, ?, ?, 'observed', 'observed', NULL, NULL, '', ?, ?)
+        ON CONFLICT(change_set_id, project_root, file_path) DO UPDATE SET
+          source_observation_id = CASE
+            WHEN hub_release_change_set_files.evidence_state = 'observed' THEN excluded.source_observation_id
+            ELSE hub_release_change_set_files.source_observation_id
+          END,
+          updated_at_ms = CASE
+            WHEN hub_release_change_set_files.evidence_state = 'observed' THEN excluded.updated_at_ms
+            ELSE hub_release_change_set_files.updated_at_ms
+          END
+      `);
+      for (const file of normalizedFiles) {
+        insertFile.run(row.id, String(projectRoot ?? "").trim(), file, observationId, nowMs);
+      }
+      this.#database.prepare(`
+        UPDATE hub_release_change_sets SET
+          title = CASE WHEN title = '' THEN ? ELSE title END,
+          updated_at_ms = ?
+        WHERE id = ?
+      `).run(String(summary ?? "").trim().slice(0, 500), nowMs, row.id);
+      this.#database.prepare(`
+        INSERT INTO hub_release_change_set_bindings (stream_id, change_set_id, updated_at_ms)
+        VALUES (?, ?, ?)
+        ON CONFLICT(stream_id) DO UPDATE SET
+          change_set_id = excluded.change_set_id,
+          updated_at_ms = excluded.updated_at_ms
+      `).run(normalizedOwnerStreamId, row.id, nowMs);
+      this.#recordChangeSetEvent({
+        workspaceId: normalizedWorkspaceId,
+        changeSetId: row.id,
+        actorStreamId: normalizedOwnerStreamId,
+        type: "changeset.turn_observed",
+        payload: {
+          observationId,
+          provider: normalizedProviderIdentity.provider,
+          threadId: normalizedProviderIdentity.threadId,
+          turnId: normalizedTurnId,
+          legacyChangeId,
+        },
+      });
+      return this.changeSet(row.id);
+    });
+  }
+
+  changeSet(changeSetId) {
+    const id = normalizedChangeSetId(changeSetId);
+    return this.#changeSetWithDetails(
+      this.#database.prepare("SELECT * FROM hub_release_change_sets WHERE id = ?").get(id),
+    );
+  }
+
+  changeSets(workspaceId, { includeClosed = false, limit = 100 } = {}) {
+    const id = safeIdentifier(workspaceId, "workspace id");
+    if (!this.workspace(id)) throw new Error(`workspace not found: ${id}`);
+    const boundedLimit = Math.max(1, Math.min(500, Number(limit) || 100));
+    const statusClause = includeClosed ? "" : "AND status NOT IN ('released', 'discarded')";
+    return this.#database.prepare(`
+      SELECT * FROM hub_release_change_sets
+      WHERE workspace_id = ? ${statusClause}
+      ORDER BY updated_at_ms DESC, id LIMIT ?
+    `).all(id, boundedLimit).map((row) => this.#changeSetWithDetails(row));
+  }
+
+  freezeChangeSet(changeSetId, {
+    actorStreamId, title = "", manifest, verification, architectOverride = false, reason = "",
+  } = {}) {
+    const id = normalizedChangeSetId(changeSetId);
+    const actor = safeIdentifier(actorStreamId, "actor Stream id");
+    if (!manifest?.manifestHash || !Array.isArray(manifest.repositories) || !Array.isArray(manifest.files)) {
+      throw new Error("freeze requires a complete immutable manifest");
+    }
+    if (!verification?.verifier?.name || !verification?.verifier?.version) {
+      throw new Error("freeze requires server-side verification evidence");
+    }
+    const nowMs = this.#nowMs();
+    return this.#transaction(() => {
+      const current = changeSetFromRow(this.#database.prepare(
+        "SELECT * FROM hub_release_change_sets WHERE id = ?",
+      ).get(id));
+      if (!current) throw new Error(`ChangeSet not found: ${id}`);
+      if (current.status !== "draft") throw new Error("only a draft ChangeSet can be frozen");
+      if (current.revision !== manifest.revision) throw new Error("ChangeSet revision changed before freeze");
+      this.#database.prepare("DELETE FROM hub_release_change_set_files WHERE change_set_id = ?").run(id);
+      const insertFile = this.#database.prepare(`
+        INSERT INTO hub_release_change_set_files (
+          change_set_id, project_root, file_path, evidence_state, operation,
+          base_blob, result_blob, patch_hash, source_observation_id, updated_at_ms
+        ) VALUES (?, ?, ?, 'frozen', ?, ?, ?, ?, NULL, ?)
+      `);
+      for (const file of manifest.files) {
+        insertFile.run(
+          id, file.projectRoot, file.path, file.operation, file.baseBlob,
+          file.resultBlob, file.patchHash, nowMs,
+        );
+      }
+      this.#database.prepare(`
+        UPDATE hub_release_change_sets SET
+          title = CASE WHEN ? = '' THEN title ELSE ? END,
+          status = 'ready', manifest_hash = ?, repository_evidence_json = ?,
+          frozen_at_ms = ?, updated_at_ms = ?
+        WHERE id = ?
+      `).run(
+        String(title ?? "").trim(), String(title ?? "").trim().slice(0, 500),
+        manifest.manifestHash, JSON.stringify(manifest.repositories), nowMs, nowMs, id,
+      );
+      this.#database.prepare("DELETE FROM hub_release_change_set_bindings WHERE change_set_id = ?").run(id);
+      this.#recordChangeSetEvent({
+        workspaceId: current.workspaceId,
+        changeSetId: id,
+        actorStreamId: actor,
+        type: "changeset.frozen",
+        payload: {
+          manifestHash: manifest.manifestHash,
+          revision: current.revision,
+          verification,
+          architectOverride: architectOverride === true,
+          reason: String(reason ?? "").trim().slice(0, 1_000),
+        },
+      });
+      return this.changeSet(id);
+    });
+  }
+
+  transitionChangeSet(changeSetId, {
+    actorStreamId, status, reason = "", architectOverride = false, authorizationSource = "",
+  } = {}) {
+    const id = normalizedChangeSetId(changeSetId);
+    const actor = safeIdentifier(actorStreamId, "actor Stream id");
+    const nextStatus = normalizedChangeSetStatus(status);
+    if (!['draft', 'discarded'].includes(nextStatus)) {
+      throw new Error("ChangeSet ready requires freeze and released requires ReleaseBatch completion");
+    }
+    const nowMs = this.#nowMs();
+    return this.#transaction(() => {
+      const current = changeSetFromRow(this.#database.prepare(
+        "SELECT * FROM hub_release_change_sets WHERE id = ?",
+      ).get(id));
+      if (!current) throw new Error(`ChangeSet not found: ${id}`);
+      if (['released', 'discarded'].includes(current.status)) throw new Error("closed ChangeSet is immutable");
+      if (current.status === nextStatus) return this.changeSet(id);
+      if (nextStatus === 'draft') {
+        if (current.status !== 'ready') throw new Error("only a ready ChangeSet can be reopened");
+        this.#database.prepare(`
+          UPDATE hub_release_change_sets SET
+            status = 'draft', revision = revision + 1, manifest_hash = '',
+            repository_evidence_json = '[]', frozen_at_ms = NULL,
+            release_batch_id = NULL, updated_at_ms = ?
+          WHERE id = ?
+        `).run(nowMs, id);
+        this.#database.prepare("DELETE FROM hub_release_change_set_files WHERE change_set_id = ?").run(id);
+        this.#database.prepare(`
+          INSERT INTO hub_release_change_set_bindings (stream_id, change_set_id, updated_at_ms)
+          VALUES (?, ?, ?)
+          ON CONFLICT(stream_id) DO UPDATE SET
+            change_set_id = excluded.change_set_id,
+            updated_at_ms = excluded.updated_at_ms
+        `).run(current.ownerStreamId, id, nowMs);
+      } else {
+        this.#database.prepare(`
+          UPDATE hub_release_change_sets SET status = 'discarded', updated_at_ms = ? WHERE id = ?
+        `).run(nowMs, id);
+        this.#database.prepare("DELETE FROM hub_release_change_set_bindings WHERE change_set_id = ?").run(id);
+      }
+      this.#recordChangeSetEvent({
+        workspaceId: current.workspaceId,
+        changeSetId: id,
+        actorStreamId: actor,
+        type: nextStatus === 'draft' ? "changeset.reopened" : "changeset.discarded",
+        payload: {
+          fromStatus: current.status,
+          toStatus: nextStatus,
+          architectOverride: architectOverride === true,
+          authorizationSource: String(authorizationSource ?? ""),
+          reason: String(reason ?? "").trim().slice(0, 1_000),
+        },
+      });
+      return this.changeSet(id);
+    });
+  }
+
+  recordReleaseBatch(value = {}) {
+    const batch = normalizedReleaseBatch(value);
+    if (!this.workspace(batch.workspaceId)) throw new Error(`workspace not found: ${batch.workspaceId}`);
+    const nowMs = this.#nowMs();
+    return this.#transaction(() => {
+      const changes = batch.changeSetIds.map((id) => this.changeSet(id));
+      if (changes.some((changeSet) => !changeSet || changeSet.workspaceId !== batch.workspaceId)) {
+        throw new Error("ReleaseBatch contains a ChangeSet outside the Workspace");
+      }
+      if (changes.some((changeSet) => changeSet.status !== "ready" || !changeSet.manifestHash)) {
+        throw new Error("ReleaseBatch requires frozen ready ChangeSets");
+      }
+      this.#database.prepare(`
+        INSERT INTO hub_release_batches (
+          id, workspace_id, plan_revision, change_set_ids_json, repository_revisions_json,
+          publication_evidence_json, deployment_evidence_json, status, created_at_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'prepared', ?)
+      `).run(
+        batch.id, batch.workspaceId, batch.planRevision, JSON.stringify(batch.changeSetIds),
+        JSON.stringify(batch.repositoryRevisions), JSON.stringify(batch.publicationEvidence),
+        JSON.stringify(batch.deploymentEvidence), nowMs,
+      );
+      const link = this.#database.prepare(`
+        UPDATE hub_release_change_sets SET release_batch_id = ?, updated_at_ms = ? WHERE id = ?
+      `);
+      for (const changeSet of changes) {
+        link.run(batch.id, nowMs, changeSet.id);
+        this.#recordChangeSetEvent({
+          workspaceId: batch.workspaceId,
+          changeSetId: changeSet.id,
+          actorStreamId: null,
+          type: "changeset.release_batch_prepared",
+          payload: { releaseBatchId: batch.id, planRevision: batch.planRevision },
+        });
+      }
+      return releaseBatchFromRow(this.#database.prepare(
+        "SELECT * FROM hub_release_batches WHERE id = ?",
+      ).get(batch.id));
+    });
+  }
+
+  releaseBatches(workspaceId, { limit = 50 } = {}) {
+    const id = safeIdentifier(workspaceId, "workspace id");
+    if (!this.workspace(id)) throw new Error(`workspace not found: ${id}`);
+    const boundedLimit = Math.max(1, Math.min(100, Number(limit) || 50));
+    return this.#database.prepare(`
+      SELECT * FROM hub_release_batches WHERE workspace_id = ?
+      ORDER BY created_at_ms DESC, id LIMIT ?
+    `).all(id, boundedLimit).map(releaseBatchFromRow);
+  }
+
+  changeSetEvents(changeSetId) {
+    const id = normalizedChangeSetId(changeSetId);
+    return this.#database.prepare(`
+      SELECT * FROM hub_release_change_set_events WHERE change_set_id = ?
+      ORDER BY created_at_ms, id
+    `).all(id).map(changeSetEventFromRow);
+  }
+
+  legacyReleaseChangeCoverage(workspaceId) {
+    const id = safeIdentifier(workspaceId, "workspace id");
+    if (!this.workspace(id)) throw new Error(`workspace not found: ${id}`);
+    return this.#database.prepare(`
+      SELECT DISTINCT observation.legacy_release_change_id AS id
+      FROM hub_release_turn_observations observation
+      JOIN hub_release_change_sets change_set ON change_set.id = observation.change_set_id
+      WHERE change_set.workspace_id = ? AND observation.legacy_release_change_id IS NOT NULL
+    `).all(id).map((row) => String(row.id));
   }
 
   recordReleaseChange({

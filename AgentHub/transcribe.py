@@ -4,6 +4,10 @@ import os
 import sys
 from pathlib import Path
 
+from whisper_runtime import configure_nvidia_runtime
+
+configure_nvidia_runtime()
+
 from faster_whisper import WhisperModel
 
 DEFAULT_MODEL = "large-v3-turbo"

@@ -1,4 +1,5 @@
 import { CONTEXT_MAINTENANCE_ACTIVE_ERROR_CODE } from "../domain/deferred-input.mjs";
+import { taskRunKey } from "../domain/task-runs.mjs";
 
 export function isRetryableDeferredLaunchError(error) {
   const code = String(error?.code ?? "").trim().toUpperCase();
@@ -29,6 +30,8 @@ export class DeferredInputController {
     pendingInputs,
     queuedInputs,
     isBlocked,
+    occupancy = async () => ({ occupied: false, waitReason: null }),
+    laneKey = taskRunKey,
     findStarted = async () => null,
     steer = async () => null,
     start,
@@ -45,10 +48,13 @@ export class DeferredInputController {
     maxRetryDelayMs = 30_000,
     setTimeoutImpl = setTimeout,
     clearTimeoutImpl = clearTimeout,
+    commandTrace = null,
   }) {
     this.pendingInputs = pendingInputs;
     this.queuedInputs = queuedInputs;
     this.isBlocked = isBlocked;
+    this.occupancy = occupancy;
+    this.laneKey = laneKey;
     this.findStarted = findStarted;
     this.steer = steer;
     this.start = start;
@@ -65,6 +71,7 @@ export class DeferredInputController {
     this.maxRetryDelayMs = maxRetryDelayMs;
     this.setTimeoutImpl = setTimeoutImpl;
     this.clearTimeoutImpl = clearTimeoutImpl;
+    this.commandTrace = commandTrace;
     this.timers = new Map();
     this.processing = new Set();
   }
@@ -92,14 +99,23 @@ export class DeferredInputController {
 
   async process(id) {
     const item = this.queuedInputs.get(id);
-    if (!item || item.paused === true || this.processing.has(id)) return;
+    if (!item || this.processing.has(id)) return;
+    if (item.paused === true && ![
+      "provider-thread-active", "provider-temporarily-unavailable",
+    ].includes(item.waitReason)) return;
+    if (item.paused === true || item.waitReason === "provider-thread-active") {
+      const occupied = await this.refreshActiveWriterWait(item);
+      if (occupied) return;
+    }
     const oldest = this.oldestForTask(item, { includePending: true });
     if (oldest?.id !== id) {
-      if (!this.pendingInputs.has(oldest?.id)) this.schedule(item);
-      return;
-    }
-    if (item.waitReason === "provider-thread-active" && item.recheckRequested !== true) {
-      await this.pauseForActiveWriter(item);
+      if (this.pendingInputs.has(oldest?.id)) {
+        const released = await this.releaseResolvedTaskConflict(oldest);
+        if (released) this.schedule(oldest, 0);
+        else if (oldest?.conflictKind === "task-running") this.schedule(item);
+      } else {
+        this.schedule(oldest, 0);
+      }
       return;
     }
     delete item.recheckRequested;
@@ -165,9 +181,25 @@ export class DeferredInputController {
       this.onStateChange(item, "dispatching");
       await this.persist();
       let started;
+      const dispatchSpan = this.commandTrace?.startBestEffortSpan?.({
+        commandId: String(item.clientUserMessageId ?? ""),
+        stage: "dispatch",
+        transport: String(item.clientSource ?? "desktop-control").trim().toLowerCase() || "desktop-control",
+        metadata: { itemId: item.id, retryCount: Number(item.attempts ?? 0) },
+      });
       try {
         started = await this.start(item);
+        dispatchSpan?.finish({
+          outcome: "succeeded",
+          queueDepth: this.queuedInputs.size,
+          metadata: { runId: started?.id ?? started?.run?.id ?? null },
+        });
       } catch (error) {
+        dispatchSpan?.finish({
+          outcome: this.isRetryableLaunchError(error, item) ? "queued" : "failed",
+          queueDepth: this.queuedInputs.size,
+          metadata: { errorCode: error?.code ?? null },
+        });
         const retryable = this.isRetryableLaunchError(error, item);
         const waitReason = retryable
           ? deferredLaunchWaitReason(error) ?? "provider-temporarily-unavailable"
@@ -222,6 +254,25 @@ export class DeferredInputController {
     }
   }
 
+  async releaseResolvedTaskConflict(item) {
+    if (!item || item.conflictKind !== "task-running" || !this.pendingInputs.has(item.id)) {
+      return false;
+    }
+    if (await this.isBlocked(item)) return false;
+    this.pendingInputs.delete(item.id);
+    item.conflictKind = null;
+    item.allowForce = false;
+    delete item.lastError;
+    this.queuedInputs.set(item.id, item);
+    this.onStateChange(item, "queued");
+    await this.persist();
+    await this.updateMessage(
+      item,
+      `▶️ Предыдущий ход завершён. Сообщение поставлено в очередь потока «${item.taskTitle}».`,
+    );
+    return true;
+  }
+
   async pauseForActiveWriter(item, options = {}) {
     const previous = Object.getOwnPropertyDescriptors(item);
     item.paused = true;
@@ -242,18 +293,36 @@ export class DeferredInputController {
       this.schedule(item, this.retryDelayMs);
       throw error;
     }
-    this.cancelSchedule(item.id);
     this.onStateChange(item, "paused", options.error);
+    this.schedule(item, this.retryDelayMs);
+  }
+
+  async refreshActiveWriterWait(item) {
+    const current = await this.occupancy(item);
+    if (current?.occupied) {
+      await this.pauseForActiveWriter(item, {
+        waitReason: current.waitReason ?? "provider-thread-active",
+      });
+      return true;
+    }
+    const previous = Object.getOwnPropertyDescriptors(item);
+    delete item.paused;
+    delete item.waitReason;
+    delete item.recheckRequested;
+    try {
+      await this.persist();
+    } catch (error) {
+      for (const key of Reflect.ownKeys(item)) delete item[key];
+      Object.defineProperties(item, previous);
+      this.schedule(item, this.retryDelayMs);
+      throw error;
+    }
+    this.onStateChange(item, "queued");
+    return false;
   }
 
   taskKey(item) {
-    const streamId = String(item?.streamId ?? "").trim();
-    if (streamId) return `stream:${streamId}`;
-    return [
-      String(item?.provider ?? "").toLowerCase(),
-      String(item?.projectRoot ?? "").toLowerCase(),
-      String(item?.threadId ?? "").toLowerCase(),
-    ].join("\0");
+    return this.laneKey(item);
   }
 
   oldestForTask(item, { includePending = false } = {}) {
@@ -265,7 +334,6 @@ export class DeferredInputController {
       : this.queuedInputs.values();
     for (const candidate of candidates) {
       if (this.taskKey(candidate) !== key) continue;
-      if (candidate.paused === true) continue;
       const order = Number(candidate.queueOrder);
       const parsed = Date.parse(String(candidate.createdAt ?? ""));
       const candidateAt = Number.isFinite(order)

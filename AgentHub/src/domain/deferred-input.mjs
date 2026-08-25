@@ -115,7 +115,7 @@ export function restoreDeferredInput(item, {
   guardConcurrentRepositoryWrites = false,
   persistentFile = () => false,
 } = {}) {
-  if (!item?.id || !item?.threadId || !item?.provider) return null;
+  if (!item?.id || !item?.provider || (!item?.threadId && !item?.streamId)) return null;
   const temporaryFiles = Array.isArray(item.temporaryFiles) ? item.temporaryFiles : [];
   const candidate = item.persistentFiles === true
     || !item.clientUserMessageId

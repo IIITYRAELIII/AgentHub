@@ -5,7 +5,7 @@ import { createDesktopApplicationRouter } from "../../../src/interfaces/desktop/
 function router(calls, { omit = [] } = {}) {
   const handler = async (params) => ({ params });
   const handlers = Object.fromEntries([
-    "snapshot", "runtimeHealth", "taskHistory", "rateLimitHistory", "usageHistory", "search", "workspaceMessageSearch",
+    "snapshot", "runtimeHealth", "taskHistory", "rateLimitHistory", "usageHistory", "search", "workspaceMessageSearch", "markTaskRead",
     "openTask", "openTurn", "workspaceMessageOpen", "sendMessage", "taskDiff", "deferredInput",
     "statusDetails", "speakLastAnswer", "restartServer", "setAutostart",
     "updateServerConfiguration", "readPreTurnInstructions", "updateGlobalPreTurnInstructions",
@@ -198,6 +198,17 @@ test("Desktop application router saves Task presentation fields", async () => {
   });
 });
 
+test("Desktop application router marks read outside the command ledger", async () => {
+  const calls = [];
+  const control = router(calls);
+  const result = await control.handleDesktopControl({
+    action: "mark-task-read",
+    params: { final: { provider: "codex", threadId: "thread-1", turnId: "turn-1", revision: 2 } },
+  });
+  assert.equal(result.params.final.revision, 2);
+  assert.deepEqual(calls, []);
+});
+
 test("Desktop application router changes a Task workflow status", async () => {
   const control = router([]);
   const result = await control.handleDesktopControl({
@@ -212,7 +223,7 @@ test("Desktop application router accepts a message beside a blocked mutation", a
   let releaseBlocked;
   const blocked = new Promise((resolve) => { releaseBlocked = resolve; });
   const handlers = Object.fromEntries([
-    "snapshot", "runtimeHealth", "taskHistory", "rateLimitHistory", "usageHistory", "search", "workspaceMessageSearch",
+    "snapshot", "runtimeHealth", "taskHistory", "rateLimitHistory", "usageHistory", "search", "workspaceMessageSearch", "markTaskRead",
     "openTask", "openTurn", "workspaceMessageOpen", "sendMessage", "taskDiff", "deferredInput",
     "statusDetails", "speakLastAnswer", "restartServer", "setAutostart",
     "updateServerConfiguration", "readPreTurnInstructions", "updateGlobalPreTurnInstructions",
@@ -242,7 +253,7 @@ test("Desktop application router accepts a restart beside a blocked mutation", a
   let releaseBlocked;
   const blocked = new Promise((resolve) => { releaseBlocked = resolve; });
   const handlers = Object.fromEntries([
-    "snapshot", "runtimeHealth", "taskHistory", "rateLimitHistory", "usageHistory", "search", "workspaceMessageSearch",
+    "snapshot", "runtimeHealth", "taskHistory", "rateLimitHistory", "usageHistory", "search", "workspaceMessageSearch", "markTaskRead",
     "openTask", "openTurn", "workspaceMessageOpen", "sendMessage", "taskDiff", "deferredInput",
     "statusDetails", "speakLastAnswer", "restartServer", "setAutostart",
     "updateServerConfiguration", "readPreTurnInstructions", "updateGlobalPreTurnInstructions",

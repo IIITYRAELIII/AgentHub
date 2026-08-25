@@ -1,5 +1,10 @@
 import { randomUUID } from "node:crypto";
 
+import {
+  MAINTENANCE_OPERATION_KINDS,
+  MAINTENANCE_OPERATION_STATUSES,
+} from "../../domain/maintenance-operation.mjs";
+
 const DEFAULT_TIMEOUT_MS = 2 * 60 * 1_000;
 const DEFAULT_PROVIDER_TURN_TIMEOUT_MS = 10 * 60 * 1_000;
 const DEFAULT_MAX_ENTRIES = 100;
@@ -30,13 +35,19 @@ function normalizedProbeTurnIds(value) {
 
 function persistedCompaction(record) {
   if (!record || typeof record !== "object") return null;
-  const id = normalizedThreadId(record.id);
-  if (!id) return null;
-  const status = ["running", "completed", "failed", "timeout"].includes(String(record.status))
-    ? String(record.status)
+  const operationId = normalizedThreadId(record.operationId ?? record.id);
+  if (!operationId) return null;
+  const legacyStatus = String(record.status) === "timeout" ? "unknown" : String(record.status);
+  const status = ["running", "completed", "failed", "unknown"].includes(legacyStatus)
+    ? legacyStatus
     : "completed";
   const value = {
-    id,
+    operationId,
+    // Migration guard: keep `id` until one production release has rewritten all
+    // runtime snapshots with operationId; maintenance_operations is authoritative.
+    id: operationId,
+    streamId: normalizedThreadId(record.streamId) || null,
+    revision: Number.isSafeInteger(record.revision) ? record.revision : 1,
     origin: record.origin === "manual" ? "manual" : "automatic",
     status,
     stage: normalizedThreadId(record.stage) || status,
@@ -79,6 +90,8 @@ export class ContextCompactionTracker {
     clearTimer = clearTimeout,
     onSettled = () => {},
     onChanged = () => {},
+    operationStore = null,
+    streamIdForThread = () => null,
   } = {}) {
     this.clock = clock;
     this.idFactory = idFactory;
@@ -90,6 +103,8 @@ export class ContextCompactionTracker {
     this.clearTimer = clearTimer;
     this.onSettled = onSettled;
     this.onChanged = onChanged;
+    this.operationStore = operationStore;
+    this.streamIdForThread = streamIdForThread;
     this.entries = new Map();
     this.timers = new Map();
     this.waiters = new Map();
@@ -157,14 +172,32 @@ export class ContextCompactionTracker {
       const threadId = normalizedThreadId(entry[0]);
       const persisted = persistedCompaction(entry[1]);
       if (!threadId || !persisted) continue;
-      const record = persisted.status === "running"
-        ? {
-          ...persisted,
-          status: "timeout",
-          stage: "timeout",
-          completedAt: restoredAt,
+      let record = persisted;
+      if (this.operationStore) {
+        record = this.#persistOperation(threadId, record, {
+          status: record.status === "completed"
+            ? MAINTENANCE_OPERATION_STATUSES.SUCCEEDED
+            : record.status === "failed"
+              ? MAINTENANCE_OPERATION_STATUSES.FAILED
+              : record.status === "unknown"
+                ? MAINTENANCE_OPERATION_STATUSES.RECONCILING
+                : MAINTENANCE_OPERATION_STATUSES.RUNNING,
+          phase: record.stage || "compacting",
+          outcome: record.status === "unknown" ? "unknown" : null,
+          blockers: record.status === "unknown" ? ["authoritative-state-unknown"] : [],
+        });
+        if (persisted.status === "running") {
+          this.operationStore.recoverInterrupted({ operationIds: [record.operationId] });
+          record = this.#recordFromOperation(record, this.operationStore.get(record.operationId));
         }
-        : persisted;
+      } else if (persisted.status === "running") {
+        record = {
+          ...persisted,
+          status: "unknown",
+          stage: "reconciling",
+          completedAt: restoredAt,
+        };
+      }
       this.entries.set(threadId, record);
     }
   }
@@ -261,6 +294,7 @@ export class ContextCompactionTracker {
 
   begin(threadId, {
     origin = "automatic",
+    streamId = null,
     turnId = null,
     itemId = null,
     startedAt = null,
@@ -284,7 +318,9 @@ export class ContextCompactionTracker {
           : {}),
       }
       : {
-        id: String(itemId ?? "").trim() || this.idFactory(),
+        operationId: String(itemId ?? "").trim() || this.idFactory(),
+        id: String(itemId ?? "").trim() || null,
+        streamId: normalizedThreadId(streamId) || normalizedThreadId(this.streamIdForThread(key)) || null,
         origin: origin === "manual" ? "manual" : "automatic",
         status: "running",
         stage: "compacting",
@@ -298,13 +334,22 @@ export class ContextCompactionTracker {
         startedAt: normalizedTimestamp(startedAt, now),
         completedAt: null,
       };
-    this.store(key, record);
+    record.operationId = normalizedThreadId(record.operationId ?? record.id) || this.idFactory();
+    record.id = record.operationId;
+    record.streamId ||= normalizedThreadId(streamId) || normalizedThreadId(this.streamIdForThread(key)) || null;
+    const persistedRecord = this.#persistOperation(key, record, {
+      status: MAINTENANCE_OPERATION_STATUSES.RUNNING,
+      phase: "compacting",
+      providerTurnId: record.turnId,
+      blockers: [],
+    });
+    this.store(key, persistedRecord);
     this.scheduleTimeout(
       key,
-      record.id,
-      record.turnId ? this.providerTurnTimeoutMs : this.timeoutMs,
+      persistedRecord.operationId,
+      persistedRecord.turnId ? this.providerTurnTimeoutMs : this.timeoutMs,
     );
-    return record;
+    return persistedRecord;
   }
 
   settleProviderTurn(threadId, { turnId = null, status = null } = {}) {
@@ -345,12 +390,19 @@ export class ContextCompactionTracker {
       compactedAt: normalizedTimestamp(compactedAt, now),
       completedAt: null,
     };
-    this.store(key, record);
-    this.scheduleTimeout(key, record.id, this.cleanupTimeoutMs);
-    return record;
+    const persistedRecord = this.#persistOperation(key, record, {
+      status: MAINTENANCE_OPERATION_STATUSES.RUNNING,
+      phase: "cleaning-images",
+      providerTurnId: record.turnId,
+      blockers: [],
+    });
+    this.store(key, persistedRecord);
+    this.scheduleTimeout(key, persistedRecord.operationId, this.cleanupTimeoutMs);
+    return persistedRecord;
   }
 
   complete(threadId, {
+    operationId = null,
     turnId = null,
     itemId = null,
     completedAt = null,
@@ -359,9 +411,12 @@ export class ContextCompactionTracker {
     if (!key) return null;
     const now = new Date(this.clock()).toISOString();
     const existing = this.entries.get(key);
+    if (operationId && existing?.operationId !== operationId) return null;
     const record = {
       ...(existing ?? {
-        id: String(itemId ?? "").trim() || this.idFactory(),
+        operationId: String(itemId ?? "").trim() || this.idFactory(),
+        id: String(itemId ?? "").trim() || null,
+        streamId: normalizedThreadId(this.streamIdForThread(key)) || null,
         origin: "automatic",
         startedAt: now,
       }),
@@ -372,9 +427,18 @@ export class ContextCompactionTracker {
       completedAt: normalizedTimestamp(completedAt, now),
     };
     this.cancelTimeout(key);
-    this.store(key, record);
-    this.notifySettled(key, record);
-    return record;
+    record.operationId = normalizedThreadId(record.operationId ?? record.id) || this.idFactory();
+    record.id = record.operationId;
+    const persistedRecord = this.#persistOperation(key, record, {
+      status: MAINTENANCE_OPERATION_STATUSES.SUCCEEDED,
+      phase: "completed",
+      providerTurnId: record.turnId,
+      outcome: "succeeded",
+      blockers: [],
+    });
+    this.store(key, persistedRecord);
+    this.notifySettled(key, persistedRecord);
+    return persistedRecord;
   }
 
   fail(threadId, expectedId = null) {
@@ -388,8 +452,15 @@ export class ContextCompactionTracker {
       stage: "failed",
       completedAt: new Date(this.clock()).toISOString(),
     };
-    this.store(key, record);
-    this.notifySettled(key, record);
+    const persistedRecord = this.#persistOperation(key, record, {
+      status: MAINTENANCE_OPERATION_STATUSES.FAILED,
+      phase: "failed",
+      providerTurnId: record.turnId,
+      outcome: "failed",
+      blockers: [],
+    });
+    this.store(key, persistedRecord);
+    this.notifySettled(key, persistedRecord);
     return true;
   }
 
@@ -424,18 +495,77 @@ export class ContextCompactionTracker {
     }
   }
 
+  #recordFromOperation(record, operation) {
+    if (!operation) return record;
+    const status = operation.status === MAINTENANCE_OPERATION_STATUSES.SUCCEEDED
+      ? "completed"
+      : operation.status === MAINTENANCE_OPERATION_STATUSES.FAILED
+        ? "failed"
+        : operation.status === MAINTENANCE_OPERATION_STATUSES.RECONCILING
+          ? "unknown"
+          : "running";
+    return {
+      ...record,
+      operationId: operation.operationId,
+      id: operation.operationId,
+      streamId: operation.streamId,
+      turnId: operation.providerTurnId ?? record.turnId ?? null,
+      revision: operation.revision,
+      status,
+      stage: status === "unknown" ? "reconciling" : operation.phase,
+      completedAt: operation.completedAt ?? (status === "unknown" ? operation.updatedAt : record.completedAt),
+    };
+  }
+
+  #persistOperation(threadId, record, patch) {
+    if (!this.operationStore) return record;
+    const streamId = normalizedThreadId(record.streamId) || normalizedThreadId(this.streamIdForThread(threadId));
+    if (!streamId) throw new Error(`Context compaction requires an exact Stream: ${threadId}`);
+    const operationId = normalizedThreadId(record.operationId ?? record.id) || this.idFactory();
+    let operation = this.operationStore.get(operationId);
+    if (!operation) {
+      operation = this.operationStore.create({
+        operationId,
+        kind: MAINTENANCE_OPERATION_KINDS.CONTEXT_COMPACTION,
+        streamId,
+        threadId,
+        providerTurnId: patch.providerTurnId ?? record.turnId,
+        status: patch.status,
+        phase: patch.phase,
+        blockers: patch.blockers,
+        outcome: patch.outcome,
+        metadata: { origin: record.origin, itemId: record.itemId },
+        createdAt: record.startedAt,
+      });
+    } else if (![MAINTENANCE_OPERATION_STATUSES.SUCCEEDED, MAINTENANCE_OPERATION_STATUSES.FAILED]
+      .includes(operation.status)) {
+      operation = this.operationStore.transition(operationId, {
+        ...patch,
+        metadata: { origin: record.origin, itemId: record.itemId },
+      }, { expectedRevision: operation.revision }).operation;
+    }
+    return this.#recordFromOperation({ ...record, operationId, id: operationId, streamId }, operation);
+  }
+
   scheduleTimeout(key, expectedId, timeoutMs = this.timeoutMs) {
     this.cancelTimeout(key);
     const timer = this.setTimer(() => {
       this.timers.delete(key);
       const current = this.entries.get(key);
-      if (!current || current.id !== expectedId || current.status !== "running") return;
-      this.store(key, {
+      if (!current || current.operationId !== expectedId || current.status !== "running") return;
+      const record = this.#persistOperation(key, {
         ...current,
-        status: "timeout",
-        stage: "timeout",
+        status: "unknown",
+        stage: "reconciling",
         completedAt: new Date(this.clock()).toISOString(),
+      }, {
+        status: MAINTENANCE_OPERATION_STATUSES.RECONCILING,
+        phase: "reconciling",
+        providerTurnId: current.turnId,
+        outcome: "unknown",
+        blockers: ["authoritative-state-unknown"],
       });
+      this.store(key, record);
       this.notifySettled(key, this.entries.get(key));
     }, timeoutMs);
     timer?.unref?.();

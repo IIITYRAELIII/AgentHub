@@ -16,10 +16,14 @@ import {
   defaultTestContourRoot,
   installTestContour,
   PLAYWRIGHT_CORE_VERSION,
+  prepareTestContourCodexProviders,
   prepareTestContourCandidate,
   republishTestContourPointer,
   stopTestContour,
   TEST_CONTOUR_MODEL,
+  TEST_CONTOUR_MODELS,
+  TEST_CONTOUR_TERRA_MODEL,
+  TEST_CONTOUR_FAKE_MODEL,
   TEST_CONTOUR_WEB_HOST,
   testContourComponentEnabled,
   testContourConfig,
@@ -162,13 +166,29 @@ test("Test Contour installation is explicit, pinned and removable by owned marke
   }
 });
 
-test("Test Contour config is loopback-only, Spark-backed and environment-isolated", () => {
+test("Test Contour exposes Spark, Terra and accept-all Fake Codex through one runtime", () => {
   const paths = testContourPaths(path.join(os.tmpdir(), "agent-hub-test-contour-config"));
   const config = testContourConfig({
     paths,
     telegramApiBaseUrl: "http://127.0.0.1:43210",
+    realCodexExecutable: "codex-test",
   });
   assert.equal(config.codexModel, TEST_CONTOUR_MODEL);
+  assert.deepEqual(config.codexModels, TEST_CONTOUR_MODELS);
+  assert.ok(config.codexModels.some((item) => item.value === TEST_CONTOUR_TERRA_MODEL));
+  assert.ok(config.codexModels.some((item) => item.value === TEST_CONTOUR_FAKE_MODEL));
+  assert.equal(config.codexExecutable, process.execPath);
+  assert.deepEqual(config.codexExecutableArgs, [
+    paths.codexMultiplexerExecutable,
+    "--real-executable",
+    "codex-test",
+    "--fake-executable",
+    paths.fakeCodexExecutable,
+    "--fake-state",
+    paths.fakeCodexStateFile,
+    "--routing-state",
+    paths.codexMultiplexerStateFile,
+  ]);
   assert.equal(config.codexSandboxMode, "workspace-write");
   assert.equal(config.projectRoot, paths.projectRoot);
   assert.equal(config.diagnostics.sentry.enabled, false);
@@ -179,6 +199,14 @@ test("Test Contour config is loopback-only, Spark-backed and environment-isolate
   assert.throws(
     () => testContourConfig({ paths, telegramApiBaseUrl: "https://api.telegram.org" }),
     /must use 127\.0\.0\.1/u,
+  );
+  assert.throws(
+    () => testContourConfig({
+      paths,
+      telegramApiBaseUrl: "http://127.0.0.1:43210",
+      model: "unknown-model",
+    }),
+    /not available/u,
   );
 
   const environment = testContourEnvironment({
@@ -202,6 +230,34 @@ test("Test Contour config is loopback-only, Spark-backed and environment-isolate
   assert.equal(environment.CODEX_HOME, paths.codexHome);
   assert.equal(environment.AGENT_HUB_RELEASE_ID, "candidate-1");
   assert.equal(environment.PATH, "safe-path");
+});
+
+test("Codex test providers are copied only into the marker-owned Test Contour root", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-test-contour-fake-"));
+  const sourceRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-test-contour-fake-source-"));
+  try {
+    await mkdir(path.join(sourceRoot, "e2e"), { recursive: true });
+    await writeFile(path.join(sourceRoot, "e2e", "fake-codex-app-server.mjs"), "export const fake = true;\n", "utf8");
+    await writeFile(
+      path.join(sourceRoot, "e2e", "test-contour-codex-multiplexer.mjs"),
+      "export const multiplexer = true;\n",
+      "utf8",
+    );
+    await installTestContour({ root, run: async () => null });
+    const copied = await prepareTestContourCodexProviders({ root, sourceRoot });
+    assert.equal(copied.fakeCodexExecutable, testContourPaths(root).fakeCodexExecutable);
+    assert.equal(copied.codexMultiplexerExecutable, testContourPaths(root).codexMultiplexerExecutable);
+    assert.equal(await readFile(copied.fakeCodexExecutable, "utf8"), "export const fake = true;\n");
+    assert.equal(
+      await readFile(copied.codexMultiplexerExecutable, "utf8"),
+      "export const multiplexer = true;\n",
+    );
+  } finally {
+    await Promise.all([
+      rm(root, { recursive: true, force: true }),
+      rm(sourceRoot, { recursive: true, force: true }),
+    ]);
+  }
 });
 
 test("production data clone keeps history but detaches live threads and forces Spark", async () => {

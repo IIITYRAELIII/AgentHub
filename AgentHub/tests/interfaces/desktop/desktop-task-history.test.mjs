@@ -4,7 +4,10 @@ import {
   createDesktopTaskHistoryFactory,
   mergeDurableTaskHistory,
 } from "../../../src/interfaces/desktop/desktop-task-history.mjs";
-import { mergeCompletedTaskHistory } from "../../../src/application/task-history.mjs";
+import {
+  mergeActiveTaskHistory,
+  mergeCompletedTaskHistory,
+} from "../../../src/application/task-history.mjs";
 import {
   CODEX_CONTEXT_PROBE_PROMPT,
   CODEX_CONTEXT_PROBE_RESPONSE,
@@ -849,15 +852,35 @@ test("desktop task history never assigns an old final to an unrelated active tur
 test("desktop task history keeps a saved final beside a later active user turn", async () => {
   const state = fixture({ run: null }).state;
   state.history = [{
-    id: "current-user-turn",
-    prompt: "Почему пропал предыдущий ответ?",
-    answer: "",
-    status: "inProgress",
-    active: true,
-    completed: false,
-    startedAt: "2026-08-08T17:09:19.000Z",
-    messages: [{ role: "user", text: "Почему пропал предыдущий ответ?" }],
+    id: "previous-user-turn",
+    prompt: "Закрепи Fake",
+    answer: "Релиз",
+    status: "completed",
+    active: false,
+    completed: true,
+    startedAt: "2026-08-08T14:00:00.000Z",
+    completedAt: "2026-08-08T14:21:46.000Z",
+    messages: [
+      { role: "user", text: "Закрепи Fake" },
+      { role: "agent", phase: "final", text: "Релиз" },
+    ],
   }];
+  state.run = {
+    provider: "codex",
+    threadId: state.threadId,
+    turnId: "current-user-turn",
+    promptPreview: "Почему пропал предыдущий ответ?",
+    responseText: "",
+    clientUserMessageId: "current-client",
+    userMessages: [{
+      role: "user",
+      clientUserMessageId: "current-client",
+      text: "Почему пропал предыдущий ответ?",
+      time: "2026-08-08T01:01:00.000Z",
+    }],
+    startedAt: "2026-08-08T17:09:19.000Z",
+    messageAttachments: [],
+  };
   const factory = createDesktopTaskHistoryFactory({
     selection: {
       activeProvider: () => state.activeProvider,
@@ -866,26 +889,32 @@ test("desktop task history keeps a saved final beside a later active user turn",
     },
     catalog: { entries: () => state.entries },
     historyReader: { read: async () => ({ history: structuredClone(state.history) }) },
-    runs: { forTask: () => null },
+    runs: { forTask: () => state.run },
     latestMessage: () => ({
       turnId: "previous-user-turn",
       text: "Релиз завершён",
       updatedAt: "2026-08-08T14:21:46.000Z",
+      terminalRevision: 2,
     }),
     historyMerger: {
-      mergeActive() {},
+      mergeActive: mergeActiveTaskHistory,
       mergeCompleted: mergeCompletedTaskHistory,
     },
     responseBudget: { fit: (payload) => payload },
   });
 
-  const result = await factory({ limit: 10, includeActive: false });
+  const result = await factory({ limit: 10 });
 
-  assert.deepEqual(result.items.map((item) => item.id), ["previous-user-turn", "current-user-turn"]);
-  assert.equal(result.items[0].answer, "Релиз завершён");
-  assert.equal(result.items[0].completed, true);
-  assert.equal(result.items[1].answer, "");
-  assert.equal(result.items[1].active, true);
+  assert.deepEqual(result.items.map((item) => item.id), ["current-user-turn", "previous-user-turn"]);
+  const previous = result.items.find((item) => item.id === "previous-user-turn");
+  const current = result.items.find((item) => item.id === "current-user-turn");
+  assert.equal(previous.answer, "Релиз завершён");
+  assert.equal(previous.completed, true);
+  assert.equal(previous.terminalRevision, 2);
+  assert.equal(current.answer, "");
+  assert.equal(current.active, true);
+  assert.equal(current.messages[0].time, "2026-08-08T17:09:19.000Z");
+  assert.equal(current.messages[0].submittedAt, "2026-08-08T01:01:00.000Z");
 });
 
 test("desktop task history returns durable history while provider hydration is still blocked", async () => {

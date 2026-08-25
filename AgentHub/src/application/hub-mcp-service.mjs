@@ -22,6 +22,7 @@ const MUTATING_TOOLS = new Set([
   "hub_task_attachment_add", "hub_workspace_rules_update", "hub_stream_rules_update",
   "hub_stream_message_send",
   "hub_release_change_status", "hub_release_complete",
+  "hub_changeset_freeze", "hub_changeset_status", "hub_changeset_architect_override",
 ]);
 const TEXT_ATTACHMENT_TYPES = new Set([
   "text/plain", "text/markdown", "text/csv", "application/json", "application/xml",
@@ -219,7 +220,9 @@ export class HubMcpService {
   #pendingMutations = new Map();
   #contextCapabilities = new Map();
 
-  constructor({ workspaceCatalog, taskBoard, workLog, attachmentDirectory, secret, releaseCompleter } = {}) {
+  constructor({
+    workspaceCatalog, taskBoard, workLog, attachmentDirectory, secret, releaseCompleter, releaseChangeSets,
+  } = {}) {
     for (const name of [
       "resolveThread", "workspace", "hierarchy", "releaseRegistry", "releasePlan",
       "updateReleaseChangeStatus", "releaseChanges", "developerRulesForStream",
@@ -234,12 +237,16 @@ export class HubMcpService {
     }
     requiredMethod(workLog, "threadTurns");
     requiredMethod(releaseCompleter, "completeRelease");
+    for (const name of [
+      "list", "freeze", "setStatus", "architectOverride", "classifyLegacy", "releaseBatches",
+    ]) requiredMethod(releaseChangeSets, name);
     this.workspaceCatalog = workspaceCatalog;
     this.taskBoard = taskBoard;
     this.workLog = workLog;
     this.attachmentDirectory = path.resolve(requiredText(attachmentDirectory, "attachment directory", 2_000));
     this.secret = requiredText(secret, "MCP secret", 512);
     this.releaseCompleter = releaseCompleter;
+    this.releaseChangeSets = releaseChangeSets;
   }
 
   setActiveRuns(value) {
@@ -345,6 +352,58 @@ export class HubMcpService {
         verification_summary: { type: "string" },
         conflicts_resolved: { type: "boolean", description: "True only after the Architect explicitly resolves every reported overlap." },
       }, ["expected_plan_revision", "deployment_verified", "verification_summary"]),
+      tool("hub_changesets_list", "Read logical REL-001 ChangeSets and their TurnObservations for the current Workspace.", {
+        include_closed: { type: "boolean", default: false },
+      }),
+      tool("hub_changeset_freeze", "Explicitly freeze an owner Stream ChangeSet after server-side Git verification of exact repository and file evidence.", {
+        change_set_id: { type: "string" },
+        title: { type: "string", default: "" },
+        repositories: {
+          type: "array",
+          minItems: 1,
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              project_root: { type: "string" },
+              base_revision: { type: "string" },
+              result_revision: { type: "string" },
+            },
+            required: ["project_root", "base_revision", "result_revision"],
+          },
+        },
+        files: {
+          type: "array",
+          minItems: 1,
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              project_root: { type: "string" },
+              path: { type: "string" },
+              operation: { type: "string", enum: ["added", "modified", "deleted"] },
+              base_blob: { type: "string", description: "Exact Git object id or absent." },
+              result_blob: { type: "string", description: "Exact Git object id or absent." },
+              patch_hash: { type: "string", default: "" },
+            },
+            required: ["project_root", "path", "operation", "base_blob", "result_blob"],
+          },
+        },
+      }, ["change_set_id", "repositories", "files"]),
+      tool("hub_changeset_status", "Reopen or discard a ChangeSet owned by the current Stream; ready requires freeze.", {
+        change_set_id: { type: "string" },
+        status: { type: "string", enum: ["draft", "discarded"] },
+        reason: { type: "string", default: "" },
+      }, ["change_set_id", "status"]),
+      tool("hub_changeset_architect_override", "Audited Architect-only reopen or discard override for a current-Workspace ChangeSet.", {
+        change_set_id: { type: "string" },
+        status: { type: "string", enum: ["draft", "discarded"] },
+        reason: { type: "string" },
+      }, ["change_set_id", "status", "reason"]),
+      tool("hub_legacy_release_classifier", "Read migration diagnostics for active legacy release entries without changing them."),
+      tool("hub_release_batches_list", "Read prepared REL-001 ReleaseBatch records without changing the legacy release pipeline.", {
+        limit: { type: "integer", minimum: 1, maximum: 100, default: 50 },
+      }),
       tool("hub_events_list", "Read bounded persistent Workspace events after a cursor; this never holds a long poll.", {
         after_sequence: { type: "integer", minimum: 0, default: 0 },
         limit: { type: "integer", minimum: 1, maximum: 100, default: 50 },
@@ -464,6 +523,60 @@ export class HubMcpService {
           verificationSummary: optionalText(args.verification_summary, 2_000) ?? "",
           conflictsResolved: args.conflicts_resolved === true,
         });
+      case "hub_changesets_list":
+        return {
+          workspaceId: context.workspaceId,
+          changeSets: this.releaseChangeSets.list({
+            workspaceId: context.workspaceId,
+            includeClosed: args.include_closed === true,
+          }),
+        };
+      case "hub_changeset_freeze":
+        return this.releaseChangeSets.freeze({
+          workspaceId: context.workspaceId,
+          actorStreamId: context.streamId,
+          changeSetId: args.change_set_id,
+          title: args.title,
+          repositories: (Array.isArray(args.repositories) ? args.repositories : []).map((repository) => ({
+            projectRoot: repository.project_root,
+            baseRevision: repository.base_revision,
+            resultRevision: repository.result_revision,
+          })),
+          files: (Array.isArray(args.files) ? args.files : []).map((file) => ({
+            projectRoot: file.project_root,
+            path: file.path,
+            operation: file.operation,
+            baseBlob: file.base_blob,
+            resultBlob: file.result_blob,
+            patchHash: file.patch_hash,
+          })),
+        });
+      case "hub_changeset_status":
+        return this.releaseChangeSets.setStatus({
+          workspaceId: context.workspaceId,
+          actorStreamId: context.streamId,
+          changeSetId: args.change_set_id,
+          status: args.status,
+          reason: args.reason,
+        });
+      case "hub_changeset_architect_override":
+        return this.releaseChangeSets.architectOverride({
+          workspaceId: context.workspaceId,
+          actorStreamId: context.streamId,
+          changeSetId: args.change_set_id,
+          status: args.status,
+          reason: args.reason,
+        });
+      case "hub_legacy_release_classifier":
+        return this.releaseChangeSets.classifyLegacy({ workspaceId: context.workspaceId });
+      case "hub_release_batches_list":
+        return {
+          workspaceId: context.workspaceId,
+          releaseBatches: this.releaseChangeSets.releaseBatches({
+            workspaceId: context.workspaceId,
+            limit: args.limit,
+          }),
+        };
       case "hub_events_list":
         return this.#events(context, args);
       case "hub_mcp_operations_list":

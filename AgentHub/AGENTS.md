@@ -2,6 +2,20 @@
 
 ## Architecture and reliability
 
+- Before changing Agent Hub behavior, read `docs/contracts/README.md` and every
+  contract selected by `docs/contracts/registry.json` for the affected paths.
+  Treat those contracts as the current accepted product behavior, not as
+  optional documentation. Use `npm run contracts:affected -- <path>` instead of
+  guessing which contract owns a changed file.
+- Every Agent Hub `CHANGELOG.md` entry must include a `Контракты` field with the
+  affected contract IDs or the explicit value `none`. A behavior change that
+  contradicts an accepted contract must update that contract and add an ADR in
+  the same coherent change; never silently redefine the behavior in code or a
+  test.
+- Before marking a change ready, state which contract invariants were preserved,
+  which observable evidence was checked, and which known migration gaps remain.
+  A passing narrow test does not override a violated contract.
+
 - Fix lifecycle, delivery, queue, persistence, and ownership defects at the
   boundary that owns the violated invariant. Do not hide backend inconsistency
   in the UI, introduce a second state owner, or add another reconciliation path

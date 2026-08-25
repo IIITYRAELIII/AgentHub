@@ -10,6 +10,7 @@ export class RestartNotificationService {
     completeMessageState,
     menu,
     finalizeReplacement,
+    completeOperation = () => {},
     logger = console,
   }) {
     Object.assign(this, {
@@ -23,6 +24,7 @@ export class RestartNotificationService {
       completeMessageState,
       menu,
       finalizeReplacement,
+      completeOperation,
       logger,
     });
   }
@@ -66,6 +68,7 @@ export class RestartNotificationService {
   async finalize() {
     const request = this.getRequest();
     if (!request) return false;
+    await this.completeOperation(request.operationId);
     if (request.notifyTelegram !== true) {
       this.setRequest(null);
       await this.saveState();

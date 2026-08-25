@@ -44,6 +44,7 @@ export class DurableCommandReceipts {
   #effectStaleMs;
   #effectMaxAgeMs;
   #projectResult;
+  #onTrace;
   #migrationPending = false;
 
   constructor({
@@ -56,6 +57,7 @@ export class DurableCommandReceipts {
     effectStaleMs = 60_000,
     effectMaxAgeMs = 5 * 60_000,
     projectResult = null,
+    onTrace = null,
   }) {
     this.#file = path.resolve(file);
     this.#maxItems = Math.max(100, Math.trunc(maxItems) || 2_000);
@@ -70,6 +72,7 @@ export class DurableCommandReceipts {
       ? Math.trunc(effectMaxAgeMs)
       : 5 * 60_000);
     this.#projectResult = typeof projectResult === "function" ? projectResult : null;
+    this.#onTrace = typeof onTrace === "function" ? onTrace : null;
   }
 
   async #load({ fresh = false } = {}) {
@@ -121,7 +124,7 @@ export class DurableCommandReceipts {
     this.#migrationPending = false;
   }
 
-  #withLock(operation) {
+  #withLock(operation, traceContext = null) {
     return withInterprocessLocks([this.#file], async () => {
       await this.#load({ fresh: true });
       try {
@@ -129,6 +132,14 @@ export class DurableCommandReceipts {
       } finally {
         if (this.#migrationPending) await this.#persist();
       }
+    }, {
+      onAcquired: ({ waitMs, lockCount }) => {
+        try {
+          this.#onTrace?.({ ...traceContext, waitMs, lockCount });
+        } catch {
+          // Receipt timing cannot affect command durability.
+        }
+      },
     });
   }
 
@@ -140,7 +151,7 @@ export class DurableCommandReceipts {
     return Date.now() - startedAtMs < this.#effectStaleMs;
   }
 
-  async #settle(commandId, fingerprint, { result, phase = "completed", error = null, effectToken = null }) {
+  async #settle(commandId, fingerprint, { result, phase = "completed", error = null, effectToken = null }, traceContext) {
     return this.#withLock(async () => {
       const record = this.#records.get(commandId);
       if (!record || record.fingerprint !== fingerprint) {
@@ -170,10 +181,10 @@ export class DurableCommandReceipts {
       await this.#persist();
       if (error) throw new Error(record.error);
       return record.result;
-    });
+    }, traceContext);
   }
 
-  async execute({ id, fingerprint, action, effect, reconcile = null }) {
+  async execute({ id, fingerprint, action, effect, reconcile = null, traceContext = null }) {
     const commandId = String(id ?? "").trim();
     const requestFingerprint = String(fingerprint ?? "").trim();
     if (!commandId || !requestFingerprint || typeof effect !== "function") {
@@ -189,6 +200,7 @@ export class DurableCommandReceipts {
     const operation = this.#execute(
       { commandId, requestFingerprint, action, effect, reconcile },
       Date.now() + this.#effectWaitTimeoutMs,
+      { ...traceContext, commandId, retryCount: 0 },
     );
     this.#inFlight.set(commandId, { fingerprint: requestFingerprint, operation });
     try {
@@ -221,7 +233,7 @@ export class DurableCommandReceipts {
     });
   }
 
-  async #execute({ commandId, requestFingerprint, action, effect, reconcile }, deadline) {
+  async #execute({ commandId, requestFingerprint, action, effect, reconcile }, deadline, traceContext) {
     const decision = await this.#withLock(async () => {
       let record = this.#records.get(commandId);
       if (record && record.fingerprint !== requestFingerprint) {
@@ -263,20 +275,24 @@ export class DurableCommandReceipts {
       record.effectOwner = { token: randomUUID(), pid: process.pid };
       await this.#persist();
       return { kind: "effect", effectToken: record.effectOwner.token };
-    });
+    }, traceContext);
     if (decision.kind === "result") return decision.result;
     if (decision.kind === "wait") {
       if (Date.now() >= deadline) {
         throw new DurableCommandRetryableError("command effect is still active in another process");
       }
       await delay(Math.min(this.#effectWaitMs, Math.max(1, deadline - Date.now())));
-      return this.#execute({ commandId, requestFingerprint, action, effect, reconcile }, deadline);
+      return this.#execute(
+        { commandId, requestFingerprint, action, effect, reconcile },
+        deadline,
+        { ...traceContext, retryCount: Number(traceContext?.retryCount ?? 0) + 1 },
+      );
     }
     if (decision.kind === "reconcile") {
       if (typeof reconcile !== "function") {
         return this.#settle(commandId, requestFingerprint, {
           error: "command outcome is unknown after an interrupted effect",
-        });
+        }, traceContext);
       }
       try {
         const reconciliation = await reconcile(decision.record);
@@ -284,7 +300,7 @@ export class DurableCommandReceipts {
           if (reconciliation?.terminal === true) {
             return this.#settle(commandId, requestFingerprint, {
               error: reconciliation.error || "command outcome is unknown after an interrupted effect",
-            });
+            }, traceContext);
           }
           throw new DurableCommandRetryableError(
             reconciliation?.error || "command reconciliation is not complete",
@@ -293,18 +309,18 @@ export class DurableCommandReceipts {
         return this.#settle(commandId, requestFingerprint, {
           result: reconciliation.result,
           phase: "reconciled",
-        });
+        }, traceContext);
       } catch (error) {
         if (error instanceof DurableCommandRetryableError) throw error;
-        return this.#settle(commandId, requestFingerprint, { error });
+        return this.#settle(commandId, requestFingerprint, { error }, traceContext);
       }
     }
     let result;
     try {
       result = await effect();
     } catch (error) {
-      return this.#settle(commandId, requestFingerprint, { error, effectToken: decision.effectToken });
+      return this.#settle(commandId, requestFingerprint, { error, effectToken: decision.effectToken }, traceContext);
     }
-    return this.#settle(commandId, requestFingerprint, { result, effectToken: decision.effectToken });
+    return this.#settle(commandId, requestFingerprint, { result, effectToken: decision.effectToken }, traceContext);
   }
 }

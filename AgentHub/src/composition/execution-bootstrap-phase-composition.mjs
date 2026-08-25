@@ -154,6 +154,7 @@ export function createExecutionBootstrapPhase({
       providerTurnTelemetryStore: infrastructure.providerTurnTelemetryStore,
       taskReadStateStore: infrastructure.taskReadStateStore,
       runtimeStateStore: infrastructure.runtimeStateStore,
+      commandTrace: infrastructure.commandTrace,
     },
     lifecycle: {
       restartRequestService: interaction.restartRequestService,

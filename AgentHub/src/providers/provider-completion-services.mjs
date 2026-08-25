@@ -29,7 +29,7 @@ export class CodexCompletionService {
     for (const name of [
       "runForTask", "consumeTracker", "waitForCompletion", "readThread",
       "readTurnUsage", "applyRolloutContext", "finalizeDelivery", "finishProgress",
-      "completedAnswer", "rememberSeenTurn", "rememberLastMessage", "releaseAdmission",
+      "completedAnswer", "rememberSeenTurn", "rememberLastMessage",
     ]) requiredFunction(dependencies[name], name);
     this.#d = dependencies;
   }
@@ -38,7 +38,6 @@ export class CodexCompletionService {
     run.status = "finishing";
     await this.#d.rememberSeenTurn(run, completedTurnId);
     this.#rememberTerminalAnswer(run, completedTurnId, answer, snapshot);
-    await this.#d.releaseAdmission(run);
     let resolvedTracker = tracker ?? this.#d.consumeTracker(completedTurnId);
     if (run.executionOwner !== TASK_EXECUTION_OWNERS.HUB) {
       const hooked = await this.#d.waitForCompletion({
@@ -81,7 +80,6 @@ export class CodexCompletionService {
       || run.responseText.trim()
       || "Ход завершён без текстового ответа.";
     this.#rememberTerminalAnswer(run, completedTurnId, answer, snapshot);
-    await this.#d.releaseAdmission(run);
     let tracker = this.#d.consumeTracker(completedTurnId);
     tracker = await this.#resolvePricing(run, completedTurnId, tracker);
     const forceSpeechButton = await this.#releaseTurnResources(completedTurnId);
@@ -109,7 +107,6 @@ export class CodexCompletionService {
     const answer = await this.#d.completedAnswer(run, completedTurnId, eventTurn)
       || (error ? `Ошибка: ${error}` : `Поток завершён: ${status}`);
     this.#rememberTerminalAnswer(run, completedTurnId, answer, eventTurn);
-    await this.#d.releaseAdmission(run);
     let tracker = this.#d.consumeTracker(completedTurnId);
     tracker = await this.#resolvePricing(run, completedTurnId, tracker);
     const forceSpeechButton = await this.#releaseTurnResources(completedTurnId);

@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "contracts": [
+    {
+      "id": "SYS-001",
+      "title": "Accepted decisions and ownership",
+      "document": "SYS-001-decision-governance.md",
+      "paths": ["AGENTS.md", "docs/**", "syntax-check.mjs", "package.json"]
+    },
+    {
+      "id": "MSG-001",
+      "title": "Durable message command",
+      "document": "MSG-001-durable-message-command.md",
+      "paths": ["src/interfaces/desktop/**", "src/application/deferred-input*", "src/application/run-coordinator.mjs", "src/infrastructure/persistence/durable-command-receipts.mjs", "src/infrastructure/persistence/runtime-state*"]
+    },
+    {
+      "id": "TURN-001",
+      "title": "Terminal turn commit and delivery",
+      "document": "TURN-001-terminal-delivery.md",
+      "paths": ["src/providers/**", "src/application/turn-end-delivery-service.mjs", "src/application/managed-run*", "src/infrastructure/persistence/provider-turn*"]
+    },
+    {
+      "id": "UI-001",
+      "title": "Canonical message projection",
+      "document": "UI-001-message-projection.md",
+      "paths": ["assets/web-app/**", "src/interfaces/desktop/desktop-read-model-service.mjs", "src/interfaces/desktop/desktop-task-service.mjs", "src/infrastructure/persistence/task-read-state-store.mjs"]
+    },
+    {
+      "id": "RST-001",
+      "title": "Restart and maintenance recovery",
+      "document": "RST-001-restart-recovery.md",
+      "paths": ["src/application/restart-request-service.mjs", "src/providers/codex/context-compaction*", "src/runtime/**", "assets/web-app/startup-screen.js"]
+    },
+    {
+      "id": "PERF-001",
+      "title": "Local command latency",
+      "document": "PERF-001-local-latency.md",
+      "paths": ["assets/web-app/connection-quality.js", "assets/web-app/hub-client.js", "src/interfaces/desktop/**", "src/infrastructure/persistence/**", "src/application/run-coordinator.mjs"]
+    },
+    {
+      "id": "REL-001",
+      "title": "Logical release ChangeSet",
+      "document": "REL-001-logical-changeset.md",
+      "paths": ["src/application/workspace-release-service.mjs", "src/application/run-journal-service.mjs", "src/application/hub-mcp-service.mjs", "src/application/release-change-set*.mjs", "src/application/legacy-release-change-classifier.mjs", "src/domain/release-change-set.mjs", "src/infrastructure/persistence/workspace-catalog-store.mjs", "src/infrastructure/filesystem/task-git-diff.mjs", "src/infrastructure/filesystem/legacy-release-file-probe.mjs", "src/infrastructure/filesystem/release-change-set-git-verifier.mjs", "release-registry-cli.mjs"]
+    }
+  ]
+}

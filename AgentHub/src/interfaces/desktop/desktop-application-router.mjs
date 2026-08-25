@@ -25,6 +25,9 @@ const CONCURRENT_MUTATION_ACTIONS = Object.freeze([
  */
 const LOCAL_ONLY_ACTIONS = Object.freeze([
   "update-server-configuration",
+  "command-trace-timeline",
+  "command-trace-percentiles",
+  "command-trace-stats",
 ]);
 const DEVICE_PAIRING_SOURCES = new Set(["desktop-control", "local-mini-app", "trusted-device"]);
 
@@ -33,12 +36,12 @@ function requiredFunction(value, name) {
   return value;
 }
 
-export function createDesktopApplicationRouter({ handlers, commands, receiptFile, reconcileMutation }) {
+export function createDesktopApplicationRouter({ handlers, commands, receiptFile, reconcileMutation, commandTrace = null }) {
   if (!handlers || typeof handlers !== "object") throw new TypeError("desktop handlers are required");
   requiredFunction(commands?.dispatch, "commands.dispatch");
   requiredFunction(commands?.settingTarget, "commands.settingTarget");
   for (const name of [
-    "snapshot", "runtimeHealth", "taskHistory", "rateLimitHistory", "usageHistory", "search", "workspaceMessageSearch",
+    "snapshot", "runtimeHealth", "taskHistory", "rateLimitHistory", "usageHistory", "search", "workspaceMessageSearch", "markTaskRead",
     "openTask", "openTurn", "workspaceMessageOpen", "sendMessage", "taskDiff", "deferredInput",
     "statusDetails", "speakLastAnswer", "restartServer", "setAutostart",
     "updateServerConfiguration", "readPreTurnInstructions", "updateGlobalPreTurnInstructions",
@@ -64,6 +67,7 @@ export function createDesktopApplicationRouter({ handlers, commands, receiptFile
       "usage-history": handlers.usageHistory,
       search: handlers.search,
       "workspace-message-search": handlers.workspaceMessageSearch,
+      "mark-task-read": handlers.markTaskRead,
       "open-task": handlers.openTask,
       "open-turn": handlers.openTurn,
       "workspace-message-open": handlers.workspaceMessageOpen,
@@ -127,6 +131,9 @@ export function createDesktopApplicationRouter({ handlers, commands, receiptFile
       "board-column-move": handlers.boardColumnMove,
       "board-column-comment": handlers.boardColumnComment,
       "board-workspace-move": handlers.boardWorkspaceMove,
+      "command-trace-timeline": handlers.commandTraceTimeline,
+      "command-trace-percentiles": handlers.commandTracePercentiles,
+      "command-trace-stats": handlers.commandTraceStats,
     },
     mutationActions: MUTATION_ACTIONS,
     concurrentMutationActions: CONCURRENT_MUTATION_ACTIONS,
@@ -140,5 +147,6 @@ export function createDesktopApplicationRouter({ handlers, commands, receiptFile
     desktopMaxResponseBytes: 3_500_000,
     receiptFile,
     reconcileMutation,
+    commandTrace,
   });
 }

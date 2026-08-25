@@ -16,6 +16,7 @@ import {
   retainProgressMessageAfterEditError,
 } from "../runtime/progress-heartbeat.mjs";
 import { taskRunIsActive, taskRunKey, updateTaskRunTitle } from "../domain/task-runs.mjs";
+import { restartUiProjection } from "../domain/maintenance-operation.mjs";
 import { taskViewCallbackData } from "../interfaces/telegram/task-view-callback.mjs";
 import {
   mergeTaskCatalog,
@@ -86,13 +87,7 @@ export function createInteractionShellPhase({
     serverReleaseId: server.releaseId,
     shortcutPath: server.autostartShortcutPath,
     activeRunCount: () => provider.taskRuns.values().filter(taskRunIsActive).length,
-    restartSnapshot: () => ({
-      pending: Boolean(selection.hostState.restartRequest),
-      waiting: selection.hostState.restartRequest?.waitingForRuns === true,
-      blockingCount: selection.hostState.restartRequest
-        ? api.restartBlockingRuns().length + provider.backgroundJobs.size
-        : 0,
-    }),
+    restartSnapshot: () => restartUiProjection(selection.hostState.restartRequest),
     desktopSnapshot: api.desktopSnapshot,
     spawnCapture: provider.spawnCapture,
     preTurnInstructions: infrastructure.preTurnInstructions,
@@ -169,6 +164,7 @@ export function createInteractionShellPhase({
       pendingInputs: provider.pendingInputs,
       queuedInputs: provider.queuedInputs,
       contextCompactions: provider.contextCompactions,
+      maintenanceOperations: provider.maintenanceOperations,
       approvalController: clients.approvalController,
       taskDiffs: provider.taskDiffs,
       managedRunLifecycle: provider.managedRunLifecycle,
@@ -324,6 +320,7 @@ export function createInteractionShellPhase({
       sendMessageTo: clients.sendMessageTo,
       saveState: api.saveState,
       streamHandoff: infrastructure.streamHandoff,
+      commandTrace: infrastructure.commandTraceService,
     },
     diff: {
       capture: taskGitDiff,

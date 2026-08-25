@@ -18,7 +18,15 @@
     return upper;
   }
 
-  window.AgentHubTaskCardSizing = Object.freeze({ fitWidth: fitTaskCardWidth });
+  function fitTaskCardHeight({ contentHeight, maxHeight } = {}) {
+    const maximum = Math.max(1, Math.floor(Number(maxHeight) || 0));
+    return Math.min(maximum, Math.max(1, Math.ceil(Number(contentHeight) || 0)));
+  }
+
+  window.AgentHubTaskCardSizing = Object.freeze({
+    fitHeight: fitTaskCardHeight,
+    fitWidth: fitTaskCardWidth,
+  });
 
   function createAutoGrowTextarea({ textarea, getStyle = (element) => window.getComputedStyle(element) } = {}) {
     function resize() {
@@ -344,6 +352,7 @@
     taskCardEditorSizingFrame = null;
     if (!taskCardModal?.open || !taskCardContent) return;
     taskCardModal.style.removeProperty("inline-size");
+    taskCardModal.style.removeProperty("block-size");
     taskCardModal.removeAttribute("data-width-expanded");
     taskCardTitleSizer.resize();
     taskCardDescriptionSizer.resize();
@@ -379,7 +388,12 @@
         + modalBorders;
     };
     const desiredWidth = fitTaskCardWidth({ baseWidth, maxWidth, maxHeight, measureHeight });
+    const desiredHeight = fitTaskCardHeight({
+      contentHeight: measureHeight(desiredWidth),
+      maxHeight,
+    });
     taskCardModal.style.setProperty("inline-size", `${desiredWidth}px`);
+    taskCardModal.style.setProperty("block-size", `${desiredHeight}px`);
     if (desiredWidth > baseWidth + 1) taskCardModal.setAttribute("data-width-expanded", "");
     taskCardTitleSizer.resize();
     taskCardDescriptionSizer.resize();
@@ -640,6 +654,7 @@
     renderOpenTaskCard();
     taskCardModal.showModal?.();
     if (!taskCardModal.open) taskCardModal.setAttribute("open", "");
+    if (taskCardContent) taskCardContent.scrollTop = 0;
     scheduleTaskCardEditorSizing();
   }
 

@@ -743,6 +743,10 @@ export function mergeCompletedTaskHistory(history, completedTurn = {}, {
   current.completed = true;
   current.status = "completed";
   current.answer = answer;
+  const terminalRevision = Number(completedTurn.terminalRevision);
+  if (Number.isSafeInteger(terminalRevision) && terminalRevision > 0) {
+    current.terminalRevision = terminalRevision;
+  }
   if (!Array.isArray(current.activities)) current.activities = [];
   if (!Array.isArray(current.activityGroups)) current.activityGroups = [];
   const completedAt = normalizedTimestamp(completedTurn.completedAt ?? completedTurn.updatedAt);

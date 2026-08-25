@@ -495,6 +495,8 @@ test("legacy release registry gains a revision without losing its change", async
   });
 
   assert.equal(store.releasePlan("workspace").ready[0].revision, 1);
+  assert.equal(store.releasePlan("workspace").ready[0].status, "ready");
+  assert.deepEqual(store.changeSets("workspace"), []);
 });
 
 test("Workspace and Stream developer rules keep versioned revisions", async (t) => {

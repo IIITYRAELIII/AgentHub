@@ -57,6 +57,8 @@ export function createCodexObservabilityComposition({
   resolveTaskByProviderRef,
   globalWorkLogProjectRoots,
   isHistoricalBackfillIdle,
+  operationStore,
+  streamIdForThread,
 }) {
   const rolloutPathsByProviderTaskId = new Map();
   const compactions = new ContextCompactionTracker({
@@ -74,6 +76,8 @@ export function createCodexObservabilityComposition({
         console.warn(`Cannot persist context compaction state: ${error.message}`);
       }
     },
+    operationStore,
+    streamIdForThread,
   });
   const usageTracker = new CodexUsageTracker({
     onContext: (context) => {

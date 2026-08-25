@@ -30,6 +30,7 @@ test("Codex task service creates, names and discovers tasks through its port", a
     bindCreatedThread: (binding) => calls.push(["bind", binding]),
     activeProjectRoot: () => "D:/workspace",
     sandboxMode: () => "workspace-write",
+    model: () => "fake-codex",
     invalidateCatalog: () => calls.push("invalidate"),
     restoreSettings: (...args) => calls.push(["restore", ...args]),
     updateSettings: async () => calls.push("settings"),
@@ -43,6 +44,10 @@ test("Codex task service creates, names and discovers tasks through its port", a
   assert.match(state.title, /^Telegram · /u);
   assert.equal(state.diff, "");
   assert.equal(created.threadId, "thread-1");
+  assert.equal(
+    calls.find((call) => Array.isArray(call) && call[0] === "thread/start")[1].model,
+    "fake-codex",
+  );
   assert.deepEqual(calls.find((call) => Array.isArray(call) && call[0] === "bind"), ["bind", {
     provider: "codex",
     threadId: "thread-1",

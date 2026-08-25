@@ -6,10 +6,15 @@ import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
 import {
+  configureRuntimeDatabase,
   readRuntimeState,
   runtimeDatabasePath,
   RuntimeStateStore,
 } from "../../../src/infrastructure/persistence/runtime-state-store.mjs";
+import {
+  holdRuntimeWriteLock,
+  messageCommandFixture,
+} from "../../fixtures/message-command-ledger.mjs";
 
 test("runtime state migrates from JSON to SQLite and archives both legacy copies", async (context) => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "agent-hub-runtime-state-"));
@@ -97,41 +102,127 @@ test("runtime state worker preserves JSON semantics for non-cloneable transient 
   await store.close();
 });
 
-test("deferred message intake survives before the next full runtime snapshot", async (context) => {
+test("durable message intake survives full snapshots and same-id retries", async (context) => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "agent-hub-runtime-intake-"));
   context.after(() => rm(dataDir, { recursive: true, force: true }));
-  const item = {
-    id: "deferred-1",
-    provider: "codex",
-    threadId: "thread-1",
-    clientUserMessageId: "client-message-1",
-    conflictKind: "message-intake",
-    createdAt: "2026-08-24T06:00:00.000Z",
-  };
-  const receipt = {
-    provider: "codex",
-    threadId: "thread-1",
-    clientUserMessageId: "client-message-1",
-    fingerprint: "fingerprint-1",
-    result: { deferred: true, id: "deferred-1" },
-    createdAt: "2026-08-24T06:00:00.000Z",
-  };
+  const { item, receipt } = messageCommandFixture();
   const store = new RuntimeStateStore({ dataDir });
   await store.save({ pendingInputs: [], queuedInputs: [], desktopMessageReceipts: [] });
-  await store.saveDeferredIntake({ item, destination: "queued", receipt });
+  const first = await store.saveDeferredIntake({ item, destination: "queued", receipt });
+  const retry = await store.saveDeferredIntake({ item, destination: "queued", receipt });
+  assert.equal(first.duplicate, false);
+  assert.equal(retry.duplicate, true);
+  assert.equal(store.messageCommands().length, 1);
+  assert.throws(() => store.saveDeferredIntake({
+    item,
+    destination: "queued",
+    receipt: { ...receipt, fingerprint: "changed-fingerprint" },
+  }), (error) => error.code === "MESSAGE_RECEIPT_FINGERPRINT_MISMATCH");
+  await store.save({ pendingInputs: [], queuedInputs: [], desktopMessageReceipts: [] });
   await store.close();
 
   const restored = new RuntimeStateStore({ dataDir });
   const loaded = await restored.load();
-  assert.deepEqual(loaded.value.queuedInputs, [item]);
-  assert.deepEqual(loaded.value.desktopMessageReceipts, [receipt]);
-  await restored.save({ pendingInputs: [], queuedInputs: [], desktopMessageReceipts: [] });
-  await restored.close();
-
-  assert.deepEqual(await readRuntimeState(dataDir), {
+  const [restoredQueuedItem] = loaded.value.queuedInputs;
+  const {
+    occupancyKey: restoredOccupancyKey,
+    occupancyBinding: restoredOccupancyBinding,
+    queueOrder: restoredQueueOrder,
+    ...restoredLegacyFields
+  } = restoredQueuedItem;
+  assert.deepEqual(restoredLegacyFields, item);
+  assert.equal(restoredOccupancyBinding, "exact");
+  assert.match(restoredOccupancyKey, /\0thread-1$/u);
+  assert.equal(Number.isFinite(restoredQueueOrder), true);
+  assert.equal(loaded.value.desktopMessageReceipts[0].clientUserMessageId, item.clientUserMessageId);
+  assert.equal(loaded.value.desktopMessageReceipts[0].result.queued, true);
+  await restored.save({
+    activeRuns: [],
+    pendingInputs: [],
+    queuedInputs: [{ ...item, dispatchingAt: "2026-08-24T06:00:01.000Z" }],
+    desktopMessageReceipts: [receipt],
+  });
+  assert.equal(restored.messageCommands()[0].state, "dispatching");
+  await restored.save({
+    activeRuns: [{
+      id: "run-1",
+      turnId: "turn-1",
+      clientUserMessageId: item.clientUserMessageId,
+    }],
     pendingInputs: [],
     queuedInputs: [],
-    desktopMessageReceipts: [],
+    desktopMessageReceipts: [{
+      ...receipt,
+      result: { accepted: true, runId: "run-1", turnId: "turn-1" },
+    }],
   });
+  assert.equal(restored.messageCommands()[0].state, "started");
+  await restored.save({
+    activeRuns: [],
+    pendingInputs: [],
+    queuedInputs: [],
+    desktopMessageReceipts: [{
+      ...receipt,
+      result: { accepted: false, cancelled: true },
+    }],
+  });
+  await restored.close();
+
+  const terminal = await readRuntimeState(dataDir);
+  assert.deepEqual(terminal.pendingInputs, []);
+  assert.deepEqual(terminal.queuedInputs, []);
+  assert.equal(terminal.desktopMessageReceipts[0].result.cancelled, true);
+});
+
+test("message intake commits while a full runtime snapshot is blocked", async (context) => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "agent-hub-runtime-intake-load-"));
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const store = new RuntimeStateStore({ dataDir });
+  const releaseRuntimeLock = holdRuntimeWriteLock(dataDir);
+  const fullSave = store.save({ sequence: 1, payload: "x".repeat(1_000_000) });
+  const { item, receipt } = messageCommandFixture({ clientUserMessageId: "load-message" });
+
+  let intakeOutcome;
+  try {
+    intakeOutcome = await Promise.race([
+      store.saveDeferredIntake({ item, destination: "queued", receipt }).then(() => "committed"),
+      new Promise((resolve) => setTimeout(() => resolve("blocked"), 250)),
+    ]);
+  } finally {
+    releaseRuntimeLock();
+  }
+
+  assert.equal(intakeOutcome, "committed");
+  await fullSave;
+  await store.close();
+});
+
+test("legacy deferred intake is dual-read and migrated into the command ledger", async (context) => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "agent-hub-runtime-intake-legacy-"));
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const { item, receipt } = messageCommandFixture({ clientUserMessageId: "legacy-message" });
+  const database = new DatabaseSync(runtimeDatabasePath(dataDir));
+  configureRuntimeDatabase(database);
+  database.prepare(`
+    INSERT INTO runtime_deferred_intake (
+      id, destination, item_json, receipt_json, created_at, updated_at
+    ) VALUES (?, 'queued', ?, ?, ?, ?)
+  `).run(item.id, JSON.stringify(item), JSON.stringify(receipt), item.createdAt, item.createdAt);
+  database.close();
+
+  const store = new RuntimeStateStore({ dataDir });
+  const loaded = await store.load();
+  const [migratedItem] = loaded.value.queuedInputs;
+  const { occupancyKey, occupancyBinding, queueOrder, ...legacyFields } = migratedItem;
+  assert.deepEqual(legacyFields, item);
+  assert.equal(occupancyBinding, "exact");
+  assert.match(occupancyKey, /\0thread-1$/u);
+  assert.equal(queueOrder, Date.parse(item.createdAt));
+  assert.equal(store.messageCommands()[0].clientUserMessageId, "legacy-message");
+  await store.save({ pendingInputs: [], queuedInputs: [], desktopMessageReceipts: [] });
+  await store.close();
+
+  const [restoredItem] = (await readRuntimeState(dataDir)).queuedInputs;
+  assert.deepEqual(restoredItem, migratedItem);
 });
 

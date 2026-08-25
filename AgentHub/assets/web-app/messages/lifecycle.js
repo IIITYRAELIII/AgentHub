@@ -14,7 +14,7 @@ function identityKey(message, { withoutItem = false } = {}) {
 }
 
 function clientIdentityKey(message) {
-  const clientUserMessageId = String(message?.clientUserMessageId ?? "");
+  const clientUserMessageId = String(message?.clientUserMessageId ?? message?.submissionId ?? "");
   const role = String(message?.role ?? "");
   if (!clientUserMessageId || role !== "user") return "";
   // clientUserMessageId is the global idempotency key of one submission.
@@ -27,7 +27,7 @@ function submissionIdentityKeys(message) {
   if (message?.role !== "user") return [];
   return [...new Set([
     String(message?.clientUserMessageId ?? "").trim(),
-    String(message?.itemId ?? "").trim(),
+    String(message?.submissionId ?? "").trim(),
   ].filter(Boolean))].map((value) => `submission:${value}`);
 }
 
@@ -101,6 +101,8 @@ function completedLiveAnswer(previous, selected) {
   const currentAnswerAt = String(selected?.lastAnswerAt ?? "").trim();
   const baselineAnswerAt = String(previous?.snapshotLastAnswerAt ?? "").trim();
   if (answer && answerTurnId && answerTurnId === previousTurnId) return answer;
+  // UI-001 migration guard for snapshots persisted before lastAnswerTurnId.
+  // Remove after every retained terminal snapshot carries provider turn identity.
   if (answer && !answerTurnId && currentAnswerAt && currentAnswerAt !== baselineAnswerAt) return answer;
   const previousPhase = String(previous?.responsePhase ?? "").trim();
   return ["final", "final_answer", "finalAnswer"].includes(previousPhase)
@@ -190,6 +192,7 @@ function latestAnswerTransition(previous, current) {
   if (!previous || !current) return false;
   if (String(previous.provider ?? "") !== String(current.provider ?? "")
     || String(previous.threadId ?? "") !== String(current.threadId ?? "")) return false;
+  if (Number(current.lastAnswerRevision) > Number(previous.lastAnswerRevision)) return true;
   return Boolean(previous.running && !current.running)
     || String(previous.lastAnswerAt ?? "") !== String(current.lastAnswerAt ?? "")
     || String(previous.lastAnswerTurnId ?? "") !== String(current.lastAnswerTurnId ?? "")
@@ -372,12 +375,47 @@ function historyContainsLatestAnswer(history, task, { expectedTurnId: pendingTur
         : []),
     ].filter(Boolean);
     if (!expectedAnswer) return texts.length > 0;
+    if (expectedTurnId) return texts.some((text) => text === expectedAnswer);
+    // UI-001 migration guard for legacy history without provider turn identity.
+    // Remove after all retained history items carry provider + threadId + turnId.
     return texts.some((text) => (
       text === expectedAnswer
       || text.startsWith(expectedAnswer)
       || expectedAnswer.startsWith(text)
     ));
   });
+}
+
+function displayedFinalAcknowledgement({
+  messages = [],
+  final = null,
+  focusedTurn = null,
+  selectTask = false,
+  selectedTaskId = "",
+  taskId = "",
+} = {}) {
+  if (focusedTurn) return false;
+  const openedTaskId = String(taskId ?? "").trim();
+  const selected = selectTask === true || (
+    openedTaskId && openedTaskId === String(selectedTaskId ?? "").trim()
+  );
+  if (!selected) return false;
+  const provider = String(final?.provider ?? "").trim().toLowerCase();
+  const threadId = String(final?.threadId ?? "").trim();
+  const turnId = String(final?.turnId ?? "").trim();
+  const revision = Number(final?.revision);
+  if (!provider || !threadId || !turnId || !Number.isSafeInteger(revision) || revision < 1) return false;
+  return (Array.isArray(messages) ? messages : []).some((message) => (
+    ["agent", "assistant"].includes(String(message?.role ?? "").trim())
+    && String(message?.provider ?? "").trim().toLowerCase() === provider
+    && String(message?.threadId ?? "").trim() === threadId
+    && String(message?.turnId ?? "").trim() === turnId
+    && Number(message?.terminalRevision) === revision
+    && (
+      ["completed", "failed", "cancelled"].includes(String(message?.projectionState ?? "").trim().toLowerCase())
+      || ["final", "final_answer", "finalanswer"].includes(String(message?.phase ?? "").trim().toLowerCase())
+    )
+  ));
 }
 
 function completionCatchUpTurnId(previous, current) {
@@ -613,11 +651,7 @@ function completedConversationTurnVisible(messages, {
     .filter(Boolean);
   const expectedAnswer = String(answer ?? "").trim();
   if (expectedAnswer) {
-    return agentTexts.some((text) => (
-      text === expectedAnswer
-      || text.startsWith(expectedAnswer)
-      || expectedAnswer.startsWith(text)
-    ));
+    return agentTexts.some((text) => text === expectedAnswer);
   }
   return requireAgent ? agentTexts.length > 0 : true;
 }
@@ -632,11 +666,9 @@ function reconcile(serverMessages, outgoingMessages) {
     if (client) clientOutgoing.set(client, message);
     const exact = identityKey(message);
     if (exact) exactOutgoing.set(exact, message);
-    // Codex sometimes omits client_id while it is materializing the first
-    // user item of a newly started turn. The turn root is still a stable
-    // identity: provider + thread + turn + its first user position. Steer
-    // messages deliberately never take this fallback because their position
-    // in a turn is not known to the optimistic client.
+    // UI-001 migration guard for Codex history written without client_id.
+    // Remove after every retained root item carries clientUserMessageId/submissionId.
+    // Steer messages never take this exact provider-turn-root fallback.
     if (message?.turnUserSlot === "root") {
       const root = turnRootUserKey(message);
       if (root) rootOutgoing.set(root, message);
@@ -650,10 +682,8 @@ function reconcile(serverMessages, outgoingMessages) {
     const client = clientOutgoing.get(serverClientIdentity);
     const exact = exactOutgoing.get(serverItemIdentity);
     const rootMessage = isTurnRootUser(server, index);
-    // A new-turn optimistic message is bound to the exact turn before Codex
-    // has finished materializing its user item. Some App Server revisions can
-    // replace the supplied client id on that root item. The root position is
-    // still unambiguous; steer messages never receive turnUserSlot="root".
+    // UI-001 migration guard for root items whose legacy App Server revision
+    // omitted/replaced client_id. Remove with the rootOutgoing guard above.
     const root = rootMessage
       ? rootOutgoing.get(turnRootUserKey(message))
       : null;
@@ -711,27 +741,33 @@ function contextProbeClientId(value) {
   return String(value ?? "").trim().startsWith(CONTEXT_PROBE_CLIENT_ID_PREFIX);
 }
 
-function contextProbeText(value) {
+function legacyContextProbeTextMigrationGuard(value) {
+  // Removal condition: all pre-UI-001 probe records carry operationKind=probe.
+  // Text is classification evidence only and never an entity identity.
   const text = String(value ?? "").trim();
   return text === CONTEXT_PROBE_PROMPT || text.startsWith(CONTEXT_PROBE_RESPONSE_PREFIX);
 }
 
 function contextProbeRun(run) {
   if (!run) return false;
+  if (String(run.operationKind ?? "").trim() === "probe") return true;
+  if (String(run.operationKind ?? "").trim()) return false;
   if ([
     run.clientUserMessageId,
     ...(Array.isArray(run.userMessages) ? run.userMessages : []).map((message) => (
       message?.clientUserMessageId ?? message?.clientId
     )),
   ].some(contextProbeClientId)) return true;
-  if (contextProbeText(run.prompt ?? run.promptPreview)) return true;
+  if (legacyContextProbeTextMigrationGuard(run.prompt ?? run.promptPreview)) return true;
   return (Array.isArray(run.userMessages) ? run.userMessages : [])
-    .some((message) => contextProbeText(message?.text));
+    .some((message) => legacyContextProbeTextMigrationGuard(message?.text));
 }
 
 function contextProbeMessage(message) {
+  if (String(message?.operationKind ?? "").trim() === "probe") return true;
+  if (String(message?.operationKind ?? "").trim()) return false;
   return contextProbeClientId(message?.clientUserMessageId ?? message?.clientId)
-    || contextProbeText(message?.text);
+    || legacyContextProbeTextMigrationGuard(message?.text);
 }
 
 function withoutContextProbeMessages(messages) {
@@ -788,6 +824,8 @@ function visibleConversationMessages(messages, {
 }
 
 function withoutSupersededCompactionFailures(messages) {
+  // UI-001 migration guard. Remove the text/time branches after persisted
+  // maintenance messages all carry operationKind, operationId and revision.
   const values = Array.isArray(messages) ? messages : [];
   const latestCompletedAtByThread = new Map();
   const threadKey = (message) => (
@@ -1307,6 +1345,7 @@ globalThis.AgentHubMessageLifecycle = Object.freeze({
   contextProbeRun,
   conversationMessageAuthor,
   deduplicateConversationMessages,
+  displayedFinalAcknowledgement,
   embeddedResponseAnnotations,
   hubErrorMessage,
   httpControlError,

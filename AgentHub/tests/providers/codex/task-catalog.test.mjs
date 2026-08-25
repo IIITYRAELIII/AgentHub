@@ -969,6 +969,20 @@ test("rollout activity exposes current and final messages without thread/read", 
   assert.equal(activity.completedAtMsByTurnId["turn-1"], Date.parse(completedAt));
 });
 
+test("rollout activity preserves a final answer longer than forty thousand characters", () => {
+  const finalAnswer = `Начало\n${"x".repeat(40_100)}\nКонец`;
+  const activity = parseCodexRolloutActivity(JSON.stringify({
+    type: "event_msg",
+    payload: {
+      type: "task_complete",
+      turn_id: "long-final",
+      last_agent_message: finalAnswer,
+    },
+  }));
+
+  assert.equal(activity.finalMessages["long-final"], finalAnswer);
+});
+
 test("concurrent rollout messages stay attached to their response_item turn ids", () => {
   const entry = (timestamp, type, payload) => JSON.stringify({ timestamp, type, payload });
   const assistant = (turnId, text) => entry("2026-07-22T12:00:00.000Z", "response_item", {

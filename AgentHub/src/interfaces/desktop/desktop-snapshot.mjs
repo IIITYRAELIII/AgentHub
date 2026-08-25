@@ -13,6 +13,7 @@ import { taskDisplayTitle } from "../../domain/task-display-title.mjs";
 import { taskRunIsActive } from "../../domain/task-runs.mjs";
 import { claudeModelOptions } from "../../domain/agent-runtime-settings.mjs";
 import { presentContextUsageBreakdown } from "../../domain/context-usage-breakdown.mjs";
+import { restartUiProjection } from "../../domain/maintenance-operation.mjs";
 import { deferredLaunchWaitReason } from "../../application/deferred-input-controller.mjs";
 import { createSnapshotCollectionDelta } from "./snapshot-collection-delta.mjs";
 
@@ -632,20 +633,15 @@ export function createDesktopSnapshotFactory({
       : claudeReasoningLabels;
     const activeCount = taskSnapshots.filter((item) => item.running).length;
     const restartRequest = restart.request();
-    const restartBlockingCount = restartRequest
-      ? restart.blockingRuns().length
-        + restart.mediaJobCount()
-        + restart.speechJobCount()
-      : 0;
-    const restartWaiting = Boolean(restartRequest) && (
-      restartRequest.waitingForRuns === true || restartBlockingCount > 0
-    );
+    const restartProjection = restartUiProjection(restartRequest);
+    const restartBlockingCount = restartProjection.blockingCount;
+    const restartWaiting = restartProjection.waiting;
     phaseStartedAt = monotonicNow();
     const serverSnapshot = typeof server.snapshot === "function"
       ? await server.snapshot({
         activeCount,
         restart: {
-          pending: Boolean(restartRequest),
+          pending: restartProjection.pending,
           waiting: restartWaiting,
           blockingCount: restartBlockingCount,
         },
@@ -777,7 +773,7 @@ export function createDesktopSnapshotFactory({
         return (Number.isFinite(leftAt) ? leftAt : Number.POSITIVE_INFINITY)
           - (Number.isFinite(rightAt) ? rightAt : Number.POSITIVE_INFINITY);
       }),
-      restartPending: Boolean(restartRequest),
+      restartPending: restartProjection.pending,
       restartWaiting,
       restartBlockingCount,
       exchangeRates: exchangeRates?.snapshot?.() ?? null,

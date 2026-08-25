@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   AGENT_HUB_VERSION,
   readAgentHubPackage,
+  readAgentHubReleaseVersion,
   readAgentHubVersion,
 } from "../../../src/infrastructure/filesystem/agent-hub-package.mjs";
 import {
@@ -18,6 +19,31 @@ import {
 test("Agent Hub package metadata is the canonical product version", () => {
   assert.equal(readAgentHubVersion(), AGENT_HUB_VERSION);
   assert.equal(readAgentHubPackage().name, "agent-hub");
+});
+
+test("runtime manifest adds the visible same-day release sequence", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-runtime-version-"));
+  const packageFile = path.join(root, "package.json");
+  const manifestFile = path.join(root, "runtime-manifest.json");
+  try {
+    await writeFile(packageFile, JSON.stringify({ name: "agent-hub", version: "2026.8.25" }), "utf8");
+    assert.equal(readAgentHubReleaseVersion({ packageFile, manifestFile }), "2026.8.25");
+    await writeFile(manifestFile, JSON.stringify({
+      version: "2026.8.25",
+      releaseVersion: "2026.8.25.2",
+    }), "utf8");
+    assert.equal(readAgentHubReleaseVersion({ packageFile, manifestFile }), "2026.8.25.2");
+    await writeFile(manifestFile, JSON.stringify({
+      version: "2026.8.25",
+      releaseVersion: "2026.8.24.9",
+    }), "utf8");
+    assert.throws(
+      () => readAgentHubReleaseVersion({ packageFile, manifestFile }),
+      /invalid release version/u,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("Agent Hub package metadata rejects missing and invalid versions", async () => {

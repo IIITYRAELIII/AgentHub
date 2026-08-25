@@ -30,6 +30,7 @@ export function createDesktopRunRouterWiring({
       maxItems: constants.maxDeferredInputs,
       persist: services.saveState,
       persistIntake: services.persistDeferredIntake,
+      commandTrace: services.commandTrace,
       removeFiles: (files) => Promise.all(files.map((file) => unlink(file).catch(() => {}))),
       notify: async (item, { executionOwner, conflictTask }) => {
         const preview = runInputPreview(item.input);
@@ -106,6 +107,7 @@ export function createDesktopRunRouterWiring({
       receipts: services.receipts,
       persistReceipts: services.saveState,
       durableIntake: true,
+      commandTrace: services.commandTrace,
     },
     desktopDeferredInput: {
       pendingInputs: services.pendingInputs,
@@ -190,6 +192,7 @@ export function createDesktopRunRouterWiring({
       usageHistory: desktop.usageHistory,
       search: desktop.search,
       workspaceMessageSearch: desktop.workspaceMessageSearch,
+      markTaskRead: desktop.markTaskRead,
       openTask: desktop.openTask,
       openTurn: desktop.openTurn,
       workspaceMessageOpen: desktop.openTurn,
@@ -224,9 +227,16 @@ export function createDesktopRunRouterWiring({
       boardColumnMove: (params) => taskBoardController.moveColumn(params),
       boardColumnComment: (params) => taskBoardController.updateColumnComment(params),
       boardWorkspaceMove: (params) => taskBoardController.moveWorkspace(params),
+      commandTraceTimeline: (params) => services.commandTrace.readCommandTimeline(
+        params?.commandId,
+        { limit: params?.limit },
+      ),
+      commandTracePercentiles: (params) => services.commandTrace.readStagePercentiles(params),
+      commandTraceStats: () => services.commandTrace.backpressureStats(),
     },
     commands: desktop.applicationCommands,
     receiptFile: path.join(config.dataDir, "desktop-control-receipts.json"),
+    commandTrace: services.commandTrace,
   });
 
   return {

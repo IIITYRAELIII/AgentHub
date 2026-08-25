@@ -17,6 +17,23 @@ from AgentHub.install import (
     request_safe_restart,
     resolve_components,
 )
+from AgentHub.whisper_runtime import nvidia_runtime_directories
+
+
+class WhisperRuntimeTests(unittest.TestCase):
+    def test_windows_runtime_discovers_installed_cublas_and_cudnn(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            prefix = Path(directory)
+            cublas = prefix / "Lib" / "site-packages" / "nvidia" / "cublas" / "bin"
+            cudnn = prefix / "Lib" / "site-packages" / "nvidia" / "cudnn" / "bin"
+            cublas.mkdir(parents=True)
+            cudnn.mkdir(parents=True)
+
+            self.assertEqual(
+                nvidia_runtime_directories(prefix, platform="win32"),
+                (cublas, cudnn),
+            )
+            self.assertEqual(nvidia_runtime_directories(prefix, platform="linux"), ())
 
 
 class ComponentSelectionTests(unittest.TestCase):

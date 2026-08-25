@@ -6,6 +6,20 @@ const stateArgument = process.argv.indexOf("--state");
 const statePath = stateArgument >= 0 ? process.argv[stateArgument + 1] : "";
 const pidFileArgument = process.argv.indexOf("--pid-file");
 const pidFilePath = pidFileArgument >= 0 ? process.argv[pidFileArgument + 1] : "";
+const acceptAll = process.argv.includes("--accept-all");
+if (process.argv.includes("--require-test-contour")) {
+  const runtimeRoot = path.resolve(String(process.env.AGENT_HUB_RUNTIME_ROOT ?? ""));
+  const resolvedStatePath = path.resolve(statePath || ".");
+  const relativeStatePath = path.relative(runtimeRoot, resolvedStatePath);
+  if (process.env.AGENT_HUB_TEST_CONTOUR !== "1"
+    || process.env.AGENT_HUB_TEST_CONTOUR_PROFILE !== "fake-codex"
+    || !statePath
+    || !runtimeRoot
+    || relativeStatePath.startsWith("..")
+    || path.isAbsolute(relativeStatePath)) {
+    throw new Error("Fake Codex is restricted to its owned Test Contour runtime");
+  }
+}
 if (pidFilePath) writeFileSync(pidFilePath, `${process.pid}\n`, "utf8");
 const initialState = {
   nextThread: 1,
@@ -174,6 +188,11 @@ function startTurn(params) {
     turnId: turn.id,
     delta: `Проверяю сценарий: ${prompt}`,
   }), 25);
+
+  if (acceptAll) {
+    schedule(() => finishTurn(thread, turn, { answer: "Принято" }), 120);
+    return turn;
+  }
 
   if (prompt.includes("[auto-compact]")) {
     const compactionItem = { id: `${turn.id}:context-compaction`, type: "contextCompaction" };
@@ -344,12 +363,14 @@ function resumeInterruptedTurns() {
   for (const thread of state.threads) {
     for (const turn of thread.turns.filter((item) => (
       item.status === "inProgress"
-      && (
+      && (acceptAll || (
         item.prompt.includes("[crash-once]")
         || item.prompt === "Ответь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1"
-      )
+      ))
     ))) {
-      schedule(() => finishTurn(thread, turn, { answer: `Восстановлено: ${turn.prompt}` }), 250);
+      schedule(() => finishTurn(thread, turn, {
+        answer: acceptAll ? "Принято" : `Восстановлено: ${turn.prompt}`,
+      }), 250);
     }
   }
 }
@@ -377,13 +398,36 @@ function handleRequest(message) {
       preview: "",
       updatedAt: Math.floor(Date.now() / 1000),
       turns: [],
-      model: "gpt-5.6-sol",
-      reasoningEffort: "high",
+      model: String(params.model ?? "fake-codex"),
+      reasoningEffort: String(params.effort ?? "medium"),
       archived: false,
     };
     state.threads.push(thread);
     loadedThreadIds.add(thread.id);
     save();
+    reply(id, { thread: publicThread(thread) });
+    return;
+  }
+  if (method === "thread/ensure") {
+    const threadId = String(params.threadId ?? "").trim();
+    if (!threadId) return send({ id, error: { message: "threadId is required" } });
+    let thread = threadById(threadId);
+    if (!thread) {
+      thread = {
+        id: threadId,
+        cwd: params.cwd,
+        name: String(params.name ?? "Новая тестовая задача"),
+        preview: "",
+        updatedAt: Math.floor(Date.now() / 1000),
+        turns: [],
+        model: String(params.model ?? "fake-codex"),
+        reasoningEffort: String(params.effort ?? "medium"),
+        archived: false,
+      };
+      state.threads.push(thread);
+      save();
+    }
+    loadedThreadIds.add(thread.id);
     reply(id, { thread: publicThread(thread) });
     return;
   }
@@ -418,6 +462,15 @@ function handleRequest(message) {
     if (!thread) return send({ id, error: { message: `thread not found: ${params.threadId}` } });
     save();
     reply(id, { thread: publicThread(thread, params.includeTurns !== false) });
+    return;
+  }
+  if (method === "thread/loaded/list") {
+    reply(id, {
+      data: state.threads
+        .filter((thread) => !thread.archived && loadedThreadIds.has(thread.id))
+        .map((thread) => thread.id),
+      nextCursor: null,
+    });
     return;
   }
   if (method === "thread/turns/list") {
@@ -464,10 +517,9 @@ function handleRequest(message) {
   }
   if (method === "thread/settings/update") {
     const thread = threadById(params.threadId);
-    if (thread) {
-      thread.model = params.model;
-      thread.reasoningEffort = params.effort;
-    }
+    if (!thread) return send({ id, error: { message: `thread not found: ${params.threadId}` } });
+    thread.model = params.model;
+    thread.reasoningEffort = params.effort;
     save();
     reply(id, { threadSettings: { model: params.model, reasoningEffort: params.effort } });
     return;
@@ -475,6 +527,19 @@ function handleRequest(message) {
   if (method === "thread/archive") {
     const thread = threadById(params.threadId);
     if (thread) thread.archived = true;
+    save();
+    reply(id, {});
+    return;
+  }
+  if (method === "thread/unsubscribe") {
+    loadedThreadIds.delete(params.threadId);
+    reply(id, {});
+    return;
+  }
+  if (method === "thread/delete") {
+    const index = state.threads.findIndex((thread) => thread.id === params.threadId);
+    if (index >= 0) state.threads.splice(index, 1);
+    loadedThreadIds.delete(params.threadId);
     save();
     reply(id, {});
     return;

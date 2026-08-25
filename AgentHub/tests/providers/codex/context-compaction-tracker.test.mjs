@@ -167,7 +167,7 @@ test("an unavailable measurement never becomes a fabricated zero", () => {
   tracker.dispose();
 });
 
-test("a missing completion becomes a bounded timeout instead of staying active forever", () => {
+test("a missing completion becomes unknown until reconciliation", () => {
   let callback = null;
   let now = Date.parse("2026-07-31T18:20:00.000Z");
   const settled = [];
@@ -184,9 +184,10 @@ test("a missing completion becomes a bounded timeout instead of staying active f
   tracker.begin("thread-3");
   now += 120_000;
   callback();
-  assert.equal(tracker.get("thread-3").status, "timeout");
+  assert.equal(tracker.get("thread-3").status, "unknown");
+  assert.equal(tracker.get("thread-3").stage, "reconciling");
   assert.equal(tracker.isRunning("thread-3"), false);
-  assert.equal(settled[0].record.status, "timeout");
+  assert.equal(settled[0].record.status, "unknown");
   tracker.dispose();
 });
 
@@ -220,8 +221,8 @@ test("a confirmed provider turn replaces the request-start watchdog with a bound
 
   now += 5 * 60_000;
   [...scheduled.values()][0].handler();
-  assert.equal((await settlement)?.status, "timeout");
-  assert.equal(tracker.get("thread-provider-turn").stage, "timeout");
+  assert.equal((await settlement)?.status, "unknown");
+  assert.equal(tracker.get("thread-provider-turn").stage, "reconciling");
   assert.equal(tracker.isRunning("thread-provider-turn"), false);
   tracker.dispose();
 });
@@ -240,7 +241,7 @@ test("an interrupted provider turn settles its pending compaction", async () => 
   tracker.dispose();
 });
 
-test("a running compaction becomes a timeout immediately after process restart", () => {
+test("a running compaction becomes unknown immediately after process restart", () => {
   const now = Date.parse("2026-08-11T00:15:00.000Z");
   let scheduled = 0;
   const tracker = new ContextCompactionTracker({
@@ -263,10 +264,13 @@ test("a running compaction becomes a timeout immediately after process restart",
   ]]);
 
   assert.deepEqual(tracker.get("thread-restarted"), {
+    operationId: "interrupted-compaction",
     id: "interrupted-compaction",
+    streamId: null,
+    revision: 1,
     origin: "automatic",
-    status: "timeout",
-    stage: "timeout",
+    status: "unknown",
+    stage: "reconciling",
     turnId: null,
     itemId: null,
     captureRawItem: false,
@@ -277,6 +281,23 @@ test("a running compaction becomes a timeout immediately after process restart",
   });
   assert.equal(tracker.isRunning("thread-restarted"), false);
   assert.equal(scheduled, 0);
+  tracker.dispose();
+});
+
+test("a reordered completion cannot settle a newer compaction operation", () => {
+  let nextId = 0;
+  const tracker = new ContextCompactionTracker({
+    idFactory: () => "operation-" + (++nextId),
+  });
+  const first = tracker.begin("thread-reorder");
+  tracker.fail("thread-reorder", first.operationId);
+  const second = tracker.begin("thread-reorder");
+
+  assert.equal(tracker.complete("thread-reorder", {
+    operationId: first.operationId,
+  }), null);
+  assert.equal(tracker.get("thread-reorder").operationId, second.operationId);
+  assert.equal(tracker.get("thread-reorder").status, "running");
   tracker.dispose();
 });
 

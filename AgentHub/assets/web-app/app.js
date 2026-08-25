@@ -8241,6 +8241,7 @@ const {
   limitPriceStatistics,
   meanSignedComparisonDeviation,
   recoverRateLimitResetGaps,
+  selectCurrentLimitSeries,
   signedComparisonDeviations,
 } = globalThis.AgentHubRateLimitSeries;
 
@@ -8425,50 +8426,7 @@ function formatResetCountdown(point) {
 }
 
 function currentLimitSeries(payload) {
-  const currentAccountKey = String(payload?.currentAccount?.key ?? "");
-  const available = (Array.isArray(payload?.series) ? payload.series : [])
-    .filter((series) => Array.isArray(series.points) && series.points.length)
-    .map((series) => {
-      const provider = String(series.name ?? "").toLowerCase();
-      const codex = provider === "codex" || provider === "spark";
-      if (!codex || !currentAccountKey) return { ...series, point: series.points.at(-1) };
-      const point = series.points.findLast((item) => (
-        String(item?.accountKey ?? "") === currentAccountKey
-      )) ?? (series.accountKey === currentAccountKey ? series.points.at(-1) : null);
-      return point ? { ...series, point } : null;
-    })
-    .filter(Boolean);
-  const pickCodex = (name) => {
-    const matches = available.filter((series) => String(series.name).toLowerCase() === name);
-    return matches.find((series) => series.window === "primary");
-  };
-  const claudeWeek = available.find((series) => series.id === "claude:week");
-  return [
-    pickCodex("codex"),
-    pickCodex("spark"),
-    ...available
-      .filter((series) => String(series.name).toLowerCase() === "claude")
-      .sort((left, right) => {
-        const order = (series) => (
-          series.window === "week" ? 0 : series.window === "session" ? 1 : 2
-        );
-        return order(left) - order(right)
-          || String(left.window).localeCompare(String(right.window), "ru");
-      }),
-  ].filter(Boolean).map((series) => {
-    const id = String(series.id ?? "");
-    const label = id.startsWith("claude:model:")
-      ? String(series.window || "Claude")
-      : id === "claude:session"
-        ? "Claude session"
-        : id === "claude:week"
-          ? "Claude"
-          : String(series.name || series.id || "");
-    const point = id.startsWith("claude:model:") && !series.point?.resetsText
-      ? { ...series.point, resetsText: claudeWeek?.point?.resetsText ?? "" }
-      : series.point;
-    return { ...series, label, point };
-  });
+  return selectCurrentLimitSeries(payload);
 }
 
 function renderCurrentLimits() {
@@ -8515,7 +8473,10 @@ function renderCurrentLimits() {
         ring,
         el("span", { class: "current-limit-copy" }, [
           el("span", { class: "current-limit-primary" }, [
-            el("span", { class: "current-limit-name", text: item.label }),
+            el("span", {
+              class: "current-limit-name",
+              text: item.windowLabel ? `${item.label} · ${item.windowLabel}` : item.label,
+            }),
             el("strong", {
               class: "current-limit-value",
               text: Number.isFinite(remaining) ? `${remaining.toFixed(1)}%` : "—",

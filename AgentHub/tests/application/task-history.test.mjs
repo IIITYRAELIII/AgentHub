@@ -40,6 +40,7 @@ test("completed history overlay replaces a stale live answer immediately", () =>
     turnId: "turn-1",
     answer: "Финальный ответ",
     completedAt: "2026-08-03T12:00:00.000Z",
+    terminalRevision: 2,
   });
 
   assert.equal(history[0].active, false);
@@ -48,6 +49,7 @@ test("completed history overlay replaces a stale live answer immediately", () =>
   assert.equal(history[0].answer, "Финальный ответ");
   assert.equal(history[0].messages[0].text, "Финальный ответ");
   assert.equal(history[0].messages[0].phase, "final");
+  assert.equal(history[0].terminalRevision, 2);
 });
 
 test("completed history overlay preserves the live activity trace", () => {

@@ -62,6 +62,24 @@ test("message receipt identity survives a provider thread rebind", async () => {
   assert.notEqual(taskReferenceFingerprint, anotherTaskReferenceFingerprint);
 });
 
+test("message fingerprint can use immutable attachment identities without reading files", async () => {
+  const first = await messageRequestFingerprint({
+    text: "Проверь",
+    attachmentIdentities: [{ id: "upload-1--image.png" }],
+  }, { readAttachment: async () => assert.fail("attachment content must stay outside intake") });
+  const retry = await messageRequestFingerprint({
+    text: "Проверь",
+    attachmentIdentities: [{ id: "upload-1--image.png" }],
+  }, { readAttachment: async () => assert.fail("attachment content must stay outside intake") });
+  const another = await messageRequestFingerprint({
+    text: "Проверь",
+    attachmentIdentities: [{ id: "upload-2--image.png" }],
+  });
+
+  assert.equal(first, retry);
+  assert.notEqual(first, another);
+});
+
 test("message receipts deduplicate the same client message after a thread rebind", async () => {
   const registry = new MessageReceiptRegistry();
   const fingerprint = await messageRequestFingerprint({ text: "Проверь" });

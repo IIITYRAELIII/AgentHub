@@ -287,6 +287,54 @@ export class SharedDashboardBotClient {
     return { ...command, params: { ...command.params, attachments } };
   }
 
+  async #handleCommand(rawCommand) {
+    let command;
+    let outcome;
+    try {
+      command = await this.#prepareCommand(this.#validateCommand(rawCommand));
+      const result = await this.#handler({
+        action: command.action,
+        params: command.params,
+        context: {
+          source: "shared-dashboard-bot",
+          userId: command.userId,
+          commandId: command.id,
+          clientId: `shared-dashboard-bot:${command.userId}`,
+        },
+      });
+      outcome = { id: command.id, userId: command.userId, ok: true, result: result ?? null };
+    } catch (error) {
+      if (retryableCommandError(error)) {
+        return {
+          handled: 0,
+          retryError: persistentRetryableError(error, "Shared Dashboard bot command will be retried"),
+        };
+      }
+      const id = String(command?.id ?? rawCommand?.id ?? "").trim().toLowerCase();
+      const userId = String(command?.userId ?? rawCommand?.userId ?? "").trim();
+      if (!COMMAND_ID_PATTERN.test(id) || !userId) return { handled: 0, retryError: null };
+      outcome = {
+        id,
+        userId,
+        ok: false,
+        error: String(error?.message ?? error ?? "Shared Dashboard bot command failed").slice(0, 4_096),
+      };
+    }
+    await this.#signedRequest("/api/dashboard-bot/result", outcome);
+    return { handled: 1, retryError: null };
+  }
+
+  async #handleCommandLane(commands) {
+    let handled = 0;
+    let retryError = null;
+    for (const command of commands) {
+      const result = await this.#handleCommand(command);
+      handled += result.handled;
+      retryError ??= result.retryError;
+    }
+    return { handled, retryError };
+  }
+
   async poll() {
     if (this.#closed) return 0;
     const abortController = new AbortController();
@@ -297,41 +345,21 @@ export class SharedDashboardBotClient {
         waitMs: 0,
       }, { signal: abortController.signal, timeoutMs: DEFAULT_POLL_TIMEOUT_MS });
       if (!Array.isArray(payload?.commands)) throw new Error("Shared Dashboard bot returned an invalid queue");
+      const textCommands = [];
+      const attachmentCommands = [];
+      for (const command of payload.commands) {
+        const attachments = command?.params?.attachments;
+        (Array.isArray(attachments) && attachments.length > 0
+          ? attachmentCommands
+          : textCommands).push(command);
+      }
+      const lanes = [textCommands, attachmentCommands].filter((commands) => commands.length > 0);
+      const results = await Promise.all(lanes.map((commands) => this.#handleCommandLane(commands)));
       let handled = 0;
       let retryError = null;
-      for (const rawCommand of payload.commands) {
-        let command;
-        let outcome;
-        try {
-          command = await this.#prepareCommand(this.#validateCommand(rawCommand));
-          const result = await this.#handler({
-            action: command.action,
-            params: command.params,
-            context: {
-              source: "shared-dashboard-bot",
-              userId: command.userId,
-              commandId: command.id,
-              clientId: `shared-dashboard-bot:${command.userId}`,
-            },
-          });
-          outcome = { id: command.id, userId: command.userId, ok: true, result: result ?? null };
-        } catch (error) {
-          if (retryableCommandError(error)) {
-            retryError ??= persistentRetryableError(error, "Shared Dashboard bot command will be retried");
-            continue;
-          }
-          const id = String(command?.id ?? rawCommand?.id ?? "").trim().toLowerCase();
-          const userId = String(command?.userId ?? rawCommand?.userId ?? "").trim();
-          if (!COMMAND_ID_PATTERN.test(id) || !userId) continue;
-          outcome = {
-            id,
-            userId,
-            ok: false,
-            error: String(error?.message ?? error ?? "Shared Dashboard bot command failed").slice(0, 4_096),
-          };
-        }
-        await this.#signedRequest("/api/dashboard-bot/result", outcome);
-        handled += 1;
+      for (const result of results) {
+        handled += result.handled;
+        retryError ??= result.retryError;
       }
       if (retryError) throw retryError;
       return handled;

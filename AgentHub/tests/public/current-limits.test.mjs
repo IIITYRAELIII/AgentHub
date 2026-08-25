@@ -3,18 +3,16 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
 
-const app = await readFile(new URL("../../assets/web-app/app.js", import.meta.url), "utf8");
-const start = app.indexOf("function currentLimitSeries");
-const end = app.indexOf("\nfunction renderCurrentLimits", start);
-assert.ok(start >= 0 && end > start, "current limit selection policy must be present");
+const source = await readFile(
+  new URL("../../assets/web-app/rate-limit-series.js", import.meta.url),
+  "utf8",
+);
+const context = {};
+vm.runInNewContext(source, context);
+const { selectCurrentLimitSeries } = context.AgentHubRateLimitSeries;
 
 function selectCurrentLimits(payload) {
-  const context = { payload };
-  vm.runInNewContext(
-    `${app.slice(start, end)}\nglobalThis.result = currentLimitSeries(payload);`,
-    context,
-  );
-  return JSON.parse(JSON.stringify(context.result));
+  return JSON.parse(JSON.stringify(selectCurrentLimitSeries(payload)));
 }
 
 test("current limits select Codex and Spark points for the current account", () => {
@@ -27,14 +25,20 @@ test("current limits select Codex and Spark points for the current account", () 
         window: "primary",
         points: [
           { accountKey: "sidor", remainingPercent: 70 },
-          { accountKey: "dark", remainingPercent: 17 },
+          { accountKey: "dark", remainingPercent: 17, windowDurationMins: 10080 },
         ],
       },
       {
         id: "codex_bengalfox:primary",
         name: "Spark",
         window: "primary",
-        points: [{ accountKey: "dark", remainingPercent: 99 }],
+        points: [{ accountKey: "dark", remainingPercent: 99, windowDurationMins: 300 }],
+      },
+      {
+        id: "codex_bengalfox:secondary",
+        name: "Spark",
+        window: "secondary",
+        points: [{ accountKey: "dark", remainingPercent: 0, windowDurationMins: 10080 }],
       },
       {
         id: "claude:week",
@@ -45,10 +49,11 @@ test("current limits select Codex and Spark points for the current account", () 
     ],
   });
 
-  assert.deepEqual(result.map((item) => [item.label, item.point.remainingPercent]), [
-    ["CODEX", 17],
-    ["Spark", 99],
-    ["Claude", 69],
+  assert.deepEqual(result.map((item) => [item.label, item.windowLabel, item.point.remainingPercent]), [
+    ["CODEX", "7 д.", 17],
+    ["Spark", "5 ч.", 99],
+    ["Spark", "7 д.", 0],
+    ["Claude", "", 69],
   ]);
 });
 

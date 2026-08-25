@@ -19,7 +19,6 @@ test("Codex completion restores missing model pricing before final delivery", as
     completedAnswer: async () => "Done",
     rememberSeenTurn: async () => {},
     rememberLastMessage: () => {},
-    releaseAdmission: async () => {},
     temporaryFiles: new Map(),
     speechButtons: new Map(),
   });
@@ -37,7 +36,6 @@ test("observed Codex completion marks a real terminal transition", async () => {
   };
   let remembered = false;
   let terminalAnswer = "";
-  let released = false;
   const service = new CodexCompletionService({
     runForTask: () => run,
     consumeTracker: () => ({ usage: {}, reported: false, model: "gpt-5.6-sol" }),
@@ -50,7 +48,6 @@ test("observed Codex completion marks a real terminal transition", async () => {
     completedAnswer: async () => "Done",
     rememberSeenTurn: async () => { remembered = true; },
     rememberLastMessage: (_run, answer) => { terminalAnswer = answer; },
-    releaseAdmission: async () => { released = true; },
     temporaryFiles: new Map(),
     speechButtons: new Map(),
   });
@@ -64,10 +61,9 @@ test("observed Codex completion marks a real terminal transition", async () => {
   assert.equal(run.status, "finishing");
   assert.equal(remembered, true);
   assert.equal(terminalAnswer, "Done");
-  assert.equal(released, true);
 });
 
-test("observed Codex completion releases admission before App Server bookkeeping", async () => {
+test("observed Codex completion leaves admission release to terminal finalization", async () => {
   const run = {
     threadId: "thread-observed",
     turnId: "turn-observed",
@@ -102,10 +98,10 @@ test("observed Codex completion releases admission before App Server bookkeeping
     tracker: { usage: {}, reported: false },
   });
   await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(events, ["remember", "terminal", "release", "wait"]);
+  assert.deepEqual(events, ["remember", "terminal", "wait"]);
   releaseWait();
   await completion;
-  assert.deepEqual(events, ["remember", "terminal", "release", "wait", "finalize"]);
+  assert.deepEqual(events, ["remember", "terminal", "wait", "finalize"]);
 });
 
 test("Codex completion reads rollout changes even when pricing is already known", async () => {
@@ -126,7 +122,6 @@ test("Codex completion reads rollout changes even when pricing is already known"
     completedAnswer: async () => "Done",
     rememberSeenTurn: async () => {},
     rememberLastMessage: () => {},
-    releaseAdmission: async () => {},
     temporaryFiles: new Map(),
     speechButtons: new Map(),
   });
@@ -136,7 +131,7 @@ test("Codex completion reads rollout changes even when pricing is already known"
   assert.equal(applied, usageResult);
 });
 
-test("managed Codex completion projects its answer before admission release and slow bookkeeping", async () => {
+test("managed Codex completion keeps admission through slow terminal bookkeeping", async () => {
   const run = { threadId: "thread-1", turnId: "turn-1", status: "running", responseText: "Done" };
   const events = [];
   let releaseRead;
@@ -160,8 +155,8 @@ test("managed Codex completion projects its answer before admission release and 
 
   const completion = service.completeManaged(run, { eventTurn: { id: "turn-1", status: "completed" } });
   await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(events, ["answer", "terminal:Done", "release", "read"]);
+  assert.deepEqual(events, ["answer", "terminal:Done", "read"]);
   releaseRead();
   await completion;
-  assert.deepEqual(events, ["answer", "terminal:Done", "release", "read", "finalize"]);
+  assert.deepEqual(events, ["answer", "terminal:Done", "read", "finalize"]);
 });

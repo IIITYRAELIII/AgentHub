@@ -123,6 +123,10 @@ test("RuntimeHost icon provides native layers for Windows task sizes", async (t)
     assert.equal(png.readUInt32BE(16), entry.width);
     assert.equal(png.readUInt32BE(20), entry.height);
   }
+  const builder = await readFile(path.join(ROOT, "RuntimeHost", "AgentHub.IconBuilder.cs"), "utf8");
+  assert.match(builder, /CreateCompactBlade/u);
+  assert.match(builder, /RotateAt\(angle, center\)/u);
+  assert.doesNotMatch(builder, /FillCircle|DrawEllipse|DrawLine\(spoke/u);
 });
 
 test("runtime launchers reject dot releases and resolve the release only inside releases", async () => {
@@ -222,6 +226,7 @@ test("shared runtime manifest verifier rejects a modified release file", async (
   const manifest = {
     releaseId: "release-1",
     version: "2026.8.23",
+    releaseVersion: "2026.8.23.1",
     files: [
       {
         path: "agent-hub-server.mjs",
@@ -243,6 +248,12 @@ test("shared runtime manifest verifier rejects a modified release file", async (
     "utf8",
   );
   await assert.rejects(verifyRuntimeManifest(releaseRoot, "release-1"), /version does not match/u);
+  await writeFile(
+    path.join(releaseRoot, "runtime-manifest.json"),
+    JSON.stringify({ ...manifest, releaseVersion: "2026.8.24.1" }),
+    "utf8",
+  );
+  await assert.rejects(verifyRuntimeManifest(releaseRoot, "release-1"), /invalid release version/u);
   await writeFile(path.join(releaseRoot, "runtime-manifest.json"), JSON.stringify(manifest), "utf8");
   await writeFile(path.join(releaseRoot, "agent-hub-server.mjs"), "tampered\n", "utf8");
   await assert.rejects(verifyRuntimeManifest(releaseRoot, "release-1"), /size mismatch|hash mismatch/);

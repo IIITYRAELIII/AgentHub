@@ -9,6 +9,8 @@ export class ManagedRunHistoryService {
     nowIso,
     nowMs,
     telemetryStore = null,
+    terminalCommits = null,
+    commandTrace = null,
     logger = console,
   }) {
     this.taskSyncStore = taskSyncStore;
@@ -17,6 +19,8 @@ export class ManagedRunHistoryService {
     this.nowIso = nowIso;
     this.nowMs = nowMs;
     this.telemetryStore = telemetryStore;
+    this.terminalCommits = terminalCommits;
+    this.commandTrace = commandTrace;
     this.logger = logger;
   }
 
@@ -25,6 +29,7 @@ export class ManagedRunHistoryService {
     status = "inProgress",
     active = true,
     turnId = run?.turnId,
+    terminalRevision = null,
   } = {}) {
     if (!run?.threadId || !turnId) return;
     if (run.provider === "codex" && isCodexContextProbeTurn({
@@ -35,6 +40,20 @@ export class ManagedRunHistoryService {
       userMessages: run.userMessages,
     }, { allowTextFallback: false })) return;
     try {
+      const committedTerminal = await this.terminalCommits?.get({
+        provider: run.provider,
+        threadId: run.threadId,
+        turnId,
+      });
+      if (active && committedTerminal) {
+        return {
+          absorbed: true,
+          terminalRevision: committedTerminal.terminalRevision,
+        };
+      }
+      const resolvedTerminalRevision = Number(terminalRevision)
+        || Number(committedTerminal?.terminalRevision)
+        || null;
       const activityAtMs = this.nowMs();
       const telemetry = providerTurnTelemetrySnapshot(run, {
         turnId,
@@ -68,6 +87,7 @@ export class ManagedRunHistoryService {
           ? structuredClone(run.activityGroups)
           : [];
         if (!active) current.completedAt = this.nowIso();
+        if (resolvedTerminalRevision) current.terminalRevision = resolvedTerminalRevision;
         if (telemetry) current.telemetry = structuredClone(telemetry);
         if (current.answer) {
           const messages = Array.isArray(current.messages) ? current.messages : [];
@@ -96,13 +116,44 @@ export class ManagedRunHistoryService {
         stage: run.progressStage,
         answer: String(answer || run.responseText || "").trim(),
         executionOwner: active ? this.hubExecutionOwner : null,
+        ...(resolvedTerminalRevision ? { terminalRevision: resolvedTerminalRevision } : {}),
       });
       await this.taskSyncStore.save();
       if (!active && telemetry && this.telemetryStore?.upsert) {
         await this.telemetryStore.upsert(telemetry);
       }
+      if (!active && run.clientUserMessageId) {
+        const transport = String(run.clientSource ?? "server-runtime").trim().toLowerCase() || "server-runtime";
+        for (const [stage, observedAtMs] of [
+          ["first-event", telemetry?.firstEventAtMs],
+          ["first-content", telemetry?.firstContentAtMs],
+          ["first-visible", telemetry?.firstVisibleAtMs],
+        ]) {
+          if (!Number.isSafeInteger(observedAtMs) || observedAtMs < 0) continue;
+          this.commandTrace?.recordBestEffort?.({
+            commandId: run.clientUserMessageId,
+            stage,
+            outcome: "succeeded",
+            transport,
+            observedAtMs,
+            metadata: { provider: run.provider, threadId: run.threadId, turnId },
+          });
+        }
+        this.commandTrace?.recordBestEffort?.({
+          commandId: run.clientUserMessageId,
+          stage: "terminal-history",
+          outcome: "succeeded",
+          transport,
+          metadata: { provider: run.provider, threadId: run.threadId, turnId, terminalRevision: resolvedTerminalRevision },
+        });
+      }
+      return {
+        absorbed: false,
+        terminalRevision: resolvedTerminalRevision,
+      };
     } catch (error) {
       this.logger.error(`Cannot persist managed task history ${run.threadId}:`, error.message);
+      return { absorbed: false, failed: true, error: error.message };
     }
   }
 }

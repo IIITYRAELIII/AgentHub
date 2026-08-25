@@ -79,3 +79,9 @@ test("task card modal expands only after its content reaches the height limit", 
     measureHeight: (width) => Math.ceil(510_000 / width),
   }), 729);
 });
+
+test("task card modal receives a definite viewport-bounded grid height", async () => {
+  const sizing = (await loadBoardExports()).AgentHubTaskCardSizing;
+  assert.equal(sizing.fitHeight({ contentHeight: 420, maxHeight: 700 }), 420);
+  assert.equal(sizing.fitHeight({ contentHeight: 1_800, maxHeight: 700 }), 700);
+});

@@ -607,7 +607,7 @@ function observeCodexEntry(activeTurnIds, lastSeenAtByTurnId, metadata, entry) {
   if (entry?.type === "event_msg" && entry.payload?.type === "task_complete" && turnId) {
     const message = String(entry.payload?.last_agent_message ?? "").trim();
     if (message) {
-      metadata.finalMessages.set(turnId, message.slice(-40_000));
+      metadata.finalMessages.set(turnId, message);
       while (metadata.finalMessages.size > 8) {
         metadata.finalMessages.delete(metadata.finalMessages.keys().next().value);
       }

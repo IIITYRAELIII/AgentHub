@@ -74,6 +74,7 @@ export function createRunAdmissionComposition({
   saveState,
   streamHandoff = null,
   logger = console,
+  commandTrace = null,
 }) {
   async function resolvedExplicitSkillNames(input, cwd) {
     const candidates = explicitSkillCandidatesFromInput(input);
@@ -137,14 +138,38 @@ export function createRunAdmissionComposition({
   }
 
   async function launchTurn(run, input, temporaryFiles = [], { forceSpeechButton = false } = {}) {
-    return agentProviders.call(
-      run.provider,
-      "launchTurn",
-      run,
-      prependStreamHandoff(input, await streamHandoffPrefix(run)),
-      temporaryFiles,
-      { forceSpeechButton },
-    );
+    const preparedInput = prependStreamHandoff(input, await streamHandoffPrefix(run));
+    if (run.provider === "codex") {
+      return agentProviders.call(run.provider, "launchTurn", run, preparedInput, temporaryFiles, { forceSpeechButton });
+    }
+    const trace = commandTrace?.startBestEffortSpan?.({
+      commandId: String(run.clientUserMessageId ?? ""),
+      stage: "provider-rpc",
+      transport: "claude-process",
+      metadata: { provider: run.provider, runId: run.id, threadId: run.threadId },
+    });
+    try {
+      const result = await agentProviders.call(
+        run.provider,
+        "launchTurn",
+        run,
+        preparedInput,
+        temporaryFiles,
+        { forceSpeechButton },
+      );
+      trace?.finish({ outcome: "succeeded", metadata: { pid: Number(run.pid ?? run.process?.pid) || null } });
+      commandTrace?.recordBestEffort?.({
+        commandId: String(run.clientUserMessageId ?? ""),
+        stage: "provider-accept",
+        outcome: "succeeded",
+        transport: "claude-process",
+        metadata: { provider: run.provider, runId: run.id, threadId: run.threadId, pid: Number(run.pid ?? run.process?.pid) || null },
+      });
+      return result;
+    } catch (error) {
+      trace?.finish({ outcome: "failed", metadata: { errorCode: error?.code ?? null } });
+      throw error;
+    }
   }
 
   async function startTurn(input, temporaryFiles = [], {
@@ -209,7 +234,7 @@ export function createRunAdmissionComposition({
     pendingInputs,
     queuedInputs,
     findStarted: async (item) => {
-      const run = taskRuns.forTask({
+      const run = runCoordinator.activeRun({
         provider: item.provider,
         projectRoot: item.projectRoot,
         threadId: item.threadId,
@@ -237,7 +262,7 @@ export function createRunAdmissionComposition({
           deferredInput: item,
         });
       } catch (error) {
-        const concurrent = taskRuns.forTask(deferredTarget(item));
+        const concurrent = runCoordinator.activeRun(deferredTarget(item));
         if (deferredInputMatchesRun(item, concurrent)) return concurrent;
         throw error;
       }
@@ -251,7 +276,7 @@ export function createRunAdmissionComposition({
     },
     steer: async (item) => {
       const target = deferredTarget(item);
-      const existingRun = taskRuns.forTask(target);
+      const existingRun = runCoordinator.activeRun(target);
       const externalActivity = existingRun
         ? { state: "active" }
         : await taskExternalActivity(target);
@@ -269,14 +294,13 @@ export function createRunAdmissionComposition({
     },
     isBlocked: async (item) => {
       const target = deferredTarget(item);
-      const externalActivity = taskRuns.forTask(target)
-        ? { state: "active" }
-        : await taskExternalActivity(target);
+      const occupancy = await runCoordinator.deferredOccupancy(target);
       return Boolean(streamMaintenance.isActive(target)
-        || taskRuns.forTask(target)
-        || externalActivity.state !== "inactive"
+        || occupancy.occupied
         || await runConflictPolicy.check(target));
     },
+    occupancy: (item) => runCoordinator.deferredOccupancy(deferredTarget(item)),
+    laneKey: (item) => runCoordinator.taskLane(deferredTarget(item)),
     // The queued item remains durable while RunCoordinator creates and persists
     // the exact managed run before invoking the provider launch operation.
     start: (item) => runCoordinator.startDeferred(item),
@@ -298,6 +322,7 @@ export function createRunAdmissionComposition({
       );
     },
     maxAgeMs: config.deferredInputTtlHours * 60 * 60 * 1000,
+    commandTrace,
   });
 
   function scheduleQueuedInput(item, delayMs = 2000) {

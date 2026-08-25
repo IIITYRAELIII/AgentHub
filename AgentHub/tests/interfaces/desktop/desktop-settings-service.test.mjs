@@ -7,7 +7,7 @@ test("Desktop settings service rejects a stale task-scoped mutation", async () =
   const service = new DesktopSettingsService({
     isSelected: () => false, selectedTask: () => ({}), switchProvider: async () => ({}), isCodex: () => true,
     threadId: () => "t1", isCompacting: () => false, switchCodexModel: () => ({}), switchClaudeModel: () => ({}),
-    updateCodexThreadSettings: async () => {}, saveState: async () => {}, getCodexReasoning: () => "high",
+    updateCodexThreadSettings: async () => {}, createCodexThread: async () => {}, saveState: async () => {}, getCodexReasoning: () => "high",
     setCodexReasoning: noop, getClaudeReasoning: () => "high", setClaudeReasoning: noop,
     getCodexMode: () => "default", setCodexMode: noop, getClaudeMode: () => "default", setClaudeMode: noop,
     getAutoApprove: () => true, setAutoApprove: noop, getIncludeClaudeUsage: () => true, setIncludeClaudeUsage: noop,
@@ -29,7 +29,7 @@ test("Desktop settings service rejects a stale project mutation before switching
   const service = new DesktopSettingsService({
     isSelected: () => false, selectedTask: () => ({ streamId: "other" }), switchProvider: async () => ({}), isCodex: () => true,
     threadId: () => "t1", isCompacting: () => false, switchCodexModel: () => ({}), switchClaudeModel: () => ({}),
-    updateCodexThreadSettings: async () => {}, saveState: async () => {}, getCodexReasoning: () => "high",
+    updateCodexThreadSettings: async () => {}, createCodexThread: async () => {}, saveState: async () => {}, getCodexReasoning: () => "high",
     setCodexReasoning: noop, getClaudeReasoning: () => "high", setClaudeReasoning: noop,
     getCodexMode: () => "default", setCodexMode: noop, getClaudeMode: () => "default", setClaudeMode: noop,
     getAutoApprove: () => true, setAutoApprove: noop, getIncludeClaudeUsage: () => true, setIncludeClaudeUsage: noop,
@@ -59,7 +59,7 @@ test("Desktop settings service persists the shared recent activity period", asyn
   const service = new DesktopSettingsService({
     isSelected: () => true, selectedTask: () => ({}), switchProvider: async () => ({}), isCodex: () => true,
     threadId: () => "t1", isCompacting: () => false, switchCodexModel: () => ({}), switchClaudeModel: () => ({}),
-    updateCodexThreadSettings: async () => {}, saveState: async () => { saveCount += 1; }, getCodexReasoning: () => "high",
+    updateCodexThreadSettings: async () => {}, createCodexThread: async () => {}, saveState: async () => { saveCount += 1; }, getCodexReasoning: () => "high",
     setCodexReasoning: noop, getClaudeReasoning: () => "high", setClaudeReasoning: noop,
     getCodexMode: () => "default", setCodexMode: noop, getClaudeMode: () => "default", setClaudeMode: noop,
     getAutoApprove: () => true, setAutoApprove: noop, getIncludeClaudeUsage: () => true, setIncludeClaudeUsage: noop,
@@ -94,7 +94,7 @@ test("Desktop settings service commits Claude usage only after projection", asyn
   const service = new DesktopSettingsService({
     isSelected: () => true, selectedTask: () => ({}), switchProvider: async () => ({}), isCodex: () => true,
     threadId: () => "t1", isCompacting: () => false, switchCodexModel: () => ({}), switchClaudeModel: () => ({}),
-    updateCodexThreadSettings: async () => {}, saveState: async () => { saveCount += 1; }, getCodexReasoning: () => "high",
+    updateCodexThreadSettings: async () => {}, createCodexThread: async () => {}, saveState: async () => { saveCount += 1; }, getCodexReasoning: () => "high",
     setCodexReasoning: noop, getClaudeReasoning: () => "high", setClaudeReasoning: noop,
     getCodexMode: () => "default", setCodexMode: noop, getClaudeMode: () => "default", setClaudeMode: noop,
     getAutoApprove: () => true, setAutoApprove: noop,
@@ -141,7 +141,7 @@ test("Desktop settings service persists shared Stream card settings", async () =
   const service = new DesktopSettingsService({
     isSelected: () => true, selectedTask: () => ({}), switchProvider: async () => ({}), isCodex: () => true,
     threadId: () => "t1", isCompacting: () => false, switchCodexModel: () => ({}), switchClaudeModel: () => ({}),
-    updateCodexThreadSettings: async () => {}, saveState: async () => { saveCount += 1; }, getCodexReasoning: () => "high",
+    updateCodexThreadSettings: async () => {}, createCodexThread: async () => {}, saveState: async () => { saveCount += 1; }, getCodexReasoning: () => "high",
     setCodexReasoning: noop, getClaudeReasoning: () => "high", setClaudeReasoning: noop,
     getCodexMode: () => "default", setCodexMode: noop, getClaudeMode: () => "default", setClaudeMode: noop,
     getAutoApprove: () => true, setAutoApprove: noop, getIncludeClaudeUsage: () => true, setIncludeClaudeUsage: noop,
@@ -183,4 +183,38 @@ test("Desktop settings service persists shared Stream card settings", async () =
     service.update({ name: "streamCardFixedWidth", value: "451" }),
     /Неизвестная ширина/u,
   );
+});
+
+test("Desktop settings service creates a new Codex Thread when a model crosses backend ownership", async () => {
+  let currentModel = "fake-codex";
+  let created = 0;
+  const noop = () => {};
+  const service = new DesktopSettingsService({
+    isSelected: () => true, selectedTask: () => ({}), switchProvider: async () => ({}), isCodex: () => true,
+    threadId: () => "fake-thread", isCompacting: () => false,
+    switchCodexModel: (value) => { currentModel = value; return { changed: true }; }, switchClaudeModel: () => ({}),
+    updateCodexThreadSettings: async () => {
+      const error = new Error("model belongs to another Thread backend");
+      error.data = { kind: "threadBackendChangeRequiresNewThread" };
+      throw error;
+    },
+    createCodexThread: async () => { created += 1; }, saveState: async () => {}, getCodexReasoning: () => "high",
+    setCodexReasoning: noop, getClaudeReasoning: () => "high", setClaudeReasoning: noop,
+    getCodexMode: () => "default", setCodexMode: noop, getClaudeMode: () => "default", setClaudeMode: noop,
+    getAutoApprove: () => true, setAutoApprove: noop, getIncludeClaudeUsage: () => true, setIncludeClaudeUsage: noop,
+    getActivityRecentMinutes: () => 180, setActivityRecentMinutes: noop,
+    getStreamOrderMode: () => "activity", setStreamOrderMode: noop,
+    getStreamCardWidthMode: () => "auto", setStreamCardWidthMode: noop,
+    getStreamCardFixedWidth: () => 90, setStreamCardFixedWidth: noop,
+    getStreamCardGapEnabled: () => false, setStreamCardGapEnabled: noop,
+    getPinnedWorkspaceStreams: () => ({}), setPinnedWorkspaceStreams: noop,
+    projectUsage: async () => {}, findProjectIndex: () => 0, switchProject: async () => ({}),
+    snapshot: async () => ({ settings: { model: currentModel } }),
+    reasoningEfforts: ["high"], collaborationModes: ["default"],
+  });
+
+  const result = await service.update({ name: "model", value: "gpt-5.6-terra" });
+
+  assert.equal(created, 1);
+  assert.equal(result.settings.model, "gpt-5.6-terra");
 });

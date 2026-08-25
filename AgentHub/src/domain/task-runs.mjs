@@ -81,6 +81,22 @@ function eventTimestamp(value = Date.now()) {
   return new Date(Number.isFinite(timestamp) ? timestamp : Date.now()).toISOString();
 }
 
+export function taskOccupancyIdentity(value) {
+  const streamId = String(value?.streamId ?? "").trim();
+  const provider = String(value?.provider ?? "").trim().toLowerCase();
+  const threadId = String(value?.threadId ?? "").trim();
+  if (streamId && provider && threadId) {
+    return { key: taskRunKey({ ...value, streamId, provider, threadId }), binding: "exact" };
+  }
+  if (streamId) {
+    return { key: taskRunKey({ streamId }), binding: "provisional" };
+  }
+  if (provider && threadId) {
+    return { key: taskRunKey({ ...value, streamId: null, provider, threadId }), binding: "exact" };
+  }
+  return null;
+}
+
 const PROVIDER_TELEMETRY_SAMPLE_INTERVAL_MS = 250;
 const PROVIDER_TELEMETRY_TIMELINE_LIMIT = 32;
 
@@ -464,7 +480,9 @@ export class TaskRunRegistry {
     if (!run?.id) throw new Error("run id is required");
     const key = taskRunKey(run);
     const existing = this.#byTask.get(key);
-    if (existing && existing !== run) throw new Error("this task is already running");
+    if (existing && existing !== run && taskRunIsActive(existing)) {
+      throw new Error("this task is already running");
+    }
     this.#byId.set(run.id, run);
     this.#byTask.set(key, run);
     if (run.turnId) this.#byTurn.set(run.turnId, run);
@@ -478,7 +496,9 @@ export class TaskRunRegistry {
     }
     const newKey = taskRunKey(run);
     const taskCollision = this.#byTask.get(newKey);
-    if (taskCollision && taskCollision !== run) throw new Error("this task is already running");
+    if (taskCollision && taskCollision !== run && taskRunIsActive(taskCollision)) {
+      throw new Error("this task is already running");
+    }
     if (run.turnId) {
       const turnCollision = this.#byTurn.get(run.turnId);
       if (turnCollision && turnCollision !== run) throw new Error("this turn is already running");
@@ -507,6 +527,8 @@ export class TaskRunRegistry {
     const normalizedThreadId = String(threadId ?? "").trim();
     if (!normalizedStreamId || !normalizedProvider || !normalizedThreadId) return null;
     const matches = this.values().filter((run) => (
+      taskRunIsActive(run)
+      &&
       String(run.provider ?? "").trim().toLowerCase() === normalizedProvider
       && String(run.threadId ?? "").trim() === normalizedThreadId
     ));
@@ -539,11 +561,13 @@ export class TaskRunRegistry {
 
   forTask(task) {
     const exact = this.#byTask.get(taskRunKey(task)) ?? null;
-    if (exact) return exact;
+    if (taskRunIsActive(exact)) return exact;
 
     const normalizedStreamId = String(task?.streamId ?? "").trim();
     if (normalizedStreamId && !String(task?.threadId ?? "").trim()) {
-      const matches = this.values().filter((run) => String(run.streamId ?? "").trim() === normalizedStreamId);
+      const matches = this.values().filter((run) => (
+        taskRunIsActive(run) && String(run.streamId ?? "").trim() === normalizedStreamId
+      ));
       return matches.length === 1 ? matches[0] : null;
     }
 
@@ -551,6 +575,8 @@ export class TaskRunRegistry {
     const normalizedThreadId = String(task?.threadId ?? "").trim();
     if (!normalizedProvider || !normalizedThreadId) return null;
     const matches = this.values().filter((run) => (
+      taskRunIsActive(run)
+      &&
       String(run.provider ?? "").trim().toLowerCase() === normalizedProvider
       && String(run.threadId ?? "").trim() === normalizedThreadId
     ));

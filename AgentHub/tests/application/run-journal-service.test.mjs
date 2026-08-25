@@ -7,7 +7,13 @@ import { legacyTaskRunKeys, taskRunKey } from "../../src/domain/task-runs.mjs";
 function fixture({ statImpl = async () => ({}) } = {}) {
   const calls = [];
   const workspaceCatalogStore = {
-    recordReleaseChange: (value) => { calls.push(["release", value]); return value; },
+    recordReleaseChange: (value) => {
+      calls.push(["release", value]);
+      return { id: "legacy-change", ...value };
+    },
+  };
+  const releaseChangeSetService = {
+    observeTurn: (value) => { calls.push(["changeset", value]); return value; },
   };
   const usageStore = {
     recordAutomaticAndProject: async (value) => { calls.push(["automatic", value]); return value; },
@@ -19,6 +25,7 @@ function fixture({ statImpl = async () => ({}) } = {}) {
   const service = new RunJournalService({
     usageStore,
     workspaceCatalogStore,
+    releaseChangeSetService,
     findProject: (root) => root === "C:/workspace" ? { path: root } : null,
     defaultProjectRoot: "C:/workspace",
     projectionProjectRoots: ["C:/workspace"],
@@ -221,6 +228,11 @@ test("RunJournalService registers changed files in the Workspace release registr
   assert.deepEqual(release.changedFiles, ["AgentHub/app.js"]);
   assert.equal(release.status, "ready");
   assert.match(release.diffHash, /^[a-f0-9]{64}$/u);
+  const observation = calls.find(([name]) => name === "changeset")?.[1];
+  assert.equal(observation.status, "completed");
+  assert.deepEqual(observation.changedFiles, ["AgentHub/app.js"]);
+  assert.equal(observation.legacyChangeId, "legacy-change");
+  assert.equal("manifestHash" in observation, false);
 
   await service.projectTurn({
     provider: "codex",
@@ -232,6 +244,8 @@ test("RunJournalService registers changed files in the Workspace release registr
   }, { title: "Failed change" });
   const failedRelease = calls.filter(([name]) => name === "release").at(-1)[1];
   assert.equal(failedRelease.status, "blocked");
+  const failedObservation = calls.filter(([name]) => name === "changeset").at(-1)[1];
+  assert.equal(failedObservation.status, "failed");
 });
 
 test("RunJournalService initializes projection before retiring verified legacy storage", async () => {

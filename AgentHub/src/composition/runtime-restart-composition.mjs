@@ -17,6 +17,8 @@ import { sentryDiagnostics } from "../infrastructure/diagnostics/sentry-diagnost
 export function createRuntimeRestartComposition({
   getRestartRequest,
   setRestartRequest,
+  completeRestartOperation = () => {},
+  failRestartOperation = () => {},
   isStopping,
   setStopping,
   beginStopping,
@@ -46,6 +48,7 @@ export function createRuntimeRestartComposition({
   providerTurnTelemetryStore,
   taskReadStateStore,
   runtimeStateStore,
+  commandTrace,
   updateOffset,
   hasBlockingWork,
   setWaiting,
@@ -72,6 +75,7 @@ export function createRuntimeRestartComposition({
     completeMessageState,
     menu: botMenu,
     finalizeReplacement: finalizeSuccessfulReplacement,
+    completeOperation: completeRestartOperation,
   });
 
   const runtimeResources = new RuntimeResourceRegistry({
@@ -112,6 +116,7 @@ export function createRuntimeRestartComposition({
       { name: "task sync store", run: () => taskSyncStore.close() },
       { name: "workspace catalog store", run: () => workspaceCatalogStore.close() },
       { name: "task read-state store", run: () => taskReadStateStore.close() },
+      { name: "command trace", run: () => commandTrace?.close?.() },
       { name: "runtime state store", run: () => runtimeStateStore.close() },
     ],
   });
@@ -166,6 +171,7 @@ export function createRuntimeRestartComposition({
     }),
     abortRestart: async (error) => {
       setStopping(false);
+      await failRestartOperation(error);
       setRestartRequest(null);
       let saveError = null;
       try {

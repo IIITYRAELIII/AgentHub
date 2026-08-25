@@ -5,6 +5,10 @@ import { DatabaseSync } from "node:sqlite";
 import { Worker } from "node:worker_threads";
 
 import { readJsonWithBackup } from "./state-store.mjs";
+import {
+  MessageCommandLedgerStore,
+  overlayMessageCommandLedgerSync,
+} from "./message-command-ledger-store.mjs";
 
 const BUSY_TIMEOUT_MS = 5_000;
 
@@ -210,15 +214,16 @@ class RuntimeStateWriter {
 
 export function readRuntimeStateSync(dataDir) {
   let database;
+  let current = null;
   try {
     database = openRuntimeDatabase(dataDir, { readOnly: true });
-    return readMergedRuntimeState(database);
+    current = readMergedRuntimeState(database);
   } catch (error) {
-    if (/unable to open database file|no such table/iu.test(String(error?.message ?? error))) return null;
-    throw error;
+    if (!/unable to open database file|no such table/iu.test(String(error?.message ?? error))) throw error;
   } finally {
     database?.close();
   }
+  return overlayMessageCommandLedgerSync(dataDir, current);
 }
 
 export async function readRuntimeState(dataDir, {
@@ -272,13 +277,21 @@ async function archiveLegacyFiles(dataDir, files, label) {
 
 export class RuntimeStateStore {
   #database;
+  #messageCommands;
   #writer;
   #dataDir;
   #legacyFile;
   #legacyBackupFile;
   #recoveredDatabase = false;
+  #commandTrace;
 
-  constructor({ dataDir, legacyFile = path.join(dataDir, "state.json"), legacyBackupFile = `${legacyFile}.bak` }) {
+  constructor({
+    dataDir,
+    legacyFile = path.join(dataDir, "state.json"),
+    legacyBackupFile = `${legacyFile}.bak`,
+    messageCommandOptions = {},
+    commandTrace = null,
+  }) {
     this.#dataDir = path.resolve(dataDir);
     this.#legacyFile = path.resolve(legacyFile);
     this.#legacyBackupFile = path.resolve(legacyBackupFile);
@@ -289,11 +302,18 @@ export class RuntimeStateStore {
       this.#database = openRuntimeDatabase(this.#dataDir);
       this.#recoveredDatabase = true;
     }
+    this.#messageCommands = new MessageCommandLedgerStore({
+      dataDir: this.#dataDir,
+      ...messageCommandOptions,
+    });
+    this.#commandTrace = commandTrace;
     this.#writer = new RuntimeStateWriter(this.#dataDir);
   }
 
   async load() {
-    const current = readMergedRuntimeState(this.#database);
+    const legacyCurrent = readMergedRuntimeState(this.#database);
+    this.#messageCommands.migrateLegacy(legacyCurrent);
+    const current = this.#messageCommands.overlay(legacyCurrent);
     if (current) {
       await archiveLegacyFiles(
         this.#dataDir,
@@ -309,6 +329,7 @@ export class RuntimeStateStore {
 
     const legacy = await readJsonWithBackup(this.#legacyFile, { backupFile: this.#legacyBackupFile });
     if (!legacy.value) return { value: null, source: null, recovered: this.#recoveredDatabase };
+    this.#messageCommands.migrateLegacy(legacy.value);
     await this.save(legacy.value);
     await archiveLegacyFiles(
       this.#dataDir,
@@ -316,7 +337,7 @@ export class RuntimeStateStore {
       "state",
     );
     return {
-      value: legacy.value,
+      value: this.#messageCommands.overlay(legacy.value),
       source: legacy.source,
       recovered: legacy.recovered,
       migrated: true,
@@ -324,15 +345,56 @@ export class RuntimeStateStore {
   }
 
   read() {
-    return readMergedRuntimeState(this.#database);
+    return this.#messageCommands.overlay(readMergedRuntimeState(this.#database));
   }
 
   save(value) {
+    this.#messageCommands.projectSnapshot(value);
     return this.#writer.request("save-state", { content: JSON.stringify(value) });
   }
 
   saveDeferredIntake({ item, destination = "pending", receipt = null }) {
-    return this.#writer.request("save-intake", { item, destination, receipt });
+    const commandId = String(item?.clientUserMessageId ?? "").trim();
+    const transport = String(item?.clientSource ?? "desktop-control").trim().toLowerCase()
+      || "desktop-control";
+    const payload = { item, destination, receipt };
+    const stateBytes = Buffer.byteLength(JSON.stringify(payload), "utf8");
+    this.#commandTrace?.recordBestEffort?.({
+      commandId,
+      stage: "durable-intake-start",
+      outcome: "started",
+      transport,
+      metadata: { destination, itemId: item?.id ?? null, stateBytes },
+    });
+    const span = this.#commandTrace?.startBestEffortSpan?.({
+      commandId,
+      stage: "durable-intake-commit",
+      transport,
+      metadata: { destination, itemId: item?.id ?? null, stateBytes },
+    });
+    try {
+      const result = this.#messageCommands.accept(payload);
+      span?.finish({
+        outcome: "succeeded",
+        metadata: { duplicate: result?.duplicate === true, retryResult: result?.retryResult != null },
+      });
+      return Promise.resolve(result);
+    } catch (error) {
+      span?.finish({ outcome: "failed", metadata: { errorCode: error?.code ?? null } });
+      throw error;
+    }
+  }
+
+  transitionMessageCommand(transition) {
+    return Promise.resolve(this.#messageCommands.transition(transition));
+  }
+
+  rekeyMessageCommandOccupancy(binding) {
+    return Promise.resolve(this.#messageCommands.rekeyOccupancy(binding));
+  }
+
+  messageCommands() {
+    return this.#messageCommands.records();
   }
 
   async close() {
@@ -342,6 +404,8 @@ export class RuntimeStateStore {
       this.#writer = null;
       this.#database?.close();
       this.#database = null;
+      this.#messageCommands?.close();
+      this.#messageCommands = null;
     }
   }
 }

@@ -150,6 +150,32 @@ test("RunCoordinator preserves an explicit queue request behind the active turn"
   ]);
 });
 
+test("RunCoordinator returns a durable same-id result without scheduling another effect", async () => {
+  const f = fixture({
+    deferInput: async () => ({
+      duplicate: true,
+      item: null,
+      durableResult: {
+        accepted: true,
+        completed: true,
+        turnId: "turn-existing",
+      },
+    }),
+    scheduleDeferred: () => assert.fail("durable retry must not schedule a second effect"),
+  });
+
+  const result = await f.coordinator.acceptClientInput({
+    input: "lost ACK retry",
+    attachments: [],
+    target: f.target,
+    clientUserMessageId: "message-existing",
+  });
+
+  assert.equal(result.duplicate, true);
+  assert.equal(result.completed, true);
+  assert.equal(result.turnId, "turn-existing");
+});
+
 test("RunCoordinator acknowledges queued intake while turn launch is still pending", async () => {
   let active = null;
   let releaseLaunch;
@@ -357,6 +383,41 @@ test("RunCoordinator serializes competing clients in one logical task lane", asy
   assert.equal(beginCount, 1);
 });
 
+test("RunCoordinator admits two exact Threads in one Stream independently", async () => {
+  const releases = new Map();
+  let beginCount = 0;
+  const f = fixture({
+    beginRun: async (_input, target) => {
+      beginCount += 1;
+      return { id: `run-${target.threadId}`, ...target };
+    },
+    launchTurn: async (run) => new Promise((resolve) => releases.set(run.threadId, resolve)),
+  });
+  const first = f.coordinator.start("first", [], {
+    target: { ...f.target, streamId: "stream-1", threadId: "thread-1" },
+  });
+  const second = f.coordinator.start("second", [], {
+    target: { ...f.target, streamId: "stream-1", threadId: "thread-2" },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(beginCount, 2);
+  releases.get("thread-1")();
+  releases.get("thread-2")();
+  const results = await Promise.all([first, second]);
+  assert.deepEqual(results.map((result) => result.started), [true, true]);
+});
+
+test("RunCoordinator ignores a completed run still indexed for delivery repair", async () => {
+  const completed = { id: "completed", status: "completed", executionOwner: "hub" };
+  const f = fixture({ taskRuns: { forTask: () => completed } });
+
+  const result = await f.coordinator.start("next", [], { target: f.target });
+
+  assert.equal(result.started, true);
+  assert.deepEqual(f.calls.map(([name]) => name), ["notify", "begin", "launch"]);
+});
+
 test("RunCoordinator starts a durable queued item exactly once", async () => {
   const f = fixture();
   const item = {
@@ -376,6 +437,40 @@ test("RunCoordinator starts a durable queued item exactly once", async () => {
   assert.equal(beginTarget.telegramDeliveryRequested, false);
   assert.equal(beginTarget.clientSource, "desktop");
   assert.deepEqual(f.calls.at(-1).slice(1), [f.run, "queued", [], { forceSpeechButton: true }]);
+});
+
+test("RunCoordinator durably binds a provisional command before admission", async () => {
+  const bindings = [];
+  const f = fixture({
+    rekeyDeferredOccupancy: async (binding) => {
+      bindings.push(binding);
+      return {
+        changed: true,
+        record: {
+          item: {
+            ...binding.target,
+            occupancyKey: "stream\0stream-1\0codex\0thread-1",
+            occupancyBinding: "exact",
+          },
+        },
+      };
+    },
+  });
+  const item = {
+    ...f.target,
+    streamId: "stream-1",
+    clientUserMessageId: "message-rekey",
+    occupancyKey: "stream\0stream-1",
+    occupancyBinding: "provisional",
+    input: "bind me",
+  };
+
+  await f.coordinator.startDeferred(item);
+
+  assert.equal(bindings.length, 1);
+  assert.equal(bindings[0].expectedOccupancyKey, "stream\0stream-1");
+  assert.equal(item.occupancyBinding, "exact");
+  assert.equal(f.calls.findIndex(([name]) => name === "begin") > -1, true);
 });
 
 test("RunCoordinator rolls back a queued launch when context maintenance wins admission", async () => {
