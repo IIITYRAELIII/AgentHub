@@ -1,0 +1,10 @@
+{
+  "id": "dead-space",
+  "name": "Dead Space",
+  "color": "#050a0c",
+  "order": 45,
+  "styles": "theme.css",
+  "backgrounds": [
+    { "id": "dead-space", "name": "Шахтёрская палуба", "asset": "dead-space-mining-deck.png", "particles": "motes", "preload": true }
+  ]
+}
