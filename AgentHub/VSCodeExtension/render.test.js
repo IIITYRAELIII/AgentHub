@@ -482,14 +482,20 @@ test("manual journal refresh queues one forced announced request behind an activ
   });
 
   const active = refresh.refresh();
-  assert.equal(refresh.refresh({ force: true, announce: true }), active);
+  const forced = refresh.refresh({ force: true, announce: true });
+  assert.notEqual(forced, active);
+  let forcedResolved = false;
+  void forced.then(() => { forcedResolved = true; });
   first.resolve(true);
   await active;
+  await Promise.resolve();
+  assert.equal(forcedResolved, false);
   assert.deepEqual(calls.map(({ force, announce }) => [force, announce]), [
     [false, false],
     [true, true],
   ]);
   second.resolve(true);
+  await forced;
 });
 
 test("VS Code resumes paused theme animations after WebView load", () => {
