@@ -150,6 +150,40 @@ test("RunCoordinator preserves an explicit queue request behind the active turn"
   ]);
 });
 
+test("RunCoordinator keeps durable intake automatic while terminal delivery is finishing", async () => {
+  const active = {
+    id: "run-finishing",
+    provider: "codex",
+    streamId: "stream-1",
+    threadId: "thread-1",
+    status: "finishing",
+    executionOwner: "hub",
+  };
+  const f = fixture({
+    taskRuns: { forTask: () => active },
+    deferInput: async (...args) => {
+      f.calls.push(["defer", ...args]);
+      return { id: "queued-finishing", item: { id: "queued-finishing" } };
+    },
+    scheduleDeferred: (item, delay) => f.calls.push(["schedule", item, delay]),
+  });
+
+  const result = await f.coordinator.acceptClientInput({
+    input: "next message",
+    target: { provider: "codex", streamId: "stream-1", threadId: "thread-1" },
+    clientUserMessageId: "client-next",
+  });
+
+  assert.equal(result.accepted, true);
+  assert.equal(result.queued, true);
+  assert.equal(result.reason, "message-intake");
+  assert.equal(f.calls.find(([name]) => name === "defer")[3].destination, "queued");
+  assert.equal(f.calls.find(([name]) => name === "defer")[3].conflictKind, "message-intake");
+  assert.deepEqual(f.calls.find(([name]) => name === "schedule").slice(1), [
+    { id: "queued-finishing" }, 0,
+  ]);
+});
+
 test("RunCoordinator returns a durable same-id result without scheduling another effect", async () => {
   const f = fixture({
     deferInput: async () => ({

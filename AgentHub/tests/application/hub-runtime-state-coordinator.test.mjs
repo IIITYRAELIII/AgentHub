@@ -99,6 +99,31 @@ test("runtime state restoration applies one canonical snapshot to all owners", a
   });
 });
 
+test("runtime state restoration preserves a modern restart operation identity", async () => {
+  const { context } = restorationFixture();
+  const result = await restoreHubRuntimeSnapshot({
+    restartRequest: {
+      operationId: "restart-operation-1",
+      chatId: null,
+      messageId: null,
+      requestedAt: "2026-08-10T00:00:00.000Z",
+      waitingForRuns: false,
+      notifyTelegram: false,
+      minimumUpdateOffset: 0,
+    },
+  }, context);
+
+  assert.deepEqual(result.restartRequest, {
+    operationId: "restart-operation-1",
+    chatId: null,
+    messageId: null,
+    requestedAt: "2026-08-10T00:00:00.000Z",
+    waitingForRuns: false,
+    notifyTelegram: false,
+    minimumUpdateOffset: 0,
+  });
+});
+
 test("runtime state restoration preserves equal chat text with different client ids", async () => {
   const { context } = restorationFixture();
   const transitions = [];

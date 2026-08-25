@@ -313,11 +313,11 @@ export async function createClientRuntimeComposition({
         streamId: selectionStore.snapshot().streamId,
         threadId: selectedThreadId(),
       };
-      const migratedRestart = maintenanceOperations.migrateLegacyRestart(
-        restoredState.restartRequest,
-        restartTarget,
-      );
-      const interruptedRestart = migratedRestart ?? maintenanceOperations.latestRestart(restartTarget);
+      const restoredOperationId = String(restoredState.restartRequest?.operationId ?? "").trim();
+      const interruptedRestart = restoredOperationId
+        ? maintenanceOperations.get(restoredOperationId)
+        : maintenanceOperations.migrateLegacyRestart(restoredState.restartRequest, restartTarget)
+          ?? maintenanceOperations.latestRestart(restartTarget);
       if (interruptedRestart) {
         maintenanceOperations.recoverInterrupted({
           operationIds: [interruptedRestart.operationId],

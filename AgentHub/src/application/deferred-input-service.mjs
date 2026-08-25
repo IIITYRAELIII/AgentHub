@@ -31,6 +31,7 @@ export class DeferredInputService {
     conflictKind = "task-running",
     conflictTask = null,
     clientUserMessageId = null,
+    messageFingerprint = null,
     destination = "pending",
     notify = true,
     persistentFiles = false,
@@ -115,7 +116,16 @@ export class DeferredInputService {
         transport: String(target.clientSource ?? "desktop-control").trim().toLowerCase() || "desktop-control",
         metadata: { destination, itemId: item.id },
       });
-      const intake = await d.persistIntake(item, destination);
+      const fingerprint = String(messageFingerprint ?? "").trim();
+      const fallbackReceipt = fingerprint ? {
+        provider: item.provider,
+        threadId: item.threadId,
+        clientUserMessageId: normalizedClientUserMessageId,
+        fingerprint,
+        createdAt,
+        result: { pending: true, deferred: true },
+      } : null;
+      const intake = await d.persistIntake(item, destination, fallbackReceipt);
       if (intake?.duplicate) {
         return {
           deferred: Boolean(intake.record?.item),

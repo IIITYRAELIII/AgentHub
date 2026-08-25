@@ -110,7 +110,8 @@ export class CodexContextMaintenanceService {
     if (target?.provider !== "codex") throw new Error("Свёртка контекста доступна только для Codex");
     const threadId = normalizedId(target.threadId);
     if (!threadId) throw new Error("Укажите корректный поток Codex");
-    if (this.runIsActive(this.runForTask(target))) {
+    const currentRun = this.runForTask(target);
+    if (this.runIsActive(currentRun) && currentRun?.status !== "finishing") {
       throw new Error("Сначала завершите или остановите текущий ход");
     }
     if (this.compactions.isRunning(threadId)) {

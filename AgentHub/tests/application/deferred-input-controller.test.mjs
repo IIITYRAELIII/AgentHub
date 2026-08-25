@@ -97,7 +97,7 @@ test("DeferredInputController reschedules while the task is blocked", async () =
   assert.equal(state.timers[0].delay, 2_000);
 });
 
-test("DeferredInputController returns legacy automatic intake to manual choice", async () => {
+test("DeferredInputController keeps durable automatic intake queued while blocked", async () => {
   const started = [];
   const state = fixture({
     isBlocked: async () => true,
@@ -113,11 +113,11 @@ test("DeferredInputController returns legacy automatic intake to manual choice",
   await state.controller.process("one");
 
   assert.deepEqual(started, []);
-  assert.equal(state.queuedInputs.has("one"), false);
-  assert.equal(state.pendingInputs.has("one"), true);
-  assert.equal(state.pendingInputs.get("one").conflictKind, "task-running");
-  assert.deepEqual(state.transitions.map((entry) => entry.state), ["pending"]);
-  assert.match(state.updates[0][1], /ручного действия/u);
+  assert.equal(state.queuedInputs.has("one"), true);
+  assert.equal(state.pendingInputs.has("one"), false);
+  assert.equal(state.queuedInputs.get("one").conflictKind, "message-intake");
+  assert.deepEqual(state.transitions, []);
+  assert.equal(state.timers[0].delay, 2_000);
 });
 
 test("DeferredInputController starts durable intake when the task is free", async () => {

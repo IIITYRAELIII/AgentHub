@@ -308,6 +308,7 @@ export class RunCoordinator {
     target,
     executionOwner,
     clientUserMessageId,
+    messageFingerprint = null,
     reason = "task-running",
     conflictKind = reason,
     scheduleDelayMs = 500,
@@ -317,6 +318,7 @@ export class RunCoordinator {
       target,
       conflictKind,
       clientUserMessageId,
+      messageFingerprint,
       destination: "queued",
       notify: false,
       persistentFiles: attachments.length > 0,
@@ -364,6 +366,7 @@ export class RunCoordinator {
     attachments = [],
     target,
     clientUserMessageId,
+    messageFingerprint = null,
     followUpMode = "",
   }) {
     const existingRun = this.activeRun(target);
@@ -372,7 +375,18 @@ export class RunCoordinator {
         target,
         executionOwner: TASK_EXECUTION_OWNERS.HUB,
         clientUserMessageId,
+        messageFingerprint,
         reason: "context-maintenance",
+      });
+    }
+    if (existingRun?.status === "finishing") {
+      return this.queue(input, attachments, {
+        target,
+        executionOwner: existingRun.executionOwner ?? TASK_EXECUTION_OWNERS.HUB,
+        clientUserMessageId,
+        messageFingerprint,
+        reason: "message-intake",
+        scheduleDelayMs: 0,
       });
     }
     if (existingRun) {
@@ -390,6 +404,7 @@ export class RunCoordinator {
           target,
           executionOwner: existingRun.executionOwner ?? TASK_EXECUTION_OWNERS.HUB,
           clientUserMessageId,
+          messageFingerprint,
         });
       }
       const deferred = await this.deferInput(input, attachments, {
@@ -412,6 +427,7 @@ export class RunCoordinator {
       target,
       executionOwner: TASK_EXECUTION_OWNERS.HUB,
       clientUserMessageId,
+      messageFingerprint,
       reason: "message-intake",
       scheduleDelayMs: 0,
     });

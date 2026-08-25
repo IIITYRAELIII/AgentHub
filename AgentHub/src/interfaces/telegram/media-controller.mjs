@@ -5,6 +5,7 @@ import path from "node:path";
 import process from "node:process";
 import { telegramBotApiUrl, telegramFileApiUrl } from "../../infrastructure/telegram/telegram-api.mjs";
 import { telegramPrompt } from "./telegram-message.mjs";
+import { messageRequestFingerprint } from "../../infrastructure/persistence/message-receipts.mjs";
 import { writeTextAtomic } from "../../infrastructure/persistence/state-store.mjs";
 import { PersistentTtsWorkerClient } from "../../infrastructure/process/tts-worker-client.mjs";
 
@@ -227,9 +228,21 @@ export class MediaController {
         return;
       }
       await this.sendMessage(target.chatId, `📝 Распознано:\n${transcript}`);
-      await this.startTurn(telegramPrompt(message, transcript), [], {
+      const prompt = telegramPrompt(message, transcript);
+      const clientUserMessageId = target.clientUserMessageId
+        ?? `telegram:${message.chat?.id ?? target.chatId}:${message.message_id}`;
+      const followUpMode = "queue";
+      const messageFingerprint = await messageRequestFingerprint({
+        text: prompt,
+        attachmentIdentities: [{ id: media.file_id }],
+        followUpMode,
+      });
+      await this.startTurn(prompt, [], {
         forceSpeechButton: true,
         target,
+        clientUserMessageId,
+        messageFingerprint,
+        followUpMode,
       });
     } catch (error) {
       await this.sendMessage(target.chatId, `Ошибка распознавания: ${error.message}`);
@@ -248,10 +261,23 @@ export class MediaController {
       imagePath = await this.captureImage(descriptor);
       const prompt = message.caption?.trim()
         || "Проанализируй это изображение с учётом предыдущих сообщений пользователя.";
+      const clientUserMessageId = target.clientUserMessageId
+        ?? `telegram:${message.chat?.id ?? target.chatId}:${message.message_id}`;
+      const followUpMode = "queue";
+      const messageFingerprint = await messageRequestFingerprint({
+        text: prompt,
+        attachmentIdentities: [{ id: descriptor.fileId }],
+        followUpMode,
+      });
       await this.startTurn([
         { type: "text", text: prompt },
         { type: "localImage", path: imagePath },
-      ], [imagePath], { target });
+      ], [imagePath], {
+        target,
+        clientUserMessageId,
+        messageFingerprint,
+        followUpMode,
+      });
     } catch (error) {
       if (imagePath) await unlink(imagePath).catch(() => {});
       await this.sendMessage(target.chatId, `Не удалось обработать изображение: ${error.message}`);

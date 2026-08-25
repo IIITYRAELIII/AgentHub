@@ -15,7 +15,7 @@ import process from "node:process";
 
 import { deployRuntime } from "./runtime-manager.mjs";
 import { normalizeUsageSyncIdentity } from "../domain/usage-sync-identity.mjs";
-import { resolveCodexExecutable } from "../providers/codex/codex-invocation.mjs";
+import { resolveCodexExecutable } from "../infrastructure/process/codex-executable.mjs";
 import {
   canonicalPath,
   pathInsideOrSame,

@@ -497,14 +497,14 @@ export function createDesktopShellComposition({
       startManualCompaction: (target) => streamContextMaintenance.compact(target),
       deferredInputs,
       saveState,
-      persistDeferredIntake: (item, destination) => runtimeStateStore.saveDeferredIntake({
+      persistDeferredIntake: (item, destination, fallbackReceipt = null) => runtimeStateStore.saveDeferredIntake({
         item,
         destination,
         receipt: desktopMessageReceipts.get({
           provider: item.provider,
           threadId: item.threadId,
           clientUserMessageId: item.clientUserMessageId,
-        }),
+        }) ?? fallbackReceipt,
       }),
       commandTrace: commandTraceService,
       executionRuntimeLabel: taskExecutionRuntimeLabel,

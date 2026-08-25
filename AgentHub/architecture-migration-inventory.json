@@ -3,7 +3,7 @@
   "baseline": {
     "serverMaximumLines": 150,
     "compositionMaximumLines": 638,
-    "rootProductionModules": 28,
+    "rootProductionModules": 29,
     "rootTestModules": 0
   },
   "publicRootModules": [
@@ -11,6 +11,7 @@
     "agent-hub-server.mjs",
     "claude-work-log-backfill-cli.mjs",
     "codex-stop-hook-launcher.mjs",
+    "contract-registry-cli.mjs",
     "desktop-control.mjs",
     "direct-gateway-cli.mjs",
     "doctor.mjs",

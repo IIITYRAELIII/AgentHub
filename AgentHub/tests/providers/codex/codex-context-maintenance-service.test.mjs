@@ -90,6 +90,22 @@ test("manual compaction resumes a discovered thread before starting", async () =
   ]);
 });
 
+test("manual compaction starts after provider terminal while delivery is finishing", async () => {
+  const finishingRun = { status: "finishing", turnId: "turn-terminal" };
+  const { service, calls } = harness({
+    runForTask: () => finishingRun,
+    runIsActive: () => true,
+    ensureTransport: async () => calls.push(["transport"]),
+    resumeThread: async (...args) => calls.push(["resume", ...args]),
+    startCompaction: async (...args) => calls.push(["compact", ...args]),
+  });
+
+  const result = await service.startManual({ provider: "codex", threadId: "thread-1" });
+
+  assert.equal(result.accepted, true);
+  assert.equal(calls.some(([name]) => name === "compact"), true);
+});
+
 test("compaction start accepts an RPC timeout after the provider turn was observed", async () => {
   const { service, calls, entries } = harness({
     ensureTransport: async () => calls.push(["transport"]),

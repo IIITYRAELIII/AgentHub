@@ -10,7 +10,7 @@ import {
   telegramImageDescriptor,
 } from "../../../src/interfaces/telegram/media-controller.mjs";
 
-function controller(dataDir, overrides = {}) {
+function controller(dataDir, overrides = {}, dependencies = {}) {
   return new MediaController({
     config: {
       dataDir,
@@ -25,6 +25,7 @@ function controller(dataDir, overrides = {}) {
     startTurn: async () => {},
     activeProjectRoot: () => dataDir,
     stopProcessTree: async () => {},
+    ...dependencies,
   });
 }
 
@@ -75,6 +76,33 @@ test("Telegram image descriptor selects the largest photo or image document", ()
     fileSize: 30,
     fileName: "screen.png",
   });
+});
+
+test("Telegram image analysis enters the durable queue with exact message identity", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "media-controller-image-"));
+  const starts = [];
+  const instance = controller(dataDir, {}, {
+    startTurn: async (...args) => starts.push(args),
+  });
+  instance.captureImage = async () => path.join(dataDir, "image.jpg");
+
+  await instance.analyzeImage({
+    message_id: 17,
+    chat: { id: 42 },
+    caption: "проверь изображение",
+    photo: [{ file_id: "image", file_size: 20 }],
+  }, { provider: "codex", threadId: "thread-1", chatId: 42 });
+
+  assert.equal(starts.length, 1);
+  assert.deepEqual(starts[0][0], [
+    { type: "text", text: "проверь изображение" },
+    { type: "localImage", path: path.join(dataDir, "image.jpg") },
+  ]);
+  assert.deepEqual(starts[0][1], [path.join(dataDir, "image.jpg")]);
+  assert.deepEqual(starts[0][2].target, { provider: "codex", threadId: "thread-1", chatId: 42 });
+  assert.equal(starts[0][2].clientUserMessageId, "telegram:42:17");
+  assert.match(starts[0][2].messageFingerprint, /^[0-9a-f]{64}$/u);
+  assert.equal(starts[0][2].followUpMode, "queue");
 });
 
 test("bounded media process stops its whole tree on excess output", async () => {

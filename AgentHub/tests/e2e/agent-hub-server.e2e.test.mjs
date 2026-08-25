@@ -448,7 +448,22 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   await telegram.waitForText("Текущий поток изменён", { after: mark, timeoutMs: 1_500 });
   assert.equal((await readJson(statePath)).threadIds.codex, secondThreadId);
 
-  await telegram.waitForText("Готово: [media] медленная картинка", { after: menuMark, timeoutMs: 8_000 });
+  try {
+    await telegram.waitForText("Готово: [media] медленная картинка", { after: menuMark, timeoutMs: 8_000 });
+  } catch (error) {
+    const failedState = await readJson(statePath).catch(() => null);
+    const failedJobs = await readdir(path.join(dataDir, "background-jobs")).catch(() => []);
+    throw new Error(
+      `${error.message}\nactiveRuns=${JSON.stringify(failedState?.activeRuns)}`
+      + `\npending=${JSON.stringify(failedState?.pendingInputs)}`
+      + `\nqueued=${JSON.stringify(failedState?.queuedInputs)}`
+      + `\nlastMessages=${JSON.stringify(failedState?.lastTaskMessages)}`
+      + `\nbackgroundJobs=${JSON.stringify(failedJobs)}`
+      + `\ntelegramCalls=${JSON.stringify(telegram.callsAfter(menuMark).filter((call) => call.method !== "getUpdates"))}`
+      + `\nstdout:\n${stdout}\nstderr:\n${stderr}`,
+      { cause: error },
+    );
+  }
   assert.ok(telegram.fileDownloads[downloadIndex].completedAt >= menuDuringDownload.at,
     "the menu response must precede completion of the delayed download");
   assert.equal((await readJson(statePath)).threadIds.codex, secondThreadId,

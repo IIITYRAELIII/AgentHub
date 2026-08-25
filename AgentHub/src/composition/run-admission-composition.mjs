@@ -179,6 +179,9 @@ export function createRunAdmissionComposition({
     allowUnknownExternalActivity = false,
     persistentFiles = false,
     telegramDeliveryRequested = true,
+    clientUserMessageId = null,
+    messageFingerprint = null,
+    followUpMode = "",
   } = {}) {
     target ??= {
       ...getSelectedTask(),
@@ -192,13 +195,22 @@ export function createRunAdmissionComposition({
       clientSource: target.clientSource
         ?? (telegramDeliveryRequested ? "telegram" : "desktop"),
     };
-    const result = await runCoordinator.start(input, temporaryFiles, {
-      forceSpeechButton,
-      target,
-      allowRepositoryConflict,
-      allowUnknownExternalActivity,
-      persistentFiles,
-    });
+    const result = clientUserMessageId
+      ? await runCoordinator.acceptClientInput({
+          input,
+          attachments: temporaryFiles,
+          target,
+          clientUserMessageId,
+          messageFingerprint,
+          followUpMode,
+        })
+      : await runCoordinator.start(input, temporaryFiles, {
+          forceSpeechButton,
+          target,
+          allowRepositoryConflict,
+          allowUnknownExternalActivity,
+          persistentFiles,
+        });
     if (!result?.run) return result;
     const { run: _run, ...publicResult } = result;
     return publicResult;

@@ -1621,7 +1621,7 @@ test("chat sends with Enter on desktop and keeps Enter as a newline on phones", 
   assert.match(client, /completionOverlaysByTask\.set\(taskIdValue, overlays\)/u);
   assert.match(client, /completedConversationTurnVisible\(durableMessages/u);
   assert.match(client, /const visible = visibleConversationMessages\(result\.map\(normalizedUserMessage\)/u);
-  assert.match(client, /chronologicalMessages\(deduplicateConversationMessages\(visible\)\)/u);
+  assert.match(client, /chronologicalMessages\(projectCanonicalMessages\(visible\)\)/u);
   assert.match(lifecycle, /historicalAgentResponseVisible\(item\)/u);
   assert.match(client, /historyOrder:\s*\(historyStart \+ itemIndex\) \* 1_000 \+ messageIndex/u);
 });
@@ -2093,10 +2093,7 @@ test("current limits live in settings and statistics instead of the compact head
   assert.match(html, /data-current-limits="statistics"/u);
   assert.match(html, /data-current-limits="settings"/u);
   assert.match(app, /function currentLimitSeries\(payload\)/u);
-  assert.match(app, /pickCodex\("codex"\)/u);
-  assert.match(app, /pickCodex\("spark"\)/u);
-  assert.match(app, /return matches\.find\(\(series\) => series\.window === "primary"\);/u);
-  assert.match(app, /id === "claude:week"/u);
+  assert.match(app, /return selectCurrentLimitSeries\(payload\);/u);
   assert.match(app, /journal\.querySelector\("\[data-work-log-rate-limits\]"\)\?\.remove\(\)/u);
 });
 

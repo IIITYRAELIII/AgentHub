@@ -2,11 +2,7 @@ import { randomUUID } from "node:crypto";
 import dns from "node:dns";
 import path from "node:path";
 import process from "node:process";
-import {
-  canonicalizeProjectRoots,
-  AGENT_HUB_ROOT,
-  loadConfig,
-} from "../infrastructure/filesystem/config.mjs";
+import { canonicalizeProjectRoots, AGENT_HUB_ROOT, loadConfig } from "../infrastructure/filesystem/config.mjs";
 import { stopProcessTree } from "../providers/claude/claude-run-io.mjs";
 import {
   CODEX_COLLABORATION_MODE_LABELS,

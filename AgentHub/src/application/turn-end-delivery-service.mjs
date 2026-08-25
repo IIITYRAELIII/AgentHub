@@ -82,7 +82,9 @@ export class TurnEndDeliveryService {
       startedAt: completion.startedAt,
     }, notificationBody, {
       updatedAt: completion.completedAt,
-      terminalRevision: completion.terminalRevision,
+      ...(Number.isSafeInteger(completion.terminalRevision) && completion.terminalRevision > 0
+        ? { terminalRevision: completion.terminalRevision }
+        : {}),
     });
     if (completion.turnId) this.rememberSeenTurn(completion, completion.turnId);
     return true;

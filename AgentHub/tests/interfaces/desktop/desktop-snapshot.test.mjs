@@ -5,6 +5,25 @@ import {
   workspaceBindingForTask,
 } from "../../../src/interfaces/desktop/desktop-snapshot.mjs";
 import { mergeTaskCatalog } from "../../../src/application/task-catalog-projection.mjs";
+import {
+  createMaintenanceOperation,
+  MAINTENANCE_OPERATION_KINDS,
+  MAINTENANCE_OPERATION_STATUSES,
+} from "../../../src/domain/maintenance-operation.mjs";
+
+function blockedRestartOperation(blockingCount = 6) {
+  return createMaintenanceOperation({
+    operationId: "restart-1",
+    kind: MAINTENANCE_OPERATION_KINDS.RESTART,
+    streamId: "stream-1",
+    threadId: "thread-1",
+    status: MAINTENANCE_OPERATION_STATUSES.BLOCKED,
+    phase: "waiting-for-work",
+    blockers: ["active-work"],
+    metadata: { blockingCount },
+    createdAt: "2026-07-30T10:01:00.000Z",
+  });
+}
 
 function fixture(overrides = {}) {
   const selected = {
@@ -863,7 +882,7 @@ test("desktopSnapshot preserves top-level settings, queues and restart state", a
   const { desktopSnapshot, state } = fixture({
     pending,
     queued,
-    restartRequest: { waitingForRuns: true },
+    restartRequest: blockedRestartOperation(),
   });
 
   const snapshot = await desktopSnapshot({ refresh: true });
@@ -999,9 +1018,9 @@ test("desktopSnapshot preserves top-level settings, queues and restart state", a
   assert.equal(snapshot.tasks.length, 1);
 });
 
-test("desktopSnapshot derives restart waiting from current blocking work", async () => {
+test("desktopSnapshot derives restart waiting from the persisted operation", async () => {
   const { desktopSnapshot } = fixture({
-    restartRequest: { waitingForRuns: false },
+    restartRequest: blockedRestartOperation(),
   });
 
   const snapshot = await desktopSnapshot();

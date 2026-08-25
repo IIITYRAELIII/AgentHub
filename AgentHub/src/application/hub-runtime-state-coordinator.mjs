@@ -236,10 +236,16 @@ export async function restoreHubRuntimeSnapshot(saved, context) {
   }
 
   const restartRequest = saved.restartRequest && typeof saved.restartRequest === "object"
-    && Number.isSafeInteger(saved.restartRequest.chatId)
+    && (String(saved.restartRequest.operationId ?? "").trim()
+      || Number.isSafeInteger(saved.restartRequest.chatId))
     && (saved.restartRequest.messageId == null || Number.isSafeInteger(saved.restartRequest.messageId))
     ? {
-        chatId: saved.restartRequest.chatId,
+        ...(String(saved.restartRequest.operationId ?? "").trim()
+          ? { operationId: String(saved.restartRequest.operationId).trim() }
+          : {}),
+        chatId: Number.isSafeInteger(saved.restartRequest.chatId)
+          ? saved.restartRequest.chatId
+          : null,
         messageId: Number.isSafeInteger(saved.restartRequest.messageId)
           ? saved.restartRequest.messageId
           : null,

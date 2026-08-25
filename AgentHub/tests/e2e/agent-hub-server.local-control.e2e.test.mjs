@@ -301,7 +301,15 @@ test("local control client survives App Server exit during delayed startup and s
   const compacted = await callDesktopControl("compact-context", {
     provider: "codex",
     threadId: firstThreadId,
-  }, { runtimeRoot });
+  }, { runtimeRoot }).catch(async (error) => {
+    const snapshot = await callDesktopControl("snapshot", {}, { runtimeRoot }).catch(() => null);
+    const state = await readRuntimeState(dataDir).catch(() => null);
+    throw new Error(`${error.message}; snapshot=${JSON.stringify({
+      activeCount: snapshot?.activeCount,
+      task: snapshot?.tasks?.find((item) => item.threadId === firstThreadId),
+      activeRuns: state?.activeRuns,
+    })}`);
+  });
   assert.equal(compacted.accepted, true);
   assert.match(compacted.compactionId, /^[0-9a-f-]{36}$/u);
   await assert.rejects(
@@ -610,7 +618,7 @@ test("local control client survives App Server exit during delayed startup and s
     provider: "codex",
     threadId: firstThreadId,
   }, { runtimeRoot });
-  assert.equal(cancelStart.accepted, true);
+  assert.equal(cancelStart.accepted, true, JSON.stringify(cancelStart));
   await waitFor(async () => {
     const snapshot = await callDesktopControl("snapshot", {}, { runtimeRoot });
     return snapshot.tasks.find((item) => item.threadId === firstThreadId)?.running ? snapshot : null;

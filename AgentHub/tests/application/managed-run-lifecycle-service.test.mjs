@@ -92,7 +92,8 @@ test("managed run lifecycle exposes terminal state before removing the run", asy
   await service.markCompleted(run);
 
   assert.equal(run.status, "completed");
-  assert.equal(taskRuns.forTask(run), run);
+  assert.equal(taskRuns.forTask(run), null);
+  assert.equal(taskRuns.values().includes(run), true);
   assert.ok(events.includes("sync-complete"));
 });
 

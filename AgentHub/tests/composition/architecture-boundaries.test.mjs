@@ -321,12 +321,17 @@ test("turn-end projection and retry policy have one delivery owner", async () =>
 test("Codex completion bookkeeping has one finalization owner", async () => {
   const source = await compositionSource();
   const finalizer = await readFile(path.join(ROOT, "src/providers/codex/codex-run-finalizer.mjs"), "utf8");
+  const terminalCommit = await readFile(path.join(ROOT, "src/application/terminal-turn-commit-service.mjs"), "utf8");
   assert.equal((source.match(/new CodexRunFinalizer\s*\(/g) ?? []).length, 1);
   assert.equal(source.includes("routeCodexFinalDelivery("), false);
-  assert.equal(finalizer.includes("routeCodexFinalDelivery"), true);
   assert.equal(finalizer.includes("async finalize("), true);
   assert.equal(finalizer.includes("this.notifications.recordCompletion("), true);
+  assert.equal(finalizer.includes("await this.commitTerminal("), true);
+  assert.equal(finalizer.includes("await this.markRunCompleted(run)"), true);
+  assert.equal(finalizer.includes("await this.deliverTerminal("), true);
   assert.equal(finalizer.includes("await this.completeRun(run)"), true);
+  assert.equal(terminalCommit.includes("export class TerminalTurnCommitService"), true);
+  assert.equal(terminalCommit.includes("async commit("), true);
 });
 
 test("Codex token and context state have one bounded owner", async () => {
