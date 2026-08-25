@@ -3034,7 +3034,7 @@ agentHub.on("selection:set", async ({ key, value }) => {
       }));
       if (tracksProjection) {
         requestUsageHistory(usageState.range, { force: true });
-        void loadJournal({ force: true });
+        await loadJournal({ force: true });
       }
     });
   } finally {

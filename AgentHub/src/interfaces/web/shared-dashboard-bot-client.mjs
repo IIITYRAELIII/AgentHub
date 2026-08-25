@@ -17,7 +17,7 @@ const DEFAULT_RETRY_MS = 5_000;
 const COMMAND_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const HUB_ID_PATTERN = COMMAND_ID_PATTERN;
 const REMOTE_ATTACHMENT_PREFIX = "remote-attachment:";
-const ATTACHMENT_TIMEOUT_MS = 20_000;
+const ATTACHMENT_TIMEOUT_MS = 60_000;
 const ATTACHMENT_DOWNLOAD_ATTEMPTS = 3;
 
 function retryableCommandError(error) {
@@ -273,14 +273,16 @@ export class SharedDashboardBotClient {
   async #prepareCommand(command) {
     const references = command.params.attachments ?? [];
     if (!references.length) return command;
-    const attachments = [];
-    try {
-      for (const reference of references) {
-        attachments.push(await this.#downloadRemoteAttachment(reference, command));
-      }
-    } catch (error) {
+    const downloads = await Promise.allSettled(
+      references.map((reference) => this.#downloadRemoteAttachment(reference, command)),
+    );
+    const attachments = downloads
+      .filter((result) => result.status === "fulfilled")
+      .map((result) => result.value);
+    const failed = downloads.find((result) => result.status === "rejected");
+    if (failed) {
       await Promise.all(attachments.map((file) => unlink(file).catch(() => {})));
-      throw error;
+      throw failed.reason;
     }
     return { ...command, params: { ...command.params, attachments } };
   }

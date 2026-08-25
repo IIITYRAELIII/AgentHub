@@ -166,3 +166,38 @@ test("journal profile compares items only within one provider", async () => {
   assert.deepEqual(Array.from(api.profileCohort([codex, claude], "codex")), [codex]);
   assert.deepEqual(Array.from(api.profileCohort(null, "codex")), []);
 });
+
+test("forced journal refresh waits for the queued fresh projection", async () => {
+  const api = await journalViewApi();
+  let releaseFirst;
+  let releaseSecond;
+  const firstGate = new Promise((resolve) => { releaseFirst = resolve; });
+  const secondGate = new Promise((resolve) => { releaseSecond = resolve; });
+  const calls = [];
+  const refresh = api.createQueuedJournalRefresh(async (options) => {
+    calls.push({ ...options });
+    if (calls.length === 1) await firstGate;
+    if (calls.length === 2) await secondGate;
+    return calls.length;
+  });
+
+  const first = refresh.refresh();
+  const forced = refresh.refresh({ force: true });
+  let forcedResolved = false;
+  void forced.then(() => { forcedResolved = true; });
+
+  await Promise.resolve();
+  assert.equal(calls.length, 1);
+  releaseFirst();
+  await first;
+  await Promise.resolve();
+  assert.equal(calls.length, 2);
+  assert.equal(forcedResolved, false);
+
+  releaseSecond();
+  assert.equal(await forced, 2);
+  assert.deepEqual(calls, [
+    { force: false, announce: false },
+    { force: true, announce: false },
+  ]);
+});

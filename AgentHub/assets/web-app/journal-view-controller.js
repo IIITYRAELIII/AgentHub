@@ -177,7 +177,11 @@
       if (inFlight) {
         if (force) queued = true;
         if (announce) queuedAnnouncement = true;
-        return inFlight;
+        const current = inFlight;
+        if (!force) return current;
+        return current.then(() => (
+          inFlight && inFlight !== current ? inFlight : undefined
+        ));
       }
 
       inFlight = Promise.resolve().then(() => request({ force, announce })).finally(() => {

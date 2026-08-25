@@ -306,6 +306,96 @@ test("shared Dashboard bot retries a timed out screenshot without rejecting the 
   }]);
 });
 
+test("shared Dashboard bot downloads bundle attachments concurrently and preserves their order", async (context) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-shared-bot-parallel-attachments-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const secretFile = path.join(directory, "shared-dashboard-bot.secret");
+  await writeFile(secretFile, "s".repeat(64), "utf8");
+  const attachmentIds = [
+    "018f6c86-3f34-7a31-8f27-16f5b96cce92",
+    "018f6c86-3f34-7a31-8f27-16f5b96cce93",
+  ];
+  const bodies = new Map([
+    [attachmentIds[0], Buffer.from("first voice")],
+    [attachmentIds[1], Buffer.from("second voice")],
+  ]);
+  const command = {
+    id: "018f6c86-3f34-7a31-8f27-16f5b96cce94",
+    userId: "42",
+    action: "board-task-ingest",
+    params: {
+      text: "Сохранить пачку с голосовыми",
+      sourceKey: "shared-dashboard:123456",
+      sourceDetails: { chatId: 42, userId: 42, messageId: 11 },
+      attachments: attachmentIds.map((id) => `remote-attachment:${id}`),
+    },
+  };
+  let releaseFirst;
+  let releaseSecond;
+  let bothStartedResolve;
+  const firstResponse = new Promise((resolve) => { releaseFirst = resolve; });
+  const secondResponse = new Promise((resolve) => { releaseSecond = resolve; });
+  const bothStarted = new Promise((resolve) => { bothStartedResolve = resolve; });
+  const started = [];
+  const handled = [];
+  const client = new SharedDashboardBotClient({
+    publicUrl: "https://hub.example.com",
+    hubId: "018f6c86-3f34-7a31-8f27-16f5b96cce95",
+    secretFile,
+    attachmentDirectory: path.join(directory, "attachments"),
+    fetchImpl: async (url, options) => {
+      if (url.endsWith("/api/dashboard-bot/pull")) return Response.json({ commands: [command] });
+      if (url.endsWith("/api/dashboard-bot/attachment/pull")) {
+        const { id } = JSON.parse(options.body);
+        started.push(id);
+        if (started.length === attachmentIds.length) bothStartedResolve();
+        await (id === attachmentIds[0] ? firstResponse : secondResponse);
+        const body = bodies.get(id);
+        return new Response(body, {
+          headers: {
+            "Content-Type": "audio/ogg",
+            "Content-Length": String(body.length),
+            "X-Agent-Hub-Attachment-Hash": createHash("sha256").update(body).digest("hex"),
+            "X-Agent-Hub-File-Name": encodeURIComponent(`${id}.ogg`),
+          },
+        });
+      }
+      if (url.endsWith("/api/dashboard-bot/result")) return Response.json({ ok: true });
+      return Response.json({ error: "unexpected request" }, { status: 500 });
+    },
+    handler: async (request) => {
+      handled.push(request);
+      return { taskId: "task-parallel-attachments" };
+    },
+  });
+
+  const polling = client.poll();
+  let concurrencyTimer;
+  try {
+    await Promise.race([
+      bothStarted,
+      new Promise((_, reject) => {
+        concurrencyTimer = setTimeout(
+          () => reject(new Error("attachment downloads did not start concurrently")),
+          1_000,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(concurrencyTimer);
+  }
+  assert.deepEqual(started, attachmentIds);
+  releaseSecond();
+  await Promise.resolve();
+  assert.equal(handled.length, 0);
+  releaseFirst();
+  assert.equal(await polling, 1);
+  assert.deepEqual(
+    await Promise.all(handled[0].params.attachments.map((file) => readFile(file, "utf8"))),
+    ["first voice", "second voice"],
+  );
+});
+
 test("shared Dashboard bot leaves an exhausted transient command available for retry", async (context) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-shared-bot-image-deferred-"));
   context.after(() => rm(directory, { recursive: true, force: true }));
