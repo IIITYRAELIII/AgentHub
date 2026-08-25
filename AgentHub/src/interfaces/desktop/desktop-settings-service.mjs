@@ -74,10 +74,13 @@ export class DesktopSettingsService {
       d.setAutoApprove(value === "auto");
     } else if (name === "includeClaudeUsage") {
       if (!['true', 'false'].includes(value)) throw new Error("Неизвестный режим учёта Claude");
-      changed = d.getIncludeClaudeUsage() !== (value === "true");
-      d.setIncludeClaudeUsage(value === "true");
-      await d.projectUsage();
-      await d.saveState();
+      const enabled = value === "true";
+      changed = d.getIncludeClaudeUsage() !== enabled;
+      if (changed) {
+        await d.projectUsage(enabled);
+        d.setIncludeClaudeUsage(enabled);
+        await d.saveState();
+      }
     } else if (name === "activityRecentMinutes") {
       const minutes = Number(value);
       if (!Number.isSafeInteger(minutes) || minutes < 0 || minutes > 30 * 24 * 60) {

@@ -400,6 +400,16 @@ export function createDesktopTaskHistoryFactory({
       const unrelatedActiveTurnVisible = history.some((item) => (
         item?.active === true && String(item?.id ?? "").trim() !== completedTurnId
       ));
+      const unrelatedUserTurnVisible = history.some((item) => (
+        item?.active === true
+        && String(item?.id ?? "").trim() !== completedTurnId
+        && (
+          String(item?.prompt ?? "").trim()
+          || (Array.isArray(item?.messages) && item.messages.some((message) => (
+            message?.role === "user" && String(message?.text ?? "").trim()
+          )))
+        )
+      ));
       if (completed?.turnId && completed?.text && !(
         binding.provider === "codex" && isCodexContextProbeTurn({
           turnId: completed.turnId,
@@ -409,11 +419,13 @@ export function createDesktopTaskHistoryFactory({
         binding.provider === "codex" && isEmptyTurnCompletionPlaceholder({
           answer: completed.text,
         })
-      ) && (matchingTurnVisible || !unrelatedActiveTurnVisible)) {
+      ) && (matchingTurnVisible || !unrelatedActiveTurnVisible || unrelatedUserTurnVisible)) {
         historyMerger.mergeCompleted(history, {
           turnId: completed.turnId,
           answer: completed.text,
           completedAt: completed.updatedAt,
+        }, {
+          matchSingleActive: !unrelatedActiveTurnVisible,
         });
       }
     }

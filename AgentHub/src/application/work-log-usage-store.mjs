@@ -146,7 +146,9 @@ export class WorkLogUsageStore {
     return `# Глобальный журнал работ\n${rateLimits ? `${rateLimits}\n` : ""}`;
   }
 
-  async #projectDatabase(selectedTurns) {
+  async #projectDatabase(selectedTurns, {
+    includeClaudeUsage = this.#includeClaudeUsage,
+  } = {}) {
     const current = await this.#repository.payload();
     const source = await this.#projectionSource();
     const accountCatalog = typeof this.#repository.accountCatalog === "function"
@@ -157,6 +159,7 @@ export class WorkLogUsageStore {
       : [];
     const updated = this.#projectUsage(source, selectedTurns, {
       accountCatalog,
+      includeClaudeUsage,
       syncedUsageEvents,
     });
     const version = `sha256:${crypto.createHash("sha256").update(updated, "utf8").digest("hex")}`;
@@ -422,9 +425,13 @@ export class WorkLogUsageStore {
     );
   }
 
-  #projectUsage(text, turns, { accountCatalog = [], syncedUsageEvents = [] } = {}) {
+  #projectUsage(text, turns, {
+    accountCatalog = [],
+    includeClaudeUsage = this.#includeClaudeUsage,
+    syncedUsageEvents = [],
+  } = {}) {
     return projectWorkLogUsage(text, turns, {
-      includeClaudeUsage: this.#includeClaudeUsage,
+      includeClaudeUsage,
       workspaceResolver: this.#workspaceResolver(),
       accountCatalog,
       syncedUsageEvents,
@@ -478,12 +485,13 @@ export class WorkLogUsageStore {
   }
 
   project(workLogFile, {
+    includeClaudeUsage = this.#includeClaudeUsage,
     projectRoot = this.#defaultProjectRoot,
     projectionProjectRoots,
   } = {}) {
     const operation = this.#enqueueMutation(workLogFile, async () => {
       const selectedTurns = this.#turnsForProjection(projectRoot, projectionProjectRoots);
-      return this.#projectDatabase(selectedTurns);
+      return this.#projectDatabase(selectedTurns, { includeClaudeUsage });
     });
     return operation;
   }

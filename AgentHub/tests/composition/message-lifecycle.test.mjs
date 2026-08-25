@@ -1336,6 +1336,42 @@ test("deferred outgoing messages render only in the queue while it owns delivery
   assert.deepEqual(visible, []);
 });
 
+test("an unacknowledged optimistic steer collapses with its canonical submission item", () => {
+  const values = lifecycle.deduplicateConversationMessages([
+    {
+      id: "codex:thread-1:turn-1:client-steer:user",
+      provider: "codex",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      itemId: "client-steer",
+      clientUserMessageId: "",
+      role: "user",
+      text: "нет",
+      time: "2026-08-25T08:11:00.000Z",
+    },
+    {
+      id: "local:client-steer",
+      provider: "codex",
+      threadId: "thread-1",
+      turnId: "",
+      itemId: "client-steer",
+      clientUserMessageId: "client-steer",
+      role: "user",
+      text: "Аннотации к ответу: 1",
+      responseAnnotations: [{ text: "Скрин, похоже, из Test Contour", annotation: "нет" }],
+      time: "2026-08-25T08:10:59.000Z",
+      deliveryState: "sending",
+    },
+  ]);
+
+  assert.equal(values.length, 1);
+  assert.equal(values[0].clientUserMessageId, "client-steer");
+  assert.equal(values[0].time, "2026-08-25T08:11:00.000Z");
+  assert.deepEqual(JSON.parse(JSON.stringify(values[0].responseAnnotations)), [
+    { text: "Скрин, похоже, из Test Contour", annotation: "нет" },
+  ]);
+});
+
 test("queued outgoing messages without a client id still render only in the queue", () => {
   const queued = {
     role: "user",
@@ -2419,6 +2455,46 @@ test("run completion starts history catch-up even when answer metadata has not c
   const current = { ...previous, running: false };
   assert.equal(lifecycle.latestAnswerTransition(previous, current), true);
   assert.equal(lifecycle.latestAnswerTransition(current, current), false);
+});
+
+test("an active run is authoritative acceptance evidence for its client message", () => {
+  const receipts = lifecycle.activeRunMessageReceipts([
+    {
+      provider: "codex",
+      threadId: "thread-1",
+      streamId: "stream-1",
+      running: true,
+      run: {
+        turnId: "turn-1",
+        clientUserMessageId: "client-1",
+        startedAt: "2026-08-25T22:15:28.000Z",
+        userMessages: [{
+          itemId: "user-1",
+          clientUserMessageId: "client-1",
+          time: "2026-08-25T22:15:28.000Z",
+          attachments: [{ id: "attachment-1" }],
+        }],
+      },
+    },
+    {
+      provider: "terra",
+      threadId: "thread-idle",
+      running: false,
+      run: { clientUserMessageId: "client-idle" },
+    },
+  ]);
+
+  assert.deepEqual(JSON.parse(JSON.stringify(receipts)), [{
+    accepted: true,
+    provider: "codex",
+    threadId: "thread-1",
+    streamId: "stream-1",
+    clientUserMessageId: "client-1",
+    turnId: "turn-1",
+    itemId: "user-1",
+    deliveredAt: "2026-08-25T22:15:28.000Z",
+    attachments: [{ id: "attachment-1" }],
+  }]);
 });
 
 test("history catch-up waits for the completed turn instead of accepting the previous answer", () => {

@@ -90,6 +90,7 @@ let pollTimer = 0;
 let connectionTimer = 0;
 let stopped = false;
 let lastStartupStartedAtMs = 0;
+let restartExpected = false;
 
 const ACTIVE_POLL_MS = 500;
 const READY_POLL_MS = 1_500;
@@ -258,9 +259,9 @@ function clearConnectionTimer() {
   connectionTimer = 0;
 }
 
-function showDisconnectedState() {
+function showDisconnectedState({ force = false } = {}) {
   const disconnectedModel = createStartupDisconnectedModel(currentModel);
-  if (disconnectedModel && !screen.hidden) showModel(disconnectedModel);
+  if (disconnectedModel && (force || !screen.hidden)) showModel(disconnectedModel);
 }
 
 async function refresh() {
@@ -273,7 +274,14 @@ async function refresh() {
     clearConnectionTimer();
     if (!response.ok) throw new Error(`health ${response.status}`);
     const model = createStartupScreenModel(await response.json());
-    if (!model.available) {
+    const replacementStartup = restartExpected
+      && !model.ready
+      && lastStartupStartedAtMs > 0
+      && Number(model.startedAtMs) !== Number(lastStartupStartedAtMs);
+    if (replacementStartup) restartExpected = false;
+    if (restartExpected) {
+      showDisconnectedState({ force: true });
+    } else if (!model.available) {
       hideScreen();
       hadStartup = false;
       delay = READY_POLL_MS;
@@ -308,6 +316,22 @@ async function refresh() {
   }
   scheduleRefresh(delay);
 }
+
+window.addEventListener("agenthub:connection-state", (event) => {
+  const status = String(event.detail?.status ?? "");
+  if (status === "restarting") {
+    restartExpected = true;
+    hadStartup = true;
+    window.clearTimeout(hideTimer);
+    hideTimer = 0;
+    showDisconnectedState({ force: true });
+    return;
+  }
+  if (status === "online" && restartExpected) {
+    restartExpected = false;
+    scheduleRefresh(0);
+  }
+});
 
 function updateTimer() {
   if (currentModel && !currentModel.connectionLost && !screen.hidden) {

@@ -1290,6 +1290,7 @@ const state = {
     project: [],
   },
   selection: {},
+  pendingSelections: new Set(),
   status: null,
   connection: "",
   connectionBlockingCount: 0,
@@ -6680,7 +6681,12 @@ function renderOptions() {
   renderTurnTimeModeOptions();
   renderComparisonViewModeOptions();
   for (const toggle of document.querySelectorAll("[data-toggle]")) {
-    toggle.checked = Boolean(state.selection[toggle.dataset.toggle]);
+    const key = toggle.dataset.toggle;
+    const pending = state.pendingSelections.has(key);
+    toggle.checked = Boolean(state.selection[key]);
+    toggle.disabled = pending;
+    toggle.setAttribute("aria-busy", String(pending));
+    toggle.closest(".setting-switch")?.toggleAttribute("data-pending", pending);
   }
 }
 
@@ -6864,8 +6870,13 @@ document.addEventListener("change", (event) => {
   const toggle = event.target.closest("[data-toggle]");
   if (!toggle) return;
   const key = toggle.dataset.toggle;
-  state.selection[key] = toggle.checked;
-  emit("selection:set", { key, value: toggle.checked });
+  const value = toggle.checked;
+  if (key === "includeClaudeUsage") {
+    toggle.checked = Boolean(state.selection[key]);
+  } else {
+    state.selection[key] = value;
+  }
+  emit("selection:set", { key, value });
 });
 
 for (const button of turnTimeModeButtons) {
@@ -7449,6 +7460,9 @@ const AgentHub = {
     if (unchanged) return;
     state.connection = value;
     state.connectionBlockingCount = blockingCount;
+    window.dispatchEvent(new CustomEvent("agenthub:connection-state", {
+      detail: { status: value, blockingCount },
+    }));
     renderConnectionQuality();
     renderStreamChatHeader(currentTask());
     root.dataset.connection = value;
@@ -7763,6 +7777,13 @@ const AgentHub = {
     renderOptions();
     if (state.selectedId) renderChat();
     if (claudeUsageChanged && journalHtml) void renderJournal();
+  },
+  setSelectionPending(key, pending) {
+    const normalizedKey = String(key ?? "").trim();
+    if (!normalizedKey) return;
+    if (pending) state.pendingSelections.add(normalizedKey);
+    else state.pendingSelections.delete(normalizedKey);
+    renderOptions();
   },
   /** Сводка статуса/лимитов для панели: { rows: [{ name, value }] }. */
   setStatus(status) {

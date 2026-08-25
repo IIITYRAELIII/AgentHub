@@ -89,6 +89,15 @@ test("startup screen stops attributing a lost connection to the last operation",
   assert.deepEqual(disconnected.queueOperations, active.queueOperations);
 });
 
+test("startup screen can reopen for a runtime replacement after initial startup", () => {
+  const disconnected = createStartupDisconnectedModel(null);
+
+  assert.equal(disconnected.available, true);
+  assert.equal(disconnected.title, "Ожидание нового процесса");
+  assert.match(startupScreenSource, /agenthub:connection-state/u);
+  assert.match(startupScreenSource, /showDisconnectedState\(\{ force: true \}\)/u);
+});
+
 test("startup screen uses factual health stages and a webview-safe mark URL", () => {
   assert.match(startupScreenSource, /new URL\("\.\/agent-hub-mark\.png", import\.meta\.url\)\.href/u);
   assert.doesNotMatch(startupScreenSource, /<img src="\/agent-hub-mark\.png"/u);

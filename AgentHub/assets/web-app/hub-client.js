@@ -88,9 +88,11 @@ const pendingStreamRotations = new Map();
 const activeMaintenanceByTask = new Map();
 const batchedMessageRenders = new Map();
 let deferredClientUserMessageIds = new Set();
+let activeRunClientUserMessageIds = new Set();
 let messageRenderBatchDepth = 0;
 const MAX_OUTGOING_MESSAGES_PER_TASK = 100;
 const {
+  activeRunMessageReceipts,
   activeStageLabel,
   activeTaskRun,
   chronologicalMessages,
@@ -1701,9 +1703,17 @@ function applySnapshot(snapshot, { materialized = false } = {}) {
         .map((item) => String(item.clientUserMessageId ?? "").trim())
         .filter(Boolean),
     );
-    const activeRunClientUserMessageIds = new Set((snapshot.tasks ?? [])
-      .map((task) => String(task.run?.clientUserMessageId ?? "").trim())
-      .filter(Boolean));
+    const activeRunReceipts = activeRunMessageReceipts(snapshot.tasks);
+    const nextActiveRunClientUserMessageIds = new Set(
+      activeRunReceipts.map((receipt) => receipt.clientUserMessageId),
+    );
+    const newlyAcceptedRunReceipts = activeRunReceipts.filter((receipt) => (
+      !activeRunClientUserMessageIds.has(receipt.clientUserMessageId)
+    ));
+    if (newlyAcceptedRunReceipts.length) {
+      applyMessageReceipts({ messageReceipts: newlyAcceptedRunReceipts });
+    }
+    activeRunClientUserMessageIds = nextActiveRunClientUserMessageIds;
     for (const clientUserMessageId of optimisticDeferredClientUserMessageIds) {
       if (
         serverDeferredClientUserMessageIds.has(clientUserMessageId)
@@ -1849,19 +1859,8 @@ function applySnapshot(snapshot, { materialized = false } = {}) {
 }
 
 function applySnapshotConnection(snapshot, idleStatus = "online") {
-  const hasDetailedCount = snapshot?.restartBlockingCount != null;
-  const blockingCount = Math.max(
-    0,
-    Number(hasDetailedCount ? snapshot.restartBlockingCount : snapshot?.activeCount) || 0,
-  );
-  const waiting = snapshot?.restartPending && (
-    snapshot?.restartWaiting === true
-    || (snapshot?.restartWaiting == null && blockingCount > 0)
-  );
-  agentHub.setConnection(
-    waiting ? "restart-waiting" : snapshot?.restartPending ? "restarting" : idleStatus,
-    { blockingCount },
-  );
+  const connection = window.AgentHubConnectionBanner.snapshotConnectionState(snapshot, idleStatus);
+  agentHub.setConnection(connection.status, { blockingCount: connection.blockingCount });
 }
 
 function resetConnectionFailures() {
@@ -3000,7 +2999,7 @@ agentHub.on("comparison:open", ({ range, seriesId, accountKey, turnTimeMode }) =
     usage,
   });
 }));
-agentHub.on("selection:set", ({ key, value }) => runAction(async () => {
+agentHub.on("selection:set", async ({ key, value }) => {
   const names = {
     model: "model",
     reasoning: "reasoning",
@@ -3017,23 +3016,31 @@ agentHub.on("selection:set", ({ key, value }) => runAction(async () => {
   };
   const name = names[key];
   if (!name) return;
+  const tracksProjection = key === "includeClaudeUsage";
+  if (tracksProjection) agentHub.setSelectionPending(key, true);
   const taskIdentity = ["provider", "project", "model", "reasoning", "mode"].includes(name)
     ? exactSelectedTaskParams()
     : {};
-  applySnapshot(await control("update-setting", {
-    ...taskIdentity,
-    name,
-    value: key === "autoApprove"
-      ? (value ? "auto" : "manual")
-      : key === "pinnedWorkspaceStreams"
-        ? JSON.stringify(value ?? {})
-        : value,
-  }));
-  if (key === "includeClaudeUsage") {
-    requestUsageHistory(usageState.range, { force: true });
-    void loadJournal({ force: true });
+  try {
+    await runAction(async () => {
+      applySnapshot(await control("update-setting", {
+        ...taskIdentity,
+        name,
+        value: key === "autoApprove"
+          ? (value ? "auto" : "manual")
+          : key === "pinnedWorkspaceStreams"
+            ? JSON.stringify(value ?? {})
+            : value,
+      }));
+      if (tracksProjection) {
+        requestUsageHistory(usageState.range, { force: true });
+        void loadJournal({ force: true });
+      }
+    });
+  } finally {
+    if (tracksProjection) agentHub.setSelectionPending(key, false);
   }
-}));
+});
 agentHub.on("approval:respond", ({ id, decision, answers }) => runAction(async () => {
   await control("resolve-approval", { key: id, decision, ...(answers ? { answers } : {}) });
   applySnapshot(await control("snapshot"));

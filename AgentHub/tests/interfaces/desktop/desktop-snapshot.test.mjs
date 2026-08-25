@@ -371,6 +371,22 @@ test("desktop task snapshot hides an internal context probe run", () => {
   assert.equal(snapshot.running, false);
 });
 
+test("desktop task snapshot treats a saved final for the retained run as terminal", () => {
+  const { desktopTaskSnapshot, entry, state } = fixture();
+  state.lastMessage = {
+    text: "Финальный ответ уже сохранён",
+    updatedAt: "2026-07-30T10:01:30.000Z",
+    turnId: state.run.turnId,
+  };
+
+  const snapshot = desktopTaskSnapshot(entry);
+
+  assert.equal(snapshot.lastAnswer, "Финальный ответ уже сохранён");
+  assert.equal(snapshot.lastAnswerTurnId, state.run.turnId);
+  assert.equal(snapshot.running, false);
+  assert.equal(snapshot.run, null);
+});
+
 test("desktop task snapshot rejects a retained run from the pre-rotation Thread", () => {
   const { desktopTaskSnapshot, entry, state } = fixture();
   state.run.threadId = "thread-before-rotation";
@@ -980,6 +996,19 @@ test("desktopSnapshot preserves top-level settings, queues and restart state", a
     restart: { pending: true, waiting: true, blockingCount: 6 },
   });
   assert.equal(snapshot.tasks.length, 1);
+});
+
+test("desktopSnapshot derives restart waiting from current blocking work", async () => {
+  const { desktopSnapshot } = fixture({
+    restartRequest: { waitingForRuns: false },
+  });
+
+  const snapshot = await desktopSnapshot();
+
+  assert.equal(snapshot.restartPending, true);
+  assert.equal(snapshot.restartWaiting, true);
+  assert.equal(snapshot.restartBlockingCount, 6);
+  assert.equal(snapshot.server.restart.waiting, true);
 });
 
 test("desktopSnapshot exposes an in-flight steer as sending rather than a new decision", async () => {

@@ -718,14 +718,16 @@ export function visibleTaskHistory(history, count = 1, { completedOnly = false }
   };
 }
 
-export function mergeCompletedTaskHistory(history, completedTurn = {}) {
+export function mergeCompletedTaskHistory(history, completedTurn = {}, {
+  matchSingleActive = true,
+} = {}) {
   const values = Array.isArray(history) ? history : [];
   const turnId = String(completedTurn.turnId ?? completedTurn.id ?? "").trim();
   const answer = String(completedTurn.answer ?? completedTurn.text ?? "").trim();
   if (!turnId || !answer) return values;
 
   let current = values.findLast((item) => String(item?.id ?? "") === turnId);
-  if (!current) {
+  if (!current && matchSingleActive) {
     const activeItems = values.filter((item) => item?.active === true);
     if (activeItems.length === 1) {
       current = activeItems[0];

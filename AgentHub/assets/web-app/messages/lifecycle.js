@@ -23,6 +23,14 @@ function clientIdentityKey(message) {
   return `${clientUserMessageId}\0${role}`;
 }
 
+function submissionIdentityKeys(message) {
+  if (message?.role !== "user") return [];
+  return [...new Set([
+    String(message?.clientUserMessageId ?? "").trim(),
+    String(message?.itemId ?? "").trim(),
+  ].filter(Boolean))].map((value) => `submission:${value}`);
+}
+
 function pagedHistoryIdentityKey(message) {
   if (!Number.isFinite(Number(message?.historyOrder))) return "";
   const turnId = String(message?.turnId ?? "").trim();
@@ -152,6 +160,32 @@ function activeTaskRun(task) {
   return task?.running === true && task?.run ? task.run : null;
 }
 
+function activeRunMessageReceipts(tasks) {
+  const receipts = [];
+  for (const task of Array.isArray(tasks) ? tasks : []) {
+    const run = activeTaskRun(task);
+    const clientUserMessageId = String(run?.clientUserMessageId ?? "").trim();
+    const provider = String(task?.provider ?? run?.provider ?? "").trim();
+    const threadId = String(task?.threadId ?? run?.threadId ?? "").trim();
+    if (!clientUserMessageId || !provider || !threadId) continue;
+    const rootMessage = (Array.isArray(run.userMessages) ? run.userMessages : []).find((message) => (
+      String(message?.clientUserMessageId ?? "").trim() === clientUserMessageId
+    ));
+    receipts.push({
+      accepted: true,
+      provider,
+      threadId,
+      streamId: String(task?.streamId ?? "").trim(),
+      clientUserMessageId,
+      turnId: String(run.turnId ?? rootMessage?.turnId ?? "").trim(),
+      itemId: String(rootMessage?.itemId ?? clientUserMessageId).trim() || clientUserMessageId,
+      deliveredAt: rootMessage?.time ?? run.startedAt ?? null,
+      attachments: Array.isArray(rootMessage?.attachments) ? rootMessage.attachments : [],
+    });
+  }
+  return receipts;
+}
+
 function latestAnswerTransition(previous, current) {
   if (!previous || !current) return false;
   if (String(previous.provider ?? "") !== String(current.provider ?? "")
@@ -181,6 +215,7 @@ function deduplicateConversationMessages(messages) {
       : "";
     const agentCard = agentCardKey(message);
     const keys = [
+      ...submissionIdentityKeys(message),
       ...(client ? [`client:${client}`] : []),
       ...(pagedHistory ? [`history:${pagedHistory}`] : []),
       ...(item ? [`item:${item}`] : []),
@@ -1258,6 +1293,7 @@ function hubErrorMessage(error) {
 }
 
 globalThis.AgentHubMessageLifecycle = Object.freeze({
+  activeRunMessageReceipts,
   activeStageLabel,
   activeTaskRun,
   attachmentOnlyText,

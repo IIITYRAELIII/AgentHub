@@ -147,6 +147,46 @@ test("shared Dashboard bot pauses after an empty short poll", async (context) =>
   await client.close();
 });
 
+test("shared Dashboard bot close aborts an in-flight result request", async (context) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-shared-bot-close-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const secretFile = path.join(directory, "shared-dashboard-bot.secret");
+  await writeFile(secretFile, "s".repeat(64), "utf8");
+  let resultStarted;
+  const resultSeen = new Promise((resolve) => { resultStarted = resolve; });
+  const client = new SharedDashboardBotClient({
+    publicUrl: "https://hub.example.com",
+    hubId: "018f6c86-3f34-7a31-8f27-16f5b96cce68",
+    secretFile,
+    fetchImpl: async (url, options) => {
+      if (url.endsWith("/api/dashboard-bot/register")) return Response.json({ paired: true });
+      if (url.endsWith("/api/dashboard-bot/pull")) {
+        return Response.json({ commands: [{
+          id: "018f6c86-3f34-7a31-8f27-16f5b96cce69",
+          userId: "42",
+          action: "board-task-ingest",
+          params: { text: "Проверить остановку", sourceKey: "shared-dashboard:123" },
+        }] });
+      }
+      if (url.endsWith("/api/dashboard-bot/result")) {
+        resultStarted();
+        return new Promise((resolve, reject) => {
+          options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true });
+        });
+      }
+      return Response.json({ error: "unexpected request" }, { status: 500 });
+    },
+    handler: async () => ({ taskId: "task-close" }),
+  });
+
+  await client.start();
+  await resultSeen;
+  await Promise.race([
+    client.close(),
+    new Promise((_, reject) => setTimeout(() => reject(new Error("close timed out")), 100)),
+  ]);
+});
+
 test("shared Dashboard bot downloads a screenshot reply before augmenting the Task", async (context) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-shared-bot-image-"));
   context.after(() => rm(directory, { recursive: true, force: true }));

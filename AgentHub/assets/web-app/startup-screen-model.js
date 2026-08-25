@@ -59,9 +59,22 @@ export function createStartupScreenModel(snapshot, nowMs = Date.now()) {
 }
 
 export function createStartupDisconnectedModel(model) {
-  if (!model?.available) return null;
+  const base = model?.available ? model : {
+    available: true,
+    ready: false,
+    failed: false,
+    finished: false,
+    status: "restarting",
+    currentIndex: -1,
+    startedAtMs: Date.now(),
+    stageNumber: 0,
+    stageTotal: 0,
+    operations: [],
+    completedOperations: [],
+    queueOperations: [],
+  };
   return {
-    ...model,
+    ...base,
     connectionLost: true,
     eyebrow: "Agent Hub перезапускается",
     title: "Ожидание нового процесса",

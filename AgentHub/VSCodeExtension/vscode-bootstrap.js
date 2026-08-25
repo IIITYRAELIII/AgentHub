@@ -307,11 +307,7 @@ async function streamDirectEvents() {
 }
 
 window.__agentHubDirectTransport = {
-  available: () => {
-    const available = Boolean(activeDirectSession());
-    if (!available) void ensureDirectSession();
-    return available;
-  },
+  available: async () => Boolean(activeDirectSession() ?? await ensureDirectSession()),
 };
 
 void ensureDirectSession().then((session) => {

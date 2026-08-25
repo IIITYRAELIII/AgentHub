@@ -119,6 +119,7 @@ export class SharedDashboardBotClient {
     const secret = await this.#secret();
     const body = JSON.stringify(payload);
     const { timestamp, signature } = signSharedDashboardBotRequest({ body, secret, pathname });
+    const activeSignal = signal ?? this.#abortController?.signal ?? null;
     try {
       return await this.#fetch(`${this.#publicUrl}${pathname}`, {
         method: "POST",
@@ -129,8 +130,8 @@ export class SharedDashboardBotClient {
           "X-Agent-Hub-Signature": signature,
         },
         body,
-        signal: signal
-          ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)])
+        signal: activeSignal
+          ? AbortSignal.any([activeSignal, AbortSignal.timeout(timeoutMs)])
           : AbortSignal.timeout(timeoutMs),
       });
     } catch (error) {

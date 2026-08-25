@@ -453,7 +453,8 @@ export function createDesktopShellComposition({
       setStreamCardGapEnabled: (value) => agentPreferences.setStreamCardGapEnabled(value),
       getPinnedWorkspaceStreams: () => agentPreferences.pinnedWorkspaceStreams,
       setPinnedWorkspaceStreams: (value) => agentPreferences.setPinnedWorkspaceStreams(value),
-      projectUsage: () => workLogUsageStore.project(null, {
+      projectUsage: (includeClaudeUsage) => workLogUsageStore.project(null, {
+        includeClaudeUsage,
         projectRoot: config.projectRoot,
         projectionProjectRoots: globalWorkLogProjectRoots,
       }),

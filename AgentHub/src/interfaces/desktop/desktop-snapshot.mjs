@@ -452,7 +452,16 @@ export function createDesktopSnapshotFactory({
     const context = desktopContextSnapshot(entry.threadId, run?.turnId, entry.contextUsage);
     const internalMaintenanceObserver = isInternalMaintenanceObserver(run, context);
     const runActive = taskRunIsActive(run);
-    const visibleRun = internalMaintenanceObserver || !runActive ? null : run;
+    const runTurnId = String(run?.turnId ?? "").trim();
+    const savedAnswerTurnId = String(lastMessage?.turnId ?? "").trim();
+    const savedCompletionMatchesRun = Boolean(
+      runActive
+      && runTurnId
+      && savedAnswerTurnId === runTurnId
+    );
+    const visibleRun = internalMaintenanceObserver || !runActive || savedCompletionMatchesRun
+      ? null
+      : run;
     const unread = Boolean(
       accountId
       && lastMessage?.updatedAt
@@ -483,9 +492,7 @@ export function createDesktopSnapshotFactory({
       threadTitle: entry.title,
       model: visibleRun?.model ?? entry.model ?? null,
       selected: tasks.entryIsSelected(entry, selection.selectedTask()),
-      running: internalMaintenanceObserver
-        ? false
-        : Boolean(run && runActive),
+      running: Boolean(visibleRun),
       activityUnknown: entry.activityUnknown === true,
       executionOwner: visibleRun?.executionOwner ?? entry.executionOwner ?? null,
       runtime: visibleRun?.appServer ?? (entry.executionOwner
@@ -624,18 +631,23 @@ export function createDesktopSnapshotFactory({
       ? current.reasoningLabels
       : claudeReasoningLabels;
     const activeCount = taskSnapshots.filter((item) => item.running).length;
+    const restartRequest = restart.request();
+    const restartBlockingCount = restartRequest
+      ? restart.blockingRuns().length
+        + restart.mediaJobCount()
+        + restart.speechJobCount()
+      : 0;
+    const restartWaiting = Boolean(restartRequest) && (
+      restartRequest.waitingForRuns === true || restartBlockingCount > 0
+    );
     phaseStartedAt = monotonicNow();
     const serverSnapshot = typeof server.snapshot === "function"
       ? await server.snapshot({
         activeCount,
         restart: {
-          pending: Boolean(restart.request()),
-          waiting: restart.request()?.waitingForRuns === true,
-          blockingCount: restart.request()
-            ? restart.blockingRuns().length
-              + restart.mediaJobCount()
-              + restart.speechJobCount()
-            : 0,
+          pending: Boolean(restartRequest),
+          waiting: restartWaiting,
+          blockingCount: restartBlockingCount,
         },
       })
       : null;
@@ -765,13 +777,9 @@ export function createDesktopSnapshotFactory({
         return (Number.isFinite(leftAt) ? leftAt : Number.POSITIVE_INFINITY)
           - (Number.isFinite(rightAt) ? rightAt : Number.POSITIVE_INFINITY);
       }),
-      restartPending: Boolean(restart.request()),
-      restartWaiting: restart.request()?.waitingForRuns === true,
-      restartBlockingCount: restart.request()
-        ? restart.blockingRuns().length
-          + restart.mediaJobCount()
-          + restart.speechJobCount()
-        : 0,
+      restartPending: Boolean(restartRequest),
+      restartWaiting,
+      restartBlockingCount,
       exchangeRates: exchangeRates?.snapshot?.() ?? null,
       activeCount,
       server: serverSnapshot,

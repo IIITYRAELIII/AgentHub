@@ -85,6 +85,48 @@ test("Desktop settings service persists the shared recent activity period", asyn
   );
 });
 
+test("Desktop settings service commits Claude usage only after projection", async () => {
+  let current = false;
+  let releaseProjection;
+  let saveCount = 0;
+  const projected = new Promise((resolve) => { releaseProjection = resolve; });
+  const noop = () => {};
+  const service = new DesktopSettingsService({
+    isSelected: () => true, selectedTask: () => ({}), switchProvider: async () => ({}), isCodex: () => true,
+    threadId: () => "t1", isCompacting: () => false, switchCodexModel: () => ({}), switchClaudeModel: () => ({}),
+    updateCodexThreadSettings: async () => {}, saveState: async () => { saveCount += 1; }, getCodexReasoning: () => "high",
+    setCodexReasoning: noop, getClaudeReasoning: () => "high", setClaudeReasoning: noop,
+    getCodexMode: () => "default", setCodexMode: noop, getClaudeMode: () => "default", setClaudeMode: noop,
+    getAutoApprove: () => true, setAutoApprove: noop,
+    getIncludeClaudeUsage: () => current,
+    setIncludeClaudeUsage: (value) => { current = value; },
+    getActivityRecentMinutes: () => 180, setActivityRecentMinutes: noop,
+    getStreamOrderMode: () => "activity", setStreamOrderMode: noop,
+    getStreamCardWidthMode: () => "auto", setStreamCardWidthMode: noop,
+    getStreamCardFixedWidth: () => 90, setStreamCardFixedWidth: noop,
+    getStreamCardGapEnabled: () => false, setStreamCardGapEnabled: noop,
+    projectUsage: async (value) => {
+      assert.equal(value, true);
+      await projected;
+    },
+    findProjectIndex: () => 0, switchProject: async () => ({}),
+    snapshot: async () => ({ settings: { includeClaudeUsage: current } }),
+    reasoningEfforts: ["high"], collaborationModes: ["default"],
+  });
+
+  const updating = service.update({ name: "includeClaudeUsage", value: "true" });
+  await Promise.resolve();
+  assert.equal(current, false);
+  assert.equal(saveCount, 0);
+
+  releaseProjection();
+  const result = await updating;
+
+  assert.equal(current, true);
+  assert.equal(saveCount, 1);
+  assert.equal(result.settings.includeClaudeUsage, true);
+});
+
 test("Desktop settings service persists shared Stream card settings", async () => {
   const current = {
     streamOrderMode: "activity",

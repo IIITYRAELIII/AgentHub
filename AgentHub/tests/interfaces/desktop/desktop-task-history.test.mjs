@@ -846,6 +846,48 @@ test("desktop task history never assigns an old final to an unrelated active tur
   assert.deepEqual(result.items[0].messages, []);
 });
 
+test("desktop task history keeps a saved final beside a later active user turn", async () => {
+  const state = fixture({ run: null }).state;
+  state.history = [{
+    id: "current-user-turn",
+    prompt: "Почему пропал предыдущий ответ?",
+    answer: "",
+    status: "inProgress",
+    active: true,
+    completed: false,
+    startedAt: "2026-08-08T17:09:19.000Z",
+    messages: [{ role: "user", text: "Почему пропал предыдущий ответ?" }],
+  }];
+  const factory = createDesktopTaskHistoryFactory({
+    selection: {
+      activeProvider: () => state.activeProvider,
+      threadId: () => state.threadId,
+      chatId: () => state.chatId,
+    },
+    catalog: { entries: () => state.entries },
+    historyReader: { read: async () => ({ history: structuredClone(state.history) }) },
+    runs: { forTask: () => null },
+    latestMessage: () => ({
+      turnId: "previous-user-turn",
+      text: "Релиз завершён",
+      updatedAt: "2026-08-08T14:21:46.000Z",
+    }),
+    historyMerger: {
+      mergeActive() {},
+      mergeCompleted: mergeCompletedTaskHistory,
+    },
+    responseBudget: { fit: (payload) => payload },
+  });
+
+  const result = await factory({ limit: 10, includeActive: false });
+
+  assert.deepEqual(result.items.map((item) => item.id), ["previous-user-turn", "current-user-turn"]);
+  assert.equal(result.items[0].answer, "Релиз завершён");
+  assert.equal(result.items[0].completed, true);
+  assert.equal(result.items[1].answer, "");
+  assert.equal(result.items[1].active, true);
+});
+
 test("desktop task history returns durable history while provider hydration is still blocked", async () => {
   let releaseRefresh;
   const blockedRefresh = new Promise((resolve) => { releaseRefresh = resolve; });
