@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { AGENT_HUB_VERSION } from "../../../src/infrastructure/filesystem/agent-hub-package.mjs";
 import { ServerControlController } from "../../../src/interfaces/web/server-control-controller.mjs";
 
 function createController(overrides = {}) {
@@ -33,7 +34,7 @@ test("server controller composes live process, restart and autostart state", asy
     instanceId: "instance",
     releaseId: "release",
     activeCount: 3,
-    version: "2026.8.25",
+    version: AGENT_HUB_VERSION,
   });
   assert.deepEqual(snapshot.restart, { pending: true, waiting: true, blockingCount: 2 });
   assert.deepEqual(snapshot.autostart, { supported: true, enabled: true });

@@ -1,0 +1,358 @@
+/* Industrial deep-space survival horror, with original project-owned artwork. */
+
+html[data-theme="dead-space"] {
+  --font-body: "Segoe UI", Arial, sans-serif;
+  --font-display: Bahnschrift, "Arial Narrow", "Segoe UI", sans-serif;
+  --font-title: Bahnschrift, "Arial Narrow", "Segoe UI", sans-serif;
+  --font-numeric: "Cascadia Mono", Consolas, monospace;
+  --display-weight: 520;
+  --display-spacing: 0.075em;
+  --display-transform: uppercase;
+  --display-shadow: 0 1px 0 #000, 0 0 10px rgb(71 226 216 / 12%);
+  --title-weight: 540;
+  --label-spacing: 0.14em;
+
+  --radius-lg: 2px;
+  --radius-md: 2px;
+  --radius-sm: 1px;
+  --radius-chip: 1px;
+  --rail-width: 2px;
+
+  --bg: #030708;
+  --surface-1: rgb(5 11 13 / 94%);
+  --surface-2: rgb(10 19 22 / 92%);
+  --surface-3: rgb(20 33 37 / 88%);
+  --sunken: rgb(1 5 6 / 92%);
+  --line: rgb(99 132 136 / 34%);
+  --line-strong: rgb(117 170 171 / 58%);
+
+  --dead-space-image: url("./dead-space-mining-deck.png");
+  --dead-space-metal:
+    repeating-linear-gradient(90deg, rgb(188 222 220 / 2%) 0 1px, transparent 1px 7px),
+    linear-gradient(180deg, rgb(27 39 42 / 96%), rgb(5 10 12 / 98%) 48%, rgb(15 23 25 / 96%));
+  --dead-space-metal-soft:
+    repeating-linear-gradient(0deg, rgb(113 169 170 / 2%) 0 1px, transparent 1px 5px),
+    linear-gradient(145deg, rgb(18 31 34 / 94%), rgb(5 11 13 / 96%));
+  --dead-space-control:
+    linear-gradient(90deg, rgb(70 224 214 / 5%), transparent 22%),
+    linear-gradient(180deg, rgb(16 28 31 / 96%), rgb(5 11 13 / 98%));
+
+  --card-bg: linear-gradient(180deg, rgb(11 22 24 / 96%), rgb(4 10 12 / 98%));
+  --card-bg-open: linear-gradient(180deg, rgb(16 31 34 / 97%), rgb(5 12 14 / 99%));
+  --card-texture: var(--dead-space-metal-soft);
+  --card-border: rgb(83 122 124 / 46%);
+  --card-border-open: rgb(79 222 214 / 66%);
+  --card-shadow:
+    inset 0 1px 0 rgb(208 247 243 / 6%),
+    inset 0 -1px 0 rgb(0 0 0 / 86%),
+    0 18px 36px -28px #000;
+  --plate-bg: var(--dead-space-control);
+  --plate-shadow: inset 0 1px 0 rgb(205 246 242 / 5%), inset 0 -1px 0 #010304;
+  --turn-shadow: 0 16px 32px -24px #000;
+
+  --text: #d4dedc;
+  --text-soft: #a9b8b6;
+  --text-muted: #758785;
+  --text-faint: #516260;
+  --accent: #55e6dc;
+  --accent-soft: rgb(72 225 215 / 12%);
+  --accent-line: rgb(77 226 216 / 58%);
+  --accent-glow: 0 0 20px -10px rgb(73 231 221 / 82%);
+  --selection: rgb(81 225 216 / 24%);
+  --brand-gradient: linear-gradient(145deg, rgb(75 225 215 / 17%), rgb(8 14 16 / 22%));
+  --brand-shadow: inset 0 -2px 0 rgb(83 229 220 / 35%), 0 0 20px -13px rgb(71 226 216 / 82%);
+
+  --provider-none: #758886;
+  --provider-codex: #65dcd4;
+  --provider-claude: #d58a3d;
+  --ok: #83c9a3;
+  --pending: #d78a32;
+  --dot-input: #66ded6;
+  --dot-cache: #8ba8a6;
+  --dot-output: #d98a36;
+  --dot-think: #8bc6c1;
+
+  --space-glow-a: rgb(62 219 210 / 6%);
+  --space-glow-b: rgb(213 128 45 / 4%);
+  --space-base: #030708;
+  --space-star: transparent;
+  --star-opacity: 0;
+
+  --shell-header-background: var(--dead-space-metal);
+  --shell-header-border: 1px solid rgb(88 123 125 / 48%);
+  --shell-header-frame-border: 1px solid rgb(94 136 137 / 48%);
+  --shell-header-frame-content: "";
+  --shell-header-frame-image: none;
+  --shell-header-gap: 0.75rem;
+  --shell-header-height: 4.35rem;
+  --shell-header-padding-left: clamp(0.75rem, 2.2vw, 2rem);
+  --shell-header-padding-right: clamp(0.75rem, 2.2vw, 2rem);
+  --shell-header-rule: linear-gradient(90deg, transparent, rgb(79 228 218 / 60%), transparent);
+  --shell-header-rule-bottom: 0;
+  --shell-header-rule-opacity: 0.72;
+  --shell-header-shadow: inset 0 -1px 0 #000, 0 14px 34px -28px #000;
+  --shell-control-background: var(--dead-space-control);
+  --shell-control-border: 1px solid rgb(84 126 128 / 54%);
+  --shell-control-shadow: inset 0 1px 0 rgb(205 246 242 / 6%), inset 0 -1px 0 #010304;
+  --shell-view-switch-background: var(--dead-space-metal-soft);
+  --shell-view-switch-border: 1px solid rgb(78 118 120 / 48%);
+  --shell-view-switch-radius: 1px;
+  --shell-view-switch-shadow: inset 0 1px 0 rgb(205 246 242 / 5%), inset 0 -1px 0 #000;
+  --shell-tab-border: 1px solid transparent;
+  --shell-tab-active-background: var(--dead-space-control);
+  --shell-tab-active-border: 1px solid rgb(99 153 154 / 62%);
+  --shell-tab-active-shadow: inset 0 -2px 0 var(--accent), 0 10px 24px -20px rgb(68 227 217 / 88%);
+  --shell-workspace-padding-top: 0.42rem;
+  --shell-panel-border: 1px solid rgb(82 123 125 / 48%);
+  --shell-panel-border-image: none;
+  --shell-panel-border-width: 1px;
+  --shell-panel-border-image-width: 0;
+  --shell-stream-tabs-background: var(--dead-space-metal);
+  --shell-stream-tabs-border: 1px solid rgb(83 125 126 / 48%);
+  --shell-stream-tabs-border-bottom: 1px solid rgb(70 111 112 / 58%);
+  --shell-stream-tabs-border-image: none;
+  --shell-stream-tabs-padding: 0.14rem 0.2rem;
+  --shell-stream-tab-background: transparent;
+  --shell-stream-tab-border: 1px solid transparent;
+  --shell-stream-tab-hover-background: rgb(26 44 46 / 70%);
+  --shell-stream-tab-active-background: rgb(14 39 40 / 82%);
+  --shell-stream-card-background: var(--dead-space-control);
+  --shell-stream-card-border: 1px solid rgb(75 121 122 / 52%);
+  --shell-stream-card-border-image: none;
+  --shell-stream-card-shadow: inset 0 1px 0 rgb(205 246 242 / 7%), inset 0 -1px 0 #010304;
+}
+
+html[data-theme="dead-space"] body::after {
+  background-color: #020506;
+  background-image:
+    linear-gradient(90deg, rgb(1 5 6 / 30%) 0 58%, transparent 82%),
+    linear-gradient(180deg, rgb(2 6 7 / 34%), transparent 34% 72%, rgb(1 3 4 / 48%)),
+    radial-gradient(110% 96% at 70% 48%, transparent 42%, rgb(0 0 0 / 56%) 100%),
+    var(--dead-space-image);
+  background-position: center, center, center, 50% 50%;
+  background-repeat: no-repeat;
+  background-size: cover;
+  inset: 0;
+  mask-image: none;
+  opacity: 1;
+}
+
+@keyframes dead-space-utility-pulse {
+  0%, 100% { opacity: 0.14; transform: translate3d(-2%, 0, 0); }
+  48% { opacity: 0.28; transform: translate3d(2%, 0, 0); }
+  72% { opacity: 0.2; transform: translate3d(0, 0, 0); }
+}
+
+html[data-theme="dead-space"] body::before {
+  animation: dead-space-utility-pulse 12s ease-in-out infinite;
+  background:
+    linear-gradient(100deg, transparent 48%, rgb(69 227 217 / 7%) 58%, transparent 68%),
+    radial-gradient(24% 42% at 82% 58%, rgb(211 126 43 / 12%), transparent 72%);
+  content: "";
+  inset: -3%;
+  mask-image: none;
+  mix-blend-mode: screen;
+  pointer-events: none;
+}
+
+html[data-background-override="true"][data-background="dead-space"] {
+  --hub-background-color: #020506;
+  --hub-background-image:
+    linear-gradient(90deg, rgb(1 5 6 / 30%) 0 58%, transparent 82%),
+    linear-gradient(180deg, rgb(2 6 7 / 34%), transparent 34% 72%, rgb(1 3 4 / 48%)),
+    radial-gradient(110% 96% at 70% 48%, transparent 42%, rgb(0 0 0 / 56%) 100%),
+    var(--dead-space-image);
+  --hub-background-position: center, center, center, 50% 50%;
+}
+
+html[data-theme="dead-space"] .task-rail,
+html[data-theme="dead-space"] .activity-rail,
+html[data-theme="dead-space"] .stream-tabs,
+html[data-theme="dead-space"] .composer,
+html[data-theme="dead-space"] .dialog-settings,
+html[data-theme="dead-space"] .settings-panel {
+  background: var(--dead-space-metal);
+  border-color: rgb(83 124 126 / 50%);
+  box-shadow:
+    inset 0 1px 0 rgb(207 244 241 / 6%),
+    inset 0 -1px 0 #010304,
+    inset 0 0 34px rgb(0 0 0 / 18%),
+    0 18px 38px -30px #000;
+}
+
+html[data-theme="dead-space"] .chat {
+  background:
+    repeating-linear-gradient(0deg, transparent 0 3px, rgb(83 220 211 / 1.8%) 3px 4px),
+    rgb(2 8 9 / 34%);
+  box-shadow: inset 0 0 0 1px rgb(55 98 100 / 34%), inset 0 0 72px rgb(0 0 0 / 20%);
+}
+
+html[data-theme="dead-space"] .task-workspace-item,
+html[data-theme="dead-space"] .activity-stream-item,
+html[data-theme="dead-space"] .composer-input,
+html[data-theme="dead-space"] .chip-button,
+html[data-theme="dead-space"] .option-chip {
+  background: var(--dead-space-control);
+  border-color: rgb(74 112 114 / 52%);
+  border-radius: 1px;
+  box-shadow: inset 0 1px 0 rgb(202 245 241 / 5%), inset 0 -1px 0 #010304;
+}
+
+html[data-theme="dead-space"] .task-workspace-item,
+html[data-theme="dead-space"] .activity-stream-item {
+  border-left-width: 2px;
+  position: relative;
+}
+
+html[data-theme="dead-space"] .task-workspace-item::after,
+html[data-theme="dead-space"] .activity-stream-item::after {
+  background: linear-gradient(180deg, transparent, rgb(81 225 216 / 38%), transparent);
+  bottom: 0.45rem;
+  content: "";
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
+  right: 0.28rem;
+  top: 0.45rem;
+  transition: opacity 160ms ease;
+  width: 1px;
+}
+
+html[data-theme="dead-space"] .task-workspace-item:hover,
+html[data-theme="dead-space"] .task-workspace-item:focus-visible,
+html[data-theme="dead-space"] .activity-stream-item:hover,
+html[data-theme="dead-space"] .activity-stream-item:focus-visible {
+  background:
+    linear-gradient(90deg, rgb(69 226 216 / 9%), transparent 64%),
+    var(--dead-space-control);
+  border-color: rgb(91 169 168 / 64%);
+}
+
+html[data-theme="dead-space"] .task-workspace-item[data-selected],
+html[data-theme="dead-space"] .activity-stream-item[data-current] {
+  background:
+    linear-gradient(90deg, rgb(67 225 215 / 16%), transparent 62%),
+    var(--dead-space-control);
+  border-color: rgb(69 205 198 / 66%);
+  box-shadow:
+    inset 2px 0 0 var(--accent),
+    inset 0 0 0 1px rgb(76 224 215 / 22%),
+    0 0 18px -12px rgb(74 230 220 / 82%);
+}
+
+html[data-theme="dead-space"] .task-workspace-item[data-selected]::after,
+html[data-theme="dead-space"] .activity-stream-item[data-current]::after {
+  opacity: 1;
+}
+
+html[data-theme="dead-space"] .stream-tab[aria-pressed="true"] .stream-tab-card {
+  box-shadow:
+    inset 0 0 0 1px rgb(78 225 216 / 60%),
+    inset 0 -2px 0 rgb(80 231 221 / 84%),
+    0 0 24px -14px rgb(70 227 217 / 88%);
+}
+
+html[data-theme="dead-space"] .msg {
+  backdrop-filter: blur(7px) saturate(106%);
+  -webkit-backdrop-filter: blur(7px) saturate(106%);
+  background:
+    repeating-linear-gradient(0deg, transparent 0 3px, rgb(76 218 210 / 2%) 3px 4px),
+    linear-gradient(180deg, rgb(8 19 21 / 90%), rgb(3 9 11 / 94%));
+  border-color: rgb(78 122 123 / 54%);
+  border-radius: 1px;
+  box-shadow: inset 2px 0 0 rgb(72 209 202 / 34%), inset 0 1px 0 rgb(205 244 241 / 5%), var(--turn-shadow);
+  clip-path: polygon(0 0, calc(100% - 9px) 0, 100% 9px, 100% 100%, 0 100%);
+}
+
+html[data-theme="dead-space"] .msg-user {
+  background:
+    linear-gradient(90deg, rgb(207 126 45 / 12%), transparent 62%),
+    linear-gradient(180deg, rgb(16 18 16 / 92%), rgb(7 10 10 / 96%));
+  border-color: rgb(205 130 53 / 46%);
+  box-shadow: inset 2px 0 0 rgb(214 135 51 / 66%), inset 0 1px 0 rgb(249 219 183 / 5%), var(--turn-shadow);
+}
+
+html[data-theme="dead-space"] .msg-system {
+  background: rgb(2 8 9 / 82%);
+  border-color: rgb(67 106 108 / 42%);
+  clip-path: none;
+}
+
+html[data-theme="dead-space"] .task-rail-title,
+html[data-theme="dead-space"] .activity-rail-toggle,
+html[data-theme="dead-space"] .eyebrow {
+  color: #a7bab8;
+  font-family: var(--font-title);
+  font-variant-caps: all-small-caps;
+  letter-spacing: 0.15em;
+  text-shadow: 0 1px 0 #000, 0 0 9px rgb(76 222 213 / 12%);
+}
+
+html[data-theme="dead-space"] .journal details[data-work-log-day-section] {
+  backdrop-filter: blur(7px) saturate(104%);
+  -webkit-backdrop-filter: blur(7px) saturate(104%);
+  background-color: rgb(3 10 12 / 88%);
+  border-color: rgb(77 120 122 / 50%);
+}
+
+html[data-theme="dead-space"] .journal details[data-work-log-turn-details] {
+  backdrop-filter: blur(5px);
+  -webkit-backdrop-filter: blur(5px);
+  background-color: rgb(3 10 12 / 80%);
+  border-color: rgb(68 108 110 / 44%);
+}
+
+@media (min-width: 860px) {
+  html[data-theme="dead-space"] .workspace {
+    position: relative;
+  }
+
+  html[data-theme="dead-space"] .workspace::before,
+  html[data-theme="dead-space"] .workspace::after {
+    background:
+      linear-gradient(90deg, #020506, rgb(29 45 47 / 92%) 44%, #020506),
+      repeating-linear-gradient(0deg, transparent 0 14px, rgb(78 225 216 / 18%) 14px 15px);
+    bottom: 0;
+    content: "";
+    opacity: 0.82;
+    pointer-events: none;
+    position: absolute;
+    top: 0;
+    width: 4px;
+    z-index: 8;
+  }
+
+  html[data-theme="dead-space"] .workspace::before { left: 0; }
+  html[data-theme="dead-space"] .workspace::after { right: 0; }
+}
+
+@media (max-width: 720px) {
+  html[data-theme="dead-space"] body::after {
+    background-position: center, center, center, 68% 50%;
+  }
+
+  html[data-background-override="true"][data-background="dead-space"] {
+    --hub-background-position: center, center, center, 68% 50%;
+  }
+
+  html[data-theme="dead-space"] .task-rail,
+  html[data-theme="dead-space"] .activity-rail,
+  html[data-theme="dead-space"] .stream-tabs,
+  html[data-theme="dead-space"] .composer,
+  html[data-theme="dead-space"] .dialog-settings,
+  html[data-theme="dead-space"] .settings-panel {
+    background-color: rgb(4 10 12 / 97%);
+  }
+
+  html[data-theme="dead-space"] .msg {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background-color: rgb(4 11 13 / 96%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-theme="dead-space"] body::before {
+    animation: none !important;
+  }
+}

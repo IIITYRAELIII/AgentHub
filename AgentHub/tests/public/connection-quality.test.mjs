@@ -117,5 +117,15 @@ test("model link state exposes the three header states", async () => {
     },
   );
   assert.equal(modelLinkState({ status: "offline", latencyMs: 80 }).state, "offline");
-  assert.equal(modelLinkState({ status: "online" }).retry, true);
+  assert.deepEqual(
+    { ...modelLinkState({ status: "online" }) },
+    {
+      bars: 0,
+      label: "Нет замера",
+      latencyMs: null,
+      quality: "unknown",
+      retry: false,
+      state: "unknown",
+    },
+  );
 });

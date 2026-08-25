@@ -3646,6 +3646,9 @@ function providerConnectionTitle(providerLabel, presentation, measurement) {
     }
     return `${providerLabel} ↔ модель: нет связи`;
   }
+  if (presentation.latencyMs == null) {
+    return `${providerLabel} ↔ модель: ${presentation.label.toLowerCase()}`;
+  }
   const timing = formatModelResponseLatency(presentation.latencyMs);
   if (measurement?.waiting) return `${providerLabel} ↔ модель: ожидание первого ответа · ${timing}`;
   return `${providerLabel} ↔ модель: ${presentation.label.toLowerCase()} · ${timing}`;
@@ -3669,9 +3672,11 @@ function renderStreamChatHeader(task, now = Date.now()) {
       measurement,
       status: state.connection || "offline",
     });
-    const label = presentation.state === "offline"
-      ? "нет связи"
-      : formatModelResponseLatency(presentation.latencyMs);
+    const label = presentation.latencyMs == null
+      ? presentation.label.toLowerCase()
+      : presentation.state === "offline"
+        ? "нет связи"
+        : formatModelResponseLatency(presentation.latencyMs);
     const title = providerConnectionTitle(providerLabel, presentation, measurement);
     streamHeaderProviderConnection.hidden = false;
     streamHeaderProviderConnection.dataset.quality = presentation.quality;

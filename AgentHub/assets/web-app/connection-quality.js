@@ -143,7 +143,7 @@
     const fallbackLatency = normalizedLatency(latencyMs);
     const latency = measuredLatency ?? fallbackLatency;
     const failed = Boolean(measurement?.failed);
-    if (failed || connection === "offline" || latency == null) {
+    if (failed || connection === "offline") {
       return {
         bars: 0,
         label: "Нет связи",
@@ -151,6 +151,16 @@
         quality: "offline",
         retry: true,
         state: "offline",
+      };
+    }
+    if (latency == null) {
+      return {
+        bars: 0,
+        label: "Нет замера",
+        latencyMs: null,
+        quality: "unknown",
+        retry: false,
+        state: "unknown",
       };
     }
     if (latency > 1_000) {
