@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { createInterface } from "node:readline";
 
@@ -39,7 +39,10 @@ const timers = new Set();
 const loadedThreadIds = new Set();
 
 function save() {
-  if (statePath) writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+  if (!statePath) return;
+  const temporary = `${statePath}.${process.pid}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+  renameSync(temporary, statePath);
 }
 
 function send(value) {
