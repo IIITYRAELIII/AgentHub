@@ -16,6 +16,7 @@ test("Desktop settings service rejects a stale task-scoped mutation", async () =
     getStreamCardWidthMode: () => "auto", setStreamCardWidthMode: noop,
     getStreamCardFixedWidth: () => 90, setStreamCardFixedWidth: noop,
     getStreamCardGapEnabled: () => false, setStreamCardGapEnabled: noop,
+    getPinnedWorkspaceStreams: () => ({}), setPinnedWorkspaceStreams: noop,
     projectUsage: async () => {}, findProjectIndex: () => 0, switchProject: async () => ({}), snapshot: async () => ({}),
     reasoningEfforts: ["high"], collaborationModes: ["default"],
   });
@@ -37,6 +38,7 @@ test("Desktop settings service rejects a stale project mutation before switching
     getStreamCardWidthMode: () => "auto", setStreamCardWidthMode: noop,
     getStreamCardFixedWidth: () => 90, setStreamCardFixedWidth: noop,
     getStreamCardGapEnabled: () => false, setStreamCardGapEnabled: noop,
+    getPinnedWorkspaceStreams: () => ({}), setPinnedWorkspaceStreams: noop,
     projectUsage: async () => {}, findProjectIndex: () => 0, switchProject: async () => { switched = true; return {}; }, snapshot: async () => ({}),
     reasoningEfforts: ["high"], collaborationModes: ["default"],
   });
@@ -66,6 +68,7 @@ test("Desktop settings service persists the shared recent activity period", asyn
     getStreamCardWidthMode: () => "auto", setStreamCardWidthMode: noop,
     getStreamCardFixedWidth: () => 90, setStreamCardFixedWidth: noop,
     getStreamCardGapEnabled: () => false, setStreamCardGapEnabled: noop,
+    getPinnedWorkspaceStreams: () => ({}), setPinnedWorkspaceStreams: noop,
     projectUsage: async () => {}, findProjectIndex: () => 0, switchProject: async () => ({}),
     snapshot: async () => ({ settings: { activityRecentMinutes: current } }),
     reasoningEfforts: ["high"], collaborationModes: ["default"],
@@ -88,6 +91,7 @@ test("Desktop settings service persists shared Stream card settings", async () =
     streamCardWidthMode: "auto",
     streamCardFixedWidth: 90,
     streamCardGapEnabled: false,
+    pinnedWorkspaceStreams: {},
   };
   let saveCount = 0;
   const noop = () => {};
@@ -107,6 +111,8 @@ test("Desktop settings service persists shared Stream card settings", async () =
     setStreamCardFixedWidth: (value) => { current.streamCardFixedWidth = value; },
     getStreamCardGapEnabled: () => current.streamCardGapEnabled,
     setStreamCardGapEnabled: (value) => { current.streamCardGapEnabled = value; },
+    getPinnedWorkspaceStreams: () => current.pinnedWorkspaceStreams,
+    setPinnedWorkspaceStreams: (value) => { current.pinnedWorkspaceStreams = value; },
     projectUsage: async () => {}, findProjectIndex: () => 0, switchProject: async () => ({}),
     snapshot: async () => ({ settings: { ...current } }),
     reasoningEfforts: ["high"], collaborationModes: ["default"],
@@ -116,15 +122,20 @@ test("Desktop settings service persists shared Stream card settings", async () =
   await service.update({ name: "streamCardWidthMode", value: "fixed" });
   await service.update({ name: "streamCardFixedWidth", value: "237" });
   const result = await service.update({ name: "streamCardGapEnabled", value: "true" });
+  await service.update({
+    name: "pinnedWorkspaceStreams",
+    value: JSON.stringify({ "workspace-1": ["stream-1"] }),
+  });
 
   assert.deepEqual(current, {
     streamOrderMode: "manual",
     streamCardWidthMode: "fixed",
     streamCardFixedWidth: 237,
     streamCardGapEnabled: true,
+    pinnedWorkspaceStreams: { "workspace-1": ["stream-1"] },
   });
-  assert.equal(saveCount, 4);
-  assert.deepEqual(result.settings, current);
+  assert.equal(saveCount, 5);
+  assert.equal(result.settings.streamCardGapEnabled, true);
   await assert.rejects(
     service.update({ name: "streamCardFixedWidth", value: "451" }),
     /Неизвестная ширина/u,

@@ -297,6 +297,7 @@ test("every production Phosphor icon creates a real namespaced SVG", async () =>
     "copy",
     "pencil-simple",
     "plus",
+    "push-pin-simple",
   ]) {
     const icon = createPhosphorIcon(document, name, "stream-order-icon");
     assert.equal(icon.namespaceURI, "http://www.w3.org/2000/svg");
@@ -594,6 +595,34 @@ test("manual mode follows the server-synchronized ordinal order", async () => {
   assert.equal(streamsAreDraggable("manual", "desktop"), true);
   assert.equal(streamsAreDraggable("activity", "desktop"), false);
   assert.equal(streamsAreDraggable("manual", "mobile"), false);
+});
+
+test("pinned Streams stay first in Workspace tabs", async () => {
+  const {
+    orderWorkspaceStreams,
+    pinnedWorkspaceStreamIds,
+    streamIsPinned,
+    togglePinnedWorkspaceStream,
+  } = await streamTabsApi();
+  const streams = [
+    stream("older", 1, "2026-08-10T08:00:00.000Z"),
+    stream("latest", 2, "2026-08-10T10:00:00.000Z"),
+    stream("middle", 3, "2026-08-10T09:00:00.000Z"),
+  ];
+  const selection = {
+    pinnedWorkspaceStreams: togglePinnedWorkspaceStream({}, "workspace-1", "older"),
+  };
+
+  assert.deepEqual(JSON.parse(JSON.stringify(pinnedWorkspaceStreamIds(selection, "workspace-1"))), ["older"]);
+  assert.equal(streamIsPinned(selection, "workspace-1", "older"), true);
+  assert.deepEqual(
+    Array.from(orderWorkspaceStreams(streams, "activity", ["older"]), (item) => item.id),
+    ["older", "latest", "middle"],
+  );
+  assert.deepEqual(
+    Array.from(orderWorkspaceStreams(streams, "manual", ["middle"]), (item) => item.id),
+    ["middle", "older", "latest"],
+  );
 });
 
 test("activity-mode pointer drag scrolls horizontally without native reordering", async () => {

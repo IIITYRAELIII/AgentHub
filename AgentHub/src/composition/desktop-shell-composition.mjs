@@ -451,6 +451,8 @@ export function createDesktopShellComposition({
       setStreamCardFixedWidth: (value) => agentPreferences.setStreamCardFixedWidth(value),
       getStreamCardGapEnabled: () => agentPreferences.streamCardGapEnabled,
       setStreamCardGapEnabled: (value) => agentPreferences.setStreamCardGapEnabled(value),
+      getPinnedWorkspaceStreams: () => agentPreferences.pinnedWorkspaceStreams,
+      setPinnedWorkspaceStreams: (value) => agentPreferences.setPinnedWorkspaceStreams(value),
       projectUsage: () => workLogUsageStore.project(null, {
         projectRoot: config.projectRoot,
         projectionProjectRoots: globalWorkLogProjectRoots,

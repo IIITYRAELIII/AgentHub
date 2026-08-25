@@ -17,6 +17,7 @@ export class DesktopSettingsService {
       "getActivityRecentMinutes", "setActivityRecentMinutes",
       "getStreamOrderMode", "setStreamOrderMode", "getStreamCardWidthMode", "setStreamCardWidthMode",
       "getStreamCardFixedWidth", "setStreamCardFixedWidth", "getStreamCardGapEnabled", "setStreamCardGapEnabled",
+      "getPinnedWorkspaceStreams", "setPinnedWorkspaceStreams",
       "findProjectIndex", "switchProject", "snapshot",
     ]) requiredFunction(dependencies[name], name);
     this.#d = dependencies;
@@ -108,6 +109,17 @@ export class DesktopSettingsService {
       const enabled = value === "true";
       changed = d.getStreamCardGapEnabled() !== enabled;
       d.setStreamCardGapEnabled(enabled);
+      await d.saveState();
+    } else if (name === "pinnedWorkspaceStreams") {
+      let parsed;
+      try {
+        parsed = JSON.parse(value);
+      } catch {
+        throw new Error("Неизвестный набор закреплённых потоков");
+      }
+      const previous = JSON.stringify(d.getPinnedWorkspaceStreams());
+      d.setPinnedWorkspaceStreams(parsed);
+      changed = previous !== JSON.stringify(d.getPinnedWorkspaceStreams());
       await d.saveState();
     } else if (name === "project") {
       const index = d.findProjectIndex(value);

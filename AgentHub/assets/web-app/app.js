@@ -1509,13 +1509,28 @@ function persistOpenStreams() {
   }
 }
 
-function orderedWorkspaceStreams(streams) {
-  return window.AgentHubStreamTabs.orderWorkspaceStreams(streams, streamOrderMode);
+function orderedWorkspaceStreams(streams, workspaceId = workspaceKey(currentTask())) {
+  return window.AgentHubStreamTabs.orderWorkspaceStreams(
+    streams,
+    streamOrderMode,
+    window.AgentHubStreamTabs.pinnedWorkspaceStreamIds(state.selection, workspaceId),
+  );
+}
+
+function togglePinnedWorkspaceStream(workspaceId, streamId) {
+  const pinnedWorkspaceStreams = window.AgentHubStreamTabs.togglePinnedWorkspaceStream(
+    state.selection,
+    workspaceId,
+    streamId,
+  );
+  state.selection = { ...state.selection, pinnedWorkspaceStreams };
+  renderStreamTabs();
+  emit("selection:set", { key: "pinnedWorkspaceStreams", value: pinnedWorkspaceStreams });
 }
 
 function reconcileOpenStreams(workspaceId, streams) {
   restoreOpenStreams();
-  const ordered = orderedWorkspaceStreams(streams);
+  const ordered = orderedWorkspaceStreams(streams, workspaceId);
   const selected = currentTask();
   const selectedInWorkspace = selected && workspaceKey(selected) === workspaceId
     ? streamKey(selected)
@@ -2290,7 +2305,8 @@ function renderStreamTabs() {
   );
   const streams = workspaceStreams(state.tasks.filter((task) => workspaceKey(task) === workspaceId));
   reconcileOpenStreams(workspaceId, streams);
-  const ordered = orderedWorkspaceStreams(streams);
+  const ordered = orderedWorkspaceStreams(streams, workspaceId);
+  const pinnedIds = window.AgentHubStreamTabs.pinnedWorkspaceStreamIds(state.selection, workspaceId);
   const open = new Set(state.openStreamsByWorkspace.get(workspaceId) ?? []);
   const orderIsManual = streamOrderMode === "manual";
   const orderToggleTitle = orderIsManual
@@ -2335,6 +2351,7 @@ function renderStreamTabs() {
         ? formatRunningDuration(task.startedAt)
         : formatRelativeTime(task?.lastActivity);
     const title = `${statusLabel ? `${statusLabel}. ` : ""}${streamProviderModelTitle({ provider, agentLabel, modelLabel: task?.modelLabel })}. Нажмите, чтобы переключиться. Ctrl+click — добавить или убрать колонку. ${streamOrderMode === "manual" ? "Перетащите, чтобы изменить порядок." : ""} ПКМ — управление Stream.`;
+    const pinned = pinnedIds.includes(stream.id);
     const attributes = {
       type: "button",
       "data-stream-tab-id": stream.id,
@@ -2346,6 +2363,7 @@ function renderStreamTabs() {
       "data-stream-provider-label": agentLabel,
       "data-stream-model": task?.modelLabel ?? "",
       "data-stream-title": title,
+      "data-pinned": pinned ? "" : null,
       "aria-pressed": String(open.has(stream.id)),
       "data-current": task?.id === selected.id ? "" : null,
       "data-running": running ? "" : null,
@@ -2362,6 +2380,11 @@ function renderStreamTabs() {
         "data-state": statusState,
         "aria-hidden": "true",
       }),
+      pinned ? window.AgentHubStreamTabs.createPhosphorIcon(
+        document,
+        "push-pin-simple",
+        "stream-tab-pin-icon",
+      ) : null,
       el("span", { class: "stream-tab-title", text: streamName }),
       el("span", {
         class: `task-time${statusState === "failed" ? " is-failed" : ""}`,
@@ -3201,6 +3224,10 @@ function ensureStreamContextMenu() {
     const provider = String(streamContextMenu.dataset.provider ?? "codex");
     closeStreamContextMenu();
     if (!streamId) return;
+    if (kind === "pin-toggle") {
+      togglePinnedWorkspaceStream(workspaceId, streamId);
+      return;
+    }
     if (kind === "rename") {
       const name = await askText({ title: "Новое название Stream", value: currentName });
       if (name != null) emit("stream:rename", { streamId, name });
@@ -3252,7 +3279,14 @@ function openStreamContextMenu(event, tab) {
   menu.dataset.streamName = String(tab.dataset.streamName ?? "");
   menu.dataset.taskId = String(tab.dataset.streamTaskId ?? "");
   menu.dataset.provider = provider;
+  const pinned = tab.hasAttribute("data-pinned");
   menu.replaceChildren(
+    el("button", {
+      type: "button", role: "menuitem", class: "stream-context-action",
+      "data-stream-menu-action": "pin-toggle",
+      text: window.AgentHubStreamTabs.pinnedStreamActionLabel(pinned),
+      title: window.AgentHubStreamTabs.pinnedStreamActionTitle(pinned),
+    }),
     el("button", {
       type: "button", role: "menuitem", class: "stream-context-action",
       "data-stream-menu-action": "edit-stream", text: "Редактировать Stream…",
@@ -3420,7 +3454,7 @@ streamTabs?.addEventListener("drop", (event) => {
   const targetId = String(target.dataset.streamTabId ?? "");
   if (targetId === streamId) return;
   const streams = workspaceStreams(state.tasks.filter((task) => workspaceKey(task) === workspaceId));
-  const order = orderedWorkspaceStreams(streams).map((stream) => stream.id)
+  const order = orderedWorkspaceStreams(streams, workspaceId).map((stream) => stream.id)
     .filter((id) => id !== streamId);
   const targetIndex = order.indexOf(targetId);
   const insertAfter = event.clientX > target.getBoundingClientRect().left + target.clientWidth / 2;
@@ -7711,7 +7745,8 @@ const AgentHub = {
   },
   /** Текущий выбор: { model, reasoning, mode, project, autoApprove,
    *  includeClaudeUsage, activityRecentMinutes, streamOrderMode,
-   *  streamCardWidthMode, streamCardFixedWidth, streamCardGapEnabled }. */
+   *  streamCardWidthMode, streamCardFixedWidth, streamCardGapEnabled,
+   *  pinnedWorkspaceStreams }. */
   setSelection(selection) {
     const claudeUsageChanged = Object.hasOwn(selection ?? {}, "includeClaudeUsage")
       && state.selection.includeClaudeUsage !== selection.includeClaudeUsage;

@@ -5317,6 +5317,14 @@ html[data-surface="mobile"]
   width: 1.15rem;
 }
 
+.stream-tab-pin-icon {
+  color: var(--accent);
+  flex: 0 0 auto;
+  height: 0.92rem;
+  opacity: 0.9;
+  width: 0.92rem;
+}
+
 .stream-tab-body {
   display: flex;
   flex: 1 1 auto;

@@ -300,6 +300,15 @@ html[data-view="chat"][data-surface][data-theme] {
   color: var(--dialog-danger);
 }
 
+.stream-tabs-track .stream-tab-pin-icon,
+.stream-overflow-item .stream-tab-pin-icon {
+  color: var(--dialog-accent);
+  flex: 0 0 auto;
+  height: 13px;
+  opacity: 0.92;
+  width: 13px;
+}
+
 .provider-dot {
   --dialog-agent-color: var(--dialog-agent-3);
   align-self: center;
@@ -437,6 +446,10 @@ html[data-view="chat"][data-surface][data-theme] {
   min-height: 32px;
   padding: 0 9px;
   text-align: left;
+}
+
+.stream-overflow-item[data-pinned] {
+  grid-template-columns: 7px 13px minmax(0, 1fr) auto;
 }
 
 .activity-stream-list :is(.stream-tab-card) {

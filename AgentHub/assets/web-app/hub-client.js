@@ -3013,6 +3013,7 @@ agentHub.on("selection:set", ({ key, value }) => runAction(async () => {
     streamCardWidthMode: "streamCardWidthMode",
     streamCardFixedWidth: "streamCardFixedWidth",
     streamCardGapEnabled: "streamCardGapEnabled",
+    pinnedWorkspaceStreams: "pinnedWorkspaceStreams",
   };
   const name = names[key];
   if (!name) return;
@@ -3022,7 +3023,11 @@ agentHub.on("selection:set", ({ key, value }) => runAction(async () => {
   applySnapshot(await control("update-setting", {
     ...taskIdentity,
     name,
-    value: key === "autoApprove" ? (value ? "auto" : "manual") : value,
+    value: key === "autoApprove"
+      ? (value ? "auto" : "manual")
+      : key === "pinnedWorkspaceStreams"
+        ? JSON.stringify(value ?? {})
+        : value,
   }));
   if (key === "includeClaudeUsage") {
     requestUsageHistory(usageState.range, { force: true });

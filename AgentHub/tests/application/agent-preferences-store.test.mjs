@@ -51,6 +51,11 @@ test("agent preferences restore and validate both providers in one state owner",
     streamCardWidthMode: "fixed",
     streamCardFixedWidth: 237,
     streamCardGapEnabled: true,
+    pinnedWorkspaceStreams: {
+      "workspace-1": ["stream-1", "stream-2", "stream-1"],
+      "": ["ignored"],
+      "workspace-2": "ignored",
+    },
   });
   assert.deepEqual(store.snapshot(), {
     codexModel: "terra",
@@ -65,6 +70,9 @@ test("agent preferences restore and validate both providers in one state owner",
     streamCardWidthMode: "fixed",
     streamCardFixedWidth: 237,
     streamCardGapEnabled: true,
+    pinnedWorkspaceStreams: {
+      "workspace-1": ["stream-1", "stream-2"],
+    },
   });
   assert.throws(() => store.setCodexModel("unknown"), /unknown Codex model/u);
   assert.throws(() => store.setClaudeReasoning("ultra"), /unknown Claude reasoning effort/u);
@@ -72,6 +80,11 @@ test("agent preferences restore and validate both providers in one state owner",
   assert.equal(store.activityRecentMinutes, 240);
   assert.deepEqual(store.setStreamCardFixedWidth(451), { changed: true });
   assert.equal(store.streamCardFixedWidth, 450);
+  assert.deepEqual(
+    store.setPinnedWorkspaceStreams(JSON.stringify({ "workspace-2": ["stream-3"] })),
+    { changed: true },
+  );
+  assert.deepEqual(store.pinnedWorkspaceStreams, { "workspace-2": ["stream-3"] });
 });
 
 test("task preferences follow the selected Codex thread without becoming task identity", () => {

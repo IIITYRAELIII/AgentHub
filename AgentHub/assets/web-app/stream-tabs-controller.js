@@ -21,6 +21,21 @@
   const STREAM_CARD_SETTINGS_CHANGE_EVENT = "agenthub:stream-card-settings-change";
   const STREAM_VIEW_SETTINGS_CHANGE_EVENT = "agenthub:stream-view-settings-change";
 
+  function normalizePinnedWorkspaceStreams(value) {
+    const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+    const normalized = {};
+    for (const [workspaceId, streamIds] of Object.entries(source).slice(0, 100)) {
+      const id = String(workspaceId ?? "").trim();
+      if (!id || !Array.isArray(streamIds)) continue;
+      const pinned = [...new Set(streamIds
+        .map((streamId) => String(streamId ?? "").trim())
+        .filter(Boolean))]
+        .slice(0, 100);
+      if (pinned.length) normalized[id] = pinned;
+    }
+    return normalized;
+  }
+
   function normalizeActivityRecentMinutes(value) {
     const minutes = Math.round(Number(value));
     return Number.isFinite(minutes)
@@ -71,6 +86,7 @@
     "arrows-down-up": "M117.66,170.34a8,8,0,0,1,0,11.32l-32,32a8,8,0,0,1-11.32,0l-32-32a8,8,0,0,1,11.32-11.32L72,188.69V48a8,8,0,0,1,16,0V188.69l18.34-18.35A8,8,0,0,1,117.66,170.34Zm96-96-32-32a8,8,0,0,0-11.32,0l-32,32a8,8,0,0,0,11.32,11.32L168,67.31V208a8,8,0,0,0,16,0V67.31l18.34,18.35a8,8,0,0,0,11.32-11.32Z",
     "pencil-simple": "M227.31,73.37,182.63,28.69a16,16,0,0,0-22.63,0L36.69,152A15.86,15.86,0,0,0,32,163.31V208a16,16,0,0,0,16,16H92.69A15.86,15.86,0,0,0,104,219.31L227.31,96A16,16,0,0,0,227.31,73.37ZM92.69,208H48V163.31l88-88L180.69,120ZM216,84.69,192,108.69,147.31,64,171.31,40,216,84.69Z",
     plus: "M216,128a8,8,0,0,1-8,8H136v72a8,8,0,0,1-16,0V136H48a8,8,0,0,1,0-16h72V48a8,8,0,0,1,16,0v72h72A8,8,0,0,1,216,128Z",
+    "push-pin-simple": "M235.32,73.37,182.63,20.69a16,16,0,0,0-22.63,0L132.69,48,92.69,36.69a16,16,0,0,0-15.38,4.1L52.69,65.37a16,16,0,0,0,0,22.63L92.69,128,40,180.69A16,16,0,0,0,40,203.31L52.69,216a16,16,0,0,0,22.62,0L128,163.31l40,40a16,16,0,0,0,22.63,0l24.68-24.68a16,16,0,0,0,4.1-15.38L208,123.31,235.32,96A16,16,0,0,0,235.32,73.37ZM196.69,112a16,16,0,0,0-4.1,15.38L204,167.31,179.31,192l-40-40a16,16,0,0,0-22.62,0L64,204.69,51.31,192,104,139.31a16,16,0,0,0,0-22.62l-40-40L88.69,52,128.62,63.41a16,16,0,0,0,15.38-4.1L171.31,32,224,84.69Z",
   });
 
   function createPhosphorIcon(documentRef, name, className = "") {
@@ -393,7 +409,7 @@
     ));
   }
 
-  function orderWorkspaceStreams(streams, mode) {
+  function orderWorkspaceStreams(streams, mode, pinnedIds = []) {
     const uniqueStreams = [];
     const available = new Map();
     for (const stream of streams ?? []) {
@@ -403,23 +419,71 @@
       uniqueStreams.push(stream);
     }
 
+    const pinned = new Set((pinnedIds ?? [])
+      .map((value) => String(value ?? "").trim())
+      .filter(Boolean));
+    const pinnedFirst = (left, right) => (
+      Number(pinned.has(String(right?.id ?? ""))) - Number(pinned.has(String(left?.id ?? "")))
+    );
+
     if (normalizeStreamOrderMode(mode) === STREAM_ORDER_MODES.ACTIVITY) {
       return uniqueStreams.sort((left, right) => (
-        streamLastActivity(right) - streamLastActivity(left)
+        pinnedFirst(left, right)
+        || streamLastActivity(right) - streamLastActivity(left)
         || (Number(right?.ordinal) || 0) - (Number(left?.ordinal) || 0)
       ));
     }
 
     const ordered = uniqueStreams.sort((left, right) => (
-      (Number(left?.ordinal) || 0) - (Number(right?.ordinal) || 0)
+      pinnedFirst(left, right)
+      || (Number(left?.ordinal) || 0) - (Number(right?.ordinal) || 0)
       || String(left?.id ?? "").localeCompare(String(right?.id ?? ""))
     ));
-    const dashBotIndex = ordered.findIndex((stream) => stream?.name === "DashBot");
+    const dashBotIndex = ordered.findIndex((stream) => (
+      stream?.name === "DashBot" && !pinned.has(String(stream?.id ?? ""))
+    ));
     if (dashBotIndex > 0) {
+      const firstUnpinnedIndex = ordered.findIndex((stream) => !pinned.has(String(stream?.id ?? "")));
       const [dashBot] = ordered.splice(dashBotIndex, 1);
-      ordered.unshift(dashBot);
+      ordered.splice(Math.max(0, firstUnpinnedIndex), 0, dashBot);
     }
     return ordered;
+  }
+
+  function pinnedWorkspaceStreamIds(selection, workspaceId) {
+    const id = String(workspaceId ?? "").trim();
+    if (!id) return [];
+    return normalizePinnedWorkspaceStreams(selection?.pinnedWorkspaceStreams)[id] ?? [];
+  }
+
+  function streamIsPinned(selection, workspaceId, streamId) {
+    return pinnedWorkspaceStreamIds(selection, workspaceId).includes(String(streamId ?? "").trim());
+  }
+
+  function togglePinnedWorkspaceStream(selection, workspaceId, streamId) {
+    const id = String(workspaceId ?? "").trim();
+    const target = String(streamId ?? "").trim();
+    const pinned = normalizePinnedWorkspaceStreams(selection?.pinnedWorkspaceStreams);
+    if (!id || !target) return pinned;
+    const current = pinned[id] ?? [];
+    if (current.includes(target)) {
+      const next = current.filter((value) => value !== target);
+      if (next.length) pinned[id] = next;
+      else delete pinned[id];
+      return pinned;
+    }
+    pinned[id] = [...current, target].slice(-100);
+    return pinned;
+  }
+
+  function pinnedStreamActionLabel(pinned) {
+    return pinned ? "Открепить Stream" : "Закрепить Stream";
+  }
+
+  function pinnedStreamActionTitle(pinned) {
+    return pinned
+      ? "Вернуть Stream в обычный порядок вкладок"
+      : "Показывать Stream первым во вкладках этого Workspace";
   }
 
   function reconcileOpenStreamIds(previousIds, availableIds, fallbackId, limit = 4) {
@@ -1167,10 +1231,14 @@
     applyStreamCardSettings,
     installStreamCardSettings,
     normalizeActivityRecentMinutes,
+    normalizePinnedWorkspaceStreams,
     normalizeStreamCardSettings,
     normalizeStreamOrderMode,
     applyOpenStreamSelection,
     orderWorkspaceStreams,
+    pinnedStreamActionLabel,
+    pinnedStreamActionTitle,
+    pinnedWorkspaceStreamIds,
     preserveStreamOverflowMenuOpen,
     representativeSnapshotTasks,
     reconcileOpenStreamIds,
@@ -1180,10 +1248,12 @@
     streamHeadTasks,
     streamLastActivity,
     streamRotationTransitions,
+    streamIsPinned,
     streamStatusPresentation,
     streamStatusState,
     streamsAreDraggable,
     taskListSections,
+    togglePinnedWorkspaceStream,
   });
 
   if (typeof document !== "undefined") {

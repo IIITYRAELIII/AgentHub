@@ -38,6 +38,29 @@ function streamCardFixedWidth(value) {
     : STREAM_CARD_MIN_WIDTH;
 }
 
+function pinnedWorkspaceStreams(value) {
+  let source = value;
+  if (typeof value === "string") {
+    try {
+      source = JSON.parse(value);
+    } catch {
+      source = {};
+    }
+  }
+  const normalized = {};
+  if (!source || typeof source !== "object" || Array.isArray(source)) return normalized;
+  for (const [workspaceId, streamIds] of Object.entries(source).slice(0, 100)) {
+    const id = String(workspaceId ?? "").trim();
+    if (!id || !Array.isArray(streamIds)) continue;
+    const pinned = [...new Set(streamIds
+      .map((streamId) => String(streamId ?? "").trim())
+      .filter(Boolean))]
+      .slice(0, 100);
+    if (pinned.length) normalized[id] = pinned;
+  }
+  return normalized;
+}
+
 export class AgentPreferencesStore {
   constructor({
     selectionStore,
@@ -105,6 +128,7 @@ export class AgentPreferencesStore {
   get streamCardWidthMode() { return this.values.streamCardWidthMode; }
   get streamCardFixedWidth() { return this.values.streamCardFixedWidth; }
   get streamCardGapEnabled() { return this.values.streamCardGapEnabled; }
+  get pinnedWorkspaceStreams() { return structuredClone(this.values.pinnedWorkspaceStreams); }
   get defaultCodexModel() { return this.defaults.codexModel; }
   get defaultCodexReasoningEffort() { return this.defaults.codexReasoningEffort; }
 
@@ -165,8 +189,12 @@ export class AgentPreferencesStore {
     return this.#set("streamCardGapEnabled", value === true);
   }
 
+  setPinnedWorkspaceStreams(value) {
+    return this.#set("pinnedWorkspaceStreams", pinnedWorkspaceStreams(value));
+  }
+
   #set(name, value) {
-    if (this.values[name] === value) return { changed: false };
+    if (JSON.stringify(this.values[name]) === JSON.stringify(value)) return { changed: false };
     this.values[name] = value;
     return { changed: true };
   }
@@ -276,12 +304,16 @@ export class AgentPreferencesStore {
       streamCardWidthMode: streamCardWidthMode(snapshot.streamCardWidthMode),
       streamCardFixedWidth: streamCardFixedWidth(snapshot.streamCardFixedWidth),
       streamCardGapEnabled: snapshot.streamCardGapEnabled === true,
+      pinnedWorkspaceStreams: pinnedWorkspaceStreams(snapshot.pinnedWorkspaceStreams),
     };
     return this.snapshot();
   }
 
   snapshot() {
-    return { ...this.values };
+    return {
+      ...this.values,
+      pinnedWorkspaceStreams: structuredClone(this.values.pinnedWorkspaceStreams),
+    };
   }
 
   #selectedCodexReference() {

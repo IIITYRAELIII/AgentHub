@@ -224,6 +224,8 @@ export function createDesktopCommandWiring({
       setStreamCardFixedWidth: services.setStreamCardFixedWidth,
       getStreamCardGapEnabled: services.getStreamCardGapEnabled,
       setStreamCardGapEnabled: services.setStreamCardGapEnabled,
+      getPinnedWorkspaceStreams: services.getPinnedWorkspaceStreams,
+      setPinnedWorkspaceStreams: services.setPinnedWorkspaceStreams,
       projectUsage: services.projectUsage,
       findProjectIndex: (value) => projects.findIndex((project) => (
         services.samePath(project.path, value)
