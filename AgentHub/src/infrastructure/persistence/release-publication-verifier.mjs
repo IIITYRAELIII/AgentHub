@@ -51,22 +51,26 @@ export async function verifyWorkspaceReleasePublication({ expectedRevision = nul
     if (!roots.length) throw new Error(`release repository is not found for: ${group.projectRoot}`);
     for (const root of roots) {
       const resolvedRoot = path.resolve(root);
+      const matchingFiles = group.files
+        .map((file) => path.resolve(group.projectRoot, String(file ?? "")))
+        .filter((file) => isInside(resolvedRoot, file));
+      if (!matchingFiles.length) continue;
       const key = pathKey(resolvedRoot);
       const repository = repositoriesByRoot.get(key) ?? { root: resolvedRoot, files: new Set() };
-      for (const file of group.files) {
-        const absoluteFile = path.resolve(group.projectRoot, String(file ?? ""));
-        if (isInside(resolvedRoot, absoluteFile)) repository.files.add(absoluteFile);
-      }
+      for (const file of matchingFiles) repository.files.add(file);
       repositoriesByRoot.set(key, repository);
     }
   }
 
   const repositories = [];
   for (const repository of repositoriesByRoot.values()) {
+    const releasePaths = [...repository.files]
+      .map((file) => path.relative(repository.root, file).split(path.sep).join("/"))
+      .sort();
     const changes = parseWorkingTreeStatus(await status([
-      "status", "--porcelain=v1", "--untracked-files=all",
+      "status", "--porcelain=v1", "--untracked-files=all", "--", ...releasePaths,
     ], { cwd: repository.root }));
-    if (changes.length) throw new Error(`release repository is dirty: ${repository.root}`);
+    if (changes.length) throw new Error(`release paths are dirty: ${repository.root}`);
     const revision = await assertRevision({ cwd: repository.root });
     repositories.push({ root: repository.root, revision });
   }

@@ -37,6 +37,10 @@ publication source. Terminal projection dual-writes a `TurnObservation` into the
 new ledger but never marks its ChangeSet ready. Existing legacy statuses are not
 migrated or changed automatically.
 
+Publication verifies cleanliness only for the exact paths declared by the frozen
+release plan. Unrelated dirty paths in a shared repository do not block the
+release, while any tracked or untracked change on a frozen path does.
+
 The new ledger becomes authoritative only after frozen manifests participate in
 release planning and every active legacy entry is either linked, released or
 discarded by its existing owner. Until Stream roles are persisted explicitly,

@@ -28,9 +28,34 @@ function dependencies(publicationRevision = "revision") {
 }
 
 test("release verification resolves Agent Hub from declared nested-repository files", async () => {
-  const result = await verifyWorkspaceReleasePublication({ plan }, dependencies());
+  let statusArgs = null;
+  const result = await verifyWorkspaceReleasePublication({ plan }, {
+    ...dependencies(),
+    status: async (args) => {
+      statusArgs = args;
+      return "";
+    },
+  });
   assert.deepEqual(result.repositories, [{ root: repositoryRoot, revision: "revision" }]);
   assert.equal(result.agentHubPublication.revision, "revision");
+  assert.deepEqual(statusArgs, [
+    "status",
+    "--porcelain=v1",
+    "--untracked-files=all",
+    "--",
+    "AgentHub/server.mjs",
+    "CHANGELOG.md",
+  ]);
+});
+
+test("release verification rejects dirty frozen paths", async () => {
+  await assert.rejects(
+    verifyWorkspaceReleasePublication({ plan }, {
+      ...dependencies(),
+      status: async () => " M AgentHub/server.mjs",
+    }),
+    /release paths are dirty/u,
+  );
 });
 
 test("release verification rejects a nested Agent Hub revision that is not published", async () => {
