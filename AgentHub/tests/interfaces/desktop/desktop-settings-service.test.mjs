@@ -105,6 +105,7 @@ test("Desktop settings service commits Claude usage only after projection", asyn
     getStreamCardWidthMode: () => "auto", setStreamCardWidthMode: noop,
     getStreamCardFixedWidth: () => 90, setStreamCardFixedWidth: noop,
     getStreamCardGapEnabled: () => false, setStreamCardGapEnabled: noop,
+    getPinnedWorkspaceStreams: () => ({}), setPinnedWorkspaceStreams: noop,
     projectUsage: async (value) => {
       assert.equal(value, true);
       await projected;

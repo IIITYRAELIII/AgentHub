@@ -1536,7 +1536,7 @@ test("chat distinguishes loading history from an empty task", () => {
 test("chat refreshes every visible external run without rebuilding a second snapshot", () => {
   const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
   const refresh = client.match(
-    /async function refresh\([^)]*\) \{(?<body>[\s\S]*?)\r?\n\}\r?\n\r?\nvoid runAction/u,
+    /async function refresh\([^)]*\) \{(?<body>[\s\S]*?)\r?\n\}\r?\n\r?\nagentHub\.on\("connection:retry"/u,
   )?.groups?.body ?? "";
   assert.match(client, /const EXTERNAL_HISTORY_REFRESH_MS = 2_500/u);
   assert.match(client, /let visibleStreamTaskIds = new Set\(\)/u);
@@ -1553,7 +1553,7 @@ test("chat refreshes every visible external run without rebuilding a second snap
 test("completed chat keeps probing briefly for late generated images", () => {
   const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
   const refresh = client.match(
-    /async function refresh\([^)]*\) \{(?<body>[\s\S]*?)\r?\n\}\r?\n\r?\nvoid runAction/u,
+    /async function refresh\([^)]*\) \{(?<body>[\s\S]*?)\r?\n\}\r?\n\r?\nagentHub\.on\("connection:retry"/u,
   )?.groups?.body ?? "";
   assert.match(client, /const HISTORY_ATTACHMENT_REFRESH_MS = 10_000/u);
   assert.match(client, /const HISTORY_ATTACHMENT_SETTLE_TIMEOUT_MS = 120_000/u);
@@ -2038,8 +2038,8 @@ test("composer restores definite rejection but keeps an ambiguous delivery singl
   assert.match(client, /if \(isConnectionFailure\(error\)\) recordTransientConnectionFailure/u);
   assert.match(client, /const rejected = messageSendDefinitelyRejected\(error\)/u);
   assert.match(client, /deliveryPatch\(rejected \? "rejected" : "unconfirmed"\)/u);
-  assert.match(client, /snapshot\?\.restartWaiting == null && blockingCount > 0/u);
-  assert.match(client, /waiting \? "restart-waiting" : snapshot\?\.restartPending \? "restarting" : idleStatus/u);
+  assert.match(client, /AgentHubConnectionBanner\.snapshotConnectionState\(snapshot, idleStatus\)/u);
+  assert.match(connectionBanner, /snapshot\?\.restartWaiting === true \|\| blockingCount > 0/u);
   assert.match(html, /data-restart-banner/u);
   assert.match(connectionBanner, /Agent Hub ожидает завершения блокирующей работы: \$\{count\}\./u);
   assert.match(app, /restarting: "Agent Hub перезапускается…"/u);

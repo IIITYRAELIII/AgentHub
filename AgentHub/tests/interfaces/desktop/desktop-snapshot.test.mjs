@@ -899,6 +899,7 @@ test("desktopSnapshot preserves top-level settings, queues and restart state", a
     streamCardWidthMode: "fixed",
     streamCardFixedWidth: 237,
     streamCardGapEnabled: true,
+    pinnedWorkspaceStreams: {},
     models: [{ value: "gpt-test", label: "GPT Test" }],
     modelOptionsByProvider: {
       codex: [{ value: "gpt-test", label: "GPT Test" }],

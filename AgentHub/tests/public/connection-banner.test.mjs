@@ -21,19 +21,19 @@ test("restart banner describes generic blocking work rather than active Tasks", 
 
 test("restart connection state trusts current blockers over a stale request flag", async () => {
   const { snapshotConnectionState } = await connectionBannerApi();
-  assert.deepEqual(snapshotConnectionState({
+  assert.deepEqual({ ...snapshotConnectionState({
     restartPending: true,
     restartWaiting: false,
     restartBlockingCount: 1,
-  }), {
+  }) }, {
     status: "restart-waiting",
     blockingCount: 1,
   });
-  assert.deepEqual(snapshotConnectionState({
+  assert.deepEqual({ ...snapshotConnectionState({
     restartPending: true,
     restartWaiting: false,
     restartBlockingCount: 0,
-  }), {
+  }) }, {
     status: "restarting",
     blockingCount: 0,
   });
