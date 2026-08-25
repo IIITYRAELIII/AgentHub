@@ -23,7 +23,7 @@ export function messageCommandLedgerPath(dataDir) {
   return path.join(path.resolve(dataDir), "message-command-ledger.sqlite");
 }
 
-function configureDatabase(database) {
+function configureDatabase(database, now = Date.now) {
   database.exec(`
     PRAGMA journal_mode = WAL;
     PRAGMA synchronous = FULL;
@@ -84,6 +84,7 @@ function configureDatabase(database) {
     CREATE INDEX IF NOT EXISTS message_commands_occupancy_idx
       ON message_commands(state, occupancy_key, queue_order, accepted_at_ms, client_user_message_id);
   `);
+  repairOrphanedLegacyCommands(database, now);
   const activePlaceholders = ACTIVE_STATES.map(() => "?").join(", ");
   const legacyActive = database.prepare(`
     SELECT client_user_message_id, item_json, accepted_at_ms
@@ -120,6 +121,114 @@ function configureDatabase(database) {
 
 function parseJson(value) {
   return value == null ? null : JSON.parse(value);
+}
+
+function parseJsonOrNull(value) {
+  try {
+    return parseJson(value);
+  } catch {
+    return null;
+  }
+}
+
+function legacyOrphanTerminalState(result) {
+  if (result?.cancelled === true) return "cancelled";
+  if (result?.rejected === true || result?.failed === true) return "failed";
+  if (result?.accepted === true && (
+    result?.started === true
+    || result?.dispatching === true
+    || result?.runId
+    || result?.turnId
+  )) return "completed";
+  return "failed";
+}
+
+function legacyOrphanTerminalResult(result, state) {
+  const source = result && typeof result === "object" ? result : {};
+  const terminal = {
+    ...source,
+    pending: false,
+    deferred: false,
+    queued: false,
+    dispatching: false,
+    unknown: false,
+  };
+  if (state === "completed") {
+    return {
+      ...terminal,
+      accepted: true,
+      started: true,
+      completed: true,
+      failed: false,
+      cancelled: false,
+      rejected: false,
+    };
+  }
+  if (state === "cancelled") {
+    return {
+      ...terminal,
+      accepted: false,
+      started: false,
+      completed: false,
+      failed: false,
+      cancelled: true,
+      rejected: false,
+    };
+  }
+  return {
+    ...terminal,
+    accepted: false,
+    started: false,
+    completed: false,
+    failed: true,
+    cancelled: false,
+    rejected: true,
+    error: String(source.error ?? "Legacy command payload is unavailable after migration"),
+  };
+}
+
+function repairOrphanedLegacyCommands(database, now) {
+  const activePlaceholders = ACTIVE_STATES.map(() => "?").join(", ");
+  const orphaned = database.prepare(`
+    SELECT client_user_message_id, state, receipt_json, result_json,
+      accepted_at_ms, revision
+    FROM message_commands
+    WHERE item_json IS NULL AND state IN (${activePlaceholders})
+  `).all(...ACTIVE_STATES);
+  if (!orphaned.length) return 0;
+  const update = database.prepare(`
+    UPDATE message_commands
+    SET state = ?, destination = NULL, result_json = ?,
+        occupancy_key = NULL, occupancy_binding = NULL, queue_order = NULL,
+        terminal_at_ms = COALESCE(terminal_at_ms, accepted_at_ms),
+        updated_at_ms = ?, revision = revision + 1
+    WHERE client_user_message_id = ? AND state = ? AND revision = ?
+      AND item_json IS NULL
+  `);
+  const updatedAtMs = now();
+  let repaired = 0;
+  database.exec("BEGIN IMMEDIATE;");
+  try {
+    for (const row of orphaned) {
+      const receipt = parseJsonOrNull(row.receipt_json);
+      const result = parseJsonOrNull(row.result_json) ?? receipt?.result ?? null;
+      const state = legacyOrphanTerminalState(result);
+      const updateResult = update.run(
+        state,
+        JSON.stringify(legacyOrphanTerminalResult(result, state)),
+        updatedAtMs,
+        row.client_user_message_id,
+        row.state,
+        row.revision,
+      );
+      repaired += Number(updateResult.changes ?? 0);
+    }
+    database.exec("COMMIT;");
+  } catch (error) {
+    database.exec("ROLLBACK;");
+    throw error;
+  }
+  return repaired;
 }
 
 function recordFromRow(row) {
@@ -205,11 +314,8 @@ function stateFromEvidence({ pending, queued, run, receipt }) {
 
 function legacyStateFromEvidence(evidence) {
   const result = evidence.receipt?.result;
-  if (!evidence.pending && !evidence.queued && !evidence.run
-    && result && result.pending !== true && result.deferred !== true && result.dispatching !== true) {
-    if (result.cancelled === true) return "cancelled";
-    if (result.rejected === true) return "failed";
-    return "completed";
+  if (!evidence.pending && !evidence.queued && !evidence.run) {
+    return legacyOrphanTerminalState(result);
   }
   const state = stateFromEvidence(evidence);
   if (state) return state;
@@ -358,7 +464,7 @@ export class MessageCommandLedgerStore {
     );
     if (readOnly) this.#database.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS};`);
     else {
-      configureDatabase(this.#database);
+      configureDatabase(this.#database, this.#now);
       this.#archiveTerminalPayloads();
     }
   }
@@ -468,6 +574,9 @@ export class MessageCommandLedgerStore {
         const receipt = receipts.get(id) ?? null;
         const run = runs.get(id) ?? null;
         const state = legacyStateFromEvidence({ pending: pendingItem, queued: queuedItem, run, receipt });
+        const resultPayload = !pendingItem && !queuedItem && !run
+          ? legacyOrphanTerminalResult(receipt?.result, state)
+          : receipt?.result ?? null;
         const destination = queuedItem ? "queued" : pendingItem ? "pending" : null;
         const acceptedAtMs = Date.parse(String(item?.createdAt ?? receipt?.createdAt ?? "")) || now;
         const occupancy = taskOccupancyIdentity(item);
@@ -481,14 +590,14 @@ export class MessageCommandLedgerStore {
               queueOrder,
             }
           : item;
-        const result = insert.run(
+        const insertResult = insert.run(
           id,
           String(receipt?.fingerprint ?? "").trim() || null,
           state,
           destination,
           durableItem ? JSON.stringify(durableItem) : null,
           receipt ? JSON.stringify(receipt) : null,
-          receipt?.result ? JSON.stringify(receipt.result) : null,
+          resultPayload ? JSON.stringify(resultPayload) : null,
           occupancy?.key ?? null,
           occupancy?.binding ?? null,
           occupancy ? queueOrder : null,
@@ -496,7 +605,7 @@ export class MessageCommandLedgerStore {
           TERMINAL_STATES.has(state) ? acceptedAtMs : null,
           now,
         );
-        migrated += Number(result.changes ?? 0);
+        migrated += Number(insertResult.changes ?? 0);
       }
       this.#database.exec("COMMIT;");
     } catch (error) {
