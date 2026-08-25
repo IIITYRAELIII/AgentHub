@@ -1495,26 +1495,6 @@ html[data-view="chat"][data-surface][data-theme] {
   animation: connection-quality-pulse 1s ease-in-out infinite alternate;
 }
 
-html[data-theme="orange"] .provider-connection-quality[data-link-state="normal"] {
-  --provider-link-active: #8a8075;
-  --provider-link-color: #8a8075;
-  --provider-link-inactive: #d9cfc0;
-}
-
-html[data-theme="orange"] .provider-connection-quality[data-link-state="weak"] {
-  --provider-link-active: #c2643a;
-  --provider-link-bg: #f7efe7;
-  --provider-link-color: #a8542a;
-  --provider-link-inactive: #e6cbb8;
-}
-
-html[data-theme="orange"] .provider-connection-quality[data-link-state="offline"] {
-  --provider-link-active: #b8493c;
-  --provider-link-bg: #f8eae8;
-  --provider-link-color: #b8493c;
-  --provider-link-inactive: #e3c4c0;
-}
-
 @keyframes connection-quality-pulse {
   to { opacity: 0.75; }
 }
