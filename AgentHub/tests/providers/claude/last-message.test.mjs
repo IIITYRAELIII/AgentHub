@@ -105,6 +105,7 @@ test("parseClaudeTranscript returns the current partial answer", () => {
     stage: "Claude использует инструмент Read…",
     startedAt: null,
     updatedAt: null,
+    transcriptActivityAtMs: null,
     entrypoint: null,
     sessionId: null,
     cwd: null,
@@ -194,6 +195,79 @@ test("parseClaudeTranscript uses only the latest user turn and detects completio
   assert.equal(result.reasoning, "Готово");
   assert.equal(result.completed, true);
   assert.equal(result.active, false);
+});
+
+test("Claude compaction records cannot revive a terminal user turn", () => {
+  const result = parseClaudeTranscript([
+    line({
+      type: "user",
+      uuid: "user-turn",
+      timestamp: "2026-08-26T20:52:00.080Z",
+      message: { role: "user", content: "Исправь совместимость" },
+    }),
+    line({
+      type: "assistant",
+      timestamp: "2026-08-26T21:04:27.283Z",
+      message: {
+        role: "assistant",
+        stop_reason: "end_turn",
+        content: [{ type: "text", text: "Готово" }],
+      },
+    }),
+    line({ type: "last-prompt" }),
+    line({ type: "queue-operation", timestamp: "2026-08-26T21:12:58.836Z" }),
+    line({
+      type: "user",
+      timestamp: "2026-08-26T21:16:04.286Z",
+      isCompactSummary: true,
+      isVisibleInTranscriptOnly: true,
+      message: {
+        role: "user",
+        content: "This session is being continued from a previous conversation that ran out of context.",
+      },
+    }),
+    line({
+      type: "user",
+      timestamp: "2026-08-26T21:16:05.094Z",
+      message: {
+        role: "user",
+        content: "<command-name>/compact</command-name><command-message>compact</command-message>",
+      },
+    }),
+    line({ type: "mode", timestamp: "2026-08-26T21:16:05.500Z" }),
+  ].join("\n"));
+
+  assert.equal(result.completed, true);
+  assert.equal(result.active, false);
+  assert.equal(result.answer, "Готово");
+  assert.equal(result.startedAt, "2026-08-26T20:52:00.080Z");
+  assert.equal(result.updatedAt, "2026-08-26T21:04:27.283Z");
+  assert.equal(result.transcriptActivityAtMs, Date.parse("2026-08-26T21:04:27.283Z"));
+});
+
+test("Claude compaction metadata does not refresh an abandoned active turn", () => {
+  const result = parseClaudeTranscript([
+    line({
+      type: "user",
+      timestamp: "2026-08-26T20:00:00.000Z",
+      message: { role: "user", content: "Незавершённый ход" },
+    }),
+    line({
+      type: "assistant",
+      timestamp: "2026-08-26T20:01:00.000Z",
+      message: { role: "assistant", stop_reason: "tool_use", content: [{ type: "tool_use", name: "Read" }] },
+    }),
+    line({
+      type: "user",
+      timestamp: "2026-08-26T21:00:00.000Z",
+      isCompactSummary: true,
+      message: { role: "user", content: "synthetic summary" },
+    }),
+  ].join("\n"));
+
+  assert.equal(result.active, true);
+  assert.equal(result.updatedAt, "2026-08-26T20:01:00.000Z");
+  assert.equal(result.transcriptActivityAtMs, Date.parse("2026-08-26T20:01:00.000Z"));
 });
 
 test("parseClaudeTranscript exposes the latest Claude context usage", () => {
@@ -427,6 +501,8 @@ test("Claude catalog keeps a real task even when its latest prompt is a command"
     }),
   ].join("\n"));
 
-  assert.equal(result.title.startsWith("<command-name>"), true);
+  assert.equal(result.title, "Настроить проект");
   assert.equal(result.catalogTitle, "Настроить проект");
+  assert.equal(result.completed, true);
+  assert.equal(result.active, false);
 });

@@ -5,7 +5,7 @@ import {
   interstreamOriginAuthor,
   normalizeInterstreamOrigin,
 } from "../domain/interstream-message.mjs";
-import { withoutClaudeResumePreludes } from "../domain/claude-transcript.mjs";
+import { isClaudeSyntheticUserEntry, withoutClaudeResumePreludes } from "../domain/claude-transcript.mjs";
 import { taskReferencePromptDetails } from "../domain/task-board-task.mjs";
 
 export const EMPTY_TURN_COMPLETION_TEXT = "Ход завершён без текстового ответа.";
@@ -613,6 +613,10 @@ function claudeAssistantText(entries) {
 
 function claudeUserPromptDetails(entry) {
   if (entry?.type !== "user" || entry.message?.role !== "user") return null;
+  /* Продолжение после свёртки, преамбула локальных команд и сами слэш-команды
+     приходят как user-записи транскрипта. Показывать их как сообщения
+     пользователя нельзя: он их не писал. */
+  if (isClaudeSyntheticUserEntry(entry)) return null;
   const rawText = textContent(entry.message?.content);
   return {
     text: displayUserPrompt(rawText),

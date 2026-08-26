@@ -4,7 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 import { claudeTranscriptHistory } from "../../application/task-history.mjs";
-import { withoutClaudeResumePreludes } from "../../domain/claude-transcript.mjs";
+import {
+  isClaudeSyntheticUserEntry,
+  withoutClaudeResumePreludes,
+} from "../../domain/claude-transcript.mjs";
 import { claudeStreamContextUsage } from "./claude.mjs";
 
 const MAX_TRANSCRIPT_TAIL = 4 * 1024 * 1024;
@@ -69,6 +72,7 @@ function contentBlocks(message) {
 
 function isUserPrompt(entry) {
   if (entry?.type !== "user" || entry.message?.role !== "user") return false;
+  if (isClaudeSyntheticUserEntry(entry)) return false;
   const blocks = contentBlocks(entry.message);
   return blocks.some((block) => block?.type === "text" && String(block.text ?? "").trim());
 }
@@ -112,6 +116,25 @@ function claudeTranscriptTitle(entries) {
     || latestClaudeTitle(entries, "ai-title", "aiTitle");
 }
 
+function claudeActivityEntry(entry) {
+  if (isClaudeSyntheticUserEntry(entry)) return false;
+  return (entry?.type === "assistant" && entry.message?.role === "assistant")
+    || (entry?.type === "user" && entry.message?.role === "user");
+}
+
+function latestClaudeActivity(entries) {
+  let timestamp = null;
+  let atMs = null;
+  for (const entry of entries) {
+    if (!claudeActivityEntry(entry)) continue;
+    const candidate = Date.parse(String(entry?.timestamp ?? ""));
+    if (!Number.isFinite(candidate) || (atMs != null && candidate <= atMs)) continue;
+    timestamp = entry.timestamp;
+    atMs = candidate;
+  }
+  return { timestamp, atMs };
+}
+
 export function parseClaudeTranscript(text) {
   const entries = withoutClaudeResumePreludes(String(text)
     .split(/\r?\n/)
@@ -132,6 +155,8 @@ export function parseClaudeTranscript(text) {
   const assistantEntries = turnEntries.filter((entry) => (
     entry?.type === "assistant" && entry.message?.role === "assistant"
   ));
+  const activity = latestClaudeActivity(promptIndex >= 0 ? entries.slice(promptIndex) : []);
+  const assistantActivity = latestClaudeActivity(assistantEntries);
   const contextUsage = assistantEntries
     .map((entry) => claudeStreamContextUsage(entry))
     .filter(Boolean)
@@ -175,7 +200,8 @@ export function parseClaudeTranscript(text) {
     active: promptIndex >= 0 && !completed,
     stage,
     startedAt: promptEntry?.timestamp ?? null,
-    updatedAt: turnEntries.map((entry) => entry?.timestamp).filter(Boolean).at(-1) ?? null,
+    updatedAt: activity.timestamp,
+    transcriptActivityAtMs: activity.atMs,
     entrypoint: entries.map((entry) => entry?.entrypoint).filter(Boolean).at(-1) ?? null,
     sessionId: entries.map((entry) => entry?.sessionId).filter(Boolean).at(-1) ?? null,
     cwd: cwdValues.at(-1) ?? null,
@@ -188,7 +214,7 @@ export function parseClaudeTranscript(text) {
         provider: "claude",
         ...contextUsage,
         turnId: String(promptEntry?.uuid ?? ""),
-        updatedAt: turnEntries.map((entry) => entry?.timestamp).filter(Boolean).at(-1) ?? null,
+        updatedAt: assistantActivity.timestamp,
       },
     } : {}),
   };

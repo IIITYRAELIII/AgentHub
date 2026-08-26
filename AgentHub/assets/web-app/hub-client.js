@@ -60,7 +60,9 @@ const LONG_CONTROL_TIMEOUT_MS = 180_000;
 const LONG_CONTROL_ACTIONS = new Set(["rotate-stream", "submit-bug-report"]);
 const VSCODE_MESSAGE_CONTROL_TIMEOUT_MS = LONG_CONTROL_TIMEOUT_MS;
 const VSCODE_MESSAGE_RETRY_DELAYS_MS = Object.freeze([150, 600]);
+const VSCODE_DIRECT_SEND_HEDGE_DELAY_MS = 250;
 const HTTP_CONTROL_RETRY_DELAYS_MS = Object.freeze([150, 600, 1_500]);
+const backgroundHttpScheduler = window.AgentHubBackgroundHttpScheduler.create({ maxConcurrent: 2 });
 const HISTORY_CATCH_UP_TIMEOUT_MS = 120_000;
 const CONNECTION_OFFLINE_FAILURES = 3;
 const CONNECTION_OFFLINE_GRACE_MS = 6_000;
@@ -1242,19 +1244,7 @@ async function prepareSnapshotTransport() {
   if (vscode) await window.__agentHubDirectTransport?.available?.();
 }
 
-async function control(action, params = {}) {
-  const directTransport = window.__agentHubDirectTransport;
-  let directAvailable = false;
-  if (vscode && directTransport) {
-    if (typeof directTransport.ready === "function") {
-      directAvailable = directTransport.ready() === true;
-      if (!directAvailable) directTransport.warmup?.();
-    } else {
-      directAvailable = await directTransport.available();
-    }
-  }
-  const bridged = directAvailable ? null : bridgeCall(action, params);
-  if (bridged) return bridged;
+async function httpControl(action, params = {}) {
   if (action === "snapshot") return readSnapshot(params);
   await localSessionReady;
   const commandId = crypto.randomUUID();
@@ -1298,6 +1288,29 @@ async function control(action, params = {}) {
         LONG_CONTROL_ACTIONS.has(action) ? LONG_CONTROL_TIMEOUT_MS : DEFAULT_CONTROL_TIMEOUT_MS,
       )
     : payload.result;
+}
+
+async function control(action, params = {}) {
+  const directTransport = window.__agentHubDirectTransport;
+  let directAvailable = false;
+  if (vscode && directTransport) {
+    if (typeof directTransport.ready === "function") {
+      directAvailable = directTransport.ready() === true;
+      if (!directAvailable) directTransport.warmup?.();
+    } else {
+      directAvailable = await directTransport.available();
+    }
+  }
+  const bridged = directAvailable ? null : bridgeCall(action, params);
+  if (bridged) return bridged;
+  if (vscode && action === "send-message") {
+    return window.AgentHubMessageSendTransaction.firstSuccessfulWithDelayedFallback({
+      primary: () => httpControl(action, params),
+      fallback: () => bridgeCall(action, params),
+      delayMs: VSCODE_DIRECT_SEND_HEDGE_DELAY_MS,
+    });
+  }
+  return httpControl(action, params);
 }
 
 window.AgentHubWebDiagnostics?.bindReporter?.((event) => control("report-diagnostic", event));
@@ -2355,13 +2368,15 @@ function enqueueTaskHistoryLoad(id, identity, {
       while (state.pending) {
         const pending = state.pending;
         state.pending = null;
-        const settled = await settleOptionalRead(() => control("task-history", {
-          ...pending.identity,
-          limit: 20,
-          includeActive: false,
-          refreshSource: pending.refreshSource,
-          knownVersion: historyPageByTask.get(id)?.version ?? "",
-        }));
+        const settled = await settleOptionalRead(() => backgroundHttpScheduler.run(
+          () => control("task-history", {
+            ...pending.identity,
+            limit: 20,
+            includeActive: false,
+            refreshSource: pending.refreshSource,
+            knownVersion: historyPageByTask.get(id)?.version ?? "",
+          }),
+        ));
         if (settled.status === "rejected" || !currentHistoryRequest(pending.request)) continue;
         const history = verifiedTaskHistory(settled.value, pending.identity);
         if (!sameIdentity(taskIdentity(id), history)) continue;

@@ -19,5 +19,16 @@ lock or SQLite wait.
 - Durable ACK to local projection visibility: p95 <= 1 s, p99 <= 3 s.
 - Correctness: no duplicate effect on same-ID retry and no lost ACKed command.
 
+When a ready VS Code direct HTTP transport does not confirm `send-message`
+within 250 ms, the WebView starts the authenticated IPC path with the same
+`clientUserMessageId`. The first successful receipt wins; the durable message
+ledger must collapse the other transport into the same command effect.
+
+Background history hydration may use at most two concurrent HTTP requests per
+client. User commands, snapshots and attachment reads do not enter that queue.
+The VS Code WebView does not open a direct `/events` stream: journal changes are
+already delivered by the extension subscription, so a retained panel cannot
+consume a long-lived Chromium HTTP socket for duplicate notifications.
+
 The “Local Hub” health RTT is not message ACK latency and must not be presented
 as such. Provider latency and remote Worker latency are separate indicators.

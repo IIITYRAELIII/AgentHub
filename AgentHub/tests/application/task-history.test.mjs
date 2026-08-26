@@ -633,6 +633,61 @@ test("claudeTranscriptHistory hides the headless resume prelude", () => {
   assert.equal(history[1].answer, "Готово");
 });
 
+test("claudeTranscriptHistory hides service records of Claude Code", () => {
+  const line = (value) => JSON.stringify(value);
+  const history = claudeTranscriptHistory([
+    line({ type: "user", uuid: "u1", message: { role: "user", content: "Первый" } }),
+    line({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "Один" }], stop_reason: "end_turn" } }),
+    line({
+      type: "user",
+      uuid: "compact",
+      isCompactSummary: true,
+      isVisibleInTranscriptOnly: true,
+      message: {
+        role: "user",
+        content: "This session is being continued from a previous conversation that ran out of context.",
+      },
+    }),
+    line({
+      type: "user",
+      uuid: "caveat",
+      isMeta: true,
+      message: { role: "user", content: "<local-command-caveat>Caveat: ...</local-command-caveat>" },
+    }),
+    line({
+      type: "user",
+      uuid: "command",
+      message: {
+        role: "user",
+        content: "<command-name>/compact</command-name>\n<command-message>compact</command-message>",
+      },
+    }),
+    line({ type: "user", uuid: "u2", message: { role: "user", content: "Второй" } }),
+    line({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "Два" }], stop_reason: "end_turn" } }),
+  ].join("\n"));
+
+  assert.deepEqual(history.map((turn) => turn.prompt), ["Первый", "Второй"]);
+  assert.equal(history.every((turn) => turn.messages.every((message) => (
+    !String(message.text ?? "").startsWith("This session is being continued")
+    && !String(message.text ?? "").startsWith("<")
+  ))), true);
+});
+
+test("claudeTranscriptHistory keeps a prompt that only mentions a command", () => {
+  const line = (value) => JSON.stringify(value);
+  const history = claudeTranscriptHistory([
+    line({
+      type: "user",
+      uuid: "u1",
+      message: { role: "user", content: "<command-name>/compact</command-name> и сверни контекст" },
+    }),
+    line({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "Готово" }], stop_reason: "end_turn" } }),
+  ].join("\n"));
+
+  assert.equal(history.length, 1);
+  assert.match(history[0].prompt, /сверни контекст/u);
+});
+
 test("visibleTaskHistory grows newest-first window without changing chronology", () => {
   const history = [1, 2, 3, 4].map((id) => ({
     id: String(id),

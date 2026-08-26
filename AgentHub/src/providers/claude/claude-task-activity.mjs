@@ -5,6 +5,10 @@ import { TASK_EXECUTION_OWNERS } from "../../domain/task-execution-owner.mjs";
 export const CLAUDE_ACTIVE_FRESHNESS_MS = 30 * 60 * 1000;
 
 export function claudeSnapshotActivityAtMs(snapshot) {
+  const transcriptActivityAtMs = Number(snapshot?.transcriptActivityAtMs ?? 0);
+  if (Number.isFinite(transcriptActivityAtMs) && transcriptActivityAtMs > 0) {
+    return transcriptActivityAtMs;
+  }
   const values = [
     Number(snapshot?.modifiedAtMs ?? 0),
     Date.parse(String(snapshot?.updatedAt ?? "")),

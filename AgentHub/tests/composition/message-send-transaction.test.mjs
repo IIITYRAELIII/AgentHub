@@ -105,3 +105,66 @@ test("remote receipt rendering failure does not reclassify the confirmed command
   assert.equal(result.accepted, true);
   assert.deepEqual(calls, ["receive", "report", "refresh"]);
 });
+
+test("stalled primary transport is hedged by the delayed fallback", async () => {
+  let scheduledFallback = null;
+  let fallbackCalls = 0;
+  const resultPromise = transaction.firstSuccessfulWithDelayedFallback({
+    primary: () => new Promise(() => {}),
+    fallback: async () => {
+      fallbackCalls += 1;
+      return { accepted: true, transport: "ipc" };
+    },
+    delayMs: 250,
+    setTimer: (callback) => {
+      scheduledFallback = callback;
+      return 1;
+    },
+    clearTimer: () => {},
+  });
+
+  await Promise.resolve();
+  assert.equal(fallbackCalls, 0);
+  scheduledFallback();
+  assert.deepEqual(await resultPromise, { accepted: true, transport: "ipc" });
+  assert.equal(fallbackCalls, 1);
+});
+
+test("fast primary transport cancels the fallback hedge", async () => {
+  let fallbackCalls = 0;
+  let timerCleared = false;
+  const result = await transaction.firstSuccessfulWithDelayedFallback({
+    primary: async () => ({ accepted: true, transport: "http" }),
+    fallback: async () => {
+      fallbackCalls += 1;
+      return { accepted: true, transport: "ipc" };
+    },
+    delayMs: 250,
+    setTimer: () => 7,
+    clearTimer: (timer) => {
+      assert.equal(timer, 7);
+      timerCleared = true;
+    },
+  });
+
+  assert.deepEqual(result, { accepted: true, transport: "http" });
+  assert.equal(fallbackCalls, 0);
+  assert.equal(timerCleared, true);
+});
+
+test("primary rejection starts the fallback without waiting for its timer", async () => {
+  let fallbackCalls = 0;
+  const result = await transaction.firstSuccessfulWithDelayedFallback({
+    primary: async () => { throw new Error("direct HTTP failed"); },
+    fallback: async () => {
+      fallbackCalls += 1;
+      return { accepted: true, transport: "ipc" };
+    },
+    delayMs: 250,
+    setTimer: () => 3,
+    clearTimer: () => {},
+  });
+
+  assert.deepEqual(result, { accepted: true, transport: "ipc" });
+  assert.equal(fallbackCalls, 1);
+});

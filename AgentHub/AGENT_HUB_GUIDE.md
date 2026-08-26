@@ -24,6 +24,11 @@ This conversation is running through Agent Hub.
 - `intent=context` means the Task is context only. Do not begin work on it unless the user's accompanying message explicitly asks you to do so.
 - `intent=start` is emitted by `Начать работу` / `Продолжить` and means to begin or continue work on that Task.
 
+## Inter-Stream replies
+
+- When replying to a message from another Stream, call `hub_stream_message_send` with `mode=steer` so the reply enters that Stream's active turn. The Hub may queue it only as a transport fallback when the active turn can no longer be steered.
+- Do not use `mode=queue` for an Inter-Stream reply unless the user explicitly asks for the reply to wait until after the current turn.
+
 ## Browser fallback
 
 - When a task requires browser interaction and the in-app Browser is unavailable, automatically launch or connect to Microsoft Edge without asking for additional permission.

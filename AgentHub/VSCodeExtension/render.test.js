@@ -226,6 +226,7 @@ test("VS Code direct transport waits for the in-flight local session", async () 
   assert.equal(await available, true);
   assert.equal(await harness.window.__agentHubDirectTransport.available(), true);
   assert.equal(harness.window.__agentHubDirectTransport.ready(), true);
+  assert.equal(harness.nativeFetchCalls(), 0);
   const nativeFetchCalls = harness.nativeFetchCalls();
   const healthResponse = harness.window.__agentHubIpcRuntimeHealth();
   await Promise.resolve();

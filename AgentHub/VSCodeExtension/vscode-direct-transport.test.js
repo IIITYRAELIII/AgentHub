@@ -11,15 +11,16 @@ const extension = fs.readFileSync(path.join(__dirname, "extension.js"), "utf8");
 const sharedWebview = fs.readFileSync(path.join(__dirname, "shared-webview.js"), "utf8");
 const client = fs.readFileSync(path.join(__dirname, "..", "assets", "web-app", "hub-client.js"), "utf8");
 
-test("VS Code WebView prefers loopback HTTP and SSE with IPC fallback", () => {
+test("VS Code WebView prefers loopback HTTP with IPC fallback", () => {
   assert.match(bootstrap, /agenthub:session/u);
   assert.match(bootstrap, /Authorization.*webview/u);
-  assert.match(bootstrap, /response\.body\.getReader\(\)/u);
   assert.match(bootstrap, /fallbackFetch/u);
   assert.match(client, /directTransport\.ready\(\)/u);
   assert.match(client, /directTransport\.warmup\?\.\(\)/u);
   assert.match(bootstrap, /ready:\s*\(\)\s*=>\s*Boolean\(activeDirectSession\(\)\)/u);
   assert.match(extension, /handleSessionMessage/u);
+  assert.match(extension, /subscribeJournal/u);
+  assert.doesNotMatch(bootstrap, /streamDirectEvents|\/events/u);
   assert.match(bridge, /createLocalWebviewSession/u);
   assert.match(sharedWebview, /connect-src http:\/\/127\.0\.0\.1:\*/u);
 });

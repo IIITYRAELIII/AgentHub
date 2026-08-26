@@ -691,6 +691,7 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
       "messages/lifecycle.js",
       "messages/projection.js",
       "messages/send-transaction.js",
+      "background-http-scheduler.js",
       "hub-client.js",
       "styles.css",
       "work-log.css",

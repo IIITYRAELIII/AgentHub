@@ -10,10 +10,8 @@ let sequence = 0;
 const HEALTH_CONTROL_TIMEOUT_MS = 15_000;
 const SESSION_TIMEOUT_MS = 5_000;
 const SESSION_REFRESH_MARGIN_MS = 30_000;
-const EVENT_RECONNECT_MS = 1_500;
 let directSession = null;
 let directSessionRequest = null;
-let eventAbort = null;
 let motionResumeFrame = 0;
 
 const MOTION_TARGET_SELECTOR = [
@@ -254,57 +252,10 @@ window.fetch = async function agentHubFetch(input, init = {}) {
   const raw = typeof input === "string" || input instanceof URL ? String(input) : input.url;
   const url = new URL(raw, window.location.href);
   const hubRequest = raw.startsWith("/")
-    && (url.pathname === "/health" || url.pathname === "/events" || url.pathname.startsWith("/api/"));
+    && (url.pathname === "/health" || url.pathname.startsWith("/api/"));
   if (!hubRequest) return nativeFetch(input, init);
   return await directFetch(url, init) ?? fallbackFetch(url, input, init);
 };
-
-function parseEventBlock(block) {
-  let type = "message";
-  const data = [];
-  for (const line of block.split(/\r?\n/u)) {
-    if (line.startsWith("event:")) type = line.slice(6).trim() || "message";
-    if (line.startsWith("data:")) data.push(line.slice(5).trimStart());
-  }
-  return { type, data: data.join("\n") };
-}
-
-async function streamDirectEvents() {
-  while (!eventAbort?.signal.aborted) {
-    try {
-      const session = await ensureDirectSession();
-      if (!session) return;
-      const response = await nativeFetch(`${String(session.baseUrl).replace(/\/+$/u, "")}/events`, {
-        headers: { Authorization: `webview ${session.token}` },
-        credentials: "omit",
-        signal: eventAbort.signal,
-      });
-      if (!response.ok || !response.body) throw new Error(`Agent Hub events: HTTP ${response.status}`);
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffered = "";
-      while (!eventAbort.signal.aborted) {
-        const { value, done } = await reader.read();
-        buffered += decoder.decode(value ?? new Uint8Array(), { stream: !done });
-        let boundary = buffered.search(/\r?\n\r?\n/u);
-        while (boundary >= 0) {
-          const separator = buffered.slice(boundary).match(/^\r?\n\r?\n/u)?.[0] ?? "\n\n";
-          const event = parseEventBlock(buffered.slice(0, boundary));
-          buffered = buffered.slice(boundary + separator.length);
-          if (event.type === "journal") {
-            window.postMessage({ type: "agenthub:journal-changed", force: false }, "*");
-          }
-          boundary = buffered.search(/\r?\n\r?\n/u);
-        }
-        if (done) break;
-      }
-    } catch (error) {
-      if (eventAbort?.signal.aborted) return;
-      console.warn("Agent Hub VS Code events disconnected", error);
-    }
-    await new Promise((resolve) => window.setTimeout(resolve, EVENT_RECONNECT_MS));
-  }
-}
 
 window.__agentHubDirectTransport = {
   available: async () => Boolean(activeDirectSession() ?? await ensureDirectSession()),
@@ -312,10 +263,4 @@ window.__agentHubDirectTransport = {
   warmup: () => { void ensureDirectSession(); },
 };
 
-void ensureDirectSession().then((session) => {
-  if (!session) return;
-  eventAbort = new AbortController();
-  void streamDirectEvents();
-});
-
-window.addEventListener("pagehide", () => eventAbort?.abort(), { once: true });
+void ensureDirectSession();

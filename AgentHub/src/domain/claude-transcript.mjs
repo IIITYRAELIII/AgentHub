@@ -13,6 +13,28 @@ export function claudeTranscriptMessageText(entry) {
     .trim();
 }
 
+/* Claude Code записывает в транскрипт служебные user-записи: продолжение после
+   свёртки контекста, преамбулу локальных команд и сами слэш-команды. Они
+   помечены собственными флагами, поэтому распознаются структурно, а не по
+   тексту. Для Hub это транспорт, а не сообщение пользователя. */
+export function isClaudeSyntheticUserEntry(entry) {
+  if (entry?.type !== "user" || entry.message?.role !== "user") return false;
+  return entry.isCompactSummary === true
+    || entry.isMeta === true
+    || entry.isVisibleInTranscriptOnly === true
+    || isClaudeLocalCommandEnvelope(claudeTranscriptMessageText(entry));
+}
+
+/* Слэш-команда приходит как набор XML-конвертов без собственного флага. */
+export function isClaudeLocalCommandEnvelope(value) {
+  const text = String(value ?? "").trim();
+  if (!text.startsWith("<")) return false;
+  return text
+    .replace(/<(command-name|command-message|command-args|command-contents)>[\s\S]*?<\/\1>/giu, "")
+    .replace(/<local-command-(caveat|stdout|stderr)>[\s\S]*?<\/local-command-\1>/giu, "")
+    .trim() === "";
+}
+
 export function isClaudeResumePrompt(value) {
   return /^continue from where you left off\.$/iu.test(String(value ?? "").trim());
 }
