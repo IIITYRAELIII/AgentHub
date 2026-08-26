@@ -5463,7 +5463,6 @@ html[data-surface="mobile"]
 :root[data-stream-status-effect="impulse"]
   .stream-tab[data-answer-ready] .stream-tab-card::before {
   --stream-status-peak: 1;
-  animation: stream-answer-ready 1.45s ease-out 2;
   border: 2px solid var(--accent);
   border-radius: inherit;
   box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 45%, transparent);
@@ -5472,6 +5471,13 @@ html[data-surface="mobile"]
   opacity: 0.5;
   pointer-events: none;
   position: absolute;
+}
+
+:root[data-stream-status-effect="impulse"]
+  .task-workspace-item[data-unread][data-answer-arrived]:not([data-running])::before,
+:root[data-stream-status-effect="impulse"]
+  .stream-tab[data-answer-ready][data-answer-arrived] .stream-tab-card::before {
+  animation: stream-answer-ready 1.45s ease-out 2;
 }
 
 :root[data-stream-status-style="fill"][data-stream-status-effect="impulse"]
@@ -5544,7 +5550,6 @@ html[data-surface="mobile"]
   .task-workspace-item[data-unread]:not([data-running])::after,
 :root[data-stream-status-effect="scanner"]
   .stream-tab[data-answer-ready] .stream-tab-card::after {
-  animation: stream-scanner-lock 0.72s ease-out 2;
   background: linear-gradient(90deg, transparent, var(--accent) 14%, var(--accent) 86%, transparent);
   border-radius: 2px;
   box-shadow: 0 0 9px color-mix(in srgb, var(--accent) 55%, transparent);
@@ -5555,6 +5560,13 @@ html[data-surface="mobile"]
   pointer-events: none;
   position: absolute;
   transform: scaleX(1);
+}
+
+:root[data-stream-status-effect="scanner"]
+  .task-workspace-item[data-unread][data-answer-arrived]:not([data-running])::after,
+:root[data-stream-status-effect="scanner"]
+  .stream-tab[data-answer-ready][data-answer-arrived] .stream-tab-card::after {
+  animation: stream-scanner-lock 0.72s ease-out 2;
 }
 
 :root[data-stream-status-style="fill"][data-stream-status-effect="scanner"]
@@ -5589,9 +5601,9 @@ html[data-surface="mobile"]
 :root[data-stream-status-effect="energy"] .task-workspace-item[data-running]::before,
 :root[data-stream-status-effect="energy"] .stream-tab[data-running] .stream-tab-card::before,
 :root[data-stream-status-effect="energy"]
-  .task-workspace-item[data-unread]:not([data-running])::before,
+  .task-workspace-item[data-unread][data-answer-arrived]:not([data-running])::before,
 :root[data-stream-status-effect="energy"]
-  .stream-tab[data-answer-ready] .stream-tab-card::before {
+  .stream-tab[data-answer-ready][data-answer-arrived] .stream-tab-card::before {
   background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 46%, transparent), var(--accent));
   border-radius: 3px;
   box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 50%, transparent);

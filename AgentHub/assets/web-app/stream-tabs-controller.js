@@ -327,6 +327,17 @@
     return { running, answerReady, statusLabel };
   }
 
+  function answerArrivalTaskIds(previousTasks, tasks) {
+    const previousById = new Map((previousTasks ?? []).map((task) => [String(task?.id ?? ""), task]));
+    return new Set((tasks ?? [])
+      .filter((task) => {
+        const id = String(task?.id ?? "");
+        const previous = previousById.get(id);
+        return Boolean(id) && previous && previous.unread !== true && task?.unread === true;
+      })
+      .map((task) => String(task.id)));
+  }
+
   function streamStatusState(task) {
     const failed = Boolean(task?.failed || task?.error)
       || /(?:fail|error|сбой|ошиб)/iu.test(`${String(task?.status ?? "")} ${String(task?.statusLabel ?? "")}`);
@@ -1209,6 +1220,7 @@
   }
 
   window.AgentHubStreamTabs = Object.freeze({
+    answerArrivalTaskIds,
     archiveStreamIntent,
     activityStreamSections,
     attentionStreamCount,

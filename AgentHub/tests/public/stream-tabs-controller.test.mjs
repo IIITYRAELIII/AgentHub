@@ -510,6 +510,25 @@ test("an active Stream preserves its answer-ready state", async () => {
   );
 });
 
+test("answer arrival animation does not replay during Thread selection", async () => {
+  const { answerArrivalTaskIds } = await streamTabsApi();
+  const previous = [
+    { id: "architect", selected: true, unread: true },
+    { id: "statistics", selected: false, unread: false },
+  ];
+  const selectedAnotherThread = [
+    { id: "architect", selected: false, unread: true },
+    { id: "statistics", selected: true, unread: false },
+  ];
+
+  assert.deepEqual(Array.from(answerArrivalTaskIds([], previous)), []);
+  assert.deepEqual(Array.from(answerArrivalTaskIds(previous, selectedAnotherThread)), []);
+  assert.deepEqual(Array.from(answerArrivalTaskIds(selectedAnotherThread, [
+    selectedAnotherThread[0],
+    { ...selectedAnotherThread[1], unread: true },
+  ])), ["statistics"]);
+});
+
 test("task hierarchy is recovered by Stream identity when a transient task lacks Workspace fields", async () => {
   const { resolveTaskHierarchy } = await streamTabsApi();
   const workspaces = [{

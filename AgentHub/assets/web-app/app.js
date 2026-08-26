@@ -1318,6 +1318,7 @@ const state = {
   configuredOpenStreamWorkspaces: new Set(),
   visibleStreamTaskIds: [],
 };
+let transientAnswerArrivalTaskIds = new Set();
 
 /* Черновики принадлежат конкретному клиенту и задаче. Вложение остаётся в
  * памяти страницы: data:-URL скриншотов может превысить лимит localStorage.
@@ -2030,6 +2031,7 @@ function renderTaskWorkspaceItem({ id, name, kind, tasks }) {
     "data-workspace-name": name,
     "data-selected": selected ? "" : null,
     "data-unread": unread ? "" : null,
+    "data-answer-arrived": tasks.some((task) => transientAnswerArrivalTaskIds.has(task.id)) ? "" : null,
     "data-running": running ? "" : null,
     "data-maintenance": maintenance || null,
     role: "button",
@@ -2221,6 +2223,7 @@ function renderActivityRail() {
       "data-current": task.id === state.selectedId ? "" : null,
       "data-running": presentation.running ? "" : null,
       "data-answer-ready": presentation.answerReady ? "" : null,
+      "data-answer-arrived": transientAnswerArrivalTaskIds.has(task.id) ? "" : null,
       "data-recent": streamAttentionKind(task) === "recent" ? "" : null,
       "data-maintenance": streamMaintenanceKind(task) || null,
       "aria-pressed": String(task.id === state.selectedId),
@@ -2369,6 +2372,7 @@ function renderStreamTabs() {
       "data-current": task?.id === selected.id ? "" : null,
       "data-running": running ? "" : null,
       "data-answer-ready": answerReady ? "" : null,
+      "data-answer-arrived": transientAnswerArrivalTaskIds.has(task?.id) ? "" : null,
       "data-state": statusState,
       "data-maintenance": streamMaintenanceKind(task) || null,
       "aria-label": [streamName, agentLabel, task?.modelLabel, statusLabel].filter(Boolean).join(". "),
@@ -2614,6 +2618,7 @@ function renderTaskItem(task, { workspaceGrouped = false } = {}) {
     "data-selected": selected ? "" : null,
     "data-running": task.running ? "" : null,
     "data-unread": task.unread ? "" : null,
+    "data-answer-arrived": transientAnswerArrivalTaskIds.has(task.id) ? "" : null,
     role: "button",
     tabindex: "0",
     "aria-pressed": String(selected),
@@ -7520,6 +7525,7 @@ const AgentHub = {
       if (workspaceMessageSearchInput) workspaceMessageSearchInput.value = "";
     }
     if (!taskDataChanged && !selectionChanged) return;
+    transientAnswerArrivalTaskIds = window.AgentHubStreamTabs.answerArrivalTaskIds(previousTasks, nextTasks);
     if (selectionChanged && state.selectedId) saveDraft();
     state.tasks = nextTasks;
     state.selectedId = nextSelectedId;
@@ -7529,13 +7535,17 @@ const AgentHub = {
       ensureTaskStreamVisible(current);
       persistOpenStreams();
     }
-    if (navigationChanged || selectionChanged) renderTasks();
-    if (selectionChanged || selectedTaskChanged || nextTasks.some((task) => (
-      task.id !== nextSelectedId
-      && state.visibleStreamTaskIds.includes(task.id)
-      && chatChangedIds.has(task.id)
-    ))) renderChat();
-    else if (selectedTaskDataChanged) renderStreamChatHeader(nextSelectedTask);
+    try {
+      if (navigationChanged || selectionChanged) renderTasks();
+      if (selectionChanged || selectedTaskChanged || nextTasks.some((task) => (
+        task.id !== nextSelectedId
+        && state.visibleStreamTaskIds.includes(task.id)
+        && chatChangedIds.has(task.id)
+      ))) renderChat();
+      else if (selectedTaskDataChanged) renderStreamChatHeader(nextSelectedTask);
+    } finally {
+      transientAnswerArrivalTaskIds = new Set();
+    }
   },
   setWorkspaces(workspaces, columnOrder = []) {
     const nextWorkspaces = Array.isArray(workspaces) ? workspaces.slice() : [];
@@ -7563,10 +7573,16 @@ const AgentHub = {
     if (!task) return;
     const changed = Object.entries(patch ?? {}).some(([key, value]) => !Object.is(task[key], value));
     if (!changed) return;
+    const previousTask = { ...task };
     Object.assign(task, patch);
-    renderTasks();
-    if (id === state.selectedId) renderChat();
-    else if (state.visibleStreamTaskIds.includes(id)) renderStreamChatDeck({ force: true });
+    transientAnswerArrivalTaskIds = window.AgentHubStreamTabs.answerArrivalTaskIds([previousTask], [task]);
+    try {
+      renderTasks();
+      if (id === state.selectedId) renderChat();
+      else if (state.visibleStreamTaskIds.includes(id)) renderStreamChatDeck({ force: true });
+    } finally {
+      transientAnswerArrivalTaskIds = new Set();
+    }
   },
   /** Выбор задачи со стороны backend (например, смена из Telegram). */
   selectTask(id) {

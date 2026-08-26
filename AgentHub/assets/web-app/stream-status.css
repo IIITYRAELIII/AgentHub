@@ -28,9 +28,17 @@
 
 /* Готовность — один глубокий вдох и остановка на светлом. */
 :root[data-stream-status-effect="breath"]
-  .task-workspace-item[data-unread]:not([data-running])::after,
-:root[data-stream-status-effect="breath"] .stream-tab[data-answer-ready] .stream-tab-card::after {
+  .task-workspace-item[data-unread][data-answer-arrived]:not([data-running])::after,
+:root[data-stream-status-effect="breath"]
+  .stream-tab[data-answer-ready][data-answer-arrived] .stream-tab-card::after {
   animation: stream-breath-ready 1.1s ease-out forwards;
+}
+
+:root[data-stream-status-effect="breath"]
+  .task-workspace-item[data-unread]:not([data-running], [data-answer-arrived])::after,
+:root[data-stream-status-effect="breath"]
+  .stream-tab[data-answer-ready]:not([data-answer-arrived]) .stream-tab-card::after {
+  opacity: 0.28;
 }
 
 @keyframes stream-breath {
@@ -146,7 +154,6 @@
 :root[data-stream-status-effect="echo"]
   .task-workspace-item[data-unread]:not([data-running])::after,
 :root[data-stream-status-effect="echo"] .stream-tab[data-answer-ready] .stream-tab-card::after {
-  animation: stream-echo-ring 1.15s ease-out 3;
   border: 2px solid var(--accent);
   border-radius: inherit;
   box-shadow: 0 0 12px color-mix(in srgb, var(--accent) 40%, transparent);
@@ -154,6 +161,13 @@
   inset: 0;
   pointer-events: none;
   position: absolute;
+}
+
+:root[data-stream-status-effect="echo"]
+  .task-workspace-item[data-unread][data-answer-arrived]:not([data-running])::after,
+:root[data-stream-status-effect="echo"]
+  .stream-tab[data-answer-ready][data-answer-arrived] .stream-tab-card::after {
+  animation: stream-echo-ring 1.15s ease-out 3;
 }
 
 @keyframes stream-echo-ring {
@@ -233,10 +247,17 @@
 }
 
 :root[data-stream-status-style="fill"][data-stream-status-effect="breath"]
-  .task-workspace-item[data-unread]:not([data-running])::after,
+  .task-workspace-item[data-unread][data-answer-arrived]:not([data-running])::after,
 :root[data-stream-status-style="fill"][data-stream-status-effect="breath"]
-  .stream-tab[data-answer-ready] .stream-tab-card::after {
+  .stream-tab[data-answer-ready][data-answer-arrived] .stream-tab-card::after {
   animation-name: stream-breath-ready-fill;
+}
+
+:root[data-stream-status-style="fill"][data-stream-status-effect="breath"]
+  .task-workspace-item[data-unread]:not([data-running], [data-answer-arrived])::after,
+:root[data-stream-status-style="fill"][data-stream-status-effect="breath"]
+  .stream-tab[data-answer-ready]:not([data-answer-arrived]) .stream-tab-card::after {
+  opacity: 0.38;
 }
 
 @keyframes stream-breath-fill {
@@ -314,11 +335,17 @@
   .task-workspace-item[data-unread]:not([data-running])::after,
 :root[data-stream-status-style="fill"][data-stream-status-effect="echo"]
   .stream-tab[data-answer-ready] .stream-tab-card::after {
-  animation: stream-echo-fill 1.15s ease-out 2;
   background: var(--accent);
   border: 0;
   border-radius: inherit;
   inset: 0;
+}
+
+:root[data-stream-status-style="fill"][data-stream-status-effect="echo"]
+  .task-workspace-item[data-unread][data-answer-arrived]:not([data-running])::after,
+:root[data-stream-status-style="fill"][data-stream-status-effect="echo"]
+  .stream-tab[data-answer-ready][data-answer-arrived] .stream-tab-card::after {
+  animation: stream-echo-fill 1.15s ease-out 2;
 }
 
 @keyframes stream-echo-fill {
