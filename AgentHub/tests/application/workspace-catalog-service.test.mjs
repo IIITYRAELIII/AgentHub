@@ -89,9 +89,14 @@ test("Workspace settings provide an inherited working directory", () => {
   const { service, calls } = fixture();
   const settings = { workingDirectory: "D:/work/AgentHub" };
   assert.deepEqual(service.updateWorkspaceSettings({
-    workspaceId: "workspace-1", settings,
+    workspaceId: "workspace-1", settings, discardReleaseEntries: true,
   }), { settings });
-  assert.deepEqual(calls.at(-1), ["updateWorkspaceSettings", "workspace-1", settings]);
+  assert.deepEqual(calls.at(-1), [
+    "updateWorkspaceSettings",
+    "workspace-1",
+    settings,
+    { discardReleaseEntries: true },
+  ]);
 });
 
 test("Workspace and Stream developer rules use dedicated store methods", () => {

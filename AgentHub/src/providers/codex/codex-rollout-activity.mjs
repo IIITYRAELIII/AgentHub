@@ -1206,6 +1206,7 @@ export function selectExactActiveCodexTurnId(activity = {}) {
 
 export function codexCatalogEntry(thread, project, {
   rolloutRunning = false,
+  activeTurnId = null,
   executionOwner = null,
   model = null,
   lastActivityAtMs = null,
@@ -1216,6 +1217,9 @@ export function codexCatalogEntry(thread, project, {
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 80);
+  const turnId = String(activeTurnId ?? "").trim();
+  const providerRunning = codexThreadRunning(thread, { rolloutRunning, ignoredTurnIds });
+  const running = Boolean(providerRunning && turnId);
   return {
     provider: "codex",
     threadId: String(thread.id),
@@ -1224,7 +1228,9 @@ export function codexCatalogEntry(thread, project, {
     title: title || "Без названия",
     model,
     updatedAtMs: Number(thread.updatedAt ?? 0) * 1000,
-    running: codexThreadRunning(thread, { rolloutRunning, ignoredTurnIds }),
+    running,
+    ...(running ? { turnId } : {}),
+    ...(providerRunning && !turnId ? { activityUnknown: true } : {}),
     executionOwner,
     lastActivityAtMs,
     startedAt: startedAtMs !== null

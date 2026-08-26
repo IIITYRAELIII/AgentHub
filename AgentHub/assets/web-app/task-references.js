@@ -6,6 +6,8 @@
     "new", "in_progress", "testing", "awaiting_implementation", "done",
   ]);
   const INTENTS = new Set(["context", "start"]);
+  const TASK_URI_PATTERN = /^agent-hub:\/\/task\/([^/?#]+)$/iu;
+  const TASK_OPEN_EVENT = "agenthub:task-reference-open";
   let activeDragReference = null;
 
   function normalize(value, { intent = null } = {}) {
@@ -41,6 +43,44 @@
       workspaceId: task?.workspaceId,
       intent: options.intent,
     });
+  }
+
+  function fromUri(value) {
+    const match = String(value ?? "").trim().match(TASK_URI_PATTERN);
+    if (!match) return null;
+    try {
+      const taskId = decodeURIComponent(match[1]).trim();
+      if (!taskId || /[\\/]/u.test(taskId)) return null;
+      return normalize({ taskId });
+    } catch {
+      return null;
+    }
+  }
+
+  function taskUri(value) {
+    const reference = typeof value === "string" ? fromUri(value) : normalize(value);
+    return reference ? `agent-hub://task/${encodeURIComponent(reference.taskId)}` : "";
+  }
+
+  function link(value) {
+    const reference = fromUri(value);
+    return reference ? { href: taskUri(reference), taskId: reference.taskId } : null;
+  }
+
+  function open(value, { dispatch } = {}) {
+    const source = typeof value === "string" ? value.trim() : value;
+    const reference = typeof source === "string" && /^agent-hub:/iu.test(source)
+      ? fromUri(source)
+      : normalize(source);
+    if (!reference) return false;
+    const detail = { taskId: reference.taskId };
+    if (typeof dispatch === "function") {
+      dispatch(TASK_OPEN_EVENT, detail);
+      return true;
+    }
+    if (!global.document?.dispatchEvent || typeof global.CustomEvent !== "function") return false;
+    global.document.dispatchEvent(new global.CustomEvent(TASK_OPEN_EVENT, { detail }));
+    return true;
   }
 
   function transferText(task, options = {}) {
@@ -90,10 +130,14 @@
     endDrag,
     fromTask,
     fromTransfer,
+    fromUri,
     hasTransfer,
     isTaskReference,
+    link,
     merge,
     normalize,
+    open,
+    taskUri,
     transferText,
   });
 })(window);

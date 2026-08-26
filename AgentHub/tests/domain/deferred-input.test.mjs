@@ -137,6 +137,18 @@ test("restart turns an interrupted manual steer back into an actionable pending 
   });
 });
 
+test("restart resumes exact reconciliation without repeating an uncertain provider start", () => {
+  const item = {
+    id: "019f7152-726b-7b62-a595-62a3fccef0bf",
+    provider: "codex",
+    threadId: "thread-1",
+    clientUserMessageId: "message-1",
+    dispatchingAt: "2026-08-27T09:00:00.000Z",
+    waitReason: "provider-start-unconfirmed",
+  };
+  assert.deepEqual(restoreDeferredInput(item), { destination: "queued", item });
+});
+
 test("restart preserves a provisional Stream-scoped queued command", () => {
   const item = {
     id: "019f7152-726b-7b62-a595-62a3fccef0bf",

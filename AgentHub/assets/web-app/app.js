@@ -85,6 +85,7 @@ const workspaceCardComment = document.querySelector("[data-workspace-card-commen
 const workspaceCardWorkingDirectory = document.querySelector("[data-workspace-card-working-directory]");
 const workspaceCardRules = document.querySelector("[data-workspace-card-rules]");
 const workspaceCardRulesCount = document.querySelector("[data-workspace-card-rules-count]");
+const workspaceCardReleaseWorkflow = document.querySelector("[data-workspace-release-workflow]");
 const workspaceCardOrder = document.querySelector("[data-workspace-card-order]");
 const workspaceCardSubmit = document.querySelector("[data-workspace-card-submit]");
 const workspaceReleaseRegistry = document.querySelector("[data-workspace-release-registry]");
@@ -154,6 +155,13 @@ const connectionQualityIndicator = document.querySelector("[data-connection-qual
 const annotationsBox = document.querySelector("[data-annotations]");
 const attachmentsBox = document.querySelector("[data-attachments]");
 const TaskReferences = window.AgentHubTaskReferences;
+const workspaceReleaseWorkflow = window.AgentHubWorkspaceReleaseWorkflow;
+const workspaceReleaseDiscardDialog = workspaceReleaseWorkflow.createDiscardConfirmation({
+  dialog: document.querySelector("[data-workspace-release-discard-modal]"),
+  cancelButton: document.querySelector("[data-workspace-release-discard-cancel]"),
+  confirmButton: document.querySelector("[data-workspace-release-discard-confirm]"),
+  message: document.querySelector("[data-workspace-release-discard-message]"),
+});
 const annotationContextMenu = document.querySelector("[data-annotation-context-menu]");
 const resourceContextMenu = document.querySelector("[data-resource-context-menu]");
 // Theme panels may clip their children (for example Lake uses overflow:hidden
@@ -2976,6 +2984,7 @@ let streamContextMenu = null;
 let workspaceContextMenu = null;
 let workspaceCardId = "";
 let workspaceCardMode = "edit";
+let workspaceReleaseDiscardConfirmed = false;
 const AGENT_RULES_LIMIT_BYTES = 32 * 1024;
 const agentRulesEncoder = new TextEncoder();
 const streamRulesDrafts = new Map();
@@ -3050,6 +3059,7 @@ function closeWorkspaceContextMenu() {
 function closeWorkspaceCard() {
   workspaceCardId = "";
   workspaceCardMode = "edit";
+  workspaceReleaseDiscardConfirmed = false;
   if (workspaceCardModal?.open) workspaceCardModal.close();
 }
 
@@ -3068,8 +3078,11 @@ function renderWorkspaceReleaseRegistry(workspace) {
   const streamNames = new Map((workspace?.streams ?? []).map((stream) => [stream.id, stream.name]));
   const conflictingChangeIds = new Set((registry?.conflicts ?? [])
     .flatMap((conflict) => conflict.changes ?? []).map((change) => change.id));
-  workspaceReleaseRegistry.hidden = workspaceCardMode === "create";
-  if (workspaceCardMode === "create") return;
+  const releaseWorkflowIsEnabled = workspaceCardReleaseWorkflow?.checked === true;
+  const hasPendingReleaseEntries = workspaceReleaseWorkflow.pendingCount(registry) > 0;
+  workspaceReleaseRegistry.hidden = workspaceCardMode === "create"
+    || (!releaseWorkflowIsEnabled && !hasPendingReleaseEntries);
+  if (workspaceReleaseRegistry.hidden) return;
   if (!registry) {
     workspaceReleaseSummary.textContent = "Загрузка…";
     workspaceReleaseList.replaceChildren(el("p", { class: "workspace-release-empty", text: "Загрузка реестра…" }));
@@ -3128,6 +3141,8 @@ function openWorkspaceCard(workspaceId) {
   workspaceCardComment.value = String(workspace.comment ?? "");
   workspaceCardWorkingDirectory.value = String(workspace.settings?.workingDirectory ?? "");
   workspaceCardRules.value = entityAgentRules(workspace);
+  workspaceCardReleaseWorkflow.checked = workspace.settings?.releaseWorkflowEnabled === true;
+  workspaceReleaseDiscardConfirmed = false;
   updateAgentRulesLimit(workspaceCardRules, workspaceCardRulesCount);
   renderWorkspaceReleaseRegistry(workspace);
   workspaceCardOrder.max = String(order.length);
@@ -3150,6 +3165,8 @@ function openNewWorkspaceCard() {
   workspaceCardComment.value = "";
   workspaceCardWorkingDirectory.value = "";
   workspaceCardRules.value = "";
+  workspaceCardReleaseWorkflow.checked = false;
+  workspaceReleaseDiscardConfirmed = false;
   updateAgentRulesLimit(workspaceCardRules, workspaceCardRulesCount);
   renderWorkspaceReleaseRegistry(null);
   workspaceCardOrder.max = String(order.length + 1);
@@ -4526,6 +4543,8 @@ function markdownLink(raw, fileContext = currentFileLinkContext()) {
   const value = source.startsWith("<") && source.endsWith(">")
     ? source.slice(1, -1).trim()
     : source;
+  const taskReferenceLink = TaskReferences.link(value);
+  if (taskReferenceLink) return taskReferenceLink;
   if (/^https?:\/\//iu.test(value)) {
     try {
       return { href: new URL(value).href };
@@ -4607,10 +4626,11 @@ function appendInlineMarkdown(target, source, fileContext = currentFileLinkConte
       if (targetLink) {
         const link = el("a", {
           href: targetLink.href,
-          target: "_blank",
-          rel: "noopener noreferrer",
+          target: targetLink.taskId ? null : "_blank",
+          rel: targetLink.taskId ? null : "noopener noreferrer",
           text: parts[1],
         });
+        if (targetLink.taskId) link.dataset.agentHubTaskReference = targetLink.taskId;
         if (targetLink.localPath) link.dataset.agentHubLocalLink = targetLink.localPath;
         target.append(link);
       } else {
@@ -5118,6 +5138,12 @@ function subagentResponseTitle(message) {
 }
 
 document.addEventListener("click", (event) => {
+  const taskReferenceLink = event.target.closest("a[data-agent-hub-task-reference]");
+  if (taskReferenceLink) {
+    event.preventDefault();
+    TaskReferences.open({ taskId: taskReferenceLink.dataset.agentHubTaskReference });
+    return;
+  }
   const link = event.target.closest("a[data-agent-hub-local-link]");
   if (!link) return;
   event.preventDefault();
@@ -6472,7 +6498,7 @@ document.addEventListener("contextmenu", (event) => {
   const workspaceId = String(workspace.dataset.workspaceHeading ?? workspace.dataset.boardWorkspaceId ?? "");
   openWorkspaceContextMenu(event, workspaceId);
 });
-workspaceCardForm?.addEventListener("submit", (event) => {
+workspaceCardForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
   if (!updateAgentRulesLimit(workspaceCardRules, workspaceCardRulesCount)) {
     workspaceCardRules.reportValidity();
@@ -6489,6 +6515,7 @@ workspaceCardForm?.addEventListener("submit", (event) => {
       comment: workspaceCardComment.value.trim(),
       workingDirectory: workspaceCardWorkingDirectory.value.trim(),
       rules: workspaceCardRules.value,
+      releaseWorkflowEnabled: workspaceCardReleaseWorkflow.checked,
       beforeColumnId: order[targetIndex] ?? null,
     });
     closeWorkspaceCard();
@@ -6496,6 +6523,18 @@ workspaceCardForm?.addEventListener("submit", (event) => {
   }
   const workspace = workspaceCatalogItem(workspaceCardId);
   if (!workspace) return closeWorkspaceCard();
+  const releaseWorkflowEnabled = workspaceCardReleaseWorkflow.checked;
+  const registry = workspaceReleaseRegistryByWorkspace.get(workspace.id);
+  if (workspaceReleaseWorkflow.requiresDiscardConfirmation({
+    enabled: releaseWorkflowEnabled,
+    registry,
+    discardConfirmed: workspaceReleaseDiscardConfirmed,
+  })) {
+    if (!await workspaceReleaseDiscardDialog.request({
+      text: workspaceReleaseWorkflow.discardConfirmationText(registry),
+    })) return;
+    workspaceReleaseDiscardConfirmed = true;
+  }
   const columnId = `workspace:${workspace.id}`;
   const remaining = order.filter((id) => id !== columnId);
   const targetIndex = Math.max(0, Math.min(remaining.length, requestedOrder - 1));
@@ -6505,12 +6544,34 @@ workspaceCardForm?.addEventListener("submit", (event) => {
     comment: workspaceCardComment.value.trim(),
     workingDirectory: workspaceCardWorkingDirectory.value.trim(),
     rules: workspaceCardRules.value,
+    releaseWorkflowEnabled,
+    discardReleaseEntries: workspaceReleaseDiscardConfirmed,
     beforeColumnId: remaining[targetIndex] ?? null,
   });
   closeWorkspaceCard();
 });
 workspaceCardRules?.addEventListener("input", () => {
   updateAgentRulesLimit(workspaceCardRules, workspaceCardRulesCount);
+});
+workspaceCardReleaseWorkflow?.addEventListener("change", async () => {
+  const registry = workspaceReleaseRegistryByWorkspace.get(workspaceCardId);
+  if (workspaceCardReleaseWorkflow.checked) {
+    workspaceReleaseDiscardConfirmed = false;
+  } else if (workspaceReleaseWorkflow.requiresDiscardConfirmation({
+    enabled: false,
+    registry,
+    discardConfirmed: workspaceReleaseDiscardConfirmed,
+  })) {
+    if (!await workspaceReleaseDiscardDialog.request({
+      text: workspaceReleaseWorkflow.discardConfirmationText(registry),
+    })) {
+      workspaceCardReleaseWorkflow.checked = true;
+      renderWorkspaceReleaseRegistry(workspaceCatalogItem(workspaceCardId));
+      return;
+    }
+    workspaceReleaseDiscardConfirmed = true;
+  }
+  renderWorkspaceReleaseRegistry(workspaceCatalogItem(workspaceCardId));
 });
 workspaceReleaseList?.addEventListener("change", (event) => {
   const select = event.target.closest("[data-release-change-status]");
@@ -6529,6 +6590,7 @@ workspaceCardModal?.addEventListener("click", (event) => {
 workspaceCardModal?.addEventListener("close", () => {
   workspaceCardId = "";
   workspaceCardMode = "edit";
+  workspaceReleaseDiscardConfirmed = false;
 });
 bugReportAttach?.addEventListener("click", () => bugReportFiles?.click());
 bugReportFiles?.addEventListener("change", () => {
@@ -7568,6 +7630,11 @@ const AgentHub = {
     if (workspaceCardModal?.open && workspaceCardId === id) {
       renderWorkspaceReleaseRegistry(workspaceCatalogItem(id));
     }
+  },
+  confirmWorkspaceReleaseDiscard(details = {}) {
+    return workspaceReleaseDiscardDialog.request({
+      text: workspaceReleaseWorkflow.discardConfirmationText(details),
+    });
   },
   openDialogSettings,
   /** Точечное обновление задачи (статус, время, непрочитанное). */

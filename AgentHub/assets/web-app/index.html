@@ -53,6 +53,7 @@
   <script src="/particle-style-controller.js" defer></script>
   <script src="/side-panel-resizer.js" defer></script>
   <script src="/task-references.js" defer></script>
+  <script src="/workspace-release-workflow.js" defer></script>
   <script src="/app.js" defer></script>
   <script src="/pre-turn-instructions-editor.js" defer></script>
   <script src="/root-agents-editor.js" defer></script>
@@ -805,12 +806,28 @@
             <output data-workspace-card-rules-count>0 / 32 КиБ</output>
           </span>
         </label>
+        <div class="workspace-release-workflow-setting">
+          <label class="setting-switch workspace-release-workflow-switch">
+            <input type="checkbox" data-workspace-release-workflow>
+            <span class="switch-text">Релизный процесс</span>
+            <span class="switch-track" aria-hidden="true"></span>
+          </label>
+          <button type="button" class="workspace-release-workflow-help"
+            aria-label="Что включает релизный процесс"
+            aria-describedby="workspace-release-workflow-tooltip">?</button>
+          <div id="workspace-release-workflow-tooltip" class="workspace-release-workflow-tooltip" role="tooltip">
+            <p>Этот Workspace использует многопоточный релизный процесс.</p>
+            <p>Эти правила являются специальной политикой Workspace и имеют приоритет над конфликтующими правилами репозитория, включая общие указания автоматически выполнять commit или push.</p>
+            <p>Не запускать тесты и сборку, не создавать commit, не выполнять push и не развёртывать в production, пока пользователь явно не запросит это действие или релиз в текущей задаче.</p>
+            <p>Разрешение на релиз относится только к явно запрошенному релизу. После его завершения оно не разрешает последующие commit, push, тесты, сборку или deployment; для них нужен новый явный запрос пользователя.</p>
+          </div>
+        </div>
         <section class="workspace-release-registry" data-workspace-release-registry>
           <div class="workspace-release-heading">
             <span>Изменения к релизу</span>
             <output data-workspace-release-summary></output>
           </div>
-          <p>Hub создаёт черновик из Git diff завершённого хода.</p>
+          <p>При включённом релизном процессе Hub регистрирует изменения завершённых ходов.</p>
           <div class="workspace-release-list" data-workspace-release-list></div>
         </section>
         <label>
@@ -823,6 +840,19 @@
         <button type="submit" class="board-task-primary" data-workspace-card-submit>Сохранить</button>
       </footer>
     </form>
+  </dialog>
+
+  <dialog class="task-delete-modal workspace-release-discard-modal"
+    data-workspace-release-discard-modal aria-labelledby="workspace-release-discard-title">
+    <section>
+      <p class="eyebrow">Релизный процесс</p>
+      <h2 id="workspace-release-discard-title">Удалить зарегистрированные изменения?</h2>
+      <p data-workspace-release-discard-message></p>
+    </section>
+    <footer>
+      <button type="button" class="board-task-quiet" data-workspace-release-discard-cancel>Отмена</button>
+      <button type="button" class="task-delete-confirm" data-workspace-release-discard-confirm>Отключить и удалить</button>
+    </footer>
   </dialog>
 
   <!-- ================================================= Отдельное представление: журнал === -->

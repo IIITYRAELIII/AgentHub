@@ -205,7 +205,11 @@ export class RunJournalService {
     const result = !workLogId
       ? await this.usageStore.recordAutomaticAndProject(fields)
       : await this.usageStore.recordAndProject({ ...fields, workLogId });
-    if (Array.isArray(completion.changedFiles) && completion.changedFiles.length) {
+    const releaseWorkflowEnabled = this.workspaceCatalogStore?.releaseWorkflowEnabledForThread?.({
+      provider: completion.provider,
+      threadId: completion.threadId,
+    }) === true;
+    if (releaseWorkflowEnabled && Array.isArray(completion.changedFiles) && completion.changedFiles.length) {
       const diffHash = completion.diff
         ? createHash("sha256").update(String(completion.diff)).digest("hex")
         : "";

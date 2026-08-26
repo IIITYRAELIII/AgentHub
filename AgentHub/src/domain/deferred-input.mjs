@@ -127,6 +127,13 @@ export function restoreDeferredInput(item, {
   // durable input for an explicit retry, but never restore a transient UI
   // "sending" state after the process that owned it has gone away.
   const { manualAction: _manualAction, ...restoredItem } = candidate;
+  if (
+    restoredItem.waitReason === "provider-start-unconfirmed"
+    && restoredItem.dispatchingAt
+    && restoredItem.clientUserMessageId
+  ) {
+    return { destination: "queued", item: restoredItem };
+  }
   if (restoredItem.conflictKind !== "repository") {
     return { destination: "pending", item: restoredItem };
   }

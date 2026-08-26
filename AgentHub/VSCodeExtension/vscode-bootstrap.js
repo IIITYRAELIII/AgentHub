@@ -308,6 +308,8 @@ async function streamDirectEvents() {
 
 window.__agentHubDirectTransport = {
   available: async () => Boolean(activeDirectSession() ?? await ensureDirectSession()),
+  ready: () => Boolean(activeDirectSession()),
+  warmup: () => { void ensureDirectSession(); },
 };
 
 void ensureDirectSession().then((session) => {

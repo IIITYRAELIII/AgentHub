@@ -41,7 +41,7 @@
       "id": "REL-001",
       "title": "Logical release ChangeSet",
       "document": "REL-001-logical-changeset.md",
-      "paths": ["src/application/workspace-release-service.mjs", "src/application/run-journal-service.mjs", "src/application/hub-mcp-service.mjs", "src/application/release-change-set*.mjs", "src/application/legacy-release-change-classifier.mjs", "src/domain/release-change-set.mjs", "src/infrastructure/persistence/workspace-catalog-store.mjs", "src/infrastructure/persistence/release-publication-verifier.mjs", "src/infrastructure/filesystem/task-git-diff.mjs", "src/infrastructure/filesystem/legacy-release-file-probe.mjs", "src/infrastructure/filesystem/release-change-set-git-verifier.mjs", "release-registry-cli.mjs"]
+      "paths": ["src/application/workspace-release-service.mjs", "src/application/run-journal-service.mjs", "src/application/hub-mcp-service.mjs", "src/application/release-change-set*.mjs", "src/application/legacy-release-change-classifier.mjs", "src/domain/release-change-set.mjs", "src/domain/workspace-release-workflow.mjs", "src/infrastructure/persistence/workspace-catalog-store.mjs", "src/infrastructure/persistence/release-publication-verifier.mjs", "src/infrastructure/filesystem/task-git-diff.mjs", "src/infrastructure/filesystem/legacy-release-file-probe.mjs", "src/infrastructure/filesystem/release-change-set-git-verifier.mjs", "release-registry-cli.mjs"]
     }
   ]
 }

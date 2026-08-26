@@ -212,7 +212,7 @@
     if (refreshTimer != null) window.clearTimeout(refreshTimer);
     const delay = Math.max(1_000, sessionExpiresAt - Date.now() - SESSION_REFRESH_MARGIN_MS);
     refreshTimer = window.setTimeout(() => {
-      void ensureSession(true).catch((error) => showPairing(error.message));
+      void ensureSession(true).catch(reportAuthenticationFailure);
     }, delay);
   }
 
@@ -242,15 +242,30 @@
     resolveReady();
   }
 
-  async function ensureSession(force = false, reportProgress = null) {
-    if (!force && sessionActive && sessionExpiresAt - Date.now() > SESSION_REFRESH_MARGIN_MS) return;
-    if (!credential) throw new Error("Браузер ещё не добавлен в доверенные устройства");
+  function reportAuthenticationFailure(error) {
+    if (sessionActive && sessionExpiresAt > Date.now()) return;
+    showPairing(String(error?.message ?? error));
+  }
+
+  function startAuthentication(reportProgress = null) {
+    if (!credential) return Promise.reject(new Error("Браузер ещё не добавлен в доверенные устройства"));
     if (!authentication) {
       authentication = authenticate(credential, reportProgress).finally(() => {
         authentication = null;
       });
     }
     return authentication;
+  }
+
+  async function ensureSession(force = false, reportProgress = null) {
+    const remainingMs = sessionExpiresAt - Date.now();
+    if (!force && sessionActive && remainingMs > 0) {
+      if (remainingMs <= SESSION_REFRESH_MARGIN_MS) {
+        void startAuthentication().catch(reportAuthenticationFailure);
+      }
+      return;
+    }
+    return startAuthentication(reportProgress);
   }
 
   function elements() {

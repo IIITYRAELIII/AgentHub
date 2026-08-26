@@ -14,6 +14,13 @@ export function isRetryableDeferredLaunchError(error) {
   return /(?:codex )?app-server (?:stopped|is not running)|write EPIPE|broken pipe|thread\s+\S+\s+already has an active writer/i.test(message);
 }
 
+export function isUnconfirmedDeferredLaunchError(error) {
+  const code = String(error?.code ?? "").trim().toUpperCase();
+  return code === "ERR_CODEX_TURN_START_UNCONFIRMED"
+    || error?.deliveryOutcome === "unknown"
+    || error?.uncertain === true;
+}
+
 export function deferredLaunchWaitReason(error) {
   if (String(error?.code ?? "").trim().toUpperCase() === CONTEXT_MAINTENANCE_ACTIVE_ERROR_CODE) {
     return "context-maintenance";
@@ -43,6 +50,7 @@ export class DeferredInputController {
     expire = async () => {},
     isRetryableLaunchError = isRetryableDeferredLaunchError,
     maxAgeMs = 7 * 24 * 60 * 60 * 1000,
+    providerReconciliationMaxAgeMs = 5 * 60 * 1000,
     now = Date.now,
     retryDelayMs = 2_000,
     maxRetryDelayMs = 30_000,
@@ -66,6 +74,10 @@ export class DeferredInputController {
     this.expire = expire;
     this.isRetryableLaunchError = isRetryableLaunchError;
     this.maxAgeMs = maxAgeMs;
+    this.providerReconciliationMaxAgeMs = Math.max(
+      Number(retryDelayMs) || 2_000,
+      Number(providerReconciliationMaxAgeMs) || 5 * 60 * 1000,
+    );
     this.now = now;
     this.retryDelayMs = retryDelayMs;
     this.maxRetryDelayMs = maxRetryDelayMs;
@@ -133,10 +145,47 @@ export class DeferredInputController {
       if (recoveredRun) {
         this.queuedInputs.delete(id);
         delete item.dispatchingAt;
+        delete item.lastError;
+        delete item.lastAttemptAt;
+        delete item.waitReason;
+        delete item.providerReconciliationStartedAt;
+        delete item.providerReconciliationChecks;
         this.onStateChange(item, "started", recoveredRun);
         await this.persist();
         await this.updateMessage(item, `▶️ Сообщение из очереди уже выполняется в потоке «${item.taskTitle}».`);
         this.scheduleNextForTask(item);
+        return;
+      }
+      if (item.waitReason === "provider-start-unconfirmed") {
+        const reconciliationStartedAt = Date.parse(String(item.providerReconciliationStartedAt ?? ""));
+        const reconciliationAgeMs = Number.isFinite(reconciliationStartedAt)
+          ? this.now() - reconciliationStartedAt
+          : 0;
+        if (reconciliationAgeMs < this.providerReconciliationMaxAgeMs) {
+          item.providerReconciliationChecks = Number(item.providerReconciliationChecks ?? 0) + 1;
+          this.onStateChange(item, "reconciling");
+          await this.persist();
+          this.schedule(item, Math.min(
+            this.maxRetryDelayMs,
+            this.retryDelayMs * (2 ** Math.min(item.providerReconciliationChecks - 1, 4)),
+          ));
+          return;
+        }
+        delete item.dispatchingAt;
+        delete item.waitReason;
+        delete item.providerReconciliationStartedAt;
+        delete item.providerReconciliationChecks;
+        item.lastError = "Codex не подтвердил запуск; автоматический повтор не выполнялся.";
+        this.queuedInputs.delete(id);
+        this.pendingInputs.set(id, item);
+        this.onStateChange(item, "pending");
+        await this.persist();
+        await this.updateMessage(
+          item,
+          `⚠️ ${item.lastError}\n\nСообщение сохранено. Выберите дальнейшее действие:`,
+          this.pendingKeyboard(item),
+        );
+        await this.notifyReturned(item);
         return;
       }
       if (item.dispatchingAt) {
@@ -177,12 +226,13 @@ export class DeferredInputController {
           metadata: { runId: started?.id ?? started?.run?.id ?? null },
         });
       } catch (error) {
+        const unconfirmed = isUnconfirmedDeferredLaunchError(error);
+        const retryable = !unconfirmed && this.isRetryableLaunchError(error, item);
         dispatchSpan?.finish({
-          outcome: this.isRetryableLaunchError(error, item) ? "queued" : "failed",
+          outcome: unconfirmed ? "unknown" : retryable ? "queued" : "failed",
           queueDepth: this.queuedInputs.size,
           metadata: { errorCode: error?.code ?? null },
         });
-        const retryable = this.isRetryableLaunchError(error, item);
         const waitReason = retryable
           ? deferredLaunchWaitReason(error) ?? "provider-temporarily-unavailable"
           : null;
@@ -192,9 +242,19 @@ export class DeferredInputController {
             return;
           }
         }
-        delete item.dispatchingAt;
         item.lastAttemptAt = new Date(this.now()).toISOString();
         item.attempts = Number(item.attempts ?? 0) + 1;
+        if (unconfirmed) {
+          item.waitReason = "provider-start-unconfirmed";
+          item.providerReconciliationStartedAt ||= item.lastAttemptAt;
+          item.providerReconciliationChecks = 0;
+          item.lastError = String(error.message ?? error);
+          this.onStateChange(item, "reconciling", error);
+          await this.persist();
+          this.schedule(item, this.retryDelayMs);
+          return;
+        }
+        delete item.dispatchingAt;
         if (retryable) {
           delete item.lastError;
           item.waitReason = waitReason;

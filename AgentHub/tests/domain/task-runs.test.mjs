@@ -208,18 +208,39 @@ test("selected external task is observed automatically only while its turn is ac
   }), false);
   assert.equal(shouldAutoObserveTask({
     task,
-    snapshot: { active: true, turnId: "new-external-turn" },
+    snapshot: { active: true, turnId: "new-external-turn", prompt: "Внешний вопрос" },
     lastSeenTurnId: "managed-turn",
   }), true);
   assert.equal(shouldAutoObserveTask({
     task,
+    snapshot: { active: true, turnId: "compaction-turn" },
+  }), false);
+  assert.equal(shouldAutoObserveTask({
+    task,
+    snapshot: {
+      active: true,
+      turnId: "probe-turn",
+      prompt: "Ответь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1",
+      clientUserMessageId: "agent-hub-context-probe:test",
+    },
+  }), false);
+  assert.equal(shouldAutoObserveTask({
+    task,
+    snapshot: {
+      active: true,
+      turnId: "manual-probe-text-turn",
+      prompt: "Ответь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1",
+    },
+  }), true);
+  assert.equal(shouldAutoObserveTask({
+    task,
     selectedTask: { ...task, threadId: "thread-2" },
-    snapshot: { active: true, turnId: "new-external-turn" },
+    snapshot: { active: true, turnId: "new-external-turn", prompt: "Внешний вопрос" },
   }), false);
   assert.equal(shouldAutoObserveTask({
     task: { ...task, streamId: "stream-1" },
     selectedTask: { ...task, streamId: "stream-1", threadId: "thread-2" },
-    snapshot: { active: true, turnId: "new-external-turn" },
+    snapshot: { active: true, turnId: "new-external-turn", prompt: "Внешний вопрос" },
   }), false);
 });
 

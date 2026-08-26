@@ -92,7 +92,8 @@ let activeRunClientUserMessageIds = new Set();
 let messageRenderBatchDepth = 0;
 const MAX_OUTGOING_MESSAGES_PER_TASK = 100;
 const acknowledgedFinalByTask = new Map();
-const { projectCanonicalMessages } = window.AgentHubMessageProjection;
+const workspaceReleaseWorkflow = window.AgentHubWorkspaceReleaseWorkflow;
+const { isUserRunningProjection, projectCanonicalMessages } = window.AgentHubMessageProjection;
 const {
   activeRunMessageReceipts,
   activeStageLabel,
@@ -103,7 +104,6 @@ const {
   conversationTaskId,
   completedConversationTurnVisible,
   confirmedOutgoingMessageIds,
-  contextProbeRun,
   conversationMessageAuthor,
   deduplicateConversationMessages,
   displayedFinalAcknowledgement,
@@ -713,7 +713,12 @@ function rememberSnapshotCompletion(taskIdValue, selected, incomingTurnId = "") 
     turnId: completion.turnId,
     answer: completion.answer,
     requireAgent: true,
-  })) return false;
+  })) {
+    const overlays = completionOverlaysByTask.get(taskIdValue);
+    if (!overlays?.delete(completion.turnId)) return false;
+    if (!overlays.size) completionOverlaysByTask.delete(taskIdValue);
+    return true;
+  }
   const overlays = completionOverlaysByTask.get(taskIdValue) ?? new Map();
   const existing = overlays.get(completion.turnId);
   const replacement = snapshotCompletionReplacement(existing, completion);
@@ -857,20 +862,28 @@ function syncHistoryPagination(taskIdValue) {
 }
 
 function updateLiveMessage(taskIdValue, selected) {
-  // A terminal snapshot may retain the completed run for diagnostics. It must
-  // not be treated as an incoming active turn, otherwise its commentary card
-  // masks the final answer until the chat is reopened.
+  // Only an explicitly classified user turn may own the live card. Internal or
+  // unknown projections must also clear a previously cached card so a hidden
+  // probe cannot keep later user input queued behind false activity.
   const run = activeTaskRun(selected);
-  if (contextProbeRun(run)) {
+  if (run && !isUserRunningProjection({ ...run, projectionState: "active" })) {
+    const promoted = promoteLiveCompletion(taskIdValue, selected, run.turnId);
+    const snapshotCompletionRemembered = rememberSnapshotCompletion(taskIdValue, selected, run.turnId);
     clearInternalContextProbe(taskIdValue);
+    if (promoted || snapshotCompletionRemembered) renderTaskMessages(taskIdValue);
     return null;
   }
   const promoted = promoteLiveCompletion(taskIdValue, selected, run?.turnId);
   const snapshotCompletionRemembered = rememberSnapshotCompletion(taskIdValue, selected, run?.turnId);
   if (!run) {
+    const previousLive = liveCardsByTask.get(taskIdValue);
+    const staleLiveRemoved = previousLive
+      && !isUserRunningProjection(previousLive)
+      ? liveCardsByTask.delete(taskIdValue)
+      : false;
     const removed = liveProbeByTask.delete(taskIdValue);
     const userRemoved = liveUserMessagesByTask.delete(taskIdValue);
-    if (promoted || snapshotCompletionRemembered || removed || userRemoved) {
+    if (promoted || snapshotCompletionRemembered || staleLiveRemoved || removed || userRemoved) {
       renderTaskMessages(taskIdValue);
     }
     return liveCardsByTask.get(taskIdValue) ?? null;
@@ -1013,12 +1026,17 @@ function bridgeCall(action, params = {}) {
   );
 }
 
-async function hubFetch(input, init) {
+async function hubFetch(input, init, retrySession = true) {
   try {
     // Refreshing the session re-issues the HttpOnly cookie that the request below
     // carries automatically as a same-origin request.
     await window.AgentHubBrowserDevice?.ensureSession?.();
-    return await fetch(input, init);
+    const response = await fetch(input, init);
+    if (response.status !== 401 || !retrySession || !window.AgentHubBrowserDevice?.ensureSession) {
+      return response;
+    }
+    await window.AgentHubBrowserDevice.ensureSession(true);
+    return hubFetch(input, init, false);
   } catch (error) {
     throw markConnectionFailure(error);
   }
@@ -1226,9 +1244,15 @@ async function prepareSnapshotTransport() {
 
 async function control(action, params = {}) {
   const directTransport = window.__agentHubDirectTransport;
-  const directAvailable = vscode && directTransport
-    ? await directTransport.available()
-    : false;
+  let directAvailable = false;
+  if (vscode && directTransport) {
+    if (typeof directTransport.ready === "function") {
+      directAvailable = directTransport.ready() === true;
+      if (!directAvailable) directTransport.warmup?.();
+    } else {
+      directAvailable = await directTransport.available();
+    }
+  }
   const bridged = directAvailable ? null : bridgeCall(action, params);
   if (bridged) return bridged;
   if (action === "snapshot") return readSnapshot(params);
@@ -2659,6 +2683,7 @@ agentHub.on("message:send", (request) => {
         deliveryPatch(rejected ? "rejected" : "unconfirmed"),
       );
       renderOutgoingWithoutBlockingSend(request.taskId, { queue: queuesOptimistically });
+      if (!rejected) void refresh();
     },
     synchronizationFailed: (error) => {
       console.error("Agent Hub accepted a message but could not refresh its card", error);
@@ -2704,11 +2729,16 @@ agentHub.on("task:rename", ({ id, title }) => runAction(async () => {
 agentHub.on("workspace:rename", ({ workspaceId, name }) => runAction(async () => applySnapshot(
   await control("rename-workspace", { workspaceId, name }),
 )));
-agentHub.on("workspace:create", ({ name, comment, workingDirectory, rules, beforeColumnId }) => runAction(async () => {
+agentHub.on("workspace:create", ({
+  name, comment, workingDirectory, rules, releaseWorkflowEnabled, beforeColumnId,
+}) => runAction(async () => {
   let snapshot = await control("create-workspace", {
     name,
     comment,
-    settings: { workingDirectory: String(workingDirectory ?? "").trim() },
+    settings: {
+      workingDirectory: String(workingDirectory ?? "").trim(),
+      releaseWorkflowEnabled: releaseWorkflowEnabled === true,
+    },
   });
   const workspaceId = snapshot.createdWorkspace?.workspace?.id;
   if (workspaceId) {
@@ -2723,7 +2753,8 @@ agentHub.on("workspace:create", ({ name, comment, workingDirectory, rules, befor
   applySnapshot(snapshot);
 }));
 agentHub.on("workspace:update", ({
-  workspaceId, name, comment, workingDirectory, rules, beforeColumnId,
+  workspaceId, name, comment, workingDirectory, rules, releaseWorkflowEnabled,
+  discardReleaseEntries = false, beforeColumnId,
 }) => runAction(async () => {
   if (!lastSnapshot?.boardLayout) {
     agentHub.toast("Agent Hub завершает обновление runtime. Повторите действие через минуту.");
@@ -2731,18 +2762,39 @@ agentHub.on("workspace:update", ({
   }
   const workspace = (lastSnapshot.workspaces ?? []).find((item) => item.id === workspaceId);
   let snapshot = lastSnapshot;
+  const nextSettings = {
+    ...(workspace?.settings ?? {}),
+    workingDirectory: String(workingDirectory ?? "").trim(),
+    releaseWorkflowEnabled: releaseWorkflowEnabled === true,
+  };
+  const settingsChanged = nextSettings.workingDirectory !== String(workspace?.settings?.workingDirectory ?? "")
+    || nextSettings.releaseWorkflowEnabled !== (workspace?.settings?.releaseWorkflowEnabled === true)
+    || discardReleaseEntries === true
+    || releaseWorkflowEnabled !== true;
+  if (settingsChanged) {
+    snapshot = await control("update-workspace-settings", {
+      workspaceId,
+      settings: nextSettings,
+      discardReleaseEntries: discardReleaseEntries === true,
+    });
+    const update = snapshot.workspaceSettingsUpdate?.releaseWorkflowUpdate;
+    if (update?.requiresDiscardConfirmation) {
+      if (!await agentHub.confirmWorkspaceReleaseDiscard(update)) {
+        applySnapshot(snapshot);
+        return;
+      }
+      snapshot = await control("update-workspace-settings", {
+        workspaceId,
+        settings: nextSettings,
+        discardReleaseEntries: true,
+      });
+    }
+  }
   if (workspace?.kind !== "system" && name !== workspace?.name) {
     snapshot = await control("rename-workspace", { workspaceId, name });
   }
   if (comment !== String(workspace?.comment ?? "")) {
     snapshot = await control("board-column-comment", { columnId: `workspace:${workspaceId}`, comment });
-  }
-  const nextSettings = {
-    ...(workspace?.settings ?? {}),
-    workingDirectory: String(workingDirectory ?? "").trim(),
-  };
-  if (nextSettings.workingDirectory !== String(workspace?.settings?.workingDirectory ?? "")) {
-    snapshot = await control("update-workspace-settings", { workspaceId, settings: nextSettings });
   }
   const currentRuleValue = workspace?.developerRules ?? workspace?.rules;
   const currentRules = typeof currentRuleValue === "string"

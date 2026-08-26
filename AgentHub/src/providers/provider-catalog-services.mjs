@@ -34,7 +34,16 @@ export class CodexCatalogProjectionService {
         const activity = await d.readActivity(thread.path);
         let rolloutRunning = activity.running;
         const existingRun = d.runForTask({ provider: "codex", projectRoot: project.path, threadId: thread.id });
-        const activeTurnId = existingRun?.turnId ?? d.selectActiveTurnId(activity);
+        const ignoredTurnIds = new Set(
+          (activity.internalTurnIds ?? []).map((turnId) => String(turnId ?? "").trim()).filter(Boolean),
+        );
+        const selectedTurnId = String(
+          existingRun?.turnId ?? d.selectActiveTurnId(activity) ?? "",
+        ).trim();
+        const activeTurnId = selectedTurnId && !ignoredTurnIds.has(selectedTurnId)
+          ? selectedTurnId
+          : null;
+        if (!activeTurnId) rolloutRunning = false;
         const capturedOwner = d.capturedOwner(thread.id, activeTurnId);
         if (rolloutRunning && activity.running && existingRun?.observer !== false) {
           rolloutRunning = await d.runtimeActive(activity, {
@@ -55,7 +64,8 @@ export class CodexCatalogProjectionService {
           .filter(Number.isFinite);
         const entry = d.catalogEntry(thread, project, {
           rolloutRunning,
-          ignoredTurnIds: activity.internalTurnIds ?? [],
+          activeTurnId,
+          ignoredTurnIds: [...ignoredTurnIds],
           executionOwner: rolloutRunning ? executionOwner : null,
           model: activity.model ? d.modelLabel(activity.model) : existingRun?.model ?? null,
           lastActivityAtMs: activity.lastActivityAtMs,

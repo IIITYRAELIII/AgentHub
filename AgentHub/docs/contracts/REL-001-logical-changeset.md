@@ -30,12 +30,24 @@ event records the verification result, verifier version and Git version.
   integration worktree. The legacy shared tree remains a migration mode, not the
   target architecture.
 
+## Workspace activation
+
+Release registration is opt-in per Workspace. The durable Workspace setting
+`releaseWorkflowEnabled=true` is the only activation source for both terminal
+change registration and the built-in release-oriented developer policy. A
+disabled Workspace records neither legacy release entries nor ChangeSet turn
+observations. Disabling with active registrations requires explicit user
+confirmation and atomically marks active legacy entries and ChangeSets
+`discarded`; released history remains immutable.
+
 ## Phase 1 compatibility boundary
 
 The existing `hub_release_changes` registry and release plan remain the only
-publication source. Terminal projection dual-writes a `TurnObservation` into the
-new ledger but never marks its ChangeSet ready. Existing legacy statuses are not
-migrated or changed automatically.
+publication source. In an enabled Workspace, terminal projection dual-writes a
+`TurnObservation` into the new ledger but never marks its ChangeSet ready.
+Existing legacy statuses are not migrated automatically except when the user
+explicitly disables the Workspace release workflow and confirms discarding all
+active release registrations.
 
 Publication verifies cleanliness only for the exact paths declared by the frozen
 release plan. Unrelated dirty paths in a shared repository do not block the

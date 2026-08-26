@@ -62,3 +62,31 @@ test("Task drag uses only its private MIME and survives an empty Edge transfer v
   assert.equal(references.hasTransfer(dataTransfer), false);
   assert.equal(references.fromTransfer(dataTransfer), null);
 });
+
+test("Dashboard Task URI becomes an internal card link", async () => {
+  const references = await referencesView();
+  const taskId = "bdcaff6a-c7e9-488f-b772-647ee8359922";
+
+  assert.equal(references.link("[invalid]"), null);
+  assert.deepEqual(
+    { ...references.link(`agent-hub://task/${taskId}`) },
+    { href: `agent-hub://task/${taskId}`, taskId },
+  );
+  assert.equal(references.link("agent-hub://stream/not-a-task"), null);
+});
+
+test("Dashboard Task link dispatches the exact card-open identity", async () => {
+  const references = await referencesView();
+  const events = [];
+  const taskId = "bdcaff6a-c7e9-488f-b772-647ee8359922";
+
+  assert.equal(references.open(`agent-hub://task/${taskId}`, {
+    dispatch: (type, detail) => events.push({ type, detail }),
+  }), true);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].type, "agenthub:task-reference-open");
+  assert.equal(events[0].detail.taskId, taskId);
+  assert.equal(references.open("agent-hub://task/%E0%A4%A", {
+    dispatch: () => assert.fail("invalid URI must not dispatch"),
+  }), false);
+});

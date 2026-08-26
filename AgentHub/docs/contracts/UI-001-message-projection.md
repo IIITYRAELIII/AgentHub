@@ -28,7 +28,9 @@ Terminal states are absorbing. For one provider-turn identity, a committed
 `terminalRevision` wins over every late active/progress/reconnect observation;
 lower or duplicate revisions cannot revive the turn. A known positive revision
 also absorbs later legacy revision `0`, while a positive revision may upgrade
-legacy revision `0`. `unknown` is a distinct state and is never projected as active.
+legacy revision `0`. At the same revision, the durable canonical projection wins
+over a temporary terminal overlay; a higher overlay revision still wins over
+older durable history. `unknown` is a distinct state and is never projected as active.
 The client considers final content caught up only on exact text equality for the
 exact provider turn. Prefix equality never proves that a complete final was
 rendered and cannot stop history refresh or remove a completion overlay.

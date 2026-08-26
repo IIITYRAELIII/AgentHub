@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { DeferredInputPresentationService } from "../../../src/interfaces/desktop/deferred-input-presentation-service.mjs";
+import { MessageReceiptRegistry } from "../../../src/infrastructure/persistence/message-receipts.mjs";
 
 function fixture() {
   const updates = [];
@@ -46,20 +47,45 @@ test("started deferred input becomes one accepted receipt with preserved attachm
   assert.deepEqual(setup.updates[0].result.attachments, [{ path: "shot.png" }]);
 });
 
-test("dispatching and pending states cannot look sent or completed", () => {
+test("deferred state transitions never regress an existing durable acceptance", () => {
   const setup = fixture();
   setup.value.updateDesktopReceipt(item, "dispatching");
+  setup.value.updateDesktopReceipt(item, "reconciling");
   setup.value.updateDesktopReceipt(item, "pending");
   assert.deepEqual(setup.updates.map(({ result }) => ({
-    accepted: result.accepted,
+    overwritesAccepted: Object.hasOwn(result, "accepted"),
     deferred: result.deferred,
     queued: result.queued,
     dispatching: result.dispatching,
     reason: result.reason,
   })), [
-    { accepted: false, deferred: true, queued: true, dispatching: true, reason: "task-running" },
-    { accepted: false, deferred: true, queued: false, dispatching: false, reason: "launch-failed" },
+    { overwritesAccepted: false, deferred: true, queued: true, dispatching: true, reason: "task-running" },
+    { overwritesAccepted: false, deferred: true, queued: true, dispatching: true, reason: "provider-start-unconfirmed" },
+    { overwritesAccepted: false, deferred: true, queued: false, dispatching: false, reason: "launch-failed" },
   ]);
+  assert.match(setup.updates[1].result.message, /без повторной отправки/u);
+});
+
+test("durable acceptance stays true through provider-start reconciliation", () => {
+  const receipts = new MessageReceiptRegistry();
+  const identity = {
+    provider: item.provider,
+    threadId: item.threadId,
+    clientUserMessageId: item.clientUserMessageId,
+  };
+  receipts.reserve(identity, "fingerprint", { accepted: true, deferred: true, queued: true });
+  const service = new DeferredInputPresentationService({
+    telegram: async () => {},
+    receipts,
+    describeAttachments: () => [],
+  });
+
+  service.updateDesktopReceipt(item, "dispatching");
+  service.updateDesktopReceipt(item, "reconciling");
+  service.updateDesktopReceipt(item, "pending");
+
+  assert.equal(receipts.get(identity).result.accepted, true);
+  assert.equal(receipts.get(identity).result.reason, "launch-failed");
 });
 
 test("Telegram card update keeps the exact deferred message address", async () => {

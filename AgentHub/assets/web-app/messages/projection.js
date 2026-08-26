@@ -104,7 +104,7 @@
 
   function authorityRank(value) {
     const authority = text(value?.projectionAuthority).toLowerCase();
-    return authority === "terminal" ? 3 : authority === "canonical" ? 2 : authority === "live" ? 1 : 0;
+    return authority === "canonical" ? 3 : authority === "terminal" ? 2 : authority === "live" ? 1 : 0;
   }
 
   function preserveIdentityAliases(current, incoming) {

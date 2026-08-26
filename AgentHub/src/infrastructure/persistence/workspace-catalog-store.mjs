@@ -20,6 +20,13 @@ import {
   normalizedDashboardTaskId,
   normalizedReleaseBatch,
 } from "../../domain/release-change-set.mjs";
+import {
+  effectiveWorkspaceDeveloperRules,
+  legacyReleaseWorkflowRules,
+  RELEASE_WORKFLOW_SETTING,
+  releaseWorkflowEnabled,
+  workspaceSettingsWithReleaseWorkflow,
+} from "../../domain/workspace-release-workflow.mjs";
 
 const SCHEMA_VERSION = 10;
 export const DEVELOPER_RULES_MAX_BYTES = 32 * 1024;
@@ -606,6 +613,7 @@ export class WorkspaceCatalogStore {
 
   async load() {
     await this.#open();
+    this.#migrateReleaseWorkflowSettings();
     this.ensureExperiments();
     return this;
   }
@@ -674,6 +682,37 @@ export class WorkspaceCatalogStore {
     );
   }
 
+  #migrateReleaseWorkflowSettings() {
+    const rows = this.#database.prepare("SELECT id, settings_json FROM hub_workspaces").all();
+    const pending = rows.filter((row) => {
+      try {
+        const settings = JSON.parse(String(row.settings_json ?? "{}"));
+        return typeof settings?.[RELEASE_WORKFLOW_SETTING] !== "boolean";
+      } catch {
+        return true;
+      }
+    });
+    if (!pending.length) return;
+    this.#transaction(() => {
+      const update = this.#database.prepare(`
+        UPDATE hub_workspaces SET settings_json = ? WHERE id = ?
+      `);
+      for (const row of pending) {
+        let settings = {};
+        try { settings = JSON.parse(String(row.settings_json ?? "{}")); } catch { settings = {}; }
+        const currentRules = this.#developerRules("workspace", row.id);
+        const migration = legacyReleaseWorkflowRules(currentRules?.content ?? "");
+        update.run(
+          JSON.stringify(workspaceSettingsWithReleaseWorkflow(settings, migration.enabled)),
+          row.id,
+        );
+        if (migration.migrated && migration.content !== currentRules?.content) {
+          this.#updateDeveloperRules("workspace", row.id, migration.content);
+        }
+      }
+    });
+  }
+
   ensureExperiments() {
     const existing = this.#database.prepare(
       "SELECT * FROM hub_workspaces WHERE system_key = ?",
@@ -715,7 +754,10 @@ export class WorkspaceCatalogStore {
       key,
       nowMs,
       nowMs,
-      JSON.stringify(settings ?? {}),
+      JSON.stringify(workspaceSettingsWithReleaseWorkflow(
+        settings,
+        releaseWorkflowEnabled(settings),
+      )),
     );
     return this.workspace(workspaceId);
   }
@@ -742,13 +784,109 @@ export class WorkspaceCatalogStore {
     return this.workspace(id);
   }
 
-  updateWorkspaceSettings(workspaceId, settings = {}) {
+  updateWorkspaceSettings(workspaceId, settings = {}, { discardReleaseEntries = false } = {}) {
     const id = safeIdentifier(workspaceId, "workspace id");
-    if (!this.workspace(id)) throw new Error(`workspace not found: ${id}`);
+    const current = this.workspace(id);
+    if (!current) throw new Error(`workspace not found: ${id}`);
+    const explicitReleaseWorkflow = Object.prototype.hasOwnProperty.call(
+      settings ?? {},
+      RELEASE_WORKFLOW_SETTING,
+    );
+    const enabled = explicitReleaseWorkflow
+      ? releaseWorkflowEnabled(settings)
+      : releaseWorkflowEnabled(current.settings);
+    const nextSettings = workspaceSettingsWithReleaseWorkflow(settings, enabled);
+    const pending = this.#releaseWorkflowPending(id);
+    if (explicitReleaseWorkflow && !enabled && pending.total > 0 && discardReleaseEntries !== true) {
+      return {
+        ...current,
+        releaseWorkflowUpdate: {
+          updated: false,
+          requiresDiscardConfirmation: true,
+          ...pending,
+        },
+      };
+    }
+    return this.#transaction(() => {
+      const discarded = !enabled && discardReleaseEntries === true
+        ? this.#discardReleaseWorkflowEntries(id)
+        : { legacyCount: 0, changeSetCount: 0, total: 0 };
+      this.#database.prepare(`
+        UPDATE hub_workspaces SET settings_json = ?, updated_at_ms = ? WHERE id = ?
+      `).run(JSON.stringify(nextSettings), this.#nowMs(), id);
+      if (discarded.total > 0) {
+        this.recordWorkspaceEvent({
+          workspaceId: id,
+          type: "release.workflow_disabled",
+          subjectId: id,
+          payload: discarded,
+        });
+      }
+      return {
+        ...this.workspace(id),
+        releaseWorkflowUpdate: {
+          updated: true,
+          requiresDiscardConfirmation: false,
+          discarded,
+        },
+      };
+    });
+  }
+
+  releaseWorkflowEnabledForThread(value) {
+    const resolved = this.resolveThread(value);
+    return resolved ? releaseWorkflowEnabled(this.workspace(resolved.workspaceId)?.settings) : false;
+  }
+
+  #releaseWorkflowPending(workspaceId) {
+    const legacyCount = Number(this.#database.prepare(`
+      SELECT COUNT(*) AS value FROM hub_release_changes
+      WHERE workspace_id = ? AND status NOT IN ('released', 'discarded')
+    `).get(workspaceId)?.value) || 0;
+    const changeSetCount = Number(this.#database.prepare(`
+      SELECT COUNT(*) AS value FROM hub_release_change_sets
+      WHERE workspace_id = ? AND status IN ('draft', 'ready')
+    `).get(workspaceId)?.value) || 0;
+    return { legacyCount, changeSetCount, total: legacyCount + changeSetCount };
+  }
+
+  #discardReleaseWorkflowEntries(workspaceId) {
+    const pending = this.#releaseWorkflowPending(workspaceId);
+    if (!pending.total) return pending;
+    const nowMs = this.#nowMs();
+    const changeSets = this.#database.prepare(`
+      SELECT id, owner_stream_id, status FROM hub_release_change_sets
+      WHERE workspace_id = ? AND status IN ('draft', 'ready')
+    `).all(workspaceId);
     this.#database.prepare(`
-      UPDATE hub_workspaces SET settings_json = ?, updated_at_ms = ? WHERE id = ?
-    `).run(JSON.stringify(settings ?? {}), this.#nowMs(), id);
-    return this.workspace(id);
+      UPDATE hub_release_changes SET status = 'discarded', updated_at_ms = ?
+      WHERE workspace_id = ? AND status NOT IN ('released', 'discarded')
+    `).run(nowMs, workspaceId);
+    const discardChangeSet = this.#database.prepare(`
+      UPDATE hub_release_change_sets
+      SET status = 'discarded', release_batch_id = NULL, updated_at_ms = ?
+      WHERE id = ?
+    `);
+    const clearBinding = this.#database.prepare(
+      "DELETE FROM hub_release_change_set_bindings WHERE change_set_id = ?",
+    );
+    for (const changeSet of changeSets) {
+      discardChangeSet.run(nowMs, changeSet.id);
+      clearBinding.run(changeSet.id);
+      this.#recordChangeSetEvent({
+        workspaceId,
+        changeSetId: changeSet.id,
+        actorStreamId: null,
+        type: "changeset.discarded",
+        payload: {
+          fromStatus: String(changeSet.status),
+          toStatus: "discarded",
+          authorizationSource: "workspace-release-workflow",
+          reason: "Workspace release workflow disabled by the user",
+        },
+      });
+    }
+    return pending;
   }
 
   workspaceDeveloperRules(workspaceId) {
@@ -772,6 +910,7 @@ export class WorkspaceCatalogStore {
     const normalizedOwnerStreamId = safeIdentifier(ownerStreamId, "owner Stream id");
     const owner = this.stream(normalizedOwnerStreamId);
     if (!owner || owner.workspaceId !== normalizedWorkspaceId) throw new Error("ChangeSet owner is outside the Workspace");
+    if (!releaseWorkflowEnabled(this.workspace(normalizedWorkspaceId)?.settings)) return null;
     const normalizedProviderIdentity = normalizedThreadIdentity({ provider, threadId });
     const normalizedTurnId = safeIdentifier(turnId, "turn id");
     const normalizedTaskId = normalizedDashboardTaskId(taskId);
@@ -1105,6 +1244,7 @@ export class WorkspaceCatalogStore {
     const normalizedTurnId = safeIdentifier(turnId, "turn id");
     const files = releaseChangeFiles(changedFiles);
     if (!resolved || !files.length) return null;
+    if (!releaseWorkflowEnabled(this.workspace(resolved.workspaceId)?.settings)) return null;
     const normalizedStatus = releaseChangeStatus(status);
     const nowMs = this.#nowMs();
     return this.#transaction(() => {
@@ -1220,12 +1360,15 @@ export class WorkspaceCatalogStore {
 
   releaseRegistry(workspaceId, { limit = 50 } = {}) {
     const allChanges = this.releaseChanges(workspaceId);
+    const pending = this.#releaseWorkflowPending(safeIdentifier(workspaceId, "workspace id"));
     const changes = allChanges.slice(0, Math.max(1, Math.min(100, Number(limit) || 50)));
     const visibleIds = new Set(changes.map((change) => change.id));
     return {
       workspaceId: safeIdentifier(workspaceId, "workspace id"),
       changes,
       total: allChanges.length,
+      changeSetTotal: pending.changeSetCount,
+      pendingTotal: pending.total,
       counts: Object.fromEntries([...RELEASE_CHANGE_STATUSES].map((status) => [
         status, allChanges.filter((change) => change.status === status).length,
       ])),
@@ -1531,8 +1674,24 @@ export class WorkspaceCatalogStore {
     const stream = this.stream(id);
     if (!stream) return { workspace: null, stream: null };
     return {
-      workspace: this.#developerRules("workspace", stream.workspaceId),
+      workspace: this.#effectiveWorkspaceDeveloperRules(stream.workspaceId),
       stream: this.#developerRules("stream", stream.id),
+    };
+  }
+
+  #effectiveWorkspaceDeveloperRules(workspaceId) {
+    const stored = this.#developerRules("workspace", workspaceId);
+    const content = effectiveWorkspaceDeveloperRules(
+      stored?.content ?? "",
+      this.workspace(workspaceId)?.settings,
+    );
+    if (!content) return stored;
+    return {
+      scopeType: "workspace",
+      scopeId: workspaceId,
+      revision: stored?.revision ?? 0,
+      content,
+      createdAtMs: stored?.createdAtMs ?? 0,
     };
   }
 

@@ -1,5 +1,7 @@
 import path from "node:path";
 
+import { isCodexContextProbeTurn } from "./codex-context-probe.mjs";
+
 function normalizedProjectRoot(projectRoot) {
   const resolved = path.resolve(String(projectRoot ?? ""));
   return process.platform === "win32" ? resolved.toLowerCase() : resolved;
@@ -692,6 +694,17 @@ export function shouldAutoObserveTask({
   dismissed = false,
   lastSeenTurnId = null,
 } = {}) {
+  const provider = String(task?.provider ?? "").trim().toLowerCase();
+  const codexHasUserInput = Boolean(
+    String(snapshot?.clientUserMessageId ?? "").trim()
+      || String(snapshot?.prompt ?? "").trim()
+      || (Array.isArray(snapshot?.userMessages) && snapshot.userMessages.some((message) => (
+        String(message?.text ?? "").trim()
+        || String(message?.clientUserMessageId ?? message?.clientId ?? "").trim()
+        || (Array.isArray(message?.attachments) && message.attachments.length)
+      )))
+      || (Array.isArray(snapshot?.items) && snapshot.items.some((item) => item?.type === "userMessage")),
+  );
   return Boolean(
     task?.provider
       && task?.projectRoot
@@ -702,7 +715,11 @@ export function shouldAutoObserveTask({
       // Codex completion is correlated by turn id. An active transport-level
       // snapshot without one can be a short-lived context probe or reconnect
       // state and must not become a task run that blocks normal input.
-      && (String(task.provider).toLowerCase() !== "codex" || snapshot?.turnId)
+      && (provider !== "codex" || (
+        snapshot?.turnId
+        && codexHasUserInput
+        && !isCodexContextProbeTurn(snapshot, { allowTextFallback: false })
+      ))
       && (!snapshot?.turnId || String(snapshot.turnId) !== String(lastSeenTurnId ?? ""))
       && !existingRun
       && !dismissed,

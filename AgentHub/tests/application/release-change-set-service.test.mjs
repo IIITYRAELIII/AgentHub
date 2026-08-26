@@ -21,7 +21,11 @@ async function fixture(context, { verifyFreezeEvidence = async (manifest) => ({
     store.close();
     await rm(directory, { recursive: true, force: true });
   });
-  const workspace = store.createWorkspace({ id: "workspace", name: "Agent HUB" });
+  const workspace = store.createWorkspace({
+    id: "workspace",
+    name: "Agent HUB",
+    settings: { releaseWorkflowEnabled: true },
+  });
   const owner = store.createStream({ id: "owner", workspaceId: workspace.id, name: "Dash" });
   const architect = store.createStream({ id: "architect", workspaceId: workspace.id, name: "Architect" });
   const foreign = store.createStream({ id: "foreign", workspaceId: workspace.id, name: "Other" });

@@ -7,6 +7,7 @@ import {
 
 test("Codex local catalog projection never writes titles through App Server", async () => {
   const titleWrites = [];
+  const catalogOptions = [];
   const service = new CodexCatalogProjectionService({
     backfillPricing: async () => {},
     readTitleHistories: async () => new Map([["thread-1", {
@@ -29,12 +30,15 @@ test("Codex local catalog projection never writes titles through App Server", as
     runtimeActive: async () => false,
     agentHubPid: () => 1,
     resolveOwner: async () => null,
-    catalogEntry: (thread, project) => ({
-      provider: "codex",
-      threadId: thread.id,
-      projectRoot: project.path,
-      title: "Fallback",
-    }),
+    catalogEntry: (thread, project, options) => {
+      catalogOptions.push(options);
+      return {
+        provider: "codex",
+        threadId: thread.id,
+        projectRoot: project.path,
+        title: "Fallback",
+      };
+    },
     modelLabel: (model) => model,
     threadResponseTitle: () => "",
     confirmationKey: () => "codex:thread-1",
@@ -56,7 +60,64 @@ test("Codex local catalog projection never writes titles through App Server", as
   }]);
 
   assert.equal(entries[0].title, "Local title");
+  assert.equal(catalogOptions[0].activeTurnId, null);
   assert.deepEqual(titleWrites, []);
+});
+
+test("Codex catalog projection forwards only an exact non-internal turn identity", async () => {
+  const projectedOptions = [];
+  const dependencies = {
+    backfillPricing: async () => {},
+    readTitleHistories: async () => new Map(),
+    findProject: () => ({ path: "D:/Work" }),
+    rememberRolloutPath() {},
+    readActivity: async () => ({
+      running: true,
+      activeTurnIds: ["user-turn"],
+      internalTurnIds: [],
+      startedAtMsByTurnId: { "user-turn": 10 },
+      lastActivityAtMs: 20,
+      model: null,
+    }),
+    runForTask: () => null,
+    selectActiveTurnId: () => "user-turn",
+    capturedOwner: () => null,
+    runtimeActive: async () => true,
+    agentHubPid: () => 1,
+    resolveOwner: async () => "vscode",
+    catalogEntry: (_thread, _project, options) => {
+      projectedOptions.push(options);
+      return { provider: "codex", threadId: "thread-1", title: "Task" };
+    },
+    modelLabel: (model) => model,
+    threadResponseTitle: () => "",
+    confirmationKey: () => "codex:thread-1",
+    expectedTitle: () => "",
+    clearExpectedTitle() {},
+    preferredTitle: () => "Task",
+    pinnedTitle: () => "",
+    setThreadName: async () => {},
+    reconcilePinnedTitle: (_provider, _threadId, title) => ({ title, changed: false }),
+    savePinnedTitles: async () => {},
+    saveState: async () => {},
+  };
+  const service = new CodexCatalogProjectionService(dependencies);
+
+  await service.project([{ id: "thread-1", cwd: "D:/Work", path: "thread-1.jsonl" }]);
+  assert.equal(projectedOptions[0].activeTurnId, "user-turn");
+
+  dependencies.readActivity = async () => ({
+    running: true,
+    activeTurnIds: [],
+    internalTurnIds: ["probe-turn"],
+    startedAtMsByTurnId: {},
+    lastActivityAtMs: 30,
+    model: null,
+  });
+  dependencies.selectActiveTurnId = () => "probe-turn";
+  const internalService = new CodexCatalogProjectionService(dependencies);
+  await internalService.project([{ id: "thread-1", cwd: "D:/Work", path: "thread-1.jsonl" }]);
+  assert.equal(projectedOptions[1].activeTurnId, null);
 });
 
 test("Claude catalog projection keeps provider identity separate from stream identity", async () => {

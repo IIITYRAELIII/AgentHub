@@ -199,6 +199,8 @@ test("VS Code bootstrap routes runtime health through the extension bridge", asy
 
 test("VS Code direct transport waits for the in-flight local session", async () => {
   const harness = loadVscodeBootstrap();
+  assert.equal(harness.window.__agentHubDirectTransport.ready(), false);
+  assert.equal(harness.window.__agentHubDirectTransport.warmup(), undefined);
   let settled = false;
   const available = harness.window.__agentHubDirectTransport.available().then((value) => {
     settled = true;
@@ -223,6 +225,7 @@ test("VS Code direct transport waits for the in-flight local session", async () 
   });
   assert.equal(await available, true);
   assert.equal(await harness.window.__agentHubDirectTransport.available(), true);
+  assert.equal(harness.window.__agentHubDirectTransport.ready(), true);
   const nativeFetchCalls = harness.nativeFetchCalls();
   const healthResponse = harness.window.__agentHubIpcRuntimeHealth();
   await Promise.resolve();

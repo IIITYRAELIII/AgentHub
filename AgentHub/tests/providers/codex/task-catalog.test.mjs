@@ -267,8 +267,21 @@ test("rollout activity makes a Codex catalog entry running", () => {
     name: "Живая задача",
     updatedAt: 123,
     status: { type: "active" },
-  }, project, { rolloutRunning: true });
+  }, project, { rolloutRunning: true, activeTurnId: "turn-live" });
   assert.equal(entry.running, true);
+  assert.equal(entry.turnId, "turn-live");
+});
+
+test("Codex catalog does not publish anonymous running activity", () => {
+  const entry = codexCatalogEntry({
+    id: "codex-internal",
+    name: "Служебный ход",
+    updatedAt: 123,
+    status: { type: "active" },
+  }, project, { rolloutRunning: true });
+  assert.equal(entry.running, false);
+  assert.equal(entry.activityUnknown, true);
+  assert.equal(entry.turnId, undefined);
 });
 
 test("durable catalog activity is unknown until a live provider scan confirms it", () => {

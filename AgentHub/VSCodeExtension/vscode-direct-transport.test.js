@@ -16,7 +16,9 @@ test("VS Code WebView prefers loopback HTTP and SSE with IPC fallback", () => {
   assert.match(bootstrap, /Authorization.*webview/u);
   assert.match(bootstrap, /response\.body\.getReader\(\)/u);
   assert.match(bootstrap, /fallbackFetch/u);
-  assert.match(client, /directTransport\.available\(\)/u);
+  assert.match(client, /directTransport\.ready\(\)/u);
+  assert.match(client, /directTransport\.warmup\?\.\(\)/u);
+  assert.match(bootstrap, /ready:\s*\(\)\s*=>\s*Boolean\(activeDirectSession\(\)\)/u);
   assert.match(extension, /handleSessionMessage/u);
   assert.match(bridge, /createLocalWebviewSession/u);
   assert.match(sharedWebview, /connect-src http:\/\/127\.0\.0\.1:\*/u);

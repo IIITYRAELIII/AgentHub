@@ -438,6 +438,7 @@ test("desktop task snapshot synthesizes the active current binding while a pre-r
   assert.equal(snapshot.run.threadId, "thread-after-rotation");
   assert.equal(snapshot.run.turnId, "turn-after-rotation");
   assert.equal(snapshot.run.status, "running");
+  assert.equal(snapshot.run.operationKind, "user-turn");
   assert.equal(snapshot.run.observer, true);
   assert.equal(snapshot.run.executionOwner, "external");
   assert.equal(snapshot.run.stage, "Ожидается ответ провайдера");
@@ -628,6 +629,7 @@ test("desktopTaskSnapshot preserves task fields and run precedence", () => {
   assert.equal(snapshot.lastAnswer, "Последний ответ");
   assert.equal(snapshot.lastAnswerTurnId, "turn-previous");
   assert.equal(snapshot.run.id, "run-1");
+  assert.equal(snapshot.run.operationKind, "user-turn");
 });
 
 test("desktopTaskSnapshot exposes catalog start time without an observer run", () => {
@@ -778,6 +780,66 @@ test("an inactive catalog entry without a run stays inactive", () => {
   });
   assert.equal(snapshot.running, false);
   assert.equal(snapshot.run, null);
+});
+
+test("an anonymous Codex catalog activity cannot become a live turn", () => {
+  const { desktopTaskSnapshot, entry, state } = fixture({ run: null });
+  state.compaction = {
+    id: "compact-1",
+    origin: "automatic",
+    status: "completed",
+    turnId: "compaction-turn",
+    beforePercent: 41,
+    afterPercent: 24,
+  };
+  state.lastMessage = {
+    text: "Предыдущий пользовательский ход завершён",
+    updatedAt: "2026-07-30T10:01:30.000Z",
+    turnId: "user-turn",
+  };
+  const snapshot = desktopTaskSnapshot({
+    ...entry,
+    running: true,
+    activityUnknown: true,
+    turnId: null,
+    lastActivityAtMs: Date.parse("2026-07-30T10:02:00.000Z"),
+  });
+  assert.equal(snapshot.running, false);
+  assert.equal(snapshot.run, null);
+  assert.equal(snapshot.context.compaction.afterPercent, 24);
+});
+
+test("a recorded post-compaction probe stays internal despite stale user content", () => {
+  const { desktopTaskSnapshot, entry, state } = fixture();
+  state.run.turnId = "probe-turn";
+  state.run.promptPreview = "Унаследованный пользовательский текст";
+  state.compaction = {
+    id: "compact-1",
+    origin: "automatic",
+    status: "completed",
+    turnId: "compaction-turn",
+    probeTurnIds: ["probe-turn"],
+    beforePercent: 41,
+    afterPercent: 24,
+  };
+  const snapshot = desktopTaskSnapshot(entry);
+  assert.equal(snapshot.running, false);
+  assert.equal(snapshot.run, null);
+});
+
+test("a user turn equal to the probe text remains visible without the internal client id", () => {
+  const { desktopTaskSnapshot, entry, state } = fixture();
+  state.run.promptPreview = "Ответь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1";
+  state.run.userMessages = [{
+    itemId: "manual-probe-text",
+    role: "user",
+    text: state.run.promptPreview,
+  }];
+  state.run.clientUserMessageId = null;
+  const snapshot = desktopTaskSnapshot(entry);
+  assert.equal(snapshot.running, true);
+  assert.equal(snapshot.run.operationKind, "user-turn");
+  assert.equal(snapshot.run.prompt, state.run.promptPreview);
 });
 
 test("desktopTaskSnapshot keeps a manual context compaction out of the live turn", () => {

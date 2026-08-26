@@ -56,6 +56,118 @@ function localSessionAuth({ hash = "", managed = false, existingSession = false 
   return { listeners, location, reloads: () => reloads, replaced, requests, window };
 }
 
+function trustedBrowserSessionAuth() {
+  const source = readFileSync(
+    new URL("../../../assets/web-app/browser-device-auth.js", import.meta.url),
+    "utf8",
+  );
+  const requests = [];
+  const credential = {
+    deviceId: "device-1",
+    privateKey: { type: "private" },
+  };
+  const documentElement = { dataset: {} };
+  let now = 1_000_000;
+  let expiresAt = now + 12 * 60 * 60 * 1_000;
+  let delayedChallenge = null;
+  let timerSequence = 0;
+
+  function request(result) {
+    const listeners = new Map();
+    const value = {
+      result,
+      addEventListener(type, listener) {
+        listeners.set(type, listener);
+        if (type === "success") queueMicrotask(listener);
+      },
+    };
+    return value;
+  }
+
+  const database = {
+    objectStoreNames: { contains: () => true },
+    transaction: () => ({
+      objectStore: () => ({ get: () => request(credential) }),
+    }),
+    close() {},
+  };
+  const indexedDB = { open: () => request(database) };
+  class TestDate extends Date {
+    static now() { return now; }
+  }
+  const window = {
+    location: {
+      hash: "",
+      origin: "https://hub.example.test",
+      pathname: "/",
+      protocol: "https:",
+      search: "",
+    },
+    history: { replaceState() {} },
+    addEventListener() {},
+    isSecureContext: true,
+    indexedDB,
+    setTimeout: () => ++timerSequence,
+    clearTimeout() {},
+  };
+  const response = (payload, status = 200) => ({
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => payload,
+  });
+  const fetch = async (url, options = {}) => {
+    requests.push({ url, options });
+    if (options.method === "HEAD") return response({}, 401);
+    if (url === "/api/device/challenge") {
+      if (delayedChallenge) return delayedChallenge;
+      return response({ challengeId: "challenge-1", challenge: "challenge" });
+    }
+    if (url === "/api/device/session") return response({ expiresAt });
+    throw new Error(`unexpected request ${url}`);
+  };
+  vm.runInNewContext(source, {
+    window,
+    fetch,
+    indexedDB,
+    navigator: { platform: "Windows", userAgent: "Browser" },
+    console,
+    crypto: { subtle: { sign: async () => new Uint8Array([1]).buffer } },
+    document: {
+      addEventListener() {},
+      documentElement,
+      querySelector: () => null,
+      visibilityState: "visible",
+    },
+    AbortController,
+    TextEncoder,
+    Date: TestDate,
+    btoa: (value) => Buffer.from(value, "binary").toString("base64"),
+    queueMicrotask,
+  });
+  return {
+    documentElement,
+    expiresAt: () => expiresAt,
+    requests,
+    setNow: (value) => { now = value; },
+    delayNextChallenge() {
+      let resolve;
+      let reject;
+      delayedChallenge = new Promise((resolvePromise, rejectPromise) => {
+        resolve = () => {
+          delayedChallenge = null;
+          resolvePromise(response({ challengeId: "challenge-2", challenge: "challenge" }));
+        };
+        reject = (error) => {
+          delayedChallenge = null;
+          rejectPromise(error);
+        };
+      });
+      return { resolve, reject };
+    },
+    window,
+  };
+}
+
 test("protected local access establishes a cookie session before managed UI starts", async () => {
   const secret = "a".repeat(43);
   const state = localSessionAuth({ hash: `#access=${secret}` });
@@ -85,6 +197,28 @@ test("an existing local HttpOnly session survives a browser reload", async () =>
   assert.equal(state.requests.length, 1);
   assert.equal(state.requests[0].url, "/api/local-session");
   assert.equal(state.requests[0].options.method, "HEAD");
+});
+
+test("a still-valid browser session renews without blocking the user request", async () => {
+  const state = trustedBrowserSessionAuth();
+  await state.window.AgentHubBrowserDeviceReady;
+  const gate = state.delayNextChallenge();
+  state.setNow(state.expiresAt() - 30_000);
+
+  let settled = false;
+  const ensured = state.window.AgentHubBrowserDevice.ensureSession().then(() => {
+    settled = true;
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.equal(settled, true);
+  assert.equal(state.requests.filter(({ url }) => url === "/api/device/challenge").length, 2);
+  assert.equal(state.documentElement.dataset.browserAuth, undefined);
+
+  gate.resolve();
+  await ensured;
+  await new Promise((resolve) => setImmediate(resolve));
 });
 
 test("public browser pairing clears stale errors and submits a complete pasted code", () => {

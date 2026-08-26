@@ -7,6 +7,7 @@ export function createWorkspaceActions(services) {
     ),
     updateWorkspaceSettings: (params) => services.workspaceMutation(
       () => services.workspaceCatalogService.updateWorkspaceSettings(params),
+      { resultKey: "workspaceSettingsUpdate" },
     ),
     updateWorkspaceDeveloperRules: (params) => services.workspaceMutation(
       () => services.workspaceCatalogService.updateWorkspaceDeveloperRules(params),

@@ -57,22 +57,26 @@ export class DeferredInputPresentationService {
     if (state === "cancelled") {
       return this.receipts.updateResult(identity, {
         ...base,
-        accepted: false,
         deferred: false,
         cancelled: true,
         message: "Сохранённое сообщение отменено.",
       });
     }
-    const queued = ["queued", "dispatching", "retrying"].includes(state);
+    const queued = ["queued", "dispatching", "retrying", "reconciling"].includes(state);
     return this.receipts.updateResult(identity, {
       ...base,
-      accepted: false,
       deferred: true,
       queued,
-      dispatching: state === "dispatching",
-      reason: state === "pending" ? "launch-failed" : item.conflictKind ?? "task-running",
+      dispatching: ["dispatching", "reconciling"].includes(state),
+      reason: state === "pending"
+        ? "launch-failed"
+        : state === "reconciling"
+          ? "provider-start-unconfirmed"
+          : item.conflictKind ?? "task-running",
       message: state === "dispatching"
         ? "Сообщение отправляется в поток."
+        : state === "reconciling"
+          ? "Сообщение принято Hub; уточняется точный запуск Codex без повторной отправки."
         : state === "retrying"
           ? "Запуск временно недоступен; сообщение остаётся первым в очереди."
           : state === "pending"

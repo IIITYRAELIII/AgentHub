@@ -99,6 +99,59 @@ test("positive terminal revision absorbs legacy zero but zero upgrades to positi
   assert.deepEqual(plain(projection.projectCanonicalMessages([legacy, canonical])), [canonical]);
 });
 
+test("canonical final replaces a stale partial overlay at the same revision", async () => {
+  const projection = await projectionApi();
+  const canonical = {
+    role: "agent",
+    provider: "codex",
+    threadId: "thread-final",
+    turnId: "turn-final",
+    itemId: "canonical-final",
+    text: "Выбери:\n\n1. Первый вариант.\n2. Второй вариант.",
+    operationKind: "user-turn",
+    projectionAuthority: "canonical",
+    projectionState: "completed",
+    terminalRevision: 1,
+  };
+  const staleOverlay = {
+    ...canonical,
+    itemId: "turn-final:agent:final",
+    text: "Выбери:\n\n1. Первый вариант.",
+    projectionAuthority: "terminal",
+  };
+
+  for (const values of [[canonical, staleOverlay], [staleOverlay, canonical]]) {
+    assert.deepEqual(plain(projection.projectCanonicalMessages(values)), [canonical]);
+  }
+});
+
+test("newer terminal overlay still replaces older canonical history", async () => {
+  const projection = await projectionApi();
+  const canonical = {
+    role: "agent",
+    provider: "codex",
+    threadId: "thread-final",
+    turnId: "turn-final",
+    itemId: "canonical-final",
+    text: "Старый финал",
+    operationKind: "user-turn",
+    projectionAuthority: "canonical",
+    projectionState: "completed",
+    terminalRevision: 1,
+  };
+  const newerOverlay = {
+    ...canonical,
+    itemId: "turn-final:agent:final",
+    text: "Новый финал",
+    projectionAuthority: "terminal",
+    terminalRevision: 2,
+  };
+
+  for (const values of [[canonical, newerOverlay], [newerOverlay, canonical]]) {
+    assert.deepEqual(plain(projection.projectCanonicalMessages(values)), [newerOverlay]);
+  }
+});
+
 test("restart replay keeps one canonical entity and never revives its terminal", async () => {
   const projection = await projectionApi();
   const persisted = {

@@ -28,8 +28,8 @@ export class WorkspaceCatalogService {
     return this.#store.renameWorkspace(workspaceId, name);
   }
 
-  updateWorkspaceSettings({ workspaceId, settings = {} } = {}) {
-    return this.#store.updateWorkspaceSettings(workspaceId, settings);
+  updateWorkspaceSettings({ workspaceId, settings = {}, discardReleaseEntries = false } = {}) {
+    return this.#store.updateWorkspaceSettings(workspaceId, settings, { discardReleaseEntries });
   }
 
   workspaceDeveloperRules({ workspaceId } = {}) {

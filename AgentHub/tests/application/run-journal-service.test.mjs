@@ -4,9 +4,10 @@ import test from "node:test";
 import { RunJournalService } from "../../src/application/run-journal-service.mjs";
 import { legacyTaskRunKeys, taskRunKey } from "../../src/domain/task-runs.mjs";
 
-function fixture({ statImpl = async () => ({}) } = {}) {
+function fixture({ statImpl = async () => ({}), releaseWorkflowEnabled = true } = {}) {
   const calls = [];
   const workspaceCatalogStore = {
+    releaseWorkflowEnabledForThread: () => releaseWorkflowEnabled,
     recordReleaseChange: (value) => {
       calls.push(["release", value]);
       return { id: "legacy-change", ...value };
@@ -246,6 +247,22 @@ test("RunJournalService registers changed files in the Workspace release registr
   assert.equal(failedRelease.status, "blocked");
   const failedObservation = calls.filter(([name]) => name === "changeset").at(-1)[1];
   assert.equal(failedObservation.status, "failed");
+});
+
+test("RunJournalService does not register changed files for a regular Workspace", async () => {
+  const { service, calls } = fixture({ releaseWorkflowEnabled: false });
+  await service.projectTurn({
+    provider: "codex",
+    projectRoot: "C:/workspace",
+    threadId: "thread",
+    turnId: "turn",
+    changedFiles: ["AgentHub/app.js"],
+    status: "completed",
+  }, { title: "Regular work" });
+
+  assert.equal(calls.some(([name]) => name === "release"), false);
+  assert.equal(calls.some(([name]) => name === "changeset"), false);
+  assert.equal(calls.some(([name]) => name === "automatic"), true);
 });
 
 test("RunJournalService forwards deferred projection for historical accounting", async () => {

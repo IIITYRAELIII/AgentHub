@@ -9,6 +9,7 @@ import {
   DEVELOPER_RULES_MAX_BYTES,
   WorkspaceCatalogStore,
 } from "../../../src/infrastructure/persistence/workspace-catalog-store.mjs";
+import { RELEASE_WORKFLOW_DEVELOPER_RULES } from "../../../src/domain/workspace-release-workflow.mjs";
 
 async function fixture(t) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-workspaces-"));
@@ -96,7 +97,10 @@ test("Workspace working directory is persisted in settings", async (t) => {
   const updated = store.updateWorkspaceSettings(workspace.id, {
     workingDirectory: "D:/work/AgentHub",
   });
-  assert.deepEqual(updated.settings, { workingDirectory: "D:/work/AgentHub" });
+  assert.deepEqual(updated.settings, {
+    workingDirectory: "D:/work/AgentHub",
+    releaseWorkflowEnabled: false,
+  });
   assert.deepEqual(
     store.hierarchy().find((item) => item.id === workspace.id).settings,
     updated.settings,
@@ -143,7 +147,7 @@ test("archiving a Stream hides it without losing its Thread history", async (t) 
 
 test("Workspace release registry keeps ownership, readiness and file conflicts", async (t) => {
   const store = await fixture(t);
-  const workspace = store.createWorkspace({ name: "Agent HUB" });
+  const workspace = store.createWorkspace({ name: "Agent HUB", settings: { releaseWorkflowEnabled: true } });
   const firstStream = store.createStream({ workspaceId: workspace.id, name: "One" });
   const secondStream = store.createStream({ workspaceId: workspace.id, name: "Two" });
   store.bindThread({ provider: "codex", threadId: "one", streamId: firstStream.id });
@@ -242,7 +246,7 @@ test("detached historical Threads remain resolvable but cannot become active", a
 
 test("release completion binds explicit conflict resolution to the observed plan revision", async (t) => {
   const store = await fixture(t);
-  const workspace = store.createWorkspace({ name: "Agent HUB" });
+  const workspace = store.createWorkspace({ name: "Agent HUB", settings: { releaseWorkflowEnabled: true } });
   const firstStream = store.createStream({ workspaceId: workspace.id, name: "One" });
   const secondStream = store.createStream({ workspaceId: workspace.id, name: "Two" });
   store.bindThread({ provider: "codex", threadId: "one", streamId: firstStream.id });
@@ -338,7 +342,7 @@ test("MCP mutation audit is idempotent and scoped to its Workspace", async (t) =
 
 test("Release registry allows one Stream to own the same file across ready turns", async (t) => {
   const store = await fixture(t);
-  const workspace = store.createWorkspace({ name: "Agent HUB" });
+  const workspace = store.createWorkspace({ name: "Agent HUB", settings: { releaseWorkflowEnabled: true } });
   const stream = store.createStream({ workspaceId: workspace.id, name: "One" });
   store.bindThread({ provider: "codex", threadId: "one", streamId: stream.id });
   for (const turnId of ["turn-one", "turn-two"]) {
@@ -353,7 +357,7 @@ test("Release registry allows one Stream to own the same file across ready turns
 
 test("Release registry does not treat the shared Utilities changelog as owned source", async (t) => {
   const store = await fixture(t);
-  const workspace = store.createWorkspace({ name: "Agent HUB" });
+  const workspace = store.createWorkspace({ name: "Agent HUB", settings: { releaseWorkflowEnabled: true } });
   const firstStream = store.createStream({ workspaceId: workspace.id, name: "One" });
   const secondStream = store.createStream({ workspaceId: workspace.id, name: "Two" });
   store.bindThread({ provider: "codex", threadId: "one", streamId: firstStream.id });
@@ -377,7 +381,7 @@ test("Release registry does not treat the shared Utilities changelog as owned so
 
 test("Release registry canonicalizes project and file aliases before detecting conflicts", async (t) => {
   const store = await fixture(t);
-  const workspace = store.createWorkspace({ name: "Agent HUB" });
+  const workspace = store.createWorkspace({ name: "Agent HUB", settings: { releaseWorkflowEnabled: true } });
   const firstStream = store.createStream({ workspaceId: workspace.id, name: "One" });
   const secondStream = store.createStream({ workspaceId: workspace.id, name: "Two" });
   store.bindThread({ provider: "codex", threadId: "one", streamId: firstStream.id });
@@ -396,7 +400,7 @@ test("Release registry canonicalizes project and file aliases before detecting c
 
 test("ready and released release payloads are immutable and released status cannot regress", async (t) => {
   const store = await fixture(t);
-  const workspace = store.createWorkspace({ name: "Agent HUB" });
+  const workspace = store.createWorkspace({ name: "Agent HUB", settings: { releaseWorkflowEnabled: true } });
   const stream = store.createStream({ workspaceId: workspace.id, name: "One" });
   store.bindThread({ provider: "codex", threadId: "one", streamId: stream.id });
   const draft = store.recordReleaseChange({
@@ -433,7 +437,7 @@ test("ready and released release payloads are immutable and released status cann
 
 test("release completion rejects a plan that changed after verification", async (t) => {
   const store = await fixture(t);
-  const workspace = store.createWorkspace({ name: "Agent HUB" });
+  const workspace = store.createWorkspace({ name: "Agent HUB", settings: { releaseWorkflowEnabled: true } });
   const stream = store.createStream({ workspaceId: workspace.id, name: "One" });
   store.bindThread({ provider: "codex", threadId: "one", streamId: stream.id });
   const first = store.recordReleaseChange({
@@ -497,6 +501,100 @@ test("legacy release registry gains a revision without losing its change", async
   assert.equal(store.releasePlan("workspace").ready[0].revision, 1);
   assert.equal(store.releasePlan("workspace").ready[0].status, "ready");
   assert.deepEqual(store.changeSets("workspace"), []);
+});
+
+test("release workflow is opt-in and injects policy without changing editable rules", async (t) => {
+  const store = await fixture(t);
+  const workspace = store.createWorkspace({ name: "Agent HUB" });
+  const stream = store.createStream({ workspaceId: workspace.id, name: "Architect" });
+  store.bindThread({ provider: "codex", threadId: "thread", streamId: stream.id });
+  store.updateWorkspaceDeveloperRules(workspace.id, "Fast Test Contour workflow");
+
+  assert.equal(store.releaseWorkflowEnabledForThread({ provider: "codex", threadId: "thread" }), false);
+  assert.equal(store.recordReleaseChange({
+    provider: "codex", threadId: "thread", turnId: "disabled-turn", changedFiles: ["AgentHub/app.js"],
+  }), null);
+  assert.equal(store.developerRulesForStream(stream.id).workspace.content, "Fast Test Contour workflow");
+  store.updateWorkspaceSettings(workspace.id, { releaseWorkflowEnabled: true });
+
+  assert.equal(store.releaseWorkflowEnabledForThread({ provider: "codex", threadId: "thread" }), true);
+  assert.equal(store.workspaceDeveloperRules(workspace.id).content, "Fast Test Contour workflow");
+  assert.equal(
+    store.developerRulesForStream(stream.id).workspace.content,
+    `${RELEASE_WORKFLOW_DEVELOPER_RULES}\n\nFast Test Contour workflow`,
+  );
+});
+
+test("disabling release workflow requires confirmation and atomically discards active registries", async (t) => {
+  const store = await fixture(t);
+  const workspace = store.createWorkspace({ name: "Agent HUB", settings: { releaseWorkflowEnabled: true } });
+  const stream = store.createStream({ workspaceId: workspace.id, name: "S1" });
+  store.bindThread({ provider: "codex", threadId: "thread", streamId: stream.id });
+  store.recordReleaseChange({
+    provider: "codex", threadId: "thread", turnId: "turn", changedFiles: ["AgentHub/app.js"],
+  });
+  store.recordChangeSetObservation({
+    workspaceId: workspace.id,
+    ownerStreamId: stream.id,
+    generatedChangeSetId: "change-set",
+    provider: "codex",
+    threadId: "thread",
+    turnId: "turn",
+    files: ["AgentHub/app.js"],
+  });
+
+  const guarded = store.updateWorkspaceSettings(workspace.id, { releaseWorkflowEnabled: false });
+  assert.equal(guarded.releaseWorkflowUpdate.requiresDiscardConfirmation, true);
+  assert.equal(store.workspace(workspace.id).settings.releaseWorkflowEnabled, true);
+  assert.equal(store.releaseRegistry(workspace.id).pendingTotal, 2);
+
+  const disabled = store.updateWorkspaceSettings(
+    workspace.id,
+    { releaseWorkflowEnabled: false },
+    { discardReleaseEntries: true },
+  );
+  assert.equal(disabled.settings.releaseWorkflowEnabled, false);
+  assert.deepEqual(disabled.releaseWorkflowUpdate.discarded, {
+    legacyCount: 1,
+    changeSetCount: 1,
+    total: 2,
+  });
+  assert.equal(store.releaseRegistry(workspace.id).pendingTotal, 0);
+  assert.equal(store.releaseChange({ provider: "codex", threadId: "thread", turnId: "turn" }).status, "discarded");
+  assert.equal(store.changeSet("change-set").status, "discarded");
+  assert.equal(
+    store.changeSetEvents("change-set").at(-1).payload.authorizationSource,
+    "workspace-release-workflow",
+  );
+});
+
+test("legacy release policy migrates only its exact Workspace to the opt-in setting", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-release-workflow-migration-"));
+  const databaseFile = path.join(directory, "journal.sqlite");
+  let sequence = 0;
+  let store = new WorkspaceCatalogStore({
+    databaseFile,
+    idFactory: () => `legacy-${++sequence}`,
+  });
+  await store.load();
+  const workspace = store.createWorkspace({ name: "Agent HUB" });
+  store.updateWorkspaceDeveloperRules(
+    workspace.id,
+    `${RELEASE_WORKFLOW_DEVELOPER_RULES}\n\nFast Test Contour workflow`,
+  );
+  store.close();
+  const database = new DatabaseSync(databaseFile);
+  database.prepare("UPDATE hub_workspaces SET settings_json = '{}' WHERE id = ?").run(workspace.id);
+  database.close();
+
+  store = new WorkspaceCatalogStore({ databaseFile });
+  await store.load();
+  t.after(async () => {
+    store.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  assert.equal(store.workspace(workspace.id).settings.releaseWorkflowEnabled, true);
+  assert.equal(store.workspaceDeveloperRules(workspace.id).content, "Fast Test Contour workflow");
 });
 
 test("Workspace and Stream developer rules keep versioned revisions", async (t) => {

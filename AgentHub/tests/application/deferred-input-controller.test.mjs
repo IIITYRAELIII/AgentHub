@@ -5,6 +5,7 @@ import {
   deferredLaunchWaitReason,
   DeferredInputController,
   isRetryableDeferredLaunchError,
+  isUnconfirmedDeferredLaunchError,
 } from "../../src/application/deferred-input-controller.mjs";
 
 function fixture(overrides = {}) {
@@ -54,6 +55,9 @@ test("retryable deferred launch errors are limited to transport failures", () =>
   assert.equal(isRetryableDeferredLaunchError(Object.assign(new Error("unknown receipt"), {
     code: "ERR_CODEX_TURN_START_UNCONFIRMED",
   })), false);
+  assert.equal(isUnconfirmedDeferredLaunchError(Object.assign(new Error("unknown receipt"), {
+    code: "ERR_CODEX_TURN_START_UNCONFIRMED",
+  })), true);
   assert.equal(isRetryableDeferredLaunchError(
     new Error("thread thread-1 already has an active writer"),
   ), true);
@@ -525,6 +529,70 @@ test("DeferredInputController adopts a run started before restart instead of dup
     detail: "run-existing",
   }]);
   assert.match(state.updates[0][1], /уже выполняется/);
+});
+
+test("DeferredInputController reconciles an uncertain provider start without launching twice", async () => {
+  let exactRun = null;
+  let starts = 0;
+  const unknown = Object.assign(new Error("provider response lost"), {
+    code: "ERR_CODEX_TURN_START_UNCONFIRMED",
+    deliveryOutcome: "unknown",
+  });
+  const state = fixture({
+    findStarted: async () => exactRun,
+    start: async () => { starts += 1; throw unknown; },
+  });
+  state.queuedInputs.set("one", {
+    id: "one",
+    provider: "codex",
+    threadId: "thread-1",
+    clientUserMessageId: "client-1",
+    taskTitle: "Task",
+  });
+
+  await state.controller.process("one");
+  assert.equal(starts, 1);
+  assert.equal(state.queuedInputs.get("one").waitReason, "provider-start-unconfirmed");
+  assert.equal(state.pendingInputs.has("one"), false);
+  assert.deepEqual(state.transitions.map((entry) => entry.state), ["dispatching", "reconciling"]);
+
+  await state.controller.process("one");
+  assert.equal(starts, 1);
+  assert.equal(state.queuedInputs.has("one"), true);
+
+  exactRun = { id: "run-existing", turnId: "turn-existing" };
+  await state.controller.process("one");
+  assert.equal(starts, 1);
+  assert.equal(state.queuedInputs.has("one"), false);
+  assert.equal(state.transitions.at(-1).state, "started");
+});
+
+test("DeferredInputController requests a decision only after exact-start reconciliation expires", async () => {
+  let now = Date.parse("2026-07-30T09:00:00.000Z");
+  const unknown = Object.assign(new Error("provider response lost"), {
+    code: "ERR_CODEX_TURN_START_UNCONFIRMED",
+  });
+  const state = fixture({
+    now: () => now,
+    providerReconciliationMaxAgeMs: 5_000,
+    start: async () => { throw unknown; },
+  });
+  state.queuedInputs.set("one", {
+    id: "one",
+    provider: "codex",
+    threadId: "thread-1",
+    clientUserMessageId: "client-1",
+    taskTitle: "Task",
+  });
+
+  await state.controller.process("one");
+  now += 6_000;
+  await state.controller.process("one");
+
+  assert.equal(state.queuedInputs.has("one"), false);
+  assert.equal(state.pendingInputs.has("one"), true);
+  assert.equal(state.transitions.at(-1).state, "pending");
+  assert.match(state.updates.at(-1)[1], /автоматический повтор не выполнялся/u);
 });
 
 test("DeferredInputController does not serialize unrelated tasks", async () => {

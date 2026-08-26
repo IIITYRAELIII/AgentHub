@@ -114,6 +114,7 @@ export function createDesktopSnapshotFactory({
     const threadId = String(entry.threadId ?? "").trim();
     if (!provider || !threadId) return null;
     const turnId = String(entry.turnId ?? "").trim();
+    if (provider.toLowerCase() === "codex" && !turnId) return null;
     const lastAnswerTurnId = String(lastMessage?.turnId ?? "").trim();
     if (turnId && turnId === lastAnswerTurnId) return null;
     const lastActivityAtMs = Number(entry.lastActivityAtMs);
@@ -263,7 +264,7 @@ export function createDesktopSnapshotFactory({
     };
   }
 
-  function desktopRunSnapshot(run, { compactSnapshot = false } = {}) {
+  function desktopRunSnapshot(run, { compactSnapshot = false, operationKind = "" } = {}) {
     if (!run) return null;
     const promptInterstream = interstreamMessageDetails(run.promptPreview);
     const promptOrigin = normalizeInterstreamOrigin(run.messageOrigin) ?? promptInterstream?.origin;
@@ -292,6 +293,7 @@ export function createDesktopSnapshotFactory({
       threadId: run.threadId,
       taskTitle: runs.titleFor(run),
       status: run.status,
+      ...(operationKind ? { operationKind } : {}),
       observer: run.observer === true,
       executionOwner: run.executionOwner ?? null,
       runtime: run.appServer ?? null,
@@ -419,14 +421,21 @@ export function createDesktopSnapshotFactory({
 
   function isInternalMaintenanceObserver(run, context) {
     if (!run) return false;
+    const turnId = String(run.turnId ?? "").trim();
+    const probeTurnIds = new Set(
+      (context?.compaction?.probeTurnIds ?? [])
+        .map((value) => String(value ?? "").trim())
+        .filter(Boolean),
+    );
     return isCompactionOnlyObserver(run, context)
       || isPostCompactionMeasurementObserver(run, context)
+      || (turnId && probeTurnIds.has(turnId))
       || (run.provider === "codex" && isCodexContextProbeTurn({
         prompt: run.promptPreview,
         finalAnswer: run.responseText,
         clientUserMessageId: run.clientUserMessageId,
         userMessages: run.userMessages,
-      }));
+      }, { allowTextFallback: false }));
   }
 
   function desktopTaskSnapshot(entry, { accountId = "", compactSnapshot = false } = {}) {
@@ -512,7 +521,10 @@ export function createDesktopSnapshotFactory({
       unread,
       maintenance: maintenance.entryFor?.(task) ?? null,
       context,
-      run: desktopRunSnapshot(visibleRun, { compactSnapshot }),
+      run: desktopRunSnapshot(visibleRun, {
+        compactSnapshot,
+        operationKind: visibleRun ? "user-turn" : "",
+      }),
     };
   }
 
