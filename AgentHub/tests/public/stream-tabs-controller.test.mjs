@@ -512,13 +512,25 @@ test("an active Stream preserves its answer-ready state", async () => {
 
 test("answer arrival animation does not replay during Thread selection", async () => {
   const { answerArrivalTaskIds } = await streamTabsApi();
+  const architectFinal = {
+    provider: "codex",
+    threadId: "thread-architect",
+    turnId: "turn-1",
+    revision: 1,
+  };
+  const statisticsFinal = {
+    provider: "codex",
+    threadId: "thread-statistics",
+    turnId: "turn-1",
+    revision: 1,
+  };
   const previous = [
-    { id: "architect", selected: true, unread: true },
-    { id: "statistics", selected: false, unread: false },
+    { id: "architect", selected: true, unread: true, latestFinal: architectFinal },
+    { id: "statistics", selected: false, unread: false, latestFinal: statisticsFinal },
   ];
   const selectedAnotherThread = [
-    { id: "architect", selected: false, unread: true },
-    { id: "statistics", selected: true, unread: false },
+    { id: "architect", selected: false, unread: true, latestFinal: architectFinal },
+    { id: "statistics", selected: true, unread: false, latestFinal: statisticsFinal },
   ];
 
   assert.deepEqual(Array.from(answerArrivalTaskIds([], previous)), []);
@@ -526,6 +538,14 @@ test("answer arrival animation does not replay during Thread selection", async (
   assert.deepEqual(Array.from(answerArrivalTaskIds(selectedAnotherThread, [
     selectedAnotherThread[0],
     { ...selectedAnotherThread[1], unread: true },
+  ])), []);
+  assert.deepEqual(Array.from(answerArrivalTaskIds(selectedAnotherThread, [
+    selectedAnotherThread[0],
+    {
+      ...selectedAnotherThread[1],
+      unread: true,
+      latestFinal: { ...statisticsFinal, turnId: "turn-2" },
+    },
   ])), ["statistics"]);
 });
 

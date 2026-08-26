@@ -329,11 +329,26 @@
 
   function answerArrivalTaskIds(previousTasks, tasks) {
     const previousById = new Map((previousTasks ?? []).map((task) => [String(task?.id ?? ""), task]));
+    const finalIdentity = (task) => {
+      const final = task?.latestFinal;
+      const provider = String(final?.provider ?? "").trim().toLowerCase();
+      const threadId = String(final?.threadId ?? "").trim();
+      const turnId = String(final?.turnId ?? "").trim();
+      const revision = Number(final?.revision);
+      return provider && threadId && turnId && Number.isSafeInteger(revision) && revision > 0
+        ? `${provider}\0${threadId}\0${turnId}\0${revision}`
+        : "";
+    };
     return new Set((tasks ?? [])
       .filter((task) => {
         const id = String(task?.id ?? "");
         const previous = previousById.get(id);
-        return Boolean(id) && previous && previous.unread !== true && task?.unread === true;
+        const currentFinal = finalIdentity(task);
+        return Boolean(id)
+          && previous
+          && task?.unread === true
+          && Boolean(currentFinal)
+          && currentFinal !== finalIdentity(previous);
       })
       .map((task) => String(task.id)));
   }

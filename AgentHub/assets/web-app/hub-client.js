@@ -1330,6 +1330,7 @@ function modelTask(task, snapshot, effectiveSelectedId, serverSelectedId) {
     context: task.run?.context ?? task.context ?? null,
     providerStart: task.run?.providerStart ?? null,
     providerTurnTelemetry: task.providerTurnTelemetry ?? null,
+    latestFinal: task.latestFinal ?? null,
     streamSettings: { ...(catalogStream?.settings ?? {}) },
     workspaceSettings: { ...(workspace?.settings ?? {}) },
     streamDeveloperRules: catalogStream?.developerRules ?? null,
