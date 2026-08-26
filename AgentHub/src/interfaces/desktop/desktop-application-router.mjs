@@ -36,7 +36,14 @@ function requiredFunction(value, name) {
   return value;
 }
 
-export function createDesktopApplicationRouter({ handlers, commands, receiptFile, reconcileMutation, commandTrace = null }) {
+export function createDesktopApplicationRouter({
+  handlers,
+  commands,
+  receiptFile,
+  receiptOptions = {},
+  reconcileMutation,
+  commandTrace = null,
+}) {
   if (!handlers || typeof handlers !== "object") throw new TypeError("desktop handlers are required");
   requiredFunction(commands?.dispatch, "commands.dispatch");
   requiredFunction(commands?.settingTarget, "commands.settingTarget");
@@ -146,6 +153,7 @@ export function createDesktopApplicationRouter({ handlers, commands, receiptFile
     },
     desktopMaxResponseBytes: 3_500_000,
     receiptFile,
+    receiptOptions,
     reconcileMutation,
     commandTrace,
   });

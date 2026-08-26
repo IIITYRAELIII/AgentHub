@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { DurableCommandReceipts, commandFingerprint } from "../../../src/infrastructure/persistence/durable-command-receipts.mjs";
+import { SqliteDurableCommandReceipts } from "../../../src/infrastructure/persistence/sqlite-durable-command-receipts.mjs";
 
 test("durable receipt reconciles a crash after the effect without repeating it", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-durable-receipt-"));
@@ -321,4 +322,70 @@ test("an old receipt with a live reused PID is reconciled after its maximum effe
     effect: async () => { throw new Error("must reconcile"); },
     reconcile: async () => ({ resolved: true, result: { reconciled: true } }),
   }), { reconciled: true });
+});
+
+test("sqlite receipts import a large legacy journal without rewriting it on ACK", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-sqlite-receipts-"));
+  const legacyFile = path.join(root, "desktop-control-receipts.json");
+  const databaseFile = path.join(root, "desktop-control-receipts.sqlite");
+  const records = Array.from({ length: 600 }, (_, index) => ({
+    id: `legacy-${index}`,
+    fingerprint: `fingerprint-${index}`,
+    action: "send-message",
+    phase: "completed",
+    result: { accepted: true, index },
+    createdAtMs: index + 1,
+    updatedAtMs: index + 1,
+  }));
+  await writeFile(legacyFile, `${JSON.stringify({ version: 1, records })}\n`);
+  const receipts = new SqliteDurableCommandReceipts({ file: databaseFile, legacyFile });
+  const startedAt = performance.now();
+  assert.deepEqual(await receipts.execute({
+    id: "new-command",
+    fingerprint: "new-command-fingerprint",
+    action: "send-message",
+    effect: async () => ({ accepted: true }),
+  }), { accepted: true });
+  assert.ok(performance.now() - startedAt < 1_000);
+  assert.deepEqual(await receipts.execute({
+    id: "new-command",
+    fingerprint: "new-command-fingerprint",
+    action: "send-message",
+    effect: async () => assert.fail("same command must not run twice"),
+  }), { accepted: true });
+  assert.equal((await readFile(legacyFile, "utf8")).length, JSON.stringify({ version: 1, records }).length + 1);
+  assert.equal(await receipts.forget("new-command"), true);
+  await receipts.close();
+  await rm(root, { recursive: true, force: true });
+});
+
+test("sqlite receipts reconcile an interrupted effect exactly once", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-sqlite-reconcile-"));
+  const file = path.join(root, "receipts.sqlite");
+  let started;
+  const waiting = new Promise((resolve) => { started = resolve; });
+  const first = new SqliteDurableCommandReceipts({ file });
+  void first.execute({
+    id: "interrupted",
+    fingerprint: "same-command",
+    action: "send-message",
+    effect: async () => {
+      started();
+      await new Promise(() => {});
+    },
+  });
+  await waiting;
+  let replayed = false;
+  const restarted = new SqliteDurableCommandReceipts({ file, isProcessAlive: () => false });
+  assert.deepEqual(await restarted.execute({
+    id: "interrupted",
+    fingerprint: "same-command",
+    action: "send-message",
+    effect: async () => { replayed = true; },
+    reconcile: async () => ({ resolved: true, result: { recovered: true } }),
+  }), { recovered: true });
+  assert.equal(replayed, false);
+  await first.close();
+  await restarted.close();
+  await rm(root, { recursive: true, force: true });
 });

@@ -1,4 +1,5 @@
 import { DurableCommandReceipts, commandFingerprint } from "../../infrastructure/persistence/durable-command-receipts.mjs";
+import { SqliteDurableCommandReceipts } from "../../infrastructure/persistence/sqlite-durable-command-receipts.mjs";
 
 const DEFAULT_MINI_APP_LIMITS = Object.freeze({
   sources: Object.freeze(["telegram-mini-app", "trusted-device", "local-mini-app"]),
@@ -66,7 +67,10 @@ export function createDesktopControlRouter({
     miniAppLimits.source,
   ].map((source) => String(source ?? "").trim()).filter(Boolean));
   let mutationQueue = Promise.resolve();
-  const receipts = receiptFile ? new DurableCommandReceipts({
+  const ReceiptStore = String(receiptFile ?? "").toLowerCase().endsWith(".sqlite")
+    ? SqliteDurableCommandReceipts
+    : DurableCommandReceipts;
+  const receipts = receiptFile ? new ReceiptStore({
     ...receiptOptions,
     file: receiptFile,
     projectResult: projectDesktopReceiptResult,

@@ -235,7 +235,10 @@ export function createDesktopRunRouterWiring({
       commandTraceStats: () => services.commandTrace.backpressureStats(),
     },
     commands: desktop.applicationCommands,
-    receiptFile: path.join(config.dataDir, "desktop-control-receipts.json"),
+    receiptFile: path.join(config.dataDir, "desktop-control-receipts.sqlite"),
+    receiptOptions: {
+      legacyFile: path.join(config.dataDir, "desktop-control-receipts.json"),
+    },
     commandTrace: services.commandTrace,
   });
 

@@ -4,6 +4,7 @@ export function createDesktopRouterComposition({
   handlers,
   commands,
   receiptFile,
+  receiptOptions = {},
   commandTrace = null,
 }) {
   const {
@@ -13,6 +14,7 @@ export function createDesktopRouterComposition({
     handlers,
     commands,
     receiptFile,
+    receiptOptions,
     reconcileMutation: async ({ action }) => ({
       resolved: false,
       terminal: true,
