@@ -14,6 +14,7 @@ export function createProviderRuntimeWiring({
   runtimeTimers,
   selectedTaskWatchIntervalMs,
   terminalAuditIntervalMs = 30_000,
+  terminalAuditEnabled = true,
   logger = console,
 }) {
   function persistManagedRunHistory(...args) {
@@ -91,7 +92,7 @@ export function createProviderRuntimeWiring({
   }
 
   function scheduleCodexTerminalAudit(delayMs = terminalAuditIntervalMs) {
-    if (isStopping()) return;
+    if (!terminalAuditEnabled || isStopping()) return;
     runtimeTimers.schedule("codex-terminal-audit", async () => {
       await auditRecentCodexTerminalTurns();
       scheduleCodexTerminalAudit();

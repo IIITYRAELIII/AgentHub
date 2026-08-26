@@ -238,6 +238,7 @@ export function createRuntimeOrchestrationComposition({
     runtimeTimers,
     selectedTaskWatchIntervalMs,
     terminalAuditIntervalMs,
+    terminalAuditEnabled: false,
     logger: taskObserverLogger,
   }));
   const {
