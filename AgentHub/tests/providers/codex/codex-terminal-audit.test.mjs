@@ -1148,6 +1148,38 @@ test("historical rollout backfill bounds each pass and flushes projection once",
   assert.equal(audit.snapshot().historicalSubagentBackfill.projectionPending, false);
 });
 
+test("terminal audit scans current rollouts before historical maintenance", async () => {
+  const order = [];
+  const audit = new CodexTerminalAudit({
+    now: () => Date.parse("2026-08-26T10:00:00.000Z"),
+    listPage: async () => ({
+      data: [thread("live-thread", "2026-08-26T09:59:00.000Z", "live.jsonl")],
+      nextCursor: null,
+    }),
+    discoverHistoricalThreads: async () => [thread(
+      "historical-thread",
+      "2026-07-01T00:00:00.000Z",
+      "historical.jsonl",
+    )],
+    resolveProject: () => project,
+    statFile: async () => ({ size: 10, mtimeMs: Date.parse("2026-08-26T09:59:00.000Z") }),
+    scanFile: async (file) => {
+      order.push(`live:${file}`);
+      return { terminals: [], activeTurns: [], nextOffset: 10 };
+    },
+    scanHistoricalFile: async (value) => {
+      order.push(`historical:${value.path}`);
+      return { turns: [] };
+    },
+    reconcile: async () => true,
+  });
+  audit.restore({ version: 11, completedThrough: "2026-08-26T09:58:00.000Z" });
+
+  await audit.run();
+
+  assert.deepEqual(order, ["live:historical.jsonl", "historical:historical.jsonl"]);
+});
+
 test("historical subagent backfill records a stale unterminated turn as aborted", async () => {
   const recovered = [];
   const audit = new CodexTerminalAudit({

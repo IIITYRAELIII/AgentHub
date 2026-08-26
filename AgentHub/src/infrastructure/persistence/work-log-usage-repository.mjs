@@ -113,6 +113,18 @@ export class WorkLogUsageRepository {
     this.#recordSnapshot = changes.snapshot;
   }
 
+  async saveRecord(key, record) {
+    const normalizedKey = String(key ?? "");
+    const serialized = JSON.stringify(record);
+    if (!normalizedKey || this.#recordSnapshot.get(normalizedKey) === serialized) {
+      return { upserted: 0, revision: this.#loadedRevision };
+    }
+    const result = await this.#database.upsertRecords([record]);
+    this.#loadedRevision = result.revision;
+    this.#recordSnapshot.set(normalizedKey, serialized);
+    return result;
+  }
+
   enqueue(operation) {
     const queued = this.#tail.catch(() => {}).then(() => withInterprocessLocks(
       [this.#databaseFile],

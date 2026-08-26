@@ -2435,6 +2435,56 @@ test("historical automatic usage can defer the expensive journal projection", as
   }
 });
 
+test("historical deferred usage persists one row without scanning the full ledger", async () => {
+  const ledger = {
+    version: 9,
+    turns: Object.fromEntries(Array.from({ length: 3_000 }, (_, index) => [
+      `codex\u0000seed-thread\u0000seed-${index}`,
+      {
+        provider: "codex",
+        threadId: "seed-thread",
+        turnId: `seed-${index}`,
+        projectRoot: "D:\\workspace",
+        status: "completed",
+      },
+    ])),
+  };
+  let fullSaves = 0;
+  const rowSaves = [];
+  const store = createWorkLogUsageStore({
+    defaultProjectRoot: "D:\\workspace",
+    repositoryFactory: () => ({
+      ledger,
+      enqueue: async (operation) => operation(),
+      save: async () => { fullSaves += 1; },
+      saveRecord: async (key, record) => { rowSaves.push([key, record.turnId]); },
+      payload: async () => ({ html: "", version: "" }),
+      replaceProjection: async () => ({ projected: true }),
+      close: async () => {},
+    }),
+  });
+
+  const result = await store.recordAutomaticAndProject({
+    provider: "codex",
+    threadId: "historical-thread",
+    turnId: "historical-turn",
+    projectRoot: "D:\\workspace",
+    usageReported: true,
+    usage: { inputTokens: 10 },
+    completedAt: "2026-08-20T00:00:00.000Z",
+    status: "completed",
+    resolveAccount: false,
+    deferProjection: true,
+  });
+
+  assert.equal(result.projectionDeferred, true);
+  assert.equal(fullSaves, 0);
+  assert.deepEqual(rowSaves, [[
+    "codex\u0000historical-thread\u0000historical-turn",
+    "historical-turn",
+  ]]);
+});
+
 test("automatic single-turn records resolve an exact account key", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "work-log-account-key-"));
   try {

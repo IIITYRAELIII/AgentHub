@@ -130,6 +130,13 @@ export class WorkLogUsageStore {
     return this.#repository.save(options);
   }
 
+  #saveRecord(key, record) {
+    if (typeof this.#repository.saveRecord === "function") {
+      return this.#repository.saveRecord(key, record);
+    }
+    return this.#save();
+  }
+
   #enqueueMutation(_workLogFile, operation) {
     return this.#repository.enqueue(operation);
   }
@@ -703,7 +710,11 @@ export class WorkLogUsageStore {
         status,
       });
       this.#ledger.turns[key] = mergeLedgerRecord(existing, incoming);
-      await this.#save();
+      if (deferProjection) {
+        await this.#saveRecord(key, this.#ledger.turns[key]);
+      } else {
+        await this.#save();
+      }
       if (deferProjection) {
         return {
           recorded: !existing,

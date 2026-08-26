@@ -819,13 +819,6 @@ export class CodexTerminalAudit {
     const supplementalThreadIds = new Set();
 
     try {
-      madeProgress = await this.#runHistoricalSubagentBackfill();
-      if (!this.historicalSubagentBackfill.pending
-        && this.historicalSubagentBackfill.projectionPending) {
-        await this.flushHistoricalProjection();
-        this.historicalSubagentBackfill.projectionPending = false;
-        madeProgress = true;
-      }
       madeProgress = await this.#pollPendingTurns(lowerBoundMs) || madeProgress;
       if (typeof this.discoverSupplementalThreads === "function"
         && startedAtMs - this.lastSupplementalDiscoveryMs >= this.supplementalDiscoveryIntervalMs) {
@@ -905,6 +898,13 @@ export class CodexTerminalAudit {
       if (allHandled) {
         this.subagentBackfillPending = false;
         this.completedThroughMs = startedAtMs;
+        madeProgress = true;
+      }
+      madeProgress = await this.#runHistoricalSubagentBackfill() || madeProgress;
+      if (!this.historicalSubagentBackfill.pending
+        && this.historicalSubagentBackfill.projectionPending) {
+        await this.flushHistoricalProjection();
+        this.historicalSubagentBackfill.projectionPending = false;
         madeProgress = true;
       }
       return madeProgress;
