@@ -4015,6 +4015,12 @@ html[data-view="dashboard"] .task-board-view {
   width: 3.8rem;
 }
 
+.board-task-attachment-count {
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1.2;
+}
+
 .board-task-card-attachments {
   border-top: 1px solid var(--line);
   padding-top: 0.75rem;
@@ -5601,9 +5607,9 @@ html[data-surface="mobile"]
 :root[data-stream-status-effect="energy"] .task-workspace-item[data-running]::before,
 :root[data-stream-status-effect="energy"] .stream-tab[data-running] .stream-tab-card::before,
 :root[data-stream-status-effect="energy"]
-  .task-workspace-item[data-unread][data-answer-arrived]:not([data-running])::before,
+  .task-workspace-item[data-unread]:not([data-running])::before,
 :root[data-stream-status-effect="energy"]
-  .stream-tab[data-answer-ready][data-answer-arrived] .stream-tab-card::before {
+  .stream-tab[data-answer-ready] .stream-tab-card::before {
   background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 46%, transparent), var(--accent));
   border-radius: 3px;
   box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 50%, transparent);
@@ -5623,9 +5629,9 @@ html[data-surface="mobile"]
 }
 
 :root[data-stream-status-effect="energy"]
-  .task-workspace-item[data-unread]:not([data-running])::before,
+  .task-workspace-item[data-unread][data-answer-arrived]:not([data-running])::before,
 :root[data-stream-status-effect="energy"]
-  .stream-tab[data-answer-ready] .stream-tab-card::before {
+  .stream-tab[data-answer-ready][data-answer-arrived] .stream-tab-card::before {
   animation: stream-energy-ready 0.92s ease-out 2;
 }
 

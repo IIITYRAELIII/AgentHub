@@ -19,6 +19,7 @@ const HUB_ID_PATTERN = COMMAND_ID_PATTERN;
 const REMOTE_ATTACHMENT_PREFIX = "remote-attachment:";
 const ATTACHMENT_TIMEOUT_MS = 60_000;
 const ATTACHMENT_DOWNLOAD_ATTEMPTS = 3;
+const ATTACHMENT_COMMAND_CONCURRENCY = 3;
 
 function retryableCommandError(error) {
   const status = Number(error?.status);
@@ -335,6 +336,31 @@ export class SharedDashboardBotClient {
     return { handled, retryError };
   }
 
+  async #handleCommandPool(commands, concurrency) {
+    let nextIndex = 0;
+    const workers = Array.from(
+      { length: Math.min(concurrency, commands.length) },
+      async () => {
+        let handled = 0;
+        let retryError = null;
+        for (;;) {
+          const index = nextIndex;
+          nextIndex += 1;
+          if (index >= commands.length) break;
+          const result = await this.#handleCommand(commands[index]);
+          handled += result.handled;
+          retryError ??= result.retryError;
+        }
+        return { handled, retryError };
+      },
+    );
+    const results = await Promise.all(workers);
+    return results.reduce((total, result) => ({
+      handled: total.handled + result.handled,
+      retryError: total.retryError ?? result.retryError,
+    }), { handled: 0, retryError: null });
+  }
+
   async poll() {
     if (this.#closed) return 0;
     const abortController = new AbortController();
@@ -353,8 +379,12 @@ export class SharedDashboardBotClient {
           ? attachmentCommands
           : textCommands).push(command);
       }
-      const lanes = [textCommands, attachmentCommands].filter((commands) => commands.length > 0);
-      const results = await Promise.all(lanes.map((commands) => this.#handleCommandLane(commands)));
+      const lanes = [];
+      if (textCommands.length) lanes.push(this.#handleCommandLane(textCommands));
+      if (attachmentCommands.length) {
+        lanes.push(this.#handleCommandPool(attachmentCommands, ATTACHMENT_COMMAND_CONCURRENCY));
+      }
+      const results = await Promise.all(lanes);
       let handled = 0;
       let retryError = null;
       for (const result of results) {

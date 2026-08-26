@@ -190,6 +190,11 @@
     };
   }
 
+  function taskAttachmentCountLabel(attachments) {
+    const count = Array.isArray(attachments) ? attachments.length : 0;
+    return count ? `${count} вложений` : "";
+  }
+
   function orderedDashboardColumnIds(columnOrder = [], availableColumnIds = []) {
     const available = new Set(availableColumnIds);
     const result = [];
@@ -230,6 +235,7 @@
     replaceBoardColumnRegionsPreservingScroll,
     replaceBoardColumnsPreservingScroll,
     taskBoardSnapshotChanges,
+    taskAttachmentCountLabel,
     taskWorkflowPresentation,
     tasksForMode,
     workspaceTasksForPanel,
@@ -705,7 +711,12 @@
       node("h3", { class: "board-task-title", text: task.title || task.text }),
       taskStatusBadge(task),
     ]));
-    if (task.attachments?.length) card.append(attachmentStrip(task.attachments, { compact: true }));
+    const attachmentCountLabel = taskAttachmentCountLabel(task.attachments);
+    if (attachmentCountLabel) {
+      card.append(node("div", { class: "board-task-attachments is-compact" }, [
+        node("span", { class: "board-task-attachment-count", text: attachmentCountLabel }),
+      ]));
+    }
     return card;
   }
 

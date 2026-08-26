@@ -2618,7 +2618,6 @@ function renderTaskItem(task, { workspaceGrouped = false } = {}) {
     "data-selected": selected ? "" : null,
     "data-running": task.running ? "" : null,
     "data-unread": task.unread ? "" : null,
-    "data-answer-arrived": transientAnswerArrivalTaskIds.has(task.id) ? "" : null,
     role: "button",
     tabindex: "0",
     "aria-pressed": String(selected),

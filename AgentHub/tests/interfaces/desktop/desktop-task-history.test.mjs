@@ -905,7 +905,7 @@ test("desktop task history keeps a saved final beside a later active user turn",
 
   const result = await factory({ limit: 10 });
 
-  assert.deepEqual(result.items.map((item) => item.id), ["current-user-turn", "previous-user-turn"]);
+  assert.deepEqual(result.items.map((item) => item.id), ["previous-user-turn", "current-user-turn"]);
   const previous = result.items.find((item) => item.id === "previous-user-turn");
   const current = result.items.find((item) => item.id === "current-user-turn");
   assert.equal(previous.answer, "Релиз завершён");

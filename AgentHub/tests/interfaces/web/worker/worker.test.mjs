@@ -47,6 +47,31 @@ test("bounded readers cancel an oversized streamed body without Content-Length",
   assert.deepEqual(state(), { produced: 3, cancelled: true });
 });
 
+test("Dashboard bot materializes an attachment before crossing the public Worker boundary", async () => {
+  const worker = await loadWorker();
+  const chunks = [Buffer.from("first"), Buffer.from("second")];
+  const upstream = new Response(new ReadableStream({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(chunk);
+      controller.close();
+    },
+  }), {
+    status: 200,
+    headers: {
+      "Content-Length": String(chunks.reduce((total, chunk) => total + chunk.length, 0)),
+      "Content-Type": "application/octet-stream",
+      "X-Agent-Hub-Attachment-Hash": "a".repeat(64),
+    },
+  });
+
+  const response = await worker.materializeDashboardBotAttachmentResponse(upstream);
+
+  assert.equal(upstream.bodyUsed, true);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("X-Agent-Hub-Attachment-Hash"), "a".repeat(64));
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()), Buffer.concat(chunks));
+});
+
 class MemoryStorage {
   values = new Map();
   alarmAt = null;

@@ -462,6 +462,82 @@ test("shared Dashboard bot does not hold text Tasks behind a stalled attachment"
   assert.deepEqual(handled, [textCommand.id, attachmentCommand.id]);
 });
 
+test("shared Dashboard bot does not hold attachment Tasks behind another stalled attachment", async (context) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-shared-bot-attachment-lanes-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const secretFile = path.join(directory, "shared-dashboard-bot.secret");
+  await writeFile(secretFile, "s".repeat(64), "utf8");
+  const stalledAttachmentId = "018f6c86-3f34-7a31-8f27-16f5b96cceb2";
+  const readyAttachmentId = "018f6c86-3f34-7a31-8f27-16f5b96cceb3";
+  const stalledCommand = {
+    id: "018f6c86-3f34-7a31-8f27-16f5b96cceb4",
+    userId: "42",
+    action: "board-task-ingest",
+    params: {
+      text: "Старая голосовая пачка",
+      sourceKey: "shared-dashboard:200",
+      attachments: [`remote-attachment:${stalledAttachmentId}`],
+    },
+  };
+  const readyCommand = {
+    id: "018f6c86-3f34-7a31-8f27-16f5b96cceb5",
+    userId: "42",
+    action: "board-task-ingest",
+    params: {
+      text: "Свежая пачка со скриншотом",
+      sourceKey: "shared-dashboard:201",
+      attachments: [`remote-attachment:${readyAttachmentId}`],
+    },
+  };
+  let releaseStalledAttachment;
+  let readyHandled;
+  const stalledGate = new Promise((resolve) => { releaseStalledAttachment = resolve; });
+  const readyHandledPromise = new Promise((resolve) => { readyHandled = resolve; });
+  const handled = [];
+  const bodies = new Map([
+    [stalledAttachmentId, Buffer.from("stalled")],
+    [readyAttachmentId, Buffer.from("ready")],
+  ]);
+  const client = new SharedDashboardBotClient({
+    publicUrl: "https://hub.example.com",
+    hubId: "018f6c86-3f34-7a31-8f27-16f5b96cceb6",
+    secretFile,
+    attachmentDirectory: path.join(directory, "attachments"),
+    fetchImpl: async (url, options) => {
+      if (url.endsWith("/api/dashboard-bot/pull")) {
+        return Response.json({ commands: [stalledCommand, readyCommand] });
+      }
+      if (url.endsWith("/api/dashboard-bot/attachment/pull")) {
+        const { id } = JSON.parse(options.body);
+        if (id === stalledAttachmentId) await stalledGate;
+        const body = bodies.get(id);
+        return new Response(body, {
+          headers: {
+            "Content-Type": "application/octet-stream",
+            "Content-Length": String(body.length),
+            "X-Agent-Hub-Attachment-Hash": createHash("sha256").update(body).digest("hex"),
+            "X-Agent-Hub-File-Name": encodeURIComponent(`${id}.bin`),
+          },
+        });
+      }
+      if (url.endsWith("/api/dashboard-bot/result")) return Response.json({ ok: true });
+      return Response.json({ error: "unexpected request" }, { status: 500 });
+    },
+    handler: async (request) => {
+      handled.push(request.context.commandId);
+      if (request.context.commandId === readyCommand.id) readyHandled();
+      return { taskId: `task-${request.context.commandId}` };
+    },
+  });
+
+  const polling = client.poll();
+  await readyHandledPromise;
+  assert.deepEqual(handled, [readyCommand.id]);
+  releaseStalledAttachment();
+  assert.equal(await polling, 2);
+  assert.deepEqual(handled, [readyCommand.id, stalledCommand.id]);
+});
+
 test("shared Dashboard bot leaves an exhausted transient command available for retry", async (context) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-shared-bot-image-deferred-"));
   context.after(() => rm(directory, { recursive: true, force: true }));

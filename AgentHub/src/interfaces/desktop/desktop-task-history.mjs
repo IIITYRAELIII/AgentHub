@@ -20,8 +20,9 @@ const MAX_CACHED_HISTORIES = 12;
 const MAX_CACHED_TURNS_PER_HISTORY = 40;
 
 function historyItemTimestamp(item) {
+  const startedAt = Date.parse(String(item?.startedAt ?? ""));
+  if (Number.isFinite(startedAt)) return startedAt;
   const values = [
-    item?.startedAt,
     ...(Array.isArray(item?.messages) ? item.messages.map((message) => message?.time) : []),
     item?.completedAt,
   ].map((value) => Date.parse(String(value ?? ""))).filter(Number.isFinite);

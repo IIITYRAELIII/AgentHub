@@ -174,6 +174,17 @@ export async function readBoundedBody(request, maxBytes, label) {
   return new TextDecoder().decode(await readBoundedBytes(request, maxBytes, label));
 }
 
+export async function materializeDashboardBotAttachmentResponse(response) {
+  const body = response.body
+    ? await readBoundedBytes(response, MAX_ATTACHMENT_BYTES, "dashboard bot attachment")
+    : null;
+  return new Response(body?.byteLength ? body : null, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
+}
+
 export async function readBoundedBinary(request, maxBytes, label) {
   const body = await readBoundedBytes(request, maxBytes, label);
   return body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength);
@@ -3541,11 +3552,12 @@ export default {
         ) {
           return json({ error: "invalid dashboard bot attachment request" }, 400);
         }
-        return hubStore.fetch(new Request("https://journal.internal/attachment/pull", {
+        const attachmentResponse = await hubStore.fetch(new Request("https://journal.internal/attachment/pull", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ id, commandId, userId: identity.userId }),
         }));
+        return materializeDashboardBotAttachmentResponse(attachmentResponse);
       }
       if (url.pathname.endsWith("/pull")) {
         const limit = Number(payload?.limit ?? 10);
