@@ -512,6 +512,7 @@ test("an active Stream preserves its answer-ready state", async () => {
 
 test("answer arrival animation does not replay during Thread selection", async () => {
   const { answerArrivalTaskIds } = await streamTabsApi();
+  const observedFinals = new Map();
   const architectFinal = {
     provider: "codex",
     threadId: "thread-architect",
@@ -533,20 +534,45 @@ test("answer arrival animation does not replay during Thread selection", async (
     { id: "statistics", selected: true, unread: false, latestFinal: statisticsFinal },
   ];
 
-  assert.deepEqual(Array.from(answerArrivalTaskIds([], previous)), []);
-  assert.deepEqual(Array.from(answerArrivalTaskIds(previous, selectedAnotherThread)), []);
-  assert.deepEqual(Array.from(answerArrivalTaskIds(selectedAnotherThread, [
+  assert.deepEqual(Array.from(answerArrivalTaskIds(previous, observedFinals)), []);
+  assert.deepEqual(Array.from(answerArrivalTaskIds(selectedAnotherThread, observedFinals)), []);
+  assert.deepEqual(Array.from(answerArrivalTaskIds([
     selectedAnotherThread[0],
     { ...selectedAnotherThread[1], unread: true },
-  ])), []);
-  assert.deepEqual(Array.from(answerArrivalTaskIds(selectedAnotherThread, [
+  ], observedFinals)), []);
+  assert.deepEqual(Array.from(answerArrivalTaskIds([
     selectedAnotherThread[0],
     {
       ...selectedAnotherThread[1],
       unread: true,
       latestFinal: { ...statisticsFinal, turnId: "turn-2" },
     },
-  ])), ["statistics"]);
+  ], observedFinals)), ["statistics"]);
+});
+
+test("transient snapshot without latest final does not replay answer arrival", async () => {
+  const { answerArrivalTaskIds } = await streamTabsApi();
+  const observedFinals = new Map();
+  const final = {
+    provider: "codex",
+    threadId: "thread-architect",
+    turnId: "turn-1",
+    revision: 1,
+  };
+  const current = [{ id: "architect", unread: true, latestFinal: final }];
+
+  assert.deepEqual(Array.from(answerArrivalTaskIds(current, observedFinals)), []);
+  assert.deepEqual(Array.from(answerArrivalTaskIds([
+    { id: "architect", unread: true, latestFinal: null },
+  ], observedFinals)), []);
+  assert.deepEqual(Array.from(answerArrivalTaskIds(current, observedFinals)), []);
+  assert.deepEqual(Array.from(answerArrivalTaskIds([
+    {
+      id: "architect",
+      unread: true,
+      latestFinal: { ...final, turnId: "turn-2" },
+    },
+  ], observedFinals)), ["architect"]);
 });
 
 test("task hierarchy is recovered by Stream identity when a transient task lacks Workspace fields", async () => {

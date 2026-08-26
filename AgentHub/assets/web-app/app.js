@@ -1319,6 +1319,7 @@ const state = {
   visibleStreamTaskIds: [],
 };
 let transientAnswerArrivalTaskIds = new Set();
+const observedAnswerFinalIdentityByTaskId = new Map();
 
 /* Черновики принадлежат конкретному клиенту и задаче. Вложение остаётся в
  * памяти страницы: data:-URL скриншотов может превысить лимит localStorage.
@@ -7524,7 +7525,10 @@ const AgentHub = {
       if (workspaceMessageSearchInput) workspaceMessageSearchInput.value = "";
     }
     if (!taskDataChanged && !selectionChanged) return;
-    transientAnswerArrivalTaskIds = window.AgentHubStreamTabs.answerArrivalTaskIds(previousTasks, nextTasks);
+    transientAnswerArrivalTaskIds = window.AgentHubStreamTabs.answerArrivalTaskIds(
+      nextTasks,
+      observedAnswerFinalIdentityByTaskId,
+    );
     if (selectionChanged && state.selectedId) saveDraft();
     state.tasks = nextTasks;
     state.selectedId = nextSelectedId;
@@ -7572,9 +7576,11 @@ const AgentHub = {
     if (!task) return;
     const changed = Object.entries(patch ?? {}).some(([key, value]) => !Object.is(task[key], value));
     if (!changed) return;
-    const previousTask = { ...task };
     Object.assign(task, patch);
-    transientAnswerArrivalTaskIds = window.AgentHubStreamTabs.answerArrivalTaskIds([previousTask], [task]);
+    transientAnswerArrivalTaskIds = window.AgentHubStreamTabs.answerArrivalTaskIds(
+      [task],
+      observedAnswerFinalIdentityByTaskId,
+    );
     try {
       renderTasks();
       if (id === state.selectedId) renderChat();

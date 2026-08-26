@@ -327,8 +327,13 @@
     return { running, answerReady, statusLabel };
   }
 
-  function answerArrivalTaskIds(previousTasks, tasks) {
-    const previousById = new Map((previousTasks ?? []).map((task) => [String(task?.id ?? ""), task]));
+  function answerArrivalTaskIds(tasks, observedFinalIdentityByTaskId) {
+    const observedFinals = observedFinalIdentityByTaskId
+      && typeof observedFinalIdentityByTaskId.has === "function"
+      && typeof observedFinalIdentityByTaskId.get === "function"
+      && typeof observedFinalIdentityByTaskId.set === "function"
+      ? observedFinalIdentityByTaskId
+      : new Map();
     const finalIdentity = (task) => {
       const final = task?.latestFinal;
       const provider = String(final?.provider ?? "").trim().toLowerCase();
@@ -339,18 +344,22 @@
         ? `${provider}\0${threadId}\0${turnId}\0${revision}`
         : "";
     };
-    return new Set((tasks ?? [])
-      .filter((task) => {
-        const id = String(task?.id ?? "");
-        const previous = previousById.get(id);
-        const currentFinal = finalIdentity(task);
-        return Boolean(id)
-          && previous
-          && task?.unread === true
-          && Boolean(currentFinal)
-          && currentFinal !== finalIdentity(previous);
-      })
-      .map((task) => String(task.id)));
+    const arrivals = new Set();
+    for (const task of tasks ?? []) {
+      const id = String(task?.id ?? "");
+      if (!id) continue;
+      const currentFinal = finalIdentity(task);
+      if (!observedFinals.has(id)) {
+        observedFinals.set(id, currentFinal);
+        continue;
+      }
+      if (!currentFinal) continue;
+      const observedFinal = observedFinals.get(id);
+      if (currentFinal === observedFinal) continue;
+      observedFinals.set(id, currentFinal);
+      if (task?.unread === true) arrivals.add(id);
+    }
+    return arrivals;
   }
 
   function streamStatusState(task) {
