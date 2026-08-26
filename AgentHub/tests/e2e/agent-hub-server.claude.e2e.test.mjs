@@ -278,18 +278,17 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
     clientUserMessageId: "claude-resume-image",
   }, { runtimeRoot: temporaryRoot });
   assert.equal(imageStart.accepted, true);
-  await waitFor(async () => {
-    const snapshot = await callDesktopControl("snapshot", {}, { runtimeRoot: temporaryRoot });
-    return snapshot.activeCount === 0 ? snapshot : null;
-  }, "resumed Claude image completion", 15_000);
-  const imageHistory = await callDesktopControl("task-history", {
-    provider: "claude",
-    threadId: nestedSessionId,
-    limit: 10,
-  }, { runtimeRoot: temporaryRoot });
-  const imageExchange = imageHistory.items.find((item) => item.prompt.includes(imagePrompt));
-  assert.ok(imageExchange, "resumed Claude image prompt must reach the session transcript");
-  assert.match(imageExchange.answer, /Claude готово:/);
+  const imageExchange = await waitFor(async () => {
+    const imageHistory = await callDesktopControl("task-history", {
+      provider: "claude",
+      threadId: nestedSessionId,
+      limit: 10,
+      refreshSource: true,
+    }, { runtimeRoot: temporaryRoot });
+    return imageHistory.items.find((item) => (
+      item.prompt.includes(imagePrompt) && /Claude готово:/.test(item.answer)
+    )) ?? null;
+  }, "durable resumed Claude image exchange", 15_000);
   assert.doesNotMatch(imageExchange.answer, /deferred tool marker/i);
 
   // Первая задача Claude виснет до снятия удержания и остаётся управляемой ботом.

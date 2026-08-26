@@ -594,10 +594,37 @@ test("local control client survives App Server exit during delayed startup and s
     threadId: firstThreadId,
   }, { runtimeRoot });
   assert.equal(imageStart.accepted, true);
+  const imageRunIdentity = await waitFor(async () => {
+    const state = await readRuntimeState(dataDir);
+    const run = state.activeRuns.find((item) => (
+      item.clientUserMessageId === imageStart.clientUserMessageId
+      && item.provider === "codex"
+      && item.threadId === firstThreadId
+    ));
+    return run?.id && run?.turnId && ["running", "finishing"].includes(run.status)
+      ? { runId: run.id, turnId: run.turnId }
+      : null;
+  }, "desktop image turn admission", 5_000);
+  assert.ok(imageRunIdentity.runId);
+  assert.ok(imageRunIdentity.turnId);
   await waitFor(async () => {
-    const snapshot = await callDesktopControl("snapshot", {}, { runtimeRoot });
-    return snapshot.activeCount === 0 ? snapshot : null;
-  }, "desktop image turn completion", 15_000);
+    const [snapshot, state] = await Promise.all([
+      callDesktopControl("snapshot", {}, { runtimeRoot }),
+      readRuntimeState(dataDir),
+    ]);
+    const receipt = snapshot.messageReceipts.find((item) => (
+      item.clientUserMessageId === imageStart.clientUserMessageId
+    ));
+    const stillActive = state.activeRuns.some((run) => (
+      run.id === imageRunIdentity.runId
+      && ["running", "finishing"].includes(run.status)
+    ));
+    return !stillActive
+      && receipt?.runId === imageRunIdentity.runId
+      && receipt?.turnId === imageRunIdentity.turnId
+      ? snapshot
+      : null;
+  }, "desktop image turn admission release", 15_000);
 
   const renamed = await callDesktopControl("rename-task", {
     title: "Desktop renamed",

@@ -3,8 +3,10 @@ import { spawn } from "node:child_process";
 import { appendFile, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { JournalDatabase } from "../../src/infrastructure/persistence/journal-database.mjs";
+import { runtimeDatabasePath } from "../../src/infrastructure/persistence/runtime-state-store.mjs";
 import {
   CHAT_ID,
   delay,
@@ -798,13 +800,32 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   assert.notEqual(parallelThreadId, firstThreadId);
   await waitFor(async () => (await readJson(statePath)).activeRuns.length === 2,
     "two independently active tasks");
-  const terminalAuditBeforeRestart = await waitFor(async () => {
-    const snapshot = (await readJson(statePath)).codexTerminalAudit;
-    return Date.parse(snapshot?.completedThrough ?? "") > 0 ? snapshot : null;
-  }, "persistent Codex terminal audit cursor");
   const botBeforeParallelRestart = bot;
   botBeforeParallelRestart.kill("SIGTERM");
   await new Promise((resolve) => botBeforeParallelRestart.once("exit", resolve));
+  const terminalAuditBeforeRestart = {
+    version: 12,
+    completedThrough: new Date(Date.now() - 60_000).toISOString(),
+    positions: [["e2e-terminal-audit-thread", {
+      path: path.join(temporaryRoot, "seeded-terminal-audit.jsonl"),
+      offset: 321,
+    }]],
+    pendingTurns: [],
+  };
+  const runtimeDatabase = new DatabaseSync(runtimeDatabasePath(dataDir));
+  try {
+    const persistedStateBeforeRestart = JSON.parse(runtimeDatabase.prepare(
+      "SELECT value_json FROM runtime_state WHERE key = 'main'",
+    ).get().value_json);
+    persistedStateBeforeRestart.codexTerminalAudit = terminalAuditBeforeRestart;
+    runtimeDatabase.prepare(`
+      UPDATE runtime_state
+      SET value_json = ?, updated_at = ?
+      WHERE key = 'main'
+    `).run(JSON.stringify(persistedStateBeforeRestart), new Date().toISOString());
+  } finally {
+    runtimeDatabase.close();
+  }
   await startBot();
   const restoredParallelRuns = await waitFor(async () => {
     const runs = (await readJson(statePath)).activeRuns;
@@ -814,13 +835,9 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   assert.equal(restoredParallelRuns.every((run) => run.executionOwner === "hub"), true);
   assert.equal((await readJson(statePath)).threadIds.codex, parallelThreadId,
     "a transient resume error must not replace the selected active task with a new thread");
-  const terminalAuditAfterRestart = await waitFor(async () => {
-    const snapshot = (await readJson(statePath)).codexTerminalAudit;
-    return Date.parse(snapshot?.completedThrough ?? "") >= Date.parse(
-      terminalAuditBeforeRestart.completedThrough,
-    ) ? snapshot : null;
-  }, "Codex terminal audit cursor restored after process restart");
-  assert.equal(Array.isArray(terminalAuditAfterRestart.positions), true);
+  const terminalAuditAfterRestart = (await readJson(statePath)).codexTerminalAudit;
+  assert.equal(terminalAuditAfterRestart.completedThrough, terminalAuditBeforeRestart.completedThrough);
+  assert.deepEqual(terminalAuditAfterRestart.positions, terminalAuditBeforeRestart.positions);
 
   mark = telegram.calls.length;
   telegram.pushMessage("/tasks");
