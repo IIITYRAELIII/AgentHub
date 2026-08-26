@@ -1,14 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { DesktopReadModelService } from "../../../src/interfaces/desktop/desktop-read-model-service.mjs";
+import { taskHasUnreadAnswer } from "../../../src/infrastructure/persistence/task-read-state-store.mjs";
 
-function serviceFixture({ allowed = false, android = false, snapshot = null } = {}) {
+function serviceFixture({ allowed = false, android = false, snapshot = null, cursor = null } = {}) {
   const snapshots = [];
   const reads = [];
   const service = new DesktopReadModelService({
     snapshot: (params) => { snapshots.push(params); return snapshot ?? params; },
     readStateStore: {
-      get: () => null,
+      get: () => cursor,
       markRead: (value) => { reads.push(value); return value; },
     },
     trustedDeviceUserId: (context) => context?.userId ? `user:${context.userId}` : "owner",
@@ -21,6 +22,7 @@ function serviceFixture({ allowed = false, android = false, snapshot = null } = 
       turnId: "turn-1",
       terminalRevision: 2,
     }),
+    hasUnread: taskHasUnreadAnswer,
   });
   return { service, snapshots, reads };
 }
@@ -125,4 +127,39 @@ test("Desktop read model terminal revision absorbs a late active snapshot", asyn
   assert.equal(task.running, false);
   assert.equal(task.run, null);
   assert.equal(task.latestFinal.revision, 2);
+});
+
+test("Desktop read model keeps a legacy final read after revision migration", async () => {
+  const completedAt = "2026-08-24T20:37:30.206Z";
+  const { service } = serviceFixture({
+    snapshot: { tasks: [{ provider: "codex", threadId: "thread-1" }] },
+    cursor: {
+      answerAtMs: Date.parse(completedAt),
+      answerTurnId: "turn-1",
+      answerRevision: 0,
+    },
+  });
+  service.lastTaskMessage = () => ({
+    provider: "codex",
+    threadId: "thread-1",
+    updatedAt: completedAt,
+    turnId: "turn-1",
+  });
+  const [task] = (await service.snapshot()).tasks;
+  assert.equal(task.latestFinal.migrationGuard, "legacy-terminal-revision");
+  assert.equal(task.unread, false);
+});
+
+test("Desktop read model does not revive stale unread without a canonical final", async () => {
+  const { service } = serviceFixture({
+    snapshot: { tasks: [{
+      provider: "codex",
+      threadId: "thread-1",
+      unread: true,
+    }] },
+  });
+  service.lastTaskMessage = () => null;
+  const [task] = (await service.snapshot()).tasks;
+  assert.equal(task.latestFinal, null);
+  assert.equal(task.unread, false);
 });

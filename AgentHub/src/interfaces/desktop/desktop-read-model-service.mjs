@@ -6,6 +6,7 @@ export class DesktopReadModelService {
     hasAllowedUsers = () => false,
     androidEnabled = () => false,
     lastTaskMessage,
+    hasUnread,
   } = {}) {
     if (typeof snapshot !== "function") throw new TypeError("snapshot is required");
     if (!readStateStore || typeof readStateStore.markRead !== "function") {
@@ -17,6 +18,7 @@ export class DesktopReadModelService {
     if (typeof lastTaskMessage !== "function") {
       throw new TypeError("lastTaskMessage is required");
     }
+    if (typeof hasUnread !== "function") throw new TypeError("hasUnread is required");
     Object.assign(this, {
       snapshotImpl: snapshot,
       readStateStore,
@@ -24,6 +26,7 @@ export class DesktopReadModelService {
       hasAllowedUsers,
       androidEnabled,
       lastTaskMessage,
+      hasUnread,
     });
   }
 
@@ -86,11 +89,15 @@ export class DesktopReadModelService {
     const cursor = latestFinal && typeof this.readStateStore.get === "function"
       ? this.readStateStore.get({ accountId, provider: latestFinal.provider, threadId: latestFinal.threadId })
       : null;
-    const unread = latestFinal ? !(
-      cursor
-      && cursor.answerTurnId === latestFinal.turnId
-      && Number(cursor.answerRevision) === latestFinal.revision
-    ) : task?.unread === true;
+    const unread = latestFinal ? this.hasUnread({
+      accountId,
+      provider: latestFinal.provider,
+      threadId: latestFinal.threadId,
+      answerAt: latestFinal.completedAt,
+      answerTurnId: latestFinal.turnId,
+      answerRevision: latestFinal.revision,
+      migrationGuard: latestFinal.migrationGuard,
+    }, cursor) : false;
     return {
       ...task,
       running: userRunning,

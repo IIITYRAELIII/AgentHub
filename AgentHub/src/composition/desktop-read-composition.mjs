@@ -27,6 +27,7 @@ export function createDesktopReadComposition({
     hasAllowedUsers: readModel.hasAllowedUsers,
     androidEnabled: readModel.androidEnabled,
     lastTaskMessage: readModel.lastTaskMessage,
+    hasUnread: taskHasUnreadAnswer,
   });
 
   const desktopSnapshot = (...args) => desktopReadModel.snapshot(...args);

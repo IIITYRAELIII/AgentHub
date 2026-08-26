@@ -62,6 +62,14 @@ export function taskHasUnreadAnswer(task, cursor) {
   if (!cursor) return true;
   const read = marker(cursor);
   if (!read) return true;
+  if (
+    task?.migrationGuard === "legacy-terminal-revision"
+    && current.atMs === read.atMs
+    && current.turnId
+    && current.turnId === read.turnId
+    && current.revision === 1
+    && read.revision === 0
+  ) return false;
   return compareCanonicalFinal(current, read) > 0;
 }
 

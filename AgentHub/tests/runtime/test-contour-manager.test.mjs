@@ -267,6 +267,9 @@ test("production data clone keeps history but detaches live threads and forces S
     const { paths: contourPaths } = await installTestContour({ root, run: async () => null });
     const productionData = path.join(productionRoot, "data");
     await mkdir(productionData, { recursive: true });
+    await writeFile(path.join(productionRoot, "config.json"), JSON.stringify({
+      allowedUserIds: [859219009],
+    }), "utf8");
     const productionAttachments = path.join(productionRoot, "attachments");
     await mkdir(productionAttachments, { recursive: true });
     await writeFile(path.join(productionAttachments, "history-image.png"), "production image", "utf8");
@@ -360,6 +363,21 @@ test("production data clone keeps history but detaches live threads and forces S
       }],
     });
     await usageSyncStore.close();
+    const productionRuntime = new DatabaseSync(path.join(productionData, "runtime.sqlite"));
+    productionRuntime.exec(`
+      CREATE TABLE task_read_state (
+        account_id TEXT NOT NULL, provider TEXT NOT NULL, thread_id TEXT NOT NULL,
+        answer_at_ms INTEGER NOT NULL, answer_turn_id TEXT NOT NULL DEFAULT '',
+        answer_revision INTEGER NOT NULL DEFAULT 0, read_at_ms INTEGER NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (account_id, provider, thread_id)
+      ) WITHOUT ROWID;
+      INSERT INTO task_read_state VALUES (
+        '859219009', 'codex', 'production-thread', 1787603850206,
+        'turn-legacy', 0, 1787603920065, '2026-08-24T20:38:40.065Z'
+      );
+    `);
+    productionRuntime.close();
     await Promise.all(["", "-wal", "-shm"].map((suffix) => (
       writeFile(path.join(contourPaths.dataDir, `runtime.sqlite${suffix}`), "stale", "utf8")
     )));
@@ -426,9 +444,27 @@ test("production data clone keeps history but detaches live threads and forces S
         contourDeviceId,
       );
       assert.equal(result.attachmentsCloned, true);
+      assert.equal(result.readStateCloned, 1);
       assert.equal(result.runtimeStateReset, true);
       assert.equal(result.codexStateReset, true);
-      await Promise.all(["", "-wal", "-shm"].map(async (suffix) => {
+      const contourRuntime = new DatabaseSync(path.join(contourPaths.dataDir, "runtime.sqlite"), {
+        readOnly: true,
+      });
+      try {
+        assert.deepEqual({ ...contourRuntime.prepare(`
+          SELECT account_id, provider, thread_id, answer_turn_id, answer_revision
+          FROM task_read_state
+        `).get() }, {
+          account_id: "42",
+          provider: "codex",
+          thread_id: "production-thread",
+          answer_turn_id: "turn-legacy",
+          answer_revision: 0,
+        });
+      } finally {
+        contourRuntime.close();
+      }
+      await Promise.all(["-wal", "-shm"].map(async (suffix) => {
         await assert.rejects(
           readFile(path.join(contourPaths.dataDir, `runtime.sqlite${suffix}`)),
           { code: "ENOENT" },

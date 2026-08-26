@@ -109,3 +109,29 @@ test("read cursor stays monotonic across stale exact acknowledgements and reorde
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("legacy revision migration does not resurrect the same read final", () => {
+  const cursor = {
+    answerAtMs: Date.parse("2026-08-24T20:37:30.206Z"),
+    answerTurnId: "turn-legacy",
+    answerRevision: 0,
+  };
+  assert.equal(taskHasUnreadAnswer({
+    answerAt: "2026-08-24T20:37:30.206Z",
+    answerTurnId: "turn-legacy",
+    answerRevision: 1,
+    migrationGuard: "legacy-terminal-revision",
+  }, cursor), false);
+  assert.equal(taskHasUnreadAnswer({
+    answerAt: "2026-08-24T20:37:30.206Z",
+    answerTurnId: "turn-legacy",
+    answerRevision: 2,
+    migrationGuard: "legacy-terminal-revision",
+  }, cursor), true);
+  assert.equal(taskHasUnreadAnswer({
+    answerAt: "2026-08-24T20:37:30.206Z",
+    answerTurnId: "turn-new",
+    answerRevision: 1,
+    migrationGuard: "legacy-terminal-revision",
+  }, cursor), true);
+});

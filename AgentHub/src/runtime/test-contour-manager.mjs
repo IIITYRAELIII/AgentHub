@@ -12,6 +12,7 @@ import {
 import { homedir } from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { DatabaseSync } from "node:sqlite";
 
 import { deployRuntime } from "./runtime-manager.mjs";
 import { normalizeUsageSyncIdentity } from "../domain/usage-sync-identity.mjs";
@@ -624,6 +625,75 @@ async function remapClonedUsageSyncEvents({ productionDataDir, contourDataDir, d
   }
 }
 
+async function cloneProductionReadStateToTestContour({ production, contourDataDir }) {
+  const productionConfig = await readJson(production.configFile, {});
+  const productionAccountId = String(productionConfig?.allowedUserIds?.[0] ?? "").trim();
+  if (!productionAccountId) return { cloned: 0, reason: "production-account-unavailable" };
+  const sourceFile = path.join(production.dataDir, "runtime.sqlite");
+  try {
+    await access(sourceFile);
+  } catch {
+    return { cloned: 0, reason: "production-runtime-unavailable" };
+  }
+  const source = new DatabaseSync(sourceFile, { readOnly: true });
+  let rows;
+  try {
+    const table = source.prepare(`
+      SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'task_read_state'
+    `).get();
+    if (!table) return { cloned: 0, reason: "production-read-state-unavailable" };
+    rows = source.prepare(`
+      SELECT provider, thread_id, answer_at_ms, answer_turn_id, answer_revision, read_at_ms, updated_at
+      FROM task_read_state
+      WHERE account_id = ?
+    `).all(productionAccountId);
+  } finally {
+    source.close();
+  }
+  const destinationFile = path.join(contourDataDir, "runtime.sqlite");
+  const destination = new DatabaseSync(destinationFile);
+  try {
+    destination.exec(`
+      CREATE TABLE task_read_state (
+        account_id TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        thread_id TEXT NOT NULL,
+        answer_at_ms INTEGER NOT NULL,
+        answer_turn_id TEXT NOT NULL DEFAULT '',
+        answer_revision INTEGER NOT NULL DEFAULT 0,
+        read_at_ms INTEGER NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (account_id, provider, thread_id)
+      ) WITHOUT ROWID
+    `);
+    const insert = destination.prepare(`
+      INSERT INTO task_read_state
+        (account_id, provider, thread_id, answer_at_ms, answer_turn_id, answer_revision, read_at_ms, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    destination.exec("BEGIN IMMEDIATE");
+    try {
+      for (const row of rows) insert.run(
+        String(USER_ID),
+        row.provider,
+        row.thread_id,
+        row.answer_at_ms,
+        row.answer_turn_id,
+        row.answer_revision,
+        row.read_at_ms,
+        row.updated_at,
+      );
+      destination.exec("COMMIT");
+    } catch (error) {
+      destination.exec("ROLLBACK");
+      throw error;
+    }
+  } finally {
+    destination.close();
+  }
+  return { cloned: rows.length };
+}
+
 async function cloneProductionDataToTestContourUnlocked({
   root = defaultTestContourRoot(),
   productionRoot = defaultRuntimeRoot(),
@@ -660,10 +730,15 @@ async function cloneProductionDataToTestContourUnlocked({
     rm(paths.fakeCodexStateFile, { force: true }),
     rm(paths.codexMultiplexerStateFile, { force: true }),
   ]);
+  const readState = await cloneProductionReadStateToTestContour({
+    production,
+    contourDataDir: paths.dataDir,
+  });
   return {
     ...result,
     remappedUsageSyncEvents: usageSyncRemap.migrated,
     attachmentsCloned: attachments.sourcePresent,
+    readStateCloned: readState.cloned,
     runtimeStateReset: true,
     codexStateReset: true,
   };
