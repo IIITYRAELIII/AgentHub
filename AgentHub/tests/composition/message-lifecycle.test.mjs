@@ -183,6 +183,7 @@ test("an in-flight completion refresh follows a Stream rotation and discards the
     currentHistoryRequest: (request) => generations.get(request.id) === request.generation,
     stableIdentity: (identity) => ({ ...identity }),
     settleOptionalRead: async (read) => ({ status: "fulfilled", value: await read() }),
+    backgroundHttpScheduler: { run: (read) => read() },
     control: async () => {
       const index = responses.length;
       const responseIdentity = { ...currentIdentity };
