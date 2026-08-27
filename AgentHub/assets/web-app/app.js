@@ -2282,28 +2282,24 @@ function syncStreamTabsOverflow() {
   const menuItems = [...(overflow?.querySelectorAll(".stream-overflow-item") ?? [])];
   if (!track || !overflow || !count) return;
   groups.forEach((group) => { group.hidden = false; });
-  overflow.hidden = true;
-  if (track.scrollWidth <= track.clientWidth + 1) {
-    menuItems.forEach((item) => { item.hidden = true; });
-    return;
-  }
   overflow.hidden = false;
-  let used = 0;
-  let visible = 0;
-  let exhausted = false;
-  groups.forEach((group, index) => {
-    const width = group.getBoundingClientRect().width;
-    const fits = !exhausted && (index === 0 || used + width <= track.clientWidth);
-    group.hidden = !fits;
-    if (fits) {
-      used += width;
-      visible += 1;
-    } else exhausted = true;
+  overflow.dataset.measuring = "";
+  const trackStyle = window.getComputedStyle(track);
+  const gap = Number.parseFloat(trackStyle.columnGap || trackStyle.gap || "0") || 0;
+  const availableWithOverflow = track.clientWidth;
+  const overflowWidth = overflow.getBoundingClientRect().width;
+  const groupWidths = groups.map((group) => group.getBoundingClientRect().width);
+  const layout = window.AgentHubStreamTabs.resolveStreamOverflowLayout({
+    groupWidths,
+    availableWithoutOverflow: availableWithOverflow + overflowWidth,
+    availableWithOverflow,
+    gap,
   });
-  const hidden = Math.max(0, groups.length - visible);
-  count.textContent = String(hidden);
-  overflow.hidden = hidden === 0;
-  menuItems.forEach((item, index) => { item.hidden = index < visible; });
+  delete overflow.dataset.measuring;
+  groups.forEach((group, index) => { group.hidden = index >= layout.visibleCount; });
+  count.textContent = String(layout.hiddenCount);
+  overflow.hidden = !layout.overflowVisible;
+  menuItems.forEach((item, index) => { item.hidden = index < layout.visibleCount; });
 }
 
 function renderStreamTabs() {
@@ -2330,6 +2326,7 @@ function renderStreamTabs() {
   const orderToggleTitle = orderIsManual
     ? "Ручной порядок. Переключить на порядок по последней активности."
     : "История активности. Переключить на ручной порядок.";
+  const overflowWasVisible = streamTabs.querySelector("[data-stream-tabs-overflow]")?.hidden === false;
   const orderToggle = el("button", {
     type: "button",
     class: "stream-tab-utility stream-order-toggle",
@@ -2451,7 +2448,7 @@ function renderStreamTabs() {
   const overflow = el("span", {
     class: "stream-tabs-overflow",
     "data-stream-tabs-overflow": "",
-    hidden: true,
+    hidden: !overflowWasVisible,
   }, [overflowButton, overflowMenu]);
   streamTabs.dataset.workspaceId = workspaceId;
   streamTabs.replaceChildren(leftControls, track, overflow);

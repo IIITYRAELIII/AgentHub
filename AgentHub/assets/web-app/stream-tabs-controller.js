@@ -396,6 +396,46 @@
     return Math.max(0, Number(overflowLeft) + Number(currentShift) - Number(lastVisibleRight));
   }
 
+  function resolveStreamOverflowLayout({
+    groupWidths = [],
+    availableWithoutOverflow = 0,
+    availableWithOverflow = 0,
+    gap = 0,
+  } = {}) {
+    const widths = groupWidths
+      .map((width) => Math.max(0, Number(width) || 0))
+      .filter((width) => width > 0);
+    const spacing = Math.max(0, Number(gap) || 0);
+    const fullWidth = widths.reduce((sum, width) => sum + width, 0)
+      + Math.max(0, widths.length - 1) * spacing;
+    if (fullWidth <= Math.max(0, Number(availableWithoutOverflow) || 0) + 1) {
+      return {
+        hiddenCount: 0,
+        overflowVisible: false,
+        visibleCount: widths.length,
+      };
+    }
+    const available = Math.max(0, Number(availableWithOverflow) || 0);
+    let used = 0;
+    let visible = 0;
+    let exhausted = false;
+    widths.forEach((width, index) => {
+      const nextWidth = width + (visible > 0 ? spacing : 0);
+      const fits = !exhausted && (index === 0 || used + nextWidth <= available + 1);
+      if (fits) {
+        used += nextWidth;
+        visible += 1;
+      } else {
+        exhausted = true;
+      }
+    });
+    return {
+      hiddenCount: Math.max(0, widths.length - visible),
+      overflowVisible: true,
+      visibleCount: visible,
+    };
+  }
+
   function includeTaskInActivityRail(task, kind) {
     const workspaceName = String(task?.workspaceName ?? "").trim();
     return workspaceName !== "Other" || kind === "running" || kind === "completed";
@@ -1278,6 +1318,7 @@
     preserveStreamOverflowMenuOpen,
     representativeSnapshotTasks,
     reconcileOpenStreamIds,
+    resolveStreamOverflowLayout,
     resolveStableStreamCardWidth,
     rotationMaintenancePresentation,
     streamDeckRenderKey,

@@ -214,6 +214,29 @@ test("desktop Stream settings are theme-independent and keep stable geometry", a
   assert.equal(resolveStableStreamCardWidth(widths, "new-stream"), 0);
 });
 
+test("Stream overflow layout reserves the More slot while measuring tabs", async () => {
+  const { resolveStreamOverflowLayout } = await streamTabsApi();
+
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(resolveStreamOverflowLayout({
+      groupWidths: [120, 110, 100],
+      availableWithoutOverflow: 350,
+      availableWithOverflow: 280,
+      gap: 9,
+    }))),
+    { hiddenCount: 0, overflowVisible: false, visibleCount: 3 },
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(resolveStreamOverflowLayout({
+      groupWidths: [120, 110, 100],
+      availableWithoutOverflow: 320,
+      availableWithOverflow: 250,
+      gap: 9,
+    }))),
+    { hiddenCount: 1, overflowVisible: true, visibleCount: 2 },
+  );
+});
+
 test("desktop Stream settings replace duplicate toolbar controls and keep titles left-aligned", async () => {
   const app = await readFile(new URL("../../assets/web-app/app.js", import.meta.url), "utf8");
   const controller = await readFile(new URL("../../assets/web-app/stream-tabs-controller.js", import.meta.url), "utf8");
@@ -222,6 +245,8 @@ test("desktop Stream settings replace duplicate toolbar controls and keep titles
   assert.match(app, /hidden: window\.AgentHubStreamTabs\.streamCardSettingsAvailable/u);
   assert.match(controller, /orderToggle\.hidden = true;/u);
   assert.match(dialogStyles, /\.stream-order-toggle\[hidden\] \{[\s\S]*display: none !important;/u);
+  assert.match(dialogStyles, /\.stream-tabs-overflow\[data-measuring\] \{[\s\S]*visibility: hidden;/u);
+  assert.match(dialogStyles, /\.stream-tabs-more \{[\s\S]*min-width: 4\.25rem;/u);
   assert.doesNotMatch(dialogStyles, /\.toolbar \.view-settings \{[\s\S]*display: none !important;/u);
   assert.match(dialogStyles, /\.stream-tabs-track \.stream-tab-title \{[\s\S]*text-align: left !important;/u);
   assert.match(

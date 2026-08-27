@@ -381,6 +381,11 @@ html[data-view="chat"][data-surface][data-theme] {
   display: none;
 }
 
+.stream-tabs-overflow[data-measuring] {
+  pointer-events: none;
+  visibility: hidden;
+}
+
 .stream-tabs-more {
   align-items: center;
   appearance: none;
@@ -395,6 +400,8 @@ html[data-view="chat"][data-surface][data-theme] {
   font-weight: 500;
   gap: 4px;
   height: 26px;
+  justify-content: center;
+  min-width: 4.25rem;
   padding: 0 9px;
   white-space: nowrap;
 }
