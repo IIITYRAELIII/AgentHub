@@ -455,7 +455,9 @@ test("local control client survives App Server exit during delayed startup and s
     followUpMode: "steer",
   }, { runtimeRoot });
   assert.equal(steered.accepted, true);
-  assert.equal(steered.steered, true);
+  assert.equal(steered.steerPending, true);
+  assert.equal(steered.deferred, false);
+  assert.equal(steered.queued, false);
   assert.equal(steered.turnId, firstTurnId);
   assert.equal(steered.clientUserMessageId, steerMessageId);
   const deferred = await callDesktopControl("send-message", {
