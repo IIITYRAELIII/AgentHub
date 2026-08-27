@@ -10,6 +10,7 @@ import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import process from "node:process";
+import { createInterface } from "node:readline";
 
 // Заглушка Claude Code для E2E. Поддерживает маркеры в промпте:
 //   [hold:NAME] — держать ход, пока в FAKE_CLAUDE_HOLD_DIR не появится файл NAME;
@@ -21,6 +22,8 @@ import process from "node:process";
 const args = process.argv.slice(2);
 const resumeIndex = args.indexOf("--resume");
 const explicitSessionIndex = args.indexOf("--session-id");
+const streamInput = args.includes("--input-format")
+  && args[args.indexOf("--input-format") + 1] === "stream-json";
 const sessionId = resumeIndex >= 0
   ? args[resumeIndex + 1]
   : explicitSessionIndex >= 0
@@ -40,13 +43,36 @@ for (let index = 0; index <= promptIndex; index += 1) {
   }
   if (index === promptIndex) addDirectoryConsumesPrompt = readingAdditionalDirectories;
 }
-const prompt = addDirectoryConsumesPrompt ? "" : args.at(-1) ?? "";
+const argumentPrompt = addDirectoryConsumesPrompt ? "" : args.at(-1) ?? "";
+const prompt = streamInput ? await readStreamPrompt() : argumentPrompt;
 const holdDirectory = process.env.FAKE_CLAUDE_HOLD_DIR ?? "";
 const transcriptRoot = process.env.FAKE_CLAUDE_TRANSCRIPT_ROOT ?? "";
 const holdMatch = /\[hold:([^\]]+)\]/.exec(prompt);
 const childMatch = /\[child:([^\]]+)\]/.exec(prompt);
 const shouldFail = prompt.includes("[fail]");
 const cwd = process.cwd();
+
+async function readStreamPrompt() {
+  const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
+  for await (const line of lines) {
+    let message = null;
+    try {
+      message = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (message?.type !== "user") continue;
+    const content = message?.message?.content;
+    if (Array.isArray(content)) {
+      return content
+        .filter((item) => item?.type === "text")
+        .map((item) => String(item.text ?? ""))
+        .join("\n");
+    }
+    return String(content ?? "");
+  }
+  return "";
+}
 
 if (prompt === "/usage") {
   sleep(Number(process.env.FAKE_CLAUDE_USAGE_DELAY_MS ?? 0));

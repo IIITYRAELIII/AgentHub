@@ -56,7 +56,7 @@ test("usage sync controls live in Statistics instead of the Journal header", () 
   );
   assert.match(
     app,
-    /updateStatisticsSyncCardVisibility\(\);\s*\n\s*return;/u,
+    /updateStatisticsSyncCardVisibility\(\);\s*\n\s*maybePromptUsageSyncDeviceLabel\(status\);\s*\n\s*return;/u,
   );
 });
 
