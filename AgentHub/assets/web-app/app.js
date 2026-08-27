@@ -13071,26 +13071,33 @@ async function setUsageSyncDeviceLabel(deviceLabel) {
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
   updateJournalSyncStatus(payload.usageSync);
-  await requestJournal({ force: true, announce: true });
   return payload;
+}
+
+function refreshJournalAfterUsageSyncDeviceLabel() {
+  void requestJournal({ force: true, announce: true })
+    .catch((error) => showToast(`Ник сохранён, но журнал не обновился: ${error.message}`));
 }
 
 async function promptUsageSyncDeviceLabel(status = journalSyncLatestStatus) {
   const suggested = usageSyncSuggestedDeviceLabel(status);
   const current = usageSyncDeviceLabel(status);
-  const value = window.prompt("Никнейм этого устройства для Sync:", suggested || current);
-  if (value === null) return;
+  const value = await askText({ title: "Никнейм этого устройства для Sync", value: suggested || current });
+  if (value === null) return false;
   const next = String(value).trim();
   if (!next) {
     showToast("Никнейм устройства не изменён: пустое значение");
-    return;
+    return false;
   }
   await setUsageSyncDeviceLabel(next);
   showToast("Никнейм устройства сохранён");
+  refreshJournalAfterUsageSyncDeviceLabel();
+  return true;
 }
 
 function maybePromptUsageSyncDeviceLabel(status = null) {
   if (!status?.deviceLabelPromptRequired || journalSyncDeviceLabelPromptInFlight) return;
+  if (dialog && !dialog.hidden) return;
   const suggested = usageSyncSuggestedDeviceLabel(status);
   const key = [
     String(status.deviceId ?? ""),
@@ -13113,10 +13120,14 @@ journalSyncDeviceLabelButton?.addEventListener("click", () => {
   if (!journalSyncDeviceLabelButton || journalSyncDeviceLabelButton.disabled) return;
   journalSyncDeviceLabelButton.disabled = true;
   journalSyncDeviceLabelButton.setAttribute("aria-busy", "true");
+  const previousText = journalSyncDeviceLabelButton.textContent;
+  journalSyncDeviceLabelButton.textContent = "Ник…";
   void promptUsageSyncDeviceLabel()
     .catch((error) => showToast(`Не удалось сохранить ник устройства: ${error.message}`))
     .finally(() => {
       journalSyncDeviceLabelButton.removeAttribute("aria-busy");
+      if (journalSyncLatestStatus) updateUsageSyncDeviceLabelButton(journalSyncLatestStatus);
+      else journalSyncDeviceLabelButton.textContent = previousText;
       journalSyncDeviceLabelButton.disabled = journalSyncDeviceLabelButton.hidden;
     });
 });
@@ -13138,12 +13149,12 @@ async function requestUsageSyncInvite() {
   } catch {
     showToast("Код Sync создан");
   }
-  window.prompt("Код подключения Sync для другого устройства:", code);
+  await askText({ title: "Код подключения Sync для другого устройства", value: code });
 }
 
 async function enrollJournalSync() {
   const serverUrl = String(journalSyncLatestStatus?.serverUrl ?? "").trim();
-  const code = window.prompt("Введите код подключения Sync:");
+  const code = await askText({ title: "Введите код подключения Sync" });
   if (!code) return;
   const response = await fetch("/api/journal/usage-sync/enroll", {
     method: "POST",

@@ -220,18 +220,38 @@ test("VS Code bridge proxies usage sync POST requests with a local webview sessi
       },
     });
 
-    const result = await bridge.http({
-      method: "POST",
-      path: "/api/journal/usage-sync/enroll",
-      headers: { "Content-Type": "application/json; charset=utf-8" },
-      body: JSON.stringify({ serverUrl: "https://sync.example.test", code: "code-1" }),
-    });
+    const cases = [
+      {
+        path: "/api/journal/usage-sync/enroll",
+        body: { serverUrl: "https://sync.example.test", code: "code-1" },
+      },
+      {
+        path: "/api/journal/usage-sync/invite",
+        body: {},
+      },
+      {
+        path: "/api/journal/usage-sync/device-label",
+        body: { deviceLabel: "SidorukSV" },
+      },
+    ];
+    for (const entry of cases) {
+      const result = await bridge.http({
+        method: "POST",
+        path: entry.path,
+        headers: { "Content-Type": "application/json; charset=utf-8" },
+        body: JSON.stringify(entry.body),
+      });
+      assert.equal(result.status, 200);
+    }
 
-    assert.equal(result.status, 200);
-    assert.equal(calls[0].url, "http://127.0.0.1:8787/api/journal/usage-sync/enroll");
-    assert.equal(calls[0].options.method, "POST");
-    assert.equal(calls[0].options.headers.get("Authorization"), "webview session-token");
+    assert.deepEqual(calls.map((call) => new URL(call.url).pathname), cases.map((entry) => entry.path));
+    for (const call of calls) {
+      assert.equal(call.url, `http://127.0.0.1:8787${new URL(call.url).pathname}`);
+      assert.equal(call.options.method, "POST");
+      assert.equal(call.options.headers.get("Authorization"), "webview session-token");
+    }
     assert.equal(JSON.parse(calls[0].options.body).code, "code-1");
+    assert.equal(JSON.parse(calls[2].options.body).deviceLabel, "SidorukSV");
   } finally {
     bridge?.close();
     await rm(root, { recursive: true, force: true });

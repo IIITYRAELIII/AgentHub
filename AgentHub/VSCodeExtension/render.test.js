@@ -1654,6 +1654,14 @@ test("chat short-polls commands and skips only unchanged loaded history renders"
   assert.match(app, /setServerStatus\(payload\)[\s\S]*root\.dataset\.view === "server"/u);
 });
 
+test("Sync controls use the shared text dialog in VS Code webviews", () => {
+  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
+  assert.doesNotMatch(app, /window\.prompt/u);
+  assert.match(app, /await askText\(\{ title: "Никнейм этого устройства для Sync"/u);
+  assert.match(app, /await askText\(\{ title: "Код подключения Sync для другого устройства"/u);
+  assert.match(app, /await askText\(\{ title: "Введите код подключения Sync"/u);
+});
+
   test("dispatching deferred messages leave the queue and reappear in the active conversation", () => {
   const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
   const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
