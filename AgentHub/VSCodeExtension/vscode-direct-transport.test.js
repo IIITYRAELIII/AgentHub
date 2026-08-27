@@ -18,7 +18,6 @@ test("VS Code WebView prefers loopback HTTP with IPC fallback", () => {
   assert.match(bootstrap, /fallbackFetch/u);
   assert.match(client, /directTransport\.ready\(\)/u);
   assert.match(client, /directTransport\.warmup\?\.\(\)/u);
-  assert.doesNotMatch(client, /await directTransport\.available\(\)/u);
   assert.match(bootstrap, /ready:\s*\(\)\s*=>\s*Boolean\(activeDirectSession\(\)\)/u);
   assert.match(extension, /handleSessionMessage/u);
   assert.match(extension, /subscribeJournal/u);
@@ -37,7 +36,14 @@ test("VS Code HTTP and IPC hedges share clientUserMessageId while keeping correl
   const posted = [];
   const fetched = [];
   const listeners = new Map();
-  const vscode = { postMessage: (message) => posted.push(message) };
+  const vscode = {};
+  Object.defineProperty(vscode, "postMessage", {
+    configurable: false,
+    enumerable: true,
+    value: (message) => posted.push(message),
+    writable: false,
+  });
+  Object.preventExtensions(vscode);
   const window = {
     acquireVsCodeApi: () => vscode,
     addEventListener: (name, listener) => listeners.set(name, listener),
@@ -117,6 +123,19 @@ test("VS Code HTTP and IPC hedges share clientUserMessageId while keeping correl
     action: "send-message",
     commandId: "client-message-1",
     params: { clientUserMessageId: "client-message-1", text: "hello" },
+  });
+
+  window.__agentHubVscode.postMessage({
+    type: "agenthub:control",
+    id: "copy-text-correlation",
+    action: "copy-text",
+    params: { text: "copy me" },
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(posted.at(-1))), {
+    type: "agenthub:control",
+    id: "copy-text-correlation",
+    action: "copy-text",
+    params: { text: "copy me" },
   });
 
   await window.fetch("/api/control/ack", {

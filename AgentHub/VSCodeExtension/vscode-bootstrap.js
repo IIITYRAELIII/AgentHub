@@ -1,25 +1,26 @@
 "use strict";
 
-const vscode = window.acquireVsCodeApi();
+const nativeVscode = window.acquireVsCodeApi();
 const commandAliases = new Map();
-const nativeVscodePostMessage = vscode.postMessage.bind(vscode);
-window.__agentHubVscode = new Proxy(vscode, {
-  get(target, property) {
-    if (property === "postMessage") {
-      return (message) => {
-        const clientUserMessageId = message?.type === "agenthub:control"
-          && message?.action === "send-message"
-          ? String(message.params?.clientUserMessageId ?? "").trim()
-          : "";
-        return nativeVscodePostMessage(clientUserMessageId
-          ? { ...message, commandId: clientUserMessageId }
-          : message);
-      };
-    }
-    const value = Reflect.get(target, property, target);
-    return typeof value === "function" ? value.bind(target) : value;
+const nativeVscodePostMessage = nativeVscode.postMessage.bind(nativeVscode);
+const vscode = Object.freeze({
+  postMessage(message, transfer) {
+    const clientUserMessageId = message?.type === "agenthub:control"
+      && message?.action === "send-message"
+      ? String(message.params?.clientUserMessageId ?? "").trim()
+      : "";
+    return nativeVscodePostMessage(clientUserMessageId
+      ? { ...message, commandId: clientUserMessageId }
+      : message, transfer);
   },
+  ...(typeof nativeVscode.getState === "function"
+    ? { getState: nativeVscode.getState.bind(nativeVscode) }
+    : {}),
+  ...(typeof nativeVscode.setState === "function"
+    ? { setState: nativeVscode.setState.bind(nativeVscode) }
+    : {}),
 });
+window.__agentHubVscode = vscode;
 const nativeFetch = window.fetch.bind(window);
 const pending = new Map();
 const pendingHealth = new Map();
