@@ -150,8 +150,6 @@ async function usageSyncIdentity(config, agentHubRoot) {
     dataDir: path.resolve(config.dataDir),
   });
   await store.load();
-  const label = await usageSyncDeviceLabel(agentHubRoot);
-  if (label && label !== store.label) await store.setLabel(label);
   return store;
 }
 
@@ -292,6 +290,7 @@ export async function createHubInfrastructure({
     defaultProjectRoot: config.projectRoot,
     usageSyncStore: workLogUsageSyncStore,
     usageSyncDeviceId: workLogUsageSyncDeviceId,
+    usageSyncDeviceLabel: workLogUsageIdentityStore.label,
     workspaceCatalogStore,
   });
   const streamHandoff = new StreamHandoffService({
@@ -436,6 +435,7 @@ export async function createHubInfrastructure({
     codexRolloutContextSanitizer,
     workLogUsageStore,
     workLogUsageIdentityStore,
+    suggestUsageSyncDeviceLabel: () => usageSyncDeviceLabel(agentHubRoot),
     workLogUsageRemoteConfigStore,
     workspaceCatalogStore,
     streamHandoff,

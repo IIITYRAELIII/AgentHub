@@ -83,6 +83,7 @@ export function normalizeUsageSyncIdentity(value, { now = () => new Date() } = {
     privateKey,
     createdAt,
     updatedAt: normalizeTimestamp(value.updatedAt, createdAt),
+    labelConfirmedAt: normalizeTimestamp(value.labelConfirmedAt, ""),
     legacyDeviceIds: normalizeLegacyDeviceIds(value.legacyDeviceIds),
   };
 }

@@ -63,6 +63,11 @@ const journalTotalDuration = document.querySelector("[data-journal-total-duratio
 const journalSyncStatus = document.querySelector("[data-journal-sync-status]");
 const journalSyncButton = document.querySelector("[data-journal-sync]");
 const journalSyncConnectButton = document.querySelector("[data-journal-sync-connect]");
+const journalSyncDeviceLabelButton = document.createElement("button");
+journalSyncDeviceLabelButton.className = "journal-sync-button";
+journalSyncDeviceLabelButton.type = "button";
+journalSyncDeviceLabelButton.hidden = true;
+journalSyncDeviceLabelButton.textContent = "Ник устройства";
 const themeColor = document.querySelector("[data-theme-color]");
 
 const taskList = document.querySelector("[data-task-list]");
@@ -11081,6 +11086,8 @@ document.querySelector("[data-comparison-retry]")?.addEventListener("click", () 
 const OPEN_STATE_KEY = "agent-hub:journal-open-state:v1";
 let currentVersion = "";
 let currentJournalEtag = "";
+let journalSyncDeviceLabelPromptInFlight = false;
+const journalSyncDeviceLabelPrompted = new Set();
 const loadingDays = new Map();
 const loadingTurns = new Map();
 const journalDayHtmlCache = new Map();
@@ -12899,29 +12906,66 @@ function formatJournalSyncClock(value) {
   return date.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
 }
 
+function usageSyncDeviceLabel(status = null) {
+  return String(status?.deviceLabel ?? "").trim();
+}
+
+function usageSyncSuggestedDeviceLabel(status = null) {
+  return String(status?.suggestedDeviceLabel || status?.deviceLabel || "").trim();
+}
+
+function usageSyncCanSetDeviceLabel(status = null) {
+  return Boolean(
+    status?.deviceLabelPromptRequired
+    || usageSyncDeviceLabel(status)
+    || usageSyncSuggestedDeviceLabel(status),
+  );
+}
+
 function mountStatisticsSyncControls() {
   if (!statisticsSyncHost) return;
-  for (const control of [journalSyncStatus, journalSyncButton, journalSyncConnectButton]) {
+  for (const control of [journalSyncStatus, journalSyncButton, journalSyncConnectButton, journalSyncDeviceLabelButton]) {
     if (control && control.parentElement !== statisticsSyncHost) statisticsSyncHost.append(control);
   }
 }
 
 function updateStatisticsSyncCardVisibility() {
   if (!statisticsSyncCard) return;
-  const visible = [journalSyncStatus, journalSyncButton, journalSyncConnectButton]
+  const visible = [journalSyncStatus, journalSyncButton, journalSyncConnectButton, journalSyncDeviceLabelButton]
     .some((control) => control && !control.hidden);
   statisticsSyncCard.hidden = !visible;
+}
+
+function updateUsageSyncDeviceLabelButton(status = null) {
+  if (!journalSyncDeviceLabelButton) return;
+  const visible = usageSyncCanSetDeviceLabel(status);
+  const label = usageSyncDeviceLabel(status);
+  const suggested = usageSyncSuggestedDeviceLabel(status);
+  journalSyncDeviceLabelButton.hidden = !visible;
+  journalSyncDeviceLabelButton.disabled = !visible;
+  journalSyncDeviceLabelButton.textContent = status?.deviceLabelPromptRequired ? "Задать ник" : "Ник устройства";
+  journalSyncDeviceLabelButton.title = [
+    "Задать никнейм этого устройства для Sync.",
+    label ? `Текущий ник: ${label}` : "",
+    suggested && suggested !== label ? `Предложение: ${suggested}` : "",
+  ].filter(Boolean).join("\n");
 }
 
 function updateJournalSyncStatus(status = null) {
   mountStatisticsSyncControls();
   journalSyncLatestStatus = status;
-  if (!journalSyncStatus && !journalSyncButton && !journalSyncConnectButton) return;
+  updateUsageSyncDeviceLabelButton(status);
+  if (!journalSyncStatus && !journalSyncButton && !journalSyncConnectButton && !journalSyncDeviceLabelButton) return;
   if (!status?.configured) {
     const canConnect = Boolean(status?.serverUrl);
     if (journalSyncStatus) {
-      journalSyncStatus.hidden = !canConnect;
-      journalSyncStatus.textContent = canConnect ? "Sync не подключён" : "Sync —";
+      const label = usageSyncDeviceLabel(status);
+      journalSyncStatus.hidden = !canConnect && !label && !status?.deviceLabelPromptRequired;
+      journalSyncStatus.textContent = [
+        canConnect ? "Sync не подключён" : "Sync",
+        label ? `ник ${label}` : "",
+        status?.deviceLabelPromptRequired ? "нужно подтвердить ник" : "",
+      ].filter(Boolean).join(" · ");
       journalSyncStatus.title = canConnect
         ? `Сервер: ${status.serverUrl}\nВведите одноразовый код подключения Sync.`
         : "Синхронизация расхода не настроена";
@@ -12942,6 +12986,7 @@ function updateJournalSyncStatus(status = null) {
         : "Sync server не задан";
     }
     updateStatisticsSyncCardVisibility();
+    maybePromptUsageSyncDeviceLabel(status);
     return;
   }
   const lastSync = status.lastPullAt || status.lastPushAt;
@@ -12951,15 +12996,18 @@ function updateJournalSyncStatus(status = null) {
   const updated = Number(result.updated || 0);
   const changed = added + updated;
   const device = shortDeviceId(status.deviceId);
+  const label = usageSyncDeviceLabel(status);
   if (journalSyncStatus) {
     journalSyncStatus.hidden = false;
     journalSyncStatus.textContent = [
       `Sync ${clock || "ожидает"}`,
       changed ? `+${added} / Δ${updated}` : "без изменений",
-      device ? `device ${device}` : "",
+      label || (device ? `device ${device}` : ""),
+      status.deviceLabelPromptRequired ? "подтвердите ник" : "",
     ].filter(Boolean).join(" · ");
     journalSyncStatus.title = [
       status.serverUrl ? `Сервер: ${status.serverUrl}` : "",
+      label ? `Ник устройства: ${label}` : "",
       status.lastPushAt ? `Последний push: ${new Date(status.lastPushAt).toLocaleString("ru-RU")}` : "",
       status.lastPullAt ? `Последний pull: ${new Date(status.lastPullAt).toLocaleString("ru-RU")}` : "",
       Number(result.after || 0) ? `Событий локально: ${Number(result.after || 0)}` : "",
@@ -12978,6 +13026,7 @@ function updateJournalSyncStatus(status = null) {
     journalSyncConnectButton.title = "Создать одноразовый код для подключения другого устройства";
   }
   updateStatisticsSyncCardVisibility();
+  maybePromptUsageSyncDeviceLabel(status);
 }
 
 async function syncJournalUsageNow() {
@@ -13008,6 +13057,69 @@ async function syncJournalUsageNow() {
 
 journalSyncButton?.addEventListener("click", () => {
   void syncJournalUsageNow();
+});
+
+async function setUsageSyncDeviceLabel(deviceLabel) {
+  const response = await fetch("/api/journal/usage-sync/device-label", {
+    method: "POST",
+    cache: "no-store",
+    headers: {
+      ...await authenticatedRequestHeaders(),
+      "Content-Type": "application/json; charset=utf-8",
+    },
+    body: JSON.stringify({ deviceLabel }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+  updateJournalSyncStatus(payload.usageSync);
+  await requestJournal({ force: true, announce: true });
+  return payload;
+}
+
+async function promptUsageSyncDeviceLabel(status = journalSyncLatestStatus) {
+  const suggested = usageSyncSuggestedDeviceLabel(status);
+  const current = usageSyncDeviceLabel(status);
+  const value = window.prompt("Никнейм этого устройства для Sync:", suggested || current);
+  if (value === null) return;
+  const next = String(value).trim();
+  if (!next) {
+    showToast("Никнейм устройства не изменён: пустое значение");
+    return;
+  }
+  await setUsageSyncDeviceLabel(next);
+  showToast("Никнейм устройства сохранён");
+}
+
+function maybePromptUsageSyncDeviceLabel(status = null) {
+  if (!status?.deviceLabelPromptRequired || journalSyncDeviceLabelPromptInFlight) return;
+  const suggested = usageSyncSuggestedDeviceLabel(status);
+  const key = [
+    String(status.deviceId ?? ""),
+    String(status.deviceLabel ?? ""),
+    suggested,
+  ].join("\0");
+  if (journalSyncDeviceLabelPrompted.has(key)) return;
+  journalSyncDeviceLabelPrompted.add(key);
+  journalSyncDeviceLabelPromptInFlight = true;
+  setTimeout(() => {
+    void promptUsageSyncDeviceLabel(status)
+      .catch((error) => showToast(`Не удалось сохранить ник устройства: ${error.message}`))
+      .finally(() => {
+        journalSyncDeviceLabelPromptInFlight = false;
+      });
+  }, 0);
+}
+
+journalSyncDeviceLabelButton?.addEventListener("click", () => {
+  if (!journalSyncDeviceLabelButton || journalSyncDeviceLabelButton.disabled) return;
+  journalSyncDeviceLabelButton.disabled = true;
+  journalSyncDeviceLabelButton.setAttribute("aria-busy", "true");
+  void promptUsageSyncDeviceLabel()
+    .catch((error) => showToast(`Не удалось сохранить ник устройства: ${error.message}`))
+    .finally(() => {
+      journalSyncDeviceLabelButton.removeAttribute("aria-busy");
+      journalSyncDeviceLabelButton.disabled = journalSyncDeviceLabelButton.hidden;
+    });
 });
 
 async function requestUsageSyncInvite() {

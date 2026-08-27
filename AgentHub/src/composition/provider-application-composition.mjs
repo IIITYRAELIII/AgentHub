@@ -77,6 +77,7 @@ export async function createProviderApplicationComposition({
     turnEndNotifications,
     workLogUsageStore,
     workLogUsageIdentityStore,
+    suggestUsageSyncDeviceLabel,
     workLogUsageRemoteConfigStore,
     workspaceCatalogStore,
     preTurnInstructions,
@@ -107,6 +108,7 @@ export async function createProviderApplicationComposition({
     clientFactory: (options) => new UsageSyncRemoteClient(options),
     projectRoot: config.projectRoot,
     projectionProjectRoots: globalWorkLogProjectRoots,
+    suggestedDeviceLabel: suggestUsageSyncDeviceLabel,
     accountBackfill: async () => {
       const claudeAccount = await readClaudeAccount();
       return applyWorkLogAccountBackfill({

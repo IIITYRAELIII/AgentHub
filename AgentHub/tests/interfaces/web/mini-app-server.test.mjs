@@ -259,6 +259,71 @@ test("journal usage sync endpoint runs manual sync and exposes refreshed status"
   }
 });
 
+test("journal usage sync status asks for device nickname and endpoint confirms it", async () => {
+  let usageSync = {
+    serverUrl: "https://sync.example.test/agenthub",
+    deviceId: "device-local",
+    enrolledAt: "2026-08-20T11:00:00.000Z",
+    lastPullAt: "",
+    lastResult: null,
+  };
+  let deviceLabel = "DESKTOP-FNNC1JA";
+  let confirmedAt = "";
+  const calls = [];
+  const server = new MiniAppServer({
+    host: "127.0.0.1",
+    port: 0,
+    journalDatabase: memoryJournal(DAY_HTML),
+    usageSyncRemoteConfigStore: {
+      load: async () => structuredClone(usageSync),
+    },
+    usageSyncService: {
+      deviceLabelStatus: async () => ({
+        deviceId: "device-local",
+        deviceLabel,
+        suggestedDeviceLabel: "SidorukSV",
+        deviceLabelConfirmed: Boolean(confirmedAt),
+        deviceLabelConfirmedAt: confirmedAt,
+        deviceLabelPromptRequired: !confirmedAt,
+      }),
+      setDeviceLabel: async (next) => {
+        calls.push(["set-label", next]);
+        deviceLabel = String(next ?? "").trim();
+        confirmedAt = "2026-08-21T07:00:00.000Z";
+        usageSync = {
+          ...usageSync,
+          lastPullAt: "2026-08-21T07:00:01.000Z",
+          lastResult: { imported: true, added: 0, updated: 1, projected: true, before: 10, after: 10 },
+        };
+        return { updated: true, deviceLabel };
+      },
+    },
+  });
+  try {
+    const address = await server.start();
+    const status = await fetch(`${address.url}api/journal`);
+    assert.equal(status.status, 200);
+    const statusPayload = await status.json();
+    assert.equal(statusPayload.usageSync.deviceLabel, "DESKTOP-FNNC1JA");
+    assert.equal(statusPayload.usageSync.suggestedDeviceLabel, "SidorukSV");
+    assert.equal(statusPayload.usageSync.deviceLabelPromptRequired, true);
+
+    const response = await fetch(`${address.url}api/journal/usage-sync/device-label`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ deviceLabel: "SidorukSV" }),
+    });
+    assert.equal(response.status, 200);
+    const payload = await response.json();
+    assert.equal(payload.ok, true);
+    assert.equal(payload.usageSync.deviceLabel, "SidorukSV");
+    assert.equal(payload.usageSync.deviceLabelPromptRequired, false);
+    assert.deepEqual(calls, [["set-label", "SidorukSV"]]);
+  } finally {
+    await server.close();
+  }
+});
+
 test("journal usage sync invite and enroll endpoints support guided connection", async () => {
   const journal = memoryJournal(DAY_HTML);
   let usageSync = {

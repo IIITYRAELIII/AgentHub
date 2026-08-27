@@ -67,6 +67,34 @@ test("device label is editable and persisted without touching the device id", as
   }
 });
 
+test("device label confirmation is persisted separately from automatic label updates", async () => {
+  const root = await temporaryRoot();
+  const file = path.join(root, "usage-sync-identity.json");
+  try {
+    const store = new UsageSyncIdentityStore({
+      file,
+      dataDir: root,
+      hostname: "work-pc",
+      now: () => new Date("2026-08-21T07:00:00.000Z"),
+    });
+    await store.load();
+    await store.setLabel("suggested-login");
+    assert.equal(store.label, "suggested-login");
+    assert.equal(store.labelConfirmedAt, "");
+
+    await store.setLabel("SidorukSV", { confirmed: true });
+    assert.equal(store.label, "SidorukSV");
+    assert.equal(store.labelConfirmedAt, "2026-08-21T07:00:00.000Z");
+
+    const reloaded = new UsageSyncIdentityStore({ file, dataDir: root, hostname: "work-pc" });
+    await reloaded.load();
+    assert.equal(reloaded.label, "SidorukSV");
+    assert.equal(reloaded.labelConfirmedAt, "2026-08-21T07:00:00.000Z");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("signatures verify against the published public key and the private key stays local", async () => {
   const root = await temporaryRoot();
   const file = path.join(root, "usage-sync-identity.json");

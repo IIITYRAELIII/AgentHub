@@ -37,7 +37,16 @@ test("identity normalization accepts a complete record", () => {
   assert.equal(identity.deviceId, validIdentity.deviceId);
   assert.equal(identity.label, "Основной компьютер");
   assert.equal(identity.updatedAt, validIdentity.createdAt);
+  assert.equal(identity.labelConfirmedAt, "");
   assert.deepEqual(identity.legacyDeviceIds, []);
+});
+
+test("identity normalization preserves device label confirmation timestamp", () => {
+  const identity = normalizeUsageSyncIdentity({
+    ...validIdentity,
+    labelConfirmedAt: "2026-08-21T07:00:00.000Z",
+  });
+  assert.equal(identity.labelConfirmedAt, "2026-08-21T07:00:00.000Z");
 });
 
 test("identity normalization rejects records that cannot identify a device", () => {

@@ -100,6 +100,10 @@ export class UsageSyncIdentityStore {
     return [...this.identity.legacyDeviceIds];
   }
 
+  get labelConfirmedAt() {
+    return this.identity.labelConfirmedAt;
+  }
+
   #enqueue(operation) {
     const next = this.#tail.catch(() => {}).then(operation);
     this.#tail = next;
@@ -154,12 +158,21 @@ export class UsageSyncIdentityStore {
     });
   }
 
-  setLabel(value) {
+  setLabel(value, { confirmed = false } = {}) {
     return this.#enqueue(async () => {
       if (!this.#identity) throw new Error("Usage sync identity is not loaded");
       const label = normalizeDeviceLabel(value);
-      if (label === this.#identity.label) return this.#identity;
-      const next = { ...this.#identity, label, updatedAt: this.#now().toISOString() };
+      const timestamp = this.#now().toISOString();
+      const labelConfirmedAt = confirmed ? timestamp : this.#identity.labelConfirmedAt;
+      if (label === this.#identity.label && labelConfirmedAt === this.#identity.labelConfirmedAt) {
+        return this.#identity;
+      }
+      const next = {
+        ...this.#identity,
+        label,
+        updatedAt: timestamp,
+        labelConfirmedAt,
+      };
       await this.#write(next);
       this.#identity = next;
       return this.#identity;

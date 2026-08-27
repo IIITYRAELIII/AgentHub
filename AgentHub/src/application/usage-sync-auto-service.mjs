@@ -30,6 +30,7 @@ export class UsageSyncAutoService {
     initialDelayMs = 30_000,
     intervalMs = 5 * 60_000,
     accountBackfill = null,
+    suggestedDeviceLabel = null,
     isStopping = () => false,
     logger = console,
   } = {}) {
@@ -59,6 +60,7 @@ export class UsageSyncAutoService {
     this.initialDelayMs = initialDelayMs;
     this.intervalMs = intervalMs;
     this.accountBackfill = typeof accountBackfill === "function" ? accountBackfill : null;
+    this.suggestedDeviceLabel = typeof suggestedDeviceLabel === "function" ? suggestedDeviceLabel : null;
     this.isStopping = isStopping;
     this.logger = logger;
     this.syncInFlight = null;
@@ -118,6 +120,40 @@ export class UsageSyncAutoService {
     return { enrolled: true, result, sync };
   }
 
+  async deviceLabelStatus() {
+    const label = String(this.identityStore.label ?? "").trim();
+    const suggested = String(await this.#suggestDeviceLabel() || label).trim();
+    const confirmedAt = String(this.identityStore.labelConfirmedAt ?? "").trim();
+    return {
+      deviceId: this.identityStore.deviceId,
+      deviceLabel: label,
+      suggestedDeviceLabel: suggested,
+      deviceLabelConfirmed: Boolean(confirmedAt),
+      deviceLabelConfirmedAt: confirmedAt,
+      deviceLabelPromptRequired: !confirmedAt,
+    };
+  }
+
+  async setDeviceLabel(value) {
+    const label = String(value ?? "").trim();
+    if (!label) throw new Error("Никнейм устройства пустой");
+    await this.identityStore.setLabel(label, { confirmed: true });
+    this.workLogUsageStore.setUsageSyncDeviceLabel?.(this.identityStore.label);
+    let sync = { skipped: true, reason: "not-run" };
+    try {
+      sync = await this.sync();
+    } catch (error) {
+      sync = { skipped: true, failed: true, reason: error.message };
+    }
+    return {
+      updated: true,
+      deviceId: this.identityStore.deviceId,
+      deviceLabel: this.identityStore.label,
+      deviceLabelConfirmedAt: this.identityStore.labelConfirmedAt,
+      sync,
+    };
+  }
+
   async #syncOnce() {
     const remoteConfig = await this.remoteConfigStore.load();
     const serverUrl = String(remoteConfig?.serverUrl ?? "").trim();
@@ -171,6 +207,16 @@ export class UsageSyncAutoService {
     } catch (error) {
       this.logger.warn?.(`Usage sync account backfill failed: ${error.message}`);
       return { applied: false, failed: true, reason: error.message };
+    }
+  }
+
+  async #suggestDeviceLabel() {
+    if (!this.suggestedDeviceLabel) return "";
+    try {
+      return String(await this.suggestedDeviceLabel() ?? "").trim();
+    } catch (error) {
+      this.logger.warn?.(`Usage sync device label suggestion failed: ${error.message}`);
+      return "";
     }
   }
 }

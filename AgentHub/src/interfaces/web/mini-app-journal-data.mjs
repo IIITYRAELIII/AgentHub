@@ -27,6 +27,11 @@ export function publicUsageSyncStatus(value = null) {
     configured: enrolled,
     serverUrl,
     deviceId: cleanText(value.deviceId, 80),
+    deviceLabel: cleanText(value.deviceLabel, 80),
+    suggestedDeviceLabel: cleanText(value.suggestedDeviceLabel, 80),
+    deviceLabelConfirmed: value.deviceLabelConfirmed === true,
+    deviceLabelConfirmedAt: cleanText(value.deviceLabelConfirmedAt, 80),
+    deviceLabelPromptRequired: value.deviceLabelPromptRequired === true,
     enrolledAt: cleanText(value.enrolledAt, 80),
     lastPushAt: cleanText(value.lastPushAt, 80),
     lastPullAt: cleanText(value.lastPullAt, 80),
@@ -36,8 +41,29 @@ export function publicUsageSyncStatus(value = null) {
 
 export function journalPayloadEtag(payload, usageSync = null) {
   const status = publicUsageSyncStatus(usageSync);
-  if (!status.configured) return String(payload?.version ?? "");
-  return `${String(payload?.version ?? "")}:${status.lastPushAt || "-"}:${status.lastPullAt || "-"}`;
+  const hasLabelState = Boolean(
+    status.deviceLabel
+    || status.suggestedDeviceLabel
+    || status.deviceLabelConfirmedAt
+    || status.deviceLabelPromptRequired,
+  );
+  const labelState = hasLabelState
+    ? [
+        status.deviceLabel || "-",
+        status.suggestedDeviceLabel || "-",
+        status.deviceLabelConfirmedAt || "-",
+        status.deviceLabelPromptRequired ? "prompt" : "ok",
+      ].join(":")
+    : "";
+  if (!status.configured) {
+    return hasLabelState ? `${String(payload?.version ?? "")}:${labelState}` : String(payload?.version ?? "");
+  }
+  return [
+    String(payload?.version ?? ""),
+    status.lastPushAt || "-",
+    status.lastPullAt || "-",
+    labelState,
+  ].filter(Boolean).join(":");
 }
 
 export function publicJournalPayload(payload, { usageSync = null } = {}) {

@@ -33,6 +33,7 @@ export function createWorkLogUsageStore({
   resolveAccount = null,
   usageSyncStore = null,
   usageSyncDeviceId = "",
+  usageSyncDeviceLabel = "",
   workspaceCatalogStore = null,
   beforeProjectionWrite = null,
   logger = console,
@@ -56,6 +57,7 @@ export function createWorkLogUsageStore({
     resolveAccount,
     usageSyncStore,
     usageSyncDeviceId,
+    usageSyncDeviceLabel,
     workspaceCatalogStore,
     beforeProjectionWrite,
     logger,
@@ -69,6 +71,7 @@ export class WorkLogUsageStore {
   #resolveAccount;
   #usageSyncStore;
   #usageSyncDeviceId;
+  #usageSyncDeviceLabel;
   #workspaceCatalogStore;
   #beforeProjectionWrite;
   #logger;
@@ -80,6 +83,7 @@ export class WorkLogUsageStore {
     resolveAccount = null,
     usageSyncStore = null,
     usageSyncDeviceId = "",
+    usageSyncDeviceLabel = "",
     workspaceCatalogStore = null,
     beforeProjectionWrite = null,
     logger = console,
@@ -101,6 +105,7 @@ export class WorkLogUsageStore {
       ? usageSyncStore
       : null;
     this.#usageSyncDeviceId = String(usageSyncDeviceId ?? "").trim();
+    this.#usageSyncDeviceLabel = String(usageSyncDeviceLabel ?? "").trim();
     if (workspaceCatalogStore && (
       typeof workspaceCatalogStore.resolveThread !== "function"
       || typeof workspaceCatalogStore.assignUnknownThread !== "function"
@@ -256,8 +261,13 @@ export class WorkLogUsageStore {
         workspaceResolver: this.#workspaceResolver(),
         syncedUsageEvents,
         localDeviceId: this.#usageSyncDeviceId,
+        localDeviceLabel: this.#usageSyncDeviceLabel,
       }));
     });
+  }
+
+  setUsageSyncDeviceLabel(value) {
+    this.#usageSyncDeviceLabel = String(value ?? "").trim();
   }
 
   ledgerSnapshot() {
@@ -443,6 +453,7 @@ export class WorkLogUsageStore {
       accountCatalog,
       syncedUsageEvents,
       localDeviceId: this.#usageSyncDeviceId,
+      localDeviceLabel: this.#usageSyncDeviceLabel,
     });
   }
 

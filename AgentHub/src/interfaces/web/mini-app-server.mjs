@@ -197,6 +197,8 @@ function validUsageSyncService(service) {
     typeof service.sync === "function"
     || typeof service.createEnrollmentCode === "function"
     || typeof service.enroll === "function"
+    || typeof service.deviceLabelStatus === "function"
+    || typeof service.setDeviceLabel === "function"
   ));
 }
 
@@ -623,18 +625,33 @@ export class MiniAppServer {
   }
 
   async #usageSyncStatus() {
+    let remoteConfig = null;
     if (!this.#usageSyncRemoteConfigStore || typeof this.#usageSyncRemoteConfigStore.load !== "function") {
-      return null;
+      remoteConfig = null;
+    } else {
+      try {
+        remoteConfig = await this.#usageSyncRemoteConfigStore.load();
+      } catch (error) {
+        this.#reportUnexpectedError?.(error, {
+          surface: "mini-app",
+          component: "usage-sync",
+          action: "status",
+        });
+      }
     }
+    if (!this.#usageSyncService?.deviceLabelStatus) return remoteConfig;
     try {
-      return await this.#usageSyncRemoteConfigStore.load();
+      return {
+        ...(remoteConfig ?? {}),
+        ...await this.#usageSyncService.deviceLabelStatus(),
+      };
     } catch (error) {
       this.#reportUnexpectedError?.(error, {
         surface: "mini-app",
         component: "usage-sync",
-        action: "status",
+        action: "device-label-status",
       });
-      return null;
+      return remoteConfig;
     }
   }
 
@@ -659,6 +676,14 @@ export class MiniAppServer {
       serverUrl: body.serverUrl,
       code: body.code,
     });
+    this.#journalCache = null;
+    return result;
+  }
+
+  async #setUsageSyncDeviceLabel(request) {
+    if (!this.#usageSyncService?.setDeviceLabel) throw new Error("Настройка ника устройства недоступна");
+    const body = await readJsonBody(request, 4 * 1024);
+    const result = await this.#usageSyncService.setDeviceLabel(body.deviceLabel);
     this.#journalCache = null;
     return result;
   }
@@ -1327,6 +1352,34 @@ export class MiniAppServer {
         }, method, { headers: { "Cache-Control": "private, no-store" } });
       } catch (error) {
         json(response, 503, { error: `Подключение Sync недоступно: ${error.message}` }, method);
+      }
+      return;
+    }
+    if (url.pathname === "/api/journal/usage-sync/device-label") {
+      if (!await this.#authorize(request, response)) return;
+      if (method !== "POST") {
+        json(response, 405, { error: "Метод не поддерживается" }, method, {
+          headers: { Allow: "POST" },
+        });
+        return;
+      }
+      try {
+        const result = await this.#setUsageSyncDeviceLabel(request);
+        const usageSync = await this.#usageSyncStatus();
+        const journal = await this.#journal().catch(() => null);
+        json(response, 200, {
+          ok: true,
+          result,
+          usageSync: publicJournalPayload({ html: "", updatedAt: "", version: "" }, { usageSync }).usageSync,
+          journal: journal
+            ? {
+                updatedAt: journal.updatedAt,
+                version: journal.version,
+              }
+            : null,
+        }, method, { headers: { "Cache-Control": "private, no-store" } });
+      } catch (error) {
+        json(response, 503, { error: `Никнейм устройства Sync недоступен: ${error.message}` }, method);
       }
       return;
     }

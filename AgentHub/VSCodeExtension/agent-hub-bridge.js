@@ -382,6 +382,7 @@ class AgentHubBridge {
       "/api/journal/usage-sync",
       "/api/journal/usage-sync/invite",
       "/api/journal/usage-sync/enroll",
+      "/api/journal/usage-sync/device-label",
     ]);
     if (requestMethod === "POST" && proxyPaths.has(url.pathname)) {
       try {

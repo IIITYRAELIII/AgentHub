@@ -690,6 +690,7 @@ test("account usage panel includes synced remote devices without duplicating loc
   }, {
     now: Date.parse("2026-08-20T12:00:00.000Z"),
     localDeviceId: "device-local",
+    localDeviceLabel: "SidorukSV",
     accountCatalog: [{ key: "chatgpt:owner", label: "owner@example.com" }],
     syncedUsageEvents: [
       {
@@ -743,7 +744,7 @@ test("account usage panel includes synced remote devices without duplicating loc
     projected,
     /data-work-log-account-device-row [^>]*data-device-id="device-local" [^>]*data-device-source="local"/u,
   );
-  assert.match(projected, /data-work-log-account-device-label>Это устройство<\/span>/u);
+  assert.match(projected, /data-work-log-account-device-label>SidorukSV<\/span>/u);
   assert.match(projected, /data-work-log-account-device-id>device-local<\/span>/u);
   assert.match(projected, /data-work-log-account-device-origin>local<\/span>/u);
   assert.match(projected, /data-work-log-account-device-quality>точно 1<\/span>/u);

@@ -17,6 +17,16 @@ function fixture({
   let scheduled = null;
   let releasePush;
   const delayedPush = new Promise((resolve) => { releasePush = resolve; });
+  const identityStore = {
+    deviceId: "device-local",
+    label: "DESKTOP-FNNC1JA",
+    labelConfirmedAt: "",
+    async setLabel(value, options = {}) {
+      events.push(["set-label", value, options]);
+      this.label = String(value ?? "").trim();
+      if (options.confirmed) this.labelConfirmedAt = "2026-08-21T07:00:00.000Z";
+    },
+  };
   const service = new UsageSyncAutoService({
     timers: {
       schedule: (name, callback, delayMs, options) => {
@@ -33,7 +43,7 @@ function fixture({
       rememberPush: async (result) => events.push(["remember-push", result]),
       rememberPull: async (result) => events.push(["remember-pull", result]),
     },
-    identityStore: { deviceId: "device-local", label: "SidorukSV" },
+    identityStore,
     workLogUsageStore: {
       usageSyncSnapshot: async (options) => {
         events.push(["snapshot", options]);
@@ -43,6 +53,7 @@ function fixture({
         events.push(["import-project", options]);
         return { imported: true, added: 1, updated: 0, projected: true };
       },
+      setUsageSyncDeviceLabel: (label) => events.push(["set-store-label", label]),
     },
     clientFactory: ({ serverUrl: url, identityStore }) => {
       events.push(["client", url, identityStore.deviceId]);
@@ -64,6 +75,7 @@ function fixture({
       if (failBackfill) throw new Error("backfill locked");
       return { applied: true, updated: 2 };
     },
+    suggestedDeviceLabel: async () => "SidorukSV",
     projectRoot: "D:/projects/Utilities",
     projectionProjectRoots: ["D:/projects/Utilities"],
     initialDelayMs: 10,
@@ -129,11 +141,43 @@ test("UsageSyncAutoService pushes, pulls, imports and remembers remote results",
   ]);
   assert.deepEqual(state.events.find(([name]) => name === "snapshot")?.[1], {
     deviceId: "device-local",
-    deviceLabel: "SidorukSV",
+    deviceLabel: "DESKTOP-FNNC1JA",
   });
   const importProject = state.events.find(([name]) => name === "import-project");
   assert.equal(importProject[1].projectRoot, "D:/projects/Utilities");
   assert.deepEqual(importProject[1].projectionProjectRoots, ["D:/projects/Utilities"]);
+});
+
+test("UsageSyncAutoService exposes and confirms the device nickname", async () => {
+  const state = fixture();
+
+  assert.deepEqual(await state.service.deviceLabelStatus(), {
+    deviceId: "device-local",
+    deviceLabel: "DESKTOP-FNNC1JA",
+    suggestedDeviceLabel: "SidorukSV",
+    deviceLabelConfirmed: false,
+    deviceLabelConfirmedAt: "",
+    deviceLabelPromptRequired: true,
+  });
+
+  const result = await state.service.setDeviceLabel("SidorukSV");
+
+  assert.equal(result.updated, true);
+  assert.equal(result.deviceLabel, "SidorukSV");
+  assert.equal(result.deviceLabelConfirmedAt, "2026-08-21T07:00:00.000Z");
+  assert.deepEqual(state.events.find(([name]) => name === "set-label"), [
+    "set-label",
+    "SidorukSV",
+    { confirmed: true },
+  ]);
+  assert.deepEqual(state.events.find(([name]) => name === "set-store-label"), [
+    "set-store-label",
+    "SidorukSV",
+  ]);
+  assert.deepEqual(state.events.find(([name]) => name === "snapshot")?.[1], {
+    deviceId: "device-local",
+    deviceLabel: "SidorukSV",
+  });
 });
 
 test("UsageSyncAutoService warns and still syncs when account backfill fails", async () => {
