@@ -26,6 +26,7 @@ const REPOSITORY_ROOT = path.resolve(ROOT, "..");
 const python = process.platform === "win32" ? "python.exe" : "python3";
 const DEFAULT_STEP_TIMEOUT_MS = 15 * 60 * 1_000;
 const RESTART_READINESS_TIMEOUT_MS = 90_000;
+const RESTART_REQUEST_TIMEOUT_MS = 30_000;
 
 export function npmStep(label, args) {
   const npmCli = String(process.env.npm_execpath ?? "").trim();
@@ -177,7 +178,10 @@ export async function waitForRuntimeReplacement({
 
 export async function restartRuntimeAndVerify(restart, verifyRestart, runtimeRoot) {
   const before = await readDesktopControlEndpoint(runtimeRoot).catch(() => null);
-  const result = await restart("restart-server");
+  const result = await restart("restart-server", {}, {
+    runtimeRoot,
+    timeoutMs: RESTART_REQUEST_TIMEOUT_MS,
+  });
   if (result?.waiting === true || result?.accepted === false) return { ...result, deferred: true };
   await verifyRestart({ previousEndpointId: before?.endpointId ?? null, runtimeRoot });
   return result;

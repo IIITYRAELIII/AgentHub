@@ -10,6 +10,7 @@ import {
   parseArguments,
   publicationSteps,
   publishAll,
+  restartRuntimeAndVerify,
   runStep,
   waitForRuntimeReplacement,
 } from "../../publish-all.mjs";
@@ -142,6 +143,19 @@ test("publication requests the server's safe deferred restart last", async () =>
     "Установка расширения VS Code",
     "restart-server",
     "record-publication",
+  ]);
+});
+
+test("publication restart tolerates a stalled outgoing runtime", async () => {
+  let request = null;
+  await restartRuntimeAndVerify(async (...args) => {
+    request = args;
+    return { accepted: true };
+  }, async () => {}, "C:\\runtime");
+  assert.deepEqual(request, [
+    "restart-server",
+    {},
+    { runtimeRoot: "C:\\runtime", timeoutMs: 30_000 },
   ]);
 });
 
