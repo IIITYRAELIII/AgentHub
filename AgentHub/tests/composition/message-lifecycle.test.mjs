@@ -490,7 +490,7 @@ test("Web control retries only blank gateway failures", async () => {
   });
   assert.equal(result, "accepted");
   assert.deepEqual(attempts, [0, 1, 2]);
-  assert.match(hubClientSource, /const commandId = crypto\.randomUUID\(\);[\s\S]*retryConnectionFailure[\s\S]*JSON\.stringify\(\{ action, params, commandId \}\)/u);
+  assert.match(hubClientSource, /const commandId = crypto\.randomUUID\(\);[\s\S]*retryConnectionFailure[\s\S]*const requestParams = action === "send-message"[\s\S]*JSON\.stringify\(\{ action, params: requestParams, commandId \}\)/u);
 });
 
 test("optional history reads settle without becoming connection failures", async () => {
