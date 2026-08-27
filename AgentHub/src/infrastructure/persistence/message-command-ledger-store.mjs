@@ -301,6 +301,7 @@ function stateFromEvidence({ pending, queued, run, receipt }) {
   const result = receipt?.result;
   if (result?.cancelled === true) return "cancelled";
   if (result?.rejected === true) return "failed";
+  if (result?.steered === true) return "completed";
   if (run) return "started";
   if (queued) return queued.dispatchingAt ? "dispatching" : "queued";
   if (pending) return "attention-required";
@@ -364,6 +365,7 @@ function projectedReceipt(record) {
     result.queued = false;
     result.dispatching = false;
     result.started = true;
+    if (record.state === "completed") result.completed = true;
   } else if (record.state === "cancelled") {
     result.accepted = false;
     result.deferred = false;
@@ -389,7 +391,7 @@ function terminalRetryTombstone(record) {
   const result = {};
   for (const key of [
     "accepted", "pending", "deferred", "queued", "dispatching", "started",
-    "completed", "failed", "cancelled", "rejected", "unknown",
+    "completed", "failed", "cancelled", "rejected", "unknown", "steered",
   ]) {
     if (typeof source[key] === "boolean") result[key] = source[key];
   }

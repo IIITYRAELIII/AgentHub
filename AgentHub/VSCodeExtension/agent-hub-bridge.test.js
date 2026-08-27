@@ -142,15 +142,6 @@ test("installed VS Code bridge resolves backend modules from the active runtime"
       options: { timeoutMs: 10_000 },
       installedLayout: true,
     });
-    assert.deepEqual(await bridge.control("send-message", {
-      clientUserMessageId: "client-message-1",
-      text: "hello",
-    }), {
-      action: "send-message",
-      params: { clientUserMessageId: "client-message-1", text: "hello" },
-      options: { timeoutMs: 10_000, commandId: "client-message-1" },
-      installedLayout: true,
-    });
     assert.deepEqual(await bridge.control("submit-bug-report", { text: "bug" }), {
       action: "submit-bug-report",
       params: { text: "bug" },
@@ -164,6 +155,66 @@ test("installed VS Code bridge resolves backend modules from the active runtime"
       installedLayout: true,
     });
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("VS Code message fallback uses local HTTP with the exact client message id", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-vscode-message-http-"));
+  const calls = [];
+  let bridge;
+  try {
+    await mkdir(path.join(root, "src", "interfaces", "web"), { recursive: true });
+    await writeFile(path.join(root, "config.json"), JSON.stringify({
+      miniApp: { host: "127.0.0.1", port: 8787 },
+    }), "utf8");
+    await writeFile(path.join(root, "local-web.secret"), "secret\n", "utf8");
+    await writeFile(path.join(root, "src", "interfaces", "web", "local-webview-session.mjs"), [
+      "export function createLocalWebviewSession() {",
+      "  return { token: 'session-token', expiresAt: Date.now() + 60_000 };",
+      "}",
+    ].join("\n"), "utf8");
+    bridge = new AgentHubBridge({
+      moduleRoot: root,
+      runtimeRoot: root,
+      fetchImpl: async (url, options) => {
+        calls.push({ url, options });
+        if (url.endsWith("/api/control/ack")) {
+          return new Response(JSON.stringify({ ok: true, retired: true }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        const body = JSON.parse(options.body);
+        return new Response(JSON.stringify({
+          ok: true,
+          receiptId: body.commandId,
+          result: { accepted: true, clientUserMessageId: body.commandId },
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+    });
+
+    const result = await bridge.control("send-message", {
+      clientUserMessageId: "client-message-1",
+      text: "hello",
+    }, { commandId: "client-message-1" });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.deepEqual(result, {
+      accepted: true,
+      clientUserMessageId: "client-message-1",
+    });
+    assert.deepEqual(calls.map(({ url }) => new URL(url).pathname), [
+      "/api/control", "/api/control/ack",
+    ]);
+    assert.equal(JSON.parse(calls[0].options.body).commandId, "client-message-1");
+    assert.equal(JSON.parse(calls[1].options.body).commandId, "client-message-1");
+    assert.equal(calls[0].options.headers.Authorization, "webview session-token");
+  } finally {
+    bridge?.close();
     await rm(root, { recursive: true, force: true });
   }
 });

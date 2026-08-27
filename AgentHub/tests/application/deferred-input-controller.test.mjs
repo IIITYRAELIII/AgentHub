@@ -80,6 +80,66 @@ test("DeferredInputController starts a free queued item exactly once", async () 
   assert.match(state.updates[0][1], /отправлено/);
 });
 
+test("DeferredInputController keeps the observed 13.429 second provider steer behind durable dispatch", async () => {
+  const providerDelayMs = 13_429;
+  let releaseProvider;
+  const provider = new Promise((resolve) => { releaseProvider = resolve; });
+  const state = fixture({
+    steer: async () => {
+      await provider;
+      return { accepted: true, steered: true, runId: "run-1", turnId: "turn-1" };
+    },
+  });
+  state.queuedInputs.set("steer", {
+    id: "steer",
+    clientUserMessageId: "client-steer",
+    clientSource: "local-vscode-webview",
+    conflictKind: "message-steer",
+    taskTitle: "Task",
+  });
+
+  const processing = state.controller.process("steer");
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(providerDelayMs, 13_429);
+  assert.equal(state.queuedInputs.get("steer").dispatchingAt != null, true);
+  assert.deepEqual(state.transitions.map((entry) => entry.state), ["dispatching"]);
+  releaseProvider();
+  await processing;
+  assert.equal(state.queuedInputs.has("steer"), false);
+  assert.deepEqual(state.transitions.map((entry) => entry.state), ["dispatching", "steered"]);
+});
+
+test("DeferredInputController recovers a dispatched steer without a second provider effect", async () => {
+  let providerEffects = 0;
+  const state = fixture({
+    findSteered: async () => ({
+      accepted: true,
+      steered: true,
+      runId: "run-1",
+      turnId: "turn-recovered",
+    }),
+    steer: async () => {
+      providerEffects += 1;
+      return null;
+    },
+  });
+  state.queuedInputs.set("steer", {
+    id: "steer",
+    clientUserMessageId: "client-steer",
+    conflictKind: "message-steer",
+    dispatchingAt: "2026-07-30T08:59:59.000Z",
+    taskTitle: "Task",
+  });
+
+  await state.controller.process("steer");
+
+  assert.equal(providerEffects, 0);
+  assert.equal(state.queuedInputs.has("steer"), false);
+  assert.deepEqual(state.transitions.map((entry) => entry.state), ["steered"]);
+  assert.match(state.updates[0][1], /Уточнение добавлено/u);
+});
+
 test("DeferredInputController expires an abandoned queued item", async () => {
   const expired = [];
   const { controller, queuedInputs } = fixture({

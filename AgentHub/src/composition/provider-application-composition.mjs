@@ -207,6 +207,9 @@ export async function createProviderApplicationComposition({
     beforeCompletion: async (run) => {
       streamContextMaintenance.reserveAfterTurn(run);
     },
+    completionAborted: async (run) => {
+      streamContextMaintenance.cancelAfterTurn(run);
+    },
     afterCompletion: async (run) => {
       const maintenance = streamContextMaintenance.maintainAfterTurn(run);
       if (hostState.restartRequest && !hostState.stopping) {

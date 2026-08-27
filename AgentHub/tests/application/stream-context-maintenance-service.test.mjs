@@ -24,6 +24,7 @@ function fixture({
   observedAfterPercent = null,
   observedMeasurementStatus = "",
   sourceIdle = true,
+  probeIdle = true,
 } = {}) {
   const events = [];
   const registry = new StreamMaintenanceRegistry();
@@ -95,7 +96,7 @@ function fixture({
     },
     waitForContextProbeIdle: async (...args) => {
       events.push(["probe-idle", ...args, registry.isActive(source)]);
-      return args[1] === source.turnId ? sourceIdle : true;
+      return args[1] === source.turnId ? sourceIdle : probeIdle;
     },
     rotate: async () => ({ thread: { id: "thread-new" } }),
     rotateCompacted: async (...args) => {
@@ -309,6 +310,21 @@ test("post-turn automation ignores non-terminal observation cleanup", () => {
   assert.equal(state.registry.isActive(state.source), false);
 });
 
+test("post-turn automation can reacquire ownership for a failed terminal-save retry", () => {
+  const state = fixture({ beforePercent: 90 });
+  state.source.status = "completed";
+
+  assert.equal(state.service.reserveAfterTurn(state.source), true);
+  assert.equal(state.registry.isActive(state.source), true);
+});
+
+test("post-turn automation does not block input below the compaction threshold", () => {
+  const state = fixture({ beforePercent: 17 });
+
+  assert.equal(state.service.reserveAfterTurn(state.source), false);
+  assert.equal(state.registry.isActive(state.source), false);
+});
+
 test("post-turn automation cannot consume another run's reservation", async () => {
   const state = fixture({ beforePercent: 90 });
   state.source.id = "run-owner";
@@ -325,6 +341,21 @@ test("post-turn automation cannot consume another run's reservation", async () =
 
   const result = await state.service.maintainAfterTurn(state.source);
   assert.equal(result.compacted, true);
+  assert.equal(state.registry.isActive(state.source), false);
+});
+
+test("post-turn reservation rollback releases only its exact owner and unblocks manual rotation", async () => {
+  const state = fixture({ beforePercent: 90 });
+  state.source.id = "run-owner";
+  assert.equal(state.service.reserveAfterTurn(state.source), true);
+
+  assert.equal(state.service.cancelAfterTurn({ ...state.source, id: "run-other" }), false);
+  assert.equal(state.registry.isActive(state.source), true);
+  assert.equal(state.service.cancelAfterTurn(state.source), true);
+  assert.equal(state.registry.isActive(state.source), false);
+
+  const rotated = await state.service.rotate(state.source);
+  assert.equal(rotated.thread.id, "thread-new");
   assert.equal(state.registry.isActive(state.source), false);
 });
 
@@ -345,9 +376,9 @@ test("post-turn automation waits for the completed writer to become idle", async
 
 test("post-turn automation does not compact at the exact threshold", async () => {
   const state = fixture({ beforePercent: 75 });
-  assert.equal(state.service.reserveAfterTurn(state.source), true);
+  assert.equal(state.service.reserveAfterTurn(state.source), false);
   const result = await state.service.maintainAfterTurn(state.source);
-  assert.deepEqual(result, { compacted: false, beforePercent: 75 });
+  assert.equal(result, null);
   assert.equal(state.events.some(([name]) => name === "compact"), false);
   assert.equal(state.registry.isActive(state.source), false);
 });
@@ -368,12 +399,13 @@ test("post-turn automation compacts once and does not rotate below 20 percent", 
   assert.equal(state.events.some(([name]) => name === "probe"), false);
 });
 
-test("post-turn automation probes once when compaction usage is provisional", async () => {
+test("exact probe terminal settlement wins over lagging activity state", async () => {
   const state = fixture({
     beforePercent: 86,
     afterPercent: 55,
     preliminaryProvisional: true,
     probePercent: 7,
+    probeIdle: false,
     rotate: false,
   });
   state.service.reserveAfterTurn(state.source);
@@ -383,9 +415,9 @@ test("post-turn automation probes once when compaction usage is provisional", as
   assert.equal(state.events.filter(([name]) => name === "probe").length, 1);
   assert.equal(state.events.find(([name]) => name === "probe").at(-1), true);
   assert.equal(state.events.filter(([name]) => name === "turn-completed").length, 1);
-  assert.equal(state.events.find(([name, _target, turnId]) => (
+  assert.equal(state.events.some(([name, _target, turnId]) => (
     name === "probe-idle" && turnId === "probe-1"
-  )).at(-1), true);
+  )), false);
   assert.equal(
     state.events.filter(([name]) => name === "usage").at(-1).at(-1).turnId,
     "probe-1",

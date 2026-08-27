@@ -4,7 +4,13 @@ import test from "node:test";
 import { ManagedRunLifecycleService } from "../../src/application/managed-run-lifecycle-service.mjs";
 import { TaskRunRegistry } from "../../src/domain/task-runs.mjs";
 
-function harness({ provider = "codex", beforeCompletion = null } = {}) {
+function harness({
+  provider = "codex",
+  beforeCompletion = null,
+  completionAborted = null,
+  afterCompletion = null,
+  saveState = null,
+} = {}) {
   const events = [];
   let baselineCaptures = 0;
   const taskRuns = new TaskRunRegistry();
@@ -28,7 +34,7 @@ function harness({ provider = "codex", beforeCompletion = null } = {}) {
     persistTaskDiff: async () => events.push("diff"),
     syncRun: (_run, options) => events.push(options?.active === false ? "sync-complete" : "sync-start"),
     invalidateCatalog: () => events.push("catalog"),
-    saveState: async () => events.push("save"),
+    saveState: saveState ?? (async () => events.push("save")),
     scheduleProgressStart: () => events.push("progress"),
     clearSelectedDiff: () => events.push("clear-diff"),
     clearApprovals: () => events.push("approvals"),
@@ -36,7 +42,8 @@ function harness({ provider = "codex", beforeCompletion = null } = {}) {
     pauseClaude: () => events.push("claude"),
     stopTyping: () => events.push("typing"),
     beforeCompletion: beforeCompletion ?? (async () => events.push("before")),
-    afterCompletion: async () => events.push("after"),
+    completionAborted: completionAborted ?? (async () => events.push("aborted")),
+    afterCompletion: afterCompletion ?? (async () => events.push("after")),
   });
   return { service, taskRuns, events, baselineCaptures: () => baselineCaptures };
 }
@@ -127,12 +134,53 @@ test("managed run lifecycle retries completion preparation after a failed hook",
   assert.equal(run.completionPrepared, undefined);
   assert.equal(run.status, "running");
   assert.equal(taskRuns.forTask(run), run);
+  assert.deepEqual(events, ["aborted"]);
 
   await service.markCompleted(run);
   assert.equal(run.completionPrepared, true);
   assert.equal(run.status, "completed");
   assert.equal(attempts, 2);
-  assert.deepEqual(events, ["before", "approvals", "observer", "claude", "sync-complete", "catalog", "save"]);
+  assert.deepEqual(events, ["aborted", "before", "approvals", "observer", "claude", "sync-complete", "catalog", "save"]);
+});
+
+test("managed run lifecycle rolls back post-turn ownership when terminal preparation fails", async () => {
+  let saveCalls = 0;
+  let reserved = false;
+  const { service } = harness({
+    beforeCompletion: async () => { reserved = true; },
+    completionAborted: async () => { reserved = false; },
+    saveState: async () => {
+      saveCalls += 1;
+      if (saveCalls === 2) throw new Error("terminal save failed");
+    },
+  });
+  const run = await service.begin("hello");
+
+  await assert.rejects(service.markCompleted(run), /terminal save failed/u);
+
+  assert.equal(reserved, false);
+  assert.equal(run.completionPrepared, undefined);
+});
+
+test("managed run lifecycle consumes post-turn ownership when admission persistence fails", async () => {
+  let saveCalls = 0;
+  const events = [];
+  const state = harness({
+    afterCompletion: async () => events.push("after"),
+    saveState: async () => {
+      saveCalls += 1;
+      if (saveCalls === 3) throw new Error("admission save failed");
+    },
+  });
+  const run = await state.service.begin("hello");
+
+  await assert.rejects(state.service.complete(run), /admission save failed/u);
+  assert.equal(run.admissionReleased, undefined);
+  assert.deepEqual(events, ["after"]);
+
+  await state.service.complete(run);
+  assert.equal(run.admissionReleased, true);
+  assert.deepEqual(events, ["after"]);
 });
 
 test("managed run lifecycle keeps a Desktop-started run out of Telegram", async () => {

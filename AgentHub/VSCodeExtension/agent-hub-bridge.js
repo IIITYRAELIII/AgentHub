@@ -196,16 +196,50 @@ class AgentHubBridge {
     }
   }
 
-  async control(action, params = {}) {
+  async control(action, params = {}, context = {}) {
     if (action === "upload-attachment") return this.uploadAttachment(params);
-    const { callDesktopControl } = await this.desktop();
     const clientUserMessageId = action === "send-message"
       ? String(params.clientUserMessageId ?? "").trim()
       : "";
+    if (clientUserMessageId) {
+      const commandId = String(context.commandId ?? clientUserMessageId).trim();
+      if (commandId !== clientUserMessageId) {
+        throw new Error("VS Code message command identity mismatch");
+      }
+      return this.localControl(action, params, commandId);
+    }
+    const { callDesktopControl } = await this.desktop();
     return callDesktopControl(action, params, {
       timeoutMs: ["rotate-stream", "submit-bug-report"].includes(action) ? 180_000 : 10_000,
-      ...(clientUserMessageId ? { commandId: clientUserMessageId } : {}),
     });
+  }
+
+  async localControl(action, params, commandId) {
+    const session = await this.webviewSession();
+    const baseUrl = session.baseUrl.replace(/\/+$/u, "");
+    const headers = {
+      Authorization: `webview ${session.token}`,
+      "Content-Type": "application/json; charset=utf-8",
+    };
+    const response = await this.fetchImpl(`${baseUrl}/api/control`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ action, params, commandId }),
+      signal: AbortSignal.timeout(30_000),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || payload.ok === false) {
+      throw new Error(String(payload.error ?? `Agent Hub: HTTP ${response.status}`));
+    }
+    if (payload.receiptId === commandId) {
+      void this.fetchImpl(`${baseUrl}/api/control/ack`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ commandId }),
+        signal: AbortSignal.timeout(10_000),
+      }).catch(() => {});
+    }
+    return payload.result;
   }
 
   async localWebAddress() {

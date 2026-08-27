@@ -345,7 +345,9 @@ class WorkLogViewProvider {
         });
         return;
       }
-      const result = await bridge.control(action, message.params ?? {});
+      const result = await bridge.control(action, message.params ?? {}, {
+        commandId: message.commandId,
+      });
       await this.decorateAttachmentUrls(result, bridge);
       await this.panel?.webview.postMessage({
         type: "agenthub:control-result",

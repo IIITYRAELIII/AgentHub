@@ -40,6 +40,7 @@ export class DeferredInputController {
     occupancy = async () => ({ occupied: false, waitReason: null }),
     laneKey = taskRunKey,
     findStarted = async () => null,
+    findSteered = async () => null,
     steer = async () => null,
     start,
     persist,
@@ -64,6 +65,7 @@ export class DeferredInputController {
     this.occupancy = occupancy;
     this.laneKey = laneKey;
     this.findStarted = findStarted;
+    this.findSteered = findSteered;
     this.steer = steer;
     this.start = start;
     this.persist = persist;
@@ -139,6 +141,10 @@ export class DeferredInputController {
         await this.expire(item);
         await this.persist();
         this.scheduleNextForTask(item);
+        return;
+      }
+      if (item.conflictKind === "message-steer") {
+        await this.processSteer(item);
         return;
       }
       const recoveredRun = await this.findStarted(item);
@@ -294,6 +300,107 @@ export class DeferredInputController {
     } finally {
       this.processing.delete(id);
     }
+  }
+
+  async processSteer(item) {
+    const id = item.id;
+    if (item.dispatchingAt) {
+      const recovered = await this.findSteered(item);
+      if (recovered) {
+        await this.finishSteer(item, recovered);
+        return;
+      }
+      const reconciliationStartedAt = Date.parse(String(
+        item.providerReconciliationStartedAt ?? item.dispatchingAt ?? "",
+      ));
+      const reconciliationAgeMs = Number.isFinite(reconciliationStartedAt)
+        ? this.now() - reconciliationStartedAt
+        : 0;
+      if (reconciliationAgeMs < this.providerReconciliationMaxAgeMs) {
+        item.waitReason = "provider-steer-unconfirmed";
+        item.providerReconciliationStartedAt ||= item.dispatchingAt;
+        item.providerReconciliationChecks = Number(item.providerReconciliationChecks ?? 0) + 1;
+        this.onStateChange(item, "reconciling");
+        await this.persist();
+        this.schedule(item, Math.min(
+          this.maxRetryDelayMs,
+          this.retryDelayMs * (2 ** Math.min(item.providerReconciliationChecks - 1, 4)),
+        ));
+        return;
+      }
+      delete item.dispatchingAt;
+      delete item.waitReason;
+      delete item.providerReconciliationStartedAt;
+      delete item.providerReconciliationChecks;
+      item.lastError = "Провайдер не подтвердил уточнение; автоматический повтор не выполнялся.";
+      this.queuedInputs.delete(id);
+      this.pendingInputs.set(id, item);
+      this.onStateChange(item, "pending");
+      await this.persist();
+      await this.updateMessage(
+        item,
+        `⚠️ ${item.lastError}\n\nСообщение сохранено. Выберите дальнейшее действие:`,
+        this.pendingKeyboard(item),
+      );
+      await this.notifyReturned(item);
+      return;
+    }
+
+    item.dispatchingAt = new Date(this.now()).toISOString();
+    this.onStateChange(item, "dispatching");
+    await this.persist();
+    const dispatchSpan = this.commandTrace?.startBestEffortSpan?.({
+      commandId: String(item.clientUserMessageId ?? ""),
+      stage: "dispatch",
+      transport: String(item.clientSource ?? "desktop-control").trim().toLowerCase() || "desktop-control",
+      metadata: { itemId: item.id, operation: "steer" },
+    });
+    try {
+      const steered = await this.steer(item);
+      if (!steered) {
+        dispatchSpan?.finish({ outcome: "queued", queueDepth: this.queuedInputs.size });
+        delete item.dispatchingAt;
+        item.conflictKind = "message-intake";
+        this.onStateChange(item, "queued");
+        await this.persist();
+        this.schedule(item, 0);
+        return;
+      }
+      dispatchSpan?.finish({
+        outcome: "succeeded",
+        queueDepth: this.queuedInputs.size,
+        metadata: { runId: steered.runId ?? null, turnId: steered.turnId ?? null },
+      });
+      await this.finishSteer(item, steered);
+    } catch (error) {
+      dispatchSpan?.finish({
+        outcome: "unknown",
+        queueDepth: this.queuedInputs.size,
+        metadata: { errorCode: error?.code ?? null },
+      });
+      item.lastError = String(error?.message ?? error);
+      item.waitReason = "provider-steer-unconfirmed";
+      item.providerReconciliationStartedAt = item.dispatchingAt;
+      item.providerReconciliationChecks = 0;
+      this.onStateChange(item, "reconciling", error);
+      await this.persist();
+      this.schedule(item, this.retryDelayMs);
+    }
+  }
+
+  async finishSteer(item, steered) {
+    this.queuedInputs.delete(item.id);
+    delete item.dispatchingAt;
+    delete item.lastError;
+    delete item.lastAttemptAt;
+    delete item.waitReason;
+    delete item.blockedChecks;
+    delete item.providerReconciliationStartedAt;
+    delete item.providerReconciliationChecks;
+    this.onStateChange(item, "steered", steered);
+    await this.persist();
+    await this.updateMessage(item, `▶️ Уточнение добавлено в текущий ход потока «${item.taskTitle}».`);
+    this.scheduleNextForTask(item);
   }
 
   async releaseResolvedTaskConflict(item) {

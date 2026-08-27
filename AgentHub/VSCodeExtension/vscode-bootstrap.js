@@ -1,7 +1,25 @@
 "use strict";
 
 const vscode = window.acquireVsCodeApi();
-window.__agentHubVscode = vscode;
+const commandAliases = new Map();
+const nativeVscodePostMessage = vscode.postMessage.bind(vscode);
+window.__agentHubVscode = new Proxy(vscode, {
+  get(target, property) {
+    if (property === "postMessage") {
+      return (message) => {
+        const clientUserMessageId = message?.type === "agenthub:control"
+          && message?.action === "send-message"
+          ? String(message.params?.clientUserMessageId ?? "").trim()
+          : "";
+        return nativeVscodePostMessage(clientUserMessageId
+          ? { ...message, commandId: clientUserMessageId }
+          : message);
+      };
+    }
+    const value = Reflect.get(target, property, target);
+    return typeof value === "function" ? value.bind(target) : value;
+  },
+});
 const nativeFetch = window.fetch.bind(window);
 const pending = new Map();
 const pendingHealth = new Map();
@@ -171,6 +189,56 @@ function activeDirectSession() {
   return Number(directSession.expiresAt) > Date.now() ? directSession : null;
 }
 
+function rememberCommandAlias(alias, commandId) {
+  if (!alias || !commandId || alias === commandId) return;
+  if (commandAliases.has(alias)) commandAliases.delete(alias);
+  commandAliases.set(alias, commandId);
+  while (commandAliases.size > 500) commandAliases.delete(commandAliases.keys().next().value);
+}
+
+function canonicalDirectControl(url, init) {
+  if (String(init.method ?? "GET").toUpperCase() !== "POST") return { init, receiptAlias: "" };
+  if (!["/api/control", "/api/control/ack"].includes(url.pathname)) {
+    return { init, receiptAlias: "" };
+  }
+  try {
+    const body = JSON.parse(String(init.body ?? "{}"));
+    if (url.pathname === "/api/control") {
+      const clientUserMessageId = body.action === "send-message"
+        ? String(body.params?.clientUserMessageId ?? "").trim()
+        : "";
+      if (!clientUserMessageId) return { init, receiptAlias: "" };
+      const receiptAlias = String(body.commandId ?? "").trim();
+      rememberCommandAlias(receiptAlias, clientUserMessageId);
+      return {
+        init: { ...init, body: JSON.stringify({ ...body, commandId: clientUserMessageId }) },
+        receiptAlias,
+      };
+    }
+    const alias = String(body.commandId ?? "").trim();
+    const commandId = commandAliases.get(alias);
+    if (!commandId) return { init, receiptAlias: "" };
+    return {
+      init: { ...init, body: JSON.stringify({ ...body, commandId }) },
+      receiptAlias: alias,
+    };
+  } catch {
+    return { init, receiptAlias: "" };
+  }
+}
+
+async function clientControlResponse(url, response, receiptAlias) {
+  if (!receiptAlias || url.pathname !== "/api/control") return response;
+  const payload = await response.json().catch(() => null);
+  if (!payload || typeof payload !== "object") return response;
+  if (payload.receiptId) payload.receiptId = receiptAlias;
+  return new Response(`${JSON.stringify(payload)}\n`, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
+}
+
 async function directFetch(url, init = {}, retry = true) {
   const session = activeDirectSession();
   if (!session) {
@@ -182,9 +250,9 @@ async function directFetch(url, init = {}, retry = true) {
   }
   const headers = new Headers(init.headers);
   headers.set("Authorization", `webview ${session.token}`);
+  const control = canonicalDirectControl(url, { ...init, headers });
   const response = await nativeFetch(directRequestUrl(session, url), {
-    ...init,
-    headers,
+    ...control.init,
     credentials: "omit",
   });
   if (response.status === 401 && retry) {
@@ -192,7 +260,11 @@ async function directFetch(url, init = {}, retry = true) {
     await ensureDirectSession({ force: true });
     return directFetch(url, init, false);
   }
-  return response;
+  const result = await clientControlResponse(url, response, control.receiptAlias);
+  if (url.pathname === "/api/control/ack" && control.receiptAlias && result.ok) {
+    commandAliases.delete(control.receiptAlias);
+  }
+  return result;
 }
 
 function runtimeHealth() {

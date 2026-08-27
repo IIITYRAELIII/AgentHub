@@ -50,6 +50,59 @@ test("canonical submission atomically replaces optimistic aliases in either orde
   assert.deepEqual(plain(projection.projectCanonicalMessages([canonical, canonical])), [canonical]);
 });
 
+test("Codex production history, live and outgoing aliases project one root and one steer", async () => {
+  const projection = await projectionApi();
+  const providerMessage = (itemId) => ({
+    role: "user",
+    provider: "codex",
+    threadId: "thread-production",
+    turnId: "turn-production",
+    itemId,
+    text: "Одинаковый текст и время не являются identity",
+    time: "2026-08-27T20:10:05.580Z",
+    operationKind: "user-turn",
+    projectionAuthority: "canonical",
+    projectionState: "active",
+  });
+  const liveMessage = (itemId, clientUserMessageId) => ({
+    ...providerMessage(itemId),
+    clientUserMessageId,
+    projectionAuthority: "live",
+  });
+  const outgoingMessage = (clientUserMessageId) => ({
+    role: "user",
+    provider: "codex",
+    threadId: "thread-production",
+    turnId: "turn-production",
+    itemId: clientUserMessageId,
+    clientUserMessageId,
+    submissionId: clientUserMessageId,
+    text: "Одинаковый текст и время не являются identity",
+    time: "2026-08-27T20:10:05.580Z",
+    operationKind: "user-turn",
+    projectionAuthority: "optimistic",
+    projectionState: "optimistic",
+  });
+  const providerRoot = providerMessage("provider-root-item");
+  const providerSteer = providerMessage("provider-steer-item");
+  const liveRoot = liveMessage("provider-root-item", "client-root");
+  const liveSteer = liveMessage("provider-steer-item", "client-steer");
+  const outgoingRoot = outgoingMessage("client-root");
+  const outgoingSteer = outgoingMessage("client-steer");
+
+  for (const values of [
+    [providerRoot, providerSteer, outgoingRoot, outgoingSteer, liveRoot, liveSteer],
+    [outgoingRoot, outgoingSteer, liveRoot, liveSteer, providerRoot, providerSteer],
+  ]) {
+    const projected = plain(projection.projectCanonicalMessages(values));
+    assert.equal(projected.length, 2);
+    assert.deepEqual(
+      projected.map((message) => message.clientUserMessageId).sort(),
+      ["client-root", "client-steer"],
+    );
+  }
+});
+
 test("terminal revision absorbs reordered and duplicated active progress", async () => {
   const projection = await projectionApi();
   const active = {

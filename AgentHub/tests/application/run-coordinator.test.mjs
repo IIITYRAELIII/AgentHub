@@ -417,6 +417,41 @@ test("RunCoordinator serializes competing clients in one logical task lane", asy
   assert.equal(beginCount, 1);
 });
 
+test("RunCoordinator acknowledges durable steer within 250ms without awaiting the provider", async () => {
+  const active = { id: "active", turnId: "turn-1", executionOwner: "hub" };
+  const f = fixture({
+    taskRuns: { forTask: () => active },
+    deferInput: async (...args) => {
+      f.calls.push(["defer", ...args]);
+      return {
+        id: "durable-steer",
+        item: { id: "durable-steer", clientUserMessageId: "message-steer" },
+      };
+    },
+    scheduleDeferred: (item, delay) => f.calls.push(["schedule", item, delay]),
+  });
+
+  const startedAt = performance.now();
+  const result = await f.coordinator.acceptClientInput({
+    input: "уточнение",
+    attachments: [],
+    target: f.target,
+    clientUserMessageId: "message-steer",
+    followUpMode: "steer",
+  });
+  const acknowledgementMs = performance.now() - startedAt;
+
+  assert.ok(acknowledgementMs < 250, `durable steer ACK took ${acknowledgementMs}ms`);
+  assert.equal(result.accepted, true);
+  assert.equal(result.steerPending, true);
+  assert.equal(result.turnId, "turn-1");
+  assert.equal(f.calls.some(([name]) => name === "provider"), false);
+  assert.equal(f.calls.find(([name]) => name === "defer")[3].conflictKind, "message-steer");
+  assert.deepEqual(f.calls.find(([name]) => name === "schedule").slice(1), [
+    { id: "durable-steer", clientUserMessageId: "message-steer" }, 0,
+  ]);
+});
+
 test("RunCoordinator admits two exact Threads in one Stream independently", async () => {
   const releases = new Map();
   let beginCount = 0;

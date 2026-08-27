@@ -28,7 +28,7 @@ export class ManagedRunLifecycleService {
       "normalizeCodexModel", "modelLabel", "captureGitBaseline", "persistTaskDiff", "syncRun",
       "invalidateCatalog", "saveState", "scheduleProgressStart", "clearSelectedDiff",
       "clearApprovals", "pauseObservation", "pauseClaude", "stopTyping",
-      "beforeCompletion", "afterCompletion",
+      "beforeCompletion", "completionAborted", "afterCompletion",
     ]) requiredFunction(dependencies[name], name);
     if (!dependencies.taskRuns?.add || !dependencies.taskRuns?.remove) {
       throw new TypeError("taskRuns registry is required");
@@ -132,12 +132,15 @@ export class ManagedRunLifecycleService {
       await this.markCompleted(run);
       d.taskRuns.remove(run);
       if (!d.taskRuns.size) d.stopTyping();
-      run.admissionReleased = true;
-      await d.saveState();
-      if (run.afterCompletionApplied !== true) {
-        run.afterCompletionApplied = true;
-        await d.afterCompletion(run);
+      try {
+        await d.saveState();
+      } finally {
+        if (run.afterCompletionApplied !== true) {
+          run.afterCompletionApplied = true;
+          await d.afterCompletion(run);
+        }
       }
+      run.admissionReleased = true;
     })();
     try {
       await run.admissionReleasing;
@@ -151,16 +154,21 @@ export class ManagedRunLifecycleService {
     if (run.completionPreparing) return run.completionPreparing;
     const d = this.#d;
     run.completionPreparing = (async () => {
-      await d.beforeCompletion(run);
-      run.completionPrepared = true;
-      d.clearApprovals(run);
-      d.pauseObservation(run);
-      d.pauseClaude(run);
-      run.status = "completed";
-      run.process = null;
-      d.syncRun(run, { active: false });
-      d.invalidateCatalog();
-      await d.saveState();
+      try {
+        await d.beforeCompletion(run);
+        d.clearApprovals(run);
+        d.pauseObservation(run);
+        d.pauseClaude(run);
+        run.status = "completed";
+        run.process = null;
+        d.syncRun(run, { active: false });
+        d.invalidateCatalog();
+        await d.saveState();
+        run.completionPrepared = true;
+      } catch (error) {
+        await d.completionAborted(run);
+        throw error;
+      }
     })();
     try {
       await run.completionPreparing;

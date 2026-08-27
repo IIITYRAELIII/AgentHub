@@ -106,7 +106,7 @@ export class DeferredInputService {
       ...(messageOrigin ? { messageOrigin } : {}),
       createdAt,
     };
-    const usesDurableIntake = conflictKind === "message-intake"
+    const usesDurableIntake = ["message-intake", "message-steer"].includes(conflictKind)
       && typeof d.persistIntake === "function";
     if (usesDurableIntake) {
       d.commandTrace?.recordBestEffort?.({

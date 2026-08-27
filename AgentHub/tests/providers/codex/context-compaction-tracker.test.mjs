@@ -167,6 +167,57 @@ test("an unavailable measurement never becomes a fabricated zero", () => {
   tracker.dispose();
 });
 
+test("a completed exact measurement cannot be downgraded by a late failure", () => {
+  const tracker = new ContextCompactionTracker({ idFactory: () => "measurement-race-id" });
+  const started = tracker.begin("thread-measurement-race", { beforePercent: 84.572755 });
+  tracker.complete("thread-measurement-race");
+  tracker.annotate("thread-measurement-race", started.id, {
+    measurementStatus: "running",
+    probeTurnId: "probe-race",
+  });
+  tracker.observeContext({
+    threadId: "thread-measurement-race",
+    turnId: "probe-race",
+    usedTokens: 34_420,
+    modelContextWindow: 258_400,
+    provisional: false,
+  });
+
+  const result = tracker.annotate("thread-measurement-race", started.id, {
+    afterPercent: null,
+    measurementStatus: "failed",
+  });
+
+  assert.equal(result.measurementStatus, "completed");
+  assert.equal(result.afterPercent, 13.320433);
+  tracker.dispose();
+});
+
+test("late exact probe usage reconciles a failed measurement", () => {
+  const tracker = new ContextCompactionTracker({ idFactory: () => "measurement-reconcile-id" });
+  const started = tracker.begin("thread-measurement-reconcile", { beforePercent: 85 });
+  tracker.complete("thread-measurement-reconcile");
+  tracker.annotate("thread-measurement-reconcile", started.id, {
+    measurementStatus: "running",
+    probeTurnId: "probe-reconcile",
+  });
+  tracker.annotate("thread-measurement-reconcile", started.id, {
+    measurementStatus: "failed",
+  });
+
+  const result = tracker.observeContext({
+    threadId: "thread-measurement-reconcile",
+    turnId: "probe-reconcile",
+    usedTokens: 34_420,
+    modelContextWindow: 258_400,
+    provisional: false,
+  });
+
+  assert.equal(result.measurementStatus, "completed");
+  assert.equal(result.afterPercent, 13.320433);
+  tracker.dispose();
+});
+
 test("a missing completion becomes unknown until reconciliation", () => {
   let callback = null;
   let now = Date.parse("2026-07-31T18:20:00.000Z");

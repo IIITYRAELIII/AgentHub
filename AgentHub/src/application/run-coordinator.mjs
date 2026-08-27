@@ -357,6 +357,40 @@ export class RunCoordinator {
     };
   }
 
+  async queueSteer(input, attachments, {
+    target,
+    existingRun,
+    clientUserMessageId,
+    messageFingerprint = null,
+  }) {
+    const deferred = await this.deferInput(input, attachments, {
+      executionOwner: existingRun.executionOwner ?? TASK_EXECUTION_OWNERS.HUB,
+      target,
+      conflictKind: "message-steer",
+      clientUserMessageId,
+      messageFingerprint,
+      destination: "queued",
+      notify: false,
+      persistentFiles: attachments.length > 0,
+    });
+    if (!deferred.duplicate) this.scheduleDeferred(deferred.item, 0);
+    return {
+      accepted: true,
+      steerPending: true,
+      deferred: false,
+      queued: false,
+      duplicate: deferred.duplicate === true,
+      id: deferred.id,
+      runId: existingRun.id ?? null,
+      threadId: target.threadId,
+      turnId: existingRun.turnId ?? null,
+      clientUserMessageId,
+      message: deferred.duplicate === true
+        ? "Уточнение уже принято Hub и не было отправлено повторно."
+        : "Уточнение принято Hub и будет добавлено в текущий ход.",
+    };
+  }
+
   acceptClientInput(request) {
     return this.serializeIntake(request.target, () => this.acceptClientInputUnlocked(request));
   }
@@ -391,12 +425,11 @@ export class RunCoordinator {
     }
     if (existingRun) {
       if (followUpMode === "steer") {
-        return this.submitClientInputUnlocked({
-          input,
-          attachments,
+        return this.queueSteer(input, attachments, {
+          existingRun,
+          messageFingerprint,
           target,
           clientUserMessageId,
-          followUpMode,
         });
       }
       if (followUpMode === "queue") {

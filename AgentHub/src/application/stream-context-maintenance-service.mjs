@@ -78,7 +78,11 @@ export class StreamContextMaintenanceService {
   }
 
   reserveAfterTurn(run) {
-    if (run?.provider !== "codex" || run?.status !== "finishing") {
+    if (
+      run?.provider !== "codex"
+      || !["finishing", "completed"].includes(run?.status)
+      || run?.completionPrepared === true
+    ) {
       return false;
     }
     const completedTurnCompaction = this.#completedTurnCompaction(run);
@@ -89,7 +93,26 @@ export class StreamContextMaintenanceService {
       return Boolean(this.registry.begin(run, "automatic-post-turn-rotation"));
     }
     if (!this.autoCompactEnabled()) return false;
+    const beforePercent = contextUsagePercent(
+      this.latestContextUsage(run.threadId, run.provider),
+    );
+    if (beforePercent === null || beforePercent <= Number(this.autoCompactThreshold())) {
+      return false;
+    }
     return Boolean(this.registry.begin(run, "automatic-post-turn"));
+  }
+
+  cancelAfterTurn(run) {
+    const reservation = this.registry.entry(run);
+    if (
+      !["automatic-post-turn", "automatic-post-turn-rotation"].includes(reservation?.reason)
+      || !automaticReservationOwnsRun(reservation, run)
+    ) {
+      return false;
+    }
+    const released = this.registry.end(reservation);
+    if (released) this.#wakeQueue(run);
+    return released;
   }
 
   async maintainAfterTurn(run) {
@@ -339,9 +362,6 @@ export class StreamContextMaintenanceService {
       if (!completion) throw new Error("Скрытый замер контекста не завершился вовремя");
       if (completion.status !== "completed") {
         throw new Error(`Скрытый замер контекста завершился со статусом ${completion.status}`);
-      }
-      if (await provider.waitForContextProbeIdle?.(target, probe?.turnId) === false) {
-        throw new Error("Скрытый замер контекста завершён, но его ход всё ещё активен");
       }
       return measured?.provisional === true || Number(measured?.usedTokens) <= 0
         ? null

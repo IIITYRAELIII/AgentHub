@@ -130,7 +130,13 @@ export class ContextCompactionTracker {
     }
     const measurementStatus = String(details.measurementStatus ?? "").trim();
     if (["running", "completed", "failed"].includes(measurementStatus)) {
-      record.measurementStatus = measurementStatus;
+      const currentMeasurementStatus = String(record.measurementStatus ?? "").trim();
+      if (
+        currentMeasurementStatus !== "completed"
+        && !(currentMeasurementStatus === "failed" && measurementStatus === "running")
+      ) {
+        record.measurementStatus = measurementStatus;
+      }
     }
     if (details.rotated !== undefined) record.rotated = details.rotated === true;
     const probeTurnId = normalizedThreadId(details.probeTurnId);
@@ -211,7 +217,7 @@ export class ContextCompactionTracker {
     const modelContextWindow = Math.max(0, Number(context?.modelContextWindow) || 0);
     if (!modelContextWindow || !usedTokens) return null;
     const probeMeasurement = record.status === "completed"
-      && record.measurementStatus === "running"
+      && ["running", "failed"].includes(record.measurementStatus)
       && normalizedProbeTurnIds(record.probeTurnIds).includes(turnId);
     const compactedAt = Date.parse(String(record.compactedAt ?? record.completedAt ?? ""));
     const contextUpdatedAt = Date.parse(String(context?.updatedAt ?? ""));

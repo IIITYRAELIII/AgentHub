@@ -268,3 +268,36 @@ test("snapshot promotes provisional occupancy when the run obtains its exact thr
   assert.equal(bound.item.threadId, "thread-late");
   assert.equal(bound.item.queueOrder, accepted.record.acceptedAtMs);
 });
+
+test("a steered receipt closes the durable command and preserves retry identity", async (context) => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "agent-hub-message-ledger-steer-"));
+  const store = new MessageCommandLedgerStore({ dataDir });
+  context.after(async () => {
+    store.close();
+    await rm(dataDir, { recursive: true, force: true });
+  });
+  const command = messageCommandFixture({
+    clientUserMessageId: "message-steer",
+    fingerprint: "fingerprint-steer",
+    item: { provider: "codex", threadId: "thread-1", conflictKind: "message-steer" },
+  });
+  store.accept({ ...command, destination: "queued" });
+
+  store.projectSnapshot({
+    desktopMessageReceipts: [{
+      ...command.receipt,
+      result: {
+        accepted: true,
+        steered: true,
+        turnId: "turn-1",
+        clientUserMessageId: command.item.clientUserMessageId,
+      },
+    }],
+  });
+
+  assert.equal(store.get(command.item.clientUserMessageId).state, "completed");
+  const retry = store.accept({ ...command, destination: "queued" });
+  assert.equal(retry.duplicate, true);
+  assert.equal(retry.retryResult.steered, true);
+  assert.equal(retry.retryResult.completed, true);
+});

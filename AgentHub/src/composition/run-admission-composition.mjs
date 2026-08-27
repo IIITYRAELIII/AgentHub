@@ -290,6 +290,29 @@ export function createRunAdmissionComposition({
       scheduleObservedRun(adopted);
       return adopted;
     },
+    findSteered: async (item) => {
+      if (!item.dispatchingAt || !item.clientUserMessageId) return null;
+      const exactTurn = await agentProviders.call(
+        item.provider,
+        "findTurnByClientMessage",
+        deferredTarget(item),
+        item.clientUserMessageId,
+      ).catch((error) => {
+        logger.warn(`Cannot reconcile deferred provider steer ${item.clientUserMessageId}: ${error.message}`);
+        return null;
+      });
+      const turnId = String(exactTurn?.id ?? exactTurn?.turnId ?? "").trim();
+      if (!turnId) return null;
+      const run = runCoordinator.activeRun(deferredTarget(item));
+      return {
+        accepted: true,
+        steered: true,
+        runId: run?.id ?? null,
+        threadId: item.threadId,
+        turnId,
+        clientUserMessageId: item.clientUserMessageId,
+      };
+    },
     steer: async (item) => {
       const target = deferredTarget(item);
       const existingRun = runCoordinator.activeRun(target);
@@ -304,7 +327,7 @@ export function createRunAdmissionComposition({
           clientUserMessageId: item.clientUserMessageId,
         });
       } catch (error) {
-        if (activeTurnNotSteerable(error) || isRetryableDeferredLaunchError(error)) return null;
+        if (activeTurnNotSteerable(error)) return null;
         throw error;
       }
     },
