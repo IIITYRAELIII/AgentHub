@@ -1132,6 +1132,25 @@ test("desktop task history preserves pagination, field limits and response budge
   assert.deepEqual(calls.fit, { maxBytes: 64 * 1_024 });
 });
 
+test("desktop task history returns a long agent answer within the supported budget", async () => {
+  const longAnswer = `Начало ответа\n${"я".repeat(120_000)}\nКонец ответа`;
+  const { desktopTaskHistory, state, calls } = fixture({ run: null });
+  state.history[3].answer = longAnswer;
+  state.history[3].messages[1].text = longAnswer;
+
+  const result = await desktopTaskHistory({
+    provider: "codex",
+    threadId: "thread-1",
+    limit: 1,
+    maxAnswerChars: 200_000,
+    maxResponseBytes: 850_000,
+  });
+
+  assert.equal(result.items[0].answer, longAnswer);
+  assert.equal(result.items[0].messages[1].text, longAnswer);
+  assert.deepEqual(calls.fit, { maxBytes: 850_000 });
+});
+
 test("desktop task history can await provider hydration for a completed image response", async () => {
   const { desktopTaskHistory, state, calls } = fixture({ run: null });
   const providerHistory = structuredClone(state.history);

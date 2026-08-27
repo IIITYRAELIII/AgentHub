@@ -16,6 +16,7 @@ const CODEX_ACTIVE_FRESHNESS_MS = 10 * 60 * 1000;
 const CODEX_PROMPTLESS_TURN_GRACE_MS = 15 * 1000;
 const CODEX_ROLLOUT_TAIL_BYTES = 128 * 1024 * 1024;
 const CODEX_ROLLOUT_LINE_BYTES = 4 * 1024 * 1024;
+const CODEX_AGENT_MESSAGE_CHARS = 200_000;
 const CODEX_ACTIVITY_CACHE_LIMIT = 200;
 const CODEX_ACTIVE_ACTIVITY_CACHE_LIMIT = 16;
 const LEGACY_TURN_ID = "__legacy__";
@@ -104,7 +105,7 @@ function rememberCodexTurnMessage(metadata, turnId, message) {
     : previous === value || previous.endsWith(`\n\n${value}`)
       ? previous
       : `${previous}\n\n${value}`;
-  metadata.latestMessages.set(turnId, combined.slice(-40_000));
+  metadata.latestMessages.set(turnId, combined.slice(-CODEX_AGENT_MESSAGE_CHARS));
   while (metadata.latestMessages.size > 8) {
     metadata.latestMessages.delete(metadata.latestMessages.keys().next().value);
   }
@@ -601,7 +602,7 @@ function observeCodexEntry(activeTurnIds, lastSeenAtByTurnId, metadata, entry) {
     if (messageTurnId && message) {
       rememberCodexTurnMessage(metadata, messageTurnId, message);
     } else if (message) {
-      metadata.unscopedLatestMessage = message.slice(-40_000);
+      metadata.unscopedLatestMessage = message.slice(-CODEX_AGENT_MESSAGE_CHARS);
     }
   }
   if (entry?.type === "event_msg" && entry.payload?.type === "task_complete" && turnId) {

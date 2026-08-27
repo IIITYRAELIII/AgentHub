@@ -4,7 +4,7 @@ import { SqliteDurableCommandReceipts } from "../../infrastructure/persistence/s
 const DEFAULT_MINI_APP_LIMITS = Object.freeze({
   sources: Object.freeze(["telegram-mini-app", "trusted-device", "local-mini-app"]),
   limit: 10,
-  maxAnswerChars: 75_000,
+  maxAnswerChars: 200_000,
   maxResponseBytes: 850_000,
 });
 

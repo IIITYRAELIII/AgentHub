@@ -982,18 +982,26 @@ test("rollout activity exposes current and final messages without thread/read", 
   assert.equal(activity.completedAtMsByTurnId["turn-1"], Date.parse(completedAt));
 });
 
-test("rollout activity preserves a final answer longer than forty thousand characters", () => {
-  const finalAnswer = `Начало\n${"x".repeat(40_100)}\nКонец`;
-  const activity = parseCodexRolloutActivity(JSON.stringify({
-    type: "event_msg",
-    payload: {
-      type: "task_complete",
-      turn_id: "long-final",
-      last_agent_message: finalAnswer,
-    },
-  }));
+test("rollout activity preserves a long Codex answer from start to finish", () => {
+  const longAnswer = `Начало ответа\n${"я".repeat(120_000)}\nКонец ответа`;
+  const entry = (type, payload) => JSON.stringify({
+    timestamp: new Date().toISOString(),
+    type,
+    payload,
+  });
 
-  assert.equal(activity.finalMessages["long-final"], finalAnswer);
+  const activity = parseCodexRolloutActivity([
+    entry("event_msg", { type: "task_started", turn_id: "turn-long" }),
+    entry("event_msg", { type: "agent_message", message: longAnswer }),
+    entry("event_msg", {
+      type: "task_complete",
+      turn_id: "turn-long",
+      last_agent_message: longAnswer,
+    }),
+  ].join("\n"));
+
+  assert.equal(activity.latestMessages["turn-long"], longAnswer);
+  assert.equal(activity.finalMessages["turn-long"], longAnswer);
 });
 
 test("concurrent rollout messages stay attached to their response_item turn ids", () => {

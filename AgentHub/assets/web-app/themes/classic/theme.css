@@ -4,6 +4,7 @@
 
 html[data-theme="classic"] {
   color-scheme: dark;
+  font-size: 15px;
 
   --font-body: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system,
     Roboto, "Helvetica Neue", Arial, sans-serif;
@@ -130,7 +131,7 @@ html[data-theme="classic"] .app-header {
 }
 
 html[data-theme="classic"] body {
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 400;
 }
 
@@ -203,7 +204,7 @@ html[data-theme="classic"] .task-rail-title,
 html[data-theme="classic"] .activity-rail-toggle,
 html[data-theme="classic"] .settings-section-title {
   color: var(--text-muted);
-  font-size: 15px !important;
+  font-size: 14px !important;
   font-weight: 400;
   letter-spacing: 0;
   text-transform: none;
@@ -213,7 +214,7 @@ html[data-theme="classic"] .task-workspace-name,
 html[data-theme="classic"] .activity-stream-name,
 html[data-theme="classic"] .stream-tab-name,
 html[data-theme="classic"] .workspace-task-title {
-  font-size: 17px !important;
+  font-size: 16px !important;
   font-weight: 400;
 }
 
@@ -221,7 +222,7 @@ html[data-theme="classic"] .task-workspace-time,
 html[data-theme="classic"] .activity-stream-time,
 html[data-theme="classic"] .stream-tab-time {
   color: var(--text-muted);
-  font-size: 13px !important;
+  font-size: 12px !important;
   font-weight: 400;
 }
 
@@ -229,7 +230,7 @@ html[data-theme="classic"] .msg-body,
 html[data-theme="classic"] .msg-reasoning,
 html[data-theme="classic"] .composer-input > textarea,
 html[data-theme="classic"] .composer-input::after {
-  font-size: 16px !important;
+  font-size: 15px !important;
   font-weight: 400;
 }
 

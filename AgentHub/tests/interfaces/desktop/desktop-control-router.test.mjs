@@ -138,7 +138,7 @@ test("desktop control router applies transport-specific response limits", async 
     miniAppLimits: {
       sources: ["telegram-mini-app", "trusted-device", "local-mini-app"],
       limit: 10,
-      maxAnswerChars: 75_000,
+      maxAnswerChars: 200_000,
       maxResponseBytes: 850_000,
     },
     desktopMaxResponseBytes: 3_500_000,
@@ -173,19 +173,19 @@ test("desktop control router applies transport-specific response limits", async 
     {
       limit: 10,
       before: 17,
-      maxAnswerChars: 75_000,
+      maxAnswerChars: 200_000,
       maxResponseBytes: 850_000,
       compactSnapshot: true,
     },
     {
       limit: 10,
-      maxAnswerChars: 75_000,
+      maxAnswerChars: 200_000,
       maxResponseBytes: 850_000,
       compactSnapshot: true,
     },
     {
       limit: 10,
-      maxAnswerChars: 75_000,
+      maxAnswerChars: 200_000,
       maxResponseBytes: 850_000,
       compactSnapshot: true,
     },
@@ -221,7 +221,7 @@ test("Web mutations replace a large live result with a compact fresh snapshot", 
     assert.ok(Buffer.byteLength(JSON.stringify(result), "utf8") < 10_000);
     assert.deepEqual(snapshotParams, [{
       limit: 10,
-      maxAnswerChars: 75_000,
+      maxAnswerChars: 200_000,
       maxResponseBytes: 850_000,
       compactSnapshot: true,
     }]);

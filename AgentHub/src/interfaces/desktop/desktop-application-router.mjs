@@ -148,7 +148,7 @@ export function createDesktopApplicationRouter({
     miniAppLimits: {
       source: "telegram-mini-app",
       limit: 10,
-      maxAnswerChars: 75_000,
+      maxAnswerChars: 200_000,
       maxResponseBytes: 850_000,
     },
     desktopMaxResponseBytes: 3_500_000,
