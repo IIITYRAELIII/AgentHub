@@ -25,9 +25,14 @@ const FAKE_CODEX_FILE = path.join(AGENT_HUB_ROOT, "e2e", "fake-codex-app-server.
 const FAKE_CLAUDE_FILE = path.join(AGENT_HUB_ROOT, "e2e", "fake-claude-cli.mjs");
 const FAKE_TTS_FILE = path.join(AGENT_HUB_ROOT, "e2e", "fake-tts-worker.mjs");
 function waitForCodexAccepted(telegram, { after, timeoutMs } = {}) {
-  return telegram.waitForCall("sendMessage", (call) => (
-    /Codex (?:принял ход|начал отвечать)/u.test(String(call.body.text ?? ""))
-  ), { after, timeoutMs });
+  return waitFor(
+    () => telegram.callsAfter(after).find((call) => (
+      (call.method === "sendMessage" || call.method === "editMessageText")
+      && /Codex (?:принял ход|начал отвечать)/u.test(String(call.body.text ?? ""))
+    )),
+    "visible Codex acceptance",
+    timeoutMs,
+  );
 }
 
 function callbackAction(value) {
