@@ -11,6 +11,7 @@ import {
   claudeResultTokenUsage,
   claudeTranscriptEstimatedCredits,
   scanClaudeHistoricalTranscript,
+  scanClaudeHistoricalTranscriptFile,
 } from "../../../src/providers/claude/claude-work-log.mjs";
 import { JournalDatabase } from "../../../src/infrastructure/persistence/journal-database.mjs";
 
@@ -27,6 +28,37 @@ test("Claude transcript scanner ignores the synthetic resume exchange", () => {
   ].join("\n"), { transcriptPath: "session-resume.jsonl" });
 
   assert.deepEqual(result.turns.map((turn) => turn.prompt), ["Первый", "Второй"]);
+});
+
+test("Claude transcript file scanner preserves the pure scanner result", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "claude-worker-scan-"));
+  const transcriptPath = path.join(root, "worker-session.jsonl");
+  const transcript = [
+    line({
+      type: "user",
+      uuid: "u1",
+      sessionId: "worker-session",
+      timestamp: "2026-08-27T10:00:00.000Z",
+      message: { role: "user", content: "Проверить worker" },
+    }),
+    line({
+      type: "assistant",
+      uuid: "a1",
+      sessionId: "worker-session",
+      timestamp: "2026-08-27T10:00:01.000Z",
+      message: {
+        role: "assistant",
+        stop_reason: "end_turn",
+        content: [{ type: "text", text: "Worker работает" }],
+      },
+    }),
+  ].join("\n");
+  await writeFile(transcriptPath, transcript, "utf8");
+
+  assert.deepEqual(
+    await scanClaudeHistoricalTranscriptFile(transcriptPath),
+    scanClaudeHistoricalTranscript(transcript, { transcriptPath }),
+  );
 });
 
 test("Claude transcript scanner returns stable completed turns and deduplicates message updates", () => {

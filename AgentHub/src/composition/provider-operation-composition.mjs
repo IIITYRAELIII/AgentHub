@@ -28,6 +28,7 @@ import { ClaudeProviderTaskService, CodexProviderTaskService } from "../provider
 import { CodexTurnService, ProviderCancellationService } from "../providers/provider-turn-services.mjs";
 
 export function createProviderOperationComposition({
+  claudeContextMaintenance = null,
   taskRuns,
   selectionStore,
   workspaceCatalogStore,
@@ -147,6 +148,8 @@ export function createProviderOperationComposition({
     logError: (...args) => console.error(...args),
   });
   const claudeCompletionService = new ClaudeCompletionService({
+    settleCompaction: (run) => claudeContextMaintenance?.settleRun(run),
+    completeMaintenanceRun: (run) => managedRunLifecycle.complete(run),
     runForTask: (run) => taskRuns.forTask(run),
     isSelectedRun,
     reindexRun: (run, previous) => taskRuns.reindex(run, previous),

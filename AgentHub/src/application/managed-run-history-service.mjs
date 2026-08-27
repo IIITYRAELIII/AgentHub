@@ -1,4 +1,5 @@
 import { isCodexContextProbeTurn } from "../domain/codex-context-probe.mjs";
+import { isClaudeCompactionRun } from "../domain/claude-context-maintenance.mjs";
 import { providerTurnTelemetrySnapshot } from "../domain/task-runs.mjs";
 
 export class ManagedRunHistoryService {
@@ -32,6 +33,8 @@ export class ManagedRunHistoryService {
     terminalRevision = null,
   } = {}) {
     if (!run?.threadId || !turnId) return;
+    // Служебная свёртка контекста Claude не является ходом разговора.
+    if (isClaudeCompactionRun(run)) return;
     if (run.provider === "codex" && isCodexContextProbeTurn({
       contextProbe: run.contextProbe,
       prompt: run.promptPreview,

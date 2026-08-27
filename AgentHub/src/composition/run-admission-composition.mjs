@@ -7,6 +7,7 @@ import { DeferredInputController } from "../application/deferred-input-controlle
 import { activeTurnNotSteerable } from "../application/run-coordinator.mjs";
 import { isCodexContextProbeTurn } from "../domain/codex-context-probe.mjs";
 import { prependStreamHandoff } from "../domain/stream-handoff.mjs";
+import { isClaudeCompactionRun } from "../domain/claude-context-maintenance.mjs";
 import { markProviderTurnAccepted } from "../domain/task-runs.mjs";
 
 function explicitSkillCandidatesFromInput(input) {
@@ -123,8 +124,11 @@ export function createRunAdmissionComposition({
 
   // Internal probe turns carry no user intent, so they must not consume the
   // package that the first real turn of the receiving Thread is waiting for.
+  // Свёртка контекста Claude — служебная команда CLI: любой префикс превратил
+  // бы её в обычный текст и команда не выполнилась бы.
   async function streamHandoffPrefix(run) {
-    if (!streamHandoff || !run?.streamId || isCodexContextProbeTurn(run)) return "";
+    if (!streamHandoff || !run?.streamId) return "";
+    if (isCodexContextProbeTurn(run) || isClaudeCompactionRun(run)) return "";
     try {
       return await streamHandoff.consume({
         streamId: run.streamId,

@@ -1,6 +1,25 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { CodexCompletionService } from "../../../src/providers/provider-completion-services.mjs";
+import {
+  ClaudeCompletionService,
+  CodexCompletionService,
+} from "../../../src/providers/provider-completion-services.mjs";
+
+function claudeCompletionFixture(events) {
+  return new ClaudeCompletionService({
+    runForTask: () => null,
+    isSelectedRun: () => false,
+    reindexRun: () => events.push("reindex"),
+    setSelectedThread: () => events.push("select"),
+    saveState: async () => events.push("save"),
+    finishProgress: async () => events.push("progress"),
+    persistHistory: async () => events.push("history"),
+    projectWorkLog: async () => events.push("work-log"),
+    finalizeDelivery: async () => events.push("delivery"),
+    settleCompaction: () => events.push("settle"),
+    completeMaintenanceRun: async () => events.push("complete-maintenance"),
+  });
+}
 
 test("Codex completion restores missing model pricing before final delivery", async () => {
   const delivered = [];
@@ -159,4 +178,33 @@ test("managed Codex completion keeps admission through slow terminal bookkeeping
   releaseRead();
   await completion;
   assert.deepEqual(events, ["answer", "terminal:Done", "read", "finalize"]);
+});
+
+test("Claude compaction completion settles maintenance without conversation side effects", async () => {
+  const events = [];
+  const service = claudeCompletionFixture(events);
+
+  await service.completeManaged({
+    provider: "claude",
+    threadId: "thread-claude",
+    turnId: "compact-turn",
+    claudeCompaction: true,
+    compactionBoundarySeen: true,
+  }, { result: { result: "must stay hidden" } });
+
+  assert.deepEqual(events, ["settle", "complete-maintenance"]);
+});
+
+test("Claude compaction terminal without a boundary still completes maintenance only", async () => {
+  const events = [];
+  const service = claudeCompletionFixture(events);
+
+  await service.completeManaged({
+    provider: "claude",
+    threadId: "thread-claude",
+    turnId: "compact-turn-without-boundary",
+    clientUserMessageId: "agent-hub-claude-compaction:test",
+  }, { exitCode: 0 });
+
+  assert.deepEqual(events, ["settle", "complete-maintenance"]);
 });

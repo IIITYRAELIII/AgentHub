@@ -21,6 +21,7 @@ export class StreamContextMaintenanceService {
   constructor({
     registry,
     provider,
+    providers = null,
     latestContextUsage,
     waitForContextUpdate,
     waitForTurnCompletion,
@@ -44,6 +45,10 @@ export class StreamContextMaintenanceService {
     Object.assign(this, {
       registry,
       provider,
+      // Обслуживание контекста устроено по-разному у провайдеров: Codex ходит
+      // в App Server и замеряет результат отдельным скрытым ходом, Claude
+      // принимает свёртку обычным ходом CLI и сам сообщает точный контекст.
+      providers: { codex: provider, ...(providers ?? {}) },
       latestContextUsage,
       waitForContextUpdate,
       waitForTurnCompletion,
@@ -62,10 +67,14 @@ export class StreamContextMaintenanceService {
     });
   }
 
+  maintenanceProvider(target) {
+    return this.providers[normalized(target?.provider).toLowerCase()] ?? null;
+  }
+
   isActive(target) {
     if (this.registry.isActive(target)) return true;
-    return normalized(target?.provider).toLowerCase() === "codex"
-      && this.provider.compactions?.isRunning?.(normalized(target?.threadId)) === true;
+    const provider = this.maintenanceProvider(target);
+    return provider?.compactions?.isRunning?.(normalized(target?.threadId)) === true;
   }
 
   reserveAfterTurn(run) {
@@ -141,7 +150,7 @@ export class StreamContextMaintenanceService {
           ...rotated,
         };
       }
-      const before = this.latestContextUsage(run.threadId);
+      const before = this.latestContextUsage(run.threadId, run.provider);
       const beforePercent = contextUsagePercent(before);
       if (beforePercent === null || beforePercent <= Number(this.autoCompactThreshold())) {
         return { compacted: false, beforePercent };
@@ -196,27 +205,33 @@ export class StreamContextMaintenanceService {
   }
 
   async compact(target) {
+    const provider = this.maintenanceProvider(target);
+    if (!provider) throw new Error("Свёртка контекста недоступна для этого провайдера");
     const reservation = this.registry.begin(target, "manual-compaction");
     if (!reservation) throw new Error("Для этого Stream уже выполняется обслуживание контекста");
     try {
-      const before = this.latestContextUsage(target.threadId);
+      const before = this.latestContextUsage(target.threadId, target.provider);
       const beforePercent = contextUsagePercent(before);
-      const started = await this.provider.startManual(target, { beforePercent });
+      const started = await provider.startManual(target, { beforePercent });
       if (!started.accepted) {
         this.registry.end(reservation);
         return started;
       }
-      this.provider.compactions.annotate?.(target.threadId, started.compactionId, { beforePercent });
-      void this.provider.compactions.waitForSettlement(target.threadId, started.compactionId)
+      provider.compactions.annotate?.(target.threadId, started.compactionId, { beforePercent });
+      void provider.compactions.waitForSettlement(target.threadId, started.compactionId)
         .then(async (settled) => {
           if (settled?.status !== "completed") return;
+          // Провайдер, который сам сообщает контекст после свёртки, уже записал
+          // точный замер: скрытый ход только потратил бы лимит впустую.
+          if (provider.measuresContextItself === true) return;
           const after = await this.#exactContextAfterCompaction(
             target,
             before,
             started.compactionId,
+            provider,
           );
           const afterPercent = contextUsagePercent(after);
-          this.provider.compactions.annotate?.(target.threadId, started.compactionId, {
+          provider.compactions.annotate?.(target.threadId, started.compactionId, {
             afterPercent,
             measurementStatus: afterPercent === null ? "failed" : "completed",
           });
@@ -236,11 +251,15 @@ export class StreamContextMaintenanceService {
   }
 
   async rotate(target) {
+    const provider = this.maintenanceProvider(target);
+    if (typeof provider?.rotate !== "function") {
+      throw new Error("Перерождение потока недоступно для этого провайдера");
+    }
     const reservation = this.registry.begin(target, "manual-rotation");
     if (!reservation) throw new Error("Для этого Stream уже выполняется обслуживание контекста");
     let queueTarget = target;
     try {
-      const rotated = await this.provider.rotate(target);
+      const rotated = await provider.rotate(target);
       queueTarget = await this.#bindRotation(target, rotated);
       await this.#exactContextAfterRotation(queueTarget);
       return rotated;
@@ -297,8 +316,8 @@ export class StreamContextMaintenanceService {
     return { ...source, streamId: stream.id, threadId, taskTitle: workspace.name };
   }
 
-  async #exactContextAfterCompaction(target, before, compactionId) {
-    this.provider.compactions.annotate?.(target.threadId, compactionId, {
+  async #exactContextAfterCompaction(target, before, compactionId, provider = this.provider) {
+    provider.compactions.annotate?.(target.threadId, compactionId, {
       measurementStatus: "running",
     });
     const preliminary = await this.waitForContextUpdate(target.threadId, {
@@ -308,7 +327,7 @@ export class StreamContextMaintenanceService {
     if (preliminary && preliminary.provisional !== true) return preliminary;
     const probeStartedAt = Date.now() - 1;
     try {
-      const probe = await this.provider.probeContext(target, { compactionId });
+      const probe = await provider.probeContext(target, { compactionId });
       const [measured, completion] = await Promise.all([
         this.waitForContextUpdate(target.threadId, {
           after: probeStartedAt,
@@ -321,7 +340,7 @@ export class StreamContextMaintenanceService {
       if (completion.status !== "completed") {
         throw new Error(`Скрытый замер контекста завершился со статусом ${completion.status}`);
       }
-      if (await this.provider.waitForContextProbeIdle?.(target, probe?.turnId) === false) {
+      if (await provider.waitForContextProbeIdle?.(target, probe?.turnId) === false) {
         throw new Error("Скрытый замер контекста завершён, но его ход всё ещё активен");
       }
       return measured?.provisional === true || Number(measured?.usedTokens) <= 0

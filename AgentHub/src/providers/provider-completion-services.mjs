@@ -1,4 +1,6 @@
 import { unlink } from "node:fs/promises";
+
+import { isClaudeCompactionRun } from "../domain/claude-context-maintenance.mjs";
 import { claudeFailureMessage, formatClaudeUsage } from "./claude/claude.mjs";
 import { TASK_EXECUTION_OWNERS } from "../domain/task-execution-owner.mjs";
 
@@ -190,6 +192,9 @@ export class ClaudeCompletionService {
 
   async completeManaged(run, { spawnError = null, result, errorText = "", exitCode = null } = {}) {
     if (!run) return;
+    // Свёртка контекста — служебный ход Hub: у неё нет ответа, поэтому она не
+    // попадает ни в историю задачи, ни в доставку.
+    if (isClaudeCompactionRun(run)) return this.#completeCompaction(run);
     const turnId = run.turnId;
     const files = this.#d.temporaryFiles.get(turnId) ?? run.claudeTemporaryFiles ?? [];
     this.#d.temporaryFiles.delete(turnId);
@@ -240,6 +245,15 @@ export class ClaudeCompletionService {
         description: "ошибка Claude",
       });
     }
+  }
+
+  async #completeCompaction(run) {
+    try {
+      this.#d.settleCompaction?.(run);
+    } catch (error) {
+      this.#d.logError?.(`Cannot settle Claude context compaction ${run.turnId}:`, error.message);
+    }
+    await this.#d.completeMaintenanceRun?.(run);
   }
 
   async #persistAndDeliver(run, options) {

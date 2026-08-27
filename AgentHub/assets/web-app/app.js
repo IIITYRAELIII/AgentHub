@@ -3862,7 +3862,7 @@ function renderContextUsageDetails(task) {
     contextUsageCategories.append(row);
   }
   contextUsageNote.textContent = context.breakdown?.note ?? "";
-  contextUsageCompact.hidden = task.provider !== "codex";
+  contextUsageCompact.hidden = !["codex", "claude"].includes(String(task.provider ?? ""));
   contextUsageCompact.disabled = Boolean(task.running || context.compacting || context.usagePending);
   contextUsageCompact.textContent = context.compacting ? "Контекст сворачивается…" : "Свернуть контекст";
 }

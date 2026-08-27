@@ -464,6 +464,32 @@ test("desktop task snapshot hides a standalone automatic compaction observer", (
   assert.equal(snapshot.running, false);
 });
 
+test("desktop task snapshot keeps an ordinary Claude turn that compacted automatically", () => {
+  const { desktopTaskSnapshot, entry, state } = fixture({
+    selected: { provider: "claude" },
+  });
+  entry.provider = "claude";
+  state.run.provider = "claude";
+  state.compaction = {
+    id: "claude-compact-1",
+    provider: "claude",
+    origin: "automatic",
+    status: "completed",
+    turnId: state.run.turnId,
+    beforePercent: 68,
+    afterPercent: 21,
+  };
+
+  const snapshot = desktopTaskSnapshot(entry);
+
+  assert.equal(snapshot.running, true);
+  assert.equal(snapshot.run.turnId, "turn-1");
+  assert.equal(snapshot.run.operationKind, "user-turn");
+  assert.equal(snapshot.run.prompt, "Вопрос");
+  assert.equal(snapshot.run.response, "Ответ");
+  assert.equal(snapshot.context.compaction.id, "claude-compact-1");
+});
+
 test("desktop snapshot exposes bounded delivery receipts for client reconciliation", async () => {
   const { desktopSnapshot, state } = fixture();
   state.receipts = [{

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { appendFile, mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, mkdir, open, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -410,13 +410,164 @@ test("Claude transcript cache reuses unchanged files and invalidates on size cha
   await writeFile(transcriptPath, first, "utf8");
 
   assert.equal((await listClaudeSessionSnapshots({ projectsRoot: root }))[0].title, "Название A");
-  assert.deepEqual(claudeTranscriptCacheStats(), { entries: 1, hits: 0, misses: 1 });
+  assert.deepEqual(claudeTranscriptCacheStats(), {
+    entries: 1,
+    hits: 0,
+    misses: 1,
+    fullHistoryReads: 0,
+    incrementalHistoryReads: 0,
+  });
   assert.equal((await listClaudeSessionSnapshots({ projectsRoot: root }))[0].title, "Название A");
-  assert.deepEqual(claudeTranscriptCacheStats(), { entries: 1, hits: 1, misses: 1 });
+  assert.deepEqual(claudeTranscriptCacheStats(), {
+    entries: 1,
+    hits: 1,
+    misses: 1,
+    fullHistoryReads: 0,
+    incrementalHistoryReads: 0,
+  });
 
   await appendFile(transcriptPath, `\n${line({ type: "ai-title", aiTitle: "Название C" })}`, "utf8");
   assert.equal((await listClaudeSessionSnapshots({ projectsRoot: root }))[0].title, "Название C");
-  assert.deepEqual(claudeTranscriptCacheStats(), { entries: 1, hits: 1, misses: 2 });
+  assert.deepEqual(claudeTranscriptCacheStats(), {
+    entries: 1,
+    hits: 1,
+    misses: 2,
+    fullHistoryReads: 0,
+    incrementalHistoryReads: 0,
+  });
+});
+
+test("Claude session history incrementally parses appended turns", async () => {
+  resetClaudeTranscriptCache();
+  const root = await mkdtemp(path.join(os.tmpdir(), "telegram-claude-incremental-"));
+  const project = path.join(root, "project");
+  const transcriptPath = path.join(project, "incremental-session.jsonl");
+  await mkdir(project);
+  await writeFile(transcriptPath, [
+    line({ type: "user", uuid: "u1", message: { role: "user", content: "Первый вопрос" } }),
+    line({
+      type: "assistant",
+      uuid: "a1",
+      message: { role: "assistant", stop_reason: "end_turn", content: "Первый ответ" },
+    }),
+  ].join("\n"), "utf8");
+
+  const first = await readClaudeSessionSnapshot("incremental-session", { projectsRoot: root });
+  assert.equal(first.history.length, 1);
+  assert.equal(claudeTranscriptCacheStats().fullHistoryReads, 1);
+
+  await appendFile(transcriptPath, `\n${[
+    line({ type: "user", uuid: "u2", message: { role: "user", content: "Второй вопрос" } }),
+    line({
+      type: "assistant",
+      uuid: "a2",
+      message: { role: "assistant", stop_reason: "end_turn", content: "Второй ответ" },
+    }),
+  ].join("\n")}`, "utf8");
+
+  const second = await readClaudeSessionSnapshot("incremental-session", { projectsRoot: root });
+  assert.deepEqual(second.history.map((turn) => turn.answer), ["Первый ответ", "Второй ответ"]);
+  assert.equal(claudeTranscriptCacheStats().fullHistoryReads, 1);
+  assert.equal(claudeTranscriptCacheStats().incrementalHistoryReads, 1);
+});
+
+test("Claude session history fully rescans a truncated transcript", async () => {
+  resetClaudeTranscriptCache();
+  const root = await mkdtemp(path.join(os.tmpdir(), "telegram-claude-truncated-"));
+  const project = path.join(root, "project");
+  const transcriptPath = path.join(project, "truncated-session.jsonl");
+  await mkdir(project);
+  await writeFile(transcriptPath, [
+    line({ type: "user", uuid: "u1", message: { role: "user", content: "Старый вопрос" } }),
+    line({
+      type: "assistant",
+      uuid: "a1",
+      message: { role: "assistant", stop_reason: "end_turn", content: "Старый длинный ответ" },
+    }),
+  ].join("\n"), "utf8");
+  await readClaudeSessionSnapshot("truncated-session", { projectsRoot: root });
+
+  await writeFile(transcriptPath, [
+    line({ type: "user", uuid: "u2", message: { role: "user", content: "Новый" } }),
+    line({
+      type: "assistant",
+      uuid: "a2",
+      message: { role: "assistant", stop_reason: "end_turn", content: "Готово" },
+    }),
+  ].join("\n"), "utf8");
+
+  const snapshot = await readClaudeSessionSnapshot("truncated-session", { projectsRoot: root });
+  assert.deepEqual(snapshot.history.map((turn) => turn.answer), ["Готово"]);
+  assert.equal(claudeTranscriptCacheStats().fullHistoryReads, 2);
+  assert.equal(claudeTranscriptCacheStats().incrementalHistoryReads, 0);
+});
+
+test("Claude session history rejects an append cache after prefix mutation", async () => {
+  resetClaudeTranscriptCache();
+  const root = await mkdtemp(path.join(os.tmpdir(), "telegram-claude-mutated-"));
+  const project = path.join(root, "project");
+  const transcriptPath = path.join(project, "mutated-session.jsonl");
+  await mkdir(project);
+  const initial = [
+    line({ type: "user", uuid: "u1", message: { role: "user", content: "Первый" } }),
+    line({
+      type: "assistant",
+      uuid: "a1",
+      message: { role: "assistant", stop_reason: "end_turn", content: "OLD-ANSWER" },
+    }),
+  ].join("\n");
+  await writeFile(transcriptPath, initial, "utf8");
+  await readClaudeSessionSnapshot("mutated-session", { projectsRoot: root });
+
+  const handle = await open(transcriptPath, "r+");
+  try {
+    await handle.write(Buffer.from("NEW-ANSWER"), 0, 10, Buffer.from(initial).indexOf("OLD-ANSWER"));
+  } finally {
+    await handle.close();
+  }
+  await appendFile(transcriptPath, `\n${[
+    line({ type: "user", uuid: "u2", message: { role: "user", content: "Второй" } }),
+    line({
+      type: "assistant",
+      uuid: "a2",
+      message: { role: "assistant", stop_reason: "end_turn", content: "SECOND" },
+    }),
+  ].join("\n")}`, "utf8");
+
+  const snapshot = await readClaudeSessionSnapshot("mutated-session", { projectsRoot: root });
+  assert.deepEqual(snapshot.history.map((turn) => turn.answer), ["NEW-ANSWER", "SECOND"]);
+  assert.equal(claudeTranscriptCacheStats().fullHistoryReads, 2);
+  assert.equal(claudeTranscriptCacheStats().incrementalHistoryReads, 0);
+});
+
+test("Claude session history retries an appended partial JSON line", async () => {
+  resetClaudeTranscriptCache();
+  const root = await mkdtemp(path.join(os.tmpdir(), "telegram-claude-partial-"));
+  const project = path.join(root, "project");
+  const transcriptPath = path.join(project, "partial-session.jsonl");
+  await mkdir(project);
+  const partialUser = '{"type":"user","uuid":"u2","message":{"role":"user","content":"Второй';
+  await writeFile(transcriptPath, `${[
+    line({ type: "user", uuid: "u1", message: { role: "user", content: "Первый" } }),
+    line({
+      type: "assistant",
+      uuid: "a1",
+      message: { role: "assistant", stop_reason: "end_turn", content: "Первый ответ" },
+    }),
+  ].join("\n")}\n${partialUser}`, "utf8");
+
+  const first = await readClaudeSessionSnapshot("partial-session", { projectsRoot: root });
+  assert.deepEqual(first.history.map((turn) => turn.answer), ["Первый ответ"]);
+
+  await appendFile(transcriptPath, ` вопрос"}}\n${line({
+    type: "assistant",
+    uuid: "a2",
+    message: { role: "assistant", stop_reason: "end_turn", content: "Второй ответ" },
+  })}`, "utf8");
+
+  const second = await readClaudeSessionSnapshot("partial-session", { projectsRoot: root });
+  assert.deepEqual(second.history.map((turn) => turn.answer), ["Первый ответ", "Второй ответ"]);
+  assert.equal(claudeTranscriptCacheStats().incrementalHistoryReads, 1);
 });
 
 test("listClaudeSessionSnapshots excludes command-only utility sessions", async () => {

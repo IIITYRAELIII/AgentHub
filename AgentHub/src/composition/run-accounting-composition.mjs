@@ -13,6 +13,8 @@ export function createRunAccountingComposition({
   refreshTaskDiff,
   runTaskTitle,
   logger = console,
+  readClaudeSession = readClaudeSessionSnapshot,
+  scanClaudeTranscriptFile = scanClaudeHistoricalTranscriptFile,
 }) {
   function applyCodexRolloutContext(run, usageResult) {
     if (!run || !usageResult) return;
@@ -84,11 +86,11 @@ export function createRunAccountingComposition({
     let transcriptTurn = null;
     let transcriptPath = String(snapshot?.transcriptPath ?? "").trim();
     if (!transcriptPath) {
-      const current = await readClaudeSessionSnapshot(run.threadId).catch(() => null);
+      const current = await readClaudeSession(run.threadId, { includeHistory: false }).catch(() => null);
       transcriptPath = String(current?.transcriptPath ?? "").trim();
     }
     if (transcriptPath) {
-      const scan = await scanClaudeHistoricalTranscriptFile(transcriptPath).catch((error) => {
+      const scan = await scanClaudeTranscriptFile(transcriptPath).catch((error) => {
         logger.error(`Cannot read Claude transcript for journal ${run.threadId}:`, error.message);
         return null;
       });

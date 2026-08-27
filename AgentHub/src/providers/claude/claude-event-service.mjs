@@ -1,4 +1,5 @@
 import { claudeStreamContextUsage } from "./claude.mjs";
+import { claudeCompactionEvent } from "../../domain/claude-context-maintenance.mjs";
 
 function requiredFunction(value, name) {
   if (typeof value !== "function") throw new TypeError(`${name} is required`);
@@ -19,6 +20,12 @@ export class ClaudeEventService {
 
   handle(run, parsed) {
     const d = this.#d;
+    const compaction = claudeCompactionEvent(parsed.event);
+    if (compaction) {
+      d.observeCompaction?.(run, compaction);
+      if (compaction.stage === "started") d.setStage(run, "Claude сворачивает контекст…");
+      void d.saveState();
+    }
     if (parsed.sessionId && parsed.sessionId !== run.threadId) {
       const previousThreadId = run.threadId;
       const wasSelected = d.isSelectedRun(run);

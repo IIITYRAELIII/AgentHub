@@ -167,6 +167,128 @@ function fixture({
   return { clientSelections, deferredInputs, events, registry, service, source };
 }
 
+function claudeFixture({ measuresContextItself = true, settlementStatus = "completed" } = {}) {
+  const events = [];
+  const registry = new StreamMaintenanceRegistry();
+  const target = {
+    provider: "claude",
+    projectRoot: "D:/Work",
+    streamId: "stream-1",
+    threadId: "claude-thread",
+    taskTitle: "Workspace",
+  };
+  let running = false;
+  const claude = {
+    measuresContextItself,
+    compactions: {
+      isRunning: (threadId) => running && threadId === target.threadId,
+      get: () => null,
+      annotate: (...args) => events.push(["annotate", ...args]),
+      waitForSettlement: async (...args) => {
+        events.push(["settled", ...args]);
+        return { status: settlementStatus };
+      },
+    },
+    startManual: async (...args) => {
+      events.push(["claude-compact", ...args]);
+      running = true;
+      return { accepted: true, compactionId: "claude-compaction-1" };
+    },
+    probeContext: async () => {
+      events.push(["claude-probe"]);
+      return { turnId: "probe-1" };
+    },
+  };
+  const codex = {
+    compactions: {
+      isRunning: () => false,
+      get: () => null,
+      annotate: () => {},
+      waitForSettlement: async () => null,
+    },
+    start: async () => ({ accepted: false }),
+    startManual: async (...args) => {
+      events.push(["codex-compact", ...args]);
+      return { accepted: true, compactionId: "codex-compaction-1" };
+    },
+    probeContext: async () => {
+      events.push(["codex-probe"]);
+      return { turnId: "probe-1" };
+    },
+    rotate: async () => ({ thread: { id: "thread-new" } }),
+    rotateCompacted: async () => ({ accepted: true }),
+    discardCompactionTransfer: () => {},
+  };
+  const service = new StreamContextMaintenanceService({
+    registry,
+    provider: codex,
+    providers: { claude },
+    latestContextUsage: (threadId, provider) => {
+      events.push(["usage-request", threadId, provider]);
+      return { usedTokens: 82, modelContextWindow: 100, updatedAt: "2026-08-27T10:00:00.000Z" };
+    },
+    waitForContextUpdate: async () => {
+      events.push(["context-update"]);
+      // Предварительное значение ненадёжно, поэтому провайдер без собственного
+      // замера обязан продолжить скрытым ходом.
+      return { usedTokens: 10, modelContextWindow: 100, provisional: !measuresContextItself };
+    },
+    waitForTurnCompletion: async () => ({ status: "completed" }),
+    workspaceCatalog: { thread: () => null, stream: () => null, workspace: () => null, bindThread: () => {} },
+    selectionStore: { threadId: target.threadId, setThread: () => {} },
+    deferredInputs: new DeferredInputStore(),
+    invalidateCatalog: () => {},
+    saveState: async () => {},
+  });
+  return { events, registry, service, target, setRunning: (value) => { running = value; } };
+}
+
+test("manual compaction of a Claude Stream goes to its own provider", async () => {
+  const { events, service, target } = claudeFixture();
+  const started = await service.compact(target);
+  assert.equal(started.accepted, true);
+  assert.equal(started.compactionId, "claude-compaction-1");
+  assert.deepEqual(events.find(([name]) => name === "usage-request"), ["usage-request", "claude-thread", "claude"]);
+  assert.equal(events.some(([name]) => name === "claude-compact"), true);
+  assert.equal(events.some(([name]) => name === "codex-compact"), false);
+});
+
+test("Claude reports its own context after compaction, so no hidden probe runs", async () => {
+  const { events, registry, service, target } = claudeFixture();
+  await service.compact(target);
+  while (registry.isActive(target)) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(events.some(([name]) => name === "claude-probe"), false);
+  assert.equal(events.some(([name]) => name === "codex-probe"), false);
+  assert.equal(events.some(([name]) => name === "context-update"), false);
+});
+
+test("a provider without its own measurement still gets the hidden probe", async () => {
+  const { events, registry, service, target } = claudeFixture({ measuresContextItself: false });
+  await service.compact(target);
+  while (registry.isActive(target)) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(events.some(([name]) => name === "claude-probe"), true);
+});
+
+test("thread rebirth stays unavailable for Claude", async () => {
+  const { service, target } = claudeFixture();
+  await assert.rejects(() => service.rotate(target), /недоступно для этого провайдера/u);
+});
+
+test("an active Claude compaction blocks new input for that Stream", async () => {
+  const { service, target, setRunning } = claudeFixture();
+  assert.equal(service.isActive(target), false);
+  setRunning(true);
+  assert.equal(service.isActive(target), true);
+});
+
+test("an unknown provider cannot request compaction", async () => {
+  const { service } = claudeFixture();
+  await assert.rejects(
+    () => service.compact({ provider: "gemini", threadId: "x" }),
+    /недоступна для этого провайдера/u,
+  );
+});
+
 test("context usage percentage uses the current model window", () => {
   assert.equal(contextUsagePercent({ usedTokens: 75, modelContextWindow: 100 }), 75);
   assert.equal(contextUsagePercent({ usedTokens: 7, modelContextWindow: 100 }), 7);

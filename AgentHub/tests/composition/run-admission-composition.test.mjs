@@ -5,6 +5,7 @@ import {
   contextCompactionRunIsInternal,
   createRunAdmissionComposition,
 } from "../../src/composition/run-admission-composition.mjs";
+import { claudeCompactionClientId } from "../../src/domain/claude-context-maintenance.mjs";
 import { codexContextProbeClientId } from "../../src/domain/codex-context-probe.mjs";
 
 function admissionFixture({ handoff = "PACKAGE", consume = null } = {}) {
@@ -95,6 +96,21 @@ test("a context probe turn never consumes a pending handoff package", async () =
   );
   assert.deepEqual(consumed, []);
   assert.equal(launches[0].input, "Ответь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1");
+});
+
+test("a Claude context compaction command is launched without a handoff prefix", async () => {
+  const { composition, launches, consumed } = admissionFixture();
+  await composition.launchTurn(
+    {
+      provider: "claude",
+      threadId: "thread-2",
+      streamId: "stream-1",
+      clientUserMessageId: claudeCompactionClientId(),
+    },
+    "/compact",
+  );
+  assert.deepEqual(consumed, []);
+  assert.equal(launches[0].input, "/compact");
 });
 
 test("a failing handoff build still launches the turn with the original input", async () => {

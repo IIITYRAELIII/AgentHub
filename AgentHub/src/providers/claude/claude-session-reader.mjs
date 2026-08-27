@@ -1,28 +1,34 @@
-import { createReadStream } from "node:fs";
 import { open, readdir, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import readline from "node:readline";
 import { claudeTranscriptHistory } from "../../application/task-history.mjs";
 import {
   isClaudeSyntheticUserEntry,
   withoutClaudeResumePreludes,
 } from "../../domain/claude-transcript.mjs";
 import { claudeStreamContextUsage } from "./claude.mjs";
+import { compactClaudeHistoryBuffer } from "./claude-transcript-history.mjs";
+import { compactClaudeTranscriptHistoryRange } from "./claude-transcript-worker-client.mjs";
 
 const MAX_TRANSCRIPT_TAIL = 4 * 1024 * 1024;
 const MAX_CATALOG_TRANSCRIPT_TAIL = 512 * 1024;
 const MAX_CATALOG_TRANSCRIPT_HEAD = 64 * 1024;
 const MAX_CLAUDE_TRANSCRIPT_CACHE_ENTRIES = 1000;
+const MAX_INLINE_HISTORY_APPEND = 1024 * 1024;
+const HISTORY_BOUNDARY_GUARD_BYTES = 64;
 const claudeTranscriptCache = new Map();
 let claudeTranscriptCacheHits = 0;
 let claudeTranscriptCacheMisses = 0;
+let claudeTranscriptFullHistoryReads = 0;
+let claudeTranscriptIncrementalHistoryReads = 0;
 
 export function claudeTranscriptCacheStats() {
   return {
     entries: claudeTranscriptCache.size,
     hits: claudeTranscriptCacheHits,
     misses: claudeTranscriptCacheMisses,
+    fullHistoryReads: claudeTranscriptFullHistoryReads,
+    incrementalHistoryReads: claudeTranscriptIncrementalHistoryReads,
   };
 }
 
@@ -30,6 +36,8 @@ export function resetClaudeTranscriptCache() {
   claudeTranscriptCache.clear();
   claudeTranscriptCacheHits = 0;
   claudeTranscriptCacheMisses = 0;
+  claudeTranscriptFullHistoryReads = 0;
+  claudeTranscriptIncrementalHistoryReads = 0;
 }
 
 function cacheKey(mode, transcriptPath) {
@@ -39,7 +47,10 @@ function cacheKey(mode, transcriptPath) {
 function cachedTranscriptSnapshot(mode, transcriptPath, info) {
   const key = cacheKey(mode, transcriptPath);
   const cached = claudeTranscriptCache.get(key);
-  if (!cached || cached.size !== info.size || cached.modifiedAtMs !== info.mtimeMs) {
+  if (!cached
+    || cached.size !== info.size
+    || cached.modifiedAtMs !== info.mtimeMs
+    || cached.identity !== transcriptIdentity(info)) {
     claudeTranscriptCacheMisses += 1;
     return null;
   }
@@ -50,13 +61,15 @@ function cachedTranscriptSnapshot(mode, transcriptPath, info) {
   return cached.snapshot;
 }
 
-function rememberTranscriptSnapshot(mode, transcriptPath, info, snapshot) {
+function rememberTranscriptSnapshot(mode, transcriptPath, info, snapshot, metadata = {}) {
   const key = cacheKey(mode, transcriptPath);
   claudeTranscriptCache.delete(key);
   claudeTranscriptCache.set(key, {
     size: info.size,
     modifiedAtMs: info.mtimeMs,
+    identity: transcriptIdentity(info),
     snapshot,
+    ...metadata,
   });
   while (claudeTranscriptCache.size > MAX_CLAUDE_TRANSCRIPT_CACHE_ENTRIES) {
     claudeTranscriptCache.delete(claudeTranscriptCache.keys().next().value);
@@ -114,6 +127,10 @@ function latestClaudeTitle(entries, type, field) {
 function claudeTranscriptTitle(entries) {
   return latestClaudeTitle(entries, "custom-title", "customTitle")
     || latestClaudeTitle(entries, "ai-title", "aiTitle");
+}
+
+function transcriptIdentity(info) {
+  return `${info.dev}:${info.ino}:${info.birthtimeMs}`;
 }
 
 function claudeActivityEntry(entry) {
@@ -239,19 +256,38 @@ async function findTranscript(directory, fileName) {
   return null;
 }
 
-async function readTail(filePath, maximumBytes = MAX_TRANSCRIPT_TAIL) {
+async function readTail(filePath, maximumBytes = MAX_TRANSCRIPT_TAIL, expectedSize = null) {
   const handle = await open(filePath, "r");
   try {
     const stats = await handle.stat();
-    const length = Math.min(stats.size, maximumBytes);
+    const size = expectedSize == null ? stats.size : Math.min(stats.size, expectedSize);
+    const length = Math.min(size, maximumBytes);
     const buffer = Buffer.alloc(length);
-    await handle.read(buffer, 0, length, stats.size - length);
+    await handle.read(buffer, 0, length, size - length);
     let text = buffer.toString("utf8");
-    if (stats.size > length) text = text.slice(text.indexOf("\n") + 1);
+    if (size > length) text = text.slice(text.indexOf("\n") + 1);
     return text;
   } finally {
     await handle.close();
   }
+}
+
+async function readRange(filePath, start, endExclusive) {
+  const length = Math.max(0, endExclusive - start);
+  if (!length) return Buffer.alloc(0);
+  const handle = await open(filePath, "r");
+  try {
+    const buffer = Buffer.alloc(length);
+    const { bytesRead } = await handle.read(buffer, 0, length, start);
+    return bytesRead === length ? buffer : buffer.subarray(0, bytesRead);
+  } finally {
+    await handle.close();
+  }
+}
+
+async function readHistoryBoundaryGuard(filePath, parsedBytes) {
+  const start = Math.max(0, parsedBytes - HISTORY_BOUNDARY_GUARD_BYTES);
+  return (await readRange(filePath, start, parsedBytes)).toString("base64");
 }
 
 async function readHead(filePath, maximumBytes) {
@@ -280,68 +316,47 @@ async function readCatalogSample(filePath, size) {
   return `${head}\n${tail}`;
 }
 
-function compactClaudeHistoryEntry(entry) {
-  if (isUserPrompt(entry)) {
-    return {
-      type: "user",
-      uuid: entry.uuid,
-      timestamp: entry.timestamp,
-      message: {
-        role: "user",
-        content: contentBlocks(entry.message)
-          .filter((block) => block?.type === "text" && String(block.text ?? "").trim())
-          .map((block) => ({ type: "text", text: String(block.text) })),
-      },
-    };
+async function readClaudeTranscriptHistory(filePath, info, previous) {
+  const identity = transcriptIdentity(info);
+  const previousState = previous?.historyState;
+  let incremental = Boolean(
+    previousState
+    && previous.identity === identity
+    && previous.size < info.size
+    && previousState.parsedBytes <= previous.size,
+  );
+  if (incremental) {
+    const boundaryGuard = await readHistoryBoundaryGuard(filePath, previousState.parsedBytes);
+    incremental = boundaryGuard === previousState.boundaryGuard;
   }
-  if (entry?.type === "assistant" && entry.message?.role === "assistant") {
-    const content = contentBlocks(entry.message).flatMap((block) => {
-      if (block?.type === "text" && String(block.text ?? "").trim()) {
-        return [{ type: "text", text: String(block.text) }];
-      }
-      if (block?.type === "tool_use") {
-        return [{
-          type: "tool_use",
-          id: String(block.id ?? ""),
-          name: String(block.name ?? ""),
-        }];
-      }
-      return [];
-    });
-    if (!content.length && entry.message.stop_reason !== "end_turn") return null;
-    return {
-      type: "assistant",
-      uuid: entry.uuid,
-      timestamp: entry.timestamp,
-      message: {
-        role: "assistant",
-        stop_reason: entry.message.stop_reason ?? null,
-        content,
-      },
-    };
-  }
-  if (entry?.type === "last-prompt") {
-    return { type: "last-prompt", timestamp: entry.timestamp };
-  }
-  return null;
-}
 
-async function readClaudeTranscriptHistory(filePath) {
-  const lines = readline.createInterface({
-    input: createReadStream(filePath, { encoding: "utf8" }),
-    crlfDelay: Number.POSITIVE_INFINITY,
-  });
-  const compact = [];
-  for await (const line of lines) {
-    if (!line) continue;
-    try {
-      const entry = compactClaudeHistoryEntry(JSON.parse(line));
-      if (entry) compact.push(JSON.stringify(entry));
-    } catch {
-      // A concurrently appended final partial line is retried on the next read.
-    }
+  const start = incremental ? previousState.parsedBytes : 0;
+  const deltaBytes = info.size - start;
+  let result;
+  if (incremental && deltaBytes <= MAX_INLINE_HISTORY_APPEND) {
+    result = compactClaudeHistoryBuffer(
+      await readRange(filePath, start, info.size),
+      { startOffset: start },
+    );
+  } else {
+    result = await compactClaudeTranscriptHistoryRange(filePath, {
+      start,
+      endExclusive: info.size,
+    });
   }
-  return claudeTranscriptHistory(compact.join("\n"));
+  if (incremental) claudeTranscriptIncrementalHistoryReads += 1;
+  else claudeTranscriptFullHistoryReads += 1;
+  const compactLines = incremental
+    ? [...previousState.compactLines, ...result.compactLines]
+    : result.compactLines;
+  return {
+    history: claudeTranscriptHistory(compactLines.join("\n")),
+    state: {
+      compactLines,
+      parsedBytes: result.parsedBytes,
+      boundaryGuard: await readHistoryBoundaryGuard(filePath, result.parsedBytes),
+    },
+  };
 }
 
 async function findTranscriptFiles(directory, results = []) {
@@ -383,19 +398,22 @@ export async function readClaudeSessionSnapshot(
   const cacheMode = includeHistory ? "session-history" : "session";
   const cached = cachedTranscriptSnapshot(cacheMode, transcriptPath, info);
   if (cached) return { ...cached };
-  const [transcript, history] = await Promise.all([
-    readTail(transcriptPath),
-    includeHistory ? readClaudeTranscriptHistory(transcriptPath) : null,
+  const previous = claudeTranscriptCache.get(cacheKey(cacheMode, transcriptPath));
+  const [transcript, historyResult] = await Promise.all([
+    readTail(transcriptPath, MAX_TRANSCRIPT_TAIL, info.size),
+    includeHistory ? readClaudeTranscriptHistory(transcriptPath, info, previous) : null,
   ]);
   // Время последней записи нужно вызывающему коду, чтобы отличить действительно
   // выполняющийся ход от давно брошенного незавершённого транскрипта.
   const snapshot = {
     ...parseClaudeTranscript(transcript),
-    ...(includeHistory ? { history } : {}),
+    ...(includeHistory ? { history: historyResult.history } : {}),
     transcriptPath,
     modifiedAtMs: info.mtimeMs,
   };
-  rememberTranscriptSnapshot(cacheMode, transcriptPath, info, snapshot);
+  rememberTranscriptSnapshot(cacheMode, transcriptPath, info, snapshot, includeHistory ? {
+    historyState: historyResult.state,
+  } : {});
   return { ...snapshot };
 }
 

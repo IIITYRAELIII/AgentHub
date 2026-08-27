@@ -46,6 +46,7 @@ export function createProviderSnapshotComposition({
   codexModelLabel,
   reasoningLabels,
   trackClaudeContextUsage = () => {},
+  observeClaudeCompaction = () => {},
   invalidateTaskCatalog,
   delay,
 }) {
@@ -60,6 +61,7 @@ export function createProviderSnapshotComposition({
     logError: (...args) => console.error(...args),
   });
   const claudeEventService = new ClaudeEventService({
+    observeCompaction: observeClaudeCompaction,
     isSelectedRun,
     reindexRun: (run, previous) => taskRuns.reindex(run, previous),
     invalidateCatalog: invalidateTaskCatalog,

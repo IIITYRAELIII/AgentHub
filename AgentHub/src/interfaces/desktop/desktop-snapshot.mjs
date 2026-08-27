@@ -3,6 +3,7 @@ import {
   displayUserPrompt,
   userTaskReferencePromptDetails,
 } from "../../application/task-history.mjs";
+import { isClaudeCompactionRun } from "../../domain/claude-context-maintenance.mjs";
 import { isCodexContextProbeTurn } from "../../domain/codex-context-probe.mjs";
 import {
   interstreamMessageDetails,
@@ -430,6 +431,7 @@ export function createDesktopSnapshotFactory({
     return isCompactionOnlyObserver(run, context)
       || isPostCompactionMeasurementObserver(run, context)
       || (turnId && probeTurnIds.has(turnId))
+      || isClaudeCompactionRun(run)
       || (run.provider === "codex" && isCodexContextProbeTurn({
         prompt: run.promptPreview,
         finalAnswer: run.responseText,

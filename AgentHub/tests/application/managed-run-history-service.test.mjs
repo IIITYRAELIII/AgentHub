@@ -150,3 +150,24 @@ test("managed run history preserves a real user message equal to probe text", as
   assert.equal(setup.history.length, 1);
   assert.equal(setup.snapshots.length, 1);
 });
+
+test("managed run history preserves an ordinary Claude turn containing automatic compaction", async () => {
+  const setup = fixture();
+  await setup.service.persist({
+    provider: "claude",
+    threadId: "claude-thread",
+    turnId: "claude-user-turn",
+    promptPreview: "Продолжай работу",
+    responseText: "Готово",
+    userMessages: [{ clientUserMessageId: "client-claude-1", text: "Продолжай работу" }],
+    claudeCompactionBoundary: {
+      origin: "automatic",
+      preTokens: 180_000,
+      postTokens: 42_000,
+    },
+  }, { active: false, status: "completed", answer: "Готово" });
+
+  assert.equal(setup.history.length, 1);
+  assert.equal(setup.history[0].id, "claude-user-turn");
+  assert.equal(setup.snapshots.length, 1);
+});

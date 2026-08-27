@@ -6,6 +6,7 @@ import { UsageSyncRemoteClient } from "../infrastructure/http/usage-sync-remote-
 import { applyWorkLogAccountBackfill } from "../infrastructure/persistence/work-log-account-backfill.mjs";
 import { MaintenanceOperationStore } from "../infrastructure/persistence/maintenance-operation-store.mjs";
 import { readClaudeAccount } from "../providers/claude/claude-account.mjs";
+import { ClaudeContextMaintenanceService } from "../providers/claude/claude-context-maintenance-service.mjs";
 import { processIsAlive } from "../providers/claude/claude-run-io.mjs";
 import { readClaudeSessionSnapshot } from "../providers/claude/claude-session-reader.mjs";
 import { readCodexTurnUsage } from "../providers/codex/codex-turn-usage.mjs";
@@ -249,12 +250,26 @@ export async function createProviderApplicationComposition({
     runForTask: (target) => runtimeData.taskRuns.forTask(target),
     sendRpc: api.sendRpc,
   });
+  const claudeContextMaintenance = new ClaudeContextMaintenanceService({
+    compactions: codexObservability.compactions,
+    beginRun: (input, target) => completion.managedRunLifecycle.begin(input, target),
+    launchTurn: (run, input, temporaryFiles) => api.launchTurn(run, input, temporaryFiles),
+    activeRun: (target) => {
+      const run = runtimeData.taskRuns.forTask(target);
+      return taskRunIsActive(run) ? run : null;
+    },
+    completeRun: (run) => completion.managedRunLifecycle.complete(run),
+    saveState: api.saveState,
+  });
   const streamContextMaintenance = new StreamContextMaintenanceService({
     registry: runtimeData.streamMaintenance,
     provider: codexContextMaintenance,
-    latestContextUsage: (threadId) => {
+    providers: { claude: claudeContextMaintenance },
+    latestContextUsage: (threadId, provider = "codex") => {
       const usage = codexObservability.usageTracker.latestExactContext(threadId);
-      return usage?.provider === "claude" ? null : usage;
+      if (!usage) return null;
+      const usageProvider = String(usage.provider ?? "codex").trim().toLowerCase();
+      return usageProvider === String(provider ?? "codex").trim().toLowerCase() ? usage : null;
     },
     waitForContextUpdate: (threadId, options) => (
       codexObservability.usageTracker.waitForContextUpdate(threadId, options)
@@ -351,10 +366,12 @@ export async function createProviderApplicationComposition({
         last: { totalTokens: usage.usedTokens },
       },
     }),
+    observeClaudeCompaction: (run, event) => claudeContextMaintenance.observe(run, event),
     invalidateTaskCatalog,
     delay,
   });
   const providerOperations = createProviderOperationComposition({
+    claudeContextMaintenance,
     taskRuns: runtimeData.taskRuns,
     selectionStore,
     workspaceCatalogStore,

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { copyFile, mkdir, readFile, readdir } from "node:fs/promises";
+import { copyFile, mkdir, readdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -14,6 +14,7 @@ import { conciseTurnTitle } from "../../application/turn-title.mjs";
 import { createWorkLogUsageStore } from "../../application/work-log-usage-store.mjs";
 import { workLogTurnKey } from "../../application/work-log-usage-projection.mjs";
 import { withoutClaudeResumePreludes } from "../../domain/claude-transcript.mjs";
+import { scanClaudeHistoricalTranscriptInWorker } from "./claude-transcript-worker-client.mjs";
 
 function contentBlocks(message) {
   if (Array.isArray(message?.content)) return message.content;
@@ -403,10 +404,7 @@ export function scanClaudeHistoricalTranscript(text, { transcriptPath = "" } = {
 }
 
 export async function scanClaudeHistoricalTranscriptFile(transcriptPath) {
-  return scanClaudeHistoricalTranscript(
-    await readFile(transcriptPath, "utf8"),
-    { transcriptPath },
-  );
+  return scanClaudeHistoricalTranscriptInWorker(transcriptPath);
 }
 
 async function transcriptFiles(root) {
