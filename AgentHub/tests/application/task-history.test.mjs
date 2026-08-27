@@ -617,6 +617,27 @@ test("claudeTranscriptHistory separates consecutive user turns", () => {
   assert.equal(history[1].answer, "Два");
 });
 
+test("claudeTranscriptHistory hides transport attachment paths from the user prompt", () => {
+  const attachmentPath = "C:\\Users\\test\\AppData\\Local\\AgentHub\\attachments\\image-1.png";
+  const history = claudeTranscriptHistory([
+    JSON.stringify({
+      type: "user",
+      uuid: "u-image",
+      message: {
+        role: "user",
+        content: `Проанализируй приложенные изображения.\n\nПроанализируй также изображение по абсолютному пути: ${attachmentPath}`,
+      },
+    }),
+    JSON.stringify({
+      type: "assistant",
+      message: { role: "assistant", content: [{ type: "text", text: "Готово" }], stop_reason: "end_turn" },
+    }),
+  ].join("\n"));
+  assert.equal(history[0].prompt, "Проанализируй приложенные изображения.");
+  assert.equal(history[0].messages[0].text, "Проанализируй приложенные изображения.");
+  assert.deepEqual(history[0].messages[0].attachmentSources, [{ type: "path", value: attachmentPath }]);
+});
+
 test("claudeTranscriptHistory hides the headless resume prelude", () => {
   const line = (value) => JSON.stringify(value);
   const history = claudeTranscriptHistory([

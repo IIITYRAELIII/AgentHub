@@ -8,6 +8,7 @@ import {
 import {
   isClaudeInterruptEntry,
   isClaudeSyntheticUserEntry,
+  claudeTransportPromptDetails,
   withoutClaudeResumePreludes,
 } from "../domain/claude-transcript.mjs";
 import { taskReferencePromptDetails } from "../domain/task-board-task.mjs";
@@ -622,9 +623,11 @@ function claudeUserPromptDetails(entry) {
      пользователя нельзя: он их не писал. */
   if (isClaudeSyntheticUserEntry(entry)) return null;
   const rawText = textContent(entry.message?.content);
+  const transport = claudeTransportPromptDetails(rawText);
   return {
-    text: displayUserPrompt(rawText),
-    taskReferences: userTaskReferencePromptDetails(rawText)?.references ?? [],
+    text: displayUserPrompt(transport.text),
+    taskReferences: userTaskReferencePromptDetails(transport.text)?.references ?? [],
+    attachmentSources: transport.attachmentSources,
   };
 }
 
@@ -662,6 +665,9 @@ function claudeUserHistoryMessage(entry, index) {
     text: userPrompt?.text ?? "",
     ...(userPrompt?.taskReferences.length
       ? { attachments: userPrompt.taskReferences.map((reference) => ({ ...reference })) }
+      : {}),
+    ...(userPrompt?.attachmentSources.length
+      ? { attachmentSources: userPrompt.attachmentSources.map((source) => ({ ...source })) }
       : {}),
     ...(claudeUserAuthor(entry) ? { author: claudeUserAuthor(entry) } : {}),
     ...(normalizedTimestamp(entry?.timestamp) ? { time: normalizedTimestamp(entry?.timestamp) } : {}),

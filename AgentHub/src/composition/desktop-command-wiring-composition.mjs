@@ -1,4 +1,5 @@
 import { createDesktopCommandComposition } from "./desktop-command-composition.mjs";
+import { createStreamAgentSettingsService } from "../application/stream-agent-settings-service.mjs";
 
 export function createWorkspaceActions(services) {
   return {
@@ -89,6 +90,11 @@ export function createDesktopCommandWiring({
   const switchProvider = (...args) => commands.taskNavigationService.switchProvider(...args);
   const switchProject = (...args) => commands.taskNavigationService.switchProject(...args);
   const activateBinding = (...args) => commands.taskNavigationService.activate(...args);
+  const streamAgentSettings = createStreamAgentSettingsService({
+    workspaceCatalog: services.workspaceCatalog,
+    selectionStore: services.selectionStore,
+    agentPreferences: services.agentPreferences,
+  });
   const resolveDesktopApproval = (params) => services.approvalController.resolveFromDesktop(
     String(params.key ?? ""),
     String(params.decision ?? ""),
@@ -192,6 +198,8 @@ export function createDesktopCommandWiring({
       initializeCodex: services.initializeCodex,
       attachCodexThread: services.attachCodexThread,
       saveState: services.saveState,
+      applyStreamAgentSettings: (streamId) => streamAgentSettings.apply(streamId),
+      rememberStreamAgentSettings: (streamId) => streamAgentSettings.remember(streamId),
     },
     settings: {
       isSelected: services.catalogEntryIsSelected,
@@ -202,6 +210,7 @@ export function createDesktopCommandWiring({
       isCompacting: services.isCompacting,
       switchCodexModel: services.switchCodexModel,
       switchClaudeModel: services.switchClaudeModel,
+      rememberStreamAgentSettings: () => streamAgentSettings.remember(),
       updateCodexThreadSettings: services.updateCodexThreadSettings,
       createCodexThread: services.createTask,
       saveState: services.saveState,

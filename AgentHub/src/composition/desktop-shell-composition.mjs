@@ -419,6 +419,7 @@ export function createDesktopShellComposition({
       rememberCodexSettings: rememberCodexTaskSettings,
       captureCodexPreferences: () => agentPreferences.captureCodex(),
       restoreCodexPreferences: (value) => agentPreferences.restoreCodex(value),
+      agentPreferences,
       storedCodexThreadTitle,
       taskRunKey,
       storedTaskDiff: (key) => taskDiffs.get(key),

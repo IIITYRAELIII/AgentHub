@@ -25,6 +25,8 @@ export class TaskNavigationService {
     initializeCodex,
     attachCodexThread,
     saveState,
+    applyStreamAgentSettings,
+    rememberStreamAgentSettings,
   }) {
     Object.assign(this, {
       projects,
@@ -52,6 +54,8 @@ export class TaskNavigationService {
       initializeCodex,
       attachCodexThread,
       saveState,
+      applyStreamAgentSettings,
+      rememberStreamAgentSettings,
     });
   }
 
@@ -135,14 +139,18 @@ export class TaskNavigationService {
       activeThreadTitle: binding.taskTitle?.trim()
         || `${binding.provider === "codex" ? "Codex" : "Claude"} · ${binding.threadId.slice(0, 8)}`,
     });
+    const streamSettings = this.applyStreamAgentSettings?.(binding.streamId ?? null);
     if (this.isCodex()) {
-      this.restoreCodexThreadSettings(this.threadId());
+      this.restoreCodexThreadSettings(this.threadId(), { inheritCurrent: Boolean(streamSettings) });
       if (!binding.taskTitle?.trim()) {
         this.selectionStore.setTitle(await this.storedCodexThreadTitle(
           this.threadId(),
           this.activeTaskTitle(),
         ));
       }
+    }
+    if (streamSettings && !streamSettings.explicit) {
+      this.rememberStreamAgentSettings?.(binding.streamId ?? null);
     }
     this.setLatestDiff(this.storedTaskDiff(this.taskRunKey(this.selectedTask())) ?? "");
     try {

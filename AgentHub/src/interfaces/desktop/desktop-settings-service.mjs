@@ -136,6 +136,9 @@ export class DesktopSettingsService {
     } else {
       throw new Error("Неизвестная настройка Desktop-приложения");
     }
+    if (changed && ["provider", "model", "reasoning", "mode"].includes(name)) {
+      await d.rememberStreamAgentSettings?.();
+    }
     return { ...await d.snapshot({ refresh: true }), setting: { name, value, changed } };
   }
 

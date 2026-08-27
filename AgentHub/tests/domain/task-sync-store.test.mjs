@@ -104,6 +104,44 @@ test("local task sync preserves a long agent answer in durable history", async (
   assert.equal(turn.messages.at(-1).text, longAnswer);
 });
 
+test("Claude transcript attachment turn cannot duplicate its managed terminal command", async () => {
+  const filePath = await storeFile();
+  const store = new LocalTaskSyncStore({ filePath });
+  await store.load();
+  const claudeTask = { ...task, provider: "claude", threadId: "claude-thread" };
+  const attachment = { id: "image-1.png", name: "image.png", type: "image/png" };
+  const managed = {
+    id: "managed-turn",
+    prompt: "Проанализируй приложенные изображения.",
+    answer: "Ошибка Claude Code: лимит исчерпан",
+    status: "failed",
+    active: false,
+    completed: true,
+    attachments: [attachment],
+    messages: [
+      { itemId: "managed-user", clientUserMessageId: "client-command-1", role: "user", text: "Проанализируй приложенные изображения.", attachments: [attachment] },
+      { itemId: "managed-final", role: "agent", text: "Ошибка Claude Code: лимит исчерпан" },
+    ],
+  };
+  const transcript = {
+    id: "provider-user-uuid",
+    prompt: "Проанализируй приложенные изображения.\n\nПроанализируй также изображение по абсолютному пути: C:\\AgentHub\\attachments\\image-1.png",
+    answer: "лимит исчерпан",
+    status: "completed",
+    active: false,
+    completed: true,
+    messages: [
+      { itemId: "provider-user-uuid", role: "user", text: "Проанализируй приложенные изображения.\n\nПроанализируй также изображение по абсолютному пути: C:\\AgentHub\\attachments\\image-1.png" },
+      { itemId: "provider-agent-uuid", role: "agent", text: "лимит исчерпан" },
+    ],
+  };
+  store.recordHistory(claudeTask, [managed, transcript]);
+  const history = store.history(claudeTask);
+  assert.equal(history.length, 1);
+  assert.equal(history[0].id, "managed-turn");
+  assert.equal(history[0].messages[0].clientUserMessageId, "client-command-1");
+});
+
 test("local task sync restores the latest model from the journal projection", async () => {
   const filePath = await storeFile();
   const databaseFile = path.join(path.dirname(filePath), "journal.sqlite");

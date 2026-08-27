@@ -218,3 +218,59 @@ test("Desktop settings service creates a new Codex Thread when a model crosses b
   assert.equal(created, 1);
   assert.equal(result.settings.model, "gpt-5.6-terra");
 });
+
+test("Desktop settings service saves changed agent settings in the selected Stream", async () => {
+  const noop = () => {};
+  let remembered = 0;
+  const service = new DesktopSettingsService({
+    isSelected: () => true, selectedTask: () => ({ streamId: "s1" }), switchProvider: async () => ({}),
+    isCodex: () => false, threadId: () => "t1", isCompacting: () => false,
+    switchCodexModel: () => ({ changed: true }), switchClaudeModel: () => ({ changed: true }),
+    updateCodexThreadSettings: async () => {}, createCodexThread: async () => {}, saveState: async () => {},
+    getCodexReasoning: () => "high", setCodexReasoning: noop,
+    getClaudeReasoning: () => "high", setClaudeReasoning: noop,
+    getCodexMode: () => "default", setCodexMode: noop,
+    getClaudeMode: () => "default", setClaudeMode: noop,
+    getAutoApprove: () => true, setAutoApprove: noop,
+    getIncludeClaudeUsage: () => true, setIncludeClaudeUsage: noop,
+    getActivityRecentMinutes: () => 180, setActivityRecentMinutes: noop,
+    getStreamOrderMode: () => "activity", setStreamOrderMode: noop,
+    getStreamCardWidthMode: () => "auto", setStreamCardWidthMode: noop,
+    getStreamCardFixedWidth: () => 90, setStreamCardFixedWidth: noop,
+    getStreamCardGapEnabled: () => false, setStreamCardGapEnabled: noop,
+    getPinnedWorkspaceStreams: () => ({}), setPinnedWorkspaceStreams: noop,
+    projectUsage: async () => {}, findProjectIndex: () => 0, switchProject: async () => ({}),
+    snapshot: async () => ({}), reasoningEfforts: ["high"], collaborationModes: ["default"],
+    rememberStreamAgentSettings: async () => { remembered += 1; },
+  });
+  await service.update({ name: "model", value: "claude-opus-5" });
+  assert.equal(remembered, 1);
+});
+
+test("Desktop settings service does not rewrite Stream settings for shared preferences", async () => {
+  const noop = () => {};
+  let remembered = 0;
+  const service = new DesktopSettingsService({
+    isSelected: () => true, selectedTask: () => ({ streamId: "s1" }), switchProvider: async () => ({}),
+    isCodex: () => false, threadId: () => "t1", isCompacting: () => false,
+    switchCodexModel: () => ({ changed: true }), switchClaudeModel: () => ({ changed: true }),
+    updateCodexThreadSettings: async () => {}, createCodexThread: async () => {}, saveState: async () => {},
+    getCodexReasoning: () => "high", setCodexReasoning: noop,
+    getClaudeReasoning: () => "high", setClaudeReasoning: noop,
+    getCodexMode: () => "default", setCodexMode: noop,
+    getClaudeMode: () => "default", setClaudeMode: noop,
+    getAutoApprove: () => true, setAutoApprove: noop,
+    getIncludeClaudeUsage: () => true, setIncludeClaudeUsage: noop,
+    getActivityRecentMinutes: () => 180, setActivityRecentMinutes: noop,
+    getStreamOrderMode: () => "activity", setStreamOrderMode: noop,
+    getStreamCardWidthMode: () => "auto", setStreamCardWidthMode: noop,
+    getStreamCardFixedWidth: () => 90, setStreamCardFixedWidth: noop,
+    getStreamCardGapEnabled: () => false, setStreamCardGapEnabled: noop,
+    getPinnedWorkspaceStreams: () => ({}), setPinnedWorkspaceStreams: noop,
+    projectUsage: async () => {}, findProjectIndex: () => 0, switchProject: async () => ({}),
+    snapshot: async () => ({}), reasoningEfforts: ["high"], collaborationModes: ["default"],
+    rememberStreamAgentSettings: async () => { remembered += 1; },
+  });
+  await service.update({ name: "streamOrderMode", value: "manual" });
+  assert.equal(remembered, 0);
+});

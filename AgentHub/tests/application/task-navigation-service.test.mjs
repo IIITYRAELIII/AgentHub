@@ -89,3 +89,50 @@ test("task activation changes local selection without starting a provider", asyn
   assert.equal(setup.state.threadId, "thread-2");
   assert.equal(setup.state.events.includes("start"), false);
 });
+
+test("stream selection applies the agent settings saved for that stream", async () => {
+  const applied = [];
+  const setup = fixture({ applyStreamAgentSettings: (streamId) => { applied.push(streamId); } });
+  await setup.value.activate({ projectRoot: "D:/two", provider: "claude", threadId: "two", streamId: "stream-two", taskTitle: "Two" });
+  assert.deepEqual(applied, ["stream-two"]);
+});
+
+test("a codex stream without saved settings seeds them from the resolved selection", async () => {
+  const remembered = [];
+  const setup = fixture({
+    applyStreamAgentSettings: () => ({ model: "gpt-5.6-sol", explicit: false }),
+    rememberStreamAgentSettings: (streamId) => { remembered.push(streamId); },
+  });
+  await setup.value.activate({ projectRoot: "D:/two", provider: "codex", threadId: "two", streamId: "stream-two", taskTitle: "Two" });
+  assert.deepEqual(remembered, ["stream-two"]);
+});
+
+test("a Stream that already saved its model is not rewritten on selection", async () => {
+  const remembered = [];
+  const setup = fixture({
+    applyStreamAgentSettings: () => ({ model: "gpt-5.6-terra", explicit: true }),
+    rememberStreamAgentSettings: (streamId) => { remembered.push(streamId); },
+  });
+  await setup.value.activate({ projectRoot: "D:/two", provider: "codex", threadId: "two", streamId: "stream-two", taskTitle: "Two" });
+  assert.deepEqual(remembered, []);
+});
+
+test("codex thread without saved settings inherits the selected Stream model", async () => {
+  const calls = [];
+  const setup = fixture({
+    applyStreamAgentSettings: () => ({ model: "gpt-5.6-sol", explicit: true }),
+    restoreCodexThreadSettings: (reference, options) => { calls.push({ reference, options }); },
+  });
+  await setup.value.activate({ projectRoot: "D:/two", provider: "codex", threadId: "two", streamId: "stream-two", taskTitle: "Two" });
+  assert.equal(calls[0].options?.inheritCurrent, true);
+});
+
+test("a task outside any Stream keeps the provider default", async () => {
+  const calls = [];
+  const setup = fixture({
+    applyStreamAgentSettings: () => null,
+    restoreCodexThreadSettings: (reference, options) => { calls.push({ reference, options }); },
+  });
+  await setup.value.activate({ projectRoot: "D:/two", provider: "codex", threadId: "two", streamId: null, taskTitle: "Two" });
+  assert.equal(calls[0].options?.inheritCurrent, false);
+});

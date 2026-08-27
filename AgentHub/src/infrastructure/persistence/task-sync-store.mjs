@@ -4,6 +4,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import { catalogTaskKey } from "../../domain/task-catalog-identity.mjs";
+import { withoutClaudeManagedTranscriptDuplicates } from "../../domain/claude-transcript.mjs";
 import {
   interstreamOriginAuthor,
   normalizeInterstreamOrigin,
@@ -14,7 +15,7 @@ const TASK_SCHEMA_VERSION = 8;
 const MODEL_BACKFILL_VERSION = "1";
 const SUBAGENT_MODEL_BACKFILL_VERSION = "1";
 const SEARCH_BACKFILL_VERSION = "3";
-const TERMINAL_HISTORY_BACKFILL_VERSION = "3";
+const TERMINAL_HISTORY_BACKFILL_VERSION = "4";
 const DEFAULT_HISTORY_LIMIT = 50;
 const DEFAULT_RUNNING_FRESHNESS_MS = 10 * 60 * 1000;
 const DEFAULT_TASK_LIMIT = 1_000;
@@ -169,8 +170,11 @@ function withoutInternalContextTurns(history) {
   ));
 }
 
-function cleanHistory(history, limit) {
-  const cleaned = (Array.isArray(history) ? history : [])
+function cleanHistory(history, limit, { provider = "" } = {}) {
+  const source = String(provider).trim().toLowerCase() === "claude"
+    ? withoutClaudeManagedTranscriptDuplicates(history)
+    : (Array.isArray(history) ? history : []);
+  const cleaned = source
     .map((item) => {
       const promptOrigin = normalizeInterstreamOrigin(item?.promptOrigin);
       const promptAuthor = interstreamOriginAuthor(promptOrigin)
@@ -368,7 +372,7 @@ function persistedTask(value = {}, canonicalizeProjectRoot = (projectRoot) => pr
     stage: cleanText(value.stage, 1_000),
     answer: cleanText(value.answer, MAX_AGENT_MESSAGE_CHARS),
     syncedAtMs: Number(value.syncedAtMs) || 0,
-    history: cleanHistory(value.history, DEFAULT_HISTORY_LIMIT),
+    history: cleanHistory(value.history, DEFAULT_HISTORY_LIMIT, { provider }),
   };
 }
 
@@ -979,7 +983,7 @@ export class LocalTaskSyncStore {
         existing,
         existing.history,
         { missingJournalOkay: false },
-      ), this.#historyLimit);
+      ), this.#historyLimit, { provider: row.provider });
       const terminals = terminalHistoryTurns(repairedHistory);
       const effectiveSnapshot = terminalSafeSnapshot(existing, {
         active: existing.running === true,
@@ -1196,7 +1200,7 @@ export class LocalTaskSyncStore {
         existing,
         existing.history,
         { missingJournalOkay: false },
-      ), this.#historyLimit);
+      ), this.#historyLimit, { provider: existing.provider });
       if (JSON.stringify(existing.history) === JSON.stringify(repairedHistory)) continue;
       const next = { ...existing, history: repairedHistory };
       this.#writeHistory(next, repairedHistory);
@@ -1422,7 +1426,7 @@ export class LocalTaskSyncStore {
       this.#transaction(() => {
         for (const task of tasks) {
           this.#writeTask(task);
-          this.#writeHistory(task, cleanHistory(task.history, this.#historyLimit));
+          this.#writeHistory(task, cleanHistory(task.history, this.#historyLimit, { provider: task.provider }));
         }
         this.#prune();
         this.#database.prepare(`
@@ -1435,7 +1439,7 @@ export class LocalTaskSyncStore {
       const actual = this.#readTask(expected, true);
       if (!actual || JSON.stringify(actual) !== JSON.stringify({
         ...expected,
-        history: cleanHistory(expected.history, this.#historyLimit),
+        history: cleanHistory(expected.history, this.#historyLimit, { provider: expected.provider }),
       })) {
         throw new Error(`SQLite verification failed for ${catalogTaskKey(expected)}`);
       }
@@ -1566,7 +1570,7 @@ export class LocalTaskSyncStore {
     const reconciledHistory = preserveTerminalHistory(terminals, journalHistory);
     const durableHistory = preserveDurableAttachments(existing.history, reconciledHistory);
     const enrichedHistory = this.#withJournalSubagentModels(task, durableHistory);
-    const cleanedHistory = cleanHistory(enrichedHistory, this.#historyLimit);
+    const cleanedHistory = cleanHistory(enrichedHistory, this.#historyLimit, { provider: task.provider });
     const effectiveSnapshot = terminalSafeSnapshot(existing, snapshot, terminals);
     const next = persistedTask({
       ...existing,
@@ -1719,7 +1723,7 @@ export class LocalTaskSyncStore {
   }
 
   history(task, { limit = this.#historyLimit } = {}) {
-    return cleanHistory(this.#readHistory(task, limit), limit);
+    return cleanHistory(this.#readHistory(task, limit), limit, { provider: task.provider });
   }
 
   snapshot(task, {

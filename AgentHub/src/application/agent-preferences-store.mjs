@@ -131,6 +131,10 @@ export class AgentPreferencesStore {
   get pinnedWorkspaceStreams() { return structuredClone(this.values.pinnedWorkspaceStreams); }
   get defaultCodexModel() { return this.defaults.codexModel; }
   get defaultCodexReasoningEffort() { return this.defaults.codexReasoningEffort; }
+  get defaultCodexCollaborationMode() { return this.defaults.codexCollaborationMode; }
+  get defaultClaudeModel() { return this.defaults.claudeModel; }
+  get defaultClaudeReasoningEffort() { return this.defaults.claudeReasoningEffort; }
+  get defaultClaudeCollaborationMode() { return this.defaults.claudeCollaborationMode; }
 
   setCodexModel(value) {
     if (!this.codexModels.has(value)) throw new Error("unknown Codex model");
