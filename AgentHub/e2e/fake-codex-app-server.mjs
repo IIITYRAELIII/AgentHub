@@ -577,12 +577,13 @@ function handleRequest(message) {
         modelContextWindow: 200_000,
       },
     }), 20);
+    const completionDelayMs = Math.max(150, Number(state.manualCompactionDelayMs) || 150);
     schedule(() => notify("item/completed", {
       threadId: thread.id,
       turnId,
       item,
       completedAtMs: Date.now(),
-    }), 150);
+    }), completionDelayMs);
     return;
   }
   if (method === "turn/start") {

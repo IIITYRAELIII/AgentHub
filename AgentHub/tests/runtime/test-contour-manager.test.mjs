@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -245,8 +245,14 @@ test("Codex test providers are copied only into the marker-owned Test Contour ro
     );
     await installTestContour({ root, run: async () => null });
     const copied = await prepareTestContourCodexProviders({ root, sourceRoot });
-    assert.equal(copied.fakeCodexExecutable, testContourPaths(root).fakeCodexExecutable);
-    assert.equal(copied.codexMultiplexerExecutable, testContourPaths(root).codexMultiplexerExecutable);
+    assert.equal(
+      await realpath(copied.fakeCodexExecutable),
+      await realpath(testContourPaths(root).fakeCodexExecutable),
+    );
+    assert.equal(
+      await realpath(copied.codexMultiplexerExecutable),
+      await realpath(testContourPaths(root).codexMultiplexerExecutable),
+    );
     assert.equal(await readFile(copied.fakeCodexExecutable, "utf8"), "export const fake = true;\n");
     assert.equal(
       await readFile(copied.codexMultiplexerExecutable, "utf8"),

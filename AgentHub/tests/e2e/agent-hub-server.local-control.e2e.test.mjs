@@ -63,6 +63,9 @@ test("local control client survives App Server exit during delayed startup and s
     // The delayed initialize models a recovering App Server. The local control
     // pipe must be available before that recovery finishes.
     initializeDelayMs: 1_500,
+    // Keep the manual compaction observable long enough for the settings guard
+    // assertion even on a loaded Windows host.
+    manualCompactionDelayMs: 1_500,
     threads: [{
       id: savedThreadId,
       cwd: projectRoot,
