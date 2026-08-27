@@ -1003,6 +1003,17 @@ function historyAttachmentsNeedSettling(taskIdValue) {
 
 function bridgeCallOnce(action, params = {}) {
   const id = `bridge-${Date.now()}-${++bridgeSequence}`;
+  const bridgeParams = action === "send-message"
+    ? {
+        ...params,
+        clientTiming: {
+          ...params.clientTiming,
+          transportStartedAtMs: Date.now(),
+          transportStartedMonotonicMs: performance.now(),
+          transport: "vscode-ipc",
+        },
+      }
+    : params;
   return new Promise((resolve, reject) => {
     const timer = window.setTimeout(() => {
       pendingBridgeCalls.delete(id);
@@ -1013,7 +1024,7 @@ function bridgeCallOnce(action, params = {}) {
         ? VSCODE_MESSAGE_CONTROL_TIMEOUT_MS
         : DEFAULT_CONTROL_TIMEOUT_MS);
     pendingBridgeCalls.set(id, { resolve, reject, timer });
-    vscode.postMessage({ type: "agenthub:control", id, action, params });
+    vscode.postMessage({ type: "agenthub:control", id, action, params: bridgeParams });
   });
 }
 
@@ -1249,13 +1260,24 @@ async function httpControl(action, params = {}) {
   await localSessionReady;
   const commandId = crypto.randomUUID();
   const payload = await retryConnectionFailure(async () => {
+    const requestParams = action === "send-message"
+      ? {
+          ...params,
+          clientTiming: {
+            ...params.clientTiming,
+            transportStartedAtMs: Date.now(),
+            transportStartedMonotonicMs: performance.now(),
+            transport: "direct-http",
+          },
+        }
+      : params;
     const response = await hubFetchWithin("/api/control", {
       method: "POST",
       headers: {
         ...authorizationHeaders(),
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ action, params, commandId }),
+      body: JSON.stringify({ action, params: requestParams, commandId }),
     }, LONG_CONTROL_ACTIONS.has(action) ? LONG_CONTROL_TIMEOUT_MS : DEFAULT_CONTROL_TIMEOUT_MS);
     const result = await response.json().catch(() => ({}));
     if (!response.ok || result.ok === false) throw httpControlError(response.status, result);
@@ -1288,6 +1310,34 @@ async function httpControl(action, params = {}) {
         LONG_CONTROL_ACTIONS.has(action) ? LONG_CONTROL_TIMEOUT_MS : DEFAULT_CONTROL_TIMEOUT_MS,
       )
     : payload.result;
+}
+
+function clientTraceSurface() {
+  if (vscode) return "vscode-webview";
+  if (telegramMode) return "telegram-mini-app";
+  if (window.AgentHubAndroid) return "android";
+  return "browser";
+}
+
+function reportClientCommandAck(commandId, clientTiming, outcome) {
+  const timing = {
+    ...clientTiming,
+    clientAckAtMs: Date.now(),
+    clientAckMonotonicMs: performance.now(),
+  };
+  void hubFetch("/api/command-trace/client-ack", {
+    method: "POST",
+    headers: {
+      ...authorizationHeaders(),
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      commandId,
+      timing,
+      outcome,
+      surface: clientTraceSurface(),
+    }),
+  }).catch(() => {});
 }
 
 async function control(action, params = {}) {
@@ -2604,6 +2654,13 @@ agentHub.on("message:send", (request) => {
         threadId: identity?.threadId,
         clientUserMessageId: request.requestId,
         followUpMode: request.followUpMode,
+        clientTiming: {
+          submittedAtMs: request.submittedAtMs,
+          submittedMonotonicMs: request.submittedMonotonicMs,
+          controlStartedAtMs: Date.now(),
+          controlStartedMonotonicMs: performance.now(),
+          surface: clientTraceSurface(),
+        },
       };
       if (paths.length) params.attachments = paths;
       if (requestTaskReferences.length) {
@@ -2612,7 +2669,14 @@ agentHub.on("message:send", (request) => {
           intent: reference.intent,
         }));
       }
-      return control("send-message", params);
+      try {
+        const result = await control("send-message", params);
+        reportClientCommandAck(request.requestId, params.clientTiming, "succeeded");
+        return result;
+      } catch (error) {
+        reportClientCommandAck(request.requestId, params.clientTiming, "failed");
+        throw error;
+      }
     },
     receive: (result) => {
       const accepted = Boolean(result?.accepted || result?.deferred);

@@ -3545,27 +3545,30 @@ function providerResponseForTask(task, now = Date.now()) {
   const providerStart = task.providerStart ?? (!task.running
     ? window.AgentHubProviderTurnTelemetry.providerStartFromTelemetry(task.providerTurnTelemetry)
     : null);
-  const measurement = window.AgentHubConnectionQuality.modelResponseMeasurement(providerStart, now, {
+  const selected = window.AgentHubConnectionQuality.selectModelResponseSample({
+    providerStart,
+    previous: state.providerResponseSamples.get(key) ?? null,
+    now,
     running: task.running,
     compaction: task.context?.compaction,
   });
-  if (measurement && key) state.providerResponseSamples.set(key, {
-    measurement,
-    providerStart: providerStart ? structuredClone(providerStart) : null,
+  if (!selected) return null;
+  if (selected.remember && key) state.providerResponseSamples.set(key, {
+    measurement: structuredClone(selected.measurement),
+    providerStart: structuredClone(selected.providerStart),
   });
-  if (measurement) return measurement;
-  const previous = state.providerResponseSamples.get(key) ?? null;
-  return previous?.measurement
-    ? { ...previous.measurement, active: false, waiting: false, phase: "completed" }
-    : null;
+  return { ...selected.measurement, sampleKind: selected.sampleKind };
 }
 
-function cachedProviderStartForTask(task) {
+function cachedProviderStartForTask(task, measurement = null) {
+  const key = String(task?.id ?? task?.streamId ?? task?.threadId ?? "");
+  if (measurement?.sampleKind === "previous") {
+    return state.providerResponseSamples.get(key)?.providerStart ?? null;
+  }
   if (task?.providerStart) return task.providerStart;
   if (!task?.running && task?.providerTurnTelemetry) {
     return window.AgentHubProviderTurnTelemetry.providerStartFromTelemetry(task.providerTurnTelemetry);
   }
-  const key = String(task?.id ?? task?.streamId ?? task?.threadId ?? "");
   return state.providerResponseSamples.get(key)?.providerStart ?? null;
 }
 
@@ -3618,7 +3621,10 @@ function providerStallSummary(task, now) {
 }
 
 function providerResponseTitle(task, measurement, presentation, providerLabel, now) {
-  const lines = [`${providerLabel} ↔ модель: ${presentation.label.toLowerCase()}`];
+  const sampleLabel = measurement.sampleKind === "previous"
+    ? `предыдущий ход · ${presentation.label.toLowerCase()}`
+    : presentation.label.toLowerCase();
+  const lines = [`${providerLabel} ↔ модель: ${sampleLabel}`];
   lines.push(`Фаза: ${providerPhaseLabel(measurement.phase)}`);
   if (measurement.requestAcceptedMs != null) {
     lines.push(`Принятие хода: ${formatModelResponseLatency(measurement.requestAcceptedMs)}`);
@@ -3674,6 +3680,9 @@ function providerConnectionTitle(providerLabel, presentation, measurement) {
     return `${providerLabel} ↔ модель: ${presentation.label.toLowerCase()}`;
   }
   const timing = formatModelResponseLatency(presentation.latencyMs);
+  if (measurement?.sampleKind === "previous") {
+    return `${providerLabel} ↔ модель: предыдущий ход · ${timing}`;
+  }
   if (measurement?.waiting) return `${providerLabel} ↔ модель: ожидание первого ответа · ${timing}`;
   return `${providerLabel} ↔ модель: ${presentation.label.toLowerCase()} · ${timing}`;
 }
@@ -3700,7 +3709,7 @@ function renderStreamChatHeader(task, now = Date.now()) {
       ? presentation.label.toLowerCase()
       : presentation.state === "offline"
         ? "нет связи"
-        : formatModelResponseLatency(presentation.latencyMs);
+        : `${measurement?.sampleKind === "previous" ? "пред. " : ""}${formatModelResponseLatency(presentation.latencyMs)}`;
     const title = providerConnectionTitle(providerLabel, presentation, measurement);
     streamHeaderProviderConnection.hidden = false;
     streamHeaderProviderConnection.dataset.quality = presentation.quality;
@@ -3714,7 +3723,7 @@ function renderStreamChatHeader(task, now = Date.now()) {
       const telemetryPresentation = window.AgentHubConnectionQuality.modelResponseQuality(measurement);
       providerTurnTelemetry.update({
         task,
-        providerStart: cachedProviderStartForTask(task),
+        providerStart: cachedProviderStartForTask(task, measurement),
         measurement,
         presentation: telemetryPresentation,
         title: providerResponseTitle(task, measurement, telemetryPresentation, providerLabel, now),
@@ -5625,6 +5634,8 @@ composer.addEventListener("submit", (event) => {
 
 function submitComposer({ steerWhileRunning = false } = {}) {
   if (!state.selectedId || pendingComposerRequest) return;
+  const submittedAtMs = Date.now();
+  const submittedMonotonicMs = performance.now();
   const task = currentTask();
   const rawText = composerInput.value;
   const text = rawText.trim();
@@ -5661,6 +5672,8 @@ function submitComposer({ steerWhileRunning = false } = {}) {
   autosizeComposer();
   emit("message:send", {
     requestId,
+    submittedAtMs,
+    submittedMonotonicMs,
     taskId: state.selectedId,
     text,
     annotations,

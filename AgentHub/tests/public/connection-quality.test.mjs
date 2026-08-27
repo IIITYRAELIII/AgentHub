@@ -75,6 +75,70 @@ test("model response quality follows live event silence and compaction", async (
   assert.equal(modelResponseQuality(compaction).quality, "poor");
 });
 
+test("completed response keeps the previous exact turn instead of a legacy wall-clock duration", async () => {
+  const { selectModelResponseSample } = await qualityApi();
+  const previous = {
+    providerStart: { turnId: "turn-previous" },
+    measurement: { firstEventMs: 1_800, latencyMs: 1_800, phase: "completed" },
+  };
+  const requestedAt = Date.parse("2026-08-21T10:00:00.000Z");
+  const selected = selectModelResponseSample({
+    providerStart: {
+      turnId: "turn-legacy",
+      state: "completed",
+      requestedAt,
+      completedAtMs: requestedAt + 170 * 60_000,
+      phase: "completed",
+    },
+    previous,
+    now: requestedAt + 170 * 60_000,
+    running: false,
+  });
+
+  assert.equal(selected.sampleKind, "previous");
+  assert.equal(selected.providerStart.turnId, "turn-previous");
+  assert.equal(selected.measurement.latencyMs, 1_800);
+  assert.equal(selected.remember, false);
+});
+
+test("exact completed response becomes the remembered previous-turn sample", async () => {
+  const { selectModelResponseSample } = await qualityApi();
+  const requestedAt = Date.parse("2026-08-21T10:00:00.000Z");
+  const selected = selectModelResponseSample({
+    providerStart: {
+      turnId: "turn-completed",
+      state: "completed",
+      requestedAt,
+      turnStartedAtMs: requestedAt + 100,
+      firstEventAt: requestedAt + 1_600,
+      completedAtMs: requestedAt + 5_000,
+      phase: "completed",
+    },
+    now: requestedAt + 5_000,
+    running: false,
+  });
+
+  assert.equal(selected.sampleKind, "previous");
+  assert.equal(selected.measurement.firstEventMs, 1_500);
+  assert.equal(selected.remember, true);
+});
+
+test("legacy completed telemetry without an exact response has no fabricated sample", async () => {
+  const { selectModelResponseSample } = await qualityApi();
+  const requestedAt = Date.parse("2026-08-21T10:00:00.000Z");
+  assert.equal(selectModelResponseSample({
+    providerStart: {
+      turnId: "turn-legacy",
+      state: "completed",
+      requestedAt,
+      completedAtMs: requestedAt + 170 * 60_000,
+      phase: "completed",
+    },
+    now: requestedAt + 170 * 60_000,
+    running: false,
+  }), null);
+});
+
 test("connection latency measures the lightweight Hub probe roundtrip", async () => {
   const { measureLatency } = await qualityApi();
   const timestamps = [1_000, 1_086];

@@ -7,6 +7,7 @@ import path from "node:path";
 import { pipeline } from "node:stream/promises";
 import { gzipSync } from "node:zlib";
 import { agentHubRuntimeHealth } from "../../application/runtime-health.mjs";
+import { clientCommandAckTraceSpan } from "../../application/client-command-trace.mjs";
 
 import {
   attachmentContentType,
@@ -499,6 +500,7 @@ export class MiniAppServer {
   #copyWorkspaceFile;
   #revealWorkspaceFile;
   #reportUnexpectedError;
+  #recordCommandTrace;
   #onControlResultDelivered;
   #deviceStore;
   #changeTimer = null;
@@ -536,6 +538,7 @@ export class MiniAppServer {
     copyWorkspaceFile = null,
     revealWorkspaceFile = null,
     reportUnexpectedError = null,
+    recordCommandTrace = null,
     onControlResultDelivered = null,
     deviceStore = null,
     assetsDirectory = path.join(AGENT_HUB_ROOT, "assets", "web-app"),
@@ -567,6 +570,7 @@ export class MiniAppServer {
     this.#copyWorkspaceFile = typeof copyWorkspaceFile === "function" ? copyWorkspaceFile : null;
     this.#revealWorkspaceFile = typeof revealWorkspaceFile === "function" ? revealWorkspaceFile : null;
     this.#reportUnexpectedError = typeof reportUnexpectedError === "function" ? reportUnexpectedError : null;
+    this.#recordCommandTrace = typeof recordCommandTrace === "function" ? recordCommandTrace : null;
     this.#onControlResultDelivered = typeof onControlResultDelivered === "function"
       ? onControlResultDelivered
       : null;
@@ -1014,6 +1018,38 @@ export class MiniAppServer {
         });
       } catch (error) {
         json(response, 400, { error: String(error?.message ?? error) }, method);
+      }
+      return;
+    }
+    if (url.pathname === "/api/command-trace/client-ack") {
+      if (method !== "POST") {
+        response.writeHead(405, {
+          Allow: "POST",
+          ...responseHeaders("text/plain; charset=utf-8"),
+        });
+        response.end("Method Not Allowed\n");
+        return;
+      }
+      const authorization = await this.#authorize(request, response);
+      if (!authorization) return;
+      try {
+        const body = await readJsonBody(request);
+        const commandId = String(body.commandId ?? "").trim();
+        if (!CONTROL_COMMAND_ID_PATTERN.test(commandId)) {
+          throw new Error("Некорректный идентификатор команды");
+        }
+        const span = clientCommandAckTraceSpan({
+          commandId,
+          timing: body.timing,
+          reportedAtMs: Date.now(),
+          outcome: body.outcome,
+          transport: String(body.surface ?? authorization.source ?? "client"),
+        });
+        if (span) this.#recordCommandTrace?.(span);
+        json(response, 200, { ok: true }, method);
+      } catch (error) {
+        this.#reportUnexpected(error, "command-trace-client-ack");
+        json(response, 400, { ok: false, error: String(error?.message ?? error) }, method);
       }
       return;
     }

@@ -57,7 +57,13 @@ test("desktop mutation receipt protects retries until delivery is acknowledged",
   });
   try {
     assert.deepEqual(await router.handleDesktopControl(request), { effect: 1 });
-    assert.deepEqual(await router.handleDesktopControl(request), { effect: 1 });
+    assert.deepEqual(await router.handleDesktopControl({
+      ...request,
+      params: {
+        ...request.params,
+        clientTiming: { submittedAtMs: Date.now(), transport: "direct-http" },
+      },
+    }), { effect: 1 });
     assert.equal(effects, 1);
     assert.equal(await router.forgetDesktopControl("stable-command"), true);
     assert.deepEqual(await router.handleDesktopControl(request), { effect: 2 });

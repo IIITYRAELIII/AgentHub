@@ -148,6 +148,10 @@ export class CodexRunFinalizer {
         },
       },
     });
+    run.responseText = String(
+      committed.terminal?.finalAnswer ?? completion.finalAnswer ?? answer ?? "",
+    ).trim();
+    run.terminalRevision = Number(committed.terminal?.terminalRevision) || null;
     await this.markRunCompleted(run);
     this.turnStarts.delete(startKey);
     await this.saveState();

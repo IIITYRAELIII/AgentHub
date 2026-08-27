@@ -1,5 +1,6 @@
 import { DurableCommandReceipts, commandFingerprint } from "../../infrastructure/persistence/durable-command-receipts.mjs";
 import { SqliteDurableCommandReceipts } from "../../infrastructure/persistence/sqlite-durable-command-receipts.mjs";
+import { clientCommandBoundaryTraceSpans } from "../../application/client-command-trace.mjs";
 
 const DEFAULT_MINI_APP_LIMITS = Object.freeze({
   sources: Object.freeze(["telegram-mini-app", "trusted-device", "local-mini-app"]),
@@ -126,6 +127,11 @@ export function createDesktopControlRouter({
     return hydrateProjectedResult(projectDesktopReceiptResult(value), context);
   }
 
+  function durableFingerprintParams(params) {
+    const { clientTiming: _clientTiming, ...stableParams } = params;
+    return stableParams;
+  }
+
   async function handleDesktopControl({ action, params, context = null }) {
     const handler = handlers[action];
     if (typeof handler !== "function") {
@@ -143,47 +149,73 @@ export function createDesktopControlRouter({
     ).trim();
     const traceTransport = String(context?.source ?? "desktop-control").trim().toLowerCase()
       || "desktop-control";
-    if (traceCommandId) {
-      commandTrace?.recordBestEffort?.({
-        commandId: traceCommandId,
-        stage: "hub-receive",
-        outcome: "succeeded",
-        transport: traceTransport,
-        metadata: { action },
-      });
+    const receivedAtMs = Date.now();
+    for (const span of clientCommandBoundaryTraceSpans({
+      commandId: traceCommandId,
+      timing: resolvedParams.clientTiming,
+      receivedAtMs,
+      transport: traceTransport,
+    })) {
+      commandTrace?.recordBestEffort?.({ ...span, metadata: { action, ...span.metadata } });
     }
-    if (mutations.has(action)) {
-      const execute = () => concurrentMutations.has(action)
-        ? handler(resolvedParams, context)
-        : serializeDesktopMutation(() => handler(resolvedParams, context));
-      const commandId = String(context?.commandId ?? "").trim();
-      if (!receipts || !commandId || !durableMutations.has(action)) {
-        return mutationResultForClient(await execute(), context);
+    const responseSpan = commandTrace?.startBestEffortSpan?.({
+      commandId: traceCommandId,
+      stage: "response-send",
+      transport: traceTransport,
+      metadata: { action, receivedAtMs },
+    });
+    try {
+      let result;
+      if (mutations.has(action)) {
+        const execute = () => concurrentMutations.has(action)
+          ? handler(resolvedParams, context)
+          : serializeDesktopMutation(() => handler(resolvedParams, context));
+        const commandId = String(context?.commandId ?? "").trim();
+        if (!receipts || !commandId || !durableMutations.has(action)) {
+          result = await mutationResultForClient(await execute(), context);
+        } else {
+          const noLiveResult = Symbol("no-live-result");
+          let liveResult = noLiveResult;
+          const durableResult = await receipts.execute({
+            id: commandId,
+            fingerprint: commandFingerprint({
+              action,
+              params: durableFingerprintParams(resolvedParams),
+              source: context?.source ?? "",
+              userId: context?.userId ?? "",
+            }),
+            action,
+            effect: async () => {
+              liveResult = await execute();
+              return projectDesktopReceiptResult(liveResult);
+            },
+            reconcile: typeof reconcileMutation === "function"
+              ? (receipt) => reconcileMutation({ action, params: resolvedParams, context, receipt })
+              : null,
+            traceContext: { commandId: traceCommandId || commandId, transport: traceTransport, action },
+          });
+          result = liveResult !== noLiveResult
+            ? await mutationResultForClient(liveResult, context)
+            : await hydrateProjectedResult(durableResult, context);
+        }
+      } else {
+        result = await handler(resolvedParams, context);
       }
-      const noLiveResult = Symbol("no-live-result");
-      let liveResult = noLiveResult;
-      const durableResult = await receipts.execute({
-        id: commandId,
-        fingerprint: commandFingerprint({
-          action,
-          params: resolvedParams,
-          source: context?.source ?? "",
-          userId: context?.userId ?? "",
-        }),
-        action,
-        effect: async () => {
-          liveResult = await execute();
-          return projectDesktopReceiptResult(liveResult);
-        },
-        reconcile: typeof reconcileMutation === "function"
-          ? (receipt) => reconcileMutation({ action, params: resolvedParams, context, receipt })
-          : null,
-        traceContext: { commandId: traceCommandId || commandId, transport: traceTransport, action },
+      responseSpan?.finish?.({
+        outcome: "succeeded",
+        metadata: { hubReceiveToResponseMs: Math.max(0, Date.now() - receivedAtMs) },
       });
-      if (liveResult !== noLiveResult) return mutationResultForClient(liveResult, context);
-      return hydrateProjectedResult(durableResult, context);
+      return result;
+    } catch (error) {
+      responseSpan?.finish?.({
+        outcome: "failed",
+        metadata: {
+          hubReceiveToResponseMs: Math.max(0, Date.now() - receivedAtMs),
+          error: String(error?.message ?? error).slice(0, 500),
+        },
+      });
+      throw error;
     }
-    return handler(resolvedParams, context);
   }
 
   return {

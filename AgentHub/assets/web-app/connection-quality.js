@@ -137,6 +137,36 @@
     return { quality: "poor", bars: 1, label: "Зависание", latencyMs: latency, waiting, failed };
   }
 
+  function exactCompletedTurnSample(providerStart, measurement) {
+    if (!String(providerStart?.turnId ?? "").trim() || !measurement) return false;
+    if (measurement.active || measurement.waiting || measurement.failed || measurement.phase !== "completed") return false;
+    return [measurement.firstEventMs, measurement.firstContentMs, measurement.firstVisibleMs]
+      .some((value) => normalizedLatency(value) != null);
+  }
+
+  function selectModelResponseSample({
+    providerStart = null,
+    previous = null,
+    now = Date.now(),
+    running = false,
+    compaction = null,
+  } = {}) {
+    const measurement = modelResponseMeasurement(providerStart, now, { running, compaction });
+    if (measurement?.active || measurement?.waiting || measurement?.failed || measurement?.compaction?.active) {
+      return { measurement, providerStart, remember: false, sampleKind: "current" };
+    }
+    if (exactCompletedTurnSample(providerStart, measurement)) {
+      return { measurement, providerStart, remember: true, sampleKind: "previous" };
+    }
+    if (!previous?.measurement || !String(previous?.providerStart?.turnId ?? "").trim()) return null;
+    return {
+      measurement: { ...previous.measurement, active: false, waiting: false, phase: "completed" },
+      providerStart: previous.providerStart,
+      remember: false,
+      sampleKind: "previous",
+    };
+  }
+
   function modelLinkState({ measurement = null, status = "online", latencyMs = null } = {}) {
     const connection = String(status ?? "online");
     const measuredLatency = normalizedLatency(measurement?.latencyMs);
@@ -190,6 +220,7 @@
     modelResponseMeasurement,
     modelResponseQuality,
     measureLatency,
+    selectModelResponseSample,
     smoothLatency,
   });
 })();

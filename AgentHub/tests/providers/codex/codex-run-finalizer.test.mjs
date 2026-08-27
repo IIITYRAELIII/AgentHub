@@ -37,7 +37,10 @@ function fixture({ existingCompletion = null, discard = false } = {}) {
       events.push(["outbox", ...args]);
       return { telegram: "sent" };
     },
-    markRunCompleted: async (run) => events.push(["terminal", run]),
+    markRunCompleted: async (run) => events.push(["terminal", {
+      responseText: run.responseText,
+      terminalRevision: run.terminalRevision,
+    }]),
     completeRun: async (run) => events.push(["complete", run]),
     formatUsage: () => "Usage",
     titleForAnswer: () => "Title",
@@ -100,6 +103,20 @@ test("CodexRunFinalizer adopts audited start data and completes one durable deli
   const terminalIntent = state.events.find(([name]) => name === "commit")[2].channelIntents.telegram;
   assert.equal(terminalIntent.requested, true);
   assert.equal(terminalIntent.message, "Final\n\nUsage");
+});
+
+test("CodexRunFinalizer publishes the exact terminal answer before the completed snapshot", async () => {
+  const state = fixture();
+  const value = run();
+  value.responseText = "First live prefix";
+
+  await state.finalizer.finalize(value, { answer: "First live prefix\n\nComplete final answer" });
+
+  const terminalSnapshot = state.events.find(([name]) => name === "terminal")[1];
+  assert.deepEqual(terminalSnapshot, {
+    responseText: "First live prefix\n\nComplete final answer",
+    terminalRevision: 1,
+  });
 });
 
 test("CodexRunFinalizer captures a Git diff when rollout tracking is unavailable", async () => {
