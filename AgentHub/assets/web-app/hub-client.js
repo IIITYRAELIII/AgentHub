@@ -1294,12 +1294,9 @@ async function control(action, params = {}) {
   const directTransport = window.__agentHubDirectTransport;
   let directAvailable = false;
   if (vscode && directTransport) {
-    if (typeof directTransport.ready === "function") {
-      directAvailable = directTransport.ready() === true;
-      if (!directAvailable) directTransport.warmup?.();
-    } else {
-      directAvailable = await directTransport.available();
-    }
+    directAvailable = typeof directTransport.ready === "function"
+      && directTransport.ready() === true;
+    if (!directAvailable) directTransport.warmup?.();
   }
   const bridged = directAvailable ? null : bridgeCall(action, params);
   if (bridged) return bridged;

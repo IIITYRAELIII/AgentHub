@@ -17,6 +17,7 @@ test("VS Code WebView prefers loopback HTTP with IPC fallback", () => {
   assert.match(bootstrap, /fallbackFetch/u);
   assert.match(client, /directTransport\.ready\(\)/u);
   assert.match(client, /directTransport\.warmup\?\.\(\)/u);
+  assert.doesNotMatch(client, /await directTransport\.available\(\)/u);
   assert.match(bootstrap, /ready:\s*\(\)\s*=>\s*Boolean\(activeDirectSession\(\)\)/u);
   assert.match(extension, /handleSessionMessage/u);
   assert.match(extension, /subscribeJournal/u);
