@@ -21,8 +21,8 @@ const MUTATING_TOOLS = new Set([
   "hub_task_create", "hub_task_update", "hub_task_move", "hub_task_start", "hub_task_status_update", "hub_task_complete", "hub_task_delete",
   "hub_task_attachment_add", "hub_workspace_rules_update", "hub_stream_rules_update",
   "hub_stream_message_send",
-  "hub_release_change_status", "hub_release_complete",
-  "hub_changeset_freeze", "hub_changeset_status", "hub_changeset_architect_override",
+  "hub_release_change_status", "hub_release_change_files_set", "hub_release_complete",
+  "hub_changeset_files_set", "hub_changeset_freeze", "hub_changeset_status", "hub_changeset_architect_override",
 ]);
 const TEXT_ATTACHMENT_TYPES = new Set([
   "text/plain", "text/markdown", "text/csv", "application/json", "application/xml",
@@ -225,7 +225,7 @@ export class HubMcpService {
   } = {}) {
     for (const name of [
       "resolveThread", "workspace", "hierarchy", "releaseRegistry", "releasePlan",
-      "updateReleaseChangeStatus", "releaseChanges", "developerRulesForStream",
+      "updateReleaseChangeStatus", "updateReleaseChangeFiles", "releaseChanges", "developerRulesForStream",
       "updateWorkspaceDeveloperRules", "updateStreamDeveloperRules",
       "beginMcpOperation", "completeMcpOperation", "failMcpOperation", "mcpOperations",
       "stream", "activeThread", "workspaceEvents",
@@ -238,7 +238,7 @@ export class HubMcpService {
     requiredMethod(workLog, "threadTurns");
     requiredMethod(releaseCompleter, "completeRelease");
     for (const name of [
-      "list", "freeze", "setStatus", "architectOverride", "classifyLegacy", "releaseBatches",
+      "list", "setFiles", "freeze", "setStatus", "architectOverride", "classifyLegacy", "releaseBatches",
     ]) requiredMethod(releaseChangeSets, name);
     this.workspaceCatalog = workspaceCatalog;
     this.taskBoard = taskBoard;
@@ -345,6 +345,10 @@ export class HubMcpService {
         change_id: { type: "string" },
         status: { type: "string", enum: [...RELEASE_STATUSES] },
       }, ["change_id", "status"]),
+      tool("hub_release_change_files_set", "Replace the exact selected file list of a legacy release entry owned by the current Stream; observed candidates remain available separately.", {
+        change_id: { type: "string" },
+        files: { type: "array", maxItems: 500, items: { type: "string" } },
+      }, ["change_id", "files"]),
       tool("hub_release_complete", "Complete a release only after clean main revisions and explicit deployment verification.", {
         expected_revision: { type: "string" },
         expected_plan_revision: { type: "string", description: "Exact revision returned by hub_release_plan_get." },
@@ -355,6 +359,22 @@ export class HubMcpService {
       tool("hub_changesets_list", "Read logical REL-001 ChangeSets and their TurnObservations for the current Workspace.", {
         include_closed: { type: "boolean", default: false },
       }),
+      tool("hub_changeset_files_set", "Replace the selected draft file list of a ChangeSet owned by the current Stream. TurnObservation candidates are audit evidence, not ownership.", {
+        change_set_id: { type: "string" },
+        files: {
+          type: "array",
+          maxItems: 500,
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              project_root: { type: "string" },
+              path: { type: "string" },
+            },
+            required: ["project_root", "path"],
+          },
+        },
+      }, ["change_set_id", "files"]),
       tool("hub_changeset_freeze", "Explicitly freeze an owner Stream ChangeSet after server-side Git verification of exact repository and file evidence.", {
         change_set_id: { type: "string" },
         title: { type: "string", default: "" },
@@ -514,6 +534,8 @@ export class HubMcpService {
         return this.workspaceCatalog.releasePlan(context.workspaceId);
       case "hub_release_change_status":
         return this.#setReleaseStatus(context, args);
+      case "hub_release_change_files_set":
+        return this.#setReleaseFiles(context, args);
       case "hub_release_complete":
         return this.releaseCompleter.completeRelease({
           workspaceId: context.workspaceId,
@@ -531,6 +553,16 @@ export class HubMcpService {
             includeClosed: args.include_closed === true,
           }),
         };
+      case "hub_changeset_files_set":
+        return this.releaseChangeSets.setFiles({
+          workspaceId: context.workspaceId,
+          actorStreamId: context.streamId,
+          changeSetId: args.change_set_id,
+          files: (Array.isArray(args.files) ? args.files : []).map((file) => ({
+            projectRoot: file.project_root,
+            path: file.path,
+          })),
+        });
       case "hub_changeset_freeze":
         return this.releaseChangeSets.freeze({
           workspaceId: context.workspaceId,
@@ -787,6 +819,18 @@ export class HubMcpService {
       throw new Error("release change is outside the current Workspace");
     }
     return this.workspaceCatalog.updateReleaseChangeStatus(normalizedChangeId, normalizedStatus);
+  }
+
+  #setReleaseFiles(context, { change_id: changeId, files = [] } = {}) {
+    const normalizedChangeId = requiredText(changeId, "release change id", 300);
+    const change = this.workspaceCatalog.releaseChanges(context.workspaceId)
+      .find((candidate) => candidate.id === normalizedChangeId);
+    if (!change) throw new Error("release change is outside the current Workspace");
+    if (change.streamId !== context.streamId) throw new Error("only the owner Stream can change release files");
+    return this.workspaceCatalog.updateReleaseChangeFiles(
+      normalizedChangeId,
+      Array.isArray(files) ? files : [],
+    );
   }
 
   async #startTask(context, {

@@ -1,6 +1,14 @@
+import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 
-import { parseClaudeResult, parseClaudeStreamEvent } from "./claude.mjs";
+const EOL = String.fromCharCode(10);
+
+import {
+  claudeInterruptRequest,
+  claudeStreamInputMessage,
+  parseClaudeResult,
+  parseClaudeStreamEvent,
+} from "./claude.mjs";
 import {
   ClaudeOutputReader,
   openClaudeRunOutput,
@@ -43,7 +51,7 @@ export class ClaudeRunController {
     this.stopProcess = stopProcess;
   }
 
-  async start(run, { command, args, cwd, env }) {
+  async start(run, { command, args, cwd, env, input = null }) {
     const output = await openClaudeRunOutput(this.dataDir, run.turnId);
     Object.assign(run, {
       claudeOutputPath: output.outputPath,
@@ -56,6 +64,8 @@ export class ClaudeRunController {
       claudeExited: false,
       claudeExitDrainRetried: false,
       claudeSettled: false,
+      claudeInput: null,
+      claudeSteer: null,
     });
     let worker;
     let callbacksEnabled = false;
@@ -65,6 +75,7 @@ export class ClaudeRunController {
         command,
         args,
         cwd,
+        stdin: input == null ? "ignore" : "pipe",
         stdout: output.outputHandle.fd,
         stderr: output.errorHandle.fd,
         env,
@@ -90,6 +101,13 @@ export class ClaudeRunController {
     }
     run.process = worker;
     run.pid = worker.pid ?? null;
+    if (input != null && worker.stdin) {
+      // Разрыв канала не является ошибкой хода: процесс дочитает текущий ход
+      // и завершится, а его результат придёт через файл вывода как обычно.
+      worker.stdin.on("error", () => {});
+      run.claudeInput = worker.stdin;
+      this.#write(run, claudeStreamInputMessage(input));
+    }
     // Win32_Process may not expose a just-created child on its first WMI
     // query. Capture the fingerprint before persisting the run so a later
     // Hub restart can safely reattach it instead of treating it as unknown.
@@ -134,7 +152,11 @@ export class ClaudeRunController {
         for (const line of lines) {
           const parsed = parseClaudeStreamEvent(line);
           if (!parsed) continue;
-          if (parsed.result) run.claudeResult = parsed.result;
+          if (parsed.result && this.#continueSteer(run)) continue;
+          if (parsed.result) {
+            run.claudeResult = parsed.result;
+            this.#closeInput(run);
+          }
           this.onStreamEvent(run, parsed);
         }
       } while (run.claudeDrainPending);
@@ -165,10 +187,57 @@ export class ClaudeRunController {
     this.schedule(run);
   }
 
+  /* Отправка в идущий ход. У Claude CLI нет подмешивания текста в ход, как у
+     Codex: текущий ход прерывается, а сообщение уходит следующим ходом того же
+     процесса и той же сессии — контекст сохраняется. Завершается такой ход
+     результатом продолжения, а не результатом прерванного хода. */
+  steer(run, text) {
+    const message = String(text ?? "").trim();
+    if (!message) throw new Error("Active turn not steerable: empty steer message");
+    if (!run || run.claudeSettled || run.claudeExited || !run.claudeInput || run.claudeInputClosed) {
+      throw new Error("Active turn not steerable: Claude turn has no open input channel");
+    }
+    const requestId = `agent-hub-interrupt:${randomUUID()}`;
+    run.claudeSteer = { text: message, state: "interrupting", requestId };
+    this.#write(run, claudeInterruptRequest(requestId));
+    return { turnId: run.turnId, requestId };
+  }
+
+  #continueSteer(run) {
+    const steer = run.claudeSteer;
+    if (steer?.state !== "interrupting") return false;
+    // Результат принадлежит прерванному ходу (или ходу, который успел
+    // завершиться сам): он не финальный, продолжение уходит тем же процессом.
+    run.claudeSteer = { ...steer, state: "continuing" };
+    this.#write(run, claudeStreamInputMessage(steer.text));
+    return true;
+  }
+
+  #write(run, line) {
+    const input = run?.claudeInput;
+    if (!input || run.claudeInputClosed || input.destroyed) return false;
+    input.write(`${line}${EOL}`);
+    return true;
+  }
+
+  #closeInput(run) {
+    const input = run?.claudeInput;
+    if (!input || run.claudeInputClosed) return;
+    run.claudeInputClosed = true;
+    try {
+      input.end();
+    } catch {
+      // Канал уже закрыт со стороны процесса.
+    }
+  }
+
   async complete(run, { spawnError = null } = {}) {
     if (!run || run.claudeSettled) return;
     run.claudeSettled = true;
     this.pause(run);
+    this.#closeInput(run);
+    run.claudeInput = null;
+    run.claudeSteer = null;
     run.process = null;
     const outputPaths = { outputPath: run.claudeOutputPath, errorPath: run.claudeErrorPath };
     const exitCode = Number.isInteger(run.claudeExitCode) ? run.claudeExitCode : null;
@@ -201,8 +270,13 @@ export class ClaudeRunController {
 
   async attachAfterRestart(run) {
     const alive = this.processAlive(run.pid) && await this.#ownsProcess(run, run.pid);
+    // Канал ввода перезапуск Hub не переживает: ход дочитывается, но отправка
+    // в него уже недоступна.
     Object.assign(run, {
       process: null,
+      claudeInput: null,
+      claudeInputClosed: true,
+      claudeSteer: null,
       claudeReader: null,
       claudeSettled: false,
       claudeExited: !alive,

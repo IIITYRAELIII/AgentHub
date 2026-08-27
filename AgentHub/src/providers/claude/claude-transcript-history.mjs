@@ -1,4 +1,7 @@
-import { isClaudeSyntheticUserEntry } from "../../domain/claude-transcript.mjs";
+import {
+  isClaudeInterruptEntry,
+  isClaudeSyntheticUserEntry,
+} from "../../domain/claude-transcript.mjs";
 
 function contentBlocks(message) {
   if (Array.isArray(message?.content)) return message.content;
@@ -15,6 +18,16 @@ function isUserPrompt(entry) {
 }
 
 export function compactClaudeHistoryEntry(entry) {
+  // Маркер прерывания нужен истории: следующий за ним запрос — продолжение
+  // того же хода, а не новый ход.
+  if (isClaudeInterruptEntry(entry)) {
+    return {
+      type: "user",
+      uuid: entry.uuid,
+      timestamp: entry.timestamp,
+      message: { role: "user", content: contentBlocks(entry.message).slice(0, 1) },
+    };
+  }
   if (isUserPrompt(entry)) {
     return {
       type: "user",

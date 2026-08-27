@@ -6,9 +6,12 @@ import {
   buildClaudePrompt,
   claudeEstimatedCostUsd,
   claudeFailureMessage,
+  claudeInterruptRequest,
   claudeModelContextWindow,
   claudeStreamContextUsage,
+  claudeStreamInputMessage,
   formatClaudeUsage,
+  isClaudeInterruptMarker,
   parseClaudeLimits,
   parseClaudeResult,
   parseClaudeStreamEvent,
@@ -96,6 +99,31 @@ test("Claude image directories cannot consume a resumed prompt", () => {
     args.indexOf("--permission-mode") > args.indexOf("--add-dir"),
     "a scalar option must terminate Claude's variadic --add-dir before the prompt",
   );
+});
+
+test("stream input keeps the prompt out of the argument list", () => {
+  const args = buildClaudeArgs({ prompt: "steer me", streamInput: true, sessionId: "session-1", model: "opus" });
+  assert.deepEqual(args.slice(0, 7), [
+    "--print", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
+    "--input-format", "stream-json",
+  ]);
+  assert.deepEqual(args.slice(-2), ["--resume", "session-1"]);
+  assert.equal(args.includes("steer me"), false);
+});
+
+test("stream input messages and interrupt requests follow the CLI protocol", () => {
+  assert.deepEqual(JSON.parse(claudeStreamInputMessage("Привет")), {
+    type: "user",
+    message: { role: "user", content: "Привет" },
+  });
+  assert.deepEqual(JSON.parse(claudeInterruptRequest("req-1")), {
+    type: "control_request",
+    request_id: "req-1",
+    request: { subtype: "interrupt" },
+  });
+  assert.equal(isClaudeInterruptMarker("[Request interrupted by user]"), true);
+  assert.equal(isClaudeInterruptMarker("[Request interrupted by user for tool use]"), true);
+  assert.equal(isClaudeInterruptMarker("Request interrupted"), false);
 });
 
 test("auto approval maps only to bypassPermissions", () => {

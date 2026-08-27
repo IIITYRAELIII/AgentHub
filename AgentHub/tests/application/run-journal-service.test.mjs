@@ -227,7 +227,7 @@ test("RunJournalService registers changed files in the Workspace release registr
   const release = calls.find(([name]) => name === "release")?.[1];
   assert.equal(release.summary, "Implemented release registry");
   assert.deepEqual(release.changedFiles, ["AgentHub/app.js"]);
-  assert.equal(release.status, "ready");
+  assert.equal(release.status, "draft");
   assert.match(release.diffHash, /^[a-f0-9]{64}$/u);
   const observation = calls.find(([name]) => name === "changeset")?.[1];
   assert.equal(observation.status, "completed");

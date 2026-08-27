@@ -223,7 +223,7 @@ export class RunJournalService {
           summary: fields.title || body,
           changedFiles: completion.changedFiles,
           status: String(completion.status ?? "").trim().toLowerCase() === "completed"
-            ? "ready"
+            ? "draft"
             : "blocked",
           diffHash,
         });

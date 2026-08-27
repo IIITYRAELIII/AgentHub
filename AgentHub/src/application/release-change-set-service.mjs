@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import {
   frozenChangeSetManifest,
+  normalizedDraftChangeSetFiles,
   normalizedDashboardTaskId,
   normalizedReleaseBatch,
   normalizedTurnObservation,
@@ -35,7 +36,7 @@ export class ReleaseChangeSetService {
   } = {}) {
     for (const name of [
       "resolveThread", "stream", "recordChangeSetObservation", "changeSet", "changeSets",
-      "freezeChangeSet", "transitionChangeSet", "recordReleaseBatch", "releaseBatches",
+      "replaceDraftChangeSetFiles", "freezeChangeSet", "transitionChangeSet", "recordReleaseBatch", "releaseBatches",
       "legacyReleaseChangeCoverage",
     ]) requiredMethod(store, name);
     requiredMethod(legacyStore, "releaseChanges");
@@ -67,6 +68,15 @@ export class ReleaseChangeSetService {
 
   list({ workspaceId, includeClosed = false } = {}) {
     return this.store.changeSets(workspaceId, { includeClosed });
+  }
+
+  setFiles({ workspaceId, actorStreamId, changeSetId, files = [] } = {}) {
+    const changeSet = this.#ownedChangeSet({ workspaceId, actorStreamId, changeSetId });
+    if (changeSet.status !== "draft") throw new Error("only a draft ChangeSet file selection can be changed");
+    return this.store.replaceDraftChangeSetFiles(changeSet.id, {
+      actorStreamId,
+      files: normalizedDraftChangeSetFiles(files),
+    });
   }
 
   async freeze({ workspaceId, actorStreamId, changeSetId, title = "", repositories, files } = {}) {

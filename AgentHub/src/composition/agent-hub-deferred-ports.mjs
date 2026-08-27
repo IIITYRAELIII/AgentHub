@@ -13,7 +13,7 @@ export function createAgentHubDeferredPorts() {
     "updateActiveCodexThreadSettings", "taskSwitchSettings",
   ]);
   const providerRuntime = createDeferredCompositionPort("provider runtime wiring", [
-    "persistManagedRunHistory", "persistClaudeRunHistory", "startClaudeTurn",
+    "persistManagedRunHistory", "persistClaudeRunHistory", "startClaudeTurn", "steerClaudeTurn",
     "stopClaudeRunProcess", "attachClaudeRunAfterRestart", "handleCodexMessage",
     "completedCodexAnswer", "applyCodexObservedSnapshot", "applyCodexActiveSnapshot",
     "readCodexTaskSnapshot", "scheduleCodexTerminalAudit",

@@ -6,10 +6,22 @@ export function createClaudeTranscriptAuditComposition({
   projectionProjectRoots,
   findProject,
   workLogUsageStore,
+  scanTranscript = scanClaudeHistoricalTranscriptFile,
+  maximumTranscriptBytes = 16 * 1024 * 1024,
   maximumTrackedTranscripts = 2_000,
   logger = console,
 }) {
   const transcriptVersions = new Map();
+  const oversizedTranscripts = new Set();
+
+  function rememberVersion(transcriptPath, auditVersion) {
+    transcriptVersions.set(transcriptPath, auditVersion);
+    while (transcriptVersions.size > maximumTrackedTranscripts) {
+      const oldestPath = transcriptVersions.keys().next().value;
+      transcriptVersions.delete(oldestPath);
+      oversizedTranscripts.delete(oldestPath);
+    }
+  }
 
   async function audit(snapshots) {
     const records = [];
@@ -20,7 +32,28 @@ export function createClaudeTranscriptAuditComposition({
       if (!transcriptPath || !sessionId || !project) continue;
       const auditVersion = Number(snapshot.modifiedAtMs) || 0;
       if (transcriptVersions.get(transcriptPath) === auditVersion) continue;
-      const scan = await scanClaudeHistoricalTranscriptFile(transcriptPath);
+      if (snapshot.active === true) continue;
+      const transcriptSizeBytes = Math.max(0, Number(snapshot.transcriptSizeBytes) || 0);
+      if (transcriptSizeBytes > maximumTranscriptBytes) {
+        rememberVersion(transcriptPath, auditVersion);
+        if (!oversizedTranscripts.has(transcriptPath)) {
+          oversizedTranscripts.add(transcriptPath);
+          logger.warn?.(
+            `Skipped Claude historical transcript audit above ${maximumTranscriptBytes} bytes: ${transcriptPath}`,
+          );
+        }
+        continue;
+      }
+      rememberVersion(transcriptPath, auditVersion);
+      let scan;
+      try {
+        scan = await scanTranscript(transcriptPath);
+      } catch (error) {
+        if (transcriptVersions.get(transcriptPath) === auditVersion) {
+          transcriptVersions.delete(transcriptPath);
+        }
+        throw error;
+      }
       const taskTitle = String(snapshot.title ?? scan.session?.title ?? "").trim();
       for (const turn of scan.turns ?? []) {
         records.push({
@@ -38,10 +71,6 @@ export function createClaudeTranscriptAuditComposition({
           changedFiles: [],
           diff: "",
         });
-      }
-      transcriptVersions.set(transcriptPath, auditVersion);
-      while (transcriptVersions.size > maximumTrackedTranscripts) {
-        transcriptVersions.delete(transcriptVersions.keys().next().value);
       }
     }
     if (!records.length) return;

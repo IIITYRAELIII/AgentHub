@@ -7,6 +7,7 @@ import {
   buildClaudePrompt,
   resolveClaudeSessionCwd,
 } from "./claude.mjs";
+import { markProviderTurnRequested } from "../../domain/task-runs.mjs";
 
 export class ClaudeTurnLauncher {
   #d;
@@ -40,8 +41,10 @@ export class ClaudeTurnLauncher {
     );
     run.sessionCwd = sessionCwd;
     const planMode = run.collaborationMode === "plan";
+    const prompt = buildClaudePrompt(input);
     const args = buildClaudeArgs({
-      prompt: buildClaudePrompt(input),
+      prompt,
+      streamInput: true,
       sessionId: run.threadId,
       // Missing local transcripts recreate the same logical task UUID instead
       // of retrying --resume forever or replacing the task identity.
@@ -54,6 +57,9 @@ export class ClaudeTurnLauncher {
       mcpConfig: d.mcpConfig?.(),
       appendSystemPrompt: await d.developerContext?.({ threadId: run.threadId, streamId: run.streamId }),
     });
+    // Отсчёт задержки связи с моделью начинается здесь: дальше остаётся только
+    // запуск процесса Claude CLI и его собственный обмен с API.
+    markProviderTurnRequested(run, { provider: "claude" });
     await d.persistHistory(run);
     const invocation = d.resolveInvocation();
     await d.runController.start(run, {
@@ -61,6 +67,7 @@ export class ClaudeTurnLauncher {
       args: [...invocation.prefixArgs, ...args],
       cwd: sessionCwd,
       env: { ...process.env },
+      input: prompt,
     });
   }
 }

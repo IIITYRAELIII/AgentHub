@@ -20,6 +20,31 @@ export function buildClaudePrompt(input) {
   }).filter(Boolean).join("\n\n");
 }
 
+export const CLAUDE_INTERRUPT_MARKER = "[Request interrupted by user]";
+
+/* Сообщение пользователя в формате потокового ввода CLI. */
+export function claudeStreamInputMessage(text) {
+  return JSON.stringify({
+    type: "user",
+    message: { role: "user", content: String(text ?? "") },
+  });
+}
+
+/* Запрос прерывания текущего хода; CLI отвечает control_response с тем же
+   request_id и закрывает ход результатом error_during_execution. */
+export function claudeInterruptRequest(requestId) {
+  return JSON.stringify({
+    type: "control_request",
+    request_id: String(requestId),
+    request: { subtype: "interrupt" },
+  });
+}
+
+export function isClaudeInterruptMarker(value) {
+  const text = String(value ?? "").trim();
+  return text === CLAUDE_INTERRUPT_MARKER || text === "[Request interrupted by user for tool use]";
+}
+
 export function buildClaudeArgs({
   prompt,
   sessionId,
@@ -31,6 +56,9 @@ export function buildClaudeArgs({
   additionalDirectories = [],
   mcpConfig = null,
   appendSystemPrompt = null,
+  // Потоковый ввод: запрос уходит в stdin, а не аргументом, и stdin остаётся
+  // открытым, чтобы в идущий ход можно было отправить прерывание и продолжение.
+  streamInput = false,
 }) {
   if (!autoApprove && !CLAUDE_PERMISSION_MODES.has(permissionMode)) {
     throw new Error(`Unsupported Claude permission mode: ${permissionMode}`);
@@ -41,6 +69,7 @@ export function buildClaudeArgs({
     "--output-format", "stream-json",
     "--verbose",
     "--include-partial-messages",
+    ...(streamInput ? ["--input-format", "stream-json"] : []),
   ];
   const directories = [...new Set(
     additionalDirectories.filter(Boolean).map((item) => path.resolve(item)),
@@ -57,7 +86,7 @@ export function buildClaudeArgs({
   if (sessionId) {
     args.push(resumeSession ? "--resume" : "--session-id", sessionId);
   }
-  args.push(prompt);
+  if (!streamInput) args.push(prompt);
   return args;
 }
 

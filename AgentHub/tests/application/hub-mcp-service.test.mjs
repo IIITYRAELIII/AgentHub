@@ -44,9 +44,10 @@ async function fixture(context) {
       ],
     }],
     releaseRegistry: () => ({ changes: [] }),
-    releaseChanges: () => [],
+    releaseChanges: () => [{ id: "legacy-1", streamId: "stream-1", files: [], observedFiles: ["src/app.mjs", "themes/foreign.css"] }],
     releasePlan: () => ({ ready: [], draft: [], blocked: [], conflicts: [] }),
     updateReleaseChangeStatus: () => null,
+    updateReleaseChangeFiles: (changeId, files) => ({ id: changeId, streamId: "stream-1", files }),
     workspaceEvents: (_workspaceId, { afterSequence }) => [{
       sequence: afterSequence + 1, workspaceId: "workspace-1", streamId: "stream-1",
       type: "run.completed", subjectId: "turn-1", payload: {}, createdAtMs: 1,
@@ -121,6 +122,10 @@ async function fixture(context) {
     freeze: (options) => {
       changeSetCalls.push(["freeze", options]);
       return { id: options.changeSetId, status: "ready", manifestHash: "a".repeat(64) };
+    },
+    setFiles: (options) => {
+      changeSetCalls.push(["files", options]);
+      return { id: options.changeSetId, status: "draft", files: options.files };
     },
     setStatus: (options) => {
       changeSetCalls.push(["status", options]);
@@ -363,6 +368,14 @@ test("HubMcpService exposes the compatible REL-001 ChangeSet API", async (contex
   const listed = await service.call("hub_changesets_list", { context_token: token });
   assert.equal(listed.changeSets[0].id, "change-1");
 
+  const selected = await service.call("hub_changeset_files_set", {
+    context_token: token,
+    request_id: "select-files-1",
+    change_set_id: "change-1",
+    files: [{ project_root: "D:/repo", path: "src/app.mjs" }],
+  });
+  assert.deepEqual(selected.files, [{ projectRoot: "D:/repo", path: "src/app.mjs" }]);
+
   const frozen = await service.call("hub_changeset_freeze", {
     context_token: token,
     request_id: "freeze-1",
@@ -382,6 +395,14 @@ test("HubMcpService exposes the compatible REL-001 ChangeSet API", async (contex
   });
   assert.equal(frozen.status, "ready");
   assert.equal(changeSetCalls.find(([name]) => name === "freeze")[1].actorStreamId, "stream-1");
+
+  const legacy = await service.call("hub_release_change_files_set", {
+    context_token: token,
+    request_id: "select-legacy-files-1",
+    change_id: "legacy-1",
+    files: ["src/app.mjs"],
+  });
+  assert.deepEqual(legacy.files, ["src/app.mjs"]);
 
   const report = await service.call("hub_legacy_release_classifier", { context_token: token });
   assert.equal(report.entries[0].id, "legacy-1");

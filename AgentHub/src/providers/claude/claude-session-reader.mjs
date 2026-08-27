@@ -409,6 +409,7 @@ export async function readClaudeSessionSnapshot(
     ...parseClaudeTranscript(transcript),
     ...(includeHistory ? { history: historyResult.history } : {}),
     transcriptPath,
+    transcriptSizeBytes: info.size,
     modifiedAtMs: info.mtimeMs,
   };
   rememberTranscriptSnapshot(cacheMode, transcriptPath, info, snapshot, includeHistory ? {
@@ -438,6 +439,7 @@ export async function listClaudeSessionSnapshots(
           ...snapshot,
           sessionId: snapshot.sessionId || path.basename(transcriptPath, ".jsonl"),
           transcriptPath,
+          transcriptSizeBytes: info.size,
           modifiedAtMs: info.mtimeMs,
         };
       } catch (error) {

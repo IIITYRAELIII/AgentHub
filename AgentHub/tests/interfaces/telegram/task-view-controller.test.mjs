@@ -299,6 +299,150 @@ test("missing Claude transcript keeps the managed exchange in durable history", 
   assert.equal(recorded[0].messages.at(-1).role, "agent");
 });
 
+test("finished Claude turn returns from the transcript under its own identity", async () => {
+  const cached = [{
+    id: "hub-run-uuid",
+    prompt: "123",
+    answer: "",
+    status: "inProgress",
+    active: true,
+    completed: false,
+    startedAt: "2026-08-26T22:57:46.000Z",
+    messages: [{
+      itemId: "hub-run-uuid:user:0",
+      role: "user",
+      text: "123",
+      clientUserMessageId: "client-1",
+    }],
+  }];
+  let recorded = null;
+  const task = {
+    provider: "claude",
+    threadId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+    projectRoot: "C:/repo",
+    title: "Claude task",
+  };
+  const view = controller({
+    readClaudeSnapshot: async () => ({
+      active: false,
+      history: [{
+        id: "transcript-uuid",
+        prompt: "123",
+        answer: "Готово",
+        status: "completed",
+        active: false,
+        completed: true,
+        startedAt: "2026-08-26T22:58:00.000Z",
+        messages: [
+          { itemId: "transcript-uuid", role: "user", text: "123" },
+          { itemId: "transcript-agent", role: "agent", text: "Готово" },
+        ],
+      }],
+    }),
+    taskRuns: { forTask: () => null },
+    taskSyncStore: {
+      history: () => structuredClone(cached),
+      recordHistory: (_task, history) => { recorded = structuredClone(history); },
+      save: async () => {},
+    },
+  });
+  const result = await view.readHistory({ ...task, chatId: 1 });
+  assert.deepEqual(result.history.map((item) => item.id), ["transcript-uuid"]);
+  assert.equal(result.history[0].answer, "Готово");
+  assert.equal(
+    result.history[0].messages.find((message) => message.role === "user").clientUserMessageId,
+    "client-1",
+  );
+  assert.deepEqual(recorded.map((item) => item.id), ["transcript-uuid"]);
+});
+
+test("Claude turn read later than its successor keeps its place in time", async () => {
+  const cached = [{
+    id: "recent",
+    prompt: "Новый запрос",
+    answer: "Новый ответ",
+    status: "completed",
+    active: false,
+    completed: true,
+    startedAt: "2026-08-26T20:46:15.000Z",
+    messages: [{ itemId: "recent", role: "user", text: "Новый запрос" }],
+  }];
+  const task = {
+    provider: "claude",
+    threadId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+    projectRoot: "C:/repo",
+    title: "Claude task",
+  };
+  const view = controller({
+    readClaudeSnapshot: async () => ({
+      active: false,
+      history: [{
+        id: "older",
+        prompt: "Старый запрос",
+        answer: "Старый ответ",
+        status: "completed",
+        active: false,
+        completed: true,
+        startedAt: "2026-08-21T19:12:32.000Z",
+        messages: [{ itemId: "older", role: "user", text: "Старый запрос" }],
+      }],
+    }),
+    taskRuns: { forTask: () => null },
+    taskSyncStore: {
+      history: () => structuredClone(cached),
+      recordHistory: () => {},
+      save: async () => {},
+    },
+  });
+  const result = await view.readHistory({ ...task, chatId: 1 });
+  assert.deepEqual(result.history.map((item) => item.id), ["older", "recent"]);
+});
+
+test("Claude turns repeating one prompt are not folded into each other", async () => {
+  const cached = [];
+  const task = {
+    provider: "claude",
+    threadId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+    projectRoot: "C:/repo",
+    title: "Claude task",
+  };
+  const view = controller({
+    readClaudeSnapshot: async () => ({
+      active: false,
+      history: [
+        {
+          id: "first",
+          prompt: "123",
+          answer: "Первый ответ",
+          status: "completed",
+          active: false,
+          completed: true,
+          startedAt: "2026-08-13T18:00:08.000Z",
+          messages: [{ itemId: "first", role: "user", text: "123" }],
+        },
+        {
+          id: "second",
+          prompt: "123",
+          answer: "Второй ответ",
+          status: "completed",
+          active: false,
+          completed: true,
+          startedAt: "2026-08-26T20:46:15.000Z",
+          messages: [{ itemId: "second", role: "user", text: "123" }],
+        },
+      ],
+    }),
+    taskRuns: { forTask: () => null },
+    taskSyncStore: {
+      history: () => structuredClone(cached),
+      recordHistory: () => {},
+      save: async () => {},
+    },
+  });
+  const result = await view.readHistory({ ...task, chatId: 1 });
+  assert.deepEqual(result.history.map((item) => item.id), ["first", "second"]);
+});
+
 test("rollout history restores a completed turn missing from Codex App Server", async () => {
   const oldTurnId = "019fbe53-7a2b-7d12-92bc-88b062536f7f";
   const missingTurnId = "019fbe58-a7d6-7e93-9f8e-1ff6ec61e0bc";

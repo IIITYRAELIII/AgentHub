@@ -74,7 +74,33 @@ test("Dashboard task turns append observations to one draft ChangeSet", async (c
   assert.equal(second.logicalKey, "task:task-1");
   assert.equal(second.status, "draft");
   assert.equal(second.observations.length, 2);
+  assert.deepEqual(second.observations.map((observation) => observation.files), [
+    ["src/app.mjs"],
+    ["src/app.mjs"],
+  ]);
+  assert.deepEqual(second.files, []);
   assert.equal(second.manifestHash, "");
+});
+
+test("owner replaces observed candidates with the exact draft file selection", async (context) => {
+  const { service, workspace, owner } = await fixture(context);
+  const observed = service.observeTurn({
+    provider: "codex", threadId: "thread", turnId: "turn-1", projectRoot: "D:/repo",
+    summary: "Implemented", status: "completed", changedFiles: ["src/app.mjs", "themes/foreign.css"],
+  });
+
+  const selected = service.setFiles({
+    workspaceId: workspace.id,
+    actorStreamId: owner.id,
+    changeSetId: observed.id,
+    files: [{ projectRoot: "D:/repo", path: "src/app.mjs" }],
+  });
+
+  assert.deepEqual(selected.observations[0].files, ["src/app.mjs", "themes/foreign.css"]);
+  assert.deepEqual(selected.files.map(({ projectRoot, path }) => ({ projectRoot, path })), [
+    { projectRoot: "d:/repo", path: "src/app.mjs" },
+  ]);
+  assert.equal(selected.revision, 2);
 });
 
 test("owner freeze is explicit and Architect override is separately audited", async (context) => {

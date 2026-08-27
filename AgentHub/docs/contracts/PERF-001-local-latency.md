@@ -30,5 +30,11 @@ The VS Code WebView does not open a direct `/events` stream: journal changes are
 already delivered by the extension subscription, so a retained panel cannot
 consume a long-lived Chromium HTTP socket for duplicate notifications.
 
+Provider transcript maintenance does not run on the command, snapshot or task
+catalog critical path. Active append-only transcripts are never historically
+rescanned. Historical full scans are bounded to 16 MiB; larger transcripts use
+managed terminal accounting and an explicit skipped-audit warning instead of
+unbounded worker memory and event-loop GC pressure.
+
 The “Local Hub” health RTT is not message ACK latency and must not be presented
 as such. Provider latency and remote Worker latency are separate indicators.

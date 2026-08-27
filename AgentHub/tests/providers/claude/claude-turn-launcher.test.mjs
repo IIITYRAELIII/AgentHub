@@ -42,8 +42,16 @@ test("ClaudeTurnLauncher owns session setup and detached run invocation", async 
   assert.equal(events[3][1].args.includes("--resume"), true);
   assert.equal(events[3][1].args.includes("Inherited rules"), true);
   assert.deepEqual(
-    events[3][1].args.slice(events[3][1].args.indexOf("--model"), -1),
+    events[3][1].args.slice(events[3][1].args.indexOf("--model")),
     ["--model", "opus", "--effort", "high", "--resume", run.threadId],
   );
+  // Запрос уходит в stdin потокового ввода, а не аргументом: так в идущий
+  // ход можно отправить прерывание и продолжение.
+  assert.deepEqual(
+    events[3][1].args.slice(1, 8),
+    ["--print", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--input-format", "stream-json"],
+  );
+  assert.equal(events[3][1].args.includes("Проверка"), false);
+  assert.equal(events[3][1].input, "Проверка");
   assert.equal(Object.hasOwn(events[3][1].env, "MAX_THINKING_TOKENS"), false);
 });

@@ -5,7 +5,11 @@ import {
   interstreamOriginAuthor,
   normalizeInterstreamOrigin,
 } from "../domain/interstream-message.mjs";
-import { isClaudeSyntheticUserEntry, withoutClaudeResumePreludes } from "../domain/claude-transcript.mjs";
+import {
+  isClaudeInterruptEntry,
+  isClaudeSyntheticUserEntry,
+  withoutClaudeResumePreludes,
+} from "../domain/claude-transcript.mjs";
 import { taskReferencePromptDetails } from "../domain/task-board-task.mjs";
 
 export const EMPTY_TURN_COMPLETION_TEXT = "Ход завершён без текстового ответа.";
@@ -633,13 +637,43 @@ function claudeUserAuthor(entry) {
   return interstreamMessageDetails(textContent(entry.message?.content))?.author ?? "";
 }
 
+function claudeUserPromptVisible(entry) {
+  const details = claudeUserPromptDetails(entry);
+  return Boolean(details && (details.text || details.taskReferences.length));
+}
+
+/* Запрос, отправленный в прерванный ход, продолжает тот же ход: между ним и
+   предыдущим запросом стоит маркер прерывания, а не ответ модели. */
+function claudeSteerContinuation(entries, index) {
+  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+    const entry = entries[cursor];
+    if (isClaudeInterruptEntry(entry)) return true;
+    if (entry?.type === "assistant" && entry.message?.stop_reason === "end_turn") return false;
+    if (claudeUserPromptVisible(entry)) return false;
+  }
+  return false;
+}
+
+function claudeUserHistoryMessage(entry, index) {
+  const userPrompt = claudeUserPromptDetails(entry);
+  return {
+    itemId: String(entry?.uuid ?? `${index}:user`),
+    role: "user",
+    text: userPrompt?.text ?? "",
+    ...(userPrompt?.taskReferences.length
+      ? { attachments: userPrompt.taskReferences.map((reference) => ({ ...reference })) }
+      : {}),
+    ...(claudeUserAuthor(entry) ? { author: claudeUserAuthor(entry) } : {}),
+    ...(normalizedTimestamp(entry?.timestamp) ? { time: normalizedTimestamp(entry?.timestamp) } : {}),
+  };
+}
+
 export function claudeTranscriptHistory(text) {
   const entries = withoutClaudeResumePreludes(claudeEntries(text));
   const userIndexes = entries
-    .map((entry, index) => {
-      const details = claudeUserPromptDetails(entry);
-      return details && (details.text || details.taskReferences.length) ? index : -1;
-    })
+    .map((entry, index) => (
+      claudeUserPromptVisible(entry) && !claudeSteerContinuation(entries, index) ? index : -1
+    ))
     .filter((index) => index >= 0);
   return userIndexes.map((entryIndex, historyIndex) => {
     const userPrompt = claudeUserPromptDetails(entries[entryIndex]);
@@ -678,21 +712,11 @@ export function claudeTranscriptHistory(text) {
         : {}),
       activities,
       messages: [
-        {
-          itemId: String(entries[entryIndex]?.uuid ?? `${entryIndex}:user`),
-          role: "user",
-          text: userPrompt?.text ?? "",
-          ...(userPrompt?.taskReferences.length
-            ? { attachments: userPrompt.taskReferences.map((reference) => ({ ...reference })) }
-            : {}),
-          ...(claudeUserAuthor(entries[entryIndex])
-            ? { author: claudeUserAuthor(entries[entryIndex]) }
-            : {}),
-          ...(normalizedTimestamp(entries[entryIndex]?.timestamp)
-            ? { time: normalizedTimestamp(entries[entryIndex]?.timestamp) }
-            : {}),
-        },
+        claudeUserHistoryMessage(entries[entryIndex], entryIndex),
         ...turnEntries.flatMap((entry, index) => {
+          if (claudeUserPromptVisible(entry)) {
+            return [{ ...claudeUserHistoryMessage(entry, entryIndex + 1 + index), turnUserSlot: "steer" }];
+          }
           if (entry?.type !== "assistant" || entry.message?.role !== "assistant") return [];
           const assistantText = textContent(entry.message?.content);
           return assistantText ? [{

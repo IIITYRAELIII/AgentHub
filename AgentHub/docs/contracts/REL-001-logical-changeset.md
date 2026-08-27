@@ -4,11 +4,18 @@
 
 One logical task owns one ChangeSet across correction and follow-up turns.
 Provider turns are observations of that ChangeSet, not separate release changes.
+Paths reported by a terminal provider turn are observation candidates, not an
+ownership claim. They remain attached to the `TurnObservation` for audit, while
+the owner Stream maintains a separate replaceable draft file selection. Only
+that explicit selection may participate in conflicts, readiness and release.
 
 The lifecycle is `draft -> ready -> released|discarded`. `ready` is an explicit
 freeze of repository base revisions and exact result blobs or patch hashes.
 Further edits require reopen/amendment and a new revision; released records are
 immutable. A ready ChangeSet cannot have an empty manifest hash.
+Terminal observation never promotes either a ChangeSet or a legacy compatibility
+entry to `ready`; readiness always follows explicit file selection and owner
+confirmation.
 
 Freeze evidence is verified server-side before persistence may transition a
 ChangeSet to `ready`. For every repository, Git must confirm the submitted root
@@ -48,6 +55,9 @@ publication source. In an enabled Workspace, terminal projection dual-writes a
 Existing legacy statuses are not migrated automatically except when the user
 explicitly disables the Workspace release workflow and confirms discarding all
 active release registrations.
+New legacy compatibility entries preserve provider-reported paths as
+`observedFiles`, start with an empty selected `files` list in `draft`, and expose
+an owner-only full-list replacement operation during the migration period.
 
 Publication verifies cleanliness only for the exact paths declared by the frozen
 release plan. Unrelated dirty paths in a shared repository do not block the

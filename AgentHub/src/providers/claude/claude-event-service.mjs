@@ -1,9 +1,47 @@
 import { claudeStreamContextUsage } from "./claude.mjs";
 import { claudeCompactionEvent } from "../../domain/claude-context-maintenance.mjs";
+import {
+  markProviderFirstEvent,
+  markProviderTurnAccepted,
+  markProviderTurnCompleted,
+  markProviderTurnContent,
+  markProviderTurnEvent,
+} from "../../domain/task-runs.mjs";
 
 function requiredFunction(value, name) {
   if (typeof value !== "function") throw new TypeError(`${name} is required`);
   return value;
+}
+
+function claudeToolBlockStart(event) {
+  const streamEvent = event?.type === "stream_event" ? event.event : null;
+  return streamEvent?.type === "content_block_start"
+    && streamEvent.content_block?.type === "tool_use";
+}
+
+/* Claude CLI не нумерует ходы RPC-методами, поэтому имя события собирается из
+   его собственного типа. Оно попадает в телеметрию как firstEventMethod. */
+function claudeEventMethod(event) {
+  const type = String(event?.type ?? "").trim();
+  if (!type) return "";
+  if (type === "system") {
+    const subtype = String(event.subtype ?? "").trim();
+    return subtype ? `claude/system/${subtype}` : "claude/system";
+  }
+  if (type === "stream_event") {
+    const inner = String(event.event?.type ?? "").trim();
+    return inner ? `claude/stream/${inner}` : "claude/stream";
+  }
+  return `claude/${type}`;
+}
+
+/* Пустая фаза оставляет предыдущую: рядовое служебное событие не должно
+   затирать «инструмент» или «ответ». */
+function claudeTelemetryPhase(parsed) {
+  if (claudeToolBlockStart(parsed.event)) return "tool";
+  if (parsed.textDelta) return "answering";
+  if (parsed.thinkingDelta || parsed.thinkingTokens != null) return "reasoning";
+  return "";
 }
 
 export class ClaudeEventService {
@@ -20,6 +58,7 @@ export class ClaudeEventService {
 
   handle(run, parsed) {
     const d = this.#d;
+    if (this.#trackTelemetry(run, parsed)) void d.saveState();
     const compaction = claudeCompactionEvent(parsed.event);
     if (compaction) {
       d.observeCompaction?.(run, compaction);
@@ -83,7 +122,7 @@ export class ClaudeEventService {
       if (messageText) run.claudeFailureText = messageText;
     }
     const streamEvent = parsed.event?.type === "stream_event" ? parsed.event.event : null;
-    if (streamEvent?.type === "content_block_start" && streamEvent.content_block?.type === "tool_use") {
+    if (claudeToolBlockStart(parsed.event)) {
       const toolName = String(streamEvent.content_block.name ?? "");
       d.setStage(run, `Claude использует инструмент ${toolName}…`);
       d.appendActivity(run, {
@@ -91,5 +130,38 @@ export class ClaudeEventService {
         type: "tool", label: "Используется инструмент", detail: toolName, status: "running",
       });
     }
+  }
+
+  /* Замер связи с моделью для Claude. Codex получает приём хода отдельным
+     ответом RPC, у CLI такого подтверждения нет: приёмом считается его первое
+     событие (обычно system/init), а первым событием ответа — всё, что приходит
+     после него. Возвращает true, когда состояние хода изменилось и его стоит
+     сохранить. */
+  #trackTelemetry(run, parsed) {
+    const turnId = String(run?.turnId ?? "").trim();
+    const method = claudeEventMethod(parsed.event);
+    if (!turnId || !method) return false;
+    let changed = false;
+    if (String(run.providerStart?.state ?? "") === "requesting") {
+      markProviderTurnAccepted(run, { turnId, provider: "claude" });
+      changed = true;
+    }
+    if (parsed.event?.type === "system" && parsed.event?.subtype === "init") {
+      markProviderTurnEvent(run, { turnId, method, phase: "starting" });
+      return changed;
+    }
+    if (markProviderFirstEvent(run, { turnId, method, provider: "claude" })) changed = true;
+    if (parsed.thinkingDelta || parsed.thinkingTokens != null) {
+      markProviderTurnContent(run, { turnId, kind: "reasoning" });
+    }
+    if (parsed.textDelta) {
+      markProviderTurnContent(run, { turnId, kind: "answer", visible: true });
+    }
+    if (parsed.event?.type === "result") {
+      markProviderTurnCompleted(run, { turnId });
+      return true;
+    }
+    markProviderTurnEvent(run, { turnId, method, phase: claudeTelemetryPhase(parsed) });
+    return changed;
   }
 }

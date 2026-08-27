@@ -22,7 +22,16 @@ export function isClaudeSyntheticUserEntry(entry) {
   return entry.isCompactSummary === true
     || entry.isMeta === true
     || entry.isVisibleInTranscriptOnly === true
+    || isClaudeInterruptEntry(entry)
     || isClaudeLocalCommandEnvelope(claudeTranscriptMessageText(entry));
+}
+
+/* Прерывание хода Claude Code записывает как user-запись с фиксированным
+   текстом и без собственного флага. */
+export function isClaudeInterruptEntry(entry) {
+  if (entry?.type !== "user" || entry.message?.role !== "user") return false;
+  return /^\[Request interrupted by user(?: for tool use)?\]$/u
+    .test(claudeTranscriptMessageText(entry).trim());
 }
 
 /* Слэш-команда приходит как набор XML-конвертов без собственного флага. */

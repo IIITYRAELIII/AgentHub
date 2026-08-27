@@ -11,7 +11,13 @@ import {
 } from "../../../src/domain/codex-context-probe.mjs";
 import { TASK_EXECUTION_OWNERS } from "../../../src/domain/task-execution-owner.mjs";
 
-async function fixture({ delivered = false, completion = { id: "completion" }, run = null } = {}) {
+async function fixture({
+  delivered = false,
+  completion = { id: "completion" },
+  run = null,
+  taskGitDiff = async () => "",
+  changedFilesForRun = (value) => value?.changedFiles ?? [],
+} = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "codex-lifecycle-controller-"));
   const projectRoot = path.join(root, "project");
   await mkdir(projectRoot);
@@ -45,8 +51,8 @@ async function fixture({ delivered = false, completion = { id: "completion" }, r
     taskRuns,
     saveState: async () => { saved.push(true); },
     taskTitle: async () => "Lifecycle task",
-    taskGitDiff: async () => "",
-    changedFilesForRun: (value) => value?.changedFiles ?? [],
+    taskGitDiff,
+    changedFilesForRun,
     turnEndNotifications: {
       hasDelivered: () => delivered,
       recordCompletion: (value) => {
@@ -123,6 +129,24 @@ test("Codex lifecycle completion records and delivers one terminal result", asyn
   assert.deepEqual(f.deliveredCompletions, [{ id: "completion" }]);
   assert.equal(f.codexTurnStarts.size, 0);
   assert.equal(f.hookReceipts.stop.status, "completed");
+});
+
+test("Codex lifecycle prefers turn-attributed files over shared-tree baseline changes", async () => {
+  const f = await fixture({
+    run: { gitBaseline: { roots: [] } },
+    taskGitDiff: async () => "diff",
+    changedFilesForRun: (value) => value?.gitBaseline
+      ? ["themes/foreign.css"]
+      : value?.changedFiles ?? [],
+  });
+  await f.controller.handle(request("turn-start", f.projectRoot, { prompt: "Do work" }));
+  await f.controller.handle(request("turn-complete", f.projectRoot, {
+    status: "completed",
+    finalAnswer: "Готово",
+    changedFiles: ["src/owned.mjs"],
+  }));
+
+  assert.deepEqual(f.recorded[0].changedFiles, ["src/owned.mjs"]);
 });
 
 test("Codex lifecycle duplicate completion updates journal without redelivery", async () => {

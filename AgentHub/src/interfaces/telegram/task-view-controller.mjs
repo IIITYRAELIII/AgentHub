@@ -11,21 +11,97 @@ import { isCodexAutoCompactionTurnId } from "../../domain/codex-internal-turn.mj
 import { taskDisplayTitle } from "../../domain/task-display-title.mjs";
 import { taskRunIsActive, updateTaskRunTitle } from "../../domain/task-runs.mjs";
 
-function mergeDurableHistory(cachedHistory, sourceHistory) {
+const RENAMED_TURN_WINDOW_MS = 5 * 60 * 1000;
+
+function turnStartedAtMs(item) {
+  const value = Date.parse(String(item?.startedAt ?? ""));
+  return Number.isFinite(value) ? value : null;
+}
+
+/* Управляемый ход Claude живёт под внутренним UUID Hub, а тот же ход из
+   транскрипта приходит под собственным UUID записи пользователя. Без сведения
+   этих двух имён завершённый ход возвращается второй карточкой и встаёт в конец
+   ленты. Совпадением считается тот же текст запроса в близкое время у элемента,
+   которого больше нет в источнике. */
+function renamedTurnIndex(merged, item, sourceIds, adopted) {
+  const prompt = String(item?.prompt ?? "").trim();
+  const startedAtMs = turnStartedAtMs(item);
+  if (!prompt || startedAtMs == null) return -1;
+  return merged.findIndex((candidate, index) => {
+    if (adopted.has(index)) return false;
+    const id = String(candidate?.id ?? "").trim();
+    if (!id || sourceIds.has(id)) return false;
+    if (String(candidate?.prompt ?? "").trim() !== prompt) return false;
+    const candidateAtMs = turnStartedAtMs(candidate);
+    return candidateAtMs != null
+      && Math.abs(candidateAtMs - startedAtMs) <= RENAMED_TURN_WINDOW_MS;
+  });
+}
+
+/* Транскрипт не знает clientUserMessageId, а без него клиент не сводит
+   оптимистичное сообщение с сохранённым. Переносим его с заменяемого элемента. */
+function withPreservedSubmissionIdentity(sourceItem, cachedItem) {
+  const clientUserMessageId = (Array.isArray(cachedItem?.messages) ? cachedItem.messages : [])
+    .map((message) => String(message?.clientUserMessageId ?? "").trim())
+    .find(Boolean);
+  const messages = Array.isArray(sourceItem?.messages) ? sourceItem.messages : [];
+  const userIndex = messages.findIndex((message) => message?.role === "user");
+  if (!clientUserMessageId || userIndex < 0) return sourceItem;
+  return {
+    ...sourceItem,
+    messages: messages.map((message, index) => (
+      index === userIndex ? { ...message, clientUserMessageId } : message
+    )),
+  };
+}
+
+/* Порядок ленты задаётся положением хода в массиве, поэтому ход, дочитанный из
+   источника позже, обязан встать по своему времени, а не в конец. Элемент без
+   времени остаётся привязанным к предшественнику. */
+function chronologicalTurns(turns) {
+  let anchorAtMs = Number.NEGATIVE_INFINITY;
+  return turns
+    .map((item, index) => {
+      const startedAtMs = turnStartedAtMs(item);
+      if (startedAtMs != null) anchorAtMs = startedAtMs;
+      return { item, index, atMs: startedAtMs ?? anchorAtMs };
+    })
+    .sort((left, right) => (left.atMs === right.atMs
+      ? left.index - right.index
+      : left.atMs - right.atMs))
+    .map(({ item }) => item);
+}
+
+function mergeDurableHistory(cachedHistory, sourceHistory, {
+  adoptRenamedTurns = false,
+  chronological = false,
+} = {}) {
   const merged = (Array.isArray(cachedHistory) ? cachedHistory : [])
     .map((item) => structuredClone(item));
   const positions = new Map(merged.map((item, index) => [String(item?.id ?? ""), index]));
-  for (const item of Array.isArray(sourceHistory) ? sourceHistory : []) {
+  const source = Array.isArray(sourceHistory) ? sourceHistory : [];
+  const sourceIds = new Set(source.map((item) => String(item?.id ?? "")).filter(Boolean));
+  const adopted = new Set();
+  for (const item of source) {
     const id = String(item?.id ?? "");
     const index = id ? positions.get(id) : undefined;
-    if (index === undefined) {
-      if (id) positions.set(id, merged.length);
-      merged.push(structuredClone(item));
-    } else {
+    if (index !== undefined) {
       merged[index] = structuredClone(item);
+      continue;
     }
+    const renamed = adoptRenamedTurns
+      ? renamedTurnIndex(merged, item, sourceIds, adopted)
+      : -1;
+    if (renamed >= 0) {
+      merged[renamed] = withPreservedSubmissionIdentity(structuredClone(item), merged[renamed]);
+      adopted.add(renamed);
+      if (id) positions.set(id, renamed);
+      continue;
+    }
+    if (id) positions.set(id, merged.length);
+    merged.push(structuredClone(item));
   }
-  return merged;
+  return chronological ? chronologicalTurns(merged) : merged;
 }
 
 function mergeAttachmentSources(currentMessages, rolloutMessages) {
@@ -533,7 +609,10 @@ export class TaskViewController {
       }
       const snapshot = await d.readClaudeSnapshot(binding.threadId, { includeHistory: true });
       const cached = d.taskSyncStore.history(task);
-      const history = mergeDurableHistory(cached, snapshot?.history ?? []);
+      const history = mergeDurableHistory(cached, snapshot?.history ?? [], {
+        adoptRenamedTurns: true,
+        chronological: true,
+      });
       const indexedRun = completedOnly ? null : d.taskRuns.forTask(task);
       const running = taskRunIsActive(indexedRun) ? indexedRun : null;
       if (running) {

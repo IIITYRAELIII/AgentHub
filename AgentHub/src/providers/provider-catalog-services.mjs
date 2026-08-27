@@ -116,9 +116,11 @@ export class ClaudeCatalogProjectionService {
   }
 
   async project(snapshots) {
-    await this.#d.audit(snapshots).catch((error) => this.#d.logError?.(
-      "Cannot audit Claude journal transcripts:", error.message,
-    ));
+    void Promise.resolve()
+      .then(() => this.#d.audit(snapshots))
+      .catch((error) => this.#d.logError?.(
+        "Cannot audit Claude journal transcripts:", error.message,
+      ));
     const entries = [];
     for (const snapshot of snapshots) {
       const project = snapshot.cwd ? this.#d.findProject(snapshot.cwd) : null;

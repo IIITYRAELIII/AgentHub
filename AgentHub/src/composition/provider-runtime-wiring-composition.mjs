@@ -1,3 +1,4 @@
+import { buildClaudePrompt } from "../providers/claude/claude.mjs";
 import { createRunObservationComposition } from "./run-observation-composition.mjs";
 
 export function createProviderRuntimeWiring({
@@ -48,6 +49,13 @@ export function createProviderRuntimeWiring({
 
   async function startClaudeTurn(run, input, temporaryFiles, { forceSpeechButton = false } = {}) {
     return claudeTurnLauncher.start(run, input, temporaryFiles, { forceSpeechButton });
+  }
+
+  // Отправка в идущий ход Claude: прерывание и продолжение тем же процессом.
+  // Без живого управляемого хода канала нет, и координатор оставит сообщение в очереди.
+  async function steerClaudeTurn({ run, input }) {
+    if (!run) throw new Error("Active turn not steerable: no active Claude run");
+    return claudeRunController.steer(run, buildClaudePrompt(input));
   }
 
   async function stopClaudeRunProcess(run) {
@@ -107,6 +115,7 @@ export function createProviderRuntimeWiring({
     persistManagedRunHistory,
     persistClaudeRunHistory,
     startClaudeTurn,
+    steerClaudeTurn,
     stopClaudeRunProcess,
     attachClaudeRunAfterRestart,
     handleCodexMessage,

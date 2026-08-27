@@ -195,11 +195,13 @@ export class CodexLifecycleController {
         latestDiff: turnDiff,
       });
     }
-    const changedFiles = [...new Set([
-      ...(Array.isArray(payload.changedFiles) ? payload.changedFiles : []),
-      ...baselineChangedFiles,
-      ...d.changedFilesForRun(run),
-    ])];
+    const payloadChangedFiles = [...new Set(
+      Array.isArray(payload.changedFiles) ? payload.changedFiles : [],
+    )];
+    const attributedChangedFiles = payloadChangedFiles.length
+      ? payloadChangedFiles
+      : d.changedFilesForRun(run);
+    const changedFiles = attributedChangedFiles.length ? attributedChangedFiles : baselineChangedFiles;
     const completion = d.turnEndNotifications.recordCompletion({
       provider: "codex",
       threadId: identity.threadId,

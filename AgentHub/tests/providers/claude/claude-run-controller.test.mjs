@@ -54,6 +54,119 @@ test("ClaudeRunController owns detached output, stream parsing and completion", 
   });
 });
 
+// Имитация Claude CLI с потоковым вводом: первый ход «работает», пока не
+// придёт control_request interrupt, затем завершает его результатом
+// error_during_execution, а следующее сообщение из stdin отвечает эхом.
+const FAKE_STREAM_CLI = `
+const NL = String.fromCharCode(10);
+let buffer = "";
+let interrupted = false;
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => {
+  buffer += chunk;
+  let index;
+  while ((index = buffer.indexOf(NL)) >= 0) {
+    const line = buffer.slice(0, index).trim();
+    buffer = buffer.slice(index + 1);
+    if (line) handle(JSON.parse(line));
+  }
+});
+process.stdin.on("end", () => setTimeout(() => process.exit(0), 20));
+function emit(value) { process.stdout.write(JSON.stringify(value) + NL); }
+function handle(message) {
+  if (message.type === "user" && !interrupted) {
+    emit({ type: "system", subtype: "init", session_id: "session-steer" });
+    return;
+  }
+  if (message.type === "control_request") {
+    interrupted = true;
+    emit({ type: "control_response", response: { subtype: "success", request_id: message.request_id } });
+    emit({ type: "user", message: { role: "user", content: [{ type: "text", text: "[Request interrupted by user]" }] } });
+    emit({ type: "result", subtype: "error_during_execution", is_error: true, session_id: "session-steer", usage: {} });
+    return;
+  }
+  if (message.type === "user") {
+    emit({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "эхо: " + message.message.content }] } });
+    emit({ type: "result", subtype: "success", result: "эхо: " + message.message.content, session_id: "session-steer", usage: {} });
+  }
+}
+`;
+
+test("ClaudeRunController steers a running turn through interrupt and continuation", async () => {
+  await withTempDir(async (directory) => {
+    const events = [];
+    let resolveCompletion;
+    const completed = new Promise((resolve) => { resolveCompletion = resolve; });
+    const run = { turnId: "turn-steer", threadId: "session-steer" };
+    const controller = new ClaudeRunController({
+      dataDir: directory,
+      pollIntervalMs: 5,
+      isCurrentRun: (candidate) => candidate === run,
+      onStreamEvent: (_run, parsed) => events.push(parsed.event),
+      onComplete: (_run, result) => resolveCompletion(result),
+      processFingerprintLookup: async (pid) => ({ pid, creationTime: "t", executablePath: process.execPath, commandLine: "node" }),
+    });
+    await controller.start(run, {
+      command: process.execPath,
+      args: ["-e", FAKE_STREAM_CLI],
+      cwd: directory,
+      env: process.env,
+      input: "Первое задание",
+    });
+    assert.ok(run.claudeInput, "stream input keeps an open stdin channel");
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    const steered = controller.steer(run, "Уточнение");
+    assert.equal(steered.turnId, "turn-steer");
+    assert.equal(run.claudeSteer.state, "interrupting");
+    const completion = await completed;
+    assert.equal(completion.result.subtype, "success");
+    assert.equal(completion.result.result, "эхо: Уточнение");
+    assert.equal(run.claudeSettled, true);
+    assert.equal(run.claudeInput, null);
+    // Результат прерванного хода не считается результатом хода и не уходит наблюдателям.
+    assert.deepEqual(
+      events.filter((event) => event.type === "result").map((event) => event.subtype),
+      ["success"],
+    );
+    assert.equal(events.some((event) => event.type === "control_response"), true);
+  });
+});
+
+test("ClaudeRunController refuses to steer without an open input channel", async () => {
+  await withTempDir(async (directory) => {
+    const controller = new ClaudeRunController({ dataDir: directory });
+    assert.throws(() => controller.steer({ turnId: "t" }, "x"), /not steerable/u);
+    assert.throws(() => controller.steer({ turnId: "t", claudeInput: {}, claudeInputClosed: true }, "x"), /not steerable/u);
+    assert.throws(() => controller.steer({ turnId: "t", claudeInput: {} }, "   "), /not steerable/u);
+  });
+});
+
+test("ClaudeRunController drops the input channel when reattaching after a restart", async () => {
+  await withTempDir(async (directory) => {
+    const outputPath = path.join(directory, "reattach.jsonl");
+    await writeFile(outputPath, `${JSON.stringify({ type: "result", result: "ок", session_id: "s", usage: {} })}\n`, "utf8");
+    await writeFile(path.join(directory, "reattach.err.log"), "", "utf8");
+    const run = {
+      turnId: "turn-reattach",
+      threadId: "s",
+      pid: process.pid,
+      claudeProcessFingerprint: { pid: process.pid, creationTime: "t", executablePath: process.execPath, commandLine: "node" },
+      claudeOutputPath: outputPath,
+      claudeErrorPath: path.join(directory, "reattach.err.log"),
+      claudeInput: { write() {}, end() {} },
+    };
+    const controller = new ClaudeRunController({
+      dataDir: directory,
+      isCurrentRun: (candidate) => candidate === run,
+      onComplete: () => {},
+      processFingerprintLookup: async () => ({ ...run.claudeProcessFingerprint }),
+    });
+    await controller.attachAfterRestart(run);
+    assert.equal(run.claudeInput, null);
+    assert.equal(run.claudeInputClosed, true);
+  });
+});
+
 test("ClaudeRunController reattaches from a saved offset and finalizes a result", async () => {
   await withTempDir(async (directory) => {
     const outputPath = path.join(directory, "saved.jsonl");

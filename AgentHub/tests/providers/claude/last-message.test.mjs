@@ -393,6 +393,7 @@ test("listClaudeSessionSnapshots discovers independent sessions but skips subage
   assert.equal(snapshots[0].title, "Проверить каталог задач");
   assert.equal(snapshots[0].catalogTitle, "Проверить каталог задач");
   assert.equal(snapshots[0].active, true);
+  assert.ok(snapshots[0].transcriptSizeBytes > 0);
 });
 
 test("Claude transcript cache reuses unchanged files and invalidates on size change", async () => {

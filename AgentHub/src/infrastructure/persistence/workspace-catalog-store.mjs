@@ -15,6 +15,7 @@ import {
 } from "../../domain/workspace-stream-identity.mjs";
 import {
   changeSetLogicalKey,
+  normalizedDraftChangeSetFiles,
   normalizedChangeSetId,
   normalizedChangeSetStatus,
   normalizedDashboardTaskId,
@@ -28,7 +29,7 @@ import {
   workspaceSettingsWithReleaseWorkflow,
 } from "../../domain/workspace-release-workflow.mjs";
 
-const SCHEMA_VERSION = 10;
+const SCHEMA_VERSION = 11;
 export const DEVELOPER_RULES_MAX_BYTES = 32 * 1024;
 const SOURCES = new Set(["created", "discovered", "migration", "rebirth"]);
 const DEVELOPER_RULE_SCOPES = new Set(["workspace", "stream"]);
@@ -96,6 +97,7 @@ function configure(database) {
       project_root TEXT NOT NULL DEFAULT '',
       summary TEXT NOT NULL DEFAULT '',
       files_json TEXT NOT NULL DEFAULT '[]',
+      observed_files_json TEXT NOT NULL DEFAULT '[]',
       diff_hash TEXT NOT NULL DEFAULT '',
       status TEXT NOT NULL CHECK (status IN ('draft', 'ready', 'blocked', 'released', 'discarded')),
       revision INTEGER NOT NULL DEFAULT 1 CHECK (revision > 0),
@@ -159,6 +161,7 @@ function configure(database) {
       project_root TEXT NOT NULL DEFAULT '',
       summary TEXT NOT NULL DEFAULT '',
       observed_status TEXT NOT NULL,
+      files_json TEXT NOT NULL DEFAULT '[]',
       diff_hash TEXT NOT NULL DEFAULT '',
       created_at_ms INTEGER NOT NULL,
       FOREIGN KEY (change_set_id) REFERENCES hub_release_change_sets(id) ON DELETE CASCADE,
@@ -276,6 +279,14 @@ function configure(database) {
   if (!releaseChangeColumns.some((column) => column.name === "revision")) {
     database.exec("ALTER TABLE hub_release_changes ADD COLUMN revision INTEGER NOT NULL DEFAULT 1");
   }
+  if (!releaseChangeColumns.some((column) => column.name === "observed_files_json")) {
+    database.exec("ALTER TABLE hub_release_changes ADD COLUMN observed_files_json TEXT NOT NULL DEFAULT '[]'");
+    database.exec("UPDATE hub_release_changes SET observed_files_json = files_json WHERE files_json <> '[]'");
+  }
+  const observationColumns = database.prepare("PRAGMA table_info(hub_release_turn_observations)").all();
+  if (!observationColumns.some((column) => column.name === "files_json")) {
+    database.exec("ALTER TABLE hub_release_turn_observations ADD COLUMN files_json TEXT NOT NULL DEFAULT '[]'");
+  }
 }
 
 function workspaceFromRow(row) {
@@ -368,7 +379,9 @@ function developerRuleFromRow(row) {
 function releaseChangeFromRow(row) {
   if (!row) return null;
   let files = [];
+  let observedFiles = [];
   try { files = JSON.parse(String(row.files_json ?? "[]")); } catch { files = []; }
+  try { observedFiles = JSON.parse(String(row.observed_files_json ?? "[]")); } catch { observedFiles = []; }
   return {
     id: String(row.id),
     workspaceId: String(row.workspace_id),
@@ -379,6 +392,7 @@ function releaseChangeFromRow(row) {
     projectRoot: String(row.project_root ?? ""),
     summary: String(row.summary ?? ""),
     files: Array.isArray(files) ? files.map((file) => String(file)) : [],
+    observedFiles: Array.isArray(observedFiles) ? observedFiles.map((file) => String(file)) : [],
     diffHash: String(row.diff_hash ?? ""),
     status: String(row.status),
     revision: Number(row.revision) || 1,
@@ -438,6 +452,7 @@ function turnObservationFromRow(row) {
     projectRoot: String(row.project_root ?? ""),
     summary: String(row.summary ?? ""),
     observedStatus: String(row.observed_status),
+    files: jsonArray(row.files_json).map((file) => String(file)),
     diffHash: String(row.diff_hash ?? ""),
     createdAtMs: Number(row.created_at_ms) || 0,
   };
@@ -973,32 +988,14 @@ export class WorkspaceCatalogStore {
       this.#database.prepare(`
         INSERT INTO hub_release_turn_observations (
           id, change_set_id, legacy_release_change_id, provider, provider_thread_id, turn_id,
-          project_root, summary, observed_status, diff_hash, created_at_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          project_root, summary, observed_status, files_json, diff_hash, created_at_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         observationId, row.id, legacyChangeId, normalizedProviderIdentity.provider,
         normalizedProviderIdentity.threadId, normalizedTurnId, String(projectRoot ?? "").trim(),
         String(summary ?? "").trim().slice(0, 500), String(observedStatus ?? "completed").trim().slice(0, 40),
-        String(diffHash ?? "").trim().slice(0, 128), nowMs,
+        JSON.stringify(normalizedFiles), String(diffHash ?? "").trim().slice(0, 128), nowMs,
       );
-      const insertFile = this.#database.prepare(`
-        INSERT INTO hub_release_change_set_files (
-          change_set_id, project_root, file_path, evidence_state, operation,
-          base_blob, result_blob, patch_hash, source_observation_id, updated_at_ms
-        ) VALUES (?, ?, ?, 'observed', 'observed', NULL, NULL, '', ?, ?)
-        ON CONFLICT(change_set_id, project_root, file_path) DO UPDATE SET
-          source_observation_id = CASE
-            WHEN hub_release_change_set_files.evidence_state = 'observed' THEN excluded.source_observation_id
-            ELSE hub_release_change_set_files.source_observation_id
-          END,
-          updated_at_ms = CASE
-            WHEN hub_release_change_set_files.evidence_state = 'observed' THEN excluded.updated_at_ms
-            ELSE hub_release_change_set_files.updated_at_ms
-          END
-      `);
-      for (const file of normalizedFiles) {
-        insertFile.run(row.id, String(projectRoot ?? "").trim(), file, observationId, nowMs);
-      }
       this.#database.prepare(`
         UPDATE hub_release_change_sets SET
           title = CASE WHEN title = '' THEN ? ELSE title END,
@@ -1046,6 +1043,40 @@ export class WorkspaceCatalogStore {
       WHERE workspace_id = ? ${statusClause}
       ORDER BY updated_at_ms DESC, id LIMIT ?
     `).all(id, boundedLimit).map((row) => this.#changeSetWithDetails(row));
+  }
+
+  replaceDraftChangeSetFiles(changeSetId, { actorStreamId, files = [] } = {}) {
+    const id = normalizedChangeSetId(changeSetId);
+    const actor = safeIdentifier(actorStreamId, "actor Stream id");
+    const normalizedFiles = normalizedDraftChangeSetFiles(files);
+    const nowMs = this.#nowMs();
+    return this.#transaction(() => {
+      const current = changeSetFromRow(this.#database.prepare(
+        "SELECT * FROM hub_release_change_sets WHERE id = ?",
+      ).get(id));
+      if (!current) throw new Error(`ChangeSet not found: ${id}`);
+      if (current.status !== "draft") throw new Error("only a draft ChangeSet file selection can be changed");
+      if (current.ownerStreamId !== actor) throw new Error("only the owner Stream can change this ChangeSet");
+      this.#database.prepare("DELETE FROM hub_release_change_set_files WHERE change_set_id = ?").run(id);
+      const insertFile = this.#database.prepare(`
+        INSERT INTO hub_release_change_set_files (
+          change_set_id, project_root, file_path, evidence_state, operation,
+          base_blob, result_blob, patch_hash, source_observation_id, updated_at_ms
+        ) VALUES (?, ?, ?, 'observed', 'observed', NULL, NULL, '', NULL, ?)
+      `);
+      for (const file of normalizedFiles) insertFile.run(id, file.projectRoot, file.path, nowMs);
+      this.#database.prepare(`
+        UPDATE hub_release_change_sets SET revision = revision + 1, updated_at_ms = ? WHERE id = ?
+      `).run(nowMs, id);
+      this.#recordChangeSetEvent({
+        workspaceId: current.workspaceId,
+        changeSetId: id,
+        actorStreamId: actor,
+        type: "changeset.files_replaced",
+        payload: { files: normalizedFiles },
+      });
+      return this.changeSet(id);
+    });
   }
 
   freezeChangeSet(changeSetId, {
@@ -1246,19 +1277,24 @@ export class WorkspaceCatalogStore {
     if (!resolved || !files.length) return null;
     if (!releaseWorkflowEnabled(this.workspace(resolved.workspaceId)?.settings)) return null;
     const normalizedStatus = releaseChangeStatus(status);
+    const selectedFiles = normalizedStatus === "ready" ? files : [];
     const nowMs = this.#nowMs();
     return this.#transaction(() => {
       this.#database.prepare(`
       INSERT INTO hub_release_changes (
         id, workspace_id, stream_id, provider, provider_thread_id, turn_id,
-        project_root, summary, files_json, diff_hash, status, revision, created_at_ms, updated_at_ms
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+        project_root, summary, files_json, observed_files_json, diff_hash, status, revision, created_at_ms, updated_at_ms
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
       ON CONFLICT(provider, provider_thread_id, turn_id) DO UPDATE SET
         workspace_id = CASE WHEN hub_release_changes.status = 'draft' THEN excluded.workspace_id ELSE hub_release_changes.workspace_id END,
         stream_id = CASE WHEN hub_release_changes.status = 'draft' THEN excluded.stream_id ELSE hub_release_changes.stream_id END,
         project_root = CASE WHEN hub_release_changes.status = 'draft' THEN excluded.project_root ELSE hub_release_changes.project_root END,
         summary = CASE WHEN hub_release_changes.status = 'draft' THEN excluded.summary ELSE hub_release_changes.summary END,
-        files_json = CASE WHEN hub_release_changes.status = 'draft' THEN excluded.files_json ELSE hub_release_changes.files_json END,
+        files_json = CASE
+          WHEN hub_release_changes.status = 'draft' AND excluded.status = 'ready' THEN excluded.files_json
+          ELSE hub_release_changes.files_json
+        END,
+        observed_files_json = CASE WHEN hub_release_changes.status = 'draft' THEN excluded.observed_files_json ELSE hub_release_changes.observed_files_json END,
         diff_hash = CASE WHEN hub_release_changes.status = 'draft' THEN excluded.diff_hash ELSE hub_release_changes.diff_hash END,
         status = CASE
           WHEN hub_release_changes.status = 'draft' THEN excluded.status
@@ -1270,7 +1306,8 @@ export class WorkspaceCatalogStore {
         this.#idFactory(), resolved.workspaceId, resolved.streamId,
         identity.provider, identity.threadId, normalizedTurnId,
         String(projectRoot ?? "").trim(), String(summary ?? "").trim().slice(0, 500),
-        JSON.stringify(files), String(diffHash ?? "").trim().slice(0, 128), normalizedStatus, nowMs, nowMs,
+        JSON.stringify(selectedFiles), JSON.stringify(files), String(diffHash ?? "").trim().slice(0, 128),
+        normalizedStatus, nowMs, nowMs,
       );
       const change = this.releaseChange({ ...identity, turnId: normalizedTurnId });
       this.recordWorkspaceEvent({
@@ -1279,7 +1316,12 @@ export class WorkspaceCatalogStore {
         type: "release.change_recorded",
         subjectId: change.id,
         dedupeKey: `release.change_recorded:${change.id}`,
-        payload: { changeId: change.id, status: change.status, files: change.files },
+        payload: {
+          changeId: change.id,
+          status: change.status,
+          files: change.files,
+          observedFiles: change.observedFiles,
+        },
       });
       return change;
     });
@@ -1315,9 +1357,13 @@ export class WorkspaceCatalogStore {
       ).get(id));
       if (!current) throw new Error(`release change not found: ${id}`);
       if (current.status === "released") throw new Error("released release change is immutable");
+      const nextStatus = releaseChangeStatus(status);
+      if (nextStatus === "ready" && !current.files.length) {
+        throw new Error("ready release change requires an explicit file selection");
+      }
       const result = this.#database.prepare(`
         UPDATE hub_release_changes SET status = ?, updated_at_ms = ? WHERE id = ?
-      `).run(releaseChangeStatus(status), this.#nowMs(), id);
+      `).run(nextStatus, this.#nowMs(), id);
       if (!Number(result.changes)) throw new Error(`release change not found: ${id}`);
       const change = releaseChangeFromRow(this.#database.prepare(
         "SELECT * FROM hub_release_changes WHERE id = ?",
@@ -1328,6 +1374,33 @@ export class WorkspaceCatalogStore {
         type: "release.status_changed",
         subjectId: change.id,
         payload: { changeId: change.id, status: change.status },
+      });
+      return change;
+    });
+  }
+
+  updateReleaseChangeFiles(changeId, files = []) {
+    const id = safeIdentifier(changeId, "release change id");
+    const normalizedFiles = releaseChangeFiles(files);
+    return this.#transaction(() => {
+      const current = releaseChangeFromRow(this.#database.prepare(
+        "SELECT * FROM hub_release_changes WHERE id = ?",
+      ).get(id));
+      if (!current) throw new Error(`release change not found: ${id}`);
+      if (["released", "discarded"].includes(current.status)) throw new Error("closed release change is immutable");
+      this.#database.prepare(`
+        UPDATE hub_release_changes SET files_json = ?, status = 'draft', revision = revision + 1,
+          updated_at_ms = ? WHERE id = ?
+      `).run(JSON.stringify(normalizedFiles), this.#nowMs(), id);
+      const change = releaseChangeFromRow(this.#database.prepare(
+        "SELECT * FROM hub_release_changes WHERE id = ?",
+      ).get(id));
+      this.recordWorkspaceEvent({
+        workspaceId: change.workspaceId,
+        streamId: change.streamId,
+        type: "release.files_replaced",
+        subjectId: change.id,
+        payload: { changeId: change.id, files: change.files },
       });
       return change;
     });

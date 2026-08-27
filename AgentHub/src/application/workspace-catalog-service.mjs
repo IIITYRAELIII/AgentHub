@@ -52,6 +52,10 @@ export class WorkspaceCatalogService {
     return this.#store.updateReleaseChangeStatus(changeId, status);
   }
 
+  updateReleaseChangeFiles({ changeId, files = [] } = {}) {
+    return this.#store.updateReleaseChangeFiles(changeId, files);
+  }
+
   completeRelease({ workspaceId, expectedPlanRevision, verificationEvidence, conflictsResolved = false } = {}) {
     return this.#store.completeRelease(workspaceId, {
       expectedPlanRevision, verificationEvidence, conflictsResolved,

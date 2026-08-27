@@ -461,6 +461,7 @@ export async function createProviderApplicationComposition({
     applyCodexObservedSnapshot: api.applyCodexObservedSnapshot,
     applyCodexActiveSnapshot: api.applyCodexActiveSnapshot,
     startClaudeTurn: api.startClaudeTurn,
+    steerClaudeTurn: api.steerClaudeTurn,
     claudeTaskSnapshots: providerSnapshots.claudeTaskSnapshots,
     backfillWorkLogPricingMetadata: api.backfillWorkLogPricingMetadata,
     readCodexThreadTitleHistories,

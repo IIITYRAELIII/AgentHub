@@ -673,6 +673,34 @@ test("claudeTranscriptHistory hides service records of Claude Code", () => {
   ))), true);
 });
 
+test("claudeTranscriptHistory folds a steer after an interrupt into the same turn", () => {
+  const line = (value) => JSON.stringify(value);
+  const history = claudeTranscriptHistory([
+    line({ type: "user", uuid: "u1", timestamp: "2026-08-27T10:00:00.000Z", message: { role: "user", content: "Считай до ста" } }),
+    line({ type: "assistant", uuid: "a1", message: { role: "assistant", content: [{ type: "text", text: "1, 2, 3" }], stop_reason: "tool_use" } }),
+    line({ type: "user", uuid: "stop", message: { role: "user", content: [{ type: "text", text: "[Request interrupted by user]" }] } }),
+    line({ type: "user", uuid: "u2", timestamp: "2026-08-27T10:00:09.000Z", message: { role: "user", content: "Хватит, ответь одним словом" } }),
+    line({ type: "assistant", uuid: "a2", message: { role: "assistant", content: [{ type: "text", text: "Прерван" }], stop_reason: "end_turn" } }),
+    line({ type: "user", uuid: "u3", timestamp: "2026-08-27T10:05:00.000Z", message: { role: "user", content: "Следующий вопрос" } }),
+    line({ type: "assistant", uuid: "a3", message: { role: "assistant", content: [{ type: "text", text: "Ответ" }], stop_reason: "end_turn" } }),
+  ].join("\n"));
+
+  assert.deepEqual(history.map((turn) => turn.id), ["u1", "u3"]);
+  assert.equal(history[0].completed, true);
+  // Ответ хода — всё, что модель сказала до и после прерывания.
+  assert.equal(history[0].answer, ["1, 2, 3", "", "Прерван"].join(String.fromCharCode(10)));
+  assert.deepEqual(
+    history[0].messages.map((message) => [message.role, message.text, message.turnUserSlot ?? ""]),
+    [
+      ["user", "Считай до ста", ""],
+      ["agent", "1, 2, 3", ""],
+      ["user", "Хватит, ответь одним словом", "steer"],
+      ["agent", "Прерван", ""],
+    ],
+  );
+  assert.equal(history[0].messages.some((message) => /interrupted/u.test(message.text)), false);
+});
+
 test("claudeTranscriptHistory keeps a prompt that only mentions a command", () => {
   const line = (value) => JSON.stringify(value);
   const history = claudeTranscriptHistory([

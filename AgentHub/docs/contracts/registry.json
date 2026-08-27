@@ -35,7 +35,7 @@
       "id": "PERF-001",
       "title": "Local command latency",
       "document": "PERF-001-local-latency.md",
-      "paths": ["assets/web-app/connection-quality.js", "assets/web-app/hub-client.js", "src/interfaces/desktop/**", "src/infrastructure/persistence/**", "src/application/run-coordinator.mjs"]
+      "paths": ["assets/web-app/connection-quality.js", "assets/web-app/hub-client.js", "src/interfaces/desktop/**", "src/infrastructure/persistence/**", "src/application/run-coordinator.mjs", "src/composition/claude-transcript-audit-composition.mjs", "src/providers/provider-catalog-services.mjs", "src/providers/claude/claude-session-reader.mjs"]
     },
     {
       "id": "REL-001",

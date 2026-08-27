@@ -5399,15 +5399,17 @@ function renderQueueForTask(taskId, container) {
         text: String(entry.delivery ?? "").trim() || "Ожидает подтверждения Hub…",
       }));
     } else {
-      const steerAvailable = Boolean(task?.running && task?.provider === "codex");
+      const steerAvailable = Boolean(task?.running && ["codex", "claude"].includes(String(task?.provider ?? "")));
       actions.push(el("button", {
         type: "button",
         class: "queue-steer",
         "data-action": "queue-steer",
         "data-queue-id": entry.id,
         title: steerAvailable
-          ? "Добавить это сообщение в текущий ход"
-          : "Доступно, пока эта задача выполняет ход Codex",
+          ? (task.provider === "claude"
+            ? "Прервать текущий ход и продолжить его этим сообщением"
+            : "Добавить это сообщение в текущий ход")
+          : "Доступно, пока эта задача выполняет ход",
         disabled: !steerAvailable,
         text: "В текущий ход",
       }));

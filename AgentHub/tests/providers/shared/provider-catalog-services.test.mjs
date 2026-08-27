@@ -134,3 +134,23 @@ test("Claude catalog projection keeps provider identity separate from stream ide
   assert.equal(entries[0].threadId, "session-1");
   assert.equal(entries[0].titleAuthoritative, true);
 });
+
+test("Claude catalog projection does not wait for transcript audit", async () => {
+  let releaseAudit;
+  const auditStarted = new Promise((resolve) => {
+    releaseAudit = () => resolve();
+  });
+  const service = new ClaudeCatalogProjectionService({
+    audit: () => auditStarted,
+    findProject: () => ({ path: "D:/Work" }),
+    applyManagedCancellation: (snapshot) => snapshot,
+    catalogEntry: (snapshot, project) => ({
+      provider: "claude", threadId: snapshot.sessionId, projectRoot: project.path,
+    }),
+  });
+
+  const entries = await service.project([{ sessionId: "session-1", cwd: "D:/Work" }]);
+
+  assert.equal(entries.length, 1);
+  releaseAudit();
+});

@@ -172,6 +172,9 @@ test("Workspace release registry keeps ownership, readiness and file conflicts",
     provider: "codex", threadId: "two", turnId: "turn-two", summary: "Second",
     changedFiles: ["AgentHub/app.js"], diffHash: "second",
   });
+  assert.deepEqual(second.files, []);
+  assert.deepEqual(second.observedFiles, ["AgentHub/app.js"]);
+  store.updateReleaseChangeFiles(second.id, ["AgentHub/app.js"]);
   const plan = store.releasePlan(workspace.id);
   assert.equal(plan.ready.length, 1);
   const registry = store.releaseRegistry(workspace.id, { limit: 1 });
@@ -190,6 +193,7 @@ test("Workspace release registry keeps ownership, readiness and file conflicts",
     provider: "codex", threadId: "two", turnId: "turn-two", summary: "Second isolated",
     changedFiles: ["AgentHub/other.js"], diffHash: "isolated",
   });
+  store.updateReleaseChangeFiles(second.id, ["AgentHub/other.js"]);
   store.updateReleaseChangeStatus(second.id, "ready");
   assert.equal(store.releasePlan(workspace.id).conflicts.length, 0);
   assert.throws(() => store.updateReleaseChangeStatus(first.id, "released"), /reserved/u);
@@ -350,6 +354,7 @@ test("Release registry allows one Stream to own the same file across ready turns
       provider: "codex", threadId: "one", turnId,
       changedFiles: ["AgentHub/app.js"],
     });
+    store.updateReleaseChangeFiles(change.id, ["AgentHub/app.js"]);
     store.updateReleaseChangeStatus(change.id, "ready");
   }
   assert.deepEqual(store.releasePlan(workspace.id).conflicts, []);
@@ -407,6 +412,10 @@ test("ready and released release payloads are immutable and released status cann
     provider: "codex", threadId: "one", turnId: "turn-one", summary: "Draft",
     changedFiles: ["AgentHub/first.mjs"], diffHash: "first",
   });
+  assert.deepEqual(draft.files, []);
+  assert.deepEqual(draft.observedFiles, ["AgentHub/first.mjs"]);
+  assert.throws(() => store.updateReleaseChangeStatus(draft.id, "ready"), /explicit file selection/u);
+  store.updateReleaseChangeFiles(draft.id, ["AgentHub/first.mjs"]);
   const ready = store.updateReleaseChangeStatus(draft.id, "ready");
   const observed = store.recordReleaseChange({
     provider: "codex", threadId: "one", turnId: "turn-one", summary: "Changed after ready",

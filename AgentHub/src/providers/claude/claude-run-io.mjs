@@ -44,6 +44,7 @@ export function spawnClaudeWorker({
   args = [],
   cwd,
   env,
+  stdin = "ignore",
   stdout = "ignore",
   stderr = "ignore",
   onError = () => {},
@@ -52,7 +53,7 @@ export function spawnClaudeWorker({
   const worker = spawn(command, args, {
     cwd,
     env,
-    stdio: ["ignore", stdout, stderr],
+    stdio: [stdin, stdout, stderr],
     windowsHide: true,
     detached: true,
   });

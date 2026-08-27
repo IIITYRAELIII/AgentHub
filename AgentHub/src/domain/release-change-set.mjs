@@ -101,6 +101,18 @@ export function normalizedTurnObservation({
   };
 }
 
+export function normalizedDraftChangeSetFiles(files = []) {
+  const normalized = (Array.isArray(files) ? files : []).map((file) => ({
+    projectRoot: normalizedRoot(file?.projectRoot),
+    path: normalizedPath(file?.path),
+  }));
+  if (normalized.length > 500) throw new Error("draft ChangeSet file selection is too large");
+  const unique = new Map(normalized.map((file) => [`${file.projectRoot}\0${file.path}`, file]));
+  return [...unique.values()].toSorted((left, right) => (
+    left.projectRoot.localeCompare(right.projectRoot) || left.path.localeCompare(right.path)
+  ));
+}
+
 export function frozenChangeSetManifest({ revision, repositories = [], files = [] } = {}) {
   const normalizedRevision = Number(revision);
   if (!Number.isSafeInteger(normalizedRevision) || normalizedRevision < 1) {
