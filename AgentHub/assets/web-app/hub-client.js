@@ -132,6 +132,7 @@ const {
   mergeReconciledUserMessage,
   mergeLiveUserMessages,
   mergeTurnMaintenanceMessages,
+  latestMaintenanceMessages,
   normalizedResponseAnnotations,
   normalizedUserMessage,
   outgoingTaskId,
@@ -143,7 +144,6 @@ const {
   settleOptionalRead,
   snapshotCompletionCandidate,
   snapshotCompletionReplacement,
-  withoutSupersededCompactionFailures,
   visibleConversationMessages,
 } = window.AgentHubMessageLifecycle;
 const maintenanceEventsByTask = readMaintenanceEvents();
@@ -276,7 +276,7 @@ function readMaintenanceEvents() {
         afterPercent: null,
         text: String(entry.message?.text ?? "").replace(/>0%$/u, ">?%"),
       } : entry.message);
-      values.set(task, withoutSupersededCompactionFailures(events).slice(-50));
+      values.set(task, latestMaintenanceMessages(events));
     }
     const normalized = [...values].flatMap(([taskIdValue, messages]) => (
       messages.map((message) => ({ taskId: taskIdValue, message }))
@@ -315,7 +315,7 @@ function rememberMaintenanceEvent(taskIdValue, message) {
   };
   if (index >= 0) events[index] = value;
   else events.push(value);
-  const normalized = withoutSupersededCompactionFailures(events).slice(-50);
+  const normalized = latestMaintenanceMessages(events);
   if (previous === JSON.stringify(normalized)) return false;
   maintenanceEventsByTask.set(stableTaskId, normalized);
   persistMaintenanceEvents();
@@ -1344,9 +1344,12 @@ async function control(action, params = {}) {
   const directTransport = window.__agentHubDirectTransport;
   let directAvailable = false;
   if (vscode && directTransport) {
-    directAvailable = typeof directTransport.ready === "function"
-      && directTransport.ready() === true;
-    if (!directAvailable) directTransport.warmup?.();
+    if (typeof directTransport.ready === "function") {
+      directAvailable = directTransport.ready() === true;
+      if (!directAvailable) directTransport.warmup?.();
+    } else {
+      directAvailable = await directTransport.available();
+    }
   }
   const bridged = directAvailable ? null : bridgeCall(action, params);
   if (bridged) return bridged;
@@ -1367,7 +1370,7 @@ function modelTask(task, snapshot, effectiveSelectedId, serverSelectedId) {
   const streamId = String(task.streamId ?? "").trim()
     || `legacy:${String(task.provider ?? "").trim()}:${String(task.threadId ?? "").trim()}`;
   const answerAt = Date.parse(task.lastAnswerAt ?? "") || 0;
-  const running = Boolean(task.running);
+  const running = window.AgentHubStreamTabs.isExactActiveUserTurn(task);
   const unknown = task.activityUnknown === true;
   const unread = task.unread === true;
   const serverSelected = id === serverSelectedId;
@@ -3464,8 +3467,15 @@ function blobDataUrl(blob) {
 
 async function loadAttachmentImage(attachment, index) {
   const directDataUrl = String(attachment?.dataUrl ?? "").trim();
+  const directResourceUrl = String(attachment?.url ?? "").trim();
+  const vscodeResource = vscode && !directDataUrl && !directResourceUrl && attachment?.id
+    ? await bridgeCall("resolve-attachment", { id: attachment.id })
+    : null;
+  const resolvedResourceUrl = String(vscodeResource?.url ?? directResourceUrl).trim();
   const result = directDataUrl
     ? { dataUrl: directDataUrl, name: attachment?.name }
+    : resolvedResourceUrl
+      ? { dataUrl: resolvedResourceUrl, name: attachment?.name }
     : await attachmentBlob(attachment).then(async ({ blob, name }) => ({
       dataUrl: await blobDataUrl(blob),
       name,

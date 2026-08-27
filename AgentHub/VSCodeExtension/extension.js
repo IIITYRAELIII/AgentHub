@@ -295,6 +295,19 @@ class WorkLogViewProvider {
     try {
       const bridge = await this.currentBridge();
       const action = String(message.action ?? "");
+      if (action === "resolve-attachment") {
+        const target = await bridge.attachmentPath(message.params?.id);
+        await this.panel?.webview.postMessage({
+          type: "agenthub:control-result",
+          id,
+          ok: true,
+          result: {
+            id: message.params?.id,
+            url: this.panel.webview.asWebviewUri(vscode.Uri.file(target)).toString(),
+          },
+        });
+        return;
+      }
       if (["open-attachment", "copy-attachment", "save-attachment"].includes(action)) {
         const target = await bridge.attachmentPath(message.params?.id);
         if (action === "open-attachment") {

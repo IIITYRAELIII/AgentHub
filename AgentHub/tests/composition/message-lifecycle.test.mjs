@@ -1768,6 +1768,21 @@ test("rotation completion stays between the source Thread and the new live turn"
   );
 });
 
+test("persisted maintenance history keeps only the latest event per task", () => {
+  const first = {
+    id: "maintenance:compaction:first",
+    maintenanceStatus: "completed",
+    time: "2026-08-14T16:20:00.000Z",
+  };
+  const latest = {
+    id: "maintenance:compaction:latest",
+    maintenanceStatus: "completed",
+    time: "2026-08-14T16:30:00.000Z",
+  };
+
+  assert.deepEqual(lifecycle.latestMaintenanceMessages([latest, first]), [latest]);
+});
+
 test("late subagent results stay above their parent final", () => {
   const values = lifecycle.chronologicalMessages([
     {

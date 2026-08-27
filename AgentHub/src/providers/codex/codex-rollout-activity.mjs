@@ -11,10 +11,14 @@ import {
   isCodexContextProbeClientId,
 } from "../../domain/codex-context-probe.mjs";
 import { codexParentThreadId } from "./codex-subagent-accounting.mjs";
+import {
+  pinCodexRolloutActivityCacheInWorker,
+  readCodexRolloutActivityInWorker,
+} from "./codex-rollout-activity-worker-client.mjs";
 
 const CODEX_ACTIVE_FRESHNESS_MS = 10 * 60 * 1000;
 const CODEX_PROMPTLESS_TURN_GRACE_MS = 15 * 1000;
-const CODEX_ROLLOUT_TAIL_BYTES = 128 * 1024 * 1024;
+const CODEX_ROLLOUT_TAIL_BYTES = 16 * 1024 * 1024;
 const CODEX_ROLLOUT_LINE_BYTES = 4 * 1024 * 1024;
 const CODEX_AGENT_MESSAGE_CHARS = 200_000;
 const CODEX_ACTIVITY_CACHE_LIMIT = 200;
@@ -22,6 +26,7 @@ const CODEX_ACTIVE_ACTIVITY_CACHE_LIMIT = 16;
 const LEGACY_TURN_ID = "__legacy__";
 const codexActivityCache = new Map();
 const codexActiveActivityCache = new Map();
+const codexActivityReadsInFlight = new Map();
 
 function retainCachedActivity(cache, key, value, limit) {
   cache.delete(key);
@@ -824,7 +829,7 @@ export function parseCodexRolloutRunning(text) {
   return parseCodexRolloutActivity(text).running;
 }
 
-export async function readCodexRolloutActivity(
+export async function readCodexRolloutActivityOnCurrentThread(
   rolloutPath,
   {
     nowMs = Date.now(),
@@ -832,9 +837,11 @@ export async function readCodexRolloutActivity(
     tailBytes = CODEX_ROLLOUT_TAIL_BYTES,
     maximumLineBytes = CODEX_ROLLOUT_LINE_BYTES,
     pinCache = false,
+    pinCacheState = null,
   } = {},
 ) {
   const normalized = String(rolloutPath ?? "").trim();
+  const shouldPinCache = () => pinCache === true || pinCacheState?.requested === true;
   if (!normalized) {
     return withoutCodexContextProbeTurns({
       running: false,
@@ -882,7 +889,7 @@ export async function readCodexRolloutActivity(
     throw error;
   }
   if (nowMs - info.mtimeMs > freshnessMs) {
-    const cached = cachedActivity(normalized, pinCache);
+    const cached = cachedActivity(normalized, shouldPinCache());
     return withoutCodexContextProbeTurns({
       running: false,
       activeTurnIds: [],
@@ -908,7 +915,7 @@ export async function readCodexRolloutActivity(
       unscopedLatestMessage: cached?.unscopedLatestMessage || null,
     });
   }
-  const cached = cachedActivity(normalized, pinCache);
+  const cached = cachedActivity(normalized, shouldPinCache());
   if (cached?.size === info.size && cached?.mtimeMs === info.mtimeMs) {
     const activity = codexActivity(
         new Set(cached.activeTurnIds),
@@ -1074,7 +1081,7 @@ export async function readCodexRolloutActivity(
     unscopedLatestMessage: metadata.unscopedLatestMessage,
     discardUntilNewline,
     suffix: await rolloutSuffix(normalized, info.size),
-  }, pinCache);
+  }, shouldPinCache());
   return withoutCodexContextProbeTurns({
     ...withoutStalePromptlessTurns(
       activity,
@@ -1097,6 +1104,82 @@ export async function readCodexRolloutActivity(
       : {}),
     unscopedLatestMessage: metadata.unscopedLatestMessage || null,
   });
+}
+
+export function pinCodexRolloutActivityCache(rolloutPath) {
+  const normalized = String(rolloutPath ?? "").trim();
+  if (!normalized) return false;
+  return Boolean(cachedActivity(normalized, true));
+}
+
+function codexActivityReadPathKey(rolloutPath) {
+  const resolved = path.resolve(rolloutPath);
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
+function codexActivityReadKey(rolloutPath, { freshnessMs, tailBytes, maximumLineBytes }) {
+  return [
+    codexActivityReadPathKey(rolloutPath),
+    `freshness:${String(freshnessMs)}`,
+    `tail:${String(tailBytes)}`,
+    `line:${String(maximumLineBytes)}`,
+  ].join("\u0000");
+}
+
+export function readCodexRolloutActivity(rolloutPath, options = {}) {
+  const normalized = String(rolloutPath ?? "").trim();
+  const {
+    nowMs = Date.now(),
+    freshnessMs = CODEX_ACTIVE_FRESHNESS_MS,
+    tailBytes = CODEX_ROLLOUT_TAIL_BYTES,
+    maximumLineBytes = CODEX_ROLLOUT_LINE_BYTES,
+    pinCache = false,
+  } = options;
+  if (!normalized) {
+    return readCodexRolloutActivityOnCurrentThread(normalized, {
+      nowMs,
+      freshnessMs,
+      tailBytes,
+      maximumLineBytes,
+      pinCache,
+    });
+  }
+  const key = codexActivityReadKey(normalized, {
+    freshnessMs,
+    tailBytes,
+    maximumLineBytes,
+  });
+  const active = codexActivityReadsInFlight.get(key);
+  if (active) {
+    if (pinCache) {
+      active.pinCacheState.requested = true;
+      cachedActivity(normalized, true);
+    }
+    return active.operation;
+  }
+  const pinCacheState = { requested: pinCache === true };
+  const initiallyPinned = pinCacheState.requested;
+  const operation = readCodexRolloutActivityInWorker(normalized, {
+    nowMs,
+    freshnessMs,
+    tailBytes,
+    maximumLineBytes,
+    pinCache: initiallyPinned,
+  }).then(async (activity) => {
+    if (pinCacheState.requested && !initiallyPinned) {
+      await pinCodexRolloutActivityCacheInWorker(normalized);
+    }
+    return activity;
+  });
+  const entry = { operation, pinCacheState };
+  codexActivityReadsInFlight.set(key, entry);
+  const clear = () => {
+    if (codexActivityReadsInFlight.get(key) === entry) {
+      codexActivityReadsInFlight.delete(key);
+    }
+  };
+  operation.then(clear, clear);
+  return operation;
 }
 
 export async function readCodexRolloutRunning(rolloutPath, options = {}) {

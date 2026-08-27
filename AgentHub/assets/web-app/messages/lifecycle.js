@@ -979,6 +979,20 @@ function receiptLeavesDeferredQueue(receipt) {
     || receipt?.dispatching === true;
 }
 
+function latestMaintenanceMessages(messages, limit = 1) {
+  const maximum = Math.max(0, Math.trunc(Number(limit) || 0));
+  if (!maximum) return [];
+  return withoutSupersededCompactionFailures(messages)
+    .map((message, index) => ({ message, index, time: Date.parse(message?.time ?? "") }))
+    .sort((left, right) => {
+      const leftTime = Number.isFinite(left.time) ? left.time : Number.NEGATIVE_INFINITY;
+      const rightTime = Number.isFinite(right.time) ? right.time : Number.NEGATIVE_INFINITY;
+      return leftTime - rightTime || left.index - right.index;
+    })
+    .slice(-maximum)
+    .map(({ message }) => message);
+}
+
 function receiptUsesDeferredQueue(receipt) {
   return receipt?.deferred === true
     && receipt?.accepted !== true
@@ -1373,6 +1387,7 @@ globalThis.AgentHubMessageLifecycle = Object.freeze({
   mergeLiveMaintenance,
   mergeLiveUserMessages,
   mergeTurnMaintenanceMessages,
+  latestMaintenanceMessages,
   withoutSupersededCompactionFailures,
   normalizedResponseAnnotations,
   normalizedUserMessage,

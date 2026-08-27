@@ -36,5 +36,11 @@ rescanned. Historical full scans are bounded to 16 MiB; larger transcripts use
 managed terminal accounting and an explicit skipped-audit warning instead of
 unbounded worker memory and event-loop GC pressure.
 
+Codex rollout activity fallback runs outside the main Hub event loop. Concurrent
+reads of the same rollout and read options share one in-flight operation, and a
+cold fallback reads at most the latest 16 MiB. Exact App Server state and managed
+run identity remain preferred over JSONL fallback; reducing the scan window must
+not truncate the terminal answer retained by TURN-001.
+
 The “Local Hub” health RTT is not message ACK latency and must not be presented
 as such. Provider latency and remote Worker latency are separate indicators.

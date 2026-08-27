@@ -1691,6 +1691,8 @@ test("message attachments keep timestamps, previews and an explicit open action"
   assert.match(client, /control\("open-attachment", \{ id \}\)/u);
   assert.match(client, /agentHub\.openAttachmentViewer/u);
   assert.match(client, /agentHub\.on\("attachment:load"/u);
+  assert.match(client, /bridgeCall\("resolve-attachment", \{ id: attachment\.id \}\)/u);
+  assert.match(extension, /action === "resolve-attachment"/u);
   assert.match(html, /data-resource-context-menu[\s\S]*data-resource-action="open"[\s\S]*data-resource-action="copy"[\s\S]*data-resource-action="save"/u);
   assert.match(client, /agentHub\.on\("resource:copy"[\s\S]*agentHub\.on\("resource:save"/u);
   assert.match(client, /value\.url = `\/api\/message-attachment\/\$\{encodeURIComponent\(id\)\}`/u);

@@ -901,6 +901,22 @@ test("readCodexRolloutActivity follows append-only lifecycle updates", async () 
   );
 });
 
+test("concurrent rollout activity reads share one in-flight operation", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-rollout-coalesced-"));
+  const rollout = path.join(root, "rollout.jsonl");
+  await writeFile(rollout, `${JSON.stringify({
+    timestamp: new Date().toISOString(),
+    type: "event_msg",
+    payload: { type: "task_started", turn_id: "shared" },
+  })}\n`, "utf8");
+
+  const first = readCodexRolloutActivity(rollout);
+  const second = readCodexRolloutActivity(rollout, { pinCache: true });
+
+  assert.equal(first, second);
+  assert.deepEqual((await first).activeTurnIds, ["shared"]);
+});
+
 test("an active rollout cache survives a cold historical scan", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-rollout-pinned-"));
   const rollout = path.join(root, "active.jsonl");
@@ -982,26 +998,40 @@ test("rollout activity exposes current and final messages without thread/read", 
   assert.equal(activity.completedAtMsByTurnId["turn-1"], Date.parse(completedAt));
 });
 
-test("rollout activity preserves a long Codex answer from start to finish", () => {
-  const longAnswer = `Начало ответа\n${"я".repeat(120_000)}\nКонец ответа`;
-  const entry = (type, payload) => JSON.stringify({
-    timestamp: new Date().toISOString(),
-    type,
-    payload,
-  });
-
-  const activity = parseCodexRolloutActivity([
-    entry("event_msg", { type: "task_started", turn_id: "turn-long" }),
-    entry("event_msg", { type: "agent_message", message: longAnswer }),
-    entry("event_msg", {
-      type: "task_complete",
-      turn_id: "turn-long",
-      last_agent_message: longAnswer,
+test("rollout activity preserves a long agent message", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-rollout-long-message-"));
+  const rollout = path.join(root, "rollout.jsonl");
+  const message = "x".repeat(120_000);
+  await writeFile(rollout, [
+    JSON.stringify({
+      timestamp: new Date().toISOString(),
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: "long-turn" },
     }),
-  ].join("\n"));
+    JSON.stringify({
+      timestamp: new Date().toISOString(),
+      type: "event_msg",
+      payload: { type: "agent_message", message },
+    }),
+  ].join("\n") + "\n", "utf8");
 
-  assert.equal(activity.latestMessages["turn-long"], longAnswer);
-  assert.equal(activity.finalMessages["turn-long"], longAnswer);
+  const activity = await readCodexRolloutActivity(rollout);
+
+  assert.equal(activity.latestMessages["long-turn"], message);
+});
+
+test("rollout activity preserves a final answer longer than forty thousand characters", () => {
+  const finalAnswer = `Начало\n${"x".repeat(40_100)}\nКонец`;
+  const activity = parseCodexRolloutActivity(JSON.stringify({
+    type: "event_msg",
+    payload: {
+      type: "task_complete",
+      turn_id: "long-final",
+      last_agent_message: finalAnswer,
+    },
+  }));
+
+  assert.equal(activity.finalMessages["long-final"], finalAnswer);
 });
 
 test("concurrent rollout messages stay attached to their response_item turn ids", () => {
