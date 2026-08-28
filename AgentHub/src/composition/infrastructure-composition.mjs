@@ -29,7 +29,7 @@ import { TrustedDeviceStore } from "../infrastructure/persistence/trusted-device
 import { WorkspaceCatalogStore } from "../infrastructure/persistence/workspace-catalog-store.mjs";
 import { TaskBoardStore } from "../infrastructure/persistence/task-board-store.mjs";
 import { WorkLogUsageRepository } from "../infrastructure/persistence/work-log-usage-repository.mjs";
-import { WorkLogUsageSyncStore } from "../infrastructure/persistence/work-log-usage-sync-store.mjs";
+import { WorkLogUsageSyncWorkerStore } from "../runtime/work-log-usage-sync-worker-client.mjs";
 import { UsageSyncIdentityStore } from "../infrastructure/persistence/usage-sync-identity-store.mjs";
 import { UsageSyncRemoteConfigStore } from "../infrastructure/persistence/usage-sync-remote-config-store.mjs";
 import { defaultUsageSyncServerUrl } from "../domain/default-usage-sync-server.mjs";
@@ -271,7 +271,7 @@ export async function createHubInfrastructure({
     defaultServerUrl: defaultUsageSyncServerUrl(),
   });
   const workLogUsageSyncDeviceId = workLogUsageIdentityStore.deviceId;
-  const workLogUsageSyncStore = new WorkLogUsageSyncStore({
+  const workLogUsageSyncStore = new WorkLogUsageSyncWorkerStore({
     databaseFile: journalDatabaseFile,
     legacyFile: path.join(config.dataDir, "work-log-usage-sync.json"),
     deviceId: workLogUsageSyncDeviceId,

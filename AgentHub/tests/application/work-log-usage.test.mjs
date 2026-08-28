@@ -11,6 +11,7 @@ import {
   buildWorkLogUsageHistory,
   groupWorkLogUsageByWorkspace,
   normalizeWorkLogId,
+  projectWorkLogAccountUsage,
   projectWorkLogRateLimits,
   projectWorkLogUsage,
   restoreLegacyOutcomes,
@@ -778,6 +779,120 @@ test("account usage panel includes synced remote devices without duplicating loc
     /data-work-log-account-total>итого <span data-kilo-usage data-usage-credits="12">12 cr<\/span> · 3 ход\./u,
   );
   assert.match(projected, /data-work-log-account-idle><\/span>/u);
+});
+
+test("account-only projection preserves lazy journal fragments", () => {
+  const lazyDay = '<details data-lazy-day="20.08.2026"><summary>День сохранён</summary></details>';
+  const projected = projectWorkLogAccountUsage(`# Глобальный журнал работ\n${lazyDay}\n`, {
+    local: {
+      provider: "codex",
+      threadId: "thread-local",
+      turnId: "turn-local",
+      completedAt: "2026-08-20T09:00:00.000Z",
+      estimatedCredits: 3,
+      accountKey: "chatgpt:owner",
+      accountAttribution: "exact",
+    },
+  }, {
+    now: Date.parse("2026-08-20T12:00:00.000Z"),
+    localDeviceId: "device-local",
+    accountCatalog: [{ key: "chatgpt:owner", label: "owner@example.com" }],
+  });
+
+  assert.match(projected, /data-work-log-account-panel/u);
+  assert.ok(projected.includes(lazyDay));
+  assert.doesNotMatch(projected, /data-work-log-day-section/u);
+});
+
+test("usage sync updates only the lazy account index after a remote delta", async () => {
+  const lazyDay = '<details data-lazy-day="20.08.2026"><summary>День сохранён</summary></details>';
+  let replacement = null;
+  const repository = {
+    databaseFile: "memory.sqlite",
+    ledger: {
+      version: 9,
+      turns: {
+        local: {
+          provider: "codex",
+          threadId: "thread-local",
+          turnId: "turn-local",
+          projectRoot: "D:/project",
+          completedAt: "2026-08-20T09:00:00.000Z",
+          estimatedCredits: 3,
+          accountKey: "chatgpt:owner",
+          accountAttribution: "exact",
+        },
+      },
+    },
+    enqueue: async (operation) => operation(),
+    save: async () => {},
+    payload: async () => ({
+      html: `# Глобальный журнал работ\n${lazyDay}\n`,
+      version: "old",
+      revision: 7,
+    }),
+    replaceProjection: async () => {},
+    replaceIndexProjection: async (html, options) => {
+      replacement = { html, options };
+      return { projected: true, revision: 8 };
+    },
+    accountCatalog: async () => [{ key: "chatgpt:owner", label: "owner@example.com" }],
+    close: async () => {},
+  };
+  const store = createWorkLogUsageStore({
+    repositoryFactory: () => repository,
+    defaultProjectRoot: "D:/project",
+    usageSyncDeviceId: "device-local",
+    usageSyncStore: {
+      events: async () => [],
+      importSnapshot: async () => ({ imported: true, added: 1, updated: 0 }),
+      projectAccountUsage: async ({ html, turns, ...options }) => ({
+        projected: true,
+        html: projectWorkLogAccountUsage(html, turns, { ...options, syncedUsageEvents: [] }),
+        version: "sha256:account-panel",
+        durationMs: 12,
+        eventCount: 0,
+        workerThreadId: 3,
+      }),
+    },
+  });
+
+  const result = await store.importUsageSyncSnapshotAndProject({
+    snapshot: { events: [] },
+    projectRoot: "D:/project",
+  });
+
+  assert.equal(result.projected, true);
+  assert.ok(replacement.html.includes(lazyDay));
+  assert.match(replacement.html, /data-work-log-account-panel/u);
+  assert.equal(replacement.options.expectedRevision, 7);
+  assert.equal(result.workerThreadId, 3);
+});
+
+test("usage sync skips projection for an unchanged remote snapshot", async () => {
+  let payloadReads = 0;
+  const repository = {
+    databaseFile: "memory.sqlite",
+    ledger: { version: 9, turns: {} },
+    enqueue: async (operation) => operation(),
+    save: async () => {},
+    payload: async () => { payloadReads += 1; return { html: "" }; },
+    replaceProjection: async () => {},
+    close: async () => {},
+  };
+  const store = createWorkLogUsageStore({
+    repositoryFactory: () => repository,
+    usageSyncStore: {
+      importSnapshot: async () => ({ imported: true, added: 0, updated: 0 }),
+      events: async () => { throw new Error("events must not be read"); },
+    },
+  });
+
+  const result = await store.importUsageSyncSnapshotAndProject({ snapshot: { events: [] } });
+
+  assert.equal(result.projected, false);
+  assert.equal(result.reason, "unchanged");
+  assert.equal(payloadReads, 0);
 });
 
 test("account usage panel keeps unlabeled sync device ids separate", () => {

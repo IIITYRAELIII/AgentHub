@@ -31,6 +31,7 @@ import {
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = path.resolve(ROOT, "..");
+export const RELEASE_CANDIDATE_CONTOUR_LABEL = "Проверка release candidate в изолированном контуре";
 
 const emptyPlan = () => ({
   runtime: false,
@@ -124,19 +125,26 @@ function focusedSteps(plan, {
   testContour = false,
   workerChangedFiles = null,
 } = {}) {
-  if (plan.unknown.length) {
-    return publicationSteps({ fullTestCheckpointId, testContour, workerChangedFiles });
-  }
+  const releaseCandidateContour = plan.fullTests;
   const full = publicationSteps({
-    skipWorker: !plan.worker,
+    skipWorker: plan.unknown.length ? false : !plan.worker,
     fullTestCheckpointId,
-    testContour,
+    testContour: testContour && !releaseCandidateContour,
     workerChangedFiles,
   });
+  if (releaseCandidateContour) {
+    const fullTestIndex = full.findIndex((step) => step.label === "Полные тесты Agent Hub");
+    full.splice(fullTestIndex < 0 ? 0 : fullTestIndex + 1, 0, npmStep(
+      RELEASE_CANDIDATE_CONTOUR_LABEL,
+      ["run", "contour:verify", "--", "--require-installed"],
+    ));
+  }
+  if (plan.unknown.length) return full;
   const byLabel = new Map(full.map((step) => [step.label, step]));
   const steps = [];
   if (plan.fullTests) {
     steps.push(byLabel.get("Полные тесты Agent Hub"));
+    steps.push(byLabel.get(RELEASE_CANDIDATE_CONTOUR_LABEL));
   } else {
     steps.push(npmStep("Проверка синтаксиса Agent Hub", ["run", "check"]));
     if (plan.unitTests) {

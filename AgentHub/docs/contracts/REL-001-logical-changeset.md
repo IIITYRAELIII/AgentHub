@@ -63,6 +63,20 @@ Publication verifies cleanliness only for the exact paths declared by the frozen
 release plan. Unrelated dirty paths in a shared repository do not block the
 release, while any tracked or untracked change on a frozen path does.
 
+## Publication evidence
+
+The rolling shared Test Contour is integration preview evidence only. It may
+contain draft work outside the frozen release plan and therefore cannot prove
+that a release candidate is complete.
+
+Before the first production deployment side effect, the publication pipeline
+must build the exact clean integration revision from its release worktree into
+an isolated contour and pass the browser/runtime smoke there. A green rolling
+contour or a test run from the shared dirty tree cannot substitute for this
+release-candidate check. Failure to load the shell, a browser exception, or a
+missing cross-file runtime API must stop publication before worker, runtime or
+extension deployment.
+
 The new ledger becomes authoritative only after frozen manifests participate in
 release planning and every active legacy entry is either linked, released or
 discarded by its existing owner. Until Stream roles are persisted explicitly,

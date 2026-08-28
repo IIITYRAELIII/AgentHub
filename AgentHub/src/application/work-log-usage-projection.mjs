@@ -2611,6 +2611,26 @@ export function projectWorkLogUsage(workLogText, turns = {}, {
   return insertAccountUsagePanel(projected, accountPanel);
 }
 
+export function projectWorkLogAccountUsage(workLogText, turns = {}, {
+  accountCatalog = [],
+  includeClaudeUsage = true,
+  syncedUsageEvents = [],
+  localDeviceId = "",
+  now = Date.now(),
+} = {}) {
+  const normalizedTurns = normalizedLedger({ version: 9, turns }).ledger.turns;
+  return insertAccountUsagePanel(
+    String(workLogText ?? ""),
+    formatAccountUsagePanel(buildWorkLogAccountUsageSummary(normalizedTurns, {
+      accountCatalog,
+      includeClaudeUsage,
+      syncedUsageEvents,
+      localDeviceId,
+      now,
+    })),
+  );
+}
+
 /* Строка одной меры внутри общего облака лимитов. */
 function rateLimitChip(line) {
   // срок сброса необязателен: Codex не всегда возвращает окно

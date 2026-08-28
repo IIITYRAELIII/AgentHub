@@ -694,6 +694,48 @@ export class JournalDatabase {
     return result;
   }
 
+  async replaceIndexProjection(html, {
+    expectedRevision,
+    updatedAt = new Date().toISOString(),
+    version = "",
+  } = {}) {
+    const database = await this.#open();
+    database.exec("BEGIN IMMEDIATE");
+    let revision;
+    let resolvedVersion;
+    try {
+      const currentRevision = revisionOf(database);
+      if (Number.isFinite(Number(expectedRevision))
+        && currentRevision !== Number(expectedRevision)) {
+        database.exec("ROLLBACK");
+        return {
+          projected: false,
+          conflict: true,
+          expectedRevision: Number(expectedRevision),
+          revision: currentRevision,
+        };
+      }
+      resolvedVersion = String(version || sha256Version(html));
+      database.prepare(`
+        INSERT INTO journal_meta (id, schema_version, source_version, updated_at, html)
+        VALUES (1, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          schema_version = excluded.schema_version,
+          source_version = excluded.source_version,
+          updated_at = excluded.updated_at,
+          html = excluded.html
+      `).run(SCHEMA_VERSION, resolvedVersion, String(updatedAt), String(html ?? ""));
+      revision = advanceRevision(database);
+      database.exec("COMMIT");
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
+    const result = { projected: true, version: resolvedVersion, revision };
+    this.#changed({ type: "projection-index", ...result });
+    return result;
+  }
+
   async payload() {
     const database = await this.#open();
     const row = database.prepare(

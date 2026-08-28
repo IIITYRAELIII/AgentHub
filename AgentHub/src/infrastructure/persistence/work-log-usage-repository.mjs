@@ -157,6 +157,12 @@ export class WorkLogUsageRepository {
     return result;
   }
 
+  async replaceIndexProjection(html, options = {}) {
+    const result = await this.#database.replaceIndexProjection(html, options);
+    if (result.projected) this.#loadedRevision = result.revision;
+    return result;
+  }
+
   retireLegacyStorage({
     workLogFile = null,
     backupRoot = path.join(path.dirname(this.#ledgerFile), "migrations"),

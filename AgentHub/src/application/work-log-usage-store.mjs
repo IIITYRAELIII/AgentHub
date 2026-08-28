@@ -188,6 +188,47 @@ export class WorkLogUsageStore {
     return { projected: true };
   }
 
+  async #projectAccountUsage(selectedTurns) {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const current = await this.#repository.payload();
+      const accountCatalog = typeof this.#repository.accountCatalog === "function"
+        ? await this.#repository.accountCatalog()
+        : [];
+      const projected = typeof this.#usageSyncStore.projectAccountUsage === "function"
+        ? await this.#usageSyncStore.projectAccountUsage({
+          html: String(current?.html ?? ""),
+          turns: selectedTurns,
+          accountCatalog,
+          includeClaudeUsage: this.#includeClaudeUsage,
+          localDeviceId: this.#usageSyncDeviceId,
+          now: Date.now(),
+        })
+        : (() => {
+          throw new Error("Usage sync projection worker is not configured");
+        })();
+      if (!projected.projected) return projected;
+      await this.#beforeProjectionWrite?.({
+        databaseFile: this.#repository.databaseFile,
+        current: current?.html ?? "",
+        updated: projected.html,
+        attempt,
+      });
+      const written = await this.#repository.replaceIndexProjection(projected.html, {
+        expectedRevision: current?.revision,
+        version: projected.version,
+      });
+      if (!written.conflict) {
+        return {
+          projected: true,
+          usageProjectionDurationMs: projected.durationMs,
+          usageProjectionEventCount: projected.eventCount,
+          workerThreadId: projected.workerThreadId,
+        };
+      }
+    }
+    return { projected: false, reason: "stale-journal-revision", projectionDeferred: true };
+  }
+
   mergeTurnTexts(messages = []) {
     const operation = this.#enqueueMutation(null, async () => {
       let updated = 0;
@@ -474,9 +515,12 @@ export class WorkLogUsageStore {
     }
     const operation = this.#enqueueMutation(workLogFile, async () => {
       const imported = await this.#usageSyncStore.importSnapshot(snapshot);
+      if (!imported.added && !imported.updated) {
+        return { ...imported, projected: false, reason: "unchanged" };
+      }
       const selectedTurns = this.#turnsForProjection(projectRoot, projectionProjectRoots);
-      const projection = await this.#projectDatabase(selectedTurns);
-      return { ...imported, projected: projection.projected };
+      const projection = await this.#projectAccountUsage(selectedTurns);
+      return { ...imported, ...projection };
     });
     return operation;
   }
@@ -836,6 +880,9 @@ export class WorkLogUsageStore {
   }
 
   close() {
-    return this.#repository.close();
+    return Promise.all([
+      this.#repository.close(),
+      this.#usageSyncStore?.close?.(),
+    ]).then(() => undefined);
   }
 }

@@ -42,5 +42,12 @@ cold fallback reads at most the latest 16 MiB. Exact App Server state and manage
 run identity remain preferred over JSONL fallback; reducing the scan window must
 not truncate the terminal answer retained by TURN-001.
 
+Periodic usage synchronization must not rebuild the complete journal projection
+on the Hub event loop. Import, merge and account-panel calculation execute in a
+dedicated worker. A remote usage delta updates only the account-usage panel in
+the existing lazy journal index through a revision-guarded index write; an
+unchanged snapshot performs no projection. Persisted day and turn fragments
+remain authoritative and are preserved intact.
+
 The “Local Hub” health RTT is not message ACK latency and must not be presented
 as such. Provider latency and remote Worker latency are separate indicators.

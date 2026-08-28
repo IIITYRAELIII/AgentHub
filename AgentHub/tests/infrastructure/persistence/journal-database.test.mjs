@@ -294,6 +294,35 @@ test("ensureFromFile remains a compatibility adapter and replaces stale fragment
   }
 });
 
+test("index-only projection uses revision CAS and preserves lazy fragments", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-journal-index-"));
+  const database = new JournalDatabase(path.join(root, "data", "journal.sqlite"));
+  try {
+    await database.replaceProjection({
+      html: '<details data-lazy-day="01.07.2026"></details>',
+      days: { "01.07.2026": "<section>День</section>" },
+      turns: { turn: "<article>Ход</article>" },
+    });
+    const current = await database.payload();
+    const conflict = await database.replaceIndexProjection("<main>Устаревшее</main>", {
+      expectedRevision: current.revision - 1,
+    });
+    assert.equal(conflict.conflict, true);
+
+    const replaced = await database.replaceIndexProjection(
+      '<aside data-work-log-account-panel></aside><details data-lazy-day="01.07.2026"></details>',
+      { expectedRevision: current.revision, version: "sha256:index" },
+    );
+    assert.equal(replaced.projected, true);
+    assert.equal((await database.payload()).version, "sha256:index");
+    assert.equal(await database.fragment("day", "01.07.2026"), "<section>День</section>");
+    assert.equal(await database.fragment("turn", "turn"), "<article>Ход</article>");
+  } finally {
+    database.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("corrupt SQLite journal fails closed without creating a clean store", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-journal-corrupt-"));
   const databaseFile = path.join(root, "data", "journal.sqlite");
