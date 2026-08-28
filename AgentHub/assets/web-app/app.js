@@ -4643,6 +4643,31 @@ function desktopFileLink(raw, fileContext = currentFileLinkContext()) {
   };
 }
 
+function inlineFileRevealButton(targetLink, name = "") {
+  const resource = resourceInteractions.linkResource({
+    href: targetLink?.href ?? "#",
+    localPath: targetLink?.localPath,
+    name,
+  });
+  const actions = resourceInteractions.inlineResourceActions?.(resource, {
+    canRevealLocalObject: localWorkspaceFilesAvailable,
+  }) ?? [];
+  if (!actions.includes("reveal")) return null;
+  const label = "Показать в Проводнике";
+  const button = el("button", {
+    type: "button",
+    class: "inline-file-reveal",
+    title: `${label}: ${resource.localPath}`,
+    "aria-label": label,
+    text: label,
+  });
+  button.dataset.agentHubResourceAction = "reveal";
+  button.dataset.agentHubLocalLink = resource.localPath;
+  button.dataset.agentHubResourceHref = resource.href;
+  button.dataset.agentHubResourceName = resource.name;
+  return button;
+}
+
 function markdownLink(raw, fileContext = currentFileLinkContext()) {
   const source = String(raw ?? "").trim();
   const value = source.startsWith("<") && source.endsWith(">")
@@ -4696,7 +4721,7 @@ function appendInlineMarkdown(target, source, fileContext = currentFileLinkConte
           rel: "noopener noreferrer",
         });
         if (targetLink.localPath) link.dataset.agentHubLocalLink = targetLink.localPath;
-        target.append(link);
+        target.append(link, inlineFileRevealButton(targetLink, citation?.label ?? "Файл"));
       } else {
         target.append(el("span", attributes));
       }
@@ -4713,7 +4738,7 @@ function appendInlineMarkdown(target, source, fileContext = currentFileLinkConte
           title: targetLink.localPath,
         }, [code]);
         link.dataset.agentHubLocalLink = targetLink.localPath;
-        target.append(link);
+        target.append(link, inlineFileRevealButton(targetLink, value));
       } else {
         target.append(code);
       }
@@ -4737,7 +4762,7 @@ function appendInlineMarkdown(target, source, fileContext = currentFileLinkConte
         });
         if (targetLink.taskId) link.dataset.agentHubTaskReference = targetLink.taskId;
         if (targetLink.localPath) link.dataset.agentHubLocalLink = targetLink.localPath;
-        target.append(link);
+        target.append(link, inlineFileRevealButton(targetLink, parts[1]));
       } else {
         target.append(document.createTextNode(token));
       }
@@ -5243,6 +5268,19 @@ function subagentResponseTitle(message) {
 }
 
 document.addEventListener("click", (event) => {
+  const resourceActionButton = event.target.closest("button[data-agent-hub-resource-action][data-agent-hub-local-link]");
+  if (resourceActionButton) {
+    event.preventDefault();
+    event.stopPropagation();
+    emit(`resource:${resourceActionButton.dataset.agentHubResourceAction}`, {
+      resource: resourceInteractions.linkResource({
+        href: resourceActionButton.dataset.agentHubResourceHref,
+        localPath: resourceActionButton.dataset.agentHubLocalLink,
+        name: resourceActionButton.dataset.agentHubResourceName,
+      }),
+    });
+    return;
+  }
   const taskReferenceLink = event.target.closest("a[data-agent-hub-task-reference]");
   if (taskReferenceLink) {
     event.preventDefault();

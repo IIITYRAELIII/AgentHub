@@ -8111,6 +8111,33 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
   text-decoration: none;
 }
 
+.msg-body .inline-file-reveal,
+.msg-reasoning .inline-file-reveal {
+  appearance: none;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--line));
+  border-radius: var(--radius-chip);
+  color: var(--accent);
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  font-size: 0.78em;
+  line-height: 1.35;
+  margin: 0 0.1em 0 0.35em;
+  padding: 0.06rem 0.38rem;
+  text-decoration: none;
+  vertical-align: baseline;
+  white-space: nowrap;
+}
+
+.msg-body .inline-file-reveal:hover,
+.msg-body .inline-file-reveal:focus-visible,
+.msg-reasoning .inline-file-reveal:hover,
+.msg-reasoning .inline-file-reveal:focus-visible {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  outline: none;
+}
+
 .msg-body .inline-file-link code,
 .msg-reasoning .inline-file-link code {
   border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
