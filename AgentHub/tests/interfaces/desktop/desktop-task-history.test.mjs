@@ -679,6 +679,93 @@ test("desktop task history combines provider Threads in global chronological ord
   assert.deepEqual(result.items.map((item) => item.id), ["turn-thread-2", "turn-thread-1"]);
 });
 
+test("desktop Stream history uses the SQLite page without reading every Thread", async () => {
+  const reads = [];
+  const factory = createDesktopTaskHistoryFactory({
+    selection: {
+      activeProvider: () => "claude",
+      threadId: () => "thread-current",
+      chatId: () => 42,
+    },
+    catalog: {
+      entries: () => [{
+        streamId: "stream-1",
+        provider: "claude",
+        projectRoot: "D:/work",
+        threadId: "thread-current",
+        title: "Workspace",
+      }],
+      threadsForStream: () => [
+        { provider: "codex", threadId: "thread-old", projectRoot: "D:/work" },
+        { provider: "claude", threadId: "thread-current", projectRoot: "D:/work" },
+      ],
+    },
+    historyReader: {
+      read: async (binding) => {
+        reads.push(binding.threadId);
+        throw new Error("full Thread history must not be read");
+      },
+      readPage: async (bindings, options) => {
+        assert.deepEqual(bindings.map(({ provider, threadId }) => ({ provider, threadId })), [
+          { provider: "codex", threadId: "thread-old" },
+          { provider: "claude", threadId: "thread-current" },
+        ]);
+        assert.equal(options.limit, 2);
+        return {
+          total: 597,
+          messageTotal: 1_429,
+          start: 595,
+          end: 597,
+          items: [{
+            provider: "codex",
+            threadId: "thread-old",
+            turn: {
+              id: "turn-old",
+              prompt: "Старый вопрос",
+              answer: "Старый ответ",
+              completed: true,
+              startedAt: "2026-08-28T10:00:00.000Z",
+              messages: [],
+            },
+          }, {
+            provider: "claude",
+            threadId: "thread-current",
+            turn: {
+              id: "turn-current",
+              prompt: "Текущий вопрос",
+              answer: "Текущий ответ",
+              completed: true,
+              startedAt: "2026-08-28T11:00:00.000Z",
+              messages: [],
+            },
+          }],
+        };
+      },
+    },
+    runs: { forTask: () => null },
+    latestMessage: () => null,
+    historyMerger: { mergeActive() {}, mergeCompleted() {} },
+    responseBudget: { fit: (payload) => payload },
+  });
+
+  const result = await factory({
+    streamId: "stream-1",
+    provider: "claude",
+    threadId: "thread-current",
+    limit: 2,
+  });
+
+  assert.deepEqual(reads, []);
+  assert.equal(result.total, 597);
+  assert.equal(result.messageTotal, 1_429);
+  assert.equal(result.start, 595);
+  assert.equal(result.end, 597);
+  assert.deepEqual(result.items.map(({ id, provider, threadId }) => ({ id, provider, threadId })), [
+    { id: "turn-old", provider: "codex", threadId: "thread-old" },
+    { id: "turn-current", provider: "claude", threadId: "thread-current" },
+  ]);
+});
+
 test("desktop Stream history refreshes only its current Thread and exposes a failed refresh", async () => {
   const refreshes = [];
   const factory = createDesktopTaskHistoryFactory({

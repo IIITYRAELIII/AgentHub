@@ -740,6 +740,162 @@ function taskFromRow(row, history = []) {
   };
 }
 
+function normalizedHistoryReferences(references) {
+  const known = new Set();
+  return (Array.isArray(references) ? references : []).flatMap((reference, sourceOrder) => {
+    const provider = cleanText(reference?.provider, 20).toLowerCase();
+    const threadId = cleanText(reference?.threadId, 100);
+    const key = `${provider}\0${threadId}`;
+    if (!provider || !threadId || known.has(key)) return [];
+    known.add(key);
+    return [{ provider, threadId, sourceOrder }];
+  });
+}
+
+function literalPrefixCondition(column, prefix, params) {
+  const value = String(prefix ?? "").trim();
+  if (!value) return "0";
+  params.push(value, value);
+  return `substr(${column}, 1, length(?)) = ?`;
+}
+
+function historyPageQuery(references, {
+  hiddenProvider = "",
+  hiddenTurnIdPrefixes = [],
+  hiddenPrompts = [],
+  hiddenAnswerPrefixes = [],
+  hiddenClientUserMessageIdPrefixes = [],
+  hiddenMessageTexts = [],
+  hiddenMessageTextPrefixes = [],
+  emptyCompletionText = "",
+} = {}) {
+  const params = [];
+  const referenceSql = references.map((reference) => {
+    params.push(reference.provider, reference.threadId, reference.sourceOrder);
+    return "(?, ?, ?)";
+  }).join(", ");
+  const hidden = [];
+  for (const prefix of hiddenTurnIdPrefixes) {
+    hidden.push(literalPrefixCondition("turns.id", prefix, params));
+  }
+  for (const prompt of hiddenPrompts) {
+    const value = String(prompt ?? "").trim();
+    if (!value) continue;
+    params.push(value);
+    hidden.push("trim(turns.prompt) = ?");
+  }
+  for (const prefix of hiddenAnswerPrefixes) {
+    hidden.push(literalPrefixCondition("trim(turns.answer)", prefix, params));
+  }
+  for (const prefix of hiddenClientUserMessageIdPrefixes) {
+    const condition = literalPrefixCondition("messages.client_user_message_id", prefix, params);
+    hidden.push(`EXISTS (
+      SELECT 1 FROM task_read_model_messages messages
+      WHERE messages.provider = turns.provider AND messages.thread_id = turns.thread_id
+        AND messages.turn_position = turns.position AND ${condition}
+    )`);
+  }
+  for (const text of hiddenMessageTexts) {
+    const value = String(text ?? "").trim();
+    if (!value) continue;
+    params.push(value);
+    hidden.push(`EXISTS (
+      SELECT 1 FROM task_read_model_messages messages
+      WHERE messages.provider = turns.provider AND messages.thread_id = turns.thread_id
+        AND messages.turn_position = turns.position AND trim(messages.text) = ?
+    )`);
+  }
+  for (const prefix of hiddenMessageTextPrefixes) {
+    const condition = literalPrefixCondition("trim(messages.text)", prefix, params);
+    hidden.push(`EXISTS (
+      SELECT 1 FROM task_read_model_messages messages
+      WHERE messages.provider = turns.provider AND messages.thread_id = turns.thread_id
+        AND messages.turn_position = turns.position AND ${condition}
+    )`);
+  }
+  const completionText = String(emptyCompletionText ?? "").trim();
+  if (completionText) {
+    params.push(completionText);
+    hidden.push(`(
+      trim(turns.prompt) = '' AND trim(turns.answer) = ?
+      AND NOT EXISTS (
+        SELECT 1 FROM task_read_model_messages messages
+        WHERE messages.provider = turns.provider AND messages.thread_id = turns.thread_id
+          AND messages.turn_position = turns.position AND messages.role = 'user'
+          AND (trim(messages.text) <> '' OR messages.attachments_json <> '[]')
+      )
+    )`);
+  }
+  let visibleSql = "1";
+  const provider = cleanText(hiddenProvider, 20).toLowerCase();
+  if (provider && hidden.length) {
+    params.push(provider);
+    visibleSql = `NOT (turns.provider = ? AND (${hidden.join(" OR ")}))`;
+    const providerParam = params.pop();
+    params.splice(references.length * 3, 0, providerParam);
+  }
+  const messageCountSql = `
+    (
+      SELECT COUNT(*) FROM task_read_model_messages messages
+      WHERE messages.provider = turns.provider AND messages.thread_id = turns.thread_id
+        AND messages.turn_position = turns.position AND messages.role = 'user'
+        AND (trim(messages.text) <> '' OR messages.attachments_json <> '[]'
+          OR turns.attachments_json <> '[]')
+    )
+    + (
+      SELECT COUNT(*) FROM task_read_model_messages messages
+      WHERE messages.provider = turns.provider AND messages.thread_id = turns.thread_id
+        AND messages.turn_position = turns.position AND messages.kind = 'subagent'
+        AND (trim(messages.text) <> '' OR messages.attachments_json <> '[]')
+    )
+    + CASE WHEN (turns.completed = 1 OR turns.active = 0) AND EXISTS (
+      SELECT 1 FROM task_read_model_messages messages
+      WHERE messages.provider = turns.provider AND messages.thread_id = turns.thread_id
+        AND messages.turn_position = turns.position AND messages.role = 'agent'
+        AND messages.kind <> 'subagent'
+        AND (trim(messages.text) <> '' OR messages.attachments_json <> '[]')
+    ) THEN 1 ELSE 0 END
+    + CASE WHEN trim(turns.prompt) <> '' AND NOT EXISTS (
+      SELECT 1 FROM task_read_model_messages messages
+      WHERE messages.provider = turns.provider AND messages.thread_id = turns.thread_id
+        AND messages.turn_position = turns.position AND messages.role = 'user'
+        AND (trim(messages.text) <> '' OR messages.attachments_json <> '[]'
+          OR turns.attachments_json <> '[]')
+    ) THEN 1 ELSE 0 END
+    + CASE WHEN trim(turns.answer) <> '' AND (turns.completed = 1 OR turns.active = 0)
+      AND NOT EXISTS (
+        SELECT 1 FROM task_read_model_messages messages
+        WHERE messages.provider = turns.provider AND messages.thread_id = turns.thread_id
+          AND messages.turn_position = turns.position AND messages.role = 'agent'
+          AND messages.kind <> 'subagent'
+          AND (trim(messages.text) <> '' OR messages.attachments_json <> '[]')
+      ) THEN 1 ELSE 0 END
+  `;
+  const cte = `WITH selected_threads(provider, thread_id, source_order) AS (
+    VALUES ${referenceSql}
+  ), visible_turns AS (
+    SELECT turns.*, selected_threads.source_order,
+      COALESCE(
+        julianday(turns.started_at),
+        (
+          SELECT MIN(candidate_time) FROM (
+            SELECT julianday(messages.time) AS candidate_time
+            FROM task_read_model_messages messages
+            WHERE messages.provider = turns.provider AND messages.thread_id = turns.thread_id
+              AND messages.turn_position = turns.position
+            UNION ALL SELECT julianday(turns.completed_at)
+          ) WHERE candidate_time IS NOT NULL
+        )
+      ) AS sort_time,
+      ${messageCountSql} AS message_count
+    FROM task_read_model_turns turns
+    JOIN selected_threads ON selected_threads.provider = turns.provider
+      AND selected_threads.thread_id = turns.thread_id
+    WHERE ${visibleSql}
+  )`;
+  return { cte, params };
+}
+
 export class LocalTaskSyncStore {
   #filePath;
   #databaseFile;
@@ -802,18 +958,21 @@ export class LocalTaskSyncStore {
         LIMIT ?
       ) ORDER BY position
     `).all(provider, threadId, safeLimit);
+    return this.#hydrateHistoryRows(turns);
+  }
+
+  #hydrateHistoryRows(turns) {
     if (!turns.length) return [];
-    const turnPositions = turns.map((row) => Number(row.position));
-    const placeholders = turnPositions.map(() => "?").join(", ");
+    const identities = turns.map(() => "(?, ?, ?)").join(", ");
     const messages = this.#database.prepare(`
       SELECT * FROM task_read_model_messages
-      WHERE provider = ? AND thread_id = ?
-        AND turn_position IN (${placeholders})
-      ORDER BY turn_position, position
-    `).all(provider, threadId, ...turnPositions);
+      WHERE (provider, thread_id, turn_position) IN (${identities})
+      ORDER BY provider, thread_id, turn_position, position
+    `).all(...turns.flatMap((row) => [row.provider, row.thread_id, Number(row.position)]));
     const messagesByTurn = new Map();
     for (const row of messages) {
-      const turnMessages = messagesByTurn.get(Number(row.turn_position)) ?? [];
+      const key = `${row.provider}\0${row.thread_id}\0${Number(row.turn_position)}`;
+      const turnMessages = messagesByTurn.get(key) ?? [];
       const origin = parseInterstreamOrigin(row.origin_json);
       turnMessages.push({
         itemId: String(row.item_id ?? ""),
@@ -835,7 +994,7 @@ export class LocalTaskSyncStore {
           : {}),
         attachments: parseJsonArray(row.attachments_json),
       });
-      messagesByTurn.set(Number(row.turn_position), turnMessages);
+      messagesByTurn.set(key, turnMessages);
     }
     return turns.map((row) => {
       const promptOrigin = parseInterstreamOrigin(row.prompt_origin_json);
@@ -857,7 +1016,7 @@ export class LocalTaskSyncStore {
       ...(parseJsonArray(row.activity_groups_json).length
         ? { activityGroups: parseJsonArray(row.activity_groups_json) }
         : {}),
-      messages: messagesByTurn.get(Number(row.position)) ?? [],
+      messages: messagesByTurn.get(`${row.provider}\0${row.thread_id}\0${Number(row.position)}`) ?? [],
       };
     });
   }
@@ -1724,6 +1883,56 @@ export class LocalTaskSyncStore {
 
   history(task, { limit = this.#historyLimit } = {}) {
     return cleanHistory(this.#readHistory(task, limit), limit, { provider: task.provider });
+  }
+
+  historyPage(references, {
+    before,
+    limit = 10,
+    ...visibility
+  } = {}) {
+    const normalizedReferences = normalizedHistoryReferences(references);
+    if (!normalizedReferences.length) {
+      return { total: 0, messageTotal: 0, start: 0, end: 0, items: [] };
+    }
+    const safeLimit = Math.max(1, Math.min(Math.floor(Number(limit) || 10), 20));
+    const query = historyPageQuery(normalizedReferences, visibility);
+    const aggregate = this.#database.prepare(`${query.cte}
+      SELECT COUNT(*) AS total, COALESCE(SUM(message_count), 0) AS message_total
+      FROM visible_turns
+    `).get(...query.params);
+    const total = Number(aggregate?.total) || 0;
+    const requestedEnd = Number(before);
+    const end = Number.isSafeInteger(requestedEnd)
+      ? Math.max(0, Math.min(requestedEnd, total))
+      : total;
+    const start = Math.max(0, end - safeLimit);
+    if (start === end) {
+      return {
+        total,
+        messageTotal: Number(aggregate?.message_total) || 0,
+        start,
+        end,
+        items: [],
+      };
+    }
+    const rows = this.#database.prepare(`${query.cte}
+      SELECT * FROM visible_turns
+      ORDER BY CASE WHEN sort_time IS NULL THEN 1 ELSE 0 END,
+        sort_time, source_order, position
+      LIMIT ? OFFSET ?
+    `).all(...query.params, end - start, start);
+    const history = this.#hydrateHistoryRows(rows);
+    return {
+      total,
+      messageTotal: Number(aggregate?.message_total) || 0,
+      start,
+      end,
+      items: history.map((turn, index) => ({
+        provider: String(rows[index].provider),
+        threadId: String(rows[index].thread_id),
+        turn,
+      })),
+    };
   }
 
   snapshot(task, {

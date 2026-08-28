@@ -1392,3 +1392,63 @@ test("task sync removes a promptless compaction echo of the previous answer", as
 
   assert.deepEqual(store.history(task).map((turn) => turn.id), ["user-turn"]);
 });
+
+test("task sync pages multiple Thread histories directly in SQLite", async () => {
+  const filePath = await storeFile();
+  const store = new LocalTaskSyncStore({ filePath, historyLimit: 100 });
+  await store.load();
+  const references = [
+    { provider: "codex", threadId: "thread-old" },
+    { provider: "claude", threadId: "thread-current" },
+  ];
+  for (const reference of references) {
+    const currentTask = { ...task, ...reference };
+    store.recordCatalog([currentTask]);
+    store.recordHistory(currentTask, Array.from({ length: 4 }, (_, index) => ({
+      id: `${reference.threadId}-turn-${index}`,
+      prompt: `Вопрос ${reference.threadId} ${index}`,
+      answer: `Ответ ${reference.threadId} ${index}`,
+      status: "completed",
+      completed: true,
+      startedAt: `2026-08-28T0${index + (reference.provider === "claude" ? 4 : 0)}:00:00.000Z`,
+      messages: [
+        { itemId: `${reference.threadId}-user-${index}`, role: "user", text: `Вопрос ${index}` },
+        { itemId: `${reference.threadId}-agent-${index}`, role: "agent", phase: "final", text: `Ответ ${index}` },
+      ],
+    })));
+  }
+  const hiddenTask = { ...task, provider: "codex", threadId: "thread-old" };
+  store.recordHistory(hiddenTask, [
+    ...store.history(hiddenTask),
+    {
+      id: "auto-compact-hidden",
+      prompt: "Служебный перенос",
+      answer: "Скрыто",
+      status: "completed",
+      completed: true,
+      startedAt: "2026-08-28T09:00:00.000Z",
+      messages: [{ itemId: "hidden-agent", role: "agent", text: "Скрыто" }],
+    },
+  ]);
+
+  const page = store.historyPage(references, {
+    before: 7,
+    limit: 3,
+    hiddenProvider: "codex",
+    hiddenTurnIdPrefixes: ["auto-compact-"],
+  });
+
+  assert.equal(page.total, 8);
+  assert.equal(page.messageTotal, 16);
+  assert.equal(page.start, 4);
+  assert.equal(page.end, 7);
+  assert.deepEqual(page.items.map(({ provider, threadId, turn }) => ({
+    provider,
+    threadId,
+    id: turn.id,
+  })), [
+    { provider: "claude", threadId: "thread-current", id: "thread-current-turn-0" },
+    { provider: "claude", threadId: "thread-current", id: "thread-current-turn-1" },
+    { provider: "claude", threadId: "thread-current", id: "thread-current-turn-2" },
+  ]);
+});

@@ -1,12 +1,21 @@
 import { createHash } from "node:crypto";
 import {
   displayUserPrompt,
+  EMPTY_TURN_COMPLETION_TEXT,
   isEmptyTurnCompletionPlaceholder,
   userTaskReferencePromptDetails,
   withoutCodexInspectionAttachments,
 } from "../../application/task-history.mjs";
-import { isCodexContextProbeTurn } from "../../domain/codex-context-probe.mjs";
-import { isCodexAutoCompactionTurnId } from "../../domain/codex-internal-turn.mjs";
+import {
+  CODEX_CONTEXT_PROBE_CLIENT_ID_PREFIX,
+  CODEX_CONTEXT_PROBE_PROMPT,
+  CODEX_CONTEXT_PROBE_RESPONSE_PREFIX,
+  isCodexContextProbeTurn,
+} from "../../domain/codex-context-probe.mjs";
+import {
+  CODEX_AUTO_COMPACTION_TURN_ID_PREFIX,
+  isCodexAutoCompactionTurnId,
+} from "../../domain/codex-internal-turn.mjs";
 import {
   interstreamMessageDetails,
   interstreamOriginAuthor,
@@ -402,13 +411,55 @@ export function createDesktopTaskHistoryFactory({
     const historySources = new Map();
     const history = [];
     let sourceRefreshFailed = false;
-    for (const threadBinding of threadBindings) {
+    const currentThreadBinding = threadBindings.find((threadBinding) => (
+      threadBinding.provider === binding.provider && threadBinding.threadId === binding.threadId
+    )) ?? binding;
+    if (params.refreshSource === true) {
+      sourceRefreshFailed = await scheduleRefresh(currentThreadBinding, { force: true }) === false;
+    }
+    const pagedHistory = typeof historyReader.readPage === "function"
+      ? await historyReader.readPage(threadBindings, {
+        before: params.before,
+        limit,
+        hiddenProvider: "codex",
+        hiddenTurnIdPrefixes: [CODEX_AUTO_COMPACTION_TURN_ID_PREFIX],
+        hiddenPrompts: [CODEX_CONTEXT_PROBE_PROMPT],
+        hiddenAnswerPrefixes: [CODEX_CONTEXT_PROBE_RESPONSE_PREFIX],
+        hiddenClientUserMessageIdPrefixes: [CODEX_CONTEXT_PROBE_CLIENT_ID_PREFIX],
+        hiddenMessageTexts: [CODEX_CONTEXT_PROBE_PROMPT],
+        hiddenMessageTextPrefixes: [CODEX_CONTEXT_PROBE_RESPONSE_PREFIX],
+        emptyCompletionText: EMPTY_TURN_COMPLETION_TEXT,
+      })
+      : null;
+    if (pagedHistory) {
+      const cachedByKey = new Map();
+      for (const threadBinding of threadBindings) {
+        const key = `${threadBinding.provider}:${threadBinding.threadId}`;
+        cachedByKey.set(key, {
+          provider: readCachedHistory(providerHistories, key),
+          hydrated: readCachedHistory(hydratedHistories, key),
+        });
+      }
+      for (const source of pagedHistory.items) {
+        const key = `${source.provider}:${source.threadId}`;
+        const cached = cachedByKey.get(key) ?? { provider: [], hydrated: [] };
+        const id = String(source.turn?.id ?? "").trim();
+        let item = mergeCachedTaskHistory(
+          cached.provider.filter((turn) => String(turn?.id ?? "").trim() === id),
+          [source.turn],
+        )[0];
+        item = mergeCachedTaskHistory(
+          cached.hydrated.filter((turn) => String(turn?.id ?? "").trim() === id),
+          [item],
+        )[0];
+        history.push(item);
+        historySources.set(item, { key, provider: source.provider, threadId: source.threadId });
+      }
+      scheduleRefresh(currentThreadBinding);
+    } else for (const threadBinding of threadBindings) {
       const key = `${threadBinding.provider}:${threadBinding.threadId}`;
       const currentThread = threadBinding.provider === binding.provider
         && threadBinding.threadId === binding.threadId;
-      if (params.refreshSource === true && currentThread) {
-        sourceRefreshFailed = await scheduleRefresh(threadBinding, { force: true }) === false;
-      }
       // Pagination is calculated after durable/provider/active histories are
       // merged. Limiting the durable source here makes its page look like the
       // complete history and loses the cursor for older turns.
@@ -432,6 +483,9 @@ export function createDesktopTaskHistoryFactory({
         });
       }
     }
+    const pagedBaseLength = history.length;
+    const pagedBaseMessageCount = visibleTaskHistoryMessageCount(history);
+    const pagedBaseIds = new Set(history.map((item) => String(item?.id ?? "").trim()));
     const indexedRun = params.includeActive === false ? null : runs.forTask(binding);
     const candidateRun = indexedRun
       && taskRunIsActive(indexedRun)
@@ -515,9 +569,15 @@ export function createDesktopTaskHistoryFactory({
       }
     }
 
-    const orderedHistory = sortTaskHistoryChronologically(history);
-    const total = orderedHistory.length;
-    const messageTotal = visibleTaskHistoryMessageCount(orderedHistory);
+    let orderedHistory = sortTaskHistoryChronologically(history);
+    const pagedLengthDelta = pagedHistory ? orderedHistory.length - pagedBaseLength : 0;
+    const total = pagedHistory
+      ? pagedHistory.total + pagedLengthDelta
+      : orderedHistory.length;
+    const messageTotal = pagedHistory
+      ? pagedHistory.messageTotal
+        + visibleTaskHistoryMessageCount(orderedHistory) - pagedBaseMessageCount
+      : visibleTaskHistoryMessageCount(orderedHistory);
     const requestedEnd = Number(params.before);
     const end = Number.isSafeInteger(requestedEnd)
       ? Math.max(0, Math.min(requestedEnd, total))
@@ -526,8 +586,18 @@ export function createDesktopTaskHistoryFactory({
       1_000,
       Math.min(Number(params.maxAnswerChars) || 200_000, 200_000),
     );
-    const start = Math.max(0, end - limit);
-    const rawPage = orderedHistory.slice(start, end);
+    let start = Math.max(0, end - limit);
+    let rawPage;
+    if (pagedHistory && Number.isSafeInteger(requestedEnd)) {
+      orderedHistory = orderedHistory.filter((item) => pagedBaseIds.has(String(item?.id ?? "").trim()));
+      start = pagedHistory.start;
+      rawPage = orderedHistory;
+    } else if (pagedHistory) {
+      rawPage = orderedHistory.slice(-limit);
+      start = Math.max(0, total - rawPage.length);
+    } else {
+      rawPage = orderedHistory.slice(start, end);
+    }
     const pageSources = rawPage.map((item) => historySources.get(item));
     const page = await hydrateHistory(rawPage);
     for (let index = 0; index < page.length; index += 1) {

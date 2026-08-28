@@ -172,6 +172,7 @@ export function createDesktopReadSystemWiring({
       },
       historyReader: {
         read: services.readCachedHistory,
+        readPage: services.readHistoryPage,
         refresh: services.refreshHistory,
       },
       runs: {
