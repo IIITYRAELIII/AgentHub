@@ -48,6 +48,7 @@ export async function runTestContourUiSmoke({
   automationRoot,
   artifactsDirectory,
   withAgent = true,
+  probeResponse = TEST_CONTOUR_PROBE_RESPONSE,
   timeoutMs = 180_000,
   launchOptions = { channel: "msedge", headless: true },
 } = {}) {
@@ -103,12 +104,12 @@ export async function runTestContourUiSmoke({
       await input.fill(TEST_CONTOUR_PROBE);
       await page.locator("[data-composer-send]").click();
       const response = page.locator(".msg-agent .msg-body")
-        .filter({ hasText: TEST_CONTOUR_PROBE_RESPONSE })
+        .filter({ hasText: probeResponse })
         .last();
       await response.waitFor({ state: "visible", timeout: timeoutMs });
       const responseText = (await response.innerText()).trim();
-      if (responseText !== TEST_CONTOUR_PROBE_RESPONSE) {
-        throw new Error(`Unexpected Spark response: ${JSON.stringify(responseText)}`);
+      if (responseText !== probeResponse) {
+        throw new Error(`Unexpected Test Contour response: ${JSON.stringify(responseText)}`);
       }
     }
 

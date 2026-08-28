@@ -136,7 +136,7 @@ function focusedSteps(plan, {
     const fullTestIndex = full.findIndex((step) => step.label === "Полные тесты Agent Hub");
     full.splice(fullTestIndex < 0 ? 0 : fullTestIndex + 1, 0, npmStep(
       RELEASE_CANDIDATE_CONTOUR_LABEL,
-      ["run", "contour:verify", "--", "--require-installed"],
+      ["run", "contour:verify", "--", "--require-installed", "--model", "fake-codex"],
     ));
   }
   if (plan.unknown.length) return full;

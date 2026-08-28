@@ -853,11 +853,15 @@ async function verifyTestContourUnlocked({
     TEST_CONTOUR_PROBE,
     TEST_CONTOUR_PROBE_RESPONSE,
   } = await import("../infrastructure/browser/test-contour-ui-smoke.mjs");
+  const probeResponse = model === TEST_CONTOUR_FAKE_MODEL
+    ? "Принято"
+    : TEST_CONTOUR_PROBE_RESPONSE;
   const smoke = await runTestContourUiSmoke({
     url: state.url,
     automationRoot: paths.automationRoot,
     artifactsDirectory: paths.artifactsDirectory,
     withAgent,
+    probeResponse,
   });
   let journal = null;
   if (withAgent) {
@@ -869,7 +873,7 @@ async function verifyTestContourUnlocked({
           item.provider === "codex"
           && item.model === state.model
           && item.prompt === TEST_CONTOUR_PROBE
-          && item.body === TEST_CONTOUR_PROBE_RESPONSE
+          && item.body === probeResponse
           && Date.parse(item.completedAt) >= Date.parse(state.startedAt)
         ));
         return record ? {
@@ -881,7 +885,7 @@ async function verifyTestContourUnlocked({
       } finally {
         database.close();
       }
-    }, "Spark journal confirmation", 30_000);
+    }, "Test Contour journal confirmation", 30_000);
   }
   return { state, smoke, journal };
 }

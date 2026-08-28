@@ -77,6 +77,10 @@ release-candidate check. Failure to load the shell, a browser exception, or a
 missing cross-file runtime API must stop publication before worker, runtime or
 extension deployment.
 
+The release-candidate provider probe uses the isolated deterministic fake Codex
+profile. Shared account quotas, provider availability and billing state are not
+release evidence and must neither pass nor block publication.
+
 The new ledger becomes authoritative only after frozen manifests participate in
 release planning and every active legacy entry is either linked, released or
 discarded by its existing owner. Until Stream roles are persisted explicitly,
