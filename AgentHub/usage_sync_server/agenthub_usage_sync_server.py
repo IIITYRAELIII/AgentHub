@@ -39,6 +39,7 @@ DEFAULT_PORT = int(os.environ.get("AGENTHUB_USAGE_SYNC_PORT", "9198"))
 MAX_ENROLL_BODY_BYTES = 64 * 1024
 MAX_USAGE_BODY_BYTES = 8 * 1024 * 1024
 MAX_SNAPSHOT_BODY_BYTES = 64 * 1024
+MAX_CHANGES_BODY_BYTES = 64 * 1024
 UUID_PATTERN = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 )
@@ -164,18 +165,25 @@ def init_db(db: sqlite3.Connection) -> None:
             service_tier TEXT NOT NULL DEFAULT '',
             device_label TEXT NOT NULL DEFAULT '',
             observed_at TEXT NOT NULL DEFAULT '',
-            received_at_ms INTEGER NOT NULL
+            received_at_ms INTEGER NOT NULL,
+            server_revision INTEGER NOT NULL DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS usage_events_device_completed
             ON usage_events(device_id, completed_ms);
         CREATE INDEX IF NOT EXISTS usage_events_account_completed
             ON usage_events(account_key, completed_ms);
+        CREATE INDEX IF NOT EXISTS usage_events_server_revision
+            ON usage_events(server_revision);
         CREATE TABLE IF NOT EXISTS ingest_audit (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             device_id TEXT NOT NULL,
             received_at_ms INTEGER NOT NULL,
             accepted_events INTEGER NOT NULL,
             rejected_events INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS usage_sync_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
         );
         """
     )
@@ -188,9 +196,62 @@ def init_db(db: sqlite3.Connection) -> None:
         ("account_type", "TEXT NOT NULL DEFAULT ''"),
         ("account_plan", "TEXT NOT NULL DEFAULT ''"),
         ("device_label", "TEXT NOT NULL DEFAULT ''"),
+        ("server_revision", "INTEGER NOT NULL DEFAULT 0"),
     ):
         if name not in columns:
             db.execute(f"ALTER TABLE usage_events ADD COLUMN {name} {definition}")
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS usage_events_server_revision ON usage_events(server_revision)"
+    )
+    backfill_server_revisions(db)
+    db.commit()
+
+
+def current_server_revision(db: sqlite3.Connection) -> int:
+    row = db.execute("SELECT value FROM usage_sync_meta WHERE key='server_revision'").fetchone()
+    meta_revision = integer(row["value"]) if row else 0
+    row = db.execute("SELECT COALESCE(MAX(server_revision), 0) AS revision FROM usage_events").fetchone()
+    event_revision = integer(row["revision"]) if row else 0
+    return max(meta_revision, event_revision)
+
+
+def set_server_revision(db: sqlite3.Connection, revision: int) -> None:
+    db.execute(
+        """
+        INSERT INTO usage_sync_meta(key, value) VALUES('server_revision', ?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value
+        """,
+        (str(max(0, int(revision))),),
+    )
+
+
+def next_server_revision(db: sqlite3.Connection) -> int:
+    row = db.execute("SELECT value FROM usage_sync_meta WHERE key='server_revision'").fetchone()
+    revision = (integer(row["value"]) if row else current_server_revision(db)) + 1
+    set_server_revision(db, revision)
+    return revision
+
+
+def backfill_server_revisions(db: sqlite3.Connection) -> None:
+    rows = db.execute(
+        """
+        SELECT event_id
+        FROM usage_events
+        WHERE server_revision=0
+        ORDER BY received_at_ms, completed_ms, device_id, event_id
+        """
+    ).fetchall()
+    if not rows:
+        set_server_revision(db, current_server_revision(db))
+        return
+    revision = current_server_revision(db)
+    for row in rows:
+        revision += 1
+        db.execute(
+            "UPDATE usage_events SET server_revision=? WHERE event_id=?",
+            (revision, row["event_id"]),
+        )
+    set_server_revision(db, revision)
 
 
 def public_key_from_b64(public_key: str) -> Ed25519PublicKey:
@@ -366,6 +427,7 @@ class UsageEvent:
     device_label: str
     observed_at: str
     received_at_ms: int
+    server_revision: int = 0
 
 
 def normalize_event(value: Any, received_at_ms: int) -> UsageEvent:
@@ -452,8 +514,34 @@ EVENT_COLUMNS = (
     "started_at, account_key, account_label, account_type, account_plan, "
     "account_attribution, estimated_credits, input_tokens, "
     "cached_input_tokens, output_tokens, reasoning_output_tokens, total_tokens, "
-    "usage_reported, model, service_tier, device_label, observed_at, received_at_ms"
+    "usage_reported, model, service_tier, device_label, observed_at, received_at_ms, "
+    "server_revision"
 )
+
+
+def update_device_label(db: sqlite3.Connection, device_id: str, label: str) -> int:
+    candidate = text(label, 80)
+    if not candidate:
+        return 0
+    db.execute(
+        "UPDATE devices SET label=?, updated_at=? WHERE device_id=?",
+        (candidate, utc_now_iso(), device_id),
+    )
+    rows = db.execute(
+        """
+        SELECT event_id
+        FROM usage_events
+        WHERE device_id=? AND device_label<>?
+        ORDER BY completed_ms, event_id
+        """,
+        (device_id, candidate),
+    ).fetchall()
+    for row in rows:
+        db.execute(
+            "UPDATE usage_events SET device_label=?, server_revision=? WHERE event_id=?",
+            (candidate, next_server_revision(db), row["event_id"]),
+        )
+    return len(rows)
 
 
 def insert_or_update_event(db: sqlite3.Connection, event: UsageEvent) -> str:
@@ -463,7 +551,10 @@ def insert_or_update_event(db: sqlite3.Connection, event: UsageEvent) -> str:
     ).fetchone()
     if not should_replace(existing, event):
         return "unchanged"
-    values = tuple(event.__dict__[name] for name in EVENT_COLUMNS.replace(" ", "").split(","))
+    values = tuple(
+        event.__dict__[name] if name != "server_revision" else next_server_revision(db)
+        for name in EVENT_COLUMNS.replace(" ", "").split(",")
+    )
     db.execute(
         f"""
         INSERT INTO usage_events({EVENT_COLUMNS})
@@ -492,7 +583,8 @@ def insert_or_update_event(db: sqlite3.Connection, event: UsageEvent) -> str:
             service_tier=excluded.service_tier,
             device_label=excluded.device_label,
             observed_at=excluded.observed_at,
-            received_at_ms=excluded.received_at_ms
+            received_at_ms=excluded.received_at_ms,
+            server_revision=excluded.server_revision
         """,
         values,
     )
@@ -546,31 +638,39 @@ def ingest_snapshot(
         raise ValueError("snapshot events must be an array")
     received = now_ms()
     added = updated = unchanged = rejected = 0
-    for item in events:
-        try:
-            event = normalize_event(item, received)
-            if event.device_id != device_id:
+    db.execute("BEGIN IMMEDIATE")
+    try:
+        label_updates = update_device_label(db, device_id, payload.get("deviceLabel"))
+        for item in events:
+            try:
+                event = normalize_event(item, received)
+                if event.device_id != device_id:
+                    rejected += 1
+                    continue
+                result = insert_or_update_event(db, event)
+                added += 1 if result == "added" else 0
+                updated += 1 if result == "updated" else 0
+                unchanged += 1 if result == "unchanged" else 0
+            except ValueError:
                 rejected += 1
-                continue
-            result = insert_or_update_event(db, event)
-            added += 1 if result == "added" else 0
-            updated += 1 if result == "updated" else 0
-            unchanged += 1 if result == "unchanged" else 0
-        except ValueError:
-            rejected += 1
-    db.execute(
-        """
-        INSERT INTO ingest_audit(device_id, received_at_ms, accepted_events, rejected_events)
-        VALUES(?,?,?,?)
-        """,
-        (device_id, received, added + updated + unchanged, rejected),
-    )
-    db.commit()
+        db.execute(
+            """
+            INSERT INTO ingest_audit(device_id, received_at_ms, accepted_events, rejected_events)
+            VALUES(?,?,?,?)
+            """,
+            (device_id, received, added + updated + unchanged, rejected),
+        )
+        revision = current_server_revision(db)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     return {
         "ok": True,
         "deviceId": device_id,
+        "serverRevision": revision,
         "added": added,
-        "updated": updated,
+        "updated": updated + label_updates,
         "unchanged": unchanged,
         "rejected": rejected,
     }
@@ -597,6 +697,38 @@ def export_snapshot(
     return {
         "version": 1,
         "exportedAt": utc_now_iso(),
+        "serverRevision": current_server_revision(db),
+        "events": [event_row_to_api(row) for row in rows],
+    }
+
+
+def export_changes(
+    db: sqlite3.Connection, *, device_id: str, signature: str, body: bytes
+) -> dict[str, Any]:
+    device_id, payload = verified_device_payload(
+        db,
+        device_id=device_id,
+        signature=signature,
+        body=body,
+        kind="changes",
+    )
+    since_revision = max(0, integer(payload.get("sinceRevision")))
+    rows = db.execute(
+        """
+        SELECT usage_events.*, devices.label AS device_device_label
+        FROM usage_events
+        LEFT JOIN devices ON devices.device_id = usage_events.device_id
+        WHERE usage_events.server_revision > ?
+        ORDER BY usage_events.server_revision, usage_events.event_id
+        """,
+        (since_revision,),
+    ).fetchall()
+    return {
+        "version": 1,
+        "exportedAt": utc_now_iso(),
+        "deviceId": device_id,
+        "sinceRevision": since_revision,
+        "serverRevision": current_server_revision(db),
         "events": [event_row_to_api(row) for row in rows],
     }
 
@@ -659,6 +791,18 @@ class UsageSyncHandler(BaseHTTPRequestHandler):
                     self.send_json(
                         200,
                         export_snapshot(
+                            db,
+                            device_id=self.headers.get("X-AgentHub-Device-Id", ""),
+                            signature=self.headers.get("X-AgentHub-Signature", ""),
+                            body=body,
+                        ),
+                    )
+                    return
+                if self.path == "/api/changes":
+                    body = self.read_body(MAX_CHANGES_BODY_BYTES)
+                    self.send_json(
+                        200,
+                        export_changes(
                             db,
                             device_id=self.headers.get("X-AgentHub-Device-Id", ""),
                             signature=self.headers.get("X-AgentHub-Signature", ""),

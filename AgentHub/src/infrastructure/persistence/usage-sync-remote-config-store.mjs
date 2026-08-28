@@ -22,6 +22,7 @@ function normalizeUrl(value) {
 function normalizeState(value = {}, { defaultServerUrl = "" } = {}) {
   if (!value || typeof value !== "object") return {};
   const serverUrl = value.serverUrl ? normalizeUrl(value.serverUrl) : normalizeUrl(defaultServerUrl);
+  const pullRevision = Math.max(0, Math.trunc(Number(value.lastUsagePullRevision) || 0));
   return {
     version: 1,
     serverUrl,
@@ -29,6 +30,8 @@ function normalizeState(value = {}, { defaultServerUrl = "" } = {}) {
     enrolledAt: text(value.enrolledAt, 80),
     lastPushAt: text(value.lastPushAt, 80),
     lastPullAt: text(value.lastPullAt, 80),
+    lastUsagePushWatermark: text(value.lastUsagePushWatermark, 80),
+    lastUsagePullRevision: pullRevision,
     lastResult: value.lastResult && typeof value.lastResult === "object"
       ? structuredClone(value.lastResult)
       : null,
@@ -99,15 +102,15 @@ export class UsageSyncRemoteConfigStore {
     });
   }
 
-  rememberPush(result = {}) {
-    return this.#rememberResult("lastPushAt", result);
+  rememberPush(result = {}, { usageWatermark = "" } = {}) {
+    return this.#rememberResult("lastPushAt", result, { usageWatermark });
   }
 
-  rememberPull(result = {}) {
-    return this.#rememberResult("lastPullAt", result);
+  rememberPull(result = {}, { serverRevision = null } = {}) {
+    return this.#rememberResult("lastPullAt", result, { serverRevision });
   }
 
-  #rememberResult(timestampField, result) {
+  #rememberResult(timestampField, result, { usageWatermark = "", serverRevision = null } = {}) {
     return this.#enqueue(async () => {
       const current = this.#state ?? normalizeState(await readJson(this.#file), {
         defaultServerUrl: this.#defaultServerUrl,
@@ -115,6 +118,10 @@ export class UsageSyncRemoteConfigStore {
       const state = normalizeState({
         ...current,
         [timestampField]: this.#now().toISOString(),
+        lastUsagePushWatermark: usageWatermark || current.lastUsagePushWatermark,
+        lastUsagePullRevision: serverRevision == null
+          ? current.lastUsagePullRevision
+          : Math.max(Number(current.lastUsagePullRevision) || 0, Math.trunc(Number(serverRevision) || 0)),
         lastResult: result,
       });
       await this.#write(state);

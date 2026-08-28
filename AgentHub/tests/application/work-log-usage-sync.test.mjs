@@ -190,6 +190,31 @@ test("usage sync snapshot exports ledger records as minimal remote turns", () =>
   assert.equal(turns[key].contextProbe, true);
 });
 
+test("usage sync snapshot can export only records observed after a watermark", () => {
+  const snapshot = usageSyncSnapshotFromLedger({
+    "codex\u0000thread-1\u0000turn-1": {
+      provider: "codex",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      completedAt: "2026-08-20T01:00:00.000Z",
+      observedAt: "2026-08-20T01:01:00.000Z",
+    },
+    "codex\u0000thread-2\u0000turn-2": {
+      provider: "codex",
+      threadId: "thread-2",
+      turnId: "turn-2",
+      completedAt: "2026-08-20T02:00:00.000Z",
+      observedAt: "2026-08-20T02:01:00.000Z",
+    },
+  }, {
+    deviceId: "device-a",
+    afterObservedAt: "2026-08-20T01:30:00.000Z",
+  });
+
+  assert.equal(snapshot.events.length, 1);
+  assert.equal(snapshot.events[0].completedAt, "2026-08-20T02:00:00.000Z");
+});
+
 test("turns of one thread stay grouped after pseudonymization", () => {
   const record = (turnId) => ({
     provider: "codex",

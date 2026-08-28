@@ -97,6 +97,57 @@ test("push and pull sign the exact transmitted body bytes", async () => {
   assert.equal(identity.signed[1], Buffer.from(calls[1].options.body).toString("utf8"));
 });
 
+test("incremental pull posts a signed changes request with a revision cursor", async () => {
+  const identity = identityStore();
+  const calls = [];
+  const client = new UsageSyncRemoteClient({
+    serverUrl: "http://127.0.0.1:9198",
+    identityStore: identity,
+    now: () => new Date("2026-08-20T04:10:00.000Z"),
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return response({ version: 1, serverRevision: 8, events: [] });
+    },
+  });
+
+  await client.pull({ sinceRevision: 7 });
+
+  assert.equal(calls[0].url, "http://127.0.0.1:9198/api/changes");
+  assert.equal(calls[0].options.headers["X-AgentHub-Device-Id"], identity.deviceId);
+  assert.equal(calls[0].options.headers["X-AgentHub-Signature"], "sig-1");
+  assert.deepEqual(JSON.parse(calls[0].options.body), {
+    deviceId: identity.deviceId,
+    requestedAt: "2026-08-20T04:10:00.000Z",
+    sinceRevision: 7,
+  });
+});
+
+test("incremental pull falls back to a full snapshot against old servers", async () => {
+  const identity = identityStore();
+  const calls = [];
+  const client = new UsageSyncRemoteClient({
+    serverUrl: "http://127.0.0.1:9198",
+    identityStore: identity,
+    now: () => new Date("2026-08-20T04:10:00.000Z"),
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      if (url.endsWith("/api/changes")) return response({ ok: false, error: "not-found" }, { status: 404 });
+      return response({ version: 1, serverRevision: 9, events: [{ eventId: "usage:a" }] });
+    },
+  });
+
+  const result = await client.pull({ sinceRevision: 7 });
+
+  assert.equal(result.serverRevision, 9);
+  assert.deepEqual(calls.map((call) => new URL(call.url).pathname), ["/api/changes", "/api/snapshot"]);
+  assert.equal(calls[0].options.headers["X-AgentHub-Signature"], "sig-1");
+  assert.equal(calls[1].options.headers["X-AgentHub-Signature"], "sig-2");
+  assert.deepEqual(JSON.parse(calls[1].options.body), {
+    deviceId: identity.deviceId,
+    requestedAt: "2026-08-20T04:10:00.000Z",
+  });
+});
+
 test("createEnrollmentCode signs invite request for enrolled devices", async () => {
   const identity = identityStore();
   const calls = [];

@@ -188,10 +188,13 @@ export function usageSyncSnapshotFromLedger(turns = {}, {
   deviceId,
   deviceLabel = "",
   exportedAt = new Date().toISOString(),
+  afterObservedAt = "",
 } = {}) {
+  const afterObservedMs = Date.parse(afterObservedAt) || 0;
   const events = Object.values(turns)
     .map((record) => usageSyncEventFromLedgerRecord(record, { deviceId }))
     .map((event) => event ? { ...event, deviceLabel: boundedText(deviceLabel, 80) || event.deviceLabel } : null)
+    .filter((event) => !event || !afterObservedMs || (Date.parse(event.observedAt) || 0) > afterObservedMs)
     .filter(Boolean);
   return {
     version: USAGE_SYNC_SNAPSHOT_VERSION,

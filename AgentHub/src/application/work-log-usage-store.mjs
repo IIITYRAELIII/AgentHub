@@ -498,9 +498,13 @@ export class WorkLogUsageStore {
     });
   }
 
-  usageSyncSnapshot({ deviceId = this.#usageSyncDeviceId, deviceLabel = "" } = {}) {
+  usageSyncSnapshot({
+    deviceId = this.#usageSyncDeviceId,
+    deviceLabel = "",
+    afterObservedAt = "",
+  } = {}) {
     return this.#enqueueRead(async () => {
-      return usageSyncSnapshotFromLedger(this.#ledger.turns, { deviceId, deviceLabel });
+      return usageSyncSnapshotFromLedger(this.#ledger.turns, { deviceId, deviceLabel, afterObservedAt });
     });
   }
 

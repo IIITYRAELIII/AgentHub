@@ -76,6 +76,18 @@ class UsageSyncServerTests(unittest.TestCase):
         ).encode("utf-8")
         return body, self.keys.sign(body)
 
+    def signed_changes_request(self, since_revision=0):
+        body = json.dumps(
+            {
+                "deviceId": self.device_id,
+                "requestedAt": "2026-08-20T04:02:00.000Z",
+                "sinceRevision": since_revision,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return body, self.keys.sign(body)
+
     def signed_invite_request(self):
         body = json.dumps(
             {"deviceId": self.device_id, "requestedAt": "2026-08-20T04:05:00.000Z", "ttlSeconds": 120},
@@ -257,6 +269,110 @@ class UsageSyncServerTests(unittest.TestCase):
         self.assertEqual(event["accountPlan"], "plus")
         self.assertEqual(event["usage"]["inputTokens"], 10)
         self.assertNotIn("receivedAtMs", event)
+
+    def test_ingest_returns_server_revision_and_delta_exports_only_new_changes(self):
+        self.enroll()
+        body, signature = self.signed_snapshot([self.event(eventId="usage:" + "a" * 64)])
+        first = server.ingest_snapshot(
+            self.db,
+            device_id=self.device_id,
+            signature=signature,
+            body=body,
+        )
+        self.assertEqual(first["serverRevision"], 1)
+
+        body, signature = self.signed_changes_request(0)
+        initial_delta = server.export_changes(
+            self.db,
+            device_id=self.device_id,
+            signature=signature,
+            body=body,
+        )
+        self.assertEqual(initial_delta["serverRevision"], 1)
+        self.assertEqual([event["eventId"] for event in initial_delta["events"]], ["usage:" + "a" * 64])
+
+        body, signature = self.signed_snapshot([self.event(eventId="usage:" + "b" * 64)])
+        second = server.ingest_snapshot(
+            self.db,
+            device_id=self.device_id,
+            signature=signature,
+            body=body,
+        )
+        self.assertEqual(second["serverRevision"], 2)
+
+        body, signature = self.signed_changes_request(1)
+        delta = server.export_changes(
+            self.db,
+            device_id=self.device_id,
+            signature=signature,
+            body=body,
+        )
+        self.assertEqual(delta["sinceRevision"], 1)
+        self.assertEqual(delta["serverRevision"], 2)
+        self.assertEqual([event["eventId"] for event in delta["events"]], ["usage:" + "b" * 64])
+
+    def test_repeated_snapshot_does_not_advance_server_revision(self):
+        self.enroll()
+        body, signature = self.signed_snapshot([
+            self.event(observedAt="2026-08-20T03:01:00.000Z")
+        ])
+        first = server.ingest_snapshot(
+            self.db,
+            device_id=self.device_id,
+            signature=signature,
+            body=body,
+        )
+        repeated = server.ingest_snapshot(
+            self.db,
+            device_id=self.device_id,
+            signature=signature,
+            body=body,
+        )
+
+        self.assertEqual(first["serverRevision"], repeated["serverRevision"])
+        self.assertEqual(repeated["unchanged"], 1)
+
+    def test_empty_usage_push_updates_device_label_without_events(self):
+        self.enroll()
+        body, signature = self.signed_snapshot([
+            self.event(deviceLabel="OldNick", observedAt="2026-08-20T03:01:00.000Z")
+        ])
+        first = server.ingest_snapshot(
+            self.db,
+            device_id=self.device_id,
+            signature=signature,
+            body=body,
+        )
+        body = json.dumps(
+            {
+                "version": 1,
+                "deviceId": self.device_id,
+                "deviceLabel": "NewNick",
+                "events": [],
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        result = server.ingest_snapshot(
+            self.db,
+            device_id=self.device_id,
+            signature=self.keys.sign(body),
+            body=body,
+        )
+
+        self.assertEqual(result["added"], 0)
+        self.assertEqual(result["updated"], 1)
+        self.assertGreater(result["serverRevision"], first["serverRevision"])
+        row = self.db.execute("SELECT label FROM devices WHERE device_id=?", (self.device_id,)).fetchone()
+        self.assertEqual(row["label"], "NewNick")
+        body, signature = self.signed_changes_request(first["serverRevision"])
+        delta = server.export_changes(
+            self.db,
+            device_id=self.device_id,
+            signature=signature,
+            body=body,
+        )
+        self.assertEqual(delta["events"][0]["deviceLabel"], "NewNick")
 
     def test_enrolled_device_can_create_one_time_enrollment_code(self):
         self.enroll()

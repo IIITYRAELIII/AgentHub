@@ -12,9 +12,23 @@ function syncHasChanges({ push = {}, pull = {}, exportedEvents = 0, remoteEvents
     || numberField(pull.added)
     || numberField(pull.updated)
     || numberField(pull.projected)
-    || exportedEvents === 0
-    || remoteEvents === 0,
+    || numberField(exportedEvents)
+    || numberField(remoteEvents),
   );
+}
+
+function latestObservedAt(events = []) {
+  let latest = "";
+  let latestMs = 0;
+  for (const event of Array.isArray(events) ? events : []) {
+    const observedAt = String(event?.observedAt ?? "").trim();
+    const observedMs = Date.parse(observedAt) || 0;
+    if (observedMs > latestMs) {
+      latestMs = observedMs;
+      latest = observedAt;
+    }
+  }
+  return latest;
 }
 
 export class UsageSyncAutoService {
@@ -164,21 +178,31 @@ export class UsageSyncAutoService {
     const snapshot = await this.workLogUsageStore.usageSyncSnapshot({
       deviceId: this.identityStore.deviceId,
       deviceLabel: this.identityStore.label,
+      afterObservedAt: remoteConfig.lastUsagePushWatermark,
     });
     const push = await client.push(snapshot);
-    await this.remoteConfigStore.rememberPush(push);
-    const remoteSnapshot = await client.pull();
-    const pull = await this.workLogUsageStore.importUsageSyncSnapshotAndProject({
-      snapshot: remoteSnapshot,
-      projectRoot: this.projectRoot,
-      projectionProjectRoots: this.projectionProjectRoots,
-      workLogFile: this.workLogFile,
+    const usageWatermark = numberField(push.rejected) ? "" : latestObservedAt(snapshot.events);
+    await this.remoteConfigStore.rememberPush(push, { usageWatermark });
+    const remoteSnapshot = await client.pull({
+      sinceRevision: Math.max(0, Math.trunc(Number(remoteConfig.lastUsagePullRevision) || 0)),
     });
-    await this.remoteConfigStore.rememberPull(pull);
+    const remoteEvents = Array.isArray(remoteSnapshot.events) ? remoteSnapshot.events.length : 0;
+    const pull = remoteEvents
+      ? await this.workLogUsageStore.importUsageSyncSnapshotAndProject({
+        snapshot: remoteSnapshot,
+        projectRoot: this.projectRoot,
+        projectionProjectRoots: this.projectionProjectRoots,
+        workLogFile: this.workLogFile,
+      })
+      : { imported: true, before: null, after: null, added: 0, updated: 0, projected: false };
+    const serverRevision = Number(remoteSnapshot.serverRevision ?? push.serverRevision ?? 0) || null;
+    await this.remoteConfigStore.rememberPull(pull, { serverRevision });
     const result = {
       synced: true,
       exportedEvents: Array.isArray(snapshot.events) ? snapshot.events.length : 0,
-      remoteEvents: Array.isArray(remoteSnapshot.events) ? remoteSnapshot.events.length : 0,
+      remoteEvents,
+      serverRevision,
+      usageWatermark,
       accountBackfill,
       push,
       pull,

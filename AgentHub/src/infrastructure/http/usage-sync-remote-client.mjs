@@ -37,7 +37,9 @@ async function parseJsonResponse(response) {
     payload = { ok: false, error: text };
   }
   if (!response.ok) {
-    throw new Error(String(payload?.error || `HTTP ${response.status}`));
+    const error = new Error(String(payload?.error || `HTTP ${response.status}`));
+    error.status = response.status;
+    throw error;
   }
   return payload ?? {};
 }
@@ -122,12 +124,16 @@ export class UsageSyncRemoteClient {
     return parseJsonResponse(response);
   }
 
-  async pull() {
+  async pull({ sinceRevision = null } = {}) {
     const body = jsonBody({
       deviceId: this.#identityStore.deviceId,
       requestedAt: this.#now().toISOString(),
+      ...(sinceRevision == null
+        ? {}
+        : { sinceRevision: Math.max(0, Math.trunc(Number(sinceRevision) || 0)) }),
     });
-    const response = await this.#fetch(`${this.#serverUrl}/api/snapshot`, {
+    const endpoint = sinceRevision == null ? "/api/snapshot" : "/api/changes";
+    const response = await this.#fetch(`${this.#serverUrl}${endpoint}`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json; charset=utf-8",
@@ -136,7 +142,25 @@ export class UsageSyncRemoteClient {
       },
       body,
     });
-    return parseJsonResponse(response);
+    try {
+      return await parseJsonResponse(response);
+    } catch (error) {
+      if (endpoint !== "/api/changes" || error.status !== 404) throw error;
+    }
+    const fallbackBody = jsonBody({
+      deviceId: this.#identityStore.deviceId,
+      requestedAt: this.#now().toISOString(),
+    });
+    const fallback = await this.#fetch(`${this.#serverUrl}/api/snapshot`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json; charset=utf-8",
+        "X-AgentHub-Device-Id": this.#identityStore.deviceId,
+        "X-AgentHub-Signature": this.#identityStore.sign(fallbackBody),
+      },
+      body: fallbackBody,
+    });
+    return parseJsonResponse(fallback);
   }
 }
 

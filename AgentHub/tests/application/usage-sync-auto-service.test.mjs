@@ -9,6 +9,12 @@ import {
 function fixture({
   serverUrl = "https://sync.example.test/agenthub",
   enrolledAt = "2026-08-20T00:00:00.000Z",
+  lastUsagePushWatermark = "",
+  lastUsagePullRevision = 0,
+  localEvents = [{ id: "turn-1", observedAt: "2026-08-20T04:00:00.000Z" }],
+  remoteEvents = [{ id: "remote-1" }],
+  accountBackfillResult = { applied: true, updated: 2 },
+  pushResult = null,
   delayPush = false,
   failPush = false,
   failBackfill = false,
@@ -38,16 +44,16 @@ function fixture({
     remoteConfigStore: {
       load: async () => {
         events.push(["load-config"]);
-        return { serverUrl, enrolledAt };
+        return { serverUrl, enrolledAt, lastUsagePushWatermark, lastUsagePullRevision };
       },
-      rememberPush: async (result) => events.push(["remember-push", result]),
-      rememberPull: async (result) => events.push(["remember-pull", result]),
+      rememberPush: async (result, options) => events.push(["remember-push", result, options]),
+      rememberPull: async (result, options) => events.push(["remember-pull", result, options]),
     },
     identityStore,
     workLogUsageStore: {
       usageSyncSnapshot: async (options) => {
         events.push(["snapshot", options]);
-        return { version: 1, deviceId: options.deviceId, events: [{ id: "turn-1" }] };
+        return { version: 1, deviceId: options.deviceId, events: localEvents };
       },
       importUsageSyncSnapshotAndProject: async (options) => {
         events.push(["import-project", options]);
@@ -62,18 +68,18 @@ function fixture({
           events.push(["push", snapshot]);
           if (failPush) throw new Error("offline");
           if (delayPush) return delayedPush;
-          return { ok: true, added: 1, updated: 0, rejected: 0 };
+          return pushResult ?? { ok: true, added: localEvents.length, updated: 0, rejected: 0 };
         },
-        pull: async () => {
-          events.push(["pull"]);
-          return { version: 1, events: [{ id: "remote-1" }] };
+        pull: async (options) => {
+          events.push(["pull", options]);
+          return { version: 1, serverRevision: 9, events: remoteEvents };
         },
       };
     },
     accountBackfill: async () => {
       events.push(["account-backfill"]);
       if (failBackfill) throw new Error("backfill locked");
-      return { applied: true, updated: 2 };
+      return accountBackfillResult;
     },
     suggestedDeviceLabel: async () => "SidorukSV",
     projectRoot: "D:/projects/Utilities",
@@ -142,10 +148,46 @@ test("UsageSyncAutoService pushes, pulls, imports and remembers remote results",
   assert.deepEqual(state.events.find(([name]) => name === "snapshot")?.[1], {
     deviceId: "device-local",
     deviceLabel: "DESKTOP-FNNC1JA",
+    afterObservedAt: "",
+  });
+  assert.deepEqual(state.events.find(([name]) => name === "remember-push")?.[2], {
+    usageWatermark: "2026-08-20T04:00:00.000Z",
+  });
+  assert.deepEqual(state.events.find(([name]) => name === "pull")?.[1], {
+    sinceRevision: 0,
+  });
+  assert.deepEqual(state.events.find(([name]) => name === "remember-pull")?.[2], {
+    serverRevision: 9,
   });
   const importProject = state.events.find(([name]) => name === "import-project");
   assert.equal(importProject[1].projectRoot, "D:/projects/Utilities");
   assert.deepEqual(importProject[1].projectionProjectRoots, ["D:/projects/Utilities"]);
+});
+
+test("UsageSyncAutoService sends only observed usage deltas after the saved watermark", async () => {
+  const state = fixture({
+    lastUsagePushWatermark: "2026-08-20T04:00:00.000Z",
+    lastUsagePullRevision: 8,
+    localEvents: [],
+    remoteEvents: [],
+    accountBackfillResult: { applied: false },
+    pushResult: { ok: true, added: 0, updated: 0, rejected: 0, serverRevision: 8 },
+  });
+
+  const result = await state.service.sync();
+
+  assert.equal(result.exportedEvents, 0);
+  assert.equal(result.remoteEvents, 0);
+  assert.deepEqual(state.events.find(([name]) => name === "snapshot")?.[1], {
+    deviceId: "device-local",
+    deviceLabel: "DESKTOP-FNNC1JA",
+    afterObservedAt: "2026-08-20T04:00:00.000Z",
+  });
+  assert.deepEqual(state.events.find(([name]) => name === "pull")?.[1], {
+    sinceRevision: 8,
+  });
+  assert.equal(state.events.some(([name]) => name === "import-project"), false);
+  assert.equal(state.events.some(([name]) => name === "info"), false);
 });
 
 test("UsageSyncAutoService exposes and confirms the device nickname", async () => {
@@ -177,6 +219,7 @@ test("UsageSyncAutoService exposes and confirms the device nickname", async () =
   assert.deepEqual(state.events.find(([name]) => name === "snapshot")?.[1], {
     deviceId: "device-local",
     deviceLabel: "SidorukSV",
+    afterObservedAt: "",
   });
 });
 
