@@ -193,7 +193,14 @@ export class TurnEndDeliveryService {
       const telegram = await this.#materializeTelegramIntent(claimed ?? item);
       return { projection: Boolean(claimed), telegram };
     } catch (error) {
-      if (claimed) await this.terminalCommits.retry(claimed, error).catch(() => {});
+      if (claimed) {
+        await this.terminalCommits.retry(claimed, error).catch((retryError) => {
+          this.logger.error(
+            `Cannot return terminal revision ${claimed.terminalRevision} for ${claimed.turnId} to retry:`,
+            retryError,
+          );
+        });
+      }
       throw error;
     } finally {
       this.delivering.delete(deliveryKey);

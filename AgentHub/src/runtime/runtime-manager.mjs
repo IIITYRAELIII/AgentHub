@@ -269,6 +269,10 @@ export async function deployRuntime({
   commitStableFile,
   writePointer = atomicJson,
   protectPointer = protectRuntimeConfig,
+  restorePointer = async (target, priorText) => {
+    if (priorText === null) await rm(target, { force: true });
+    else await writeTextAtomic(target, priorText);
+  },
 } = {}) {
   const layout = runtimeLayout(runtimeRoot);
   const releaseRoot = runtimeReleaseDirectory(runtimeRoot, releaseId);
@@ -366,10 +370,25 @@ export async function deployRuntime({
       await protectPointer(layout.currentFile);
       await stableFiles.cleanup();
     } catch (error) {
-      await stableFiles.rollback();
-      await stableFiles.cleanup({ removeDisplaced: false });
-      if (priorPointerText === null) await rm(layout.currentFile, { force: true }).catch(() => {});
-      else await writeTextAtomic(layout.currentFile, priorPointerText).catch(() => {});
+      const rollbackErrors = [];
+      for (const rollback of [
+        () => stableFiles.rollback(),
+        () => stableFiles.cleanup({ removeDisplaced: false }),
+        () => restorePointer(layout.currentFile, priorPointerText),
+      ]) {
+        try {
+          await rollback();
+        } catch (rollbackError) {
+          rollbackErrors.push(rollbackError);
+        }
+      }
+      if (rollbackErrors.length) {
+        throw new AggregateError(
+          [error, ...rollbackErrors],
+          `Runtime deployment failed and rollback was incomplete: ${error.message}`,
+          { cause: error },
+        );
+      }
       throw error;
     }
     await pruneRuntimeReleases(

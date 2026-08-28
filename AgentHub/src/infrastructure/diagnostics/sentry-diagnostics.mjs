@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import process from "node:process";
 
 import { AGENT_HUB_VERSION } from "../filesystem/agent-hub-package.mjs";
+import { redactSecrets } from "./secret-redaction.mjs";
 
 const DEFAULT_TIMEOUT_MS = 5_000;
 const DEFAULT_MAX_EVENTS_PER_MINUTE = 30;
@@ -56,9 +57,7 @@ function sanitizeText(value, { roots = [], maxLength = MAX_MESSAGE_LENGTH } = {}
     if (!normalized) continue;
     text = text.replace(new RegExp(escapePattern(normalized), "giu"), "<project>");
   }
-  text = text
-    .replace(/(authorization\s*[:=]\s*(?:bearer\s+)?)[^\s,;]+/giu, "$1[redacted]")
-    .replace(/\b(token|api[_-]?key|secret|password)\s*[:=]\s*["']?[^"'\s,;]+/giu, "$1=[redacted]");
+  text = redactSecrets(text);
   text = stripUrlDetails(text);
   return text.slice(0, maxLength);
 }

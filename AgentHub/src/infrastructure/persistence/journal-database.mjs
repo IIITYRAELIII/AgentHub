@@ -9,6 +9,7 @@ import { readJsonWithBackup } from "./state-store.mjs";
 const SCHEMA_VERSION = 2;
 const LEDGER_VERSION = 9;
 const LEGACY_IMPORT_KEY = "work-log-usage-v1";
+const JOURNAL_DAY_ORDER = "substr(date, 7, 4), substr(date, 4, 2), substr(date, 1, 2)";
 
 function configure(database) {
   database.exec(`
@@ -751,7 +752,7 @@ export class JournalDatabase {
     return {
       ...payload,
       days: Object.fromEntries(database.prepare(
-        "SELECT date, html FROM journal_days ORDER BY date",
+        `SELECT date, html FROM journal_days ORDER BY ${JOURNAL_DAY_ORDER}`,
       ).all().map((row) => [row.date, row.html])),
       turns: Object.fromEntries(database.prepare(
         "SELECT id, html FROM journal_turns ORDER BY id",
@@ -816,8 +817,9 @@ export class JournalDatabase {
     const database = await this.#open();
     const table = kind === "day" ? "journal_days" : "journal_turns";
     const column = kind === "day" ? "date" : "id";
+    const order = kind === "day" ? JOURNAL_DAY_ORDER : column;
     return Object.fromEntries(database.prepare(
-      `SELECT ${column} AS key, html FROM ${table} ORDER BY ${column}`,
+      `SELECT ${column} AS key, html FROM ${table} ORDER BY ${order}`,
     ).all().map((row) => [row.key, row.html]));
   }
 

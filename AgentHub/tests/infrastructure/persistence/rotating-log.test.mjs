@@ -19,3 +19,20 @@ test("appendRotatingLog bounds the current log and numbered backups", async () =
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("appendRotatingLog redacts access fragments and named secrets", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-secret-log-"));
+  const logPath = path.join(directory, "hub.log");
+  try {
+    appendRotatingLog(logPath, [
+      "http://127.0.0.1:8787/#access=live-access-token",
+      " token=live-api-token\n",
+    ].join(""), { maxBytes: 10_000, maxFiles: 2 });
+    const logged = await readFile(logPath, "utf8");
+    assert.doesNotMatch(logged, /live-access-token|live-api-token/u);
+    assert.match(logged, /#access=\[redacted\]/u);
+    assert.match(logged, /token=\[redacted\]/u);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

@@ -37,7 +37,7 @@ test("Sentry diagnostics send a redacted envelope through the local runtime", as
     roots: ["D:\\Workspace"],
   });
   const error = new Error(
-    "token=super-secret https://example.test/path?chat=private C:\\Users\\Example\\Desktop",
+    "token=super-secret http://127.0.0.1:8787/#access=live-access-token https://example.test/path?chat=private C:\\Users\\Example\\Desktop",
   );
   error.stack = [
     `Error: ${error.message}`,
@@ -51,7 +51,7 @@ test("Sentry diagnostics send a redacted envelope through the local runtime", as
   const [url, init] = requests[0];
   assert.match(url, /^https:\/\/example\.test\/sentry\/api\/42\/envelope\//u);
   assert.equal(init.headers["Content-Type"], "application/x-sentry-envelope");
-  assert.doesNotMatch(init.body, /super-secret|Example|chat=private|D:\\Workspace/u);
+  assert.doesNotMatch(init.body, /super-secret|live-access-token|Example|chat=private|D:\\Workspace/u);
   const event = JSON.parse(init.body.split("\n")[2]);
   assert.equal(event.environment, "test");
   assert.equal(event.tags.surface, "server");

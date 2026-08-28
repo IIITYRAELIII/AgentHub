@@ -25,6 +25,14 @@ test("attachment storage names stay below the portable filesystem limit", () => 
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
 });
 
+test("legacy attachment ids reject Windows device names", () => {
+  for (const id of ["con", "CON.txt", "prn", "aux.json", "nul", "com1", "LPT9.pdf"]) {
+    assert.equal(attachmentMetadataFromId(id), null, id);
+  }
+  const encoded = createAttachmentStorageName("con.txt", "01234567-89ab-cdef-0123-456789abcdef");
+  assert.equal(attachmentMetadataFromId(encoded)?.name, "con.txt");
+});
+
 test("document inputs reach the agent as paths without exposing binary data", () => {
   const file = path.resolve("fixtures", "Требования.pdf");
   const input = messageInputWithAttachments("Проверь файл", [file], [{

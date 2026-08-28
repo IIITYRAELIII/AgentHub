@@ -8,6 +8,7 @@ import {
   appendLedgerEvents,
   applyLedgerDelta,
   ledgerRecordChanges,
+  ledgerRecordFingerprint,
   ledgerRecordSnapshot,
 } from "../../../src/infrastructure/persistence/incremental-ledger.mjs";
 
@@ -32,4 +33,15 @@ test("ledger delta persists only changed records and deletions", async () => {
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("ledger snapshots retain bounded fingerprints instead of record JSON", () => {
+  const record = { answer: "x".repeat(100_000), nested: { value: 1 } };
+  const snapshot = ledgerRecordSnapshot({ one: record });
+  const fingerprint = snapshot.get("one");
+
+  assert.equal(fingerprint, ledgerRecordFingerprint(structuredClone(record)));
+  assert.equal(fingerprint.length, 43);
+  assert.equal(fingerprint.includes(record.answer), false);
+  assert.notEqual(fingerprint, ledgerRecordFingerprint({ ...record, nested: { value: 2 } }));
 });

@@ -8,6 +8,7 @@ import test from "node:test";
 
 import {
   extractWorkLogHtml,
+  loopbackRequest,
   miniAppMenuButtonRequests,
   MiniAppServer,
   PublicAuthAttemptLimiter,
@@ -30,6 +31,15 @@ const DAY_HTML = [
   '<div data-work-log-table>Пилот</div>',
   "</details>",
 ].join("");
+
+test("local session trust uses the socket peer and rejects forwarded requests", () => {
+  assert.equal(loopbackRequest({ socket: { remoteAddress: "::ffff:127.0.0.1" }, headers: { host: "evil.test" } }), true);
+  assert.equal(loopbackRequest({ socket: { remoteAddress: "203.0.113.10" }, headers: { host: "127.0.0.1" } }), false);
+  assert.equal(loopbackRequest({
+    socket: { remoteAddress: "127.0.0.1" },
+    headers: { host: "127.0.0.1", "x-forwarded-for": "203.0.113.10" },
+  }), false);
+});
 const BOT_TOKEN = "123456789:test-token";
 
 test("local Web App accepts short-lived VS Code WebView CORS sessions", async () => {

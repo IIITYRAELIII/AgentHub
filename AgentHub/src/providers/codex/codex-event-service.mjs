@@ -45,6 +45,16 @@ function requiredFunction(value, name) {
   return value;
 }
 
+function saveStateBestEffort(dependencies) {
+  try {
+    void Promise.resolve(dependencies.saveState()).catch((error) => {
+      dependencies.logError?.("Cannot persist Codex event state:", error.message);
+    });
+  } catch (error) {
+    dependencies.logError?.("Cannot persist Codex event state:", error.message);
+  }
+}
+
 function rememberBounded(map, key, value, limit) {
   if (map.has(key)) map.delete(key);
   map.set(key, value);
@@ -119,17 +129,17 @@ export class CodexEventService {
         occurredAt: params.startedAtMs ?? params.completedAtMs ?? Date.now(),
         provider: "codex",
       });
-      if (firstEvent) void d.saveState();
+      if (firstEvent) saveStateBestEffort(d);
     }
     if (method === "thread/settings/updated") {
       d.applyThreadSettings(params.threadId, params.threadSettings);
-      void d.saveState();
+      saveStateBestEffort(d);
     }
     if (method === "thread/status/changed" && run) {
       run.threadStatus = params.status ?? null;
       const flags = Array.isArray(params.status?.activeFlags) ? params.status.activeFlags : [];
       if (flags.includes("waitingOnApproval")) d.setStage(run, "Ожидается ответ пользователя…");
-      void d.saveState();
+      saveStateBestEffort(d);
     }
     if (method === "turn/started") {
       const pendingCompaction = d.getCompaction(params.threadId);
@@ -167,7 +177,7 @@ export class CodexEventService {
       if (eventTurnId && !d.turnTokenUsage.has(eventTurnId)) {
         rememberBounded(d.turnTokenUsage, eventTurnId, { usage: emptyTokenUsage(), reported: false }, 200);
       }
-      if (run && eventTurnId) void d.saveState();
+      if (run && eventTurnId) saveStateBestEffort(d);
     }
     if (
       run
@@ -192,7 +202,7 @@ export class CodexEventService {
         // the first exact post-compaction context measurement.
         provisionalContext: isCompactionOnlyContextMeasurement(params, compaction),
       });
-      void d.saveState();
+      saveStateBestEffort(d);
     }
     if (method === "turn/diff/updated" && run) {
       run.latestDiff = params.diff ?? run.latestDiff;

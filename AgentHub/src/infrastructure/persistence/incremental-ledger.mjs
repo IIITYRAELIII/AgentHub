@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { appendFile, readFile } from "node:fs/promises";
 
 export async function applyLedgerDelta(ledger, deltaFile) {
@@ -29,8 +30,12 @@ export async function applyLedgerDelta(ledger, deltaFile) {
   return { value, applied, invalid };
 }
 
+export function ledgerRecordFingerprint(record) {
+  return createHash("sha256").update(JSON.stringify(record)).digest("base64url");
+}
+
 export function ledgerRecordSnapshot(turns = {}) {
-  return new Map(Object.entries(turns).map(([key, record]) => [key, JSON.stringify(record)]));
+  return new Map(Object.entries(turns).map(([key, record]) => [key, ledgerRecordFingerprint(record)]));
 }
 
 export function ledgerRecordChanges(turns = {}, previous = new Map()) {

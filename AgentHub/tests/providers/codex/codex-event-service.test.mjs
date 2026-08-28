@@ -331,3 +331,19 @@ test("Codex event service accepts the first real post-compaction context measure
 
   assert.deepEqual(captured, [[params, { provisionalContext: false }]]);
 });
+
+test("Codex event service contains background state persistence failures", async () => {
+  const errors = [];
+  const service = createService({ status: "running" }, {
+    saveState: async () => { throw new Error("state unavailable"); },
+    logError: (...args) => errors.push(args),
+  });
+
+  await service.handle({
+    method: "thread/status/changed",
+    params: { threadId: "thread-1", status: { activeFlags: [] } },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(errors, [["Cannot persist Codex event state:", "state unavailable"]]);
+});

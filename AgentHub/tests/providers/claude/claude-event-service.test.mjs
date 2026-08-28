@@ -68,3 +68,21 @@ test("Claude event service publishes live context usage from the observed model"
     { model: "claude-opus-5", modelContextWindow: 1_000_000, usedTokens: 3_102 },
   ]);
 });
+
+test("Claude event service contains background state persistence failures", async () => {
+  const errors = [];
+  const service = new ClaudeEventService({
+    isSelectedRun: () => false, reindexRun: () => {}, setSelectedThread: () => {},
+    invalidateCatalog: () => {}, retargetClientSelection: () => {}, runTitle: () => "Task",
+    bindRunMessage: async () => {}, saveState: async () => { throw new Error("state unavailable"); },
+    noteActivity: () => {}, scheduleProgress: () => {}, appendReasoning: () => {}, setStage: () => {},
+    appendActivity: () => {}, trackContextUsage: () => {},
+    logError: (...args) => errors.push(args),
+  });
+  const run = { threadId: "old-thread", progressMessageIds: [] };
+
+  service.handle(run, { sessionId: "new-thread" });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(errors, [["Cannot persist Claude event state:", "state unavailable"]]);
+});

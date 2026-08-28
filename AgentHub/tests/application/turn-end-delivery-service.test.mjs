@@ -109,3 +109,43 @@ test("TurnEndDeliveryService returns an already accounted completion immediately
   const state = fixture({ completions: [completion] });
   assert.equal(await state.service.waitForCompletion({ turnId: "turn-1" }), completion);
 });
+
+test("TurnEndDeliveryService reports a failed retry transition without hiding projection failure", async () => {
+  const errors = [];
+  const claimed = {
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    terminalRevision: 7,
+    channels: { projection: { state: "projecting" } },
+    payload: {
+      completion: { provider: "codex", threadId: "thread-1", turnId: "turn-1" },
+      history: {},
+    },
+  };
+  const service = new TurnEndDeliveryService({
+    notifications: null,
+    terminalCommits: {
+      claim: async () => claimed,
+      retry: async () => { throw new Error("retry write failed"); },
+    },
+    taskRuns: { forEvent: () => null },
+    persistHistory: async () => { throw new Error("history write failed"); },
+    projectTurn: async () => null,
+    rememberLastMessage: () => {},
+    rememberSeenTurn: () => {},
+    saveState: async () => {},
+    logger: { error: (...args) => errors.push(args) },
+  });
+
+  await assert.rejects(
+    service.deliverOutbox({
+      ...claimed,
+      channels: { projection: { state: "pending" } },
+    }),
+    /history write failed/u,
+  );
+  assert.equal(errors.length, 1);
+  assert.match(errors[0][0], /Cannot return terminal revision 7/u);
+  assert.equal(errors[0][1].message, "retry write failed");
+});

@@ -21,6 +21,18 @@ const MODEL_CREDIT_RATES = new Map([
 
 const CREDIT_FIELDS = ["input", "cache", "output", "reasoning", "estimate", "total"];
 export const CREDITS_PER_USD = 25;
+const SCALED_CREDIT_FORMATTER = new Intl.NumberFormat("ru-RU", {
+  minimumFractionDigits: 1,
+  maximumFractionDigits: 1,
+});
+const INTEGER_CREDIT_FORMATTER = new Intl.NumberFormat("ru-RU", {
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 1,
+});
+const FRACTIONAL_CREDIT_FORMATTER = new Intl.NumberFormat("ru-RU", {
+  minimumFractionDigits: 1,
+  maximumFractionDigits: 1,
+});
 
 function normalizedModel(value) {
   return String(value ?? "").trim().toLowerCase();
@@ -85,15 +97,10 @@ export function formatCredits(value) {
   ];
   const scale = scales.find(([divisor]) => Math.abs(normalized) >= divisor);
   if (scale) {
-    return `${(normalized / scale[0]).toLocaleString("ru-RU", {
-      minimumFractionDigits: 1,
-      maximumFractionDigits: 1,
-    })} ${scale[1]}`;
+    return `${SCALED_CREDIT_FORMATTER.format(normalized / scale[0])} ${scale[1]}`;
   }
-  return `${normalized.toLocaleString("ru-RU", {
-    minimumFractionDigits: Number.isInteger(normalized) ? 0 : 1,
-    maximumFractionDigits: 1,
-  })} cr`;
+  const formatter = Number.isInteger(normalized) ? INTEGER_CREDIT_FORMATTER : FRACTIONAL_CREDIT_FORMATTER;
+  return `${formatter.format(normalized)} cr`;
 }
 
 export function creditsFromUsd(value) {

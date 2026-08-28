@@ -13,6 +13,16 @@ function requiredFunction(value, name) {
   return value;
 }
 
+function saveStateBestEffort(dependencies) {
+  try {
+    void Promise.resolve(dependencies.saveState()).catch((error) => {
+      dependencies.logError?.("Cannot persist Claude event state:", error.message);
+    });
+  } catch (error) {
+    dependencies.logError?.("Cannot persist Claude event state:", error.message);
+  }
+}
+
 function claudeToolBlockStart(event) {
   const streamEvent = event?.type === "stream_event" ? event.event : null;
   return streamEvent?.type === "content_block_start"
@@ -58,12 +68,12 @@ export class ClaudeEventService {
 
   handle(run, parsed) {
     const d = this.#d;
-    if (this.#trackTelemetry(run, parsed)) void d.saveState();
+    if (this.#trackTelemetry(run, parsed)) saveStateBestEffort(d);
     const compaction = claudeCompactionEvent(parsed.event);
     if (compaction) {
       d.observeCompaction?.(run, compaction);
       if (compaction.stage === "started") d.setStage(run, "Claude сворачивает контекст…");
-      void d.saveState();
+      saveStateBestEffort(d);
     }
     if (parsed.sessionId && parsed.sessionId !== run.threadId) {
       const previousThreadId = run.threadId;
@@ -82,7 +92,7 @@ export class ClaudeEventService {
           d.logError?.("Cannot bind Claude progress message:", error.message);
         });
       }
-      void d.saveState();
+      saveStateBestEffort(d);
     }
     if (parsed.textDelta) {
       run.responseText += parsed.textDelta;

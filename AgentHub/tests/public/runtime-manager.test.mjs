@@ -303,6 +303,30 @@ test("deployRuntime rolls stable launchers back when publishing current.json fai
   assert.equal(await readFile(path.join(runtimeRoot, "codex-stop-hook-launcher.mjs"), "utf8"), beforeHook);
 });
 
+test("deployRuntime reports a pointer rollback failure without hiding the publish error", async () => {
+  const { sourceRoot, runtimeRoot } = await fixture();
+  await deployRuntime({ sourceRoot, runtimeRoot, releaseId: "release-1" });
+
+  await assert.rejects(
+    deployRuntime({
+      sourceRoot,
+      runtimeRoot,
+      releaseId: "release-2",
+      protectPointer: async () => { throw new Error("pointer protection failed"); },
+      restorePointer: async () => { throw new Error("pointer rollback failed"); },
+    }),
+    (error) => {
+      assert.equal(error instanceof AggregateError, true);
+      assert.match(error.message, /pointer protection failed/u);
+      assert.deepEqual(error.errors.map((item) => item.message), [
+        "pointer protection failed",
+        "pointer rollback failed",
+      ]);
+      return true;
+    },
+  );
+});
+
 test("activation preserves source data when an incomplete runtime target already exists", async () => {
   const { sourceRoot, runtimeRoot } = await fixture();
   await deployRuntime({ sourceRoot, runtimeRoot, releaseId: "release-1" });

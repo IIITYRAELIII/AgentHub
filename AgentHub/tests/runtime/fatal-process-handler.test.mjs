@@ -27,8 +27,9 @@ test("fatal process handler sets a failing exit code and shuts down once", async
 
 test("fatal process handler reports shutdown failure", async () => {
   const errors = [];
+  const exits = [];
   const handler = createFatalProcessHandler({
-    processRef: { exitCode: 0 },
+    processRef: { exitCode: 0, exit: (code) => exits.push(code) },
     logger: { error: (...args) => errors.push(args) },
     shutdown: async () => { throw new Error("shutdown failed"); },
   });
@@ -37,4 +38,5 @@ test("fatal process handler reports shutdown failure", async () => {
 
   assert.equal(errors.length, 2);
   assert.equal(errors[1][0], "Agent Hub fatal shutdown failed:");
+  assert.deepEqual(exits, [1]);
 });

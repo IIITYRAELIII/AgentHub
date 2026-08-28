@@ -303,14 +303,17 @@ export function withoutTelegramRuntime(html) {
   return String(html).replace(TELEGRAM_RUNTIME_SCRIPT, "");
 }
 
-function loopbackHost(hostHeader) {
-  const value = String(hostHeader ?? "").trim();
-  if (!value) return false;
-  try {
-    return ["127.0.0.1", "localhost", "::1"].includes(new URL(`http://${value}`).hostname);
-  } catch {
-    return false;
-  }
+function loopbackAddress(value) {
+  const address = String(value ?? "").trim().toLowerCase();
+  return address === "127.0.0.1"
+    || address === "::1"
+    || address === "::ffff:127.0.0.1";
+}
+
+export function loopbackRequest(request) {
+  return loopbackAddress(request?.socket?.remoteAddress)
+    && !request?.headers?.["cf-connecting-ip"]
+    && !request?.headers?.["x-forwarded-for"];
 }
 
 export function miniAppMenuButtonRequests({
@@ -728,7 +731,7 @@ export class MiniAppServer {
     return this.#requireTelegramAuth || Boolean(
       request.headers["cf-connecting-ip"]
       || request.headers["x-forwarded-for"]
-      || !loopbackHost(request.headers.host),
+      || !loopbackRequest(request),
     );
   }
 
@@ -866,7 +869,7 @@ export class MiniAppServer {
       return;
     }
     if (url.pathname === "/api/local-session") {
-      if (method === "HEAD" && !this.#requireTelegramAuth && loopbackHost(request.headers.host)) {
+      if (method === "HEAD" && !this.#requireTelegramAuth && loopbackRequest(request)) {
         const cookie = cookieValue(request, LOCAL_SESSION_COOKIE);
         let localAccessSecret = this.#localAccessSecret;
         if (localAccessSecret && !validLocalSession(cookie, localAccessSecret)) {
@@ -882,7 +885,7 @@ export class MiniAppServer {
       if (
         method !== "POST"
         || this.#requireTelegramAuth
-        || !loopbackHost(request.headers.host)
+        || !loopbackRequest(request)
         || String(request.headers["content-type"] ?? "").split(";", 1)[0].trim().toLowerCase()
           !== "application/json"
       ) {
@@ -947,7 +950,7 @@ export class MiniAppServer {
         json(response, 200, session, method, {
           headers: {
             "Set-Cookie": deviceSessionCookie(session.token, session.expiresAt, {
-              secure: forwardedProtocol(request) === "https" || !loopbackHost(request.headers.host),
+              secure: forwardedProtocol(request) === "https" || !loopbackRequest(request),
             }),
           },
         });

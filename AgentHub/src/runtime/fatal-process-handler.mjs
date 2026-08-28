@@ -25,6 +25,7 @@ export function createFatalProcessHandler({
       await shutdown(kind);
     } catch (shutdownError) {
       logger.error("Agent Hub fatal shutdown failed:", shutdownError);
+      processRef.exit?.(1);
     }
   };
 }

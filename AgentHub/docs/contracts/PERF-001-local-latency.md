@@ -57,5 +57,15 @@ receipts are omitted from raw `runtime_state` JSON and overlaid from the ledger
 on read; non-ledger records remain in the snapshot. A failed writer revision
 rejects only its covered waiters and must not poison a later save.
 
+Periodic Test Contour journal comparison and full Mini App journal publication
+must not scan, materialize, stringify or compress the journal on the Hub event
+loop. Test Contour comparison runs in an isolated worker. Production journal
+publication reads one SQLite snapshot and performs JSON encoding plus gzip in an
+isolated worker; compression favors bounded CPU over the smallest possible
+artifact. Synchronous SQLite stores on the Hub loop reuse initialized handles,
+batch hierarchy metadata reads and use immediate `SQLITE_BUSY` failure with
+asynchronous retry rather than blocking busy waits.
+
+
 The “Local Hub” health RTT is not message ACK latency and must not be presented
 as such. Provider latency and remote Worker latency are separate indicators.

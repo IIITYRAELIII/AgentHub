@@ -198,6 +198,11 @@
     return ["reveal"];
   }
 
+  function appendLinkWithOptionalAction(target, link, action = null) {
+    target.append(link);
+    if (action != null) target.append(action);
+  }
+
   function localWorkspaceFilesAvailable({ vscode = false, protocol = "", hostname = "" } = {}) {
     if (vscode) return true;
     return ["http:", "https:"].includes(String(protocol).toLowerCase())
@@ -210,6 +215,7 @@
     fileReferenceBases,
     galleryIndex,
     imageGallery,
+    appendLinkWithOptionalAction,
     inlineResourceActions,
     isImageAttachment,
     linkResource,

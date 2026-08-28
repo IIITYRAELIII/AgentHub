@@ -8,6 +8,8 @@ import {
 import path from "node:path";
 import { format } from "node:util";
 
+import { redactSecrets } from "../diagnostics/secret-redaction.mjs";
+
 function backupPath(filePath, index) {
   const extension = path.extname(filePath);
   return `${filePath.slice(0, -extension.length)}.${index}${extension}`;
@@ -28,7 +30,7 @@ export function appendRotatingLog(filePath, text, {
   maxBytes,
   maxFiles,
 } = {}) {
-  const value = String(text);
+  const value = redactSecrets(text);
   const currentBytes = existsSync(filePath) ? statSync(filePath).size : 0;
   if (currentBytes > 0 && currentBytes + Buffer.byteLength(value, "utf8") > maxBytes) {
     rotateLogFile(filePath, maxFiles);

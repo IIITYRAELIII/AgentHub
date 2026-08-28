@@ -1289,6 +1289,7 @@ const state = {
   workspaceColumnOrder: [],
   selectedId: null,
   messages: new Map(),   // taskId -> message[]
+  messageRenderLimits: new Map(), // taskId -> visible newest-message count
   taskDiffs: new Map(),  // taskId -> { text, open }
   historyPagination: new Map(), // taskId -> { hasOlder, loading }
   live: new Map(),       // taskId -> live | null
@@ -3619,7 +3620,8 @@ function selectTaskFromUi(id) {
 /* ================================================================== чат */
 
 let activeChatId = null;
-const SWITCH_MESSAGE_RENDER_LIMIT = 80;
+const INITIAL_MESSAGE_RENDER_LIMIT = 40;
+const MESSAGE_RENDER_PAGE_SIZE = 40;
 
 function messageCountLabel(count) {
   const value = Math.max(0, Number(count) || 0);
@@ -3883,7 +3885,8 @@ function renderChat() {
 
   if (taskChanged) {
     activeChatId = task.id;
-    renderMessages({ forceBottom: true, tailLimit: SWITCH_MESSAGE_RENDER_LIMIT });
+    state.messageRenderLimits.set(task.id, INITIAL_MESSAGE_RENDER_LIMIT);
+    renderMessages({ forceBottom: true });
   }
   renderLive();
   renderApprovals();
@@ -4234,13 +4237,29 @@ function currentHistoryPagination() {
   return state.historyPagination.get(state.selectedId) ?? { hasOlder: false, loading: false };
 }
 
+function messageTailPagination(taskId = state.selectedId) {
+  const messages = state.messages.get(taskId) ?? [];
+  const visibleLimit = state.messageRenderLimits.get(taskId) ?? INITIAL_MESSAGE_RENDER_LIMIT;
+  return MessageView.messageTailPagination(messages.length, visibleLimit, MESSAGE_RENDER_PAGE_SIZE);
+}
+
+function canLoadOlderHistory(taskId = state.selectedId) {
+  return messageTailPagination(taskId).hiddenCount > 0
+    || (state.historyPagination.get(taskId)?.hasOlder === true);
+}
+
 function renderHistoryLoader() {
   const pagination = currentHistoryPagination();
-  historyLoader.hidden = !pagination.hasOlder && !pagination.loading;
+  const tail = messageTailPagination();
+  historyLoader.hidden = tail.hiddenCount === 0 && !pagination.hasOlder && !pagination.loading;
   historyLoader.toggleAttribute("data-loading", pagination.loading);
   historyLoadButton.disabled = pagination.loading;
   if (!historyLoader.hasAttribute("data-pulling")) {
-    historyLoadLabel.textContent = pagination.loading ? "Загрузка…" : "Загрузить ещё";
+    historyLoadLabel.textContent = pagination.loading
+      ? "Загрузка…"
+      : tail.hiddenCount > 0
+        ? `Показать ещё (${tail.nextCount})`
+        : "Загрузить ещё";
   }
 }
 
@@ -4429,9 +4448,10 @@ function renderMessages({
     .filter(Boolean));
   const historyLoaded = state.messages.has(taskId);
   const allMessages = state.messages.get(taskId) ?? [];
-  const messages = tailLimit > 0
-    ? MessageView.messageTailWindow(allMessages, tailLimit)
-    : allMessages;
+  const visibleLimit = tailLimit > 0
+    ? tailLimit
+    : (state.messageRenderLimits.get(taskId) ?? INITIAL_MESSAGE_RENDER_LIMIT);
+  const messages = MessageView.messageTailWindow(allMessages, visibleLimit);
   renderHistoryLoader();
   if (messages.length === 0) {
     const emptyText = historyLoaded
@@ -4543,7 +4563,14 @@ function resetHistoryPull() {
 
 function requestOlderHistory() {
   const pagination = currentHistoryPagination();
-  if (!state.selectedId || !pagination.hasOlder || pagination.loading) return;
+  if (!state.selectedId || pagination.loading) return;
+  const tail = messageTailPagination();
+  if (tail.hiddenCount > 0) {
+    state.messageRenderLimits.set(state.selectedId, tail.visibleCount + tail.nextCount);
+    renderMessages({ preserveTop: true, prependedCount: tail.nextCount });
+    return;
+  }
+  if (!pagination.hasOlder) return;
   emit("history:load-older", { taskId: state.selectedId });
 }
 
@@ -4554,7 +4581,10 @@ function scheduleUnderfilledHistoryLoad() {
   historyUnderfillFrame = window.requestAnimationFrame(() => {
     historyUnderfillFrame = 0;
     const pagination = currentHistoryPagination();
-    if (shouldLoadOlderPage(chatScroll, pagination)) requestOlderHistory();
+    if (shouldLoadOlderPage(chatScroll, {
+      ...pagination,
+      hasOlder: canLoadOlderHistory(),
+    })) requestOlderHistory();
   });
 }
 
@@ -4566,7 +4596,7 @@ chatScroll.addEventListener("touchstart", (event) => {
     !phoneComposerMode()
     || event.touches.length !== 1
     || chatScroll.scrollTop > 1
-    || !pagination.hasOlder
+    || !canLoadOlderHistory()
     || pagination.loading
   ) return;
   historyPull = {
@@ -4721,7 +4751,11 @@ function appendInlineMarkdown(target, source, fileContext = currentFileLinkConte
           rel: "noopener noreferrer",
         });
         if (targetLink.localPath) link.dataset.agentHubLocalLink = targetLink.localPath;
-        target.append(link, inlineFileRevealButton(targetLink, citation?.label ?? "Файл"));
+        resourceInteractions.appendLinkWithOptionalAction(
+          target,
+          link,
+          inlineFileRevealButton(targetLink, citation?.label ?? "Файл"),
+        );
       } else {
         target.append(el("span", attributes));
       }
@@ -4738,7 +4772,11 @@ function appendInlineMarkdown(target, source, fileContext = currentFileLinkConte
           title: targetLink.localPath,
         }, [code]);
         link.dataset.agentHubLocalLink = targetLink.localPath;
-        target.append(link, inlineFileRevealButton(targetLink, value));
+        resourceInteractions.appendLinkWithOptionalAction(
+          target,
+          link,
+          inlineFileRevealButton(targetLink, value),
+        );
       } else {
         target.append(code);
       }
@@ -4762,7 +4800,11 @@ function appendInlineMarkdown(target, source, fileContext = currentFileLinkConte
         });
         if (targetLink.taskId) link.dataset.agentHubTaskReference = targetLink.taskId;
         if (targetLink.localPath) link.dataset.agentHubLocalLink = targetLink.localPath;
-        target.append(link, inlineFileRevealButton(targetLink, parts[1]));
+        resourceInteractions.appendLinkWithOptionalAction(
+          target,
+          link,
+          inlineFileRevealButton(targetLink, parts[1]),
+        );
       } else {
         target.append(document.createTextNode(token));
       }
@@ -5522,13 +5564,12 @@ function renderQueueForTask(taskId, container) {
   container.replaceChildren();
   container.hidden = queued.length === 0;
   if (queued.length === 0) return;
-  const pendingCount = queued.filter((entry) => entry.state === "pending").length;
-  const pausedCount = queued.filter((entry) => entry.state === "paused").length;
-  const queuedCount = queued.length - pendingCount - pausedCount;
+  const queueCounts = MessageView.deferredQueueCounts(queued);
   const counts = [
-    pendingCount ? `Требуют решения: ${pendingCount}` : "",
-    queuedCount ? `В очереди: ${queuedCount}` : "",
-    pausedCount ? `На паузе: ${pausedCount}` : "",
+    queueCounts.pending ? `Требуют решения: ${queueCounts.pending}` : "",
+    queueCounts.starting ? `Запускается: ${queueCounts.starting}` : "",
+    queueCounts.queued ? `В очереди: ${queueCounts.queued}` : "",
+    queueCounts.paused ? `На паузе: ${queueCounts.paused}` : "",
   ].filter(Boolean).join(" · ");
   container.append(el("div", { class: "queue-head", text: counts }));
   const task = state.tasks.find((entry) => entry.id === taskId);
@@ -7896,10 +7937,21 @@ const AgentHub = {
     const previous = state.messages.get(taskId) ?? [];
     const sameMessages = state.messages.has(taskId) && sameData(previous, next);
     const prependedCount = sameMessages ? 0 : MessageView.prependedMessageCount(previous, next);
+    const previousTail = MessageView.messageTailPagination(
+      previous.length,
+      state.messageRenderLimits.get(taskId) ?? INITIAL_MESSAGE_RENDER_LIMIT,
+      MESSAGE_RENDER_PAGE_SIZE,
+    );
     const selectedSurfaceOwned = taskId === state.selectedId
       && String(chatLog.dataset.messageOwnerKey ?? "") === String(taskId ?? "");
     if (sameMessages && (taskId !== state.selectedId || selectedSurfaceOwned)) return;
     if (!sameMessages) state.messages.set(taskId, next);
+    if (prependedCount > 0 && previousTail.hiddenCount === 0) {
+      state.messageRenderLimits.set(
+        taskId,
+        previousTail.visibleCount + Math.min(prependedCount, MESSAGE_RENDER_PAGE_SIZE),
+      );
+    }
     if (taskId === state.selectedId) {
       renderMessages({ preserveTop: true, prependedCount });
       renderLive();

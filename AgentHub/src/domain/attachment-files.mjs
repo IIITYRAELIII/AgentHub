@@ -33,6 +33,7 @@ const DOCUMENT_TYPES = new Map([
 
 const ENCODED_ID = /^([a-z0-9-]{16,100})--([A-Za-z0-9_-]{1,180})(\.[A-Za-z0-9]{1,16})?$/u;
 const LEGACY_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,239}$/u;
+const WINDOWS_RESERVED_FILE = /^(?:aux|con|nul|prn|com[1-9]|lpt[1-9])(?:\..*)?$/iu;
 
 function cleanDisplayName(value) {
   const base = path.basename(String(value ?? "").replace(/[\u0000-\u001f\u007f]/gu, " ")).trim();
@@ -105,7 +106,7 @@ export function createAttachmentStorageName(originalName, uniqueId = randomUUID(
 
 export function attachmentMetadataFromId(value) {
   const id = String(value ?? "").trim();
-  if (!id || id !== path.basename(id)) return null;
+  if (!id || id !== path.basename(id) || WINDOWS_RESERVED_FILE.test(id)) return null;
   const encoded = ENCODED_ID.exec(id);
   let name = id;
   if (encoded) {

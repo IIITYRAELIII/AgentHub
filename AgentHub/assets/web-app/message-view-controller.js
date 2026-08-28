@@ -99,6 +99,17 @@
     return { text, successMessage: "Блок скопирован" };
   }
 
+  function deferredQueueCounts(entries) {
+    const counts = { pending: 0, starting: 0, queued: 0, paused: 0 };
+    for (const entry of Array.isArray(entries) ? entries : []) {
+      if (entry?.state === "pending") counts.pending += 1;
+      else if (entry?.state === "paused") counts.paused += 1;
+      else if (entry?.conflictKind === "message-intake") counts.starting += 1;
+      else counts.queued += 1;
+    }
+    return counts;
+  }
+
   function standaloneInlineCode(value) {
     const match = String(value ?? "").match(/^\s*`([^`\r\n]+)`\s*$/u);
     return match ? match[1] : null;
@@ -172,6 +183,22 @@
     const values = Array.isArray(messages) ? messages : [];
     const maximum = Math.max(1, Number(limit) || 80);
     return values.length > maximum ? values.slice(-maximum) : values;
+  }
+
+  function messageTailPagination(messageCount, visibleLimit = 40, pageSize = 40) {
+    const loadedCount = Number.isSafeInteger(Number(messageCount))
+      ? Math.max(0, Number(messageCount))
+      : 0;
+    const requestedLimit = Math.max(1, Number(visibleLimit) || 40);
+    const requestedPageSize = Math.max(1, Number(pageSize) || 40);
+    const visibleCount = Math.min(loadedCount, requestedLimit);
+    const hiddenCount = Math.max(0, loadedCount - visibleCount);
+    return {
+      loadedCount,
+      visibleCount,
+      hiddenCount,
+      nextCount: Math.min(hiddenCount, requestedPageSize),
+    };
   }
 
   function resolvedMessageCount(loadedCount, totalCount) {
@@ -289,12 +316,14 @@
     claimKeyedChildrenOwner,
     codeBlockCopyRequest,
     composerFollowUpMode,
+    deferredQueueCounts,
     extractTechnicalTails,
     messageTechnicalContent,
     messageCopyRequest,
     messageDisclosurePresentation,
     messageContentSignature,
     messageKey,
+    messageTailPagination,
     messageTimestampLabel,
     messageTailWindow,
     normalizeSystemEventText,

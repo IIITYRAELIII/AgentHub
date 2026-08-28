@@ -119,7 +119,13 @@ test("Claude transcript attachment turn cannot duplicate its managed terminal co
     completed: true,
     attachments: [attachment],
     messages: [
-      { itemId: "managed-user", clientUserMessageId: "client-command-1", role: "user", text: "Проанализируй приложенные изображения.", attachments: [attachment] },
+      {
+        itemId: "managed-user",
+        clientUserMessageId: "client-command-1",
+        role: "user",
+        text: "Проанализируй приложенные изображения.",
+        attachments: [attachment],
+      },
       { itemId: "managed-final", role: "agent", text: "Ошибка Claude Code: лимит исчерпан" },
     ],
   };
@@ -131,15 +137,22 @@ test("Claude transcript attachment turn cannot duplicate its managed terminal co
     active: false,
     completed: true,
     messages: [
-      { itemId: "provider-user-uuid", role: "user", text: "Проанализируй приложенные изображения.\n\nПроанализируй также изображение по абсолютному пути: C:\\AgentHub\\attachments\\image-1.png" },
+      {
+        itemId: "provider-user-uuid",
+        role: "user",
+        text: "Проанализируй приложенные изображения.\n\nПроанализируй также изображение по абсолютному пути: C:\\AgentHub\\attachments\\image-1.png",
+      },
       { itemId: "provider-agent-uuid", role: "agent", text: "лимит исчерпан" },
     ],
   };
+
   store.recordHistory(claudeTask, [managed, transcript]);
+
   const history = store.history(claudeTask);
   assert.equal(history.length, 1);
   assert.equal(history[0].id, "managed-turn");
   assert.equal(history[0].messages[0].clientUserMessageId, "client-command-1");
+  assert.equal(history[0].answer, "Ошибка Claude Code: лимит исчерпан");
 });
 
 test("local task sync restores the latest model from the journal projection", async () => {

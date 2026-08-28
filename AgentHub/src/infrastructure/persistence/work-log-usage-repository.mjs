@@ -3,6 +3,7 @@ import path from "node:path";
 
 import {
   ledgerRecordChanges,
+  ledgerRecordFingerprint,
   ledgerRecordSnapshot,
 } from "./incremental-ledger.mjs";
 import { JournalDatabase } from "./journal-database.mjs";
@@ -115,13 +116,13 @@ export class WorkLogUsageRepository {
 
   async saveRecord(key, record) {
     const normalizedKey = String(key ?? "");
-    const serialized = JSON.stringify(record);
-    if (!normalizedKey || this.#recordSnapshot.get(normalizedKey) === serialized) {
+    const fingerprint = ledgerRecordFingerprint(record);
+    if (!normalizedKey || this.#recordSnapshot.get(normalizedKey) === fingerprint) {
       return { upserted: 0, revision: this.#loadedRevision };
     }
     const result = await this.#database.upsertRecords([record]);
     this.#loadedRevision = result.revision;
-    this.#recordSnapshot.set(normalizedKey, serialized);
+    this.#recordSnapshot.set(normalizedKey, fingerprint);
     return result;
   }
 

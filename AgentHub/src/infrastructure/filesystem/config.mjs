@@ -383,13 +383,30 @@ export function httpBaseUrl(value, name) {
   return normalized;
 }
 
+const CANONICAL_PATH_CACHE_LIMIT = 512;
+const canonicalPathCache = new Map();
+
+function rememberCanonicalPath(resolved, canonical) {
+  canonicalPathCache.delete(resolved);
+  canonicalPathCache.set(resolved, canonical);
+  if (canonicalPathCache.size <= CANONICAL_PATH_CACHE_LIMIT) return;
+  canonicalPathCache.delete(canonicalPathCache.keys().next().value);
+}
+
 export function canonicalPath(value) {
   const resolved = path.resolve(value);
+  const cached = canonicalPathCache.get(resolved);
+  if (cached) {
+    rememberCanonicalPath(resolved, cached);
+    return cached;
+  }
   let existing = resolved;
   const missingTail = [];
   while (true) {
     try {
-      return path.join(realpathSync.native(existing), ...missingTail.reverse());
+      const canonical = path.join(realpathSync.native(existing), ...missingTail.slice().reverse());
+      if (missingTail.length === 0) rememberCanonicalPath(resolved, canonical);
+      return canonical;
     } catch {
       const parent = path.dirname(existing);
       if (parent === existing) return resolved;
@@ -415,8 +432,12 @@ export function pathInsideOrSame(child, parent) {
 }
 
 export function findContainingProject(projects, candidatePath) {
+  const candidate = canonicalPath(candidatePath);
   return projects
-    .filter((project) => pathInsideOrSame(candidatePath, project.path))
+    .filter((project) => {
+      const relative = path.relative(canonicalPath(project.path), candidate);
+      return !relative || (!relative.startsWith("..") && !path.isAbsolute(relative));
+    })
     .sort((left, right) => right.path.length - left.path.length)[0];
 }
 

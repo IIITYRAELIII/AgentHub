@@ -412,7 +412,7 @@ test("task catalog provider and Telegram concerns have explicit owners", async (
     "utf8",
   );
   assert.match(claude, /^export function claudeSnapshotActivityAtMs/mu);
-  assert.match(codex, /^export async function readCodexRolloutActivity/mu);
+  assert.match(codex, /^export function readCodexRolloutActivity/mu);
   assert.match(titles, /^export function preferredCodexTaskTitle/mu);
   assert.match(projection, /^export function mergeTaskCatalog/mu);
   assert.match(presentation, /^export function runningTaskReplyMarkup/mu);
