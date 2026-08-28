@@ -5,10 +5,18 @@ import test from "node:test";
 import { RunJournalService } from "../../src/application/run-journal-service.mjs";
 import { legacyTaskRunKeys, taskRunKey } from "../../src/domain/task-runs.mjs";
 
-function fixture({ statImpl = async () => ({}), releaseWorkflowEnabled = true } = {}) {
+function fixture({
+  statImpl = async () => ({}),
+  releaseWorkflowEnabled = true,
+  recordWorkspaceEvents = false,
+} = {}) {
   const calls = [];
   const workspaceCatalogStore = {
     releaseWorkflowEnabledForThread: () => releaseWorkflowEnabled,
+    ...(recordWorkspaceEvents ? {
+      resolveThread: () => ({ workspaceId: "workspace-1", streamId: "stream-1" }),
+      recordWorkspaceEvent: (value) => calls.push(["workspace-event", value]),
+    } : {}),
   };
   const taskBoard = {
     claimedTaskForTurn: ({ turnId }) => turnId === "unbound-turn" ? null : {
@@ -201,6 +209,25 @@ test("RunJournalService selects automatic and explicit journal projection paths"
   assert.equal(calls[0][1].title, "Useful final answer");
   assert.equal(calls[1][0], "explicit");
   assert.equal(calls[1][1].workLogId, "row-1");
+});
+
+test("RunJournalService records a deterministic Workspace completion event", async () => {
+  const { service, calls } = fixture({ recordWorkspaceEvents: true });
+  await service.projectTurn({
+    provider: "codex",
+    projectRoot: "C:/workspace",
+    threadId: "thread",
+    turnId: "turn",
+    status: "completed",
+  }, { body: "Useful final answer" });
+
+  const event = calls.find(([name]) => name === "workspace-event")?.[1];
+  assert.equal(event.workspaceId, "workspace-1");
+  assert.equal(event.streamId, "stream-1");
+  assert.equal(event.type, "run.completed");
+  assert.equal(event.subjectId, "turn");
+  assert.match(event.dedupeKey, /^run\.completed:[a-f0-9]{64}$/u);
+  assert.equal(calls.some(([name]) => name === "error"), false);
 });
 
 test("RunJournalService projects the initial and every steered message", async () => {
