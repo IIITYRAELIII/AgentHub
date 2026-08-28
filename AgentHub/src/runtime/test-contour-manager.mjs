@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { closeSync, openSync } from "node:fs";
+import { closeSync, existsSync, openSync } from "node:fs";
 import {
   access,
   copyFile,
@@ -61,6 +61,13 @@ const CHAT_ID = 84;
 
 export { defaultTestContourRoot };
 
+function requireTestContourModel(model) {
+  if (!TEST_CONTOUR_MODELS.some((item) => item.value === model)) {
+    throw new Error(`Model ${model} is not available in Test Contour`);
+  }
+  return model;
+}
+
 export function testContourPaths(root = defaultTestContourRoot()) {
   const resolved = path.resolve(root);
   return {
@@ -81,6 +88,37 @@ export function testContourPaths(root = defaultTestContourRoot()) {
     stdoutFile: path.join(resolved, "test-contour.log"),
     stderrFile: path.join(resolved, "test-contour-error.log"),
   };
+}
+
+export function alignTestContourStreamModel({ databaseFile, model } = {}) {
+  requireTestContourModel(model);
+  if (!databaseFile || !existsSync(databaseFile)) return { updated: 0, reason: "journal-unavailable" };
+  const database = new DatabaseSync(databaseFile);
+  try {
+    const table = database.prepare(`
+      SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'hub_streams'
+    `).get();
+    if (!table) return { updated: 0, reason: "stream-catalog-unavailable" };
+    const rows = database.prepare("SELECT id, settings_json FROM hub_streams").all();
+    const update = database.prepare("UPDATE hub_streams SET settings_json = ? WHERE id = ?");
+    let updated = 0;
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      for (const row of rows) {
+        const settings = JSON.parse(row.settings_json);
+        if (settings.provider === "codex" && settings.model === model) continue;
+        update.run(JSON.stringify({ ...settings, provider: "codex", model }), row.id);
+        updated += 1;
+      }
+      database.exec("COMMIT");
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
+    return { updated };
+  } finally {
+    database.close();
+  }
 }
 
 export function testContourOperationLockTarget(root = defaultTestContourRoot()) {
@@ -239,9 +277,7 @@ export function testContourConfig({
   model = TEST_CONTOUR_MODEL,
   realCodexExecutable = "codex",
 } = {}) {
-  if (!TEST_CONTOUR_MODELS.some((item) => item.value === model)) {
-    throw new Error(`Model ${model} is not available in Test Contour`);
-  }
+  requireTestContourModel(model);
   const parsedTelegramUrl = new URL(String(telegramApiBaseUrl));
   if (parsedTelegramUrl.protocol !== "http:" || parsedTelegramUrl.hostname !== "127.0.0.1") {
     throw new Error("Test Contour Telegram API must use 127.0.0.1 over HTTP");
@@ -770,6 +806,10 @@ async function startTestContourUnlocked({
   else await currentRelease(isolatedRoot).catch(() => prepareTestContourCandidate({ root: isolatedRoot, sourceRoot }));
   await prepareTestContourCodexProviders({ root: isolatedRoot, sourceRoot });
   await prepareTestContourCodexHome(paths);
+  alignTestContourStreamModel({
+    databaseFile: path.join(paths.dataDir, "journal.sqlite"),
+    model,
+  });
   await rm(paths.stateFile, { force: true });
   const stdout = openSync(paths.stdoutFile, "a");
   const stderr = openSync(paths.stderrFile, "a");

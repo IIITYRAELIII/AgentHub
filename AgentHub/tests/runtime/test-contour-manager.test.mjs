@@ -11,6 +11,7 @@ import { LoopbackTelegramApi } from "../../src/infrastructure/network/loopback-t
 import { WorkLogUsageSyncStore } from "../../src/infrastructure/persistence/work-log-usage-sync-store.mjs";
 import { processIsAlive } from "../../src/infrastructure/process/process-liveness.mjs";
 import {
+  alignTestContourStreamModel,
   assertIsolatedTestContourRoot,
   cloneProductionDataToTestContour,
   defaultTestContourRoot,
@@ -33,6 +34,42 @@ import {
   uninstallTestContour,
   withTestContourOperationLock,
 } from "../../src/runtime/test-contour-manager.mjs";
+
+test("Test Contour aligns cloned Stream settings with the requested provider model", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-test-contour-model-"));
+  const databaseFile = path.join(root, "journal.sqlite");
+  const database = new DatabaseSync(databaseFile);
+  try {
+    database.exec(`
+      CREATE TABLE hub_streams (
+        id TEXT PRIMARY KEY, settings_json TEXT NOT NULL
+      ) WITHOUT ROWID;
+      INSERT INTO hub_streams VALUES
+        ('stream-1', '{"provider":"codex","model":"gpt-5.3-codex-spark","custom":true}'),
+        ('stream-2', '{"provider":"claude","model":"claude-opus-5"}');
+    `);
+  } finally {
+    database.close();
+  }
+  try {
+    assert.deepEqual(alignTestContourStreamModel({
+      databaseFile,
+      model: TEST_CONTOUR_FAKE_MODEL,
+    }), { updated: 2 });
+    const verified = new DatabaseSync(databaseFile, { readOnly: true });
+    try {
+      const rows = verified.prepare("SELECT settings_json FROM hub_streams ORDER BY id").all();
+      assert.deepEqual(rows.map((row) => JSON.parse(row.settings_json)), [
+        { provider: "codex", model: TEST_CONTOUR_FAKE_MODEL, custom: true },
+        { provider: "codex", model: TEST_CONTOUR_FAKE_MODEL },
+      ]);
+    } finally {
+      verified.close();
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("Test Contour uses a sibling runtime instead of production or source", () => {
   assert.equal(TEST_CONTOUR_WEB_HOST, "localhost");
