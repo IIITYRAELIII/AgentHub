@@ -3840,7 +3840,7 @@ function renderChat() {
   if (taskChanged) {
     activeChatId = task.id;
     state.messageRenderLimits.set(task.id, INITIAL_MESSAGE_RENDER_LIMIT);
-    renderMessages({ forceBottom: true, tailLimit: SWITCH_MESSAGE_RENDER_LIMIT });
+    renderMessages({ forceBottom: true });
   }
   renderLive();
   renderApprovals();

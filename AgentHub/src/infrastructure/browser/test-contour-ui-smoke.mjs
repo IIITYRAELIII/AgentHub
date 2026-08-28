@@ -25,11 +25,16 @@ export async function selectTestContourModel(page, model, timeoutMs) {
   await settingsToggle.click();
   const modelSelect = page.locator('select[data-dialog-options="model"]');
   await modelSelect.waitFor({ state: "attached", timeout: timeoutMs });
+  await modelSelect.locator(`option[value="${normalizedModel}"]`)
+    .waitFor({ state: "attached", timeout: timeoutMs })
+    .catch(() => {});
   const availableModels = await modelSelect.locator("option").evaluateAll((options) => (
     options.map((option) => String(option.value))
   ));
   if (!availableModels.includes(normalizedModel)) {
-    throw new Error(`Test Contour model is not selectable: ${normalizedModel}`);
+    throw new Error(
+      `Test Contour model is not selectable: ${normalizedModel}; available=${availableModels.join(",")}`,
+    );
   }
   const settingResponse = page.waitForResponse(
     (response) => isTestContourModelSettingResponse(response, normalizedModel),
@@ -42,6 +47,31 @@ export async function selectTestContourModel(page, model, timeoutMs) {
   const response = await settingResponse;
   if (!response.ok()) throw new Error(`Test Contour model setting failed: HTTP ${response.status()}`);
   await page.locator("[data-dialog-settings-close]").click();
+}
+
+export async function selectTestContourCodexStream(page, timeoutMs) {
+  const workspaces = page.locator("[data-workspace-select]:visible");
+  await workspaces.first().waitFor({ state: "visible", timeout: timeoutMs });
+  const workspaceCount = await workspaces.count();
+  for (let index = 0; index < workspaceCount; index += 1) {
+    const workspace = workspaces.nth(index);
+    const workspaceId = String(await workspace.getAttribute("data-workspace-id") ?? "").trim();
+    if (!workspaceId) continue;
+    await workspace.click();
+    const stream = page.locator(
+      `[data-stream-tab-id][data-workspace-id="${workspaceId}"]`
+      + '[data-stream-provider="codex"]'
+      + '[data-stream-name]:not([data-stream-name=""]):visible',
+    ).first();
+    const available = await stream.waitFor({
+      state: "visible",
+      timeout: Math.min(timeoutMs, 2_000),
+    }).then(() => true, () => false);
+    if (!available) continue;
+    await stream.click();
+    return stream;
+  }
+  throw new Error("Test Contour has no named Codex Stream");
 }
 
 function playwrightRuntime(automationRoot) {
@@ -125,14 +155,7 @@ export async function runTestContourUiSmoke({
     await page.locator('html[data-view="chat"]').waitFor({ state: "attached", timeout: 10_000 });
 
     if (withAgent) {
-      const workspace = page.locator("[data-workspace-select]:visible").first();
-      await workspace.waitFor({ state: "visible", timeout: timeoutMs });
-      await workspace.click();
-      const selectedStream = page.locator(
-        '[data-stream-tab-id][data-stream-provider="codex"]:visible',
-      ).first();
-      await selectedStream.waitFor({ state: "visible", timeout: timeoutMs });
-      await selectedStream.click();
+      const selectedStream = await selectTestContourCodexStream(page, timeoutMs);
       await selectTestContourModel(page, model, timeoutMs);
       const previousUrl = page.url();
       await selectedStream.click({ button: "right" });

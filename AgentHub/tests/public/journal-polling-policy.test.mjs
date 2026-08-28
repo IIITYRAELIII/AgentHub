@@ -110,3 +110,63 @@ test("journal polling serializes requests and caps exponential backoff", async (
   await settlePolling();
   assert.equal(timers.nextDelay(), 40);
 });
+
+test("journal live updates wait for authenticated session before opening the event stream", async () => {
+  const api = await pollingApi();
+  let resolveReady;
+  const ready = new Promise((resolve) => { resolveReady = resolve; });
+  const listeners = new Map();
+  const received = [];
+  let created = 0;
+  let closed = 0;
+  const live = api.createAuthenticatedEventStream({
+    ready,
+    createSource: () => {
+      created += 1;
+      return {
+        addEventListener: (type, listener) => listeners.set(type, listener),
+        close: () => { closed += 1; },
+      };
+    },
+    onReady: () => received.push("ready"),
+    onChange: () => received.push("journal"),
+    onError: () => received.push("error"),
+  });
+
+  const started = live.start();
+  await settlePolling();
+  assert.equal(created, 0);
+  assert.equal(live.snapshot().starting, true);
+
+  resolveReady();
+  await started;
+  assert.equal(created, 1);
+  assert.equal(live.snapshot().connected, true);
+  listeners.get("ready")();
+  listeners.get("journal")();
+  assert.deepEqual(received, ["ready", "journal"]);
+
+  live.stop();
+  assert.equal(closed, 1);
+  assert.equal(live.snapshot().connected, false);
+});
+
+test("stopped journal live updates do not open a late authenticated stream", async () => {
+  const api = await pollingApi();
+  let resolveReady;
+  const ready = new Promise((resolve) => { resolveReady = resolve; });
+  let created = 0;
+  const live = api.createAuthenticatedEventStream({
+    ready,
+    createSource: () => {
+      created += 1;
+      return { addEventListener() {} };
+    },
+  });
+
+  const started = live.start();
+  live.stop();
+  resolveReady();
+  assert.equal(await started, null);
+  assert.equal(created, 0);
+});

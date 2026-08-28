@@ -107,7 +107,66 @@
     });
   }
 
+  function createAuthenticatedEventStream({
+    ready = Promise.resolve(),
+    createSource,
+    onReady = () => {},
+    onChange = () => {},
+    onError = () => {},
+  } = {}) {
+    if (typeof createSource !== "function") throw new TypeError("createSource must be a function");
+    let source = null;
+    let starting = null;
+    let stopped = false;
+
+    function start() {
+      if (source) return Promise.resolve(source);
+      if (starting) return starting;
+      stopped = false;
+      starting = Promise.resolve(ready)
+        .then(() => {
+          if (stopped) return null;
+          const created = createSource();
+          if (!created || typeof created.addEventListener !== "function") {
+            throw new TypeError("createSource must return an event source");
+          }
+          source = created;
+          source.addEventListener("ready", onReady);
+          source.addEventListener("journal", onChange);
+          source.addEventListener("error", onError);
+          return source;
+        })
+        .catch((error) => {
+          if (!stopped) onError(error);
+          return null;
+        })
+        .finally(() => {
+          starting = null;
+        });
+      return starting;
+    }
+
+    function stop() {
+      stopped = true;
+      source?.close?.();
+      source = null;
+    }
+
+    return Object.freeze({
+      start,
+      stop,
+      snapshot() {
+        return Object.freeze({
+          connected: Boolean(source),
+          starting: Boolean(starting),
+          stopped,
+        });
+      },
+    });
+  }
+
   window.AgentHubJournalPolling = Object.freeze({
+    createAuthenticatedEventStream,
     createBoundedPollingFallback,
   });
 })();

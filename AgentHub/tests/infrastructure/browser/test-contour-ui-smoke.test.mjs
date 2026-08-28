@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   isTestContourModelSettingResponse,
+  selectTestContourCodexStream,
   selectTestContourModel,
 } from "../../../src/infrastructure/browser/test-contour-ui-smoke.mjs";
 
@@ -17,6 +18,15 @@ function smokePage({ availableModels = ["gpt-5.3-codex-spark"], selectedModel = 
     'select[data-dialog-options="model"]': {
       async waitFor(options) { events.push(["model.waitFor", options]); },
       locator(selector) {
+        if (selector.startsWith('option[value="')) {
+          const value = selector.match(/^option\[value="(.+)"\]$/u)?.[1] ?? "";
+          return {
+            async waitFor(options) {
+              events.push(["model.option.waitFor", value, options]);
+              if (!availableModels.includes(value)) throw new Error("option unavailable");
+            },
+          };
+        }
         assert.equal(selector, "option");
         return {
           async evaluateAll(callback) {
@@ -78,9 +88,57 @@ test("Test Contour smoke selects the requested model before creating a thread", 
     ["toggle.waitFor", { state: "visible", timeout: 5_000 }],
     ["toggle.click"],
     ["model.waitFor", { state: "attached", timeout: 5_000 }],
+    ["model.option.waitFor", "gpt-5.6-terra", { state: "attached", timeout: 5_000 }],
     ["page.waitForResponse", { timeout: 5_000 }],
     ["model.selectOption", "gpt-5.6-terra", { force: true }],
     ["close.click"],
+  ]);
+});
+
+test("Test Contour smoke skips empty Workspaces and selects a named Codex Stream", async () => {
+  const events = [];
+  let activeWorkspace = -1;
+  const namedCodexByWorkspace = [false, true];
+  const stream = {
+    async waitFor(options) {
+      events.push(["stream.waitFor", activeWorkspace, options]);
+      if (!namedCodexByWorkspace[activeWorkspace]) throw new Error("stream unavailable");
+    },
+    async click() { events.push(["stream.click", activeWorkspace]); },
+  };
+  const workspaces = {
+    first() {
+      return { async waitFor(options) { events.push(["workspaces.waitFor", options]); } };
+    },
+    async count() { return namedCodexByWorkspace.length; },
+    nth(index) {
+      return {
+        async getAttribute(name) {
+          assert.equal(name, "data-workspace-id");
+          return `workspace-${index}`;
+        },
+        async click() { activeWorkspace = index; events.push(["workspace.click", index]); },
+      };
+    },
+  };
+  const page = {
+    locator(selector) {
+      if (selector === "[data-workspace-select]:visible") return workspaces;
+      assert.match(selector, /data-stream-provider="codex"/u);
+      assert.match(selector, /data-stream-name/u);
+      assert.match(selector, new RegExp(`data-workspace-id="workspace-${activeWorkspace}"`, "u"));
+      return { first: () => stream };
+    },
+  };
+
+  assert.equal(await selectTestContourCodexStream(page, 5_000), stream);
+  assert.deepEqual(events, [
+    ["workspaces.waitFor", { state: "visible", timeout: 5_000 }],
+    ["workspace.click", 0],
+    ["stream.waitFor", 0, { state: "visible", timeout: 2_000 }],
+    ["workspace.click", 1],
+    ["stream.waitFor", 1, { state: "visible", timeout: 2_000 }],
+    ["stream.click", 1],
   ]);
 });
 
