@@ -37,13 +37,13 @@ test("slow trace writes stay off the ACK path and overflow drops spans, not comm
   });
 
   assert.deepEqual(result, { accepted: true });
-  assert.equal(store.stats().queuedWrites, 2, "ACK returned while both boundary spans were still pending");
+  assert.equal(store.stats().queuedWrites, 3, "ACK returned while all boundary spans were still pending");
   assert.equal(service.recordBestEffort({
     commandId: "slow-trace-command",
     stage: "client-ack",
     outcome: "succeeded",
     transport: "desktop-control",
-  }), true);
+  }), false);
   assert.equal(service.recordBestEffort({
     commandId: "slow-trace-command",
     stage: "response-send",
@@ -52,7 +52,7 @@ test("slow trace writes stay off the ACK path and overflow drops spans, not comm
   }), false);
   assert.deepEqual(store.stats(), {
     queuedWrites: 3,
-    droppedSpans: 1,
+    droppedSpans: 2,
     pendingRequests: 0,
     workerRestarts: 0,
     workerRunning: true,

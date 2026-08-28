@@ -2047,7 +2047,9 @@ test("composer restores definite rejection but keeps an ambiguous delivery singl
   const submit = app.match(
     /function submitComposer\(\{ steerWhileRunning = false \} = \{\}\) \{(?<body>[\s\S]*?)\n\}/u,
   )?.groups?.body ?? "";
-  assert.match(submit, /composerInput\.value = ""[\s\S]*emit\("message:send"/u);
+  assert.match(submit, /sendComposerRequest\(\{/u);
+  assert.match(submit, /clearComposer: true/u);
+  assert.match(submit, /restoreOnReject: true/u);
   assert.match(app, /function completeComposerSend\(requestId, accepted\)/u);
   assert.match(app, /if \(accepted\)[\s\S]*else \{[\s\S]*text: pending\.rawText/u);
   assert.match(app, /const retryComposerRequests = new Map\(\)/u);

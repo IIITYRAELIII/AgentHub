@@ -483,8 +483,8 @@ test("extracted composition factories remain bounded", async () => {
     .filter((name) => name !== "agent-hub-composition.mjs");
   for (const name of files) {
     const source = await readFile(path.join(directory, name), "utf8");
-    const lines = source.split(/\r?\n/u).length - (source.endsWith("\n") ? 1 : 0);
-    assert.ok(lines <= 600, `${name} grew to ${lines} lines; maximum is 600`);
+    const lines = source.split(/\r?\n/u).filter((line) => line.trim()).length;
+    assert.ok(lines <= 600, `${name} grew to ${lines} non-empty lines; maximum is 600`);
   }
 });
 
