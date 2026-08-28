@@ -327,6 +327,25 @@
     return { running, answerReady, statusLabel };
   }
 
+  function isExactActiveUserTurn(task) {
+    if (task?.running !== true) return false;
+    const run = task?.run;
+    const turnId = String(run?.turnId ?? "").trim();
+    if (
+      !turnId
+      || String(run?.operationKind ?? "").trim() !== "user-turn"
+      || String(run?.projectionState ?? "").trim() !== "active"
+    ) return false;
+    const final = task?.latestFinal;
+    if (!final) return true;
+    return !(
+      String(final.provider ?? "").trim().toLowerCase()
+        === String(task.provider ?? "").trim().toLowerCase()
+      && String(final.threadId ?? "").trim() === String(task.threadId ?? "").trim()
+      && String(final.turnId ?? "").trim() === turnId
+    );
+  }
+
   function answerArrivalTaskIds(tasks, observedFinalIdentityByTaskId) {
     const observedFinals = observedFinalIdentityByTaskId
       && typeof observedFinalIdentityByTaskId.has === "function"
@@ -1291,6 +1310,7 @@
     createPhosphorIcon,
     HorizontalPointerScroller,
     includeTaskInActivityRail,
+    isExactActiveUserTurn,
     orderWorkspaceGroups,
     resolveTaskHierarchy,
     STREAM_CARD_MAX_WIDTH,

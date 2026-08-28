@@ -102,6 +102,30 @@ test("rotated Stream keeps recent activity while opening its current Thread", as
   assert.equal(representative.orderingActivityAtMs, previousThreadActivity);
 });
 
+test("a terminal identity absorbs a stale active Stream projection", async () => {
+  const { isExactActiveUserTurn } = await streamTabsApi();
+  const task = {
+    provider: "codex",
+    threadId: "thread-1",
+    running: true,
+    run: {
+      turnId: "turn-1",
+      operationKind: "user-turn",
+      projectionState: "active",
+    },
+    latestFinal: {
+      provider: "codex",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      revision: 2,
+    },
+  };
+
+  assert.equal(isExactActiveUserTurn(task), false);
+  assert.equal(isExactActiveUserTurn({ ...task, latestFinal: null }), true);
+  assert.equal(isExactActiveUserTurn({ ...task, run: null }), false);
+});
+
 test("rotation notice follows the actually compacted Thread instead of the previous head", async () => {
   const {
     rotationMaintenancePresentation,
