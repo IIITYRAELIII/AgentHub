@@ -1,0 +1,443 @@
+html[data-theme="malachor-v"] {
+  --font-body: "Bahnschrift", "Arial Narrow", "Segoe UI", system-ui, sans-serif;
+  --font-display: "Bahnschrift SemiCondensed", "Bahnschrift", "Arial Narrow", sans-serif;
+  --font-title: "Bahnschrift SemiCondensed", "Bahnschrift", "Arial Narrow", sans-serif;
+  --font-numeric: "Cascadia Mono", Consolas, monospace;
+  --display-weight: 520;
+  --display-spacing: 0.15em;
+  --display-transform: uppercase;
+  --display-shadow: 0 1px 0 #000;
+  --title-weight: 560;
+  --label-spacing: 0.12em;
+  --radius-lg: 2px;
+  --radius-md: 2px;
+  --radius-sm: 1px;
+  --radius-chip: 1px;
+  --rail-width: 2px;
+  --bg: #030405;
+  --surface-1: rgb(7 8 9 / 54%);
+  --surface-2: rgb(10 11 12 / 58%);
+  --surface-3: rgb(15 16 17 / 62%);
+  --sunken: rgb(2 3 4 / 48%);
+  --line: #303436;
+  --line-strong: #4a4f51;
+  --malachor-default-scene: url("./malachor-v-trayus-descent.webp");
+  --malachor-grain: var(--malachor-v-grain-asset, url("./malachor-v-grain.webp"));
+  --malachor-panel-tile: var(--malachor-v-panel-asset, url("./malachor-v-panel.webp"));
+  --malachor-grain-size: 512px 512px;
+  --malachor-header: rgb(5 6 7 / 62%);
+  --malachor-control: rgb(9 10 11 / 56%);
+  --malachor-panel: rgb(3 4 5 / 44%);
+  --malachor-section: rgb(7 8 9 / 42%);
+  --malachor-item: rgb(10 11 12 / 50%);
+  --malachor-chat-panel: rgb(2 3 4 / 10%);
+  --malachor-panel-frame: rgb(111 118 119 / 42%);
+  --malachor-panel-frame-dark: rgb(24 27 29 / 86%);
+  --malachor-section-frame: rgb(82 88 89 / 34%);
+  --malachor-item-frame: rgb(74 79 81 / 42%);
+  --malachor-hairline: rgb(69 74 75 / 30%);
+  --card-bg: rgb(6 7 8 / 48%);
+  --card-bg-open: rgb(9 10 11 / 56%);
+  --card-texture: var(--malachor-grain);
+  --card-border: #292d2f;
+  --card-border-open: rgb(199 49 61 / 74%);
+  --card-shadow: inset 0 1px 0 rgb(220 224 222 / 4%), inset 0 -1px 0 #000;
+  --plate-bg: var(--malachor-control);
+  --plate-shadow: inset 0 1px 0 rgb(220 224 222 / 4%), inset 0 -1px 0 #000;
+  --turn-shadow: 0 18px 34px -28px #000;
+  --text: #d4d6d2;
+  --text-soft: #aaadaa;
+  --text-muted: #767b79;
+  --text-faint: #565b59;
+  --accent: #ce303c;
+  --accent-soft: rgb(206 48 60 / 14%);
+  --accent-line: rgb(206 48 60 / 82%);
+  --accent-glow: none;
+  --selection: rgb(206 48 60 / 24%);
+  --brand-gradient: linear-gradient(180deg, #101214, #050607);
+  --brand-shadow: inset 0 -1px 0 rgb(206 48 60 / 48%);
+  --provider-none: #747977;
+  --provider-codex: #c2c6c3;
+  --provider-claude: #9d554a;
+  --ok: #718a74;
+  --pending: #9a6845;
+  --dot-input: #ce303c;
+  --dot-cache: #696e6c;
+  --dot-output: #b3424d;
+  --dot-think: #7a7f7d;
+  --space-glow-a: rgb(104 27 34 / 3%);
+  --space-glow-b: rgb(82 87 85 / 2%);
+  --space-base: #020304;
+  --space-star: transparent;
+  --star-opacity: 0;
+  --shell-header-background: var(--malachor-header);
+  --shell-header-border: 1px solid var(--malachor-panel-frame-dark);
+  --shell-header-frame-border: 0;
+  --shell-header-frame-content: none;
+  --shell-header-frame-image: none;
+  --shell-header-gap: 14px;
+  --shell-header-height: 70px;
+  --shell-header-padding-left: clamp(14px, 2.2vw, 34px);
+  --shell-header-padding-right: clamp(14px, 2.2vw, 34px);
+  --shell-header-rule: linear-gradient(90deg, transparent, rgb(206 48 60 / 38%), transparent);
+  --shell-header-rule-bottom: 0;
+  --shell-header-rule-opacity: 1;
+  --shell-header-shadow: inset 0 -1px 0 rgb(97 103 104 / 34%), 0 18px 32px -30px #000;
+  --shell-control-background: var(--malachor-control);
+  --shell-control-border: 1px solid var(--malachor-item-frame);
+  --shell-control-radius: 1px;
+  --shell-control-shadow: inset 0 1px 0 rgb(213 218 215 / 3%);
+  --shell-view-switch-background: transparent;
+  --shell-view-switch-border: 0;
+  --shell-view-switch-radius: 0;
+  --shell-view-switch-shadow: none;
+  --shell-view-switch-gap: 0.4rem;
+  --shell-view-switch-padding: 0;
+  --shell-tab-background: transparent;
+  --shell-tab-border: 0;
+  --shell-tab-radius: 0;
+  --shell-tab-shadow: none;
+  --shell-tab-active-background: transparent;
+  --shell-tab-active-border: 0;
+  --shell-tab-active-shadow: inset 0 -2px 0 rgb(206 48 60 / 92%);
+  --shell-tab-active-color: #dc4651;
+  --shell-workspace-padding-top: 8px;
+  --shell-panel-border: 1px solid var(--malachor-panel-frame);
+  --shell-panel-border-image: none;
+  --shell-panel-border-width: 1px;
+  --shell-panel-border-image-width: 1px;
+  --shell-panel-radius: 1px;
+  --shell-chat-border: 1px solid var(--malachor-panel-frame);
+  --shell-chat-border-image: none;
+  --shell-chat-radius: 1px;
+  --shell-stream-tabs-background: var(--malachor-header);
+  --shell-stream-tabs-border: 1px solid transparent;
+  --shell-stream-tabs-border-bottom: 1px solid var(--malachor-panel-frame);
+  --shell-stream-tabs-border-image: none;
+  --shell-stream-tabs-padding: 3px 5px;
+  --shell-stream-tab-background: transparent;
+  --shell-stream-tab-border: 1px solid transparent;
+  --shell-stream-tab-hover-background: rgb(23 25 26 / 52%);
+  --shell-stream-tab-active-background: rgb(18 12 13 / 70%);
+  --shell-stream-card-background: var(--malachor-control);
+  --shell-stream-card-border: 1px solid var(--malachor-item-frame);
+  --shell-stream-card-border-image: none;
+  --shell-stream-card-radius: 1px;
+  --shell-stream-card-shadow: inset 0 1px 0 rgb(213 218 215 / 3%);
+}
+
+html[data-theme="malachor-v"] body::after {
+  background-color: #020304;
+  background-image:
+    linear-gradient(rgb(0 0 0 / 38%), rgb(0 0 0 / 38%)),
+    linear-gradient(90deg, rgb(0 0 0 / 66%), transparent 25% 75%, rgb(0 0 0 / 66%)),
+    linear-gradient(180deg, rgb(0 0 0 / 42%), transparent 30% 68%, rgb(0 0 0 / 72%)),
+    var(--malachor-default-scene);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: cover;
+  inset: 0;
+  mask-image: none;
+  opacity: 1;
+}
+
+html[data-theme="malachor-v"] body::before {
+  background:
+    linear-gradient(101deg, transparent 47%, rgb(152 35 43 / 3%) 53%, transparent 59%),
+    radial-gradient(34% 38% at 50% 64%, rgb(151 35 43 / 4%), transparent 72%);
+  content: "";
+  inset: 0;
+  mask-image: none;
+  mix-blend-mode: screen;
+  opacity: 1;
+  pointer-events: none;
+}
+
+html[data-background-override="true"][data-background="malachor-v"] {
+  --hub-background-color: #020304;
+  --hub-background-image: linear-gradient(rgb(0 0 0 / 38%), rgb(0 0 0 / 38%)), linear-gradient(90deg, rgb(0 0 0 / 66%), transparent 25% 75%, rgb(0 0 0 / 66%)), linear-gradient(180deg, rgb(0 0 0 / 42%), transparent 30% 68%, rgb(0 0 0 / 72%)), url("./malachor-v-trayus-descent.webp");
+  --hub-background-position: center;
+  --hub-background-repeat: no-repeat;
+  --hub-background-size: cover;
+}
+
+html[data-background-override="true"][data-background="malachor-v-storm-rift"] {
+  --hub-background-color: #020405;
+  --hub-background-image: linear-gradient(rgb(0 0 0 / 40%), rgb(0 0 0 / 40%)), linear-gradient(90deg, rgb(0 0 0 / 66%), transparent 24% 76%, rgb(0 0 0 / 66%)), linear-gradient(180deg, rgb(0 0 0 / 42%), transparent 34% 68%, rgb(0 0 0 / 74%)), url("./malachor-v-storm-rift.webp");
+  --hub-background-position: center;
+  --hub-background-repeat: no-repeat;
+  --hub-background-size: cover;
+}
+
+html[data-background-override="true"][data-background="malachor-v-mass-shadow"] {
+  --hub-background-color: #010203;
+  --hub-background-image: linear-gradient(rgb(0 0 0 / 42%), rgb(0 0 0 / 42%)), linear-gradient(90deg, rgb(0 0 0 / 68%), transparent 24% 76%, rgb(0 0 0 / 68%)), linear-gradient(180deg, rgb(0 0 0 / 42%), transparent 32% 64%, rgb(0 0 0 / 76%)), url("./malachor-v-mass-shadow.webp");
+  --hub-background-position: center;
+  --hub-background-repeat: no-repeat;
+  --hub-background-size: cover;
+}
+
+html[data-background-override="true"][data-background="malachor-v-shattered-horizon"] {
+  --hub-background-color: #030405;
+  --hub-background-image: linear-gradient(rgb(0 0 0 / 26%), rgb(0 0 0 / 26%)), linear-gradient(90deg, rgb(0 0 0 / 58%), transparent 22% 78%, rgb(0 0 0 / 58%)), linear-gradient(180deg, rgb(0 0 0 / 22%), transparent 36% 72%, rgb(0 0 0 / 58%)), url("./malachor-v-shattered-horizon.png");
+  --hub-background-position: center;
+  --hub-background-repeat: no-repeat;
+  --hub-background-size: cover;
+}
+
+html[data-theme="malachor-v"] body {
+  font-stretch: semi-condensed;
+}
+
+html[data-theme="malachor-v"] .task-rail,
+html[data-theme="malachor-v"] .activity-rail {
+  background-color: var(--malachor-panel);
+  background-image: none;
+  backdrop-filter: blur(12px) brightness(58%) saturate(72%);
+  -webkit-backdrop-filter: blur(12px) brightness(58%) saturate(72%);
+  border-color: var(--malachor-panel-frame) var(--malachor-panel-frame-dark) var(--malachor-panel-frame-dark) var(--malachor-panel-frame);
+  border-radius: 1px;
+  box-shadow: inset 1px 1px 0 rgb(210 216 213 / 3%), 0 20px 38px -30px #000;
+}
+
+html[data-theme="malachor-v"] .chat {
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border-color: var(--malachor-panel-frame) var(--malachor-panel-frame-dark) var(--malachor-panel-frame-dark) var(--malachor-panel-frame);
+  border-radius: 1px;
+  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 34%), 0 20px 38px -30px #000;
+}
+
+html[data-theme="malachor-v"] .task-rail-head,
+html[data-theme="malachor-v"] .activity-rail-head,
+html[data-theme="malachor-v"] .stream-chat-header,
+html[data-theme="malachor-v"] .dialog-settings,
+html[data-theme="malachor-v"] .settings-panel {
+  background-color: var(--malachor-header);
+  background-image: none;
+  backdrop-filter: blur(14px) brightness(62%) saturate(70%);
+  -webkit-backdrop-filter: blur(14px) brightness(62%) saturate(70%);
+  border: 0;
+  border-bottom: 1px solid var(--malachor-section-frame);
+  border-image: none;
+  border-radius: 0;
+  box-shadow: inset 0 -1px 0 #000;
+}
+
+html[data-theme="malachor-v"] .task-rail-head {
+  border-bottom: 0;
+  box-shadow: none;
+}
+
+html[data-theme="malachor-v"] .task-list,
+html[data-theme="malachor-v"] .activity-rail-content,
+html[data-theme="malachor-v"] .activity-stream-column,
+html[data-theme="malachor-v"] .activity-streams {
+  background: transparent;
+  border: 0;
+  border-image: none;
+  box-shadow: none;
+}
+
+html[data-theme="malachor-v"] .task-search,
+html[data-theme="malachor-v"] .workspace-task-panel,
+html[data-theme="malachor-v"] .workspace-message-search,
+html[data-theme="malachor-v"] .approvals,
+html[data-theme="malachor-v"] .activity-section {
+  background-color: var(--malachor-section);
+  background-image: none;
+  backdrop-filter: blur(10px) brightness(66%) saturate(72%);
+  -webkit-backdrop-filter: blur(10px) brightness(66%) saturate(72%);
+  border: 1px solid var(--malachor-section-frame);
+  border-radius: 1px;
+  box-shadow: inset 1px 1px 0 rgb(214 219 216 / 2%);
+}
+
+html[data-theme="malachor-v"] .stream-chat-columns,
+html[data-theme="malachor-v"] .chat-pane,
+html[data-theme="malachor-v"] .chat-scroll,
+html[data-theme="malachor-v"] .chat-log,
+html[data-theme="malachor-v"] .msg-stack {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+html[data-theme="malachor-v"] .task-workspace-item,
+html[data-theme="malachor-v"] .activity-stream-item {
+  background-color: var(--malachor-item);
+  background-image: none;
+  backdrop-filter: blur(7px) brightness(70%) saturate(74%);
+  -webkit-backdrop-filter: blur(7px) brightness(70%) saturate(74%);
+  border: 1px solid var(--malachor-item-frame);
+  border-radius: 1px;
+  box-shadow: inset 1px 1px 0 rgb(218 222 220 / 3%);
+  position: relative;
+}
+
+html[data-theme="malachor-v"] .task-workspace-item:hover,
+html[data-theme="malachor-v"] .task-workspace-item:focus-visible,
+html[data-theme="malachor-v"] .activity-stream-item:hover,
+html[data-theme="malachor-v"] .activity-stream-item:focus-visible {
+  background-color: rgb(15 16 17 / 66%);
+  border-color: #4a4f51;
+  box-shadow: inset 1px 1px 0 rgb(221 225 223 / 4%);
+}
+
+html[data-theme="malachor-v"] .task-workspace-item[data-selected],
+html[data-theme="malachor-v"] .activity-stream-item[data-current] {
+  background-color: rgb(22 10 12 / 74%);
+  border-color: rgb(206 48 60 / 64%);
+  box-shadow: inset 2px 0 0 #ce303c, inset 0 -1px 0 rgb(206 48 60 / 84%);
+}
+
+html[data-theme="malachor-v"] .composer-input,
+html[data-theme="malachor-v"] .chip-button,
+html[data-theme="malachor-v"] .option-chip,
+html[data-theme="malachor-v"] .icon-button,
+html[data-theme="malachor-v"] .task-count {
+  background-color: var(--malachor-control);
+  background-image: none;
+  backdrop-filter: blur(8px) brightness(70%) saturate(76%);
+  -webkit-backdrop-filter: blur(8px) brightness(70%) saturate(76%);
+  border: 1px solid var(--malachor-item-frame);
+  border-radius: 1px;
+  box-shadow: inset 1px 1px 0 rgb(217 221 219 / 3%);
+}
+
+html[data-theme="malachor-v"] .stream-tab[aria-pressed="true"] .stream-tab-card {
+  border-color: rgb(206 48 60 / 66%);
+  box-shadow: inset 0 -2px 0 var(--accent), inset 2px 0 0 rgb(206 48 60 / 62%);
+}
+
+html[data-theme="malachor-v"] .msg,
+html[data-theme="malachor-v"] .msg-user,
+html[data-theme="malachor-v"] .msg-system,
+html[data-theme="malachor-v"] .msg-user-bubble {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  background: transparent !important;
+  border-color: transparent !important;
+  border-radius: 0;
+  box-shadow: none !important;
+  text-shadow: 0 1px 2px rgb(0 0 0 / 94%);
+}
+
+html[data-theme="malachor-v"] .msg .activity-list,
+html[data-theme="malachor-v"] .msg .turn-trace,
+html[data-theme="malachor-v"] .msg .turn-trace-block {
+  background: rgb(4 5 6 / 38%);
+  border: 1px solid var(--malachor-hairline);
+  border-radius: 1px;
+  box-shadow: none;
+}
+
+html[data-theme="malachor-v"] .msg-author {
+  font-family: var(--font-title);
+  font-variant-caps: all-small-caps;
+  letter-spacing: 0.09em;
+}
+
+html[data-theme="malachor-v"] .composer {
+  background-color: rgb(5 6 7 / 58%) !important;
+  background-image: none !important;
+  backdrop-filter: blur(14px) brightness(64%) saturate(72%);
+  -webkit-backdrop-filter: blur(14px) brightness(64%) saturate(72%);
+  border: 1px solid var(--malachor-panel-frame) !important;
+  border-radius: 1px !important;
+  box-shadow: inset 1px 1px 0 rgb(215 220 217 / 3%), 0 20px 38px -30px #000 !important;
+  position: relative;
+}
+
+html[data-theme="malachor-v"] .composer::after {
+  content: none;
+}
+
+html[data-theme="malachor-v"] .composer-send {
+  background: rgb(48 11 15 / 96%) !important;
+  border: 1px solid #ce303c !important;
+  border-radius: 1px !important;
+  box-shadow: inset 0 -1px 0 rgb(206 48 60 / 64%) !important;
+  color: #e6a7ad !important;
+}
+
+html[data-theme="malachor-v"] .task-rail-title,
+html[data-theme="malachor-v"] .activity-rail-toggle,
+html[data-theme="malachor-v"] .activity-section-head,
+html[data-theme="malachor-v"] .eyebrow {
+  color: #aeb1ae;
+  font-family: var(--font-title);
+  font-variant-caps: all-small-caps;
+  font-weight: 560;
+  letter-spacing: 0.14em;
+  text-shadow: 0 1px 0 #000;
+}
+
+html[data-theme="malachor-v"] .task-workspace-name,
+html[data-theme="malachor-v"] .stream-tab-title {
+  color: #c4c7c3;
+  font-family: var(--font-title);
+  font-weight: 430;
+  letter-spacing: 0.02em;
+}
+
+html[data-theme="malachor-v"] .task-workspace-item[data-selected] .task-workspace-name {
+  color: #eef0ec;
+  font-weight: 620;
+}
+
+html[data-theme="malachor-v"] .stream-tab[aria-pressed="true"] .stream-tab-title {
+  color: #df4652;
+  font-weight: 620;
+}
+
+html[data-theme="malachor-v"] .msg-agent .msg-author {
+  color: #d23a47;
+}
+
+html[data-theme="malachor-v"] .msg-user .msg-author {
+  color: #9aa7a6;
+}
+
+html[data-theme="malachor-v"] .composer-input {
+  border-color: #3e4345;
+}
+
+html[data-theme="malachor-v"] .task-list {
+  padding: 4px 12px 12px;
+}
+
+html[data-theme="malachor-v"] .task-workspace-item + .task-workspace-item,
+html[data-theme="malachor-v"] .task-list > li + li {
+  margin-top: 6px;
+}
+
+html[data-theme="malachor-v"] .journal details[data-work-log-day-section] {
+  backdrop-filter: blur(8px) saturate(82%);
+  -webkit-backdrop-filter: blur(8px) saturate(82%);
+  background-color: rgb(5 6 7 / 52%);
+  border-color: rgb(91 97 95 / 38%);
+  border-radius: 1px;
+}
+
+html[data-theme="malachor-v"] .journal details[data-work-log-turn-details] {
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  background-color: rgb(3 4 5 / 46%);
+  border-color: rgb(79 85 83 / 34%);
+  border-radius: 1px;
+}
+
+@media (max-width: 720px) {
+  html[data-theme="malachor-v"] body::after,
+  html[data-background-override="true"][data-background^="malachor-v"] {
+    --hub-background-position: 58% 50%;
+  }
+
+  html[data-theme="malachor-v"] .msg {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background-color: rgb(3 4 5 / 48%);
+  }
+}

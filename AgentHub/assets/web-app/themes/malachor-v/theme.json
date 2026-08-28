@@ -1,0 +1,38 @@
+{
+  "id": "malachor-v",
+  "name": "Malachor V",
+  "color": "#050708",
+  "order": 190,
+  "styles": "theme.css",
+  "assets": {
+    "grain": "malachor-v-grain.webp",
+    "panel": "malachor-v-panel.webp",
+    "lava": "malachor-v-lava.webp"
+  },
+  "backgrounds": [
+    {
+      "id": "malachor-v",
+      "name": "Спуск Трайус",
+      "asset": "malachor-v-trayus-descent.webp",
+      "preload": true
+    },
+    {
+      "id": "malachor-v-storm-rift",
+      "name": "Грозовой разлом",
+      "asset": "malachor-v-storm-rift.webp",
+      "preload": true
+    },
+    {
+      "id": "malachor-v-mass-shadow",
+      "name": "Массовая тень",
+      "asset": "malachor-v-mass-shadow.webp",
+      "preload": true
+    },
+    {
+      "id": "malachor-v-shattered-horizon",
+      "name": "Расколотый горизонт",
+      "asset": "malachor-v-shattered-horizon.png",
+      "preload": true
+    }
+  ]
+}
