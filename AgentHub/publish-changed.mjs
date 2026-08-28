@@ -173,14 +173,12 @@ function focusedSteps(plan, {
   }
   if (testContour) steps.push(byLabel.get("Тестовый контур Agent Hub"));
   if (plan.android) steps.push(byLabel.get("Сборка Agent Hub Mobile"));
+  if (plan.runtime) steps.push(byLabel.get("Сборка runtime-релиза"));
   if (plan.worker) {
     steps.push(byLabel.get("Развёртывание Mini App Worker"));
     steps.push(byLabel.get("Проверка Mini App Worker"));
   }
-  if (plan.runtime) {
-    steps.push(byLabel.get("Сборка runtime-релиза"));
-    steps.push(byLabel.get("Активация runtime-релиза"));
-  }
+  if (plan.runtime) steps.push(byLabel.get("Активация runtime-релиза"));
   if (plan.vscode) steps.push(byLabel.get("Установка расширения VS Code"));
   return steps.filter(Boolean);
 }

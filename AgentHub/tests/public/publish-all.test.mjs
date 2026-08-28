@@ -81,9 +81,9 @@ test("publication runs Test Contour only when explicitly requested", () => {
   assert.deepEqual(steps.map((item) => item.label), [
     "Полные тесты Agent Hub",
     "Сборка Agent Hub Mobile",
+    "Сборка runtime-релиза",
     "Развёртывание Mini App Worker",
     "Проверка Mini App Worker",
-    "Сборка runtime-релиза",
     "Активация runtime-релиза",
     "Установка расширения VS Code",
   ]);
@@ -93,8 +93,13 @@ test("publication runs Test Contour only when explicitly requested", () => {
   assert.deepEqual(steps[1].args.slice(-2), ["run", "android:build"]);
   assert.equal(
     steps.findIndex((step) => step.label.includes("Развёртывание")),
-    2,
+    3,
     "deployment must start only after all validation surfaces pass",
+  );
+  assert.ok(
+    steps.findIndex((step) => step.label === "Сборка runtime-релиза")
+      < steps.findIndex((step) => step.label === "Проверка Mini App Worker"),
+    "the live direct asset gateway must observe the candidate runtime before Worker verification",
   );
 
   const withContour = publicationSteps({ testContour: true });
@@ -404,9 +409,9 @@ test("selective publication records the exact published revision", async () => {
     "Unit-тесты Agent Hub",
     "Межповерхностные E2E Agent Hub",
     "Тесты расширения VS Code",
+    "Сборка runtime-релиза",
     "Развёртывание Mini App Worker",
     "Проверка Mini App Worker",
-    "Сборка runtime-релиза",
     "Активация runtime-релиза",
   ]);
   assert.deepEqual(
@@ -641,7 +646,6 @@ test("selective publication resumes after the last successful stage", async () =
   assert.ok(firstRun.includes("Unit-тесты Agent Hub"));
   assert.deepEqual(resumedRun, [
     "Проверка Mini App Worker",
-    "Сборка runtime-релиза",
     "Активация runtime-релиза",
   ]);
   assert.equal(savedCheckpoint, null);

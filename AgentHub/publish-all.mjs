@@ -65,6 +65,7 @@ export function publicationSteps({
       ? [npmStep("Тестовый контур Agent Hub", ["run", "contour:verify", "--", "--require-installed"])]
       : []),
     npmStep("Сборка Agent Hub Mobile", ["run", "android:build"]),
+    npmStep("Сборка runtime-релиза", ["run", "runtime:deploy"]),
     ...(!skipWorker ? [
       npmStep("Развёртывание Mini App Worker", ["run", "worker:deploy"]),
       {
@@ -74,7 +75,6 @@ export function publicationSteps({
         } : {}),
       },
     ] : []),
-    npmStep("Сборка runtime-релиза", ["run", "runtime:deploy"]),
     npmStep("Активация runtime-релиза", ["run", "runtime:activate"]),
     {
       label: "Установка расширения VS Code",
