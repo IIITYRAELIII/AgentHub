@@ -543,6 +543,30 @@ test("Mini App switches published frontend assets without restarting the server"
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("versioned direct shell assets are complete, immutable, and cross-origin readable", async () => {
+  const server = new MiniAppServer({
+    host: "127.0.0.1",
+    port: 0,
+    journalDatabase: memoryJournal(DAY_HTML),
+  });
+  try {
+    const address = await server.start();
+    const response = await fetch(`${address.url}app.js?v=0123456789ab`);
+    const body = Buffer.from(await response.arrayBuffer());
+    const source = await readFile(path.resolve(import.meta.dirname, "../../../assets/web-app/app.js"));
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("content-type"), "text/javascript; charset=utf-8");
+    assert.equal(response.headers.get("access-control-allow-origin"), "*");
+    assert.equal(response.headers.get("cross-origin-resource-policy"), "cross-origin");
+    assert.match(response.headers.get("cache-control"), /immutable/u);
+    assert.equal(body.length, source.length);
+    assert.equal(createHash("sha256").update(body).digest("hex"), createHash("sha256").update(source).digest("hex"));
+  } finally {
+    await server.close();
+  }
+});
+
 test("Telegram Mini App initData is signed, fresh and allowlisted", () => {
   const now = Date.UTC(2026, 6, 27, 12, 0, 0);
   const initData = signedInitData({ authDate: Math.floor(now / 1_000) });

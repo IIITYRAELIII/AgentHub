@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
 import { stat } from "node:fs/promises";
+import path from "node:path";
 
 import { legacyTaskRunKeys, taskRunKey } from "../domain/task-runs.mjs";
 import { isCodexContextProbeResponseText } from "../domain/codex-context-probe.mjs";
@@ -35,13 +35,62 @@ function lastMessageTimestamp(record) {
   return Date.parse(String(record?.updatedAt ?? "")) || 0;
 }
 
+function changedFileOperations(diff) {
+  const operations = new Map();
+  let current = null;
+  for (const line of String(diff ?? "").split(/\r?\n/u)) {
+    const header = /^diff --git a\/(.+) b\/(.+)$/u.exec(line);
+    if (header) {
+      current = header[2];
+      operations.set(current, "modified");
+    } else if (current && line.startsWith("new file mode ")) {
+      operations.set(current, "added");
+    } else if (current && line.startsWith("deleted file mode ")) {
+      operations.set(current, "deleted");
+    }
+  }
+  return operations;
+}
+
+function repositorySnapshots(snapshot) {
+  if (Array.isArray(snapshot?.repositories)) return snapshot.repositories;
+  return snapshot?.repoRoot ? [snapshot] : [];
+}
+
+function pathInside(root, candidate) {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
+}
+
+function exactTaskChangedFiles({ projectRoot, files, operations, turnId, baseline }) {
+  const repositories = repositorySnapshots(baseline)
+    .map((repository) => path.resolve(repository.repoRoot))
+    .sort((left, right) => right.length - left.length);
+  if (!repositories.length) throw new Error("terminal Task evidence requires a captured Git baseline");
+  return files.map((file) => {
+    const reported = String(file ?? "").replaceAll("\\", "/");
+    const absolute = path.isAbsolute(reported) ? path.resolve(reported) : path.resolve(projectRoot, reported);
+    const repositoryRoot = repositories.find((root) => pathInside(root, absolute));
+    if (!repositoryRoot) throw new Error(`changed file is outside the captured Task repositories: ${reported}`);
+    const relativePath = path.relative(repositoryRoot, absolute).replaceAll(path.sep, "/");
+    return {
+      projectRoot: repositoryRoot,
+      path: relativePath,
+      operation: operations.get(reported) ?? operations.get(relativePath) ?? "modified",
+      turnId,
+    };
+  });
+}
+
 export class RunJournalService {
   #revision = 0;
 
   constructor({
     usageStore,
     workspaceCatalogStore = null,
-    releaseChangeSetService = null,
+    taskBoard = null,
+    taskReleaseService = null,
+    captureResultSnapshot = null,
     findProject,
     defaultProjectRoot,
     projectionProjectRoots,
@@ -54,7 +103,9 @@ export class RunJournalService {
   }) {
     this.usageStore = usageStore;
     this.workspaceCatalogStore = workspaceCatalogStore;
-    this.releaseChangeSetService = releaseChangeSetService;
+    this.taskBoard = taskBoard;
+    this.taskReleaseService = taskReleaseService;
+    this.captureResultSnapshot = typeof captureResultSnapshot === "function" ? captureResultSnapshot : null;
     this.findProject = findProject;
     this.defaultProjectRoot = defaultProjectRoot;
     this.projectionProjectRoots = projectionProjectRoots;
@@ -210,43 +261,51 @@ export class RunJournalService {
       threadId: completion.threadId,
     }) === true;
     if (releaseWorkflowEnabled && Array.isArray(completion.changedFiles) && completion.changedFiles.length) {
-      const diffHash = completion.diff
-        ? createHash("sha256").update(String(completion.diff)).digest("hex")
-        : "";
-      let legacyChange = null;
       try {
-        legacyChange = this.workspaceCatalogStore?.recordReleaseChange?.({
+        const bound = this.taskBoard?.claimedTaskForTurn?.({
           provider: completion.provider,
           threadId: completion.threadId,
           turnId: completion.turnId,
-          projectRoot: project.path,
-          summary: fields.title || body,
-          changedFiles: completion.changedFiles,
-          status: String(completion.status ?? "").trim().toLowerCase() === "completed"
-            ? "draft"
-            : "blocked",
-          diffHash,
         });
+        const dashboardTaskId = String(completion.dashboardTaskId ?? "").trim() || null;
+        const taskId = bound?.id ?? null;
+        if (dashboardTaskId && bound && bound.id !== dashboardTaskId) {
+          throw new Error("dashboardTaskId conflicts with the exact provider turn binding");
+        }
+        if (taskId) {
+          const operations = changedFileOperations(completion.diff);
+          const changedFiles = exactTaskChangedFiles({
+            projectRoot: project.path,
+            files: completion.changedFiles,
+            operations,
+            turnId: completion.turnId,
+            baseline: bound.gitBaseline,
+          });
+          const resultSnapshot = this.captureResultSnapshot
+            ? await this.captureResultSnapshot(project.path, completion.turnId)
+            : null;
+          this.taskBoard.recordTaskTurn({
+            taskId,
+            provider: completion.provider,
+            threadId: completion.threadId,
+            turnId: completion.turnId,
+            projectRoot: project.path,
+            summary: fields.title || body,
+            status: completion.status,
+            changedFiles,
+            resultSnapshot,
+          });
+          if (bound?.requestedWorkflowStatus === "awaiting_implementation"
+            && String(completion.status ?? "").trim().toLowerCase() === "completed") {
+            await this.taskReleaseService?.freezeRecorded?.({
+              taskId,
+              workspaceId: bound.workspaceId,
+              actorStreamId: bound.streamId,
+            });
+          }
+        }
       } catch (error) {
-        this.logger.error(`Cannot register release change for ${completion.turnId}:`, error.message);
-      }
-      try {
-        this.releaseChangeSetService?.observeTurn?.({
-          provider: completion.provider,
-          threadId: completion.threadId,
-          turnId: completion.turnId,
-          projectRoot: project.path,
-          summary: fields.title || body,
-          status: completion.status,
-          changedFiles: completion.changedFiles,
-          diffHash,
-          legacyChangeId: legacyChange?.id ?? null,
-          prompts: completion.prompts,
-          taskId: completion.dashboardTaskId ?? null,
-          changeSetId: completion.changeSetId ?? null,
-        });
-      } catch (error) {
-        this.logger.error(`Cannot append ChangeSet observation for ${completion.turnId}:`, error.message);
+        this.logger.error(`Cannot append exact Task release evidence for ${completion.turnId}:`, error.message);
       }
     }
     try {

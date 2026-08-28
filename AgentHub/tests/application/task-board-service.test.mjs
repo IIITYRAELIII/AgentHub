@@ -10,8 +10,11 @@ import { TaskBoardStore } from "../../src/infrastructure/persistence/task-board-
 
 async function fixture(t, classify) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-task-service-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
   const store = new TaskBoardStore({ databaseFile: path.join(directory, "journal.sqlite") });
+  t.after(async () => {
+    store.close();
+    await rm(directory, { recursive: true, force: true });
+  });
   const workspaces = [
     { id: "agent-hub", name: "Agent Hub", systemKey: null, streams: [] },
     { id: "other", name: "Other", systemKey: "experiments", streams: [] },
@@ -38,6 +41,12 @@ test("snapshot revision reads owner revisions without building hierarchy or boar
     reassignWorkspace: () => 0,
     notesComment: () => { throw new Error("board layout must not be built"); },
     setNotesComment: () => "",
+    claim: () => null,
+    claimedTaskForTurn: () => null,
+    recordTaskTurn: () => null,
+    freezeTaskRelease: () => null,
+    releasePlan: () => ({ revision: "", candidates: [] }),
+    completeRelease: () => null,
   };
   const service = new TaskBoardService({
     store,
@@ -204,6 +213,12 @@ test("disabled Spark leaves new Tasks idle and clears recovered triage", () => {
       reassignWorkspace: () => 0,
       notesComment: () => "",
       setNotesComment: () => "",
+      claim: () => null,
+      claimedTaskForTurn: () => null,
+      recordTaskTurn: () => null,
+      freezeTaskRelease: () => null,
+      releasePlan: () => ({ revision: "", candidates: [] }),
+      completeRelease: () => null,
       disablePendingTriage: () => { disabled += 1; },
     },
     workspaceCatalog: { hierarchy: () => [] },

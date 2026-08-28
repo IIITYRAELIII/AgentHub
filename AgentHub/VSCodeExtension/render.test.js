@@ -2535,7 +2535,7 @@ test("VS Code stream refresh keeps composer focus and opens history at the botto
   assert.match(deck, /chatPane\.style\.order/u);
   assert.doesNotMatch(app, /syncChatActionsPlacement/u);
   // Колонки фиксируются до forceBottom, поэтому переносы строк уже учтены.
-  assert.ok(chat.indexOf("renderStreamChatDeck();") < chat.indexOf("renderMessages({ forceBottom: true });"));
+  assert.ok(chat.indexOf("renderStreamChatDeck();") < chat.indexOf("renderMessages({ forceBottom: true, tailLimit: SWITCH_MESSAGE_RENDER_LIMIT });"));
 });
 
 test("hub status band lives inside the top toolbar instead of covering the stream row", () => {

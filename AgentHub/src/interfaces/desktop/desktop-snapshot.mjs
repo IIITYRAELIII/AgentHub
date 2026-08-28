@@ -709,6 +709,7 @@ export function createDesktopSnapshotFactory({
         streamCardWidthMode: current.streamCardWidthMode,
         streamCardFixedWidth: current.streamCardFixedWidth,
         streamCardGapEnabled: current.streamCardGapEnabled === true,
+        showInlineFileRevealButtons: current.showInlineFileRevealButtons === true,
         pinnedWorkspaceStreams: current.pinnedWorkspaceStreams ?? {},
         quickMessages: current.quickMessages ?? { streams: {}, workspaces: {} },
         models: activeProvider === "codex"

@@ -222,15 +222,11 @@ test("legacy import preserves pre-identity records under a deterministic synthet
 test("direct projection snapshot preserves lazy journal HTTP contract without a source file", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-journal-projection-"));
   const database = new JournalDatabase(path.join(root, "journal.sqlite"));
-  const dates = [
-    "31.05.2026", "01.06.2026", "30.06.2026", "01.07.2026", "31.07.2026",
-    "01.08.2026", "02.08.2026", "03.08.2026", "04.08.2026", "05.08.2026",
-  ];
-  const lazyDates = dates.slice(0, 5);
-  const items = dates.map((date, index) => turn(`turn-${index}`, `Ход ${date}`));
+  const item = turn("turn-old", "Старый ход");
+  const dates = ["01.07.2026", "02.07.2026", "31.07.2026", "01.08.2026", "02.08.2026", "03.08.2026"];
   try {
     const change = await replaceJournalProjectionFromMarkdown(database,
-      `# Журнал\n${accountPanel()}\n${dates.map((date, index) => day(date, items[index])).join("\n")}\n`,
+      `# Журнал\n${accountPanel()}\n${dates.map((date) => day(date, item)).join("\n")}\n`,
       { updatedAt: "2026-08-01T12:00:00.000Z" },
     );
     assert.equal(change.projected, true);
@@ -238,14 +234,15 @@ test("direct projection snapshot preserves lazy journal HTTP contract without a 
     assert.equal(snapshot.updatedAt, "2026-08-01T12:00:00.000Z");
     assert.match(snapshot.version, /^sha256:/u);
     assert.match(snapshot.html, /data-work-log-account-panel/u);
-    assert.match(snapshot.html, /data-lazy-day="31\.05\.2026"/u);
-    assert.match(snapshot.days["31.05.2026"], /Ход 31\.05\.2026/u);
-    assert.deepEqual(Object.keys(snapshot.days), lazyDates);
-    assert.match(snapshot.turns[items[0].reference], /Ход 31\.05\.2026 body/u);
-    assert.match(await database.fragment("turn", items[0].reference), /Ход 31\.05\.2026 body/u);
+    assert.match(snapshot.html, /data-lazy-day="01\.07\.2026"/u);
+    for (const date of dates.slice(1)) assert.match(snapshot.html, new RegExp(`<strong>${date.replaceAll(".", "\\.")}</strong>`, "u"));
+    assert.match(snapshot.days["01.07.2026"], /Старый ход/u);
+    assert.deepEqual(Object.keys(snapshot.days), ["01.07.2026"]);
+    assert.match(snapshot.turns[item.reference], /Старый ход body/u);
+    assert.match(await database.fragment("turn", item.reference), /Старый ход body/u);
     const dayFragments = await database.fragments("day");
-    assert.match(dayFragments["31.05.2026"], /Ход 31\.05\.2026/u);
-    assert.deepEqual(Object.keys(dayFragments), lazyDates);
+    assert.match(dayFragments["01.07.2026"], /Старый ход/u);
+    assert.deepEqual(Object.keys(dayFragments), ["01.07.2026"]);
     assert.deepEqual(await database.exportPayload(), snapshot);
   } finally {
     database.close();

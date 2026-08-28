@@ -13,12 +13,7 @@ export function createWorkspaceActions(services) {
     updateWorkspaceDeveloperRules: (params) => services.workspaceMutation(
       () => services.workspaceCatalogService.updateWorkspaceDeveloperRules(params),
     ),
-    readWorkspaceReleaseRegistry: (params) => services.workspaceCatalogService.releaseRegistry(params),
     readWorkspaceReleasePlan: (params) => services.workspaceCatalogService.releasePlan(params),
-    updateReleaseChangeStatus: (params) => {
-      const updated = services.workspaceCatalogService.updateReleaseChangeStatus(params);
-      return services.workspaceCatalogService.releaseRegistry({ workspaceId: updated.workspaceId });
-    },
     completeWorkspaceRelease: (params) => services.workspaceCatalogService.completeRelease(params),
     createWorkspace: (params) => services.workspaceMutation(
       () => services.workspaceCatalogService.createWorkspace(params),
@@ -236,6 +231,8 @@ export function createDesktopCommandWiring({
       setStreamCardFixedWidth: services.setStreamCardFixedWidth,
       getStreamCardGapEnabled: services.getStreamCardGapEnabled,
       setStreamCardGapEnabled: services.setStreamCardGapEnabled,
+      getShowInlineFileRevealButtons: services.getShowInlineFileRevealButtons,
+      setShowInlineFileRevealButtons: services.setShowInlineFileRevealButtons,
       getPinnedWorkspaceStreams: services.getPinnedWorkspaceStreams,
       setPinnedWorkspaceStreams: services.setPinnedWorkspaceStreams,
       getQuickMessages: services.getQuickMessages,

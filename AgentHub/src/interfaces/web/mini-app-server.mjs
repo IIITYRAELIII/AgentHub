@@ -335,7 +335,11 @@ export function miniAppMenuButtonRequests({
   ];
 }
 
-function responseHeaders(contentType, { immutable = false, telegramRuntime = true } = {}) {
+function responseHeaders(contentType, {
+  crossOrigin = false,
+  immutable = false,
+  telegramRuntime = true,
+} = {}) {
   return {
     "Cache-Control": immutable ? "public, max-age=31536000, immutable" : "no-store",
     "Content-Security-Policy": [
@@ -352,6 +356,10 @@ function responseHeaders(contentType, { immutable = false, telegramRuntime = tru
     "Content-Type": contentType,
     "Referrer-Policy": "no-referrer",
     "X-Content-Type-Options": "nosniff",
+    ...(crossOrigin ? {
+      "Access-Control-Allow-Origin": "*",
+      "Cross-Origin-Resource-Policy": "cross-origin",
+    } : {}),
   };
 }
 
@@ -1542,7 +1550,11 @@ export class MiniAppServer {
         descriptor.contentType,
         url.pathname === "/" && !telegramRuntime ? withoutTelegramRuntime(body) : body,
         method,
-        { immutable: descriptor.immutable, telegramRuntime },
+        {
+          crossOrigin: url.searchParams.has("v"),
+          immutable: descriptor.immutable || url.searchParams.has("v"),
+          telegramRuntime,
+        },
       );
     } catch (error) {
       send(response, 500, "text/plain; charset=utf-8", `Cannot load Mini App: ${error.message}\n`, method);

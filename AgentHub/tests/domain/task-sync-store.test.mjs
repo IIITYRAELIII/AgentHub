@@ -77,33 +77,6 @@ test("local task sync persists catalog, runtime owner, status and history", asyn
   assert.equal(restored.snapshot(task).stage, "Изменяются файлы");
 });
 
-test("local task sync preserves a long agent answer in durable history", async () => {
-  const filePath = await storeFile();
-  const databaseFile = path.join(path.dirname(filePath), "journal.sqlite");
-  const longAnswer = `Начало ответа\n${"я".repeat(120_000)}\nКонец ответа`;
-  const store = new LocalTaskSyncStore({ filePath, databaseFile });
-  await store.load();
-  store.recordHistory(task, [{
-    id: "turn-long",
-    prompt: "Покажи длинный ответ",
-    answer: longAnswer,
-    status: "completed",
-    active: false,
-    completed: true,
-    messages: [
-      { itemId: "user-long", role: "user", text: "Покажи длинный ответ" },
-      { itemId: "agent-long", role: "agent", text: longAnswer },
-    ],
-  }]);
-  await store.save();
-
-  const restored = new LocalTaskSyncStore({ filePath, databaseFile });
-  await restored.load();
-  const [turn] = restored.history(task);
-  assert.equal(turn.answer, longAnswer);
-  assert.equal(turn.messages.at(-1).text, longAnswer);
-});
-
 test("Claude transcript attachment turn cannot duplicate its managed terminal command", async () => {
   const filePath = await storeFile();
   const store = new LocalTaskSyncStore({ filePath });

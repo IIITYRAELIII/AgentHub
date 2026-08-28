@@ -28,7 +28,8 @@ export class TaskBoardService {
   } = {}) {
     for (const name of [
       "create", "task", "list", "move", "markStarted", "orderedColumnIds", "moveColumn",
-      "notesComment", "setNotesComment", "reassignWorkspace",
+      "notesComment", "setNotesComment", "reassignWorkspace", "claim", "claimedTaskForTurn",
+      "recordTaskTurn", "freezeTaskRelease", "releasePlan", "completeRelease",
     ]) requiredMethod(store, name);
     if (typeof workspaceCatalog?.hierarchy !== "function") throw new TypeError("workspaceCatalog is required");
     this.store = store;
@@ -40,6 +41,10 @@ export class TaskBoardService {
       : 0.82;
     this.logger = logger;
     this.recordEvent = typeof recordEvent === "function" ? recordEvent : null;
+  }
+
+  close() {
+    return this.store.close?.();
   }
 
   #event(type, task, payload = {}) {
@@ -210,6 +215,51 @@ export class TaskBoardService {
     const task = this.store.setWorkflowStatus(id, status);
     this.#event("task.workflow-status.updated", task, { workflowStatus: task.workflowStatus });
     return task;
+  }
+
+  claim({ id, workspaceId, streamId, provider, threadId, turnId, gitBaseline = null } = {}) {
+    const task = this.store.claim(id, {
+      workspaceId, streamId, provider, threadId, turnId, gitBaseline,
+    });
+    this.#event("task.claimed", task, { provider, threadId, turnId });
+    return task;
+  }
+
+  claimedTaskForTurn(identity = {}) {
+    return this.store.claimedTaskForTurn(identity);
+  }
+
+  requestWorkflowStatus({ id, ...payload } = {}) {
+    requiredMethod(this.store, "requestWorkflowStatus");
+    const task = this.store.requestWorkflowStatus(id, payload);
+    this.#event("task.workflow-status.requested", task, {
+      workflowStatus: payload.status,
+      turnId: payload.turnId ?? null,
+    });
+    return task;
+  }
+
+  recordTaskTurn(payload = {}) {
+    const task = this.store.recordTaskTurn(payload);
+    if (task) this.#event("task.turn-recorded", task, { turnId: payload.turnId });
+    return task;
+  }
+
+  freezeTaskRelease({ id, ...payload } = {}) {
+    const task = this.store.freezeTaskRelease(id, payload);
+    this.#event("task.release-frozen", task, {
+      taskRevision: task.frozenRevision,
+      manifestHash: task.releaseManifestHash,
+    });
+    return task;
+  }
+
+  releasePlan(workspaceId) {
+    return this.store.releasePlan(workspaceId);
+  }
+
+  completeRelease(workspaceId, payload = {}) {
+    return this.store.completeRelease(workspaceId, payload);
   }
 
   get snapshotRevision() {

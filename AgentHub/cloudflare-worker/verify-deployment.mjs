@@ -18,7 +18,7 @@ function sha256(body) {
   return createHash("sha256").update(body).digest("hex");
 }
 
-async function fetchWithCurl(target, { signal } = {}) {
+export async function fetchWithCurl(target, { signal } = {}) {
   const executable = process.platform === "win32" ? "curl.exe" : "curl";
   const { stdout } = await execFileAsync(executable, [
     "--silent",
@@ -34,6 +34,99 @@ async function fetchWithCurl(target, { signal } = {}) {
     windowsHide: true,
   });
   return new Response(stdout, { status: 200 });
+}
+
+async function readCompleteHttp1(http1Fetch, target, timeoutMs) {
+  const response = await http1Fetch(target, { signal: AbortSignal.timeout(timeoutMs) });
+  if (!response.ok) throw new Error(`${new URL(target).pathname}: HTTP ${response.status}`);
+  return Buffer.from(await response.arrayBuffer());
+}
+
+function directShellUrls(html) {
+  return [...html.matchAll(/(?:href|src)="(https:\/\/home\.[^"]+)"/giu)]
+    .map((match) => new URL(match[1]));
+}
+
+async function verifyLargeStaticHttp1({ html, http1Fetch, requestTimeoutMs, sourceRoot }) {
+  const candidates = [];
+  for (const target of directShellUrls(html)) {
+    try {
+      const source = await readFile(path.join(sourceRoot, ...target.pathname.slice(1).split("/")));
+      candidates.push({ source, target });
+    } catch {
+      // Only shell files that map to the canonical local web assets are evidence.
+    }
+  }
+  candidates.sort((left, right) => right.source.length - left.source.length);
+  const candidate = candidates.find(({ source }) => source.length > 100 * 1024);
+  if (!candidate) throw new Error("Published Worker shell has no direct large static HTTP/1.1 probe target");
+  const expectedHash = sha256(candidate.source);
+  if (candidate.target.searchParams.get("v") !== expectedHash.slice(0, 12)) {
+    throw new Error("Published large static target has an invalid immutable revision");
+  }
+  const body = await readCompleteHttp1(http1Fetch, candidate.target, requestTimeoutMs);
+  if (body.length !== candidate.source.length || sha256(body) !== expectedHash) {
+    throw new Error("Published large static target is partial or damaged over HTTP/1.1");
+  }
+  return { bytes: body.length, hash: expectedHash, url: candidate.target.href };
+}
+
+function validateAttachmentProbeManifest(manifest, expectedPage) {
+  const valid = manifest?.protocol === "agent-hub-attachment-chunks-v1"
+    && manifest?.id === "dashboard-transport-probe-v1"
+    && Number.isSafeInteger(manifest?.size) && manifest.size > 100 * 1024
+    && Number.isSafeInteger(manifest?.count)
+    && manifest.count === Math.ceil(manifest.size / manifest.chunkBytes)
+    && Number.isSafeInteger(manifest?.chunkBytes) && manifest.chunkBytes > 0 && manifest.chunkBytes < 25 * 1024
+    && Number.isSafeInteger(manifest?.pageCount) && manifest.pageCount > 0
+    && manifest?.page === expectedPage
+    && /^[a-f0-9]{64}$/u.test(String(manifest?.hash ?? ""))
+    && Array.isArray(manifest?.chunks) && manifest.chunks.length > 0;
+  if (!valid) throw new Error("Synthetic attachment transport returned an invalid manifest");
+  return manifest;
+}
+
+async function verifyAttachmentProbeHttp1({ base, http1Fetch, requestTimeoutMs }) {
+  const manifestUrl = new URL("/api/transport-probe/attachment?mode=manifest&page=0", base);
+  const firstBody = await readCompleteHttp1(http1Fetch, manifestUrl, requestTimeoutMs);
+  if (firstBody.length > 24 * 1024) throw new Error("Synthetic attachment manifest exceeds response bound");
+  const first = validateAttachmentProbeManifest(JSON.parse(firstBody.toString("utf8")), 0);
+  const pages = [first];
+  for (let page = 1; page < first.pageCount; page += 1) {
+    const target = new URL(`/api/transport-probe/attachment?mode=manifest&page=${page}`, base);
+    const body = await readCompleteHttp1(http1Fetch, target, requestTimeoutMs);
+    if (body.length > 24 * 1024) throw new Error("Synthetic attachment manifest exceeds response bound");
+    const manifest = validateAttachmentProbeManifest(JSON.parse(body.toString("utf8")), page);
+    if (["id", "size", "hash", "count", "chunkBytes", "pageCount"].some(
+      (key) => manifest[key] !== first[key],
+    )) {
+      throw new Error("Synthetic attachment manifest pages are inconsistent");
+    }
+    pages.push(manifest);
+  }
+  const descriptors = pages.flatMap((page) => page.chunks);
+  if (descriptors.length !== first.count || descriptors.some((chunk, index) => (
+    chunk?.index !== index
+    || !Number.isSafeInteger(chunk?.size)
+    || chunk.size !== Math.min(first.chunkBytes, first.size - index * first.chunkBytes)
+    || !/^[a-f0-9]{64}$/u.test(String(chunk?.hash ?? ""))
+  ))) {
+    throw new Error("Synthetic attachment manifest has unordered or invalid chunks");
+  }
+  const chunks = [];
+  for (const descriptor of descriptors) {
+    const target = new URL(`/api/transport-probe/attachment?mode=chunk&index=${descriptor.index}`, base);
+    const body = await readCompleteHttp1(http1Fetch, target, requestTimeoutMs);
+    if (body.length !== descriptor.size || sha256(body) !== descriptor.hash) {
+      throw new Error(`Synthetic attachment chunk ${descriptor.index} is partial or damaged over HTTP/1.1`);
+    }
+    chunks.push(body);
+  }
+  const body = Buffer.concat(chunks, first.size);
+  if (body.length !== first.size || sha256(body) !== first.hash) {
+    throw new Error("Synthetic attachment assembly is partial or damaged over HTTP/1.1");
+  }
+  return { bytes: body.length, chunks: chunks.length, hash: first.hash };
 }
 
 async function fetchBuffered(fetchImpl, target, signal) {
@@ -153,6 +246,7 @@ export async function verifyThemeDeployment({
   sourceRoot = themeRoot,
   deployedRoot = publishedRoot,
   fetchImpl = fetchWithTransportRace,
+  http1Fetch = fetchWithCurl,
   changedFiles = null,
   requestTimeoutMs = WORKER_VERIFY_REQUEST_TIMEOUT_MS,
   log = console.log,
@@ -168,6 +262,13 @@ export async function verifyThemeDeployment({
   if (sha256(remoteIndex) !== sha256(index)) {
     throw new Error("Published Worker index does not match the built release");
   }
+  const largeStatic = await verifyLargeStaticHttp1({
+    html: remoteIndex,
+    http1Fetch,
+    requestTimeoutMs,
+    sourceRoot,
+  });
+  const attachmentProbe = await verifyAttachmentProbeHttp1({ base, http1Fetch, requestTimeoutMs });
   const catalog = themeCatalog(remoteIndex);
   const published = new Map(catalog.map((theme) => [theme.id, theme]));
   const registry = loadThemeRegistry(sourceRoot);
@@ -233,12 +334,16 @@ export async function verifyThemeDeployment({
     sampledChunks += sampleIndexes.length;
     bytes += source.length;
   });
-  log(`Verified ${backgrounds.length}/${availableBackgrounds.length} changed theme manifests and ${sampledChunks} chunks (${bytes} bytes).`);
+  log(`Verified ${backgrounds.length}/${availableBackgrounds.length} changed theme manifests and ${sampledChunks} chunks (${bytes} bytes), ${largeStatic.bytes} static bytes and ${attachmentProbe.bytes} attachment bytes over HTTP/1.1.`);
   return {
     backgrounds: backgrounds.length,
     availableBackgrounds: availableBackgrounds.length,
     bytes,
     sampledChunks,
+    largeStaticBytes: largeStatic.bytes,
+    largeStaticHash: largeStatic.hash,
+    attachmentProbeBytes: attachmentProbe.bytes,
+    attachmentProbeChunks: attachmentProbe.chunks,
   };
 }
 

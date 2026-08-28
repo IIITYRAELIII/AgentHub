@@ -690,14 +690,12 @@ export function buildWorkLogAccountUsageSummary(turns = {}, {
   includeClaudeUsage = true,
   syncedUsageEvents = [],
   localDeviceId = "",
-  localDeviceLabel = "",
   now = Date.now(),
   ranges = ACCOUNT_USAGE_RANGES.map((range) => range.id),
 } = {}) {
   const catalog = accountCatalogByKey(accountCatalog);
   const normalizedTurns = normalizedLedger({ version: 9, turns }).ledger.turns;
   const normalizedLocalDeviceId = String(localDeviceId ?? "").trim();
-  const normalizedLocalDeviceLabel = String(localDeviceLabel ?? "").trim();
   const normalizedSyncedTurns = (Array.isArray(syncedUsageEvents) ? syncedUsageEvents : [])
     .map(syncedUsageRecord)
     .filter((record) => record && record.syncDeviceId !== normalizedLocalDeviceId);
@@ -748,7 +746,7 @@ export function buildWorkLogAccountUsageSummary(turns = {}, {
         if (!bucket.devices[deviceKey]) {
           bucket.devices[deviceKey] = emptyAccountDeviceBucket(deviceKey, entry.source, {
             noCost: bucket.noCost,
-            label: entry.source === "local" ? normalizedLocalDeviceLabel : record?.syncDeviceLabel,
+            label: entry.source === "local" ? "" : record?.syncDeviceLabel,
           });
         }
         const deviceBucket = bucket.devices[deviceKey];
@@ -2580,7 +2578,6 @@ export function projectWorkLogUsage(workLogText, turns = {}, {
   accountCatalog = [],
   syncedUsageEvents = [],
   localDeviceId = "",
-  localDeviceLabel = "",
   now = Date.now(),
 } = {}) {
   let text = removeAccountUsagePanel(String(workLogText ?? ""));
@@ -2590,7 +2587,6 @@ export function projectWorkLogUsage(workLogText, turns = {}, {
     includeClaudeUsage,
     syncedUsageEvents,
     localDeviceId,
-    localDeviceLabel,
     now,
   }));
   const records = ledgerByWorkLogId(normalizedTurns);

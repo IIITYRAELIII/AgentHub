@@ -19,7 +19,6 @@ const TERMINAL_HISTORY_BACKFILL_VERSION = "4";
 const DEFAULT_HISTORY_LIMIT = 50;
 const DEFAULT_RUNNING_FRESHNESS_MS = 10 * 60 * 1000;
 const DEFAULT_TASK_LIMIT = 1_000;
-const MAX_AGENT_MESSAGE_CHARS = 200_000;
 
 function cleanText(value, limit) {
   return String(value ?? "").trim().slice(0, limit);
@@ -184,7 +183,7 @@ function cleanHistory(history, limit, { provider = "" } = {}) {
         prompt: cleanText(item?.prompt, 12_000),
         ...(promptAuthor ? { promptAuthor } : {}),
         ...(promptOrigin ? { promptOrigin } : {}),
-        answer: cleanText(item?.answer, MAX_AGENT_MESSAGE_CHARS),
+        answer: cleanText(item?.answer, 40_000),
         status: cleanText(item?.status, 40),
         active: item?.active === true,
         completed: item?.completed === true,
@@ -203,10 +202,7 @@ function cleanHistory(history, limit, { provider = "" } = {}) {
         .slice(-100)
         .flatMap((message) => {
           const role = cleanText(message?.role, 20);
-          const text = cleanText(
-            message?.text,
-            role === "agent" ? MAX_AGENT_MESSAGE_CHARS : 12_000,
-          );
+          const text = cleanText(message?.text, role === "agent" ? 40_000 : 12_000);
           if (!["user", "agent"].includes(role) || !text) return [];
           const itemId = cleanText(message?.itemId, 200);
           const kind = cleanText(message?.kind, 40);
@@ -370,7 +366,7 @@ function persistedTask(value = {}, canonicalizeProjectRoot = (projectRoot) => pr
     turnId: cleanText(value.turnId, 100) || null,
     lastActivityAtMs: Number(value.lastActivityAtMs) || null,
     stage: cleanText(value.stage, 1_000),
-    answer: cleanText(value.answer, MAX_AGENT_MESSAGE_CHARS),
+    answer: cleanText(value.answer, 40_000),
     syncedAtMs: Number(value.syncedAtMs) || 0,
     history: cleanHistory(value.history, DEFAULT_HISTORY_LIMIT, { provider }),
   };
@@ -1121,7 +1117,7 @@ export class LocalTaskSyncStore {
       return {
         ...turn,
         prompt: cleanText(record.prompt, 12_000) || turn.prompt,
-        answer: turn.answer || cleanText(record.body ?? record.text, MAX_AGENT_MESSAGE_CHARS),
+        answer: turn.answer || cleanText(record.body ?? record.text, 40_000),
         status: cleanText(record.status, 40),
         active: false,
         completed: true,

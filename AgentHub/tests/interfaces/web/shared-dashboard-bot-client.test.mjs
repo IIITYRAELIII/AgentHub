@@ -10,6 +10,52 @@ import {
   signSharedDashboardBotRequest,
 } from "../../../src/interfaces/web/shared-dashboard-bot-client.mjs";
 
+function attachmentChunkTransport(body, {
+  contentType = "application/octet-stream",
+  hashOverride = "",
+  id,
+  name = "attachment.bin",
+  reorder = false,
+} = {}) {
+  const chunks = Array.from({ length: Math.ceil(body.length / (16 * 1024)) }, (_, index) => {
+    const value = body.subarray(index * 16 * 1024, Math.min(body.length, (index + 1) * 16 * 1024));
+    return { index, size: value.length, hash: createHash("sha256").update(value).digest("hex"), value };
+  });
+  const hash = hashOverride || createHash("sha256").update(body).digest("hex");
+  return ({ mode, index }) => {
+    if (mode === "manifest") {
+      const descriptors = chunks.map(({ value: _value, ...descriptor }) => descriptor);
+      return Response.json({
+        protocol: "agent-hub-attachment-chunks-v1",
+        id,
+        size: body.length,
+        hash,
+        count: chunks.length,
+        chunkBytes: 16 * 1024,
+        page: 0,
+        pageCount: 1,
+        contentType,
+        name,
+        chunks: reorder ? descriptors.toReversed() : descriptors,
+      });
+    }
+    const chunk = chunks[index];
+    return new Response(chunk?.value ?? "missing", {
+      status: chunk ? 200 : 404,
+      headers: chunk ? {
+        "Content-Type": "application/octet-stream",
+        "Content-Length": String(chunk.size),
+        "X-Agent-Hub-Attachment-Protocol": "agent-hub-attachment-chunks-v1",
+        "X-Agent-Hub-Attachment-Id": id,
+        "X-Agent-Hub-Attachment-Hash": hash,
+        "X-Agent-Hub-Chunk-Index": String(chunk.index),
+        "X-Agent-Hub-Chunk-Count": String(chunks.length),
+        "X-Agent-Hub-Chunk-Hash": chunk.hash,
+      } : {},
+    });
+  };
+}
+
 test("shared Dashboard bot signs requests, dispatches a Task, and reports its result", async (context) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-shared-bot-"));
   context.after(() => rm(directory, { recursive: true, force: true }));
@@ -237,7 +283,125 @@ test("shared Dashboard bot downloads a screenshot reply before augmenting the Ta
   assert.deepEqual(await readFile(handled[0].params.attachments[0]), image);
 });
 
-test("shared Dashboard bot retries a timed out screenshot without rejecting the command", async (context) => {
+test("shared Dashboard bot assembles ordered bounded chunks and verifies the final hash", async (context) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-shared-bot-chunks-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const secretFile = path.join(directory, "shared-dashboard-bot.secret");
+  await writeFile(secretFile, "s".repeat(64), "utf8");
+  const attachmentId = "018f6c86-3f34-7a31-8f27-16f5b96cce76";
+  const command = {
+    id: "018f6c86-3f34-7a31-8f27-16f5b96cce77",
+    userId: "42",
+    action: "board-task-ingest",
+    params: {
+      text: "Сохранить большую запись",
+      sourceKey: "shared-dashboard:018f6c86-3f34-7a31-8f27-16f5b96cce77",
+      attachments: [`remote-attachment:${attachmentId}`],
+    },
+  };
+  const body = Buffer.from(Uint8Array.from({ length: 128 * 1024 + 37 }, (_, index) => index % 251));
+  const transport = attachmentChunkTransport(body, { id: attachmentId, name: "voice.oga", contentType: "audio/ogg" });
+  const handled = [];
+  const client = new SharedDashboardBotClient({
+    publicUrl: "https://hub.example.com",
+    hubId: "018f6c86-3f34-7a31-8f27-16f5b96cce78",
+    secretFile,
+    attachmentDirectory: path.join(directory, "attachments"),
+    fetchImpl: async (url, options) => {
+      if (url.endsWith("/api/dashboard-bot/pull")) return Response.json({ commands: [command] });
+      if (url.endsWith("/api/dashboard-bot/attachment/pull")) return transport(JSON.parse(options.body));
+      if (url.endsWith("/api/dashboard-bot/result")) return Response.json({ ok: true });
+      return Response.json({ error: "unexpected request" }, { status: 500 });
+    },
+    handler: async (request) => { handled.push(request); return { taskId: "task-chunked" }; },
+  });
+
+  assert.equal(await client.poll(), 1);
+  assert.deepEqual(await readFile(handled[0].params.attachments[0]), body);
+});
+
+test("shared Dashboard bot rejects an unordered chunk manifest before any side effect", async (context) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-shared-bot-unordered-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const secretFile = path.join(directory, "shared-dashboard-bot.secret");
+  await writeFile(secretFile, "s".repeat(64), "utf8");
+  const attachmentId = "018f6c86-3f34-7a31-8f27-16f5b96cce79";
+  const command = {
+    id: "018f6c86-3f34-7a31-8f27-16f5b96cce7a",
+    userId: "42",
+    action: "board-task-ingest",
+    params: {
+      text: "Повреждённая пачка",
+      sourceKey: "shared-dashboard:018f6c86-3f34-7a31-8f27-16f5b96cce7a",
+      attachments: [`remote-attachment:${attachmentId}`],
+    },
+  };
+  const transport = attachmentChunkTransport(Buffer.alloc(32 * 1024, 7), { id: attachmentId, reorder: true });
+  let handled = 0;
+  const results = [];
+  const client = new SharedDashboardBotClient({
+    publicUrl: "https://hub.example.com",
+    hubId: "018f6c86-3f34-7a31-8f27-16f5b96cce7b",
+    secretFile,
+    attachmentDirectory: path.join(directory, "attachments"),
+    fetchImpl: async (url, options) => {
+      if (url.endsWith("/api/dashboard-bot/pull")) return Response.json({ commands: [command] });
+      if (url.endsWith("/api/dashboard-bot/attachment/pull")) return transport(JSON.parse(options.body));
+      if (url.endsWith("/api/dashboard-bot/result")) results.push(JSON.parse(options.body));
+      return Response.json({ ok: true });
+    },
+    handler: async () => { handled += 1; return {}; },
+  });
+
+  assert.equal(await client.poll(), 1);
+  assert.equal(handled, 0);
+  assert.equal(results.length, 1);
+  assert.match(results[0].error, /unordered attachment chunks/u);
+});
+
+test("shared Dashboard bot rejects a chunk set with a false final SHA-256", async (context) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-shared-bot-final-hash-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const secretFile = path.join(directory, "shared-dashboard-bot.secret");
+  await writeFile(secretFile, "s".repeat(64), "utf8");
+  const attachmentId = "018f6c86-3f34-7a31-8f27-16f5b96cce7c";
+  const command = {
+    id: "018f6c86-3f34-7a31-8f27-16f5b96cce7d",
+    userId: "42",
+    action: "board-task-ingest",
+    params: {
+      text: "Проверить hash",
+      sourceKey: "shared-dashboard:018f6c86-3f34-7a31-8f27-16f5b96cce7d",
+      attachments: [`remote-attachment:${attachmentId}`],
+    },
+  };
+  const transport = attachmentChunkTransport(Buffer.alloc(20 * 1024, 9), {
+    hashOverride: "0".repeat(64),
+    id: attachmentId,
+  });
+  let handled = 0;
+  const results = [];
+  const client = new SharedDashboardBotClient({
+    publicUrl: "https://hub.example.com",
+    hubId: "018f6c86-3f34-7a31-8f27-16f5b96cce7e",
+    secretFile,
+    attachmentDirectory: path.join(directory, "attachments"),
+    fetchImpl: async (url, options) => {
+      if (url.endsWith("/api/dashboard-bot/pull")) return Response.json({ commands: [command] });
+      if (url.endsWith("/api/dashboard-bot/attachment/pull")) return transport(JSON.parse(options.body));
+      if (url.endsWith("/api/dashboard-bot/result")) results.push(JSON.parse(options.body));
+      return Response.json({ ok: true });
+    },
+    handler: async () => { handled += 1; return {}; },
+  });
+
+  assert.equal(await client.poll(), 1);
+  assert.equal(handled, 0);
+  assert.equal(results.length, 1);
+  assert.match(results[0].error, /damaged attachment/u);
+});
+
+test("shared Dashboard bot leaves a timed out screenshot for the next idempotent poll", async (context) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-shared-bot-image-retry-"));
   context.after(() => rm(directory, { recursive: true, force: true }));
   const secretFile = path.join(directory, "shared-dashboard-bot.secret");
@@ -257,6 +421,7 @@ test("shared Dashboard bot retries a timed out screenshot without rejecting the 
   };
   let attachmentPulls = 0;
   const results = [];
+  let handled = 0;
   const client = new SharedDashboardBotClient({
     publicUrl: "https://hub.example.com",
     hubId: "018f6c86-3f34-7a31-8f27-16f5b96cce75",
@@ -293,17 +458,13 @@ test("shared Dashboard bot retries a timed out screenshot without rejecting the 
       }
       return Response.json({ error: "unexpected request" }, { status: 500 });
     },
-    handler: async () => ({ taskId: "task-image-retry" }),
+    handler: async () => { handled += 1; return { taskId: "task-image-retry" }; },
   });
 
-  assert.equal(await client.poll(), 1);
-  assert.equal(attachmentPulls, 2);
-  assert.deepEqual(results, [{
-    id: command.id,
-    userId: "42",
-    ok: true,
-    result: { taskId: "task-image-retry" },
-  }]);
+  await assert.rejects(client.poll(), /command will be retried/u);
+  assert.equal(attachmentPulls, 1);
+  assert.equal(handled, 0);
+  assert.deepEqual(results, []);
 });
 
 test("shared Dashboard bot downloads bundle attachments concurrently and preserves their order", async (context) => {
@@ -577,7 +738,7 @@ test("shared Dashboard bot leaves an exhausted transient command available for r
   assert.equal(resultRequests, 0);
 });
 
-test("shared Dashboard bot retries when an attachment body stalls after response headers", async (context) => {
+test("shared Dashboard bot bounds one stalled attachment body without an internal retry loop", async (context) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-shared-bot-stalled-body-"));
   context.after(() => rm(directory, { recursive: true, force: true }));
   const secretFile = path.join(directory, "shared-dashboard-bot.secret");
@@ -631,8 +792,8 @@ test("shared Dashboard bot retries when an attachment body stalls after response
   });
 
   await assert.rejects(client.poll(), /command will be retried/u);
-  assert.equal(attachmentPulls, 3);
-  assert.equal(cancelledBodies, 3);
+  assert.equal(attachmentPulls, 1);
+  assert.equal(cancelledBodies, 1);
   assert.equal(handled, 0);
   assert.equal(resultRequests, 0);
 });

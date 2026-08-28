@@ -93,10 +93,6 @@ const workspaceCardRulesCount = document.querySelector("[data-workspace-card-rul
 const workspaceCardReleaseWorkflow = document.querySelector("[data-workspace-release-workflow]");
 const workspaceCardOrder = document.querySelector("[data-workspace-card-order]");
 const workspaceCardSubmit = document.querySelector("[data-workspace-card-submit]");
-const workspaceReleaseRegistry = document.querySelector("[data-workspace-release-registry]");
-const workspaceReleaseSummary = document.querySelector("[data-workspace-release-summary]");
-const workspaceReleaseList = document.querySelector("[data-workspace-release-list]");
-const workspaceReleaseRegistryByWorkspace = new Map();
 
 const chatPane = document.querySelector("[data-chat-pane]");
 const streamTabs = document.querySelector("[data-stream-tabs]");
@@ -142,6 +138,7 @@ const dialogWorkingDirectoryNote = document.querySelector("[data-dialog-working-
 const dialogStreamRules = document.querySelector("[data-dialog-stream-rules]");
 const dialogStreamRulesCount = document.querySelector("[data-dialog-stream-rules-count]");
 const dialogStreamRulesSave = document.querySelector("[data-dialog-stream-rules-save]");
+const dialogStreamArchitect = document.querySelector("[data-dialog-stream-architect]");
 const workspaceMessageSearch = document.querySelector("[data-workspace-message-search]");
 const workspaceMessageSearchToggle = document.querySelector("[data-workspace-message-search-toggle]");
 const workspaceMessageSearchClose = document.querySelector("[data-workspace-message-search-close]");
@@ -161,13 +158,7 @@ const connectionQualityIndicator = document.querySelector("[data-connection-qual
 const annotationsBox = document.querySelector("[data-annotations]");
 const attachmentsBox = document.querySelector("[data-attachments]");
 const TaskReferences = window.AgentHubTaskReferences;
-const workspaceReleaseWorkflow = window.AgentHubWorkspaceReleaseWorkflow;
-const workspaceReleaseDiscardDialog = workspaceReleaseWorkflow.createDiscardConfirmation({
-  dialog: document.querySelector("[data-workspace-release-discard-modal]"),
-  cancelButton: document.querySelector("[data-workspace-release-discard-cancel]"),
-  confirmButton: document.querySelector("[data-workspace-release-discard-confirm]"),
-  message: document.querySelector("[data-workspace-release-discard-message]"),
-});
+const streamRoleSettings = window.AgentHubStreamRoleSettings;
 const annotationContextMenu = document.querySelector("[data-annotation-context-menu]");
 const resourceContextMenu = document.querySelector("[data-resource-context-menu]");
 // Theme panels may clip their children (for example Lake uses overflow:hidden
@@ -2025,8 +2016,29 @@ function renderTasks() {
       groups.get(key).tasks.push(task);
     }
     visibleCount = groups.size + unassignedTasks.length;
-    const orderedGroups = window.AgentHubStreamTabs.orderWorkspaceGroups(groups.values());
-    for (const group of orderedGroups) taskList.append(renderTaskWorkspaceItem(group));
+    /* Поиск ищет по всему списку сразу, поэтому при фильтре деление на ленту
+       и каталог только мешает: показываем плоский результат. */
+    if (filter) {
+      for (const group of window.AgentHubStreamTabs.orderWorkspaceGroups(groups.values())) {
+        taskList.append(renderTaskWorkspaceItem(group));
+      }
+    } else {
+      const sections = window.AgentHubStreamTabs.workspaceSections(groups.values());
+      for (const group of sections.active) taskList.append(renderTaskWorkspaceItem(group));
+      if (sections.active.length && sections.catalog.length) {
+        taskList.append(renderTaskWorkspaceDivider("Все"));
+      }
+      for (const entry of sections.catalog) {
+        if (entry.type === "workspace") {
+          taskList.append(renderTaskWorkspaceItem(entry.group));
+          continue;
+        }
+        taskList.append(renderTaskWorkspaceDivider(`${entry.name} · ${entry.items.length}`));
+        for (const item of entry.items) {
+          taskList.append(renderTaskWorkspaceItem(item, { family: true }));
+        }
+      }
+    }
     for (const task of unassignedTasks) taskList.append(renderTaskItem(task));
   } else {
     for (const task of visible) taskList.append(renderTaskItem(task));
@@ -2102,7 +2114,13 @@ function streamMaintenanceKind(task) {
   return String(task?.context?.compaction?.status ?? "") === "running" ? "compaction" : "";
 }
 
-function renderTaskWorkspaceItem({ id, name, kind, tasks }) {
+function renderTaskWorkspaceDivider(label) {
+  return el("li", { class: "task-workspace-divider", role: "presentation" }, [
+    el("span", { class: "task-workspace-divider-label", text: label }),
+  ]);
+}
+
+function renderTaskWorkspaceItem({ id, name, kind, tasks, shortName }, { family = false } = {}) {
   const selected = workspaceKey(currentTask()) === id;
   const lastActivity = workspaceLastActivity(tasks);
   const unread = tasks.some((task) => task.unread);
@@ -2120,12 +2138,16 @@ function renderTaskWorkspaceItem({ id, name, kind, tasks }) {
     "data-answer-arrived": tasks.some((task) => transientAnswerArrivalTaskIds.has(task.id)) ? "" : null,
     "data-running": running ? "" : null,
     "data-maintenance": maintenance || null,
+    "data-family-member": family ? "" : null,
     role: "button",
     tabindex: "0",
     "aria-pressed": String(selected),
+    /* Внутри семейства префикс уже стоит в заголовке группы, поэтому в строке
+       остаётся только собственное имя — но полное имя нужно озвучке и поиску. */
+    "aria-label": family ? name : null,
     title: "ПКМ — редактировать Workspace",
   }, [
-    el("span", { class: "task-workspace-name", text: name }),
+    el("span", { class: "task-workspace-name", text: family ? (shortName || name) : name }),
     el("span", {
       class: "task-workspace-time",
       text: formatRelativeTime(lastActivity),
@@ -2354,24 +2376,28 @@ function syncStreamTabsOverflow() {
   const menuItems = [...(overflow?.querySelectorAll(".stream-overflow-item") ?? [])];
   if (!track || !overflow || !count) return;
   groups.forEach((group) => { group.hidden = false; });
+  overflow.hidden = true;
+  if (track.scrollWidth <= track.clientWidth + 1) {
+    menuItems.forEach((item) => { item.hidden = true; });
+    return;
+  }
   overflow.hidden = false;
-  overflow.dataset.measuring = "";
-  const trackStyle = window.getComputedStyle(track);
-  const gap = Number.parseFloat(trackStyle.columnGap || trackStyle.gap || "0") || 0;
-  const availableWithOverflow = track.clientWidth;
-  const overflowWidth = overflow.getBoundingClientRect().width;
-  const groupWidths = groups.map((group) => group.getBoundingClientRect().width);
-  const layout = window.AgentHubStreamTabs.resolveStreamOverflowLayout({
-    groupWidths,
-    availableWithoutOverflow: availableWithOverflow + overflowWidth,
-    availableWithOverflow,
-    gap,
+  let used = 0;
+  let visible = 0;
+  let exhausted = false;
+  groups.forEach((group, index) => {
+    const width = group.getBoundingClientRect().width;
+    const fits = !exhausted && (index === 0 || used + width <= track.clientWidth);
+    group.hidden = !fits;
+    if (fits) {
+      used += width;
+      visible += 1;
+    } else exhausted = true;
   });
-  delete overflow.dataset.measuring;
-  groups.forEach((group, index) => { group.hidden = index >= layout.visibleCount; });
-  count.textContent = String(layout.hiddenCount);
-  overflow.hidden = !layout.overflowVisible;
-  menuItems.forEach((item, index) => { item.hidden = index < layout.visibleCount; });
+  const hidden = Math.max(0, groups.length - visible);
+  count.textContent = String(hidden);
+  overflow.hidden = hidden === 0;
+  menuItems.forEach((item, index) => { item.hidden = index < visible; });
 }
 
 function renderStreamTabs() {
@@ -2398,7 +2424,6 @@ function renderStreamTabs() {
   const orderToggleTitle = orderIsManual
     ? "Ручной порядок. Переключить на порядок по последней активности."
     : "История активности. Переключить на ручной порядок.";
-  const overflowWasVisible = streamTabs.querySelector("[data-stream-tabs-overflow]")?.hidden === false;
   const orderToggle = el("button", {
     type: "button",
     class: "stream-tab-utility stream-order-toggle",
@@ -2520,7 +2545,7 @@ function renderStreamTabs() {
   const overflow = el("span", {
     class: "stream-tabs-overflow",
     "data-stream-tabs-overflow": "",
-    hidden: !overflowWasVisible,
+    hidden: true,
   }, [overflowButton, overflowMenu]);
   streamTabs.dataset.workspaceId = workspaceId;
   streamTabs.replaceChildren(leftControls, track, overflow);
@@ -3058,7 +3083,6 @@ let streamContextMenu = null;
 let workspaceContextMenu = null;
 let workspaceCardId = "";
 let workspaceCardMode = "edit";
-let workspaceReleaseDiscardConfirmed = false;
 const AGENT_RULES_LIMIT_BYTES = 32 * 1024;
 const agentRulesEncoder = new TextEncoder();
 const streamRulesDrafts = new Map();
@@ -3133,72 +3157,7 @@ function closeWorkspaceContextMenu() {
 function closeWorkspaceCard() {
   workspaceCardId = "";
   workspaceCardMode = "edit";
-  workspaceReleaseDiscardConfirmed = false;
   if (workspaceCardModal?.open) workspaceCardModal.close();
-}
-
-function releaseChangeStatusLabel(status) {
-  return ({
-    draft: "Черновик", ready: "Готово", blocked: "Заблокировано",
-    released: "Выпущено", discarded: "Исключено",
-  })[status]
-    ?? String(status ?? "");
-}
-
-function renderWorkspaceReleaseRegistry(workspace) {
-  if (!workspaceReleaseRegistry || !workspaceReleaseList || !workspaceReleaseSummary) return;
-  const registry = workspaceReleaseRegistryByWorkspace.get(workspace?.id);
-  const changes = Array.isArray(registry?.changes) ? registry.changes : [];
-  const streamNames = new Map((workspace?.streams ?? []).map((stream) => [stream.id, stream.name]));
-  const conflictingChangeIds = new Set((registry?.conflicts ?? [])
-    .flatMap((conflict) => conflict.changes ?? []).map((change) => change.id));
-  const releaseWorkflowIsEnabled = workspaceCardReleaseWorkflow?.checked === true;
-  const hasPendingReleaseEntries = workspaceReleaseWorkflow.pendingCount(registry) > 0;
-  workspaceReleaseRegistry.hidden = workspaceCardMode === "create"
-    || (!releaseWorkflowIsEnabled && !hasPendingReleaseEntries);
-  if (workspaceReleaseRegistry.hidden) return;
-  if (!registry) {
-    workspaceReleaseSummary.textContent = "Загрузка…";
-    workspaceReleaseList.replaceChildren(el("p", { class: "workspace-release-empty", text: "Загрузка реестра…" }));
-    return;
-  }
-  const count = (status) => Number(registry.counts?.[status]) || 0;
-  const conflictCount = Array.isArray(registry.conflicts) ? registry.conflicts.length : 0;
-  workspaceReleaseSummary.textContent = `Готово: ${count("ready")} · Черновики: ${count("draft")} · Блокеры: ${count("blocked")} · Конфликты: ${conflictCount}`;
-  workspaceReleaseList.replaceChildren(...changes.map((change) => {
-    const conflictingFiles = (registry.conflicts ?? [])
-      .filter((conflict) => (conflict.changes ?? []).some((item) => item.id === change.id))
-      .map((conflict) => conflict.file);
-    const select = el("select", {
-      "data-release-change-status": change.id,
-      "aria-label": `Статус изменения ${change.summary || change.id}`,
-    }, ["draft", "ready", "blocked", "discarded"].map((status) => el("option", {
-      value: status,
-      text: releaseChangeStatusLabel(status),
-      selected: change.status === status,
-    })));
-    return el("article", {
-      class: `workspace-release-change${conflictingChangeIds.has(change.id) ? " has-conflict" : ""}`,
-    }, [
-      el("div", { class: "workspace-release-change-title" }, [
-        el("strong", { text: change.summary || "Изменения без описания" }),
-        select,
-      ]),
-      el("span", {
-        class: "workspace-release-change-stream",
-        text: `${streamNames.get(change.streamId) ?? change.streamId} · ${change.provider} · ${String(change.turnId ?? "").slice(0, 12)}`,
-      }),
-      conflictingFiles.length
-        ? el("strong", { class: "workspace-release-conflict", text: `Пересечение файлов: ${conflictingFiles.join(", ")}` })
-        : null,
-      el("div", { class: "workspace-release-files" }, (change.files ?? []).map((file) => (
-        el("code", { text: file })
-      ))),
-    ]);
-  }));
-  if (!changes.length) {
-    workspaceReleaseList.append(el("p", { class: "workspace-release-empty", text: "Активных изменений нет." }));
-  }
 }
 
 function openWorkspaceCard(workspaceId) {
@@ -3216,13 +3175,10 @@ function openWorkspaceCard(workspaceId) {
   workspaceCardWorkingDirectory.value = String(workspace.settings?.workingDirectory ?? "");
   workspaceCardRules.value = entityAgentRules(workspace);
   workspaceCardReleaseWorkflow.checked = workspace.settings?.releaseWorkflowEnabled === true;
-  workspaceReleaseDiscardConfirmed = false;
   updateAgentRulesLimit(workspaceCardRules, workspaceCardRulesCount);
-  renderWorkspaceReleaseRegistry(workspace);
   workspaceCardOrder.max = String(order.length);
   workspaceCardOrder.value = String(Math.max(1, order.indexOf(columnId) + 1));
   workspaceCardModal.showModal();
-  emit("workspace-release:open", { workspaceId: workspace.id });
   (workspaceCardName.disabled ? workspaceCardComment : workspaceCardName).focus();
 }
 
@@ -3240,9 +3196,7 @@ function openNewWorkspaceCard() {
   workspaceCardWorkingDirectory.value = "";
   workspaceCardRules.value = "";
   workspaceCardReleaseWorkflow.checked = false;
-  workspaceReleaseDiscardConfirmed = false;
   updateAgentRulesLimit(workspaceCardRules, workspaceCardRulesCount);
-  renderWorkspaceReleaseRegistry(null);
   workspaceCardOrder.max = String(order.length + 1);
   workspaceCardOrder.value = String((notesIndex < 0 ? order.length : notesIndex) + 1);
   workspaceCardModal.showModal();
@@ -3420,12 +3374,12 @@ function openStreamContextMenu(event, tab) {
     el("button", {
       type: "button", role: "menuitem", class: "stream-context-action",
       "data-stream-menu-action": "replace-thread", text: "Ротация",
-      disabled: tab.hasAttribute("data-running") || provider !== "codex",
+      disabled: tab.hasAttribute("data-running") || !["codex", "claude"].includes(provider),
       title: tab.hasAttribute("data-running")
         ? "Сначала завершите текущий ход"
-        : provider !== "codex"
-          ? "Ротация пока доступна только для Codex"
-          : "Завершить текущий Thread и продолжить Stream в новом Codex Thread",
+        : !["codex", "claude"].includes(provider)
+          ? "Ротация доступна для Codex и Claude"
+          : `Завершить текущий Thread и продолжить Stream в новом Thread ${provider === "claude" ? "Claude" : "Codex"}`,
     }),
     el("button", {
       type: "button", role: "menuitem", class: "stream-context-action",
@@ -3886,7 +3840,7 @@ function renderChat() {
   if (taskChanged) {
     activeChatId = task.id;
     state.messageRenderLimits.set(task.id, INITIAL_MESSAGE_RENDER_LIMIT);
-    renderMessages({ forceBottom: true });
+    renderMessages({ forceBottom: true, tailLimit: SWITCH_MESSAGE_RENDER_LIMIT });
   }
   renderLive();
   renderApprovals();
@@ -6734,7 +6688,7 @@ document.addEventListener("contextmenu", (event) => {
   const workspaceId = String(workspace.dataset.workspaceHeading ?? workspace.dataset.boardWorkspaceId ?? "");
   openWorkspaceContextMenu(event, workspaceId);
 });
-workspaceCardForm?.addEventListener("submit", async (event) => {
+workspaceCardForm?.addEventListener("submit", (event) => {
   event.preventDefault();
   if (!updateAgentRulesLimit(workspaceCardRules, workspaceCardRulesCount)) {
     workspaceCardRules.reportValidity();
@@ -6760,17 +6714,6 @@ workspaceCardForm?.addEventListener("submit", async (event) => {
   const workspace = workspaceCatalogItem(workspaceCardId);
   if (!workspace) return closeWorkspaceCard();
   const releaseWorkflowEnabled = workspaceCardReleaseWorkflow.checked;
-  const registry = workspaceReleaseRegistryByWorkspace.get(workspace.id);
-  if (workspaceReleaseWorkflow.requiresDiscardConfirmation({
-    enabled: releaseWorkflowEnabled,
-    registry,
-    discardConfirmed: workspaceReleaseDiscardConfirmed,
-  })) {
-    if (!await workspaceReleaseDiscardDialog.request({
-      text: workspaceReleaseWorkflow.discardConfirmationText(registry),
-    })) return;
-    workspaceReleaseDiscardConfirmed = true;
-  }
   const columnId = `workspace:${workspace.id}`;
   const remaining = order.filter((id) => id !== columnId);
   const targetIndex = Math.max(0, Math.min(remaining.length, requestedOrder - 1));
@@ -6781,42 +6724,12 @@ workspaceCardForm?.addEventListener("submit", async (event) => {
     workingDirectory: workspaceCardWorkingDirectory.value.trim(),
     rules: workspaceCardRules.value,
     releaseWorkflowEnabled,
-    discardReleaseEntries: workspaceReleaseDiscardConfirmed,
     beforeColumnId: remaining[targetIndex] ?? null,
   });
   closeWorkspaceCard();
 });
 workspaceCardRules?.addEventListener("input", () => {
   updateAgentRulesLimit(workspaceCardRules, workspaceCardRulesCount);
-});
-workspaceCardReleaseWorkflow?.addEventListener("change", async () => {
-  const registry = workspaceReleaseRegistryByWorkspace.get(workspaceCardId);
-  if (workspaceCardReleaseWorkflow.checked) {
-    workspaceReleaseDiscardConfirmed = false;
-  } else if (workspaceReleaseWorkflow.requiresDiscardConfirmation({
-    enabled: false,
-    registry,
-    discardConfirmed: workspaceReleaseDiscardConfirmed,
-  })) {
-    if (!await workspaceReleaseDiscardDialog.request({
-      text: workspaceReleaseWorkflow.discardConfirmationText(registry),
-    })) {
-      workspaceCardReleaseWorkflow.checked = true;
-      renderWorkspaceReleaseRegistry(workspaceCatalogItem(workspaceCardId));
-      return;
-    }
-    workspaceReleaseDiscardConfirmed = true;
-  }
-  renderWorkspaceReleaseRegistry(workspaceCatalogItem(workspaceCardId));
-});
-workspaceReleaseList?.addEventListener("change", (event) => {
-  const select = event.target.closest("[data-release-change-status]");
-  if (!select || !workspaceCardId) return;
-  emit("workspace-release:status", {
-    workspaceId: workspaceCardId,
-    changeId: String(select.dataset.releaseChangeStatus ?? ""),
-    status: String(select.value ?? "draft"),
-  });
 });
 document.querySelector("[data-workspace-card-close]")?.addEventListener("click", closeWorkspaceCard);
 document.querySelector("[data-workspace-card-cancel]")?.addEventListener("click", closeWorkspaceCard);
@@ -6826,7 +6739,6 @@ workspaceCardModal?.addEventListener("click", (event) => {
 workspaceCardModal?.addEventListener("close", () => {
   workspaceCardId = "";
   workspaceCardMode = "edit";
-  workspaceReleaseDiscardConfirmed = false;
 });
 bugReportAttach?.addEventListener("click", () => bugReportFiles?.click());
 bugReportFiles?.addEventListener("change", () => {
@@ -7087,6 +6999,10 @@ function renderDialogSettings() {
         : "Применится при создании следующего Thread; текущий Thread сохраняет свою директорию.";
     }
   }
+  if (dialogStreamArchitect) {
+    dialogStreamArchitect.checked = streamRoleSettings.architectEnabled(task?.streamSettings);
+    dialogStreamArchitect.disabled = !task?.streamId;
+  }
   renderStreamRulesPreview();
 }
 
@@ -7138,6 +7054,15 @@ dialogSettings.addEventListener("change", (event) => {
     renderOptions();
     return;
   }
+  const architect = event.target.closest("[data-dialog-stream-architect]");
+  if (architect) {
+    const task = currentTask();
+    if (!task?.streamId) return;
+    task.streamSettings = streamRoleSettings.withArchitect(task.streamSettings, architect.checked);
+    emit("stream:settings-save", { streamId: task.streamId, settings: { ...task.streamSettings } });
+    renderOptions();
+    return;
+  }
   const toggle = event.target.closest("[data-dialog-toggle]");
   if (!toggle) return;
   const key = toggle.dataset.dialogToggle;
@@ -7179,6 +7104,9 @@ document.addEventListener("change", (event) => {
   if (!toggle) return;
   const key = toggle.dataset.toggle;
   const value = toggle.checked;
+  if (key === "showInlineFileRevealButtons") {
+    root.dataset.inlineFileReveal = value ? "on" : "off";
+  }
   if (key === "includeClaudeUsage") {
     toggle.checked = Boolean(state.selection[key]);
   } else {
@@ -7855,22 +7783,7 @@ const AgentHub = {
       && sameData(state.workspaceColumnOrder, nextColumnOrder)) return;
     state.workspaces = nextWorkspaces;
     state.workspaceColumnOrder = nextColumnOrder;
-    if (workspaceCardModal?.open && workspaceCardId) {
-      renderWorkspaceReleaseRegistry(workspaceCatalogItem(workspaceCardId));
-    }
     if (journalRendered) updateJournalStreamCount();
-  },
-  setWorkspaceReleaseRegistry(workspaceId, registry) {
-    const id = String(workspaceId ?? "");
-    workspaceReleaseRegistryByWorkspace.set(id, registry ?? {});
-    if (workspaceCardModal?.open && workspaceCardId === id) {
-      renderWorkspaceReleaseRegistry(workspaceCatalogItem(id));
-    }
-  },
-  confirmWorkspaceReleaseDiscard(details = {}) {
-    return workspaceReleaseDiscardDialog.request({
-      text: workspaceReleaseWorkflow.discardConfirmationText(details),
-    });
   },
   openDialogSettings,
   /** Точечное обновление задачи (статус, время, непрочитанное). */
@@ -8100,11 +8013,15 @@ const AgentHub = {
   /** Текущий выбор: { model, reasoning, mode, project, autoApprove,
    *  includeClaudeUsage, activityRecentMinutes, streamOrderMode,
    *  streamCardWidthMode, streamCardFixedWidth, streamCardGapEnabled,
+   *  showInlineFileRevealButtons,
    *  pinnedWorkspaceStreams, quickMessages }. */
   setSelection(selection) {
     const incoming = { ...(selection ?? {}) };
     for (const key of state.pendingSelections) {
       if (Object.hasOwn(incoming, key) && !sameData(incoming[key], state.selection[key])) delete incoming[key];
+    }
+    if (Object.hasOwn(incoming, "showInlineFileRevealButtons")) {
+      root.dataset.inlineFileReveal = incoming.showInlineFileRevealButtons === true ? "on" : "off";
     }
     const claudeUsageChanged = Object.hasOwn(incoming, "includeClaudeUsage")
       && state.selection.includeClaudeUsage !== incoming.includeClaudeUsage;
@@ -13190,7 +13107,6 @@ function updateStatisticsSyncCardVisibility() {
 }
 
 function updateUsageSyncDeviceLabelButton(status = null) {
-  if (!journalSyncDeviceLabelButton) return;
   const visible = usageSyncCanSetDeviceLabel(status);
   const label = usageSyncDeviceLabel(status);
   const suggested = usageSyncSuggestedDeviceLabel(status);
@@ -13255,12 +13171,11 @@ function updateJournalSyncStatus(status = null) {
     journalSyncStatus.textContent = [
       `Sync ${clock || "ожидает"}`,
       changed ? `+${added} / Δ${updated}` : "без изменений",
-      label || (device ? `device ${device}` : ""),
-      status.deviceLabelPromptRequired ? "подтвердите ник" : "",
+      label ? `ник ${label}` : "",
+      device ? `device ${device}` : "",
     ].filter(Boolean).join(" · ");
     journalSyncStatus.title = [
       status.serverUrl ? `Сервер: ${status.serverUrl}` : "",
-      label ? `Ник устройства: ${label}` : "",
       status.lastPushAt ? `Последний push: ${new Date(status.lastPushAt).toLocaleString("ru-RU")}` : "",
       status.lastPullAt ? `Последний pull: ${new Date(status.lastPullAt).toLocaleString("ru-RU")}` : "",
       Number(result.after || 0) ? `Событий локально: ${Number(result.after || 0)}` : "",
@@ -13370,8 +13285,8 @@ function maybePromptUsageSyncDeviceLabel(status = null) {
   }, 0);
 }
 
-journalSyncDeviceLabelButton?.addEventListener("click", () => {
-  if (!journalSyncDeviceLabelButton || journalSyncDeviceLabelButton.disabled) return;
+journalSyncDeviceLabelButton.addEventListener("click", () => {
+  if (journalSyncDeviceLabelButton.disabled) return;
   journalSyncDeviceLabelButton.disabled = true;
   journalSyncDeviceLabelButton.setAttribute("aria-busy", "true");
   const previousText = journalSyncDeviceLabelButton.textContent;
@@ -13659,15 +13574,23 @@ if (telegramMode) {
   }, 5_000);
   window.addEventListener("pagehide", () => clearInterval(polling), { once: true });
 } else if (!vscodeMode && !window.AgentHubAndroid && !window.AgentHubBrowserDevice) {
-  const events = new EventSource("/events");
-  events.addEventListener("ready", () => {
-    AgentHub.setConnection("online");
-    if (journalRequested) void loadJournal();
+  /* Защищённая локальная ссылка сначала устанавливает HttpOnly-сессию. Если
+     открыть EventSource раньше, его первый запрос получает 401 и открытая
+     Статистика больше не узнаёт о входящем Usage Sync. */
+  const journalEvents = window.AgentHubJournalPolling.createAuthenticatedEventStream({
+    ready: localSessionReady,
+    createSource: () => new EventSource("/events"),
+    onReady: () => {
+      AgentHub.setConnection("online");
+      if (journalRequested) void loadJournal();
+    },
+    onChange: () => {
+      if (journalRequested) void loadJournal();
+    },
+    onError: () => AgentHub.setConnection("connecting"),
   });
-  events.addEventListener("journal", () => {
-    if (journalRequested) void loadJournal();
-  });
-  events.addEventListener("error", () => AgentHub.setConnection("connecting"));
+  void journalEvents.start();
+  window.addEventListener("pagehide", () => journalEvents.stop(), { once: true });
 }
 if (journalPolling) {
   document.addEventListener("visibilitychange", () => journalPolling.reconcile());

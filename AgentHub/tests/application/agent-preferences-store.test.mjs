@@ -51,6 +51,7 @@ test("agent preferences restore and validate both providers in one state owner",
     streamCardWidthMode: "fixed",
     streamCardFixedWidth: 237,
     streamCardGapEnabled: true,
+    showInlineFileRevealButtons: true,
     pinnedWorkspaceStreams: {
       "workspace-1": ["stream-1", "stream-2", "stream-1"],
       "": ["ignored"],
@@ -78,6 +79,7 @@ test("agent preferences restore and validate both providers in one state owner",
     streamCardWidthMode: "fixed",
     streamCardFixedWidth: 237,
     streamCardGapEnabled: true,
+    showInlineFileRevealButtons: true,
     pinnedWorkspaceStreams: {
       "workspace-1": ["stream-1", "stream-2"],
     },
@@ -99,6 +101,8 @@ test("agent preferences restore and validate both providers in one state owner",
   assert.equal(store.activityRecentMinutes, 240);
   assert.deepEqual(store.setStreamCardFixedWidth(451), { changed: true });
   assert.equal(store.streamCardFixedWidth, 450);
+  assert.deepEqual(store.setShowInlineFileRevealButtons(false), { changed: true });
+  assert.equal(store.showInlineFileRevealButtons, false);
   assert.deepEqual(
     store.setPinnedWorkspaceStreams(JSON.stringify({ "workspace-2": ["stream-3"] })),
     { changed: true },
@@ -112,6 +116,13 @@ test("agent preferences restore and validate both providers in one state owner",
     streams: {},
     workspaces: { "workspace-2": [{ id: "релизь", label: "релизь", text: "релизь" }] },
   });
+});
+
+test("inline file reveal buttons are server-persisted and default off for legacy state", () => {
+  const { store } = fixture();
+  assert.equal(store.showInlineFileRevealButtons, false);
+  assert.equal(store.restore({ showInlineFileRevealButtons: true }).showInlineFileRevealButtons, true);
+  assert.equal(store.snapshot().showInlineFileRevealButtons, true);
 });
 
 test("task preferences follow the selected Codex thread without becoming task identity", () => {

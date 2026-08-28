@@ -2,19 +2,25 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
+import { frozenTaskReleaseManifest } from "../../../src/domain/task-release-snapshot.mjs";
 import { TaskBoardStore } from "../../../src/infrastructure/persistence/task-board-store.mjs";
 
 async function fixture(t) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-task-board-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
   let sequence = 0;
-  return new TaskBoardStore({
+  const store = new TaskBoardStore({
     databaseFile: path.join(directory, "journal.sqlite"),
     now: () => 1_700_000_000_000 + sequence,
     idFactory: () => `task-${++sequence}`,
   });
+  t.after(async () => {
+    store.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  return store;
 }
 
 test("Task store revision changes on writes but not reads", async (t) => {
@@ -49,21 +55,21 @@ test("Task store can persist disabled Spark triage", async (t) => {
   assert.equal(store.pendingTriage().length, 0);
 });
 
-test("restarting a completed Task clears its completion timestamp", async (t) => {
+test("restarting a closed Task clears its completion timestamp", async (t) => {
   const store = await fixture(t);
   const task = store.create({ text: "Исправить запуск" });
   const completed = store.complete(task.id);
   const restarted = store.markStarted(task.id, { workspaceId: "workspace-1", streamId: "stream-1" });
 
   assert.equal(completed.status, "done");
-  assert.equal(completed.workflowStatus, "done");
+  assert.equal(completed.workflowStatus, "new");
   assert.notEqual(completed.completedAt, null);
   assert.equal(restarted.status, "started");
   assert.equal(restarted.workflowStatus, "in_progress");
   assert.equal(restarted.completedAt, null);
 });
 
-test("Task workflow Done remains visible until the Task is explicitly closed", async (t) => {
+test("generic Task completion closes without forging release workflow status", async (t) => {
   const store = await fixture(t);
   const created = store.create({ text: "Провести задачу по статусам" });
   assert.equal(created.workflowStatus, "new");
@@ -71,18 +77,14 @@ test("Task workflow Done remains visible until the Task is explicitly closed", a
   const started = store.markStarted(created.id, { workspaceId: "workspace-1", streamId: "stream-1" });
   assert.equal(started.workflowStatus, "in_progress");
   assert.equal(store.setWorkflowStatus(created.id, "testing").workflowStatus, "testing");
-  assert.equal(
-    store.setWorkflowStatus(created.id, "awaiting_implementation").workflowStatus,
-    "awaiting_implementation",
+  assert.throws(
+    () => store.setWorkflowStatus(created.id, "awaiting_implementation"),
+    /requires verified/u,
   );
-  const productionReady = store.setWorkflowStatus(created.id, "done");
-  assert.equal(productionReady.status, "started");
-  assert.equal(productionReady.workflowStatus, "done");
-  assert.equal(productionReady.completedAt, null);
 
   const completed = store.complete(created.id);
   assert.equal(completed.status, "done");
-  assert.equal(completed.workflowStatus, "done");
+  assert.equal(completed.workflowStatus, "testing");
   assert.notEqual(completed.completedAt, null);
 
   const reopened = store.setWorkflowStatus(created.id, "testing");
@@ -269,6 +271,7 @@ test("Task card order persists within and between columns", async (t) => {
 
   const reopened = new TaskBoardStore({ databaseFile: store.databaseFile });
   const tasks = reopened.list({ includeDone: false });
+  reopened.close();
   assert.deepEqual(
     tasks.filter((task) => task.workspaceId === "workspace-1").map((task) => task.id),
     [third.id, first.id],
@@ -284,8 +287,11 @@ test("Workspace and Notes column order persists after reordering", async (t) => 
   store.setNotesComment("Книги и фильмы");
 
   const reopened = new TaskBoardStore({ databaseFile: store.databaseFile });
-  assert.deepEqual(reopened.orderedColumnIds(["one", "two", "three"]), ["one", "notes", "two", "three"]);
-  assert.equal(reopened.notesComment(), "Книги и фильмы");
+  const columnIds = reopened.orderedColumnIds(["one", "two", "three"]);
+  const notesComment = reopened.notesComment();
+  reopened.close();
+  assert.deepEqual(columnIds, ["one", "notes", "two", "three"]);
+  assert.equal(notesComment, "Книги и фильмы");
 });
 
 test("Workspace removal reassigns its cards and preserves their order", async (t) => {
@@ -309,4 +315,216 @@ test("Workspace removal reassigns its cards and preserves their order", async (t
     [target.id, first.id, second.id],
   );
   assert.deepEqual(store.orderedColumnIds(["workspace-2"]), ["workspace-2", "notes"]);
+});
+
+function freezeTask(store, taskId, projectRoot) {
+  store.claim(taskId, {
+    workspaceId: "workspace-1", streamId: "stream-1",
+    provider: "codex", threadId: "thread-1", turnId: "turn-1",
+    gitBaseline: { repoRoot: projectRoot, tree: "a".repeat(40) },
+  });
+  const recorded = store.recordTaskTurn({
+    taskId, provider: "codex", threadId: "thread-1", turnId: "turn-1",
+    projectRoot, summary: "Implemented", status: "completed",
+    changedFiles: [{ projectRoot, path: "src/app.mjs", operation: "modified", turnId: "turn-1" }],
+    resultSnapshot: { repoRoot: projectRoot, tree: "b".repeat(40) },
+  });
+  const manifest = frozenTaskReleaseManifest({
+    revision: recorded.revision + 1,
+    repositories: [{ projectRoot, baseRevision: "a".repeat(40), resultRevision: "b".repeat(40) }],
+    files: [{
+      projectRoot, path: "src/app.mjs", operation: "modified",
+      baseBlob: "c".repeat(40), resultBlob: "d".repeat(40), patchHash: "e".repeat(64),
+    }],
+  });
+  return store.freezeTaskRelease(taskId, {
+    expectedTaskRevision: recorded.revision,
+    manifest,
+    verification: { verifier: { name: "fixture", version: "1" } },
+    actorStreamId: "stream-1",
+  });
+}
+
+test("Frozen Task rejects every aggregate mutation until exact release completion", async (t) => {
+  const store = await fixture(t);
+  const projectRoot = path.resolve("D:/repo");
+  const frozen = store.create({ text: "Frozen" });
+  const mutable = store.create({ text: "Mutable" });
+  store.move(frozen.id, { bucket: "workspace", workspaceId: "workspace-1" });
+  store.move(mutable.id, { bucket: "workspace", workspaceId: "workspace-1" });
+  const frozenSnapshot = freezeTask(store, frozen.id, projectRoot);
+
+  const mutations = [
+    () => store.updatePresentation(frozen.id, { title: "Changed" }),
+    () => store.move(frozen.id, { bucket: "backlog" }),
+    () => store.applyTriage(frozen.id, { correctedText: "Changed", category: "task", confidence: 1 }),
+    () => store.prepareStart(frozen.id, { workspaceId: "workspace-1", streamId: "stream-1", requestId: "start" }),
+    () => store.markStarted(frozen.id, { workspaceId: "workspace-1", streamId: "stream-1" }),
+    () => store.claim(frozen.id, {
+      workspaceId: "workspace-1", streamId: "stream-1",
+      provider: "codex", threadId: "thread-1", turnId: "turn-2",
+    }),
+    () => store.complete(frozen.id),
+    () => store.remove(frozen.id),
+  ];
+  for (const mutate of mutations) assert.throws(mutate, /Frozen|frozen|immutable/u);
+  assert.throws(
+    () => store.reassignWorkspace("workspace-1", "workspace-2"),
+    /Frozen|frozen|immutable/u,
+  );
+  assert.equal(store.task(mutable.id).workspaceId, "workspace-1");
+
+  store.move(mutable.id, { bucket: "workspace", workspaceId: "workspace-1", beforeId: frozen.id });
+  assert.equal(store.task(frozen.id).revision, frozenSnapshot.revision);
+  assert.equal(store.task(frozen.id).releaseManifestHash, frozenSnapshot.releaseManifestHash);
+
+  const plan = store.releasePlan("workspace-1");
+  const completed = store.completeRelease("workspace-1", {
+    expectedPlanRevision: plan.revision,
+    verificationEvidence: { publishedRevision: "f".repeat(40) },
+  });
+  assert.equal(completed.released[0].id, frozen.id);
+  assert.equal(store.task(frozen.id).workflowStatus, "done");
+  assert.equal(store.task(frozen.id).status, "done");
+});
+
+function createLegacyReleaseSchema(database) {
+  database.exec(`
+    CREATE TABLE hub_release_changes (
+      id TEXT PRIMARY KEY, workspace_id TEXT, stream_id TEXT, provider TEXT,
+      provider_thread_id TEXT, turn_id TEXT, project_root TEXT, summary TEXT,
+      status TEXT, files_json TEXT, observed_files_json TEXT, revision INTEGER, created_at_ms INTEGER
+    );
+    CREATE TABLE hub_release_batches (id TEXT PRIMARY KEY, status TEXT, created_at_ms INTEGER);
+    CREATE TABLE hub_release_change_sets (
+      id TEXT PRIMARY KEY, task_id TEXT, workspace_id TEXT, owner_stream_id TEXT,
+      title TEXT, status TEXT, revision INTEGER, manifest_hash TEXT,
+      repository_evidence_json TEXT, created_at_ms INTEGER
+    );
+    CREATE TABLE hub_release_turn_observations (
+      id TEXT PRIMARY KEY, change_set_id TEXT, legacy_release_change_id TEXT,
+      provider TEXT, provider_thread_id TEXT, turn_id TEXT, project_root TEXT,
+      summary TEXT, files_json TEXT, created_at_ms INTEGER
+    );
+    CREATE TABLE hub_release_change_set_files (
+      change_set_id TEXT, project_root TEXT, file_path TEXT, operation TEXT,
+      base_blob TEXT, result_blob TEXT, patch_hash TEXT,
+      PRIMARY KEY (change_set_id, project_root, file_path)
+    );
+    CREATE TABLE hub_release_change_set_bindings (stream_id TEXT PRIMARY KEY, change_set_id TEXT);
+    CREATE TABLE hub_release_change_set_events (
+      id TEXT PRIMARY KEY, change_set_id TEXT, event_type TEXT, payload_json TEXT, created_at_ms INTEGER
+    );
+  `);
+}
+
+function seedProductionShapeLegacyRelease(database) {
+  createLegacyReleaseSchema(database);
+  const insertChangeSet = database.prepare(`
+    INSERT INTO hub_release_change_sets VALUES (?, NULL, 'workspace-1', ?, ?, ?, 2, ?, ?, ?)
+  `);
+  for (let index = 0; index < 11; index += 1) {
+    const verified = index < 2;
+    insertChangeSet.run(
+      `changeset-${index}`, `stream-${index}`, `ChangeSet ${index}`,
+      verified ? "ready" : "draft",
+      verified ? String(index + 1).repeat(64).slice(0, 64) : "",
+      verified ? JSON.stringify([{
+        projectRoot: "D:/repo", baseRevision: "a".repeat(40), resultRevision: "b".repeat(40),
+      }]) : "[]",
+      100 + index,
+    );
+  }
+  const insertLegacy = database.prepare(`
+    INSERT INTO hub_release_changes VALUES (?, 'workspace-1', ?, 'codex', ?, ?, 'D:/repo', ?, ?, ?, ?, 1, ?)
+  `);
+  const insertObservation = database.prepare(`
+    INSERT INTO hub_release_turn_observations VALUES (?, ?, ?, 'codex', ?, ?, 'D:/repo', ?, ?, ?)
+  `);
+  for (let index = 0; index < 13; index += 1) {
+    const files = index < 3 ? JSON.stringify([`legacy/path-${index}.mjs`]) : "[]";
+    insertLegacy.run(
+      `legacy-${index}`, `stream-${index % 7}`, `thread-${index}`, `turn-${index}`,
+      `Legacy ${index}`, index < 3 ? "ready" : "draft", files, files, 200 + index,
+    );
+    insertObservation.run(
+      `observation-${index}`, `changeset-${index % 7}`, `legacy-${index}`,
+      `thread-${index}`, `turn-${index}`, `Observed ${index}`,
+      JSON.stringify([`observed/path-${index}.mjs`]), 300 + index,
+    );
+  }
+  const insertFile = database.prepare("INSERT INTO hub_release_change_set_files VALUES (?, 'D:/repo', ?, ?, ?, ?, ?)");
+  for (let index = 0; index < 2; index += 1) {
+    insertFile.run(
+      `changeset-${index}`, `src/verified-${index}.mjs`, "modified",
+      "c".repeat(40), "d".repeat(40), "e".repeat(64),
+    );
+    database.prepare("INSERT INTO hub_release_change_set_events VALUES (?, ?, 'changeset.frozen', ?, ?)").run(
+      `event-${index}`, `changeset-${index}`,
+      JSON.stringify({ verification: { verifier: { name: "git", version: "1" } } }), 400 + index,
+    );
+  }
+  insertFile.run("changeset-2", "src/observed-only.mjs", "observed", "", "", "");
+  database.prepare("INSERT INTO hub_release_change_set_bindings VALUES ('stream-0', 'changeset-0')").run();
+  database.prepare("INSERT INTO hub_release_batches VALUES ('batch-1', 'released', 500)").run();
+}
+
+test("Legacy cutover maps production union to 11 Tasks and only two verified awaiting", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-task-release-migration-"));
+  const databaseFile = path.join(directory, "journal.sqlite");
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const database = new DatabaseSync(databaseFile);
+  seedProductionShapeLegacyRelease(database);
+  database.close();
+
+  const store = new TaskBoardStore({ databaseFile });
+  const migrated = store.list().filter((task) => task.source === "release-registry-migration");
+  assert.equal(migrated.length, 11);
+  assert.equal(migrated.filter((task) => task.workflowStatus === "awaiting_implementation").length, 2);
+  assert.equal(migrated.filter((task) => task.workflowStatus === "in_progress").length, 9);
+  assert.deepEqual(
+    migrated.find((task) => task.sourceKey === "release-migration:changeset:changeset-2").changedFiles,
+    [],
+  );
+  assert.equal(
+    migrated.find((task) => task.sourceKey === "release-migration:changeset:changeset-0").workLog.length,
+    2,
+  );
+  store.close();
+
+  const archived = new DatabaseSync(databaseFile);
+  assert.equal(archived.prepare("SELECT COUNT(*) AS value FROM hub_release_registry_history").get().value, 44);
+  assert.throws(
+    () => archived.prepare("UPDATE hub_release_changes SET status = 'discarded'").run(),
+    /read-only archive/u,
+  );
+  archived.close();
+
+  const reopened = new TaskBoardStore({ databaseFile });
+  assert.equal(reopened.list().filter((task) => task.source === "release-registry-migration").length, 11);
+  reopened.close();
+});
+
+test("Legacy archive checksum mismatch rolls back Task import", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-task-release-rollback-"));
+  const databaseFile = path.join(directory, "journal.sqlite");
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const database = new DatabaseSync(databaseFile);
+  seedProductionShapeLegacyRelease(database);
+  database.exec(`
+    CREATE TABLE hub_release_registry_history (
+      source_kind TEXT NOT NULL, source_id TEXT NOT NULL, status TEXT NOT NULL,
+      payload_json TEXT NOT NULL, payload_sha256 TEXT NOT NULL, migrated_task_id TEXT,
+      archived_at_ms INTEGER NOT NULL, PRIMARY KEY (source_kind, source_id)
+    ) WITHOUT ROWID;
+  `);
+  database.prepare("INSERT INTO hub_release_registry_history VALUES ('legacy', 'legacy-0', 'draft', '{}', ?, NULL, 1)")
+    .run("0".repeat(64));
+  database.close();
+
+  assert.throws(() => new TaskBoardStore({ databaseFile }), /archive checksum mismatch/u);
+  const inspected = new DatabaseSync(databaseFile);
+  assert.equal(inspected.prepare("SELECT COUNT(*) AS value FROM hub_board_tasks").get().value, 0);
+  assert.equal(inspected.prepare("SELECT COUNT(*) AS value FROM hub_board_settings WHERE key = 'task_release_registry_migrated_v1'").get().value, 0);
+  inspected.close();
 });

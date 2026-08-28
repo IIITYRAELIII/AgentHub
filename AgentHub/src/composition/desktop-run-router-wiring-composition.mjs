@@ -112,6 +112,19 @@ export function createDesktopRunRouterWiring({
       setProgressStage: services.setProgressStage,
       noteRunActivity: services.noteRunActivity,
       scheduleProgressUpdate: services.scheduleProgressUpdate,
+      bindDashboardTask: ({ run, taskId }) => {
+        const stream = services.workspaceCatalog.stream(run.streamId);
+        if (!stream) throw new Error("Task-started run has no Workspace Stream");
+        return services.taskBoard.claim({
+          id: taskId,
+          workspaceId: stream.workspaceId,
+          streamId: stream.id,
+          provider: run.provider,
+          threadId: run.threadId,
+          turnId: run.turnId,
+          gitBaseline: run.gitBaseline ?? null,
+        });
+      },
       notifyInputStart: (target) => {
         if (target?.telegramDeliveryRequested === false) return;
         void services.telegram("sendChatAction", {

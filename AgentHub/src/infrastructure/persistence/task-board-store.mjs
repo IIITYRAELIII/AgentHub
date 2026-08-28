@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -14,12 +14,20 @@ import {
   TASK_WORKFLOW_STATUSES,
   taskPresentation,
 } from "../../domain/task-board-task.mjs";
+import {
+  mergeTaskChangedFiles,
+  normalizedTaskChangedFiles,
+  taskReleaseConflicts,
+  taskReleaseManifest,
+  taskReleasePlanRevision,
+} from "../../domain/task-release-snapshot.mjs";
 
 const NOTES_COLUMN_ID = "notes";
 
 function configure(database) {
   database.exec("PRAGMA busy_timeout = 5000");
   database.exec("PRAGMA journal_mode = WAL");
+  database.exec("PRAGMA foreign_keys = ON");
   database.exec(`
     CREATE TABLE IF NOT EXISTS hub_board_tasks (
       id TEXT PRIMARY KEY,
@@ -48,7 +56,8 @@ function configure(database) {
       started_at_ms INTEGER,
       completed_at_ms INTEGER,
       start_request_id TEXT,
-      start_stream_name TEXT
+      start_stream_name TEXT,
+      row_revision INTEGER NOT NULL DEFAULT 1
     );
     CREATE TABLE IF NOT EXISTS hub_board_workspace_order (
       workspace_id TEXT PRIMARY KEY,
@@ -76,6 +85,106 @@ function configure(database) {
       enabled INTEGER NOT NULL DEFAULT 0,
       updated_at_ms INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS hub_task_release_state (
+      task_id TEXT PRIMARY KEY,
+      revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
+      frozen_revision INTEGER,
+      manifest_hash TEXT NOT NULL DEFAULT '',
+      updated_at_ms INTEGER NOT NULL,
+      FOREIGN KEY (task_id) REFERENCES hub_board_tasks(id) ON DELETE CASCADE
+    ) WITHOUT ROWID;
+    CREATE TABLE IF NOT EXISTS hub_task_turn_bindings (
+      task_id TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      provider_thread_id TEXT NOT NULL,
+      turn_id TEXT NOT NULL,
+      baseline_json TEXT NOT NULL DEFAULT '{}',
+      requested_workflow_status TEXT,
+      claimed_at_ms INTEGER NOT NULL,
+      terminal_at_ms INTEGER,
+      PRIMARY KEY (provider, provider_thread_id, turn_id),
+      FOREIGN KEY (task_id) REFERENCES hub_board_tasks(id) ON DELETE CASCADE
+    ) WITHOUT ROWID;
+    CREATE INDEX IF NOT EXISTS hub_task_turn_bindings_task_idx
+      ON hub_task_turn_bindings(task_id, claimed_at_ms DESC);
+    CREATE TABLE IF NOT EXISTS hub_task_changed_files (
+      task_id TEXT NOT NULL,
+      project_root TEXT NOT NULL,
+      file_path TEXT NOT NULL,
+      operation TEXT NOT NULL CHECK (operation IN ('added', 'modified', 'deleted')),
+      turn_id TEXT,
+      updated_at_ms INTEGER NOT NULL,
+      PRIMARY KEY (task_id, project_root, file_path),
+      FOREIGN KEY (task_id) REFERENCES hub_board_tasks(id) ON DELETE CASCADE
+    ) WITHOUT ROWID;
+    CREATE TABLE IF NOT EXISTS hub_task_work_log (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      provider_thread_id TEXT NOT NULL,
+      turn_id TEXT NOT NULL,
+      project_root TEXT NOT NULL,
+      summary TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL,
+      changed_files_json TEXT NOT NULL,
+      created_at_ms INTEGER NOT NULL,
+      FOREIGN KEY (task_id) REFERENCES hub_board_tasks(id) ON DELETE CASCADE,
+      UNIQUE (task_id, provider, provider_thread_id, turn_id)
+    ) WITHOUT ROWID;
+    CREATE INDEX IF NOT EXISTS hub_task_work_log_task_idx
+      ON hub_task_work_log(task_id, created_at_ms, id);
+    CREATE TABLE IF NOT EXISTS hub_task_repository_revisions (
+      task_id TEXT NOT NULL,
+      project_root TEXT NOT NULL,
+      baseline_revision TEXT NOT NULL,
+      result_revision TEXT NOT NULL,
+      updated_at_ms INTEGER NOT NULL,
+      PRIMARY KEY (task_id, project_root),
+      FOREIGN KEY (task_id) REFERENCES hub_board_tasks(id) ON DELETE CASCADE
+    ) WITHOUT ROWID;
+    CREATE TABLE IF NOT EXISTS hub_task_release_revisions (
+      task_id TEXT NOT NULL,
+      task_revision INTEGER NOT NULL,
+      manifest_hash TEXT NOT NULL,
+      repositories_json TEXT NOT NULL,
+      verification_json TEXT NOT NULL,
+      created_at_ms INTEGER NOT NULL,
+      PRIMARY KEY (task_id, task_revision),
+      FOREIGN KEY (task_id) REFERENCES hub_board_tasks(id) ON DELETE CASCADE
+    ) WITHOUT ROWID;
+    CREATE TABLE IF NOT EXISTS hub_task_release_revision_files (
+      task_id TEXT NOT NULL,
+      task_revision INTEGER NOT NULL,
+      project_root TEXT NOT NULL,
+      file_path TEXT NOT NULL,
+      operation TEXT NOT NULL CHECK (operation IN ('added', 'modified', 'deleted')),
+      base_blob TEXT NOT NULL,
+      result_blob TEXT NOT NULL,
+      patch_hash TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY (task_id, task_revision, project_root, file_path),
+      FOREIGN KEY (task_id, task_revision)
+        REFERENCES hub_task_release_revisions(task_id, task_revision) ON DELETE CASCADE
+    ) WITHOUT ROWID;
+    CREATE TABLE IF NOT EXISTS hub_task_release_completions (
+      task_id TEXT NOT NULL,
+      task_revision INTEGER NOT NULL,
+      manifest_hash TEXT NOT NULL,
+      verification_json TEXT NOT NULL,
+      completed_at_ms INTEGER NOT NULL,
+      PRIMARY KEY (task_id, task_revision),
+      FOREIGN KEY (task_id, task_revision)
+        REFERENCES hub_task_release_revisions(task_id, task_revision) ON DELETE RESTRICT
+    ) WITHOUT ROWID;
+    CREATE TABLE IF NOT EXISTS hub_release_registry_history (
+      source_kind TEXT NOT NULL,
+      source_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      payload_sha256 TEXT NOT NULL,
+      migrated_task_id TEXT,
+      archived_at_ms INTEGER NOT NULL,
+      PRIMARY KEY (source_kind, source_id)
+    ) WITHOUT ROWID;
   `);
   const taskColumns = database.prepare("PRAGMA table_info(hub_board_tasks)").all();
   if (!taskColumns.some((column) => column.name === "board_order")) {
@@ -106,6 +215,13 @@ function configure(database) {
       END
     `);
   }
+  if (!taskColumns.some((column) => column.name === "row_revision")) {
+    database.exec("ALTER TABLE hub_board_tasks ADD COLUMN row_revision INTEGER NOT NULL DEFAULT 1");
+  }
+  const bindingColumns = database.prepare("PRAGMA table_info(hub_task_turn_bindings)").all();
+  if (!bindingColumns.some((column) => column.name === "requested_workflow_status")) {
+    database.exec("ALTER TABLE hub_task_turn_bindings ADD COLUMN requested_workflow_status TEXT");
+  }
   const legacyPrefixPattern = `${LEGACY_TELEGRAM_BUNDLE_PREFIX}%`;
   const contentOffset = LEGACY_TELEGRAM_BUNDLE_PREFIX.length + 1;
   database.prepare(`
@@ -123,6 +239,25 @@ function configure(database) {
   database.exec(`
     CREATE INDEX IF NOT EXISTS hub_board_tasks_board_order_idx
       ON hub_board_tasks(status, bucket, workspace_id, board_order);
+    DROP TRIGGER IF EXISTS hub_board_tasks_revision_update;
+    CREATE TRIGGER hub_board_tasks_revision_update
+      AFTER UPDATE ON hub_board_tasks
+      WHEN NEW.row_revision = OLD.row_revision AND (
+        NEW.raw_text IS NOT OLD.raw_text OR NEW.title IS NOT OLD.title
+        OR NEW.description IS NOT OLD.description OR NEW.presentation_source IS NOT OLD.presentation_source
+        OR NEW.corrected_text IS NOT OLD.corrected_text OR NEW.category IS NOT OLD.category
+        OR NEW.bucket IS NOT OLD.bucket OR NEW.status IS NOT OLD.status
+        OR NEW.workflow_status IS NOT OLD.workflow_status OR NEW.workspace_id IS NOT OLD.workspace_id
+        OR NEW.stream_id IS NOT OLD.stream_id OR NEW.source_json IS NOT OLD.source_json
+        OR NEW.placement_source IS NOT OLD.placement_source OR NEW.triage_status IS NOT OLD.triage_status
+        OR NEW.triage_confidence IS NOT OLD.triage_confidence OR NEW.triage_reason IS NOT OLD.triage_reason
+        OR NEW.triage_error IS NOT OLD.triage_error OR NEW.started_at_ms IS NOT OLD.started_at_ms
+        OR NEW.completed_at_ms IS NOT OLD.completed_at_ms OR NEW.start_request_id IS NOT OLD.start_request_id
+        OR NEW.start_stream_name IS NOT OLD.start_stream_name
+      )
+      BEGIN
+        UPDATE hub_board_tasks SET row_revision = OLD.row_revision + 1 WHERE id = OLD.id;
+      END;
   `);
 }
 
@@ -234,6 +369,7 @@ function taskFromRow(row) {
     updatedAt: new Date(Number(row.updated_at_ms)).toISOString(),
     startedAt: row.started_at_ms == null ? null : new Date(Number(row.started_at_ms)).toISOString(),
     completedAt: row.completed_at_ms == null ? null : new Date(Number(row.completed_at_ms)).toISOString(),
+    revision: Number(row.row_revision) || 1,
     startRequestId: row.start_request_id ?? null,
     startStreamName: row.start_stream_name ?? null,
     boardOrder: Number(row.board_order) || 0,
@@ -241,6 +377,7 @@ function taskFromRow(row) {
 }
 
 export class TaskBoardStore {
+  #database;
   #revision = 0;
 
   constructor({ databaseFile, now = () => Date.now(), idFactory = randomUUID } = {}) {
@@ -248,35 +385,463 @@ export class TaskBoardStore {
     this.databaseFile = path.resolve(databaseFile);
     this.now = now;
     this.idFactory = idFactory;
-    this.#withDatabase(() => {});
+    mkdirSync(path.dirname(this.databaseFile), { recursive: true });
+    this.#database = new DatabaseSync(this.databaseFile);
+    try {
+      configure(this.#database);
+      this.#migrateLegacyReleaseRegistry();
+    } catch (error) {
+      this.#database.close();
+      this.#database = null;
+      throw error;
+    }
+  }
+
+  #tableExists(database, name) {
+    return Boolean(database.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+    ).get(name));
+  }
+
+  #migrateLegacyReleaseRegistry() {
+    const database = this.#database;
+    const marker = database.prepare(
+      "SELECT value FROM hub_board_settings WHERE key = 'task_release_registry_migrated_v1'",
+    ).get();
+    if (marker) return;
+    const hasLegacy = this.#legacyArchiveTables().some(({ table }) => this.#tableExists(database, table));
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      if (hasLegacy) {
+        this.#archiveLegacyReleaseRegistry(database);
+        this.#importLegacyReleaseEntries(database);
+      }
+      if (hasLegacy) {
+        this.#verifyLegacyReleaseArchive(database);
+        this.#makeLegacyReleaseTablesReadOnly(database);
+      }
+      database.prepare(`
+        INSERT INTO hub_board_settings (key, value, updated_at_ms)
+        VALUES ('task_release_registry_migrated_v1', 'completed', ?)
+      `).run(this.now());
+      database.exec("COMMIT");
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  #archiveLegacyReleaseRegistry(database) {
+    const insert = database.prepare(`
+      INSERT OR IGNORE INTO hub_release_registry_history (
+        source_kind, source_id, status, payload_json, payload_sha256, archived_at_ms
+      ) VALUES (?, ?, ?, ?, ?, ?)
+    `);
+    for (const { kind, table, order, identity } of this.#legacyArchiveTables()) {
+      if (!this.#tableExists(database, table)) continue;
+      for (const row of database.prepare(`SELECT * FROM ${table} ORDER BY ${order}`).all()) {
+        const payload = JSON.stringify(row);
+        insert.run(
+          kind, identity(row), String(row.status ?? "archived"), payload,
+          createHash("sha256").update(payload, "utf8").digest("hex"), this.now(),
+        );
+      }
+    }
+  }
+
+  #legacyArchiveTables() {
+    return [
+      { kind: "legacy", table: "hub_release_changes", order: "id", identity: (row) => String(row.id) },
+      { kind: "batch", table: "hub_release_batches", order: "id", identity: (row) => String(row.id) },
+      { kind: "changeset", table: "hub_release_change_sets", order: "id", identity: (row) => String(row.id) },
+      { kind: "observation", table: "hub_release_turn_observations", order: "id", identity: (row) => String(row.id) },
+      {
+        kind: "file", table: "hub_release_change_set_files",
+        order: "change_set_id, project_root, file_path",
+        identity: (row) => [row.change_set_id, row.project_root, row.file_path].join("\0"),
+      },
+      { kind: "binding", table: "hub_release_change_set_bindings", order: "stream_id", identity: (row) => String(row.stream_id) },
+      { kind: "event", table: "hub_release_change_set_events", order: "id", identity: (row) => String(row.id) },
+    ];
+  }
+
+  #verifyLegacyReleaseArchive(database) {
+    for (const { kind, table, order, identity } of this.#legacyArchiveTables()) {
+      if (!this.#tableExists(database, table)) continue;
+      const sourceRows = database.prepare(`SELECT * FROM ${table} ORDER BY ${order}`).all();
+      const archivedRows = database.prepare(`
+        SELECT source_id, payload_json, payload_sha256 FROM hub_release_registry_history
+        WHERE source_kind = ? ORDER BY source_id
+      `).all(kind);
+      if (sourceRows.length !== archivedRows.length) {
+        throw new Error(`legacy release ${kind} archive cardinality mismatch`);
+      }
+      const archived = new Map(archivedRows.map((row) => [row.source_id, row]));
+      for (const source of sourceRows) {
+        const payload = JSON.stringify(source);
+        const expectedHash = createHash("sha256").update(payload, "utf8").digest("hex");
+        const sourceId = identity(source);
+        const stored = archived.get(sourceId);
+        if (!stored || stored.payload_json !== payload || stored.payload_sha256 !== expectedHash) {
+          throw new Error(`legacy release ${kind} archive checksum mismatch: ${sourceId}`);
+        }
+      }
+    }
+  }
+
+  #makeLegacyReleaseTablesReadOnly(database) {
+    for (const table of [
+      "hub_release_changes", "hub_release_batches", "hub_release_change_sets",
+      "hub_release_turn_observations", "hub_release_change_set_files",
+      "hub_release_change_set_bindings", "hub_release_change_set_events",
+    ]) {
+      if (!this.#tableExists(database, table)) continue;
+      for (const operation of ["INSERT", "UPDATE", "DELETE"]) {
+        const trigger = `task_release_archive_${table}_${operation.toLowerCase()}`;
+        database.exec(`
+          CREATE TRIGGER IF NOT EXISTS ${trigger}
+          BEFORE ${operation} ON ${table}
+          BEGIN
+            SELECT RAISE(ABORT, 'legacy release registry is a read-only archive');
+          END
+        `);
+      }
+    }
+  }
+
+  #importLegacyReleaseEntries(database) {
+    const coveredLegacyIds = new Set();
+    if (this.#tableExists(database, "hub_release_turn_observations")) {
+      for (const row of database.prepare(`
+        SELECT legacy_release_change_id AS id FROM hub_release_turn_observations
+        WHERE legacy_release_change_id IS NOT NULL
+      `).all()) coveredLegacyIds.add(String(row.id));
+    }
+    if (this.#tableExists(database, "hub_release_change_sets")) {
+      const rows = database.prepare(`
+        SELECT * FROM hub_release_change_sets WHERE status IN ('draft', 'ready')
+        ORDER BY created_at_ms, id
+      `).all();
+      for (const row of rows) this.#importLegacyChangeSet(database, row);
+    }
+    if (this.#tableExists(database, "hub_release_changes")) {
+      const rows = database.prepare(`
+        SELECT * FROM hub_release_changes
+        WHERE status NOT IN ('released', 'discarded') ORDER BY created_at_ms, id
+      `).all();
+      for (const row of rows) {
+        if (!coveredLegacyIds.has(String(row.id))) this.#importLegacyReleaseChange(database, row);
+      }
+    }
+  }
+
+  #ensureMigratedTask(database, { taskId = null, workspaceId, streamId, title, workflowStatus, sourceKey }) {
+    const existing = taskId && database.prepare("SELECT id FROM hub_board_tasks WHERE id = ?").get(taskId);
+    const id = existing?.id ?? this.idFactory();
+    const timestamp = this.now();
+    if (!existing) {
+      const normalizedTitle = String(title ?? "").trim().slice(0, 160) || "Migrated release task";
+      database.prepare(`
+        INSERT INTO hub_board_tasks (
+          id, raw_text, title, description, presentation_source, category, bucket, status,
+          workflow_status, workspace_id, stream_id, source, source_key, source_json,
+          placement_source, triage_status, board_order, created_at_ms, updated_at_ms, started_at_ms
+        ) VALUES (?, ?, ?, '', 'manual', 'task', 'workspace', 'started', ?, ?, ?,
+          'release-registry-migration', ?, '{}', 'migration', 'disabled', 0, ?, ?, ?)
+      `).run(
+        id, normalizedTitle, normalizedTitle, workflowStatus, workspaceId, streamId,
+        sourceKey, timestamp, timestamp, timestamp,
+      );
+    } else {
+      database.prepare(`
+        UPDATE hub_board_tasks SET bucket = 'workspace', status = 'started', workflow_status = ?,
+          workspace_id = ?, stream_id = ?, completed_at_ms = NULL, updated_at_ms = ? WHERE id = ?
+      `).run(workflowStatus, workspaceId, streamId, timestamp, id);
+    }
+    database.prepare(`
+      INSERT INTO hub_task_release_state (task_id, revision, frozen_revision, manifest_hash, updated_at_ms)
+      VALUES (?, 0, NULL, '', ?) ON CONFLICT(task_id) DO NOTHING
+    `).run(id, timestamp);
+    return id;
+  }
+
+  #importLegacyChangeSet(database, row) {
+    let files = [];
+    if (this.#tableExists(database, "hub_release_change_set_files")) {
+      const storedFiles = database.prepare(`
+        SELECT project_root AS projectRoot, file_path AS path, operation, NULL AS turnId,
+          base_blob AS baseBlob, result_blob AS resultBlob, patch_hash AS patchHash
+        FROM hub_release_change_set_files WHERE change_set_id = ?
+      `).all(row.id);
+      files = storedFiles.filter((file) => ["added", "modified", "deleted"].includes(file.operation));
+    }
+    const frozenEvent = this.#tableExists(database, "hub_release_change_set_events")
+      ? database.prepare(`
+        SELECT payload_json FROM hub_release_change_set_events
+        WHERE change_set_id = ? AND event_type = 'changeset.frozen'
+        ORDER BY created_at_ms DESC, id DESC LIMIT 1
+      `).get(row.id)
+      : null;
+    let frozenAudit = null;
+    try { frozenAudit = JSON.parse(String(frozenEvent?.payload_json ?? "null")); } catch { frozenAudit = null; }
+    const verifiedReady = row.status === "ready"
+      && Boolean(String(row.manifest_hash ?? "").trim())
+      && String(row.repository_evidence_json ?? "[]") !== "[]"
+      && files.length > 0
+      && files.every((file) => String(file.base_blob ?? file.baseBlob ?? "").trim()
+        && String(file.result_blob ?? file.resultBlob ?? "").trim())
+      && Boolean(frozenAudit?.verification?.verifier?.name || frozenAudit?.verifier?.name);
+    const workflowStatus = verifiedReady ? "awaiting_implementation" : "in_progress";
+    const taskId = this.#ensureMigratedTask(database, {
+      taskId: row.task_id,
+      workspaceId: row.workspace_id,
+      streamId: row.owner_stream_id,
+      title: row.title,
+      workflowStatus,
+      sourceKey: `release-migration:changeset:${row.id}`,
+    });
+    if (this.#tableExists(database, "hub_release_turn_observations")) {
+      for (const observation of database.prepare(`
+        SELECT * FROM hub_release_turn_observations WHERE change_set_id = ? ORDER BY created_at_ms, id
+      `).all(row.id)) {
+        let observed = [];
+        try { observed = JSON.parse(String(observation.files_json ?? "[]")); } catch { observed = []; }
+        if (observed.length) this.#insertMigratedWorkLog(database, taskId, observation, observed);
+      }
+    }
+    this.#replaceChangedFiles(database, taskId, files);
+    this.#migrateRepositoryEvidence(database, taskId, row.repository_evidence_json);
+    this.#freezeMigratedTask(database, taskId, verifiedReady, Number(row.revision) || 1, {
+      manifestHash: row.manifest_hash,
+      repositoriesJson: row.repository_evidence_json,
+      verificationJson: JSON.stringify(frozenAudit?.verification ?? frozenAudit ?? {}),
+      files,
+    });
+    database.prepare(`
+      UPDATE hub_release_registry_history SET migrated_task_id = ?
+      WHERE source_kind = 'changeset' AND source_id = ?
+    `).run(taskId, row.id);
+  }
+
+  #importLegacyReleaseChange(database, row) {
+    const workflowStatus = "in_progress";
+    const taskId = this.#ensureMigratedTask(database, {
+      workspaceId: row.workspace_id,
+      streamId: row.stream_id,
+      title: row.summary,
+      workflowStatus,
+      sourceKey: `release-migration:legacy:${row.id}`,
+    });
+    let files = [];
+    for (const field of ["files_json", "observed_files_json"]) {
+      try { files = JSON.parse(String(row[field] ?? "[]")); } catch { files = []; }
+      if (files.length) break;
+    }
+    const changedFiles = files.map((file) => ({
+      projectRoot: row.project_root, path: file, operation: "modified", turnId: row.turn_id,
+    }));
+    this.#replaceChangedFiles(database, taskId, changedFiles);
+    this.#insertMigratedWorkLog(database, taskId, row, files);
+    this.#freezeMigratedTask(database, taskId, false, Number(row.revision) || 1);
+    database.prepare(`
+      UPDATE hub_release_registry_history SET migrated_task_id = ?
+      WHERE source_kind = 'legacy' AND source_id = ?
+    `).run(taskId, row.id);
+  }
+
+  #insertMigratedWorkLog(database, taskId, row, files) {
+    if (!files.length) return;
+    database.prepare(`
+      INSERT OR IGNORE INTO hub_task_work_log (
+        id, task_id, provider, provider_thread_id, turn_id, project_root,
+        summary, status, changed_files_json, created_at_ms
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      this.idFactory(), String(taskId), String(row.provider ?? "migration"),
+      String(row.provider_thread_id ?? `migration:${taskId}`),
+      String(row.turn_id ?? row.id ?? `migration:${taskId}`),
+      String(row.project_root ?? ""), String(row.summary ?? "").slice(0, 2_000),
+      String(row.status ?? row.observed_status ?? "completed"),
+      JSON.stringify(files), Number(row.created_at_ms) || this.now(),
+    );
+  }
+
+  #replaceChangedFiles(database, taskId, files) {
+    const normalized = normalizedTaskChangedFiles(files);
+    database.prepare("DELETE FROM hub_task_changed_files WHERE task_id = ?").run(taskId);
+    const insert = database.prepare(`
+      INSERT INTO hub_task_changed_files
+        (task_id, project_root, file_path, operation, turn_id, updated_at_ms)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+    for (const file of normalized) {
+      insert.run(taskId, file.projectRoot, file.path, file.operation, file.turnId, this.now());
+    }
+  }
+
+  #migrateRepositoryEvidence(database, taskId, rawEvidence) {
+    let values = [];
+    try { values = JSON.parse(String(rawEvidence ?? "[]")); } catch { values = []; }
+    const insert = database.prepare(`
+      INSERT OR REPLACE INTO hub_task_repository_revisions
+        (task_id, project_root, baseline_revision, result_revision, updated_at_ms)
+      VALUES (?, ?, ?, ?, ?)
+    `);
+    for (const value of Array.isArray(values) ? values : []) {
+      const projectRoot = String(value.projectRoot ?? value.project_root ?? "").trim();
+      const baseline = String(value.baseRevision ?? value.base_revision ?? "").trim();
+      const result = String(value.resultRevision ?? value.result_revision ?? "").trim();
+      if (projectRoot && baseline && result) insert.run(taskId, projectRoot, baseline, result, this.now());
+    }
+  }
+
+  #freezeMigratedTask(database, taskId, frozen, revision, evidence = {}) {
+    const details = this.#releaseDetails(database, taskId);
+    const taskRevision = Number(database.prepare(
+      "SELECT row_revision AS value FROM hub_board_tasks WHERE id = ?",
+    ).get(taskId)?.value) || revision;
+    const manifestHash = frozen && details.changedFiles.length
+      ? String(evidence.manifestHash ?? "").trim()
+      : "";
+    if (manifestHash) {
+      database.prepare(`
+        INSERT OR IGNORE INTO hub_task_release_revisions (
+          task_id, task_revision, manifest_hash, repositories_json, verification_json, created_at_ms
+        ) VALUES (?, ?, ?, ?, ?, ?)
+      `).run(
+        taskId, taskRevision, manifestHash, String(evidence.repositoriesJson ?? "[]"),
+        String(evidence.verificationJson ?? "{}"), this.now(),
+      );
+      const insert = database.prepare(`
+        INSERT OR IGNORE INTO hub_task_release_revision_files (
+          task_id, task_revision, project_root, file_path, operation,
+          base_blob, result_blob, patch_hash
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      for (const file of Array.isArray(evidence.files) ? evidence.files : []) {
+        insert.run(
+          taskId, taskRevision, file.projectRoot, file.path, file.operation,
+          String(file.base_blob ?? file.baseBlob ?? ""),
+          String(file.result_blob ?? file.resultBlob ?? ""),
+          String(file.patch_hash ?? file.patchHash ?? ""),
+        );
+      }
+    }
+    database.prepare(`
+      UPDATE hub_task_release_state SET revision = ?, frozen_revision = ?, manifest_hash = ?, updated_at_ms = ?
+      WHERE task_id = ?
+    `).run(taskRevision, manifestHash ? taskRevision : null, manifestHash, this.now(), taskId);
   }
 
   #withDatabase(operation) {
-    mkdirSync(path.dirname(this.databaseFile), { recursive: true });
-    const database = new DatabaseSync(this.databaseFile);
+    const database = this.#database;
+    if (!database) throw new Error("Task board store is closed");
+    const changesBefore = Number(database.prepare("SELECT total_changes() AS value").get()?.value) || 0;
     try {
-      configure(database);
-      const changesBefore = Number(database.prepare("SELECT total_changes() AS value").get()?.value) || 0;
-      try {
-        return operation(database);
-      } finally {
-        const changesAfter = Number(database.prepare("SELECT total_changes() AS value").get()?.value) || 0;
-        if (changesAfter !== changesBefore) this.#revision += 1;
-      }
+      return operation(database);
     } finally {
-      database.close();
+      const changesAfter = Number(database.prepare("SELECT total_changes() AS value").get()?.value) || 0;
+      if (changesAfter !== changesBefore) this.#revision += 1;
     }
+  }
+
+  #assertTaskMutable(database, id) {
+    const taskId = String(id ?? "").trim();
+    const row = database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(taskId);
+    if (!row) throw new Error("Task не найден");
+    const immutable = database.prepare(`
+      SELECT 1 FROM hub_task_release_state
+      WHERE task_id = ? AND frozen_revision IS NOT NULL
+      UNION ALL
+      SELECT 1 FROM hub_task_release_completions WHERE task_id = ?
+      LIMIT 1
+    `).get(taskId, taskId);
+    if (immutable) throw new Error("Frozen or released Task is immutable; only verified release completion may close it");
+    return row;
+  }
+
+  #releaseDetails(database, taskId) {
+    const changedFiles = database.prepare(`
+      SELECT project_root AS projectRoot, file_path AS path, operation, turn_id AS turnId
+      FROM hub_task_changed_files WHERE task_id = ? ORDER BY project_root, file_path
+    `).all(taskId);
+    const workLog = database.prepare(`
+      SELECT provider, provider_thread_id AS threadId, turn_id AS turnId,
+        project_root AS projectRoot, summary, status, changed_files_json, created_at_ms
+      FROM hub_task_work_log WHERE task_id = ? ORDER BY created_at_ms, id
+    `).all(taskId).map((row) => {
+      let files = [];
+      try { files = JSON.parse(String(row.changed_files_json ?? "[]")); } catch { files = []; }
+      return {
+        provider: row.provider,
+        threadId: row.threadId,
+        turnId: row.turnId,
+        projectRoot: row.projectRoot,
+        summary: row.summary,
+        status: row.status,
+        changedFiles: files,
+        createdAt: new Date(Number(row.created_at_ms)).toISOString(),
+      };
+    });
+    const repositoryRevisions = database.prepare(`
+      SELECT project_root AS projectRoot, baseline_revision AS baselineRevision,
+        result_revision AS resultRevision
+      FROM hub_task_repository_revisions WHERE task_id = ? ORDER BY project_root
+    `).all(taskId);
+    const state = database.prepare(
+      "SELECT * FROM hub_task_release_state WHERE task_id = ?",
+    ).get(taskId);
+    const frozenRevision = state?.frozen_revision == null ? null : Number(state.frozen_revision);
+    const frozenFiles = frozenRevision == null ? [] : database.prepare(`
+      SELECT project_root AS projectRoot, file_path AS path, operation,
+        base_blob AS baseBlob, result_blob AS resultBlob, patch_hash AS patchHash
+      FROM hub_task_release_revision_files
+      WHERE task_id = ? AND task_revision = ? ORDER BY project_root, file_path
+    `).all(taskId, frozenRevision);
+    const frozen = frozenRevision == null ? null : database.prepare(`
+      SELECT repositories_json, verification_json FROM hub_task_release_revisions
+      WHERE task_id = ? AND task_revision = ?
+    `).get(taskId, frozenRevision);
+    let frozenRepositories = [];
+    let frozenVerification = null;
+    try { frozenRepositories = JSON.parse(String(frozen?.repositories_json ?? "[]")); } catch { frozenRepositories = []; }
+    try { frozenVerification = JSON.parse(String(frozen?.verification_json ?? "null")); } catch { frozenVerification = null; }
+    return {
+      changedFiles: normalizedTaskChangedFiles(changedFiles),
+      workLog,
+      repositoryRevisions,
+      releaseRevision: Number(state?.revision) || 0,
+      frozenRevision,
+      releaseManifestHash: String(state?.manifest_hash ?? ""),
+      frozenChangedFiles: frozenFiles,
+      frozenRepositories,
+      frozenVerification,
+    };
+  }
+
+  #taskWithRelease(database, row) {
+    const task = taskFromRow(row);
+    return task ? { ...task, ...this.#releaseDetails(database, task.id) } : null;
   }
 
   get revision() {
     return this.#revision;
   }
 
+  close() {
+    this.#database?.close();
+    this.#database = null;
+  }
+
   create({ text, source = "hub", sourceKey = null, sourceDetails = {}, triageStatus = "pending" } = {}) {
-    const rawText = normalizedTaskText(text);
+    const normalizedText = normalizedTaskText(text);
+    const legacyBundle = normalizedText.startsWith(LEGACY_TELEGRAM_BUNDLE_PREFIX);
+    const rawText = legacyBundle
+      ? normalizedTaskText(normalizedText.slice(LEGACY_TELEGRAM_BUNDLE_PREFIX.length))
+      : normalizedText;
     const presentation = taskPresentation(rawText);
     const normalizedSourceKey = String(sourceKey ?? "").trim() || null;
-    const initialTriageStatus = triageStatus === "disabled" ? "disabled" : "pending";
+    const initialTriageStatus = !legacyBundle && triageStatus === "disabled" ? "disabled" : "pending";
     return this.#withDatabase((database) => {
       if (normalizedSourceKey) {
         const existing = database.prepare(
@@ -320,6 +885,7 @@ export class TaskBoardStore {
     return this.#withDatabase((database) => {
       const row = sourceTaskRow(database, { source, chatId, userId, messageId });
       if (!row) throw new Error("Задача для исходного сообщения не найдена");
+      this.#assertTaskMutable(database, row.id);
       const details = parseJson(row.source_json);
       details.attachments = [...new Set([
         ...(Array.isArray(details.attachments) ? details.attachments : []),
@@ -337,8 +903,7 @@ export class TaskBoardStore {
     const file = String(attachment ?? "").trim();
     if (!taskId || !file) throw new Error("Не удалось определить задачу или вложение");
     return this.#withDatabase((database) => {
-      const row = database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(taskId);
-      if (!row) throw new Error("Задача не найдена");
+      const row = this.#assertTaskMutable(database, taskId);
       const details = parseJson(row.source_json);
       details.attachments = [...new Set([
         ...(Array.isArray(details.attachments) ? details.attachments : []),
@@ -366,6 +931,7 @@ export class TaskBoardStore {
     return this.#withDatabase((database) => {
       const row = sourceTaskRow(database, { source, chatId, userId, messageId });
       if (!row) throw new Error("Задача для исходного сообщения не найдена");
+      this.#assertTaskMutable(database, row.id);
       const currentDetails = parseJson(row.source_json);
       const currentBlocks = String(row.raw_text).match(/^--- Сообщение \d+ ·/gmu)?.length ?? 0;
       const priorText = currentBlocks
@@ -429,6 +995,7 @@ export class TaskBoardStore {
     return this.#withDatabase((database) => {
       const row = sourceTaskRow(database, { source, chatId, userId, messageId });
       if (!row) throw new Error("Задача для исходного сообщения не найдена");
+      this.#assertTaskMutable(database, row.id);
       const currentDetails = parseJson(row.source_json);
       const nextDetails = {
         ...currentDetails,
@@ -468,7 +1035,7 @@ export class TaskBoardStore {
   task(id) {
     const taskId = String(id ?? "").trim();
     if (!taskId) return null;
-    return this.#withDatabase((database) => taskFromRow(
+    return this.#withDatabase((database) => this.#taskWithRelease(database,
       database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(taskId),
     ));
   }
@@ -479,14 +1046,15 @@ export class TaskBoardStore {
       ${includeDone ? "" : "WHERE status != 'done'"}
       ORDER BY CASE status WHEN 'open' THEN 0 WHEN 'started' THEN 1 ELSE 2 END,
         bucket, workspace_id, board_order, created_at_ms, id
-    `).all().map(taskFromRow));
+    `).all().map((row) => this.#taskWithRelease(database, row)));
   }
 
   pendingTriage() {
     return this.#withDatabase((database) => database.prepare(`
-      SELECT * FROM hub_board_tasks
-      WHERE triage_status IN ('pending', 'running')
-      ORDER BY created_at_ms, id
+      SELECT task.* FROM hub_board_tasks task
+      LEFT JOIN hub_task_release_state state ON state.task_id = task.id
+      WHERE task.triage_status IN ('pending', 'running') AND state.frozen_revision IS NULL
+      ORDER BY task.created_at_ms, task.id
     `).all().map(taskFromRow));
   }
 
@@ -494,11 +1062,16 @@ export class TaskBoardStore {
     return this.#withDatabase((database) => Number(database.prepare(`
       UPDATE hub_board_tasks SET triage_status = 'disabled', updated_at_ms = ?
       WHERE triage_status IN ('pending', 'running')
+        AND NOT EXISTS (
+          SELECT 1 FROM hub_task_release_state state
+          WHERE state.task_id = hub_board_tasks.id AND state.frozen_revision IS NOT NULL
+        )
     `).run(this.now()).changes));
   }
 
   markTriageRunning(id) {
     return this.#withDatabase((database) => {
+      this.#assertTaskMutable(database, id);
       database.prepare(`
         UPDATE hub_board_tasks
         SET triage_status = 'running', triage_error = NULL, updated_at_ms = ?
@@ -516,6 +1089,7 @@ export class TaskBoardStore {
       ? `${normalizedTitle}\n\n${normalizedDescription}`
       : normalizedTitle;
     return this.#withDatabase((database) => {
+      this.#assertTaskMutable(database, taskId);
       const result = database.prepare(`
         UPDATE hub_board_tasks SET
           title = ?, description = ?, corrected_text = ?, presentation_source = 'manual',
@@ -545,8 +1119,7 @@ export class TaskBoardStore {
     const normalizedBucket = normalizedTaskBucket(bucket);
     const numericConfidence = Math.max(0, Math.min(1, Number(confidence) || 0));
     return this.#withDatabase((database) => {
-      const current = database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(taskId);
-      if (!current) throw new Error("Task не найден");
+      const current = this.#assertTaskMutable(database, taskId);
       const canAutoPlace = autoPlace
         && current.placement_source === "default"
         && current.bucket === "backlog"
@@ -579,6 +1152,7 @@ export class TaskBoardStore {
 
   markTriageFailed(id, error) {
     return this.#withDatabase((database) => {
+      this.#assertTaskMutable(database, id);
       database.prepare(`
         UPDATE hub_board_tasks
         SET triage_status = 'failed', triage_error = ?, updated_at_ms = ?
@@ -590,6 +1164,7 @@ export class TaskBoardStore {
 
   retryTriage(id) {
     return this.#withDatabase((database) => {
+      this.#assertTaskMutable(database, id);
       database.prepare(`
         UPDATE hub_board_tasks
         SET triage_status = 'pending', triage_error = NULL,
@@ -608,8 +1183,7 @@ export class TaskBoardStore {
     if (normalizedBucket === "workspace" && !normalizedWorkspaceId) throw new Error("Выберите Workspace");
     return this.#withDatabase((database) => {
       const taskId = String(id ?? "").trim();
-      const current = database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(taskId);
-      if (!current) throw new Error("Задача не найдена");
+      const current = this.#assertTaskMutable(database, taskId);
       const oldBucket = current.bucket;
       const oldWorkspaceId = current.workspace_id ?? null;
       database.exec("BEGIN IMMEDIATE");
@@ -650,6 +1224,10 @@ export class TaskBoardStore {
     if (!sourceId || !targetId) throw new Error("Workspace не найден");
     if (sourceId === targetId) return 0;
     return this.#withDatabase((database) => {
+      const allSourceIds = database.prepare(
+        "SELECT id FROM hub_board_tasks WHERE workspace_id = ? ORDER BY id",
+      ).all(sourceId).map((row) => row.id);
+      for (const taskId of allSourceIds) this.#assertTaskMutable(database, taskId);
       const sourceIds = taskLocationRows(database, "workspace", sourceId).map((row) => row.id);
       const targetIds = taskLocationRows(database, "workspace", targetId).map((row) => row.id);
       database.exec("BEGIN IMMEDIATE");
@@ -725,8 +1303,7 @@ export class TaskBoardStore {
     if (!normalizedRequestId) throw new Error("Task launch request id is required");
     const timestamp = this.now();
     return this.#withDatabase((database) => {
-      const current = database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(taskId);
-      if (!current) throw new Error("Task не найден");
+      const current = this.#assertTaskMutable(database, taskId);
       const currentRequestId = String(current.start_request_id ?? "").trim();
       if (currentRequestId && currentRequestId !== normalizedRequestId) {
         throw new Error("Task launch is already pending; retry it with the original request_id");
@@ -754,6 +1331,7 @@ export class TaskBoardStore {
     const normalizedRequestId = String(requestId ?? "").trim();
     if (!normalizedRequestId) throw new Error("Task launch request id is required");
     return this.#withDatabase((database) => {
+      this.#assertTaskMutable(database, taskId);
       database.prepare(`
         UPDATE hub_board_tasks
         SET status = 'open', stream_id = NULL, start_request_id = NULL, start_stream_name = NULL,
@@ -770,8 +1348,7 @@ export class TaskBoardStore {
     const timestamp = this.now();
     return this.#withDatabase((database) => {
       const normalizedRequestId = String(requestId ?? "").trim();
-      const current = database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(String(id));
-      if (!current) throw new Error("Task не найден");
+      const current = this.#assertTaskMutable(database, id);
       if (normalizedRequestId && String(current.start_request_id ?? "") !== normalizedRequestId) {
         throw new Error("Task launch request does not match the prepared Task");
       }
@@ -792,9 +1369,10 @@ export class TaskBoardStore {
   complete(id) {
     const timestamp = this.now();
     return this.#withDatabase((database) => {
+      this.#assertTaskMutable(database, id);
       database.prepare(`
         UPDATE hub_board_tasks
-        SET status = 'done', workflow_status = 'done', completed_at_ms = ?, updated_at_ms = ? WHERE id = ?
+        SET status = 'done', completed_at_ms = ?, updated_at_ms = ? WHERE id = ?
       `).run(timestamp, timestamp, String(id));
       const task = taskFromRow(database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(String(id)));
       if (!task) throw new Error("Task не найден");
@@ -804,11 +1382,13 @@ export class TaskBoardStore {
 
   setWorkflowStatus(id, status) {
     const workflowStatus = normalizedTaskWorkflowStatus(status);
+    if (workflowStatus === "awaiting_implementation") {
+      throw new Error("Task awaiting implementation requires verified hub_task_release_freeze evidence");
+    }
     const timestamp = this.now();
     return this.#withDatabase((database) => {
       const taskId = String(id);
-      const current = database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(taskId);
-      if (!current) throw new Error("Задача не найдена");
+      const current = this.#assertTaskMutable(database, taskId);
       const lifecycleStatus = current.status === "done"
         ? (current.stream_id ? "started" : "open")
         : current.status;
@@ -821,10 +1401,424 @@ export class TaskBoardStore {
     });
   }
 
-  remove(id) {
-    return this.#withDatabase((database) => (
-      Number(database.prepare("DELETE FROM hub_board_tasks WHERE id = ?").run(String(id)).changes) > 0
+  claim(id, { workspaceId, streamId, provider, threadId, turnId, gitBaseline = null } = {}) {
+    const taskId = String(id ?? "").trim();
+    const identity = [provider, threadId, turnId].map((value) => String(value ?? "").trim());
+    if (!taskId || identity.some((value) => !value)) throw new Error("Task claim requires an exact provider turn");
+    const timestamp = this.now();
+    return this.#withDatabase((database) => {
+      database.exec("BEGIN IMMEDIATE");
+      try {
+      const current = this.#assertTaskMutable(database, taskId);
+      if (String(current.workspace_id ?? "") !== String(workspaceId ?? "")) {
+        throw new Error("Task is outside the current Workspace");
+      }
+      const bound = database.prepare(`
+        SELECT task_id FROM hub_task_turn_bindings
+        WHERE provider = ? AND provider_thread_id = ? AND turn_id = ?
+      `).get(...identity);
+      if (bound && bound.task_id !== taskId) throw new Error("provider turn is already claimed by another Task");
+      if (bound?.task_id === taskId) {
+        const result = this.#taskWithRelease(database, current);
+        database.exec("COMMIT");
+        return result;
+      }
+      database.prepare(`
+        INSERT INTO hub_task_turn_bindings (
+          task_id, provider, provider_thread_id, turn_id, baseline_json, claimed_at_ms
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(provider, provider_thread_id, turn_id) DO UPDATE SET
+          baseline_json = CASE
+            WHEN hub_task_turn_bindings.baseline_json = '{}' THEN excluded.baseline_json
+            ELSE hub_task_turn_bindings.baseline_json
+          END
+      `).run(taskId, ...identity, JSON.stringify(gitBaseline ?? {}), timestamp);
+      database.prepare(`
+        INSERT INTO hub_task_release_state (task_id, revision, updated_at_ms)
+        VALUES (?, 0, ?) ON CONFLICT(task_id) DO NOTHING
+      `).run(taskId, timestamp);
+      database.prepare(`
+        UPDATE hub_board_tasks SET bucket = 'workspace', status = 'started', workflow_status = 'in_progress',
+          workspace_id = ?, stream_id = ?, placement_source = 'manual',
+          started_at_ms = COALESCE(started_at_ms, ?), completed_at_ms = NULL, updated_at_ms = ?
+        WHERE id = ?
+      `).run(String(workspaceId), String(streamId), timestamp, timestamp, taskId);
+      const result = this.#taskWithRelease(
+        database,
+        database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(taskId),
+      );
+      database.exec("COMMIT");
+      return result;
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
+    });
+  }
+
+  claimedTaskForTurn({ provider, threadId, turnId } = {}) {
+    const identity = [provider, threadId, turnId].map((value) => String(value ?? "").trim());
+    if (identity.some((value) => !value)) return null;
+    return this.#withDatabase((database) => {
+      const row = database.prepare(`
+        SELECT task.*, binding.baseline_json, binding.requested_workflow_status
+        FROM hub_task_turn_bindings binding
+        JOIN hub_board_tasks task ON task.id = binding.task_id
+        WHERE binding.provider = ? AND binding.provider_thread_id = ? AND binding.turn_id = ?
+      `).get(...identity);
+      if (!row) return null;
+      let gitBaseline = null;
+      try { gitBaseline = JSON.parse(String(row.baseline_json ?? "{}")); } catch { gitBaseline = null; }
+      return {
+        ...this.#taskWithRelease(database, row),
+        gitBaseline,
+        requestedWorkflowStatus: row.requested_workflow_status ?? null,
+      };
+    });
+  }
+
+  requestWorkflowStatus(id, { status, provider, threadId, turnId } = {}) {
+    const workflowStatus = normalizedTaskWorkflowStatus(status);
+    if (workflowStatus === "awaiting_implementation") {
+      const identity = [provider, threadId, turnId].map((value) => String(value ?? "").trim());
+      if (identity.some((value) => !value)) throw new Error("awaiting intent requires an exact provider turn");
+      return this.#withDatabase((database) => {
+        this.#assertTaskMutable(database, id);
+        const binding = database.prepare(`
+          SELECT task_id FROM hub_task_turn_bindings
+          WHERE provider = ? AND provider_thread_id = ? AND turn_id = ?
+        `).get(...identity);
+        if (!binding || binding.task_id !== String(id)) {
+          throw new Error("awaiting intent requires hub_task_claim for the exact current turn");
+        }
+        database.prepare(`
+          UPDATE hub_task_turn_bindings SET requested_workflow_status = 'awaiting_implementation'
+          WHERE provider = ? AND provider_thread_id = ? AND turn_id = ?
+        `).run(...identity);
+        return this.#taskWithRelease(
+          database,
+          database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(String(id)),
+        );
+      });
+    }
+    return this.setWorkflowStatus(id, workflowStatus);
+  }
+
+  recordTaskTurn({
+    taskId = null, provider, threadId, turnId, projectRoot, summary = "", status = "completed",
+    changedFiles = [], resultSnapshot = null,
+  } = {}) {
+    const identity = [provider, threadId, turnId].map((value) => String(value ?? "").trim());
+    const files = normalizedTaskChangedFiles(changedFiles);
+    if (identity.some((value) => !value) || !files.length) return null;
+    const timestamp = this.now();
+    return this.#withDatabase((database) => {
+      database.exec("BEGIN IMMEDIATE");
+      try {
+      const binding = database.prepare(`
+        SELECT * FROM hub_task_turn_bindings
+        WHERE provider = ? AND provider_thread_id = ? AND turn_id = ?
+      `).get(...identity);
+      if (!binding) throw new Error("terminal Task evidence requires an exact durable provider turn binding");
+      const resolvedTaskId = String(taskId ?? binding.task_id).trim();
+      if (binding.task_id !== resolvedTaskId) throw new Error("terminal Task identity conflicts with its exact turn binding");
+      this.#assertTaskMutable(database, resolvedTaskId);
+      const details = this.#releaseDetails(database, resolvedTaskId);
+      const mergedFiles = mergeTaskChangedFiles(details.changedFiles, files);
+      this.#replaceChangedFiles(database, resolvedTaskId, mergedFiles);
+      database.prepare(`
+        INSERT INTO hub_task_work_log (
+          id, task_id, provider, provider_thread_id, turn_id, project_root,
+          summary, status, changed_files_json, created_at_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(task_id, provider, provider_thread_id, turn_id) DO UPDATE SET
+          summary = excluded.summary, status = excluded.status,
+          changed_files_json = excluded.changed_files_json
+      `).run(
+        this.idFactory(), resolvedTaskId, ...identity, String(projectRoot ?? ""),
+        String(summary ?? "").trim().slice(0, 2_000), String(status ?? "completed"),
+        JSON.stringify(files), timestamp,
+      );
+      this.#recordRepositoryRevisions(database, resolvedTaskId, binding?.baseline_json, resultSnapshot);
+      database.prepare(`
+        UPDATE hub_board_tasks SET
+          workflow_status = CASE
+            WHEN workflow_status IN ('awaiting_implementation', 'done') THEN 'in_progress'
+            ELSE workflow_status
+          END,
+          status = CASE WHEN status = 'done' THEN 'started' ELSE status END,
+          completed_at_ms = NULL, updated_at_ms = ?
+        WHERE id = ?
+      `).run(timestamp, resolvedTaskId);
+      const taskRevision = Number(database.prepare(
+        "SELECT row_revision AS value FROM hub_board_tasks WHERE id = ?",
+      ).get(resolvedTaskId)?.value) || 1;
+      database.prepare(`
+        INSERT INTO hub_task_release_state (task_id, revision, updated_at_ms)
+        VALUES (?, ?, ?)
+        ON CONFLICT(task_id) DO UPDATE SET revision = excluded.revision,
+          frozen_revision = NULL, manifest_hash = '', updated_at_ms = excluded.updated_at_ms
+      `).run(resolvedTaskId, taskRevision, timestamp);
+      database.prepare(`
+        UPDATE hub_task_turn_bindings SET terminal_at_ms = ?
+        WHERE provider = ? AND provider_thread_id = ? AND turn_id = ?
+      `).run(timestamp, ...identity);
+      const result = this.#taskWithRelease(
+        database,
+        database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(resolvedTaskId),
+      );
+      database.exec("COMMIT");
+      return result;
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
+    });
+  }
+
+  freezeTaskRelease(id, {
+    expectedTaskRevision, manifest, verification, actorStreamId,
+  } = {}) {
+    const taskId = String(id ?? "").trim();
+    const expected = Number(expectedTaskRevision);
+    if (!Number.isSafeInteger(expected) || expected < 1) throw new Error("expected_task_revision is required");
+    if (!manifest?.manifestHash || !Array.isArray(manifest.files) || !manifest.files.length) {
+      throw new Error("verified Task release manifest is required");
+    }
+    const targetRevision = expected + 1;
+    if (Number(manifest.revision) !== targetRevision) {
+      throw new Error("Task release manifest revision must match the post-freeze Task revision");
+    }
+    const timestamp = this.now();
+    return this.#withDatabase((database) => {
+      database.exec("BEGIN IMMEDIATE");
+      try {
+      const current = database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(taskId);
+      if (!current) throw new Error("Task не найден");
+      if (Number(current.row_revision) !== expected) throw new Error("Task revision changed; read the Task again");
+      if (String(current.stream_id ?? "") !== String(actorStreamId ?? "")) {
+        throw new Error("only the Task executor Stream can freeze its release revision");
+      }
+      const mutable = this.#releaseDetails(database, taskId).changedFiles;
+      const submitted = normalizedTaskChangedFiles(manifest.files.map((file) => ({
+        projectRoot: file.projectRoot,
+        path: file.path,
+        operation: file.operation,
+        turnId: null,
+      })));
+      const expectedFiles = normalizedTaskChangedFiles(mutable.map((file) => ({ ...file, turnId: null })));
+      const comparableFiles = (files) => files.map((file) => ({
+        projectRoot: process.platform === "win32"
+          ? path.resolve(file.projectRoot).toLowerCase()
+          : path.resolve(file.projectRoot),
+        path: process.platform === "win32" ? file.path.toLowerCase() : file.path,
+        operation: file.operation,
+      }));
+      if (JSON.stringify(comparableFiles(submitted)) !== JSON.stringify(comparableFiles(expectedFiles))) {
+        throw new Error("verified Task release files do not match the exact Task changedFiles snapshot");
+      }
+      const updated = database.prepare(`
+        UPDATE hub_board_tasks SET workflow_status = 'awaiting_implementation', updated_at_ms = ?
+        WHERE id = ? AND row_revision = ?
+      `).run(timestamp, taskId, expected);
+      if (!Number(updated.changes)) throw new Error("Task revision changed during freeze");
+      const actualRevision = Number(database.prepare(
+        "SELECT row_revision AS value FROM hub_board_tasks WHERE id = ?",
+      ).get(taskId)?.value);
+      if (actualRevision !== targetRevision) throw new Error("Task revision CAS produced an unexpected revision");
+      database.prepare(`
+        INSERT INTO hub_task_release_revisions (
+          task_id, task_revision, manifest_hash, repositories_json, verification_json, created_at_ms
+        ) VALUES (?, ?, ?, ?, ?, ?)
+      `).run(
+        taskId, targetRevision, manifest.manifestHash,
+        JSON.stringify(manifest.repositories), JSON.stringify(verification), timestamp,
+      );
+      const insert = database.prepare(`
+        INSERT INTO hub_task_release_revision_files (
+          task_id, task_revision, project_root, file_path, operation,
+          base_blob, result_blob, patch_hash
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      for (const file of manifest.files) {
+        insert.run(
+          taskId, targetRevision, file.projectRoot, file.path, file.operation,
+          file.baseBlob, file.resultBlob, file.patchHash ?? "",
+        );
+      }
+      database.prepare(`
+        INSERT INTO hub_task_release_state (task_id, revision, frozen_revision, manifest_hash, updated_at_ms)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(task_id) DO UPDATE SET revision = excluded.revision,
+          frozen_revision = excluded.frozen_revision, manifest_hash = excluded.manifest_hash,
+          updated_at_ms = excluded.updated_at_ms
+      `).run(taskId, targetRevision, targetRevision, manifest.manifestHash, timestamp);
+      const result = this.#taskWithRelease(
+        database,
+        database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(taskId),
+      );
+      database.exec("COMMIT");
+      return result;
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
+    });
+  }
+
+  #recordRepositoryRevisions(database, taskId, baselineJson, resultSnapshot) {
+    let baseline = null;
+    try { baseline = JSON.parse(String(baselineJson ?? "{}")); } catch { baseline = null; }
+    const flatten = (snapshot) => Array.isArray(snapshot?.repositories)
+      ? snapshot.repositories
+      : (snapshot?.repoRoot ? [snapshot] : []);
+    const results = new Map(flatten(resultSnapshot).map((value) => [
+      path.resolve(value.repoRoot), String(value.tree ?? ""),
+    ]));
+    const insert = database.prepare(`
+      INSERT INTO hub_task_repository_revisions (
+        task_id, project_root, baseline_revision, result_revision, updated_at_ms
+      ) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(task_id, project_root) DO UPDATE SET
+        result_revision = excluded.result_revision, updated_at_ms = excluded.updated_at_ms
+    `);
+    for (const value of flatten(baseline)) {
+      const projectRoot = path.resolve(value.repoRoot);
+      const baseRevision = String(value.tree ?? "").trim();
+      const resultRevision = results.get(projectRoot) ?? "";
+      if (baseRevision && resultRevision) {
+        insert.run(taskId, projectRoot, baseRevision, resultRevision, this.now());
+      }
+    }
+  }
+
+  releaseRegistrationSummary(workspaceId) {
+    return this.#withDatabase((database) => {
+      const value = Number(database.prepare(`
+        SELECT COUNT(*) AS value FROM hub_task_release_state state
+        JOIN hub_board_tasks task ON task.id = state.task_id
+        WHERE task.workspace_id = ? AND state.revision > 0
+          AND task.workflow_status NOT IN ('done')
+      `).get(String(workspaceId))?.value) || 0;
+      return { taskCount: value, total: value };
+    });
+  }
+
+  releasePlan(workspaceId) {
+    const tasks = this.list({ includeDone: true }).filter((task) => task.workspaceId === String(workspaceId));
+    const candidates = tasks.filter((task) => (
+      task.status !== "done"
+      && task.workflowStatus === "awaiting_implementation"
+      && task.frozenChangedFiles.length > 0
+      && task.frozenRevision === task.revision
+      && Boolean(task.releaseManifestHash)
     ));
+    const doneAudit = tasks.filter((task) => task.status !== "done" && task.workflowStatus === "done");
+    const conflicts = taskReleaseConflicts(candidates.map((task) => ({
+      ...task, changedFiles: task.frozenChangedFiles,
+    })));
+    const ready = candidates.flatMap((task) => {
+      const grouped = new Map();
+      for (const file of task.frozenChangedFiles) {
+        const values = grouped.get(file.projectRoot) ?? [];
+        values.push(file.path);
+        grouped.set(file.projectRoot, values);
+      }
+      return [...grouped].map(([projectRoot, files]) => ({
+        id: `${task.id}:${projectRoot}`,
+        taskId: task.id,
+        taskRevision: task.frozenRevision,
+        manifestHash: task.releaseManifestHash,
+        streamId: task.streamId,
+        projectRoot,
+        files: [...new Set(files)].sort(),
+      }));
+    });
+    return {
+      workspaceId: String(workspaceId),
+      revision: taskReleasePlanRevision(workspaceId, [...candidates, ...doneAudit].map((task) => ({
+        ...task, releaseRevision: task.frozenRevision ?? task.revision,
+      }))),
+      candidates,
+      ready,
+      doneAudit,
+      draft: tasks.filter((task) => task.status !== "done" && task.releaseRevision > 0
+        && task.workflowStatus !== "awaiting_implementation" && task.workflowStatus !== "done"),
+      blocked: [],
+      conflicts,
+    };
+  }
+
+  completeRelease(workspaceId, { expectedPlanRevision = null, verificationEvidence = null } = {}) {
+    const expected = String(expectedPlanRevision ?? "").trim();
+    return this.#withDatabase((database) => {
+      database.exec("BEGIN IMMEDIATE");
+      try {
+      const plan = this.releasePlan(workspaceId);
+      if (!expected || plan.revision !== expected) {
+        throw new Error("release plan revision conflict; verify the current release plan again");
+      }
+      if (!plan.candidates.length) throw new Error("release has no awaiting Task candidates");
+      if (!verificationEvidence || typeof verificationEvidence !== "object") {
+        throw new Error("release completion requires durable publication evidence");
+      }
+      const timestamp = this.now();
+      for (const task of plan.candidates) {
+        const frozen = database.prepare(`
+          SELECT task.row_revision, task.workflow_status, state.frozen_revision, state.manifest_hash
+          FROM hub_board_tasks task JOIN hub_task_release_state state ON state.task_id = task.id
+          WHERE task.id = ?
+        `).get(task.id);
+        if (!frozen
+          || Number(frozen.row_revision) !== task.frozenRevision
+          || Number(frozen.frozen_revision) !== task.frozenRevision
+          || frozen.manifest_hash !== task.releaseManifestHash
+          || frozen.workflow_status !== "awaiting_implementation") {
+          throw new Error(`release Task revision changed: ${task.id}`);
+        }
+        database.prepare(`
+          INSERT INTO hub_task_release_completions (
+            task_id, task_revision, manifest_hash, verification_json, completed_at_ms
+          ) VALUES (?, ?, ?, ?, ?)
+        `).run(
+          task.id, task.frozenRevision, task.releaseManifestHash,
+          JSON.stringify(verificationEvidence), timestamp,
+        );
+        const result = database.prepare(`
+          UPDATE hub_board_tasks SET workflow_status = 'done', status = 'done',
+            completed_at_ms = ?, updated_at_ms = ?
+          WHERE id = ? AND row_revision = ? AND workflow_status = 'awaiting_implementation'
+        `).run(timestamp, timestamp, task.id, task.frozenRevision);
+        if (!Number(result.changes)) throw new Error(`release Task disappeared: ${task.id}`);
+      }
+      const result = {
+        workspaceId: String(workspaceId),
+        released: plan.candidates.map((task) => ({
+          id: task.id,
+          revision: task.frozenRevision,
+          manifestHash: task.releaseManifestHash,
+        })),
+        verificationEvidence,
+      };
+      database.exec("COMMIT");
+      return result;
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
+    });
+  }
+
+  remove(id) {
+    return this.#withDatabase((database) => {
+      const taskId = String(id);
+      const evidence = database.prepare(`
+        SELECT 1 FROM hub_task_release_revisions WHERE task_id = ?
+        UNION ALL SELECT 1 FROM hub_task_release_completions WHERE task_id = ? LIMIT 1
+      `).get(taskId, taskId);
+      if (evidence) throw new Error("Task with frozen or released evidence cannot be deleted");
+      return Number(database.prepare("DELETE FROM hub_board_tasks WHERE id = ?").run(taskId).changes) > 0;
+    });
   }
 
   captureEnabled(chatId) {

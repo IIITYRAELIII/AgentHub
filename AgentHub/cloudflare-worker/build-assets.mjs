@@ -11,6 +11,7 @@ const root = path.resolve(import.meta.dirname, "..");
 const source = path.join(root, "assets", "web-app");
 const defaultOutput = path.join(import.meta.dirname, "public");
 const BACKGROUND_CHUNK_CHARACTERS = 20 * 1024;
+const DIRECT_SHELL_MIN_BYTES = 20 * 1024;
 
 function shellAssetSource(pathname) {
   if (pathname === "/work-log.css") return path.join(root, "work-log.css");
@@ -59,6 +60,13 @@ async function directAssetOrigin() {
   const hostname = String(pattern ?? "").replace(/^https?:\/\//iu, "").replace(/\/\*.*$/u, "").replace(/\/$/u, "");
   if (!hostname.startsWith("hub.")) return "";
   return `https://home.${hostname.slice(4)}`;
+}
+
+function headersWithDirectAssetOrigin(source, assetOrigin) {
+  if (!assetOrigin) return source;
+  return source
+    .replace("script-src 'self' https://telegram.org", `script-src 'self' ${assetOrigin} https://telegram.org`)
+    .replace("style-src 'self'", `style-src 'self' ${assetOrigin}`);
 }
 
 export async function buildWorkerAssets({
@@ -143,7 +151,12 @@ export async function buildWorkerAssets({
       }), "utf8");
     }
   }
-  await copyFile(path.join(import.meta.dirname, "_headers"), path.join(output, "_headers"));
+  const workerHeaders = await readFile(path.join(import.meta.dirname, "_headers"), "utf8");
+  await writeFile(
+    path.join(output, "_headers"),
+    headersWithDirectAssetOrigin(workerHeaders, assetOrigin),
+    "utf8",
+  );
 
   if (includeMobile) {
     const mobileAssets = path.join(root, "assets", "mobile");
@@ -170,19 +183,24 @@ export async function buildWorkerAssets({
       ?? pathname,
   });
 
+  const directShellAssets = new Map();
   for (const reference of shellReferences) {
     const pathname = localAssetPathname(reference);
     const file = pathname.slice(1);
-    const revision = createHash("sha256")
-      .update(await readFile(path.join(output, ...file.split("/"))))
-      .digest("hex")
-      .slice(0, 12);
+    const body = await readFile(path.join(output, ...file.split("/")));
+    const revision = createHash("sha256").update(body).digest("hex").slice(0, 12);
     const extension = path.extname(file);
     const versionedFile = `${file.slice(0, -extension.length)}.${revision}${extension}`;
     const versionedReference = `/${versionedFile.split(path.sep).join("/")}`;
     await mkdir(path.dirname(path.join(output, versionedFile)), { recursive: true });
     await copyFile(path.join(output, file), path.join(output, versionedFile));
-    const updated = replaceLocalAssetReference(index, reference, versionedReference);
+    const publishedReference = assetOrigin && body.length > DIRECT_SHELL_MIN_BYTES
+      ? `${assetOrigin}${pathname}?v=${revision}`
+      : versionedReference;
+    if (publishedReference !== versionedReference) {
+      directShellAssets.set(pathname, { bytes: body.length, revision, url: publishedReference });
+    }
+    const updated = replaceLocalAssetReference(index, reference, publishedReference);
     if (updated === index) throw new Error(`Agent Hub Worker build could not find the ${reference} asset anchor`);
     index = updated;
   }
@@ -194,6 +212,7 @@ export async function buildWorkerAssets({
     themeRegistry,
     publishedThemePathnames,
     backgroundManifestPathnames,
+    directShellAssets,
   };
 }
 

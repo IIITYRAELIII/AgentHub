@@ -138,7 +138,7 @@ test("Desktop application router enforces Mini App history limits", async () => 
     context: { source: "telegram-mini-app" },
   });
   assert.equal(result.params.limit, 10);
-  assert.equal(result.params.maxAnswerChars, 200_000);
+  assert.equal(result.params.maxAnswerChars, 75_000);
 });
 
 test("Desktop application router exposes root AGENTS read and serialized update", async () => {

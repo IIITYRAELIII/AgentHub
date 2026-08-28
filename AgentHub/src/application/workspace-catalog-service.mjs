@@ -8,8 +8,10 @@ function requiredStore(value) {
 export class WorkspaceCatalogService {
   #store;
 
-  constructor({ store } = {}) {
+  constructor({ store, taskBoard = null, releaseCompleter = null } = {}) {
     this.#store = requiredStore(store);
+    this.taskBoard = taskBoard;
+    this.releaseCompleter = releaseCompleter;
   }
 
   hierarchy() {
@@ -29,7 +31,22 @@ export class WorkspaceCatalogService {
   }
 
   updateWorkspaceSettings({ workspaceId, settings = {}, discardReleaseEntries = false } = {}) {
-    return this.#store.updateWorkspaceSettings(workspaceId, settings, { discardReleaseEntries });
+    const disabling = settings?.releaseWorkflowEnabled === false;
+    const pending = disabling ? this.taskBoard?.store?.releaseRegistrationSummary?.(workspaceId) : null;
+    if (pending?.total > 0) {
+      return {
+        ...this.#store.workspace(workspaceId),
+        releaseWorkflowUpdate: {
+          updated: false,
+          requiresDiscardConfirmation: true,
+          requiresTaskCleanup: true,
+          taskCount: pending.taskCount,
+          total: pending.total,
+          destructiveDiscardSupported: false,
+        },
+      };
+    }
+    return this.#store.updateWorkspaceSettings(workspaceId, settings);
   }
 
   workspaceDeveloperRules({ workspaceId } = {}) {
@@ -41,25 +58,15 @@ export class WorkspaceCatalogService {
   }
 
   releasePlan({ workspaceId } = {}) {
-    return this.#store.releasePlan(workspaceId);
+    if (typeof this.taskBoard?.releasePlan !== "function") throw new Error("Task release plan is unavailable");
+    return this.taskBoard.releasePlan(workspaceId);
   }
 
-  releaseRegistry({ workspaceId, limit } = {}) {
-    return this.#store.releaseRegistry(workspaceId, { limit });
-  }
-
-  updateReleaseChangeStatus({ changeId, status } = {}) {
-    return this.#store.updateReleaseChangeStatus(changeId, status);
-  }
-
-  updateReleaseChangeFiles({ changeId, files = [] } = {}) {
-    return this.#store.updateReleaseChangeFiles(changeId, files);
-  }
-
-  completeRelease({ workspaceId, expectedPlanRevision, verificationEvidence, conflictsResolved = false } = {}) {
-    return this.#store.completeRelease(workspaceId, {
-      expectedPlanRevision, verificationEvidence, conflictsResolved,
-    });
+  completeRelease(params = {}) {
+    if (typeof this.releaseCompleter?.completeRelease !== "function") {
+      throw new Error("Task release completion is unavailable");
+    }
+    return this.releaseCompleter.completeRelease(params);
   }
 
   createWorkspaceFromStream({ streamId, name } = {}) {

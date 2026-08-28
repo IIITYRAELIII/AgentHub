@@ -66,6 +66,51 @@ test("Dashboard presents every workflow status in the selected language", async 
   assert.equal(view.normalizedTaskStatusLanguage("unknown"), "en");
 });
 
+test("Task release details use the canonical executor and changed-file projection", async () => {
+  const view = await loadBoardView();
+  const workspaces = [{
+    id: "workspace-1",
+    name: "Agent HUB",
+    streams: [{ id: "stream-1", name: "Dash", displayName: "Dash" }],
+  }];
+  const task = {
+    workspaceId: "workspace-1",
+    streamId: "stream-1",
+    changedFiles: [
+      { projectRoot: "D:/VSC_Tyrael/Utilities", path: "AgentHub/app.js", operation: "modified", turnId: "turn-1" },
+      { projectRoot: "D:/VSC_Tyrael/Utilities", path: "AgentHub/new.js", operation: "added", turnId: null },
+      { projectRoot: "D:/VSC_Tyrael/FirstBit", path: "old.xml", operation: "deleted", turnId: "turn-2" },
+    ],
+  };
+
+  assert.equal(view.taskExecutorPresentation(task, workspaces).label, "Agent HUB — Dash");
+  assert.equal(
+    view.taskExecutorPresentation({ workspaceId: "workspace-1" }, workspaces).label,
+    "Agent HUB — Stream не назначен",
+  );
+  assert.deepEqual(
+    Array.from(view.taskChangedFileGroups(task), (group) => ({
+      projectRoot: group.projectRoot,
+      files: Array.from(group.files, (file) => ({ ...file })),
+    })),
+    [
+      {
+        projectRoot: "D:/VSC_Tyrael/Utilities",
+        files: [
+          { projectRoot: "D:/VSC_Tyrael/Utilities", path: "AgentHub/app.js", operation: "modified", turnId: "turn-1" },
+          { projectRoot: "D:/VSC_Tyrael/Utilities", path: "AgentHub/new.js", operation: "added", turnId: null },
+        ],
+      },
+      {
+        projectRoot: "D:/VSC_Tyrael/FirstBit",
+        files: [
+          { projectRoot: "D:/VSC_Tyrael/FirstBit", path: "old.xml", operation: "deleted", turnId: "turn-2" },
+        ],
+      },
+    ],
+  );
+});
+
 test("workspace side panel keeps every current Task available for scrolling", async () => {
   const { workspaceTasksForPanel } = await loadBoardView();
   const tasks = [

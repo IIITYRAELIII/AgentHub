@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted.
+Accepted; Task cleanup and role persistence refined by ADR-0005.
 
 ## Decision
 
@@ -12,9 +12,9 @@ default is disabled. Existing data migrates to enabled only when the Workspace
 rules begin with the exact legacy release-policy block; that block is removed
 from editable rules and thereafter composed from code.
 
-Disabling the capability with active registrations requires explicit user
-confirmation. The setting update and discard of active legacy entries and
-ChangeSets are one SQLite transaction. Released history is retained.
+Disabling the capability with active release evidence requires explicit user
+cleanup. Frozen or released Task evidence is immutable and is never discarded
+through a compatibility registry operation.
 
 ## Consequences
 

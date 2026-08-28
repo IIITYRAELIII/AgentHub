@@ -75,8 +75,7 @@ test("dialog interactions expose overflow, message actions and anchored context"
   const app = await readFile(new URL("app.js", assets), "utf8");
   assert.match(app, /data-stream-tabs-overflow-count/u);
   assert.match(app, /class: "stream-tabs-overflow-menu",[\s\S]*hidden: true,/u);
-  assert.match(app, /const overflowWasVisible = streamTabs\.querySelector/u);
-  assert.match(app, /class: "stream-tabs-overflow",[\s\S]*hidden: !overflowWasVisible,/u);
+  assert.match(app, /class: "stream-tabs-overflow",[\s\S]*hidden: true,/u);
   assert.match(app, /class: "stream-overflow-item",[\s\S]*hidden: true,/u);
   assert.match(app, /scheduleStreamTabsOverflow\(\)/u);
   assert.match(app, /label: "Редактировать"/u);

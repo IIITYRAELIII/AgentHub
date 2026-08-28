@@ -34,20 +34,17 @@ async function fixture(context) {
       id, workspaceId: "workspace-1", displayName: "MCP", settings: { project: projectRoot },
     } : null,
     activeThread: () => null,
-    workspace: (id) => id === "workspace-1" ? { id, name: "Agent Hub" } : null,
+    workspace: (id) => id === "workspace-1" ? {
+      id, name: "Agent Hub", settings: { releaseWorkflowEnabled: false },
+    } : null,
     hierarchy: () => [{
       id: "workspace-1",
       name: "Agent Hub",
       streams: [
-        { id: "stream-1", displayName: "MCP", threads: [{ provider: "codex", threadId: "thread-1" }] },
+        { id: "stream-1", displayName: "MCP", settings: { architect: true }, threads: [{ provider: "codex", threadId: "thread-1" }] },
         { id: "stream-2", displayName: "Themes", threads: [{ provider: "codex", threadId: "thread-2" }] },
       ],
     }],
-    releaseRegistry: () => ({ changes: [] }),
-    releaseChanges: () => [{ id: "legacy-1", streamId: "stream-1", files: [], observedFiles: ["src/app.mjs", "themes/foreign.css"] }],
-    releasePlan: () => ({ ready: [], draft: [], blocked: [], conflicts: [] }),
-    updateReleaseChangeStatus: () => null,
-    updateReleaseChangeFiles: (changeId, files) => ({ id: changeId, streamId: "stream-1", files }),
     workspaceEvents: (_workspaceId, { afterSequence }) => [{
       sequence: afterSequence + 1, workspaceId: "workspace-1", streamId: "stream-1",
       type: "run.completed", subjectId: "turn-1", payload: {}, createdAtMs: 1,
@@ -95,6 +92,13 @@ async function fixture(context) {
     markStarted: ({ id, streamId }) => Object.assign(tasks.get(id), {
       status: "started", workflowStatus: "in_progress", streamId,
     }),
+    claim: ({ id, streamId, turnId }) => Object.assign(tasks.get(id), {
+      status: "started", workflowStatus: "in_progress", streamId, claimedTurnId: turnId,
+    }),
+    requestWorkflowStatus: ({ id, status, turnId }) => Object.assign(tasks.get(id), {
+      requestedWorkflowStatus: status, requestedTurnId: turnId,
+    }),
+    releasePlan: () => ({ revision: "plan-1", candidates: [], ready: [], draft: [], blocked: [], conflicts: [] }),
     setWorkflowStatus: ({ id, status }) => Object.assign(tasks.get(id), {
       workflowStatus: status,
     }),
@@ -113,40 +117,16 @@ async function fixture(context) {
     }],
   };
   const releaseCalls = [];
-  const changeSetCalls = [];
-  const releaseChangeSets = {
-    list: (options) => {
-      changeSetCalls.push(["list", options]);
-      return [{ id: "change-1", status: "draft", ownerStreamId: "stream-1" }];
-    },
-    freeze: (options) => {
-      changeSetCalls.push(["freeze", options]);
-      return { id: options.changeSetId, status: "ready", manifestHash: "a".repeat(64) };
-    },
-    setFiles: (options) => {
-      changeSetCalls.push(["files", options]);
-      return { id: options.changeSetId, status: "draft", files: options.files };
-    },
-    setStatus: (options) => {
-      changeSetCalls.push(["status", options]);
-      return { id: options.changeSetId, status: options.status };
-    },
-    architectOverride: (options) => {
-      changeSetCalls.push(["override", options]);
-      return { id: options.changeSetId, status: options.status };
-    },
-    classifyLegacy: async (options) => {
-      changeSetCalls.push(["classify", options]);
-      return { total: 1, entries: [{ id: "legacy-1" }] };
-    },
-    releaseBatches: (options) => {
-      changeSetCalls.push(["batches", options]);
-      return [{ id: "batch-1" }];
+  const taskReleaseCalls = [];
+  const taskReleases = {
+    freeze: async (options) => {
+      taskReleaseCalls.push(options);
+      return { ...tasks.get(options.taskId), frozenRevision: options.expectedTaskRevision + 1 };
     },
   };
   const service = new HubMcpService({
     workspaceCatalog, taskBoard, workLog, attachmentDirectory, secret: "secret",
-    releaseChangeSets,
+    taskReleases,
     releaseCompleter: {
       completeRelease: async (options) => {
         releaseCalls.push(options);
@@ -176,7 +156,7 @@ async function fixture(context) {
     tasks,
     operations,
     releaseCalls,
-    changeSetCalls,
+    taskReleaseCalls,
     sentMessages,
   };
 }
@@ -363,23 +343,20 @@ test("HubMcpService exposes cursor events and publication-gated release completi
   assert.equal(releaseCalls[0].conflictsResolved, true);
 });
 
-test("HubMcpService exposes the compatible REL-001 ChangeSet API", async (context) => {
-  const { service, token, changeSetCalls } = await fixture(context);
-  const listed = await service.call("hub_changesets_list", { context_token: token });
-  assert.equal(listed.changeSets[0].id, "change-1");
-
-  const selected = await service.call("hub_changeset_files_set", {
+test("HubMcpService binds and freezes the exact current Task turn", async (context) => {
+  const { service, token, taskReleaseCalls } = await fixture(context);
+  const claimed = await service.call("hub_task_claim", {
     context_token: token,
-    request_id: "select-files-1",
-    change_set_id: "change-1",
-    files: [{ project_root: "D:/repo", path: "src/app.mjs" }],
+    request_id: "claim-task-1",
+    task_id: "task-current",
   });
-  assert.deepEqual(selected.files, [{ projectRoot: "D:/repo", path: "src/app.mjs" }]);
+  assert.equal(claimed.claimedTurnId, "turn-live");
 
-  const frozen = await service.call("hub_changeset_freeze", {
+  const frozen = await service.call("hub_task_release_freeze", {
     context_token: token,
     request_id: "freeze-1",
-    change_set_id: "change-1",
+    task_id: "task-current",
+    expected_task_revision: 1,
     repositories: [{
       project_root: "D:/repo",
       base_revision: "a".repeat(40),
@@ -393,21 +370,9 @@ test("HubMcpService exposes the compatible REL-001 ChangeSet API", async (contex
       result_blob: "d".repeat(40),
     }],
   });
-  assert.equal(frozen.status, "ready");
-  assert.equal(changeSetCalls.find(([name]) => name === "freeze")[1].actorStreamId, "stream-1");
-
-  const legacy = await service.call("hub_release_change_files_set", {
-    context_token: token,
-    request_id: "select-legacy-files-1",
-    change_id: "legacy-1",
-    files: ["src/app.mjs"],
-  });
-  assert.deepEqual(legacy.files, ["src/app.mjs"]);
-
-  const report = await service.call("hub_legacy_release_classifier", { context_token: token });
-  assert.equal(report.entries[0].id, "legacy-1");
-  const batches = await service.call("hub_release_batches_list", { context_token: token, limit: 10 });
-  assert.equal(batches.releaseBatches[0].id, "batch-1");
+  assert.equal(frozen.frozenRevision, 2);
+  assert.equal(taskReleaseCalls[0].actorStreamId, "stream-1");
+  assert.equal(taskReleaseCalls[0].taskId, "task-current");
 });
 
 test("HubMcpService rejects forged context capabilities", async (context) => {

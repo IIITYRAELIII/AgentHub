@@ -24,7 +24,14 @@
   --dialog-list-marker: var(--line-strong);
   --dialog-shadow-soft: var(--turn-shadow);
   --dialog-shadow-popover: var(--card-shadow);
-  --dialog-column-width: 44rem;
+  /* Колонка шире полей, а не текста.
+
+     Раньше по краям переписки пустовало по 126 px, и при этом строка ответа
+     доходила до 86 знаков — место было, а читать было тяжело. Теперь мера
+     текста ограничена отдельно, в знаках (см. --msg-measure), поэтому колонку
+     можно расширять безопасно: строки короче не станут, зато код, таблицы,
+     диффы и вложения перестают жаться. */
+  --dialog-column-width: clamp(44rem, 62vw, 54rem);
   --dialog-stream-tabs-height: 44px;
 }
 
@@ -322,16 +329,27 @@ html[data-view="chat"][data-surface][data-theme] {
   width: 7px;
 }
 
+/* Цвет провайдера — это имя, а не состояние.
+
+   --dialog-agent-N получаются поворотом акцента темы по тону на 120° и 240°.
+   Для сине-зелёных акцентов это даёт приятную тройку, но у красного акцента
+   +120° попадает точно в зелёный: пара «Codex / Claude» начинает читаться как
+   «плохо / хорошо», а не как два имени. В malachor-v так и вышло — красный и
+   зелёный. Эта же пара хуже всего различима при дальтонизме.
+
+   Тема уже объявляет --provider-codex и --provider-claude осмысленно (в
+   malachor-v это серый и кирпичный), поэтому идентичность берётся оттуда, а
+   поворот акцента остаётся запасным вариантом. */
 .provider-dot[data-provider="codex"],
 [data-provider="codex"] > .msg-head .msg-author,
 .msg[data-provider="codex"] .msg-author {
-  --dialog-agent-color: var(--dialog-agent-1);
+  --dialog-agent-color: var(--provider-codex, var(--dialog-agent-1));
 }
 
 .provider-dot[data-provider="claude"],
 [data-provider="claude"] > .msg-head .msg-author,
 .msg[data-provider="claude"] .msg-author {
-  --dialog-agent-color: var(--dialog-agent-2);
+  --dialog-agent-color: var(--provider-claude, var(--dialog-agent-2));
 }
 
 .provider-dot[data-provider="spark"],
@@ -381,11 +399,6 @@ html[data-view="chat"][data-surface][data-theme] {
   display: none;
 }
 
-.stream-tabs-overflow[data-measuring] {
-  pointer-events: none;
-  visibility: hidden;
-}
-
 .stream-tabs-more {
   align-items: center;
   appearance: none;
@@ -400,8 +413,6 @@ html[data-view="chat"][data-surface][data-theme] {
   font-weight: 500;
   gap: 4px;
   height: 26px;
-  justify-content: center;
-  min-width: 4.25rem;
   padding: 0 9px;
   white-space: nowrap;
 }

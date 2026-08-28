@@ -6,7 +6,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 
-import { frozenChangeSetManifest } from "../../../src/domain/release-change-set.mjs";
+import { frozenTaskReleaseManifest } from "../../../src/domain/task-release-snapshot.mjs";
 import {
   canonicalReleaseChangeSetDiffHash,
   verifyReleaseChangeSetGitEvidence,
@@ -60,7 +60,7 @@ async function repositoryFixture(context) {
 }
 
 function manifest(fixture, overrides = {}) {
-  return frozenChangeSetManifest({
+  return frozenTaskReleaseManifest({
     revision: 1,
     repositories: [{
       projectRoot: fixture.repository,
@@ -107,7 +107,7 @@ test("Git verifier rejects existing but fabricated path blobs and patch hashes",
 
 test("Git verifier accepts absent only on the missing side of add and delete", async (context) => {
   const fixture = await repositoryFixture(context);
-  const evidence = frozenChangeSetManifest({
+  const evidence = frozenTaskReleaseManifest({
     revision: 1,
     repositories: [{
       projectRoot: fixture.repository,

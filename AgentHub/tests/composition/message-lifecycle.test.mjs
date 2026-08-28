@@ -2297,7 +2297,10 @@ test("Stream context menu exposes manual provider continuation without rotating 
   assert.match(miniAppSource, /const provider = String\(tab\.dataset\.streamProvider \?\? "codex"\);/u);
   assert.match(miniAppSource, /"data-stream-menu-action": "continue-provider"[\s\S]*"data-provider": "claude"[\s\S]*text: "Продолжить в Claude"/u);
   assert.match(miniAppSource, /emit\("stream:continue-provider", \{ streamId, provider: targetProvider, taskId \}\)/u);
-  assert.match(miniAppSource, /disabled: tab\.hasAttribute\("data-running"\) \|\| provider !== "codex"/u);
+  assert.match(
+    miniAppSource,
+    /disabled: tab\.hasAttribute\("data-running"\) \|\| !\["codex", "claude"\]\.includes\(provider\)/u,
+  );
 });
 
 test("Hub compaction delegates targeted completion to its context maintenance owner", () => {

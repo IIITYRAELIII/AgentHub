@@ -54,6 +54,7 @@
   <script src="/side-panel-resizer.js" defer></script>
   <script src="/task-references.js" defer></script>
   <script src="/workspace-release-workflow.js" defer></script>
+  <script src="/stream-role-settings.js" defer></script>
   <script src="/app.js" defer></script>
   <script src="/pre-turn-instructions-editor.js" defer></script>
   <script src="/root-agents-editor.js" defer></script>
@@ -477,6 +478,17 @@
                   <span class="switch-text">Автоподтверждение</span>
                   <span class="switch-track" aria-hidden="true"></span>
                 </label>
+                <div class="stream-architect-setting">
+                  <label class="setting-switch">
+                    <input type="checkbox" data-dialog-stream-architect
+                      aria-describedby="stream-architect-note">
+                    <span class="switch-text">Архитектор</span>
+                    <span class="switch-track" aria-hidden="true"></span>
+                  </label>
+                  <span class="switch-note" id="stream-architect-note">
+                    Архитектор Workspace проверяет и выпускает ожидающие Tasks. Архитекторов может быть несколько.
+                  </span>
+                </div>
               </div>
             </section>
             <section class="settings-section stream-agent-rules">
@@ -731,6 +743,16 @@
         <span>Статус</span>
         <select data-task-card-status aria-label="Статус задачи"></select>
       </label>
+      <section class="task-card-release-details" aria-label="Исполнение и изменения">
+        <div class="task-card-detail-row">
+          <span>Исполнитель</span>
+          <strong data-task-card-executor>Не назначен</strong>
+        </div>
+        <div class="task-card-changed-files" data-task-card-changed-files hidden>
+          <span>Изменённые файлы</span>
+          <div class="task-card-changed-file-groups" data-task-card-changed-file-groups></div>
+        </div>
+      </section>
       <div class="board-task-card-attachments" data-task-card-attachments hidden></div>
       <div class="board-task-original" data-task-card-original>
         <button type="button" class="board-task-original-toggle" data-task-card-original-toggle
@@ -819,20 +841,16 @@
             aria-label="Что включает релизный процесс"
             aria-describedby="workspace-release-workflow-tooltip">?</button>
           <div id="workspace-release-workflow-tooltip" class="workspace-release-workflow-tooltip" role="tooltip">
-            <p>Этот Workspace использует многопоточный релизный процесс.</p>
-            <p>Эти правила являются специальной политикой Workspace и имеют приоритет над конфликтующими правилами репозитория, включая общие указания автоматически выполнять commit или push.</p>
-            <p>Не запускать тесты и сборку, не создавать commit, не выполнять push и не развёртывать в production, пока пользователь явно не запросит это действие или релиз в текущей задаче.</p>
-            <p>Разрешение на релиз относится только к явно запрошенному релизу. После его завершения оно не разрешает последующие commit, push, тесты, сборку или deployment; для них нужен новый явный запрос пользователя.</p>
+            <p>До содержательной работы нужно найти существующую Dashboard Task или создать новую.</p>
+            <p>Текущий Stream сразу назначается исполнителем Task в своём Workspace.</p>
+            <p>В конце каждого хода Task получает актуальные work log, изменённые файлы и статус.</p>
+            <p>Ход без diff не создаёт запись файла или evidence.</p>
+            <p>Завершённое исправление автоматически переходит в «К применению» только после точного terminal evidence.</p>
+            <p>Завершённый анализ закрывается после результата или смены темы пользователем; незавершённый остаётся открытым.</p>
+            <p>Любой Архитектор Workspace выбирает ожидающие Tasks и проверяет видимый результат.</p>
+            <p>После проверенного релиза только вошедшие в него Tasks переходят в «Готово» и закрываются.</p>
           </div>
         </div>
-        <section class="workspace-release-registry" data-workspace-release-registry>
-          <div class="workspace-release-heading">
-            <span>Изменения к релизу</span>
-            <output data-workspace-release-summary></output>
-          </div>
-          <p>При включённом релизном процессе Hub регистрирует изменения завершённых ходов.</p>
-          <div class="workspace-release-list" data-workspace-release-list></div>
-        </section>
         <label>
           <span>Порядковый номер в Дашборде</span>
           <input type="number" min="1" step="1" data-workspace-card-order required>
@@ -843,19 +861,6 @@
         <button type="submit" class="board-task-primary" data-workspace-card-submit>Сохранить</button>
       </footer>
     </form>
-  </dialog>
-
-  <dialog class="task-delete-modal workspace-release-discard-modal"
-    data-workspace-release-discard-modal aria-labelledby="workspace-release-discard-title">
-    <section>
-      <p class="eyebrow">Релизный процесс</p>
-      <h2 id="workspace-release-discard-title">Удалить зарегистрированные изменения?</h2>
-      <p data-workspace-release-discard-message></p>
-    </section>
-    <footer>
-      <button type="button" class="board-task-quiet" data-workspace-release-discard-cancel>Отмена</button>
-      <button type="button" class="task-delete-confirm" data-workspace-release-discard-confirm>Отключить и удалить</button>
-    </footer>
   </dialog>
 
   <!-- ================================================= Отдельное представление: журнал === -->
@@ -1555,6 +1560,13 @@
             <input type="checkbox" data-chat-background-toggle>
             <span class="switch-text">Прозрачный фон переписки
               <span class="switch-note">Убирает только заливку области сообщений; панели, карточки и рамки остаются.</span>
+            </span>
+            <span class="switch-track" aria-hidden="true"></span>
+          </label>
+          <label class="setting-switch">
+            <input type="checkbox" data-toggle="showInlineFileRevealButtons">
+            <span class="switch-text">Показывать кнопку «Показать в Проводнике» рядом со ссылками
+              <span class="switch-note">Настройка хранится на сервере; действие остаётся в контекстном меню ссылки.</span>
             </span>
             <span class="switch-track" aria-hidden="true"></span>
           </label>

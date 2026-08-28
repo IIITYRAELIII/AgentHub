@@ -40,6 +40,15 @@
   --line: rgba(150, 178, 214, 0.13);
   --line-strong: rgba(150, 178, 214, 0.24);
 
+  /* ---- подложка под текстом ----
+     Сцена темы лежит во всю площадь (body::after), а панели поверх неё
+     прозрачные. Там, где панель несёт текст, фон должен быть предсказуемым:
+     эти фильтры гасят и размывают именно то, что окажется под текстом, не
+     перекрашивая саму панель. Тема может усилить или ослабить значение, но
+     не должна отключать его на текстовых поверхностях. */
+  --text-scrim: brightness(0.42) saturate(0.8) blur(3px);
+  --text-scrim-strong: brightness(0.32) saturate(0.7) blur(6px);
+
   --card-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.016));
   --card-bg-open: linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.02));
   --card-texture: none;
@@ -3510,6 +3519,40 @@ html[data-surface="mobile"]
   min-height: 0;
 }
 
+/* Гарантированный фон под текстом.
+
+   Сцена темы — фотография во всю площадь, а панели поверх неё прозрачные.
+   Цвет текста задаёт тема и не знает, что окажется под ним: в тёмных сценах
+   это почти работает, в светлых текст пропадает совсем. Здесь под каждой
+   текстовой поверхностью гасится и размывается именно её задник — сама
+   панель не перекрашивается, поэтому оформление темы сохраняется.
+
+   Плотные мелкие подписи (боковая колонка, вкладки, поле ввода) получают
+   усиленное значение; реплики — обычное, чтобы сцена дышала в промежутках
+   между ними. */
+.activity-rail-content,
+.stream-tabs-track,
+.composer {
+  backdrop-filter: var(--text-scrim-strong);
+  -webkit-backdrop-filter: var(--text-scrim-strong);
+}
+
+.msg-user-bubble,
+.msg:not(.msg-user) .msg-body {
+  backdrop-filter: var(--text-scrim);
+  -webkit-backdrop-filter: var(--text-scrim);
+}
+
+/* Сцена отключена — гасить нечего, а лишний слой стоит кадров. */
+html[data-background-motion="off"] .activity-rail-content,
+html[data-background-motion="off"] .stream-tabs-track,
+html[data-background-motion="off"] .composer,
+html[data-background-motion="off"] .msg-user-bubble,
+html[data-background-motion="off"] .msg:not(.msg-user) .msg-body {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
 .activity-rail[data-collapsed] .activity-streams {
   display: none;
 }
@@ -4121,7 +4164,6 @@ html[data-view="dashboard"] .task-board-view {
 .task-start-modal,
 .task-card-modal,
 .task-delete-modal,
-.workspace-release-discard-modal,
 .context-usage-modal {
   background: var(--surface-1);
   border: 1px solid var(--line-strong);
@@ -4136,50 +4178,40 @@ html[data-view="dashboard"] .task-board-view {
 .task-start-modal::backdrop,
 .task-card-modal::backdrop,
 .task-delete-modal::backdrop,
-.workspace-release-discard-modal::backdrop,
 .context-usage-modal::backdrop {
   background: rgba(2, 5, 10, 0.76);
   backdrop-filter: blur(3px);
 }
 
-.task-delete-modal,
-.workspace-release-discard-modal {
+.task-delete-modal {
   max-width: 26rem;
 }
 
 .task-delete-modal > section,
-.task-delete-modal > footer,
-.workspace-release-discard-modal > section,
-.workspace-release-discard-modal > footer {
+.task-delete-modal > footer {
   padding: 1rem;
 }
 
-.task-delete-modal > section,
-.workspace-release-discard-modal > section {
+.task-delete-modal > section {
   display: grid;
   gap: 0.45rem;
 }
 
 .task-delete-modal h2,
-.task-delete-modal p,
-.workspace-release-discard-modal h2,
-.workspace-release-discard-modal p {
+.task-delete-modal p {
   margin: 0;
 }
 
-.task-delete-modal h2,
-.workspace-release-discard-modal h2 {
+.task-delete-modal h2 {
   font-size: 1.05rem;
 }
 
-.task-delete-modal > section > p:last-child,
-.workspace-release-discard-modal > section > p:last-child {
+.task-delete-modal > section > p:last-child {
   color: var(--text-muted);
   font-size: 0.78rem;
 }
 
-.task-delete-modal > footer,
-.workspace-release-discard-modal > footer {
+.task-delete-modal > footer {
   align-items: center;
   border-top: 1px solid var(--line);
   display: flex;
@@ -4271,6 +4303,77 @@ html[data-view="dashboard"] .task-board-view {
 .task-card-status-field select:focus {
   border-color: var(--accent-line);
   outline: 2px solid var(--accent-soft);
+}
+
+.task-card-release-details {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  display: grid;
+  gap: 0.75rem;
+  padding: 0.75rem;
+}
+
+.task-card-detail-row,
+.task-card-changed-files,
+.task-card-changed-file-groups,
+.task-card-changed-file-group {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.task-card-detail-row > span,
+.task-card-changed-files > span {
+  color: var(--text-faint);
+  font-size: 0.68rem;
+}
+
+.task-card-detail-row strong {
+  color: var(--text);
+  font-size: 0.82rem;
+}
+
+.task-card-project-root {
+  color: var(--text-soft);
+  font-family: var(--font-numeric);
+  font-size: 0.72rem;
+  overflow-wrap: anywhere;
+}
+
+.task-card-changed-file-group ul {
+  display: grid;
+  gap: 0.3rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.task-card-changed-file {
+  align-items: start;
+  display: grid;
+  gap: 0.45rem;
+  grid-template-columns: 4.8rem minmax(0, 1fr);
+}
+
+.task-card-changed-file-operation {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 0.64rem;
+  padding: 0.12rem 0.35rem;
+  text-align: center;
+}
+
+.task-card-changed-file.is-added .task-card-changed-file-operation {
+  color: var(--success, #76c893);
+}
+
+.task-card-changed-file.is-deleted .task-card-changed-file-operation {
+  color: var(--danger, #e57373);
+}
+
+.task-card-changed-file code {
+  font-size: 0.7rem;
+  overflow-wrap: anywhere;
 }
 
 .task-card-editor textarea {
@@ -4504,83 +4607,17 @@ html[data-view="dashboard"] .task-board-view {
   display: grid;
 }
 
+.stream-architect-setting {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.stream-architect-setting .switch-note {
+  padding-left: 0;
+}
+
 .workspace-card-fields input[type="number"] {
   max-width: 8rem;
-}
-
-.workspace-release-registry {
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  display: grid;
-  gap: 0.65rem;
-  padding: 0.8rem;
-}
-
-.workspace-release-heading,
-.workspace-release-change-title {
-  align-items: center;
-  display: flex;
-  gap: 0.75rem;
-  justify-content: space-between;
-}
-
-.workspace-release-heading output,
-.workspace-release-registry > p,
-.workspace-release-change-stream,
-.workspace-release-empty {
-  color: var(--text-muted);
-  font-size: 0.72rem;
-  margin: 0;
-}
-
-.workspace-release-list {
-  display: grid;
-  gap: 0.55rem;
-}
-
-.workspace-release-change {
-  background: color-mix(in srgb, var(--surface-2) 82%, transparent);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  display: grid;
-  gap: 0.45rem;
-  padding: 0.65rem;
-}
-
-.workspace-release-change.has-conflict {
-  border-color: var(--danger, #d66);
-}
-
-.workspace-release-change-title strong {
-  font-size: 0.78rem;
-}
-
-.workspace-release-change-title select {
-  background: var(--surface-2);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  color: var(--text);
-  padding: 0.3rem 0.4rem;
-}
-
-.workspace-release-conflict {
-  color: var(--danger, #d66);
-  font-size: 0.7rem;
-}
-
-.workspace-release-files {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.3rem;
-}
-
-.workspace-release-files code {
-  background: var(--surface-1);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  font-size: 0.68rem;
-  overflow-wrap: anywhere;
-  padding: 0.18rem 0.3rem;
 }
 
 .workspace-card-fields input:disabled {
@@ -4746,6 +4783,37 @@ html[data-surface="mobile"]
   padding: 0.55rem 0.62rem;
   position: relative;
   transition: background 0.14s ease, border-color 0.14s ease;
+}
+
+/* Заголовок семейства — не строка списка, а надпись на полке: он ничего не
+   открывает, поэтому набран тише самих пространств и не претендует на клик. */
+.task-workspace-divider {
+  align-items: center;
+  display: flex;
+  gap: 0.5rem;
+  list-style: none;
+  margin: 0.62rem 0 0.3rem;
+  padding: 0 0.62rem;
+}
+
+.task-workspace-divider::after {
+  background: var(--line);
+  content: "";
+  flex: 1 1 auto;
+  height: 1px;
+}
+
+.task-workspace-divider-label {
+  color: var(--text-faint);
+  flex: 0 0 auto;
+  font-size: 0.66rem;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+/* Внутри семейства строки сдвинуты — видно, что они принадлежат заголовку. */
+.task-workspace-item[data-family-member] {
+  margin-left: 0.7rem;
 }
 
 .task-workspace-item[data-workspace-kind="system"] {
@@ -7115,6 +7183,17 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
   white-space: pre-wrap;
 }
 
+/* Мера реплики одна для обоих голосов.
+
+   Раньше твоя реплика жила в 549 px, а ответ агента — в 670: разной ширине
+   нечего сообщить, кто говорит — видно по выравниванию и подписи, поэтому
+   ширина была лишним сигналом и заставляла глаз перестраиваться на каждой
+   смене говорящего. Ограничение задано в ch, то есть в знаках, а не в
+   пикселях: при смене кегля мера остаётся комфортной сама. */
+.msg-body {
+  max-width: var(--msg-measure, min(68ch, 100%));
+}
+
 .msg-user .msg-body.is-collapsed {
   max-height: var(--user-message-collapse-height, 448px);
   overflow: hidden;
@@ -8119,7 +8198,7 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
   border-radius: var(--radius-chip);
   color: var(--accent);
   cursor: pointer;
-  display: inline-flex;
+  display: none;
   font: inherit;
   font-size: 0.78em;
   line-height: 1.35;
@@ -8128,6 +8207,11 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
   text-decoration: none;
   vertical-align: baseline;
   white-space: nowrap;
+}
+
+:root[data-inline-file-reveal="on"] .msg-body .inline-file-reveal,
+:root[data-inline-file-reveal="on"] .msg-reasoning .inline-file-reveal {
+  display: inline-flex;
 }
 
 .msg-body .inline-file-reveal:hover,

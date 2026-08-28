@@ -34,6 +34,9 @@ export class WorkspaceReleaseService {
     }
     const normalizedSummary = String(verificationSummary).trim().slice(0, 2_000);
     const publication = await this.verifyPublication({ expectedRevision, plan });
+    if (!Array.isArray(publication?.repositories) || !publication.repositories.length) {
+      throw new Error("publication verifier returned no released repository revisions");
+    }
     publication.verificationSummary = normalizedSummary;
     publication.planRevision = plan.revision;
     return {
@@ -45,6 +48,11 @@ export class WorkspaceReleaseService {
           expectedRevision,
           verificationSummary: normalizedSummary,
           conflictsResolved: conflictsResolved === true,
+          publication,
+          deployment: {
+            verified: true,
+            summary: normalizedSummary,
+          },
         },
       }),
       publication,

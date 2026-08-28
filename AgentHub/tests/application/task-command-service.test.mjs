@@ -3,12 +3,12 @@ import test from "node:test";
 
 import { TaskCommandService } from "../../src/application/task-command-service.mjs";
 
-function fixture({ run = null, createTask = null } = {}) {
+function fixture({ run = null, createTask = null, provider: fixtureProvider = "codex" } = {}) {
   const events = [];
-  const target = { streamId: "stream-1", provider: "codex", threadId: "thread-1" };
+  const target = { streamId: "stream-1", provider: fixtureProvider, threadId: "thread-1" };
   const current = { ...target };
   const selected = {
-    activeProvider: "codex",
+    activeProvider: fixtureProvider,
     activeProjectRoot: "D:/work",
     streamId: "stream-1",
     threadId: "thread-1",
@@ -51,13 +51,13 @@ function fixture({ run = null, createTask = null } = {}) {
     createTask: createTask
       ? () => createTask(selected)
       : async () => ({
-          provider: "codex", threadId: "thread-new", projectRoot: "D:/work", title: "New",
+          provider: fixtureProvider, threadId: "thread-new", projectRoot: "D:/work", title: "New",
         }),
     rotateStream: async (...args) => {
       events.push(["rotate", ...args]);
       return { thread: { id: "thread-rotated" } };
     },
-    activeProvider: () => "codex",
+    activeProvider: () => fixtureProvider,
     switchProvider: async () => {},
     prepareTaskCreation: async (value) => {
       selected.activeProvider = value.provider;
@@ -75,7 +75,7 @@ function fixture({ run = null, createTask = null } = {}) {
         id,
         workspaceId: "workspace-1",
         settings: {
-          provider: "codex",
+          provider: fixtureProvider,
           model: "gpt-5",
           reasoning: "high",
           project: "D:/later",
@@ -90,10 +90,10 @@ function fixture({ run = null, createTask = null } = {}) {
       renameWorkspace: (id, name) => ({ id, name }),
       bindThread: (value) => events.push(["bind", value]),
       activeThread: (id) => id === "stream-1"
-        ? { provider: "codex", threadId: "thread-1", streamId: "stream-1", projectRoot: "D:/work" }
+        ? { provider: fixtureProvider, threadId: "thread-1", streamId: "stream-1", projectRoot: "D:/work" }
         : null,
-      thread: (value) => value?.provider === "codex" && value?.threadId === "thread-1"
-        ? { provider: "codex", threadId: "thread-1", streamId: "stream-1", projectRoot: "D:/work" }
+      thread: (value) => value?.provider === fixtureProvider && value?.threadId === "thread-1"
+        ? { provider: fixtureProvider, threadId: "thread-1", streamId: "stream-1", projectRoot: "D:/work" }
         : null,
     },
     streamHandoff: {
@@ -334,4 +334,34 @@ test("task command service rotates inside the same Stream after context transfer
   assert.equal(target.workingDirectory, "D:/work/AgentHub");
   assert.equal(result.rotation.sourceThreadId, "thread-1");
   assert.equal(result.rotation.threadId, "thread-rotated");
+});
+
+test("task command service rotates a Claude Stream by creating a Thread", async () => {
+  const { service, events } = fixture({ provider: "claude" });
+  const result = await service.rotate({ streamId: "stream-1" });
+
+  assert.equal(events.some(([name]) => name === "rotate"), false);
+  assert.equal(result.rotation.sourceThreadId, "thread-1");
+  assert.equal(result.rotation.threadId, "thread-new");
+  assert.equal(result.rotation.streamId, "stream-1");
+
+  const bound = events.find(([name]) => name === "bind")[1];
+  assert.equal(bound.provider, "claude");
+  assert.equal(bound.threadId, "thread-new");
+  assert.equal(bound.streamId, "stream-1");
+  assert.equal(bound.source, "rebirth");
+
+  const handoff = events.find(([name]) => name === "handoff")[1];
+  assert.equal(handoff.streamId, "stream-1");
+  assert.equal(handoff.targetProvider, "claude");
+  assert.equal(handoff.sourceThreadId, "thread-1");
+  assert.equal(handoff.reason, "manual-rotation");
+});
+
+test("task command service refuses rotation while a run is active", async () => {
+  const { service } = fixture({ provider: "claude", run: { id: "run-1" } });
+  await assert.rejects(
+    () => service.rotate({ streamId: "stream-1" }),
+    /Сначала завершите или остановите текущий ход/u,
+  );
 });

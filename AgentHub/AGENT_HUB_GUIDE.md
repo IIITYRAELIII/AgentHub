@@ -11,12 +11,11 @@ This conversation is running through Agent Hub.
 ## Task workflow statuses
 
 - When the user asks to create a Dashboard Task, create it with `hub_task_create`; a new Task starts in `new`.
-- When work on a Task starts, its status is `in_progress`. Starting it through `hub_task_start` applies this status automatically.
+- `hub_task_claim` assigns the current Stream as the Task executor and changes its status to `in_progress`. `hub_task_start` also applies that state when it launches the Task in a Stream.
 - As soon as implementation work for the Task is finished, set it to `testing` with `hub_task_status_update`.
-- When the user says that an analyst confirmed the result, set the Task to `awaiting_implementation`.
-- When the user says the Task is done but does not say whether it is on the production database, set it to `awaiting_implementation` and ask whether it has been applied to production.
-- When the user says the change was applied to production, set the workflow status to `done` with `hub_task_status_update`. `done` means ready on production; it remains visible and is not the same as closing the Task. Do not call `hub_task_complete` merely because implementation, testing, analyst confirmation, or production deployment finished.
-- Close the Task with `hub_task_complete` only when the user explicitly says that the customer accepted it, that delivery/acceptance is not required, or explicitly asks to close it. Closing hides the Task from the current board.
+- `awaiting_implementation` means that the work is accepted and is waiting to be applied or published. `done` means that the required production application or publication is verified.
+- `hub_task_complete` closes and hides a Task without changing its workflow status. Close completed analysis or other work that requires no delivery; for release work, follow the effective Workspace policy before closing it.
+- A release-enabled Workspace may inject stricter Task requirements, automatic fix acceptance and Architect-only release transitions. Follow those effective Workspace and Stream rules instead of applying release policy globally.
 
 ## Task references in messages
 

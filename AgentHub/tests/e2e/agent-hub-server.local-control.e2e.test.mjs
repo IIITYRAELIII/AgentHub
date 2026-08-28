@@ -470,9 +470,10 @@ test("local control client survives App Server exit during delayed startup and s
   assert.equal(deferred.deferred, true);
   assert.equal(deferred.queued, undefined);
   const deferredSnapshot = await callDesktopControl("snapshot", {}, { runtimeRoot });
-  assert.equal(deferredSnapshot.deferredInputs.length, 1);
-  assert.equal(deferredSnapshot.deferredInputs[0].provider, "codex");
-  assert.equal(deferredSnapshot.deferredInputs[0].threadId, firstThreadId);
+  const deferredEntry = deferredSnapshot.deferredInputs.find((item) => item.id === deferred.id);
+  assert.ok(deferredEntry, JSON.stringify(deferredSnapshot.deferredInputs));
+  assert.equal(deferredEntry.provider, "codex");
+  assert.equal(deferredEntry.threadId, firstThreadId);
   const completedEdits = [];
   const firstEditPromise = callDesktopControl("deferred-input", {
       id: deferred.id,

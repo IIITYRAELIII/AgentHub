@@ -20,13 +20,11 @@ test("full publication verifies the exact release candidate before deployment", 
 
   const labels = steps.map((step) => step.label);
   const candidate = steps.find((step) => step.label === RELEASE_CANDIDATE_CONTOUR_LABEL);
-  assert.deepEqual(candidate.args.slice(-6), [
+  assert.deepEqual(candidate.args.slice(-4), [
     "run",
     "contour:verify",
     "--",
     "--require-installed",
-    "--model",
-    "fake-codex",
   ]);
   assert.ok(labels.indexOf("Полные тесты Agent Hub") < labels.indexOf(RELEASE_CANDIDATE_CONTOUR_LABEL));
   assert.ok(labels.indexOf(RELEASE_CANDIDATE_CONTOUR_LABEL) < labels.indexOf("Развёртывание Mini App Worker"));

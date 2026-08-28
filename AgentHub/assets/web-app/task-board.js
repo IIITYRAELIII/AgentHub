@@ -195,6 +195,43 @@
     return count ? `${count} вложений` : "";
   }
 
+  function taskExecutorPresentation(task, workspaces = []) {
+    const workspaceId = String(task?.workspaceId ?? "").trim();
+    const streamId = String(task?.streamId ?? "").trim();
+    const workspace = (Array.isArray(workspaces) ? workspaces : [])
+      .find((candidate) => String(candidate?.id ?? "") === workspaceId);
+    if (!workspace) return { label: "Не назначен", workspace: null, stream: null };
+    const workspaceName = String(workspace.name ?? workspaceId).trim() || workspaceId;
+    const stream = (Array.isArray(workspace.streams) ? workspace.streams : [])
+      .find((candidate) => String(candidate?.id ?? "") === streamId);
+    if (!stream) return { label: `${workspaceName} — Stream не назначен`, workspace, stream: null };
+    const streamName = String(stream.displayName ?? stream.name ?? "").trim()
+      || `Stream ${Number(stream.ordinal) || ""}`.trim();
+    return { label: `${workspaceName} — ${streamName}`, workspace, stream };
+  }
+
+  function taskChangedFileGroups(task) {
+    const groups = new Map();
+    for (const item of Array.isArray(task?.changedFiles) ? task.changedFiles : []) {
+      const projectRoot = String(item?.projectRoot ?? "").trim();
+      const filePath = String(item?.path ?? "").trim();
+      const operation = String(item?.operation ?? "").trim();
+      if (!projectRoot || !filePath || !["added", "modified", "deleted"].includes(operation)) continue;
+      if (!groups.has(projectRoot)) groups.set(projectRoot, []);
+      groups.get(projectRoot).push({
+        projectRoot,
+        path: filePath,
+        operation,
+        turnId: String(item?.turnId ?? "").trim() || null,
+      });
+    }
+    return Array.from(groups, ([projectRoot, files]) => ({ projectRoot, files }));
+  }
+
+  function changedFileOperationLabel(operation) {
+    return ({ added: "Добавлен", modified: "Изменён", deleted: "Удалён" })[operation] ?? operation;
+  }
+
   function orderedDashboardColumnIds(columnOrder = [], availableColumnIds = []) {
     const available = new Set(availableColumnIds);
     const result = [];
@@ -236,6 +273,8 @@
     replaceBoardColumnsPreservingScroll,
     taskBoardSnapshotChanges,
     taskAttachmentCountLabel,
+    taskChangedFileGroups,
+    taskExecutorPresentation,
     taskWorkflowPresentation,
     tasksForMode,
     workspaceTasksForPanel,
@@ -259,6 +298,9 @@
   const taskCardContent = document.querySelector(".task-card-content");
   const taskCardSaveButton = taskCardEditor?.querySelector("button[type='submit']");
   const taskCardAttachments = document.querySelector("[data-task-card-attachments]");
+  const taskCardExecutor = document.querySelector("[data-task-card-executor]");
+  const taskCardChangedFiles = document.querySelector("[data-task-card-changed-files]");
+  const taskCardChangedFileGroups = document.querySelector("[data-task-card-changed-file-groups]");
   const taskCardStatus = document.querySelector("[data-task-card-status]");
   const taskCardOriginal = document.querySelector("[data-task-card-original]");
   const taskCardOriginalToggle = document.querySelector("[data-task-card-original-toggle]");
@@ -619,6 +661,26 @@
     const attachments = Array.isArray(task.attachments) ? task.attachments : [];
     taskCardAttachments.hidden = attachments.length === 0;
     taskCardAttachments.replaceChildren(...(attachments.length ? [attachmentStrip(attachments)] : []));
+    if (taskCardExecutor) taskCardExecutor.textContent = taskExecutorPresentation(task, state.workspaces).label;
+    const changedFileGroups = taskChangedFileGroups(task);
+    if (taskCardChangedFiles && taskCardChangedFileGroups) {
+      taskCardChangedFiles.hidden = changedFileGroups.length === 0;
+      taskCardChangedFileGroups.replaceChildren(...changedFileGroups.map((group) => node("section", {
+        class: "task-card-changed-file-group",
+      }, [
+        node("strong", { class: "task-card-project-root", text: group.projectRoot }),
+        node("ul", {}, group.files.map((file) => node("li", {
+          class: `task-card-changed-file is-${file.operation}`,
+          title: file.turnId ? `Ход ${file.turnId}` : null,
+        }, [
+          node("span", {
+            class: "task-card-changed-file-operation",
+            text: changedFileOperationLabel(file.operation),
+          }),
+          node("code", { text: file.path }),
+        ]))),
+      ])));
+    }
     const actions = [];
     if (task.status !== "done" && taskWorkflowStatus(task) !== "done" && task.bucket === "workspace") {
       actions.push(node("button", {

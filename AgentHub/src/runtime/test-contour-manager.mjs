@@ -41,11 +41,12 @@ import { processIsAlive } from "../infrastructure/process/process-liveness.mjs";
 import { withInterprocessLocks } from "../infrastructure/process/interprocess-lock.mjs";
 import { stopProcessTree } from "../infrastructure/process/process-tree.mjs";
 
-export const TEST_CONTOUR_MODEL = "gpt-5.3-codex-spark";
+export const TEST_CONTOUR_SPARK_MODEL = "gpt-5.3-codex-spark";
 export const TEST_CONTOUR_TERRA_MODEL = "gpt-5.6-terra";
 export const TEST_CONTOUR_FAKE_MODEL = "fake-codex";
+export const TEST_CONTOUR_MODEL = TEST_CONTOUR_FAKE_MODEL;
 export const TEST_CONTOUR_MODELS = Object.freeze([
-  Object.freeze({ value: TEST_CONTOUR_MODEL, label: "GPT-5.3-Codex-Spark" }),
+  Object.freeze({ value: TEST_CONTOUR_SPARK_MODEL, label: "GPT-5.3-Codex-Spark" }),
   Object.freeze({ value: TEST_CONTOUR_TERRA_MODEL, label: "GPT-5.6-Terra" }),
   Object.freeze({ value: TEST_CONTOUR_FAKE_MODEL, label: "Fake Codex · Принято" }),
 ]);
@@ -903,6 +904,7 @@ async function verifyTestContourUnlocked({
     withAgent,
     model: state.model,
     probeResponse,
+
   });
   let journal = null;
   if (withAgent) {
@@ -927,6 +929,7 @@ async function verifyTestContourUnlocked({
         database.close();
       }
     }, "Test Contour journal confirmation", 30_000);
+
   }
   return { state, smoke, journal };
 }

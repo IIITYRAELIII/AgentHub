@@ -40,3 +40,24 @@ occupancy and self-heals after restart without manual interaction.
 - An ACKed command is recoverable after process death.
 - Lost transport responses are retried with the same identity and cannot create
   duplicate provider effects.
+
+## Remote attachment transport
+
+Dashboard attachment bytes cross the public Worker boundary only through
+`agent-hub-attachment-chunks-v1`. Every response is smaller than 25 KiB. Paged
+manifests bind the immutable attachment id, total size, SHA-256, chunk count,
+chunk size and ordered `{index, size, hash}` descriptors. Chunk reads are exact
+and idempotent for the original command identity. The receiving runtime bounds
+every page and chunk, requires contiguous indices and exact sizes, verifies each
+chunk SHA-256, then verifies the assembled size and final SHA-256 before making
+the local file visible to the command handler.
+
+Transport timeout or an incomplete chunk leaves the durable command available
+for a later poll with the same command and attachment identities. The client
+does not create an immediate retry loop to make a stalled body appear reliable.
+
+During rolling deployment, a request without `mode` may still receive the
+legacy full-body response, and a new runtime may accept a binary response from
+an old Worker that ignored `mode=manifest`. This migration guard is removed
+after all deployed Workers and runtimes advertise the chunk protocol; it is not
+an alternative source of attachment identity or state.

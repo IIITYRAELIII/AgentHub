@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted target architecture; staged migration pending.
+Superseded as live authority by ADR-0005. Its isolated-worktree direction and
+immutable Git evidence are retained and refined there.
 
 ## Decision
 
@@ -17,7 +18,5 @@ The registry becomes a patch ledger rather than a claim over shared paths.
 Compatible hunks can coexist, stale and late turns cannot silently enter a
 release, and Git three-way merge replaces path-only overlap heuristics.
 
-Migration is dual-write first: terminal turns append observations while the
-legacy release plan remains authoritative. Explicit Stream roles and frozen
-manifest planning are required before the compatibility ledger and Architect
-name fallback can be removed.
+The former dual-write migration was transitional only. ADR-0005 removes
+ChangeSet and legacy registry live authority after verified Task cutover.

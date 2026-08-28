@@ -49,13 +49,7 @@ test("workspace card saves through existing workspace and board commands", async
   assert.match(client, /control\("board-column-move"/u);
 });
 
-test("workspace card exposes the server-backed release registry", async () => {
-  const [html, app, client] = await Promise.all([
-    asset("index.html"), asset("app.js"), asset("hub-client.js"),
-  ]);
-  assert.match(html, /data-workspace-release-registry/u);
-  assert.match(app, /workspace-release:status/u);
-  assert.match(app, /workspace-release:open/u);
-  assert.match(client, /control\("read-workspace-release-registry"/u);
-  assert.match(client, /control\("update-release-change-status"/u);
+test("workspace card no longer exposes the legacy release registry", async () => {
+  const html = await asset("index.html");
+  assert.doesNotMatch(html, /data-workspace-release-registry|Изменения к релизу/u);
 });

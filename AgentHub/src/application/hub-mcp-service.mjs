@@ -16,13 +16,11 @@ import {
 
 const CONTEXT_TOKEN_VERSION = 1;
 const MAX_REGISTERED_CONTEXT_CAPABILITIES = 1_000;
-const RELEASE_STATUSES = new Set(["draft", "ready", "blocked", "discarded"]);
 const MUTATING_TOOLS = new Set([
-  "hub_task_create", "hub_task_update", "hub_task_move", "hub_task_start", "hub_task_status_update", "hub_task_complete", "hub_task_delete",
+  "hub_task_create", "hub_task_update", "hub_task_move", "hub_task_start", "hub_task_claim", "hub_task_status_update", "hub_task_complete", "hub_task_delete",
   "hub_task_attachment_add", "hub_workspace_rules_update", "hub_stream_rules_update",
   "hub_stream_message_send",
-  "hub_release_change_status", "hub_release_change_files_set", "hub_release_complete",
-  "hub_changeset_files_set", "hub_changeset_freeze", "hub_changeset_status", "hub_changeset_architect_override",
+  "hub_task_release_freeze", "hub_release_complete",
 ]);
 const TEXT_ATTACHMENT_TYPES = new Set([
   "text/plain", "text/markdown", "text/csv", "application/json", "application/xml",
@@ -183,6 +181,15 @@ function compactTask(task) {
     updatedAt: task.updatedAt,
     startedAt: task.startedAt,
     completedAt: task.completedAt,
+    revision: task.revision,
+    changedFiles: task.changedFiles ?? [],
+    workLog: task.workLog ?? [],
+    repositoryRevisions: task.repositoryRevisions ?? [],
+    frozenRevision: task.frozenRevision ?? null,
+    releaseManifestHash: task.releaseManifestHash ?? "",
+    frozenChangedFiles: task.frozenChangedFiles ?? [],
+    frozenRepositories: task.frozenRepositories ?? [],
+    frozenVerification: task.frozenVerification ?? null,
     attachments: task.attachments ?? [],
   };
 }
@@ -221,32 +228,30 @@ export class HubMcpService {
   #contextCapabilities = new Map();
 
   constructor({
-    workspaceCatalog, taskBoard, workLog, attachmentDirectory, secret, releaseCompleter, releaseChangeSets,
+    workspaceCatalog, taskBoard, workLog, attachmentDirectory, secret, releaseCompleter, taskReleases,
   } = {}) {
     for (const name of [
-      "resolveThread", "workspace", "hierarchy", "releaseRegistry", "releasePlan",
-      "updateReleaseChangeStatus", "updateReleaseChangeFiles", "releaseChanges", "developerRulesForStream",
+      "resolveThread", "workspace", "hierarchy", "developerRulesForStream",
       "updateWorkspaceDeveloperRules", "updateStreamDeveloperRules",
       "beginMcpOperation", "completeMcpOperation", "failMcpOperation", "mcpOperations",
       "stream", "activeThread", "workspaceEvents",
     ]) requiredMethod(workspaceCatalog, name);
     for (const name of [
       "snapshot", "task", "create", "move", "update", "markStarted", "complete", "addAttachment",
+      "claim", "requestWorkflowStatus", "releasePlan",
     ]) {
       requiredMethod(taskBoard, name);
     }
     requiredMethod(workLog, "threadTurns");
     requiredMethod(releaseCompleter, "completeRelease");
-    for (const name of [
-      "list", "setFiles", "freeze", "setStatus", "architectOverride", "classifyLegacy", "releaseBatches",
-    ]) requiredMethod(releaseChangeSets, name);
+    requiredMethod(taskReleases, "freeze");
     this.workspaceCatalog = workspaceCatalog;
     this.taskBoard = taskBoard;
     this.workLog = workLog;
     this.attachmentDirectory = path.resolve(requiredText(attachmentDirectory, "attachment directory", 2_000));
     this.secret = requiredText(secret, "MCP secret", 512);
     this.releaseCompleter = releaseCompleter;
-    this.releaseChangeSets = releaseChangeSets;
+    this.taskReleases = taskReleases;
   }
 
   setActiveRuns(value) {
@@ -321,6 +326,9 @@ export class HubMcpService {
         provider: { type: "string", enum: ["codex", "claude"] },
         confirm_launch: { type: "boolean", description: "Must be true because this starts or queues another agent turn." },
       }, ["task_id", "confirm_launch"]),
+      tool("hub_task_claim", "Bind a Dashboard Task to the exact current provider turn and make the current Stream its executor.", {
+        task_id: { type: "string" },
+      }, ["task_id"]),
       tool("hub_task_status_update", "Change the workflow status of any Dashboard task. Done means ready on production and remains visible; it does not close the task.", {
         task_id: { type: "string" },
         status: { type: "string", enum: ["new", "in_progress", "testing", "awaiting_implementation", "done"] },
@@ -341,49 +349,12 @@ export class HubMcpService {
         local_path: { type: "string" },
       }, ["task_id", "local_path"]),
       tool("hub_release_plan_get", "Read the complete release plan for the current Workspace."),
-      tool("hub_release_change_status", "Set readiness of a current-Workspace release entry.", {
-        change_id: { type: "string" },
-        status: { type: "string", enum: [...RELEASE_STATUSES] },
-      }, ["change_id", "status"]),
-      tool("hub_release_change_files_set", "Replace the exact selected file list of a legacy release entry owned by the current Stream; observed candidates remain available separately.", {
-        change_id: { type: "string" },
-        files: { type: "array", maxItems: 500, items: { type: "string" } },
-      }, ["change_id", "files"]),
-      tool("hub_release_complete", "Complete a release only after clean main revisions and explicit deployment verification.", {
-        expected_revision: { type: "string" },
-        expected_plan_revision: { type: "string", description: "Exact revision returned by hub_release_plan_get." },
-        deployment_verified: { type: "boolean" },
-        verification_summary: { type: "string" },
-        conflicts_resolved: { type: "boolean", description: "True only after the Architect explicitly resolves every reported overlap." },
-      }, ["expected_plan_revision", "deployment_verified", "verification_summary"]),
-      tool("hub_changesets_list", "Read logical REL-001 ChangeSets and their TurnObservations for the current Workspace.", {
-        include_closed: { type: "boolean", default: false },
-      }),
-      tool("hub_changeset_files_set", "Replace the selected draft file list of a ChangeSet owned by the current Stream. TurnObservation candidates are audit evidence, not ownership.", {
-        change_set_id: { type: "string" },
-        files: {
-          type: "array",
-          maxItems: 500,
-          items: {
-            type: "object",
-            additionalProperties: false,
-            properties: {
-              project_root: { type: "string" },
-              path: { type: "string" },
-            },
-            required: ["project_root", "path"],
-          },
-        },
-      }, ["change_set_id", "files"]),
-      tool("hub_changeset_freeze", "Explicitly freeze an owner Stream ChangeSet after server-side Git verification of exact repository and file evidence.", {
-        change_set_id: { type: "string" },
-        title: { type: "string", default: "" },
+      tool("hub_task_release_freeze", "Freeze an immutable Task-owned release revision after server-side Git verification.", {
+        task_id: { type: "string" },
+        expected_task_revision: { type: "integer", minimum: 1 },
         repositories: {
-          type: "array",
-          minItems: 1,
-          items: {
-            type: "object",
-            additionalProperties: false,
+          type: "array", minItems: 1, items: {
+            type: "object", additionalProperties: false,
             properties: {
               project_root: { type: "string" },
               base_revision: { type: "string" },
@@ -393,37 +364,27 @@ export class HubMcpService {
           },
         },
         files: {
-          type: "array",
-          minItems: 1,
-          items: {
-            type: "object",
-            additionalProperties: false,
+          type: "array", minItems: 1, items: {
+            type: "object", additionalProperties: false,
             properties: {
               project_root: { type: "string" },
               path: { type: "string" },
               operation: { type: "string", enum: ["added", "modified", "deleted"] },
-              base_blob: { type: "string", description: "Exact Git object id or absent." },
-              result_blob: { type: "string", description: "Exact Git object id or absent." },
+              base_blob: { type: "string" },
+              result_blob: { type: "string" },
               patch_hash: { type: "string", default: "" },
             },
             required: ["project_root", "path", "operation", "base_blob", "result_blob"],
           },
         },
-      }, ["change_set_id", "repositories", "files"]),
-      tool("hub_changeset_status", "Reopen or discard a ChangeSet owned by the current Stream; ready requires freeze.", {
-        change_set_id: { type: "string" },
-        status: { type: "string", enum: ["draft", "discarded"] },
-        reason: { type: "string", default: "" },
-      }, ["change_set_id", "status"]),
-      tool("hub_changeset_architect_override", "Audited Architect-only reopen or discard override for a current-Workspace ChangeSet.", {
-        change_set_id: { type: "string" },
-        status: { type: "string", enum: ["draft", "discarded"] },
-        reason: { type: "string" },
-      }, ["change_set_id", "status", "reason"]),
-      tool("hub_legacy_release_classifier", "Read migration diagnostics for active legacy release entries without changing them."),
-      tool("hub_release_batches_list", "Read prepared REL-001 ReleaseBatch records without changing the legacy release pipeline.", {
-        limit: { type: "integer", minimum: 1, maximum: 100, default: 50 },
-      }),
+      }, ["task_id", "expected_task_revision", "repositories", "files"]),
+      tool("hub_release_complete", "Complete a release only after clean main revisions and explicit deployment verification.", {
+        expected_revision: { type: "string" },
+        expected_plan_revision: { type: "string", description: "Exact revision returned by hub_release_plan_get." },
+        deployment_verified: { type: "boolean" },
+        verification_summary: { type: "string" },
+        conflicts_resolved: { type: "boolean", description: "True only after the Architect explicitly resolves every reported overlap." },
+      }, ["expected_plan_revision", "deployment_verified", "verification_summary"]),
       tool("hub_events_list", "Read bounded persistent Workspace events after a cursor; this never holds a long poll.", {
         after_sequence: { type: "integer", minimum: 0, default: 0 },
         limit: { type: "integer", minimum: 1, maximum: 100, default: 50 },
@@ -514,11 +475,10 @@ export class HubMcpService {
         return this.#moveTask(context, args);
       case "hub_task_start":
         return this.#startTask(context, args);
+      case "hub_task_claim":
+        return this.#claimTask(context, args);
       case "hub_task_status_update":
-        return compactTask(this.taskBoard.setWorkflowStatus({
-          id: this.#task(context, args.task_id).id,
-          status: requiredText(args.status, "task workflow status", 40),
-        }));
+        return this.#updateTaskWorkflowStatus(context, args);
       case "hub_task_complete":
         return compactTask(this.taskBoard.complete({ id: this.#task(context, args.task_id).id }));
       case "hub_task_delete": {
@@ -531,44 +491,13 @@ export class HubMcpService {
       case "hub_task_attachment_add":
         return this.#addAttachment(context, args);
       case "hub_release_plan_get":
-        return this.workspaceCatalog.releasePlan(context.workspaceId);
-      case "hub_release_change_status":
-        return this.#setReleaseStatus(context, args);
-      case "hub_release_change_files_set":
-        return this.#setReleaseFiles(context, args);
-      case "hub_release_complete":
-        return this.releaseCompleter.completeRelease({
-          workspaceId: context.workspaceId,
-          expectedRevision: optionalText(args.expected_revision, 128),
-          expectedPlanRevision: optionalText(args.expected_plan_revision, 128),
-          deploymentVerified: args.deployment_verified === true,
-          verificationSummary: optionalText(args.verification_summary, 2_000) ?? "",
-          conflictsResolved: args.conflicts_resolved === true,
-        });
-      case "hub_changesets_list":
-        return {
-          workspaceId: context.workspaceId,
-          changeSets: this.releaseChangeSets.list({
-            workspaceId: context.workspaceId,
-            includeClosed: args.include_closed === true,
-          }),
-        };
-      case "hub_changeset_files_set":
-        return this.releaseChangeSets.setFiles({
+        return this.taskBoard.releasePlan(context.workspaceId);
+      case "hub_task_release_freeze":
+        return this.taskReleases.freeze({
           workspaceId: context.workspaceId,
           actorStreamId: context.streamId,
-          changeSetId: args.change_set_id,
-          files: (Array.isArray(args.files) ? args.files : []).map((file) => ({
-            projectRoot: file.project_root,
-            path: file.path,
-          })),
-        });
-      case "hub_changeset_freeze":
-        return this.releaseChangeSets.freeze({
-          workspaceId: context.workspaceId,
-          actorStreamId: context.streamId,
-          changeSetId: args.change_set_id,
-          title: args.title,
+          taskId: args.task_id,
+          expectedTaskRevision: args.expected_task_revision,
           repositories: (Array.isArray(args.repositories) ? args.repositories : []).map((repository) => ({
             projectRoot: repository.project_root,
             baseRevision: repository.base_revision,
@@ -583,32 +512,16 @@ export class HubMcpService {
             patchHash: file.patch_hash,
           })),
         });
-      case "hub_changeset_status":
-        return this.releaseChangeSets.setStatus({
+      case "hub_release_complete":
+        if (!this.#isArchitect(context)) throw new Error("release completion requires an Architect Stream");
+        return this.releaseCompleter.completeRelease({
           workspaceId: context.workspaceId,
-          actorStreamId: context.streamId,
-          changeSetId: args.change_set_id,
-          status: args.status,
-          reason: args.reason,
+          expectedRevision: optionalText(args.expected_revision, 128),
+          expectedPlanRevision: optionalText(args.expected_plan_revision, 128),
+          deploymentVerified: args.deployment_verified === true,
+          verificationSummary: optionalText(args.verification_summary, 2_000) ?? "",
+          conflictsResolved: args.conflicts_resolved === true,
         });
-      case "hub_changeset_architect_override":
-        return this.releaseChangeSets.architectOverride({
-          workspaceId: context.workspaceId,
-          actorStreamId: context.streamId,
-          changeSetId: args.change_set_id,
-          status: args.status,
-          reason: args.reason,
-        });
-      case "hub_legacy_release_classifier":
-        return this.releaseChangeSets.classifyLegacy({ workspaceId: context.workspaceId });
-      case "hub_release_batches_list":
-        return {
-          workspaceId: context.workspaceId,
-          releaseBatches: this.releaseChangeSets.releaseBatches({
-            workspaceId: context.workspaceId,
-            limit: args.limit,
-          }),
-        };
       case "hub_events_list":
         return this.#events(context, args);
       case "hub_mcp_operations_list":
@@ -810,27 +723,61 @@ export class HubMcpService {
     }));
   }
 
-  #setReleaseStatus(context, { change_id: changeId, status } = {}) {
-    const normalizedChangeId = requiredText(changeId, "release change id", 300);
-    const normalizedStatus = requiredText(status, "release status", 30);
-    if (!RELEASE_STATUSES.has(normalizedStatus)) throw new Error("invalid release status");
-    const changes = this.workspaceCatalog.releaseChanges(context.workspaceId);
-    if (!changes.some((change) => change.id === normalizedChangeId)) {
-      throw new Error("release change is outside the current Workspace");
-    }
-    return this.workspaceCatalog.updateReleaseChangeStatus(normalizedChangeId, normalizedStatus);
+  #claimTask(context, { task_id: taskId } = {}) {
+    const task = this.#task(context, taskId);
+    const active = this.#currentRun(context);
+    return {
+      ...compactTask(this.taskBoard.claim({
+      id: task.id,
+      workspaceId: context.workspaceId,
+      streamId: context.streamId,
+      provider: context.provider,
+      threadId: context.threadId,
+      turnId: active.turnId,
+      gitBaseline: active.gitBaseline ?? null,
+      })),
+      claimedTurnId: active.turnId,
+    };
   }
 
-  #setReleaseFiles(context, { change_id: changeId, files = [] } = {}) {
-    const normalizedChangeId = requiredText(changeId, "release change id", 300);
-    const change = this.workspaceCatalog.releaseChanges(context.workspaceId)
-      .find((candidate) => candidate.id === normalizedChangeId);
-    if (!change) throw new Error("release change is outside the current Workspace");
-    if (change.streamId !== context.streamId) throw new Error("only the owner Stream can change release files");
-    return this.workspaceCatalog.updateReleaseChangeFiles(
-      normalizedChangeId,
-      Array.isArray(files) ? files : [],
-    );
+  #currentRun(context) {
+    if (!context.threadId) throw new Error("operation requires a bound provider Thread");
+    const active = this.#activeRuns().filter((run) => (
+      String(run?.provider ?? "").trim().toLowerCase() === context.provider
+      && String(run?.threadId ?? "").trim() === context.threadId
+      && String(run?.turnId ?? "").trim()
+      && run?.observer !== true
+    ));
+    if (active.length !== 1) {
+      throw new Error(active.length ? "current provider Thread has ambiguous active runs" : "current provider Thread has no exact active run");
+    }
+    return active[0];
+  }
+
+  #updateTaskWorkflowStatus(context, { task_id: taskId, status } = {}) {
+    const task = this.#task(context, taskId);
+    const workflowStatus = requiredText(status, "task workflow status", 40);
+    const releaseEnabled = this.workspaceCatalog.workspace(context.workspaceId)?.settings?.releaseWorkflowEnabled === true;
+    if (releaseEnabled && workflowStatus === "done") {
+      throw new Error("release-enabled Task can become done only through verified Architect release completion");
+    }
+    if (releaseEnabled && workflowStatus === "awaiting_implementation") {
+      const run = this.#currentRun(context);
+      return compactTask(this.taskBoard.requestWorkflowStatus({
+        id: task.id,
+        status: workflowStatus,
+        provider: context.provider,
+        threadId: context.threadId,
+        turnId: run.turnId,
+      }));
+    }
+    return compactTask(this.taskBoard.setWorkflowStatus({ id: task.id, status: workflowStatus }));
+  }
+
+  #isArchitect(context) {
+    return this.#workspace(context).streams.some((stream) => (
+      stream.id === context.streamId && stream.settings?.architect === true
+    ));
   }
 
   async #startTask(context, {

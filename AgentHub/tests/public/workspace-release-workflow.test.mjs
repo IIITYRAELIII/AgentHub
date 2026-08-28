@@ -13,65 +13,16 @@ async function workflowApi() {
   return window.AgentHubWorkspaceReleaseWorkflow;
 }
 
-class Control {
-  constructor() {
-    this.listeners = new Map();
-    this.open = false;
-    this.textContent = "";
-  }
-
-  addEventListener(type, listener) {
-    this.listeners.set(type, listener);
-  }
-
-  dispatch(type) {
-    let prevented = false;
-    this.listeners.get(type)?.({ preventDefault: () => { prevented = true; } });
-    return prevented;
-  }
-
-  showModal() { this.open = true; }
-  close() { this.open = false; }
-  focus() { this.focused = true; }
-  setAttribute(name) { if (name === "open") this.open = true; }
-  removeAttribute(name) { if (name === "open") this.open = false; }
-}
-
-test("turning release workflow off asks before discarding registered changes", async () => {
+test("release workflow tooltip describes the mandatory Task lifecycle", async () => {
   const workflow = await workflowApi();
-  const registry = { total: 3, changeSetTotal: 1, pendingTotal: 4 };
-  assert.equal(workflow.requiresDiscardConfirmation({ enabled: false, registry }), true);
-  assert.equal(workflow.requiresDiscardConfirmation({ enabled: true, registry }), false);
-  assert.equal(workflow.requiresDiscardConfirmation({
-    enabled: false,
-    registry,
-    discardConfirmed: true,
-  }), false);
-  assert.match(workflow.discardConfirmationText(registry), /удалить все зарегистрированные изменения/u);
-  assert.equal(workflow.tooltip.length, 4);
-});
-
-test("discard confirmation uses an in-app dialog and resolves once", async () => {
-  const workflow = await workflowApi();
-  const dialog = new Control();
-  const cancelButton = new Control();
-  const confirmButton = new Control();
-  const message = new Control();
-  const controller = workflow.createDiscardConfirmation({
-    dialog, cancelButton, confirmButton, message,
-  });
-
-  const cancelled = controller.request({ text: "Удалить изменения?" });
-  assert.equal(dialog.open, true);
-  assert.equal(cancelButton.focused, true);
-  assert.equal(message.textContent, "Удалить изменения?");
-  assert.equal(dialog.dispatch("cancel"), true);
-  assert.equal(await cancelled, false);
-
-  const confirmed = controller.request();
-  const repeated = controller.request();
-  assert.equal(confirmed, repeated);
-  confirmButton.dispatch("click");
-  assert.equal(await confirmed, true);
-  assert.equal(dialog.open, false);
+  assert.equal(workflow.tooltip.length, 8);
+  const text = workflow.tooltip.join("\n");
+  assert.match(text, /найти существующую Dashboard Task или создать/iu);
+  assert.match(text, /Текущий Stream сразу назначается исполнителем/iu);
+  assert.match(text, /конце каждого хода.*work log.*изменённые файлы.*статус/iu);
+  assert.match(text, /без diff.*не создаёт запись файла или evidence/iu);
+  assert.match(text, /исправление.*К применению.*terminal evidence/iu);
+  assert.match(text, /анализ.*смены темы.*незавершённый остаётся открытым/iu);
+  assert.match(text, /Архитектор Workspace.*ожидающие Tasks.*видимый результат/iu);
+  assert.match(text, /проверенного релиза.*Tasks.*Готово.*закрываются/iu);
 });

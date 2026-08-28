@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import path from "node:path";
 import test from "node:test";
 
 import { RunJournalService } from "../../src/application/run-journal-service.mjs";
@@ -8,13 +9,17 @@ function fixture({ statImpl = async () => ({}), releaseWorkflowEnabled = true } 
   const calls = [];
   const workspaceCatalogStore = {
     releaseWorkflowEnabledForThread: () => releaseWorkflowEnabled,
-    recordReleaseChange: (value) => {
-      calls.push(["release", value]);
-      return { id: "legacy-change", ...value };
-    },
   };
-  const releaseChangeSetService = {
-    observeTurn: (value) => { calls.push(["changeset", value]); return value; },
+  const taskBoard = {
+    claimedTaskForTurn: ({ turnId }) => turnId === "unbound-turn" ? null : {
+      id: "task-1", workspaceId: "workspace-1", streamId: "stream-1",
+      requestedWorkflowStatus: turnId === "ready-turn" ? "awaiting_implementation" : null,
+      gitBaseline: { repoRoot: "C:/workspace", tree: "a".repeat(40) },
+    },
+    recordTaskTurn: (value) => { calls.push(["task-turn", value]); return value; },
+  };
+  const taskReleaseService = {
+    freezeRecorded: async (value) => { calls.push(["task-freeze", value]); return value; },
   };
   const usageStore = {
     recordAutomaticAndProject: async (value) => { calls.push(["automatic", value]); return value; },
@@ -26,7 +31,9 @@ function fixture({ statImpl = async () => ({}), releaseWorkflowEnabled = true } 
   const service = new RunJournalService({
     usageStore,
     workspaceCatalogStore,
-    releaseChangeSetService,
+    taskBoard,
+    taskReleaseService,
+    captureResultSnapshot: async () => ({ repoRoot: "C:/workspace", tree: "b".repeat(40) }),
     findProject: (root) => root === "C:/workspace" ? { path: root } : null,
     defaultProjectRoot: "C:/workspace",
     projectionProjectRoots: ["C:/workspace"],
@@ -213,7 +220,7 @@ test("RunJournalService projects the initial and every steered message", async (
   );
 });
 
-test("RunJournalService registers changed files in the Workspace release registry", async () => {
+test("RunJournalService writes only exact Task-bound terminal evidence", async () => {
   const { service, calls } = fixture();
   await service.projectTurn({
     provider: "codex",
@@ -224,16 +231,15 @@ test("RunJournalService registers changed files in the Workspace release registr
     diff: "diff --git a/AgentHub/app.js b/AgentHub/app.js",
     status: "completed",
   }, { title: "Implemented release registry" });
-  const release = calls.find(([name]) => name === "release")?.[1];
-  assert.equal(release.summary, "Implemented release registry");
-  assert.deepEqual(release.changedFiles, ["AgentHub/app.js"]);
-  assert.equal(release.status, "draft");
-  assert.match(release.diffHash, /^[a-f0-9]{64}$/u);
-  const observation = calls.find(([name]) => name === "changeset")?.[1];
-  assert.equal(observation.status, "completed");
-  assert.deepEqual(observation.changedFiles, ["AgentHub/app.js"]);
-  assert.equal(observation.legacyChangeId, "legacy-change");
-  assert.equal("manifestHash" in observation, false);
+  const evidence = calls.find(([name]) => name === "task-turn")?.[1];
+  assert.equal(evidence.summary, "Implemented release registry");
+  assert.deepEqual(evidence.changedFiles, [{
+    projectRoot: path.resolve("C:/workspace"),
+    path: "AgentHub/app.js",
+    operation: "modified",
+    turnId: "turn",
+  }]);
+  assert.equal(evidence.status, "completed");
 
   await service.projectTurn({
     provider: "codex",
@@ -243,10 +249,8 @@ test("RunJournalService registers changed files in the Workspace release registr
     changedFiles: ["AgentHub/failure.js"],
     status: "failed",
   }, { title: "Failed change" });
-  const failedRelease = calls.filter(([name]) => name === "release").at(-1)[1];
-  assert.equal(failedRelease.status, "blocked");
-  const failedObservation = calls.filter(([name]) => name === "changeset").at(-1)[1];
-  assert.equal(failedObservation.status, "failed");
+  const failedEvidence = calls.filter(([name]) => name === "task-turn").at(-1)[1];
+  assert.equal(failedEvidence.status, "failed");
 });
 
 test("RunJournalService does not register changed files for a regular Workspace", async () => {
@@ -260,9 +264,30 @@ test("RunJournalService does not register changed files for a regular Workspace"
     status: "completed",
   }, { title: "Regular work" });
 
-  assert.equal(calls.some(([name]) => name === "release"), false);
-  assert.equal(calls.some(([name]) => name === "changeset"), false);
+  assert.equal(calls.some(([name]) => name === "task-turn"), false);
   assert.equal(calls.some(([name]) => name === "automatic"), true);
+});
+
+test("RunJournalService ignores dashboardTaskId without an exact durable turn binding", async () => {
+  const { service, calls } = fixture();
+  await service.projectTurn({
+    provider: "codex", projectRoot: "C:/workspace", threadId: "thread",
+    turnId: "unbound-turn", dashboardTaskId: "task-1",
+    changedFiles: ["AgentHub/app.js"], status: "completed",
+  }, { title: "Unbound" });
+  assert.equal(calls.some(([name]) => name === "task-turn"), false);
+});
+
+test("RunJournalService freezes a completed fix only after same-turn awaiting intent", async () => {
+  const { service, calls } = fixture();
+  await service.projectTurn({
+    provider: "codex", projectRoot: "C:/workspace", threadId: "thread",
+    turnId: "ready-turn", changedFiles: ["AgentHub/app.js"], status: "completed",
+  }, { title: "Ready fix" });
+  assert.equal(calls.filter(([name]) => name === "task-turn").length, 1);
+  assert.deepEqual(calls.find(([name]) => name === "task-freeze")?.[1], {
+    taskId: "task-1", workspaceId: "workspace-1", actorStreamId: "stream-1",
+  });
 });
 
 test("RunJournalService forwards deferred projection for historical accounting", async () => {

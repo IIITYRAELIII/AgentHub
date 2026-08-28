@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -14,14 +14,7 @@ import {
   streamDisplayName,
 } from "../../domain/workspace-stream-identity.mjs";
 import {
-  changeSetLogicalKey,
-  normalizedDraftChangeSetFiles,
-  normalizedChangeSetId,
-  normalizedChangeSetStatus,
-  normalizedDashboardTaskId,
-  normalizedReleaseBatch,
-} from "../../domain/release-change-set.mjs";
-import {
+  effectiveStreamDeveloperRules,
   effectiveWorkspaceDeveloperRules,
   legacyReleaseWorkflowRules,
   RELEASE_WORKFLOW_SETTING,
@@ -33,7 +26,6 @@ const SCHEMA_VERSION = 11;
 export const DEVELOPER_RULES_MAX_BYTES = 32 * 1024;
 const SOURCES = new Set(["created", "discovered", "migration", "rebirth"]);
 const DEVELOPER_RULE_SCOPES = new Set(["workspace", "stream"]);
-const RELEASE_CHANGE_STATUSES = new Set(["draft", "ready", "blocked", "released", "discarded"]);
 
 function configure(database) {
   database.exec(`
@@ -87,125 +79,6 @@ function configure(database) {
     ) WITHOUT ROWID;
     CREATE INDEX IF NOT EXISTS hub_threads_stream_idx
       ON hub_threads(stream_id, position);
-    CREATE TABLE IF NOT EXISTS hub_release_changes (
-      id TEXT PRIMARY KEY,
-      workspace_id TEXT NOT NULL,
-      stream_id TEXT NOT NULL,
-      provider TEXT NOT NULL,
-      provider_thread_id TEXT NOT NULL,
-      turn_id TEXT NOT NULL,
-      project_root TEXT NOT NULL DEFAULT '',
-      summary TEXT NOT NULL DEFAULT '',
-      files_json TEXT NOT NULL DEFAULT '[]',
-      observed_files_json TEXT NOT NULL DEFAULT '[]',
-      diff_hash TEXT NOT NULL DEFAULT '',
-      status TEXT NOT NULL CHECK (status IN ('draft', 'ready', 'blocked', 'released', 'discarded')),
-      revision INTEGER NOT NULL DEFAULT 1 CHECK (revision > 0),
-      created_at_ms INTEGER NOT NULL,
-      updated_at_ms INTEGER NOT NULL,
-      FOREIGN KEY (workspace_id) REFERENCES hub_workspaces(id) ON DELETE CASCADE,
-      FOREIGN KEY (stream_id) REFERENCES hub_streams(id) ON DELETE CASCADE,
-      UNIQUE (provider, provider_thread_id, turn_id)
-    ) WITHOUT ROWID;
-    CREATE INDEX IF NOT EXISTS hub_release_changes_workspace_status_idx
-      ON hub_release_changes(workspace_id, status, updated_at_ms DESC);
-    CREATE INDEX IF NOT EXISTS hub_release_changes_stream_idx
-      ON hub_release_changes(stream_id, updated_at_ms DESC);
-    CREATE TABLE IF NOT EXISTS hub_release_batches (
-      id TEXT PRIMARY KEY,
-      workspace_id TEXT NOT NULL,
-      plan_revision TEXT NOT NULL,
-      change_set_ids_json TEXT NOT NULL,
-      repository_revisions_json TEXT NOT NULL,
-      publication_evidence_json TEXT NOT NULL DEFAULT '{}',
-      deployment_evidence_json TEXT NOT NULL DEFAULT '{}',
-      status TEXT NOT NULL CHECK (status IN ('prepared', 'completed')),
-      created_at_ms INTEGER NOT NULL,
-      completed_at_ms INTEGER,
-      FOREIGN KEY (workspace_id) REFERENCES hub_workspaces(id) ON DELETE CASCADE
-    ) WITHOUT ROWID;
-    CREATE INDEX IF NOT EXISTS hub_release_batches_workspace_idx
-      ON hub_release_batches(workspace_id, created_at_ms DESC);
-    CREATE TABLE IF NOT EXISTS hub_release_change_sets (
-      id TEXT PRIMARY KEY,
-      workspace_id TEXT NOT NULL,
-      owner_stream_id TEXT NOT NULL,
-      task_id TEXT,
-      logical_key TEXT NOT NULL,
-      title TEXT NOT NULL DEFAULT '',
-      status TEXT NOT NULL CHECK (status IN ('draft', 'ready', 'released', 'discarded')),
-      revision INTEGER NOT NULL DEFAULT 1 CHECK (revision > 0),
-      manifest_hash TEXT NOT NULL DEFAULT '',
-      repository_evidence_json TEXT NOT NULL DEFAULT '[]',
-      frozen_at_ms INTEGER,
-      release_batch_id TEXT,
-      created_at_ms INTEGER NOT NULL,
-      updated_at_ms INTEGER NOT NULL,
-      released_at_ms INTEGER,
-      FOREIGN KEY (workspace_id) REFERENCES hub_workspaces(id) ON DELETE CASCADE,
-      FOREIGN KEY (owner_stream_id) REFERENCES hub_streams(id) ON DELETE CASCADE,
-      FOREIGN KEY (release_batch_id) REFERENCES hub_release_batches(id) ON DELETE SET NULL,
-      UNIQUE (workspace_id, logical_key)
-    ) WITHOUT ROWID;
-    CREATE INDEX IF NOT EXISTS hub_release_change_sets_workspace_status_idx
-      ON hub_release_change_sets(workspace_id, status, updated_at_ms DESC);
-    CREATE INDEX IF NOT EXISTS hub_release_change_sets_owner_idx
-      ON hub_release_change_sets(owner_stream_id, updated_at_ms DESC);
-    CREATE TABLE IF NOT EXISTS hub_release_turn_observations (
-      id TEXT PRIMARY KEY,
-      change_set_id TEXT NOT NULL,
-      legacy_release_change_id TEXT,
-      provider TEXT NOT NULL,
-      provider_thread_id TEXT NOT NULL,
-      turn_id TEXT NOT NULL,
-      project_root TEXT NOT NULL DEFAULT '',
-      summary TEXT NOT NULL DEFAULT '',
-      observed_status TEXT NOT NULL,
-      files_json TEXT NOT NULL DEFAULT '[]',
-      diff_hash TEXT NOT NULL DEFAULT '',
-      created_at_ms INTEGER NOT NULL,
-      FOREIGN KEY (change_set_id) REFERENCES hub_release_change_sets(id) ON DELETE CASCADE,
-      FOREIGN KEY (legacy_release_change_id) REFERENCES hub_release_changes(id) ON DELETE SET NULL,
-      UNIQUE (provider, provider_thread_id, turn_id)
-    ) WITHOUT ROWID;
-    CREATE INDEX IF NOT EXISTS hub_release_turn_observations_change_set_idx
-      ON hub_release_turn_observations(change_set_id, created_at_ms);
-    CREATE TABLE IF NOT EXISTS hub_release_change_set_files (
-      change_set_id TEXT NOT NULL,
-      project_root TEXT NOT NULL,
-      file_path TEXT NOT NULL,
-      evidence_state TEXT NOT NULL CHECK (evidence_state IN ('observed', 'frozen')),
-      operation TEXT NOT NULL CHECK (operation IN ('observed', 'added', 'modified', 'deleted')),
-      base_blob TEXT,
-      result_blob TEXT,
-      patch_hash TEXT NOT NULL DEFAULT '',
-      source_observation_id TEXT,
-      updated_at_ms INTEGER NOT NULL,
-      PRIMARY KEY (change_set_id, project_root, file_path),
-      FOREIGN KEY (change_set_id) REFERENCES hub_release_change_sets(id) ON DELETE CASCADE,
-      FOREIGN KEY (source_observation_id) REFERENCES hub_release_turn_observations(id) ON DELETE SET NULL
-    ) WITHOUT ROWID;
-    CREATE TABLE IF NOT EXISTS hub_release_change_set_bindings (
-      stream_id TEXT PRIMARY KEY,
-      change_set_id TEXT NOT NULL UNIQUE,
-      updated_at_ms INTEGER NOT NULL,
-      FOREIGN KEY (stream_id) REFERENCES hub_streams(id) ON DELETE CASCADE,
-      FOREIGN KEY (change_set_id) REFERENCES hub_release_change_sets(id) ON DELETE CASCADE
-    ) WITHOUT ROWID;
-    CREATE TABLE IF NOT EXISTS hub_release_change_set_events (
-      id TEXT PRIMARY KEY,
-      workspace_id TEXT NOT NULL,
-      change_set_id TEXT NOT NULL,
-      actor_stream_id TEXT,
-      event_type TEXT NOT NULL,
-      payload_json TEXT NOT NULL DEFAULT '{}',
-      created_at_ms INTEGER NOT NULL,
-      FOREIGN KEY (workspace_id) REFERENCES hub_workspaces(id) ON DELETE CASCADE,
-      FOREIGN KEY (change_set_id) REFERENCES hub_release_change_sets(id) ON DELETE CASCADE,
-      FOREIGN KEY (actor_stream_id) REFERENCES hub_streams(id) ON DELETE SET NULL
-    ) WITHOUT ROWID;
-    CREATE INDEX IF NOT EXISTS hub_release_change_set_events_change_set_idx
-      ON hub_release_change_set_events(change_set_id, created_at_ms);
     CREATE TABLE IF NOT EXISTS hub_mcp_operations (
       request_id TEXT PRIMARY KEY,
       workspace_id TEXT NOT NULL,
@@ -274,18 +147,6 @@ function configure(database) {
   const threadColumns = database.prepare("PRAGMA table_info(hub_threads)").all();
   if (!threadColumns.some((column) => column.name === "detached_at_ms")) {
     database.exec("ALTER TABLE hub_threads ADD COLUMN detached_at_ms INTEGER");
-  }
-  const releaseChangeColumns = database.prepare("PRAGMA table_info(hub_release_changes)").all();
-  if (!releaseChangeColumns.some((column) => column.name === "revision")) {
-    database.exec("ALTER TABLE hub_release_changes ADD COLUMN revision INTEGER NOT NULL DEFAULT 1");
-  }
-  if (!releaseChangeColumns.some((column) => column.name === "observed_files_json")) {
-    database.exec("ALTER TABLE hub_release_changes ADD COLUMN observed_files_json TEXT NOT NULL DEFAULT '[]'");
-    database.exec("UPDATE hub_release_changes SET observed_files_json = files_json WHERE files_json <> '[]'");
-  }
-  const observationColumns = database.prepare("PRAGMA table_info(hub_release_turn_observations)").all();
-  if (!observationColumns.some((column) => column.name === "files_json")) {
-    database.exec("ALTER TABLE hub_release_turn_observations ADD COLUMN files_json TEXT NOT NULL DEFAULT '[]'");
   }
 }
 
@@ -376,208 +237,6 @@ function developerRuleFromRow(row) {
   };
 }
 
-function releaseChangeFromRow(row) {
-  if (!row) return null;
-  let files = [];
-  let observedFiles = [];
-  try { files = JSON.parse(String(row.files_json ?? "[]")); } catch { files = []; }
-  try { observedFiles = JSON.parse(String(row.observed_files_json ?? "[]")); } catch { observedFiles = []; }
-  return {
-    id: String(row.id),
-    workspaceId: String(row.workspace_id),
-    streamId: String(row.stream_id),
-    provider: String(row.provider),
-    threadId: String(row.provider_thread_id),
-    turnId: String(row.turn_id),
-    projectRoot: String(row.project_root ?? ""),
-    summary: String(row.summary ?? ""),
-    files: Array.isArray(files) ? files.map((file) => String(file)) : [],
-    observedFiles: Array.isArray(observedFiles) ? observedFiles.map((file) => String(file)) : [],
-    diffHash: String(row.diff_hash ?? ""),
-    status: String(row.status),
-    revision: Number(row.revision) || 1,
-    createdAtMs: Number(row.created_at_ms) || 0,
-    updatedAtMs: Number(row.updated_at_ms) || 0,
-  };
-}
-
-function jsonArray(value) {
-  try {
-    const parsed = JSON.parse(String(value ?? "[]"));
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
-function jsonObject(value) {
-  try {
-    const parsed = JSON.parse(String(value ?? "{}"));
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
-function changeSetFromRow(row) {
-  if (!row) return null;
-  return {
-    id: String(row.id),
-    workspaceId: String(row.workspace_id),
-    ownerStreamId: String(row.owner_stream_id),
-    taskId: row.task_id == null ? null : String(row.task_id),
-    logicalKey: String(row.logical_key),
-    title: String(row.title ?? ""),
-    status: String(row.status),
-    revision: Number(row.revision) || 1,
-    manifestHash: String(row.manifest_hash ?? ""),
-    repositories: jsonArray(row.repository_evidence_json),
-    frozenAtMs: row.frozen_at_ms == null ? null : Number(row.frozen_at_ms),
-    releaseBatchId: row.release_batch_id == null ? null : String(row.release_batch_id),
-    createdAtMs: Number(row.created_at_ms) || 0,
-    updatedAtMs: Number(row.updated_at_ms) || 0,
-    releasedAtMs: row.released_at_ms == null ? null : Number(row.released_at_ms),
-  };
-}
-
-function turnObservationFromRow(row) {
-  if (!row) return null;
-  return {
-    id: String(row.id),
-    changeSetId: String(row.change_set_id),
-    legacyChangeId: row.legacy_release_change_id == null ? null : String(row.legacy_release_change_id),
-    provider: String(row.provider),
-    threadId: String(row.provider_thread_id),
-    turnId: String(row.turn_id),
-    projectRoot: String(row.project_root ?? ""),
-    summary: String(row.summary ?? ""),
-    observedStatus: String(row.observed_status),
-    files: jsonArray(row.files_json).map((file) => String(file)),
-    diffHash: String(row.diff_hash ?? ""),
-    createdAtMs: Number(row.created_at_ms) || 0,
-  };
-}
-
-function changeSetFileFromRow(row) {
-  if (!row) return null;
-  return {
-    changeSetId: String(row.change_set_id),
-    projectRoot: String(row.project_root),
-    path: String(row.file_path),
-    evidenceState: String(row.evidence_state),
-    operation: String(row.operation),
-    baseBlob: row.base_blob == null ? null : String(row.base_blob),
-    resultBlob: row.result_blob == null ? null : String(row.result_blob),
-    patchHash: String(row.patch_hash ?? ""),
-    sourceObservationId: row.source_observation_id == null ? null : String(row.source_observation_id),
-    updatedAtMs: Number(row.updated_at_ms) || 0,
-  };
-}
-
-function releaseBatchFromRow(row) {
-  if (!row) return null;
-  return {
-    id: String(row.id),
-    workspaceId: String(row.workspace_id),
-    planRevision: String(row.plan_revision),
-    changeSetIds: jsonArray(row.change_set_ids_json).map(String),
-    repositoryRevisions: jsonArray(row.repository_revisions_json),
-    publicationEvidence: jsonObject(row.publication_evidence_json),
-    deploymentEvidence: jsonObject(row.deployment_evidence_json),
-    status: String(row.status),
-    createdAtMs: Number(row.created_at_ms) || 0,
-    completedAtMs: row.completed_at_ms == null ? null : Number(row.completed_at_ms),
-  };
-}
-
-function changeSetEventFromRow(row) {
-  if (!row) return null;
-  return {
-    id: String(row.id),
-    workspaceId: String(row.workspace_id),
-    changeSetId: String(row.change_set_id),
-    actorStreamId: row.actor_stream_id == null ? null : String(row.actor_stream_id),
-    type: String(row.event_type),
-    payload: jsonObject(row.payload_json),
-    createdAtMs: Number(row.created_at_ms) || 0,
-  };
-}
-
-function releaseChangeStatus(value) {
-  const status = String(value ?? "").trim().toLowerCase();
-  if (!RELEASE_CHANGE_STATUSES.has(status)) throw new Error(`invalid release change status: ${value}`);
-  if (status === "released") throw new Error("released status is reserved for completed releases");
-  return status;
-}
-
-function releaseChangeFiles(values) {
-  return [...new Set((Array.isArray(values) ? values : [])
-    .map((value) => String(value ?? "").trim().replaceAll("\\", "/"))
-    .filter((value) => value && !value.includes("\0")))].slice(0, 500);
-}
-
-function releasePath(value) {
-  return String(value ?? "").trim().replaceAll("\\", "/");
-}
-
-function isWindowsPath(value) {
-  return /^(?:[a-z]:[\\/]|\\\\)/iu.test(String(value ?? ""));
-}
-
-function canonicalReleaseFileIdentity(projectRoot, file) {
-  const root = releasePath(projectRoot);
-  const candidate = releasePath(file);
-  if (!candidate) return "";
-  if (isWindowsPath(root) || isWindowsPath(candidate)) {
-    const absolute = path.win32.isAbsolute(candidate)
-      ? path.win32.normalize(candidate)
-      : root
-        ? path.win32.resolve(root, candidate)
-        : path.win32.normalize(candidate);
-    return `${root || path.win32.isAbsolute(candidate) ? "windows" : "relative"}:${absolute.replaceAll("\\", "/").toLowerCase()}`;
-  }
-  if (!root) return `relative:${path.posix.normalize(candidate)}`;
-  return `posix:${path.posix.resolve(root, candidate)}`;
-}
-
-function sharedReleaseChangelog(projectRoot, file) {
-  const identity = canonicalReleaseFileIdentity(projectRoot, file);
-  return identity === "relative:utilities/changelog.md" || identity.endsWith("/utilities/changelog.md");
-}
-
-function releasePlanRevision(workspaceId, changes) {
-  const payload = (Array.isArray(changes) ? changes : [])
-    .map((change) => ({
-      id: change.id,
-      revision: change.revision,
-      status: change.status,
-      projectRoot: canonicalReleaseFileIdentity(change.projectRoot, "."),
-      summary: change.summary,
-      files: change.files.map((file) => canonicalReleaseFileIdentity(change.projectRoot, file)).toSorted(),
-      diffHash: change.diffHash,
-    }))
-    .toSorted((left, right) => left.id.localeCompare(right.id));
-  return createHash("sha256")
-    .update(JSON.stringify({ workspaceId, changes: payload }), "utf8")
-    .digest("hex");
-}
-
-function releaseCompletionEvidence(value, expectedPlanRevision) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new TypeError("release completion evidence is required");
-  }
-  const planRevision = String(value.planRevision ?? "").trim();
-  if (!planRevision || planRevision !== expectedPlanRevision) {
-    throw new Error("release completion evidence does not match the release plan revision");
-  }
-  return {
-    planRevision,
-    expectedRevision: String(value.expectedRevision ?? "").trim() || null,
-    verificationSummary: String(value.verificationSummary ?? "").trim().slice(0, 2_000),
-    conflictsResolved: value.conflictsResolved === true,
-  };
-}
-
 function mcpOperationFromRow(row) {
   if (!row) return null;
   let result = null;
@@ -629,6 +288,7 @@ export class WorkspaceCatalogStore {
   async load() {
     await this.#open();
     this.#migrateReleaseWorkflowSettings();
+    this.#migrateArchitectStreamSettings();
     this.ensureExperiments();
     return this;
   }
@@ -668,33 +328,6 @@ export class WorkspaceCatalogStore {
   #nowMs() {
     const value = Number(this.#now());
     return Number.isSafeInteger(value) && value > 0 ? value : Date.now();
-  }
-
-  #changeSetWithDetails(row) {
-    const changeSet = changeSetFromRow(row);
-    if (!changeSet) return null;
-    return {
-      ...changeSet,
-      observations: this.#database.prepare(`
-        SELECT * FROM hub_release_turn_observations
-        WHERE change_set_id = ? ORDER BY created_at_ms, id
-      `).all(changeSet.id).map(turnObservationFromRow),
-      files: this.#database.prepare(`
-        SELECT * FROM hub_release_change_set_files
-        WHERE change_set_id = ? ORDER BY project_root, file_path
-      `).all(changeSet.id).map(changeSetFileFromRow),
-    };
-  }
-
-  #recordChangeSetEvent({ workspaceId, changeSetId, actorStreamId = null, type, payload = {} }) {
-    this.#database.prepare(`
-      INSERT INTO hub_release_change_set_events
-        (id, workspace_id, change_set_id, actor_stream_id, event_type, payload_json, created_at_ms)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      this.#idFactory(), workspaceId, changeSetId, actorStreamId,
-      String(type), JSON.stringify(payload ?? {}), this.#nowMs(),
-    );
   }
 
   #migrateReleaseWorkflowSettings() {
@@ -799,7 +432,7 @@ export class WorkspaceCatalogStore {
     return this.workspace(id);
   }
 
-  updateWorkspaceSettings(workspaceId, settings = {}, { discardReleaseEntries = false } = {}) {
+  updateWorkspaceSettings(workspaceId, settings = {}) {
     const id = safeIdentifier(workspaceId, "workspace id");
     const current = this.workspace(id);
     if (!current) throw new Error(`workspace not found: ${id}`);
@@ -811,97 +444,15 @@ export class WorkspaceCatalogStore {
       ? releaseWorkflowEnabled(settings)
       : releaseWorkflowEnabled(current.settings);
     const nextSettings = workspaceSettingsWithReleaseWorkflow(settings, enabled);
-    const pending = this.#releaseWorkflowPending(id);
-    if (explicitReleaseWorkflow && !enabled && pending.total > 0 && discardReleaseEntries !== true) {
-      return {
-        ...current,
-        releaseWorkflowUpdate: {
-          updated: false,
-          requiresDiscardConfirmation: true,
-          ...pending,
-        },
-      };
-    }
-    return this.#transaction(() => {
-      const discarded = !enabled && discardReleaseEntries === true
-        ? this.#discardReleaseWorkflowEntries(id)
-        : { legacyCount: 0, changeSetCount: 0, total: 0 };
-      this.#database.prepare(`
-        UPDATE hub_workspaces SET settings_json = ?, updated_at_ms = ? WHERE id = ?
-      `).run(JSON.stringify(nextSettings), this.#nowMs(), id);
-      if (discarded.total > 0) {
-        this.recordWorkspaceEvent({
-          workspaceId: id,
-          type: "release.workflow_disabled",
-          subjectId: id,
-          payload: discarded,
-        });
-      }
-      return {
-        ...this.workspace(id),
-        releaseWorkflowUpdate: {
-          updated: true,
-          requiresDiscardConfirmation: false,
-          discarded,
-        },
-      };
-    });
+    this.#database.prepare(`
+      UPDATE hub_workspaces SET settings_json = ?, updated_at_ms = ? WHERE id = ?
+    `).run(JSON.stringify(nextSettings), this.#nowMs(), id);
+    return this.workspace(id);
   }
 
   releaseWorkflowEnabledForThread(value) {
     const resolved = this.resolveThread(value);
     return resolved ? releaseWorkflowEnabled(this.workspace(resolved.workspaceId)?.settings) : false;
-  }
-
-  #releaseWorkflowPending(workspaceId) {
-    const legacyCount = Number(this.#database.prepare(`
-      SELECT COUNT(*) AS value FROM hub_release_changes
-      WHERE workspace_id = ? AND status NOT IN ('released', 'discarded')
-    `).get(workspaceId)?.value) || 0;
-    const changeSetCount = Number(this.#database.prepare(`
-      SELECT COUNT(*) AS value FROM hub_release_change_sets
-      WHERE workspace_id = ? AND status IN ('draft', 'ready')
-    `).get(workspaceId)?.value) || 0;
-    return { legacyCount, changeSetCount, total: legacyCount + changeSetCount };
-  }
-
-  #discardReleaseWorkflowEntries(workspaceId) {
-    const pending = this.#releaseWorkflowPending(workspaceId);
-    if (!pending.total) return pending;
-    const nowMs = this.#nowMs();
-    const changeSets = this.#database.prepare(`
-      SELECT id, owner_stream_id, status FROM hub_release_change_sets
-      WHERE workspace_id = ? AND status IN ('draft', 'ready')
-    `).all(workspaceId);
-    this.#database.prepare(`
-      UPDATE hub_release_changes SET status = 'discarded', updated_at_ms = ?
-      WHERE workspace_id = ? AND status NOT IN ('released', 'discarded')
-    `).run(nowMs, workspaceId);
-    const discardChangeSet = this.#database.prepare(`
-      UPDATE hub_release_change_sets
-      SET status = 'discarded', release_batch_id = NULL, updated_at_ms = ?
-      WHERE id = ?
-    `);
-    const clearBinding = this.#database.prepare(
-      "DELETE FROM hub_release_change_set_bindings WHERE change_set_id = ?",
-    );
-    for (const changeSet of changeSets) {
-      discardChangeSet.run(nowMs, changeSet.id);
-      clearBinding.run(changeSet.id);
-      this.#recordChangeSetEvent({
-        workspaceId,
-        changeSetId: changeSet.id,
-        actorStreamId: null,
-        type: "changeset.discarded",
-        payload: {
-          fromStatus: String(changeSet.status),
-          toStatus: "discarded",
-          authorizationSource: "workspace-release-workflow",
-          reason: "Workspace release workflow disabled by the user",
-        },
-      });
-    }
-    return pending;
   }
 
   workspaceDeveloperRules(workspaceId) {
@@ -916,595 +467,23 @@ export class WorkspaceCatalogStore {
     return this.#updateDeveloperRules("workspace", id, content);
   }
 
-  recordChangeSetObservation({
-    workspaceId, ownerStreamId, taskId = null, changeSetId = null, generatedChangeSetId,
-    provider, threadId, turnId, projectRoot = "", summary = "", observedStatus = "completed",
-    files = [], diffHash = "", legacyChangeId = null,
-  } = {}) {
-    const normalizedWorkspaceId = safeIdentifier(workspaceId, "workspace id");
-    const normalizedOwnerStreamId = safeIdentifier(ownerStreamId, "owner Stream id");
-    const owner = this.stream(normalizedOwnerStreamId);
-    if (!owner || owner.workspaceId !== normalizedWorkspaceId) throw new Error("ChangeSet owner is outside the Workspace");
-    if (!releaseWorkflowEnabled(this.workspace(normalizedWorkspaceId)?.settings)) return null;
-    const normalizedProviderIdentity = normalizedThreadIdentity({ provider, threadId });
-    const normalizedTurnId = safeIdentifier(turnId, "turn id");
-    const normalizedTaskId = normalizedDashboardTaskId(taskId);
-    const requestedChangeSetId = changeSetId == null || String(changeSetId).trim() === ""
-      ? null
-      : normalizedChangeSetId(changeSetId);
-    const fallbackChangeSetId = normalizedChangeSetId(generatedChangeSetId);
-    const normalizedFiles = releaseChangeFiles(files);
-    if (!normalizedFiles.length) return null;
-    const nowMs = this.#nowMs();
-    return this.#transaction(() => {
-      const replay = this.#database.prepare(`
-        SELECT change_set_id FROM hub_release_turn_observations
-        WHERE provider = ? AND provider_thread_id = ? AND turn_id = ?
-      `).get(normalizedProviderIdentity.provider, normalizedProviderIdentity.threadId, normalizedTurnId);
-      if (replay) return this.changeSet(replay.change_set_id);
-
-      let row = null;
-      if (normalizedTaskId) {
-        row = this.#database.prepare(`
-          SELECT * FROM hub_release_change_sets WHERE workspace_id = ? AND logical_key = ?
-        `).get(normalizedWorkspaceId, changeSetLogicalKey({ taskId: normalizedTaskId, changeSetId: fallbackChangeSetId }));
-      } else if (requestedChangeSetId) {
-        row = this.#database.prepare("SELECT * FROM hub_release_change_sets WHERE id = ?")
-          .get(requestedChangeSetId);
-      } else {
-        row = this.#database.prepare(`
-          SELECT change_set.* FROM hub_release_change_set_bindings binding
-          JOIN hub_release_change_sets change_set ON change_set.id = binding.change_set_id
-          WHERE binding.stream_id = ? AND change_set.status = 'draft'
-        `).get(normalizedOwnerStreamId);
+  #migrateArchitectStreamSettings() {
+    const key = "architect_stream_settings_migrated_v1";
+    if (this.#database.prepare("SELECT 1 FROM hub_workspace_catalog_meta WHERE key = ?").get(key)) return;
+    this.#transaction(() => {
+      const update = this.#database.prepare("UPDATE hub_streams SET settings_json = ? WHERE id = ?");
+      for (const row of this.#database.prepare("SELECT id, name, settings_json FROM hub_streams").all()) {
+        let settings = {};
+        try { settings = JSON.parse(String(row.settings_json ?? "{}")); } catch { settings = {}; }
+        const legacyArchitect = settings?.releaseRole === "architect" || String(row.name ?? "").trim() === "Architect";
+        const next = { ...(settings && typeof settings === "object" ? settings : {}) };
+        delete next.releaseRole;
+        if (next.architect === true || legacyArchitect) next.architect = true;
+        update.run(JSON.stringify(next), row.id);
       }
-      if (row && (String(row.workspace_id) !== normalizedWorkspaceId || String(row.owner_stream_id) !== normalizedOwnerStreamId)) {
-        throw new Error("ChangeSet belongs to another Workspace or owner Stream");
-      }
-      if (!row) {
-        const id = requestedChangeSetId ?? fallbackChangeSetId;
-        const logicalKey = changeSetLogicalKey({ taskId: normalizedTaskId, changeSetId: id });
-        this.#database.prepare(`
-          INSERT INTO hub_release_change_sets (
-            id, workspace_id, owner_stream_id, task_id, logical_key, title, status,
-            revision, manifest_hash, repository_evidence_json, created_at_ms, updated_at_ms
-          ) VALUES (?, ?, ?, ?, ?, ?, 'draft', 1, '', '[]', ?, ?)
-        `).run(
-          id, normalizedWorkspaceId, normalizedOwnerStreamId, normalizedTaskId, logicalKey,
-          String(summary ?? "").trim().slice(0, 500), nowMs, nowMs,
-        );
-        row = this.#database.prepare("SELECT * FROM hub_release_change_sets WHERE id = ?").get(id);
-        this.#recordChangeSetEvent({
-          workspaceId: normalizedWorkspaceId,
-          changeSetId: id,
-          actorStreamId: normalizedOwnerStreamId,
-          type: "changeset.created",
-          payload: { logicalKey, taskId: normalizedTaskId },
-        });
-      }
-      if (row.status !== "draft") throw new Error("frozen or closed ChangeSet cannot receive a new TurnObservation");
-
-      const observationId = this.#idFactory();
-      this.#database.prepare(`
-        INSERT INTO hub_release_turn_observations (
-          id, change_set_id, legacy_release_change_id, provider, provider_thread_id, turn_id,
-          project_root, summary, observed_status, files_json, diff_hash, created_at_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        observationId, row.id, legacyChangeId, normalizedProviderIdentity.provider,
-        normalizedProviderIdentity.threadId, normalizedTurnId, String(projectRoot ?? "").trim(),
-        String(summary ?? "").trim().slice(0, 500), String(observedStatus ?? "completed").trim().slice(0, 40),
-        JSON.stringify(normalizedFiles), String(diffHash ?? "").trim().slice(0, 128), nowMs,
-      );
-      this.#database.prepare(`
-        UPDATE hub_release_change_sets SET
-          title = CASE WHEN title = '' THEN ? ELSE title END,
-          updated_at_ms = ?
-        WHERE id = ?
-      `).run(String(summary ?? "").trim().slice(0, 500), nowMs, row.id);
-      this.#database.prepare(`
-        INSERT INTO hub_release_change_set_bindings (stream_id, change_set_id, updated_at_ms)
-        VALUES (?, ?, ?)
-        ON CONFLICT(stream_id) DO UPDATE SET
-          change_set_id = excluded.change_set_id,
-          updated_at_ms = excluded.updated_at_ms
-      `).run(normalizedOwnerStreamId, row.id, nowMs);
-      this.#recordChangeSetEvent({
-        workspaceId: normalizedWorkspaceId,
-        changeSetId: row.id,
-        actorStreamId: normalizedOwnerStreamId,
-        type: "changeset.turn_observed",
-        payload: {
-          observationId,
-          provider: normalizedProviderIdentity.provider,
-          threadId: normalizedProviderIdentity.threadId,
-          turnId: normalizedTurnId,
-          legacyChangeId,
-        },
-      });
-      return this.changeSet(row.id);
-    });
-  }
-
-  changeSet(changeSetId) {
-    const id = normalizedChangeSetId(changeSetId);
-    return this.#changeSetWithDetails(
-      this.#database.prepare("SELECT * FROM hub_release_change_sets WHERE id = ?").get(id),
-    );
-  }
-
-  changeSets(workspaceId, { includeClosed = false, limit = 100 } = {}) {
-    const id = safeIdentifier(workspaceId, "workspace id");
-    if (!this.workspace(id)) throw new Error(`workspace not found: ${id}`);
-    const boundedLimit = Math.max(1, Math.min(500, Number(limit) || 100));
-    const statusClause = includeClosed ? "" : "AND status NOT IN ('released', 'discarded')";
-    return this.#database.prepare(`
-      SELECT * FROM hub_release_change_sets
-      WHERE workspace_id = ? ${statusClause}
-      ORDER BY updated_at_ms DESC, id LIMIT ?
-    `).all(id, boundedLimit).map((row) => this.#changeSetWithDetails(row));
-  }
-
-  replaceDraftChangeSetFiles(changeSetId, { actorStreamId, files = [] } = {}) {
-    const id = normalizedChangeSetId(changeSetId);
-    const actor = safeIdentifier(actorStreamId, "actor Stream id");
-    const normalizedFiles = normalizedDraftChangeSetFiles(files);
-    const nowMs = this.#nowMs();
-    return this.#transaction(() => {
-      const current = changeSetFromRow(this.#database.prepare(
-        "SELECT * FROM hub_release_change_sets WHERE id = ?",
-      ).get(id));
-      if (!current) throw new Error(`ChangeSet not found: ${id}`);
-      if (current.status !== "draft") throw new Error("only a draft ChangeSet file selection can be changed");
-      if (current.ownerStreamId !== actor) throw new Error("only the owner Stream can change this ChangeSet");
-      this.#database.prepare("DELETE FROM hub_release_change_set_files WHERE change_set_id = ?").run(id);
-      const insertFile = this.#database.prepare(`
-        INSERT INTO hub_release_change_set_files (
-          change_set_id, project_root, file_path, evidence_state, operation,
-          base_blob, result_blob, patch_hash, source_observation_id, updated_at_ms
-        ) VALUES (?, ?, ?, 'observed', 'observed', NULL, NULL, '', NULL, ?)
-      `);
-      for (const file of normalizedFiles) insertFile.run(id, file.projectRoot, file.path, nowMs);
-      this.#database.prepare(`
-        UPDATE hub_release_change_sets SET revision = revision + 1, updated_at_ms = ? WHERE id = ?
-      `).run(nowMs, id);
-      this.#recordChangeSetEvent({
-        workspaceId: current.workspaceId,
-        changeSetId: id,
-        actorStreamId: actor,
-        type: "changeset.files_replaced",
-        payload: { files: normalizedFiles },
-      });
-      return this.changeSet(id);
-    });
-  }
-
-  freezeChangeSet(changeSetId, {
-    actorStreamId, title = "", manifest, verification, architectOverride = false, reason = "",
-  } = {}) {
-    const id = normalizedChangeSetId(changeSetId);
-    const actor = safeIdentifier(actorStreamId, "actor Stream id");
-    if (!manifest?.manifestHash || !Array.isArray(manifest.repositories) || !Array.isArray(manifest.files)) {
-      throw new Error("freeze requires a complete immutable manifest");
-    }
-    if (!verification?.verifier?.name || !verification?.verifier?.version) {
-      throw new Error("freeze requires server-side verification evidence");
-    }
-    const nowMs = this.#nowMs();
-    return this.#transaction(() => {
-      const current = changeSetFromRow(this.#database.prepare(
-        "SELECT * FROM hub_release_change_sets WHERE id = ?",
-      ).get(id));
-      if (!current) throw new Error(`ChangeSet not found: ${id}`);
-      if (current.status !== "draft") throw new Error("only a draft ChangeSet can be frozen");
-      if (current.revision !== manifest.revision) throw new Error("ChangeSet revision changed before freeze");
-      this.#database.prepare("DELETE FROM hub_release_change_set_files WHERE change_set_id = ?").run(id);
-      const insertFile = this.#database.prepare(`
-        INSERT INTO hub_release_change_set_files (
-          change_set_id, project_root, file_path, evidence_state, operation,
-          base_blob, result_blob, patch_hash, source_observation_id, updated_at_ms
-        ) VALUES (?, ?, ?, 'frozen', ?, ?, ?, ?, NULL, ?)
-      `);
-      for (const file of manifest.files) {
-        insertFile.run(
-          id, file.projectRoot, file.path, file.operation, file.baseBlob,
-          file.resultBlob, file.patchHash, nowMs,
-        );
-      }
-      this.#database.prepare(`
-        UPDATE hub_release_change_sets SET
-          title = CASE WHEN ? = '' THEN title ELSE ? END,
-          status = 'ready', manifest_hash = ?, repository_evidence_json = ?,
-          frozen_at_ms = ?, updated_at_ms = ?
-        WHERE id = ?
-      `).run(
-        String(title ?? "").trim(), String(title ?? "").trim().slice(0, 500),
-        manifest.manifestHash, JSON.stringify(manifest.repositories), nowMs, nowMs, id,
-      );
-      this.#database.prepare("DELETE FROM hub_release_change_set_bindings WHERE change_set_id = ?").run(id);
-      this.#recordChangeSetEvent({
-        workspaceId: current.workspaceId,
-        changeSetId: id,
-        actorStreamId: actor,
-        type: "changeset.frozen",
-        payload: {
-          manifestHash: manifest.manifestHash,
-          revision: current.revision,
-          verification,
-          architectOverride: architectOverride === true,
-          reason: String(reason ?? "").trim().slice(0, 1_000),
-        },
-      });
-      return this.changeSet(id);
-    });
-  }
-
-  transitionChangeSet(changeSetId, {
-    actorStreamId, status, reason = "", architectOverride = false, authorizationSource = "",
-  } = {}) {
-    const id = normalizedChangeSetId(changeSetId);
-    const actor = safeIdentifier(actorStreamId, "actor Stream id");
-    const nextStatus = normalizedChangeSetStatus(status);
-    if (!['draft', 'discarded'].includes(nextStatus)) {
-      throw new Error("ChangeSet ready requires freeze and released requires ReleaseBatch completion");
-    }
-    const nowMs = this.#nowMs();
-    return this.#transaction(() => {
-      const current = changeSetFromRow(this.#database.prepare(
-        "SELECT * FROM hub_release_change_sets WHERE id = ?",
-      ).get(id));
-      if (!current) throw new Error(`ChangeSet not found: ${id}`);
-      if (['released', 'discarded'].includes(current.status)) throw new Error("closed ChangeSet is immutable");
-      if (current.status === nextStatus) return this.changeSet(id);
-      if (nextStatus === 'draft') {
-        if (current.status !== 'ready') throw new Error("only a ready ChangeSet can be reopened");
-        this.#database.prepare(`
-          UPDATE hub_release_change_sets SET
-            status = 'draft', revision = revision + 1, manifest_hash = '',
-            repository_evidence_json = '[]', frozen_at_ms = NULL,
-            release_batch_id = NULL, updated_at_ms = ?
-          WHERE id = ?
-        `).run(nowMs, id);
-        this.#database.prepare("DELETE FROM hub_release_change_set_files WHERE change_set_id = ?").run(id);
-        this.#database.prepare(`
-          INSERT INTO hub_release_change_set_bindings (stream_id, change_set_id, updated_at_ms)
-          VALUES (?, ?, ?)
-          ON CONFLICT(stream_id) DO UPDATE SET
-            change_set_id = excluded.change_set_id,
-            updated_at_ms = excluded.updated_at_ms
-        `).run(current.ownerStreamId, id, nowMs);
-      } else {
-        this.#database.prepare(`
-          UPDATE hub_release_change_sets SET status = 'discarded', updated_at_ms = ? WHERE id = ?
-        `).run(nowMs, id);
-        this.#database.prepare("DELETE FROM hub_release_change_set_bindings WHERE change_set_id = ?").run(id);
-      }
-      this.#recordChangeSetEvent({
-        workspaceId: current.workspaceId,
-        changeSetId: id,
-        actorStreamId: actor,
-        type: nextStatus === 'draft' ? "changeset.reopened" : "changeset.discarded",
-        payload: {
-          fromStatus: current.status,
-          toStatus: nextStatus,
-          architectOverride: architectOverride === true,
-          authorizationSource: String(authorizationSource ?? ""),
-          reason: String(reason ?? "").trim().slice(0, 1_000),
-        },
-      });
-      return this.changeSet(id);
-    });
-  }
-
-  recordReleaseBatch(value = {}) {
-    const batch = normalizedReleaseBatch(value);
-    if (!this.workspace(batch.workspaceId)) throw new Error(`workspace not found: ${batch.workspaceId}`);
-    const nowMs = this.#nowMs();
-    return this.#transaction(() => {
-      const changes = batch.changeSetIds.map((id) => this.changeSet(id));
-      if (changes.some((changeSet) => !changeSet || changeSet.workspaceId !== batch.workspaceId)) {
-        throw new Error("ReleaseBatch contains a ChangeSet outside the Workspace");
-      }
-      if (changes.some((changeSet) => changeSet.status !== "ready" || !changeSet.manifestHash)) {
-        throw new Error("ReleaseBatch requires frozen ready ChangeSets");
-      }
-      this.#database.prepare(`
-        INSERT INTO hub_release_batches (
-          id, workspace_id, plan_revision, change_set_ids_json, repository_revisions_json,
-          publication_evidence_json, deployment_evidence_json, status, created_at_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'prepared', ?)
-      `).run(
-        batch.id, batch.workspaceId, batch.planRevision, JSON.stringify(batch.changeSetIds),
-        JSON.stringify(batch.repositoryRevisions), JSON.stringify(batch.publicationEvidence),
-        JSON.stringify(batch.deploymentEvidence), nowMs,
-      );
-      const link = this.#database.prepare(`
-        UPDATE hub_release_change_sets SET release_batch_id = ?, updated_at_ms = ? WHERE id = ?
-      `);
-      for (const changeSet of changes) {
-        link.run(batch.id, nowMs, changeSet.id);
-        this.#recordChangeSetEvent({
-          workspaceId: batch.workspaceId,
-          changeSetId: changeSet.id,
-          actorStreamId: null,
-          type: "changeset.release_batch_prepared",
-          payload: { releaseBatchId: batch.id, planRevision: batch.planRevision },
-        });
-      }
-      return releaseBatchFromRow(this.#database.prepare(
-        "SELECT * FROM hub_release_batches WHERE id = ?",
-      ).get(batch.id));
-    });
-  }
-
-  releaseBatches(workspaceId, { limit = 50 } = {}) {
-    const id = safeIdentifier(workspaceId, "workspace id");
-    if (!this.workspace(id)) throw new Error(`workspace not found: ${id}`);
-    const boundedLimit = Math.max(1, Math.min(100, Number(limit) || 50));
-    return this.#database.prepare(`
-      SELECT * FROM hub_release_batches WHERE workspace_id = ?
-      ORDER BY created_at_ms DESC, id LIMIT ?
-    `).all(id, boundedLimit).map(releaseBatchFromRow);
-  }
-
-  changeSetEvents(changeSetId) {
-    const id = normalizedChangeSetId(changeSetId);
-    return this.#database.prepare(`
-      SELECT * FROM hub_release_change_set_events WHERE change_set_id = ?
-      ORDER BY created_at_ms, id
-    `).all(id).map(changeSetEventFromRow);
-  }
-
-  legacyReleaseChangeCoverage(workspaceId) {
-    const id = safeIdentifier(workspaceId, "workspace id");
-    if (!this.workspace(id)) throw new Error(`workspace not found: ${id}`);
-    return this.#database.prepare(`
-      SELECT DISTINCT observation.legacy_release_change_id AS id
-      FROM hub_release_turn_observations observation
-      JOIN hub_release_change_sets change_set ON change_set.id = observation.change_set_id
-      WHERE change_set.workspace_id = ? AND observation.legacy_release_change_id IS NOT NULL
-    `).all(id).map((row) => String(row.id));
-  }
-
-  recordReleaseChange({
-    provider, threadId, turnId, projectRoot = "", summary = "", changedFiles = [], diffHash = "",
-    status = "draft",
-  } = {}) {
-    const identity = normalizedThreadIdentity({ provider, threadId });
-    const resolved = this.resolveThread(identity);
-    const normalizedTurnId = safeIdentifier(turnId, "turn id");
-    const files = releaseChangeFiles(changedFiles);
-    if (!resolved || !files.length) return null;
-    if (!releaseWorkflowEnabled(this.workspace(resolved.workspaceId)?.settings)) return null;
-    const normalizedStatus = releaseChangeStatus(status);
-    const selectedFiles = normalizedStatus === "ready" ? files : [];
-    const nowMs = this.#nowMs();
-    return this.#transaction(() => {
-      this.#database.prepare(`
-      INSERT INTO hub_release_changes (
-        id, workspace_id, stream_id, provider, provider_thread_id, turn_id,
-        project_root, summary, files_json, observed_files_json, diff_hash, status, revision, created_at_ms, updated_at_ms
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
-      ON CONFLICT(provider, provider_thread_id, turn_id) DO UPDATE SET
-        workspace_id = CASE WHEN hub_release_changes.status = 'draft' THEN excluded.workspace_id ELSE hub_release_changes.workspace_id END,
-        stream_id = CASE WHEN hub_release_changes.status = 'draft' THEN excluded.stream_id ELSE hub_release_changes.stream_id END,
-        project_root = CASE WHEN hub_release_changes.status = 'draft' THEN excluded.project_root ELSE hub_release_changes.project_root END,
-        summary = CASE WHEN hub_release_changes.status = 'draft' THEN excluded.summary ELSE hub_release_changes.summary END,
-        files_json = CASE
-          WHEN hub_release_changes.status = 'draft' AND excluded.status = 'ready' THEN excluded.files_json
-          ELSE hub_release_changes.files_json
-        END,
-        observed_files_json = CASE WHEN hub_release_changes.status = 'draft' THEN excluded.observed_files_json ELSE hub_release_changes.observed_files_json END,
-        diff_hash = CASE WHEN hub_release_changes.status = 'draft' THEN excluded.diff_hash ELSE hub_release_changes.diff_hash END,
-        status = CASE
-          WHEN hub_release_changes.status = 'draft' THEN excluded.status
-          ELSE hub_release_changes.status
-        END,
-        revision = CASE WHEN hub_release_changes.status = 'draft' THEN hub_release_changes.revision + 1 ELSE hub_release_changes.revision END,
-        updated_at_ms = CASE WHEN hub_release_changes.status = 'draft' THEN excluded.updated_at_ms ELSE hub_release_changes.updated_at_ms END
-      `).run(
-        this.#idFactory(), resolved.workspaceId, resolved.streamId,
-        identity.provider, identity.threadId, normalizedTurnId,
-        String(projectRoot ?? "").trim(), String(summary ?? "").trim().slice(0, 500),
-        JSON.stringify(selectedFiles), JSON.stringify(files), String(diffHash ?? "").trim().slice(0, 128),
-        normalizedStatus, nowMs, nowMs,
-      );
-      const change = this.releaseChange({ ...identity, turnId: normalizedTurnId });
-      this.recordWorkspaceEvent({
-        workspaceId: change.workspaceId,
-        streamId: change.streamId,
-        type: "release.change_recorded",
-        subjectId: change.id,
-        dedupeKey: `release.change_recorded:${change.id}`,
-        payload: {
-          changeId: change.id,
-          status: change.status,
-          files: change.files,
-          observedFiles: change.observedFiles,
-        },
-      });
-      return change;
-    });
-  }
-
-  releaseChange({ provider, threadId, turnId } = {}) {
-    const identity = normalizedThreadIdentity({ provider, threadId });
-    const normalizedTurnId = safeIdentifier(turnId, "turn id");
-    return releaseChangeFromRow(this.#database.prepare(`
-      SELECT * FROM hub_release_changes
-      WHERE provider = ? AND provider_thread_id = ? AND turn_id = ?
-    `).get(identity.provider, identity.threadId, normalizedTurnId));
-  }
-
-  releaseChanges(workspaceId, { includeReleased = false, limit = null } = {}) {
-    const id = safeIdentifier(workspaceId, "workspace id");
-    if (!this.workspace(id)) throw new Error(`workspace not found: ${id}`);
-    const boundedLimit = limit == null ? null : Math.max(1, Math.min(100, Number(limit) || 50));
-    const statusClause = includeReleased ? "" : "AND status NOT IN ('released', 'discarded')";
-    const limitClause = boundedLimit == null ? "" : "LIMIT ?";
-    const statement = this.#database.prepare(`SELECT * FROM hub_release_changes
-      WHERE workspace_id = ? ${statusClause}
-      ORDER BY updated_at_ms DESC, id ${limitClause}`);
-    const rows = boundedLimit == null ? statement.all(id) : statement.all(id, boundedLimit);
-    return rows.map(releaseChangeFromRow);
-  }
-
-  updateReleaseChangeStatus(changeId, status) {
-    const id = safeIdentifier(changeId, "release change id");
-    return this.#transaction(() => {
-      const current = releaseChangeFromRow(this.#database.prepare(
-        "SELECT * FROM hub_release_changes WHERE id = ?",
-      ).get(id));
-      if (!current) throw new Error(`release change not found: ${id}`);
-      if (current.status === "released") throw new Error("released release change is immutable");
-      const nextStatus = releaseChangeStatus(status);
-      if (nextStatus === "ready" && !current.files.length) {
-        throw new Error("ready release change requires an explicit file selection");
-      }
-      const result = this.#database.prepare(`
-        UPDATE hub_release_changes SET status = ?, updated_at_ms = ? WHERE id = ?
-      `).run(nextStatus, this.#nowMs(), id);
-      if (!Number(result.changes)) throw new Error(`release change not found: ${id}`);
-      const change = releaseChangeFromRow(this.#database.prepare(
-        "SELECT * FROM hub_release_changes WHERE id = ?",
-      ).get(id));
-      this.recordWorkspaceEvent({
-        workspaceId: change.workspaceId,
-        streamId: change.streamId,
-        type: "release.status_changed",
-        subjectId: change.id,
-        payload: { changeId: change.id, status: change.status },
-      });
-      return change;
-    });
-  }
-
-  updateReleaseChangeFiles(changeId, files = []) {
-    const id = safeIdentifier(changeId, "release change id");
-    const normalizedFiles = releaseChangeFiles(files);
-    return this.#transaction(() => {
-      const current = releaseChangeFromRow(this.#database.prepare(
-        "SELECT * FROM hub_release_changes WHERE id = ?",
-      ).get(id));
-      if (!current) throw new Error(`release change not found: ${id}`);
-      if (["released", "discarded"].includes(current.status)) throw new Error("closed release change is immutable");
-      this.#database.prepare(`
-        UPDATE hub_release_changes SET files_json = ?, status = 'draft', revision = revision + 1,
-          updated_at_ms = ? WHERE id = ?
-      `).run(JSON.stringify(normalizedFiles), this.#nowMs(), id);
-      const change = releaseChangeFromRow(this.#database.prepare(
-        "SELECT * FROM hub_release_changes WHERE id = ?",
-      ).get(id));
-      this.recordWorkspaceEvent({
-        workspaceId: change.workspaceId,
-        streamId: change.streamId,
-        type: "release.files_replaced",
-        subjectId: change.id,
-        payload: { changeId: change.id, files: change.files },
-      });
-      return change;
-    });
-  }
-
-  #releaseConflicts(changes) {
-    const ownersByFile = new Map();
-    for (const change of changes) {
-      for (const file of change.files) {
-        if (sharedReleaseChangelog(change.projectRoot, file)) continue;
-        const key = canonicalReleaseFileIdentity(change.projectRoot, file);
-        const owners = ownersByFile.get(key) ?? { projectRoot: change.projectRoot, file, changes: [] };
-        owners.changes.push({ id: change.id, streamId: change.streamId, status: change.status });
-        ownersByFile.set(key, owners);
-      }
-    }
-    const statusOrder = new Map([["ready", 0], ["draft", 1], ["blocked", 2]]);
-    return [...ownersByFile.values()].map((entry) => ({
-      ...entry,
-      changes: entry.changes.toSorted((left, right) => (
-        (statusOrder.get(left.status) ?? 3) - (statusOrder.get(right.status) ?? 3)
-        || left.id.localeCompare(right.id)
-      )),
-    })).filter((entry) => {
-      const streams = new Set(entry.changes.map((change) => change.streamId));
-      const statuses = new Set(entry.changes.map((change) => change.status));
-      return streams.size > 1 || (statuses.has("ready") && statuses.size > 1);
-    });
-  }
-
-  releaseRegistry(workspaceId, { limit = 50 } = {}) {
-    const allChanges = this.releaseChanges(workspaceId);
-    const pending = this.#releaseWorkflowPending(safeIdentifier(workspaceId, "workspace id"));
-    const changes = allChanges.slice(0, Math.max(1, Math.min(100, Number(limit) || 50)));
-    const visibleIds = new Set(changes.map((change) => change.id));
-    return {
-      workspaceId: safeIdentifier(workspaceId, "workspace id"),
-      changes,
-      total: allChanges.length,
-      changeSetTotal: pending.changeSetCount,
-      pendingTotal: pending.total,
-      counts: Object.fromEntries([...RELEASE_CHANGE_STATUSES].map((status) => [
-        status, allChanges.filter((change) => change.status === status).length,
-      ])),
-      conflicts: this.#releaseConflicts(allChanges)
-        .filter((conflict) => conflict.changes.some((change) => visibleIds.has(change.id)))
-        .map((conflict) => ({
-          ...conflict,
-          ownerCount: conflict.changes.length,
-          changes: conflict.changes.filter((change) => visibleIds.has(change.id)),
-        })),
-    };
-  }
-
-  releasePlan(workspaceId) {
-    const changes = this.releaseChanges(workspaceId);
-    const normalizedWorkspaceId = safeIdentifier(workspaceId, "workspace id");
-    const ready = changes.filter((change) => change.status === "ready");
-    return {
-      workspaceId: normalizedWorkspaceId,
-      revision: releasePlanRevision(normalizedWorkspaceId, changes),
-      ready,
-      draft: changes.filter((change) => change.status === "draft"),
-      blocked: changes.filter((change) => change.status === "blocked"),
-      conflicts: this.#releaseConflicts(changes),
-    };
-  }
-
-  completeRelease(workspaceId, {
-    expectedPlanRevision = null, verificationEvidence = null, conflictsResolved = false,
-  } = {}) {
-    const expected = expectedPlanRevision == null ? null : String(expectedPlanRevision).trim();
-    if (expectedPlanRevision != null && !expected) throw new Error("expected release plan revision is required");
-    return this.#transaction(() => {
-      const plan = this.releasePlan(workspaceId);
-      if (expected && plan.revision !== expected) {
-        throw new Error("release plan revision conflict; verify the current release plan again");
-      }
-      const evidence = expected ? releaseCompletionEvidence(verificationEvidence, expected) : null;
-      if (!plan.ready.length) throw new Error("release has no ready changes");
-      if (plan.blocked.length) throw new Error("release has blocked changes");
-      if (plan.conflicts.length && conflictsResolved !== true) throw new Error("release has overlapping files");
-      if (plan.conflicts.length && (!expected || evidence?.conflictsResolved !== true)) {
-        throw new Error("resolved release conflicts require revision-bound verification evidence");
-      }
-      const nowMs = this.#nowMs();
-      const update = this.#database.prepare(`
-        UPDATE hub_release_changes SET status = 'released', updated_at_ms = ? WHERE id = ?
-      `);
-      for (const change of plan.ready) update.run(nowMs, change.id);
-      const result = {
-        workspaceId: plan.workspaceId,
-        released: plan.ready.map((change) => ({ ...change, status: "released", updatedAtMs: nowMs })),
-      };
-      this.recordWorkspaceEvent({
-        workspaceId: plan.workspaceId,
-        type: "release.completed",
-        payload: {
-          changeIds: result.released.map((change) => change.id),
-          planRevision: plan.revision,
-          ...(evidence ? { verification: evidence } : {}),
-        },
-      });
-      return result;
+      this.#database.prepare(
+        "INSERT INTO hub_workspace_catalog_meta (key, value) VALUES (?, 'completed')",
+      ).run(key);
     });
   }
 
@@ -1746,9 +725,20 @@ export class WorkspaceCatalogStore {
     const id = safeIdentifier(streamId, "stream id");
     const stream = this.stream(id);
     if (!stream) return { workspace: null, stream: null };
+    const rawStreamRules = this.#developerRules("stream", stream.id);
+    const workspace = this.workspace(stream.workspaceId);
+    const streamContent = releaseWorkflowEnabled(workspace?.settings)
+      ? effectiveStreamDeveloperRules(rawStreamRules?.content ?? "", stream.settings)
+      : (rawStreamRules?.content ?? "");
     return {
       workspace: this.#effectiveWorkspaceDeveloperRules(stream.workspaceId),
-      stream: this.#developerRules("stream", stream.id),
+      stream: streamContent ? {
+        scopeType: "stream",
+        scopeId: stream.id,
+        revision: rawStreamRules?.revision ?? 0,
+        content: streamContent,
+        createdAtMs: rawStreamRules?.createdAtMs ?? 0,
+      } : rawStreamRules,
     };
   }
 
@@ -1780,6 +770,25 @@ export class WorkspaceCatalogStore {
     `).get(scope, id));
   }
 
+  #latestDeveloperRules() {
+    return new Map(this.#database.prepare(`
+      WITH latest AS (
+        SELECT scope_type, scope_id, MAX(revision) AS revision
+        FROM hub_developer_rule_revisions
+        GROUP BY scope_type, scope_id
+      )
+      SELECT rules.scope_type, rules.scope_id, rules.revision, rules.content, rules.created_at_ms
+      FROM hub_developer_rule_revisions AS rules
+      INNER JOIN latest
+        ON latest.scope_type = rules.scope_type
+        AND latest.scope_id = rules.scope_id
+        AND latest.revision = rules.revision
+    `).all().map((row) => [
+      `${row.scope_type}\0${row.scope_id}`,
+      developerRuleFromRow(row),
+    ]));
+  }
+
   #updateDeveloperRules(scopeType, scopeId, content) {
     const scope = developerRuleScope(scopeType);
     const id = safeIdentifier(scopeId, `${scope} id`);
@@ -1809,9 +818,6 @@ export class WorkspaceCatalogStore {
       UPDATE hub_streams
       SET workspace_id = ?, ordinal = ?, updated_at_ms = ? WHERE id = ?
     `).run(targetWorkspaceId, ordinal, this.#nowMs(), id);
-    this.#database.prepare(`
-      UPDATE hub_release_changes SET workspace_id = ?, updated_at_ms = ? WHERE stream_id = ?
-    `).run(targetWorkspaceId, this.#nowMs(), id);
     this.#compactOrdinals(stream.workspaceId);
     this.#removeEmptyWorkspace(stream.workspaceId);
     return this.stream(id);
@@ -2073,6 +1079,7 @@ export class WorkspaceCatalogStore {
     const threads = this.#database.prepare(`
       SELECT * FROM hub_threads ORDER BY stream_id, position
     `).all().map(threadFromRow);
+    const developerRules = this.#latestDeveloperRules();
     const streamCount = new Map();
     for (const row of streams) {
       streamCount.set(row.workspace_id, (streamCount.get(row.workspace_id) ?? 0) + 1);
@@ -2089,14 +1096,14 @@ export class WorkspaceCatalogStore {
       const values = streamsByWorkspace.get(stream.workspaceId) ?? [];
       values.push({
         ...stream,
-        developerRules: this.#developerRules("stream", stream.id),
+        developerRules: developerRules.get(`stream\0${stream.id}`) ?? null,
         threads: threadsByStream.get(stream.id) ?? [],
       });
       streamsByWorkspace.set(stream.workspaceId, values);
     }
     return workspaces.map((workspace) => ({
       ...workspace,
-      developerRules: this.#developerRules("workspace", workspace.id),
+      developerRules: developerRules.get(`workspace\0${workspace.id}`) ?? null,
       streams: streamsByWorkspace.get(workspace.id) ?? [],
     }));
   }

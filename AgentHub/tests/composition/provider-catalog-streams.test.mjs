@@ -55,7 +55,7 @@ test("a rotated empty Thread remains visible as the current Stream entry", () =>
     threadId: "new-thread",
     projectRoot: "D:\\Repo",
     projectName: "Repo",
-    title: "Agent HUB",
+    title: "",
     model: null,
     updatedAtMs: 0,
     running: false,

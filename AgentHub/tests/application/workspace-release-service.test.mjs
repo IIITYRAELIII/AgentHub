@@ -52,6 +52,15 @@ test("release completion verifies repositories before atomically closing ready c
       expectedRevision: "abc",
       verificationSummary: "Published and smoke-tested",
       conflictsResolved: false,
+      publication: {
+        repositories: [{ root: "D:/repo", revision: "abc" }],
+        verificationSummary: "Published and smoke-tested",
+        planRevision: "plan-1",
+      },
+      deployment: {
+        verified: true,
+        summary: "Published and smoke-tested",
+      },
     },
   });
 });

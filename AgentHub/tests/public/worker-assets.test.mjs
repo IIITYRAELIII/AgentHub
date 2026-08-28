@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import os from "node:os";
@@ -25,6 +26,38 @@ const { localAssetPathname, localAssetReferences } = require("../../client-asset
 const { loadThemeRegistry } = require("../../theme-registry.cjs");
 const ROOT = path.resolve(import.meta.dirname, "../..");
 
+function sha256(body) {
+  return createHash("sha256").update(body).digest("hex");
+}
+
+function syntheticAttachmentProbeResponse(target) {
+  const body = Buffer.from(Uint8Array.from(
+    { length: 128 * 1024 + 123 },
+    (_, index) => (index * 31 + 17) % 251,
+  ));
+  const chunks = Array.from({ length: Math.ceil(body.length / (16 * 1024)) }, (_, index) => {
+    const chunk = body.subarray(index * 16 * 1024, Math.min(body.length, (index + 1) * 16 * 1024));
+    return { body: chunk, hash: sha256(chunk), index, size: chunk.length };
+  });
+  if (target.searchParams.get("mode") === "manifest") {
+    return Response.json({
+      protocol: "agent-hub-attachment-chunks-v1",
+      id: "dashboard-transport-probe-v1",
+      size: body.length,
+      hash: sha256(body),
+      count: chunks.length,
+      chunkBytes: 16 * 1024,
+      page: 0,
+      pageCount: 1,
+      contentType: "application/octet-stream",
+      name: "dashboard-transport-probe.bin",
+      chunks: chunks.map(({ body: _body, ...descriptor }) => descriptor),
+    });
+  }
+  const chunk = chunks[Number(target.searchParams.get("index"))];
+  return new Response(chunk?.body ?? "missing", { status: chunk ? 200 : 404 });
+}
+
 test("Worker build packages the same shell and theme resources used by local clients", async () => {
   const output = await mkdtemp(path.join(os.tmpdir(), "agent-hub-worker-assets-"));
   try {
@@ -49,6 +82,9 @@ test("Worker build packages the same shell and theme resources used by local cli
     }
 
     const builtIndex = await readFile(path.join(output, "index.html"), "utf8");
+    assert.match(builtIndex, /https:\/\/home\.[^/]+\/app\.js\?v=[a-f0-9]{12}/u);
+    assert.match(builtIndex, /https:\/\/home\.[^/]+\/styles\.css\?v=[a-f0-9]{12}/u);
+    assert.ok(build.directShellAssets.get("/app.js")?.bytes > 100 * 1024);
     const catalogSource = builtIndex.match(/<script type="application\/json" data-theme-catalog>([^<]+)<\/script>/u)?.[1];
     assert.ok(catalogSource, "theme catalog");
     const catalog = JSON.parse(catalogSource);
@@ -75,37 +111,83 @@ test("Worker build packages the same shell and theme resources used by local cli
 
     const headers = await readFile(path.join(output, "_headers"), "utf8");
     assert.match(headers, /Content-Security-Policy:/u);
+    assert.match(headers, /script-src 'self' https:\/\/home\./u);
+    assert.match(headers, /style-src 'self' https:\/\/home\./u);
     assert.match(headers, /Cache-Control: no-store/u);
     const wrangler = JSON.parse(await readFile(path.join(ROOT, "cloudflare-worker", "wrangler.jsonc"), "utf8"));
     assert.equal(wrangler.assets.run_worker_first, false);
     let activeChunkReads = 0;
     let maximumChunkReads = 0;
+    const fixtureFetch = async (input, options) => {
+      const target = new URL(input);
+      if (target.hostname.startsWith("home.")) {
+        const body = await readFile(path.join(ROOT, "assets", "web-app", ...target.pathname.slice(1).split("/")));
+        return new Response(body, { status: 200 });
+      }
+      if (target.pathname === "/api/transport-probe/attachment") {
+        return syntheticAttachmentProbeResponse(target);
+      }
+      const pathname = target.pathname === "/" ? "/index.html" : target.pathname;
+      try {
+        if (pathname.endsWith(".b64")) {
+          assert.notEqual(options?.cache, "no-store", pathname);
+          activeChunkReads += 1;
+          maximumChunkReads = Math.max(maximumChunkReads, activeChunkReads);
+          await new Promise((resolve) => setImmediate(resolve));
+        }
+        const body = await readFile(path.join(output, ...pathname.slice(1).split("/")));
+        return new Response(body, { status: 200 });
+      } catch {
+        return new Response("Not Found", { status: 404 });
+      } finally {
+        if (pathname.endsWith(".b64")) activeChunkReads -= 1;
+      }
+    };
     const deployment = await verifyThemeDeployment({
       baseUrl: "https://agent-hub.test/",
       sourceRoot: path.join(ROOT, "assets", "web-app"),
       deployedRoot: output,
-      fetchImpl: async (input, options) => {
-        const target = new URL(input);
-        const pathname = target.pathname === "/" ? "/index.html" : target.pathname;
-        try {
-          if (pathname.endsWith(".b64")) {
-            assert.notEqual(options?.cache, "no-store", pathname);
-            activeChunkReads += 1;
-            maximumChunkReads = Math.max(maximumChunkReads, activeChunkReads);
-            await new Promise((resolve) => setImmediate(resolve));
-          }
-          const body = await readFile(path.join(output, ...pathname.slice(1).split("/")));
-          return new Response(body, { status: 200 });
-        } catch {
-          return new Response("Not Found", { status: 404 });
-        } finally {
-          if (pathname.endsWith(".b64")) activeChunkReads -= 1;
-        }
-      },
+      fetchImpl: fixtureFetch,
+      http1Fetch: fixtureFetch,
     });
     assert.ok(deployment.backgrounds > 3);
     assert.ok(deployment.sampledChunks >= deployment.backgrounds * 2);
     assert.equal(maximumChunkReads, 1);
+    assert.ok(deployment.largeStaticBytes > 100 * 1024);
+    assert.ok(deployment.attachmentProbeBytes > 100 * 1024);
+    assert.ok(deployment.attachmentProbeChunks > 1);
+
+    await assert.rejects(() => verifyThemeDeployment({
+      baseUrl: "https://agent-hub.test/",
+      sourceRoot: path.join(ROOT, "assets", "web-app"),
+      deployedRoot: output,
+      fetchImpl: fixtureFetch,
+      http1Fetch: async (input, options) => {
+        const response = await fixtureFetch(input, options);
+        if (!new URL(input).hostname.startsWith("home.")) return response;
+        const body = Buffer.from(await response.arrayBuffer());
+        return new Response(body.subarray(0, body.length - 1));
+      },
+      changedFiles: [],
+    }), /partial or damaged over HTTP\/1\.1/u);
+
+    await assert.rejects(() => verifyThemeDeployment({
+      baseUrl: "https://agent-hub.test/",
+      sourceRoot: path.join(ROOT, "assets", "web-app"),
+      deployedRoot: output,
+      fetchImpl: fixtureFetch,
+      http1Fetch: async (input, { signal } = {}) => {
+        if (!new URL(input).hostname.startsWith("home.")) return fixtureFetch(input);
+        return new Response(new ReadableStream({
+          start(controller) {
+            controller.enqueue(Buffer.from("partial"));
+            signal?.addEventListener("abort", () => controller.error(signal.reason), { once: true });
+          },
+        }));
+      },
+      changedFiles: [],
+      requestTimeoutMs: 20,
+    }), /abort|timeout/iu);
   } finally {
     await rm(output, { recursive: true, force: true });
   }

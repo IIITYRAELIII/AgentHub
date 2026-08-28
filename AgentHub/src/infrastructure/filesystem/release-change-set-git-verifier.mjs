@@ -130,15 +130,17 @@ function treeEntry(output, expectedPath) {
   return matches[0] ?? null;
 }
 
-async function verifiedCommit(projectRoot, revision, label, options) {
-  const resolved = await gitText(projectRoot, ["rev-parse", "--verify", `${revision}^{commit}`], options)
+async function verifiedRevision(projectRoot, revision, label, options) {
+  const type = await gitText(projectRoot, ["cat-file", "-t", revision], options)
     .catch((error) => {
-      throw new Error(`${label} revision does not exist as a commit: ${error.message}`);
+      throw new Error(`${label} revision does not exist: ${error.message}`);
     });
+  if (!new Set(["commit", "tree"]).has(type)) throw new Error(`${label} revision is neither a commit nor a tree`);
+  const resolved = await gitText(projectRoot, ["rev-parse", "--verify", revision], options);
   if (resolved.toLowerCase() !== revision) {
-    throw new Error(`${label} revision does not resolve to the claimed commit`);
+    throw new Error(`${label} revision does not resolve to the claimed object`);
   }
-  return resolved.toLowerCase();
+  return { revision: resolved.toLowerCase(), type };
 }
 
 async function verifyBlobExists(projectRoot, blob, label, options) {
@@ -182,6 +184,42 @@ export async function canonicalReleaseChangeSetDiffHash({
   return result;
 }
 
+export async function buildTaskReleaseTreeEvidence({ repositoryRevisions = [], changedFiles = [] } = {}, {
+  gitExecutable = "git",
+} = {}) {
+  const repositories = repositoryRevisions.map((repository) => ({
+    projectRoot: path.resolve(repository.projectRoot),
+    baseRevision: String(repository.baselineRevision ?? "").trim().toLowerCase(),
+    resultRevision: String(repository.resultRevision ?? "").trim().toLowerCase(),
+  }));
+  if (!repositories.length) throw new Error("Task has no recorded repository revisions");
+  const files = [];
+  for (const changedFile of changedFiles) {
+    const projectRoot = path.resolve(changedFile.projectRoot);
+    const repository = repositories.find((candidate) => comparablePath(candidate.projectRoot) === comparablePath(projectRoot));
+    if (!repository) throw new Error(`Task file has no recorded repository revision: ${changedFile.path}`);
+    const readBlob = async (revision) => {
+      const output = await runGit(projectRoot, [
+        "ls-tree", "-z", "--full-tree", revision, "--", literalPathspec(changedFile.path),
+      ], { gitExecutable });
+      return treeEntry(output, changedFile.path)?.object?.toLowerCase() ?? "absent";
+    };
+    const baseBlob = await readBlob(repository.baseRevision);
+    const resultBlob = await readBlob(repository.resultRevision);
+    const operation = baseBlob === "absent" ? "added" : resultBlob === "absent" ? "deleted" : "modified";
+    if (baseBlob === resultBlob) throw new Error(`Task file is unchanged in recorded repository trees: ${changedFile.path}`);
+    const patch = await canonicalReleaseChangeSetDiffHash({
+      projectRoot,
+      baseRevision: repository.baseRevision,
+      resultRevision: repository.resultRevision,
+      filePath: changedFile.path,
+      gitExecutable,
+    });
+    files.push({ projectRoot, path: changedFile.path, operation, baseBlob, resultBlob, patchHash: patch.hash });
+  }
+  return { repositories, files };
+}
+
 export async function verifyReleaseChangeSetGitEvidence(manifest, { gitExecutable = "git" } = {}) {
   if (!manifest?.manifestHash || !Array.isArray(manifest.repositories) || !Array.isArray(manifest.files)) {
     throw new Error("Git verifier requires a normalized frozen ChangeSet manifest");
@@ -205,10 +243,10 @@ export async function verifyReleaseChangeSetGitEvidence(manifest, { gitExecutabl
     if (repository.baseRevision.length !== expectedLength || repository.resultRevision.length !== expectedLength) {
       throw new Error(`repository revisions do not match Git object format ${objectFormat}`);
     }
-    const baseRevision = await verifiedCommit(
+    const base = await verifiedRevision(
       canonicalRoot, repository.baseRevision, "base", { gitExecutable },
     );
-    const resultRevision = await verifiedCommit(
+    const result = await verifiedRevision(
       canonicalRoot, repository.resultRevision, "result", { gitExecutable },
     );
     gitVersion ||= await gitText(canonicalRoot, ["--version"], { gitExecutable });
@@ -216,9 +254,9 @@ export async function verifyReleaseChangeSetGitEvidence(manifest, { gitExecutabl
       projectRoot: repository.projectRoot,
       canonicalRoot: normalizedEvidencePath(canonicalRoot),
       objectFormat,
-      baseRevision,
-      resultRevision,
-      revisionType: "commit",
+      baseRevision: base.revision,
+      resultRevision: result.revision,
+      revisionType: base.type === result.type ? base.type : `${base.type}->${result.type}`,
     });
   }
 

@@ -297,7 +297,9 @@ export class TaskCommandService {
 
   async rotate(params = {}) {
     const target = await this.resolveTarget(params);
-    if (target.provider !== "codex") throw new Error("Ротация пока доступна только для Codex");
+    if (!["codex", "claude"].includes(target.provider)) {
+      throw new Error(`Ротация не поддерживается для агента ${target.provider}`);
+    }
     if (this.runForTask(target)) throw new Error("Сначала завершите или остановите текущий ход");
     const binding = this.workspaceCatalog.thread({
       provider: target.provider,
@@ -314,6 +316,25 @@ export class TaskCommandService {
       stream.settings?.workingDirectory,
       workspace.settings?.workingDirectory,
     ].map((value) => String(value ?? "").trim()).find(Boolean) ?? "";
+    if (target.provider === "claude") {
+      const created = await this.create({
+        streamId: stream.id,
+        provider: "claude",
+        handoffReason: params.handoffReason ?? "manual-rotation",
+        ...(workingDirectory ? { workingDirectory } : {}),
+      });
+      const claudeThreadId = String(created?.createdTask?.threadId ?? "").trim();
+      if (!claudeThreadId) throw new Error("Не удалось создать новый Thread Claude");
+      return {
+        ...created,
+        rotation: {
+          sourceThreadId: target.threadId,
+          threadId: claudeThreadId,
+          streamId: stream.id,
+        },
+      };
+    }
+
     const rotated = await this.rotateStream({
       ...target,
       streamId: stream.id,

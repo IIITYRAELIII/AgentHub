@@ -184,9 +184,6 @@ function sanitizeTestContourDatabase(databaseFile, {
         }
         remappedJournalRecords = records.length;
       }
-      if (tableExists(database, "hub_release_changes")) {
-        database.prepare("UPDATE hub_release_changes SET project_root = ?").run(projectRoot);
-      }
       if (tableExists(database, "hub_mcp_operations")) {
         database.prepare(`
           UPDATE hub_mcp_operations

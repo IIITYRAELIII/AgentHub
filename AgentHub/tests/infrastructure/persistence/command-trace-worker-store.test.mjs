@@ -14,7 +14,7 @@ test("slow trace writes stay off the ACK path and overflow drops spans, not comm
     databaseFile: path.join(directory, "ignored.sqlite"),
     workerUrl: new URL("../../fixtures/command-trace-slow-worker.mjs", import.meta.url),
     workerData: { delayMs: 10_000 },
-    maxPendingWrites: 3,
+    maxPendingWrites: 2,
     closeTimeoutMs: 100,
     logger: { warn: () => {} },
   });
@@ -37,7 +37,14 @@ test("slow trace writes stay off the ACK path and overflow drops spans, not comm
   });
 
   assert.deepEqual(result, { accepted: true });
-  assert.equal(store.stats().queuedWrites, 3, "ACK returned while all boundary spans were still pending");
+  assert.deepEqual(store.stats(), {
+    queuedWrites: 2,
+    droppedSpans: 1,
+    pendingRequests: 0,
+    workerRestarts: 0,
+    workerRunning: true,
+  });
+
   assert.equal(service.recordBestEffort({
     commandId: "slow-trace-command",
     stage: "client-ack",
@@ -51,8 +58,8 @@ test("slow trace writes stay off the ACK path and overflow drops spans, not comm
     transport: "desktop-control",
   }), false);
   assert.deepEqual(store.stats(), {
-    queuedWrites: 3,
-    droppedSpans: 2,
+    queuedWrites: 2,
+    droppedSpans: 3,
     pendingRequests: 0,
     workerRestarts: 0,
     workerRunning: true,

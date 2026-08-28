@@ -2,32 +2,28 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  ARCHITECT_RELEASE_DEVELOPER_RULES,
+  effectiveStreamDeveloperRules,
   effectiveWorkspaceDeveloperRules,
-  legacyReleaseWorkflowRules,
+  LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V1,
   RELEASE_WORKFLOW_DEVELOPER_RULES,
-  releaseWorkflowEnabled,
-  workspaceSettingsWithReleaseWorkflow,
 } from "../../src/domain/workspace-release-workflow.mjs";
 
-test("release workflow is opt-in and contributes its policy only when enabled", () => {
-  assert.equal(releaseWorkflowEnabled({}), false);
-  const settings = workspaceSettingsWithReleaseWorkflow({ workingDirectory: "D:/work" }, true);
-  assert.equal(releaseWorkflowEnabled(settings), true);
-  assert.equal(
-    effectiveWorkspaceDeveloperRules("Workspace-specific rule", settings),
-    `${RELEASE_WORKFLOW_DEVELOPER_RULES}\n\nWorkspace-specific rule`,
+test("legacy v1 policy is stripped once and replaced by Task workflow rules", () => {
+  const rules = effectiveWorkspaceDeveloperRules(
+    `${LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V1}\n\nCustom rule`,
+    { releaseWorkflowEnabled: true },
   );
-  assert.equal(effectiveWorkspaceDeveloperRules("Workspace-specific rule", {}), "Workspace-specific rule");
+  assert.equal(rules, `${RELEASE_WORKFLOW_DEVELOPER_RULES}\n\nCustom rule`);
+  assert.match(rules, /hub_task_claim/u);
+  assert.match(rules, /no changed-file or release evidence/u);
 });
 
-test("legacy exact policy prefix migrates without consuming following Workspace rules", () => {
-  const migrated = legacyReleaseWorkflowRules(
-    `${RELEASE_WORKFLOW_DEVELOPER_RULES}\n\nFast Test Contour workflow`,
+test("Architect rules use only explicit settings.architect and allow multiple Streams", () => {
+  assert.equal(effectiveStreamDeveloperRules("Stream rule", { releaseRole: "architect" }), "Stream rule");
+  assert.equal(effectiveStreamDeveloperRules("Stream rule", {}), "Stream rule");
+  assert.equal(
+    effectiveStreamDeveloperRules("Stream rule", { architect: true }),
+    `${ARCHITECT_RELEASE_DEVELOPER_RULES}\n\nStream rule`,
   );
-  assert.deepEqual(migrated, {
-    content: "Fast Test Contour workflow",
-    enabled: true,
-    migrated: true,
-  });
-  assert.equal(legacyReleaseWorkflowRules("A similar policy").migrated, false);
 });

@@ -518,46 +518,6 @@
     return Math.max(0, Number(overflowLeft) + Number(currentShift) - Number(lastVisibleRight));
   }
 
-  function resolveStreamOverflowLayout({
-    groupWidths = [],
-    availableWithoutOverflow = 0,
-    availableWithOverflow = 0,
-    gap = 0,
-  } = {}) {
-    const widths = groupWidths
-      .map((width) => Math.max(0, Number(width) || 0))
-      .filter((width) => width > 0);
-    const spacing = Math.max(0, Number(gap) || 0);
-    const fullWidth = widths.reduce((sum, width) => sum + width, 0)
-      + Math.max(0, widths.length - 1) * spacing;
-    if (fullWidth <= Math.max(0, Number(availableWithoutOverflow) || 0) + 1) {
-      return {
-        hiddenCount: 0,
-        overflowVisible: false,
-        visibleCount: widths.length,
-      };
-    }
-    const available = Math.max(0, Number(availableWithOverflow) || 0);
-    let used = 0;
-    let visible = 0;
-    let exhausted = false;
-    widths.forEach((width, index) => {
-      const nextWidth = width + (visible > 0 ? spacing : 0);
-      const fits = !exhausted && (index === 0 || used + nextWidth <= available + 1);
-      if (fits) {
-        used += nextWidth;
-        visible += 1;
-      } else {
-        exhausted = true;
-      }
-    });
-    return {
-      hiddenCount: Math.max(0, widths.length - visible),
-      overflowVisible: true,
-      visibleCount: visible,
-    };
-  }
-
   function includeTaskInActivityRail(task, kind) {
     const workspaceName = String(task?.workspaceName ?? "").trim();
     return workspaceName !== "Other" || kind === "running" || kind === "completed";
@@ -604,6 +564,77 @@
       || String(left?.name ?? "").localeCompare(String(right?.name ?? ""), "ru")
       || String(left?.id ?? "").localeCompare(String(right?.id ?? ""))
     ));
+  }
+
+  /* Список рабочих пространств отвечает сразу на два разных вопроса: «где
+     сейчас идёт работа» и «где вообще живёт проект». Пока это один список,
+     они мешают друг другу: сортировка по активности поднимает наверх целое
+     семейство однотипных пространств, а группировка по семействам, наоборот,
+     прячет то, что горит прямо сейчас.
+
+     Поэтому вопросы разведены. Сверху — короткая лента активных, плоская и
+     без группировки: семейство попадает в неё ровно теми пространствами, где
+     действительно идёт работа. Ниже — каталог, который от активности не
+     зависит: порядок в нём стабильный, и место проекта не прыгает от того,
+     что кто-то в соседнем потоке написал сообщение.
+
+     Семейство определяется по первому слову имени и собирается только когда
+     его носят minGroupSize и больше пространств: две «FB» группой не станут. */
+  const WORKSPACE_ACTIVE_LIMIT = 6;
+  const WORKSPACE_ACTIVE_WINDOW_MS = 3 * 60 * 60 * 1000;
+  const WORKSPACE_GROUP_MIN_SIZE = 3;
+
+  function workspaceFamilyKey(group) {
+    const name = String(group?.name ?? "").trim();
+    const [head] = name.split(/\s+/u);
+    return head && head.length <= 24 && name.length > head.length ? head : "";
+  }
+
+  function workspaceSections(groups, {
+    nowMs = Date.now(),
+    activeLimit = WORKSPACE_ACTIVE_LIMIT,
+    activeWindowMs = WORKSPACE_ACTIVE_WINDOW_MS,
+    minGroupSize = WORKSPACE_GROUP_MIN_SIZE,
+  } = {}) {
+    const ordered = orderWorkspaceGroups(groups);
+    const active = [];
+    const rest = [];
+    for (const group of ordered) {
+      const running = (group?.tasks ?? []).some((task) => task?.running);
+      const fresh = nowMs - workspaceGroupLastActivity(group) <= activeWindowMs;
+      if ((running || fresh) && active.length < activeLimit) active.push(group);
+      else rest.push(group);
+    }
+
+    const families = new Map();
+    for (const group of rest) {
+      const key = workspaceFamilyKey(group);
+      if (!key) continue;
+      families.set(key, (families.get(key) ?? 0) + 1);
+    }
+
+    const catalog = [];
+    const opened = new Map();
+    for (const group of [...rest].sort((left, right) => (
+      String(left?.name ?? "").localeCompare(String(right?.name ?? ""), "ru")
+    ))) {
+      const key = workspaceFamilyKey(group);
+      if (!key || (families.get(key) ?? 0) < minGroupSize) {
+        catalog.push({ type: "workspace", group });
+        continue;
+      }
+      let family = opened.get(key);
+      if (!family) {
+        family = { type: "family", name: key, items: [] };
+        opened.set(key, family);
+        catalog.push(family);
+      }
+      family.items.push({
+        ...group,
+        shortName: String(group.name ?? "").slice(key.length).trim() || group.name,
+      });
+    }
+    return { active, catalog };
   }
 
   function orderWorkspaceStreams(streams, mode, pinnedIds = []) {
@@ -1415,6 +1446,7 @@
     includeTaskInActivityRail,
     isExactActiveUserTurn,
     orderWorkspaceGroups,
+    workspaceSections,
     resolveTaskHierarchy,
     STREAM_CARD_MAX_WIDTH,
     STREAM_CARD_MIN_WIDTH,
@@ -1445,7 +1477,6 @@
     quickMessagesToText,
     representativeSnapshotTasks,
     reconcileOpenStreamIds,
-    resolveStreamOverflowLayout,
     resolveStableStreamCardWidth,
     rotationMaintenancePresentation,
     streamDeckRenderKey,

@@ -42,7 +42,12 @@ const SYNC_STAGING_EXPIRY_MS = 30 * 60 * 1_000;
 const STORAGE_DELETE_BATCH_SIZE = 128;
 const REMOTE_ATTACHMENT_PREFIX = "remote-attachment:";
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
-const ATTACHMENT_CHUNK_BYTES = 1024 * 1024;
+const ATTACHMENT_STORAGE_CHUNK_BYTES = 1024 * 1024;
+export const ATTACHMENT_TRANSPORT_PROTOCOL = "agent-hub-attachment-chunks-v1";
+export const ATTACHMENT_TRANSPORT_CHUNK_BYTES = 16 * 1024;
+const ATTACHMENT_TRANSPORT_MANIFEST_PAGE_CHUNKS = 128;
+const ATTACHMENT_TRANSPORT_MAX_RESPONSE_BYTES = 24 * 1024;
+const ATTACHMENT_TRANSPORT_PROBE_BYTES = 128 * 1024 + 123;
 const MAX_ATTACHMENTS_PER_COMMAND = 8;
 const MAX_ATTACHMENTS_PER_USER = 32;
 const MAX_ATTACHMENT_BYTES_PER_USER = 100 * 1024 * 1024;
@@ -183,6 +188,123 @@ export async function materializeDashboardBotAttachmentResponse(response) {
     statusText: response.statusText,
     headers: response.headers,
   });
+}
+
+function attachmentTransportChunkCount(size) {
+  return Math.ceil(Number(size) / ATTACHMENT_TRANSPORT_CHUNK_BYTES);
+}
+
+function attachmentTransportChunkSize(size, index) {
+  return Math.min(
+    ATTACHMENT_TRANSPORT_CHUNK_BYTES,
+    Number(size) - index * ATTACHMENT_TRANSPORT_CHUNK_BYTES,
+  );
+}
+
+async function attachmentTransportManifestPage(metadata, page, readChunk) {
+  const count = attachmentTransportChunkCount(metadata.size);
+  const pageCount = Math.ceil(count / ATTACHMENT_TRANSPORT_MANIFEST_PAGE_CHUNKS);
+  if (!Number.isSafeInteger(page) || page < 0 || page >= pageCount) {
+    throw new RangeError("invalid attachment manifest page");
+  }
+  const start = page * ATTACHMENT_TRANSPORT_MANIFEST_PAGE_CHUNKS;
+  const end = Math.min(count, start + ATTACHMENT_TRANSPORT_MANIFEST_PAGE_CHUNKS);
+  const chunks = [];
+  for (let index = start; index < end; index += 1) {
+    const body = await readChunk(index);
+    chunks.push({ index, size: body.byteLength, hash: await sha256(body) });
+  }
+  return {
+    protocol: ATTACHMENT_TRANSPORT_PROTOCOL,
+    id: metadata.id,
+    size: metadata.size,
+    hash: metadata.hash,
+    count,
+    chunkBytes: ATTACHMENT_TRANSPORT_CHUNK_BYTES,
+    page,
+    pageCount,
+    contentType: metadata.contentType,
+    name: metadata.name,
+    chunks,
+  };
+}
+
+function attachmentTransportJson(payload) {
+  const body = JSON.stringify(payload);
+  const size = encoder.encode(body).byteLength;
+  if (size > ATTACHMENT_TRANSPORT_MAX_RESPONSE_BYTES) {
+    throw new Error("attachment transport manifest exceeds response bound");
+  }
+  return new Response(body, {
+    headers: {
+      "Cache-Control": "no-store",
+      "Content-Type": "application/json; charset=utf-8",
+      "Content-Length": String(size),
+      "X-Agent-Hub-Attachment-Protocol": ATTACHMENT_TRANSPORT_PROTOCOL,
+    },
+  });
+}
+
+function attachmentTransportChunkResponse(metadata, descriptor, body) {
+  return new Response(body, {
+    headers: {
+      "Cache-Control": "no-store",
+      "Content-Type": "application/octet-stream",
+      "Content-Length": String(body.byteLength),
+      "X-Agent-Hub-Attachment-Protocol": ATTACHMENT_TRANSPORT_PROTOCOL,
+      "X-Agent-Hub-Attachment-Id": metadata.id,
+      "X-Agent-Hub-Attachment-Hash": metadata.hash,
+      "X-Agent-Hub-Chunk-Index": String(descriptor.index),
+      "X-Agent-Hub-Chunk-Count": String(attachmentTransportChunkCount(metadata.size)),
+      "X-Agent-Hub-Chunk-Hash": descriptor.hash,
+    },
+  });
+}
+
+function syntheticAttachmentTransportBody() {
+  return Uint8Array.from(
+    { length: ATTACHMENT_TRANSPORT_PROBE_BYTES },
+    (_, index) => (index * 31 + 17) % 251,
+  );
+}
+
+export async function dashboardAttachmentTransportProbeResponse(request) {
+  if (request.method !== "GET") return json({ error: "Method Not Allowed" }, 405);
+  const url = new URL(request.url);
+  const body = syntheticAttachmentTransportBody();
+  const metadata = {
+    id: "dashboard-transport-probe-v1",
+    size: body.byteLength,
+    hash: await sha256(body),
+    contentType: "application/octet-stream",
+    name: "dashboard-transport-probe.bin",
+  };
+  const readChunk = async (index) => body.slice(
+    index * ATTACHMENT_TRANSPORT_CHUNK_BYTES,
+    Math.min(body.byteLength, (index + 1) * ATTACHMENT_TRANSPORT_CHUNK_BYTES),
+  );
+  if (url.searchParams.get("mode") === "manifest") {
+    const page = Number(url.searchParams.get("page") ?? 0);
+    try {
+      return attachmentTransportJson(await attachmentTransportManifestPage(metadata, page, readChunk));
+    } catch (error) {
+      return json({ error: error.message }, error instanceof RangeError ? 400 : 500);
+    }
+  }
+  if (url.searchParams.get("mode") === "chunk") {
+    const index = Number(url.searchParams.get("index"));
+    const count = attachmentTransportChunkCount(body.byteLength);
+    if (!Number.isSafeInteger(index) || index < 0 || index >= count) {
+      return json({ error: "invalid attachment chunk index" }, 400);
+    }
+    const chunk = await readChunk(index);
+    return attachmentTransportChunkResponse(metadata, {
+      index,
+      size: chunk.byteLength,
+      hash: await sha256(chunk),
+    }, chunk);
+  }
+  return json({ error: "invalid attachment transport mode" }, 400);
 }
 
 export async function readBoundedBinary(request, maxBytes, label) {
@@ -2286,6 +2408,72 @@ export class JournalStore extends DurableObject {
     return active;
   }
 
+  async #attachmentTransportChunk(manifest, index, storageChunks = null) {
+    const count = attachmentTransportChunkCount(manifest.size);
+    if (!Number.isSafeInteger(index) || index < 0 || index >= count) {
+      throw new RangeError("invalid attachment chunk index");
+    }
+    const absoluteOffset = index * ATTACHMENT_TRANSPORT_CHUNK_BYTES;
+    const storageIndex = Math.floor(absoluteOffset / ATTACHMENT_STORAGE_CHUNK_BYTES);
+    const storageOffset = absoluteOffset % ATTACHMENT_STORAGE_CHUNK_BYTES;
+    const storageKey = `control:attachment-chunk:${manifest.id}:${storageIndex}`;
+    let stored = storageChunks?.get(storageIndex);
+    if (stored == null) {
+      stored = await this.ctx.storage.get(storageKey);
+      if (stored != null) storageChunks?.set(storageIndex, stored);
+    }
+    const size = attachmentTransportChunkSize(manifest.size, index);
+    const source = stored == null ? null : new Uint8Array(stored);
+    if (!source || size < 1 || storageOffset + size > source.byteLength) {
+      throw new Error("remote attachment is incomplete");
+    }
+    return source.slice(storageOffset, storageOffset + size);
+  }
+
+  async #attachmentTransportResponse(manifest, payload) {
+    const metadata = {
+      id: manifest.id,
+      size: Number(manifest.size),
+      hash: String(manifest.bodyHash),
+      contentType: String(manifest.contentType),
+      name: String(manifest.name),
+    };
+    if (
+      !Number.isSafeInteger(metadata.size)
+      || metadata.size < 1
+      || metadata.size > MAX_ATTACHMENT_BYTES
+      || !/^[a-f0-9]{64}$/u.test(metadata.hash)
+    ) {
+      return json({ error: "remote attachment metadata is invalid" }, 503);
+    }
+    if (payload.mode === "manifest") {
+      try {
+        const storageChunks = new Map();
+        return attachmentTransportJson(await attachmentTransportManifestPage(
+          metadata,
+          Number(payload.page ?? 0),
+          (index) => this.#attachmentTransportChunk(manifest, index, storageChunks),
+        ));
+      } catch (error) {
+        return json({ error: error.message }, error instanceof RangeError ? 400 : 503);
+      }
+    }
+    if (payload.mode === "chunk") {
+      try {
+        const index = Number(payload.index);
+        const body = await this.#attachmentTransportChunk(manifest, index);
+        return attachmentTransportChunkResponse(metadata, {
+          index,
+          size: body.byteLength,
+          hash: await sha256(body),
+        }, body);
+      } catch (error) {
+        return json({ error: error.message }, error instanceof RangeError ? 400 : 503);
+      }
+    }
+    return json({ error: "invalid attachment transport mode" }, 400);
+  }
+
   async #claimControlCommands(limit) {
     const now = Date.now();
     return this.ctx.storage.transaction(async (storage) => {
@@ -2661,8 +2849,8 @@ export class JournalStore extends DurableObject {
           return json({ error: "remote attachment quota exceeded" }, 429);
         }
         const chunks = [];
-        for (let offset = 0; offset < body.byteLength; offset += ATTACHMENT_CHUNK_BYTES) {
-          chunks.push(body.slice(offset, Math.min(offset + ATTACHMENT_CHUNK_BYTES, body.byteLength)));
+        for (let offset = 0; offset < body.byteLength; offset += ATTACHMENT_STORAGE_CHUNK_BYTES) {
+          chunks.push(body.slice(offset, Math.min(offset + ATTACHMENT_STORAGE_CHUNK_BYTES, body.byteLength)));
         }
         const manifest = {
           id,
@@ -2735,8 +2923,8 @@ export class JournalStore extends DurableObject {
           return json({ error: "attachment view quota exceeded" }, 429);
         }
         const chunks = [];
-        for (let offset = 0; offset < body.byteLength; offset += ATTACHMENT_CHUNK_BYTES) {
-          chunks.push(body.slice(offset, Math.min(offset + ATTACHMENT_CHUNK_BYTES, body.byteLength)));
+        for (let offset = 0; offset < body.byteLength; offset += ATTACHMENT_STORAGE_CHUNK_BYTES) {
+          chunks.push(body.slice(offset, Math.min(offset + ATTACHMENT_STORAGE_CHUNK_BYTES, body.byteLength)));
         }
         const manifest = {
           id,
@@ -2818,6 +3006,7 @@ export class JournalStore extends DurableObject {
       ) {
         return json({ error: "remote attachment not found" }, 404);
       }
+      if (payload?.mode != null) return this.#attachmentTransportResponse(manifest, payload);
       const chunkKeys = Array.from(
         { length: manifest.chunkCount },
         (_, index) => `control:attachment-chunk:${id}:${index}`,
@@ -3171,6 +3360,9 @@ function secureStaticResponse(response, request) {
   const headers = new Headers(response.headers);
   const contentType = String(headers.get("Content-Type") ?? "").toLowerCase();
   const url = new URL(request.url);
+  const directAssetOrigin = url.hostname.startsWith("hub.")
+    ? `https://home.${url.hostname.slice(4)}`
+    : "";
   const versioned = url.searchParams.has("v") || /\.[a-f0-9]{12}\.[^/]+$/iu.test(url.pathname);
   if (contentType.includes("text/html")) {
     headers.set("Cache-Control", "no-store");
@@ -3187,8 +3379,8 @@ function secureStaticResponse(response, request) {
     "frame-ancestors 'none'",
     "img-src 'self' data: blob: https://*.darksanctuary.ru",
     "object-src 'none'",
-    "script-src 'self' https://telegram.org",
-    "style-src 'self'",
+    `script-src 'self'${directAssetOrigin ? ` ${directAssetOrigin}` : ""} https://telegram.org`,
+    `style-src 'self'${directAssetOrigin ? ` ${directAssetOrigin}` : ""}`,
   ].join("; "));
   headers.set("Referrer-Policy", "no-referrer");
   headers.set("X-Content-Type-Options", "nosniff");
@@ -3316,6 +3508,9 @@ export default {
     const url = new URL(request.url);
     const store = env.JOURNAL.getByName("current");
     const dashboardBotRouter = env.JOURNAL.getByName(DASHBOARD_BOT_ROUTER_NAME);
+    if (url.pathname === "/api/transport-probe/attachment") {
+      return dashboardAttachmentTransportProbeResponse(request);
+    }
     if (url.pathname === "/health") return json({ ok: true });
     if (url.pathname === "/api/dashboard-bot/register") {
       if (request.method !== "POST") return json({ error: "Method Not Allowed" }, 405);
@@ -3555,7 +3750,16 @@ export default {
         const attachmentResponse = await hubStore.fetch(new Request("https://journal.internal/attachment/pull", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ id, commandId, userId: identity.userId }),
+          body: JSON.stringify({
+            id,
+            commandId,
+            userId: identity.userId,
+            ...(payload?.mode == null ? {} : {
+              mode: payload.mode,
+              page: payload.page,
+              index: payload.index,
+            }),
+          }),
         }));
         return materializeDashboardBotAttachmentResponse(attachmentResponse);
       }
@@ -3989,7 +4193,16 @@ export default {
         return store.fetch(new Request("https://journal.internal/attachment/pull", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ id, userId, commandId }),
+          body: JSON.stringify({
+            id,
+            userId,
+            commandId,
+            ...(payload?.mode == null ? {} : {
+              mode: payload.mode,
+              page: payload.page,
+              index: payload.index,
+            }),
+          }),
         }));
       } catch (error) {
         return json({ error: error.message }, 400);

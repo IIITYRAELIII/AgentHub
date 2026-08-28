@@ -61,7 +61,7 @@ export function currentWorkspaceThreadEntries(workspaceCatalogStore) {
       threadId: thread.threadId,
       projectRoot: thread.projectRoot ?? "",
       projectName: path.basename(thread.projectRoot ?? "") || "Проект",
-      title: workspace.name,
+      title: "",
       model: null,
       updatedAtMs: 0,
       running: false,

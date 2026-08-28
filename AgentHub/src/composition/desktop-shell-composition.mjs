@@ -20,13 +20,8 @@ export function createDesktopShellComposition({
   serverControlController,
   desktopCommandsPort,
 }) {
-  const {
-    projects,
-    maxSpeechJobs,
-    maxDeferredInputs,
-    taskExecutionOwners,
-    globalWorkLogProjectRoots,
-  } = limits;
+  const { projects, maxSpeechJobs, maxDeferredInputs, taskExecutionOwners,
+    globalWorkLogProjectRoots } = limits;
   const {
     hostState,
     selectionStore,
@@ -65,6 +60,7 @@ export function createDesktopShellComposition({
     workLogUsageStore,
     workLogUsageRemoteConfigStore,
     workspaceCatalogStore,
+    workspaceReleaseService,
     streamHandoff,
     runtimeStateStore,
     commandTraceService,
@@ -259,7 +255,11 @@ export function createDesktopShellComposition({
     },
   });
 
-  const workspaceCatalog = new WorkspaceCatalogService({ store: workspaceCatalogStore });
+  const workspaceCatalog = new WorkspaceCatalogService({
+    store: workspaceCatalogStore,
+    taskBoard,
+    releaseCompleter: workspaceReleaseService,
+  });
   const workspaceMutation = async (run, { resultKey = "" } = {}) => {
     const result = run();
     invalidateTaskCatalog();
@@ -457,6 +457,8 @@ export function createDesktopShellComposition({
       setStreamCardFixedWidth: (value) => agentPreferences.setStreamCardFixedWidth(value),
       getStreamCardGapEnabled: () => agentPreferences.streamCardGapEnabled,
       setStreamCardGapEnabled: (value) => agentPreferences.setStreamCardGapEnabled(value),
+      getShowInlineFileRevealButtons: () => agentPreferences.showInlineFileRevealButtons,
+      setShowInlineFileRevealButtons: (value) => agentPreferences.setShowInlineFileRevealButtons(value),
       getPinnedWorkspaceStreams: () => agentPreferences.pinnedWorkspaceStreams,
       setPinnedWorkspaceStreams: (value) => agentPreferences.setPinnedWorkspaceStreams(value),
       getQuickMessages: () => agentPreferences.quickMessages,

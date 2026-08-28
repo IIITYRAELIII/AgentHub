@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -23,6 +23,7 @@ import {
   stopTestContour,
   TEST_CONTOUR_MODEL,
   TEST_CONTOUR_MODELS,
+  TEST_CONTOUR_SPARK_MODEL,
   TEST_CONTOUR_TERRA_MODEL,
   TEST_CONTOUR_FAKE_MODEL,
   TEST_CONTOUR_WEB_HOST,
@@ -34,6 +35,11 @@ import {
   uninstallTestContour,
   withTestContourOperationLock,
 } from "../../src/runtime/test-contour-manager.mjs";
+
+test("Test Contour uses Fake Codex by default without consuming provider limits", () => {
+  assert.equal(TEST_CONTOUR_MODEL, TEST_CONTOUR_FAKE_MODEL);
+  assert.ok(TEST_CONTOUR_MODELS.some((item) => item.value === TEST_CONTOUR_SPARK_MODEL));
+});
 
 test("Test Contour aligns cloned Stream settings with the requested provider model", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-test-contour-model-"));
@@ -203,7 +209,7 @@ test("Test Contour installation is explicit, pinned and removable by owned marke
   }
 });
 
-test("Test Contour exposes Spark, Terra and accept-all Fake Codex through one runtime", () => {
+test("Test Contour defaults to Fake Codex while exposing optional real models", () => {
   const paths = testContourPaths(path.join(os.tmpdir(), "agent-hub-test-contour-config"));
   const config = testContourConfig({
     paths,
@@ -282,14 +288,8 @@ test("Codex test providers are copied only into the marker-owned Test Contour ro
     );
     await installTestContour({ root, run: async () => null });
     const copied = await prepareTestContourCodexProviders({ root, sourceRoot });
-    assert.equal(
-      await realpath(copied.fakeCodexExecutable),
-      await realpath(testContourPaths(root).fakeCodexExecutable),
-    );
-    assert.equal(
-      await realpath(copied.codexMultiplexerExecutable),
-      await realpath(testContourPaths(root).codexMultiplexerExecutable),
-    );
+    assert.equal(copied.fakeCodexExecutable, testContourPaths(root).fakeCodexExecutable);
+    assert.equal(copied.codexMultiplexerExecutable, testContourPaths(root).codexMultiplexerExecutable);
     assert.equal(await readFile(copied.fakeCodexExecutable, "utf8"), "export const fake = true;\n");
     assert.equal(
       await readFile(copied.codexMultiplexerExecutable, "utf8"),
@@ -303,7 +303,7 @@ test("Codex test providers are copied only into the marker-owned Test Contour ro
   }
 });
 
-test("production data clone keeps history but detaches live threads and forces Spark", async () => {
+test("production data clone keeps history but detaches live threads and forces Fake Codex", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-test-contour-clone-"));
   const productionRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-production-clone-"));
   try {
@@ -464,7 +464,7 @@ test("production data clone keeps history but detaches live threads and forces S
       assert.equal(clone.prepare("SELECT active FROM task_read_model_turns").get().active, 0);
       assert.equal(
         clone.prepare("SELECT project_root FROM hub_release_changes").get().project_root,
-        contourPaths.projectRoot,
+        "D:/production",
       );
       assert.equal(clone.prepare("SELECT status FROM hub_mcp_operations").get().status, "failed");
       assert.equal(clone.prepare("SELECT value FROM journal_store_meta WHERE key = 'revision'").get().value, "6");

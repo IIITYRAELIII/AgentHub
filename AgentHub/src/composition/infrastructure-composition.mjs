@@ -10,7 +10,7 @@ import { TurnEndNotificationRegistry } from "../application/turn-end-notificatio
 import { createWorkLogUsageStore } from "../application/work-log-usage-store.mjs";
 import { TaskBoardService } from "../application/task-board-service.mjs";
 import { WorkspaceReleaseService } from "../application/workspace-release-service.mjs";
-import { ReleaseChangeSetService } from "../application/release-change-set-service.mjs";
+import { TaskReleaseService } from "../application/task-release-service.mjs";
 import { StreamHandoffService } from "../application/stream-handoff-service.mjs";
 import { AGENT_HUB_VERSION } from "../infrastructure/filesystem/agent-hub-package.mjs";
 import { samePath } from "../infrastructure/filesystem/config.mjs";
@@ -34,8 +34,11 @@ import { UsageSyncIdentityStore } from "../infrastructure/persistence/usage-sync
 import { UsageSyncRemoteConfigStore } from "../infrastructure/persistence/usage-sync-remote-config-store.mjs";
 import { defaultUsageSyncServerUrl } from "../domain/default-usage-sync-server.mjs";
 import { verifyWorkspaceReleasePublication } from "../infrastructure/persistence/release-publication-verifier.mjs";
-import { inspectLegacyReleaseFile } from "../infrastructure/filesystem/legacy-release-file-probe.mjs";
-import { verifyReleaseChangeSetGitEvidence } from "../infrastructure/filesystem/release-change-set-git-verifier.mjs";
+import {
+  buildTaskReleaseTreeEvidence,
+  verifyReleaseChangeSetGitEvidence,
+} from "../infrastructure/filesystem/release-change-set-git-verifier.mjs";
+import { captureTaskGitBaseline } from "../infrastructure/filesystem/task-git-diff.mjs";
 import { SingleInstanceGuard } from "../infrastructure/process/instance-lock.mjs";
 import { captureProcess } from "../infrastructure/process/process-capture.mjs";
 import { RuntimeCommandServer } from "../infrastructure/process/runtime-command.mjs";
@@ -150,6 +153,8 @@ async function usageSyncIdentity(config, agentHubRoot) {
     dataDir: path.resolve(config.dataDir),
   });
   await store.load();
+  const label = await usageSyncDeviceLabel(agentHubRoot);
+  if (label && label !== store.label) await store.setLabel(label);
   return store;
 }
 
@@ -203,23 +208,22 @@ export async function createHubInfrastructure({
   const workspaceCatalogStore = new WorkspaceCatalogStore({
     databaseFile: journalDatabaseFile,
   });
+  const taskBoardStore = new TaskBoardStore({ databaseFile: journalDatabaseFile });
   await workspaceCatalogStore.load();
   const workspaceReleaseService = new WorkspaceReleaseService({
-    store: workspaceCatalogStore,
+    store: taskBoardStore,
     verifyPublication: verifyWorkspaceReleasePublication,
   });
-  const releaseChangeSetService = new ReleaseChangeSetService({
-    store: workspaceCatalogStore,
-    legacyStore: workspaceCatalogStore,
-    inspectLegacyFile: inspectLegacyReleaseFile,
+  const taskReleaseService = new TaskReleaseService({
+    taskBoard: taskBoardStore,
     verifyFreezeEvidence: verifyReleaseChangeSetGitEvidence,
+    buildTreeEvidence: buildTaskReleaseTreeEvidence,
   });
   const preTurnInstructions = new PreTurnInstructionStore({
     guideFile: path.join(agentHubRoot, "AGENT_HUB_GUIDE.md"),
     globalFile: path.join(config.dataDir, "global-pre-turn-instructions.md"),
   });
   await preTurnInstructions.loadGuide();
-  const taskBoardStore = new TaskBoardStore({ databaseFile: journalDatabaseFile });
   const dashBotStream = config.taskBoard.triageEnabled
     ? ensureDashBotStream(workspaceCatalogStore, {
       model: config.taskBoard.triageModel,
@@ -290,7 +294,6 @@ export async function createHubInfrastructure({
     defaultProjectRoot: config.projectRoot,
     usageSyncStore: workLogUsageSyncStore,
     usageSyncDeviceId: workLogUsageSyncDeviceId,
-    usageSyncDeviceLabel: workLogUsageIdentityStore.label,
     workspaceCatalogStore,
   });
   const streamHandoff = new StreamHandoffService({
@@ -310,7 +313,7 @@ export async function createHubInfrastructure({
     attachmentDirectory,
     secret: hubMcpSecret,
     releaseCompleter: workspaceReleaseService,
-    releaseChangeSets: releaseChangeSetService,
+    taskReleases: taskReleaseService,
   });
   const hubMcpServer = new HubMcpServer({
     service: hubMcpService,
@@ -399,7 +402,11 @@ export async function createHubInfrastructure({
   const runJournal = new RunJournalService({
     usageStore: workLogUsageStore,
     workspaceCatalogStore,
-    releaseChangeSetService,
+    taskBoard,
+    taskReleaseService,
+    captureResultSnapshot: (projectRoot, turnId) => (
+      captureTaskGitBaseline(projectRoot, config.dataDir, `task-release-result-${turnId}`)
+    ),
     findProject,
     defaultProjectRoot: config.projectRoot,
     projectionProjectRoots: globalWorkLogProjectRoots,
@@ -436,9 +443,9 @@ export async function createHubInfrastructure({
     codexRolloutContextSanitizer,
     workLogUsageStore,
     workLogUsageIdentityStore,
-    suggestUsageSyncDeviceLabel: () => usageSyncDeviceLabel(agentHubRoot),
     workLogUsageRemoteConfigStore,
     workspaceCatalogStore,
+    workspaceReleaseService,
     streamHandoff,
     preTurnInstructions,
     taskBoard,

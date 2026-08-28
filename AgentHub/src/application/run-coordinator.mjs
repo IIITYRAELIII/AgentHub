@@ -12,6 +12,7 @@ import {
   taskRunIsActive,
   taskRunKey,
 } from "../domain/task-runs.mjs";
+import { taskReferencePromptDetails } from "../domain/task-board-task.mjs";
 
 export function activeTurnNotSteerable(error) {
   const details = `${String(error?.message ?? "")} ${JSON.stringify(error?.data ?? {})}`.toLowerCase();
@@ -55,6 +56,7 @@ export class RunCoordinator {
     noteRunActivity = () => {},
     scheduleProgressUpdate = () => {},
     rekeyDeferredOccupancy = null,
+    bindDashboardTask = null,
   }) {
     if (!taskRuns?.forTask) throw new TypeError("taskRuns.forTask is required");
     if (!providers?.call) throw new TypeError("providers.call is required");
@@ -85,6 +87,18 @@ export class RunCoordinator {
     this.noteRunActivity = noteRunActivity;
     this.scheduleProgressUpdate = scheduleProgressUpdate;
     this.rekeyDeferredOccupancy = rekeyDeferredOccupancy;
+    this.bindDashboardTask = typeof bindDashboardTask === "function" ? bindDashboardTask : null;
+  }
+
+  async bindStartedDashboardTask(run, input) {
+    if (!this.bindDashboardTask || !run?.turnId) return;
+    const text = typeof input === "string"
+      ? input
+      : (Array.isArray(input) ? input : []).filter((item) => item?.type === "text")
+        .map((item) => String(item.text ?? "")).join("\n");
+    const reference = taskReferencePromptDetails(text)?.references
+      ?.find((candidate) => candidate.intent === "start");
+    if (reference?.taskId) await this.bindDashboardTask({ run, taskId: reference.taskId });
   }
 
   taskLane(target) {
@@ -258,6 +272,7 @@ export class RunCoordinator {
       persistentFiles ? [] : temporaryFiles,
       { forceSpeechButton },
     );
+    await this.bindStartedDashboardTask(run, input);
     return { started: true, runId: run.id, run };
   }
 
@@ -301,6 +316,7 @@ export class RunCoordinator {
       item.persistentFiles ? [] : item.temporaryFiles ?? [],
       { forceSpeechButton: item.forceSpeechButton === true },
     );
+    await this.bindStartedDashboardTask(run, item.input);
     return run;
   }
 

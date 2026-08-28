@@ -16,6 +16,7 @@ test("Desktop settings service rejects a stale task-scoped mutation", async () =
     getStreamCardWidthMode: () => "auto", setStreamCardWidthMode: noop,
     getStreamCardFixedWidth: () => 90, setStreamCardFixedWidth: noop,
     getStreamCardGapEnabled: () => false, setStreamCardGapEnabled: noop,
+    getShowInlineFileRevealButtons: () => false, setShowInlineFileRevealButtons: noop,
     getPinnedWorkspaceStreams: () => ({}), setPinnedWorkspaceStreams: noop,
     getQuickMessages: () => ({ streams: {}, workspaces: {} }), setQuickMessages: noop,
     projectUsage: async () => {}, findProjectIndex: () => 0, switchProject: async () => ({}), snapshot: async () => ({}),
@@ -39,6 +40,7 @@ test("Desktop settings service rejects a stale project mutation before switching
     getStreamCardWidthMode: () => "auto", setStreamCardWidthMode: noop,
     getStreamCardFixedWidth: () => 90, setStreamCardFixedWidth: noop,
     getStreamCardGapEnabled: () => false, setStreamCardGapEnabled: noop,
+    getShowInlineFileRevealButtons: () => false, setShowInlineFileRevealButtons: noop,
     getPinnedWorkspaceStreams: () => ({}), setPinnedWorkspaceStreams: noop,
     getQuickMessages: () => ({ streams: {}, workspaces: {} }), setQuickMessages: noop,
     projectUsage: async () => {}, findProjectIndex: () => 0, switchProject: async () => { switched = true; return {}; }, snapshot: async () => ({}),
@@ -70,6 +72,7 @@ test("Desktop settings service persists the shared recent activity period", asyn
     getStreamCardWidthMode: () => "auto", setStreamCardWidthMode: noop,
     getStreamCardFixedWidth: () => 90, setStreamCardFixedWidth: noop,
     getStreamCardGapEnabled: () => false, setStreamCardGapEnabled: noop,
+    getShowInlineFileRevealButtons: () => false, setShowInlineFileRevealButtons: noop,
     getPinnedWorkspaceStreams: () => ({}), setPinnedWorkspaceStreams: noop,
     getQuickMessages: () => ({ streams: {}, workspaces: {} }), setQuickMessages: noop,
     projectUsage: async () => {}, findProjectIndex: () => 0, switchProject: async () => ({}),
@@ -108,6 +111,7 @@ test("Desktop settings service commits Claude usage only after projection", asyn
     getStreamCardWidthMode: () => "auto", setStreamCardWidthMode: noop,
     getStreamCardFixedWidth: () => 90, setStreamCardFixedWidth: noop,
     getStreamCardGapEnabled: () => false, setStreamCardGapEnabled: noop,
+    getShowInlineFileRevealButtons: () => false, setShowInlineFileRevealButtons: noop,
     getPinnedWorkspaceStreams: () => ({}), setPinnedWorkspaceStreams: noop,
     getQuickMessages: () => ({ streams: {}, workspaces: {} }), setQuickMessages: noop,
     projectUsage: async (value) => {
@@ -138,6 +142,7 @@ test("Desktop settings service persists shared Stream card settings", async () =
     streamCardWidthMode: "auto",
     streamCardFixedWidth: 90,
     streamCardGapEnabled: false,
+    showInlineFileRevealButtons: false,
     pinnedWorkspaceStreams: {},
     quickMessages: { streams: {}, workspaces: {} },
   };
@@ -159,6 +164,8 @@ test("Desktop settings service persists shared Stream card settings", async () =
     setStreamCardFixedWidth: (value) => { current.streamCardFixedWidth = value; },
     getStreamCardGapEnabled: () => current.streamCardGapEnabled,
     setStreamCardGapEnabled: (value) => { current.streamCardGapEnabled = value; },
+    getShowInlineFileRevealButtons: () => current.showInlineFileRevealButtons,
+    setShowInlineFileRevealButtons: (value) => { current.showInlineFileRevealButtons = value; },
     getPinnedWorkspaceStreams: () => current.pinnedWorkspaceStreams,
     setPinnedWorkspaceStreams: (value) => { current.pinnedWorkspaceStreams = value; },
     getQuickMessages: () => current.quickMessages,
@@ -171,7 +178,8 @@ test("Desktop settings service persists shared Stream card settings", async () =
   await service.update({ name: "streamOrderMode", value: "manual" });
   await service.update({ name: "streamCardWidthMode", value: "fixed" });
   await service.update({ name: "streamCardFixedWidth", value: "237" });
-  const result = await service.update({ name: "streamCardGapEnabled", value: "true" });
+  await service.update({ name: "streamCardGapEnabled", value: "true" });
+  const result = await service.update({ name: "showInlineFileRevealButtons", value: "true" });
   await service.update({
     name: "pinnedWorkspaceStreams",
     value: JSON.stringify({ "workspace-1": ["stream-1"] }),
@@ -186,14 +194,15 @@ test("Desktop settings service persists shared Stream card settings", async () =
     streamCardWidthMode: "fixed",
     streamCardFixedWidth: 237,
     streamCardGapEnabled: true,
+    showInlineFileRevealButtons: true,
     pinnedWorkspaceStreams: { "workspace-1": ["stream-1"] },
     quickMessages: {
       streams: { "stream-1": ["релизь"] },
       workspaces: { "workspace-1": ["проверь"] },
     },
   });
-  assert.equal(saveCount, 6);
-  assert.equal(result.settings.streamCardGapEnabled, true);
+  assert.equal(saveCount, 7);
+  assert.equal(result.settings.showInlineFileRevealButtons, true);
   await assert.rejects(
     service.update({ name: "streamCardFixedWidth", value: "451" }),
     /Неизвестная ширина/u,
@@ -222,6 +231,7 @@ test("Desktop settings service creates a new Codex Thread when a model crosses b
     getStreamCardWidthMode: () => "auto", setStreamCardWidthMode: noop,
     getStreamCardFixedWidth: () => 90, setStreamCardFixedWidth: noop,
     getStreamCardGapEnabled: () => false, setStreamCardGapEnabled: noop,
+    getShowInlineFileRevealButtons: () => false, setShowInlineFileRevealButtons: noop,
     getPinnedWorkspaceStreams: () => ({}), setPinnedWorkspaceStreams: noop,
     getQuickMessages: () => ({ streams: {}, workspaces: {} }), setQuickMessages: noop,
     projectUsage: async () => {}, findProjectIndex: () => 0, switchProject: async () => ({}),
@@ -235,58 +245,62 @@ test("Desktop settings service creates a new Codex Thread when a model crosses b
   assert.equal(result.settings.model, "gpt-5.6-terra");
 });
 
-test("Desktop settings service saves changed agent settings in the selected Stream", async () => {
+test("Desktop settings service saves the changed model in the selected stream", async () => {
   const noop = () => {};
   let remembered = 0;
   const service = new DesktopSettingsService({
     isSelected: () => true, selectedTask: () => ({ streamId: "s1" }), switchProvider: async () => ({}),
-    isCodex: () => false, threadId: () => "t1", isCompacting: () => false,
+    isCodex: () => false,
+    threadId: () => "t1", isCompacting: () => false,
     switchCodexModel: () => ({ changed: true }), switchClaudeModel: () => ({ changed: true }),
     updateCodexThreadSettings: async () => {}, createCodexThread: async () => {}, saveState: async () => {},
-    getCodexReasoning: () => "high", setCodexReasoning: noop,
-    getClaudeReasoning: () => "high", setClaudeReasoning: noop,
-    getCodexMode: () => "default", setCodexMode: noop,
-    getClaudeMode: () => "default", setClaudeMode: noop,
-    getAutoApprove: () => true, setAutoApprove: noop,
-    getIncludeClaudeUsage: () => true, setIncludeClaudeUsage: noop,
+    getCodexReasoning: () => "high",
+    setCodexReasoning: noop, getClaudeReasoning: () => "high", setClaudeReasoning: noop,
+    getCodexMode: () => "default", setCodexMode: noop, getClaudeMode: () => "default", setClaudeMode: noop,
+    getAutoApprove: () => true, setAutoApprove: noop, getIncludeClaudeUsage: () => true, setIncludeClaudeUsage: noop,
     getActivityRecentMinutes: () => 180, setActivityRecentMinutes: noop,
     getStreamOrderMode: () => "activity", setStreamOrderMode: noop,
     getStreamCardWidthMode: () => "auto", setStreamCardWidthMode: noop,
     getStreamCardFixedWidth: () => 90, setStreamCardFixedWidth: noop,
     getStreamCardGapEnabled: () => false, setStreamCardGapEnabled: noop,
+    getShowInlineFileRevealButtons: () => false, setShowInlineFileRevealButtons: noop,
     getPinnedWorkspaceStreams: () => ({}), setPinnedWorkspaceStreams: noop,
     getQuickMessages: () => ({ streams: {}, workspaces: {} }), setQuickMessages: noop,
     projectUsage: async () => {}, findProjectIndex: () => 0, switchProject: async () => ({}),
     snapshot: async () => ({}), reasoningEfforts: ["high"], collaborationModes: ["default"],
+
     rememberStreamAgentSettings: async () => { remembered += 1; },
   });
-  await service.update({ name: "model", value: "claude-opus-5" });
+  await service.update({
+    name: "model", value: "claude-opus-5", provider: "claude", threadId: "t1", streamId: "s1",
+  });
   assert.equal(remembered, 1);
 });
 
-test("Desktop settings service does not rewrite Stream settings for shared preferences", async () => {
+test("Desktop settings service does not touch stream settings for shared preferences", async () => {
   const noop = () => {};
   let remembered = 0;
   const service = new DesktopSettingsService({
     isSelected: () => true, selectedTask: () => ({ streamId: "s1" }), switchProvider: async () => ({}),
-    isCodex: () => false, threadId: () => "t1", isCompacting: () => false,
+    isCodex: () => false,
+    threadId: () => "t1", isCompacting: () => false,
     switchCodexModel: () => ({ changed: true }), switchClaudeModel: () => ({ changed: true }),
     updateCodexThreadSettings: async () => {}, createCodexThread: async () => {}, saveState: async () => {},
-    getCodexReasoning: () => "high", setCodexReasoning: noop,
-    getClaudeReasoning: () => "high", setClaudeReasoning: noop,
-    getCodexMode: () => "default", setCodexMode: noop,
-    getClaudeMode: () => "default", setClaudeMode: noop,
-    getAutoApprove: () => true, setAutoApprove: noop,
-    getIncludeClaudeUsage: () => true, setIncludeClaudeUsage: noop,
+    getCodexReasoning: () => "high",
+    setCodexReasoning: noop, getClaudeReasoning: () => "high", setClaudeReasoning: noop,
+    getCodexMode: () => "default", setCodexMode: noop, getClaudeMode: () => "default", setClaudeMode: noop,
+    getAutoApprove: () => true, setAutoApprove: noop, getIncludeClaudeUsage: () => true, setIncludeClaudeUsage: noop,
     getActivityRecentMinutes: () => 180, setActivityRecentMinutes: noop,
     getStreamOrderMode: () => "activity", setStreamOrderMode: noop,
     getStreamCardWidthMode: () => "auto", setStreamCardWidthMode: noop,
     getStreamCardFixedWidth: () => 90, setStreamCardFixedWidth: noop,
     getStreamCardGapEnabled: () => false, setStreamCardGapEnabled: noop,
+    getShowInlineFileRevealButtons: () => false, setShowInlineFileRevealButtons: noop,
     getPinnedWorkspaceStreams: () => ({}), setPinnedWorkspaceStreams: noop,
     getQuickMessages: () => ({ streams: {}, workspaces: {} }), setQuickMessages: noop,
     projectUsage: async () => {}, findProjectIndex: () => 0, switchProject: async () => ({}),
     snapshot: async () => ({}), reasoningEfforts: ["high"], collaborationModes: ["default"],
+
     rememberStreamAgentSettings: async () => { remembered += 1; },
   });
   await service.update({ name: "streamOrderMode", value: "manual" });

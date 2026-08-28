@@ -18,8 +18,12 @@ const COMMAND_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9
 const HUB_ID_PATTERN = COMMAND_ID_PATTERN;
 const REMOTE_ATTACHMENT_PREFIX = "remote-attachment:";
 const ATTACHMENT_TIMEOUT_MS = 60_000;
-const ATTACHMENT_DOWNLOAD_ATTEMPTS = 3;
 const ATTACHMENT_COMMAND_CONCURRENCY = 3;
+const ATTACHMENT_CHUNK_CONCURRENCY = 8;
+const ATTACHMENT_TRANSPORT_PROTOCOL = "agent-hub-attachment-chunks-v1";
+const ATTACHMENT_TRANSPORT_CHUNK_BYTES = 16 * 1024;
+const ATTACHMENT_TRANSPORT_MANIFEST_MAX_BYTES = 24 * 1024;
+const SHA256_PATTERN = /^[a-f0-9]{64}$/u;
 
 function retryableCommandError(error) {
   const status = Number(error?.status);
@@ -193,37 +197,20 @@ export class SharedDashboardBotClient {
     return { id, userId, action: "board-task-ingest", params };
   }
 
-  async #downloadRemoteAttachmentOnce(reference, command) {
-    if (!this.#attachmentDirectory) throw new Error("Shared Dashboard bot attachment storage is not configured");
-    const id = String(reference).toLowerCase().slice(REMOTE_ATTACHMENT_PREFIX.length);
-    const response = await this.#signedFetch("/api/dashboard-bot/attachment/pull", {
-      id,
-      userId: command.userId,
-      commandId: command.id,
-    }, { timeoutMs: this.#attachmentTimeoutMs });
+  async #attachmentResponse(payload) {
+    const response = await this.#signedFetch("/api/dashboard-bot/attachment/pull", payload, {
+      timeoutMs: this.#attachmentTimeoutMs,
+    });
     if (!response.ok) {
       const payload = await response.json().catch(() => ({}));
       const error = new Error(`Shared Dashboard bot attachment download failed: ${payload?.error ?? `HTTP ${response.status}`}`);
       error.status = response.status;
       throw error;
     }
-    const encodedName = String(response.headers.get("X-Agent-Hub-File-Name") ?? "").trim();
-    let originalName = "attachment.bin";
-    try {
-      if (encodedName) originalName = decodeURIComponent(encodedName);
-    } catch {
-      throw new Error("Shared Dashboard bot returned invalid attachment metadata");
-    }
-    const contentType = attachmentContentType(originalName, response.headers.get("Content-Type"));
-    const expectedHash = String(response.headers.get("X-Agent-Hub-Attachment-Hash") ?? "").toLowerCase();
-    const advertisedLength = Number(response.headers.get("Content-Length"));
-    if (
-      !/^[a-f0-9]{64}$/u.test(expectedHash)
-      || (Number.isFinite(advertisedLength) && advertisedLength > MAX_ATTACHMENT_BYTES)
-    ) {
-      throw new Error("Shared Dashboard bot returned invalid attachment metadata");
-    }
-    const body = await this.#readAttachmentBody(response);
+    return response;
+  }
+
+  async #storeDownloadedAttachment({ body, command, contentType, expectedHash, id, originalName }) {
     if (
       body.length < 1
       || body.length > MAX_ATTACHMENT_BYTES
@@ -258,7 +245,169 @@ export class SharedDashboardBotClient {
     return target;
   }
 
-  async #readAttachmentBody(response) {
+  async #storeLegacyAttachment(response, { command, id }) {
+    const encodedName = String(response.headers.get("X-Agent-Hub-File-Name") ?? "").trim();
+    let originalName = "attachment.bin";
+    try {
+      if (encodedName) originalName = decodeURIComponent(encodedName);
+    } catch {
+      throw new Error("Shared Dashboard bot returned invalid attachment metadata");
+    }
+    const contentType = attachmentContentType(originalName, response.headers.get("Content-Type"));
+    const expectedHash = String(response.headers.get("X-Agent-Hub-Attachment-Hash") ?? "").toLowerCase();
+    const advertisedLength = Number(response.headers.get("Content-Length"));
+    if (
+      !SHA256_PATTERN.test(expectedHash)
+      || (Number.isFinite(advertisedLength) && advertisedLength > MAX_ATTACHMENT_BYTES)
+    ) {
+      throw new Error("Shared Dashboard bot returned invalid attachment metadata");
+    }
+    const body = await this.#readAttachmentBody(response);
+    return this.#storeDownloadedAttachment({ body, command, contentType, expectedHash, id, originalName });
+  }
+
+  async #attachmentManifestPage(response) {
+    const body = await this.#readAttachmentBody(response, ATTACHMENT_TRANSPORT_MANIFEST_MAX_BYTES);
+    try {
+      return JSON.parse(body.toString("utf8"));
+    } catch {
+      throw new Error("Shared Dashboard bot returned invalid attachment manifest JSON");
+    }
+  }
+
+  #validateAttachmentManifestPage(page, { id, expected = null, expectedPage }) {
+    const count = page?.count;
+    const size = page?.size;
+    const pageCount = page?.pageCount;
+    const valid = page?.protocol === ATTACHMENT_TRANSPORT_PROTOCOL
+      && page?.id === id
+      && page?.chunkBytes === ATTACHMENT_TRANSPORT_CHUNK_BYTES
+      && page?.page === expectedPage
+      && Number.isSafeInteger(size) && size > 0 && size <= MAX_ATTACHMENT_BYTES
+      && Number.isSafeInteger(count) && count === Math.ceil(size / ATTACHMENT_TRANSPORT_CHUNK_BYTES)
+      && Number.isSafeInteger(pageCount) && pageCount > 0 && pageCount <= count
+      && SHA256_PATTERN.test(String(page?.hash ?? ""))
+      && typeof page?.name === "string" && page.name.length > 0
+      && typeof page?.contentType === "string" && page.contentType.length > 0
+      && Array.isArray(page?.chunks) && page.chunks.length > 0;
+    if (!valid) throw new Error("Shared Dashboard bot returned invalid attachment manifest");
+    if (expected && ["size", "hash", "count", "pageCount", "contentType", "name"].some(
+      (key) => page[key] !== expected[key],
+    )) {
+      throw new Error("Shared Dashboard bot returned inconsistent attachment manifest pages");
+    }
+    return page;
+  }
+
+  async #downloadAttachmentChunk({ command, descriptor, id, manifest }) {
+    const response = await this.#attachmentResponse({
+      id,
+      userId: command.userId,
+      commandId: command.id,
+      mode: "chunk",
+      index: descriptor.index,
+    });
+    const advertisedLength = Number(response.headers.get("Content-Length"));
+    if (
+      response.headers.get("X-Agent-Hub-Attachment-Protocol") !== ATTACHMENT_TRANSPORT_PROTOCOL
+      || response.headers.get("X-Agent-Hub-Attachment-Id") !== id
+      || response.headers.get("X-Agent-Hub-Attachment-Hash") !== manifest.hash
+      || Number(response.headers.get("X-Agent-Hub-Chunk-Index")) !== descriptor.index
+      || Number(response.headers.get("X-Agent-Hub-Chunk-Count")) !== manifest.count
+      || response.headers.get("X-Agent-Hub-Chunk-Hash") !== descriptor.hash
+      || advertisedLength !== descriptor.size
+    ) {
+      throw new Error("Shared Dashboard bot returned invalid attachment chunk metadata");
+    }
+    const body = await this.#readAttachmentBody(response, ATTACHMENT_TRANSPORT_CHUNK_BYTES);
+    if (
+      body.length !== descriptor.size
+      || createHash("sha256").update(body).digest("hex") !== descriptor.hash
+    ) {
+      throw new Error("Shared Dashboard bot returned a damaged attachment chunk");
+    }
+    return body;
+  }
+
+  async #downloadAttachmentChunks({ command, descriptors, id, manifest }) {
+    const bodies = new Array(descriptors.length);
+    let nextIndex = 0;
+    const workers = Array.from(
+      { length: Math.min(ATTACHMENT_CHUNK_CONCURRENCY, descriptors.length) },
+      async () => {
+        for (;;) {
+          const index = nextIndex;
+          nextIndex += 1;
+          if (index >= descriptors.length) break;
+          bodies[index] = await this.#downloadAttachmentChunk({
+            command,
+            descriptor: descriptors[index],
+            id,
+            manifest,
+          });
+        }
+      },
+    );
+    await Promise.all(workers);
+    return bodies;
+  }
+
+  async #downloadRemoteAttachmentOnce(reference, command) {
+    if (!this.#attachmentDirectory) throw new Error("Shared Dashboard bot attachment storage is not configured");
+    const id = String(reference).toLowerCase().slice(REMOTE_ATTACHMENT_PREFIX.length);
+    const firstResponse = await this.#attachmentResponse({
+      id,
+      userId: command.userId,
+      commandId: command.id,
+      mode: "manifest",
+      page: 0,
+    });
+    if (!String(firstResponse.headers.get("Content-Type") ?? "").toLowerCase().includes("application/json")) {
+      return this.#storeLegacyAttachment(firstResponse, { command, id });
+    }
+    const first = this.#validateAttachmentManifestPage(
+      await this.#attachmentManifestPage(firstResponse),
+      { id, expectedPage: 0 },
+    );
+    const pages = [first];
+    for (let page = 1; page < first.pageCount; page += 1) {
+      const response = await this.#attachmentResponse({
+        id,
+        userId: command.userId,
+        commandId: command.id,
+        mode: "manifest",
+        page,
+      });
+      pages.push(this.#validateAttachmentManifestPage(
+        await this.#attachmentManifestPage(response),
+        { id, expected: first, expectedPage: page },
+      ));
+    }
+    const descriptors = pages.flatMap((page) => page.chunks);
+    if (descriptors.length !== first.count || descriptors.some((descriptor, index) => (
+      Number(descriptor?.index) !== index
+      || Number(descriptor?.size) !== Math.min(
+        ATTACHMENT_TRANSPORT_CHUNK_BYTES,
+        first.size - index * ATTACHMENT_TRANSPORT_CHUNK_BYTES,
+      )
+      || !SHA256_PATTERN.test(String(descriptor?.hash ?? ""))
+    ))) {
+      throw new Error("Shared Dashboard bot returned unordered attachment chunks");
+    }
+    const chunks = await this.#downloadAttachmentChunks({ command, descriptors, id, manifest: first });
+    const body = Buffer.concat(chunks, first.size);
+    const contentType = attachmentContentType(first.name, first.contentType);
+    return this.#storeDownloadedAttachment({
+      body,
+      command,
+      contentType,
+      expectedHash: first.hash,
+      id,
+      originalName: first.name,
+    });
+  }
+
+  async #readAttachmentBody(response, maxBytes = MAX_ATTACHMENT_BYTES) {
     if (!response.body) return Buffer.alloc(0);
     const reader = response.body.getReader();
     const chunks = [];
@@ -279,7 +428,7 @@ export class SharedDashboardBotClient {
         if (done) break;
         const chunk = Buffer.from(value);
         length += chunk.length;
-        if (length > MAX_ATTACHMENT_BYTES) {
+        if (length > maxBytes) {
           throw new Error("Shared Dashboard bot returned an oversized attachment");
         }
         chunks.push(chunk);
@@ -295,19 +444,12 @@ export class SharedDashboardBotClient {
   }
 
   async #downloadRemoteAttachment(reference, command) {
-    let lastError = null;
-    for (let attempt = 1; attempt <= ATTACHMENT_DOWNLOAD_ATTEMPTS; attempt += 1) {
-      try {
-        return await this.#downloadRemoteAttachmentOnce(reference, command);
-      } catch (error) {
-        if (!retryableCommandError(error)) throw error;
-        lastError = error;
-      }
+    try {
+      return await this.#downloadRemoteAttachmentOnce(reference, command);
+    } catch (error) {
+      if (!retryableCommandError(error)) throw error;
+      throw persistentRetryableError(error, "Shared Dashboard bot attachment download is incomplete; command will be retried");
     }
-    throw persistentRetryableError(
-      lastError,
-      `Shared Dashboard bot attachment download failed after ${ATTACHMENT_DOWNLOAD_ATTEMPTS} attempts`,
-    );
   }
 
   async #prepareCommand(command) {

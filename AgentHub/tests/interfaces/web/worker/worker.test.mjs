@@ -72,6 +72,36 @@ test("Dashboard bot materializes an attachment before crossing the public Worker
   assert.deepEqual(Buffer.from(await response.arrayBuffer()), Buffer.concat(chunks));
 });
 
+test("Dashboard transport probe exposes a bounded ordered attachment manifest", async () => {
+  const worker = await loadWorker();
+  const manifestResponse = await worker.dashboardAttachmentTransportProbeResponse(new Request(
+    "https://hub.test/api/transport-probe/attachment?mode=manifest&page=0",
+  ));
+  const manifestBody = Buffer.from(await manifestResponse.arrayBuffer());
+  const manifest = JSON.parse(manifestBody.toString("utf8"));
+  assert.ok(manifestBody.length < 25 * 1024);
+  assert.ok(manifest.size > 100 * 1024);
+  assert.equal(manifest.protocol, worker.ATTACHMENT_TRANSPORT_PROTOCOL);
+  assert.equal(manifest.count, manifest.chunks.length);
+  const chunks = [];
+  for (const descriptor of manifest.chunks) {
+    const request = new Request(
+      `https://hub.test/api/transport-probe/attachment?mode=chunk&index=${descriptor.index}`,
+    );
+    const first = await worker.dashboardAttachmentTransportProbeResponse(request);
+    const second = await worker.dashboardAttachmentTransportProbeResponse(request);
+    const firstBody = Buffer.from(await first.arrayBuffer());
+    const secondBody = Buffer.from(await second.arrayBuffer());
+    assert.ok(firstBody.length <= worker.ATTACHMENT_TRANSPORT_CHUNK_BYTES);
+    assert.deepEqual(firstBody, secondBody);
+    assert.equal(createHash("sha256").update(firstBody).digest("hex"), descriptor.hash);
+    chunks.push(firstBody);
+  }
+  const body = Buffer.concat(chunks);
+  assert.equal(body.length, manifest.size);
+  assert.equal(createHash("sha256").update(body).digest("hex"), manifest.hash);
+});
+
 class MemoryStorage {
   values = new Map();
   alarmAt = null;
@@ -1942,6 +1972,38 @@ test("Worker relay stores user-bound file uploads and serves them only to their 
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("Content-Type"), "image/png");
   assert.deepEqual(Buffer.from(await response.arrayBuffer()), png);
+
+  response = await workerModule.default.fetch(
+    signedServiceRequest("https://hub.test/api/control/attachment/pull", {
+      id: uploaded.id,
+      userId: "42",
+      commandId,
+      mode: "manifest",
+      page: 0,
+    }, syncSecret),
+    env,
+  );
+  const manifestBytes = Buffer.from(await response.arrayBuffer());
+  const manifest = JSON.parse(manifestBytes.toString("utf8"));
+  assert.ok(manifestBytes.length < 25 * 1024);
+  assert.deepEqual(manifest.chunks.map((chunk) => chunk.index), [0]);
+  assert.equal(manifest.hash, createHash("sha256").update(png).digest("hex"));
+
+  const pullChunk = () => workerModule.default.fetch(
+    signedServiceRequest("https://hub.test/api/control/attachment/pull", {
+      id: uploaded.id,
+      userId: "42",
+      commandId,
+      mode: "chunk",
+      index: 0,
+    }, syncSecret),
+    env,
+  );
+  const firstChunk = await pullChunk();
+  const secondChunk = await pullChunk();
+  assert.equal(firstChunk.headers.get("X-Agent-Hub-Chunk-Index"), "0");
+  assert.deepEqual(Buffer.from(await firstChunk.arrayBuffer()), png);
+  assert.deepEqual(Buffer.from(await secondChunk.arrayBuffer()), png);
 
   response = await workerModule.default.fetch(
     signedServiceRequest("https://hub.test/api/control/attachment/pull", {

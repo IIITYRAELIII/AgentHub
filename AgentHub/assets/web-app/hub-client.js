@@ -94,7 +94,6 @@ let activeRunClientUserMessageIds = new Set();
 let messageRenderBatchDepth = 0;
 const MAX_OUTGOING_MESSAGES_PER_TASK = 100;
 const acknowledgedFinalByTask = new Map();
-const workspaceReleaseWorkflow = window.AgentHubWorkspaceReleaseWorkflow;
 const { isUserRunningProjection, projectCanonicalMessages } = window.AgentHubMessageProjection;
 const {
   activeRunMessageReceipts,
@@ -2823,7 +2822,7 @@ agentHub.on("workspace:create", ({
 }));
 agentHub.on("workspace:update", ({
   workspaceId, name, comment, workingDirectory, rules, releaseWorkflowEnabled,
-  discardReleaseEntries = false, beforeColumnId,
+  beforeColumnId,
 }) => runAction(async () => {
   if (!lastSnapshot?.boardLayout) {
     agentHub.toast("Agent Hub завершает обновление runtime. Повторите действие через минуту.");
@@ -2837,27 +2836,12 @@ agentHub.on("workspace:update", ({
     releaseWorkflowEnabled: releaseWorkflowEnabled === true,
   };
   const settingsChanged = nextSettings.workingDirectory !== String(workspace?.settings?.workingDirectory ?? "")
-    || nextSettings.releaseWorkflowEnabled !== (workspace?.settings?.releaseWorkflowEnabled === true)
-    || discardReleaseEntries === true
-    || releaseWorkflowEnabled !== true;
+    || nextSettings.releaseWorkflowEnabled !== (workspace?.settings?.releaseWorkflowEnabled === true);
   if (settingsChanged) {
     snapshot = await control("update-workspace-settings", {
       workspaceId,
       settings: nextSettings,
-      discardReleaseEntries: discardReleaseEntries === true,
     });
-    const update = snapshot.workspaceSettingsUpdate?.releaseWorkflowUpdate;
-    if (update?.requiresDiscardConfirmation) {
-      if (!await agentHub.confirmWorkspaceReleaseDiscard(update)) {
-        applySnapshot(snapshot);
-        return;
-      }
-      snapshot = await control("update-workspace-settings", {
-        workspaceId,
-        settings: nextSettings,
-        discardReleaseEntries: true,
-      });
-    }
   }
   if (workspace?.kind !== "system" && name !== workspace?.name) {
     snapshot = await control("rename-workspace", { workspaceId, name });
@@ -2880,17 +2864,6 @@ agentHub.on("workspace:update", ({
     snapshot = await control("board-column-move", { columnId, beforeColumnId });
   }
   applySnapshot(snapshot);
-}));
-async function loadWorkspaceReleaseRegistry(workspaceId) {
-  const registry = await control("read-workspace-release-registry", { workspaceId, limit: 50 });
-  agentHub.setWorkspaceReleaseRegistry(workspaceId, registry);
-}
-agentHub.on("workspace-release:open", ({ workspaceId }) => runAction(
-  () => loadWorkspaceReleaseRegistry(workspaceId),
-));
-agentHub.on("workspace-release:status", ({ workspaceId, changeId, status }) => runAction(async () => {
-  const registry = await control("update-release-change-status", { changeId, status });
-  agentHub.setWorkspaceReleaseRegistry(workspaceId, registry);
 }));
 document.addEventListener("agenthub:board-action", (event) => {
   const detail = event.detail ?? {};
@@ -3223,6 +3196,7 @@ agentHub.on("selection:set", async ({ key, value }) => {
     streamCardWidthMode: "streamCardWidthMode",
     streamCardFixedWidth: "streamCardFixedWidth",
     streamCardGapEnabled: "streamCardGapEnabled",
+    showInlineFileRevealButtons: "showInlineFileRevealButtons",
     pinnedWorkspaceStreams: "pinnedWorkspaceStreams",
     quickMessages: "quickMessages",
   };

@@ -89,6 +89,7 @@ export async function runTestContourUiSmoke({
   withAgent = true,
   model = "",
   probeResponse = TEST_CONTOUR_PROBE_RESPONSE,
+
   timeoutMs = 180_000,
   launchOptions = { channel: "msedge", headless: true },
 } = {}) {
@@ -127,7 +128,9 @@ export async function runTestContourUiSmoke({
       const workspace = page.locator("[data-workspace-select]:visible").first();
       await workspace.waitFor({ state: "visible", timeout: timeoutMs });
       await workspace.click();
-      const selectedStream = page.locator("[data-stream-tab-id]:visible").first();
+      const selectedStream = page.locator(
+        '[data-stream-tab-id][data-stream-provider="codex"]:visible',
+      ).first();
       await selectedStream.waitFor({ state: "visible", timeout: timeoutMs });
       await selectedStream.click();
       await selectTestContourModel(page, model, timeoutMs);
