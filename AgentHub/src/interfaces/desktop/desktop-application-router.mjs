@@ -11,7 +11,8 @@ const MUTATION_ACTIONS = Object.freeze([
   "archive-stream", "update-stream-settings", "update-stream-rules", "move-stream",
   "board-task-create", "board-task-ingest", "board-task-update", "board-task-status", "board-task-move", "board-task-complete", "board-task-remove",
   "board-task-retry-triage", "board-task-start", "board-column-move", "board-column-comment",
-  "board-workspace-move",
+  "board-workspace-move", "usage-sync", "usage-sync-invite", "usage-sync-enroll",
+  "usage-sync-device-label",
 ]);
 
 const CONCURRENT_MUTATION_ACTIONS = Object.freeze([
@@ -57,6 +58,7 @@ export function createDesktopApplicationRouter({
     "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskStatus", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
     "boardTaskRetryTriage", "boardTaskStart", "boardColumnMove", "boardColumnComment",
     "boardWorkspaceMove",
+    "usageSync", "usageSyncInvite", "usageSyncEnroll", "usageSyncDeviceLabel",
   ]) requiredFunction(handlers[name], name);
 
   const dispatch = (type, params, context, target) => commands.dispatch(
@@ -138,6 +140,10 @@ export function createDesktopApplicationRouter({
       "board-column-move": handlers.boardColumnMove,
       "board-column-comment": handlers.boardColumnComment,
       "board-workspace-move": handlers.boardWorkspaceMove,
+      "usage-sync": handlers.usageSync,
+      "usage-sync-invite": handlers.usageSyncInvite,
+      "usage-sync-enroll": handlers.usageSyncEnroll,
+      "usage-sync-device-label": handlers.usageSyncDeviceLabel,
       "command-trace-timeline": handlers.commandTraceTimeline,
       "command-trace-percentiles": handlers.commandTracePercentiles,
       "command-trace-stats": handlers.commandTraceStats,

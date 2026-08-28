@@ -12,6 +12,7 @@ import { createDesktopRouterComposition } from "./desktop-router-composition.mjs
 import { DesktopTaskBoardController } from "../interfaces/desktop/desktop-task-board-controller.mjs";
 import { TaskBoardLaunchService } from "../application/task-board-launch-service.mjs";
 import { taskReferenceDescriptor } from "../domain/task-board-task.mjs";
+import { publicUsageSyncStatus } from "../interfaces/web/mini-app-journal-data.mjs";
 
 export function createDesktopRunRouterWiring({
   config,
@@ -23,6 +24,44 @@ export function createDesktopRunRouterWiring({
   const compactContext = async (params) => (
     services.startManualCompaction(await desktop.messageTarget(params))
   );
+  function usageSyncService() {
+    if (!services.usageSyncAuto) throw new Error("Синхронизация расхода недоступна");
+    return services.usageSyncAuto;
+  }
+
+  async function usageSyncStatus() {
+    const remoteConfig = await services.usageSyncRemoteConfigStore?.load?.().catch(() => null);
+    const labelStatus = await services.usageSyncAuto?.deviceLabelStatus?.().catch(() => null);
+    return publicUsageSyncStatus({ ...(remoteConfig ?? {}), ...(labelStatus ?? {}) });
+  }
+
+  async function usageSyncResponse(result) {
+    return {
+      ok: true,
+      result,
+      usageSync: await usageSyncStatus(),
+      journal: null,
+    };
+  }
+
+  async function usageSyncNow() {
+    return usageSyncResponse(await usageSyncService().sync());
+  }
+
+  async function usageSyncInvite() {
+    return usageSyncResponse(await usageSyncService().createEnrollmentCode({ ttlSeconds: 10_800 }));
+  }
+
+  async function usageSyncEnroll(params = {}) {
+    return usageSyncResponse(await usageSyncService().enroll({
+      serverUrl: params.serverUrl,
+      code: params.code,
+    }));
+  }
+
+  async function usageSyncDeviceLabel(params = {}) {
+    return usageSyncResponse(await usageSyncService().setDeviceLabel(params.deviceLabel));
+  }
 
   const runInputs = createDesktopRunInputComposition({
     deferredInput: {
@@ -227,6 +266,10 @@ export function createDesktopRunRouterWiring({
       boardColumnMove: (params) => taskBoardController.moveColumn(params),
       boardColumnComment: (params) => taskBoardController.updateColumnComment(params),
       boardWorkspaceMove: (params) => taskBoardController.moveWorkspace(params),
+      usageSync: usageSyncNow,
+      usageSyncInvite,
+      usageSyncEnroll,
+      usageSyncDeviceLabel,
       commandTraceTimeline: (params) => services.commandTrace.readCommandTimeline(
         params?.commandId,
         { limit: params?.limit },

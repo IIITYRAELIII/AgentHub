@@ -154,6 +154,7 @@ export function createInteractionShellPhase({
       rateLimitHistoryStore: infrastructure.rateLimitHistoryStore,
       providerTurnTelemetryStore: infrastructure.providerTurnTelemetryStore,
       workLogUsageStore: infrastructure.workLogUsageStore,
+      workLogUsageRemoteConfigStore: infrastructure.workLogUsageRemoteConfigStore,
       workspaceCatalogStore: infrastructure.workspaceCatalogStore,
       streamHandoff: infrastructure.streamHandoff,
       runtimeStateStore,
@@ -197,6 +198,7 @@ export function createInteractionShellPhase({
       codexContextMaintenance: provider.codexContextMaintenance,
       streamContextMaintenance: provider.streamContextMaintenance,
       streamMaintenance: provider.streamMaintenance,
+      usageSyncAuto: provider.usageSyncAuto,
     },
     provider: {
       agentProviders: provider.agentProviders,

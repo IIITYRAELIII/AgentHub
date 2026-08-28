@@ -309,6 +309,42 @@ test("VS Code bridge proxies usage sync POST requests with a local webview sessi
   }
 });
 
+test("VS Code bridge handles usage sync POST through desktop control without local web secret", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-vscode-sync-desktop-"));
+  let bridge;
+  try {
+    await writeFile(path.join(root, "config.json"), JSON.stringify({ miniApp: { host: "127.0.0.1", port: 8787 } }), "utf8");
+    await writeFile(path.join(root, "desktop-control.mjs"), [
+      "export async function callDesktopControl(action, params) {",
+      "  return { ok: true, result: { action, params }, usageSync: { configured: true } };",
+      "}",
+    ].join("\n"), "utf8");
+    bridge = new AgentHubBridge({
+      moduleRoot: root,
+      runtimeRoot: root,
+      fetchImpl: async () => {
+        throw new Error("local web proxy must not be used");
+      },
+    });
+
+    const result = await bridge.http({
+      method: "POST",
+      path: "/api/journal/usage-sync/device-label",
+      headers: { "Content-Type": "application/json; charset=utf-8" },
+      body: JSON.stringify({ deviceLabel: "Andrey" }),
+    });
+
+    assert.equal(result.status, 200);
+    const payload = JSON.parse(result.body);
+    assert.equal(payload.ok, true);
+    assert.equal(payload.result.action, "usage-sync-device-label");
+    assert.deepEqual(payload.result.params, { deviceLabel: "Andrey" });
+  } finally {
+    bridge?.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("installed VS Code bridge follows the next runtime release without Reload Window", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-vscode-runtime-switch-"));
   async function writeRelease(name) {

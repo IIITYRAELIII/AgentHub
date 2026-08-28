@@ -304,6 +304,24 @@ class AgentHubBridge {
     return target;
   }
 
+  async usageSyncDesktopHttp(pathname, body = "") {
+    const action = {
+      "/api/journal/usage-sync": "usage-sync",
+      "/api/journal/usage-sync/invite": "usage-sync-invite",
+      "/api/journal/usage-sync/enroll": "usage-sync-enroll",
+      "/api/journal/usage-sync/device-label": "usage-sync-device-label",
+    }[pathname];
+    if (!action) return null;
+    const params = body ? JSON.parse(String(body)) : {};
+    try {
+      return jsonResponse(await this.control(action, params));
+    } catch (error) {
+      const message = String(error?.message ?? error);
+      if (/Неизвестная desktop-команда|desktop-control\.mjs|Cannot find module|ENOENT/u.test(message)) return null;
+      throw error;
+    }
+  }
+
   async journal() {
     this.journalCache = await this.withJournalStore((database) => database.payload());
     if (!this.journalCache) throw new Error("Журнал ещё не создан");
@@ -419,6 +437,12 @@ class AgentHubBridge {
       "/api/journal/usage-sync/device-label",
     ]);
     if (requestMethod === "POST" && proxyPaths.has(url.pathname)) {
+      try {
+        const desktopResult = await this.usageSyncDesktopHttp(url.pathname, body);
+        if (desktopResult) return desktopResult;
+      } catch (error) {
+        return jsonResponse({ error: `Sync в VS Code недоступен: ${error.message}` }, 503);
+      }
       try {
         const session = await this.webviewSession();
         const requestHeaders = new Headers(headers);

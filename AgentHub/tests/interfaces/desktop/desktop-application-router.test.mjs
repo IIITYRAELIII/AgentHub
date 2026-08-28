@@ -14,7 +14,7 @@ function router(calls, { omit = [] } = {}) {
     "renameWorkspace", "createWorkspaceFromStream", "mergeWorkspaces", "renameStream", "moveStream",
     "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskStatus", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
     "boardTaskRetryTriage", "boardTaskStart", "boardColumnMove", "boardColumnComment",
-    "boardWorkspaceMove",
+    "boardWorkspaceMove", "usageSync", "usageSyncInvite", "usageSyncEnroll", "usageSyncDeviceLabel",
   ].map((name) => [name, handler]));
   for (const name of omit) delete handlers[name];
   return createDesktopApplicationRouter({
@@ -230,7 +230,8 @@ test("Desktop application router accepts a message beside a blocked mutation", a
     "readRootAgents", "updateRootAgents", "compactContext", "openAttachment", "submitBugReport", "reportDiagnostic",
     "trustedDevices", "createDevicePairing", "revokeDevice",
     "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskStatus", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
-    "boardTaskRetryTriage", "boardTaskStart", "boardColumnMove", "boardColumnComment", "boardWorkspaceMove",
+    "boardTaskRetryTriage", "boardTaskStart", "boardColumnMove", "boardColumnComment",
+    "boardWorkspaceMove", "usageSync", "usageSyncInvite", "usageSyncEnroll", "usageSyncDeviceLabel",
   ].map((name) => [name, async () => ({ accepted: true, name })]));
   handlers.restartServer = async () => blocked;
   const control = createDesktopApplicationRouter({
@@ -260,7 +261,8 @@ test("Desktop application router accepts a restart beside a blocked mutation", a
     "readRootAgents", "updateRootAgents", "compactContext", "openAttachment", "submitBugReport", "reportDiagnostic",
     "trustedDevices", "createDevicePairing", "revokeDevice",
     "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskStatus", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
-    "boardTaskRetryTriage", "boardTaskStart", "boardColumnMove", "boardColumnComment", "boardWorkspaceMove",
+    "boardTaskRetryTriage", "boardTaskStart", "boardColumnMove", "boardColumnComment",
+    "boardWorkspaceMove", "usageSync", "usageSyncInvite", "usageSyncEnroll", "usageSyncDeviceLabel",
   ].map((name) => [name, async () => ({ accepted: true, name })]));
   const control = createDesktopApplicationRouter({
     handlers,

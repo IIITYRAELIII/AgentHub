@@ -63,6 +63,7 @@ export function createDesktopShellComposition({
     rateLimitHistoryStore,
     providerTurnTelemetryStore,
     workLogUsageStore,
+    workLogUsageRemoteConfigStore,
     workspaceCatalogStore,
     streamHandoff,
     runtimeStateStore,
@@ -93,6 +94,7 @@ export function createDesktopShellComposition({
     streamMaintenance,
     taskBoard,
     taskVoiceTranscriber,
+    usageSyncAuto,
   } = runtime;
   const {
     agentProviders,
@@ -510,6 +512,8 @@ export function createDesktopShellComposition({
         }) ?? fallbackReceipt,
       }),
       commandTrace: commandTraceService,
+      usageSyncAuto,
+      usageSyncRemoteConfigStore: workLogUsageRemoteConfigStore,
       executionRuntimeLabel: taskExecutionRuntimeLabel,
       sendMessageTo,
       resolveRepoRoots: resolveTaskGitRepoRoots,
