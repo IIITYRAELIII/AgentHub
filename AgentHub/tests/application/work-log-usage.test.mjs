@@ -1089,6 +1089,48 @@ test("journal projection groups all Stream turns under one expandable Workspace"
   assert.ok(projected.includes('data-usage-credits="9"'));
 });
 
+test("journal projection indexes automatic turns by exact day provider and root thread", () => {
+  const originalDateToString = Date.prototype.toString;
+  let parsedDateStringifications = 0;
+  Date.prototype.toString = function trackedDateToString() {
+    parsedDateStringifications += 1;
+    return originalDateToString.call(this);
+  };
+  try {
+    const turns = {
+      codexFirst: {
+        provider: "codex", threadId: "codex-child", taskThreadId: "shared-root",
+        turnId: "codex-first", taskTitle: "Codex", title: "Codex first",
+        completedAt: "2026-07-30T10:00:00.000Z",
+      },
+      claudeSameThread: {
+        provider: "claude", threadId: "shared-root", turnId: "claude-first",
+        taskTitle: "Claude", title: "Claude first", completedAt: "2026-07-30T11:00:00.000Z",
+      },
+      codexNextDay: {
+        provider: "codex", threadId: "codex-child-2", taskThreadId: "shared-root",
+        turnId: "codex-next", taskTitle: "Codex", title: "Codex next",
+        completedAt: "2026-07-31T10:00:00.000Z",
+      },
+      probe: {
+        provider: "codex", threadId: "probe-thread", turnId: "probe-turn",
+        taskTitle: "Probe", title: "AGENT_HUB_CONTEXT_PROBE_OK_V1",
+        contextProbe: true, completedAt: "2026-07-30T12:00:00.000Z",
+      },
+    };
+    const projected = projectWorkLogUsage("# Глобальный журнал работ\n", turns);
+
+    assert.equal(parsedDateStringifications, 0);
+    assert.equal((projected.match(/data-work-log-turn-id="codex-first"/gu) ?? []).length, 1);
+    assert.equal((projected.match(/data-work-log-turn-id="claude-first"/gu) ?? []).length, 1);
+    assert.equal((projected.match(/data-work-log-turn-id="codex-next"/gu) ?? []).length, 1);
+    assert.doesNotMatch(projected, /probe-turn|AGENT_HUB_CONTEXT_PROBE_OK_V1/u);
+    assert.equal(projectWorkLogUsage(projected, turns), projected);
+  } finally {
+    Date.prototype.toString = originalDateToString;
+  }
+});
+
 test("journal assigns an unknown root Thread to Other instead of a fake group", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "work-log-workspace-fallback-"));
   try {

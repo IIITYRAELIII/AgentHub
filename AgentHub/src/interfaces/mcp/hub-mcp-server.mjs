@@ -4,7 +4,33 @@ import { createServer } from "node:http";
 import { AGENT_HUB_VERSION } from "../../infrastructure/filesystem/agent-hub-package.mjs";
 
 const MAX_REQUEST_BYTES = 1024 * 1024;
+const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
+const REQUEST_TIMEOUT_ERROR_CODE = -32001;
 const PROTOCOL_VERSIONS = new Set(["2024-11-05", "2025-03-26", "2025-06-18"]);
+
+function requestTimeoutMessage(timeoutMs) {
+  const duration = timeoutMs % 1_000 === 0
+    ? `${timeoutMs / 1_000} seconds`
+    : `${timeoutMs} ms`;
+  return `Agent Hub MCP request timed out after ${duration}; outcome is unknown. Reuse the same request_id when retrying a mutation.`;
+}
+
+async function withRequestTimeout(operation, timeoutMs) {
+  let timeout;
+  const deadline = new Promise((_, reject) => {
+    timeout = setTimeout(() => {
+      reject(Object.assign(new Error(requestTimeoutMessage(timeoutMs)), {
+        code: REQUEST_TIMEOUT_ERROR_CODE,
+      }));
+    }, timeoutMs);
+    timeout.unref?.();
+  });
+  try {
+    return await Promise.race([operation, deadline]);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
 function jsonRpcResult(id, result) {
   return { jsonrpc: "2.0", id, result };
@@ -44,6 +70,7 @@ export class HubMcpServer {
     secret,
     host = "127.0.0.1",
     port = 0,
+    requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
     logger = console,
     captureUnexpectedException = () => false,
   } = {}) {
@@ -59,6 +86,7 @@ export class HubMcpServer {
     this.endpointPath = `/mcp/${endpointCapability}`;
     this.host = host;
     this.port = Number(port) || 0;
+    this.requestTimeoutMs = Math.max(1, Math.trunc(Number(requestTimeoutMs) || DEFAULT_REQUEST_TIMEOUT_MS));
     this.logger = logger;
     this.captureUnexpectedException = captureUnexpectedException;
   }
@@ -158,10 +186,13 @@ export class HubMcpServer {
       return;
     }
     try {
-      const result = await this.#dispatch(message.method, message.params ?? {});
+      const result = await withRequestTimeout(
+        this.#dispatch(message.method, message.params ?? {}),
+        this.requestTimeoutMs,
+      );
       writeJson(response, 200, jsonRpcResult(message.id, result));
     } catch (error) {
-      this.#capture(error, "dispatch");
+      if (error?.code !== REQUEST_TIMEOUT_ERROR_CODE) this.#capture(error, "dispatch");
       writeJson(response, 200, jsonRpcError(message.id, Number(error?.code) || -32603, error.message));
     }
   }

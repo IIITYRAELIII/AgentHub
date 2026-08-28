@@ -156,6 +156,31 @@ test("task run registry exposes a monotonic presentation revision", () => {
   assert.equal(registry.revision, 4);
 });
 
+test("runtime serialization excludes reconstructible active presentation caches", () => {
+  const userMessages = [{ role: "user", text: "Проверь" }];
+  const providerStart = { state: "observed", turnId: "turn-1" };
+  const serialized = serializableTaskRun({
+    id: "run-1",
+    turnId: "turn-1",
+    responseText: "Текущий ответ",
+    userMessages,
+    providerStart,
+    liveItems: [{ id: "live-1" }],
+    responseItems: [{ id: "response-1" }],
+    activities: [{ id: "activity-1" }],
+    activityGroups: [{ id: "group-1", activities: [] }],
+    currentActivityGroupId: "group-1",
+  });
+
+  assert.deepEqual(serialized, {
+    id: "run-1",
+    turnId: "turn-1",
+    responseText: "Текущий ответ",
+    userMessages,
+    providerStart,
+  });
+});
+
 test("taskRunIsActive excludes terminal runs kept for final delivery", () => {
   assert.equal(taskRunIsActive(null), false);
   assert.equal(taskRunIsActive(undefined), false);

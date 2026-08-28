@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import {
   displayUserPrompt,
   isEmptyTurnCompletionPlaceholder,
-  mergeSyntheticRolloutUsers,
   userTaskReferencePromptDetails,
   withoutCodexInspectionAttachments,
 } from "../../application/task-history.mjs";
@@ -75,16 +74,90 @@ export function visibleTaskHistoryMessageCount(history) {
   }, 0);
 }
 
+function userMessageEntries(messages) {
+  let ordinal = 0;
+  return (Array.isArray(messages) ? messages : []).flatMap((message, index) => {
+    if (message?.role !== "user") return [];
+    const entry = { index, ordinal, message };
+    ordinal += 1;
+    return [entry];
+  });
+}
+
+function syntheticUserOrdinal(message, turnId) {
+  if (message?.role !== "user" || message?.clientUserMessageId) return null;
+  const match = new RegExp(`^${turnId}:rollout-user:(\\d+)$`, "u")
+    .exec(String(message?.itemId ?? ""));
+  return match ? Number(match[1]) : null;
+}
+
+function normalizedUserText(message) {
+  return displayUserPrompt(message?.text) || String(message?.text ?? "").trim();
+}
+
+function uniqueMessageValues(values, keyFor) {
+  const known = new Set();
+  return values.filter((value) => {
+    const key = keyFor(value);
+    if (!key || known.has(key)) return false;
+    known.add(key);
+    return true;
+  });
+}
+
+function mergeSyntheticUserCopy(synthetic, canonical) {
+  const attachments = uniqueMessageValues([
+    ...(Array.isArray(canonical?.attachments) ? canonical.attachments : []),
+    ...(Array.isArray(synthetic?.attachments) ? synthetic.attachments : []),
+  ], (item) => String(item?.id ?? item?.path ?? item?.url ?? "").toLowerCase());
+  const attachmentSources = uniqueMessageValues([
+    ...(Array.isArray(canonical?.attachmentSources) ? canonical.attachmentSources : []),
+    ...(Array.isArray(synthetic?.attachmentSources) ? synthetic.attachmentSources : []),
+  ], (item) => `${String(item?.type ?? "")}\0${String(item?.value ?? "").toLowerCase()}`);
+  return {
+    ...structuredClone(synthetic),
+    ...structuredClone(canonical),
+    time: canonical?.time ?? synthetic?.time ?? null,
+    ...(attachments.length ? { attachments } : {}),
+    ...(attachmentSources.length ? { attachmentSources } : {}),
+  };
+}
+
+function syntheticMigrationPair(left, right, turnId, ordinal) {
+  const leftSynthetic = syntheticUserOrdinal(left, turnId) === ordinal;
+  const rightSynthetic = syntheticUserOrdinal(right, turnId) === ordinal;
+  if (leftSynthetic === rightSynthetic) return null;
+  const synthetic = leftSynthetic ? left : right;
+  const canonical = leftSynthetic ? right : left;
+  if (!String(canonical?.clientUserMessageId ?? "").trim()) return null;
+  const syntheticText = normalizedUserText(synthetic);
+  if (!syntheticText || syntheticText !== normalizedUserText(canonical)) return null;
+  return { synthetic, canonical };
+}
+
 // Builds the bounded Desktop/Mini App history read-model for one task.
-function mergeDurableMessages(hydratedMessages, durableMessages) {
+function mergeDurableMessages(hydratedMessages, durableMessages, turnId) {
   const values = structuredClone(Array.isArray(hydratedMessages) ? hydratedMessages : []);
-  for (const durable of Array.isArray(durableMessages) ? durableMessages : []) {
+  const hydratedUsers = new Map(userMessageEntries(values).map((entry) => [entry.ordinal, entry]));
+  const durableValues = Array.isArray(durableMessages) ? durableMessages : [];
+  const durableOrdinals = new Map(userMessageEntries(durableValues)
+    .map((entry) => [entry.index, entry.ordinal]));
+  for (const [durableIndex, durable] of durableValues.entries()) {
     const itemId = String(durable?.itemId ?? "").trim();
     const clientId = String(durable?.clientUserMessageId ?? "").trim();
     let index = values.findIndex((message) => (
       (itemId && String(message?.itemId ?? "").trim() === itemId)
       || (clientId && String(message?.clientUserMessageId ?? "").trim() === clientId)
     ));
+    let migrationPair = null;
+    if (index < 0 && durable?.role === "user") {
+      const ordinal = durableOrdinals.get(durableIndex);
+      const hydrated = hydratedUsers.get(ordinal);
+      migrationPair = hydrated
+        ? syntheticMigrationPair(hydrated.message, durable, turnId, ordinal)
+        : null;
+      if (migrationPair) index = hydrated.index;
+    }
     if (index < 0 && durable?.role === "agent") {
       const syntheticFinalId = /:(?:rollout-)?agent:(?:live|final)$/u.test(itemId);
       if (syntheticFinalId) {
@@ -101,6 +174,10 @@ function mergeDurableMessages(hydratedMessages, durableMessages) {
       continue;
     }
     const current = values[index];
+    if (migrationPair) {
+      values[index] = mergeSyntheticUserCopy(migrationPair.synthetic, migrationPair.canonical);
+      continue;
+    }
     const author = String(durable?.author ?? "").trim()
       || String(current?.author ?? "").trim();
     values[index] = {
@@ -136,10 +213,7 @@ export function mergeDurableTaskHistory(hydratedHistory, durableHistory) {
       ...structuredClone(durable),
       startedAt: current.startedAt ?? durable?.startedAt ?? null,
       completedAt: current.completedAt ?? durable?.completedAt ?? null,
-      messages: mergeSyntheticRolloutUsers(
-        mergeDurableMessages(current.messages, durable?.messages),
-        id,
-      ),
+      messages: mergeDurableMessages(current.messages, durable?.messages, id),
       activities: Array.isArray(durable?.activities) && durable.activities.length
         ? structuredClone(durable.activities)
         : current.activities,

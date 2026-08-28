@@ -13,6 +13,10 @@ const identity = {
   clientUserMessageId: "client-1",
 };
 
+test("message receipt projection leaves capacity for every durable active command", () => {
+  assert.equal(new MessageReceiptRegistry().limit, 600);
+});
+
 test("message receipts survive persistence and reject changed content", async () => {
   const firstFingerprint = await messageRequestFingerprint({
     text: "Проверь",

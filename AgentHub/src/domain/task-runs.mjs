@@ -741,6 +741,11 @@ export function serializableTaskRun(run) {
     claudeDrainInFlight: _claudeDrainInFlight,
     claudeDrainPending: _claudeDrainPending,
     latestDiff: _latestDiff,
+    liveItems: _liveItems,
+    responseItems: _responseItems,
+    activities: _activities,
+    activityGroups: _activityGroups,
+    currentActivityGroupId: _currentActivityGroupId,
     ...value
   } = run;
   return value;

@@ -156,13 +156,18 @@ test("state coordinator coalesces queued snapshots and isolates a missing initia
   const saved = [];
   let releaseFirst;
   const firstBlocked = new Promise((resolve) => { releaseFirst = resolve; });
+  let markFirstStarted;
+  const firstStarted = new Promise((resolve) => { markFirstStarted = resolve; });
   let revision = 0;
   const coordinator = new HubRuntimeStateCoordinator({
     store: {
       load: async () => ({ value: null }),
       save: async (value) => {
         saved.push(value);
-        if (saved.length === 1) await firstBlocked;
+        if (saved.length === 1) {
+          markFirstStarted();
+          await firstBlocked;
+        }
       },
     },
     canonicalize: (value) => value,
@@ -172,13 +177,65 @@ test("state coordinator coalesces queued snapshots and isolates a missing initia
   });
   assert.deepEqual(await coordinator.restore(), { failed: false, value: null });
   const first = coordinator.save();
-  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(revision, 0);
+  await firstStarted;
+  assert.equal(revision, 1);
   const second = coordinator.save();
   const third = coordinator.save();
   releaseFirst();
   await Promise.all([first, second, third]);
   await coordinator.flush();
-  assert.deepEqual(saved, [{ revision: 1 }, { revision: 3 }]);
+  assert.deepEqual(saved, [{ revision: 1 }, { revision: 2 }]);
+});
+
+test("state coordinator captures one snapshot for same-tick durability waiters", async () => {
+  const saved = [];
+  let revision = 0;
+  const coordinator = new HubRuntimeStateCoordinator({
+    store: {
+      load: async () => ({ value: null }),
+      save: async (value) => saved.push(value),
+    },
+    canonicalize: (value) => value,
+    restoreSnapshot: async (value) => value,
+    createSnapshot: () => ({ revision: ++revision }),
+    log: { log() {}, warn() {}, error() {} },
+  });
+
+  const saves = [coordinator.save(), coordinator.save(), coordinator.save()];
+  await coordinator.flush();
+  await Promise.all(saves);
+
+  assert.deepEqual(saved, [{ revision: 1 }]);
+});
+
+test("state coordinator recovers after a failed persisted revision", async () => {
+  const saved = [];
+  let revision = 0;
+  let fail = true;
+  const coordinator = new HubRuntimeStateCoordinator({
+    store: {
+      load: async () => ({ value: null }),
+      save: async (value) => {
+        if (fail) {
+          fail = false;
+          throw new Error("writer failed");
+        }
+        saved.push(value);
+      },
+    },
+    canonicalize: (value) => value,
+    restoreSnapshot: async (value) => value,
+    createSnapshot: () => ({ revision: ++revision }),
+    log: { log() {}, warn() {}, error() {} },
+  });
+
+  await assert.rejects(coordinator.save(), /writer failed/u);
+  await assert.rejects(coordinator.flush(), /writer failed/u);
+  await coordinator.save();
+  await coordinator.flush();
+
+  assert.deepEqual(saved, [{ revision: 2 }]);
 });
 
 test("runtime snapshot keeps task identity and provider preferences separate", () => {

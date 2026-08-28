@@ -231,6 +231,51 @@ test("durable history coalesces transient rollout users in either source order",
   }
 });
 
+test("durable history migrates a sparse canonical steer by its source user slot", () => {
+  const turnId = "turn-sparse-steer";
+  const syntheticRoot = {
+    itemId: `${turnId}:rollout-user:0`,
+    role: "user",
+    text: "11 сек..",
+  };
+  const syntheticSteer = {
+    itemId: `${turnId}:rollout-user:1`,
+    role: "user",
+    text: "11 сек..",
+    attachments: [{ id: "legacy.png", type: "image/png" }],
+  };
+  const canonicalSteer = {
+    itemId: "canonical-steer",
+    clientUserMessageId: "b74897d2-0ba2-48e8-a378-cde19f96dbb2",
+    role: "user",
+    text: "11 сек..",
+    attachmentSources: [{ type: "path", value: "C:/AgentHub/attachments/canonical.png" }],
+  };
+
+  for (const [hydrated, durable] of [
+    [[syntheticRoot, canonicalSteer], [syntheticRoot, syntheticSteer]],
+    [[syntheticRoot, syntheticSteer], [syntheticRoot, canonicalSteer]],
+  ]) {
+    const [turn] = mergeDurableTaskHistory(
+      [{ id: turnId, messages: hydrated }],
+      [{ id: turnId, messages: durable }],
+    );
+    assert.deepEqual(turn.messages.map((message) => message.itemId), [
+      `${turnId}:rollout-user:0`,
+      "canonical-steer",
+    ]);
+    assert.equal(
+      turn.messages[1].clientUserMessageId,
+      "b74897d2-0ba2-48e8-a378-cde19f96dbb2",
+    );
+    assert.deepEqual(turn.messages[1].attachments, [{ id: "legacy.png", type: "image/png" }]);
+    assert.deepEqual(turn.messages[1].attachmentSources, [{
+      type: "path",
+      value: "C:/AgentHub/attachments/canonical.png",
+    }]);
+  }
+});
+
 test("durable history preserves a real steer beside the root message", () => {
   const turnId = "turn-with-steer";
   const [turn] = mergeDurableTaskHistory([{
@@ -1130,25 +1175,6 @@ test("desktop task history preserves pagination, field limits and response budge
   assert.equal(result.items[0].activities.length, 105);
   assert.equal(result.items[0].messages.some((message) => message.role === "tool"), false);
   assert.deepEqual(calls.fit, { maxBytes: 64 * 1_024 });
-});
-
-test("desktop task history returns a long agent answer within the supported budget", async () => {
-  const longAnswer = `Начало ответа\n${"я".repeat(120_000)}\nКонец ответа`;
-  const { desktopTaskHistory, state, calls } = fixture({ run: null });
-  state.history[3].answer = longAnswer;
-  state.history[3].messages[1].text = longAnswer;
-
-  const result = await desktopTaskHistory({
-    provider: "codex",
-    threadId: "thread-1",
-    limit: 1,
-    maxAnswerChars: 200_000,
-    maxResponseBytes: 850_000,
-  });
-
-  assert.equal(result.items[0].answer, longAnswer);
-  assert.equal(result.items[0].messages[1].text, longAnswer);
-  assert.deepEqual(calls.fit, { maxBytes: 850_000 });
 });
 
 test("desktop task history can await provider hydration for a completed image response", async () => {

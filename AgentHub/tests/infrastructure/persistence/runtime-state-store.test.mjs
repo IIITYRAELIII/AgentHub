@@ -16,6 +16,16 @@ import {
   messageCommandFixture,
 } from "../../fixtures/message-command-ledger.mjs";
 
+function readRawRuntimeState(dataDir) {
+  const database = new DatabaseSync(runtimeDatabasePath(dataDir), { readOnly: true });
+  try {
+    const row = database.prepare("SELECT value_json FROM runtime_state WHERE key = 'main'").get();
+    return row?.value_json ? JSON.parse(row.value_json) : null;
+  } finally {
+    database.close();
+  }
+}
+
 test("runtime state migrates from JSON to SQLite and archives both legacy copies", async (context) => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "agent-hub-runtime-state-"));
   context.after(() => rm(dataDir, { recursive: true, force: true }));
@@ -102,6 +112,58 @@ test("runtime state worker preserves JSON semantics for non-cloneable transient 
   await store.close();
 });
 
+test("runtime state omits only exact ledger-owned message projections", async (context) => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "agent-hub-runtime-ledger-projection-"));
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const queued = messageCommandFixture({
+    clientUserMessageId: "ledger-queued",
+    itemId: "queued-item",
+  });
+  const pending = messageCommandFixture({
+    clientUserMessageId: "ledger-pending",
+    itemId: "pending-item",
+  });
+  const externalQueued = { id: "external-queued", clientUserMessageId: "external-queued" };
+  const externalPending = { id: "external-pending", clientUserMessageId: "external-pending" };
+  const externalReceipt = {
+    clientUserMessageId: "external-receipt",
+    fingerprint: "external-fingerprint",
+    result: { accepted: true },
+  };
+  const store = new RuntimeStateStore({ dataDir });
+  await store.saveDeferredIntake({ ...queued, destination: "queued" });
+  await store.saveDeferredIntake({ ...pending, destination: "pending" });
+
+  await store.save({
+    marker: "preserved",
+    pendingInputs: [pending.item, externalPending],
+    queuedInputs: [queued.item, externalQueued],
+    desktopMessageReceipts: [queued.receipt, pending.receipt, externalReceipt],
+  });
+
+  assert.deepEqual(readRawRuntimeState(dataDir), {
+    marker: "preserved",
+    pendingInputs: [externalPending],
+    queuedInputs: [externalQueued],
+    desktopMessageReceipts: [externalReceipt],
+  });
+  const restored = await readRuntimeState(dataDir);
+  assert.deepEqual(new Set(restored.pendingInputs.map((item) => item.clientUserMessageId)), new Set([
+    "external-pending",
+    "ledger-pending",
+  ]));
+  assert.deepEqual(new Set(restored.queuedInputs.map((item) => item.clientUserMessageId)), new Set([
+    "external-queued",
+    "ledger-queued",
+  ]));
+  assert.deepEqual(new Set(restored.desktopMessageReceipts.map((receipt) => receipt.clientUserMessageId)), new Set([
+    "external-receipt",
+    "ledger-pending",
+    "ledger-queued",
+  ]));
+  await store.close();
+});
+
 test("durable message intake survives full snapshots and same-id retries", async (context) => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "agent-hub-runtime-intake-"));
   context.after(() => rm(dataDir, { recursive: true, force: true }));
@@ -165,6 +227,12 @@ test("durable message intake survives full snapshots and same-id retries", async
       ...receipt,
       result: { accepted: false, cancelled: true },
     }],
+  });
+  assert.deepEqual(readRawRuntimeState(dataDir), {
+    activeRuns: [],
+    pendingInputs: [],
+    queuedInputs: [],
+    desktopMessageReceipts: [],
   });
   await restored.close();
 

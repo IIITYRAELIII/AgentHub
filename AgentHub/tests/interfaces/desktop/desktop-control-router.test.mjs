@@ -5,6 +5,50 @@ import path from "node:path";
 import test from "node:test";
 import { createDesktopControlRouter } from "../../../src/interfaces/desktop/desktop-control-router.mjs";
 
+test("desktop router preserves transport receive and handler-enter trace boundaries", async () => {
+  const spans = [];
+  const receivedAtMs = Date.now() - 25;
+  const router = createDesktopControlRouter({
+    handlers: { "send-message": async () => ({ accepted: true }) },
+    mutationActions: ["send-message"],
+    commandTrace: {
+      recordBestEffort: (span) => {
+        spans.push(span);
+        return true;
+      },
+      startBestEffortSpan: () => ({ finish: () => true }),
+    },
+  });
+
+  assert.deepEqual(await router.handleDesktopControl({
+    action: "send-message",
+    params: {
+      text: "Измерь ACK",
+      clientTiming: {
+        submittedAtMs: receivedAtMs - 100,
+        transportStartedAtMs: receivedAtMs - 40,
+        transport: "direct-http",
+        surface: "browser",
+      },
+    },
+    context: {
+      source: "local-mini-app",
+      commandId: "trace-boundary-command",
+      transportReceivedAtMs: receivedAtMs,
+    },
+  }), { accepted: true });
+
+  const hubReceive = spans.find((span) => span.stage === "hub-receive");
+  const handlerEnter = spans.find((span) => span.stage === "handler-enter");
+  assert.equal(hubReceive.observedAtMs, receivedAtMs);
+  assert.equal(hubReceive.metadata.transportToHubMs, 40);
+  assert.ok(handlerEnter.observedAtMs >= receivedAtMs);
+  assert.equal(
+    handlerEnter.metadata.transportReceiveToHandlerMs,
+    handlerEnter.observedAtMs - receivedAtMs,
+  );
+});
+
 test("desktop mutation reconciles a redelivery after a crash without repeating its effect", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-desktop-receipt-"));
   const receiptFile = path.join(root, "receipts.json");
@@ -57,13 +101,7 @@ test("desktop mutation receipt protects retries until delivery is acknowledged",
   });
   try {
     assert.deepEqual(await router.handleDesktopControl(request), { effect: 1 });
-    assert.deepEqual(await router.handleDesktopControl({
-      ...request,
-      params: {
-        ...request.params,
-        clientTiming: { submittedAtMs: Date.now(), transport: "direct-http" },
-      },
-    }), { effect: 1 });
+    assert.deepEqual(await router.handleDesktopControl(request), { effect: 1 });
     assert.equal(effects, 1);
     assert.equal(await router.forgetDesktopControl("stable-command"), true);
     assert.deepEqual(await router.handleDesktopControl(request), { effect: 2 });
@@ -144,7 +182,7 @@ test("desktop control router applies transport-specific response limits", async 
     miniAppLimits: {
       sources: ["telegram-mini-app", "trusted-device", "local-mini-app"],
       limit: 10,
-      maxAnswerChars: 200_000,
+      maxAnswerChars: 75_000,
       maxResponseBytes: 850_000,
     },
     desktopMaxResponseBytes: 3_500_000,
@@ -179,19 +217,19 @@ test("desktop control router applies transport-specific response limits", async 
     {
       limit: 10,
       before: 17,
-      maxAnswerChars: 200_000,
+      maxAnswerChars: 75_000,
       maxResponseBytes: 850_000,
       compactSnapshot: true,
     },
     {
       limit: 10,
-      maxAnswerChars: 200_000,
+      maxAnswerChars: 75_000,
       maxResponseBytes: 850_000,
       compactSnapshot: true,
     },
     {
       limit: 10,
-      maxAnswerChars: 200_000,
+      maxAnswerChars: 75_000,
       maxResponseBytes: 850_000,
       compactSnapshot: true,
     },
@@ -227,7 +265,7 @@ test("Web mutations replace a large live result with a compact fresh snapshot", 
     assert.ok(Buffer.byteLength(JSON.stringify(result), "utf8") < 10_000);
     assert.deepEqual(snapshotParams, [{
       limit: 10,
-      maxAnswerChars: 200_000,
+      maxAnswerChars: 75_000,
       maxResponseBytes: 850_000,
       compactSnapshot: true,
     }]);

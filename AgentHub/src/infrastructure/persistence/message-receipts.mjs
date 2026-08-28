@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 
+const DEFAULT_RECEIPT_LIMIT = 600;
+
 function normalizedIdentity({ provider, threadId, clientUserMessageId } = {}) {
   return {
     provider: String(provider ?? "").trim(),
@@ -52,8 +54,8 @@ export async function messageRequestFingerprint({
 }
 
 export class MessageReceiptRegistry {
-  constructor({ limit = 2_000 } = {}) {
-    this.limit = Math.max(1, Number(limit) || 2_000);
+  constructor({ limit = DEFAULT_RECEIPT_LIMIT } = {}) {
+    this.limit = Math.max(1, Number(limit) || DEFAULT_RECEIPT_LIMIT);
     this.receipts = new Map();
     this.revision = 0;
   }

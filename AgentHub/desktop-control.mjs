@@ -255,6 +255,7 @@ export class DesktopControlServer {
     this.#secret = await readOrCreateSecret(this.#runtimeRoot, this.#protectSecret);
     const descriptor = createEndpointDescriptor();
     const server = createServer({ allowHalfOpen: false }, (socket) => {
+      const transportReceivedAtMs = Date.now();
       let body = "";
       let state = "hello";
       let processing = false;
@@ -359,6 +360,7 @@ export class DesktopControlServer {
                 ...(request.context ?? {}),
                 source: request.context?.source ?? "desktop-control",
                 commandId: request.commandId ?? null,
+                transportReceivedAtMs,
               },
             });
             const acknowledgementRequired = Boolean(handledCommandId && this.#onResultDelivered);

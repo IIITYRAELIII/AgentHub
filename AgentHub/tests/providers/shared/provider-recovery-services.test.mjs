@@ -92,3 +92,73 @@ test("Codex recovery never substitutes another turn for an exact saved receipt",
     ["complete"],
   ]);
 });
+
+test("Codex restart recovery commits an interrupted terminal before removing progress", async () => {
+  const calls = [];
+  const noop = async () => {};
+  const run = {
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    status: "running",
+    responseText: "Промежуточный ответ",
+    progressMessageIds: [41, 42],
+    progressReasoning: "Анализ",
+    lastProgressText: "Выполняется",
+    chatId: 100,
+  };
+  const tracker = { usage: {}, reported: false };
+  const service = new CodexRecoveryService({
+    transportRunning: () => true,
+    readTaskSnapshot: noop,
+    startTransport: noop,
+    initialize: noop,
+    isCodex: () => true,
+    finishInterrupted: noop,
+    readThread: async (_threadId, { applySnapshot }) => applySnapshot({
+      thread: {
+        status: { type: "idle" },
+        turns: [{ id: "turn-1", status: "interrupted", items: [] }],
+      },
+    }),
+    autoApprove: () => true,
+    restartRequested: () => true,
+    finishProgress: noop,
+    completeRun: async () => calls.push(["complete"]),
+    recoveredAnswer: () => "Промежуточный ответ",
+    setProgressStage: () => {},
+    launchTurn: noop,
+    reindexRun: () => {},
+    scheduleObservedRun: () => {},
+    startTyping: () => {},
+    saveState: noop,
+    telegram: async (_method, params) => calls.push(["delete", params.message_id]),
+    consumeTracker: (turnId) => {
+      assert.equal(turnId, "turn-1");
+      return tracker;
+    },
+    finalizeDelivery: async (_run, options) => {
+      calls.push(["terminal", options]);
+      assert.deepEqual(run.progressMessageIds, []);
+      assert.equal(run.progressReasoning, "");
+      assert.equal(run.lastProgressText, "");
+    },
+    turnTokenUsage: new Map(),
+  });
+
+  await service.recover(run);
+
+  assert.deepEqual(calls, [
+    ["terminal", {
+      answer: "Промежуточный ответ",
+      turnId: "turn-1",
+      status: "interrupted",
+      tracker,
+      deliver: false,
+      silent: true,
+      description: "прерванный при перезапуске ход",
+    }],
+    ["delete", 41],
+    ["delete", 42],
+  ]);
+});

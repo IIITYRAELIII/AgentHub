@@ -84,3 +84,36 @@ test("HubMcpServer reports an unexpected dispatch failure", async (context) => {
   assert.equal(response.error.code, -32603);
   assert.deepEqual(captured, [["broken tool registry", "dispatch"]]);
 });
+
+test("HubMcpServer bounds an unresolved tool call and reports an unknown outcome", async (context) => {
+  const captured = [];
+  const server = new HubMcpServer({
+    secret: "server-secret",
+    requestTimeoutMs: 20,
+    service: {
+      tools: () => [{ name: "blocked", inputSchema: { type: "object" } }],
+      call: () => new Promise(() => {}),
+    },
+    captureUnexpectedException: (error) => captured.push(error.message),
+    logger: { log() {}, error() {} },
+  });
+  await server.start();
+  context.after(() => server.close());
+
+  const response = await fetch(server.url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "blocked", arguments: { request_id: "same-request" } },
+    }),
+    signal: AbortSignal.timeout(1_000),
+  }).then((value) => value.json());
+
+  assert.equal(response.error.code, -32001);
+  assert.match(response.error.message, /timed out after 20 ms; outcome is unknown/u);
+  assert.match(response.error.message, /Reuse the same request_id/u);
+  assert.deepEqual(captured, []);
+});

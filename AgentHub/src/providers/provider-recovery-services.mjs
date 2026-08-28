@@ -133,13 +133,24 @@ export class CodexRecoveryService {
     }
     if (recoveryAction === TASK_RECOVERY_ACTIONS.DISMISS_RESTART_INTERRUPTION) {
       while (run.progressUpdateInFlight) await delay(50);
-      for (const messageId of run.progressMessageIds) {
-        await d.telegram("deleteMessage", { chat_id: run.chatId, message_id: messageId }).catch(() => {});
-      }
+      const progressMessageIds = [...run.progressMessageIds];
       run.progressMessageIds = [];
       run.progressReasoning = "";
       run.lastProgressText = "";
-      await d.completeRun(run);
+      await d.finalizeDelivery(run, {
+        answer: d.recoveredAnswer(turn)
+          || run.responseText.trim()
+          || "Ход прерван при перезапуске.",
+        turnId: run.turnId,
+        status: "interrupted",
+        tracker: d.consumeTracker(run.turnId),
+        deliver: false,
+        silent: true,
+        description: "прерванный при перезапуске ход",
+      });
+      for (const messageId of progressMessageIds) {
+        await d.telegram("deleteMessage", { chat_id: run.chatId, message_id: messageId }).catch(() => {});
+      }
       return;
     }
     const answer = d.recoveredAnswer(turn)

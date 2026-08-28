@@ -67,16 +67,20 @@ test("desktop control validates endpoint and request shape", () => {
 test("desktop control exchanges authenticated RPC and rotates endpoint after restart", async () => {
   const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-desktop-control-"));
   const protectedFiles = [];
+  let receivedTransportAtMs = null;
   const server = new DesktopControlServer({
     runtimeRoot,
     protectSecret: async (file) => { protectedFiles.push(path.basename(file)); },
-    handler: async ({ action, params, context }) => ({
-      action,
-      source: context?.source,
-      commandId: context?.commandId,
-      value: params.value,
-      tasks: ["один", "два"],
-    }),
+    handler: async ({ action, params, context }) => {
+      receivedTransportAtMs = context?.transportReceivedAtMs;
+      return {
+        action,
+        source: context?.source,
+        commandId: context?.commandId,
+        value: params.value,
+        tasks: ["один", "два"],
+      };
+    },
   });
   try {
     const staleEndpointId = "f".repeat(64);
@@ -99,6 +103,8 @@ test("desktop control exchanges authenticated RPC and rotates endpoint after res
       value: 42,
       tasks: ["один", "два"],
     });
+    assert.equal(Number.isSafeInteger(receivedTransportAtMs), true);
+    assert.ok(receivedTransportAtMs <= Date.now());
     assert.ok(protectedFiles.includes("desktop-control.secret"));
     assert.ok(protectedFiles.includes("desktop-control.endpoint.json"));
 

@@ -1572,7 +1572,7 @@ function formatTurnTable(records, legacyOutcome = "", legacyFiles = "") {
 }
 
 function formatLocalDate(value) {
-  const date = new Date(String(value ?? ""));
+  const date = value instanceof Date ? value : new Date(String(value ?? ""));
   const resolved = Number.isNaN(date.getTime()) ? new Date() : date;
   return [
     twoDigits(resolved.getDate()),
@@ -1943,15 +1943,44 @@ function withRowIdentity(row, { provider, threadId }) {
   );
 }
 
-function automaticRecordsForDay(turns, date, claimedWorkLogIds = new Set()) {
-  return Object.values(turns)
-    .filter((record) => (
-      recordLocalDate(record.completedAt) === date
-      && record.provider
-      && record.threadId
-      && !isContextProbeRecord(record)
-      && (!record.workLogId || !claimedWorkLogIds.has(record.workLogId))
-    ));
+function turnProjectionIndex(turns) {
+  const recordsByDate = new Map();
+  const automaticByIdentity = new Map();
+  for (const record of Object.values(turns)) {
+    const date = recordLocalDate(record.completedAt);
+    if (!date) continue;
+    const datedRecords = recordsByDate.get(date) ?? [];
+    datedRecords.push(record);
+    recordsByDate.set(date, datedRecords);
+    const provider = String(record.provider ?? "").trim().toLowerCase();
+    const threadId = taskThreadId(record);
+    if (!provider || !record.threadId || !threadId || isContextProbeRecord(record)) continue;
+    const key = `${date}\0${provider}\0${threadId}`;
+    const automaticRecords = automaticByIdentity.get(key) ?? [];
+    automaticRecords.push(record);
+    automaticByIdentity.set(key, automaticRecords);
+  }
+  return { recordsByDate, automaticByIdentity };
+}
+
+function unclaimedAutomaticRecords(records, claimedWorkLogIds) {
+  return (records ?? []).filter((record) => (
+    !record.workLogId || !claimedWorkLogIds.has(record.workLogId)
+  ));
+}
+
+function automaticRecordsForDay(index, date, claimedWorkLogIds = new Set()) {
+  const records = [];
+  const prefix = `${date}\0`;
+  for (const [key, values] of index.automaticByIdentity) {
+    if (key.startsWith(prefix)) records.push(...values);
+  }
+  return unclaimedAutomaticRecords(records, claimedWorkLogIds);
+}
+
+function automaticRecordsForIdentity(index, date, identity, claimedWorkLogIds = new Set()) {
+  const key = `${date}\0${identity.provider}\0${identity.threadId}`;
+  return unclaimedAutomaticRecords(index.automaticByIdentity.get(key), claimedWorkLogIds);
 }
 
 export function taskThreadId(record) {
@@ -2179,11 +2208,11 @@ export function searchWorkLogRecords(turns = {}, query, {
     .map(({ latestAtMs: _latestAtMs, ...group }) => group);
 }
 
-function ensureCanonicalRows(section, date, turns) {
+function ensureCanonicalRows(section, date, turnIndex) {
   let updated = String(section);
   const groups = new Map();
   const claimedWorkLogIds = new Set(usageIds(updated));
-  for (const record of automaticRecordsForDay(turns, date, claimedWorkLogIds)) {
+  for (const record of automaticRecordsForDay(turnIndex, date, claimedWorkLogIds)) {
     const key = `${record.provider}\0${taskThreadId(record)}`;
     const values = groups.get(key) ?? [];
     values.push(record);
@@ -2225,9 +2254,7 @@ function ensureCanonicalRows(section, date, turns) {
     values.push(row);
     linkedRows.set(threadId, values);
   }
-  const datedTurns = Object.values(turns).filter(
-    (record) => recordLocalDate(record.completedAt) === date,
-  );
+  const datedTurns = turnIndex.recordsByDate.get(date) ?? [];
   const identityTargets = [];
   for (const [threadId, matches] of linkedRows) {
     if (matches.length !== 1) continue;
@@ -2424,13 +2451,13 @@ function formatWorkspaceRows(rows, dayCredits, dayElapsedSeconds, workspaceResol
 function projectDaySection(
   section,
   date,
-  turns,
+  turnIndex,
   recordsById,
   open,
   includeClaudeUsage,
   workspaceResolver,
 ) {
-  const canonicalSection = ensureCanonicalRows(section, date, turns);
+  const canonicalSection = ensureCanonicalRows(section, date, turnIndex);
   const claimedWorkLogIds = new Set(usageIds(canonicalSection));
   const rows = workLogTaskRows(canonicalSection)
     .map((match, sourceIndex) => {
@@ -2438,9 +2465,7 @@ function projectDaySection(
       const identity = rowIdentity(match.text);
       const legacyRecords = ids.map((id) => recordsById.get(id)).filter(Boolean);
       const automaticRecords = identity
-        ? automaticRecordsForDay(turns, date, claimedWorkLogIds).filter((record) => (
-          record.provider === identity.provider && taskThreadId(record) === identity.threadId
-        ))
+        ? automaticRecordsForIdentity(turnIndex, date, identity, claimedWorkLogIds)
         : [];
       const seen = new Set();
       const recorded = [...legacyRecords, ...automaticRecords].filter((record) => {
@@ -2569,10 +2594,9 @@ export function projectWorkLogUsage(workLogText, turns = {}, {
     now,
   }));
   const records = ledgerByWorkLogId(normalizedTurns);
+  const turnIndex = turnProjectionIndex(normalizedTurns);
   const existingDates = new Set(daySectionRanges(text).map((range) => range.date));
-  const requiredDates = [...new Set(Object.values(normalizedTurns)
-    .map((record) => recordLocalDate(record.completedAt))
-    .filter(Boolean))]
+  const requiredDates = [...turnIndex.recordsByDate.keys()]
     .filter((date) => !existingDates.has(date))
     .sort((left, right) => {
       const [ld, lm, ly] = left.split(".").map(Number);
@@ -2600,7 +2624,7 @@ export function projectWorkLogUsage(workLogText, turns = {}, {
     const replacement = projectDaySection(
       section,
       dayStarts[index][1],
-      normalizedTurns,
+      turnIndex,
       records,
       dayStarts[index][1] === defaultOpenDate,
       includeClaudeUsage,

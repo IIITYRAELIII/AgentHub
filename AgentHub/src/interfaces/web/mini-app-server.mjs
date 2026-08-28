@@ -198,8 +198,6 @@ function validUsageSyncService(service) {
     typeof service.sync === "function"
     || typeof service.createEnrollmentCode === "function"
     || typeof service.enroll === "function"
-    || typeof service.deviceLabelStatus === "function"
-    || typeof service.setDeviceLabel === "function"
   ));
 }
 
@@ -629,33 +627,18 @@ export class MiniAppServer {
   }
 
   async #usageSyncStatus() {
-    let remoteConfig = null;
     if (!this.#usageSyncRemoteConfigStore || typeof this.#usageSyncRemoteConfigStore.load !== "function") {
-      remoteConfig = null;
-    } else {
-      try {
-        remoteConfig = await this.#usageSyncRemoteConfigStore.load();
-      } catch (error) {
-        this.#reportUnexpectedError?.(error, {
-          surface: "mini-app",
-          component: "usage-sync",
-          action: "status",
-        });
-      }
+      return null;
     }
-    if (!this.#usageSyncService?.deviceLabelStatus) return remoteConfig;
     try {
-      return {
-        ...(remoteConfig ?? {}),
-        ...await this.#usageSyncService.deviceLabelStatus(),
-      };
+      return await this.#usageSyncRemoteConfigStore.load();
     } catch (error) {
       this.#reportUnexpectedError?.(error, {
         surface: "mini-app",
         component: "usage-sync",
-        action: "device-label-status",
+        action: "status",
       });
-      return remoteConfig;
+      return null;
     }
   }
 
@@ -680,14 +663,6 @@ export class MiniAppServer {
       serverUrl: body.serverUrl,
       code: body.code,
     });
-    this.#journalCache = null;
-    return result;
-  }
-
-  async #setUsageSyncDeviceLabel(request) {
-    if (!this.#usageSyncService?.setDeviceLabel) throw new Error("Настройка ника устройства недоступна");
-    const body = await readJsonBody(request, 4 * 1024);
-    const result = await this.#usageSyncService.setDeviceLabel(body.deviceLabel);
     this.#journalCache = null;
     return result;
   }
@@ -868,7 +843,7 @@ export class MiniAppServer {
     return false;
   }
 
-  async #handle(request, response) {
+  async #handle(request, response, transportReceivedAtMs = Date.now()) {
     const method = String(request.method ?? "GET").toUpperCase();
     const url = new URL(request.url ?? "/", `http://${this.#host}`);
     const webviewCors = applyVscodeWebviewCors(
@@ -1133,7 +1108,10 @@ export class MiniAppServer {
           result: await this.#controlHandler({
             action,
             params,
-            context: { ...authorization, ...(commandId ? { commandId } : {}) },
+            context: {
+              ...authorization,
+              ...(commandId ? { commandId, transportReceivedAtMs } : {}),
+            },
           }),
           ...(commandId ? { receiptId: commandId } : {}),
         }, method, {
@@ -1391,34 +1369,6 @@ export class MiniAppServer {
       }
       return;
     }
-    if (url.pathname === "/api/journal/usage-sync/device-label") {
-      if (!await this.#authorize(request, response)) return;
-      if (method !== "POST") {
-        json(response, 405, { error: "Метод не поддерживается" }, method, {
-          headers: { Allow: "POST" },
-        });
-        return;
-      }
-      try {
-        const result = await this.#setUsageSyncDeviceLabel(request);
-        const usageSync = await this.#usageSyncStatus();
-        const journal = await this.#journal().catch(() => null);
-        json(response, 200, {
-          ok: true,
-          result,
-          usageSync: publicJournalPayload({ html: "", updatedAt: "", version: "" }, { usageSync }).usageSync,
-          journal: journal
-            ? {
-                updatedAt: journal.updatedAt,
-                version: journal.version,
-              }
-            : null,
-        }, method, { headers: { "Cache-Control": "private, no-store" } });
-      } catch (error) {
-        json(response, 503, { error: `Никнейм устройства Sync недоступен: ${error.message}` }, method);
-      }
-      return;
-    }
     if (!["GET", "HEAD"].includes(method)) {
       response.writeHead(405, {
         Allow: "GET, HEAD",
@@ -1600,7 +1550,8 @@ export class MiniAppServer {
     if (this.#closePromise) await this.#closePromise;
     if (this.#server) return this.address();
     const server = createServer((request, response) => {
-      const handling = this.#handle(request, response).catch((error) => {
+      const transportReceivedAtMs = Date.now();
+      const handling = this.#handle(request, response, transportReceivedAtMs).catch((error) => {
         this.#reportUnexpected(error, "request");
         if (!response.headersSent) {
           send(response, 500, "text/plain; charset=utf-8", `Mini App error: ${error.message}\n`);

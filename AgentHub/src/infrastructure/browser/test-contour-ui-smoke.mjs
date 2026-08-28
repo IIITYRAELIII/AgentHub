@@ -5,6 +5,45 @@ import path from "node:path";
 export const TEST_CONTOUR_PROBE = "Ответь строго: AGENT_HUB_TEST_CONTOUR_SPARK_OK_V1";
 export const TEST_CONTOUR_PROBE_RESPONSE = "AGENT_HUB_TEST_CONTOUR_SPARK_OK_V1";
 
+export function isTestContourModelSettingResponse(response, model) {
+  if (!response?.url?.().endsWith("/api/control") || response.request?.().method?.() !== "POST") return false;
+  try {
+    const payload = JSON.parse(response.request().postData() || "{}");
+    return payload.action === "update-setting"
+      && payload.params?.name === "model"
+      && payload.params?.value === model;
+  } catch {
+    return false;
+  }
+}
+
+export async function selectTestContourModel(page, model, timeoutMs) {
+  const normalizedModel = String(model ?? "").trim();
+  if (!normalizedModel) throw new Error("Test Contour smoke model is required");
+  const settingsToggle = page.locator("[data-dialog-settings-toggle]");
+  await settingsToggle.waitFor({ state: "visible", timeout: timeoutMs });
+  await settingsToggle.click();
+  const modelSelect = page.locator('select[data-dialog-options="model"]');
+  await modelSelect.waitFor({ state: "attached", timeout: timeoutMs });
+  const availableModels = await modelSelect.locator("option").evaluateAll((options) => (
+    options.map((option) => String(option.value))
+  ));
+  if (!availableModels.includes(normalizedModel)) {
+    throw new Error(`Test Contour model is not selectable: ${normalizedModel}`);
+  }
+  const settingResponse = page.waitForResponse(
+    (response) => isTestContourModelSettingResponse(response, normalizedModel),
+    { timeout: timeoutMs },
+  );
+  await modelSelect.selectOption(normalizedModel, { force: true });
+  if (await modelSelect.inputValue() !== normalizedModel) {
+    throw new Error(`Test Contour did not select model: ${normalizedModel}`);
+  }
+  const response = await settingResponse;
+  if (!response.ok()) throw new Error(`Test Contour model setting failed: HTTP ${response.status()}`);
+  await page.locator("[data-dialog-settings-close]").click();
+}
+
 function playwrightRuntime(automationRoot) {
   const require = createRequire(path.join(automationRoot, "package.json"));
   return require("playwright-core");
@@ -48,6 +87,7 @@ export async function runTestContourUiSmoke({
   automationRoot,
   artifactsDirectory,
   withAgent = true,
+  model = "",
   probeResponse = TEST_CONTOUR_PROBE_RESPONSE,
   timeoutMs = 180_000,
   launchOptions = { channel: "msedge", headless: true },
@@ -89,13 +129,15 @@ export async function runTestContourUiSmoke({
       await workspace.click();
       const selectedStream = page.locator("[data-stream-tab-id]:visible").first();
       await selectedStream.waitFor({ state: "visible", timeout: timeoutMs });
+      await selectedStream.click();
+      await selectTestContourModel(page, model, timeoutMs);
       const previousUrl = page.url();
       await selectedStream.click({ button: "right" });
       const continueInCodex = page.locator(
         '[data-stream-menu-action="continue-provider"][data-provider="codex"]',
       );
       await continueInCodex.waitFor({ state: "visible", timeout: timeoutMs });
-      await continueInCodex.click();
+      await continueInCodex.evaluate((button) => button.click());
       await page.waitForFunction((previous) => (
         window.location.href !== previous && window.location.hash.includes("/chat/codex/")
       ), previousUrl, { timeout: timeoutMs });

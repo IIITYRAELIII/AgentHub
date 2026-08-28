@@ -577,6 +577,66 @@ test("shared Dashboard bot leaves an exhausted transient command available for r
   assert.equal(resultRequests, 0);
 });
 
+test("shared Dashboard bot retries when an attachment body stalls after response headers", async (context) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-shared-bot-stalled-body-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const secretFile = path.join(directory, "shared-dashboard-bot.secret");
+  await writeFile(secretFile, "s".repeat(64), "utf8");
+  const attachmentId = "018f6c86-3f34-7a31-8f27-16f5b96cce92";
+  const command = {
+    id: "018f6c86-3f34-7a31-8f27-16f5b96cce93",
+    userId: "42",
+    action: "board-task-ingest",
+    params: {
+      text: "Не потерять пакет после VPN-сбоя",
+      sourceKey: "shared-dashboard:790",
+      sourceDetails: { chatId: 42, userId: 42, messageId: 11 },
+      attachments: [`remote-attachment:${attachmentId}`],
+    },
+  };
+  let attachmentPulls = 0;
+  let cancelledBodies = 0;
+  let handled = 0;
+  let resultRequests = 0;
+  const client = new SharedDashboardBotClient({
+    publicUrl: "https://hub.example.com",
+    hubId: "018f6c86-3f34-7a31-8f27-16f5b96cce94",
+    secretFile,
+    attachmentDirectory: path.join(directory, "attachments"),
+    attachmentTimeoutMs: 20,
+    fetchImpl: async (url) => {
+      if (url.endsWith("/api/dashboard-bot/pull")) return Response.json({ commands: [command] });
+      if (url.endsWith("/api/dashboard-bot/attachment/pull")) {
+        attachmentPulls += 1;
+        return new Response(new ReadableStream({
+          cancel() {
+            cancelledBodies += 1;
+          },
+        }), {
+          headers: {
+            "Content-Type": "application/octet-stream",
+            "Content-Length": "1",
+            "X-Agent-Hub-Attachment-Hash": "a".repeat(64),
+            "X-Agent-Hub-File-Name": encodeURIComponent("stalled.bin"),
+          },
+        });
+      }
+      if (url.endsWith("/api/dashboard-bot/result")) resultRequests += 1;
+      return Response.json({ ok: true });
+    },
+    handler: async () => {
+      handled += 1;
+      return { taskId: "must-not-run" };
+    },
+  });
+
+  await assert.rejects(client.poll(), /command will be retried/u);
+  assert.equal(attachmentPulls, 3);
+  assert.equal(cancelledBodies, 3);
+  assert.equal(handled, 0);
+  assert.equal(resultRequests, 0);
+});
+
 test("shared Dashboard bot accepts a text reply clarification without a source key", async (context) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-shared-bot-reply-"));
   context.after(() => rm(directory, { recursive: true, force: true }));

@@ -3,9 +3,10 @@
 ## Trace contract
 
 The root trace identity is the command ID. Required stages are client submit,
-transport start, Hub receive, receipt lock wait, durable intake enqueue/start/
-commit, response send, client ACK, dispatch, admission, provider RPC/accept,
-first event/content/visible, terminal commit and projection visibility.
+transport start, Hub HTTP callback or Desktop IPC accept, authenticated control
+handler enter, receipt lock wait, durable intake enqueue/start/commit, response
+send, client ACK, dispatch, admission, provider RPC/accept, first
+event/content/visible, terminal commit and projection visibility.
 
 Cross-process timestamps use UTC epoch; durations inside one process use a
 monotonic clock. Every blocking span reports outcome, queue depth and relevant
@@ -48,6 +49,13 @@ dedicated worker. A remote usage delta updates only the account-usage panel in
 the existing lazy journal index through a revision-guarded index write; an
 unchanged snapshot performs no projection. Persisted day and turn fragments
 remain authoritative and are preserved intact.
+
+Runtime durability saves coalesce pending requests before snapshot capture while
+preserving each caller's persistence fence. After the durable command ledger has
+projected a snapshot, exact ledger-owned pending inputs, queued inputs and
+receipts are omitted from raw `runtime_state` JSON and overlaid from the ledger
+on read; non-ledger records remain in the snapshot. A failed writer revision
+rejects only its covered waiters and must not poison a later save.
 
 The “Local Hub” health RTT is not message ACK latency and must not be presented
 as such. Provider latency and remote Worker latency are separate indicators.

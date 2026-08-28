@@ -901,6 +901,7 @@ async function verifyTestContourUnlocked({
     automationRoot: paths.automationRoot,
     artifactsDirectory: paths.artifactsDirectory,
     withAgent,
+    model: state.model,
     probeResponse,
   });
   let journal = null;

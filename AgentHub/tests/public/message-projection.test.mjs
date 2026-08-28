@@ -50,6 +50,48 @@ test("canonical submission atomically replaces optimistic aliases in either orde
   assert.deepEqual(plain(projection.projectCanonicalMessages([canonical, canonical])), [canonical]);
 });
 
+test("attachment steer replaces its optimistic card only by exact submission identity", async () => {
+  const projection = await projectionApi();
+  const optimistic = {
+    role: "user",
+    clientUserMessageId: "client-attachment-steer",
+    submissionId: "client-attachment-steer",
+    text: "11 сек..",
+    attachments: [{ id: "local-image", name: "image.png" }],
+    operationKind: "user-turn",
+    projectionAuthority: "optimistic",
+    projectionState: "optimistic",
+  };
+  const canonical = {
+    role: "user",
+    clientUserMessageId: "client-attachment-steer",
+    provider: "codex",
+    threadId: "thread-production",
+    turnId: "turn-production",
+    itemId: "provider-user-item",
+    text: "11 сек..",
+    attachments: [{ id: "durable-image", name: "image.png" }],
+    operationKind: "user-turn",
+    projectionAuthority: "canonical",
+    projectionState: "active",
+  };
+  const legacyWithoutIdentity = {
+    ...canonical,
+    clientUserMessageId: "",
+    itemId: "legacy-provider-user-item",
+    attachments: [],
+  };
+
+  assert.deepEqual(plain(projection.projectCanonicalMessages([optimistic, canonical])), [{
+    ...optimistic,
+    ...canonical,
+  }]);
+  assert.equal(
+    projection.projectCanonicalMessages([optimistic, legacyWithoutIdentity]).length,
+    2,
+  );
+});
+
 test("Codex production history, live and outgoing aliases project one root and one steer", async () => {
   const projection = await projectionApi();
   const providerMessage = (itemId) => ({

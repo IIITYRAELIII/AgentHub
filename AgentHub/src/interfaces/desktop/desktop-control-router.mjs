@@ -5,7 +5,7 @@ import { clientCommandBoundaryTraceSpans } from "../../application/client-comman
 const DEFAULT_MINI_APP_LIMITS = Object.freeze({
   sources: Object.freeze(["telegram-mini-app", "trusted-device", "local-mini-app"]),
   limit: 10,
-  maxAnswerChars: 200_000,
+  maxAnswerChars: 75_000,
   maxResponseBytes: 850_000,
 });
 
@@ -112,6 +112,11 @@ export function createDesktopControlRouter({
     };
   }
 
+  function durableFingerprintParams(params) {
+    const { clientTiming: _clientTiming, ...stableParams } = params;
+    return stableParams;
+  }
+
   async function hydrateProjectedResult(value, context) {
     const shape = value?.[RECEIPT_SHAPE];
     if (!shape) return value;
@@ -125,11 +130,6 @@ export function createDesktopControlRouter({
   async function mutationResultForClient(value, context) {
     if (!miniAppSources.has(String(context?.source ?? ""))) return value;
     return hydrateProjectedResult(projectDesktopReceiptResult(value), context);
-  }
-
-  function durableFingerprintParams(params) {
-    const { clientTiming: _clientTiming, ...stableParams } = params;
-    return stableParams;
   }
 
   async function handleDesktopControl({ action, params, context = null }) {
@@ -149,7 +149,13 @@ export function createDesktopControlRouter({
     ).trim();
     const traceTransport = String(context?.source ?? "desktop-control").trim().toLowerCase()
       || "desktop-control";
-    const receivedAtMs = Date.now();
+    const handlerEnteredAtMs = Date.now();
+    const contextReceivedAtMs = Number(context?.transportReceivedAtMs);
+    const receivedAtMs = Number.isSafeInteger(contextReceivedAtMs)
+      && contextReceivedAtMs >= 0
+      && contextReceivedAtMs <= handlerEnteredAtMs
+      ? contextReceivedAtMs
+      : handlerEnteredAtMs;
     for (const span of clientCommandBoundaryTraceSpans({
       commandId: traceCommandId,
       timing: resolvedParams.clientTiming,
@@ -158,11 +164,23 @@ export function createDesktopControlRouter({
     })) {
       commandTrace?.recordBestEffort?.({ ...span, metadata: { action, ...span.metadata } });
     }
+    commandTrace?.recordBestEffort?.({
+      commandId: traceCommandId,
+      stage: "handler-enter",
+      outcome: "succeeded",
+      transport: traceTransport,
+      observedAtMs: handlerEnteredAtMs,
+      monotonicDurationMs: 0,
+      metadata: {
+        action,
+        transportReceiveToHandlerMs: Math.max(0, handlerEnteredAtMs - receivedAtMs),
+      },
+    });
     const responseSpan = commandTrace?.startBestEffortSpan?.({
       commandId: traceCommandId,
       stage: "response-send",
       transport: traceTransport,
-      metadata: { action, receivedAtMs },
+      metadata: { action, receivedAtMs, handlerEnteredAtMs },
     });
     try {
       let result;
@@ -203,7 +221,10 @@ export function createDesktopControlRouter({
       }
       responseSpan?.finish?.({
         outcome: "succeeded",
-        metadata: { hubReceiveToResponseMs: Math.max(0, Date.now() - receivedAtMs) },
+        metadata: {
+          hubReceiveToResponseMs: Math.max(0, Date.now() - receivedAtMs),
+          handlerToResponseMs: Math.max(0, Date.now() - handlerEnteredAtMs),
+        },
       });
       return result;
     } catch (error) {
@@ -211,6 +232,7 @@ export function createDesktopControlRouter({
         outcome: "failed",
         metadata: {
           hubReceiveToResponseMs: Math.max(0, Date.now() - receivedAtMs),
+          handlerToResponseMs: Math.max(0, Date.now() - handlerEnteredAtMs),
           error: String(error?.message ?? error).slice(0, 500),
         },
       });

@@ -350,7 +350,8 @@ export class RuntimeStateStore {
 
   save(value) {
     this.#messageCommands.projectSnapshot(value);
-    return this.#writer.request("save-state", { content: JSON.stringify(value) });
+    const compacted = this.#messageCommands.withoutOwnedProjections(value);
+    return this.#writer.request("save-state", { content: JSON.stringify(compacted) });
   }
 
   saveDeferredIntake({ item, destination = "pending", receipt = null }) {

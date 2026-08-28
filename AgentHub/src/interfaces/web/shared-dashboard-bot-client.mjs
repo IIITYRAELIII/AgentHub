@@ -61,6 +61,7 @@ export class SharedDashboardBotClient {
   #fetch;
   #logger;
   #retryMs;
+  #attachmentTimeoutMs;
   #closed = false;
   #loop = null;
   #abortController = null;
@@ -76,6 +77,7 @@ export class SharedDashboardBotClient {
     handler,
     fetchImpl = globalThis.fetch,
     retrySeconds = DEFAULT_RETRY_MS / 1_000,
+    attachmentTimeoutMs = ATTACHMENT_TIMEOUT_MS,
     logger = console,
   } = {}) {
     this.#publicUrl = String(publicUrl ?? "").replace(/\/+$/u, "");
@@ -87,6 +89,7 @@ export class SharedDashboardBotClient {
     this.#fetch = fetchImpl;
     this.#logger = logger;
     this.#retryMs = Math.max(1_000, Number(retrySeconds) * 1_000 || DEFAULT_RETRY_MS);
+    this.#attachmentTimeoutMs = Math.max(1, Number(attachmentTimeoutMs) || ATTACHMENT_TIMEOUT_MS);
     if (!this.#publicUrl || !HUB_ID_PATTERN.test(this.#hubId)) {
       throw new TypeError("Shared Dashboard bot publicUrl and hubId are required");
     }
@@ -197,7 +200,7 @@ export class SharedDashboardBotClient {
       id,
       userId: command.userId,
       commandId: command.id,
-    }, { timeoutMs: ATTACHMENT_TIMEOUT_MS });
+    }, { timeoutMs: this.#attachmentTimeoutMs });
     if (!response.ok) {
       const payload = await response.json().catch(() => ({}));
       const error = new Error(`Shared Dashboard bot attachment download failed: ${payload?.error ?? `HTTP ${response.status}`}`);
@@ -220,7 +223,7 @@ export class SharedDashboardBotClient {
     ) {
       throw new Error("Shared Dashboard bot returned invalid attachment metadata");
     }
-    const body = Buffer.from(await response.arrayBuffer());
+    const body = await this.#readAttachmentBody(response);
     if (
       body.length < 1
       || body.length > MAX_ATTACHMENT_BYTES
@@ -253,6 +256,42 @@ export class SharedDashboardBotClient {
       });
     }
     return target;
+  }
+
+  async #readAttachmentBody(response) {
+    if (!response.body) return Buffer.alloc(0);
+    const reader = response.body.getReader();
+    const chunks = [];
+    let length = 0;
+    let timeoutTimer = null;
+    const timeout = new Promise((_, reject) => {
+      timeoutTimer = setTimeout(() => {
+        const error = new Error(
+          `Shared Dashboard bot attachment body timed out after ${this.#attachmentTimeoutMs} ms`,
+        );
+        error.name = "TimeoutError";
+        reject(error);
+      }, this.#attachmentTimeoutMs);
+    });
+    try {
+      while (true) {
+        const { done, value } = await Promise.race([reader.read(), timeout]);
+        if (done) break;
+        const chunk = Buffer.from(value);
+        length += chunk.length;
+        if (length > MAX_ATTACHMENT_BYTES) {
+          throw new Error("Shared Dashboard bot returned an oversized attachment");
+        }
+        chunks.push(chunk);
+      }
+      return Buffer.concat(chunks, length);
+    } catch (error) {
+      void reader.cancel(error).catch(() => {});
+      throw error;
+    } finally {
+      clearTimeout(timeoutTimer);
+      reader.releaseLock();
+    }
   }
 
   async #downloadRemoteAttachment(reference, command) {

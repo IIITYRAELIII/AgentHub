@@ -12,6 +12,7 @@ import {
   codexTurnActivities,
   displayUserPrompt,
   isEmptyTurnCompletionPlaceholder,
+  mergeSyntheticRolloutUsers,
   responseAnnotationDetails,
   mergeActiveTaskHistory,
   mergeCompletedTaskHistory,
@@ -633,6 +634,7 @@ test("claudeTranscriptHistory hides transport attachment paths from the user pro
       message: { role: "assistant", content: [{ type: "text", text: "Готово" }], stop_reason: "end_turn" },
     }),
   ].join("\n"));
+
   assert.equal(history[0].prompt, "Проанализируй приложенные изображения.");
   assert.equal(history[0].messages[0].text, "Проанализируй приложенные изображения.");
   assert.deepEqual(history[0].messages[0].attachmentSources, [{ type: "path", value: attachmentPath }]);
@@ -937,6 +939,59 @@ test("active receipt adopts the rollout user and keeps its screenshot", () => {
   ]);
 });
 
+test("active rollout keeps root and image steer as exact separate users", () => {
+  const history = [{
+    id: "live-turn",
+    prompt: "ну исправляй",
+    status: "inProgress",
+    active: true,
+    completed: false,
+    messages: [{
+      itemId: "live-turn:user:0",
+      role: "user",
+      text: "ну исправляй",
+    }],
+  }];
+
+  mergeActiveTaskHistory(history, {
+    active: true,
+    turnId: "live-turn",
+    prompt: "ну исправляй",
+    clientUserMessageId: "root-client",
+    userMessages: [{
+      itemId: "provider-root",
+      clientUserMessageId: "root-client",
+      role: "user",
+      text: "ну исправляй",
+    }, {
+      itemId: "provider-steer",
+      clientUserMessageId: "steer-client",
+      role: "user",
+      text: "почему сообщение в очереди",
+      attachmentSources: [{ type: "path", value: "C:/AgentHub/attachments/queue.png" }],
+    }],
+  });
+
+  const users = history[0].messages.filter((message) => message.role === "user");
+  assert.deepEqual(users.map((message) => ({
+    itemId: message.itemId,
+    clientUserMessageId: message.clientUserMessageId,
+    text: message.text,
+  })), [{
+    itemId: "provider-root",
+    clientUserMessageId: "root-client",
+    text: "ну исправляй",
+  }, {
+    itemId: "provider-steer",
+    clientUserMessageId: "steer-client",
+    text: "почему сообщение в очереди",
+  }]);
+  assert.deepEqual(users[1].attachmentSources, [{
+    type: "path",
+    value: "C:/AgentHub/attachments/queue.png",
+  }]);
+});
+
 test("displayUserPrompt unwraps Codex Desktop file metadata", () => {
   assert.equal(displayUserPrompt([
     "# Files mentioned by the user:",
@@ -1010,6 +1065,27 @@ test("official root message replaces its synthetic rollout root by structural id
     type: "path",
     value: "C:/Temp/screenshot.png",
   }]);
+});
+
+test("sparse canonical steer does not replace a synthetic root by ordinal", () => {
+  const turnId = "turn-with-sparse-canonical-steer";
+  const messages = [{
+    itemId: `${turnId}:rollout-user:0`,
+    role: "user",
+    text: "Повторный текст",
+  }, {
+    itemId: `${turnId}:rollout-user:1`,
+    role: "user",
+    text: "Повторный текст",
+    attachmentSources: [{ type: "path", value: "C:/AgentHub/attachments/legacy.png" }],
+  }, {
+    itemId: "canonical-steer",
+    clientUserMessageId: "steer-client",
+    role: "user",
+    text: "Повторный текст",
+  }];
+
+  assert.deepEqual(mergeSyntheticRolloutUsers(messages, turnId), messages);
 });
 
 test("Codex Desktop screenshots are retained as private attachment references", () => {

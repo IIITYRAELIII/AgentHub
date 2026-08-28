@@ -324,16 +324,24 @@ export function mergeSyntheticRolloutUsers(messages, turnId) {
   });
   if (!synthetic.length) return values;
 
-  const canonical = values.flatMap((message, index) => (
-    message?.role === "user" && Boolean(message.clientUserMessageId)
-      ? [{ index, message }]
-      : []
-  ));
+  const canonical = values.flatMap((message, index) => {
+    if (message?.role !== "user" || syntheticPattern.test(String(message?.itemId ?? ""))) return [];
+    return [{ index, message }];
+  });
+  const completeCoverage = canonical.length === synthetic.length
+    && canonical.every(({ message }) => Boolean(message.clientUserMessageId))
+    && synthetic.every((projection, ordinal) => projection.ordinal === ordinal);
+  if (!completeCoverage) return values;
+
   const replacements = new Map();
   const removed = new Set();
   for (const projection of synthetic) {
     const official = canonical[projection.ordinal];
-    if (!official) continue;
+    const officialText = displayUserPrompt(official.message?.text)
+      || String(official.message?.text ?? "").trim();
+    const projectionText = displayUserPrompt(projection.message?.text)
+      || String(projection.message?.text ?? "").trim();
+    if (!officialText || officialText !== projectionText) return values;
     const attachmentSources = uniqueMessageValues([
       ...(Array.isArray(official.message.attachmentSources) ? official.message.attachmentSources : []),
       ...(Array.isArray(projection.message.attachmentSources) ? projection.message.attachmentSources : []),
@@ -903,6 +911,9 @@ export function mergeActiveTaskHistory(history, activeTurn = {}) {
         ...(Array.isArray(message.attachments)
           ? { attachments: message.attachments.map((item) => ({ ...item })) }
           : {}),
+        ...(Array.isArray(message.attachmentSources)
+          ? { attachmentSources: message.attachmentSources.map((item) => ({ ...item })) }
+          : {}),
         index,
       };
     });
@@ -993,6 +1004,7 @@ export function mergeActiveTaskHistory(history, activeTurn = {}) {
       if (incoming.responseAnnotations?.length) user.responseAnnotations = incoming.responseAnnotations;
       if (incoming.responseAnnotationRequest) user.responseAnnotationRequest = incoming.responseAnnotationRequest;
       if (incoming.attachments?.length) user.attachments = incoming.attachments;
+      if (incoming.attachmentSources?.length) user.attachmentSources = incoming.attachmentSources;
     }
     if (attachments.length) current.attachments = attachments;
     current.messages = messages;

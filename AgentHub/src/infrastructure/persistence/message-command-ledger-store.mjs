@@ -435,6 +435,20 @@ function overlayRecords(value, records) {
   return state;
 }
 
+function withoutOwnedProjectionRecords(value, records) {
+  if (!records.length || !value || typeof value !== "object") return value;
+  const ids = new Set(records.map((record) => record.clientUserMessageId));
+  const withoutOwned = (values) => (Array.isArray(values)
+    ? values.filter((item) => !ids.has(clientMessageId(item)))
+    : values);
+  return {
+    ...value,
+    pendingInputs: withoutOwned(value.pendingInputs),
+    queuedInputs: withoutOwned(value.queuedInputs),
+    desktopMessageReceipts: withoutOwned(value.desktopMessageReceipts),
+  };
+}
+
 export class MessageCommandLedgerStore {
   #database;
   #now;
@@ -909,6 +923,10 @@ export class MessageCommandLedgerStore {
 
   overlay(value) {
     return overlayRecords(value, this.projectionRecords());
+  }
+
+  withoutOwnedProjections(value) {
+    return withoutOwnedProjectionRecords(value, this.projectionRecords());
   }
 
   #archiveTerminalPayloads() {
