@@ -66,6 +66,13 @@ then changes only those Tasks to workflow `done` and closes them. Neither
 `hub_task_complete` nor generic status update may substitute for release
 completion.
 
+Post-deployment verification reads the immutable published revision recorded by
+the publication pipeline and proves that every frozen Task result revision is
+an ancestor of it. Physical source clones with the same canonical Git origin
+are one logical repository. Their mutable working-tree state is not publication
+evidence and cannot block completion after a clean integration worktree has
+already been committed, pushed and deployed.
+
 The rolling Test Contour is preview evidence, not release proof. The isolated
 release-candidate contour, full HTTP/1.1 large-resource verification, chunked
 attachment reconstruction and deterministic fake-provider probe remain required

@@ -64,3 +64,61 @@ test("release verification rejects a nested Agent Hub revision that is not publi
     /not the currently published Agent Hub revision/u,
   );
 });
+
+test("release verification uses published ancestry instead of dirty source clones", async () => {
+  const cloneRoot = path.join(workspaceRoot, "Utilities-release-clone");
+  const ancestry = [];
+  const releasePlan = {
+    candidates: [
+      {
+        frozenRepositories: [{ projectRoot: repositoryRoot, resultRevision: "task-a" }],
+      },
+      {
+        frozenRepositories: [{ projectRoot: cloneRoot, resultRevision: "task-b" }],
+      },
+    ],
+    ready: [
+      { projectRoot: repositoryRoot, files: ["AgentHub/server.mjs"] },
+      { projectRoot: cloneRoot, files: ["AgentHub/client.mjs"] },
+    ],
+  };
+  const result = await verifyWorkspaceReleasePublication({
+    expectedRevision: "published",
+    plan: releasePlan,
+  }, {
+    ...dependencies("published"),
+    resolveRoots: async (projectRoot) => [projectRoot],
+    status: async () => {
+      throw new Error("mutable source status must not be read after publication");
+    },
+    identifyRepository: async () => "origin:https://example.test/Utilities.git",
+    assertAncestor: async (value) => ancestry.push(value),
+  });
+
+  assert.deepEqual(result.repositories, [{ root: repositoryRoot, revision: "published" }]);
+  assert.deepEqual(ancestry, [
+    { repositoryRoot, ancestor: "task-a", descendant: "published" },
+    { repositoryRoot, ancestor: "task-b", descendant: "published" },
+  ]);
+});
+
+test("release verification rejects a frozen Task revision outside published history", async () => {
+  await assert.rejects(
+    verifyWorkspaceReleasePublication({
+      expectedRevision: "published",
+      plan: {
+        candidates: [{
+          frozenRepositories: [{ projectRoot: repositoryRoot, resultRevision: "not-integrated" }],
+        }],
+        ready: [{ projectRoot: repositoryRoot, files: ["AgentHub/server.mjs"] }],
+      },
+    }, {
+      ...dependencies("published"),
+      identifyRepository: async () => "origin:https://example.test/Utilities.git",
+      assertAncestor: async () => {
+        throw new Error("not an ancestor");
+      },
+    }),
+    /frozen Task revision not-integrated is not contained in published revision published/u,
+  );
+});
