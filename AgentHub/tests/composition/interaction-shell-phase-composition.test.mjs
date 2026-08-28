@@ -18,7 +18,10 @@ test("interaction phase owns server, Desktop and run shell assembly", async () =
   }
   assert.equal(root.includes("createInteractionShellPhase"), true);
   assert.match(root, /infrastructure:\s*\{[\s\S]*workspaceCatalogStore,[\s\S]*\},\s*provider: providerApplication/u);
+  assert.match(root, /rateLimitHistoryStore, providerTurnTelemetryStore, commandTraceService/u);
+  assert.match(root, /rateLimitHistoryStore, commandTraceService, runJournal/u);
   assert.match(owner, /workspaceCatalogStore: infrastructure\.workspaceCatalogStore/u);
+  assert.match(owner, /commandTraceService: infrastructure\.commandTraceService/u);
   assert.equal(owner.includes("desktopCommandsPort: ports.desktopCommands"), true);
   assert.equal(owner.includes("runShell: ports.runShell"), true);
   assert.equal(owner.includes("lastTaskMessageRevision: api.lastTaskMessageRevision"), true);

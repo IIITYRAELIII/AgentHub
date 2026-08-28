@@ -91,7 +91,7 @@ const {
   runtimeNotificationController,
   runJournal,
   runtimeCommandServer,
-  rateLimitHistoryStore, providerTurnTelemetryStore,
+  rateLimitHistoryStore, providerTurnTelemetryStore, commandTraceService,
   sqliteRecovery, acknowledgeSqliteRecovery,
 } = await createHubInfrastructure({
   config,
@@ -264,7 +264,7 @@ const providerApplication = await createProviderApplicationComposition({
     runJournal,
     turnEndNotifications,
     workLogUsageStore, workLogUsageIdentityStore, workLogUsageRemoteConfigStore, workspaceCatalogStore, preTurnInstructions, hubMcpService,
-    providerTurnTelemetryStore, codexRolloutContextSanitizer, runtimeStateStore,
+    providerTurnTelemetryStore, commandTraceService, codexRolloutContextSanitizer, runtimeStateStore,
   },
   taskServices: {
     findProject,
@@ -570,7 +570,7 @@ const interactionShell = createInteractionShellPhase({
   },
   infrastructure: {
     trustedDeviceStore, workLogUsageStore, workspaceCatalogStore, preTurnInstructions, taskBoard, taskVoiceTranscriber,
-    usdRubRateStore, runtimeStateStore, taskReadStateStore, rateLimitHistoryStore, runJournal,
+    usdRubRateStore, runtimeStateStore, taskReadStateStore, rateLimitHistoryStore, commandTraceService, runJournal,
   },
   provider: providerApplication,
   clients: clientRuntime,
