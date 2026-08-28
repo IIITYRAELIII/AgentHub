@@ -147,3 +147,38 @@ test("snapshot transport rejects the wrong base and drops local ghosts by author
     (error) => api.isBaselineError(error),
   );
 });
+
+test("snapshot transport maps persisted stream UI settings into selection", async () => {
+  const api = await transport();
+  assert.deepEqual(plain(api.selectionFromSnapshotSettings({
+    provider: "codex",
+    model: "gpt-test",
+    reasoning: "high",
+    mode: "default",
+    approvalMode: "auto",
+    includeClaudeUsage: true,
+    activityRecentMinutes: 60,
+    streamOrderMode: "manual",
+    streamCardWidthMode: "fixed",
+    streamCardFixedWidth: 240,
+    streamCardGapEnabled: true,
+    pinnedWorkspaceStreams: { "workspace-1": ["stream-architect"] },
+    quickMessages: { streams: { "stream-architect": [{ label: "Релиз", text: "релизь" }] }, workspaces: {} },
+  }, {
+    model: "stream-model",
+  })), {
+    provider: "codex",
+    model: "stream-model",
+    reasoning: "high",
+    mode: "default",
+    autoApprove: true,
+    includeClaudeUsage: true,
+    activityRecentMinutes: 60,
+    streamOrderMode: "manual",
+    streamCardWidthMode: "fixed",
+    streamCardFixedWidth: 240,
+    streamCardGapEnabled: true,
+    pinnedWorkspaceStreams: { "workspace-1": ["stream-architect"] },
+    quickMessages: { streams: { "stream-architect": [{ label: "Релиз", text: "релизь" }] }, workspaces: {} },
+  });
+});

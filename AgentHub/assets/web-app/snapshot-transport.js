@@ -79,9 +79,29 @@
     };
   }
 
+  function selectionFromSnapshotSettings(settings = {}, streamSettings = {}) {
+    return {
+      provider: settings.provider,
+      model: settings.model,
+      reasoning: settings.reasoning,
+      mode: settings.mode,
+      autoApprove: settings.approvalMode === "auto",
+      includeClaudeUsage: settings.includeClaudeUsage !== false,
+      activityRecentMinutes: settings.activityRecentMinutes,
+      streamOrderMode: settings.streamOrderMode,
+      streamCardWidthMode: settings.streamCardWidthMode,
+      streamCardFixedWidth: settings.streamCardFixedWidth,
+      streamCardGapEnabled: settings.streamCardGapEnabled,
+      pinnedWorkspaceStreams: settings.pinnedWorkspaceStreams ?? {},
+      quickMessages: settings.quickMessages ?? { streams: {}, workspaces: {} },
+      ...(streamSettings ?? {}),
+    };
+  }
+
   global.AgentHubSnapshotTransport = Object.freeze({
     isBaselineError: (error) => error instanceof SnapshotCollectionBaselineError,
     materialize,
     requestParams,
+    selectionFromSnapshotSettings,
   });
 })(window);

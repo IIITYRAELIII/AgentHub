@@ -1959,20 +1959,10 @@ function applySnapshot(snapshot, { materialized = false } = {}) {
     mode: settings.modeOptions ?? [],
   });
   const selectedDraft = tasks.find((task) => task.id === effectiveSelectedId && task.draftStream);
-  agentHub.setSelection({
-    provider: settings.provider,
-    model: settings.model,
-    reasoning: settings.reasoning,
-    mode: settings.mode,
-    autoApprove: settings.approvalMode === "auto",
-    includeClaudeUsage: settings.includeClaudeUsage !== false,
-    activityRecentMinutes: settings.activityRecentMinutes,
-    streamOrderMode: settings.streamOrderMode,
-    streamCardWidthMode: settings.streamCardWidthMode,
-    streamCardFixedWidth: settings.streamCardFixedWidth,
-    streamCardGapEnabled: settings.streamCardGapEnabled,
-    ...(selectedDraft?.streamSettings ?? {}),
-  });
+  agentHub.setSelection(window.AgentHubSnapshotTransport.selectionFromSnapshotSettings(
+    settings,
+    selectedDraft?.streamSettings,
+  ));
   applySnapshotConnection(snapshot);
 }
 
@@ -3239,7 +3229,8 @@ agentHub.on("selection:set", async ({ key, value }) => {
   const name = names[key];
   if (!name) return;
   const tracksProjection = key === "includeClaudeUsage";
-  if (tracksProjection) agentHub.setSelectionPending(key, true);
+  const tracksPending = tracksProjection || ["pinnedWorkspaceStreams", "quickMessages"].includes(key);
+  if (tracksPending) agentHub.setSelectionPending(key, true);
   const taskIdentity = ["provider", "project", "model", "reasoning", "mode"].includes(name)
     ? exactSelectedTaskParams()
     : {};
@@ -3260,7 +3251,7 @@ agentHub.on("selection:set", async ({ key, value }) => {
       }
     });
   } finally {
-    if (tracksProjection) agentHub.setSelectionPending(key, false);
+    if (tracksPending) agentHub.setSelectionPending(key, false);
   }
 });
 agentHub.on("approval:respond", ({ id, decision, answers }) => runAction(async () => {

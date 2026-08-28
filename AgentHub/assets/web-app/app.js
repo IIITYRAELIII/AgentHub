@@ -8048,21 +8048,31 @@ const AgentHub = {
   /** Текущий выбор: { model, reasoning, mode, project, autoApprove,
    *  includeClaudeUsage, activityRecentMinutes, streamOrderMode,
    *  streamCardWidthMode, streamCardFixedWidth, streamCardGapEnabled,
-   *  pinnedWorkspaceStreams }. */
+   *  pinnedWorkspaceStreams, quickMessages }. */
   setSelection(selection) {
-    const claudeUsageChanged = Object.hasOwn(selection ?? {}, "includeClaudeUsage")
-      && state.selection.includeClaudeUsage !== selection.includeClaudeUsage;
-    const next = { ...state.selection, ...selection };
+    const incoming = { ...(selection ?? {}) };
+    for (const key of state.pendingSelections) {
+      if (Object.hasOwn(incoming, key) && !sameData(incoming[key], state.selection[key])) delete incoming[key];
+    }
+    const claudeUsageChanged = Object.hasOwn(incoming, "includeClaudeUsage")
+      && state.selection.includeClaudeUsage !== incoming.includeClaudeUsage;
+    const pinnedWorkspaceStreamsChanged = Object.hasOwn(incoming, "pinnedWorkspaceStreams")
+      && !sameData(state.selection.pinnedWorkspaceStreams, incoming.pinnedWorkspaceStreams);
+    const next = { ...state.selection, ...incoming };
     if (sameData(state.selection, next)) return;
     state.selection = next;
-    if (Object.hasOwn(selection ?? {}, "activityRecentMinutes")) {
-      applyActivityRecentPeriod(selection.activityRecentMinutes, { update: true });
+    if (Object.hasOwn(incoming, "activityRecentMinutes")) {
+      applyActivityRecentPeriod(incoming.activityRecentMinutes, { update: true });
     }
-    if (Object.hasOwn(selection ?? {}, "streamOrderMode")) {
-      applyStreamOrderMode(selection.streamOrderMode, { update: true });
+    if (Object.hasOwn(incoming, "streamOrderMode")) {
+      applyStreamOrderMode(incoming.streamOrderMode, { update: true });
     }
-    window.AgentHubStreamTabs.applyStreamCardSettings(selection);
+    window.AgentHubStreamTabs.applyStreamCardSettings(incoming);
     renderOptions();
+    if (pinnedWorkspaceStreamsChanged) {
+      renderStreamTabs();
+      renderActivityRail();
+    }
     if (state.selectedId) renderChat();
     else renderComposerQuickMessages();
     if (claudeUsageChanged && journalHtml) void renderJournal();
