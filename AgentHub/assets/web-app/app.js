@@ -156,6 +156,7 @@ const composer = document.querySelector("[data-composer]");
 const composerGrow = document.querySelector("[data-composer-grow]");
 const composerInput = document.querySelector("[data-composer-input]");
 const composerSend = document.querySelector("[data-composer-send]");
+const composerQuickMessages = document.querySelector("[data-composer-quick-messages]");
 const connectionQualityIndicator = document.querySelector("[data-connection-quality]");
 const annotationsBox = document.querySelector("[data-annotations]");
 const attachmentsBox = document.querySelector("[data-attachments]");
@@ -1542,6 +1543,76 @@ function togglePinnedWorkspaceStream(workspaceId, streamId) {
   state.selection = { ...state.selection, pinnedWorkspaceStreams };
   renderStreamTabs();
   emit("selection:set", { key: "pinnedWorkspaceStreams", value: pinnedWorkspaceStreams });
+}
+
+function currentQuickMessageContext() {
+  const task = currentTask();
+  if (!task) return null;
+  return {
+    streamId: streamKey(task),
+    streamName: String(task.streamName ?? task.streamDisplayName ?? "Stream").trim() || "Stream",
+    workspaceId: workspaceKey(task),
+    workspaceName: String(task.workspaceName ?? task.title ?? "Workspace").trim() || "Workspace",
+  };
+}
+
+function quickMessageEntriesForCurrentTask() {
+  const context = currentQuickMessageContext();
+  if (!context) return [];
+  return window.AgentHubStreamTabs.quickMessagesForStream(
+    state.selection,
+    context.workspaceId,
+    context.streamId,
+  );
+}
+
+function saveQuickMessagesForScope(scope, scopeId, entries) {
+  const quickMessages = window.AgentHubStreamTabs.setQuickMessagesForScope(
+    state.selection,
+    scope,
+    scopeId,
+    entries,
+  );
+  state.selection = { ...state.selection, quickMessages };
+  renderComposerQuickMessages();
+  emit("selection:set", { key: "quickMessages", value: quickMessages });
+}
+
+async function editQuickMessagesForScope(scope, scopeId, title) {
+  const id = String(scopeId ?? "").trim();
+  if (!id) return;
+  const key = scope === "workspace" ? "workspaces" : "streams";
+  const quickMessages = window.AgentHubStreamTabs.normalizeQuickMessages(state.selection.quickMessages);
+  const current = quickMessages[key][id] ?? [];
+  const value = window.AgentHubStreamTabs.quickMessagesToText(current);
+  const text = await askText({
+    title: `Быстрые сообщения: ${title}`,
+    value,
+    multiline: true,
+  });
+  if (text === null) return;
+  saveQuickMessagesForScope(scope, id, window.AgentHubStreamTabs.quickMessagesFromText(text));
+}
+
+function renderComposerQuickMessages() {
+  if (!composerQuickMessages) return;
+  const entries = quickMessageEntriesForCurrentTask();
+  composerQuickMessages.hidden = entries.length === 0;
+  composerQuickMessages.replaceChildren(...entries.map((entry, index) => {
+    const button = el("button", {
+      type: "button",
+      class: "composer-quick-message",
+      "data-quick-message-index": String(index),
+      "data-quick-message-scope": entry.scope,
+      title: entry.text,
+      disabled: Boolean(pendingComposerRequest),
+    }, [
+      el("span", { class: "composer-quick-message-scope", text: entry.scope === "workspace" ? "W" : "S" }),
+      el("span", { class: "composer-quick-message-label", text: entry.label }),
+    ]);
+    button.__agentHubQuickMessage = entry;
+    return button;
+  }));
 }
 
 function reconcileOpenStreams(workspaceId, streams) {
@@ -3190,15 +3261,26 @@ function ensureWorkspaceContextMenu() {
     class: "stream-context-action",
     "data-workspace-menu-action": "edit",
     text: "Редактировать Workspace…",
+  }), el("button", {
+    type: "button",
+    role: "menuitem",
+    class: "stream-context-action",
+    "data-workspace-menu-action": "quick-messages",
+    text: "Быстрые сообщения Workspace…",
   })]);
   document.body.append(workspaceContextMenu);
-  workspaceContextMenu.addEventListener("click", (event) => {
-    const action = event.target.closest("[data-workspace-menu-action='edit']");
+  workspaceContextMenu.addEventListener("click", async (event) => {
+    const action = event.target.closest("[data-workspace-menu-action]");
     if (!action) return;
     event.preventDefault();
     const workspaceId = String(workspaceContextMenu.dataset.workspaceId ?? "");
+    const workspaceName = String(workspaceContextMenu.dataset.workspaceName ?? "Workspace");
+    const kind = String(action.dataset.workspaceMenuAction ?? "");
     closeWorkspaceContextMenu();
-    openWorkspaceCard(workspaceId);
+    if (kind === "edit") openWorkspaceCard(workspaceId);
+    else if (kind === "quick-messages") {
+      await editQuickMessagesForScope("workspace", workspaceId, `${workspaceName} / Workspace`);
+    }
   });
   return workspaceContextMenu;
 }
@@ -3207,7 +3289,9 @@ function openWorkspaceContextMenu(event, workspaceId) {
   if (!workspaceCatalogItem(workspaceId)) return;
   closeStreamContextMenu();
   const menu = ensureWorkspaceContextMenu();
+  const workspace = workspaceCatalogItem(workspaceId);
   menu.dataset.workspaceId = String(workspaceId);
+  menu.dataset.workspaceName = String(workspace?.name ?? workspace?.displayName ?? workspaceId);
   menu.hidden = false;
   const left = Math.max(8, Math.min(event.clientX, window.innerWidth - menu.offsetWidth - 8));
   const top = Math.max(8, Math.min(event.clientY, window.innerHeight - menu.offsetHeight - 8));
@@ -3263,6 +3347,10 @@ function ensureStreamContextMenu() {
       openDialogSettings();
       return;
     }
+    if (kind === "quick-messages") {
+      await editQuickMessagesForScope("stream", streamId, `${currentName || "Stream"} / Stream`);
+      return;
+    }
     if (kind === "edit-workspace") {
       if (workspaceId) openWorkspaceCard(workspaceId);
       return;
@@ -3315,6 +3403,10 @@ function openStreamContextMenu(event, tab) {
     el("button", {
       type: "button", role: "menuitem", class: "stream-context-action",
       "data-stream-menu-action": "edit-stream", text: "Редактировать Stream…",
+    }),
+    el("button", {
+      type: "button", role: "menuitem", class: "stream-context-action",
+      "data-stream-menu-action": "quick-messages", text: "Быстрые сообщения Stream…",
     }),
     el("button", {
       type: "button", role: "menuitem", class: "stream-context-action",
@@ -3769,6 +3861,7 @@ function renderChat() {
     streamChatColumns?.removeAttribute("data-multi-stream");
     publishVisibleStreamTasks([]);
     renderStreamChatHeader(null);
+    renderComposerQuickMessages();
     setDialogSettingsOpen(false);
     return;
   }
@@ -3795,6 +3888,7 @@ function renderChat() {
   renderLive();
   renderApprovals();
   renderQueue();
+  renderComposerQuickMessages();
   // Композер восстанавливаем только при реальной смене задачи, чтобы фоновые
   // обновления статуса не сбрасывали курсор и набранный текст.
   if (taskChanged) restoreDraft();
@@ -5587,6 +5681,9 @@ function updateSendState() {
     || currentTaskReferences().length > 0
     || currentAnnotations().length > 0;
   composerSend.disabled = !draftFilled || !state.selectedId || Boolean(pendingComposerRequest);
+  composerQuickMessages?.querySelectorAll("button").forEach((button) => {
+    button.disabled = !state.selectedId || Boolean(pendingComposerRequest);
+  });
 }
 
 composerInput.addEventListener("input", () => {
@@ -5595,6 +5692,12 @@ composerInput.addEventListener("input", () => {
   saveDraft();
   slashSelection = 0;
   renderSlashMenu();
+});
+
+composerQuickMessages?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-quick-message-index]");
+  if (!button || button.disabled) return;
+  submitQuickMessage(button.__agentHubQuickMessage);
 });
 
 composerInput.addEventListener("keydown", (event) => {
@@ -5632,23 +5735,33 @@ composer.addEventListener("submit", (event) => {
   submitComposer();
 });
 
-function submitComposer({ steerWhileRunning = false } = {}) {
+function sendComposerRequest({
+  rawText,
+  attachments: requestAttachments = [],
+  taskReferences: requestTaskReferences = [],
+  annotations: requestAnnotations = [],
+  steerWhileRunning = false,
+  clearComposer = false,
+  restoreOnReject = false,
+} = {}) {
   if (!state.selectedId || pendingComposerRequest) return;
   const submittedAtMs = Date.now();
   const submittedMonotonicMs = performance.now();
   const task = currentTask();
-  const rawText = composerInput.value;
-  const text = rawText.trim();
-  const attachments = currentAttachments().slice();
-  const taskReferences = currentTaskReferences().slice();
-  const annotations = currentAnnotations().slice();
-  if (!text && attachments.length === 0 && taskReferences.length === 0 && annotations.length === 0) return;
+  const text = String(rawText ?? "").trim();
+  const payloadAttachments = requestAttachments.slice();
+  const payloadTaskReferences = requestTaskReferences.slice();
+  const payloadAnnotations = requestAnnotations.slice();
+  if (!text
+    && payloadAttachments.length === 0
+    && payloadTaskReferences.length === 0
+    && payloadAnnotations.length === 0) return;
   const fingerprint = JSON.stringify({
     taskId: state.selectedId,
     rawText,
-    attachments,
-    taskReferences,
-    annotations,
+    attachments: payloadAttachments,
+    taskReferences: payloadTaskReferences,
+    annotations: payloadAnnotations,
   });
   const retry = retryComposerRequests.get(state.selectedId);
   const requestId = retry?.fingerprint === fingerprint
@@ -5660,25 +5773,28 @@ function submitComposer({ steerWhileRunning = false } = {}) {
     fingerprint,
     taskId: state.selectedId,
     rawText,
-    attachments,
-    taskReferences,
-    annotations,
+    attachments: payloadAttachments,
+    taskReferences: payloadTaskReferences,
+    annotations: payloadAnnotations,
+    restoreOnReject,
   };
-  drafts.set(state.selectedId, { text: "", attachments: [], taskReferences: [], annotations: [] });
-  composerInput.value = "";
-  setAttachments([]);
-  setTaskReferences([]);
-  setAnnotations([]);
-  autosizeComposer();
+  if (clearComposer) {
+    drafts.set(state.selectedId, { text: "", attachments: [], taskReferences: [], annotations: [] });
+    composerInput.value = "";
+    setAttachments([]);
+    setTaskReferences([]);
+    setAnnotations([]);
+    autosizeComposer();
+  }
   emit("message:send", {
     requestId,
     submittedAtMs,
     submittedMonotonicMs,
     taskId: state.selectedId,
     text,
-    annotations,
-    attachments,
-    taskReferences,
+    annotations: payloadAnnotations,
+    attachments: payloadAttachments,
+    taskReferences: payloadTaskReferences,
     followUpMode: MessageView.composerFollowUpMode(task, { steerWhileRunning }),
     deferWhileRunning: task?.running === true && !steerWhileRunning,
     draftStream: task?.draftStream === true,
@@ -5686,7 +5802,31 @@ function submitComposer({ steerWhileRunning = false } = {}) {
     settings: task?.draftStream ? { ...task.streamSettings } : null,
   });
   updateSendState();
+  if (clearComposer) saveDraft();
+  return true;
+}
+
+function submitComposer({ steerWhileRunning = false } = {}) {
+  return sendComposerRequest({
+    rawText: composerInput.value,
+    attachments: currentAttachments(),
+    taskReferences: currentTaskReferences(),
+    annotations: currentAnnotations(),
+    steerWhileRunning,
+    clearComposer: true,
+    restoreOnReject: true,
+  });
+}
+
+function submitQuickMessage(entry) {
+  if (!entry?.text) return;
   saveDraft();
+  const sent = sendComposerRequest({
+    rawText: entry.text,
+    clearComposer: false,
+    restoreOnReject: false,
+  });
+  if (sent) showToast(`Отправлено: ${entry.label}`);
 }
 
 function completeComposerSend(requestId, accepted) {
@@ -5706,7 +5846,7 @@ function completeComposerSend(requestId, accepted) {
       && (draft.attachments ?? []).length === 0
       && (draft.taskReferences ?? []).length === 0
       && (draft.annotations ?? []).length === 0;
-    if (untouched) {
+    if (pending.restoreOnReject !== false && untouched) {
       drafts.set(pending.taskId, {
         text: pending.rawText,
         attachments: pending.attachments,
@@ -7886,6 +8026,7 @@ const AgentHub = {
     window.AgentHubStreamTabs.applyStreamCardSettings(selection);
     renderOptions();
     if (state.selectedId) renderChat();
+    else renderComposerQuickMessages();
     if (claudeUsageChanged && journalHtml) void renderJournal();
   },
   setSelectionPending(key, pending) {

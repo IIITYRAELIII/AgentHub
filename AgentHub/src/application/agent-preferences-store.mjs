@@ -15,6 +15,10 @@ const DEFAULT_ACTIVITY_RECENT_MINUTES = 3 * 60;
 const MAX_ACTIVITY_RECENT_MINUTES = 30 * 24 * 60;
 const STREAM_CARD_MIN_WIDTH = 90;
 const STREAM_CARD_MAX_WIDTH = 450;
+const QUICK_MESSAGE_MAX_SCOPES = 200;
+const QUICK_MESSAGE_MAX_ITEMS = 20;
+const QUICK_MESSAGE_MAX_LABEL = 64;
+const QUICK_MESSAGE_MAX_TEXT = 4_000;
 
 function activityRecentMinutes(value, fallback = DEFAULT_ACTIVITY_RECENT_MINUTES) {
   const minutes = Math.round(Number(value));
@@ -59,6 +63,61 @@ function pinnedWorkspaceStreams(value) {
     if (pinned.length) normalized[id] = pinned;
   }
   return normalized;
+}
+
+function quickMessageEntry(value) {
+  const source = value && typeof value === "object" && !Array.isArray(value)
+    ? value
+    : { text: value };
+  const text = String(source.text ?? "").trim().slice(0, QUICK_MESSAGE_MAX_TEXT);
+  if (!text) return null;
+  const label = String(source.label ?? text).trim().slice(0, QUICK_MESSAGE_MAX_LABEL) || text.slice(0, QUICK_MESSAGE_MAX_LABEL);
+  return {
+    id: String(source.id ?? label).trim().slice(0, QUICK_MESSAGE_MAX_LABEL) || label,
+    label,
+    text,
+  };
+}
+
+function quickMessageEntries(value) {
+  if (!Array.isArray(value)) return [];
+  const entries = [];
+  const seen = new Set();
+  for (const item of value) {
+    const entry = quickMessageEntry(item);
+    if (!entry || seen.has(entry.text)) continue;
+    entries.push(entry);
+    seen.add(entry.text);
+    if (entries.length >= QUICK_MESSAGE_MAX_ITEMS) break;
+  }
+  return entries;
+}
+
+function quickMessageScopeMap(value) {
+  const normalized = {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) return normalized;
+  for (const [scopeId, entries] of Object.entries(value).slice(0, QUICK_MESSAGE_MAX_SCOPES)) {
+    const id = String(scopeId ?? "").trim();
+    if (!id) continue;
+    const normalizedEntries = quickMessageEntries(entries);
+    if (normalizedEntries.length) normalized[id] = normalizedEntries;
+  }
+  return normalized;
+}
+
+function quickMessages(value) {
+  let source = value;
+  if (typeof value === "string") {
+    try {
+      source = JSON.parse(value);
+    } catch {
+      source = {};
+    }
+  }
+  return {
+    streams: quickMessageScopeMap(source?.streams),
+    workspaces: quickMessageScopeMap(source?.workspaces),
+  };
 }
 
 export class AgentPreferencesStore {
@@ -129,6 +188,7 @@ export class AgentPreferencesStore {
   get streamCardFixedWidth() { return this.values.streamCardFixedWidth; }
   get streamCardGapEnabled() { return this.values.streamCardGapEnabled; }
   get pinnedWorkspaceStreams() { return structuredClone(this.values.pinnedWorkspaceStreams); }
+  get quickMessages() { return structuredClone(this.values.quickMessages); }
   get defaultCodexModel() { return this.defaults.codexModel; }
   get defaultCodexReasoningEffort() { return this.defaults.codexReasoningEffort; }
   get defaultCodexCollaborationMode() { return this.defaults.codexCollaborationMode; }
@@ -195,6 +255,10 @@ export class AgentPreferencesStore {
 
   setPinnedWorkspaceStreams(value) {
     return this.#set("pinnedWorkspaceStreams", pinnedWorkspaceStreams(value));
+  }
+
+  setQuickMessages(value) {
+    return this.#set("quickMessages", quickMessages(value));
   }
 
   #set(name, value) {
@@ -309,6 +373,7 @@ export class AgentPreferencesStore {
       streamCardFixedWidth: streamCardFixedWidth(snapshot.streamCardFixedWidth),
       streamCardGapEnabled: snapshot.streamCardGapEnabled === true,
       pinnedWorkspaceStreams: pinnedWorkspaceStreams(snapshot.pinnedWorkspaceStreams),
+      quickMessages: quickMessages(snapshot.quickMessages),
     };
     return this.snapshot();
   }
@@ -317,6 +382,7 @@ export class AgentPreferencesStore {
     return {
       ...this.values,
       pinnedWorkspaceStreams: structuredClone(this.values.pinnedWorkspaceStreams),
+      quickMessages: structuredClone(this.values.quickMessages),
     };
   }
 

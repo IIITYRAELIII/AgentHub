@@ -20,6 +20,10 @@
   const STREAM_STATUS_STYLE_KEY = "agent-hub-stream-status-style";
   const STREAM_CARD_SETTINGS_CHANGE_EVENT = "agenthub:stream-card-settings-change";
   const STREAM_VIEW_SETTINGS_CHANGE_EVENT = "agenthub:stream-view-settings-change";
+  const QUICK_MESSAGE_MAX_SCOPES = 200;
+  const QUICK_MESSAGE_MAX_ITEMS = 20;
+  const QUICK_MESSAGE_MAX_LABEL = 64;
+  const QUICK_MESSAGE_MAX_TEXT = 4_000;
 
   function normalizePinnedWorkspaceStreams(value) {
     const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
@@ -34,6 +38,105 @@
       if (pinned.length) normalized[id] = pinned;
     }
     return normalized;
+  }
+
+  function normalizeQuickMessageEntry(value) {
+    const source = value && typeof value === "object" && !Array.isArray(value)
+      ? value
+      : { text: value };
+    const text = String(source.text ?? "").trim().slice(0, QUICK_MESSAGE_MAX_TEXT);
+    if (!text) return null;
+    const label = String(source.label ?? text).trim().slice(0, QUICK_MESSAGE_MAX_LABEL)
+      || text.slice(0, QUICK_MESSAGE_MAX_LABEL);
+    return {
+      id: String(source.id ?? label).trim().slice(0, QUICK_MESSAGE_MAX_LABEL) || label,
+      label,
+      text,
+    };
+  }
+
+  function normalizeQuickMessageEntries(value) {
+    if (!Array.isArray(value)) return [];
+    const entries = [];
+    const seen = new Set();
+    for (const item of value) {
+      const entry = normalizeQuickMessageEntry(item);
+      if (!entry || seen.has(entry.text)) continue;
+      entries.push(entry);
+      seen.add(entry.text);
+      if (entries.length >= QUICK_MESSAGE_MAX_ITEMS) break;
+    }
+    return entries;
+  }
+
+  function normalizeQuickMessageScopeMap(value) {
+    const normalized = {};
+    if (!value || typeof value !== "object" || Array.isArray(value)) return normalized;
+    for (const [scopeId, entries] of Object.entries(value).slice(0, QUICK_MESSAGE_MAX_SCOPES)) {
+      const id = String(scopeId ?? "").trim();
+      if (!id) continue;
+      const normalizedEntries = normalizeQuickMessageEntries(entries);
+      if (normalizedEntries.length) normalized[id] = normalizedEntries;
+    }
+    return normalized;
+  }
+
+  function normalizeQuickMessages(value) {
+    return {
+      streams: normalizeQuickMessageScopeMap(value?.streams),
+      workspaces: normalizeQuickMessageScopeMap(value?.workspaces),
+    };
+  }
+
+  function quickMessagesForStream(selection, workspaceId, streamId) {
+    const messages = normalizeQuickMessages(selection?.quickMessages);
+    const workspaceEntries = messages.workspaces[String(workspaceId ?? "").trim()] ?? [];
+    const streamEntries = messages.streams[String(streamId ?? "").trim()] ?? [];
+    const entries = [];
+    const seen = new Set();
+    for (const [scope, source] of [["workspace", workspaceEntries], ["stream", streamEntries]]) {
+      for (const entry of source) {
+        if (seen.has(entry.text)) continue;
+        entries.push({ ...entry, scope });
+        seen.add(entry.text);
+      }
+    }
+    return entries;
+  }
+
+  function quickMessagesFromText(value) {
+    return normalizeQuickMessageEntries(
+      String(value ?? "")
+        .split(/\r?\n/u)
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .map((line) => {
+          const separator = line.indexOf("|");
+          return separator < 0
+            ? { label: line, text: line }
+            : {
+                label: line.slice(0, separator).trim(),
+                text: line.slice(separator + 1).trim(),
+              };
+        }),
+    );
+  }
+
+  function quickMessagesToText(entries) {
+    return normalizeQuickMessageEntries(entries)
+      .map((entry) => (entry.label === entry.text ? entry.text : `${entry.label} | ${entry.text}`))
+      .join("\n");
+  }
+
+  function setQuickMessagesForScope(selection, scope, scopeId, entries) {
+    const quickMessages = normalizeQuickMessages(selection?.quickMessages);
+    const key = scope === "workspace" ? "workspaces" : "streams";
+    const id = String(scopeId ?? "").trim();
+    if (!id) return quickMessages;
+    const normalizedEntries = normalizeQuickMessageEntries(entries);
+    if (normalizedEntries.length) quickMessages[key][id] = normalizedEntries;
+    else delete quickMessages[key][id];
+    return quickMessages;
   }
 
   function normalizeActivityRecentMinutes(value) {
@@ -1328,6 +1431,7 @@
     installStreamCardSettings,
     normalizeActivityRecentMinutes,
     normalizePinnedWorkspaceStreams,
+    normalizeQuickMessages,
     normalizeStreamCardSettings,
     normalizeStreamOrderMode,
     applyOpenStreamSelection,
@@ -1336,6 +1440,9 @@
     pinnedStreamActionTitle,
     pinnedWorkspaceStreamIds,
     preserveStreamOverflowMenuOpen,
+    quickMessagesForStream,
+    quickMessagesFromText,
+    quickMessagesToText,
     representativeSnapshotTasks,
     reconcileOpenStreamIds,
     resolveStreamOverflowLayout,
@@ -1349,6 +1456,7 @@
     streamStatusPresentation,
     streamStatusState,
     streamsAreDraggable,
+    setQuickMessagesForScope,
     taskListSections,
     togglePinnedWorkspaceStream,
   });

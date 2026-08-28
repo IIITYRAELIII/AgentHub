@@ -3234,6 +3234,7 @@ agentHub.on("selection:set", async ({ key, value }) => {
     streamCardFixedWidth: "streamCardFixedWidth",
     streamCardGapEnabled: "streamCardGapEnabled",
     pinnedWorkspaceStreams: "pinnedWorkspaceStreams",
+    quickMessages: "quickMessages",
   };
   const name = names[key];
   if (!name) return;
@@ -3249,7 +3250,7 @@ agentHub.on("selection:set", async ({ key, value }) => {
         name,
         value: key === "autoApprove"
           ? (value ? "auto" : "manual")
-          : key === "pinnedWorkspaceStreams"
+          : ["pinnedWorkspaceStreams", "quickMessages"].includes(key)
             ? JSON.stringify(value ?? {})
             : value,
       }));

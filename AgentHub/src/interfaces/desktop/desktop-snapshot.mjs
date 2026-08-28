@@ -710,6 +710,7 @@ export function createDesktopSnapshotFactory({
         streamCardFixedWidth: current.streamCardFixedWidth,
         streamCardGapEnabled: current.streamCardGapEnabled === true,
         pinnedWorkspaceStreams: current.pinnedWorkspaceStreams ?? {},
+        quickMessages: current.quickMessages ?? { streams: {}, workspaces: {} },
         models: activeProvider === "codex"
           ? current.codexModels.map((model) => ({ value: model.value, label: model.label }))
           : claudeOptions,

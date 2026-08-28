@@ -261,6 +261,48 @@ test("Stream overflow layout reserves the More slot while measuring tabs", async
   );
 });
 
+test("quick messages merge Workspace and Stream scopes without duplicates", async () => {
+  const {
+    quickMessagesForStream,
+    quickMessagesFromText,
+    quickMessagesToText,
+    setQuickMessagesForScope,
+  } = await streamTabsApi();
+  const selection = {
+    quickMessages: {
+      workspaces: { "workspace-1": ["релизь", { label: "Тесты", text: "запусти тесты" }] },
+      streams: { "stream-1": [{ label: "Release", text: "релизь" }, "продолжай"] },
+    },
+  };
+
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(quickMessagesForStream(selection, "workspace-1", "stream-1").map(({ scope, label, text }) => ({
+      scope, label, text,
+    })))),
+    [
+      { scope: "workspace", label: "релизь", text: "релизь" },
+      { scope: "workspace", label: "Тесты", text: "запусти тесты" },
+      { scope: "stream", label: "продолжай", text: "продолжай" },
+    ],
+  );
+  assert.equal(
+    quickMessagesToText(quickMessagesFromText("Релиз | релизь\nпроверь")),
+    "Релиз | релизь\nпроверь",
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(setQuickMessagesForScope(selection, "stream", "stream-1", []))),
+    {
+      streams: {},
+      workspaces: {
+        "workspace-1": [
+          { id: "релизь", label: "релизь", text: "релизь" },
+          { id: "Тесты", label: "Тесты", text: "запусти тесты" },
+        ],
+      },
+    },
+  );
+});
+
 test("desktop Stream settings replace duplicate toolbar controls and keep titles left-aligned", async () => {
   const app = await readFile(new URL("../../assets/web-app/app.js", import.meta.url), "utf8");
   const controller = await readFile(new URL("../../assets/web-app/stream-tabs-controller.js", import.meta.url), "utf8");

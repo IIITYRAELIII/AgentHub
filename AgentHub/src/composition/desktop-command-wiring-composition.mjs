@@ -238,6 +238,8 @@ export function createDesktopCommandWiring({
       setStreamCardGapEnabled: services.setStreamCardGapEnabled,
       getPinnedWorkspaceStreams: services.getPinnedWorkspaceStreams,
       setPinnedWorkspaceStreams: services.setPinnedWorkspaceStreams,
+      getQuickMessages: services.getQuickMessages,
+      setQuickMessages: services.setQuickMessages,
       projectUsage: services.projectUsage,
       findProjectIndex: (value) => projects.findIndex((project) => (
         services.samePath(project.path, value)

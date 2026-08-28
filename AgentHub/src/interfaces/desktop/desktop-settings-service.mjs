@@ -17,7 +17,7 @@ export class DesktopSettingsService {
       "getActivityRecentMinutes", "setActivityRecentMinutes",
       "getStreamOrderMode", "setStreamOrderMode", "getStreamCardWidthMode", "setStreamCardWidthMode",
       "getStreamCardFixedWidth", "setStreamCardFixedWidth", "getStreamCardGapEnabled", "setStreamCardGapEnabled",
-      "getPinnedWorkspaceStreams", "setPinnedWorkspaceStreams",
+      "getPinnedWorkspaceStreams", "setPinnedWorkspaceStreams", "getQuickMessages", "setQuickMessages",
       "findProjectIndex", "switchProject", "snapshot",
     ]) requiredFunction(dependencies[name], name);
     this.#d = dependencies;
@@ -128,6 +128,17 @@ export class DesktopSettingsService {
       const previous = JSON.stringify(d.getPinnedWorkspaceStreams());
       d.setPinnedWorkspaceStreams(parsed);
       changed = previous !== JSON.stringify(d.getPinnedWorkspaceStreams());
+      await d.saveState();
+    } else if (name === "quickMessages") {
+      let parsed;
+      try {
+        parsed = JSON.parse(value);
+      } catch {
+        throw new Error("Неизвестный набор быстрых сообщений");
+      }
+      const previous = JSON.stringify(d.getQuickMessages());
+      d.setQuickMessages(parsed);
+      changed = previous !== JSON.stringify(d.getQuickMessages());
       await d.saveState();
     } else if (name === "project") {
       const index = d.findProjectIndex(value);

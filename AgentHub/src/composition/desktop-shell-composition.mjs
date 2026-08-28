@@ -456,6 +456,8 @@ export function createDesktopShellComposition({
       setStreamCardGapEnabled: (value) => agentPreferences.setStreamCardGapEnabled(value),
       getPinnedWorkspaceStreams: () => agentPreferences.pinnedWorkspaceStreams,
       setPinnedWorkspaceStreams: (value) => agentPreferences.setPinnedWorkspaceStreams(value),
+      getQuickMessages: () => agentPreferences.quickMessages,
+      setQuickMessages: (value) => agentPreferences.setQuickMessages(value),
       projectUsage: (includeClaudeUsage) => workLogUsageStore.project(null, {
         includeClaudeUsage,
         projectRoot: config.projectRoot,

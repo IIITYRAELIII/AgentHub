@@ -1301,6 +1301,67 @@ html[data-view="chat"][data-surface][data-theme] {
   grid-template-rows: auto 30px;
 }
 
+.composer-quick-messages {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 0 8px;
+}
+
+.composer-quick-messages[hidden] {
+  display: none;
+}
+
+.composer-quick-message {
+  align-items: center;
+  background: var(--dialog-sunken);
+  border: 1px solid var(--dialog-hairline);
+  border-radius: 999px;
+  color: var(--dialog-text-2);
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  font-size: 12px;
+  gap: 5px;
+  min-height: 26px;
+  max-width: min(20rem, 100%);
+  padding: 3px 9px 3px 6px;
+}
+
+.composer-quick-message:hover,
+.composer-quick-message:focus-visible {
+  background: var(--dialog-control-hover);
+  border-color: var(--dialog-accent-soft);
+  color: var(--dialog-text);
+  outline: 0;
+}
+
+.composer-quick-message:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.composer-quick-message-scope {
+  align-items: center;
+  background: var(--dialog-chrome);
+  border-radius: 999px;
+  color: var(--dialog-text-3);
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 700;
+  height: 16px;
+  justify-content: center;
+  width: 16px;
+}
+
+.composer-quick-message-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .composer-input {
   background: transparent;
   border: 0;

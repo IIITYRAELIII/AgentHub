@@ -56,6 +56,14 @@ test("agent preferences restore and validate both providers in one state owner",
       "": ["ignored"],
       "workspace-2": "ignored",
     },
+    quickMessages: {
+      streams: {
+        "stream-1": ["релизь", { label: "Тест", text: "запусти тесты" }, "релизь"],
+      },
+      workspaces: {
+        "workspace-1": [{ label: "Проверь", text: "проверь" }, ""],
+      },
+    },
   });
   assert.deepEqual(store.snapshot(), {
     codexModel: "terra",
@@ -73,6 +81,17 @@ test("agent preferences restore and validate both providers in one state owner",
     pinnedWorkspaceStreams: {
       "workspace-1": ["stream-1", "stream-2"],
     },
+    quickMessages: {
+      streams: {
+        "stream-1": [
+          { id: "релизь", label: "релизь", text: "релизь" },
+          { id: "Тест", label: "Тест", text: "запусти тесты" },
+        ],
+      },
+      workspaces: {
+        "workspace-1": [{ id: "Проверь", label: "Проверь", text: "проверь" }],
+      },
+    },
   });
   assert.throws(() => store.setCodexModel("unknown"), /unknown Codex model/u);
   assert.throws(() => store.setClaudeReasoning("ultra"), /unknown Claude reasoning effort/u);
@@ -85,6 +104,14 @@ test("agent preferences restore and validate both providers in one state owner",
     { changed: true },
   );
   assert.deepEqual(store.pinnedWorkspaceStreams, { "workspace-2": ["stream-3"] });
+  assert.deepEqual(
+    store.setQuickMessages(JSON.stringify({ workspaces: { "workspace-2": ["релизь"] } })),
+    { changed: true },
+  );
+  assert.deepEqual(store.quickMessages, {
+    streams: {},
+    workspaces: { "workspace-2": [{ id: "релизь", label: "релизь", text: "релизь" }] },
+  });
 });
 
 test("task preferences follow the selected Codex thread without becoming task identity", () => {

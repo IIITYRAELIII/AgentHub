@@ -8,6 +8,7 @@ test("dialog area stylesheet is loaded after theme packages", async () => {
   const index = await readFile(new URL("index.html", assets), "utf8");
   assert.ok(index.indexOf("<!-- agent-hub-theme-styles -->") < index.indexOf('href="/dialog-area.css"'));
   assert.match(index, /class="stream-chat-header"[\s\S]*class="chat-scroll"/u);
+  assert.match(index, /data-composer-quick-messages/u);
   assert.match(index, /data-stream-header-provider[\s\S]*data-stream-header-model[\s\S]*data-stream-header-message-count/u);
   assert.match(index, /class="chip-button secondary-danger chat-stop-bottom"[^>]*aria-label="Остановить ход"[\s\S]*data-phosphor-icon="stop"/u);
   assert.doesNotMatch(index, /chat-stop-bottom[^>]*>[\s\S]*<span[^>]*>Стоп<\/span>/u);
@@ -26,6 +27,8 @@ test("dialog geometry references semantic tokens without literal colors", async 
   assert.match(styles, /\.msg-user-bubble \{[\s\S]*max-width: 560px;/u);
   assert.match(styles, /--dialog-stream-tabs-height: 44px;/u);
   assert.match(styles, /\.stream-tabs \{[\s\S]*position: relative;[\s\S]*z-index: 50;/u);
+  assert.match(styles, /\.composer-quick-messages \{[\s\S]*flex-wrap: wrap;/u);
+  assert.match(styles, /\.composer-quick-message \{[\s\S]*border-radius: 999px;/u);
   assert.match(styles, /\.stream-tabs-track \.stream-tab \{[\s\S]*align-items: center;/u);
   assert.match(styles, /\.activity-stream-list :is\(\.stream-tab-card\) \{[\s\S]*align-items: center;[\s\S]*width: 100%;/u);
   assert.doesNotMatch(styles, /\.activity-stream-list \.stream-tab,[\s\S]*?align-items: center;/u);
