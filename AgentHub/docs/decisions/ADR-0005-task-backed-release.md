@@ -3,7 +3,8 @@
 ## Status
 
 Accepted. Supersedes the live ChangeSet authority and migration boundary in
-ADR-0003; refines ADR-0004 cleanup and Architect-role persistence.
+ADR-0003; refines ADR-0004 cleanup and Architect-role persistence. Workflow
+status freedom is refined by ADR-0006.
 
 ## Decision
 

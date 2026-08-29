@@ -50,6 +50,44 @@ test("canonical submission atomically replaces optimistic aliases in either orde
   assert.deepEqual(plain(projection.projectCanonicalMessages([canonical, canonical])), [canonical]);
 });
 
+test("a bridge rebinds provider aliases before a later canonical refresh", async () => {
+  const projection = await projectionApi();
+  const history = {
+    role: "user",
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    itemId: "provider-user-item",
+    text: "релиз сразу",
+    projectionAuthority: "canonical",
+    projectionState: "active",
+    operationKind: "user-turn",
+  };
+  const optimistic = {
+    role: "user",
+    clientUserMessageId: "client-release",
+    submissionId: "client-release",
+    text: "релиз сразу",
+    projectionAuthority: "optimistic",
+    projectionState: "optimistic",
+    operationKind: "user-turn",
+  };
+  const bridge = {
+    ...history,
+    clientUserMessageId: "client-release",
+    projectionAuthority: "live",
+  };
+  const refreshed = {
+    ...history,
+    text: "релиз",
+  };
+
+  assert.deepEqual(
+    plain(projection.projectCanonicalMessages([history, optimistic, bridge, refreshed])),
+    [{ ...optimistic, ...bridge, ...refreshed }],
+  );
+});
+
 test("attachment steer replaces its optimistic card only by exact submission identity", async () => {
   const projection = await projectionApi();
   const optimistic = {

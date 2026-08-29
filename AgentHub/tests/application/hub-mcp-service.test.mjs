@@ -6,7 +6,7 @@ import test from "node:test";
 
 import { HubMcpService } from "../../src/application/hub-mcp-service.mjs";
 
-async function fixture(context) {
+async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-mcp-"));
   context.after(() => rm(directory, { recursive: true, force: true }));
   const projectRoot = path.join(directory, "project");
@@ -35,7 +35,7 @@ async function fixture(context) {
     } : null,
     activeThread: () => null,
     workspace: (id) => id === "workspace-1" ? {
-      id, name: "Agent Hub", settings: { releaseWorkflowEnabled: false },
+      id, name: "Agent Hub", settings: { releaseWorkflowEnabled },
     } : null,
     hierarchy: () => [{
       id: "workspace-1",
@@ -218,7 +218,7 @@ test("HubMcpService starts the current Workspace task in the current Stream", as
 });
 
 test("HubMcpService keeps workflow Done visible until explicit completion", async (context) => {
-  const { service, token } = await fixture(context);
+  const { service, token } = await fixture(context, { releaseWorkflowEnabled: true });
   const testing = await service.call("hub_task_status_update", {
     context_token: token,
     request_id: "task-testing",

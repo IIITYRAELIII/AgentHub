@@ -49,9 +49,11 @@ verifier derives or verifies:
 The successful CAS increments the Task revision, appends immutable rows keyed
 by `(taskId, taskRevision)`, stores the manifest hash, and changes workflow
 status to `awaiting_implementation`. Generic status mutation cannot produce
-`awaiting_implementation` or `done`. Every user-visible or release-relevant
-mutation of a frozen or released Task is rejected. Reordering another Task may
-change derived board order but cannot change the frozen Task revision.
+verified `awaiting_implementation`, but it may set `done` as an ordinary visible
+workflow status without creating publication evidence or closing the Task.
+Every user-visible or release-relevant mutation of a frozen or released Task is
+rejected. Reordering another Task may change derived board order but cannot
+change the frozen Task revision.
 
 ## Release plan and completion
 
@@ -66,8 +68,8 @@ must first verify exact clean published repository revisions and deployment
 evidence. Completion performs one transaction that CAS-checks every exact
 frozen Task revision and manifest hash, appends durable completion evidence,
 then changes only those Tasks to workflow `done` and closes them. Neither
-`hub_task_complete` nor generic status update may substitute for release
-completion.
+`hub_task_complete` nor generic `done` status creates release-completion
+evidence or closes a published Task on behalf of the release transaction.
 
 Post-deployment verification reads the immutable published revision recorded by
 the publication pipeline and proves that every frozen Task result revision is

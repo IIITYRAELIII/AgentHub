@@ -168,6 +168,9 @@
       for (const linkedKey of linkedKeys.slice(1)) {
         records.set(key, reduceProjectionEntity(records.get(key), records.get(linkedKey)));
         records.delete(linkedKey);
+        for (const [alias, aliasKey] of aliases) {
+          if (aliasKey === linkedKey) aliases.set(alias, key);
+        }
         const position = order.indexOf(linkedKey);
         if (position >= 0) order.splice(position, 1);
       }

@@ -339,7 +339,7 @@ export class HubMcpService {
       tool("hub_task_claim", "Bind a Dashboard Task to the exact current provider turn and make the current Stream its executor.", {
         task_id: { type: "string" },
       }, ["task_id"]),
-      tool("hub_task_status_update", "Change the workflow status of any Dashboard task. Done means ready on production and remains visible; it does not close the task.", {
+      tool("hub_task_status_update", "Change the workflow status of any Dashboard task. Done remains visible and does not close the task.", {
         task_id: { type: "string" },
         status: { type: "string", enum: ["new", "in_progress", "testing", "awaiting_implementation", "done"] },
       }, ["task_id", "status"]),
@@ -771,9 +771,6 @@ export class HubMcpService {
     const task = this.#task(context, taskId);
     const workflowStatus = requiredText(status, "task workflow status", 40);
     const releaseEnabled = this.workspaceCatalog.workspace(context.workspaceId)?.settings?.releaseWorkflowEnabled === true;
-    if (releaseEnabled && workflowStatus === "done") {
-      throw new Error("release-enabled Task can become done only through verified Architect release completion");
-    }
     if (releaseEnabled && workflowStatus === "awaiting_implementation") {
       const run = this.#currentRun(context);
       return compactTask(this.taskBoard.requestWorkflowStatus({
