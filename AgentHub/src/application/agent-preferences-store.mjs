@@ -115,6 +115,7 @@ function quickMessages(value) {
     }
   }
   return {
+    global: quickMessageEntries(source?.global),
     streams: quickMessageScopeMap(source?.streams),
     workspaces: quickMessageScopeMap(source?.workspaces),
   };

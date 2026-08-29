@@ -8920,6 +8920,19 @@ html[data-surface="mobile"] .chat-stop-bottom > span {
   max-width: 11rem;
 }
 
+.dialog-quick-messages-control {
+  align-items: center;
+  display: inline-flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+.dialog-quick-messages-control .setting-value {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
 .setting-field select option {
   background: var(--bg);
   color: var(--text);

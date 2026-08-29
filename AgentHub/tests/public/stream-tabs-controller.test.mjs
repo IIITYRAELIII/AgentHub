@@ -247,8 +247,9 @@ test("quick messages merge Workspace and Stream scopes without duplicates", asyn
   } = await streamTabsApi();
   const selection = {
     quickMessages: {
+      global: ["пинг"],
       workspaces: { "workspace-1": ["релизь", { label: "Тесты", text: "запусти тесты" }] },
-      streams: { "stream-1": [{ label: "Release", text: "релизь" }, "продолжай"] },
+      streams: { "stream-1": [{ label: "Release", text: "релизь" }, "продолжай", "пинг"] },
     },
   };
 
@@ -257,6 +258,7 @@ test("quick messages merge Workspace and Stream scopes without duplicates", asyn
       scope, label, text,
     })))),
     [
+      { scope: "global", label: "пинг", text: "пинг" },
       { scope: "workspace", label: "релизь", text: "релизь" },
       { scope: "workspace", label: "Тесты", text: "запусти тесты" },
       { scope: "stream", label: "продолжай", text: "продолжай" },
@@ -269,7 +271,27 @@ test("quick messages merge Workspace and Stream scopes without duplicates", asyn
   assert.deepEqual(
     JSON.parse(JSON.stringify(setQuickMessagesForScope(selection, "stream", "stream-1", []))),
     {
+      global: [{ id: "пинг", label: "пинг", text: "пинг" }],
       streams: {},
+      workspaces: {
+        "workspace-1": [
+          { id: "релизь", label: "релизь", text: "релизь" },
+          { id: "Тесты", label: "Тесты", text: "запусти тесты" },
+        ],
+      },
+    },
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(setQuickMessagesForScope(selection, "global", "", ["везде"]))),
+    {
+      global: [{ id: "везде", label: "везде", text: "везде" }],
+      streams: {
+        "stream-1": [
+          { id: "Release", label: "Release", text: "релизь" },
+          { id: "продолжай", label: "продолжай", text: "продолжай" },
+          { id: "пинг", label: "пинг", text: "пинг" },
+        ],
+      },
       workspaces: {
         "workspace-1": [
           { id: "релизь", label: "релизь", text: "релизь" },

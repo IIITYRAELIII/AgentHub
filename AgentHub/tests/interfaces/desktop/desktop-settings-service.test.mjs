@@ -144,7 +144,7 @@ test("Desktop settings service persists shared Stream card settings", async () =
     streamCardGapEnabled: false,
     showInlineFileRevealButtons: false,
     pinnedWorkspaceStreams: {},
-    quickMessages: { streams: {}, workspaces: {} },
+    quickMessages: { global: [], streams: {}, workspaces: {} },
   };
   let saveCount = 0;
   const noop = () => {};
@@ -186,7 +186,11 @@ test("Desktop settings service persists shared Stream card settings", async () =
   });
   await service.update({
     name: "quickMessages",
-    value: JSON.stringify({ streams: { "stream-1": ["релизь"] }, workspaces: { "workspace-1": ["проверь"] } }),
+    value: JSON.stringify({
+      global: ["пинг"],
+      streams: { "stream-1": ["релизь"] },
+      workspaces: { "workspace-1": ["проверь"] },
+    }),
   });
 
   assert.deepEqual(current, {
@@ -197,6 +201,7 @@ test("Desktop settings service persists shared Stream card settings", async () =
     showInlineFileRevealButtons: true,
     pinnedWorkspaceStreams: { "workspace-1": ["stream-1"] },
     quickMessages: {
+      global: ["пинг"],
       streams: { "stream-1": ["релизь"] },
       workspaces: { "workspace-1": ["проверь"] },
     },

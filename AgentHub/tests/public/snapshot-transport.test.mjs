@@ -164,7 +164,11 @@ test("snapshot transport maps persisted stream UI settings into selection", asyn
     streamCardGapEnabled: true,
     showInlineFileRevealButtons: true,
     pinnedWorkspaceStreams: { "workspace-1": ["stream-architect"] },
-    quickMessages: { streams: { "stream-architect": [{ label: "Релиз", text: "релизь" }] }, workspaces: {} },
+    quickMessages: {
+      global: [{ label: "Пинг", text: "пинг" }],
+      streams: { "stream-architect": [{ label: "Релиз", text: "релизь" }] },
+      workspaces: {},
+    },
   }, {
     model: "stream-model",
   })), {
@@ -181,6 +185,10 @@ test("snapshot transport maps persisted stream UI settings into selection", asyn
     streamCardGapEnabled: true,
     showInlineFileRevealButtons: true,
     pinnedWorkspaceStreams: { "workspace-1": ["stream-architect"] },
-    quickMessages: { streams: { "stream-architect": [{ label: "Релиз", text: "релизь" }] }, workspaces: {} },
+    quickMessages: {
+      global: [{ label: "Пинг", text: "пинг" }],
+      streams: { "stream-architect": [{ label: "Релиз", text: "релизь" }] },
+      workspaces: {},
+    },
   });
 });

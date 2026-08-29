@@ -115,6 +115,15 @@
     return match ? match[1] : null;
   }
 
+  function inlineMarkdownTokens(value) {
+    const text = String(value ?? "");
+    const pattern = /(:codex-file-citation\{[^}\n]+\}|`[^`\n]+`|\*\*[^*\n]+\*\*|\*[^*\n]+\*|\[[^\]\n]+\]\(<[^>\n]+>\)|\[[^\]\n]+\]\([^)\n]+\))/gu;
+    return [...text.matchAll(pattern)].map((match) => ({
+      index: match.index,
+      token: match[0],
+    }));
+  }
+
   function messageDisclosurePresentation(expanded) {
     return expanded
       ? { label: "Свернуть", icon: "caret-up" }
@@ -326,6 +335,7 @@
     messageTailPagination,
     messageTimestampLabel,
     messageTailWindow,
+    inlineMarkdownTokens,
     normalizeSystemEventText,
     prependedMessageCount,
     reconcilePrependedKeyedChildren,

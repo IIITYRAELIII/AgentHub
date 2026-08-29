@@ -94,7 +94,7 @@
       streamCardGapEnabled: settings.streamCardGapEnabled,
       showInlineFileRevealButtons: settings.showInlineFileRevealButtons === true,
       pinnedWorkspaceStreams: settings.pinnedWorkspaceStreams ?? {},
-      quickMessages: settings.quickMessages ?? { streams: {}, workspaces: {} },
+      quickMessages: settings.quickMessages ?? { global: [], streams: {}, workspaces: {} },
       ...(streamSettings ?? {}),
     };
   }

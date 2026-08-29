@@ -2,10 +2,10 @@
 
 (() => {
   const knownFileExtensions = new Set([
-    "bsl", "c", "cfe", "cf", "cmd", "cpp", "cs", "csproj", "css", "docx", "epf", "erf",
-    "go", "h", "html", "ini", "java", "jpeg", "jpg", "js", "json", "jsx", "md", "mjs",
-    "pdf", "php", "png", "ps1", "py", "rb", "rs", "sh", "sql", "svg", "toml", "ts", "tsx",
-    "txt", "xml", "yaml", "yml",
+    "avi", "bsl", "c", "cfe", "cf", "cmd", "cpp", "cs", "csproj", "css", "docx", "epf",
+    "erf", "go", "h", "html", "ini", "java", "jpeg", "jpg", "js", "json", "jsx", "m4v",
+    "md", "mjs", "mkv", "mov", "mp4", "pdf", "php", "png", "ps1", "py", "rb", "rs", "sh",
+    "sql", "svg", "toml", "ts", "tsx", "txt", "webm", "xml", "yaml", "yml",
   ]);
   const homeRelativeFolders = new Set([
     "appdata", "desktop", "documents", "downloads", "music", "pictures", "videos",
@@ -32,6 +32,52 @@
       }
     }
     return `${match[1].toUpperCase()}:/${segments.join("/")}`;
+  }
+
+  function decodedUrlPart(value) {
+    try {
+      return decodeURIComponent(value);
+    } catch {
+      return String(value ?? "");
+    }
+  }
+
+  function fileUriPath(raw) {
+    const source = String(raw ?? "").trim();
+    if (!/^file:/iu.test(source)) return "";
+    const manual = source.match(/^file:\/\/(?<host>[^/]*)(?<pathname>\/.*)$/iu);
+    if (manual?.groups) {
+      const host = decodedUrlPart(manual.groups.host ?? "");
+      const pathname = decodedUrlPart(manual.groups.pathname ?? "");
+      if (!host || host.toLowerCase() === "localhost") return pathname;
+      return `//${host}${pathname}`;
+    }
+    try {
+      const url = new URL(source);
+      if (url.protocol !== "file:") return "";
+      const host = decodedUrlPart(url.hostname ?? "");
+      const pathname = decodedUrlPart(url.pathname ?? "");
+      if (!host || host.toLowerCase() === "localhost") return pathname;
+      return `//${host}${pathname}`;
+    } catch {
+      return "";
+    }
+  }
+
+  function wslMountWindowsPath(raw) {
+    const source = String(raw ?? "").trim().replaceAll("\\", "/");
+    const match = source.match(/^\/mnt\/([A-Za-z])\/(.*)$/u);
+    return match ? `${match[1].toUpperCase()}:/${match[2]}` : "";
+  }
+
+  function normalizeFileReferenceValue(raw) {
+    const source = String(raw ?? "").trim();
+    const unwrapped = source.startsWith("<") && source.endsWith(">")
+      ? source.slice(1, -1).trim()
+      : source;
+    const uriPath = fileUriPath(unwrapped);
+    const localPath = uriPath || unwrapped;
+    return wslMountWindowsPath(localPath) || localPath;
   }
 
   function appendUniquePath(paths, value) {
@@ -100,10 +146,7 @@
   }
 
   function fileReferenceParts(raw) {
-    const source = String(raw ?? "").trim();
-    const value = source.startsWith("<") && source.endsWith(">")
-      ? source.slice(1, -1).trim()
-      : source;
+    const value = normalizeFileReferenceValue(raw);
     if (!value || /^(?:https?|vscode):/iu.test(value)) return null;
     const positioned = value.match(/^(?<file>.+):(?<line>[1-9][0-9]*):(?<column>[1-9][0-9]*)$/u)
       ?? value.match(/^(?<file>.+):(?<line>[1-9][0-9]*)$/u);

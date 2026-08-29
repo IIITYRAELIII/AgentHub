@@ -711,7 +711,7 @@ export function createDesktopSnapshotFactory({
         streamCardGapEnabled: current.streamCardGapEnabled === true,
         showInlineFileRevealButtons: current.showInlineFileRevealButtons === true,
         pinnedWorkspaceStreams: current.pinnedWorkspaceStreams ?? {},
-        quickMessages: current.quickMessages ?? { streams: {}, workspaces: {} },
+        quickMessages: current.quickMessages ?? { global: [], streams: {}, workspaces: {} },
         models: activeProvider === "codex"
           ? current.codexModels.map((model) => ({ value: model.value, label: model.label }))
           : claudeOptions,

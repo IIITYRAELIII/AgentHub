@@ -58,6 +58,7 @@ test("agent preferences restore and validate both providers in one state owner",
       "workspace-2": "ignored",
     },
     quickMessages: {
+      global: ["пинг", "пинг"],
       streams: {
         "stream-1": ["релизь", { label: "Тест", text: "запусти тесты" }, "релизь"],
       },
@@ -84,6 +85,7 @@ test("agent preferences restore and validate both providers in one state owner",
       "workspace-1": ["stream-1", "stream-2"],
     },
     quickMessages: {
+      global: [{ id: "пинг", label: "пинг", text: "пинг" }],
       streams: {
         "stream-1": [
           { id: "релизь", label: "релизь", text: "релизь" },
@@ -113,6 +115,7 @@ test("agent preferences restore and validate both providers in one state owner",
     { changed: true },
   );
   assert.deepEqual(store.quickMessages, {
+    global: [],
     streams: {},
     workspaces: { "workspace-2": [{ id: "релизь", label: "релизь", text: "релизь" }] },
   });

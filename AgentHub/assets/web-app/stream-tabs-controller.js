@@ -83,6 +83,7 @@
 
   function normalizeQuickMessages(value) {
     return {
+      global: normalizeQuickMessageEntries(value?.global),
       streams: normalizeQuickMessageScopeMap(value?.streams),
       workspaces: normalizeQuickMessageScopeMap(value?.workspaces),
     };
@@ -90,11 +91,16 @@
 
   function quickMessagesForStream(selection, workspaceId, streamId) {
     const messages = normalizeQuickMessages(selection?.quickMessages);
+    const globalEntries = messages.global;
     const workspaceEntries = messages.workspaces[String(workspaceId ?? "").trim()] ?? [];
     const streamEntries = messages.streams[String(streamId ?? "").trim()] ?? [];
     const entries = [];
     const seen = new Set();
-    for (const [scope, source] of [["workspace", workspaceEntries], ["stream", streamEntries]]) {
+    for (const [scope, source] of [
+      ["global", globalEntries],
+      ["workspace", workspaceEntries],
+      ["stream", streamEntries],
+    ]) {
       for (const entry of source) {
         if (seen.has(entry.text)) continue;
         entries.push({ ...entry, scope });
@@ -130,6 +136,10 @@
 
   function setQuickMessagesForScope(selection, scope, scopeId, entries) {
     const quickMessages = normalizeQuickMessages(selection?.quickMessages);
+    if (scope === "global") {
+      quickMessages.global = normalizeQuickMessageEntries(entries);
+      return quickMessages;
+    }
     const key = scope === "workspace" ? "workspaces" : "streams";
     const id = String(scopeId ?? "").trim();
     if (!id) return quickMessages;

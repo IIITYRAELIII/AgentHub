@@ -207,7 +207,11 @@ function fixture(overrides = {}) {
         streamCardFixedWidth: 237,
         streamCardGapEnabled: true,
         showInlineFileRevealButtons: true,
-        quickMessages: { streams: { "stream-1": [{ label: "релизь", text: "релизь" }] }, workspaces: {} },
+        quickMessages: {
+          global: [{ label: "Пинг", text: "пинг" }],
+          streams: { "stream-1": [{ label: "релизь", text: "релизь" }] },
+          workspaces: {},
+        },
         codexModels: [{ value: "gpt-test", label: "GPT Test" }],
         codexModelLabel: () => "GPT Test",
         claudeModels: ["opus"],
@@ -1010,7 +1014,11 @@ test("desktopSnapshot preserves top-level settings, queues and restart state", a
     streamCardGapEnabled: true,
     showInlineFileRevealButtons: true,
     pinnedWorkspaceStreams: {},
-    quickMessages: { streams: { "stream-1": [{ label: "релизь", text: "релизь" }] }, workspaces: {} },
+    quickMessages: {
+      global: [{ label: "Пинг", text: "пинг" }],
+      streams: { "stream-1": [{ label: "релизь", text: "релизь" }] },
+      workspaces: {},
+    },
     models: [{ value: "gpt-test", label: "GPT Test" }],
     modelOptionsByProvider: {
       codex: [{ value: "gpt-test", label: "GPT Test" }],

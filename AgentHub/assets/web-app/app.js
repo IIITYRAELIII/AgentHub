@@ -139,6 +139,8 @@ const dialogStreamRules = document.querySelector("[data-dialog-stream-rules]");
 const dialogStreamRulesCount = document.querySelector("[data-dialog-stream-rules-count]");
 const dialogStreamRulesSave = document.querySelector("[data-dialog-stream-rules-save]");
 const dialogStreamArchitect = document.querySelector("[data-dialog-stream-architect]");
+const dialogGlobalQuickMessages = document.querySelector("[data-dialog-global-quick-messages]");
+const dialogGlobalQuickMessagesCount = document.querySelector("[data-dialog-global-quick-messages-count]");
 const workspaceMessageSearch = document.querySelector("[data-workspace-message-search]");
 const workspaceMessageSearchToggle = document.querySelector("[data-workspace-message-search-toggle]");
 const workspaceMessageSearchClose = document.querySelector("[data-workspace-message-search-close]");
@@ -1572,18 +1574,22 @@ function saveQuickMessagesForScope(scope, scopeId, entries) {
 
 async function editQuickMessagesForScope(scope, scopeId, title) {
   const id = String(scopeId ?? "").trim();
-  if (!id) return;
-  const key = scope === "workspace" ? "workspaces" : "streams";
+  if (scope !== "global" && !id) return;
   const quickMessages = window.AgentHubStreamTabs.normalizeQuickMessages(state.selection.quickMessages);
-  const current = quickMessages[key][id] ?? [];
+  const key = scope === "global" ? "global" : scope === "workspace" ? "workspaces" : "streams";
+  const current = scope === "global" ? quickMessages.global : quickMessages[key][id] ?? [];
   const value = window.AgentHubStreamTabs.quickMessagesToText(current);
   const text = await askText({
-    title: `Быстрые сообщения: ${title}`,
+    title: `Быстрые ответы: ${title}`,
     value,
     multiline: true,
   });
   if (text === null) return;
   saveQuickMessagesForScope(scope, id, window.AgentHubStreamTabs.quickMessagesFromText(text));
+}
+
+function quickMessageScopeLabel(scope) {
+  return ({ global: "G", workspace: "W", stream: "S" })[scope] ?? "S";
 }
 
 function renderComposerQuickMessages() {
@@ -1599,7 +1605,7 @@ function renderComposerQuickMessages() {
       title: entry.text,
       disabled: Boolean(pendingComposerRequest),
     }, [
-      el("span", { class: "composer-quick-message-scope", text: entry.scope === "workspace" ? "W" : "S" }),
+      el("span", { class: "composer-quick-message-scope", text: quickMessageScopeLabel(entry.scope) }),
       el("span", { class: "composer-quick-message-label", text: entry.label }),
     ]);
     button.__agentHubQuickMessage = entry;
@@ -3221,7 +3227,7 @@ function ensureWorkspaceContextMenu() {
     role: "menuitem",
     class: "stream-context-action",
     "data-workspace-menu-action": "quick-messages",
-    text: "Быстрые сообщения Workspace…",
+    text: "Быстрые ответы Workspace…",
   })]);
   document.body.append(workspaceContextMenu);
   workspaceContextMenu.addEventListener("click", async (event) => {
@@ -3361,7 +3367,7 @@ function openStreamContextMenu(event, tab) {
     }),
     el("button", {
       type: "button", role: "menuitem", class: "stream-context-action",
-      "data-stream-menu-action": "quick-messages", text: "Быстрые сообщения Stream…",
+      "data-stream-menu-action": "quick-messages", text: "Быстрые ответы Stream…",
     }),
     el("button", {
       type: "button", role: "menuitem", class: "stream-context-action",
@@ -4652,6 +4658,11 @@ function inlineFileRevealButton(targetLink, name = "") {
   return button;
 }
 
+function appendInlineFileReveal(target, targetLink, name = "") {
+  const button = inlineFileRevealButton(targetLink, name);
+  if (button) target.append(button);
+}
+
 function markdownLink(raw, fileContext = currentFileLinkContext()) {
   const source = String(raw ?? "").trim();
   const value = source.startsWith("<") && source.endsWith(">")
@@ -4684,11 +4695,10 @@ function codexFileCitation(raw) {
 
 function appendInlineMarkdown(target, source, fileContext = currentFileLinkContext()) {
   const text = String(source ?? "");
-  const pattern = /(:codex-file-citation\{[^}\n]+\}|`[^`\n]+`|\*\*[^*\n]+\*\*|\*[^*\n]+\*|\[[^\]\n]+\]\([^)\n]+\))/gu;
   let cursor = 0;
-  for (const match of text.matchAll(pattern)) {
+  for (const match of MessageView.inlineMarkdownTokens(text)) {
     target.append(document.createTextNode(text.slice(cursor, match.index)));
-    const token = match[0];
+    const token = match.token;
     if (token.startsWith(":codex-file-citation{")) {
       const citation = codexFileCitation(token);
       const targetLink = markdownLink(citation?.path, fileContext);
@@ -4743,7 +4753,8 @@ function appendInlineMarkdown(target, source, fileContext = currentFileLinkConte
       appendInlineMarkdown(emphasis, token.slice(1, -1), fileContext);
       target.append(emphasis);
     } else {
-      const parts = token.match(/^\[([^\]]+)\]\(([^)]+)\)$/u);
+      const parts = token.match(/^\[([^\]\n]+)\]\(<([^>\n]+)>\)$/u)
+        ?? token.match(/^\[([^\]\n]+)\]\(([^)\n]+)\)$/u);
       const targetLink = markdownLink(parts?.[2], fileContext);
       if (targetLink) {
         const link = el("a", {
@@ -7004,6 +7015,18 @@ function renderDialogSettings() {
     dialogStreamArchitect.disabled = !task?.streamId;
   }
   renderStreamRulesPreview();
+  if (dialogGlobalQuickMessagesCount) {
+    const quickMessages = window.AgentHubStreamTabs.normalizeQuickMessages(state.selection.quickMessages);
+    const count = quickMessages.global.length;
+    dialogGlobalQuickMessagesCount.textContent = count
+      ? `${count} ответов`
+      : "Не заданы";
+  }
+  if (dialogGlobalQuickMessages) {
+    const pending = state.pendingSelections.has("quickMessages");
+    dialogGlobalQuickMessages.disabled = pending;
+    dialogGlobalQuickMessages.setAttribute("aria-busy", String(pending));
+  }
 }
 
 function selectDialogSetting(group, value) {
@@ -7030,7 +7053,13 @@ function selectDialogSetting(group, value) {
   renderOptions();
 }
 
-dialogSettings.addEventListener("click", (event) => {
+dialogSettings.addEventListener("click", async (event) => {
+  const globalQuickMessages = event.target.closest("[data-dialog-global-quick-messages]");
+  if (globalQuickMessages) {
+    await editQuickMessagesForScope("global", "", "Глобальные");
+    renderDialogSettings();
+    return;
+  }
   const chip = event.target.closest("[data-select-group]");
   if (!chip) return;
   selectDialogSetting(chip.dataset.selectGroup, chip.dataset.selectValue);
