@@ -36,6 +36,10 @@ export async function selectTestContourModel(page, model, timeoutMs) {
       `Test Contour model is not selectable: ${normalizedModel}; available=${availableModels.join(",")}`,
     );
   }
+  if (await modelSelect.inputValue() === normalizedModel) {
+    await page.locator("[data-dialog-settings-close]").click();
+    return;
+  }
   const settingResponse = page.waitForResponse(
     (response) => isTestContourModelSettingResponse(response, normalizedModel),
     { timeout: timeoutMs },

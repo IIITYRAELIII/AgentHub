@@ -95,6 +95,16 @@ test("Test Contour smoke selects the requested model before creating a thread", 
   ]);
 });
 
+test("Test Contour smoke accepts an already selected model without waiting for a no-op request", async () => {
+  const fixture = smokePage({ availableModels: ["fake-codex"], selectedModel: "fake-codex" });
+
+  await selectTestContourModel(fixture.page, "fake-codex", 5_000);
+
+  assert.equal(fixture.events.some(([event]) => event === "page.waitForResponse"), false);
+  assert.equal(fixture.events.some(([event]) => event === "model.selectOption"), false);
+  assert.deepEqual(fixture.events.at(-1), ["close.click"]);
+});
+
 test("Test Contour smoke skips empty Workspaces and selects a named Codex Stream", async () => {
   const events = [];
   let activeWorkspace = -1;
