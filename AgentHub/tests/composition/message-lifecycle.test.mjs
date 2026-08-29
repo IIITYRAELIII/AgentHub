@@ -2280,7 +2280,7 @@ test("workspace task panel follows the effective local Stream selection", () => 
   );
   assert.match(
     hubClientSource,
-    /const selectedWorkspaceId = String\([\s\S]*tasks\.find\(\(task\) => task\.id === effectiveSelectedId\)\?\.workspaceId[\s\S]*\)\.trim\(\) \|\| null;[\s\S]*AgentHubTaskBoard\?\.setSnapshot\(\{[\s\S]*selectedWorkspaceId,/u,
+    /const selectedTask = tasks\.find\(\(task\) => task\.id === effectiveSelectedId\);[\s\S]*const selectedWorkspaceId = String\(selectedTask\?\.workspaceId \?\? ""\)\.trim\(\) \|\| null;[\s\S]*AgentHubTaskBoard\?\.setSnapshot\(\{[\s\S]*selectedWorkspaceId,/u,
   );
 });
 

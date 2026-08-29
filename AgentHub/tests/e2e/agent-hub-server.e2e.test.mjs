@@ -149,7 +149,8 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
 
   async function journalContains(text) {
     const snapshot = await journalDatabase.snapshot().catch(() => null);
-    return String(snapshot?.html ?? "").includes(text);
+    return [snapshot?.html, ...Object.values(snapshot?.turns ?? {})]
+      .some((fragment) => String(fragment ?? "").includes(text));
   }
 
   t.after(async () => {
