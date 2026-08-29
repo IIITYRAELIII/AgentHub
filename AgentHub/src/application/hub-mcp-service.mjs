@@ -194,6 +194,14 @@ function compactTask(task) {
   };
 }
 
+function hasGitBaseline(value) {
+  const repositories = Array.isArray(value?.repositories) ? value.repositories : [value];
+  return repositories.some((repository) => (
+    String(repository?.repoRoot ?? "").trim()
+    && String(repository?.tree ?? "").trim()
+  ));
+}
+
 function tool(name, description, properties = {}, required = []) {
   const mutating = MUTATING_TOOLS.has(name);
   return {
@@ -229,6 +237,7 @@ export class HubMcpService {
 
   constructor({
     workspaceCatalog, taskBoard, workLog, attachmentDirectory, secret, releaseCompleter, taskReleases,
+    captureGitBaseline = null,
   } = {}) {
     for (const name of [
       "resolveThread", "workspace", "hierarchy", "developerRulesForStream",
@@ -252,6 +261,7 @@ export class HubMcpService {
     this.secret = requiredText(secret, "MCP secret", 512);
     this.releaseCompleter = releaseCompleter;
     this.taskReleases = taskReleases;
+    this.captureGitBaseline = typeof captureGitBaseline === "function" ? captureGitBaseline : null;
   }
 
   setActiveRuns(value) {
@@ -723,9 +733,12 @@ export class HubMcpService {
     }));
   }
 
-  #claimTask(context, { task_id: taskId } = {}) {
+  async #claimTask(context, { task_id: taskId } = {}) {
     const task = this.#task(context, taskId);
     const active = this.#currentRun(context);
+    if (active.projectRoot && !hasGitBaseline(active.gitBaseline) && this.captureGitBaseline) {
+      active.gitBaseline = await this.captureGitBaseline(active.projectRoot, active.turnId);
+    }
     return {
       ...compactTask(this.taskBoard.claim({
       id: task.id,

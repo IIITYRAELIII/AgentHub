@@ -314,6 +314,9 @@ export async function createHubInfrastructure({
     secret: hubMcpSecret,
     releaseCompleter: workspaceReleaseService,
     taskReleases: taskReleaseService,
+    captureGitBaseline: (projectRoot, turnId) => (
+      captureTaskGitBaseline(projectRoot, config.dataDir, `task-claim-${turnId}`)
+    ),
   });
   const hubMcpServer = new HubMcpServer({
     service: hubMcpService,

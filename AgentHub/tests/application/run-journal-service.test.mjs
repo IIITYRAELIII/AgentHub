@@ -19,10 +19,19 @@ function fixture({
     } : {}),
   };
   const taskBoard = {
-    claimedTaskForTurn: ({ turnId }) => turnId === "unbound-turn" ? null : {
-      id: "task-1", workspaceId: "workspace-1", streamId: "stream-1",
-      requestedWorkflowStatus: turnId === "ready-turn" ? "awaiting_implementation" : null,
-      gitBaseline: { repoRoot: "C:/workspace", tree: "a".repeat(40) },
+    claimedTaskForTurn: ({ turnId }) => {
+      if (turnId === "unbound-turn") return null;
+      const ready = ["ready-turn", "ready-interrupted-turn", "ready-no-diff-turn"].includes(turnId);
+      return {
+        id: "task-1", workspaceId: "workspace-1", streamId: "stream-1",
+        requestedWorkflowStatus: ready ? "awaiting_implementation" : null,
+        gitBaseline: turnId === "ready-interrupted-turn"
+          ? {}
+          : { repoRoot: "C:/workspace", tree: "a".repeat(40) },
+        changedFiles: turnId === "ready-no-diff-turn"
+          ? [{ projectRoot: "C:/workspace", path: "AgentHub/app.js", operation: "modified" }]
+          : [],
+      };
     },
     recordTaskTurn: (value) => { calls.push(["task-turn", value]); return value; },
   };
@@ -315,6 +324,31 @@ test("RunJournalService freezes a completed fix only after same-turn awaiting in
   assert.deepEqual(calls.find(([name]) => name === "task-freeze")?.[1], {
     taskId: "task-1", workspaceId: "workspace-1", actorStreamId: "stream-1",
   });
+});
+
+test("RunJournalService restores a missing claim baseline and freezes interrupted ready work", async () => {
+  const { service, calls } = fixture();
+  await service.projectTurn({
+    provider: "codex", projectRoot: "C:/workspace", threadId: "thread",
+    turnId: "ready-interrupted-turn", changedFiles: ["AgentHub/app.js"], status: "interrupted",
+    gitBaseline: { repoRoot: "C:/workspace", tree: "a".repeat(40) },
+  }, { title: "Interrupted ready fix" });
+  const evidence = calls.find(([name]) => name === "task-turn")?.[1];
+  assert.deepEqual(evidence.gitBaseline, {
+    repoRoot: "C:/workspace", tree: "a".repeat(40),
+  });
+  assert.equal(evidence.status, "interrupted");
+  assert.equal(calls.some(([name]) => name === "task-freeze"), true);
+});
+
+test("RunJournalService freezes previously recorded work after a completed no-diff continuation", async () => {
+  const { service, calls } = fixture();
+  await service.projectTurn({
+    provider: "codex", projectRoot: "C:/workspace", threadId: "thread",
+    turnId: "ready-no-diff-turn", changedFiles: [], status: "completed",
+  }, { title: "Accepted on continuation" });
+  assert.equal(calls.some(([name]) => name === "task-turn"), false);
+  assert.equal(calls.some(([name]) => name === "task-freeze"), true);
 });
 
 test("RunJournalService forwards deferred projection for historical accounting", async () => {

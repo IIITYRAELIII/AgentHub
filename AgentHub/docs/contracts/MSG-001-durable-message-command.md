@@ -30,7 +30,17 @@ One queue-to-run orchestrator derives occupancy from exact nonterminal managed
 runs and authoritative provider activity. Completed, failed or cancelled runs do
 not block admission while terminal delivery or projections are repaired. A
 persisted wait reason is not authority: it is recalculated from current exact
-occupancy and self-heals after restart without manual interaction.
+occupancy and self-heals after restart without manual interaction. When terminal
+admission is released, every queued lane head
+preempts polling backoff and is scheduled immediately because repository
+occupancy can couple otherwise independent lanes. A steer that no longer has
+an active turn is downgraded to ordinary intake before the later-turn FIFO
+choice.
+
+For an inter-Stream command, the envelope `requestId` deterministically restores
+the `mcp:<requestId>` command alias when a provider rollout omits
+`clientUserMessageId`. That alias reconciles receipt and rollout projections;
+display text and card position never substitute for it.
 
 ## Durable ACK
 

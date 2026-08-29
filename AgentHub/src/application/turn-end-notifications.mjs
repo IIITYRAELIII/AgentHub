@@ -132,6 +132,9 @@ function normalizedCompletion(value) {
       ? value.changedFiles.map((file) => String(file).trim()).filter(Boolean)
       : [],
     diff: String(value.diff ?? ""),
+    gitBaseline: value.gitBaseline && typeof value.gitBaseline === "object"
+      ? structuredClone(value.gitBaseline)
+      : null,
     skillsUsed,
     mcpCalls,
     toolMetricsKnown: value.toolMetricsKnown === true,
@@ -252,6 +255,7 @@ export class TurnEndNotificationRegistry {
     completion.finalAnswer = incoming.finalAnswer || completion.finalAnswer;
     if (incoming.changedFiles.length) completion.changedFiles = incoming.changedFiles;
     if (incoming.diff) completion.diff = incoming.diff;
+    if (incoming.gitBaseline) completion.gitBaseline = incoming.gitBaseline;
     if (incoming.toolMetricsKnown) {
       completion.skillsUsed = incoming.skillsUsed;
       completion.mcpCalls = incoming.mcpCalls;

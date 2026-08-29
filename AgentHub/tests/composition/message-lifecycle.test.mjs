@@ -1617,6 +1617,53 @@ test("live inter-Stream messages preserve the source agent author", () => {
   assert.equal(fromPrompt[0].author, author);
 });
 
+test("inter-Stream rollout aliases the receipt without replacing the root user", () => {
+  const origin = {
+    kind: "interstream",
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-themes",
+    streamName: "Themes",
+    provider: "codex",
+    model: "Sol",
+    requestId: "themes-ack-1",
+  };
+  const root = {
+    ...message("root-item", "Исходное сообщение пользователя"),
+    turnId: "active-turn",
+    clientUserMessageId: "root-client",
+    turnUserSlot: "root",
+  };
+  const receipt = {
+    ...message("receipt-item", "Themes → Architect. Принято."),
+    turnId: "active-turn",
+    clientUserMessageId: "mcp:themes-ack-1",
+    turnUserSlot: "steer",
+    author: "Agent HUB - Themes (Sol)",
+    origin,
+  };
+
+  const merged = lifecycle.mergeLiveUserMessages([root, receipt], {
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "active-turn",
+    prompt: "Исходное сообщение пользователя",
+    clientUserMessageId: "root-client",
+    userMessages: [{
+      itemId: "rollout-user:1",
+      clientUserMessageId: "",
+      text: "Themes → Architect. Принято.",
+      author: "Agent HUB - Themes (Sol)",
+      origin,
+    }],
+  });
+
+  assert.equal(merged.length, 2);
+  assert.equal(merged[0].text, "Исходное сообщение пользователя");
+  assert.equal(merged[1].clientUserMessageId, "mcp:themes-ack-1");
+  assert.equal(merged[1].author, "Agent HUB - Themes (Sol)");
+});
+
 test("unattributed live updates do not overwrite a durable inter-Stream author", () => {
   const merged = lifecycle.mergeLiveUserMessages([{
     ...message("server-user", "Сообщение из другого Stream"),

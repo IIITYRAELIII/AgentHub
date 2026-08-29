@@ -59,7 +59,7 @@ export function createAgentHubDeferredPorts() {
     "forgetDesktopControl",
   ]);
   const deferredInput = createDeferredCompositionPort("deferred input controller", [
-    "isProcessing", "cancelSchedule", "scheduleNextForTask",
+    "isProcessing", "cancelSchedule", "scheduleNextForTask", "wakeAll",
   ]);
   const bootstrap = createDeferredCompositionPort("Agent Hub bootstrap", [
     "desktopControlServer",
@@ -137,6 +137,7 @@ export function createAgentHubDeferredPorts() {
       isDeferredInputProcessing: deferredInput.api.isProcessing,
       cancelDeferredInputSchedule: deferredInput.api.cancelSchedule,
       scheduleNextDeferredInput: deferredInput.api.scheduleNextForTask,
+      wakeDeferredInputs: deferredInput.api.wakeAll,
       desktopControlServer: bootstrap.api.desktopControlServer,
       ...runtimeFacades.api,
       ...statePersistence.api,

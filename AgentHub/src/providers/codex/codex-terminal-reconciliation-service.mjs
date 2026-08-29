@@ -147,6 +147,7 @@ export class CodexTerminalReconciliationService {
           provisional,
           changedFiles,
           turnDiff,
+          gitBaseline: turnStart?.gitBaseline ?? null,
         });
         this.turnStarts.delete(key);
         this.logger.log(
@@ -164,6 +165,7 @@ export class CodexTerminalReconciliationService {
           resolvedCompletedAt,
           changedFiles,
           turnDiff,
+          gitBaseline: turnStart?.gitBaseline ?? null,
         });
         this.turnStarts.delete(key);
         this.logger.log(`Reconciled delivered Codex terminal turn ${identity.turnId} (${resolvedStatus})`);
@@ -189,6 +191,7 @@ export class CodexTerminalReconciliationService {
         finalAnswer: usageResult.finalAnswer,
         changedFiles,
         diff: turnDiff,
+        gitBaseline: turnStart?.gitBaseline ?? null,
         skillsUsed: usageResult.skillsUsed,
         mcpCalls: usageResult.mcpCalls,
         toolMetricsKnown: usageResult.toolMetricsKnown,
@@ -221,6 +224,7 @@ export class CodexTerminalReconciliationService {
     provisional,
     changedFiles,
     turnDiff,
+    gitBaseline,
   }) {
     const finalAnswer = String(usageResult.finalAnswer ?? "").trim();
     const journal = await this.projectTurn({
@@ -251,6 +255,7 @@ export class CodexTerminalReconciliationService {
       prompt: usageResult.prompt,
       changedFiles,
       diff: turnDiff,
+      gitBaseline,
       skillsUsed: usageResult.skillsUsed,
       mcpCalls: usageResult.mcpCalls,
       toolMetricsKnown: usageResult.toolMetricsKnown,
@@ -276,6 +281,7 @@ export class CodexTerminalReconciliationService {
     resolvedCompletedAt,
     changedFiles,
     turnDiff,
+    gitBaseline,
   }) {
     const registeredMessage = this.notifications.takePendingMessage(identity);
     const journalTurn = await this.workLogStore.getTurn(identity);
@@ -301,6 +307,7 @@ export class CodexTerminalReconciliationService {
       prompt: usageResult.prompt,
       changedFiles,
       diff: turnDiff,
+      gitBaseline,
       skillsUsed: usageResult.skillsUsed,
       mcpCalls: usageResult.mcpCalls,
       toolMetricsKnown: usageResult.toolMetricsKnown,

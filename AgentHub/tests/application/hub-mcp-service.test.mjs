@@ -92,8 +92,8 @@ async function fixture(context) {
     markStarted: ({ id, streamId }) => Object.assign(tasks.get(id), {
       status: "started", workflowStatus: "in_progress", streamId,
     }),
-    claim: ({ id, streamId, turnId }) => Object.assign(tasks.get(id), {
-      status: "started", workflowStatus: "in_progress", streamId, claimedTurnId: turnId,
+    claim: ({ id, streamId, turnId, gitBaseline }) => Object.assign(tasks.get(id), {
+      status: "started", workflowStatus: "in_progress", streamId, claimedTurnId: turnId, gitBaseline,
     }),
     requestWorkflowStatus: ({ id, status, turnId }) => Object.assign(tasks.get(id), {
       requestedWorkflowStatus: status, requestedTurnId: turnId,
@@ -127,6 +127,7 @@ async function fixture(context) {
   const service = new HubMcpService({
     workspaceCatalog, taskBoard, workLog, attachmentDirectory, secret: "secret",
     taskReleases,
+    captureGitBaseline: async (root, turnId) => ({ repoRoot: root, tree: turnId.padEnd(40, "0") }),
     releaseCompleter: {
       completeRelease: async (options) => {
         releaseCalls.push(options);
@@ -143,10 +144,11 @@ async function fixture(context) {
     sentMessages.push({ params, context: messageContext });
     return { accepted: false, queued: true, id: "queued-1" };
   });
-  service.setActiveRuns(() => [{
+  const activeRun = {
     id: "run-1", provider: "codex", threadId: "thread-1", turnId: "turn-live",
-    status: "running", progressStage: "Editing files", model: "Sol",
-  }]);
+    projectRoot, status: "running", progressStage: "Editing files", model: "Sol",
+  };
+  service.setActiveRuns(() => [activeRun]);
   return {
     service,
     token: service.contextToken({ provider: "codex", threadId: "thread-1" }),
@@ -344,13 +346,17 @@ test("HubMcpService exposes cursor events and publication-gated release completi
 });
 
 test("HubMcpService binds and freezes the exact current Task turn", async (context) => {
-  const { service, token, taskReleaseCalls } = await fixture(context);
+  const { service, token, taskReleaseCalls, tasks, projectRoot } = await fixture(context);
   const claimed = await service.call("hub_task_claim", {
     context_token: token,
     request_id: "claim-task-1",
     task_id: "task-current",
   });
   assert.equal(claimed.claimedTurnId, "turn-live");
+  assert.deepEqual(tasks.get("task-current").gitBaseline, {
+    repoRoot: projectRoot,
+    tree: "turn-live".padEnd(40, "0"),
+  });
 
   const frozen = await service.call("hub_task_release_freeze", {
     context_token: token,

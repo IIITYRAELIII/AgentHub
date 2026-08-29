@@ -212,6 +212,7 @@ export async function createProviderApplicationComposition({
     },
     afterCompletion: async (run) => {
       const maintenance = streamContextMaintenance.maintainAfterTurn(run);
+      api.wakeDeferredInputs();
       if (hostState.restartRequest && !hostState.stopping) {
         void maintenance.finally(() => api.scheduleDeferredRestartIfReady());
       }

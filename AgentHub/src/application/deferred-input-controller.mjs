@@ -91,11 +91,16 @@ export class DeferredInputController {
   }
 
   schedule(item, delayMs = this.retryDelayMs) {
-    if (!item || this.timers.has(item.id)) return;
+    if (!item) return;
+    const normalizedDelayMs = Math.max(0, Number(delayMs) || 0);
+    if (this.timers.has(item.id)) {
+      if (normalizedDelayMs > 0) return;
+      this.cancelSchedule(item.id);
+    }
     const timer = this.setTimeoutImpl(() => {
       this.timers.delete(item.id);
       void this.process(item.id);
-    }, delayMs);
+    }, normalizedDelayMs);
     this.timers.set(item.id, timer);
   }
 
@@ -120,6 +125,14 @@ export class DeferredInputController {
     if (item.paused === true || item.waitReason === "provider-thread-active") {
       const occupied = await this.refreshActiveWriterWait(item);
       if (occupied) return;
+    }
+    if (item.conflictKind === "message-steer" && !item.dispatchingAt) {
+      const occupancy = await this.occupancy(item);
+      if (!occupancy?.occupied) {
+        item.conflictKind = "message-intake";
+        this.onStateChange(item, "queued");
+        await this.persist();
+      }
     }
     const oldest = this.oldestForTask(item, { includePending: true });
     if (oldest?.id !== id) {
@@ -299,6 +312,11 @@ export class DeferredInputController {
       this.scheduleNextForTask(item);
     } finally {
       this.processing.delete(id);
+      if (item.recheckRequested === true && this.queuedInputs.has(id)) {
+        delete item.recheckRequested;
+        this.cancelSchedule(id);
+        this.schedule(item, 0);
+      }
     }
   }
 
@@ -499,6 +517,35 @@ export class DeferredInputController {
   scheduleNextForTask(item) {
     const next = this.oldestForTask(item);
     if (next) this.schedule(next, 0);
+  }
+
+  wakeLane(target) {
+    const key = this.taskKey(target);
+    const queued = [...this.queuedInputs.values()]
+      .filter((candidate) => this.taskKey(candidate) === key);
+    if (!queued.length) return false;
+    for (const candidate of queued) this.cancelSchedule(candidate.id);
+    const oldest = this.oldestForTask(target, { includePending: true });
+    const trigger = this.pendingInputs.has(oldest?.id)
+      ? this.oldestForTask(target)
+      : oldest;
+    if (!trigger) return false;
+    if (this.processing.has(trigger.id)) trigger.recheckRequested = true;
+    else this.schedule(trigger, 0);
+    return true;
+  }
+
+  wakeAll() {
+    const lanes = new Map();
+    for (const item of this.queuedInputs.values()) {
+      const key = this.taskKey(item);
+      if (!lanes.has(key)) lanes.set(key, item);
+    }
+    let woken = 0;
+    for (const target of lanes.values()) {
+      if (this.wakeLane(target)) woken += 1;
+    }
+    return woken;
   }
 
   stop() {

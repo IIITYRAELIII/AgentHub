@@ -757,9 +757,13 @@
           <span>Исполнитель</span>
           <strong data-task-card-executor>Не назначен</strong>
         </div>
-        <div class="task-card-changed-files" data-task-card-changed-files hidden>
+        <div class="task-card-changed-files" data-task-card-changed-files>
           <span>Изменённые файлы</span>
           <div class="task-card-changed-file-groups" data-task-card-changed-file-groups></div>
+        </div>
+        <div class="task-card-work-log" data-task-card-work-log>
+          <span>Лог работы</span>
+          <div class="task-card-work-log-entries" data-task-card-work-log-entries></div>
         </div>
       </section>
       <div class="board-task-card-attachments" data-task-card-attachments hidden></div>
@@ -846,19 +850,23 @@
             <span class="switch-text">Релизный процесс</span>
             <span class="switch-track" aria-hidden="true"></span>
           </label>
-          <button type="button" class="workspace-release-workflow-help"
-            aria-label="Что включает релизный процесс"
-            aria-describedby="workspace-release-workflow-tooltip">?</button>
-          <div id="workspace-release-workflow-tooltip" class="workspace-release-workflow-tooltip" role="tooltip">
-            <p>До содержательной работы нужно найти существующую Dashboard Task или создать новую.</p>
-            <p>Текущий Stream сразу назначается исполнителем Task в своём Workspace.</p>
-            <p>В конце каждого хода Task получает актуальные work log, изменённые файлы и статус.</p>
-            <p>Ход без diff не создаёт запись файла или evidence.</p>
-            <p>Завершённое исправление автоматически переходит в «К применению» только после точного terminal evidence.</p>
-            <p>Завершённый анализ закрывается после результата или смены темы пользователем; незавершённый остаётся открытым.</p>
-            <p>Любой Архитектор Workspace выбирает ожидающие Tasks и проверяет видимый результат.</p>
-            <p>После проверенного релиза только вошедшие в него Tasks переходят в «Готово» и закрываются.</p>
-          </div>
+          <details class="workspace-release-workflow-help-popover">
+            <summary class="workspace-release-workflow-help"
+              aria-label="Что включает релизный процесс"
+              aria-describedby="workspace-release-workflow-tooltip">?</summary>
+            <div id="workspace-release-workflow-tooltip" class="workspace-release-workflow-tooltip" role="tooltip">
+              <p>Dashboard Task создаётся только для работы с изменениями кода, конфигурации, данных или другого поставляемого результата.</p>
+              <p>Агент даёт Task краткий содержательный заголовок; исходный запрос сохраняется в описании и не копируется как название без явной просьбы.</p>
+              <p>Для диагностики, чтения, объяснений и ответов без изменений Task не создаётся.</p>
+              <p>Если после диагностики нужны изменения, Task создаётся или назначается до первой правки.</p>
+              <p>Текущий Stream сразу назначается исполнителем Task в своём Workspace.</p>
+              <p>В конце каждого хода Task получает актуальные work log, изменённые файлы и статус.</p>
+              <p>Ход без diff не создаёт запись файла или evidence.</p>
+              <p>Завершённое исправление автоматически переходит в «К применению» только после точного terminal evidence.</p>
+              <p>Любой Архитектор Workspace выбирает ожидающие Tasks и проверяет видимый результат.</p>
+              <p>После проверенного релиза только вошедшие в него Tasks переходят в «Готово» и закрываются.</p>
+            </div>
+          </details>
         </div>
         <label>
           <span>Порядковый номер в Дашборде</span>

@@ -992,6 +992,53 @@ test("active rollout keeps root and image steer as exact separate users", () => 
   }]);
 });
 
+test("active inter-Stream steer cannot replace an unidentified root user", () => {
+  const origin = {
+    kind: "interstream",
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-themes",
+    streamName: "Themes",
+    provider: "codex",
+    model: "Sol",
+    requestId: "themes-ack-1",
+  };
+  const history = [{
+    id: "live-turn",
+    prompt: "Исходное сообщение пользователя",
+    status: "inProgress",
+    active: true,
+    completed: false,
+    messages: [{
+      itemId: "live-turn:user:0",
+      role: "user",
+      text: "Исходное сообщение пользователя",
+    }],
+  }];
+
+  mergeActiveTaskHistory(history, {
+    active: true,
+    turnId: "live-turn",
+    prompt: "Исходное сообщение пользователя",
+    userMessages: [{
+      itemId: "rollout-user:1",
+      clientUserMessageId: "",
+      role: "user",
+      origin,
+      text: "Themes → Architect. Принято.",
+    }],
+  });
+
+  const users = history[0].messages.filter((message) => message.role === "user");
+  assert.deepEqual(users.map(({ text, clientUserMessageId }) => ({ text, clientUserMessageId })), [{
+    text: "Исходное сообщение пользователя",
+    clientUserMessageId: undefined,
+  }, {
+    text: "Themes → Architect. Принято.",
+    clientUserMessageId: "mcp:themes-ack-1",
+  }]);
+});
+
 test("displayUserPrompt unwraps Codex Desktop file metadata", () => {
   assert.equal(displayUserPrompt([
     "# Files mentioned by the user:",

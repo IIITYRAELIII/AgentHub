@@ -85,6 +85,7 @@ test("DeferredInputController keeps the observed 13.429 second provider steer be
   let releaseProvider;
   const provider = new Promise((resolve) => { releaseProvider = resolve; });
   const state = fixture({
+    occupancy: async () => ({ occupied: true, waitReason: "provider-thread-active" }),
     steer: async () => {
       await provider;
       return { accepted: true, steered: true, runId: "run-1", turnId: "turn-1" };
@@ -508,6 +509,63 @@ test("DeferredInputController preserves exact-lane reorder after restart", async
   await state.controller.process("second");
 
   assert.deepEqual(started, ["first", "second"]);
+});
+
+test("DeferredInputController preempts polling backoff in every lane after terminal release", () => {
+  const cleared = [];
+  const state = fixture({ clearTimeoutImpl: (timer) => cleared.push(timer) });
+  const architect = {
+    id: "architect", streamId: "stream-architect", provider: "codex",
+    threadId: "thread-architect", queueOrder: 1,
+  };
+  const themes = {
+    id: "themes", streamId: "stream-themes", provider: "codex",
+    threadId: "thread-themes", queueOrder: 1,
+  };
+  state.queuedInputs.set(architect.id, architect);
+  state.queuedInputs.set(themes.id, themes);
+  state.controller.schedule(architect, 30_000);
+  state.controller.schedule(themes, 30_000);
+
+  assert.equal(state.controller.wakeAll(), 2);
+
+  assert.deepEqual(cleared, [1, 2]);
+  assert.equal(state.timers.at(-1).delay, 0);
+  assert.equal(state.controller.timers.size, 2);
+  assert.equal(state.controller.timers.has(architect.id), true);
+  assert.equal(state.controller.timers.has(themes.id), true);
+});
+
+test("DeferredInputController restores ordinary FIFO when a steer misses its turn", async () => {
+  const started = [];
+  let steers = 0;
+  const state = fixture({
+    occupancy: async () => ({ occupied: false, waitReason: null }),
+    start: async (item) => started.push(item.id),
+    steer: async () => { steers += 1; return null; },
+  });
+  const lane = { streamId: "stream-1", provider: "codex", threadId: "thread-1" };
+  state.pendingInputs.set("user", {
+    ...lane,
+    id: "user",
+    queueOrder: 1,
+    conflictKind: "task-running",
+  });
+  state.queuedInputs.set("themes", {
+    ...lane,
+    id: "themes",
+    queueOrder: 2,
+    conflictKind: "message-steer",
+  });
+
+  await state.controller.process("themes");
+  assert.equal(steers, 0);
+  assert.equal(state.queuedInputs.get("themes").conflictKind, "message-intake");
+  assert.equal(state.pendingInputs.has("user"), false);
+
+  await state.controller.process("user");
+  await state.controller.process("themes");
+  assert.deepEqual(started, ["user", "themes"]);
 });
 
 test("DeferredInputController does not pass an older pending input in the same task", async () => {

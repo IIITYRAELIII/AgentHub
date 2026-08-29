@@ -227,7 +227,7 @@ const {
   saveState,
   savePinnedTaskTitles,
   refreshTaskDiff,
-  updateDeferredDesktopReceipt,
+  updateDeferredDesktopReceipt, wakeDeferredInputs,
   },
 } = agentHubDeferred;
 const providerApplication = await createProviderApplicationComposition({
@@ -292,7 +292,7 @@ const providerApplication = await createProviderApplicationComposition({
     finalizeRunDelivery,
     restartHasBlockingWork,
     performRestart,
-    refreshTaskCatalog,
+    refreshTaskCatalog, wakeDeferredInputs,
     startCodexAppServer,
     stopCodexAppServerTree,
     initializeCodex,

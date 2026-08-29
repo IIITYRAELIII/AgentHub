@@ -345,6 +345,53 @@ function freezeTask(store, taskId, projectRoot) {
   });
 }
 
+test("repeated Task claim backfills a baseline captured after the first claim", async (t) => {
+  const store = await fixture(t);
+  const projectRoot = path.resolve("D:/repo");
+  const task = store.create({ text: "Claim baseline" });
+  store.move(task.id, { bucket: "workspace", workspaceId: "workspace-1" });
+  const claim = {
+    workspaceId: "workspace-1", streamId: "stream-1",
+    provider: "codex", threadId: "thread-1", turnId: "turn-1",
+  };
+  store.claim(task.id, claim);
+  store.claim(task.id, {
+    ...claim,
+    gitBaseline: { repoRoot: projectRoot, tree: "a".repeat(40) },
+  });
+
+  assert.deepEqual(store.claimedTaskForTurn(claim).gitBaseline, {
+    repoRoot: projectRoot,
+    tree: "a".repeat(40),
+  });
+});
+
+test("terminal Task evidence backfills a claim baseline captured after claim", async (t) => {
+  const store = await fixture(t);
+  const projectRoot = path.resolve("D:/repo");
+  const task = store.create({ text: "Interrupted evidence" });
+  store.move(task.id, { bucket: "workspace", workspaceId: "workspace-1" });
+  store.claim(task.id, {
+    workspaceId: "workspace-1", streamId: "stream-1",
+    provider: "codex", threadId: "thread-1", turnId: "turn-1",
+  });
+
+  const recorded = store.recordTaskTurn({
+    taskId: task.id, provider: "codex", threadId: "thread-1", turnId: "turn-1",
+    projectRoot, summary: "Interrupted after edit", status: "interrupted",
+    changedFiles: [{ projectRoot, path: "src/app.mjs", operation: "modified", turnId: "turn-1" }],
+    gitBaseline: { repoRoot: projectRoot, tree: "a".repeat(40) },
+    resultSnapshot: { repoRoot: projectRoot, tree: "b".repeat(40) },
+  });
+
+  assert.equal(recorded.changedFiles.length, 1);
+  assert.deepEqual(Array.from(recorded.repositoryRevisions, (repository) => ({ ...repository })), [{
+    projectRoot,
+    baselineRevision: "a".repeat(40),
+    resultRevision: "b".repeat(40),
+  }]);
+});
+
 test("Frozen Task rejects every aggregate mutation until exact release completion", async (t) => {
   const store = await fixture(t);
   const projectRoot = path.resolve("D:/repo");

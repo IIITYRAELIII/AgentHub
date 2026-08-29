@@ -28,10 +28,13 @@ path candidates with migration operation `observed` are audit metadata only and
 never become authoritative changed files. A no-diff turn creates no changed-file
 or release evidence.
 
-The same exact binding stores captured baseline Git trees. Terminal projection
-records matching result trees. A completed fix becomes eligible for automatic
-freeze only when its exact bound turn previously requested
-`awaiting_implementation`; no final-text classifier may infer that intent.
+The same exact binding stores captured baseline Git trees. A completed or
+interrupted terminal projection records matching result trees and may backfill
+a baseline carried by that exact completion when claim-time capture raced turn
+startup. A finished fix becomes eligible for automatic freeze only when its
+exact bound turn previously requested `awaiting_implementation`; a later
+completed no-diff continuation may freeze already recorded evidence, and no
+final-text classifier may infer that intent.
 
 ## Immutable freeze
 
@@ -86,6 +89,11 @@ only `stream.settings.architect === true`; multiple Architect Streams are
 allowed. Legacy `settings.releaseRole` and exact Stream name `Architect` are
 recognized once only by migration, persisted as `architect:true`, then removed
 as runtime fallbacks.
+
+The built-in rules require a Task only for work that changes a repository,
+configuration, data or another deliverable. Read-only diagnosis, explanations
+and answers do not create Tasks. If diagnosis leads to requested changes, the
+exact turn must claim a Task before the first change.
 
 Disabling release workflow is blocked while active Task release evidence exists
 and returns an explicit cleanup requirement. Frozen or released evidence cannot

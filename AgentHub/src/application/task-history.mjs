@@ -894,9 +894,14 @@ export function mergeActiveTaskHistory(history, activeTurn = {}) {
       const origin = normalizeInterstreamOrigin(message.origin) ?? interstream?.origin;
       const author = interstreamOriginAuthor(origin) || String(message.author ?? "").trim();
       const messageText = displayUserPrompt(rawMessageText);
+      const directClientUserMessageId = String(
+        message.clientUserMessageId ?? message.clientId ?? "",
+      ).trim();
+      const clientUserMessageId = directClientUserMessageId
+        || (origin?.requestId ? `mcp:${origin.requestId}` : "");
       return {
         itemId: String(message.itemId ?? message.id ?? "").trim(),
-        clientUserMessageId: String(message.clientUserMessageId ?? message.clientId ?? "").trim(),
+        clientUserMessageId,
         role: "user",
         text: messageText,
         ...(author ? { author } : {}),
@@ -976,7 +981,7 @@ export function mergeActiveTaskHistory(history, activeTurn = {}) {
           String(message.clientUserMessageId ?? "") === incoming.clientUserMessageId
         ));
       }
-      if (!user) {
+      if (!user && !incoming.origin) {
         const unidentified = users.filter((message) => !String(message.clientUserMessageId ?? "").trim());
         const matchingText = incoming.text
           ? unidentified.filter((message) => String(message.text ?? "").trim() === incoming.text)

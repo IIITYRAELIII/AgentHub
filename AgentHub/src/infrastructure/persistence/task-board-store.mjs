@@ -24,6 +24,15 @@ import {
 
 const NOTES_COLUMN_ID = "notes";
 
+function gitBaselineJson(value) {
+  const repositories = Array.isArray(value?.repositories) ? value.repositories : [value];
+  const valid = repositories.some((repository) => (
+    String(repository?.repoRoot ?? "").trim()
+    && String(repository?.tree ?? "").trim()
+  ));
+  return valid ? JSON.stringify(value) : "{}";
+}
+
 function configure(database) {
   database.exec("PRAGMA busy_timeout = 5000");
   database.exec("PRAGMA journal_mode = WAL");
@@ -1405,6 +1414,7 @@ export class TaskBoardStore {
     const taskId = String(id ?? "").trim();
     const identity = [provider, threadId, turnId].map((value) => String(value ?? "").trim());
     if (!taskId || identity.some((value) => !value)) throw new Error("Task claim requires an exact provider turn");
+    const baselineJson = gitBaselineJson(gitBaseline);
     const timestamp = this.now();
     return this.#withDatabase((database) => {
       database.exec("BEGIN IMMEDIATE");
@@ -1419,6 +1429,12 @@ export class TaskBoardStore {
       `).get(...identity);
       if (bound && bound.task_id !== taskId) throw new Error("provider turn is already claimed by another Task");
       if (bound?.task_id === taskId) {
+        if (baselineJson !== "{}") {
+          database.prepare(`
+            UPDATE hub_task_turn_bindings SET baseline_json = ?
+            WHERE provider = ? AND provider_thread_id = ? AND turn_id = ? AND baseline_json = '{}'
+          `).run(baselineJson, ...identity);
+        }
         const result = this.#taskWithRelease(database, current);
         database.exec("COMMIT");
         return result;
@@ -1432,7 +1448,7 @@ export class TaskBoardStore {
             WHEN hub_task_turn_bindings.baseline_json = '{}' THEN excluded.baseline_json
             ELSE hub_task_turn_bindings.baseline_json
           END
-      `).run(taskId, ...identity, JSON.stringify(gitBaseline ?? {}), timestamp);
+      `).run(taskId, ...identity, baselineJson, timestamp);
       database.prepare(`
         INSERT INTO hub_task_release_state (task_id, revision, updated_at_ms)
         VALUES (?, 0, ?) ON CONFLICT(task_id) DO NOTHING
@@ -1506,7 +1522,7 @@ export class TaskBoardStore {
 
   recordTaskTurn({
     taskId = null, provider, threadId, turnId, projectRoot, summary = "", status = "completed",
-    changedFiles = [], resultSnapshot = null,
+    changedFiles = [], gitBaseline = null, resultSnapshot = null,
   } = {}) {
     const identity = [provider, threadId, turnId].map((value) => String(value ?? "").trim());
     const files = normalizedTaskChangedFiles(changedFiles);
@@ -1523,6 +1539,15 @@ export class TaskBoardStore {
       const resolvedTaskId = String(taskId ?? binding.task_id).trim();
       if (binding.task_id !== resolvedTaskId) throw new Error("terminal Task identity conflicts with its exact turn binding");
       this.#assertTaskMutable(database, resolvedTaskId);
+      let baselineJson = String(binding.baseline_json ?? "{}");
+      const recoveredBaselineJson = gitBaselineJson(gitBaseline);
+      if (baselineJson === "{}" && recoveredBaselineJson !== "{}") {
+        database.prepare(`
+          UPDATE hub_task_turn_bindings SET baseline_json = ?
+          WHERE provider = ? AND provider_thread_id = ? AND turn_id = ?
+        `).run(recoveredBaselineJson, ...identity);
+        baselineJson = recoveredBaselineJson;
+      }
       const details = this.#releaseDetails(database, resolvedTaskId);
       const mergedFiles = mergeTaskChangedFiles(details.changedFiles, files);
       this.#replaceChangedFiles(database, resolvedTaskId, mergedFiles);
@@ -1539,7 +1564,7 @@ export class TaskBoardStore {
         String(summary ?? "").trim().slice(0, 2_000), String(status ?? "completed"),
         JSON.stringify(files), timestamp,
       );
-      this.#recordRepositoryRevisions(database, resolvedTaskId, binding?.baseline_json, resultSnapshot);
+      this.#recordRepositoryRevisions(database, resolvedTaskId, baselineJson, resultSnapshot);
       database.prepare(`
         UPDATE hub_board_tasks SET
           workflow_status = CASE

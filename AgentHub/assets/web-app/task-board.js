@@ -228,8 +228,55 @@
     return Array.from(groups, ([projectRoot, files]) => ({ projectRoot, files }));
   }
 
+  function taskWorkLogEntries(task) {
+    return (Array.isArray(task?.workLog) ? task.workLog : []).flatMap((entry) => {
+      const summary = String(entry?.summary ?? "").trim();
+      const provider = String(entry?.provider ?? "").trim();
+      const status = String(entry?.status ?? "").trim();
+      const turnId = String(entry?.turnId ?? "").trim();
+      const createdAt = String(entry?.createdAt ?? "").trim();
+      if (!summary && !provider && !status && !turnId) return [];
+      return [{
+        summary,
+        provider,
+        status,
+        turnId,
+        createdAt,
+        changedFileCount: Array.isArray(entry?.changedFiles) ? entry.changedFiles.length : 0,
+      }];
+    });
+  }
+
   function changedFileOperationLabel(operation) {
     return ({ added: "Добавлен", modified: "Изменён", deleted: "Удалён" })[operation] ?? operation;
+  }
+
+  function taskWorkLogStatusLabel(status) {
+    return ({
+      completed: "Завершён",
+      interrupted: "Прерван",
+      failed: "Ошибка",
+      running: "Выполняется",
+    })[status] ?? status ?? "Неизвестно";
+  }
+
+  function taskWorkLogTimeLabel(value) {
+    const timestamp = Date.parse(String(value ?? ""));
+    if (!Number.isFinite(timestamp)) return "";
+    return new Date(timestamp).toLocaleString("ru-RU", {
+      dateStyle: "short",
+      timeStyle: "short",
+    });
+  }
+
+  function taskChangedFileCountLabel(count) {
+    const value = Math.max(0, Number(count) || 0);
+    const mod100 = value % 100;
+    const mod10 = value % 10;
+    const noun = mod100 >= 11 && mod100 <= 14
+      ? "файлов"
+      : (mod10 === 1 ? "файл" : (mod10 >= 2 && mod10 <= 4 ? "файла" : "файлов"));
+    return `${value} ${noun}`;
   }
 
   function orderedDashboardColumnIds(columnOrder = [], availableColumnIds = []) {
@@ -275,6 +322,7 @@
     taskAttachmentCountLabel,
     taskChangedFileGroups,
     taskExecutorPresentation,
+    taskWorkLogEntries,
     taskWorkflowPresentation,
     tasksForMode,
     workspaceTasksForPanel,
@@ -301,6 +349,8 @@
   const taskCardExecutor = document.querySelector("[data-task-card-executor]");
   const taskCardChangedFiles = document.querySelector("[data-task-card-changed-files]");
   const taskCardChangedFileGroups = document.querySelector("[data-task-card-changed-file-groups]");
+  const taskCardWorkLog = document.querySelector("[data-task-card-work-log]");
+  const taskCardWorkLogEntries = document.querySelector("[data-task-card-work-log-entries]");
   const taskCardStatus = document.querySelector("[data-task-card-status]");
   const taskCardOriginal = document.querySelector("[data-task-card-original]");
   const taskCardOriginalToggle = document.querySelector("[data-task-card-original-toggle]");
@@ -664,22 +714,48 @@
     if (taskCardExecutor) taskCardExecutor.textContent = taskExecutorPresentation(task, state.workspaces).label;
     const changedFileGroups = taskChangedFileGroups(task);
     if (taskCardChangedFiles && taskCardChangedFileGroups) {
-      taskCardChangedFiles.hidden = changedFileGroups.length === 0;
-      taskCardChangedFileGroups.replaceChildren(...changedFileGroups.map((group) => node("section", {
-        class: "task-card-changed-file-group",
-      }, [
-        node("strong", { class: "task-card-project-root", text: group.projectRoot }),
-        node("ul", {}, group.files.map((file) => node("li", {
-          class: `task-card-changed-file is-${file.operation}`,
-          title: file.turnId ? `Ход ${file.turnId}` : null,
+      taskCardChangedFiles.hidden = false;
+      taskCardChangedFileGroups.replaceChildren(...(changedFileGroups.length
+        ? changedFileGroups.map((group) => node("section", {
+          class: "task-card-changed-file-group",
         }, [
+          node("strong", { class: "task-card-project-root", text: group.projectRoot }),
+          node("ul", {}, group.files.map((file) => node("li", {
+            class: `task-card-changed-file is-${file.operation}`,
+            title: file.turnId ? `Ход ${file.turnId}` : null,
+          }, [
+            node("span", {
+              class: "task-card-changed-file-operation",
+              text: changedFileOperationLabel(file.operation),
+            }),
+            node("code", { text: file.path }),
+          ]))),
+        ]))
+        : [node("p", { class: "task-card-detail-empty", text: "Пока нет зафиксированных изменений." })]));
+    }
+    if (taskCardWorkLog && taskCardWorkLogEntries) {
+      const entries = taskWorkLogEntries(task);
+      taskCardWorkLog.hidden = false;
+      taskCardWorkLogEntries.replaceChildren(...(entries.length
+        ? entries.map((entry) => node("article", {
+          class: "task-card-work-log-entry",
+          title: entry.turnId ? `Ход ${entry.turnId}` : null,
+        }, [
+          node("div", { class: "task-card-work-log-meta" }, [
+            node("strong", { text: entry.provider || "agent" }),
+            node("span", { text: taskWorkLogStatusLabel(entry.status) }),
+            ...(taskWorkLogTimeLabel(entry.createdAt) ? [node("time", {
+              datetime: entry.createdAt,
+              text: taskWorkLogTimeLabel(entry.createdAt),
+            })] : []),
+          ]),
+          node("p", { text: entry.summary || "Без итогового описания." }),
           node("span", {
-            class: "task-card-changed-file-operation",
-            text: changedFileOperationLabel(file.operation),
+            class: "task-card-work-log-files",
+            text: taskChangedFileCountLabel(entry.changedFileCount),
           }),
-          node("code", { text: file.path }),
-        ]))),
-      ])));
+        ]))
+        : [node("p", { class: "task-card-detail-empty", text: "Пока нет записей о выполненной работе." })]));
     }
     const actions = [];
     if (task.status !== "done" && taskWorkflowStatus(task) !== "done" && task.bucket === "workspace") {

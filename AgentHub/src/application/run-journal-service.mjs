@@ -261,7 +261,7 @@ export class RunJournalService {
       provider: completion.provider,
       threadId: completion.threadId,
     }) === true;
-    if (releaseWorkflowEnabled && Array.isArray(completion.changedFiles) && completion.changedFiles.length) {
+    if (releaseWorkflowEnabled) {
       try {
         const bound = this.taskBoard?.claimedTaskForTurn?.({
           provider: completion.provider,
@@ -274,30 +274,39 @@ export class RunJournalService {
           throw new Error("dashboardTaskId conflicts with the exact provider turn binding");
         }
         if (taskId) {
-          const operations = changedFileOperations(completion.diff);
-          const changedFiles = exactTaskChangedFiles({
-            projectRoot: project.path,
-            files: completion.changedFiles,
-            operations,
-            turnId: completion.turnId,
-            baseline: bound.gitBaseline,
-          });
-          const resultSnapshot = this.captureResultSnapshot
-            ? await this.captureResultSnapshot(project.path, completion.turnId)
-            : null;
-          this.taskBoard.recordTaskTurn({
-            taskId,
-            provider: completion.provider,
-            threadId: completion.threadId,
-            turnId: completion.turnId,
-            projectRoot: project.path,
-            summary: fields.title || body,
-            status: completion.status,
-            changedFiles,
-            resultSnapshot,
-          });
+          const files = Array.isArray(completion.changedFiles) ? completion.changedFiles : [];
+          if (files.length) {
+            const operations = changedFileOperations(completion.diff);
+            const gitBaseline = repositorySnapshots(bound.gitBaseline).length
+              ? bound.gitBaseline
+              : completion.gitBaseline;
+            const changedFiles = exactTaskChangedFiles({
+              projectRoot: project.path,
+              files,
+              operations,
+              turnId: completion.turnId,
+              baseline: gitBaseline,
+            });
+            const resultSnapshot = this.captureResultSnapshot
+              ? await this.captureResultSnapshot(project.path, completion.turnId)
+              : null;
+            this.taskBoard.recordTaskTurn({
+              taskId,
+              provider: completion.provider,
+              threadId: completion.threadId,
+              turnId: completion.turnId,
+              projectRoot: project.path,
+              summary: fields.title || body,
+              status: completion.status,
+              changedFiles,
+              gitBaseline,
+              resultSnapshot,
+            });
+          }
+          const terminalStatus = String(completion.status ?? "").trim().toLowerCase();
           if (bound?.requestedWorkflowStatus === "awaiting_implementation"
-            && String(completion.status ?? "").trim().toLowerCase() === "completed") {
+            && ["completed", "interrupted"].includes(terminalStatus)
+            && (files.length || bound.changedFiles?.length)) {
             await this.taskReleaseService?.freezeRecorded?.({
               taskId,
               workspaceId: bound.workspaceId,

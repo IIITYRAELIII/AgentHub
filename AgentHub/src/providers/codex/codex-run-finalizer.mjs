@@ -104,6 +104,7 @@ export class CodexRunFinalizer {
       finalAnswer: String(answer ?? "").trim(),
       changedFiles: this.changedFiles(run),
       diff: run.latestDiff ?? "",
+      gitBaseline: run.gitBaseline ?? null,
       skillsUsed: tracker.toolMetricsKnown === true ? tracker.skillsUsed ?? [] : run.skillsUsed ?? [],
       mcpCalls: tracker.toolMetricsKnown === true ? tracker.mcpCalls ?? [] : run.mcpCalls ?? [],
       toolMetricsKnown: tracker.toolMetricsKnown === true || run.toolMetricsKnown === true,

@@ -74,5 +74,6 @@ hydration starts strictly as background work and is never awaited by mark-read.
   context-probe sentinel and never as entity identity. Remove these guards after
   all retained snapshots and history rows carry explicit operation kinds.
 - The exact provider-turn root fallback remains only for old rows that lack a
-  submission alias. It cannot bind steer messages and is removed after retained
-  history has `clientUserMessageId` or `submissionId` on every user command.
+  submission alias. It cannot bind steer or inter-Stream messages and is removed
+  after retained history has `clientUserMessageId` or `submissionId` on every
+  user command.

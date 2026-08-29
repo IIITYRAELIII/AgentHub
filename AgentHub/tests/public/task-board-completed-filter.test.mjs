@@ -109,6 +109,26 @@ test("Task release details use the canonical executor and changed-file projectio
       },
     ],
   );
+  assert.deepEqual(
+    Array.from(view.taskWorkLogEntries({
+      workLog: [{
+        provider: "codex",
+        turnId: "turn-1",
+        status: "interrupted",
+        summary: "Изменения сохранены",
+        createdAt: "2026-08-29T12:00:00.000Z",
+        changedFiles: [{ path: "AgentHub/app.js" }],
+      }],
+    }), (entry) => ({ ...entry })),
+    [{
+      provider: "codex",
+      turnId: "turn-1",
+      status: "interrupted",
+      summary: "Изменения сохранены",
+      createdAt: "2026-08-29T12:00:00.000Z",
+      changedFileCount: 1,
+    }],
+  );
 });
 
 test("workspace side panel keeps every current Task available for scrolling", async () => {

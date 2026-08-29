@@ -890,8 +890,15 @@ function mergeLiveUserMessages(messages, {
     const text = String(message?.text ?? "").trim();
     if (!provider || !threadId || !turnId || !text) continue;
     const role = message?.role === "agent" && message?.kind === "subagent" ? "agent" : "user";
+    const originRequestId = String(message?.origin?.requestId ?? "").trim();
+    const directClientUserMessageId = String(message?.clientUserMessageId ?? "").trim();
+    const resolvedClientUserMessageId = directClientUserMessageId
+      || (originRequestId ? `mcp:${originRequestId}` : "");
     const turnUserSlot = role === "user"
-      ? liveTurnUserSlot(message, index, { prompt, clientUserMessageId })
+      ? liveTurnUserSlot({ ...message, clientUserMessageId: resolvedClientUserMessageId }, index, {
+          prompt,
+          clientUserMessageId,
+        })
       : "";
     const author = String(message?.author ?? "").trim()
       || (role === "agent" ? "Субагент (модель неизвестна)" : turnUserSlot === "root" ? String(promptAuthor ?? "").trim() : "")
@@ -902,7 +909,7 @@ function mergeLiveUserMessages(messages, {
       threadId,
       turnId,
       itemId: String(message.itemId ?? `live-${role}-${index}`),
-      clientUserMessageId: String(message.clientUserMessageId ?? ""),
+      clientUserMessageId: resolvedClientUserMessageId,
       turnUserSlot,
       role,
       author,
@@ -910,7 +917,7 @@ function mergeLiveUserMessages(messages, {
       ...(message?.kind ? { kind: String(message.kind) } : {}),
       ...(message?.agentThreadId ? { agentThreadId: String(message.agentThreadId) } : {}),
       ...(message?.model ? { model: String(message.model) } : {}),
-      ...(message?.origin ? { origin: structuredClone(message.origin) } : {}),
+      ...(message?.origin ? { origin: { ...message.origin } } : {}),
       ...(Array.isArray(message.responseAnnotations) ? {
         responseAnnotations: message.responseAnnotations.map((item) => ({ ...item })),
         responseAnnotationRequest: String(message.responseAnnotationRequest ?? ""),
@@ -937,6 +944,7 @@ function mergeLiveUserMessages(messages, {
     const fallbackDuplicateIndex = duplicateIndex < 0
       && role === "user"
       && turnUserSlot === "root"
+      && !candidate.origin
       && sameTurnUsers.length > 0
       ? values.indexOf(sameTurnUsers[0])
       : duplicateIndex;

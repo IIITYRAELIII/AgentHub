@@ -81,6 +81,16 @@ test("turn-end registry preserves every prompt while merging repeated completion
   ]);
 });
 
+test("turn-end registry preserves the Git baseline through merge and restore", () => {
+  const registry = new TurnEndNotificationRegistry();
+  const gitBaseline = { repoRoot: process.cwd(), tree: "a".repeat(40) };
+  registry.recordCompletion(completion({ gitBaseline }));
+  registry.recordCompletion(completion({ finalAnswer: "Готово" }));
+
+  const restored = new TurnEndNotificationRegistry(registry.snapshot());
+  assert.deepEqual(restored.get(completion()).gitBaseline, gitBaseline);
+});
+
 test("late deferred message refreshes the completed task title", () => {
   const registry = new TurnEndNotificationRegistry();
   registry.recordCompletion(completion({ taskTitle: "Старое название" }));
