@@ -109,18 +109,13 @@ html[data-activity-task-column="separate"]:not([data-surface="mobile"])
   border-top: 0;
   grid-column: 1;
   grid-row: 1;
+  height: 100%;
   margin-top: 0;
-  padding-top: 0.55rem;
 }
 
 html[data-activity-task-column="separate"]:not([data-surface="mobile"])
-  .workspace-task-panel > header strong {
-  display: none;
-}
-
-html[data-activity-task-column="separate"]:not([data-surface="mobile"])
-  .workspace-task-panel > header {
-  justify-content: flex-end;
+  .workspace-task-section.is-workspace {
+  margin-top: auto;
 }
 
 html[data-activity-task-column="separate"]:not([data-surface="mobile"])

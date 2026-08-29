@@ -263,11 +263,23 @@ export class RunJournalService {
     }) === true;
     if (releaseWorkflowEnabled) {
       try {
-        const bound = this.taskBoard?.claimedTaskForTurn?.({
-          provider: completion.provider,
-          threadId: completion.threadId,
-          turnId: completion.turnId,
-        });
+        const turnIds = [...new Set([
+          completion.turnId,
+          completion.runTurnId,
+        ].map((value) => String(value ?? "").trim()).filter(Boolean))];
+        let bound = null;
+        let boundTurnId = "";
+        for (const turnId of turnIds) {
+          bound = this.taskBoard?.claimedTaskForTurn?.({
+            provider: completion.provider,
+            threadId: completion.threadId,
+            turnId,
+          });
+          if (bound) {
+            boundTurnId = turnId;
+            break;
+          }
+        }
         const dashboardTaskId = String(completion.dashboardTaskId ?? "").trim() || null;
         const taskId = bound?.id ?? null;
         if (dashboardTaskId && bound && bound.id !== dashboardTaskId) {
@@ -282,26 +294,26 @@ export class RunJournalService {
             projectRoot: project.path,
             files: reportedFiles,
             operations: changedFileOperations(completion.diff),
-            turnId: completion.turnId,
+            turnId: boundTurnId,
             baseline: gitBaseline,
           }) : [];
           let captured = null;
           if (scopedFiles.length && this.captureTaskResult && repositorySnapshots(gitBaseline).length) {
             try {
-              captured = await this.captureTaskResult(gitBaseline, completion.turnId, scopedFiles);
+              captured = await this.captureTaskResult(gitBaseline, boundTurnId, scopedFiles);
             } catch (error) {
-              this.logger.error(`Cannot capture terminal Task Git result for ${completion.turnId}:`, error.message);
+              this.logger.error(`Cannot capture terminal Task Git result for ${boundTurnId}:`, error.message);
             }
           }
           const changedFiles = captured
-            ? (captured.changedFiles ?? []).map((file) => ({ ...file, turnId: completion.turnId }))
+            ? (captured.changedFiles ?? []).map((file) => ({ ...file, turnId: boundTurnId }))
             : [];
           if (changedFiles.length) {
             this.taskBoard.recordTaskTurn({
               taskId,
               provider: completion.provider,
               threadId: completion.threadId,
-              turnId: completion.turnId,
+              turnId: boundTurnId,
               projectRoot: project.path,
               summary: fields.title || body,
               status: completion.status,

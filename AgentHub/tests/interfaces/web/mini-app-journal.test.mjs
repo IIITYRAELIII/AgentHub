@@ -24,6 +24,7 @@ test("Mini App keeps the fresh rate-limit summary above projected days", () => {
 function journalDay(date, turnId, {
   provider = "",
   threadId = "",
+  entryAttributes = "",
 } = {}) {
   const identity = provider && threadId
     ? ` data-work-log-turn-provider="${provider}" data-work-log-turn-thread-id="${threadId}"`
@@ -31,7 +32,7 @@ function journalDay(date, turnId, {
   return [
     "<details data-work-log-day-section>",
     `<summary data-work-log-day><strong>${date}</strong><span>Итого 1 kcr</span></summary>`,
-    `<div data-work-log-row><div data-work-log-turn-entry${identity} data-work-log-turn-id="${turnId}">`,
+    `<div data-work-log-row><div data-work-log-turn-entry${identity}${entryAttributes} data-work-log-turn-id="${turnId}">`,
     "<details data-work-log-turn-details>",
     `<summary><span data-work-log-turn-title>Ход ${turnId}</span></summary>`,
     `<div data-work-log-turn-expanded><div data-work-log-turn-prompt>Запрос ${turnId}</div>`,
@@ -40,7 +41,7 @@ function journalDay(date, turnId, {
   ].join("");
 }
 
-test("Mini App initially includes five recent days and lazily splits older details", () => {
+test("Mini App includes five recent day shells and lazily splits every turn body", () => {
   const dates = [
     "06.07.2026",
     "05.07.2026",
@@ -54,13 +55,18 @@ test("Mini App initially includes five recent days and lazily splits older detai
     ...dates.map((date, index) => journalDay(date, `turn-${index + 1}`)),
   ].join("\n"));
 
-  assert.match(payload.html, /Ответ turn-1/u);
-  assert.match(payload.html, /Ответ turn-5/u);
-  assert.doesNotMatch(payload.html, /Ответ turn-6/u);
+  assert.match(payload.html, /Ход turn-1/u);
+  assert.match(payload.html, /Ход turn-5/u);
+  assert.doesNotMatch(payload.html, /Запрос turn-[1-6]|Ответ turn-[1-6]/u);
+  assert.match(payload.html, /data-lazy-turn-id="turn-1"/u);
+  assert.match(payload.html, /data-lazy-turn-id="turn-5"/u);
   assert.match(payload.html, /data-lazy-day="01\.07\.2026"/u);
   assert.match(payload.days["01.07.2026"], /Ход turn-6/u);
   assert.doesNotMatch(payload.days["01.07.2026"], /Запрос turn-6|Ответ turn-6/u);
   assert.match(payload.days["01.07.2026"], /data-lazy-turn-id="turn-6"/u);
+  assert.match(payload.turns["turn-1"], /Запрос turn-1/u);
+  assert.match(payload.turns["turn-1"], /Ответ turn-1/u);
+  assert.match(payload.turns["turn-5"], /Ответ turn-5/u);
   assert.match(payload.turns["turn-6"], /Запрос turn-6/u);
   assert.match(payload.turns["turn-6"], /Ответ turn-6/u);
 });
@@ -78,10 +84,32 @@ test("Mini App lazy turn references stay unique across tasks and providers", () 
   ].join("\n"));
 
   const references = Object.keys(payload.turns);
-  assert.equal(references.length, 2);
-  assert.notEqual(references[0], references[1]);
-  assert.match(payload.turns[references[0]], /Ответ same-turn/u);
-  assert.match(payload.turns[references[1]], /Ответ same-turn/u);
+  const sameTurnReferences = references.filter((reference) => (
+    /Ответ same-turn/u.test(payload.turns[reference])
+  ));
+  assert.equal(references.length, 7);
+  assert.equal(sameTurnReferences.length, 3);
+  assert.equal(new Set(sameTurnReferences).size, 3);
+});
+
+test("Mini App lazily extracts a turn whose entry attributes exceed the old scan window", () => {
+  const payload = buildLazyJournalPayload(journalDay("06.07.2026", "turn-wide", {
+    entryAttributes: ` data-work-log-turn-skills="${"skill".repeat(400)}"`,
+  }));
+
+  assert.doesNotMatch(payload.html, /Ответ turn-wide/u);
+  assert.match(payload.html, /data-lazy-turn-id="turn-wide"/u);
+  assert.match(payload.turns["turn-wide"], /Ответ turn-wide/u);
+});
+
+test("упоминание data-lazy-day в теле хода не делает весь день ленивой оболочкой", () => {
+  const markdown = journalDay("06.07.2026", "turn-content")
+    .replace("Ответ turn-content", "В ответе обсуждается data-lazy-day");
+  const payload = buildLazyJournalPayload(markdown);
+
+  assert.match(payload.html, /data-lazy-turn-id="turn-content"/u);
+  assert.doesNotMatch(payload.html, /В ответе обсуждается data-lazy-day/u);
+  assert.match(payload.turns["turn-content"], /В ответе обсуждается data-lazy-day/u);
 });
 
 test("повторная проекция не превращает свёрнутый день в пустую оболочку", () => {

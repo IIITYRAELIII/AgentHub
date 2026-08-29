@@ -1870,9 +1870,9 @@ function applySnapshot(snapshot, { materialized = false } = {}) {
       ...representativeTasks.map((task) => modelTask(task, snapshot, effectiveSelectedId, serverSelectedId)),
       ...emptyStreamModels(snapshot, effectiveSelectedId),
     ].sort((left, right) => Date.parse(right.lastActivity || 0) - Date.parse(left.lastActivity || 0));
-    const selectedWorkspaceId = String(
-      tasks.find((task) => task.id === effectiveSelectedId)?.workspaceId ?? "",
-    ).trim() || null;
+    const selectedTask = tasks.find((task) => task.id === effectiveSelectedId);
+    const selectedWorkspaceId = String(selectedTask?.workspaceId ?? "").trim() || null;
+    const selectedStreamId = String(selectedTask?.streamId ?? "").trim() || null;
     window.AgentHubTaskBoard?.setSnapshot({
       tasks: (snapshot.boardTasks ?? []).map((task) => ({
         ...task,
@@ -1882,6 +1882,7 @@ function applySnapshot(snapshot, { materialized = false } = {}) {
       columnOrder: snapshot.boardLayout?.columnOrder ?? [],
       notesComment: snapshot.boardLayout?.notesComment ?? "",
       selectedWorkspaceId,
+      selectedStreamId,
       provider: snapshot.settings?.provider ?? "codex",
     });
     agentHub.setTasks(tasks);
@@ -3196,7 +3197,6 @@ agentHub.on("selection:set", async ({ key, value }) => {
     streamCardWidthMode: "streamCardWidthMode",
     streamCardFixedWidth: "streamCardFixedWidth",
     streamCardGapEnabled: "streamCardGapEnabled",
-    showInlineFileRevealButtons: "showInlineFileRevealButtons",
     pinnedWorkspaceStreams: "pinnedWorkspaceStreams",
     quickMessages: "quickMessages",
   };

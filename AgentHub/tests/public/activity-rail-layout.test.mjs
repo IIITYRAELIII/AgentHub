@@ -115,6 +115,13 @@ test("automatic task layout measures list content instead of stretched list heig
   }), 16);
 });
 
+test("task column detects cards from either task section", async () => {
+  const { taskPanelHasCards } = await layoutApi();
+  assert.equal(taskPanelHasCards({ querySelector: () => ({ id: "stream-card" }) }), true);
+  assert.equal(taskPanelHasCards({ querySelector: () => null }), false);
+  assert.equal(taskPanelHasCards(null), false);
+});
+
 test("activity column divider clamps, restores, and persists its ratio", async () => {
   const {
     COLUMN_RATIO_STORAGE_KEY,

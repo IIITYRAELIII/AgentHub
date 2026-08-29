@@ -347,6 +347,9 @@ export function formatWorkLogUsage(breakdown) {
   return telegramText
     .split("\n")
     .flatMap((line) => line.split(/\s+\|\s+/))
+    // Estimated credits already contribute to the total; they are not a
+    // separate usage category alongside input, cache, output and reasoning.
+    .filter((line) => !/^ImageGen:/u.test(line))
     .join("<br>");
 }
 
@@ -388,7 +391,6 @@ const BREAKDOWN_FIELD_BY_LABEL = new Map([
   ["Кэш", "cache"],
   ["Выход", "output"],
   ["Думы", "reasoning"],
-  ["ImageGen", "estimate"],
 ]);
 
 function breakdownPartCredits(part, breakdown) {

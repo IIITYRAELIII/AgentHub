@@ -20,7 +20,7 @@ function fixture({
   };
   const taskBoard = {
     claimedTaskForTurn: ({ turnId }) => {
-      if (turnId === "unbound-turn") return null;
+      if (["unbound-turn", "transcript-turn"].includes(turnId)) return null;
       const ready = ["ready-turn", "ready-interrupted-turn", "ready-no-diff-turn"].includes(turnId);
       return {
         id: "task-1", workspaceId: "workspace-1", streamId: "stream-1",
@@ -299,6 +299,30 @@ test("RunJournalService writes only exact Task-bound terminal evidence", async (
   }, { title: "Failed change" });
   const failedEvidence = calls.filter(([name]) => name === "task-turn").at(-1)[1];
   assert.equal(failedEvidence.status, "failed");
+});
+
+test("RunJournalService records Claude evidence under its claimed Hub run id", async () => {
+  const { service, calls } = fixture();
+  await service.projectTurn({
+    provider: "claude",
+    projectRoot: "C:/workspace",
+    threadId: "thread",
+    turnId: "transcript-turn",
+    runTurnId: "turn",
+    changedFiles: ["AgentHub/app.js"],
+    diff: "diff --git a/AgentHub/app.js b/AgentHub/app.js",
+    status: "completed",
+  }, { title: "Claude change" });
+
+  const evidence = calls.find(([name]) => name === "task-turn")?.[1];
+  assert.equal(evidence.turnId, "turn");
+  assert.equal(calls.find(([name]) => name === "capture-task-result")?.[1].turnId, "turn");
+  assert.deepEqual(evidence.changedFiles, [{
+    projectRoot: path.resolve("C:/workspace"),
+    path: "AgentHub/app.js",
+    operation: "modified",
+    turnId: "turn",
+  }]);
 });
 
 test("RunJournalService does not infer Task ownership from a dirty workspace", async () => {

@@ -49,6 +49,10 @@ function rootUserMessage(turn) {
     .find((message) => message?.role === "user") ?? null;
 }
 
+function rootUserItemId(turn) {
+  return String(rootUserMessage(turn)?.itemId ?? "").trim();
+}
+
 function attachmentIdentity(value) {
   const ids = [
     ...(Array.isArray(value?.attachments) ? value.attachments : [])
@@ -75,6 +79,10 @@ function terminalTurn(turn) {
   ].includes(String(turn?.status ?? "").trim().toLowerCase());
 }
 
+/* Headless Claude stores the transport-expanded prompt under its own UUID,
+   while Hub owns the same command by clientUserMessageId. An adopted provider
+   user-item UUID is the exact alias between them. Attachment identity remains
+   the migration fallback for older managed rows that did not retain that UUID. */
 export function withoutClaudeManagedTranscriptDuplicates(history) {
   const values = Array.isArray(history) ? history : [];
   const managed = values.flatMap((turn, index) => {
@@ -83,6 +91,7 @@ export function withoutClaudeManagedTranscriptDuplicates(history) {
     if (!clientUserMessageId || !terminalTurn(turn)) return [];
     return [{
       index,
+      rootUserItemId: rootUserItemId(turn),
       text: normalizedPrompt(user?.text ?? turn?.prompt),
       attachments: attachmentIdentity({
         attachments: [
@@ -97,6 +106,7 @@ export function withoutClaudeManagedTranscriptDuplicates(history) {
     const turn = values[index];
     const user = rootUserMessage(turn);
     if (!user || String(user.clientUserMessageId ?? "").trim()) continue;
+    const providerUserItemId = rootUserItemId(turn);
     const transport = claudeTransportPromptDetails(user.text ?? turn?.prompt);
     const attachments = attachmentIdentity({
       attachmentSources: [
@@ -108,12 +118,17 @@ export function withoutClaudeManagedTranscriptDuplicates(history) {
         ...(Array.isArray(user?.attachments) ? user.attachments : []),
       ],
     });
-    if (!attachments.length) continue;
     const text = normalizedPrompt(transport.text || user.text || turn?.prompt);
     const matches = managed.filter((candidate) => (
       candidate.index !== index
-      && candidate.text === text
-      && sameIdentitySet(candidate.attachments, attachments)
+      && (
+        (providerUserItemId && candidate.rootUserItemId === providerUserItemId)
+        || (
+          attachments.length > 0
+          && candidate.text === text
+          && sameIdentitySet(candidate.attachments, attachments)
+        )
+      )
     ));
     if (matches.length === 1) removed.add(index);
   }

@@ -33,6 +33,12 @@
       "name": "Расколотый горизонт",
       "asset": "malachor-v-shattered-horizon.png",
       "preload": true
+    },
+    {
+      "id": "malachor-v-trayus-core",
+      "name": "Ядро Трайуса",
+      "asset": "malachor-v-trayus-core.png",
+      "preload": true
     }
   ]
 }

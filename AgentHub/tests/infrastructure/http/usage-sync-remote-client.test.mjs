@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   canonicalUsageSyncJson,
   normalizeServerUrl,
+  usageSyncPushChunks,
   UsageSyncRemoteClient,
 } from "../../../src/infrastructure/http/usage-sync-remote-client.mjs";
 
@@ -95,6 +96,65 @@ test("push and pull sign the exact transmitted body bytes", async () => {
   assert.equal(calls[1].url, "http://127.0.0.1:9198/api/snapshot");
   assert.equal(calls[1].options.headers["X-AgentHub-Signature"], "sig-2");
   assert.equal(identity.signed[1], Buffer.from(calls[1].options.body).toString("utf8"));
+});
+
+test("large usage snapshots are sent as bounded signed idempotent chunks", async () => {
+  const identity = identityStore();
+  const calls = [];
+  const stored = new Set();
+  const events = Array.from({ length: 12 }, (_, index) => ({
+    eventId: `usage:${String(index).padStart(4, "0")}`,
+    deviceId: identity.deviceId,
+    payload: "x".repeat(90),
+  }));
+  const snapshot = { version: 1, deviceId: identity.deviceId, exportedAt: "2026-08-28T09:00:00.000Z", events };
+  const maxPushBodyBytes = 420;
+  const expectedChunks = usageSyncPushChunks(snapshot, { maxBodyBytes: maxPushBodyBytes });
+  let failSecondRequest = true;
+  const client = new UsageSyncRemoteClient({
+    serverUrl: "https://sync.example.test",
+    identityStore: identity,
+    maxPushBodyBytes,
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      if (failSecondRequest && calls.length === 2) {
+        failSecondRequest = false;
+        return response({ error: "temporary" }, { status: 503 });
+      }
+      let added = 0;
+      let unchanged = 0;
+      for (const event of JSON.parse(options.body).events) {
+        if (stored.has(event.eventId)) unchanged += 1;
+        else {
+          stored.add(event.eventId);
+          added += 1;
+        }
+      }
+      return response({ ok: true, deviceId: identity.deviceId, added, updated: 0, unchanged, rejected: 0 });
+    },
+  });
+
+  await assert.rejects(client.push(snapshot), /temporary/u);
+  const result = await client.push(snapshot);
+
+  assert.ok(expectedChunks.length > 1);
+  assert.equal(result.requests, expectedChunks.length);
+  assert.equal(result.added + result.unchanged, events.length);
+  assert.deepEqual([...stored], events.map((event) => event.eventId));
+  for (const call of calls) {
+    assert.equal(call.url, "https://sync.example.test/api/usage");
+    assert.ok(Buffer.byteLength(call.options.body) <= maxPushBodyBytes);
+  }
+  assert.deepEqual(identity.signed, calls.map((call) => Buffer.from(call.options.body).toString("utf8")));
+});
+
+test("usage sync rejects one event that cannot fit in a bounded request", () => {
+  assert.throws(
+    () => usageSyncPushChunks({ version: 1, deviceId: "device", events: [{ payload: "x".repeat(500) }] }, {
+      maxBodyBytes: 300,
+    }),
+    /event exceeds 300 bytes/u,
+  );
 });
 
 test("incremental pull posts a signed changes request with a revision cursor", async () => {

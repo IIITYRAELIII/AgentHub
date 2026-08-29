@@ -95,7 +95,7 @@
       new: Object.freeze({ short: "New", full: "New" }),
       in_progress: Object.freeze({ short: "InProg", full: "In progress" }),
       testing: Object.freeze({ short: "Test", full: "Testing" }),
-      awaiting_implementation: Object.freeze({ short: "AwImpl", full: "Awaiting implementation" }),
+      awaiting_implementation: Object.freeze({ short: "Await", full: "Awaiting implementation" }),
       done: Object.freeze({ short: "Done", full: "Done" }),
     }),
     ru: Object.freeze({
@@ -154,6 +154,29 @@
     ));
   }
 
+  function workspaceTaskSectionsForPanel(tasks, workspaceId, streamId) {
+    const workspaceTasks = workspaceTasksForPanel(tasks, workspaceId);
+    const normalizedStreamId = String(streamId ?? "").trim();
+    if (!normalizedStreamId) {
+      return Object.freeze({
+        streamTasks: [],
+        workspaceTasks,
+        total: workspaceTasks.length,
+      });
+    }
+    const streamTasks = workspaceTasks.filter((task) => (
+      String(task?.streamId ?? "").trim() === normalizedStreamId
+    ));
+    const remainingWorkspaceTasks = workspaceTasks.filter((task) => (
+      String(task?.streamId ?? "").trim() !== normalizedStreamId
+    ));
+    return Object.freeze({
+      streamTasks,
+      workspaceTasks: remainingWorkspaceTasks,
+      total: workspaceTasks.length,
+    });
+  }
+
   function sameSnapshotValue(left, right) {
     if (Object.is(left, right)) return true;
     try {
@@ -170,6 +193,7 @@
       columnOrder: Array.isArray(payload.columnOrder) ? payload.columnOrder.slice() : [],
       notesComment: String(payload.notesComment ?? ""),
       selectedWorkspaceId: payload.selectedWorkspaceId ?? null,
+      selectedStreamId: payload.selectedStreamId ?? null,
       provider: payload.provider === "claude" ? "claude" : "codex",
     };
     const tasksChanged = !sameSnapshotValue(current.tasks ?? [], next.tasks);
@@ -185,7 +209,8 @@
       panelChanged: !initialized
         || tasksChanged
         || workspacesChanged
-        || (current.selectedWorkspaceId ?? null) !== next.selectedWorkspaceId,
+        || (current.selectedWorkspaceId ?? null) !== next.selectedWorkspaceId
+        || (current.selectedStreamId ?? null) !== next.selectedStreamId,
       openTaskChanged: !initialized || tasksChanged,
     };
   }
@@ -325,6 +350,7 @@
     taskWorkLogEntries,
     taskWorkflowPresentation,
     tasksForMode,
+    workspaceTaskSectionsForPanel,
     workspaceTasksForPanel,
   });
 
@@ -333,8 +359,8 @@
   const completedToggle = document.querySelector("[data-task-board-completed-toggle]");
   const statusLanguageButtons = Array.from(document.querySelectorAll?.("[data-task-status-language]") ?? []);
   const workspacePanel = document.querySelector("[data-workspace-task-panel]");
+  const streamPanelList = document.querySelector("[data-stream-task-list]");
   const workspacePanelList = document.querySelector("[data-workspace-task-list]");
-  const workspacePanelTitle = document.querySelector("[data-workspace-task-title]");
   const activityTaskHeading = document.querySelector("[data-activity-task-heading]");
   const taskCardModal = document.querySelector("[data-task-card-modal]");
   const taskCardSource = document.querySelector("[data-task-card-source]");
@@ -402,6 +428,7 @@
     columnOrder: [],
     notesComment: "",
     selectedWorkspaceId: null,
+    selectedStreamId: null,
     provider: "codex",
     statusLanguage: storedTaskStatusLanguage(),
     completedOnly: false,
@@ -1014,22 +1041,31 @@
 
   function renderWorkspacePanel() {
     const workspace = workspaceById(state.selectedWorkspaceId);
-    const tasks = workspaceTasksForPanel(state.tasks, workspace?.id);
+    const sections = workspaceTaskSectionsForPanel(
+      state.tasks,
+      workspace?.id,
+      state.selectedStreamId,
+    );
     if (activityTaskHeading) {
       activityTaskHeading.textContent = window.AgentHubActivityRailLayout.countedActivityHeading(
         "Задачи",
-        tasks.length,
+        sections.total,
       );
     }
     workspacePanel.hidden = !workspace;
     if (!workspace) return;
-    workspacePanelTitle.textContent = `Задачи · ${workspace.name}`;
+    streamPanelList.replaceChildren();
     workspacePanelList.replaceChildren();
-    if (!tasks.length) {
-      workspacePanelList.append(node("p", { class: "workspace-task-empty", text: "Нет назначенных задач" }));
-      return;
+    if (!sections.streamTasks.length) {
+      streamPanelList.append(node("p", { class: "workspace-task-empty", text: "Нет задач потока" }));
+    } else {
+      for (const task of sections.streamTasks) streamPanelList.append(taskCard(task, { compact: true }));
     }
-    for (const task of tasks) workspacePanelList.append(taskCard(task, { compact: true }));
+    if (!sections.workspaceTasks.length) {
+      workspacePanelList.append(node("p", { class: "workspace-task-empty", text: "Нет задач Workspace" }));
+    } else {
+      for (const task of sections.workspaceTasks) workspacePanelList.append(taskCard(task, { compact: true }));
+    }
   }
 
   document.querySelector("[data-task-start-close]")?.addEventListener("click", closeStart);
@@ -1108,6 +1144,17 @@
   });
 
   window.AgentHubTaskBoard = Object.freeze({
+    setSelectedContext({ workspaceId, streamId } = {}) {
+      const nextWorkspaceId = String(workspaceId ?? "").trim() || null;
+      const nextStreamId = String(streamId ?? "").trim() || null;
+      if (
+        state.selectedWorkspaceId === nextWorkspaceId
+        && state.selectedStreamId === nextStreamId
+      ) return;
+      state.selectedWorkspaceId = nextWorkspaceId;
+      state.selectedStreamId = nextStreamId;
+      renderWorkspacePanel();
+    },
     setSelectedWorkspace(workspaceId) {
       const nextWorkspaceId = String(workspaceId ?? "").trim() || null;
       if (state.selectedWorkspaceId === nextWorkspaceId) return;

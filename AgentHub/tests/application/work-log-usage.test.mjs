@@ -9,6 +9,7 @@ import {
   applyWorkLogUsage,
   buildWorkLogAccountUsageSummary,
   buildWorkLogUsageHistory,
+  formatWorkLogUsage,
   groupWorkLogUsageByWorkspace,
   normalizeWorkLogId,
   projectWorkLogAccountUsage,
@@ -43,6 +44,12 @@ async function rm(...args) {
 
 async function projectedJournal(store) {
   return String((await store.journalSnapshot())?.html ?? "");
+}
+
+async function projectedJournalTurns(store) {
+  return Object.values((await store.journalSnapshot())?.turns ?? {})
+    .map(String)
+    .join("\n");
 }
 
 async function persistedLedger(store) {
@@ -106,6 +113,20 @@ test("usage history keeps the raw ImageGen estimate but excludes it from account
   assert.ok(Math.abs(
     history.points.reduce((sum, point) => sum + point.credits - point.tokenCredits, 0),
   ) < 1e-9);
+});
+
+test("journal keeps estimated credits in the total without rendering a separate category", () => {
+  const formatted = formatWorkLogUsage({
+    total: 4_140.65,
+    input: 0,
+    cache: 0,
+    output: 0,
+    reasoning: 0,
+    estimate: 4_140.65,
+  });
+
+  assert.match(formatted, /^Итого 4,1 kcr(?:<br>|$)/u);
+  assert.doesNotMatch(formatted, /ImageGen|Оценка/u);
 });
 
 test("context probes count in statistics but stay hidden from journal and search", () => {
@@ -2330,10 +2351,11 @@ test("a fresh usage store reprojects an existing work log with its persisted led
     const store = new WorkLogUsageStore({ ledgerFile });
     assert.deepEqual(await store.project(workLogFile), { projected: true });
     const projected = await projectedJournal(store);
+    const projectedTurns = await projectedJournalTurns(store);
     assert.match(projected, /data-task-usage><span data-usage-label>Итого<\/span> <span [^>]*data-kilo-usage[^>]*>219,6 cr<\/span> <span data-usage-percent>\(100%\)<\/span>/);
-    assert.match(projected, /data-work-log-turn-body>Сохранённый результат<\/div>/);
-    assert.match(projected, /<strong>Запрос:<\/strong> Сохранённый вопрос/);
-    assert.doesNotMatch(projected, /response-annotations|Старый ответ/);
+    assert.match(projectedTurns, /data-work-log-turn-body>Сохранённый результат<\/div>/);
+    assert.match(projectedTurns, /<strong>Запрос:<\/strong> Сохранённый вопрос/);
+    assert.doesNotMatch(projectedTurns, /response-annotations|Старый ответ/);
     assert.doesNotMatch(projected, /data-mega-usage[^>]*>[^<]*cr/);
     const persisted = await persistedLedger(store);
     assert.equal(Object.values(persisted.turns)[0].prompt, "Сохранённый вопрос");
@@ -2398,9 +2420,10 @@ test("usage store backfills exact model and Fast tier before recalculating credi
       projected: true,
     });
     const projected = await projectedJournal(store);
+    const projectedTurns = await projectedJournalTurns(store);
     assert.match(projected, /Итого<\/span> <span [^>]*data-kilo-usage[^>]*>125 cr<\/span>/);
     assert.match(
-      projected,
+      projectedTurns,
       /<div data-work-log-turn-facts><div data-work-log-turn-pricing>gpt-5\.4 · Fast ×2<\/div><div data-work-log-turn-context><strong>Длит\.:<\/strong>/,
     );
     const persisted = await persistedLedger(store);
@@ -2474,7 +2497,7 @@ test("usage store backfills a verified image generation estimate and reprojects 
     assert.equal(stored.estimatedCredits, 90);
     assert.equal(stored.imageGenerationCount, 1);
     const projected = await projectedJournal(store);
-    assert.doesNotMatch(projected, /ImageGen:/u);
+    assert.doesNotMatch(projected, /ImageGen:|Оценка:/u);
     assert.deepEqual(await store.missingImageGenerationEstimateTurns(), []);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -2757,8 +2780,11 @@ test("automatic batch records many historical turns and projects once", async ()
     const ledger = await persistedLedger(store);
     assert.equal(Object.keys(ledger.turns).length, 2);
     const projected = await projectedJournal(store);
-    assert.match(projected, /Ответ 1/u);
-    assert.match(projected, /Ответ 2/u);
+    const projectedTurns = await projectedJournalTurns(store);
+    assert.match(projected, /Ход 1/u);
+    assert.match(projected, /Ход 2/u);
+    assert.match(projectedTurns, /Ответ 1/u);
+    assert.match(projectedTurns, /Ответ 2/u);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -3257,12 +3283,13 @@ test("automatic journal records a stopped turn even when usage is unavailable", 
       workLogFile,
     });
     const projected = await projectedJournal(store);
+    const projectedTurns = await projectedJournalTurns(store);
     assert.match(projected, /Codex - Остановленная задача/);
     assert.match(projected, /12:01 — нет данных/);
     assert.match(projected, /data-work-log-turn-title>Ход остановлен<\/span>/);
-    assert.match(projected, /data-work-log-turn-prompt><strong>Запрос:<\/strong> Сделай работу<\/div>/);
-    assert.doesNotMatch(projected, /data-work-log-turn-diff/u);
-    assert.doesNotMatch(projected, /data-work-log-turn-files>[\s\S]*stopped\.mjs/u);
+    assert.match(projectedTurns, /data-work-log-turn-prompt><strong>Запрос:<\/strong> Сделай работу<\/div>/);
+    assert.doesNotMatch(projectedTurns, /data-work-log-turn-diff/u);
+    assert.doesNotMatch(projectedTurns, /data-work-log-turn-files>[\s\S]*stopped\.mjs/u);
     const ledger = await persistedLedger(store);
     assert.equal(Object.values(ledger.turns)[0].usageReported, false);
     assert.match(Object.values(ledger.turns)[0].diff, /stopped = true/u);
@@ -3296,7 +3323,7 @@ test("automatic journal marks only the image-generated turn while task and day t
     });
     const projected = await projectedJournal(store);
     assert.match(projected, /Итого<\/span> <span [^>]*data-kilo-usage[^>]*>12,5 cr<\/span>/);
-    assert.doesNotMatch(projected, /ImageGen:/u);
+    assert.doesNotMatch(projected, /ImageGen:|Оценка:/u);
     assert.match(projected, /12:03 — <span data-kilo-usage data-usage-credits="12.5">12,5 cr<\/span>/);
     assert.doesNotMatch(projected, /≈/u);
     assert.doesNotMatch(projected, /Итого<\/span> ≈/);

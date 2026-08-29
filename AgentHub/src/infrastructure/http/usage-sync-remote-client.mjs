@@ -28,6 +28,41 @@ function jsonBody(value) {
   return Buffer.from(JSON.stringify(value), "utf8");
 }
 
+export const DEFAULT_USAGE_SYNC_PUSH_BODY_BYTES = 512 * 1024;
+
+export function usageSyncPushChunks(snapshot, {
+  maxBodyBytes = DEFAULT_USAGE_SYNC_PUSH_BODY_BYTES,
+} = {}) {
+  const limit = Math.max(256, Math.floor(Number(maxBodyBytes) || 0));
+  const events = Array.isArray(snapshot?.events) ? snapshot.events : [];
+  const emptySnapshot = { ...snapshot, events: [] };
+  const envelopeBytes = jsonBody(emptySnapshot).byteLength;
+  if (envelopeBytes > limit) {
+    throw new Error(`Usage sync snapshot envelope exceeds ${limit} bytes`);
+  }
+  if (!events.length) return [emptySnapshot];
+
+  const chunks = [];
+  let chunkEvents = [];
+  let chunkBytes = envelopeBytes;
+  for (const event of events) {
+    const eventBytes = jsonBody(event).byteLength;
+    if (envelopeBytes + eventBytes > limit) {
+      throw new Error(`Usage sync event exceeds ${limit} bytes`);
+    }
+    const separatorBytes = chunkEvents.length ? 1 : 0;
+    if (chunkBytes + separatorBytes + eventBytes > limit) {
+      chunks.push({ ...snapshot, events: chunkEvents });
+      chunkEvents = [];
+      chunkBytes = envelopeBytes;
+    }
+    chunkBytes += (chunkEvents.length ? 1 : 0) + eventBytes;
+    chunkEvents.push(event);
+  }
+  if (chunkEvents.length) chunks.push({ ...snapshot, events: chunkEvents });
+  return chunks;
+}
+
 async function parseJsonResponse(response) {
   const text = await response.text();
   let payload = null;
@@ -49,12 +84,14 @@ export class UsageSyncRemoteClient {
   #identityStore;
   #fetch;
   #now;
+  #maxPushBodyBytes;
 
   constructor({
     serverUrl,
     identityStore,
     fetchImpl = globalThis.fetch,
     now = () => new Date(),
+    maxPushBodyBytes = DEFAULT_USAGE_SYNC_PUSH_BODY_BYTES,
   } = {}) {
     this.#serverUrl = normalizeServerUrl(serverUrl);
     if (!this.#serverUrl) throw new TypeError("UsageSyncRemoteClient requires a serverUrl");
@@ -67,6 +104,7 @@ export class UsageSyncRemoteClient {
     this.#identityStore = identityStore;
     this.#fetch = fetchImpl;
     this.#now = now;
+    this.#maxPushBodyBytes = maxPushBodyBytes;
   }
 
   get serverUrl() {
@@ -111,17 +149,35 @@ export class UsageSyncRemoteClient {
   }
 
   async push(snapshot) {
-    const body = jsonBody(snapshot);
-    const response = await this.#fetch(`${this.#serverUrl}/api/usage`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json; charset=utf-8",
-        "X-AgentHub-Device-Id": this.#identityStore.deviceId,
-        "X-AgentHub-Signature": this.#identityStore.sign(body),
-      },
-      body,
-    });
-    return parseJsonResponse(response);
+    const chunks = usageSyncPushChunks(snapshot, { maxBodyBytes: this.#maxPushBodyBytes });
+    let lastResult = null;
+    const aggregate = {
+      ok: true,
+      deviceId: this.#identityStore.deviceId,
+      added: 0,
+      updated: 0,
+      unchanged: 0,
+      rejected: 0,
+      requests: chunks.length,
+    };
+    for (const chunk of chunks) {
+      const body = jsonBody(chunk);
+      const response = await this.#fetch(`${this.#serverUrl}/api/usage`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json; charset=utf-8",
+          "X-AgentHub-Device-Id": this.#identityStore.deviceId,
+          "X-AgentHub-Signature": this.#identityStore.sign(body),
+        },
+        body,
+      });
+      lastResult = await parseJsonResponse(response);
+      aggregate.ok = aggregate.ok && lastResult?.ok !== false;
+      for (const field of ["added", "updated", "unchanged", "rejected"]) {
+        aggregate[field] += Math.max(0, Number(lastResult?.[field]) || 0);
+      }
+    }
+    return chunks.length === 1 ? lastResult : aggregate;
   }
 
   async pull({ sinceRevision = null } = {}) {

@@ -108,6 +108,7 @@ export function createRunAccountingComposition({
       provider: "claude",
       threadId: run.threadId,
       turnId: transcriptTurn?.turnId || run.turnId || randomUUID(),
+      runTurnId: run.turnId,
       projectRoot: run.projectRoot,
       taskTitle: runTaskTitle(run),
       status,

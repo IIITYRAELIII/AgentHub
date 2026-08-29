@@ -70,6 +70,10 @@
       + Math.max(0, Number(gap) || 0) * Math.max(0, heights.length - 1);
   }
 
+  function taskPanelHasCards(taskPanel) {
+    return Boolean(taskPanel?.querySelector?.(".board-task-card"));
+  }
+
   function shouldSeparateActivityColumns({
     autoSeparate = true,
     alwaysSeparate = false,
@@ -154,14 +158,13 @@
     const taskToggle = documentRef.querySelector("[data-activity-task-toggle]");
     const streamToggle = documentRef.querySelector("[data-activity-rail-toggle]");
     const taskPanel = documentRef.querySelector("[data-workspace-task-panel]");
-    const taskList = documentRef.querySelector("[data-workspace-task-list]");
     const streamColumn = documentRef.querySelector("[data-activity-stream-column]");
     const content = documentRef.querySelector(".activity-rail-content");
     const resizer = documentRef.querySelector("[data-activity-column-resizer]");
     const workspace = rail?.closest?.("[data-workspace]");
     if (
       !root || !rail || !head || !taskToggle || !streamToggle || !streamColumn
-      || !taskPanel || !taskList || !content || !resizer || !workspace
+      || !taskPanel || !content || !resizer || !workspace
     ) return null;
 
     const widthProbe = documentRef.createElement("span");
@@ -218,9 +221,16 @@
         });
     };
 
-    const naturalPanelHeight = (panel, listSelector) => verticalChrome(panel)
+    const naturalTaskSectionHeight = (section) => verticalChrome(section)
+      + Array.from(section.children).reduce((height, child) => (
+        height + (child.matches?.(".workspace-task-list") ? naturalListHeight(child) : outerHeight(child))
+      ), 0);
+
+    const naturalPanelHeight = (panel) => verticalChrome(panel)
       + Array.from(panel.children).reduce((height, child) => (
-        height + (child.matches?.(listSelector) ? naturalListHeight(child) : outerHeight(child))
+        height + (child.matches?.(".workspace-task-section")
+          ? naturalTaskSectionHeight(child)
+          : outerHeight(child))
       ), 0);
 
     const naturalStreamHeight = () => verticalChrome(streamColumn)
@@ -234,7 +244,7 @@
       ), 0);
 
     const combinedContentHeight = () => naturalStreamHeight()
-      + naturalPanelHeight(taskPanel, ".workspace-task-list");
+      + naturalPanelHeight(taskPanel);
 
     const intrinsicToggleWidth = (toggle) => {
       const style = windowRef.getComputedStyle(toggle);
@@ -321,7 +331,7 @@
 
     const sync = () => {
       const tasksAvailable = !taskPanel.hidden;
-      const tasksPresent = Boolean(taskList.querySelector(".board-task-card"));
+      const tasksPresent = taskPanelHasCards(taskPanel);
       const columnCollapsed = tasksCollapsed || rail.hasAttribute("data-collapsed");
       const separate = resolveActivityColumnSeparation({
         autoSeparate,
@@ -479,6 +489,7 @@
     shouldSeparateActivityColumns,
     storedColumnRatio,
     storedBoolean,
+    taskPanelHasCards,
   });
 
   installActivityRailLayout();

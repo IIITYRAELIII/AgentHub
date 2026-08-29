@@ -27,3 +27,36 @@ test("Claude accounting resolves transcript path without loading history", async
 
   assert.deepEqual(readOptions, { includeHistory: false });
 });
+
+test("Claude accounting preserves Hub run identity beside transcript identity", async () => {
+  let projected = null;
+  const accounting = createRunAccountingComposition({
+    runJournal: {
+      projectTurn: async (completion) => {
+        projected = completion;
+        return completion;
+      },
+    },
+    refreshTaskDiff: async () => {},
+    runTaskTitle: () => "Task",
+    readClaudeSession: async () => ({ transcriptPath: "claude-session.jsonl" }),
+    scanClaudeTranscriptFile: async () => ({
+      turns: [{
+        turnId: "transcript-turn",
+        completedAt: "2026-08-30T00:00:00.000Z",
+        usage: {},
+        usageReported: false,
+      }],
+    }),
+  });
+
+  await accounting.projectClaudeRunToWorkLog({
+    threadId: "claude-thread",
+    turnId: "hub-run-turn",
+    projectRoot: "C:\\Project",
+    startedAt: "2026-08-30T00:00:00.000Z",
+  }, { answer: "Готово" });
+
+  assert.equal(projected.turnId, "transcript-turn");
+  assert.equal(projected.runTurnId, "hub-run-turn");
+});

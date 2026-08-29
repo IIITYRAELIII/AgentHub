@@ -128,6 +128,58 @@ test("Claude transcript attachment turn cannot duplicate its managed terminal co
   assert.equal(history[0].answer, "Ошибка Claude Code: лимит исчерпан");
 });
 
+test("Claude transcript plain turn reuses its managed provider user identity", async () => {
+  const filePath = await storeFile();
+  const store = new LocalTaskSyncStore({ filePath });
+  await store.load();
+  const claudeTask = { ...task, provider: "claude", threadId: "claude-thread" };
+  const managed = {
+    id: "managed-turn",
+    prompt: "123",
+    answer: "Получил «123». Что нужно сделать?",
+    status: "completed",
+    active: false,
+    completed: true,
+    messages: [
+      {
+        itemId: "provider-user-uuid",
+        clientUserMessageId: "client-command-123",
+        role: "user",
+        text: "123",
+      },
+      {
+        itemId: "managed-turn:agent:final",
+        role: "agent",
+        text: "Получил «123». Что нужно сделать?",
+      },
+    ],
+  };
+  const transcript = {
+    id: "provider-user-uuid",
+    prompt: "123",
+    answer: "Получил «123». Что нужно сделать?",
+    status: "completed",
+    active: false,
+    completed: true,
+    messages: [
+      { itemId: "provider-user-uuid", role: "user", text: "123" },
+      {
+        itemId: "provider-agent-uuid",
+        role: "agent",
+        text: "Получил «123». Что нужно сделать?",
+      },
+    ],
+  };
+
+  store.recordHistory(claudeTask, [managed, transcript]);
+
+  const history = store.history(claudeTask);
+  assert.equal(history.length, 1);
+  assert.equal(history[0].id, "managed-turn");
+  assert.equal(history[0].messages[0].clientUserMessageId, "client-command-123");
+  assert.equal(history[0].answer, "Получил «123». Что нужно сделать?");
+});
+
 test("local task sync restores the latest model from the journal projection", async () => {
   const filePath = await storeFile();
   const databaseFile = path.join(path.dirname(filePath), "journal.sqlite");

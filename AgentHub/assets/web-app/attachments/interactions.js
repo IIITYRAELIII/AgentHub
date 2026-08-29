@@ -235,17 +235,6 @@
     return ["open", "copy", "save"];
   }
 
-  function inlineResourceActions(resource, { canRevealLocalObject = false } = {}) {
-    if (resource?.kind !== "link") return [];
-    if (!String(resource?.localPath ?? "").trim() || !canRevealLocalObject) return [];
-    return ["reveal"];
-  }
-
-  function appendLinkWithOptionalAction(target, link, action = null) {
-    target.append(link);
-    if (action != null) target.append(action);
-  }
-
   function localWorkspaceFilesAvailable({ vscode = false, protocol = "", hostname = "" } = {}) {
     if (vscode) return true;
     return ["http:", "https:"].includes(String(protocol).toLowerCase())
@@ -258,8 +247,6 @@
     fileReferenceBases,
     galleryIndex,
     imageGallery,
-    appendLinkWithOptionalAction,
-    inlineResourceActions,
     isImageAttachment,
     linkResource,
     localWorkspaceFilesAvailable,

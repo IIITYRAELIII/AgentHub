@@ -183,7 +183,6 @@ test("snapshot transport maps persisted stream UI settings into selection", asyn
     streamCardWidthMode: "fixed",
     streamCardFixedWidth: 240,
     streamCardGapEnabled: true,
-    showInlineFileRevealButtons: true,
     pinnedWorkspaceStreams: { "workspace-1": ["stream-architect"] },
     quickMessages: {
       global: [{ label: "Пинг", text: "пинг" }],

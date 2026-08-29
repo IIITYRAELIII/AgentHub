@@ -56,7 +56,7 @@ test("Dashboard presents every workflow status in the selected language", async 
 
   assert.deepEqual(
     statuses.map((workflowStatus) => view.taskWorkflowPresentation({ workflowStatus }, "en").short),
-    ["New", "InProg", "Test", "AwImpl", "Done"],
+    ["New", "InProg", "Test", "Await", "Done"],
   );
   assert.deepEqual(
     statuses.map((workflowStatus) => view.taskWorkflowPresentation({ workflowStatus }, "ru").short),
@@ -150,6 +150,27 @@ test("workspace side panel keeps every current Task available for scrolling", as
   );
 });
 
+test("workspace side panel separates selected Stream Tasks from remaining Workspace Tasks", async () => {
+  const { workspaceTaskSectionsForPanel } = await loadBoardView();
+  const tasks = [
+    { id: "stream-one", status: "open", bucket: "workspace", workspaceId: "workspace-1", streamId: "stream-1" },
+    { id: "workspace-unassigned", status: "open", bucket: "workspace", workspaceId: "workspace-1", streamId: null },
+    { id: "workspace-other-stream", status: "open", bucket: "workspace", workspaceId: "workspace-1", streamId: "stream-2" },
+    { id: "stream-two", status: "started", bucket: "workspace", workspaceId: "workspace-1", streamId: "stream-1" },
+    { id: "completed", status: "done", bucket: "workspace", workspaceId: "workspace-1", streamId: "stream-1" },
+    { id: "foreign", status: "open", bucket: "workspace", workspaceId: "workspace-2", streamId: "stream-1" },
+  ];
+
+  const sections = workspaceTaskSectionsForPanel(tasks, "workspace-1", "stream-1");
+
+  assert.deepEqual(Array.from(sections.streamTasks, (task) => task.id), ["stream-one", "stream-two"]);
+  assert.deepEqual(
+    Array.from(sections.workspaceTasks, (task) => task.id),
+    ["workspace-unassigned", "workspace-other-stream"],
+  );
+  assert.equal(sections.total, 4);
+});
+
 test("unchanged run snapshots do not rebuild Dashboard columns", async () => {
   const { taskBoardSnapshotChanges } = await loadBoardView();
   const current = {
@@ -158,6 +179,7 @@ test("unchanged run snapshots do not rebuild Dashboard columns", async () => {
     columnOrder: ["backlog", "workspace:workspace-1"],
     notesComment: "Notes",
     selectedWorkspaceId: "workspace-1",
+    selectedStreamId: "stream-1",
     provider: "codex",
   };
 
@@ -172,6 +194,13 @@ test("unchanged run snapshots do not rebuild Dashboard columns", async () => {
   });
   assert.equal(selection.boardChanged, false);
   assert.equal(selection.panelChanged, true);
+
+  const streamSelection = taskBoardSnapshotChanges(current, {
+    ...current,
+    selectedStreamId: "stream-2",
+  });
+  assert.equal(streamSelection.boardChanged, false);
+  assert.equal(streamSelection.panelChanged, true);
 });
 
 test("Dashboard Notes have no default subtitle", async () => {

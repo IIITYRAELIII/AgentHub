@@ -79,10 +79,15 @@ function lazyDayShell({ date, summary }) {
 }
 
 function turnReferenceBefore(source, detailsStart) {
-  const prefix = source.slice(Math.max(0, detailsStart - 1_200), detailsStart);
-  const opening = [...prefix.matchAll(
-    /<div\b[^>]*data-work-log-turn-entry\b[^>]*>/giu,
-  )].at(-1)?.[0] ?? "";
+  /* details — первый дочерний элемент turn-entry. Ищем начало именно соседнего
+     opening tag, а не в произвольном окне: JSON-атрибуты skills/MCP у больших
+     ходов сами могут быть длиннее прежних 1200 символов. */
+  const openingStart = source.lastIndexOf("<div", detailsStart);
+  const openingEnd = openingStart >= 0 ? source.indexOf(">", openingStart) : -1;
+  const opening = openingEnd >= 0 && openingEnd < detailsStart
+    ? source.slice(openingStart, openingEnd + 1)
+    : "";
+  if (!/\bdata-work-log-turn-entry\b/iu.test(opening)) return "";
   const attribute = (name) => opening.match(
     new RegExp(`\\b${name}="([^"]+)"`, "iu"),
   )?.[1] ?? "";
@@ -166,21 +171,27 @@ export function buildLazyJournalPayload(markdown, {
   const days = {};
   const turns = {};
   for (const section of sections) {
-    if (eagerDates.has(section.date)) {
-      initialSections.push(section.html);
-      continue;
-    }
     /* Раздел уже свёрнут до оболочки: его содержимое лежит в базе, и повторная
        проекция обязана оставить оболочку как есть. Иначе фрагмент дня будет
        перезаписан пустой оболочкой и день перестанет открываться. */
-    if (section.html.includes("data-lazy-day")) {
+    /* Проверяем только корневой opening tag дня. Строка data-lazy-day может
+       законно встретиться в запросе или финале про разработку самого журнала;
+       прежний includes тогда ошибочно оставлял весь такой день eager. */
+    if (/^<details\b[^>]*\bdata-lazy-day="/iu.test(section.html)) {
       initialSections.push(section.html);
       continue;
     }
     const shallow = shallowDaySection(section.html);
+    Object.assign(turns, shallow.turns);
+    /* Свежие дни нужны сразу, но полные запросы и финалы каждого хода не нужны
+       до раскрытия карточки. Иначе большой день попадает в initial HTML целиком,
+       а дневная группировка клонирует это тяжёлое дерево ещё раз. */
+    if (eagerDates.has(section.date)) {
+      initialSections.push(shallow.html);
+      continue;
+    }
     initialSections.push(lazyDayShell(section));
     days[section.date] = shallow.html;
-    Object.assign(turns, shallow.turns);
   }
   return {
     html: [rateLimits, accountPanel, ...initialSections].filter(Boolean).join("\n"),

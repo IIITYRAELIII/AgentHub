@@ -2300,8 +2300,11 @@ function renderActivityRail() {
     || !activityRecentList
     || !activityRecentEmpty
   ) return;
-  const selectedWorkspaceId = String(currentTask()?.workspaceId ?? "").trim() || null;
-  window.AgentHubTaskBoard?.setSelectedWorkspace(selectedWorkspaceId);
+  const selectedTask = currentTask();
+  window.AgentHubTaskBoard?.setSelectedContext({
+    workspaceId: String(selectedTask?.workspaceId ?? "").trim() || null,
+    streamId: String(selectedTask?.streamId ?? "").trim() || null,
+  });
   const entries = activityStreamEntries(state.tasks);
   const sections = window.AgentHubStreamTabs.activityStreamSections(entries);
   activityRailCount.textContent = "Активно";
@@ -4633,36 +4636,6 @@ function desktopFileLink(raw, fileContext = currentFileLinkContext()) {
   };
 }
 
-function inlineFileRevealButton(targetLink, name = "") {
-  const resource = resourceInteractions.linkResource({
-    href: targetLink?.href ?? "#",
-    localPath: targetLink?.localPath,
-    name,
-  });
-  const actions = resourceInteractions.inlineResourceActions?.(resource, {
-    canRevealLocalObject: localWorkspaceFilesAvailable,
-  }) ?? [];
-  if (!actions.includes("reveal")) return null;
-  const label = "Показать в Проводнике";
-  const button = el("button", {
-    type: "button",
-    class: "inline-file-reveal",
-    title: `${label}: ${resource.localPath}`,
-    "aria-label": label,
-    text: label,
-  });
-  button.dataset.agentHubResourceAction = "reveal";
-  button.dataset.agentHubLocalLink = resource.localPath;
-  button.dataset.agentHubResourceHref = resource.href;
-  button.dataset.agentHubResourceName = resource.name;
-  return button;
-}
-
-function appendInlineFileReveal(target, targetLink, name = "") {
-  const button = inlineFileRevealButton(targetLink, name);
-  if (button) target.append(button);
-}
-
 function markdownLink(raw, fileContext = currentFileLinkContext()) {
   const source = String(raw ?? "").trim();
   const value = source.startsWith("<") && source.endsWith(">")
@@ -4715,11 +4688,7 @@ function appendInlineMarkdown(target, source, fileContext = currentFileLinkConte
           rel: "noopener noreferrer",
         });
         if (targetLink.localPath) link.dataset.agentHubLocalLink = targetLink.localPath;
-        resourceInteractions.appendLinkWithOptionalAction(
-          target,
-          link,
-          inlineFileRevealButton(targetLink, citation?.label ?? "Файл"),
-        );
+        target.append(link);
       } else {
         target.append(el("span", attributes));
       }
@@ -4736,11 +4705,7 @@ function appendInlineMarkdown(target, source, fileContext = currentFileLinkConte
           title: targetLink.localPath,
         }, [code]);
         link.dataset.agentHubLocalLink = targetLink.localPath;
-        resourceInteractions.appendLinkWithOptionalAction(
-          target,
-          link,
-          inlineFileRevealButton(targetLink, value),
-        );
+        target.append(link);
       } else {
         target.append(code);
       }
@@ -4765,11 +4730,7 @@ function appendInlineMarkdown(target, source, fileContext = currentFileLinkConte
         });
         if (targetLink.taskId) link.dataset.agentHubTaskReference = targetLink.taskId;
         if (targetLink.localPath) link.dataset.agentHubLocalLink = targetLink.localPath;
-        resourceInteractions.appendLinkWithOptionalAction(
-          target,
-          link,
-          inlineFileRevealButton(targetLink, parts[1]),
-        );
+        target.append(link);
       } else {
         target.append(document.createTextNode(token));
       }
@@ -5999,7 +5960,7 @@ function renderAttachmentStrip(items, { readOnly, taskReferenceList = false }) {
         new: "New",
         in_progress: "InProg",
         testing: "Test",
-        awaiting_implementation: "AwImpl",
+        awaiting_implementation: "Await",
         done: "Done",
       })[reference.workflowStatus] ?? "New";
       const card = el(readOnly ? "button" : "div", {
@@ -7133,9 +7094,6 @@ document.addEventListener("change", (event) => {
   if (!toggle) return;
   const key = toggle.dataset.toggle;
   const value = toggle.checked;
-  if (key === "showInlineFileRevealButtons") {
-    root.dataset.inlineFileReveal = value ? "on" : "off";
-  }
   if (key === "includeClaudeUsage") {
     toggle.checked = Boolean(state.selection[key]);
   } else {
@@ -8042,15 +8000,11 @@ const AgentHub = {
   /** Текущий выбор: { model, reasoning, mode, project, autoApprove,
    *  includeClaudeUsage, activityRecentMinutes, streamOrderMode,
    *  streamCardWidthMode, streamCardFixedWidth, streamCardGapEnabled,
-   *  showInlineFileRevealButtons,
    *  pinnedWorkspaceStreams, quickMessages }. */
   setSelection(selection) {
     const incoming = { ...(selection ?? {}) };
     for (const key of state.pendingSelections) {
       if (Object.hasOwn(incoming, key) && !sameData(incoming[key], state.selection[key])) delete incoming[key];
-    }
-    if (Object.hasOwn(incoming, "showInlineFileRevealButtons")) {
-      root.dataset.inlineFileReveal = incoming.showInlineFileRevealButtons === true ? "on" : "off";
     }
     const claudeUsageChanged = Object.hasOwn(incoming, "includeClaudeUsage")
       && state.selection.includeClaudeUsage !== incoming.includeClaudeUsage;

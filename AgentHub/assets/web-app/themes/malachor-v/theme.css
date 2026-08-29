@@ -185,6 +185,14 @@ html[data-background-override="true"][data-background="malachor-v-shattered-hori
   --hub-background-size: cover;
 }
 
+html[data-background-override="true"][data-background="malachor-v-trayus-core"] {
+  --hub-background-color: #010203;
+  --hub-background-image: linear-gradient(rgb(0 0 0 / 18%), rgb(0 0 0 / 18%)), linear-gradient(90deg, rgb(0 0 0 / 52%), transparent 22% 78%, rgb(0 0 0 / 52%)), linear-gradient(180deg, rgb(0 0 0 / 18%), transparent 36% 72%, rgb(0 0 0 / 48%)), var(--malachor-v-trayus-core-image);
+  --hub-background-position: center;
+  --hub-background-repeat: no-repeat;
+  --hub-background-size: cover;
+}
+
 html[data-theme="malachor-v"] body {
   font-stretch: semi-condensed;
 }

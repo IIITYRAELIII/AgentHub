@@ -92,7 +92,6 @@
       streamCardWidthMode: settings.streamCardWidthMode,
       streamCardFixedWidth: settings.streamCardFixedWidth,
       streamCardGapEnabled: settings.streamCardGapEnabled,
-      showInlineFileRevealButtons: settings.showInlineFileRevealButtons === true,
       pinnedWorkspaceStreams: settings.pinnedWorkspaceStreams ?? {},
       quickMessages: settings.quickMessages ?? { global: [], streams: {}, workspaces: {} },
       ...(streamSettings ?? {}),
