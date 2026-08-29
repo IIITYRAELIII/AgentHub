@@ -2,6 +2,12 @@ import { emptyTokenUsage, formatTurnTokenUsage } from "../../domain/token-usage.
 import { turnEndKey } from "../../application/turn-end-notifications.mjs";
 import { conciseTurnTitle } from "../../application/turn-title.mjs";
 
+function exactRunChangedFiles(run) {
+  if (run?.rolloutChangeTrackingKnown !== true) return [];
+  return [...new Set(Array.isArray(run.rolloutChangedFiles) ? run.rolloutChangedFiles : [])]
+    .sort((left, right) => left.localeCompare(right));
+}
+
 export class CodexRunFinalizer {
   constructor({
     turnStarts,
@@ -12,7 +18,6 @@ export class CodexRunFinalizer {
     runTitle,
     currentChatId,
     defaultNotificationChatId,
-    changedFiles,
     saveState,
     commitTerminal,
     deliverTerminal,
@@ -30,7 +35,6 @@ export class CodexRunFinalizer {
     this.runTitle = runTitle;
     this.currentChatId = currentChatId;
     this.defaultNotificationChatId = defaultNotificationChatId;
-    this.changedFiles = changedFiles;
     this.saveState = saveState;
     this.commitTerminal = commitTerminal;
     this.deliverTerminal = deliverTerminal;
@@ -102,7 +106,7 @@ export class CodexRunFinalizer {
       clientUserMessageId: run.clientUserMessageId ?? null,
       userMessages: run.userMessages,
       finalAnswer: String(answer ?? "").trim(),
-      changedFiles: this.changedFiles(run),
+      changedFiles: exactRunChangedFiles(run),
       diff: run.latestDiff ?? "",
       gitBaseline: run.gitBaseline ?? null,
       skillsUsed: tracker.toolMetricsKnown === true ? tracker.skillsUsed ?? [] : run.skillsUsed ?? [],

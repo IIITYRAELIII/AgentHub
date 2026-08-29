@@ -88,32 +88,48 @@ test("task Git diff uses the real repository and excludes pre-existing dirt", as
   }
 });
 
-test("task Git result inventories changes independently of provider reporting", async () => {
+test("task Git result includes only exact-turn files across a dirty workspace", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "task-evidence-result-"));
   const dataDir = path.join(root, "runtime");
-  const repo = path.join(root, "repo");
+  const ownedRepo = path.join(root, "Owned");
+  const parallelRepo = path.join(root, "Parallel");
   try {
-    await mkdir(repo, { recursive: true });
-    await git(repo, "init");
-    await git(repo, "config", "user.email", "test@example.invalid");
-    await git(repo, "config", "user.name", "Test");
-    await writeFile(path.join(repo, "modified.txt"), "base\n", "utf8");
-    await writeFile(path.join(repo, "deleted.txt"), "base\n", "utf8");
-    await git(repo, "add", ".");
-    await git(repo, "commit", "-m", "base");
-    const baseline = await captureTaskGitBaseline(repo, dataDir, "evidence");
+    for (const repo of [ownedRepo, parallelRepo]) {
+      await mkdir(repo, { recursive: true });
+      await git(repo, "init");
+      await git(repo, "config", "user.email", "test@example.invalid");
+      await git(repo, "config", "user.name", "Test");
+      await writeFile(path.join(repo, "modified.txt"), "base\n", "utf8");
+      await writeFile(path.join(repo, "deleted.txt"), "base\n", "utf8");
+      await writeFile(path.join(repo, "parallel.txt"), "base\n", "utf8");
+      await git(repo, "add", ".");
+      await git(repo, "commit", "-m", "base");
+    }
+    const baseline = await captureTaskGitBaseline(root, dataDir, "evidence");
 
-    await writeFile(path.join(repo, "modified.txt"), "changed\n", "utf8");
-    await writeFile(path.join(repo, "added.txt"), "added\n", "utf8");
-    await rm(path.join(repo, "deleted.txt"));
-    const result = await captureTaskGitResult(baseline, dataDir, "evidence");
+    await writeFile(path.join(ownedRepo, "modified.txt"), "task change\n", "utf8");
+    await writeFile(path.join(ownedRepo, "added.txt"), "added\n", "utf8");
+    await rm(path.join(ownedRepo, "deleted.txt"));
+    await writeFile(path.join(ownedRepo, "parallel.txt"), "same repo, other turn\n", "utf8");
+    await writeFile(path.join(parallelRepo, "parallel.txt"), "other worktree\n", "utf8");
+    const result = await captureTaskGitResult(baseline, dataDir, "evidence", [{
+      projectRoot: ownedRepo,
+      path: "modified.txt",
+    }, {
+      projectRoot: ownedRepo,
+      path: "added.txt",
+    }, {
+      projectRoot: ownedRepo,
+      path: "deleted.txt",
+    }]);
 
     assert.deepEqual(result.changedFiles.map(({ path: file, operation }) => [file, operation]), [
       ["added.txt", "added"],
       ["deleted.txt", "deleted"],
       ["modified.txt", "modified"],
     ]);
-    assert.notEqual(result.snapshot.tree, baseline.tree);
+    assert.equal(result.snapshot.repositories.length, 1);
+    assert.equal(result.snapshot.repositories[0].repoRoot, await realpath(ownedRepo));
   } finally {
     await rm(root, { recursive: true, force: true });
   }

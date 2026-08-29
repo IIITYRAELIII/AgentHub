@@ -149,6 +149,22 @@ test("Codex lifecycle prefers turn-attributed files over shared-tree baseline ch
   assert.deepEqual(f.recorded[0].changedFiles, ["src/owned.mjs"]);
 });
 
+test("Codex lifecycle does not attribute baseline-only files to a turn", async () => {
+  const f = await fixture({
+    run: { gitBaseline: { roots: [] } },
+    taskGitDiff: async () => "diff",
+    changedFilesForRun: () => ["themes/foreign.css"],
+  });
+  await f.controller.handle(request("turn-start", f.projectRoot, { prompt: "Do work" }));
+  await f.controller.handle(request("turn-complete", f.projectRoot, {
+    status: "completed",
+    finalAnswer: "Готово",
+    changedFiles: [],
+  }));
+
+  assert.deepEqual(f.recorded[0].changedFiles, []);
+});
+
 test("Codex lifecycle duplicate completion updates journal without redelivery", async () => {
   const f = await fixture({ delivered: true, completion: null });
   const result = await f.controller.handle(request("turn-complete", f.projectRoot, {

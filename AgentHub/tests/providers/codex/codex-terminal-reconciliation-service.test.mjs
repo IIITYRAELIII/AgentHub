@@ -159,6 +159,20 @@ test("unhooked terminal Codex turn is recorded, saved and delivered once", async
   assert.equal(calls.some(([name, turnId]) => name === "deliver" && turnId === "turn-1"), true);
 });
 
+test("terminal reconciliation keeps only exact rollout file receipts", async () => {
+  const { service, completions } = harness({
+    changedFilesForRun: () => ["foreign.mjs"],
+  });
+  await service.reconcile(thread, project, {
+    turnId: "turn-files",
+    status: "completed",
+    completedAt: "2026-08-04T10:00:00.000Z",
+    usageResult: usage({ changedFiles: ["owned.mjs"] }),
+  });
+
+  assert.deepEqual(completions[0].changedFiles, ["owned.mjs"]);
+});
+
 test("delivered provisional turn is corrected without a second notification", async () => {
   const pendingMessage = { text: "Исправленный ответ", title: "Исправлено" };
   const { service, calls, delivered, pending, completions } = harness({

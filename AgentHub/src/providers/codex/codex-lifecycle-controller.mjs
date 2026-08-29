@@ -180,7 +180,6 @@ export class CodexLifecycleController {
     }
     const alreadyDelivered = d.turnEndNotifications.hasDelivered(deliveredIdentity);
     const taskTitle = await d.taskTitle({ ...identity, run });
-    let baselineChangedFiles = [];
     let turnDiff = String(payload.diff ?? "");
     if (turnStart?.gitBaseline) {
       const baselineDiff = await d.taskGitDiff(
@@ -189,19 +188,14 @@ export class CodexLifecycleController {
         `turn-complete-${payload.turnId}`,
       ) ?? "";
       turnDiff = baselineDiff || turnDiff;
-      baselineChangedFiles = d.changedFilesForRun({
-        projectRoot: project.path,
-        gitBaseline: turnStart.gitBaseline,
-        latestDiff: turnDiff,
-      });
     }
     const payloadChangedFiles = [...new Set(
       Array.isArray(payload.changedFiles) ? payload.changedFiles : [],
     )];
-    const attributedChangedFiles = payloadChangedFiles.length
-      ? payloadChangedFiles
-      : d.changedFilesForRun(run);
-    const changedFiles = attributedChangedFiles.length ? attributedChangedFiles : baselineChangedFiles;
+    const rolloutChangedFiles = run?.rolloutChangeTrackingKnown === true
+      ? [...new Set(Array.isArray(run.rolloutChangedFiles) ? run.rolloutChangedFiles : [])]
+      : [];
+    const changedFiles = payloadChangedFiles.length ? payloadChangedFiles : rolloutChangedFiles;
     const completion = d.turnEndNotifications.recordCompletion({
       provider: "codex",
       threadId: identity.threadId,

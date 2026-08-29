@@ -410,11 +410,8 @@ export async function createHubInfrastructure({
     workspaceCatalogStore,
     taskBoard,
     taskReleaseService,
-    captureTaskResult: (baseline, turnId) => (
-      captureTaskGitResult(baseline, config.dataDir, `task-release-result-${turnId}`)
-    ),
-    captureResultSnapshot: (projectRoot, turnId) => (
-      captureTaskGitBaseline(projectRoot, config.dataDir, `task-release-result-${turnId}`)
+    captureTaskResult: (baseline, turnId, files) => (
+      captureTaskGitResult(baseline, config.dataDir, `task-release-result-${turnId}`, files)
     ),
     findProject,
     defaultProjectRoot: config.projectRoot,

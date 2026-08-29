@@ -50,15 +50,13 @@ function fixture({
     workspaceCatalogStore,
     taskBoard,
     taskReleaseService,
-    captureTaskResult: async (_baseline, turnId) => turnId === "empty-provider-files-turn" ? ({
-      snapshot: { repoRoot: "C:/workspace", tree: "b".repeat(40) },
-      changedFiles: [{
-        projectRoot: path.resolve("C:/workspace"),
-        path: "AgentHub/from-git.js",
-        operation: "modified",
-      }],
-    }) : null,
-    captureResultSnapshot: async () => ({ repoRoot: "C:/workspace", tree: "b".repeat(40) }),
+    captureTaskResult: async (_baseline, turnId, files) => {
+      calls.push(["capture-task-result", { turnId, files }]);
+      return {
+        snapshot: { repoRoot: "C:/workspace", tree: "b".repeat(40) },
+        changedFiles: files.map(({ turnId: _turnId, ...file }) => file),
+      };
+    },
     findProject: (root) => root === "C:/workspace" ? { path: root } : null,
     defaultProjectRoot: "C:/workspace",
     projectionProjectRoots: ["C:/workspace"],
@@ -284,6 +282,12 @@ test("RunJournalService writes only exact Task-bound terminal evidence", async (
     turnId: "turn",
   }]);
   assert.equal(evidence.status, "completed");
+  assert.deepEqual(calls.find(([name]) => name === "capture-task-result")?.[1].files, [{
+    projectRoot: path.resolve("C:/workspace"),
+    path: "AgentHub/app.js",
+    operation: "modified",
+    turnId: "turn",
+  }]);
 
   await service.projectTurn({
     provider: "codex",
@@ -297,7 +301,7 @@ test("RunJournalService writes only exact Task-bound terminal evidence", async (
   assert.equal(failedEvidence.status, "failed");
 });
 
-test("RunJournalService records Git evidence when provider file reporting is empty", async () => {
+test("RunJournalService does not infer Task ownership from a dirty workspace", async () => {
   const { service, calls } = fixture();
   await service.projectTurn({
     provider: "codex",
@@ -307,15 +311,10 @@ test("RunJournalService records Git evidence when provider file reporting is emp
     changedFiles: [],
     diff: "",
     status: "completed",
-  }, { title: "Captured from baseline" });
+  }, { title: "No exact file receipts" });
 
-  const evidence = calls.find(([name]) => name === "task-turn")?.[1];
-  assert.deepEqual(evidence.changedFiles, [{
-    projectRoot: path.resolve("C:/workspace"),
-    path: "AgentHub/from-git.js",
-    operation: "modified",
-    turnId: "empty-provider-files-turn",
-  }]);
+  assert.equal(calls.some(([name]) => name === "capture-task-result"), false);
+  assert.equal(calls.some(([name]) => name === "task-turn"), false);
 });
 
 test("RunJournalService does not register changed files for a regular Workspace", async () => {

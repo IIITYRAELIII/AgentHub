@@ -92,7 +92,6 @@ export class RunJournalService {
     taskBoard = null,
     taskReleaseService = null,
     captureTaskResult = null,
-    captureResultSnapshot = null,
     findProject,
     defaultProjectRoot,
     projectionProjectRoots,
@@ -108,7 +107,6 @@ export class RunJournalService {
     this.taskBoard = taskBoard;
     this.taskReleaseService = taskReleaseService;
     this.captureTaskResult = typeof captureTaskResult === "function" ? captureTaskResult : null;
-    this.captureResultSnapshot = typeof captureResultSnapshot === "function" ? captureResultSnapshot : null;
     this.findProject = findProject;
     this.defaultProjectRoot = defaultProjectRoot;
     this.projectionProjectRoots = projectionProjectRoots;
@@ -280,27 +278,25 @@ export class RunJournalService {
           const gitBaseline = repositorySnapshots(bound.gitBaseline).length
             ? bound.gitBaseline
             : completion.gitBaseline;
+          const scopedFiles = reportedFiles.length ? exactTaskChangedFiles({
+            projectRoot: project.path,
+            files: reportedFiles,
+            operations: changedFileOperations(completion.diff),
+            turnId: completion.turnId,
+            baseline: gitBaseline,
+          }) : [];
           let captured = null;
-          if (this.captureTaskResult && repositorySnapshots(gitBaseline).length) {
+          if (scopedFiles.length && this.captureTaskResult && repositorySnapshots(gitBaseline).length) {
             try {
-              captured = await this.captureTaskResult(gitBaseline, completion.turnId);
+              captured = await this.captureTaskResult(gitBaseline, completion.turnId, scopedFiles);
             } catch (error) {
               this.logger.error(`Cannot capture terminal Task Git result for ${completion.turnId}:`, error.message);
             }
           }
           const changedFiles = captured
             ? (captured.changedFiles ?? []).map((file) => ({ ...file, turnId: completion.turnId }))
-            : reportedFiles.length ? exactTaskChangedFiles({
-                projectRoot: project.path,
-                files: reportedFiles,
-                operations: changedFileOperations(completion.diff),
-                turnId: completion.turnId,
-                baseline: gitBaseline,
-              }) : [];
+            : [];
           if (changedFiles.length) {
-            const resultSnapshot = captured?.snapshot ?? (this.captureResultSnapshot
-              ? await this.captureResultSnapshot(project.path, completion.turnId)
-              : null);
             this.taskBoard.recordTaskTurn({
               taskId,
               provider: completion.provider,
@@ -311,7 +307,7 @@ export class RunJournalService {
               status: completion.status,
               changedFiles,
               gitBaseline,
-              resultSnapshot,
+              resultSnapshot: captured?.snapshot ?? null,
             });
           }
           const terminalStatus = String(completion.status ?? "").trim().toLowerCase();

@@ -28,7 +28,6 @@ export class CodexTerminalReconciliationService {
     readTurnUsage,
     taskGitDiff,
     dataDir,
-    changedFilesForRun,
     projectTurn,
     taskTitle,
     defaultChatId,
@@ -49,7 +48,6 @@ export class CodexTerminalReconciliationService {
     this.readTurnUsage = readTurnUsage;
     this.taskGitDiff = taskGitDiff;
     this.dataDir = dataDir;
-    this.changedFilesForRun = changedFilesForRun;
     this.projectTurn = projectTurn;
     this.taskTitle = taskTitle;
     this.defaultChatId = defaultChatId;
@@ -119,19 +117,13 @@ export class CodexTerminalReconciliationService {
         ) ?? ""
         : "";
       const turnDiff = baselineDiff || usageResult.diff || "";
-      const changedFiles = [...new Set([
-        ...(usageResult.changedFiles ?? []).flatMap((file) => {
-          const absolute = path.resolve(String(file));
-          const relative = path.relative(project.path, absolute);
-          if (!relative || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return [];
-          return [relative.replaceAll(path.sep, "/")];
-        }),
-        ...this.changedFilesForRun({
-          projectRoot: project.path,
-          gitBaseline: turnStart?.gitBaseline,
-          latestDiff: turnDiff,
-        }),
-      ])];
+      const changedFiles = [...new Set((usageResult.changedFiles ?? []).flatMap((file) => {
+        const value = String(file ?? "").trim();
+        const absolute = path.isAbsolute(value) ? path.resolve(value) : path.resolve(project.path, value);
+        const relative = path.relative(project.path, absolute);
+        if (!value || !relative || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return [];
+        return [relative.replaceAll(path.sep, "/")];
+      }))];
       if (accountingThread.isSubagent || terminal?.historical === true) {
         await this.#projectHistorical({
           identity,

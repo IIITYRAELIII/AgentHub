@@ -23,13 +23,14 @@ set of changed files:
 `Array<{projectRoot,path,operation:"added"|"modified"|"deleted",turnId:null|string}>`.
 
 `projectRoot` is the containing Git repository root and `path` is relative to
-that root. Rows are sorted and deduplicated by repository and path. Provider
-path candidates with migration operation `observed` are audit metadata only and
-never become authoritative changed files. A no-diff turn creates no changed-file
-or release evidence. Provider-reported file lists are hints only: terminal
-evidence is derived independently from the exact Git worktree tree captured at
-claim and the exact terminal worktree tree. An empty provider list therefore
-cannot suppress real Task evidence.
+that root. Rows are sorted and deduplicated by repository and path. Exact
+provider file-mutation receipts define which paths the bound turn owns; text,
+timestamps, the current dirty tree and files changed by other turns are never
+ownership fallbacks. Provider path candidates with migration operation
+`observed` are audit metadata only and never become authoritative changed
+files. Git independently derives the actual operation and result tree by
+applying only those owned paths to the claim-time baseline tree. A turn without
+exact file-mutation receipts creates no changed-file or release evidence.
 
 The same exact binding stores captured baseline Git trees. A completed or
 interrupted terminal projection records matching result trees and may backfill

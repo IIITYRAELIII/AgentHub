@@ -141,10 +141,58 @@ function changedFilesFromNameStatus(value, repoRoot) {
   });
 }
 
-async function captureRepositoryResult(repository, dataDir, token) {
+function normalizedRepositoryKey(value) {
+  const resolved = path.resolve(value);
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
+function scopedRepositoryFiles(repositories, ownedFiles) {
+  const byRoot = new Map(repositories.map((repository) => [
+    normalizedRepositoryKey(repository.repoRoot),
+    { repository, files: new Set() },
+  ]));
+  for (const file of ownedFiles) {
+    const entry = byRoot.get(normalizedRepositoryKey(file?.projectRoot));
+    if (!entry) throw new Error("Task file does not belong to its captured Git baseline");
+    const repoRoot = path.resolve(entry.repository.repoRoot);
+    const candidate = String(file?.path ?? "").replaceAll("\\", "/");
+    const absolute = path.resolve(repoRoot, candidate);
+    const relative = path.relative(repoRoot, absolute);
+    if (!candidate || path.isAbsolute(candidate) || relative === ".."
+      || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+      throw new Error("Task file must be relative to its captured Git repository");
+    }
+    entry.files.add(relative.split(path.sep).join("/"));
+  }
+  return [...byRoot.values()]
+    .filter((entry) => entry.files.size)
+    .map((entry) => ({ ...entry, files: [...entry.files].sort((left, right) => left.localeCompare(right)) }));
+}
+
+async function scopedWorktreeTree(repository, files, dataDir, token) {
   const repoRoot = path.resolve(repository.repoRoot);
-  const tree = await worktreeTree(repoRoot, dataDir, `${token}-after`);
-  const indexTree = await gitText(["write-tree"], { cwd: repoRoot }).catch(() => null);
+  const indexDir = path.join(dataDir, "task-diff-indexes");
+  const indexPath = path.join(indexDir, `${token}.index`);
+  await mkdir(indexDir, { recursive: true });
+  const env = { GIT_INDEX_FILE: indexPath };
+  try {
+    await gitText(["read-tree", repository.tree], { cwd: repoRoot, env });
+    await gitText([
+      "add", "-A", "--",
+      ...files.map((file) => `:(top,literal)${file}`),
+    ], { cwd: repoRoot, env, timeoutMs: 60_000 });
+    return await gitText(["write-tree"], { cwd: repoRoot, env });
+  } finally {
+    await Promise.all([
+      rm(indexPath, { force: true }),
+      rm(`${indexPath}.lock`, { force: true }),
+    ].map((operation) => operation.catch(() => {})));
+  }
+}
+
+async function captureRepositoryResult(repository, files, dataDir, token) {
+  const repoRoot = path.resolve(repository.repoRoot);
+  const tree = await scopedWorktreeTree(repository, files, dataDir, `${token}-after`);
   const result = await runGit([
     "-c", "core.quotePath=false",
     "diff", "--name-status", "--find-renames", repository.tree, tree, "--",
@@ -160,7 +208,7 @@ async function captureRepositoryResult(repository, dataDir, token) {
     snapshot: {
       repoRoot,
       tree,
-      indexTree,
+      indexTree: tree,
       capturedAt: new Date().toISOString(),
     },
     changedFiles: changedFilesFromNameStatus(result.stdout, repoRoot),
@@ -182,13 +230,16 @@ export async function captureTaskGitBaseline(projectRoot, dataDir, token = rando
   };
 }
 
-export async function captureTaskGitResult(baseline, dataDir, token = randomUUID()) {
+export async function captureTaskGitResult(baseline, dataDir, token = randomUUID(), ownedFiles = []) {
   const repositories = Array.isArray(baseline?.repositories)
     ? baseline.repositories
     : baseline?.repoRoot ? [baseline] : [];
-  if (!repositories.length) return null;
-  const results = await Promise.all(repositories.map(
-    (repository, index) => captureRepositoryResult(repository, dataDir, `${token}-${index}`),
+  const scopes = scopedRepositoryFiles(repositories, Array.isArray(ownedFiles) ? ownedFiles : []);
+  if (!scopes.length) return null;
+  const results = await Promise.all(scopes.map(
+    ({ repository, files }, index) => captureRepositoryResult(
+      repository, files, dataDir, `${token}-${index}`,
+    ),
   ));
   return {
     snapshot: Array.isArray(baseline?.repositories) ? {

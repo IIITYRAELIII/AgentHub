@@ -61,6 +61,7 @@ function run() {
     promptPreview: "later prompt",
     userMessages: [{ text: "later prompt" }, { text: "follow-up" }],
     latestDiff: "",
+    rolloutChangedFiles: ["file.mjs"],
     rolloutChangeTrackingKnown: true,
   };
 }
@@ -131,6 +132,8 @@ test("CodexRunFinalizer captures a Git diff when rollout tracking is unavailable
     state.events.findIndex(([name]) => name === "diff")
       < state.events.findIndex(([name]) => name === "commit"),
   );
+  const recorded = state.events.find(([name]) => name === "record")[1];
+  assert.deepEqual(recorded.changedFiles, []);
   assert.equal(state.events.filter(([name]) => name === "commit").length, 1);
 });
 
