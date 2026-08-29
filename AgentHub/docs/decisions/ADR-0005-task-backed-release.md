@@ -4,7 +4,8 @@
 
 Accepted. Supersedes the live ChangeSet authority and migration boundary in
 ADR-0003; refines ADR-0004 cleanup and Architect-role persistence. Workflow
-status freedom is refined by ADR-0006.
+status freedom is refined by ADR-0006, and aggregate mutability after freeze is
+refined by ADR-0007.
 
 ## Decision
 

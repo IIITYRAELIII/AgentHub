@@ -69,7 +69,7 @@ test("restarting a closed Task clears its completion timestamp", async (t) => {
   assert.equal(restarted.completedAt, null);
 });
 
-test("generic Task completion closes without forging release workflow status", async (t) => {
+test("generic Task statuses remain directly editable", async (t) => {
   const store = await fixture(t);
   const created = store.create({ text: "Провести задачу по статусам" });
   assert.equal(created.workflowStatus, "new");
@@ -77,14 +77,14 @@ test("generic Task completion closes without forging release workflow status", a
   const started = store.markStarted(created.id, { workspaceId: "workspace-1", streamId: "stream-1" });
   assert.equal(started.workflowStatus, "in_progress");
   assert.equal(store.setWorkflowStatus(created.id, "testing").workflowStatus, "testing");
-  assert.throws(
-    () => store.setWorkflowStatus(created.id, "awaiting_implementation"),
-    /requires verified/u,
+  assert.equal(
+    store.setWorkflowStatus(created.id, "awaiting_implementation").workflowStatus,
+    "awaiting_implementation",
   );
 
   const completed = store.complete(created.id);
   assert.equal(completed.status, "done");
-  assert.equal(completed.workflowStatus, "testing");
+  assert.equal(completed.workflowStatus, "awaiting_implementation");
   assert.notEqual(completed.completedAt, null);
 
   const reopened = store.setWorkflowStatus(created.id, "testing");
@@ -392,47 +392,76 @@ test("terminal Task evidence backfills a claim baseline captured after claim", a
   }]);
 });
 
-test("Frozen Task rejects every aggregate mutation until exact release completion", async (t) => {
+test("Frozen evidence stays historical while the Task remains editable", async (t) => {
   const store = await fixture(t);
   const projectRoot = path.resolve("D:/repo");
   const frozen = store.create({ text: "Frozen" });
-  const mutable = store.create({ text: "Mutable" });
   store.move(frozen.id, { bucket: "workspace", workspaceId: "workspace-1" });
-  store.move(mutable.id, { bucket: "workspace", workspaceId: "workspace-1" });
   const frozenSnapshot = freezeTask(store, frozen.id, projectRoot);
 
-  const mutations = [
-    () => store.updatePresentation(frozen.id, { title: "Changed" }),
-    () => store.move(frozen.id, { bucket: "backlog" }),
-    () => store.applyTriage(frozen.id, { correctedText: "Changed", category: "task", confidence: 1 }),
-    () => store.prepareStart(frozen.id, { workspaceId: "workspace-1", streamId: "stream-1", requestId: "start" }),
-    () => store.markStarted(frozen.id, { workspaceId: "workspace-1", streamId: "stream-1" }),
-    () => store.claim(frozen.id, {
-      workspaceId: "workspace-1", streamId: "stream-1",
-      provider: "codex", threadId: "thread-1", turnId: "turn-2",
-    }),
-    () => store.complete(frozen.id),
-    () => store.remove(frozen.id),
-  ];
-  for (const mutate of mutations) assert.throws(mutate, /Frozen|frozen|immutable/u);
-  assert.throws(
-    () => store.reassignWorkspace("workspace-1", "workspace-2"),
-    /Frozen|frozen|immutable/u,
-  );
-  assert.equal(store.task(mutable.id).workspaceId, "workspace-1");
+  const testing = store.setWorkflowStatus(frozen.id, "testing");
+  const updated = store.updatePresentation(frozen.id, { title: "Changed" });
+  const completed = store.complete(frozen.id);
 
-  store.move(mutable.id, { bucket: "workspace", workspaceId: "workspace-1", beforeId: frozen.id });
-  assert.equal(store.task(frozen.id).revision, frozenSnapshot.revision);
-  assert.equal(store.task(frozen.id).releaseManifestHash, frozenSnapshot.releaseManifestHash);
+  assert.equal(testing.workflowStatus, "testing");
+  assert.equal(updated.title, "Changed");
+  assert.equal(completed.status, "done");
+  assert.equal(completed.frozenRevision, frozenSnapshot.frozenRevision);
+  assert.equal(completed.releaseManifestHash, frozenSnapshot.releaseManifestHash);
+  assert.ok(completed.revision > frozenSnapshot.revision);
+  assert.equal(store.releasePlan("workspace-1").candidates.length, 0);
+});
 
-  const plan = store.releasePlan("workspace-1");
-  const completed = store.completeRelease("workspace-1", {
-    expectedPlanRevision: plan.revision,
-    verificationEvidence: { publishedRevision: "f".repeat(40) },
+test("rolling a Task back clears its pending automatic freeze intent", async (t) => {
+  const store = await fixture(t);
+  const task = store.create({ text: "Rollback awaiting" });
+  const identity = {
+    workspaceId: "workspace-1", streamId: "stream-1",
+    provider: "codex", threadId: "thread-1", turnId: "turn-1",
+  };
+  store.move(task.id, { bucket: "workspace", workspaceId: "workspace-1" });
+  store.claim(task.id, identity);
+  assert.equal(store.requestWorkflowStatus(task.id, {
+    status: "awaiting_implementation",
+    provider: identity.provider,
+    threadId: identity.threadId,
+    turnId: identity.turnId,
+  }).workflowStatus, "awaiting_implementation");
+  assert.equal(store.claimedTaskForTurn(identity).requestedWorkflowStatus, "awaiting_implementation");
+
+  assert.equal(store.setWorkflowStatus(task.id, "testing").workflowStatus, "testing");
+  assert.equal(store.claimedTaskForTurn(identity).requestedWorkflowStatus, null);
+});
+
+test("recording evidence never overrides a user-selected workflow status", async (t) => {
+  const store = await fixture(t);
+  const projectRoot = path.resolve("D:/repo");
+  const task = store.create({ text: "Preserve status" });
+  const identity = {
+    workspaceId: "workspace-1", streamId: "stream-1",
+    provider: "codex", threadId: "thread-1", turnId: "turn-1",
+  };
+  store.move(task.id, { bucket: "workspace", workspaceId: "workspace-1" });
+  store.claim(task.id, {
+    ...identity,
+    gitBaseline: { repoRoot: projectRoot, tree: "a".repeat(40) },
   });
-  assert.equal(completed.released[0].id, frozen.id);
-  assert.equal(store.task(frozen.id).workflowStatus, "done");
-  assert.equal(store.task(frozen.id).status, "done");
+  store.setWorkflowStatus(task.id, "done");
+  const recorded = store.recordTaskTurn({
+    taskId: task.id,
+    provider: identity.provider,
+    threadId: identity.threadId,
+    turnId: identity.turnId,
+    projectRoot,
+    summary: "Evidence captured",
+    changedFiles: [{ projectRoot, path: "src/app.mjs", operation: "modified" }],
+    resultSnapshot: { repoRoot: projectRoot, tree: "b".repeat(40) },
+  });
+
+  assert.equal(recorded.workflowStatus, "done");
+  assert.equal(recorded.changedFiles.length, 1);
+  assert.equal(recorded.workLog.length, 1);
+  assert.equal(recorded.repositoryRevisions.length, 1);
 });
 
 function createLegacyReleaseSchema(database) {

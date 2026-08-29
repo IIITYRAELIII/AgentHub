@@ -339,7 +339,7 @@ export class HubMcpService {
       tool("hub_task_claim", "Bind a Dashboard Task to the exact current provider turn and make the current Stream its executor.", {
         task_id: { type: "string" },
       }, ["task_id"]),
-      tool("hub_task_status_update", "Change the workflow status of any Dashboard task. Done remains visible and does not close the task.", {
+      tool("hub_task_status_update", "Always change a Dashboard Task to any valid workflow status. Freeze, evidence, Workspace policy, role and release state never block a status transition. Done remains visible and does not close the Task.", {
         task_id: { type: "string" },
         status: { type: "string", enum: ["new", "in_progress", "testing", "awaiting_implementation", "done"] },
       }, ["task_id", "status"]),
@@ -770,18 +770,20 @@ export class HubMcpService {
   #updateTaskWorkflowStatus(context, { task_id: taskId, status } = {}) {
     const task = this.#task(context, taskId);
     const workflowStatus = requiredText(status, "task workflow status", 40);
-    const releaseEnabled = this.workspaceCatalog.workspace(context.workspaceId)?.settings?.releaseWorkflowEnabled === true;
-    if (releaseEnabled && workflowStatus === "awaiting_implementation") {
-      const run = this.#currentRun(context);
-      return compactTask(this.taskBoard.requestWorkflowStatus({
-        id: task.id,
-        status: workflowStatus,
-        provider: context.provider,
-        threadId: context.threadId,
-        turnId: run.turnId,
-      }));
-    }
-    return compactTask(this.taskBoard.setWorkflowStatus({ id: task.id, status: workflowStatus }));
+    const active = context.threadId ? this.#activeRuns().filter((run) => (
+      String(run?.provider ?? "").trim().toLowerCase() === context.provider
+      && String(run?.threadId ?? "").trim() === context.threadId
+      && String(run?.turnId ?? "").trim()
+      && run?.observer !== true
+    )) : [];
+    const run = active.length === 1 ? active[0] : null;
+    return compactTask(this.taskBoard.requestWorkflowStatus({
+      id: task.id,
+      status: workflowStatus,
+      provider: context.provider,
+      threadId: context.threadId,
+      turnId: run?.turnId ?? null,
+    }));
   }
 
   #isArchitect(context) {

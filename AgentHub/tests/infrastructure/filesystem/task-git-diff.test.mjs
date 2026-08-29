@@ -7,6 +7,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import {
   captureTaskGitBaseline,
+  captureTaskGitResult,
   cleanupTaskGitIndexes,
   resolveTaskGitRepoRoots,
   resolveTaskGitRepoRootsForFiles,
@@ -82,6 +83,37 @@ test("task Git diff uses the real repository and excludes pre-existing dirt", as
     assert.match(diff, /new-untracked\.txt/);
     assert.doesNotMatch(diff, /^\+pre-existing$/m);
     assert.doesNotMatch(diff, /old-untracked\.txt/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("task Git result inventories changes independently of provider reporting", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "task-evidence-result-"));
+  const dataDir = path.join(root, "runtime");
+  const repo = path.join(root, "repo");
+  try {
+    await mkdir(repo, { recursive: true });
+    await git(repo, "init");
+    await git(repo, "config", "user.email", "test@example.invalid");
+    await git(repo, "config", "user.name", "Test");
+    await writeFile(path.join(repo, "modified.txt"), "base\n", "utf8");
+    await writeFile(path.join(repo, "deleted.txt"), "base\n", "utf8");
+    await git(repo, "add", ".");
+    await git(repo, "commit", "-m", "base");
+    const baseline = await captureTaskGitBaseline(repo, dataDir, "evidence");
+
+    await writeFile(path.join(repo, "modified.txt"), "changed\n", "utf8");
+    await writeFile(path.join(repo, "added.txt"), "added\n", "utf8");
+    await rm(path.join(repo, "deleted.txt"));
+    const result = await captureTaskGitResult(baseline, dataDir, "evidence");
+
+    assert.deepEqual(result.changedFiles.map(({ path: file, operation }) => [file, operation]), [
+      ["added.txt", "added"],
+      ["deleted.txt", "deleted"],
+      ["modified.txt", "modified"],
+    ]);
+    assert.notEqual(result.snapshot.tree, baseline.tree);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

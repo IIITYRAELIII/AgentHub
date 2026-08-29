@@ -91,6 +91,7 @@ export class RunJournalService {
     workspaceCatalogStore = null,
     taskBoard = null,
     taskReleaseService = null,
+    captureTaskResult = null,
     captureResultSnapshot = null,
     findProject,
     defaultProjectRoot,
@@ -106,6 +107,7 @@ export class RunJournalService {
     this.workspaceCatalogStore = workspaceCatalogStore;
     this.taskBoard = taskBoard;
     this.taskReleaseService = taskReleaseService;
+    this.captureTaskResult = typeof captureTaskResult === "function" ? captureTaskResult : null;
     this.captureResultSnapshot = typeof captureResultSnapshot === "function" ? captureResultSnapshot : null;
     this.findProject = findProject;
     this.defaultProjectRoot = defaultProjectRoot;
@@ -274,22 +276,31 @@ export class RunJournalService {
           throw new Error("dashboardTaskId conflicts with the exact provider turn binding");
         }
         if (taskId) {
-          const files = Array.isArray(completion.changedFiles) ? completion.changedFiles : [];
-          if (files.length) {
-            const operations = changedFileOperations(completion.diff);
-            const gitBaseline = repositorySnapshots(bound.gitBaseline).length
-              ? bound.gitBaseline
-              : completion.gitBaseline;
-            const changedFiles = exactTaskChangedFiles({
-              projectRoot: project.path,
-              files,
-              operations,
-              turnId: completion.turnId,
-              baseline: gitBaseline,
-            });
-            const resultSnapshot = this.captureResultSnapshot
+          const reportedFiles = Array.isArray(completion.changedFiles) ? completion.changedFiles : [];
+          const gitBaseline = repositorySnapshots(bound.gitBaseline).length
+            ? bound.gitBaseline
+            : completion.gitBaseline;
+          let captured = null;
+          if (this.captureTaskResult && repositorySnapshots(gitBaseline).length) {
+            try {
+              captured = await this.captureTaskResult(gitBaseline, completion.turnId);
+            } catch (error) {
+              this.logger.error(`Cannot capture terminal Task Git result for ${completion.turnId}:`, error.message);
+            }
+          }
+          const changedFiles = captured
+            ? (captured.changedFiles ?? []).map((file) => ({ ...file, turnId: completion.turnId }))
+            : reportedFiles.length ? exactTaskChangedFiles({
+                projectRoot: project.path,
+                files: reportedFiles,
+                operations: changedFileOperations(completion.diff),
+                turnId: completion.turnId,
+                baseline: gitBaseline,
+              }) : [];
+          if (changedFiles.length) {
+            const resultSnapshot = captured?.snapshot ?? (this.captureResultSnapshot
               ? await this.captureResultSnapshot(project.path, completion.turnId)
-              : null;
+              : null);
             this.taskBoard.recordTaskTurn({
               taskId,
               provider: completion.provider,
@@ -306,7 +317,7 @@ export class RunJournalService {
           const terminalStatus = String(completion.status ?? "").trim().toLowerCase();
           if (bound?.requestedWorkflowStatus === "awaiting_implementation"
             && ["completed", "interrupted"].includes(terminalStatus)
-            && (files.length || bound.changedFiles?.length)) {
+            && (changedFiles.length || bound.changedFiles?.length)) {
             await this.taskReleaseService?.freezeRecorded?.({
               taskId,
               workspaceId: bound.workspaceId,

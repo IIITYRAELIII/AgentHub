@@ -38,7 +38,10 @@ import {
   buildTaskReleaseTreeEvidence,
   verifyReleaseChangeSetGitEvidence,
 } from "../infrastructure/filesystem/release-change-set-git-verifier.mjs";
-import { captureTaskGitBaseline } from "../infrastructure/filesystem/task-git-diff.mjs";
+import {
+  captureTaskGitBaseline,
+  captureTaskGitResult,
+} from "../infrastructure/filesystem/task-git-diff.mjs";
 import { SingleInstanceGuard } from "../infrastructure/process/instance-lock.mjs";
 import { captureProcess } from "../infrastructure/process/process-capture.mjs";
 import { RuntimeCommandServer } from "../infrastructure/process/runtime-command.mjs";
@@ -407,6 +410,9 @@ export async function createHubInfrastructure({
     workspaceCatalogStore,
     taskBoard,
     taskReleaseService,
+    captureTaskResult: (baseline, turnId) => (
+      captureTaskGitResult(baseline, config.dataDir, `task-release-result-${turnId}`)
+    ),
     captureResultSnapshot: (projectRoot, turnId) => (
       captureTaskGitBaseline(projectRoot, config.dataDir, `task-release-result-${turnId}`)
     ),

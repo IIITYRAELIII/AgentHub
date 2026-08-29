@@ -754,18 +754,10 @@ export class TaskBoardStore {
     }
   }
 
-  #assertTaskMutable(database, id) {
+  #taskRow(database, id) {
     const taskId = String(id ?? "").trim();
     const row = database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(taskId);
     if (!row) throw new Error("Task не найден");
-    const immutable = database.prepare(`
-      SELECT 1 FROM hub_task_release_state
-      WHERE task_id = ? AND frozen_revision IS NOT NULL
-      UNION ALL
-      SELECT 1 FROM hub_task_release_completions WHERE task_id = ?
-      LIMIT 1
-    `).get(taskId, taskId);
-    if (immutable) throw new Error("Frozen or released Task is immutable; only verified release completion may close it");
     return row;
   }
 
@@ -894,7 +886,7 @@ export class TaskBoardStore {
     return this.#withDatabase((database) => {
       const row = sourceTaskRow(database, { source, chatId, userId, messageId });
       if (!row) throw new Error("Задача для исходного сообщения не найдена");
-      this.#assertTaskMutable(database, row.id);
+      this.#taskRow(database, row.id);
       const details = parseJson(row.source_json);
       details.attachments = [...new Set([
         ...(Array.isArray(details.attachments) ? details.attachments : []),
@@ -912,7 +904,7 @@ export class TaskBoardStore {
     const file = String(attachment ?? "").trim();
     if (!taskId || !file) throw new Error("Не удалось определить задачу или вложение");
     return this.#withDatabase((database) => {
-      const row = this.#assertTaskMutable(database, taskId);
+      const row = this.#taskRow(database, taskId);
       const details = parseJson(row.source_json);
       details.attachments = [...new Set([
         ...(Array.isArray(details.attachments) ? details.attachments : []),
@@ -940,7 +932,7 @@ export class TaskBoardStore {
     return this.#withDatabase((database) => {
       const row = sourceTaskRow(database, { source, chatId, userId, messageId });
       if (!row) throw new Error("Задача для исходного сообщения не найдена");
-      this.#assertTaskMutable(database, row.id);
+      this.#taskRow(database, row.id);
       const currentDetails = parseJson(row.source_json);
       const currentBlocks = String(row.raw_text).match(/^--- Сообщение \d+ ·/gmu)?.length ?? 0;
       const priorText = currentBlocks
@@ -1004,7 +996,7 @@ export class TaskBoardStore {
     return this.#withDatabase((database) => {
       const row = sourceTaskRow(database, { source, chatId, userId, messageId });
       if (!row) throw new Error("Задача для исходного сообщения не найдена");
-      this.#assertTaskMutable(database, row.id);
+      this.#taskRow(database, row.id);
       const currentDetails = parseJson(row.source_json);
       const nextDetails = {
         ...currentDetails,
@@ -1080,7 +1072,7 @@ export class TaskBoardStore {
 
   markTriageRunning(id) {
     return this.#withDatabase((database) => {
-      this.#assertTaskMutable(database, id);
+      this.#taskRow(database, id);
       database.prepare(`
         UPDATE hub_board_tasks
         SET triage_status = 'running', triage_error = NULL, updated_at_ms = ?
@@ -1098,7 +1090,7 @@ export class TaskBoardStore {
       ? `${normalizedTitle}\n\n${normalizedDescription}`
       : normalizedTitle;
     return this.#withDatabase((database) => {
-      this.#assertTaskMutable(database, taskId);
+      this.#taskRow(database, taskId);
       const result = database.prepare(`
         UPDATE hub_board_tasks SET
           title = ?, description = ?, corrected_text = ?, presentation_source = 'manual',
@@ -1128,7 +1120,7 @@ export class TaskBoardStore {
     const normalizedBucket = normalizedTaskBucket(bucket);
     const numericConfidence = Math.max(0, Math.min(1, Number(confidence) || 0));
     return this.#withDatabase((database) => {
-      const current = this.#assertTaskMutable(database, taskId);
+      const current = this.#taskRow(database, taskId);
       const canAutoPlace = autoPlace
         && current.placement_source === "default"
         && current.bucket === "backlog"
@@ -1161,7 +1153,7 @@ export class TaskBoardStore {
 
   markTriageFailed(id, error) {
     return this.#withDatabase((database) => {
-      this.#assertTaskMutable(database, id);
+      this.#taskRow(database, id);
       database.prepare(`
         UPDATE hub_board_tasks
         SET triage_status = 'failed', triage_error = ?, updated_at_ms = ?
@@ -1173,7 +1165,7 @@ export class TaskBoardStore {
 
   retryTriage(id) {
     return this.#withDatabase((database) => {
-      this.#assertTaskMutable(database, id);
+      this.#taskRow(database, id);
       database.prepare(`
         UPDATE hub_board_tasks
         SET triage_status = 'pending', triage_error = NULL,
@@ -1192,7 +1184,7 @@ export class TaskBoardStore {
     if (normalizedBucket === "workspace" && !normalizedWorkspaceId) throw new Error("Выберите Workspace");
     return this.#withDatabase((database) => {
       const taskId = String(id ?? "").trim();
-      const current = this.#assertTaskMutable(database, taskId);
+      const current = this.#taskRow(database, taskId);
       const oldBucket = current.bucket;
       const oldWorkspaceId = current.workspace_id ?? null;
       database.exec("BEGIN IMMEDIATE");
@@ -1236,7 +1228,7 @@ export class TaskBoardStore {
       const allSourceIds = database.prepare(
         "SELECT id FROM hub_board_tasks WHERE workspace_id = ? ORDER BY id",
       ).all(sourceId).map((row) => row.id);
-      for (const taskId of allSourceIds) this.#assertTaskMutable(database, taskId);
+      for (const taskId of allSourceIds) this.#taskRow(database, taskId);
       const sourceIds = taskLocationRows(database, "workspace", sourceId).map((row) => row.id);
       const targetIds = taskLocationRows(database, "workspace", targetId).map((row) => row.id);
       database.exec("BEGIN IMMEDIATE");
@@ -1312,7 +1304,7 @@ export class TaskBoardStore {
     if (!normalizedRequestId) throw new Error("Task launch request id is required");
     const timestamp = this.now();
     return this.#withDatabase((database) => {
-      const current = this.#assertTaskMutable(database, taskId);
+      const current = this.#taskRow(database, taskId);
       const currentRequestId = String(current.start_request_id ?? "").trim();
       if (currentRequestId && currentRequestId !== normalizedRequestId) {
         throw new Error("Task launch is already pending; retry it with the original request_id");
@@ -1340,7 +1332,7 @@ export class TaskBoardStore {
     const normalizedRequestId = String(requestId ?? "").trim();
     if (!normalizedRequestId) throw new Error("Task launch request id is required");
     return this.#withDatabase((database) => {
-      this.#assertTaskMutable(database, taskId);
+      this.#taskRow(database, taskId);
       database.prepare(`
         UPDATE hub_board_tasks
         SET status = 'open', stream_id = NULL, start_request_id = NULL, start_stream_name = NULL,
@@ -1357,7 +1349,7 @@ export class TaskBoardStore {
     const timestamp = this.now();
     return this.#withDatabase((database) => {
       const normalizedRequestId = String(requestId ?? "").trim();
-      const current = this.#assertTaskMutable(database, id);
+      const current = this.#taskRow(database, id);
       if (normalizedRequestId && String(current.start_request_id ?? "") !== normalizedRequestId) {
         throw new Error("Task launch request does not match the prepared Task");
       }
@@ -1369,7 +1361,10 @@ export class TaskBoardStore {
           completed_at_ms = NULL, updated_at_ms = ?
         WHERE id = ?
       `).run(String(workspaceId), String(streamId), timestamp, timestamp, String(id));
-      const task = taskFromRow(database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(String(id)));
+      const task = this.#taskWithRelease(
+        database,
+        database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(String(id)),
+      );
       if (!task) throw new Error("Task не найден");
       return task;
     });
@@ -1378,12 +1373,15 @@ export class TaskBoardStore {
   complete(id) {
     const timestamp = this.now();
     return this.#withDatabase((database) => {
-      this.#assertTaskMutable(database, id);
+      this.#taskRow(database, id);
       database.prepare(`
         UPDATE hub_board_tasks
         SET status = 'done', completed_at_ms = ?, updated_at_ms = ? WHERE id = ?
       `).run(timestamp, timestamp, String(id));
-      const task = taskFromRow(database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(String(id)));
+      const task = this.#taskWithRelease(
+        database,
+        database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(String(id)),
+      );
       if (!task) throw new Error("Task не найден");
       return task;
     });
@@ -1391,22 +1389,28 @@ export class TaskBoardStore {
 
   setWorkflowStatus(id, status) {
     const workflowStatus = normalizedTaskWorkflowStatus(status);
-    if (workflowStatus === "awaiting_implementation") {
-      throw new Error("Task awaiting implementation requires verified hub_task_release_freeze evidence");
-    }
     const timestamp = this.now();
     return this.#withDatabase((database) => {
       const taskId = String(id);
-      const current = this.#assertTaskMutable(database, taskId);
+      const current = this.#taskRow(database, taskId);
       const lifecycleStatus = current.status === "done"
         ? (current.stream_id ? "started" : "open")
         : current.status;
+      if (workflowStatus !== "awaiting_implementation") {
+        database.prepare(`
+          UPDATE hub_task_turn_bindings SET requested_workflow_status = NULL
+          WHERE task_id = ? AND requested_workflow_status IS NOT NULL
+        `).run(taskId);
+      }
       database.prepare(`
         UPDATE hub_board_tasks
         SET status = ?, workflow_status = ?, completed_at_ms = NULL, updated_at_ms = ?
         WHERE id = ?
       `).run(lifecycleStatus, workflowStatus, timestamp, taskId);
-      return taskFromRow(database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(taskId));
+      return this.#taskWithRelease(
+        database,
+        database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(taskId),
+      );
     });
   }
 
@@ -1419,7 +1423,7 @@ export class TaskBoardStore {
     return this.#withDatabase((database) => {
       database.exec("BEGIN IMMEDIATE");
       try {
-      const current = this.#assertTaskMutable(database, taskId);
+      const current = this.#taskRow(database, taskId);
       if (String(current.workspace_id ?? "") !== String(workspaceId ?? "")) {
         throw new Error("Task is outside the current Workspace");
       }
@@ -1497,24 +1501,18 @@ export class TaskBoardStore {
     const workflowStatus = normalizedTaskWorkflowStatus(status);
     if (workflowStatus === "awaiting_implementation") {
       const identity = [provider, threadId, turnId].map((value) => String(value ?? "").trim());
-      if (identity.some((value) => !value)) throw new Error("awaiting intent requires an exact provider turn");
-      return this.#withDatabase((database) => {
-        this.#assertTaskMutable(database, id);
+      if (!identity.some((value) => !value)) this.#withDatabase((database) => {
+        this.#taskRow(database, id);
         const binding = database.prepare(`
           SELECT task_id FROM hub_task_turn_bindings
           WHERE provider = ? AND provider_thread_id = ? AND turn_id = ?
         `).get(...identity);
-        if (!binding || binding.task_id !== String(id)) {
-          throw new Error("awaiting intent requires hub_task_claim for the exact current turn");
+        if (binding?.task_id === String(id)) {
+          database.prepare(`
+            UPDATE hub_task_turn_bindings SET requested_workflow_status = 'awaiting_implementation'
+            WHERE provider = ? AND provider_thread_id = ? AND turn_id = ?
+          `).run(...identity);
         }
-        database.prepare(`
-          UPDATE hub_task_turn_bindings SET requested_workflow_status = 'awaiting_implementation'
-          WHERE provider = ? AND provider_thread_id = ? AND turn_id = ?
-        `).run(...identity);
-        return this.#taskWithRelease(
-          database,
-          database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(String(id)),
-        );
       });
     }
     return this.setWorkflowStatus(id, workflowStatus);
@@ -1538,7 +1536,7 @@ export class TaskBoardStore {
       if (!binding) throw new Error("terminal Task evidence requires an exact durable provider turn binding");
       const resolvedTaskId = String(taskId ?? binding.task_id).trim();
       if (binding.task_id !== resolvedTaskId) throw new Error("terminal Task identity conflicts with its exact turn binding");
-      this.#assertTaskMutable(database, resolvedTaskId);
+      this.#taskRow(database, resolvedTaskId);
       let baselineJson = String(binding.baseline_json ?? "{}");
       const recoveredBaselineJson = gitBaselineJson(gitBaseline);
       if (baselineJson === "{}" && recoveredBaselineJson !== "{}") {
@@ -1566,14 +1564,7 @@ export class TaskBoardStore {
       );
       this.#recordRepositoryRevisions(database, resolvedTaskId, baselineJson, resultSnapshot);
       database.prepare(`
-        UPDATE hub_board_tasks SET
-          workflow_status = CASE
-            WHEN workflow_status IN ('awaiting_implementation', 'done') THEN 'in_progress'
-            ELSE workflow_status
-          END,
-          status = CASE WHEN status = 'done' THEN 'started' ELSE status END,
-          completed_at_ms = NULL, updated_at_ms = ?
-        WHERE id = ?
+        UPDATE hub_board_tasks SET updated_at_ms = ? WHERE id = ?
       `).run(timestamp, resolvedTaskId);
       const taskRevision = Number(database.prepare(
         "SELECT row_revision AS value FROM hub_board_tasks WHERE id = ?",

@@ -26,7 +26,10 @@ set of changed files:
 that root. Rows are sorted and deduplicated by repository and path. Provider
 path candidates with migration operation `observed` are audit metadata only and
 never become authoritative changed files. A no-diff turn creates no changed-file
-or release evidence.
+or release evidence. Provider-reported file lists are hints only: terminal
+evidence is derived independently from the exact Git worktree tree captured at
+claim and the exact terminal worktree tree. An empty provider list therefore
+cannot suppress real Task evidence.
 
 The same exact binding stores captured baseline Git trees. A completed or
 interrupted terminal projection records matching result trees and may backfill
@@ -36,7 +39,7 @@ exact bound turn previously requested `awaiting_implementation`; a later
 completed no-diff continuation may freeze already recorded evidence, and no
 final-text classifier may infer that intent.
 
-## Immutable freeze
+## Immutable evidence, mutable Task
 
 Freeze is one expected-revision CAS. Before persistence, the server-side Git
 verifier derives or verifies:
@@ -48,12 +51,18 @@ verifier derives or verifies:
 
 The successful CAS increments the Task revision, appends immutable rows keyed
 by `(taskId, taskRevision)`, stores the manifest hash, and changes workflow
-status to `awaiting_implementation`. Generic status mutation cannot produce
-verified `awaiting_implementation`, but it may set `done` as an ordinary visible
-workflow status without creating publication evidence or closing the Task.
-Every user-visible or release-relevant mutation of a frozen or released Task is
-rejected. Reordering another Task may change derived board order but cannot
-change the frozen Task revision.
+status to `awaiting_implementation`. The frozen rows are historical evidence,
+not a lock on the Dashboard card. Generic status mutation may select any
+workflow status, including `awaiting_implementation` and `done`; title, placement,
+executor and lifecycle controls remain editable as well.
+
+Any post-freeze Task mutation advances the live Task revision. A frozen manifest
+whose revision no longer equals the live revision is automatically excluded
+from the release candidate set. Rolling a Task back from
+`awaiting_implementation` also clears pending automatic-freeze intent so a later
+terminal callback cannot restore a status the user already changed.
+Recording `changedFiles`, `workLog` or repository revisions never changes the
+user-selected workflow status; evidence and status are independent state.
 
 ## Release plan and completion
 
@@ -63,7 +72,8 @@ included as an Architect audit set. The plan revision hashes the sorted exact
 triples `(taskId, taskRevision, manifestHash)`. Conflict detection reads frozen
 files, never the mutable shared worktree.
 
-Only a Stream with `settings.architect=true` may complete a release. Publication
+Only a Stream with `settings.architect=true` may record verified release
+completion. Publication
 must first verify exact clean published repository revisions and deployment
 evidence. Completion performs one transaction that CAS-checks every exact
 frozen Task revision and manifest hash, appends durable completion evidence,

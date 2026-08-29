@@ -50,6 +50,14 @@ function fixture({
     workspaceCatalogStore,
     taskBoard,
     taskReleaseService,
+    captureTaskResult: async (_baseline, turnId) => turnId === "empty-provider-files-turn" ? ({
+      snapshot: { repoRoot: "C:/workspace", tree: "b".repeat(40) },
+      changedFiles: [{
+        projectRoot: path.resolve("C:/workspace"),
+        path: "AgentHub/from-git.js",
+        operation: "modified",
+      }],
+    }) : null,
     captureResultSnapshot: async () => ({ repoRoot: "C:/workspace", tree: "b".repeat(40) }),
     findProject: (root) => root === "C:/workspace" ? { path: root } : null,
     defaultProjectRoot: "C:/workspace",
@@ -287,6 +295,27 @@ test("RunJournalService writes only exact Task-bound terminal evidence", async (
   }, { title: "Failed change" });
   const failedEvidence = calls.filter(([name]) => name === "task-turn").at(-1)[1];
   assert.equal(failedEvidence.status, "failed");
+});
+
+test("RunJournalService records Git evidence when provider file reporting is empty", async () => {
+  const { service, calls } = fixture();
+  await service.projectTurn({
+    provider: "codex",
+    projectRoot: "C:/workspace",
+    threadId: "thread",
+    turnId: "empty-provider-files-turn",
+    changedFiles: [],
+    diff: "",
+    status: "completed",
+  }, { title: "Captured from baseline" });
+
+  const evidence = calls.find(([name]) => name === "task-turn")?.[1];
+  assert.deepEqual(evidence.changedFiles, [{
+    projectRoot: path.resolve("C:/workspace"),
+    path: "AgentHub/from-git.js",
+    operation: "modified",
+    turnId: "empty-provider-files-turn",
+  }]);
 });
 
 test("RunJournalService does not register changed files for a regular Workspace", async () => {

@@ -96,7 +96,7 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
       status: "started", workflowStatus: "in_progress", streamId, claimedTurnId: turnId, gitBaseline,
     }),
     requestWorkflowStatus: ({ id, status, turnId }) => Object.assign(tasks.get(id), {
-      requestedWorkflowStatus: status, requestedTurnId: turnId,
+      workflowStatus: status, requestedWorkflowStatus: status, requestedTurnId: turnId,
     }),
     releasePlan: () => ({ revision: "plan-1", candidates: [], ready: [], draft: [], blocked: [], conflicts: [] }),
     setWorkflowStatus: ({ id, status }) => Object.assign(tasks.get(id), {
@@ -242,6 +242,36 @@ test("HubMcpService keeps workflow Done visible until explicit completion", asyn
   assert.notEqual(done.status, "done");
   assert.equal(completed.workflowStatus, "done");
   assert.equal(completed.status, "done");
+});
+
+test("release-enabled Task statuses can be changed and rolled back directly", async (context) => {
+  const { service, token, workspaceCatalog } = await fixture(context);
+  workspaceCatalog.workspace = (id) => id === "workspace-1" ? {
+    id, name: "Agent Hub", settings: { releaseWorkflowEnabled: true },
+  } : null;
+
+  const awaiting = await service.call("hub_task_status_update", {
+    context_token: token,
+    request_id: "task-awaiting-direct",
+    task_id: "task-current",
+    status: "awaiting_implementation",
+  });
+  const testing = await service.call("hub_task_status_update", {
+    context_token: token,
+    request_id: "task-awaiting-rollback",
+    task_id: "task-current",
+    status: "testing",
+  });
+  const done = await service.call("hub_task_status_update", {
+    context_token: token,
+    request_id: "task-done-direct",
+    task_id: "task-current",
+    status: "done",
+  });
+
+  assert.equal(awaiting.workflowStatus, "awaiting_implementation");
+  assert.equal(testing.workflowStatus, "testing");
+  assert.equal(done.workflowStatus, "done");
 });
 
 test("HubMcpService resumes an interrupted pending task start with the same request id", async (context) => {

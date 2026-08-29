@@ -123,6 +123,50 @@ async function captureRepositoryBaseline(repoRoot, dataDir, token) {
   }
 }
 
+function changedFilesFromNameStatus(value, repoRoot) {
+  return String(value ?? "").split(/\r?\n/u).flatMap((line) => {
+    const fields = line.split("\t");
+    const status = String(fields[0] ?? "").trim().toUpperCase();
+    const operation = status.startsWith("A") ? "added"
+      : status.startsWith("D") ? "deleted"
+        : "modified";
+    if (status.startsWith("R") && fields[1] && fields[2]) {
+      return [
+        { projectRoot: repoRoot, path: fields[1], operation: "deleted" },
+        { projectRoot: repoRoot, path: fields[2], operation: "added" },
+      ];
+    }
+    if (!status || !fields[1]) return [];
+    return [{ projectRoot: repoRoot, path: fields.at(-1), operation }];
+  });
+}
+
+async function captureRepositoryResult(repository, dataDir, token) {
+  const repoRoot = path.resolve(repository.repoRoot);
+  const tree = await worktreeTree(repoRoot, dataDir, `${token}-after`);
+  const indexTree = await gitText(["write-tree"], { cwd: repoRoot }).catch(() => null);
+  const result = await runGit([
+    "-c", "core.quotePath=false",
+    "diff", "--name-status", "--find-renames", repository.tree, tree, "--",
+  ], { cwd: repoRoot, maxOutputBytes: 4 * 1024 * 1024, timeoutMs: 30_000 });
+  if (result.error || result.code !== 0 || result.stdoutTruncated) {
+    throw result.error ?? new Error(
+      result.stdoutTruncated
+        ? "Task changed-file inventory exceeded 4 MiB"
+        : result.stderr.trim() || "Cannot capture Task changed-file inventory",
+    );
+  }
+  return {
+    snapshot: {
+      repoRoot,
+      tree,
+      indexTree,
+      capturedAt: new Date().toISOString(),
+    },
+    changedFiles: changedFilesFromNameStatus(result.stdout, repoRoot),
+  };
+}
+
 export async function captureTaskGitBaseline(projectRoot, dataDir, token = randomUUID()) {
   const resolvedProjectRoot = path.resolve(projectRoot);
   const repoRoots = await resolveTaskGitRepoRoots(resolvedProjectRoot);
@@ -135,6 +179,24 @@ export async function captureTaskGitBaseline(projectRoot, dataDir, token = rando
     projectRoot: resolvedProjectRoot,
     repositories,
     capturedAt: new Date().toISOString(),
+  };
+}
+
+export async function captureTaskGitResult(baseline, dataDir, token = randomUUID()) {
+  const repositories = Array.isArray(baseline?.repositories)
+    ? baseline.repositories
+    : baseline?.repoRoot ? [baseline] : [];
+  if (!repositories.length) return null;
+  const results = await Promise.all(repositories.map(
+    (repository, index) => captureRepositoryResult(repository, dataDir, `${token}-${index}`),
+  ));
+  return {
+    snapshot: Array.isArray(baseline?.repositories) ? {
+      projectRoot: path.resolve(baseline.projectRoot),
+      repositories: results.map((result) => result.snapshot),
+      capturedAt: new Date().toISOString(),
+    } : results[0].snapshot,
+    changedFiles: results.flatMap((result) => result.changedFiles),
   };
 }
 
