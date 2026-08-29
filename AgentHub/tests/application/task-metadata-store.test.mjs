@@ -19,6 +19,18 @@ test("task metadata owns pinned and pending titles", () => {
   });
 });
 
+test("pending provider confirmation rejects a stale catalog title", () => {
+  const store = new TaskMetadataStore();
+  store.pinTitle(reference, "Новое имя");
+  store.expectTitle(reference, "Новое имя");
+
+  assert.deepEqual(store.reconcilePinnedTitle(reference, "Старое имя"), {
+    title: "Новое имя",
+    changed: false,
+  });
+  assert.equal(store.pinnedTitle(reference), "Новое имя");
+});
+
 test("task metadata restores compatible state and validates Codex settings", () => {
   const store = new TaskMetadataStore({
     maximumEntries: 2,

@@ -18,7 +18,7 @@ function fixture({ run = null, createTask = null, provider: fixtureProvider = "c
     resolveTarget: async () => target,
     pinTitle: (_provider, _thread, title) => title.trim(),
     renameCodexTask: async (...args) => events.push(["rename", ...args]),
-    expectTitleConfirmation: () => {},
+    expectTitleConfirmation: (...args) => events.push(["expect-title", ...args]),
     invalidateCatalog: () => events.push(["invalidate"]),
     runForTask: () => run,
     updateRunTitle: () => events.push(["run-title"]),
@@ -126,6 +126,26 @@ test("task command service renames one exact logical task", async () => {
   assert.equal(result.renamedTitle, "New");
   assert.equal(events.some(([name]) => name === "rename"), true);
   assert.equal(events.some(([name]) => name === "selection-title"), true);
+});
+
+test("task command service protects the title before awaiting the provider rename", async () => {
+  const { service, events } = fixture();
+  let releaseRename;
+  const renameBlocked = new Promise((resolve) => { releaseRename = resolve; });
+  service.renameCodexTask = async () => {
+    events.push(["rename-start"]);
+    await renameBlocked;
+  };
+
+  const operation = service.rename({ title: "New" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(events.slice(0, 2), [
+    ["expect-title", "codex", "thread-1", "New"],
+    ["rename-start"],
+  ]);
+
+  releaseRename();
+  await operation;
 });
 
 test("task command service archives only an idle Codex task", async () => {

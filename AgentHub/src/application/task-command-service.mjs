@@ -92,8 +92,8 @@ export class TaskCommandService {
     const title = this.pinTitle(target.provider, target.threadId, String(params.title ?? ""));
     if (!title) throw new Error("Укажите непустое название");
     if (target.provider === "codex") {
-      await this.renameCodexTask(target.threadId, title);
       this.expectTitleConfirmation(target.provider, target.threadId, title);
+      await this.renameCodexTask(target.threadId, title);
       this.invalidateCatalog();
     }
     const run = this.runForTask(target);

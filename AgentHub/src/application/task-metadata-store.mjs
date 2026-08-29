@@ -55,6 +55,12 @@ export class TaskMetadataStore {
   reconcilePinnedTitle(reference, discoveredTitle) {
     const discovered = normalizedTitle(discoveredTitle);
     const pinned = this.pinnedTitle(reference);
+    const pending = this.pendingTitle(reference);
+    if (pending && discovered !== pending) {
+      const changed = pinned !== pending;
+      if (changed) this.pinTitle(reference, pending);
+      return { title: pending, changed };
+    }
     if (!discovered || !pinned || discovered === pinned) {
       return { title: pinned || discovered, changed: false };
     }
