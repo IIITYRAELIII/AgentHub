@@ -111,6 +111,12 @@ async function repositoryRoot(projectRoot) {
     : commonDir;
 }
 
+async function worktreeRoot(projectRoot) {
+  return path.resolve(await runGit([
+    "rev-parse", "--path-format=absolute", "--show-toplevel",
+  ], { cwd: path.resolve(projectRoot) }));
+}
+
 async function branchExists(repositoryRootValue, branch) {
   return await gitMaybe(["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], {
     cwd: repositoryRootValue,
@@ -328,7 +334,8 @@ export async function prepareTaskContourSource({ sourceRoot, integrationRoot } =
   if (!await branchExists(repoRoot, TASK_DEV_BRANCH)) {
     return { sourceRoot: resolvedSourceRoot, branch: null, headCommit: null };
   }
-  const sourceRelativePath = path.relative(repoRoot, resolvedSourceRoot);
+  const sourceWorktreeRoot = await worktreeRoot(resolvedSourceRoot);
+  const sourceRelativePath = path.relative(sourceWorktreeRoot, resolvedSourceRoot);
   if (path.isAbsolute(sourceRelativePath) || sourceRelativePath === ".." || sourceRelativePath.startsWith(`..${path.sep}`)) {
     throw new Error("Test Contour source is outside its Git repository");
   }

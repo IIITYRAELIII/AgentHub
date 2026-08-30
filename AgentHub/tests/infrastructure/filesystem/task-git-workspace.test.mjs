@@ -55,6 +55,19 @@ test("Task Git workspace commits one Task branch and merges it into dev", async 
   assert.equal(contour.headCommit, result.integration.dev.headCommit);
   assert.equal(contour.sourceRoot, path.join(result.integration.dev.projectRoot, "AgentHub"));
   assert.equal(await readFile(path.join(contour.sourceRoot, "package.json"), "utf8"), "{}\n");
+
+  const releaseRoot = path.join(root, "..", `${path.basename(root)}-release`);
+  await git(root, "worktree", "add", "-b", "release-fixture", releaseRoot, "HEAD");
+  try {
+    const linkedContour = await prepareTaskContourSource({
+      sourceRoot: path.join(releaseRoot, "AgentHub"),
+      integrationRoot: dataDir,
+    });
+    assert.equal(linkedContour.sourceRoot, path.join(result.integration.dev.projectRoot, "AgentHub"));
+    assert.equal(await readFile(path.join(linkedContour.sourceRoot, "package.json"), "utf8"), "{}\n");
+  } finally {
+    await git(root, "worktree", "remove", "--force", releaseRoot);
+  }
 });
 
 test("Task Git workspace aborts a conflicting dev merge without deleting either branch", async (context) => {
