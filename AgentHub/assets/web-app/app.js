@@ -309,11 +309,6 @@ const localSessionReady = Promise.all([
 ]).then(() => undefined);
 window.AgentHubLocalSessionReady = localSessionReady;
 const vscodeMode = Boolean(window.__agentHubVscode);
-const localWorkspaceFilesAvailable = resourceInteractions.localWorkspaceFilesAvailable({
-  vscode: vscodeMode,
-  protocol: window.location.protocol,
-  hostname: window.location.hostname,
-});
 const telegramPlatform = String(telegram?.platform ?? "").toLowerCase();
 const mobileTelegramPlatforms = new Set(["android", "ios"]);
 const compactSurfaceWidth = 860;
@@ -6438,9 +6433,7 @@ function closeResourceContextMenu() {
 
 function openResourceContextMenu(event, resource) {
   pendingResource = resource;
-  const actions = new Set(resourceInteractions.resourceActions(resource, {
-    canCopyLocalObject: localWorkspaceFilesAvailable,
-  }));
+  const actions = new Set(resourceInteractions.resourceActions(resource));
   for (const button of resourceContextMenu.querySelectorAll("[data-resource-action]")) {
     button.hidden = !actions.has(button.dataset.resourceAction);
   }

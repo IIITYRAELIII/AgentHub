@@ -23,7 +23,7 @@ export const RELEASE_WORKFLOW_DEVELOPER_RULES = [
   "Do not create a Task for diagnosis, read-only investigation, explanations, answers, or other work that makes no changes.",
   "If diagnosis leads to requested changes, create or claim the Task before the first change and bind it to the exact current Stream and provider turn with hub_task_claim.",
   "Work only in the dedicated Git worktree returned by hub_task_claim or hub_task_start; never mix Task changes in a shared working tree.",
-  "When a finished fix moves to awaiting_implementation, Agent Hub commits its Task branch, merges it into dev and records Git-derived release evidence. A merge conflict is reported but never blocks the selected status.",
+  "When a finished fix moves to awaiting_implementation, Agent Hub commits its Task branch, merges it into dev and records Git-derived release evidence directly on the Task. A merge conflict is reported but never blocks the selected status.",
   "The shared Test Contour is built from dev. Architect releases the frozen dev revision to main and closes only the Tasks included in that release.",
 ].join("\n");
 

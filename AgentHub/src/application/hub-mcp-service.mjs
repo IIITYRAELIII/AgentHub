@@ -20,7 +20,7 @@ const MUTATING_TOOLS = new Set([
   "hub_task_create", "hub_task_update", "hub_task_move", "hub_task_start", "hub_task_claim", "hub_task_status_update", "hub_task_complete", "hub_task_delete",
   "hub_task_attachment_add", "hub_workspace_rules_update", "hub_stream_rules_update",
   "hub_stream_message_send",
-  "hub_task_release_freeze", "hub_release_complete",
+  "hub_release_complete",
 ]);
 const TEXT_ATTACHMENT_TYPES = new Set([
   "text/plain", "text/markdown", "text/csv", "application/json", "application/xml",
@@ -185,11 +185,6 @@ function compactTask(task) {
     changedFiles: task.changedFiles ?? [],
     workLog: task.workLog ?? [],
     repositoryRevisions: task.repositoryRevisions ?? [],
-    frozenRevision: task.frozenRevision ?? null,
-    releaseManifestHash: task.releaseManifestHash ?? "",
-    frozenChangedFiles: task.frozenChangedFiles ?? [],
-    frozenRepositories: task.frozenRepositories ?? [],
-    frozenVerification: task.frozenVerification ?? null,
     attachments: task.attachments ?? [],
   };
 }
@@ -228,7 +223,7 @@ export class HubMcpService {
   #contextCapabilities = new Map();
 
   constructor({
-    workspaceCatalog, taskBoard, workLog, attachmentDirectory, secret, releaseCompleter, taskReleases,
+    workspaceCatalog, taskBoard, workLog, attachmentDirectory, secret, releaseCompleter,
     taskGitWorkspaces = null,
   } = {}) {
     for (const name of [
@@ -245,14 +240,12 @@ export class HubMcpService {
     }
     requiredMethod(workLog, "threadTurns");
     requiredMethod(releaseCompleter, "completeRelease");
-    requiredMethod(taskReleases, "freeze");
     this.workspaceCatalog = workspaceCatalog;
     this.taskBoard = taskBoard;
     this.workLog = workLog;
     this.attachmentDirectory = path.resolve(requiredText(attachmentDirectory, "attachment directory", 2_000));
     this.secret = requiredText(secret, "MCP secret", 512);
     this.releaseCompleter = releaseCompleter;
-    this.taskReleases = taskReleases;
     this.taskGitWorkspaces = taskGitWorkspaces;
   }
 
@@ -351,35 +344,6 @@ export class HubMcpService {
         local_path: { type: "string" },
       }, ["task_id", "local_path"]),
       tool("hub_release_plan_get", "Read the complete release plan and exact integrated dev heads for the current Workspace."),
-      tool("hub_task_release_freeze", "Freeze an immutable Task-owned release revision after server-side Git verification.", {
-        task_id: { type: "string" },
-        expected_task_revision: { type: "integer", minimum: 1 },
-        repositories: {
-          type: "array", minItems: 1, items: {
-            type: "object", additionalProperties: false,
-            properties: {
-              project_root: { type: "string" },
-              base_revision: { type: "string" },
-              result_revision: { type: "string" },
-            },
-            required: ["project_root", "base_revision", "result_revision"],
-          },
-        },
-        files: {
-          type: "array", minItems: 1, items: {
-            type: "object", additionalProperties: false,
-            properties: {
-              project_root: { type: "string" },
-              path: { type: "string" },
-              operation: { type: "string", enum: ["added", "modified", "deleted"] },
-              base_blob: { type: "string" },
-              result_blob: { type: "string" },
-              patch_hash: { type: "string", default: "" },
-            },
-            required: ["project_root", "path", "operation", "base_blob", "result_blob"],
-          },
-        },
-      }, ["task_id", "expected_task_revision", "repositories", "files"]),
       tool("hub_release_complete", "Complete a release only after clean main revisions and explicit deployment verification.", {
         expected_revision: { type: "string" },
         expected_plan_revision: { type: "string", description: "Exact revision returned by hub_release_plan_get." },
@@ -495,26 +459,6 @@ export class HubMcpService {
         return this.#addAttachment(context, args);
       case "hub_release_plan_get":
         return this.#releasePlan(context);
-      case "hub_task_release_freeze":
-        return this.taskReleases.freeze({
-          workspaceId: context.workspaceId,
-          actorStreamId: context.streamId,
-          taskId: args.task_id,
-          expectedTaskRevision: args.expected_task_revision,
-          repositories: (Array.isArray(args.repositories) ? args.repositories : []).map((repository) => ({
-            projectRoot: repository.project_root,
-            baseRevision: repository.base_revision,
-            resultRevision: repository.result_revision,
-          })),
-          files: (Array.isArray(args.files) ? args.files : []).map((file) => ({
-            projectRoot: file.project_root,
-            path: file.path,
-            operation: file.operation,
-            baseBlob: file.base_blob,
-            resultBlob: file.result_blob,
-            patchHash: file.patch_hash,
-          })),
-        });
       case "hub_release_complete":
         if (!this.#isArchitect(context)) throw new Error("release completion requires an Architect Stream");
         return this.#completeRelease(context, args);
@@ -812,9 +756,7 @@ export class HubMcpService {
         turnId: run?.turnId,
         summary: task.title,
       });
-      let frozen = null;
-      let freezeError = null;
-      if (snapshot.changedFiles.length) {
+      if (integration.integrated && snapshot.changedFiles.length) {
         this.taskBoard.recordTaskTurn({
           taskId: task.id,
           provider: context.provider,
@@ -827,19 +769,8 @@ export class HubMcpService {
           gitBaseline: snapshot.gitBaseline,
           resultSnapshot: snapshot.resultSnapshot,
         });
-        if (integration.integrated) {
-          try {
-            frozen = await this.taskReleases.freezeRecorded({
-              taskId: task.id,
-              workspaceId: context.workspaceId,
-              actorStreamId: context.streamId,
-            });
-          } catch (error) {
-            freezeError = error.message;
-          }
-        }
       }
-      const current = frozen ?? this.#task(context, task.id);
+      const current = this.#task(context, task.id);
       return {
         ...compactTask(current),
         gitWorkspace: {
@@ -855,7 +786,6 @@ export class HubMcpService {
           devHeadCommit: integration.dev?.headCommit ?? null,
           conflicts: integration.conflicts ?? [],
           error: integration.error ?? null,
-          freezeError,
         },
       };
     } catch (error) {

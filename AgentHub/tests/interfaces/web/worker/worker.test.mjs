@@ -1498,6 +1498,9 @@ test("shared Dashboard bot can send forwards separately with their reply clarifi
     const body = JSON.parse(options.body);
     telegramCalls.push({ method, body });
     if (method === "getFile") {
+      if (body.file_id === "telegram-too-large") {
+        return Response.json({ ok: false, description: "Bad Request: file is too big" }, { status: 400 });
+      }
       return Response.json({ ok: true, result: { file_path: "photos/example.jpg", file_size: 4 } });
     }
     return Response.json({
@@ -1860,6 +1863,68 @@ test("shared Dashboard bot can send forwards separately with their reply clarifi
   ), env);
   const [recoveredCommand] = (await response.json()).commands;
   assert.match(recoveredCommand.params.text, /Новая пачка после отмены/u);
+
+  await webhook({
+    update_id: 216,
+    message: {
+      message_id: 12,
+      date: 1_786_200_013,
+      chat: { id: 42, type: "private" },
+      from: { id: 42, first_name: "Алиса" },
+      forward_origin: { type: "hidden_user", sender_user_name: "Заказчик" },
+      document: {
+        file_id: "telegram-too-large",
+        file_name: "meeting.mp4",
+        mime_type: "video/mp4",
+      },
+      caption: "Видео и картинка относятся к одной задаче",
+    },
+  });
+  await webhook({
+    update_id: 217,
+    message: {
+      message_id: 13,
+      date: 1_786_200_014,
+      chat: { id: 42, type: "private" },
+      from: { id: 42, first_name: "Алиса" },
+      photo: [{ file_id: "valid-after-large" }, { file_id: "valid-after-large-best", file_size: 4 }],
+      caption: "Где картинка?",
+    },
+  });
+  const partialCard = telegramCalls
+    .filter((call) => call.method === "sendMessage" && /Собираю пачку/u.test(call.body.text))
+    .at(-1);
+  response = await webhook({
+    update_id: 218,
+    callback_query: {
+      id: "callback-send-partial-bundle",
+      from: { id: 42, first_name: "Алиса" },
+      message: { message_id: 806, chat: { id: 42, type: "private" } },
+      data: partialCard.body.reply_markup.inline_keyboard[0][0].callback_data,
+    },
+  });
+  assert.equal(response.status, 200);
+  response = await workerModule.default.fetch(signedServiceRequest(
+    "https://hub.test/api/dashboard-bot/pull",
+    { limit: 10, waitMs: 0 },
+    hubSecret,
+    { "X-Agent-Hub-Dashboard-Id": hubId },
+  ), env);
+  const [partialCommand] = (await response.json()).commands;
+  assert.equal(partialCommand.params.attachments.length, 1);
+  assert.match(partialCommand.params.attachments[0], /^remote-attachment:[0-9a-f-]{36}$/u);
+  assert.equal(partialCommand.params.sourceDetails.attachmentCount, 2);
+  assert.equal(partialCommand.params.sourceDetails.deliveredAttachmentCount, 1);
+  assert.equal(partialCommand.params.sourceDetails.skippedAttachmentCount, 1);
+  assert.equal(partialCommand.params.sourceDetails.skippedAttachments[0].name, "meeting.mp4");
+  assert.match(partialCommand.params.text, /Изображение 2 приложено/u);
+  assert.match(partialCommand.params.text, /meeting\.mp4[\s\S]*20 МБ/u);
+  assert.ok(telegramCalls.some((call) => (
+    call.method === "editMessageText"
+      && /Пачка из 2 сообщений поставлена в очередь/u.test(call.body.text)
+      && /Не приложено файлов: 1/u.test(call.body.text)
+      && /meeting\.mp4/u.test(call.body.text)
+  )));
 });
 
 test("Worker relay stores user-bound file uploads and serves them only to their command", async () => {

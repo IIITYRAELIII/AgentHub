@@ -8,6 +8,7 @@ import { pipeline } from "node:stream/promises";
 import { gzipSync } from "node:zlib";
 import { agentHubRuntimeHealth } from "../../application/runtime-health.mjs";
 import { clientCommandAckTraceSpan } from "../../application/client-command-trace.mjs";
+import { WorkspaceFileTransferTickets } from "../../application/workspace-file-transfer-tickets.mjs";
 
 import {
   attachmentContentType,
@@ -93,6 +94,7 @@ const MAX_WORKSPACE_FILE_BYTES = 512 * 1024 * 1024;
 const CONTROL_COMMAND_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,199}$/;
 const MOBILE_UPDATE_FILE = "AgentHub-Mobile.apk";
 const MOBILE_UPDATE_MANIFEST = "update.json";
+const FILE_BRIDGE_INSTALLER = path.join(AGENT_HUB_ROOT, "FileBridge", "install.ps1");
 
 function attachmentHeaderName(request) {
   const value = String(request.headers["x-agent-hub-file-name"] ?? "").trim();
@@ -533,6 +535,7 @@ export class MiniAppServer {
   #server = null;
   #closePromise = null;
   #workspaceFileRoots;
+  #workspaceFileTransferTickets;
 
   constructor({
     host = "127.0.0.1",
@@ -562,6 +565,7 @@ export class MiniAppServer {
     usageSyncRemoteConfigStore = null,
     usageSyncService = null,
     workspaceFileRoots = [],
+    workspaceFileTransferTickets = null,
     health = agentHubRuntimeHealth,
     handlerCloseTimeoutMs = 1_000,
   } = {}) {
@@ -598,6 +602,8 @@ export class MiniAppServer {
       .map((root) => String(root ?? "").trim())
       .filter(Boolean)
       .map((root) => path.resolve(root));
+    this.#workspaceFileTransferTickets = workspaceFileTransferTickets
+      ?? new WorkspaceFileTransferTickets();
     if (!journalDatabase && !journalDatabaseFile) {
       throw new Error("Mini App journalDatabase or journalDatabaseFile is required");
     }
@@ -1131,6 +1137,99 @@ export class MiniAppServer {
       } catch (error) {
         this.#reportUnexpected(error, "control");
         json(response, 400, { ok: false, error: String(error?.message ?? error) }, method);
+      }
+      return;
+    }
+    if (url.pathname === "/api/workspace-file/bridge-installer.ps1") {
+      if (!["GET", "HEAD"].includes(method)) {
+        response.writeHead(405, {
+          Allow: "GET, HEAD",
+          ...responseHeaders("text/plain; charset=utf-8"),
+        });
+        response.end("Method Not Allowed\n");
+        return;
+      }
+      const authorization = await this.#authorize(request, response);
+      if (!authorization) return;
+      if (authorization.source !== "trusted-device") {
+        json(response, 403, { error: "Установщик File Bridge доступен доверенному браузеру." }, method);
+        return;
+      }
+      try {
+        const info = await stat(FILE_BRIDGE_INSTALLER);
+        await sendBoundedFile(
+          response,
+          FILE_BRIDGE_INSTALLER,
+          info.size,
+          "text/plain; charset=utf-8",
+          method,
+          {
+            "Cache-Control": "private, no-store",
+            "Content-Disposition": downloadDisposition("AgentHub-FileBridge-install.ps1"),
+          },
+        );
+      } catch (error) {
+        json(response, 404, { error: String(error?.message ?? error) }, method);
+      }
+      return;
+    }
+    if (url.pathname === "/api/workspace-file/transfer-ticket") {
+      if (method !== "POST") {
+        response.writeHead(405, {
+          Allow: "POST",
+          ...responseHeaders("text/plain; charset=utf-8"),
+        });
+        response.end("Method Not Allowed\n");
+        return;
+      }
+      const authorization = await this.#authorize(request, response);
+      if (!authorization) return;
+      if (authorization.source !== "trusted-device" || !this.#workspaceFileRoots.length) {
+        json(response, 403, { error: "Передача файла доступна доверенному браузеру." }, method);
+        return;
+      }
+      try {
+        const body = await readJsonBody(request);
+        const file = await resolveWorkspaceFile(body.path, this.#workspaceFileRoots);
+        const ticket = this.#workspaceFileTransferTickets.issue(file, {
+          deviceId: authorization.deviceId,
+        });
+        json(response, 200, {
+          ok: true,
+          bytes: ticket.bytes,
+          downloadPath: `/api/workspace-file/transfer/${ticket.token}`,
+          expiresAt: ticket.expiresAt,
+          name: ticket.name,
+        }, method, { headers: { "Cache-Control": "private, no-store" } });
+      } catch (error) {
+        json(response, 400, { ok: false, error: String(error?.message ?? error) }, method);
+      }
+      return;
+    }
+    if (url.pathname.startsWith("/api/workspace-file/transfer/")) {
+      if (method !== "GET") {
+        response.writeHead(405, {
+          Allow: "GET",
+          ...responseHeaders("text/plain; charset=utf-8"),
+        });
+        response.end("Method Not Allowed\n");
+        return;
+      }
+      const token = decodeURIComponent(url.pathname.slice("/api/workspace-file/transfer/".length)).trim();
+      const file = this.#workspaceFileTransferTickets.consume(token);
+      if (!file) {
+        json(response, 404, { error: "Одноразовый билет недействителен или истёк." }, method);
+        return;
+      }
+      try {
+        await sendBoundedFile(response, file.target, file.bytes, file.type, method, {
+          "Cache-Control": "private, no-store",
+          "Content-Disposition": downloadDisposition(file.name),
+          "X-Content-Type-Options": "nosniff",
+        });
+      } catch (error) {
+        if (response.headersSent) response.destroy(error);
+        else json(response, 404, { error: String(error?.message ?? error) }, method);
       }
       return;
     }

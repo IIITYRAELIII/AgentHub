@@ -27,53 +27,49 @@ receipts, final text, timestamps and shared dirty trees are never ownership
 fallbacks.
 
 Agent Hub then merges the Task head into the single local `dev` branch. A
-successful merge makes the Task eligible for immutable freeze. A conflict is
-aborted and returned with exact conflicting paths. Git failure never rejects a
-requested workflow-status transition: the Task remains visible in
-`awaiting_implementation`, but without a current frozen release revision until
-the conflict is resolved and the merge succeeds.
+successful merge records the changed files and repository revisions directly on
+the Task. A conflict is aborted and returned with exact conflicting paths. Git
+failure never rejects a requested workflow-status transition: the Task remains
+visible in `awaiting_implementation`. A new Await request clears the previous
+derived Git projection first, so a failed integration is explicitly blocked in
+the release plan until complete evidence is recorded again.
 
-## Immutable evidence, mutable Task
+## Task evidence and CAS
 
-Before freeze, the server-side Git verifier derives or verifies:
+The server-side Git boundary derives:
 
 - exact base and result commit or tree object ids;
-- repository-relative operation and base/result blob for every file;
-- canonical per-file patch SHA-256 when available;
-- verifier and Git evidence.
+- repository-relative operation for every changed file;
+- the Task branch and integrated `dev` result.
 
-Freeze is one expected-revision CAS. It explicitly increments `row_revision`
-even when the live status is already `awaiting_implementation`, appends
-immutable rows keyed by `(taskId, taskRevision)`, stores the manifest hash and
-keeps the workflow status at `awaiting_implementation`.
-
-Frozen rows are historical evidence, not a lock. Generic status mutation may
-select any workflow status at any time. Title, placement, executor and lifecycle
-controls remain editable. Any later Task mutation advances the live revision;
-a frozen manifest whose revision no longer equals it is excluded automatically.
-Terminal callbacks do not own Task status, changed files or release freeze.
+The Task aggregate stores changed files and repository revisions. There is no
+separate readiness row, frozen manifest or freeze command. The release plan
+hashes the current Task revision and evidence. Generic status mutation may
+select any workflow status at any time; any intervening Task mutation changes
+the plan revision and invalidates an older Architect plan. Provider terminal
+callbacks do not infer file ownership or release readiness.
 
 ## Release plan and completion
 
-The candidate set contains open `awaiting_implementation` Tasks whose current
-revision equals their immutable frozen revision and whose Task head was merged
-into `dev`. Open `done` Tasks are an Architect audit set. Plan revision hashes
-the sorted exact triples `(taskId, taskRevision, manifestHash)`. Conflict
-detection reads frozen files and recorded Git revisions, never a shared mutable
-working tree.
+The plan contains every open `awaiting_implementation` Task. Tasks with changed
+files and repository revisions are candidates; Tasks missing either are returned
+as `blocked` and are never silently omitted. Open `done` Tasks remain an
+Architect audit set. Plan revision hashes current Task IDs, row revisions and
+Task evidence. Conflict detection reads recorded Task files and revisions,
+never a shared mutable working tree.
 
 At explicit release start, Architect freezes the selected `dev` head, updates
 from `origin/main`, validates that exact integrated revision, integrates it into
 `main`, and publishes `main`. Only a Stream with `settings.architect=true` may
 record verified release completion.
 
-Completion performs one transaction that CAS-checks every exact frozen Task
-revision and manifest hash, appends durable deployment evidence, then changes
-only those Tasks to `done` and closes them. Generic `done` and
+Completion performs one transaction that CAS-checks every exact Task revision
+and the plan hash, then changes only those Tasks to `done` and closes them.
+Generic `done` and
 `hub_task_complete` do not create production evidence.
 
-Post-deployment verification proves that the published `main` revision contains
-the frozen Task results. Once verified, managed Task branches and worktrees may
+Post-deployment verification proves file-by-file that the published `main`
+revision contains every recorded Task result. Once verified, managed Task branches and worktrees may
 be removed. The `dev` branch advances with published `main` while retaining any
 later unreleased Task merges.
 
@@ -100,13 +96,14 @@ configuration, data or another deliverable. Read-only diagnosis, explanations
 and answers do not create Tasks. If diagnosis becomes implementation, claim a
 Task before the first change and continue only in its returned worktree.
 
-Disabling release workflow is blocked while active Task release evidence exists
-and returns an explicit cleanup requirement. Frozen or released evidence cannot
-be discarded through compatibility APIs.
+Disabling release workflow changes only Workspace policy. It does not mutate or
+discard Tasks or historical publication evidence.
 
 ## Legacy cutover
 
-Legacy release tables remain immutable compatibility archives. Existing frozen
-Task revisions remain valid. ADR-0008 exact-turn synthetic trees are supported
-only for already-recorded evidence; all new Task work follows ADR-0009 branches,
-`dev` integration and Git-derived manifests.
+Active legacy registry entries and Task-freeze rows are imported into their Task
+aggregate before cutover. Every source row is exported to append-only history
+and verified by source identity, payload cardinality and SHA-256. Only then are
+the live registry/freeze source tables physically dropped. The retained history
+is audit-only and is never read by release planning. All new work follows
+ADR-0009 Task branches, `dev` integration and Task-owned Git evidence.

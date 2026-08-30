@@ -1453,6 +1453,54 @@ test("public Mini App cannot read local Workspace files", async () => {
   }
 });
 
+test("trusted browser receives one-time File Bridge transfer without generic file access", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-file-bridge-"));
+  const target = path.join(directory, "result.cfe");
+  await writeFile(target, "extension", "utf8");
+  const server = new MiniAppServer({
+    host: "127.0.0.1",
+    port: 0,
+    journalDatabase: memoryJournal(),
+    requireTelegramAuth: true,
+    deviceStore: {
+      resolveSession: async () => ({ id: "session-1", deviceId: "browser-1" }),
+    },
+    workspaceFileRoots: [directory],
+  });
+  try {
+    const address = await server.start();
+    const headers = { Authorization: "device trusted-session", "Content-Type": "application/json" };
+    const ticketResponse = await fetch(`${address.url}api/workspace-file/transfer-ticket`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ path: target }),
+    });
+    const ticket = await ticketResponse.json();
+    const direct = await fetch(
+      `${address.url}api/workspace-file?path=${encodeURIComponent(target)}`,
+      { headers: { Authorization: "device trusted-session" } },
+    );
+    const installer = await fetch(`${address.url}api/workspace-file/bridge-installer.ps1`, {
+      headers: { Authorization: "device trusted-session" },
+    });
+    const first = await fetch(new URL(ticket.downloadPath, address.url));
+    const second = await fetch(new URL(ticket.downloadPath, address.url));
+
+    assert.equal(ticketResponse.status, 200);
+    assert.equal(ticket.ok, true);
+    assert.match(ticket.downloadPath, /^\/api\/workspace-file\/transfer\/[A-Za-z0-9_-]{43}$/u);
+    assert.equal(direct.status, 403);
+    assert.equal(installer.status, 200);
+    assert.match(await installer.text(), /agenthub-file/u);
+    assert.equal(first.status, 200);
+    assert.equal(await first.text(), "extension");
+    assert.equal(second.status, 404);
+  } finally {
+    await server.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("local HTTP ACK retires delivered receipts beyond receipt capacity", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-local-control-capacity-"));
   const receiptFile = path.join(directory, "receipts.json");

@@ -399,6 +399,7 @@ export class TaskBoardStore {
     try {
       configure(this.#database);
       this.#migrateLegacyReleaseRegistry();
+      this.#removeReleaseRegistry();
     } catch (error) {
       this.#database.close();
       this.#database = null;
@@ -440,13 +441,13 @@ export class TaskBoardStore {
     }
   }
 
-  #archiveLegacyReleaseRegistry(database) {
+  #archiveLegacyReleaseRegistry(database, tables = this.#legacyArchiveTables()) {
     const insert = database.prepare(`
       INSERT OR IGNORE INTO hub_release_registry_history (
         source_kind, source_id, status, payload_json, payload_sha256, archived_at_ms
       ) VALUES (?, ?, ?, ?, ?, ?)
     `);
-    for (const { kind, table, order, identity } of this.#legacyArchiveTables()) {
+    for (const { kind, table, order, identity } of tables) {
       if (!this.#tableExists(database, table)) continue;
       for (const row of database.prepare(`SELECT * FROM ${table} ORDER BY ${order}`).all()) {
         const payload = JSON.stringify(row);
@@ -474,17 +475,41 @@ export class TaskBoardStore {
     ];
   }
 
-  #verifyLegacyReleaseArchive(database) {
-    for (const { kind, table, order, identity } of this.#legacyArchiveTables()) {
+  #retiredReleaseTables() {
+    return [
+      ...this.#legacyArchiveTables(),
+      {
+        kind: "task-state", table: "hub_task_release_state", order: "task_id",
+        identity: (row) => String(row.task_id),
+      },
+      {
+        kind: "task-revision", table: "hub_task_release_revisions",
+        order: "task_id, task_revision",
+        identity: (row) => [row.task_id, row.task_revision].join("\0"),
+      },
+      {
+        kind: "task-revision-file", table: "hub_task_release_revision_files",
+        order: "task_id, task_revision, project_root, file_path",
+        identity: (row) => [
+          row.task_id, row.task_revision, row.project_root, row.file_path,
+        ].join("\0"),
+      },
+      {
+        kind: "task-completion", table: "hub_task_release_completions",
+        order: "task_id, task_revision",
+        identity: (row) => [row.task_id, row.task_revision].join("\0"),
+      },
+    ];
+  }
+
+  #verifyLegacyReleaseArchive(database, tables = this.#legacyArchiveTables()) {
+    for (const { kind, table, order, identity } of tables) {
       if (!this.#tableExists(database, table)) continue;
       const sourceRows = database.prepare(`SELECT * FROM ${table} ORDER BY ${order}`).all();
       const archivedRows = database.prepare(`
         SELECT source_id, payload_json, payload_sha256 FROM hub_release_registry_history
         WHERE source_kind = ? ORDER BY source_id
       `).all(kind);
-      if (sourceRows.length !== archivedRows.length) {
-        throw new Error(`legacy release ${kind} archive cardinality mismatch`);
-      }
       const archived = new Map(archivedRows.map((row) => [row.source_id, row]));
       for (const source of sourceRows) {
         const payload = JSON.stringify(source);
@@ -789,34 +814,10 @@ export class TaskBoardStore {
         result_revision AS resultRevision
       FROM hub_task_repository_revisions WHERE task_id = ? ORDER BY project_root
     `).all(taskId);
-    const state = database.prepare(
-      "SELECT * FROM hub_task_release_state WHERE task_id = ?",
-    ).get(taskId);
-    const frozenRevision = state?.frozen_revision == null ? null : Number(state.frozen_revision);
-    const frozenFiles = frozenRevision == null ? [] : database.prepare(`
-      SELECT project_root AS projectRoot, file_path AS path, operation,
-        base_blob AS baseBlob, result_blob AS resultBlob, patch_hash AS patchHash
-      FROM hub_task_release_revision_files
-      WHERE task_id = ? AND task_revision = ? ORDER BY project_root, file_path
-    `).all(taskId, frozenRevision);
-    const frozen = frozenRevision == null ? null : database.prepare(`
-      SELECT repositories_json, verification_json FROM hub_task_release_revisions
-      WHERE task_id = ? AND task_revision = ?
-    `).get(taskId, frozenRevision);
-    let frozenRepositories = [];
-    let frozenVerification = null;
-    try { frozenRepositories = JSON.parse(String(frozen?.repositories_json ?? "[]")); } catch { frozenRepositories = []; }
-    try { frozenVerification = JSON.parse(String(frozen?.verification_json ?? "null")); } catch { frozenVerification = null; }
     return {
       changedFiles: normalizedTaskChangedFiles(changedFiles),
       workLog,
       repositoryRevisions,
-      releaseRevision: Number(state?.revision) || 0,
-      frozenRevision,
-      releaseManifestHash: String(state?.manifest_hash ?? ""),
-      frozenChangedFiles: frozenFiles,
-      frozenRepositories,
-      frozenVerification,
     };
   }
 
@@ -1052,10 +1053,9 @@ export class TaskBoardStore {
 
   pendingTriage() {
     return this.#withDatabase((database) => database.prepare(`
-      SELECT task.* FROM hub_board_tasks task
-      LEFT JOIN hub_task_release_state state ON state.task_id = task.id
-      WHERE task.triage_status IN ('pending', 'running') AND state.frozen_revision IS NULL
-      ORDER BY task.created_at_ms, task.id
+      SELECT * FROM hub_board_tasks
+      WHERE triage_status IN ('pending', 'running')
+      ORDER BY created_at_ms, id
     `).all().map(taskFromRow));
   }
 
@@ -1063,10 +1063,6 @@ export class TaskBoardStore {
     return this.#withDatabase((database) => Number(database.prepare(`
       UPDATE hub_board_tasks SET triage_status = 'disabled', updated_at_ms = ?
       WHERE triage_status IN ('pending', 'running')
-        AND NOT EXISTS (
-          SELECT 1 FROM hub_task_release_state state
-          WHERE state.task_id = hub_board_tasks.id AND state.frozen_revision IS NOT NULL
-        )
     `).run(this.now()).changes));
   }
 
@@ -1454,10 +1450,6 @@ export class TaskBoardStore {
           END
       `).run(taskId, ...identity, baselineJson, timestamp);
       database.prepare(`
-        INSERT INTO hub_task_release_state (task_id, revision, updated_at_ms)
-        VALUES (?, 0, ?) ON CONFLICT(task_id) DO NOTHING
-      `).run(taskId, timestamp);
-      database.prepare(`
         UPDATE hub_board_tasks SET bucket = 'workspace', status = 'started', workflow_status = 'in_progress',
           workspace_id = ?, stream_id = ?, placement_source = 'manual',
           started_at_ms = COALESCE(started_at_ms, ?), completed_at_ms = NULL, updated_at_ms = ?
@@ -1501,17 +1493,21 @@ export class TaskBoardStore {
     const workflowStatus = normalizedTaskWorkflowStatus(status);
     if (workflowStatus === "awaiting_implementation") {
       const identity = [provider, threadId, turnId].map((value) => String(value ?? "").trim());
-      if (!identity.some((value) => !value)) this.#withDatabase((database) => {
+      this.#withDatabase((database) => {
         this.#taskRow(database, id);
-        const binding = database.prepare(`
-          SELECT task_id FROM hub_task_turn_bindings
-          WHERE provider = ? AND provider_thread_id = ? AND turn_id = ?
-        `).get(...identity);
-        if (binding?.task_id === String(id)) {
-          database.prepare(`
-            UPDATE hub_task_turn_bindings SET requested_workflow_status = 'awaiting_implementation'
+        database.prepare("DELETE FROM hub_task_changed_files WHERE task_id = ?").run(String(id));
+        database.prepare("DELETE FROM hub_task_repository_revisions WHERE task_id = ?").run(String(id));
+        if (!identity.some((value) => !value)) {
+          const binding = database.prepare(`
+            SELECT task_id FROM hub_task_turn_bindings
             WHERE provider = ? AND provider_thread_id = ? AND turn_id = ?
-          `).run(...identity);
+          `).get(...identity);
+          if (binding?.task_id === String(id)) {
+            database.prepare(`
+              UPDATE hub_task_turn_bindings SET requested_workflow_status = 'awaiting_implementation'
+              WHERE provider = ? AND provider_thread_id = ? AND turn_id = ?
+            `).run(...identity);
+          }
         }
       });
     }
@@ -1566,15 +1562,6 @@ export class TaskBoardStore {
       database.prepare(`
         UPDATE hub_board_tasks SET updated_at_ms = ? WHERE id = ?
       `).run(timestamp, resolvedTaskId);
-      const taskRevision = Number(database.prepare(
-        "SELECT row_revision AS value FROM hub_board_tasks WHERE id = ?",
-      ).get(resolvedTaskId)?.value) || 1;
-      database.prepare(`
-        INSERT INTO hub_task_release_state (task_id, revision, updated_at_ms)
-        VALUES (?, ?, ?)
-        ON CONFLICT(task_id) DO UPDATE SET revision = excluded.revision,
-          frozen_revision = NULL, manifest_hash = '', updated_at_ms = excluded.updated_at_ms
-      `).run(resolvedTaskId, taskRevision, timestamp);
       database.prepare(`
         UPDATE hub_task_turn_bindings SET terminal_at_ms = ?
         WHERE provider = ? AND provider_thread_id = ? AND turn_id = ?
@@ -1582,97 +1569,6 @@ export class TaskBoardStore {
       const result = this.#taskWithRelease(
         database,
         database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(resolvedTaskId),
-      );
-      database.exec("COMMIT");
-      return result;
-      } catch (error) {
-        database.exec("ROLLBACK");
-        throw error;
-      }
-    });
-  }
-
-  freezeTaskRelease(id, {
-    expectedTaskRevision, manifest, verification, actorStreamId,
-  } = {}) {
-    const taskId = String(id ?? "").trim();
-    const expected = Number(expectedTaskRevision);
-    if (!Number.isSafeInteger(expected) || expected < 1) throw new Error("expected_task_revision is required");
-    if (!manifest?.manifestHash || !Array.isArray(manifest.files) || !manifest.files.length) {
-      throw new Error("verified Task release manifest is required");
-    }
-    const targetRevision = expected + 1;
-    if (Number(manifest.revision) !== targetRevision) {
-      throw new Error("Task release manifest revision must match the post-freeze Task revision");
-    }
-    const timestamp = this.now();
-    return this.#withDatabase((database) => {
-      database.exec("BEGIN IMMEDIATE");
-      try {
-      const current = database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(taskId);
-      if (!current) throw new Error("Task не найден");
-      if (Number(current.row_revision) !== expected) throw new Error("Task revision changed; read the Task again");
-      if (String(current.stream_id ?? "") !== String(actorStreamId ?? "")) {
-        throw new Error("only the Task executor Stream can freeze its release revision");
-      }
-      const mutable = this.#releaseDetails(database, taskId).changedFiles;
-      const submitted = normalizedTaskChangedFiles(manifest.files.map((file) => ({
-        projectRoot: file.projectRoot,
-        path: file.path,
-        operation: file.operation,
-        turnId: null,
-      })));
-      const expectedFiles = normalizedTaskChangedFiles(mutable.map((file) => ({ ...file, turnId: null })));
-      const comparableFiles = (files) => files.map((file) => ({
-        projectRoot: process.platform === "win32"
-          ? path.resolve(file.projectRoot).toLowerCase()
-          : path.resolve(file.projectRoot),
-        path: process.platform === "win32" ? file.path.toLowerCase() : file.path,
-        operation: file.operation,
-      }));
-      if (JSON.stringify(comparableFiles(submitted)) !== JSON.stringify(comparableFiles(expectedFiles))) {
-        throw new Error("verified Task release files do not match the exact Task changedFiles snapshot");
-      }
-      const updated = database.prepare(`
-        UPDATE hub_board_tasks SET workflow_status = 'awaiting_implementation', updated_at_ms = ?,
-          row_revision = row_revision + 1
-        WHERE id = ? AND row_revision = ?
-      `).run(timestamp, taskId, expected);
-      if (!Number(updated.changes)) throw new Error("Task revision changed during freeze");
-      const actualRevision = Number(database.prepare(
-        "SELECT row_revision AS value FROM hub_board_tasks WHERE id = ?",
-      ).get(taskId)?.value);
-      if (actualRevision !== targetRevision) throw new Error("Task revision CAS produced an unexpected revision");
-      database.prepare(`
-        INSERT INTO hub_task_release_revisions (
-          task_id, task_revision, manifest_hash, repositories_json, verification_json, created_at_ms
-        ) VALUES (?, ?, ?, ?, ?, ?)
-      `).run(
-        taskId, targetRevision, manifest.manifestHash,
-        JSON.stringify(manifest.repositories), JSON.stringify(verification), timestamp,
-      );
-      const insert = database.prepare(`
-        INSERT INTO hub_task_release_revision_files (
-          task_id, task_revision, project_root, file_path, operation,
-          base_blob, result_blob, patch_hash
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      `);
-      for (const file of manifest.files) {
-        insert.run(
-          taskId, targetRevision, file.projectRoot, file.path, file.operation,
-          file.baseBlob, file.resultBlob, file.patchHash ?? "",
-        );
-      }
-      database.prepare(`
-        INSERT INTO hub_task_release_state (task_id, revision, frozen_revision, manifest_hash, updated_at_ms)
-        VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(task_id) DO UPDATE SET revision = excluded.revision,
-          frozen_revision = excluded.frozen_revision, manifest_hash = excluded.manifest_hash,
-          updated_at_ms = excluded.updated_at_ms
-      `).run(taskId, targetRevision, targetRevision, manifest.manifestHash, timestamp);
-      const result = this.#taskWithRelease(
-        database,
-        database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(taskId),
       );
       database.exec("COMMIT");
       return result;
@@ -1709,34 +1605,51 @@ export class TaskBoardStore {
     }
   }
 
-  releaseRegistrationSummary(workspaceId) {
-    return this.#withDatabase((database) => {
-      const value = Number(database.prepare(`
-        SELECT COUNT(*) AS value FROM hub_task_release_state state
-        JOIN hub_board_tasks task ON task.id = state.task_id
-        WHERE task.workspace_id = ? AND state.revision > 0
-          AND task.workflow_status NOT IN ('done')
-      `).get(String(workspaceId))?.value) || 0;
-      return { taskCount: value, total: value };
-    });
+  #removeReleaseRegistry() {
+    const database = this.#database;
+    const retiredTables = this.#retiredReleaseTables();
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      this.#archiveLegacyReleaseRegistry(database, retiredTables);
+      this.#verifyLegacyReleaseArchive(database, retiredTables);
+      for (const { table } of retiredTables.toReversed()) {
+        database.exec(`DROP TABLE IF EXISTS ${table}`);
+      }
+      database.prepare(`
+        INSERT INTO hub_board_settings (key, value, updated_at_ms)
+        VALUES ('task_release_registry_removed_v2', 'completed', ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at_ms = excluded.updated_at_ms
+      `).run(this.now());
+      database.exec(`
+        CREATE TRIGGER IF NOT EXISTS hub_release_registry_history_no_update
+        BEFORE UPDATE ON hub_release_registry_history
+        BEGIN
+          SELECT RAISE(ABORT, 'release history is immutable');
+        END;
+        CREATE TRIGGER IF NOT EXISTS hub_release_registry_history_no_delete
+        BEFORE DELETE ON hub_release_registry_history
+        BEGIN
+          SELECT RAISE(ABORT, 'release history is immutable');
+        END;
+      `);
+      database.exec("COMMIT");
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   releasePlan(workspaceId) {
     const tasks = this.list({ includeDone: true }).filter((task) => task.workspaceId === String(workspaceId));
-    const candidates = tasks.filter((task) => (
-      task.status !== "done"
-      && task.workflowStatus === "awaiting_implementation"
-      && task.frozenChangedFiles.length > 0
-      && task.frozenRevision === task.revision
-      && Boolean(task.releaseManifestHash)
-    ));
+    const awaiting = tasks.filter((task) => task.status !== "done"
+      && task.workflowStatus === "awaiting_implementation");
+    const candidates = awaiting.filter((task) => task.changedFiles.length > 0
+      && task.repositoryRevisions.length > 0);
     const doneAudit = tasks.filter((task) => task.status !== "done" && task.workflowStatus === "done");
-    const conflicts = taskReleaseConflicts(candidates.map((task) => ({
-      ...task, changedFiles: task.frozenChangedFiles,
-    })));
+    const conflicts = taskReleaseConflicts(candidates);
     const ready = candidates.flatMap((task) => {
       const grouped = new Map();
-      for (const file of task.frozenChangedFiles) {
+      for (const file of task.changedFiles) {
         const values = grouped.get(file.projectRoot) ?? [];
         values.push(file.path);
         grouped.set(file.projectRoot, values);
@@ -1744,8 +1657,13 @@ export class TaskBoardStore {
       return [...grouped].map(([projectRoot, files]) => ({
         id: `${task.id}:${projectRoot}`,
         taskId: task.id,
-        taskRevision: task.frozenRevision,
-        manifestHash: task.releaseManifestHash,
+        taskRevision: task.revision,
+        manifestHash: taskReleaseManifest({
+          taskId: task.id,
+          revision: task.revision,
+          changedFiles: task.changedFiles,
+          repositoryRevisions: task.repositoryRevisions,
+        }),
         streamId: task.streamId,
         projectRoot,
         files: [...new Set(files)].sort(),
@@ -1753,15 +1671,21 @@ export class TaskBoardStore {
     });
     return {
       workspaceId: String(workspaceId),
-      revision: taskReleasePlanRevision(workspaceId, [...candidates, ...doneAudit].map((task) => ({
-        ...task, releaseRevision: task.frozenRevision ?? task.revision,
-      }))),
+      revision: taskReleasePlanRevision(workspaceId, [...awaiting, ...doneAudit]),
       candidates,
       ready,
       doneAudit,
-      draft: tasks.filter((task) => task.status !== "done" && task.releaseRevision > 0
+      draft: tasks.filter((task) => task.status !== "done" && task.changedFiles.length > 0
         && task.workflowStatus !== "awaiting_implementation" && task.workflowStatus !== "done"),
-      blocked: [],
+      blocked: awaiting.filter((task) => !task.changedFiles.length || !task.repositoryRevisions.length)
+        .map((task) => ({
+          id: task.id,
+          taskId: task.id,
+          title: task.title,
+          reason: !task.changedFiles.length
+            ? "Task has no exact changed-file evidence"
+            : "Task has no repository revision evidence",
+        })),
       conflicts,
     };
   }
@@ -1781,39 +1705,32 @@ export class TaskBoardStore {
       }
       const timestamp = this.now();
       for (const task of plan.candidates) {
-        const frozen = database.prepare(`
-          SELECT task.row_revision, task.workflow_status, state.frozen_revision, state.manifest_hash
-          FROM hub_board_tasks task JOIN hub_task_release_state state ON state.task_id = task.id
-          WHERE task.id = ?
+        const current = database.prepare(`
+          SELECT row_revision, workflow_status FROM hub_board_tasks WHERE id = ?
         `).get(task.id);
-        if (!frozen
-          || Number(frozen.row_revision) !== task.frozenRevision
-          || Number(frozen.frozen_revision) !== task.frozenRevision
-          || frozen.manifest_hash !== task.releaseManifestHash
-          || frozen.workflow_status !== "awaiting_implementation") {
+        if (!current
+          || Number(current.row_revision) !== task.revision
+          || current.workflow_status !== "awaiting_implementation") {
           throw new Error(`release Task revision changed: ${task.id}`);
         }
-        database.prepare(`
-          INSERT INTO hub_task_release_completions (
-            task_id, task_revision, manifest_hash, verification_json, completed_at_ms
-          ) VALUES (?, ?, ?, ?, ?)
-        `).run(
-          task.id, task.frozenRevision, task.releaseManifestHash,
-          JSON.stringify(verificationEvidence), timestamp,
-        );
         const result = database.prepare(`
           UPDATE hub_board_tasks SET workflow_status = 'done', status = 'done',
             completed_at_ms = ?, updated_at_ms = ?
           WHERE id = ? AND row_revision = ? AND workflow_status = 'awaiting_implementation'
-        `).run(timestamp, timestamp, task.id, task.frozenRevision);
+        `).run(timestamp, timestamp, task.id, task.revision);
         if (!Number(result.changes)) throw new Error(`release Task disappeared: ${task.id}`);
       }
       const result = {
         workspaceId: String(workspaceId),
         released: plan.candidates.map((task) => ({
           id: task.id,
-          revision: task.frozenRevision,
-          manifestHash: task.releaseManifestHash,
+          revision: task.revision,
+          manifestHash: taskReleaseManifest({
+            taskId: task.id,
+            revision: task.revision,
+            changedFiles: task.changedFiles,
+            repositoryRevisions: task.repositoryRevisions,
+          }),
         })),
         verificationEvidence,
       };
@@ -1829,11 +1746,6 @@ export class TaskBoardStore {
   remove(id) {
     return this.#withDatabase((database) => {
       const taskId = String(id);
-      const evidence = database.prepare(`
-        SELECT 1 FROM hub_task_release_revisions WHERE task_id = ?
-        UNION ALL SELECT 1 FROM hub_task_release_completions WHERE task_id = ? LIMIT 1
-      `).get(taskId, taskId);
-      if (evidence) throw new Error("Task with frozen or released evidence cannot be deleted");
       return Number(database.prepare("DELETE FROM hub_board_tasks WHERE id = ?").run(taskId).changes) > 0;
     });
   }

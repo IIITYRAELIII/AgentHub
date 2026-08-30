@@ -4,8 +4,9 @@ export const TASK_WORKFLOW_STATUSES = Object.freeze([
   "new", "in_progress", "testing", "awaiting_implementation", "done",
 ]);
 export const TASK_REFERENCE_INTENTS = Object.freeze(["context", "start"]);
-export const TASK_REFERENCE_CONTEXT_REQUEST = "Учти прикреплённые Dashboard Task как контекст; само прикрепление не является просьбой выполнять их.";
+export const TASK_REFERENCE_CONTEXT_REQUEST = "Рассматривай прикреплённые Dashboard Task как контекст к сообщению пользователя; intent=context сам по себе не определяет, начинать ли работу.";
 export const TASK_REFERENCE_START_REQUEST = "Начни работу над прикреплённой Dashboard Task.";
+const LEGACY_TASK_REFERENCE_CONTEXT_MIGRATION_GUARD = "Учти прикреплённые Dashboard Task как контекст; само прикрепление не является просьбой выполнять их.";
 export const TASK_CATEGORIES = Object.freeze(["task", "note", "unknown"]);
 export const TASK_SHORT_TITLE_MAX_LENGTH = 100;
 export const TASK_TITLE_MAX_LENGTH = 160;
@@ -126,6 +127,7 @@ export function taskReferencePromptDetails(value) {
   if (!marker) return null;
   const request = text.slice(marker.index + marker[0].length).trim();
   const generated = request === TASK_REFERENCE_CONTEXT_REQUEST
+    || request === LEGACY_TASK_REFERENCE_CONTEXT_MIGRATION_GUARD
     || request === TASK_REFERENCE_START_REQUEST;
   const references = text.slice("# Attached Agent Hub Tasks\n".length, marker.index)
     .split("\n")
@@ -172,7 +174,7 @@ export function messageWithTaskReferences(text, references = []) {
     )),
     "",
     "Открой актуальное содержимое Task командой MCP `hub_task_get` по `taskId` из ссылки. "
-      + "Для intent=context не начинай работу без явной просьбы пользователя.",
+      + "Для intent=context решение о начале работы определяется сопровождающим сообщением пользователя.",
     "",
     "# My request",
     "",

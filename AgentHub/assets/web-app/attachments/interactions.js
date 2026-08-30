@@ -225,12 +225,10 @@
     };
   }
 
-  function resourceActions(resource, { canCopyLocalObject = false } = {}) {
+  function resourceActions(resource) {
     if (resource?.kind !== "link") return ["copy", "save"];
     if (String(resource?.localPath ?? "").trim()) {
-      return canCopyLocalObject
-        ? ["open-editor", "reveal", "copy-path", "copy-object", "save"]
-        : ["open-editor", "copy-path", "save"];
+      return ["open-editor", "reveal", "copy-path", "copy-object", "save"];
     }
     return ["open", "copy", "save"];
   }

@@ -30,22 +30,7 @@ export class WorkspaceCatalogService {
     return this.#store.renameWorkspace(workspaceId, name);
   }
 
-  updateWorkspaceSettings({ workspaceId, settings = {}, discardReleaseEntries = false } = {}) {
-    const disabling = settings?.releaseWorkflowEnabled === false;
-    const pending = disabling ? this.taskBoard?.store?.releaseRegistrationSummary?.(workspaceId) : null;
-    if (pending?.total > 0) {
-      return {
-        ...this.#store.workspace(workspaceId),
-        releaseWorkflowUpdate: {
-          updated: false,
-          requiresDiscardConfirmation: true,
-          requiresTaskCleanup: true,
-          taskCount: pending.taskCount,
-          total: pending.total,
-          destructiveDiscardSupported: false,
-        },
-      };
-    }
+  updateWorkspaceSettings({ workspaceId, settings = {} } = {}) {
     return this.#store.updateWorkspaceSettings(workspaceId, settings);
   }
 

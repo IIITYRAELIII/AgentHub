@@ -1,10 +1,14 @@
-import { CONTEXT_MAINTENANCE_ACTIVE_ERROR_CODE } from "../domain/deferred-input.mjs";
+import {
+  CONTEXT_MAINTENANCE_ACTIVE_ERROR_CODE,
+  RUNTIME_RESTART_PENDING_ERROR_CODE,
+} from "../domain/deferred-input.mjs";
 import { taskRunKey } from "../domain/task-runs.mjs";
 
 export function isRetryableDeferredLaunchError(error) {
   const code = String(error?.code ?? "").trim().toUpperCase();
   if ([
     CONTEXT_MAINTENANCE_ACTIVE_ERROR_CODE,
+    RUNTIME_RESTART_PENDING_ERROR_CODE,
     "EPIPE",
     "ECONNRESET",
     "ECONNREFUSED",
@@ -22,6 +26,9 @@ export function isUnconfirmedDeferredLaunchError(error) {
 }
 
 export function deferredLaunchWaitReason(error) {
+  if (String(error?.code ?? "").trim().toUpperCase() === RUNTIME_RESTART_PENDING_ERROR_CODE) {
+    return "runtime-restart";
+  }
   if (String(error?.code ?? "").trim().toUpperCase() === CONTEXT_MAINTENANCE_ACTIVE_ERROR_CODE) {
     return "context-maintenance";
   }

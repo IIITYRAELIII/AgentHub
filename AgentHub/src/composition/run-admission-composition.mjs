@@ -63,7 +63,6 @@ export function createRunAdmissionComposition({
   scheduleObservedRun,
   runCoordinator,
   runConflictPolicy,
-  streamMaintenance,
   pendingInputs,
   queuedInputs,
   getSelectedTask,
@@ -334,7 +333,7 @@ export function createRunAdmissionComposition({
     isBlocked: async (item) => {
       const target = deferredTarget(item);
       const occupancy = await runCoordinator.deferredOccupancy(target);
-      return Boolean(streamMaintenance.isActive(target)
+      return Boolean(runCoordinator.admissionBarrier(target)
         || occupancy.occupied
         || await runConflictPolicy.check(target));
     },

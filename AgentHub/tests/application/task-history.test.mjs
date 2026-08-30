@@ -496,6 +496,17 @@ test("displayUserPrompt keeps Task instructions private while preserving the use
   assert.equal(displayUserPrompt(messageWithTaskReferences("Сравни с текущим решением", [reference])),
     "Сравни с текущим решением");
   assert.equal(displayUserPrompt(messageWithTaskReferences("", [reference])), "");
+  assert.equal(displayUserPrompt([
+    "# Attached Agent Hub Tasks",
+    "",
+    "- [Dashboard Task: Исправить Dashboard](agent-hub://task/board-1) · status: new · intent: context",
+    "",
+    "Открой актуальное содержимое Task командой MCP `hub_task_get` по `taskId` из ссылки.",
+    "",
+    "# My request",
+    "",
+    "Учти прикреплённые Dashboard Task как контекст; само прикрепление не является просьбой выполнять их.",
+  ].join("\n")), "");
 });
 
 test("Codex history retains a Task-only turn as a structured attachment", () => {

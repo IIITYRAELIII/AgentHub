@@ -325,6 +325,27 @@ test("desktop Stream settings replace duplicate toolbar controls and keep titles
   assert.doesNotMatch(strippedPseudoElements, /\.stream-tab-card::/u);
 });
 
+test("every desktop Stream tab keeps dot, title and time in fixed columns", async () => {
+  const dialogStyles = await readFile(new URL("../../assets/web-app/dialog-area.css", import.meta.url), "utf8");
+  const gothicStyles = await readFile(new URL("../../assets/web-app/themes/gothic/theme.css", import.meta.url), "utf8");
+
+  assert.match(
+    dialogStyles,
+    /\.stream-tabs-track \.stream-tab-card \{[\s\S]*display: grid;[\s\S]*grid-template-columns: 7px minmax\(0, 1fr\) max-content;[\s\S]*width: 100%;/u,
+  );
+  assert.match(
+    dialogStyles,
+    /\.stream-tabs-track \.stream-tab-card:has\(> \.stream-tab-pin-icon\) \{[\s\S]*grid-template-columns: 7px 13px minmax\(0, 1fr\) max-content;/u,
+  );
+  assert.match(dialogStyles, /\.stream-tabs-track \.stream-tab-title \{[\s\S]*justify-self: start;[\s\S]*text-align: left !important;/u);
+  assert.match(dialogStyles, /\.stream-tabs-track \.stream-tab \.task-time,[\s\S]*justify-self: end;[\s\S]*margin-left: 0;/u);
+  assert.doesNotMatch(dialogStyles, /\.stream-tab:is\([^}]+margin-inline: calc\(-1 \* var\(--stream-tab-inline-padding\)\)/u);
+  assert.doesNotMatch(
+    gothicStyles,
+    /\.stream-tabs \.stream-tab(?:\[[^\]]+\])+ \.stream-tab-card \{[^}]*margin(?:-inline|-left|-right)\s*:/u,
+  );
+});
+
 test("Stream card settings normalize values received from the server snapshot", async () => {
   const {
     normalizeStreamCardSettings,

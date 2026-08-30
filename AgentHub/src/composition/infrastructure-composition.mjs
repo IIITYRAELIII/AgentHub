@@ -10,7 +10,6 @@ import { TurnEndNotificationRegistry } from "../application/turn-end-notificatio
 import { createWorkLogUsageStore } from "../application/work-log-usage-store.mjs";
 import { TaskBoardService } from "../application/task-board-service.mjs";
 import { WorkspaceReleaseService } from "../application/workspace-release-service.mjs";
-import { TaskReleaseService } from "../application/task-release-service.mjs";
 import { StreamHandoffService } from "../application/stream-handoff-service.mjs";
 import { AGENT_HUB_VERSION } from "../infrastructure/filesystem/agent-hub-package.mjs";
 import { samePath } from "../infrastructure/filesystem/config.mjs";
@@ -35,10 +34,6 @@ import { UsageSyncIdentityStore } from "../infrastructure/persistence/usage-sync
 import { UsageSyncRemoteConfigStore } from "../infrastructure/persistence/usage-sync-remote-config-store.mjs";
 import { defaultUsageSyncServerUrl } from "../domain/default-usage-sync-server.mjs";
 import { verifyWorkspaceReleasePublication } from "../infrastructure/persistence/release-publication-verifier.mjs";
-import {
-  buildTaskReleaseTreeEvidence,
-  verifyReleaseChangeSetGitEvidence,
-} from "../infrastructure/filesystem/release-change-set-git-verifier.mjs";
 import { SingleInstanceGuard } from "../infrastructure/process/instance-lock.mjs";
 import { captureProcess } from "../infrastructure/process/process-capture.mjs";
 import { RuntimeCommandServer } from "../infrastructure/process/runtime-command.mjs";
@@ -214,11 +209,6 @@ export async function createHubInfrastructure({
     store: taskBoardStore,
     verifyPublication: verifyWorkspaceReleasePublication,
   });
-  const taskReleaseService = new TaskReleaseService({
-    taskBoard: taskBoardStore,
-    verifyFreezeEvidence: verifyReleaseChangeSetGitEvidence,
-    buildTreeEvidence: buildTaskReleaseTreeEvidence,
-  });
   const preTurnInstructions = new PreTurnInstructionStore({
     guideFile: path.join(agentHubRoot, "AGENT_HUB_GUIDE.md"),
     globalFile: path.join(config.dataDir, "global-pre-turn-instructions.md"),
@@ -314,7 +304,6 @@ export async function createHubInfrastructure({
     attachmentDirectory,
     secret: hubMcpSecret,
     releaseCompleter: workspaceReleaseService,
-    taskReleases: taskReleaseService,
     taskGitWorkspaces,
   });
   const hubMcpServer = new HubMcpServer({
@@ -334,6 +323,7 @@ export async function createHubInfrastructure({
     assetBundleProvider: runtimeAssetBundleProvider(runtimeCommandRoot),
     journalDatabaseFile,
     usageSyncRemoteConfigStore: workLogUsageRemoteConfigStore,
+    workspaceFileRoots: [config.projectRoot, ...config.projects.map((project) => project.path)],
     recordCommandTrace: (span) => commandTrace?.service?.recordBestEffort?.(span) ?? false,
     reportUnexpectedError: (error, context) => sentryDiagnostics.captureUnexpectedException(error, context),
   };
@@ -343,7 +333,6 @@ export async function createHubInfrastructure({
       ...serverOptions,
       localAccessSecret: localWebSecret,
       localAccessSecretFile: path.join(runtimeCommandRoot, "local-web.secret"),
-      workspaceFileRoots: [config.projectRoot, ...config.projects.map((project) => project.path)],
       copyWorkspaceFile: copyWindowsFileObject,
       revealWorkspaceFile: revealWindowsFile,
     })

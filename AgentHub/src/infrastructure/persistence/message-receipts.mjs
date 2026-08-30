@@ -107,22 +107,21 @@ export class MessageReceiptRegistry {
   }
 
   findByTurn({ provider, threadId, turnId } = {}) {
+    return this.findAllByTurn({ provider, threadId, turnId }).at(-1) ?? null;
+  }
+
+  findAllByTurn({ provider, threadId, turnId } = {}) {
     const normalizedProvider = String(provider ?? "").trim();
     const normalizedThreadId = String(threadId ?? "").trim();
     const normalizedTurnId = String(turnId ?? "").trim();
-    if (!normalizedProvider || !normalizedThreadId || !normalizedTurnId) return null;
-    const values = [...this.receipts.values()];
-    for (let index = values.length - 1; index >= 0; index -= 1) {
-      const receipt = values[index];
-      if (
+    if (!normalizedProvider || !normalizedThreadId || !normalizedTurnId) return [];
+    return [...this.receipts.values()]
+      .filter((receipt) => (
         receipt.provider === normalizedProvider
         && receipt.threadId === normalizedThreadId
         && String(receipt.result?.turnId ?? "").trim() === normalizedTurnId
-      ) {
-        return structuredClone(receipt);
-      }
-    }
-    return null;
+      ))
+      .map((receipt) => structuredClone(receipt));
   }
 
   findByResultId(id) {

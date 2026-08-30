@@ -14,6 +14,34 @@ const localWorkspaceFilesAvailable = window.AgentHubResourceInteractions.localWo
   protocol: window.location.protocol,
   hostname: window.location.hostname,
 });
+function remoteWorkspaceFileBridgeAvailable() {
+  return !vscode
+    && !localWorkspaceFilesAvailable
+    && window.AgentHubBrowserDevice?.isPaired?.() === true;
+}
+
+async function launchWorkspaceFileBridge(action, localPath) {
+  const response = await hubFetch("/api/workspace-file/transfer-ticket", {
+    method: "POST",
+    headers: { ...authorizationHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify({ path: localPath }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload.ok === false) {
+    throw new Error(String(payload.error ?? `Не удалось подготовить файл: HTTP ${response.status}`));
+  }
+  const source = new URL(String(payload.downloadPath ?? ""), window.location.origin);
+  const launch = new URL(`agenthub-file://${action}`);
+  launch.searchParams.set("source", source.href);
+  launch.searchParams.set("name", String(payload.name ?? "file.bin"));
+  const link = document.createElement("a");
+  link.href = launch.href;
+  link.hidden = true;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  agentHub.toast("Windows File Bridge вызван. Если он не установлен, скачай /api/workspace-file/bridge-installer.ps1");
+}
 const selectedTaskKey = "agent-hub:selected-task:v1";
 const serverIdentityKey = "agent-hub:server-identity:v1";
 const maintenanceEventStorageKey = "agent-hub:maintenance-events:v1";
@@ -3586,10 +3614,12 @@ agentHub.on("resource:open-editor", ({ resource }) => runAction(async () => {
 
 agentHub.on("resource:reveal", ({ resource }) => runAction(async () => {
   const target = String(resource?.localPath ?? "").trim();
-  if (!target || !localWorkspaceFilesAvailable) {
-    throw new Error("Показ файла в проводнике недоступен в этой поверхности");
-  }
+  if (!target) throw new Error("Локальный путь не указан");
   if (vscode) await bridgeCall("reveal-link", { href: target });
+  else if (remoteWorkspaceFileBridgeAvailable()) await launchWorkspaceFileBridge("reveal", target);
+  else if (!localWorkspaceFilesAvailable) {
+    throw new Error("Для удалённого браузера сопряги устройство и установи Windows File Bridge");
+  }
   else {
     const response = await hubFetch("/api/workspace-file/reveal", {
       method: "POST",
@@ -3624,10 +3654,12 @@ agentHub.on("clipboard:write", ({ text, successMessage }) => runAction(async () 
 
 agentHub.on("resource:copy-object", ({ resource }) => runAction(async () => {
   const localPath = String(resource?.localPath ?? "").trim();
-  if (!localPath || !localWorkspaceFilesAvailable) {
-    throw new Error("Копирование файлового объекта недоступно в этой поверхности");
-  }
+  if (!localPath) throw new Error("Локальный путь не указан");
   if (vscode) await bridgeCall("copy-link-object", { href: localPath });
+  else if (remoteWorkspaceFileBridgeAvailable()) await launchWorkspaceFileBridge("copy", localPath);
+  else if (!localWorkspaceFilesAvailable) {
+    throw new Error("Для удалённого браузера сопряги устройство и установи Windows File Bridge");
+  }
   else {
     const response = await hubFetch("/api/workspace-file/copy", {
       method: "POST",
@@ -3639,7 +3671,7 @@ agentHub.on("resource:copy-object", ({ resource }) => runAction(async () => {
       throw new Error(String(payload.error ?? `Не удалось скопировать файл: HTTP ${response.status}`));
     }
   }
-  agentHub.toast("Файл скопирован в буфер обмена");
+  if (!remoteWorkspaceFileBridgeAvailable()) agentHub.toast("Файл скопирован в буфер обмена");
 }));
 
 agentHub.on("resource:save", ({ resource }) => runAction(async () => {

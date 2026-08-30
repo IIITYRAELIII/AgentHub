@@ -49,10 +49,10 @@ test("startup preserves control, recovery and readiness order", async () => {
     "recover",
     "notifications",
     "jobs",
-    "timers",
     "commands",
     "restart",
     "ready",
+    "timers",
     "log:ready message",
     "poll",
   ]);
@@ -131,6 +131,7 @@ test("startup never marks a replacement ready before restart state is finalized"
   });
   await assert.rejects(service.start(), /restart state/u);
   assert.equal(calls.includes("ready"), false);
+  assert.equal(calls.includes("timers"), false);
   assert.equal(calls.includes("poll"), false);
   assert.deepEqual(captured, [["restart state", "restart"]]);
 });

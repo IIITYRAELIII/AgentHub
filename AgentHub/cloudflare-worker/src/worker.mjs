@@ -724,6 +724,9 @@ async function dashboardBotTelegramRequest(env, method, body = {}) {
 
 async function dashboardBotTelegramFile(env, attachment) {
   const token = String(env.DASHBOARD_BOT_TOKEN ?? "").trim();
+  if (Number(attachment?.fileSize ?? 0) > MAX_ATTACHMENT_BYTES) {
+    throw new Error("Telegram Bot API cannot download files larger than 20 MB");
+  }
   const file = await dashboardBotTelegramRequest(env, "getFile", { file_id: attachment.fileId });
   const filePath = String(file?.file_path ?? "").trim();
   if (!filePath || Number(file?.file_size ?? attachment.fileSize ?? 0) > MAX_ATTACHMENT_BYTES) {
@@ -742,30 +745,58 @@ async function dashboardBotTelegramFile(env, attachment) {
   };
 }
 
+function dashboardBotAttachmentFailure(attachment, error) {
+  const detail = String(error?.message ?? error ?? "").replace(/\s+/gu, " ").trim();
+  const oversized = Number(attachment?.fileSize ?? 0) > MAX_ATTACHMENT_BYTES
+    || /file is too big|oversized|too large|larger than 20 mb/iu.test(detail);
+  return {
+    name: attachmentFileName(attachment?.fileName),
+    type: dashboardBotNonEmpty(attachment?.type) ?? "document",
+    reason: oversized
+      ? "Telegram Bot API не позволяет боту скачать файл больше 20 МБ"
+      : `не удалось загрузить: ${detail || "неизвестная ошибка"}`.slice(0, 320),
+  };
+}
+
+function dashboardBotAttachmentFailureNotice(failures) {
+  if (!failures.length) return "";
+  return [
+    "Не приложены файлы:",
+    ...failures.map((failure) => `• «${failure.name}» — ${failure.reason}.`),
+  ].join("\n");
+}
+
 async function uploadDashboardBotAttachments(env, hubStore, userId, attachments) {
   const references = [];
+  const failures = [];
   for (const attachment of attachments) {
-    const downloaded = await dashboardBotTelegramFile(env, attachment);
-    const id = crypto.randomUUID().toLowerCase();
-    const response = await hubStore.fetch(new Request("https://journal.internal/attachment/upload", {
-      method: "POST",
-      headers: {
-        "Content-Type": downloaded.contentType,
-        "Content-Length": String(downloaded.body.byteLength),
-        "X-Agent-Hub-User-Id": String(userId),
-        "X-Agent-Hub-Attachment-Id": id,
-        "X-Agent-Hub-Attachment-Hash": downloaded.bodyHash,
-        "X-Agent-Hub-File-Name": encodedAttachmentFileName(downloaded.name),
-      },
-      body: downloaded.body,
-    }));
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok || !attachmentIdFromReference(payload?.path)) {
-      throw new Error(`Agent Hub rejected an attachment: ${String(payload?.error ?? `HTTP ${response.status}`).slice(0, 300)}`);
+    try {
+      const downloaded = await dashboardBotTelegramFile(env, attachment);
+      const id = crypto.randomUUID().toLowerCase();
+      const response = await hubStore.fetch(new Request("https://journal.internal/attachment/upload", {
+        method: "POST",
+        headers: {
+          "Content-Type": downloaded.contentType,
+          "Content-Length": String(downloaded.body.byteLength),
+          "X-Agent-Hub-User-Id": String(userId),
+          "X-Agent-Hub-Attachment-Id": id,
+          "X-Agent-Hub-Attachment-Hash": downloaded.bodyHash,
+          "X-Agent-Hub-File-Name": encodedAttachmentFileName(downloaded.name),
+        },
+        body: downloaded.body,
+      }));
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || !attachmentIdFromReference(payload?.path)) {
+        throw new Error(`Agent Hub rejected an attachment: ${String(payload?.error ?? `HTTP ${response.status}`).slice(0, 300)}`);
+      }
+      references.push(payload.path);
+    } catch (error) {
+      const failure = dashboardBotAttachmentFailure(attachment, error);
+      failures.push(failure);
+      console.warn(`Dashboard bot skipped attachment ${failure.name}: ${failure.reason}`);
     }
-    references.push(payload.path);
   }
-  return references;
+  return { references, failures };
 }
 
 async function updateDashboardBotCard(env, registryStore, card) {
@@ -3589,6 +3620,7 @@ export default {
           ? [{ command: routed.command, hubId: routed.hubId, telegramAttachments: routed.telegramAttachments ?? routed.telegramImages }]
           : []);
       if (routedCommands.length) {
+        const attachmentFailures = [];
         try {
           for (const routedCommand of routedCommands) {
             const hubStore = env.JOURNAL.getByName(`dashboard-bot:${routedCommand.hubId}`);
@@ -3618,17 +3650,32 @@ export default {
             }
             let command = routedCommand.command;
             if (Array.isArray(routedCommand.telegramAttachments) && routedCommand.telegramAttachments.length) {
+              const uploaded = await uploadDashboardBotAttachments(
+                env,
+                hubStore,
+                command.userId,
+                routedCommand.telegramAttachments,
+              );
+              attachmentFailures.push(...uploaded.failures);
+              const failureNotice = dashboardBotAttachmentFailureNotice(uploaded.failures);
+              const params = {
+                ...command.params,
+                ...(uploaded.references.length ? { attachments: uploaded.references } : {}),
+              };
+              if (failureNotice) {
+                params.text = [dashboardBotNonEmpty(params.text), `⚠️ ${failureNotice}`]
+                  .filter(Boolean)
+                  .join("\n\n");
+                params.sourceDetails = {
+                  ...(isPlainObject(params.sourceDetails) ? params.sourceDetails : {}),
+                  deliveredAttachmentCount: uploaded.references.length,
+                  skippedAttachmentCount: uploaded.failures.length,
+                  skippedAttachments: uploaded.failures,
+                };
+              }
               command = {
                 ...command,
-                params: {
-                  ...command.params,
-                  attachments: await uploadDashboardBotAttachments(
-                    env,
-                    hubStore,
-                    command.userId,
-                    routedCommand.telegramAttachments,
-                  ),
-                },
+                params,
               };
             }
             const enqueueResponse = await hubStore.fetch(new Request("https://journal.internal/control/enqueue", {
@@ -3672,9 +3719,11 @@ export default {
           await updateDashboardBotCard(env, dashboardBotRouter, {
             ...routed.card,
             mode: "edit",
-            text: routed.submittedBundle.separate
+            text: `${routed.submittedBundle.separate
               ? `⏳ Отдельных задач поставлено в очередь: ${routed.submittedBundle.taskCount}.`
-              : `⏳ Пачка из ${routed.submittedBundle.itemCount} сообщений поставлена в очередь Agent Hub.`,
+              : `⏳ Пачка из ${routed.submittedBundle.itemCount} сообщений поставлена в очередь Agent Hub.`}${attachmentFailures.length
+              ? `\n⚠️ Не приложено файлов: ${attachmentFailures.length}.\n${dashboardBotAttachmentFailureNotice(attachmentFailures)}`
+              : ""}`,
             replyMarkup: { inline_keyboard: [] },
           });
         }

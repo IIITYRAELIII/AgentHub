@@ -39,8 +39,22 @@ async function repositoryIdentity(repositoryRoot) {
   return `root:${pathKey(repositoryRoot)}`;
 }
 
-async function assertRevisionAncestor({ repositoryRoot, ancestor, descendant }) {
-  await gitOutput(["merge-base", "--is-ancestor", ancestor, descendant], { cwd: repositoryRoot });
+async function objectAtRevision(repositoryRoot, revision, file) {
+  try {
+    return await gitOutput(["rev-parse", `${revision}:${file}`], { cwd: repositoryRoot });
+  } catch {
+    return null;
+  }
+}
+
+async function assertTaskResultPublished({ repositoryRoot, taskRevision, publishedRevision, files }) {
+  for (const file of files) {
+    const taskObject = await objectAtRevision(repositoryRoot, taskRevision, file.path);
+    const publishedObject = await objectAtRevision(repositoryRoot, publishedRevision, file.path);
+    if (taskObject !== publishedObject) {
+      throw new Error(`Task result ${taskRevision}:${file.path} differs from ${publishedRevision}`);
+    }
+  }
 }
 
 export async function verifyWorkspaceReleasePublication({ expectedRevision = null, plan } = {}, {
@@ -48,20 +62,23 @@ export async function verifyWorkspaceReleasePublication({ expectedRevision = nul
   status = gitOutput,
   assertRevision = assertCurrentPublicationRevision,
   identifyRepository = repositoryIdentity,
-  assertAncestor = assertRevisionAncestor,
+  assertTaskResult = assertTaskResultPublished,
   readPublication = readPublicationState,
   readPackage = readAgentHubPackage,
 } = {}) {
-  const frozenRevisionsByProjectRoot = new Map();
+  const taskEvidenceByProjectRoot = new Map();
   for (const candidate of plan.candidates ?? []) {
-    for (const repository of candidate.frozenRepositories ?? []) {
+    for (const repository of candidate.repositoryRevisions ?? []) {
       const projectRoot = String(repository.projectRoot ?? "").trim();
       const resultRevision = String(repository.resultRevision ?? "").trim();
       if (!projectRoot || !resultRevision) continue;
       const key = pathKey(projectRoot);
-      const revisions = frozenRevisionsByProjectRoot.get(key) ?? new Set();
-      revisions.add(resultRevision);
-      frozenRevisionsByProjectRoot.set(key, revisions);
+      const evidence = taskEvidenceByProjectRoot.get(key) ?? [];
+      evidence.push({
+        resultRevision,
+        files: (candidate.changedFiles ?? []).filter((file) => pathKey(file.projectRoot) === key),
+      });
+      taskEvidenceByProjectRoot.set(key, evidence);
     }
   }
   const groupedChanges = new Map();
@@ -88,11 +105,15 @@ export async function verifyWorkspaceReleasePublication({ expectedRevision = nul
       const repository = repositoriesByRoot.get(key) ?? {
         root: resolvedRoot,
         files: new Set(),
-        frozenRevisions: new Set(),
+        taskEvidence: [],
       };
       for (const file of matchingFiles) repository.files.add(file);
-      for (const revision of frozenRevisionsByProjectRoot.get(pathKey(group.projectRoot)) ?? []) {
-        repository.frozenRevisions.add(revision);
+      for (const evidence of taskEvidenceByProjectRoot.get(pathKey(group.projectRoot)) ?? []) {
+        const files = evidence.files.map((file) => ({
+          path: path.relative(resolvedRoot, path.resolve(group.projectRoot, file.path)).split(path.sep).join("/"),
+          operation: file.operation,
+        })).filter((file) => file.path && !file.path.startsWith("../"));
+        repository.taskEvidence.push({ resultRevision: evidence.resultRevision, files });
       }
       repositoriesByRoot.set(key, repository);
     }
@@ -107,26 +128,27 @@ export async function verifyWorkspaceReleasePublication({ expectedRevision = nul
     const logical = logicalRepositories.get(identity) ?? {
       root: repository.root,
       files: new Set(),
-      frozenRevisions: new Set(),
+      taskEvidence: [],
     };
     for (const file of repository.files) logical.files.add(file);
-    for (const revision of repository.frozenRevisions) logical.frozenRevisions.add(revision);
+    logical.taskEvidence.push(...repository.taskEvidence);
     logicalRepositories.set(identity, logical);
   }
 
   const repositories = [];
   for (const repository of logicalRepositories.values()) {
     if (expectedRevision) {
-      for (const frozenRevision of repository.frozenRevisions) {
+      for (const evidence of repository.taskEvidence) {
         try {
-          await assertAncestor({
+          await assertTaskResult({
             repositoryRoot: repository.root,
-            ancestor: frozenRevision,
-            descendant: expectedRevision,
+            taskRevision: evidence.resultRevision,
+            publishedRevision: expectedRevision,
+            files: evidence.files,
           });
         } catch {
           throw new Error(
-            `frozen Task revision ${frozenRevision} is not contained in published revision ${expectedRevision}`,
+            `Task result revision ${evidence.resultRevision} is not contained in published revision ${expectedRevision}`,
           );
         }
       }

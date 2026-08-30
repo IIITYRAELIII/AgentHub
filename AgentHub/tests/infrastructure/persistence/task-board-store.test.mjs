@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
-import { frozenTaskReleaseManifest } from "../../../src/domain/task-release-snapshot.mjs";
 import { TaskBoardStore } from "../../../src/infrastructure/persistence/task-board-store.mjs";
 
 async function fixture(t) {
@@ -317,35 +317,6 @@ test("Workspace removal reassigns its cards and preserves their order", async (t
   assert.deepEqual(store.orderedColumnIds(["workspace-2"]), ["workspace-2", "notes"]);
 });
 
-function freezeTask(store, taskId, projectRoot) {
-  store.claim(taskId, {
-    workspaceId: "workspace-1", streamId: "stream-1",
-    provider: "codex", threadId: "thread-1", turnId: "turn-1",
-    gitBaseline: { repoRoot: projectRoot, tree: "a".repeat(40) },
-  });
-  store.recordTaskTurn({
-    taskId, provider: "codex", threadId: "thread-1", turnId: "turn-1",
-    projectRoot, summary: "Implemented", status: "completed",
-    changedFiles: [{ projectRoot, path: "src/app.mjs", operation: "modified", turnId: "turn-1" }],
-    resultSnapshot: { repoRoot: projectRoot, tree: "b".repeat(40) },
-  });
-  const awaiting = store.setWorkflowStatus(taskId, "awaiting_implementation");
-  const manifest = frozenTaskReleaseManifest({
-    revision: awaiting.revision + 1,
-    repositories: [{ projectRoot, baseRevision: "a".repeat(40), resultRevision: "b".repeat(40) }],
-    files: [{
-      projectRoot, path: "src/app.mjs", operation: "modified",
-      baseBlob: "c".repeat(40), resultBlob: "d".repeat(40), patchHash: "e".repeat(64),
-    }],
-  });
-  return store.freezeTaskRelease(taskId, {
-    expectedTaskRevision: awaiting.revision,
-    manifest,
-    verification: { verifier: { name: "fixture", version: "1" } },
-    actorStreamId: "stream-1",
-  });
-}
-
 test("repeated Task claim backfills a baseline captured after the first claim", async (t) => {
   const store = await fixture(t);
   const projectRoot = path.resolve("D:/repo");
@@ -393,27 +364,69 @@ test("terminal Task evidence backfills a claim baseline captured after claim", a
   }]);
 });
 
-test("Frozen evidence stays historical while the Task remains editable", async (t) => {
+test("Await Tasks enter the plan directly and missing evidence stays visible", async (t) => {
   const store = await fixture(t);
   const projectRoot = path.resolve("D:/repo");
-  const frozen = store.create({ text: "Frozen" });
-  store.move(frozen.id, { bucket: "workspace", workspaceId: "workspace-1" });
-  const frozenSnapshot = freezeTask(store, frozen.id, projectRoot);
+  const ready = store.create({ text: "Ready Task" });
+  const blocked = store.create({ text: "Blocked Task" });
+  for (const task of [ready, blocked]) {
+    store.move(task.id, { bucket: "workspace", workspaceId: "workspace-1" });
+  }
+  store.claim(ready.id, {
+    workspaceId: "workspace-1", streamId: "stream-1",
+    provider: "codex", threadId: "thread-1", turnId: "turn-1",
+    gitBaseline: { repoRoot: projectRoot, tree: "a".repeat(40) },
+  });
+  store.recordTaskTurn({
+    taskId: ready.id, provider: "codex", threadId: "thread-1", turnId: "turn-1",
+    projectRoot, status: "completed",
+    changedFiles: [{ projectRoot, path: "src/app.mjs", operation: "modified" }],
+    resultSnapshot: { repoRoot: projectRoot, tree: "b".repeat(40) },
+  });
+  store.setWorkflowStatus(ready.id, "awaiting_implementation");
+  store.setWorkflowStatus(blocked.id, "awaiting_implementation");
 
-  const testing = store.setWorkflowStatus(frozen.id, "testing");
-  const updated = store.updatePresentation(frozen.id, { title: "Changed" });
-  const completed = store.complete(frozen.id);
-
-  assert.equal(testing.workflowStatus, "testing");
-  assert.equal(updated.title, "Changed");
-  assert.equal(completed.status, "done");
-  assert.equal(completed.frozenRevision, frozenSnapshot.frozenRevision);
-  assert.equal(completed.releaseManifestHash, frozenSnapshot.releaseManifestHash);
-  assert.ok(completed.revision > frozenSnapshot.revision);
-  assert.equal(store.releasePlan("workspace-1").candidates.length, 0);
+  const plan = store.releasePlan("workspace-1");
+  assert.deepEqual(plan.candidates.map((task) => task.id), [ready.id]);
+  assert.deepEqual(plan.blocked.map((task) => task.id), [blocked.id]);
+  assert.equal(plan.ready.length, 1);
 });
 
-test("rolling a Task back clears its pending automatic freeze intent", async (t) => {
+test("a new Await request clears stale evidence until the Task branch is integrated again", async (t) => {
+  const store = await fixture(t);
+  const projectRoot = path.resolve("D:/repo");
+  const task = store.create({ text: "Retry integration" });
+  const identity = {
+    workspaceId: "workspace-1", streamId: "stream-1",
+    provider: "codex", threadId: "thread-1", turnId: "turn-1",
+  };
+  store.move(task.id, { bucket: "workspace", workspaceId: "workspace-1" });
+  store.claim(task.id, {
+    ...identity,
+    gitBaseline: { repoRoot: projectRoot, tree: "a".repeat(40) },
+  });
+  store.recordTaskTurn({
+    taskId: task.id, provider: identity.provider, threadId: identity.threadId, turnId: identity.turnId,
+    projectRoot, status: "completed",
+    changedFiles: [{ projectRoot, path: "src/app.mjs", operation: "modified" }],
+    resultSnapshot: { repoRoot: projectRoot, tree: "b".repeat(40) },
+  });
+  store.setWorkflowStatus(task.id, "awaiting_implementation");
+  assert.deepEqual(store.releasePlan("workspace-1").candidates.map((candidate) => candidate.id), [task.id]);
+
+  store.requestWorkflowStatus(task.id, {
+    status: "awaiting_implementation",
+    provider: identity.provider,
+    threadId: identity.threadId,
+    turnId: identity.turnId,
+  });
+
+  const retried = store.releasePlan("workspace-1");
+  assert.deepEqual(retried.candidates, []);
+  assert.deepEqual(retried.blocked.map((candidate) => candidate.id), [task.id]);
+});
+
+test("rolling a Task back clears its pending awaiting intent", async (t) => {
   const store = await fixture(t);
   const task = store.create({ text: "Rollback awaiting" });
   const identity = {
@@ -546,7 +559,7 @@ function seedProductionShapeLegacyRelease(database) {
   database.prepare("INSERT INTO hub_release_batches VALUES ('batch-1', 'released', 500)").run();
 }
 
-test("Legacy cutover maps production union to 11 Tasks and only two verified awaiting", async (t) => {
+test("Legacy cutover maps production union to Tasks and retains verified immutable history", async (t) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-task-release-migration-"));
   const databaseFile = path.join(directory, "journal.sqlite");
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -569,17 +582,50 @@ test("Legacy cutover maps production union to 11 Tasks and only two verified awa
   );
   store.close();
 
-  const archived = new DatabaseSync(databaseFile);
-  assert.equal(archived.prepare("SELECT COUNT(*) AS value FROM hub_release_registry_history").get().value, 44);
-  assert.throws(
-    () => archived.prepare("UPDATE hub_release_changes SET status = 'discarded'").run(),
-    /read-only archive/u,
-  );
-  archived.close();
+  const inspected = new DatabaseSync(databaseFile);
+  assert.equal(inspected.prepare(`
+    SELECT COUNT(*) AS value FROM sqlite_master
+    WHERE type = 'table' AND name IN (
+      'hub_release_changes', 'hub_release_batches', 'hub_release_change_sets',
+      'hub_release_turn_observations', 'hub_release_change_set_files',
+      'hub_release_change_set_bindings', 'hub_release_change_set_events',
+      'hub_task_release_state', 'hub_task_release_revisions',
+      'hub_task_release_revision_files', 'hub_task_release_completions'
+    )
+  `).get().value, 0);
+  const history = inspected.prepare(`
+    SELECT source_kind, source_id, payload_json, payload_sha256
+    FROM hub_release_registry_history ORDER BY source_kind, source_id
+  `).all();
+  assert.equal(history.length, 59);
+  for (const row of history) {
+    assert.equal(
+      row.payload_sha256,
+      createHash("sha256").update(row.payload_json, "utf8").digest("hex"),
+    );
+  }
+  inspected.close();
 
   const reopened = new TaskBoardStore({ databaseFile });
   assert.equal(reopened.list().filter((task) => task.source === "release-registry-migration").length, 11);
   reopened.close();
+
+  const reinspected = new DatabaseSync(databaseFile);
+  assert.equal(reinspected.prepare(`
+    SELECT COUNT(*) AS value FROM sqlite_master
+    WHERE type = 'table' AND name IN (
+      'hub_release_changes', 'hub_release_batches', 'hub_release_change_sets',
+      'hub_release_turn_observations', 'hub_release_change_set_files',
+      'hub_release_change_set_bindings', 'hub_release_change_set_events',
+      'hub_task_release_state', 'hub_task_release_revisions',
+      'hub_task_release_revision_files', 'hub_task_release_completions'
+    )
+  `).get().value, 0);
+  assert.throws(
+    () => reinspected.prepare("DELETE FROM hub_release_registry_history").run(),
+    /release history is immutable/,
+  );
+  reinspected.close();
 });
 
 test("Legacy archive checksum mismatch rolls back Task import", async (t) => {

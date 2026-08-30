@@ -57,6 +57,7 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
     updateStreamDeveloperRules: (_id, content) => ({ revision: 3, content }),
   };
   const operations = new Map();
+  const taskEvidenceCalls = [];
   workspaceCatalog.beginMcpOperation = (operation) => {
     const existing = operations.get(operation.requestId);
     if (existing) {
@@ -98,7 +99,10 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
     requestWorkflowStatus: ({ id, status, turnId }) => Object.assign(tasks.get(id), {
       workflowStatus: status, requestedWorkflowStatus: status, requestedTurnId: turnId,
     }),
-    recordTaskTurn: ({ taskId, changedFiles }) => Object.assign(tasks.get(taskId), { changedFiles }),
+    recordTaskTurn: ({ taskId, changedFiles }) => {
+      taskEvidenceCalls.push({ taskId, changedFiles });
+      return Object.assign(tasks.get(taskId), { changedFiles });
+    },
     releasePlan: () => ({ revision: "plan-1", candidates: [], ready: [], draft: [], blocked: [], conflicts: [] }),
     setWorkflowStatus: ({ id, status }) => Object.assign(tasks.get(id), {
       workflowStatus: status,
@@ -118,14 +122,6 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
     }],
   };
   const releaseCalls = [];
-  const taskReleaseCalls = [];
-  const taskReleases = {
-    freeze: async (options) => {
-      taskReleaseCalls.push(options);
-      return { ...tasks.get(options.taskId), frozenRevision: options.expectedTaskRevision + 1 };
-    },
-    freezeRecorded: async () => null,
-  };
   const taskGitWorkspaces = {
     prepare: async ({ taskId }) => ({
       taskId,
@@ -158,7 +154,6 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
   };
   const service = new HubMcpService({
     workspaceCatalog, taskBoard, workLog, attachmentDirectory, secret: "secret",
-    taskReleases,
     taskGitWorkspaces,
     releaseCompleter: {
       completeRelease: async (options) => {
@@ -189,8 +184,8 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
     workspaceCatalog,
     tasks,
     operations,
+    taskEvidenceCalls,
     releaseCalls,
-    taskReleaseCalls,
     taskGitWorkspaces,
     sentMessages,
   };
@@ -307,8 +302,8 @@ test("release-enabled Task statuses can be changed and rolled back directly", as
   assert.equal(done.workflowStatus, "done");
 });
 
-test("Await status remains selected when the Task branch conflicts with dev", async (context) => {
-  const { service, token, taskGitWorkspaces } = await fixture(context, { releaseWorkflowEnabled: true });
+test("Await status remains selected and no evidence is recorded when the Task branch conflicts with dev", async (context) => {
+  const { service, token, taskGitWorkspaces, taskEvidenceCalls } = await fixture(context, { releaseWorkflowEnabled: true });
   taskGitWorkspaces.snapshotAndMerge = async ({ taskId }) => ({
     snapshot: {
       taskId,
@@ -339,6 +334,7 @@ test("Await status remains selected when the Task branch conflicts with dev", as
   assert.equal(result.workflowStatus, "awaiting_implementation");
   assert.equal(result.gitIntegration.integrated, false);
   assert.deepEqual(result.gitIntegration.conflicts, ["app.mjs"]);
+  assert.equal(taskEvidenceCalls.length, 0);
 });
 
 test("HubMcpService resumes an interrupted pending task start with the same request id", async (context) => {
@@ -443,7 +439,7 @@ test("HubMcpService exposes cursor events and publication-gated release completi
 });
 
 test("HubMcpService binds the current turn to its dedicated Task worktree", async (context) => {
-  const { service, token, taskReleaseCalls, tasks, projectRoot } = await fixture(context);
+  const { service, token, tasks, projectRoot } = await fixture(context);
   const claimed = await service.call("hub_task_claim", {
     context_token: token,
     request_id: "claim-task-1",
@@ -456,27 +452,8 @@ test("HubMcpService binds the current turn to its dedicated Task worktree", asyn
   });
   assert.match(claimed.gitWorkspace.branch, /^agenthub\/task\/task-current/u);
 
-  const frozen = await service.call("hub_task_release_freeze", {
-    context_token: token,
-    request_id: "freeze-1",
-    task_id: "task-current",
-    expected_task_revision: 1,
-    repositories: [{
-      project_root: "D:/repo",
-      base_revision: "a".repeat(40),
-      result_revision: "b".repeat(40),
-    }],
-    files: [{
-      project_root: "D:/repo",
-      path: "src/app.mjs",
-      operation: "modified",
-      base_blob: "c".repeat(40),
-      result_blob: "d".repeat(40),
-    }],
-  });
-  assert.equal(frozen.frozenRevision, 2);
-  assert.equal(taskReleaseCalls[0].actorStreamId, "stream-1");
-  assert.equal(taskReleaseCalls[0].taskId, "task-current");
+  const tools = service.tools();
+  assert.equal(tools.some((tool) => tool.name === "hub_task_release_freeze"), false);
 });
 
 test("HubMcpService rejects forged context capabilities", async (context) => {

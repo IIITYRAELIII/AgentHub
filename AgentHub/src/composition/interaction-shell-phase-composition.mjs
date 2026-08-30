@@ -311,7 +311,6 @@ export function createInteractionShellPhase({
       scheduleObservedRun: provider.scheduleObservedRun,
       runCoordinator: desktopShell.runCoordinator,
       runConflictPolicy: desktopShell.runConflictPolicy,
-      streamMaintenance: provider.streamMaintenance,
       pendingInputs: provider.pendingInputs,
       queuedInputs: provider.queuedInputs,
       getSelectedTask: api.selectedTask,

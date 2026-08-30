@@ -20,7 +20,7 @@ final status and final content.
   Task worktrees and the explicit `Await` snapshot.
 - The authoritative provider final is retained byte-complete by the terminal
   projection; live-preview bounds must not truncate durable final content.
-- A provider completion event is not sufficient evidence to freeze a known
+- A provider completion event is not sufficient evidence to persist a known
   prefix while the authoritative final is still materializing. Terminal commit
   uses the exact reconciled provider final after a bounded settle window.
 - Terminal is absorbing: late running, progress, snapshot or reconnect events

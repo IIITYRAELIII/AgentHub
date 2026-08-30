@@ -1325,15 +1325,24 @@ test("desktop task history returns the preceding page for a supplied cursor", as
   assert.equal(older.nextBefore, 7);
 });
 
-test("desktop task history assigns a turn receipt only to the root user message", async () => {
+test("desktop task history assigns exact turn receipts to synthetic user ordinals", async () => {
   const { desktopTaskHistory, state } = fixture({
     run: null,
     receipts: {
       forMessage: () => null,
-      forTurn: () => ({
+      forTurn: () => [{
         clientUserMessageId: "root-receipt",
-        result: { attachments: [{ id: "root.png", type: "image/png" }] },
-      }),
+        result: {
+          displayText: "Текст receipt не используется для identity",
+          attachments: [{ id: "root.png", type: "image/png" }],
+        },
+      }, {
+        clientUserMessageId: "steer-receipt",
+        result: {
+          displayText: "Другой текст receipt тоже не используется",
+          attachments: [{ id: "steer.png", type: "image/png" }],
+        },
+      }],
     },
   });
   state.history = [{
@@ -1342,10 +1351,13 @@ test("desktop task history assigns a turn receipt only to the root user message"
     answer: "Ответ",
     completed: true,
     messages: [
-      { itemId: "root", role: "user", text: "Корневой запрос" },
       {
-        itemId: "steer",
-        clientUserMessageId: "steer-client",
+        itemId: "turn-with-steer:rollout-user:0",
+        role: "user",
+        text: "Корневой запрос",
+      },
+      {
+        itemId: "turn-with-steer:rollout-user:1",
         role: "user",
         text: "Уточнение",
       },
@@ -1360,7 +1372,45 @@ test("desktop task history assigns a turn receipt only to the root user message"
     id: "root.png",
     type: "image/png",
   }]);
-  assert.equal(result.items[0].messages[1].clientUserMessageId, "steer-client");
+  assert.equal(result.items[0].messages[1].clientUserMessageId, "steer-receipt");
+  assert.deepEqual(result.items[0].messages[1].attachments, [{
+    id: "steer.png",
+    type: "image/png",
+  }]);
+});
+
+test("desktop task history keeps turn attachments on the root user only", async () => {
+  const rootAttachment = { id: "screen.png", type: "image/png" };
+  const { desktopTaskHistory, state } = fixture({
+    run: null,
+    receipts: {
+      forMessage: () => null,
+      forTurn: () => [{
+        clientUserMessageId: "root-receipt",
+        result: { attachments: [rootAttachment] },
+      }],
+    },
+  });
+  state.history = [{
+    id: "turn-with-one-screen",
+    prompt: "Проанализируй изображение",
+    completed: true,
+    attachments: [rootAttachment],
+    messages: [{
+      itemId: "turn-with-one-screen:rollout-user:0",
+      role: "user",
+      text: "Проанализируй изображение",
+    }, {
+      itemId: "turn-with-one-screen:rollout-user:1",
+      role: "user",
+      text: "Дубля уже нет",
+    }],
+  }];
+
+  const result = await desktopTaskHistory({ limit: 1, includeActive: false });
+
+  assert.deepEqual(result.items[0].messages[0].attachments, [rootAttachment]);
+  assert.deepEqual(result.items[0].messages[1].attachments, []);
 });
 
 test("desktop task history restores receipt attachments from an explicit empty message list", async () => {

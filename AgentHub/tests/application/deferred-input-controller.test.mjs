@@ -67,6 +67,11 @@ test("retryable deferred launch errors are limited to transport failures", () =>
   });
   assert.equal(isRetryableDeferredLaunchError(maintenance), true);
   assert.equal(deferredLaunchWaitReason(maintenance), "context-maintenance");
+  const restart = Object.assign(new Error("restart pending"), {
+    code: "ERR_RUNTIME_RESTART_PENDING",
+  });
+  assert.equal(isRetryableDeferredLaunchError(restart), true);
+  assert.equal(deferredLaunchWaitReason(restart), "runtime-restart");
 });
 
 test("DeferredInputController starts a free queued item exactly once", async () => {

@@ -128,6 +128,20 @@ test("message receipt result can follow a deferred message into an active run", 
     threadId: "thread-1",
     turnId: "turn-1",
   })?.clientUserMessageId, "client-1");
+  registry.remember({ ...identity, clientUserMessageId: "client-2" }, fingerprint, {
+    accepted: true,
+    turnId: "turn-1",
+  });
+  assert.deepEqual(registry.findAllByTurn({
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "turn-1",
+  }).map((receipt) => receipt.clientUserMessageId), ["client-1", "client-2"]);
+  assert.equal(registry.findByTurn({
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "turn-1",
+  })?.clientUserMessageId, "client-2");
   assert.equal(registry.findByResultId("queued-1")?.clientUserMessageId, "client-1");
   assert.equal(registry.updateResult({ ...identity, clientUserMessageId: "missing" }, {}), false);
 });

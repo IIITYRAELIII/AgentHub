@@ -6,7 +6,10 @@ import {
   interstreamOriginAuthor,
   normalizeInterstreamOrigin,
 } from "../domain/interstream-message.mjs";
-import { contextMaintenanceActiveError } from "../domain/deferred-input.mjs";
+import {
+  contextMaintenanceActiveError,
+  runtimeRestartPendingError,
+} from "../domain/deferred-input.mjs";
 import {
   taskOccupancyIdentity,
   taskRunIsActive,
@@ -51,6 +54,7 @@ export class RunCoordinator {
     notifyInputStart = () => {},
     hasDeferredBacklog = () => false,
     isMaintenanceActive = () => false,
+    isRestartPending = () => false,
     scheduleDeferred = () => {},
     setProgressStage = () => {},
     noteRunActivity = () => {},
@@ -82,6 +86,7 @@ export class RunCoordinator {
     this.notifyInputStart = notifyInputStart;
     this.hasDeferredBacklog = hasDeferredBacklog;
     this.isMaintenanceActive = isMaintenanceActive;
+    this.isRestartPending = isRestartPending;
     this.scheduleDeferred = scheduleDeferred;
     this.setProgressStage = setProgressStage;
     this.noteRunActivity = noteRunActivity;
@@ -108,6 +113,12 @@ export class RunCoordinator {
   activeRun(target) {
     const run = this.taskRuns.forTask(target);
     return taskRunIsActive(run) ? run : null;
+  }
+
+  admissionBarrier(target) {
+    if (this.isRestartPending()) return "runtime-restart";
+    if (this.isMaintenanceActive(target)) return "context-maintenance";
+    return null;
   }
 
   async deferredOccupancy(target) {
@@ -281,7 +292,9 @@ export class RunCoordinator {
   }
 
   async startDeferredUnlocked(item) {
-    if (this.isMaintenanceActive(item)) throw contextMaintenanceActiveError();
+    const initialBarrier = this.admissionBarrier(item);
+    if (initialBarrier === "runtime-restart") throw runtimeRestartPendingError();
+    if (initialBarrier) throw contextMaintenanceActiveError();
     await this.bindDeferredOccupancy(item);
     const messageOrigin = normalizeInterstreamOrigin(item.messageOrigin);
     const target = {
@@ -301,8 +314,10 @@ export class RunCoordinator {
       deferredInput: item,
     };
     const run = await this.beginRun(item.input, target);
-    if (this.isMaintenanceActive(target)) {
+    const admittedBarrier = this.admissionBarrier(target);
+    if (admittedBarrier) {
       await this.rollbackAdmission(run);
+      if (admittedBarrier === "runtime-restart") throw runtimeRestartPendingError();
       throw contextMaintenanceActiveError();
     }
     run.messageAttachments = persistentAttachmentDescriptors(
@@ -348,7 +363,7 @@ export class RunCoordinator {
     }
     if (!deferred.duplicate) this.scheduleDeferred(deferred.item, scheduleDelayMs);
     return {
-      accepted: reason === "message-intake",
+      accepted: ["message-intake", "runtime-restart"].includes(reason),
       deferred: true,
       queued: true,
       duplicate: deferred.duplicate === true,
@@ -367,7 +382,9 @@ export class RunCoordinator {
         ? "Текущий ход уже нельзя изменить; сообщение сохранено в очереди."
         : reason === "context-maintenance"
           ? "Сообщение поставлено в очередь до завершения свёртки или ротации контекста."
-          : reason === "provider-thread-active"
+          : reason === "runtime-restart"
+            ? "Сообщение сохранено и будет запущено после готовности нового Agent Hub runtime."
+            : reason === "provider-thread-active"
             ? "Codex ещё завершает предыдущий ход; сообщение сохранено в очереди."
             : "Сообщение поставлено в очередь и будет отправлено после текущего хода.",
     };
@@ -420,13 +437,14 @@ export class RunCoordinator {
     followUpMode = "",
   }) {
     const existingRun = this.activeRun(target);
-    if (this.isMaintenanceActive(target)) {
+    const admissionBarrier = this.admissionBarrier(target);
+    if (admissionBarrier) {
       return this.queue(input, attachments, {
         target,
         executionOwner: TASK_EXECUTION_OWNERS.HUB,
         clientUserMessageId,
         messageFingerprint,
-        reason: "context-maintenance",
+        reason: admissionBarrier,
       });
     }
     if (existingRun?.status === "finishing") {

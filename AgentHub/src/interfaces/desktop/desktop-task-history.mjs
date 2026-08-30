@@ -661,8 +661,35 @@ export function createDesktopTaskHistoryFactory({
             const rootUserIndex = sourceMessages.findIndex((message) => (
               String(message?.role ?? "") === "user"
             ));
+            const turnReceiptsValue = receipts.forTurn?.({
+              provider: itemProvider,
+              threadId: itemThreadId,
+              turnId: item.id,
+            });
+            const turnReceipts = Array.isArray(turnReceiptsValue)
+              ? turnReceiptsValue
+              : turnReceiptsValue ? [turnReceiptsValue] : [];
+            const syntheticPattern = new RegExp(`^${String(item.id ?? "")}:rollout-user:(\\d+)$`, "u");
+            const syntheticUsers = sourceMessages.flatMap((message) => {
+              if (String(message?.role ?? "") !== "user"
+                || String(message?.clientUserMessageId ?? "").trim()) return [];
+              const match = syntheticPattern.exec(String(message?.itemId ?? ""));
+              return match ? [{ message, ordinal: Number(match[1]) }] : [];
+            });
+            const completeReceiptCoverage = syntheticUsers.length === turnReceipts.length
+              && syntheticUsers.every(({ ordinal }, index) => ordinal === index);
+            const syntheticReceiptByItemId = new Map(completeReceiptCoverage
+              ? syntheticUsers.map(({ message, ordinal }) => [
+                String(message.itemId),
+                turnReceipts[ordinal],
+              ])
+              : []);
             return sourceMessages.flatMap((message, messageIndex) => {
               const role = String(message?.role ?? "");
+              const syntheticReceipt = syntheticReceiptByItemId.get(String(message?.itemId ?? ""));
+              const legacyRootReceipt = messageIndex === rootUserIndex && turnReceipts.length === 1
+                ? turnReceipts[0]
+                : null;
               const receipt = role === "user"
                 ? (message.clientUserMessageId
                   ? receipts.forMessage?.({
@@ -671,15 +698,12 @@ export function createDesktopTaskHistoryFactory({
                     clientUserMessageId: message.clientUserMessageId,
                   })
                   : null)
-                  ?? (messageIndex === rootUserIndex ? receipts.forTurn?.({
-                    provider: itemProvider,
-                    threadId: itemThreadId,
-                    turnId: item.id,
-                  }) : null)
+                  ?? syntheticReceipt
+                  ?? legacyRootReceipt
                 : null;
               const clientUserMessageId = String(
                 message.clientUserMessageId
-                  ?? (messageIndex === rootUserIndex ? receipt?.clientUserMessageId : "")
+                  ?? receipt?.clientUserMessageId
                   ?? "",
               ).trim();
               const messageAttachments = Array.isArray(message.attachments)
@@ -688,7 +712,9 @@ export function createDesktopTaskHistoryFactory({
               const receiptAttachments = role === "user" && Array.isArray(receipt?.result?.attachments)
                 ? receipt.result.attachments
                 : [];
-              const itemAttachments = role === "user" && Array.isArray(item.attachments)
+              const itemAttachments = role === "user"
+                && messageIndex === rootUserIndex
+                && Array.isArray(item.attachments)
                 ? item.attachments
                 : [];
               const sourceText = String(message?.text ?? "");

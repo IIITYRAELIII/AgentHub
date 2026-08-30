@@ -246,8 +246,6 @@ export class AgentHubStartupCoordinator {
     }
     if (this.telegramEnabled && !backgroundFailed) this.health.completeOperation("background-jobs");
 
-    await this.#runOperation("timers", async () => this.startTimers());
-
     if (this.telegramEnabled) {
       this.health.startOperation("telegram");
       await this.registerTelegramCommands().then(() => {
@@ -276,6 +274,8 @@ export class AgentHubStartupCoordinator {
     }
 
     await this.#runOperation("readiness", this.markReady);
+
+    await this.#runOperation("timers", async () => this.startTimers());
 
     if (this.sqliteRecovery?.degraded) {
       this.health.startOperation("recovery");

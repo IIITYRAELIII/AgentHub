@@ -14,8 +14,7 @@ applying the owned paths from the current worktree to the exact claim-time tree.
 
 The shared project root and its dirty repositories are not an ownership source.
 If a terminal turn has no exact file-mutation receipts, it appends no new Task
-evidence. A later no-diff continuation may still freeze evidence already owned
-and recorded by the Task.
+evidence.
 
 ## Consequences
 

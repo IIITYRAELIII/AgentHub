@@ -252,32 +252,42 @@ html[data-view="chat"][data-surface][data-theme] {
   right: 0;
 }
 
+/* Рамка прозрачная, а не нулевая: полоса вкладок остаётся плоской, но правило
+   статуса потока сохраняет носитель для акцентного цвета. Нулевая ширина
+   отбирала его вместе с оформлением, и во вкладке от эффекта оставалась одна
+   бегущая волна — заметная лишь в момент прохода. */
 .stream-tabs-track .stream-tab-card {
   align-items: center;
   background: transparent !important;
-  border: 0 !important;
+  border: 1px solid transparent !important;
   border-image: none !important;
-  border-radius: 0 !important;
+  border-radius: calc(var(--radius-md) - 2px) !important;
   box-shadow: none !important;
-  display: flex;
-  flex: 0 0 auto;
+  display: grid;
+  flex: 1 1 auto;
   gap: 9px !important;
+  grid-template-columns: 7px minmax(0, 1fr) max-content;
   height: 100%;
   justify-content: flex-start !important;
   min-width: 0;
   overflow: visible;
   padding: 0 !important;
   text-align: left !important;
+  width: 100%;
 }
 
+.stream-tabs-track .stream-tab-card:has(> .stream-tab-pin-icon) {
+  grid-template-columns: 7px 13px minmax(0, 1fr) max-content;
+}
+
+/* Статус потока во вкладке. Общее правило эффекта задаёт только border-color и
+   проигрывает плоской рамке полосы, поэтому акцент возвращается здесь. Запись
+   через [class~=...] — как у соседнего правила: файл владеет только карточками
+   внутри полосы и не должен объявлять голый .stream-tab-card. */
 .stream-tabs-track
-  .stream-tab:is([data-maintenance], [data-running], [data-answer-ready], [aria-pressed="true"])
+  .stream-tab:is([data-running], [data-answer-ready])
   [class~="stream-tab-card"] {
-  box-sizing: border-box;
-  margin-inline: calc(-1 * var(--stream-tab-inline-padding)) !important;
-  overflow: visible;
-  padding-inline: var(--stream-tab-inline-padding) !important;
-  width: calc(100% + 2 * var(--stream-tab-inline-padding)) !important;
+  border-color: var(--accent-line) !important;
 }
 
 .stream-tabs-track .stream-tab-title {
@@ -287,9 +297,11 @@ html[data-view="chat"][data-surface][data-theme] {
   max-width: min(12rem, 32vw) !important;
   min-width: 0 !important;
   overflow: hidden;
+  justify-self: start;
   text-align: left !important;
   text-overflow: ellipsis;
   white-space: nowrap;
+  width: 100% !important;
 }
 
 .stream-tabs-track .stream-tab .task-time,
@@ -299,6 +311,8 @@ html[data-view="chat"][data-surface][data-theme] {
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   font-weight: 400;
+  justify-self: end;
+  margin-left: 0;
   white-space: nowrap;
 }
 
@@ -325,6 +339,7 @@ html[data-view="chat"][data-surface][data-theme] {
   box-shadow: none;
   flex: 0 0 7px;
   height: 7px;
+  justify-self: start;
   margin: 0;
   width: 7px;
 }

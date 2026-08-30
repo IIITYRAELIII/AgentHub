@@ -30,7 +30,6 @@ function fixture() {
     developerRulesForStream: (value) => (calls.push(["developerRulesForStream", value]), value),
   };
   const taskBoard = {
-    store: { releaseRegistrationSummary: () => ({ taskCount: 0, total: 0 }) },
     releasePlan: (workspaceId) => (calls.push(["releasePlan", workspaceId]), { workspaceId }),
   };
   const releaseCompleter = {
@@ -102,15 +101,13 @@ test("Workspace settings provide an inherited working directory", () => {
   ]);
 });
 
-test("release workflow disable reports Task cleanup instead of destructive discard", () => {
+test("release workflow disable never blocks on Task state", () => {
   const { calls, service } = fixture();
-  service.taskBoard.store.releaseRegistrationSummary = () => ({ taskCount: 2, total: 2 });
   const result = service.updateWorkspaceSettings({
     workspaceId: "workspace-1", settings: { releaseWorkflowEnabled: false },
   });
-  assert.equal(result.releaseWorkflowUpdate.requiresTaskCleanup, true);
-  assert.equal(result.releaseWorkflowUpdate.destructiveDiscardSupported, false);
-  assert.equal(calls.some(([name]) => name === "updateWorkspaceSettings"), false);
+  assert.deepEqual(result, { settings: { releaseWorkflowEnabled: false } });
+  assert.equal(calls.some(([name]) => name === "updateWorkspaceSettings"), true);
 });
 
 test("Workspace and Stream developer rules use dedicated store methods", () => {

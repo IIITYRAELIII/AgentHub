@@ -80,6 +80,36 @@ test("RunCoordinator queues directly into a Stream under context maintenance", a
   assert.equal(f.calls.some(([name]) => name === "begin"), false);
 });
 
+test("RunCoordinator holds durable intake until a pending runtime restart clears", async () => {
+  let restartPending = true;
+  const f = fixture({ isRestartPending: () => restartPending });
+  const target = { ...f.target, streamId: "stream-1" };
+  const result = await f.coordinator.acceptClientInput({
+    input: "continue after cutover",
+    target,
+    clientUserMessageId: "message-after-restart",
+  });
+  assert.equal(result.deferred, true);
+  assert.equal(result.queued, true);
+  assert.equal(result.accepted, true);
+  assert.equal(result.reason, "runtime-restart");
+  assert.equal(f.calls.some(([name]) => name === "begin"), false);
+
+  const item = {
+    ...target,
+    input: "continue after cutover",
+    clientUserMessageId: "message-after-restart",
+  };
+  await assert.rejects(
+    f.coordinator.startDeferred(item),
+    (error) => error?.code === "ERR_RUNTIME_RESTART_PENDING",
+  );
+  restartPending = false;
+  await f.coordinator.startDeferred(item);
+  assert.equal(f.calls.filter(([name]) => name === "begin").length, 1);
+  assert.equal(f.calls.filter(([name]) => name === "launch").length, 1);
+});
+
 test("RunCoordinator keeps ordinary active intake pending for a manual action", async () => {
   const active = { id: "active", executionOwner: "hub" };
   const f = fixture({ taskRuns: { forTask: () => active } });

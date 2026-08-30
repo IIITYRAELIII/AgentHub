@@ -3447,7 +3447,6 @@ html[data-surface="mobile"]
   min-height: 0;
   overscroll-behavior: contain;
   overflow-y: auto;
-  scrollbar-gutter: stable;
 }
 
 .workspace-task-empty {

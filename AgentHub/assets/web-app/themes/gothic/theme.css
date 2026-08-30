@@ -1170,14 +1170,6 @@ html[data-theme="gothic"] body::before {
       0 1px 3px rgb(0 0 0 / 58%) !important;
   }
 
-  html[data-theme="gothic"][data-view="chat"]:not([data-surface="mobile"])
-    .stream-tabs .stream-tab[aria-pressed="true"] .stream-tab-card {
-    margin-left: -16px !important;
-    margin-right: -16px !important;
-    padding-left: 16px !important;
-    padding-right: 16px !important;
-  }
-
   html[data-theme="gothic"]:not([data-surface="mobile"]) .stream-tabs .stream-tab-card {
     background-color: #15181b !important;
     background-image:
@@ -1992,30 +1984,6 @@ html[data-theme="gothic"][data-surface="mobile"] .stream-tab[aria-pressed="true"
     --stream-tab-inline-padding: 1rem;
     min-width: 0 !important;
     overflow: hidden !important;
-  }
-
-  html[data-theme="gothic"]:not([data-surface="mobile"])
-    .stream-tabs .stream-tab[data-maintenance] .stream-tab-card,
-  html[data-theme="gothic"]:not([data-surface="mobile"])
-    .stream-tabs .stream-tab[data-running] .stream-tab-card,
-  html[data-theme="gothic"]:not([data-surface="mobile"])
-    .stream-tabs .stream-tab[data-answer-ready] .stream-tab-card,
-  html[data-theme="gothic"]:not([data-surface="mobile"])
-    .stream-tabs .stream-tab[aria-pressed="true"] .stream-tab-card {
-    background: transparent !important;
-    border: 0 !important;
-    box-sizing: border-box !important;
-    box-shadow: none !important;
-    margin-inline: calc(-1 * var(--stream-tab-inline-padding)) !important;
-    overflow: visible !important;
-    padding-inline: var(--stream-tab-inline-padding) !important;
-    width: calc(100% + 2 * var(--stream-tab-inline-padding)) !important;
-  }
-
-  html[data-theme="gothic"]:not([data-surface="mobile"])
-    .stream-tabs .stream-tab[aria-pressed="true"][data-current] .stream-tab-card {
-    margin: 0 calc(-1 * var(--stream-tab-inline-padding)) !important;
-    padding: 0 var(--stream-tab-inline-padding) !important;
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"])

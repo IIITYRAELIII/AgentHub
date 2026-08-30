@@ -29,7 +29,7 @@
       "id": "RST-001",
       "title": "Restart and maintenance recovery",
       "document": "RST-001-restart-recovery.md",
-      "paths": ["src/application/restart-request-service.mjs", "src/providers/codex/context-compaction*", "src/runtime/**", "assets/web-app/startup-screen.js"]
+      "paths": ["src/application/restart-request-service.mjs", "src/application/agent-hub-startup-coordinator.mjs", "src/application/deferred-input*", "src/application/run-coordinator.mjs", "src/composition/desktop-shell-composition.mjs", "src/composition/interaction-shell-phase-composition.mjs", "src/composition/run-admission-composition.mjs", "src/domain/deferred-input.mjs", "src/providers/codex/context-compaction*", "src/runtime/**", "assets/web-app/startup-screen.js"]
     },
     {
       "id": "PERF-001",
@@ -41,7 +41,7 @@
       "id": "REL-001",
       "title": "Task-backed Workspace release",
       "document": "REL-001-task-backed-release.md",
-      "paths": ["src/application/workspace-release-service.mjs", "src/application/task-release-service.mjs", "src/application/task-board-service.mjs", "src/application/run-journal-service.mjs", "src/application/hub-mcp-service.mjs", "src/application/task-board-launch-service.mjs", "src/application/workspace-catalog-service.mjs", "src/domain/task-release-snapshot.mjs", "src/domain/workspace-release-workflow.mjs", "src/infrastructure/persistence/task-board-store.mjs", "src/infrastructure/persistence/workspace-catalog-store.mjs", "src/infrastructure/persistence/release-publication-verifier.mjs", "src/infrastructure/filesystem/task-git-workspace.mjs", "src/infrastructure/filesystem/release-change-set-git-verifier.mjs", "src/infrastructure/browser/test-contour-ui-smoke.mjs", "src/interfaces/web/mini-app-server.mjs", "src/runtime/test-contour-manager.mjs", "cloudflare-worker/build-assets.mjs", "cloudflare-worker/verify-deployment.mjs", "cloudflare-worker/_headers", "publish-changed.mjs", "test-contour.mjs"]
+      "paths": ["src/application/workspace-release-service.mjs", "src/application/task-board-service.mjs", "src/application/run-journal-service.mjs", "src/application/hub-mcp-service.mjs", "src/application/task-board-launch-service.mjs", "src/application/workspace-catalog-service.mjs", "src/domain/task-release-snapshot.mjs", "src/domain/workspace-release-workflow.mjs", "src/infrastructure/persistence/task-board-store.mjs", "src/infrastructure/persistence/workspace-catalog-store.mjs", "src/infrastructure/persistence/release-publication-verifier.mjs", "src/infrastructure/filesystem/task-git-workspace.mjs", "src/infrastructure/browser/test-contour-ui-smoke.mjs", "src/interfaces/web/mini-app-server.mjs", "src/runtime/test-contour-manager.mjs", "cloudflare-worker/build-assets.mjs", "cloudflare-worker/verify-deployment.mjs", "cloudflare-worker/_headers", "publish-changed.mjs", "test-contour.mjs"]
 
     }
   ]

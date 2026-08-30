@@ -65,16 +65,18 @@ test("release verification rejects a nested Agent Hub revision that is not publi
   );
 });
 
-test("release verification uses published ancestry instead of dirty source clones", async () => {
+test("release verification compares Task result blobs instead of dirty source clones", async () => {
   const cloneRoot = path.join(workspaceRoot, "Utilities-release-clone");
-  const ancestry = [];
+  const comparisons = [];
   const releasePlan = {
     candidates: [
       {
-        frozenRepositories: [{ projectRoot: repositoryRoot, resultRevision: "task-a" }],
+        repositoryRevisions: [{ projectRoot: repositoryRoot, resultRevision: "task-a" }],
+        changedFiles: [{ projectRoot: repositoryRoot, path: "AgentHub/server.mjs", operation: "modified" }],
       },
       {
-        frozenRepositories: [{ projectRoot: cloneRoot, resultRevision: "task-b" }],
+        repositoryRevisions: [{ projectRoot: cloneRoot, resultRevision: "task-b" }],
+        changedFiles: [{ projectRoot: cloneRoot, path: "AgentHub/client.mjs", operation: "modified" }],
       },
     ],
     ready: [
@@ -92,33 +94,40 @@ test("release verification uses published ancestry instead of dirty source clone
       throw new Error("mutable source status must not be read after publication");
     },
     identifyRepository: async () => "origin:https://example.test/Utilities.git",
-    assertAncestor: async (value) => ancestry.push(value),
+    assertTaskResult: async (value) => comparisons.push(value),
   });
 
   assert.deepEqual(result.repositories, [{ root: repositoryRoot, revision: "published" }]);
-  assert.deepEqual(ancestry, [
-    { repositoryRoot, ancestor: "task-a", descendant: "published" },
-    { repositoryRoot, ancestor: "task-b", descendant: "published" },
+  assert.deepEqual(comparisons, [
+    {
+      repositoryRoot, taskRevision: "task-a", publishedRevision: "published",
+      files: [{ path: "AgentHub/server.mjs", operation: "modified" }],
+    },
+    {
+      repositoryRoot, taskRevision: "task-b", publishedRevision: "published",
+      files: [{ path: "AgentHub/client.mjs", operation: "modified" }],
+    },
   ]);
 });
 
-test("release verification rejects a frozen Task revision outside published history", async () => {
+test("release verification rejects Task blobs missing from the published revision", async () => {
   await assert.rejects(
     verifyWorkspaceReleasePublication({
       expectedRevision: "published",
       plan: {
         candidates: [{
-          frozenRepositories: [{ projectRoot: repositoryRoot, resultRevision: "not-integrated" }],
+          repositoryRevisions: [{ projectRoot: repositoryRoot, resultRevision: "not-integrated" }],
+          changedFiles: [{ projectRoot: repositoryRoot, path: "AgentHub/server.mjs", operation: "modified" }],
         }],
         ready: [{ projectRoot: repositoryRoot, files: ["AgentHub/server.mjs"] }],
       },
     }, {
       ...dependencies("published"),
       identifyRepository: async () => "origin:https://example.test/Utilities.git",
-      assertAncestor: async () => {
-        throw new Error("not an ancestor");
+      assertTaskResult: async () => {
+        throw new Error("different blob");
       },
     }),
-    /frozen Task revision not-integrated is not contained in published revision published/u,
+    /Task result revision not-integrated is not contained in published revision published/u,
   );
 });
