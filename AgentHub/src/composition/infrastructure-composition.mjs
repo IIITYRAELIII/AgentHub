@@ -14,6 +14,7 @@ import { TaskReleaseService } from "../application/task-release-service.mjs";
 import { StreamHandoffService } from "../application/stream-handoff-service.mjs";
 import { AGENT_HUB_VERSION } from "../infrastructure/filesystem/agent-hub-package.mjs";
 import { samePath } from "../infrastructure/filesystem/config.mjs";
+import { TaskGitWorkspaceService } from "../infrastructure/filesystem/task-git-workspace.mjs";
 import { AttachmentThumbnailService } from "../infrastructure/media/attachment-thumbnail-service.mjs";
 import { runtimeLayout, runtimeReleaseDirectory } from "../infrastructure/filesystem/runtime-layout.mjs";
 import { UsdRubRateStore } from "../infrastructure/network/exchange-rate.mjs";
@@ -38,10 +39,6 @@ import {
   buildTaskReleaseTreeEvidence,
   verifyReleaseChangeSetGitEvidence,
 } from "../infrastructure/filesystem/release-change-set-git-verifier.mjs";
-import {
-  captureTaskGitBaseline,
-  captureTaskGitResult,
-} from "../infrastructure/filesystem/task-git-diff.mjs";
 import { SingleInstanceGuard } from "../infrastructure/process/instance-lock.mjs";
 import { captureProcess } from "../infrastructure/process/process-capture.mjs";
 import { RuntimeCommandServer } from "../infrastructure/process/runtime-command.mjs";
@@ -309,6 +306,7 @@ export async function createHubInfrastructure({
     pythonExe: config.pythonExe,
   });
   const hubMcpSecret = await ensureLocalWebSecret(path.join(runtimeCommandRoot, "hub-mcp.secret"));
+  const taskGitWorkspaces = new TaskGitWorkspaceService({ dataDir: config.dataDir });
   const hubMcpService = new HubMcpService({
     workspaceCatalog: workspaceCatalogStore,
     taskBoard,
@@ -317,9 +315,7 @@ export async function createHubInfrastructure({
     secret: hubMcpSecret,
     releaseCompleter: workspaceReleaseService,
     taskReleases: taskReleaseService,
-    captureGitBaseline: (projectRoot, turnId) => (
-      captureTaskGitBaseline(projectRoot, config.dataDir, `task-claim-${turnId}`)
-    ),
+    taskGitWorkspaces,
   });
   const hubMcpServer = new HubMcpServer({
     service: hubMcpService,
@@ -408,11 +404,6 @@ export async function createHubInfrastructure({
   const runJournal = new RunJournalService({
     usageStore: workLogUsageStore,
     workspaceCatalogStore,
-    taskBoard,
-    taskReleaseService,
-    captureTaskResult: (baseline, turnId, files) => (
-      captureTaskGitResult(baseline, config.dataDir, `task-release-result-${turnId}`, files)
-    ),
     findProject,
     defaultProjectRoot: config.projectRoot,
     projectionProjectRoots: globalWorkLogProjectRoots,
@@ -455,6 +446,7 @@ export async function createHubInfrastructure({
     streamHandoff,
     preTurnInstructions,
     taskBoard,
+    taskGitWorkspaces,
     taskVoiceTranscriber,
     hubMcpService,
     hubMcpServer,

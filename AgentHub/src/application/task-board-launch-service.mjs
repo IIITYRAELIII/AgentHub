@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import path from "node:path";
+import process from "node:process";
 
 import { taskDisplayText, taskDisplayTitle } from "../domain/task-board-task.mjs";
 
@@ -11,8 +13,17 @@ function plannedStreamId(taskId, requestId) {
   return `task-launch-${fingerprint}`;
 }
 
+function samePath(left, right) {
+  const first = path.resolve(String(left ?? ""));
+  const second = path.resolve(String(right ?? ""));
+  return process.platform === "win32" ? first.toLowerCase() === second.toLowerCase() : first === second;
+}
+
 export class TaskBoardLaunchService {
-  constructor({ taskBoard, workspaceCatalog, dispatchCommand, sendMessage, recordEvent = null, logger = console } = {}) {
+  constructor({
+    taskBoard, workspaceCatalog, dispatchCommand, sendMessage, taskGitWorkspaces = null,
+    recordEvent = null, logger = console,
+  } = {}) {
     requiredMethod(taskBoard, "task");
     requiredMethod(taskBoard, "markStarted");
     requiredMethod(workspaceCatalog, "workspace");
@@ -24,6 +35,7 @@ export class TaskBoardLaunchService {
     this.workspaceCatalog = workspaceCatalog;
     this.dispatchCommand = dispatchCommand;
     this.sendMessage = sendMessage;
+    this.taskGitWorkspaces = taskGitWorkspaces;
     this.recordEvent = typeof recordEvent === "function" ? recordEvent : null;
     this.logger = logger;
   }
@@ -40,12 +52,29 @@ export class TaskBoardLaunchService {
     if (requestedStreamId && requestedStreamName) {
       throw new Error("Выберите существующий Stream или создайте новый, но не оба сразу");
     }
+    const requestedThread = requestedStreamId
+      ? this.workspaceCatalog.activeThread(requestedStreamId)
+      : null;
+    const sourceRoot = [
+      params.workingDirectory,
+      requestedThread?.projectRoot,
+      workspace.settings?.workingDirectory,
+      workspace.settings?.project,
+    ].map((value) => String(value ?? "").trim()).find(Boolean) ?? "";
+    const gitWorkspace = this.taskGitWorkspaces && sourceRoot
+      ? await this.taskGitWorkspaces.prepare({ taskId: task.id, projectRoot: sourceRoot })
+      : null;
+    const launchParams = {
+      ...params,
+      ...(gitWorkspace ? { workingDirectory: gitWorkspace.projectRoot } : {}),
+    };
     const launchRequestId = String(params.launchRequestId ?? "").trim();
     if (launchRequestId) {
       return this.#resumeMcpLaunch({
-        task, workspace, requestedStreamId, requestedStreamName, launchRequestId, params, context,
+        task, workspace, requestedStreamId, requestedStreamName, launchRequestId, params: launchParams, context,
       });
     }
+    params = launchParams;
     let target;
     if (requestedStreamId) {
       const stream = this.workspaceCatalog.stream(requestedStreamId);
@@ -53,7 +82,7 @@ export class TaskBoardLaunchService {
         throw new Error("Stream не найден в выбранном Workspace");
       }
       const thread = this.workspaceCatalog.activeThread(stream.id);
-      if (thread) {
+      if (thread && (!params.workingDirectory || samePath(thread.projectRoot, params.workingDirectory))) {
         target = {
           streamId: stream.id,
           provider: thread.provider,
@@ -65,6 +94,10 @@ export class TaskBoardLaunchService {
         const created = await this.dispatchCommand("task.create", {
           provider: params.provider,
           streamId: stream.id,
+          ...(params.workingDirectory ? {
+            workingDirectory: params.workingDirectory,
+            handoffReason: "Task Git worktree",
+          } : {}),
         }, context);
         target = created.createdTask;
       }
@@ -74,6 +107,7 @@ export class TaskBoardLaunchService {
         provider: params.provider,
         workspaceId: workspace.id,
         streamName,
+        ...(params.workingDirectory ? { workingDirectory: params.workingDirectory } : {}),
       }, context);
       target = created.createdTask;
     }
@@ -158,7 +192,7 @@ export class TaskBoardLaunchService {
     }
     if (stream.workspaceId !== workspace.id) throw new Error("Stream не найден в выбранном Workspace");
     let target = this.workspaceCatalog.activeThread(stream.id);
-    if (target) {
+    if (target && (!params.workingDirectory || samePath(target.projectRoot, params.workingDirectory))) {
       target = {
         streamId: stream.id,
         provider: target.provider,
@@ -170,6 +204,10 @@ export class TaskBoardLaunchService {
       const created = await this.dispatchCommand("task.create", {
         provider: params.provider,
         streamId: stream.id,
+        ...(params.workingDirectory ? {
+          workingDirectory: params.workingDirectory,
+          handoffReason: "Task Git worktree",
+        } : {}),
       }, context);
       target = created.createdTask;
     }

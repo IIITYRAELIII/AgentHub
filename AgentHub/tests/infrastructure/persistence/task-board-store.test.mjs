@@ -323,14 +323,15 @@ function freezeTask(store, taskId, projectRoot) {
     provider: "codex", threadId: "thread-1", turnId: "turn-1",
     gitBaseline: { repoRoot: projectRoot, tree: "a".repeat(40) },
   });
-  const recorded = store.recordTaskTurn({
+  store.recordTaskTurn({
     taskId, provider: "codex", threadId: "thread-1", turnId: "turn-1",
     projectRoot, summary: "Implemented", status: "completed",
     changedFiles: [{ projectRoot, path: "src/app.mjs", operation: "modified", turnId: "turn-1" }],
     resultSnapshot: { repoRoot: projectRoot, tree: "b".repeat(40) },
   });
+  const awaiting = store.setWorkflowStatus(taskId, "awaiting_implementation");
   const manifest = frozenTaskReleaseManifest({
-    revision: recorded.revision + 1,
+    revision: awaiting.revision + 1,
     repositories: [{ projectRoot, baseRevision: "a".repeat(40), resultRevision: "b".repeat(40) }],
     files: [{
       projectRoot, path: "src/app.mjs", operation: "modified",
@@ -338,7 +339,7 @@ function freezeTask(store, taskId, projectRoot) {
     }],
   });
   return store.freezeTaskRelease(taskId, {
-    expectedTaskRevision: recorded.revision,
+    expectedTaskRevision: awaiting.revision,
     manifest,
     verification: { verifier: { name: "fixture", version: "1" } },
     actorStreamId: "stream-1",

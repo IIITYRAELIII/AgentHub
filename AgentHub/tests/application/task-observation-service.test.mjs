@@ -29,7 +29,6 @@ function fixture({ snapshot = null, now = 1_000_000, savedRecord = null } = {}) 
       completeManaged: async (run, options) => completed.push(["managed", run, options]),
       completeObserved: async (run, options) => completed.push(["observed", run, options]),
     },
-    dataDir: "data",
     findProject: () => ({ name: "Workspace" }),
     invalidateTaskCatalog: () => events.push(["invalidate"]),
     syncTaskRun: (run, state) => events.push(["sync", run, state]),
@@ -47,7 +46,6 @@ function fixture({ snapshot = null, now = 1_000_000, savedRecord = null } = {}) 
     savedLastTaskMessageRecord: () => savedRecord,
     externalPollIntervalMs: 10,
     managedPollIntervalMs: 20,
-    captureGitBaseline: async (...args) => ({ args }),
     now: () => now,
     logger: {
       log: (...args) => events.push(["log", ...args]),
@@ -83,7 +81,7 @@ test("TaskObservationService creates an observed run without losing streamId", a
   assert.equal(run.model, "Model gpt");
   assert.equal(run.reasoning, "High");
   assert.equal(state.currentRun(), run);
-  assert.deepEqual(run.gitBaseline.args.slice(0, 2), ["C:/workspace", "data"]);
+  assert.equal(run.gitBaseline, null);
 });
 
 test("TaskObservationService applies live snapshots and keeps the earliest start", async () => {

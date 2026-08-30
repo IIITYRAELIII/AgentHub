@@ -30,7 +30,6 @@ export function createRunObservationComposition({
   savedLastTaskMessageRecord,
   externalPollIntervalMs,
   managedPollIntervalMs,
-  captureTaskGitBaseline,
   turnTemporaryFiles,
   claudeTaskSnapshots,
   claudePermissionMode,
@@ -73,7 +72,6 @@ export function createRunObservationComposition({
     providers: agentProviders,
     taskRuns,
     runCoordinator,
-    dataDir,
     findProject,
     invalidateTaskCatalog,
     syncTaskRun,
@@ -95,7 +93,6 @@ export function createRunObservationComposition({
     savedLastTaskMessageRecord,
     externalPollIntervalMs,
     managedPollIntervalMs,
-    captureGitBaseline: captureTaskGitBaseline,
   });
 
   const claudeTurnLauncher = new ClaudeTurnLauncher({

@@ -1,0 +1,74 @@
+import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+import { promisify } from "node:util";
+
+import {
+  prepareTaskContourSource,
+  TaskGitWorkspaceService,
+} from "../../../src/infrastructure/filesystem/task-git-workspace.mjs";
+
+const execFileAsync = promisify(execFile);
+
+async function git(cwd, ...args) {
+  return String((await execFileAsync("git", args, { cwd, windowsHide: true })).stdout).trim();
+}
+
+async function repository(context) {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-task-git-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  await git(root, "init", "-b", "main");
+  await git(root, "config", "core.autocrlf", "false");
+  await writeFile(path.join(root, "app.txt"), "main\n", "utf8");
+  await git(root, "add", "app.txt");
+  await git(root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "main");
+  return root;
+}
+
+test("Task Git workspace commits one Task branch and merges it into dev", async (context) => {
+  const root = await repository(context);
+  const dataDir = path.join(root, "..", `${path.basename(root)}-data`);
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const service = new TaskGitWorkspaceService({ dataDir });
+  const taskId = "11111111-1111-1111-1111-111111111111";
+
+  const workspace = await service.prepare({ taskId, projectRoot: root });
+  assert.match(workspace.branch, /^agenthub\/task\/11111111-/u);
+  assert.notEqual(workspace.projectRoot, root);
+  await writeFile(path.join(workspace.projectRoot, "app.txt"), "task\n", "utf8");
+
+  const result = await service.snapshotAndMerge({ taskId, projectRoot: workspace.projectRoot });
+  assert.equal(result.integration.integrated, true);
+  assert.deepEqual(result.snapshot.changedFiles.map((file) => file.path), ["app.txt"]);
+  assert.equal(await readFile(path.join(result.integration.dev.projectRoot, "app.txt"), "utf8"), "task\n");
+
+  const contour = await prepareTaskContourSource({ sourceRoot: root, integrationRoot: dataDir });
+  assert.equal(contour.branch, "dev");
+  assert.equal(contour.headCommit, result.integration.dev.headCommit);
+});
+
+test("Task Git workspace aborts a conflicting dev merge without deleting either branch", async (context) => {
+  const root = await repository(context);
+  const dataDir = path.join(root, "..", `${path.basename(root)}-data`);
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const service = new TaskGitWorkspaceService({ dataDir });
+  const first = await service.prepare({
+    taskId: "22222222-2222-2222-2222-222222222222",
+    projectRoot: root,
+  });
+  const second = await service.prepare({
+    taskId: "33333333-3333-3333-3333-333333333333",
+    projectRoot: root,
+  });
+  await writeFile(path.join(first.projectRoot, "app.txt"), "first\n", "utf8");
+  await writeFile(path.join(second.projectRoot, "app.txt"), "second\n", "utf8");
+
+  assert.equal((await service.snapshotAndMerge({ taskId: first.taskId, projectRoot: first.projectRoot })).integration.integrated, true);
+  const conflict = await service.snapshotAndMerge({ taskId: second.taskId, projectRoot: second.projectRoot });
+  assert.equal(conflict.integration.integrated, false);
+  assert.deepEqual(conflict.integration.conflicts, ["app.txt"]);
+  assert.equal(await git(conflict.integration.dev.projectRoot, "status", "--porcelain"), "");
+});

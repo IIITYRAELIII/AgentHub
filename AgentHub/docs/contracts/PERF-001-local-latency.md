@@ -37,6 +37,10 @@ rescanned. Historical full scans are bounded to 16 MiB; larger transcripts use
 managed terminal accounting and an explicit skipped-audit warning instead of
 unbounded worker memory and event-loop GC pressure.
 
+Provider turn start and completion do not snapshot Git repositories. The only
+release Git snapshot occurs when a Task explicitly moves to `Await`, outside
+provider admission and terminal-delivery latency.
+
 Codex rollout activity fallback runs outside the main Hub event loop. Concurrent
 reads of the same rollout and read options share one in-flight operation, and a
 cold fallback reads at most the latest 16 MiB. Exact App Server state and managed

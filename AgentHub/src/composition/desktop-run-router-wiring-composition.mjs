@@ -221,6 +221,7 @@ export function createDesktopRunRouterWiring({
   const taskBoardLauncher = new TaskBoardLaunchService({
     taskBoard: services.taskBoard,
     workspaceCatalog: services.workspaceCatalog,
+    taskGitWorkspaces: services.taskGitWorkspaces,
     dispatchCommand: desktop.dispatchApplicationCommand,
     sendMessage: runInputs.desktopMessageController.sendMessage,
     recordEvent: typeof services.workspaceCatalog.recordWorkspaceEvent === "function"

@@ -37,6 +37,13 @@ occupancy can couple otherwise independent lanes. A steer that no longer has
 an active turn is downgraded to ordinary intake before the later-turn FIFO
 choice.
 
+For a nonterminal Hub-owned managed run, its exact registered `run.turnId` is
+the primary steer identity. A lagging or temporarily incomplete Thread
+projection must not suppress the `turn/steer` attempt. Thread projection is
+consulted only when no exact managed identity exists or when the provider
+rejects that identity as stale; only a real provider rejection downgrades the
+durable command to queued intake.
+
 For an inter-Stream command, the envelope `requestId` deterministically restores
 the `mcp:<requestId>` command alias when a provider rollout omits
 `clientUserMessageId`. That alias reconciles receipt and rollout projections;

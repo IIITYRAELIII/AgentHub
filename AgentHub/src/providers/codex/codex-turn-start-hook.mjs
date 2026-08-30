@@ -2,13 +2,11 @@ import path from "node:path";
 import process from "node:process";
 
 import { displayUserPrompt } from "../../application/task-history.mjs";
-import { captureTaskGitBaseline } from "../../infrastructure/filesystem/task-git-diff.mjs";
 import {
   enqueueRuntimeCommandThroughSpool,
   forwardRuntimeCommand,
   runtimeCommandUnavailable,
 } from "../../infrastructure/process/runtime-command.mjs";
-import { defaultRuntimeRoot, runtimeLayout } from "../../infrastructure/filesystem/runtime-layout.mjs";
 import { isMainModule } from "../../infrastructure/process/main-module.mjs";
 import { detectCodexHookExecutionOwner } from "./codex-runtime-owner.mjs";
 
@@ -38,11 +36,9 @@ export function validateTurnStartHookInput(value) {
 }
 
 export async function handleCodexTurnStartHook(value, {
-  captureBaseline = captureTaskGitBaseline,
   forward = forwardRuntimeCommand,
   enqueue = enqueueRuntimeCommandThroughSpool,
   environment = process.env,
-  dataDir = runtimeLayout(defaultRuntimeRoot()).dataDir,
   now = () => new Date(),
   detectExecutionOwner = detectCodexHookExecutionOwner,
 } = {}) {
@@ -78,18 +74,9 @@ export async function handleCodexTurnStartHook(value, {
     }
   };
 
-  // Persist the exact prompt before the potentially expensive multi-repository
-  // Git snapshot. Codex limits hook execution time, so snapshotting first could
-  // lose the prompt entirely when a large workspace exceeded that limit.
-  const initiallyQueued = await register({ ...basePayload, gitBaseline: null });
-  const gitBaseline = await captureBaseline(
-    input.projectRoot,
-    dataDir,
-    `codex-turn-${input.turnId}`,
-  );
-  const payload = { ...basePayload, gitBaseline };
-  const baselineQueued = await register(payload);
-  return { queued: initiallyQueued || baselineQueued, payload };
+  const payload = { ...basePayload, gitBaseline: null };
+  const queued = await register(payload);
+  return { queued, payload };
 }
 
 export async function main() {

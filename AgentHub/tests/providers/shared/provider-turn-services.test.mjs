@@ -49,9 +49,10 @@ test("Codex turn service steers one exact active turn", async () => {
   assert.throws(() => unsupportedProviderSteer(), /недоступна/u);
 });
 
-test("Codex turn service refreshes a stale registered turn before steering", async () => {
-  const run = { turnId: "turn-old" };
+test("Codex turn service refreshes a rejected registered turn before steering", async () => {
+  const run = { turnId: "turn-old", clientUserMessageId: "message-root" };
   const reindexed = [];
+  const steerRequests = [];
   let saves = 0;
   const service = codexTurnService({
     readThread: async () => ({
@@ -59,7 +60,10 @@ test("Codex turn service refreshes a stale registered turn before steering", asy
     }),
     sendRpc: async (method, params) => {
       assert.equal(method, "turn/steer");
-      assert.equal(params.expectedTurnId, "turn-current");
+      steerRequests.push(params.expectedTurnId);
+      if (params.expectedTurnId === "turn-old") {
+        throw new Error("expected active turn id 'turn-old' but found 'turn-current'");
+      }
       return { turnId: params.expectedTurnId };
     },
     reindexRun: (value, previous) => reindexed.push({ value, previous }),
@@ -74,9 +78,39 @@ test("Codex turn service refreshes a stale registered turn before steering", asy
   });
 
   assert.deepEqual(result, { turnId: "turn-current" });
+  assert.deepEqual(steerRequests, ["turn-old", "turn-current"]);
   assert.equal(run.turnId, "turn-current");
   assert.deepEqual(reindexed, [{ value: run, previous: { turnId: "turn-old" } }]);
   assert.equal(saves, 1);
+});
+
+test("Codex turn service steers a registered managed turn despite a stale Thread projection", async () => {
+  const calls = [];
+  const service = codexTurnService({
+    readThread: async () => {
+      calls.push("thread/read");
+      return { thread: { turns: [{ id: "turn-managed", status: "completed" }] } };
+    },
+    sendRpc: async (method, params) => {
+      calls.push(method);
+      assert.equal(params.expectedTurnId, "turn-managed");
+      return { turnId: params.expectedTurnId };
+    },
+  });
+
+  const result = await service.steer({
+    run: {
+      turnId: "turn-managed",
+      status: "running",
+      clientUserMessageId: "message-root",
+    },
+    target: { threadId: "thread-1" },
+    input: "Добавить в текущий ход",
+    clientUserMessageId: "message-managed",
+  });
+
+  assert.deepEqual(result, { turnId: "turn-managed" });
+  assert.deepEqual(calls, ["turn/steer"]);
 });
 
 test("Codex turn service never steers user input into a context probe", async () => {
@@ -102,7 +136,10 @@ test("Codex turn service never steers user input into a context probe", async ()
 
   await assert.rejects(
     service.steer({
-      run: { turnId: "probe-turn" },
+      run: {
+        turnId: "probe-turn",
+        clientUserMessageId: "agent-hub-context-probe:test",
+      },
       target: { threadId: "thread-1" },
       input: "Обычное пользовательское сообщение",
       clientUserMessageId: "message-user",

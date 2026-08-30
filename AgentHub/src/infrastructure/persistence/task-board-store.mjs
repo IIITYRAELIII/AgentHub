@@ -1634,7 +1634,8 @@ export class TaskBoardStore {
         throw new Error("verified Task release files do not match the exact Task changedFiles snapshot");
       }
       const updated = database.prepare(`
-        UPDATE hub_board_tasks SET workflow_status = 'awaiting_implementation', updated_at_ms = ?
+        UPDATE hub_board_tasks SET workflow_status = 'awaiting_implementation', updated_at_ms = ?,
+          row_revision = row_revision + 1
         WHERE id = ? AND row_revision = ?
       `).run(timestamp, taskId, expected);
       if (!Number(updated.changes)) throw new Error("Task revision changed during freeze");

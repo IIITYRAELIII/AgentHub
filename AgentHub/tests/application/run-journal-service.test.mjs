@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import path from "node:path";
 import test from "node:test";
 
 import { RunJournalService } from "../../src/application/run-journal-service.mjs";
@@ -7,36 +6,14 @@ import { legacyTaskRunKeys, taskRunKey } from "../../src/domain/task-runs.mjs";
 
 function fixture({
   statImpl = async () => ({}),
-  releaseWorkflowEnabled = true,
   recordWorkspaceEvents = false,
 } = {}) {
   const calls = [];
   const workspaceCatalogStore = {
-    releaseWorkflowEnabledForThread: () => releaseWorkflowEnabled,
     ...(recordWorkspaceEvents ? {
       resolveThread: () => ({ workspaceId: "workspace-1", streamId: "stream-1" }),
       recordWorkspaceEvent: (value) => calls.push(["workspace-event", value]),
     } : {}),
-  };
-  const taskBoard = {
-    claimedTaskForTurn: ({ turnId }) => {
-      if (["unbound-turn", "transcript-turn"].includes(turnId)) return null;
-      const ready = ["ready-turn", "ready-interrupted-turn", "ready-no-diff-turn"].includes(turnId);
-      return {
-        id: "task-1", workspaceId: "workspace-1", streamId: "stream-1",
-        requestedWorkflowStatus: ready ? "awaiting_implementation" : null,
-        gitBaseline: turnId === "ready-interrupted-turn"
-          ? {}
-          : { repoRoot: "C:/workspace", tree: "a".repeat(40) },
-        changedFiles: turnId === "ready-no-diff-turn"
-          ? [{ projectRoot: "C:/workspace", path: "AgentHub/app.js", operation: "modified" }]
-          : [],
-      };
-    },
-    recordTaskTurn: (value) => { calls.push(["task-turn", value]); return value; },
-  };
-  const taskReleaseService = {
-    freezeRecorded: async (value) => { calls.push(["task-freeze", value]); return value; },
   };
   const usageStore = {
     recordAutomaticAndProject: async (value) => { calls.push(["automatic", value]); return value; },
@@ -48,15 +25,6 @@ function fixture({
   const service = new RunJournalService({
     usageStore,
     workspaceCatalogStore,
-    taskBoard,
-    taskReleaseService,
-    captureTaskResult: async (_baseline, turnId, files) => {
-      calls.push(["capture-task-result", { turnId, files }]);
-      return {
-        snapshot: { repoRoot: "C:/workspace", tree: "b".repeat(40) },
-        changedFiles: files.map(({ turnId: _turnId, ...file }) => file),
-      };
-    },
     findProject: (root) => root === "C:/workspace" ? { path: root } : null,
     defaultProjectRoot: "C:/workspace",
     projectionProjectRoots: ["C:/workspace"],
@@ -262,87 +230,8 @@ test("RunJournalService projects the initial and every steered message", async (
   );
 });
 
-test("RunJournalService writes only exact Task-bound terminal evidence", async () => {
+test("RunJournalService never derives Task release evidence from provider completions", async () => {
   const { service, calls } = fixture();
-  await service.projectTurn({
-    provider: "codex",
-    projectRoot: "C:/workspace",
-    threadId: "thread",
-    turnId: "turn",
-    changedFiles: ["AgentHub/app.js"],
-    diff: "diff --git a/AgentHub/app.js b/AgentHub/app.js",
-    status: "completed",
-  }, { title: "Implemented release registry" });
-  const evidence = calls.find(([name]) => name === "task-turn")?.[1];
-  assert.equal(evidence.summary, "Implemented release registry");
-  assert.deepEqual(evidence.changedFiles, [{
-    projectRoot: path.resolve("C:/workspace"),
-    path: "AgentHub/app.js",
-    operation: "modified",
-    turnId: "turn",
-  }]);
-  assert.equal(evidence.status, "completed");
-  assert.deepEqual(calls.find(([name]) => name === "capture-task-result")?.[1].files, [{
-    projectRoot: path.resolve("C:/workspace"),
-    path: "AgentHub/app.js",
-    operation: "modified",
-    turnId: "turn",
-  }]);
-
-  await service.projectTurn({
-    provider: "codex",
-    projectRoot: "C:/workspace",
-    threadId: "thread",
-    turnId: "failed-turn",
-    changedFiles: ["AgentHub/failure.js"],
-    status: "failed",
-  }, { title: "Failed change" });
-  const failedEvidence = calls.filter(([name]) => name === "task-turn").at(-1)[1];
-  assert.equal(failedEvidence.status, "failed");
-});
-
-test("RunJournalService records Claude evidence under its claimed Hub run id", async () => {
-  const { service, calls } = fixture();
-  await service.projectTurn({
-    provider: "claude",
-    projectRoot: "C:/workspace",
-    threadId: "thread",
-    turnId: "transcript-turn",
-    runTurnId: "turn",
-    changedFiles: ["AgentHub/app.js"],
-    diff: "diff --git a/AgentHub/app.js b/AgentHub/app.js",
-    status: "completed",
-  }, { title: "Claude change" });
-
-  const evidence = calls.find(([name]) => name === "task-turn")?.[1];
-  assert.equal(evidence.turnId, "turn");
-  assert.equal(calls.find(([name]) => name === "capture-task-result")?.[1].turnId, "turn");
-  assert.deepEqual(evidence.changedFiles, [{
-    projectRoot: path.resolve("C:/workspace"),
-    path: "AgentHub/app.js",
-    operation: "modified",
-    turnId: "turn",
-  }]);
-});
-
-test("RunJournalService does not infer Task ownership from a dirty workspace", async () => {
-  const { service, calls } = fixture();
-  await service.projectTurn({
-    provider: "codex",
-    projectRoot: "C:/workspace",
-    threadId: "thread",
-    turnId: "empty-provider-files-turn",
-    changedFiles: [],
-    diff: "",
-    status: "completed",
-  }, { title: "No exact file receipts" });
-
-  assert.equal(calls.some(([name]) => name === "capture-task-result"), false);
-  assert.equal(calls.some(([name]) => name === "task-turn"), false);
-});
-
-test("RunJournalService does not register changed files for a regular Workspace", async () => {
-  const { service, calls } = fixture({ releaseWorkflowEnabled: false });
   await service.projectTurn({
     provider: "codex",
     projectRoot: "C:/workspace",
@@ -352,55 +241,8 @@ test("RunJournalService does not register changed files for a regular Workspace"
     status: "completed",
   }, { title: "Regular work" });
 
-  assert.equal(calls.some(([name]) => name === "task-turn"), false);
   assert.equal(calls.some(([name]) => name === "automatic"), true);
-});
-
-test("RunJournalService ignores dashboardTaskId without an exact durable turn binding", async () => {
-  const { service, calls } = fixture();
-  await service.projectTurn({
-    provider: "codex", projectRoot: "C:/workspace", threadId: "thread",
-    turnId: "unbound-turn", dashboardTaskId: "task-1",
-    changedFiles: ["AgentHub/app.js"], status: "completed",
-  }, { title: "Unbound" });
-  assert.equal(calls.some(([name]) => name === "task-turn"), false);
-});
-
-test("RunJournalService freezes a completed fix only after same-turn awaiting intent", async () => {
-  const { service, calls } = fixture();
-  await service.projectTurn({
-    provider: "codex", projectRoot: "C:/workspace", threadId: "thread",
-    turnId: "ready-turn", changedFiles: ["AgentHub/app.js"], status: "completed",
-  }, { title: "Ready fix" });
-  assert.equal(calls.filter(([name]) => name === "task-turn").length, 1);
-  assert.deepEqual(calls.find(([name]) => name === "task-freeze")?.[1], {
-    taskId: "task-1", workspaceId: "workspace-1", actorStreamId: "stream-1",
-  });
-});
-
-test("RunJournalService restores a missing claim baseline and freezes interrupted ready work", async () => {
-  const { service, calls } = fixture();
-  await service.projectTurn({
-    provider: "codex", projectRoot: "C:/workspace", threadId: "thread",
-    turnId: "ready-interrupted-turn", changedFiles: ["AgentHub/app.js"], status: "interrupted",
-    gitBaseline: { repoRoot: "C:/workspace", tree: "a".repeat(40) },
-  }, { title: "Interrupted ready fix" });
-  const evidence = calls.find(([name]) => name === "task-turn")?.[1];
-  assert.deepEqual(evidence.gitBaseline, {
-    repoRoot: "C:/workspace", tree: "a".repeat(40),
-  });
-  assert.equal(evidence.status, "interrupted");
-  assert.equal(calls.some(([name]) => name === "task-freeze"), true);
-});
-
-test("RunJournalService freezes previously recorded work after a completed no-diff continuation", async () => {
-  const { service, calls } = fixture();
-  await service.projectTurn({
-    provider: "codex", projectRoot: "C:/workspace", threadId: "thread",
-    turnId: "ready-no-diff-turn", changedFiles: [], status: "completed",
-  }, { title: "Accepted on continuation" });
-  assert.equal(calls.some(([name]) => name === "task-turn"), false);
-  assert.equal(calls.some(([name]) => name === "task-freeze"), true);
+  assert.equal(calls.some(([name]) => name === "task-turn" || name === "task-freeze"), false);
 });
 
 test("RunJournalService forwards deferred projection for historical accounting", async () => {

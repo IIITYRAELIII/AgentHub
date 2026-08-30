@@ -16,7 +16,6 @@ export class TaskObservationService {
     providers,
     taskRuns,
     runCoordinator,
-    dataDir,
     findProject,
     invalidateTaskCatalog,
     syncTaskRun,
@@ -33,7 +32,6 @@ export class TaskObservationService {
     savedLastTaskMessageRecord,
     externalPollIntervalMs,
     managedPollIntervalMs,
-    captureGitBaseline,
     now = Date.now,
     logger = console,
     setTimeoutImpl = setTimeout,
@@ -42,7 +40,6 @@ export class TaskObservationService {
     this.providers = providers;
     this.taskRuns = taskRuns;
     this.runCoordinator = runCoordinator;
-    this.dataDir = dataDir;
     this.findProject = findProject;
     this.invalidateTaskCatalog = invalidateTaskCatalog;
     this.syncTaskRun = syncTaskRun;
@@ -57,10 +54,6 @@ export class TaskObservationService {
     this.completeRun = completeRun;
     this.discardContextCompactionRun = discardContextCompactionRun;
     this.savedLastTaskMessageRecord = savedLastTaskMessageRecord;
-    if (typeof captureGitBaseline !== "function") {
-      throw new TypeError("captureGitBaseline is required");
-    }
-    this.captureGitBaseline = captureGitBaseline;
     this.now = now;
     this.logger = logger;
 
@@ -137,7 +130,7 @@ export class TaskObservationService {
         : "Внешний Claude CLI",
       collaborationMode: "default",
     }, snapshot);
-    run.gitBaseline = await this.captureGitBaseline(run.projectRoot, this.dataDir, run.id);
+    run.gitBaseline = null;
     this.taskRuns.add(run);
     this.invalidateTaskCatalog();
     this.syncTaskRun(run, {

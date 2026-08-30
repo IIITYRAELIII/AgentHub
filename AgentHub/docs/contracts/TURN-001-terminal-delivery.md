@@ -15,6 +15,9 @@ final status and final content.
   durable append-only byte checkpoint and reconciles that metadata afterward.
   A cold exact-turn lookup locates the matching turn start by scanning backward
   from the rollout tail, then reads forward only from that boundary.
+- Turn-start hooks, managed-run admission, observers and terminal audit never
+  capture Git baselines. Task file ownership is handled separately by REL-001
+  Task worktrees and the explicit `Await` snapshot.
 - The authoritative provider final is retained byte-complete by the terminal
   projection; live-preview bounds must not truncate durable final content.
 - A provider completion event is not sufficient evidence to freeze a known

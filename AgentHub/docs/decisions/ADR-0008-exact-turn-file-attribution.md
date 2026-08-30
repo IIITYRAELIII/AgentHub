@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted. Refines the terminal evidence derivation in ADR-0005 and ADR-0007.
+Superseded by ADR-0009 for new Task work. Retained for historical frozen evidence.
 
 ## Decision
 

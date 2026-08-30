@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { TaskBoardLaunchService } from "../../src/application/task-board-launch-service.mjs";
 
-function fixture({ interruptAfterCreate = false } = {}) {
+function fixture({ interruptAfterCreate = false, gitWorktree = false } = {}) {
   const calls = [];
   const streams = new Map();
   const threads = new Map();
@@ -49,7 +49,7 @@ function fixture({ interruptAfterCreate = false } = {}) {
     },
   };
   const workspaceCatalog = {
-    workspace: (id) => id === "workspace-1" ? { id, name: "Agent HUB" } : null,
+    workspace: (id) => id === "workspace-1" ? { id, name: "Agent HUB", settings: { project: "D:/main" } } : null,
     stream: (id) => streams.get(id) ?? null,
     createStream: ({ id, workspaceId, name }) => {
       const stream = { id, workspaceId, name };
@@ -63,6 +63,12 @@ function fixture({ interruptAfterCreate = false } = {}) {
   const launch = new TaskBoardLaunchService({
     taskBoard,
     workspaceCatalog,
+    taskGitWorkspaces: gitWorktree ? {
+      prepare: async ({ taskId, projectRoot }) => {
+        calls.push(["git-worktree", taskId, projectRoot]);
+        return { projectRoot: "D:/task-worktree" };
+      },
+    } : null,
     dispatchCommand: async (type, payload) => {
       calls.push(["command", type, payload]);
       if (type === "task.select") return {};
@@ -86,6 +92,23 @@ function fixture({ interruptAfterCreate = false } = {}) {
   });
   return { launch, task, calls, streams };
 }
+
+test("TaskBoardLaunchService starts a Task in its dedicated Git worktree", async () => {
+  const { launch, calls } = fixture({ gitWorktree: true });
+  await launch.start({
+    id: "board-1",
+    workspaceId: "workspace-1",
+    streamName: "Git Task",
+    provider: "codex",
+    launchRequestId: "mcp-git-task",
+  });
+
+  assert.deepEqual(calls.find(([kind]) => kind === "git-worktree"), [
+    "git-worktree", "board-1", "D:/main",
+  ]);
+  const create = calls.find(([, type]) => type === "task.create");
+  assert.equal(create[2].workingDirectory, "D:/task-worktree");
+});
 
 test("TaskBoardLaunchService reconciles a crashed MCP start without creating another Stream or Task", async () => {
   const { launch, task, calls, streams } = fixture({ interruptAfterCreate: true });

@@ -2,7 +2,6 @@ import { ManagedRunLifecycleService } from "../application/managed-run-lifecycle
 import { TerminalTurnCommitService } from "../application/terminal-turn-commit-service.mjs";
 import { TurnEndDeliveryService } from "../application/turn-end-delivery-service.mjs";
 import { CodexRunFinalizer } from "../providers/codex/codex-run-finalizer.mjs";
-import { captureTaskGitBaseline } from "../infrastructure/filesystem/task-git-diff.mjs";
 import { ProviderTurnTerminalStore } from "../infrastructure/persistence/provider-turn-terminal-store.mjs";
 import { taskRunKey } from "../domain/task-runs.mjs";
 import { providerThreadKey } from "../domain/workspace-stream-identity.mjs";
@@ -72,9 +71,6 @@ export function createRunCompletionComposition({
     claudeModelLabels,
     reasoningLabels,
     clearClaudeCancellation: (task) => cancelledManagedClaudeTasks.delete(providerThreadKey(task)),
-    captureGitBaseline: (projectRoot, runId) => (
-      captureTaskGitBaseline(projectRoot, config.dataDir, runId)
-    ),
     persistTaskDiff,
     syncRun: syncTaskRun,
     invalidateCatalog: invalidateTaskCatalog,

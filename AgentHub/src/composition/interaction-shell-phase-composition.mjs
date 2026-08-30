@@ -1,6 +1,5 @@
 import { samePath } from "../infrastructure/filesystem/config.mjs";
 import {
-  captureTaskGitBaseline,
   resolveTaskGitRepoRoots,
   taskGitDiff,
 } from "../infrastructure/filesystem/task-git-diff.mjs";
@@ -345,6 +344,5 @@ export function createInteractionShellPhase({
     serverControlController,
     ...desktopShell,
     ...runShell,
-    captureTaskGitBaseline,
   };
 }

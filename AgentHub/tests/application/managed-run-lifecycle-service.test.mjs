@@ -12,7 +12,6 @@ function harness({
   saveState = null,
 } = {}) {
   const events = [];
-  let baselineCaptures = 0;
   const taskRuns = new TaskRunRegistry();
   const service = new ManagedRunLifecycleService({
     taskRuns,
@@ -27,10 +26,6 @@ function harness({
     normalizeCodexModel: (value) => String(value).toLowerCase(),
     modelLabel: (value) => value.toUpperCase(),
     claudeModelLabels: {}, reasoningLabels: { high: "High" },
-    captureGitBaseline: async () => {
-      baselineCaptures += 1;
-      return { repositories: [] };
-    },
     persistTaskDiff: async () => events.push("diff"),
     syncRun: (_run, options) => events.push(options?.active === false ? "sync-complete" : "sync-start"),
     invalidateCatalog: () => events.push("catalog"),
@@ -45,11 +40,11 @@ function harness({
     completionAborted: completionAborted ?? (async () => events.push("aborted")),
     afterCompletion: afterCompletion ?? (async () => events.push("after")),
   });
-  return { service, taskRuns, events, baselineCaptures: () => baselineCaptures };
+  return { service, taskRuns, events };
 }
 
 test("managed run lifecycle creates and persists one owned run", async () => {
-  const { service, taskRuns, events, baselineCaptures } = harness();
+  const { service, taskRuns, events } = harness();
   const run = await service.begin("hello");
 
   assert.equal(taskRuns.forTask(run), run);
@@ -61,16 +56,14 @@ test("managed run lifecycle creates and persists one owned run", async () => {
   }]);
   assert.equal(run.streamId, "stream-1");
   assert.equal(run.model, "GPT");
-  assert.equal(baselineCaptures(), 0);
   assert.deepEqual(events, ["catalog", "diff", "clear-diff", "sync-start", "save", "progress"]);
 });
 
-test("managed run lifecycle keeps Git baseline fallback for non-Codex providers", async () => {
-  const { service, baselineCaptures } = harness({ provider: "claude" });
+test("managed run lifecycle does not capture Git baselines for provider turns", async () => {
+  const { service } = harness({ provider: "claude" });
   const run = await service.begin("hello");
 
-  assert.equal(baselineCaptures(), 1);
-  assert.deepEqual(run.gitBaseline, { repositories: [] });
+  assert.equal(run.gitBaseline, null);
 });
 
 test("managed run lifecycle canonicalizes a legacy Codex model label", async () => {

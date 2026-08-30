@@ -17,7 +17,8 @@ test("legacy v1 policy is stripped once and replaced by Task workflow rules", ()
   );
   assert.equal(rules, `${RELEASE_WORKFLOW_DEVELOPER_RULES}\n\nCustom rule`);
   assert.match(rules, /hub_task_claim/u);
-  assert.match(rules, /no changed-file or release evidence/u);
+  assert.match(rules, /dedicated Git worktree/u);
+  assert.match(rules, /merges it into dev/u);
   assert.match(rules, /Do not create a Task for diagnosis/u);
   assert.match(rules, /concise descriptive title.*original request in the description/u);
 });

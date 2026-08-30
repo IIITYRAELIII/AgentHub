@@ -325,7 +325,7 @@ export class CodexTurnService {
   }
 
   async steer({ run, target, input, clientUserMessageId }) {
-    let turnId = await this.#exactTurnId(target, run?.turnId);
+    let turnId = await this.#registeredTurnId(target, run) ?? await this.#exactTurnId(target);
     if (!turnId) throw new Error("Текущий ход уже нельзя изменить; сообщение осталось в очереди");
     let request = {
       threadId: target.threadId,
@@ -352,6 +352,26 @@ export class CodexTurnService {
       await this.#d.saveState();
     }
     return { turnId: acceptedTurnId };
+  }
+
+  async #registeredTurnId(target, run) {
+    const turnId = String(run?.turnId ?? "").trim();
+    if (!turnId) return null;
+    if (isCodexContextProbeTurn(run, { allowTextFallback: true })) return null;
+    if (this.#d.isContextProbeTurn(target.threadId, turnId)) return null;
+    if (String(run?.clientUserMessageId ?? "").trim()) return turnId;
+    const result = await this.#d.readThread(target.threadId, {
+      fresh: true,
+      includeTurns: true,
+      priority: "interactive",
+      turnLimit: 8,
+      turnPageSize: 8,
+    });
+    const thread = result?.thread ?? result;
+    const exact = (Array.isArray(thread?.turns) ? thread.turns : [])
+      .find((turn) => String(turn?.id ?? "").trim() === turnId);
+    if (exact && isCodexContextProbeTurn(exact, { allowTextFallback: true })) return null;
+    return turnId;
   }
 
   #steerRequest(target, request) {
@@ -388,7 +408,7 @@ export class CodexTurnService {
     });
   }
 
-  async #exactTurnId(target, preferredTurnId = "") {
+  async #exactTurnId(target) {
     const result = await this.#d.readThread(target.threadId, {
       fresh: true,
       includeTurns: true,
@@ -404,10 +424,6 @@ export class CodexTurnService {
         return !isCodexContextProbeTurn(turn, { allowTextFallback: true })
           && !this.#d.isContextProbeTurn(target.threadId, turnId);
       });
-    const preferred = String(preferredTurnId ?? "").trim();
-    if (preferred && active.some((turn) => String(turn?.id ?? "").trim() === preferred)) {
-      return preferred;
-    }
     if (active.length === 1) {
       const turnId = String(active[0]?.id ?? "").trim();
       return turnId || null;

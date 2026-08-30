@@ -194,14 +194,6 @@ function compactTask(task) {
   };
 }
 
-function hasGitBaseline(value) {
-  const repositories = Array.isArray(value?.repositories) ? value.repositories : [value];
-  return repositories.some((repository) => (
-    String(repository?.repoRoot ?? "").trim()
-    && String(repository?.tree ?? "").trim()
-  ));
-}
-
 function tool(name, description, properties = {}, required = []) {
   const mutating = MUTATING_TOOLS.has(name);
   return {
@@ -237,7 +229,7 @@ export class HubMcpService {
 
   constructor({
     workspaceCatalog, taskBoard, workLog, attachmentDirectory, secret, releaseCompleter, taskReleases,
-    captureGitBaseline = null,
+    taskGitWorkspaces = null,
   } = {}) {
     for (const name of [
       "resolveThread", "workspace", "hierarchy", "developerRulesForStream",
@@ -261,7 +253,7 @@ export class HubMcpService {
     this.secret = requiredText(secret, "MCP secret", 512);
     this.releaseCompleter = releaseCompleter;
     this.taskReleases = taskReleases;
-    this.captureGitBaseline = typeof captureGitBaseline === "function" ? captureGitBaseline : null;
+    this.taskGitWorkspaces = taskGitWorkspaces;
   }
 
   setActiveRuns(value) {
@@ -336,10 +328,10 @@ export class HubMcpService {
         provider: { type: "string", enum: ["codex", "claude"] },
         confirm_launch: { type: "boolean", description: "Must be true because this starts or queues another agent turn." },
       }, ["task_id", "confirm_launch"]),
-      tool("hub_task_claim", "Bind a Dashboard Task to the exact current provider turn and make the current Stream its executor.", {
+      tool("hub_task_claim", "Bind a Dashboard Task to the exact current provider turn, assign its dedicated Git branch/worktree, and make the current Stream its executor. Continue repository work only in the returned gitWorkspace.projectRoot.", {
         task_id: { type: "string" },
       }, ["task_id"]),
-      tool("hub_task_status_update", "Always change a Dashboard Task to any valid workflow status. Freeze, evidence, Workspace policy, role and release state never block a status transition. Done remains visible and does not close the Task.", {
+      tool("hub_task_status_update", "Always change a Dashboard Task to any valid workflow status. Await snapshots its Task branch and merges it into dev; Git conflicts are reported but never block the status transition. Done remains visible and does not close the Task.", {
         task_id: { type: "string" },
         status: { type: "string", enum: ["new", "in_progress", "testing", "awaiting_implementation", "done"] },
       }, ["task_id", "status"]),
@@ -358,7 +350,7 @@ export class HubMcpService {
         task_id: { type: "string" },
         local_path: { type: "string" },
       }, ["task_id", "local_path"]),
-      tool("hub_release_plan_get", "Read the complete release plan for the current Workspace."),
+      tool("hub_release_plan_get", "Read the complete release plan and exact integrated dev heads for the current Workspace."),
       tool("hub_task_release_freeze", "Freeze an immutable Task-owned release revision after server-side Git verification.", {
         task_id: { type: "string" },
         expected_task_revision: { type: "integer", minimum: 1 },
@@ -490,10 +482,11 @@ export class HubMcpService {
       case "hub_task_status_update":
         return this.#updateTaskWorkflowStatus(context, args);
       case "hub_task_complete":
-        return compactTask(this.taskBoard.complete({ id: this.#task(context, args.task_id).id }));
+        return this.#completeTask(context, args);
       case "hub_task_delete": {
         const task = this.#task(context, args.task_id);
         this.taskBoard.remove({ id: task.id });
+        await this.taskGitWorkspaces?.cleanup?.(task.id);
         return { deleted: true, task: compactTask(task) };
       }
       case "hub_task_attachment_read":
@@ -501,7 +494,7 @@ export class HubMcpService {
       case "hub_task_attachment_add":
         return this.#addAttachment(context, args);
       case "hub_release_plan_get":
-        return this.taskBoard.releasePlan(context.workspaceId);
+        return this.#releasePlan(context);
       case "hub_task_release_freeze":
         return this.taskReleases.freeze({
           workspaceId: context.workspaceId,
@@ -524,14 +517,7 @@ export class HubMcpService {
         });
       case "hub_release_complete":
         if (!this.#isArchitect(context)) throw new Error("release completion requires an Architect Stream");
-        return this.releaseCompleter.completeRelease({
-          workspaceId: context.workspaceId,
-          expectedRevision: optionalText(args.expected_revision, 128),
-          expectedPlanRevision: optionalText(args.expected_plan_revision, 128),
-          deploymentVerified: args.deployment_verified === true,
-          verificationSummary: optionalText(args.verification_summary, 2_000) ?? "",
-          conflictsResolved: args.conflicts_resolved === true,
-        });
+        return this.#completeRelease(context, args);
       case "hub_events_list":
         return this.#events(context, args);
       case "hub_mcp_operations_list":
@@ -736,20 +722,27 @@ export class HubMcpService {
   async #claimTask(context, { task_id: taskId } = {}) {
     const task = this.#task(context, taskId);
     const active = this.#currentRun(context);
-    if (active.projectRoot && !hasGitBaseline(active.gitBaseline) && this.captureGitBaseline) {
-      active.gitBaseline = await this.captureGitBaseline(active.projectRoot, active.turnId);
-    }
+    const gitWorkspace = this.taskGitWorkspaces && active.projectRoot
+      ? await this.taskGitWorkspaces.prepare({ taskId: task.id, projectRoot: active.projectRoot })
+      : null;
+    if (gitWorkspace) active.gitBaseline = gitWorkspace.gitBaseline;
     return {
       ...compactTask(this.taskBoard.claim({
-      id: task.id,
-      workspaceId: context.workspaceId,
-      streamId: context.streamId,
-      provider: context.provider,
-      threadId: context.threadId,
-      turnId: active.turnId,
-      gitBaseline: active.gitBaseline ?? null,
+        id: task.id,
+        workspaceId: context.workspaceId,
+        streamId: context.streamId,
+        provider: context.provider,
+        threadId: context.threadId,
+        turnId: active.turnId,
+        gitBaseline: active.gitBaseline ?? null,
       })),
       claimedTurnId: active.turnId,
+      gitWorkspace: gitWorkspace ? {
+        branch: gitWorkspace.branch,
+        projectRoot: gitWorkspace.projectRoot,
+        baseCommit: gitWorkspace.baseCommit,
+        headCommit: gitWorkspace.headCommit,
+      } : null,
     };
   }
 
@@ -767,7 +760,7 @@ export class HubMcpService {
     return active[0];
   }
 
-  #updateTaskWorkflowStatus(context, { task_id: taskId, status } = {}) {
+  async #updateTaskWorkflowStatus(context, { task_id: taskId, status } = {}) {
     const task = this.#task(context, taskId);
     const workflowStatus = requiredText(status, "task workflow status", 40);
     const active = context.threadId ? this.#activeRuns().filter((run) => (
@@ -777,19 +770,154 @@ export class HubMcpService {
       && run?.observer !== true
     )) : [];
     const run = active.length === 1 ? active[0] : null;
-    return compactTask(this.taskBoard.requestWorkflowStatus({
+    let gitWorkspace = null;
+    let preparationError = null;
+    if (workflowStatus === "awaiting_implementation" && run?.projectRoot && this.taskGitWorkspaces) {
+      try {
+        gitWorkspace = await this.taskGitWorkspaces.prepare({ taskId: task.id, projectRoot: run.projectRoot });
+        this.taskBoard.claim({
+          id: task.id,
+          workspaceId: context.workspaceId,
+          streamId: context.streamId,
+          provider: context.provider,
+          threadId: context.threadId,
+          turnId: run.turnId,
+          gitBaseline: gitWorkspace.gitBaseline,
+        });
+      } catch (error) {
+        preparationError = error;
+      }
+    }
+    const updated = this.taskBoard.requestWorkflowStatus({
       id: task.id,
       status: workflowStatus,
       provider: context.provider,
       threadId: context.threadId,
       turnId: run?.turnId ?? null,
-    }));
+    });
+    if (workflowStatus !== "awaiting_implementation") return compactTask(updated);
+    if (!gitWorkspace) {
+      return {
+        ...compactTask(updated),
+        gitIntegration: {
+          integrated: false,
+          error: preparationError?.message ?? "Task Git workspace is unavailable for this turn",
+        },
+      };
+    }
+    try {
+      const { snapshot, integration } = await this.taskGitWorkspaces.snapshotAndMerge({
+        taskId: task.id,
+        projectRoot: gitWorkspace.projectRoot,
+        turnId: run?.turnId,
+        summary: task.title,
+      });
+      let frozen = null;
+      let freezeError = null;
+      if (snapshot.changedFiles.length) {
+        this.taskBoard.recordTaskTurn({
+          taskId: task.id,
+          provider: context.provider,
+          threadId: context.threadId,
+          turnId: run.turnId,
+          projectRoot: snapshot.repositoryRoot,
+          summary: task.title,
+          status: "completed",
+          changedFiles: snapshot.changedFiles.map((file) => ({ ...file, turnId: run.turnId })),
+          gitBaseline: snapshot.gitBaseline,
+          resultSnapshot: snapshot.resultSnapshot,
+        });
+        if (integration.integrated) {
+          try {
+            frozen = await this.taskReleases.freezeRecorded({
+              taskId: task.id,
+              workspaceId: context.workspaceId,
+              actorStreamId: context.streamId,
+            });
+          } catch (error) {
+            freezeError = error.message;
+          }
+        }
+      }
+      const current = frozen ?? this.#task(context, task.id);
+      return {
+        ...compactTask(current),
+        gitWorkspace: {
+          branch: snapshot.branch,
+          projectRoot: snapshot.projectRoot,
+          baseCommit: snapshot.baseCommit,
+          headCommit: snapshot.headCommit,
+        },
+        gitIntegration: {
+          integrated: integration.integrated,
+          alreadyIntegrated: integration.alreadyIntegrated === true,
+          devBranch: integration.dev?.branch ?? "dev",
+          devHeadCommit: integration.dev?.headCommit ?? null,
+          conflicts: integration.conflicts ?? [],
+          error: integration.error ?? null,
+          freezeError,
+        },
+      };
+    } catch (error) {
+      return {
+        ...compactTask(this.#task(context, task.id)),
+        gitIntegration: { integrated: false, error: error.message },
+      };
+    }
+  }
+
+  async #completeTask(context, { task_id: taskId } = {}) {
+    const task = this.#task(context, taskId);
+    const completed = this.taskBoard.complete({ id: task.id });
+    await this.taskGitWorkspaces?.cleanup?.(task.id);
+    return compactTask(completed);
   }
 
   #isArchitect(context) {
     return this.#workspace(context).streams.some((stream) => (
       stream.id === context.streamId && stream.settings?.architect === true
     ));
+  }
+
+  async #releasePlan(context) {
+    const plan = this.taskBoard.releasePlan(context.workspaceId);
+    if (!this.taskGitWorkspaces) return plan;
+    const roots = [...new Set(plan.ready.map((entry) => String(entry.projectRoot ?? "").trim()).filter(Boolean))];
+    const repositories = [];
+    for (const projectRoot of roots) {
+      try {
+        const dev = await this.taskGitWorkspaces.prepareDev(projectRoot);
+        repositories.push({
+          projectRoot: dev.repositoryRoot,
+          branch: dev.branch,
+          headCommit: dev.headCommit,
+          worktreeRoot: dev.projectRoot,
+        });
+      } catch (error) {
+        repositories.push({ projectRoot, branch: "dev", headCommit: null, error: error.message });
+      }
+    }
+    return { ...plan, devIntegration: { branch: "dev", repositories } };
+  }
+
+  async #completeRelease(context, args) {
+    const result = await this.releaseCompleter.completeRelease({
+      workspaceId: context.workspaceId,
+      expectedRevision: optionalText(args.expected_revision, 128),
+      expectedPlanRevision: optionalText(args.expected_plan_revision, 128),
+      deploymentVerified: args.deployment_verified === true,
+      verificationSummary: optionalText(args.verification_summary, 2_000) ?? "",
+      conflictsResolved: args.conflicts_resolved === true,
+    });
+    const cleanupErrors = [];
+    for (const task of result.released ?? []) {
+      try {
+        await this.taskGitWorkspaces?.cleanup?.(task.id);
+      } catch (error) {
+        cleanupErrors.push({ taskId: task.id, error: error.message });
+      }
+    }
+    return { ...result, cleanupErrors };
   }
 
   async #startTask(context, {
@@ -803,6 +931,9 @@ export class HubMcpService {
     if (requestedStreamId && requestedStreamName) {
       throw new Error("stream_id and new_stream_name are mutually exclusive");
     }
+    const gitWorkspace = this.taskGitWorkspaces && context.projectRoot
+      ? await this.taskGitWorkspaces.prepare({ taskId: task.id, projectRoot: context.projectRoot })
+      : null;
     const result = await this.#taskLauncher({
       id: task.id,
       workspaceId: context.workspaceId,
@@ -812,6 +943,7 @@ export class HubMcpService {
       followUpMode: "queue",
       launchRequestId: requiredText(requestId, "request id", 200),
       clientUserMessageId: `mcp:${requiredText(requestId, "request id", 200)}`,
+      workingDirectory: gitWorkspace?.projectRoot ?? null,
     }, context);
     return {
       task: compactTask(result.task),
@@ -821,6 +953,11 @@ export class HubMcpService {
         threadId: result.target.threadId ?? null,
       },
       delivery: result.delivery ?? null,
+      gitWorkspace: gitWorkspace ? {
+        branch: gitWorkspace.branch,
+        projectRoot: gitWorkspace.projectRoot,
+        baseCommit: gitWorkspace.baseCommit,
+      } : null,
     };
   }
 

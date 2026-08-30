@@ -25,7 +25,7 @@ export class ManagedRunLifecycleService {
   constructor(dependencies = {}) {
     for (const name of [
       "currentTarget", "findProject", "codexSettings", "currentPreferences",
-      "normalizeCodexModel", "modelLabel", "captureGitBaseline", "persistTaskDiff", "syncRun",
+      "normalizeCodexModel", "modelLabel", "persistTaskDiff", "syncRun",
       "invalidateCatalog", "saveState", "scheduleProgressStart", "clearSelectedDiff",
       "clearApprovals", "pauseObservation", "pauseClaude", "stopTyping",
       "beforeCompletion", "completionAborted", "afterCompletion",
@@ -106,9 +106,7 @@ export class ManagedRunLifecycleService {
     d.invalidateCatalog();
     await d.persistTaskDiff(taskRunKey(run), "");
     d.clearSelectedDiff(run);
-    run.gitBaseline = provider === "codex"
-      ? null
-      : await d.captureGitBaseline(run.projectRoot, run.id);
+    run.gitBaseline = null;
     d.syncRun(run);
     if (target?.deferredInput) target.deferredInput.dispatchingRunId = run.id;
     await d.saveState();

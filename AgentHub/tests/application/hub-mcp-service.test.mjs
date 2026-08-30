@@ -98,6 +98,7 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
     requestWorkflowStatus: ({ id, status, turnId }) => Object.assign(tasks.get(id), {
       workflowStatus: status, requestedWorkflowStatus: status, requestedTurnId: turnId,
     }),
+    recordTaskTurn: ({ taskId, changedFiles }) => Object.assign(tasks.get(taskId), { changedFiles }),
     releasePlan: () => ({ revision: "plan-1", candidates: [], ready: [], draft: [], blocked: [], conflicts: [] }),
     setWorkflowStatus: ({ id, status }) => Object.assign(tasks.get(id), {
       workflowStatus: status,
@@ -123,11 +124,42 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
       taskReleaseCalls.push(options);
       return { ...tasks.get(options.taskId), frozenRevision: options.expectedTaskRevision + 1 };
     },
+    freezeRecorded: async () => null,
+  };
+  const taskGitWorkspaces = {
+    prepare: async ({ taskId }) => ({
+      taskId,
+      branch: `agenthub/task/${taskId}/repo`,
+      projectRoot: path.join(directory, "task-worktree", taskId),
+      repositoryRoot: projectRoot,
+      baseCommit: "a".repeat(40),
+      headCommit: "a".repeat(40),
+      gitBaseline: { repoRoot: projectRoot, tree: "a".repeat(40) },
+    }),
+    snapshotAndMerge: async ({ taskId }) => ({
+      snapshot: {
+        taskId,
+        branch: `agenthub/task/${taskId}/repo`,
+        projectRoot: path.join(directory, "task-worktree", taskId),
+        repositoryRoot: projectRoot,
+        baseCommit: "a".repeat(40),
+        headCommit: "a".repeat(40),
+        gitBaseline: { repoRoot: projectRoot, tree: "a".repeat(40) },
+        resultSnapshot: { repoRoot: projectRoot, tree: "a".repeat(40) },
+        changedFiles: [],
+      },
+      integration: {
+        integrated: true,
+        alreadyIntegrated: true,
+        dev: { branch: "dev", headCommit: "a".repeat(40) },
+      },
+    }),
+    cleanup: async () => ({ removed: 1 }),
   };
   const service = new HubMcpService({
     workspaceCatalog, taskBoard, workLog, attachmentDirectory, secret: "secret",
     taskReleases,
-    captureGitBaseline: async (root, turnId) => ({ repoRoot: root, tree: turnId.padEnd(40, "0") }),
+    taskGitWorkspaces,
     releaseCompleter: {
       completeRelease: async (options) => {
         releaseCalls.push(options);
@@ -159,6 +191,7 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
     operations,
     releaseCalls,
     taskReleaseCalls,
+    taskGitWorkspaces,
     sentMessages,
   };
 }
@@ -274,6 +307,40 @@ test("release-enabled Task statuses can be changed and rolled back directly", as
   assert.equal(done.workflowStatus, "done");
 });
 
+test("Await status remains selected when the Task branch conflicts with dev", async (context) => {
+  const { service, token, taskGitWorkspaces } = await fixture(context, { releaseWorkflowEnabled: true });
+  taskGitWorkspaces.snapshotAndMerge = async ({ taskId }) => ({
+    snapshot: {
+      taskId,
+      branch: `agenthub/task/${taskId}/repo`,
+      projectRoot: "D:/task",
+      repositoryRoot: "D:/repo",
+      baseCommit: "a".repeat(40),
+      headCommit: "b".repeat(40),
+      gitBaseline: { repoRoot: "D:/repo", tree: "a".repeat(40) },
+      resultSnapshot: { repoRoot: "D:/repo", tree: "b".repeat(40) },
+      changedFiles: [{ projectRoot: "D:/repo", path: "app.mjs", operation: "modified" }],
+    },
+    integration: {
+      integrated: false,
+      conflicts: ["app.mjs"],
+      error: "merge conflict",
+      dev: { branch: "dev", headCommit: "c".repeat(40) },
+    },
+  });
+
+  const result = await service.call("hub_task_status_update", {
+    context_token: token,
+    request_id: "task-awaiting-conflict",
+    task_id: "task-current",
+    status: "awaiting_implementation",
+  });
+
+  assert.equal(result.workflowStatus, "awaiting_implementation");
+  assert.equal(result.gitIntegration.integrated, false);
+  assert.deepEqual(result.gitIntegration.conflicts, ["app.mjs"]);
+});
+
 test("HubMcpService resumes an interrupted pending task start with the same request id", async (context) => {
   const { service, token, operations, tasks } = await fixture(context);
   let launches = 0;
@@ -375,7 +442,7 @@ test("HubMcpService exposes cursor events and publication-gated release completi
   assert.equal(releaseCalls[0].conflictsResolved, true);
 });
 
-test("HubMcpService binds and freezes the exact current Task turn", async (context) => {
+test("HubMcpService binds the current turn to its dedicated Task worktree", async (context) => {
   const { service, token, taskReleaseCalls, tasks, projectRoot } = await fixture(context);
   const claimed = await service.call("hub_task_claim", {
     context_token: token,
@@ -385,8 +452,9 @@ test("HubMcpService binds and freezes the exact current Task turn", async (conte
   assert.equal(claimed.claimedTurnId, "turn-live");
   assert.deepEqual(tasks.get("task-current").gitBaseline, {
     repoRoot: projectRoot,
-    tree: "turn-live".padEnd(40, "0"),
+    tree: "a".repeat(40),
   });
+  assert.match(claimed.gitWorkspace.branch, /^agenthub\/task\/task-current/u);
 
   const frozen = await service.call("hub_task_release_freeze", {
     context_token: token,

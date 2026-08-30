@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import { stat } from "node:fs/promises";
-import path from "node:path";
 
 import { legacyTaskRunKeys, taskRunKey } from "../domain/task-runs.mjs";
 import { isCodexContextProbeResponseText } from "../domain/codex-context-probe.mjs";
@@ -36,62 +35,12 @@ function lastMessageTimestamp(record) {
   return Date.parse(String(record?.updatedAt ?? "")) || 0;
 }
 
-function changedFileOperations(diff) {
-  const operations = new Map();
-  let current = null;
-  for (const line of String(diff ?? "").split(/\r?\n/u)) {
-    const header = /^diff --git a\/(.+) b\/(.+)$/u.exec(line);
-    if (header) {
-      current = header[2];
-      operations.set(current, "modified");
-    } else if (current && line.startsWith("new file mode ")) {
-      operations.set(current, "added");
-    } else if (current && line.startsWith("deleted file mode ")) {
-      operations.set(current, "deleted");
-    }
-  }
-  return operations;
-}
-
-function repositorySnapshots(snapshot) {
-  if (Array.isArray(snapshot?.repositories)) return snapshot.repositories;
-  return snapshot?.repoRoot ? [snapshot] : [];
-}
-
-function pathInside(root, candidate) {
-  const relative = path.relative(root, candidate);
-  return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
-}
-
-function exactTaskChangedFiles({ projectRoot, files, operations, turnId, baseline }) {
-  const repositories = repositorySnapshots(baseline)
-    .map((repository) => path.resolve(repository.repoRoot))
-    .sort((left, right) => right.length - left.length);
-  if (!repositories.length) throw new Error("terminal Task evidence requires a captured Git baseline");
-  return files.map((file) => {
-    const reported = String(file ?? "").replaceAll("\\", "/");
-    const absolute = path.isAbsolute(reported) ? path.resolve(reported) : path.resolve(projectRoot, reported);
-    const repositoryRoot = repositories.find((root) => pathInside(root, absolute));
-    if (!repositoryRoot) throw new Error(`changed file is outside the captured Task repositories: ${reported}`);
-    const relativePath = path.relative(repositoryRoot, absolute).replaceAll(path.sep, "/");
-    return {
-      projectRoot: repositoryRoot,
-      path: relativePath,
-      operation: operations.get(reported) ?? operations.get(relativePath) ?? "modified",
-      turnId,
-    };
-  });
-}
-
 export class RunJournalService {
   #revision = 0;
 
   constructor({
     usageStore,
     workspaceCatalogStore = null,
-    taskBoard = null,
-    taskReleaseService = null,
-    captureTaskResult = null,
     findProject,
     defaultProjectRoot,
     projectionProjectRoots,
@@ -104,9 +53,6 @@ export class RunJournalService {
   }) {
     this.usageStore = usageStore;
     this.workspaceCatalogStore = workspaceCatalogStore;
-    this.taskBoard = taskBoard;
-    this.taskReleaseService = taskReleaseService;
-    this.captureTaskResult = typeof captureTaskResult === "function" ? captureTaskResult : null;
     this.findProject = findProject;
     this.defaultProjectRoot = defaultProjectRoot;
     this.projectionProjectRoots = projectionProjectRoots;
@@ -257,86 +203,6 @@ export class RunJournalService {
     const result = !workLogId
       ? await this.usageStore.recordAutomaticAndProject(fields)
       : await this.usageStore.recordAndProject({ ...fields, workLogId });
-    const releaseWorkflowEnabled = this.workspaceCatalogStore?.releaseWorkflowEnabledForThread?.({
-      provider: completion.provider,
-      threadId: completion.threadId,
-    }) === true;
-    if (releaseWorkflowEnabled) {
-      try {
-        const turnIds = [...new Set([
-          completion.turnId,
-          completion.runTurnId,
-        ].map((value) => String(value ?? "").trim()).filter(Boolean))];
-        let bound = null;
-        let boundTurnId = "";
-        for (const turnId of turnIds) {
-          bound = this.taskBoard?.claimedTaskForTurn?.({
-            provider: completion.provider,
-            threadId: completion.threadId,
-            turnId,
-          });
-          if (bound) {
-            boundTurnId = turnId;
-            break;
-          }
-        }
-        const dashboardTaskId = String(completion.dashboardTaskId ?? "").trim() || null;
-        const taskId = bound?.id ?? null;
-        if (dashboardTaskId && bound && bound.id !== dashboardTaskId) {
-          throw new Error("dashboardTaskId conflicts with the exact provider turn binding");
-        }
-        if (taskId) {
-          const reportedFiles = Array.isArray(completion.changedFiles) ? completion.changedFiles : [];
-          const gitBaseline = repositorySnapshots(bound.gitBaseline).length
-            ? bound.gitBaseline
-            : completion.gitBaseline;
-          const scopedFiles = reportedFiles.length ? exactTaskChangedFiles({
-            projectRoot: project.path,
-            files: reportedFiles,
-            operations: changedFileOperations(completion.diff),
-            turnId: boundTurnId,
-            baseline: gitBaseline,
-          }) : [];
-          let captured = null;
-          if (scopedFiles.length && this.captureTaskResult && repositorySnapshots(gitBaseline).length) {
-            try {
-              captured = await this.captureTaskResult(gitBaseline, boundTurnId, scopedFiles);
-            } catch (error) {
-              this.logger.error(`Cannot capture terminal Task Git result for ${boundTurnId}:`, error.message);
-            }
-          }
-          const changedFiles = captured
-            ? (captured.changedFiles ?? []).map((file) => ({ ...file, turnId: boundTurnId }))
-            : [];
-          if (changedFiles.length) {
-            this.taskBoard.recordTaskTurn({
-              taskId,
-              provider: completion.provider,
-              threadId: completion.threadId,
-              turnId: boundTurnId,
-              projectRoot: project.path,
-              summary: fields.title || body,
-              status: completion.status,
-              changedFiles,
-              gitBaseline,
-              resultSnapshot: captured?.snapshot ?? null,
-            });
-          }
-          const terminalStatus = String(completion.status ?? "").trim().toLowerCase();
-          if (bound?.requestedWorkflowStatus === "awaiting_implementation"
-            && ["completed", "interrupted"].includes(terminalStatus)
-            && (changedFiles.length || bound.changedFiles?.length)) {
-            await this.taskReleaseService?.freezeRecorded?.({
-              taskId,
-              workspaceId: bound.workspaceId,
-              actorStreamId: bound.streamId,
-            });
-          }
-        }
-      } catch (error) {
-        this.logger.error(`Cannot append exact Task release evidence for ${completion.turnId}:`, error.message);
-      }
-    }
     try {
       const resolved = this.workspaceCatalogStore?.resolveThread?.({
         provider: completion.provider,

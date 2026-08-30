@@ -114,7 +114,6 @@ export function createExecutionBootstrapPhase({
       syncTaskRun: api.syncTaskRun,
       codexModelLabel: settings.codexModelLabel,
       reasoningLabels: settings.codexReasoningLabels,
-      captureTaskGitBaseline: interaction.captureTaskGitBaseline,
       savedLastTaskMessage: api.savedLastTaskMessage,
       savedLastTaskMessageRecord: api.savedLastTaskMessageRecord,
       rememberLastTaskMessage: api.rememberLastTaskMessage,

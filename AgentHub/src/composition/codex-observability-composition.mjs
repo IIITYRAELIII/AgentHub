@@ -3,7 +3,7 @@ import path from "node:path";
 import { turnEndKey } from "../application/turn-end-notifications.mjs";
 import { fallbackTurnEndMessage } from "../application/turn-end-delivery-service.mjs";
 import { taskRunKey } from "../domain/task-runs.mjs";
-import { captureTaskGitBaseline, taskGitDiff } from "../infrastructure/filesystem/task-git-diff.mjs";
+import { taskGitDiff } from "../infrastructure/filesystem/task-git-diff.mjs";
 import {
   backupCodexHistoricalReconciliation,
 } from "../infrastructure/persistence/codex-historical-reconciliation-backup.mjs";
@@ -138,22 +138,15 @@ export function createCodexObservabilityComposition({
     if (!identity.threadId || !identity.turnId) return;
     const key = turnEndKey(identity);
     const existing = turnStarts.get(key);
-    if (existing?.gitBaseline) return;
+    if (existing) return;
     const run = taskRuns.forEvent({ ...identity, allowThreadFallback: true });
-    const gitBaseline = run?.executionOwner === TASK_EXECUTION_OWNERS.HUB
-      ? null
-      : await captureTaskGitBaseline(
-        project.path,
-        config.dataDir,
-        `terminal-audit-${identity.turnId}`,
-      );
     const record = {
       ...existing,
       ...identity,
       projectRoot: project.path,
       startedAt: existing?.startedAt || String(turn?.startedAt ?? ""),
       prompt: existing?.prompt || "",
-      gitBaseline: gitBaseline ?? existing?.gitBaseline ?? null,
+      gitBaseline: null,
     };
     setBounded(turnStarts, key, record, 500);
     if (!run) return;

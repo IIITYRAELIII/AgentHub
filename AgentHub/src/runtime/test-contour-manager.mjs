@@ -21,6 +21,7 @@ import {
   canonicalPath,
   pathInsideOrSame,
 } from "../infrastructure/filesystem/config.mjs";
+import { prepareTaskContourSource } from "../infrastructure/filesystem/task-git-workspace.mjs";
 import {
   defaultRuntimeRoot,
   defaultTestContourRoot,
@@ -57,6 +58,7 @@ export const PLAYWRIGHT_CORE_VERSION = "1.62.1";
 const MARKER_FILE = ".agent-hub-test-contour.json";
 const STATE_FILE = "test-contour-state.json";
 const CONFIG_FILE = "config.json";
+const SOURCE_FILE = "test-contour-source.json";
 const USER_ID = 42;
 const CHAT_ID = 84;
 
@@ -76,6 +78,8 @@ export function testContourPaths(root = defaultTestContourRoot()) {
     markerFile: path.join(resolved, MARKER_FILE),
     stateFile: path.join(resolved, STATE_FILE),
     configFile: path.join(resolved, CONFIG_FILE),
+    sourceFile: path.join(resolved, SOURCE_FILE),
+    taskGitDataDirectory: path.join(resolved, "task-git"),
     projectRoot: path.join(resolved, "project"),
     codexHome: path.join(resolved, "codex-home"),
     fakeCodexExecutable: path.join(resolved, "providers", "fake-codex-app-server.mjs"),
@@ -460,12 +464,30 @@ export async function prepareTestContourCandidate({
 } = {}) {
   const isolatedRoot = assertIsolatedTestContourRoot(root, { sourceRoot });
   await ensureMarker(isolatedRoot);
-  const deployed = await deploy({
+  const paths = testContourPaths(isolatedRoot);
+  const source = await prepareTaskContourSource({
     sourceRoot,
+    integrationRoot: paths.taskGitDataDirectory,
+  });
+  const deployed = await deploy({
+    sourceRoot: source.sourceRoot,
     runtimeRoot: isolatedRoot,
     beforePointerCommit: ({ releaseRoot }) => markTestContourWebApp(releaseRoot),
   });
-  return { root: isolatedRoot, releaseId: deployed.releaseId, releaseRoot: deployed.releaseRoot };
+  await writeJson(paths.sourceFile, {
+    branch: source.branch,
+    headCommit: source.headCommit,
+    sourceRoot: source.sourceRoot,
+    preparedAt: new Date().toISOString(),
+  });
+  return {
+    root: isolatedRoot,
+    releaseId: deployed.releaseId,
+    releaseRoot: deployed.releaseRoot,
+    sourceRoot: source.sourceRoot,
+    branch: source.branch,
+    headCommit: source.headCommit,
+  };
 }
 
 async function currentRelease(root) {
@@ -597,12 +619,15 @@ export async function serveTestContour({
 
 export async function readTestContourStatus({ root = defaultTestContourRoot() } = {}) {
   const paths = testContourPaths(root);
-  const state = await readJson(paths.stateFile);
+  const [state, source] = await Promise.all([
+    readJson(paths.stateFile),
+    readJson(paths.sourceFile),
+  ]);
   if (!state || !processIsAlive(state.managerPid) || !processIsAlive(state.runtimePid)) {
-    return { running: false, root: paths.root, state: state ?? null };
+    return { running: false, root: paths.root, state: state ?? null, source };
   }
   const health = await readyHealth(state.port).catch(() => null);
-  return { running: Boolean(health), root: paths.root, state, health };
+  return { running: Boolean(health), root: paths.root, state, health, source };
 }
 
 async function stopTestContourUnlocked({ root }) {
@@ -802,10 +827,12 @@ async function startTestContourUnlocked({
 } = {}) {
   const isolatedRoot = assertIsolatedTestContourRoot(root, { sourceRoot });
   const paths = testContourPaths(isolatedRoot);
+  const candidate = refresh
+    ? await prepareTestContourCandidate({ root: isolatedRoot, sourceRoot })
+    : await currentRelease(isolatedRoot).catch(() => prepareTestContourCandidate({ root: isolatedRoot, sourceRoot }));
   await stopTestContourUnlocked({ root: isolatedRoot });
-  if (refresh) await prepareTestContourCandidate({ root: isolatedRoot, sourceRoot });
-  else await currentRelease(isolatedRoot).catch(() => prepareTestContourCandidate({ root: isolatedRoot, sourceRoot }));
-  await prepareTestContourCodexProviders({ root: isolatedRoot, sourceRoot });
+  const candidateSourceRoot = candidate.sourceRoot ?? sourceRoot;
+  await prepareTestContourCodexProviders({ root: isolatedRoot, sourceRoot: candidateSourceRoot });
   await prepareTestContourCodexHome(paths);
   alignTestContourStreamModel({
     databaseFile: path.join(paths.dataDir, "journal.sqlite"),
@@ -826,7 +853,7 @@ async function startTestContourUnlocked({
       "--model",
       model,
     ], {
-      cwd: sourceRoot,
+      cwd: candidateSourceRoot,
       detached: true,
       stdio: ["ignore", stdout, stderr],
       windowsHide: true,

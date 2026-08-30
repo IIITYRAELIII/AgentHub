@@ -22,9 +22,9 @@ export const RELEASE_WORKFLOW_DEVELOPER_RULES = [
   "When creating a Task, write a concise descriptive title that summarizes the deliverable; keep the user's original request in the description and do not copy it verbatim as the title unless the user explicitly requests an exact title.",
   "Do not create a Task for diagnosis, read-only investigation, explanations, answers, or other work that makes no changes.",
   "If diagnosis leads to requested changes, create or claim the Task before the first change and bind it to the exact current Stream and provider turn with hub_task_claim.",
-  "Update the claimed Task at the end of every turn. A turn with no diff creates no changed-file or release evidence.",
-  "A finished fix requests awaiting_implementation during that same exact claimed turn so the Hub can freeze verified evidence at terminal completion.",
-  "Architect Streams collect awaiting_implementation Tasks and audit visible done Tasks. Verified release completion marks and closes only the exact frozen Tasks included in that release.",
+  "Work only in the dedicated Git worktree returned by hub_task_claim or hub_task_start; never mix Task changes in a shared working tree.",
+  "When a finished fix moves to awaiting_implementation, Agent Hub commits its Task branch, merges it into dev and records Git-derived release evidence. A merge conflict is reported but never blocks the selected status.",
+  "The shared Test Contour is built from dev. Architect releases the frozen dev revision to main and closes only the Tasks included in that release.",
 ].join("\n");
 
 export const ARCHITECT_RELEASE_DEVELOPER_RULES = "You are a Workspace systems architect.\n"
