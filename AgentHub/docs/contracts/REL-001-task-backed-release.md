@@ -13,11 +13,12 @@ Every file-changing Task owns a local branch named
 be made there. Provider turn identity remains journal metadata and is not a
 source of file ownership.
 
-## Mutable work state
+## Test and acceptance integration
 
-Moving a Task to `awaiting_implementation` snapshots its complete dirty
-worktree into a local commit. Git derives the stable changed-file set between
-the Task base commit and Task head commit:
+Moving a Task to `testing`, or directly to a later implementation status,
+snapshots its complete dirty worktree into a local result commit and merges that
+result into the shared local `dev` branch. Git derives the stable changed-file
+set between the Task base commit and Task result commit:
 
 `Array<{projectRoot,path,operation:"added"|"modified"|"deleted",turnId:null|string}>`.
 
@@ -26,13 +27,16 @@ that root. Git defines the base, result, operation, blobs and patch. Provider
 receipts, final text, timestamps and shared dirty trees are never ownership
 fallbacks.
 
-Agent Hub then merges the Task head into the single local `dev` branch. A
-successful merge records the changed files and repository revisions directly on
-the Task. A conflict is aborted and returned with exact conflicting paths. Git
-failure never rejects a requested workflow-status transition: the Task remains
-visible in `awaiting_implementation`. A new Await request clears the previous
-derived Git projection first, so a failed integration is explicitly blocked in
-the release plan until complete evidence is recorded again.
+A successful Test integration records the changed files and repository revisions
+directly on the Task. A conflict is aborted and returned with exact conflicting
+paths. Git failure never rejects the requested workflow-status transition.
+
+Moving a Task to `awaiting_implementation` additionally rebuilds `PreRelease`
+from current `main` plus the exact result commits of every accepted Await Task.
+`dev` is never merged into `PreRelease`; Test-only work must not enter a release.
+Returning, withdrawing or replacing an Await Task rebuilds `PreRelease` without
+its old result. An Await Task without successful `dev` and `PreRelease`
+integration is explicitly blocked and cannot be released.
 
 ## Task evidence and CAS
 
@@ -58,10 +62,12 @@ Architect audit set. Plan revision hashes current Task IDs, row revisions and
 Task evidence. Conflict detection reads recorded Task files and revisions,
 never a shared mutable working tree.
 
-At explicit release start, Architect freezes the selected `dev` head, updates
-from `origin/main`, validates that exact integrated revision, integrates it into
-`main`, and publishes `main`. Only a Stream with `settings.architect=true` may
-record verified release completion.
+At explicit release start, Architect freezes the exact release-plan revision,
+included Await Task IDs and resulting `PreRelease` head. Architect updates from
+`origin/main`, writes one consolidated `CHANGELOG.md` entry in `PreRelease` when
+that file exists, validates the exact frozen revision, integrates it into
+`main`, and publishes `main`. Later Await Tasks are not silently added. Only a
+Stream with `settings.architect=true` may record verified release completion.
 
 Completion performs one transaction that CAS-checks every exact Task revision
 and the plan hash, then changes only those Tasks to `done` and closes them.
@@ -69,9 +75,10 @@ Generic `done` and
 `hub_task_complete` do not create production evidence.
 
 Post-deployment verification proves file-by-file that the published `main`
-revision contains every recorded Task result. Once verified, managed Task branches and worktrees may
-be removed. The `dev` branch advances with published `main` while retaining any
-later unreleased Task merges.
+revision contains every recorded Task result. Once verified, only included Tasks
+are completed and their managed branches and worktrees may be removed. Published
+`main` is incorporated into `dev` without discarding later Test work, then
+`PreRelease` is rebuilt from any remaining Await Tasks.
 
 ## Test Contour
 
@@ -91,10 +98,13 @@ pipeline before production side effects.
 built-in workflow rules. Architect authority is only
 `stream.settings.architect === true`; multiple Architect Streams are allowed.
 
-The built-in rules require a Task only for work that changes a repository,
-configuration, data or another deliverable. Read-only diagnosis, explanations
-and answers do not create Tasks. If diagnosis becomes implementation, claim a
-Task before the first change and continue only in its returned worktree.
+The built-in rules require a Task for every change to a repository,
+configuration, data, documentation or another deliverable. Read-only diagnosis,
+explanations and answers do not create Tasks. If diagnosis becomes
+implementation, claim a Task before the first change and continue only in its
+main-based managed sparse worktree. Project-root selection follows the current
+Stream working directory, then the Workspace working directory, and never a
+historical provider Thread.
 
 Disabling release workflow changes only Workspace policy. It does not mutate or
 discard Tasks or historical publication evidence.

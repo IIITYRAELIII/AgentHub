@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import {
   displayUserPrompt,
+  exactTurnReceiptBindings,
   userTaskReferencePromptDetails,
 } from "../../application/task-history.mjs";
 import { isClaudeCompactionRun } from "../../domain/claude-context-maintenance.mjs";
@@ -219,7 +220,7 @@ export function createDesktopSnapshotFactory({
         responseAnnotations: Array.isArray(result.responseAnnotations)
           ? result.responseAnnotations.map((item) => ({ ...item }))
           : [],
-        responseAnnotationRequest: String(result.responseAnnotationRequest ?? ""),
+        responseAnnotationRequest: displayUserPrompt(result.responseAnnotationRequest),
         attachments: Array.isArray(result.attachments)
           ? result.attachments.map((attachment) => ({ ...attachment }))
           : [],
@@ -287,6 +288,18 @@ export function createDesktopSnapshotFactory({
     const activities = compactSnapshot && activityGroups.length
       ? []
       : (Array.isArray(run.activities) ? run.activities : []).map(compactActivity);
+    const runUserMessages = Array.isArray(run.userMessages) ? run.userMessages : [];
+    const turnReceiptsValue = receipts.forTurn?.({
+      provider: run.provider,
+      threadId: run.threadId,
+      turnId: run.turnId,
+    });
+    const turnReceiptBindings = exactTurnReceiptBindings(
+      runUserMessages,
+      Array.isArray(turnReceiptsValue)
+        ? turnReceiptsValue
+        : turnReceiptsValue ? [turnReceiptsValue] : [],
+    );
     return {
       id: run.id,
       turnId: run.turnId ?? null,
@@ -310,19 +323,22 @@ export function createDesktopSnapshotFactory({
       attachments: Array.isArray(run.messageAttachments)
         ? run.messageAttachments.map((attachment) => ({ ...attachment }))
         : [],
-      userMessages: (Array.isArray(run.userMessages) ? run.userMessages : []).flatMap((message) => {
+      userMessages: runUserMessages.flatMap((message, index) => {
         const rawText = String(message?.text ?? "");
         const role = message?.role === "agent" && message?.kind === "subagent" ? "agent" : "user";
         const interstream = interstreamMessageDetails(rawText);
         const origin = normalizeInterstreamOrigin(message?.origin) ?? interstream?.origin;
         const text = displayUserPrompt(rawText);
-        const clientUserMessageId = String(message.clientUserMessageId ?? "");
+        const turnReceipt = role === "user" ? turnReceiptBindings.get(index) ?? null : null;
+        const clientUserMessageId = String(
+          message.clientUserMessageId ?? turnReceipt?.clientUserMessageId ?? "",
+        ).trim();
         const receipt = role === "user" && clientUserMessageId
           ? receipts.forMessage?.({
             provider: run.provider,
             threadId: run.threadId,
             clientUserMessageId,
-          })
+          }) ?? turnReceipt
           : null;
         const receiptAttachments = Array.isArray(receipt?.result?.attachments)
           ? receipt.result.attachments
@@ -354,6 +370,16 @@ export function createDesktopSnapshotFactory({
             ? { author: interstreamOriginAuthor(origin) || String(message.author).trim() }
             : {}),
           ...(origin ? { origin } : {}),
+          ...(role === "user" && Array.isArray(
+            receipt?.result?.responseAnnotations ?? message.responseAnnotations,
+          ) ? {
+            responseAnnotations: (
+              receipt?.result?.responseAnnotations ?? message.responseAnnotations
+            ).map((item) => ({ ...item })),
+            responseAnnotationRequest: displayUserPrompt(
+              receipt?.result?.responseAnnotationRequest ?? message.responseAnnotationRequest,
+            ),
+          } : {}),
           time: message.time ?? run.startedAt ?? receipt?.createdAt ?? null,
           attachments,
         }];

@@ -89,6 +89,40 @@ function messageItemId(turnId, role, item, index) {
   return exact || `${String(turnId ?? "turn")}:${role}:${index}`;
 }
 
+export function exactTurnReceiptBindings(messages, receipts) {
+  const values = Array.isArray(messages) ? messages : [];
+  const turnReceipts = (Array.isArray(receipts) ? receipts : [])
+    .filter((receipt) => String(receipt?.clientUserMessageId ?? "").trim());
+  const receiptByClientId = new Map(turnReceipts.map((receipt) => [
+    String(receipt.clientUserMessageId).trim(),
+    receipt,
+  ]));
+  const bindings = new Map();
+  const unresolvedMessageIndexes = [];
+  const usedClientIds = new Set();
+
+  values.forEach((message, index) => {
+    if (String(message?.role ?? "") !== "user") return;
+    const clientUserMessageId = String(message?.clientUserMessageId ?? "").trim();
+    const receipt = receiptByClientId.get(clientUserMessageId);
+    if (receipt) {
+      bindings.set(index, receipt);
+      usedClientIds.add(clientUserMessageId);
+      return;
+    }
+    if (!clientUserMessageId) unresolvedMessageIndexes.push(index);
+  });
+
+  const remainingReceipts = turnReceipts.filter((receipt) => (
+    !usedClientIds.has(String(receipt.clientUserMessageId).trim())
+  ));
+  if (unresolvedMessageIndexes.length !== remainingReceipts.length) return bindings;
+  unresolvedMessageIndexes.forEach((messageIndex, index) => {
+    bindings.set(messageIndex, remainingReceipts[index]);
+  });
+  return bindings;
+}
+
 function inlineImageAttachments(value) {
   const source = String(value ?? "");
   return [...source.matchAll(/<image\b([^>]*)>\s*(?:<\/image>)?/giu)]
@@ -107,6 +141,13 @@ function inlineImageAttachments(value) {
 function stripInlineImageTags(value) {
   return String(value ?? "")
     .replace(/<image\b[^>]*>\s*(?:<\/image>)?/giu, "")
+    .trim();
+}
+
+function stripUserServiceMarkup(value) {
+  return stripInlineImageTags(value)
+    .replace(/<ide_[^>]+>[\s\S]*?<\/ide_[^>]+>/gi, "")
+    .replace(/<environment_context>[\s\S]*?<\/environment_context>/gi, "")
     .trim();
 }
 
@@ -462,9 +503,8 @@ export function responseAnnotationDetails(value) {
     item.annotation ? [{ index: index + 1, annotation: item.annotation }] : []
   ));
   const requestTail = text.slice((block.index ?? 0) + block[0].length);
-  const request = requestTail
-    .replace(/^\s*##\s*My request(?: for Codex)?:\s*/i, "")
-    .trim();
+  const request = stripUserServiceMarkup(requestTail
+    .replace(/^\s*##\s*My request(?: for Codex)?:\s*/i, ""));
   const selections = items
     .map((item) => item.text)
     .filter(Boolean);
@@ -512,11 +552,7 @@ export function displayUserPrompt(value) {
   const telegramReplyMarker = "\nТекст пользователя:\n";
   const telegramReplyAt = text.lastIndexOf(telegramReplyMarker);
   if (telegramReplyAt >= 0) text = text.slice(telegramReplyAt + telegramReplyMarker.length).trim();
-  text = text
-    .replace(/<image\b[^>]*>\s*(?:<\/image>)?/giu, "")
-    .replace(/<ide_[^>]+>[\s\S]*?<\/ide_[^>]+>/gi, "")
-    .replace(/<environment_context>[\s\S]*?<\/environment_context>/gi, "")
-    .trim();
+  text = stripUserServiceMarkup(text);
   if (/^<turn_aborted>\s*[\s\S]*?\s*<\/turn_aborted>$/iu.test(text)) return "";
   const annotated = responseAnnotationPrompt(text);
   if (annotated !== null) return annotated;

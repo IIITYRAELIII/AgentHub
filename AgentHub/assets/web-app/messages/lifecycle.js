@@ -463,6 +463,14 @@ function normalizedResponseAnnotations(values) {
   });
 }
 
+function visibleUserText(value) {
+  return String(value ?? "")
+    .replace(/<image\b[^>]*>\s*(?:<\/image>)?/giu, "")
+    .replace(/<ide_[^>]+>[\s\S]*?<\/ide_[^>]+>/gi, "")
+    .replace(/<environment_context>[\s\S]*?<\/environment_context>/gi, "")
+    .trim();
+}
+
 function responseAnnotationPrompt(request, values) {
   const payload = normalizedResponseAnnotations(values);
   if (!payload.length) return String(request ?? "");
@@ -485,20 +493,21 @@ function embeddedResponseAnnotations(value) {
   } catch {
     // Even a damaged legacy envelope must not expose its service wrapper.
   }
-  const request = text.split(requestMarker).slice(1).join("\n").trim();
+  const request = visibleUserText(text.split(requestMarker).slice(1).join("\n"));
   return { annotations: normalizedResponseAnnotations(parsed), request };
 }
 
 function normalizedUserMessage(message) {
   if (message?.role !== "user") return message;
-  const embedded = embeddedResponseAnnotations(message.text);
+  const visibleText = visibleUserText(message.text);
+  const embedded = embeddedResponseAnnotations(visibleText);
   const structured = normalizedResponseAnnotations(message.responseAnnotations);
   const annotations = structured.length ? structured : embedded?.annotations ?? [];
-  const explicitRequest = String(message.responseAnnotationRequest ?? "").trim();
+  const explicitRequest = visibleUserText(message.responseAnnotationRequest);
   const request = explicitRequest || embedded?.request || "";
   return {
     ...message,
-    text: embedded || annotations.length ? request : String(message.text ?? ""),
+    text: embedded || annotations.length ? request : visibleText,
     ...(annotations.length ? { responseAnnotations: annotations } : {}),
     ...(request ? { responseAnnotationRequest: request } : {}),
   };

@@ -23,6 +23,10 @@ set `clientUserMessageId + submissionId`; either alias binds the optimistic and
 canonical forms without using text, time or display order. Provider turns are
 keyed by `provider + threadId + turnId`; item entities additionally include
 `itemId + role`. Canonical intake atomically replaces its optimistic projection.
+The server applies exact turn-receipt aliases before exposing active or durable
+user items, so a root or steer cannot coexist with its accepted optimistic card.
+Service-only attachment wrappers such as `<image ...>` are removed from both the
+main text and annotation request while the attachment object remains visible.
 
 Terminal states are absorbing. For one provider-turn identity, a committed
 `terminalRevision` wins over every late active/progress/reconnect observation;
@@ -38,6 +42,11 @@ Canonical ordering follows durable provider sequence. A queued root message
 keeps its original `submittedAt` as metadata, but its displayed `time` becomes
 the bound turn occurrence/start time so the clock label cannot contradict its
 position after an earlier completed turn.
+
+Unlabelled fenced blocks are treated as prose-oriented preformatted text and
+wrap inside the message column without horizontal page movement. Fences with an
+explicit language preserve code whitespace and may scroll horizontally. Both
+presentations copy the original unmodified block text.
 
 ## Operation kinds
 

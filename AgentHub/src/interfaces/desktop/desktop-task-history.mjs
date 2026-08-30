@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import {
   displayUserPrompt,
   EMPTY_TURN_COMPLETION_TEXT,
+  exactTurnReceiptBindings,
   isEmptyTurnCompletionPlaceholder,
   userTaskReferencePromptDetails,
   withoutCodexInspectionAttachments,
@@ -669,27 +670,10 @@ export function createDesktopTaskHistoryFactory({
             const turnReceipts = Array.isArray(turnReceiptsValue)
               ? turnReceiptsValue
               : turnReceiptsValue ? [turnReceiptsValue] : [];
-            const syntheticPattern = new RegExp(`^${String(item.id ?? "")}:rollout-user:(\\d+)$`, "u");
-            const syntheticUsers = sourceMessages.flatMap((message) => {
-              if (String(message?.role ?? "") !== "user"
-                || String(message?.clientUserMessageId ?? "").trim()) return [];
-              const match = syntheticPattern.exec(String(message?.itemId ?? ""));
-              return match ? [{ message, ordinal: Number(match[1]) }] : [];
-            });
-            const completeReceiptCoverage = syntheticUsers.length === turnReceipts.length
-              && syntheticUsers.every(({ ordinal }, index) => ordinal === index);
-            const syntheticReceiptByItemId = new Map(completeReceiptCoverage
-              ? syntheticUsers.map(({ message, ordinal }) => [
-                String(message.itemId),
-                turnReceipts[ordinal],
-              ])
-              : []);
+            const turnReceiptBindings = exactTurnReceiptBindings(sourceMessages, turnReceipts);
             return sourceMessages.flatMap((message, messageIndex) => {
               const role = String(message?.role ?? "");
-              const syntheticReceipt = syntheticReceiptByItemId.get(String(message?.itemId ?? ""));
-              const legacyRootReceipt = messageIndex === rootUserIndex && turnReceipts.length === 1
-                ? turnReceipts[0]
-                : null;
+              const turnReceipt = turnReceiptBindings.get(messageIndex) ?? null;
               const receipt = role === "user"
                 ? (message.clientUserMessageId
                   ? receipts.forMessage?.({
@@ -698,8 +682,7 @@ export function createDesktopTaskHistoryFactory({
                     clientUserMessageId: message.clientUserMessageId,
                   })
                   : null)
-                  ?? syntheticReceipt
-                  ?? legacyRootReceipt
+                  ?? turnReceipt
                 : null;
               const clientUserMessageId = String(
                 message.clientUserMessageId
@@ -738,6 +721,11 @@ export function createDesktopTaskHistoryFactory({
                 ? "interstream"
                 : String(message?.kind ?? "").trim();
               const text = role === "user" ? displayUserPrompt(sourceText) : sourceText;
+              const responseAnnotations = role === "user" && Array.isArray(
+                receipt?.result?.responseAnnotations ?? message.responseAnnotations,
+              )
+                ? (receipt?.result?.responseAnnotations ?? message.responseAnnotations)
+                : [];
               if (!["user", "agent"].includes(role) || (!text && !attachments.length)) return [];
               const taskReferencesOnly = attachments.length > 0
                 && attachments.every((attachment) => attachment?.kind === "task");
@@ -760,13 +748,15 @@ export function createDesktopTaskHistoryFactory({
                 ...(String(message?.model ?? "").trim()
                   ? { model: String(message.model).trim() }
                   : {}),
-                ...(role === "user" && Array.isArray(message.responseAnnotations)
+                ...(role === "user" && responseAnnotations.length
                   ? {
-                    responseAnnotations: message.responseAnnotations.slice(0, 20).map((annotation) => ({
+                    responseAnnotations: responseAnnotations.slice(0, 20).map((annotation) => ({
                       text: String(annotation?.text ?? ""),
                       annotation: String(annotation?.annotation ?? ""),
                     })),
-                    responseAnnotationRequest: String(message.responseAnnotationRequest ?? ""),
+                    responseAnnotationRequest: displayUserPrompt(
+                      receipt?.result?.responseAnnotationRequest ?? message.responseAnnotationRequest,
+                    ),
                   }
                   : {}),
                 ...(message.phase ? { phase: String(message.phase) } : {}),

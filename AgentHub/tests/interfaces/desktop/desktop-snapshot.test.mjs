@@ -230,6 +230,8 @@ function fixture(overrides = {}) {
     },
     receipts: {
       recent: () => state.receipts,
+      forMessage: overrides.receiptForMessage ?? (() => null),
+      forTurn: overrides.receiptsForTurn ?? (() => []),
     },
     approvals: {
       snapshot: () => [{ id: "approval-1" }],
@@ -605,6 +607,48 @@ test("desktopRunSnapshot preserves run fields and nested context", () => {
     },
   });
   assert.equal(desktopRunSnapshot(null), null);
+});
+
+test("desktopRunSnapshot binds a sparse provider steer to its remaining exact receipt", () => {
+  const receipts = [{
+    clientUserMessageId: "client-root",
+    createdAt: "2026-07-30T10:00:00.000Z",
+    result: { attachments: [] },
+  }, {
+    clientUserMessageId: "client-steer",
+    createdAt: "2026-07-30T10:01:00.000Z",
+    result: {
+      attachments: [{ id: "screen.png", type: "image/png" }],
+      responseAnnotations: [{ text: "Цитата", annotation: "Проверь" }],
+      responseAnnotationRequest: [
+        "Уточнение со скрином",
+        '<image name=[Image #1] path="C:/AgentHub/attachments/screen.png">',
+        "</image>",
+      ].join("\n"),
+    },
+  }];
+  const { desktopRunSnapshot, run } = fixture({
+    receiptForMessage: ({ clientUserMessageId }) => (
+      receipts.find((receipt) => receipt.clientUserMessageId === clientUserMessageId) ?? null
+    ),
+    receiptsForTurn: () => receipts,
+  });
+  run.clientUserMessageId = "client-root";
+  run.userMessages = [{
+    itemId: "provider-root",
+    clientUserMessageId: "client-root",
+    role: "user",
+    text: "Корневой запрос",
+  }, {
+    itemId: "provider-steer",
+    role: "user",
+    text: "Уточнение со скрином",
+  }];
+
+  const snapshot = desktopRunSnapshot(run);
+  assert.equal(snapshot.userMessages[1].clientUserMessageId, "client-steer");
+  assert.equal(snapshot.userMessages[1].responseAnnotationRequest, "Уточнение со скрином");
+  assert.deepEqual(snapshot.userMessages[1].attachments, [{ id: "screen.png", type: "image/png" }]);
 });
 
 test("desktopTaskSnapshot preserves task fields and run precedence", () => {

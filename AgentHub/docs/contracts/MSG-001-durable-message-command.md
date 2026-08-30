@@ -6,6 +6,12 @@
 outermost client boundary through receipt, queue, run, provider prompt and
 history. A retry reuses it. Equal text is never an identity.
 
+If a provider omits that identity from some user items in an exact turn, the
+read model subtracts the already bound command identities from that turn's
+ordered durable receipts. It binds the remaining provider items only when the
+remaining item and receipt counts match exactly. Partial or ambiguous coverage
+stays unbound; text, time and attachment names never repair identity.
+
 The durable command ledger owns acceptance and dispatch state. UI cards,
 in-memory receipts and runtime snapshots are projections.
 

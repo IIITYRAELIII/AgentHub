@@ -48,3 +48,23 @@ test("conversation task identity does not guess when provider Thread is ambiguou
   );
   assert.equal(id, "codex:thread-shared");
 });
+
+test("user annotation display removes service image markup but keeps its attachment", async () => {
+  const { normalizedUserMessage } = await lifecycleApi();
+  const attachment = { id: "screen.png", type: "image/png" };
+  const message = normalizedUserMessage({
+    role: "user",
+    text: "сделал?\n\nУточнение",
+    responseAnnotations: [{ text: "Ветка обязательна", annotation: "сделал?" }],
+    responseAnnotationRequest: [
+      "Уточнение",
+      '<image name=[Image #1] path="C:/AgentHub/attachments/screen.png">',
+      "</image>",
+    ].join("\n"),
+    attachments: [attachment],
+  });
+
+  assert.equal(message.text, "Уточнение");
+  assert.equal(message.responseAnnotationRequest, "Уточнение");
+  assert.deepEqual(JSON.parse(JSON.stringify(message.attachments)), [attachment]);
+});

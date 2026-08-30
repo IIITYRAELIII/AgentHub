@@ -16,6 +16,9 @@ This conversation is running through Agent Hub.
 - `awaiting_implementation` means that the work is accepted and is waiting to be applied or published. `done` means that the required production application or publication is verified.
 - `hub_task_complete` closes and hides a Task without changing its workflow status. Close completed analysis or other work that requires no delivery; for release work, follow the effective Workspace policy before closing it.
 - A release-enabled Workspace may inject stricter Task requirements, automatic fix acceptance and Architect-only release transitions. Follow those effective Workspace and Stream rules instead of applying release policy globally.
+- Individual Task branches must not edit `CHANGELOG.md`; release history is consolidated once for the selected release set.
+- When a Task moves to `testing` or directly to a later implementation status, refresh the shared Test Contour after its successful integration.
+- The Test Contour is always built from `dev`. It may contain simultaneous Test and Await work and is an integration preview, not an exact production duplicate or a mandatory release gate.
 
 ## Task references in messages
 

@@ -11,6 +11,7 @@ import {
   codexTurnActivityGroups,
   codexTurnActivities,
   displayUserPrompt,
+  exactTurnReceiptBindings,
   isEmptyTurnCompletionPlaceholder,
   mergeSyntheticRolloutUsers,
   responseAnnotationDetails,
@@ -482,6 +483,49 @@ test("displayUserPrompt extracts comments and requests from response annotations
 test("displayUserPrompt retains a complete long user message", () => {
   const prompt = "Полный текст ".repeat(2_000);
   assert.equal(displayUserPrompt(prompt), prompt.trim());
+});
+
+test("response annotations never expose inline attachment service markup", () => {
+  const prompt = [
+    "<response-annotations>",
+    JSON.stringify([{ text: "Ветка обязательна", annotation: "сделал?" }]),
+    "</response-annotations>",
+    "",
+    "## My request for Codex:",
+    "ДА СКОЛЬКО МОЖНО ДУБЛЕЙ!?!?!?!?!?",
+    '<image name=[Image #1] path="C:/AgentHub/attachments/screenshot.png">',
+    "</image>",
+  ].join("\n");
+
+  assert.equal(responseAnnotationDetails(prompt).request, "ДА СКОЛЬКО МОЖНО ДУБЛЕЙ!?!?!?!?!?");
+  assert.equal(displayUserPrompt(prompt), "сделал?\n\nДА СКОЛЬКО МОЖНО ДУБЛЕЙ!?!?!?!?!?");
+});
+
+test("exact turn receipts bind only the unmatched provider user remainder", () => {
+  const messages = [{
+    role: "user",
+    clientUserMessageId: "root-client",
+    text: "Корневой запрос",
+  }, {
+    role: "agent",
+    text: "Промежуточный ответ",
+  }, {
+    role: "user",
+    clientUserMessageId: "first-steer",
+    text: "Первое уточнение",
+  }, {
+    role: "user",
+    text: "Второе уточнение",
+  }];
+  const receipts = ["root-client", "first-steer", "second-steer"].map((clientUserMessageId) => ({
+    clientUserMessageId,
+  }));
+
+  const bindings = exactTurnReceiptBindings(messages, receipts);
+  assert.equal(bindings.get(0).clientUserMessageId, "root-client");
+  assert.equal(bindings.get(2).clientUserMessageId, "first-steer");
+  assert.equal(bindings.get(3).clientUserMessageId, "second-steer");
+  assert.equal(exactTurnReceiptBindings(messages, receipts.slice(0, 2)).has(3), false);
 });
 
 test("displayUserPrompt keeps Task instructions private while preserving the user's request", () => {

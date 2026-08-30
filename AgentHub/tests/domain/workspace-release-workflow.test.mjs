@@ -17,10 +17,11 @@ test("legacy v1 policy is stripped once and replaced by Task workflow rules", ()
   );
   assert.equal(rules, `${RELEASE_WORKFLOW_DEVELOPER_RULES}\n\nCustom rule`);
   assert.match(rules, /hub_task_claim/u);
-  assert.match(rules, /dedicated Git worktree/u);
-  assert.match(rules, /merges it into dev/u);
-  assert.match(rules, /Do not create a Task for diagnosis/u);
-  assert.match(rules, /concise descriptive title.*original request in the description/u);
+  assert.match(rules, /sparse worktree/u);
+  assert.match(rules, /результат.*в dev/u);
+  assert.match(rules, /диагностики.*без изменений Task не создаётся/u);
+  assert.match(rules, /Название Task.*запрос пользователя сохраняется в описании/u);
+  assert.match(rules, /PreRelease.*Await Tasks/u);
 });
 
 test("legacy v2 Task policy is stripped before the change-only policy is injected", () => {
@@ -38,4 +39,7 @@ test("Architect rules use only explicit settings.architect and allow multiple St
     effectiveStreamDeveloperRules("Stream rule", { architect: true }),
     `${ARCHITECT_RELEASE_DEVELOPER_RULES}\n\nStream rule`,
   );
+  assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /точную ревизию.*Await Tasks/u);
+  assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /CHANGELOG\.md существует/u);
+  assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /опубликованный main в dev/u);
 });

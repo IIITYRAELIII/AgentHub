@@ -964,6 +964,14 @@ html[data-view="chat"][data-surface][data-theme] {
   padding-top: 42px;
 }
 
+.msg-body .markdown-code-block > pre:has(> code:not([class*="language-"])),
+.msg-reasoning .markdown-code-block > pre:has(> code:not([class*="language-"])) {
+  overflow-x: hidden;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .markdown-code-copy {
   align-items: center;
   background: var(--dialog-control-hover);

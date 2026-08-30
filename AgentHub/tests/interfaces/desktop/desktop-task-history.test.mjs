@@ -1379,6 +1379,58 @@ test("desktop task history assigns exact turn receipts to synthetic user ordinal
   }]);
 });
 
+test("desktop task history binds the one missing steer after subtracting known receipt identities", async () => {
+  const receipts = [{
+    clientUserMessageId: "root-receipt",
+    result: { attachments: [] },
+  }, {
+    clientUserMessageId: "steer-receipt",
+    result: {
+      attachments: [{ id: "steer.png", type: "image/png" }],
+      responseAnnotations: [{ text: "Ветка", annotation: "сделал?" }],
+      responseAnnotationRequest: "Уточнение без service markup",
+    },
+  }];
+  const { desktopTaskHistory, state } = fixture({
+    run: null,
+    receipts: {
+      forMessage: ({ clientUserMessageId }) => (
+        receipts.find((receipt) => receipt.clientUserMessageId === clientUserMessageId) ?? null
+      ),
+      forTurn: () => receipts,
+    },
+  });
+  state.history = [{
+    id: "turn-with-partial-identities",
+    prompt: "Корневой запрос\n\nУточнение",
+    completed: true,
+    messages: [{
+      itemId: "provider-root",
+      clientUserMessageId: "root-receipt",
+      role: "user",
+      text: "Корневой запрос",
+    }, {
+      itemId: "turn-with-partial-identities:rollout-user:1",
+      role: "user",
+      text: "Уточнение",
+      responseAnnotations: [{ text: "Ветка", annotation: "сделал?" }],
+      responseAnnotationRequest: [
+        "Уточнение без service markup",
+        '<image name=[Image #1] path="C:/AgentHub/attachments/steer.png">',
+        "</image>",
+      ].join("\n"),
+    }],
+  }];
+
+  const result = await desktopTaskHistory({ limit: 1, includeActive: false });
+  assert.equal(result.items[0].messages[1].clientUserMessageId, "steer-receipt");
+  assert.equal(result.items[0].messages[1].responseAnnotationRequest, "Уточнение без service markup");
+  assert.deepEqual(result.items[0].messages[1].attachments, [{
+    id: "steer.png",
+    type: "image/png",
+  }]);
+});
+
 test("desktop task history keeps turn attachments on the root user only", async () => {
   const rootAttachment = { id: "screen.png", type: "image/png" };
   const { desktopTaskHistory, state } = fixture({
