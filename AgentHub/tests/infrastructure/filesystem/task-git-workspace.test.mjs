@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -30,6 +30,11 @@ async function repository(context) {
 
 test("Task Git workspace commits one Task branch and merges it into dev", async (context) => {
   const root = await repository(context);
+  const agentHubRoot = path.join(root, "AgentHub");
+  await mkdir(agentHubRoot);
+  await writeFile(path.join(agentHubRoot, "package.json"), "{}\n", "utf8");
+  await git(root, "add", "AgentHub/package.json");
+  await git(root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "agent hub");
   const dataDir = path.join(root, "..", `${path.basename(root)}-data`);
   context.after(() => rm(dataDir, { recursive: true, force: true }));
   const service = new TaskGitWorkspaceService({ dataDir });
@@ -45,9 +50,11 @@ test("Task Git workspace commits one Task branch and merges it into dev", async 
   assert.deepEqual(result.snapshot.changedFiles.map((file) => file.path), ["app.txt"]);
   assert.equal(await readFile(path.join(result.integration.dev.projectRoot, "app.txt"), "utf8"), "task\n");
 
-  const contour = await prepareTaskContourSource({ sourceRoot: root, integrationRoot: dataDir });
+  const contour = await prepareTaskContourSource({ sourceRoot: agentHubRoot, integrationRoot: dataDir });
   assert.equal(contour.branch, "dev");
   assert.equal(contour.headCommit, result.integration.dev.headCommit);
+  assert.equal(contour.sourceRoot, path.join(result.integration.dev.projectRoot, "AgentHub"));
+  assert.equal(await readFile(path.join(contour.sourceRoot, "package.json"), "utf8"), "{}\n");
 });
 
 test("Task Git workspace aborts a conflicting dev merge without deleting either branch", async (context) => {

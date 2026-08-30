@@ -322,15 +322,21 @@ export class TaskGitWorkspaceService {
 }
 
 export async function prepareTaskContourSource({ sourceRoot, integrationRoot } = {}) {
-  const repoRoot = await repositoryRoot(sourceRoot).catch(() => null);
-  if (!repoRoot) return { sourceRoot: path.resolve(sourceRoot), branch: null, headCommit: null };
+  const resolvedSourceRoot = path.resolve(sourceRoot);
+  const repoRoot = await repositoryRoot(resolvedSourceRoot).catch(() => null);
+  if (!repoRoot) return { sourceRoot: resolvedSourceRoot, branch: null, headCommit: null };
   if (!await branchExists(repoRoot, TASK_DEV_BRANCH)) {
-    return { sourceRoot: path.resolve(sourceRoot), branch: null, headCommit: null };
+    return { sourceRoot: resolvedSourceRoot, branch: null, headCommit: null };
   }
+  const sourceRelativePath = path.relative(repoRoot, resolvedSourceRoot);
+  if (path.isAbsolute(sourceRelativePath) || sourceRelativePath === ".." || sourceRelativePath.startsWith(`..${path.sep}`)) {
+    throw new Error("Test Contour source is outside its Git repository");
+  }
+  const sourceFromWorktree = (worktreeRoot) => path.resolve(worktreeRoot, sourceRelativePath);
   const headCommit = await runGit(["rev-parse", `${TASK_DEV_BRANCH}^{commit}`], { cwd: repoRoot });
   const checkedOut = await worktreeForBranch(repoRoot, TASK_DEV_BRANCH);
   if (checkedOut) {
-    return { sourceRoot: path.resolve(checkedOut), branch: TASK_DEV_BRANCH, headCommit };
+    return { sourceRoot: sourceFromWorktree(checkedOut), branch: TASK_DEV_BRANCH, headCommit };
   }
   const managedRoot = path.resolve(integrationRoot);
   const detachedRoot = path.join(managedRoot, "dev-source", repositoryKey(repoRoot));
@@ -344,5 +350,5 @@ export async function prepareTaskContourSource({ sourceRoot, integrationRoot } =
     await mkdir(path.dirname(detachedRoot), { recursive: true });
     await runGit(["worktree", "add", "--detach", detachedRoot, headCommit], { cwd: repoRoot, timeoutMs: 120_000 });
   }
-  return { sourceRoot: detachedRoot, branch: TASK_DEV_BRANCH, headCommit };
+  return { sourceRoot: sourceFromWorktree(detachedRoot), branch: TASK_DEV_BRANCH, headCommit };
 }
