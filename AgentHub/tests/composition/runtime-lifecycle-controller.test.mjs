@@ -4,7 +4,7 @@ import { createAgentHubBootstrapComposition } from "../../src/composition/agent-
 import { createRuntimeLifecycleComposition } from "../../src/composition/runtime-lifecycle-composition.mjs";
 import { RuntimeLifecycleController } from "../../src/runtime/runtime-lifecycle-controller.mjs";
 
-test("runtime composition passes startup timers through its public contract", async () => {
+test("runtime composition marks readiness before starting background timers", async () => {
   const events = [];
   const noOp = async () => {};
   const lifecycle = createRuntimeLifecycleComposition({
@@ -35,7 +35,7 @@ test("runtime composition passes startup timers through its public contract", as
   });
 
   assert.equal(await lifecycle.startAgentHub(), "polling");
-  assert.deepEqual(events, ["timers", "ready"]);
+  assert.deepEqual(events, ["ready", "timers"]);
 });
 
 test("Agent Hub bootstrap starts and stops every boundary without a real process", async () => {
