@@ -1050,6 +1050,51 @@ test("active inter-Stream steer cannot replace an unidentified root user", () =>
   }]);
 });
 
+test("active inter-Stream root adopts its exact managed identity without a duplicate", () => {
+  const origin = {
+    kind: "interstream",
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-architect",
+    streamName: "Architect",
+    provider: "codex",
+    model: "gpt-5.6-sol",
+    requestId: "architect-continuation-1",
+  };
+  const history = [{
+    id: "live-turn",
+    prompt: "Продолжи закрытие релиза",
+    status: "inProgress",
+    active: true,
+    completed: false,
+    messages: [{
+      itemId: "provider-root",
+      role: "user",
+      text: "Продолжи закрытие релиза",
+    }],
+  }];
+
+  mergeActiveTaskHistory(history, {
+    active: true,
+    turnId: "live-turn",
+    prompt: "Продолжи закрытие релиза",
+    clientUserMessageId: "mcp:architect-continuation-1",
+    userMessages: [{
+      clientUserMessageId: "mcp:architect-continuation-1",
+      role: "user",
+      origin,
+      text: "Продолжи закрытие релиза",
+    }],
+  });
+
+  const users = history[0].messages.filter((message) => message.role === "user");
+  assert.equal(users.length, 1);
+  assert.equal(users[0].itemId, "provider-root");
+  assert.equal(users[0].clientUserMessageId, "mcp:architect-continuation-1");
+  assert.equal(users[0].author, "Agent HUB - Architect (Sol)");
+  assert.deepEqual(users[0].origin, origin);
+});
+
 test("displayUserPrompt unwraps Codex Desktop file metadata", () => {
   assert.equal(displayUserPrompt([
     "# Files mentioned by the user:",

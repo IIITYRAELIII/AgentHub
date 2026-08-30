@@ -26,6 +26,20 @@ import { createProviderOperationComposition } from "./provider-operation-composi
 import { createProviderProcessComposition } from "./provider-process-composition.mjs";
 import { createProviderSnapshotComposition } from "./provider-snapshot-composition.mjs";
 import { createProviderStartupComposition } from "./provider-startup-composition.mjs";
+
+export function resumePostTurnWork({
+  maintenance,
+  restartPending,
+  wakeDeferredInputs,
+  scheduleDeferredRestartIfReady,
+}) {
+  if (restartPending) {
+    void Promise.resolve(maintenance).finally(scheduleDeferredRestartIfReady);
+    return "restart";
+  }
+  wakeDeferredInputs();
+  return "deferred-inputs";
+}
 import { createRunAccountingComposition } from "./run-accounting-composition.mjs";
 import { createRunCompletionComposition } from "./run-completion-composition.mjs";
 import { createRuntimeDataComposition } from "./runtime-data-composition.mjs";
@@ -212,10 +226,12 @@ export async function createProviderApplicationComposition({
     },
     afterCompletion: async (run) => {
       const maintenance = streamContextMaintenance.maintainAfterTurn(run);
-      api.wakeDeferredInputs();
-      if (hostState.restartRequest && !hostState.stopping) {
-        void maintenance.finally(() => api.scheduleDeferredRestartIfReady());
-      }
+      resumePostTurnWork({
+        maintenance,
+        restartPending: Boolean(hostState.restartRequest && !hostState.stopping),
+        wakeDeferredInputs: api.wakeDeferredInputs,
+        scheduleDeferredRestartIfReady: api.scheduleDeferredRestartIfReady,
+      });
     },
     turnEndNotifications,
     runJournal,

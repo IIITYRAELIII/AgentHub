@@ -981,6 +981,17 @@ export function mergeActiveTaskHistory(history, activeTurn = {}) {
           String(message.clientUserMessageId ?? "") === incoming.clientUserMessageId
         ));
       }
+      if (
+        !user
+        && rootClientUserMessageId
+        && incoming.clientUserMessageId === rootClientUserMessageId
+        && incoming.index === 0
+      ) {
+        const unidentifiedRoot = users.filter((message, index) => (
+          index === 0 && !String(message.clientUserMessageId ?? "").trim()
+        ));
+        if (unidentifiedRoot.length === 1) user = unidentifiedRoot[0];
+      }
       if (!user && !incoming.origin) {
         const unidentified = users.filter((message) => !String(message.clientUserMessageId ?? "").trim());
         const matchingText = incoming.text
