@@ -48,6 +48,7 @@ async function objectAtRevision(repositoryRoot, revision, file) {
 }
 
 async function assertTaskResultPublished({ repositoryRoot, taskRevision, publishedRevision, files }) {
+  await gitOutput(["merge-base", "--is-ancestor", taskRevision, publishedRevision], { cwd: repositoryRoot });
   for (const file of files) {
     const taskObject = await objectAtRevision(repositoryRoot, taskRevision, file.path);
     const publishedObject = await objectAtRevision(repositoryRoot, publishedRevision, file.path);
@@ -57,7 +58,9 @@ async function assertTaskResultPublished({ repositoryRoot, taskRevision, publish
   }
 }
 
-export async function verifyWorkspaceReleasePublication({ expectedRevision = null, plan } = {}, {
+export async function verifyWorkspaceReleasePublication({
+  expectedRevision = null, plan, conflictsResolved = false,
+} = {}, {
   resolveRoots = resolveTaskGitRepoRootsForFiles,
   status = gitOutput,
   assertRevision = assertCurrentPublicationRevision,
@@ -66,6 +69,17 @@ export async function verifyWorkspaceReleasePublication({ expectedRevision = nul
   readPublication = readPublicationState,
   readPackage = readAgentHubPackage,
 } = {}) {
+  const resolvedFiles = new Set(conflictsResolved
+    ? (plan.conflicts ?? []).map((conflict) => (
+      `${pathKey(conflict.projectRoot)}\0${process.platform === "win32" ? String(conflict.file).toLowerCase() : String(conflict.file)}`
+    ))
+    : []);
+  const requiresExactBlob = (file) => {
+    if (!conflictsResolved) return true;
+    if (/^(?:Utilities\/)?CHANGELOG\.md$/iu.test(String(file.path ?? ""))) return false;
+    const filePath = process.platform === "win32" ? String(file.path ?? "").toLowerCase() : String(file.path ?? "");
+    return !resolvedFiles.has(`${pathKey(file.projectRoot)}\0${filePath}`);
+  };
   const taskEvidenceByProjectRoot = new Map();
   for (const candidate of plan.candidates ?? []) {
     for (const repository of candidate.repositoryRevisions ?? []) {
@@ -76,7 +90,9 @@ export async function verifyWorkspaceReleasePublication({ expectedRevision = nul
       const evidence = taskEvidenceByProjectRoot.get(key) ?? [];
       evidence.push({
         resultRevision,
-        files: (candidate.changedFiles ?? []).filter((file) => pathKey(file.projectRoot) === key),
+        files: (candidate.changedFiles ?? [])
+          .filter((file) => pathKey(file.projectRoot) === key)
+          .filter(requiresExactBlob),
       });
       taskEvidenceByProjectRoot.set(key, evidence);
     }

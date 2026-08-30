@@ -131,3 +131,39 @@ test("release verification rejects Task blobs missing from the published revisio
     /Task result revision not-integrated is not contained in published revision published/u,
   );
 });
+
+test("release verification keeps exact blobs only for non-overlapping Task files", async () => {
+  const comparisons = [];
+  const releasePlan = {
+    candidates: [{
+      repositoryRevisions: [{ projectRoot: repositoryRoot, resultRevision: "task-a" }],
+      changedFiles: [
+        { projectRoot: repositoryRoot, path: "AgentHub/shared.mjs", operation: "modified" },
+        { projectRoot: repositoryRoot, path: "AgentHub/unique.mjs", operation: "modified" },
+        { projectRoot: repositoryRoot, path: "CHANGELOG.md", operation: "modified" },
+      ],
+    }],
+    ready: [{
+      projectRoot: repositoryRoot,
+      files: ["AgentHub/shared.mjs", "AgentHub/unique.mjs", "CHANGELOG.md"],
+    }],
+    conflicts: [{ projectRoot: repositoryRoot, file: "AgentHub/shared.mjs" }],
+  };
+
+  await verifyWorkspaceReleasePublication({
+    expectedRevision: "published",
+    plan: releasePlan,
+    conflictsResolved: true,
+  }, {
+    ...dependencies("published"),
+    identifyRepository: async () => "origin:https://example.test/Utilities.git",
+    assertTaskResult: async (value) => comparisons.push(value),
+  });
+
+  assert.deepEqual(comparisons, [{
+    repositoryRoot,
+    taskRevision: "task-a",
+    publishedRevision: "published",
+    files: [{ path: "AgentHub/unique.mjs", operation: "modified" }],
+  }]);
+});

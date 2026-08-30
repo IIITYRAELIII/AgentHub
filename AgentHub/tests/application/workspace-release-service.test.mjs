@@ -79,6 +79,7 @@ test("release completion requires and records explicit resolution of overlapping
   };
   await assert.rejects(() => service.completeRelease(request), /overlapping files/u);
   await service.completeRelease({ ...request, conflictsResolved: true });
+  assert.equal(calls[0][1].conflictsResolved, true);
   assert.equal(calls[1][2].conflictsResolved, true);
   assert.equal(calls[1][2].verificationEvidence.conflictsResolved, true);
 });
