@@ -21,17 +21,18 @@ function claudeCompletionFixture(events) {
   });
 }
 
-test("Codex completion restores missing model pricing before final delivery", async () => {
+test("Codex completion commits without waiting for rollout metadata", async () => {
   const delivered = [];
+  let rolloutReads = 0;
   const run = { threadId: "thread-1", turnId: "turn-1", status: "running", responseText: "" };
   const service = new CodexCompletionService({
     runForTask: () => run,
-    consumeTracker: () => ({ usage: { input_tokens: 10 }, reported: true }),
-    waitForCompletion: async () => null,
-    readThread: async () => ({ thread: { path: "rollout.jsonl" } }),
-    readTurnUsage: async () => ({
+    consumeTracker: () => ({
       usage: { input_tokens: 10 }, reported: true, model: "gpt-5.6-sol", serviceTier: "fast",
     }),
+    waitForCompletion: async () => null,
+    readThread: async () => { rolloutReads += 1; return { thread: { path: "rollout.jsonl" } }; },
+    readTurnUsage: async () => { rolloutReads += 1; return null; },
     applyRolloutContext: () => {},
     finalizeDelivery: async (_run, value) => delivered.push(value),
     finishProgress: async () => {},
@@ -44,6 +45,7 @@ test("Codex completion restores missing model pricing before final delivery", as
   await service.completeManaged(run, { eventTurn: { id: "turn-1", status: "completed" } });
   assert.equal(delivered[0].tracker.model, "gpt-5.6-sol");
   assert.equal(delivered[0].tracker.serviceTier, "fast");
+  assert.equal(rolloutReads, 0);
 });
 
 test("observed Codex completion marks a real terminal transition", async () => {
@@ -123,7 +125,7 @@ test("observed Codex completion leaves admission release to terminal finalizatio
   assert.deepEqual(events, ["remember", "terminal", "wait", "finalize"]);
 });
 
-test("Codex completion reads rollout changes even when pricing is already known", async () => {
+test("Codex completion leaves rollout reconciliation outside terminal commit", async () => {
   const run = { threadId: "thread-1", turnId: "turn-1", status: "running", responseText: "" };
   let applied = null;
   const usageResult = {
@@ -147,19 +149,18 @@ test("Codex completion reads rollout changes even when pricing is already known"
 
   await service.completeManaged(run, { eventTurn: { id: "turn-1", status: "completed" } });
 
-  assert.equal(applied, usageResult);
+  assert.equal(applied, null);
 });
 
-test("managed Codex completion keeps admission through slow terminal bookkeeping", async () => {
+test("managed Codex completion does not enter slow rollout bookkeeping", async () => {
   const run = { threadId: "thread-1", turnId: "turn-1", status: "running", responseText: "Done" };
   const events = [];
-  let releaseRead;
-  const blockedRead = new Promise((resolve) => { releaseRead = resolve; });
+  let rolloutReads = 0;
   const service = new CodexCompletionService({
     runForTask: () => run,
     consumeTracker: () => ({ usage: {}, reported: false }),
     waitForCompletion: async () => null,
-    readThread: async () => { events.push("read"); await blockedRead; return { thread: {} }; },
+    readThread: async () => { rolloutReads += 1; return { thread: {} }; },
     readTurnUsage: async () => null,
     applyRolloutContext: () => {},
     finalizeDelivery: async () => { events.push("finalize"); },
@@ -172,12 +173,9 @@ test("managed Codex completion keeps admission through slow terminal bookkeeping
     speechButtons: new Map(),
   });
 
-  const completion = service.completeManaged(run, { eventTurn: { id: "turn-1", status: "completed" } });
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(events, ["answer", "terminal:Done", "read"]);
-  releaseRead();
-  await completion;
-  assert.deepEqual(events, ["answer", "terminal:Done", "read", "finalize"]);
+  await service.completeManaged(run, { eventTurn: { id: "turn-1", status: "completed" } });
+  assert.deepEqual(events, ["answer", "terminal:Done", "finalize"]);
+  assert.equal(rolloutReads, 0);
 });
 
 test("Claude compaction completion settles maintenance without conversation side effects", async () => {

@@ -1,10 +1,7 @@
-import { stat } from "node:fs/promises";
+import { open, stat } from "node:fs/promises";
 
 import { isCodexContextProbeTurn } from "../../domain/codex-context-probe.mjs";
-import {
-  scanCodexHistoricalRollout,
-  scanCodexTerminalEventsFromOffset,
-} from "./codex-turn-usage.mjs";
+import { scanCodexHistoricalRollout } from "./codex-turn-usage.mjs";
 
 const DEFAULT_PAGE_SIZE = 100;
 const DEFAULT_BOOTSTRAP_WINDOW_MS = 30 * 60_000;
@@ -16,8 +13,9 @@ const DEFAULT_HISTORICAL_SUBAGENT_BACKFILL_BYTES = 32 * 1024 * 1024;
 const DEFAULT_HISTORICAL_ACTIVE_STALE_MS = 30 * 60_000;
 const DEFAULT_SUPPLEMENTAL_DISCOVERY_INTERVAL_MS = 30_000;
 const DEFAULT_HISTORICAL_TURNS_PER_RUN = 25;
-const SNAPSHOT_VERSION = 12;
-const COMPATIBLE_SNAPSHOT_VERSIONS = new Set([4, 5, 6, 7, 8, 9, 10, 11, SNAPSHOT_VERSION]);
+const ROLLOUT_CHECKPOINT_BYTES = 128;
+const SNAPSHOT_VERSION = 13;
+const COMPATIBLE_SNAPSHOT_VERSIONS = new Set([4, 5, 6, 7, 8, 9, 10, 11, 12, SNAPSHOT_VERSION]);
 
 function timestampMs(value) {
   const numeric = Number(value);
@@ -34,6 +32,67 @@ function restoredPosition(value) {
   return {
     path: String(value?.path ?? ""),
     offset,
+    ...(value?.resumeState ? { resumeState: structuredClone(value.resumeState) } : {}),
+    ...(String(value?.fileIdentity ?? "").trim()
+      ? { fileIdentity: String(value.fileIdentity).trim() }
+      : {}),
+    ...(String(value?.fileCheckpoint ?? "").trim()
+      ? { fileCheckpoint: String(value.fileCheckpoint).trim() }
+      : {}),
+  };
+}
+
+async function readRolloutCheckpoint(transcriptPath, offset) {
+  const end = Math.max(0, Number(offset) || 0);
+  const length = Math.min(end, ROLLOUT_CHECKPOINT_BYTES);
+  if (!length) return "";
+  const handle = await open(transcriptPath, "r");
+  try {
+    const buffer = Buffer.allocUnsafe(length);
+    const { bytesRead } = await handle.read(buffer, 0, length, end - length);
+    return buffer.subarray(0, bytesRead).toString("base64");
+  } finally {
+    await handle.close();
+  }
+}
+
+function rolloutFileIdentity(info) {
+  const parts = [info?.dev, info?.ino, info?.birthtimeMs]
+    .map((value) => String(value ?? "").trim())
+    .filter(Boolean);
+  return parts.length ? parts.join(":") : "";
+}
+
+function resumablePosition(prior, transcriptPath, info, { requireResumeState = false } = {}) {
+  if (prior?.path !== transcriptPath || prior.offset > info.size) return false;
+  if (requireResumeState && !prior.resumeState) return false;
+  const currentIdentity = rolloutFileIdentity(info);
+  return !prior.fileIdentity || !currentIdentity || prior.fileIdentity === currentIdentity;
+}
+
+function normalizedLiveScanResult(result) {
+  if (!Array.isArray(result?.turns)) return result;
+  const activeTurns = Array.isArray(result.resumeState?.turns)
+    ? result.resumeState.turns
+    : result.turns.filter((turn) => turn?.terminal !== true);
+  return {
+    terminals: result.turns
+      .filter((turn) => turn?.terminal === true)
+      .map((turn) => ({
+        turnId: String(turn.turnId),
+        status: terminalTurnStatus(turn.status) || "completed",
+        completedAt: String(turn.completedAt ?? turn.lastActivityAt ?? ""),
+        ...(turn.contextProbe === true ? { contextProbe: true } : {}),
+        usageResult: turn,
+      })),
+    activeTurns: activeTurns.map((turn) => ({
+      turnId: String(turn.turnId),
+      startedAt: String(turn.startedAt ?? ""),
+      lastActivityAt: String(turn.lastActivityAt ?? turn.startedAt ?? ""),
+      ...(turn.contextProbe === true ? { contextProbe: true } : {}),
+    })),
+    nextOffset: result.nextOffset,
+    resumeState: result.resumeState ?? null,
   };
 }
 
@@ -173,7 +232,8 @@ export class CodexTerminalAudit {
     prepareHistoricalBackfill = async () => null,
     flushHistoricalProjection = async () => {},
     statFile = stat,
-    scanFile = scanCodexTerminalEventsFromOffset,
+    scanFile = scanCodexHistoricalRollout,
+    readCheckpoint = readRolloutCheckpoint,
     now = Date.now,
     pageSize = DEFAULT_PAGE_SIZE,
     bootstrapWindowMs = DEFAULT_BOOTSTRAP_WINDOW_MS,
@@ -203,6 +263,8 @@ export class CodexTerminalAudit {
     this.flushHistoricalProjection = flushHistoricalProjection;
     this.statFile = statFile;
     this.scanFile = scanFile;
+    this.incrementalUsageScan = scanFile === scanCodexHistoricalRollout;
+    this.readCheckpoint = readCheckpoint;
     this.now = now;
     this.pageSize = pageSize;
     this.bootstrapWindowMs = bootstrapWindowMs;
@@ -252,8 +314,8 @@ export class CodexTerminalAudit {
       || (compatibleSnapshot && snapshot?.subagentBackfillPending === true);
     // Snapshots v10 and v11 may have completed or interrupted the old
     // per-turn projection pass. Treat them as compatible for live cursors,
-    // while rebuilding only the resumable historical queue once under v12.
-    this.historicalSubagentBackfill = [8, 9, SNAPSHOT_VERSION].includes(snapshotVersion)
+    // while rebuilding only the resumable historical queue once under v13.
+    this.historicalSubagentBackfill = [8, 9, 12, SNAPSHOT_VERSION].includes(snapshotVersion)
       ? restoredHistoricalSubagentBackfill(snapshot?.historicalSubagentBackfill)
       : emptyHistoricalSubagentBackfill(compatibleSnapshot);
     this.historicalScanCache.clear();
@@ -314,6 +376,14 @@ export class CodexTerminalAudit {
     }
   }
 
+  async #canResume(prior, transcriptPath, info) {
+    if (!resumablePosition(prior, transcriptPath, info, {
+      requireResumeState: this.incrementalUsageScan,
+    })) return false;
+    if (!this.incrementalUsageScan || !prior.fileCheckpoint) return true;
+    return await this.readCheckpoint(transcriptPath, prior.offset) === prior.fileCheckpoint;
+  }
+
   async #projectFor(thread) {
     return await this.resolveProject(thread);
   }
@@ -372,9 +442,12 @@ export class CodexTerminalAudit {
 
     const info = fileInfo ?? await this.statFile(transcriptPath);
     const prior = this.positions.get(threadId);
-    const canResume = prior?.path === transcriptPath && prior.offset <= info.size;
+    const canResume = await this.#canResume(prior, transcriptPath, info);
     const startOffset = canResume ? prior.offset : 0;
-    const result = await this.scanFile(transcriptPath, { startOffset });
+    const result = normalizedLiveScanResult(await this.scanFile(transcriptPath, {
+      startOffset,
+      ...(canResume && prior.resumeState ? { resumeState: prior.resumeState } : {}),
+    }));
     const terminals = canResume
       ? result.terminals
       : result.terminals.filter((terminal) => (
@@ -417,6 +490,11 @@ export class CodexTerminalAudit {
     this.#setPosition(threadId, {
       path: transcriptPath,
       offset: result.nextOffset,
+      ...(result.resumeState ? { resumeState: result.resumeState } : {}),
+      ...(rolloutFileIdentity(info) ? { fileIdentity: rolloutFileIdentity(info) } : {}),
+      ...(this.incrementalUsageScan
+        ? { fileCheckpoint: await this.readCheckpoint(transcriptPath, result.nextOffset) }
+        : {}),
     });
     return true;
   }
@@ -430,7 +508,7 @@ export class CodexTerminalAudit {
         if (!project) continue;
         const position = this.positions.get(threadId);
         const info = await this.statFile(pending.thread.path);
-        if (position?.path === pending.thread.path && position.offset < info.size) {
+        if (await this.#canResume(position, pending.thread.path, info) && position.offset < info.size) {
           const handled = await this.#auditThread(pending.thread, project, lowerBoundMs);
           madeProgress = madeProgress || handled;
           if (!handled || !this.pendingTurns.has(threadId)) continue;
@@ -847,7 +925,7 @@ export class CodexTerminalAudit {
           const transcriptPath = String(thread.path);
           const info = await this.statFile(transcriptPath);
           const prior = this.positions.get(threadId);
-          const canResume = prior?.path === transcriptPath && prior.offset <= info.size;
+          const canResume = await this.#canResume(prior, transcriptPath, info);
           const hasUnreadBytes = canResume && prior.offset < info.size;
           const isSubagent = Boolean(String(thread.parentThreadId ?? "").trim());
           const activityMs = Number(info.mtimeMs) || timestampMs(thread.updatedAt);
@@ -866,6 +944,7 @@ export class CodexTerminalAudit {
             this.#setPosition(threadId, {
               path: transcriptPath,
               offset: info.size,
+              ...(rolloutFileIdentity(info) ? { fileIdentity: rolloutFileIdentity(info) } : {}),
             });
             madeProgress = true;
             continue;
@@ -875,6 +954,7 @@ export class CodexTerminalAudit {
             this.#setPosition(threadId, {
               path: transcriptPath,
               offset: info.size,
+              ...(rolloutFileIdentity(info) ? { fileIdentity: rolloutFileIdentity(info) } : {}),
             });
             madeProgress = true;
             continue;

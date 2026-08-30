@@ -212,6 +212,87 @@ test("terminal audit resumes byte positions after a long server outage", async (
   assert.equal(audit.snapshot().positions[0][1].offset, 180);
 });
 
+test("terminal audit reuses persisted usage state and passes exact usage to reconciliation", async () => {
+  const scans = [];
+  const reconciled = [];
+  const audit = new CodexTerminalAudit({
+    now: () => Date.parse("2026-08-30T04:00:00.000Z"),
+    listPage: async () => ({
+      data: [thread("thread-indexed", "2026-08-30T03:59:00.000Z", "indexed.jsonl")],
+      nextCursor: null,
+    }),
+    resolveProject: () => project,
+    statFile: async () => ({ size: 120, dev: 7, ino: 9, birthtimeMs: 11 }),
+    scanFile: async (_path, options) => {
+      scans.push(options);
+      return {
+        turns: [{
+          turnId: "turn-indexed",
+          terminal: true,
+          status: "aborted",
+          completedAt: "2026-08-30T03:59:00.000Z",
+          usage: { inputTokens: 42 },
+          reported: true,
+          model: "gpt-5.6-sol",
+        }],
+        nextOffset: 120,
+        resumeState: { turns: [], activeTurnIds: [], latestModel: "gpt-5.6-sol" },
+      };
+    },
+    reconcile: async (_thread, _project, terminal) => reconciled.push(terminal),
+  });
+  audit.restore({
+    version: 13,
+    completedThrough: "2026-08-30T03:58:00.000Z",
+    positions: [["thread-indexed", {
+      path: "indexed.jsonl",
+      offset: 100,
+      fileIdentity: "7:9:11",
+      resumeState: { turns: [], activeTurnIds: [], latestModel: "gpt-5.6-sol" },
+    }]],
+  });
+
+  await audit.run();
+
+  assert.equal(scans[0].startOffset, 100);
+  assert.equal(scans[0].resumeState.latestModel, "gpt-5.6-sol");
+  assert.equal(reconciled[0].usageResult.usage.inputTokens, 42);
+  assert.equal(audit.snapshot().positions[0][1].offset, 120);
+  assert.equal(audit.snapshot().positions[0][1].fileIdentity, "7:9:11");
+});
+
+test("terminal audit resets its offset when a rollout file is replaced", async () => {
+  const starts = [];
+  const audit = new CodexTerminalAudit({
+    now: () => Date.parse("2026-08-30T04:00:00.000Z"),
+    listPage: async () => ({
+      data: [thread("thread-replaced", "2026-08-30T03:59:00.000Z", "replaced.jsonl")],
+      nextCursor: null,
+    }),
+    resolveProject: () => project,
+    statFile: async () => ({ size: 300, dev: 7, ino: 10, birthtimeMs: 12 }),
+    scanFile: async (_path, { startOffset }) => {
+      starts.push(startOffset);
+      return { terminals: [], activeTurns: [], nextOffset: 300 };
+    },
+    reconcile: async () => true,
+  });
+  audit.restore({
+    version: 13,
+    completedThrough: "2026-08-30T03:58:00.000Z",
+    positions: [["thread-replaced", {
+      path: "replaced.jsonl",
+      offset: 200,
+      fileIdentity: "7:9:11",
+      resumeState: { turns: [], activeTurnIds: [] },
+    }]],
+  });
+
+  await audit.run();
+
+  assert.deepEqual(starts, [0]);
+});
+
 test("terminal audit follows every thread-list page newer than its cursor", async () => {
   const calls = [];
   const reconciled = [];
@@ -655,7 +736,7 @@ test("terminal audit migrates v7 and imports an external parent with four subage
   );
   assert.ok(recovered.every((value) => value.project === project));
   assert.ok(recovered.every((value) => value.turnId.startsWith("turn-")));
-  assert.equal(audit.snapshot().version, 12);
+  assert.equal(audit.snapshot().version, 13);
   assert.equal(audit.snapshot().historicalSubagentBackfill.pending, false);
   assert.equal(audit.snapshot().historicalSubagentBackfill.completedFiles, 5);
 });
@@ -1006,7 +1087,7 @@ test("terminal audit reruns v11 historical reconciliation once after preparing a
   assert.deepEqual(preparations, ["prepared"]);
   assert.deepEqual(scans, ["previously-completed.jsonl"]);
   const checkpoint = audit.snapshot();
-  assert.equal(checkpoint.version, 12);
+  assert.equal(checkpoint.version, 13);
   assert.equal(checkpoint.historicalSubagentBackfill.pending, false);
   assert.equal(checkpoint.historicalSubagentBackfill.prepared, true);
   assert.equal(

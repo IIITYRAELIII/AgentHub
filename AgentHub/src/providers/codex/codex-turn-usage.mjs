@@ -464,6 +464,7 @@ export function codexTurnUsageFromJsonl(text, turnId) {
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const DEFAULT_ROLLOUT_TAIL_BYTES = 64 * 1024 * 1024;
 const DEFAULT_TERMINAL_TAIL_BYTES = 16 * 1024 * 1024;
+const DEFAULT_TURN_START_SEARCH_BYTES = 1024 * 1024;
 
 export async function readCodexRolloutTail(transcriptPath, {
   openImpl = open,
@@ -482,6 +483,72 @@ export async function readCodexRolloutTail(transcriptPath, {
       text = firstLineEnd >= 0 ? text.slice(firstLineEnd + 1) : "";
     }
     return text;
+  } finally {
+    await handle.close();
+  }
+}
+
+export async function findCodexTurnStartOffsetFromTail(transcriptPath, turnId, {
+  openImpl = open,
+  chunkBytes = DEFAULT_TURN_START_SEARCH_BYTES,
+} = {}) {
+  const requestedTurnId = String(turnId ?? "").trim();
+  if (!requestedTurnId) throw new Error("Codex turn id is required");
+  const handle = await openImpl(transcriptPath, "r");
+  try {
+    const info = await handle.stat();
+    const requestedChunkBytes = Math.max(1, Number(chunkBytes) || DEFAULT_TURN_START_SEARCH_BYTES);
+    let cursor = info.size;
+    let rightPartial = Buffer.alloc(0);
+
+    while (cursor > 0) {
+      const start = Math.max(0, cursor - requestedChunkBytes);
+      const buffer = Buffer.allocUnsafe(cursor - start);
+      let bytesRead = 0;
+      while (bytesRead < buffer.length) {
+        const current = await handle.read(
+          buffer,
+          bytesRead,
+          buffer.length - bytesRead,
+          start + bytesRead,
+        );
+        if (!current.bytesRead) break;
+        bytesRead += current.bytesRead;
+      }
+      const chunk = buffer.subarray(0, bytesRead);
+      const combined = rightPartial.length ? Buffer.concat([chunk, rightPartial]) : chunk;
+      const firstNewline = combined.indexOf(0x0a);
+      const completeStart = start > 0 ? firstNewline + 1 : 0;
+
+      if (start === 0 || firstNewline >= 0) {
+        let lineEnd = combined.length;
+        while (lineEnd > completeStart) {
+          const newline = combined.lastIndexOf(0x0a, lineEnd - 1);
+          const lineStart = Math.max(completeStart, newline + 1);
+          const line = combined.subarray(lineStart, lineEnd).toString("utf8").replace(/\r$/u, "");
+          if (line) {
+            try {
+              const entry = JSON.parse(line);
+              if (entry?.type === "event_msg"
+                && entry.payload?.type === "task_started"
+                && String(entry.payload?.turn_id ?? "").trim() === requestedTurnId) {
+                return start + lineStart;
+              }
+            } catch {
+              // Continue toward the beginning; only complete JSONL records are candidates.
+            }
+          }
+          if (newline < completeStart) break;
+          lineEnd = newline;
+        }
+      }
+
+      rightPartial = start > 0 && firstNewline >= 0
+        ? combined.subarray(0, firstNewline)
+        : combined;
+      cursor = start;
+    }
+    return 0;
   } finally {
     await handle.close();
   }
@@ -698,6 +765,7 @@ function createHistoricalTurn(turnId) {
     serviceTier: "default",
     status: "",
     contextCompacted: false,
+    contextProbe: false,
     hasOwnTurnContent: false,
   };
 }
@@ -835,6 +903,9 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
       turn.completedAt = timestamp || turn.completedAt;
       turn.status = lifecycleTerminalStatus(lifecycle);
       touch(turn, timestamp);
+    }
+    if (lifecycleTurnId && isCodexContextProbeClientId(entry?.payload?.client_id)) {
+      ensureTurn(lifecycleTurnId).contextProbe = true;
     }
     if (lifecycle === "patch_apply_end" && lifecycleTurnId) {
       const turn = ensureTurn(lifecycleTurnId);
@@ -1234,11 +1305,17 @@ async function scanCodexTurnJsonlFromOffset(
 
 export async function scanCodexTurnJsonlIncrementally(transcriptPath, turnId, {
   createReadStreamImpl = createReadStream,
+  findTurnStartImpl = findCodexTurnStartOffsetFromTail,
   attempts = 5,
   retryDelayMs = 40,
 } = {}) {
   const accumulator = createTurnAccumulator(turnId);
-  let position = 0;
+  let position;
+  try {
+    position = await findTurnStartImpl(transcriptPath, turnId);
+  } catch {
+    position = 0;
+  }
   let result = null;
   let error = null;
   for (let attempt = 0; attempt < Math.max(1, attempts); attempt += 1) {

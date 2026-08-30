@@ -14,6 +14,7 @@ import {
   codexTurnUsageFromJsonl,
   discoverCodexRollouts,
   discoverCodexSubagentRollouts,
+  findCodexTurnStartOffsetFromTail,
   findCodexRolloutPath,
   readCodexRolloutSession,
   readCodexRolloutTail,
@@ -1185,6 +1186,7 @@ test("incremental retries scan only bytes appended after the first large pass", 
   const result = await scanCodexTurnJsonlIncrementally("growing-rollout.jsonl", "turn-1", {
     attempts: 2,
     retryDelayMs: 0,
+    findTurnStartImpl: async () => 0,
     createReadStreamImpl: (_file, options) => {
       starts.push(options.start);
       reads += 1;
@@ -1197,6 +1199,55 @@ test("incremental retries scan only bytes appended after the first large pass", 
   assert.equal(result.finalTokenSeen, true);
   assert.equal(result.completedAt, "2026-07-27T01:00:00.000Z");
   assert.equal(result.usage.inputTokens, 50);
+});
+
+test("cold exact-turn lookup searches backward and scans forward from task start", async () => {
+  const oldPrefix = Array.from({ length: 64 }, (_, index) => `${line({
+    type: "event_msg",
+    payload: { type: "unrelated", index, padding: "x".repeat(48) },
+  })}\n`).join("");
+  const targetStart = `${line({
+    type: "event_msg",
+    payload: { type: "task_started", turn_id: "turn-latest" },
+  })}\n`;
+  const source = Buffer.from(`${oldPrefix}${targetStart}${line(response("turn-latest"))}\n${line(token(70, 50, 9, 2))}\n${line({
+    timestamp: "2026-08-30T04:00:00.000Z",
+    type: "event_msg",
+    payload: { type: "task_complete", turn_id: "turn-latest" },
+  })}\n`);
+  const reads = [];
+  const openImpl = async () => ({
+    stat: async () => ({ size: source.length }),
+    read: async (buffer, offset, length, position) => {
+      reads.push({ length, position });
+      const chunk = source.subarray(position, position + length);
+      chunk.copy(buffer, offset);
+      return { bytesRead: chunk.length };
+    },
+    close: async () => {},
+  });
+
+  const start = await findCodexTurnStartOffsetFromTail("large-rollout.jsonl", "turn-latest", {
+    openImpl,
+    chunkBytes: 512,
+  });
+
+  assert.equal(start, Buffer.byteLength(oldPrefix));
+  assert.equal(reads[0].position > 0, true);
+  assert.equal(reads.reduce((total, read) => total + read.length, 0) < source.length, true);
+
+  const starts = [];
+  const result = await scanCodexTurnJsonlIncrementally("large-rollout.jsonl", "turn-latest", {
+    attempts: 1,
+    findTurnStartImpl: async () => start,
+    createReadStreamImpl: (_file, options) => {
+      starts.push(options.start);
+      return Readable.from([source.subarray(options.start)]);
+    },
+  });
+  assert.deepEqual(starts, [start]);
+  assert.equal(result.status, "completed");
+  assert.equal(result.usage.inputTokens, 70);
 });
 
 test("incremental scanner handles a large JSONL record split into tiny chunks", async () => {

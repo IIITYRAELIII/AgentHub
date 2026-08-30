@@ -2056,9 +2056,8 @@ function renderTasks() {
     taskEmpty.hidden = false;
     taskEmpty.textContent = "Ничего не найдено по запросу.";
   } else {
-    taskEmpty.textContent = hasWorkspace
-      ? "Пока нет Workspaces. Создайте новый кнопкой «+»."
-      : "Пока нет задач. Создайте новую задачу кнопкой «+».";
+    taskEmpty.hidden = true;
+    taskEmpty.textContent = "";
   }
   taskCount.hidden = !hasTasks;
   taskCount.textContent = String(visibleCount);
@@ -3815,7 +3814,7 @@ function renderChat() {
   const hasTask = Boolean(task);
   if (!hasTask) {
     chatEmpty.hidden = false;
-    if (chatEmptyText) chatEmptyText.textContent = "Выберите Workspace слева, чтобы открыть его Streams.";
+    if (chatEmptyText) chatEmptyText.textContent = "Выберите Workspace слева, чтобы открыть его Потоки.";
     streamTabs.hidden = true;
     streamTabs.replaceChildren();
     chatPane.hidden = true;

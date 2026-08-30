@@ -9,28 +9,12 @@ function requiredFunction(value, name) {
   return value;
 }
 
-function trackerFromUsageResult(usageResult) {
-  return {
-    usage: usageResult?.usage,
-    reported: usageResult?.reported === true,
-    imageGenerationCount: usageResult?.imageGenerationCount,
-    estimatedCredits: usageResult?.estimatedCredits,
-    estimateKind: usageResult?.estimateKind,
-    model: usageResult?.model,
-    serviceTier: usageResult?.serviceTier,
-    skillsUsed: usageResult?.skillsUsed,
-    mcpCalls: usageResult?.mcpCalls,
-    toolMetricsKnown: usageResult?.toolMetricsKnown,
-  };
-}
-
 export class CodexCompletionService {
   #d;
 
   constructor(dependencies = {}) {
     for (const name of [
-      "runForTask", "consumeTracker", "waitForCompletion", "readThread",
-      "readTurnUsage", "applyRolloutContext", "finalizeDelivery", "finishProgress",
+      "runForTask", "consumeTracker", "waitForCompletion", "finalizeDelivery", "finishProgress",
       "completedAnswer", "rememberSeenTurn", "rememberLastMessage",
     ]) requiredFunction(dependencies[name], name);
     this.#d = dependencies;
@@ -40,7 +24,7 @@ export class CodexCompletionService {
     run.status = "finishing";
     await this.#d.rememberSeenTurn(run, completedTurnId);
     this.#rememberTerminalAnswer(run, completedTurnId, answer, snapshot);
-    let resolvedTracker = tracker ?? this.#d.consumeTracker(completedTurnId);
+    const resolvedTracker = tracker ?? this.#d.consumeTracker(completedTurnId);
     if (run.executionOwner !== TASK_EXECUTION_OWNERS.HUB) {
       const hooked = await this.#d.waitForCompletion({
         provider: "codex",
@@ -61,7 +45,6 @@ export class CodexCompletionService {
         };
       }
     }
-    resolvedTracker = await this.#resolvePricing(run, completedTurnId, resolvedTracker);
     return this.#d.finalizeDelivery(run, {
       answer,
       turnId: completedTurnId,
@@ -82,8 +65,7 @@ export class CodexCompletionService {
       || run.responseText.trim()
       || "Ход завершён без текстового ответа.";
     this.#rememberTerminalAnswer(run, completedTurnId, answer, snapshot);
-    let tracker = this.#d.consumeTracker(completedTurnId);
-    tracker = await this.#resolvePricing(run, completedTurnId, tracker);
+    const tracker = this.#d.consumeTracker(completedTurnId);
     const forceSpeechButton = await this.#releaseTurnResources(completedTurnId);
     await this.#d.finishProgress(run, snapshot?.stage ?? "Поток завершён.");
     await this.#d.finalizeDelivery(run, {
@@ -109,8 +91,7 @@ export class CodexCompletionService {
     const answer = await this.#d.completedAnswer(run, completedTurnId, eventTurn)
       || (error ? `Ошибка: ${error}` : `Поток завершён: ${status}`);
     this.#rememberTerminalAnswer(run, completedTurnId, answer, eventTurn);
-    let tracker = this.#d.consumeTracker(completedTurnId);
-    tracker = await this.#resolvePricing(run, completedTurnId, tracker);
+    const tracker = this.#d.consumeTracker(completedTurnId);
     const forceSpeechButton = await this.#releaseTurnResources(completedTurnId);
     await this.#d.finishProgress(
       run,
@@ -133,24 +114,6 @@ export class CodexCompletionService {
     const updatedAt = completion?.completedAt
       ?? (Number.isFinite(completedAtMs) ? new Date(completedAtMs).toISOString() : null);
     this.#d.rememberLastMessage({ ...run, turnId }, answer, { updatedAt });
-  }
-
-  async #resolvePricing(run, turnId, tracker) {
-    if (String(tracker?.model ?? "").trim() && run?.rolloutChangeTrackingKnown === true) return tracker;
-    try {
-      const result = await this.#d.readThread(run.threadId, { fresh: true, includeTurns: false });
-      const usageResult = await this.#d.readTurnUsage(result.thread?.path, turnId);
-      this.#d.applyRolloutContext(run, usageResult);
-      if (usageResult?.model) {
-        const fromRollout = trackerFromUsageResult(usageResult);
-        return fromRollout.reported || !tracker?.reported
-          ? fromRollout
-          : { ...tracker, ...fromRollout, usage: tracker.usage, reported: tracker.reported };
-      }
-    } catch (error) {
-      this.#d.logError?.(`Cannot resolve rollout metadata for Codex turn ${turnId}:`, error.message);
-    }
-    return tracker;
   }
 
   async #releaseTurnResources(turnId) {

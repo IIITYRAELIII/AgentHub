@@ -10,6 +10,11 @@ final status and final content.
 
 - Terminal status, final content, usage identity and last-message identity are
   committed before admission or queue ownership is released.
+- Optional rollout usage, pricing and tool-metadata reconstruction never delays
+  terminal commit or admission release. The terminal audit resumes from its
+  durable append-only byte checkpoint and reconciles that metadata afterward.
+  A cold exact-turn lookup locates the matching turn start by scanning backward
+  from the rollout tail, then reads forward only from that boundary.
 - The authoritative provider final is retained byte-complete by the terminal
   projection; live-preview bounds must not truncate durable final content.
 - A provider completion event is not sufficient evidence to freeze a known
