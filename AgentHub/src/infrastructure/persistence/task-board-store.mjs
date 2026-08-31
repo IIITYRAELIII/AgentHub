@@ -106,7 +106,7 @@ function configure(database) {
       provider_thread_id TEXT NOT NULL,
       turn_id TEXT NOT NULL,
       operation_id TEXT NOT NULL,
-      operation_kind TEXT NOT NULL CHECK (operation_kind IN ('claim', 'evidence', 'legacy')),
+      operation_kind TEXT NOT NULL CHECK (operation_kind IN ('claim', 'legacy')),
       baseline_json TEXT NOT NULL DEFAULT '{}',
       requested_workflow_status TEXT,
       claimed_at_ms INTEGER NOT NULL,
@@ -291,7 +291,7 @@ function configure(database) {
             provider_thread_id TEXT NOT NULL,
             turn_id TEXT NOT NULL,
             operation_id TEXT NOT NULL,
-            operation_kind TEXT NOT NULL CHECK (operation_kind IN ('claim', 'evidence', 'legacy')),
+            operation_kind TEXT NOT NULL CHECK (operation_kind IN ('claim', 'legacy')),
             baseline_json TEXT NOT NULL DEFAULT '{}',
             requested_workflow_status TEXT,
             claimed_at_ms INTEGER NOT NULL,
@@ -1525,7 +1525,7 @@ export class TaskBoardStore {
     if (!taskId || identity.some((value) => !value)) {
       throw new Error("Task claim requires an exact provider operation");
     }
-    if (!["claim", "evidence"].includes(kind)) throw new Error("invalid Task operation kind");
+    if (kind !== "claim") throw new Error("invalid Task operation kind");
     const baselineJson = gitBaselineJson(gitBaseline);
     const timestamp = this.now();
     return this.#withDatabase((database) => {
@@ -1557,11 +1557,7 @@ export class TaskBoardStore {
         SELECT * FROM hub_task_turn_bindings
         WHERE provider = ? AND provider_thread_id = ? AND turn_id = ? AND terminal_at_ms IS NULL
       `).get(...identity.slice(0, 3));
-      const handoff = active?.task_id === taskId
-        && kind === "evidence"
-        && ["claim", "legacy"].includes(String(active.operation_kind));
-      if (active && !handoff) throw new Error("provider turn already has an active Task operation");
-      if (handoff) database.prepare(`
+      if (active) database.prepare(`
         UPDATE hub_task_turn_bindings SET terminal_at_ms = ?
         WHERE provider = ? AND provider_thread_id = ? AND turn_id = ?
           AND operation_id = ? AND terminal_at_ms IS NULL
@@ -1703,25 +1699,6 @@ export class TaskBoardStore {
         database.exec("ROLLBACK");
         throw error;
       }
-    });
-  }
-
-  finishTaskOperation({ taskId = null, provider, threadId, turnId, operationId } = {}) {
-    const identity = [provider, threadId, turnId, operationId].map((value) => String(value ?? "").trim());
-    if (identity.some((value) => !value)) throw new Error("Task operation identity is required");
-    return this.#withDatabase((database) => {
-      const binding = database.prepare(`
-        SELECT * FROM hub_task_turn_bindings
-        WHERE provider = ? AND provider_thread_id = ? AND turn_id = ? AND operation_id = ?
-      `).get(...identity);
-      if (!binding) throw new Error("Task operation binding not found");
-      const resolvedTaskId = String(taskId ?? binding.task_id).trim();
-      if (binding.task_id !== resolvedTaskId) throw new Error("Task operation identity conflicts with its binding");
-      database.prepare(`
-        UPDATE hub_task_turn_bindings SET terminal_at_ms = COALESCE(terminal_at_ms, ?)
-        WHERE provider = ? AND provider_thread_id = ? AND turn_id = ? AND operation_id = ?
-      `).run(this.now(), ...identity);
-      return this.#taskWithRelease(database, this.#taskRow(database, resolvedTaskId));
     });
   }
 

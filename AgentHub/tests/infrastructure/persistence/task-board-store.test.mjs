@@ -367,7 +367,7 @@ test("terminal Task evidence backfills a claim baseline captured after claim", a
   }]);
 });
 
-test("one provider turn switches Tasks only between terminal operation bindings", async (t) => {
+test("one provider turn switches Tasks with exact reorder-safe operation evidence", async (t) => {
   const store = await fixture(t);
   const projectRoot = path.resolve("D:/repo");
   const first = store.create({ text: "First operation" });
@@ -385,10 +385,6 @@ test("one provider turn switches Tasks only between terminal operation bindings"
 
   store.claim(first.id, { ...turn, operationId: "claim-first" });
   assert.throws(
-    () => store.claim(second.id, { ...turn, operationId: "claim-second" }),
-    /already has an active Task operation/u,
-  );
-  assert.throws(
     () => store.recordTaskTurn({
       taskId: first.id,
       provider: turn.provider,
@@ -400,28 +396,22 @@ test("one provider turn switches Tasks only between terminal operation bindings"
     /exact durable provider operation binding/u,
   );
 
-  store.claim(first.id, {
-    ...turn,
-    operationId: "snapshot-first",
-    operationKind: "evidence",
-    gitBaseline: { repoRoot: projectRoot, tree: "a".repeat(40) },
-  });
-  assert.throws(
-    () => store.claim(second.id, { ...turn, operationId: "claim-second" }),
-    /already has an active Task operation/u,
-  );
+  store.claim(second.id, { ...turn, operationId: "claim-second" });
+  assert.equal(store.claimedTaskForTurn(turn).id, second.id);
+
   store.recordTaskTurn({
     taskId: first.id,
     provider: turn.provider,
     threadId: turn.threadId,
     turnId: turn.turnId,
-    operationId: "snapshot-first",
+    operationId: "claim-first",
     projectRoot,
     changedFiles: [{ projectRoot, path: "src/first.mjs", operation: "modified" }],
     resultSnapshot: { repoRoot: projectRoot, tree: "b".repeat(40) },
   });
+  assert.equal(store.claimedTaskForTurn(turn).id, second.id);
 
-  store.claim(second.id, { ...turn, operationId: "claim-second" });
+  store.claim(first.id, { ...turn, operationId: "claim-first-again" });
   store.recordTaskTurn({
     taskId: second.id,
     provider: turn.provider,
@@ -432,7 +422,8 @@ test("one provider turn switches Tasks only between terminal operation bindings"
     changedFiles: [{ projectRoot, path: "src/second.mjs", operation: "modified" }],
     resultSnapshot: { repoRoot: projectRoot, tree: "c".repeat(40) },
   });
-  store.claim(first.id, { ...turn, operationId: "claim-first-again" });
+  assert.equal(store.claimedTaskForTurn(turn).id, first.id);
+
   store.recordTaskTurn({
     taskId: first.id,
     provider: turn.provider,
@@ -445,7 +436,7 @@ test("one provider turn switches Tasks only between terminal operation bindings"
   });
 
   assert.deepEqual(store.task(first.id).workLog.map((entry) => entry.operationId), [
-    "snapshot-first",
+    "claim-first",
     "claim-first-again",
   ]);
   assert.equal(store.claimedTaskForTurn(turn).id, first.id);

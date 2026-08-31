@@ -29,7 +29,7 @@ export class TaskBoardService {
     for (const name of [
       "create", "task", "list", "move", "markStarted", "orderedColumnIds", "moveColumn",
       "notesComment", "setNotesComment", "reassignWorkspace", "claim", "claimedTaskForTurn",
-      "recordTaskTurn", "finishTaskOperation", "releaseTasks", "completeRelease",
+      "recordTaskTurn", "releaseTasks", "completeRelease",
     ]) requiredMethod(store, name);
     if (typeof workspaceCatalog?.hierarchy !== "function") throw new TypeError("workspaceCatalog is required");
     this.store = store;
@@ -245,15 +245,6 @@ export class TaskBoardService {
   recordTaskTurn(payload = {}) {
     const task = this.store.recordTaskTurn(payload);
     if (task) this.#event("task.turn-recorded", task, { turnId: payload.turnId });
-    return task;
-  }
-
-  finishTaskOperation(payload = {}) {
-    const task = this.store.finishTaskOperation(payload);
-    this.#event("task.operation-finished", task, {
-      turnId: payload.turnId ?? null,
-      operationId: payload.operationId ?? null,
-    });
     return task;
   }
 

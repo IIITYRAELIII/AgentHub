@@ -63,7 +63,6 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
   const operations = new Map();
   const taskEvidenceCalls = [];
   const taskClaimCalls = [];
-  const taskFinishCalls = [];
   workspaceCatalog.beginMcpOperation = (operation) => {
     const existing = operations.get(operation.requestId);
     if (existing) {
@@ -113,10 +112,6 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
       return Object.assign(tasks.get(taskId), {
         gitReferences: [{ projectRoot, branch, resultCommit: resultSnapshot.tree }],
       });
-    },
-    finishTaskOperation: ({ taskId, operationId }) => {
-      taskFinishCalls.push({ taskId, operationId });
-      return tasks.get(taskId);
     },
     releaseTasks: () => [],
     setWorkflowStatus: ({ id, status }) => Object.assign(tasks.get(id), {
@@ -213,7 +208,6 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
     operations,
     taskEvidenceCalls,
     taskClaimCalls,
-    taskFinishCalls,
     taskGitPrepareCalls,
     taskLaunchCalls,
     releaseCalls,
@@ -518,30 +512,6 @@ test("HubMcpService binds the current turn to its dedicated Task worktree", asyn
 
   const tools = service.tools();
   assert.equal(tools.some((tool) => tool.name === "hub_task_release_freeze"), false);
-});
-
-test("HubMcpService binds snapshot evidence to its own MCP operation", async (context) => {
-  const { service, token, taskClaimCalls, taskFinishCalls } = await fixture(context, {
-    releaseWorkflowEnabled: true,
-  });
-
-  await service.call("hub_task_claim", {
-    context_token: token,
-    request_id: "claim-current",
-    task_id: "task-current",
-  });
-  await service.call("hub_task_status_update", {
-    context_token: token,
-    request_id: "snapshot-current",
-    task_id: "task-current",
-    status: "testing",
-  });
-
-  assert.deepEqual(taskClaimCalls.map(({ operationId, operationKind }) => ({ operationId, operationKind })), [
-    { operationId: "claim-current", operationKind: "claim" },
-    { operationId: "snapshot-current", operationKind: "evidence" },
-  ]);
-  assert.deepEqual(taskFinishCalls, [{ taskId: "task-current", operationId: "snapshot-current" }]);
 });
 
 test("HubMcpService claim falls back to the Workspace working directory", async (context) => {

@@ -14,12 +14,12 @@ be made there. Provider turn identity remains journal metadata and is not a
 source of file ownership.
 
 One provider turn may perform multiple sequential Task operations. Each claim
-or snapshot operation is durably identified by its MCP `request_id`, and
-terminal evidence resolves the exact `(provider, thread, turn, operation)`
-binding rather than a turn-global Task. At most one unterminated Task write
-operation may exist for a provider turn. A snapshot operation may atomically
-take over the active claim for the same Task; another Task cannot acquire the
-turn until that operation reaches a terminal boundary.
+is durably identified by its MCP `request_id`, and terminal evidence resolves
+the exact `(provider, thread, turn, operation)` binding rather than a
+turn-global Task. At most one unterminated Task write operation may exist for a
+provider turn. A new explicit claim operation
+atomically terminates the preceding binding before it activates the next Task,
+so sequential switches are allowed without overlapping active writers.
 
 The persistence compatibility boundary is the absence of `operation_id` on
 the binding or work-log table. Store startup rebuilds only that legacy shape,

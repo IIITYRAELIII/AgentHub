@@ -233,7 +233,7 @@ export class HubMcpService {
     ]) requiredMethod(workspaceCatalog, name);
     for (const name of [
       "snapshot", "task", "create", "move", "update", "markStarted", "complete", "addAttachment",
-      "claim", "requestWorkflowStatus", "recordTaskTurn", "finishTaskOperation", "releaseTasks",
+      "claim", "requestWorkflowStatus", "releaseTasks",
     ]) {
       requiredMethod(taskBoard, name);
     }
@@ -715,7 +715,7 @@ export class HubMcpService {
     return active[0];
   }
 
-  async #updateTaskWorkflowStatus(context, { task_id: taskId, status, request_id: operationId } = {}) {
+  async #updateTaskWorkflowStatus(context, { task_id: taskId, status } = {}) {
     const task = this.#task(context, taskId);
     const workflowStatus = requiredText(status, "task workflow status", 40);
     const active = context.threadId ? this.#activeRuns().filter((run) => (
@@ -739,13 +739,10 @@ export class HubMcpService {
           provider: context.provider,
           threadId: context.threadId,
           turnId: run.turnId,
-          operationId,
-          operationKind: "evidence",
           gitBaseline: gitWorkspace.gitBaseline,
         });
       } catch (error) {
         preparationError = error;
-        gitWorkspace = null;
       }
     }
     const updated = this.taskBoard.requestWorkflowStatus({
@@ -754,7 +751,6 @@ export class HubMcpService {
       provider: context.provider,
       threadId: context.threadId,
       turnId: run?.turnId ?? null,
-      operationId,
     });
     if (!snapshotsResult) return compactTask(updated);
     if (!gitWorkspace) {
@@ -779,7 +775,6 @@ export class HubMcpService {
           provider: context.provider,
           threadId: context.threadId,
           turnId: run.turnId,
-          operationId,
           projectRoot: snapshot.repositoryRoot,
           summary: task.title,
           status: "completed",
@@ -789,13 +784,6 @@ export class HubMcpService {
           branch: snapshot.branch,
         });
       }
-      this.taskBoard.finishTaskOperation({
-        taskId: task.id,
-        provider: context.provider,
-        threadId: context.threadId,
-        turnId: run.turnId,
-        operationId,
-      });
       const current = this.#task(context, task.id);
       return {
         ...compactTask(current),
@@ -815,13 +803,6 @@ export class HubMcpService {
         },
       };
     } catch (error) {
-      if (gitWorkspace && run) this.taskBoard.finishTaskOperation({
-        taskId: task.id,
-        provider: context.provider,
-        threadId: context.threadId,
-        turnId: run.turnId,
-        operationId,
-      });
       return {
         ...compactTask(this.#task(context, task.id)),
         gitIntegration: { integrated: false, error: error.message },
