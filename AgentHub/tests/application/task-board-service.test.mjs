@@ -44,7 +44,7 @@ test("snapshot revision reads owner revisions without building hierarchy or boar
     claim: () => null,
     claimedTaskForTurn: () => null,
     recordTaskTurn: () => null,
-    releasePlan: () => ({ revision: "", candidates: [] }),
+    releaseTasks: () => [],
     completeRelease: () => null,
   };
   const service = new TaskBoardService({
@@ -215,7 +215,7 @@ test("disabled Spark leaves new Tasks idle and clears recovered triage", () => {
       claim: () => null,
       claimedTaskForTurn: () => null,
       recordTaskTurn: () => null,
-      releasePlan: () => ({ revision: "", candidates: [] }),
+      releaseTasks: () => [],
       completeRelease: () => null,
       disablePendingTriage: () => { disabled += 1; },
     },

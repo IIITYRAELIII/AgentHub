@@ -39,23 +39,8 @@ async function repositoryIdentity(repositoryRoot) {
   return `root:${pathKey(repositoryRoot)}`;
 }
 
-async function objectAtRevision(repositoryRoot, revision, file) {
-  try {
-    return await gitOutput(["rev-parse", `${revision}:${file}`], { cwd: repositoryRoot });
-  } catch {
-    return null;
-  }
-}
-
-async function assertTaskResultPublished({ repositoryRoot, taskRevision, publishedRevision, files }) {
+async function assertTaskResultPublished({ repositoryRoot, taskRevision, publishedRevision }) {
   await gitOutput(["merge-base", "--is-ancestor", taskRevision, publishedRevision], { cwd: repositoryRoot });
-  for (const file of files) {
-    const taskObject = await objectAtRevision(repositoryRoot, taskRevision, file.path);
-    const publishedObject = await objectAtRevision(repositoryRoot, publishedRevision, file.path);
-    if (taskObject !== publishedObject) {
-      throw new Error(`Task result ${taskRevision}:${file.path} differs from ${publishedRevision}`);
-    }
-  }
 }
 
 export async function verifyWorkspaceReleasePublication({
@@ -69,31 +54,15 @@ export async function verifyWorkspaceReleasePublication({
   readPublication = readPublicationState,
   readPackage = readAgentHubPackage,
 } = {}) {
-  const resolvedFiles = new Set(conflictsResolved
-    ? (plan.conflicts ?? []).map((conflict) => (
-      `${pathKey(conflict.projectRoot)}\0${process.platform === "win32" ? String(conflict.file).toLowerCase() : String(conflict.file)}`
-    ))
-    : []);
-  const requiresExactBlob = (file) => {
-    if (!conflictsResolved) return true;
-    if (/^(?:Utilities\/)?CHANGELOG\.md$/iu.test(String(file.path ?? ""))) return false;
-    const filePath = process.platform === "win32" ? String(file.path ?? "").toLowerCase() : String(file.path ?? "");
-    return !resolvedFiles.has(`${pathKey(file.projectRoot)}\0${filePath}`);
-  };
   const taskEvidenceByProjectRoot = new Map();
   for (const candidate of plan.candidates ?? []) {
-    for (const repository of candidate.repositoryRevisions ?? []) {
-      const projectRoot = String(repository.projectRoot ?? "").trim();
-      const resultRevision = String(repository.resultRevision ?? "").trim();
-      if (!projectRoot || !resultRevision) continue;
+    for (const reference of candidate.gitReferences ?? []) {
+      const projectRoot = String(reference.projectRoot ?? "").trim();
+      const resultCommit = String(reference.resultCommit ?? "").trim();
+      if (!projectRoot || !resultCommit) continue;
       const key = pathKey(projectRoot);
       const evidence = taskEvidenceByProjectRoot.get(key) ?? [];
-      evidence.push({
-        resultRevision,
-        files: (candidate.changedFiles ?? [])
-          .filter((file) => pathKey(file.projectRoot) === key)
-          .filter(requiresExactBlob),
-      });
+      evidence.push({ resultCommit });
       taskEvidenceByProjectRoot.set(key, evidence);
     }
   }
@@ -125,11 +94,7 @@ export async function verifyWorkspaceReleasePublication({
       };
       for (const file of matchingFiles) repository.files.add(file);
       for (const evidence of taskEvidenceByProjectRoot.get(pathKey(group.projectRoot)) ?? []) {
-        const files = evidence.files.map((file) => ({
-          path: path.relative(resolvedRoot, path.resolve(group.projectRoot, file.path)).split(path.sep).join("/"),
-          operation: file.operation,
-        })).filter((file) => file.path && !file.path.startsWith("../"));
-        repository.taskEvidence.push({ resultRevision: evidence.resultRevision, files });
+        repository.taskEvidence.push(evidence);
       }
       repositoriesByRoot.set(key, repository);
     }
@@ -158,13 +123,12 @@ export async function verifyWorkspaceReleasePublication({
         try {
           await assertTaskResult({
             repositoryRoot: repository.root,
-            taskRevision: evidence.resultRevision,
+            taskRevision: evidence.resultCommit,
             publishedRevision: expectedRevision,
-            files: evidence.files,
           });
         } catch {
           throw new Error(
-            `Task result revision ${evidence.resultRevision} is not contained in published revision ${expectedRevision}`,
+            `Task result commit ${evidence.resultCommit} is not contained in published revision ${expectedRevision}`,
           );
         }
       }

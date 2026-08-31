@@ -49,6 +49,20 @@ test("Task Git workspace commits one Task branch and merges it into dev", async 
   assert.equal(result.integration.integrated, true);
   assert.deepEqual(result.snapshot.changedFiles.map((file) => file.path), ["app.txt"]);
   assert.equal(await readFile(path.join(result.integration.dev.projectRoot, "app.txt"), "utf8"), "task\n");
+  const evidence = await service.releaseEvidence({
+    taskId,
+    projectRoot: root,
+    branch: result.snapshot.branch,
+    resultCommit: result.snapshot.headCommit,
+  });
+  assert.equal(evidence.resultCommit, result.snapshot.headCommit);
+  assert.deepEqual(evidence.changedFiles.map((file) => file.path), ["app.txt"]);
+  await assert.rejects(() => service.releaseEvidence({
+    taskId,
+    projectRoot: root,
+    branch: "agenthub/task/another-task/repository",
+    resultCommit: result.snapshot.headCommit,
+  }), /branch does not match/u);
 
   const contour = await prepareTaskContourSource({ sourceRoot: agentHubRoot, integrationRoot: dataDir });
   assert.equal(contour.branch, "dev");
@@ -91,4 +105,30 @@ test("Task Git workspace aborts a conflicting dev merge without deleting either 
   assert.equal(conflict.integration.integrated, false);
   assert.deepEqual(conflict.integration.conflicts, ["app.txt"]);
   assert.equal(await git(conflict.integration.dev.projectRoot, "status", "--porcelain"), "");
+});
+
+test("a new Task branch starts from main and never inherits earlier dev-only work", async (context) => {
+  const root = await repository(context);
+  const dataDir = path.join(root, "..", `${path.basename(root)}-data`);
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const service = new TaskGitWorkspaceService({ dataDir });
+  const first = await service.prepare({
+    taskId: "44444444-4444-4444-4444-444444444444",
+    projectRoot: root,
+  });
+  await writeFile(path.join(first.projectRoot, "first.txt"), "first\n", "utf8");
+  assert.equal((await service.snapshotAndMerge({
+    taskId: first.taskId,
+    projectRoot: first.projectRoot,
+  })).integration.integrated, true);
+
+  const second = await service.prepare({
+    taskId: "55555555-5555-5555-5555-555555555555",
+    projectRoot: root,
+  });
+  assert.equal(await readFile(path.join(second.projectRoot, "app.txt"), "utf8"), "main\n");
+  await assert.rejects(() => readFile(path.join(second.projectRoot, "first.txt"), "utf8"), /ENOENT/u);
+  await writeFile(path.join(second.projectRoot, "second.txt"), "second\n", "utf8");
+  const snapshot = await service.snapshot({ taskId: second.taskId, projectRoot: second.projectRoot });
+  assert.deepEqual(snapshot.changedFiles.map((file) => file.path), ["second.txt"]);
 });

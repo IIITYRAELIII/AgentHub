@@ -8,9 +8,10 @@ function requiredStore(value) {
 export class WorkspaceCatalogService {
   #store;
 
-  constructor({ store, taskBoard = null, releaseCompleter = null } = {}) {
+  constructor({ store, taskBoard = null, releasePlanner = null, releaseCompleter = null } = {}) {
     this.#store = requiredStore(store);
     this.taskBoard = taskBoard;
+    this.releasePlanner = releasePlanner;
     this.releaseCompleter = releaseCompleter;
   }
 
@@ -43,8 +44,8 @@ export class WorkspaceCatalogService {
   }
 
   releasePlan({ workspaceId } = {}) {
-    if (typeof this.taskBoard?.releasePlan !== "function") throw new Error("Task release plan is unavailable");
-    return this.taskBoard.releasePlan(workspaceId);
+    if (typeof this.releasePlanner?.plan !== "function") throw new Error("Task release plan is unavailable");
+    return this.releasePlanner.plan(workspaceId);
   }
 
   completeRelease(params = {}) {

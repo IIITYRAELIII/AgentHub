@@ -60,6 +60,7 @@ export function createDesktopShellComposition({
     workLogUsageStore,
     workLogUsageRemoteConfigStore,
     workspaceCatalogStore,
+    taskReleasePlanner,
     workspaceReleaseService,
     streamHandoff,
     runtimeStateStore,
@@ -258,6 +259,7 @@ export function createDesktopShellComposition({
   const workspaceCatalog = new WorkspaceCatalogService({
     store: workspaceCatalogStore,
     taskBoard,
+    releasePlanner: taskReleasePlanner,
     releaseCompleter: workspaceReleaseService,
   });
   const workspaceMutation = async (run, { resultKey = "" } = {}) => {

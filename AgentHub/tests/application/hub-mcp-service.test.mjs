@@ -103,11 +103,13 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
     requestWorkflowStatus: ({ id, status, turnId }) => Object.assign(tasks.get(id), {
       workflowStatus: status, requestedWorkflowStatus: status, requestedTurnId: turnId,
     }),
-    recordTaskTurn: ({ taskId, changedFiles }) => {
-      taskEvidenceCalls.push({ taskId, changedFiles });
-      return Object.assign(tasks.get(taskId), { changedFiles });
+    recordTaskTurn: ({ taskId, changedFiles, branch, resultSnapshot }) => {
+      taskEvidenceCalls.push({ taskId, changedFiles, branch, resultSnapshot });
+      return Object.assign(tasks.get(taskId), {
+        gitReferences: [{ projectRoot, branch, resultCommit: resultSnapshot.tree }],
+      });
     },
-    releasePlan: () => ({ revision: "plan-1", candidates: [], ready: [], draft: [], blocked: [], conflicts: [] }),
+    releaseTasks: () => [],
     setWorkflowStatus: ({ id, status }) => Object.assign(tasks.get(id), {
       workflowStatus: status,
     }),
@@ -163,6 +165,9 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
   const service = new HubMcpService({
     workspaceCatalog, taskBoard, workLog, attachmentDirectory, secret: "secret",
     taskGitWorkspaces,
+    releasePlanner: {
+      plan: async () => ({ revision: "plan-1", candidates: [], ready: [], draft: [], blocked: [], conflicts: [] }),
+    },
     releaseCompleter: {
       completeRelease: async (options) => {
         releaseCalls.push(options);
