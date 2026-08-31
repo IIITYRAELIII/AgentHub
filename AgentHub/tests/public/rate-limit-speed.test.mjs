@@ -212,7 +212,7 @@ test("weekly burn rate never carries a negative delta across a reset", () => {
   assert.equal(points[1].overTarget, false);
 });
 
-test("preliminary speed pins a detected reset to zero without inventing an account baseline", () => {
+test("preliminary speed fills the post-reset gap with zero without inventing an account baseline", () => {
   const options = { minimumSpanMs: 0, showResetStartAsZero: true };
   const resetPoints = calculate({
     id: "codex:primary",
@@ -232,8 +232,11 @@ test("preliminary speed pins a detected reset to zero without inventing an accou
   }, options);
 
   assert.equal(resetPoints[0].actualRate, null);
+  assert.equal(resetPoints[1].raw.at, "2026-08-08T00:00:00.000Z");
   assert.equal(resetPoints[1].actualRate, 0);
-  assert.equal(resetPoints[1].sampleSpanMs, 0);
+  assert.equal(resetPoints[1].resetAnchor, true);
+  assert.equal(resetPoints[2].actualRate, 0);
+  assert.equal(resetPoints[2].sampleSpanMs, 0);
   assert.equal(accountPoints[1].actualRate, null);
 });
 

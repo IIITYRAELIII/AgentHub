@@ -8701,7 +8701,7 @@ function weeklyBurnRatePoints(series, {
     points[index].startsAfterReset = startsAfterReset;
   }
 
-  return points.map((point, index) => {
+  const ratePoints = points.map((point, index) => {
     const remainingMs = point.resetMs - point.atMs;
     const targetRate = Math.max(0, point.remainingPercent) / remainingMs * WEEK_MILLISECONDS;
     let baseline = null;
@@ -8734,6 +8734,37 @@ function weeklyBurnRatePoints(series, {
       deviationRate,
       overTarget: Number.isFinite(deviationRate) ? deviationRate > 0 : false,
     };
+  });
+  if (!showResetStartAsZero) return ratePoints;
+  return ratePoints.flatMap((point, index) => {
+    if (!point.startsAfterReset) return [point];
+    const previousAtMs = ratePoints[index - 1]?.atMs;
+    const cycleStartMs = point.resetMs - durationMs;
+    if (!(cycleStartMs > previousAtMs && cycleStartMs < point.atMs)) return [point];
+    const remainingPercent = 100;
+    const targetRate = remainingPercent / durationMs * WEEK_MILLISECONDS;
+    return [{
+      ...point,
+      raw: {
+        ...point.raw,
+        at: new Date(cycleStartMs).toISOString(),
+        usedPercent: 0,
+        remainingPercent,
+        estimated: true,
+        estimateKind: "reset-start",
+      },
+      atMs: cycleStartMs,
+      usedPercent: 0,
+      remainingPercent,
+      cycleAgeMs: 0,
+      sampleSpanMs: 0,
+      targetRate,
+      actualRate: 0,
+      deviationRate: -targetRate,
+      overTarget: false,
+      startsAfterReset: false,
+      resetAnchor: true,
+    }, point];
   });
 }
 
