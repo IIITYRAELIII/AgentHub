@@ -3606,7 +3606,10 @@ async function revealWorkspaceFileOnServer(target) {
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || payload.ok === false) {
-    throw new Error(String(payload.error ?? `Не удалось показать файл: HTTP ${response.status}`));
+    const error = new Error(String(payload.error ?? `Не удалось показать файл: HTTP ${response.status}`));
+    error.code = String(payload.code ?? "");
+    error.status = response.status;
+    throw error;
   }
 }
 

@@ -13,6 +13,7 @@ import {
   MiniAppServer,
   PublicAuthAttemptLimiter,
   validateTelegramInitData,
+  workspaceFileRevealAccessError,
 } from "../../../src/interfaces/web/mini-app-server.mjs";
 import { buildLazyJournalPayload } from "../../../src/interfaces/web/mini-app-journal-data.mjs";
 import { createAttachmentStorageName } from "../../../src/domain/attachment-files.mjs";
@@ -39,6 +40,32 @@ test("local session trust uses the socket peer and rejects forwarded requests", 
     socket: { remoteAddress: "127.0.0.1" },
     headers: { host: "127.0.0.1", "x-forwarded-for": "203.0.113.10" },
   }), false);
+});
+
+test("workspace file reveal access allows trusted devices and separates unavailable runtime", () => {
+  assert.equal(workspaceFileRevealAccessError({
+    authorizationSource: "trusted-device",
+    hasWorkspaceFileRoots: true,
+    hasRevealWorkspaceFile: true,
+  }), null);
+  assert.deepEqual(workspaceFileRevealAccessError({
+    authorizationSource: "telegram-mini-app",
+    hasWorkspaceFileRoots: true,
+    hasRevealWorkspaceFile: true,
+  }), {
+    status: 403,
+    code: "workspace-file-reveal-forbidden",
+    error: "Показ файлов доступен только локальному Agent Hub или доверенному устройству.",
+  });
+  assert.deepEqual(workspaceFileRevealAccessError({
+    authorizationSource: "trusted-device",
+    hasWorkspaceFileRoots: true,
+    hasRevealWorkspaceFile: false,
+  }), {
+    status: 503,
+    code: "workspace-file-reveal-unavailable",
+    error: "Показ файлов на стороне runtime недоступен.",
+  });
 });
 const BOT_TOKEN = "123456789:test-token";
 
@@ -1457,6 +1484,7 @@ test("trusted browser receives one-time File Bridge transfer without generic fil
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-file-bridge-"));
   const target = path.join(directory, "result.cfe");
   await writeFile(target, "extension", "utf8");
+  let revealed = "";
   const server = new MiniAppServer({
     host: "127.0.0.1",
     port: 0,
@@ -1466,6 +1494,7 @@ test("trusted browser receives one-time File Bridge transfer without generic fil
       resolveSession: async () => ({ id: "session-1", deviceId: "browser-1" }),
     },
     workspaceFileRoots: [directory],
+    revealWorkspaceFile: async (file) => { revealed = file; },
   });
   try {
     const address = await server.start();
@@ -1483,6 +1512,11 @@ test("trusted browser receives one-time File Bridge transfer without generic fil
     const installer = await fetch(`${address.url}api/workspace-file/bridge-installer.ps1`, {
       headers: { Authorization: "device trusted-session" },
     });
+    const reveal = await fetch(`${address.url}api/workspace-file/reveal`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ path: target }),
+    });
     const first = await fetch(new URL(ticket.downloadPath, address.url));
     const second = await fetch(new URL(ticket.downloadPath, address.url));
 
@@ -1492,6 +1526,8 @@ test("trusted browser receives one-time File Bridge transfer without generic fil
     assert.equal(direct.status, 403);
     assert.equal(installer.status, 200);
     assert.match(await installer.text(), /agenthub-file/u);
+    assert.equal(reveal.status, 200);
+    assert.equal(revealed, await realpath(target));
     assert.equal(first.status, 200);
     assert.equal(await first.text(), "extension");
     assert.equal(second.status, 404);

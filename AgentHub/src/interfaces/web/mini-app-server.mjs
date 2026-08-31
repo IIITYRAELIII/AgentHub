@@ -118,6 +118,28 @@ function workspaceFilePath(value) {
   return path.resolve(source.replace(/:[1-9][0-9]*(?::[1-9][0-9]*)?$/u, ""));
 }
 
+export function workspaceFileRevealAccessError({
+  authorizationSource = "",
+  hasWorkspaceFileRoots = false,
+  hasRevealWorkspaceFile = false,
+} = {}) {
+  if (!["local-mini-app", "trusted-device"].includes(String(authorizationSource))) {
+    return {
+      status: 403,
+      code: "workspace-file-reveal-forbidden",
+      error: "Показ файлов доступен только локальному Agent Hub или доверенному устройству.",
+    };
+  }
+  if (!hasWorkspaceFileRoots || !hasRevealWorkspaceFile) {
+    return {
+      status: 503,
+      code: "workspace-file-reveal-unavailable",
+      error: "Показ файлов на стороне runtime недоступен.",
+    };
+  }
+  return null;
+}
+
 async function resolveWorkspaceFile(value, roots) {
   const target = await realpath(workspaceFilePath(value));
   const resolvedRoots = (await Promise.all((roots ?? []).map(async (root) => {
@@ -1296,10 +1318,16 @@ export class MiniAppServer {
       }
       const authorization = await this.#authorize(request, response);
       if (!authorization) return;
-      if (authorization.source !== "local-mini-app"
-        || !this.#workspaceFileRoots.length
-        || !this.#revealWorkspaceFile) {
-        json(response, 403, { error: "Показ файлов доступен только локальному Agent Hub." }, method);
+      const accessError = workspaceFileRevealAccessError({
+        authorizationSource: authorization.source,
+        hasWorkspaceFileRoots: Boolean(this.#workspaceFileRoots.length),
+        hasRevealWorkspaceFile: Boolean(this.#revealWorkspaceFile),
+      });
+      if (accessError) {
+        json(response, accessError.status, {
+          code: accessError.code,
+          error: accessError.error,
+        }, method);
         return;
       }
       try {
@@ -1308,7 +1336,11 @@ export class MiniAppServer {
         await this.#revealWorkspaceFile(file.target);
         json(response, 200, { ok: true }, method);
       } catch (error) {
-        json(response, 400, { ok: false, error: String(error?.message ?? error) }, method);
+        json(response, 400, {
+          ok: false,
+          code: "workspace-file-reveal-failed",
+          error: String(error?.message ?? error),
+        }, method);
       }
       return;
     }

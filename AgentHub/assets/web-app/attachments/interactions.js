@@ -239,6 +239,10 @@
       && ["127.0.0.1", "localhost", "::1"].includes(String(hostname).toLowerCase());
   }
 
+  function workspaceFileRevealBridgeFallbackAllowed(error) {
+    return String(error?.code ?? "") === "workspace-file-reveal-unavailable";
+  }
+
   async function revealWorkspaceFileResource({
     target = "",
     vscode = false,
@@ -263,10 +267,13 @@
       serverRevealError = error;
     }
 
-    if (bridgeAvailable) {
+    const bridgeFallbackAllowed = workspaceFileRevealBridgeFallbackAllowed(serverRevealError);
+    if (bridgeAvailable && bridgeFallbackAllowed) {
       await launchWorkspaceFileBridge("reveal", localPath);
       return "bridge";
     }
+
+    if (!bridgeFallbackAllowed) throw serverRevealError;
 
     if (!localFilesAvailable) {
       throw new Error("Проводник на стороне runtime недоступен. Для режима удалённого устройства сопряги устройство и установи Windows File Bridge.");
@@ -287,6 +294,7 @@
     moveGalleryIndex,
     normalizeWindowsPath,
     revealWorkspaceFileResource,
+    workspaceFileRevealBridgeFallbackAllowed,
     resourceActions,
     resolveFileReference,
     shouldDismissViewer,
