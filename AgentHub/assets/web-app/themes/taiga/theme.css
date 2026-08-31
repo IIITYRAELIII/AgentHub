@@ -49,7 +49,7 @@ html[data-theme="taiga"] {
 
   --shell-header-background:
     linear-gradient(90deg, rgba(1, 5, 8, 0.7), rgba(3, 10, 14, 0.3) 52%, rgba(1, 5, 8, 0.68)),
-    url("/themes/taiga/rain-header.png") center 76% / cover no-repeat;
+    var(--taiga-header-asset) center 76% / cover no-repeat;
   --shell-header-border: 1px solid rgba(65, 124, 150, 0.26);
   --shell-header-rule: linear-gradient(90deg, transparent 1%, rgba(65, 124, 150, 0.18) 8%, #417c96 48%, rgba(65, 124, 150, 0.24) 90%, transparent 99%);
   --shell-header-rule-opacity: 0.92;
@@ -62,18 +62,18 @@ html[data-theme="taiga"] {
   --shell-control-background: rgba(1, 6, 9, 0.48);
   --shell-control-border: 1px solid rgba(151, 184, 199, 0.14);
   --shell-panel-border: 2px solid transparent;
-  --shell-panel-border-image: url("/themes/taiga/rain-panel-frame.png") 64 fill stretch;
+  --shell-panel-border-image: var(--taiga-panel-frame-asset) 64 fill stretch;
   --shell-panel-border-width: 2px;
   --shell-panel-border-image-width: 5px;
   --shell-panel-radius: 4px;
   --shell-chat-border: 2px solid transparent;
-  --shell-chat-border-image: url("/themes/taiga/rain-panel-frame.png") 64 fill stretch;
+  --shell-chat-border-image: var(--taiga-panel-frame-asset) 64 fill stretch;
   --shell-chat-panel-border-image-width: 5px;
   --shell-chat-panel-border-width: 2px;
   --shell-chat-radius: 4px;
   --shell-stream-tabs-background:
     linear-gradient(rgba(1, 6, 9, 0.48), rgba(2, 8, 12, 0.42)),
-    url("/themes/taiga/rain-panel.png") center / 512px 512px repeat;
+    var(--taiga-panel-asset) center / 512px 512px repeat;
   --shell-stream-tabs-border-bottom: 1px solid rgba(65, 124, 150, 0.24);
   --shell-stream-tab-background: transparent;
   --shell-stream-tab-hover-background: rgba(65, 124, 150, 0.07);
@@ -288,9 +288,9 @@ html[data-theme="taiga"] body .chat .composer {
   -webkit-backdrop-filter: blur(14px) saturate(92%);
   background:
     linear-gradient(rgba(1, 6, 9, 0.18), rgba(1, 6, 9, 0.34)),
-    url("/themes/taiga/rain-composer.png") center / cover no-repeat;
+    var(--taiga-composer-asset) center / cover no-repeat;
   border: 2px solid transparent;
-  border-image: url("/themes/taiga/rain-panel-frame.png") 64 fill / 5px / 0 stretch;
+  border-image: var(--taiga-panel-frame-asset) 64 fill / 5px / 0 stretch;
   border-radius: 5px;
   box-shadow:
     inset 0 1px rgba(214, 232, 240, 0.06),

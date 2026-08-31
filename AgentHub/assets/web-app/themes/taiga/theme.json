@@ -4,6 +4,12 @@
   "color": "#070c12",
   "order": 60,
   "styles": "theme.css",
+  "assets": {
+    "header": "rain-header.png",
+    "panel": "rain-panel.png",
+    "panel-frame": "rain-panel-frame.png",
+    "composer": "rain-composer.png"
+  },
   "backgrounds": [
     { "id": "taiga", "name": "Лесной коридор", "asset": "rain-corridor.png", "particles": "rain", "preload": true },
     { "id": "taiga-corridor", "name": "Убежище", "asset": "rain-shelter.png", "particles": "rain" },
