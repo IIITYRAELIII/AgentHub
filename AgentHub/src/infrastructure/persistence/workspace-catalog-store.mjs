@@ -280,18 +280,26 @@ function workspaceEventFromRow(row) {
 export class WorkspaceCatalogStore {
   #databaseFile;
   #database = null;
+  #readOnly;
   #now;
   #idFactory;
 
-  constructor({ databaseFile, now = () => Date.now(), idFactory = randomUUID } = {}) {
+  constructor({
+    databaseFile,
+    readOnly = false,
+    now = () => Date.now(),
+    idFactory = randomUUID,
+  } = {}) {
     if (!databaseFile) throw new Error("WorkspaceCatalogStore databaseFile is required");
     this.#databaseFile = path.resolve(databaseFile);
+    this.#readOnly = readOnly === true;
     this.#now = now;
     this.#idFactory = idFactory;
   }
 
   async load() {
     await this.#open();
+    if (this.#readOnly) return this;
     this.#migrateReleaseWorkflowSettings();
     this.#migrateWorkspaceDeveloperRules();
     this.#migrateArchitectStreamSettings();
@@ -306,11 +314,18 @@ export class WorkspaceCatalogStore {
 
   async #open() {
     if (this.#database) return this.#database;
-    await mkdir(path.dirname(this.#databaseFile), { recursive: true });
+    if (!this.#readOnly) await mkdir(path.dirname(this.#databaseFile), { recursive: true });
     let database;
     try {
-      database = new DatabaseSync(this.#databaseFile);
-      configure(database);
+      database = new DatabaseSync(
+        this.#databaseFile,
+        this.#readOnly ? { readOnly: true } : {},
+      );
+      if (this.#readOnly) {
+        database.exec("PRAGMA query_only = ON; PRAGMA busy_timeout = 0; PRAGMA foreign_keys = ON;");
+      } else {
+        configure(database);
+      }
     } catch (error) {
       database?.close();
       throw error;

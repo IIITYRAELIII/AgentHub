@@ -43,6 +43,43 @@ test("workspace catalog revision is O(1) state that changes after a write", asyn
   assert.ok(store.revision > initial);
 });
 
+test("workspace catalog read-only mode exposes hierarchy without running migrations", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-workspaces-read-only-"));
+  const databaseFile = path.join(directory, "journal.sqlite");
+  let writer;
+  let reader;
+  try {
+    writer = new WorkspaceCatalogStore({ databaseFile, now: () => 100 });
+    await writer.load();
+    const workspace = writer.createWorkspace({ name: "Read model" });
+    const stream = writer.createStream({ workspaceId: workspace.id, name: "Queue" });
+    writer.bindThread({
+      provider: "codex",
+      threadId: "10000000-0000-4000-8000-000000000020",
+      streamId: stream.id,
+      projectRoot: "D:/work",
+    });
+    writer.close();
+    writer = null;
+
+    reader = new WorkspaceCatalogStore({ databaseFile, readOnly: true });
+    await reader.load();
+    assert.equal(reader.revision, 0);
+    assert.equal(
+      reader.hierarchy().find((item) => item.id === workspace.id).streams[0].threads[0].threadId,
+      "10000000-0000-4000-8000-000000000020",
+    );
+    assert.throws(
+      () => reader.createWorkspace({ name: "Forbidden" }),
+      /read.?only|attempt to write/iu,
+    );
+  } finally {
+    writer?.close();
+    reader?.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("workspace catalog fails closed on a corrupt shared database", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-workspaces-corrupt-"));
   const databaseFile = path.join(directory, "journal.sqlite");

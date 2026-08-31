@@ -31,6 +31,10 @@ import {
 import { LoopbackTelegramApi } from "../infrastructure/network/loopback-telegram-api.mjs";
 import { localWebAccessUrl } from "../infrastructure/network/loopback-web-access.mjs";
 import { JournalDatabase } from "../infrastructure/persistence/journal-database.mjs";
+import {
+  MessageCommandLedgerStore,
+  messageCommandLedgerPath,
+} from "../infrastructure/persistence/message-command-ledger-store.mjs";
 import { writeTextAtomic } from "../infrastructure/persistence/state-store.mjs";
 import {
   cloneAttachmentDirectoryToTestContour,
@@ -38,6 +42,7 @@ import {
 } from "../infrastructure/persistence/test-contour-data-clone.mjs";
 import { UsageSyncIdentityStore } from "../infrastructure/persistence/usage-sync-identity-store.mjs";
 import { WorkLogUsageSyncStore } from "../infrastructure/persistence/work-log-usage-sync-store.mjs";
+import { WorkspaceCatalogStore } from "../infrastructure/persistence/workspace-catalog-store.mjs";
 import { processIsAlive } from "../infrastructure/process/process-liveness.mjs";
 import { withInterprocessLocks } from "../infrastructure/process/interprocess-lock.mjs";
 import { stopProcessTree } from "../infrastructure/process/process-tree.mjs";
@@ -61,6 +66,7 @@ const CONFIG_FILE = "config.json";
 const SOURCE_FILE = "test-contour-source.json";
 const USER_ID = 42;
 const CHAT_ID = 84;
+const TEST_CONTOUR_DRAIN_STATES = new Set(["accepted", "queued", "dispatching", "started", "unknown"]);
 
 export { defaultTestContourRoot };
 
@@ -166,6 +172,173 @@ async function readJson(file, fallback = null) {
 async function writeJson(file, value) {
   await mkdir(path.dirname(file), { recursive: true });
   await writeFile(file, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+function fakeThreadSequence(threadId) {
+  const match = /^10000000-0000-4000-8000-(\d{12})$/u.exec(String(threadId ?? "").trim());
+  return match ? Number(match[1]) : 0;
+}
+
+function fakeCodexThread({ threadId, projectRoot, name, model, updatedAtMs = 0 }) {
+  return {
+    id: threadId,
+    cwd: String(projectRoot ?? "").trim(),
+    name: String(name ?? "").trim() || "Восстановленная тестовая задача",
+    preview: "",
+    updatedAt: Math.max(0, Math.floor(Number(updatedAtMs) / 1_000)) || Math.floor(Date.now() / 1_000),
+    turns: [],
+    model,
+    reasoningEffort: "medium",
+    archived: false,
+  };
+}
+
+async function activeTestContourCodexCommands(dataDir) {
+  if (!existsSync(messageCommandLedgerPath(dataDir))) return [];
+  const ledger = new MessageCommandLedgerStore({ dataDir, readOnly: true });
+  try {
+    return ledger.activeRecords().filter((record) => (
+      String(record.item?.provider ?? "").trim().toLowerCase() === "codex"
+    ));
+  } finally {
+    ledger.close();
+  }
+}
+
+async function persistedTestContourCodexThreads({ databaseFile, projectRoot, model }) {
+  if (!existsSync(databaseFile)) return [];
+  const catalog = new WorkspaceCatalogStore({ databaseFile, readOnly: true });
+  try {
+    await catalog.load();
+    return catalog.hierarchy().flatMap((workspace) => workspace.streams.flatMap((stream) => (
+      stream.threads
+        .filter((thread) => thread.provider === "codex")
+        .map((thread) => fakeCodexThread({
+          threadId: thread.threadId,
+          projectRoot: thread.projectRoot || stream.settings?.project || projectRoot,
+          name: stream.displayName,
+          model,
+          updatedAtMs: thread.updatedAtMs,
+        }))
+    )));
+  } finally {
+    catalog.close();
+  }
+}
+
+export async function reconcileTestContourFakeCodexState({
+  root = defaultTestContourRoot(),
+  model = TEST_CONTOUR_FAKE_MODEL,
+} = {}) {
+  const paths = testContourPaths(root);
+  if (model !== TEST_CONTOUR_FAKE_MODEL) {
+    return { status: "disabled", model, recoveredThreadCount: 0, activeCommandCount: 0 };
+  }
+  const [catalogThreads, commands, saved] = await Promise.all([
+    persistedTestContourCodexThreads({
+      databaseFile: path.join(paths.dataDir, "journal.sqlite"),
+      projectRoot: paths.projectRoot,
+      model,
+    }),
+    activeTestContourCodexCommands(paths.dataDir),
+    readJson(paths.fakeCodexStateFile, {}),
+  ]);
+  const desired = new Map(catalogThreads.map((thread) => [thread.id, thread]));
+  const unresolvedCommands = [];
+  for (const record of commands) {
+    const threadId = String(record.item?.threadId ?? "").trim();
+    if (!threadId) {
+      if (TEST_CONTOUR_DRAIN_STATES.has(record.state)) {
+        unresolvedCommands.push(record.clientUserMessageId);
+      }
+      continue;
+    }
+    if (!desired.has(threadId)) {
+      desired.set(threadId, fakeCodexThread({
+        threadId,
+        projectRoot: record.item?.projectRoot || paths.projectRoot,
+        name: record.item?.taskTitle,
+        model,
+        updatedAtMs: record.updatedAtMs,
+      }));
+    }
+  }
+  if (unresolvedCommands.length) {
+    throw new Error(
+      `Fake Codex recovery cannot resolve ${unresolvedCommands.length} durable command Thread identities`,
+    );
+  }
+  const existingThreads = Array.isArray(saved?.threads) ? saved.threads : [];
+  const existingIds = new Set(existingThreads.map((thread) => String(thread?.id ?? "").trim()).filter(Boolean));
+  const recoveredThreads = [...desired.values()].filter((thread) => !existingIds.has(thread.id));
+  const threads = [...existingThreads, ...recoveredThreads];
+  const diagnostics = {
+    version: 1,
+    status: "ready",
+    catalogThreadCount: catalogThreads.length,
+    activeCommandCount: commands.length,
+    queuedCommandCount: commands.filter((record) => record.state === "queued").length,
+    recoveredThreadCount: recoveredThreads.length,
+    retainedThreadCount: existingThreads.length,
+    updatedAt: new Date().toISOString(),
+  };
+  const nextState = {
+    ...(saved && typeof saved === "object" ? saved : {}),
+    nextThread: Math.max(
+      1,
+      Number(saved?.nextThread) || 1,
+      ...threads.map((thread) => fakeThreadSequence(thread.id) + 1),
+    ),
+    nextTurn: Math.max(1, Number(saved?.nextTurn) || 1),
+    nextMessage: Math.max(1, Number(saved?.nextMessage) || 1),
+    threads,
+    crashedOnce: saved?.crashedOnce === true,
+    requestCounts: saved?.requestCounts && typeof saved.requestCounts === "object"
+      ? saved.requestCounts
+      : {},
+    hubRecovery: diagnostics,
+  };
+  await writeTextAtomic(paths.fakeCodexStateFile, `${JSON.stringify(nextState, null, 2)}\n`);
+  return diagnostics;
+}
+
+export async function testContourFakeCodexQueueDiagnostics({
+  root = defaultTestContourRoot(),
+} = {}) {
+  const paths = testContourPaths(root);
+  const [commands, fakeState] = await Promise.all([
+    activeTestContourCodexCommands(paths.dataDir),
+    readJson(paths.fakeCodexStateFile, {}),
+  ]);
+  const fakeThreadIds = new Set((Array.isArray(fakeState?.threads) ? fakeState.threads : [])
+    .map((thread) => String(thread?.id ?? "").trim())
+    .filter(Boolean));
+  const drainCommands = commands.filter((record) => TEST_CONTOUR_DRAIN_STATES.has(record.state));
+  const fakeCommands = drainCommands.filter((record) => (
+    fakeThreadIds.has(String(record.item?.threadId ?? "").trim())
+  ));
+  const stateCounts = Object.fromEntries([...new Set(fakeCommands.map((record) => record.state))]
+    .sort()
+    .map((state) => [state, fakeCommands.filter((record) => record.state === state).length]));
+  const missingThreadIds = [...new Set(drainCommands
+    .map((record) => String(record.item?.threadId ?? "").trim())
+    .filter((threadId) => threadId && !fakeThreadIds.has(threadId)))].sort();
+  const unresolvedCommandIds = drainCommands
+    .filter((record) => !String(record.item?.threadId ?? "").trim())
+    .map((record) => record.clientUserMessageId)
+    .sort();
+  return {
+    status: missingThreadIds.length || unresolvedCommandIds.length
+      ? "blocked"
+      : fakeCommands.length ? "draining" : "ready",
+    activeCommandCount: fakeCommands.length,
+    stateCounts,
+    missingThreadIds,
+    unresolvedCommandIds,
+    oldestAcceptedAtMs: fakeCommands.length
+      ? Math.min(...fakeCommands.map((record) => Number(record.acceptedAtMs) || Number.POSITIVE_INFINITY))
+      : null,
+  };
 }
 
 async function ensureMarker(root) {
@@ -532,11 +705,29 @@ async function waitFor(operation, description, timeoutMs = 120_000) {
   throw new Error(`Timeout waiting for ${description}: ${lastError?.message ?? "not ready"}`);
 }
 
-async function readyHealth(port) {
+async function readyHealth(port, {
+  root = defaultTestContourRoot(),
+  requireFakeQueue = false,
+} = {}) {
   const response = await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(2_000) });
   if (!response.ok) return null;
   const body = await response.json();
-  return body?.ok === true && body?.live === true && body?.ready === true ? body : null;
+  if (body?.ok !== true || body?.live !== true || body?.ready !== true) return null;
+  if (!requireFakeQueue) return body;
+  const paths = testContourPaths(root);
+  const fakeState = await readJson(paths.fakeCodexStateFile, {});
+  const recovery = fakeState?.hubRecovery ?? { status: "missing" };
+  const queue = await testContourFakeCodexQueueDiagnostics({ root });
+  if (recovery.status !== "ready" || queue.status !== "ready") {
+    throw new Error(`Fake Codex queue recovery is ${queue.status}: ${JSON.stringify({ recovery, queue })}`);
+  }
+  return {
+    ...body,
+    testContour: {
+      fakeCodexRecovery: recovery,
+      fakeCodexQueue: queue,
+    },
+  };
 }
 
 export async function serveTestContour({
@@ -580,7 +771,10 @@ export async function serveTestContour({
   try {
     const health = await waitFor(async () => {
       if (runtimeExit) throw new Error(`candidate exited with ${runtimeExit.signal ?? runtimeExit.code}`);
-      return readyHealth(port);
+      return readyHealth(port, {
+        root: isolatedRoot,
+        requireFakeQueue: model === TEST_CONTOUR_FAKE_MODEL,
+      });
     }, "Test Contour runtime readiness");
     const secret = String(await readFile(path.join(isolatedRoot, "local-web.secret"), "utf8")).trim();
     const url = localWebAccessUrl(`http://${TEST_CONTOUR_WEB_HOST}:${port}/`, secret);
@@ -626,7 +820,10 @@ export async function readTestContourStatus({ root = defaultTestContourRoot() } 
   if (!state || !processIsAlive(state.managerPid) || !processIsAlive(state.runtimePid)) {
     return { running: false, root: paths.root, state: state ?? null, source };
   }
-  const health = await readyHealth(state.port).catch(() => null);
+  const health = await readyHealth(state.port, {
+    root: paths.root,
+    requireFakeQueue: state.model === TEST_CONTOUR_FAKE_MODEL,
+  }).catch(() => null);
   return { running: Boolean(health), root: paths.root, state, health, source };
 }
 
@@ -838,6 +1035,7 @@ async function startTestContourUnlocked({
     databaseFile: path.join(paths.dataDir, "journal.sqlite"),
     model,
   });
+  await reconcileTestContourFakeCodexState({ root: isolatedRoot, model });
   await rm(paths.stateFile, { force: true });
   const stdout = openSync(paths.stdoutFile, "a");
   const stderr = openSync(paths.stderrFile, "a");
