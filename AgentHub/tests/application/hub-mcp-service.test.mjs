@@ -128,6 +128,7 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
     }],
   };
   const releaseCalls = [];
+  const preflightCalls = [];
   const taskGitPrepareCalls = [];
   const taskGitWorkspaces = {
     prepare: async ({ taskId, projectRoot: selectedProjectRoot }) => {
@@ -168,6 +169,12 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
     releasePlanner: {
       plan: async () => ({ revision: "plan-1", candidates: [], ready: [], draft: [], blocked: [], conflicts: [] }),
     },
+    releasePreflight: {
+      preflight: async (options) => {
+        preflightCalls.push(options);
+        return { ...options, testContour: { running: true, headCommit: "dev-head" } };
+      },
+    },
     releaseCompleter: {
       completeRelease: async (options) => {
         releaseCalls.push(options);
@@ -206,6 +213,7 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
     taskGitPrepareCalls,
     taskLaunchCalls,
     releaseCalls,
+    preflightCalls,
     taskGitWorkspaces,
     sentMessages,
   };
@@ -471,10 +479,17 @@ test("HubMcpService sends attributed messages to another current-Workspace Strea
 });
 
 test("HubMcpService exposes cursor events and publication-gated release completion", async (context) => {
-  const { service, token, releaseCalls } = await fixture(context);
+  const { service, token, preflightCalls, releaseCalls } = await fixture(context);
   const events = await service.call("hub_events_list", { context_token: token, after_sequence: 4 });
   assert.equal(events.events[0].sequence, 5);
   assert.equal(events.nextSequence, 5);
+  const preflight = await service.call("hub_release_preflight", {
+    context_token: token, request_id: "preflight-1", expected_plan_revision: "plan-1",
+  });
+  assert.equal(preflight.testContour.headCommit, "dev-head");
+  assert.deepEqual(preflightCalls[0], {
+    workspaceId: "workspace-1", expectedPlanRevision: "plan-1", conflictsResolved: false,
+  });
   const release = await service.call("hub_release_complete", {
     context_token: token, request_id: "release-1", expected_revision: "abc", expected_plan_revision: "plan-1",
     deployment_verified: true, verification_summary: "Published and smoke-tested", conflicts_resolved: true,
@@ -482,6 +497,23 @@ test("HubMcpService exposes cursor events and publication-gated release completi
   assert.equal(release.workspaceId, "workspace-1");
   assert.equal(release.expectedRevision, "abc");
   assert.equal(releaseCalls[0].conflictsResolved, true);
+});
+
+test("HubMcpService restricts release preflight to Architect Streams", async (context) => {
+  const { service, token, workspaceCatalog } = await fixture(context);
+  const hierarchy = workspaceCatalog.hierarchy;
+  workspaceCatalog.hierarchy = () => hierarchy().map((workspace) => ({
+    ...workspace,
+    streams: workspace.streams.map((stream) => ({
+      ...stream,
+      settings: { ...stream.settings, architect: false },
+    })),
+  }));
+  await assert.rejects(() => service.call("hub_release_preflight", {
+    context_token: token,
+    request_id: "preflight-forbidden",
+    expected_plan_revision: "plan-1",
+  }), /requires an Architect Stream/u);
 });
 
 test("HubMcpService binds the current turn to its dedicated Task worktree", async (context) => {
@@ -501,6 +533,7 @@ test("HubMcpService binds the current turn to its dedicated Task worktree", asyn
 
   const tools = service.tools();
   assert.equal(tools.some((tool) => tool.name === "hub_task_release_freeze"), false);
+  assert.equal(tools.some((tool) => tool.name === "hub_release_preflight"), true);
 });
 
 test("HubMcpService claim falls back to the Workspace working directory", async (context) => {

@@ -20,7 +20,7 @@ const MUTATING_TOOLS = new Set([
   "hub_task_create", "hub_task_update", "hub_task_move", "hub_task_start", "hub_task_claim", "hub_task_status_update", "hub_task_complete", "hub_task_delete",
   "hub_task_attachment_add", "hub_workspace_rules_update", "hub_stream_rules_update",
   "hub_stream_message_send",
-  "hub_release_complete",
+  "hub_release_preflight", "hub_release_complete",
 ]);
 const TEXT_ATTACHMENT_TYPES = new Set([
   "text/plain", "text/markdown", "text/csv", "application/json", "application/xml",
@@ -222,7 +222,7 @@ export class HubMcpService {
   #contextCapabilities = new Map();
 
   constructor({
-    workspaceCatalog, taskBoard, workLog, attachmentDirectory, secret, releasePlanner, releaseCompleter,
+    workspaceCatalog, taskBoard, workLog, attachmentDirectory, secret, releasePlanner, releasePreflight, releaseCompleter,
     taskGitWorkspaces = null,
   } = {}) {
     for (const name of [
@@ -238,12 +238,14 @@ export class HubMcpService {
       requiredMethod(taskBoard, name);
     }
     requiredMethod(workLog, "threadTurns");
+    requiredMethod(releasePreflight, "preflight");
     requiredMethod(releaseCompleter, "completeRelease");
     this.workspaceCatalog = workspaceCatalog;
     this.taskBoard = taskBoard;
     this.workLog = workLog;
     this.attachmentDirectory = path.resolve(requiredText(attachmentDirectory, "attachment directory", 2_000));
     this.secret = requiredText(secret, "MCP secret", 512);
+    this.releasePreflight = releasePreflight;
     this.releaseCompleter = releaseCompleter;
     this.releasePlanner = releasePlanner;
     this.taskGitWorkspaces = taskGitWorkspaces;
@@ -344,6 +346,10 @@ export class HubMcpService {
         local_path: { type: "string" },
       }, ["task_id", "local_path"]),
       tool("hub_release_plan_get", "Read the complete release plan and exact integrated dev heads for the current Workspace."),
+      tool("hub_release_preflight", "Refresh Test Contour from dev and verify the exact selected Task results are integrated before release.", {
+        expected_plan_revision: { type: "string", description: "Exact revision returned by hub_release_plan_get." },
+        conflicts_resolved: { type: "boolean", description: "True only after the Architect explicitly resolves every reported overlap." },
+      }, ["expected_plan_revision"]),
       tool("hub_release_complete", "Complete a release only after clean main revisions and explicit deployment verification.", {
         expected_revision: { type: "string" },
         expected_plan_revision: { type: "string", description: "Exact revision returned by hub_release_plan_get." },
@@ -459,6 +465,9 @@ export class HubMcpService {
         return this.#addAttachment(context, args);
       case "hub_release_plan_get":
         return this.#releasePlan(context);
+      case "hub_release_preflight":
+        if (!this.#isArchitect(context)) throw new Error("release preflight requires an Architect Stream");
+        return this.#preflightRelease(context, args);
       case "hub_release_complete":
         if (!this.#isArchitect(context)) throw new Error("release completion requires an Architect Stream");
         return this.#completeRelease(context, args);
@@ -1116,5 +1125,13 @@ export class HubMcpService {
     } catch {
       return false;
     }
+  }
+
+  async #preflightRelease(context, args) {
+    return this.releasePreflight.preflight({
+      workspaceId: context.workspaceId,
+      expectedPlanRevision: optionalText(args.expected_plan_revision, 128),
+      conflictsResolved: args.conflicts_resolved === true,
+    });
   }
 }

@@ -97,6 +97,15 @@ not deploy a contour per Task branch. The contour status records the exact
 runtime is stopped, so a Git or build preparation failure leaves the previous
 working contour available.
 
+An explicit release preflight always prepares a fresh candidate from `dev`; it
+must never reuse or start a cached candidate. After refresh,
+`TestContour.source.headCommit` must equal the exact Agent Hub repository `dev`
+HEAD observed by the preflight. Only this release preflight additionally
+requires every selected immutable Task result commit to be an ancestor of the
+corresponding repository `dev` HEAD. Ordinary plan reads do not impose that
+integration requirement. The preflight does not reconstruct or compare blob
+manifests.
+
 The rolling contour is preview evidence, not release proof. Release validation
 still requires the prescribed isolated candidate checks and publication
 pipeline before production side effects.

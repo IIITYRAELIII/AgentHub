@@ -304,6 +304,26 @@ export class TaskGitWorkspaceService {
     };
   }
 
+  async verifyReleaseResultsInDev({ projectRoot, resultCommits = [] } = {}) {
+    const dev = await this.prepareDev(projectRoot);
+    const commits = [...new Set(resultCommits.map((value) => String(value ?? "").trim()).filter(Boolean))].sort();
+    if (!commits.length) throw new Error("release preflight requires Task result commits");
+    const verified = [];
+    for (const resultCommit of commits) {
+      const acceptedCommit = await runGit(["rev-parse", "--verify", `${resultCommit}^{commit}`], {
+        cwd: dev.projectRoot,
+      });
+      const integrated = await gitMaybe(["merge-base", "--is-ancestor", acceptedCommit, dev.headCommit], {
+        cwd: dev.projectRoot,
+      }) !== null;
+      if (!integrated) {
+        throw new Error(`Task result commit ${acceptedCommit} is not integrated into dev ${dev.headCommit}`);
+      }
+      verified.push(acceptedCommit);
+    }
+    return { ...dev, resultCommits: verified };
+  }
+
   async describe(taskId) {
     const id = normalizedTaskId(taskId);
     const root = path.join(this.taskWorktreesRoot, id);

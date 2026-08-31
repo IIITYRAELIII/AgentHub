@@ -57,6 +57,21 @@ test("Task Git workspace commits one Task branch and merges it into dev", async 
   });
   assert.equal(evidence.resultCommit, result.snapshot.headCommit);
   assert.deepEqual(evidence.changedFiles.map((file) => file.path), ["app.txt"]);
+  const devEvidence = await service.verifyReleaseResultsInDev({
+    projectRoot: root,
+    resultCommits: [result.snapshot.headCommit],
+  });
+  assert.equal(devEvidence.headCommit, result.integration.dev.headCommit);
+  assert.deepEqual(devEvidence.resultCommits, [result.snapshot.headCommit]);
+
+  const pendingTaskId = "22222222-2222-2222-2222-222222222222";
+  const pendingWorkspace = await service.prepare({ taskId: pendingTaskId, projectRoot: root });
+  await writeFile(path.join(pendingWorkspace.projectRoot, "pending.txt"), "pending\n", "utf8");
+  const pendingSnapshot = await service.snapshot({ taskId: pendingTaskId, projectRoot: pendingWorkspace.projectRoot });
+  await assert.rejects(() => service.verifyReleaseResultsInDev({
+    projectRoot: root,
+    resultCommits: [pendingSnapshot.headCommit],
+  }), /not integrated into dev/u);
   await assert.rejects(() => service.releaseEvidence({
     taskId,
     projectRoot: root,

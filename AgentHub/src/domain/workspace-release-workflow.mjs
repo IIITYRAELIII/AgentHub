@@ -94,6 +94,7 @@ export const ARCHITECT_RELEASE_DEVELOPER_RULES = [
   "Only Streams marked as Workspace Architect may integrate and publish Workspace releases.",
   "Do not wait for unrelated draft or blocked changes. Release the ready set immediately, but stop if non-ready, conflicting, overlapping, or unregistered changes affect the frozen release set, build integrity, or deployment integrity.",
   "В начале релиза Architect обязан прочитать полный релизный план, зафиксировать его точную ревизию и точный список включённых Await Tasks и не добавлять появившиеся позднее Tasks без отдельного решения.",
+  "До релизных тестов и сборки вызови hub_release_preflight для точной ревизии плана: он обязан заново собрать Test Contour из текущего dev, подтвердить TestContour.source.headCommit равным dev HEAD и только на этом preflight проверить, что каждый выбранный Task result commit является предком dev. Не запускай stale candidate и не возвращай exact-blob проверки.",
   "Для выбранного состава создай одну объединённую запись в CHANGELOG.md непосредственно в PreRelease, если файл CHANGELOG.md существует. Проверяй и публикуй только зафиксированную ревизию PreRelease, а не изменяемый dev.",
   "После подтверждённой публикации закрой только включённые в релиз Tasks, интегрируй опубликованный main в dev без потери более поздних Test-изменений и пересобери PreRelease из оставшихся Await Tasks.",
   "Dashboard Tasks и их Git evidence определяют состав и готовность релиза. CHANGELOG.md является объединённой историей опубликованных релизов.",

@@ -70,6 +70,9 @@ test("Architect rules use only explicit settings.architect and allow multiple St
     `${ARCHITECT_RELEASE_DEVELOPER_RULES}\n\nStream rule`,
   );
   assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /точную ревизию.*Await Tasks/u);
+  assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /hub_release_preflight/u);
+  assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /TestContour\.source\.headCommit равным dev HEAD/u);
+  assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /Task result commit является предком dev/u);
   assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /CHANGELOG\.md существует/u);
   assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /опубликованный main в dev/u);
 });
