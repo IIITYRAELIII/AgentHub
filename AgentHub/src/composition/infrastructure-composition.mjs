@@ -9,6 +9,7 @@ import { HubMcpService } from "../application/hub-mcp-service.mjs";
 import { TurnEndNotificationRegistry } from "../application/turn-end-notifications.mjs";
 import { createWorkLogUsageStore } from "../application/work-log-usage-store.mjs";
 import { TaskBoardService } from "../application/task-board-service.mjs";
+import { TaskReleasePlanService } from "../application/task-release-plan-service.mjs";
 import { WorkspaceReleaseService } from "../application/workspace-release-service.mjs";
 import { StreamHandoffService } from "../application/stream-handoff-service.mjs";
 import { AGENT_HUB_VERSION } from "../infrastructure/filesystem/agent-hub-package.mjs";
@@ -205,10 +206,6 @@ export async function createHubInfrastructure({
   });
   const taskBoardStore = new TaskBoardStore({ databaseFile: journalDatabaseFile });
   await workspaceCatalogStore.load();
-  const workspaceReleaseService = new WorkspaceReleaseService({
-    store: taskBoardStore,
-    verifyPublication: verifyWorkspaceReleasePublication,
-  });
   const preTurnInstructions = new PreTurnInstructionStore({
     guideFile: path.join(agentHubRoot, "AGENT_HUB_GUIDE.md"),
     globalFile: path.join(config.dataDir, "global-pre-turn-instructions.md"),
@@ -298,12 +295,19 @@ export async function createHubInfrastructure({
   });
   const hubMcpSecret = await ensureLocalWebSecret(path.join(runtimeCommandRoot, "hub-mcp.secret"));
   const taskGitWorkspaces = new TaskGitWorkspaceService({ dataDir: config.dataDir });
+  const taskReleasePlanner = new TaskReleasePlanService({ taskBoard, taskGitWorkspaces });
+  const workspaceReleaseService = new WorkspaceReleaseService({
+    store: taskBoardStore,
+    releasePlanner: taskReleasePlanner,
+    verifyPublication: verifyWorkspaceReleasePublication,
+  });
   const hubMcpService = new HubMcpService({
     workspaceCatalog: workspaceCatalogStore,
     taskBoard,
     workLog: workLogUsageStore,
     attachmentDirectory,
     secret: hubMcpSecret,
+    releasePlanner: taskReleasePlanner,
     releaseCompleter: workspaceReleaseService,
     taskGitWorkspaces,
   });
@@ -432,6 +436,7 @@ export async function createHubInfrastructure({
     workLogUsageIdentityStore,
     workLogUsageRemoteConfigStore,
     workspaceCatalogStore,
+    taskReleasePlanner,
     workspaceReleaseService,
     streamHandoff,
     preTurnInstructions,

@@ -65,18 +65,16 @@ test("release verification rejects a nested Agent Hub revision that is not publi
   );
 });
 
-test("release verification compares Task result blobs instead of dirty source clones", async () => {
+test("release verification checks immutable Task result commits instead of mutable source clones", async () => {
   const cloneRoot = path.join(workspaceRoot, "Utilities-release-clone");
   const comparisons = [];
   const releasePlan = {
     candidates: [
       {
-        repositoryRevisions: [{ projectRoot: repositoryRoot, resultRevision: "task-a" }],
-        changedFiles: [{ projectRoot: repositoryRoot, path: "AgentHub/server.mjs", operation: "modified" }],
+        gitReferences: [{ projectRoot: repositoryRoot, resultCommit: "task-a" }],
       },
       {
-        repositoryRevisions: [{ projectRoot: cloneRoot, resultRevision: "task-b" }],
-        changedFiles: [{ projectRoot: cloneRoot, path: "AgentHub/client.mjs", operation: "modified" }],
+        gitReferences: [{ projectRoot: cloneRoot, resultCommit: "task-b" }],
       },
     ],
     ready: [
@@ -101,23 +99,20 @@ test("release verification compares Task result blobs instead of dirty source cl
   assert.deepEqual(comparisons, [
     {
       repositoryRoot, taskRevision: "task-a", publishedRevision: "published",
-      files: [{ path: "AgentHub/server.mjs", operation: "modified" }],
     },
     {
       repositoryRoot, taskRevision: "task-b", publishedRevision: "published",
-      files: [{ path: "AgentHub/client.mjs", operation: "modified" }],
     },
   ]);
 });
 
-test("release verification rejects Task blobs missing from the published revision", async () => {
+test("release verification rejects a Task result commit missing from the published revision", async () => {
   await assert.rejects(
     verifyWorkspaceReleasePublication({
       expectedRevision: "published",
       plan: {
         candidates: [{
-          repositoryRevisions: [{ projectRoot: repositoryRoot, resultRevision: "not-integrated" }],
-          changedFiles: [{ projectRoot: repositoryRoot, path: "AgentHub/server.mjs", operation: "modified" }],
+          gitReferences: [{ projectRoot: repositoryRoot, resultCommit: "not-integrated" }],
         }],
         ready: [{ projectRoot: repositoryRoot, files: ["AgentHub/server.mjs"] }],
       },
@@ -125,23 +120,18 @@ test("release verification rejects Task blobs missing from the published revisio
       ...dependencies("published"),
       identifyRepository: async () => "origin:https://example.test/Utilities.git",
       assertTaskResult: async () => {
-        throw new Error("different blob");
+        throw new Error("not an ancestor");
       },
     }),
-    /Task result revision not-integrated is not contained in published revision published/u,
+    /Task result commit not-integrated is not contained in published revision published/u,
   );
 });
 
-test("release verification keeps exact blobs only for non-overlapping Task files", async () => {
+test("release verification uses the same commit ancestry check for resolved overlaps", async () => {
   const comparisons = [];
   const releasePlan = {
     candidates: [{
-      repositoryRevisions: [{ projectRoot: repositoryRoot, resultRevision: "task-a" }],
-      changedFiles: [
-        { projectRoot: repositoryRoot, path: "AgentHub/shared.mjs", operation: "modified" },
-        { projectRoot: repositoryRoot, path: "AgentHub/unique.mjs", operation: "modified" },
-        { projectRoot: repositoryRoot, path: "CHANGELOG.md", operation: "modified" },
-      ],
+      gitReferences: [{ projectRoot: repositoryRoot, resultCommit: "task-a" }],
     }],
     ready: [{
       projectRoot: repositoryRoot,
@@ -164,6 +154,5 @@ test("release verification keeps exact blobs only for non-overlapping Task files
     repositoryRoot,
     taskRevision: "task-a",
     publishedRevision: "published",
-    files: [{ path: "AgentHub/unique.mjs", operation: "modified" }],
   }]);
 });

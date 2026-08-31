@@ -6,6 +6,8 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
+import { taskBranchName } from "../../../src/domain/task-git-reference.mjs";
+import { taskReleasePlanRevision } from "../../../src/domain/task-release-snapshot.mjs";
 import { TaskBoardStore } from "../../../src/infrastructure/persistence/task-board-store.mjs";
 
 async function fixture(t) {
@@ -356,15 +358,15 @@ test("terminal Task evidence backfills a claim baseline captured after claim", a
     resultSnapshot: { repoRoot: projectRoot, tree: "b".repeat(40) },
   });
 
-  assert.equal(recorded.changedFiles.length, 1);
-  assert.deepEqual(Array.from(recorded.repositoryRevisions, (repository) => ({ ...repository })), [{
+  assert.equal(recorded.workLog[0].changedFiles.length, 1);
+  assert.deepEqual(recorded.gitReferences, [{
     projectRoot,
-    baselineRevision: "a".repeat(40),
-    resultRevision: "b".repeat(40),
+    branch: taskBranchName(task.id, projectRoot),
+    resultCommit: "b".repeat(40),
   }]);
 });
 
-test("Await Tasks enter the plan directly and missing evidence stays visible", async (t) => {
+test("Await Tasks expose only their immutable Git references to the release planner", async (t) => {
   const store = await fixture(t);
   const projectRoot = path.resolve("D:/repo");
   const ready = store.create({ text: "Ready Task" });
@@ -386,10 +388,9 @@ test("Await Tasks enter the plan directly and missing evidence stays visible", a
   store.setWorkflowStatus(ready.id, "awaiting_implementation");
   store.setWorkflowStatus(blocked.id, "awaiting_implementation");
 
-  const plan = store.releasePlan("workspace-1");
-  assert.deepEqual(plan.candidates.map((task) => task.id), [ready.id]);
-  assert.deepEqual(plan.blocked.map((task) => task.id), [blocked.id]);
-  assert.equal(plan.ready.length, 1);
+  const releaseTasks = store.releaseTasks("workspace-1");
+  assert.equal(releaseTasks.find((task) => task.id === ready.id).gitReferences.length, 1);
+  assert.deepEqual(releaseTasks.find((task) => task.id === blocked.id).gitReferences, []);
 });
 
 test("a new Await request clears stale evidence until the Task branch is integrated again", async (t) => {
@@ -412,7 +413,7 @@ test("a new Await request clears stale evidence until the Task branch is integra
     resultSnapshot: { repoRoot: projectRoot, tree: "b".repeat(40) },
   });
   store.setWorkflowStatus(task.id, "awaiting_implementation");
-  assert.deepEqual(store.releasePlan("workspace-1").candidates.map((candidate) => candidate.id), [task.id]);
+  assert.equal(store.task(task.id).gitReferences.length, 1);
 
   store.requestWorkflowStatus(task.id, {
     status: "awaiting_implementation",
@@ -421,9 +422,7 @@ test("a new Await request clears stale evidence until the Task branch is integra
     turnId: identity.turnId,
   });
 
-  const retried = store.releasePlan("workspace-1");
-  assert.deepEqual(retried.candidates, []);
-  assert.deepEqual(retried.blocked.map((candidate) => candidate.id), [task.id]);
+  assert.deepEqual(store.task(task.id).gitReferences, []);
 });
 
 test("rolling a Task back clears its pending awaiting intent", async (t) => {
@@ -473,9 +472,103 @@ test("recording evidence never overrides a user-selected workflow status", async
   });
 
   assert.equal(recorded.workflowStatus, "done");
-  assert.equal(recorded.changedFiles.length, 1);
+  assert.equal(recorded.workLog[0].changedFiles.length, 1);
   assert.equal(recorded.workLog.length, 1);
-  assert.equal(recorded.repositoryRevisions.length, 1);
+  assert.equal(recorded.gitReferences.length, 1);
+});
+
+test("legacy Task evidence tables migrate atomically to one Git reference", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-task-evidence-migration-"));
+  const databaseFile = path.join(directory, "journal.sqlite");
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const initial = new TaskBoardStore({ databaseFile });
+  const task = initial.create({ text: "Migrate evidence" });
+  initial.close();
+
+  const projectRoot = path.resolve("D:/repo");
+  const database = new DatabaseSync(databaseFile);
+  database.exec(`
+    CREATE TABLE hub_task_repository_revisions (
+      task_id TEXT NOT NULL, project_root TEXT NOT NULL,
+      baseline_revision TEXT NOT NULL, result_revision TEXT NOT NULL,
+      updated_at_ms INTEGER NOT NULL,
+      PRIMARY KEY (task_id, project_root)
+    ) WITHOUT ROWID;
+    CREATE TABLE hub_task_changed_files (
+      task_id TEXT NOT NULL, project_root TEXT NOT NULL, file_path TEXT NOT NULL,
+      operation TEXT NOT NULL, turn_id TEXT, updated_at_ms INTEGER NOT NULL,
+      PRIMARY KEY (task_id, project_root, file_path)
+    ) WITHOUT ROWID;
+  `);
+  database.prepare("INSERT INTO hub_task_repository_revisions VALUES (?, ?, ?, ?, ?)").run(
+    task.id, projectRoot, "a".repeat(40), "b".repeat(40), 123,
+  );
+  database.prepare("INSERT INTO hub_task_changed_files VALUES (?, ?, ?, 'modified', NULL, ?)").run(
+    task.id, projectRoot, "src/app.mjs", 123,
+  );
+  database.close();
+
+  const migrated = new TaskBoardStore({ databaseFile });
+  assert.deepEqual(migrated.task(task.id).gitReferences, [{
+    projectRoot,
+    branch: taskBranchName(task.id, projectRoot),
+    resultCommit: "b".repeat(40),
+  }]);
+  migrated.close();
+
+  const inspected = new DatabaseSync(databaseFile);
+  assert.equal(inspected.prepare(`
+    SELECT COUNT(*) AS value FROM sqlite_master
+    WHERE type = 'table' AND name IN ('hub_task_repository_revisions', 'hub_task_changed_files')
+  `).get().value, 0);
+  const history = inspected.prepare(`
+    SELECT source_kind, payload_json, payload_sha256 FROM hub_release_registry_history
+    WHERE source_kind IN ('task-repository-revision-v3', 'task-changed-file-v3')
+    ORDER BY source_kind
+  `).all();
+  assert.equal(history.length, 2);
+  for (const row of history) {
+    assert.equal(row.payload_sha256, createHash("sha256").update(row.payload_json, "utf8").digest("hex"));
+  }
+  inspected.close();
+});
+
+test("release completion CAS-checks the exact Task Git reference", async (t) => {
+  const store = await fixture(t);
+  const projectRoot = path.resolve("D:/repo");
+  const task = store.create({ text: "Publish commit" });
+  const identity = {
+    workspaceId: "workspace-1", streamId: "stream-1",
+    provider: "codex", threadId: "thread-1", turnId: "turn-1",
+  };
+  store.move(task.id, { bucket: "workspace", workspaceId: identity.workspaceId });
+  store.claim(task.id, identity);
+  store.recordTaskTurn({
+    taskId: task.id,
+    provider: identity.provider,
+    threadId: identity.threadId,
+    turnId: identity.turnId,
+    projectRoot,
+    changedFiles: [{ projectRoot, path: "src/app.mjs", operation: "modified" }],
+    resultSnapshot: { repoRoot: projectRoot, tree: "b".repeat(40) },
+  });
+  store.setWorkflowStatus(task.id, "awaiting_implementation");
+  const candidate = store.task(task.id);
+  const plan = {
+    revision: taskReleasePlanRevision(identity.workspaceId, [candidate]),
+    candidates: [{
+      ...candidate,
+      changedFiles: [{ projectRoot, path: "src/app.mjs", operation: "modified" }],
+    }],
+  };
+
+  const result = store.completeRelease(identity.workspaceId, {
+    expectedPlanRevision: plan.revision,
+    plan,
+    verificationEvidence: { publishedRevision: "c".repeat(40) },
+  });
+  assert.deepEqual(result.released[0].gitReferences, candidate.gitReferences);
+  assert.equal(store.task(task.id).workflowStatus, "done");
 });
 
 function createLegacyReleaseSchema(database) {
@@ -573,7 +666,7 @@ test("Legacy cutover maps production union to Tasks and retains verified immutab
   assert.equal(migrated.filter((task) => task.workflowStatus === "awaiting_implementation").length, 2);
   assert.equal(migrated.filter((task) => task.workflowStatus === "in_progress").length, 9);
   assert.deepEqual(
-    migrated.find((task) => task.sourceKey === "release-migration:changeset:changeset-2").changedFiles,
+    migrated.find((task) => task.sourceKey === "release-migration:changeset:changeset-2").gitReferences,
     [],
   );
   assert.equal(

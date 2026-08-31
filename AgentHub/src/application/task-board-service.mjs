@@ -29,7 +29,7 @@ export class TaskBoardService {
     for (const name of [
       "create", "task", "list", "move", "markStarted", "orderedColumnIds", "moveColumn",
       "notesComment", "setNotesComment", "reassignWorkspace", "claim", "claimedTaskForTurn",
-      "recordTaskTurn", "releasePlan", "completeRelease",
+      "recordTaskTurn", "releaseTasks", "completeRelease",
     ]) requiredMethod(store, name);
     if (typeof workspaceCatalog?.hierarchy !== "function") throw new TypeError("workspaceCatalog is required");
     this.store = store;
@@ -245,8 +245,8 @@ export class TaskBoardService {
     return task;
   }
 
-  releasePlan(workspaceId) {
-    return this.store.releasePlan(workspaceId);
+  releaseTasks(workspaceId) {
+    return this.store.releaseTasks(workspaceId);
   }
 
   completeRelease(workspaceId, payload = {}) {

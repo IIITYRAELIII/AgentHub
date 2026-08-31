@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
 
+import { normalizedTaskGitReferences } from "./task-git-reference.mjs";
+
 const OPERATIONS = new Set(["added", "modified", "deleted"]);
 
 function canonicalRoot(value) {
@@ -58,30 +60,13 @@ export function mergeTaskChangedFiles(current = [], incoming = []) {
   return normalizedTaskChangedFiles([...values.values()]);
 }
 
-export function taskReleaseManifest({ taskId, revision, changedFiles, repositoryRevisions = [] } = {}) {
-  const payload = JSON.stringify({
-    taskId: String(taskId ?? "").trim(),
-    revision: Number(revision) || 0,
-    changedFiles: normalizedTaskChangedFiles(changedFiles),
-    repositoryRevisions: [...repositoryRevisions].sort((left, right) => (
-      canonicalRoot(left.projectRoot).localeCompare(canonicalRoot(right.projectRoot))
-    )),
-  });
-  return createHash("sha256").update(payload, "utf8").digest("hex");
-}
-
 export function taskReleasePlanRevision(workspaceId, tasks = []) {
   const payload = JSON.stringify({
     workspaceId: String(workspaceId ?? "").trim(),
     tasks: tasks.map((task) => ({
       id: task.id,
       taskRevision: task.revision,
-      manifestHash: taskReleaseManifest({
-        taskId: task.id,
-        revision: task.revision,
-        changedFiles: task.changedFiles,
-        repositoryRevisions: task.repositoryRevisions,
-      }),
+      gitReferences: normalizedTaskGitReferences(task.gitReferences),
     })).sort((left, right) => left.id.localeCompare(right.id)),
   });
   return createHash("sha256").update(payload, "utf8").digest("hex");
@@ -99,4 +84,44 @@ export function taskReleaseConflicts(tasks = []) {
     }
   }
   return [...owners.values()].filter((entry) => new Set(entry.tasks.map((task) => task.id)).size > 1);
+}
+
+export function taskReleasePlan(workspaceId, tasks = []) {
+  const workspaceTasks = tasks.filter((task) => task.workspaceId === String(workspaceId));
+  const awaiting = workspaceTasks.filter((task) => task.status !== "done"
+    && task.workflowStatus === "awaiting_implementation");
+  const candidates = awaiting.filter((task) => task.gitReferences.length > 0
+    && task.changedFiles.length > 0 && !task.gitError);
+  const doneAudit = workspaceTasks.filter((task) => task.status !== "done" && task.workflowStatus === "done");
+  const ready = candidates.flatMap((task) => task.gitReferences.map((reference) => ({
+    id: `${task.id}:${reference.projectRoot}`,
+    taskId: task.id,
+    taskRevision: task.revision,
+    streamId: task.streamId,
+    projectRoot: reference.projectRoot,
+    branch: reference.branch,
+    resultCommit: reference.resultCommit,
+    files: task.changedFiles
+      .filter((file) => canonicalRoot(file.projectRoot) === canonicalRoot(reference.projectRoot))
+      .map((file) => file.path),
+  })));
+  return {
+    workspaceId: String(workspaceId),
+    revision: taskReleasePlanRevision(workspaceId, [...awaiting, ...doneAudit]),
+    candidates,
+    ready,
+    doneAudit,
+    draft: workspaceTasks.filter((task) => task.status !== "done"
+      && task.workflowStatus !== "awaiting_implementation" && task.workflowStatus !== "done"
+      && task.gitReferences.length > 0),
+    blocked: awaiting.filter((task) => !candidates.includes(task)).map((task) => ({
+      id: task.id,
+      taskId: task.id,
+      title: task.title,
+      reason: task.gitError || (!task.gitReferences.length
+        ? "Task has no accepted Git branch result"
+        : "Task Git result has no changes"),
+    })),
+    conflicts: taskReleaseConflicts(candidates),
+  };
 }

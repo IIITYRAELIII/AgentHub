@@ -15,12 +15,10 @@ import {
   taskPresentation,
 } from "../../domain/task-board-task.mjs";
 import {
-  mergeTaskChangedFiles,
   normalizedTaskChangedFiles,
-  taskReleaseConflicts,
-  taskReleaseManifest,
   taskReleasePlanRevision,
 } from "../../domain/task-release-snapshot.mjs";
+import { normalizedTaskGitReferences, taskBranchName } from "../../domain/task-git-reference.mjs";
 
 const NOTES_COLUMN_ID = "notes";
 
@@ -116,16 +114,6 @@ function configure(database) {
     ) WITHOUT ROWID;
     CREATE INDEX IF NOT EXISTS hub_task_turn_bindings_task_idx
       ON hub_task_turn_bindings(task_id, claimed_at_ms DESC);
-    CREATE TABLE IF NOT EXISTS hub_task_changed_files (
-      task_id TEXT NOT NULL,
-      project_root TEXT NOT NULL,
-      file_path TEXT NOT NULL,
-      operation TEXT NOT NULL CHECK (operation IN ('added', 'modified', 'deleted')),
-      turn_id TEXT,
-      updated_at_ms INTEGER NOT NULL,
-      PRIMARY KEY (task_id, project_root, file_path),
-      FOREIGN KEY (task_id) REFERENCES hub_board_tasks(id) ON DELETE CASCADE
-    ) WITHOUT ROWID;
     CREATE TABLE IF NOT EXISTS hub_task_work_log (
       id TEXT PRIMARY KEY,
       task_id TEXT NOT NULL,
@@ -142,11 +130,11 @@ function configure(database) {
     ) WITHOUT ROWID;
     CREATE INDEX IF NOT EXISTS hub_task_work_log_task_idx
       ON hub_task_work_log(task_id, created_at_ms, id);
-    CREATE TABLE IF NOT EXISTS hub_task_repository_revisions (
+    CREATE TABLE IF NOT EXISTS hub_task_git_references (
       task_id TEXT NOT NULL,
       project_root TEXT NOT NULL,
-      baseline_revision TEXT NOT NULL,
-      result_revision TEXT NOT NULL,
+      branch TEXT NOT NULL,
+      result_commit TEXT NOT NULL,
       updated_at_ms INTEGER NOT NULL,
       PRIMARY KEY (task_id, project_root),
       FOREIGN KEY (task_id) REFERENCES hub_board_tasks(id) ON DELETE CASCADE
@@ -195,6 +183,58 @@ function configure(database) {
       PRIMARY KEY (source_kind, source_id)
     ) WITHOUT ROWID;
   `);
+  const tableExists = (name) => Boolean(database.prepare(`
+    SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?
+  `).get(name));
+  const archive = database.prepare(`
+    INSERT OR IGNORE INTO hub_release_registry_history (
+      source_kind, source_id, status, payload_json, payload_sha256, archived_at_ms
+    ) VALUES (?, ?, 'retired', ?, ?, ?)
+  `);
+  const hasRepositoryRevisions = tableExists("hub_task_repository_revisions");
+  const hasChangedFiles = tableExists("hub_task_changed_files");
+  if (hasRepositoryRevisions || hasChangedFiles) database.exec("BEGIN IMMEDIATE");
+  try {
+    if (hasRepositoryRevisions) {
+      const insert = database.prepare(`
+        INSERT OR IGNORE INTO hub_task_git_references
+          (task_id, project_root, branch, result_commit, updated_at_ms)
+        VALUES (?, ?, ?, ?, ?)
+      `);
+      for (const row of database.prepare(`
+        SELECT * FROM hub_task_repository_revisions ORDER BY task_id, project_root
+      `).all()) {
+        const payload = JSON.stringify(row);
+        archive.run(
+          "task-repository-revision-v3", `${row.task_id}\0${row.project_root}`, payload,
+          createHash("sha256").update(payload, "utf8").digest("hex"), Date.now(),
+        );
+        if (String(row.result_revision ?? "").trim()) {
+          insert.run(
+            row.task_id, row.project_root, taskBranchName(row.task_id, row.project_root),
+            row.result_revision, Number(row.updated_at_ms) || Date.now(),
+          );
+        }
+      }
+      database.exec("DROP TABLE hub_task_repository_revisions");
+    }
+    if (hasChangedFiles) {
+      for (const row of database.prepare(`
+        SELECT * FROM hub_task_changed_files ORDER BY task_id, project_root, file_path
+      `).all()) {
+        const payload = JSON.stringify(row);
+        archive.run(
+          "task-changed-file-v3", `${row.task_id}\0${row.project_root}\0${row.file_path}`, payload,
+          createHash("sha256").update(payload, "utf8").digest("hex"), Date.now(),
+        );
+      }
+      database.exec("DROP TABLE hub_task_changed_files");
+    }
+    if (hasRepositoryRevisions || hasChangedFiles) database.exec("COMMIT");
+  } catch (error) {
+    if (hasRepositoryRevisions || hasChangedFiles) database.exec("ROLLBACK");
+    throw error;
+  }
   const taskColumns = database.prepare("PRAGMA table_info(hub_board_tasks)").all();
   if (!taskColumns.some((column) => column.name === "board_order")) {
     database.exec("ALTER TABLE hub_board_tasks ADD COLUMN board_order INTEGER NOT NULL DEFAULT 0");
@@ -643,7 +683,6 @@ export class TaskBoardStore {
         if (observed.length) this.#insertMigratedWorkLog(database, taskId, observation, observed);
       }
     }
-    this.#replaceChangedFiles(database, taskId, files);
     this.#migrateRepositoryEvidence(database, taskId, row.repository_evidence_json);
     this.#freezeMigratedTask(database, taskId, verifiedReady, Number(row.revision) || 1, {
       manifestHash: row.manifest_hash,
@@ -674,7 +713,6 @@ export class TaskBoardStore {
     const changedFiles = files.map((file) => ({
       projectRoot: row.project_root, path: file, operation: "modified", turnId: row.turn_id,
     }));
-    this.#replaceChangedFiles(database, taskId, changedFiles);
     this.#insertMigratedWorkLog(database, taskId, row, files);
     this.#freezeMigratedTask(database, taskId, false, Number(row.revision) || 1);
     database.prepare(`
@@ -700,32 +738,20 @@ export class TaskBoardStore {
     );
   }
 
-  #replaceChangedFiles(database, taskId, files) {
-    const normalized = normalizedTaskChangedFiles(files);
-    database.prepare("DELETE FROM hub_task_changed_files WHERE task_id = ?").run(taskId);
-    const insert = database.prepare(`
-      INSERT INTO hub_task_changed_files
-        (task_id, project_root, file_path, operation, turn_id, updated_at_ms)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `);
-    for (const file of normalized) {
-      insert.run(taskId, file.projectRoot, file.path, file.operation, file.turnId, this.now());
-    }
-  }
-
   #migrateRepositoryEvidence(database, taskId, rawEvidence) {
     let values = [];
     try { values = JSON.parse(String(rawEvidence ?? "[]")); } catch { values = []; }
     const insert = database.prepare(`
-      INSERT OR REPLACE INTO hub_task_repository_revisions
-        (task_id, project_root, baseline_revision, result_revision, updated_at_ms)
+      INSERT OR REPLACE INTO hub_task_git_references
+        (task_id, project_root, branch, result_commit, updated_at_ms)
       VALUES (?, ?, ?, ?, ?)
     `);
     for (const value of Array.isArray(values) ? values : []) {
       const projectRoot = String(value.projectRoot ?? value.project_root ?? "").trim();
-      const baseline = String(value.baseRevision ?? value.base_revision ?? "").trim();
       const result = String(value.resultRevision ?? value.result_revision ?? "").trim();
-      if (projectRoot && baseline && result) insert.run(taskId, projectRoot, baseline, result, this.now());
+      if (projectRoot && result) {
+        insert.run(taskId, projectRoot, taskBranchName(taskId, projectRoot), result, this.now());
+      }
     }
   }
 
@@ -734,7 +760,7 @@ export class TaskBoardStore {
     const taskRevision = Number(database.prepare(
       "SELECT row_revision AS value FROM hub_board_tasks WHERE id = ?",
     ).get(taskId)?.value) || revision;
-    const manifestHash = frozen && details.changedFiles.length
+    const manifestHash = frozen && Array.isArray(evidence.files) && evidence.files.length
       ? String(evidence.manifestHash ?? "").trim()
       : "";
     if (manifestHash) {
@@ -787,10 +813,6 @@ export class TaskBoardStore {
   }
 
   #releaseDetails(database, taskId) {
-    const changedFiles = database.prepare(`
-      SELECT project_root AS projectRoot, file_path AS path, operation, turn_id AS turnId
-      FROM hub_task_changed_files WHERE task_id = ? ORDER BY project_root, file_path
-    `).all(taskId);
     const workLog = database.prepare(`
       SELECT provider, provider_thread_id AS threadId, turn_id AS turnId,
         project_root AS projectRoot, summary, status, changed_files_json, created_at_ms
@@ -809,15 +831,13 @@ export class TaskBoardStore {
         createdAt: new Date(Number(row.created_at_ms)).toISOString(),
       };
     });
-    const repositoryRevisions = database.prepare(`
-      SELECT project_root AS projectRoot, baseline_revision AS baselineRevision,
-        result_revision AS resultRevision
-      FROM hub_task_repository_revisions WHERE task_id = ? ORDER BY project_root
+    const gitReferences = database.prepare(`
+      SELECT project_root AS projectRoot, branch, result_commit AS resultCommit
+      FROM hub_task_git_references WHERE task_id = ? ORDER BY project_root
     `).all(taskId);
     return {
-      changedFiles: normalizedTaskChangedFiles(changedFiles),
       workLog,
-      repositoryRevisions,
+      gitReferences: normalizedTaskGitReferences(gitReferences),
     };
   }
 
@@ -1495,8 +1515,7 @@ export class TaskBoardStore {
       const identity = [provider, threadId, turnId].map((value) => String(value ?? "").trim());
       this.#withDatabase((database) => {
         this.#taskRow(database, id);
-        database.prepare("DELETE FROM hub_task_changed_files WHERE task_id = ?").run(String(id));
-        database.prepare("DELETE FROM hub_task_repository_revisions WHERE task_id = ?").run(String(id));
+        database.prepare("DELETE FROM hub_task_git_references WHERE task_id = ?").run(String(id));
         if (!identity.some((value) => !value)) {
           const binding = database.prepare(`
             SELECT task_id FROM hub_task_turn_bindings
@@ -1516,11 +1535,11 @@ export class TaskBoardStore {
 
   recordTaskTurn({
     taskId = null, provider, threadId, turnId, projectRoot, summary = "", status = "completed",
-    changedFiles = [], gitBaseline = null, resultSnapshot = null,
+    changedFiles = [], gitBaseline = null, resultSnapshot = null, branch = null,
   } = {}) {
     const identity = [provider, threadId, turnId].map((value) => String(value ?? "").trim());
     const files = normalizedTaskChangedFiles(changedFiles);
-    if (identity.some((value) => !value) || !files.length) return null;
+    if (identity.some((value) => !value)) return null;
     const timestamp = this.now();
     return this.#withDatabase((database) => {
       database.exec("BEGIN IMMEDIATE");
@@ -1542,10 +1561,7 @@ export class TaskBoardStore {
         `).run(recoveredBaselineJson, ...identity);
         baselineJson = recoveredBaselineJson;
       }
-      const details = this.#releaseDetails(database, resolvedTaskId);
-      const mergedFiles = mergeTaskChangedFiles(details.changedFiles, files);
-      this.#replaceChangedFiles(database, resolvedTaskId, mergedFiles);
-      database.prepare(`
+      if (files.length) database.prepare(`
         INSERT INTO hub_task_work_log (
           id, task_id, provider, provider_thread_id, turn_id, project_root,
           summary, status, changed_files_json, created_at_ms
@@ -1558,7 +1574,7 @@ export class TaskBoardStore {
         String(summary ?? "").trim().slice(0, 2_000), String(status ?? "completed"),
         JSON.stringify(files), timestamp,
       );
-      this.#recordRepositoryRevisions(database, resolvedTaskId, baselineJson, resultSnapshot);
+      this.#recordGitReference(database, resolvedTaskId, projectRoot, branch, resultSnapshot);
       database.prepare(`
         UPDATE hub_board_tasks SET updated_at_ms = ? WHERE id = ?
       `).run(timestamp, resolvedTaskId);
@@ -1579,29 +1595,23 @@ export class TaskBoardStore {
     });
   }
 
-  #recordRepositoryRevisions(database, taskId, baselineJson, resultSnapshot) {
-    let baseline = null;
-    try { baseline = JSON.parse(String(baselineJson ?? "{}")); } catch { baseline = null; }
+  #recordGitReference(database, taskId, projectRoot, branch, resultSnapshot) {
     const flatten = (snapshot) => Array.isArray(snapshot?.repositories)
       ? snapshot.repositories
       : (snapshot?.repoRoot ? [snapshot] : []);
-    const results = new Map(flatten(resultSnapshot).map((value) => [
-      path.resolve(value.repoRoot), String(value.tree ?? ""),
-    ]));
     const insert = database.prepare(`
-      INSERT INTO hub_task_repository_revisions (
-        task_id, project_root, baseline_revision, result_revision, updated_at_ms
+      INSERT INTO hub_task_git_references (
+        task_id, project_root, branch, result_commit, updated_at_ms
       ) VALUES (?, ?, ?, ?, ?)
       ON CONFLICT(task_id, project_root) DO UPDATE SET
-        result_revision = excluded.result_revision, updated_at_ms = excluded.updated_at_ms
+        branch = excluded.branch, result_commit = excluded.result_commit,
+        updated_at_ms = excluded.updated_at_ms
     `);
-    for (const value of flatten(baseline)) {
-      const projectRoot = path.resolve(value.repoRoot);
-      const baseRevision = String(value.tree ?? "").trim();
-      const resultRevision = results.get(projectRoot) ?? "";
-      if (baseRevision && resultRevision) {
-        insert.run(taskId, projectRoot, baseRevision, resultRevision, this.now());
-      }
+    for (const value of flatten(resultSnapshot)) {
+      const root = path.resolve(value.repoRoot || projectRoot);
+      const resultCommit = String(value.tree ?? "").trim();
+      const taskBranch = String(branch ?? "").trim() || taskBranchName(taskId, root);
+      if (root && resultCommit) insert.run(taskId, root, taskBranch, resultCommit, this.now());
     }
   }
 
@@ -1639,64 +1649,21 @@ export class TaskBoardStore {
     }
   }
 
-  releasePlan(workspaceId) {
-    const tasks = this.list({ includeDone: true }).filter((task) => task.workspaceId === String(workspaceId));
-    const awaiting = tasks.filter((task) => task.status !== "done"
-      && task.workflowStatus === "awaiting_implementation");
-    const candidates = awaiting.filter((task) => task.changedFiles.length > 0
-      && task.repositoryRevisions.length > 0);
-    const doneAudit = tasks.filter((task) => task.status !== "done" && task.workflowStatus === "done");
-    const conflicts = taskReleaseConflicts(candidates);
-    const ready = candidates.flatMap((task) => {
-      const grouped = new Map();
-      for (const file of task.changedFiles) {
-        const values = grouped.get(file.projectRoot) ?? [];
-        values.push(file.path);
-        grouped.set(file.projectRoot, values);
-      }
-      return [...grouped].map(([projectRoot, files]) => ({
-        id: `${task.id}:${projectRoot}`,
-        taskId: task.id,
-        taskRevision: task.revision,
-        manifestHash: taskReleaseManifest({
-          taskId: task.id,
-          revision: task.revision,
-          changedFiles: task.changedFiles,
-          repositoryRevisions: task.repositoryRevisions,
-        }),
-        streamId: task.streamId,
-        projectRoot,
-        files: [...new Set(files)].sort(),
-      }));
-    });
-    return {
-      workspaceId: String(workspaceId),
-      revision: taskReleasePlanRevision(workspaceId, [...awaiting, ...doneAudit]),
-      candidates,
-      ready,
-      doneAudit,
-      draft: tasks.filter((task) => task.status !== "done" && task.changedFiles.length > 0
-        && task.workflowStatus !== "awaiting_implementation" && task.workflowStatus !== "done"),
-      blocked: awaiting.filter((task) => !task.changedFiles.length || !task.repositoryRevisions.length)
-        .map((task) => ({
-          id: task.id,
-          taskId: task.id,
-          title: task.title,
-          reason: !task.changedFiles.length
-            ? "Task has no exact changed-file evidence"
-            : "Task has no repository revision evidence",
-        })),
-      conflicts,
-    };
+  releaseTasks(workspaceId) {
+    return this.list({ includeDone: true }).filter((task) => task.workspaceId === String(workspaceId));
   }
 
-  completeRelease(workspaceId, { expectedPlanRevision = null, verificationEvidence = null } = {}) {
+  completeRelease(workspaceId, { expectedPlanRevision = null, plan = null, verificationEvidence = null } = {}) {
     const expected = String(expectedPlanRevision ?? "").trim();
     return this.#withDatabase((database) => {
       database.exec("BEGIN IMMEDIATE");
       try {
-      const plan = this.releasePlan(workspaceId);
-      if (!expected || plan.revision !== expected) {
+      const tasks = this.releaseTasks(workspaceId);
+      const awaiting = tasks.filter((task) => task.status !== "done"
+        && task.workflowStatus === "awaiting_implementation");
+      const doneAudit = tasks.filter((task) => task.status !== "done" && task.workflowStatus === "done");
+      const currentRevision = taskReleasePlanRevision(workspaceId, [...awaiting, ...doneAudit]);
+      if (!expected || currentRevision !== expected || plan?.revision !== expected) {
         throw new Error("release plan revision conflict; verify the current release plan again");
       }
       if (!plan.candidates.length) throw new Error("release has no awaiting Task candidates");
@@ -1725,12 +1692,7 @@ export class TaskBoardStore {
         released: plan.candidates.map((task) => ({
           id: task.id,
           revision: task.revision,
-          manifestHash: taskReleaseManifest({
-            taskId: task.id,
-            revision: task.revision,
-            changedFiles: task.changedFiles,
-            repositoryRevisions: task.repositoryRevisions,
-          }),
+          gitReferences: task.gitReferences,
         })),
         verificationEvidence,
       };

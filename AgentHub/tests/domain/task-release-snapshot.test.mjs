@@ -12,17 +12,20 @@ test("REL-001 changedFiles reject observed migration candidates", () => {
   }]), /Invalid Task release operation: observed/u);
 });
 
-test("REL-001 release plan revision hashes current Task evidence", () => {
+test("REL-001 release plan revision hashes only Task revision and immutable Git reference", () => {
   const task = {
     id: "task-1",
     revision: 3,
-    changedFiles: [{ projectRoot: "D:/repo", path: "src/app.mjs", operation: "modified" }],
-    repositoryRevisions: [{
-      projectRoot: "D:/repo", baselineRevision: "a".repeat(40), resultRevision: "b".repeat(40),
+    gitReferences: [{
+      projectRoot: "D:/repo", branch: "agenthub/task/task-1/repository", resultCommit: "b".repeat(40),
     }],
   };
   const first = taskReleasePlanRevision("workspace", [task]);
   const reordered = taskReleasePlanRevision("workspace", [task]);
   assert.equal(first, reordered);
   assert.notEqual(first, taskReleasePlanRevision("workspace", [{ ...task, revision: 4 }]));
+  assert.notEqual(first, taskReleasePlanRevision("workspace", [{
+    ...task,
+    gitReferences: [{ ...task.gitReferences[0], resultCommit: "c".repeat(40) }],
+  }]));
 });

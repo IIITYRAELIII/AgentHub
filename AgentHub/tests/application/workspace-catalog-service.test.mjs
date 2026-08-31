@@ -29,13 +29,13 @@ function fixture() {
     developerRulesForThread: (value) => (calls.push(["developerRulesForThread", value]), value),
     developerRulesForStream: (value) => (calls.push(["developerRulesForStream", value]), value),
   };
-  const taskBoard = {
-    releasePlan: (workspaceId) => (calls.push(["releasePlan", workspaceId]), { workspaceId }),
+  const releasePlanner = {
+    plan: (workspaceId) => (calls.push(["releasePlan", workspaceId]), { workspaceId }),
   };
   const releaseCompleter = {
     completeRelease: (params) => (calls.push(["completeRelease", params]), params),
   };
-  return { calls, service: new WorkspaceCatalogService({ store, taskBoard, releaseCompleter }) };
+  return { calls, service: new WorkspaceCatalogService({ store, releasePlanner, releaseCompleter }) };
 }
 
 test("createWorkspace creates its first empty Stream and comment atomically", () => {

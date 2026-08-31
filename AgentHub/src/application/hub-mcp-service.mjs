@@ -182,9 +182,8 @@ function compactTask(task) {
     startedAt: task.startedAt,
     completedAt: task.completedAt,
     revision: task.revision,
-    changedFiles: task.changedFiles ?? [],
     workLog: task.workLog ?? [],
-    repositoryRevisions: task.repositoryRevisions ?? [],
+    gitReferences: task.gitReferences ?? [],
     attachments: task.attachments ?? [],
   };
 }
@@ -223,7 +222,7 @@ export class HubMcpService {
   #contextCapabilities = new Map();
 
   constructor({
-    workspaceCatalog, taskBoard, workLog, attachmentDirectory, secret, releaseCompleter,
+    workspaceCatalog, taskBoard, workLog, attachmentDirectory, secret, releasePlanner, releaseCompleter,
     taskGitWorkspaces = null,
   } = {}) {
     for (const name of [
@@ -234,7 +233,7 @@ export class HubMcpService {
     ]) requiredMethod(workspaceCatalog, name);
     for (const name of [
       "snapshot", "task", "create", "move", "update", "markStarted", "complete", "addAttachment",
-      "claim", "requestWorkflowStatus", "releasePlan",
+      "claim", "requestWorkflowStatus", "releaseTasks",
     ]) {
       requiredMethod(taskBoard, name);
     }
@@ -246,6 +245,7 @@ export class HubMcpService {
     this.attachmentDirectory = path.resolve(requiredText(attachmentDirectory, "attachment directory", 2_000));
     this.secret = requiredText(secret, "MCP secret", 512);
     this.releaseCompleter = releaseCompleter;
+    this.releasePlanner = releasePlanner;
     this.taskGitWorkspaces = taskGitWorkspaces;
   }
 
@@ -725,9 +725,11 @@ export class HubMcpService {
     const run = active.length === 1 ? active[0] : null;
     let gitWorkspace = null;
     let preparationError = null;
-    if (workflowStatus === "awaiting_implementation" && run?.projectRoot && this.taskGitWorkspaces) {
+    const snapshotsResult = ["testing", "awaiting_implementation", "done"].includes(workflowStatus);
+    const projectRoot = snapshotsResult ? this.#taskProjectRoot(context) : null;
+    if (snapshotsResult && projectRoot && this.taskGitWorkspaces) {
       try {
-        gitWorkspace = await this.taskGitWorkspaces.prepare({ taskId: task.id, projectRoot: run.projectRoot });
+        gitWorkspace = await this.taskGitWorkspaces.prepare({ taskId: task.id, projectRoot });
         this.taskBoard.claim({
           id: task.id,
           workspaceId: context.workspaceId,
@@ -748,7 +750,7 @@ export class HubMcpService {
       threadId: context.threadId,
       turnId: run?.turnId ?? null,
     });
-    if (workflowStatus !== "awaiting_implementation") return compactTask(updated);
+    if (!snapshotsResult) return compactTask(updated);
     if (!gitWorkspace) {
       return {
         ...compactTask(updated),
@@ -777,6 +779,7 @@ export class HubMcpService {
           changedFiles: snapshot.changedFiles.map((file) => ({ ...file, turnId: run.turnId })),
           gitBaseline: snapshot.gitBaseline,
           resultSnapshot: snapshot.resultSnapshot,
+          branch: snapshot.branch,
         });
       }
       const current = this.#task(context, task.id);
@@ -819,7 +822,7 @@ export class HubMcpService {
   }
 
   async #releasePlan(context) {
-    const plan = this.taskBoard.releasePlan(context.workspaceId);
+    const plan = await this.releasePlanner.plan(context.workspaceId);
     if (!this.taskGitWorkspaces) return plan;
     const roots = [...new Set(plan.ready.map((entry) => String(entry.projectRoot ?? "").trim()).filter(Boolean))];
     const repositories = [];

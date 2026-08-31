@@ -1,13 +1,18 @@
 import { spawn } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { mkdir, readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 
 import { canonicalPath } from "./config.mjs";
 import { withInterprocessLocks } from "../process/interprocess-lock.mjs";
+import {
+  normalizedTaskId,
+  TASK_BRANCH_PREFIX,
+  taskBranchName,
+  taskRepositoryKey,
+} from "../../domain/task-git-reference.mjs";
 
-export const TASK_BRANCH_PREFIX = "agenthub/task/";
 export const TASK_DEV_BRANCH = "dev";
 const TASK_BASE_REF_PREFIX = "refs/agent-hub/task-bases/";
 
@@ -42,20 +47,6 @@ async function gitMaybe(args, options) {
   } catch {
     return null;
   }
-}
-
-function repositoryKey(repositoryRoot) {
-  return createHash("sha256").update(canonicalPath(repositoryRoot).toLowerCase(), "utf8").digest("hex").slice(0, 12);
-}
-
-function normalizedTaskId(value) {
-  const taskId = String(value ?? "").trim().toLowerCase();
-  if (!/^[a-f0-9-]{8,80}$/u.test(taskId)) throw new Error("Task Git workspace requires a stable Task id");
-  return taskId;
-}
-
-function taskBranchName(taskId, repoKey) {
-  return `${TASK_BRANCH_PREFIX}${normalizedTaskId(taskId)}/${repoKey}`;
 }
 
 function taskBaseRef(taskId, repoKey) {
@@ -180,7 +171,7 @@ export class TaskGitWorkspaceService {
 
   async prepareDev(projectRoot) {
     const repoRoot = await repositoryRoot(projectRoot);
-    const repoKey = repositoryKey(repoRoot);
+    const repoKey = taskRepositoryKey(repoRoot);
     const devLock = path.join(this.dataDir, "locks", `task-git-dev-${repoKey}`);
     return withInterprocessLocks([devLock], async () => {
       const mainCommit = await preferredMainCommit(repoRoot);
@@ -203,12 +194,12 @@ export class TaskGitWorkspaceService {
   async prepare({ taskId, projectRoot } = {}) {
     const id = normalizedTaskId(taskId);
     const dev = await this.prepareDev(projectRoot);
-    const repoKey = repositoryKey(dev.repositoryRoot);
-    const branch = taskBranchName(id, repoKey);
+    const repoKey = taskRepositoryKey(dev.repositoryRoot);
+    const branch = taskBranchName(id, dev.repositoryRoot);
     const baseRef = taskBaseRef(id, repoKey);
     let baseCommit = await gitMaybe(["rev-parse", "--verify", `${baseRef}^{commit}`], { cwd: dev.repositoryRoot });
     if (!baseCommit) {
-      baseCommit = dev.headCommit;
+      baseCommit = await preferredMainCommit(dev.repositoryRoot);
       await runGit(["update-ref", baseRef, baseCommit], { cwd: dev.repositoryRoot });
     }
     const taskRoot = await this.#ensureBranchWorktree({
@@ -253,7 +244,7 @@ export class TaskGitWorkspaceService {
 
   async mergeIntoDev(snapshot) {
     const dev = await this.prepareDev(snapshot.repositoryRoot);
-    const devLock = path.join(this.dataDir, "locks", `task-git-dev-${repositoryKey(dev.repositoryRoot)}`);
+    const devLock = path.join(this.dataDir, "locks", `task-git-dev-${taskRepositoryKey(dev.repositoryRoot)}`);
     return withInterprocessLocks([devLock], async () => {
       const isMerged = await gitMaybe(["merge-base", "--is-ancestor", snapshot.headCommit, "HEAD"], {
         cwd: dev.projectRoot,
@@ -286,6 +277,31 @@ export class TaskGitWorkspaceService {
       ? await this.mergeIntoDev(snapshot)
       : { integrated: true, alreadyIntegrated: true, dev: await this.prepareDev(snapshot.repositoryRoot) };
     return { snapshot, integration };
+  }
+
+  async releaseEvidence({ taskId, projectRoot, branch, resultCommit } = {}) {
+    const id = normalizedTaskId(taskId);
+    const repoRoot = await repositoryRoot(projectRoot);
+    const expectedBranch = taskBranchName(id, repoRoot);
+    if (String(branch ?? "").trim() !== expectedBranch) {
+      throw new Error(`Task branch does not match its repository: ${branch}`);
+    }
+    const repoKey = taskRepositoryKey(repoRoot);
+    const baseRef = taskBaseRef(id, repoKey);
+    const baseCommit = await runGit(["rev-parse", "--verify", `${baseRef}^{commit}`], { cwd: repoRoot });
+    const acceptedCommit = await runGit(["rev-parse", "--verify", `${String(resultCommit)}^{commit}`], { cwd: repoRoot });
+    const branchCommit = await runGit(["rev-parse", "--verify", `refs/heads/${expectedBranch}^{commit}`], { cwd: repoRoot });
+    await runGit(["merge-base", "--is-ancestor", acceptedCommit, branchCommit], { cwd: repoRoot });
+    const diff = await runGit([
+      "-c", "core.quotePath=false",
+      "diff", "--name-status", "--find-renames", baseCommit, acceptedCommit, "--",
+    ], { cwd: repoRoot });
+    return {
+      projectRoot: repoRoot,
+      branch: expectedBranch,
+      resultCommit: acceptedCommit,
+      changedFiles: changedFilesFromNameStatus(diff, repoRoot),
+    };
   }
 
   async describe(taskId) {
@@ -347,7 +363,7 @@ export async function prepareTaskContourSource({ sourceRoot, integrationRoot } =
     return { sourceRoot: sourceFromWorktree(checkedOut), branch: TASK_DEV_BRANCH, headCommit };
   }
   const managedRoot = path.resolve(integrationRoot);
-  const detachedRoot = path.join(managedRoot, "dev-source", repositoryKey(repoRoot));
+  const detachedRoot = path.join(managedRoot, "dev-source", taskRepositoryKey(repoRoot));
   if (!pathInside(managedRoot, detachedRoot)) throw new Error("Test Contour dev source escaped its managed root");
   const registered = parseWorktrees(await runGit(["worktree", "list", "--porcelain"], { cwd: repoRoot }))
     .some((item) => samePath(item.path, detachedRoot));

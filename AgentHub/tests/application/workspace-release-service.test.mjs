@@ -9,12 +9,12 @@ function fixture(plan = {
   const calls = [];
   const service = new WorkspaceReleaseService({
     store: {
-      releasePlan: () => plan,
       completeRelease: (workspaceId, options) => {
         calls.push(["complete", workspaceId, options]);
         return { workspaceId, released: plan.ready };
       },
     },
+    releasePlanner: { plan: async () => plan },
     verifyPublication: async (value) => {
       calls.push(["verify", value]);
       return { repositories: [{ root: "D:/repo", revision: "abc" }] };
@@ -44,7 +44,9 @@ test("release completion verifies repositories before atomically closing ready c
   assert.equal(result.publication.verificationSummary, "Published and smoke-tested");
   assert.equal(result.publication.planRevision, "plan-1");
   assert.deepEqual(calls.map(([name]) => name), ["verify", "complete"]);
-  assert.deepEqual(calls[1][2], {
+  const { plan: completedPlan, ...completionOptions } = calls[1][2];
+  assert.equal(completedPlan.revision, "plan-1");
+  assert.deepEqual(completionOptions, {
     expectedPlanRevision: "plan-1",
     conflictsResolved: false,
     verificationEvidence: {
