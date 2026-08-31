@@ -44,6 +44,7 @@ import {
 } from "../infrastructure/process/windows-file-clipboard.mjs";
 import { MiniAppServer } from "../interfaces/web/mini-app-server.mjs";
 import { HubMcpServer } from "../interfaces/mcp/hub-mcp-server.mjs";
+import { agentHubRuntimeHealth } from "../application/runtime-health.mjs";
 import { ensureLocalWebSecret } from "../interfaces/web/local-web-auth.mjs";
 import { TrustedDeviceRegistry } from "../interfaces/web/trusted-device-access.mjs";
 import { CodexRolloutContextSanitizer } from "../providers/codex/codex-rollout-context.mjs";
@@ -284,6 +285,8 @@ export async function createHubInfrastructure({
     usageSyncDeviceLabel: workLogUsageIdentityStore.label,
     workspaceCatalogStore,
   });
+  agentHubRuntimeHealth.setDiagnosticSource("usageSync", () => workLogUsageSyncStore.diagnostics());
+  agentHubRuntimeHealth.setDiagnosticSource("journal", () => workLogUsageStore.diagnostics());
   const streamHandoff = new StreamHandoffService({
     workspaceCatalog: workspaceCatalogStore,
     workLog: workLogUsageStore,

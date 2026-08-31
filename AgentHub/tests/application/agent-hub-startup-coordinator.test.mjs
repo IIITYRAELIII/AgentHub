@@ -197,3 +197,13 @@ test("replacement startup exposes sqlite recovery as degraded until acknowledgem
   assert.equal(health.snapshot().status, "degraded");
   assert.equal(health.snapshot().startup.operations.find(({ id }) => id === "recovery").state, "completed");
 });
+
+test("runtime health exposes bounded process diagnostics from registered owners", () => {
+  const health = createRuntimeHealth();
+  health.setDiagnosticSource("journal", () => ({ retainedRecords: 0 }));
+  const snapshot = health.snapshot();
+  assert.equal(snapshot.diagnostics.journal.retainedRecords, 0);
+  assert.ok(snapshot.diagnostics.process.rssBytes > 0);
+  assert.ok(snapshot.diagnostics.process.heapUsedBytes > 0);
+  assert.ok(snapshot.diagnostics.process.eventLoopDelayP95Ms >= 0);
+});

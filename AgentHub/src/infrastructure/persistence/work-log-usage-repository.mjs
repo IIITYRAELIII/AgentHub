@@ -47,6 +47,20 @@ export class WorkLogUsageRepository {
     return this.#ledger;
   }
 
+  diagnostics() {
+    return {
+      loaded: this.#loaded,
+      retainedRecords: this.#loaded ? Object.keys(this.#ledger.turns).length : 0,
+      loadedRevision: this.#loadedRevision,
+    };
+  }
+
+  #releaseLoadedLedger() {
+    this.#loaded = false;
+    this.#ledger = { version: 9, turns: {} };
+    this.#recordSnapshot = new Map();
+  }
+
   async #load() {
     let imported = null;
     let persisted = null;
@@ -126,16 +140,28 @@ export class WorkLogUsageRepository {
     return result;
   }
 
-  enqueue(operation) {
+  enqueue(operation, { load = true, retain = true } = {}) {
     const queued = this.#tail.catch(() => {}).then(() => withInterprocessLocks(
       [this.#databaseFile],
       async () => {
-        await this.#load();
-        return operation();
+        if (load) await this.#load();
+        try {
+          return await operation();
+        } finally {
+          if (load && !retain) this.#releaseLoadedLedger();
+        }
       },
     ));
     this.#tail = queued;
     return queued;
+  }
+
+  getRecord(identity) {
+    return this.#database.getRecord(identity);
+  }
+
+  threadRecords(identities, options) {
+    return this.#database.threadRecords(identities, options);
   }
 
   payload() {

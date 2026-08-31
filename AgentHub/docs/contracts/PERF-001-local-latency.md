@@ -47,12 +47,22 @@ cold fallback reads at most the latest 16 MiB. Exact App Server state and manage
 run identity remain preferred over JSONL fallback; reducing the scan window must
 not truncate the terminal answer retained by TURN-001.
 
+Codex `thread/read` coalescing is single-flight only: a completed read retains no
+Thread payload in Hub memory. Historical rollout discovery retains at most 128
+parsed sessions and 32 MiB; older entries are evicted in insertion order.
+
 Periodic usage synchronization must not rebuild the complete journal projection
 on the Hub event loop. Import, merge and account-panel calculation execute in a
 dedicated worker. A remote usage delta updates only the account-usage panel in
 the existing lazy journal index through a revision-guarded index write; an
 unchanged snapshot performs no projection. Persisted day and turn fragments
 remain authoritative and are preserved intact.
+
+The usage export cursor is the indexed durable `observed_at_ms` journal column.
+Only rows newer than the acknowledged watermark are parsed by the worker.
+Exact-turn and bounded Thread reads use SQLite primary/index queries and do not
+materialize the complete ledger. Read-only compatibility scans release their
+in-memory ledger immediately after producing the bounded public result.
 
 Runtime durability saves coalesce pending requests before snapshot capture while
 preserving each caller's persistence fence. After the durable command ledger has

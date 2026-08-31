@@ -14,16 +14,28 @@ import { displayUserPrompt } from "../../application/task-history.mjs";
 
 const rolloutPathIndexPromises = new Map();
 const rolloutSessionCache = new Map();
-const DEFAULT_ROLLOUT_SESSION_CACHE_LIMIT = 10_000;
+const DEFAULT_ROLLOUT_SESSION_CACHE_LIMIT = 128;
+const DEFAULT_ROLLOUT_SESSION_CACHE_BYTES = 32 * 1024 * 1024;
 
 function rolloutSessionCacheKey(file) {
   return path.resolve(file).toLowerCase();
 }
 
-function trimRolloutSessionCache(cache, limit) {
+function rolloutSessionBytes(value) {
+  try {
+    return Buffer.byteLength(JSON.stringify(value), "utf8");
+  } catch {
+    return DEFAULT_ROLLOUT_SESSION_CACHE_BYTES;
+  }
+}
+
+function trimRolloutSessionCache(cache, limit, maxBytes = DEFAULT_ROLLOUT_SESSION_CACHE_BYTES) {
   const normalizedLimit = Math.max(1, Number(limit) || DEFAULT_ROLLOUT_SESSION_CACHE_LIMIT);
-  while (cache.size > normalizedLimit) {
-    cache.delete(cache.keys().next().value);
+  let retainedBytes = [...cache.values()].reduce((total, value) => total + rolloutSessionBytes(value), 0);
+  while (cache.size > normalizedLimit || retainedBytes > maxBytes) {
+    const oldestKey = cache.keys().next().value;
+    retainedBytes -= rolloutSessionBytes(cache.get(oldestKey));
+    cache.delete(oldestKey);
   }
 }
 

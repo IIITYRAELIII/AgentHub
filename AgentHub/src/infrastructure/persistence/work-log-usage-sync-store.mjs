@@ -259,6 +259,43 @@ export class WorkLogUsageSyncStore {
     `).all().map(rowToEvent).filter(Boolean);
   }
 
+  #journalTurns(database, { projectRoots = [], afterObservedAt = "" } = {}) {
+    const exists = database.prepare(`
+      SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'journal_records'
+    `).get();
+    if (!exists) return {};
+    const roots = [...new Set((Array.isArray(projectRoots) ? projectRoots : [])
+      .map((value) => path.resolve(String(value ?? "").trim()))
+      .filter(Boolean))];
+    const afterObservedMs = Date.parse(afterObservedAt) || 0;
+    const where = [];
+    const parameters = [];
+    if (afterObservedMs > 0) {
+      where.push("observed_at_ms > ?");
+      parameters.push(afterObservedMs);
+    }
+    if (roots.length) {
+      where.push(`project_root IN (${roots.map(() => "?").join(", ")})`);
+      parameters.push(...roots);
+    }
+    const rows = database.prepare(`
+      SELECT provider, thread_id, turn_id, record_json
+      FROM journal_records
+      ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+      ORDER BY observed_at_ms, provider, thread_id, turn_id
+    `).all(...parameters);
+    const turns = {};
+    for (const row of rows) {
+      try {
+        const record = JSON.parse(row.record_json);
+        turns[`${row.provider}\0${row.thread_id}\0${row.turn_id}`] = record;
+      } catch {
+        // Corrupt journal rows stay available for the Journal repair path.
+      }
+    }
+    return turns;
+  }
+
   #existing(database, eventIds) {
     const found = new Map();
     const ids = [...eventIds];
@@ -360,6 +397,17 @@ export class WorkLogUsageSyncStore {
 
   events() {
     return this.#enqueue((database) => this.#readAll(database));
+  }
+
+  journalTurns(options = {}) {
+    return this.#enqueue((database) => this.#journalTurns(database, options));
+  }
+
+  usageSyncSnapshot({ deviceLabel = "", afterObservedAt = "" } = {}) {
+    return this.#enqueue((database) => usageSyncSnapshotFromLedger(
+      this.#journalTurns(database, { afterObservedAt }),
+      { deviceId: this.#deviceId, deviceLabel, afterObservedAt },
+    ));
   }
 
   importSnapshot(remoteSnapshot) {
