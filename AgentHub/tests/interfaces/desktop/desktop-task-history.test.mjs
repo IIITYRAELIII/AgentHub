@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   createDesktopTaskHistoryFactory,
+  mergeCachedTaskHistory,
   mergeDurableTaskHistory,
 } from "../../../src/interfaces/desktop/desktop-task-history.mjs";
 import {
@@ -182,6 +183,78 @@ test("sparse durable history does not erase an already known interstream author"
   }]);
 
   assert.equal(history[0].messages[0].author, "Agent HUB - Architect (Codex)");
+});
+
+test("durable history collapses a persisted interstream root alias", () => {
+  const origin = {
+    kind: "interstream",
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-architect",
+    streamName: "Architect",
+    provider: "codex",
+    model: "gpt-5.6-sol",
+    requestId: "release-continuation-1",
+  };
+  const [turn] = mergeDurableTaskHistory([{
+    id: "turn-1",
+    prompt: "Продолжи релиз",
+    promptOrigin: origin,
+    messages: [{
+      itemId: "provider-root",
+      role: "user",
+      text: "Продолжи релиз",
+    }],
+  }], [{
+    id: "turn-1",
+    prompt: "Продолжи релиз",
+    promptOrigin: origin,
+    messages: [{
+      itemId: "managed-root",
+      clientUserMessageId: "mcp:release-continuation-1",
+      role: "user",
+      text: "Продолжи релиз",
+      kind: "interstream",
+      origin,
+      author: "Agent HUB - Architect (Sol)",
+    }],
+  }]);
+
+  assert.equal(turn.messages.length, 1);
+  assert.equal(turn.messages[0].itemId, "provider-root");
+  assert.equal(turn.messages[0].clientUserMessageId, "mcp:release-continuation-1");
+  assert.equal(turn.messages[0].author, "Agent HUB - Architect (Sol)");
+  assert.deepEqual(turn.messages[0].origin, origin);
+});
+
+test("cached history keeps an unmatched older turn before its durable anchor", () => {
+  const history = mergeCachedTaskHistory([{
+    id: "old-turn-without-time",
+    prompt: "Старый запрос",
+  }, {
+    id: "current-turn",
+    prompt: "Текущий запрос",
+  }], [{
+    id: "current-turn",
+    prompt: "Текущий запрос",
+  }]);
+
+  assert.deepEqual(history.map((turn) => turn.id), [
+    "old-turn-without-time",
+    "current-turn",
+  ]);
+});
+
+test("durable history orders unmatched turns by their canonical timestamps", () => {
+  const history = mergeDurableTaskHistory([{
+    id: "new-turn",
+    startedAt: "2026-09-01T12:00:00.000Z",
+  }], [{
+    id: "old-turn",
+    completedAt: "2026-09-01T10:00:00.000Z",
+  }]);
+
+  assert.deepEqual(history.map((turn) => turn.id), ["old-turn", "new-turn"]);
 });
 
 test("durable history coalesces transient rollout users in either source order", () => {

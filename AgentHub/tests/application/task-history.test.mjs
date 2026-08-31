@@ -1139,6 +1139,50 @@ test("active inter-Stream root adopts its exact managed identity without a dupli
   assert.deepEqual(users[0].origin, origin);
 });
 
+test("active inter-Stream root reconciles its provider alias by request identity", () => {
+  const origin = {
+    kind: "interstream",
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-architect",
+    streamName: "Architect",
+    provider: "codex",
+    model: "gpt-5.6-sol",
+    requestId: "architect-continuation-without-client-id",
+  };
+  const history = [{
+    id: "live-turn",
+    prompt: "Продолжи закрытие релиза",
+    status: "inProgress",
+    active: true,
+    completed: false,
+    messages: [{
+      itemId: "provider-root",
+      role: "user",
+      text: "Продолжи закрытие релиза",
+    }],
+  }];
+
+  mergeActiveTaskHistory(history, {
+    active: true,
+    turnId: "live-turn",
+    prompt: "Продолжи закрытие релиза",
+    messageOrigin: origin,
+    userMessages: [{
+      role: "user",
+      origin,
+      text: "Продолжи закрытие релиза",
+    }],
+  });
+
+  const users = history[0].messages.filter((message) => message.role === "user");
+  assert.equal(users.length, 1);
+  assert.equal(users[0].itemId, "provider-root");
+  assert.equal(users[0].clientUserMessageId, "mcp:architect-continuation-without-client-id");
+  assert.equal(users[0].author, "Agent HUB - Architect (Sol)");
+  assert.deepEqual(users[0].origin, origin);
+});
+
 test("displayUserPrompt unwraps Codex Desktop file metadata", () => {
   assert.equal(displayUserPrompt([
     "# Files mentioned by the user:",
