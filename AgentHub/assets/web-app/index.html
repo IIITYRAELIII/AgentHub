@@ -747,12 +747,11 @@
     <section class="task-card-content">
       <form class="task-card-editor" data-task-card-editor>
         <label>
-          <span>Номер</span>
-          <input type="text" maxlength="80" data-task-card-number autocomplete="off" spellcheck="false">
-        </label>
-        <label>
           <span>Заголовок</span>
-          <textarea rows="1" maxlength="160" required data-task-card-title></textarea>
+          <span class="task-card-title-control">
+            <output class="task-card-number" data-task-card-number aria-label="Номер задачи" hidden></output>
+            <textarea rows="1" maxlength="160" required data-task-card-title></textarea>
+          </span>
         </label>
         <label>
           <span>Описание</span>

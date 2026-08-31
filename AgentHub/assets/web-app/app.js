@@ -6026,6 +6026,7 @@ function renderAttachmentStrip(items, { readOnly, taskReferenceList = false }) {
   items.forEach((item, index) => {
     if (TaskReferences.isTaskReference(item)) {
       const reference = TaskReferences.normalize(item);
+      const presentation = TaskReferences.presentation(reference);
       const status = ({
         new: "New",
         in_progress: "InProg",
@@ -6038,9 +6039,9 @@ function renderAttachmentStrip(items, { readOnly, taskReferenceList = false }) {
         title: reference.title,
         ...(readOnly ? { type: "button" } : {}),
       }, [el("span", { class: "attachment-task-card" }, [
-        el("span", { class: "attachment-file-type", text: "TASK" }),
+        el("span", { class: "attachment-file-type", text: presentation.badge }),
         el("span", { class: "attachment-task-copy" }, [
-          el("span", { class: "attachment-file-name", text: reference.taskNumber || reference.title }),
+          el("span", { class: "attachment-file-name", text: presentation.title }),
           el("span", { class: "attachment-task-status", text: status }),
         ]),
       ])]);

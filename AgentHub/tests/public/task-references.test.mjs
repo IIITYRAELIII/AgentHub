@@ -38,6 +38,19 @@ test("Task references deduplicate in one composer draft", async () => {
   assert.equal(updated[0].title, "Обновлённая");
 });
 
+test("Task attachment presents its number instead of the generic TASK badge", async () => {
+  const references = await referencesView();
+
+  assert.deepEqual(
+    { ...references.presentation({ taskId: "board-1", taskNumber: "HUB-11", title: "Исправить Dashboard" }) },
+    { badge: "HUB-11", title: "Исправить Dashboard" },
+  );
+  assert.deepEqual(
+    { ...references.presentation({ taskId: "legacy-1", title: "Старая задача" }) },
+    { badge: "TASK", title: "Старая задача" },
+  );
+});
+
 test("Task drag uses only its private MIME and survives an empty Edge transfer view", async () => {
   const references = await referencesView();
   const writes = [];

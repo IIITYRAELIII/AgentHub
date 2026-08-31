@@ -126,6 +126,15 @@
     return value?.kind === "task" && Boolean(String(value?.taskId ?? "").trim());
   }
 
+  function presentation(value) {
+    const reference = normalize(value);
+    if (!reference) return null;
+    return {
+      badge: reference.taskNumber || "TASK",
+      title: reference.title,
+    };
+  }
+
   global.AgentHubTaskReferences = Object.freeze({
     MIME,
     beginDrag,
@@ -139,6 +148,7 @@
     merge,
     normalize,
     open,
+    presentation,
     taskUri,
     transferText,
   });
