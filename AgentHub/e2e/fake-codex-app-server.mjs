@@ -26,6 +26,7 @@ const initialState = {
   nextTurn: 1,
   nextMessage: 1,
   threads: [],
+  loadedThreadIds: [],
   crashedOnce: false,
   requestCounts: {},
 };
@@ -36,10 +37,15 @@ state.requestCounts ??= {};
 state.nextMessage ??= 1;
 const pendingApprovals = new Map();
 const timers = new Set();
-const loadedThreadIds = new Set();
+const loadedThreadIds = new Set(
+  (Array.isArray(state.loadedThreadIds) ? state.loadedThreadIds : [])
+    .map((value) => String(value ?? "").trim())
+    .filter(Boolean),
+);
 
 function save() {
   if (!statePath) return;
+  state.loadedThreadIds = [...loadedThreadIds].sort();
   const temporary = `${statePath}.${process.pid}.tmp`;
   writeFileSync(temporary, `${JSON.stringify(state, null, 2)}\n`, "utf8");
   renameSync(temporary, statePath);
@@ -431,6 +437,7 @@ function handleRequest(message) {
       save();
     }
     loadedThreadIds.add(thread.id);
+    save();
     reply(id, { thread: publicThread(thread) });
     return;
   }
@@ -446,6 +453,7 @@ function handleRequest(message) {
       });
     }
     loadedThreadIds.add(thread.id);
+    save();
     reply(id, {
       thread: publicThread(thread),
       model: thread.model,
@@ -536,6 +544,7 @@ function handleRequest(message) {
   }
   if (method === "thread/unsubscribe") {
     loadedThreadIds.delete(params.threadId);
+    save();
     reply(id, {});
     return;
   }

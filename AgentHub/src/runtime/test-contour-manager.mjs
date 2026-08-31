@@ -272,6 +272,14 @@ export async function reconcileTestContourFakeCodexState({
   const existingIds = new Set(existingThreads.map((thread) => String(thread?.id ?? "").trim()).filter(Boolean));
   const recoveredThreads = [...desired.values()].filter((thread) => !existingIds.has(thread.id));
   const threads = [...existingThreads, ...recoveredThreads];
+  const requiredLoadedThreadIds = commands
+    .filter((record) => TEST_CONTOUR_DRAIN_STATES.has(record.state))
+    .map((record) => String(record.item?.threadId ?? "").trim())
+    .filter(Boolean);
+  const loadedThreadIds = [...new Set([
+    ...(Array.isArray(saved?.loadedThreadIds) ? saved.loadedThreadIds : []),
+    ...requiredLoadedThreadIds,
+  ].map((threadId) => String(threadId ?? "").trim()).filter(Boolean))].sort();
   const diagnostics = {
     version: 1,
     status: "ready",
@@ -280,6 +288,7 @@ export async function reconcileTestContourFakeCodexState({
     queuedCommandCount: commands.filter((record) => record.state === "queued").length,
     recoveredThreadCount: recoveredThreads.length,
     retainedThreadCount: existingThreads.length,
+    requiredLoadedThreadCount: requiredLoadedThreadIds.length,
     updatedAt: new Date().toISOString(),
   };
   const nextState = {
@@ -292,6 +301,7 @@ export async function reconcileTestContourFakeCodexState({
     nextTurn: Math.max(1, Number(saved?.nextTurn) || 1),
     nextMessage: Math.max(1, Number(saved?.nextMessage) || 1),
     threads,
+    loadedThreadIds,
     crashedOnce: saved?.crashedOnce === true,
     requestCounts: saved?.requestCounts && typeof saved.requestCounts === "object"
       ? saved.requestCounts

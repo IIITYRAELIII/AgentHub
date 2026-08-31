@@ -135,3 +135,25 @@ test("accept-all Fake Codex restores one unfinished turn after restart", async (
   assert.equal(completed.params.turn.status, "completed");
   assert.equal(completed.params.turn.items.at(-1).text, "Принято");
 });
+
+test("Fake Codex preserves loaded Thread ownership across process restart", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-fake-codex-loaded-restart-"));
+  const stateFile = path.join(root, "data", "fake-state.json");
+  const threadId = "10000000-0000-4000-8000-000000000020";
+  await mkdir(path.dirname(stateFile), { recursive: true });
+  let fake = startFake(root, stateFile);
+  t.after(async () => {
+    if (fake) await fake.stop();
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  });
+
+  await fake.request("initialize");
+  await fake.request("thread/ensure", { threadId, model: "fake-codex" });
+  assert.deepEqual((await fake.request("thread/loaded/list")).data, [threadId]);
+  await fake.stop();
+  fake = null;
+
+  fake = startFake(root, stateFile);
+  await fake.request("initialize");
+  assert.deepEqual((await fake.request("thread/loaded/list")).data, [threadId]);
+});

@@ -370,11 +370,13 @@ test("Fake Codex recovery recreates the exact Thread and preserves five FIFO com
       queuedCommandCount: 5,
       recoveredThreadCount: 1,
       retainedThreadCount: 0,
+      requiredLoadedThreadCount: 5,
       updatedAt: recovery.updatedAt,
     });
     const fakeState = JSON.parse(await readFile(paths.fakeCodexStateFile, "utf8"));
     assert.equal(fakeState.nextThread, 21);
     assert.deepEqual(fakeState.threads.map((thread) => thread.id), [threadId]);
+    assert.deepEqual(fakeState.loadedThreadIds, [threadId]);
     assert.equal(fakeState.threads[0].name, "S5");
     assert.deepEqual(await testContourFakeCodexQueueDiagnostics({ root }), {
       status: "draining",
