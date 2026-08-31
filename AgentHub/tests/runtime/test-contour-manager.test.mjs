@@ -570,7 +570,7 @@ test("candidate preparation deploys only into the isolated runtime root", async 
     });
     assert.equal(result.releaseId, "candidate-1");
     assert.equal(calls[0].runtimeRoot, canonicalPath(root));
-    assert.equal(calls[0].sourceRoot, sourceRoot);
+    assert.equal(calls[0].sourceRoot, canonicalPath(sourceRoot));
     assert.match(
       await readFile(path.join(result.releaseRoot, "assets", "web-app", "index.html"), "utf8"),
       /<html data-test-contour="" lang="ru">/u,
