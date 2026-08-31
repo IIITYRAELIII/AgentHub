@@ -35,6 +35,14 @@ let state = statePath && existsSync(statePath)
   : structuredClone(initialState);
 state.requestCounts ??= {};
 state.nextMessage ??= 1;
+state.threads ??= [];
+state.nextTurn = Math.max(
+  1,
+  Number(state.nextTurn) || 1,
+  ...state.threads.flatMap((thread) => (
+    Array.isArray(thread?.turns) ? thread.turns : []
+  )).map((turn) => uuidSequence("turn", turn?.id) + 1),
+);
 const pendingApprovals = new Map();
 const timers = new Set();
 const loadedThreadIds = new Set(
@@ -72,6 +80,13 @@ function uuid(kind, value) {
   return kind === "thread"
     ? `10000000-0000-4000-8000-${suffix}`
     : `20000000-0000-4000-8000-${suffix}`;
+}
+
+function uuidSequence(kind, value) {
+  const prefix = kind === "thread" ? "10000000" : "20000000";
+  const match = new RegExp(`^${prefix}-0000-4000-8000-(\\d{12})$`, "u")
+    .exec(String(value ?? "").trim());
+  return match ? Number(match[1]) : 0;
 }
 
 function threadById(id) {

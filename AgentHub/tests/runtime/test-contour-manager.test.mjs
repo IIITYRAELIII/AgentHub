@@ -330,6 +330,18 @@ test("Fake Codex recovery recreates the exact Thread and preserves five FIFO com
     catalog.close();
     catalog = null;
 
+    const readModel = new DatabaseSync(path.join(paths.dataDir, "journal.sqlite"));
+    readModel.exec(`
+      CREATE TABLE task_read_model_turns (
+        provider TEXT NOT NULL,
+        thread_id TEXT NOT NULL,
+        id TEXT NOT NULL
+      );
+      INSERT INTO task_read_model_turns VALUES
+        ('codex', '10000000-0000-4000-8000-000000000001', '20000000-0000-4000-8000-000000000022');
+    `);
+    readModel.close();
+
     let ledgerNow = 1_700_000_000_000;
     ledger = new MessageCommandLedgerStore({
       dataDir: paths.dataDir,
@@ -371,10 +383,13 @@ test("Fake Codex recovery recreates the exact Thread and preserves five FIFO com
       recoveredThreadCount: 1,
       retainedThreadCount: 0,
       requiredLoadedThreadCount: 5,
+      durableTurnSequence: 22,
+      nextTurn: 23,
       updatedAt: recovery.updatedAt,
     });
     const fakeState = JSON.parse(await readFile(paths.fakeCodexStateFile, "utf8"));
     assert.equal(fakeState.nextThread, 21);
+    assert.equal(fakeState.nextTurn, 23);
     assert.deepEqual(fakeState.threads.map((thread) => thread.id), [threadId]);
     assert.deepEqual(fakeState.loadedThreadIds, [threadId]);
     assert.equal(fakeState.threads[0].name, "S5");

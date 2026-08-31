@@ -2120,7 +2120,10 @@ function historyMessages(history, focusedTurn = null) {
     for (const [index, message] of focusedTurn.messages.entries()) {
       const itemId = String(message?.itemId ?? "").trim();
       if (!itemId || messages.some((candidate) => (
-        candidate.turnId === focusedTurn.turnId && candidate.itemId === itemId
+        candidate.provider === focusedTurn.provider
+        && candidate.threadId === focusedThreadId
+        && candidate.turnId === focusedTurn.turnId
+        && candidate.itemId === itemId
       )) || (parentAgentAlreadyVisible
         && message.role === "agent"
         && message.kind !== "subagent")) continue;

@@ -157,3 +157,65 @@ test("Fake Codex preserves loaded Thread ownership across process restart", asyn
   await fake.request("initialize");
   assert.deepEqual((await fake.request("thread/loaded/list")).data, [threadId]);
 });
+
+test("Fake Codex allocates above retained turn ids across process restart", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-fake-codex-turn-sequence-"));
+  const stateFile = path.join(root, "data", "fake-state.json");
+  const historicalThreadId = "10000000-0000-4000-8000-000000000001";
+  const currentThreadId = "10000000-0000-4000-8000-000000000020";
+  await mkdir(path.dirname(stateFile), { recursive: true });
+  await writeFile(stateFile, `${JSON.stringify({
+    nextThread: 21,
+    nextTurn: 9,
+    nextMessage: 1,
+    loadedThreadIds: [currentThreadId],
+    crashedOnce: false,
+    requestCounts: {},
+    threads: [
+      {
+        id: historicalThreadId,
+        cwd: root,
+        name: "Historical",
+        preview: "",
+        updatedAt: 1,
+        model: "fake-codex",
+        reasoningEffort: "medium",
+        archived: false,
+        turns: [{ id: "20000000-0000-4000-8000-000000000022", status: "completed", prompt: "old", items: [] }],
+      },
+      {
+        id: currentThreadId,
+        cwd: root,
+        name: "Current",
+        preview: "",
+        updatedAt: 2,
+        model: "fake-codex",
+        reasoningEffort: "medium",
+        archived: false,
+        turns: [],
+      },
+    ],
+  }, null, 2)}\n`, "utf8");
+  let fake = startFake(root, stateFile);
+  t.after(async () => {
+    if (fake) await fake.stop();
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  });
+
+  await fake.request("initialize");
+  const first = await fake.request("turn/start", {
+    threadId: currentThreadId,
+    input: [{ type: "text", text: "first after recovery" }],
+  });
+  assert.equal(first.turn.id, "20000000-0000-4000-8000-000000000023");
+  await fake.stop();
+  fake = null;
+
+  fake = startFake(root, stateFile);
+  await fake.request("initialize");
+  const second = await fake.request("turn/start", {
+    threadId: currentThreadId,
+    input: [{ type: "text", text: "second after restart" }],
+  });
+  assert.equal(second.turn.id, "20000000-0000-4000-8000-000000000024");
+});

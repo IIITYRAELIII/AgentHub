@@ -179,6 +179,42 @@ function fakeThreadSequence(threadId) {
   return match ? Number(match[1]) : 0;
 }
 
+function fakeTurnSequence(turnId) {
+  const match = /^20000000-0000-4000-8000-(\d{12})$/u.exec(String(turnId ?? "").trim());
+  return match ? Number(match[1]) : 0;
+}
+
+function persistedTestContourFakeTurnSequence(databaseFile) {
+  if (!existsSync(databaseFile)) return 0;
+  const database = new DatabaseSync(databaseFile, { readOnly: true });
+  try {
+    database.exec("PRAGMA query_only = ON; PRAGMA busy_timeout = 0;");
+    const tables = new Set(database.prepare(`
+      SELECT name FROM sqlite_master WHERE type = 'table'
+    `).all().map((row) => String(row.name)));
+    const turnIds = [];
+    if (tables.has("task_read_model_turns")) {
+      turnIds.push(...database.prepare(`
+        SELECT id AS turn_id FROM task_read_model_turns WHERE provider = 'codex'
+      `).all().map((row) => row.turn_id));
+    }
+    if (tables.has("task_read_model_tasks")) {
+      turnIds.push(...database.prepare(`
+        SELECT turn_id FROM task_read_model_tasks
+        WHERE provider = 'codex' AND turn_id IS NOT NULL
+      `).all().map((row) => row.turn_id));
+    }
+    if (tables.has("journal_records")) {
+      turnIds.push(...database.prepare(`
+        SELECT turn_id FROM journal_records WHERE provider = 'codex'
+      `).all().map((row) => row.turn_id));
+    }
+    return Math.max(0, ...turnIds.map(fakeTurnSequence));
+  } finally {
+    database.close();
+  }
+}
+
 function fakeCodexThread({ threadId, projectRoot, name, model, updatedAtMs = 0 }) {
   return {
     id: threadId,
@@ -234,14 +270,16 @@ export async function reconcileTestContourFakeCodexState({
   if (model !== TEST_CONTOUR_FAKE_MODEL) {
     return { status: "disabled", model, recoveredThreadCount: 0, activeCommandCount: 0 };
   }
-  const [catalogThreads, commands, saved] = await Promise.all([
+  const databaseFile = path.join(paths.dataDir, "journal.sqlite");
+  const [catalogThreads, commands, saved, persistedTurnSequence] = await Promise.all([
     persistedTestContourCodexThreads({
-      databaseFile: path.join(paths.dataDir, "journal.sqlite"),
+      databaseFile,
       projectRoot: paths.projectRoot,
       model,
     }),
     activeTestContourCodexCommands(paths.dataDir),
     readJson(paths.fakeCodexStateFile, {}),
+    Promise.resolve().then(() => persistedTestContourFakeTurnSequence(databaseFile)),
   ]);
   const desired = new Map(catalogThreads.map((thread) => [thread.id, thread]));
   const unresolvedCommands = [];
@@ -280,6 +318,14 @@ export async function reconcileTestContourFakeCodexState({
     ...(Array.isArray(saved?.loadedThreadIds) ? saved.loadedThreadIds : []),
     ...requiredLoadedThreadIds,
   ].map((threadId) => String(threadId ?? "").trim()).filter(Boolean))].sort();
+  const retainedTurnSequence = Math.max(
+    0,
+    ...threads.flatMap((thread) => (
+      Array.isArray(thread?.turns) ? thread.turns : []
+    )).map((turn) => fakeTurnSequence(turn?.id)),
+  );
+  const durableTurnSequence = Math.max(persistedTurnSequence, retainedTurnSequence);
+  const nextTurn = Math.max(1, Number(saved?.nextTurn) || 1, durableTurnSequence + 1);
   const diagnostics = {
     version: 1,
     status: "ready",
@@ -289,6 +335,8 @@ export async function reconcileTestContourFakeCodexState({
     recoveredThreadCount: recoveredThreads.length,
     retainedThreadCount: existingThreads.length,
     requiredLoadedThreadCount: requiredLoadedThreadIds.length,
+    durableTurnSequence,
+    nextTurn,
     updatedAt: new Date().toISOString(),
   };
   const nextState = {
@@ -298,7 +346,7 @@ export async function reconcileTestContourFakeCodexState({
       Number(saved?.nextThread) || 1,
       ...threads.map((thread) => fakeThreadSequence(thread.id) + 1),
     ),
-    nextTurn: Math.max(1, Number(saved?.nextTurn) || 1),
+    nextTurn,
     nextMessage: Math.max(1, Number(saved?.nextMessage) || 1),
     threads,
     loadedThreadIds,
