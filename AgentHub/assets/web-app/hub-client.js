@@ -130,6 +130,7 @@ const {
   chronologicalMessages,
   completionCatchUpTurnId,
   completedLiveAgentMessage,
+  completedLiveTurnIdentity,
   conversationTaskId,
   completedConversationTurnVisible,
   confirmedOutgoingMessageIds,
@@ -813,11 +814,22 @@ function promoteLiveCompletion(taskIdValue, selected, incomingTurnId = "") {
 
 function clearDurablyCompletedLiveCard(taskIdValue) {
   const liveCard = liveCardsByTask.get(taskIdValue);
-  const turnId = String(liveCard?.turnId ?? "").trim();
-  if (!turnId || !completedConversationTurnVisible(historyByTask.get(taskIdValue) ?? [], {
-    turnId,
-    requireAgent: true,
-  })) return false;
+  const liveUsers = liveUserMessagesByTask.get(taskIdValue) ?? {};
+  const completedIdentity = completedLiveTurnIdentity(
+    historyByTask.get(taskIdValue) ?? [],
+    {
+      provider: liveCard?.provider ?? liveUsers.provider,
+      threadId: liveCard?.threadId ?? liveUsers.threadId,
+      turnId: liveCard?.turnId,
+      clientUserMessageIds: [
+        liveUsers.clientUserMessageId,
+        ...(Array.isArray(liveUsers.userMessages)
+          ? liveUsers.userMessages.map((message) => message?.clientUserMessageId)
+          : []),
+      ],
+    },
+  );
+  if (!completedIdentity) return false;
   liveCardsByTask.delete(taskIdValue);
   liveProbeByTask.delete(taskIdValue);
   liveUserMessagesByTask.delete(taskIdValue);

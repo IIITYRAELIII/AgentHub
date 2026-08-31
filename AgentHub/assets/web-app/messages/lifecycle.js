@@ -663,19 +663,34 @@ function confirmedOutgoingMessageIds(durableMessages, outgoingMessages) {
 }
 
 function completedConversationTurnVisible(messages, {
+  provider = "",
+  threadId = "",
   turnId,
   answer = "",
   requireAgent = false,
+  requireTerminalAgent = false,
 } = {}) {
+  const exactProvider = String(provider ?? "").trim().toLowerCase();
+  const exactThreadId = String(threadId ?? "").trim();
   const exactTurnId = String(turnId ?? "").trim();
   if (!exactTurnId) return false;
   const turnMessages = (Array.isArray(messages) ? messages : []).filter((message) => (
     String(message?.turnId ?? "").trim() === exactTurnId
+    && (!exactProvider || String(message?.provider ?? "").trim().toLowerCase() === exactProvider)
+    && (!exactThreadId || String(message?.threadId ?? "").trim() === exactThreadId)
   ));
   const hasUser = turnMessages.some(userMessageHasVisibleContent);
   if (!hasUser) return false;
   const agentTexts = turnMessages
-    .filter((message) => message?.role === "agent")
+    .filter((message) => {
+      if (message?.role !== "agent") return false;
+      if (!requireTerminalAgent) return true;
+      const state = String(message?.projectionState ?? message?.status ?? "").trim().toLowerCase();
+      const phase = String(message?.phase ?? "").trim().toLowerCase();
+      return ["completed", "failed", "cancelled"].includes(state)
+        || Number(message?.terminalRevision) > 0
+        || ["final", "final_answer", "finalanswer"].includes(phase);
+    })
     .map((message) => String(message?.text ?? "").trim())
     .filter(Boolean);
   const expectedAnswer = String(answer ?? "").trim();
@@ -683,6 +698,45 @@ function completedConversationTurnVisible(messages, {
     return agentTexts.some((text) => text === expectedAnswer);
   }
   return requireAgent ? agentTexts.length > 0 : true;
+}
+
+function completedLiveTurnIdentity(messages, {
+  provider,
+  threadId,
+  turnId = "",
+  clientUserMessageIds = [],
+} = {}) {
+  const exactProvider = String(provider ?? "").trim().toLowerCase();
+  const exactThreadId = String(threadId ?? "").trim();
+  const exactTurnId = String(turnId ?? "").trim();
+  if (!exactProvider || !exactThreadId) return null;
+  const values = Array.isArray(messages) ? messages : [];
+  const candidates = [];
+  if (exactTurnId) candidates.push(exactTurnId);
+  else {
+    const clientIds = new Set((Array.isArray(clientUserMessageIds) ? clientUserMessageIds : [])
+      .map((value) => String(value ?? "").trim())
+      .filter(Boolean));
+    if (!clientIds.size) return null;
+    for (const message of values) {
+      if (String(message?.role ?? "") !== "user"
+        || String(message?.provider ?? "").trim().toLowerCase() !== exactProvider
+        || String(message?.threadId ?? "").trim() !== exactThreadId
+        || !clientIds.has(String(message?.clientUserMessageId ?? "").trim())) continue;
+      const candidate = String(message?.turnId ?? "").trim();
+      if (candidate && !candidates.includes(candidate)) candidates.push(candidate);
+    }
+  }
+  for (const candidate of candidates) {
+    if (completedConversationTurnVisible(values, {
+      provider: exactProvider,
+      threadId: exactThreadId,
+      turnId: candidate,
+      requireAgent: true,
+      requireTerminalAgent: true,
+    })) return { provider: exactProvider, threadId: exactThreadId, turnId: candidate };
+  }
+  return null;
 }
 
 function reconcile(serverMessages, outgoingMessages) {
@@ -1397,6 +1451,7 @@ globalThis.AgentHubMessageLifecycle = Object.freeze({
   completionCatchUpTurnId,
   completedLiveAnswer,
   completedLiveAgentMessage,
+  completedLiveTurnIdentity,
   conversationTaskId,
   completedConversationTurnVisible,
   confirmedOutgoingMessageIds,

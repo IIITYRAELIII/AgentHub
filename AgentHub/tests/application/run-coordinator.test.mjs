@@ -279,6 +279,46 @@ test("RunCoordinator acknowledges queued intake while turn launch is still pendi
   await launch;
 });
 
+test("RunCoordinator preserves FIFO queue for burst intake before running snapshot", async () => {
+  let active = null;
+  let sequence = 0;
+  const scheduled = [];
+  const f = fixture({
+    taskRuns: { forTask: () => active },
+    deferInput: async (input, _attachments, options) => {
+      const item = { id: `burst-${++sequence}`, input, conflictKind: options.conflictKind };
+      f.calls.push(["defer", input, [], options]);
+      return { id: item.id, item };
+    },
+    scheduleDeferred: (item, delay) => {
+      scheduled.push({ item, delay });
+      if (scheduled.length === 1) active = { ...f.run, executionOwner: "hub" };
+    },
+  });
+
+  const results = await Promise.all(["first", "second", "third"].map((input, index) => (
+    f.coordinator.acceptClientInput({
+      input,
+      target: f.target,
+      clientUserMessageId: `burst-client-${index + 1}`,
+      followUpMode: "queue",
+    })
+  )));
+
+  assert.deepEqual(scheduled.map(({ item }) => item.input), ["first", "second", "third"]);
+  assert.deepEqual(scheduled.map(({ delay }) => delay), [0, 500, 500]);
+  assert.equal(results.every((result) => result.deferred && result.queued), true);
+  assert.equal(results.some((result) => result.reason === "task-running" && !result.queued), false);
+  assert.deepEqual(
+    f.calls.filter(([name]) => name === "defer").map((call) => call[3].conflictKind),
+    ["message-intake", "task-running", "task-running"],
+  );
+  assert.equal(
+    f.calls.filter(([name]) => name === "defer").every((call) => call[3].destination === "queued"),
+    true,
+  );
+});
+
 test("RunCoordinator immediately queues steering for a turn owned by Codex Desktop", async () => {
   const external = { id: "external", executionOwner: "desktop" };
   const f = fixture({

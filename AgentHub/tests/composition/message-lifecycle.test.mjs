@@ -2470,6 +2470,81 @@ test("completed live card uses a newly recorded final even before durable histor
   }), "Legacy final");
 });
 
+test("terminal history clears a pre-turn live card by exact client identity", () => {
+  const taskId = "stream:s5";
+  const provider = "codex";
+  const threadId = "10000000-0000-4000-8000-000000000020";
+  const turnId = "20000000-0000-4000-8000-000000000028";
+  const clientUserMessageId = "qa-28";
+  const history = [
+    {
+      provider, threadId, turnId, itemId: `${turnId}:user`, role: "user",
+      clientUserMessageId, text: "QA-28", projectionState: "completed",
+    },
+    {
+      provider, threadId, turnId, itemId: `${turnId}:agent:final`, role: "agent",
+      text: "Принято", projectionState: "completed", terminalRevision: 1,
+    },
+  ];
+  assert.deepEqual(
+    { ...lifecycle.completedLiveTurnIdentity(history, {
+      provider,
+      threadId,
+      turnId: "",
+      clientUserMessageIds: [clientUserMessageId],
+    }) },
+    { provider, threadId, turnId },
+  );
+
+  const liveCardsByTask = new Map([[taskId, { provider, threadId, turnId: "" }]]);
+  const liveProbeByTask = new Map([[taskId, { provider, threadId, turnId: "" }]]);
+  const liveUserMessagesByTask = new Map([[taskId, {
+    provider,
+    threadId,
+    turnId: "",
+    clientUserMessageId,
+    userMessages: [{ clientUserMessageId }],
+  }]]);
+  const cleared = [];
+  const sandbox = vm.createContext({
+    liveCardsByTask,
+    liveProbeByTask,
+    liveUserMessagesByTask,
+    historyByTask: new Map([[taskId, history]]),
+    completedLiveTurnIdentity: lifecycle.completedLiveTurnIdentity,
+    agentHub: { setLive: (...args) => cleared.push(args) },
+  });
+  const clearSource = clientFunctionSource(
+    "clearDurablyCompletedLiveCard",
+    "function exactSelectedTaskParams",
+  );
+  vm.runInContext(`${clearSource}; globalThis.clearLive = clearDurablyCompletedLiveCard;`, sandbox);
+
+  assert.equal(sandbox.clearLive(taskId), true);
+  assert.equal(liveCardsByTask.has(taskId), false);
+  assert.equal(liveProbeByTask.has(taskId), false);
+  assert.equal(liveUserMessagesByTask.has(taskId), false);
+  assert.deepEqual(cleared, [[taskId, null]]);
+});
+
+test("pre-turn live cleanup never crosses provider Thread identity", () => {
+  const turnId = "20000000-0000-4000-8000-000000000028";
+  assert.equal(lifecycle.completedLiveTurnIdentity([
+    {
+      provider: "codex", threadId: "thread-old", turnId, role: "user",
+      clientUserMessageId: "qa-28", text: "QA-28",
+    },
+    {
+      provider: "codex", threadId: "thread-old", turnId, role: "agent",
+      text: "Принято", projectionState: "completed", terminalRevision: 1,
+    },
+  ], {
+    provider: "codex",
+    threadId: "thread-current",
+    clientUserMessageIds: ["qa-28"],
+  }), null);
+});
+
 test("terminal live promotion keeps the complete activity trace", () => {
   const activities = [{ id: "tool-1", type: "command" }];
   const activityGroups = [{ id: "group-1", reasoning: "Проверяю.", activities }];
