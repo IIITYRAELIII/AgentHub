@@ -86,8 +86,10 @@ test("work-log account backfill infers Codex account from rate-limit account tim
     const after = records(state.databaseFile);
     assert.match(after["codex\0thread-a\0turn-1"].accountKey, /^chatgpt:/u);
     assert.equal(after["codex\0thread-a\0turn-1"].accountAttribution, "inferred");
+    assert.equal(after["codex\0thread-a\0turn-1"].observedAt, "2026-08-01T02:00:00.000Z");
     assert.equal(after["codex\0thread-a\0turn-2"].accountKey, "chatgpt:exact");
     assert.equal(after["codex\0thread-a\0turn-2"].accountAttribution, "exact");
+    assert.notEqual(after["codex\0thread-a\0turn-2"].observedAt, "2026-08-01T02:00:00.000Z");
     assert.equal(after["claude\0thread-b\0turn-1"].accountKey, "");
     assert.equal(after["claude\0thread-b\0turn-1"].accountAttribution, "inferred");
   } finally {

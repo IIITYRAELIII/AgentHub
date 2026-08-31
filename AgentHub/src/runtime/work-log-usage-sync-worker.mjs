@@ -22,6 +22,7 @@ async function projectAccountUsage(payload = {}) {
     includeClaudeUsage: payload.includeClaudeUsage,
     syncedUsageEvents,
     localDeviceId: payload.localDeviceId,
+    localDeviceLabel: payload.localDeviceLabel,
     now: payload.now,
   });
   const unchanged = updatedHtml === String(payload.html ?? "");

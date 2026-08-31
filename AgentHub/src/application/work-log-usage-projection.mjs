@@ -625,15 +625,8 @@ function emptyAccountDeviceBucket(deviceId, source, { noCost = false, label = ""
   };
 }
 
-function normalizedDeviceLabelKey(value) {
-  const label = String(value ?? "").trim();
-  return label ? label.toLowerCase() : "";
-}
-
 function accountUsageDeviceKey(entry, localDeviceId, record = {}) {
   if (entry.source === "local") return localDeviceId || "local";
-  const labelKey = normalizedDeviceLabelKey(record?.syncDeviceLabel);
-  if (labelKey) return `sync-label:${labelKey}`;
   return String(record?.syncDeviceId ?? entry?.deviceId ?? "").trim() || "__sync_unlabeled__";
 }
 
@@ -692,12 +685,14 @@ export function buildWorkLogAccountUsageSummary(turns = {}, {
   includeClaudeUsage = true,
   syncedUsageEvents = [],
   localDeviceId = "",
+  localDeviceLabel = "",
   now = Date.now(),
   ranges = ACCOUNT_USAGE_RANGES.map((range) => range.id),
 } = {}) {
   const catalog = accountCatalogByKey(accountCatalog);
   const normalizedTurns = normalizedLedger({ version: 9, turns }).ledger.turns;
   const normalizedLocalDeviceId = String(localDeviceId ?? "").trim();
+  const normalizedLocalDeviceLabel = String(localDeviceLabel ?? "").trim();
   const normalizedSyncedTurns = (Array.isArray(syncedUsageEvents) ? syncedUsageEvents : [])
     .map(syncedUsageRecord)
     .filter((record) => record && record.syncDeviceId !== normalizedLocalDeviceId);
@@ -748,7 +743,7 @@ export function buildWorkLogAccountUsageSummary(turns = {}, {
         if (!bucket.devices[deviceKey]) {
           bucket.devices[deviceKey] = emptyAccountDeviceBucket(deviceKey, entry.source, {
             noCost: bucket.noCost,
-            label: entry.source === "local" ? "" : record?.syncDeviceLabel,
+            label: entry.source === "local" ? normalizedLocalDeviceLabel : record?.syncDeviceLabel,
           });
         }
         const deviceBucket = bucket.devices[deviceKey];
@@ -2580,6 +2575,7 @@ export function projectWorkLogUsage(workLogText, turns = {}, {
   accountCatalog = [],
   syncedUsageEvents = [],
   localDeviceId = "",
+  localDeviceLabel = "",
   now = Date.now(),
 } = {}) {
   let text = removeAccountUsagePanel(String(workLogText ?? ""));
@@ -2589,6 +2585,7 @@ export function projectWorkLogUsage(workLogText, turns = {}, {
     includeClaudeUsage,
     syncedUsageEvents,
     localDeviceId,
+    localDeviceLabel,
     now,
   }));
   const records = ledgerByWorkLogId(normalizedTurns);
@@ -2638,6 +2635,7 @@ export function projectWorkLogAccountUsage(workLogText, turns = {}, {
   includeClaudeUsage = true,
   syncedUsageEvents = [],
   localDeviceId = "",
+  localDeviceLabel = "",
   now = Date.now(),
 } = {}) {
   const normalizedTurns = normalizedLedger({ version: 9, turns }).ledger.turns;
@@ -2648,6 +2646,7 @@ export function projectWorkLogAccountUsage(workLogText, turns = {}, {
       includeClaudeUsage,
       syncedUsageEvents,
       localDeviceId,
+      localDeviceLabel,
       now,
     })),
   );
@@ -3001,6 +3000,7 @@ export function buildWorkLogUsageHistory(turns = {}, {
   turnTimeMode = "end",
   syncedUsageEvents = [],
   localDeviceId = "",
+  localDeviceLabel = "",
   accountKey = "",
   accountActivity = [],
 } = {}) {
@@ -3037,27 +3037,16 @@ export function buildWorkLogUsageHistory(turns = {}, {
   ));
   const localTurns = Object.values(turns ?? {});
   const localUsageEventIds = new Set(localTurns.map(usageSyncEventIdentity).filter(Boolean));
-  const localAccountKeys = new Map();
-  for (const record of localTurns) {
-    const recordAccountKey = String(record?.accountKey ?? "").trim();
-    const recordProvider = String(record?.provider ?? "").trim().toLowerCase();
-    if (!recordAccountKey || !recordProvider) continue;
-    if (!localAccountKeys.has(recordProvider)) localAccountKeys.set(recordProvider, new Set());
-    localAccountKeys.get(recordProvider).add(recordAccountKey);
-  }
   const normalizedLocalDeviceId = String(localDeviceId ?? "").trim();
+  const normalizedLocalDeviceLabel = String(localDeviceLabel ?? "").trim();
   const syncedTurns = (Array.isArray(syncedUsageEvents) ? syncedUsageEvents : [])
     .map(syncedUsageRecord)
     .filter((record) => {
       if (!record || record.syncDeviceId === normalizedLocalDeviceId) return false;
       if (localUsageEventIds.has(record.syncEventId)) return false;
-      const recordProvider = String(record.provider ?? "").trim().toLowerCase();
       const recordAccountKey = String(record.accountKey ?? "").trim();
       if (!recordAccountKey) return false;
-      const matchesAccount = requestedAccountKey
-        ? recordAccountKey === requestedAccountKey
-        : localAccountKeys.get(recordProvider)?.has(recordAccountKey) === true;
-      if (!matchesAccount) return false;
+      if (requestedAccountKey && recordAccountKey !== requestedAccountKey) return false;
       const activity = accountActivityIntervals.get(recordAccountKey);
       if (!activity) return true;
       const pointMs = turnUsageTimeMs(record, normalizedTimeMode);
@@ -3100,7 +3089,7 @@ export function buildWorkLogUsageHistory(turns = {}, {
           ? normalizedLocalDeviceId || "local"
           : String(record?.syncDeviceId ?? "").trim(),
         deviceLabel: source === "local"
-          ? "Это устройство"
+          ? normalizedLocalDeviceLabel || "Это устройство"
           : `${String(record?.syncDeviceLabel ?? "").trim() || "Другое устройство"}`
             + ` · ${shortDeviceKey(record?.syncDeviceId)}`,
       };

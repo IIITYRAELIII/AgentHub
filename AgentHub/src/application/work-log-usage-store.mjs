@@ -33,6 +33,7 @@ export function createWorkLogUsageStore({
   resolveAccount = null,
   usageSyncStore = null,
   usageSyncDeviceId = "",
+  usageSyncDeviceLabel = "",
   workspaceCatalogStore = null,
   beforeProjectionWrite = null,
   logger = console,
@@ -56,6 +57,7 @@ export function createWorkLogUsageStore({
     resolveAccount,
     usageSyncStore,
     usageSyncDeviceId,
+    usageSyncDeviceLabel,
     workspaceCatalogStore,
     beforeProjectionWrite,
     logger,
@@ -69,6 +71,7 @@ export class WorkLogUsageStore {
   #resolveAccount;
   #usageSyncStore;
   #usageSyncDeviceId;
+  #usageSyncDeviceLabel;
   #workspaceCatalogStore;
   #beforeProjectionWrite;
   #logger;
@@ -80,6 +83,7 @@ export class WorkLogUsageStore {
     resolveAccount = null,
     usageSyncStore = null,
     usageSyncDeviceId = "",
+    usageSyncDeviceLabel = "",
     workspaceCatalogStore = null,
     beforeProjectionWrite = null,
     logger = console,
@@ -101,6 +105,7 @@ export class WorkLogUsageStore {
       ? usageSyncStore
       : null;
     this.#usageSyncDeviceId = String(usageSyncDeviceId ?? "").trim();
+    this.#usageSyncDeviceLabel = String(usageSyncDeviceLabel ?? "").trim();
     if (workspaceCatalogStore && (
       typeof workspaceCatalogStore.resolveThread !== "function"
       || typeof workspaceCatalogStore.assignUnknownThread !== "function"
@@ -124,6 +129,10 @@ export class WorkLogUsageStore {
 
   setResolveAccount(resolveAccount) {
     this.#resolveAccount = typeof resolveAccount === "function" ? resolveAccount : null;
+  }
+
+  setUsageSyncDeviceLabel(value) {
+    this.#usageSyncDeviceLabel = String(value ?? "").trim();
   }
 
   #save(options) {
@@ -196,6 +205,7 @@ export class WorkLogUsageStore {
           accountCatalog,
           includeClaudeUsage: this.#includeClaudeUsage,
           localDeviceId: this.#usageSyncDeviceId,
+          localDeviceLabel: this.#usageSyncDeviceLabel,
           now: Date.now(),
         })
         : (() => {
@@ -297,6 +307,7 @@ export class WorkLogUsageStore {
         workspaceResolver: this.#workspaceResolver(),
         syncedUsageEvents,
         localDeviceId: this.#usageSyncDeviceId,
+        localDeviceLabel: this.#usageSyncDeviceLabel,
       }));
     });
   }
@@ -484,6 +495,7 @@ export class WorkLogUsageStore {
       accountCatalog,
       syncedUsageEvents,
       localDeviceId: this.#usageSyncDeviceId,
+      localDeviceLabel: this.#usageSyncDeviceLabel,
     });
   }
 

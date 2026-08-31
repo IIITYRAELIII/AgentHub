@@ -135,6 +135,16 @@ function sameJson(left, right) {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+function accountChanged(left, right) {
+  return [
+    "accountKey",
+    "accountLabel",
+    "accountType",
+    "accountPlan",
+    "accountAttribution",
+  ].some((field) => String(left?.[field] ?? "").trim() !== String(right?.[field] ?? "").trim());
+}
+
 function ensureJournalMeta(database) {
   if (!tableExists(database, "journal_store_meta")) return;
   database.prepare(`
@@ -174,6 +184,7 @@ export async function applyWorkLogAccountBackfill({
 
   const database = new DatabaseSync(resolvedDatabase);
   database.exec("PRAGMA busy_timeout = 10000");
+  const observedAt = now.toISOString();
   try {
     if (!tableExists(database, "journal_records")) {
       return { applied: false, reason: "no-journal-records" };
@@ -205,7 +216,10 @@ export async function applyWorkLogAccountBackfill({
       if (provider === "codex" && before.accountKey && before.accountAttribution === "exact") {
         exactPreserved += 1;
       }
-      const next = updatedRecord(record, provider, Number(row.completed_at_ms), timeline, providers);
+      let next = updatedRecord(record, provider, Number(row.completed_at_ms), timeline, providers);
+      if (accountChanged(record, next)) {
+        next = { ...next, observedAt };
+      }
       if (next.accountKey && next.accountAttribution === "inferred"
         && next.accountKey !== before.accountKey) {
         inferredAssigned += 1;

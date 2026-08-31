@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 
+import { applyInferredTeamDeviceAccount } from "./team-usage-accounts.mjs";
 import { normalizeServiceTier, normalizeTokenUsage } from "./token-usage.mjs";
 
 export const USAGE_SYNC_SNAPSHOT_VERSION = 1;
@@ -81,7 +82,7 @@ export function normalizeUsageSyncEvent(value = {}) {
   const estimateKind = nonEmpty(value.estimateKind);
   const imageGenerationCount = Math.max(0, Math.floor(Number(value.imageGenerationCount) || 0));
   const usage = normalizeTokenUsage(value.usage);
-  return {
+  return applyInferredTeamDeviceAccount({
     version: USAGE_SYNC_SNAPSHOT_VERSION,
     eventId,
     deviceId,
@@ -106,7 +107,7 @@ export function normalizeUsageSyncEvent(value = {}) {
     serviceTier: value.serviceTier == null ? "" : normalizeServiceTier(value.serviceTier),
     deviceLabel: boundedText(value.deviceLabel, 80),
     observedAt: nonEmpty(value.observedAt) || new Date().toISOString(),
-  };
+  });
 }
 
 export function usageSyncEventFromLedgerRecord(record, { deviceId, source = "local" } = {}) {
@@ -193,7 +194,12 @@ export function usageSyncSnapshotFromLedger(turns = {}, {
   const afterObservedMs = Date.parse(afterObservedAt) || 0;
   const events = Object.values(turns)
     .map((record) => usageSyncEventFromLedgerRecord(record, { deviceId }))
-    .map((event) => event ? { ...event, deviceLabel: boundedText(deviceLabel, 80) || event.deviceLabel } : null)
+    .map((event) => event
+      ? normalizeUsageSyncEvent({
+          ...event,
+          deviceLabel: boundedText(deviceLabel, 80) || event.deviceLabel,
+        })
+      : null)
     .filter((event) => !event || !afterObservedMs || (Date.parse(event.observedAt) || 0) > afterObservedMs)
     .filter(Boolean);
   return {

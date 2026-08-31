@@ -284,6 +284,7 @@ export async function createHubInfrastructure({
     defaultProjectRoot: config.projectRoot,
     usageSyncStore: workLogUsageSyncStore,
     usageSyncDeviceId: workLogUsageSyncDeviceId,
+    usageSyncDeviceLabel: workLogUsageIdentityStore.label,
     workspaceCatalogStore,
   });
   const streamHandoff = new StreamHandoffService({
