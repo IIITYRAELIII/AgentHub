@@ -8921,41 +8921,37 @@ html[data-surface="mobile"] .chat-stop-bottom > span {
   max-width: 11rem;
 }
 
-.dialog-quick-messages-row {
-  align-items: flex-start;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.55rem 0.75rem;
-  justify-content: space-between;
-}
-
-.dialog-quick-messages-summary {
+.quick-messages-settings-row {
   display: grid;
-  flex: 1 1 13rem;
-  gap: 0.18rem;
-  min-width: min(100%, 13rem);
+  gap: 0.35rem;
+  min-width: 0;
 }
 
-.dialog-quick-messages-summary .setting-name {
+.quick-messages-settings-row .setting-name {
   overflow-wrap: anywhere;
 }
 
-.dialog-quick-messages-summary .setting-value {
+.quick-messages-settings-control {
+  align-items: center;
+  display: flex;
+  gap: 0.75rem;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.quick-messages-settings-control .setting-value {
   color: var(--text-muted);
+  flex: 1 1 auto;
   font-size: 0.78rem;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.dialog-quick-messages-row > .chip-button {
-  flex: 0 1 auto;
+.quick-messages-settings-control > .chip-button {
+  flex: 0 0 auto;
   justify-content: center;
-  margin-left: auto;
-}
-
-@media (max-width: 520px) {
-  .dialog-quick-messages-row > .chip-button {
-    flex-basis: 100%;
-    width: 100%;
-  }
 }
 
 .setting-field select option {

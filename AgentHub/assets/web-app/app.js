@@ -90,6 +90,8 @@ const workspaceCardComment = document.querySelector("[data-workspace-card-commen
 const workspaceCardWorkingDirectory = document.querySelector("[data-workspace-card-working-directory]");
 const workspaceCardRules = document.querySelector("[data-workspace-card-rules]");
 const workspaceCardRulesCount = document.querySelector("[data-workspace-card-rules-count]");
+const workspaceCardQuickMessages = document.querySelector("[data-workspace-card-quick-messages]");
+const workspaceCardQuickMessagesCount = document.querySelector("[data-workspace-card-quick-messages-count]");
 const workspaceCardReleaseWorkflow = document.querySelector("[data-workspace-release-workflow]");
 const workspaceCardOrder = document.querySelector("[data-workspace-card-order]");
 const workspaceCardSubmit = document.querySelector("[data-workspace-card-submit]");
@@ -139,8 +141,8 @@ const dialogStreamRules = document.querySelector("[data-dialog-stream-rules]");
 const dialogStreamRulesCount = document.querySelector("[data-dialog-stream-rules-count]");
 const dialogStreamRulesSave = document.querySelector("[data-dialog-stream-rules-save]");
 const dialogStreamArchitect = document.querySelector("[data-dialog-stream-architect]");
-const dialogGlobalQuickMessages = document.querySelector("[data-dialog-global-quick-messages]");
-const dialogGlobalQuickMessagesCount = document.querySelector("[data-dialog-global-quick-messages-count]");
+const dialogStreamQuickMessages = document.querySelector("[data-dialog-stream-quick-messages]");
+const dialogStreamQuickMessagesCount = document.querySelector("[data-dialog-stream-quick-messages-count]");
 const workspaceMessageSearch = document.querySelector("[data-workspace-message-search]");
 const workspaceMessageSearchToggle = document.querySelector("[data-workspace-message-search-toggle]");
 const workspaceMessageSearchClose = document.querySelector("[data-workspace-message-search-close]");
@@ -187,6 +189,8 @@ const approvalsBox = document.querySelector("[data-approvals]");
 const queueBox = document.querySelector("[data-queue]");
 
 const settingsPanel = document.querySelector("[data-settings-panel]");
+const settingsGlobalQuickMessages = document.querySelector("[data-settings-global-quick-messages]");
+const settingsGlobalQuickMessagesCount = document.querySelector("[data-settings-global-quick-messages-count]");
 const bugReportToggle = document.querySelector("[data-bug-report-toggle]");
 const bugReportForm = document.querySelector("[data-bug-report-form]");
 const bugReportText = document.querySelector("[data-bug-report-text]");
@@ -1555,6 +1559,69 @@ function quickMessageEntriesForCurrentTask() {
   );
 }
 
+function quickMessagesForScope(scope, scopeId = "") {
+  const quickMessages = window.AgentHubStreamTabs.normalizeQuickMessages(state.selection.quickMessages);
+  if (scope === "global") return quickMessages.global;
+  const id = String(scopeId ?? "").trim();
+  if (!id) return [];
+  const key = scope === "workspace" ? "workspaces" : "streams";
+  return quickMessages[key][id] ?? [];
+}
+
+function quickMessagesCountText(entries) {
+  const count = window.AgentHubStreamTabs.normalizeQuickMessages({ global: entries }).global.length;
+  return count ? window.AgentHubStreamTabs.quickMessagesCountLabel(count) : "Не заданы";
+}
+
+function renderQuickMessagesControl(countElement, button, entries, disabled = false) {
+  if (countElement) countElement.textContent = quickMessagesCountText(entries);
+  if (button) {
+    button.disabled = Boolean(disabled);
+    button.setAttribute("aria-busy", String(disabled));
+  }
+}
+
+function renderGlobalQuickMessagesSettings() {
+  renderQuickMessagesControl(
+    settingsGlobalQuickMessagesCount,
+    settingsGlobalQuickMessages,
+    quickMessagesForScope("global"),
+    state.pendingSelections.has("quickMessages"),
+  );
+}
+
+function renderWorkspaceCardQuickMessages(workspaceId = workspaceCardId) {
+  const id = String(workspaceId ?? "").trim();
+  const pending = state.pendingSelections.has("quickMessages");
+  const createMode = workspaceCardMode === "create" || !id;
+  if (workspaceCardQuickMessagesCount) {
+    workspaceCardQuickMessagesCount.textContent = createMode
+      ? "Доступно после создания"
+      : quickMessagesCountText(quickMessagesForScope("workspace", id));
+  }
+  if (workspaceCardQuickMessages) {
+    workspaceCardQuickMessages.disabled = pending || createMode;
+    workspaceCardQuickMessages.setAttribute("aria-busy", String(pending));
+  }
+}
+
+function renderStreamQuickMessagesSettings() {
+  const task = currentTask();
+  const streamId = String(task?.streamId ?? "").trim();
+  renderQuickMessagesControl(
+    dialogStreamQuickMessagesCount,
+    dialogStreamQuickMessages,
+    quickMessagesForScope("stream", streamId),
+    state.pendingSelections.has("quickMessages") || !streamId,
+  );
+}
+
+function renderQuickMessageSettingsControls() {
+  renderGlobalQuickMessagesSettings();
+  renderWorkspaceCardQuickMessages();
+  renderStreamQuickMessagesSettings();
+}
+
 function saveQuickMessagesForScope(scope, scopeId, entries) {
   const quickMessages = window.AgentHubStreamTabs.setQuickMessagesForScope(
     state.selection,
@@ -1564,6 +1631,7 @@ function saveQuickMessagesForScope(scope, scopeId, entries) {
   );
   state.selection = { ...state.selection, quickMessages };
   renderComposerQuickMessages();
+  renderQuickMessageSettingsControls();
   emit("selection:set", { key: "quickMessages", value: quickMessages });
 }
 
@@ -3179,6 +3247,7 @@ function openWorkspaceCard(workspaceId) {
   workspaceCardRules.value = entityAgentRules(workspace);
   workspaceCardReleaseWorkflow.checked = workspace.settings?.releaseWorkflowEnabled === true;
   updateAgentRulesLimit(workspaceCardRules, workspaceCardRulesCount);
+  renderWorkspaceCardQuickMessages(workspace.id);
   workspaceCardOrder.max = String(order.length);
   workspaceCardOrder.value = String(Math.max(1, order.indexOf(columnId) + 1));
   workspaceCardModal.showModal();
@@ -3200,6 +3269,7 @@ function openNewWorkspaceCard() {
   workspaceCardRules.value = "";
   workspaceCardReleaseWorkflow.checked = false;
   updateAgentRulesLimit(workspaceCardRules, workspaceCardRulesCount);
+  renderWorkspaceCardQuickMessages("");
   workspaceCardOrder.max = String(order.length + 1);
   workspaceCardOrder.value = String((notesIndex < 0 ? order.length : notesIndex) + 1);
   workspaceCardModal.showModal();
@@ -6548,6 +6618,7 @@ function toggleDialogSettings() {
 }
 
 function openPanel() {
+  renderGlobalQuickMessagesSettings();
   settingsPanel.hidden = false;
   panelScrim.hidden = false;
   if (limitsState.status === "idle") requestLimits(limitsState.range);
@@ -6651,6 +6722,12 @@ document.addEventListener("contextmenu", (event) => {
   event.preventDefault();
   const workspaceId = String(workspace.dataset.workspaceHeading ?? workspace.dataset.boardWorkspaceId ?? "");
   openWorkspaceContextMenu(event, workspaceId);
+});
+workspaceCardQuickMessages?.addEventListener("click", async () => {
+  const workspace = workspaceCatalogItem(workspaceCardId);
+  if (!workspace) return;
+  await editQuickMessagesForScope("workspace", workspace.id, String(workspace.name ?? "Workspace"));
+  renderWorkspaceCardQuickMessages(workspace.id);
 });
 workspaceCardForm?.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -6862,6 +6939,7 @@ panelScrim.addEventListener("click", closePanel);
 
 function renderOptions() {
   renderDialogSettings();
+  renderGlobalQuickMessagesSettings();
   renderTurnTimeModeOptions();
   renderComparisonViewModeOptions();
   for (const toggle of document.querySelectorAll("[data-toggle]")) {
@@ -6968,18 +7046,7 @@ function renderDialogSettings() {
     dialogStreamArchitect.disabled = !task?.streamId;
   }
   renderStreamRulesPreview();
-  if (dialogGlobalQuickMessagesCount) {
-    const quickMessages = window.AgentHubStreamTabs.normalizeQuickMessages(state.selection.quickMessages);
-    const count = quickMessages.global.length;
-    dialogGlobalQuickMessagesCount.textContent = count
-      ? window.AgentHubStreamTabs.quickMessagesCountLabel(count)
-      : "Не заданы";
-  }
-  if (dialogGlobalQuickMessages) {
-    const pending = state.pendingSelections.has("quickMessages");
-    dialogGlobalQuickMessages.disabled = pending;
-    dialogGlobalQuickMessages.setAttribute("aria-busy", String(pending));
-  }
+  renderStreamQuickMessagesSettings();
 }
 
 function selectDialogSetting(group, value) {
@@ -7006,10 +7073,21 @@ function selectDialogSetting(group, value) {
   renderOptions();
 }
 
+settingsPanel?.addEventListener("click", async (event) => {
+  const globalQuickMessages = event.target.closest("[data-settings-global-quick-messages]");
+  if (!globalQuickMessages) return;
+  await editQuickMessagesForScope("global", "", "Глобальные");
+  renderGlobalQuickMessagesSettings();
+});
+
 dialogSettings.addEventListener("click", async (event) => {
-  const globalQuickMessages = event.target.closest("[data-dialog-global-quick-messages]");
-  if (globalQuickMessages) {
-    await editQuickMessagesForScope("global", "", "Глобальные");
+  const streamQuickMessages = event.target.closest("[data-dialog-stream-quick-messages]");
+  if (streamQuickMessages) {
+    const task = currentTask();
+    const streamId = String(task?.streamId ?? "").trim();
+    if (!streamId) return;
+    const name = String(task?.streamName ?? task?.streamDisplayName ?? "потока").trim() || "потока";
+    await editQuickMessagesForScope("stream", streamId, name);
     renderDialogSettings();
     return;
   }

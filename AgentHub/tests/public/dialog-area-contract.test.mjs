@@ -44,14 +44,17 @@ test("dialog geometry references semantic tokens without literal colors", async 
   assert.match(styles, /\.composer \{[\s\S]*width: min\(var\(--dialog-column-width\), calc\(100% - 48px\)\);/u);
 });
 
-test("global quick replies settings use a wrapping label meta action row", async () => {
+test("quick replies settings keep scope entry points and a two-row action pattern", async () => {
   const index = await readFile(new URL("index.html", assets), "utf8");
   const styles = await readFile(new URL("styles.css", assets), "utf8");
-  assert.match(index, /class="setting-row dialog-quick-messages-row"[\s\S]*class="dialog-quick-messages-summary"[\s\S]*data-dialog-global-quick-messages-count[\s\S]*data-dialog-global-quick-messages/u);
-  assert.match(styles, /\.dialog-quick-messages-row \{[\s\S]*display: flex;[\s\S]*flex-wrap: wrap;/u);
-  assert.match(styles, /\.dialog-quick-messages-summary \{[\s\S]*display: grid;[\s\S]*flex: 1 1 13rem;[\s\S]*min-width: min\(100%, 13rem\);/u);
-  assert.match(styles, /\.dialog-quick-messages-row > \.chip-button \{[\s\S]*margin-left: auto;/u);
-  assert.match(styles, /@media \(max-width: 520px\) \{[\s\S]*\.dialog-quick-messages-row > \.chip-button \{[\s\S]*flex-basis: 100%;[\s\S]*width: 100%;/u);
+  assert.match(index, /Глобальные ответы[\s\S]*data-settings-global-quick-messages-count[\s\S]*data-settings-global-quick-messages/u);
+  assert.match(index, /Быстрые ответы Workspace[\s\S]*data-workspace-card-quick-messages-count[\s\S]*data-workspace-card-quick-messages/u);
+  assert.match(index, /Быстрые ответы потока[\s\S]*data-dialog-stream-quick-messages-count[\s\S]*data-dialog-stream-quick-messages/u);
+  assert.doesNotMatch(index, /data-dialog-global-quick-messages/u);
+  assert.match(styles, /\.quick-messages-settings-row \{[\s\S]*display: grid;[\s\S]*gap: 0\.35rem;/u);
+  assert.match(styles, /\.quick-messages-settings-control \{[\s\S]*display: flex;[\s\S]*justify-content: space-between;/u);
+  assert.match(styles, /\.quick-messages-settings-control \.setting-value \{[\s\S]*text-overflow: ellipsis;[\s\S]*white-space: nowrap;/u);
+  assert.doesNotMatch(styles, /\.dialog-quick-messages-row/u);
 });
 
 test("Orange defines the reference dialog palette only as theme tokens", async () => {

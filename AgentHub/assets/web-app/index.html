@@ -489,14 +489,14 @@
                     Архитектор Workspace проверяет и выпускает ожидающие Tasks. Архитекторов может быть несколько.
                   </span>
                 </div>
-                <div class="setting-row dialog-quick-messages-row">
-                  <span class="dialog-quick-messages-summary">
-                    <span class="setting-name">Глобальные быстрые ответы</span>
-                    <span class="setting-value" data-dialog-global-quick-messages-count>Не заданы</span>
+                <div class="quick-messages-settings-row">
+                  <span class="setting-name">Быстрые ответы потока</span>
+                  <span class="quick-messages-settings-control">
+                    <span class="setting-value" data-dialog-stream-quick-messages-count>Не заданы</span>
+                    <button type="button" class="chip-button" data-dialog-stream-quick-messages>
+                      Настроить…
+                    </button>
                   </span>
-                  <button type="button" class="chip-button" data-dialog-global-quick-messages>
-                    Настроить…
-                  </button>
                 </div>
               </div>
             </section>
@@ -852,6 +852,15 @@
             <output data-workspace-card-rules-count>0 / 32 КиБ</output>
           </span>
         </label>
+        <div class="quick-messages-settings-row workspace-card-quick-messages">
+          <span class="setting-name">Быстрые ответы Workspace</span>
+          <span class="quick-messages-settings-control">
+            <span class="setting-value" data-workspace-card-quick-messages-count>Не заданы</span>
+            <button type="button" class="chip-button" data-workspace-card-quick-messages>
+              Настроить…
+            </button>
+          </span>
+        </div>
         <div class="workspace-release-workflow-setting">
           <label class="setting-switch workspace-release-workflow-switch">
             <input type="checkbox" data-workspace-release-workflow>
@@ -1559,6 +1568,20 @@
         <div class="settings-card">
           <div class="current-limits-row current-limits-settings" data-current-limits="settings">
             <span class="current-limits-empty">Загрузка…</span>
+          </div>
+        </div>
+      </section>
+      <section class="settings-section">
+        <h3 class="settings-section-title">Диалоги</h3>
+        <div class="settings-card">
+          <div class="quick-messages-settings-row">
+            <span class="setting-name">Глобальные ответы</span>
+            <span class="quick-messages-settings-control">
+              <span class="setting-value" data-settings-global-quick-messages-count>Не заданы</span>
+              <button type="button" class="chip-button" data-settings-global-quick-messages>
+                Настроить…
+              </button>
+            </span>
           </div>
         </div>
       </section>
