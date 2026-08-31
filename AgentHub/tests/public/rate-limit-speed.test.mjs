@@ -212,6 +212,31 @@ test("weekly burn rate never carries a negative delta across a reset", () => {
   assert.equal(points[1].overTarget, false);
 });
 
+test("preliminary speed pins a detected reset to zero without inventing an account baseline", () => {
+  const options = { minimumSpanMs: 0, showResetStartAsZero: true };
+  const resetPoints = calculate({
+    id: "codex:primary",
+    window: "primary",
+    points: [
+      { at: "2026-08-07T22:00:00.000Z", usedPercent: 14, accountKey: "same", resetsAt: "2026-08-08T00:00:00.000Z", windowDurationMins: 10080 },
+      { at: "2026-08-08T02:00:00.000Z", usedPercent: 6, accountKey: "same", resetsAt: "2026-08-15T00:00:00.000Z", windowDurationMins: 10080 },
+    ],
+  }, options);
+  const accountPoints = calculate({
+    id: "codex:primary",
+    window: "primary",
+    points: [
+      { at: "2026-08-01T00:00:00.000Z", usedPercent: 10, accountKey: "old", resetsAt: "2026-08-08T00:00:00.000Z", windowDurationMins: 10080 },
+      { at: "2026-08-02T00:00:00.000Z", usedPercent: 30, accountKey: "new", resetsAt: "2026-08-08T00:00:00.000Z", windowDurationMins: 10080 },
+    ],
+  }, options);
+
+  assert.equal(resetPoints[0].actualRate, null);
+  assert.equal(resetPoints[1].actualRate, 0);
+  assert.equal(resetPoints[1].sampleSpanMs, 0);
+  assert.equal(accountPoints[1].actualRate, null);
+});
+
 test("weekly burn rate never spans two accounts", () => {
   const points = calculate({
     id: "codex:secondary",

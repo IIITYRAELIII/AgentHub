@@ -8584,7 +8584,9 @@ function burnRatePolicyForRange(range) {
 
 function selectedBurnRatePolicyForRange(range) {
   const policy = burnRatePolicyForRange(range);
-  return limitsState.speedFullWindow ? policy : { ...policy, minimumSpanMs: 0 };
+  return limitsState.speedFullWindow
+    ? policy
+    : { ...policy, minimumSpanMs: 0, showResetStartAsZero: true };
 }
 
 function weeklyLimitDurationMs(series) {
@@ -8661,6 +8663,7 @@ function weeklyBurnRatePoints(series, {
   rollingWindowMs = BURN_RATE_ROLLING_WINDOW_MS,
   minimumSpanMs = BURN_RATE_MINIMUM_SPAN_MS,
   maximumLookbackMs = rollingWindowMs * 1.5,
+  showResetStartAsZero = false,
 } = {}) {
   const durationMs = weeklyLimitDurationMs(series);
   if (!durationMs) return [];
@@ -8687,11 +8690,15 @@ function weeklyBurnRatePoints(series, {
   for (let index = 0; index < points.length; index += 1) {
     const previousAccount = String(points[index - 1]?.raw?.accountKey ?? "");
     const currentAccount = String(points[index]?.raw?.accountKey ?? "");
-    if (index > 0 && (
-      points[index].usedPercent < points[index - 1].usedPercent
-      || (previousAccount && currentAccount && previousAccount !== currentAccount)
-    )) cycleIndex += 1;
+    const startsAfterReset = index > 0
+      && points[index].usedPercent < points[index - 1].usedPercent;
+    const startsAfterAccountChange = index > 0
+      && previousAccount
+      && currentAccount
+      && previousAccount !== currentAccount;
+    if (startsAfterReset || startsAfterAccountChange) cycleIndex += 1;
     points[index].cycleIndex = cycleIndex;
+    points[index].startsAfterReset = startsAfterReset;
   }
 
   return points.map((point, index) => {
@@ -8715,7 +8722,7 @@ function weeklyBurnRatePoints(series, {
     const usedDelta = baseline ? point.usedPercent - baseline.usedPercent : Number.NaN;
     const actualRate = spanMs > 0 && spanMs >= minimumSpanMs && usedDelta >= 0
       ? usedDelta / spanMs * WEEK_MILLISECONDS
-      : null;
+      : showResetStartAsZero && point.startsAfterReset ? 0 : null;
     const deviationRate = Number.isFinite(actualRate) ? actualRate - targetRate : null;
     return {
       ...point,
