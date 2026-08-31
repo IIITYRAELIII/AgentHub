@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { createConnection, createServer } from "node:net";
 import os from "node:os";
@@ -18,6 +19,78 @@ import {
 import { DurableCommandRetryableError } from "../../../src/infrastructure/persistence/durable-command-receipts.mjs";
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function leaveStaleUnixSocket(endpoint) {
+  const child = spawn(process.execPath, [
+    "-e",
+    `const { createServer } = require("node:net");
+const server = createServer();
+server.listen(process.argv[1], () => process.stdout.write("ready\\n"));
+setInterval(() => {}, 1_000);`,
+    endpoint,
+  ], { stdio: ["ignore", "pipe", "pipe"] });
+  let stderr = "";
+  child.stderr.setEncoding("utf8");
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`Timed out creating stale socket: ${stderr}`)), 5_000);
+    child.stdout.setEncoding("utf8");
+    child.stdout.once("data", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+    child.once("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.once("exit", (code) => {
+      clearTimeout(timer);
+      reject(new Error(`Socket fixture exited with code ${code}: ${stderr}`));
+    });
+  });
+  child.kill("SIGKILL");
+  await new Promise((resolve) => child.once("exit", resolve));
+}
+
+test("runtime command server recovers an abandoned Unix socket", {
+  skip: process.platform === "win32",
+}, async () => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "runtime-command-stale-"));
+  const endpoint = runtimeCommandEndpoint(runtimeRoot);
+  const server = new RuntimeCommandServer({ runtimeRoot, handler: async () => "recovered" });
+  try {
+    await leaveStaleUnixSocket(endpoint);
+    assert.equal((await stat(endpoint)).isSocket(), true);
+    await server.start();
+    assert.equal(await forwardRuntimeCommand("send-message", ["test"], {
+      runtimeRoot,
+      cwd: runtimeRoot,
+    }), "recovered");
+  } finally {
+    await server.close();
+    await rm(runtimeRoot, { recursive: true, force: true });
+  }
+});
+
+test("runtime command server preserves a live Unix socket", {
+  skip: process.platform === "win32",
+}, async () => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "runtime-command-live-"));
+  const first = new RuntimeCommandServer({ runtimeRoot, handler: async () => "first" });
+  const second = new RuntimeCommandServer({ runtimeRoot, handler: async () => "second" });
+  await first.start();
+  try {
+    await assert.rejects(second.start(), (error) => error?.code === "EADDRINUSE");
+    assert.equal(await forwardRuntimeCommand("send-message", ["test"], {
+      runtimeRoot,
+      cwd: runtimeRoot,
+    }), "first");
+  } finally {
+    await second.close();
+    await first.close();
+    await rm(runtimeRoot, { recursive: true, force: true });
+  }
+});
 
 test("runtime command server recreates a removed spool directory", async () => {
   const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "runtime-spool-recreate-runtime-"));

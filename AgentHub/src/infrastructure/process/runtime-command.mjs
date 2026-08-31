@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, readdir, stat, unlink } from "node:fs/promises";
+import { lstat, mkdir, readFile, readdir, stat, unlink } from "node:fs/promises";
 import { createConnection, createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -30,6 +30,39 @@ const FORWARDED_ENVIRONMENT = [
 const SPOOL_POLL_MS = 100;
 const SPOOL_RETENTION_MS = 24 * 60 * 60 * 1000;
 const REQUEST_TIMEOUT_MS = 15_000;
+const SOCKET_PROBE_TIMEOUT_MS = 1_000;
+
+function probeUnixSocket(endpoint) {
+  return new Promise((resolve) => {
+    const socket = createConnection(endpoint);
+    let settled = false;
+    const finish = (state) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(state);
+    };
+    socket.once("connect", () => finish("live"));
+    socket.once("error", (error) => finish(error?.code === "ECONNREFUSED" ? "stale" : "unknown"));
+    socket.setTimeout(SOCKET_PROBE_TIMEOUT_MS, () => finish("unknown"));
+  });
+}
+
+async function removeStaleUnixSocket(endpoint) {
+  if (process.platform === "win32") return false;
+  const before = await lstat(endpoint).catch((error) => {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  });
+  if (!before?.isSocket() || await probeUnixSocket(endpoint) !== "stale") return false;
+  const after = await lstat(endpoint).catch((error) => {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  });
+  if (!after?.isSocket() || after.dev !== before.dev || after.ino !== before.ino) return false;
+  await unlink(endpoint);
+  return true;
+}
 
 function runtimeCommandId(runtimeRoot) {
   return createHash("sha256").update(path.resolve(runtimeRoot).toLowerCase()).digest("hex").slice(0, 24);
@@ -147,6 +180,7 @@ export class RuntimeCommandServer {
 
   async start() {
     if (this.#server) return;
+    await removeStaleUnixSocket(this.#endpoint);
     const server = createServer({ allowHalfOpen: false }, (socket) => {
       let body = "";
       let handled = false;
