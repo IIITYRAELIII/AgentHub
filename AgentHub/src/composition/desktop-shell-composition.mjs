@@ -4,6 +4,7 @@ import { createDesktopRunRouterWiring } from "./desktop-run-router-wiring-compos
 import { WorkspaceCatalogService } from "../application/workspace-catalog-service.mjs";
 import { ClientTaskSelectionService } from "../application/client-task-selection-service.mjs";
 import { agentHubRuntimeHealth } from "../application/runtime-health.mjs";
+import { configuredProjectForTaskWorkingDirectory } from "../domain/task-project-root.mjs";
 
 export function createDesktopShellComposition({
   config,
@@ -90,6 +91,7 @@ export function createDesktopShellComposition({
     streamContextMaintenance,
     streamMaintenance,
     taskBoard,
+    taskGitWorkspaces,
     taskVoiceTranscriber,
     usageSyncAuto,
   } = runtime;
@@ -285,7 +287,11 @@ export function createDesktopShellComposition({
     const requestedDirectory = [workingDirectory, project, selectedProjectRoot()]
       .map((value) => String(value ?? "").trim())
       .find(Boolean) ?? "";
-    const selectedProject = findProject(requestedDirectory);
+    const selectedProject = await configuredProjectForTaskWorkingDirectory({
+      workingDirectory: requestedDirectory,
+      findProject,
+      taskGitWorkspaces,
+    });
     if (!selectedProject) {
       throw new Error("Рабочая директория должна находиться внутри настроенного репозитория");
     }

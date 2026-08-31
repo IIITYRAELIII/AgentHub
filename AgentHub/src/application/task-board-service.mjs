@@ -245,6 +245,13 @@ export class TaskBoardService {
     return task;
   }
 
+  recordTaskGitReference(payload = {}) {
+    requiredMethod(this.store, "recordTaskGitReference");
+    const task = this.store.recordTaskGitReference(payload);
+    this.#event("task.git-reference.recorded", task, { projectRoot: payload.projectRoot });
+    return task;
+  }
+
   releaseTasks(workspaceId) {
     return this.store.releaseTasks(workspaceId);
   }

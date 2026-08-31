@@ -13,6 +13,7 @@ import {
   createInterstreamMessage,
   interstreamMessageDetails,
 } from "../domain/interstream-message.mjs";
+import { taskProjectRoot } from "../domain/task-project-root.mjs";
 
 const CONTEXT_TOKEN_VERSION = 1;
 const MAX_REGISTERED_CONTEXT_CAPABILITIES = 1_000;
@@ -582,9 +583,7 @@ export class HubMcpService {
   #taskProjectRoot(context, streamId = context.streamId) {
     const workspace = this.#workspace(context);
     const stream = workspace.streams.find((candidate) => candidate.id === streamId);
-    return String(stream?.settings?.workingDirectory ?? "").trim()
-      || String(workspace.settings?.workingDirectory ?? "").trim()
-      || null;
+    return taskProjectRoot({ workspace, stream });
   }
 
   #parallelStreams(context) {
@@ -716,29 +715,14 @@ export class HubMcpService {
   async #updateTaskWorkflowStatus(context, { task_id: taskId, status } = {}) {
     const task = this.#task(context, taskId);
     const workflowStatus = requiredText(status, "task workflow status", 40);
-    const active = context.threadId ? this.#activeRuns().filter((run) => (
-      String(run?.provider ?? "").trim().toLowerCase() === context.provider
-      && String(run?.threadId ?? "").trim() === context.threadId
-      && String(run?.turnId ?? "").trim()
-      && run?.observer !== true
-    )) : [];
-    const run = active.length === 1 ? active[0] : null;
     let gitWorkspace = null;
     let preparationError = null;
     const snapshotsResult = ["testing", "awaiting_implementation", "done"].includes(workflowStatus);
-    const projectRoot = snapshotsResult ? this.#taskProjectRoot(context) : null;
+    const targetStreamId = String(task.streamId ?? "").trim() || context.streamId;
+    const projectRoot = snapshotsResult ? this.#taskProjectRoot(context, targetStreamId) : null;
     if (snapshotsResult && projectRoot && this.taskGitWorkspaces) {
       try {
         gitWorkspace = await this.taskGitWorkspaces.prepare({ taskId: task.id, projectRoot });
-        this.taskBoard.claim({
-          id: task.id,
-          workspaceId: context.workspaceId,
-          streamId: context.streamId,
-          provider: context.provider,
-          threadId: context.threadId,
-          turnId: run.turnId,
-          gitBaseline: gitWorkspace.gitBaseline,
-        });
       } catch (error) {
         preparationError = error;
       }
@@ -748,7 +732,7 @@ export class HubMcpService {
       status: workflowStatus,
       provider: context.provider,
       threadId: context.threadId,
-      turnId: run?.turnId ?? null,
+      turnId: null,
     });
     if (!snapshotsResult) return compactTask(updated);
     if (!gitWorkspace) {
@@ -764,20 +748,13 @@ export class HubMcpService {
       const { snapshot, integration } = await this.taskGitWorkspaces.snapshotAndMerge({
         taskId: task.id,
         projectRoot: gitWorkspace.projectRoot,
-        turnId: run?.turnId,
+        turnId: null,
         summary: task.title,
       });
       if (integration.integrated && snapshot.changedFiles.length) {
-        this.taskBoard.recordTaskTurn({
+        this.taskBoard.recordTaskGitReference({
           taskId: task.id,
-          provider: context.provider,
-          threadId: context.threadId,
-          turnId: run.turnId,
           projectRoot: snapshot.repositoryRoot,
-          summary: task.title,
-          status: "completed",
-          changedFiles: snapshot.changedFiles.map((file) => ({ ...file, turnId: run.turnId })),
-          gitBaseline: snapshot.gitBaseline,
           resultSnapshot: snapshot.resultSnapshot,
           branch: snapshot.branch,
         });
@@ -874,10 +851,6 @@ export class HubMcpService {
       throw new Error("stream_id and new_stream_name are mutually exclusive");
     }
     const targetStreamId = requestedStreamName ? null : (requestedStreamId || context.streamId);
-    const projectRoot = this.#taskProjectRoot(context, targetStreamId);
-    const gitWorkspace = this.taskGitWorkspaces && projectRoot
-      ? await this.taskGitWorkspaces.prepare({ taskId: task.id, projectRoot })
-      : null;
     const result = await this.#taskLauncher({
       id: task.id,
       workspaceId: context.workspaceId,
@@ -887,8 +860,8 @@ export class HubMcpService {
       followUpMode: "queue",
       launchRequestId: requiredText(requestId, "request id", 200),
       clientUserMessageId: `mcp:${requiredText(requestId, "request id", 200)}`,
-      workingDirectory: gitWorkspace?.projectRoot ?? null,
     }, context);
+    const gitWorkspace = result.gitWorkspace ?? null;
     return {
       task: compactTask(result.task),
       target: {

@@ -222,6 +222,21 @@ export class TaskGitWorkspaceService {
     };
   }
 
+  async managedRepositoryRoot(projectRoot) {
+    const candidate = canonicalPath(projectRoot);
+    if (!pathInside(this.taskWorktreesRoot, candidate)) return null;
+    try {
+      const taskRoot = await worktreeRoot(candidate);
+      if (!samePath(taskRoot, candidate) || !pathInside(this.taskWorktreesRoot, taskRoot)) return null;
+      const taskId = path.relative(this.taskWorktreesRoot, taskRoot).split(path.sep)[0];
+      const repoRoot = await repositoryRoot(taskRoot);
+      const branch = await runGit(["symbolic-ref", "--quiet", "--short", "HEAD"], { cwd: taskRoot });
+      return branch === taskBranchName(taskId, repoRoot) ? repoRoot : null;
+    } catch {
+      return null;
+    }
+  }
+
   async snapshot({ taskId, projectRoot, turnId = null, summary = "" } = {}) {
     const workspace = await this.prepare({ taskId, projectRoot });
     const suffix = String(turnId ?? "").trim() || randomUUID();

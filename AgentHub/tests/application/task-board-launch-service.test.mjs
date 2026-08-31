@@ -49,7 +49,9 @@ function fixture({ interruptAfterCreate = false, gitWorktree = false } = {}) {
     },
   };
   const workspaceCatalog = {
-    workspace: (id) => id === "workspace-1" ? { id, name: "Agent HUB", settings: { project: "D:/main" } } : null,
+    workspace: (id) => id === "workspace-1" ? {
+      id, name: "Agent HUB", settings: { workingDirectory: "D:/workspace" },
+    } : null,
     stream: (id) => streams.get(id) ?? null,
     createStream: ({ id, workspaceId, name }) => {
       const stream = { id, workspaceId, name };
@@ -90,7 +92,7 @@ function fixture({ interruptAfterCreate = false, gitWorktree = false } = {}) {
       return { accepted: true };
     },
   });
-  return { launch, task, calls, streams };
+  return { launch, task, calls, streams, threads };
 }
 
 test("TaskBoardLaunchService starts a Task in its dedicated Git worktree", async () => {
@@ -104,10 +106,51 @@ test("TaskBoardLaunchService starts a Task in its dedicated Git worktree", async
   });
 
   assert.deepEqual(calls.find(([kind]) => kind === "git-worktree"), [
-    "git-worktree", "board-1", "D:/main",
+    "git-worktree", "board-1", "D:/workspace",
   ]);
   const create = calls.find(([, type]) => type === "task.create");
   assert.equal(create[2].workingDirectory, "D:/task-worktree");
+});
+
+test("TaskBoardLaunchService ignores a historical Thread root for an existing Stream", async () => {
+  const { launch, calls, streams, threads } = fixture({ gitWorktree: true });
+  streams.set("stream-1", {
+    id: "stream-1", workspaceId: "workspace-1", settings: { workingDirectory: "D:/stream" },
+  });
+  threads.set("stream-1", {
+    streamId: "stream-1", provider: "codex", threadId: "old-thread", projectRoot: "D:/historical",
+  });
+
+  await launch.start({
+    id: "board-1",
+    workspaceId: "workspace-1",
+    streamId: "stream-1",
+    provider: "codex",
+    launchRequestId: "mcp-existing-stream",
+  });
+
+  assert.deepEqual(calls.find(([kind]) => kind === "git-worktree"), [
+    "git-worktree", "board-1", "D:/stream",
+  ]);
+});
+
+test("TaskBoardLaunchService falls back from an empty Stream root to the Workspace root", async () => {
+  const { launch, calls, streams } = fixture({ gitWorktree: true });
+  streams.set("stream-1", {
+    id: "stream-1", workspaceId: "workspace-1", settings: { workingDirectory: "" },
+  });
+
+  await launch.start({
+    id: "board-1",
+    workspaceId: "workspace-1",
+    streamId: "stream-1",
+    provider: "codex",
+    launchRequestId: "mcp-workspace-fallback",
+  });
+
+  assert.deepEqual(calls.find(([kind]) => kind === "git-worktree"), [
+    "git-worktree", "board-1", "D:/workspace",
+  ]);
 });
 
 test("TaskBoardLaunchService reconciles a crashed MCP start without creating another Stream or Task", async () => {

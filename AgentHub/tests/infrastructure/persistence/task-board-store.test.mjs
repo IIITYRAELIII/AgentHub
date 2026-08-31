@@ -37,6 +37,27 @@ test("Task store revision changes on writes but not reads", async (t) => {
   assert.equal(store.revision, initial + 1);
 });
 
+test("status integration records a Git result without fabricating a provider turn", async (t) => {
+  const store = await fixture(t);
+  const task = store.create({ text: "Integrate Task status" });
+  const projectRoot = path.resolve("D:/repo");
+  const resultCommit = "b".repeat(40);
+
+  const recorded = store.recordTaskGitReference({
+    taskId: task.id,
+    projectRoot,
+    branch: taskBranchName(task.id, projectRoot),
+    resultSnapshot: { repoRoot: projectRoot, tree: resultCommit },
+  });
+
+  assert.deepEqual(recorded.gitReferences, [{
+    projectRoot,
+    branch: taskBranchName(task.id, projectRoot),
+    resultCommit,
+  }]);
+  assert.deepEqual(recorded.workLog, []);
+});
+
 test("Task store deduplicates Telegram updates and persists capture mode", async (t) => {
   const store = await fixture(t);
   const first = store.create({ text: "  Купить молоко ", source: "telegram", sourceKey: "telegram:1:2" });

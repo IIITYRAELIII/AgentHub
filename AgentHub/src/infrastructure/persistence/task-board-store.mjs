@@ -1595,6 +1595,28 @@ export class TaskBoardStore {
     });
   }
 
+  recordTaskGitReference({ taskId, projectRoot, branch, resultSnapshot } = {}) {
+    const timestamp = this.now();
+    return this.#withDatabase((database) => {
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        const row = this.#taskRow(database, taskId);
+        this.#recordGitReference(database, row.id, projectRoot, branch, resultSnapshot);
+        database.prepare(`
+          UPDATE hub_board_tasks
+          SET updated_at_ms = ?, row_revision = row_revision + 1
+          WHERE id = ?
+        `).run(timestamp, row.id);
+        const task = this.#taskWithRelease(database, this.#taskRow(database, row.id));
+        database.exec("COMMIT");
+        return task;
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
+    });
+  }
+
   #recordGitReference(database, taskId, projectRoot, branch, resultSnapshot) {
     const flatten = (snapshot) => Array.isArray(snapshot?.repositories)
       ? snapshot.repositories

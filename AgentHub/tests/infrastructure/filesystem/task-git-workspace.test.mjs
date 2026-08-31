@@ -43,6 +43,8 @@ test("Task Git workspace commits one Task branch and merges it into dev", async 
   const workspace = await service.prepare({ taskId, projectRoot: root });
   assert.match(workspace.branch, /^agenthub\/task\/11111111-/u);
   assert.notEqual(workspace.projectRoot, root);
+  assert.equal(await service.managedRepositoryRoot(workspace.projectRoot), path.resolve(root));
+  assert.equal(await service.managedRepositoryRoot(root), null);
   await writeFile(path.join(workspace.projectRoot, "app.txt"), "task\n", "utf8");
 
   const result = await service.snapshotAndMerge({ taskId, projectRoot: workspace.projectRoot });

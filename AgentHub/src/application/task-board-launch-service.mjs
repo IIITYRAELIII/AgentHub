@@ -3,6 +3,7 @@ import path from "node:path";
 import process from "node:process";
 
 import { taskDisplayText, taskDisplayTitle } from "../domain/task-board-task.mjs";
+import { taskProjectRoot } from "../domain/task-project-root.mjs";
 
 function requiredMethod(value, name) {
   if (typeof value?.[name] !== "function") throw new TypeError(`${name} is required`);
@@ -52,15 +53,11 @@ export class TaskBoardLaunchService {
     if (requestedStreamId && requestedStreamName) {
       throw new Error("Выберите существующий Stream или создайте новый, но не оба сразу");
     }
-    const requestedThread = requestedStreamId
-      ? this.workspaceCatalog.activeThread(requestedStreamId)
-      : null;
-    const sourceRoot = [
-      params.workingDirectory,
-      requestedThread?.projectRoot,
-      workspace.settings?.workingDirectory,
-      workspace.settings?.project,
-    ].map((value) => String(value ?? "").trim()).find(Boolean) ?? "";
+    const requestedStream = requestedStreamId ? this.workspaceCatalog.stream(requestedStreamId) : null;
+    if (requestedStreamId && (!requestedStream || requestedStream.workspaceId !== workspace.id)) {
+      throw new Error("Stream не найден в выбранном Workspace");
+    }
+    const sourceRoot = taskProjectRoot({ workspace, stream: requestedStream });
     const gitWorkspace = this.taskGitWorkspaces && sourceRoot
       ? await this.taskGitWorkspaces.prepare({ taskId: task.id, projectRoot: sourceRoot })
       : null;
@@ -71,7 +68,8 @@ export class TaskBoardLaunchService {
     const launchRequestId = String(params.launchRequestId ?? "").trim();
     if (launchRequestId) {
       return this.#resumeMcpLaunch({
-        task, workspace, requestedStreamId, requestedStreamName, launchRequestId, params: launchParams, context,
+        task, workspace, requestedStreamId, requestedStreamName, launchRequestId,
+        params: launchParams, gitWorkspace, context,
       });
     }
     params = launchParams;
@@ -149,12 +147,13 @@ export class TaskBoardLaunchService {
       task: started,
       target,
       delivery,
+      gitWorkspace,
       startedBoardTask: { id: task.id, streamId: target.streamId },
     };
   }
 
   async #resumeMcpLaunch({
-    task, workspace, requestedStreamId, requestedStreamName, launchRequestId, params, context,
+    task, workspace, requestedStreamId, requestedStreamName, launchRequestId, params, gitWorkspace, context,
   }) {
     if (typeof this.taskBoard.prepareStart !== "function" || typeof this.taskBoard.cancelPreparedStart !== "function") {
       throw new Error("Task board does not support durable launch reconciliation");
@@ -233,6 +232,7 @@ export class TaskBoardLaunchService {
       task: started,
       target,
       delivery,
+      gitWorkspace,
       startedBoardTask: { id: started.id, streamId: target.streamId },
     };
   }

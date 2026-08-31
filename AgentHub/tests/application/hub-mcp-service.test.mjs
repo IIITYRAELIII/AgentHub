@@ -109,6 +109,12 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
         gitReferences: [{ projectRoot, branch, resultCommit: resultSnapshot.tree }],
       });
     },
+    recordTaskGitReference: ({ taskId, projectRoot: root, branch, resultSnapshot }) => {
+      taskEvidenceCalls.push({ taskId, projectRoot: root, branch, resultSnapshot });
+      return Object.assign(tasks.get(taskId), {
+        gitReferences: [{ projectRoot: root, branch, resultCommit: resultSnapshot.tree }],
+      });
+    },
     releaseTasks: () => [],
     setWorkflowStatus: ({ id, status }) => Object.assign(tasks.get(id), {
       workflowStatus: status,
@@ -178,8 +184,12 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
   const taskLaunchCalls = [];
   service.setTaskLauncher(async ({ id, workspaceId, streamId, ...options }) => {
     taskLaunchCalls.push({ id, workspaceId, streamId, ...options });
+    const selectedProjectRoot = streamId === "stream-2"
+      ? targetWorkingDirectory
+      : streamId === null ? workspaceWorkingDirectory : streamWorkingDirectory;
+    const gitWorkspace = await taskGitWorkspaces.prepare({ taskId: id, projectRoot: selectedProjectRoot });
     const task = taskBoard.markStarted({ id, workspaceId, streamId });
-    return { task, target: { streamId, provider: "codex", threadId: "thread-1" } };
+    return { task, target: { streamId, provider: "codex", threadId: "thread-1" }, gitWorkspace };
   });
   const sentMessages = [];
   service.setStreamMessenger(async (params, messageContext) => {
@@ -264,7 +274,8 @@ test("HubMcpService starts the current Workspace task in the current Stream", as
   assert.equal(task.task.workflowStatus, "in_progress");
   assert.equal(task.target.streamId, "stream-1");
   assert.equal(taskGitPrepareCalls[0].projectRoot, streamWorkingDirectory);
-  assert.match(taskLaunchCalls[0].workingDirectory, /task-worktree[\\/]task-current$/u);
+  assert.equal("workingDirectory" in taskLaunchCalls[0], false);
+  assert.match(task.gitWorkspace.projectRoot, /task-worktree[\\/]task-current$/u);
 });
 
 test("HubMcpService starts a Task from the target Stream working directory", async (context) => {
@@ -381,6 +392,42 @@ test("Await status remains selected and no evidence is recorded when the Task br
   assert.equal(result.gitIntegration.integrated, false);
   assert.deepEqual(result.gitIntegration.conflicts, ["app.mjs"]);
   assert.equal(taskEvidenceCalls.length, 0);
+});
+
+test("Task status integration uses its executor Stream root without reassigning it", async (context) => {
+  const {
+    service, token, tasks, targetWorkingDirectory, taskGitPrepareCalls, taskGitWorkspaces, taskEvidenceCalls,
+  } = await fixture(context, { releaseWorkflowEnabled: true });
+  Object.assign(tasks.get("task-current"), { streamId: "stream-2", workflowStatus: "in_progress" });
+  taskGitWorkspaces.snapshotAndMerge = async ({ taskId, projectRoot }) => ({
+    snapshot: {
+      taskId,
+      branch: `agenthub/task/${taskId}/repo`,
+      projectRoot,
+      repositoryRoot: targetWorkingDirectory,
+      baseCommit: "a".repeat(40),
+      headCommit: "b".repeat(40),
+      gitBaseline: { repoRoot: targetWorkingDirectory, tree: "a".repeat(40) },
+      resultSnapshot: { repoRoot: targetWorkingDirectory, tree: "b".repeat(40) },
+      changedFiles: [{ projectRoot: targetWorkingDirectory, path: "app.mjs", operation: "modified" }],
+    },
+    integration: {
+      integrated: true,
+      dev: { branch: "dev", headCommit: "b".repeat(40) },
+    },
+  });
+
+  const result = await service.call("hub_task_status_update", {
+    context_token: token,
+    request_id: "task-testing-executor-root",
+    task_id: "task-current",
+    status: "testing",
+  });
+
+  assert.equal(taskGitPrepareCalls.at(-1).projectRoot, targetWorkingDirectory);
+  assert.equal(tasks.get("task-current").streamId, "stream-2");
+  assert.equal(result.gitIntegration.integrated, true);
+  assert.equal(taskEvidenceCalls.at(-1).projectRoot, targetWorkingDirectory);
 });
 
 test("HubMcpService resumes an interrupted pending task start with the same request id", async (context) => {
