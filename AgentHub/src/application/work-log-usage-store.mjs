@@ -273,14 +273,14 @@ export class WorkLogUsageStore {
   getTurn({ provider = "codex", threadId, turnId }) {
     return this.#repository.enqueue(
       async () => structuredClone(await this.#repository.getRecord({ provider, threadId, turnId })),
-      { load: false },
+      { load: false, pointRead: true },
     );
   }
 
   threadTurns(identities = [], { limit = 20 } = {}) {
     return this.#repository.enqueue(
       async () => structuredClone(await this.#repository.threadRecords(identities, { limit })),
-      { load: false },
+      { load: false, pointRead: true },
     );
   }
 

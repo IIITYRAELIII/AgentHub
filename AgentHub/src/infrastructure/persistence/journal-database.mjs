@@ -424,6 +424,19 @@ export class JournalDatabase {
     return revisionOf(await this.#open());
   }
 
+  async ledgerStatus() {
+    const database = await this.#open();
+    return {
+      revision: revisionOf(database),
+      version: Math.max(0, Number(database.prepare(
+        "SELECT value FROM journal_store_meta WHERE key = 'ledger_version'",
+      ).get()?.value) || 0),
+      records: Math.max(0, Number(database.prepare(
+        "SELECT COUNT(*) AS count FROM journal_records",
+      ).get()?.count) || 0),
+    };
+  }
+
   async loadLedger() {
     const database = await this.#open();
     const turns = {};

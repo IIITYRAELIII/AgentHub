@@ -20,6 +20,7 @@ export class WorkLogUsageRepository {
   #loadedRevision = -1;
   #ledger = { version: 9, turns: {} };
   #recordSnapshot = new Map();
+  #pointReadsReady = false;
   #tail = Promise.resolve();
 
   constructor({
@@ -100,6 +101,29 @@ export class WorkLogUsageRepository {
     }
   }
 
+  async #preparePointReads() {
+    if (this.#pointReadsReady) return;
+    let imported = null;
+    let importError = null;
+    try {
+      imported = await this.#database.importLegacyLedger(this.#ledgerFile);
+    } catch (error) {
+      importError = error;
+    }
+    const status = await this.#database.ledgerStatus();
+    if (importError && !status.records) throw importError;
+    if (importError) {
+      console.error(
+        `Ignored unreadable retired work-log ledger ${this.#ledgerFile}; SQLite already contains the journal records: ${String(importError?.message ?? importError)}`,
+      );
+    }
+    if (imported?.imported || status.version < 9) {
+      await this.#load();
+      this.#releaseLoadedLedger();
+    }
+    this.#pointReadsReady = true;
+  }
+
   async save({ forceCheckpoint = false } = {}) {
     const changes = ledgerRecordChanges(this.#ledger.turns, this.#recordSnapshot);
     if (!forceCheckpoint && !changes.events.length) return;
@@ -140,11 +164,12 @@ export class WorkLogUsageRepository {
     return result;
   }
 
-  enqueue(operation, { load = true, retain = true } = {}) {
+  enqueue(operation, { load = true, retain = true, pointRead = false } = {}) {
     const queued = this.#tail.catch(() => {}).then(() => withInterprocessLocks(
       [this.#databaseFile],
       async () => {
-        if (load) await this.#load();
+        if (pointRead) await this.#preparePointReads();
+        else if (load) await this.#load();
         try {
           return await operation();
         } finally {

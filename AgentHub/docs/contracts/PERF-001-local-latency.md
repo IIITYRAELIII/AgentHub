@@ -72,8 +72,11 @@ export before persisting the new cursor. The legacy timestamp fallback replays
 the acknowledged millisecond and relies on exact event-id merge rather than
 dropping equal-timestamp rows.
 Exact-turn and bounded Thread reads use SQLite primary/index queries and do not
-materialize the complete ledger. Read-only compatibility scans release their
-in-memory ledger immediately after producing the bounded public result.
+materialize the complete ledger after durable point-read readiness is known.
+The first read imports and normalizes legacy JSON only when it is newly imported
+or its persisted ledger version is old; migrated SQLite performs only bounded
+status and point queries. Any compatibility normalization releases its in-memory
+ledger before returning, so `retainedRecords` remains zero after the read.
 
 Runtime durability saves coalesce pending requests before snapshot capture while
 preserving each caller's persistence fence. After the durable command ledger has
