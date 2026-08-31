@@ -59,7 +59,9 @@ export class TaskBoardLaunchService {
     }
     const sourceRoot = taskProjectRoot({ workspace, stream: requestedStream });
     const gitWorkspace = this.taskGitWorkspaces && sourceRoot
-      ? await this.taskGitWorkspaces.prepare({ taskId: task.id, projectRoot: sourceRoot })
+      ? await this.taskGitWorkspaces.prepare({
+          taskId: task.id, taskNumber: task.taskNumber, projectRoot: sourceRoot,
+        })
       : null;
     const launchParams = {
       ...params,

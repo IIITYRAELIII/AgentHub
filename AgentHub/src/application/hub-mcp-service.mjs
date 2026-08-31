@@ -722,7 +722,9 @@ export class HubMcpService {
     const projectRoot = snapshotsResult ? this.#taskProjectRoot(context, targetStreamId) : null;
     if (snapshotsResult && projectRoot && this.taskGitWorkspaces) {
       try {
-        gitWorkspace = await this.taskGitWorkspaces.prepare({ taskId: task.id, projectRoot });
+        gitWorkspace = await this.taskGitWorkspaces.prepare({
+          taskId: task.id, taskNumber: task.taskNumber, projectRoot,
+        });
       } catch (error) {
         preparationError = error;
       }
@@ -747,6 +749,7 @@ export class HubMcpService {
     try {
       const { snapshot, integration } = await this.taskGitWorkspaces.snapshotAndMerge({
         taskId: task.id,
+        taskNumber: task.taskNumber,
         projectRoot: gitWorkspace.projectRoot,
         turnId: null,
         summary: task.title,

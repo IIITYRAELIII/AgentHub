@@ -78,6 +78,10 @@ function samePath(left, right) {
   return process.platform === "win32" ? first.toLowerCase() === second.toLowerCase() : first === second;
 }
 
+function isTaskNumberBranch(value) {
+  return /^[\p{L}\p{N}](?:[\p{L}\p{N}._-]{0,68}[\p{L}\p{N}])?-\d{1,9}$/u.test(String(value ?? ""));
+}
+
 function changedFilesFromNameStatus(value, projectRoot) {
   return String(value ?? "").split(/\r?\n/u).flatMap((line) => {
     const fields = line.split("\t");
@@ -231,14 +235,15 @@ export class TaskGitWorkspaceService {
       const taskId = path.relative(this.taskWorktreesRoot, taskRoot).split(path.sep)[0];
       const repoRoot = await repositoryRoot(taskRoot);
       const branch = await runGit(["symbolic-ref", "--quiet", "--short", "HEAD"], { cwd: taskRoot });
-      return branch === taskBranchName(taskId, repoRoot) ? repoRoot : null;
+      if (branch === taskBranchName(taskId, repoRoot)) return repoRoot;
+      return isTaskNumberBranch(branch) ? repoRoot : null;
     } catch {
       return null;
     }
   }
 
-  async snapshot({ taskId, projectRoot, turnId = null, summary = "" } = {}) {
-    const workspace = await this.prepare({ taskId, projectRoot });
+  async snapshot({ taskId, taskNumber = null, projectRoot, turnId = null, summary = "" } = {}) {
+    const workspace = await this.prepare({ taskId, taskNumber, projectRoot });
     const suffix = String(turnId ?? "").trim() || randomUUID();
     await commitDirtyWorktree(
       workspace.projectRoot,
