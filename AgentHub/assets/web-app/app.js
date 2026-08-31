@@ -13060,11 +13060,7 @@ function usageSyncSuggestedDeviceLabel(status = null) {
 }
 
 function usageSyncCanSetDeviceLabel(status = null) {
-  return Boolean(
-    status?.deviceLabelPromptRequired
-    || usageSyncDeviceLabel(status)
-    || usageSyncSuggestedDeviceLabel(status),
-  );
+  return Boolean(status && typeof status === "object");
 }
 
 function mountStatisticsSyncControls() {
@@ -13087,7 +13083,7 @@ function updateUsageSyncDeviceLabelButton(status = null) {
   const suggested = usageSyncSuggestedDeviceLabel(status);
   journalSyncDeviceLabelButton.hidden = !visible;
   journalSyncDeviceLabelButton.disabled = !visible;
-  journalSyncDeviceLabelButton.textContent = status?.deviceLabelPromptRequired ? "Задать ник" : "Ник устройства";
+  journalSyncDeviceLabelButton.textContent = status?.deviceLabelPromptRequired || !label ? "Задать ник" : "Ник устройства";
   journalSyncDeviceLabelButton.title = [
     "Задать никнейм этого устройства для Sync.",
     label ? `Текущий ник: ${label}` : "",
