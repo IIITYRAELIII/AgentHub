@@ -1059,7 +1059,17 @@ html[data-theme="gothic"] body::before {
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .workspace-task-panel {
-    padding: var(--gothic-rail-content-inset) !important;
+    padding: var(--gothic-rail-content-inset) 0.5rem !important;
+  }
+
+  html[data-theme="gothic"][data-activity-task-column="separate"][data-activity-column-count="2"]:not([data-surface="mobile"])
+    .workspace-task-panel {
+    padding-right: 0.25rem !important;
+  }
+
+  html[data-theme="gothic"][data-activity-task-column="separate"][data-activity-column-count="2"]:not([data-surface="mobile"])
+    .activity-stream-list {
+    padding-left: 0.75rem !important;
   }
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .chat {
