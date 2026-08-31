@@ -597,6 +597,11 @@ def insert_or_update_event(db: sqlite3.Connection, event: UsageEvent) -> str:
 
 
 def event_row_to_api(row: sqlite3.Row) -> dict[str, Any]:
+    account_key = text(row["account_key"], 256)
+    account_attribution = text(row["account_attribution"], 32).lower()
+    if account_attribution != "exact" or not account_key:
+        account_key = ""
+        account_attribution = "inferred"
     return {
         "version": 1,
         "eventId": row["event_id"],
@@ -607,11 +612,11 @@ def event_row_to_api(row: sqlite3.Row) -> dict[str, Any]:
         "taskKey": row["task_key"],
         "completedAt": row["completed_at"],
         "startedAt": row["started_at"],
-        "accountKey": row["account_key"],
-        "accountLabel": row["account_label"],
-        "accountType": row["account_type"],
-        "accountPlan": row["account_plan"],
-        "accountAttribution": row["account_attribution"],
+        "accountKey": account_key,
+        "accountLabel": row["account_label"] if account_key else "",
+        "accountType": row["account_type"] if account_key else "",
+        "accountPlan": row["account_plan"] if account_key else "",
+        "accountAttribution": account_attribution,
         "estimatedCredits": row["estimated_credits"],
         "usage": {
             "inputTokens": row["input_tokens"],

@@ -76,6 +76,16 @@ function configureUsageSyncDatabase(database) {
   ]) {
     if (!columns.has(name)) database.exec(`ALTER TABLE usage_sync_events ADD COLUMN ${name} ${definition}`);
   }
+  database.exec(`
+    UPDATE usage_sync_events
+    SET account_key = '',
+        account_label = '',
+        account_type = '',
+        account_plan = '',
+        account_attribution = 'inferred'
+    WHERE lower(trim(account_attribution)) <> 'exact'
+       OR trim(account_key) = ''
+  `);
 }
 
 function rowToEvent(row) {
