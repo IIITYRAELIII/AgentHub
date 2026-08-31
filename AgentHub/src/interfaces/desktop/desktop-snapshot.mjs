@@ -791,7 +791,11 @@ export function createDesktopSnapshotFactory({
         })),
         ...deferred.queuedValues().map((item) => ({
           id: item.id,
-          state: item.dispatchingAt ? "dispatching" : item.paused === true ? "paused" : "queued",
+          state: item.dispatchingAt
+            ? "dispatching"
+            : item.conflictKind === "message-steer"
+              ? "steering"
+              : item.paused === true ? "paused" : "queued",
           provider: item.provider,
           threadId: item.threadId,
           taskTitle: deferredTaskTitle(item),

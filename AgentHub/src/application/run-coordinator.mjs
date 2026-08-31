@@ -402,6 +402,8 @@ export class RunCoordinator {
       conflictKind: "message-steer",
       clientUserMessageId,
       messageFingerprint,
+      steerTargetRunId: existingRun.id ?? null,
+      steerTargetTurnId: existingRun.turnId ?? null,
       destination: "queued",
       notify: false,
       persistentFiles: attachments.length > 0,
@@ -506,6 +508,12 @@ export class RunCoordinator {
 
   async steerUnlocked({ input, target, clientUserMessageId }) {
     const existingRun = this.activeRun(target);
+    const expectedRunId = String(target?.steerTargetRunId ?? "").trim();
+    const expectedTurnId = String(target?.steerTargetTurnId ?? "").trim();
+    if ((expectedRunId && expectedRunId !== String(existingRun?.id ?? "").trim())
+      || (expectedTurnId && expectedTurnId !== String(existingRun?.turnId ?? "").trim())) {
+      throw new Error("Active turn not steerable: the targeted managed turn is no longer active");
+    }
     const externalActivity = existingRun
       ? { state: "active", executionOwner: existingRun.executionOwner }
       : await this.externalActivity(target);

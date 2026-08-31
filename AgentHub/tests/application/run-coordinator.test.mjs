@@ -477,9 +477,27 @@ test("RunCoordinator acknowledges durable steer within 250ms without awaiting th
   assert.equal(result.turnId, "turn-1");
   assert.equal(f.calls.some(([name]) => name === "provider"), false);
   assert.equal(f.calls.find(([name]) => name === "defer")[3].conflictKind, "message-steer");
+  assert.equal(f.calls.find(([name]) => name === "defer")[3].steerTargetRunId, "active");
+  assert.equal(f.calls.find(([name]) => name === "defer")[3].steerTargetTurnId, "turn-1");
   assert.deepEqual(f.calls.find(([name]) => name === "schedule").slice(1), [
     { id: "durable-steer", clientUserMessageId: "message-steer" }, 0,
   ]);
+});
+
+test("RunCoordinator rejects a durable steer after its exact managed turn changes", async () => {
+  const active = { id: "run-new", turnId: "turn-new", executionOwner: "hub" };
+  const f = fixture({ taskRuns: { forTask: () => active } });
+
+  await assert.rejects(f.coordinator.steer({
+    input: "late steer",
+    target: {
+      ...f.target,
+      steerTargetRunId: "run-old",
+      steerTargetTurnId: "turn-old",
+    },
+    clientUserMessageId: "message-late-steer",
+  }), /targeted managed turn is no longer active/u);
+  assert.equal(f.calls.some(([name]) => name === "provider"), false);
 });
 
 test("RunCoordinator admits two exact Threads in one Stream independently", async () => {

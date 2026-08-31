@@ -39,6 +39,15 @@ export function deferredLaunchWaitReason(error) {
   return isRetryableDeferredLaunchError(error) ? "provider-temporarily-unavailable" : null;
 }
 
+function steerTargetsOccupancy(item, occupancy) {
+  if (!occupancy?.occupied || !occupancy.run) return false;
+  const expectedRunId = String(item?.steerTargetRunId ?? "").trim();
+  const expectedTurnId = String(item?.steerTargetTurnId ?? "").trim();
+  if (!expectedRunId && !expectedTurnId) return false;
+  return (!expectedRunId || expectedRunId === String(occupancy.run.id ?? "").trim())
+    && (!expectedTurnId || expectedTurnId === String(occupancy.run.turnId ?? "").trim());
+}
+
 export class DeferredInputController {
   constructor({
     pendingInputs,
@@ -133,24 +142,28 @@ export class DeferredInputController {
       const occupied = await this.refreshActiveWriterWait(item);
       if (occupied) return;
     }
+    let activeSteer = item.conflictKind === "message-steer" && Boolean(item.dispatchingAt);
     if (item.conflictKind === "message-steer" && !item.dispatchingAt) {
       const occupancy = await this.occupancy(item);
-      if (!occupancy?.occupied) {
+      activeSteer = steerTargetsOccupancy(item, occupancy);
+      if (!activeSteer) {
         item.conflictKind = "message-intake";
         this.onStateChange(item, "queued");
         await this.persist();
       }
     }
-    const oldest = this.oldestForTask(item, { includePending: true });
-    if (oldest?.id !== id) {
-      if (this.pendingInputs.has(oldest?.id)) {
-        const released = await this.releaseResolvedTaskConflict(oldest);
-        if (released) this.schedule(oldest, 0);
-        else if (oldest?.conflictKind === "task-running") this.schedule(item);
-      } else {
-        this.schedule(oldest, 0);
+    if (!activeSteer) {
+      const oldest = this.oldestForTask(item, { includePending: true });
+      if (oldest?.id !== id) {
+        if (this.pendingInputs.has(oldest?.id)) {
+          const released = await this.releaseResolvedTaskConflict(oldest);
+          if (released) this.schedule(oldest, 0);
+          else if (oldest?.conflictKind === "task-running") this.schedule(item);
+        } else {
+          this.schedule(oldest, 0);
+        }
+        return;
       }
-      return;
     }
     delete item.recheckRequested;
     this.processing.add(id);
@@ -532,11 +545,17 @@ export class DeferredInputController {
       .filter((candidate) => this.taskKey(candidate) === key);
     if (!queued.length) return false;
     for (const candidate of queued) this.cancelSchedule(candidate.id);
+    let scheduled = false;
+    for (const candidate of queued.filter((item) => item.conflictKind === "message-steer")) {
+      if (this.processing.has(candidate.id)) candidate.recheckRequested = true;
+      else this.schedule(candidate, 0);
+      scheduled = true;
+    }
     const oldest = this.oldestForTask(target, { includePending: true });
     const trigger = this.pendingInputs.has(oldest?.id)
       ? this.oldestForTask(target)
       : oldest;
-    if (!trigger) return false;
+    if (!trigger) return scheduled;
     if (this.processing.has(trigger.id)) trigger.recheckRequested = true;
     else this.schedule(trigger, 0);
     return true;
