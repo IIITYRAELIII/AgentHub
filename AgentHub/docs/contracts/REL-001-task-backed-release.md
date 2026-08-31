@@ -13,6 +13,20 @@ Every file-changing Task owns a local branch named
 be made there. Provider turn identity remains journal metadata and is not a
 source of file ownership.
 
+One provider turn may perform multiple sequential Task operations. Each claim
+or snapshot operation is durably identified by its MCP `request_id`, and
+terminal evidence resolves the exact `(provider, thread, turn, operation)`
+binding rather than a turn-global Task. At most one unterminated Task write
+operation may exist for a provider turn. A snapshot operation may atomically
+take over the active claim for the same Task; another Task cannot acquire the
+turn until that operation reaches a terminal boundary.
+
+The persistence compatibility boundary is the absence of `operation_id` on
+the binding or work-log table. Store startup rebuilds only that legacy shape,
+assigns deterministic `legacy:<taskId>` operation identities and installs the
+active-operation guard in the same migration. The rebuild may be removed only
+after every supported database version is guaranteed to contain operation IDs.
+
 ## Test and acceptance integration
 
 Moving a Task to `testing`, or directly to a later implementation status,

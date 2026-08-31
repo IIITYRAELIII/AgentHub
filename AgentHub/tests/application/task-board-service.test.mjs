@@ -44,6 +44,7 @@ test("snapshot revision reads owner revisions without building hierarchy or boar
     claim: () => null,
     claimedTaskForTurn: () => null,
     recordTaskTurn: () => null,
+    finishTaskOperation: () => null,
     releaseTasks: () => [],
     completeRelease: () => null,
   };
@@ -215,6 +216,7 @@ test("disabled Spark leaves new Tasks idle and clears recovered triage", () => {
       claim: () => null,
       claimedTaskForTurn: () => null,
       recordTaskTurn: () => null,
+      finishTaskOperation: () => null,
       releaseTasks: () => [],
       completeRelease: () => null,
       disablePendingTriage: () => { disabled += 1; },

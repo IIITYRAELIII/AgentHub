@@ -122,6 +122,8 @@ export function createDesktopRunRouterWiring({
           provider: run.provider,
           threadId: run.threadId,
           turnId: run.turnId,
+          operationId: run.id ?? run.turnId,
+          operationKind: "claim",
           gitBaseline: run.gitBaseline ?? null,
         });
       },

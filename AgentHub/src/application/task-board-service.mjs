@@ -29,7 +29,7 @@ export class TaskBoardService {
     for (const name of [
       "create", "task", "list", "move", "markStarted", "orderedColumnIds", "moveColumn",
       "notesComment", "setNotesComment", "reassignWorkspace", "claim", "claimedTaskForTurn",
-      "recordTaskTurn", "releaseTasks", "completeRelease",
+      "recordTaskTurn", "finishTaskOperation", "releaseTasks", "completeRelease",
     ]) requiredMethod(store, name);
     if (typeof workspaceCatalog?.hierarchy !== "function") throw new TypeError("workspaceCatalog is required");
     this.store = store;
@@ -217,11 +217,14 @@ export class TaskBoardService {
     return task;
   }
 
-  claim({ id, workspaceId, streamId, provider, threadId, turnId, gitBaseline = null } = {}) {
+  claim({
+    id, workspaceId, streamId, provider, threadId, turnId, operationId,
+    operationKind = "claim", gitBaseline = null,
+  } = {}) {
     const task = this.store.claim(id, {
-      workspaceId, streamId, provider, threadId, turnId, gitBaseline,
+      workspaceId, streamId, provider, threadId, turnId, operationId, operationKind, gitBaseline,
     });
-    this.#event("task.claimed", task, { provider, threadId, turnId });
+    this.#event("task.claimed", task, { provider, threadId, turnId, operationId, operationKind });
     return task;
   }
 
@@ -242,6 +245,15 @@ export class TaskBoardService {
   recordTaskTurn(payload = {}) {
     const task = this.store.recordTaskTurn(payload);
     if (task) this.#event("task.turn-recorded", task, { turnId: payload.turnId });
+    return task;
+  }
+
+  finishTaskOperation(payload = {}) {
+    const task = this.store.finishTaskOperation(payload);
+    this.#event("task.operation-finished", task, {
+      turnId: payload.turnId ?? null,
+      operationId: payload.operationId ?? null,
+    });
     return task;
   }
 

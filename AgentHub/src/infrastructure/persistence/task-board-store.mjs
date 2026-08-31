@@ -105,11 +105,13 @@ function configure(database) {
       provider TEXT NOT NULL,
       provider_thread_id TEXT NOT NULL,
       turn_id TEXT NOT NULL,
+      operation_id TEXT NOT NULL,
+      operation_kind TEXT NOT NULL CHECK (operation_kind IN ('claim', 'evidence', 'legacy')),
       baseline_json TEXT NOT NULL DEFAULT '{}',
       requested_workflow_status TEXT,
       claimed_at_ms INTEGER NOT NULL,
       terminal_at_ms INTEGER,
-      PRIMARY KEY (provider, provider_thread_id, turn_id),
+      PRIMARY KEY (provider, provider_thread_id, turn_id, operation_id),
       FOREIGN KEY (task_id) REFERENCES hub_board_tasks(id) ON DELETE CASCADE
     ) WITHOUT ROWID;
     CREATE INDEX IF NOT EXISTS hub_task_turn_bindings_task_idx
@@ -120,13 +122,14 @@ function configure(database) {
       provider TEXT NOT NULL,
       provider_thread_id TEXT NOT NULL,
       turn_id TEXT NOT NULL,
+      operation_id TEXT NOT NULL,
       project_root TEXT NOT NULL,
       summary TEXT NOT NULL DEFAULT '',
       status TEXT NOT NULL,
       changed_files_json TEXT NOT NULL,
       created_at_ms INTEGER NOT NULL,
       FOREIGN KEY (task_id) REFERENCES hub_board_tasks(id) ON DELETE CASCADE,
-      UNIQUE (task_id, provider, provider_thread_id, turn_id)
+      UNIQUE (task_id, provider, provider_thread_id, turn_id, operation_id)
     ) WITHOUT ROWID;
     CREATE INDEX IF NOT EXISTS hub_task_work_log_task_idx
       ON hub_task_work_log(task_id, created_at_ms, id);
@@ -267,10 +270,89 @@ function configure(database) {
   if (!taskColumns.some((column) => column.name === "row_revision")) {
     database.exec("ALTER TABLE hub_board_tasks ADD COLUMN row_revision INTEGER NOT NULL DEFAULT 1");
   }
-  const bindingColumns = database.prepare("PRAGMA table_info(hub_task_turn_bindings)").all();
+  let bindingColumns = database.prepare("PRAGMA table_info(hub_task_turn_bindings)").all();
   if (!bindingColumns.some((column) => column.name === "requested_workflow_status")) {
     database.exec("ALTER TABLE hub_task_turn_bindings ADD COLUMN requested_workflow_status TEXT");
+    bindingColumns = database.prepare("PRAGMA table_info(hub_task_turn_bindings)").all();
   }
+  const workLogColumns = database.prepare("PRAGMA table_info(hub_task_work_log)").all();
+  const migrateBindings = !bindingColumns.some((column) => column.name === "operation_id");
+  const migrateWorkLog = !workLogColumns.some((column) => column.name === "operation_id");
+  if (migrateBindings || migrateWorkLog) {
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      if (migrateBindings) {
+        database.exec(`
+          DROP INDEX IF EXISTS hub_task_turn_bindings_task_idx;
+          ALTER TABLE hub_task_turn_bindings RENAME TO hub_task_turn_bindings_turn_scope;
+          CREATE TABLE hub_task_turn_bindings (
+            task_id TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            provider_thread_id TEXT NOT NULL,
+            turn_id TEXT NOT NULL,
+            operation_id TEXT NOT NULL,
+            operation_kind TEXT NOT NULL CHECK (operation_kind IN ('claim', 'evidence', 'legacy')),
+            baseline_json TEXT NOT NULL DEFAULT '{}',
+            requested_workflow_status TEXT,
+            claimed_at_ms INTEGER NOT NULL,
+            terminal_at_ms INTEGER,
+            PRIMARY KEY (provider, provider_thread_id, turn_id, operation_id),
+            FOREIGN KEY (task_id) REFERENCES hub_board_tasks(id) ON DELETE CASCADE
+          ) WITHOUT ROWID;
+          INSERT INTO hub_task_turn_bindings (
+            task_id, provider, provider_thread_id, turn_id, operation_id, operation_kind,
+            baseline_json, requested_workflow_status, claimed_at_ms, terminal_at_ms
+          )
+          SELECT task_id, provider, provider_thread_id, turn_id, 'legacy:' || task_id, 'legacy',
+            baseline_json, requested_workflow_status, claimed_at_ms, terminal_at_ms
+          FROM hub_task_turn_bindings_turn_scope;
+          DROP TABLE hub_task_turn_bindings_turn_scope;
+        `);
+      }
+      if (migrateWorkLog) {
+        database.exec(`
+          DROP INDEX IF EXISTS hub_task_work_log_task_idx;
+          ALTER TABLE hub_task_work_log RENAME TO hub_task_work_log_turn_scope;
+          CREATE TABLE hub_task_work_log (
+            id TEXT PRIMARY KEY,
+            task_id TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            provider_thread_id TEXT NOT NULL,
+            turn_id TEXT NOT NULL,
+            operation_id TEXT NOT NULL,
+            project_root TEXT NOT NULL,
+            summary TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL,
+            changed_files_json TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            FOREIGN KEY (task_id) REFERENCES hub_board_tasks(id) ON DELETE CASCADE,
+            UNIQUE (task_id, provider, provider_thread_id, turn_id, operation_id)
+          ) WITHOUT ROWID;
+          INSERT INTO hub_task_work_log (
+            id, task_id, provider, provider_thread_id, turn_id, operation_id,
+            project_root, summary, status, changed_files_json, created_at_ms
+          )
+          SELECT id, task_id, provider, provider_thread_id, turn_id, 'legacy:' || task_id,
+            project_root, summary, status, changed_files_json, created_at_ms
+          FROM hub_task_work_log_turn_scope;
+          DROP TABLE hub_task_work_log_turn_scope;
+        `);
+      }
+      database.exec("COMMIT");
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS hub_task_turn_bindings_task_idx
+      ON hub_task_turn_bindings(task_id, claimed_at_ms DESC);
+    CREATE UNIQUE INDEX IF NOT EXISTS hub_task_turn_bindings_active_idx
+      ON hub_task_turn_bindings(provider, provider_thread_id, turn_id)
+      WHERE terminal_at_ms IS NULL;
+    CREATE INDEX IF NOT EXISTS hub_task_work_log_task_idx
+      ON hub_task_work_log(task_id, created_at_ms, id);
+  `);
   const legacyPrefixPattern = `${LEGACY_TELEGRAM_BUNDLE_PREFIX}%`;
   const contentOffset = LEGACY_TELEGRAM_BUNDLE_PREFIX.length + 1;
   database.prepare(`
@@ -725,13 +807,14 @@ export class TaskBoardStore {
     if (!files.length) return;
     database.prepare(`
       INSERT OR IGNORE INTO hub_task_work_log (
-        id, task_id, provider, provider_thread_id, turn_id, project_root,
-        summary, status, changed_files_json, created_at_ms
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        id, task_id, provider, provider_thread_id, turn_id, operation_id,
+        project_root, summary, status, changed_files_json, created_at_ms
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       this.idFactory(), String(taskId), String(row.provider ?? "migration"),
       String(row.provider_thread_id ?? `migration:${taskId}`),
       String(row.turn_id ?? row.id ?? `migration:${taskId}`),
+      `migration:${String(row.id ?? taskId)}`,
       String(row.project_root ?? ""), String(row.summary ?? "").slice(0, 2_000),
       String(row.status ?? row.observed_status ?? "completed"),
       JSON.stringify(files), Number(row.created_at_ms) || this.now(),
@@ -815,7 +898,8 @@ export class TaskBoardStore {
   #releaseDetails(database, taskId) {
     const workLog = database.prepare(`
       SELECT provider, provider_thread_id AS threadId, turn_id AS turnId,
-        project_root AS projectRoot, summary, status, changed_files_json, created_at_ms
+        operation_id AS operationId, project_root AS projectRoot,
+        summary, status, changed_files_json, created_at_ms
       FROM hub_task_work_log WHERE task_id = ? ORDER BY created_at_ms, id
     `).all(taskId).map((row) => {
       let files = [];
@@ -824,6 +908,7 @@ export class TaskBoardStore {
         provider: row.provider,
         threadId: row.threadId,
         turnId: row.turnId,
+        operationId: row.operationId,
         projectRoot: row.projectRoot,
         summary: row.summary,
         status: row.status,
@@ -1430,10 +1515,17 @@ export class TaskBoardStore {
     });
   }
 
-  claim(id, { workspaceId, streamId, provider, threadId, turnId, gitBaseline = null } = {}) {
+  claim(id, {
+    workspaceId, streamId, provider, threadId, turnId, operationId,
+    operationKind = "claim", gitBaseline = null,
+  } = {}) {
     const taskId = String(id ?? "").trim();
-    const identity = [provider, threadId, turnId].map((value) => String(value ?? "").trim());
-    if (!taskId || identity.some((value) => !value)) throw new Error("Task claim requires an exact provider turn");
+    const identity = [provider, threadId, turnId, operationId].map((value) => String(value ?? "").trim());
+    const kind = String(operationKind ?? "claim").trim();
+    if (!taskId || identity.some((value) => !value)) {
+      throw new Error("Task claim requires an exact provider operation");
+    }
+    if (!["claim", "evidence"].includes(kind)) throw new Error("invalid Task operation kind");
     const baselineJson = gitBaselineJson(gitBaseline);
     const timestamp = this.now();
     return this.#withDatabase((database) => {
@@ -1444,31 +1536,42 @@ export class TaskBoardStore {
         throw new Error("Task is outside the current Workspace");
       }
       const bound = database.prepare(`
-        SELECT task_id FROM hub_task_turn_bindings
-        WHERE provider = ? AND provider_thread_id = ? AND turn_id = ?
+        SELECT * FROM hub_task_turn_bindings
+        WHERE provider = ? AND provider_thread_id = ? AND turn_id = ? AND operation_id = ?
       `).get(...identity);
-      if (bound && bound.task_id !== taskId) throw new Error("provider turn is already claimed by another Task");
+      if (bound && bound.task_id !== taskId) throw new Error("provider operation is already claimed by another Task");
+      if (bound && bound.operation_kind !== kind) throw new Error("provider operation kind conflicts with its Task binding");
       if (bound?.task_id === taskId) {
         if (baselineJson !== "{}") {
           database.prepare(`
             UPDATE hub_task_turn_bindings SET baseline_json = ?
-            WHERE provider = ? AND provider_thread_id = ? AND turn_id = ? AND baseline_json = '{}'
+            WHERE provider = ? AND provider_thread_id = ? AND turn_id = ?
+              AND operation_id = ? AND baseline_json = '{}'
           `).run(baselineJson, ...identity);
         }
         const result = this.#taskWithRelease(database, current);
         database.exec("COMMIT");
         return result;
       }
+      const active = database.prepare(`
+        SELECT * FROM hub_task_turn_bindings
+        WHERE provider = ? AND provider_thread_id = ? AND turn_id = ? AND terminal_at_ms IS NULL
+      `).get(...identity.slice(0, 3));
+      const handoff = active?.task_id === taskId
+        && kind === "evidence"
+        && ["claim", "legacy"].includes(String(active.operation_kind));
+      if (active && !handoff) throw new Error("provider turn already has an active Task operation");
+      if (handoff) database.prepare(`
+        UPDATE hub_task_turn_bindings SET terminal_at_ms = ?
+        WHERE provider = ? AND provider_thread_id = ? AND turn_id = ?
+          AND operation_id = ? AND terminal_at_ms IS NULL
+      `).run(timestamp, active.provider, active.provider_thread_id, active.turn_id, active.operation_id);
       database.prepare(`
         INSERT INTO hub_task_turn_bindings (
-          task_id, provider, provider_thread_id, turn_id, baseline_json, claimed_at_ms
-        ) VALUES (?, ?, ?, ?, ?, ?)
-        ON CONFLICT(provider, provider_thread_id, turn_id) DO UPDATE SET
-          baseline_json = CASE
-            WHEN hub_task_turn_bindings.baseline_json = '{}' THEN excluded.baseline_json
-            ELSE hub_task_turn_bindings.baseline_json
-          END
-      `).run(taskId, ...identity, baselineJson, timestamp);
+          task_id, provider, provider_thread_id, turn_id, operation_id, operation_kind,
+          baseline_json, claimed_at_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(taskId, ...identity, kind, baselineJson, timestamp);
       database.prepare(`
         UPDATE hub_board_tasks SET bucket = 'workspace', status = 'started', workflow_status = 'in_progress',
           workspace_id = ?, stream_id = ?, placement_source = 'manual',
@@ -1488,43 +1591,51 @@ export class TaskBoardStore {
     });
   }
 
-  claimedTaskForTurn({ provider, threadId, turnId } = {}) {
+  claimedTaskForTurn({ provider, threadId, turnId, operationId = null } = {}) {
     const identity = [provider, threadId, turnId].map((value) => String(value ?? "").trim());
+    const operation = String(operationId ?? "").trim();
     if (identity.some((value) => !value)) return null;
     return this.#withDatabase((database) => {
       const row = database.prepare(`
-        SELECT task.*, binding.baseline_json, binding.requested_workflow_status
+        SELECT task.*, binding.baseline_json, binding.requested_workflow_status,
+          binding.operation_id, binding.operation_kind
         FROM hub_task_turn_bindings binding
         JOIN hub_board_tasks task ON task.id = binding.task_id
         WHERE binding.provider = ? AND binding.provider_thread_id = ? AND binding.turn_id = ?
-      `).get(...identity);
+          AND (? = '' OR binding.operation_id = ?)
+        ORDER BY (binding.terminal_at_ms IS NULL) DESC, binding.claimed_at_ms DESC,
+          binding.operation_id DESC
+        LIMIT 1
+      `).get(...identity, operation, operation);
       if (!row) return null;
       let gitBaseline = null;
       try { gitBaseline = JSON.parse(String(row.baseline_json ?? "{}")); } catch { gitBaseline = null; }
       return {
         ...this.#taskWithRelease(database, row),
         gitBaseline,
+        operationId: row.operation_id,
+        operationKind: row.operation_kind,
         requestedWorkflowStatus: row.requested_workflow_status ?? null,
       };
     });
   }
 
-  requestWorkflowStatus(id, { status, provider, threadId, turnId } = {}) {
+  requestWorkflowStatus(id, { status, provider, threadId, turnId, operationId } = {}) {
     const workflowStatus = normalizedTaskWorkflowStatus(status);
     if (workflowStatus === "awaiting_implementation") {
-      const identity = [provider, threadId, turnId].map((value) => String(value ?? "").trim());
+      const identity = [provider, threadId, turnId, operationId].map((value) => String(value ?? "").trim());
       this.#withDatabase((database) => {
         this.#taskRow(database, id);
         database.prepare("DELETE FROM hub_task_git_references WHERE task_id = ?").run(String(id));
         if (!identity.some((value) => !value)) {
           const binding = database.prepare(`
             SELECT task_id FROM hub_task_turn_bindings
-            WHERE provider = ? AND provider_thread_id = ? AND turn_id = ?
+            WHERE provider = ? AND provider_thread_id = ? AND turn_id = ? AND operation_id = ?
           `).get(...identity);
           if (binding?.task_id === String(id)) {
             database.prepare(`
               UPDATE hub_task_turn_bindings SET requested_workflow_status = 'awaiting_implementation'
-              WHERE provider = ? AND provider_thread_id = ? AND turn_id = ?
+              WHERE provider = ? AND provider_thread_id = ? AND turn_id = ? AND operation_id = ?
             `).run(...identity);
           }
         }
@@ -1534,10 +1645,10 @@ export class TaskBoardStore {
   }
 
   recordTaskTurn({
-    taskId = null, provider, threadId, turnId, projectRoot, summary = "", status = "completed",
+    taskId = null, provider, threadId, turnId, operationId, projectRoot, summary = "", status = "completed",
     changedFiles = [], gitBaseline = null, resultSnapshot = null, branch = null,
   } = {}) {
-    const identity = [provider, threadId, turnId].map((value) => String(value ?? "").trim());
+    const identity = [provider, threadId, turnId, operationId].map((value) => String(value ?? "").trim());
     const files = normalizedTaskChangedFiles(changedFiles);
     if (identity.some((value) => !value)) return null;
     const timestamp = this.now();
@@ -1546,27 +1657,27 @@ export class TaskBoardStore {
       try {
       const binding = database.prepare(`
         SELECT * FROM hub_task_turn_bindings
-        WHERE provider = ? AND provider_thread_id = ? AND turn_id = ?
+        WHERE provider = ? AND provider_thread_id = ? AND turn_id = ? AND operation_id = ?
       `).get(...identity);
-      if (!binding) throw new Error("terminal Task evidence requires an exact durable provider turn binding");
+      if (!binding) throw new Error("terminal Task evidence requires an exact durable provider operation binding");
       const resolvedTaskId = String(taskId ?? binding.task_id).trim();
-      if (binding.task_id !== resolvedTaskId) throw new Error("terminal Task identity conflicts with its exact turn binding");
+      if (binding.task_id !== resolvedTaskId) throw new Error("terminal Task identity conflicts with its exact operation binding");
       this.#taskRow(database, resolvedTaskId);
       let baselineJson = String(binding.baseline_json ?? "{}");
       const recoveredBaselineJson = gitBaselineJson(gitBaseline);
       if (baselineJson === "{}" && recoveredBaselineJson !== "{}") {
         database.prepare(`
           UPDATE hub_task_turn_bindings SET baseline_json = ?
-          WHERE provider = ? AND provider_thread_id = ? AND turn_id = ?
+          WHERE provider = ? AND provider_thread_id = ? AND turn_id = ? AND operation_id = ?
         `).run(recoveredBaselineJson, ...identity);
         baselineJson = recoveredBaselineJson;
       }
       if (files.length) database.prepare(`
         INSERT INTO hub_task_work_log (
-          id, task_id, provider, provider_thread_id, turn_id, project_root,
-          summary, status, changed_files_json, created_at_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(task_id, provider, provider_thread_id, turn_id) DO UPDATE SET
+          id, task_id, provider, provider_thread_id, turn_id, operation_id,
+          project_root, summary, status, changed_files_json, created_at_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(task_id, provider, provider_thread_id, turn_id, operation_id) DO UPDATE SET
           summary = excluded.summary, status = excluded.status,
           changed_files_json = excluded.changed_files_json
       `).run(
@@ -1580,7 +1691,7 @@ export class TaskBoardStore {
       `).run(timestamp, resolvedTaskId);
       database.prepare(`
         UPDATE hub_task_turn_bindings SET terminal_at_ms = ?
-        WHERE provider = ? AND provider_thread_id = ? AND turn_id = ?
+        WHERE provider = ? AND provider_thread_id = ? AND turn_id = ? AND operation_id = ?
       `).run(timestamp, ...identity);
       const result = this.#taskWithRelease(
         database,
@@ -1592,6 +1703,25 @@ export class TaskBoardStore {
         database.exec("ROLLBACK");
         throw error;
       }
+    });
+  }
+
+  finishTaskOperation({ taskId = null, provider, threadId, turnId, operationId } = {}) {
+    const identity = [provider, threadId, turnId, operationId].map((value) => String(value ?? "").trim());
+    if (identity.some((value) => !value)) throw new Error("Task operation identity is required");
+    return this.#withDatabase((database) => {
+      const binding = database.prepare(`
+        SELECT * FROM hub_task_turn_bindings
+        WHERE provider = ? AND provider_thread_id = ? AND turn_id = ? AND operation_id = ?
+      `).get(...identity);
+      if (!binding) throw new Error("Task operation binding not found");
+      const resolvedTaskId = String(taskId ?? binding.task_id).trim();
+      if (binding.task_id !== resolvedTaskId) throw new Error("Task operation identity conflicts with its binding");
+      database.prepare(`
+        UPDATE hub_task_turn_bindings SET terminal_at_ms = COALESCE(terminal_at_ms, ?)
+        WHERE provider = ? AND provider_thread_id = ? AND turn_id = ? AND operation_id = ?
+      `).run(this.now(), ...identity);
+      return this.#taskWithRelease(database, this.#taskRow(database, resolvedTaskId));
     });
   }
 
