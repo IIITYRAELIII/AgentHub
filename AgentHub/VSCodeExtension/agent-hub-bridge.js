@@ -94,6 +94,14 @@ function defaultProcessIsAlive(pid) {
   }
 }
 
+async function readJsonFile(file) {
+  try {
+    return JSON.parse(await readFile(file, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
 class AgentHubBridge {
   constructor({
     moduleRoot = null,
@@ -109,6 +117,8 @@ class AgentHubBridge {
     this.journalDatabase = journalDatabase;
     this.ownsJournalDatabase = !journalDatabase;
     this.journalDatabaseModule = null;
+    this.journalDataModule = null;
+    this.defaultUsageSyncServerModule = null;
     this.webviewSessionModule = null;
     this.resolvedModuleRoot = null;
     this.processIsAlive = processIsAlive;
@@ -328,6 +338,56 @@ class AgentHubBridge {
     return this.journalCache;
   }
 
+  async journalData() {
+    if (this.journalDataModule) return this.journalDataModule;
+    const root = await this.backendRoot();
+    const modulePath = path.join(root, "src", "interfaces", "web", "mini-app-journal-data.mjs");
+    await stat(modulePath);
+    this.journalDataModule = import(pathToFileURL(modulePath).href);
+    return this.journalDataModule;
+  }
+
+  async defaultUsageSyncServerUrl() {
+    try {
+      if (!this.defaultUsageSyncServerModule) {
+        const root = await this.backendRoot();
+        const modulePath = path.join(root, "src", "domain", "default-usage-sync-server.mjs");
+        await stat(modulePath);
+        this.defaultUsageSyncServerModule = import(pathToFileURL(modulePath).href);
+      }
+      const { defaultUsageSyncServerUrl } = await this.defaultUsageSyncServerModule;
+      return String(defaultUsageSyncServerUrl?.() ?? "").trim();
+    } catch {
+      return "";
+    }
+  }
+
+  async usageSyncStatus() {
+    try {
+      const { publicUsageSyncStatus } = await this.journalData();
+      const dataDirectory = path.join(this.runtimeRoot, "data");
+      const [remote, identity] = await Promise.all([
+        readJsonFile(path.join(dataDirectory, "usage-sync-remote.json")),
+        readJsonFile(path.join(dataDirectory, "usage-sync-identity.json")),
+      ]);
+      const defaultServerUrl = await this.defaultUsageSyncServerUrl();
+      const deviceLabel = String(identity?.label ?? "").trim();
+      const labelConfirmedAt = String(identity?.labelConfirmedAt ?? "").trim();
+      return publicUsageSyncStatus({
+        ...remote,
+        serverUrl: String(remote?.serverUrl ?? "").trim() || defaultServerUrl,
+        deviceId: String(remote?.deviceId ?? "").trim() || String(identity?.deviceId ?? "").trim(),
+        deviceLabel,
+        suggestedDeviceLabel: deviceLabel,
+        deviceLabelConfirmed: Boolean(labelConfirmedAt),
+        deviceLabelConfirmedAt: labelConfirmedAt,
+        deviceLabelPromptRequired: Boolean(deviceLabel && !labelConfirmedAt),
+      });
+    } catch {
+      return { configured: false };
+    }
+  }
+
   async subscribeJournal(listener, { pollMs = 500 } = {}) {
     if (!this.ownsJournalDatabase) {
       return (await this.journalStore()).subscribe((event) => {
@@ -503,15 +563,24 @@ class AgentHubBridge {
         });
       }
       if (url.pathname === "/api/journal") {
-        const etag = `"${journal.version}"`;
+        const journalData = await this.journalData().catch(() => null);
+        const usageSync = await this.usageSyncStatus();
+        const etagValue = journalData?.journalPayloadEtag
+          ? journalData.journalPayloadEtag(journal, usageSync)
+          : journal.version;
+        const etag = `"${etagValue}"`;
         if (String(headers["if-none-match"] ?? "") === etag) {
           return { status: 304, headers: { ETag: etag }, body: "" };
         }
-        return jsonResponse({
-          html: journal.html,
-          updatedAt: journal.updatedAt,
-          version: journal.version,
-        }, 200, { ETag: etag });
+        const payload = journalData?.publicJournalPayload
+          ? journalData.publicJournalPayload(journal, { usageSync })
+          : {
+              html: journal.html,
+              updatedAt: journal.updatedAt,
+              version: journal.version,
+              usageSync,
+            };
+        return jsonResponse(payload, 200, { ETag: etag });
       }
       if (url.pathname === "/api/journal/day" || url.pathname === "/api/journal/turn") {
         const requestedVersion = String(url.searchParams.get("version") ?? "");

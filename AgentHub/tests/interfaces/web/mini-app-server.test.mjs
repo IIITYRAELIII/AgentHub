@@ -359,6 +359,52 @@ test("journal usage sync invite and enroll endpoints support guided connection",
   }
 });
 
+test("journal usage sync device label endpoint supports local Web and mobile Web", async () => {
+  const journal = memoryJournal(DAY_HTML);
+  const labels = [];
+  const server = new MiniAppServer({
+    host: "127.0.0.1",
+    port: 0,
+    journalDatabase: journal,
+    usageSyncRemoteConfigStore: {
+      load: async () => ({
+        serverUrl: "https://sync.example.test/agenthub",
+        deviceId: "device-label",
+        enrolledAt: "2026-08-20T13:45:00.000Z",
+        deviceLabel: labels.at(-1) ?? "",
+        deviceLabelConfirmed: Boolean(labels.length),
+        deviceLabelConfirmedAt: labels.length ? "2026-08-20T13:46:00.000Z" : "",
+        deviceLabelPromptRequired: !labels.length,
+      }),
+    },
+    usageSyncService: {
+      setDeviceLabel: async (deviceLabel) => {
+        labels.push(String(deviceLabel));
+        journal.replace(`${LIMITS_HTML}\n${DAY_HTML}`);
+        return { updated: true, deviceLabel };
+      },
+    },
+  });
+  try {
+    const address = await server.start();
+    const response = await fetch(`${address.url}api/journal/usage-sync/device-label`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ deviceLabel: "SidorukSV" }),
+    });
+    assert.equal(response.status, 200);
+    const payload = await response.json();
+    assert.deepEqual(labels, ["SidorukSV"]);
+    assert.equal(payload.ok, true);
+    assert.equal(payload.result.deviceLabel, "SidorukSV");
+    assert.equal(payload.usageSync.deviceLabel, "SidorukSV");
+    assert.equal(payload.usageSync.deviceLabelConfirmed, true);
+    assert.equal(payload.journal.version, "sha256:0000000000000000000000000000000000000000000000000000000000000002");
+  } finally {
+    await server.close();
+  }
+});
+
 test("Mini App close does not wait forever for a blocked control handler", async () => {
   let enterHandler;
   let releaseHandler;
