@@ -283,7 +283,7 @@ html[data-theme="taiga"] .msg-user {
   border-color: rgba(65, 124, 150, 0.38);
 }
 
-html[data-theme="taiga"] body .chat .composer {
+html[data-theme="taiga"] body form.composer {
   backdrop-filter: blur(14px) saturate(92%);
   -webkit-backdrop-filter: blur(14px) saturate(92%);
   background-color: transparent !important;
