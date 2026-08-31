@@ -44,6 +44,16 @@ test("dialog geometry references semantic tokens without literal colors", async 
   assert.match(styles, /\.composer \{[\s\S]*width: min\(var\(--dialog-column-width\), calc\(100% - 48px\)\);/u);
 });
 
+test("global quick replies settings use a wrapping label meta action row", async () => {
+  const index = await readFile(new URL("index.html", assets), "utf8");
+  const styles = await readFile(new URL("styles.css", assets), "utf8");
+  assert.match(index, /class="setting-row dialog-quick-messages-row"[\s\S]*class="dialog-quick-messages-summary"[\s\S]*data-dialog-global-quick-messages-count[\s\S]*data-dialog-global-quick-messages/u);
+  assert.match(styles, /\.dialog-quick-messages-row \{[\s\S]*display: flex;[\s\S]*flex-wrap: wrap;/u);
+  assert.match(styles, /\.dialog-quick-messages-summary \{[\s\S]*display: grid;[\s\S]*flex: 1 1 13rem;[\s\S]*min-width: min\(100%, 13rem\);/u);
+  assert.match(styles, /\.dialog-quick-messages-row > \.chip-button \{[\s\S]*margin-left: auto;/u);
+  assert.match(styles, /@media \(max-width: 520px\) \{[\s\S]*\.dialog-quick-messages-row > \.chip-button \{[\s\S]*flex-basis: 100%;[\s\S]*width: 100%;/u);
+});
+
 test("Orange defines the reference dialog palette only as theme tokens", async () => {
   const orange = await readFile(new URL("themes/orange/theme.css", assets), "utf8");
   const expected = new Map([

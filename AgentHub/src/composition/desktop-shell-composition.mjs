@@ -457,8 +457,6 @@ export function createDesktopShellComposition({
       setStreamCardFixedWidth: (value) => agentPreferences.setStreamCardFixedWidth(value),
       getStreamCardGapEnabled: () => agentPreferences.streamCardGapEnabled,
       setStreamCardGapEnabled: (value) => agentPreferences.setStreamCardGapEnabled(value),
-      getShowInlineFileRevealButtons: () => agentPreferences.showInlineFileRevealButtons,
-      setShowInlineFileRevealButtons: (value) => agentPreferences.setShowInlineFileRevealButtons(value),
       getPinnedWorkspaceStreams: () => agentPreferences.pinnedWorkspaceStreams,
       setPinnedWorkspaceStreams: (value) => agentPreferences.setPinnedWorkspaceStreams(value),
       getQuickMessages: () => agentPreferences.quickMessages,

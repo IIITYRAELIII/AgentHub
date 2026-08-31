@@ -6972,7 +6972,7 @@ function renderDialogSettings() {
     const quickMessages = window.AgentHubStreamTabs.normalizeQuickMessages(state.selection.quickMessages);
     const count = quickMessages.global.length;
     dialogGlobalQuickMessagesCount.textContent = count
-      ? `${count} ответов`
+      ? window.AgentHubStreamTabs.quickMessagesCountLabel(count)
       : "Не заданы";
   }
   if (dialogGlobalQuickMessages) {

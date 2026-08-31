@@ -17,7 +17,6 @@ export class DesktopSettingsService {
       "getActivityRecentMinutes", "setActivityRecentMinutes",
       "getStreamOrderMode", "setStreamOrderMode", "getStreamCardWidthMode", "setStreamCardWidthMode",
       "getStreamCardFixedWidth", "setStreamCardFixedWidth", "getStreamCardGapEnabled", "setStreamCardGapEnabled",
-      "getShowInlineFileRevealButtons", "setShowInlineFileRevealButtons",
       "getPinnedWorkspaceStreams", "setPinnedWorkspaceStreams", "getQuickMessages", "setQuickMessages",
       "findProjectIndex", "switchProject", "snapshot",
     ]) requiredFunction(dependencies[name], name);
@@ -118,12 +117,6 @@ export class DesktopSettingsService {
       const enabled = value === "true";
       changed = d.getStreamCardGapEnabled() !== enabled;
       d.setStreamCardGapEnabled(enabled);
-      await d.saveState();
-    } else if (name === "showInlineFileRevealButtons") {
-      if (!["true", "false"].includes(value)) throw new Error("Неизвестный режим кнопок Проводника");
-      const enabled = value === "true";
-      changed = d.getShowInlineFileRevealButtons() !== enabled;
-      d.setShowInlineFileRevealButtons(enabled);
       await d.saveState();
     } else if (name === "pinnedWorkspaceStreams") {
       let parsed;

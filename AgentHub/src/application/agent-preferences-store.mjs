@@ -188,7 +188,6 @@ export class AgentPreferencesStore {
   get streamCardWidthMode() { return this.values.streamCardWidthMode; }
   get streamCardFixedWidth() { return this.values.streamCardFixedWidth; }
   get streamCardGapEnabled() { return this.values.streamCardGapEnabled; }
-  get showInlineFileRevealButtons() { return this.values.showInlineFileRevealButtons; }
   get pinnedWorkspaceStreams() { return structuredClone(this.values.pinnedWorkspaceStreams); }
   get quickMessages() { return structuredClone(this.values.quickMessages); }
   get defaultCodexModel() { return this.defaults.codexModel; }
@@ -253,10 +252,6 @@ export class AgentPreferencesStore {
 
   setStreamCardGapEnabled(value) {
     return this.#set("streamCardGapEnabled", value === true);
-  }
-
-  setShowInlineFileRevealButtons(value) {
-    return this.#set("showInlineFileRevealButtons", value === true);
   }
 
   setPinnedWorkspaceStreams(value) {
@@ -378,7 +373,6 @@ export class AgentPreferencesStore {
       streamCardWidthMode: streamCardWidthMode(snapshot.streamCardWidthMode),
       streamCardFixedWidth: streamCardFixedWidth(snapshot.streamCardFixedWidth),
       streamCardGapEnabled: snapshot.streamCardGapEnabled === true,
-      showInlineFileRevealButtons: snapshot.showInlineFileRevealButtons === true,
       pinnedWorkspaceStreams: pinnedWorkspaceStreams(snapshot.pinnedWorkspaceStreams),
       quickMessages: quickMessages(snapshot.quickMessages),
     };

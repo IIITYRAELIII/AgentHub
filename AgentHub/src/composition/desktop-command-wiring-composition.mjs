@@ -231,8 +231,6 @@ export function createDesktopCommandWiring({
       setStreamCardFixedWidth: services.setStreamCardFixedWidth,
       getStreamCardGapEnabled: services.getStreamCardGapEnabled,
       setStreamCardGapEnabled: services.setStreamCardGapEnabled,
-      getShowInlineFileRevealButtons: services.getShowInlineFileRevealButtons,
-      setShowInlineFileRevealButtons: services.setShowInlineFileRevealButtons,
       getPinnedWorkspaceStreams: services.getPinnedWorkspaceStreams,
       setPinnedWorkspaceStreams: services.setPinnedWorkspaceStreams,
       getQuickMessages: services.getQuickMessages,

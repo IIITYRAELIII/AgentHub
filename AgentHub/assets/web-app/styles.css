@@ -8223,11 +8223,6 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
   text-decoration: none;
 }
 
-.msg-body .inline-file-reveal,
-.msg-reasoning .inline-file-reveal {
-  display: none !important;
-}
-
 .msg-body .inline-file-link code,
 .msg-reasoning .inline-file-link code {
   border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
@@ -8926,17 +8921,41 @@ html[data-surface="mobile"] .chat-stop-bottom > span {
   max-width: 11rem;
 }
 
-.dialog-quick-messages-control {
-  align-items: center;
-  display: inline-flex;
-  gap: 0.5rem;
-  justify-content: flex-end;
-  min-width: 0;
+.dialog-quick-messages-row {
+  align-items: flex-start;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem 0.75rem;
+  justify-content: space-between;
 }
 
-.dialog-quick-messages-control .setting-value {
+.dialog-quick-messages-summary {
+  display: grid;
+  flex: 1 1 13rem;
+  gap: 0.18rem;
+  min-width: min(100%, 13rem);
+}
+
+.dialog-quick-messages-summary .setting-name {
+  overflow-wrap: anywhere;
+}
+
+.dialog-quick-messages-summary .setting-value {
   color: var(--text-muted);
   font-size: 0.78rem;
+}
+
+.dialog-quick-messages-row > .chip-button {
+  flex: 0 1 auto;
+  justify-content: center;
+  margin-left: auto;
+}
+
+@media (max-width: 520px) {
+  .dialog-quick-messages-row > .chip-button {
+    flex-basis: 100%;
+    width: 100%;
+  }
 }
 
 .setting-field select option {

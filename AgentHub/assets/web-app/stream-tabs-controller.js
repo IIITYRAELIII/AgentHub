@@ -134,6 +134,18 @@
       .join("\n");
   }
 
+  function quickMessagesCountLabel(value) {
+    const count = Math.max(0, Math.trunc(Number(value)) || 0);
+    const mod10 = count % 10;
+    const mod100 = count % 100;
+    const noun = mod10 === 1 && mod100 !== 11
+      ? "ответ"
+      : mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)
+        ? "ответа"
+        : "ответов";
+    return `${count} ${noun}`;
+  }
+
   function setQuickMessagesForScope(selection, scope, scopeId, entries) {
     const quickMessages = normalizeQuickMessages(selection?.quickMessages);
     if (scope === "global") {
@@ -1482,6 +1494,7 @@
     pinnedStreamActionTitle,
     pinnedWorkspaceStreamIds,
     preserveStreamOverflowMenuOpen,
+    quickMessagesCountLabel,
     quickMessagesForStream,
     quickMessagesFromText,
     quickMessagesToText,

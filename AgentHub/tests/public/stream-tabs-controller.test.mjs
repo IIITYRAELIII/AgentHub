@@ -240,6 +240,7 @@ test("desktop Stream settings are theme-independent and keep stable geometry", a
 
 test("quick messages merge Workspace and Stream scopes without duplicates", async () => {
   const {
+    quickMessagesCountLabel,
     quickMessagesForStream,
     quickMessagesFromText,
     quickMessagesToText,
@@ -268,6 +269,12 @@ test("quick messages merge Workspace and Stream scopes without duplicates", asyn
     quickMessagesToText(quickMessagesFromText("Релиз | релизь\nпроверь")),
     "Релиз | релизь\nпроверь",
   );
+  assert.equal(quickMessagesCountLabel(0), "0 ответов");
+  assert.equal(quickMessagesCountLabel(1), "1 ответ");
+  assert.equal(quickMessagesCountLabel(2), "2 ответа");
+  assert.equal(quickMessagesCountLabel(5), "5 ответов");
+  assert.equal(quickMessagesCountLabel(11), "11 ответов");
+  assert.equal(quickMessagesCountLabel(21), "21 ответ");
   assert.deepEqual(
     JSON.parse(JSON.stringify(setQuickMessagesForScope(selection, "stream", "stream-1", []))),
     {
