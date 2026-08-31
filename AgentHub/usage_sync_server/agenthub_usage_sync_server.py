@@ -452,6 +452,10 @@ def normalize_event(value: Any, received_at_ms: int) -> UsageEvent:
     attribution = text(value.get("accountAttribution"), 32).lower()
     if attribution not in ACCOUNT_ATTRIBUTIONS:
         attribution = "exact" if account_key else "inferred"
+    if attribution == "exact" and not account_key:
+        attribution = "inferred"
+    if attribution != "exact":
+        account_key = ""
     return UsageEvent(
         event_id=event_id,
         device_id=device_id,
@@ -462,11 +466,12 @@ def normalize_event(value: Any, received_at_ms: int) -> UsageEvent:
         completed_ms=completed_ms,
         started_at=text(value.get("startedAt"), 80),
         account_key=account_key,
-        account_label=text(value.get("accountLabel"), 256),
-        account_type=text(value.get("accountType"), 80),
-        account_plan=text(
-            value.get("accountPlan") or value.get("accountPlanType") or value.get("planType"),
-            80,
+        account_label=text(value.get("accountLabel"), 256) if account_key else "",
+        account_type=text(value.get("accountType"), 80) if account_key else "",
+        account_plan=(
+            text(value.get("accountPlan") or value.get("accountPlanType") or value.get("planType"), 80)
+            if account_key
+            else ""
         ),
         account_attribution=attribution,
         estimated_credits=positive_number(value.get("estimatedCredits") or value.get("credits")),

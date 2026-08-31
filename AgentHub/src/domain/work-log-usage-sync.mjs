@@ -1,6 +1,5 @@
 import crypto from "node:crypto";
 
-import { applyInferredTeamDeviceAccount } from "./team-usage-accounts.mjs";
 import { normalizeServiceTier, normalizeTokenUsage } from "./token-usage.mjs";
 
 export const USAGE_SYNC_SNAPSHOT_VERSION = 1;
@@ -25,7 +24,8 @@ function positiveNumber(value) {
 
 function normalizeAttribution(value, hasAccountKey) {
   const candidate = nonEmpty(value).toLowerCase();
-  if (candidate === "exact" || candidate === "inferred") return candidate;
+  if (candidate === "exact") return hasAccountKey ? "exact" : "inferred";
+  if (candidate === "inferred") return "inferred";
   return hasAccountKey ? "exact" : "inferred";
 }
 
@@ -78,11 +78,12 @@ export function normalizeUsageSyncEvent(value = {}) {
     || threadKey;
   if (!deviceId || !completedAt || !eventId || !threadKey) return null;
   const accountKey = nonEmpty(value.accountKey);
+  const accountAttribution = normalizeAttribution(value.accountAttribution, Boolean(accountKey));
   const estimatedCredits = positiveNumber(value.estimatedCredits ?? value.credits);
   const estimateKind = nonEmpty(value.estimateKind);
   const imageGenerationCount = Math.max(0, Math.floor(Number(value.imageGenerationCount) || 0));
   const usage = normalizeTokenUsage(value.usage);
-  return applyInferredTeamDeviceAccount({
+  return {
     version: USAGE_SYNC_SNAPSHOT_VERSION,
     eventId,
     deviceId,
@@ -92,11 +93,13 @@ export function normalizeUsageSyncEvent(value = {}) {
     taskKey,
     completedAt,
     startedAt: nonEmpty(value.startedAt),
-    accountKey,
-    accountLabel: boundedText(value.accountLabel),
-    accountType: boundedText(value.accountType, 80),
-    accountPlan: boundedText(value.accountPlan ?? value.accountPlanType ?? value.planType, 80),
-    accountAttribution: normalizeAttribution(value.accountAttribution, Boolean(accountKey)),
+    accountKey: accountAttribution === "exact" ? accountKey : "",
+    accountLabel: accountAttribution === "exact" ? boundedText(value.accountLabel) : "",
+    accountType: accountAttribution === "exact" ? boundedText(value.accountType, 80) : "",
+    accountPlan: accountAttribution === "exact"
+      ? boundedText(value.accountPlan ?? value.accountPlanType ?? value.planType, 80)
+      : "",
+    accountAttribution,
     estimatedCredits,
     estimateKind,
     imageGenerationCount,
@@ -107,7 +110,28 @@ export function normalizeUsageSyncEvent(value = {}) {
     serviceTier: value.serviceTier == null ? "" : normalizeServiceTier(value.serviceTier),
     deviceLabel: boundedText(value.deviceLabel, 80),
     observedAt: nonEmpty(value.observedAt) || new Date().toISOString(),
-  });
+  };
+}
+
+function syncAccountFieldsFromRecord(record) {
+  const accountKey = nonEmpty(record?.accountKey);
+  const attribution = normalizeAttribution(record?.accountAttribution, Boolean(accountKey));
+  if (attribution !== "exact") {
+    return {
+      accountKey: "",
+      accountLabel: "",
+      accountType: "",
+      accountPlan: "",
+      accountAttribution: "inferred",
+    };
+  }
+  return {
+    accountKey,
+    accountLabel: record?.accountLabel,
+    accountType: record?.accountType,
+    accountPlan: record?.accountPlan,
+    accountAttribution: "exact",
+  };
 }
 
 export function usageSyncEventFromLedgerRecord(record, { deviceId, source = "local" } = {}) {
@@ -120,11 +144,7 @@ export function usageSyncEventFromLedgerRecord(record, { deviceId, source = "loc
     taskThreadId: record?.taskThreadId,
     completedAt: record?.completedAt,
     startedAt: record?.startedAt,
-    accountKey: record?.accountKey,
-    accountLabel: record?.accountLabel,
-    accountType: record?.accountType,
-    accountPlan: record?.accountPlan,
-    accountAttribution: record?.accountAttribution,
+    ...syncAccountFieldsFromRecord(record),
     estimatedCredits: record?.estimatedCredits,
     estimateKind: record?.estimateKind,
     imageGenerationCount: record?.imageGenerationCount,

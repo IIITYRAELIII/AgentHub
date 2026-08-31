@@ -246,6 +246,48 @@ class UsageSyncServerTests(unittest.TestCase):
         row = self.db.execute("SELECT account_key, account_attribution FROM usage_events").fetchone()
         self.assertEqual(dict(row), {"account_key": "chatgpt:owner", "account_attribution": "exact"})
 
+    def test_inferred_account_fields_are_not_stored_as_trusted_sync_account(self):
+        self.enroll()
+        body, signature = self.signed_snapshot([
+            self.event(accountAttribution="inferred")
+        ])
+        server.ingest_snapshot(self.db, device_id=self.device_id, signature=signature, body=body)
+
+        row = self.db.execute(
+            """
+            SELECT account_key, account_label, account_type, account_plan, account_attribution
+            FROM usage_events
+            """
+        ).fetchone()
+        self.assertEqual(dict(row), {
+            "account_key": "",
+            "account_label": "",
+            "account_type": "",
+            "account_plan": "",
+            "account_attribution": "inferred",
+        })
+
+    def test_exact_without_account_key_is_demoted_to_inferred(self):
+        self.enroll()
+        body, signature = self.signed_snapshot([
+            self.event(accountKey="", accountAttribution="exact")
+        ])
+        server.ingest_snapshot(self.db, device_id=self.device_id, signature=signature, body=body)
+
+        row = self.db.execute(
+            """
+            SELECT account_key, account_label, account_type, account_plan, account_attribution
+            FROM usage_events
+            """
+        ).fetchone()
+        self.assertEqual(dict(row), {
+            "account_key": "",
+            "account_label": "",
+            "account_type": "",
+            "account_plan": "",
+            "account_attribution": "inferred",
+        })
+
     def test_exports_signed_snapshot_for_enrolled_device(self):
         self.enroll()
         body, signature = self.signed_snapshot([self.event()])
