@@ -532,6 +532,7 @@ test("displayUserPrompt keeps Task instructions private while preserving the use
   const reference = {
     kind: "task",
     taskId: "board-1",
+    taskNumber: null,
     title: "Исправить Dashboard",
     workflowStatus: "new",
     intent: "context",
@@ -557,6 +558,7 @@ test("Codex history retains a Task-only turn as a structured attachment", () => 
   const reference = {
     kind: "task",
     taskId: "board-1",
+    taskNumber: null,
     title: "Исправить Dashboard",
     workflowStatus: "new",
     workspaceId: null,

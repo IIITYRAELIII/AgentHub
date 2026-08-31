@@ -22,6 +22,7 @@ import {
   storedWorkspaceDeveloperRules,
   workspaceSettingsWithReleaseWorkflow,
 } from "../../domain/workspace-release-workflow.mjs";
+import { workspaceSettingsWithTaskPrefix } from "../../domain/task-number.mjs";
 
 const SCHEMA_VERSION = 11;
 export const DEVELOPER_RULES_MAX_BYTES = 32 * 1024;
@@ -423,7 +424,7 @@ export class WorkspaceCatalogStore {
       nowMs,
       nowMs,
       JSON.stringify(workspaceSettingsWithReleaseWorkflow(
-        settings,
+        workspaceSettingsWithTaskPrefix(settings),
         releaseWorkflowEnabled(settings),
       )),
     );
@@ -464,7 +465,7 @@ export class WorkspaceCatalogStore {
     const enabled = explicitReleaseWorkflow
       ? releaseWorkflowEnabled(settings)
       : releaseWorkflowEnabled(current.settings);
-    const nextSettings = workspaceSettingsWithReleaseWorkflow(settings, enabled);
+    const nextSettings = workspaceSettingsWithReleaseWorkflow(workspaceSettingsWithTaskPrefix(settings), enabled);
     this.#database.prepare(`
       UPDATE hub_workspaces SET settings_json = ?, updated_at_ms = ? WHERE id = ?
     `).run(JSON.stringify(nextSettings), this.#nowMs(), id);

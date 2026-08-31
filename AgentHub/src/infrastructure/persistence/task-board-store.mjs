@@ -19,6 +19,7 @@ import {
   taskReleasePlanRevision,
 } from "../../domain/task-release-snapshot.mjs";
 import { normalizedTaskGitReferences, taskBranchName } from "../../domain/task-git-reference.mjs";
+import { normalizedTaskNumber, normalizedWorkspaceTaskPrefix, taskNumberParts } from "../../domain/task-number.mjs";
 
 const NOTES_COLUMN_ID = "notes";
 
@@ -40,6 +41,7 @@ function configure(database) {
       id TEXT PRIMARY KEY,
       raw_text TEXT NOT NULL,
       title TEXT NOT NULL DEFAULT '',
+      task_number TEXT NOT NULL DEFAULT '',
       description TEXT NOT NULL DEFAULT '',
       presentation_source TEXT NOT NULL DEFAULT 'automatic',
       corrected_text TEXT,
@@ -87,6 +89,11 @@ function configure(database) {
       ON hub_board_tasks(status, bucket, workspace_id, updated_at_ms DESC);
     CREATE INDEX IF NOT EXISTS hub_board_tasks_triage_idx
       ON hub_board_tasks(triage_status, created_at_ms);
+    CREATE TABLE IF NOT EXISTS hub_task_number_sequences (
+      prefix TEXT PRIMARY KEY,
+      last_number INTEGER NOT NULL DEFAULT 0 CHECK (last_number >= 0),
+      updated_at_ms INTEGER NOT NULL
+    ) WITHOUT ROWID;
     CREATE TABLE IF NOT EXISTS hub_board_capture_chats (
       chat_id INTEGER PRIMARY KEY,
       enabled INTEGER NOT NULL DEFAULT 0,
@@ -242,6 +249,13 @@ function configure(database) {
   if (!taskColumns.some((column) => column.name === "title")) {
     database.exec("ALTER TABLE hub_board_tasks ADD COLUMN title TEXT NOT NULL DEFAULT ''");
   }
+  if (!taskColumns.some((column) => column.name === "task_number")) {
+    database.exec("ALTER TABLE hub_board_tasks ADD COLUMN task_number TEXT NOT NULL DEFAULT ''");
+  }
+  database.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS hub_board_tasks_number_idx
+      ON hub_board_tasks(task_number) WHERE task_number != '';
+  `);
   if (!taskColumns.some((column) => column.name === "description")) {
     database.exec("ALTER TABLE hub_board_tasks ADD COLUMN description TEXT NOT NULL DEFAULT ''");
   }
@@ -292,7 +306,7 @@ function configure(database) {
     CREATE TRIGGER hub_board_tasks_revision_update
       AFTER UPDATE ON hub_board_tasks
       WHEN NEW.row_revision = OLD.row_revision AND (
-        NEW.raw_text IS NOT OLD.raw_text OR NEW.title IS NOT OLD.title
+        NEW.raw_text IS NOT OLD.raw_text OR NEW.title IS NOT OLD.title OR NEW.task_number IS NOT OLD.task_number
         OR NEW.description IS NOT OLD.description OR NEW.presentation_source IS NOT OLD.presentation_source
         OR NEW.corrected_text IS NOT OLD.corrected_text OR NEW.category IS NOT OLD.category
         OR NEW.bucket IS NOT OLD.bucket OR NEW.status IS NOT OLD.status
@@ -326,6 +340,49 @@ function writeTaskOrder(database, bucket, workspaceId, ids) {
       AND ((? IS NULL AND workspace_id IS NULL) OR workspace_id = ?)
   `);
   ids.forEach((id, position) => update.run(position, id, bucket, workspaceId, workspaceId));
+}
+
+function advanceTaskNumberSequence(database, taskNumber, timestamp) {
+  const parts = taskNumberParts(taskNumber);
+  if (!parts) return;
+  database.prepare(`
+    INSERT INTO hub_task_number_sequences (prefix, last_number, updated_at_ms)
+    VALUES (?, ?, ?)
+    ON CONFLICT(prefix) DO UPDATE SET
+      last_number = MAX(last_number, excluded.last_number), updated_at_ms = excluded.updated_at_ms
+  `).run(parts.prefix, parts.ordinal, timestamp);
+}
+
+function allocateTaskNumber(database, prefix, timestamp) {
+  const normalizedPrefix = normalizedWorkspaceTaskPrefix(prefix);
+  if (!normalizedPrefix) return "";
+  database.prepare(`
+    INSERT OR IGNORE INTO hub_task_number_sequences (prefix, last_number, updated_at_ms)
+    VALUES (?, 0, ?)
+  `).run(normalizedPrefix, timestamp);
+  let ordinal = Number(database.prepare(
+    "SELECT last_number FROM hub_task_number_sequences WHERE prefix = ?",
+  ).get(normalizedPrefix)?.last_number) || 0;
+  let taskNumber = "";
+  do {
+    ordinal += 1;
+    taskNumber = `${normalizedPrefix}-${ordinal}`;
+  } while (database.prepare("SELECT 1 FROM hub_board_tasks WHERE task_number = ?").get(taskNumber));
+  database.prepare(`
+    UPDATE hub_task_number_sequences SET last_number = ?, updated_at_ms = ? WHERE prefix = ?
+  `).run(ordinal, timestamp, normalizedPrefix);
+  return taskNumber;
+}
+
+function taskNumberForRow(database, row, prefix, timestamp) {
+  if (String(row?.task_number ?? "").trim()) return String(row.task_number);
+  return allocateTaskNumber(database, prefix, timestamp);
+}
+
+function assignTaskNumber(database, row, prefix, timestamp) {
+  const taskNumber = taskNumberForRow(database, row, prefix, timestamp);
+  if (taskNumber) database.prepare("UPDATE hub_board_tasks SET task_number = ? WHERE id = ?").run(taskNumber, row.id);
+  return taskNumber;
 }
 
 function normalizedColumnIds(workspaceIds) {
@@ -396,6 +453,7 @@ function taskFromRow(row) {
     : (row.status === "done" ? "done" : (["starting", "started"].includes(row.status) ? "in_progress" : "new"));
   return {
     id: row.id,
+    taskNumber: row.task_number ?? "",
     rawText: row.raw_text,
     title: presentation.title,
     description: presentation.description,
@@ -855,7 +913,10 @@ export class TaskBoardStore {
     this.#database = null;
   }
 
-  create({ text, source = "hub", sourceKey = null, sourceDetails = {}, triageStatus = "pending" } = {}) {
+  create({
+    text, source = "hub", sourceKey = null, sourceDetails = {}, triageStatus = "pending",
+    bucket = "backlog", workspaceId = null, taskPrefix = "",
+  } = {}) {
     const normalizedText = normalizedTaskText(text);
     const legacyBundle = normalizedText.startsWith(LEGACY_TELEGRAM_BUNDLE_PREFIX);
     const rawText = legacyBundle
@@ -865,34 +926,52 @@ export class TaskBoardStore {
     const normalizedSourceKey = String(sourceKey ?? "").trim() || null;
     const initialTriageStatus = !legacyBundle && triageStatus === "disabled" ? "disabled" : "pending";
     return this.#withDatabase((database) => {
-      if (normalizedSourceKey) {
-        const existing = database.prepare(
-          "SELECT * FROM hub_board_tasks WHERE source_key = ?",
-        ).get(normalizedSourceKey);
-        if (existing) return taskFromRow(existing);
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        if (normalizedSourceKey) {
+          const existing = database.prepare(
+            "SELECT * FROM hub_board_tasks WHERE source_key = ?",
+          ).get(normalizedSourceKey);
+          if (existing) {
+            database.exec("COMMIT");
+            return taskFromRow(existing);
+          }
+        }
+        const timestamp = this.now();
+        const id = String(this.idFactory());
+        const normalizedBucket = normalizedTaskBucket(bucket);
+        const normalizedWorkspaceId = normalizedBucket === "workspace" ? String(workspaceId ?? "").trim() : null;
+        if (normalizedBucket === "workspace" && !normalizedWorkspaceId) throw new Error("Выберите Workspace");
+        const taskNumber = normalizedBucket === "workspace" ? allocateTaskNumber(database, taskPrefix, timestamp) : "";
+        const boardOrder = taskLocationRows(database, normalizedBucket, normalizedWorkspaceId).length;
+        database.prepare(`
+          INSERT INTO hub_board_tasks (
+            id, raw_text, title, description, task_number, bucket, workspace_id,
+            source, source_key, source_json, triage_status, board_order, created_at_ms, updated_at_ms
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          id,
+          rawText,
+          presentation.title,
+          presentation.description,
+          taskNumber,
+          normalizedBucket,
+          normalizedWorkspaceId,
+          String(source ?? "hub").trim() || "hub",
+          normalizedSourceKey,
+          JSON.stringify(sourceDetails ?? {}),
+          initialTriageStatus,
+          boardOrder,
+          timestamp,
+          timestamp,
+        );
+        const result = taskFromRow(database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(id));
+        database.exec("COMMIT");
+        return result;
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
       }
-      const timestamp = this.now();
-      const id = String(this.idFactory());
-      const boardOrder = taskLocationRows(database, "backlog").length;
-      database.prepare(`
-        INSERT INTO hub_board_tasks (
-          id, raw_text, title, description, source, source_key, source_json, triage_status,
-          board_order, created_at_ms, updated_at_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        id,
-        rawText,
-        presentation.title,
-        presentation.description,
-        String(source ?? "hub").trim() || "hub",
-        normalizedSourceKey,
-        JSON.stringify(sourceDetails ?? {}),
-        initialTriageStatus,
-        boardOrder,
-        timestamp,
-        timestamp,
-      );
-      return taskFromRow(database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(id));
     });
   }
 
@@ -1098,7 +1177,7 @@ export class TaskBoardStore {
     });
   }
 
-  updatePresentation(id, { title, description = "" } = {}) {
+  updatePresentation(id, { title, description = "", taskNumber = undefined } = {}) {
     const taskId = String(id ?? "").trim();
     const normalizedTitle = normalizedTaskTitle(title);
     const normalizedDescription = normalizedTaskDescription(description);
@@ -1106,15 +1185,31 @@ export class TaskBoardStore {
       ? `${normalizedTitle}\n\n${normalizedDescription}`
       : normalizedTitle;
     return this.#withDatabase((database) => {
-      this.#taskRow(database, taskId);
-      const result = database.prepare(`
-        UPDATE hub_board_tasks SET
-          title = ?, description = ?, corrected_text = ?, presentation_source = 'manual',
-          updated_at_ms = ?
-        WHERE id = ?
-      `).run(normalizedTitle, normalizedDescription, correctedText, this.now(), taskId);
-      if (!result.changes) throw new Error("Задача не найдена");
-      return taskFromRow(database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(taskId));
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        const current = this.#taskRow(database, taskId);
+        const nextTaskNumber = taskNumber === undefined
+          ? String(current.task_number ?? "")
+          : normalizedTaskNumber(taskNumber, { allowEmpty: false });
+        const duplicate = nextTaskNumber && database.prepare(
+          "SELECT id FROM hub_board_tasks WHERE task_number = ? AND id != ?",
+        ).get(nextTaskNumber, taskId);
+        if (duplicate) throw new Error(`Номер Task уже используется: ${nextTaskNumber}`);
+        const result = database.prepare(`
+          UPDATE hub_board_tasks SET
+            title = ?, description = ?, corrected_text = ?, task_number = ?, presentation_source = 'manual',
+            updated_at_ms = ?
+          WHERE id = ?
+        `).run(normalizedTitle, normalizedDescription, correctedText, nextTaskNumber, this.now(), taskId);
+        if (!result.changes) throw new Error("Задача не найдена");
+        if (nextTaskNumber) advanceTaskNumberSequence(database, nextTaskNumber, this.now());
+        const updated = taskFromRow(database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(taskId));
+        database.exec("COMMIT");
+        return updated;
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
     });
   }
 
@@ -1127,6 +1222,7 @@ export class TaskBoardStore {
     reason = "",
     bucket = "backlog",
     workspaceId = null,
+    taskPrefix = "",
     autoPlace = false,
   } = {}) {
     const taskId = String(id ?? "").trim();
@@ -1136,34 +1232,49 @@ export class TaskBoardStore {
     const normalizedBucket = normalizedTaskBucket(bucket);
     const numericConfidence = Math.max(0, Math.min(1, Number(confidence) || 0));
     return this.#withDatabase((database) => {
-      const current = this.#taskRow(database, taskId);
-      const canAutoPlace = autoPlace
-        && current.placement_source === "default"
-        && current.bucket === "backlog"
-        && current.status === "open";
-      database.prepare(`
-        UPDATE hub_board_tasks SET
-          title = CASE WHEN presentation_source = 'manual' THEN title ELSE ? END,
-          description = CASE WHEN presentation_source = 'manual' THEN description ELSE ? END,
-          corrected_text = CASE WHEN presentation_source = 'manual' THEN corrected_text ELSE ? END,
-          category = ?, triage_status = 'completed',
-          triage_confidence = ?, triage_reason = ?, triage_error = NULL,
-          bucket = ?, workspace_id = ?, placement_source = ?, updated_at_ms = ?
-        WHERE id = ?
-      `).run(
-        presentation.title,
-        presentation.description,
-        normalizedCorrectedText,
-        normalizedCategory,
-        numericConfidence,
-        String(reason ?? "").trim().slice(0, 1000),
-        canAutoPlace ? normalizedBucket : current.bucket,
-        canAutoPlace && normalizedBucket === "workspace" ? String(workspaceId ?? "").trim() || null : current.workspace_id,
-        canAutoPlace ? "ai" : current.placement_source,
-        this.now(),
-        taskId,
-      );
-      return taskFromRow(database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(taskId));
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        const current = this.#taskRow(database, taskId);
+        const canAutoPlace = autoPlace
+          && current.placement_source === "default"
+          && current.bucket === "backlog"
+          && current.status === "open";
+        const targetWorkspaceId = canAutoPlace && normalizedBucket === "workspace"
+          ? String(workspaceId ?? "").trim() || null
+          : current.workspace_id;
+        const taskNumber = canAutoPlace && normalizedBucket === "workspace"
+          ? taskNumberForRow(database, current, taskPrefix, this.now())
+          : String(current.task_number ?? "");
+        database.prepare(`
+          UPDATE hub_board_tasks SET
+            title = CASE WHEN presentation_source = 'manual' THEN title ELSE ? END,
+            description = CASE WHEN presentation_source = 'manual' THEN description ELSE ? END,
+            corrected_text = CASE WHEN presentation_source = 'manual' THEN corrected_text ELSE ? END,
+            category = ?, triage_status = 'completed',
+            triage_confidence = ?, triage_reason = ?, triage_error = NULL,
+            bucket = ?, workspace_id = ?, task_number = ?, placement_source = ?, updated_at_ms = ?
+          WHERE id = ?
+        `).run(
+          presentation.title,
+          presentation.description,
+          normalizedCorrectedText,
+          normalizedCategory,
+          numericConfidence,
+          String(reason ?? "").trim().slice(0, 1000),
+          canAutoPlace ? normalizedBucket : current.bucket,
+          targetWorkspaceId,
+          taskNumber,
+          canAutoPlace ? "ai" : current.placement_source,
+          this.now(),
+          taskId,
+        );
+        const result = taskFromRow(database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(taskId));
+        database.exec("COMMIT");
+        return result;
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
     });
   }
 
@@ -1192,7 +1303,7 @@ export class TaskBoardStore {
     });
   }
 
-  move(id, { bucket, workspaceId = null, beforeId = null } = {}) {
+  move(id, { bucket, workspaceId = null, beforeId = null, taskPrefix = "" } = {}) {
     const normalizedBucket = normalizedTaskBucket(bucket);
     const normalizedWorkspaceId = normalizedBucket === "workspace"
       ? String(workspaceId ?? "").trim()
@@ -1205,12 +1316,15 @@ export class TaskBoardStore {
       const oldWorkspaceId = current.workspace_id ?? null;
       database.exec("BEGIN IMMEDIATE");
       try {
+        const taskNumber = normalizedBucket === "workspace"
+          ? taskNumberForRow(database, current, taskPrefix, this.now())
+          : String(current.task_number ?? "");
         database.prepare(`
           UPDATE hub_board_tasks
           SET bucket = ?, workspace_id = ?, stream_id = NULL,
-            placement_source = 'manual', updated_at_ms = ?
+            task_number = ?, placement_source = 'manual', updated_at_ms = ?
           WHERE id = ?
-        `).run(normalizedBucket, normalizedWorkspaceId, this.now(), taskId);
+        `).run(normalizedBucket, normalizedWorkspaceId, taskNumber, this.now(), taskId);
         const targetIds = taskLocationRows(database, normalizedBucket, normalizedWorkspaceId)
           .map((row) => row.id)
           .filter((candidateId) => candidateId !== taskId);
@@ -1235,7 +1349,7 @@ export class TaskBoardStore {
     });
   }
 
-  reassignWorkspace(sourceWorkspaceId, targetWorkspaceId) {
+  reassignWorkspace(sourceWorkspaceId, targetWorkspaceId, { taskPrefix = "" } = {}) {
     const sourceId = String(sourceWorkspaceId ?? "").trim();
     const targetId = String(targetWorkspaceId ?? "").trim();
     if (!sourceId || !targetId) throw new Error("Workspace не найден");
@@ -1249,6 +1363,9 @@ export class TaskBoardStore {
       const targetIds = taskLocationRows(database, "workspace", targetId).map((row) => row.id);
       database.exec("BEGIN IMMEDIATE");
       try {
+        for (const taskId of allSourceIds) {
+          assignTaskNumber(database, this.#taskRow(database, taskId), taskPrefix, this.now());
+        }
         const result = database.prepare(`
           UPDATE hub_board_tasks
           SET workspace_id = ?, updated_at_ms = ?
@@ -1259,6 +1376,28 @@ export class TaskBoardStore {
         database.prepare("DELETE FROM hub_board_workspace_order WHERE workspace_id = ?").run(sourceId);
         database.exec("COMMIT");
         return Number(result.changes);
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
+    });
+  }
+
+  assignWorkspaceTaskNumbers(workspaceId, taskPrefix) {
+    const targetWorkspaceId = String(workspaceId ?? "").trim();
+    if (!targetWorkspaceId) throw new Error("Workspace не найден");
+    return this.#withDatabase((database) => {
+      const prefix = normalizedWorkspaceTaskPrefix(taskPrefix);
+      if (!prefix) return 0;
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        const rows = database.prepare(`
+          SELECT * FROM hub_board_tasks WHERE workspace_id = ? AND task_number = '' ORDER BY created_at_ms, id
+        `).all(targetWorkspaceId);
+        const timestamp = this.now();
+        for (const row of rows) assignTaskNumber(database, row, prefix, timestamp);
+        database.exec("COMMIT");
+        return rows.length;
       } catch (error) {
         database.exec("ROLLBACK");
         throw error;

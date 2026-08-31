@@ -258,6 +258,68 @@ test("manual Task edits persist and win over a late Spark result", async (t) => 
   assert.equal(triaged.correctedText, edited.correctedText);
 });
 
+test("Workspace placement allocates stable sequential Task numbers", async (t) => {
+  const store = await fixture(t);
+  const direct = store.create({
+    text: "Создана в Workspace", bucket: "workspace", workspaceId: "workspace-hub", taskPrefix: "HUB",
+  });
+  const backlog = store.create({ text: "Перемещена из Backlog" });
+  const moved = store.move(backlog.id, {
+    bucket: "workspace", workspaceId: "workspace-hub", taskPrefix: "HUB",
+  });
+
+  assert.equal(direct.taskNumber, "HUB-1");
+  assert.equal(moved.taskNumber, "HUB-2");
+  assert.equal(store.move(direct.id, {
+    bucket: "workspace", workspaceId: "workspace-ops", taskPrefix: "OPS",
+  }).taskNumber, "HUB-1");
+
+  const edited = store.updatePresentation(moved.id, {
+    title: moved.title, description: moved.description, taskNumber: "OPS-20",
+  });
+  assert.equal(edited.taskNumber, "OPS-20");
+  assert.equal(store.create({
+    text: "Следующая OPS", bucket: "workspace", workspaceId: "workspace-ops", taskPrefix: "OPS",
+  }).taskNumber, "OPS-21");
+  assert.throws(() => store.updatePresentation(direct.id, {
+    title: direct.title, taskNumber: "OPS-20",
+  }), /уже используется/u);
+});
+
+test("automatic placement, Workspace reassignment and backfill allocate numbers", async (t) => {
+  const store = await fixture(t);
+  const automatic = store.create({ text: "Автоматическая сортировка" });
+  const triaged = store.applyTriage(automatic.id, {
+    title: "Автоматическая сортировка",
+    description: "",
+    correctedText: "Автоматическая сортировка",
+    category: "task",
+    confidence: 0.95,
+    bucket: "workspace",
+    workspaceId: "workspace-auto",
+    taskPrefix: "AUTO",
+    autoPlace: true,
+  });
+  assert.equal(triaged.taskNumber, "AUTO-1");
+
+  const reassigned = store.create({
+    text: "Переезд Workspace", bucket: "workspace", workspaceId: "workspace-old",
+  });
+  assert.equal(reassigned.taskNumber, "");
+  assert.equal(store.reassignWorkspace("workspace-old", "workspace-new", { taskPrefix: "NEW" }), 1);
+  assert.equal(store.task(reassigned.id).taskNumber, "NEW-1");
+
+  const firstLegacy = store.create({
+    text: "Первая старая", bucket: "workspace", workspaceId: "workspace-legacy",
+  });
+  const secondLegacy = store.create({
+    text: "Вторая старая", bucket: "workspace", workspaceId: "workspace-legacy",
+  });
+  assert.equal(store.assignWorkspaceTaskNumbers("workspace-legacy", "LEG"), 2);
+  assert.equal(store.task(firstLegacy.id).taskNumber, "LEG-1");
+  assert.equal(store.task(secondLegacy.id).taskNumber, "LEG-2");
+});
+
 test("Task card order persists within and between columns", async (t) => {
   const store = await fixture(t);
   const first = store.create({ text: "Первая" });

@@ -18,7 +18,11 @@ export class TaskReleasePlanService {
       let gitError = null;
       try {
         for (const reference of task.gitReferences ?? []) {
-          const evidence = await this.taskGitWorkspaces.releaseEvidence({ taskId: task.id, ...reference });
+          const evidence = await this.taskGitWorkspaces.releaseEvidence({
+            taskId: task.id,
+            ...(task.taskNumber ? { taskNumber: task.taskNumber } : {}),
+            ...reference,
+          });
           changedFiles.push(...evidence.changedFiles);
         }
       } catch (error) {

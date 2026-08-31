@@ -132,3 +132,18 @@ test("a new Task branch starts from main and never inherits earlier dev-only wor
   const snapshot = await service.snapshot({ taskId: second.taskId, projectRoot: second.projectRoot });
   assert.deepEqual(snapshot.changedFiles.map((file) => file.path), ["second.txt"]);
 });
+
+test("a numbered Task uses its number as the exact Git branch name", async (context) => {
+  const root = await repository(context);
+  const dataDir = path.join(root, "..", `${path.basename(root)}-data`);
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const service = new TaskGitWorkspaceService({ dataDir });
+  const taskId = "66666666-6666-6666-6666-666666666666";
+
+  const legacy = await service.prepare({ taskId, projectRoot: root });
+  assert.match(legacy.branch, /^agenthub\/task\//u);
+  const numbered = await service.prepare({ taskId, taskNumber: "HUB-11", projectRoot: root });
+
+  assert.equal(numbered.branch, "HUB-11");
+  assert.equal(await git(numbered.projectRoot, "branch", "--show-current"), "HUB-11");
+});

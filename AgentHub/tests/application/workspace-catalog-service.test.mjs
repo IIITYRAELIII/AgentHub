@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { WorkspaceCatalogService } from "../../src/application/workspace-catalog-service.mjs";
 
-function fixture() {
+function fixture({ taskBoard = null } = {}) {
   const calls = [];
   const store = {
     hierarchy: () => [{ id: "workspace-1" }],
@@ -35,7 +35,7 @@ function fixture() {
   const releaseCompleter = {
     completeRelease: (params) => (calls.push(["completeRelease", params]), params),
   };
-  return { calls, service: new WorkspaceCatalogService({ store, releasePlanner, releaseCompleter }) };
+  return { calls, service: new WorkspaceCatalogService({ store, taskBoard, releasePlanner, releaseCompleter }) };
 }
 
 test("createWorkspace creates its first empty Stream and comment atomically", () => {
@@ -99,6 +99,17 @@ test("Workspace settings provide an inherited working directory", () => {
     "workspace-1",
     settings,
   ]);
+});
+
+test("adding a Workspace Task prefix backfills its unnumbered Tasks", () => {
+  const assigned = [];
+  const { service } = fixture({
+    taskBoard: { assignWorkspaceTaskNumbers: (workspaceId) => assigned.push(workspaceId) },
+  });
+  service.updateWorkspaceSettings({
+    workspaceId: "workspace-1", settings: { taskPrefix: "HUB" },
+  });
+  assert.deepEqual(assigned, ["workspace-1"]);
 });
 
 test("release workflow disable never blocks on Task state", () => {

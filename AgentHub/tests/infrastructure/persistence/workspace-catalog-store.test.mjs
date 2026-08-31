@@ -105,11 +105,22 @@ test("Workspace working directory is persisted in settings", async (t) => {
   });
   assert.deepEqual(updated.settings, {
     workingDirectory: "D:/work/AgentHub",
+    taskPrefix: "",
     releaseWorkflowEnabled: false,
   });
   assert.deepEqual(
     store.hierarchy().find((item) => item.id === workspace.id).settings,
     updated.settings,
+  );
+});
+
+test("Workspace Task prefix is persisted and validated", async (t) => {
+  const store = await fixture(t);
+  const workspace = store.createWorkspace({ name: "Agent HUB" });
+  assert.equal(store.updateWorkspaceSettings(workspace.id, { taskPrefix: "HUB" }).settings.taskPrefix, "HUB");
+  assert.throws(
+    () => store.updateWorkspaceSettings(workspace.id, { taskPrefix: "-HUB" }),
+    /Префикс Workspace/u,
   );
 });
 

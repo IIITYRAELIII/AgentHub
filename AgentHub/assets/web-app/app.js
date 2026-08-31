@@ -88,6 +88,7 @@ const workspaceCardTitle = document.querySelector("[data-workspace-card-title]")
 const workspaceCardName = document.querySelector("[data-workspace-card-name]");
 const workspaceCardComment = document.querySelector("[data-workspace-card-comment]");
 const workspaceCardWorkingDirectory = document.querySelector("[data-workspace-card-working-directory]");
+const workspaceCardTaskPrefix = document.querySelector("[data-workspace-card-task-prefix]");
 const workspaceCardRules = document.querySelector("[data-workspace-card-rules]");
 const workspaceCardRulesCount = document.querySelector("[data-workspace-card-rules-count]");
 const workspaceCardQuickMessages = document.querySelector("[data-workspace-card-quick-messages]");
@@ -3246,6 +3247,7 @@ function openWorkspaceCard(workspaceId) {
   workspaceCardName.disabled = workspace.kind === "system";
   workspaceCardComment.value = String(workspace.comment ?? "");
   workspaceCardWorkingDirectory.value = String(workspace.settings?.workingDirectory ?? "");
+  workspaceCardTaskPrefix.value = String(workspace.settings?.taskPrefix ?? "");
   workspaceCardRules.value = entityAgentRules(workspace);
   workspaceCardReleaseWorkflow.checked = workspace.settings?.releaseWorkflowEnabled === true;
   updateAgentRulesLimit(workspaceCardRules, workspaceCardRulesCount);
@@ -3268,6 +3270,7 @@ function openNewWorkspaceCard() {
   workspaceCardName.disabled = false;
   workspaceCardComment.value = "";
   workspaceCardWorkingDirectory.value = "";
+  workspaceCardTaskPrefix.value = "";
   workspaceCardRules.value = "";
   workspaceCardReleaseWorkflow.checked = false;
   updateAgentRulesLimit(workspaceCardRules, workspaceCardRulesCount);
@@ -4784,8 +4787,8 @@ function appendInlineMarkdown(target, source, fileContext = currentFileLinkConte
       appendInlineMarkdown(emphasis, token.slice(1, -1), fileContext);
       target.append(emphasis);
     } else {
-      const parts = token.match(/^\[([^\]\n]+)\]\(<([^>\n]+)>\)$/u)
-        ?? token.match(/^\[([^\]\n]+)\]\(([^)\n]+)\)$/u);
+      const parts = token.match(/^\[([^\]\n]+)\]\(<([^>\n]+)>(?:\s+"([^"]*)")?\)$/u)
+        ?? token.match(/^\[([^\]\n]+)\]\(([^)\n]+?)(?:\s+"([^"]*)")?\)$/u);
       const targetLink = markdownLink(parts?.[2], fileContext);
       if (targetLink) {
         const link = el("a", {
@@ -4793,6 +4796,7 @@ function appendInlineMarkdown(target, source, fileContext = currentFileLinkConte
           target: targetLink.taskId ? null : "_blank",
           rel: targetLink.taskId ? null : "noopener noreferrer",
           text: parts[1],
+          title: parts[3] || null,
         });
         if (targetLink.taskId) link.dataset.agentHubTaskReference = targetLink.taskId;
         if (targetLink.localPath) link.dataset.agentHubLocalLink = targetLink.localPath;
@@ -6031,12 +6035,12 @@ function renderAttachmentStrip(items, { readOnly, taskReferenceList = false }) {
       })[reference.workflowStatus] ?? "New";
       const card = el(readOnly ? "button" : "div", {
         class: "attachment attachment-task-reference",
-        title: readOnly ? "Открыть карточку Dashboard Task" : reference.title,
+        title: reference.title,
         ...(readOnly ? { type: "button" } : {}),
       }, [el("span", { class: "attachment-task-card" }, [
         el("span", { class: "attachment-file-type", text: "TASK" }),
         el("span", { class: "attachment-task-copy" }, [
-          el("span", { class: "attachment-file-name", text: reference.title }),
+          el("span", { class: "attachment-file-name", text: reference.taskNumber || reference.title }),
           el("span", { class: "attachment-task-status", text: status }),
         ]),
       ])]);
@@ -6747,6 +6751,7 @@ workspaceCardForm?.addEventListener("submit", (event) => {
       name,
       comment: workspaceCardComment.value.trim(),
       workingDirectory: workspaceCardWorkingDirectory.value.trim(),
+      taskPrefix: workspaceCardTaskPrefix.value.trim(),
       rules: workspaceCardRules.value,
       releaseWorkflowEnabled: workspaceCardReleaseWorkflow.checked,
       beforeColumnId: order[targetIndex] ?? null,
@@ -6765,6 +6770,7 @@ workspaceCardForm?.addEventListener("submit", (event) => {
     name,
     comment: workspaceCardComment.value.trim(),
     workingDirectory: workspaceCardWorkingDirectory.value.trim(),
+    taskPrefix: workspaceCardTaskPrefix.value.trim(),
     rules: workspaceCardRules.value,
     releaseWorkflowEnabled,
     beforeColumnId: remaining[targetIndex] ?? null,

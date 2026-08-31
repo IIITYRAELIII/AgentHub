@@ -62,10 +62,10 @@ function fixture({ activeThread = null, sourceDetails = undefined, voiceTranscri
 test("dashboard creation adds a manual task directly to its Workspace", async () => {
   const { controller, calls } = fixture();
   await controller.create({ text: "Новая задача", workspaceId: "workspace-1" });
-  assert.deepEqual(calls[0], ["create", { text: "Новая задача", source: "hub" }]);
-  assert.deepEqual(calls[1], ["move", {
-    id: "board-created", bucket: "workspace", workspaceId: "workspace-1",
+  assert.deepEqual(calls[0], ["create", {
+    text: "Новая задача", source: "hub", bucket: "workspace", workspaceId: "workspace-1",
   }]);
+  assert.equal(calls.some(([name]) => name === "move"), false);
 });
 
 test("shared Telegram bot ingestion preserves its source and refreshes the dashboard", async () => {

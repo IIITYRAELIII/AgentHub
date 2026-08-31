@@ -169,6 +169,16 @@ export class TaskGitWorkspaceService {
     return path.resolve(worktreeRoot);
   }
 
+  async #alignExistingTaskBranch({ repositoryRoot: repoRoot, worktreeRoot: root, branch }) {
+    const registered = parseWorktrees(await runGit(["worktree", "list", "--porcelain"], { cwd: repoRoot }))
+      .find((item) => samePath(item.path, root));
+    if (!registered) return;
+    const currentBranch = await runGit(["branch", "--show-current"], { cwd: root });
+    if (currentBranch === branch) return;
+    if (await branchExists(repoRoot, branch)) throw new Error(`Task branch already exists: ${branch}`);
+    await runGit(["branch", "-m", branch], { cwd: root });
+  }
+
   async prepareDev(projectRoot) {
     const repoRoot = await repositoryRoot(projectRoot);
     const repoKey = taskRepositoryKey(repoRoot);
@@ -191,21 +201,27 @@ export class TaskGitWorkspaceService {
     });
   }
 
-  async prepare({ taskId, projectRoot } = {}) {
+  async prepare({ taskId, taskNumber = null, projectRoot } = {}) {
     const id = normalizedTaskId(taskId);
     const dev = await this.prepareDev(projectRoot);
     const repoKey = taskRepositoryKey(dev.repositoryRoot);
-    const branch = taskBranchName(id, dev.repositoryRoot);
+    const branch = taskBranchName(id, dev.repositoryRoot, taskNumber);
     const baseRef = taskBaseRef(id, repoKey);
     let baseCommit = await gitMaybe(["rev-parse", "--verify", `${baseRef}^{commit}`], { cwd: dev.repositoryRoot });
     if (!baseCommit) {
       baseCommit = await preferredMainCommit(dev.repositoryRoot);
       await runGit(["update-ref", baseRef, baseCommit], { cwd: dev.repositoryRoot });
     }
+    const taskRootPath = path.join(this.taskWorktreesRoot, id, repoKey);
+    await this.#alignExistingTaskBranch({
+      repositoryRoot: dev.repositoryRoot,
+      worktreeRoot: taskRootPath,
+      branch,
+    });
     const taskRoot = await this.#ensureBranchWorktree({
       repositoryRoot: dev.repositoryRoot,
       branch,
-      worktreeRoot: path.join(this.taskWorktreesRoot, id, repoKey),
+      worktreeRoot: taskRootPath,
       managedRoot: path.join(this.taskWorktreesRoot, id),
       startCommit: baseCommit,
     });
@@ -222,8 +238,8 @@ export class TaskGitWorkspaceService {
     };
   }
 
-  async snapshot({ taskId, projectRoot, turnId = null, summary = "" } = {}) {
-    const workspace = await this.prepare({ taskId, projectRoot });
+  async snapshot({ taskId, taskNumber = null, projectRoot, turnId = null, summary = "" } = {}) {
+    const workspace = await this.prepare({ taskId, taskNumber, projectRoot });
     const suffix = String(turnId ?? "").trim() || randomUUID();
     await commitDirtyWorktree(
       workspace.projectRoot,
@@ -279,18 +295,20 @@ export class TaskGitWorkspaceService {
     return { snapshot, integration };
   }
 
-  async releaseEvidence({ taskId, projectRoot, branch, resultCommit } = {}) {
+  async releaseEvidence({ taskId, taskNumber = null, projectRoot, branch, resultCommit } = {}) {
     const id = normalizedTaskId(taskId);
     const repoRoot = await repositoryRoot(projectRoot);
-    const expectedBranch = taskBranchName(id, repoRoot);
-    if (String(branch ?? "").trim() !== expectedBranch) {
+    const expectedBranch = taskBranchName(id, repoRoot, taskNumber);
+    const legacyBranch = taskBranchName(id, repoRoot);
+    const storedBranch = String(branch ?? "").trim();
+    if (storedBranch !== expectedBranch && storedBranch !== legacyBranch) {
       throw new Error(`Task branch does not match its repository: ${branch}`);
     }
     const repoKey = taskRepositoryKey(repoRoot);
     const baseRef = taskBaseRef(id, repoKey);
     const baseCommit = await runGit(["rev-parse", "--verify", `${baseRef}^{commit}`], { cwd: repoRoot });
     const acceptedCommit = await runGit(["rev-parse", "--verify", `${String(resultCommit)}^{commit}`], { cwd: repoRoot });
-    const branchCommit = await runGit(["rev-parse", "--verify", `refs/heads/${expectedBranch}^{commit}`], { cwd: repoRoot });
+    const branchCommit = await runGit(["rev-parse", "--verify", `refs/heads/${storedBranch}^{commit}`], { cwd: repoRoot });
     await runGit(["merge-base", "--is-ancestor", acceptedCommit, branchCommit], { cwd: repoRoot });
     const diff = await runGit([
       "-c", "core.quotePath=false",
@@ -298,7 +316,7 @@ export class TaskGitWorkspaceService {
     ], { cwd: repoRoot });
     return {
       projectRoot: repoRoot,
-      branch: expectedBranch,
+      branch: storedBranch,
       resultCommit: acceptedCommit,
       changedFiles: changedFilesFromNameStatus(diff, repoRoot),
     };
@@ -315,9 +333,10 @@ export class TaskGitWorkspaceService {
     for (const entry of entries.filter((item) => item.isDirectory())) {
       const projectRoot = path.join(root, entry.name);
       const branch = await gitMaybe(["branch", "--show-current"], { cwd: projectRoot });
-      if (!branch?.startsWith(TASK_BRANCH_PREFIX)) continue;
+      if (!branch) continue;
       workspaces.push({
         taskId: id,
+        repositoryKey: entry.name,
         projectRoot,
         branch,
         headCommit: await runGit(["rev-parse", "HEAD^{commit}"], { cwd: projectRoot }),
@@ -334,10 +353,9 @@ export class TaskGitWorkspaceService {
     for (const workspace of workspaces) {
       if (!pathInside(root, workspace.projectRoot)) throw new Error("Task worktree is outside its managed Task root");
       const repoRoot = await repositoryRoot(workspace.projectRoot);
-      const [, , branchTaskId, repoKey] = workspace.branch.split("/");
       await runGit(["worktree", "remove", "--force", workspace.projectRoot], { cwd: repoRoot, timeoutMs: 120_000 });
       await gitMaybe(["branch", "-D", workspace.branch], { cwd: repoRoot });
-      await gitMaybe(["update-ref", "-d", taskBaseRef(branchTaskId, repoKey)], { cwd: repoRoot });
+      await gitMaybe(["update-ref", "-d", taskBaseRef(id, workspace.repositoryKey)], { cwd: repoRoot });
     }
     await rm(root, { recursive: true, force: true });
     return { taskId: id, removed: workspaces.length };

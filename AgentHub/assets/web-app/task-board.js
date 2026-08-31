@@ -365,6 +365,7 @@
   const taskCardModal = document.querySelector("[data-task-card-modal]");
   const taskCardSource = document.querySelector("[data-task-card-source]");
   const taskCardEditor = document.querySelector("[data-task-card-editor]");
+  const taskCardNumber = document.querySelector("[data-task-card-number]");
   const taskCardTitle = document.querySelector("[data-task-card-title]");
   const taskCardDescription = document.querySelector("[data-task-card-description]");
   const taskCardTitleSizer = createAutoGrowTextarea({ textarea: taskCardTitle });
@@ -700,6 +701,7 @@
     const saving = state.savingTaskId === taskId;
     const savingStatus = state.savingStatusTaskId === taskId;
     if (taskCardTitle) taskCardTitle.disabled = saving;
+    if (taskCardNumber) taskCardNumber.disabled = saving;
     if (taskCardDescription) taskCardDescription.disabled = saving;
     if (taskCardStatus) taskCardStatus.disabled = savingStatus;
     if (taskCardSaveButton) {
@@ -725,6 +727,8 @@
       taskCardStatus.value = taskWorkflowStatus(task);
     }
     if (state.editingTaskId !== task.id || !state.editDirty) {
+      taskCardNumber.value = String(task.taskNumber ?? "");
+      taskCardNumber.required = Boolean(task.taskNumber || workspaceById(task.workspaceId)?.settings?.taskPrefix);
       taskCardTitle.value = task.title || task.text;
       taskCardDescription.value = String(task.description ?? "").trim();
       state.editingTaskId = task.id;
@@ -873,6 +877,11 @@
       });
     }
     card.append(node("div", { class: "board-task-summary" }, [
+      ...(task.taskNumber ? [node("span", {
+        class: "board-task-number",
+        text: task.taskNumber,
+        title: task.title || task.text,
+      })] : []),
       node("h3", { class: "board-task-title", text: task.title || task.text }),
       taskStatusBadge(task),
     ]));
@@ -1112,15 +1121,18 @@
   taskCardEditor?.addEventListener("submit", (event) => {
     event.preventDefault();
     const task = state.tasks.find((item) => item.id === state.openTaskId);
+    const taskNumber = taskCardNumber.value.trim();
     const title = taskCardTitle.value.trim();
-    if (!task || !title) {
-      taskCardTitle.reportValidity?.();
+    if (!task || (taskCardNumber.required && !taskNumber) || !title) {
+      (!taskNumber && taskCardNumber.required ? taskCardNumber : taskCardTitle).reportValidity?.();
       return;
     }
     if (state.savingTaskId === task.id) return;
     state.savingTaskId = task.id;
     renderTaskCardSaving(task.id);
-    emit("update", { id: task.id, title, description: taskCardDescription.value.trim() });
+    emit("update", {
+      id: task.id, taskNumber: taskNumber || undefined, title, description: taskCardDescription.value.trim(),
+    });
   });
   taskCardModal?.addEventListener("cancel", (event) => { event.preventDefault(); closeTaskCard(); });
   startModal.addEventListener("cancel", (event) => { event.preventDefault(); closeStart(); });

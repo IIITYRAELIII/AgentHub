@@ -7,8 +7,10 @@ authority for ownership, readiness and release completion. Its `workspaceId`
 and `streamId` identify the Workspace and executor Stream. The durable Task
 `row_revision` is the CAS version for every release-relevant mutation.
 
-Every file-changing Task owns a local branch named
-`agenthub/task/<taskId>/<repositoryKey>` and a managed worktree.
+Every numbered file-changing Task owns a local branch whose name is exactly its
+stable human-facing Task number, for example `HUB-11`, and a managed worktree.
+Legacy unnumbered Tasks retain `agenthub/task/<taskId>/<repositoryKey>` until
+their next managed preparation renames the branch.
 `hub_task_claim` and `hub_task_start` return that worktree. All Task changes must
 be made there. Provider turn identity remains journal metadata and is not a
 source of file ownership.
@@ -44,7 +46,7 @@ integration is explicitly blocked and cannot be released.
 
 The server-side Git boundary owns:
 
-- the deterministic Task branch;
+- the Task-number branch;
 - the internal Task base ref;
 - the immutable accepted result commit;
 - the integrated `dev` result.

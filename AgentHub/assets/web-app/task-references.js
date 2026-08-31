@@ -28,6 +28,7 @@
     return {
       kind: "task",
       taskId,
+      taskNumber: String(source?.taskNumber ?? source?.number ?? "").trim().slice(0, 80) || null,
       title: String(source?.title ?? source?.name ?? "Task").replace(/\s+/gu, " ").trim().slice(0, 160) || "Task",
       workflowStatus: WORKFLOW_STATUSES.has(workflowStatus) ? workflowStatus : "new",
       workspaceId: String(source?.workspaceId ?? "").trim() || null,
@@ -38,6 +39,7 @@
   function fromTask(task, options = {}) {
     return normalize({
       taskId: task?.id,
+      taskNumber: task?.taskNumber,
       title: task?.title || task?.text,
       workflowStatus: task?.workflowStatus,
       workspaceId: task?.workspaceId,

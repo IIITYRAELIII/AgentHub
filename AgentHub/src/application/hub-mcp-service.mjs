@@ -167,6 +167,7 @@ function compactText(value, maximumLength) {
 function compactTask(task) {
   return {
     id: task.id,
+    taskNumber: task.taskNumber,
     title: task.title,
     description: task.description,
     text: task.text,
@@ -304,8 +305,9 @@ export class HubMcpService {
         title: { type: "string" },
         description: { type: "string", default: "" },
       }, ["title"]),
-      tool("hub_task_update", "Update the title or description of any Dashboard task by id.", {
+      tool("hub_task_update", "Update the number, title or description of any Dashboard task by id.", {
         task_id: { type: "string" },
+        task_number: { type: "string" },
         title: { type: "string" },
         description: { type: "string" },
       }, ["task_id"]),
@@ -631,15 +633,13 @@ export class HubMcpService {
       text,
       source: "hub-mcp",
       sourceDetails: { mcpWorkspaceId: context.workspaceId },
-    });
-    return compactTask(this.taskBoard.move({
-      id: created.id,
       bucket: "workspace",
       workspaceId: context.workspaceId,
-    }));
+    });
+    return compactTask(created);
   }
 
-  #updateTask(context, { task_id: taskId, title, description } = {}) {
+  #updateTask(context, { task_id: taskId, task_number: taskNumber, title, description } = {}) {
     const current = this.#task(context, taskId);
     const nextTitle = title == null ? current.title : requiredText(title, "task title", 10_000);
     const nextDescription = description == null
@@ -647,6 +647,7 @@ export class HubMcpService {
       : (optionalText(description, 50_000) ?? "");
     return compactTask(this.taskBoard.update({
       id: current.id,
+      taskNumber: taskNumber == null ? undefined : requiredText(taskNumber, "task number", 80),
       title: nextTitle,
       description: nextDescription,
     }));
@@ -676,7 +677,7 @@ export class HubMcpService {
     const active = this.#currentRun(context);
     const projectRoot = this.#taskProjectRoot(context);
     const gitWorkspace = this.taskGitWorkspaces && projectRoot
-      ? await this.taskGitWorkspaces.prepare({ taskId: task.id, projectRoot })
+      ? await this.taskGitWorkspaces.prepare({ taskId: task.id, taskNumber: task.taskNumber, projectRoot })
       : null;
     if (gitWorkspace) active.gitBaseline = gitWorkspace.gitBaseline;
     return {
@@ -729,7 +730,7 @@ export class HubMcpService {
     const projectRoot = snapshotsResult ? this.#taskProjectRoot(context) : null;
     if (snapshotsResult && projectRoot && this.taskGitWorkspaces) {
       try {
-        gitWorkspace = await this.taskGitWorkspaces.prepare({ taskId: task.id, projectRoot });
+        gitWorkspace = await this.taskGitWorkspaces.prepare({ taskId: task.id, taskNumber: task.taskNumber, projectRoot });
         this.taskBoard.claim({
           id: task.id,
           workspaceId: context.workspaceId,
@@ -763,6 +764,7 @@ export class HubMcpService {
     try {
       const { snapshot, integration } = await this.taskGitWorkspaces.snapshotAndMerge({
         taskId: task.id,
+        taskNumber: task.taskNumber,
         projectRoot: gitWorkspace.projectRoot,
         turnId: run?.turnId,
         summary: task.title,
@@ -876,7 +878,7 @@ export class HubMcpService {
     const targetStreamId = requestedStreamName ? null : (requestedStreamId || context.streamId);
     const projectRoot = this.#taskProjectRoot(context, targetStreamId);
     const gitWorkspace = this.taskGitWorkspaces && projectRoot
-      ? await this.taskGitWorkspaces.prepare({ taskId: task.id, projectRoot })
+      ? await this.taskGitWorkspaces.prepare({ taskId: task.id, taskNumber: task.taskNumber, projectRoot })
       : null;
     const result = await this.#taskLauncher({
       id: task.id,

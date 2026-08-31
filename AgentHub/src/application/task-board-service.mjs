@@ -1,6 +1,7 @@
 import { attachmentDescriptor } from "../domain/attachment-files.mjs";
 import { normalizedTaskBucket, normalizedTaskText, taskDisplayText } from "../domain/task-board-task.mjs";
 import { EXPERIMENTS_SYSTEM_KEY } from "../domain/workspace-stream-identity.mjs";
+import { workspaceTaskPrefix } from "../domain/task-number.mjs";
 
 function requiredMethod(value, name) {
   if (typeof value?.[name] !== "function") throw new TypeError(`task board ${name} is required`);
@@ -108,10 +109,16 @@ export class TaskBoardService {
   }
 
   create(payload = {}) {
+    const normalizedBucket = normalizedTaskBucket(payload.bucket ?? (payload.workspaceId ? "workspace" : "backlog"));
+    const workspace = normalizedBucket === "workspace" ? this.workspaceCatalog.workspace(payload.workspaceId) : null;
+    if (normalizedBucket === "workspace" && !workspace) throw new Error("Workspace не найден");
     const task = this.store.create({
       ...payload,
       text: normalizedTaskText(payload.text),
       triageStatus: this.classify && payload.source === "telegram" ? "pending" : "disabled",
+      bucket: normalizedBucket,
+      workspaceId: workspace?.id ?? null,
+      taskPrefix: workspaceTaskPrefix(workspace?.settings),
     });
     if (task.triageStatus === "pending") this.scheduleTriage(task.id);
     return task;
@@ -154,19 +161,32 @@ export class TaskBoardService {
       throw new Error("Workspace не найден");
     }
     const previous = this.task(id);
-    const task = this.store.move(id, { bucket: normalizedBucket, workspaceId, beforeId });
+    const workspace = normalizedBucket === "workspace" ? this.workspaceCatalog.workspace(workspaceId) : null;
+    const task = this.store.move(id, {
+      bucket: normalizedBucket, workspaceId, beforeId, taskPrefix: workspaceTaskPrefix(workspace?.settings),
+    });
     this.#event("task.moved", task.workspaceId ? task : { ...task, workspaceId: previous.workspaceId });
     return task;
   }
 
-  update({ id, title, description = "" } = {}) {
-    const task = this.store.updatePresentation(id, { title, description });
+  update({ id, title, description = "", taskNumber = undefined } = {}) {
+    const task = this.store.updatePresentation(id, { title, description, taskNumber });
     this.#event("task.updated", task);
     return task;
   }
 
   reassignWorkspace(sourceWorkspaceId, targetWorkspaceId) {
-    return this.store.reassignWorkspace(sourceWorkspaceId, targetWorkspaceId);
+    const workspace = this.workspaceCatalog.workspace(targetWorkspaceId);
+    return this.store.reassignWorkspace(sourceWorkspaceId, targetWorkspaceId, {
+      taskPrefix: workspaceTaskPrefix(workspace?.settings),
+    });
+  }
+
+  assignWorkspaceTaskNumbers(workspaceId) {
+    requiredMethod(this.store, "assignWorkspaceTaskNumbers");
+    const workspace = this.workspaceCatalog.workspace(workspaceId);
+    if (!workspace) throw new Error("Workspace не найден");
+    return this.store.assignWorkspaceTaskNumbers(workspace.id, workspaceTaskPrefix(workspace.settings));
   }
 
   moveColumn({ columnId, beforeColumnId = null } = {}) {
@@ -335,6 +355,7 @@ export class TaskBoardService {
         reason: result?.reason,
         bucket: wantsNotes ? "notes" : suggestedWorkspace ? "workspace" : "backlog",
         workspaceId: suggestedWorkspace?.id ?? null,
+        taskPrefix: workspaceTaskPrefix(suggestedWorkspace?.settings),
         autoPlace,
       });
     } catch (error) {

@@ -14,6 +14,7 @@ test("Task drag payload stays a reference and carries no Task body", async () =>
   const references = await referencesView();
   const payload = references.transferText({
     id: "board-1",
+    taskNumber: "HUB-11",
     title: "Исправить Dashboard",
     description: "Секретное подробное описание",
     workflowStatus: "testing",
@@ -22,6 +23,7 @@ test("Task drag payload stays a reference and carries no Task body", async () =>
   const parsed = JSON.parse(payload);
 
   assert.equal(parsed.taskId, "board-1");
+  assert.equal(parsed.taskNumber, "HUB-11");
   assert.equal(parsed.title, "Исправить Dashboard");
   assert.equal(parsed.intent, "context");
   assert.equal("description" in parsed, false);

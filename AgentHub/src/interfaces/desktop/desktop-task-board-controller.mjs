@@ -22,8 +22,9 @@ export class DesktopTaskBoardController {
   create(params) {
     return this.#mutate(() => {
       if (!this.workspaceCatalog.workspace(params.workspaceId)) throw new Error("Workspace не найден");
-      const task = this.taskBoard.create({ text: params.text, source: "hub" });
-      this.taskBoard.move({ id: task.id, bucket: "workspace", workspaceId: params.workspaceId });
+      this.taskBoard.create({
+        text: params.text, source: "hub", bucket: "workspace", workspaceId: params.workspaceId,
+      });
     });
   }
 

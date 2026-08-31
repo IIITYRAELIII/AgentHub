@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import process from "node:process";
 
+import { normalizedTaskNumber } from "./task-number.mjs";
+
 export const TASK_BRANCH_PREFIX = "agenthub/task/";
 
 function canonicalRoot(value) {
@@ -21,8 +23,9 @@ export function taskRepositoryKey(projectRoot) {
   return createHash("sha256").update(canonicalRoot(projectRoot).toLowerCase(), "utf8").digest("hex").slice(0, 12);
 }
 
-export function taskBranchName(taskId, projectRoot) {
-  return `${TASK_BRANCH_PREFIX}${normalizedTaskId(taskId)}/${taskRepositoryKey(projectRoot)}`;
+export function taskBranchName(taskId, projectRoot, taskNumber = null) {
+  const numbered = normalizedTaskNumber(taskNumber);
+  return numbered || `${TASK_BRANCH_PREFIX}${normalizedTaskId(taskId)}/${taskRepositoryKey(projectRoot)}`;
 }
 
 export function normalizedTaskGitReferences(values = []) {
@@ -32,7 +35,7 @@ export function normalizedTaskGitReferences(values = []) {
     const branch = String(value?.branch ?? "").trim();
     const resultCommit = String(value?.resultCommit ?? value?.resultRevision ?? "").trim().toLowerCase();
     if (!projectRoot || !branch || !resultCommit) continue;
-    if (!branch.startsWith(TASK_BRANCH_PREFIX)) throw new Error(`Invalid Task branch: ${branch}`);
+    if (!branch.startsWith(TASK_BRANCH_PREFIX)) normalizedTaskNumber(branch, { allowEmpty: false });
     if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(resultCommit)) {
       throw new Error(`Invalid Task result commit: ${resultCommit}`);
     }
