@@ -38,6 +38,7 @@ html[data-theme="orange"] {
   --radius-sm: 7px;
   --radius-chip: 8px;
   --rail-width: 2px;
+  --stream-status-border-color: transparent;
 
   --bg: #f7f1e8;
   --surface-1: #f2e8dc;
@@ -190,12 +191,6 @@ html[data-theme="orange"] .stream-tabs {
 
 html[data-theme="orange"] .stream-tab[aria-pressed="true"] {
   color: var(--text);
-}
-
-html[data-theme="orange"] .stream-tabs-track
-  .stream-tab:is([data-running], [data-answer-ready])
-  [class~="stream-tab-card"] {
-  border-color: transparent !important;
 }
 
 html[data-theme="orange"] .stream-tab[aria-pressed="true"]::after {

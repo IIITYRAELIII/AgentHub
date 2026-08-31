@@ -4,6 +4,8 @@ import { copyFile, mkdir, readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 
+import { canonicalPath } from "./config.mjs";
+
 const DEFAULT_MAX_DIFF_BYTES = 64 * 1024;
 
 function decodedGitPathToken(value) {
@@ -117,7 +119,7 @@ async function captureRepositoryBaseline(repoRoot, dataDir, token) {
   try {
     const tree = await worktreeTree(repoRoot, dataDir, `${token}-before`);
     const indexTree = await gitText(["write-tree"], { cwd: repoRoot }).catch(() => null);
-    return { repoRoot: path.resolve(repoRoot), tree, indexTree, capturedAt: new Date().toISOString() };
+    return { repoRoot: canonicalPath(repoRoot), tree, indexTree, capturedAt: new Date().toISOString() };
   } catch {
     return null;
   }
@@ -142,7 +144,7 @@ function changedFilesFromNameStatus(value, repoRoot) {
 }
 
 function normalizedRepositoryKey(value) {
-  const resolved = path.resolve(value);
+  const resolved = canonicalPath(value);
   return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }
 
@@ -216,7 +218,7 @@ async function captureRepositoryResult(repository, files, dataDir, token) {
 }
 
 export async function captureTaskGitBaseline(projectRoot, dataDir, token = randomUUID()) {
-  const resolvedProjectRoot = path.resolve(projectRoot);
+  const resolvedProjectRoot = canonicalPath(projectRoot);
   const repoRoots = await resolveTaskGitRepoRoots(resolvedProjectRoot);
   const repositories = (await Promise.all(repoRoots.map(
     (repoRoot, index) => captureRepositoryBaseline(repoRoot, dataDir, `${token}-${index}`),
@@ -243,7 +245,7 @@ export async function captureTaskGitResult(baseline, dataDir, token = randomUUID
   ));
   return {
     snapshot: Array.isArray(baseline?.repositories) ? {
-      projectRoot: path.resolve(baseline.projectRoot),
+      projectRoot: canonicalPath(baseline.projectRoot),
       repositories: results.map((result) => result.snapshot),
       capturedAt: new Date().toISOString(),
     } : results[0].snapshot,
@@ -254,7 +256,7 @@ export async function captureTaskGitResult(baseline, dataDir, token = randomUUID
 export async function resolveTaskGitRepoRoot(projectRoot) {
   try {
     const repoRoot = await gitText(["rev-parse", "--show-toplevel"], { cwd: projectRoot });
-    return path.resolve(repoRoot);
+    return canonicalPath(repoRoot);
   } catch {
     return null;
   }

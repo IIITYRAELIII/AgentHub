@@ -287,7 +287,7 @@ html[data-view="chat"][data-surface][data-theme] {
 .stream-tabs-track
   .stream-tab:is([data-running], [data-answer-ready])
   [class~="stream-tab-card"] {
-  border-color: var(--accent-line) !important;
+  border-color: var(--stream-status-border-color, var(--accent-line)) !important;
 }
 
 .stream-tabs-track .stream-tab-title {

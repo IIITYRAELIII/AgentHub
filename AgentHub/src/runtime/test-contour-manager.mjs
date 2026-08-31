@@ -72,7 +72,7 @@ function requireTestContourModel(model) {
 }
 
 export function testContourPaths(root = defaultTestContourRoot()) {
-  const resolved = path.resolve(root);
+  const resolved = canonicalPath(root);
   return {
     root: resolved,
     markerFile: path.join(resolved, MARKER_FILE),

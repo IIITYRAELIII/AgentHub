@@ -4,6 +4,7 @@ import { mkdir, readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 
+import { canonicalPath } from "./config.mjs";
 import { withInterprocessLocks } from "../process/interprocess-lock.mjs";
 
 export const TASK_BRANCH_PREFIX = "agenthub/task/";
@@ -44,7 +45,7 @@ async function gitMaybe(args, options) {
 }
 
 function repositoryKey(repositoryRoot) {
-  return createHash("sha256").update(path.resolve(repositoryRoot).toLowerCase(), "utf8").digest("hex").slice(0, 12);
+  return createHash("sha256").update(canonicalPath(repositoryRoot).toLowerCase(), "utf8").digest("hex").slice(0, 12);
 }
 
 function normalizedTaskId(value) {
@@ -76,13 +77,13 @@ function parseWorktrees(value) {
 }
 
 function pathInside(root, candidate) {
-  const relative = path.relative(path.resolve(root), path.resolve(candidate));
+  const relative = path.relative(canonicalPath(root), canonicalPath(candidate));
   return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
 }
 
 function samePath(left, right) {
-  const first = path.resolve(left);
-  const second = path.resolve(right);
+  const first = canonicalPath(left);
+  const second = canonicalPath(right);
   return process.platform === "win32" ? first.toLowerCase() === second.toLowerCase() : first === second;
 }
 
@@ -106,13 +107,13 @@ async function repositoryRoot(projectRoot) {
   const commonDir = path.resolve(await runGit([
     "rev-parse", "--path-format=absolute", "--git-common-dir",
   ], { cwd: path.resolve(projectRoot) }));
-  return path.basename(commonDir).toLowerCase() === ".git"
+  return canonicalPath(path.basename(commonDir).toLowerCase() === ".git"
     ? path.dirname(commonDir)
-    : commonDir;
+    : commonDir);
 }
 
 async function worktreeRoot(projectRoot) {
-  return path.resolve(await runGit([
+  return canonicalPath(await runGit([
     "rev-parse", "--path-format=absolute", "--show-toplevel",
   ], { cwd: path.resolve(projectRoot) }));
 }
@@ -328,7 +329,7 @@ export class TaskGitWorkspaceService {
 }
 
 export async function prepareTaskContourSource({ sourceRoot, integrationRoot } = {}) {
-  const resolvedSourceRoot = path.resolve(sourceRoot);
+  const resolvedSourceRoot = canonicalPath(sourceRoot);
   const repoRoot = await repositoryRoot(resolvedSourceRoot).catch(() => null);
   if (!repoRoot) return { sourceRoot: resolvedSourceRoot, branch: null, headCommit: null };
   if (!await branchExists(repoRoot, TASK_DEV_BRANCH)) {
