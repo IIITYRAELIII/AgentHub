@@ -10,6 +10,9 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-mcp-"));
   context.after(() => rm(directory, { recursive: true, force: true }));
   const projectRoot = path.join(directory, "project");
+  const streamWorkingDirectory = path.join(directory, "stream-working-directory");
+  const workspaceWorkingDirectory = path.join(directory, "workspace-working-directory");
+  const targetWorkingDirectory = path.join(directory, "target-working-directory");
   const attachmentDirectory = path.join(directory, "attachments");
   await mkdir(projectRoot, { recursive: true });
   const tasks = new Map([
@@ -35,14 +38,15 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
     } : null,
     activeThread: () => null,
     workspace: (id) => id === "workspace-1" ? {
-      id, name: "Agent Hub", settings: { releaseWorkflowEnabled },
+      id, name: "Agent Hub", settings: { releaseWorkflowEnabled, workingDirectory: workspaceWorkingDirectory },
     } : null,
     hierarchy: () => [{
       id: "workspace-1",
       name: "Agent Hub",
+      settings: { releaseWorkflowEnabled, workingDirectory: workspaceWorkingDirectory },
       streams: [
-        { id: "stream-1", displayName: "MCP", settings: { architect: true }, threads: [{ provider: "codex", threadId: "thread-1" }] },
-        { id: "stream-2", displayName: "Themes", threads: [{ provider: "codex", threadId: "thread-2" }] },
+        { id: "stream-1", displayName: "MCP", settings: { architect: true, workingDirectory: streamWorkingDirectory }, threads: [{ provider: "codex", threadId: "thread-1" }] },
+        { id: "stream-2", displayName: "Themes", settings: { workingDirectory: targetWorkingDirectory }, threads: [{ provider: "codex", threadId: "thread-2" }] },
       ],
     }],
     workspaceEvents: (_workspaceId, { afterSequence }) => [{
@@ -122,16 +126,20 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
     }],
   };
   const releaseCalls = [];
+  const taskGitPrepareCalls = [];
   const taskGitWorkspaces = {
-    prepare: async ({ taskId }) => ({
-      taskId,
-      branch: `agenthub/task/${taskId}/repo`,
-      projectRoot: path.join(directory, "task-worktree", taskId),
-      repositoryRoot: projectRoot,
-      baseCommit: "a".repeat(40),
-      headCommit: "a".repeat(40),
-      gitBaseline: { repoRoot: projectRoot, tree: "a".repeat(40) },
-    }),
+    prepare: async ({ taskId, projectRoot: selectedProjectRoot }) => {
+      taskGitPrepareCalls.push({ taskId, projectRoot: selectedProjectRoot });
+      return {
+        taskId,
+        branch: `agenthub/task/${taskId}/repo`,
+        projectRoot: path.join(directory, "task-worktree", taskId),
+        repositoryRoot: selectedProjectRoot,
+        baseCommit: "a".repeat(40),
+        headCommit: "a".repeat(40),
+        gitBaseline: { repoRoot: selectedProjectRoot, tree: "a".repeat(40) },
+      };
+    },
     snapshotAndMerge: async ({ taskId }) => ({
       snapshot: {
         taskId,
@@ -162,7 +170,9 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
       },
     },
   });
-  service.setTaskLauncher(async ({ id, workspaceId, streamId }) => {
+  const taskLaunchCalls = [];
+  service.setTaskLauncher(async ({ id, workspaceId, streamId, ...options }) => {
+    taskLaunchCalls.push({ id, workspaceId, streamId, ...options });
     const task = taskBoard.markStarted({ id, workspaceId, streamId });
     return { task, target: { streamId, provider: "codex", threadId: "thread-1" } };
   });
@@ -181,10 +191,15 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
     token: service.contextToken({ provider: "codex", threadId: "thread-1" }),
     attachmentDirectory,
     projectRoot,
+    streamWorkingDirectory,
+    workspaceWorkingDirectory,
+    targetWorkingDirectory,
     workspaceCatalog,
     tasks,
     operations,
     taskEvidenceCalls,
+    taskGitPrepareCalls,
+    taskLaunchCalls,
     releaseCalls,
     taskGitWorkspaces,
     sentMessages,
@@ -236,13 +251,39 @@ test("HubMcpService falls back to Stream context while a rotated Thread is not b
 });
 
 test("HubMcpService starts the current Workspace task in the current Stream", async (context) => {
-  const { service, token } = await fixture(context);
+  const { service, token, streamWorkingDirectory, taskGitPrepareCalls, taskLaunchCalls } = await fixture(context);
   const task = await service.call("hub_task_start", {
     context_token: token, request_id: "start-task", task_id: "task-current", confirm_launch: true,
   });
   assert.equal(task.task.status, "started");
   assert.equal(task.task.workflowStatus, "in_progress");
   assert.equal(task.target.streamId, "stream-1");
+  assert.equal(taskGitPrepareCalls[0].projectRoot, streamWorkingDirectory);
+  assert.match(taskLaunchCalls[0].workingDirectory, /task-worktree[\\/]task-current$/u);
+});
+
+test("HubMcpService starts a Task from the target Stream working directory", async (context) => {
+  const { service, token, targetWorkingDirectory, taskGitPrepareCalls } = await fixture(context);
+  await service.call("hub_task_start", {
+    context_token: token,
+    request_id: "start-target-task",
+    task_id: "task-current",
+    stream_id: "stream-2",
+    confirm_launch: true,
+  });
+  assert.equal(taskGitPrepareCalls[0].projectRoot, targetWorkingDirectory);
+});
+
+test("HubMcpService uses the Workspace working directory for a new Stream", async (context) => {
+  const { service, token, workspaceWorkingDirectory, taskGitPrepareCalls } = await fixture(context);
+  await service.call("hub_task_start", {
+    context_token: token,
+    request_id: "start-new-stream-task",
+    task_id: "task-current",
+    new_stream_name: "New Stream",
+    confirm_launch: true,
+  });
+  assert.equal(taskGitPrepareCalls[0].projectRoot, workspaceWorkingDirectory);
 });
 
 test("HubMcpService keeps workflow Done visible until explicit completion", async (context) => {
@@ -439,21 +480,40 @@ test("HubMcpService exposes cursor events and publication-gated release completi
 });
 
 test("HubMcpService binds the current turn to its dedicated Task worktree", async (context) => {
-  const { service, token, tasks, projectRoot } = await fixture(context);
+  const { service, token, tasks, streamWorkingDirectory, taskGitPrepareCalls } = await fixture(context);
   const claimed = await service.call("hub_task_claim", {
     context_token: token,
     request_id: "claim-task-1",
     task_id: "task-current",
   });
   assert.equal(claimed.claimedTurnId, "turn-live");
+  assert.equal(taskGitPrepareCalls[0].projectRoot, streamWorkingDirectory);
   assert.deepEqual(tasks.get("task-current").gitBaseline, {
-    repoRoot: projectRoot,
+    repoRoot: streamWorkingDirectory,
     tree: "a".repeat(40),
   });
   assert.match(claimed.gitWorkspace.branch, /^agenthub\/task\/task-current/u);
 
   const tools = service.tools();
   assert.equal(tools.some((tool) => tool.name === "hub_task_release_freeze"), false);
+});
+
+test("HubMcpService claim falls back to the Workspace working directory", async (context) => {
+  const { service, token, workspaceCatalog, workspaceWorkingDirectory, taskGitPrepareCalls } = await fixture(context);
+  const hierarchy = workspaceCatalog.hierarchy;
+  workspaceCatalog.hierarchy = () => hierarchy().map((workspace) => ({
+    ...workspace,
+    streams: workspace.streams.map((stream) => stream.id === "stream-1"
+      ? { ...stream, settings: { ...stream.settings, workingDirectory: "" } }
+      : stream),
+  }));
+
+  await service.call("hub_task_claim", {
+    context_token: token,
+    request_id: "claim-workspace-root",
+    task_id: "task-current",
+  });
+  assert.equal(taskGitPrepareCalls[0].projectRoot, workspaceWorkingDirectory);
 });
 
 test("HubMcpService rejects forged context capabilities", async (context) => {

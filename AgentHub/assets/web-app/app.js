@@ -93,8 +93,10 @@ const workspaceCardRulesCount = document.querySelector("[data-workspace-card-rul
 const workspaceCardQuickMessages = document.querySelector("[data-workspace-card-quick-messages]");
 const workspaceCardQuickMessagesCount = document.querySelector("[data-workspace-card-quick-messages-count]");
 const workspaceCardReleaseWorkflow = document.querySelector("[data-workspace-release-workflow]");
+const workspaceCardReleaseWorkflowTooltip = document.querySelector("[data-workspace-release-workflow-tooltip]");
 const workspaceCardOrder = document.querySelector("[data-workspace-card-order]");
 const workspaceCardSubmit = document.querySelector("[data-workspace-card-submit]");
+window.AgentHubWorkspaceReleaseWorkflow?.renderTooltip(workspaceCardReleaseWorkflowTooltip);
 
 const chatPane = document.querySelector("[data-chat-pane]");
 const streamTabs = document.querySelector("[data-stream-tabs]");

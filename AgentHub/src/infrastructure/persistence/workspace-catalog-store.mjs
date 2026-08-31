@@ -19,11 +19,16 @@ import {
   legacyReleaseWorkflowRules,
   RELEASE_WORKFLOW_SETTING,
   releaseWorkflowEnabled,
+  storedWorkspaceDeveloperRules,
   workspaceSettingsWithReleaseWorkflow,
 } from "../../domain/workspace-release-workflow.mjs";
 
 const SCHEMA_VERSION = 11;
 export const DEVELOPER_RULES_MAX_BYTES = 32 * 1024;
+const WORKSPACE_RULE_PREFIX_BYTES = Buffer.byteLength(
+  `${storedWorkspaceDeveloperRules("")}\n\n`,
+  "utf8",
+);
 const SOURCES = new Set(["created", "discovered", "migration", "rebirth"]);
 const DEVELOPER_RULE_SCOPES = new Set(["workspace", "stream"]);
 
@@ -218,9 +223,9 @@ function developerRuleScope(value) {
   return scope;
 }
 
-function developerRuleContent(value) {
+function developerRuleContent(value, maximumBytes = DEVELOPER_RULES_MAX_BYTES) {
   const content = String(value ?? "");
-  if (Buffer.byteLength(content, "utf8") > DEVELOPER_RULES_MAX_BYTES) {
+  if (Buffer.byteLength(content, "utf8") > maximumBytes) {
     throw new Error(`developer rules exceed ${DEVELOPER_RULES_MAX_BYTES} UTF-8 bytes`);
   }
   return content;
@@ -288,6 +293,7 @@ export class WorkspaceCatalogStore {
   async load() {
     await this.#open();
     this.#migrateReleaseWorkflowSettings();
+    this.#migrateWorkspaceDeveloperRules();
     this.#migrateArchitectStreamSettings();
     this.ensureExperiments();
     return this;
@@ -354,10 +360,24 @@ export class WorkspaceCatalogStore {
           JSON.stringify(workspaceSettingsWithReleaseWorkflow(settings, migration.enabled)),
           row.id,
         );
-        if (migration.migrated && migration.content !== currentRules?.content) {
-          this.#updateDeveloperRules("workspace", row.id, migration.content);
-        }
+        const storedRules = storedWorkspaceDeveloperRules(migration.content);
+        if (storedRules !== currentRules?.content) this.#updateWorkspaceDeveloperRules(row.id, storedRules);
       }
+    });
+  }
+
+  #migrateWorkspaceDeveloperRules() {
+    const key = "workspace_agent_hub_rules_migrated_v1";
+    if (this.#database.prepare("SELECT 1 FROM hub_workspace_catalog_meta WHERE key = ?").get(key)) return;
+    this.#transaction(() => {
+      for (const row of this.#database.prepare("SELECT id FROM hub_workspaces").all()) {
+        const current = this.#developerRules("workspace", row.id);
+        const content = storedWorkspaceDeveloperRules(current?.content ?? "");
+        if (content !== current?.content) this.#updateWorkspaceDeveloperRules(row.id, content);
+      }
+      this.#database.prepare(
+        "INSERT INTO hub_workspace_catalog_meta (key, value) VALUES (?, ?)",
+      ).run(key, "completed");
     });
   }
 
@@ -407,6 +427,7 @@ export class WorkspaceCatalogStore {
         releaseWorkflowEnabled(settings),
       )),
     );
+    this.#updateWorkspaceDeveloperRules(workspaceId, "");
     return this.workspace(workspaceId);
   }
 
@@ -464,7 +485,7 @@ export class WorkspaceCatalogStore {
   updateWorkspaceDeveloperRules(workspaceId, content) {
     const id = safeIdentifier(workspaceId, "workspace id");
     if (!this.workspace(id)) throw new Error(`workspace not found: ${id}`);
-    return this.#updateDeveloperRules("workspace", id, content);
+    return this.#updateWorkspaceDeveloperRules(id, content);
   }
 
   #migrateArchitectStreamSettings() {
@@ -789,10 +810,20 @@ export class WorkspaceCatalogStore {
     ]));
   }
 
-  #updateDeveloperRules(scopeType, scopeId, content) {
+  #updateWorkspaceDeveloperRules(workspaceId, content) {
+    const editableContent = developerRuleContent(legacyReleaseWorkflowRules(content).content);
+    return this.#updateDeveloperRules(
+      "workspace",
+      workspaceId,
+      storedWorkspaceDeveloperRules(editableContent),
+      DEVELOPER_RULES_MAX_BYTES + WORKSPACE_RULE_PREFIX_BYTES,
+    );
+  }
+
+  #updateDeveloperRules(scopeType, scopeId, content, maximumBytes = DEVELOPER_RULES_MAX_BYTES) {
     const scope = developerRuleScope(scopeType);
     const id = safeIdentifier(scopeId, `${scope} id`);
-    const value = developerRuleContent(content);
+    const value = developerRuleContent(content, maximumBytes);
     const current = this.#developerRules(scope, id);
     if (current?.content === value) return current;
     const revision = (current?.revision ?? 0) + 1;

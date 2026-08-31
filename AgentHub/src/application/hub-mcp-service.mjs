@@ -579,6 +579,14 @@ export class HubMcpService {
     return { ...workspace, currentStreamId: context.streamId };
   }
 
+  #taskProjectRoot(context, streamId = context.streamId) {
+    const workspace = this.#workspace(context);
+    const stream = workspace.streams.find((candidate) => candidate.id === streamId);
+    return String(stream?.settings?.workingDirectory ?? "").trim()
+      || String(workspace.settings?.workingDirectory ?? "").trim()
+      || null;
+  }
+
   #parallelStreams(context) {
     const workspace = this.#workspace(context);
     return {
@@ -666,8 +674,9 @@ export class HubMcpService {
   async #claimTask(context, { task_id: taskId } = {}) {
     const task = this.#task(context, taskId);
     const active = this.#currentRun(context);
-    const gitWorkspace = this.taskGitWorkspaces && active.projectRoot
-      ? await this.taskGitWorkspaces.prepare({ taskId: task.id, projectRoot: active.projectRoot })
+    const projectRoot = this.#taskProjectRoot(context);
+    const gitWorkspace = this.taskGitWorkspaces && projectRoot
+      ? await this.taskGitWorkspaces.prepare({ taskId: task.id, projectRoot })
       : null;
     if (gitWorkspace) active.gitBaseline = gitWorkspace.gitBaseline;
     return {
@@ -861,13 +870,15 @@ export class HubMcpService {
     if (requestedStreamId && requestedStreamName) {
       throw new Error("stream_id and new_stream_name are mutually exclusive");
     }
-    const gitWorkspace = this.taskGitWorkspaces && context.projectRoot
-      ? await this.taskGitWorkspaces.prepare({ taskId: task.id, projectRoot: context.projectRoot })
+    const targetStreamId = requestedStreamName ? null : (requestedStreamId || context.streamId);
+    const projectRoot = this.#taskProjectRoot(context, targetStreamId);
+    const gitWorkspace = this.taskGitWorkspaces && projectRoot
+      ? await this.taskGitWorkspaces.prepare({ taskId: task.id, projectRoot })
       : null;
     const result = await this.#taskLauncher({
       id: task.id,
       workspaceId: context.workspaceId,
-      streamId: requestedStreamName ? null : (requestedStreamId || context.streamId),
+      streamId: targetStreamId,
       streamName: requestedStreamName || null,
       provider: String(provider ?? "").trim() || context.provider,
       followUpMode: "queue",
