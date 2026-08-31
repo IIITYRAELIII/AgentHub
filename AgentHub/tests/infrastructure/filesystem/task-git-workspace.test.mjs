@@ -43,7 +43,8 @@ test("Task Git workspace commits one Task branch and merges it into dev", async 
   const workspace = await service.prepare({ taskId, projectRoot: root });
   assert.match(workspace.branch, /^agenthub\/task\/11111111-/u);
   assert.notEqual(workspace.projectRoot, root);
-  assert.equal(await service.managedRepositoryRoot(workspace.projectRoot), path.resolve(root));
+  assert.equal(await service.managedRepositoryRoot(workspace.projectRoot, { taskId }), path.resolve(root));
+  assert.equal(await service.managedRepositoryRoot(workspace.projectRoot), null);
   assert.equal(await service.managedRepositoryRoot(root), null);
   await writeFile(path.join(workspace.projectRoot, "app.txt"), "task\n", "utf8");
 
@@ -84,6 +85,34 @@ test("Task Git workspace commits one Task branch and merges it into dev", async 
   } finally {
     await git(root, "worktree", "remove", "--force", releaseRoot);
   }
+});
+
+test("managed Task admission rejects another Task owner and numbered branch", async (context) => {
+  const root = await repository(context);
+  const dataDir = path.join(root, "..", `${path.basename(root)}-data`);
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const service = new TaskGitWorkspaceService({ dataDir });
+  const firstTaskId = "66666666-6666-4666-8666-666666666666";
+  const secondTaskId = "77777777-7777-4777-8777-777777777777";
+  const first = await service.prepare({ taskId: firstTaskId, projectRoot: root });
+  await service.prepare({ taskId: secondTaskId, projectRoot: root });
+
+  assert.equal(await service.managedRepositoryRoot(first.projectRoot, { taskId: secondTaskId }), null);
+  assert.equal(await service.managedRepositoryRoot(first.projectRoot, { taskId: firstTaskId }), path.resolve(root));
+
+  await git(first.projectRoot, "branch", "-m", "AH-42");
+  assert.equal(await service.managedRepositoryRoot(first.projectRoot, {
+    taskId: firstTaskId,
+    taskNumber: "AH-7",
+  }), null);
+  assert.equal(await service.managedRepositoryRoot(first.projectRoot, {
+    taskId: secondTaskId,
+    taskNumber: "AH-42",
+  }), null);
+  assert.equal(await service.managedRepositoryRoot(first.projectRoot, {
+    taskId: firstTaskId,
+    taskNumber: "AH-42",
+  }), path.resolve(root));
 });
 
 test("Task Git workspace aborts a conflicting dev merge without deleting either branch", async (context) => {

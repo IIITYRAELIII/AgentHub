@@ -9,6 +9,7 @@ function fixture({ interruptAfterCreate = false, gitWorktree = false } = {}) {
   const threads = new Map();
   const task = {
     id: "board-1",
+    taskNumber: "AH-42",
     rawText: "Проверить crash recovery",
     correctedText: "",
     bucket: "workspace",
@@ -110,6 +111,8 @@ test("TaskBoardLaunchService starts a Task in its dedicated Git worktree", async
   ]);
   const create = calls.find(([, type]) => type === "task.create");
   assert.equal(create[2].workingDirectory, "D:/task-worktree");
+  assert.equal(create[2].taskId, "board-1");
+  assert.equal(create[2].taskNumber, "AH-42");
 });
 
 test("TaskBoardLaunchService ignores a historical Thread root for an existing Stream", async () => {

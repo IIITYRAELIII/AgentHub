@@ -264,7 +264,12 @@ test("task command service recovers a persisted provider Thread after post-creat
 
 test("task command service continues an existing Stream in a new Codex Thread", async () => {
   const { service, events } = fixture();
-  await service.create({ provider: "codex", streamId: "stream-1" });
+  await service.create({
+    provider: "codex",
+    streamId: "stream-1",
+    taskId: "board-1",
+    taskNumber: "AH-42",
+  });
   assert.deepEqual(events.find(([name]) => name === "bind")[1], {
     provider: "codex",
     threadId: "thread-new",
@@ -285,6 +290,8 @@ test("task command service continues an existing Stream in a new Codex Thread", 
     autoApprove: false,
     streamId: "stream-1",
     title: "Existing",
+    taskId: "board-1",
+    taskNumber: "AH-42",
   });
 });
 

@@ -226,17 +226,22 @@ export class TaskGitWorkspaceService {
     };
   }
 
-  async managedRepositoryRoot(projectRoot) {
+  async managedRepositoryRoot(projectRoot, { taskId, taskNumber = null } = {}) {
+    const expectedTaskId = String(taskId ?? "").trim();
+    if (!expectedTaskId) return null;
+    const id = normalizedTaskId(expectedTaskId);
     const candidate = canonicalPath(projectRoot);
     if (!pathInside(this.taskWorktreesRoot, candidate)) return null;
     try {
       const taskRoot = await worktreeRoot(candidate);
       if (!samePath(taskRoot, candidate) || !pathInside(this.taskWorktreesRoot, taskRoot)) return null;
-      const taskId = path.relative(this.taskWorktreesRoot, taskRoot).split(path.sep)[0];
+      const ownerTaskId = path.relative(this.taskWorktreesRoot, taskRoot).split(path.sep)[0];
+      if (normalizedTaskId(ownerTaskId) !== id) return null;
       const repoRoot = await repositoryRoot(taskRoot);
       const branch = await runGit(["symbolic-ref", "--quiet", "--short", "HEAD"], { cwd: taskRoot });
-      if (branch === taskBranchName(taskId, repoRoot)) return repoRoot;
-      return isTaskNumberBranch(branch) ? repoRoot : null;
+      if (branch === taskBranchName(id, repoRoot)) return repoRoot;
+      const numberedBranch = String(taskNumber ?? "").trim();
+      return isTaskNumberBranch(numberedBranch) && branch === numberedBranch ? repoRoot : null;
     } catch {
       return null;
     }

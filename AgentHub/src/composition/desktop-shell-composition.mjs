@@ -282,6 +282,8 @@ export function createDesktopShellComposition({
     autoApprove: targetAutoApprove,
     streamId = null,
     title = "",
+    taskId = null,
+    taskNumber = null,
   } = {}) => {
     const normalizedProvider = targetProvider === "claude" ? "claude" : "codex";
     const requestedDirectory = [workingDirectory, project, selectedProjectRoot()]
@@ -291,6 +293,8 @@ export function createDesktopShellComposition({
       workingDirectory: requestedDirectory,
       findProject,
       taskGitWorkspaces,
+      taskId,
+      taskNumber,
     });
     if (!selectedProject) {
       throw new Error("Рабочая директория должна находиться внутри настроенного репозитория");

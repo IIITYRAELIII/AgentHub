@@ -94,6 +94,8 @@ export class TaskBoardLaunchService {
         const created = await this.dispatchCommand("task.create", {
           provider: params.provider,
           streamId: stream.id,
+          taskId: task.id,
+          taskNumber: task.taskNumber,
           ...(params.workingDirectory ? {
             workingDirectory: params.workingDirectory,
             handoffReason: "Task Git worktree",
@@ -107,6 +109,8 @@ export class TaskBoardLaunchService {
         provider: params.provider,
         workspaceId: workspace.id,
         streamName,
+        taskId: task.id,
+        taskNumber: task.taskNumber,
         ...(params.workingDirectory ? { workingDirectory: params.workingDirectory } : {}),
       }, context);
       target = created.createdTask;
@@ -205,6 +209,8 @@ export class TaskBoardLaunchService {
       const created = await this.dispatchCommand("task.create", {
         provider: params.provider,
         streamId: stream.id,
+        taskId: task.id,
+        taskNumber: task.taskNumber,
         ...(params.workingDirectory ? {
           workingDirectory: params.workingDirectory,
           handoffReason: "Task Git worktree",

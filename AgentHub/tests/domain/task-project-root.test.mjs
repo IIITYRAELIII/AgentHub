@@ -23,15 +23,20 @@ test("a verified managed Task worktree resolves through its configured repositor
   const calls = [];
   const project = await configuredProjectForTaskWorkingDirectory({
     workingDirectory: "C:/AgentHub/task-worktrees/task/repo",
+    taskId: "task-a",
+    taskNumber: "AH-42",
     findProject: (value) => value === configured.path ? configured : null,
     taskGitWorkspaces: {
-      managedRepositoryRoot: async (value) => {
-        calls.push(value);
+      managedRepositoryRoot: async (value, identity) => {
+        calls.push([value, identity]);
         return configured.path;
       },
     },
   });
 
   assert.equal(project, configured);
-  assert.deepEqual(calls, ["C:/AgentHub/task-worktrees/task/repo"]);
+  assert.deepEqual(calls, [[
+    "C:/AgentHub/task-worktrees/task/repo",
+    { taskId: "task-a", taskNumber: "AH-42" },
+  ]]);
 });
