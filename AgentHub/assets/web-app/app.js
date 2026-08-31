@@ -8625,7 +8625,10 @@ function sameWeeklyLimitCycle(left, right) {
 function sameLimitsSpeedSegment(left, right) {
   const hasPathSegments = Number.isInteger(left?.pathSegmentIndex)
     && Number.isInteger(right?.pathSegmentIndex);
-  return sameWeeklyLimitCycle(left, right)
+  const joinsResetAnchor = right?.resetAnchor === true
+    && Number.isInteger(left?.cycleIndex)
+    && right.cycleIndex === left.cycleIndex + 1;
+  return (sameWeeklyLimitCycle(left, right) || joinsResetAnchor)
     && (!hasPathSegments || left.pathSegmentIndex === right.pathSegmentIndex);
 }
 

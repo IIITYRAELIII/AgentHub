@@ -150,6 +150,14 @@ test("speed chart starts a new path at every weekly reset", () => {
   ]), "M1.0 2.0 L3.0 4.0 M5.0 6.0");
 });
 
+test("preliminary reset anchor closes the path gap at the cycle boundary", () => {
+  assert.equal(pathFor([
+    { x: 1, y: 80, cycleIndex: 0, pathSegmentIndex: 1 },
+    { x: 3, y: 0, cycleIndex: 1, pathSegmentIndex: 1, resetAnchor: true },
+    { x: 5, y: 0, cycleIndex: 1, pathSegmentIndex: 1 },
+  ]), "M1.0 80.0 L3.0 0.0 L5.0 0.0");
+});
+
 test("missing speed samples break the actual-rate path", () => {
   const points = finitePoints([
     { actualRate: 160, cycleIndex: 0 },
