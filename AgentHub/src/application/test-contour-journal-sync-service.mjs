@@ -11,6 +11,7 @@ export class TestContourJournalSyncService {
     initialDelayMs = 3_000,
     intervalMs = 10_000,
     readRecords,
+    sourceRuntimeAlive = null,
     logger = console,
   } = {}) {
     if (!timers || typeof timers.schedule !== "function") {
@@ -31,6 +32,7 @@ export class TestContourJournalSyncService {
     this.initialDelayMs = initialDelayMs;
     this.intervalMs = intervalMs;
     this.readRecords = readRecords;
+    this.sourceRuntimeAlive = typeof sourceRuntimeAlive === "function" ? sourceRuntimeAlive : null;
     this.logger = logger;
     this.syncInFlight = null;
     this.stopped = false;
@@ -68,6 +70,12 @@ export class TestContourJournalSyncService {
   }
 
   async #syncOnce() {
+    // Пока контур перезапускается, его journal.sqlite вместе с -wal и -shm
+    // пересоздаётся, и чтение из production попадает в середину смены файлов.
+    // Ждать тут нечего: цикл повторяется каждые десять секунд.
+    if (this.sourceRuntimeAlive && !await this.sourceRuntimeAlive()) {
+      return { skipped: true, reason: "source-runtime-stopped" };
+    }
     const source = await this.readRecords({
       sourceDatabaseFile: this.sourceDatabaseFile,
       targetDatabaseFile: this.targetDatabaseFile,

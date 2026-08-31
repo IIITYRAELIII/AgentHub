@@ -102,3 +102,29 @@ test("TestContourJournalSyncService does not reschedule after stop during sync",
   assert.deepEqual(events, [["clear", TEST_CONTOUR_JOURNAL_SYNC_TIMER_NAME]]);
   assert.deepEqual(await service.sync(), { skipped: true, reason: "stopped" });
 });
+
+test("TestContourJournalSyncService не читает журнал, пока контур перезапускается", async () => {
+  const events = [];
+  let alive = false;
+  const service = new TestContourJournalSyncService({
+    timers: { schedule: () => true, clear: () => true },
+    workLogUsageStore: { recordAutomaticBatchAndProject: async () => ({ recorded: 0 }) },
+    sourceDatabaseFile: "D:/contour/journal.sqlite",
+    targetDatabaseFile: "D:/production/journal.sqlite",
+    readRecords: async () => {
+      events.push("read");
+      return { records: [], sourceRecords: 0, eligibleRecords: 0, missing: false };
+    },
+    sourceRuntimeAlive: async () => alive,
+    logger: {},
+  });
+
+  const skipped = await service.sync();
+  assert.deepEqual(skipped, { skipped: true, reason: "source-runtime-stopped" });
+  assert.deepEqual(events, []);
+
+  alive = true;
+  const synced = await service.sync();
+  assert.equal(synced.synced, true);
+  assert.deepEqual(events, ["read"]);
+});

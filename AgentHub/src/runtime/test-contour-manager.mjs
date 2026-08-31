@@ -617,6 +617,17 @@ export async function serveTestContour({
   }
 }
 
+/* Дешёвый признак того, что контур сейчас владеет своими файлами.
+
+   readTestContourStatus дополнительно опрашивает health по HTTP и для
+   регулярной фоновой проверки слишком тяжёл. Здесь достаточно того, что оба
+   процесса контура живы: пока это так, его journal.sqlite не пересоздаётся. */
+export async function testContourRuntimeAlive({ root = defaultTestContourRoot() } = {}) {
+  const state = await readJson(testContourPaths(root).stateFile);
+  if (!state) return false;
+  return processIsAlive(state.managerPid) && processIsAlive(state.runtimePid);
+}
+
 export async function readTestContourStatus({ root = defaultTestContourRoot() } = {}) {
   const paths = testContourPaths(root);
   const [state, source] = await Promise.all([
