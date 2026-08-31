@@ -26,6 +26,7 @@ import {
   usageSyncEventIdentity,
   usageSyncEventFromLedgerRecord,
 } from "../domain/work-log-usage-sync.mjs";
+import { applyInferredTeamDeviceAccount } from "../domain/team-usage-accounts.mjs";
 
 const WORK_LOG_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ACCOUNT_ATTRIBUTIONS = new Set(["exact", "inferred"]);
@@ -655,7 +656,7 @@ function applyAccountUsageStats(target, entry, record, {
 }
 
 function syncedUsageRecord(value) {
-  const event = normalizeUsageSyncEvent(value);
+  const event = applyInferredTeamDeviceAccount(normalizeUsageSyncEvent(value));
   if (!event) return null;
   return {
     usage: event.usage,

@@ -11,7 +11,7 @@ import {
   teamUsageAccountAt,
 } from "../../domain/team-usage-accounts.mjs";
 
-const MIGRATION_KEY = "team_rate_limit_account_backfill:2026-08-31-v4";
+const MIGRATION_KEY = "team_rate_limit_account_backfill:2026-08-31-v5";
 
 export { FIRST_ACCOUNT_BOUNDARY, SECOND_ACCOUNT_BOUNDARY };
 
