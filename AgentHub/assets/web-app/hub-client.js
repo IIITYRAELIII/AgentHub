@@ -3597,6 +3597,19 @@ async function saveLinkResource(resource) {
   await saveBlob(await response.blob(), resourceFileName(resource));
 }
 
+async function revealWorkspaceFileOnServer(target) {
+  await localSessionReady;
+  const response = await hubFetch("/api/workspace-file/reveal", {
+    method: "POST",
+    headers: { ...authorizationHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify({ path: target }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload.ok === false) {
+    throw new Error(String(payload.error ?? `Не удалось показать файл: HTTP ${response.status}`));
+  }
+}
+
 agentHub.on("resource:open", ({ resource }) => runAction(async () => {
   if (vscode) {
     await bridgeCall("open-link", { href: resource.localPath || resource.href });
@@ -3614,23 +3627,15 @@ agentHub.on("resource:open-editor", ({ resource }) => runAction(async () => {
 
 agentHub.on("resource:reveal", ({ resource }) => runAction(async () => {
   const target = String(resource?.localPath ?? "").trim();
-  if (!target) throw new Error("Локальный путь не указан");
-  if (vscode) await bridgeCall("reveal-link", { href: target });
-  else if (remoteWorkspaceFileBridgeAvailable()) await launchWorkspaceFileBridge("reveal", target);
-  else if (!localWorkspaceFilesAvailable) {
-    throw new Error("Для удалённого браузера сопряги устройство и установи Windows File Bridge");
-  }
-  else {
-    const response = await hubFetch("/api/workspace-file/reveal", {
-      method: "POST",
-      headers: { ...authorizationHeaders(), "Content-Type": "application/json" },
-      body: JSON.stringify({ path: target }),
-    });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok || payload.ok === false) {
-      throw new Error(String(payload.error ?? `Не удалось показать файл: HTTP ${response.status}`));
-    }
-  }
+  await window.AgentHubResourceInteractions.revealWorkspaceFileResource({
+    target,
+    vscode: Boolean(vscode),
+    localWorkspaceFilesAvailable,
+    remoteWorkspaceFileBridgeAvailable: remoteWorkspaceFileBridgeAvailable(),
+    bridgeCall,
+    revealOnServer: revealWorkspaceFileOnServer,
+    launchWorkspaceFileBridge,
+  });
 }));
 
 agentHub.on("resource:copy", ({ resource }) => runAction(async () => {

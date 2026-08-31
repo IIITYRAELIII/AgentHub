@@ -239,6 +239,42 @@
       && ["127.0.0.1", "localhost", "::1"].includes(String(hostname).toLowerCase());
   }
 
+  async function revealWorkspaceFileResource({
+    target = "",
+    vscode = false,
+    localWorkspaceFilesAvailable: localFilesAvailable = false,
+    remoteWorkspaceFileBridgeAvailable: bridgeAvailable = false,
+    bridgeCall,
+    revealOnServer,
+    launchWorkspaceFileBridge,
+  } = {}) {
+    const localPath = String(target ?? "").trim();
+    if (!localPath) throw new Error("Локальный путь не указан");
+    if (vscode) {
+      await bridgeCall("reveal-link", { href: localPath });
+      return "vscode";
+    }
+
+    let serverRevealError = null;
+    try {
+      await revealOnServer(localPath);
+      return "server";
+    } catch (error) {
+      serverRevealError = error;
+    }
+
+    if (bridgeAvailable) {
+      await launchWorkspaceFileBridge("reveal", localPath);
+      return "bridge";
+    }
+
+    if (!localFilesAvailable) {
+      throw new Error("Проводник на стороне runtime недоступен. Для режима удалённого устройства сопряги устройство и установи Windows File Bridge.");
+    }
+
+    throw serverRevealError;
+  }
+
   window.AgentHubResourceInteractions = {
     attachmentPreviewSource,
     fileReferenceParts,
@@ -250,6 +286,7 @@
     localWorkspaceFilesAvailable,
     moveGalleryIndex,
     normalizeWindowsPath,
+    revealWorkspaceFileResource,
     resourceActions,
     resolveFileReference,
     shouldDismissViewer,

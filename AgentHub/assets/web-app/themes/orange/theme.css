@@ -192,6 +192,12 @@ html[data-theme="orange"] .stream-tab[aria-pressed="true"] {
   color: var(--text);
 }
 
+html[data-theme="orange"] .stream-tabs-track
+  .stream-tab:is([data-running], [data-answer-ready])
+  [class~="stream-tab-card"] {
+  border-color: transparent !important;
+}
+
 html[data-theme="orange"] .stream-tab[aria-pressed="true"]::after {
   background: var(--accent);
   bottom: 0;
