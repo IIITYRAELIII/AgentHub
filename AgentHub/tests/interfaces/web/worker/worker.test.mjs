@@ -1780,6 +1780,7 @@ test("shared Dashboard bot can send forwards separately with their reply clarifi
       chat: { id: 42, type: "private" },
       from: { id: 42, first_name: "Алиса" },
       forward_origin: { type: "hidden_user", sender_user_name: "Заказчик" },
+      photo: [{ file_id: "unconfirmed-small" }, { file_id: "unconfirmed-large", file_size: 4 }],
       text: "Пачка перед временным сбоем",
     },
   });
@@ -1787,12 +1788,59 @@ test("shared Dashboard bot can send forwards separately with their reply clarifi
     .filter((call) => call.method === "sendMessage" && /Собираю пачку/u.test(call.body.text))
     .at(-1);
   const bundleKey = "dashboard-bot:bundle:42";
-  const routerStorage = namespace.getByName("dashboard-bot:router").ctx.storage.values;
-  let stuckBundle = routerStorage.get(bundleKey);
-  stuckBundle.submitting = true;
-  stuckBundle.submissionStartedAt = 1;
-  routerStorage.set(bundleKey, stuckBundle);
+  const router = namespace.getByName("dashboard-bot:router");
+  const routerStorage = router.ctx.storage.values;
+  const hubStore = namespace.getByName(`dashboard-bot:${hubId}`);
+  const originalHubStoreFetch = hubStore.fetch.bind(hubStore);
+  let loseFirstEnqueueResponse = true;
+  hubStore.fetch = async (request) => {
+    const storedResponse = await originalHubStoreFetch(request);
+    if (new URL(request.url).pathname === "/control/enqueue" && loseFirstEnqueueResponse) {
+      loseFirstEnqueueResponse = false;
+      throw new Error("simulated lost enqueue response");
+    }
+    return storedResponse;
+  };
+  response = await webhook({
+    update_id: 2111,
+    callback_query: {
+      id: "callback-prepare-unconfirmed-bundle",
+      from: { id: 42, first_name: "Алиса" },
+      message: { message_id: 804, chat: { id: 42, type: "private" } },
+      data: stuckCard.body.reply_markup.inline_keyboard[0][0].callback_data,
+    },
+  });
+  hubStore.fetch = originalHubStoreFetch;
+  assert.equal(response.status, 503);
+  const unconfirmedBundle = routerStorage.get(bundleKey);
+  const preparedCommandId = unconfirmedBundle.submission.commands[0].command.id;
+  const unconfirmedBundleId = unconfirmedBundle.id;
+  assert.equal(routerStorage.get(bundleKey).submitting, false);
+  assert.equal(unconfirmedBundle.submission.commands[0].telegramAttachments.length, 0);
+  assert.equal(unconfirmedBundle.submission.commands[0].command.params.attachments.length, 1);
+  assert.equal(routerStorage.get(bundleKey).submission.commands[0].command.id, preparedCommandId);
 
+  response = await router.fetch(new Request("https://journal.internal/dashboard-bot/update", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      update_id: 211,
+      message: {
+        message_id: 9,
+        date: 1_786_200_010,
+        chat: { id: 42, type: "private" },
+        from: { id: 42, first_name: "Алиса" },
+        forward_origin: { type: "hidden_user", sender_user_name: "Заказчик" },
+        text: "Пачка перед временным сбоем",
+      },
+    }),
+  }));
+  const duplicateWhileUnconfirmed = await response.json();
+  assert.equal(duplicateWhileUnconfirmed.commands, undefined);
+  assert.equal(routerStorage.get(bundleKey).submission.commands[0].command.id, preparedCommandId);
+
+  const telegramCallCountBeforeRecovery = telegramCalls.length;
+  const telegramGetFileCountBeforeRecovery = telegramCalls.filter((call) => call.method === "getFile").length;
   await webhook({
     update_id: 212,
     message: {
@@ -1804,21 +1852,78 @@ test("shared Dashboard bot can send forwards separately with their reply clarifi
       text: "Не должно молча смешаться с зависшей пачкой",
     },
   });
-  assert.match(telegramCalls.at(-1).body.text, /Новое сообщение не добавлено/u);
-  assert.equal(routerStorage.get(bundleKey).items.length, 1);
-  assert.equal(routerStorage.get(bundleKey).submitting, false);
+  assert.ok(telegramCalls.slice(telegramCallCountBeforeRecovery).every((call) => (
+    !/Новое сообщение не добавлено/u.test(String(call.body.text ?? ""))
+  )));
+  const nextBundle = routerStorage.get(bundleKey);
+  assert.equal(nextBundle.items.length, 1);
+  assert.equal(nextBundle.items[0].messageId, 10);
+  assert.notEqual(nextBundle.id, unconfirmedBundleId);
+  assert.equal(
+    telegramCalls.filter((call) => call.method === "getFile").length,
+    telegramGetFileCountBeforeRecovery,
+  );
 
-  stuckBundle = routerStorage.get(bundleKey);
+  response = await workerModule.default.fetch(signedServiceRequest(
+    "https://hub.test/api/dashboard-bot/pull",
+    { limit: 10, waitMs: 0 },
+    hubSecret,
+    { "X-Agent-Hub-Dashboard-Id": hubId },
+  ), env);
+  const [retriedCommand] = (await response.json()).commands;
+  assert.equal(retriedCommand.id, preparedCommandId);
+  assert.equal(retriedCommand.params.attachments.length, 1);
+  assert.match(retriedCommand.params.text, /Пачка перед временным сбоем/u);
+  assert.doesNotMatch(retriedCommand.params.text, /Не должно молча смешаться/u);
+
+  const nextCard = telegramCalls
+    .filter((call) => call.method === "sendMessage" && /Собираю пачку/u.test(call.body.text))
+    .at(-1);
+  response = await webhook({
+    update_id: 213,
+    callback_query: {
+      id: "callback-send-next-bundle",
+      from: { id: 42, first_name: "Алиса" },
+      message: { message_id: 805, chat: { id: 42, type: "private" } },
+      data: nextCard.body.reply_markup.inline_keyboard[0][0].callback_data,
+    },
+  });
+  assert.equal(response.status, 200);
+  response = await workerModule.default.fetch(signedServiceRequest(
+    "https://hub.test/api/dashboard-bot/pull",
+    { limit: 10, waitMs: 0 },
+    hubSecret,
+    { "X-Agent-Hub-Dashboard-Id": hubId },
+  ), env);
+  const [nextCommand] = (await response.json()).commands;
+  assert.match(nextCommand.params.text, /Не должно молча смешаться с зависшей пачкой/u);
+  assert.doesNotMatch(nextCommand.params.text, /Пачка перед временным сбоем/u);
+
+  await webhook({
+    update_id: 214,
+    message: {
+      message_id: 11,
+      date: 1_786_200_012,
+      chat: { id: 42, type: "private" },
+      from: { id: 42, first_name: "Алиса" },
+      forward_origin: { type: "hidden_user", sender_user_name: "Заказчик" },
+      text: "Пачка для отмены после сбоя",
+    },
+  });
+  const cancelCard = telegramCalls
+    .filter((call) => call.method === "sendMessage" && /Собираю пачку/u.test(call.body.text))
+    .at(-1);
+  const stuckBundle = routerStorage.get(bundleKey);
   stuckBundle.submitting = true;
   stuckBundle.submissionStartedAt = 1;
   routerStorage.set(bundleKey, stuckBundle);
   await webhook({
-    update_id: 213,
+    update_id: 215,
     callback_query: {
       id: "callback-cancel-stuck-bundle",
       from: { id: 42, first_name: "Алиса" },
-      message: { message_id: 804, chat: { id: 42, type: "private" } },
-      data: stuckCard.body.reply_markup.inline_keyboard[1][1].callback_data,
+      message: { message_id: 806, chat: { id: 42, type: "private" } },
+      data: cancelCard.body.reply_markup.inline_keyboard[1][1].callback_data,
     },
   });
   assert.equal(routerStorage.has(bundleKey), false);
@@ -1827,10 +1932,10 @@ test("shared Dashboard bot can send forwards separately with their reply clarifi
   )));
 
   await webhook({
-    update_id: 214,
+    update_id: 216,
     message: {
-      message_id: 11,
-      date: 1_786_200_012,
+      message_id: 12,
+      date: 1_786_200_013,
       chat: { id: 42, type: "private" },
       from: { id: 42, first_name: "Алиса" },
       forward_origin: { type: "hidden_user", sender_user_name: "Заказчик" },
@@ -1845,11 +1950,11 @@ test("shared Dashboard bot can send forwards separately with their reply clarifi
   recoveredBundle.submissionStartedAt = 1;
   routerStorage.set(bundleKey, recoveredBundle);
   response = await webhook({
-    update_id: 215,
+    update_id: 217,
     callback_query: {
       id: "callback-retry-stuck-bundle",
       from: { id: 42, first_name: "Алиса" },
-      message: { message_id: 805, chat: { id: 42, type: "private" } },
+      message: { message_id: 807, chat: { id: 42, type: "private" } },
       data: recoveredCard.body.reply_markup.inline_keyboard[0][0].callback_data,
     },
   });
@@ -1865,10 +1970,10 @@ test("shared Dashboard bot can send forwards separately with their reply clarifi
   assert.match(recoveredCommand.params.text, /Новая пачка после отмены/u);
 
   await webhook({
-    update_id: 216,
+    update_id: 218,
     message: {
-      message_id: 12,
-      date: 1_786_200_013,
+      message_id: 13,
+      date: 1_786_200_014,
       chat: { id: 42, type: "private" },
       from: { id: 42, first_name: "Алиса" },
       forward_origin: { type: "hidden_user", sender_user_name: "Заказчик" },
@@ -1881,10 +1986,10 @@ test("shared Dashboard bot can send forwards separately with their reply clarifi
     },
   });
   await webhook({
-    update_id: 217,
+    update_id: 219,
     message: {
-      message_id: 13,
-      date: 1_786_200_014,
+      message_id: 14,
+      date: 1_786_200_015,
       chat: { id: 42, type: "private" },
       from: { id: 42, first_name: "Алиса" },
       photo: [{ file_id: "valid-after-large" }, { file_id: "valid-after-large-best", file_size: 4 }],
@@ -1895,11 +2000,11 @@ test("shared Dashboard bot can send forwards separately with their reply clarifi
     .filter((call) => call.method === "sendMessage" && /Собираю пачку/u.test(call.body.text))
     .at(-1);
   response = await webhook({
-    update_id: 218,
+    update_id: 220,
     callback_query: {
       id: "callback-send-partial-bundle",
       from: { id: 42, first_name: "Алиса" },
-      message: { message_id: 806, chat: { id: 42, type: "private" } },
+      message: { message_id: 808, chat: { id: 42, type: "private" } },
       data: partialCard.body.reply_markup.inline_keyboard[0][0].callback_data,
     },
   });
