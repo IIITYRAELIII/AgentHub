@@ -286,11 +286,15 @@ html[data-theme="taiga"] .msg-user {
 html[data-theme="taiga"] body .chat .composer {
   backdrop-filter: blur(14px) saturate(92%);
   -webkit-backdrop-filter: blur(14px) saturate(92%);
-  background:
+  background-color: transparent !important;
+  background-image:
     linear-gradient(rgba(1, 6, 9, 0.18), rgba(1, 6, 9, 0.34)),
-    var(--taiga-composer-asset) center / cover no-repeat;
-  border: 2px solid transparent;
-  border-image: var(--taiga-panel-frame-asset) 64 fill / 5px / 0 stretch;
+    url("./rain-composer.png") !important;
+  background-position: center !important;
+  background-repeat: no-repeat !important;
+  background-size: cover !important;
+  border: 2px solid transparent !important;
+  border-image: url("./rain-panel-frame.png") 64 fill / 5px / 0 stretch !important;
   border-radius: 5px;
   box-shadow:
     inset 0 1px rgba(214, 232, 240, 0.06),
