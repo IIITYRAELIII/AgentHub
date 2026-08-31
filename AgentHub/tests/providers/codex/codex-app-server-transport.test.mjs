@@ -206,7 +206,7 @@ test("CodexAppServerTransport deduplicates only in-flight thread reads", async (
   child.stdout.write(`${JSON.stringify({ id: secondRequest.id, result: { thread: { id: "thread-1", fresh: true } } })}\n`);
   assert.equal((await refreshed).thread.fresh, true);
   assert.equal(transport.diagnostics().inFlightThreadReads, 0);
-  assert.equal(transport.diagnostics().retainedThreadReadValues, 0);
+  assert.equal("retainedThreadReadValues" in transport.diagnostics(), false);
 });
 
 test("CodexAppServerTransport builds bounded full history from cursor pages", async () => {

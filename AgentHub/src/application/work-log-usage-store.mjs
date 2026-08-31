@@ -500,6 +500,7 @@ export class WorkLogUsageStore {
     deviceId = this.#usageSyncDeviceId,
     deviceLabel = "",
     afterObservedAt = "",
+    afterJournalRevision = 0,
   } = {}) {
     if (typeof this.#usageSyncStore?.usageSyncSnapshot !== "function") {
       return this.#enqueueRead(async () => usageSyncSnapshotFromLedger(
@@ -508,7 +509,12 @@ export class WorkLogUsageStore {
       ));
     }
     return this.#repository.enqueue(
-      () => this.#usageSyncStore.usageSyncSnapshot({ deviceId, deviceLabel, afterObservedAt }),
+      () => this.#usageSyncStore.usageSyncSnapshot({
+        deviceId,
+        deviceLabel,
+        afterObservedAt,
+        afterJournalRevision,
+      }),
       { load: false },
     );
   }

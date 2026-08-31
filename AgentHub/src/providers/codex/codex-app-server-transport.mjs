@@ -178,7 +178,6 @@ export class CodexAppServerTransport {
         0,
       ),
       inFlightThreadReads: this.threadReadCache.size,
-      retainedThreadReadValues: 0,
       activeHydrations: this.threadHydrations.size,
     };
   }

@@ -66,3 +66,53 @@ test("usage sync account projection executes in a worker thread", async () => {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("usage sync revision cursor retains same-ms and late journal changes", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-usage-cursor-"));
+  const databaseFile = path.join(root, "journal.sqlite");
+  const observedAt = "2026-08-20T10:01:00.000Z";
+  const record = (turnId, overrides = {}) => ({
+    provider: "codex",
+    threadId: `thread-${turnId}`,
+    taskThreadId: `thread-${turnId}`,
+    turnId,
+    projectRoot: root,
+    completedAt: "2026-08-20T10:00:00.000Z",
+    observedAt,
+    accountKey: "chatgpt:owner",
+    accountAttribution: "exact",
+    usageReported: true,
+    usage: { inputTokens: 10 },
+    ...overrides,
+  });
+  const journal = new JournalDatabase(databaseFile);
+  const initial = await journal.upsertRecords([record("a"), record("b")]);
+  journal.close();
+  const store = new WorkLogUsageSyncWorkerStore({ databaseFile, deviceId: "device-local" });
+  try {
+    const first = await store.usageSyncSnapshot({ afterJournalRevision: 0 });
+    assert.equal(first.journalRevision, initial.revision);
+    assert.equal(first.events.length, 2);
+
+    const updatedJournal = new JournalDatabase(databaseFile);
+    const updated = await updatedJournal.upsertRecords([
+      record("a", { usage: { inputTokens: 99 } }),
+      record("late", {
+        completedAt: "2026-08-20T09:00:00.000Z",
+        observedAt: "2026-08-20T09:01:00.000Z",
+      }),
+    ]);
+    updatedJournal.close();
+
+    const delta = await store.usageSyncSnapshot({ afterJournalRevision: initial.revision });
+    assert.equal(delta.journalRevision, updated.revision);
+    assert.equal(delta.events.length, 2);
+    assert.deepEqual(delta.events.map((event) => event.usage.inputTokens).sort((a, b) => a - b), [10, 99]);
+    assert.equal((await store.usageSyncSnapshot({
+      afterJournalRevision: updated.revision,
+    })).events.length, 0);
+  } finally {
+    await store.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});

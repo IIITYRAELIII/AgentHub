@@ -24,13 +24,17 @@ function normalizeState(value = {}, { defaultServerUrl = "" } = {}) {
   const serverUrl = value.serverUrl ? normalizeUrl(value.serverUrl) : normalizeUrl(defaultServerUrl);
   const pullRevision = Math.max(0, Math.trunc(Number(value.lastUsagePullRevision) || 0));
   return {
-    version: 1,
+    version: 2,
     serverUrl,
     deviceId: text(value.deviceId, 80),
     enrolledAt: text(value.enrolledAt, 80),
     lastPushAt: text(value.lastPushAt, 80),
     lastPullAt: text(value.lastPullAt, 80),
     lastUsagePushWatermark: text(value.lastUsagePushWatermark, 80),
+    lastUsagePushJournalRevision: Math.max(
+      0,
+      Math.trunc(Number(value.lastUsagePushJournalRevision) || 0),
+    ),
     lastUsagePullRevision: pullRevision,
     lastResult: value.lastResult && typeof value.lastResult === "object"
       ? structuredClone(value.lastResult)
@@ -102,15 +106,19 @@ export class UsageSyncRemoteConfigStore {
     });
   }
 
-  rememberPush(result = {}, { usageWatermark = "" } = {}) {
-    return this.#rememberResult("lastPushAt", result, { usageWatermark });
+  rememberPush(result = {}, { usageWatermark = "", usageJournalRevision = null } = {}) {
+    return this.#rememberResult("lastPushAt", result, { usageWatermark, usageJournalRevision });
   }
 
   rememberPull(result = {}, { serverRevision = null } = {}) {
     return this.#rememberResult("lastPullAt", result, { serverRevision });
   }
 
-  #rememberResult(timestampField, result, { usageWatermark = "", serverRevision = null } = {}) {
+  #rememberResult(timestampField, result, {
+    usageWatermark = "",
+    usageJournalRevision = null,
+    serverRevision = null,
+  } = {}) {
     return this.#enqueue(async () => {
       const current = this.#state ?? normalizeState(await readJson(this.#file), {
         defaultServerUrl: this.#defaultServerUrl,
@@ -119,6 +127,12 @@ export class UsageSyncRemoteConfigStore {
         ...current,
         [timestampField]: this.#now().toISOString(),
         lastUsagePushWatermark: usageWatermark || current.lastUsagePushWatermark,
+        lastUsagePushJournalRevision: usageJournalRevision == null
+          ? current.lastUsagePushJournalRevision
+          : Math.max(
+              Number(current.lastUsagePushJournalRevision) || 0,
+              Math.trunc(Number(usageJournalRevision) || 0),
+            ),
         lastUsagePullRevision: serverRevision == null
           ? current.lastUsagePullRevision
           : Math.max(Number(current.lastUsagePullRevision) || 0, Math.trunc(Number(serverRevision) || 0)),

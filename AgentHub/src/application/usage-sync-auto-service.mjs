@@ -179,10 +179,14 @@ export class UsageSyncAutoService {
       deviceId: this.identityStore.deviceId,
       deviceLabel: this.identityStore.label,
       afterObservedAt: remoteConfig.lastUsagePushWatermark,
+      afterJournalRevision: remoteConfig.lastUsagePushJournalRevision,
     });
     const push = await client.push(snapshot);
     const usageWatermark = numberField(push.rejected) ? "" : latestObservedAt(snapshot.events);
-    await this.remoteConfigStore.rememberPush(push, { usageWatermark });
+    const usageJournalRevision = numberField(push.rejected)
+      ? null
+      : Math.max(0, Math.trunc(Number(snapshot.journalRevision) || 0));
+    await this.remoteConfigStore.rememberPush(push, { usageWatermark, usageJournalRevision });
     const remoteSnapshot = await client.pull({
       sinceRevision: Math.max(0, Math.trunc(Number(remoteConfig.lastUsagePullRevision) || 0)),
     });
@@ -203,6 +207,7 @@ export class UsageSyncAutoService {
       remoteEvents,
       serverRevision,
       usageWatermark,
+      usageJournalRevision,
       accountBackfill,
       push,
       pull,

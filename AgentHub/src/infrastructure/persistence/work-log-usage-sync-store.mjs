@@ -259,19 +259,32 @@ export class WorkLogUsageSyncStore {
     `).all().map(rowToEvent).filter(Boolean);
   }
 
-  #journalTurns(database, { projectRoots = [], afterObservedAt = "" } = {}) {
+  #journalDelta(database, {
+    projectRoots = [],
+    afterObservedAt = "",
+    afterJournalRevision = 0,
+  } = {}) {
     const exists = database.prepare(`
       SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'journal_records'
     `).get();
-    if (!exists) return {};
+    if (!exists) return { turns: {}, journalRevision: 0, revisionCursor: false };
     const roots = [...new Set((Array.isArray(projectRoots) ? projectRoots : [])
       .map((value) => path.resolve(String(value ?? "").trim()))
       .filter(Boolean))];
     const afterObservedMs = Date.parse(afterObservedAt) || 0;
+    const journalRevision = Math.max(0, Number(database.prepare(`
+      SELECT value FROM journal_store_meta WHERE key = 'revision'
+    `).get()?.value) || 0);
+    const columns = new Set(database.prepare("PRAGMA table_info(journal_records)")
+      .all().map((row) => row.name));
+    const revisionCursor = columns.has("changed_revision");
     const where = [];
     const parameters = [];
-    if (afterObservedMs > 0) {
-      where.push("observed_at_ms > ?");
+    if (revisionCursor) {
+      where.push("changed_revision > ? AND changed_revision <= ?");
+      parameters.push(Math.max(0, Number(afterJournalRevision) || 0), journalRevision);
+    } else if (afterObservedMs > 0) {
+      where.push("observed_at_ms >= ?");
       parameters.push(afterObservedMs);
     }
     if (roots.length) {
@@ -282,7 +295,7 @@ export class WorkLogUsageSyncStore {
       SELECT provider, thread_id, turn_id, record_json
       FROM journal_records
       ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
-      ORDER BY observed_at_ms, provider, thread_id, turn_id
+      ORDER BY ${revisionCursor ? "changed_revision" : "observed_at_ms"}, provider, thread_id, turn_id
     `).all(...parameters);
     const turns = {};
     for (const row of rows) {
@@ -293,7 +306,7 @@ export class WorkLogUsageSyncStore {
         // Corrupt journal rows stay available for the Journal repair path.
       }
     }
-    return turns;
+    return { turns, journalRevision, revisionCursor };
   }
 
   #existing(database, eventIds) {
@@ -400,14 +413,25 @@ export class WorkLogUsageSyncStore {
   }
 
   journalTurns(options = {}) {
-    return this.#enqueue((database) => this.#journalTurns(database, options));
+    return this.#enqueue((database) => this.#journalDelta(database, options).turns);
   }
 
-  usageSyncSnapshot({ deviceLabel = "", afterObservedAt = "" } = {}) {
-    return this.#enqueue((database) => usageSyncSnapshotFromLedger(
-      this.#journalTurns(database, { afterObservedAt }),
-      { deviceId: this.#deviceId, deviceLabel, afterObservedAt },
-    ));
+  usageSyncSnapshot({
+    deviceLabel = "",
+    afterObservedAt = "",
+    afterJournalRevision = 0,
+  } = {}) {
+    return this.#enqueue((database) => {
+      const delta = this.#journalDelta(database, { afterObservedAt, afterJournalRevision });
+      return {
+        ...usageSyncSnapshotFromLedger(delta.turns, {
+          deviceId: this.#deviceId,
+          deviceLabel,
+          afterObservedAt: delta.revisionCursor ? "" : afterObservedAt,
+        }),
+        journalRevision: delta.journalRevision,
+      };
+    });
   }
 
   importSnapshot(remoteSnapshot) {

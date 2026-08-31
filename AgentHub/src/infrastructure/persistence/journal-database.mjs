@@ -39,6 +39,7 @@ function configure(database) {
       task_thread_id TEXT NOT NULL,
       completed_at_ms INTEGER,
       observed_at_ms INTEGER,
+      changed_revision INTEGER NOT NULL DEFAULT 0,
       record_json TEXT NOT NULL,
       PRIMARY KEY (provider, thread_id, turn_id)
     ) WITHOUT ROWID;
@@ -73,12 +74,23 @@ function configure(database) {
   if (!journalRecordColumns.has("observed_at_ms")) {
     database.exec("ALTER TABLE journal_records ADD COLUMN observed_at_ms INTEGER");
   }
+  if (!journalRecordColumns.has("changed_revision")) {
+    database.exec("ALTER TABLE journal_records ADD COLUMN changed_revision INTEGER NOT NULL DEFAULT 0");
+    const migrationRevision = Math.max(1, Number(database.prepare(
+      "SELECT value FROM journal_store_meta WHERE key = 'revision'",
+    ).get()?.value) || 0);
+    database.prepare("UPDATE journal_records SET changed_revision = ?").run(migrationRevision);
+    database.prepare("UPDATE journal_store_meta SET value = ? WHERE key = 'revision'")
+      .run(String(migrationRevision));
+  }
   database.exec(`
     UPDATE journal_records
     SET observed_at_ms = completed_at_ms
     WHERE observed_at_ms IS NULL;
     CREATE INDEX IF NOT EXISTS journal_records_observed_idx
       ON journal_records(observed_at_ms, provider, thread_id, turn_id);
+    CREATE INDEX IF NOT EXISTS journal_records_changed_idx
+      ON journal_records(changed_revision, provider, thread_id, turn_id);
   `);
 }
 
@@ -245,18 +257,20 @@ function writeProjection(database, payload, {
 function insertRecordStatement(database) {
   return database.prepare(`
     INSERT INTO journal_records
-      (provider, thread_id, turn_id, project_root, task_thread_id, completed_at_ms, observed_at_ms, record_json)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      (provider, thread_id, turn_id, project_root, task_thread_id, completed_at_ms, observed_at_ms,
+       changed_revision, record_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(provider, thread_id, turn_id) DO UPDATE SET
       project_root = excluded.project_root,
       task_thread_id = excluded.task_thread_id,
       completed_at_ms = excluded.completed_at_ms,
       observed_at_ms = excluded.observed_at_ms,
+      changed_revision = excluded.changed_revision,
       record_json = excluded.record_json
   `);
 }
 
-function insertRow(statement, row) {
+function insertRow(statement, row, changedRevision) {
   statement.run(
     row.provider,
     row.threadId,
@@ -265,6 +279,7 @@ function insertRow(statement, row) {
     row.taskThreadId,
     row.completedAtMs,
     row.observedAtMs,
+    changedRevision,
     row.json,
   );
 }
@@ -486,8 +501,9 @@ export class JournalDatabase {
         throw new Error(`Journal revision conflict: expected ${expectedRevision}, found ${current}`);
       }
       database.exec("DELETE FROM journal_records");
+      const nextRevision = current + 1;
       const insert = insertRecordStatement(database);
-      for (const row of rows) insertRow(insert, row);
+      for (const row of rows) insertRow(insert, row, nextRevision);
       database.prepare(`
         INSERT INTO journal_store_meta (key, value) VALUES ('ledger_version', ?)
         ON CONFLICT(key) DO UPDATE SET value = excluded.value
@@ -513,8 +529,9 @@ export class JournalDatabase {
     database.exec("BEGIN IMMEDIATE");
     let revision;
     try {
+      const nextRevision = revisionOf(database) + 1;
       const insert = insertRecordStatement(database);
-      for (const row of rows) insertRow(insert, row);
+      for (const row of rows) insertRow(insert, row, nextRevision);
       revision = advanceRevision(database);
       database.exec("COMMIT");
     } catch (error) {
@@ -585,6 +602,7 @@ export class JournalDatabase {
     let upserted = 0;
     let deleted = 0;
     try {
+      const nextRevision = revisionOf(database) + 1;
       const previous = database.prepare(
         "SELECT record_count, details_json FROM journal_imports WHERE key = ?",
       ).get(LEGACY_IMPORT_KEY);
@@ -626,6 +644,7 @@ export class JournalDatabase {
           row.taskThreadId,
           row.completedAtMs,
           row.observedAtMs,
+          nextRevision,
           row.json,
         ).changes) || 0;
       }
