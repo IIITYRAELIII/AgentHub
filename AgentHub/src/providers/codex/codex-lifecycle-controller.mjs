@@ -196,7 +196,10 @@ export class CodexLifecycleController {
       ? [...new Set(Array.isArray(run.rolloutChangedFiles) ? run.rolloutChangedFiles : [])]
       : [];
     const changedFiles = payloadChangedFiles.length ? payloadChangedFiles : rolloutChangedFiles;
-    const lifecycleOwnsTerminal = !run;
+    const executionOwner = normalizeTaskExecutionOwner(
+      turnStart?.executionOwner ?? payload.executionOwner ?? run?.executionOwner,
+    );
+    const lifecycleOwnsTerminal = !run && executionOwner !== TASK_EXECUTION_OWNERS.HUB;
     const responseAttachments = lifecycleOwnsTerminal
       ? await d.resolveTerminalAttachments?.({
         threadId: identity.threadId,
