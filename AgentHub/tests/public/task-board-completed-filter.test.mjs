@@ -66,6 +66,54 @@ test("Dashboard presents every workflow status in the selected language", async 
   assert.equal(view.normalizedTaskStatusLanguage("unknown"), "en");
 });
 
+test("Task status control keeps its native option list stable across snapshots", async () => {
+  const { syncTaskStatusControl } = await loadBoardView();
+  const createOption = () => ({ value: "", textContent: "" });
+  const control = {
+    ownerDocument: { createElement: createOption },
+    options: [
+      { value: "new", textContent: "New" },
+      { value: "in_progress", textContent: "In progress" },
+      { value: "testing", textContent: "Testing" },
+      { value: "awaiting_implementation", textContent: "Awaiting implementation" },
+      { value: "done", textContent: "Done" },
+    ],
+    value: "testing",
+    replacements: 0,
+    replaceChildren(...options) {
+      this.replacements += 1;
+      this.options = options;
+    },
+  };
+
+  assert.deepEqual(
+    { ...syncTaskStatusControl(control, { workflowStatus: "testing" }, "en") },
+    { optionsChanged: false, statusChanged: false },
+  );
+  assert.equal(control.replacements, 0);
+
+  assert.deepEqual(
+    { ...syncTaskStatusControl(control, { workflowStatus: "done" }, "en", { pending: true }) },
+    { optionsChanged: false, statusChanged: false },
+  );
+  assert.equal(control.value, "testing");
+  assert.equal(control.replacements, 0);
+
+  assert.deepEqual(
+    { ...syncTaskStatusControl(control, { workflowStatus: "done" }, "en") },
+    { optionsChanged: false, statusChanged: true },
+  );
+  assert.equal(control.value, "done");
+  assert.equal(control.replacements, 0);
+
+  assert.deepEqual(
+    { ...syncTaskStatusControl(control, { workflowStatus: "done" }, "ru") },
+    { optionsChanged: true, statusChanged: false },
+  );
+  assert.equal(control.replacements, 1);
+  assert.equal(control.options[3].textContent, "К применению");
+});
+
 test("Task release details use the canonical executor and changed-file projection", async () => {
   const view = await loadBoardView();
   const workspaces = [{
