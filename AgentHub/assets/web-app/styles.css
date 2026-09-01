@@ -6362,6 +6362,16 @@ html[data-surface="mobile"]
   to { transform: translateX(300%); }
 }
 
+/* Кольцо статуса во вкладке двигает не сам слой, а градиент внутри него,
+   поэтому у него отдельный ключевой кадр. Объявление обязано быть на верхнем
+   уровне: dialog-area.css целиком вложен в правило html[...], а вложенность
+   CSS допускает внутри правила только @media, @supports, @layer, @scope и
+   @container — @keyframes оттуда молча выбрасывается. */
+@keyframes stream-tab-ring-sweep {
+  from { background-position: 120% 0; }
+  to { background-position: -120% 0; }
+}
+
 @keyframes stream-answer-ready {
   0% { opacity: 0.08; transform: scale(0.98); }
   46% { opacity: var(--stream-status-peak, 0.68); transform: scale(1.025); }
