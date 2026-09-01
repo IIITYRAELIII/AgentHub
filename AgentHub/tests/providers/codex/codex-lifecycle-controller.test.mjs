@@ -276,6 +276,30 @@ test("Codex lifecycle ignores an internal context probe completion", async () =>
   assert.equal(f.deliveredCompletions.length, 0);
 });
 
+test("Codex lifecycle preserves payload-only user identity for exact context probe text", async () => {
+  const f = await fixture({ run: null });
+  await f.controller.handle(request("turn-start", f.projectRoot, {
+    prompt: CODEX_CONTEXT_PROBE_PROMPT,
+  }));
+
+  const result = await f.controller.handle(request("turn-complete", f.projectRoot, {
+    status: "completed",
+    clientUserMessageId: "client-manual-probe",
+    prompt: CODEX_CONTEXT_PROBE_PROMPT,
+    finalAnswer: CODEX_CONTEXT_PROBE_RESPONSE,
+  }));
+
+  assert.equal(result, "Recorded Codex turn completion turn-1.");
+  assert.equal(f.recorded.length, 1);
+  assert.equal(f.recorded[0].operationKind, "user-turn");
+  assert.equal(f.recorded[0].contextProbe, false);
+  assert.equal(f.recorded[0].clientUserMessageId, "client-manual-probe");
+  assert.equal(f.recorded[0].prompt, CODEX_CONTEXT_PROBE_PROMPT);
+  assert.equal(f.recorded[0].finalAnswer, CODEX_CONTEXT_PROBE_RESPONSE);
+  assert.deepEqual(f.deliveredCompletions, [{ id: "completion" }]);
+  assert.equal(f.codexTurnStarts.size, 0);
+});
+
 test("Codex lifecycle rejects mixed caller identities", async () => {
   const f = await fixture();
   assert.throws(
