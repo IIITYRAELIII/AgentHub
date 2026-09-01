@@ -62,6 +62,7 @@ const CONTROL_ACTIONS = new Set([
   "trusted-devices",
   "create-device-pairing",
   "revoke-device",
+  "board-task-attachment-add",
 ]);
 const CONTROL_SOURCES = new Set(["telegram-mini-app", "trusted-device", "shared-dashboard-bot"]);
 const gzipAsync = promisify(gzip);
@@ -484,7 +485,7 @@ export class MiniAppPublisher {
     if (
       (Object.hasOwn(params, "attachments") && !Array.isArray(attachments))
       || attachments.length > MAX_ATTACHMENTS_PER_COMMAND
-      || (attachments.length && !["send-message", "submit-bug-report"].includes(action))
+      || (attachments.length && !["send-message", "submit-bug-report", "board-task-attachment-add"].includes(action))
       || attachments.some((reference) => {
         const value = String(reference ?? "").toLowerCase();
         return !value.startsWith(REMOTE_ATTACHMENT_PREFIX)

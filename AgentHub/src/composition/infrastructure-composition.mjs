@@ -480,6 +480,7 @@ export async function createHubInfrastructure({
     mcpAdmissionCoordinator,
     miniAppServer,
     publicMiniAppServer,
+    attachmentDirectory,
     attachmentThumbnails,
     usdRubRateStore,
     instanceGuard,

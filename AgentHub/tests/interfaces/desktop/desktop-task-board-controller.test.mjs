@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import { DesktopTaskBoardController } from "../../../src/interfaces/desktop/desktop-task-board-controller.mjs";
 
-function fixture({ activeThread = null, sourceDetails = undefined, voiceTranscriber = null } = {}) {
+function fixture({ activeThread = null, sourceDetails = undefined, voiceTranscriber = null, attachmentDirectory = null } = {}) {
   const calls = [];
   const task = {
     id: "board-1",
@@ -31,6 +34,7 @@ function fixture({ activeThread = null, sourceDetails = undefined, voiceTranscri
         return { id: "board-1", rawText: value.text };
       },
       update: (value) => calls.push(["update", value]),
+      addAttachment: (value) => calls.push(["add-attachment", value]),
       setWorkflowStatus: (value) => calls.push(["status", value]),
       move: (value) => calls.push(["move", value]),
       moveColumn: (value) => calls.push(["move-column", value]),
@@ -63,10 +67,40 @@ function fixture({ activeThread = null, sourceDetails = undefined, voiceTranscri
     },
     sendMessage: async (params) => calls.push(["message", params]),
     voiceTranscriber,
+    attachmentDirectory,
     snapshot: async (value) => { calls.push(["snapshot", value]); return { boardTasks: [] }; },
   });
   return { controller, calls };
 }
+
+test("dashboard attachment mutation accepts only files from the runtime attachment directory", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-task-attachments-"));
+  const attachmentDirectory = path.join(root, "attachments");
+  const outside = path.join(root, "outside.txt");
+  await mkdir(attachmentDirectory);
+  const first = path.join(attachmentDirectory, "first.bin");
+  const second = path.join(attachmentDirectory, "second.txt");
+  await Promise.all([
+    writeFile(first, Buffer.from([1, 2, 3])),
+    writeFile(second, "text"),
+    writeFile(outside, "outside"),
+  ]);
+  try {
+    const { controller, calls } = fixture({ attachmentDirectory });
+    await controller.addAttachments({ id: "board-1", attachments: [first, second] });
+    assert.deepEqual(calls.slice(0, 2), [
+      ["add-attachment", { id: "board-1", attachment: first }],
+      ["add-attachment", { id: "board-1", attachment: second }],
+    ]);
+    assert.deepEqual(calls[2], ["snapshot", { refresh: true }]);
+    await assert.rejects(
+      controller.addAttachments({ id: "board-1", attachments: [outside] }),
+      /Вложение недоступно/u,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("dashboard creation adds a manual task directly to its Workspace", async () => {
   const { controller, calls } = fixture();

@@ -237,6 +237,7 @@ export function createDesktopRunRouterWiring({
     voiceTranscriber: services.taskVoiceTranscriber,
     workspaceCatalog: services.workspaceCatalog,
     taskLauncher: taskBoardLauncher,
+    attachmentDirectory: services.attachmentDirectory,
     snapshot: desktop.snapshot,
   });
 
@@ -275,6 +276,7 @@ export function createDesktopRunRouterWiring({
       boardTaskCreate: (params) => taskBoardController.create(params),
       boardTaskIngest: (params) => taskBoardController.ingest(params),
       boardTaskUpdate: (params) => taskBoardController.update(params),
+      boardTaskAttachmentAdd: (params) => taskBoardController.addAttachments(params),
       boardTaskStatus: (params) => taskBoardController.status(params),
       boardTaskMove: (params) => taskBoardController.move(params),
       boardTaskComplete: (params) => taskBoardController.complete(params),

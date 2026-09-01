@@ -828,7 +828,22 @@
           <div class="task-card-work-log-entries" data-task-card-work-log-entries></div>
         </div>
       </section>
-      <div class="board-task-card-attachments" data-task-card-attachments hidden></div>
+      <section class="board-task-card-attachments" aria-label="Вложения задачи">
+        <div class="task-card-attachment-toolbar">
+          <span>Вложения</span>
+          <button type="button" class="icon-button task-card-attachment-add" data-task-card-attachment-add
+            title="Прикрепить файлы" aria-label="Прикрепить файлы">
+            <svg data-phosphor-icon="paperclip" viewBox="0 0 256 256" aria-hidden="true">
+              <path d="M160,80,76.69,164.69a16,16,0,0,0,22.63,22.62L198.63,86.63a32,32,0,0,0-45.26-45.26L54.06,142.06a48,48,0,0,0,67.88,67.88L204,128"
+                fill="none" stroke="currentColor" stroke-linecap="round"
+                stroke-linejoin="round" stroke-width="16"></path>
+            </svg>
+          </button>
+          <input type="file" data-task-card-attachment-input multiple hidden>
+        </div>
+        <p class="task-card-attachment-hint" data-task-card-attachment-hint>Выбери файлы или вставь их через Ctrl+V</p>
+        <div data-task-card-attachments hidden></div>
+      </section>
       <div class="board-task-original" data-task-card-original>
         <button type="button" class="board-task-original-toggle" data-task-card-original-toggle
           aria-expanded="false" aria-controls="task-card-original-text">Показать исходный текст</button>
@@ -1718,8 +1733,7 @@
     </form>
   </div>
 
-  <div class="attachment-viewer" data-attachment-viewer hidden role="dialog" aria-modal="true" tabindex="-1"
-    aria-label="Просмотр изображения">
+  <dialog class="attachment-viewer" data-attachment-viewer hidden aria-label="Просмотр изображения">
     <button type="button" class="attachment-viewer-close" data-attachment-viewer-close
       aria-label="Вернуться в чат" title="Вернуться в чат">
       <svg data-phosphor-icon="caret-left" viewBox="0 0 256 256" aria-hidden="true">
@@ -1749,7 +1763,7 @@
       <span data-attachment-viewer-name></span>
       <span data-attachment-viewer-counter></span>
     </div>
-  </div>
+  </dialog>
 
   <div class="resource-context-menu" data-resource-context-menu hidden role="menu"
     aria-label="Действия с ресурсом">

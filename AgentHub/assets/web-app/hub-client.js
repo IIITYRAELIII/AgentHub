@@ -2934,6 +2934,15 @@ document.addEventListener("agenthub:board-action", (event) => {
       "move-column": "board-column-move",
       "update-comment": "board-column-comment",
     };
+    if (detail.type === "attachment-add") {
+      const attachments = [];
+      for (const attachment of detail.attachments ?? []) attachments.push(await uploadAttachment(attachment));
+      const result = await control("board-task-attachment-add", { id: detail.id, attachments });
+      succeeded = true;
+      applySnapshot(result);
+      agentHub.toast("Вложения добавлены");
+      return;
+    }
     const action = actions[detail.type];
     if (!action) return;
     const { type: _type, ...params } = detail;
