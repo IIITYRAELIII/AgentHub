@@ -24,7 +24,7 @@ test("вкладка потока показывает его состояние
   // показывала поток активным, потому что сортирует сначала по состоянию.
   assert.match(
     appSource,
-    /function representativeStreamTask\(stream\) \{[\s\S]*?const attention = \(task\) => \(task\?\.running \? 0 : task\?\.unread \? 1 : 2\);/u,
+    /function representativeStreamTask\(stream\) \{[\s\S]*?const attention = \(task\) => \(task\?\.unread && !task\?\.running \? 0 : task\?\.running \? 1 : 2\);/u,
   );
   assert.match(
     appSource,

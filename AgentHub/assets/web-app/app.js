@@ -2241,7 +2241,10 @@ function representativeStreamTask(stream) {
   // соседнюю задачу без признака работы. Правая панель тем временем выбирает по
   // состоянию и показывает поток работающим — отсюда «справа есть, сверху нет».
   // Порядок здесь тот же, что в рельсе: сначала состояние, потом время.
-  const attention = (task) => (task?.running ? 0 : task?.unread ? 1 : 2);
+  // Порядок обязан совпадать с attentionRank рельса: там готовый ответ идёт
+  // впереди идущего хода. Обратный порядок давал разные ветки одного потока
+  // в полосе и в панели, и они показывали разные состояния одновременно.
+  const attention = (task) => (task?.unread && !task?.running ? 0 : task?.running ? 1 : 2);
   return stream.tasks.find((task) => task.id === state.selectedId)
     ?? [...stream.tasks].sort((left, right) => (
       attention(left) - attention(right)
