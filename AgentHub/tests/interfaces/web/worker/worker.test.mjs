@@ -546,21 +546,62 @@ test("Worker result long poll wakes as soon as Hub completes a command", async (
 
 test("Worker prevents stale Mini App shells and caches versioned assets", async () => {
   const workerModule = await loadWorker();
+  const shell = Buffer.alloc(32 * 1_024, "x");
+  let shellResponse = null;
   const env = {
     JOURNAL: { getByName: () => ({}) },
     ASSETS: {
-      fetch: async (request) => new Response("asset", {
-        headers: {
-          "Content-Type": new URL(request.url).pathname === "/"
-            ? "text/html; charset=utf-8"
-            : "text/javascript; charset=utf-8",
-        },
-      }),
+      fetch: async (request) => {
+        shellResponse = new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(shell.subarray(0, 16 * 1_024));
+              controller.enqueue(shell.subarray(16 * 1_024));
+              controller.close();
+            },
+          }),
+          {
+            headers: {
+              "Content-Length": "999999",
+              "Content-Type": ["/", "/index.html"].includes(new URL(request.url).pathname)
+                ? "text/html; charset=utf-8"
+                : "text/javascript; charset=utf-8",
+            },
+          },
+        );
+        return shellResponse;
+      },
     },
   };
 
   let response = await workerModule.default.fetch(new Request("https://hub.test/"), env);
+  assert.equal(shellResponse.bodyUsed, true);
+  assert.equal(response.headers.get("X-Agent-Hub-Static-Body"), "chunk-bootstrap");
   assert.equal(response.headers.get("Cache-Control"), "no-store");
+  const bootstrap = await response.text();
+  const chunkCount = Number(bootstrap.match(/data-agent-hub-shell-chunks="(\d+)"/u)?.[1]);
+  const shellBytes = Number(bootstrap.match(/data-agent-hub-shell-bytes="(\d+)"/u)?.[1]);
+  assert.equal(shellBytes, shell.length);
+  assert.ok(chunkCount > 1);
+
+  response = await workerModule.default.fetch(
+    new Request("https://hub.test/__agent-hub-shell-loader.js"),
+    env,
+  );
+  assert.match(await response.text(), /document\.write\(html\)/u);
+
+  const chunks = [];
+  for (let index = 0; index < chunkCount; index += 1) {
+    response = await workerModule.default.fetch(
+      new Request(`https://hub.test/index.html?__agent_hub_shell_chunk=${index}`),
+      env,
+    );
+    const chunk = Buffer.from(await response.arrayBuffer());
+    assert.ok(chunk.length <= 16 * 1_024);
+    assert.equal(response.headers.get("X-Agent-Hub-Shell-Chunk"), `${index + 1}/${chunkCount}`);
+    chunks.push(chunk);
+  }
+  assert.deepEqual(Buffer.concat(chunks), shell);
 
   response = await workerModule.default.fetch(
     new Request("https://hub.test/app.js?v=123456789abc"),

@@ -361,6 +361,41 @@ async function readWithRetry(fetchImpl, target, read, {
   throw new Error(`${pathname}: ${lastError?.message ?? `request timed out after ${timeoutMs} ms`}`);
 }
 
+function shellBootstrapManifest(html) {
+  const chunkCount = Number(html.match(/data-agent-hub-shell-chunks="(\d+)"/u)?.[1]);
+  const expectedBytes = Number(html.match(/data-agent-hub-shell-bytes="(\d+)"/u)?.[1]);
+  if (!Number.isSafeInteger(chunkCount) || chunkCount < 1
+    || !Number.isSafeInteger(expectedBytes) || expectedBytes < 1) return null;
+  return { chunkCount, expectedBytes };
+}
+
+async function readPublishedIndex(fetchImpl, base, { timeoutMs, log }) {
+  const bootstrap = await readWithRetry(fetchImpl, base, (response) => response.text(), { timeoutMs, log });
+  const manifest = shellBootstrapManifest(bootstrap);
+  if (!manifest) return bootstrap;
+  const chunks = await mapConcurrent(Array.from({ length: manifest.chunkCount }, (_, index) => index), 4, async (index) => {
+    const target = new URL("/index.html", base);
+    target.searchParams.set("__agent_hub_shell_chunk", String(index));
+    return new Uint8Array(await readWithRetry(
+      fetchImpl,
+      target,
+      (response) => response.arrayBuffer(),
+      { timeoutMs, log },
+    ));
+  });
+  const size = chunks.reduce((total, chunk) => total + chunk.byteLength, 0);
+  if (size !== manifest.expectedBytes) {
+    throw new Error(`Published Worker index has ${size} of ${manifest.expectedBytes} bytes`);
+  }
+  const body = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(body);
+}
+
 function normalizedChangedFiles(changedFiles) {
   return new Set((Array.isArray(changedFiles) ? changedFiles : [])
     .map((file) => String(file).replaceAll("\\", "/").replace(/^\.\//u, "")));
@@ -418,12 +453,10 @@ export async function verifyThemeDeployment({
     key: "index",
     expected: { url: base.href, hash: indexHash },
     read: async () => ({
-      body: await readWithRetry(
-        fetchImpl,
-        base,
-        (response) => response.text(),
-        { timeoutMs: requestTimeoutMs, log },
-      ),
+      body: await readPublishedIndex(fetchImpl, base, {
+        timeoutMs: requestTimeoutMs,
+        log,
+      }),
     }),
     validate: (evidence) => {
       if (typeof evidence?.body !== "string" || sha256(evidence.body) !== indexHash) {
