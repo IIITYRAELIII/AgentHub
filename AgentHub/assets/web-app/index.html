@@ -478,15 +478,29 @@
                   <span class="switch-text">Автоподтверждение</span>
                   <span class="switch-track" aria-hidden="true"></span>
                 </label>
-                <div class="stream-architect-setting">
-                  <label class="setting-switch">
-                    <input type="checkbox" data-dialog-stream-architect
-                      aria-describedby="stream-architect-note">
-                    <span class="switch-text">Архитектор</span>
-                    <span class="switch-track" aria-hidden="true"></span>
-                  </label>
-                  <span class="switch-note" id="stream-architect-note">
-                    Архитектор Workspace проверяет и выпускает ожидающие Tasks. Архитекторов может быть несколько.
+                <div class="stream-role-setting stream-architect-setting">
+                  <span class="stream-role-setting-heading">
+                    <label class="setting-switch">
+                      <input type="checkbox" data-dialog-stream-architect
+                        aria-describedby="stream-architect-note">
+                      <span class="switch-text">Архитектор</span>
+                      <span class="switch-track" aria-hidden="true"></span>
+                    </label>
+                    <span class="stream-role-help-popover">
+                      <button type="button" class="stream-role-help" aria-label="Инструкция роли Архитектор"
+                        popovertarget="stream-architect-note">?</button>
+                      <div class="stream-role-tooltip" id="stream-architect-note" popover>
+                        <p>Ты — системный архитектор Workspace.</p>
+                        <p>Ты собираешь, проверяешь и развёртываешь релизы этого Workspace.</p>
+                        <p>Только Streams, отмеченные как Workspace Architect, могут интегрировать и публиковать релизы Workspace.</p>
+                        <p>Не жди не связанных с релизом черновых или заблокированных изменений. Немедленно выпускай готовый набор, но остановись, если неготовые, конфликтующие, пересекающиеся или незарегистрированные изменения влияют на зафиксированный состав релиза, целостность сборки или развёртывания.</p>
+                        <p>В начале релиза прочитай полный релизный план, зафиксируй его точную ревизию и точный список включённых Await Tasks. Не добавляй появившиеся позднее Tasks без отдельного решения.</p>
+                        <p>До релизных тестов и сборки вызови hub_release_preflight для точной ревизии плана. Он должен заново собрать Test Contour из текущего dev, подтвердить равенство TestContour.source.headCommit и dev HEAD и только на этом preflight проверить, что result commit каждой выбранной Task является предком dev. Не запускай устаревший кандидат и не возвращай exact-blob проверки.</p>
+                        <p>Для выбранного состава создай одну объединённую запись в CHANGELOG.md непосредственно в PreRelease, если файл CHANGELOG.md существует. Проверяй и публикуй только зафиксированную ревизию PreRelease, а не изменяемый dev.</p>
+                        <p>После подтверждённой публикации закрой только включённые в релиз Tasks, интегрируй опубликованный main в dev без потери более поздних Test-изменений и пересобери PreRelease из оставшихся Await Tasks.</p>
+                        <p>Dashboard Tasks и их Git evidence определяют состав и готовность релиза. CHANGELOG.md является объединённой историей опубликованных релизов.</p>
+                      </div>
+                    </span>
                   </span>
                 </div>
                 <div class="stream-role-setting stream-team-lead-setting">

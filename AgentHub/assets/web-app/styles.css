@@ -4688,15 +4688,6 @@ html[data-view="dashboard"] .task-board-view {
   display: grid;
 }
 
-.stream-architect-setting {
-  display: grid;
-  gap: 0.35rem;
-}
-
-.stream-architect-setting .switch-note {
-  padding-left: 0;
-}
-
 .stream-role-setting {
   display: grid;
   gap: 0.35rem;
@@ -4713,21 +4704,45 @@ html[data-view="dashboard"] .task-board-view {
 }
 
 .stream-role-help {
+  appearance: none;
   align-items: center;
+  background: var(--accent-soft);
   border: 1px solid var(--accent-line);
   border-radius: 50%;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), var(--accent-glow);
+  color: var(--accent);
   cursor: help;
   display: inline-flex;
+  font-family: var(--font-body);
   font-size: 0.72rem;
+  font-weight: 750;
   height: 1.1rem;
   justify-content: center;
-  list-style: none;
+  line-height: 1;
+  min-width: 1.1rem;
+  padding: 0;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease, transform 120ms ease;
   width: 1.1rem;
 }
 
+.stream-role-help:hover {
+  background: color-mix(in srgb, var(--accent) 24%, var(--surface-2));
+  border-color: var(--accent);
+  color: var(--text);
+  transform: translateY(-1px);
+}
+
+.stream-role-help:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .stream-role-tooltip {
-  background: var(--surface-2);
+  background: color-mix(in srgb, var(--bg) 94%, var(--accent));
   border: 1px solid var(--accent-line);
+  border-radius: var(--radius-md);
+  box-shadow: 0 24px 64px -20px rgba(0, 0, 0, 0.9), var(--accent-glow);
+  color: var(--text);
   gap: 0.45rem;
   margin: auto;
   max-height: min(28rem, 70vh);
