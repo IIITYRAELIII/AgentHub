@@ -220,6 +220,15 @@
     return count ? `${count} вложений` : "";
   }
 
+  function taskAttachmentFiles(files, { limit = 8, maxBytes = 20 * 1024 * 1024 } = {}) {
+    const selected = [...(files ?? [])].filter((file) => file && Number(file.size) > 0);
+    return {
+      accepted: selected.slice(0, limit).filter((file) => Number(file.size) <= maxBytes),
+      oversized: selected.slice(0, limit).filter((file) => Number(file.size) > maxBytes).length,
+      truncated: Math.max(0, selected.length - limit),
+    };
+  }
+
   function taskPresentationUpdate(task, { title = "", description = "" } = {}) {
     return {
       id: String(task?.id ?? "").trim(),
@@ -360,6 +369,7 @@
     replaceBoardColumnsPreservingScroll,
     taskBoardSnapshotChanges,
     taskAttachmentCountLabel,
+    taskAttachmentFiles,
     taskChangedFileGroups,
     taskExecutorPresentation,
     taskExecutorStreamName,
@@ -390,6 +400,9 @@
   const taskCardContent = document.querySelector(".task-card-content");
   const taskCardSaveButton = taskCardEditor?.querySelector("button[type='submit']");
   const taskCardAttachments = document.querySelector("[data-task-card-attachments]");
+  const taskCardAttachmentAdd = document.querySelector("[data-task-card-attachment-add]");
+  const taskCardAttachmentInput = document.querySelector("[data-task-card-attachment-input]");
+  const taskCardAttachmentHint = document.querySelector("[data-task-card-attachment-hint]");
   const taskCardExecutor = document.querySelector("[data-task-card-executor]");
   const taskCardChangedFiles = document.querySelector("[data-task-card-changed-files]");
   const taskCardChangedFileGroups = document.querySelector("[data-task-card-changed-file-groups]");
@@ -458,6 +471,7 @@
     editDirty: false,
     savingTaskId: null,
     savingStatusTaskId: null,
+    attachingTaskId: null,
     removingTaskId: null,
     snapshotInitialized: false,
   };
@@ -717,6 +731,7 @@
   function renderTaskCardSaving(taskId) {
     const saving = state.savingTaskId === taskId;
     const savingStatus = state.savingStatusTaskId === taskId;
+    const attaching = state.attachingTaskId === taskId;
     if (taskCardTitle) taskCardTitle.disabled = saving;
     if (taskCardDescription) taskCardDescription.disabled = saving;
     if (taskCardStatus) taskCardStatus.disabled = savingStatus;
@@ -725,6 +740,30 @@
       taskCardSaveButton.setAttribute("aria-busy", String(saving));
       taskCardSaveButton.textContent = saving ? "Сохраняю…" : "Сохранить изменения";
     }
+    if (taskCardAttachmentAdd) {
+      taskCardAttachmentAdd.disabled = attaching;
+      taskCardAttachmentAdd.setAttribute("aria-busy", String(attaching));
+    }
+    if (taskCardAttachmentHint) {
+      taskCardAttachmentHint.textContent = attaching
+        ? "Добавляю вложения…"
+        : "Выбери файлы или вставь их через Ctrl+V";
+    }
+  }
+
+  function readTaskAttachmentFiles(files) {
+    const task = state.tasks.find((item) => item.id === state.openTaskId);
+    if (!task || state.attachingTaskId != null) return;
+    const selection = taskAttachmentFiles(files);
+    if (!selection.accepted.length) {
+      if (selection.oversized) window.AgentHub?.toast?.("Размер одного файла не должен превышать 20 МБ.");
+      return;
+    }
+    state.attachingTaskId = task.id;
+    renderTaskCardSaving(task.id);
+    emit("attachment-add", { id: task.id, attachments: selection.accepted });
+    if (selection.truncated) window.AgentHub?.toast?.("За один раз можно приложить не больше восьми файлов.");
+    else if (selection.oversized) window.AgentHub?.toast?.("Файлы больше 20 МБ пропущены.");
   }
 
   function renderOpenTaskCard() {
@@ -1136,6 +1175,20 @@
     renderTaskCardSaving(task.id);
     emit("status", { id: task.id, status: taskCardStatus.value });
   });
+  taskCardAttachmentAdd?.addEventListener("click", () => taskCardAttachmentInput?.click());
+  taskCardAttachmentInput?.addEventListener("change", () => {
+    readTaskAttachmentFiles(taskCardAttachmentInput.files);
+    taskCardAttachmentInput.value = "";
+  });
+  taskCardModal?.addEventListener("paste", (event) => {
+    const files = [...(event.clipboardData?.items ?? [])]
+      .filter((item) => item.kind === "file")
+      .map((item) => item.getAsFile())
+      .filter(Boolean);
+    if (!files.length) return;
+    event.preventDefault();
+    readTaskAttachmentFiles(files);
+  });
   taskCardTitle?.addEventListener("keydown", (event) => {
     if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
     event.preventDefault();
@@ -1226,6 +1279,11 @@
       }
       if (type === "status" && state.savingStatusTaskId === id) {
         state.savingStatusTaskId = null;
+        renderOpenTaskCard();
+        return;
+      }
+      if (type === "attachment-add" && state.attachingTaskId === id) {
+        state.attachingTaskId = null;
         renderOpenTaskCard();
       }
     },

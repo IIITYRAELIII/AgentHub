@@ -476,6 +476,7 @@ export async function createHubInfrastructure({
     hubMcpServer,
     miniAppServer,
     publicMiniAppServer,
+    attachmentDirectory,
     attachmentThumbnails,
     usdRubRateStore,
     instanceGuard,

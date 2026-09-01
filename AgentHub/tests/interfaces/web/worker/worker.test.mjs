@@ -864,6 +864,22 @@ test("Worker relay rejects unsupported actions, attachments, and unsigned servic
     },
   });
 
+  assert.deepEqual(workerModule.validateControlCommand({
+    id: "018f6c86-3f34-7a31-8f27-16f5b96cce14",
+    action: "board-task-attachment-add",
+    params: {
+      id: "board-1",
+      attachments: ["remote-attachment:018f6c86-3f34-7a31-8f27-16f5b96cce15"],
+    },
+  }), {
+    id: "018f6c86-3f34-7a31-8f27-16f5b96cce14",
+    action: "board-task-attachment-add",
+    params: {
+      id: "board-1",
+      attachments: ["remote-attachment:018f6c86-3f34-7a31-8f27-16f5b96cce15"],
+    },
+  });
+
   let response = await enqueue({
     id: "018f6c86-3f34-7a31-8f27-16f5b96cce12",
     action: "shell",

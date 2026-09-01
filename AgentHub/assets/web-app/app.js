@@ -4075,6 +4075,10 @@ function openAttachmentViewer({ dataUrl = "", name = "Изображение", g
   const selectedDataUrl = String(selected.dataUrl ?? dataUrl ?? "");
   attachmentViewerOpen = true;
   attachmentViewer.hidden = false;
+  if (!attachmentViewer.open) {
+    if (typeof attachmentViewer.showModal === "function") attachmentViewer.showModal();
+    else attachmentViewer.setAttribute("open", "");
+  }
   attachmentViewerImage.hidden = !selectedDataUrl;
   attachmentViewerLoading.hidden = Boolean(selectedDataUrl);
   attachmentViewerImage.alt = String(selected.name ?? name);
@@ -4121,6 +4125,8 @@ function moveAttachmentViewer(direction) {
 function closeAttachmentViewer() {
   if (!attachmentViewerOpen) return false;
   attachmentViewerOpen = false;
+  if (attachmentViewer.open && typeof attachmentViewer.close === "function") attachmentViewer.close();
+  else attachmentViewer.removeAttribute("open");
   attachmentViewer.hidden = true;
   attachmentViewerImage.removeAttribute("src");
   attachmentViewerImage.hidden = true;
@@ -4162,6 +4168,10 @@ attachmentViewer.addEventListener("click", (event) => {
     attachmentViewer,
     attachmentViewerStage,
   )) closeAttachmentViewer();
+});
+attachmentViewer.addEventListener("cancel", (event) => {
+  event.preventDefault();
+  closeAttachmentViewer();
 });
 window.addEventListener("keydown", (event) => {
   if (!attachmentViewerOpen) return;
