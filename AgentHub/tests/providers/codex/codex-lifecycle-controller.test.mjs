@@ -163,22 +163,25 @@ test("Codex lifecycle commits generated images when no managed run owns the term
   assert.deepEqual(f.recorded[0].responseAttachments, responseAttachments);
 });
 
-test("Codex lifecycle leaves generated image capture to the managed run finalizer", async () => {
-  let resolverCalls = 0;
-  const f = await fixture({
-    run: { status: "running" },
-    resolveTerminalAttachments: async () => {
-      resolverCalls += 1;
-      return [];
-    },
-  });
-  await f.controller.handle(request("turn-complete", f.projectRoot, {
-    status: "completed",
-    finalAnswer: "Done",
-  }));
+test("Codex lifecycle leaves every managed run terminal to the finalizer", async () => {
+  for (const status of ["running", "finishing", "completed"]) {
+    let resolverCalls = 0;
+    const f = await fixture({
+      run: { status },
+      resolveTerminalAttachments: async () => {
+        resolverCalls += 1;
+        return [];
+      },
+    });
+    await f.controller.handle(request("turn-complete", f.projectRoot, {
+      status: "completed",
+      finalAnswer: "Done",
+    }));
 
-  assert.equal(resolverCalls, 0);
-  assert.deepEqual(f.recorded[0].responseAttachments, []);
+    assert.equal(resolverCalls, 0, status);
+    assert.deepEqual(f.recorded[0].responseAttachments, [], status);
+    assert.deepEqual(f.deliveredCompletions, [], status);
+  }
 });
 
 test("Codex lifecycle prefers turn-attributed files over shared-tree baseline changes", async () => {
