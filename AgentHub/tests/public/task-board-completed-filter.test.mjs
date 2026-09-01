@@ -53,6 +53,19 @@ test("Dashboard considers a Stream free only without an active turn or queue", a
   );
 });
 
+test("Dashboard labels reassignment separately from first Task start", async () => {
+  const { taskStartActionLabels } = await loadBoardView();
+
+  assert.deepEqual({ ...taskStartActionLabels({ status: "open" }) }, {
+    eyebrow: "Начать работу",
+    newStreamSubmit: "Создать Stream и начать",
+  });
+  assert.deepEqual({ ...taskStartActionLabels({ status: "started" }) }, {
+    eyebrow: "Переназначить Task",
+    newStreamSubmit: "Создать Stream и переназначить",
+  });
+});
+
 test("a freshly completed Task lands at the bottom of completed Tasks", async () => {
   const view = await loadBoardView();
   const tasks = [

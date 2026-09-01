@@ -237,6 +237,14 @@
     });
   }
 
+  function taskStartActionLabels(task) {
+    const reassigning = task?.status === "started";
+    return Object.freeze({
+      eyebrow: reassigning ? "Переназначить Task" : "Начать работу",
+      newStreamSubmit: reassigning ? "Создать Stream и переназначить" : "Создать Stream и начать",
+    });
+  }
+
   function taskAttachmentCountLabel(attachments) {
     const count = Array.isArray(attachments) ? attachments.length : 0;
     return count ? `${count} вложений` : "";
@@ -389,6 +397,7 @@
     taskWorkLogEntries,
     taskWorkflowPresentation,
     streamAvailability,
+    taskStartActionLabels,
     tasksForMode,
     workspaceTaskSectionsForPanel,
     workspaceTasksForPanel,
@@ -427,11 +436,13 @@
   const taskDeleteCancel = document.querySelector("[data-task-delete-cancel]");
   const taskDeleteConfirm = document.querySelector("[data-task-delete-confirm]");
   const startModal = document.querySelector("[data-task-start-modal]");
+  const startEyebrow = document.querySelector("[data-task-start-eyebrow]");
   const startTitle = document.querySelector("[data-task-start-title]");
   const startOptions = document.querySelector("[data-task-start-options]");
   const startNewForm = document.querySelector("[data-task-start-new]");
   const startNewName = document.querySelector("[data-task-start-new-name]");
   const startProvider = document.querySelector("[data-task-start-provider]");
+  const startSubmit = document.querySelector("[data-task-start-submit]");
   if (!board || !columns) return;
 
   const boardColumnRegions = {
@@ -690,6 +701,9 @@
       state.deferredInputs,
     );
     const sourceBusy = reassigning && !currentAvailability.free;
+    const actionLabels = taskStartActionLabels(task);
+    startEyebrow.textContent = actionLabels.eyebrow;
+    startSubmit.textContent = actionLabels.newStreamSubmit;
     startTitle.textContent = task.title || task.text;
     startOptions.replaceChildren();
     for (const stream of workspace.streams ?? []) {
