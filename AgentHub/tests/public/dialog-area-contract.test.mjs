@@ -53,6 +53,14 @@ test("dialog geometry references semantic tokens without literal colors", async 
     styles,
     /@media \(prefers-reduced-motion: reduce\) \{[\s\S]{0,400}\[class~="stream-tab-card"\]::after \{[\s\S]{0,200}animation: none !important;/u,
   );
+  // Весь файл вложен в правило html[...], а вложенность CSS допускает внутри
+  // правила только @media, @supports, @layer, @scope и @container. Объявленный
+  // здесь @keyframes парсер молча выбрасывает: имя анимации не резолвится, и
+  // эффект застывает в первой фазе, оставаясь при этом «применённым» в
+  // computed style. Такие объявления живут в styles.css, на верхнем уровне.
+  assert.doesNotMatch(styles, /@keyframes stream-tab-ring-sweep/u);
+  const shell = await readFile(new URL("styles.css", assets), "utf8");
+  assert.match(shell, /^@keyframes stream-tab-ring-sweep \{[\s\S]{0,200}background-position/mu);
   assert.match(styles, /\.composer \{[\s\S]*width: min\(var\(--dialog-column-width\), calc\(100% - 48px\)\);/u);
 });
 
