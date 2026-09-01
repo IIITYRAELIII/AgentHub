@@ -608,6 +608,9 @@ export function createDesktopTaskHistoryFactory({
       binding.provider === "codex" && isCodexContextProbeTurn({
         turnId: completed.turnId,
         finalAnswer: completed.text,
+        operationKind: completed.operationKind,
+        contextProbe: completed.contextProbe,
+        clientUserMessageId: completed.clientUserMessageId,
       })
     ) && !(
       binding.provider === "codex" && isEmptyTurnCompletionPlaceholder({
