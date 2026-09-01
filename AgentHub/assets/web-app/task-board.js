@@ -751,7 +751,7 @@
     }
   }
 
-  function readTaskAttachmentFiles(files) {
+  async function readTaskAttachmentFiles(files) {
     const task = state.tasks.find((item) => item.id === state.openTaskId);
     if (!task || state.attachingTaskId != null) return;
     const selection = taskAttachmentFiles(files);
@@ -761,7 +761,26 @@
     }
     state.attachingTaskId = task.id;
     renderTaskCardSaving(task.id);
-    emit("attachment-add", { id: task.id, attachments: selection.accepted });
+    let attachments;
+    try {
+      attachments = await Promise.all(selection.accepted.map((file) => new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve({
+          name: file.name,
+          type: file.type || "application/octet-stream",
+          size: file.size,
+          dataUrl: String(reader.result).replace(/^data:;base64,/u, "data:application/octet-stream;base64,"),
+        });
+        reader.onerror = () => reject(new Error(`Не удалось прочитать файл «${file.name}»`));
+        reader.readAsDataURL(file);
+      })));
+    } catch (error) {
+      state.attachingTaskId = null;
+      renderTaskCardSaving(task.id);
+      window.AgentHub?.toast?.(error.message);
+      return;
+    }
+    emit("attachment-add", { id: task.id, attachments });
     if (selection.truncated) window.AgentHub?.toast?.("За один раз можно приложить не больше восьми файлов.");
     else if (selection.oversized) window.AgentHub?.toast?.("Файлы больше 20 МБ пропущены.");
   }
@@ -1177,7 +1196,7 @@
   });
   taskCardAttachmentAdd?.addEventListener("click", () => taskCardAttachmentInput?.click());
   taskCardAttachmentInput?.addEventListener("change", () => {
-    readTaskAttachmentFiles(taskCardAttachmentInput.files);
+    void readTaskAttachmentFiles(taskCardAttachmentInput.files);
     taskCardAttachmentInput.value = "";
   });
   taskCardModal?.addEventListener("paste", (event) => {
@@ -1187,7 +1206,7 @@
       .filter(Boolean);
     if (!files.length) return;
     event.preventDefault();
-    readTaskAttachmentFiles(files);
+    void readTaskAttachmentFiles(files);
   });
   taskCardTitle?.addEventListener("keydown", (event) => {
     if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
