@@ -161,3 +161,34 @@ the live registry/freeze source tables physically dropped. The retained history
 is audit-only and is never read by release planning. All new work follows
 ADR-0009 Task branches, ADR-0010 integration boundaries and ADR-0011
 Git-reference authority.
+
+## Independent release repository
+
+`PreRelease` is materialized only in an Agent Hub-owned standalone clone under
+runtime data. Its Git common directory is distinct from the registered primary
+Workspace. It imports the exact frozen Task results without sharing branch
+ownership; a linked worktree is never a release holder. Publication entrypoints
+require the independent-clone marker and reject the primary Workspace.
+
+The clone writes a content-addressed execution manifest and retry checkpoint
+containing the exact plan revision, `origin/main` base, Task IDs, result commits
+and `PreRelease` head. This is audit evidence, not a second readiness authority.
+Retry may reuse it only when the complete frozen identity and head match.
+
+The registered primary must own and remain attached to `refs/heads/main` before
+preflight, after candidate preparation, during retry, after publication and at
+startup reconciliation. Release code must not switch, detach, reset, stash,
+clean, or otherwise mutate its HEAD, index or working tree.
+
+After verified publication, synchronization is limited to a guarded `--ff-only`
+update while the primary still satisfies the invariant. Existing dirty paths are
+hashed first. Overlap with published paths, a non-fast-forward, or an invalid
+primary yields `manual_required`: the successful release stands and primary HEAD
+and local bytes remain untouched. A successful fast-forward must preserve every
+pre-existing dirty-path hash.
+
+Linked release holders from before ADR-0013 are detection-only migration
+evidence. They are never reused or removed by startup/retry. Cleanup requires a
+separate authorization and proven Agent Hub ownership. The detection guard may
+be retired only after every supported installation has an independent-clone
+checkpoint and no supported migration can contain a linked holder.
