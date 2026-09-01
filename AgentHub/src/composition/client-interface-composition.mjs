@@ -83,6 +83,7 @@ export async function createClientInterfaceComposition({
   sendRunMessage,
   runExists,
   taskProgress,
+  mcpAdmissionCoordinator,
 }) {
   let mediaController;
   const telegramClient = new TelegramClient({
@@ -303,6 +304,7 @@ export async function createClientInterfaceComposition({
     setProgressStage: (...args) => taskProgress().setStage(...args),
     telegram,
     currentChatId,
+    mcpAdmissionCoordinator,
   });
   return {
     telegramClient,

@@ -75,6 +75,7 @@ export async function createClientRuntimeComposition({
     workLogUsageStore,
     taskBoard,
     hubMcpServer,
+    mcpAdmissionCoordinator,
     runtimeStateStore,
     turnEndNotifications,
     runJournal,
@@ -182,6 +183,7 @@ export async function createClientRuntimeComposition({
     sendRunMessage: api.sendRunMessage,
     runExists: (id) => taskRuns.values().some((run) => run.id === id),
     taskProgress: late.taskProgress,
+    mcpAdmissionCoordinator,
   });
   ports.deferredInputPresentation.bind({
     updateDeferredMessage: (...args) => clients.deferredInputPresentation.updateTelegramMessage(...args),

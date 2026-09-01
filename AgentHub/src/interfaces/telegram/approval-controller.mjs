@@ -9,6 +9,7 @@ export class ApprovalController {
     setProgressStage,
     telegram,
     currentChatId,
+    mcpAdmissionCoordinator = null,
   }) {
     this.approvalProtocol = approvalProtocol;
     this.autoApprove = autoApprove;
@@ -19,6 +20,7 @@ export class ApprovalController {
     this.setProgressStage = setProgressStage;
     this.telegram = telegram;
     this.currentChatId = currentChatId;
+    this.mcpAdmissionCoordinator = mcpAdmissionCoordinator;
     this.pending = new Map();
   }
 
@@ -29,7 +31,7 @@ export class ApprovalController {
       createApprovalKey,
     } = this.approvalProtocol;
     if (this.autoApprove()) {
-      this.respond(rpcId, codexApprovalResponse(kind, "once", params));
+      this.#respondOnce(rpcId, codexApprovalResponse(kind, "once", params));
       return;
     }
     const key = createApprovalKey();
@@ -74,7 +76,7 @@ export class ApprovalController {
     } = this.approvalProtocol;
     const autoResponse = mcpElicitationAutoResponse(params);
     if (this.autoApprove() && autoResponse) {
-      this.respond(rpcId, autoResponse);
+      this.#respondMcp(rpcId, params, autoResponse, run, "auto");
       if (run) this.setProgressStage(run, "MCP-запрос подтверждён автоматически. Продолжаю…");
       return;
     }
@@ -182,7 +184,9 @@ export class ApprovalController {
       this.pending.set(key, approval);
       return true;
     }
-    this.respond(approval.rpcId, response);
+    if (approval.kind === "mcp-elicitation" && response.action === "accept") {
+      this.#respondMcp(approval.rpcId, approval.params, response, approval.runId, "telegram");
+    } else this.#respondOnce(approval.rpcId, response);
     const decision = action === "once"
       ? "разрешено"
       : action === "session" ? "разрешено на сессию" : "отклонено";
@@ -246,7 +250,9 @@ export class ApprovalController {
       : codexApprovalResponse(approval.kind, action, approval.params);
     if (!response) throw new Error("Для этой формы нужен явный ввод данных");
     this.pending.delete(key);
-    this.respond(approval.rpcId, response);
+    if (approval.kind === "mcp-elicitation" && response.action === "accept") {
+      this.#respondMcp(approval.rpcId, approval.params, response, approval.runId, "desktop");
+    } else this.#respondOnce(approval.rpcId, response);
     if (approval.messageId && approval.chatId) {
       await this.telegram("editMessageReplyMarkup", {
         chat_id: approval.chatId,
@@ -259,5 +265,39 @@ export class ApprovalController {
         : action === "once" ? "allowed"
           : action === "session" ? "session" : "declined",
     };
+  }
+
+  #respondMcp(rpcId, params, response, run, source) {
+    if (!this.mcpAdmissionCoordinator) {
+      this.#respondOnce(rpcId, response);
+      return;
+    }
+    const runId = typeof run === "object" ? run?.id : run;
+    this.mcpAdmissionCoordinator.begin({
+      rpcId,
+      params,
+      response,
+      respond: (...args) => this.#respondOnce(...args, false),
+      runId,
+      threadId: typeof run === "object" ? run?.threadId : params?.threadId,
+      turnId: typeof run === "object" ? run?.turnId : params?.turnId,
+      source,
+      isActive: () => !runId || this.runExists(runId),
+    });
+  }
+
+  #respondOnce(rpcId, response, logFailure = true) {
+    const result = this.respond(rpcId, response);
+    if (logFailure && result && typeof result.catch === "function") {
+      result.catch((error) => console.error(
+        `[mcp-admission] ${JSON.stringify({
+          component: "mcp-admission",
+          stage: "rpc-response-write-failed",
+          rpcId: String(rpcId),
+          error: error.message,
+        })}`,
+      ));
+    }
+    return result;
   }
 }

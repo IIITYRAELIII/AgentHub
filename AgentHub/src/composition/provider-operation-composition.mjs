@@ -34,6 +34,7 @@ export function createProviderOperationComposition({
   workspaceCatalogStore,
   preTurnInstructions,
   hubMcpService,
+  mcpAdmissionCoordinator,
   saveState,
   taskProgress,
   taskObserver,
@@ -294,6 +295,7 @@ export function createProviderOperationComposition({
     taskDiffs,
     logWarn: (...args) => console.warn(...args),
     logError: (...args) => console.error(...args),
+    observeMcpProgress: (event) => mcpAdmissionCoordinator?.progress(event),
   });
   return {
     codexProviderTasks,
