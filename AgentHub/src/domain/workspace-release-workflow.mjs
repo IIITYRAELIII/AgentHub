@@ -88,12 +88,15 @@ export const LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_RU_V1 = LEGACY_RELEASE_WORK
   .slice(1)
   .join("\n");
 
-export const RELEASE_WORKFLOW_DEVELOPER_RULES = [
+const LEGACY_TASK_TITLE_RULE_V3 = "Keep the Task title concise and outcome-oriented. Preserve the user's original request in its description; do not copy it verbatim into the title unless explicitly requested.";
+const TASK_TITLE_RULE = "Keep the Task title concise and outcome-oriented. Aim to fit it within 36 characters; use a longer title only when the Task's meaning cannot be preserved within 36 characters. Preserve the user's original request in its description; do not copy it verbatim into the title unless explicitly requested.";
+
+export const LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V3 = [
   "Release workflow — applies only when the checkbox is enabled",
   "Any work that changes code, configuration, data, documentation, or another deliverable MUST be performed in a Dashboard Task.",
   "If no suitable Task exists, create it before the first edit. If the Task already exists, assign it to the current Stream before the first edit. Do not change files or data without a created and assigned Task.",
   "Do not create a Task for diagnosis, reading, investigation, or answers that require no changes. If diagnosis reveals required changes, create or assign a Task before continuing.",
-  "Keep the Task title concise and outcome-oriented. Preserve the user's original request in its description; do not copy it verbatim into the title unless explicitly requested.",
+  LEGACY_TASK_TITLE_RULE_V3,
   "Assign the Task to the current Stream and current provider turn with hub_task_claim. The current Stream becomes the Task executor.",
   "Select the project root from the current Stream working directory, then fall back to the Workspace working directory. Never select it from a historical provider Thread.",
   "Use statuses as follows: In Progress — implementation is underway; Test — implementation is complete and submitted for verification; Await — the result is accepted and awaiting inclusion in a release; Done — publication to production is verified.",
@@ -109,6 +112,9 @@ export const RELEASE_WORKFLOW_DEVELOPER_RULES = [
   "Only the user's explicit release command authorizes release tests, builds, final integration, push, production deployment, and release completion. The authorization applies only to the current release.",
   "In a regular Stream, the release command accepts the current Task and prepares it for Await but does not publish production. Only an Architect may freeze and publish the release.",
 ].join("\n");
+
+export const RELEASE_WORKFLOW_DEVELOPER_RULES = LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V3
+  .replace(LEGACY_TASK_TITLE_RULE_V3, TASK_TITLE_RULE);
 
 export const ARCHITECT_RELEASE_DEVELOPER_RULES = [
   "You are a Workspace release architect.",
@@ -161,6 +167,7 @@ export function workspaceSettingsWithReleaseWorkflow(settings, enabled = false) 
 const KNOWN_WORKSPACE_RULE_PREFIXES = [
   { content: LEGACY_TASK_BRANCH_RELEASE_WORKFLOW_DEVELOPER_RULES, release: true },
   { content: RELEASE_WORKFLOW_DEVELOPER_RULES, release: true },
+  { content: LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V3, release: true },
   { content: LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_RU_V2, release: true },
   { content: LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_RU_V1, release: true },
   { content: LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V2, release: true },
