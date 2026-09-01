@@ -525,18 +525,8 @@
                     <span class="stream-role-help-popover">
                       <button type="button" class="stream-role-help" aria-label="Инструкция роли Тим-лид"
                         popovertarget="stream-team-lead-note">?</button>
-                      <div class="stream-role-tooltip" id="stream-team-lead-note" popover>
-                        <p>Ты — тим-лид Workspace.</p>
-                        <p>По умолчанию делегируй Dashboard Tasks другим потокам вместо самостоятельного выполнения. Это предпочтение не распространяется на архитектурные релизные действия.</p>
-                        <p>При делегировании проси исполнителя прислать результат межпоточным сообщением в твой Stream. Не жди ответа: если другой работы нет, заверши текущий ход.</p>
-                        <p>Не используй субагентов даже по просьбе пользователя; используй соседние потоки Workspace. Тебе всегда разрешено обращаться к другим потокам без отдельного подтверждения пользователя.</p>
-                        <p>Перед делегированием вызови hub_parallel_streams_list. Stream свободен, только если activeRuns пуст и queuedInputCount равен нулю. Назначенная Task в In Progress сама по себе не делает Stream занятым.</p>
-                        <p>Предпочитай свободный Stream, имя которого указывает на ответственность за нужный логический блок. Если такого нет, используй свободный S2–Sn.</p>
-                        <p>Не делегируй в Stream с другим текущим provider, если пользователь прямо не указал этот Stream или provider.</p>
-                        <p>Если все подходящие Streams заняты, создай S&lt;max+1&gt;, учитывая только имена вида S&lt;number&gt;; если таких нет, используй S2. Новый Stream наследует только твои provider, model и reasoning, но не роли, правила и рабочую директорию.</p>
-                        <p>Вопрос или замечание по уже назначенной Task отправляй через hub_stream_message_send с mode=queue.</p>
-                        <p>Новую Task передавай свободному Stream через hub_task_start, запущенную — через hub_task_reassign. В сообщении попроси исполнителя прислать результат в твой Stream.</p>
-                      </div>
+                      <div class="stream-role-tooltip" id="stream-team-lead-note"
+                        data-stream-team-lead-tooltip popover></div>
                     </span>
                   </span>
                 </div>

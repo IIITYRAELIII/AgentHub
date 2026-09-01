@@ -110,5 +110,10 @@ test("Team Lead rules are independent and compose after Architect rules", () => 
   assert.match(TEAM_LEAD_DEVELOPER_RULES, /queuedInputCount is zero/u);
   assert.match(TEAM_LEAD_DEVELOPER_RULES, /hub_task_reassign/u);
   assert.match(TEAM_LEAD_DEVELOPER_RULES, /Never use subagents/u);
+  assert.match(
+    TEAM_LEAD_DEVELOPER_RULES,
+    /Review the result of every Task.*does not pass review.*return the same Task.*review the corrected result again/iu,
+  );
+  assert.match(TEAM_LEAD_DEVELOPER_RULES, /highest number.*S<number>.*add one.*name the new Stream S2/iu);
   assert.match(TEAM_LEAD_DEVELOPER_RULES, /provider, model, and reasoning/u);
 });

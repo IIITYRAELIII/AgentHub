@@ -145,6 +145,7 @@ const dialogStreamRulesCount = document.querySelector("[data-dialog-stream-rules
 const dialogStreamRulesSave = document.querySelector("[data-dialog-stream-rules-save]");
 const dialogStreamArchitect = document.querySelector("[data-dialog-stream-architect]");
 const dialogStreamTeamLead = document.querySelector("[data-dialog-stream-team-lead]");
+const dialogStreamTeamLeadTooltip = document.querySelector("[data-stream-team-lead-tooltip]");
 const dialogStreamQuickMessages = document.querySelector("[data-dialog-stream-quick-messages]");
 const dialogStreamQuickMessagesCount = document.querySelector("[data-dialog-stream-quick-messages-count]");
 const workspaceMessageSearch = document.querySelector("[data-workspace-message-search]");
@@ -167,6 +168,7 @@ const annotationsBox = document.querySelector("[data-annotations]");
 const attachmentsBox = document.querySelector("[data-attachments]");
 const TaskReferences = window.AgentHubTaskReferences;
 const streamRoleSettings = window.AgentHubStreamRoleSettings;
+streamRoleSettings?.renderTeamLeadTooltip(dialogStreamTeamLeadTooltip);
 const annotationContextMenu = document.querySelector("[data-annotation-context-menu]");
 const resourceContextMenu = document.querySelector("[data-resource-context-menu]");
 // Theme panels may clip their children (for example Lake uses overflow:hidden
