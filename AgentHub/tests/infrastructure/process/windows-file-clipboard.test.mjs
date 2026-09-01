@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import path from "node:path";
 import test from "node:test";
 
@@ -32,16 +33,52 @@ test("file clipboard rejects unsupported platforms", () => {
 
 test("Windows Explorer reveals the exact file without a shell command", async () => {
   let invocation;
-  await revealWindowsFile("file with spaces.txt", {
+  const reveal = revealWindowsFile("file with spaces.txt", {
     platform: "win32",
-    execFileImpl: (file, args, options, callback) => {
+    existsSyncImpl: () => true,
+    spawnImpl: (file, args, options) => {
+      const child = new EventEmitter();
+      child.unref = () => {};
       invocation = { file, args, options };
-      callback(null);
+      queueMicrotask(() => child.emit("spawn"));
+      return child;
     },
   });
+  await reveal;
   assert.equal(invocation.file, "explorer.exe");
   assert.deepEqual(invocation.args, [`/select,${path.resolve("file with spaces.txt")}`]);
   assert.equal(invocation.options.windowsHide, true);
+  assert.equal(invocation.options.detached, true);
+  assert.equal(invocation.options.stdio, "ignore");
+});
+
+test("Windows Explorer reveal resolves after launch without treating process exit as result", async () => {
+  const child = new EventEmitter();
+  child.unref = () => {};
+  const reveal = revealWindowsFile("бит_Документооборот.cfe", {
+    platform: "win32",
+    existsSyncImpl: () => true,
+    spawnImpl: () => child,
+  });
+  child.emit("spawn");
+  child.emit("exit", 1);
+  await reveal;
+});
+
+test("Windows Explorer reveal rejects missing files before launching Explorer", async () => {
+  let launched = false;
+  assert.throws(
+    () => revealWindowsFile("missing.cfe", {
+      platform: "win32",
+      existsSyncImpl: () => false,
+      spawnImpl: () => {
+        launched = true;
+        return new EventEmitter();
+      },
+    }),
+    /Файл не найден/u,
+  );
+  assert.equal(launched, false);
 });
 
 test("file reveal rejects unsupported platforms", () => {
