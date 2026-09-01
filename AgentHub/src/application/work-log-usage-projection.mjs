@@ -26,7 +26,7 @@ import {
   usageSyncEventIdentity,
   usageSyncEventFromLedgerRecord,
 } from "../domain/work-log-usage-sync.mjs";
-import { applyInferredTeamDeviceAccount } from "../domain/team-usage-accounts.mjs";
+import { applyInferredDeviceTimelineAccounts } from "../domain/team-usage-accounts.mjs";
 
 const WORK_LOG_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ACCOUNT_ATTRIBUTIONS = new Set(["exact", "inferred"]);
@@ -655,8 +655,7 @@ function applyAccountUsageStats(target, entry, record, {
   }
 }
 
-function syncedUsageRecord(value) {
-  const event = applyInferredTeamDeviceAccount(normalizeUsageSyncEvent(value));
+function syncedUsageRecord(event) {
   if (!event) return null;
   return {
     usage: event.usage,
@@ -681,6 +680,15 @@ function syncedUsageRecord(value) {
   };
 }
 
+function syncedUsageRecords(values) {
+  const normalized = (Array.isArray(values) ? values : [])
+    .map(normalizeUsageSyncEvent)
+    .filter(Boolean);
+  return applyInferredDeviceTimelineAccounts(normalized)
+    .map(syncedUsageRecord)
+    .filter(Boolean);
+}
+
 export function buildWorkLogAccountUsageSummary(turns = {}, {
   accountCatalog = [],
   includeClaudeUsage = true,
@@ -694,8 +702,7 @@ export function buildWorkLogAccountUsageSummary(turns = {}, {
   const normalizedTurns = normalizedLedger({ version: 9, turns }).ledger.turns;
   const normalizedLocalDeviceId = String(localDeviceId ?? "").trim();
   const normalizedLocalDeviceLabel = String(localDeviceLabel ?? "").trim();
-  const normalizedSyncedTurns = (Array.isArray(syncedUsageEvents) ? syncedUsageEvents : [])
-    .map(syncedUsageRecord)
+  const normalizedSyncedTurns = syncedUsageRecords(syncedUsageEvents)
     .filter((record) => record && record.syncDeviceId !== normalizedLocalDeviceId);
   const nowMs = Number.isFinite(Number(now)) ? Number(now) : Date.now();
   const records = [
@@ -3040,8 +3047,7 @@ export function buildWorkLogUsageHistory(turns = {}, {
   const localUsageEventIds = new Set(localTurns.map(usageSyncEventIdentity).filter(Boolean));
   const normalizedLocalDeviceId = String(localDeviceId ?? "").trim();
   const normalizedLocalDeviceLabel = String(localDeviceLabel ?? "").trim();
-  const syncedTurns = (Array.isArray(syncedUsageEvents) ? syncedUsageEvents : [])
-    .map(syncedUsageRecord)
+  const syncedTurns = syncedUsageRecords(syncedUsageEvents)
     .filter((record) => {
       if (!record || record.syncDeviceId === normalizedLocalDeviceId) return false;
       if (localUsageEventIds.has(record.syncEventId)) return false;
