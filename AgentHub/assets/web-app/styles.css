@@ -3939,16 +3939,14 @@ html[data-view="dashboard"] .task-board-view {
 }
 
 .board-task-number {
-  background: var(--accent-soft);
-  border: 1px solid var(--accent-line);
-  border-radius: var(--radius-sm);
+  border-bottom: 1px solid var(--accent-line);
   color: var(--accent);
   flex: 0 0 auto;
   font-family: var(--font-mono);
   font-size: 0.56rem;
   font-weight: 700;
   line-height: 1;
-  padding: 0.24rem 0.32rem;
+  padding: 0.12rem 0.05rem 0.16rem;
   white-space: nowrap;
 }
 
