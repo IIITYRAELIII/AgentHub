@@ -39,11 +39,15 @@ export function createCodexTerminalAttachmentResolver({
     try {
       const normalizedTurnId = String(turnId ?? "").trim();
       let bestAttachments = [];
+      const diagnostics = [];
       for (const retryDelayMs of retryDelaysMs) {
         if (retryDelayMs > 0) await wait(retryDelayMs);
         const rolloutPath = String(run?.rolloutPath ?? "").trim()
           || await knownRolloutPath?.(run?.threadId, run?.startedAt);
-        if (!rolloutPath) continue;
+        if (!rolloutPath) {
+          diagnostics.push({ retryDelayMs, rolloutPath: false });
+          continue;
+        }
         const activity = await readRolloutActivity(rolloutPath, {
           freshnessMs: Number.POSITIVE_INFINITY,
           tailBytes: CODEX_TERMINAL_ATTACHMENT_TAIL_BYTES,
@@ -51,16 +55,32 @@ export function createCodexTerminalAttachmentResolver({
         });
         const sources = codexTerminalAttachmentSources(activity, normalizedTurnId);
         const expectedImages = completedImageGenerationCount(activity, normalizedTurnId);
+        diagnostics.push({
+          retryDelayMs,
+          rolloutPath,
+          finalized: exactTurnFinalized(activity, normalizedTurnId),
+          sourceCount: sources.length,
+          expectedImages,
+        });
         if (!sources.length) {
-          if (exactTurnFinalized(activity, normalizedTurnId) && expectedImages === 0) return [];
+          if (exactTurnFinalized(activity, normalizedTurnId) && expectedImages === 0) {
+            if (process.env.AGENT_HUB_TEST_CONTOUR === "1") {
+              logger.error(`[terminal-attachments] ${normalizedTurnId} ${JSON.stringify(diagnostics)}`);
+            }
+            return [];
+          }
           continue;
         }
         if (typeof importAttachments !== "function") return [];
         const attachments = await importAttachments(sources);
+        diagnostics.at(-1).attachmentCount = Array.isArray(attachments) ? attachments.length : null;
         if (Array.isArray(attachments) && attachments.length) {
           bestAttachments = attachments.map((attachment) => ({ ...attachment }));
           if (bestAttachments.length >= Math.max(1, expectedImages)) return bestAttachments;
         }
+      }
+      if (process.env.AGENT_HUB_TEST_CONTOUR === "1") {
+        logger.error(`[terminal-attachments] ${normalizedTurnId} ${JSON.stringify(diagnostics)}`);
       }
       return bestAttachments;
     } catch (error) {
