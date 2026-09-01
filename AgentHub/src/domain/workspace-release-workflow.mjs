@@ -88,12 +88,15 @@ export const LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_RU_V1 = LEGACY_RELEASE_WORK
   .slice(1)
   .join("\n");
 
-export const RELEASE_WORKFLOW_DEVELOPER_RULES = [
+const LEGACY_TASK_TITLE_RULE_V3 = "Keep the Task title concise and outcome-oriented. Preserve the user's original request in its description; do not copy it verbatim into the title unless explicitly requested.";
+const TASK_TITLE_RULE = "Keep the Task title concise and outcome-oriented. Aim to fit it within 36 characters; use a longer title only when the Task's meaning cannot be preserved within 36 characters. Preserve the user's original request in its description; do not copy it verbatim into the title unless explicitly requested.";
+
+export const LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V3 = [
   "Release workflow — applies only when the checkbox is enabled",
   "Any work that changes code, configuration, data, documentation, or another deliverable MUST be performed in a Dashboard Task.",
   "If no suitable Task exists, create it before the first edit. If the Task already exists, assign it to the current Stream before the first edit. Do not change files or data without a created and assigned Task.",
   "Do not create a Task for diagnosis, reading, investigation, or answers that require no changes. If diagnosis reveals required changes, create or assign a Task before continuing.",
-  "Keep the Task title concise and outcome-oriented. Preserve the user's original request in its description; do not copy it verbatim into the title unless explicitly requested.",
+  LEGACY_TASK_TITLE_RULE_V3,
   "Assign the Task to the current Stream and current provider turn with hub_task_claim. The current Stream becomes the Task executor.",
   "Select the project root from the current Stream working directory, then fall back to the Workspace working directory. Never select it from a historical provider Thread.",
   "Use statuses as follows: In Progress — implementation is underway; Test — implementation is complete and submitted for verification; Await — the result is accepted and awaiting inclusion in a release; Done — publication to production is verified.",
@@ -110,6 +113,31 @@ export const RELEASE_WORKFLOW_DEVELOPER_RULES = [
   "In a regular Stream, the release command accepts the current Task and prepares it for Await but does not publish production. Only an Architect may freeze and publish the release.",
 ].join("\n");
 
+export const LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V4 = LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V3
+  .replace(LEGACY_TASK_TITLE_RULE_V3, TASK_TITLE_RULE);
+
+export const RELEASE_WORKFLOW_DEVELOPER_RULES = [
+  "Release workflow — applies only when the checkbox is enabled",
+  "Any work that changes code, configuration, data, documentation, or another deliverable MUST be performed in a Dashboard Task.",
+  "If no suitable Task exists, create it before the first edit. If the Task already exists, assign it to the current Stream before the first edit. Do not change files or data without a created and assigned Task.",
+  "Do not create a Task for diagnosis, reading, investigation, or answers that require no changes. If diagnosis reveals required changes, create or assign a Task before continuing.",
+  TASK_TITLE_RULE,
+  "Assign the Task to the current Stream and current provider turn with hub_task_claim. The current Stream becomes the Task executor.",
+  "Select the project root from the current Stream working directory, then fall back to the Workspace working directory. Never select it from a historical provider Thread.",
+  "Use statuses as follows: In Progress — implementation is underway; Test — implementation is complete and submitted for verification; Await — the result is accepted and awaiting inclusion in a release; Done — publication to production is verified.",
+  "Move a Task to Test as soon as implementation is complete. Move it to Await only after the result is accepted.",
+  "Every changing Task must use its own Git branch created from current main and a separate managed sparse worktree. Never perform Task work in a shared working tree.",
+  "Create the branch and worktree through hub_task_claim or hub_task_start. Do not change files before they are available.",
+  "Agent Hub may create Task snapshot commits and managed merge commits only during workflow-status transitions. Do not create unrelated commits, push, or deploy without explicit user authorization.",
+  "When a Task moves to Test, or directly to a later status, snapshot its latest branch result and merge that result into dev.",
+  "Moving a Task to Await records its exact accepted result for a future release. It does not rebuild or mutate PreRelease.",
+  "At explicit release start, Architect builds PreRelease from current main and the exact result commits of the selected ready Await Tasks, then freezes the exact plan revision, included Task IDs, and PreRelease head.",
+  "Never merge dev into PreRelease. Test-only work and Await Tasks accepted after the freeze must not enter the current frozen release.",
+  "If an included Task changes, is withdrawn, or is excluded before release completion, the frozen release cannot complete until Architect explicitly rebuilds and refreezes it. Merge conflicts and missing or invalid exact results block the release, not the selected Task status.",
+  "Only the user's explicit release command authorizes release tests, builds, final integration, push, production deployment, and release completion. The authorization applies only to the current release.",
+  "In a regular Stream, the release command accepts the current Task and prepares it for Await but does not publish production. Only an Architect may freeze and publish the release.",
+].join("\n");
+
 export const ARCHITECT_RELEASE_DEVELOPER_RULES = [
   "You are a Workspace release architect.",
   "You assemble, validate, and deploy releases.",
@@ -119,8 +147,8 @@ export const ARCHITECT_RELEASE_DEVELOPER_RULES = [
   "Release validation sequence",
   "",
   "When the user explicitly authorizes a release, act as the release integrator.",
-  "At the start of the release, update local main from origin before freezing the release set. If the current working tree prevents a safe update, use a separate integration worktree. Never stash, discard, or overwrite changes owned by another Stream.",
-  "After updating main, freeze the exact release set. Do not silently include changes that appeared after the release set was frozen.",
+  "At the start of the release, update local main from origin before assembling the release candidate. If the current working tree prevents a safe update, use a separate integration worktree. Never stash, discard, or overwrite changes owned by another Stream.",
+  "Select the ready Await set, build PreRelease from current main and those exact Task results, then freeze the exact plan revision, included Task IDs, and PreRelease head. Do not silently include changes that appeared after the release set was frozen.",
   "Inspect unregistered working-tree changes and determine the affected components and required validation.",
   "Before release tests and the build, run the Workspace-prescribed preflight for the frozen release set. Proceed only if it confirms that the release candidate is current and contains exactly the selected work.",
   "Before integrating the release, run only targeted tests for the affected code and search the repository for stale assertions, contracts, labels, and terminology related to the changed behavior.",
@@ -131,7 +159,7 @@ export const ARCHITECT_RELEASE_DEVELOPER_RULES = [
   "If the pipeline fails, use its complete aggregated failure report. Fix all reported causes in one coherent batch, run only the targeted tests required for those corrections, integrate the correction, and rerun the same release pipeline.",
   "Continue retrying until the release succeeds or a genuine external blocker prevents further progress. Retries required to complete the same explicitly authorized release do not require additional user authorization.",
   "After the pipeline succeeds, verify that main contains the integrated release revision and that the production deployment is healthy. Only then mark the release as published.",
-  "After confirmed publication, close only the included work items, synchronize the published main into the integration branch without losing later work, and rebuild the next candidate from the remaining accepted items.",
+  "After confirmed publication, close only the included work items and synchronize the published main into the integration branch without losing later work. Leave remaining accepted items for the next explicit release; do not prebuild a mutable next candidate.",
 ].join("\n");
 
 export const TEAM_LEAD_DEVELOPER_RULES = [
@@ -161,6 +189,8 @@ export function workspaceSettingsWithReleaseWorkflow(settings, enabled = false) 
 const KNOWN_WORKSPACE_RULE_PREFIXES = [
   { content: LEGACY_TASK_BRANCH_RELEASE_WORKFLOW_DEVELOPER_RULES, release: true },
   { content: RELEASE_WORKFLOW_DEVELOPER_RULES, release: true },
+  { content: LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V4, release: true },
+  { content: LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V3, release: true },
   { content: LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_RU_V2, release: true },
   { content: LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_RU_V1, release: true },
   { content: LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V2, release: true },

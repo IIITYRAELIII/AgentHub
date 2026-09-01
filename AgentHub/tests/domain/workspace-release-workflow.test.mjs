@@ -11,6 +11,8 @@ import {
   LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_RU_V2,
   LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V1,
   LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V2,
+  LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V3,
+  LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V4,
   RELEASE_WORKFLOW_DEVELOPER_RULES,
   TEAM_LEAD_DEVELOPER_RULES,
 } from "../../src/domain/workspace-release-workflow.mjs";
@@ -29,8 +31,24 @@ test("legacy v1 policy is stripped once and replaced by Task workflow rules", ()
   assert.match(rules, /merge that result into dev/u);
   assert.match(rules, /Do not create a Task for diagnosis/u);
   assert.match(rules, /preserve the user's original request in its description/iu);
-  assert.match(rules, /PreRelease.*Await Tasks/u);
+  assert.match(rules, /Moving a Task to Await.*does not rebuild or mutate PreRelease/iu);
+  assert.match(rules, /explicit release start.*selected ready Await Tasks.*freezes the exact plan revision/iu);
+  assert.match(rules, /fit it within 36 characters.*only when.*cannot be preserved/iu);
   assert.doesNotMatch(rules, /[А-Яа-яЁё]/u);
+});
+
+test("previous release policies are stripped after title and freeze guidance changes", () => {
+  for (const legacyRules of [
+    LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V3,
+    LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V4,
+  ]) {
+    const rules = effectiveWorkspaceDeveloperRules(
+      `${legacyRules}\n\nCustom rule`,
+      { releaseWorkflowEnabled: true },
+    );
+    assert.equal(rules, `${RELEASE_WORKFLOW_DEVELOPER_RULES}\n\nCustom rule`);
+    assert.equal((rules.match(/Release workflow — applies only/gu) ?? []).length, 1);
+  }
 });
 
 test("legacy v2 Task policy is stripped before the change-only policy is injected", () => {
@@ -72,13 +90,15 @@ test("Architect rules use only explicit settings.architect and allow multiple St
     `${ARCHITECT_RELEASE_DEVELOPER_RULES}\n\nStream rule`,
   );
   assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /Workspace release architect/u);
-  assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /freeze the exact release set/u);
+  assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /frozen release set/u);
+  assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /build PreRelease.*freeze the exact plan revision/iu);
+  assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /next explicit release.*do not prebuild/iu);
   assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /Workspace-prescribed preflight/u);
   assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /immutable candidate/u);
   assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /production deployment is healthy/u);
   assert.doesNotMatch(
     ARCHITECT_RELEASE_DEVELOPER_RULES,
-    /hub_release_preflight|TestContour|Await Tasks|PreRelease|CHANGELOG\.md/u,
+    /hub_release_preflight|TestContour|CHANGELOG\.md/u,
   );
 });
 

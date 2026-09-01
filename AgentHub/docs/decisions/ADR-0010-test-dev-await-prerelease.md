@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted. Refines the Task branch integration decision in ADR-0009.
+Partially superseded by ADR-0013. The Test-to-`dev` decision remains accepted;
+the Await-to-`PreRelease` rebuild decision is superseded.
 
 ## Decision
 

@@ -49,12 +49,11 @@ set remain Git data and are derived when a release plan is read. A conflict is
 aborted and returned with exact conflicting paths. Git failure never rejects the
 requested workflow-status transition.
 
-Moving a Task to `awaiting_implementation` additionally rebuilds `PreRelease`
-from current `main` plus the exact result commits of every accepted Await Task.
-`dev` is never merged into `PreRelease`; Test-only work must not enter a release.
-Returning, withdrawing or replacing an Await Task rebuilds `PreRelease` without
-its old result. An Await Task without successful `dev` and `PreRelease`
-integration is explicitly blocked and cannot be released.
+Moving a Task to `awaiting_implementation` records that its exact immutable
+result is accepted for a future release. The status transition does not build,
+rebuild or mutate `PreRelease`. A ready Await Task requires a valid exact result
+and successful `dev` integration; invalid or missing evidence is explicitly
+blocked from release without rejecting the selected Task status.
 
 ## Task Git reference and CAS
 
@@ -86,12 +85,21 @@ Open `done` Tasks remain an Architect audit set. Plan revision hashes current
 Task IDs, row revisions and Git references. Conflict detection reads the
 Git-derived plan projection, never work-log files or a shared mutable tree.
 
-At explicit release start, Architect freezes the exact release-plan revision,
-included Await Task IDs and resulting `PreRelease` head. Architect updates from
-`origin/main`, writes one consolidated `CHANGELOG.md` entry in `PreRelease` when
-that file exists, validates the exact frozen revision, integrates it into
-`main`, and publishes `main`. Later Await Tasks are not silently added. Only a
-Stream with `settings.architect=true` may record verified release completion.
+At explicit release start, Architect reads and selects the exact ready Await
+set, updates from `origin/main`, builds `PreRelease` from current `main` plus the
+selected exact Task results, and then freezes the exact release-plan revision,
+included Await Task IDs and resulting `PreRelease` head. `dev` is never merged
+into `PreRelease`; Test-only work cannot enter a release. Architect writes one
+consolidated `CHANGELOG.md` entry in `PreRelease` when that file exists,
+validates the exact frozen revision, integrates it into `main`, and publishes
+`main`. Later Await Tasks are not silently added. Only a Stream with
+`settings.architect=true` may record verified release completion.
+
+The frozen candidate remains immutable. If an included Task changes, is
+withdrawn or is excluded before completion, its Task revision or Git reference
+changes and completion CAS fails. Architect must explicitly rebuild and
+refreeze the release before it can complete; acceptance changes never mutate an
+already frozen candidate.
 
 Completion performs one transaction that CAS-checks every exact Task revision
 and the plan hash, then changes only those Tasks to `done` and closes them.
@@ -102,8 +110,9 @@ Post-deployment verification proves that every accepted immutable Task result
 commit is an ancestor of the published `main` revision. It does not compare a
 second stored blob manifest. Once verified, only included Tasks are completed
 and their managed branches and worktrees may be removed. Published `main` is
-incorporated into `dev` without discarding later Test work, then `PreRelease` is
-rebuilt from any remaining Await Tasks.
+incorporated into `dev` without discarding later Test work. Remaining Await
+Tasks stay accepted for the next explicit release; Agent Hub does not prebuild a
+mutable next candidate.
 
 ## Test Contour
 
