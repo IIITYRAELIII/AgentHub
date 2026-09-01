@@ -10,12 +10,15 @@ import {
   WorkspaceCatalogStore,
 } from "../../../src/infrastructure/persistence/workspace-catalog-store.mjs";
 import {
-  LEGACY_AGENT_HUB_WORKSPACE_DEVELOPER_RULES_RU_V1,
+  AGENT_HUB_WORKSPACE_DEVELOPER_RULES,
   LEGACY_TASK_BRANCH_RELEASE_WORKFLOW_DEVELOPER_RULES,
   LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_RU_V1,
   LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V2,
   RELEASE_WORKFLOW_DEVELOPER_RULES,
 } from "../../../src/domain/workspace-release-workflow.mjs";
+import {
+  LEGACY_PERSISTED_AGENT_HUB_WORKSPACE_RULES_RU_V1,
+} from "../../../src/domain/editable-workspace-developer-rules.mjs";
 
 async function fixture(t) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-workspaces-"));
@@ -529,7 +532,7 @@ test("release workflow is opt-in and injects policy without changing editable ru
   assert.equal(store.releaseWorkflowEnabledForThread({ provider: "codex", threadId: "thread" }), false);
   assert.equal(
     store.developerRulesForStream(stream.id).workspace.content,
-    "Fast Test Contour workflow",
+    `${AGENT_HUB_WORKSPACE_DEVELOPER_RULES}\n\nFast Test Contour workflow`,
   );
   assert.equal(store.developerRulesForStream(stream.id).stream, null);
   store.updateWorkspaceSettings(workspace.id, { releaseWorkflowEnabled: true });
@@ -541,7 +544,7 @@ test("release workflow is opt-in and injects policy without changing editable ru
   );
   assert.equal(
     store.developerRulesForStream(stream.id).workspace.content,
-    `${RELEASE_WORKFLOW_DEVELOPER_RULES}\n\nFast Test Contour workflow`,
+    `${AGENT_HUB_WORKSPACE_DEVELOPER_RULES}\n\n${RELEASE_WORKFLOW_DEVELOPER_RULES}\n\nFast Test Contour workflow`,
   );
   assert.match(store.developerRulesForStream(stream.id).stream.content, /Workspace systems architect/u);
 });
@@ -621,7 +624,7 @@ test("persisted system prefixes are removed from every editable Workspace rule",
       LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_RU_V1,
       LEGACY_TASK_BRANCH_RELEASE_WORKFLOW_DEVELOPER_RULES,
       LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V2,
-      LEGACY_AGENT_HUB_WORKSPACE_DEVELOPER_RULES_RU_V1,
+      LEGACY_PERSISTED_AGENT_HUB_WORKSPACE_RULES_RU_V1,
       "Agent Hub rules",
       "Custom English rules",
     ].join("\n\n"),
@@ -633,7 +636,7 @@ test("persisted system prefixes are removed from every editable Workspace rule",
     VALUES ('workspace', ?, 1, ?, ?)
   `).run(
     regularWorkspace.id,
-    LEGACY_AGENT_HUB_WORKSPACE_DEVELOPER_RULES_RU_V1,
+    LEGACY_PERSISTED_AGENT_HUB_WORKSPACE_RULES_RU_V1,
     Date.now(),
   );
   database.prepare(
@@ -714,7 +717,7 @@ test("developer rules enforce a 32 KiB UTF-8 limit for each scope", async (t) =>
   assert.equal(
     store.updateWorkspaceDeveloperRules(
       workspace.id,
-      `${LEGACY_AGENT_HUB_WORKSPACE_DEVELOPER_RULES_RU_V1}\n\n${allowed}`,
+      `${LEGACY_PERSISTED_AGENT_HUB_WORKSPACE_RULES_RU_V1}\n\n${allowed}`,
     ).content,
     allowed,
   );
@@ -741,17 +744,16 @@ test("moving a Stream changes inherited Workspace developer rules", async (t) =>
 
   assert.equal(
     store.developerRulesForStream(moving.id).workspace.content,
-    "First workspace",
+    `${AGENT_HUB_WORKSPACE_DEVELOPER_RULES}\n\nFirst workspace`,
   );
-  assert.deepEqual(store.developerRulesForThread({ provider: "codex", threadId: "thread-1" }), {
-    workspace: store.workspaceDeveloperRules(firstWorkspace.id),
-    stream: store.streamDeveloperRules(moving.id),
-  });
+  const inherited = store.developerRulesForThread({ provider: "codex", threadId: "thread-1" });
+  assert.equal(inherited.workspace.content, `${AGENT_HUB_WORKSPACE_DEVELOPER_RULES}\n\nFirst workspace`);
+  assert.deepEqual(inherited.stream, store.streamDeveloperRules(moving.id));
   store.moveStream(moving.id, secondWorkspace.id);
   const effective = store.developerRulesForThread({ provider: "codex", threadId: "thread-1" });
   assert.equal(
     effective.workspace.content,
-    "Second workspace",
+    `${AGENT_HUB_WORKSPACE_DEVELOPER_RULES}\n\nSecond workspace`,
   );
   assert.equal(effective.stream.content, "Stream rule");
 });

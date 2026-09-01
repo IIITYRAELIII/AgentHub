@@ -1,6 +1,6 @@
 export const RELEASE_WORKFLOW_SETTING = "releaseWorkflowEnabled";
 
-export const LEGACY_AGENT_HUB_WORKSPACE_DEVELOPER_RULES_RU_V1 = [
+export const AGENT_HUB_WORKSPACE_DEVELOPER_RULES = [
   "Правила Agent Hub",
   "Dashboard Task создаётся только для работы, которая изменяет код, конфигурацию, данные, документацию или другой поставляемый результат.",
   "Для диагностики, чтения, исследования, объяснений и ответов без изменений Task не создаётся.",
@@ -116,7 +116,7 @@ const KNOWN_WORKSPACE_RULE_PREFIXES = [
   { content: LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_RU_V1, release: true },
   { content: LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V2, release: true },
   { content: LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V1, release: true },
-  { content: LEGACY_AGENT_HUB_WORKSPACE_DEVELOPER_RULES_RU_V1, release: false },
+  { content: AGENT_HUB_WORKSPACE_DEVELOPER_RULES, release: false },
 ];
 
 function stripKnownWorkspaceRulePrefixes(content) {
@@ -148,9 +148,17 @@ export function legacyReleaseWorkflowRules(content) {
   };
 }
 
+export function storedWorkspaceDeveloperRules(content) {
+  const userRules = stripKnownWorkspaceRulePrefixes(content).content;
+  return [AGENT_HUB_WORKSPACE_DEVELOPER_RULES, userRules]
+    .filter((part) => String(part).trim())
+    .join("\n\n");
+}
+
 export function effectiveWorkspaceDeveloperRules(content, settings) {
   const userRules = stripKnownWorkspaceRulePrefixes(content).content;
   return [
+    AGENT_HUB_WORKSPACE_DEVELOPER_RULES,
     releaseWorkflowEnabled(settings) ? RELEASE_WORKFLOW_DEVELOPER_RULES : "",
     userRules,
   ]

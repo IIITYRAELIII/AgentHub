@@ -21,6 +21,7 @@ import {
   releaseWorkflowEnabled,
   workspaceSettingsWithReleaseWorkflow,
 } from "../../domain/workspace-release-workflow.mjs";
+import { editableWorkspaceDeveloperRules } from "../../domain/editable-workspace-developer-rules.mjs";
 
 const SCHEMA_VERSION = 11;
 export const DEVELOPER_RULES_MAX_BYTES = 32 * 1024;
@@ -351,12 +352,13 @@ export class WorkspaceCatalogStore {
         try { settings = JSON.parse(String(row.settings_json ?? "{}")); } catch { settings = {}; }
         const currentRules = this.#developerRules("workspace", row.id);
         const migration = legacyReleaseWorkflowRules(currentRules?.content ?? "");
+        const editableContent = editableWorkspaceDeveloperRules(currentRules?.content ?? "");
         update.run(
           JSON.stringify(workspaceSettingsWithReleaseWorkflow(settings, migration.enabled)),
           row.id,
         );
-        if (migration.content !== (currentRules?.content ?? "")) {
-          this.#updateWorkspaceDeveloperRules(row.id, migration.content);
+        if (editableContent !== (currentRules?.content ?? "")) {
+          this.#updateWorkspaceDeveloperRules(row.id, editableContent);
         }
       }
     });
@@ -368,7 +370,7 @@ export class WorkspaceCatalogStore {
     this.#transaction(() => {
       for (const row of this.#database.prepare("SELECT id FROM hub_workspaces").all()) {
         const current = this.#developerRules("workspace", row.id);
-        const content = legacyReleaseWorkflowRules(current?.content ?? "").content;
+        const content = editableWorkspaceDeveloperRules(current?.content ?? "");
         if (content !== (current?.content ?? "")) this.#updateWorkspaceDeveloperRules(row.id, content);
       }
       this.#database.prepare(
@@ -806,7 +808,7 @@ export class WorkspaceCatalogStore {
   }
 
   #updateWorkspaceDeveloperRules(workspaceId, content) {
-    const editableContent = developerRuleContent(legacyReleaseWorkflowRules(content).content);
+    const editableContent = developerRuleContent(editableWorkspaceDeveloperRules(content));
     return this.#updateDeveloperRules("workspace", workspaceId, editableContent);
   }
 
