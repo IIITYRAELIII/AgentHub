@@ -1664,9 +1664,12 @@ test("Sync controls use the shared text dialog in VS Code webviews", () => {
   assert.match(app, /Date\.parse\(left\.createdAt \|\| 0\)/u);
     assert.match(
       client,
-      /function deferredEntriesForTask[\s\S]*item\.state !== "dispatching"[\s\S]*item\.state !== "steering"/u,
+      /function deferredEntriesForTask[\s\S]*deferredInputUsesQueue\(item, snapshot\?\.messageReceipts\)/u,
     );
-    assert.match(client, /deferred\.state === "dispatching" \|\| deferred\.state === "steering"\s*\?\s*"sending"/u);
+    assert.match(
+      client,
+      /const deferredDeliveryState = deferredInputDeliveryState\([\s\S]*\.\.\.deliveryPatch\(deferredDeliveryState\)/u,
+    );
 });
 
 test("message attachments keep timestamps, previews and an explicit open action", () => {
@@ -1776,7 +1779,7 @@ test("annotation actions preserve native selection and keep per-quote comments",
 
 test("lost command results reconcile by durable message receipt without duplicate draft", () => {
   const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
-  assert.match(client, /function applyMessageReceipts\(snapshot\)[\s\S]*agentHub\.completeSend\(clientUserMessageId, \{ accepted \}\)/u);
+  assert.match(client, /function applyMessageReceipts\(snapshot\)[\s\S]*const projection = messageReceiptProjection\(receipt\)[\s\S]*agentHub\.completeSend\(clientUserMessageId, \{[\s\S]*accepted: projection\.accepted/u);
   assert.match(client, /const rejected = messageSendDefinitelyRejected\(error\)[\s\S]*deliveryPatch\(rejected \? "rejected" : "unconfirmed"\)/u);
 });
 
