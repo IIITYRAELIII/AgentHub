@@ -576,7 +576,8 @@ test("Worker prevents stale Mini App shells and caches versioned assets", async 
 
   let response = await workerModule.default.fetch(new Request("https://hub.test/"), env);
   assert.equal(shellResponse.bodyUsed, true);
-  assert.equal(response.headers.get("Content-Length"), String(shell.length));
+  assert.equal(response.headers.get("Content-Length"), null);
+  assert.equal(response.headers.get("X-Agent-Hub-Static-Body"), "fixed");
   assert.equal(response.headers.get("Cache-Control"), "no-store");
   assert.deepEqual(Buffer.from(await response.arrayBuffer()), shell);
 

@@ -3456,8 +3456,9 @@ async function secureStaticResponse(response, request) {
   headers.set("X-Content-Type-Options", "nosniff");
   let body = response.body;
   if (body && contentType.includes("text/html")) {
-    body = await response.arrayBuffer();
-    headers.set("Content-Length", String(body.byteLength));
+    body = new Uint8Array(await response.arrayBuffer());
+    headers.delete("Content-Length");
+    headers.set("X-Agent-Hub-Static-Body", "fixed");
   }
   return new Response(body, { status: response.status, statusText: response.statusText, headers });
 }
