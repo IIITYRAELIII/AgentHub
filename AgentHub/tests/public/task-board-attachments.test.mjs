@@ -17,6 +17,10 @@ async function asset(name) {
   return readFile(new URL(`../../assets/web-app/${name}`, import.meta.url), "utf8");
 }
 
+async function composition(name) {
+  return readFile(new URL(`../../src/composition/${name}`, import.meta.url), "utf8");
+}
+
 test("Dashboard Task preview summarizes attachments without exposing file names", async () => {
   const view = await loadBoardView();
   const attachments = ["01.oga", "02.oga", "03.oga", "05.oga", "04.oga", "06.oga", "transcripts.json"]
@@ -54,4 +58,18 @@ test("Task card exposes paste and unrestricted file picking while image viewer o
   assert.match(board, /taskCardModal\?\.addEventListener\("paste"/u);
   assert.match(board, /emit\("attachment-add"/u);
   assert.match(app, /attachmentViewer\.showModal\(\)/u);
+});
+
+test("Task attachment storage reaches the desktop task controller through every composition boundary", async () => {
+  const [hub, interactionShell, desktopShell, routerWiring] = await Promise.all([
+    composition("agent-hub-composition.mjs"),
+    composition("interaction-shell-phase-composition.mjs"),
+    composition("desktop-shell-composition.mjs"),
+    composition("desktop-run-router-wiring-composition.mjs"),
+  ]);
+
+  assert.match(hub, /attachmentDirectory,/u);
+  assert.match(interactionShell, /attachmentDirectory: infrastructure\.attachmentDirectory/u);
+  assert.match(desktopShell, /attachmentDirectory,/u);
+  assert.match(routerWiring, /attachmentDirectory: services\.attachmentDirectory/u);
 });
