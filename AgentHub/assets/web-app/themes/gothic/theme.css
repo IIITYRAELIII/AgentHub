@@ -654,8 +654,8 @@ html[data-theme="gothic"] {
   --gothic-blade-joint-task-bottom-preview: url("./gothic-blade-joint-bottom-left-v12.png");
   --gothic-blade-joint-activity-top-preview: url("./gothic-blade-joint-top-right-v12.png");
   --gothic-blade-joint-activity-bottom-preview: url("./gothic-blade-joint-bottom-right-v12.png");
-  --gothic-panel-texture-preview: url("./gothic-panel-texture-reference.png");
   --gothic-workspace-card-texture-preview: url("./gothic-workspace-card-texture.png");
+  --gothic-panel-texture-preview: var(--gothic-workspace-card-texture-preview);
   --gothic-panel-base-color: #0b0c0e;
   --gothic-panel-base-image:
     linear-gradient(rgb(8 9 10 / 14%), rgb(8 9 10 / 14%)),
@@ -790,7 +790,7 @@ html[data-theme="gothic"] body::before {
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .view-tab {
     background-color: #100f0f !important;
-    background-image: url("./gothic-panel-texture-reference.png") !important;
+    background-image: var(--gothic-panel-texture-preview) !important;
     background-blend-mode: multiply;
     background-size: 24rem 24rem !important;
     border: 1px solid rgb(79 75 79 / 28%) !important;
@@ -817,7 +817,7 @@ html[data-theme="gothic"] body::before {
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .view-tab[aria-pressed="true"] {
     background-color: #15100f !important;
-    background-image: url("./gothic-panel-texture-reference.png") !important;
+    background-image: var(--gothic-panel-texture-preview) !important;
     background-blend-mode: multiply;
     background-size: 24rem 24rem !important;
     border: 1px solid rgb(79 75 79 / 48%) !important;
@@ -881,7 +881,7 @@ html[data-theme="gothic"] body::before {
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .toolbar .view-settings {
     background-color: #100f0f !important;
-    background-image: url("./gothic-panel-texture-reference.png") !important;
+    background-image: var(--gothic-panel-texture-preview) !important;
     background-blend-mode: multiply;
     background-size: 24rem 24rem !important;
     border: 1px solid rgb(79 75 79 / 28%) !important;
