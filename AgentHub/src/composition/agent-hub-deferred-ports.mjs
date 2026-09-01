@@ -16,7 +16,7 @@ export function createAgentHubDeferredPorts() {
     "persistManagedRunHistory", "persistClaudeRunHistory", "startClaudeTurn", "steerClaudeTurn",
     "stopClaudeRunProcess", "attachClaudeRunAfterRestart", "handleCodexMessage",
     "completedCodexAnswer", "applyCodexObservedSnapshot", "applyCodexActiveSnapshot",
-    "readCodexTaskSnapshot", "scheduleCodexTerminalAudit",
+    "readCodexTaskSnapshot", "scheduleCodexTerminalAudit", "importCodexAssistantAttachments",
   ]);
   const taskInteraction = createDeferredCompositionPort("task interaction wiring", [
     "readCachedHistory", "refreshHistory", "showTaskMessage", "showLastTaskMessage",

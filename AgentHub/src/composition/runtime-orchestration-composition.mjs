@@ -89,6 +89,7 @@ export function createRuntimeOrchestrationComposition({
     startCodexAppServer,
     initializeCodex,
     stopCodexAppServerTree,
+    importCodexDesktopAttachments,
   } = provider;
   const {
     runTaskTitle,
@@ -237,6 +238,7 @@ export function createRuntimeOrchestrationComposition({
     isStopping: () => hostState.stopping,
     runtimeTimers,
     selectedTaskWatchIntervalMs,
+    attachmentImporter: importCodexDesktopAttachments,
     terminalAuditIntervalMs,
     terminalAuditEnabled: false,
     logger: taskObserverLogger,

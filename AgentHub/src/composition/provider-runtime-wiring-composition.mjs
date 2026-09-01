@@ -14,6 +14,7 @@ export function createProviderRuntimeWiring({
   isStopping,
   runtimeTimers,
   selectedTaskWatchIntervalMs,
+  attachmentImporter,
   terminalAuditIntervalMs = 30_000,
   terminalAuditEnabled = true,
   logger = console,
@@ -24,6 +25,10 @@ export function createProviderRuntimeWiring({
 
   function persistClaudeRunHistory(run, options = {}) {
     return persistManagedRunHistory(run, options);
+  }
+
+  function importCodexAssistantAttachments(...args) {
+    return attachmentImporter(...args);
   }
 
   function handleClaudeStreamEvent(run, parsed) {
@@ -114,6 +119,7 @@ export function createProviderRuntimeWiring({
     selectedTaskWatch,
     persistManagedRunHistory,
     persistClaudeRunHistory,
+    importCodexAssistantAttachments,
     startClaudeTurn,
     steerClaudeTurn,
     stopClaudeRunProcess,

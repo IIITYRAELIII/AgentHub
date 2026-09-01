@@ -23,6 +23,7 @@ export class CodexRunFinalizer {
     deliverTerminal,
     markRunCompleted,
     completeRun,
+    resolveTerminalAttachments = async () => [],
     formatUsage = formatTurnTokenUsage,
     titleForAnswer = conciseTurnTitle,
     logger = console,
@@ -40,6 +41,7 @@ export class CodexRunFinalizer {
     this.deliverTerminal = deliverTerminal;
     this.markRunCompleted = markRunCompleted;
     this.completeRun = completeRun;
+    this.resolveTerminalAttachments = resolveTerminalAttachments;
     this.formatUsage = formatUsage;
     this.titleForAnswer = titleForAnswer;
     this.logger = logger;
@@ -87,6 +89,8 @@ export class CodexRunFinalizer {
       turnId: completedTurnId,
     };
     const existingCompletion = this.notifications.get(identity);
+    const responseAttachments = await this.resolveTerminalAttachments(run, completedTurnId);
+    run.responseAttachments = responseAttachments;
     const completionInput = {
       ...identity,
       streamId: run.streamId ?? null,
@@ -106,6 +110,7 @@ export class CodexRunFinalizer {
       clientUserMessageId: run.clientUserMessageId ?? null,
       userMessages: run.userMessages,
       finalAnswer: String(answer ?? "").trim(),
+      responseAttachments,
       changedFiles: exactRunChangedFiles(run),
       diff: run.latestDiff ?? "",
       gitBaseline: run.gitBaseline ?? null,
