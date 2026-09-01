@@ -288,8 +288,13 @@ html[data-view="chat"][data-surface][data-theme] {
 /* Кольцо бегущего сигнала во вкладке. Эффект строит его маской xor между
    content-box и border-box, то есть толщина кольца равна padding. В полосе
    вкладок padding доходит до псевдоэлемента нулевым, обе области совпадают, и
-   маска стирает слой целиком, поэтому сигнала не видно. Толщина задаётся явно. */
-.stream-tabs-track
+   маска стирает слой целиком, поэтому сигнала не видно. Толщина задаётся явно.
+
+   Правило принадлежит эффекту impulse и только ему: без этого ограничения оно
+   подменяло бы своей анимацией scanner, breath, thread, sediment и echo,
+   выбранные пользователем. */
+&[data-stream-status-effect="impulse"]
+  .stream-tabs-track
   .stream-tab:is([data-running], [data-answer-ready])
   [class~="stream-tab-card"]::after {
   /* Кольцо занимает карточку целиком, иначе на статичном кадре оно читается
@@ -317,6 +322,19 @@ html[data-view="chat"][data-surface][data-theme] {
 @keyframes stream-tab-ring-sweep {
   from { background-position: 120% 0; }
   to { background-position: -120% 0; }
+}
+
+/* Общий блок reduced-motion в styles.css гасит анимацию без !important и
+   проигрывает правилу выше, поэтому запрет движения повторён здесь с той же
+   силой. Кольцо остаётся видимым, но неподвижным. */
+@media (prefers-reduced-motion: reduce) {
+  &[data-stream-status-effect="impulse"]
+    .stream-tabs-track
+    .stream-tab:is([data-running], [data-answer-ready])
+    [class~="stream-tab-card"]::after {
+    animation: none !important;
+    background-position: 0 0 !important;
+  }
 }
 
 .stream-tabs-track .stream-tab-title {
