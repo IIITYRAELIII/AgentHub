@@ -9,8 +9,6 @@ import {
 } from "../../application/task-history.mjs";
 import {
   CODEX_CONTEXT_PROBE_CLIENT_ID_PREFIX,
-  CODEX_CONTEXT_PROBE_PROMPT,
-  CODEX_CONTEXT_PROBE_RESPONSE_PREFIX,
   isCodexContextProbeTurn,
 } from "../../domain/codex-context-probe.mjs";
 import {
@@ -494,11 +492,7 @@ export function createDesktopTaskHistoryFactory({
         limit,
         hiddenProvider: "codex",
         hiddenTurnIdPrefixes: [CODEX_AUTO_COMPACTION_TURN_ID_PREFIX],
-        hiddenPrompts: [CODEX_CONTEXT_PROBE_PROMPT],
-        hiddenAnswerPrefixes: [CODEX_CONTEXT_PROBE_RESPONSE_PREFIX],
         hiddenClientUserMessageIdPrefixes: [CODEX_CONTEXT_PROBE_CLIENT_ID_PREFIX],
-        hiddenMessageTexts: [CODEX_CONTEXT_PROBE_PROMPT],
-        hiddenMessageTextPrefixes: [CODEX_CONTEXT_PROBE_RESPONSE_PREFIX],
         emptyCompletionText: EMPTY_TURN_COMPLETION_TEXT,
       })
       : null;

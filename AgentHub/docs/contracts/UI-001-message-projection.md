@@ -71,9 +71,12 @@ presentations copy the original unmodified block text.
 Every live projection has an explicit `operationKind`. Only `user-turn` may
 produce user-visible running state. `probe`, `compaction`, `measurement` and
 `maintenance` may have dedicated system presentation but cannot create or revive
-a user-turn card. A task snapshot with no active run is authoritative after any
-available completion has been promoted: it removes the cached live card, probe
-and live-user projection even when the previous card was a valid `user-turn`.
+a user-turn card. An explicit non-probe `operationKind` or ordinary
+`clientUserMessageId` is authoritative user-operation identity even when the
+prompt or final output exactly equals the reserved context-probe sentinel.
+A task snapshot with no active run is authoritative after any available
+completion has been promoted: it removes the cached live card, probe and
+live-user projection even when the previous card was a valid `user-turn`.
 Queued inputs remain represented by the queue surface and cannot keep a drained
 run card alive while waiting for, or after completing, later turns.
 
@@ -102,8 +105,10 @@ hydration starts strictly as background work and is never awaited by mark-read.
   after one supported release has rewritten every retained terminal record.
 - Pre-UI-001 live/message records without `operationKind` use guards explicitly
   labelled `legacy-*`. Text matching is permitted only for the historical
-  context-probe sentinel and never as entity identity. Remove these guards after
-  all retained snapshots and history rows carry explicit operation kinds.
+  context-probe sentinel when the record also lacks any client operation identity;
+  it is never entity identity and cannot override an ordinary
+  `clientUserMessageId`. Remove these guards after all retained snapshots and
+  history rows carry explicit operation kinds.
 - The exact provider-turn root fallback remains only for old rows that lack a
   submission alias. It cannot bind steer or inter-Stream messages and is removed
   after retained history has `clientUserMessageId` or `submissionId` on every

@@ -147,6 +147,13 @@ function normalizedCompletion(value) {
     deliverySequence: Number.isSafeInteger(value.deliverySequence) ? value.deliverySequence : null,
     startedAt: String(value.startedAt ?? ""),
     completedAt: String(value.completedAt ?? new Date().toISOString()),
+    ...(String(value.operationKind ?? "").trim()
+      ? { operationKind: String(value.operationKind).trim().toLowerCase() }
+      : {}),
+    ...(typeof value.contextProbe === "boolean" ? { contextProbe: value.contextProbe } : {}),
+    ...(String(value.clientUserMessageId ?? "").trim()
+      ? { clientUserMessageId: String(value.clientUserMessageId).trim() }
+      : {}),
     prompt: prompts[0] ?? "",
     prompts,
     finalAnswer: (base.provider === "codex"
@@ -272,6 +279,9 @@ export class TurnEndNotificationRegistry {
     completion.provisional = incoming.provisional === true;
     completion.completedAt = completion.completedAt || incoming.completedAt;
     completion.startedAt = completion.startedAt || incoming.startedAt;
+    if (incoming.operationKind) completion.operationKind = incoming.operationKind;
+    if (typeof incoming.contextProbe === "boolean") completion.contextProbe = incoming.contextProbe;
+    if (incoming.clientUserMessageId) completion.clientUserMessageId = incoming.clientUserMessageId;
     completion.prompts = [...new Set([
       ...(Array.isArray(completion.prompts) ? completion.prompts : [completion.prompt]),
       ...incoming.prompts,

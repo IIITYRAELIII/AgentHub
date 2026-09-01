@@ -847,12 +847,14 @@ function contextProbeRun(run) {
   if (!run) return false;
   if (String(run.operationKind ?? "").trim() === "probe") return true;
   if (String(run.operationKind ?? "").trim()) return false;
-  if ([
+  const clientIds = [
     run.clientUserMessageId,
     ...(Array.isArray(run.userMessages) ? run.userMessages : []).map((message) => (
       message?.clientUserMessageId ?? message?.clientId
     )),
-  ].some(contextProbeClientId)) return true;
+  ].map((value) => String(value ?? "").trim()).filter(Boolean);
+  if (clientIds.some(contextProbeClientId)) return true;
+  if (clientIds.length) return false;
   if (legacyContextProbeTextMigrationGuard(run.prompt ?? run.promptPreview)) return true;
   return (Array.isArray(run.userMessages) ? run.userMessages : [])
     .some((message) => legacyContextProbeTextMigrationGuard(message?.text));
@@ -861,8 +863,10 @@ function contextProbeRun(run) {
 function contextProbeMessage(message) {
   if (String(message?.operationKind ?? "").trim() === "probe") return true;
   if (String(message?.operationKind ?? "").trim()) return false;
-  return contextProbeClientId(message?.clientUserMessageId ?? message?.clientId)
-    || legacyContextProbeTextMigrationGuard(message?.text);
+  const clientId = String(message?.clientUserMessageId ?? message?.clientId ?? "").trim();
+  if (contextProbeClientId(clientId)) return true;
+  if (clientId) return false;
+  return legacyContextProbeTextMigrationGuard(message?.text);
 }
 
 function withoutContextProbeMessages(messages) {

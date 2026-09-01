@@ -80,6 +80,9 @@ export class TurnEndDeliveryService {
       threadId: completion.threadId,
       turnId: completion.turnId,
       startedAt: completion.startedAt,
+      operationKind: completion.operationKind,
+      contextProbe: completion.contextProbe,
+      clientUserMessageId: completion.clientUserMessageId,
     }, notificationBody, {
       updatedAt: completion.completedAt,
       ...(Number.isSafeInteger(completion.terminalRevision) && completion.terminalRevision > 0
