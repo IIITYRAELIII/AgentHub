@@ -2234,9 +2234,17 @@ function streamDisplayName(stream, streamCount) {
 
 function representativeStreamTask(stream) {
   if (!stream) return null;
+  // У потока обычно несколько задач: каждый Thread — своя. Вкладка показывает
+  // одну из них, и выбирать её только по времени последней активности нельзя:
+  // идущий ход часто не самый свежий по этому полю, и вкладка молча брала
+  // соседнюю задачу без признака работы. Правая панель тем временем выбирает по
+  // состоянию и показывает поток работающим — отсюда «справа есть, сверху нет».
+  // Порядок здесь тот же, что в рельсе: сначала состояние, потом время.
+  const attention = (task) => (task?.running ? 0 : task?.unread ? 1 : 2);
   return stream.tasks.find((task) => task.id === state.selectedId)
     ?? [...stream.tasks].sort((left, right) => (
-      Date.parse(right.lastActivity || 0) - Date.parse(left.lastActivity || 0)
+      attention(left) - attention(right)
+      || Date.parse(right.lastActivity || 0) - Date.parse(left.lastActivity || 0)
     ))[0]
     ?? null;
 }
