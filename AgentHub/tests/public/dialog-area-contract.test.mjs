@@ -41,6 +41,18 @@ test("dialog geometry references semantic tokens without literal colors", async 
   assert.match(styles, /\.chat-scroll > \.msg-live \{[\s\S]*margin-top: 28px;[\s\S]*width: min\(var\(--dialog-column-width\), calc\(100% - 32px\)\);/u);
   assert.match(styles, /\.chat-stop-bottom \{[\s\S]*background: color-mix\(in srgb, var\(--dialog-danger\) 10%, transparent\);[\s\S]*width: 30px;/u);
   assert.doesNotMatch(styles, /(?<!track )\.stream-tab-card \{/u);
+  // Кольцо статуса во вкладке принадлежит только эффекту impulse. Без привязки
+  // его !important подменял бы анимации scanner, breath, thread и остальных.
+  assert.match(
+    styles,
+    /&\[data-stream-status-effect="impulse"\][\s\S]{0,200}\[class~="stream-tab-card"\]::after \{[\s\S]{0,400}animation: stream-tab-ring-sweep/u,
+  );
+  // Общий запрет движения в styles.css задан без !important и проигрывает
+  // правилу кольца, поэтому reduced-motion повторён рядом и с той же силой.
+  assert.match(
+    styles,
+    /@media \(prefers-reduced-motion: reduce\) \{[\s\S]{0,400}\[class~="stream-tab-card"\]::after \{[\s\S]{0,200}animation: none !important;/u,
+  );
   assert.match(styles, /\.composer \{[\s\S]*width: min\(var\(--dialog-column-width\), calc\(100% - 48px\)\);/u);
 });
 
