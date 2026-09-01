@@ -11,6 +11,7 @@ import {
   LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_RU_V2,
   LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V1,
   LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V2,
+  LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V3,
   RELEASE_WORKFLOW_DEVELOPER_RULES,
   TEAM_LEAD_DEVELOPER_RULES,
 } from "../../src/domain/workspace-release-workflow.mjs";
@@ -29,6 +30,7 @@ test("legacy v1 policy is stripped once and replaced by Task workflow rules", ()
   assert.match(rules, /merge that result into dev/u);
   assert.match(rules, /Do not create a Task for diagnosis/u);
   assert.match(rules, /preserve the user's original request in its description/iu);
+  assert.match(rules, /fit it within 36 characters.*only when.*cannot be preserved/iu);
   assert.match(rules, /PreRelease.*Await Tasks/u);
   assert.doesNotMatch(rules, /[А-Яа-яЁё]/u);
 });
@@ -42,6 +44,16 @@ test("legacy v2 Task policy is stripped before the change-only policy is injecte
     rules,
     `${RELEASE_WORKFLOW_DEVELOPER_RULES}\n\nCustom rule`,
   );
+});
+
+test("the previous Task policy is stripped after the title guidance changes", () => {
+  const rules = effectiveWorkspaceDeveloperRules(
+    `${LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V3}\n\nCustom rule`,
+    { releaseWorkflowEnabled: true },
+  );
+  assert.equal(rules, `${RELEASE_WORKFLOW_DEVELOPER_RULES}\n\nCustom rule`);
+  assert.match(rules, /fit it within 36 characters/iu);
+  assert.equal((rules.match(/Release workflow — applies only/gu) ?? []).length, 1);
 });
 
 test("explicit user rules matching the former hidden English block are preserved", () => {
