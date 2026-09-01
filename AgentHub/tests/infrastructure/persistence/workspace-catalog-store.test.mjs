@@ -633,7 +633,7 @@ test("persisted system prefixes are removed from every editable Workspace rule",
   database.prepare(`
     INSERT INTO hub_developer_rule_revisions
       (scope_type, scope_id, revision, content, created_at_ms)
-    VALUES ('workspace', ?, 1, ?, ?)
+    VALUES ('workspace', ?, 2, ?, ?)
   `).run(
     regularWorkspace.id,
     LEGACY_PERSISTED_AGENT_HUB_WORKSPACE_RULES_RU_V1,
@@ -696,12 +696,12 @@ test("Workspace and Stream developer rules keep versioned revisions", async (t) 
   const workspace = store.createWorkspace({ name: "Agent HUB" });
   const stream = store.createStream({ workspaceId: workspace.id, name: "Rules" });
 
-  assert.equal(store.workspaceDeveloperRules(workspace.id), null);
-  assert.equal(store.updateWorkspaceDeveloperRules(workspace.id, "First").revision, 1);
-  assert.equal(store.updateWorkspaceDeveloperRules(workspace.id, "Second").revision, 2);
-  assert.equal(store.updateWorkspaceDeveloperRules(workspace.id, "Second").revision, 2);
-  assert.equal(store.updateWorkspaceDeveloperRules(workspace.id, "").revision, 3);
-  assert.equal(store.updateWorkspaceDeveloperRules(workspace.id, "").revision, 3);
+  assert.equal(store.workspaceDeveloperRules(workspace.id).content, "");
+  assert.equal(store.updateWorkspaceDeveloperRules(workspace.id, "First").revision, 2);
+  assert.equal(store.updateWorkspaceDeveloperRules(workspace.id, "Second").revision, 3);
+  assert.equal(store.updateWorkspaceDeveloperRules(workspace.id, "Second").revision, 3);
+  assert.equal(store.updateWorkspaceDeveloperRules(workspace.id, "").revision, 4);
+  assert.equal(store.updateWorkspaceDeveloperRules(workspace.id, "").revision, 4);
   assert.equal(store.updateStreamDeveloperRules(stream.id, "Stream rule").revision, 1);
   assert.equal(store.workspaceDeveloperRules(workspace.id).content, "");
   assert.equal(store.streamDeveloperRules(stream.id).content, "Stream rule");

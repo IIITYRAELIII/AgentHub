@@ -3,6 +3,8 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
+import { editableWorkspaceDeveloperRules } from "../../domain/editable-workspace-developer-rules.mjs";
+
 import {
   EXPERIMENTS_SYSTEM_KEY,
   OTHER_WORKSPACE_NAME,
@@ -19,12 +21,16 @@ import {
   legacyReleaseWorkflowRules,
   RELEASE_WORKFLOW_SETTING,
   releaseWorkflowEnabled,
+  storedWorkspaceDeveloperRules,
   workspaceSettingsWithReleaseWorkflow,
 } from "../../domain/workspace-release-workflow.mjs";
-import { editableWorkspaceDeveloperRules } from "../../domain/editable-workspace-developer-rules.mjs";
 
 const SCHEMA_VERSION = 11;
 export const DEVELOPER_RULES_MAX_BYTES = 32 * 1024;
+const WORKSPACE_RULE_PREFIX_BYTES = Buffer.byteLength(
+  `${storedWorkspaceDeveloperRules("")}\n\n`,
+  "utf8",
+);
 const SOURCES = new Set(["created", "discovered", "migration", "rebirth"]);
 const DEVELOPER_RULE_SCOPES = new Set(["workspace", "stream"]);
 
@@ -425,6 +431,7 @@ export class WorkspaceCatalogStore {
         releaseWorkflowEnabled(settings),
       )),
     );
+    this.#updateWorkspaceDeveloperRules(workspaceId, "");
     return this.workspace(workspaceId);
   }
 
