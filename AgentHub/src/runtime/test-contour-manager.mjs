@@ -101,15 +101,18 @@ export function testContourPaths(root = defaultTestContourRoot()) {
   };
 }
 
-export function alignTestContourStreamModel({
+export async function alignTestContourStreamModel({
   databaseFile,
   model,
   databaseFactory = (file) => new DatabaseSync(file),
+  attempts = 12,
+  retryDelayMs = 250,
+  wait = (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)),
 } = {}) {
   requireTestContourModel(model);
   if (!databaseFile || !existsSync(databaseFile)) return { updated: 0, reason: "journal-unavailable" };
-  let lastError = null;
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
+  const maxAttempts = Math.max(1, Number(attempts) || 1);
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     let database = null;
     try {
       database = databaseFactory(databaseFile);
@@ -135,14 +138,19 @@ export function alignTestContourStreamModel({
       }
       return { updated };
     } catch (error) {
-      lastError = error;
       const code = Number(error?.errcode);
-      if (!Number.isInteger(code) || (code & 0xff) !== 10 || attempt === 3) throw error;
+      if (!Number.isInteger(code) || (code & 0xff) !== 10) throw error;
+      if (attempt === maxAttempts) {
+        throw new Error(
+          `Test Contour SQLite handoff failed after ${maxAttempts} attempts: ${error.message}`,
+          { cause: error },
+        );
+      }
     } finally {
       database?.close();
     }
+    await wait(retryDelayMs);
   }
-  throw lastError;
 }
 
 export function testContourOperationLockTarget(root = defaultTestContourRoot()) {
@@ -1117,7 +1125,7 @@ async function startTestContourUnlocked({
   const candidateSourceRoot = candidate.sourceRoot ?? sourceRoot;
   await prepareTestContourCodexProviders({ root: isolatedRoot, sourceRoot: candidateSourceRoot });
   await prepareTestContourCodexHome(paths);
-  alignTestContourStreamModel({
+  await alignTestContourStreamModel({
     databaseFile: path.join(paths.dataDir, "journal.sqlite"),
     model,
   });

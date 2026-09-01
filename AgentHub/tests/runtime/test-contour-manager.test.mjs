@@ -62,7 +62,7 @@ test("Test Contour aligns cloned Stream settings with the requested provider mod
     database.close();
   }
   try {
-    assert.deepEqual(alignTestContourStreamModel({
+    assert.deepEqual(await alignTestContourStreamModel({
       databaseFile,
       model: TEST_CONTOUR_FAKE_MODEL,
     }), { updated: 2 });
@@ -96,10 +96,15 @@ test("Test Contour retries transient SQLite I/O while production releases its re
     database.close();
   }
   let attempts = 0;
+  let waits = 0;
   try {
-    assert.deepEqual(alignTestContourStreamModel({
+    assert.deepEqual(await alignTestContourStreamModel({
       databaseFile,
       model: TEST_CONTOUR_FAKE_MODEL,
+      wait: async (delayMs) => {
+        waits += 1;
+        assert.equal(delayMs, 250);
+      },
       databaseFactory(file) {
         attempts += 1;
         if (attempts === 1) {
@@ -111,6 +116,7 @@ test("Test Contour retries transient SQLite I/O while production releases its re
       },
     }), { updated: 1 });
     assert.equal(attempts, 2);
+    assert.equal(waits, 1);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
