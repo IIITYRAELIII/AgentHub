@@ -4709,7 +4709,7 @@ html[data-view="dashboard"] .task-board-view {
 }
 
 .stream-role-help-popover {
-  position: relative;
+  display: inline-flex;
 }
 
 .stream-role-help {
@@ -4725,27 +4725,25 @@ html[data-view="dashboard"] .task-board-view {
   width: 1.1rem;
 }
 
-.stream-role-help::-webkit-details-marker {
-  display: none;
-}
-
 .stream-role-tooltip {
   background: var(--surface-2);
   border: 1px solid var(--accent-line);
-  display: none;
   gap: 0.45rem;
-  left: 0;
+  margin: auto;
   max-height: min(28rem, 70vh);
+  max-width: calc(100vw - 2rem);
   overflow: auto;
   padding: 0.75rem;
-  position: absolute;
-  top: calc(100% + 0.35rem);
-  width: min(34rem, 75vw);
+  width: min(42rem, calc(100vw - 2rem));
   z-index: 8;
 }
 
-.stream-role-help-popover[open] .stream-role-tooltip {
+.stream-role-tooltip:popover-open {
   display: grid;
+}
+
+.stream-role-tooltip::backdrop {
+  background: rgba(0, 0, 0, 0.45);
 }
 
 .stream-role-tooltip p {

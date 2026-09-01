@@ -497,9 +497,10 @@
                       <span class="switch-text">Тим-лид</span>
                       <span class="switch-track" aria-hidden="true"></span>
                     </label>
-                    <details class="stream-role-help-popover">
-                      <summary class="stream-role-help" aria-label="Инструкция роли Тим-лид">?</summary>
-                      <div class="stream-role-tooltip" id="stream-team-lead-note">
+                    <span class="stream-role-help-popover">
+                      <button type="button" class="stream-role-help" aria-label="Инструкция роли Тим-лид"
+                        popovertarget="stream-team-lead-note">?</button>
+                      <div class="stream-role-tooltip" id="stream-team-lead-note" popover>
                         <p>Ты — тим-лид Workspace.</p>
                         <p>По умолчанию делегируй Dashboard Tasks другим потокам вместо самостоятельного выполнения. Это предпочтение не распространяется на архитектурные релизные действия.</p>
                         <p>При делегировании проси исполнителя прислать результат межпоточным сообщением в твой Stream. Не жди ответа: если другой работы нет, заверши текущий ход.</p>
@@ -511,7 +512,7 @@
                         <p>Вопрос или замечание по уже назначенной Task отправляй через hub_stream_message_send с mode=queue.</p>
                         <p>Новую Task передавай свободному Stream через hub_task_start, запущенную — через hub_task_reassign. В сообщении попроси исполнителя прислать результат в твой Stream.</p>
                       </div>
-                    </details>
+                    </span>
                   </span>
                 </div>
                 <div class="quick-messages-settings-row">
