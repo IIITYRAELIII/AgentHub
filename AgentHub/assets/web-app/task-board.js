@@ -228,6 +228,16 @@
     };
   }
 
+  function createTaskReferenceOpenHandler({ getTasks, openTask } = {}) {
+    return (event) => {
+      const taskId = String(event?.detail?.taskId ?? "");
+      const task = (getTasks?.() ?? []).find((item) => item.id === taskId);
+      if (!task) return false;
+      openTask?.(task);
+      return true;
+    };
+  }
+
   function taskExecutorPresentation(task, workspaces = []) {
     const workspaceId = String(task?.workspaceId ?? "").trim();
     const streamId = String(task?.streamId ?? "").trim();
@@ -354,6 +364,7 @@
   }
 
   window.AgentHubTaskBoardView = Object.freeze({
+    createTaskReferenceOpenHandler,
     normalizedTaskStatusLanguage,
     orderedDashboardColumnIds,
     replaceBoardColumnRegionsPreservingScroll,
@@ -1230,10 +1241,8 @@
       }
     },
   });
-  document.addEventListener("agenthub:task-reference-open", (event) => {
-    const task = state.tasks.find((item) => item.id === String(event.detail?.taskId ?? ""));
-    if (!task) return;
-    document.querySelector("[data-view-button='dashboard']")?.click();
-    openTaskCard(task);
-  });
+  document.addEventListener("agenthub:task-reference-open", createTaskReferenceOpenHandler({
+    getTasks: () => state.tasks,
+    openTask: openTaskCard,
+  }));
 })();
