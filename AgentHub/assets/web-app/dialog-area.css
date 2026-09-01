@@ -292,19 +292,31 @@ html[data-view="chat"][data-surface][data-theme] {
 .stream-tabs-track
   .stream-tab:is([data-running], [data-answer-ready])
   [class~="stream-tab-card"]::after {
-  /* Вкладка вдвое ниже карточки в панели, поэтому тот же градиент читается
-     как еле заметная чёрточка. Ядро сигнала шире, кромки короче, свечение
-     сильнее — рисунок эффекта тот же, различимость восстановлена. */
+  /* Кольцо занимает карточку целиком, иначе на статичном кадре оно читается
+     как недорисованная рамка вокруг части вкладки. Движение осталось: по
+     кольцу едет светлое ядро, но едет градиент внутри слоя, а не сам слой.
+     Вкладка вдвое ниже карточки в правой панели, поэтому ядро шире и свечение
+     сильнее — рисунок эффекта тот же, различимость сохранена. */
+  animation: stream-tab-ring-sweep 2.2s linear infinite !important;
   background-image: linear-gradient(
     90deg,
-    transparent 0%,
-    var(--accent) 26%,
-    var(--accent) 74%,
-    transparent 100%
+    color-mix(in srgb, var(--accent) 18%, transparent) 0%,
+    var(--accent) 34%,
+    var(--accent) 50%,
+    color-mix(in srgb, var(--accent) 18%, transparent) 84%,
+    color-mix(in srgb, var(--accent) 18%, transparent) 100%
   ) !important;
+  background-size: 220% 100% !important;
   filter: drop-shadow(0 0 7px color-mix(in srgb, var(--accent) 85%, transparent)) !important;
+  inset: -1px !important;
   padding: 5px !important;
-  width: 72% !important;
+  transform: none !important;
+  width: 100% !important;
+}
+
+@keyframes stream-tab-ring-sweep {
+  from { background-position: 120% 0; }
+  to { background-position: -120% 0; }
 }
 
 .stream-tabs-track .stream-tab-title {
