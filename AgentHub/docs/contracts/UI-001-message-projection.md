@@ -32,7 +32,12 @@ dispatch) moves from the conversation to the queue surface. Provider start and
 history reconciliation reuse the same command identity and cannot add a second
 card. Direct ACK, remote-result reconciliation and snapshot reconciliation use
 the same receipt classifier; none may infer queue ownership from
-`deferredInputs` presence or the `deferred` flag alone.
+`deferredInputs` presence or the `deferred` flag alone. Receipt snapshots are
+bounded, so an active deferred record with `conflictKind=message-intake`
+remains authoritative evidence of accepted immediate intake when its receipt
+has left the current receipt window. Absence of a receipt must not move that
+card into the queue; deferred records with any other conflict kind retain queue
+ownership unless an available receipt or dispatch state says otherwise.
 The server applies exact turn-receipt aliases before exposing active or durable
 user items, so a root or steer cannot coexist with its accepted optimistic card.
 Service-only attachment wrappers such as `<image ...>` are removed from both the
