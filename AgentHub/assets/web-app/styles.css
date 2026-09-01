@@ -5706,28 +5706,10 @@ html[data-surface="mobile"]
   .task-workspace-item[data-running]::after,
 :root[data-stream-status-style="fill"][data-stream-status-effect="impulse"]
   .stream-tab[data-running] .stream-tab-card::after {
-  /* Заливка обязана красить карточку целиком и в каждый момент цикла.
-     Базовое правило задаёт полосу в 58% ширины и возит её translateX, поэтому
-     при inset: 0 правый отступ игнорируется, а на треть цикла полоса вообще
-     уезжает за карточку. Здесь коробка распрямляется на всю ширину, а
-     переливание берёт на себя фон двойной ширины: он повторяется, поэтому
-     блик идёт от края до края без разрывов. */
-  animation: stream-fill-sweep 2.2s linear infinite;
-  background: linear-gradient(
-    90deg,
-    color-mix(in srgb, var(--accent) 46%, transparent) 0%,
-    var(--accent) 25%,
-    color-mix(in srgb, var(--accent) 46%, transparent) 50%,
-    var(--accent) 75%,
-    color-mix(in srgb, var(--accent) 46%, transparent) 100%
-  );
-  background-size: 200% 100%;
   filter: none;
   inset: 0;
   opacity: 0.34;
   padding: 0;
-  transform: none;
-  width: auto;
   -webkit-mask: none;
   -webkit-mask-composite: initial;
   mask: none;
@@ -5813,28 +5795,10 @@ html[data-surface="mobile"]
   .task-workspace-item[data-running]::after,
 :root[data-stream-status-style="fill"][data-stream-status-effect="scanner"]
   .stream-tab[data-running] .stream-tab-card::after {
-  /* Заливка обязана красить карточку целиком и в каждый момент цикла.
-     Базовое правило задаёт полосу в 30% ширины и возит её translateX, поэтому
-     при inset: 0 правый отступ игнорируется, а на треть цикла полоса вообще
-     уезжает за карточку. Здесь коробка распрямляется на всю ширину, а
-     переливание берёт на себя фон двойной ширины: он повторяется, поэтому
-     блик идёт от края до края без разрывов. */
-  animation: stream-fill-sweep 1.85s linear infinite;
-  background: linear-gradient(
-    90deg,
-    color-mix(in srgb, var(--accent) 46%, transparent) 0%,
-    var(--accent) 25%,
-    color-mix(in srgb, var(--accent) 46%, transparent) 50%,
-    var(--accent) 75%,
-    color-mix(in srgb, var(--accent) 46%, transparent) 100%
-  );
-  background-size: 200% 100%;
   filter: none;
   inset: 0;
   opacity: 0.28;
   padding: 0;
-  transform: none;
-  width: auto;
   -webkit-mask: none;
   -webkit-mask-composite: initial;
   mask: none;
@@ -6404,11 +6368,6 @@ html[data-surface="mobile"]
   100% { opacity: 0.2; transform: scale(1); }
 }
 
-@keyframes stream-fill-sweep {
-  from { background-position: 0 0; }
-  to { background-position: 200% 0; }
-}
-
 @keyframes stream-scanner-pass {
   to { transform: translateX(420%); }
 }
@@ -6447,20 +6406,6 @@ html[data-surface="mobile"]
     animation: none;
     opacity: 0.72;
     transform: scaleX(0.72);
-  }
-
-  /* Правило заливки специфичнее общего запрета выше и без этого повтора
-     пережило бы его: у него два атрибута на :root против одного. */
-  :root[data-stream-status-style="fill"][data-stream-status-effect="impulse"]
-    .task-workspace-item[data-running]::after,
-  :root[data-stream-status-style="fill"][data-stream-status-effect="impulse"]
-    .stream-tab[data-running] .stream-tab-card::after,
-  :root[data-stream-status-style="fill"][data-stream-status-effect="scanner"]
-    .task-workspace-item[data-running]::after,
-  :root[data-stream-status-style="fill"][data-stream-status-effect="scanner"]
-    .stream-tab[data-running] .stream-tab-card::after {
-    animation: none;
-    background-position: 0 0;
   }
 
   :root[data-stream-status-effect]:not([data-stream-status-effect="off"])
