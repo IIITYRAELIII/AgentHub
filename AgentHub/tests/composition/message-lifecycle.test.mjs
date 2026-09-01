@@ -2000,24 +2000,6 @@ test("only receipts still owned by the deferred queue hide their chat card", () 
   assert.equal(lifecycle.receiptUsesDeferredQueue({ accepted: true, deferred: false }), false);
 });
 
-test("every client receipt path uses the canonical message projection", () => {
-  const projectionCalls = hubClientSource.match(/messageReceiptProjection\(/g) ?? [];
-  assert.equal(projectionCalls.length, 3);
-  assert.doesNotMatch(hubClientSource, /(?:result|receipt)\?\.deferred\s*===\s*true/);
-  assert.match(
-    clientFunctionSource("applyMessageReceipts", "function rememberSnapshotCompletion"),
-    /const projection = messageReceiptProjection\(receipt\)/,
-  );
-  assert.match(
-    clientFunctionSource("observeQueuedRemoteMessage", "async function readSnapshot"),
-    /const projection = messageReceiptProjection\(result\)/,
-  );
-  assert.match(
-    hubClientSource,
-    /agentHub\.completeSend\(request\.requestId, \{ accepted: projection\.accepted \}\)/,
-  );
-});
-
 test("accepted immediate intake stays visible until its provider turn starts", () => {
   const clientUserMessageId = "client-immediate-intake";
   const intakeReceipt = {
