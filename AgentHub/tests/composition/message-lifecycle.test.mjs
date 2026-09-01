@@ -2527,6 +2527,46 @@ test("terminal history clears a pre-turn live card by exact client identity", ()
   assert.deepEqual(cleared, [[taskId, null]]);
 });
 
+test("an inactive snapshot clears a retained user live card after queued turns drain", () => {
+  const taskId = "stream:burst";
+  const liveCardsByTask = new Map([[taskId, {
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "turn-last",
+    operationKind: "user-turn",
+    projectionAuthority: "live",
+    projectionState: "active",
+    stage: "Поток принят.",
+  }]]);
+  const liveProbeByTask = new Map([[taskId, { turnId: "turn-last" }]]);
+  const liveUserMessagesByTask = new Map([[taskId, {
+    clientUserMessageId: "client-last",
+  }]]);
+  const rendered = [];
+  const sandbox = vm.createContext({
+    activeTaskRun: lifecycle.activeTaskRun,
+    isUserRunningProjection: projection.isUserRunningProjection,
+    promoteLiveCompletion: () => false,
+    rememberSnapshotCompletion: () => false,
+    clearInternalContextProbe: () => {},
+    liveCardsByTask,
+    liveProbeByTask,
+    liveUserMessagesByTask,
+    renderTaskMessages: (...args) => rendered.push(args),
+  });
+  const source = clientFunctionSource(
+    "updateLiveMessage",
+    "function authorizationHeaders",
+  );
+  vm.runInContext(`${source}; globalThis.updateLive = updateLiveMessage;`, sandbox);
+
+  assert.equal(sandbox.updateLive(taskId, { running: false, run: null }), null);
+  assert.equal(liveCardsByTask.has(taskId), false);
+  assert.equal(liveProbeByTask.has(taskId), false);
+  assert.equal(liveUserMessagesByTask.has(taskId), false);
+  assert.deepEqual(rendered, [[taskId]]);
+});
+
 test("pre-turn live cleanup never crosses provider Thread identity", () => {
   const turnId = "20000000-0000-4000-8000-000000000028";
   assert.equal(lifecycle.completedLiveTurnIdentity([
