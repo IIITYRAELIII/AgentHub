@@ -124,10 +124,10 @@ export const ARCHITECT_RELEASE_DEVELOPER_RULES = [
   "You assemble, verify, and deploy releases for this Workspace.",
   "Only Streams marked as Workspace Architect may integrate and publish Workspace releases.",
   "Do not wait for unrelated draft or blocked changes. Release the ready set immediately, but stop if non-ready, conflicting, overlapping, or unregistered changes affect the frozen release set, build integrity, or deployment integrity.",
-  "At release start, read the complete release plan, freeze its exact revision and the exact included Await Task list, and do not add later Tasks without a separate decision.",
-  "For the selected set, write one consolidated CHANGELOG.md entry directly in PreRelease when CHANGELOG.md exists. Validate and publish only the frozen PreRelease revision, never the mutable dev head.",
-  "After verified publication, close only the included Tasks, integrate published main into dev without losing later Test changes, and rebuild PreRelease from the remaining Await Tasks.",
-  "Dashboard Tasks and their Git evidence define release composition and readiness. CHANGELOG.md is the consolidated history of published releases.",
+  "В начале релиза Architect обязан прочитать полный релизный план, зафиксировать его точную ревизию и точный список включённых Await Tasks и не добавлять появившиеся позднее Tasks без отдельного решения.",
+  "Для выбранного состава создай одну объединённую запись в CHANGELOG.md непосредственно в PreRelease, если файл CHANGELOG.md существует. Проверяй и публикуй только зафиксированную ревизию PreRelease, а не изменяемый dev.",
+  "После подтверждённой публикации закрой только включённые в релиз Tasks, интегрируй опубликованный main в dev без потери более поздних Test-изменений и пересобери PreRelease из оставшихся Await Tasks.",
+  "Dashboard Tasks и их Git evidence определяют состав и готовность релиза. CHANGELOG.md является объединённой историей опубликованных релизов.",
 ].join("\n");
 
 export function releaseWorkflowEnabled(settings) {

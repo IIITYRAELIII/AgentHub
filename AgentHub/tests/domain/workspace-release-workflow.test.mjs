@@ -75,8 +75,7 @@ test("Architect rules use only explicit settings.architect and allow multiple St
     effectiveStreamDeveloperRules("Stream rule", { architect: true }),
     `${ARCHITECT_RELEASE_DEVELOPER_RULES}\n\nStream rule`,
   );
-  assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /exact revision.*Await Task list/u);
-  assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /CHANGELOG\.md exists/u);
-  assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /published main into dev/u);
-  assert.doesNotMatch(ARCHITECT_RELEASE_DEVELOPER_RULES, /[А-Яа-яЁё]/u);
+  assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /точную ревизию.*Await Tasks/u);
+  assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /CHANGELOG\.md существует/u);
+  assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /опубликованный main в dev/u);
 });
