@@ -72,6 +72,42 @@ test("Dashboard bot materializes an attachment before crossing the public Worker
   assert.deepEqual(Buffer.from(await response.arrayBuffer()), Buffer.concat(chunks));
 });
 
+test("Dashboard bot reports Durable Object exhaustion as an observable retryable service state", async () => {
+  const worker = await loadWorker();
+  const hubId = "018f6c86-3f34-7a31-8f27-16f5b96cce70";
+  const hubSecret = "h".repeat(64);
+  const diagnostics = [];
+  const originalError = console.error;
+  console.error = (message) => diagnostics.push(String(message));
+  try {
+    const response = await worker.default.fetch(signedServiceRequest(
+      "https://hub.test/api/dashboard-bot/pull",
+      { limit: 10, waitMs: 25_000 },
+      hubSecret,
+      { "X-Agent-Hub-Dashboard-Id": hubId },
+    ), {
+      JOURNAL: {
+        getByName: () => ({
+          fetch: async () => { throw new Error("Exceeded allowed volume of requests in Durable Objects free tier."); },
+        }),
+      },
+      ASSETS: { fetch: async () => new Response("asset") },
+    });
+
+    assert.equal(response.status, 503);
+    assert.equal(response.headers.get("Retry-After"), "60");
+    assert.deepEqual(await response.json(), {
+      error: "Dashboard bot storage is temporarily unavailable",
+      code: "dashboard_bot_storage_unavailable",
+    });
+    assert.equal(diagnostics.length, 1);
+    assert.match(diagnostics[0], /"stage":"authenticate"/u);
+    assert.match(diagnostics[0], /Exceeded allowed volume/u);
+  } finally {
+    console.error = originalError;
+  }
+});
+
 test("Dashboard transport probe exposes a bounded ordered attachment manifest", async () => {
   const worker = await loadWorker();
   const manifestResponse = await worker.dashboardAttachmentTransportProbeResponse(new Request(

@@ -10,10 +10,16 @@ import {
   MAX_ATTACHMENT_BYTES,
   MAX_MESSAGE_ATTACHMENTS,
 } from "../../domain/attachment-files.mjs";
+import {
+  BoundedPollingBackoff,
+  retryAfterMilliseconds,
+} from "./remote-polling-policy.mjs";
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 35_000;
-const DEFAULT_POLL_TIMEOUT_MS = 10_000;
+const DEFAULT_POLL_WAIT_MS = 25_000;
+const DEFAULT_POLL_TIMEOUT_MS = 35_000;
 const DEFAULT_RETRY_MS = 5_000;
+const MAX_RETRY_MS = 5 * 60_000;
 const COMMAND_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const HUB_ID_PATTERN = COMMAND_ID_PATTERN;
 const REMOTE_ATTACHMENT_PREFIX = "remote-attachment:";
@@ -65,6 +71,7 @@ export class SharedDashboardBotClient {
   #fetch;
   #logger;
   #retryMs;
+  #backoff;
   #attachmentTimeoutMs;
   #closed = false;
   #loop = null;
@@ -81,8 +88,10 @@ export class SharedDashboardBotClient {
     handler,
     fetchImpl = globalThis.fetch,
     retrySeconds = DEFAULT_RETRY_MS / 1_000,
+    maxRetrySeconds = MAX_RETRY_MS / 1_000,
     attachmentTimeoutMs = ATTACHMENT_TIMEOUT_MS,
     logger = console,
+    random = Math.random,
   } = {}) {
     this.#publicUrl = String(publicUrl ?? "").replace(/\/+$/u, "");
     this.#hubId = String(hubId ?? "").trim().toLowerCase();
@@ -93,6 +102,11 @@ export class SharedDashboardBotClient {
     this.#fetch = fetchImpl;
     this.#logger = logger;
     this.#retryMs = Math.max(1_000, Number(retrySeconds) * 1_000 || DEFAULT_RETRY_MS);
+    this.#backoff = new BoundedPollingBackoff({
+      baseMs: this.#retryMs,
+      maxMs: Math.max(this.#retryMs, Number(maxRetrySeconds) * 1_000 || MAX_RETRY_MS),
+      random,
+    });
     this.#attachmentTimeoutMs = Math.max(1, Number(attachmentTimeoutMs) || ATTACHMENT_TIMEOUT_MS);
     if (!this.#publicUrl || !HUB_ID_PATTERN.test(this.#hubId)) {
       throw new TypeError("Shared Dashboard bot publicUrl and hubId are required");
@@ -158,6 +172,8 @@ export class SharedDashboardBotClient {
     if (!response.ok) {
       const error = new Error(`Shared Dashboard bot request ${pathname} failed: ${result?.error ?? `HTTP ${response.status}`}`);
       error.status = response.status;
+      error.code = String(result?.code ?? "");
+      error.retryAfterMs = retryAfterMilliseconds(response.headers.get("Retry-After"));
       throw error;
     }
     return result;
@@ -549,7 +565,7 @@ export class SharedDashboardBotClient {
     try {
       const payload = await this.#signedRequest("/api/dashboard-bot/pull", {
         limit: 10,
-        waitMs: 0,
+        waitMs: DEFAULT_POLL_WAIT_MS,
       }, { signal: abortController.signal, timeoutMs: DEFAULT_POLL_TIMEOUT_MS });
       if (!Array.isArray(payload?.commands)) throw new Error("Shared Dashboard bot returned an invalid queue");
       const textCommands = [];
@@ -579,7 +595,7 @@ export class SharedDashboardBotClient {
     }
   }
 
-  async #delay() {
+  async #delay(delayMs = this.#retryMs) {
     if (this.#closed) return;
     await new Promise((resolve) => {
       this.#delayResolve = resolve;
@@ -587,7 +603,7 @@ export class SharedDashboardBotClient {
         this.#delayTimer = null;
         this.#delayResolve = null;
         resolve();
-      }, this.#retryMs);
+      }, delayMs);
       this.#delayTimer.unref?.();
     });
   }
@@ -596,11 +612,20 @@ export class SharedDashboardBotClient {
     while (!this.#closed) {
       try {
         const handled = await this.poll();
+        const recoveredAttempts = this.#backoff.success();
+        if (recoveredAttempts > 0) {
+          this.#logger.info?.(`Shared Dashboard bot recovered after ${recoveredAttempts} failed polls.`);
+        }
         if (handled === 0) await this.#delay();
       } catch (error) {
         if (this.#closed || error?.name === "AbortError") break;
-        if (error?.status !== 409) this.#logger.warn(`Shared Dashboard bot: ${error.message}`);
-        await this.#delay();
+        const retry = this.#backoff.failure({ minimumMs: error?.retryAfterMs });
+        if (error?.status !== 409) {
+          this.#logger.warn(
+            `Shared Dashboard bot poll failed (attempt ${retry.attempt}, retry in ${retry.delayMs} ms): ${error.message}`,
+          );
+        }
+        await this.#delay(retry.delayMs);
       }
     }
   }

@@ -696,15 +696,32 @@ export async function validateSyncChunkRequest(request, secret, { now = Date.now
   return { body, syncId, index, count, encoding, version, updatedAt };
 }
 
-function json(payload, status = 200) {
+function json(payload, status = 200, headers = {}) {
   return new Response(JSON.stringify(payload), {
     status,
     headers: {
       "Cache-Control": "no-store",
       "Content-Type": "application/json; charset=utf-8",
       "X-Content-Type-Options": "nosniff",
+      ...headers,
     },
   });
+}
+
+async function dashboardBotDurableFetch(target, request, stage) {
+  try {
+    return await target.fetch(request);
+  } catch (error) {
+    console.error(JSON.stringify({
+      component: "dashboard-bot-service",
+      stage,
+      error: String(error?.message ?? error),
+    }));
+    return json({
+      error: "Dashboard bot storage is temporarily unavailable",
+      code: "dashboard_bot_storage_unavailable",
+    }, 503, { "Retry-After": "60" });
+  }
 }
 
 async function dashboardBotTelegramRequest(env, method, body = {}) {
@@ -3893,35 +3910,35 @@ export default {
       const hubId = String(request.headers.get("X-Agent-Hub-Dashboard-Id") ?? "").trim().toLowerCase();
       if (!CONTROL_ID_PATTERN.test(hubId)) return json({ error: "invalid dashboard bot hub id" }, 401);
       const hubStore = env.JOURNAL.getByName(`dashboard-bot:${hubId}`);
-      let authenticated = await hubStore.fetch(new Request(
+      let authenticated = await dashboardBotDurableFetch(hubStore, new Request(
         `https://journal.internal${url.pathname}`,
         request.clone(),
-      ));
+      ), "authenticate");
       let identity;
       if (authenticated.ok) {
         identity = await authenticated.json();
       } else {
         if (authenticated.status !== 401) return authenticated;
-        authenticated = await dashboardBotRouter.fetch(new Request(
+        authenticated = await dashboardBotDurableFetch(dashboardBotRouter, new Request(
           `https://journal.internal/dashboard-bot/service-export?pathname=${encodeURIComponent(url.pathname)}`,
           request.clone(),
-        ));
+        ), "router-export");
         if (!authenticated.ok && authenticated.status === 401) {
-          authenticated = await store.fetch(new Request(
+          authenticated = await dashboardBotDurableFetch(store, new Request(
             `https://journal.internal/dashboard-bot/service-export?pathname=${encodeURIComponent(url.pathname)}`,
             request.clone(),
-          ));
+          ), "legacy-export");
         }
         if (!authenticated.ok) return authenticated;
         const migratedIdentity = await authenticated.json();
-        const serviceRegistration = await hubStore.fetch(new Request(
+        const serviceRegistration = await dashboardBotDurableFetch(hubStore, new Request(
           "https://journal.internal/dashboard-bot/service-register",
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(migratedIdentity),
           },
-        ));
+        ), "service-register");
         if (!serviceRegistration.ok) return serviceRegistration;
         const { secret: _secret, ...publicIdentity } = migratedIdentity;
         identity = publicIdentity;
@@ -3942,7 +3959,7 @@ export default {
         ) {
           return json({ error: "invalid dashboard bot attachment request" }, 400);
         }
-        const attachmentResponse = await hubStore.fetch(new Request("https://journal.internal/attachment/pull", {
+        const attachmentResponse = await dashboardBotDurableFetch(hubStore, new Request("https://journal.internal/attachment/pull", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -3955,7 +3972,7 @@ export default {
               index: payload.index,
             }),
           }),
-        }));
+        }), "attachment-pull");
         return materializeDashboardBotAttachmentResponse(attachmentResponse);
       }
       if (url.pathname.endsWith("/pull")) {
@@ -3967,11 +3984,11 @@ export default {
         if (!Number.isSafeInteger(waitMs) || waitMs < 0 || waitMs > MAX_CONTROL_WAIT_MS) {
           return json({ error: "invalid dashboard bot pull wait" }, 400);
         }
-        return hubStore.fetch(new Request("https://journal.internal/control/pull", {
+        return dashboardBotDurableFetch(hubStore, new Request("https://journal.internal/control/pull", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ limit, waitMs }),
-        }));
+        }), "control-pull");
       }
       const id = String(payload?.id ?? "").toLowerCase();
       if (
@@ -3981,7 +3998,7 @@ export default {
       ) {
         return json({ error: "invalid dashboard bot result" }, 400);
       }
-      const resultResponse = await hubStore.fetch(new Request("https://journal.internal/control/result", {
+      const resultResponse = await dashboardBotDurableFetch(hubStore, new Request("https://journal.internal/control/result", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -3992,7 +4009,7 @@ export default {
             ? { result: payload.result ?? null }
             : { error: String(payload.error ?? "").slice(0, MAX_CONTROL_ERROR_CHARS) }),
         }),
-      }));
+      }), "control-result");
       const result = await resultResponse.json().catch(() => ({}));
       if (resultResponse.ok && result.resultAccepted === true && result.dashboardBotReceipt) {
         const receipt = result.dashboardBotReceipt;

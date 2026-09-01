@@ -483,7 +483,7 @@ test("Mini App publisher polls signed controls and posts their result", async ()
     assert.equal(requests.length, 2);
     assert.deepEqual(JSON.parse(requests[0].options.body), {
       limit: 10,
-      waitMs: 0,
+      waitMs: 10_000,
     });
     for (const request of requests) {
       const pathname = new URL(request.url).pathname;
@@ -510,7 +510,7 @@ test("Mini App publisher polls signed controls and posts their result", async ()
   }
 });
 
-test("Mini App publisher pauses between short control polls", async () => {
+test("Mini App publisher uses a wakeable long poll without an immediate empty-loop retry", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-control-short-poll-"));
   const secretFile = path.join(root, "sync.secret");
   await writeFile(secretFile, "l".repeat(64));
@@ -537,7 +537,34 @@ test("Mini App publisher pauses between short control polls", async () => {
     await started;
     await publisher.close();
     assert.equal(pullCount, 1);
-    assert.deepEqual(pullBody, { limit: 10, waitMs: 0 });
+    assert.deepEqual(pullBody, { limit: 10, waitMs: 10_000 });
+  } finally {
+    await publisher.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Mini App publisher preserves retry guidance from a capacity response", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-control-capacity-"));
+  const secretFile = path.join(root, "sync.secret");
+  await writeFile(secretFile, "c".repeat(64));
+  const publisher = new MiniAppPublisher({
+    dataDirectory: root,
+    publicUrl: "https://hub.example.test",
+    syncSecretFile: secretFile,
+    fetchImpl: async () => Response.json({
+      error: "Dashboard bot storage is temporarily unavailable",
+      code: "dashboard_bot_storage_unavailable",
+    }, { status: 503, headers: { "Retry-After": "60" } }),
+    controlHandler: async () => ({ ok: true }),
+  });
+  try {
+    await assert.rejects(publisher.pollControl(), (error) => {
+      assert.equal(error.status, 503);
+      assert.equal(error.code, "dashboard_bot_storage_unavailable");
+      assert.equal(error.retryAfterMs, 60_000);
+      return true;
+    });
   } finally {
     await publisher.close();
     await rm(root, { recursive: true, force: true });

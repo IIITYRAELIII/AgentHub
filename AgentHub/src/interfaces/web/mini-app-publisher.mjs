@@ -20,11 +20,17 @@ import {
   commandFingerprint,
 } from "../../infrastructure/persistence/durable-command-receipts.mjs";
 import { PersistentDeliveryOutbox } from "../../infrastructure/persistence/delivery-outbox.mjs";
+import {
+  BoundedPollingBackoff,
+  retryAfterMilliseconds,
+} from "./remote-polling-policy.mjs";
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 const ATTACHMENT_TIMEOUT_MS = 60_000;
 const SYNC_CHUNK_BYTES = 1024 * 1024;
 const DEFAULT_CONTROL_POLL_MS = 1_000;
+const DEFAULT_CONTROL_WAIT_MS = 10_000;
+const MAX_CONTROL_RETRY_MS = 60_000;
 const DEFAULT_SNAPSHOT_REFRESH_MS = 2_000;
 const MAX_CONTROL_RESULT_BYTES = 1024 * 1024;
 const MAX_CONTROL_ERROR_CHARS = 4_096;
@@ -154,12 +160,15 @@ export class MiniAppPublisher {
   #retryMs;
   #refreshMs;
   #fetch;
+  #logger;
   #onPublished;
   #controlHandler;
   #snapshotUserIds;
   #snapshotRefreshMs;
   #snapshotVersions = new Map();
   #controlPollMs;
+  #controlWaitMs;
+  #controlBackoff;
   #controlBatchSize;
   #attachmentDirectory;
   #unsubscribeJournal = null;
@@ -198,6 +207,8 @@ export class MiniAppPublisher {
     retrySeconds = 15,
     refreshSeconds = 60,
     fetchImpl = globalThis.fetch,
+    logger = console,
+    random = Math.random,
     onPublished = null,
     controlHandler = null,
     snapshotUserIds = [],
@@ -219,6 +230,7 @@ export class MiniAppPublisher {
     this.#retryMs = Number(retrySeconds) * 1_000;
     this.#refreshMs = Number(refreshSeconds) * 1_000;
     this.#fetch = fetchImpl;
+    this.#logger = logger;
     this.#onPublished = onPublished;
     this.#controlHandler = typeof controlHandler === "function" ? controlHandler : null;
     this.#snapshotUserIds = [...new Set([...snapshotUserIds]
@@ -229,6 +241,12 @@ export class MiniAppPublisher {
       Number(snapshotRefreshSeconds) * 1_000 || DEFAULT_SNAPSHOT_REFRESH_MS,
     );
     this.#controlPollMs = Math.max(500, Number(controlPollSeconds) * 1_000 || DEFAULT_CONTROL_POLL_MS);
+    this.#controlWaitMs = DEFAULT_CONTROL_WAIT_MS;
+    this.#controlBackoff = new BoundedPollingBackoff({
+      baseMs: this.#controlPollMs,
+      maxMs: MAX_CONTROL_RETRY_MS,
+      random,
+    });
     this.#controlBatchSize = Math.min(20, Math.max(1, Math.trunc(Number(controlBatchSize) || 10)));
     this.#attachmentDirectory = attachmentDirectory ? path.resolve(attachmentDirectory) : null;
     const storageDirectory = dataDirectory
@@ -324,7 +342,15 @@ export class MiniAppPublisher {
         : AbortSignal.timeout(timeoutMs),
     });
     if (!response.ok) {
-      throw new Error(`Mini App Worker control request ${pathname} failed with HTTP ${response.status}`);
+      const result = await response.clone().json().catch(() => ({}));
+      const error = new Error(
+        `Mini App Worker control request ${pathname} failed with HTTP ${response.status}`
+        + `${result?.error ? `: ${result.error}` : ""}`,
+      );
+      error.status = response.status;
+      error.code = String(result?.code ?? "");
+      error.retryAfterMs = retryAfterMilliseconds(response.headers.get("Retry-After"));
+      throw error;
     }
     return response;
   }
@@ -662,9 +688,10 @@ export class MiniAppPublisher {
       await this.#flushControlResults();
       const response = await this.#signedControlRequest("/api/control/pull", {
         limit: this.#controlBatchSize,
-        waitMs: 0,
+        waitMs: this.#controlWaitMs,
       }, secret, {
         signal: abortController.signal,
+        timeoutMs: this.#controlWaitMs + DEFAULT_TIMEOUT_MS,
       });
       if (!Array.isArray(response?.commands)) throw new Error("Mini App Worker returned an invalid control response");
       let handled = 0;
@@ -705,11 +732,19 @@ export class MiniAppPublisher {
     while (!this.#closed) {
       let retryDelay = 0;
       try {
-        await this.pollControl();
-        retryDelay = this.#controlPollMs;
-      } catch {
+        const handled = await this.pollControl();
+        const recoveredAttempts = this.#controlBackoff.success();
+        if (recoveredAttempts > 0) {
+          this.#logger.info?.(`Mini App control polling recovered after ${recoveredAttempts} failed polls.`);
+        }
+        retryDelay = handled > 0 ? 0 : this.#controlPollMs;
+      } catch (error) {
         if (this.#closed) break;
-        retryDelay = this.#controlPollMs;
+        const retry = this.#controlBackoff.failure({ minimumMs: error?.retryAfterMs });
+        retryDelay = retry.delayMs;
+        this.#logger.warn?.(
+          `Mini App control poll failed (attempt ${retry.attempt}, retry in ${retry.delayMs} ms): ${error.message}`,
+        );
       }
       await this.#controlDelay(retryDelay);
     }

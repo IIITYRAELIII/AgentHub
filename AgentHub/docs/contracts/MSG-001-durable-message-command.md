@@ -79,6 +79,13 @@ Transport timeout or an incomplete chunk leaves the durable command available
 for a later poll with the same command and attachment identities. The client
 does not create an immediate retry loop to make a stalled body appear reliable.
 
+Remote command intake uses a wakeable bounded long poll instead of periodic
+short polling. A successful response resets transport failure state. Consecutive
+transport or storage failures use bounded exponential backoff with jitter while
+retaining the original command identities. Durable Object unavailability is an
+observable `503` service state, not an unhandled `500` and not evidence that a
+command was rejected or completed.
+
 During rolling deployment, a request without `mode` may still receive the
 legacy full-body response, and a new runtime may accept a binary response from
 an old Worker that ignored `mode=manifest`. This migration guard is removed
