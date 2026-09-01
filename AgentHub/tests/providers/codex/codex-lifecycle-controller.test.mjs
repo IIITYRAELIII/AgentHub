@@ -184,6 +184,29 @@ test("Codex lifecycle leaves every managed run terminal to the finalizer", async
   }
 });
 
+test("Codex lifecycle preserves Hub terminal ownership after the managed run leaves the index", async () => {
+  let resolverCalls = 0;
+  const f = await fixture({
+    run: null,
+    resolveTerminalAttachments: async () => {
+      resolverCalls += 1;
+      return [];
+    },
+  });
+  await f.controller.handle(request("turn-start", f.projectRoot, {
+    prompt: "Generate an image",
+    executionOwner: TASK_EXECUTION_OWNERS.HUB,
+  }));
+  await f.controller.handle(request("turn-complete", f.projectRoot, {
+    status: "completed",
+    finalAnswer: "Done",
+  }));
+
+  assert.equal(resolverCalls, 0);
+  assert.deepEqual(f.recorded[0].responseAttachments, []);
+  assert.deepEqual(f.deliveredCompletions, []);
+});
+
 test("Codex lifecycle prefers turn-attributed files over shared-tree baseline changes", async () => {
   const f = await fixture({
     run: { gitBaseline: { roots: [] } },
