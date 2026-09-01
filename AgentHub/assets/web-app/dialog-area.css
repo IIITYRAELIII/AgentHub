@@ -276,23 +276,6 @@ html[data-view="chat"][data-surface][data-theme] {
   grid-template-columns: 7px 13px minmax(0, 1fr) max-content;
 }
 
-/* Статус потока во вкладке рисуется так же, как в строке правой панели:
-   рамкой в один пиксель акцентным цветом. Полоса вкладок держит карточку
-   плоской через border: 0, поэтому ширина возвращается здесь и только для
-   этих двух состояний. box-sizing: border-box задан глобально, поэтому
-   вкладка не меняет размер.
-
-   Цвет берётся из --accent-line — из того же источника, что и рамка строки
-   в правой панели. Промежуточная переменная --stream-status-border-color
-   здесь не годится: часть тем гасит её в transparent, и тогда вкладка
-   молчит, а панель тем временем показывает поток работающим. Два места
-   про одно состояние обязаны говорить одинаково. */
-.stream-tabs-track
-  .stream-tab:is([data-running], [data-answer-ready])
-  [class~="stream-tab-card"] {
-  border: 1px solid var(--accent-line) !important;
-  border-radius: calc(var(--radius-md) - 2px) !important;
-}
 
 
 
