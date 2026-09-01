@@ -85,7 +85,19 @@ test("terminal resolver retries until the exact rollout final is visible", async
     knownRolloutPath: async () => "C:/rollout.jsonl",
     readRolloutActivity: async () => {
       reads += 1;
-      return reads === 1 ? { finalMessages: {}, generatedImageSources: {} } : completeActivity;
+      return reads === 1 ? {
+        finalMessages: { "turn-direct": "Done" },
+        generatedImageSources: {},
+        activityGroups: {
+          "turn-direct": [{
+            activities: [{
+              type: "tool",
+              detail: "image_gen__imagegen",
+              status: "completed",
+            }],
+          }],
+        },
+      } : completeActivity;
     },
     importAttachments: async (sources) => sources.map(() => ({
       id: "codex-generated-direct.png",
