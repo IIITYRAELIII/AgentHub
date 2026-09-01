@@ -196,7 +196,7 @@ export class CodexLifecycleController {
       ? [...new Set(Array.isArray(run.rolloutChangedFiles) ? run.rolloutChangedFiles : [])]
       : [];
     const changedFiles = payloadChangedFiles.length ? payloadChangedFiles : rolloutChangedFiles;
-    const lifecycleOwnsTerminal = !run || !["running", "finishing"].includes(run.status);
+    const lifecycleOwnsTerminal = !run;
     const responseAttachments = lifecycleOwnsTerminal
       ? await d.resolveTerminalAttachments?.({
         threadId: identity.threadId,
@@ -280,7 +280,7 @@ export class CodexLifecycleController {
     }
     d.codexTurnStarts.delete(turnEndKey(deliveredIdentity));
     await d.saveState();
-    if (completion && (!run || !["running", "finishing"].includes(run.status))) {
+    if (completion && lifecycleOwnsTerminal) {
       await d.deliverTurnEndNotification(completion);
     }
     return completion
