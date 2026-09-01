@@ -23,6 +23,16 @@ set `clientUserMessageId + submissionId`; either alias binds the optimistic and
 canonical forms without using text, time or display order. Provider turns are
 keyed by `provider + threadId + turnId`; item entities additionally include
 `itemId + role`. Canonical intake atomically replaces its optimistic projection.
+After the optimistic card is visible, a durable `accepted=true` receipt keeps
+that same card continuously visible while immediate intake passes through a
+transient deferred record before provider start. Presence in `deferredInputs`
+alone cannot move an accepted command out of the conversation. Only a command
+still owned by the deferred queue (`deferred=true`, without acceptance or
+dispatch) moves from the conversation to the queue surface. Provider start and
+history reconciliation reuse the same command identity and cannot add a second
+card. Direct ACK, remote-result reconciliation and snapshot reconciliation use
+the same receipt classifier; none may infer queue ownership from
+`deferredInputs` presence or the `deferred` flag alone.
 The server applies exact turn-receipt aliases before exposing active or durable
 user items, so a root or steer cannot coexist with its accepted optimistic card.
 Service-only attachment wrappers such as `<image ...>` are removed from both the

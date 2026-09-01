@@ -2000,6 +2000,121 @@ test("only receipts still owned by the deferred queue hide their chat card", () 
   assert.equal(lifecycle.receiptUsesDeferredQueue({ accepted: true, deferred: false }), false);
 });
 
+test("every client receipt path uses the canonical message projection", () => {
+  const projectionCalls = hubClientSource.match(/messageReceiptProjection\(/g) ?? [];
+  assert.equal(projectionCalls.length, 3);
+  assert.doesNotMatch(hubClientSource, /(?:result|receipt)\?\.deferred\s*===\s*true/);
+  assert.match(
+    clientFunctionSource("applyMessageReceipts", "function rememberSnapshotCompletion"),
+    /const projection = messageReceiptProjection\(receipt\)/,
+  );
+  assert.match(
+    clientFunctionSource("observeQueuedRemoteMessage", "async function readSnapshot"),
+    /const projection = messageReceiptProjection\(result\)/,
+  );
+  assert.match(
+    hubClientSource,
+    /agentHub\.completeSend\(request\.requestId, \{ accepted: projection\.accepted \}\)/,
+  );
+});
+
+test("accepted immediate intake stays visible until its provider turn starts", () => {
+  const clientUserMessageId = "client-immediate-intake";
+  const intakeReceipt = {
+    clientUserMessageId,
+    accepted: true,
+    deferred: true,
+    queued: true,
+    reason: "message-intake",
+  };
+  const transientDeferredInput = {
+    clientUserMessageId,
+    state: "queued",
+  };
+  const optimistic = {
+    ...message(clientUserMessageId, "Исправь регрессию"),
+    turnId: "",
+    itemId: clientUserMessageId,
+    deliveryState: lifecycle.receiptDeliveryState(intakeReceipt),
+  };
+
+  assert.deepEqual(
+    { ...lifecycle.messageReceiptProjection(intakeReceipt) },
+    { accepted: true, deliveryState: "accepted", ownsDeferredQueue: false },
+  );
+  assert.equal(optimistic.deliveryState, "accepted");
+  assert.equal(
+    lifecycle.deferredInputDeliveryState(transientDeferredInput, [intakeReceipt]),
+    null,
+  );
+  const deferredIds = lifecycle.deferredQueueClientUserMessageIds(
+    [transientDeferredInput],
+    [intakeReceipt],
+  );
+  assert.deepEqual(deferredIds, []);
+  assert.deepEqual(
+    lifecycle.visibleConversationMessages([optimistic], {
+      deferredClientUserMessageIds: deferredIds,
+    }).map((item) => item.clientUserMessageId),
+    [clientUserMessageId],
+  );
+
+  const canonical = {
+    ...optimistic,
+    id: "provider-user-item",
+    turnId: "provider-turn",
+    itemId: "provider-user-item",
+    deliveryState: "delivered",
+  };
+  const started = lifecycle.deduplicateConversationMessages([canonical, optimistic]);
+  assert.equal(started.length, 1);
+  assert.equal(started[0].clientUserMessageId, clientUserMessageId);
+});
+
+test("a real deferred queue command stays out of the conversation", () => {
+  const clientUserMessageId = "client-real-queue";
+  const queueReceipt = {
+    clientUserMessageId,
+    accepted: false,
+    deferred: true,
+    queued: true,
+    reason: "task-running",
+  };
+  const deferredInput = { clientUserMessageId, state: "queued" };
+  assert.deepEqual(
+    { ...lifecycle.messageReceiptProjection(queueReceipt) },
+    { accepted: true, deliveryState: "queued", ownsDeferredQueue: true },
+  );
+  assert.equal(lifecycle.receiptDeliveryState(queueReceipt), "queued");
+  assert.equal(lifecycle.deferredInputDeliveryState(deferredInput, [queueReceipt]), "queued");
+  const deferredIds = lifecycle.deferredQueueClientUserMessageIds(
+    [deferredInput],
+    [queueReceipt],
+  );
+  const visible = lifecycle.visibleConversationMessages([{
+    ...message(clientUserMessageId, "После текущего хода"),
+    deliveryState: "queued",
+  }], { deferredClientUserMessageIds: deferredIds });
+  assert.deepEqual(visible, []);
+});
+
+test("dispatching input leaves the queue while retaining its sending state", () => {
+  const clientUserMessageId = "client-dispatching";
+  const receipt = {
+    clientUserMessageId,
+    deferred: true,
+    queued: true,
+    dispatching: true,
+  };
+  const deferredInput = { clientUserMessageId, state: "dispatching" };
+  assert.equal(lifecycle.deferredInputUsesQueue(deferredInput, [receipt]), false);
+  assert.equal(lifecycle.deferredInputDeliveryState(deferredInput, [receipt]), "sending");
+  assert.deepEqual(
+    lifecycle.deferredQueueClientUserMessageIds([deferredInput], [receipt]),
+    [],
+  );
+});
+
 test("live user update enriches a durable duplicate with its attachment and time", () => {
   const merged = lifecycle.mergeLiveUserMessages([{
     id: "durable-user",
