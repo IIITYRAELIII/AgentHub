@@ -292,8 +292,12 @@ html[data-view="chat"][data-surface][data-theme] {
 
    Правило принадлежит эффекту impulse и только ему: без этого ограничения оно
    подменяло бы своей анимацией scanner, breath, thread, sediment и echo,
-   выбранные пользователем. */
-&[data-stream-status-effect="impulse"]
+   выбранные пользователем.
+
+   Режим заливки исключён отдельно. Там эффект намеренно рисуется сплошным
+   слоем без маски, с нулевым padding и без свечения; кольцо с его отступом,
+   выносом за край и подсветкой превращало лёгкую заливку в плотную плиту. */
+&[data-stream-status-effect="impulse"]:not([data-stream-status-style="fill"])
   .stream-tabs-track
   .stream-tab:is([data-running], [data-answer-ready])
   [class~="stream-tab-card"]::after {
@@ -325,7 +329,7 @@ html[data-view="chat"][data-surface][data-theme] {
    проигрывает правилу выше, поэтому запрет движения повторён здесь с той же
    силой. Кольцо остаётся видимым, но неподвижным. */
 @media (prefers-reduced-motion: reduce) {
-  &[data-stream-status-effect="impulse"]
+  &[data-stream-status-effect="impulse"]:not([data-stream-status-style="fill"])
     .stream-tabs-track
     .stream-tab:is([data-running], [data-answer-ready])
     [class~="stream-tab-card"]::after {

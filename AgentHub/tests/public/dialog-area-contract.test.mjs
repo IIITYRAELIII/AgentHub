@@ -47,6 +47,13 @@ test("dialog geometry references semantic tokens without literal colors", async 
     styles,
     /&\[data-stream-status-effect="impulse"\][\s\S]{0,200}\[class~="stream-tab-card"\]::after \{[\s\S]{0,400}animation: stream-tab-ring-sweep/u,
   );
+  // Режим заливки рисует эффект сплошным слоем без маски, с нулевым отступом и
+  // без свечения. Кольцо со своим padding, выносом за край и подсветкой
+  // превращало эту заливку в плотную плиту, поэтому оно там не применяется.
+  assert.match(
+    styles,
+    /&\[data-stream-status-effect="impulse"\]:not\(\[data-stream-status-style="fill"\]\)/u,
+  );
   // Общий запрет движения в styles.css задан без !important и проигрывает
   // правилу кольца, поэтому reduced-motion повторён рядом и с той же силой.
   assert.match(
