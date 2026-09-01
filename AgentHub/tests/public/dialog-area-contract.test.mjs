@@ -41,33 +41,15 @@ test("dialog geometry references semantic tokens without literal colors", async 
   assert.match(styles, /\.chat-scroll > \.msg-live \{[\s\S]*margin-top: 28px;[\s\S]*width: min\(var\(--dialog-column-width\), calc\(100% - 32px\)\);/u);
   assert.match(styles, /\.chat-stop-bottom \{[\s\S]*background: color-mix\(in srgb, var\(--dialog-danger\) 10%, transparent\);[\s\S]*width: 30px;/u);
   assert.doesNotMatch(styles, /(?<!track )\.stream-tab-card \{/u);
-  // Кольцо статуса во вкладке принадлежит только эффекту impulse. Без привязки
-  // его !important подменял бы анимации scanner, breath, thread и остальных.
+  // Статус потока во вкладке рисуется тем же способом, что и в строке правой
+  // панели: рамкой в один пиксель. Цвет берётся из --accent-line напрямую,
+  // потому что промежуточную переменную часть тем гасит в transparent, и тогда
+  // вкладка молчит, пока панель показывает поток работающим.
   assert.match(
     styles,
-    /&\[data-stream-status-effect="impulse"\][\s\S]{0,200}\[class~="stream-tab-card"\]::after \{[\s\S]{0,400}animation: stream-tab-ring-sweep/u,
+    /\.stream-tab:is\(\[data-running\], \[data-answer-ready\]\)[\s\S]{0,80}\[class~="stream-tab-card"\] \{[\s\S]{0,200}border: 1px solid var\(--accent-line\) !important;/u,
   );
-  // Режим заливки рисует эффект сплошным слоем без маски, с нулевым отступом и
-  // без свечения. Кольцо со своим padding, выносом за край и подсветкой
-  // превращало эту заливку в плотную плиту, поэтому оно там не применяется.
-  assert.match(
-    styles,
-    /&\[data-stream-status-effect="impulse"\]:not\(\[data-stream-status-style="fill"\]\)/u,
-  );
-  // Общий запрет движения в styles.css задан без !important и проигрывает
-  // правилу кольца, поэтому reduced-motion повторён рядом и с той же силой.
-  assert.match(
-    styles,
-    /@media \(prefers-reduced-motion: reduce\) \{[\s\S]{0,400}\[class~="stream-tab-card"\]::after \{[\s\S]{0,200}animation: none !important;/u,
-  );
-  // Весь файл вложен в правило html[...], а вложенность CSS допускает внутри
-  // правила только @media, @supports, @layer, @scope и @container. Объявленный
-  // здесь @keyframes парсер молча выбрасывает: имя анимации не резолвится, и
-  // эффект застывает в первой фазе, оставаясь при этом «применённым» в
-  // computed style. Такие объявления живут в styles.css, на верхнем уровне.
-  assert.doesNotMatch(styles, /@keyframes stream-tab-ring-sweep/u);
-  const shell = await readFile(new URL("styles.css", assets), "utf8");
-  assert.match(shell, /^@keyframes stream-tab-ring-sweep \{[\s\S]{0,200}background-position/mu);
+  assert.doesNotMatch(styles, /stream-tab-ring-sweep/u);
   assert.match(styles, /\.composer \{[\s\S]*width: min\(var\(--dialog-column-width\), calc\(100% - 48px\)\);/u);
 });
 

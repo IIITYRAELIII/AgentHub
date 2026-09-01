@@ -276,67 +276,26 @@ html[data-view="chat"][data-surface][data-theme] {
   grid-template-columns: 7px 13px minmax(0, 1fr) max-content;
 }
 
-/* Цвет рамки статуса остаётся за темой: ширина рамки карточки нулевая,
-   поэтому правило невидимо, но переменная --stream-status-border-color
-   сохраняется для тех, кто на неё опирается. */
+/* Статус потока во вкладке рисуется так же, как в строке правой панели:
+   рамкой в один пиксель акцентным цветом. Полоса вкладок держит карточку
+   плоской через border: 0, поэтому ширина возвращается здесь и только для
+   этих двух состояний. box-sizing: border-box задан глобально, поэтому
+   вкладка не меняет размер.
+
+   Цвет берётся из --accent-line — из того же источника, что и рамка строки
+   в правой панели. Промежуточная переменная --stream-status-border-color
+   здесь не годится: часть тем гасит её в transparent, и тогда вкладка
+   молчит, а панель тем временем показывает поток работающим. Два места
+   про одно состояние обязаны говорить одинаково. */
 .stream-tabs-track
   .stream-tab:is([data-running], [data-answer-ready])
   [class~="stream-tab-card"] {
-  border-color: var(--stream-status-border-color, var(--accent-line)) !important;
-}
-
-/* Кольцо бегущего сигнала во вкладке. Эффект строит его маской xor между
-   content-box и border-box, то есть толщина кольца равна padding. В полосе
-   вкладок padding доходит до псевдоэлемента нулевым, обе области совпадают, и
-   маска стирает слой целиком, поэтому сигнала не видно. Толщина задаётся явно.
-
-   Правило принадлежит эффекту impulse и только ему: без этого ограничения оно
-   подменяло бы своей анимацией scanner, breath, thread, sediment и echo,
-   выбранные пользователем.
-
-   Режим заливки исключён отдельно. Там эффект намеренно рисуется сплошным
-   слоем без маски, с нулевым padding и без свечения; кольцо с его отступом,
-   выносом за край и подсветкой превращало лёгкую заливку в плотную плиту. */
-&[data-stream-status-effect="impulse"]:not([data-stream-status-style="fill"])
-  .stream-tabs-track
-  .stream-tab:is([data-running], [data-answer-ready])
-  [class~="stream-tab-card"]::after {
-  /* Кольцо занимает карточку целиком, иначе на статичном кадре оно читается
-     как недорисованная рамка вокруг части вкладки. Движение осталось: по
-     кольцу едет светлое ядро, но едет градиент внутри слоя, а не сам слой.
-     Вкладка вдвое ниже карточки в правой панели, поэтому ядро шире и свечение
-     ровнее — различимость даёт полная ширина, а не толщина и яркость. */
-  animation: stream-tab-ring-sweep 2.2s linear infinite !important;
-  background-image: linear-gradient(
-    90deg,
-    color-mix(in srgb, var(--accent) 12%, transparent) 0%,
-    color-mix(in srgb, var(--accent) 12%, transparent) 30%,
-    var(--accent) 46%,
-    var(--accent) 54%,
-    color-mix(in srgb, var(--accent) 12%, transparent) 70%,
-    color-mix(in srgb, var(--accent) 12%, transparent) 100%
-  ) !important;
-  background-size: 220% 100% !important;
-  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--accent) 60%, transparent)) !important;
-  inset: -1px !important;
-  padding: 3px !important;
-  transform: none !important;
-  width: 100% !important;
+  border: 1px solid var(--accent-line) !important;
+  border-radius: calc(var(--radius-md) - 2px) !important;
 }
 
 
-/* Общий блок reduced-motion в styles.css гасит анимацию без !important и
-   проигрывает правилу выше, поэтому запрет движения повторён здесь с той же
-   силой. Кольцо остаётся видимым, но неподвижным. */
-@media (prefers-reduced-motion: reduce) {
-  &[data-stream-status-effect="impulse"]:not([data-stream-status-style="fill"])
-    .stream-tabs-track
-    .stream-tab:is([data-running], [data-answer-ready])
-    [class~="stream-tab-card"]::after {
-    animation: none !important;
-    background-position: 0 0 !important;
-  }
-}
+
 
 .stream-tabs-track .stream-tab-title {
   color: inherit;
