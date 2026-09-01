@@ -169,6 +169,7 @@ export class RunJournalService {
       provider: completion.provider,
       threadId: completion.threadId,
       turnId: completion.turnId,
+      runId: completion.runId,
       terminalRevision: completion.terminalRevision,
       usage: completion.usage,
       usageReported: completion.usageReported,

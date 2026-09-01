@@ -5,9 +5,12 @@ import { TerminalTurnCommitService } from "../../src/application/terminal-turn-c
 
 test("terminal commit closes the matching message command through idempotent CAS", async () => {
   const transitions = [];
+  let committed = null;
   const service = new TerminalTurnCommitService({
     store: {
-      commit: async () => ({
+      commit: async (value) => {
+        committed = value;
+        return ({
         terminal: {
           provider: "codex",
           threadId: "thread-1",
@@ -17,7 +20,8 @@ test("terminal commit closes the matching message command through idempotent CAS
           payload: { history: { id: "run-1", clientUserMessageId: "message-1" } },
         },
         outbox: {},
-      }),
+        });
+      },
       get: async () => null,
     },
     messageCommands: {
@@ -39,4 +43,6 @@ test("terminal commit closes the matching message command through idempotent CAS
   assert.equal(transitions[0].clientUserMessageId, "message-1");
   assert.equal(transitions[0].state, "completed");
   assert.equal(transitions[0].result.terminalRevision, 3);
+  assert.equal(committed.payload.completion.runId, "run-1");
+  assert.equal(committed.payload.history.id, "run-1");
 });

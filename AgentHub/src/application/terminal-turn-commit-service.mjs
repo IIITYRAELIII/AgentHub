@@ -95,7 +95,10 @@ export class TerminalTurnCommitService {
       usageIdentity: usageIdentity(completion),
       lastMessage,
       payload: {
-        completion: structuredClone(completion),
+        completion: {
+          ...structuredClone(completion),
+          ...(String(run?.id ?? "").trim() ? { runId: String(run.id).trim() } : {}),
+        },
         history: historySnapshot(run, completion),
       },
       channels: channelIntents,
