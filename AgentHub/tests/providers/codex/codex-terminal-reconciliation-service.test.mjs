@@ -57,6 +57,7 @@ function harness(overrides = {}) {
     rememberSeenTurn: (...args) => calls.push(["seen", ...args]),
     saveState: async () => calls.push(["save"]),
     deliverNotification: async (completion) => calls.push(["deliver", completion.turnId]),
+    resolveTerminalAttachments: async () => [],
     now: () => Date.parse("2026-08-04T12:00:00.000Z"),
     logger: {
       log: (...args) => calls.push(["log", ...args]),
@@ -157,6 +158,35 @@ test("unhooked terminal Codex turn is recorded, saved and delivered once", async
   assert.equal(completions[0].chatId, 42);
   assert.equal(calls.some(([name]) => name === "save"), true);
   assert.equal(calls.some(([name, turnId]) => name === "deliver" && turnId === "turn-1"), true);
+});
+
+test("unhooked terminal reconciliation commits generated image attachments", async () => {
+  const responseAttachments = [
+    { id: "codex-generated-one.png", name: "Изображение", type: "image/png" },
+  ];
+  const resolverCalls = [];
+  const { service, completions } = harness({
+    resolveTerminalAttachments: async (run, turnId) => {
+      resolverCalls.push({ run, turnId });
+      return responseAttachments;
+    },
+  });
+  await service.reconcile(thread, project, {
+    turnId: "turn-image",
+    status: "completed",
+    completedAt: "2026-08-04T10:00:00.000Z",
+    usageResult: usage({ startedAt: "2026-08-04T09:59:00.000Z" }),
+  });
+
+  assert.deepEqual(resolverCalls, [{
+    run: {
+      threadId: "thread-1",
+      startedAt: "2026-08-04T09:59:00.000Z",
+      rolloutPath: "rollout.jsonl",
+    },
+    turnId: "turn-image",
+  }]);
+  assert.deepEqual(completions[0].responseAttachments, responseAttachments);
 });
 
 test("terminal reconciliation keeps only exact rollout file receipts", async () => {

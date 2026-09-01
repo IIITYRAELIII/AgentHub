@@ -36,6 +36,7 @@ export class CodexTerminalReconciliationService {
     rememberSeenTurn,
     saveState,
     deliverNotification,
+    resolveTerminalAttachments = async () => [],
     completedGraceMs = 10_000,
     now = Date.now,
     logger = console,
@@ -56,6 +57,7 @@ export class CodexTerminalReconciliationService {
     this.rememberSeenTurn = rememberSeenTurn;
     this.saveState = saveState;
     this.deliverNotification = deliverNotification;
+    this.resolveTerminalAttachments = resolveTerminalAttachments;
     this.completedGraceMs = completedGraceMs;
     this.now = now;
     this.logger = logger;
@@ -163,6 +165,11 @@ export class CodexTerminalReconciliationService {
         this.logger.log(`Reconciled delivered Codex terminal turn ${identity.turnId} (${resolvedStatus})`);
         return true;
       }
+      const responseAttachments = await this.resolveTerminalAttachments({
+        threadId: identity.threadId,
+        startedAt: usageResult.startedAt,
+        rolloutPath: thread.path,
+      }, identity.turnId);
       const completion = this.notifications.recordCompletion({
         ...identity,
         projectRoot: project.path,
@@ -181,6 +188,7 @@ export class CodexTerminalReconciliationService {
         completedAt: resolvedCompletedAt,
         prompt: usageResult.prompt,
         finalAnswer: usageResult.finalAnswer,
+        responseAttachments,
         changedFiles,
         diff: turnDiff,
         gitBaseline: turnStart?.gitBaseline ?? null,

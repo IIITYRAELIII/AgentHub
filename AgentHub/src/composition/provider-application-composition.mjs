@@ -10,8 +10,6 @@ import { ClaudeContextMaintenanceService } from "../providers/claude/claude-cont
 import { processIsAlive } from "../providers/claude/claude-run-io.mjs";
 import { readClaudeSessionSnapshot } from "../providers/claude/claude-session-reader.mjs";
 import { readCodexTurnUsage } from "../providers/codex/codex-turn-usage.mjs";
-import { readCodexRolloutActivity } from "../providers/codex/codex-rollout-activity.mjs";
-import { createCodexTerminalAttachmentResolver } from "../providers/codex/codex-terminal-attachments.mjs";
 import {
   codexObservedRuntimeActive,
   resolveCodexObservedExecutionOwner,
@@ -186,6 +184,7 @@ export async function createProviderApplicationComposition({
       provider: "codex",
       threadId,
     })?.streamId ?? null,
+    importCodexAssistantAttachments: api.importCodexAssistantAttachments,
   });
 
   const completion = createRunCompletionComposition({
@@ -247,11 +246,7 @@ export async function createProviderApplicationComposition({
     defaultNotificationChatId,
     changedFilesForRun: accounting.changedFilesForRun,
     persistManagedRunHistory: api.persistManagedRunHistory,
-    resolveCodexTerminalAttachments: createCodexTerminalAttachmentResolver({
-      knownRolloutPath: codexObservability.knownRolloutPath,
-      readRolloutActivity: readCodexRolloutActivity,
-      importAttachments: api.importCodexAssistantAttachments,
-    }),
+    resolveCodexTerminalAttachments: codexObservability.resolveTerminalAttachments,
     runtimeStateStore,
     commandTrace: commandTraceService,
   });
@@ -493,6 +488,7 @@ export async function createProviderApplicationComposition({
     backfillWorkLogPricingMetadata: api.backfillWorkLogPricingMetadata,
     readCodexThreadTitleHistories,
     rememberCodexRolloutPath: codexObservability.rememberRolloutPath,
+    resolveCodexTerminalAttachments: codexObservability.resolveTerminalAttachments,
     capturedCodexExecutionOwner: codexObservability.capturedExecutionOwner,
     codexObservedRuntimeActive,
     codexTransportPid: () => late.codexTransport().pid,

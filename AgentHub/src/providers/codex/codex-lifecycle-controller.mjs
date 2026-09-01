@@ -196,6 +196,13 @@ export class CodexLifecycleController {
       ? [...new Set(Array.isArray(run.rolloutChangedFiles) ? run.rolloutChangedFiles : [])]
       : [];
     const changedFiles = payloadChangedFiles.length ? payloadChangedFiles : rolloutChangedFiles;
+    const lifecycleOwnsTerminal = !run || !["running", "finishing"].includes(run.status);
+    const responseAttachments = lifecycleOwnsTerminal
+      ? await d.resolveTerminalAttachments?.({
+        threadId: identity.threadId,
+        startedAt: payload.startedAt ?? turnStart?.startedAt,
+      }, payload.turnId) ?? []
+      : [];
     const completion = d.turnEndNotifications.recordCompletion({
       provider: "codex",
       threadId: identity.threadId,
@@ -218,6 +225,7 @@ export class CodexLifecycleController {
       prompts: payload.prompts,
       userMessages: payload.userMessages ?? run?.userMessages,
       finalAnswer: payload.finalAnswer ?? "",
+      responseAttachments,
       changedFiles,
       diff: turnDiff || run?.latestDiff || "",
       gitBaseline: turnStart?.gitBaseline ?? run?.gitBaseline ?? null,
