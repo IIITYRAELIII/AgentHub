@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir, readFile } from "node:fs/promises";
+import { access, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { promisify } from "node:util";
@@ -10,6 +10,7 @@ import { TurnEndNotificationRegistry } from "../application/turn-end-notificatio
 import { createWorkLogUsageStore } from "../application/work-log-usage-store.mjs";
 import { TaskBoardService } from "../application/task-board-service.mjs";
 import { TaskReleasePlanService } from "../application/task-release-plan-service.mjs";
+import { WorkspaceReleasePreflightService } from "../application/workspace-release-preflight-service.mjs";
 import { WorkspaceReleaseService } from "../application/workspace-release-service.mjs";
 import { StreamHandoffService } from "../application/stream-handoff-service.mjs";
 import { AGENT_HUB_VERSION } from "../infrastructure/filesystem/agent-hub-package.mjs";
@@ -44,6 +45,7 @@ import {
 } from "../infrastructure/process/windows-file-clipboard.mjs";
 import { MiniAppServer } from "../interfaces/web/mini-app-server.mjs";
 import { HubMcpServer } from "../interfaces/mcp/hub-mcp-server.mjs";
+import { agentHubRuntimeHealth } from "../application/runtime-health.mjs";
 import { ensureLocalWebSecret } from "../interfaces/web/local-web-auth.mjs";
 import { TrustedDeviceRegistry } from "../interfaces/web/trusted-device-access.mjs";
 import { CodexRolloutContextSanitizer } from "../providers/codex/codex-rollout-context.mjs";
@@ -56,6 +58,7 @@ import {
   ensureDashBotTerraStream,
 } from "../providers/codex/codex-terra-voice-transcriber.mjs";
 import { RuntimeNotificationController } from "../runtime/runtime-notification-controller.mjs";
+import { readTestContourStatus, startTestContour } from "../runtime/test-contour-manager.mjs";
 import { sentryDiagnostics } from "../infrastructure/diagnostics/sentry-diagnostics.mjs";
 import { createCommandTraceComposition } from "./command-trace-composition.mjs";
 
@@ -152,6 +155,17 @@ async function usageSyncIdentity(config, agentHubRoot) {
   const label = await usageSyncDeviceLabel(agentHubRoot);
   if (label && label !== store.label) await store.setLabel(label);
   return store;
+}
+
+async function resolveReleaseTestContourSource(repositories) {
+  for (const repository of repositories) {
+    const sourceRoot = path.join(repository.worktreeRoot, "AgentHub");
+    try {
+      await access(path.join(sourceRoot, "test-contour.mjs"));
+      return { ...repository, sourceRoot };
+    } catch {}
+  }
+  throw new Error("release preflight could not locate AgentHub in an integrated dev worktree");
 }
 
 export async function createHubInfrastructure({
@@ -284,6 +298,8 @@ export async function createHubInfrastructure({
     usageSyncDeviceLabel: workLogUsageIdentityStore.label,
     workspaceCatalogStore,
   });
+  agentHubRuntimeHealth.setDiagnosticSource("usageSync", () => workLogUsageSyncStore.diagnostics());
+  agentHubRuntimeHealth.setDiagnosticSource("journal", () => workLogUsageStore.diagnostics());
   const streamHandoff = new StreamHandoffService({
     workspaceCatalog: workspaceCatalogStore,
     workLog: workLogUsageStore,
@@ -296,6 +312,17 @@ export async function createHubInfrastructure({
   const hubMcpSecret = await ensureLocalWebSecret(path.join(runtimeCommandRoot, "hub-mcp.secret"));
   const taskGitWorkspaces = new TaskGitWorkspaceService({ dataDir: config.dataDir });
   const taskReleasePlanner = new TaskReleasePlanService({ taskBoard, taskGitWorkspaces });
+  const workspaceReleasePreflight = new WorkspaceReleasePreflightService({
+    releasePlanner: taskReleasePlanner,
+    taskGitWorkspaces,
+    resolveTestContourSource: resolveReleaseTestContourSource,
+    refreshTestContour: ({ sourceRoot }) => startTestContour({
+      refresh: true,
+      sourceRoot,
+      entryFile: path.join(sourceRoot, "test-contour.mjs"),
+    }),
+    readTestContourStatus,
+  });
   const workspaceReleaseService = new WorkspaceReleaseService({
     store: taskBoardStore,
     releasePlanner: taskReleasePlanner,
@@ -308,6 +335,7 @@ export async function createHubInfrastructure({
     attachmentDirectory,
     secret: hubMcpSecret,
     releasePlanner: taskReleasePlanner,
+    releasePreflight: workspaceReleasePreflight,
     releaseCompleter: workspaceReleaseService,
     taskGitWorkspaces,
   });
@@ -437,6 +465,7 @@ export async function createHubInfrastructure({
     workLogUsageRemoteConfigStore,
     workspaceCatalogStore,
     taskReleasePlanner,
+    workspaceReleasePreflight,
     workspaceReleaseService,
     streamHandoff,
     preTurnInstructions,

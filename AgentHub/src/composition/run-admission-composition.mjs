@@ -242,6 +242,8 @@ export function createRunAdmissionComposition({
       modelId: item.modelId,
       reasoningId: item.reasoningId,
       collaborationMode: item.collaborationMode,
+      steerTargetRunId: item.steerTargetRunId,
+      steerTargetTurnId: item.steerTargetTurnId,
     };
   }
 

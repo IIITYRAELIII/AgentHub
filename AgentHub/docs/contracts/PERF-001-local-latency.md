@@ -47,12 +47,36 @@ cold fallback reads at most the latest 16 MiB. Exact App Server state and manage
 run identity remain preferred over JSONL fallback; reducing the scan window must
 not truncate the terminal answer retained by TURN-001.
 
+Codex `thread/read` coalescing is single-flight only: a completed read retains no
+Thread payload in Hub memory. Rollout session discovery incrementally parses at
+most 1 MiB, 4,096 lines, 256 KiB per line and one second per file; damaged,
+newline-free and stalled inputs return no session instead of exhausting heap or
+failing the process. Discovery retains at most 128 parsed sessions and 32 MiB,
+prunes them when files disappear, retries incomplete files only through the same
+strict bounds, and passes valid sessions to the existing durable historical
+byte-offset/checkpoint queue.
+
 Periodic usage synchronization must not rebuild the complete journal projection
 on the Hub event loop. Import, merge and account-panel calculation execute in a
 dedicated worker. A remote usage delta updates only the account-usage panel in
 the existing lazy journal index through a revision-guarded index write; an
 unchanged snapshot performs no projection. Persisted day and turn fragments
 remain authoritative and are preserved intact.
+
+The usage export cursor is the indexed durable per-row `changed_revision`
+journal revision. Snapshot capture first fixes an upper journal revision, then
+parses only rows in `(acknowledgedRevision, snapshotRevision]`; a later insert or
+update remains visible even when its `observedAt` shares or predates the prior
+millisecond watermark. Upgrades without a revision cursor perform one full
+export before persisting the new cursor. The legacy timestamp fallback replays
+the acknowledged millisecond and relies on exact event-id merge rather than
+dropping equal-timestamp rows.
+Exact-turn and bounded Thread reads use SQLite primary/index queries and do not
+materialize the complete ledger after durable point-read readiness is known.
+The first read imports and normalizes legacy JSON only when it is newly imported
+or its persisted ledger version is old; migrated SQLite performs only bounded
+status and point queries. Any compatibility normalization releases its in-memory
+ledger before returning, so `retainedRecords` remains zero after the read.
 
 Runtime durability saves coalesce pending requests before snapshot capture while
 preserving each caller's persistence fence. After the durable command ledger has

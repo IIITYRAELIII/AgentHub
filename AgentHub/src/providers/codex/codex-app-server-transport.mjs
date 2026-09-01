@@ -167,6 +167,21 @@ export class CodexAppServerTransport {
     return this.child?.pid ?? null;
   }
 
+  diagnostics() {
+    return {
+      running: this.running,
+      pid: this.pid,
+      generation: this.generation,
+      pendingRequests: this.pending.size,
+      queuedRequests: REQUEST_PRIORITIES.reduce(
+        (total, priority) => total + this.requestQueues[priority].length,
+        0,
+      ),
+      inFlightThreadReads: this.threadReadCache.size,
+      activeHydrations: this.threadHydrations.size,
+    };
+  }
+
   async start() {
     if (this.child) return this.child;
     if (this.startPromise) return this.startPromise;
@@ -211,9 +226,10 @@ export class CodexAppServerTransport {
     if (!child) return;
     if (!child.pid || typeof this.stopProcessTree !== "function") {
       child.kill();
-      return;
+    } else {
+      await this.stopProcessTree(child.pid).catch(() => child.kill());
     }
-    await this.stopProcessTree(child.pid).catch(() => child.kill());
+    await this.#handleExit(child, null, "owner-stop", new Error("stopped by Hub owner"));
   }
 
   request(method, params = {}, { timeoutMs = null, priority = null } = {}) {
@@ -392,30 +408,21 @@ export class CodexAppServerTransport {
     const key = `${threadKey}\0${includeTurns
       ? `full:${turnLimit}:${turnPageSize}:${turnItemsView}`
       : "metadata"}`;
-    const cached = this.threadReadCache.get(key);
-    if (cached?.promise) return cached.promise;
-    if (!fresh && cached?.value && cached.expiresAt > Date.now()) return cached.value;
+    const inFlight = this.threadReadCache.get(key);
+    if (inFlight) return inFlight;
 
-    const entry = { value: null, expiresAt: 0, promise: null };
-    entry.promise = this.#readThreadValue(threadKey, {
+    const operation = this.#readThreadValue(threadKey, {
       includeTurns,
       priority,
       turnLimit,
       turnPageSize,
       turnItemsView,
     });
-    this.threadReadCache.set(key, entry);
+    this.threadReadCache.set(key, operation);
     try {
-      entry.value = await entry.promise;
-      entry.expiresAt = Date.now() + this.threadReadCacheMs;
-      entry.promise = null;
-      while (this.threadReadCache.size > this.threadReadCacheLimit) {
-        this.threadReadCache.delete(this.threadReadCache.keys().next().value);
-      }
-      return entry.value;
-    } catch (error) {
-      if (this.threadReadCache.get(key) === entry) this.threadReadCache.delete(key);
-      throw error;
+      return await operation;
+    } finally {
+      if (this.threadReadCache.get(key) === operation) this.threadReadCache.delete(key);
     }
   }
 

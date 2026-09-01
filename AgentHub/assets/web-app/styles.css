@@ -3932,10 +3932,22 @@ html[data-view="dashboard"] .task-board-view {
 }
 
 .board-task-summary {
-  align-items: flex-start;
-  display: flex;
+  align-items: center;
+  display: grid;
   gap: 0.45rem;
-  justify-content: space-between;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
+.board-task-number {
+  border-bottom: 1px solid var(--accent-line);
+  color: var(--accent);
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: 0.56rem;
+  font-weight: 700;
+  line-height: 1;
+  padding: 0.12rem 0.05rem 0.16rem;
+  white-space: nowrap;
 }
 
 .board-task-title {
@@ -3943,9 +3955,19 @@ html[data-view="dashboard"] .task-board-view {
   font-size: 0.8rem;
   font-weight: 600;
   line-height: 1.35;
-  margin: 0;
+  margin: 0.42rem 0 0;
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+.board-task-executor {
+  color: var(--text-muted);
+  font-size: 0.62rem;
+  line-height: 1.2;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .board-task-status {
@@ -4251,6 +4273,31 @@ html[data-view="dashboard"] .task-board-view {
   gap: 0.3rem;
 }
 
+.task-card-title-control {
+  align-items: center;
+  display: flex;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.task-card-number {
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-line);
+  border-radius: var(--radius-sm);
+  color: var(--accent);
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  font-weight: 700;
+  line-height: 1;
+  padding: 0.32rem 0.4rem;
+  white-space: nowrap;
+}
+
+.task-card-number[hidden] {
+  display: none;
+}
+
 .task-card-status-field {
   color: var(--text-faint);
   display: grid;
@@ -4401,6 +4448,7 @@ html[data-view="dashboard"] .task-board-view {
 }
 
 .task-card-editor [data-task-card-title] {
+  flex: 1 1 auto;
   font-size: 0.92rem;
   font-weight: 650;
   min-height: 0;
@@ -7814,10 +7862,16 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
   align-items: center;
   display: grid;
   gap: 0.45rem;
-  grid-template-columns: 2.25rem minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr);
   min-height: 3.4rem;
   padding: 0.35rem 0.55rem;
   width: min(18rem, 72vw);
+}
+
+.attachment-task-card .attachment-file-type {
+  min-width: 2.25rem;
+  padding-inline: 0.4rem;
+  white-space: nowrap;
 }
 
 .attachment-task-copy {

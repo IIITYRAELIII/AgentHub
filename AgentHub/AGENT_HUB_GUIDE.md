@@ -23,6 +23,7 @@ This conversation is running through Agent Hub.
 ## Task references in messages
 
 - A Dashboard Task attached to a message is a live reference, not a copy of the Task text. Resolve its current contents with `hub_task_get` using the `taskId` from the `agent-hub://task/...` link. Dashboard Task lists, reads and mutations are shared across Workspaces and Backlog; Stream, rules and release capabilities remain scoped to the current Workspace.
+- When mentioning a numbered Task, use only its number as the link text: `[HUB-11](agent-hub://task/<taskId> "Task title")`. The title belongs in the link tooltip; clicking the link opens the live Task card.
 - `intent=context` marks the Task as context. It neither independently requests nor forbids starting work; follow the user's accompanying message.
 - `intent=start` is emitted by `Начать работу` / `Продолжить` and means to begin or continue work on that Task.
 

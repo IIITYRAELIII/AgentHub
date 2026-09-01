@@ -1,3 +1,5 @@
+import { monitorEventLoopDelay } from "node:perf_hooks";
+
 const CAPABILITY_STATES = new Set(["pending", "ready", "degraded", "failed", "disabled"]);
 const OPERATION_STATES = new Set(["pending", "running", "completed", "failed", "skipped"]);
 
@@ -52,9 +54,26 @@ export class RuntimeHealth {
   #now;
   #phase = "starting";
   #startup = null;
+  #diagnosticSources = new Map();
+  #eventLoopDelay = null;
 
   constructor({ now = Date.now } = {}) {
     this.#now = typeof now === "function" ? now : Date.now;
+  }
+
+  setDiagnosticSource(name, source) {
+    const normalizedName = capabilityName(name);
+    if (source == null) {
+      this.#diagnosticSources.delete(normalizedName);
+      return this;
+    }
+    if (typeof source !== "function") throw new TypeError("runtime diagnostic source must be a function");
+    this.#diagnosticSources.set(normalizedName, source);
+    if (!this.#eventLoopDelay) {
+      this.#eventLoopDelay = monitorEventLoopDelay({ resolution: 20 });
+      this.#eventLoopDelay.enable();
+    }
+    return this;
   }
 
   begin({ operations = [] } = {}) {
@@ -173,12 +192,32 @@ export class RuntimeHealth {
     const required = capabilities.filter((capability) => capability.critical && capability.state !== "disabled");
     const ready = this.#phase === "complete" && required.every((capability) => capability.state === "ready");
     const degraded = impaired.length > 0;
+    const diagnostics = {};
+    for (const [name, source] of this.#diagnosticSources) {
+      try {
+        diagnostics[name] = source();
+      } catch (error) {
+        diagnostics[name] = { error: String(error?.message ?? error) };
+      }
+    }
+    if (this.#diagnosticSources.size) {
+      const memory = process.memoryUsage();
+      diagnostics.process = {
+        rssBytes: memory.rss,
+        heapUsedBytes: memory.heapUsed,
+        heapTotalBytes: memory.heapTotal,
+        externalBytes: memory.external,
+        eventLoopDelayP95Ms: Number(this.#eventLoopDelay.percentile(95)) / 1e6,
+        eventLoopDelayMaxMs: Number(this.#eventLoopDelay.max) / 1e6,
+      };
+    }
     return {
       live: true,
       ready,
       degraded,
       status: ready ? (degraded ? "degraded" : "ready") : (degraded ? "unready" : "starting"),
       capabilities,
+      ...(this.#diagnosticSources.size ? { diagnostics } : {}),
       ...(this.#startup ? {
         startup: {
           startedAtMs: this.#startup.startedAtMs,

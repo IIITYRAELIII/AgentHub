@@ -90,7 +90,11 @@ test("DeferredInputController keeps the observed 13.429 second provider steer be
   let releaseProvider;
   const provider = new Promise((resolve) => { releaseProvider = resolve; });
   const state = fixture({
-    occupancy: async () => ({ occupied: true, waitReason: "provider-thread-active" }),
+    occupancy: async () => ({
+      occupied: true,
+      waitReason: "provider-thread-active",
+      run: { id: "run-1", turnId: "turn-1" },
+    }),
     steer: async () => {
       await provider;
       return { accepted: true, steered: true, runId: "run-1", turnId: "turn-1" };
@@ -101,6 +105,8 @@ test("DeferredInputController keeps the observed 13.429 second provider steer be
     clientUserMessageId: "client-steer",
     clientSource: "local-vscode-webview",
     conflictKind: "message-steer",
+    steerTargetRunId: "run-1",
+    steerTargetTurnId: "turn-1",
     taskTitle: "Task",
   });
 
@@ -561,6 +567,8 @@ test("DeferredInputController restores ordinary FIFO when a steer misses its tur
     id: "themes",
     queueOrder: 2,
     conflictKind: "message-steer",
+    steerTargetRunId: "run-old",
+    steerTargetTurnId: "turn-old",
   });
 
   await state.controller.process("themes");
@@ -571,6 +579,63 @@ test("DeferredInputController restores ordinary FIFO when a steer misses its tur
   await state.controller.process("user");
   await state.controller.process("themes");
   assert.deepEqual(started, ["user", "themes"]);
+});
+
+test("DeferredInputController steers the exact active turn ahead of later-turn FIFO", async () => {
+  const steered = [];
+  const state = fixture({
+    occupancy: async () => ({
+      occupied: true,
+      run: { id: "run-active", turnId: "turn-active" },
+    }),
+    steer: async (item) => {
+      steered.push(item.id);
+      return { accepted: true, steered: true, runId: "run-active", turnId: "turn-active" };
+    },
+  });
+  const lane = { streamId: "stream-1", provider: "codex", threadId: "thread-1" };
+  state.queuedInputs.set("user", {
+    ...lane,
+    id: "user",
+    queueOrder: 1,
+    conflictKind: "message-intake",
+  });
+  state.queuedInputs.set("steer", {
+    ...lane,
+    id: "steer",
+    queueOrder: 2,
+    conflictKind: "message-steer",
+    steerTargetRunId: "run-active",
+    steerTargetTurnId: "turn-active",
+  });
+
+  await state.controller.process("steer");
+
+  assert.deepEqual(steered, ["steer"]);
+  assert.equal(state.queuedInputs.has("steer"), false);
+  assert.equal(state.queuedInputs.has("user"), true);
+});
+
+test("DeferredInputController wakes an exact steer even behind older queued intake", () => {
+  const state = fixture();
+  const lane = { streamId: "stream-1", provider: "codex", threadId: "thread-1" };
+  state.queuedInputs.set("user", {
+    ...lane,
+    id: "user",
+    queueOrder: 1,
+    conflictKind: "message-intake",
+  });
+  state.queuedInputs.set("steer", {
+    ...lane,
+    id: "steer",
+    queueOrder: 2,
+    conflictKind: "message-steer",
+    steerTargetRunId: "run-active",
+    steerTargetTurnId: "turn-active",
+  });
+
+  assert.equal(state.controller.wakeLane(lane), true);
+  assert.deepEqual(state.timers.map(({ delay }) => delay), [0, 0]);
 });
 
 test("DeferredInputController does not pass an older pending input in the same task", async () => {

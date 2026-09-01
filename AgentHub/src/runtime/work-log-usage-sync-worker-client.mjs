@@ -15,6 +15,8 @@ export class WorkLogUsageSyncWorkerStore {
   #pending = new Map();
   #closing = false;
   #closed = false;
+  #lastProjection = null;
+  #lastSnapshot = null;
 
   constructor({
     databaseFile,
@@ -60,7 +62,34 @@ export class WorkLogUsageSyncWorkerStore {
   }
 
   projectAccountUsage(payload) {
-    return this.#request("project-account-usage", payload);
+    return this.#request("project-account-usage", payload).then((result) => {
+      this.#lastProjection = {
+        durationMs: result.durationMs,
+        eventCount: result.eventCount,
+        completedAtMs: Date.now(),
+      };
+      return result;
+    });
+  }
+
+  usageSyncSnapshot(payload) {
+    return this.#request("usage-sync-snapshot", payload).then((result) => {
+      this.#lastSnapshot = {
+        durationMs: result.durationMs,
+        eventCount: result.events?.length ?? 0,
+        completedAtMs: Date.now(),
+      };
+      return result;
+    });
+  }
+
+  diagnostics() {
+    return {
+      pendingRequests: this.#pending.size,
+      closed: this.#closed,
+      lastProjection: this.#lastProjection,
+      lastSnapshot: this.#lastSnapshot,
+    };
   }
 
   async close() {

@@ -4,6 +4,58 @@ import { DatabaseSync } from "node:sqlite";
 
 const TERMINAL_STATUSES = new Set(["aborted", "completed", "failed"]);
 
+/* Открытие журнала контура на чтение.
+
+   Даже read-only соединение с базой в режиме WAL работает через файл -shm и
+   создаёт его, когда он отсутствует. Пока контур перезапускается, его runtime
+   удаляет и заново создаёт -wal и -shm, и чтение из production попадает в
+   середину этой смены — SQLite отвечает SQLITE_IOERR. Состояние кратковременное:
+   следующая попытка проходит. Здесь оно и переживается, ограниченным числом
+   попыток и только для этого класса ошибок; любая другая ошибка поднимается
+   сразу и с полным контекстом, иначе диагностировать её потом нечем. */
+const SQLITE_IOERR = 10;
+const READ_OPEN_ATTEMPTS = 3;
+
+function sqliteErrorCode(error) {
+  const value = Number(error?.errcode);
+  return Number.isInteger(value) ? value : null;
+}
+
+function transientIoError(error) {
+  const code = sqliteErrorCode(error);
+  return code !== null && (code & 0xff) === SQLITE_IOERR;
+}
+
+function describeFailure(error, { phase, file, attempts }) {
+  const code = sqliteErrorCode(error);
+  const details = [
+    `фаза ${phase}`,
+    `файл ${file}`,
+    code === null ? "код SQLite неизвестен" : `код SQLite ${code}`,
+    error?.errstr ? `${error.errstr}` : "",
+    attempts > 1 ? `попыток ${attempts}` : "",
+  ].filter(Boolean).join(", ");
+  const failure = new Error(`${error?.message ?? error}: ${details}`);
+  failure.cause = error;
+  failure.phase = phase;
+  failure.databaseFile = file;
+  failure.sqliteCode = code;
+  return failure;
+}
+
+function openJournalForRead(file, phase) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= READ_OPEN_ATTEMPTS; attempt += 1) {
+    try {
+      return new DatabaseSync(file, { readOnly: true });
+    } catch (error) {
+      lastError = error;
+      if (!transientIoError(error)) break;
+    }
+  }
+  throw describeFailure(lastError, { phase, file, attempts: READ_OPEN_ATTEMPTS });
+}
+
 function tableExists(database, name) {
   return Boolean(database.prepare(`
     SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?
@@ -67,9 +119,9 @@ export async function readMissingTestContourJournalRecords({
   const acceptedModels = new Set((Array.isArray(models) ? models : [models])
     .map((model) => String(model ?? "").trim().toLowerCase())
     .filter(Boolean));
-  const source = new DatabaseSync(sourceFile, { readOnly: true });
+  const source = openJournalForRead(sourceFile, "чтение журнала Test Contour");
   const target = await fileExists(targetFile)
-    ? new DatabaseSync(targetFile, { readOnly: true })
+    ? openJournalForRead(targetFile, "чтение журнала production")
     : null;
   try {
     source.exec("PRAGMA busy_timeout = 2000");

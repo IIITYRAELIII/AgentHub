@@ -1004,7 +1004,6 @@ test("Gothic theme packages the Old Camp banner with its Sleeper-temple palette"
   const theme = THEME_REGISTRY.themes.find((item) => item.id === "gothic");
   const styles = themeFile("gothic");
   const banner = theme.resources.find((resource) => resource.pathname.endsWith("/gothic-old-camp-banner.png"));
-  const ironTexture = theme.resources.find((resource) => resource.pathname.endsWith("/gothic-iron-texture.png"));
   const ironFrame = theme.resources.find((resource) => resource.pathname.endsWith("/gothic-iron-frame.jpg"));
   const forgedFrame = theme.resources.find((resource) => resource.pathname.endsWith("/gothic-forged-frame.png"));
   const matteForgedFrame = theme.resources.find((resource) => resource.pathname.endsWith("/gothic-forged-frame-matte.png"));
@@ -1017,10 +1016,6 @@ test("Gothic theme packages the Old Camp banner with its Sleeper-temple palette"
   assert.equal(banner.contentType, "image/png");
   assert.equal(banner.immutable, true);
   assert.ok(fs.statSync(banner.file).size > 100_000);
-  assert.ok(ironTexture);
-  assert.equal(ironTexture.contentType, "image/png");
-  assert.equal(ironTexture.immutable, true);
-  assert.ok(fs.statSync(ironTexture.file).size > 100_000);
   assert.ok(ironFrame);
   assert.equal(ironFrame.contentType, "image/jpeg");
   assert.equal(ironFrame.immutable, true);

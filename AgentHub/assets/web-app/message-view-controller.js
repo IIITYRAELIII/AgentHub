@@ -80,7 +80,6 @@
   }
 
   function composerFollowUpMode(task, { steerWhileRunning = false } = {}) {
-    if (task?.running !== true) return null;
     return steerWhileRunning ? "steer" : "queue";
   }
 

@@ -38,6 +38,8 @@ function configure(database) {
       project_root TEXT NOT NULL,
       task_thread_id TEXT NOT NULL,
       completed_at_ms INTEGER,
+      observed_at_ms INTEGER,
+      changed_revision INTEGER NOT NULL DEFAULT 0,
       record_json TEXT NOT NULL,
       PRIMARY KEY (provider, thread_id, turn_id)
     ) WITHOUT ROWID;
@@ -66,6 +68,29 @@ function configure(database) {
     ) WITHOUT ROWID;
     INSERT OR IGNORE INTO journal_store_meta (key, value) VALUES ('revision', '0');
     INSERT OR IGNORE INTO journal_store_meta (key, value) VALUES ('ledger_version', '9');
+  `);
+  const journalRecordColumns = new Set(database.prepare("PRAGMA table_info(journal_records)")
+    .all().map((row) => row.name));
+  if (!journalRecordColumns.has("observed_at_ms")) {
+    database.exec("ALTER TABLE journal_records ADD COLUMN observed_at_ms INTEGER");
+  }
+  if (!journalRecordColumns.has("changed_revision")) {
+    database.exec("ALTER TABLE journal_records ADD COLUMN changed_revision INTEGER NOT NULL DEFAULT 0");
+    const migrationRevision = Math.max(1, Number(database.prepare(
+      "SELECT value FROM journal_store_meta WHERE key = 'revision'",
+    ).get()?.value) || 0);
+    database.prepare("UPDATE journal_records SET changed_revision = ?").run(migrationRevision);
+    database.prepare("UPDATE journal_store_meta SET value = ? WHERE key = 'revision'")
+      .run(String(migrationRevision));
+  }
+  database.exec(`
+    UPDATE journal_records
+    SET observed_at_ms = completed_at_ms
+    WHERE observed_at_ms IS NULL;
+    CREATE INDEX IF NOT EXISTS journal_records_observed_idx
+      ON journal_records(observed_at_ms, provider, thread_id, turn_id);
+    CREATE INDEX IF NOT EXISTS journal_records_changed_idx
+      ON journal_records(changed_revision, provider, thread_id, turn_id);
   `);
 }
 
@@ -152,6 +177,7 @@ function recordRow(record, key = "", options = {}) {
   const normalized = normalizedRecord(record, key, options);
   if (!normalized) return null;
   const completedAtMs = Date.parse(normalized.completedAt || normalized.startedAt || "");
+  const observedAtMs = Date.parse(normalized.observedAt || normalized.completedAt || normalized.startedAt || "");
   return {
     record: normalized,
     provider: normalized.provider,
@@ -160,6 +186,7 @@ function recordRow(record, key = "", options = {}) {
     projectRoot: normalized.projectRoot,
     taskThreadId: normalized.taskThreadId,
     completedAtMs: Number.isFinite(completedAtMs) ? completedAtMs : null,
+    observedAtMs: Number.isFinite(observedAtMs) ? observedAtMs : null,
     json: JSON.stringify(normalized),
   };
 }
@@ -230,17 +257,20 @@ function writeProjection(database, payload, {
 function insertRecordStatement(database) {
   return database.prepare(`
     INSERT INTO journal_records
-      (provider, thread_id, turn_id, project_root, task_thread_id, completed_at_ms, record_json)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+      (provider, thread_id, turn_id, project_root, task_thread_id, completed_at_ms, observed_at_ms,
+       changed_revision, record_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(provider, thread_id, turn_id) DO UPDATE SET
       project_root = excluded.project_root,
       task_thread_id = excluded.task_thread_id,
       completed_at_ms = excluded.completed_at_ms,
+      observed_at_ms = excluded.observed_at_ms,
+      changed_revision = excluded.changed_revision,
       record_json = excluded.record_json
   `);
 }
 
-function insertRow(statement, row) {
+function insertRow(statement, row, changedRevision) {
   statement.run(
     row.provider,
     row.threadId,
@@ -248,6 +278,8 @@ function insertRow(statement, row) {
     row.projectRoot,
     row.taskThreadId,
     row.completedAtMs,
+    row.observedAtMs,
+    changedRevision,
     row.json,
   );
 }
@@ -392,6 +424,19 @@ export class JournalDatabase {
     return revisionOf(await this.#open());
   }
 
+  async ledgerStatus() {
+    const database = await this.#open();
+    return {
+      revision: revisionOf(database),
+      version: Math.max(0, Number(database.prepare(
+        "SELECT value FROM journal_store_meta WHERE key = 'ledger_version'",
+      ).get()?.value) || 0),
+      records: Math.max(0, Number(database.prepare(
+        "SELECT COUNT(*) AS count FROM journal_records",
+      ).get()?.count) || 0),
+    };
+  }
+
   async loadLedger() {
     const database = await this.#open();
     const turns = {};
@@ -414,6 +459,48 @@ export class JournalDatabase {
     return { version, turns };
   }
 
+  async getRecord({ provider = "codex", threadId, turnId } = {}) {
+    const identity = normalizedIdentity({ provider, threadId, turnId });
+    if (!identity) return null;
+    const row = (await this.#open()).prepare(`
+      SELECT record_json FROM journal_records
+      WHERE provider = ? AND thread_id = ? AND turn_id = ?
+    `).get(identity.provider, identity.threadId, identity.turnId);
+    if (!row) return null;
+    try {
+      return normalizedRecord(JSON.parse(row.record_json), ledgerKey(identity));
+    } catch {
+      return null;
+    }
+  }
+
+  async threadRecords(identities = [], { limit = 20 } = {}) {
+    const requested = (Array.isArray(identities) ? identities : [])
+      .map((value) => normalizedIdentity({ ...value, turnId: value?.turnId || "_" }))
+      .filter(Boolean)
+      .slice(0, 100);
+    if (!requested.length) return [];
+    const boundedLimit = Math.max(1, Math.min(50, Number(limit) || 20));
+    const clauses = requested.map(() => "(provider = ? AND thread_id = ?)").join(" OR ");
+    const parameters = requested.flatMap((value) => [value.provider, value.threadId]);
+    const rows = (await this.#open()).prepare(`
+      SELECT provider, thread_id, turn_id, record_json FROM journal_records
+      WHERE ${clauses}
+      ORDER BY completed_at_ms DESC LIMIT ?
+    `).all(...parameters, boundedLimit);
+    return rows.map((row) => {
+      try {
+        return normalizedRecord(JSON.parse(row.record_json), ledgerKey({
+          provider: row.provider,
+          threadId: row.thread_id,
+          turnId: row.turn_id,
+        }));
+      } catch {
+        return null;
+      }
+    }).filter(Boolean);
+  }
+
   async replaceLedger(ledger, { expectedRevision = null } = {}) {
     const database = await this.#open();
     const rows = Object.entries(ledger?.turns ?? {})
@@ -427,8 +514,9 @@ export class JournalDatabase {
         throw new Error(`Journal revision conflict: expected ${expectedRevision}, found ${current}`);
       }
       database.exec("DELETE FROM journal_records");
+      const nextRevision = current + 1;
       const insert = insertRecordStatement(database);
-      for (const row of rows) insertRow(insert, row);
+      for (const row of rows) insertRow(insert, row, nextRevision);
       database.prepare(`
         INSERT INTO journal_store_meta (key, value) VALUES ('ledger_version', ?)
         ON CONFLICT(key) DO UPDATE SET value = excluded.value
@@ -454,8 +542,9 @@ export class JournalDatabase {
     database.exec("BEGIN IMMEDIATE");
     let revision;
     try {
+      const nextRevision = revisionOf(database) + 1;
       const insert = insertRecordStatement(database);
-      for (const row of rows) insertRow(insert, row);
+      for (const row of rows) insertRow(insert, row, nextRevision);
       revision = advanceRevision(database);
       database.exec("COMMIT");
     } catch (error) {
@@ -526,6 +615,7 @@ export class JournalDatabase {
     let upserted = 0;
     let deleted = 0;
     try {
+      const nextRevision = revisionOf(database) + 1;
       const previous = database.prepare(
         "SELECT record_count, details_json FROM journal_imports WHERE key = ?",
       ).get(LEGACY_IMPORT_KEY);
@@ -566,6 +656,8 @@ export class JournalDatabase {
           row.projectRoot,
           row.taskThreadId,
           row.completedAtMs,
+          row.observedAtMs,
+          nextRevision,
           row.json,
         ).changes) || 0;
       }

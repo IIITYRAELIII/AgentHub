@@ -6,8 +6,10 @@ import {
   ARCHITECT_RELEASE_DEVELOPER_RULES,
   effectiveStreamDeveloperRules,
   effectiveWorkspaceDeveloperRules,
+  LEGACY_AGENT_HUB_WORKSPACE_DEVELOPER_RULES_RU_V1,
   LEGACY_TASK_BRANCH_RELEASE_WORKFLOW_DEVELOPER_RULES,
   LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_RU_V1,
+  LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_RU_V2,
   LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V1,
   LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V2,
   RELEASE_WORKFLOW_DEVELOPER_RULES,
@@ -25,10 +27,11 @@ test("legacy v1 policy is stripped once and replaced by Task workflow rules", ()
   );
   assert.match(rules, /hub_task_claim/u);
   assert.match(rules, /sparse worktree/u);
-  assert.match(rules, /результат.*в dev/u);
-  assert.match(rules, /диагностики.*без изменений Task не создаётся/u);
-  assert.match(rules, /Название Task.*запрос пользователя сохраняется в описании/u);
+  assert.match(rules, /merge that result into dev/u);
+  assert.match(rules, /Do not create a Task for diagnosis/u);
+  assert.match(rules, /preserve the user's original request in its description/u);
   assert.match(rules, /PreRelease.*Await Tasks/u);
+  assert.doesNotMatch(rules, /[А-Яа-яЁё]/u);
 });
 
 test("legacy v2 Task policy is stripped before the change-only policy is injected", () => {
@@ -44,6 +47,8 @@ test("legacy v2 Task policy is stripped before the change-only policy is injecte
 
 test("stored Workspace rules keep one Agent Hub block and strip sequential release prefixes", () => {
   const stored = storedWorkspaceDeveloperRules([
+    LEGACY_AGENT_HUB_WORKSPACE_DEVELOPER_RULES_RU_V1,
+    LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_RU_V2,
     LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_RU_V1,
     LEGACY_TASK_BRANCH_RELEASE_WORKFLOW_DEVELOPER_RULES,
     LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V2,
@@ -51,7 +56,8 @@ test("stored Workspace rules keep one Agent Hub block and strip sequential relea
     "Custom rule",
   ].join("\n\n"));
   assert.equal(stored, `${AGENT_HUB_WORKSPACE_DEVELOPER_RULES}\n\nCustom rule`);
-  assert.equal(stored.match(/Правила Agent Hub/gu)?.length, 1);
+  assert.equal(stored.match(/Agent Hub rules/gu)?.length, 1);
+  assert.doesNotMatch(stored, /Правила Agent Hub/u);
   assert.doesNotMatch(stored, /This Workspace uses a multi-stream/u);
 });
 
@@ -70,6 +76,9 @@ test("Architect rules use only explicit settings.architect and allow multiple St
     `${ARCHITECT_RELEASE_DEVELOPER_RULES}\n\nStream rule`,
   );
   assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /точную ревизию.*Await Tasks/u);
+  assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /hub_release_preflight/u);
+  assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /TestContour\.source\.headCommit равным dev HEAD/u);
+  assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /Task result commit является предком dev/u);
   assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /CHANGELOG\.md существует/u);
   assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /опубликованный main в dev/u);
 });

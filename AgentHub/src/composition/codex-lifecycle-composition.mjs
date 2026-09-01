@@ -2,6 +2,7 @@ import { unavailableLocalMcpOverrides } from "../infrastructure/process/local-mc
 import { resolveCodexExecutable } from "../providers/codex/codex-invocation.mjs";
 import { CodexAppServerLifecycle } from "../providers/codex/codex-app-server-lifecycle.mjs";
 import { CodexLifecycleController } from "../providers/codex/codex-lifecycle-controller.mjs";
+import { agentHubRuntimeHealth } from "../application/runtime-health.mjs";
 
 export function createCodexLifecycleComposition({
   config,
@@ -32,6 +33,10 @@ export function createCodexLifecycleComposition({
     logger: runtimeDependencies.logger ?? console,
   });
   const transport = runtime.transport;
+  agentHubRuntimeHealth.setDiagnosticSource("codexAppServer", () => ({
+    ...transport.diagnostics(),
+    hubOwnedProcessTrees: transport.running ? 1 : 0,
+  }));
 
   async function start() {
     await runtime.start();

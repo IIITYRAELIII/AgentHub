@@ -6,7 +6,6 @@
   "styles": "theme.css",
   "shellLayout": "custom",
   "assets": {
-    "iron-texture": "gothic-iron-texture.png",
     "iron-frame": "gothic-iron-frame-plain.png",
     "forged-frame": "gothic-forged-frame.png",
     "forged-frame-matte": "gothic-forged-frame-matte.png",

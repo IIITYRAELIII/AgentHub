@@ -220,6 +220,14 @@
     return count ? `${count} вложений` : "";
   }
 
+  function taskPresentationUpdate(task, { title = "", description = "" } = {}) {
+    return {
+      id: String(task?.id ?? "").trim(),
+      title: String(title ?? "").trim(),
+      description: String(description ?? "").trim(),
+    };
+  }
+
   function taskExecutorPresentation(task, workspaces = []) {
     const workspaceId = String(task?.workspaceId ?? "").trim();
     const streamId = String(task?.streamId ?? "").trim();
@@ -233,6 +241,13 @@
     const streamName = String(stream.displayName ?? stream.name ?? "").trim()
       || `Stream ${Number(stream.ordinal) || ""}`.trim();
     return { label: `${workspaceName} — ${streamName}`, workspace, stream };
+  }
+
+  function taskExecutorStreamName(task, workspaces = []) {
+    const presentation = taskExecutorPresentation(task, workspaces);
+    if (!presentation.stream) return "Не назначен";
+    return String(presentation.stream.displayName ?? presentation.stream.name ?? "").trim()
+      || `Stream ${Number(presentation.stream.ordinal) || ""}`.trim();
   }
 
   function taskChangedFileGroups(task) {
@@ -347,6 +362,8 @@
     taskAttachmentCountLabel,
     taskChangedFileGroups,
     taskExecutorPresentation,
+    taskExecutorStreamName,
+    taskPresentationUpdate,
     taskWorkLogEntries,
     taskWorkflowPresentation,
     tasksForMode,
@@ -365,6 +382,7 @@
   const taskCardModal = document.querySelector("[data-task-card-modal]");
   const taskCardSource = document.querySelector("[data-task-card-source]");
   const taskCardEditor = document.querySelector("[data-task-card-editor]");
+  const taskCardNumber = document.querySelector("[data-task-card-number]");
   const taskCardTitle = document.querySelector("[data-task-card-title]");
   const taskCardDescription = document.querySelector("[data-task-card-description]");
   const taskCardTitleSizer = createAutoGrowTextarea({ textarea: taskCardTitle });
@@ -725,6 +743,9 @@
       taskCardStatus.value = taskWorkflowStatus(task);
     }
     if (state.editingTaskId !== task.id || !state.editDirty) {
+      const taskNumber = String(task.taskNumber ?? "").trim();
+      taskCardNumber.textContent = taskNumber;
+      taskCardNumber.hidden = !taskNumber;
       taskCardTitle.value = task.title || task.text;
       taskCardDescription.value = String(task.description ?? "").trim();
       state.editingTaskId = task.id;
@@ -872,10 +893,21 @@
         moveTask(draggedTask, destinationValue(task), task.id);
       });
     }
+    const executor = taskExecutorPresentation(task, state.workspaces);
     card.append(node("div", { class: "board-task-summary" }, [
-      node("h3", { class: "board-task-title", text: task.title || task.text }),
+      ...(task.taskNumber ? [node("span", {
+        class: "board-task-number",
+        text: task.taskNumber,
+        title: task.title || task.text,
+      })] : []),
+      node("span", {
+        class: "board-task-executor",
+        text: taskExecutorStreamName(task, state.workspaces),
+        title: executor.label,
+      }),
       taskStatusBadge(task),
     ]));
+    card.append(node("h3", { class: "board-task-title", text: task.title || task.text }));
     const attachmentCountLabel = taskAttachmentCountLabel(task.attachments);
     if (attachmentCountLabel) {
       card.append(node("div", { class: "board-task-attachments is-compact" }, [
@@ -1120,7 +1152,10 @@
     if (state.savingTaskId === task.id) return;
     state.savingTaskId = task.id;
     renderTaskCardSaving(task.id);
-    emit("update", { id: task.id, title, description: taskCardDescription.value.trim() });
+    emit("update", taskPresentationUpdate(task, {
+      title,
+      description: taskCardDescription.value,
+    }));
   });
   taskCardModal?.addEventListener("cancel", (event) => { event.preventDefault(); closeTaskCard(); });
   startModal.addEventListener("cancel", (event) => { event.preventDefault(); closeStart(); });

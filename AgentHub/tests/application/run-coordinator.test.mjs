@@ -279,6 +279,46 @@ test("RunCoordinator acknowledges queued intake while turn launch is still pendi
   await launch;
 });
 
+test("RunCoordinator preserves FIFO queue for burst intake before running snapshot", async () => {
+  let active = null;
+  let sequence = 0;
+  const scheduled = [];
+  const f = fixture({
+    taskRuns: { forTask: () => active },
+    deferInput: async (input, _attachments, options) => {
+      const item = { id: `burst-${++sequence}`, input, conflictKind: options.conflictKind };
+      f.calls.push(["defer", input, [], options]);
+      return { id: item.id, item };
+    },
+    scheduleDeferred: (item, delay) => {
+      scheduled.push({ item, delay });
+      if (scheduled.length === 1) active = { ...f.run, executionOwner: "hub" };
+    },
+  });
+
+  const results = await Promise.all(["first", "second", "third"].map((input, index) => (
+    f.coordinator.acceptClientInput({
+      input,
+      target: f.target,
+      clientUserMessageId: `burst-client-${index + 1}`,
+      followUpMode: "queue",
+    })
+  )));
+
+  assert.deepEqual(scheduled.map(({ item }) => item.input), ["first", "second", "third"]);
+  assert.deepEqual(scheduled.map(({ delay }) => delay), [0, 500, 500]);
+  assert.equal(results.every((result) => result.deferred && result.queued), true);
+  assert.equal(results.some((result) => result.reason === "task-running" && !result.queued), false);
+  assert.deepEqual(
+    f.calls.filter(([name]) => name === "defer").map((call) => call[3].conflictKind),
+    ["message-intake", "task-running", "task-running"],
+  );
+  assert.equal(
+    f.calls.filter(([name]) => name === "defer").every((call) => call[3].destination === "queued"),
+    true,
+  );
+});
+
 test("RunCoordinator immediately queues steering for a turn owned by Codex Desktop", async () => {
   const external = { id: "external", executionOwner: "desktop" };
   const f = fixture({
@@ -477,9 +517,27 @@ test("RunCoordinator acknowledges durable steer within 250ms without awaiting th
   assert.equal(result.turnId, "turn-1");
   assert.equal(f.calls.some(([name]) => name === "provider"), false);
   assert.equal(f.calls.find(([name]) => name === "defer")[3].conflictKind, "message-steer");
+  assert.equal(f.calls.find(([name]) => name === "defer")[3].steerTargetRunId, "active");
+  assert.equal(f.calls.find(([name]) => name === "defer")[3].steerTargetTurnId, "turn-1");
   assert.deepEqual(f.calls.find(([name]) => name === "schedule").slice(1), [
     { id: "durable-steer", clientUserMessageId: "message-steer" }, 0,
   ]);
+});
+
+test("RunCoordinator rejects a durable steer after its exact managed turn changes", async () => {
+  const active = { id: "run-new", turnId: "turn-new", executionOwner: "hub" };
+  const f = fixture({ taskRuns: { forTask: () => active } });
+
+  await assert.rejects(f.coordinator.steer({
+    input: "late steer",
+    target: {
+      ...f.target,
+      steerTargetRunId: "run-old",
+      steerTargetTurnId: "turn-old",
+    },
+    clientUserMessageId: "message-late-steer",
+  }), /targeted managed turn is no longer active/u);
+  assert.equal(f.calls.some(([name]) => name === "provider"), false);
 });
 
 test("RunCoordinator admits two exact Threads in one Stream independently", async () => {

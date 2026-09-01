@@ -26,6 +26,7 @@ const initialState = {
   nextTurn: 1,
   nextMessage: 1,
   threads: [],
+  loadedThreadIds: [],
   crashedOnce: false,
   requestCounts: {},
 };
@@ -34,12 +35,25 @@ let state = statePath && existsSync(statePath)
   : structuredClone(initialState);
 state.requestCounts ??= {};
 state.nextMessage ??= 1;
+state.threads ??= [];
+state.nextTurn = Math.max(
+  1,
+  Number(state.nextTurn) || 1,
+  ...state.threads.flatMap((thread) => (
+    Array.isArray(thread?.turns) ? thread.turns : []
+  )).map((turn) => uuidSequence("turn", turn?.id) + 1),
+);
 const pendingApprovals = new Map();
 const timers = new Set();
-const loadedThreadIds = new Set();
+const loadedThreadIds = new Set(
+  (Array.isArray(state.loadedThreadIds) ? state.loadedThreadIds : [])
+    .map((value) => String(value ?? "").trim())
+    .filter(Boolean),
+);
 
 function save() {
   if (!statePath) return;
+  state.loadedThreadIds = [...loadedThreadIds].sort();
   const temporary = `${statePath}.${process.pid}.tmp`;
   writeFileSync(temporary, `${JSON.stringify(state, null, 2)}\n`, "utf8");
   renameSync(temporary, statePath);
@@ -66,6 +80,13 @@ function uuid(kind, value) {
   return kind === "thread"
     ? `10000000-0000-4000-8000-${suffix}`
     : `20000000-0000-4000-8000-${suffix}`;
+}
+
+function uuidSequence(kind, value) {
+  const prefix = kind === "thread" ? "10000000" : "20000000";
+  const match = new RegExp(`^${prefix}-0000-4000-8000-(\\d{12})$`, "u")
+    .exec(String(value ?? "").trim());
+  return match ? Number(match[1]) : 0;
 }
 
 function threadById(id) {
@@ -431,6 +452,7 @@ function handleRequest(message) {
       save();
     }
     loadedThreadIds.add(thread.id);
+    save();
     reply(id, { thread: publicThread(thread) });
     return;
   }
@@ -446,6 +468,7 @@ function handleRequest(message) {
       });
     }
     loadedThreadIds.add(thread.id);
+    save();
     reply(id, {
       thread: publicThread(thread),
       model: thread.model,
@@ -536,6 +559,7 @@ function handleRequest(message) {
   }
   if (method === "thread/unsubscribe") {
     loadedThreadIds.delete(params.threadId);
+    save();
     reply(id, {});
     return;
   }

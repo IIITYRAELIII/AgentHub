@@ -130,6 +130,7 @@ const {
   chronologicalMessages,
   completionCatchUpTurnId,
   completedLiveAgentMessage,
+  completedLiveTurnIdentity,
   conversationTaskId,
   completedConversationTurnVisible,
   confirmedOutgoingMessageIds,
@@ -813,11 +814,22 @@ function promoteLiveCompletion(taskIdValue, selected, incomingTurnId = "") {
 
 function clearDurablyCompletedLiveCard(taskIdValue) {
   const liveCard = liveCardsByTask.get(taskIdValue);
-  const turnId = String(liveCard?.turnId ?? "").trim();
-  if (!turnId || !completedConversationTurnVisible(historyByTask.get(taskIdValue) ?? [], {
-    turnId,
-    requireAgent: true,
-  })) return false;
+  const liveUsers = liveUserMessagesByTask.get(taskIdValue) ?? {};
+  const completedIdentity = completedLiveTurnIdentity(
+    historyByTask.get(taskIdValue) ?? [],
+    {
+      provider: liveCard?.provider ?? liveUsers.provider,
+      threadId: liveCard?.threadId ?? liveUsers.threadId,
+      turnId: liveCard?.turnId,
+      clientUserMessageIds: [
+        liveUsers.clientUserMessageId,
+        ...(Array.isArray(liveUsers.userMessages)
+          ? liveUsers.userMessages.map((message) => message?.clientUserMessageId)
+          : []),
+      ],
+    },
+  );
+  if (!completedIdentity) return false;
   liveCardsByTask.delete(taskIdValue);
   liveProbeByTask.delete(taskIdValue);
   liveUserMessagesByTask.delete(taskIdValue);
@@ -2120,7 +2132,10 @@ function historyMessages(history, focusedTurn = null) {
     for (const [index, message] of focusedTurn.messages.entries()) {
       const itemId = String(message?.itemId ?? "").trim();
       if (!itemId || messages.some((candidate) => (
-        candidate.turnId === focusedTurn.turnId && candidate.itemId === itemId
+        candidate.provider === focusedTurn.provider
+        && candidate.threadId === focusedThreadId
+        && candidate.turnId === focusedTurn.turnId
+        && candidate.itemId === itemId
       )) || (parentAgentAlreadyVisible
         && message.role === "agent"
         && message.kind !== "subagent")) continue;
@@ -2827,13 +2842,14 @@ agentHub.on("workspace:rename", ({ workspaceId, name }) => runAction(async () =>
   await control("rename-workspace", { workspaceId, name }),
 )));
 agentHub.on("workspace:create", ({
-  name, comment, workingDirectory, rules, releaseWorkflowEnabled, beforeColumnId,
+  name, comment, workingDirectory, taskPrefix, rules, releaseWorkflowEnabled, beforeColumnId,
 }) => runAction(async () => {
   let snapshot = await control("create-workspace", {
     name,
     comment,
     settings: {
       workingDirectory: String(workingDirectory ?? "").trim(),
+      taskPrefix: String(taskPrefix ?? "").trim(),
       releaseWorkflowEnabled: releaseWorkflowEnabled === true,
     },
   });
@@ -2850,7 +2866,7 @@ agentHub.on("workspace:create", ({
   applySnapshot(snapshot);
 }));
 agentHub.on("workspace:update", ({
-  workspaceId, name, comment, workingDirectory, rules, releaseWorkflowEnabled,
+  workspaceId, name, comment, workingDirectory, taskPrefix, rules, releaseWorkflowEnabled,
   beforeColumnId,
 }) => runAction(async () => {
   if (!lastSnapshot?.boardLayout) {
@@ -2862,9 +2878,11 @@ agentHub.on("workspace:update", ({
   const nextSettings = {
     ...(workspace?.settings ?? {}),
     workingDirectory: String(workingDirectory ?? "").trim(),
+    taskPrefix: String(taskPrefix ?? "").trim(),
     releaseWorkflowEnabled: releaseWorkflowEnabled === true,
   };
   const settingsChanged = nextSettings.workingDirectory !== String(workspace?.settings?.workingDirectory ?? "")
+    || nextSettings.taskPrefix !== String(workspace?.settings?.taskPrefix ?? "")
     || nextSettings.releaseWorkflowEnabled !== (workspace?.settings?.releaseWorkflowEnabled === true);
   if (settingsChanged) {
     snapshot = await control("update-workspace-settings", {

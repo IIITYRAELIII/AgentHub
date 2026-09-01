@@ -62,7 +62,10 @@ test("remote config records push and pull timestamps", async () => {
       now: () => new Date("2026-08-20T04:01:00.000Z"),
     });
     await store.rememberPush({ ok: true, added: 1 });
-    await store.rememberPush({ ok: true, added: 2 }, { usageWatermark: "2026-08-20T04:00:30.000Z" });
+    await store.rememberPush({ ok: true, added: 2 }, {
+      usageWatermark: "2026-08-20T04:00:30.000Z",
+      usageJournalRevision: 17,
+    });
     const pulled = await store.rememberPull(
       { imported: true, added: 1 },
       { serverRevision: 42 },
@@ -71,6 +74,7 @@ test("remote config records push and pull timestamps", async () => {
     assert.equal(pulled.lastPushAt, "2026-08-20T04:01:00.000Z");
     assert.equal(pulled.lastPullAt, "2026-08-20T04:01:00.000Z");
     assert.equal(pulled.lastUsagePushWatermark, "2026-08-20T04:00:30.000Z");
+    assert.equal(pulled.lastUsagePushJournalRevision, 17);
     assert.equal(pulled.lastUsagePullRevision, 42);
     assert.deepEqual(pulled.lastResult, { imported: true, added: 1 });
   } finally {

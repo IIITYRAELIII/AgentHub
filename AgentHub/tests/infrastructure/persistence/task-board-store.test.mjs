@@ -37,6 +37,27 @@ test("Task store revision changes on writes but not reads", async (t) => {
   assert.equal(store.revision, initial + 1);
 });
 
+test("status integration records a Git result without fabricating a provider turn", async (t) => {
+  const store = await fixture(t);
+  const task = store.create({ text: "Integrate Task status" });
+  const projectRoot = path.resolve("D:/repo");
+  const resultCommit = "b".repeat(40);
+
+  const recorded = store.recordTaskGitReference({
+    taskId: task.id,
+    projectRoot,
+    branch: taskBranchName(task.id, projectRoot),
+    resultSnapshot: { repoRoot: projectRoot, tree: resultCommit },
+  });
+
+  assert.deepEqual(recorded.gitReferences, [{
+    projectRoot,
+    branch: taskBranchName(task.id, projectRoot),
+    resultCommit,
+  }]);
+  assert.deepEqual(recorded.workLog, []);
+});
+
 test("Task store deduplicates Telegram updates and persists capture mode", async (t) => {
   const store = await fixture(t);
   const first = store.create({ text: "  Купить молоко ", source: "telegram", sourceKey: "telegram:1:2" });
@@ -258,6 +279,68 @@ test("manual Task edits persist and win over a late Spark result", async (t) => 
   assert.equal(triaged.correctedText, edited.correctedText);
 });
 
+test("Workspace placement allocates stable sequential Task numbers", async (t) => {
+  const store = await fixture(t);
+  const direct = store.create({
+    text: "Создана в Workspace", bucket: "workspace", workspaceId: "workspace-hub", taskPrefix: "HUB",
+  });
+  const backlog = store.create({ text: "Перемещена из Backlog" });
+  const moved = store.move(backlog.id, {
+    bucket: "workspace", workspaceId: "workspace-hub", taskPrefix: "HUB",
+  });
+
+  assert.equal(direct.taskNumber, "HUB-1");
+  assert.equal(moved.taskNumber, "HUB-2");
+  assert.equal(store.move(direct.id, {
+    bucket: "workspace", workspaceId: "workspace-ops", taskPrefix: "OPS",
+  }).taskNumber, "HUB-1");
+
+  const edited = store.updatePresentation(moved.id, {
+    title: moved.title, description: moved.description, taskNumber: "OPS-20",
+  });
+  assert.equal(edited.taskNumber, "OPS-20");
+  assert.equal(store.create({
+    text: "Следующая OPS", bucket: "workspace", workspaceId: "workspace-ops", taskPrefix: "OPS",
+  }).taskNumber, "OPS-21");
+  assert.throws(() => store.updatePresentation(direct.id, {
+    title: direct.title, taskNumber: "OPS-20",
+  }), /уже используется/u);
+});
+
+test("automatic placement, Workspace reassignment and backfill allocate numbers", async (t) => {
+  const store = await fixture(t);
+  const automatic = store.create({ text: "Автоматическая сортировка" });
+  const triaged = store.applyTriage(automatic.id, {
+    title: "Автоматическая сортировка",
+    description: "",
+    correctedText: "Автоматическая сортировка",
+    category: "task",
+    confidence: 0.95,
+    bucket: "workspace",
+    workspaceId: "workspace-auto",
+    taskPrefix: "AUTO",
+    autoPlace: true,
+  });
+  assert.equal(triaged.taskNumber, "AUTO-1");
+
+  const reassigned = store.create({
+    text: "Переезд Workspace", bucket: "workspace", workspaceId: "workspace-old",
+  });
+  assert.equal(reassigned.taskNumber, "");
+  assert.equal(store.reassignWorkspace("workspace-old", "workspace-new", { taskPrefix: "NEW" }), 1);
+  assert.equal(store.task(reassigned.id).taskNumber, "NEW-1");
+
+  const firstLegacy = store.create({
+    text: "Первая старая", bucket: "workspace", workspaceId: "workspace-legacy",
+  });
+  const secondLegacy = store.create({
+    text: "Вторая старая", bucket: "workspace", workspaceId: "workspace-legacy",
+  });
+  assert.equal(store.assignWorkspaceTaskNumbers("workspace-legacy", "LEG"), 2);
+  assert.equal(store.task(firstLegacy.id).taskNumber, "LEG-1");
+  assert.equal(store.task(secondLegacy.id).taskNumber, "LEG-2");
+});
+
 test("Task card order persists within and between columns", async (t) => {
   const store = await fixture(t);
   const first = store.create({ text: "Первая" });
@@ -326,7 +409,7 @@ test("repeated Task claim backfills a baseline captured after the first claim", 
   store.move(task.id, { bucket: "workspace", workspaceId: "workspace-1" });
   const claim = {
     workspaceId: "workspace-1", streamId: "stream-1",
-    provider: "codex", threadId: "thread-1", turnId: "turn-1",
+    provider: "codex", threadId: "thread-1", turnId: "turn-1", operationId: "claim-1",
   };
   store.claim(task.id, claim);
   store.claim(task.id, {
@@ -347,11 +430,12 @@ test("terminal Task evidence backfills a claim baseline captured after claim", a
   store.move(task.id, { bucket: "workspace", workspaceId: "workspace-1" });
   store.claim(task.id, {
     workspaceId: "workspace-1", streamId: "stream-1",
-    provider: "codex", threadId: "thread-1", turnId: "turn-1",
+    provider: "codex", threadId: "thread-1", turnId: "turn-1", operationId: "claim-1",
   });
 
   const recorded = store.recordTaskTurn({
     taskId: task.id, provider: "codex", threadId: "thread-1", turnId: "turn-1",
+    operationId: "claim-1",
     projectRoot, summary: "Interrupted after edit", status: "interrupted",
     changedFiles: [{ projectRoot, path: "src/app.mjs", operation: "modified", turnId: "turn-1" }],
     gitBaseline: { repoRoot: projectRoot, tree: "a".repeat(40) },
@@ -366,6 +450,82 @@ test("terminal Task evidence backfills a claim baseline captured after claim", a
   }]);
 });
 
+test("one provider turn switches Tasks with exact reorder-safe operation evidence", async (t) => {
+  const store = await fixture(t);
+  const projectRoot = path.resolve("D:/repo");
+  const first = store.create({ text: "First operation" });
+  const second = store.create({ text: "Second operation" });
+  for (const task of [first, second]) {
+    store.move(task.id, { bucket: "workspace", workspaceId: "workspace-1" });
+  }
+  const turn = {
+    workspaceId: "workspace-1",
+    streamId: "stream-1",
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "turn-1",
+  };
+
+  store.claim(first.id, { ...turn, operationId: "claim-first" });
+  assert.throws(
+    () => store.recordTaskTurn({
+      taskId: first.id,
+      provider: turn.provider,
+      threadId: turn.threadId,
+      turnId: turn.turnId,
+      operationId: "unknown-operation",
+      projectRoot,
+    }),
+    /exact durable provider operation binding/u,
+  );
+
+  store.claim(second.id, { ...turn, operationId: "claim-second" });
+  assert.equal(store.claimedTaskForTurn(turn).id, second.id);
+
+  store.recordTaskTurn({
+    taskId: first.id,
+    provider: turn.provider,
+    threadId: turn.threadId,
+    turnId: turn.turnId,
+    operationId: "claim-first",
+    projectRoot,
+    changedFiles: [{ projectRoot, path: "src/first.mjs", operation: "modified" }],
+    resultSnapshot: { repoRoot: projectRoot, tree: "b".repeat(40) },
+  });
+  assert.equal(store.claimedTaskForTurn(turn).id, second.id);
+
+  store.claim(first.id, { ...turn, operationId: "claim-first-again" });
+  store.recordTaskTurn({
+    taskId: second.id,
+    provider: turn.provider,
+    threadId: turn.threadId,
+    turnId: turn.turnId,
+    operationId: "claim-second",
+    projectRoot,
+    changedFiles: [{ projectRoot, path: "src/second.mjs", operation: "modified" }],
+    resultSnapshot: { repoRoot: projectRoot, tree: "c".repeat(40) },
+  });
+  assert.equal(store.claimedTaskForTurn(turn).id, first.id);
+
+  store.recordTaskTurn({
+    taskId: first.id,
+    provider: turn.provider,
+    threadId: turn.threadId,
+    turnId: turn.turnId,
+    operationId: "claim-first-again",
+    projectRoot,
+    changedFiles: [{ projectRoot, path: "src/follow-up.mjs", operation: "added" }],
+    resultSnapshot: { repoRoot: projectRoot, tree: "d".repeat(40) },
+  });
+
+  assert.deepEqual(store.task(first.id).workLog.map((entry) => entry.operationId), [
+    "claim-first",
+    "claim-first-again",
+  ]);
+  assert.equal(store.claimedTaskForTurn(turn).id, first.id);
+  assert.equal(store.claimedTaskForTurn({ ...turn, operationId: "claim-second" }).id, second.id);
+});
+
 test("Await Tasks expose only their immutable Git references to the release planner", async (t) => {
   const store = await fixture(t);
   const projectRoot = path.resolve("D:/repo");
@@ -376,11 +536,12 @@ test("Await Tasks expose only their immutable Git references to the release plan
   }
   store.claim(ready.id, {
     workspaceId: "workspace-1", streamId: "stream-1",
-    provider: "codex", threadId: "thread-1", turnId: "turn-1",
+    provider: "codex", threadId: "thread-1", turnId: "turn-1", operationId: "claim-1",
     gitBaseline: { repoRoot: projectRoot, tree: "a".repeat(40) },
   });
   store.recordTaskTurn({
     taskId: ready.id, provider: "codex", threadId: "thread-1", turnId: "turn-1",
+    operationId: "claim-1",
     projectRoot, status: "completed",
     changedFiles: [{ projectRoot, path: "src/app.mjs", operation: "modified" }],
     resultSnapshot: { repoRoot: projectRoot, tree: "b".repeat(40) },
@@ -399,7 +560,7 @@ test("a new Await request clears stale evidence until the Task branch is integra
   const task = store.create({ text: "Retry integration" });
   const identity = {
     workspaceId: "workspace-1", streamId: "stream-1",
-    provider: "codex", threadId: "thread-1", turnId: "turn-1",
+    provider: "codex", threadId: "thread-1", turnId: "turn-1", operationId: "claim-1",
   };
   store.move(task.id, { bucket: "workspace", workspaceId: "workspace-1" });
   store.claim(task.id, {
@@ -408,6 +569,7 @@ test("a new Await request clears stale evidence until the Task branch is integra
   });
   store.recordTaskTurn({
     taskId: task.id, provider: identity.provider, threadId: identity.threadId, turnId: identity.turnId,
+    operationId: identity.operationId,
     projectRoot, status: "completed",
     changedFiles: [{ projectRoot, path: "src/app.mjs", operation: "modified" }],
     resultSnapshot: { repoRoot: projectRoot, tree: "b".repeat(40) },
@@ -420,6 +582,7 @@ test("a new Await request clears stale evidence until the Task branch is integra
     provider: identity.provider,
     threadId: identity.threadId,
     turnId: identity.turnId,
+    operationId: identity.operationId,
   });
 
   assert.deepEqual(store.task(task.id).gitReferences, []);
@@ -430,7 +593,7 @@ test("rolling a Task back clears its pending awaiting intent", async (t) => {
   const task = store.create({ text: "Rollback awaiting" });
   const identity = {
     workspaceId: "workspace-1", streamId: "stream-1",
-    provider: "codex", threadId: "thread-1", turnId: "turn-1",
+    provider: "codex", threadId: "thread-1", turnId: "turn-1", operationId: "claim-1",
   };
   store.move(task.id, { bucket: "workspace", workspaceId: "workspace-1" });
   store.claim(task.id, identity);
@@ -439,6 +602,7 @@ test("rolling a Task back clears its pending awaiting intent", async (t) => {
     provider: identity.provider,
     threadId: identity.threadId,
     turnId: identity.turnId,
+    operationId: identity.operationId,
   }).workflowStatus, "awaiting_implementation");
   assert.equal(store.claimedTaskForTurn(identity).requestedWorkflowStatus, "awaiting_implementation");
 
@@ -452,7 +616,7 @@ test("recording evidence never overrides a user-selected workflow status", async
   const task = store.create({ text: "Preserve status" });
   const identity = {
     workspaceId: "workspace-1", streamId: "stream-1",
-    provider: "codex", threadId: "thread-1", turnId: "turn-1",
+    provider: "codex", threadId: "thread-1", turnId: "turn-1", operationId: "claim-1",
   };
   store.move(task.id, { bucket: "workspace", workspaceId: "workspace-1" });
   store.claim(task.id, {
@@ -465,6 +629,7 @@ test("recording evidence never overrides a user-selected workflow status", async
     provider: identity.provider,
     threadId: identity.threadId,
     turnId: identity.turnId,
+    operationId: identity.operationId,
     projectRoot,
     summary: "Evidence captured",
     changedFiles: [{ projectRoot, path: "src/app.mjs", operation: "modified" }],
@@ -533,13 +698,94 @@ test("legacy Task evidence tables migrate atomically to one Git reference", asyn
   inspected.close();
 });
 
+test("turn-scoped Task bindings migrate to operation-scoped evidence", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-task-operation-migration-"));
+  const databaseFile = path.join(directory, "journal.sqlite");
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const initial = new TaskBoardStore({ databaseFile });
+  const projectRoot = path.resolve("D:/repo");
+  const first = initial.create({ text: "Legacy binding" });
+  const second = initial.create({ text: "Next binding" });
+  for (const task of [first, second]) {
+    initial.move(task.id, { bucket: "workspace", workspaceId: "workspace-1" });
+  }
+  const turn = {
+    workspaceId: "workspace-1",
+    streamId: "stream-1",
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    operationId: "old-operation",
+  };
+  initial.claim(first.id, turn);
+  initial.recordTaskTurn({
+    taskId: first.id,
+    provider: turn.provider,
+    threadId: turn.threadId,
+    turnId: turn.turnId,
+    operationId: turn.operationId,
+    projectRoot,
+    changedFiles: [{ projectRoot, path: "src/legacy.mjs", operation: "modified" }],
+  });
+  initial.close();
+
+  const database = new DatabaseSync(databaseFile);
+  database.exec(`
+    DROP INDEX IF EXISTS hub_task_turn_bindings_active_idx;
+    DROP INDEX IF EXISTS hub_task_turn_bindings_task_idx;
+    DROP INDEX IF EXISTS hub_task_work_log_task_idx;
+    ALTER TABLE hub_task_turn_bindings RENAME TO hub_task_turn_bindings_operation_scope;
+    CREATE TABLE hub_task_turn_bindings (
+      task_id TEXT NOT NULL, provider TEXT NOT NULL, provider_thread_id TEXT NOT NULL,
+      turn_id TEXT NOT NULL, baseline_json TEXT NOT NULL DEFAULT '{}',
+      requested_workflow_status TEXT, claimed_at_ms INTEGER NOT NULL, terminal_at_ms INTEGER,
+      PRIMARY KEY (provider, provider_thread_id, turn_id),
+      FOREIGN KEY (task_id) REFERENCES hub_board_tasks(id) ON DELETE CASCADE
+    ) WITHOUT ROWID;
+    INSERT INTO hub_task_turn_bindings
+      SELECT task_id, provider, provider_thread_id, turn_id, baseline_json,
+        requested_workflow_status, claimed_at_ms, terminal_at_ms
+      FROM hub_task_turn_bindings_operation_scope;
+    DROP TABLE hub_task_turn_bindings_operation_scope;
+    ALTER TABLE hub_task_work_log RENAME TO hub_task_work_log_operation_scope;
+    CREATE TABLE hub_task_work_log (
+      id TEXT PRIMARY KEY, task_id TEXT NOT NULL, provider TEXT NOT NULL,
+      provider_thread_id TEXT NOT NULL, turn_id TEXT NOT NULL, project_root TEXT NOT NULL,
+      summary TEXT NOT NULL DEFAULT '', status TEXT NOT NULL,
+      changed_files_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL,
+      FOREIGN KEY (task_id) REFERENCES hub_board_tasks(id) ON DELETE CASCADE,
+      UNIQUE (task_id, provider, provider_thread_id, turn_id)
+    ) WITHOUT ROWID;
+    INSERT INTO hub_task_work_log
+      SELECT id, task_id, provider, provider_thread_id, turn_id, project_root,
+        summary, status, changed_files_json, created_at_ms
+      FROM hub_task_work_log_operation_scope;
+    DROP TABLE hub_task_work_log_operation_scope;
+  `);
+  database.close();
+
+  const migrated = new TaskBoardStore({ databaseFile });
+  const legacyOperationId = `legacy:${first.id}`;
+  assert.equal(migrated.claimedTaskForTurn({
+    provider: turn.provider,
+    threadId: turn.threadId,
+    turnId: turn.turnId,
+  }).operationId, legacyOperationId);
+  assert.equal(migrated.task(first.id).workLog[0].operationId, legacyOperationId);
+  assert.equal(migrated.claim(second.id, {
+    ...turn,
+    operationId: "next-operation",
+  }).id, second.id);
+  migrated.close();
+});
+
 test("release completion CAS-checks the exact Task Git reference", async (t) => {
   const store = await fixture(t);
   const projectRoot = path.resolve("D:/repo");
   const task = store.create({ text: "Publish commit" });
   const identity = {
     workspaceId: "workspace-1", streamId: "stream-1",
-    provider: "codex", threadId: "thread-1", turnId: "turn-1",
+    provider: "codex", threadId: "thread-1", turnId: "turn-1", operationId: "claim-1",
   };
   store.move(task.id, { bucket: "workspace", workspaceId: identity.workspaceId });
   store.claim(task.id, identity);
@@ -548,6 +794,7 @@ test("release completion CAS-checks the exact Task Git reference", async (t) => 
     provider: identity.provider,
     threadId: identity.threadId,
     turnId: identity.turnId,
+    operationId: identity.operationId,
     projectRoot,
     changedFiles: [{ projectRoot, path: "src/app.mjs", operation: "modified" }],
     resultSnapshot: { repoRoot: projectRoot, tree: "b".repeat(40) },

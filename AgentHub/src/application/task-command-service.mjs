@@ -232,6 +232,10 @@ export class TaskCommandService {
         provider,
         streamId: stream.id,
         title: workspace?.name ?? "",
+        ...(String(params.taskId ?? "").trim() ? {
+          taskId: params.taskId,
+          taskNumber: params.taskNumber,
+        } : {}),
       });
     } else {
       this.selectionStore.setThread(null, {

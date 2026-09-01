@@ -13,6 +13,7 @@ import {
   createInterstreamMessage,
   interstreamMessageDetails,
 } from "../domain/interstream-message.mjs";
+import { taskProjectRoot } from "../domain/task-project-root.mjs";
 
 const CONTEXT_TOKEN_VERSION = 1;
 const MAX_REGISTERED_CONTEXT_CAPABILITIES = 1_000;
@@ -20,7 +21,7 @@ const MUTATING_TOOLS = new Set([
   "hub_task_create", "hub_task_update", "hub_task_move", "hub_task_start", "hub_task_claim", "hub_task_status_update", "hub_task_complete", "hub_task_delete",
   "hub_task_attachment_add", "hub_workspace_rules_update", "hub_stream_rules_update",
   "hub_stream_message_send",
-  "hub_release_complete",
+  "hub_release_preflight", "hub_release_complete",
 ]);
 const TEXT_ATTACHMENT_TYPES = new Set([
   "text/plain", "text/markdown", "text/csv", "application/json", "application/xml",
@@ -167,6 +168,7 @@ function compactText(value, maximumLength) {
 function compactTask(task) {
   return {
     id: task.id,
+    taskNumber: task.taskNumber,
     title: task.title,
     description: task.description,
     text: task.text,
@@ -222,7 +224,7 @@ export class HubMcpService {
   #contextCapabilities = new Map();
 
   constructor({
-    workspaceCatalog, taskBoard, workLog, attachmentDirectory, secret, releasePlanner, releaseCompleter,
+    workspaceCatalog, taskBoard, workLog, attachmentDirectory, secret, releasePlanner, releasePreflight, releaseCompleter,
     taskGitWorkspaces = null,
   } = {}) {
     for (const name of [
@@ -238,12 +240,14 @@ export class HubMcpService {
       requiredMethod(taskBoard, name);
     }
     requiredMethod(workLog, "threadTurns");
+    requiredMethod(releasePreflight, "preflight");
     requiredMethod(releaseCompleter, "completeRelease");
     this.workspaceCatalog = workspaceCatalog;
     this.taskBoard = taskBoard;
     this.workLog = workLog;
     this.attachmentDirectory = path.resolve(requiredText(attachmentDirectory, "attachment directory", 2_000));
     this.secret = requiredText(secret, "MCP secret", 512);
+    this.releasePreflight = releasePreflight;
     this.releaseCompleter = releaseCompleter;
     this.releasePlanner = releasePlanner;
     this.taskGitWorkspaces = taskGitWorkspaces;
@@ -304,8 +308,9 @@ export class HubMcpService {
         title: { type: "string" },
         description: { type: "string", default: "" },
       }, ["title"]),
-      tool("hub_task_update", "Update the title or description of any Dashboard task by id.", {
+      tool("hub_task_update", "Update the number, title or description of any Dashboard task by id.", {
         task_id: { type: "string" },
+        task_number: { type: "string" },
         title: { type: "string" },
         description: { type: "string" },
       }, ["task_id"]),
@@ -344,6 +349,10 @@ export class HubMcpService {
         local_path: { type: "string" },
       }, ["task_id", "local_path"]),
       tool("hub_release_plan_get", "Read the complete release plan and exact integrated dev heads for the current Workspace."),
+      tool("hub_release_preflight", "Refresh Test Contour from dev and verify the exact selected Task results are integrated before release.", {
+        expected_plan_revision: { type: "string", description: "Exact revision returned by hub_release_plan_get." },
+        conflicts_resolved: { type: "boolean", description: "True only after the Architect explicitly resolves every reported overlap." },
+      }, ["expected_plan_revision"]),
       tool("hub_release_complete", "Complete a release only after clean main revisions and explicit deployment verification.", {
         expected_revision: { type: "string" },
         expected_plan_revision: { type: "string", description: "Exact revision returned by hub_release_plan_get." },
@@ -459,6 +468,9 @@ export class HubMcpService {
         return this.#addAttachment(context, args);
       case "hub_release_plan_get":
         return this.#releasePlan(context);
+      case "hub_release_preflight":
+        if (!this.#isArchitect(context)) throw new Error("release preflight requires an Architect Stream");
+        return this.#preflightRelease(context, args);
       case "hub_release_complete":
         if (!this.#isArchitect(context)) throw new Error("release completion requires an Architect Stream");
         return this.#completeRelease(context, args);
@@ -582,9 +594,7 @@ export class HubMcpService {
   #taskProjectRoot(context, streamId = context.streamId) {
     const workspace = this.#workspace(context);
     const stream = workspace.streams.find((candidate) => candidate.id === streamId);
-    return String(stream?.settings?.workingDirectory ?? "").trim()
-      || String(workspace.settings?.workingDirectory ?? "").trim()
-      || null;
+    return taskProjectRoot({ workspace, stream });
   }
 
   #parallelStreams(context) {
@@ -631,15 +641,13 @@ export class HubMcpService {
       text,
       source: "hub-mcp",
       sourceDetails: { mcpWorkspaceId: context.workspaceId },
-    });
-    return compactTask(this.taskBoard.move({
-      id: created.id,
       bucket: "workspace",
       workspaceId: context.workspaceId,
-    }));
+    });
+    return compactTask(created);
   }
 
-  #updateTask(context, { task_id: taskId, title, description } = {}) {
+  #updateTask(context, { task_id: taskId, task_number: taskNumber, title, description } = {}) {
     const current = this.#task(context, taskId);
     const nextTitle = title == null ? current.title : requiredText(title, "task title", 10_000);
     const nextDescription = description == null
@@ -647,6 +655,7 @@ export class HubMcpService {
       : (optionalText(description, 50_000) ?? "");
     return compactTask(this.taskBoard.update({
       id: current.id,
+      taskNumber: taskNumber == null ? undefined : requiredText(taskNumber, "task number", 80),
       title: nextTitle,
       description: nextDescription,
     }));
@@ -671,12 +680,12 @@ export class HubMcpService {
     }));
   }
 
-  async #claimTask(context, { task_id: taskId } = {}) {
+  async #claimTask(context, { task_id: taskId, request_id: operationId } = {}) {
     const task = this.#task(context, taskId);
     const active = this.#currentRun(context);
     const projectRoot = this.#taskProjectRoot(context);
     const gitWorkspace = this.taskGitWorkspaces && projectRoot
-      ? await this.taskGitWorkspaces.prepare({ taskId: task.id, projectRoot })
+      ? await this.taskGitWorkspaces.prepare({ taskId: task.id, taskNumber: task.taskNumber, projectRoot })
       : null;
     if (gitWorkspace) active.gitBaseline = gitWorkspace.gitBaseline;
     return {
@@ -687,6 +696,8 @@ export class HubMcpService {
         provider: context.provider,
         threadId: context.threadId,
         turnId: active.turnId,
+        operationId,
+        operationKind: "claim",
         gitBaseline: active.gitBaseline ?? null,
       })),
       claimedTurnId: active.turnId,
@@ -716,28 +727,15 @@ export class HubMcpService {
   async #updateTaskWorkflowStatus(context, { task_id: taskId, status } = {}) {
     const task = this.#task(context, taskId);
     const workflowStatus = requiredText(status, "task workflow status", 40);
-    const active = context.threadId ? this.#activeRuns().filter((run) => (
-      String(run?.provider ?? "").trim().toLowerCase() === context.provider
-      && String(run?.threadId ?? "").trim() === context.threadId
-      && String(run?.turnId ?? "").trim()
-      && run?.observer !== true
-    )) : [];
-    const run = active.length === 1 ? active[0] : null;
     let gitWorkspace = null;
     let preparationError = null;
     const snapshotsResult = ["testing", "awaiting_implementation", "done"].includes(workflowStatus);
-    const projectRoot = snapshotsResult ? this.#taskProjectRoot(context) : null;
+    const targetStreamId = String(task.streamId ?? "").trim() || context.streamId;
+    const projectRoot = snapshotsResult ? this.#taskProjectRoot(context, targetStreamId) : null;
     if (snapshotsResult && projectRoot && this.taskGitWorkspaces) {
       try {
-        gitWorkspace = await this.taskGitWorkspaces.prepare({ taskId: task.id, projectRoot });
-        this.taskBoard.claim({
-          id: task.id,
-          workspaceId: context.workspaceId,
-          streamId: context.streamId,
-          provider: context.provider,
-          threadId: context.threadId,
-          turnId: run.turnId,
-          gitBaseline: gitWorkspace.gitBaseline,
+        gitWorkspace = await this.taskGitWorkspaces.prepare({
+          taskId: task.id, taskNumber: task.taskNumber, projectRoot,
         });
       } catch (error) {
         preparationError = error;
@@ -748,7 +746,7 @@ export class HubMcpService {
       status: workflowStatus,
       provider: context.provider,
       threadId: context.threadId,
-      turnId: run?.turnId ?? null,
+      turnId: null,
     });
     if (!snapshotsResult) return compactTask(updated);
     if (!gitWorkspace) {
@@ -763,21 +761,15 @@ export class HubMcpService {
     try {
       const { snapshot, integration } = await this.taskGitWorkspaces.snapshotAndMerge({
         taskId: task.id,
+        taskNumber: task.taskNumber,
         projectRoot: gitWorkspace.projectRoot,
-        turnId: run?.turnId,
+        turnId: null,
         summary: task.title,
       });
       if (integration.integrated && snapshot.changedFiles.length) {
-        this.taskBoard.recordTaskTurn({
+        this.taskBoard.recordTaskGitReference({
           taskId: task.id,
-          provider: context.provider,
-          threadId: context.threadId,
-          turnId: run.turnId,
           projectRoot: snapshot.repositoryRoot,
-          summary: task.title,
-          status: "completed",
-          changedFiles: snapshot.changedFiles.map((file) => ({ ...file, turnId: run.turnId })),
-          gitBaseline: snapshot.gitBaseline,
           resultSnapshot: snapshot.resultSnapshot,
           branch: snapshot.branch,
         });
@@ -874,10 +866,6 @@ export class HubMcpService {
       throw new Error("stream_id and new_stream_name are mutually exclusive");
     }
     const targetStreamId = requestedStreamName ? null : (requestedStreamId || context.streamId);
-    const projectRoot = this.#taskProjectRoot(context, targetStreamId);
-    const gitWorkspace = this.taskGitWorkspaces && projectRoot
-      ? await this.taskGitWorkspaces.prepare({ taskId: task.id, projectRoot })
-      : null;
     const result = await this.#taskLauncher({
       id: task.id,
       workspaceId: context.workspaceId,
@@ -887,8 +875,8 @@ export class HubMcpService {
       followUpMode: "queue",
       launchRequestId: requiredText(requestId, "request id", 200),
       clientUserMessageId: `mcp:${requiredText(requestId, "request id", 200)}`,
-      workingDirectory: gitWorkspace?.projectRoot ?? null,
     }, context);
+    const gitWorkspace = result.gitWorkspace ?? null;
     return {
       task: compactTask(result.task),
       target: {
@@ -1116,5 +1104,13 @@ export class HubMcpService {
     } catch {
       return false;
     }
+  }
+
+  async #preflightRelease(context, args) {
+    return this.releasePreflight.preflight({
+      workspaceId: context.workspaceId,
+      expectedPlanRevision: optionalText(args.expected_plan_revision, 128),
+      conflictsResolved: args.conflicts_resolved === true,
+    });
   }
 }

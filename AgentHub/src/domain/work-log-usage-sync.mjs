@@ -220,7 +220,7 @@ export function usageSyncSnapshotFromLedger(turns = {}, {
           deviceLabel: boundedText(deviceLabel, 80) || event.deviceLabel,
         })
       : null)
-    .filter((event) => !event || !afterObservedMs || (Date.parse(event.observedAt) || 0) > afterObservedMs)
+    .filter((event) => !event || !afterObservedMs || (Date.parse(event.observedAt) || 0) >= afterObservedMs)
     .filter(Boolean);
   return {
     version: USAGE_SYNC_SNAPSHOT_VERSION,

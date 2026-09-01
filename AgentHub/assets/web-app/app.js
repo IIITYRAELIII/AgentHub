@@ -88,6 +88,7 @@ const workspaceCardTitle = document.querySelector("[data-workspace-card-title]")
 const workspaceCardName = document.querySelector("[data-workspace-card-name]");
 const workspaceCardComment = document.querySelector("[data-workspace-card-comment]");
 const workspaceCardWorkingDirectory = document.querySelector("[data-workspace-card-working-directory]");
+const workspaceCardTaskPrefix = document.querySelector("[data-workspace-card-task-prefix]");
 const workspaceCardRules = document.querySelector("[data-workspace-card-rules]");
 const workspaceCardRulesCount = document.querySelector("[data-workspace-card-rules-count]");
 const workspaceCardQuickMessages = document.querySelector("[data-workspace-card-quick-messages]");
@@ -3246,6 +3247,7 @@ function openWorkspaceCard(workspaceId) {
   workspaceCardName.disabled = workspace.kind === "system";
   workspaceCardComment.value = String(workspace.comment ?? "");
   workspaceCardWorkingDirectory.value = String(workspace.settings?.workingDirectory ?? "");
+  workspaceCardTaskPrefix.value = String(workspace.settings?.taskPrefix ?? "");
   workspaceCardRules.value = entityAgentRules(workspace);
   workspaceCardReleaseWorkflow.checked = workspace.settings?.releaseWorkflowEnabled === true;
   updateAgentRulesLimit(workspaceCardRules, workspaceCardRulesCount);
@@ -3268,6 +3270,7 @@ function openNewWorkspaceCard() {
   workspaceCardName.disabled = false;
   workspaceCardComment.value = "";
   workspaceCardWorkingDirectory.value = "";
+  workspaceCardTaskPrefix.value = "";
   workspaceCardRules.value = "";
   workspaceCardReleaseWorkflow.checked = false;
   updateAgentRulesLimit(workspaceCardRules, workspaceCardRulesCount);
@@ -4784,8 +4787,8 @@ function appendInlineMarkdown(target, source, fileContext = currentFileLinkConte
       appendInlineMarkdown(emphasis, token.slice(1, -1), fileContext);
       target.append(emphasis);
     } else {
-      const parts = token.match(/^\[([^\]\n]+)\]\(<([^>\n]+)>\)$/u)
-        ?? token.match(/^\[([^\]\n]+)\]\(([^)\n]+)\)$/u);
+      const parts = token.match(/^\[([^\]\n]+)\]\(<([^>\n]+)>(?:\s+"([^"]*)")?\)$/u)
+        ?? token.match(/^\[([^\]\n]+)\]\(([^)\n]+?)(?:\s+"([^"]*)")?\)$/u);
       const targetLink = markdownLink(parts?.[2], fileContext);
       if (targetLink) {
         const link = el("a", {
@@ -4793,6 +4796,7 @@ function appendInlineMarkdown(target, source, fileContext = currentFileLinkConte
           target: targetLink.taskId ? null : "_blank",
           rel: targetLink.taskId ? null : "noopener noreferrer",
           text: parts[1],
+          title: parts[3] || null,
         });
         if (targetLink.taskId) link.dataset.agentHubTaskReference = targetLink.taskId;
         if (targetLink.localPath) link.dataset.agentHubLocalLink = targetLink.localPath;
@@ -6022,6 +6026,7 @@ function renderAttachmentStrip(items, { readOnly, taskReferenceList = false }) {
   items.forEach((item, index) => {
     if (TaskReferences.isTaskReference(item)) {
       const reference = TaskReferences.normalize(item);
+      const presentation = TaskReferences.presentation(reference);
       const status = ({
         new: "New",
         in_progress: "InProg",
@@ -6031,12 +6036,12 @@ function renderAttachmentStrip(items, { readOnly, taskReferenceList = false }) {
       })[reference.workflowStatus] ?? "New";
       const card = el(readOnly ? "button" : "div", {
         class: "attachment attachment-task-reference",
-        title: readOnly ? "Открыть карточку Dashboard Task" : reference.title,
+        title: reference.title,
         ...(readOnly ? { type: "button" } : {}),
       }, [el("span", { class: "attachment-task-card" }, [
-        el("span", { class: "attachment-file-type", text: "TASK" }),
+        el("span", { class: "attachment-file-type", text: presentation.badge }),
         el("span", { class: "attachment-task-copy" }, [
-          el("span", { class: "attachment-file-name", text: reference.title }),
+          el("span", { class: "attachment-file-name", text: presentation.title }),
           el("span", { class: "attachment-task-status", text: status }),
         ]),
       ])]);
@@ -6747,6 +6752,7 @@ workspaceCardForm?.addEventListener("submit", (event) => {
       name,
       comment: workspaceCardComment.value.trim(),
       workingDirectory: workspaceCardWorkingDirectory.value.trim(),
+      taskPrefix: workspaceCardTaskPrefix.value.trim(),
       rules: workspaceCardRules.value,
       releaseWorkflowEnabled: workspaceCardReleaseWorkflow.checked,
       beforeColumnId: order[targetIndex] ?? null,
@@ -6765,6 +6771,7 @@ workspaceCardForm?.addEventListener("submit", (event) => {
     name,
     comment: workspaceCardComment.value.trim(),
     workingDirectory: workspaceCardWorkingDirectory.value.trim(),
+    taskPrefix: workspaceCardTaskPrefix.value.trim(),
     rules: workspaceCardRules.value,
     releaseWorkflowEnabled,
     beforeColumnId: remaining[targetIndex] ?? null,
@@ -8584,7 +8591,9 @@ function burnRatePolicyForRange(range) {
 
 function selectedBurnRatePolicyForRange(range) {
   const policy = burnRatePolicyForRange(range);
-  return limitsState.speedFullWindow ? policy : { ...policy, minimumSpanMs: 0 };
+  return limitsState.speedFullWindow
+    ? policy
+    : { ...policy, minimumSpanMs: 0, showResetStartAsZero: true };
 }
 
 function weeklyLimitDurationMs(series) {
@@ -8623,7 +8632,10 @@ function sameWeeklyLimitCycle(left, right) {
 function sameLimitsSpeedSegment(left, right) {
   const hasPathSegments = Number.isInteger(left?.pathSegmentIndex)
     && Number.isInteger(right?.pathSegmentIndex);
-  return sameWeeklyLimitCycle(left, right)
+  const joinsResetAnchor = right?.resetAnchor === true
+    && Number.isInteger(left?.cycleIndex)
+    && right.cycleIndex === left.cycleIndex + 1;
+  return (sameWeeklyLimitCycle(left, right) || joinsResetAnchor)
     && (!hasPathSegments || left.pathSegmentIndex === right.pathSegmentIndex);
 }
 
@@ -8661,6 +8673,7 @@ function weeklyBurnRatePoints(series, {
   rollingWindowMs = BURN_RATE_ROLLING_WINDOW_MS,
   minimumSpanMs = BURN_RATE_MINIMUM_SPAN_MS,
   maximumLookbackMs = rollingWindowMs * 1.5,
+  showResetStartAsZero = false,
 } = {}) {
   const durationMs = weeklyLimitDurationMs(series);
   if (!durationMs) return [];
@@ -8687,14 +8700,18 @@ function weeklyBurnRatePoints(series, {
   for (let index = 0; index < points.length; index += 1) {
     const previousAccount = String(points[index - 1]?.raw?.accountKey ?? "");
     const currentAccount = String(points[index]?.raw?.accountKey ?? "");
-    if (index > 0 && (
-      points[index].usedPercent < points[index - 1].usedPercent
-      || (previousAccount && currentAccount && previousAccount !== currentAccount)
-    )) cycleIndex += 1;
+    const startsAfterReset = index > 0
+      && points[index].usedPercent < points[index - 1].usedPercent;
+    const startsAfterAccountChange = index > 0
+      && previousAccount
+      && currentAccount
+      && previousAccount !== currentAccount;
+    if (startsAfterReset || startsAfterAccountChange) cycleIndex += 1;
     points[index].cycleIndex = cycleIndex;
+    points[index].startsAfterReset = startsAfterReset;
   }
 
-  return points.map((point, index) => {
+  const ratePoints = points.map((point, index) => {
     const remainingMs = point.resetMs - point.atMs;
     const targetRate = Math.max(0, point.remainingPercent) / remainingMs * WEEK_MILLISECONDS;
     let baseline = null;
@@ -8715,7 +8732,7 @@ function weeklyBurnRatePoints(series, {
     const usedDelta = baseline ? point.usedPercent - baseline.usedPercent : Number.NaN;
     const actualRate = spanMs > 0 && spanMs >= minimumSpanMs && usedDelta >= 0
       ? usedDelta / spanMs * WEEK_MILLISECONDS
-      : null;
+      : showResetStartAsZero && point.startsAfterReset ? 0 : null;
     const deviationRate = Number.isFinite(actualRate) ? actualRate - targetRate : null;
     return {
       ...point,
@@ -8727,6 +8744,37 @@ function weeklyBurnRatePoints(series, {
       deviationRate,
       overTarget: Number.isFinite(deviationRate) ? deviationRate > 0 : false,
     };
+  });
+  if (!showResetStartAsZero) return ratePoints;
+  return ratePoints.flatMap((point, index) => {
+    if (!point.startsAfterReset) return [point];
+    const previousAtMs = ratePoints[index - 1]?.atMs;
+    const cycleStartMs = point.resetMs - durationMs;
+    if (!(cycleStartMs > previousAtMs && cycleStartMs < point.atMs)) return [point];
+    const remainingPercent = 100;
+    const targetRate = remainingPercent / durationMs * WEEK_MILLISECONDS;
+    return [{
+      ...point,
+      raw: {
+        ...point.raw,
+        at: new Date(cycleStartMs).toISOString(),
+        usedPercent: 0,
+        remainingPercent,
+        estimated: true,
+        estimateKind: "reset-start",
+      },
+      atMs: cycleStartMs,
+      usedPercent: 0,
+      remainingPercent,
+      cycleAgeMs: 0,
+      sampleSpanMs: 0,
+      targetRate,
+      actualRate: 0,
+      deviationRate: -targetRate,
+      overTarget: false,
+      startsAfterReset: false,
+      resetAnchor: true,
+    }, point];
   });
 }
 

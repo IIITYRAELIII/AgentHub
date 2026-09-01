@@ -151,7 +151,11 @@ export class WorkLogUsageStore {
   }
 
   #enqueueRead(operation) {
-    return this.#repository.enqueue(operation);
+    return this.#repository.enqueue(operation, { retain: false });
+  }
+
+  diagnostics() {
+    return this.#repository.diagnostics?.() ?? {};
   }
 
   async #projectionSource() {
@@ -192,7 +196,7 @@ export class WorkLogUsageStore {
     return { projected: true };
   }
 
-  async #projectAccountUsage(selectedTurns) {
+  async #projectAccountUsage(projectRoots = []) {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const current = await this.#repository.payload();
       const accountCatalog = typeof this.#repository.accountCatalog === "function"
@@ -201,7 +205,7 @@ export class WorkLogUsageStore {
       const projected = typeof this.#usageSyncStore.projectAccountUsage === "function"
         ? await this.#usageSyncStore.projectAccountUsage({
           html: String(current?.html ?? ""),
-          turns: selectedTurns,
+          projectRoots,
           accountCatalog,
           includeClaudeUsage: this.#includeClaudeUsage,
           localDeviceId: this.#usageSyncDeviceId,
@@ -267,24 +271,17 @@ export class WorkLogUsageStore {
   }
 
   getTurn({ provider = "codex", threadId, turnId }) {
-    return this.#enqueueRead(async () => {
-      const record = this.#ledger.turns[workLogTurnKey({ provider, threadId, turnId })];
-      return record ? structuredClone(record) : null;
-    });
+    return this.#repository.enqueue(
+      async () => structuredClone(await this.#repository.getRecord({ provider, threadId, turnId })),
+      { load: false, pointRead: true },
+    );
   }
 
   threadTurns(identities = [], { limit = 20 } = {}) {
-    return this.#enqueueRead(async () => {
-      const keys = new Set((Array.isArray(identities) ? identities : []).map((identity) => (
-        `${String(identity?.provider ?? "").trim().toLowerCase()}\0${String(identity?.threadId ?? "").trim()}`
-      )));
-      const boundedLimit = Math.max(1, Math.min(50, Number(limit) || 20));
-      const timestamp = (record) => Date.parse(record.completedAt || record.startedAt || "") || 0;
-      return structuredClone(Object.values(this.#ledger.turns)
-        .filter((record) => keys.has(`${record.provider}\0${record.threadId}`))
-        .sort((left, right) => timestamp(right) - timestamp(left))
-        .slice(0, boundedLimit));
-    });
+    return this.#repository.enqueue(
+      async () => structuredClone(await this.#repository.threadRecords(identities, { limit })),
+      { load: false, pointRead: true },
+    );
   }
 
   searchTurns(query, options = {}) {
@@ -503,10 +500,23 @@ export class WorkLogUsageStore {
     deviceId = this.#usageSyncDeviceId,
     deviceLabel = "",
     afterObservedAt = "",
+    afterJournalRevision = 0,
   } = {}) {
-    return this.#enqueueRead(async () => {
-      return usageSyncSnapshotFromLedger(this.#ledger.turns, { deviceId, deviceLabel, afterObservedAt });
-    });
+    if (typeof this.#usageSyncStore?.usageSyncSnapshot !== "function") {
+      return this.#enqueueRead(async () => usageSyncSnapshotFromLedger(
+        this.#ledger.turns,
+        { deviceId, deviceLabel, afterObservedAt },
+      ));
+    }
+    return this.#repository.enqueue(
+      () => this.#usageSyncStore.usageSyncSnapshot({
+        deviceId,
+        deviceLabel,
+        afterObservedAt,
+        afterJournalRevision,
+      }),
+      { load: false },
+    );
   }
 
   importUsageSyncSnapshotAndProject({
@@ -518,16 +528,17 @@ export class WorkLogUsageStore {
     if (!this.#usageSyncStore) {
       throw new Error("Usage sync store is not configured");
     }
-    const operation = this.#enqueueMutation(workLogFile, async () => {
+    const operation = this.#repository.enqueue(async () => {
       const imported = await this.#usageSyncStore.importSnapshot(snapshot);
       if (!imported.added && !imported.updated) {
         return { ...imported, projected: false, reason: "unchanged" };
       }
-      const selectedTurns = this.#turnsForProjection(projectRoot, projectionProjectRoots);
-      const projection = await this.#projectAccountUsage(selectedTurns);
+      const roots = (Array.isArray(projectionProjectRoots) && projectionProjectRoots.length)
+        ? projectionProjectRoots
+        : [projectRoot];
+      const projection = await this.#projectAccountUsage(roots);
       return { ...imported, ...projection };
-
-    });
+    }, { load: false });
     return operation;
   }
 
@@ -732,6 +743,57 @@ export class WorkLogUsageStore {
     projectionProjectRoots,
     deferProjection = false,
   }) {
+    if (deferProjection) {
+      return this.#repository.enqueue(async () => {
+        const key = workLogTurnKey({ provider, threadId, turnId });
+        const existing = await this.#repository.getRecord({ provider, threadId, turnId });
+        const incoming = incomingLedgerRecord({
+          provider,
+          threadId,
+          turnId,
+          projectRoot,
+          usage,
+          usageReported,
+          estimatedCredits,
+          estimateKind,
+          imageGenerationCount,
+          contextProbe,
+          model,
+          serviceTier,
+          taskThreadId,
+          parentThreadId,
+          parentTurnId,
+          aggregateOnly,
+          provisional,
+          taskTitle,
+          title,
+          body,
+          text,
+          prompt,
+          changedFiles,
+          diff,
+          skillsUsed,
+          mcpCalls,
+          toolMetricsKnown,
+          ...(resolveAccount === false
+            ? { account, accountKey, accountAttribution }
+            : await this.#resolvedAccountFields(provider, { account, accountKey, accountAttribution })),
+          startedAt,
+          completedAt,
+          status,
+        });
+        const record = mergeLedgerRecord(existing, incoming);
+        await this.#repository.saveRecord(key, record);
+        return {
+          recorded: !existing,
+          usage: record.usage,
+          workLogId: null,
+          target: "thread-day-row",
+          projected: false,
+          projectionDeferred: true,
+        };
+      }, { load: false });
+    }
     return this.#enqueueMutation(workLogFile, async () => {
       const key = workLogTurnKey({ provider, threadId, turnId });
       const existing = this.#ledger.turns[key];
@@ -771,21 +833,7 @@ export class WorkLogUsageStore {
         status,
       });
       this.#ledger.turns[key] = mergeLedgerRecord(existing, incoming);
-      if (deferProjection) {
-        await this.#saveRecord(key, this.#ledger.turns[key]);
-      } else {
-        await this.#save();
-      }
-      if (deferProjection) {
-        return {
-          recorded: !existing,
-          usage: this.#ledger.turns[key].usage,
-          workLogId: null,
-          target: "thread-day-row",
-          projected: false,
-          projectionDeferred: true,
-        };
-      }
+      await this.#save();
       try {
         const selectedTurns = this.#turnsForProjection(projectRoot, projectionProjectRoots);
         const projection = await this.#projectDatabase(selectedTurns);

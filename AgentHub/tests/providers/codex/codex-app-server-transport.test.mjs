@@ -189,7 +189,7 @@ test("CodexAppServerTransport times out requests and rejects them on exit", asyn
   assert.equal(exits[0].code, 7);
 });
 
-test("CodexAppServerTransport deduplicates, caches and invalidates thread reads", async () => {
+test("CodexAppServerTransport deduplicates only in-flight thread reads", async () => {
   const { child, transport } = await startedTransport({ threadReadCacheMs: 10_000 });
   const firstWrite = nextWrittenJson(child.stdin);
   const first = transport.readThread("thread-1", { includeTurns: false });
@@ -199,14 +199,14 @@ test("CodexAppServerTransport deduplicates, caches and invalidates thread reads"
   assert.deepEqual(await first, { thread: { id: "thread-1" } });
   assert.deepEqual(await duplicate, { thread: { id: "thread-1" } });
 
-  assert.deepEqual(await transport.readThread("thread-1", { includeTurns: false }), { thread: { id: "thread-1" } });
-  transport.invalidateThreadRead("thread-1");
   const secondWrite = nextWrittenJson(child.stdin);
   const refreshed = transport.readThread("thread-1", { includeTurns: false });
   const secondRequest = await secondWrite;
   assert.notEqual(secondRequest.id, request.id);
   child.stdout.write(`${JSON.stringify({ id: secondRequest.id, result: { thread: { id: "thread-1", fresh: true } } })}\n`);
   assert.equal((await refreshed).thread.fresh, true);
+  assert.equal(transport.diagnostics().inFlightThreadReads, 0);
+  assert.equal("retainedThreadReadValues" in transport.diagnostics(), false);
 });
 
 test("CodexAppServerTransport builds bounded full history from cursor pages", async () => {
@@ -399,6 +399,8 @@ test("CodexAppServerTransport owns notifications, responses and process-tree sto
 
   await transport.stop();
   assert.deepEqual(stopped, [321]);
+  assert.equal(transport.running, false);
+  assert.equal(transport.diagnostics().hubOwnedProcessTrees, undefined);
 });
 
 test("CodexAppServerTransport reports startup failures without becoming active", async () => {

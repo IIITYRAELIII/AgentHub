@@ -9,6 +9,8 @@ import test from "node:test";
 import { canonicalPath } from "../../src/infrastructure/filesystem/config.mjs";
 import { LoopbackTelegramApi } from "../../src/infrastructure/network/loopback-telegram-api.mjs";
 import { WorkLogUsageSyncStore } from "../../src/infrastructure/persistence/work-log-usage-sync-store.mjs";
+import { MessageCommandLedgerStore } from "../../src/infrastructure/persistence/message-command-ledger-store.mjs";
+import { WorkspaceCatalogStore } from "../../src/infrastructure/persistence/workspace-catalog-store.mjs";
 import { processIsAlive } from "../../src/infrastructure/process/process-liveness.mjs";
 import {
   alignTestContourStreamModel,
@@ -19,6 +21,7 @@ import {
   PLAYWRIGHT_CORE_VERSION,
   prepareTestContourCodexProviders,
   prepareTestContourCandidate,
+  reconcileTestContourFakeCodexState,
   republishTestContourPointer,
   stopTestContour,
   TEST_CONTOUR_MODEL,
@@ -30,6 +33,7 @@ import {
   testContourComponentEnabled,
   testContourConfig,
   testContourEnvironment,
+  testContourFakeCodexQueueDiagnostics,
   testContourOperationLockTarget,
   testContourPaths,
   uninstallTestContour,
@@ -303,6 +307,129 @@ test("Codex test providers are copied only into the marker-owned Test Contour ro
   }
 });
 
+test("Fake Codex recovery recreates the exact Thread and preserves five FIFO commands", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-test-contour-fake-recovery-"));
+  const threadId = "10000000-0000-4000-8000-000000000020";
+  let catalog;
+  let ledger;
+  try {
+    const { paths } = await installTestContour({ root, run: async () => null });
+    catalog = new WorkspaceCatalogStore({
+      databaseFile: path.join(paths.dataDir, "journal.sqlite"),
+      now: () => 1_700_000_000_000,
+    });
+    await catalog.load();
+    const workspace = catalog.createWorkspace({ name: "Agent HUB" });
+    const stream = catalog.createStream({ workspaceId: workspace.id, name: "S5" });
+    catalog.bindThread({
+      provider: "codex",
+      threadId,
+      streamId: stream.id,
+      projectRoot: paths.projectRoot,
+    });
+    catalog.close();
+    catalog = null;
+
+    const readModel = new DatabaseSync(path.join(paths.dataDir, "journal.sqlite"));
+    readModel.exec(`
+      CREATE TABLE task_read_model_turns (
+        provider TEXT NOT NULL,
+        thread_id TEXT NOT NULL,
+        id TEXT NOT NULL
+      );
+      INSERT INTO task_read_model_turns VALUES
+        ('codex', '10000000-0000-4000-8000-000000000001', '20000000-0000-4000-8000-000000000022');
+    `);
+    readModel.close();
+
+    let ledgerNow = 1_700_000_000_000;
+    ledger = new MessageCommandLedgerStore({
+      dataDir: paths.dataDir,
+      now: () => ledgerNow++,
+    });
+    for (let index = 1; index <= 5; index += 1) {
+      const clientUserMessageId = `queued-123-${index}`;
+      ledger.accept({
+        destination: "queued",
+        item: {
+          id: clientUserMessageId,
+          clientUserMessageId,
+          provider: "codex",
+          threadId,
+          streamId: stream.id,
+          projectRoot: paths.projectRoot,
+          taskTitle: "S5",
+          text: "123",
+          queueOrder: index,
+          createdAt: new Date(1_700_000_000_000 + index).toISOString(),
+        },
+        receipt: { clientUserMessageId, fingerprint: `fingerprint-${index}` },
+      });
+    }
+    assert.deepEqual(
+      ledger.activeRecords().map((record) => record.clientUserMessageId),
+      [1, 2, 3, 4, 5].map((index) => `queued-123-${index}`),
+    );
+    ledger.close();
+    ledger = null;
+
+    const recovery = await reconcileTestContourFakeCodexState({ root });
+    assert.deepEqual(recovery, {
+      version: 1,
+      status: "ready",
+      catalogThreadCount: 1,
+      activeCommandCount: 5,
+      queuedCommandCount: 5,
+      recoveredThreadCount: 1,
+      retainedThreadCount: 0,
+      requiredLoadedThreadCount: 5,
+      durableTurnSequence: 22,
+      nextTurn: 23,
+      updatedAt: recovery.updatedAt,
+    });
+    const fakeState = JSON.parse(await readFile(paths.fakeCodexStateFile, "utf8"));
+    assert.equal(fakeState.nextThread, 21);
+    assert.equal(fakeState.nextTurn, 23);
+    assert.deepEqual(fakeState.threads.map((thread) => thread.id), [threadId]);
+    assert.deepEqual(fakeState.loadedThreadIds, [threadId]);
+    assert.equal(fakeState.threads[0].name, "S5");
+    assert.deepEqual(await testContourFakeCodexQueueDiagnostics({ root }), {
+      status: "draining",
+      activeCommandCount: 5,
+      stateCounts: { queued: 5 },
+      missingThreadIds: [],
+      unresolvedCommandIds: [],
+      oldestAcceptedAtMs: 1_700_000_000_001,
+    });
+
+    const repeated = await reconcileTestContourFakeCodexState({ root });
+    assert.equal(repeated.recoveredThreadCount, 0);
+    assert.equal(repeated.retainedThreadCount, 1);
+
+    ledger = new MessageCommandLedgerStore({ dataDir: paths.dataDir });
+    for (let index = 1; index <= 5; index += 1) {
+      ledger.transition({
+        clientUserMessageId: `queued-123-${index}`,
+        state: "completed",
+      });
+    }
+    ledger.close();
+    ledger = null;
+    assert.deepEqual(await testContourFakeCodexQueueDiagnostics({ root }), {
+      status: "ready",
+      activeCommandCount: 0,
+      stateCounts: {},
+      missingThreadIds: [],
+      unresolvedCommandIds: [],
+      oldestAcceptedAtMs: null,
+    });
+  } finally {
+    catalog?.close();
+    ledger?.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("production data clone keeps history but detaches live threads and forces Fake Codex", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-test-contour-clone-"));
   const productionRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-production-clone-"));
@@ -550,6 +677,11 @@ test("candidate preparation deploys only into the isolated runtime root", async 
     const result = await prepareTestContourCandidate({
       root,
       sourceRoot,
+      prepareSource: async () => ({
+        sourceRoot,
+        branch: "dev",
+        headCommit: "dev-head",
+      }),
       deploy: async (options) => {
         calls.push(options);
         const releaseRoot = path.join(root, "releases", "candidate-1");
@@ -569,6 +701,8 @@ test("candidate preparation deploys only into the isolated runtime root", async 
       },
     });
     assert.equal(result.releaseId, "candidate-1");
+    assert.equal(result.branch, "dev");
+    assert.equal(result.headCommit, "dev-head");
     assert.equal(calls[0].runtimeRoot, canonicalPath(root));
     assert.equal(calls[0].sourceRoot, canonicalPath(sourceRoot));
     assert.match(
@@ -581,6 +715,32 @@ test("candidate preparation deploys only into the isolated runtime root", async 
     );
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("candidate preparation refuses a non-dev source before deployment", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-test-contour-source-guard-"));
+  const sourceRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-test-contour-stale-source-"));
+  let deployed = false;
+  try {
+    await assert.rejects(
+      prepareTestContourCandidate({
+        root,
+        sourceRoot,
+        prepareSource: async () => ({ sourceRoot, branch: null, headCommit: null }),
+        deploy: async () => {
+          deployed = true;
+          return null;
+        },
+      }),
+      /must use the exact dev HEAD/u,
+    );
+    assert.equal(deployed, false);
+  } finally {
+    await Promise.all([
+      rm(root, { recursive: true, force: true }),
+      rm(sourceRoot, { recursive: true, force: true }),
+    ]);
   }
 });
 

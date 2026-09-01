@@ -7,11 +7,27 @@ authority for ownership, readiness and release completion. Its `workspaceId`
 and `streamId` identify the Workspace and executor Stream. The durable Task
 `row_revision` is the CAS version for every release-relevant mutation.
 
-Every file-changing Task owns a local branch named
-`agenthub/task/<taskId>/<repositoryKey>` and a managed worktree.
+Every numbered file-changing Task owns a local branch whose name is exactly its
+stable human-facing Task number, for example `HUB-11`, and a managed worktree.
+Legacy unnumbered Tasks retain `agenthub/task/<taskId>/<repositoryKey>` until
+their next managed preparation renames the branch.
 `hub_task_claim` and `hub_task_start` return that worktree. All Task changes must
 be made there. Provider turn identity remains journal metadata and is not a
 source of file ownership.
+
+One provider turn may perform multiple sequential Task operations. Each claim
+is durably identified by its MCP `request_id`, and terminal evidence resolves
+the exact `(provider, thread, turn, operation)` binding rather than a
+turn-global Task. At most one unterminated Task write operation may exist for a
+provider turn. A new explicit claim operation
+atomically terminates the preceding binding before it activates the next Task,
+so sequential switches are allowed without overlapping active writers.
+
+The persistence compatibility boundary is the absence of `operation_id` on
+the binding or work-log table. Store startup rebuilds only that legacy shape,
+assigns deterministic `legacy:<taskId>` operation identities and installs the
+active-operation guard in the same migration. The rebuild may be removed only
+after every supported database version is guaranteed to contain operation IDs.
 
 ## Test and acceptance integration
 
@@ -44,7 +60,7 @@ integration is explicitly blocked and cannot be released.
 
 The server-side Git boundary owns:
 
-- the deterministic Task branch;
+- the Task-number branch;
 - the internal Task base ref;
 - the immutable accepted result commit;
 - the integrated `dev` result.
@@ -96,6 +112,15 @@ not deploy a contour per Task branch. The contour status records the exact
 `dev` head it displays. Candidate preparation completes before the current
 runtime is stopped, so a Git or build preparation failure leaves the previous
 working contour available.
+
+An explicit release preflight always prepares a fresh candidate from `dev`; it
+must never reuse or start a cached candidate. After refresh,
+`TestContour.source.headCommit` must equal the exact Agent Hub repository `dev`
+HEAD observed by the preflight. Only this release preflight additionally
+requires every selected immutable Task result commit to be an ancestor of the
+corresponding repository `dev` HEAD. Ordinary plan reads do not impose that
+integration requirement. The preflight does not reconstruct or compare blob
+manifests.
 
 The rolling contour is preview evidence, not release proof. Release validation
 still requires the prescribed isolated candidate checks and publication

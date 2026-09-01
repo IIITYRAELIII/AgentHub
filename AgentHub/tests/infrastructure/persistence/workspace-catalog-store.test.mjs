@@ -16,6 +16,9 @@ import {
   LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V2,
   RELEASE_WORKFLOW_DEVELOPER_RULES,
 } from "../../../src/domain/workspace-release-workflow.mjs";
+import {
+  LEGACY_PERSISTED_AGENT_HUB_WORKSPACE_RULES_RU_V1,
+} from "../../../src/domain/editable-workspace-developer-rules.mjs";
 
 async function fixture(t) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-workspaces-"));
@@ -41,6 +44,43 @@ test("workspace catalog revision is O(1) state that changes after a write", asyn
   assert.equal(store.revision, initial);
   store.createWorkspace({ name: "Revision boundary" });
   assert.ok(store.revision > initial);
+});
+
+test("workspace catalog read-only mode exposes hierarchy without running migrations", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-workspaces-read-only-"));
+  const databaseFile = path.join(directory, "journal.sqlite");
+  let writer;
+  let reader;
+  try {
+    writer = new WorkspaceCatalogStore({ databaseFile, now: () => 100 });
+    await writer.load();
+    const workspace = writer.createWorkspace({ name: "Read model" });
+    const stream = writer.createStream({ workspaceId: workspace.id, name: "Queue" });
+    writer.bindThread({
+      provider: "codex",
+      threadId: "10000000-0000-4000-8000-000000000020",
+      streamId: stream.id,
+      projectRoot: "D:/work",
+    });
+    writer.close();
+    writer = null;
+
+    reader = new WorkspaceCatalogStore({ databaseFile, readOnly: true });
+    await reader.load();
+    assert.equal(reader.revision, 0);
+    assert.equal(
+      reader.hierarchy().find((item) => item.id === workspace.id).streams[0].threads[0].threadId,
+      "10000000-0000-4000-8000-000000000020",
+    );
+    assert.throws(
+      () => reader.createWorkspace({ name: "Forbidden" }),
+      /read.?only|attempt to write/iu,
+    );
+  } finally {
+    writer?.close();
+    reader?.close();
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("workspace catalog fails closed on a corrupt shared database", async () => {
@@ -105,11 +145,22 @@ test("Workspace working directory is persisted in settings", async (t) => {
   });
   assert.deepEqual(updated.settings, {
     workingDirectory: "D:/work/AgentHub",
+    taskPrefix: "",
     releaseWorkflowEnabled: false,
   });
   assert.deepEqual(
     store.hierarchy().find((item) => item.id === workspace.id).settings,
     updated.settings,
+  );
+});
+
+test("Workspace Task prefix is persisted and validated", async (t) => {
+  const store = await fixture(t);
+  const workspace = store.createWorkspace({ name: "Agent HUB" });
+  assert.equal(store.updateWorkspaceSettings(workspace.id, { taskPrefix: "HUB" }).settings.taskPrefix, "HUB");
+  assert.throws(
+    () => store.updateWorkspaceSettings(workspace.id, { taskPrefix: "-HUB" }),
+    /Префикс Workspace/u,
   );
 });
 
@@ -537,7 +588,7 @@ test("release workflow is opt-in and injects policy without changing editable ru
   assert.equal(store.releaseWorkflowEnabledForThread({ provider: "codex", threadId: "thread" }), true);
   assert.equal(
     store.workspaceDeveloperRules(workspace.id).content,
-    `${AGENT_HUB_WORKSPACE_DEVELOPER_RULES}\n\nFast Test Contour workflow`,
+    "Fast Test Contour workflow",
   );
   assert.equal(
     store.developerRulesForStream(stream.id).workspace.content,
@@ -589,7 +640,7 @@ test.skip("retired destructive release registry discard", async (t) => {
   );
 });
 
-test("legacy release policy strips sequential prefixes and persists one Agent Hub block", async (t) => {
+test("persisted system prefixes are removed from every editable Workspace rule", async (t) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-release-workflow-migration-"));
   const databaseFile = path.join(directory, "journal.sqlite");
   let sequence = 0;
@@ -599,9 +650,13 @@ test("legacy release policy strips sequential prefixes and persists one Agent Hu
   });
   await store.load();
   const workspace = store.createWorkspace({ name: "Agent HUB" });
+  const regularWorkspace = store.createWorkspace({ name: "Regular" });
   store.close();
   const database = new DatabaseSync(databaseFile);
-  database.prepare("UPDATE hub_workspaces SET settings_json = '{}' WHERE id = ?").run(workspace.id);
+  database.prepare("UPDATE hub_workspaces SET settings_json = ? WHERE id = ?")
+    .run(JSON.stringify({ releaseWorkflowEnabled: true }), workspace.id);
+  database.prepare("UPDATE hub_workspaces SET settings_json = ? WHERE id = ?")
+    .run(JSON.stringify({ releaseWorkflowEnabled: false }), regularWorkspace.id);
   const revision = Number(database.prepare(`
     SELECT COALESCE(MAX(revision), 0) + 1 AS value
     FROM hub_developer_rule_revisions WHERE scope_type = 'workspace' AND scope_id = ?
@@ -617,13 +672,26 @@ test("legacy release policy strips sequential prefixes and persists one Agent Hu
       LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_RU_V1,
       LEGACY_TASK_BRANCH_RELEASE_WORKFLOW_DEVELOPER_RULES,
       LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V2,
-      AGENT_HUB_WORKSPACE_DEVELOPER_RULES,
-      "Fast Test Contour workflow",
+      LEGACY_PERSISTED_AGENT_HUB_WORKSPACE_RULES_RU_V1,
+      "Agent Hub rules",
+      "Custom English rules",
     ].join("\n\n"),
     Date.now(),
   );
+  database.prepare(`
+    INSERT INTO hub_developer_rule_revisions
+      (scope_type, scope_id, revision, content, created_at_ms)
+    VALUES ('workspace', ?, 2, ?, ?)
+  `).run(
+    regularWorkspace.id,
+    LEGACY_PERSISTED_AGENT_HUB_WORKSPACE_RULES_RU_V1,
+    Date.now(),
+  );
   database.prepare(
-    "DELETE FROM hub_workspace_catalog_meta WHERE key = 'workspace_agent_hub_rules_migrated_v1'",
+    "INSERT OR REPLACE INTO hub_workspace_catalog_meta (key, value) VALUES ('workspace_agent_hub_rules_migrated_v1', 'completed')",
+  ).run();
+  database.prepare(
+    "DELETE FROM hub_workspace_catalog_meta WHERE key = 'workspace_system_rules_removed_v2'",
   ).run();
   database.close();
 
@@ -636,8 +704,10 @@ test("legacy release policy strips sequential prefixes and persists one Agent Hu
   assert.equal(store.workspace(workspace.id).settings.releaseWorkflowEnabled, true);
   assert.equal(
     store.workspaceDeveloperRules(workspace.id).content,
-    `${AGENT_HUB_WORKSPACE_DEVELOPER_RULES}\n\nFast Test Contour workflow`,
+    "Agent Hub rules\n\nCustom English rules",
   );
+  assert.equal(store.workspace(regularWorkspace.id).settings.releaseWorkflowEnabled, false);
+  assert.equal(store.workspaceDeveloperRules(regularWorkspace.id).content, "");
 });
 
 test("Architect role migrates once from legacy role or exact name without runtime fallback", async (t) => {
@@ -674,15 +744,14 @@ test("Workspace and Stream developer rules keep versioned revisions", async (t) 
   const workspace = store.createWorkspace({ name: "Agent HUB" });
   const stream = store.createStream({ workspaceId: workspace.id, name: "Rules" });
 
-  assert.equal(store.workspaceDeveloperRules(workspace.id).content, AGENT_HUB_WORKSPACE_DEVELOPER_RULES);
+  assert.equal(store.workspaceDeveloperRules(workspace.id).content, "");
   assert.equal(store.updateWorkspaceDeveloperRules(workspace.id, "First").revision, 2);
   assert.equal(store.updateWorkspaceDeveloperRules(workspace.id, "Second").revision, 3);
   assert.equal(store.updateWorkspaceDeveloperRules(workspace.id, "Second").revision, 3);
+  assert.equal(store.updateWorkspaceDeveloperRules(workspace.id, "").revision, 4);
+  assert.equal(store.updateWorkspaceDeveloperRules(workspace.id, "").revision, 4);
   assert.equal(store.updateStreamDeveloperRules(stream.id, "Stream rule").revision, 1);
-  assert.equal(
-    store.workspaceDeveloperRules(workspace.id).content,
-    `${AGENT_HUB_WORKSPACE_DEVELOPER_RULES}\n\nSecond`,
-  );
+  assert.equal(store.workspaceDeveloperRules(workspace.id).content, "");
   assert.equal(store.streamDeveloperRules(stream.id).content, "Stream rule");
 });
 
@@ -691,10 +760,15 @@ test("developer rules enforce a 32 KiB UTF-8 limit for each scope", async (t) =>
   const workspace = store.createWorkspace({ name: "Limits" });
   const stream = store.createStream({ workspaceId: workspace.id });
   const allowed = "я".repeat(DEVELOPER_RULES_MAX_BYTES / 2);
-  const storedAllowed = `${AGENT_HUB_WORKSPACE_DEVELOPER_RULES}\n\n${allowed}`;
 
-  assert.equal(store.updateWorkspaceDeveloperRules(workspace.id, allowed).content, storedAllowed);
-  assert.equal(store.updateWorkspaceDeveloperRules(workspace.id, storedAllowed).content, storedAllowed);
+  assert.equal(store.updateWorkspaceDeveloperRules(workspace.id, allowed).content, allowed);
+  assert.equal(
+    store.updateWorkspaceDeveloperRules(
+      workspace.id,
+      `${LEGACY_PERSISTED_AGENT_HUB_WORKSPACE_RULES_RU_V1}\n\n${allowed}`,
+    ).content,
+    allowed,
+  );
   assert.throws(
     () => store.updateWorkspaceDeveloperRules(workspace.id, `${allowed}я`),
     /exceed/u,
@@ -720,10 +794,9 @@ test("moving a Stream changes inherited Workspace developer rules", async (t) =>
     store.developerRulesForStream(moving.id).workspace.content,
     `${AGENT_HUB_WORKSPACE_DEVELOPER_RULES}\n\nFirst workspace`,
   );
-  assert.deepEqual(store.developerRulesForThread({ provider: "codex", threadId: "thread-1" }), {
-    workspace: store.workspaceDeveloperRules(firstWorkspace.id),
-    stream: store.streamDeveloperRules(moving.id),
-  });
+  const inherited = store.developerRulesForThread({ provider: "codex", threadId: "thread-1" });
+  assert.equal(inherited.workspace.content, `${AGENT_HUB_WORKSPACE_DEVELOPER_RULES}\n\nFirst workspace`);
+  assert.deepEqual(inherited.stream, store.streamDeveloperRules(moving.id));
   store.moveStream(moving.id, secondWorkspace.id);
   const effective = store.developerRulesForThread({ provider: "codex", threadId: "thread-1" });
   assert.equal(
@@ -741,10 +814,7 @@ test("hierarchy exposes current developer rules to clients", async (t) => {
   store.updateStreamDeveloperRules(stream.id, "Stream rule");
 
   const hierarchy = store.hierarchy();
-  assert.equal(
-    hierarchy[0].developerRules.content,
-    `${AGENT_HUB_WORKSPACE_DEVELOPER_RULES}\n\nWorkspace rule`,
-  );
+  assert.equal(hierarchy[0].developerRules.content, "Workspace rule");
   assert.equal(hierarchy[0].streams[0].developerRules.content, "Stream rule");
 });
 

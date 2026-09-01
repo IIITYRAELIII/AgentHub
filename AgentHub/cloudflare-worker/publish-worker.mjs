@@ -4,7 +4,10 @@ import { pathToFileURL } from "node:url";
 
 import { buildWorkerAssets } from "./build-assets.mjs";
 import { deployWorker } from "./deploy-worker.mjs";
-import { verifyThemeDeployment } from "./verify-deployment.mjs";
+import {
+  verifyThemeDeployment,
+  workerVerificationCheckpointStore,
+} from "./verify-deployment.mjs";
 import { withPublicationLock } from "../src/infrastructure/process/publication-lock.mjs";
 import {
   assertCleanPublicationTree,
@@ -31,6 +34,7 @@ export async function publishWorker({
   verify = verifyThemeDeployment,
   before = async () => {},
   exclusive = withPublicationLock,
+  verificationCheckpoint = workerVerificationCheckpointStore(),
   readConfig = async () => JSON.parse(await readFile(
     path.join(import.meta.dirname, "wrangler.jsonc"),
     "utf8",
@@ -40,7 +44,10 @@ export async function publishWorker({
     await before();
     await build();
     await deploy();
-    return verify({ baseUrl: workerRouteBaseUrl(await readConfig()) });
+    return verify({
+      baseUrl: workerRouteBaseUrl(await readConfig()),
+      checkpoint: verificationCheckpoint,
+    });
   });
 }
 
@@ -62,6 +69,7 @@ export async function verifyWorkerRelease({
   before = async () => {},
   exclusive = withPublicationLock,
   changedFiles = null,
+  verificationCheckpoint = workerVerificationCheckpointStore(),
   readConfig = async () => JSON.parse(await readFile(
     path.join(import.meta.dirname, "wrangler.jsonc"),
     "utf8",
@@ -72,6 +80,7 @@ export async function verifyWorkerRelease({
     return verify({
       baseUrl: workerRouteBaseUrl(await readConfig()),
       changedFiles,
+      checkpoint: verificationCheckpoint,
     });
   });
 }

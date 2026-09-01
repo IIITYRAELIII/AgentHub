@@ -3,6 +3,8 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
+import { editableWorkspaceDeveloperRules } from "../../domain/editable-workspace-developer-rules.mjs";
+
 import {
   EXPERIMENTS_SYSTEM_KEY,
   OTHER_WORKSPACE_NAME,
@@ -22,6 +24,7 @@ import {
   storedWorkspaceDeveloperRules,
   workspaceSettingsWithReleaseWorkflow,
 } from "../../domain/workspace-release-workflow.mjs";
+import { workspaceSettingsWithTaskPrefix } from "../../domain/task-number.mjs";
 
 const SCHEMA_VERSION = 11;
 export const DEVELOPER_RULES_MAX_BYTES = 32 * 1024;
@@ -280,18 +283,26 @@ function workspaceEventFromRow(row) {
 export class WorkspaceCatalogStore {
   #databaseFile;
   #database = null;
+  #readOnly;
   #now;
   #idFactory;
 
-  constructor({ databaseFile, now = () => Date.now(), idFactory = randomUUID } = {}) {
+  constructor({
+    databaseFile,
+    readOnly = false,
+    now = () => Date.now(),
+    idFactory = randomUUID,
+  } = {}) {
     if (!databaseFile) throw new Error("WorkspaceCatalogStore databaseFile is required");
     this.#databaseFile = path.resolve(databaseFile);
+    this.#readOnly = readOnly === true;
     this.#now = now;
     this.#idFactory = idFactory;
   }
 
   async load() {
     await this.#open();
+    if (this.#readOnly) return this;
     this.#migrateReleaseWorkflowSettings();
     this.#migrateWorkspaceDeveloperRules();
     this.#migrateArchitectStreamSettings();
@@ -306,11 +317,18 @@ export class WorkspaceCatalogStore {
 
   async #open() {
     if (this.#database) return this.#database;
-    await mkdir(path.dirname(this.#databaseFile), { recursive: true });
+    if (!this.#readOnly) await mkdir(path.dirname(this.#databaseFile), { recursive: true });
     let database;
     try {
-      database = new DatabaseSync(this.#databaseFile);
-      configure(database);
+      database = new DatabaseSync(
+        this.#databaseFile,
+        this.#readOnly ? { readOnly: true } : {},
+      );
+      if (this.#readOnly) {
+        database.exec("PRAGMA query_only = ON; PRAGMA busy_timeout = 0; PRAGMA foreign_keys = ON;");
+      } else {
+        configure(database);
+      }
     } catch (error) {
       database?.close();
       throw error;
@@ -356,24 +374,26 @@ export class WorkspaceCatalogStore {
         try { settings = JSON.parse(String(row.settings_json ?? "{}")); } catch { settings = {}; }
         const currentRules = this.#developerRules("workspace", row.id);
         const migration = legacyReleaseWorkflowRules(currentRules?.content ?? "");
+        const editableContent = editableWorkspaceDeveloperRules(currentRules?.content ?? "");
         update.run(
           JSON.stringify(workspaceSettingsWithReleaseWorkflow(settings, migration.enabled)),
           row.id,
         );
-        const storedRules = storedWorkspaceDeveloperRules(migration.content);
-        if (storedRules !== currentRules?.content) this.#updateWorkspaceDeveloperRules(row.id, storedRules);
+        if (editableContent !== (currentRules?.content ?? "")) {
+          this.#updateWorkspaceDeveloperRules(row.id, editableContent);
+        }
       }
     });
   }
 
   #migrateWorkspaceDeveloperRules() {
-    const key = "workspace_agent_hub_rules_migrated_v1";
+    const key = "workspace_system_rules_removed_v2";
     if (this.#database.prepare("SELECT 1 FROM hub_workspace_catalog_meta WHERE key = ?").get(key)) return;
     this.#transaction(() => {
       for (const row of this.#database.prepare("SELECT id FROM hub_workspaces").all()) {
         const current = this.#developerRules("workspace", row.id);
-        const content = storedWorkspaceDeveloperRules(current?.content ?? "");
-        if (content !== current?.content) this.#updateWorkspaceDeveloperRules(row.id, content);
+        const content = editableWorkspaceDeveloperRules(current?.content ?? "");
+        if (content !== (current?.content ?? "")) this.#updateWorkspaceDeveloperRules(row.id, content);
       }
       this.#database.prepare(
         "INSERT INTO hub_workspace_catalog_meta (key, value) VALUES (?, ?)",
@@ -423,7 +443,7 @@ export class WorkspaceCatalogStore {
       nowMs,
       nowMs,
       JSON.stringify(workspaceSettingsWithReleaseWorkflow(
-        settings,
+        workspaceSettingsWithTaskPrefix(settings),
         releaseWorkflowEnabled(settings),
       )),
     );
@@ -464,7 +484,7 @@ export class WorkspaceCatalogStore {
     const enabled = explicitReleaseWorkflow
       ? releaseWorkflowEnabled(settings)
       : releaseWorkflowEnabled(current.settings);
-    const nextSettings = workspaceSettingsWithReleaseWorkflow(settings, enabled);
+    const nextSettings = workspaceSettingsWithReleaseWorkflow(workspaceSettingsWithTaskPrefix(settings), enabled);
     this.#database.prepare(`
       UPDATE hub_workspaces SET settings_json = ?, updated_at_ms = ? WHERE id = ?
     `).run(JSON.stringify(nextSettings), this.#nowMs(), id);
@@ -811,13 +831,8 @@ export class WorkspaceCatalogStore {
   }
 
   #updateWorkspaceDeveloperRules(workspaceId, content) {
-    const editableContent = developerRuleContent(legacyReleaseWorkflowRules(content).content);
-    return this.#updateDeveloperRules(
-      "workspace",
-      workspaceId,
-      storedWorkspaceDeveloperRules(editableContent),
-      DEVELOPER_RULES_MAX_BYTES + WORKSPACE_RULE_PREFIX_BYTES,
-    );
+    const editableContent = developerRuleContent(editableWorkspaceDeveloperRules(content));
+    return this.#updateDeveloperRules("workspace", workspaceId, editableContent);
   }
 
   #updateDeveloperRules(scopeType, scopeId, content, maximumBytes = DEVELOPER_RULES_MAX_BYTES) {

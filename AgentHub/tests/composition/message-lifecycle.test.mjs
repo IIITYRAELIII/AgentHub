@@ -1762,6 +1762,81 @@ test("durable turn order wins over an earlier queue timestamp", () => {
   ]);
 });
 
+test("focused history item identity includes its provider Thread", () => {
+  const source = clientFunctionSource("historyMessages", "function mergeNewestHistory");
+  const sandbox = vm.createContext({
+    attachmentViews: () => [],
+    conversationMessageAuthor: (_message, provider) => provider,
+    focusedTurnAlreadyVisible: () => true,
+    focusedTurnTaskThreadId: (turn) => turn.threadId,
+    historicalMessagesForDisplay: (item) => item.messages,
+  });
+  vm.runInContext(`${source}; globalThis.mapHistory = historyMessages;`, sandbox);
+  const turnId = "20000000-0000-4000-8000-000000000001";
+  const itemId = `${turnId}:user`;
+  const messages = sandbox.mapHistory({
+    provider: "codex",
+    threadId: "10000000-0000-4000-8000-000000000020",
+    items: [{
+      provider: "codex",
+      threadId: "10000000-0000-4000-8000-000000000001",
+      id: turnId,
+      messages: [{ itemId, role: "user", text: "historical" }],
+    }],
+  }, {
+    provider: "codex",
+    threadId: "10000000-0000-4000-8000-000000000020",
+    turnId,
+    messages: [{ itemId, role: "user", text: "current" }],
+  });
+
+  assert.deepEqual(Array.from(messages, (message) => [message.threadId, message.text]), [
+    ["10000000-0000-4000-8000-000000000001", "historical"],
+    ["10000000-0000-4000-8000-000000000020", "current"],
+  ]);
+});
+
+test("chronology keeps colliding turn ids isolated by provider Thread identity", () => {
+  const turnId = "20000000-0000-4000-8000-000000000001";
+  const source = [
+    {
+      id: "old-user", provider: "codex", threadId: "10000000-0000-4000-8000-000000000001",
+      turnId, itemId: `${turnId}:user`, role: "user", turnUserSlot: "root",
+      text: "old prompt", time: "2026-08-28T22:42:00.000Z", historyOrder: 1_000,
+    },
+    {
+      id: "old-agent", provider: "codex", threadId: "10000000-0000-4000-8000-000000000001",
+      turnId, itemId: `${turnId}:agent:final`, role: "agent", text: "old answer",
+      time: "2026-08-28T22:43:00.000Z", historyOrder: 1_001,
+      activities: [{ id: "old-diff", title: "Historical diff" }],
+    },
+    {
+      id: "current-user", provider: "codex", threadId: "10000000-0000-4000-8000-000000000020",
+      turnId, itemId: `${turnId}:user`, role: "user", turnUserSlot: "root",
+      text: "123", time: "2026-09-01T04:05:00.000Z", historyOrder: 29_000,
+    },
+    {
+      id: "current-agent", provider: "codex", threadId: "10000000-0000-4000-8000-000000000020",
+      turnId, itemId: `${turnId}:agent:final`, role: "agent", text: "Принято",
+      time: "2026-09-01T04:05:01.000Z", historyOrder: 29_001,
+      activities: [],
+    },
+  ];
+
+  const deduplicated = lifecycle.deduplicateConversationMessages(source);
+  assert.equal(deduplicated.length, 4);
+  const ordered = lifecycle.chronologicalMessages(deduplicated);
+  assert.deepEqual(Array.from(ordered, (item) => item.id), [
+    "old-user", "old-agent", "current-user", "current-agent",
+  ]);
+  assert.deepEqual(JSON.parse(JSON.stringify(
+    ordered.find((item) => item.id === "old-agent").activities,
+  )), [
+    { id: "old-diff", title: "Historical diff" },
+  ]);
+  assert.equal(ordered.find((item) => item.id === "current-agent").activities.length, 0);
+});
+
 test("same-turn maintenance stays below the agent answer despite an earlier timestamp", () => {
   const values = lifecycle.chronologicalMessages([
     {
@@ -2393,6 +2468,81 @@ test("completed live card uses a newly recorded final even before durable histor
     lastAnswer: "Legacy final",
     lastAnswerAt: "2026-08-02T10:00:01.000Z",
   }), "Legacy final");
+});
+
+test("terminal history clears a pre-turn live card by exact client identity", () => {
+  const taskId = "stream:s5";
+  const provider = "codex";
+  const threadId = "10000000-0000-4000-8000-000000000020";
+  const turnId = "20000000-0000-4000-8000-000000000028";
+  const clientUserMessageId = "qa-28";
+  const history = [
+    {
+      provider, threadId, turnId, itemId: `${turnId}:user`, role: "user",
+      clientUserMessageId, text: "QA-28", projectionState: "completed",
+    },
+    {
+      provider, threadId, turnId, itemId: `${turnId}:agent:final`, role: "agent",
+      text: "Принято", projectionState: "completed", terminalRevision: 1,
+    },
+  ];
+  assert.deepEqual(
+    { ...lifecycle.completedLiveTurnIdentity(history, {
+      provider,
+      threadId,
+      turnId: "",
+      clientUserMessageIds: [clientUserMessageId],
+    }) },
+    { provider, threadId, turnId },
+  );
+
+  const liveCardsByTask = new Map([[taskId, { provider, threadId, turnId: "" }]]);
+  const liveProbeByTask = new Map([[taskId, { provider, threadId, turnId: "" }]]);
+  const liveUserMessagesByTask = new Map([[taskId, {
+    provider,
+    threadId,
+    turnId: "",
+    clientUserMessageId,
+    userMessages: [{ clientUserMessageId }],
+  }]]);
+  const cleared = [];
+  const sandbox = vm.createContext({
+    liveCardsByTask,
+    liveProbeByTask,
+    liveUserMessagesByTask,
+    historyByTask: new Map([[taskId, history]]),
+    completedLiveTurnIdentity: lifecycle.completedLiveTurnIdentity,
+    agentHub: { setLive: (...args) => cleared.push(args) },
+  });
+  const clearSource = clientFunctionSource(
+    "clearDurablyCompletedLiveCard",
+    "function exactSelectedTaskParams",
+  );
+  vm.runInContext(`${clearSource}; globalThis.clearLive = clearDurablyCompletedLiveCard;`, sandbox);
+
+  assert.equal(sandbox.clearLive(taskId), true);
+  assert.equal(liveCardsByTask.has(taskId), false);
+  assert.equal(liveProbeByTask.has(taskId), false);
+  assert.equal(liveUserMessagesByTask.has(taskId), false);
+  assert.deepEqual(cleared, [[taskId, null]]);
+});
+
+test("pre-turn live cleanup never crosses provider Thread identity", () => {
+  const turnId = "20000000-0000-4000-8000-000000000028";
+  assert.equal(lifecycle.completedLiveTurnIdentity([
+    {
+      provider: "codex", threadId: "thread-old", turnId, role: "user",
+      clientUserMessageId: "qa-28", text: "QA-28",
+    },
+    {
+      provider: "codex", threadId: "thread-old", turnId, role: "agent",
+      text: "Принято", projectionState: "completed", terminalRevision: 1,
+    },
+  ], {
+    provider: "codex",
+    threadId: "thread-current",
+    clientUserMessageIds: ["qa-28"],
+  }), null);
 });
 
 test("terminal live promotion keeps the complete activity trace", () => {

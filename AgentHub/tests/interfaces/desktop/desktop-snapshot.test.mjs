@@ -1188,6 +1188,23 @@ test("desktopSnapshot exposes an in-flight steer as sending rather than a new de
   assert.equal(snapshot.deferredInputs[0].state, "steering");
 });
 
+test("desktopSnapshot exposes a durable automatic steer as steering", async () => {
+  const { desktopSnapshot } = fixture({
+    queued: [{
+      id: "automatic-steer-1",
+      provider: "codex",
+      threadId: "thread-1",
+      taskTitle: "Задача",
+      input: "Уточнение",
+      conflictKind: "message-steer",
+      steerTargetRunId: "run-1",
+      steerTargetTurnId: "turn-1",
+    }],
+  });
+  const snapshot = await desktopSnapshot();
+  assert.equal(snapshot.deferredInputs[0].state, "steering");
+});
+
 test("desktopSnapshot exposes an inter-Stream queue message without its service envelope", async () => {
   const input = [
     "<agent-hub-stream-message>",
@@ -1473,6 +1490,7 @@ test("live snapshot exposes only a Task card when its provider prompt has no use
   const reference = {
     kind: "task",
     taskId: "board-1",
+    taskNumber: null,
     title: "Проверка",
     workflowStatus: "new",
     workspaceId: null,

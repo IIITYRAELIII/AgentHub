@@ -32,8 +32,11 @@ function historyItemTimestamp(item) {
   const startedAt = Date.parse(String(item?.startedAt ?? ""));
   if (Number.isFinite(startedAt)) return startedAt;
   const values = [
+    item?.time,
     ...(Array.isArray(item?.messages) ? item.messages.map((message) => message?.time) : []),
     item?.completedAt,
+    item?.createdAt,
+    item?.updatedAt,
   ].map((value) => Date.parse(String(value ?? ""))).filter(Number.isFinite);
   return values.length ? Math.min(...values) : Number.NaN;
 }
@@ -145,8 +148,49 @@ function syntheticMigrationPair(left, right, turnId, ordinal) {
   return { synthetic, canonical };
 }
 
+function coalesceInterstreamRootAlias(messages, turn) {
+  const values = Array.isArray(messages) ? messages : [];
+  const turnOrigin = normalizeInterstreamOrigin(turn?.promptOrigin)
+    ?? interstreamMessageDetails(turn?.prompt)?.origin;
+  const requestId = String(turnOrigin?.requestId ?? "").trim();
+  const prompt = displayUserPrompt(turn?.prompt) || String(turn?.prompt ?? "").trim();
+  if (!requestId || !prompt) return values;
+
+  const canonical = values.flatMap((message, index) => {
+    const origin = normalizeInterstreamOrigin(message?.origin);
+    return message?.role === "user"
+      && origin?.requestId === requestId
+      && String(message?.clientUserMessageId ?? "").trim() === `mcp:${requestId}`
+      && normalizedUserText(message) === prompt
+      ? [{ index, message }]
+      : [];
+  });
+  if (canonical.length !== 1) return values;
+
+  const aliases = values.flatMap((message, index) => (
+    message?.role === "user"
+    && index !== canonical[0].index
+    && !String(message?.clientUserMessageId ?? "").trim()
+    && !normalizeInterstreamOrigin(message?.origin)
+    && normalizedUserText(message) === prompt
+      ? [{ index, message }]
+      : []
+  ));
+  if (aliases.length !== 1) return values;
+
+  const alias = aliases[0];
+  const official = canonical[0];
+  const merged = mergeSyntheticUserCopy(alias.message, official.message);
+  if (alias.message?.itemId) merged.itemId = alias.message.itemId;
+  const first = Math.min(alias.index, official.index);
+  const second = Math.max(alias.index, official.index);
+  values[first] = merged;
+  values.splice(second, 1);
+  return values;
+}
+
 // Builds the bounded Desktop/Mini App history read-model for one task.
-function mergeDurableMessages(hydratedMessages, durableMessages, turnId) {
+function mergeDurableMessages(hydratedMessages, durableMessages, turnId, turn) {
   const values = structuredClone(Array.isArray(hydratedMessages) ? hydratedMessages : []);
   const hydratedUsers = new Map(userMessageEntries(values).map((entry) => [entry.ordinal, entry]));
   const durableValues = Array.isArray(durableMessages) ? durableMessages : [];
@@ -203,27 +247,32 @@ function mergeDurableMessages(hydratedMessages, durableMessages, turnId) {
         : current.attachmentSources,
     };
   }
-  return values;
+  return coalesceInterstreamRootAlias(values, turn);
 }
 
 export function mergeDurableTaskHistory(hydratedHistory, durableHistory) {
-  const values = structuredClone(Array.isArray(hydratedHistory) ? hydratedHistory : []);
+  const values = structuredClone(Array.isArray(hydratedHistory) ? hydratedHistory : [])
+    .map((item) => ({
+      ...item,
+      messages: coalesceInterstreamRootAlias(item?.messages, item),
+    }));
   for (const durable of Array.isArray(durableHistory) ? durableHistory : []) {
     const id = String(durable?.id ?? "").trim();
     const index = id
       ? values.findIndex((item) => String(item?.id ?? "").trim() === id)
       : -1;
     if (index < 0) {
-      values.push(structuredClone(durable));
+      const item = structuredClone(durable);
+      item.messages = coalesceInterstreamRootAlias(item?.messages, item);
+      values.push(item);
       continue;
     }
     const current = values[index];
-    values[index] = {
+    const merged = {
       ...current,
       ...structuredClone(durable),
       startedAt: current.startedAt ?? durable?.startedAt ?? null,
       completedAt: current.completedAt ?? durable?.completedAt ?? null,
-      messages: mergeDurableMessages(current.messages, durable?.messages, id),
       activities: Array.isArray(durable?.activities) && durable.activities.length
         ? structuredClone(durable.activities)
         : current.activities,
@@ -231,30 +280,51 @@ export function mergeDurableTaskHistory(hydratedHistory, durableHistory) {
         ? structuredClone(durable.activityGroups)
         : current.activityGroups,
     };
+    merged.messages = mergeDurableMessages(current.messages, durable?.messages, id, merged);
+    values[index] = merged;
   }
-  return values;
+  return sortTaskHistoryChronologically(values);
 }
 
-function mergeCachedTaskHistory(cachedHistory, durableHistory) {
+export function mergeCachedTaskHistory(cachedHistory, durableHistory) {
   const cachedById = new Map((Array.isArray(cachedHistory) ? cachedHistory : [])
     .map((item) => [String(item?.id ?? "").trim(), item])
     .filter(([id]) => Boolean(id)));
-  if (!cachedById.size) return Array.isArray(durableHistory) ? durableHistory : [];
+  if (!cachedById.size) {
+    return sortTaskHistoryChronologically(structuredClone(
+      Array.isArray(durableHistory) ? durableHistory : [],
+    ));
+  }
 
   const values = [];
-  const durableIds = new Set();
   for (const durable of Array.isArray(durableHistory) ? durableHistory : []) {
     const id = String(durable?.id ?? "").trim();
-    if (id) durableIds.add(id);
     const cached = id ? cachedById.get(id) : null;
     values.push(cached
       ? mergeDurableTaskHistory([cached], [durable])[0]
       : durable);
   }
-  for (const [id, cached] of cachedById) {
-    if (!durableIds.has(id)) values.push(structuredClone(cached));
+  const valueIds = new Set(values.map((item) => String(item?.id ?? "").trim()).filter(Boolean));
+  const cachedValues = Array.isArray(cachedHistory) ? cachedHistory : [];
+  for (const [cachedIndex, cached] of cachedValues.entries()) {
+    const id = String(cached?.id ?? "").trim();
+    if (id && valueIds.has(id)) continue;
+    const nextId = cachedValues.slice(cachedIndex + 1)
+      .map((item) => String(item?.id ?? "").trim())
+      .find((candidate) => candidate && valueIds.has(candidate));
+    const previousId = cachedValues.slice(0, cachedIndex).reverse()
+      .map((item) => String(item?.id ?? "").trim())
+      .find((candidate) => candidate && valueIds.has(candidate));
+    const nextIndex = nextId
+      ? values.findIndex((item) => String(item?.id ?? "").trim() === nextId)
+      : -1;
+    const previousIndex = previousId
+      ? values.findIndex((item) => String(item?.id ?? "").trim() === previousId)
+      : -1;
+    values.splice(nextIndex >= 0 ? nextIndex : previousIndex + 1, 0, structuredClone(cached));
+    if (id) valueIds.add(id);
   }
-  return values;
+  return sortTaskHistoryChronologically(values);
 }
 
 function visibleProviderHistory(provider, history) {

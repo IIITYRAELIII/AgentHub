@@ -16,8 +16,11 @@ function serializedError(error) {
 
 async function projectAccountUsage(payload = {}) {
   const startedAt = performance.now();
-  const syncedUsageEvents = await store.events();
-  const updatedHtml = projectWorkLogAccountUsage(payload.html, payload.turns, {
+  const [syncedUsageEvents, turns] = await Promise.all([
+    store.events(),
+    store.journalTurns({ projectRoots: payload.projectRoots }),
+  ]);
+  const updatedHtml = projectWorkLogAccountUsage(payload.html, turns, {
     accountCatalog: payload.accountCatalog,
     includeClaudeUsage: payload.includeClaudeUsage,
     syncedUsageEvents,
@@ -39,6 +42,12 @@ async function projectAccountUsage(payload = {}) {
   };
 }
 
+async function usageSyncSnapshot(payload = {}) {
+  const startedAt = performance.now();
+  const snapshot = await store.usageSyncSnapshot(payload);
+  return { ...snapshot, durationMs: performance.now() - startedAt, workerThreadId: threadId };
+}
+
 async function handle(message) {
   switch (message.type) {
     case "events": return store.events();
@@ -46,6 +55,7 @@ async function handle(message) {
     case "replace-events": return store.replaceEvents(message.payload.events);
     case "adopt-device-ids": return store.adoptDeviceIds(message.payload.deviceIds);
     case "project-account-usage": return projectAccountUsage(message.payload);
+    case "usage-sync-snapshot": return usageSyncSnapshot(message.payload);
     case "close": return store.close();
     default: throw new Error(`unknown usage sync worker request: ${message.type}`);
   }

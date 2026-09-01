@@ -748,7 +748,10 @@
       <form class="task-card-editor" data-task-card-editor>
         <label>
           <span>Заголовок</span>
-          <textarea rows="1" maxlength="160" required data-task-card-title></textarea>
+          <span class="task-card-title-control">
+            <output class="task-card-number" data-task-card-number aria-label="Номер задачи" hidden></output>
+            <textarea rows="1" maxlength="160" required data-task-card-title></textarea>
+          </span>
         </label>
         <label>
           <span>Описание</span>
@@ -841,6 +844,11 @@
           <span>Рабочая директория</span>
           <input type="text" maxlength="1000" data-workspace-card-working-directory
             placeholder="Например, D:\projects\Utilities\AgentHub" autocomplete="off" spellcheck="false">
+        </label>
+        <label>
+          <span>Префикс воркспейса</span>
+          <input type="text" maxlength="40" data-workspace-card-task-prefix
+            placeholder="Например, HUB" autocomplete="off" spellcheck="false">
         </label>
         <label class="agent-rules-field">
           <span>Правила агента</span>

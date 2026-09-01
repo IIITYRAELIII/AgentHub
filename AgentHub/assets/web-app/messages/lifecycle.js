@@ -33,23 +33,43 @@ function submissionIdentityKeys(message) {
 
 function pagedHistoryIdentityKey(message) {
   if (!Number.isFinite(Number(message?.historyOrder))) return "";
+  const provider = String(message?.provider ?? "").trim().toLowerCase();
+  const threadId = String(message?.threadId ?? "").trim();
   const turnId = String(message?.turnId ?? "").trim();
   const itemId = String(message?.itemId ?? "").trim();
   const role = String(message?.role ?? "").trim();
-  if (!turnId || !role) return "";
-  // Pagination belongs to one stable Stream cache. Provider and Thread are
-  // provenance, not message identity: after Stream rebirth an overlapping
-  // page can describe the same durable item with a newly resolved source.
-  if (itemId) return `${turnId}\0${itemId}\0${role}`;
-  if (role === "agent" && message?.kind !== "subagent") return `${turnId}\0parent-agent`;
+  if (!provider || !threadId || !turnId || !role) return "";
+  const turnIdentity = `${provider}\0${threadId}\0${turnId}`;
+  if (itemId) return `${turnIdentity}\0${itemId}\0${role}`;
+  if (role === "agent" && message?.kind !== "subagent") return `${turnIdentity}\0parent-agent`;
   const agentThreadId = String(message?.agentThreadId ?? "").trim();
   if (role === "agent" && message?.kind === "subagent" && agentThreadId) {
-    return `${turnId}\0subagent\0${agentThreadId}`;
+    return `${turnIdentity}\0subagent\0${agentThreadId}`;
   }
   if (role === "user" && String(message?.turnUserSlot ?? "").trim() === "root") {
-    return `${turnId}\0root-user`;
+    return `${turnIdentity}\0root-user`;
   }
   return "";
+}
+
+function chronologyTurnIdentity(message) {
+  const provider = String(message?.provider ?? "").trim().toLowerCase();
+  const threadId = String(message?.threadId ?? "").trim();
+  const turnId = String(message?.turnId ?? "").trim();
+  if (provider && threadId && turnId) return `${provider}\0${threadId}\0${turnId}`;
+  return turnId ? `legacy\0${turnId}` : "";
+}
+
+function chronologyEntityIdentity(message) {
+  return [
+    chronologyTurnIdentity(message),
+    String(message?.itemId ?? message?.id ?? "").trim(),
+    String(message?.role ?? "").trim(),
+  ].join("\0");
+}
+
+function compareChronologyIdentity(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function historyMatchesIdentity(history, identity) {
@@ -643,19 +663,34 @@ function confirmedOutgoingMessageIds(durableMessages, outgoingMessages) {
 }
 
 function completedConversationTurnVisible(messages, {
+  provider = "",
+  threadId = "",
   turnId,
   answer = "",
   requireAgent = false,
+  requireTerminalAgent = false,
 } = {}) {
+  const exactProvider = String(provider ?? "").trim().toLowerCase();
+  const exactThreadId = String(threadId ?? "").trim();
   const exactTurnId = String(turnId ?? "").trim();
   if (!exactTurnId) return false;
   const turnMessages = (Array.isArray(messages) ? messages : []).filter((message) => (
     String(message?.turnId ?? "").trim() === exactTurnId
+    && (!exactProvider || String(message?.provider ?? "").trim().toLowerCase() === exactProvider)
+    && (!exactThreadId || String(message?.threadId ?? "").trim() === exactThreadId)
   ));
   const hasUser = turnMessages.some(userMessageHasVisibleContent);
   if (!hasUser) return false;
   const agentTexts = turnMessages
-    .filter((message) => message?.role === "agent")
+    .filter((message) => {
+      if (message?.role !== "agent") return false;
+      if (!requireTerminalAgent) return true;
+      const state = String(message?.projectionState ?? message?.status ?? "").trim().toLowerCase();
+      const phase = String(message?.phase ?? "").trim().toLowerCase();
+      return ["completed", "failed", "cancelled"].includes(state)
+        || Number(message?.terminalRevision) > 0
+        || ["final", "final_answer", "finalanswer"].includes(phase);
+    })
     .map((message) => String(message?.text ?? "").trim())
     .filter(Boolean);
   const expectedAnswer = String(answer ?? "").trim();
@@ -663,6 +698,45 @@ function completedConversationTurnVisible(messages, {
     return agentTexts.some((text) => text === expectedAnswer);
   }
   return requireAgent ? agentTexts.length > 0 : true;
+}
+
+function completedLiveTurnIdentity(messages, {
+  provider,
+  threadId,
+  turnId = "",
+  clientUserMessageIds = [],
+} = {}) {
+  const exactProvider = String(provider ?? "").trim().toLowerCase();
+  const exactThreadId = String(threadId ?? "").trim();
+  const exactTurnId = String(turnId ?? "").trim();
+  if (!exactProvider || !exactThreadId) return null;
+  const values = Array.isArray(messages) ? messages : [];
+  const candidates = [];
+  if (exactTurnId) candidates.push(exactTurnId);
+  else {
+    const clientIds = new Set((Array.isArray(clientUserMessageIds) ? clientUserMessageIds : [])
+      .map((value) => String(value ?? "").trim())
+      .filter(Boolean));
+    if (!clientIds.size) return null;
+    for (const message of values) {
+      if (String(message?.role ?? "") !== "user"
+        || String(message?.provider ?? "").trim().toLowerCase() !== exactProvider
+        || String(message?.threadId ?? "").trim() !== exactThreadId
+        || !clientIds.has(String(message?.clientUserMessageId ?? "").trim())) continue;
+      const candidate = String(message?.turnId ?? "").trim();
+      if (candidate && !candidates.includes(candidate)) candidates.push(candidate);
+    }
+  }
+  for (const candidate of candidates) {
+    if (completedConversationTurnVisible(values, {
+      provider: exactProvider,
+      threadId: exactThreadId,
+      turnId: candidate,
+      requireAgent: true,
+      requireTerminalAgent: true,
+    })) return { provider: exactProvider, threadId: exactThreadId, turnId: candidate };
+  }
+  return null;
 }
 
 function reconcile(serverMessages, outgoingMessages) {
@@ -1087,23 +1161,25 @@ function chronologicalMessages(messages) {
   const turnTimes = new Map();
   const historyTurnOrders = new Map();
   for (const item of decorated) {
-    const turnId = String(item.message?.turnId ?? "");
-    if (!turnId) continue;
+    const turnIdentity = chronologyTurnIdentity(item.message);
+    if (!turnIdentity) continue;
     if (Number.isFinite(item.time)) {
-      const previous = turnTimes.get(turnId);
-      turnTimes.set(turnId, previous == null ? item.time : Math.min(previous, item.time));
+      const previous = turnTimes.get(turnIdentity);
+      turnTimes.set(turnIdentity, previous == null ? item.time : Math.min(previous, item.time));
     }
     if (Number.isFinite(item.historyOrder)) {
-      const previous = historyTurnOrders.get(turnId);
+      const previous = historyTurnOrders.get(turnIdentity);
       historyTurnOrders.set(
-        turnId,
+        turnIdentity,
         previous == null ? item.historyOrder : Math.min(previous, item.historyOrder),
       );
     }
   }
   const orderedHistoryTurns = [...historyTurnOrders]
-    .map(([turnId, order]) => ({ turnId, order, time: turnTimes.get(turnId) }))
-    .sort((left, right) => left.order - right.order);
+    .map(([identity, order]) => ({ identity, order, time: turnTimes.get(identity) }))
+    .sort((left, right) => (
+      left.order - right.order || compareChronologyIdentity(left.identity, right.identity)
+    ));
   const anchors = orderedHistoryTurns.filter((turn) => Number.isFinite(turn.time));
   for (const turn of orderedHistoryTurns) {
     if (Number.isFinite(turn.time)) continue;
@@ -1120,23 +1196,23 @@ function chronologicalMessages(messages) {
     } else {
       turn.time = turn.order;
     }
-    turnTimes.set(turn.turnId, turn.time);
+    turnTimes.set(turn.identity, turn.time);
   }
   for (const item of decorated) {
     if (Number.isFinite(item.time)) continue;
-    const turnId = String(item.message?.turnId ?? "");
-    item.time = turnTimes.get(turnId) ?? Number.POSITIVE_INFINITY;
+    item.time = turnTimes.get(chronologyTurnIdentity(item.message)) ?? Number.POSITIVE_INFINITY;
   }
   const ordered = decorated
     .sort((left, right) => {
-      const leftTurnOrder = historyTurnOrders.get(String(left.message?.turnId ?? ""));
-      const rightTurnOrder = historyTurnOrders.get(String(right.message?.turnId ?? ""));
+      const leftTurnIdentity = chronologyTurnIdentity(left.message);
+      const rightTurnIdentity = chronologyTurnIdentity(right.message);
+      const leftTurnOrder = historyTurnOrders.get(leftTurnIdentity);
+      const rightTurnOrder = historyTurnOrders.get(rightTurnIdentity);
       if (Number.isFinite(leftTurnOrder) && Number.isFinite(rightTurnOrder)
         && leftTurnOrder !== rightTurnOrder) {
         return leftTurnOrder - rightTurnOrder;
       }
-      const sameTurn = String(left.message?.turnId ?? "")
-        && String(left.message?.turnId ?? "") === String(right.message?.turnId ?? "");
+      const sameTurn = leftTurnIdentity && leftTurnIdentity === rightTurnIdentity;
       if (sameTurn) {
         const placement = (message) => (
           message?.kind === "maintenance" ? 3
@@ -1148,6 +1224,11 @@ function chronologicalMessages(messages) {
         if (placementDifference) return placementDifference;
       }
       if (left.time !== right.time) return left.time - right.time;
+      const identityOrder = compareChronologyIdentity(
+        chronologyEntityIdentity(left.message),
+        chronologyEntityIdentity(right.message),
+      );
+      if (identityOrder) return identityOrder;
       return left.index - right.index;
     })
     .map(({ message }) => message);
@@ -1370,6 +1451,7 @@ globalThis.AgentHubMessageLifecycle = Object.freeze({
   completionCatchUpTurnId,
   completedLiveAnswer,
   completedLiveAgentMessage,
+  completedLiveTurnIdentity,
   conversationTaskId,
   completedConversationTurnVisible,
   confirmedOutgoingMessageIds,

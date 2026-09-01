@@ -14,16 +14,32 @@ import { displayUserPrompt } from "../../application/task-history.mjs";
 
 const rolloutPathIndexPromises = new Map();
 const rolloutSessionCache = new Map();
-const DEFAULT_ROLLOUT_SESSION_CACHE_LIMIT = 10_000;
+const DEFAULT_ROLLOUT_SESSION_CACHE_LIMIT = 128;
+const DEFAULT_ROLLOUT_SESSION_CACHE_BYTES = 32 * 1024 * 1024;
+const DEFAULT_ROLLOUT_SESSION_SCAN_BYTES = 1024 * 1024;
+const DEFAULT_ROLLOUT_SESSION_SCAN_LINES = 4_096;
+const DEFAULT_ROLLOUT_SESSION_LINE_BYTES = 256 * 1024;
+const DEFAULT_ROLLOUT_SESSION_SCAN_MS = 1_000;
 
 function rolloutSessionCacheKey(file) {
   return path.resolve(file).toLowerCase();
 }
 
-function trimRolloutSessionCache(cache, limit) {
+function rolloutSessionBytes(value) {
+  try {
+    return Buffer.byteLength(JSON.stringify(value), "utf8");
+  } catch {
+    return DEFAULT_ROLLOUT_SESSION_CACHE_BYTES;
+  }
+}
+
+function trimRolloutSessionCache(cache, limit, maxBytes = DEFAULT_ROLLOUT_SESSION_CACHE_BYTES) {
   const normalizedLimit = Math.max(1, Number(limit) || DEFAULT_ROLLOUT_SESSION_CACHE_LIMIT);
-  while (cache.size > normalizedLimit) {
-    cache.delete(cache.keys().next().value);
+  let retainedBytes = [...cache.values()].reduce((total, value) => total + rolloutSessionBytes(value), 0);
+  while (cache.size > normalizedLimit || retainedBytes > maxBytes) {
+    const oldestKey = cache.keys().next().value;
+    retainedBytes -= rolloutSessionBytes(cache.get(oldestKey));
+    cache.delete(oldestKey);
   }
 }
 
@@ -73,21 +89,90 @@ function codexRolloutSession(entry, transcriptPath = "") {
 
 export async function readCodexRolloutSession(transcriptPath, {
   createReadStreamImpl = createReadStream,
+  maxBytes = DEFAULT_ROLLOUT_SESSION_SCAN_BYTES,
+  maxLines = DEFAULT_ROLLOUT_SESSION_SCAN_LINES,
+  maxLineBytes = DEFAULT_ROLLOUT_SESSION_LINE_BYTES,
+  maxDurationMs = DEFAULT_ROLLOUT_SESSION_SCAN_MS,
 } = {}) {
-  const input = createReadStreamImpl(transcriptPath, { encoding: "utf8" });
-  const lines = createInterface({ input, crlfDelay: Infinity });
+  const byteLimit = Math.max(1, Number(maxBytes) || DEFAULT_ROLLOUT_SESSION_SCAN_BYTES);
+  const lineLimit = Math.max(1, Number(maxLines) || DEFAULT_ROLLOUT_SESSION_SCAN_LINES);
+  const lineByteLimit = Math.max(1, Number(maxLineBytes) || DEFAULT_ROLLOUT_SESSION_LINE_BYTES);
+  const durationLimit = Math.max(1, Number(maxDurationMs) || DEFAULT_ROLLOUT_SESSION_SCAN_MS);
+  const input = createReadStreamImpl(transcriptPath, { start: 0, end: byteLimit - 1 });
+  const iterator = input[Symbol.asyncIterator]();
+  const deadline = Date.now() + durationLimit;
+  let bytesRead = 0;
+  let linesRead = 0;
+  let pendingParts = [];
+  let pendingLength = 0;
+  let droppingLongLine = false;
+  let reachedEof = false;
+
+  const acceptLine = (parts, length) => {
+    if (!length) return null;
+    try {
+      const line = parts.length === 1 ? parts[0] : Buffer.concat(parts, length);
+      return codexRolloutSession(JSON.parse(line.toString("utf8").replace(/\r$/u, "")), transcriptPath);
+    } catch {
+      return null;
+    }
+  };
+
   try {
-    for await (const line of lines) {
-      if (!line) continue;
-      try {
-        const session = codexRolloutSession(JSON.parse(line), transcriptPath);
-        if (session) return session;
-      } catch {
-        // Keep looking if a damaged preamble record precedes session metadata.
+    while (bytesRead < byteLimit && linesRead < lineLimit) {
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) break;
+      let timer;
+      const next = await Promise.race([
+        iterator.next().then((value) => ({ value })),
+        new Promise((resolve) => {
+          timer = setTimeout(() => resolve({ timedOut: true }), remainingMs);
+        }),
+      ]);
+      clearTimeout(timer);
+      if (next.timedOut) break;
+      if (next.value.done) {
+        reachedEof = true;
+        break;
+      }
+      const source = Buffer.isBuffer(next.value.value)
+        ? next.value.value
+        : Buffer.from(next.value.value);
+      const chunk = source.subarray(0, Math.min(source.length, byteLimit - bytesRead));
+      bytesRead += chunk.length;
+      let start = 0;
+      let newline = chunk.indexOf(0x0a);
+      while (newline >= 0 && linesRead < lineLimit) {
+        const part = chunk.subarray(start, newline);
+        linesRead += 1;
+        if (!droppingLongLine && pendingLength + part.length <= lineByteLimit) {
+          const session = acceptLine([...pendingParts, part], pendingLength + part.length);
+          if (session) return session;
+        }
+        pendingParts = [];
+        pendingLength = 0;
+        droppingLongLine = false;
+        start = newline + 1;
+        newline = chunk.indexOf(0x0a, start);
+      }
+      if (start < chunk.length && linesRead < lineLimit) {
+        const part = chunk.subarray(start);
+        if (!droppingLongLine && pendingLength + part.length <= lineByteLimit) {
+          pendingParts.push(part);
+          pendingLength += part.length;
+        } else {
+          pendingParts = [];
+          pendingLength = 0;
+          droppingLongLine = true;
+        }
       }
     }
+    if (reachedEof && !droppingLongLine && pendingLength && linesRead < lineLimit) {
+      return acceptLine(pendingParts, pendingLength);
+    }
+  } catch {
+    return null;
   } finally {
-    lines.close();
     input.destroy?.();
   }
   return null;

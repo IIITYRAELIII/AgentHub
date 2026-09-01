@@ -1,3 +1,5 @@
+import { workspaceTaskPrefix } from "../domain/task-number.mjs";
+
 function requiredStore(value) {
   if (!value || typeof value.hierarchy !== "function") {
     throw new TypeError("workspace catalog store is required");
@@ -32,7 +34,9 @@ export class WorkspaceCatalogService {
   }
 
   updateWorkspaceSettings({ workspaceId, settings = {} } = {}) {
-    return this.#store.updateWorkspaceSettings(workspaceId, settings);
+    const workspace = this.#store.updateWorkspaceSettings(workspaceId, settings);
+    if (workspaceTaskPrefix(workspace.settings)) this.taskBoard?.assignWorkspaceTaskNumbers?.(workspaceId);
+    return workspace;
   }
 
   workspaceDeveloperRules({ workspaceId } = {}) {

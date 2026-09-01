@@ -10,7 +10,9 @@ function fixture({
   serverUrl = "https://sync.example.test/agenthub",
   enrolledAt = "2026-08-20T00:00:00.000Z",
   lastUsagePushWatermark = "",
+  lastUsagePushJournalRevision = 0,
   lastUsagePullRevision = 0,
+  localJournalRevision = 7,
   localEvents = [{ id: "turn-1", observedAt: "2026-08-20T04:00:00.000Z" }],
   remoteEvents = [{ id: "remote-1" }],
   accountBackfillResult = { applied: true, updated: 2 },
@@ -44,7 +46,13 @@ function fixture({
     remoteConfigStore: {
       load: async () => {
         events.push(["load-config"]);
-        return { serverUrl, enrolledAt, lastUsagePushWatermark, lastUsagePullRevision };
+        return {
+          serverUrl,
+          enrolledAt,
+          lastUsagePushWatermark,
+          lastUsagePushJournalRevision,
+          lastUsagePullRevision,
+        };
       },
       rememberPush: async (result, options) => events.push(["remember-push", result, options]),
       rememberPull: async (result, options) => events.push(["remember-pull", result, options]),
@@ -53,7 +61,12 @@ function fixture({
     workLogUsageStore: {
       usageSyncSnapshot: async (options) => {
         events.push(["snapshot", options]);
-        return { version: 1, deviceId: options.deviceId, events: localEvents };
+        return {
+          version: 1,
+          deviceId: options.deviceId,
+          journalRevision: localJournalRevision,
+          events: localEvents,
+        };
       },
       importUsageSyncSnapshotAndProject: async (options) => {
         events.push(["import-project", options]);
@@ -149,9 +162,11 @@ test("UsageSyncAutoService pushes, pulls, imports and remembers remote results",
     deviceId: "device-local",
     deviceLabel: "DESKTOP-FNNC1JA",
     afterObservedAt: "",
+    afterJournalRevision: 0,
   });
   assert.deepEqual(state.events.find(([name]) => name === "remember-push")?.[2], {
     usageWatermark: "2026-08-20T04:00:00.000Z",
+    usageJournalRevision: 7,
   });
   assert.deepEqual(state.events.find(([name]) => name === "pull")?.[1], {
     sinceRevision: 0,
@@ -164,9 +179,10 @@ test("UsageSyncAutoService pushes, pulls, imports and remembers remote results",
   assert.deepEqual(importProject[1].projectionProjectRoots, ["D:/projects/Utilities"]);
 });
 
-test("UsageSyncAutoService sends only observed usage deltas after the saved watermark", async () => {
+test("UsageSyncAutoService sends only journal deltas after the saved revision", async () => {
   const state = fixture({
     lastUsagePushWatermark: "2026-08-20T04:00:00.000Z",
+    lastUsagePushJournalRevision: 6,
     lastUsagePullRevision: 8,
     localEvents: [],
     remoteEvents: [],
@@ -182,6 +198,7 @@ test("UsageSyncAutoService sends only observed usage deltas after the saved wate
     deviceId: "device-local",
     deviceLabel: "DESKTOP-FNNC1JA",
     afterObservedAt: "2026-08-20T04:00:00.000Z",
+    afterJournalRevision: 6,
   });
   assert.deepEqual(state.events.find(([name]) => name === "pull")?.[1], {
     sinceRevision: 8,
@@ -220,6 +237,7 @@ test("UsageSyncAutoService exposes and confirms the device nickname", async () =
     deviceId: "device-local",
     deviceLabel: "SidorukSV",
     afterObservedAt: "",
+    afterJournalRevision: 0,
   });
 });
 
