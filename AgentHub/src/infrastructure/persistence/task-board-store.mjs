@@ -1537,7 +1537,7 @@ export class TaskBoardStore {
   }
 
   prepareStart(id, {
-    workspaceId, streamId, requestId, streamName = null,
+    workspaceId, streamId, requestId, streamName = null, reassign = false,
   } = {}) {
     const taskId = String(id);
     const normalizedRequestId = String(requestId ?? "").trim();
@@ -1546,12 +1546,22 @@ export class TaskBoardStore {
     return this.#withDatabase((database) => {
       const current = this.#taskRow(database, taskId);
       const currentRequestId = String(current.start_request_id ?? "").trim();
-      if (currentRequestId && currentRequestId !== normalizedRequestId) {
+      if (currentRequestId && currentRequestId !== normalizedRequestId && !reassign) {
         throw new Error("Task launch is already pending; retry it with the original request_id");
       }
       if (current.status === "done") throw new Error("Task уже закрыта");
-      if (current.status === "started" && !currentRequestId) throw new Error("Task уже запущена");
-      if (!currentRequestId) {
+      if (reassign && current.status !== "started") throw new Error("Переназначить можно только запущенную Task");
+      if (!reassign && current.status === "started" && !currentRequestId) throw new Error("Task уже запущена");
+      if (reassign && String(current.stream_id ?? "") === String(streamId)) {
+        throw new Error("Task уже назначена этому Stream");
+      }
+      if (reassign && currentRequestId !== normalizedRequestId) {
+        database.prepare(`
+          UPDATE hub_board_tasks
+          SET start_request_id = ?, start_stream_name = ?, updated_at_ms = ?
+          WHERE id = ?
+        `).run(normalizedRequestId, String(streamName ?? "").trim() || null, timestamp, taskId);
+      } else if (!currentRequestId) {
         database.prepare(`
           UPDATE hub_board_tasks
           SET bucket = 'workspace', status = 'starting', workspace_id = ?, stream_id = ?,
@@ -1567,18 +1577,26 @@ export class TaskBoardStore {
     });
   }
 
-  cancelPreparedStart(id, { requestId } = {}) {
+  cancelPreparedStart(id, { requestId, reassign = false } = {}) {
     const taskId = String(id);
     const normalizedRequestId = String(requestId ?? "").trim();
     if (!normalizedRequestId) throw new Error("Task launch request id is required");
     return this.#withDatabase((database) => {
       this.#taskRow(database, taskId);
-      database.prepare(`
-        UPDATE hub_board_tasks
-        SET status = 'open', stream_id = NULL, start_request_id = NULL, start_stream_name = NULL,
-          updated_at_ms = ?
-        WHERE id = ? AND status = 'starting' AND start_request_id = ?
-      `).run(this.now(), taskId, normalizedRequestId);
+      if (reassign) {
+        database.prepare(`
+          UPDATE hub_board_tasks
+          SET start_request_id = NULL, start_stream_name = NULL, updated_at_ms = ?
+          WHERE id = ? AND status = 'started' AND start_request_id = ?
+        `).run(this.now(), taskId, normalizedRequestId);
+      } else {
+        database.prepare(`
+          UPDATE hub_board_tasks
+          SET status = 'open', stream_id = NULL, start_request_id = NULL, start_stream_name = NULL,
+            updated_at_ms = ?
+          WHERE id = ? AND status = 'starting' AND start_request_id = ?
+        `).run(this.now(), taskId, normalizedRequestId);
+      }
       const task = taskFromRow(database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(taskId));
       if (!task) throw new Error("Task не найден");
       return task;

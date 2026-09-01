@@ -144,6 +144,7 @@ const dialogStreamRules = document.querySelector("[data-dialog-stream-rules]");
 const dialogStreamRulesCount = document.querySelector("[data-dialog-stream-rules-count]");
 const dialogStreamRulesSave = document.querySelector("[data-dialog-stream-rules-save]");
 const dialogStreamArchitect = document.querySelector("[data-dialog-stream-architect]");
+const dialogStreamTeamLead = document.querySelector("[data-dialog-stream-team-lead]");
 const dialogStreamQuickMessages = document.querySelector("[data-dialog-stream-quick-messages]");
 const dialogStreamQuickMessagesCount = document.querySelector("[data-dialog-stream-quick-messages-count]");
 const workspaceMessageSearch = document.querySelector("[data-workspace-message-search]");
@@ -964,9 +965,10 @@ function enhanceThemedSelect(select) {
   menu.setAttribute("role", "listbox");
   menu.setAttribute("aria-label", button.getAttribute("aria-label"));
   button.setAttribute("aria-controls", menu.id);
-  const supportsPopover = typeof menu.showPopover === "function";
+  const placement = window.AgentHubThemedSelectPlacement.resolve(select, menu);
+  const supportsPopover = placement.usePopover;
   if (supportsPopover) menu.setAttribute("popover", "manual");
-  (supportsPopover ? document.body : select.closest("dialog") ?? document.body).append(menu);
+  placement.host.append(menu);
 
   const state = { button, menu, select, shell, value };
   select.__themedSelect = state;
@@ -2234,9 +2236,20 @@ function streamDisplayName(stream, streamCount) {
 
 function representativeStreamTask(stream) {
   if (!stream) return null;
+  // У потока обычно несколько задач: каждый Thread — своя. Вкладка показывает
+  // одну из них, и выбирать её только по времени последней активности нельзя:
+  // идущий ход часто не самый свежий по этому полю, и вкладка молча брала
+  // соседнюю задачу без признака работы. Правая панель тем временем выбирает по
+  // состоянию и показывает поток работающим — отсюда «справа есть, сверху нет».
+  // Порядок здесь тот же, что в рельсе: сначала состояние, потом время.
+  // Порядок обязан совпадать с attentionRank рельса: там готовый ответ идёт
+  // впереди идущего хода. Обратный порядок давал разные ветки одного потока
+  // в полосе и в панели, и они показывали разные состояния одновременно.
+  const attention = (task) => (task?.unread && !task?.running ? 0 : task?.running ? 1 : 2);
   return stream.tasks.find((task) => task.id === state.selectedId)
     ?? [...stream.tasks].sort((left, right) => (
-      Date.parse(right.lastActivity || 0) - Date.parse(left.lastActivity || 0)
+      attention(left) - attention(right)
+      || Date.parse(right.lastActivity || 0) - Date.parse(left.lastActivity || 0)
     ))[0]
     ?? null;
 }
@@ -4075,6 +4088,10 @@ function openAttachmentViewer({ dataUrl = "", name = "Изображение", g
   const selectedDataUrl = String(selected.dataUrl ?? dataUrl ?? "");
   attachmentViewerOpen = true;
   attachmentViewer.hidden = false;
+  if (!attachmentViewer.open) {
+    if (typeof attachmentViewer.showModal === "function") attachmentViewer.showModal();
+    else attachmentViewer.setAttribute("open", "");
+  }
   attachmentViewerImage.hidden = !selectedDataUrl;
   attachmentViewerLoading.hidden = Boolean(selectedDataUrl);
   attachmentViewerImage.alt = String(selected.name ?? name);
@@ -4121,6 +4138,8 @@ function moveAttachmentViewer(direction) {
 function closeAttachmentViewer() {
   if (!attachmentViewerOpen) return false;
   attachmentViewerOpen = false;
+  if (attachmentViewer.open && typeof attachmentViewer.close === "function") attachmentViewer.close();
+  else attachmentViewer.removeAttribute("open");
   attachmentViewer.hidden = true;
   attachmentViewerImage.removeAttribute("src");
   attachmentViewerImage.hidden = true;
@@ -4162,6 +4181,10 @@ attachmentViewer.addEventListener("click", (event) => {
     attachmentViewer,
     attachmentViewerStage,
   )) closeAttachmentViewer();
+});
+attachmentViewer.addEventListener("cancel", (event) => {
+  event.preventDefault();
+  closeAttachmentViewer();
 });
 window.addEventListener("keydown", (event) => {
   if (!attachmentViewerOpen) return;
@@ -7054,6 +7077,10 @@ function renderDialogSettings() {
     dialogStreamArchitect.checked = streamRoleSettings.architectEnabled(task?.streamSettings);
     dialogStreamArchitect.disabled = !task?.streamId;
   }
+  if (dialogStreamTeamLead) {
+    dialogStreamTeamLead.checked = streamRoleSettings.teamLeadEnabled(task?.streamSettings);
+    dialogStreamTeamLead.disabled = !task?.streamId;
+  }
   renderStreamRulesPreview();
   renderStreamQuickMessagesSettings();
 }
@@ -7128,6 +7155,15 @@ dialogSettings.addEventListener("change", (event) => {
     const task = currentTask();
     if (!task?.streamId) return;
     task.streamSettings = streamRoleSettings.withArchitect(task.streamSettings, architect.checked);
+    emit("stream:settings-save", { streamId: task.streamId, settings: { ...task.streamSettings } });
+    renderOptions();
+    return;
+  }
+  const teamLead = event.target.closest("[data-dialog-stream-team-lead]");
+  if (teamLead) {
+    const task = currentTask();
+    if (!task?.streamId) return;
+    task.streamSettings = streamRoleSettings.withTeamLead(task.streamSettings, teamLead.checked);
     emit("stream:settings-save", { streamId: task.streamId, settings: { ...task.streamSettings } });
     renderOptions();
     return;

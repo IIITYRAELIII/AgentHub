@@ -837,6 +837,7 @@ export async function readCodexRolloutActivityOnCurrentThread(
     tailBytes = CODEX_ROLLOUT_TAIL_BYTES,
     maximumLineBytes = CODEX_ROLLOUT_LINE_BYTES,
     pinCache = false,
+    reparseTail = false,
     pinCacheState = null,
   } = {},
 ) {
@@ -915,7 +916,7 @@ export async function readCodexRolloutActivityOnCurrentThread(
       unscopedLatestMessage: cached?.unscopedLatestMessage || null,
     });
   }
-  const cached = cachedActivity(normalized, shouldPinCache());
+  const cached = reparseTail ? null : cachedActivity(normalized, shouldPinCache());
   if (cached?.size === info.size && cached?.mtimeMs === info.mtimeMs) {
     const activity = codexActivity(
         new Set(cached.activeTurnIds),
@@ -1117,12 +1118,18 @@ function codexActivityReadPathKey(rolloutPath) {
   return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }
 
-function codexActivityReadKey(rolloutPath, { freshnessMs, tailBytes, maximumLineBytes }) {
+function codexActivityReadKey(rolloutPath, {
+  freshnessMs,
+  tailBytes,
+  maximumLineBytes,
+  reparseTail,
+}) {
   return [
     codexActivityReadPathKey(rolloutPath),
     `freshness:${String(freshnessMs)}`,
     `tail:${String(tailBytes)}`,
     `line:${String(maximumLineBytes)}`,
+    `reparse:${reparseTail === true}`,
   ].join("\u0000");
 }
 
@@ -1134,6 +1141,7 @@ export function readCodexRolloutActivity(rolloutPath, options = {}) {
     tailBytes = CODEX_ROLLOUT_TAIL_BYTES,
     maximumLineBytes = CODEX_ROLLOUT_LINE_BYTES,
     pinCache = false,
+    reparseTail = false,
   } = options;
   if (!normalized) {
     return readCodexRolloutActivityOnCurrentThread(normalized, {
@@ -1142,12 +1150,14 @@ export function readCodexRolloutActivity(rolloutPath, options = {}) {
       tailBytes,
       maximumLineBytes,
       pinCache,
+      reparseTail,
     });
   }
   const key = codexActivityReadKey(normalized, {
     freshnessMs,
     tailBytes,
     maximumLineBytes,
+    reparseTail,
   });
   const active = codexActivityReadsInFlight.get(key);
   if (active) {
@@ -1165,6 +1175,7 @@ export function readCodexRolloutActivity(rolloutPath, options = {}) {
     tailBytes,
     maximumLineBytes,
     pinCache: initiallyPinned,
+    reparseTail,
   }).then(async (activity) => {
     if (pinCacheState.requested && !initiallyPinned) {
       await pinCodexRolloutActivityCacheInWorker(normalized);

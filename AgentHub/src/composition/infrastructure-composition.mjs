@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 
 import { RunJournalService } from "../application/run-journal-service.mjs";
 import { HubMcpService } from "../application/hub-mcp-service.mjs";
+import { McpAdmissionCoordinator } from "../application/mcp-admission-coordinator.mjs";
 import { TurnEndNotificationRegistry } from "../application/turn-end-notifications.mjs";
 import { createWorkLogUsageStore } from "../application/work-log-usage-store.mjs";
 import { TaskBoardService } from "../application/task-board-service.mjs";
@@ -339,9 +340,11 @@ export async function createHubInfrastructure({
     releaseCompleter: workspaceReleaseService,
     taskGitWorkspaces,
   });
+  const mcpAdmissionCoordinator = new McpAdmissionCoordinator();
   const hubMcpServer = new HubMcpServer({
     service: hubMcpService,
     secret: hubMcpSecret,
+    mcpAdmissionCoordinator,
     captureUnexpectedException: (error, context) => sentryDiagnostics.captureUnexpectedException(error, context),
   });
   const serverOptions = {
@@ -474,8 +477,10 @@ export async function createHubInfrastructure({
     taskVoiceTranscriber,
     hubMcpService,
     hubMcpServer,
+    mcpAdmissionCoordinator,
     miniAppServer,
     publicMiniAppServer,
+    attachmentDirectory,
     attachmentThumbnails,
     usdRubRateStore,
     instanceGuard,

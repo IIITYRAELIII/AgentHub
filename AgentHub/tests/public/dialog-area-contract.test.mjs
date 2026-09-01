@@ -41,6 +41,11 @@ test("dialog geometry references semantic tokens without literal colors", async 
   assert.match(styles, /\.chat-scroll > \.msg-live \{[\s\S]*margin-top: 28px;[\s\S]*width: min\(var\(--dialog-column-width\), calc\(100% - 32px\)\);/u);
   assert.match(styles, /\.chat-stop-bottom \{[\s\S]*background: color-mix\(in srgb, var\(--dialog-danger\) 10%, transparent\);[\s\S]*width: 30px;/u);
   assert.doesNotMatch(styles, /(?<!track )\.stream-tab-card \{/u);
+  // Полоса вкладок ничего не добавляет к признаку статуса: и рамка, и кольцо
+  // оказались лишними. Сигнал рисует общий эффект, тот же, что в строке правой
+  // панели, поэтому здесь не должно быть ни собственной анимации, ни рамки.
+  assert.doesNotMatch(styles, /stream-tab-ring-sweep/u);
+  assert.doesNotMatch(styles, /border: 1px solid var\(--accent-line\) !important/u);
   assert.match(styles, /\.composer \{[\s\S]*width: min\(var\(--dialog-column-width\), calc\(100% - 48px\)\);/u);
 });
 

@@ -36,6 +36,36 @@ test("Dashboard switches between current and completed Tasks", async () => {
   );
 });
 
+test("Dashboard considers a Stream free only without an active turn or queue", async () => {
+  const { streamAvailability } = await loadBoardView();
+  const stream = {
+    id: "stream-1",
+    threads: [{ provider: "codex", threadId: "thread-1" }],
+  };
+
+  assert.deepEqual({ ...streamAvailability(stream, [], []) }, {
+    active: false, activeRunCount: 0, queuedInputCount: 0, free: true,
+  });
+  assert.equal(streamAvailability(stream, [{ streamId: "stream-1", running: true }], []).free, false);
+  assert.deepEqual(
+    { ...streamAvailability(stream, [], [{ provider: "codex", threadId: "thread-1" }]) },
+    { active: false, activeRunCount: 0, queuedInputCount: 1, free: false },
+  );
+});
+
+test("Dashboard labels reassignment separately from first Task start", async () => {
+  const { taskStartActionLabels } = await loadBoardView();
+
+  assert.deepEqual({ ...taskStartActionLabels({ status: "open" }) }, {
+    eyebrow: "Начать работу",
+    newStreamSubmit: "Создать Stream и начать",
+  });
+  assert.deepEqual({ ...taskStartActionLabels({ status: "started" }) }, {
+    eyebrow: "Переназначить Task",
+    newStreamSubmit: "Создать Stream и переназначить",
+  });
+});
+
 test("a freshly completed Task lands at the bottom of completed Tasks", async () => {
   const view = await loadBoardView();
   const tasks = [
@@ -64,6 +94,54 @@ test("Dashboard presents every workflow status in the selected language", async 
   );
   assert.equal(view.taskWorkflowPresentation({ status: "started" }, "ru").status, "in_progress");
   assert.equal(view.normalizedTaskStatusLanguage("unknown"), "en");
+});
+
+test("Task status control keeps its native option list stable across snapshots", async () => {
+  const { syncTaskStatusControl } = await loadBoardView();
+  const createOption = () => ({ value: "", textContent: "" });
+  const control = {
+    ownerDocument: { createElement: createOption },
+    options: [
+      { value: "new", textContent: "New" },
+      { value: "in_progress", textContent: "In progress" },
+      { value: "testing", textContent: "Testing" },
+      { value: "awaiting_implementation", textContent: "Awaiting implementation" },
+      { value: "done", textContent: "Done" },
+    ],
+    value: "testing",
+    replacements: 0,
+    replaceChildren(...options) {
+      this.replacements += 1;
+      this.options = options;
+    },
+  };
+
+  assert.deepEqual(
+    { ...syncTaskStatusControl(control, { workflowStatus: "testing" }, "en") },
+    { optionsChanged: false, statusChanged: false },
+  );
+  assert.equal(control.replacements, 0);
+
+  assert.deepEqual(
+    { ...syncTaskStatusControl(control, { workflowStatus: "done" }, "en", { pending: true }) },
+    { optionsChanged: false, statusChanged: false },
+  );
+  assert.equal(control.value, "testing");
+  assert.equal(control.replacements, 0);
+
+  assert.deepEqual(
+    { ...syncTaskStatusControl(control, { workflowStatus: "done" }, "en") },
+    { optionsChanged: false, statusChanged: true },
+  );
+  assert.equal(control.value, "done");
+  assert.equal(control.replacements, 0);
+
+  assert.deepEqual(
+    { ...syncTaskStatusControl(control, { workflowStatus: "done" }, "ru") },
+    { optionsChanged: true, statusChanged: false },
+  );
+  assert.equal(control.replacements, 1);
+  assert.equal(control.options[3].textContent, "К применению");
 });
 
 test("Task release details use the canonical executor and changed-file projection", async () => {
@@ -209,6 +287,21 @@ test("Dashboard Notes have no default subtitle", async () => {
   const snapshot = taskBoardSnapshotChanges({}, {}, { initialized: false });
 
   assert.equal(snapshot.next.notesComment, "");
+});
+
+test("Task links open the card without requesting Dashboard navigation", async () => {
+  const { createTaskReferenceOpenHandler } = await loadBoardView();
+  const opened = [];
+  const tasks = [{ id: "task-1", title: "Keep current route" }];
+  const handler = createTaskReferenceOpenHandler({
+    getTasks: () => tasks,
+    openTask: (task) => opened.push(task.id),
+  });
+
+  assert.equal(handler({ detail: { taskId: "task-1" } }), true);
+  assert.deepEqual(opened, ["task-1"]);
+  assert.equal(handler({ detail: { taskId: "missing" } }), false);
+  assert.deepEqual(opened, ["task-1"]);
 });
 
 test("Dashboard pins Backlog first and Notes last regardless of saved order", async () => {

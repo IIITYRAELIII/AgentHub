@@ -238,6 +238,7 @@ export class ProviderTurnTerminalStore {
       finalAnswer,
       usageIdentity,
       lastMessageText: String(lastMessage?.text ?? "").trim(),
+      responseAttachments: basePayload?.completion?.responseAttachments ?? [],
       telegramIntent,
     });
     return this.#enqueue(() => {

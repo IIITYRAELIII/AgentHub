@@ -96,6 +96,7 @@ export async function createProviderApplicationComposition({
     workspaceCatalogStore,
     preTurnInstructions,
     hubMcpService,
+    mcpAdmissionCoordinator,
     codexRolloutContextSanitizer,
     providerTurnTelemetryStore,
     runtimeStateStore,
@@ -157,6 +158,7 @@ export async function createProviderApplicationComposition({
   });
   const maintenanceOperations = new MaintenanceOperationStore({ dataDir: config.dataDir });
   hubMcpService.setActiveRuns(() => runtimeData.taskRuns.values());
+  hubMcpService.setDeferredInputs(() => runtimeData.deferredInputs.values());
 
   const codexObservability = createCodexObservabilityComposition({
     config,
@@ -184,6 +186,7 @@ export async function createProviderApplicationComposition({
       provider: "codex",
       threadId,
     })?.streamId ?? null,
+    importCodexAssistantAttachments: api.importCodexAssistantAttachments,
   });
 
   const completion = createRunCompletionComposition({
@@ -245,6 +248,7 @@ export async function createProviderApplicationComposition({
     defaultNotificationChatId,
     changedFilesForRun: accounting.changedFilesForRun,
     persistManagedRunHistory: api.persistManagedRunHistory,
+    resolveCodexTerminalAttachments: codexObservability.resolveTerminalAttachments,
     runtimeStateStore,
     commandTrace: commandTraceService,
   });
@@ -399,6 +403,7 @@ export async function createProviderApplicationComposition({
     workspaceCatalogStore,
     preTurnInstructions,
     hubMcpService,
+    mcpAdmissionCoordinator,
     saveState: api.saveState,
     taskProgress: late.taskProgress,
     taskObserver: late.taskObserver,
@@ -486,6 +491,7 @@ export async function createProviderApplicationComposition({
     backfillWorkLogPricingMetadata: api.backfillWorkLogPricingMetadata,
     readCodexThreadTitleHistories,
     rememberCodexRolloutPath: codexObservability.rememberRolloutPath,
+    resolveCodexTerminalAttachments: codexObservability.resolveTerminalAttachments,
     capturedCodexExecutionOwner: codexObservability.capturedExecutionOwner,
     codexObservedRuntimeActive,
     codexTransportPid: () => late.codexTransport().pid,

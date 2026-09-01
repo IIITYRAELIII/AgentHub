@@ -73,6 +73,7 @@ export class HubMcpServer {
     requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
     logger = console,
     captureUnexpectedException = () => false,
+    mcpAdmissionCoordinator = null,
   } = {}) {
     if (typeof service?.tools !== "function" || typeof service?.call !== "function") {
       throw new TypeError("Hub MCP service is required");
@@ -89,6 +90,7 @@ export class HubMcpServer {
     this.requestTimeoutMs = Math.max(1, Math.trunc(Number(requestTimeoutMs) || DEFAULT_REQUEST_TIMEOUT_MS));
     this.logger = logger;
     this.captureUnexpectedException = captureUnexpectedException;
+    this.mcpAdmissionCoordinator = mcpAdmissionCoordinator;
   }
 
   #capture(error, action) {
@@ -187,7 +189,7 @@ export class HubMcpServer {
     }
     try {
       const result = await withRequestTimeout(
-        this.#dispatch(message.method, message.params ?? {}),
+        this.#dispatch(message.method, message.params ?? {}, { rpcRequestId: message.id }),
         this.requestTimeoutMs,
       );
       writeJson(response, 200, jsonRpcResult(message.id, result));
@@ -197,7 +199,7 @@ export class HubMcpServer {
     }
   }
 
-  async #dispatch(method, params) {
+  async #dispatch(method, params, { rpcRequestId = null } = {}) {
     if (method === "initialize") {
       const requested = String(params?.protocolVersion ?? "");
       return {
@@ -210,14 +212,37 @@ export class HubMcpServer {
     if (method === "ping") return {};
     if (method === "tools/list") return { tools: this.service.tools() };
     if (method === "tools/call") {
+      const toolName = String(params?.name ?? "").trim();
+      const toolArguments = params?.arguments ?? {};
+      const requestId = String(toolArguments?.request_id ?? "").trim() || null;
+      this.mcpAdmissionCoordinator?.admit({
+        serverName: "agent_hub",
+        requestId,
+        toolName,
+        rpcRequestId,
+      });
+      this.mcpAdmissionCoordinator?.observeOperation("tool-call-received", {
+        serverName: "agent_hub",
+        requestId,
+        toolName,
+        rpcRequestId: String(rpcRequestId ?? "") || null,
+      });
       try {
-        const structuredContent = await this.service.call(params?.name, params?.arguments ?? {});
+        const structuredContent = await this.service.call(toolName, toolArguments);
+        this.mcpAdmissionCoordinator?.observeOperation("tool-call-completed", {
+          serverName: "agent_hub", requestId, toolName, rpcRequestId: String(rpcRequestId ?? "") || null,
+        });
         return {
           content: [{ type: "text", text: JSON.stringify(structuredContent, null, 2) }],
           structuredContent,
           isError: false,
         };
       } catch (error) {
+        this.mcpAdmissionCoordinator?.observeOperation("tool-call-failed", {
+          serverName: "agent_hub", requestId, toolName,
+          rpcRequestId: String(rpcRequestId ?? "") || null,
+          error: error.message,
+        });
         return {
           content: [{ type: "text", text: error.message }],
           isError: true,

@@ -97,6 +97,7 @@ export class CodexEventService {
       "formatPermissionsApproval", "requestMcpElicitation", "discardContextCompaction",
       "requestUserInput", "reduceLiveItemEvent", "startLiveItem", "completeLiveItem",
       "consumeTracker", "finishObserved", "turnSnapshot", "completeManaged",
+      "observeMcpProgress",
     ]) requiredFunction(dependencies[name], name);
     this.#d = dependencies;
   }
@@ -122,6 +123,18 @@ export class CodexEventService {
         provider: "codex",
         allowThreadFallback: method === "turn/started",
       });
+    if (method !== "mcpServer/elicitation/request" && [
+      "item/started",
+      "item/completed",
+      "turn/diff/updated",
+      "turn/completed",
+    ].includes(method)) {
+      d.observeMcpProgress({
+        threadId: params.threadId,
+        turnId: eventTurnId,
+        method,
+      });
+    }
     if (run && startsProviderResponse(method)) {
       const firstEvent = markProviderFirstEvent(run, {
         turnId: eventTurnId,

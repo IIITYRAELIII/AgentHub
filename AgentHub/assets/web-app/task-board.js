@@ -125,6 +125,32 @@
     return { status, ...TASK_STATUS_PRESENTATION[normalizedTaskStatusLanguage(language)][status] };
   }
 
+  function syncTaskStatusControl(control, task, language = "en", { pending = false } = {}) {
+    if (!control) return { optionsChanged: false, statusChanged: false };
+    const presentation = TASK_STATUS_PRESENTATION[normalizedTaskStatusLanguage(language)];
+    const desiredOptions = TASK_WORKFLOW_STATUSES.map((status) => ({
+      value: status,
+      text: presentation[status].full,
+    }));
+    const currentOptions = Array.from(control.options ?? [], (option) => ({
+      value: String(option.value ?? ""),
+      text: String(option.textContent ?? option.text ?? ""),
+    }));
+    const optionsChanged = !sameSnapshotValue(currentOptions, desiredOptions);
+    if (optionsChanged) {
+      control.replaceChildren(...desiredOptions.map(({ value, text }) => {
+        const option = control.ownerDocument.createElement("option");
+        option.value = value;
+        option.textContent = text;
+        return option;
+      }));
+    }
+    const status = taskWorkflowStatus(task);
+    const statusChanged = !pending && control.value !== status;
+    if (statusChanged) control.value = status;
+    return { optionsChanged, statusChanged };
+  }
+
   function storedTaskStatusLanguage() {
     try {
       return normalizedTaskStatusLanguage(window.localStorage?.getItem(TASK_STATUS_LANGUAGE_STORAGE_KEY));
@@ -195,6 +221,8 @@
       selectedWorkspaceId: payload.selectedWorkspaceId ?? null,
       selectedStreamId: payload.selectedStreamId ?? null,
       provider: payload.provider === "claude" ? "claude" : "codex",
+      conversations: Array.isArray(payload.conversations) ? payload.conversations.slice() : [],
+      deferredInputs: Array.isArray(payload.deferredInputs) ? payload.deferredInputs.slice() : [],
     };
     const tasksChanged = !sameSnapshotValue(current.tasks ?? [], next.tasks);
     const workspacesChanged = !sameSnapshotValue(current.workspaces ?? [], next.workspaces);
@@ -215,9 +243,46 @@
     };
   }
 
+  function streamAvailability(stream, conversations = [], deferredInputs = []) {
+    const streamId = String(stream?.id ?? "").trim();
+    const threadKeys = new Set((stream?.threads ?? []).map((thread) => (
+      `${String(thread?.provider ?? "").trim()}\0${String(thread?.threadId ?? "").trim()}`
+    )));
+    const activeRuns = (Array.isArray(conversations) ? conversations : []).filter((conversation) => (
+      conversation?.running === true && String(conversation?.streamId ?? "").trim() === streamId
+    ));
+    const queuedInputs = (Array.isArray(deferredInputs) ? deferredInputs : []).filter((input) => (
+      String(input?.streamId ?? "").trim() === streamId
+      || threadKeys.has(`${String(input?.provider ?? "").trim()}\0${String(input?.threadId ?? "").trim()}`)
+    ));
+    return Object.freeze({
+      active: activeRuns.length > 0,
+      activeRunCount: activeRuns.length,
+      queuedInputCount: queuedInputs.length,
+      free: activeRuns.length === 0 && queuedInputs.length === 0,
+    });
+  }
+
+  function taskStartActionLabels(task) {
+    const reassigning = task?.status === "started";
+    return Object.freeze({
+      eyebrow: reassigning ? "Переназначить Task" : "Начать работу",
+      newStreamSubmit: reassigning ? "Создать Stream и переназначить" : "Создать Stream и начать",
+    });
+  }
+
   function taskAttachmentCountLabel(attachments) {
     const count = Array.isArray(attachments) ? attachments.length : 0;
     return count ? `${count} вложений` : "";
+  }
+
+  function taskAttachmentFiles(files, { limit = 8, maxBytes = 20 * 1024 * 1024 } = {}) {
+    const selected = [...(files ?? [])].filter((file) => file && Number(file.size) > 0);
+    return {
+      accepted: selected.slice(0, limit).filter((file) => Number(file.size) <= maxBytes),
+      oversized: selected.slice(0, limit).filter((file) => Number(file.size) > maxBytes).length,
+      truncated: Math.max(0, selected.length - limit),
+    };
   }
 
   function taskPresentationUpdate(task, { title = "", description = "" } = {}) {
@@ -225,6 +290,16 @@
       id: String(task?.id ?? "").trim(),
       title: String(title ?? "").trim(),
       description: String(description ?? "").trim(),
+    };
+  }
+
+  function createTaskReferenceOpenHandler({ getTasks, openTask } = {}) {
+    return (event) => {
+      const taskId = String(event?.detail?.taskId ?? "");
+      const task = (getTasks?.() ?? []).find((item) => item.id === taskId);
+      if (!task) return false;
+      openTask?.(task);
+      return true;
     };
   }
 
@@ -354,18 +429,24 @@
   }
 
   window.AgentHubTaskBoardView = Object.freeze({
+    createTaskReferenceOpenHandler,
     normalizedTaskStatusLanguage,
     orderedDashboardColumnIds,
     replaceBoardColumnRegionsPreservingScroll,
     replaceBoardColumnsPreservingScroll,
     taskBoardSnapshotChanges,
     taskAttachmentCountLabel,
+    taskAttachmentFiles,
     taskChangedFileGroups,
     taskExecutorPresentation,
     taskExecutorStreamName,
     taskPresentationUpdate,
+    taskSummaryItems,
     taskWorkLogEntries,
+    syncTaskStatusControl,
     taskWorkflowPresentation,
+    streamAvailability,
+    taskStartActionLabels,
     tasksForMode,
     workspaceTaskSectionsForPanel,
     workspaceTasksForPanel,
@@ -390,6 +471,9 @@
   const taskCardContent = document.querySelector(".task-card-content");
   const taskCardSaveButton = taskCardEditor?.querySelector("button[type='submit']");
   const taskCardAttachments = document.querySelector("[data-task-card-attachments]");
+  const taskCardAttachmentAdd = document.querySelector("[data-task-card-attachment-add]");
+  const taskCardAttachmentInput = document.querySelector("[data-task-card-attachment-input]");
+  const taskCardAttachmentHint = document.querySelector("[data-task-card-attachment-hint]");
   const taskCardExecutor = document.querySelector("[data-task-card-executor]");
   const taskCardChangedFiles = document.querySelector("[data-task-card-changed-files]");
   const taskCardChangedFileGroups = document.querySelector("[data-task-card-changed-file-groups]");
@@ -404,11 +488,13 @@
   const taskDeleteCancel = document.querySelector("[data-task-delete-cancel]");
   const taskDeleteConfirm = document.querySelector("[data-task-delete-confirm]");
   const startModal = document.querySelector("[data-task-start-modal]");
+  const startEyebrow = document.querySelector("[data-task-start-eyebrow]");
   const startTitle = document.querySelector("[data-task-start-title]");
   const startOptions = document.querySelector("[data-task-start-options]");
   const startNewForm = document.querySelector("[data-task-start-new]");
   const startNewName = document.querySelector("[data-task-start-new-name]");
   const startProvider = document.querySelector("[data-task-start-provider]");
+  const startSubmit = document.querySelector("[data-task-start-submit]");
   if (!board || !columns) return;
 
   const boardColumnRegions = {
@@ -448,6 +534,8 @@
     selectedWorkspaceId: null,
     selectedStreamId: null,
     provider: "codex",
+    conversations: [],
+    deferredInputs: [],
     statusLanguage: storedTaskStatusLanguage(),
     completedOnly: false,
     openTaskId: null,
@@ -458,6 +546,7 @@
     editDirty: false,
     savingTaskId: null,
     savingStatusTaskId: null,
+    attachingTaskId: null,
     removingTaskId: null,
     snapshotInitialized: false,
   };
@@ -636,15 +725,24 @@
     return select;
   }
 
-  function taskStatusBadge(task) {
-    const presentation = taskWorkflowPresentation(task, state.statusLanguage);
-    return node("span", {
-      class: "board-task-status",
-      "data-workflow-status": presentation.status,
-      text: presentation.short,
-      title: presentation.full,
-      "aria-label": `Статус: ${presentation.full}`,
-    });
+  function taskSummaryItems(task, workspaces, language = "en") {
+    const taskNumber = String(task?.taskNumber ?? "").trim();
+    const executor = taskExecutorPresentation(task, workspaces);
+    const status = taskWorkflowPresentation(task, language);
+    return Object.freeze([
+      Object.freeze({
+        role: "number",
+        text: taskNumber,
+        title: taskNumber ? task.title || task.text : "",
+        placeholder: !taskNumber,
+      }),
+      Object.freeze({
+        role: "executor",
+        text: taskExecutorStreamName(task, workspaces),
+        title: executor.label,
+      }),
+      Object.freeze({ role: "status", ...status }),
+    ]);
   }
 
   function taskLaunchMessageId(taskId) {
@@ -657,12 +755,27 @@
     const workspace = workspaceById(task.workspaceId);
     if (!workspace) return;
     state.startingTaskId = task.id;
+    const reassigning = task.status === "started";
+    const currentStream = (workspace.streams ?? []).find((stream) => stream.id === task.streamId);
+    const currentAvailability = streamAvailability(
+      currentStream,
+      state.conversations,
+      state.deferredInputs,
+    );
+    const sourceBusy = reassigning && !currentAvailability.free;
+    const actionLabels = taskStartActionLabels(task);
+    startEyebrow.textContent = actionLabels.eyebrow;
+    startSubmit.textContent = actionLabels.newStreamSubmit;
     startTitle.textContent = task.title || task.text;
     startOptions.replaceChildren();
     for (const stream of workspace.streams ?? []) {
+      if (reassigning && stream.id === task.streamId) continue;
+      const availability = streamAvailability(stream, state.conversations, state.deferredInputs);
       startOptions.append(node("button", {
         type: "button",
         class: "task-start-stream",
+        disabled: sourceBusy ? "" : null,
+        title: sourceBusy ? "У текущего исполнителя ещё есть активный ход или очередь" : null,
         onclick: () => {
           closeStart();
           emit("start", {
@@ -671,11 +784,18 @@
             streamId: stream.id,
             provider: state.provider,
             clientUserMessageId: taskLaunchMessageId(task.id),
+            reassign: reassigning,
           });
         },
       }, [
         node("strong", { text: stream.displayName || stream.name || `Stream ${stream.ordinal}` }),
-        node("span", { text: `${(stream.threads ?? []).length} диалогов` }),
+        node("span", {
+          text: availability.active
+            ? "Идёт активный ход"
+            : availability.queuedInputCount
+              ? `В очереди: ${availability.queuedInputCount}`
+              : "Свободен",
+        }),
       ]));
     }
     if (!(workspace.streams ?? []).length) {
@@ -683,6 +803,9 @@
     }
     startNewName.value = (task.title || task.text).slice(0, 80);
     startProvider.value = state.provider;
+    startNewName.disabled = sourceBusy;
+    startProvider.disabled = sourceBusy;
+    startNewForm.querySelector("button[type='submit']").disabled = sourceBusy;
     startModal.showModal?.();
     if (!startModal.open) startModal.setAttribute("open", "");
   }
@@ -717,6 +840,7 @@
   function renderTaskCardSaving(taskId) {
     const saving = state.savingTaskId === taskId;
     const savingStatus = state.savingStatusTaskId === taskId;
+    const attaching = state.attachingTaskId === taskId;
     if (taskCardTitle) taskCardTitle.disabled = saving;
     if (taskCardDescription) taskCardDescription.disabled = saving;
     if (taskCardStatus) taskCardStatus.disabled = savingStatus;
@@ -725,6 +849,49 @@
       taskCardSaveButton.setAttribute("aria-busy", String(saving));
       taskCardSaveButton.textContent = saving ? "Сохраняю…" : "Сохранить изменения";
     }
+    if (taskCardAttachmentAdd) {
+      taskCardAttachmentAdd.disabled = attaching;
+      taskCardAttachmentAdd.setAttribute("aria-busy", String(attaching));
+    }
+    if (taskCardAttachmentHint) {
+      taskCardAttachmentHint.textContent = attaching
+        ? "Добавляю вложения…"
+        : "Выбери файлы или вставь их через Ctrl+V";
+    }
+  }
+
+  async function readTaskAttachmentFiles(files) {
+    const task = state.tasks.find((item) => item.id === state.openTaskId);
+    if (!task || state.attachingTaskId != null) return;
+    const selection = taskAttachmentFiles(files);
+    if (!selection.accepted.length) {
+      if (selection.oversized) window.AgentHub?.toast?.("Размер одного файла не должен превышать 20 МБ.");
+      return;
+    }
+    state.attachingTaskId = task.id;
+    renderTaskCardSaving(task.id);
+    let attachments;
+    try {
+      attachments = await Promise.all(selection.accepted.map((file) => new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve({
+          name: file.name,
+          type: file.type || "application/octet-stream",
+          size: file.size,
+          dataUrl: String(reader.result).replace(/^data:;base64,/u, "data:application/octet-stream;base64,"),
+        });
+        reader.onerror = () => reject(new Error(`Не удалось прочитать файл «${file.name}»`));
+        reader.readAsDataURL(file);
+      })));
+    } catch (error) {
+      state.attachingTaskId = null;
+      renderTaskCardSaving(task.id);
+      window.AgentHub?.toast?.(error.message);
+      return;
+    }
+    emit("attachment-add", { id: task.id, attachments });
+    if (selection.truncated) window.AgentHub?.toast?.("За один раз можно приложить не больше восьми файлов.");
+    else if (selection.oversized) window.AgentHub?.toast?.("Файлы больше 20 МБ пропущены.");
   }
 
   function renderOpenTaskCard() {
@@ -735,13 +902,9 @@
       return;
     }
     taskCardSource.textContent = task.source === "telegram" ? "Telegram" : "Hub";
-    if (taskCardStatus) {
-      taskCardStatus.replaceChildren(...TASK_WORKFLOW_STATUSES.map((status) => node("option", {
-        value: status,
-        text: TASK_STATUS_PRESENTATION[state.statusLanguage][status].full,
-      })));
-      taskCardStatus.value = taskWorkflowStatus(task);
-    }
+    syncTaskStatusControl(taskCardStatus, task, state.statusLanguage, {
+      pending: state.savingStatusTaskId === task.id,
+    });
     if (state.editingTaskId !== task.id || !state.editDirty) {
       const taskNumber = String(task.taskNumber ?? "").trim();
       taskCardNumber.textContent = taskNumber;
@@ -810,7 +973,7 @@
       actions.push(node("button", {
         type: "button",
         class: "board-task-primary",
-        text: task.status === "started" ? "Продолжить" : "Начать работу",
+        text: task.status === "started" ? "Переназначить…" : "Начать работу",
         onclick: () => { closeTaskCard(); openStart(task); },
       }));
     }
@@ -893,19 +1056,30 @@
         moveTask(draggedTask, destinationValue(task), task.id);
       });
     }
-    const executor = taskExecutorPresentation(task, state.workspaces);
+    const [numberSummary, executorSummary, statusSummary] = taskSummaryItems(
+      task,
+      state.workspaces,
+      state.statusLanguage,
+    );
     card.append(node("div", { class: "board-task-summary" }, [
-      ...(task.taskNumber ? [node("span", {
-        class: "board-task-number",
-        text: task.taskNumber,
-        title: task.title || task.text,
-      })] : []),
+      node("span", {
+        class: `board-task-number${numberSummary.placeholder ? " is-placeholder" : ""}`,
+        text: numberSummary.text,
+        title: numberSummary.title || null,
+        "aria-hidden": numberSummary.placeholder ? "true" : null,
+      }),
       node("span", {
         class: "board-task-executor",
-        text: taskExecutorStreamName(task, state.workspaces),
-        title: executor.label,
+        text: executorSummary.text,
+        title: executorSummary.title,
       }),
-      taskStatusBadge(task),
+      node("span", {
+        class: "board-task-status",
+        "data-workflow-status": statusSummary.status,
+        text: statusSummary.short,
+        title: statusSummary.full,
+        "aria-label": `Статус: ${statusSummary.full}`,
+      }),
     ]));
     card.append(node("h3", { class: "board-task-title", text: task.title || task.text }));
     const attachmentCountLabel = taskAttachmentCountLabel(task.attachments);
@@ -1136,6 +1310,20 @@
     renderTaskCardSaving(task.id);
     emit("status", { id: task.id, status: taskCardStatus.value });
   });
+  taskCardAttachmentAdd?.addEventListener("click", () => taskCardAttachmentInput?.click());
+  taskCardAttachmentInput?.addEventListener("change", () => {
+    void readTaskAttachmentFiles(taskCardAttachmentInput.files);
+    taskCardAttachmentInput.value = "";
+  });
+  taskCardModal?.addEventListener("paste", (event) => {
+    const files = [...(event.clipboardData?.items ?? [])]
+      .filter((item) => item.kind === "file")
+      .map((item) => item.getAsFile())
+      .filter(Boolean);
+    if (!files.length) return;
+    event.preventDefault();
+    void readTaskAttachmentFiles(files);
+  });
   taskCardTitle?.addEventListener("keydown", (event) => {
     if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
     event.preventDefault();
@@ -1172,6 +1360,7 @@
       streamName,
       provider: startProvider.value,
       clientUserMessageId: taskLaunchMessageId(task.id),
+      reassign: task.status === "started",
     });
   });
   document.querySelector("[data-workspace-task-dashboard]")?.addEventListener("click", () => {
@@ -1227,13 +1416,16 @@
       if (type === "status" && state.savingStatusTaskId === id) {
         state.savingStatusTaskId = null;
         renderOpenTaskCard();
+        return;
+      }
+      if (type === "attachment-add" && state.attachingTaskId === id) {
+        state.attachingTaskId = null;
+        renderOpenTaskCard();
       }
     },
   });
-  document.addEventListener("agenthub:task-reference-open", (event) => {
-    const task = state.tasks.find((item) => item.id === String(event.detail?.taskId ?? ""));
-    if (!task) return;
-    document.querySelector("[data-view-button='dashboard']")?.click();
-    openTaskCard(task);
-  });
+  document.addEventListener("agenthub:task-reference-open", createTaskReferenceOpenHandler({
+    getTasks: () => state.tasks,
+    openTask: openTaskCard,
+  }));
 })();

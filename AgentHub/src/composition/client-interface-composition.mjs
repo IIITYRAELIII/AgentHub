@@ -80,9 +80,11 @@ export async function createClientInterfaceComposition({
   approvalProtocol,
   autoApprove,
   respondRpc,
+  codexTransportGeneration,
   sendRunMessage,
   runExists,
   taskProgress,
+  mcpAdmissionCoordinator,
 }) {
   let mediaController;
   const telegramClient = new TelegramClient({
@@ -160,6 +162,7 @@ export async function createClientInterfaceComposition({
   const desktopAttachments = new DesktopAttachmentService({
     assistantAttachmentImporterFactory: createCodexAssistantAttachmentImporter,
     runtimeCommandRoot,
+    codexHome: process.env.CODEX_HOME,
     projectRoot: config.projectRoot,
     projectRoots: config.projects.map((project) => project.path),
     workerEnabled: config.miniApp.worker.enabled,
@@ -297,12 +300,14 @@ export async function createClientInterfaceComposition({
     approvalProtocol,
     autoApprove,
     respond: respondRpc,
+    transportGeneration: codexTransportGeneration,
     send: sendMessage,
     sendForRun: sendRunMessage,
     runExists,
     setProgressStage: (...args) => taskProgress().setStage(...args),
     telegram,
     currentChatId,
+    mcpAdmissionCoordinator,
   });
   return {
     telegramClient,

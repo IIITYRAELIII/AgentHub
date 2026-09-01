@@ -28,3 +28,19 @@ test("Stream Architect is an independent persisted boolean", async () => {
     { provider: "claude", architect: false },
   );
 });
+
+test("Stream Team Lead is an independent persisted boolean", async () => {
+  const settings = await roleSettingsApi();
+
+  assert.equal(settings.teamLeadEnabled({ teamLead: true }), true);
+  assert.equal(settings.teamLeadEnabled({ teamLead: false }), false);
+  assert.equal(settings.teamLeadEnabled({ role: "team-lead" }), false);
+  assert.deepEqual(
+    { ...settings.withTeamLead({ provider: "codex", architect: true }, true) },
+    { provider: "codex", architect: true, teamLead: true },
+  );
+  assert.deepEqual(
+    { ...settings.withTeamLead({ provider: "claude", teamLead: true }, false) },
+    { provider: "claude", teamLead: false },
+  );
+});

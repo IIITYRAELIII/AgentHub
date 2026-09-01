@@ -276,36 +276,9 @@ html[data-view="chat"][data-surface][data-theme] {
   grid-template-columns: 7px 13px minmax(0, 1fr) max-content;
 }
 
-/* Цвет рамки статуса остаётся за темой: ширина рамки карточки нулевая,
-   поэтому правило невидимо, но переменная --stream-status-border-color
-   сохраняется для тех, кто на неё опирается. */
-.stream-tabs-track
-  .stream-tab:is([data-running], [data-answer-ready])
-  [class~="stream-tab-card"] {
-  border-color: var(--stream-status-border-color, var(--accent-line)) !important;
-}
 
-/* Кольцо бегущего сигнала во вкладке. Эффект строит его маской xor между
-   content-box и border-box, то есть толщина кольца равна padding. В полосе
-   вкладок padding доходит до псевдоэлемента нулевым, обе области совпадают, и
-   маска стирает слой целиком, поэтому сигнала не видно. Толщина задаётся явно. */
-.stream-tabs-track
-  .stream-tab:is([data-running], [data-answer-ready])
-  [class~="stream-tab-card"]::after {
-  /* Вкладка вдвое ниже карточки в панели, поэтому тот же градиент читается
-     как еле заметная чёрточка. Ядро сигнала шире, кромки короче, свечение
-     сильнее — рисунок эффекта тот же, различимость восстановлена. */
-  background-image: linear-gradient(
-    90deg,
-    transparent 0%,
-    var(--accent) 26%,
-    var(--accent) 74%,
-    transparent 100%
-  ) !important;
-  filter: drop-shadow(0 0 7px color-mix(in srgb, var(--accent) 85%, transparent)) !important;
-  padding: 5px !important;
-  width: 72% !important;
-}
+
+
 
 .stream-tabs-track .stream-tab-title {
   color: inherit;

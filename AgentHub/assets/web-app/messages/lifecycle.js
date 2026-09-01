@@ -1090,6 +1090,53 @@ function receiptUsesDeferredQueue(receipt) {
     && receipt?.dispatching !== true;
 }
 
+function receiptDeliveryState(receipt) {
+  if (receipt?.accepted === true || receipt?.steered === true) return "accepted";
+  if (receipt?.dispatching === true) return "sending";
+  if (receiptUsesDeferredQueue(receipt)) {
+    return receipt?.queued === true ? "queued" : "deferred";
+  }
+  return null;
+}
+
+function messageReceiptProjection(receipt) {
+  return {
+    accepted: Boolean(receipt?.accepted || receipt?.deferred),
+    deliveryState: receiptDeliveryState(receipt),
+    ownsDeferredQueue: receiptUsesDeferredQueue(receipt),
+  };
+}
+
+function deferredInputReceipt(deferredInput, messageReceipts) {
+  const clientUserMessageId = deferredClientMessageId(deferredInput);
+  if (!clientUserMessageId) return null;
+  return (Array.isArray(messageReceipts) ? messageReceipts : []).find((receipt) => (
+    deferredClientMessageId(receipt) === clientUserMessageId
+  )) ?? null;
+}
+
+function deferredInputUsesQueue(deferredInput, messageReceipts = []) {
+  const state = String(deferredInput?.state ?? "").trim();
+  if (state === "dispatching" || state === "steering") return false;
+  const receipt = deferredInputReceipt(deferredInput, messageReceipts);
+  if (receipt) return receiptUsesDeferredQueue(receipt);
+  return String(deferredInput?.conflictKind ?? "").trim() !== "message-intake";
+}
+
+function deferredInputDeliveryState(deferredInput, messageReceipts = []) {
+  const state = String(deferredInput?.state ?? "").trim();
+  if (state === "dispatching" || state === "steering") return "sending";
+  if (!deferredInputUsesQueue(deferredInput, messageReceipts)) return null;
+  return state === "queued" ? "queued" : "deferred";
+}
+
+function deferredQueueClientUserMessageIds(deferredInputs, messageReceipts = []) {
+  return (Array.isArray(deferredInputs) ? deferredInputs : [])
+    .filter((item) => deferredInputUsesQueue(item, messageReceipts))
+    .map(deferredClientMessageId)
+    .filter(Boolean);
+}
+
 function mergeDeferredQueueEntries(serverEntries, clientEntries) {
   const values = [];
   const positions = new Map();
@@ -1480,8 +1527,13 @@ globalThis.AgentHubMessageLifecycle = Object.freeze({
   markCommandRejected,
   markConnectionFailure,
   messageSendDefinitelyRejected,
+  messageReceiptProjection,
   mergeDeferredQueueEntries,
+  deferredInputDeliveryState,
+  deferredInputUsesQueue,
+  deferredQueueClientUserMessageIds,
   receiptLeavesDeferredQueue,
+  receiptDeliveryState,
   receiptUsesDeferredQueue,
   mergeLiveMaintenance,
   mergeLiveUserMessages,

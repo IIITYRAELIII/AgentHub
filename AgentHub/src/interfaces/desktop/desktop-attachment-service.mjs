@@ -18,6 +18,7 @@ export class DesktopAttachmentService {
   #trustedUserId;
   #assistantAttachmentImporterFactory;
   #attachmentThumbnails;
+  #generatedImageRoot;
   #importer = null;
 
   constructor(options = {}) {
@@ -29,6 +30,8 @@ export class DesktopAttachmentService {
     this.#trustedUserId = typeof options.trustedUserId === "function" ? options.trustedUserId : () => "local";
     this.#assistantAttachmentImporterFactory = options.assistantAttachmentImporterFactory;
     this.#attachmentThumbnails = options.attachmentThumbnails ?? null;
+    const codexHome = String(options.codexHome ?? "").trim() || path.join(os.homedir(), ".codex");
+    this.#generatedImageRoot = path.join(path.resolve(codexHome), "generated_images");
   }
 
   async paths(values) {
@@ -74,7 +77,7 @@ export class DesktopAttachmentService {
     }
     this.#importer ??= this.#assistantAttachmentImporterFactory({
       temporaryRoot: os.tmpdir(),
-      generatedImageRoot: path.resolve(os.homedir(), ".codex", "generated_images"),
+      generatedImageRoot: this.#generatedImageRoot,
       attachmentRoot: this.#attachmentRoot,
       viewImageRoots: [os.homedir(), path.dirname(path.dirname(this.#attachmentRoot)), this.#projectRoot, ...this.#projectRoots],
     });

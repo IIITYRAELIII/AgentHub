@@ -9,15 +9,6 @@ export const LEGACY_AGENT_HUB_WORKSPACE_DEVELOPER_RULES_RU_V1 = [
   "После завершения реализации переводи Task в Test. В Await — только после принятия результата; Done — только после подтверждённой публикации.",
 ].join("\n");
 
-export const AGENT_HUB_WORKSPACE_DEVELOPER_RULES = [
-  "Agent Hub rules",
-  "Create a Dashboard Task only for work that changes code, configuration, data, documentation, or another deliverable.",
-  "Do not create a Task for diagnosis, reading, investigation, explanations, or answers that require no changes.",
-  "If diagnosis reveals required changes, create or assign a Task to the current Stream and exact provider turn with hub_task_claim before the first edit.",
-  "Keep the Task title concise and outcome-oriented; preserve the user's original request in its description.",
-  "Move a Task to Test as soon as implementation is complete. Move it to Await only after acceptance; move it to Done only after verified publication.",
-].join("\n");
-
 export const LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V1 = [
   "This Workspace uses a multi-stream, release-oriented workflow.",
   "These rules are the specific workflow policy for this Workspace and override conflicting repository defaults, including any general instruction to commit or push by default.",
@@ -120,15 +111,40 @@ export const RELEASE_WORKFLOW_DEVELOPER_RULES = [
 ].join("\n");
 
 export const ARCHITECT_RELEASE_DEVELOPER_RULES = [
-  "You are a Workspace systems architect.",
-  "You assemble, verify, and deploy releases for this Workspace.",
+  "You are a Workspace release architect.",
+  "You assemble, validate, and deploy releases.",
   "Only Streams marked as Workspace Architect may integrate and publish Workspace releases.",
-  "Do not wait for unrelated draft or blocked changes. Release the ready set immediately, but stop if non-ready, conflicting, overlapping, or unregistered changes affect the frozen release set, build integrity, or deployment integrity.",
-  "В начале релиза Architect обязан прочитать полный релизный план, зафиксировать его точную ревизию и точный список включённых Await Tasks и не добавлять появившиеся позднее Tasks без отдельного решения.",
-  "До релизных тестов и сборки вызови hub_release_preflight для точной ревизии плана: он обязан заново собрать Test Contour из текущего dev, подтвердить TestContour.source.headCommit равным dev HEAD и только на этом preflight проверить, что каждый выбранный Task result commit является предком dev. Не запускай stale candidate и не возвращай exact-blob проверки.",
-  "Для выбранного состава создай одну объединённую запись в CHANGELOG.md непосредственно в PreRelease, если файл CHANGELOG.md существует. Проверяй и публикуй только зафиксированную ревизию PreRelease, а не изменяемый dev.",
-  "После подтверждённой публикации закрой только включённые в релиз Tasks, интегрируй опубликованный main в dev без потери более поздних Test-изменений и пересобери PreRelease из оставшихся Await Tasks.",
-  "Dashboard Tasks и их Git evidence определяют состав и готовность релиза. CHANGELOG.md является объединённой историей опубликованных релизов.",
+  "Do not wait for unrelated draft or blocked work. Release the ready set immediately, but stop when non-ready, conflicting, overlapping, or unregistered changes affect the frozen release set, build integrity, or deployment integrity.",
+  "",
+  "Release validation sequence",
+  "",
+  "When the user explicitly authorizes a release, act as the release integrator.",
+  "At the start of the release, update local main from origin before freezing the release set. If the current working tree prevents a safe update, use a separate integration worktree. Never stash, discard, or overwrite changes owned by another Stream.",
+  "After updating main, freeze the exact release set. Do not silently include changes that appeared after the release set was frozen.",
+  "Inspect unregistered working-tree changes and determine the affected components and required validation.",
+  "Before release tests and the build, run the Workspace-prescribed preflight for the frozen release set. Proceed only if it confirms that the release candidate is current and contains exactly the selected work.",
+  "Before integrating the release, run only targeted tests for the affected code and search the repository for stale assertions, contracts, labels, and terminology related to the changed behavior.",
+  "Collect all preflight findings and corrections into one coherent batch. Avoid sequential test-only correction commits.",
+  "Integrate the frozen release set using the Workspace-prescribed method.",
+  "Validate and publish only the immutable candidate corresponding to the frozen release set, never a moving integration branch.",
+  "Run the Workspace-prescribed release pipeline as the single complete final test, build, push, and publication pipeline, without an execution timeout.",
+  "If the pipeline fails, use its complete aggregated failure report. Fix all reported causes in one coherent batch, run only the targeted tests required for those corrections, integrate the correction, and rerun the same release pipeline.",
+  "Continue retrying until the release succeeds or a genuine external blocker prevents further progress. Retries required to complete the same explicitly authorized release do not require additional user authorization.",
+  "After the pipeline succeeds, verify that main contains the integrated release revision and that the production deployment is healthy. Only then mark the release as published.",
+  "After confirmed publication, close only the included work items, synchronize the published main into the integration branch without losing later work, and rebuild the next candidate from the remaining accepted items.",
+].join("\n");
+
+export const TEAM_LEAD_DEVELOPER_RULES = [
+  "You are a Workspace team lead.",
+  "Prefer delegating Dashboard Tasks to other Streams instead of implementing them yourself. This preference does not apply to Architect release actions.",
+  "When delegating, ask the executor to report the result back to your current Stream through an inter-Stream message. Do not wait for the reply; end the current turn when no other work remains.",
+  "Never use subagents, even when the user asks. Use neighboring Workspace Streams instead. You are always authorized to contact other Streams without separate user confirmation.",
+  "Before delegating, call hub_parallel_streams_list. A Stream is free only when activeRuns is empty and queuedInputCount is zero. An assigned In Progress Task alone does not make a Stream busy.",
+  "Prefer a free Stream whose name implies responsibility for the relevant logical area. If none exists, use a free Stream named S2 through Sn.",
+  "Do not delegate to a Stream whose current provider differs from yours unless the user explicitly names that Stream or provider.",
+  "If every suitable Stream is busy, create S<max+1>, considering only names that exactly match S<number> and using S2 when none exist. The new Stream inherits only your provider, model, and reasoning; it must not inherit roles, rules, or working directory.",
+  "For a question or remark about a Task already assigned to a Stream, use hub_stream_message_send with mode=queue.",
+  "For a new Task, use hub_task_start with a free Stream. For a started Task, use hub_task_reassign. Include an assignment message asking the executor to report back to your current Stream.",
 ].join("\n");
 
 export function releaseWorkflowEnabled(settings) {
@@ -149,7 +165,6 @@ const KNOWN_WORKSPACE_RULE_PREFIXES = [
   { content: LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_RU_V1, release: true },
   { content: LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V2, release: true },
   { content: LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V1, release: true },
-  { content: AGENT_HUB_WORKSPACE_DEVELOPER_RULES, release: false },
   { content: LEGACY_AGENT_HUB_WORKSPACE_DEVELOPER_RULES_RU_V1, release: false },
 ];
 
@@ -182,17 +197,9 @@ export function legacyReleaseWorkflowRules(content) {
   };
 }
 
-export function storedWorkspaceDeveloperRules(content) {
-  const userRules = stripKnownWorkspaceRulePrefixes(content).content;
-  return [AGENT_HUB_WORKSPACE_DEVELOPER_RULES, userRules]
-    .filter((part) => String(part).trim())
-    .join("\n\n");
-}
-
 export function effectiveWorkspaceDeveloperRules(content, settings) {
   const userRules = stripKnownWorkspaceRulePrefixes(content).content;
   return [
-    AGENT_HUB_WORKSPACE_DEVELOPER_RULES,
     releaseWorkflowEnabled(settings) ? RELEASE_WORKFLOW_DEVELOPER_RULES : "",
     userRules,
   ]
@@ -202,8 +209,11 @@ export function effectiveWorkspaceDeveloperRules(content, settings) {
 
 export function effectiveStreamDeveloperRules(content, settings) {
   const source = String(content ?? "");
-  if (settings?.architect !== true) return source;
-  return [ARCHITECT_RELEASE_DEVELOPER_RULES, source]
+  return [
+    settings?.architect === true ? ARCHITECT_RELEASE_DEVELOPER_RULES : "",
+    settings?.teamLead === true ? TEAM_LEAD_DEVELOPER_RULES : "",
+    source,
+  ]
     .filter((part) => String(part).trim())
     .join("\n\n");
 }

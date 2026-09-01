@@ -3,13 +3,21 @@ import test from "node:test";
 import { ApprovalController } from "../../../src/interfaces/telegram/approval-controller.mjs";
 import * as approvalProtocol from "../../../src/providers/codex/codex-approvals.mjs";
 
-function fixture({ auto = false } = {}) {
+function fixture({
+  auto = false,
+  mcpAdmissionCoordinator = null,
+  transportGeneration = null,
+} = {}) {
   const responses = [];
+  const responseOptions = [];
   const calls = [];
   const controller = new ApprovalController({
     approvalProtocol,
     autoApprove: () => auto,
-    respond: (id, value) => responses.push([id, value]),
+    respond: (id, value, options) => {
+      responses.push([id, value]);
+      responseOptions.push(options);
+    },
     send: async (_text, extra) => {
       calls.push(["send", extra]);
       return { message_id: 11 };
@@ -19,8 +27,10 @@ function fixture({ auto = false } = {}) {
     setProgressStage: () => {},
     telegram: async (method, body) => calls.push([method, body]),
     currentChatId: () => 9,
+    mcpAdmissionCoordinator,
+    transportGeneration,
   });
-  return { controller, responses, calls };
+  return { controller, responses, responseOptions, calls };
 }
 
 test("auto approval responds without creating Telegram prompt", async () => {
@@ -124,4 +134,40 @@ test("URL MCP elicitation stays explicit and disappears after Desktop consent", 
   await controller.resolveFromDesktop(pending.key, "once");
   assert.deepEqual(responses, [["rpc-url", { action: "accept" }]]);
   assert.equal(controller.snapshot().length, 0);
+});
+
+test("safe MCP auto approval is tracked until exact operation admission", async () => {
+  const admissions = [];
+  const coordinator = { begin: (value) => admissions.push(value) };
+  let generation = 7;
+  const { controller, responses, responseOptions } = fixture({
+    auto: true,
+    mcpAdmissionCoordinator: coordinator,
+    transportGeneration: () => generation,
+  });
+  const run = { id: "run-1", threadId: "thread-1", turnId: "turn-1" };
+  await controller.requestMcp("rpc-claim", {
+    serverName: "agent_hub",
+    toolCall: { toolName: "hub_task_claim", arguments: { request_id: "claim-1" } },
+    mode: "form",
+    requestedSchema: {
+      type: "object",
+      properties: { accept: { type: "boolean" } },
+      required: ["accept"],
+    },
+  }, run);
+
+  assert.equal(responses.length, 0, "coordinator owns the initial response and any retry");
+  assert.equal(admissions.length, 1);
+  assert.equal(admissions[0].rpcId, "rpc-claim");
+  assert.equal(admissions[0].runId, "run-1");
+  assert.equal(admissions[0].threadId, "thread-1");
+  assert.equal(admissions[0].turnId, "turn-1");
+  assert.equal(admissions[0].transportGeneration, 7);
+  assert.equal(admissions[0].currentTransportGeneration(), 7);
+  admissions[0].respond(admissions[0].rpcId, admissions[0].response);
+  assert.deepEqual(responses, [["rpc-claim", { action: "accept", content: { accept: true } }]]);
+  assert.deepEqual(responseOptions, [{ expectedGeneration: 7 }]);
+  generation = 8;
+  assert.equal(admissions[0].currentTransportGeneration(), 8);
 });

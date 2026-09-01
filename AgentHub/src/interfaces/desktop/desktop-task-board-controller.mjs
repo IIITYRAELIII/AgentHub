@@ -1,7 +1,11 @@
+import { realpath, stat } from "node:fs/promises";
+import path from "node:path";
 import { TaskBoardLaunchService } from "../../application/task-board-launch-service.mjs";
+import { MAX_ATTACHMENT_BYTES } from "../../domain/attachment-files.mjs";
+import { pathInsideOrSame } from "../../infrastructure/filesystem/config.mjs";
 
 export class DesktopTaskBoardController {
-  constructor({ taskBoard, workspaceCatalog, dispatchCommand, sendMessage, taskLauncher = null, voiceTranscriber = null, snapshot, logger = console } = {}) {
+  constructor({ taskBoard, workspaceCatalog, dispatchCommand, sendMessage, taskLauncher = null, voiceTranscriber = null, attachmentDirectory = null, snapshot, logger = console } = {}) {
     this.taskBoard = taskBoard;
     this.workspaceCatalog = workspaceCatalog;
     this.dispatchCommand = dispatchCommand;
@@ -10,6 +14,7 @@ export class DesktopTaskBoardController {
       taskBoard, workspaceCatalog, dispatchCommand, sendMessage,
     });
     this.voiceTranscriber = voiceTranscriber;
+    this.attachmentDirectory = attachmentDirectory ? path.resolve(attachmentDirectory) : null;
     this.snapshot = snapshot;
     this.logger = logger;
   }
@@ -107,6 +112,25 @@ export class DesktopTaskBoardController {
     return this.#mutate(() => this.taskBoard.update(params));
   }
 
+  async addAttachments(params) {
+    if (!this.attachmentDirectory) throw new Error("Хранилище вложений недоступно");
+    const attachments = Array.isArray(params.attachments) ? [...new Set(params.attachments)] : [];
+    if (!attachments.length || attachments.length > 8) throw new Error("Некорректный список вложений");
+    const root = await realpath(this.attachmentDirectory);
+    const files = [];
+    for (const attachment of attachments) {
+      const file = await realpath(path.resolve(String(attachment ?? "")));
+      const details = await stat(file);
+      if (!pathInsideOrSame(file, root) || !details.isFile() || details.size < 1 || details.size > MAX_ATTACHMENT_BYTES) {
+        throw new Error("Вложение недоступно");
+      }
+      files.push(file);
+    }
+    return this.#mutate(() => {
+      for (const file of files) this.taskBoard.addAttachment({ id: params.id, attachment: file });
+    });
+  }
+
   status(params) {
     return this.#mutate(() => this.taskBoard.setWorkflowStatus(params));
   }
@@ -146,7 +170,10 @@ export class DesktopTaskBoardController {
   }
 
   async start(params, context = {}) {
-    const result = await this.taskLauncher.start(params, context);
+    const result = await this.taskLauncher.start({
+      ...params,
+      launchRequestId: String(params.launchRequestId ?? params.clientUserMessageId ?? "").trim() || null,
+    }, context);
     return {
       ...await this.snapshot({ refresh: true }),
       startedBoardTask: result.startedBoardTask,

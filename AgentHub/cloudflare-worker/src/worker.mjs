@@ -90,6 +90,7 @@ const CONTROL_ACTIONS = new Set([
   "create-device-pairing",
   "revoke-device",
   "board-task-ingest",
+  "board-task-attachment-add",
 ]);
 const CONTROL_SOURCES = new Set(["telegram-mini-app", "trusted-device", "shared-dashboard-bot"]);
 
@@ -419,7 +420,7 @@ function attachmentIdFromReference(value) {
 function attachmentIdsFromParams(action, params) {
   if (!Object.hasOwn(params, "attachments") || params.attachments == null) return [];
   if (
-    !["send-message", "submit-bug-report", "board-task-ingest"].includes(action)
+    !["send-message", "submit-bug-report", "board-task-ingest", "board-task-attachment-add"].includes(action)
     || !Array.isArray(params.attachments)
     || params.attachments.length < 1
     || params.attachments.length > MAX_ATTACHMENTS_PER_COMMAND
