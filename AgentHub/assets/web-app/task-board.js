@@ -125,6 +125,32 @@
     return { status, ...TASK_STATUS_PRESENTATION[normalizedTaskStatusLanguage(language)][status] };
   }
 
+  function syncTaskStatusControl(control, task, language = "en", { pending = false } = {}) {
+    if (!control) return { optionsChanged: false, statusChanged: false };
+    const presentation = TASK_STATUS_PRESENTATION[normalizedTaskStatusLanguage(language)];
+    const desiredOptions = TASK_WORKFLOW_STATUSES.map((status) => ({
+      value: status,
+      text: presentation[status].full,
+    }));
+    const currentOptions = Array.from(control.options ?? [], (option) => ({
+      value: String(option.value ?? ""),
+      text: String(option.textContent ?? option.text ?? ""),
+    }));
+    const optionsChanged = !sameSnapshotValue(currentOptions, desiredOptions);
+    if (optionsChanged) {
+      control.replaceChildren(...desiredOptions.map(({ value, text }) => {
+        const option = control.ownerDocument.createElement("option");
+        option.value = value;
+        option.textContent = text;
+        return option;
+      }));
+    }
+    const status = taskWorkflowStatus(task);
+    const statusChanged = !pending && control.value !== status;
+    if (statusChanged) control.value = status;
+    return { optionsChanged, statusChanged };
+  }
+
   function storedTaskStatusLanguage() {
     try {
       return normalizedTaskStatusLanguage(window.localStorage?.getItem(TASK_STATUS_LANGUAGE_STORAGE_KEY));
@@ -396,6 +422,7 @@
     taskPresentationUpdate,
     taskSummaryItems,
     taskWorkLogEntries,
+    syncTaskStatusControl,
     taskWorkflowPresentation,
     streamAvailability,
     taskStartActionLabels,
@@ -806,13 +833,9 @@
       return;
     }
     taskCardSource.textContent = task.source === "telegram" ? "Telegram" : "Hub";
-    if (taskCardStatus) {
-      taskCardStatus.replaceChildren(...TASK_WORKFLOW_STATUSES.map((status) => node("option", {
-        value: status,
-        text: TASK_STATUS_PRESENTATION[state.statusLanguage][status].full,
-      })));
-      taskCardStatus.value = taskWorkflowStatus(task);
-    }
+    syncTaskStatusControl(taskCardStatus, task, state.statusLanguage, {
+      pending: state.savingStatusTaskId === task.id,
+    });
     if (state.editingTaskId !== task.id || !state.editDirty) {
       const taskNumber = String(task.taskNumber ?? "").trim();
       taskCardNumber.textContent = taskNumber;
