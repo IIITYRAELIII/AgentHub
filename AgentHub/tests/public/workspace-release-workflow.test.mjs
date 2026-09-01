@@ -27,9 +27,10 @@ test("release workflow tooltip describes the mandatory Task lifecycle", async ()
   assert.match(text, /Корень проекта.*Stream.*Workspace/iu);
   assert.match(text, /sparse worktree/iu);
   assert.match(text, /переходе Task в Test.*влей.*dev/iu);
-  assert.match(text, /переходе Task в Await.*PreRelease.*Await Tasks/iu);
-  assert.match(text, /Test.*не должны попадать в PreRelease/iu);
-  assert.match(text, /Merge-конфликт.*заблокированной/iu);
+  assert.match(text, /Переход Task в Await.*не пересобирает.*PreRelease/iu);
+  assert.match(text, /явном старте релиза Architect.*выбранных готовых Await Tasks.*замораживает/iu);
+  assert.match(text, /после заморозки.*не должны попадать.*текущий замороженный релиз/iu);
+  assert.match(text, /Merge-конфликты.*блокируют релиз.*не.*статус Task/iu);
   assert.match(text, /явная команда пользователя.*production deployment/iu);
   assert.match(text, /только Architect/iu);
   assert.doesNotMatch(RELEASE_WORKFLOW_DEVELOPER_RULES, /[А-Яа-яЁё]/u);
