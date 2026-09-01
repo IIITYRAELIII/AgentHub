@@ -8,6 +8,17 @@ function exactRunChangedFiles(run) {
     .sort((left, right) => left.localeCompare(right));
 }
 
+function exactTerminalCompletion(existing, incoming) {
+  if (!existing) return incoming;
+  return {
+    ...existing,
+    ...incoming,
+    responseAttachments: incoming.responseAttachments.length
+      ? incoming.responseAttachments
+      : existing.responseAttachments ?? [],
+  };
+}
+
 export class CodexRunFinalizer {
   constructor({
     turnStarts,
@@ -119,8 +130,7 @@ export class CodexRunFinalizer {
       toolMetricsKnown: tracker.toolMetricsKnown === true || run.toolMetricsKnown === true,
     };
     const completion = this.notifications.recordCompletion(completionInput)
-      ?? existingCompletion
-      ?? completionInput;
+      ?? exactTerminalCompletion(existingCompletion, completionInput);
     const resolvedTracker = {
       usage: completion.usage,
       reported: completion.usageReported,
