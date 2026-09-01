@@ -68,7 +68,11 @@ presentations copy the original unmodified block text.
 Every live projection has an explicit `operationKind`. Only `user-turn` may
 produce user-visible running state. `probe`, `compaction`, `measurement` and
 `maintenance` may have dedicated system presentation but cannot create or revive
-a user-turn card.
+a user-turn card. A task snapshot with no active run is authoritative after any
+available completion has been promoted: it removes the cached live card, probe
+and live-user projection even when the previous card was a valid `user-turn`.
+Queued inputs remain represented by the queue surface and cannot keep a drained
+run card alive while waiting for, or after completing, later turns.
 
 ## Read protocol
 

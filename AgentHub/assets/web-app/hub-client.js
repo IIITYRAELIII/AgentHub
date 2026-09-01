@@ -910,17 +910,13 @@ function updateLiveMessage(taskIdValue, selected) {
   const promoted = promoteLiveCompletion(taskIdValue, selected, run?.turnId);
   const snapshotCompletionRemembered = rememberSnapshotCompletion(taskIdValue, selected, run?.turnId);
   if (!run) {
-    const previousLive = liveCardsByTask.get(taskIdValue);
-    const staleLiveRemoved = previousLive
-      && !isUserRunningProjection(previousLive)
-      ? liveCardsByTask.delete(taskIdValue)
-      : false;
+    const staleLiveRemoved = liveCardsByTask.delete(taskIdValue);
     const removed = liveProbeByTask.delete(taskIdValue);
     const userRemoved = liveUserMessagesByTask.delete(taskIdValue);
     if (promoted || snapshotCompletionRemembered || staleLiveRemoved || removed || userRemoved) {
       renderTaskMessages(taskIdValue);
     }
-    return liveCardsByTask.get(taskIdValue) ?? null;
+    return null;
   }
   const nextLiveUsers = {
     provider: selected.provider,
