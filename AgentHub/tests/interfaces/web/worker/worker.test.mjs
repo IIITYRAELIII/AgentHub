@@ -563,7 +563,7 @@ test("Worker prevents stale Mini App shells and caches versioned assets", async 
           {
             headers: {
               "Content-Length": "999999",
-              "Content-Type": new URL(request.url).pathname === "/"
+              "Content-Type": ["/", "/index.html"].includes(new URL(request.url).pathname)
                 ? "text/html; charset=utf-8"
                 : "text/javascript; charset=utf-8",
             },
@@ -576,10 +576,32 @@ test("Worker prevents stale Mini App shells and caches versioned assets", async 
 
   let response = await workerModule.default.fetch(new Request("https://hub.test/"), env);
   assert.equal(shellResponse.bodyUsed, true);
-  assert.equal(response.headers.get("Content-Length"), null);
-  assert.equal(response.headers.get("X-Agent-Hub-Static-Body"), "fixed");
+  assert.equal(response.headers.get("X-Agent-Hub-Static-Body"), "chunk-bootstrap");
   assert.equal(response.headers.get("Cache-Control"), "no-store");
-  assert.deepEqual(Buffer.from(await response.arrayBuffer()), shell);
+  const bootstrap = await response.text();
+  const chunkCount = Number(bootstrap.match(/data-agent-hub-shell-chunks="(\d+)"/u)?.[1]);
+  const shellBytes = Number(bootstrap.match(/data-agent-hub-shell-bytes="(\d+)"/u)?.[1]);
+  assert.equal(shellBytes, shell.length);
+  assert.ok(chunkCount > 1);
+
+  response = await workerModule.default.fetch(
+    new Request("https://hub.test/__agent-hub-shell-loader.js"),
+    env,
+  );
+  assert.match(await response.text(), /document\.write\(html\)/u);
+
+  const chunks = [];
+  for (let index = 0; index < chunkCount; index += 1) {
+    response = await workerModule.default.fetch(
+      new Request(`https://hub.test/index.html?__agent_hub_shell_chunk=${index}`),
+      env,
+    );
+    const chunk = Buffer.from(await response.arrayBuffer());
+    assert.ok(chunk.length <= 16 * 1_024);
+    assert.equal(response.headers.get("X-Agent-Hub-Shell-Chunk"), `${index + 1}/${chunkCount}`);
+    chunks.push(chunk);
+  }
+  assert.deepEqual(Buffer.concat(chunks), shell);
 
   response = await workerModule.default.fetch(
     new Request("https://hub.test/app.js?v=123456789abc"),

@@ -115,7 +115,7 @@ test("Worker build packages the same shell and theme resources used by local cli
     assert.match(headers, /style-src 'self' https:\/\/home\./u);
     assert.match(headers, /Cache-Control: no-store/u);
     const wrangler = JSON.parse(await readFile(path.join(ROOT, "cloudflare-worker", "wrangler.jsonc"), "utf8"));
-    assert.deepEqual(wrangler.assets.run_worker_first, ["/", "/index.html"]);
+    assert.deepEqual(wrangler.assets.run_worker_first, ["/", "/index.html", "/__agent-hub-shell-loader.js"]);
     let activeChunkReads = 0;
     let maximumChunkReads = 0;
     const fixtureFetch = async (input, options) => {

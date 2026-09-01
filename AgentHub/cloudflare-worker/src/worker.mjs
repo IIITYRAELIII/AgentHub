@@ -3426,6 +3426,61 @@ export class JournalStore extends DurableObject {
   }
 }
 
+const STATIC_SHELL_CHUNK_BYTES = 16 * 1_024;
+const STATIC_SHELL_CHUNK_PARAM = "__agent_hub_shell_chunk";
+const STATIC_SHELL_LOADER_PATH = "/__agent-hub-shell-loader.js";
+const STATIC_SHELL_LOADER = `(() => {
+  const script = document.currentScript;
+  const chunkCount = Number(script?.dataset.agentHubShellChunks ?? 0);
+  const expectedBytes = Number(script?.dataset.agentHubShellBytes ?? 0);
+  const fail = (error) => {
+    console.error("Agent Hub shell bootstrap failed", error);
+    document.body.textContent = "Agent Hub не загрузился. Обнови страницу.";
+  };
+  if (!Number.isSafeInteger(chunkCount) || chunkCount < 1
+    || !Number.isSafeInteger(expectedBytes) || expectedBytes < 1) {
+    fail(new Error("invalid shell manifest"));
+    return;
+  }
+  Promise.all(Array.from({ length: chunkCount }, async (_, index) => {
+    const target = new URL("/index.html", location.href);
+    target.searchParams.set("${STATIC_SHELL_CHUNK_PARAM}", String(index));
+    const response = await fetch(target, { cache: "no-store" });
+    if (!response.ok) throw new Error("shell chunk " + index + ": HTTP " + response.status);
+    return new Uint8Array(await response.arrayBuffer());
+  })).then((chunks) => {
+    const size = chunks.reduce((total, chunk) => total + chunk.byteLength, 0);
+    if (size !== expectedBytes) throw new Error("shell size " + size + " !== " + expectedBytes);
+    const body = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) {
+      body.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    const html = new TextDecoder().decode(body);
+    document.open();
+    document.write(html);
+    document.close();
+  }).catch(fail);
+})();`;
+
+function staticShellLoaderResponse() {
+  return new Response(STATIC_SHELL_LOADER, {
+    headers: {
+      "Cache-Control": "no-store",
+      "Content-Type": "text/javascript; charset=utf-8",
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
+}
+
+function replaceBodyHeaders(headers) {
+  headers.delete("Content-Encoding");
+  headers.delete("Content-Length");
+  headers.delete("Content-Range");
+  headers.delete("ETag");
+}
+
 async function secureStaticResponse(response, request) {
   const headers = new Headers(response.headers);
   const contentType = String(headers.get("Content-Type") ?? "").toLowerCase();
@@ -3457,8 +3512,23 @@ async function secureStaticResponse(response, request) {
   let body = response.body;
   if (body && contentType.includes("text/html")) {
     body = new Uint8Array(await response.arrayBuffer());
-    headers.delete("Content-Length");
-    headers.set("X-Agent-Hub-Static-Body", "fixed");
+    replaceBodyHeaders(headers);
+    const chunkValue = url.searchParams.get(STATIC_SHELL_CHUNK_PARAM);
+    if (chunkValue !== null) {
+      const chunkIndex = Number(chunkValue);
+      const chunkCount = Math.ceil(body.byteLength / STATIC_SHELL_CHUNK_BYTES);
+      if (!Number.isSafeInteger(chunkIndex) || chunkIndex < 0 || chunkIndex >= chunkCount) {
+        return new Response("invalid shell chunk", { status: 416 });
+      }
+      const start = chunkIndex * STATIC_SHELL_CHUNK_BYTES;
+      const chunk = body.slice(start, Math.min(start + STATIC_SHELL_CHUNK_BYTES, body.byteLength));
+      headers.set("Content-Type", "application/octet-stream");
+      headers.set("X-Agent-Hub-Shell-Chunk", `${chunkIndex + 1}/${chunkCount}`);
+      return new Response(chunk, { status: response.status, statusText: response.statusText, headers });
+    }
+    const chunkCount = Math.ceil(body.byteLength / STATIC_SHELL_CHUNK_BYTES);
+    body = `<!doctype html><html><head><meta charset="utf-8"><title>Agent Hub</title></head><body><script src="${STATIC_SHELL_LOADER_PATH}" data-agent-hub-shell-chunks="${chunkCount}" data-agent-hub-shell-bytes="${body.byteLength}"></script></body></html>`;
+    headers.set("X-Agent-Hub-Static-Body", "chunk-bootstrap");
   }
   return new Response(body, { status: response.status, statusText: response.statusText, headers });
 }
@@ -4358,6 +4428,7 @@ export default {
         : response;
     }
     if (url.pathname === "/events") return json({ error: "Polling is used in Telegram." }, 404);
+    if (url.pathname === STATIC_SHELL_LOADER_PATH) return staticShellLoaderResponse();
     return secureStaticResponse(await env.ASSETS.fetch(request), request);
   },
 };
