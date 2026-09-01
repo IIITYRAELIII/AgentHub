@@ -28,6 +28,20 @@ async function repository(context) {
   return root;
 }
 
+test("Test Contour source refuses a repository without dev", async (context) => {
+  const root = await repository(context);
+  const agentHubRoot = path.join(root, "AgentHub");
+  await mkdir(agentHubRoot);
+  await writeFile(path.join(agentHubRoot, "package.json"), "{}\n", "utf8");
+  await git(root, "add", "AgentHub/package.json");
+  await git(root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "agent hub");
+
+  await assert.rejects(
+    prepareTaskContourSource({ sourceRoot: agentHubRoot, integrationRoot: path.join(root, "data") }),
+    /requires branch dev/u,
+  );
+});
+
 test("Task Git workspace commits one Task branch and merges it into dev", async (context) => {
   const root = await repository(context);
   const agentHubRoot = path.join(root, "AgentHub");

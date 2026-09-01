@@ -347,9 +347,9 @@ export class TaskGitWorkspaceService {
 export async function prepareTaskContourSource({ sourceRoot, integrationRoot } = {}) {
   const resolvedSourceRoot = canonicalPath(sourceRoot);
   const repoRoot = await repositoryRoot(resolvedSourceRoot).catch(() => null);
-  if (!repoRoot) return { sourceRoot: resolvedSourceRoot, branch: null, headCommit: null };
+  if (!repoRoot) throw new Error("Test Contour source must belong to a Git repository with branch dev");
   if (!await branchExists(repoRoot, TASK_DEV_BRANCH)) {
-    return { sourceRoot: resolvedSourceRoot, branch: null, headCommit: null };
+    throw new Error("Test Contour requires branch dev");
   }
   const sourceWorktreeRoot = await worktreeRoot(resolvedSourceRoot);
   const sourceRelativePath = path.relative(sourceWorktreeRoot, resolvedSourceRoot);

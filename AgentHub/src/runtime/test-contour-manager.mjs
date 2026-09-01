@@ -461,14 +461,18 @@ export async function prepareTestContourCandidate({
   root = defaultTestContourRoot(),
   sourceRoot = path.resolve(import.meta.dirname, "..", ".."),
   deploy = deployRuntime,
+  prepareSource = prepareTaskContourSource,
 } = {}) {
   const isolatedRoot = assertIsolatedTestContourRoot(root, { sourceRoot });
   await ensureMarker(isolatedRoot);
   const paths = testContourPaths(isolatedRoot);
-  const source = await prepareTaskContourSource({
+  const source = await prepareSource({
     sourceRoot,
     integrationRoot: paths.taskGitDataDirectory,
   });
+  if (source.branch !== "dev" || !String(source.headCommit ?? "").trim()) {
+    throw new Error("Test Contour candidate must use the exact dev HEAD");
+  }
   const deployed = await deploy({
     sourceRoot: source.sourceRoot,
     runtimeRoot: isolatedRoot,

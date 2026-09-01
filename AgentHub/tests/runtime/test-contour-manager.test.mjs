@@ -550,6 +550,11 @@ test("candidate preparation deploys only into the isolated runtime root", async 
     const result = await prepareTestContourCandidate({
       root,
       sourceRoot,
+      prepareSource: async () => ({
+        sourceRoot,
+        branch: "dev",
+        headCommit: "dev-head",
+      }),
       deploy: async (options) => {
         calls.push(options);
         const releaseRoot = path.join(root, "releases", "candidate-1");
@@ -569,6 +574,8 @@ test("candidate preparation deploys only into the isolated runtime root", async 
       },
     });
     assert.equal(result.releaseId, "candidate-1");
+    assert.equal(result.branch, "dev");
+    assert.equal(result.headCommit, "dev-head");
     assert.equal(calls[0].runtimeRoot, canonicalPath(root));
     assert.equal(calls[0].sourceRoot, canonicalPath(sourceRoot));
     assert.match(
@@ -581,6 +588,32 @@ test("candidate preparation deploys only into the isolated runtime root", async 
     );
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("candidate preparation refuses a non-dev source before deployment", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-test-contour-source-guard-"));
+  const sourceRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-test-contour-stale-source-"));
+  let deployed = false;
+  try {
+    await assert.rejects(
+      prepareTestContourCandidate({
+        root,
+        sourceRoot,
+        prepareSource: async () => ({ sourceRoot, branch: null, headCommit: null }),
+        deploy: async () => {
+          deployed = true;
+          return null;
+        },
+      }),
+      /must use the exact dev HEAD/u,
+    );
+    assert.equal(deployed, false);
+  } finally {
+    await Promise.all([
+      rm(root, { recursive: true, force: true }),
+      rm(sourceRoot, { recursive: true, force: true }),
+    ]);
   }
 });
 
