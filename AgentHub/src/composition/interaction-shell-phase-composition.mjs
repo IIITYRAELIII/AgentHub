@@ -161,6 +161,7 @@ export function createInteractionShellPhase({
       taskBoard: infrastructure.taskBoard,
       taskGitWorkspaces: infrastructure.taskGitWorkspaces,
       taskVoiceTranscriber: infrastructure.taskVoiceTranscriber,
+      attachmentDirectory: infrastructure.attachmentDirectory,
       taskReadStateStore: infrastructure.taskReadStateStore,
       usdRubRateStore: infrastructure.usdRubRateStore,
       pendingInputs: provider.pendingInputs,

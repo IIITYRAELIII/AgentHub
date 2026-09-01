@@ -93,6 +93,7 @@ export function createDesktopShellComposition({
     taskBoard,
     taskGitWorkspaces,
     taskVoiceTranscriber,
+    attachmentDirectory,
     usageSyncAuto,
   } = runtime;
   const {
@@ -531,6 +532,7 @@ export function createDesktopShellComposition({
       updateRootAgents: (params) => serverControlController.updateRootAgents(params),
       taskBoard,
       taskVoiceTranscriber,
+      attachmentDirectory,
       workspaceCatalog: workspaceCatalogStore,
     },
     desktop: {

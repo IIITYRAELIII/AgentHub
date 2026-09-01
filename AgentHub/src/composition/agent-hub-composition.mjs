@@ -83,6 +83,7 @@ const {
   workLogUsageStore, workLogUsageIdentityStore, workLogUsageRemoteConfigStore, workspaceCatalogStore, workspaceReleaseService, preTurnInstructions, taskBoard, taskVoiceTranscriber, hubMcpService, hubMcpServer,
   miniAppServer,
   publicMiniAppServer,
+  attachmentDirectory,
   usdRubRateStore,
   instanceGuard,
   runtimeStateStore,
@@ -570,6 +571,7 @@ const interactionShell = createInteractionShellPhase({
   },
   infrastructure: {
     trustedDeviceStore, workLogUsageStore, workspaceCatalogStore, preTurnInstructions, taskBoard, taskVoiceTranscriber,
+    attachmentDirectory,
     usdRubRateStore, runtimeStateStore, taskReadStateStore, rateLimitHistoryStore, commandTraceService, runJournal,
   },
   provider: providerApplication,
