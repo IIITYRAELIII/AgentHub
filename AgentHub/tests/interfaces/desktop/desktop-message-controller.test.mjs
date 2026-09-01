@@ -477,7 +477,7 @@ test("desktop message controller resolves Dashboard Task references into links",
     clientUserMessageId: "message-with-task",
   });
 
-  assert.match(launchedInput, /\[Dashboard Task: Исправить Dashboard\]\(agent-hub:\/\/task\/board-1\)/u);
+  assert.match(launchedInput, /\[Dashboard Task: Исправить Dashboard\]\(agent-hub:\/\/task\/board-1 "Исправить Dashboard"\)/u);
   assert.match(launchedInput, /intent: context/u);
   assert.match(launchedInput, /решение о начале работы определяется сопровождающим сообщением пользователя/u);
   assert.doesNotMatch(launchedInput, /не начинай работу без явной просьбы пользователя/u);
