@@ -522,6 +522,58 @@ function accountDeviceDisplayName(deviceId, source, label = "") {
   return id.length <= 16 ? id : `device ${shortDeviceKey(id)}`;
 }
 
+function deviceLabelQuality(label, deviceId = "") {
+  const value = String(label ?? "").trim();
+  if (!value) return 0;
+  const normalizedLabel = value.toLowerCase();
+  const normalizedDeviceId = String(deviceId ?? "").trim().toLowerCase();
+  if (normalizedDeviceId && normalizedLabel === normalizedDeviceId) return 1;
+  if (/^device\s+[a-f0-9-]{4,}$/iu.test(value)) return 1;
+  if (/^(?:desktop|laptop|pc|macbook|notebook)-[a-z0-9-]+$/iu.test(value)) return 2;
+  return 3;
+}
+
+function deviceLabelTimestamp(record) {
+  const completedMs = Date.parse(String(record?.completedAt ?? ""));
+  if (Number.isFinite(completedMs)) return completedMs;
+  const startedMs = Date.parse(String(record?.startedAt ?? ""));
+  if (Number.isFinite(startedMs)) return startedMs;
+  const observedMs = Date.parse(String(record?.observedAt ?? ""));
+  return Number.isFinite(observedMs) ? observedMs : Number.NEGATIVE_INFINITY;
+}
+
+function betterDeviceLabel(current, candidate, deviceId = "") {
+  const label = String(candidate?.label ?? "").trim();
+  if (!label) return current;
+  const quality = deviceLabelQuality(label, deviceId);
+  const timestamp = Number(candidate?.timestamp);
+  const normalizedTimestamp = Number.isFinite(timestamp) ? timestamp : Number.NEGATIVE_INFINITY;
+  if (!current) return { label, quality, timestamp: normalizedTimestamp };
+  if (quality > current.quality) return { label, quality, timestamp: normalizedTimestamp };
+  if (quality === current.quality && normalizedTimestamp >= current.timestamp) {
+    return { label, quality, timestamp: normalizedTimestamp };
+  }
+  return current;
+}
+
+function preferredSyncDeviceLabels(records = []) {
+  const labels = new Map();
+  for (const record of Array.isArray(records) ? records : []) {
+    const deviceId = String(record?.syncDeviceId ?? "").trim();
+    if (!deviceId) continue;
+    labels.set(deviceId, betterDeviceLabel(labels.get(deviceId), {
+      label: record?.syncDeviceLabel,
+      timestamp: deviceLabelTimestamp(record),
+    }, deviceId));
+  }
+  return labels;
+}
+
+function preferredSyncDeviceLabel(record, labels) {
+  const deviceId = String(record?.syncDeviceId ?? "").trim();
+  return String(labels?.get(deviceId)?.label ?? record?.syncDeviceLabel ?? "").trim();
+}
+
 function accountUsageRangeStart(range, nowMs) {
   const now = Number.isFinite(Number(nowMs)) ? Number(nowMs) : Date.now();
   if (range === "24h") return now - 24 * 60 * 60 * 1_000;
@@ -710,6 +762,7 @@ export function buildWorkLogAccountUsageSummary(turns = {}, {
   const normalizedLocalDeviceLabel = String(localDeviceLabel ?? "").trim();
   const normalizedSyncedTurns = syncedUsageRecords(syncedUsageEvents)
     .filter((record) => record && record.syncDeviceId !== normalizedLocalDeviceId);
+  const syncDeviceLabels = preferredSyncDeviceLabels(normalizedSyncedTurns);
   const nowMs = Number.isFinite(Number(now)) ? Number(now) : Date.now();
   const records = [
     ...Object.values(normalizedTurns).map((record) => ({ record, source: "local", deviceId: "" })),
@@ -758,13 +811,19 @@ export function buildWorkLogAccountUsageSummary(turns = {}, {
         if (!bucket.devices[deviceKey]) {
           bucket.devices[deviceKey] = emptyAccountDeviceBucket(deviceKey, entry.source, {
             noCost: bucket.noCost,
-            label: entry.source === "local" ? normalizedLocalDeviceLabel : record?.syncDeviceLabel,
+            label: entry.source === "local"
+              ? normalizedLocalDeviceLabel
+              : preferredSyncDeviceLabel(record, syncDeviceLabels),
           });
         }
         const deviceBucket = bucket.devices[deviceKey];
         if (deviceBucket.source !== entry.source) {
           deviceBucket.source = "mixed";
-          deviceBucket.label = accountDeviceDisplayName(deviceKey, "mixed", record?.syncDeviceLabel);
+          deviceBucket.label = accountDeviceDisplayName(
+            deviceKey,
+            "mixed",
+            preferredSyncDeviceLabel(record, syncDeviceLabels),
+          );
         }
         applyAccountUsageStats(deviceBucket, entry, record, { accountKey, attribution, noCost });
         if (noCost) {
@@ -3063,10 +3122,15 @@ export function buildWorkLogUsageHistory(turns = {}, {
   const localUsageEventIds = new Set(localTurns.map(usageSyncEventIdentity).filter(Boolean));
   const normalizedLocalDeviceId = String(localDeviceId ?? "").trim();
   const normalizedLocalDeviceLabel = String(localDeviceLabel ?? "").trim();
-  const syncedTurns = syncedUsageRecords(syncedUsageEvents)
+  const allSyncedTurns = syncedUsageRecords(syncedUsageEvents)
     .filter((record) => {
       if (!record || record.syncDeviceId === normalizedLocalDeviceId) return false;
       if (localUsageEventIds.has(record.syncEventId)) return false;
+      return true;
+    });
+  const syncDeviceLabels = preferredSyncDeviceLabels(allSyncedTurns);
+  const syncedTurns = allSyncedTurns
+    .filter((record) => {
       const recordAccountKey = String(record.accountKey ?? "").trim();
       if (!recordAccountKey) return false;
       if (requestedAccountKey && recordAccountKey !== requestedAccountKey) return false;
@@ -3113,7 +3177,7 @@ export function buildWorkLogUsageHistory(turns = {}, {
           : String(record?.syncDeviceId ?? "").trim(),
         deviceLabel: source === "local"
           ? normalizedLocalDeviceLabel || "Это устройство"
-          : `${String(record?.syncDeviceLabel ?? "").trim() || "Другое устройство"}`
+          : `${preferredSyncDeviceLabel(record, syncDeviceLabels) || "Другое устройство"}`
             + ` · ${shortDeviceKey(record?.syncDeviceId)}`,
       };
     }).filter((record) => (
