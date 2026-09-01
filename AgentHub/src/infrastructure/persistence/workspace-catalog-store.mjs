@@ -19,16 +19,11 @@ import {
   legacyReleaseWorkflowRules,
   RELEASE_WORKFLOW_SETTING,
   releaseWorkflowEnabled,
-  storedWorkspaceDeveloperRules,
   workspaceSettingsWithReleaseWorkflow,
 } from "../../domain/workspace-release-workflow.mjs";
 
 const SCHEMA_VERSION = 11;
 export const DEVELOPER_RULES_MAX_BYTES = 32 * 1024;
-const WORKSPACE_RULE_PREFIX_BYTES = Buffer.byteLength(
-  `${storedWorkspaceDeveloperRules("")}\n\n`,
-  "utf8",
-);
 const SOURCES = new Set(["created", "discovered", "migration", "rebirth"]);
 const DEVELOPER_RULE_SCOPES = new Set(["workspace", "stream"]);
 
@@ -360,20 +355,21 @@ export class WorkspaceCatalogStore {
           JSON.stringify(workspaceSettingsWithReleaseWorkflow(settings, migration.enabled)),
           row.id,
         );
-        const storedRules = storedWorkspaceDeveloperRules(migration.content);
-        if (storedRules !== currentRules?.content) this.#updateWorkspaceDeveloperRules(row.id, storedRules);
+        if (migration.content !== (currentRules?.content ?? "")) {
+          this.#updateWorkspaceDeveloperRules(row.id, migration.content);
+        }
       }
     });
   }
 
   #migrateWorkspaceDeveloperRules() {
-    const key = "workspace_agent_hub_rules_migrated_v1";
+    const key = "workspace_system_rules_removed_v2";
     if (this.#database.prepare("SELECT 1 FROM hub_workspace_catalog_meta WHERE key = ?").get(key)) return;
     this.#transaction(() => {
       for (const row of this.#database.prepare("SELECT id FROM hub_workspaces").all()) {
         const current = this.#developerRules("workspace", row.id);
-        const content = storedWorkspaceDeveloperRules(current?.content ?? "");
-        if (content !== current?.content) this.#updateWorkspaceDeveloperRules(row.id, content);
+        const content = legacyReleaseWorkflowRules(current?.content ?? "").content;
+        if (content !== (current?.content ?? "")) this.#updateWorkspaceDeveloperRules(row.id, content);
       }
       this.#database.prepare(
         "INSERT INTO hub_workspace_catalog_meta (key, value) VALUES (?, ?)",
@@ -427,7 +423,6 @@ export class WorkspaceCatalogStore {
         releaseWorkflowEnabled(settings),
       )),
     );
-    this.#updateWorkspaceDeveloperRules(workspaceId, "");
     return this.workspace(workspaceId);
   }
 
@@ -812,12 +807,7 @@ export class WorkspaceCatalogStore {
 
   #updateWorkspaceDeveloperRules(workspaceId, content) {
     const editableContent = developerRuleContent(legacyReleaseWorkflowRules(content).content);
-    return this.#updateDeveloperRules(
-      "workspace",
-      workspaceId,
-      storedWorkspaceDeveloperRules(editableContent),
-      DEVELOPER_RULES_MAX_BYTES + WORKSPACE_RULE_PREFIX_BYTES,
-    );
+    return this.#updateDeveloperRules("workspace", workspaceId, editableContent);
   }
 
   #updateDeveloperRules(scopeType, scopeId, content, maximumBytes = DEVELOPER_RULES_MAX_BYTES) {
