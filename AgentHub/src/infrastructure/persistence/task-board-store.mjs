@@ -1888,8 +1888,16 @@ export class TaskBoardStore {
     const retiredTables = this.#retiredReleaseTables();
     database.exec("BEGIN IMMEDIATE");
     try {
-      this.#archiveLegacyReleaseRegistry(database, retiredTables);
-      this.#verifyLegacyReleaseArchive(database, retiredTables);
+      const removalCompleted = database.prepare(
+        "SELECT value FROM hub_board_settings WHERE key = 'task_release_registry_removed_v2'",
+      ).get()?.value === "completed";
+      // After cutover the Task aggregate is authoritative. Retired tables can
+      // only reappear when an older runtime starts, so their mutable rows must
+      // not be compared with the canonical immutable audit archive again.
+      if (!removalCompleted) {
+        this.#archiveLegacyReleaseRegistry(database, retiredTables);
+        this.#verifyLegacyReleaseArchive(database, retiredTables);
+      }
       for (const { table } of retiredTables.toReversed()) {
         database.exec(`DROP TABLE IF EXISTS ${table}`);
       }

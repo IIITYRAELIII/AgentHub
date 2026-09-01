@@ -968,6 +968,88 @@ test("Legacy cutover maps production union to Tasks and retains verified immutab
   reinspected.close();
 });
 
+test("Completed cutover ignores retired Task state recreated by a previous runtime", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-task-release-recreated-"));
+  const databaseFile = path.join(directory, "journal.sqlite");
+  t.after(() => rm(directory, { recursive: true, force: true }));
+
+  const initial = new TaskBoardStore({ databaseFile, now: () => 1_000, idFactory: () => "task-live" });
+  const created = initial.create({
+    text: "Preserve live Dashboard Task",
+    bucket: "workspace",
+    workspaceId: "workspace-1",
+    taskPrefix: "HUB",
+  });
+  const expected = initial.markStarted(created.id, {
+    workspaceId: "workspace-1",
+    streamId: "stream-live",
+  });
+  initial.close();
+
+  const archivedPayload = JSON.stringify({
+    task_id: created.id,
+    revision: 1,
+    frozen_revision: 1,
+    manifest_hash: "a".repeat(64),
+    updated_at_ms: 1_100,
+  });
+  const previousRuntime = new DatabaseSync(databaseFile);
+  previousRuntime.prepare(`
+    INSERT INTO hub_release_registry_history (
+      source_kind, source_id, status, payload_json, payload_sha256, archived_at_ms
+    ) VALUES ('task-state', ?, 'archived', ?, ?, ?)
+  `).run(
+    created.id,
+    archivedPayload,
+    createHash("sha256").update(archivedPayload, "utf8").digest("hex"),
+    1_200,
+  );
+  previousRuntime.exec(`
+    CREATE TABLE hub_task_release_state (
+      task_id TEXT PRIMARY KEY,
+      revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
+      frozen_revision INTEGER,
+      manifest_hash TEXT NOT NULL DEFAULT '',
+      updated_at_ms INTEGER NOT NULL,
+      FOREIGN KEY (task_id) REFERENCES hub_board_tasks(id) ON DELETE CASCADE
+    ) WITHOUT ROWID;
+  `);
+  previousRuntime.prepare(`
+    INSERT INTO hub_task_release_state (
+      task_id, revision, frozen_revision, manifest_hash, updated_at_ms
+    ) VALUES (?, 2, 2, ?, 1_300)
+  `).run(created.id, "b".repeat(64));
+  previousRuntime.close();
+
+  const reopened = new TaskBoardStore({ databaseFile, now: () => 1_400 });
+  const preserved = reopened.task(created.id);
+  assert.equal(preserved.title, expected.title);
+  assert.equal(preserved.workflowStatus, expected.workflowStatus);
+  assert.equal(preserved.workspaceId, expected.workspaceId);
+  assert.equal(preserved.streamId, expected.streamId);
+  reopened.close();
+
+  const inspected = new DatabaseSync(databaseFile);
+  assert.equal(inspected.prepare(`
+    SELECT COUNT(*) AS value FROM sqlite_master
+    WHERE type = 'table' AND name = 'hub_task_release_state'
+  `).get().value, 0);
+  const archive = inspected.prepare(`
+    SELECT payload_json, payload_sha256 FROM hub_release_registry_history
+    WHERE source_kind = 'task-state' AND source_id = ?
+  `).get(created.id);
+  assert.equal(archive.payload_json, archivedPayload);
+  assert.equal(
+    archive.payload_sha256,
+    createHash("sha256").update(archivedPayload, "utf8").digest("hex"),
+  );
+  inspected.close();
+
+  const restarted = new TaskBoardStore({ databaseFile, now: () => 1_500 });
+  assert.equal(restarted.task(created.id).workflowStatus, expected.workflowStatus);
+  restarted.close();
+});
+
 test("Legacy archive checksum mismatch rolls back Task import", async (t) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-task-release-rollback-"));
   const databaseFile = path.join(directory, "journal.sqlite");
