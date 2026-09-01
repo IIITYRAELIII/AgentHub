@@ -964,9 +964,10 @@ function enhanceThemedSelect(select) {
   menu.setAttribute("role", "listbox");
   menu.setAttribute("aria-label", button.getAttribute("aria-label"));
   button.setAttribute("aria-controls", menu.id);
-  const supportsPopover = typeof menu.showPopover === "function";
+  const placement = window.AgentHubThemedSelectPlacement.resolve(select, menu);
+  const supportsPopover = placement.usePopover;
   if (supportsPopover) menu.setAttribute("popover", "manual");
-  (supportsPopover ? document.body : select.closest("dialog") ?? document.body).append(menu);
+  placement.host.append(menu);
 
   const state = { button, menu, select, shell, value };
   select.__themedSelect = state;
