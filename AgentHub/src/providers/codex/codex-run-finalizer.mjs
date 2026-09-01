@@ -131,6 +131,7 @@ export class CodexRunFinalizer {
     };
     const completion = this.notifications.recordCompletion(completionInput)
       ?? exactTerminalCompletion(existingCompletion, completionInput);
+    const visibleAnswer = String(completion.finalAnswer ?? answer ?? "").trim();
     const resolvedTracker = {
       usage: completion.usage,
       reported: completion.usageReported,
@@ -139,7 +140,7 @@ export class CodexRunFinalizer {
       serviceTier: completion.serviceTier,
     };
     const shouldDeliver = deliver ?? (run.telegramDeliveryRequested !== false);
-    const message = [answer, this.formatUsage(resolvedTracker)].filter(Boolean).join("\n\n");
+    const message = [visibleAnswer, this.formatUsage(resolvedTracker)].filter(Boolean).join("\n\n");
     const telegramRequested = shouldDeliver && Number.isSafeInteger(completion.chatId);
     const committed = await this.commitTerminal(completion, {
       run,
@@ -159,9 +160,9 @@ export class CodexRunFinalizer {
             serviceTier: run.serviceTier ?? null,
             finishedProgressMessageIds: [...(run.finishedProgressMessageIds ?? [])],
           },
-          answer: String(answer ?? ""),
+          answer: visibleAnswer,
           message,
-          speechText: String(answer ?? ""),
+          speechText: visibleAnswer,
           forceSpeechButton,
           silent,
           description,

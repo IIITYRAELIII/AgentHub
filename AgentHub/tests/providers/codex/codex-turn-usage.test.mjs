@@ -119,6 +119,36 @@ test("Codex rollout usage accepts the terminal last agent message", () => {
   assert.equal(result.finalTokenSeen, true);
 });
 
+test("Codex terminal reconciliation removes only provider annotation markers", () => {
+  const prompt = [
+    "# Response annotations:",
+    "<response-annotations>",
+    '[{"text":"Фрагмент","annotation":"Проверь"}]',
+    "</response-annotations>",
+  ].join("\n");
+  const text = [
+    line({ timestamp: "2026-09-01T10:00:00Z", type: "event_msg", payload: {
+      type: "task_started", turn_id: "turn-annotation",
+    } }),
+    line(response("turn-annotation", "message", {
+      role: "user", content: [{ type: "input_text", text: prompt }],
+    })),
+    line(response("turn-annotation", "message", {
+      role: "assistant", phase: "final_answer",
+      content: [{ type: "output_text", text: ':codex-annotation{index="1"} Проверено' }],
+    })),
+    line(token(10, 5, 2, 1)),
+    line({ timestamp: "2026-09-01T10:01:00Z", type: "event_msg", payload: {
+      type: "task_complete", turn_id: "turn-annotation",
+      last_agent_message: ':codex-annotation{index="1"} Проверено',
+    } }),
+  ].join("\n");
+
+  const result = codexTurnUsageFromJsonl(text, "turn-annotation");
+  assert.equal(result.finalAnswer, "Проверено");
+  assert.match(result.prompt, /Проверь/u);
+});
+
 test("historical rollout scan extracts all turns in one streaming pass", async () => {
   const first = "019f1ec8-8de7-7aa3-92b6-045036561c8e";
   const second = "019f1ec9-8de7-7aa3-92b6-045036561c8e";

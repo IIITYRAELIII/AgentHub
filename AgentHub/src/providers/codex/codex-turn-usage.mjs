@@ -9,6 +9,7 @@ import { IMAGE_GENERATION_ESTIMATE_CREDITS } from "../../domain/codex-usage-esti
 import {
   isCodexContextProbeClientId,
 } from "../../domain/codex-context-probe.mjs";
+import { visibleCodexAssistantText } from "../../domain/codex-response-annotation.mjs";
 import { addTokenUsage, emptyTokenUsage, normalizeTokenUsage } from "../../domain/token-usage.mjs";
 import { displayUserPrompt } from "../../application/task-history.mjs";
 
@@ -415,7 +416,7 @@ function createTurnAccumulator(turnId) {
         terminal = true;
         completedAt ||= String(entry?.timestamp ?? "");
         status = lifecycleTerminalStatus(lifecycle);
-        const terminalAnswer = String(entry.payload?.last_agent_message ?? "").trim();
+        const terminalAnswer = visibleCodexAssistantText(entry.payload?.last_agent_message).trim();
         if (terminalAnswer && !finalAnswer) {
           finalAnswer = terminalAnswer;
           terminalAnswerSeen = true;
@@ -491,7 +492,7 @@ function createTurnAccumulator(turnId) {
     }
     if (isFinalAssistantItem(entry, requestedTurnId)) {
       finalAnswerIndex = index;
-      finalAnswer = messageText(entry.payload) || finalAnswer;
+      finalAnswer = visibleCodexAssistantText(messageText(entry.payload)).trim() || finalAnswer;
     }
 
     if (entry?.type !== "event_msg" || entry.payload?.type !== "token_count") return;
@@ -1087,7 +1088,8 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
       if (patch) exactTurn.patches.push(patch);
     }
     if (exactTurn && isFinalAssistantItem(entry, exactTurnId)) {
-      exactTurn.finalAnswer = messageText(entry.payload) || exactTurn.finalAnswer;
+      exactTurn.finalAnswer = visibleCodexAssistantText(messageText(entry.payload)).trim()
+        || exactTurn.finalAnswer;
     }
 
     if (entry?.type !== "event_msg" || entry.payload?.type !== "token_count") return;

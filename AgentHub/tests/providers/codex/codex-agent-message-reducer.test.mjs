@@ -111,3 +111,32 @@ test("Codex hydration restores a completed Plan as the final response", () => {
   assert.equal(run.responseItems[0].type, "plan");
   assert.equal(run.responseItems[0].phase, "final_answer");
 });
+
+test("Codex live response hides a split response annotation marker", () => {
+  const run = { responseText: "", responseItems: [] };
+  appendCodexAgentMessageDelta(run, {
+    turnId: "turn-annotation", itemId: "answer-annotation", delta: ':codex-annotation{index="',
+  });
+  assert.equal(run.responseText, "");
+  appendCodexAgentMessageDelta(run, {
+    turnId: "turn-annotation", itemId: "answer-annotation", delta: "1\"} Исправлено",
+  });
+  assert.equal(run.responseText, "Исправлено");
+  assert.equal(run.responseItems[0].text, "Исправлено");
+});
+
+test("Codex response keeps annotation-looking literals inside code", () => {
+  const literal = [
+    "Покажи literal:",
+    "```text",
+    ':codex-annotation{index="1"}',
+    "```",
+    'И inline `:codex-annotation{index="2"}` тоже.',
+  ].join("\n");
+  const run = { responseText: "", responseItems: [] };
+  completeCodexAgentMessage(run, {
+    turnId: "turn-literal",
+    item: { id: "answer-literal", type: "agentMessage", phase: "final_answer", text: literal },
+  });
+  assert.equal(run.responseText, literal);
+});

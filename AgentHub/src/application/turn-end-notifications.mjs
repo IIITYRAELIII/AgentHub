@@ -1,5 +1,6 @@
 import path from "node:path";
 
+import { visibleCodexAssistantText } from "../domain/codex-response-annotation.mjs";
 import { estimateMissingCodexUsage } from "../domain/codex-usage-estimate.mjs";
 import { normalizeServiceTier, normalizeTokenUsage } from "../domain/token-usage.mjs";
 import { normalizeWorkLogId } from "./work-log-usage-projection.mjs";
@@ -25,8 +26,14 @@ function validBase(value) {
 
 function normalizedMessage(value) {
   const base = validBase(value);
-  const text = String(value?.text ?? "").trim().slice(0, TURN_END_BODY_LIMIT);
-  const title = String(value?.title ?? "").trim().replace(/\s+/g, " ").slice(0, TURN_END_TITLE_LIMIT);
+  const providerText = String(value?.text ?? "");
+  const text = (base?.provider === "codex"
+    ? visibleCodexAssistantText(providerText)
+    : providerText).trim().slice(0, TURN_END_BODY_LIMIT);
+  const providerTitle = String(value?.title ?? "");
+  const title = (base?.provider === "codex"
+    ? visibleCodexAssistantText(providerTitle)
+    : providerTitle).trim().replace(/\s+/g, " ").slice(0, TURN_END_TITLE_LIMIT);
   const projectRoot = String(value?.projectRoot ?? "").trim();
   if (!base || !text || !projectRoot) return null;
   let workLogId = null;
@@ -142,7 +149,9 @@ function normalizedCompletion(value) {
     completedAt: String(value.completedAt ?? new Date().toISOString()),
     prompt: prompts[0] ?? "",
     prompts,
-    finalAnswer: String(value.finalAnswer ?? "").trim(),
+    finalAnswer: (base.provider === "codex"
+      ? visibleCodexAssistantText(value.finalAnswer)
+      : String(value.finalAnswer ?? "")).trim(),
     responseAttachments: normalizedAttachments(value.responseAttachments),
     changedFiles: Array.isArray(value.changedFiles)
       ? value.changedFiles.map((file) => String(file).trim()).filter(Boolean)

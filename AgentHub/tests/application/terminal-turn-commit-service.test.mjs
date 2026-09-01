@@ -40,3 +40,43 @@ test("terminal commit closes the matching message command through idempotent CAS
   assert.equal(transitions[0].state, "completed");
   assert.equal(transitions[0].result.terminalRevision, 3);
 });
+
+test("terminal commit keeps structured response annotations beside the canonical answer", async () => {
+  let stored = null;
+  const service = new TerminalTurnCommitService({
+    store: {
+      commit: async (value) => {
+        stored = value;
+        return {
+          terminal: {
+            provider: "codex",
+            threadId: "thread-annotation",
+            turnId: "turn-annotation",
+            terminalRevision: 1,
+            status: "completed",
+            payload: value.payload,
+          },
+          outbox: {},
+        };
+      },
+      get: async () => null,
+    },
+  });
+  const responseAnnotations = [{ text: "Фрагмент", annotation: "Почему?" }];
+
+  await service.commit({
+    provider: "codex",
+    threadId: "thread-annotation",
+    turnId: "turn-annotation",
+    status: "completed",
+    finalAnswer: "Связь сохранена",
+  }, {
+    run: {
+      id: "run-annotation",
+      userMessages: [{ role: "user", text: "Комментарий", responseAnnotations }],
+    },
+  });
+
+  assert.equal(stored.finalAnswer, "Связь сохранена");
+  assert.deepEqual(stored.payload.history.userMessages[0].responseAnnotations, responseAnnotations);
+});
