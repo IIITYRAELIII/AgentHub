@@ -725,22 +725,23 @@ export async function prepareTestContourCandidate({
   if (source.branch !== "dev" || !String(source.headCommit ?? "").trim()) {
     throw new Error("Test Contour candidate must use the exact dev HEAD");
   }
+  const candidateSourceRoot = canonicalPath(source.sourceRoot);
   const deployed = await deploy({
-    sourceRoot: source.sourceRoot,
+    sourceRoot: candidateSourceRoot,
     runtimeRoot: isolatedRoot,
     beforePointerCommit: ({ releaseRoot }) => markTestContourWebApp(releaseRoot),
   });
   await writeJson(paths.sourceFile, {
     branch: source.branch,
     headCommit: source.headCommit,
-    sourceRoot: source.sourceRoot,
+    sourceRoot: candidateSourceRoot,
     preparedAt: new Date().toISOString(),
   });
   return {
     root: isolatedRoot,
     releaseId: deployed.releaseId,
     releaseRoot: deployed.releaseRoot,
-    sourceRoot: source.sourceRoot,
+    sourceRoot: candidateSourceRoot,
     branch: source.branch,
     headCommit: source.headCommit,
   };

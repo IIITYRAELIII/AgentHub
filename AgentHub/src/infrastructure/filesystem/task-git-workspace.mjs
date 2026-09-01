@@ -148,7 +148,7 @@ async function commitDirtyWorktree(worktreeRoot, message) {
 
 export class TaskGitWorkspaceService {
   constructor({ dataDir, devBranch = TASK_DEV_BRANCH } = {}) {
-    this.dataDir = path.resolve(String(dataDir ?? ""));
+    this.dataDir = canonicalPath(String(dataDir ?? ""));
     this.taskWorktreesRoot = path.join(this.dataDir, "task-worktrees");
     this.devWorktreesRoot = path.join(this.dataDir, "dev-worktrees");
     this.devBranch = String(devBranch ?? TASK_DEV_BRANCH).trim() || TASK_DEV_BRANCH;
@@ -160,7 +160,7 @@ export class TaskGitWorkspaceService {
       if (!pathInside(managedRoot, existing)) {
         throw new Error(`Agent Hub branch ${branch} is checked out outside its managed worktree: ${existing}`);
       }
-      return path.resolve(existing);
+      return canonicalPath(existing);
     }
     await mkdir(path.dirname(worktreeRoot), { recursive: true });
     const exists = await branchExists(repoRoot, branch);
@@ -170,7 +170,7 @@ export class TaskGitWorkspaceService {
       worktreeRoot,
       ...(exists ? [branch] : [startCommit]),
     ], { cwd: repoRoot, timeoutMs: 120_000 });
-    return path.resolve(worktreeRoot);
+    return canonicalPath(worktreeRoot);
   }
 
   async #alignExistingTaskBranch({ repositoryRoot: repoRoot, worktreeRoot: root, branch }) {
@@ -419,13 +419,13 @@ export async function prepareTaskContourSource({ sourceRoot, integrationRoot } =
   if (path.isAbsolute(sourceRelativePath) || sourceRelativePath === ".." || sourceRelativePath.startsWith(`..${path.sep}`)) {
     throw new Error("Test Contour source is outside its Git repository");
   }
-  const sourceFromWorktree = (worktreeRoot) => path.resolve(worktreeRoot, sourceRelativePath);
+  const sourceFromWorktree = (worktreeRoot) => canonicalPath(path.resolve(worktreeRoot, sourceRelativePath));
   const headCommit = await runGit(["rev-parse", `${TASK_DEV_BRANCH}^{commit}`], { cwd: repoRoot });
   const checkedOut = await worktreeForBranch(repoRoot, TASK_DEV_BRANCH);
   if (checkedOut) {
     return { sourceRoot: sourceFromWorktree(checkedOut), branch: TASK_DEV_BRANCH, headCommit };
   }
-  const managedRoot = path.resolve(integrationRoot);
+  const managedRoot = canonicalPath(integrationRoot);
   const detachedRoot = path.join(managedRoot, "dev-source", taskRepositoryKey(repoRoot));
   if (!pathInside(managedRoot, detachedRoot)) throw new Error("Test Contour dev source escaped its managed root");
   const registered = parseWorktrees(await runGit(["worktree", "list", "--porcelain"], { cwd: repoRoot }))

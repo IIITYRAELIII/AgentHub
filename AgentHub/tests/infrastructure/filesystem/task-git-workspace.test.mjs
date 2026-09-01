@@ -10,6 +10,7 @@ import {
   prepareTaskContourSource,
   TaskGitWorkspaceService,
 } from "../../../src/infrastructure/filesystem/task-git-workspace.mjs";
+import { canonicalPath } from "../../../src/infrastructure/filesystem/config.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -57,7 +58,7 @@ test("Task Git workspace commits one Task branch and merges it into dev", async 
   const workspace = await service.prepare({ taskId, projectRoot: root });
   assert.match(workspace.branch, /^agenthub\/task\/11111111-/u);
   assert.notEqual(workspace.projectRoot, root);
-  assert.equal(await service.managedRepositoryRoot(workspace.projectRoot, { taskId }), path.resolve(root));
+  assert.equal(await service.managedRepositoryRoot(workspace.projectRoot, { taskId }), canonicalPath(root));
   assert.equal(await service.managedRepositoryRoot(workspace.projectRoot), null);
   assert.equal(await service.managedRepositoryRoot(root), null);
   await writeFile(path.join(workspace.projectRoot, "app.txt"), "task\n", "utf8");
@@ -127,7 +128,7 @@ test("managed Task admission rejects another Task owner and numbered branch", as
   await service.prepare({ taskId: secondTaskId, projectRoot: root });
 
   assert.equal(await service.managedRepositoryRoot(first.projectRoot, { taskId: secondTaskId }), null);
-  assert.equal(await service.managedRepositoryRoot(first.projectRoot, { taskId: firstTaskId }), path.resolve(root));
+  assert.equal(await service.managedRepositoryRoot(first.projectRoot, { taskId: firstTaskId }), canonicalPath(root));
 
   await git(first.projectRoot, "branch", "-m", "AH-42");
   assert.equal(await service.managedRepositoryRoot(first.projectRoot, {
@@ -141,7 +142,7 @@ test("managed Task admission rejects another Task owner and numbered branch", as
   assert.equal(await service.managedRepositoryRoot(first.projectRoot, {
     taskId: firstTaskId,
     taskNumber: "AH-42",
-  }), path.resolve(root));
+  }), canonicalPath(root));
 });
 
 test("Task Git workspace aborts a conflicting dev merge without deleting either branch", async (context) => {
