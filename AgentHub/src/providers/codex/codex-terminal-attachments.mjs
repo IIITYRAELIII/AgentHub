@@ -1,5 +1,5 @@
 export const CODEX_TERMINAL_ATTACHMENT_TAIL_BYTES = 16 * 1024 * 1024;
-export const CODEX_TERMINAL_ATTACHMENT_RETRY_DELAYS_MS = Object.freeze([0, 100, 300, 600]);
+export const CODEX_TERMINAL_ATTACHMENT_RETRY_DELAYS_MS = Object.freeze([0, 100, 300, 600, 1_000, 2_000]);
 
 function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -7,6 +7,16 @@ function delay(milliseconds) {
 
 function exactTurnFinalized(activity, turnId) {
   return Object.prototype.hasOwnProperty.call(activity?.finalMessages ?? {}, turnId);
+}
+
+function completedImageGenerationCount(activity, turnId) {
+  return (Array.isArray(activity?.activityGroups?.[turnId]) ? activity.activityGroups[turnId] : [])
+    .flatMap((group) => Array.isArray(group?.activities) ? group.activities : [])
+    .filter((item) => (
+      item?.type === "tool"
+      && item?.status === "completed"
+      && item?.detail === "image_gen__imagegen"
+    )).length;
 }
 
 export function codexTerminalAttachmentSources(activity, turnId) {
@@ -28,6 +38,7 @@ export function createCodexTerminalAttachmentResolver({
   return async function resolveCodexTerminalAttachments(run, turnId) {
     try {
       const normalizedTurnId = String(turnId ?? "").trim();
+      let bestAttachments = [];
       for (const retryDelayMs of retryDelaysMs) {
         if (retryDelayMs > 0) await wait(retryDelayMs);
         const rolloutPath = String(run?.rolloutPath ?? "").trim()
@@ -38,17 +49,19 @@ export function createCodexTerminalAttachmentResolver({
           tailBytes: CODEX_TERMINAL_ATTACHMENT_TAIL_BYTES,
         });
         const sources = codexTerminalAttachmentSources(activity, normalizedTurnId);
+        const expectedImages = completedImageGenerationCount(activity, normalizedTurnId);
         if (!sources.length) {
-          if (exactTurnFinalized(activity, normalizedTurnId)) return [];
+          if (exactTurnFinalized(activity, normalizedTurnId) && expectedImages === 0) return [];
           continue;
         }
         if (typeof importAttachments !== "function") return [];
         const attachments = await importAttachments(sources);
         if (Array.isArray(attachments) && attachments.length) {
-          return attachments.map((attachment) => ({ ...attachment }));
+          bestAttachments = attachments.map((attachment) => ({ ...attachment }));
+          if (bestAttachments.length >= Math.max(1, expectedImages)) return bestAttachments;
         }
       }
-      return [];
+      return bestAttachments;
     } catch (error) {
       logger.error(`Cannot capture terminal attachments for Codex turn ${turnId}:`, error.message);
       return [];
