@@ -1473,6 +1473,7 @@ test("live snapshot exposes only a Task card when its provider prompt has no use
   const reference = {
     kind: "task",
     taskId: "board-1",
+    taskNumber: null,
     title: "Проверка",
     workflowStatus: "new",
     workspaceId: null,

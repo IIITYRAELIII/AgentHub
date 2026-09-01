@@ -1505,6 +1505,7 @@ test("desktop task history renders a Task-only message without a service label",
   const reference = {
     kind: "task",
     taskId: "board-1",
+    taskNumber: null,
     title: "Проверка",
     workflowStatus: "new",
     workspaceId: null,
