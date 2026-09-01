@@ -65,6 +65,21 @@ function normalizedPrompts(value) {
   return [...new Set(values)].slice(0, 100);
 }
 
+function normalizedAttachments(value) {
+  const known = new Set();
+  return (Array.isArray(value) ? value : []).flatMap((attachment) => {
+    const id = String(attachment?.id ?? "").trim();
+    if (!id || known.has(id)) return [];
+    known.add(id);
+    return [{
+      id,
+      name: String(attachment?.name ?? "").trim() || id,
+      type: String(attachment?.type ?? "application/octet-stream").trim(),
+      ...(attachment?.missing === true ? { missing: true } : {}),
+    }];
+  });
+}
+
 function normalizedCompletion(value) {
   const base = validBase(value);
   const turnId = String(value?.turnId ?? "").trim();
@@ -128,6 +143,7 @@ function normalizedCompletion(value) {
     prompt: prompts[0] ?? "",
     prompts,
     finalAnswer: String(value.finalAnswer ?? "").trim(),
+    responseAttachments: normalizedAttachments(value.responseAttachments),
     changedFiles: Array.isArray(value.changedFiles)
       ? value.changedFiles.map((file) => String(file).trim()).filter(Boolean)
       : [],
@@ -253,6 +269,9 @@ export class TurnEndNotificationRegistry {
     ].map((prompt) => String(prompt ?? "").trim()).filter(Boolean))].slice(0, 100);
     completion.prompt = completion.prompts[0] ?? incoming.prompt ?? completion.prompt;
     completion.finalAnswer = incoming.finalAnswer || completion.finalAnswer;
+    if (incoming.responseAttachments.length) {
+      completion.responseAttachments = incoming.responseAttachments;
+    }
     if (incoming.changedFiles.length) completion.changedFiles = incoming.changedFiles;
     if (incoming.diff) completion.diff = incoming.diff;
     if (incoming.gitBaseline) completion.gitBaseline = incoming.gitBaseline;

@@ -81,6 +81,24 @@ test("turn-end registry preserves every prompt while merging repeated completion
   ]);
 });
 
+test("turn-end registry preserves generated response attachments through restore", () => {
+  const registry = new TurnEndNotificationRegistry();
+  registry.recordCompletion(completion({
+    responseAttachments: [
+      { id: "codex-generated-one.png", name: "Изображение", type: "image/png" },
+      { id: "codex-generated-two.png", name: "Изображение", type: "image/png" },
+      { id: "codex-generated-three.png", name: "Изображение", type: "image/png" },
+    ],
+  }));
+
+  const restored = new TurnEndNotificationRegistry(registry.snapshot()).get(completion());
+  assert.deepEqual(restored.responseAttachments.map((attachment) => attachment.id), [
+    "codex-generated-one.png",
+    "codex-generated-two.png",
+    "codex-generated-three.png",
+  ]);
+});
+
 test("turn-end registry preserves the Git baseline through merge and restore", () => {
   const registry = new TurnEndNotificationRegistry();
   const gitBaseline = { repoRoot: process.cwd(), tree: "a".repeat(40) };

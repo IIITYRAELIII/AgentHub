@@ -79,6 +79,9 @@ export class ManagedRunHistoryService {
       });
       const current = history.findLast((item) => String(item?.id ?? "") === String(turnId));
       if (current) {
+        const responseAttachments = Array.isArray(run.responseAttachments)
+          ? run.responseAttachments.map((attachment) => ({ ...attachment }))
+          : [];
         current.active = active;
         current.completed = !active;
         current.status = status;
@@ -92,20 +95,22 @@ export class ManagedRunHistoryService {
         if (!active) current.completedAt = this.nowIso();
         if (resolvedTerminalRevision) current.terminalRevision = resolvedTerminalRevision;
         if (telemetry) current.telemetry = structuredClone(telemetry);
-        if (current.answer) {
+        if (current.answer || responseAttachments.length) {
           const messages = Array.isArray(current.messages) ? current.messages : [];
           const itemId = String(run.responseItemId ?? "").trim() || `${turnId}:agent:final`;
           const existing = messages.find((message) => (
             message.role === "agent" && String(message.itemId ?? "") === itemId
           ));
           if (existing) {
-            existing.text = current.answer;
+            existing.text = current.answer || existing.text || "Изображение";
             existing.time = current.completedAt ?? existing.time;
+            if (responseAttachments.length) existing.attachments = responseAttachments;
           } else {
             messages.push({
               itemId,
               role: "agent",
-              text: current.answer,
+              text: current.answer || "Изображение",
+              ...(responseAttachments.length ? { attachments: responseAttachments } : {}),
               ...(current.completedAt ? { time: current.completedAt } : {}),
             });
           }

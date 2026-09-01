@@ -38,6 +38,11 @@ function historySnapshot(run, completion) {
     messageAttachments: Array.isArray(source.messageAttachments)
       ? structuredClone(source.messageAttachments)
       : [],
+    responseAttachments: Array.isArray(source.responseAttachments)
+      ? structuredClone(source.responseAttachments)
+      : Array.isArray(completion.responseAttachments)
+        ? structuredClone(completion.responseAttachments)
+        : [],
     progressStage: source.progressStage,
     startedAt: completion.startedAt || source.startedAt,
     providerStart: source.providerStart ? structuredClone(source.providerStart) : null,

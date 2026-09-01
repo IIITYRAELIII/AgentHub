@@ -49,6 +49,7 @@ export function createRunCompletionComposition({
   defaultNotificationChatId,
   changedFilesForRun,
   persistManagedRunHistory,
+  resolveCodexTerminalAttachments,
   runtimeStateStore,
   commandTrace = null,
 }) {
@@ -124,6 +125,7 @@ export function createRunCompletionComposition({
     deliverTerminal: (...args) => turnEndDelivery.deliverOutbox(...args),
     markRunCompleted: (run) => managedRunLifecycle.markCompleted(run),
     completeRun: (run) => managedRunLifecycle.complete(run),
+    resolveTerminalAttachments: resolveCodexTerminalAttachments,
   });
 
   return {
