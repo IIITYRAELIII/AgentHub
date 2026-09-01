@@ -110,7 +110,7 @@
   }
 
   function preserveIdentityAliases(current, incoming) {
-    return {
+    return normalizeSubmissionTiming({
       ...current,
       ...(!text(current?.clientUserMessageId) && text(incoming?.clientUserMessageId)
         ? { clientUserMessageId: incoming.clientUserMessageId }
@@ -118,11 +118,31 @@
       ...(!text(current?.submissionId) && text(incoming?.submissionId)
         ? { submissionId: incoming.submissionId }
         : {}),
+    }, current, incoming);
+  }
+
+  function normalizeSubmissionTiming(value, current = null, incoming = null) {
+    if (text(value?.role) !== "user") return value;
+    const currentCanonicalSubmittedAt = authorityRank(current) >= 3 ? text(current?.submittedAt) : "";
+    const incomingCanonicalSubmittedAt = authorityRank(incoming) >= 3 ? text(incoming?.submittedAt) : "";
+    const submittedAt = currentCanonicalSubmittedAt
+      || incomingCanonicalSubmittedAt
+      || text(current?.submittedAt)
+      || text(incoming?.submittedAt)
+      || text(value?.submittedAt)
+      || text(current?.time)
+      || text(incoming?.time)
+      || text(value?.time);
+    const startedAt = text(value?.startedAt) || text(incoming?.startedAt) || text(current?.startedAt);
+    return {
+      ...value,
+      ...(submittedAt ? { submittedAt, time: submittedAt } : {}),
+      ...(startedAt ? { startedAt } : {}),
     };
   }
 
   function reduceProjectionEntity(current, incoming) {
-    if (!current) return { ...incoming };
+    if (!current) return normalizeSubmissionTiming({ ...incoming }, null, incoming);
     const currentTerminal = isTerminal(current);
     const incomingTerminal = isTerminal(incoming);
     if (currentTerminal && !incomingTerminal) return preserveIdentityAliases(current, incoming);
@@ -142,11 +162,11 @@
     if (!currentTerminal && !incomingTerminal) {
       const currentRank = STATE_RANK.get(projectionState(current)) ?? 0;
       const incomingRank = STATE_RANK.get(projectionState(incoming)) ?? 0;
-      if (incomingRank < currentRank && authorityRank(incoming) <= authorityRank(current)) {
+      if (incomingRank < currentRank) {
         return preserveIdentityAliases(current, incoming);
       }
     }
-    return { ...current, ...incoming };
+    return normalizeSubmissionTiming({ ...current, ...incoming }, current, incoming);
   }
 
   function visibleProjectionEntity(value) {

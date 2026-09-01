@@ -50,6 +50,63 @@ test("canonical submission atomically replaces optimistic aliases in either orde
   assert.deepEqual(plain(projection.projectCanonicalMessages([canonical, canonical])), [canonical]);
 });
 
+test("queued active and completed projections keep one card and immutable submittedAt", async () => {
+  const projection = await projectionApi();
+  const optimistic = {
+    role: "user",
+    clientUserMessageId: "client-lifecycle",
+    submissionId: "client-lifecycle",
+    operationKind: "user-turn",
+    projectionAuthority: "optimistic",
+    projectionState: "optimistic",
+    submittedAt: "2026-09-01T21:24:59.000Z",
+    time: "2026-09-01T21:24:59.000Z",
+  };
+  const queued = {
+    ...optimistic,
+    projectionAuthority: "canonical",
+    projectionState: "queued",
+    deliveryState: "queued",
+    submittedAt: "2026-09-01T21:25:00.000Z",
+    time: "2026-09-01T21:25:00.000Z",
+  };
+  const active = {
+    ...queued,
+    projectionAuthority: "live",
+    projectionState: "active",
+    deliveryState: "accepted",
+    turnId: "turn-lifecycle",
+    startedAt: "2026-09-01T21:28:00.000Z",
+    time: "2026-09-01T21:28:00.000Z",
+  };
+  const completed = {
+    ...active,
+    projectionAuthority: "canonical",
+    projectionState: "completed",
+    terminalRevision: 1,
+    time: "2026-09-01T21:29:00.000Z",
+  };
+
+  const queuedProjection = plain(projection.projectCanonicalMessages([optimistic, queued]));
+  assert.equal(queuedProjection.length, 1);
+  assert.equal(queuedProjection[0].projectionState, "queued");
+  assert.equal(queuedProjection[0].submittedAt, queued.submittedAt);
+  assert.equal(queuedProjection[0].time, queued.submittedAt);
+
+  const activeProjection = plain(projection.projectCanonicalMessages([optimistic, queued, active, queued]));
+  assert.equal(activeProjection.length, 1);
+  assert.equal(activeProjection[0].projectionState, "active");
+  assert.equal(activeProjection[0].submittedAt, queued.submittedAt);
+  assert.equal(activeProjection[0].startedAt, active.startedAt);
+  assert.equal(activeProjection[0].time, queued.submittedAt);
+
+  const completedProjection = plain(projection.projectCanonicalMessages([optimistic, queued, active, completed]));
+  assert.equal(completedProjection.length, 1);
+  assert.equal(completedProjection[0].projectionState, "completed");
+  assert.equal(completedProjection[0].submittedAt, queued.submittedAt);
+  assert.equal(completedProjection[0].time, queued.submittedAt);
+});
+
 test("a bridge rebinds provider aliases before a later canonical refresh", async () => {
   const projection = await projectionApi();
   const history = {

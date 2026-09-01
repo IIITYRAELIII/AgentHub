@@ -32,6 +32,7 @@ function historySnapshot(run, completion) {
     responseText: String(completion.finalAnswer ?? source.responseText ?? ""),
     responseItemId: String(source.responseItemId ?? ""),
     clientUserMessageId: String(source.clientUserMessageId ?? "") || null,
+    submittedAt: source.submittedAt ?? source.userMessages?.[0]?.submittedAt ?? source.userMessages?.[0]?.time ?? source.startedAt ?? null,
     userMessages: Array.isArray(source.userMessages) ? structuredClone(source.userMessages) : [],
     activities: Array.isArray(source.activities) ? structuredClone(source.activities) : [],
     activityGroups: Array.isArray(source.activityGroups) ? structuredClone(source.activityGroups) : [],
