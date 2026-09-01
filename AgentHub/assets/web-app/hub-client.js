@@ -153,9 +153,12 @@ const {
   markCommandRejected,
   markConnectionFailure,
   messageSendDefinitelyRejected,
+  messageReceiptProjection,
   mergeDeferredQueueEntries,
+  deferredInputDeliveryState,
+  deferredInputUsesQueue,
+  deferredQueueClientUserMessageIds,
   receiptLeavesDeferredQueue,
-  receiptUsesDeferredQueue,
   mergeLiveMaintenance,
   mergeReconciledUserMessage,
   mergeLiveUserMessages,
@@ -613,8 +616,7 @@ function reconciledMessages(taskIdValue) {
 
 function deferredEntriesForTask(snapshot, taskIdValue) {
   return (snapshot?.deferredInputs ?? []).filter((item) => (
-    item.state !== "dispatching"
-    && item.state !== "steering"
+    deferredInputUsesQueue(item, snapshot?.messageReceipts)
     && !optimisticQueueSteerIds.has(String(item.id ?? ""))
     && (!item.provider || taskId(item.provider, item.threadId, item.streamId) === taskIdValue)
   ));
@@ -654,15 +656,6 @@ function renderTaskQueue(taskIdValue, snapshot = lastSnapshot) {
   ));
 }
 
-function receiptDeliveryPatch(receipt) {
-  if (receipt?.accepted === true || receipt?.steered === true) return deliveryPatch("accepted");
-  if (receipt?.dispatching === true) return deliveryPatch("sending");
-  if (receipt?.deferred === true) {
-    return deliveryPatch(receipt?.queued === true ? "queued" : "deferred");
-  }
-  return null;
-}
-
 function applyMessageReceipts(snapshot) {
   for (const receipt of snapshot?.messageReceipts ?? []) {
     const clientUserMessageId = String(receipt?.clientUserMessageId ?? "").trim();
@@ -680,12 +673,12 @@ function applyMessageReceipts(snapshot) {
       outgoingMessages(stableTaskId).delete(clientUserMessageId);
       continue;
     }
-    const patch = receiptDeliveryPatch(receipt);
+    const projection = messageReceiptProjection(receipt);
+    const patch = projection.deliveryState ? deliveryPatch(projection.deliveryState) : null;
     if (!patch) continue;
-    const accepted = receipt.accepted === true
-      || receipt.deferred === true
-      || receipt.steered === true;
-    agentHub.completeSend(clientUserMessageId, { accepted });
+    agentHub.completeSend(clientUserMessageId, {
+      accepted: projection.accepted,
+    });
     const restoredText = String(receipt.displayText ?? "");
     const restoredAnnotations = normalizedResponseAnnotations(receipt.responseAnnotations);
     const restoredRequest = String(receipt.responseAnnotationRequest ?? "");
@@ -1202,7 +1195,8 @@ function observeQueuedRemoteMessage(commandId, params) {
     receive: (result) => {
       const clientUserMessageId = String(params?.clientUserMessageId ?? "").trim();
       if (clientUserMessageId) {
-        if (!result?.deferred) {
+        const projection = messageReceiptProjection(result);
+        if (!projection.ownsDeferredQueue) {
           optimisticDeferredClientUserMessageIds.delete(clientUserMessageId);
           deferredClientUserMessageIds.delete(clientUserMessageId);
         }
@@ -1212,11 +1206,7 @@ function observeQueuedRemoteMessage(commandId, params) {
           itemId: result?.itemId ?? clientUserMessageId,
           remoteQueued: false,
           remoteCommandId: commandId,
-          ...(result?.accepted
-            ? deliveryPatch("accepted")
-            : result?.deferred
-              ? deliveryPatch(result?.queued ? "queued" : "deferred")
-              : deliveryPatch("rejected")),
+          ...deliveryPatch(projection.deliveryState ?? "rejected"),
         });
         if (resolvedTaskId) renderTaskMessages(resolvedTaskId);
       }
@@ -1854,12 +1844,10 @@ function applySnapshot(snapshot, { materialized = false } = {}) {
       ...syncActiveMaintenanceMessages(representativeTasks),
     ]);
     if (snapshot.messageReceipts !== previousSnapshot?.messageReceipts) applyMessageReceipts(snapshot);
-    const serverDeferredClientUserMessageIds = new Set(
-      (snapshot.deferredInputs ?? [])
-        .filter((item) => item.state !== "dispatching")
-        .map((item) => String(item.clientUserMessageId ?? "").trim())
-        .filter(Boolean),
-    );
+    const serverDeferredClientUserMessageIds = new Set(deferredQueueClientUserMessageIds(
+      snapshot.deferredInputs,
+      snapshot.messageReceipts,
+    ));
     const activeRunReceipts = activeRunMessageReceipts(snapshot.tasks);
     const nextActiveRunClientUserMessageIds = new Set(
       activeRunReceipts.map((receipt) => receipt.clientUserMessageId),
@@ -1935,17 +1923,16 @@ function applySnapshot(snapshot, { materialized = false } = {}) {
     for (const deferred of snapshot.deferredInputs ?? []) {
       const clientUserMessageId = String(deferred.clientUserMessageId ?? "");
       if (!clientUserMessageId) continue;
+      const deferredDeliveryState = deferredInputDeliveryState(
+        deferred,
+        snapshot.messageReceipts,
+      );
+      if (!deferredDeliveryState) continue;
       patchOutgoing(
         taskId(deferred.provider, deferred.threadId, deferred.streamId),
         clientUserMessageId,
         {
-          ...deliveryPatch(
-            deferred.state === "dispatching" || deferred.state === "steering"
-              ? "sending"
-              : deferred.state === "queued"
-                ? "queued"
-                : "deferred",
-          ),
+          ...deliveryPatch(deferredDeliveryState),
           time: deferred.createdAt ?? null,
           ...nonEmptyAttachmentPatch(deferred.attachments),
         },
@@ -2717,16 +2704,15 @@ agentHub.on("message:send", (request) => {
       }
     },
     receive: (result) => {
-      const accepted = Boolean(result?.accepted || result?.deferred);
-      const deferredToQueue = receiptUsesDeferredQueue(result);
-      if (deferredToQueue) {
+      const projection = messageReceiptProjection(result);
+      if (projection.ownsDeferredQueue) {
         optimisticDeferredClientUserMessageIds.add(request.requestId);
         deferredClientUserMessageIds.add(request.requestId);
       } else {
         optimisticDeferredClientUserMessageIds.delete(request.requestId);
         deferredClientUserMessageIds.delete(request.requestId);
       }
-      agentHub.completeSend(request.requestId, { accepted });
+      agentHub.completeSend(request.requestId, { accepted: projection.accepted });
       updateOutgoing(request.taskId, request.requestId, {
         provider: identity?.provider ?? "",
         threadId: result?.threadId ?? identity?.threadId ?? "",
@@ -2739,13 +2725,7 @@ agentHub.on("message:send", (request) => {
         ...(result?.accepted && !result?.steered ? { turnUserSlot: "root" } : {}),
         ...(result?.remoteQueued
           ? deliveryPatch("relaying")
-          : result?.accepted
-          ? deliveryPatch("accepted")
-          : result?.dispatching
-            ? deliveryPatch("sending")
-            : result?.deferred
-            ? deliveryPatch(result?.queued ? "queued" : "accepted")
-            : deliveryPatch("rejected")),
+          : deliveryPatch(projection.deliveryState ?? "rejected")),
       });
       renderOutgoingWithoutBlockingSend(request.taskId, { queue: queuesOptimistically });
     },
@@ -2773,11 +2753,6 @@ agentHub.on("message:send", (request) => {
       }
       renderTaskMessages(request.taskId);
       if (queuesOptimistically) {
-        deferredClientUserMessageIds = new Set([
-          ...deferredClientUserMessageIds,
-          ...(result?.deferred ? [request.requestId] : []),
-        ]);
-        if (!result?.deferred) deferredClientUserMessageIds.delete(request.requestId);
         renderTaskQueue(request.taskId, result?.snapshot ?? lastSnapshot);
         renderTaskMessages(request.taskId);
       }
