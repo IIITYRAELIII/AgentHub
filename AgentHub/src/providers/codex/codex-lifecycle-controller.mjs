@@ -167,11 +167,14 @@ export class CodexLifecycleController {
       run.startedAt = turnStart.startedAt || run.startedAt;
       run.promptPreview = turnStart.prompt || run.promptPreview;
     }
+    const clientUserMessageId = String(run?.clientUserMessageId ?? "").trim()
+      || String(payload.clientUserMessageId ?? "").trim()
+      || null;
     if (isCodexContextProbeTurn({
       contextProbe: run?.contextProbe,
       prompt: String(payload.prompt ?? "").trim() || turnStart?.prompt || run?.promptPreview,
       finalAnswer: payload.finalAnswer ?? run?.responseText,
-      clientUserMessageId: run?.clientUserMessageId,
+      clientUserMessageId,
       userMessages: payload.userMessages ?? run?.userMessages,
     })) {
       d.codexTurnStarts.delete(turnEndKey(deliveredIdentity));
@@ -227,7 +230,7 @@ export class CodexLifecycleController {
       operationKind: "user-turn",
       contextProbe: false,
       prompt: payload.prompt ?? turnStart?.prompt ?? run?.promptPreview,
-      clientUserMessageId: run?.clientUserMessageId ?? payload.clientUserMessageId ?? null,
+      clientUserMessageId,
       prompts: payload.prompts,
       userMessages: payload.userMessages ?? run?.userMessages,
       finalAnswer: payload.finalAnswer ?? "",
@@ -258,7 +261,7 @@ export class CodexLifecycleController {
         operationKind: "user-turn",
         contextProbe: false,
         prompt: payload.prompt ?? turnStart?.prompt ?? run?.promptPreview,
-        clientUserMessageId: run?.clientUserMessageId ?? payload.clientUserMessageId ?? null,
+        clientUserMessageId,
         prompts: payload.prompts,
         userMessages: payload.userMessages ?? run?.userMessages,
         changedFiles,
@@ -281,7 +284,7 @@ export class CodexLifecycleController {
           startedAt: payload.startedAt ?? turnStart?.startedAt ?? run?.startedAt,
           operationKind: "user-turn",
           contextProbe: false,
-          clientUserMessageId: run?.clientUserMessageId ?? payload.clientUserMessageId ?? null,
+          clientUserMessageId,
         }, finalAnswer, { updatedAt: payload.completedAt });
         d.setBoundedMapValue(d.lastSeenTaskTurnIds, taskRunKey({
           provider: "codex",
