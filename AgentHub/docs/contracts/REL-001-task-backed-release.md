@@ -56,11 +56,6 @@ Returning, withdrawing or replacing an Await Task rebuilds `PreRelease` without
 its old result. An Await Task without successful `dev` and `PreRelease`
 integration is explicitly blocked and cannot be released.
 
-`PreRelease` is materialized only in an Agent Hub-owned standalone clone under
-runtime data. That clone has a Git common directory distinct from the registered
-primary Workspace and imports exact Task result commits from the primary clone
-without sharing branch ownership. A linked worktree is never a release holder.
-
 ## Task Git reference and CAS
 
 The server-side Git boundary owns:
@@ -73,18 +68,12 @@ The server-side Git boundary owns:
 The Task aggregate stores only `{projectRoot, branch, resultCommit}` for each
 repository. It does not store a second release-authority copy of changed files,
 base/result revision pairs, blobs or manifests. Work-log changed files remain
-diagnostic journal data only. There is no separate readiness row or freeze
-command. The release plan hashes the current Task revision
+diagnostic journal data only. There is no separate readiness row, frozen
+manifest or freeze command. The release plan hashes the current Task revision
 and Git references. Generic status mutation may select any workflow status at
 any time; any intervening Task or accepted-result mutation changes the plan
 revision and invalidates an older Architect plan. Provider terminal callbacks
 do not infer file ownership or release readiness.
-
-The independent release clone writes a content-addressed runtime manifest and a
-retry checkpoint containing the exact plan revision, `origin/main` base, Task IDs,
-result commits and resulting `PreRelease` head. This is immutable execution and
-audit evidence, not a second readiness authority; the live Task plan remains the
-CAS owner. Retry may reuse only the exact matching manifest and head.
 
 ## Release plan and completion
 
@@ -98,14 +87,11 @@ Task IDs, row revisions and Git references. Conflict detection reads the
 Git-derived plan projection, never work-log files or a shared mutable tree.
 
 At explicit release start, Architect freezes the exact release-plan revision,
-included Await Task IDs and resulting `PreRelease` head in the independent
-release clone. Architect updates that clone from `origin/main`, writes one
-consolidated `CHANGELOG.md` entry in `PreRelease` when that file exists, validates
-the exact frozen revision, integrates it into the clone's `main`, and publishes
-that `main`. Publication entrypoints reject the registered primary Workspace and
-any repository without the Agent Hub-owned independent-clone marker. Later Await
-Tasks are not silently added. Only a Stream with `settings.architect=true` may
-record verified release completion.
+included Await Task IDs and resulting `PreRelease` head. Architect updates from
+`origin/main`, writes one consolidated `CHANGELOG.md` entry in `PreRelease` when
+that file exists, validates the exact frozen revision, integrates it into
+`main`, and publishes `main`. Later Await Tasks are not silently added. Only a
+Stream with `settings.architect=true` may record verified release completion.
 
 Completion performs one transaction that CAS-checks every exact Task revision
 and the plan hash, then changes only those Tasks to `done` and closes them.
@@ -118,24 +104,6 @@ second stored blob manifest. Once verified, only included Tasks are completed
 and their managed branches and worktrees may be removed. Published `main` is
 incorporated into `dev` without discarding later Test work, then `PreRelease` is
 rebuilt from any remaining Await Tasks.
-
-## Registered primary Workspace invariant
-
-The registered primary Workspace must own and remain attached to
-`refs/heads/main` before preflight, after candidate preparation, during retry,
-after publication and during startup reconciliation. Release preparation and
-publication must not run `switch`, `checkout`, `detach`, `reset`, `stash` or
-`clean` there and must not mutate its HEAD, index or working tree. Legacy linked
-holders are reported as migration evidence, are never reused, and are not
-deleted by release reconciliation.
-
-After verified publication, Agent Hub may synchronize the primary only with a
-guarded `--ff-only` update while it is still attached to `main`. Local dirty
-paths are hashed before the update. If the published path set overlaps a local
-dirty path, the update is not a fast-forward, or the primary invariant is
-already broken, release completion remains successful while primary HEAD and
-local bytes remain untouched and the result is `manual_required`. A successful
-fast-forward must preserve every pre-existing dirty-path hash.
 
 ## Test Contour
 
@@ -185,9 +153,33 @@ is audit-only and is never read by release planning. All new work follows
 ADR-0009 Task branches, ADR-0010 integration boundaries and ADR-0011
 Git-reference authority.
 
-Linked release holders from before ADR-0013 are detection-only compatibility
-evidence. They may be removed only by a separate, explicitly authorized cleanup
-after ownership is proven; startup and release retry never remove them. The
-detection guard may be retired only after all supported installations have an
-independent-clone checkpoint and no supported migration can contain a linked
-holder.
+## Independent release repository
+
+`PreRelease` is materialized only in an Agent Hub-owned standalone clone under
+runtime data. Its Git common directory is distinct from the registered primary
+Workspace. It imports the exact frozen Task results without sharing branch
+ownership; a linked worktree is never a release holder. Publication entrypoints
+require the independent-clone marker and reject the primary Workspace.
+
+The clone writes a content-addressed execution manifest and retry checkpoint
+containing the exact plan revision, `origin/main` base, Task IDs, result commits
+and `PreRelease` head. This is audit evidence, not a second readiness authority.
+Retry may reuse it only when the complete frozen identity and head match.
+
+The registered primary must own and remain attached to `refs/heads/main` before
+preflight, after candidate preparation, during retry, after publication and at
+startup reconciliation. Release code must not switch, detach, reset, stash,
+clean, or otherwise mutate its HEAD, index or working tree.
+
+After verified publication, synchronization is limited to a guarded `--ff-only`
+update while the primary still satisfies the invariant. Existing dirty paths are
+hashed first. Overlap with published paths, a non-fast-forward, or an invalid
+primary yields `manual_required`: the successful release stands and primary HEAD
+and local bytes remain untouched. A successful fast-forward must preserve every
+pre-existing dirty-path hash.
+
+Linked release holders from before ADR-0013 are detection-only migration
+evidence. They are never reused or removed by startup/retry. Cleanup requires a
+separate authorization and proven Agent Hub ownership. The detection guard may
+be retired only after every supported installation has an independent-clone
+checkpoint and no supported migration can contain a linked holder.

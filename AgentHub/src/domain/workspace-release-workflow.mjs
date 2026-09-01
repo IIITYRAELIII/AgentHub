@@ -106,7 +106,6 @@ export const RELEASE_WORKFLOW_DEVELOPER_RULES = [
   "Never merge dev into PreRelease. Changes belonging only to Tasks in Test must not enter PreRelease.",
   "If an Await Task is returned for revision, withdrawn, or excluded, rebuild PreRelease without it. A newly accepted Task result completely replaces its previous result.",
   "A merge conflict does not cancel the selected status, but a Task without successful dev and PreRelease integration is blocked and cannot be released.",
-  "The registered primary Workspace must remain attached to main. Release and PreRelease work runs only in the Agent Hub-owned independent clone returned by release preflight; never detach, switch, reset, stash, clean, or reuse a linked release holder in the primary repository.",
   "Only the user's explicit release command authorizes release tests, builds, final integration, push, production deployment, and release completion. The authorization applies only to the current release.",
   "In a regular Stream, the release command accepts the current Task and prepares it for Await but does not publish production. Only an Architect may freeze and publish the release.",
 ].join("\n");
@@ -120,7 +119,7 @@ export const ARCHITECT_RELEASE_DEVELOPER_RULES = [
   "Release validation sequence",
   "",
   "When the user explicitly authorizes a release, act as the release integrator.",
-  "At release start, assert that the registered primary Workspace remains attached to main, then use the Workspace-prescribed preflight to prepare the Agent Hub-owned independent release clone. Never detach, switch, reset, stash, clean, or publish from the primary Workspace, and never reuse a linked legacy holder.",
+  "At the start of the release, update local main from origin before freezing the release set. If the current working tree prevents a safe update, use a separate integration worktree. Never stash, discard, or overwrite changes owned by another Stream.",
   "After updating main, freeze the exact release set. Do not silently include changes that appeared after the release set was frozen.",
   "Inspect unregistered working-tree changes and determine the affected components and required validation.",
   "Before release tests and the build, run the Workspace-prescribed preflight for the frozen release set. Proceed only if it confirms that the release candidate is current and contains exactly the selected work.",
@@ -132,7 +131,6 @@ export const ARCHITECT_RELEASE_DEVELOPER_RULES = [
   "If the pipeline fails, use its complete aggregated failure report. Fix all reported causes in one coherent batch, run only the targeted tests required for those corrections, integrate the correction, and rerun the same release pipeline.",
   "Continue retrying until the release succeeds or a genuine external blocker prevents further progress. Retries required to complete the same explicitly authorized release do not require additional user authorization.",
   "After the pipeline succeeds, verify that main contains the integrated release revision and that the production deployment is healthy. Only then mark the release as published.",
-  "After publication, allow only the guarded post-release fast-forward of a primary still attached to main. If local modifications overlap published paths or the update is not a fast-forward, keep the release successful, leave the primary bytes and HEAD untouched, and report manual synchronization evidence.",
   "After confirmed publication, close only the included work items, synchronize the published main into the integration branch without losing later work, and rebuild the next candidate from the remaining accepted items.",
 ].join("\n");
 

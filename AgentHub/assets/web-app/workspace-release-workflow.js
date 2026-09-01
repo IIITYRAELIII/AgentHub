@@ -19,7 +19,6 @@
     "Never merge dev into PreRelease. Changes belonging only to Tasks in Test must not enter PreRelease.",
     "If an Await Task is returned for revision, withdrawn, or excluded, rebuild PreRelease without it. A newly accepted Task result completely replaces its previous result.",
     "A merge conflict does not cancel the selected status, but a Task without successful dev and PreRelease integration is blocked and cannot be released.",
-    "The registered primary Workspace must remain attached to main. Release and PreRelease work runs only in the Agent Hub-owned independent clone returned by release preflight; never detach, switch, reset, stash, clean, or reuse a linked release holder in the primary repository.",
     "Only the user's explicit release command authorizes release tests, builds, final integration, push, production deployment, and release completion. The authorization applies only to the current release.",
     "In a regular Stream, the release command accepts the current Task and prepares it for Await but does not publish production. Only an Architect may freeze and publish the release.",
   ];
