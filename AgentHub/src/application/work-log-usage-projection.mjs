@@ -26,7 +26,7 @@ import {
   usageSyncEventIdentity,
   usageSyncEventFromLedgerRecord,
 } from "../domain/work-log-usage-sync.mjs";
-import { applyInferredTeamDeviceAccount } from "../domain/team-usage-accounts.mjs";
+import { applyInferredDeviceTimelineAccounts } from "../domain/team-usage-accounts.mjs";
 
 const WORK_LOG_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ACCOUNT_ATTRIBUTIONS = new Set(["exact", "inferred"]);
@@ -583,6 +583,7 @@ function emptyAccountUsageBucket(accountKey, catalog) {
     inferredTurns: 0,
     unknownTurns: 0,
     noCostTurns: 0,
+    deviceRecoveredTurns: 0,
     localTurns: 0,
     syncedTurns: 0,
     providers: {},
@@ -620,6 +621,7 @@ function emptyAccountDeviceBucket(deviceId, source, { noCost = false, label = ""
     inferredTurns: 0,
     unknownTurns: 0,
     noCostTurns: 0,
+    deviceRecoveredTurns: 0,
     localTurns: 0,
     syncedTurns: 0,
     providers: {},
@@ -652,11 +654,13 @@ function applyAccountUsageStats(target, entry, record, {
     target.exactTurns += 1;
   } else {
     target.inferredTurns += 1;
+    if (String(record?.accountRecovery ?? "").trim() === "device") {
+      target.deviceRecoveredTurns += 1;
+    }
   }
 }
 
-function syncedUsageRecord(value) {
-  const event = applyInferredTeamDeviceAccount(normalizeUsageSyncEvent(value));
+function syncedUsageRecord(event) {
   if (!event) return null;
   return {
     usage: event.usage,
@@ -675,10 +679,20 @@ function syncedUsageRecord(value) {
     accountLabel: event.accountLabel,
     accountType: event.accountType,
     accountPlan: event.accountPlan,
+    accountRecovery: event.accountRecovery,
     syncDeviceId: event.deviceId,
     syncDeviceLabel: event.deviceLabel,
     syncEventId: event.eventId,
   };
+}
+
+function syncedUsageRecords(values) {
+  const normalized = (Array.isArray(values) ? values : [])
+    .map(normalizeUsageSyncEvent)
+    .filter(Boolean);
+  return applyInferredDeviceTimelineAccounts(normalized)
+    .map(syncedUsageRecord)
+    .filter(Boolean);
 }
 
 export function buildWorkLogAccountUsageSummary(turns = {}, {
@@ -694,8 +708,7 @@ export function buildWorkLogAccountUsageSummary(turns = {}, {
   const normalizedTurns = normalizedLedger({ version: 9, turns }).ledger.turns;
   const normalizedLocalDeviceId = String(localDeviceId ?? "").trim();
   const normalizedLocalDeviceLabel = String(localDeviceLabel ?? "").trim();
-  const normalizedSyncedTurns = (Array.isArray(syncedUsageEvents) ? syncedUsageEvents : [])
-    .map(syncedUsageRecord)
+  const normalizedSyncedTurns = syncedUsageRecords(syncedUsageEvents)
     .filter((record) => record && record.syncDeviceId !== normalizedLocalDeviceId);
   const nowMs = Number.isFinite(Number(now)) ? Number(now) : Date.now();
   const records = [
@@ -726,6 +739,7 @@ export function buildWorkLogAccountUsageSummary(turns = {}, {
       let inferredTurns = 0;
       let unknownTurns = 0;
       let noCostTurns = 0;
+      let deviceRecoveredTurns = 0;
       let syncedTurns = 0;
       for (const entry of records) {
         if (entry.timestamp < fromMs) continue;
@@ -768,6 +782,9 @@ export function buildWorkLogAccountUsageSummary(turns = {}, {
           exactTurns += 1;
         } else {
           inferredTurns += 1;
+          if (String(record?.accountRecovery ?? "").trim() === "device") {
+            deviceRecoveredTurns += 1;
+          }
         }
         totalCredits += entry.credits;
         totalTurns += 1;
@@ -783,6 +800,7 @@ export function buildWorkLogAccountUsageSummary(turns = {}, {
         inferredTurns,
         unknownTurns,
         noCostTurns,
+        deviceRecoveredTurns,
         syncedTurns,
         accounts: [...accounts.values()].map((account) => ({
           ...account,
@@ -875,7 +893,10 @@ function formatAccountQuality(account) {
   }
   const parts = [];
   if (account.exactTurns) parts.push(`точно ${account.exactTurns}`);
-  if (account.inferredTurns) parts.push(`восст. ${account.inferredTurns}`);
+  const deviceRecoveredTurns = Math.max(0, Number(account.deviceRecoveredTurns) || 0);
+  const otherInferredTurns = Math.max(0, (Number(account.inferredTurns) || 0) - deviceRecoveredTurns);
+  if (deviceRecoveredTurns) parts.push(`Восстановлено устройством ${deviceRecoveredTurns}`);
+  if (otherInferredTurns) parts.push(`восст. ${otherInferredTurns}`);
   if (account.unknownTurns) parts.push(`без ключа ${account.unknownTurns}`);
   if (account.noCostTurns) parts.push(`без расхода ${account.noCostTurns}`);
   if (account.syncedTurns) parts.push(`sync ${account.syncedTurns}`);
@@ -961,6 +982,7 @@ function formatAccountUsageRow(account, totalCredits, groupId) {
     + `data-account-color="${escapeHtmlAttribute(accountColorSlot(uiAccountKey))}" `
     + `data-account-attribution-exact="${escapeHtmlAttribute(String(account.exactTurns))}" `
     + `data-account-attribution-inferred="${escapeHtmlAttribute(String(account.inferredTurns))}" `
+    + `data-account-recovery-device="${escapeHtmlAttribute(String(account.deviceRecoveredTurns))}" `
     + (account.noCost ? "data-account-no-cost " : "")
     + `data-account-sync-turns="${escapeHtmlAttribute(String(account.syncedTurns))}" `
     + `data-account-turns="${escapeHtmlAttribute(String(account.turns))}" `
@@ -1009,6 +1031,7 @@ function formatAccountDeviceRow(account, device, index) {
     + `data-device-index="${escapeHtmlAttribute(String(Math.min(index, 3)))}" `
     + `data-account-color="${escapeHtmlAttribute(accountColorSlot(uiAccountKey))}" `
     + `data-account-turns="${escapeHtmlAttribute(String(device.turns))}" `
+    + `data-account-recovery-device="${escapeHtmlAttribute(String(device.deviceRecoveredTurns))}" `
     + `data-account-credits="${escapeHtmlAttribute(String(device.credits))}">`
     + "<span data-work-log-account-name>"
     + '<span data-work-log-account-device-rail aria-hidden="true"></span>'
@@ -3040,8 +3063,7 @@ export function buildWorkLogUsageHistory(turns = {}, {
   const localUsageEventIds = new Set(localTurns.map(usageSyncEventIdentity).filter(Boolean));
   const normalizedLocalDeviceId = String(localDeviceId ?? "").trim();
   const normalizedLocalDeviceLabel = String(localDeviceLabel ?? "").trim();
-  const syncedTurns = (Array.isArray(syncedUsageEvents) ? syncedUsageEvents : [])
-    .map(syncedUsageRecord)
+  const syncedTurns = syncedUsageRecords(syncedUsageEvents)
     .filter((record) => {
       if (!record || record.syncDeviceId === normalizedLocalDeviceId) return false;
       if (localUsageEventIds.has(record.syncEventId)) return false;

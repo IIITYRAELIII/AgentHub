@@ -35,6 +35,16 @@ test("usage sync account projection executes in a worker thread", async () => {
       events: [{
         deviceId: "device-remote",
         provider: "codex",
+        threadId: "thread-legacy",
+        turnId: "turn-legacy",
+        completedAt: "2026-08-20T08:00:00.000Z",
+        accountKey: "chatgpt:untrusted",
+        accountLabel: "untrusted@example.com",
+        accountAttribution: "inferred",
+        estimatedCredits: 1,
+      }, {
+        deviceId: "device-remote",
+        provider: "codex",
         threadId: "thread-remote",
         turnId: "turn-remote",
         completedAt: "2026-08-20T09:00:00.000Z",
@@ -52,7 +62,10 @@ test("usage sync account projection executes in a worker thread", async () => {
     assert.equal(result.projected, true);
     assert.ok(result.workerThreadId > 0);
     assert.match(result.html, /data-work-log-account-panel/u);
-    assert.equal(result.eventCount, 1);
+    assert.match(result.html, /data-account-key="chatgpt:owner"/u);
+    assert.match(result.html, /data-account-turns="2"/u);
+    assert.doesNotMatch(result.html, /__unknown_account__/u);
+    assert.equal(result.eventCount, 2);
     const snapshot = await store.usageSyncSnapshot({
       deviceLabel: "local",
       afterObservedAt: "2026-08-20T10:00:30.000Z",
