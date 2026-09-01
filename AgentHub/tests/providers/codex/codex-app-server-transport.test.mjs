@@ -68,6 +68,34 @@ test("CodexAppServerTransport confirms an elicitation response was flushed", asy
   await flushed;
 });
 
+test("CodexAppServerTransport rejects an elicitation response bound to an old generation", async () => {
+  const firstChild = fakeChild({ pid: 321 });
+  const replacementChild = fakeChild({ pid: 654 });
+  const children = [firstChild, replacementChild];
+  const replacementWrites = [];
+  replacementChild.stdin.on("data", (chunk) => replacementWrites.push(String(chunk)));
+  const transport = new CodexAppServerTransport({
+    spawnProcess: async () => children.shift(),
+    onStderr: () => {},
+  });
+  await transport.start();
+  const firstGeneration = transport.generation;
+  firstChild.emit("exit", 1, null);
+  await new Promise((resolve) => setImmediate(resolve));
+  await transport.start();
+
+  await assert.rejects(
+    transport.respond(41, { action: "accept" }, { expectedGeneration: firstGeneration }),
+    (error) => {
+      assert.equal(error.code, "CODEX_APP_SERVER_GENERATION_CHANGED");
+      assert.equal(error.deliveryOutcome, "not-sent");
+      return true;
+    },
+  );
+  assert.equal(transport.generation, firstGeneration + 1);
+  assert.deepEqual(replacementWrites, []);
+});
+
 test("CodexAppServerTransport coalesces live answer deltas before dispatch", async () => {
   const { child, messages } = await startedTransport();
   const lines = Array.from({ length: 600 }, (_, index) => JSON.stringify({

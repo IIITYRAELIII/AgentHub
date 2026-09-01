@@ -10,6 +10,7 @@ export class ApprovalController {
     telegram,
     currentChatId,
     mcpAdmissionCoordinator = null,
+    transportGeneration = null,
   }) {
     this.approvalProtocol = approvalProtocol;
     this.autoApprove = autoApprove;
@@ -21,6 +22,9 @@ export class ApprovalController {
     this.telegram = telegram;
     this.currentChatId = currentChatId;
     this.mcpAdmissionCoordinator = mcpAdmissionCoordinator;
+    this.transportGeneration = typeof transportGeneration === "function"
+      ? transportGeneration
+      : null;
     this.pending = new Map();
   }
 
@@ -273,21 +277,27 @@ export class ApprovalController {
       return;
     }
     const runId = typeof run === "object" ? run?.id : run;
+    const currentTransportGeneration = this.transportGeneration;
+    const transportGeneration = currentTransportGeneration?.() ?? null;
     this.mcpAdmissionCoordinator.begin({
       rpcId,
       params,
       response,
-      respond: (...args) => this.#respondOnce(...args, false),
+      respond: (id, value) => this.#respondOnce(id, value, false, {
+        expectedGeneration: transportGeneration,
+      }),
       runId,
       threadId: typeof run === "object" ? run?.threadId : params?.threadId,
       turnId: typeof run === "object" ? run?.turnId : params?.turnId,
       source,
       isActive: () => !runId || this.runExists(runId),
+      transportGeneration,
+      currentTransportGeneration,
     });
   }
 
-  #respondOnce(rpcId, response, logFailure = true) {
-    const result = this.respond(rpcId, response);
+  #respondOnce(rpcId, response, logFailure = true, options = {}) {
+    const result = this.respond(rpcId, response, options);
     if (logFailure && result && typeof result.catch === "function") {
       result.catch((error) => console.error(
         `[mcp-admission] ${JSON.stringify({

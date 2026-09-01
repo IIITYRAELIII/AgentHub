@@ -69,8 +69,12 @@ export function createCodexLifecycleComposition({
     transport.notify(method, params);
   }
 
-  function respondRpc(id, result) {
-    return transport.respond(id, result);
+  function respondRpc(id, result, options = {}) {
+    return transport.respond(id, result, options);
+  }
+
+  function transportGeneration() {
+    return transport.generation;
   }
 
   async function initialize(options = {}) {
@@ -101,6 +105,7 @@ export function createCodexLifecycleComposition({
     readThread,
     sendNotification,
     respondRpc,
+    transportGeneration,
     initialize,
   };
 }

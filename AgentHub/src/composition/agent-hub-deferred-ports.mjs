@@ -48,7 +48,7 @@ export function createAgentHubDeferredPorts() {
   ]);
   const codexLifecycle = createDeferredCompositionPort("Codex lifecycle wiring", [
     "start", "stop", "restartAfterCrash", "sendRpc", "invalidateThreadRead", "readThread",
-    "sendNotification", "respondRpc", "initialize",
+    "sendNotification", "respondRpc", "transportGeneration", "initialize",
   ]);
   const providerStartup = createDeferredCompositionPort("provider startup wiring", [
     "initializeProvider", "attachCodexThread", "createThread", "listThreads",
@@ -126,6 +126,7 @@ export function createAgentHubDeferredPorts() {
       readCodexThread: codexLifecycle.api.readThread,
       sendNotification: codexLifecycle.api.sendNotification,
       respondRpc: codexLifecycle.api.respondRpc,
+      codexTransportGeneration: codexLifecycle.api.transportGeneration,
       initializeCodex: codexLifecycle.api.initialize,
       ...providerStartup.api,
       desktopMessageTarget: desktopCommands.api.messageTarget,

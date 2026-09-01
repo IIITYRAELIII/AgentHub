@@ -180,6 +180,7 @@ export async function createClientRuntimeComposition({
     approvalProtocol: late.approvalProtocol,
     autoApprove: () => hostState.autoApprove,
     respondRpc: api.respondRpc,
+    codexTransportGeneration: api.codexTransportGeneration,
     sendRunMessage: api.sendRunMessage,
     runExists: (id) => taskRuns.values().some((run) => run.id === id),
     taskProgress: late.taskProgress,
