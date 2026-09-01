@@ -47,7 +47,7 @@ test("Windows Explorer reveals the exact file without a shell command", async ()
   await reveal;
   assert.equal(invocation.file, "explorer.exe");
   assert.deepEqual(invocation.args, [`/select,${path.resolve("file with spaces.txt")}`]);
-  assert.equal(invocation.options.windowsHide, true);
+  assert.equal(invocation.options.windowsHide, false);
   assert.equal(invocation.options.detached, true);
   assert.equal(invocation.options.stdio, "ignore");
 });

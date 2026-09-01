@@ -10,7 +10,6 @@ import {
   WorkspaceCatalogStore,
 } from "../../../src/infrastructure/persistence/workspace-catalog-store.mjs";
 import {
-  AGENT_HUB_WORKSPACE_DEVELOPER_RULES,
   LEGACY_TASK_BRANCH_RELEASE_WORKFLOW_DEVELOPER_RULES,
   LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_RU_V1,
   LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V2,
@@ -575,12 +574,13 @@ test("release workflow is opt-in and injects policy without changing editable ru
     workspaceId: workspace.id, name: "Architect", settings: { architect: true },
   });
   store.bindThread({ provider: "codex", threadId: "thread", streamId: stream.id });
+  assert.equal(store.developerRulesForStream(stream.id).workspace.content, "");
   store.updateWorkspaceDeveloperRules(workspace.id, "Fast Test Contour workflow");
 
   assert.equal(store.releaseWorkflowEnabledForThread({ provider: "codex", threadId: "thread" }), false);
   assert.equal(
     store.developerRulesForStream(stream.id).workspace.content,
-    `${AGENT_HUB_WORKSPACE_DEVELOPER_RULES}\n\nFast Test Contour workflow`,
+    "Fast Test Contour workflow",
   );
   assert.equal(store.developerRulesForStream(stream.id).stream, null);
   store.updateWorkspaceSettings(workspace.id, { releaseWorkflowEnabled: true });
@@ -592,7 +592,7 @@ test("release workflow is opt-in and injects policy without changing editable ru
   );
   assert.equal(
     store.developerRulesForStream(stream.id).workspace.content,
-    `${AGENT_HUB_WORKSPACE_DEVELOPER_RULES}\n\n${RELEASE_WORKFLOW_DEVELOPER_RULES}\n\nFast Test Contour workflow`,
+    `${RELEASE_WORKFLOW_DEVELOPER_RULES}\n\nFast Test Contour workflow`,
   );
   assert.match(store.developerRulesForStream(stream.id).stream.content, /Workspace release architect/u);
 });
@@ -792,16 +792,16 @@ test("moving a Stream changes inherited Workspace developer rules", async (t) =>
 
   assert.equal(
     store.developerRulesForStream(moving.id).workspace.content,
-    `${AGENT_HUB_WORKSPACE_DEVELOPER_RULES}\n\nFirst workspace`,
+    "First workspace",
   );
   const inherited = store.developerRulesForThread({ provider: "codex", threadId: "thread-1" });
-  assert.equal(inherited.workspace.content, `${AGENT_HUB_WORKSPACE_DEVELOPER_RULES}\n\nFirst workspace`);
+  assert.equal(inherited.workspace.content, "First workspace");
   assert.deepEqual(inherited.stream, store.streamDeveloperRules(moving.id));
   store.moveStream(moving.id, secondWorkspace.id);
   const effective = store.developerRulesForThread({ provider: "codex", threadId: "thread-1" });
   assert.equal(
     effective.workspace.content,
-    `${AGENT_HUB_WORKSPACE_DEVELOPER_RULES}\n\nSecond workspace`,
+    "Second workspace",
   );
   assert.equal(effective.stream.content, "Stream rule");
 });

@@ -21,17 +21,12 @@ import {
   legacyReleaseWorkflowRules,
   RELEASE_WORKFLOW_SETTING,
   releaseWorkflowEnabled,
-  storedWorkspaceDeveloperRules,
   workspaceSettingsWithReleaseWorkflow,
 } from "../../domain/workspace-release-workflow.mjs";
 import { workspaceSettingsWithTaskPrefix } from "../../domain/task-number.mjs";
 
 const SCHEMA_VERSION = 11;
 export const DEVELOPER_RULES_MAX_BYTES = 32 * 1024;
-const WORKSPACE_RULE_PREFIX_BYTES = Buffer.byteLength(
-  `${storedWorkspaceDeveloperRules("")}\n\n`,
-  "utf8",
-);
 const SOURCES = new Set(["created", "discovered", "migration", "rebirth"]);
 const DEVELOPER_RULE_SCOPES = new Set(["workspace", "stream"]);
 

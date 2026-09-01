@@ -57,7 +57,7 @@ export function revealWindowsFile(file, {
     const child = spawnImpl("explorer.exe", [`/select,${target}`], {
       detached: true,
       stdio: "ignore",
-      windowsHide: true,
+      windowsHide: false,
     });
     child.once("error", (error) => settle(reject, error));
     child.once("spawn", () => {

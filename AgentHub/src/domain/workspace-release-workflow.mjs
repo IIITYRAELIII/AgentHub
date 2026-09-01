@@ -9,15 +9,6 @@ export const LEGACY_AGENT_HUB_WORKSPACE_DEVELOPER_RULES_RU_V1 = [
   "После завершения реализации переводи Task в Test. В Await — только после принятия результата; Done — только после подтверждённой публикации.",
 ].join("\n");
 
-export const AGENT_HUB_WORKSPACE_DEVELOPER_RULES = [
-  "Agent Hub rules",
-  "Create a Dashboard Task only for work that changes code, configuration, data, documentation, or another deliverable.",
-  "Do not create a Task for diagnosis, reading, investigation, explanations, or answers that require no changes.",
-  "If diagnosis reveals required changes, create or assign a Task to the current Stream and exact provider turn with hub_task_claim before the first edit.",
-  "Keep the Task title concise and outcome-oriented; preserve the user's original request in its description.",
-  "Move a Task to Test as soon as implementation is complete. Move it to Await only after acceptance; move it to Done only after verified publication.",
-].join("\n");
-
 export const LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V1 = [
   "This Workspace uses a multi-stream, release-oriented workflow.",
   "These rules are the specific workflow policy for this Workspace and override conflicting repository defaults, including any general instruction to commit or push by default.",
@@ -174,7 +165,6 @@ const KNOWN_WORKSPACE_RULE_PREFIXES = [
   { content: LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_RU_V1, release: true },
   { content: LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V2, release: true },
   { content: LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V1, release: true },
-  { content: AGENT_HUB_WORKSPACE_DEVELOPER_RULES, release: false },
   { content: LEGACY_AGENT_HUB_WORKSPACE_DEVELOPER_RULES_RU_V1, release: false },
 ];
 
@@ -207,17 +197,9 @@ export function legacyReleaseWorkflowRules(content) {
   };
 }
 
-export function storedWorkspaceDeveloperRules(content) {
-  const userRules = stripKnownWorkspaceRulePrefixes(content).content;
-  return [AGENT_HUB_WORKSPACE_DEVELOPER_RULES, userRules]
-    .filter((part) => String(part).trim())
-    .join("\n\n");
-}
-
 export function effectiveWorkspaceDeveloperRules(content, settings) {
   const userRules = stripKnownWorkspaceRulePrefixes(content).content;
   return [
-    AGENT_HUB_WORKSPACE_DEVELOPER_RULES,
     releaseWorkflowEnabled(settings) ? RELEASE_WORKFLOW_DEVELOPER_RULES : "",
     userRules,
   ]
