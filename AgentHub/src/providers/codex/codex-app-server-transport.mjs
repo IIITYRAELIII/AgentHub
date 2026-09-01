@@ -376,25 +376,34 @@ export class CodexAppServerTransport {
     };
   }
 
-  respond(id, result) {
-    if (!this.child) return Promise.reject(new Error("Codex App Server is not running"));
+  respond(id, result, { expectedGeneration = null } = {}) {
+    const child = this.child;
+    if (!child) return Promise.reject(new Error("Codex App Server is not running"));
+    if (Number.isSafeInteger(expectedGeneration) && expectedGeneration !== this.generation) {
+      const error = new Error(
+        `Codex App Server generation changed (expected=${expectedGeneration}, current=${this.generation})`,
+      );
+      error.code = "CODEX_APP_SERVER_GENERATION_CHANGED";
+      error.deliveryOutcome = "not-sent";
+      return Promise.reject(error);
+    }
     const message = { id, result };
-    if (typeof this.child.send === "function") {
+    if (typeof child.send === "function") {
       return new Promise((resolve, reject) => {
-        if (this.child.send.length < 2) {
+        if (child.send.length < 2) {
           try {
-            this.child.send(message);
+            child.send(message);
             resolve();
           } catch (error) {
             reject(error);
           }
           return;
         }
-        this.child.send(message, (error) => error ? reject(error) : resolve());
+        child.send(message, (error) => error ? reject(error) : resolve());
       });
     }
     return new Promise((resolve, reject) => {
-      this.child.stdin.write(`${JSON.stringify(message)}\n`, (error) => error ? reject(error) : resolve());
+      child.stdin.write(`${JSON.stringify(message)}\n`, (error) => error ? reject(error) : resolve());
     });
   }
 

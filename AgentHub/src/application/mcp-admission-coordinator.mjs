@@ -72,6 +72,8 @@ export class McpAdmissionCoordinator {
     turnId = null,
     source = "auto",
     isActive = () => true,
+    transportGeneration = null,
+    currentTransportGeneration = null,
   } = {}) {
     if (rpcId === undefined || rpcId === null) throw new TypeError("MCP elicitation rpcId is required");
     if (typeof respond !== "function") throw new TypeError("MCP elicitation respond is required");
@@ -92,6 +94,12 @@ export class McpAdmissionCoordinator {
       operationRequestId: identity.requestId,
       toolName: identity.toolName,
       isActive,
+      transportGeneration: Number.isSafeInteger(transportGeneration)
+        ? transportGeneration
+        : null,
+      currentTransportGeneration: typeof currentTransportGeneration === "function"
+        ? currentTransportGeneration
+        : null,
       attempts: 0,
       timer: null,
     };
@@ -175,6 +183,14 @@ export class McpAdmissionCoordinator {
 
   #expire(record) {
     if (this.#pending.get(record.key) !== record) return;
+    if (!this.#transportGenerationIsCurrent(record)) {
+      this.#trace("elicitation-cancelled-transport-replaced", record, {
+        currentTransportGeneration: this.#currentTransportGeneration(record),
+      });
+      this.#clearRecord(record);
+      this.#pending.delete(record.key);
+      return;
+    }
     if (!record.isActive()) {
       this.#trace("elicitation-cancelled-inactive", record);
       this.#pending.delete(record.key);
@@ -195,6 +211,21 @@ export class McpAdmissionCoordinator {
     record.timer = null;
   }
 
+  #currentTransportGeneration(record) {
+    if (!record.currentTransportGeneration) return null;
+    try {
+      const generation = record.currentTransportGeneration();
+      return Number.isSafeInteger(generation) ? generation : null;
+    } catch {
+      return null;
+    }
+  }
+
+  #transportGenerationIsCurrent(record) {
+    if (record.transportGeneration === null) return true;
+    return this.#currentTransportGeneration(record) === record.transportGeneration;
+  }
+
   #snapshot(record) {
     return {
       rpcId: String(record.rpcId),
@@ -204,6 +235,7 @@ export class McpAdmissionCoordinator {
       threadId: record.threadId,
       turnId: record.turnId,
       runId: record.runId,
+      transportGeneration: record.transportGeneration,
       attempts: record.attempts,
     };
   }

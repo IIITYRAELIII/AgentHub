@@ -184,3 +184,45 @@ test("MCP admission timeout stays unknown and stops after one bounded retry", ()
       && line.includes('"outcome":"unknown"')
   )));
 });
+
+test("MCP admission never retries an elicitation into a replacement transport generation", () => {
+  const timers = manualTimers();
+  const responses = [];
+  const logs = [];
+  let generation = 1;
+  const coordinator = new McpAdmissionCoordinator({
+    timeoutMs: 25,
+    schedule: timers.schedule,
+    clear: timers.clear,
+    logger: { log: (value) => logs.push(value), error: (value) => logs.push(value) },
+  });
+
+  coordinator.begin({
+    rpcId: 41,
+    params: {
+      serverName: "agent_hub",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      arguments: { request_id: "claim-1" },
+    },
+    response: { action: "accept" },
+    respond: (...args) => responses.push({ generation, args }),
+    transportGeneration: generation,
+    currentTransportGeneration: () => generation,
+  });
+
+  generation = 2;
+  timers.runNext();
+
+  assert.deepEqual(responses, [{
+    generation: 1,
+    args: [41, { action: "accept" }],
+  }]);
+  assert.equal(timers.pending(), 0);
+  assert.deepEqual(coordinator.diagnostics(), []);
+  assert.ok(logs.some((line) => (
+    line.includes('"stage":"elicitation-cancelled-transport-replaced"')
+      && line.includes('"transportGeneration":1')
+      && line.includes('"currentTransportGeneration":2')
+  )));
+});
