@@ -160,6 +160,7 @@ export async function createClientInterfaceComposition({
   const desktopAttachments = new DesktopAttachmentService({
     assistantAttachmentImporterFactory: createCodexAssistantAttachmentImporter,
     runtimeCommandRoot,
+    codexHome: process.env.CODEX_HOME,
     projectRoot: config.projectRoot,
     projectRoots: config.projects.map((project) => project.path),
     workerEnabled: config.miniApp.worker.enabled,

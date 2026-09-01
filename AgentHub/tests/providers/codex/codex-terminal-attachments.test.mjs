@@ -14,11 +14,25 @@ test("terminal resolver imports all ideate outputs from a production-shaped roll
     readRolloutActivity: async (_rolloutPath, options) => {
       assert.equal(options.freshnessMs, Number.POSITIVE_INFINITY);
       assert.equal(options.tailBytes, CODEX_TERMINAL_ATTACHMENT_TAIL_BYTES);
+      const output = (savedPath) => ({
+        type: "response_item",
+        payload: {
+          type: "custom_tool_call_output",
+          output: [
+            { type: "input_image", image_url: "data:image/png;base64,aGVsbG8=" },
+            {
+              type: "input_text",
+              text: `Generated images are saved to C:/generated as ${savedPath} by default.`,
+            },
+          ],
+          internal_chat_message_metadata_passthrough: { turn_id: "turn-ideate" },
+        },
+      });
       return parseCodexRolloutActivity([
         { type: "event_msg", payload: { type: "task_started", turn_id: "turn-ideate" } },
-        { type: "event_msg", payload: { type: "image_generation_end", call_id: "exec-1", status: "completed", saved_path: "C:/generated/one.png" } },
-        { type: "event_msg", payload: { type: "image_generation_end", call_id: "exec-2", status: "completed", saved_path: "C:/generated/two.png" } },
-        { type: "event_msg", payload: { type: "image_generation_end", call_id: "exec-3", status: "completed", saved_path: "C:/generated/three.png" } },
+        output("C:/generated/one.png"),
+        output("C:/generated/two.png"),
+        output("C:/generated/three.png"),
         { type: "event_msg", payload: { type: "task_complete", turn_id: "turn-ideate", last_agent_message: "Три концепта Rain" } },
       ].map((entry) => JSON.stringify(entry)).join("\n"));
     },
