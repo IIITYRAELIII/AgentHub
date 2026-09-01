@@ -594,7 +594,7 @@ test("release workflow is opt-in and injects policy without changing editable ru
     store.developerRulesForStream(stream.id).workspace.content,
     `${AGENT_HUB_WORKSPACE_DEVELOPER_RULES}\n\n${RELEASE_WORKFLOW_DEVELOPER_RULES}\n\nFast Test Contour workflow`,
   );
-  assert.match(store.developerRulesForStream(stream.id).stream.content, /Workspace systems architect/u);
+  assert.match(store.developerRulesForStream(stream.id).stream.content, /Workspace release architect/u);
 });
 
 test.skip("retired destructive release registry discard", async (t) => {
