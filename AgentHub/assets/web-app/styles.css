@@ -3950,6 +3950,11 @@ html[data-view="dashboard"] .task-board-view {
   white-space: nowrap;
 }
 
+.board-task-number.is-placeholder {
+  border-bottom: 0;
+  padding-inline: 0;
+}
+
 .board-task-title {
   color: var(--text);
   font-size: 0.8rem;

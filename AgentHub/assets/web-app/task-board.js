@@ -394,6 +394,7 @@
     taskExecutorPresentation,
     taskExecutorStreamName,
     taskPresentationUpdate,
+    taskSummaryItems,
     taskWorkLogEntries,
     taskWorkflowPresentation,
     streamAvailability,
@@ -672,15 +673,24 @@
     return select;
   }
 
-  function taskStatusBadge(task) {
-    const presentation = taskWorkflowPresentation(task, state.statusLanguage);
-    return node("span", {
-      class: "board-task-status",
-      "data-workflow-status": presentation.status,
-      text: presentation.short,
-      title: presentation.full,
-      "aria-label": `Статус: ${presentation.full}`,
-    });
+  function taskSummaryItems(task, workspaces, language = "en") {
+    const taskNumber = String(task?.taskNumber ?? "").trim();
+    const executor = taskExecutorPresentation(task, workspaces);
+    const status = taskWorkflowPresentation(task, language);
+    return Object.freeze([
+      Object.freeze({
+        role: "number",
+        text: taskNumber,
+        title: taskNumber ? task.title || task.text : "",
+        placeholder: !taskNumber,
+      }),
+      Object.freeze({
+        role: "executor",
+        text: taskExecutorStreamName(task, workspaces),
+        title: executor.label,
+      }),
+      Object.freeze({ role: "status", ...status }),
+    ]);
   }
 
   function taskLaunchMessageId(taskId) {
@@ -954,19 +964,30 @@
         moveTask(draggedTask, destinationValue(task), task.id);
       });
     }
-    const executor = taskExecutorPresentation(task, state.workspaces);
+    const [numberSummary, executorSummary, statusSummary] = taskSummaryItems(
+      task,
+      state.workspaces,
+      state.statusLanguage,
+    );
     card.append(node("div", { class: "board-task-summary" }, [
-      ...(task.taskNumber ? [node("span", {
-        class: "board-task-number",
-        text: task.taskNumber,
-        title: task.title || task.text,
-      })] : []),
+      node("span", {
+        class: `board-task-number${numberSummary.placeholder ? " is-placeholder" : ""}`,
+        text: numberSummary.text,
+        title: numberSummary.title || null,
+        "aria-hidden": numberSummary.placeholder ? "true" : null,
+      }),
       node("span", {
         class: "board-task-executor",
-        text: taskExecutorStreamName(task, state.workspaces),
-        title: executor.label,
+        text: executorSummary.text,
+        title: executorSummary.title,
       }),
-      taskStatusBadge(task),
+      node("span", {
+        class: "board-task-status",
+        "data-workflow-status": statusSummary.status,
+        text: statusSummary.short,
+        title: statusSummary.full,
+        "aria-label": `Статус: ${statusSummary.full}`,
+      }),
     ]));
     card.append(node("h3", { class: "board-task-title", text: task.title || task.text }));
     const attachmentCountLabel = taskAttachmentCountLabel(task.attachments);
