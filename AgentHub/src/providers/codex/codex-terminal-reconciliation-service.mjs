@@ -186,6 +186,8 @@ export class CodexTerminalReconciliationService {
         serviceTier: usageResult.serviceTier,
         startedAt: usageResult.startedAt,
         completedAt: resolvedCompletedAt,
+        operationKind: contextProbe ? "probe" : "user-turn",
+        contextProbe,
         prompt: usageResult.prompt,
         finalAnswer: usageResult.finalAnswer,
         responseAttachments,
@@ -246,6 +248,7 @@ export class CodexTerminalReconciliationService {
       imageGenerationCount: usageResult.imageGenerationCount,
       estimatedCredits: usageResult.estimatedCredits,
       estimateKind: usageResult.estimateKind,
+      operationKind: contextProbe ? "probe" : "user-turn",
       contextProbe,
       resolveAccount: terminal?.historical !== true || terminal?.resolveCurrentAccount === true,
       model: usageResult.model,
@@ -304,6 +307,8 @@ export class CodexTerminalReconciliationService {
       serviceTier: usageResult.serviceTier,
       startedAt: usageResult.startedAt,
       completedAt: resolvedCompletedAt,
+      operationKind: "user-turn",
+      contextProbe: false,
       prompt: usageResult.prompt,
       changedFiles,
       diff: turnDiff,
@@ -322,7 +327,12 @@ export class CodexTerminalReconciliationService {
       );
     }
     if (correctedBody) {
-      const task = { ...identity, projectRoot: project.path };
+      const task = {
+        ...identity,
+        projectRoot: project.path,
+        operationKind: "user-turn",
+        contextProbe: false,
+      };
       this.rememberLastMessage(task, correctedBody, { updatedAt: resolvedCompletedAt });
       this.rememberSeenTurn(task, identity.turnId);
     }

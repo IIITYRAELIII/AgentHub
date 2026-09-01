@@ -512,6 +512,35 @@ test("desktop task history hides the reserved probe text without metadata", asyn
   assert.deepEqual(result.items, []);
 });
 
+test("desktop task history keeps reserved probe text with a normal client identity", async () => {
+  const { desktopTaskHistory } = fixture({
+    run: null,
+    history: [{
+      id: "manual-probe-text",
+      prompt: CODEX_CONTEXT_PROBE_PROMPT,
+      answer: CODEX_CONTEXT_PROBE_RESPONSE,
+      completed: true,
+      clientUserMessageId: "client-manual-probe",
+      messages: [{
+        itemId: "manual-user",
+        role: "user",
+        clientUserMessageId: "client-manual-probe",
+        text: CODEX_CONTEXT_PROBE_PROMPT,
+      }, {
+        itemId: "manual-answer",
+        role: "agent",
+        text: CODEX_CONTEXT_PROBE_RESPONSE,
+      }],
+    }],
+  });
+
+  const result = await desktopTaskHistory({ includeActive: false, limit: 10 });
+
+  assert.equal(result.items.length, 1);
+  assert.equal(result.items[0].prompt, CODEX_CONTEXT_PROBE_PROMPT);
+  assert.equal(result.items[0].answer, CODEX_CONTEXT_PROBE_RESPONSE);
+});
+
 test("desktop task history preserves the author of an interstream message", async () => {
   const { desktopTaskHistory, state } = fixture();
   state.history[3].messages[0].author = "Agent HUB · Themes (Codex)";

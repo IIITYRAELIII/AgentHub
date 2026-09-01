@@ -117,6 +117,8 @@ export class CodexRunFinalizer {
       model: tracker.model ?? run.modelId ?? "",
       serviceTier: tracker.serviceTier ?? run.serviceTier ?? "default",
       startedAt: run.startedAt,
+      operationKind: "user-turn",
+      contextProbe: false,
       prompt: run.promptPreview,
       clientUserMessageId: run.clientUserMessageId ?? null,
       userMessages: run.userMessages,

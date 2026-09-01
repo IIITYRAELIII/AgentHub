@@ -281,9 +281,11 @@ function startTurn(params) {
     return turn;
   }
   const failed = prompt.includes("[fail]");
-  const completedAnswer = prompt.includes("[long-final]")
-    ? `Готово: ${prompt}\n${"длинный-фрагмент ".repeat(400)}\nФИНАЛ_НЕ_ОБРЕЗАН`
-    : null;
+  const completedAnswer = prompt === "Ответь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1"
+    ? "AGENT_HUB_CONTEXT_PROBE_OK_V1"
+    : prompt.includes("[long-final]")
+      ? `Готово: ${prompt}\n${"длинный-фрагмент ".repeat(400)}\nФИНАЛ_НЕ_ОБРЕЗАН`
+      : null;
   schedule(() => finishTurn(thread, turn, {
     status: failed ? "failed" : "completed",
     answer: failed ? "Имитированная ошибка хода" : completedAnswer,

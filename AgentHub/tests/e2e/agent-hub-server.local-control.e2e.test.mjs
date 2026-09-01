@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { callDesktopControl } from "../../desktop-control.mjs";
+import { JournalDatabase } from "../../src/infrastructure/persistence/journal-database.mjs";
 import { readRuntimeState } from "../../src/infrastructure/persistence/runtime-state-store.mjs";
 import {
   CHAT_ID,
@@ -29,6 +30,7 @@ test("local control client survives App Server exit during delayed startup and s
   const codexPidPath = path.join(runtimeRoot, "fake-codex.pid");
   const savedThreadId = "10000000-0000-4000-8000-000000000001";
   await Promise.all([mkdir(dataDir, { recursive: true }), mkdir(projectRoot, { recursive: true })]);
+  const journalDatabase = new JournalDatabase(path.join(dataDir, "journal.sqlite"));
   const telegram = new FakeTelegramApi();
   await telegram.start();
   await writeFile(configPath, `${JSON.stringify({
@@ -58,8 +60,8 @@ test("local control client survives App Server exit during delayed startup and s
   }, null, 2)}\n`, "utf8");
   await writeFile(codexStatePath, `${JSON.stringify({
     nextThread: 2,
-    nextTurn: 1,
-    nextMessage: 1,
+    nextTurn: 2,
+    nextMessage: 3,
     // The delayed initialize models a recovering App Server. The local control
     // pipe must be available before that recovery finishes.
     initializeDelayMs: 1_500,
@@ -72,7 +74,22 @@ test("local control client survives App Server exit during delayed startup and s
       name: "Saved large task",
       preview: "",
       updatedAt: Math.floor(Date.now() / 1000),
-      turns: [],
+      turns: [{
+        id: "00000000-0000-4000-8000-000000000001",
+        status: "completed",
+        prompt: "Ответь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1",
+        items: [{
+          id: "synthetic-probe:user",
+          clientId: "agent-hub-context-probe:e2e-synthetic",
+          type: "userMessage",
+          content: [{ type: "text", text: "Ответь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1" }],
+        }, {
+          id: "synthetic-probe:agent",
+          type: "agentMessage",
+          text: "AGENT_HUB_CONTEXT_PROBE_OK_V1",
+          phase: "final_answer",
+        }],
+      }],
       model: "gpt-5.6-sol",
       reasoningEffort: "high",
       archived: false,
@@ -108,6 +125,7 @@ test("local control client survives App Server exit during delayed startup and s
       await Promise.race([new Promise((resolve) => bot.once("exit", resolve)), delay(2_000)]);
     }
     if (bot.exitCode == null) await stopPid(bot.pid);
+    journalDatabase.close();
     await telegram.stop();
     await rm(runtimeRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
@@ -283,6 +301,13 @@ test("local control client survives App Server exit during delayed startup and s
     .flatMap((turn) => turn.items)
     .filter((item) => item.clientId === "desktop-message-during-compaction");
   assert.equal(compactionQueuedProviderItems.length, 1, "deferred input reached the provider more than once");
+  const syntheticProbeTurnIds = stateAfterCompactionQueue.threads
+    .flatMap((thread) => thread.turns)
+    .filter((turn) => turn.items.some((item) => (
+      String(item.clientId ?? "").startsWith("agent-hub-context-probe:")
+    )))
+    .map((turn) => turn.id);
+  assert.ok(syntheticProbeTurnIds.length > 0, "automatic maintenance did not create a service-identified probe");
   const compactionQueuedHistory = await waitFor(async () => {
     const result = await callDesktopControl("task-history", {
       provider: "codex",
@@ -295,6 +320,9 @@ test("local control client survives App Server exit during delayed startup and s
     return exchange?.answer?.endsWith("ФИНАЛ_НЕ_ОБРЕЗАН") ? { result, exchange } : null;
   }, "full queued answer history after context compaction", 5_000);
   assert.equal(compactionQueuedHistory.result.total, 2);
+  assert.equal(compactionQueuedHistory.result.items.some((item) => (
+    syntheticProbeTurnIds.includes(item.id)
+  )), false, "a service-identified context probe reached user history");
   assert.ok(compactionQueuedHistory.exchange.answer.length > 6_000);
   assert.match(compactionQueuedHistory.exchange.answer, /ФИНАЛ_НЕ_ОБРЕЗАН$/u);
   const beforeCompaction = await callDesktopControl("snapshot", {}, { runtimeRoot });
@@ -803,6 +831,73 @@ test("local control client survives App Server exit during delayed startup and s
       new RegExp(`Готово: load queued B ${task.index}$`, "u"),
     );
   }
+
+  const reservedPrompt = "Ответь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1";
+  const reservedAnswer = "AGENT_HUB_CONTEXT_PROBE_OK_V1";
+  const reservedClientId = "desktop-manual-context-probe-text";
+  const reservedTask = loadTasks[0];
+  const reservedStart = await callDesktopControl("send-message", {
+    text: reservedPrompt,
+    provider: reservedTask.provider,
+    threadId: reservedTask.threadId,
+    clientUserMessageId: reservedClientId,
+  }, { runtimeRoot });
+  assert.equal(reservedStart.accepted, true);
+  const reservedCompletion = await waitFor(async () => {
+    const snapshot = await callDesktopControl("snapshot", {}, { runtimeRoot });
+    const receipt = snapshot.messageReceipts.find((item) => (
+      item.clientUserMessageId === reservedClientId
+    ));
+    const task = snapshot.tasks.find((item) => item.threadId === reservedTask.threadId);
+    return receipt?.turnId && !task?.running && task?.lastAnswer === reservedAnswer
+      ? { snapshot, receipt, task }
+      : null;
+  }, "ordinary reserved-phrase turn completion", 10_000);
+  assert.equal(reservedCompletion.task.lastAnswer, reservedAnswer);
+  const reservedHistory = await waitFor(async () => {
+    const result = await callDesktopControl("task-history", {
+      provider: reservedTask.provider,
+      threadId: reservedTask.threadId,
+      limit: 10,
+    }, { runtimeRoot });
+    const exchange = result.items.find((item) => item.messages.some((message) => (
+      message.clientUserMessageId === reservedClientId
+    )));
+    return exchange?.prompt === reservedPrompt && exchange?.answer === reservedAnswer
+      ? exchange
+      : null;
+  }, "ordinary reserved-phrase history projection", 5_000);
+  assert.equal(reservedHistory.prompt, reservedPrompt);
+  assert.equal(reservedHistory.answer, reservedAnswer);
+  const reservedJournalTurn = await waitFor(async () => {
+    const ledger = await journalDatabase.loadLedger().catch(() => null);
+    return Object.values(ledger?.turns ?? {}).find((turn) => (
+      turn.turnId === reservedCompletion.receipt.turnId
+    )) ?? null;
+  }, "ordinary reserved-phrase journal projection", 5_000);
+  assert.equal(reservedJournalTurn.prompt, reservedPrompt);
+  assert.equal(reservedJournalTurn.body, reservedAnswer);
+  assert.equal(reservedJournalTurn.contextProbe, false);
+
+  const reservedProviderPid = Number((await readFile(codexPidPath, "utf8")).trim());
+  await stopPid(reservedProviderPid);
+  await waitFor(async () => {
+    const value = Number((await readFile(codexPidPath, "utf8").catch(() => "")).trim());
+    return value && value !== reservedProviderPid ? value : null;
+  }, "provider reconnect after ordinary reserved-phrase turn", 5_000);
+  const reconnectedReservedSnapshot = await callDesktopControl("snapshot", {}, { runtimeRoot });
+  assert.equal(
+    reconnectedReservedSnapshot.tasks.find((item) => item.threadId === reservedTask.threadId)?.lastAnswer,
+    reservedAnswer,
+  );
+  const reconnectedReservedHistory = await callDesktopControl("task-history", {
+    provider: reservedTask.provider,
+    threadId: reservedTask.threadId,
+    limit: 10,
+  }, { runtimeRoot });
+  assert.equal(reconnectedReservedHistory.items.some((item) => (
+    item.prompt === reservedPrompt && item.answer === reservedAnswer
+  )), true);
 
   const archived = await callDesktopControl("archive-task", {
     provider: "codex",
