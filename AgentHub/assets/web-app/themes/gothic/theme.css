@@ -661,8 +661,7 @@ html[data-theme="gothic"] {
   --gothic-blade-joint-activity-top-preview: url("./gothic-blade-joint-top-right-v12.png");
   --gothic-blade-joint-activity-bottom-preview: url("./gothic-blade-joint-bottom-right-v12.png");
   --gothic-workspace-card-texture-preview: url("./gothic-workspace-card-texture.png");
-  --gothic-panel-texture-preview:
-    linear-gradient(145deg, rgb(255 255 255 / 1.2%), transparent 38%, rgb(0 0 0 / 10%) 72%, rgb(255 255 255 / 0.8%));
+  --gothic-panel-texture-preview: none;
   --gothic-panel-base-color: #0b0c0e;
   --gothic-panel-base-image:
     linear-gradient(rgb(8 9 10 / 14%), rgb(8 9 10 / 14%)),
