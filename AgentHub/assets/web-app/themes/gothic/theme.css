@@ -1280,6 +1280,10 @@ html[data-theme="gothic"] body::before {
     background-size: auto, 28rem 28rem !important;
   }
 
+  html[data-theme="gothic"] .msg-user-bubble {
+    background: transparent !important;
+  }
+
   html[data-theme="gothic"]:not([data-surface="mobile"]) .chat-log {
     max-width: 54rem !important;
   }
