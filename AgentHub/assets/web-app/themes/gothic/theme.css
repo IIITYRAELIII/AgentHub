@@ -1112,12 +1112,22 @@ html[data-theme="gothic"] body::before {
 
   html[data-theme="gothic"]:not([data-surface="mobile"]) .task-workspace-item,
   html[data-theme="gothic"]:not([data-surface="mobile"]) .activity-stream-item,
-  html[data-theme="gothic"]:not([data-surface="mobile"]) .stream-tab-card,
-  html[data-theme="gothic"]:not([data-surface="mobile"]) .msg:not(.msg-user) {
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .stream-tab-card {
     background-color: #151618 !important;
     background-image:
       linear-gradient(rgb(24 25 27 / 24%), rgb(24 25 27 / 24%)),
       var(--gothic-panel-texture-preview) !important;
+    background-blend-mode: normal, normal !important;
+    background-position: center, center !important;
+    background-repeat: repeat, repeat !important;
+    background-size: auto, 28rem 28rem !important;
+  }
+
+  html[data-theme="gothic"]:not([data-surface="mobile"]) .msg:not(.msg-user) {
+    background-color: #151618 !important;
+    background-image:
+      linear-gradient(rgb(24 25 27 / 24%), rgb(24 25 27 / 24%)),
+      var(--gothic-workspace-card-texture-preview) !important;
     background-blend-mode: normal, normal !important;
     background-position: center, center !important;
     background-repeat: repeat, repeat !important;
@@ -1257,7 +1267,7 @@ html[data-theme="gothic"] body::before {
     background-color: #151618 !important;
     background-image:
       linear-gradient(rgb(24 25 27 / 24%), rgb(24 25 27 / 24%)),
-      var(--gothic-panel-texture-preview) !important;
+      var(--gothic-workspace-card-texture-preview) !important;
     background-blend-mode: normal, normal !important;
     background-position: center, center !important;
     background-repeat: repeat, repeat !important;
@@ -1650,7 +1660,7 @@ html[data-theme="gothic"][data-surface="mobile"] .stream-tab[aria-pressed="true"
     background-color: #151618 !important;
     background-image:
       linear-gradient(rgb(24 25 27 / 24%), rgb(24 25 27 / 24%)),
-      var(--gothic-panel-texture-preview) !important;
+      var(--gothic-workspace-card-texture-preview) !important;
     background-position: center, center !important;
     background-repeat: repeat, repeat !important;
     background-size: auto, 28rem 28rem !important;
