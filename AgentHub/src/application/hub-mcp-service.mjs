@@ -14,9 +14,12 @@ import {
   interstreamMessageDetails,
 } from "../domain/interstream-message.mjs";
 import { taskProjectRoot } from "../domain/task-project-root.mjs";
+import { displayUserPrompt } from "./task-history.mjs";
 
 const CONTEXT_TOKEN_VERSION = 1;
 const MAX_REGISTERED_CONTEXT_CAPABILITIES = 1_000;
+const STREAM_HISTORY_CURSOR_VERSION = 1;
+const DEFAULT_HISTORY_ACTIVITY_LIMIT = 40;
 const MUTATING_TOOLS = new Set([
   "hub_task_create", "hub_task_update", "hub_task_move", "hub_task_start", "hub_task_reassign", "hub_task_claim", "hub_task_status_update", "hub_task_complete", "hub_task_delete",
   "hub_task_attachment_add", "hub_workspace_rules_update", "hub_stream_rules_update",
@@ -165,6 +168,135 @@ function compactText(value, maximumLength) {
   return text.length <= maximumLength ? text : `${text.slice(0, maximumLength)}\n…[truncated]`;
 }
 
+function activeRun(value) {
+  return ["running", "finishing"].includes(String(value?.status ?? "running").trim().toLowerCase());
+}
+
+function turnIdentityKey({ provider, threadId, turnId, runId = null } = {}) {
+  const normalizedProvider = String(provider ?? "").trim().toLowerCase();
+  const normalizedThreadId = String(threadId ?? "").trim();
+  const normalizedTurnId = String(turnId ?? "").trim();
+  if (normalizedProvider && normalizedThreadId && normalizedTurnId) {
+    return `${normalizedProvider}\0${normalizedThreadId}\0${normalizedTurnId}`;
+  }
+  return runId ? `run\0${String(runId)}` : "";
+}
+
+function streamHistoryCursor({ workspaceId, streamId, run } = {}) {
+  return Buffer.from(JSON.stringify({
+    v: STREAM_HISTORY_CURSOR_VERSION,
+    workspaceId: String(workspaceId),
+    streamId: String(streamId),
+    runId: String(run?.id ?? ""),
+    provider: String(run?.provider ?? "").trim().toLowerCase(),
+    threadId: String(run?.threadId ?? "").trim(),
+    turnId: String(run?.turnId ?? "").trim() || null,
+  }), "utf8").toString("base64url");
+}
+
+function parsedStreamHistoryCursor(value) {
+  const source = String(value ?? "").trim();
+  if (!source) return null;
+  if (source.length > 2_000) throw new Error("invalid Stream history cursor");
+  let parsed;
+  try {
+    parsed = JSON.parse(Buffer.from(source, "base64url").toString("utf8"));
+  } catch {
+    throw new Error("invalid Stream history cursor");
+  }
+  if (
+    parsed?.v !== STREAM_HISTORY_CURSOR_VERSION
+    || !String(parsed.workspaceId ?? "").trim()
+    || !String(parsed.streamId ?? "").trim()
+    || !String(parsed.runId ?? "").trim()
+    || !String(parsed.provider ?? "").trim()
+    || !String(parsed.threadId ?? "").trim()
+  ) throw new Error("invalid Stream history cursor");
+  return {
+    source,
+    workspaceId: String(parsed.workspaceId),
+    streamId: String(parsed.streamId),
+    runId: String(parsed.runId),
+    provider: String(parsed.provider).trim().toLowerCase(),
+    threadId: String(parsed.threadId).trim(),
+    turnId: String(parsed.turnId ?? "").trim() || null,
+  };
+}
+
+function boundedActivity(value, maximumDetailLength = 2_000) {
+  return {
+    id: String(value?.id ?? ""),
+    type: String(value?.type ?? "stage"),
+    label: compactText(value?.label ?? "Действие", 500),
+    detail: compactText(value?.detail ?? "", maximumDetailLength),
+    status: String(value?.status ?? "running"),
+    time: value?.time ?? null,
+  };
+}
+
+function boundedActiveTurn(run, { includeBody, maximumActivities }) {
+  let remainingActivities = maximumActivities;
+  const activityGroups = [];
+  for (const group of Array.isArray(run?.activityGroups) ? run.activityGroups : []) {
+    if (remainingActivities <= 0) break;
+    const activities = (Array.isArray(group?.activities) ? group.activities : [])
+      .slice(0, remainingActivities)
+      .map((activity) => boundedActivity(activity));
+    remainingActivities -= activities.length;
+    activityGroups.push({
+      id: String(group?.id ?? ""),
+      reasoning: compactText(group?.reasoning ?? "", 4_000),
+      activities,
+    });
+  }
+  const activities = activityGroups.length
+    ? []
+    : (Array.isArray(run?.activities) ? run.activities : [])
+      .slice(0, maximumActivities)
+      .map((activity) => boundedActivity(activity));
+  return {
+    provider: String(run?.provider ?? "").trim().toLowerCase(),
+    threadId: String(run?.threadId ?? "").trim(),
+    turnId: String(run?.turnId ?? "").trim() || null,
+    runId: String(run?.id ?? ""),
+    title: compactText(run?.taskTitle ?? "", 500),
+    prompt: compactText(displayUserPrompt(run?.promptPreview), 2_000),
+    startedAt: run?.startedAt ?? null,
+    completedAt: null,
+    status: "active",
+    active: true,
+    stage: compactText(run?.progressStage ?? "Выполняется…", 500),
+    ...(includeBody ? {
+      body: compactText(run?.responseText ?? "", 6_000),
+      progress: compactText(run?.progressReasoning ?? "", 4_000),
+      activities,
+      ...(activityGroups.length ? { activityGroups } : {}),
+    } : {}),
+  };
+}
+
+function boundedCompletedTurn(record, includeBody) {
+  return {
+    provider: record.provider,
+    threadId: record.threadId,
+    turnId: record.turnId,
+    runId: String(record.id ?? "").trim() || null,
+    title: compactText(record.title, 500),
+    prompt: compactText(record.prompt, 2_000),
+    ...(includeBody ? { body: compactText(record.body, 6_000) } : {}),
+    startedAt: record.startedAt,
+    completedAt: record.completedAt,
+    status: record.status ?? "completed",
+    active: false,
+  };
+}
+
+function streamHistoryRevision(value) {
+  return createHash("sha256")
+    .update(JSON.stringify(canonicalValue(value)), "utf8")
+    .digest("hex");
+}
+
 function compactTask(task) {
   return {
     id: task.id,
@@ -277,16 +409,25 @@ export class HubMcpService {
   tools() {
     return [
       tool("hub_context_get", "Return the current Agent Hub Workspace, Stream and Thread context."),
-      tool("hub_workspace_get", "Return the current Workspace and all of its Streams and Threads."),
-      tool("hub_parallel_streams_list", "List Streams running in parallel inside the current Workspace."),
-      tool("hub_active_runs_list", "List compact live-run status for the current Workspace."),
-      tool("hub_stream_history", "Read bounded recent turn summaries for one Stream in the current Workspace.", {
-        stream_id: { type: "string", description: "Defaults to the current Stream." },
+      tool("hub_workspace_get", "Return any existing Workspace and all of its Streams and Threads.", {
+        workspace_id: { type: "string", description: "Defaults to the caller Workspace." },
+      }),
+      tool("hub_parallel_streams_list", "List Streams and occupancy for any existing Workspace.", {
+        workspace_id: { type: "string", description: "Defaults to the caller Workspace." },
+      }),
+      tool("hub_active_runs_list", "List compact live-run status for any existing Workspace.", {
+        workspace_id: { type: "string", description: "Defaults to the caller Workspace." },
+      }),
+      tool("hub_stream_history", "Read a bounded snapshot of completed and active turns for any Hub Stream. This never long-polls.", {
+        workspace_id: { type: "string", description: "Optional consistency check for stream_id; defaults to the Stream Workspace." },
+        stream_id: { type: "string", description: "Globally unique target Stream ID. Defaults to the caller Stream." },
         limit: { type: "integer", minimum: 1, maximum: 50, default: 20 },
         include_body: { type: "boolean", default: true },
+        cursor: { type: "string", description: "Opaque cursor returned by an earlier active snapshot, used to report replaced or terminal state." },
+        max_activity_items: { type: "integer", minimum: 1, maximum: 100, default: 40 },
       }),
-      tool("hub_stream_message_send", "Send a visible message from the current Stream to another Stream in the current Workspace through the normal Hub admission queue.", {
-        stream_id: { type: "string", description: "Target Stream in the current Workspace." },
+      tool("hub_stream_message_send", "Send a visible message from the caller Stream to any existing target Stream through the normal Hub admission queue.", {
+        stream_id: { type: "string", description: "Globally unique target Stream ID." },
         text: { type: "string" },
         mode: {
           type: "string",
@@ -296,11 +437,15 @@ export class HubMcpService {
         },
         confirm_send: { type: "boolean", description: "Must be true because this starts, queues or steers another agent turn." },
       }, ["stream_id", "text", "confirm_send"]),
-      tool("hub_rules_get", "Read effective Workspace and current Stream developer rules."),
-      tool("hub_workspace_rules_update", "Replace developer rules for the current Workspace.", {
+      tool("hub_rules_get", "Read effective Workspace and Stream developer rules for any Stream.", {
+        stream_id: { type: "string", description: "Defaults to the caller Stream." },
+      }),
+      tool("hub_workspace_rules_update", "Replace developer rules for any existing Workspace.", {
+        workspace_id: { type: "string", description: "Defaults to the caller Workspace." },
         content: { type: "string" },
       }, ["content"]),
-      tool("hub_stream_rules_update", "Replace developer rules for the current Stream.", {
+      tool("hub_stream_rules_update", "Replace developer rules for any existing Stream.", {
+        stream_id: { type: "string", description: "Defaults to the caller Stream." },
         content: { type: "string" },
       }, ["content"]),
       tool("hub_tasks_list", "List Dashboard tasks across all Workspaces and Backlog.", {
@@ -310,7 +455,8 @@ export class HubMcpService {
       tool("hub_task_get", "Read one Dashboard task by id, including a Task attached from Backlog or another Workspace.", {
         task_id: { type: "string" },
       }, ["task_id"]),
-      tool("hub_task_create", "Create a Dashboard task in the current Workspace with workflow status New and without automatic triage.", {
+      tool("hub_task_create", "Create a Dashboard task in any existing Workspace with workflow status New and without automatic triage.", {
+        workspace_id: { type: "string", description: "Defaults to the caller Workspace." },
         title: { type: "string" },
         description: { type: "string", default: "" },
       }, ["title"]),
@@ -320,14 +466,16 @@ export class HubMcpService {
         title: { type: "string" },
         description: { type: "string" },
       }, ["task_id"]),
-      tool("hub_task_move", "Move or reorder any Dashboard task. Destination workspace means the current Workspace.", {
+      tool("hub_task_move", "Move or reorder any Dashboard task, optionally into any existing Workspace.", {
         task_id: { type: "string" },
         destination: { type: "string", enum: ["workspace", "backlog", "notes"] },
+        workspace_id: { type: "string", description: "Destination Workspace when destination=workspace; defaults to the caller Workspace." },
         before_task_id: { type: "string" },
       }, ["task_id", "destination"]),
       tool("hub_task_start", "Send a Dashboard task into an existing or new Stream through the normal Hub queue, then mark it started.", {
         task_id: { type: "string" },
-        stream_id: { type: "string", description: "Existing Stream in this Workspace. Defaults to the current Stream." },
+        workspace_id: { type: "string", description: "Workspace for new_stream_name, or consistency check for stream_id." },
+        stream_id: { type: "string", description: "Globally unique existing Stream ID. Defaults to the caller Stream." },
         new_stream_name: { type: "string", description: "Create a new Stream instead of using stream_id." },
         provider: { type: "string", enum: ["codex", "claude"] },
         message: { type: "string", description: "Optional assignment message delivered together with the Task reference." },
@@ -335,7 +483,8 @@ export class HubMcpService {
       }, ["task_id", "confirm_launch"]),
       tool("hub_task_reassign", "Reassign a started Dashboard task to an existing or new Stream. The current executor must have no active turn or queued input.", {
         task_id: { type: "string" },
-        stream_id: { type: "string", description: "Existing target Stream in this Workspace." },
+        workspace_id: { type: "string", description: "Workspace for new_stream_name, or consistency check for stream_id." },
+        stream_id: { type: "string", description: "Globally unique existing target Stream ID." },
         new_stream_name: { type: "string", description: "Create a new target Stream instead of using stream_id." },
         provider: { type: "string", enum: ["codex", "claude"] },
         message: { type: "string", description: "Optional assignment message delivered together with the Task reference." },
@@ -363,12 +512,16 @@ export class HubMcpService {
         task_id: { type: "string" },
         local_path: { type: "string" },
       }, ["task_id", "local_path"]),
-      tool("hub_release_plan_get", "Read the complete release plan and exact integrated dev heads for the current Workspace."),
+      tool("hub_release_plan_get", "Read the complete release plan and exact integrated dev heads for any existing Workspace.", {
+        workspace_id: { type: "string", description: "Defaults to the caller Workspace." },
+      }),
       tool("hub_release_preflight", "Refresh Test Contour from dev and verify the exact selected Task results are integrated before release.", {
+        workspace_id: { type: "string", description: "Defaults to the caller Workspace." },
         expected_plan_revision: { type: "string", description: "Exact revision returned by hub_release_plan_get." },
         conflicts_resolved: { type: "boolean", description: "True only after the Architect explicitly resolves every reported overlap." },
       }, ["expected_plan_revision"]),
       tool("hub_release_complete", "Complete a release only after clean main revisions and explicit deployment verification.", {
+        workspace_id: { type: "string", description: "Defaults to the caller Workspace." },
         expected_revision: { type: "string" },
         expected_plan_revision: { type: "string", description: "Exact revision returned by hub_release_plan_get." },
         deployment_verified: { type: "boolean" },
@@ -376,10 +529,12 @@ export class HubMcpService {
         conflicts_resolved: { type: "boolean", description: "True only after the Architect explicitly resolves every reported overlap." },
       }, ["expected_plan_revision", "deployment_verified", "verification_summary"]),
       tool("hub_events_list", "Read bounded persistent Workspace events after a cursor; this never holds a long poll.", {
+        workspace_id: { type: "string", description: "Defaults to the caller Workspace." },
         after_sequence: { type: "integer", minimum: 0, default: 0 },
         limit: { type: "integer", minimum: 1, maximum: 100, default: 50 },
       }),
-      tool("hub_mcp_operations_list", "List recent audited MCP mutations for the current Workspace.", {
+      tool("hub_mcp_operations_list", "List recent audited MCP mutations for any existing Workspace.", {
+        workspace_id: { type: "string", description: "Defaults to the caller Workspace." },
         limit: { type: "integer", minimum: 1, maximum: 100, default: 50 },
       }),
     ];
@@ -413,7 +568,7 @@ export class HubMcpService {
       `Provider Thread: ${threadId ? `${provider}/${threadId}` : "pending first Thread"}`,
       `Required MCP arguments: ${JSON.stringify({ context_token: capability })}`,
       "Copy that exact context_token into every agent_hub MCP call. Do not search environment variables and never pass an empty value.",
-      "The server restricts this capability to the current Workspace.",
+      "The token identifies the caller for authorization and audit. Standard tools may target any existing Workspace or Stream by explicit ID.",
       "</agent_hub_context>",
     ].join("\n");
   }
@@ -432,25 +587,27 @@ export class HubMcpService {
       case "hub_context_get":
         return context;
       case "hub_workspace_get":
-        return this.#workspace(context);
+        return this.#workspace(context, args.workspace_id);
       case "hub_parallel_streams_list":
-        return this.#parallelStreams(context);
+        return this.#parallelStreams(context, args);
       case "hub_active_runs_list":
-        return this.#activeRunsForWorkspace(context);
+        return this.#activeRunsForWorkspace(context, args);
       case "hub_stream_history":
         return this.#streamHistory(context, args);
       case "hub_stream_message_send":
         return this.#sendStreamMessage(context, args);
       case "hub_rules_get":
-        return this.workspaceCatalog.developerRulesForStream(context.streamId);
+        return this.workspaceCatalog.developerRulesForStream(
+          this.#streamTarget(context, args).stream.id,
+        );
       case "hub_workspace_rules_update":
         return this.workspaceCatalog.updateWorkspaceDeveloperRules(
-          context.workspaceId,
+          this.#workspace(context, args.workspace_id).id,
           optionalText(args.content, 32 * 1024) ?? "",
         );
       case "hub_stream_rules_update":
         return this.workspaceCatalog.updateStreamDeveloperRules(
-          context.streamId,
+          this.#streamTarget(context, args).stream.id,
           optionalText(args.content, 32 * 1024) ?? "",
         );
       case "hub_tasks_list":
@@ -484,7 +641,7 @@ export class HubMcpService {
       case "hub_task_attachment_add":
         return this.#addAttachment(context, args);
       case "hub_release_plan_get":
-        return this.#releasePlan(context);
+        return this.#releasePlan(context, args);
       case "hub_release_preflight":
         if (!this.#isArchitect(context)) throw new Error("release preflight requires an Architect Stream");
         return this.#preflightRelease(context, args);
@@ -494,9 +651,11 @@ export class HubMcpService {
       case "hub_events_list":
         return this.#events(context, args);
       case "hub_mcp_operations_list":
+      {
+        const workspaceId = this.#workspace(context, args.workspace_id).id;
         return {
-          workspaceId: context.workspaceId,
-          operations: this.workspaceCatalog.mcpOperations(context.workspaceId, { limit: args.limit })
+          workspaceId,
+          operations: this.workspaceCatalog.mcpOperations(workspaceId, { limit: args.limit })
             .map((operation) => ({
               requestId: operation.requestId,
               streamId: operation.streamId,
@@ -509,6 +668,7 @@ export class HubMcpService {
               completedAtMs: operation.completedAtMs,
             })),
         };
+      }
       default:
         throw new Error(`unknown Agent Hub MCP tool: ${name}`);
     }
@@ -601,26 +761,45 @@ export class HubMcpService {
     };
   }
 
-  #workspace(context) {
+  #workspace(context, workspaceId = null) {
+    const targetWorkspaceId = String(workspaceId ?? "").trim() || context.workspaceId;
     const workspace = this.workspaceCatalog.hierarchy()
-      .find((candidate) => candidate.id === context.workspaceId);
+      .find((candidate) => candidate.id === targetWorkspaceId);
     if (!workspace) throw new Error("Agent Hub Workspace not found");
-    return { ...workspace, currentStreamId: context.streamId };
+    return {
+      ...workspace,
+      currentStreamId: workspace.id === context.workspaceId ? context.streamId : null,
+      callerStreamId: context.streamId,
+    };
   }
 
-  #taskProjectRoot(context, streamId = context.streamId) {
-    const workspace = this.#workspace(context);
-    const stream = workspace.streams.find((candidate) => candidate.id === streamId);
+  #streamTarget(context, { stream_id: streamId = null, workspace_id: workspaceId = null } = {}) {
+    const targetStreamId = String(streamId ?? "").trim() || context.streamId;
+    const catalogStream = this.workspaceCatalog.stream(requiredText(targetStreamId, "stream id", 300));
+    if (!catalogStream) throw new Error("Agent Hub Stream not found");
+    const requestedWorkspaceId = String(workspaceId ?? "").trim();
+    if (requestedWorkspaceId && requestedWorkspaceId !== catalogStream.workspaceId) {
+      throw new Error("Stream is outside the selected Workspace");
+    }
+    const workspace = this.#workspace(context, catalogStream.workspaceId);
+    const stream = workspace.streams.find((candidate) => candidate.id === targetStreamId);
+    if (!stream) throw new Error("Agent Hub Stream not found");
+    return { workspace, stream, catalogStream };
+  }
+
+  #taskProjectRoot(context, streamId = context.streamId, workspaceId = null) {
+    const target = this.#streamTarget(context, { stream_id: streamId, workspace_id: workspaceId });
+    const { workspace, stream } = target;
     return taskProjectRoot({ workspace, stream });
   }
 
-  #parallelStreams(context) {
-    const workspace = this.#workspace(context);
-    const activeRunSummaries = this.#activeRunSummaries(context.workspaceId);
-    const deferredInputs = this.#deferredInputSummaries(context.workspaceId);
+  #parallelStreams(context, { workspace_id: workspaceId = null } = {}) {
+    const workspace = this.#workspace(context, workspaceId);
+    const activeRunSummaries = this.#activeRunSummaries(workspace.id);
+    const deferredInputs = this.#deferredInputSummaries(workspace.id);
     return {
-      workspaceId: context.workspaceId,
-      currentStreamId: context.streamId,
+      workspaceId: workspace.id,
+      currentStreamId: workspace.currentStreamId,
       streams: workspace.streams.map((stream) => {
         const activeRuns = activeRunSummaries
           .filter((run) => run.streamId === stream.id);
@@ -658,16 +837,21 @@ export class HubMcpService {
     return task;
   }
 
-  #createTask(context, { title, description = "" } = {}) {
+  #createTask(context, { workspace_id: workspaceId = null, title, description = "" } = {}) {
+    const targetWorkspace = this.#workspace(context, workspaceId);
     const normalizedTitle = requiredText(title, "task title", 10_000);
     const normalizedDescription = optionalText(description, 50_000) ?? "";
     const text = normalizedDescription ? `${normalizedTitle}\n\n${normalizedDescription}` : normalizedTitle;
     const created = this.taskBoard.create({
       text,
       source: "hub-mcp",
-      sourceDetails: { mcpWorkspaceId: context.workspaceId },
+      sourceDetails: {
+        mcpWorkspaceId: targetWorkspace.id,
+        mcpCallerWorkspaceId: context.workspaceId,
+        mcpCallerStreamId: context.streamId,
+      },
       bucket: "workspace",
-      workspaceId: context.workspaceId,
+      workspaceId: targetWorkspace.id,
     });
     return compactTask(created);
   }
@@ -686,13 +870,15 @@ export class HubMcpService {
     }));
   }
 
-  #moveTask(context, { task_id: taskId, destination, before_task_id: beforeTaskId = null } = {}) {
+  #moveTask(context, {
+    task_id: taskId, destination, workspace_id: workspaceId = null, before_task_id: beforeTaskId = null,
+  } = {}) {
     const current = this.#task(context, taskId);
     const target = requiredText(destination, "task destination", 30);
     if (!["workspace", "backlog", "notes"].includes(target)) throw new Error("invalid task destination");
+    const targetWorkspaceId = target === "workspace" ? this.#workspace(context, workspaceId).id : null;
     if (beforeTaskId) {
       const before = this.#task(context, requiredText(beforeTaskId, "before task id", 300));
-      const targetWorkspaceId = target === "workspace" ? context.workspaceId : null;
       if (before.bucket !== target || before.workspaceId !== targetWorkspaceId) {
         throw new Error("before task is outside the destination column");
       }
@@ -700,7 +886,7 @@ export class HubMcpService {
     return compactTask(this.taskBoard.move({
       id: current.id,
       bucket: target,
-      workspaceId: target === "workspace" ? context.workspaceId : null,
+      workspaceId: targetWorkspaceId,
       beforeId: beforeTaskId,
     }));
   }
@@ -756,7 +942,9 @@ export class HubMcpService {
     let preparationError = null;
     const snapshotsResult = ["testing", "awaiting_implementation", "done"].includes(workflowStatus);
     const targetStreamId = String(task.streamId ?? "").trim() || context.streamId;
-    const projectRoot = snapshotsResult ? this.#taskProjectRoot(context, targetStreamId) : null;
+    const projectRoot = snapshotsResult && targetStreamId
+      ? this.#taskProjectRoot(context, targetStreamId, task.workspaceId)
+      : null;
     if (snapshotsResult && projectRoot && this.taskGitWorkspaces) {
       try {
         gitWorkspace = await this.taskGitWorkspaces.prepare({
@@ -838,8 +1026,9 @@ export class HubMcpService {
     ));
   }
 
-  async #releasePlan(context) {
-    const plan = await this.releasePlanner.plan(context.workspaceId);
+  async #releasePlan(context, { workspace_id: workspaceId = null } = {}) {
+    const targetWorkspaceId = this.#workspace(context, workspaceId).id;
+    const plan = await this.releasePlanner.plan(targetWorkspaceId);
     if (!this.taskGitWorkspaces) return plan;
     const roots = [...new Set(plan.ready.map((entry) => String(entry.projectRoot ?? "").trim()).filter(Boolean))];
     const repositories = [];
@@ -860,8 +1049,9 @@ export class HubMcpService {
   }
 
   async #completeRelease(context, args) {
+    const workspaceId = this.#workspace(context, args.workspace_id).id;
     const result = await this.releaseCompleter.completeRelease({
-      workspaceId: context.workspaceId,
+      workspaceId,
       expectedRevision: optionalText(args.expected_revision, 128),
       expectedPlanRevision: optionalText(args.expected_plan_revision, 128),
       deploymentVerified: args.deployment_verified === true,
@@ -881,7 +1071,8 @@ export class HubMcpService {
 
   async #startTask(context, {
     task_id: taskId, stream_id: streamId = null, new_stream_name: newStreamName = null,
-    provider = null, message = "", confirm_launch: confirmLaunch = false, request_id: requestId,
+    workspace_id: workspaceId = null, provider = null, message = "",
+    confirm_launch: confirmLaunch = false, request_id: requestId,
   } = {}, { reassign = false } = {}) {
     if (confirmLaunch !== true) throw new Error("confirm_launch must be true");
     const task = this.#task(context, taskId);
@@ -890,14 +1081,28 @@ export class HubMcpService {
     if (requestedStreamId && requestedStreamName) {
       throw new Error("stream_id and new_stream_name are mutually exclusive");
     }
-    const targetStreamId = requestedStreamName ? null : (requestedStreamId || context.streamId);
+    const requestedWorkspaceId = String(workspaceId ?? "").trim();
+    let targetWorkspace;
+    let targetStreamId;
+    if (requestedStreamName) {
+      targetWorkspace = this.#workspace(context, requestedWorkspaceId || context.workspaceId);
+      targetStreamId = null;
+    } else {
+      const target = this.#streamTarget(context, {
+        stream_id: requestedStreamId || context.streamId,
+        workspace_id: requestedWorkspaceId || null,
+      });
+      targetWorkspace = target.workspace;
+      targetStreamId = target.stream.id;
+    }
     const previousStreamId = String(task.streamId ?? "").trim();
     if (reassign) {
       if (task.status !== "started" || !previousStreamId) throw new Error("only a started Task can be reassigned");
       if (targetStreamId && targetStreamId === previousStreamId) throw new Error("Task is already assigned to this Stream");
-      const activeRuns = this.#activeRunSummaries(context.workspaceId)
+      const previousStream = this.#streamTarget(context, { stream_id: previousStreamId });
+      const activeRuns = this.#activeRunSummaries(previousStream.workspace.id)
         .filter((run) => run.streamId === previousStreamId);
-      const queuedInputs = this.#deferredInputSummaries(context.workspaceId)
+      const queuedInputs = this.#deferredInputSummaries(previousStream.workspace.id)
         .filter((input) => input.streamId === previousStreamId);
       if (activeRuns.length || queuedInputs.length) {
         throw new Error("Task cannot be reassigned while its current Stream has an active turn or queued input");
@@ -915,7 +1120,7 @@ export class HubMcpService {
     } : null;
     const result = await this.#taskLauncher({
       id: task.id,
-      workspaceId: context.workspaceId,
+      workspaceId: targetWorkspace.id,
       streamId: targetStreamId,
       streamName: requestedStreamName || null,
       provider: targetProvider,
@@ -953,9 +1158,8 @@ export class HubMcpService {
   } = {}) {
     if (confirmSend !== true) throw new Error("confirm_send must be true");
     const targetStreamId = requiredText(streamId, "stream id", 300);
-    const targetStream = this.#workspace(context).streams
-      .find((candidate) => candidate.id === targetStreamId);
-    if (!targetStream) throw new Error("Stream is outside the current Workspace");
+    const target = this.#streamTarget(context, { stream_id: targetStreamId });
+    const targetStream = target.stream;
     const followUpMode = requiredText(mode, "message mode", 20).toLowerCase();
     if (!new Set(["queue", "steer"]).has(followUpMode)) throw new Error("invalid message mode");
     const normalizedRequestId = requiredText(requestId, "request id", 200);
@@ -996,7 +1200,8 @@ export class HubMcpService {
         ...(messageOrigin?.sourceThreadId ? { threadId: messageOrigin.sourceThreadId } : {}),
       },
       target: {
-        workspaceId: context.workspaceId,
+        workspaceId: target.workspace.id,
+        workspaceName: target.workspace.name,
         streamId: targetStreamId,
         streamName: targetStream.displayName ?? targetStream.name ?? "",
       },
@@ -1004,10 +1209,13 @@ export class HubMcpService {
     };
   }
 
-  #events(context, { after_sequence: afterSequence = 0, limit = 50 } = {}) {
-    const events = this.workspaceCatalog.workspaceEvents(context.workspaceId, { afterSequence, limit });
+  #events(context, {
+    workspace_id: workspaceId = null, after_sequence: afterSequence = 0, limit = 50,
+  } = {}) {
+    const targetWorkspaceId = this.#workspace(context, workspaceId).id;
+    const events = this.workspaceCatalog.workspaceEvents(targetWorkspaceId, { afterSequence, limit });
     return {
-      workspaceId: context.workspaceId,
+      workspaceId: targetWorkspaceId,
       events,
       nextSequence: events.at(-1)?.sequence ?? Math.max(0, Number(afterSequence) || 0),
     };
@@ -1048,31 +1256,106 @@ export class HubMcpService {
     });
   }
 
-  #activeRunsForWorkspace(context) {
-    return { workspaceId: context.workspaceId, runs: this.#activeRunSummaries(context.workspaceId) };
+  #activeRunsForWorkspace(context, { workspace_id: workspaceId = null } = {}) {
+    const targetWorkspaceId = this.#workspace(context, workspaceId).id;
+    return { workspaceId: targetWorkspaceId, runs: this.#activeRunSummaries(targetWorkspaceId) };
   }
 
-  async #streamHistory(context, { stream_id: streamId = null, limit = 20, include_body: includeBody = true } = {}) {
+  async #streamHistory(context, {
+    workspace_id: workspaceId = null,
+    stream_id: streamId = null,
+    limit = 20,
+    include_body: includeBody = true,
+    cursor = null,
+    max_activity_items: maxActivityItems = DEFAULT_HISTORY_ACTIVITY_LIMIT,
+  } = {}) {
     const targetStreamId = String(streamId ?? "").trim() || context.streamId;
-    const workspace = this.#workspace(context);
-    const stream = workspace.streams.find((candidate) => candidate.id === targetStreamId);
-    if (!stream) throw new Error("Stream is outside the current Workspace");
-    const records = await this.workLog.threadTurns(stream.threads, { limit });
-    return {
-      workspaceId: context.workspaceId,
-      streamId: targetStreamId,
-      turns: records.map((record) => ({
-        provider: record.provider,
-        threadId: record.threadId,
-        turnId: record.turnId,
-        title: compactText(record.title, 500),
-        prompt: compactText(record.prompt, 2_000),
-        ...(includeBody ? { body: compactText(record.body, 6_000) } : {}),
-        startedAt: record.startedAt,
-        completedAt: record.completedAt,
-        status: record.status ?? null,
-      })),
+    const parsedCursor = parsedStreamHistoryCursor(cursor);
+    let target;
+    try {
+      target = this.#streamTarget(context, {
+        stream_id: targetStreamId,
+        workspace_id: workspaceId,
+      });
+    } catch (error) {
+      if (!/not found|outside the selected Workspace/iu.test(error.message)) throw error;
+      const result = {
+        workspaceId: String(workspaceId ?? "").trim() || null,
+        streamId: targetStreamId,
+        state: "not_found",
+        cursor: parsedCursor?.source ?? null,
+        activeRunCount: 0,
+        turns: [],
+      };
+      return { ...result, revision: streamHistoryRevision(result) };
+    }
+    const boundedLimit = Math.max(1, Math.min(50, Number(limit) || 20));
+    const maximumActivities = Math.max(
+      1,
+      Math.min(100, Number(maxActivityItems) || DEFAULT_HISTORY_ACTIVITY_LIMIT),
+    );
+    if (parsedCursor && (
+      parsedCursor.workspaceId !== target.workspace.id
+      || parsedCursor.streamId !== target.stream.id
+    )) {
+      const result = {
+        workspaceId: target.workspace.id,
+        streamId: target.stream.id,
+        state: "not_found",
+        cursor: parsedCursor.source,
+        activeRunCount: 0,
+        turns: [],
+      };
+      return { ...result, revision: streamHistoryRevision(result) };
+    }
+    const activeRuns = this.#activeRuns()
+      .filter((run) => {
+        if (!activeRun(run)) return false;
+        if (String(run?.streamId ?? "").trim() === target.stream.id) return true;
+        return this.workspaceCatalog.resolveThread({
+          provider: run?.provider,
+          threadId: run?.threadId,
+        })?.streamId === target.stream.id;
+      })
+      .sort((left, right) => {
+        const byTime = Date.parse(String(right?.startedAt ?? "")) - Date.parse(String(left?.startedAt ?? ""));
+        if (Number.isFinite(byTime) && byTime) return byTime;
+        return String(left?.id ?? "").localeCompare(String(right?.id ?? ""));
+      });
+    const records = await this.workLog.threadTurns(target.stream.threads, { limit: 50 });
+    const activeTurns = activeRuns.map((run) => boundedActiveTurn(run, {
+      includeBody: includeBody === true,
+      maximumActivities,
+    }));
+    const activeIdentities = new Set(activeTurns.map(turnIdentityKey));
+    const completedTurns = records
+      .map((record) => boundedCompletedTurn(record, includeBody === true))
+      .filter((turn) => !activeIdentities.has(turnIdentityKey(turn)));
+    const turns = [...activeTurns, ...completedTurns].slice(0, boundedLimit);
+    const cursorRun = parsedCursor
+      ? activeRuns.find((run) => String(run?.id ?? "") === parsedCursor.runId) ?? null
+      : null;
+    const selectedRun = cursorRun ?? activeRuns[0] ?? null;
+    let state = "idle";
+    if (selectedRun) state = !parsedCursor || cursorRun ? "active" : "replaced";
+    else if (parsedCursor) {
+      state = completedTurns.some((turn) => (
+        (parsedCursor.turnId && turnIdentityKey(turn) === turnIdentityKey(parsedCursor))
+        || (turn.runId && turn.runId === parsedCursor.runId)
+      )) ? "terminal" : "not_found";
+    }
+    const result = {
+      workspaceId: target.workspace.id,
+      streamId: target.stream.id,
+      state,
+      cursor: selectedRun
+        ? streamHistoryCursor({ workspaceId: target.workspace.id, streamId: target.stream.id, run: selectedRun })
+        : parsedCursor?.source ?? null,
+      activeRunCount: activeRuns.length,
+      truncated: activeTurns.length + completedTurns.length > boundedLimit,
+      turns,
     };
+    return { ...result, revision: streamHistoryRevision(result) };
   }
 
   #taskAttachment(taskId, attachmentId) {
@@ -1174,8 +1457,9 @@ export class HubMcpService {
   }
 
   async #preflightRelease(context, args) {
+    const workspaceId = this.#workspace(context, args.workspace_id).id;
     return this.releasePreflight.preflight({
-      workspaceId: context.workspaceId,
+      workspaceId,
       expectedPlanRevision: optionalText(args.expected_plan_revision, 128),
       conflictsResolved: args.conflicts_resolved === true,
     });
