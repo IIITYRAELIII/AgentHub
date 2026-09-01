@@ -268,3 +268,25 @@ test("a provisional delivered turn can be retracted before its real terminal", (
   assert.equal(registry.get(value), null);
   assert.notEqual(registry.recordCompletion(completion()), null);
 });
+
+test("Codex completion hides its service marker across durable restore without touching prompts", () => {
+  const annotationPrompt = [
+    "# Response annotations:",
+    "<response-annotations>",
+    '[{"text":"Старый ответ","annotation":"как так?"}]',
+    "</response-annotations>",
+    "",
+    "## My request for Codex:",
+  ].join("\n");
+  const userLiteral = ':codex-annotation{index="1"} — пользовательский literal-текст';
+  const registry = new TurnEndNotificationRegistry();
+  registry.recordCompletion(completion({
+    prompt: annotationPrompt,
+    prompts: [annotationPrompt, userLiteral],
+    finalAnswer: ':codex-annotation{index="1"} Причина найдена',
+  }));
+
+  const restored = new TurnEndNotificationRegistry(registry.snapshot()).get(completion());
+  assert.equal(restored.finalAnswer, "Причина найдена");
+  assert.deepEqual(restored.prompts, [annotationPrompt, userLiteral]);
+});

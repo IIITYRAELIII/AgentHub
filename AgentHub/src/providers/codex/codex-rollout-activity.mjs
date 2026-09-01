@@ -10,6 +10,7 @@ import { TASK_EXECUTION_OWNERS } from "../../domain/task-execution-owner.mjs";
 import {
   isCodexContextProbeClientId,
 } from "../../domain/codex-context-probe.mjs";
+import { visibleCodexAssistantText } from "../../domain/codex-response-annotation.mjs";
 import { codexParentThreadId } from "./codex-subagent-accounting.mjs";
 import {
   pinCodexRolloutActivityCacheInWorker,
@@ -102,7 +103,7 @@ function codexResponseItemMessage(entry, role) {
 }
 
 function rememberCodexTurnMessage(metadata, turnId, message) {
-  const value = String(message ?? "").trim();
+  const value = visibleCodexAssistantText(message).trim();
   if (!turnId || !value) return;
   const previous = String(metadata.latestMessages.get(turnId) ?? "").trim();
   const combined = !previous
@@ -603,7 +604,7 @@ function observeCodexEntry(activeTurnIds, lastSeenAtByTurnId, metadata, entry) {
   }
   if (entry?.type === "event_msg" && entry.payload?.type === "agent_message") {
     const messageTurnId = turnId || (activeTurnIds.size === 1 ? [...activeTurnIds][0] : "");
-    const message = String(entry.payload?.message ?? "").trim();
+    const message = visibleCodexAssistantText(entry.payload?.message).trim();
     if (messageTurnId && message) {
       rememberCodexTurnMessage(metadata, messageTurnId, message);
     } else if (message) {
@@ -611,7 +612,7 @@ function observeCodexEntry(activeTurnIds, lastSeenAtByTurnId, metadata, entry) {
     }
   }
   if (entry?.type === "event_msg" && entry.payload?.type === "task_complete" && turnId) {
-    const message = String(entry.payload?.last_agent_message ?? "").trim();
+    const message = visibleCodexAssistantText(entry.payload?.last_agent_message).trim();
     if (message) {
       metadata.finalMessages.set(turnId, message);
       while (metadata.finalMessages.size > 8) {

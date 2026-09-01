@@ -1073,6 +1073,40 @@ test("rollout activity preserves a final answer longer than forty thousand chara
   assert.equal(activity.finalMessages["long-final"], finalAnswer);
 });
 
+test("rollout history projects marker-free Codex answers and structured annotations", () => {
+  const turnId = "annotation-turn";
+  const annotationPrompt = [
+    "# Response annotations:",
+    "<response-annotations>",
+    '[{"text":"Фрагмент","annotation":"Почему?"}]',
+    "</response-annotations>",
+  ].join("\n");
+  const entry = (type, payload) => JSON.stringify({ type, payload });
+  const activity = parseCodexRolloutActivity([
+    entry("event_msg", { type: "task_started", turn_id: turnId }),
+    entry("response_item", {
+      type: "message", role: "user",
+      content: [{ type: "input_text", text: annotationPrompt }],
+      internal_chat_message_metadata_passthrough: { turn_id: turnId },
+    }),
+    entry("response_item", {
+      type: "message", role: "assistant",
+      content: [{ type: "output_text", text: ':codex-annotation{index="1"} Готово' }],
+      internal_chat_message_metadata_passthrough: { turn_id: turnId },
+    }),
+    entry("event_msg", {
+      type: "task_complete", turn_id: turnId,
+      last_agent_message: ':codex-annotation{index="1"} Готово',
+    }),
+  ].join("\n"));
+
+  assert.equal(activity.latestMessages[turnId], "Готово");
+  assert.equal(activity.finalMessages[turnId], "Готово");
+  assert.deepEqual(activity.userMessages[turnId][0].responseAnnotations, [
+    { text: "Фрагмент", annotation: "Почему?" },
+  ]);
+});
+
 test("concurrent rollout messages stay attached to their response_item turn ids", () => {
   const entry = (timestamp, type, payload) => JSON.stringify({ timestamp, type, payload });
   const assistant = (turnId, text) => entry("2026-07-22T12:00:00.000Z", "response_item", {
