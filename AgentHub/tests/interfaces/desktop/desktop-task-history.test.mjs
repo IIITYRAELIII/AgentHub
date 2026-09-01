@@ -445,7 +445,9 @@ test("desktop task history resolves selection and merges the active run", async 
   assert.equal(result.end, 5);
   assert.equal(result.nextBefore, 3);
   assert.deepEqual(result.items.map((item) => item.id), ["turn-4", "turn-live"]);
-  assert.equal(result.items[0].messages[0].time, "2026-07-30T10:03:00.000Z");
+  assert.equal(result.items[0].messages[0].time, "2026-07-30T09:59:00.000Z");
+  assert.equal(result.items[0].messages[0].submittedAt, "2026-07-30T09:59:00.000Z");
+  assert.equal(result.items[0].messages[0].startedAt, "2026-07-30T10:03:00.000Z");
   assert.deepEqual(result.items[0].messages[0].attachments, [{
     id: "client-4.png",
     type: "image/png",
@@ -1118,8 +1120,9 @@ test("desktop task history keeps a saved final beside a later active user turn",
   assert.equal(previous.terminalRevision, 2);
   assert.equal(current.answer, "");
   assert.equal(current.active, true);
-  assert.equal(current.messages[0].time, "2026-08-08T17:09:19.000Z");
+  assert.equal(current.messages[0].time, "2026-08-08T01:01:00.000Z");
   assert.equal(current.messages[0].submittedAt, "2026-08-08T01:01:00.000Z");
+  assert.equal(current.messages[0].startedAt, "2026-08-08T17:09:19.000Z");
 });
 
 test("desktop task history returns durable history while provider hydration is still blocked", async () => {

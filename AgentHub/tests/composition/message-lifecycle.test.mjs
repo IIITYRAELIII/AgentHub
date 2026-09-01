@@ -2022,12 +2022,12 @@ test("accepted immediate intake stays visible until its provider turn starts", (
 
   assert.deepEqual(
     { ...lifecycle.messageReceiptProjection(intakeReceipt) },
-    { accepted: true, deliveryState: "accepted", ownsDeferredQueue: false },
+    { accepted: true, deliveryState: "queued", ownsDeferredQueue: false, projectionState: "queued" },
   );
-  assert.equal(optimistic.deliveryState, "accepted");
+  assert.equal(optimistic.deliveryState, "queued");
   assert.equal(
     lifecycle.deferredInputDeliveryState(transientDeferredInput, [intakeReceipt]),
-    null,
+    "queued",
   );
   const deferredIds = lifecycle.deferredQueueClientUserMessageIds(
     [transientDeferredInput],
@@ -2065,7 +2065,7 @@ test("a real deferred queue command stays out of the conversation", () => {
   const deferredInput = { clientUserMessageId, state: "queued" };
   assert.deepEqual(
     { ...lifecycle.messageReceiptProjection(queueReceipt) },
-    { accepted: true, deliveryState: "queued", ownsDeferredQueue: true },
+    { accepted: true, deliveryState: "queued", ownsDeferredQueue: true, projectionState: "queued" },
   );
   assert.equal(lifecycle.receiptDeliveryState(queueReceipt), "queued");
   assert.equal(lifecycle.deferredInputDeliveryState(deferredInput, [queueReceipt]), "queued");
@@ -2103,7 +2103,7 @@ test("accepted intake stays visible after its receipt leaves the bounded snapsho
     receipt.clientUserMessageId === clientUserMessageId
   )), false);
   assert.equal(lifecycle.deferredInputUsesQueue(deferredInput, exposedReceipts), false);
-  assert.equal(lifecycle.deferredInputDeliveryState(deferredInput, exposedReceipts), null);
+  assert.equal(lifecycle.deferredInputDeliveryState(deferredInput, exposedReceipts), "queued");
   const deferredIds = lifecycle.deferredQueueClientUserMessageIds(
     [deferredInput],
     exposedReceipts,
@@ -2939,11 +2939,14 @@ test("an active run is authoritative acceptance evidence for its client message"
       run: {
         turnId: "turn-1",
         clientUserMessageId: "client-1",
+        submittedAt: "2026-08-25T22:14:00.000Z",
         startedAt: "2026-08-25T22:15:28.000Z",
         userMessages: [{
           itemId: "user-1",
           clientUserMessageId: "client-1",
-          time: "2026-08-25T22:15:28.000Z",
+          submittedAt: "2026-08-25T22:14:00.000Z",
+          startedAt: "2026-08-25T22:15:28.000Z",
+          time: "2026-08-25T22:14:00.000Z",
           attachments: [{ id: "attachment-1" }],
         }],
       },
@@ -2964,6 +2967,8 @@ test("an active run is authoritative acceptance evidence for its client message"
     clientUserMessageId: "client-1",
     turnId: "turn-1",
     itemId: "user-1",
+    submittedAt: "2026-08-25T22:14:00.000Z",
+    startedAt: "2026-08-25T22:15:28.000Z",
     deliveredAt: "2026-08-25T22:15:28.000Z",
     attachments: [{ id: "attachment-1" }],
   }]);

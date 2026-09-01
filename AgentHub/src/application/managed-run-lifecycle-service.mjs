@@ -87,6 +87,7 @@ export class ManagedRunLifecycleService {
       clientSource: String(target?.clientSource ?? "telegram").trim() || "telegram",
       ...(messageOrigin ? { messageOrigin } : {}),
     });
+    run.submittedAt = target?.deferredInput?.createdAt ?? target?.submittedAt ?? run.startedAt;
     if (run.promptPreview) {
       run.userMessages = [{
         role: "user",
@@ -99,7 +100,9 @@ export class ManagedRunLifecycleService {
           origin: structuredClone(messageOrigin),
           author: interstreamOriginAuthor(messageOrigin),
         } : {}),
-        time: run.startedAt,
+        submittedAt: run.submittedAt,
+        startedAt: run.startedAt,
+        time: run.submittedAt,
       }];
     }
     d.taskRuns.add(run);
