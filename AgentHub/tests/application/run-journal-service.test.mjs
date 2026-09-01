@@ -202,6 +202,7 @@ test("RunJournalService selects automatic and explicit journal projection paths"
     projectRoot: "C:/workspace",
     threadId: "thread",
     turnId: "turn",
+    runId: "run-1",
     taskTitle: "Task",
     status: "completed",
   };
@@ -209,6 +210,7 @@ test("RunJournalService selects automatic and explicit journal projection paths"
   await service.projectTurn({ ...completion, message: { workLogId: "row-1" } }, { title: "Title" });
   assert.equal(calls[0][0], "automatic");
   assert.equal(calls[0][1].title, "Useful final answer");
+  assert.equal(calls[0][1].runId, "run-1");
   assert.equal(calls[1][0], "explicit");
   assert.equal(calls[1][1].workLogId, "row-1");
 });

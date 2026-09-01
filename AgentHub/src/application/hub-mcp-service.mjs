@@ -182,6 +182,28 @@ function turnIdentityKey({ provider, threadId, turnId, runId = null } = {}) {
   return runId ? `run\0${String(runId)}` : "";
 }
 
+function turnIdentityAliases(value = {}) {
+  const aliases = [];
+  const providerTurn = turnIdentityKey(value);
+  if (providerTurn) aliases.push(providerTurn);
+  const runId = String(value?.runId ?? value?.id ?? "").trim();
+  if (runId) aliases.push(`run\0${runId}`);
+  return [...new Set(aliases)];
+}
+
+function streamHistoryTurnTime(turn) {
+  const timestamp = Date.parse(String(turn?.active ? turn?.startedAt : turn?.completedAt ?? turn?.startedAt ?? ""));
+  return Number.isFinite(timestamp) ? timestamp : Number.NEGATIVE_INFINITY;
+}
+
+function compareStreamHistoryTurns(left, right) {
+  const byTime = streamHistoryTurnTime(right) - streamHistoryTurnTime(left);
+  if (Number.isFinite(byTime) && byTime) return byTime;
+  const leftKey = turnIdentityAliases(left).join("\0") || JSON.stringify(canonicalValue(left));
+  const rightKey = turnIdentityAliases(right).join("\0") || JSON.stringify(canonicalValue(right));
+  return leftKey.localeCompare(rightKey);
+}
+
 function streamHistoryCursor({ workspaceId, streamId, run } = {}) {
   return Buffer.from(JSON.stringify({
     v: STREAM_HISTORY_CURSOR_VERSION,
@@ -280,7 +302,7 @@ function boundedCompletedTurn(record, includeBody) {
     provider: record.provider,
     threadId: record.threadId,
     turnId: record.turnId,
-    runId: String(record.id ?? "").trim() || null,
+    runId: String(record.runId ?? "").trim() || null,
     title: compactText(record.title, 500),
     prompt: compactText(record.prompt, 2_000),
     ...(includeBody ? { body: compactText(record.body, 6_000) } : {}),
@@ -421,7 +443,10 @@ export class HubMcpService {
       tool("hub_stream_history", "Read a bounded snapshot of completed and active turns for any Hub Stream. This never long-polls.", {
         workspace_id: { type: "string", description: "Optional consistency check for stream_id; defaults to the Stream Workspace." },
         stream_id: { type: "string", description: "Globally unique target Stream ID. Defaults to the caller Stream." },
-        limit: { type: "integer", minimum: 1, maximum: 50, default: 20 },
+        limit: {
+          type: "integer", minimum: 1, maximum: 50, default: 20,
+          description: "Applied after newest-first merge sorting: completedAt for terminal turns, startedAt for active turns, then exact identity.",
+        },
         include_body: { type: "boolean", default: true },
         cursor: { type: "string", description: "Opaque cursor returned by an earlier active snapshot, used to report replaced or terminal state." },
         max_activity_items: { type: "integer", minimum: 1, maximum: 100, default: 40 },
@@ -1271,24 +1296,10 @@ export class HubMcpService {
   } = {}) {
     const targetStreamId = String(streamId ?? "").trim() || context.streamId;
     const parsedCursor = parsedStreamHistoryCursor(cursor);
-    let target;
-    try {
-      target = this.#streamTarget(context, {
-        stream_id: targetStreamId,
-        workspace_id: workspaceId,
-      });
-    } catch (error) {
-      if (!/not found|outside the selected Workspace/iu.test(error.message)) throw error;
-      const result = {
-        workspaceId: String(workspaceId ?? "").trim() || null,
-        streamId: targetStreamId,
-        state: "not_found",
-        cursor: parsedCursor?.source ?? null,
-        activeRunCount: 0,
-        turns: [],
-      };
-      return { ...result, revision: streamHistoryRevision(result) };
-    }
+    const target = this.#streamTarget(context, {
+      stream_id: targetStreamId,
+      workspace_id: workspaceId,
+    });
     const boundedLimit = Math.max(1, Math.min(50, Number(limit) || 20));
     const maximumActivities = Math.max(
       1,
@@ -1308,6 +1319,10 @@ export class HubMcpService {
       };
       return { ...result, revision: streamHistoryRevision(result) };
     }
+    const records = await this.workLog.threadTurns(target.stream.threads, { limit: 50 });
+    const completedTurns = records
+      .map((record) => boundedCompletedTurn(record, includeBody === true));
+    const completedIdentities = new Set(completedTurns.flatMap(turnIdentityAliases));
     const activeRuns = this.#activeRuns()
       .filter((run) => {
         if (!activeRun(run)) return false;
@@ -1317,21 +1332,18 @@ export class HubMcpService {
           threadId: run?.threadId,
         })?.streamId === target.stream.id;
       })
-      .sort((left, right) => {
-        const byTime = Date.parse(String(right?.startedAt ?? "")) - Date.parse(String(left?.startedAt ?? ""));
-        if (Number.isFinite(byTime) && byTime) return byTime;
-        return String(left?.id ?? "").localeCompare(String(right?.id ?? ""));
-      });
-    const records = await this.workLog.threadTurns(target.stream.threads, { limit: 50 });
+      .filter((run) => !turnIdentityAliases(run).some((identity) => completedIdentities.has(identity)))
+      .sort((left, right) => compareStreamHistoryTurns(
+        { ...left, runId: left?.id, active: true },
+        { ...right, runId: right?.id, active: true },
+      ));
     const activeTurns = activeRuns.map((run) => boundedActiveTurn(run, {
       includeBody: includeBody === true,
       maximumActivities,
     }));
-    const activeIdentities = new Set(activeTurns.map(turnIdentityKey));
-    const completedTurns = records
-      .map((record) => boundedCompletedTurn(record, includeBody === true))
-      .filter((turn) => !activeIdentities.has(turnIdentityKey(turn)));
-    const turns = [...activeTurns, ...completedTurns].slice(0, boundedLimit);
+    const turns = [...activeTurns, ...completedTurns]
+      .sort(compareStreamHistoryTurns)
+      .slice(0, boundedLimit);
     const cursorRun = parsedCursor
       ? activeRuns.find((run) => String(run?.id ?? "") === parsedCursor.runId) ?? null
       : null;
@@ -1339,9 +1351,9 @@ export class HubMcpService {
     let state = "idle";
     if (selectedRun) state = !parsedCursor || cursorRun ? "active" : "replaced";
     else if (parsedCursor) {
+      const cursorIdentities = turnIdentityAliases(parsedCursor);
       state = completedTurns.some((turn) => (
-        (parsedCursor.turnId && turnIdentityKey(turn) === turnIdentityKey(parsedCursor))
-        || (turn.runId && turn.runId === parsedCursor.runId)
+        turnIdentityAliases(turn).some((identity) => cursorIdentities.includes(identity))
       )) ? "terminal" : "not_found";
     }
     const result = {

@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { HubMcpService } from "../../src/application/hub-mcp-service.mjs";
+import { incomingLedgerRecord } from "../../src/application/work-log-usage-projection.mjs";
 
 async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-mcp-"));
@@ -784,7 +785,7 @@ test("HubMcpService exposes bounded activity, history and effective rules", asyn
   const rules = await service.call("hub_rules_get", { context_token: token });
   assert.equal(active.runs[0].streamId, "stream-1");
   assert.equal(history.state, "active");
-  assert.equal(history.turns[0].active, true);
+  assert.equal(history.turns.some((turn) => turn.active === true), true);
   assert.match(history.turns.find((turn) => turn.turnId === "turn-1").prompt, /Initial prompt/u);
   assert.equal(rules.stream.content, "Stream rule");
 });
@@ -879,10 +880,9 @@ test("HubMcpService performs standard reads and writes across Workspace boundari
   assert.equal(operations.get("foreign-workspace-rules").workspaceId, "workspace-1");
   assert.equal(operations.get("foreign-workspace-rules").streamId, "stream-1");
 
-  const mismatchedHistory = await service.call("hub_stream_history", {
+  await assert.rejects(() => service.call("hub_stream_history", {
     context_token: token, workspace_id: "workspace-1", stream_id: "stream-3",
-  });
-  assert.equal(mismatchedHistory.state, "not_found");
+  }), /outside the selected Workspace/u);
   await assert.rejects(() => service.call("hub_task_start", {
     context_token: token, request_id: "mismatched-target", task_id: "task-foreign",
     workspace_id: "workspace-1", stream_id: "stream-3", confirm_launch: true,
@@ -943,7 +943,7 @@ test("hub_stream_history projects active content and deterministic lifecycle sta
     context_token: token, stream_id: "stream-3", cursor: first.cursor, limit: 5,
   });
   assert.equal(deduplicated.turns.filter((turn) => turn.turnId === "turn-foreign-1").length, 1);
-  assert.equal(deduplicated.turns[0].active, true);
+  assert.equal(deduplicated.turns[0].active, false);
 
   const replacementRun = {
     ...firstRun,
@@ -985,11 +985,11 @@ test("hub_stream_history projects active content and deterministic lifecycle sta
   const beforeTurnId = await service.call("hub_stream_history", {
     context_token: token, stream_id: "stream-3",
   });
-  historyRecordsByThread.set("thread-3", [{
+  historyRecordsByThread.set("thread-3", [incomingLedgerRecord({
     provider: "codex", threadId: "thread-3", turnId: "turn-assigned-at-terminal",
-    id: "run-before-turn-id", title: "Pre-turn", prompt: "Pre-turn", body: "Final",
+    runId: "run-before-turn-id", title: "Pre-turn", prompt: "Pre-turn", body: "Final",
     status: "completed", completedAt: "2026-09-01T13:07:00.000Z",
-  }]);
+  })]);
   service.setActiveRuns(() => []);
   const terminalAfterPreTurn = await service.call("hub_stream_history", {
     context_token: token, stream_id: "stream-3", cursor: beforeTurnId.cursor,
@@ -998,20 +998,52 @@ test("hub_stream_history projects active content and deterministic lifecycle sta
   assert.equal(terminalAfterPreTurn.turns[0].turnId, "turn-assigned-at-terminal");
   assert.equal(terminalAfterPreTurn.turns[0].runId, "run-before-turn-id");
 
+  historyRecordsByThread.set("thread-3", []);
+  const unknownCursor = await service.call("hub_stream_history", {
+    context_token: token, stream_id: "stream-3", cursor: first.cursor,
+  });
   const idle = await service.call("hub_stream_history", {
     context_token: token, stream_id: "stream-3", limit: 1,
   });
-  const missing = await service.call("hub_stream_history", {
+  await assert.rejects(() => service.call("hub_stream_history", {
     context_token: token, stream_id: "missing-stream", limit: 1,
-  });
+  }), /Stream not found/u);
+  assert.equal(unknownCursor.state, "not_found");
   assert.equal(idle.state, "idle");
-  assert.equal(missing.state, "not_found");
-  assert.deepEqual(missing.turns, []);
 
   const schema = service.tools().find((tool) => tool.name === "hub_stream_history").inputSchema.properties;
   assert.equal("wait" in schema, false);
   assert.equal("timeout" in schema, false);
   assert.equal(service.tools().some((tool) => tool.name === "hub_stream_turn_snapshot"), false);
+});
+
+test("hub_stream_history merge-sorts active and terminal turns before applying limit", async (context) => {
+  const { service, token, historyRecordsByThread } = await fixture(context);
+  historyRecordsByThread.set("thread-3", [{
+    provider: "codex", threadId: "thread-3", turnId: "turn-terminal-new",
+    title: "Newest terminal", status: "completed", completedAt: "2026-09-01T13:06:00.000Z",
+  }, {
+    provider: "codex", threadId: "thread-3", turnId: "turn-terminal-old",
+    title: "Older terminal", status: "completed", completedAt: "2026-09-01T13:04:00.000Z",
+  }]);
+  service.setActiveRuns(() => [{
+    id: "run-b", provider: "codex", streamId: "stream-3", threadId: "thread-3",
+    turnId: "turn-b", status: "running", startedAt: "2026-09-01T13:05:00.000Z",
+  }, {
+    id: "run-a", provider: "codex", streamId: "stream-3", threadId: "thread-3",
+    turnId: "turn-a", status: "running", startedAt: "2026-09-01T13:05:00.000Z",
+  }]);
+
+  const result = await service.call("hub_stream_history", {
+    context_token: token, stream_id: "stream-3", limit: 3,
+  });
+
+  assert.deepEqual(result.turns.map((turn) => turn.turnId), [
+    "turn-terminal-new", "turn-a", "turn-b",
+  ]);
+  assert.equal(result.truncated, true);
+  const cursor = JSON.parse(Buffer.from(result.cursor, "base64url").toString("utf8"));
+  assert.equal(cursor.turnId, "turn-a");
 });
 
 test("HubMcpService replays successful mutations by request id", async (context) => {
