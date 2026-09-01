@@ -31,3 +31,32 @@ final status and final content.
 - A later user turn cannot suppress or mutate the previous terminal entity.
 - Projection overlays the exact latest terminal independently of a later active
   turn, so both entities remain visible in provider sequence.
+- Generated response attachments belong to the exact provider turn and are
+  materialized into both the terminal completion and its history snapshot.
+  Importing a file for live history is not evidence that terminal persistence
+  contains it.
+- A richer exact-turn terminal revision supersedes an earlier empty revision.
+  Notification deduplication must not discard generated attachments merely
+  because the same terminal identity was already delivered without them.
+- Attachment projection may update the same final card after a short bounded
+  materialization delay, but it must not require a page refresh, reopening the
+  Stream or another user turn.
+
+## Generated attachment runbook
+
+When a final answer mentions a generated image but the final card has none,
+inspect the chain in this order:
+
+1. Confirm that the provider created the image under its generated-image root.
+2. Confirm that the rollout associates the generated-image source with the
+   exact terminal `turnId`.
+3. Confirm that the attachment importer created the durable private copy.
+4. Inspect `provider_turn_terminals.payload_json`: both
+   `completion.responseAttachments` and `history.responseAttachments` must
+   contain the same generated attachment IDs.
+5. Confirm that the latest terminal revision, rather than an earlier empty
+   revision, reached the projection outbox and final card.
+
+Required regression coverage includes direct ImageGen, multiple ideate outputs,
+an empty terminal delivered before a richer generated-image revision, and
+exclusion of viewed or supplied input images from generated response outputs.
