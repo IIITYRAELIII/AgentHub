@@ -1119,7 +1119,8 @@ function deferredInputUsesQueue(deferredInput, messageReceipts = []) {
   const state = String(deferredInput?.state ?? "").trim();
   if (state === "dispatching" || state === "steering") return false;
   const receipt = deferredInputReceipt(deferredInput, messageReceipts);
-  return !receipt || receiptUsesDeferredQueue(receipt);
+  if (receipt) return receiptUsesDeferredQueue(receipt);
+  return String(deferredInput?.conflictKind ?? "").trim() !== "message-intake";
 }
 
 function deferredInputDeliveryState(deferredInput, messageReceipts = []) {

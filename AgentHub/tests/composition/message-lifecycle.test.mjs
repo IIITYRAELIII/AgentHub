@@ -2080,6 +2080,59 @@ test("a real deferred queue command stays out of the conversation", () => {
   assert.deepEqual(visible, []);
 });
 
+test("accepted intake stays visible after its receipt leaves the bounded snapshot", () => {
+  const clientUserMessageId = "client-accepted-outside-receipt-window";
+  const deferredInput = {
+    clientUserMessageId,
+    state: "queued",
+    conflictKind: "message-intake",
+  };
+  const newerReceipts = Array.from({ length: 100 }, (_, index) => ({
+    clientUserMessageId: `client-terminal-${index}`,
+    accepted: true,
+  }));
+  const exposedReceipts = [{
+    clientUserMessageId,
+    accepted: true,
+    deferred: true,
+    queued: true,
+    reason: "message-intake",
+  }, ...newerReceipts].slice(-100);
+
+  assert.equal(exposedReceipts.some((receipt) => (
+    receipt.clientUserMessageId === clientUserMessageId
+  )), false);
+  assert.equal(lifecycle.deferredInputUsesQueue(deferredInput, exposedReceipts), false);
+  assert.equal(lifecycle.deferredInputDeliveryState(deferredInput, exposedReceipts), null);
+  const deferredIds = lifecycle.deferredQueueClientUserMessageIds(
+    [deferredInput],
+    exposedReceipts,
+  );
+  assert.deepEqual(deferredIds, []);
+  assert.deepEqual(
+    lifecycle.visibleConversationMessages([{
+      ...message(clientUserMessageId, "Не исчезай после snapshot"),
+      deliveryState: "accepted",
+    }], { deferredClientUserMessageIds: deferredIds }).map((item) => item.clientUserMessageId),
+    [clientUserMessageId],
+  );
+});
+
+test("deferred input without a receipt stays queued unless durable intake accepted it", () => {
+  const deferredInput = {
+    clientUserMessageId: "client-real-queue-without-receipt",
+    state: "queued",
+    conflictKind: "task-running",
+  };
+
+  assert.equal(lifecycle.deferredInputUsesQueue(deferredInput, []), true);
+  assert.equal(lifecycle.deferredInputDeliveryState(deferredInput, []), "queued");
+  assert.deepEqual(
+    lifecycle.deferredQueueClientUserMessageIds([deferredInput], []),
+    [deferredInput.clientUserMessageId],
+  );
+});
+
 test("dispatching input leaves the queue while retaining its sending state", () => {
   const clientUserMessageId = "client-dispatching";
   const receipt = {
