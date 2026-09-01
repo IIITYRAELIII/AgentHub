@@ -4,7 +4,7 @@ import test from "node:test";
 import { CodexRunFinalizer } from "../../../src/providers/codex/codex-run-finalizer.mjs";
 import { turnEndKey } from "../../../src/application/turn-end-notifications.mjs";
 
-function fixture({ existingCompletion = null, discard = false } = {}) {
+function fixture({ existingCompletion = null, discard = false, rejectCompletion = false } = {}) {
   const events = [];
   const turnStarts = new Map();
   const notifications = {
@@ -12,7 +12,7 @@ function fixture({ existingCompletion = null, discard = false } = {}) {
     recordCompletion: (value) => {
       const completion = { ...value, usage: value.usage ?? {}, usageReported: value.usageReported };
       events.push(["record", completion]);
-      return completion;
+      return rejectCompletion ? null : completion;
     },
   };
   const finalizer = new CodexRunFinalizer({
@@ -140,6 +140,27 @@ test("CodexRunFinalizer commits generated ideate images with the exact final ans
     "codex-generated-three.png",
   ]);
   assert.deepEqual(value.responseAttachments, committed.responseAttachments);
+});
+
+test("CodexRunFinalizer revises an already delivered empty terminal with generated images", async () => {
+  const state = fixture({
+    existingCompletion: {
+      turnId: "turn-1",
+      responseAttachments: [],
+    },
+    rejectCompletion: true,
+  });
+  state.finalizer.resolveTerminalAttachments = async () => [
+    { id: "codex-generated-one.png", name: "Изображение", type: "image/png" },
+  ];
+
+  await state.finalizer.finalize(run(), { answer: "Готово" });
+
+  const committed = state.events.find(([name]) => name === "commit")[1];
+  assert.equal(committed.finalAnswer, "Готово");
+  assert.deepEqual(committed.responseAttachments, [
+    { id: "codex-generated-one.png", name: "Изображение", type: "image/png" },
+  ]);
 });
 
 test("CodexRunFinalizer captures a Git diff when rollout tracking is unavailable", async () => {
