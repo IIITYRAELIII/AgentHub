@@ -580,6 +580,13 @@ html[data-theme="gothic"] .composer-send {
     border-radius: 0;
   }
 
+  html[data-theme="gothic"] .quick-messages-settings-control > .chip-button {
+    background-color: #100f0f;
+    background-image: var(--gothic-panel-texture-preview);
+    background-blend-mode: normal;
+    background-size: auto;
+  }
+
   html[data-theme="gothic"]:not([data-surface="mobile"]) .task-workspace-name,
   html[data-theme="gothic"]:not([data-surface="mobile"]) .stream-tab-title,
   html[data-theme="gothic"]:not([data-surface="mobile"]) .msg-body {
