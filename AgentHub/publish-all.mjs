@@ -7,6 +7,7 @@ import { callDesktopControl, readDesktopControlEndpoint } from "./desktop-contro
 import { ensureWrangler } from "./wrangler-runner.mjs";
 import { defaultRuntimeRoot } from "./src/infrastructure/filesystem/runtime-layout.mjs";
 import { prepareCommittedAgentHubReleaseVersion } from "./src/infrastructure/filesystem/release-version.mjs";
+import { assertReleaseCloneForPublication } from "./src/infrastructure/filesystem/release-git-workspace.mjs";
 import {
   publicationCheckpointStore,
   runPublicationSteps,
@@ -264,6 +265,7 @@ if (invokedFile === fileURLToPath(import.meta.url)) {
     checkpoint: publicationCheckpointStore(),
     journal: publicationRunStore(),
     before: async () => {
+      await assertReleaseCloneForPublication({ repositoryRoot: REPOSITORY_ROOT });
       await assertCleanPublicationTree({ cwd: REPOSITORY_ROOT });
       await assertCurrentPublicationRevision({ cwd: REPOSITORY_ROOT });
     },

@@ -17,7 +17,7 @@ async function workflowApi() {
 
 test("release workflow tooltip describes the mandatory Task lifecycle", async () => {
   const workflow = await workflowApi();
-  assert.equal(workflow.tooltip.length, 19);
+  assert.equal(workflow.tooltip.length, 20);
   const text = workflow.tooltip.join("\n");
   assert.equal(text, RELEASE_WORKFLOW_DEVELOPER_RULES);
   assert.match(text, /applies only when the checkbox is enabled/iu);
@@ -28,6 +28,7 @@ test("release workflow tooltip describes the mandatory Task lifecycle", async ()
   assert.match(text, /Task moves to Await.*PreRelease.*Await Tasks/iu);
   assert.match(text, /Test.*must not enter PreRelease/iu);
   assert.match(text, /merge conflict.*blocked/iu);
+  assert.match(text, /primary Workspace.*main.*independent clone/iu);
   assert.match(text, /explicit release command.*production deployment/iu);
   assert.match(text, /Only an Architect/iu);
 });
