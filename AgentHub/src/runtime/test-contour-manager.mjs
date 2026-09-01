@@ -101,35 +101,48 @@ export function testContourPaths(root = defaultTestContourRoot()) {
   };
 }
 
-export function alignTestContourStreamModel({ databaseFile, model } = {}) {
+export function alignTestContourStreamModel({
+  databaseFile,
+  model,
+  databaseFactory = (file) => new DatabaseSync(file),
+} = {}) {
   requireTestContourModel(model);
   if (!databaseFile || !existsSync(databaseFile)) return { updated: 0, reason: "journal-unavailable" };
-  const database = new DatabaseSync(databaseFile);
-  try {
-    const table = database.prepare(`
-      SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'hub_streams'
-    `).get();
-    if (!table) return { updated: 0, reason: "stream-catalog-unavailable" };
-    const rows = database.prepare("SELECT id, settings_json FROM hub_streams").all();
-    const update = database.prepare("UPDATE hub_streams SET settings_json = ? WHERE id = ?");
-    let updated = 0;
-    database.exec("BEGIN IMMEDIATE");
+  let lastError = null;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    let database = null;
     try {
-      for (const row of rows) {
-        const settings = JSON.parse(row.settings_json);
-        if (settings.provider === "codex" && settings.model === model) continue;
-        update.run(JSON.stringify({ ...settings, provider: "codex", model }), row.id);
-        updated += 1;
+      database = databaseFactory(databaseFile);
+      const table = database.prepare(`
+        SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'hub_streams'
+      `).get();
+      if (!table) return { updated: 0, reason: "stream-catalog-unavailable" };
+      const rows = database.prepare("SELECT id, settings_json FROM hub_streams").all();
+      const update = database.prepare("UPDATE hub_streams SET settings_json = ? WHERE id = ?");
+      let updated = 0;
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        for (const row of rows) {
+          const settings = JSON.parse(row.settings_json);
+          if (settings.provider === "codex" && settings.model === model) continue;
+          update.run(JSON.stringify({ ...settings, provider: "codex", model }), row.id);
+          updated += 1;
+        }
+        database.exec("COMMIT");
+      } catch (error) {
+        try { database.exec("ROLLBACK"); } catch {}
+        throw error;
       }
-      database.exec("COMMIT");
+      return { updated };
     } catch (error) {
-      database.exec("ROLLBACK");
-      throw error;
+      lastError = error;
+      const code = Number(error?.errcode);
+      if (!Number.isInteger(code) || (code & 0xff) !== 10 || attempt === 3) throw error;
+    } finally {
+      database?.close();
     }
-    return { updated };
-  } finally {
-    database.close();
   }
+  throw lastError;
 }
 
 export function testContourOperationLockTarget(root = defaultTestContourRoot()) {

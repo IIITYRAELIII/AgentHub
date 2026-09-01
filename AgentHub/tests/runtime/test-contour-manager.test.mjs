@@ -81,6 +81,41 @@ test("Test Contour aligns cloned Stream settings with the requested provider mod
   }
 });
 
+test("Test Contour retries transient SQLite I/O while production releases its reader", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-test-contour-model-retry-"));
+  const databaseFile = path.join(root, "journal.sqlite");
+  const database = new DatabaseSync(databaseFile);
+  try {
+    database.exec(`
+      CREATE TABLE hub_streams (
+        id TEXT PRIMARY KEY, settings_json TEXT NOT NULL
+      ) WITHOUT ROWID;
+      INSERT INTO hub_streams VALUES ('stream-1', '{"provider":"codex","model":"gpt-5.3-codex-spark"}');
+    `);
+  } finally {
+    database.close();
+  }
+  let attempts = 0;
+  try {
+    assert.deepEqual(alignTestContourStreamModel({
+      databaseFile,
+      model: TEST_CONTOUR_FAKE_MODEL,
+      databaseFactory(file) {
+        attempts += 1;
+        if (attempts === 1) {
+          const error = new Error("disk I/O error");
+          error.errcode = 10;
+          throw error;
+        }
+        return new DatabaseSync(file);
+      },
+    }), { updated: 1 });
+    assert.equal(attempts, 2);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("Test Contour uses a sibling runtime instead of production or source", () => {
   assert.equal(TEST_CONTOUR_WEB_HOST, "localhost");
   assert.equal(
