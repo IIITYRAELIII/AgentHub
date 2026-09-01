@@ -14,6 +14,7 @@ test("terminal resolver imports all ideate outputs from a production-shaped roll
     readRolloutActivity: async (_rolloutPath, options) => {
       assert.equal(options.freshnessMs, Number.POSITIVE_INFINITY);
       assert.equal(options.tailBytes, CODEX_TERMINAL_ATTACHMENT_TAIL_BYTES);
+      assert.equal(options.reparseTail, true);
       const output = (savedPath) => ({
         type: "response_item",
         payload: {

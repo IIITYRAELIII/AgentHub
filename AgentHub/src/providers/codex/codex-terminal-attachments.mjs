@@ -47,6 +47,7 @@ export function createCodexTerminalAttachmentResolver({
         const activity = await readRolloutActivity(rolloutPath, {
           freshnessMs: Number.POSITIVE_INFINITY,
           tailBytes: CODEX_TERMINAL_ATTACHMENT_TAIL_BYTES,
+          reparseTail: true,
         });
         const sources = codexTerminalAttachmentSources(activity, normalizedTurnId);
         const expectedImages = completedImageGenerationCount(activity, normalizedTurnId);
