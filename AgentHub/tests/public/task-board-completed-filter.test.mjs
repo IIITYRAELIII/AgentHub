@@ -289,6 +289,21 @@ test("Dashboard Notes have no default subtitle", async () => {
   assert.equal(snapshot.next.notesComment, "");
 });
 
+test("Task links open the card without requesting Dashboard navigation", async () => {
+  const { createTaskReferenceOpenHandler } = await loadBoardView();
+  const opened = [];
+  const tasks = [{ id: "task-1", title: "Keep current route" }];
+  const handler = createTaskReferenceOpenHandler({
+    getTasks: () => tasks,
+    openTask: (task) => opened.push(task.id),
+  });
+
+  assert.equal(handler({ detail: { taskId: "task-1" } }), true);
+  assert.deepEqual(opened, ["task-1"]);
+  assert.equal(handler({ detail: { taskId: "missing" } }), false);
+  assert.deepEqual(opened, ["task-1"]);
+});
+
 test("Dashboard pins Backlog first and Notes last regardless of saved order", async () => {
   const { orderedDashboardColumnIds } = await loadBoardView();
 
