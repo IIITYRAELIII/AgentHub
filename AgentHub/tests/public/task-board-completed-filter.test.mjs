@@ -36,6 +36,23 @@ test("Dashboard switches between current and completed Tasks", async () => {
   );
 });
 
+test("Dashboard considers a Stream free only without an active turn or queue", async () => {
+  const { streamAvailability } = await loadBoardView();
+  const stream = {
+    id: "stream-1",
+    threads: [{ provider: "codex", threadId: "thread-1" }],
+  };
+
+  assert.deepEqual({ ...streamAvailability(stream, [], []) }, {
+    active: false, activeRunCount: 0, queuedInputCount: 0, free: true,
+  });
+  assert.equal(streamAvailability(stream, [{ streamId: "stream-1", running: true }], []).free, false);
+  assert.deepEqual(
+    { ...streamAvailability(stream, [], [{ provider: "codex", threadId: "thread-1" }]) },
+    { active: false, activeRunCount: 0, queuedInputCount: 1, free: false },
+  );
+});
+
 test("a freshly completed Task lands at the bottom of completed Tasks", async () => {
   const view = await loadBoardView();
   const tasks = [

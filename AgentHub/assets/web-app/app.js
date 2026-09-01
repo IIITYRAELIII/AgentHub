@@ -144,6 +144,7 @@ const dialogStreamRules = document.querySelector("[data-dialog-stream-rules]");
 const dialogStreamRulesCount = document.querySelector("[data-dialog-stream-rules-count]");
 const dialogStreamRulesSave = document.querySelector("[data-dialog-stream-rules-save]");
 const dialogStreamArchitect = document.querySelector("[data-dialog-stream-architect]");
+const dialogStreamTeamLead = document.querySelector("[data-dialog-stream-team-lead]");
 const dialogStreamQuickMessages = document.querySelector("[data-dialog-stream-quick-messages]");
 const dialogStreamQuickMessagesCount = document.querySelector("[data-dialog-stream-quick-messages-count]");
 const workspaceMessageSearch = document.querySelector("[data-workspace-message-search]");
@@ -7054,6 +7055,10 @@ function renderDialogSettings() {
     dialogStreamArchitect.checked = streamRoleSettings.architectEnabled(task?.streamSettings);
     dialogStreamArchitect.disabled = !task?.streamId;
   }
+  if (dialogStreamTeamLead) {
+    dialogStreamTeamLead.checked = streamRoleSettings.teamLeadEnabled(task?.streamSettings);
+    dialogStreamTeamLead.disabled = !task?.streamId;
+  }
   renderStreamRulesPreview();
   renderStreamQuickMessagesSettings();
 }
@@ -7128,6 +7133,15 @@ dialogSettings.addEventListener("change", (event) => {
     const task = currentTask();
     if (!task?.streamId) return;
     task.streamSettings = streamRoleSettings.withArchitect(task.streamSettings, architect.checked);
+    emit("stream:settings-save", { streamId: task.streamId, settings: { ...task.streamSettings } });
+    renderOptions();
+    return;
+  }
+  const teamLead = event.target.closest("[data-dialog-stream-team-lead]");
+  if (teamLead) {
+    const task = currentTask();
+    if (!task?.streamId) return;
+    task.streamSettings = streamRoleSettings.withTeamLead(task.streamSettings, teamLead.checked);
     emit("stream:settings-save", { streamId: task.streamId, settings: { ...task.streamSettings } });
     renderOptions();
     return;

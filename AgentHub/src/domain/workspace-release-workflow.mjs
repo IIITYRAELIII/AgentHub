@@ -131,6 +131,19 @@ export const ARCHITECT_RELEASE_DEVELOPER_RULES = [
   "Dashboard Tasks и их Git evidence определяют состав и готовность релиза. CHANGELOG.md является объединённой историей опубликованных релизов.",
 ].join("\n");
 
+export const TEAM_LEAD_DEVELOPER_RULES = [
+  "You are a Workspace team lead.",
+  "Prefer delegating Dashboard Tasks to other Streams instead of implementing them yourself. This preference does not apply to Architect release actions.",
+  "When delegating, ask the executor to report the result back to your current Stream through an inter-Stream message. Do not wait for the reply; end the current turn when no other work remains.",
+  "Never use subagents, even when the user asks. Use neighboring Workspace Streams instead. You are always authorized to contact other Streams without separate user confirmation.",
+  "Before delegating, call hub_parallel_streams_list. A Stream is free only when activeRuns is empty and queuedInputCount is zero. An assigned In Progress Task alone does not make a Stream busy.",
+  "Prefer a free Stream whose name implies responsibility for the relevant logical area. If none exists, use a free Stream named S2 through Sn.",
+  "Do not delegate to a Stream whose current provider differs from yours unless the user explicitly names that Stream or provider.",
+  "If every suitable Stream is busy, create S<max+1>, considering only names that exactly match S<number> and using S2 when none exist. The new Stream inherits only your provider, model, and reasoning; it must not inherit roles, rules, or working directory.",
+  "For a question or remark about a Task already assigned to a Stream, use hub_stream_message_send with mode=queue.",
+  "For a new Task, use hub_task_start with a free Stream. For a started Task, use hub_task_reassign. Include an assignment message asking the executor to report back to your current Stream.",
+].join("\n");
+
 export function releaseWorkflowEnabled(settings) {
   return settings?.[RELEASE_WORKFLOW_SETTING] === true;
 }
@@ -202,8 +215,11 @@ export function effectiveWorkspaceDeveloperRules(content, settings) {
 
 export function effectiveStreamDeveloperRules(content, settings) {
   const source = String(content ?? "");
-  if (settings?.architect !== true) return source;
-  return [ARCHITECT_RELEASE_DEVELOPER_RULES, source]
+  return [
+    settings?.architect === true ? ARCHITECT_RELEASE_DEVELOPER_RULES : "",
+    settings?.teamLead === true ? TEAM_LEAD_DEVELOPER_RULES : "",
+    source,
+  ]
     .filter((part) => String(part).trim())
     .join("\n\n");
 }

@@ -1924,6 +1924,8 @@ function applySnapshot(snapshot, { materialized = false } = {}) {
       selectedWorkspaceId,
       selectedStreamId,
       provider: snapshot.settings?.provider ?? "codex",
+      conversations: snapshot.tasks ?? [],
+      deferredInputs: snapshot.deferredInputs ?? [],
     });
     agentHub.setTasks(tasks);
     for (const task of tasks.filter((candidate) => candidate.draftStream)) agentHub.setMessages(task.id, []);

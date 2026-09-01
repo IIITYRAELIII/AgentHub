@@ -287,16 +287,16 @@ export class TaskBoardService {
     return `${Number(this.store.revision) || 0}:${Number(this.workspaceCatalog.revision) || 0}`;
   }
 
-  prepareStart({ id, workspaceId, streamId, requestId, streamName = null } = {}) {
+  prepareStart({ id, workspaceId, streamId, requestId, streamName = null, reassign = false } = {}) {
     const workspace = this.workspaceCatalog.workspace(workspaceId);
     if (!workspace) throw new Error("Workspace не найден");
-    const task = this.store.prepareStart(id, { workspaceId, streamId, requestId, streamName });
+    const task = this.store.prepareStart(id, { workspaceId, streamId, requestId, streamName, reassign });
     this.#event("task.starting", task);
     return task;
   }
 
-  cancelPreparedStart({ id, requestId } = {}) {
-    const task = this.store.cancelPreparedStart(id, { requestId });
+  cancelPreparedStart({ id, requestId, reassign = false } = {}) {
+    const task = this.store.cancelPreparedStart(id, { requestId, reassign });
     this.#event("task.start-cancelled", task);
     return task;
   }

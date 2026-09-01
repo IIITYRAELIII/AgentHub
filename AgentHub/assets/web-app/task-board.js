@@ -195,6 +195,8 @@
       selectedWorkspaceId: payload.selectedWorkspaceId ?? null,
       selectedStreamId: payload.selectedStreamId ?? null,
       provider: payload.provider === "claude" ? "claude" : "codex",
+      conversations: Array.isArray(payload.conversations) ? payload.conversations.slice() : [],
+      deferredInputs: Array.isArray(payload.deferredInputs) ? payload.deferredInputs.slice() : [],
     };
     const tasksChanged = !sameSnapshotValue(current.tasks ?? [], next.tasks);
     const workspacesChanged = !sameSnapshotValue(current.workspaces ?? [], next.workspaces);
@@ -213,6 +215,26 @@
         || (current.selectedStreamId ?? null) !== next.selectedStreamId,
       openTaskChanged: !initialized || tasksChanged,
     };
+  }
+
+  function streamAvailability(stream, conversations = [], deferredInputs = []) {
+    const streamId = String(stream?.id ?? "").trim();
+    const threadKeys = new Set((stream?.threads ?? []).map((thread) => (
+      `${String(thread?.provider ?? "").trim()}\0${String(thread?.threadId ?? "").trim()}`
+    )));
+    const activeRuns = (Array.isArray(conversations) ? conversations : []).filter((conversation) => (
+      conversation?.running === true && String(conversation?.streamId ?? "").trim() === streamId
+    ));
+    const queuedInputs = (Array.isArray(deferredInputs) ? deferredInputs : []).filter((input) => (
+      String(input?.streamId ?? "").trim() === streamId
+      || threadKeys.has(`${String(input?.provider ?? "").trim()}\0${String(input?.threadId ?? "").trim()}`)
+    ));
+    return Object.freeze({
+      active: activeRuns.length > 0,
+      activeRunCount: activeRuns.length,
+      queuedInputCount: queuedInputs.length,
+      free: activeRuns.length === 0 && queuedInputs.length === 0,
+    });
   }
 
   function taskAttachmentCountLabel(attachments) {
@@ -366,6 +388,7 @@
     taskPresentationUpdate,
     taskWorkLogEntries,
     taskWorkflowPresentation,
+    streamAvailability,
     tasksForMode,
     workspaceTaskSectionsForPanel,
     workspaceTasksForPanel,
@@ -448,6 +471,8 @@
     selectedWorkspaceId: null,
     selectedStreamId: null,
     provider: "codex",
+    conversations: [],
+    deferredInputs: [],
     statusLanguage: storedTaskStatusLanguage(),
     completedOnly: false,
     openTaskId: null,
@@ -657,12 +682,24 @@
     const workspace = workspaceById(task.workspaceId);
     if (!workspace) return;
     state.startingTaskId = task.id;
+    const reassigning = task.status === "started";
+    const currentStream = (workspace.streams ?? []).find((stream) => stream.id === task.streamId);
+    const currentAvailability = streamAvailability(
+      currentStream,
+      state.conversations,
+      state.deferredInputs,
+    );
+    const sourceBusy = reassigning && !currentAvailability.free;
     startTitle.textContent = task.title || task.text;
     startOptions.replaceChildren();
     for (const stream of workspace.streams ?? []) {
+      if (reassigning && stream.id === task.streamId) continue;
+      const availability = streamAvailability(stream, state.conversations, state.deferredInputs);
       startOptions.append(node("button", {
         type: "button",
         class: "task-start-stream",
+        disabled: sourceBusy ? "" : null,
+        title: sourceBusy ? "У текущего исполнителя ещё есть активный ход или очередь" : null,
         onclick: () => {
           closeStart();
           emit("start", {
@@ -671,11 +708,18 @@
             streamId: stream.id,
             provider: state.provider,
             clientUserMessageId: taskLaunchMessageId(task.id),
+            reassign: reassigning,
           });
         },
       }, [
         node("strong", { text: stream.displayName || stream.name || `Stream ${stream.ordinal}` }),
-        node("span", { text: `${(stream.threads ?? []).length} диалогов` }),
+        node("span", {
+          text: availability.active
+            ? "Идёт активный ход"
+            : availability.queuedInputCount
+              ? `В очереди: ${availability.queuedInputCount}`
+              : "Свободен",
+        }),
       ]));
     }
     if (!(workspace.streams ?? []).length) {
@@ -683,6 +727,9 @@
     }
     startNewName.value = (task.title || task.text).slice(0, 80);
     startProvider.value = state.provider;
+    startNewName.disabled = sourceBusy;
+    startProvider.disabled = sourceBusy;
+    startNewForm.querySelector("button[type='submit']").disabled = sourceBusy;
     startModal.showModal?.();
     if (!startModal.open) startModal.setAttribute("open", "");
   }
@@ -810,7 +857,7 @@
       actions.push(node("button", {
         type: "button",
         class: "board-task-primary",
-        text: task.status === "started" ? "Продолжить" : "Начать работу",
+        text: task.status === "started" ? "Переназначить…" : "Начать работу",
         onclick: () => { closeTaskCard(); openStart(task); },
       }));
     }
@@ -1172,6 +1219,7 @@
       streamName,
       provider: startProvider.value,
       clientUserMessageId: taskLaunchMessageId(task.id),
+      reassign: task.status === "started",
     });
   });
   document.querySelector("[data-workspace-task-dashboard]")?.addEventListener("click", () => {

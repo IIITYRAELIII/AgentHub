@@ -157,6 +157,7 @@ export async function createProviderApplicationComposition({
   });
   const maintenanceOperations = new MaintenanceOperationStore({ dataDir: config.dataDir });
   hubMcpService.setActiveRuns(() => runtimeData.taskRuns.values());
+  hubMcpService.setDeferredInputs(() => runtimeData.deferredInputs.values());
 
   const codexObservability = createCodexObservabilityComposition({
     config,

@@ -12,5 +12,21 @@
     };
   }
 
-  global.AgentHubStreamRoleSettings = Object.freeze({ architectEnabled, withArchitect });
+  function teamLeadEnabled(settings) {
+    return settings?.teamLead === true;
+  }
+
+  function withTeamLead(settings, enabled) {
+    return {
+      ...(settings && typeof settings === "object" ? settings : {}),
+      teamLead: enabled === true,
+    };
+  }
+
+  global.AgentHubStreamRoleSettings = Object.freeze({
+    architectEnabled,
+    teamLeadEnabled,
+    withArchitect,
+    withTeamLead,
+  });
 })(window);

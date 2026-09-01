@@ -226,6 +226,8 @@ export function createDesktopRunRouterWiring({
     taskGitWorkspaces: services.taskGitWorkspaces,
     dispatchCommand: desktop.dispatchApplicationCommand,
     sendMessage: runInputs.desktopMessageController.sendMessage,
+    activeRuns: services.activeRuns,
+    deferredInputs: () => services.deferredInputs.values(),
     recordEvent: typeof services.workspaceCatalog.recordWorkspaceEvent === "function"
       ? (event) => services.workspaceCatalog.recordWorkspaceEvent(event)
       : null,

@@ -117,6 +117,31 @@ test("generic Task statuses remain directly editable", async (t) => {
   assert.throws(() => store.setWorkflowStatus(created.id, "unknown"), /Неизвестный статус/u);
 });
 
+test("durable reassignment keeps the old executor until the new launch succeeds", async (t) => {
+  const store = await fixture(t);
+  const created = store.create({ text: "Переназначить Task" });
+  store.markStarted(created.id, { workspaceId: "workspace-1", streamId: "stream-old" });
+
+  const prepared = store.prepareStart(created.id, {
+    workspaceId: "workspace-1", streamId: "stream-new", requestId: "reassign-1", reassign: true,
+  });
+  assert.equal(prepared.status, "started");
+  assert.equal(prepared.streamId, "stream-old");
+
+  const cancelled = store.cancelPreparedStart(created.id, { requestId: "reassign-1", reassign: true });
+  assert.equal(cancelled.status, "started");
+  assert.equal(cancelled.streamId, "stream-old");
+
+  store.prepareStart(created.id, {
+    workspaceId: "workspace-1", streamId: "stream-new", requestId: "reassign-2", reassign: true,
+  });
+  const reassigned = store.markStarted(created.id, {
+    workspaceId: "workspace-1", streamId: "stream-new", requestId: "reassign-2",
+  });
+  assert.equal(reassigned.status, "started");
+  assert.equal(reassigned.streamId, "stream-new");
+});
+
 test("Task store attaches a screenshot to the Task addressed by a Telegram reply", async (t) => {
   const store = await fixture(t);
   const task = store.create({

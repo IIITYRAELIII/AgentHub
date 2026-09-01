@@ -14,6 +14,7 @@ import {
   LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V2,
   RELEASE_WORKFLOW_DEVELOPER_RULES,
   storedWorkspaceDeveloperRules,
+  TEAM_LEAD_DEVELOPER_RULES,
 } from "../../src/domain/workspace-release-workflow.mjs";
 
 test("legacy v1 policy is stripped once and replaced by Task workflow rules", () => {
@@ -81,4 +82,23 @@ test("Architect rules use only explicit settings.architect and allow multiple St
   assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /Task result commit является предком dev/u);
   assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /CHANGELOG\.md существует/u);
   assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /опубликованный main в dev/u);
+});
+
+test("Team Lead rules are independent and compose after Architect rules", () => {
+  assert.equal(effectiveStreamDeveloperRules("Stream rule", { teamLead: false }), "Stream rule");
+  assert.equal(
+    effectiveStreamDeveloperRules("Stream rule", { teamLead: true }),
+    `${TEAM_LEAD_DEVELOPER_RULES}\n\nStream rule`,
+  );
+  assert.equal(
+    effectiveStreamDeveloperRules("Stream rule", { architect: true, teamLead: true }),
+    `${ARCHITECT_RELEASE_DEVELOPER_RULES}\n\n${TEAM_LEAD_DEVELOPER_RULES}\n\nStream rule`,
+  );
+  assert.match(TEAM_LEAD_DEVELOPER_RULES, /Prefer delegating/u);
+  assert.match(TEAM_LEAD_DEVELOPER_RULES, /Architect release actions/u);
+  assert.match(TEAM_LEAD_DEVELOPER_RULES, /hub_parallel_streams_list/u);
+  assert.match(TEAM_LEAD_DEVELOPER_RULES, /queuedInputCount is zero/u);
+  assert.match(TEAM_LEAD_DEVELOPER_RULES, /hub_task_reassign/u);
+  assert.match(TEAM_LEAD_DEVELOPER_RULES, /Never use subagents/u);
+  assert.match(TEAM_LEAD_DEVELOPER_RULES, /provider, model, and reasoning/u);
 });

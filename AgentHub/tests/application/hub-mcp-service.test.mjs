@@ -26,16 +26,27 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
     }],
   ]);
   const workspaceCatalog = {
-    resolveThread: ({ provider, threadId }) => provider === "codex" && threadId === "thread-1" ? {
-      workspaceId: "workspace-1",
-      workspaceName: "Agent Hub",
-      streamId: "stream-1",
-      streamDisplayName: "MCP",
-      thread: { projectRoot },
-    } : null,
-    stream: (id) => id === "stream-1" ? {
-      id, workspaceId: "workspace-1", displayName: "MCP", settings: { project: projectRoot },
-    } : null,
+    resolveThread: ({ provider, threadId }) => {
+      if (provider !== "codex" || !["thread-1", "thread-2"].includes(threadId)) return null;
+      const streamId = threadId === "thread-1" ? "stream-1" : "stream-2";
+      return {
+        workspaceId: "workspace-1",
+        workspaceName: "Agent Hub",
+        streamId,
+        streamDisplayName: streamId === "stream-1" ? "MCP" : "Themes",
+        thread: { projectRoot },
+      };
+    },
+    stream: (id) => ({
+      "stream-1": {
+        id, workspaceId: "workspace-1", displayName: "MCP", settings: { project: projectRoot },
+        threads: [{ provider: "codex", threadId: "thread-1" }],
+      },
+      "stream-2": {
+        id, workspaceId: "workspace-1", displayName: "Themes", settings: { workingDirectory: targetWorkingDirectory },
+        threads: [{ provider: "codex", threadId: "thread-2" }],
+      },
+    }[id] ?? null),
     activeThread: () => null,
     workspace: (id) => id === "workspace-1" ? {
       id, name: "Agent Hub", settings: { releaseWorkflowEnabled, workingDirectory: workspaceWorkingDirectory },
@@ -210,8 +221,10 @@ async function fixture(context, { releaseWorkflowEnabled = false } = {}) {
   const activeRun = {
     id: "run-1", provider: "codex", threadId: "thread-1", turnId: "turn-live",
     projectRoot, status: "running", progressStage: "Editing files", model: "Sol",
+    modelId: "gpt-5.6-sol", reasoningId: "high",
   };
   service.setActiveRuns(() => [activeRun]);
+  service.setDeferredInputs(() => []);
   return {
     service,
     token: service.contextToken({ provider: "codex", threadId: "thread-1" }),
@@ -304,7 +317,7 @@ test("HubMcpService starts a Task from the target Stream working directory", asy
 });
 
 test("HubMcpService uses the Workspace working directory for a new Stream", async (context) => {
-  const { service, token, workspaceWorkingDirectory, taskGitPrepareCalls } = await fixture(context);
+  const { service, token, workspaceWorkingDirectory, taskGitPrepareCalls, taskLaunchCalls } = await fixture(context);
   await service.call("hub_task_start", {
     context_token: token,
     request_id: "start-new-stream-task",
@@ -313,6 +326,80 @@ test("HubMcpService uses the Workspace working directory for a new Stream", asyn
     confirm_launch: true,
   });
   assert.equal(taskGitPrepareCalls[0].projectRoot, workspaceWorkingDirectory);
+  assert.deepEqual(taskLaunchCalls[0].settings, {
+    provider: "codex", model: "gpt-5.6-sol", reasoning: "high",
+  });
+});
+
+test("HubMcpService reports Stream availability from active turns and queued input", async (context) => {
+  const { service, token } = await fixture(context);
+  service.setDeferredInputs(() => [{ id: "queued-1", provider: "codex", threadId: "thread-2" }]);
+
+  const result = await service.call("hub_parallel_streams_list", { context_token: token });
+  const current = result.streams.find((stream) => stream.id === "stream-1");
+  const queued = result.streams.find((stream) => stream.id === "stream-2");
+  assert.equal(current.activeRuns.length, 1);
+  assert.equal(current.queuedInputCount, 0);
+  assert.equal(current.available, false);
+  assert.equal(queued.activeRuns.length, 0);
+  assert.equal(queued.queuedInputCount, 1);
+  assert.equal(queued.available, false);
+});
+
+test("HubMcpService reassigns a started Task and preserves assignment context", async (context) => {
+  const { service, token, tasks, taskLaunchCalls } = await fixture(context);
+  Object.assign(tasks.get("task-current"), {
+    status: "started", workflowStatus: "in_progress", streamId: "stream-1",
+  });
+  service.setActiveRuns(() => []);
+
+  const result = await service.call("hub_task_reassign", {
+    context_token: token,
+    request_id: "reassign-task",
+    task_id: "task-current",
+    stream_id: "stream-2",
+    message: "Пришли результат в Architect.",
+    confirm_launch: true,
+  });
+
+  assert.equal(result.previousStreamId, "stream-1");
+  assert.equal(result.task.streamId, "stream-2");
+  assert.equal(taskLaunchCalls[0].reassign, true);
+  assert.equal(taskLaunchCalls[0].message, "Пришли результат в Architect.");
+});
+
+test("HubMcpService blocks reassignment while the current executor is busy", async (context) => {
+  const { service, token, tasks, taskLaunchCalls } = await fixture(context);
+  Object.assign(tasks.get("task-current"), {
+    status: "started", workflowStatus: "in_progress", streamId: "stream-1",
+  });
+
+  await assert.rejects(() => service.call("hub_task_reassign", {
+    context_token: token,
+    request_id: "reassign-busy-task",
+    task_id: "task-current",
+    stream_id: "stream-2",
+    confirm_launch: true,
+  }), /active turn or queued input/u);
+  assert.equal(taskLaunchCalls.length, 0);
+});
+
+test("HubMcpService blocks reassignment while the current executor has queued input", async (context) => {
+  const { service, token, tasks, taskLaunchCalls } = await fixture(context);
+  Object.assign(tasks.get("task-current"), {
+    status: "started", workflowStatus: "in_progress", streamId: "stream-1",
+  });
+  service.setActiveRuns(() => []);
+  service.setDeferredInputs(() => [{ id: "queued-current", streamId: "stream-1" }]);
+
+  await assert.rejects(() => service.call("hub_task_reassign", {
+    context_token: token,
+    request_id: "reassign-queued-task",
+    task_id: "task-current",
+    stream_id: "stream-2",
+    confirm_launch: true,
+  }), /active turn or queued input/u);
+  assert.equal(taskLaunchCalls.length, 0);
 });
 
 test("HubMcpService keeps workflow Done visible until explicit completion", async (context) => {

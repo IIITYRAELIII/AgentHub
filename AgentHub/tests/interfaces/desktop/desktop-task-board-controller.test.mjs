@@ -9,7 +9,9 @@ function fixture({ activeThread = null, sourceDetails = undefined, voiceTranscri
     id: "board-1",
     rawText: "Исправить Task dashboard",
     correctedText: "",
+    status: "open",
     workspaceId: "workspace-1",
+    streamId: null,
     sourceDetails,
   };
   const controller = new DesktopTaskBoardController({
@@ -33,11 +35,18 @@ function fixture({ activeThread = null, sourceDetails = undefined, voiceTranscri
       move: (value) => calls.push(["move", value]),
       moveColumn: (value) => calls.push(["move-column", value]),
       setNotesComment: (value) => calls.push(["notes-comment", value]),
+      prepareStart: ({ workspaceId, streamId, streamName, requestId }) => Object.assign(task, {
+        status: "starting", workspaceId, streamId, startStreamName: streamName, startRequestId: requestId,
+      }),
+      cancelPreparedStart: () => Object.assign(task, {
+        status: "open", streamId: null, startStreamName: null, startRequestId: null,
+      }),
       markStarted: (value) => calls.push(["started", value]),
     },
     workspaceCatalog: {
       workspace: (id) => id === "workspace-1" ? { id, name: "Agent Hub" } : null,
       stream: (id) => id === "stream-1" ? { id, workspaceId: "workspace-1" } : null,
+      createStream: ({ id, workspaceId, name, settings }) => ({ id, workspaceId, name, settings }),
       activeThread: () => activeThread,
       updateWorkspaceComment: (...value) => calls.push(["workspace-comment", ...value]),
     },
@@ -237,6 +246,7 @@ test("starting a Task in an existing Stream sends a uniquely identified referenc
   assert.equal("attachments" in calls[1][1], false);
   assert.deepEqual(calls[2], ["started", {
     id: "board-1", workspaceId: "workspace-1", streamId: "stream-1",
+    requestId: "board-task:board-1:launch-2",
   }]);
 });
 

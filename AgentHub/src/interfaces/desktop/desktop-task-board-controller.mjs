@@ -146,7 +146,10 @@ export class DesktopTaskBoardController {
   }
 
   async start(params, context = {}) {
-    const result = await this.taskLauncher.start(params, context);
+    const result = await this.taskLauncher.start({
+      ...params,
+      launchRequestId: String(params.launchRequestId ?? params.clientUserMessageId ?? "").trim() || null,
+    }, context);
     return {
       ...await this.snapshot({ refresh: true }),
       startedBoardTask: result.startedBoardTask,
