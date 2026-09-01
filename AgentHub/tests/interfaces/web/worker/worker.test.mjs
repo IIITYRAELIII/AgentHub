@@ -546,21 +546,39 @@ test("Worker result long poll wakes as soon as Hub completes a command", async (
 
 test("Worker prevents stale Mini App shells and caches versioned assets", async () => {
   const workerModule = await loadWorker();
+  const shell = Buffer.alloc(32 * 1_024, "x");
+  let shellResponse = null;
   const env = {
     JOURNAL: { getByName: () => ({}) },
     ASSETS: {
-      fetch: async (request) => new Response("asset", {
-        headers: {
-          "Content-Type": new URL(request.url).pathname === "/"
-            ? "text/html; charset=utf-8"
-            : "text/javascript; charset=utf-8",
-        },
-      }),
+      fetch: async (request) => {
+        shellResponse = new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(shell.subarray(0, 16 * 1_024));
+              controller.enqueue(shell.subarray(16 * 1_024));
+              controller.close();
+            },
+          }),
+          {
+            headers: {
+              "Content-Length": "999999",
+              "Content-Type": new URL(request.url).pathname === "/"
+                ? "text/html; charset=utf-8"
+                : "text/javascript; charset=utf-8",
+            },
+          },
+        );
+        return shellResponse;
+      },
     },
   };
 
   let response = await workerModule.default.fetch(new Request("https://hub.test/"), env);
+  assert.equal(shellResponse.bodyUsed, true);
+  assert.equal(response.headers.get("Content-Length"), String(shell.length));
   assert.equal(response.headers.get("Cache-Control"), "no-store");
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()), shell);
 
   response = await workerModule.default.fetch(
     new Request("https://hub.test/app.js?v=123456789abc"),

@@ -3426,7 +3426,7 @@ export class JournalStore extends DurableObject {
   }
 }
 
-function secureStaticResponse(response, request) {
+async function secureStaticResponse(response, request) {
   const headers = new Headers(response.headers);
   const contentType = String(headers.get("Content-Type") ?? "").toLowerCase();
   const url = new URL(request.url);
@@ -3454,7 +3454,12 @@ function secureStaticResponse(response, request) {
   ].join("; "));
   headers.set("Referrer-Policy", "no-referrer");
   headers.set("X-Content-Type-Options", "nosniff");
-  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+  let body = response.body;
+  if (body && contentType.includes("text/html")) {
+    body = await response.arrayBuffer();
+    headers.set("Content-Length", String(body.byteLength));
+  }
+  return new Response(body, { status: response.status, statusText: response.statusText, headers });
 }
 
 const DEVICE_SESSION_COOKIE = "agent_hub_device";
