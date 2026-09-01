@@ -70,7 +70,7 @@ export function createCodexLifecycleComposition({
   }
 
   function respondRpc(id, result) {
-    transport.respond(id, result);
+    return transport.respond(id, result);
   }
 
   async function initialize(options = {}) {

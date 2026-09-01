@@ -377,7 +377,25 @@ export class CodexAppServerTransport {
   }
 
   respond(id, result) {
-    this.#write({ id, result });
+    if (!this.child) return Promise.reject(new Error("Codex App Server is not running"));
+    const message = { id, result };
+    if (typeof this.child.send === "function") {
+      return new Promise((resolve, reject) => {
+        if (this.child.send.length < 2) {
+          try {
+            this.child.send(message);
+            resolve();
+          } catch (error) {
+            reject(error);
+          }
+          return;
+        }
+        this.child.send(message, (error) => error ? reject(error) : resolve());
+      });
+    }
+    return new Promise((resolve, reject) => {
+      this.child.stdin.write(`${JSON.stringify(message)}\n`, (error) => error ? reject(error) : resolve());
+    });
   }
 
   invalidateThreadRead(threadId) {

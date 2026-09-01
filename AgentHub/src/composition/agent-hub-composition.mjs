@@ -80,7 +80,7 @@ const localWebSecret = config.miniApp.enabled
 const {
   trustedDeviceStore,
   codexRolloutContextSanitizer,
-  workLogUsageStore, workLogUsageIdentityStore, workLogUsageRemoteConfigStore, workspaceCatalogStore, workspaceReleaseService, preTurnInstructions, taskBoard, taskVoiceTranscriber, hubMcpService, hubMcpServer,
+  workLogUsageStore, workLogUsageIdentityStore, workLogUsageRemoteConfigStore, workspaceCatalogStore, workspaceReleaseService, preTurnInstructions, taskBoard, taskVoiceTranscriber, hubMcpService, hubMcpServer, mcpAdmissionCoordinator,
   miniAppServer,
   publicMiniAppServer,
   usdRubRateStore,
@@ -432,7 +432,7 @@ const clientRuntime = await createClientRuntimeComposition({
     publicMiniAppServer,
     trustedDeviceStore,
     rateLimitHistoryStore,
-    workLogUsageStore, taskBoard, hubMcpServer,
+    workLogUsageStore, taskBoard, hubMcpServer, mcpAdmissionCoordinator,
     runtimeStateStore,
     turnEndNotifications,
     runJournal,

@@ -21,6 +21,7 @@ function createService(run, overrides = {}) {
     beginCompactionCleanup: noop, setStage: noop, describeItem: () => "stage",
     itemActivity: () => null, requestApproval: async () => {}, formatCommandApproval: () => "",
     formatFileApproval: () => "", formatPermissionsApproval: () => "", requestMcpElicitation: async () => {},
+    observeMcpProgress: () => {},
     requestUserInput: async () => {}, reduceLiveItemEvent: () => null,
     startLiveItem: () => null, completeLiveItem: () => null,
     discardContextCompaction: async () => false, consumeTracker: () => null,
@@ -62,6 +63,40 @@ test("Codex event service forwards structured user input requests", async () => 
   await service.handle({ id: 17, method: "item/tool/requestUserInput", params });
   assert.deepEqual(requests, [[17, params, run]]);
   assert.equal(activities.at(-1).status, "waiting");
+});
+
+test("Codex event service settles MCP admission only on later exact-turn progress", async () => {
+  const run = { id: "run-1", status: "running", threadId: "thread-1", turnId: "turn-1" };
+  const requests = [];
+  const progress = [];
+  const service = createService(run, {
+    requestMcpElicitation: (...args) => requests.push(args),
+    observeMcpProgress: (event) => progress.push(event),
+  });
+  const params = {
+    serverName: "agent_hub",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    mode: "form",
+  };
+
+  await service.handle({ id: 21, method: "mcpServer/elicitation/request", params });
+  assert.deepEqual(requests, [[21, params, run]]);
+  assert.deepEqual(progress, []);
+
+  await service.handle({
+    method: "item/completed",
+    params: {
+      threadId: "thread-1",
+      turnId: "turn-1",
+      item: { id: "tool-1", type: "mcpToolCall", status: "completed" },
+    },
+  });
+  assert.deepEqual(progress, [{
+    threadId: "thread-1",
+    turnId: "turn-1",
+    method: "item/completed",
+  }]);
 });
 
 test("Codex event service applies canonical completed agent messages", async () => {

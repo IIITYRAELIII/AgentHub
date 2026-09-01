@@ -117,3 +117,43 @@ test("HubMcpServer bounds an unresolved tool call and reports an unknown outcome
   assert.match(response.error.message, /Reuse the same request_id/u);
   assert.deepEqual(captured, []);
 });
+
+test("HubMcpServer records exact admission before an idempotent mutation runs", async (context) => {
+  const events = [];
+  const server = new HubMcpServer({
+    secret: "server-secret",
+    mcpAdmissionCoordinator: {
+      admit: (event) => events.push(["admit", event]),
+      observeOperation: (stage, event) => events.push([stage, event]),
+    },
+    service: {
+      tools: () => [],
+      call: (name, args) => {
+        events.push(["call", { name, requestId: args.request_id }]);
+        return { ok: true };
+      },
+    },
+    logger: { log() {}, error() {} },
+  });
+  await server.start();
+  context.after(() => server.close());
+
+  const response = await fetch(server.url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 91,
+      method: "tools/call",
+      params: { name: "hub_task_claim", arguments: { request_id: "claim-1" } },
+    }),
+  }).then((value) => value.json());
+
+  assert.equal(response.result.isError, false);
+  assert.deepEqual(events.map(([stage]) => stage), [
+    "admit", "tool-call-received", "call", "tool-call-completed",
+  ]);
+  assert.equal(events[0][1].requestId, "claim-1");
+  assert.equal(events[0][1].rpcRequestId, 91);
+  assert.equal(events[2][1].requestId, "claim-1");
+});

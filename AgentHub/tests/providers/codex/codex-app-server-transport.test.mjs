@@ -60,6 +60,14 @@ test("CodexAppServerTransport routes RPC responses and notifications", async () 
   assert.deepEqual(messages, [{ method: "turn/started", params: { turnId: "t1" } }]);
 });
 
+test("CodexAppServerTransport confirms an elicitation response was flushed", async () => {
+  const { child, transport } = await startedTransport();
+  const written = nextWrittenJson(child.stdin);
+  const flushed = transport.respond(41, { action: "accept" });
+  assert.deepEqual(await written, { id: 41, result: { action: "accept" } });
+  await flushed;
+});
+
 test("CodexAppServerTransport coalesces live answer deltas before dispatch", async () => {
   const { child, messages } = await startedTransport();
   const lines = Array.from({ length: 600 }, (_, index) => JSON.stringify({
