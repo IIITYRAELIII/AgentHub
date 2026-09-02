@@ -5778,6 +5778,14 @@ html[data-surface="mobile"]
   mask-composite: exclude;
 }
 
+/* В компактной верхней вкладке яркое ядро impulse не должно целиком уходить
+   за края. Правая панель продолжает использовать исходную длинную траекторию. */
+:root[data-stream-status-effect="impulse"]
+  .stream-tabs-track .stream-tab[data-running] .stream-tab-card::after {
+  animation-name: stream-tab-running-wave;
+  transform: translateX(-44%);
+}
+
 :root[data-stream-status-effect="impulse"]
   .task-workspace-item[data-unread]:not([data-running])::before,
 :root[data-stream-status-effect="impulse"]
@@ -6458,6 +6466,11 @@ html[data-surface="mobile"]
 
 @keyframes stream-running-wave {
   to { transform: translateX(300%); }
+}
+
+@keyframes stream-tab-running-wave {
+  from { transform: translateX(-44%); }
+  to { transform: translateX(116%); }
 }
 
 /* Кольцо статуса во вкладке двигает не сам слой, а градиент внутри него,

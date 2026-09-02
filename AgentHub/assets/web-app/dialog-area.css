@@ -422,59 +422,6 @@ html[data-view="chat"][data-surface][data-theme] {
   white-space: nowrap;
 }
 
-.stream-tabs-more-statuses {
-  align-items: center;
-  display: inline-flex;
-  gap: 3px;
-  margin-left: 2px;
-}
-
-.stream-tabs-more-status {
-  align-items: center;
-  color: var(--dialog-text-2);
-  display: inline-flex;
-  font-family: var(--font-numeric);
-  font-size: 10px;
-  font-variant-numeric: tabular-nums;
-  gap: 2px;
-}
-
-.stream-tabs-more-status[hidden],
-&[data-stream-status-effect="off"] .stream-tabs-more-statuses {
-  display: none;
-}
-
-.stream-tabs-more-status::before {
-  border-radius: 50%;
-  content: "";
-  flex: 0 0 5px;
-  height: 5px;
-  width: 5px;
-}
-
-.stream-tabs-more-status-running::before {
-  animation: stream-tabs-more-running 1.3s ease-in-out infinite;
-  background: color-mix(in srgb, var(--accent) 76%, transparent);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 16%, transparent);
-}
-
-.stream-tabs-more-status-answer-ready::before {
-  background: var(--accent);
-  box-shadow: 0 0 5px color-mix(in srgb, var(--accent) 62%, transparent);
-}
-
-@keyframes stream-tabs-more-running {
-  0%, 100% { opacity: 0.48; transform: scale(0.82); }
-  50% { opacity: 1; transform: scale(1); }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .stream-tabs-more-status-running::before {
-    animation: none;
-    opacity: 0.82;
-  }
-}
-
 .stream-tabs-more-icon {
   height: 10px;
   transform: rotate(-90deg);

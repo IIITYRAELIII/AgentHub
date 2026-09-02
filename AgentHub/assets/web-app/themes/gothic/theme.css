@@ -2067,8 +2067,8 @@ html[data-theme="gothic"][data-surface="mobile"] .stream-tab[aria-pressed="true"
 }
 
 @keyframes gothic-stream-running-wave {
-  from { transform: translateX(-70%); }
-  to { transform: translateX(140%); }
+  from { transform: translateX(-44%); }
+  to { transform: translateX(116%); }
 }
 
 @keyframes gothic-stream-scanner-pass {
