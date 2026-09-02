@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { access, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
+import { homedir } from "node:os";
 import { promisify } from "node:util";
 
 import { RunJournalService } from "../application/run-journal-service.mjs";
@@ -158,6 +159,13 @@ async function usageSyncIdentity(config, agentHubRoot) {
   return store;
 }
 
+function usageSyncRuntimeHomeIds(identityStore) {
+  return {
+    codex: identityStore.runtimeHomeId(process.env.CODEX_HOME || path.join(homedir(), ".codex")),
+    claude: identityStore.runtimeHomeId(process.env.CLAUDE_CONFIG_DIR || homedir()),
+  };
+}
+
 async function resolveReleaseTestContourSource(repositories) {
   for (const repository of repositories) {
     const sourceRoot = path.join(repository.worktreeRoot, "AgentHub");
@@ -277,10 +285,12 @@ export async function createHubInfrastructure({
     defaultServerUrl: defaultUsageSyncServerUrl(),
   });
   const workLogUsageSyncDeviceId = workLogUsageIdentityStore.deviceId;
+  const workLogUsageRuntimeHomeIds = usageSyncRuntimeHomeIds(workLogUsageIdentityStore);
   const workLogUsageSyncStore = new WorkLogUsageSyncWorkerStore({
     databaseFile: journalDatabaseFile,
     legacyFile: path.join(config.dataDir, "work-log-usage-sync.json"),
     deviceId: workLogUsageSyncDeviceId,
+    defaultRuntimeHomeIds: workLogUsageRuntimeHomeIds,
   });
   const adoptedUsageSyncEvents = await workLogUsageSyncStore
     .adoptDeviceIds(workLogUsageIdentityStore.legacyDeviceIds);
@@ -297,6 +307,7 @@ export async function createHubInfrastructure({
     usageSyncStore: workLogUsageSyncStore,
     usageSyncDeviceId: workLogUsageSyncDeviceId,
     usageSyncDeviceLabel: workLogUsageIdentityStore.label,
+    usageSyncRuntimeHomeIds: workLogUsageRuntimeHomeIds,
     workspaceCatalogStore,
   });
   agentHubRuntimeHealth.setDiagnosticSource("usageSync", () => workLogUsageSyncStore.diagnostics());

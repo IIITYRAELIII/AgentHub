@@ -22,6 +22,7 @@ export class WorkLogUsageSyncWorkerStore {
     databaseFile,
     legacyFile = "",
     deviceId = "",
+    defaultRuntimeHomeIds = {},
     maxPendingRequests = DEFAULT_MAX_PENDING_REQUESTS,
     closeTimeoutMs = DEFAULT_CLOSE_TIMEOUT_MS,
     workerUrl = new URL("./work-log-usage-sync-worker.mjs", import.meta.url),
@@ -33,7 +34,7 @@ export class WorkLogUsageSyncWorkerStore {
     this.maxPendingRequests = maxPendingRequests;
     this.closeTimeoutMs = closeTimeoutMs;
     this.#worker = new WorkerImpl(workerUrl, {
-      workerData: { databaseFile, legacyFile, deviceId },
+      workerData: { databaseFile, legacyFile, deviceId, defaultRuntimeHomeIds },
     });
     this.#worker.unref?.();
     this.#worker.on("message", (message) => this.#settle(message));

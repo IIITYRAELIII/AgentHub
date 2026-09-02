@@ -34,6 +34,7 @@ export function createWorkLogUsageStore({
   usageSyncStore = null,
   usageSyncDeviceId = "",
   usageSyncDeviceLabel = "",
+  usageSyncRuntimeHomeIds = {},
   workspaceCatalogStore = null,
   beforeProjectionWrite = null,
   logger = console,
@@ -58,6 +59,7 @@ export function createWorkLogUsageStore({
     usageSyncStore,
     usageSyncDeviceId,
     usageSyncDeviceLabel,
+    usageSyncRuntimeHomeIds,
     workspaceCatalogStore,
     beforeProjectionWrite,
     logger,
@@ -72,6 +74,7 @@ export class WorkLogUsageStore {
   #usageSyncStore;
   #usageSyncDeviceId;
   #usageSyncDeviceLabel;
+  #usageSyncRuntimeHomeIds;
   #workspaceCatalogStore;
   #beforeProjectionWrite;
   #logger;
@@ -84,6 +87,7 @@ export class WorkLogUsageStore {
     usageSyncStore = null,
     usageSyncDeviceId = "",
     usageSyncDeviceLabel = "",
+    usageSyncRuntimeHomeIds = {},
     workspaceCatalogStore = null,
     beforeProjectionWrite = null,
     logger = console,
@@ -106,6 +110,11 @@ export class WorkLogUsageStore {
       : null;
     this.#usageSyncDeviceId = String(usageSyncDeviceId ?? "").trim();
     this.#usageSyncDeviceLabel = String(usageSyncDeviceLabel ?? "").trim();
+    this.#usageSyncRuntimeHomeIds = Object.fromEntries(
+      Object.entries(usageSyncRuntimeHomeIds ?? {})
+        .map(([key, value]) => [String(key ?? "").trim().toLowerCase(), String(value ?? "").trim()])
+        .filter(([key, value]) => key && value),
+    );
     if (workspaceCatalogStore && (
       typeof workspaceCatalogStore.resolveThread !== "function"
       || typeof workspaceCatalogStore.assignUnknownThread !== "function"
@@ -505,7 +514,12 @@ export class WorkLogUsageStore {
     if (typeof this.#usageSyncStore?.usageSyncSnapshot !== "function") {
       return this.#enqueueRead(async () => usageSyncSnapshotFromLedger(
         this.#ledger.turns,
-        { deviceId, deviceLabel, afterObservedAt },
+        {
+          deviceId,
+          deviceLabel,
+          afterObservedAt,
+          defaultRuntimeHomeIds: this.#usageSyncRuntimeHomeIds,
+        },
       ));
     }
     return this.#repository.enqueue(
@@ -514,6 +528,7 @@ export class WorkLogUsageStore {
         deviceLabel,
         afterObservedAt,
         afterJournalRevision,
+        defaultRuntimeHomeIds: this.#usageSyncRuntimeHomeIds,
       }),
       { load: false },
     );

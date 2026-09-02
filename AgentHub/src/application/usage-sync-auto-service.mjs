@@ -17,10 +17,17 @@ function syncHasChanges({ push = {}, pull = {}, exportedEvents = 0, remoteEvents
   );
 }
 
-function latestObservedAt(events = []) {
+function isUsageTurnEvent(event) {
+  const type = String(event?.type ?? "").trim();
+  const eventId = String(event?.eventId ?? event?.id ?? "").trim();
+  return type === "turn" || (!type && !eventId.startsWith("auth:") && !eventId.startsWith("limit:"));
+}
+
+function latestTurnObservedAt(events = []) {
   let latest = "";
   let latestMs = 0;
   for (const event of Array.isArray(events) ? events : []) {
+    if (!isUsageTurnEvent(event)) continue;
     const observedAt = String(event?.observedAt ?? "").trim();
     const observedMs = Date.parse(observedAt) || 0;
     if (observedMs > latestMs) {
@@ -182,7 +189,7 @@ export class UsageSyncAutoService {
       afterJournalRevision: remoteConfig.lastUsagePushJournalRevision,
     });
     const push = await client.push(snapshot);
-    const usageWatermark = numberField(push.rejected) ? "" : latestObservedAt(snapshot.events);
+    const usageWatermark = numberField(push.rejected) ? "" : latestTurnObservedAt(snapshot.events);
     const usageJournalRevision = numberField(push.rejected)
       ? null
       : Math.max(0, Math.trunc(Number(snapshot.journalRevision) || 0));

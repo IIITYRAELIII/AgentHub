@@ -2,6 +2,7 @@ import path from "node:path";
 
 import { estimateMissingCodexUsage } from "../domain/codex-usage-estimate.mjs";
 import { normalizeServiceTier, normalizeTokenUsage } from "../domain/token-usage.mjs";
+import { mergeUsageLimitSamples } from "../domain/usage-facts.mjs";
 import { normalizeWorkLogId } from "./work-log-usage-projection.mjs";
 
 export const TURN_END_TITLE_LIMIT = 100;
@@ -154,6 +155,7 @@ function normalizedCompletion(value) {
     skillsUsed,
     mcpCalls,
     toolMetricsKnown: value.toolMetricsKnown === true,
+    limitSamples: mergeUsageLimitSamples(value.limitSamples),
     message: value.message ? normalizedMessage(value.message) : null,
   };
 }
@@ -280,6 +282,7 @@ export class TurnEndNotificationRegistry {
       completion.mcpCalls = incoming.mcpCalls;
       completion.toolMetricsKnown = true;
     }
+    completion.limitSamples = mergeUsageLimitSamples(completion.limitSamples, incoming.limitSamples);
     completion.deliveryGroupId = incoming.deliveryGroupId ?? completion.deliveryGroupId;
     completion.deliverySequence = incoming.deliverySequence ?? completion.deliverySequence;
     if (incoming.usageReported || !completion.usageReported) {

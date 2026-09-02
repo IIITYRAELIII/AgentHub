@@ -1,6 +1,13 @@
-import crypto from "node:crypto";
-
-import { normalizeServiceTier, normalizeTokenUsage } from "./token-usage.mjs";
+import {
+  LEGACY_USAGE_EVENT_SCHEMA_VERSION,
+  mergeUsageLimitSamples,
+  normalizeUsageTurnFact,
+  usageThreadKey,
+  usageTurnFactFromLegacyEvent,
+  usageTurnFactId,
+  USAGE_FACT_SCHEMA_VERSION,
+  USAGE_FACT_TYPES,
+} from "./usage-facts.mjs";
 
 export const USAGE_SYNC_SNAPSHOT_VERSION = 1;
 
@@ -12,28 +19,10 @@ function boundedText(value, limit = 256) {
   return nonEmpty(value).replaceAll(/[\p{Cc}\p{Cf}]/gu, " ").replaceAll(/\s+/gu, " ").slice(0, limit);
 }
 
-function normalizedProvider(value) {
-  const provider = nonEmpty(value).toLowerCase();
-  return provider || "unknown";
-}
-
 function positiveNumber(value) {
   const number = Number(value ?? 0);
   return Number.isFinite(number) && number > 0 ? number : 0;
 }
-
-function normalizeAttribution(value, hasAccountKey) {
-  const candidate = nonEmpty(value).toLowerCase();
-  if (candidate === "exact") return hasAccountKey ? "exact" : "inferred";
-  if (candidate === "inferred") return "inferred";
-  return hasAccountKey ? "exact" : "inferred";
-}
-
-function sha256(value) {
-  return crypto.createHash("sha256").update(String(value), "utf8").digest("hex");
-}
-
-const PSEUDONYM_PATTERN = /^[0-9a-f]{64}$/u;
 
 /**
  * Turn identity used for deduplication. Provider thread and turn ids are
@@ -42,11 +31,7 @@ const PSEUDONYM_PATTERN = /^[0-9a-f]{64}$/u;
  * installation must collapse into one event instead of being counted twice.
  */
 export function usageSyncEventIdentity(event) {
-  const provider = normalizedProvider(event?.provider);
-  const threadId = nonEmpty(event?.threadId);
-  const turnId = nonEmpty(event?.turnId);
-  if (!threadId || !turnId) return "";
-  return `usage:${sha256(JSON.stringify([provider, threadId, turnId]))}`;
+  return usageTurnFactId(event);
 }
 
 /**
@@ -55,100 +40,81 @@ export function usageSyncEventIdentity(event) {
  * because grouping only needs the pseudonym to be stable.
  */
 export function usageSyncThreadKey({ provider, threadId } = {}) {
-  const id = nonEmpty(threadId);
-  return id ? sha256(JSON.stringify([normalizedProvider(provider), id])) : "";
+  return usageThreadKey({ provider, threadId });
 }
 
-function pseudonym(value) {
-  const candidate = nonEmpty(value).toLowerCase();
-  return PSEUDONYM_PATTERN.test(candidate) ? candidate : "";
-}
-
-export function normalizeUsageSyncEvent(value = {}) {
-  const provider = normalizedProvider(value.provider);
-  const deviceId = nonEmpty(value.deviceId);
-  const completedAt = nonEmpty(value.completedAt);
-  // Events recorded before pseudonymization still carry raw ids; they are
-  // converted here and the raw values are dropped from the sync model.
-  const eventId = nonEmpty(value.eventId) || usageSyncEventIdentity(value);
-  const threadKey = pseudonym(value.threadKey)
-    || usageSyncThreadKey({ provider, threadId: value.threadId });
-  const taskKey = pseudonym(value.taskKey)
-    || usageSyncThreadKey({ provider, threadId: value.taskThreadId })
-    || threadKey;
-  if (!deviceId || !completedAt || !eventId || !threadKey) return null;
-  const accountKey = nonEmpty(value.accountKey);
-  const accountAttribution = normalizeAttribution(value.accountAttribution, Boolean(accountKey));
-  const estimatedCredits = positiveNumber(value.estimatedCredits ?? value.credits);
-  const estimateKind = nonEmpty(value.estimateKind);
-  const imageGenerationCount = Math.max(0, Math.floor(Number(value.imageGenerationCount) || 0));
-  const usage = normalizeTokenUsage(value.usage);
-  return {
-    version: USAGE_SYNC_SNAPSHOT_VERSION,
-    eventId,
-    deviceId,
-    source: nonEmpty(value.source) || "sync",
-    provider,
-    threadKey,
-    taskKey,
-    completedAt,
-    startedAt: nonEmpty(value.startedAt),
-    accountKey: accountAttribution === "exact" ? accountKey : "",
-    accountLabel: accountAttribution === "exact" ? boundedText(value.accountLabel) : "",
-    accountType: accountAttribution === "exact" ? boundedText(value.accountType, 80) : "",
-    accountPlan: accountAttribution === "exact"
-      ? boundedText(value.accountPlan ?? value.accountPlanType ?? value.planType, 80)
-      : "",
-    accountAttribution,
-    estimatedCredits,
-    estimateKind,
-    imageGenerationCount,
-    contextProbe: value.contextProbe === true,
-    usage,
-    usageReported: value.usageReported === false ? false : true,
-    model: nonEmpty(value.model).toLowerCase(),
-    serviceTier: value.serviceTier == null ? "" : normalizeServiceTier(value.serviceTier),
-    deviceLabel: boundedText(value.deviceLabel, 80),
-    observedAt: nonEmpty(value.observedAt) || new Date().toISOString(),
-  };
-}
-
-function syncAccountFieldsFromRecord(record) {
-  const accountKey = nonEmpty(record?.accountKey);
-  const attribution = normalizeAttribution(record?.accountAttribution, Boolean(accountKey));
-  if (attribution !== "exact") {
-    return {
-      accountKey: "",
-      accountLabel: "",
-      accountType: "",
-      accountPlan: "",
-      accountAttribution: "inferred",
-    };
+export function normalizeUsageSyncEvent(value = {}, options = {}) {
+  const schemaVersion = Number(value?.schemaVersion ?? value?.version ?? LEGACY_USAGE_EVENT_SCHEMA_VERSION);
+  let event = null;
+  if (schemaVersion === USAGE_FACT_SCHEMA_VERSION) {
+    if (nonEmpty(value?.type) !== USAGE_FACT_TYPES.TURN) return null;
+    event = normalizeUsageTurnFact(value);
+  } else if (schemaVersion === LEGACY_USAGE_EVENT_SCHEMA_VERSION) {
+    event = usageTurnFactFromLegacyEvent(value, options).fact;
+  } else {
+    return null;
   }
+  if (!event) return null;
   return {
-    accountKey,
-    accountLabel: record?.accountLabel,
-    accountType: record?.accountType,
-    accountPlan: record?.accountPlan,
-    accountAttribution: "exact",
+    ...event,
+    version: USAGE_SYNC_SNAPSHOT_VERSION,
+    source: nonEmpty(value.source) || "sync",
   };
 }
 
-export function usageSyncEventFromLedgerRecord(record, { deviceId, source = "local" } = {}) {
+function runtimeHomeIdForRecord(record, { runtimeHomeId = "", defaultRuntimeHomeIds = {} } = {}) {
+  const provider = nonEmpty(record?.provider).toLowerCase();
+  return nonEmpty(record?.runtimeHomeId)
+    || nonEmpty(defaultRuntimeHomeIds?.[provider])
+    || nonEmpty(runtimeHomeId);
+}
+
+export function usageSyncEventFromLedgerRecord(record, {
+  deviceId,
+  source = "local",
+  runtimeHomeId = "",
+  defaultRuntimeHomeIds = {},
+} = {}) {
+  if (!nonEmpty(record?.startedAt)) {
+    return normalizeUsageSyncEvent({
+      schemaVersion: LEGACY_USAGE_EVENT_SCHEMA_VERSION,
+      deviceId,
+      source,
+      provider: record?.provider,
+      threadId: record?.threadId,
+      turnId: record?.turnId,
+      taskThreadId: record?.taskThreadId,
+      completedAt: record?.completedAt,
+      estimatedCredits: record?.estimatedCredits,
+      estimateKind: record?.estimateKind,
+      imageGenerationCount: record?.imageGenerationCount,
+      contextProbe: record?.contextProbe,
+      limitSamples: record?.limitSamples,
+      usage: record?.usage,
+      usageReported: record?.usageReported,
+      model: record?.model,
+      serviceTier: record?.serviceTier,
+      deviceLabel: record?.deviceLabel,
+      observedAt: record?.observedAt || record?.completedAt,
+    });
+  }
   return normalizeUsageSyncEvent({
+    schemaVersion: USAGE_FACT_SCHEMA_VERSION,
+    type: "turn",
     deviceId,
     source,
+    runtimeHomeId: runtimeHomeIdForRecord(record, { runtimeHomeId, defaultRuntimeHomeIds }),
     provider: record?.provider,
     threadId: record?.threadId,
     turnId: record?.turnId,
     taskThreadId: record?.taskThreadId,
     completedAt: record?.completedAt,
     startedAt: record?.startedAt,
-    ...syncAccountFieldsFromRecord(record),
     estimatedCredits: record?.estimatedCredits,
     estimateKind: record?.estimateKind,
     imageGenerationCount: record?.imageGenerationCount,
     contextProbe: record?.contextProbe,
+    limitSamples: record?.limitSamples,
     usage: record?.usage,
     usageReported: record?.usageReported,
     model: record?.model,
@@ -160,11 +126,14 @@ export function usageSyncEventFromLedgerRecord(record, { deviceId, source = "loc
 
 function eventRank(event) {
   return [
-    event.accountAttribution === "exact" ? 1 : 0,
-    event.accountKey ? 1 : 0,
+    event.schemaVersion === USAGE_FACT_SCHEMA_VERSION ? 1 : 0,
+    event.runtimeHomeId ? 1 : 0,
+    event.startedAt ? 1 : 0,
+    Array.isArray(event.limitSamples) ? event.limitSamples.length : 0,
+    event.usageReported ? 1 : 0,
+    event.usage?.totalTokens || 0,
     positiveNumber(event.estimatedCredits) > 0 ? 1 : 0,
     event.estimateKind || event.imageGenerationCount > 0 || event.contextProbe ? 1 : 0,
-    Date.parse(event.observedAt) || 0,
   ];
 }
 
@@ -177,12 +146,27 @@ function eventRank(event) {
 export function strongerUsageSyncEvent(left, right) {
   const leftRank = eventRank(left);
   const rightRank = eventRank(right);
+  let winner = left;
+  let loser = right;
   for (let index = 0; index < leftRank.length; index += 1) {
     if (leftRank[index] !== rightRank[index]) {
-      return leftRank[index] > rightRank[index] ? left : right;
+      winner = leftRank[index] > rightRank[index] ? left : right;
+      loser = winner === left ? right : left;
+      break;
     }
   }
-  return left.eventId <= right.eventId ? left : right;
+  if (winner === left && loser === right && leftRank.every((value, index) => value === rightRank[index])) {
+    winner = left.eventId <= right.eventId ? left : right;
+    loser = winner === left ? right : left;
+  }
+  const observedAt = [winner.observedAt, loser.observedAt]
+    .filter(Boolean)
+    .sort((a, b) => (Date.parse(a) || 0) - (Date.parse(b) || 0))[0] || winner.observedAt;
+  return {
+    ...winner,
+    observedAt,
+    limitSamples: mergeUsageLimitSamples(loser.limitSamples, winner.limitSamples),
+  };
 }
 
 export function mergeUsageSyncEvents(...collections) {
@@ -210,15 +194,18 @@ export function usageSyncSnapshotFromLedger(turns = {}, {
   deviceLabel = "",
   exportedAt = new Date().toISOString(),
   afterObservedAt = "",
+  runtimeHomeId = "",
+  defaultRuntimeHomeIds = {},
 } = {}) {
   const afterObservedMs = Date.parse(afterObservedAt) || 0;
   const events = Object.values(turns)
-    .map((record) => usageSyncEventFromLedgerRecord(record, { deviceId }))
+    .map((record) => usageSyncEventFromLedgerRecord(record, {
+      deviceId,
+      runtimeHomeId,
+      defaultRuntimeHomeIds,
+    }))
     .map((event) => event
-      ? normalizeUsageSyncEvent({
-          ...event,
-          deviceLabel: boundedText(deviceLabel, 80) || event.deviceLabel,
-        })
+      ? { ...event, deviceLabel: boundedText(deviceLabel, 80) || event.deviceLabel }
       : null)
     .filter((event) => !event || !afterObservedMs || (Date.parse(event.observedAt) || 0) >= afterObservedMs)
     .filter(Boolean);
@@ -243,15 +230,17 @@ export function syncedUsageEventsToTurns(events = []) {
       turnId: event.eventId,
       completedAt: event.completedAt,
       startedAt: event.startedAt,
-      accountKey: event.accountKey,
-      accountLabel: event.accountLabel,
-      accountType: event.accountType,
-      accountPlan: event.accountPlan,
-      accountAttribution: event.accountAttribution,
+      accountKey: "",
+      accountLabel: "",
+      accountType: "",
+      accountPlan: "",
+      accountAttribution: "inferred",
       estimatedCredits: event.estimatedCredits,
       estimateKind: event.estimateKind,
       imageGenerationCount: event.imageGenerationCount,
       contextProbe: event.contextProbe,
+      runtimeHomeId: event.runtimeHomeId,
+      limitSamples: event.limitSamples,
       usage: event.usage,
       usageReported: event.usageReported,
       model: event.model,

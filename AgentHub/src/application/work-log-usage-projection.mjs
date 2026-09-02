@@ -26,7 +26,7 @@ import {
   usageSyncEventIdentity,
   usageSyncEventFromLedgerRecord,
 } from "../domain/work-log-usage-sync.mjs";
-import { applyInferredDeviceTimelineAccounts } from "../domain/team-usage-accounts.mjs";
+import { mergeUsageLimitSamples } from "../domain/usage-facts.mjs";
 
 const WORK_LOG_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ACCOUNT_ATTRIBUTIONS = new Set(["exact", "inferred"]);
@@ -295,6 +295,7 @@ export function normalizedLedger(value = {}, { defaultProjectRoot = "" } = {}) {
         skillsUsed: normalizedSkillsUsed(record?.skillsUsed),
         mcpCalls: normalizedMcpCalls(record?.mcpCalls),
         toolMetricsKnown: sourceVersion >= 8 && record?.toolMetricsKnown === true,
+        limitSamples: mergeUsageLimitSamples(record?.limitSamples),
         startedAt: String(record?.startedAt ?? ""),
         completedAt: String(record?.completedAt ?? ""),
         observedAt: String(record?.observedAt ?? ""),
@@ -739,10 +740,9 @@ function syncedUsageRecord(event) {
 }
 
 function syncedUsageRecords(values) {
-  const normalized = (Array.isArray(values) ? values : [])
+  return (Array.isArray(values) ? values : [])
     .map(normalizeUsageSyncEvent)
-    .filter(Boolean);
-  return applyInferredDeviceTimelineAccounts(normalized)
+    .filter(Boolean)
     .map(syncedUsageRecord)
     .filter(Boolean);
 }
@@ -2844,6 +2844,7 @@ export function incomingLedgerRecord({
   skillsUsed,
   mcpCalls,
   toolMetricsKnown,
+  limitSamples,
   account,
   accountKey,
   accountAttribution,
@@ -2889,6 +2890,7 @@ export function incomingLedgerRecord({
     skillsUsed: normalizedSkillsUsed(skillsUsed),
     mcpCalls: normalizedMcpCalls(mcpCalls),
     toolMetricsKnown: toolMetricsKnown === true,
+    limitSamples: mergeUsageLimitSamples(limitSamples),
     ...accountFields,
     startedAt: String(startedAt ?? ""),
     completedAt: String(completedAt ?? new Date().toISOString()),
@@ -2898,7 +2900,10 @@ export function incomingLedgerRecord({
 }
 
 function usageSyncContent(record) {
-  const event = usageSyncEventFromLedgerRecord(record, { deviceId: "ledger-content" });
+  const event = usageSyncEventFromLedgerRecord(record, {
+    deviceId: "ledger-content",
+    runtimeHomeId: "ledger-content-home",
+  });
   if (!event) return "";
   const {
     deviceId: _deviceId,
@@ -2925,6 +2930,7 @@ export function mergeLedgerRecord(existing, incoming) {
   }
   if (incoming.imageGenerationCount > 0) existing.imageGenerationCount = incoming.imageGenerationCount;
   if (incoming.contextProbe) existing.contextProbe = true;
+  existing.limitSamples = mergeUsageLimitSamples(existing.limitSamples, incoming.limitSamples);
   if (incoming.accountKey) {
     existing.accountKey = incoming.accountKey;
     if (incoming.accountLabel) existing.accountLabel = incoming.accountLabel;

@@ -1,11 +1,12 @@
 import { createReadStream } from "node:fs";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { appendFile, copyFile, mkdir, readFile, rm, stat } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import { writeTextAtomic } from "./state-store.mjs";
+import { codexUsageAccount } from "../../domain/usage-account-identity.mjs";
 
 const RANGE_MILLISECONDS = Object.freeze({
   "6h": 6 * 60 * 60_000,
@@ -44,23 +45,7 @@ const CSV_COLUMNS = [
 ];
 
 export function codexAccountDimension(value) {
-  const account = value?.account && typeof value.account === "object" ? value.account : value;
-  const type = String(account?.type ?? "").trim();
-  const email = String(account?.email ?? "").trim().toLowerCase();
-  const planType = String(account?.planType ?? "").trim();
-  if (type === "chatgpt" && email) {
-    return {
-      key: `chatgpt:${createHash("sha256").update(email).digest("hex")}`,
-      label: email,
-      type,
-      planType,
-    };
-  }
-  if (type === "apiKey") return { key: "api-key", label: "API key", type, planType };
-  if (type === "amazonBedrock") {
-    return { key: "amazon-bedrock", label: "Amazon Bedrock", type, planType };
-  }
-  return { key: "", label: "", type: "", planType: "" };
+  return codexUsageAccount(value) ?? { key: "", label: "", type: "", planType: "" };
 }
 
 function storedAccountDimension(value) {

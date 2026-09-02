@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -86,11 +86,12 @@ test("dashboard attachment mutation accepts only files from the runtime attachme
     writeFile(outside, "outside"),
   ]);
   try {
+    const [expectedFirst, expectedSecond] = await Promise.all([realpath(first), realpath(second)]);
     const { controller, calls } = fixture({ attachmentDirectory });
     await controller.addAttachments({ id: "board-1", attachments: [first, second] });
     assert.deepEqual(calls.slice(0, 2), [
-      ["add-attachment", { id: "board-1", attachment: first }],
-      ["add-attachment", { id: "board-1", attachment: second }],
+      ["add-attachment", { id: "board-1", attachment: expectedFirst }],
+      ["add-attachment", { id: "board-1", attachment: expectedSecond }],
     ]);
     assert.deepEqual(calls[2], ["snapshot", { refresh: true }]);
     await assert.rejects(

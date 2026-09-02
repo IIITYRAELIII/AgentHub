@@ -74,6 +74,7 @@ export async function handleCodexStopHook(value, {
     imageGenerationCount: usageResult?.imageGenerationCount ?? 0,
     estimatedCredits: usageResult?.estimatedCredits ?? 0,
     estimateKind: usageResult?.estimateKind ?? "",
+    limitSamples: usageResult?.limitSamples ?? [],
     model: usageResult?.model ?? "",
     serviceTier: usageResult?.serviceTier ?? "default",
     usageError,

@@ -114,6 +114,7 @@ export class CodexRunFinalizer {
       imageGenerationCount: tracker.imageGenerationCount ?? 0,
       estimatedCredits: tracker.estimatedCredits ?? 0,
       estimateKind: tracker.estimateKind ?? "",
+      limitSamples: tracker.limitSamples,
       model: tracker.model ?? run.modelId ?? "",
       serviceTier: tracker.serviceTier ?? run.serviceTier ?? "default",
       startedAt: run.startedAt,

@@ -220,6 +220,7 @@ export class CodexLifecycleController {
       estimatedCredits: payload.estimatedCredits
         ?? (payload.estimatedUnits != null ? Number(payload.estimatedUnits) / 8_000 : 0),
       estimateKind: payload.estimateKind ?? "",
+      limitSamples: payload.limitSamples ?? [],
       model: payload.model ?? "",
       serviceTier: payload.serviceTier ?? payload.service_tier ?? "default",
       startedAt: payload.startedAt ?? turnStart?.startedAt ?? run?.startedAt,
@@ -248,6 +249,7 @@ export class CodexLifecycleController {
         estimatedCredits: payload.estimatedCredits
           ?? (payload.estimatedUnits != null ? Number(payload.estimatedUnits) / 8_000 : 0),
         estimateKind: payload.estimateKind ?? "",
+        limitSamples: payload.limitSamples ?? [],
         model: payload.model ?? "",
         serviceTier: payload.serviceTier ?? payload.service_tier ?? "default",
         startedAt: payload.startedAt ?? turnStart?.startedAt ?? run?.startedAt,

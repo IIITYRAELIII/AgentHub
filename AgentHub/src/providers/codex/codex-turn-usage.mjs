@@ -10,6 +10,7 @@ import {
   isCodexContextProbeClientId,
 } from "../../domain/codex-context-probe.mjs";
 import { addTokenUsage, emptyTokenUsage, normalizeTokenUsage } from "../../domain/token-usage.mjs";
+import { mergeUsageLimitSamples } from "../../domain/usage-facts.mjs";
 import { displayUserPrompt } from "../../application/task-history.mjs";
 
 const rolloutPathIndexPromises = new Map();
@@ -209,6 +210,50 @@ function normalizedRolloutUsage(value) {
   });
 }
 
+function isoFromEpochSeconds(value) {
+  const milliseconds = Number(value) * 1000;
+  if (!Number.isFinite(milliseconds) || milliseconds <= 0) return "";
+  return new Date(milliseconds).toISOString();
+}
+
+function timestamp(value) {
+  const candidate = String(value ?? "").trim();
+  return Number.isFinite(Date.parse(candidate)) ? candidate : "";
+}
+
+function codexLimitSamplesFromTokenEvent(entry) {
+  const observedAt = timestamp(entry?.timestamp);
+  const source = entry?.payload?.rate_limits ?? entry?.rate_limits;
+  if (!observedAt || !source || typeof source !== "object") return [];
+  const buckets = source.limit_id || source.limitId
+    ? [source]
+    : Object.values(source.rateLimitsByLimitId ?? source).filter((value) => (
+      value && typeof value === "object"
+    ));
+  const samples = [];
+  for (const bucket of buckets) {
+    const limitId = String(bucket?.limit_id ?? bucket?.limitId ?? bucket?.limitName ?? "").trim();
+    if (!limitId) continue;
+    for (const [window, value] of Object.entries(bucket)) {
+      if (["limit_id", "limitId", "limitName", "plan_type", "planType"].includes(window)) continue;
+      if (!value || typeof value !== "object") continue;
+      const usedPercent = Number(value.used_percent ?? value.usedPercent);
+      if (!Number.isFinite(usedPercent)) continue;
+      samples.push({
+        observedAt,
+        limitId,
+        window,
+        windowMinutes: Number(value.window_minutes ?? value.windowDurationMins) || null,
+        usedPercent,
+        resetsAt: timestamp(value.resets_at ?? value.resetsAt)
+          || isoFromEpochSeconds(value.resets_at ?? value.resetsAt),
+        planType: String(bucket.plan_type ?? bucket.planType ?? "").trim(),
+      });
+    }
+  }
+  return mergeUsageLimitSamples(samples);
+}
+
 function isFinalAssistantItem(entry, turnId) {
   if (entry?.type !== "response_item" || entryTurnId(entry) !== turnId) return false;
   const payload = entry.payload;
@@ -367,6 +412,7 @@ function createTurnAccumulator(turnId) {
   let finalAnswer = "";
   let startedAt = "";
   let completedAt = "";
+  let limitSamples = [];
   let prompt = "";
   const prompts = [];
   let status = "";
@@ -499,6 +545,7 @@ function createTurnAccumulator(turnId) {
       || (activeTurnIds.size === 1 ? [...activeTurnIds][0] : "");
     if (attributedTurnId === requestedTurnId) {
       usage = addTokenUsage(usage, normalizedRolloutUsage(entry.payload?.info?.last_token_usage));
+      limitSamples = mergeUsageLimitSamples(limitSamples, codexLimitSamplesFromTokenEvent(entry));
       reported = true;
       finalTokenIndex = index;
     }
@@ -531,6 +578,7 @@ function createTurnAccumulator(turnId) {
       imageGenerationCount,
       estimatedCredits: imageGenerationCount * IMAGE_GENERATION_ESTIMATE_CREDITS,
       estimateKind: imageGenerationCount > 0 ? "imagegen-default" : "",
+      limitSamples,
       model: model || latestModel,
       serviceTier,
       status: status || (terminal ? "completed" : started ? "inProgress" : ""),
@@ -852,6 +900,7 @@ function createHistoricalTurn(turnId) {
     contextCompacted: false,
     contextProbe: false,
     hasOwnTurnContent: false,
+    limitSamples: [],
   };
 }
 
@@ -877,6 +926,7 @@ function restoreHistoricalTurn(value) {
       spawned?.threadId ? [[String(spawned.threadId), spawned]] : []
     ))),
     imageGenerationCalls: new Set(value?.imageGenerationCalls ?? []),
+    limitSamples: mergeUsageLimitSamples(value?.limitSamples),
   };
 }
 
@@ -1098,6 +1148,10 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
       attributedTurn.usage = addTokenUsage(
         attributedTurn.usage,
         normalizedRolloutUsage(entry.payload?.info?.last_token_usage),
+      );
+      attributedTurn.limitSamples = mergeUsageLimitSamples(
+        attributedTurn.limitSamples,
+        codexLimitSamplesFromTokenEvent(entry),
       );
       attributedTurn.reported = true;
       touch(attributedTurn, timestamp);

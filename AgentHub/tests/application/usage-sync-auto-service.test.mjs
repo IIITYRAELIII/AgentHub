@@ -179,6 +179,35 @@ test("UsageSyncAutoService pushes, pulls, imports and remembers remote results",
   assert.deepEqual(importProject[1].projectionProjectRoots, ["D:/projects/Utilities"]);
 });
 
+test("UsageSyncAutoService push watermark is based only on turn facts", async () => {
+  const state = fixture({
+    localEvents: [{
+      schemaVersion: 2,
+      type: "turn",
+      eventId: `usage:${"a".repeat(64)}`,
+      observedAt: "2026-08-20T04:00:00.000Z",
+    }, {
+      schemaVersion: 2,
+      type: "auth_observation",
+      observationId: `auth:${"b".repeat(64)}`,
+      observedAt: "2026-08-20T05:00:00.000Z",
+    }, {
+      schemaVersion: 2,
+      type: "limit_observation",
+      observationId: `limit:${"c".repeat(64)}`,
+      observedAt: "2026-08-20T06:00:00.000Z",
+    }],
+    remoteEvents: [],
+  });
+
+  await state.service.sync();
+
+  assert.deepEqual(state.events.find(([name]) => name === "remember-push")?.[2], {
+    usageWatermark: "2026-08-20T04:00:00.000Z",
+    usageJournalRevision: 7,
+  });
+});
+
 test("UsageSyncAutoService sends only journal deltas after the saved revision", async () => {
   const state = fixture({
     lastUsagePushWatermark: "2026-08-20T04:00:00.000Z",

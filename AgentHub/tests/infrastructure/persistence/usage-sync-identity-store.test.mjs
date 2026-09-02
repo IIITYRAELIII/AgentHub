@@ -21,6 +21,8 @@ test("identity is issued once and survives reload", async () => {
     const issuedId = first.deviceId;
     assert.ok(isUsageSyncDeviceId(issuedId));
     assert.equal(first.label, "work-pc");
+    assert.ok(first.installationInstanceId);
+    assert.match(first.runtimeHomeId("C:\\Users\\me\\.codex"), /^[0-9a-f]{64}$/u);
     assert.deepEqual(first.legacyDeviceIds, [
       legacyUsageSyncDeviceId({ hostname: "work-pc", dataDir: root }),
     ]);
@@ -29,6 +31,7 @@ test("identity is issued once and survives reload", async () => {
     await second.load();
     assert.equal(second.deviceId, issuedId, "renaming the host must not change the device id");
     assert.equal(second.publicKey, first.publicKey);
+    assert.equal(second.installationInstanceId, first.installationInstanceId);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -62,6 +65,41 @@ test("device label is editable and persisted without touching the device id", as
     await reloaded.load();
     assert.equal(reloaded.label, "Ярик, компьютер");
     assert.equal(reloaded.deviceId, deviceId);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("old identity files are upgraded with local attribution fields", async () => {
+  const root = await temporaryRoot();
+  const file = path.join(root, "usage-sync-identity.json");
+  try {
+    await writeFile(file, JSON.stringify({
+      version: 1,
+      deviceId: "7e1d0c0a-2b3c-4d5e-8f90-a1b2c3d4e5f6",
+      label: "work-pc",
+      platform: "win32",
+      publicKey: "MCowBQYDK2VwAyEAabc",
+      privateKey: "MC4CAQAwBQYDK2VwBCIEIabc",
+      createdAt: "2026-08-20T05:00:00.000Z",
+      updatedAt: "2026-08-20T05:00:00.000Z",
+    }), "utf8");
+    const store = new UsageSyncIdentityStore({
+      file,
+      createHomeSalt: () => "salt-1",
+      createInstallationInstanceId: () => "11111111-2222-3333-4444-555555555555",
+    });
+
+    await store.load();
+
+    assert.equal(store.deviceId, "7e1d0c0a-2b3c-4d5e-8f90-a1b2c3d4e5f6");
+    assert.equal(store.installationInstanceId, "11111111-2222-3333-4444-555555555555");
+    assert.match(store.runtimeHomeId("D:\\codex"), /^[0-9a-f]{64}$/u);
+    assert.match(store.authFingerprint({ accountKey: "chatgpt:owner", accountPlan: "pro" }), /^[0-9a-f]{64}$/u);
+    const persisted = JSON.parse(await readFile(file, "utf8"));
+    assert.equal(persisted.homeSalt, "salt-1");
+    assert.equal(persisted.installationInstanceId, "11111111-2222-3333-4444-555555555555");
+    assert.ok(!Object.hasOwn(store.toPublic(), "homeSalt"));
   } finally {
     await rm(root, { recursive: true, force: true });
   }

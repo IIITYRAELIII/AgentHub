@@ -81,6 +81,8 @@ export function normalizeUsageSyncIdentity(value, { now = () => new Date() } = {
     platform: text(value.platform).slice(0, 40),
     publicKey,
     privateKey,
+    homeSalt: normalizeKeyMaterial(value.homeSalt),
+    installationInstanceId: text(value.installationInstanceId).toLowerCase(),
     createdAt,
     updatedAt: normalizeTimestamp(value.updatedAt, createdAt),
     labelConfirmedAt: normalizeTimestamp(value.labelConfirmedAt, ""),

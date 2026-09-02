@@ -2,6 +2,7 @@ import { readFile, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { claudeUsageAccount } from "../../domain/usage-account-identity.mjs";
 
 function claudeConfigFile({ env = process.env, homedir = os.homedir } = {}) {
   const configured = String(env.CLAUDE_CONFIG_DIR ?? "").trim();
@@ -10,19 +11,7 @@ function claudeConfigFile({ env = process.env, homedir = os.homedir } = {}) {
 }
 
 function accountDimension(value) {
-  const account = value?.oauthAccount;
-  const accountUuid = String(account?.accountUuid ?? "").trim();
-  if (!accountUuid) return null;
-  const planType = [
-    String(account?.seatTier ?? "").trim(),
-    String(account?.billingType ?? "").trim(),
-  ].filter(Boolean).join(":");
-  return {
-    key: `anthropic:${accountUuid}`,
-    label: String(account?.emailAddress ?? "").trim().toLowerCase(),
-    type: "oauth",
-    planType,
-  };
+  return claudeUsageAccount(value);
 }
 
 export function createClaudeAccountReader({

@@ -1,6 +1,7 @@
 import {
   generateKeyPairSync,
   randomUUID,
+  randomBytes,
   sign as signWithKey,
   createPrivateKey,
   createPublicKey,
@@ -17,6 +18,10 @@ import {
   publicUsageSyncIdentity,
   USAGE_SYNC_IDENTITY_VERSION,
 } from "../../domain/usage-sync-identity.mjs";
+import {
+  usageAuthFingerprint,
+  usageRuntimeHomeId,
+} from "../../domain/usage-account-identity.mjs";
 import { writeTextAtomic } from "./state-store.mjs";
 
 function base64Url(buffer) {
@@ -29,6 +34,10 @@ function defaultKeyPair() {
     publicKey: base64Url(publicKey.export({ type: "spki", format: "der" })),
     privateKey: base64Url(privateKey.export({ type: "pkcs8", format: "der" })),
   };
+}
+
+function defaultHomeSalt() {
+  return randomBytes(32).toString("base64url");
 }
 
 async function readJson(file) {
@@ -51,6 +60,8 @@ export class UsageSyncIdentityStore {
   #now;
   #createKeyPair;
   #createDeviceId;
+  #createHomeSalt;
+  #createInstallationInstanceId;
   #identity = null;
   #tail = Promise.resolve();
 
@@ -62,6 +73,8 @@ export class UsageSyncIdentityStore {
     now = () => new Date(),
     createKeyPair = defaultKeyPair,
     createDeviceId = randomUUID,
+    createHomeSalt = defaultHomeSalt,
+    createInstallationInstanceId = randomUUID,
   } = {}) {
     if (!file) throw new TypeError("UsageSyncIdentityStore requires a file");
     this.#file = path.resolve(file);
@@ -73,6 +86,8 @@ export class UsageSyncIdentityStore {
     this.#now = now;
     this.#createKeyPair = createKeyPair;
     this.#createDeviceId = createDeviceId;
+    this.#createHomeSalt = createHomeSalt;
+    this.#createInstallationInstanceId = createInstallationInstanceId;
   }
 
   get file() {
@@ -104,6 +119,18 @@ export class UsageSyncIdentityStore {
     return this.identity.labelConfirmedAt;
   }
 
+  get installationInstanceId() {
+    return this.identity.installationInstanceId;
+  }
+
+  runtimeHomeId(absolutePath) {
+    return usageRuntimeHomeId(this.identity.homeSalt, absolutePath);
+  }
+
+  authFingerprint(fields) {
+    return usageAuthFingerprint(this.identity.homeSalt, fields);
+  }
+
   #enqueue(operation) {
     const next = this.#tail.catch(() => {}).then(operation);
     this.#tail = next;
@@ -131,10 +158,22 @@ export class UsageSyncIdentityStore {
       platform: this.#legacySource.platform,
       publicKey,
       privateKey,
+      homeSalt: this.#createHomeSalt(),
+      installationInstanceId: String(this.#createInstallationInstanceId()).toLowerCase(),
       createdAt: timestamp,
       updatedAt: timestamp,
       legacyDeviceIds: [legacyUsageSyncDeviceId(this.#legacySource)],
     };
+  }
+
+  #completeLocalFields(identity) {
+    const completed = {
+      ...identity,
+      homeSalt: identity.homeSalt || this.#createHomeSalt(),
+      installationInstanceId: identity.installationInstanceId
+        || String(this.#createInstallationInstanceId()).toLowerCase(),
+    };
+    return normalizeUsageSyncIdentity(completed, { now: this.#now });
   }
 
   /**
@@ -147,10 +186,18 @@ export class UsageSyncIdentityStore {
       if (this.#identity) return this.#identity;
       const stored = normalizeUsageSyncIdentity(await readJson(this.#file), { now: this.#now });
       if (stored) {
-        this.#identity = stored;
+        const completed = this.#completeLocalFields(stored);
+        if (!completed) throw new Error("Cannot upgrade usage sync identity");
+        if (
+          completed.homeSalt !== stored.homeSalt
+          || completed.installationInstanceId !== stored.installationInstanceId
+        ) {
+          await this.#write(completed);
+        }
+        this.#identity = completed;
         return this.#identity;
       }
-      const issued = normalizeUsageSyncIdentity(this.#issue(), { now: this.#now });
+      const issued = this.#completeLocalFields(this.#issue());
       if (!issued) throw new Error("Cannot issue a usage sync identity");
       await this.#write(issued);
       this.#identity = issued;
