@@ -4,6 +4,8 @@
   const SEPARATE_COLUMN_STORAGE_KEY = "agent-hub:activity-tasks-separate-column:v1";
   const ALWAYS_SEPARATE_COLUMN_STORAGE_KEY = "agent-hub:activity-tasks-always-separate-column:v1";
   const TASKS_COLLAPSED_STORAGE_KEY = "agent-hub:activity-tasks-collapsed:v1";
+  const WORKSPACE_TASKS_COLLAPSED_STORAGE_KEY = "agent-hub:workspace-tasks-collapsed:v1";
+  const RECENT_STREAMS_COLLAPSED_STORAGE_KEY = "agent-hub:recent-streams-collapsed:v1";
   const COLUMN_RATIO_STORAGE_KEY = "agent-hub:activity-task-column-ratio:v1";
   const VIEW_SETTINGS_CHANGE_EVENT = "agenthub:stream-view-settings-change";
   const DEFAULT_COLUMN_RATIO = 0.5;
@@ -25,6 +27,38 @@
       storage?.setItem?.(key, String(normalized));
     } catch {}
     return normalized;
+  }
+
+  function installCollapsibleSection({
+    section,
+    toggle,
+    storage,
+    key,
+    collapsedTitle = "Развернуть секцию",
+    expandedTitle = "Свернуть секцию",
+    onChange = () => {},
+  } = {}) {
+    if (!section || !toggle || !key) return null;
+    let collapsed = storedBoolean(storage, key);
+    const sync = () => {
+      section.toggleAttribute("data-section-collapsed", collapsed);
+      toggle.setAttribute("aria-expanded", String(!collapsed));
+      toggle.setAttribute("aria-label", collapsed ? collapsedTitle : expandedTitle);
+      toggle.title = collapsed ? collapsedTitle : expandedTitle;
+      return collapsed;
+    };
+    toggle.addEventListener("click", () => {
+      collapsed = persistBoolean(storage, key, !collapsed);
+      sync();
+      onChange(collapsed);
+    });
+    sync();
+    return Object.freeze({
+      get collapsed() {
+        return collapsed;
+      },
+      sync,
+    });
   }
 
   function normalizeColumnRatio(value, fallback = DEFAULT_COLUMN_RATIO) {
@@ -159,12 +193,18 @@
     const streamToggle = documentRef.querySelector("[data-activity-rail-toggle]");
     const taskPanel = documentRef.querySelector("[data-workspace-task-panel]");
     const streamColumn = documentRef.querySelector("[data-activity-stream-column]");
+    const recentStreamSection = documentRef.querySelector(".activity-recent-streams");
+    const recentStreamToggle = documentRef.querySelector("[data-activity-recent-toggle]");
+    const workspaceTaskSection = documentRef.querySelector("[data-workspace-task-section]");
+    const workspaceTaskToggle = documentRef.querySelector("[data-workspace-task-toggle]");
     const content = documentRef.querySelector(".activity-rail-content");
     const resizer = documentRef.querySelector("[data-activity-column-resizer]");
     const workspace = rail?.closest?.("[data-workspace]");
     if (
       !root || !rail || !head || !taskToggle || !streamToggle || !streamColumn
-      || !taskPanel || !content || !resizer || !workspace
+      || !taskPanel || !recentStreamSection || !recentStreamToggle
+      || !workspaceTaskSection || !workspaceTaskToggle
+      || !content || !resizer || !workspace
     ) return null;
 
     const widthProbe = documentRef.createElement("span");
@@ -438,6 +478,25 @@
       sync();
     });
 
+    installCollapsibleSection({
+      section: workspaceTaskSection,
+      toggle: workspaceTaskToggle,
+      storage: windowRef.localStorage,
+      key: WORKSPACE_TASKS_COLLAPSED_STORAGE_KEY,
+      collapsedTitle: "Развернуть задачи Workspace",
+      expandedTitle: "Свернуть задачи Workspace",
+      onChange: sync,
+    });
+    installCollapsibleSection({
+      section: recentStreamSection,
+      toggle: recentStreamToggle,
+      storage: windowRef.localStorage,
+      key: RECENT_STREAMS_COLLAPSED_STORAGE_KEY,
+      collapsedTitle: "Развернуть недавние потоки",
+      expandedTitle: "Свернуть недавние потоки",
+      onChange: sync,
+    });
+
     if (typeof windowRef.MutationObserver === "function") {
       const observer = new windowRef.MutationObserver(sync);
       observer.observe(rail, { attributes: true, attributeFilter: ["data-collapsed"] });
@@ -472,13 +531,16 @@
     DEFAULT_COLUMN_RATIO,
     MAX_COLUMN_RATIO,
     MIN_COLUMN_RATIO,
+    RECENT_STREAMS_COLLAPSED_STORAGE_KEY,
     SEPARATE_COLUMN_STORAGE_KEY,
     TASKS_COLLAPSED_STORAGE_KEY,
+    WORKSPACE_TASKS_COLLAPSED_STORAGE_KEY,
     activityHeadingsShouldStack,
     activityRailColumnState,
     activityRailWidthFactor,
     columnRatioFromPointer,
     countedActivityHeading,
+    installCollapsibleSection,
     installActivityRailLayout,
     minimumCollapsedRailWidth,
     naturalStackHeight,

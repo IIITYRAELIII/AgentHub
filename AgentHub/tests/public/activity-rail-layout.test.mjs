@@ -48,6 +48,73 @@ test("activity rail layout preferences survive reload and unavailable storage", 
   assert.equal(storedBoolean({ getItem: () => { throw new Error("blocked"); } }, "layout", true), true);
 });
 
+test("workspace tasks and recent streams collapse independently and persist", async () => {
+  const {
+    RECENT_STREAMS_COLLAPSED_STORAGE_KEY,
+    WORKSPACE_TASKS_COLLAPSED_STORAGE_KEY,
+    installCollapsibleSection,
+  } = await layoutApi();
+  const values = new Map([[RECENT_STREAMS_COLLAPSED_STORAGE_KEY, "true"]]);
+  const storage = {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, value),
+  };
+  const fakeElement = () => {
+    const attributes = new Map();
+    const listeners = new Map();
+    return {
+      attributes,
+      listeners,
+      title: "",
+      addEventListener: (name, listener) => listeners.set(name, listener),
+      setAttribute: (name, value) => attributes.set(name, String(value)),
+      toggleAttribute: (name, force) => {
+        if (force) attributes.set(name, "");
+        else attributes.delete(name);
+      },
+    };
+  };
+  const workspaceSection = fakeElement();
+  const workspaceToggle = fakeElement();
+  const recentSection = fakeElement();
+  const recentToggle = fakeElement();
+  let workspaceChanges = 0;
+
+  const workspaceControl = installCollapsibleSection({
+    section: workspaceSection,
+    toggle: workspaceToggle,
+    storage,
+    key: WORKSPACE_TASKS_COLLAPSED_STORAGE_KEY,
+    collapsedTitle: "Развернуть задачи Workspace",
+    expandedTitle: "Свернуть задачи Workspace",
+    onChange: () => { workspaceChanges += 1; },
+  });
+  const recentControl = installCollapsibleSection({
+    section: recentSection,
+    toggle: recentToggle,
+    storage,
+    key: RECENT_STREAMS_COLLAPSED_STORAGE_KEY,
+  });
+
+  assert.equal(workspaceControl.collapsed, false);
+  assert.equal(workspaceToggle.attributes.get("aria-expanded"), "true");
+  assert.equal(recentControl.collapsed, true);
+  assert.equal(recentToggle.attributes.get("aria-expanded"), "false");
+  assert.equal(recentSection.attributes.has("data-section-collapsed"), true);
+
+  workspaceToggle.listeners.get("click")();
+  assert.equal(workspaceControl.collapsed, true);
+  assert.equal(workspaceSection.attributes.has("data-section-collapsed"), true);
+  assert.equal(workspaceToggle.title, "Развернуть задачи Workspace");
+  assert.equal(values.get(WORKSPACE_TASKS_COLLAPSED_STORAGE_KEY), "true");
+  assert.equal(workspaceChanges, 1);
+
+  recentToggle.listeners.get("click")();
+  assert.equal(recentControl.collapsed, false);
+  assert.equal(recentSection.attributes.has("data-section-collapsed"), false);
+  assert.equal(values.get(RECENT_STREAMS_COLLAPSED_STORAGE_KEY), "false");
+});
+
 test("task column is automatic by default and can be forced or disabled", async () => {
   const { resolveActivityColumnSeparation, shouldSeparateActivityColumns } = await layoutApi();
   assert.equal(shouldSeparateActivityColumns({

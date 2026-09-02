@@ -679,6 +679,14 @@
           <section class="activity-streams activity-recent-streams" aria-label="Недавние потоки">
             <header class="activity-section-head">
               <strong>Недавние</strong>
+              <button type="button" class="activity-section-collapse" data-activity-recent-toggle
+                aria-expanded="true" aria-label="Свернуть недавние потоки"
+                title="Свернуть недавние потоки">
+                <svg data-phosphor-icon="caret-up" viewBox="0 0 256 256" aria-hidden="true">
+                  <polyline points="48 160 128 80 208 160" fill="none" stroke="currentColor"
+                    stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></polyline>
+                </svg>
+              </button>
             </header>
             <div class="activity-stream-list" data-activity-recent-list></div>
             <p class="activity-stream-empty" data-activity-recent-empty>Нет недавних потоков</p>
@@ -694,7 +702,17 @@
           <section class="workspace-task-section is-workspace" data-workspace-task-section>
             <header>
               <strong>Задачи Workspace</strong>
-              <button type="button" data-workspace-task-dashboard>Все</button>
+              <span class="workspace-task-section-actions">
+                <button type="button" data-workspace-task-dashboard>Все</button>
+                <button type="button" class="workspace-task-section-collapse"
+                  data-workspace-task-toggle aria-expanded="true"
+                  aria-label="Свернуть задачи Workspace" title="Свернуть задачи Workspace">
+                  <svg data-phosphor-icon="caret-up" viewBox="0 0 256 256" aria-hidden="true">
+                    <polyline points="48 160 128 80 208 160" fill="none" stroke="currentColor"
+                      stroke-linecap="round" stroke-linejoin="round" stroke-width="16"></polyline>
+                  </svg>
+                </button>
+              </span>
             </header>
             <div class="workspace-task-list" data-workspace-task-list></div>
           </section>
