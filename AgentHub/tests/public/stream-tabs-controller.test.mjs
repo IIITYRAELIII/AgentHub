@@ -659,6 +659,8 @@ test("desktop Stream statuses keep a permanent marker and overflow exposes aggre
     /\.stream-tabs-track \.stream-tab-status-marker \{[^}]*\}/u,
   )?.[0] ?? "";
   assert.doesNotMatch(markerBlock, /inset-inline:/u);
+  assert.doesNotMatch(dialogStyles, /:root\[data-stream-status-effect/u);
+  assert.match(dialogStyles, /&\[data-stream-status-effect\]:not/u);
 });
 
 test("answer arrival animation does not replay during Thread selection", async () => {
