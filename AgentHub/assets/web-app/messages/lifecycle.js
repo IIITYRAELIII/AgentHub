@@ -1008,9 +1008,6 @@ function mergeLiveUserMessages(messages, {
         responseAnnotations: message.responseAnnotations.map((item) => ({ ...item })),
         responseAnnotationRequest: String(message.responseAnnotationRequest ?? ""),
       } : {}),
-      ...(role === "agent" && Array.isArray(message.responseAnnotationReferences) ? {
-        responseAnnotationReferences: message.responseAnnotationReferences.map((item) => ({ ...item })),
-      } : {}),
       time: message.time ?? time ?? null,
       attachments: Array.isArray(message.attachments) && message.attachments.length
         ? message.attachments.map((attachment) => ({ ...attachment }))
