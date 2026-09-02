@@ -63,6 +63,20 @@ function fixture({ outcome = "exact", mutateStatus = (value) => value } = {}) {
         };
       },
     },
+    releaseGitWorkspaces: {
+      assertPrimaryInvariant: async () => ({
+        projectRoot,
+        branch: "refs/heads/main",
+        headCommit: "main-head",
+      }),
+      prepareCandidate: async () => ({
+        repositoryRoot: projectRoot,
+        releaseRoot: path.resolve("D:/release-candidate"),
+        preReleaseHead: "prerelease-head",
+        manifestHash: "manifest-hash",
+        primaryPreserved: true,
+      }),
+    },
     resolveTestContourSource: async () => ({
       projectRoot,
       sourceRoot: path.join(devRoot, "AgentHub"),
