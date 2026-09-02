@@ -27,14 +27,18 @@
   exact target annotation exists. Missing mappings render non-interactive
   `Цитата N`. User-authored marker-like literals and code remain ordinary user
   content.
-- A new user-created annotation records its exact source provider item, one
+- A new user-created annotation records its exact source user or agent provider
+  item, including an active non-final agent item, one
   versioned rendered surface, a bounded UTF-16 range and SHA-256 boundaries for
   canonical message content, surface content and selected content. Equal text
-  is not source identity. Clicking a response citation validates every boundary,
+  is not source identity. Clicking either the user-created annotation card or a
+  response citation validates every boundary,
   reveals a hidden source trace when necessary, scrolls and focuses that exact
   source surface, and temporarily highlights only the addressed range across
   Markdown DOM splits. A missing, stale or malformed locator cannot highlight
-  another range and falls back to the annotation card. Legacy annotations
+  another range and a response citation falls back to the annotation card.
+  A user-created annotation card is keyboard-operable only when it owns a valid
+  locator. Legacy annotations
   without a locator keep the annotation-card jump and are never backfilled by
   text, time or display order.
 

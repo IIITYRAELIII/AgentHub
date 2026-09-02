@@ -120,6 +120,17 @@
     };
   }
 
+  function responseAnnotationCardControl(annotation) {
+    const source = globalThis.AgentHubMessageDisclosure?.normalizedResponseAnnotationSource?.(
+      annotation?.source,
+    );
+    return {
+      tagName: source ? "button" : "div",
+      interactive: Boolean(source),
+      ...(source ? { source } : {}),
+    };
+  }
+
   function withoutResponseCitationFallbacks(value, references) {
     let lines = String(value ?? "").replace(/\r\n?/gu, "\n").split("\n");
     for (const reference of normalizedResponseAnnotationReferences(references)) {
@@ -422,6 +433,7 @@
     messageTailPagination,
     messageTimestampLabel,
     normalizedResponseAnnotationReferences,
+    responseAnnotationCardControl,
     responseCitationControl,
     responseCitationPresentations,
     messageTailWindow,

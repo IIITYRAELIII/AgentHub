@@ -4,6 +4,7 @@ const MAX_SOURCE_OFFSET = 1_000_000;
 const MAX_SOURCE_SPAN = 400;
 const MAX_SURFACE_INDEX = 199;
 const SOURCE_SURFACES = new Set(["message-body", "trace-reasoning", "reasoning"]);
+const SOURCE_ROLES = new Set(["agent", "user"]);
 const SHA256 = /^sha256:[0-9a-f]{64}$/u;
 
 function cleanIdentity(value, limit = MAX_IDENTITY_LENGTH) {
@@ -37,7 +38,7 @@ export function normalizedResponseAnnotationSource(value) {
   const surfaceHash = String(value.surfaceHash ?? "").trim().toLowerCase();
   const selectionHash = String(value.selectionHash ?? "").trim().toLowerCase();
   const messageKey = responseAnnotationSourceMessageKey({ provider, threadId, turnId, itemId, role });
-  if (!provider || !threadId || !turnId || !itemId || role !== "agent"
+  if (!provider || !threadId || !turnId || !itemId || !SOURCE_ROLES.has(role)
     || String(value.messageKey ?? "") !== messageKey
     || !SOURCE_SURFACES.has(surfaceKind)
     || !Number.isSafeInteger(surfaceIndex) || surfaceIndex < 0 || surfaceIndex > MAX_SURFACE_INDEX

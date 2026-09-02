@@ -26,6 +26,12 @@ const ANNOTATION_SOURCE = {
   surfaceHash: `sha256:${"b".repeat(64)}`,
   selectionHash: `sha256:${"c".repeat(64)}`,
 };
+const USER_ANNOTATION_SOURCE = {
+  ...ANNOTATION_SOURCE,
+  itemId: "user-source",
+  role: "user",
+  messageKey: "provider\u001fcodex\u001fthread-1\u001fturn-source\u001fuser-source\u001fuser",
+};
 
 function controller(overrides = {}) {
   const target = {
@@ -515,7 +521,10 @@ test("desktop message receipt preserves the visible message before provider laun
   await messages.sendMessage({
     text: "служебный конверт",
     displayText: "Видимый вопрос",
-    responseAnnotations: [{ text: "Цитата", annotation: "Комментарий", source: ANNOTATION_SOURCE }],
+    responseAnnotations: [
+      { text: "Цитата", annotation: "Комментарий", source: ANNOTATION_SOURCE },
+      { text: "Цитата пользователя", annotation: "Комментарий", source: USER_ANNOTATION_SOURCE },
+    ],
     responseAnnotationRequest: "Что изменить?",
     clientUserMessageId: "message-visible",
   });
@@ -526,6 +535,10 @@ test("desktop message receipt preserves the visible message before provider laun
     text: "Цитата",
     annotation: "Комментарий",
     source: ANNOTATION_SOURCE,
+  }, {
+    text: "Цитата пользователя",
+    annotation: "Комментарий",
+    source: USER_ANNOTATION_SOURCE,
   }]);
   assert.equal(observedReceipt.result.responseAnnotationRequest, "Что изменить?");
 });

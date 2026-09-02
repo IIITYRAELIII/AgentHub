@@ -44,7 +44,8 @@ test("response annotation source accepts only exact bounded provider item ranges
   assert.equal(normalizedResponseAnnotationSource(source({ start: -1 })), null);
   assert.equal(normalizedResponseAnnotationSource(source({ contentHash: "sha256:nope" })), null);
   assert.equal(normalizedResponseAnnotationSource(source({ messageKey: "provider\u001fwrong" })), null);
-  assert.equal(normalizedResponseAnnotationSource(source({ role: "user" })), null);
+  assert.deepEqual(normalizedResponseAnnotationSource(source({ role: "user" })), source({ role: "user" }));
+  assert.equal(normalizedResponseAnnotationSource(source({ role: "system" })), null);
 });
 
 test("invalid source metadata fails closed without discarding readable legacy annotation", () => {
@@ -99,4 +100,34 @@ test("browser source resolution ignores equal text and fails closed on absent id
     surfaceHash: HASH_B,
     selectionHash: `sha256:${"d".repeat(64)}`,
   }), false);
+});
+
+test("browser source projection accepts user and non-final agent identities with canonical history precedence", async () => {
+  const script = await readFile(
+    new URL("../../assets/web-app/messages/disclosure.js", import.meta.url),
+    "utf8",
+  );
+  const context = vm.createContext({ crypto: webcrypto, TextEncoder });
+  context.window = context;
+  vm.runInContext(script, context);
+  const api = context.AgentHubMessageDisclosure;
+  const user = {
+    provider: "codex", threadId: "thread-source", turnId: "turn-user", itemId: "item-user",
+    role: "user", text: "same text",
+  };
+  const commentary = {
+    provider: "codex", threadId: "thread-source", turnId: "turn-live", itemId: "item-commentary",
+    role: "agent", responsePhase: "commentary", text: "same text",
+  };
+  assert.equal(api.responseAnnotationSourceIdentity(user).role, "user");
+  assert.equal(api.responseAnnotationSourceIdentity(commentary).itemId, "item-commentary");
+  const exactHistory = { ...commentary, text: "terminal projection" };
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(api.responseAnnotationSourceMessages([user, exactHistory], commentary))),
+    [user, exactHistory],
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(api.responseAnnotationSourceMessages([user], commentary))),
+    [user, commentary],
+  );
 });

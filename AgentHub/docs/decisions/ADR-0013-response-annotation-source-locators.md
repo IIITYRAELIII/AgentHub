@@ -3,13 +3,15 @@
 ## Decision
 
 New response annotations persist a bounded version-1 source locator containing
-the exact provider message identity, rendered surface kind and ordinal, UTF-16
+the exact user or agent provider-message identity, including an active
+non-final agent item, rendered surface kind and ordinal, UTF-16
 range, and SHA-256 boundaries for canonical message content, surface content
 and selected content. The client creates the locator from the actual DOM range
 and authoritative provider item. Intake is the trust boundary that removes an
 invalid locator while preserving readable quote text.
 
-Response-citation navigation resolves only that identity and validates all
+Both the user-created annotation card and response-citation navigation resolve
+only that identity and validate all
 three hashes before highlighting the range. Hidden trace details are opened
 only after validation. Missing or stale sources fail closed to the existing
 annotation-card jump. Legacy annotations remain unlinked to source text; no

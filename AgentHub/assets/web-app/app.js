@@ -37,6 +37,7 @@ const {
   responseAnnotationSourceContent,
   responseAnnotationSourceHashesMatch,
   responseAnnotationSourceIdentity,
+  responseAnnotationSourceMessages,
   responseAnnotationSourceProjection,
   responseAnnotationSourceSurface,
   responseAnnotationSurfaceLocator,
@@ -5357,6 +5358,12 @@ function subagentResponseTitle(message) {
 }
 
 document.addEventListener("click", (event) => {
+  const responseAnnotation = event.target.closest("button[data-response-annotation-source]");
+  if (responseAnnotation) {
+    event.preventDefault();
+    void focusResponseCitationSource(responseAnnotation);
+    return;
+  }
   const responseCitation = event.target.closest("button[data-response-citation-target]");
   if (responseCitation) {
     event.preventDefault();
@@ -5400,10 +5407,17 @@ function renderResponseAnnotations(body, message) {
     const text = String(item?.text ?? "").trim();
     const comment = String(item?.annotation ?? "").trim();
     if (!text && !comment) return;
-    const content = el("div", {
+    const control = MessageView.responseAnnotationCardControl(item);
+    const content = el(control.tagName, {
       class: "msg-annotation-content",
       tabIndex: -1,
       "data-response-annotation-index": String(index + 1),
+      ...(control.interactive ? {
+        type: "button",
+        tabIndex: 0,
+        "data-response-annotation-source": "",
+        title: "Перейти к исходному фрагменту",
+      } : {}),
     }, [
       el("div", { class: "msg-annotation-label", text: `Цитата ${index + 1}` }),
       text ? el("div", { class: "msg-annotation-quote", text }) : null,
@@ -5412,6 +5426,9 @@ function renderResponseAnnotations(body, message) {
       const commentNode = el("div", { class: "msg-annotation-comment" });
       renderMarkdown(commentNode, comment, undefined, "user");
       content.append(commentNode);
+    }
+    if (control.interactive) {
+      responseCitationSources.set(content, { source: control.source, quote: text });
     }
     annotations.append(content);
   });
@@ -5489,9 +5506,23 @@ function focusResponseAnnotationCard(button) {
   return true;
 }
 
-function sourceMessageProjection(source) {
+function selectedResponseAnnotationSourceMessages() {
   const messages = state.messages.get(state.selectedId) ?? [];
-  return responseAnnotationSourceProjection(messages, source);
+  const live = state.live.get(state.selectedId);
+  return responseAnnotationSourceMessages(
+    messages,
+    liveCardHasContent(live) ? { ...live, role: "agent" } : null,
+  );
+}
+
+function sourceMessageProjection(source) {
+  return responseAnnotationSourceProjection(selectedResponseAnnotationSourceMessages(), source);
+}
+
+function renderedResponseAnnotationSourceRoot(renderedKey) {
+  const historyRoot = Array.from(chatLog.children).find((node) => node.dataset?.messageKey === renderedKey);
+  if (historyRoot) return historyRoot;
+  return chatLive.dataset?.messageKey === renderedKey ? chatLive : null;
 }
 
 function revealResponseCitationSource(article, surface) {
@@ -5508,7 +5539,7 @@ async function focusResponseCitationSource(button) {
   const projection = sourceMessageProjection(source);
   if (!projection) return false;
   const renderedKey = MessageView.messageKey(projection.message, projection.index);
-  const rootNode = Array.from(chatLog.children).find((node) => node.dataset?.messageKey === renderedKey);
+  const rootNode = renderedResponseAnnotationSourceRoot(renderedKey);
   const article = rootNode?.matches?.("article.msg, details.msg")
     ? rootNode
     : rootNode?.querySelector?.("article.msg, details.msg");
@@ -5624,6 +5655,7 @@ function populateLiveCard(node, live, fallbackAuthor = "Агент", task = curr
       historyMessages.length,
     ),
   };
+  node.dataset.messageKey = MessageView.messageKey(liveMessage, historyMessages.length);
   if (liveMessage.responseCitationPresentations.length) {
     renderAgentResponseBody(body, liveMessage, visibleText, fileContext);
   } else renderMarkdown(body, visibleText, fileContext);
@@ -6621,7 +6653,7 @@ function sourceMessageForSelection(selection) {
   const renderedRoot = selection?.message?.closest?.("[data-message-key]");
   const renderedKey = String(renderedRoot?.dataset?.messageKey ?? "");
   if (!renderedKey) return null;
-  const messages = state.messages.get(state.selectedId) ?? [];
+  const messages = selectedResponseAnnotationSourceMessages();
   const index = messages.findIndex((message, messageIndex) => (
     MessageView.messageKey(message, messageIndex) === renderedKey
   ));
@@ -6670,7 +6702,7 @@ async function addAnnotation(selection) {
   }
   const next = await responseAnnotationFromSelection(selection);
   if (!next) {
-    showToast("Цитату можно связать только с сохранённым сообщением агента.");
+    showToast("Не удалось подтвердить источник выделенного фрагмента.");
     return false;
   }
   if (annotations.some((annotation) => duplicateResponseAnnotation(annotation, next))) {

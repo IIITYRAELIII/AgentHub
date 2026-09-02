@@ -10386,9 +10386,31 @@ html[data-view="background"] .background-view {
 
 .msg-annotation-content {
   background: color-mix(in srgb, var(--surface-1) 88%, transparent);
+  border: 0;
   border-left: 3px solid var(--accent-line);
   border-radius: var(--radius-sm);
+  color: inherit;
+  font: inherit;
   padding: 0.55rem 0.7rem;
+  text-align: left;
+  width: 100%;
+}
+
+.msg-annotation-content[data-response-annotation-source] {
+  cursor: pointer;
+  transition: background-color 140ms ease, border-color 140ms ease, transform 140ms ease;
+}
+
+.msg-annotation-content[data-response-annotation-source]:hover,
+.msg-annotation-content[data-response-annotation-source]:focus-visible {
+  background: color-mix(in srgb, var(--accent-soft) 55%, var(--surface-1));
+  border-left-color: var(--accent);
+  transform: translateY(-1px);
+}
+
+.msg-annotation-content[data-response-annotation-source]:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 48%, transparent);
+  outline-offset: 2px;
 }
 
 .msg-annotation-content.is-citation-target {

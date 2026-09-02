@@ -10,6 +10,7 @@
   const RESPONSE_ANNOTATION_MAX_SPAN = 400;
   const RESPONSE_ANNOTATION_MAX_SURFACE_INDEX = 199;
   const RESPONSE_ANNOTATION_SURFACES = new Set(["message-body", "trace-reasoning", "reasoning"]);
+  const RESPONSE_ANNOTATION_SOURCE_ROLES = new Set(["agent", "user"]);
   const SHA256 = /^sha256:[0-9a-f]{64}$/u;
 
   function cleanSourceIdentity(value, limit = 300) {
@@ -33,9 +34,8 @@
     const threadId = cleanSourceIdentity(message?.threadId);
     const turnId = cleanSourceIdentity(message?.turnId);
     const itemId = cleanSourceIdentity(message?.itemId);
-    const role = ["agent", "assistant"].includes(String(message?.role ?? "").trim().toLowerCase())
-      ? "agent"
-      : "";
+    const inputRole = String(message?.role ?? "").trim().toLowerCase();
+    const role = ["agent", "assistant"].includes(inputRole) ? "agent" : inputRole === "user" ? "user" : "";
     const messageKey = responseAnnotationSourceMessageKey({ provider, threadId, turnId, itemId, role });
     return messageKey ? { provider, threadId, turnId, itemId, role, messageKey } : null;
   }
@@ -70,7 +70,7 @@
     const surfaceHash = String(value.surfaceHash ?? "").trim().toLowerCase();
     const selectionHash = String(value.selectionHash ?? "").trim().toLowerCase();
     const messageKey = responseAnnotationSourceMessageKey({ provider, threadId, turnId, itemId, role });
-    if (!provider || !threadId || !turnId || !itemId || role !== "agent"
+    if (!provider || !threadId || !turnId || !itemId || !RESPONSE_ANNOTATION_SOURCE_ROLES.has(role)
       || String(value.messageKey ?? "") !== messageKey
       || !RESPONSE_ANNOTATION_SURFACES.has(surfaceKind)
       || !Number.isSafeInteger(surfaceIndex) || surfaceIndex < 0
@@ -105,6 +105,17 @@
       responseAnnotationSourceIdentity(message)?.messageKey === normalized.messageKey
     ));
     return index >= 0 ? { message: values[index], index } : null;
+  }
+
+  function responseAnnotationSourceMessages(messages, liveMessage = null) {
+    const values = Array.isArray(messages) ? messages.slice() : [];
+    const liveIdentity = responseAnnotationSourceIdentity(liveMessage);
+    if (!liveIdentity) return values;
+    const hasCanonicalProjection = values.some((message) => (
+      responseAnnotationSourceIdentity(message)?.messageKey === liveIdentity.messageKey
+    ));
+    if (!hasCanonicalProjection) values.push(liveMessage);
+    return values;
   }
 
   function responseAnnotationSourceHashesMatch(source, hashes) {
@@ -370,6 +381,7 @@
     responseAnnotationSourceHashesMatch,
     responseAnnotationSourceIdentity,
     responseAnnotationSourceMessageKey,
+    responseAnnotationSourceMessages,
     responseAnnotationSourceProjection,
     responseAnnotationSourceSurface,
     responseAnnotationSurfaceLocator,
