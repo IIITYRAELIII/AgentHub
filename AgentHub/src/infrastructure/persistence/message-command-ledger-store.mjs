@@ -85,6 +85,7 @@ function configureDatabase(database, now = Date.now) {
       ON message_commands(state, occupancy_key, queue_order, accepted_at_ms, client_user_message_id);
   `);
   repairOrphanedLegacyCommands(database, now);
+  repairPreAcceptanceStartedCommands(database, now);
   const activePlaceholders = ACTIVE_STATES.map(() => "?").join(", ");
   const legacyActive = database.prepare(`
     SELECT client_user_message_id, item_json, accepted_at_ms
@@ -231,6 +232,75 @@ function repairOrphanedLegacyCommands(database, now) {
   return repaired;
 }
 
+function repairPreAcceptanceStartedCommands(database, now) {
+  const candidates = database.prepare(`
+    SELECT client_user_message_id, item_json, receipt_json, result_json, revision
+    FROM message_commands
+    WHERE state = 'started' AND destination = 'queued' AND item_json IS NOT NULL
+  `).all();
+  if (!candidates.length) return 0;
+  const update = database.prepare(`
+    UPDATE message_commands
+    SET state = 'attention-required', destination = 'pending', item_json = ?,
+        receipt_json = ?, result_json = ?, updated_at_ms = ?, revision = revision + 1
+    WHERE client_user_message_id = ? AND state = 'started' AND revision = ?
+  `);
+  const updatedAtMs = now();
+  let repaired = 0;
+  database.exec("BEGIN IMMEDIATE;");
+  try {
+    for (const row of candidates) {
+      const item = parseJsonOrNull(row.item_json);
+      const receipt = parseJsonOrNull(row.receipt_json);
+      const result = parseJsonOrNull(row.result_json) ?? receipt?.result ?? null;
+      if (
+        !item?.dispatchingAt
+        || !item?.dispatchingRunId
+        || result?.started !== true
+        || result?.runId
+        || result?.turnId
+      ) continue;
+      const pendingItem = { ...item };
+      delete pendingItem.dispatchingAt;
+      delete pendingItem.dispatchingRunId;
+      pendingItem.waitReason = "provider-start-unconfirmed";
+      pendingItem.lastError = "Запуск провайдера не был подтверждён; автоматический повтор не выполнялся.";
+      const pendingResult = {
+        ...(result && typeof result === "object" ? result : {}),
+        accepted: false,
+        pending: false,
+        deferred: true,
+        queued: false,
+        dispatching: false,
+        started: false,
+        completed: false,
+        failed: false,
+        cancelled: false,
+        rejected: false,
+        reason: "provider-start-unconfirmed",
+        message: "Запуск провайдера не подтверждён; требуется выбрать дальнейшее действие.",
+      };
+      const pendingReceipt = receipt && typeof receipt === "object"
+        ? { ...receipt, result: pendingResult }
+        : null;
+      const outcome = update.run(
+        JSON.stringify(pendingItem),
+        pendingReceipt ? JSON.stringify(pendingReceipt) : null,
+        JSON.stringify(pendingResult),
+        updatedAtMs,
+        row.client_user_message_id,
+        row.revision,
+      );
+      repaired += Number(outcome.changes ?? 0);
+    }
+    database.exec("COMMIT;");
+  } catch (error) {
+    database.exec("ROLLBACK;");
+    throw error;
+  }
+  return repaired;
+}
+
 function recordFromRow(row) {
   if (!row) return null;
   const parsedItem = parseJson(row.item_json);
@@ -302,7 +372,13 @@ function stateFromEvidence({ pending, queued, run, receipt }) {
   if (result?.cancelled === true) return "cancelled";
   if (result?.rejected === true) return "failed";
   if (result?.steered === true) return "completed";
-  if (run) return "started";
+  const runTurnId = String(run?.turnId ?? "").trim();
+  const acceptedTurnId = String(run?.providerStart?.turnId ?? "").trim();
+  if (
+    runTurnId
+    && acceptedTurnId === runTurnId
+    && ["accepted-awaiting-first-event", "observed"].includes(run?.providerStart?.state)
+  ) return "started";
   if (queued) return queued.dispatchingAt ? "dispatching" : "queued";
   if (pending) return "attention-required";
   if (result?.dispatching === true) return "dispatching";
