@@ -416,6 +416,7 @@
     messageKey,
     messageTailPagination,
     messageTimestampLabel,
+    normalizedResponseAnnotationReferences,
     responseCitationControl,
     responseCitationPresentations,
     messageTailWindow,

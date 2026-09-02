@@ -253,6 +253,45 @@ test("aggregated Stream history preserves each item's provider and Thread", () =
   assert.match(messages[0].id, /^codex:thread-old:/u);
 });
 
+test("Web history mapping preserves canonical citation references", () => {
+  const source = clientFunctionSource("historyMessages", "function mergeNewestHistory");
+  const normalize = (references) => references.filter((reference) => reference.index === 1);
+  const sandbox = vm.createContext({
+    AgentHubMessageView: { normalizedResponseAnnotationReferences: normalize },
+    attachmentViews: () => [],
+    conversationMessageAuthor: () => "Codex",
+    focusedTurnAlreadyVisible: () => true,
+    focusedTurnTaskThreadId: (turn) => turn.threadId,
+    historicalMessagesForDisplay: (item) => item.messages,
+  });
+  vm.runInContext(`${source}; globalThis.mapHistory = historyMessages;`, sandbox);
+  const [historyAgent] = sandbox.mapHistory({
+    provider: "codex",
+    threadId: "thread-citation",
+    items: [{
+      id: "turn-citation",
+      messages: [{
+        itemId: "turn-citation:rollout-agent:final",
+        role: "agent",
+        responseAnnotationReferences: [{ index: 1 }, { index: 21 }],
+      }],
+    }],
+  });
+  const [focusedAgent] = sandbox.mapHistory({ items: [] }, {
+    provider: "codex",
+    threadId: "thread-focused-citation",
+    turnId: "turn-focused-citation",
+    messages: [{
+      itemId: "msg_focused_citation",
+      role: "agent",
+      responseAnnotationReferences: [{ index: 1 }, { index: 21 }],
+    }],
+  });
+
+  assert.deepEqual(historyAgent.responseAnnotationReferences, [{ index: 1 }]);
+  assert.deepEqual(focusedAgent.responseAnnotationReferences, [{ index: 1 }]);
+});
+
 test("focused completed turn cannot append commentary after its durable final", () => {
   const source = clientFunctionSource("historyMessages", "function mergeNewestHistory");
   const sandbox = vm.createContext({
