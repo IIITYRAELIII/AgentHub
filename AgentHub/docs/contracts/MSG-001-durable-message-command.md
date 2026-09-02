@@ -25,6 +25,12 @@ permission to create a second effect.
 Transitions are monotonic and idempotent. A canonical record atomically replaces
 its optimistic projection by the same identity.
 
+A provider rejection received before provider acceptance moves that command to
+`attention-required` and releases its FIFO lane only after the rejection is
+durable. A launch with an unknown outcome keeps the lane until exact
+reconciliation or an explicit user decision; it never authorizes automatic
+resubmission or a later same-lane provider effect.
+
 ## Occupancy and ordering
 
 Before provider Thread binding, a queued command occupies a provisional lane
