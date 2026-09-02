@@ -7868,12 +7868,16 @@ const AgentHub = {
     }
     try {
       if (navigationChanged || selectionChanged) renderTasks();
-      if (selectionChanged || selectedTaskChanged || nextTasks.some((task) => (
+      const chatNeedsRender = selectionChanged || selectedTaskChanged || nextTasks.some((task) => (
         task.id !== nextSelectedId
         && state.visibleStreamTaskIds.includes(task.id)
         && chatChangedIds.has(task.id)
-      ))) renderChat();
-      else if (selectedTaskDataChanged) renderStreamChatHeader(nextSelectedTask);
+      ));
+      if (chatNeedsRender) renderChat();
+      else {
+        if (navigationChanged) renderStreamTabs();
+        if (selectedTaskDataChanged) renderStreamChatHeader(nextSelectedTask);
+      }
     } finally {
       transientAnswerArrivalTaskIds = new Set();
     }
@@ -7902,7 +7906,10 @@ const AgentHub = {
     try {
       renderTasks();
       if (id === state.selectedId) renderChat();
-      else if (state.visibleStreamTaskIds.includes(id)) renderStreamChatDeck({ force: true });
+      else {
+        renderStreamTabs();
+        if (state.visibleStreamTaskIds.includes(id)) renderStreamChatDeck({ force: true });
+      }
     } finally {
       transientAnswerArrivalTaskIds = new Set();
     }
