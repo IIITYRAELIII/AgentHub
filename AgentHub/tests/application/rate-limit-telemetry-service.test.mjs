@@ -8,6 +8,16 @@ import {
   formatCodexRateLimits,
 } from "../../src/interfaces/telegram/status.mjs";
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 function fixture({
   codexRunning = true,
   codexPollingEnabled = true,
@@ -16,9 +26,10 @@ function fixture({
 } = {}) {
   const events = [];
   let nowMs = 1_000;
-  let releaseCodex;
+  const delayedAccount = deferred();
+  const delayedCodex = deferred();
+  let delayAccount = false;
   let delayCodex = false;
-  const delayedCodex = new Promise((resolve) => { releaseCodex = resolve; });
   const service = new RateLimitTelemetryService({
     resolveClaudeInvocation: () => ({ command: "claude", prefixArgs: ["--flag"] }),
     parseClaudeLimits,
@@ -30,6 +41,7 @@ function fixture({
     },
     readCodexAccount: async () => {
       events.push(["read-account"]);
+      if (delayAccount) return delayedAccount.promise;
       return { account: { type: "chatgpt", email: "first@example.test", planType: "pro" } };
     },
     readClaudeAccount: async () => {
@@ -38,7 +50,7 @@ function fixture({
     },
     readCodexRateLimits: async () => {
       events.push(["read-codex"]);
-      if (delayCodex) return delayedCodex;
+      if (delayCodex) return delayedCodex.promise;
       return { rateLimits: { primary: { usedPercent: 25 } } };
     },
     codexRunning: () => codexRunning,
@@ -63,9 +75,12 @@ function fixture({
   return {
     service,
     events,
+    delayAccount: () => { delayAccount = true; },
     delayCodex: () => { delayCodex = true; },
-    releaseCodex,
-    advance: (milliseconds) => { nowMs += milliseconds; },
+    releaseAccount: delayedAccount.resolve,
+    rejectAccount: delayedAccount.reject,
+    releaseCodex: delayedCodex.resolve,
+    rejectCodex: delayedCodex.reject,
   };
 }
 
@@ -144,28 +159,86 @@ test("RateLimitTelemetryService coalesces concurrent polling", async () => {
   assert.equal(state.events.filter(([name]) => name === "schedule").length, 1);
 });
 
-test("RateLimitTelemetryService refreshes history from live Codex limits and reuses a fresh sample", async () => {
+test("RateLimitTelemetryService returns stored history while both Codex RPCs remain pending", async () => {
   const state = fixture();
-  assert.deepEqual(await state.service.history({ range: "24h" }), { fresh: true });
-  assert.deepEqual(await state.service.history({ range: "24h" }), { fresh: true });
+  state.delayAccount();
+  state.delayCodex();
 
-  assert.equal(state.events.filter(([name]) => name === "read-codex").length, 1);
-  assert.equal(state.events.filter(([name]) => name === "record").length, 1);
+  const firstHistory = state.service.history({ range: "24h" });
+  const secondHistory = state.service.history({ range: "7d" });
+
   assert.equal(state.events.filter(([name]) => name === "read-history").length, 2);
+  assert.deepEqual(await firstHistory, { fresh: true });
+  assert.deepEqual(await secondHistory, { fresh: true });
+  assert.equal(state.events.filter(([name]) => name === "read-account").length, 1);
+  assert.equal(state.events.filter(([name]) => name === "read-codex").length, 1);
 
-  state.advance(30_001);
-  await state.service.history({ range: "24h" });
+  const manualRefresh = state.service.refreshCodex();
+  assert.equal(state.events.filter(([name]) => name === "read-account").length, 1);
+  assert.equal(state.events.filter(([name]) => name === "read-codex").length, 1);
+  state.releaseAccount({ account: { type: "chatgpt", email: "first@example.test", planType: "pro" } });
+  state.releaseCodex({ rateLimits: { primary: { usedPercent: 30 } } });
+  assert.deepEqual(await manualRefresh, { rateLimits: { primary: { usedPercent: 30 } } });
+  assert.equal(state.events.filter(([name]) => name === "record").length, 1);
+});
+
+test("RateLimitTelemetryService keeps explicit refresh forceful after a fresh history sample", async () => {
+  const state = fixture();
+  assert.deepEqual(await state.service.refreshCodex(), {
+    rateLimits: { primary: { usedPercent: 25 } },
+  });
+
+  assert.deepEqual(await state.service.history({ range: "24h" }), { fresh: true });
+  assert.equal(state.events.filter(([name]) => name === "read-codex").length, 1);
+
+  await state.service.refreshCodex();
   assert.equal(state.events.filter(([name]) => name === "read-codex").length, 2);
 });
 
-test("RateLimitTelemetryService serves stored history when the live refresh fails", async () => {
+test("RateLimitTelemetryService handles a rejected background refresh and permits a manual retry", async () => {
   const state = fixture();
-  state.service.readCodexRateLimits = async () => { throw new Error("offline"); };
+  state.delayCodex();
+  const unhandled = [];
+  const onUnhandled = (error) => unhandled.push(error);
+  process.on("unhandledRejection", onUnhandled);
+
+  try {
+    assert.deepEqual(await state.service.history({ range: "7d" }), { fresh: true });
+    assert.deepEqual(await state.service.history({ range: "24h" }), { fresh: true });
+    assert.equal(state.events.filter(([name]) => name === "read-codex").length, 1);
+
+    state.rejectCodex(new Error("offline"));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.deepEqual(unhandled, []);
+    assert.equal(state.events.filter((event) => (
+      event[0] === "error" && event[1] === "Cannot refresh current Codex rate limits:"
+    )).length, 1);
+
+    state.service.readCodexRateLimits = async () => {
+      state.events.push(["read-codex"]);
+      return { rateLimits: { primary: { usedPercent: 40 } } };
+    };
+    assert.deepEqual(await state.service.refreshCodex(), {
+      rateLimits: { primary: { usedPercent: 40 } },
+    });
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+});
+
+test("RateLimitTelemetryService tolerates a rejected account RPC during background refresh", async () => {
+  const state = fixture();
+  state.delayAccount();
 
   assert.deepEqual(await state.service.history({ range: "7d" }), { fresh: true });
+  state.rejectAccount(new Error("account offline"));
+  await new Promise((resolve) => setImmediate(resolve));
+
   assert.equal(state.events.some((event) => (
-    event[0] === "error" && event[1] === "Cannot refresh current Codex rate limits:"
+    event[0] === "error" && event[1] === "Cannot identify Codex account:"
   )), true);
+  assert.equal(state.events.filter(([name]) => name === "record").length, 1);
   assert.deepEqual(state.events.find(([name]) => name === "read-history")?.[1], { range: "7d" });
 });
 
