@@ -452,15 +452,6 @@
     return { running, answerReady, statusLabel };
   }
 
-  function summarizeStreamStatuses(items) {
-    const summary = { running: 0, answerReady: 0 };
-    for (const item of items ?? []) {
-      if (item?.running) summary.running += 1;
-      if (item?.answerReady) summary.answerReady += 1;
-    }
-    return summary;
-  }
-
   function isExactActiveUserTurn(task) {
     if (task?.running !== true) return false;
     const run = task?.run;
@@ -1518,7 +1509,6 @@
     streamIsPinned,
     streamStatusPresentation,
     streamStatusState,
-    summarizeStreamStatuses,
     streamsAreDraggable,
     setQuickMessagesForScope,
     taskListSections,

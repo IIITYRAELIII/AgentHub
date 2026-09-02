@@ -2456,37 +2456,6 @@ function scheduleStreamTabsOverflow() {
   streamTabsOverflowFrame = window.requestAnimationFrame(syncStreamTabsOverflow);
 }
 
-function syncStreamTabsOverflowStatus(overflow, menuItems) {
-  const button = overflow?.querySelector("[data-stream-overflow-toggle]");
-  if (!button) return;
-  const hiddenStatuses = menuItems
-    .filter((item) => !item.hidden)
-    .map((item) => ({
-      running: item.hasAttribute("data-running"),
-      answerReady: item.hasAttribute("data-answer-ready"),
-    }));
-  const summary = window.AgentHubStreamTabs.summarizeStreamStatuses(hiddenStatuses);
-  button.toggleAttribute("data-running", summary.running > 0);
-  button.toggleAttribute("data-answer-ready", summary.answerReady > 0);
-  const runningCount = button.querySelector("[data-stream-tabs-overflow-running-count]");
-  const answerReadyCount = button.querySelector("[data-stream-tabs-overflow-answer-ready-count]");
-  if (runningCount) {
-    runningCount.textContent = String(summary.running);
-    runningCount.parentElement.hidden = summary.running === 0;
-  }
-  if (answerReadyCount) {
-    answerReadyCount.textContent = String(summary.answerReady);
-    answerReadyCount.parentElement.hidden = summary.answerReady === 0;
-  }
-  const status = [
-    summary.running ? `выполняются: ${summary.running}` : "",
-    summary.answerReady ? `ответ готов: ${summary.answerReady}` : "",
-  ].filter(Boolean).join("; ");
-  const label = status ? `Остальные потоки — ${status}` : "Остальные потоки";
-  button.title = label;
-  button.setAttribute("aria-label", label);
-}
-
 function syncStreamTabsOverflow() {
   if (!streamTabs || streamTabs.hidden) return;
   const track = streamTabs.querySelector("[data-stream-tabs-track]");
@@ -2499,7 +2468,6 @@ function syncStreamTabsOverflow() {
   overflow.hidden = true;
   if (track.scrollWidth <= track.clientWidth + 1) {
     menuItems.forEach((item) => { item.hidden = true; });
-    syncStreamTabsOverflowStatus(overflow, menuItems);
     return;
   }
   overflow.hidden = false;
@@ -2519,7 +2487,6 @@ function syncStreamTabsOverflow() {
   count.textContent = String(hidden);
   overflow.hidden = hidden === 0;
   menuItems.forEach((item, index) => { item.hidden = index < visible; });
-  syncStreamTabsOverflowStatus(overflow, menuItems);
 }
 
 function renderStreamTabs() {
@@ -2656,18 +2623,6 @@ function renderStreamTabs() {
   }, [
     el("span", { text: "ещё " }),
     el("span", { "data-stream-tabs-overflow-count": "", text: "0" }),
-    el("span", { class: "stream-tabs-more-statuses", "aria-hidden": "true" }, [
-      el("span", {
-        class: "stream-tabs-more-status stream-tabs-more-status-running",
-        title: "Выполняются",
-        hidden: true,
-      }, [el("span", { "data-stream-tabs-overflow-running-count": "", text: "0" })]),
-      el("span", {
-        class: "stream-tabs-more-status stream-tabs-more-status-answer-ready",
-        title: "Ответ готов",
-        hidden: true,
-      }, [el("span", { "data-stream-tabs-overflow-answer-ready-count": "", text: "0" })]),
-    ]),
     window.AgentHubStreamTabs.createPhosphorIcon(document, "caret-down", "stream-tabs-more-icon"),
   ]);
   const overflowMenu = el("div", {

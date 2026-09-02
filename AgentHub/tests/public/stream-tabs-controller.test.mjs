@@ -625,26 +625,29 @@ test("an active Stream preserves its answer-ready state", async () => {
   );
 });
 
-test("overflow summary counts running and answer-ready Streams independently", async () => {
-  const { summarizeStreamStatuses } = await streamTabsApi();
-  assert.deepEqual(
-    JSON.parse(JSON.stringify(summarizeStreamStatuses([
-      { running: true, answerReady: false },
-      { running: false, answerReady: true },
-      { running: true, answerReady: true },
-      { running: false, answerReady: false },
-    ]))),
-    { running: 2, answerReady: 2 },
-  );
-});
-
-test("Stream overflow exposes aggregate running and answer-ready state", async () => {
+test("the existing impulse wave stays visible across the full top-tab cycle", async () => {
   const app = await readFile(new URL("../../assets/web-app/app.js", import.meta.url), "utf8");
+  const styles = await readFile(new URL("../../assets/web-app/styles.css", import.meta.url), "utf8");
+  const gothicStyles = await readFile(new URL("../../assets/web-app/themes/gothic/theme.css", import.meta.url), "utf8");
+  const trajectory = /@keyframes stream-tab-running-wave \{\s*from \{ transform: translateX\((-?\d+)%\); \}\s*to \{ transform: translateX\((-?\d+)%\); \}\s*\}/u.exec(styles);
+  assert.ok(trajectory);
+  const [, fromPercent, toPercent] = trajectory.map(Number);
+  const waveWidth = 0.58;
+  const brightCoreStart = 0.44;
+  const brightCoreEnd = 0.56;
 
-  assert.match(app, /button\.toggleAttribute\("data-running", summary\.running > 0\)/u);
-  assert.match(app, /button\.toggleAttribute\("data-answer-ready", summary\.answerReady > 0\)/u);
-  assert.match(app, /data-stream-tabs-overflow-running-count/u);
-  assert.match(app, /data-stream-tabs-overflow-answer-ready-count/u);
+  assert.ok((fromPercent / 100 + brightCoreStart) * waveWidth >= 0);
+  assert.ok((toPercent / 100 + brightCoreEnd) * waveWidth <= 1);
+  assert.match(
+    styles,
+    /\.stream-tabs-track \.stream-tab\[data-running\] \.stream-tab-card::after \{\s*animation-name: stream-tab-running-wave;/u,
+  );
+  assert.match(styles, /@keyframes stream-running-wave \{\s*to \{ transform: translateX\(300%\); \}/u);
+  assert.match(
+    gothicStyles,
+    /@keyframes gothic-stream-running-wave \{\s*from \{ transform: translateX\(-44%\); \}\s*to \{ transform: translateX\(116%\); \}/u,
+  );
+  assert.doesNotMatch(app, /stream-tab-status-marker|stream-tabs-more-statuses/u);
 });
 
 test("answer arrival animation does not replay during Thread selection", async () => {
