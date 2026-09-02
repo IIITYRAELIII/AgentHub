@@ -136,7 +136,7 @@ export class DesktopTaskService {
       sessionCwd: entry.sessionCwd ?? null,
       threadId: entry.threadId,
       taskTitle: taskDisplayTitle(entry),
-      model: entry.model ?? null,
+      modelId: entry.model ?? null,
       chatId: this.chatId(),
       telegramDeliveryRequested: false,
       clientSource: String(context?.source ?? "desktop").trim() || "desktop",

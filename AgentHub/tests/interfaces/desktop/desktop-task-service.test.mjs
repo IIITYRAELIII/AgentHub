@@ -12,6 +12,7 @@ function fixture() {
     projectRoot: "C:\\repo",
     threadId: "thread-1",
     title: "Task",
+    model: "GPT-5.3-Codex-Spark",
   };
   const calls = [];
   const service = new DesktopTaskService({
@@ -71,6 +72,7 @@ test("Desktop task service resolves streamId before provider references", async 
   assert.equal(target.telegramDeliveryRequested, false);
   assert.equal(target.clientSource, "vscode-extension");
   assert.equal(target.taskTitle, "Agent HUB - Themes");
+  assert.equal(target.modelId, "GPT-5.3-Codex-Spark");
 });
 
 test("Desktop task service retargets a stale Stream reference to its current Thread", async () => {
