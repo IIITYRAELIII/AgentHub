@@ -2715,7 +2715,9 @@ function renderStreamChatPreview(task) {
   } else if (!messages.length) {
     log.append(el("p", { class: "stream-chat-preview-empty", text: "В этом Stream пока нет сообщений." }));
   } else {
-    for (const message of messages.slice(-20)) log.append(renderMessage(message, { readOnly: true, task }));
+    for (const message of MessageView.conversationSurfaceMessages(messages).slice(-20)) {
+      log.append(renderMessage(message, { readOnly: true, task }));
+    }
   }
   const live = state.live.get(task.id);
   if (liveCardHasContent(live)) {
@@ -4502,7 +4504,7 @@ function renderMessages({
     .map((node) => String(node?.dataset?.messageKey ?? ""))
     .filter(Boolean));
   const historyLoaded = state.messages.has(taskId);
-  const allMessages = state.messages.get(taskId) ?? [];
+  const allMessages = MessageView.conversationSurfaceMessages(state.messages.get(taskId) ?? []);
   const visibleLimit = tailLimit > 0
     ? tailLimit
     : (state.messageRenderLimits.get(taskId) ?? INITIAL_MESSAGE_RENDER_LIMIT);
@@ -5567,7 +5569,6 @@ function renderApprovals() {
 
 function renderQueueForTask(taskId, container) {
   const queued = (state.queue.get(taskId) ?? [])
-    .filter((entry) => entry.state !== "dispatching" && entry.state !== "steering")
     .slice()
     .sort((left, right) => {
       const leftOrder = Number(left.queueOrder);

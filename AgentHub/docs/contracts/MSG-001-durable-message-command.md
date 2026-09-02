@@ -25,6 +25,12 @@ permission to create a second effect.
 Transitions are monotonic and idempotent. A canonical record atomically replaces
 its optimistic projection by the same identity.
 
+Hub acceptance and provider acceptance are distinct boundaries. Durable ACK may
+return while the command is queued or dispatching, but those states and
+`attention-required` remain on the queue-management surface. Conversation
+history begins only after exact provider acceptance; the later active and
+terminal projections reuse the original `clientUserMessageId`.
+
 ## Occupancy and ordering
 
 Before provider Thread binding, a queued command occupies a provisional lane

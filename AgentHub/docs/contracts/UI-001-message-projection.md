@@ -23,21 +23,26 @@ set `clientUserMessageId + submissionId`; either alias binds the optimistic and
 canonical forms without using text, time or display order. Provider turns are
 keyed by `provider + threadId + turnId`; item entities additionally include
 `itemId + role`. Canonical intake atomically replaces its optimistic projection.
-After the optimistic card is visible, a durable `accepted=true` receipt keeps
-that same card continuously visible while immediate intake passes through a
-transient deferred record before provider start. Presence in `deferredInputs`
-alone cannot move an accepted command out of the conversation. Only a command
-still owned by the deferred queue (`deferred=true`, without acceptance or
-dispatch) moves from the conversation to the queue surface. Provider start and
-history reconciliation reuse the same command identity and cannot add a second
-card. Direct ACK, remote-result reconciliation and snapshot reconciliation use
-the same receipt classifier; none may infer queue ownership from
-`deferredInputs` presence or the `deferred` flag alone. Receipt snapshots are
-bounded, so an active deferred record with `conflictKind=message-intake`
-remains authoritative evidence of accepted immediate intake when its receipt
-has left the current receipt window. Absence of a receipt must not move that
-card into the queue; deferred records with any other conflict kind retain queue
-ownership unless an available receipt or dispatch state says otherwise.
+Before provider acceptance, optimistic, durable queued, dispatching, ambiguous
+and attention-required forms are rendered only by the queue surface above the
+composer. A Hub durable ACK confirms storage and idempotency; it is not provider
+acceptance and does not create a conversation card. `accepted=true` combined
+with `deferred=true`, `queued=true`, `dispatching=true` or
+`steerPending=true` therefore remains queue-owned.
+
+The conversation card appears only after exact provider acceptance. For a new
+turn that requires the exact command identity plus `runId + turnId`; for a
+steer it requires `steered=true` plus the exact target `turnId`. An active run
+snapshot is accepted only when `run.turnId` equals
+`run.providerStart.turnId` and provider-start state is
+`accepted-awaiting-first-event` or `observed`. Queue, active and history
+projections reuse the same `clientUserMessageId` and cannot create a second
+card.
+
+Direct ACK, remote-result reconciliation and snapshot reconciliation use the
+same classifier. Receipt snapshots are bounded, so any unresolved durable input
+record remains queue-owned even after its receipt leaves the current window;
+`conflictKind`, text, time and display order cannot promote it into history.
 The server applies exact turn-receipt aliases before exposing active or durable
 user items, so a root or steer cannot coexist with its accepted optimistic card.
 Service-only attachment wrappers such as `<image ...>` are removed from both the
@@ -53,10 +58,10 @@ older durable history. `unknown` is a distinct state and is never projected as a
 The client considers final content caught up only on exact text equality for the
 exact provider turn. Prefix equality never proves that a complete final was
 rendered and cannot stop history refresh or remove a completion overlay.
-Canonical ordering follows durable provider sequence. A queued root message
-keeps its original `submittedAt` as metadata, but its displayed `time` becomes
-the bound turn occurrence/start time so the clock label cannot contradict its
-position after an earlier completed turn.
+Canonical ordering follows durable provider sequence. A queued command retains
+its submission time on the queue surface. Once provider-accepted, its
+conversation projection retains that same submission identity and chronology;
+provider start time remains separate lifecycle metadata.
 
 Unlabelled fenced blocks are treated as prose-oriented preformatted text and
 wrap inside the message column without horizontal page movement. Fences with an

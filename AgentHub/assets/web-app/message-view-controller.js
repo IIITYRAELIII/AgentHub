@@ -187,6 +187,28 @@
     return true;
   }
 
+  function messageOwnsDeferredQueue(message) {
+    if (message?.role !== "user" || message?.providerAccepted === true) return false;
+    const projectionState = String(message?.projectionState ?? "").trim();
+    if (["active", "completed", "failed", "cancelled"].includes(projectionState)) return false;
+    if (["optimistic", "queued", "unknown"].includes(projectionState)) return true;
+    return [
+      "preparing",
+      "sending",
+      "steering",
+      "queued",
+      "deferred",
+      "unconfirmed",
+      "rejected",
+    ].includes(String(message?.deliveryState ?? "").trim());
+  }
+
+  function conversationSurfaceMessages(messages) {
+    return (Array.isArray(messages) ? messages : []).filter((message) => (
+      !messageOwnsDeferredQueue(message)
+    ));
+  }
+
   function messageTailWindow(messages, limit = 80) {
     const values = Array.isArray(messages) ? messages : [];
     const maximum = Math.max(1, Number(limit) || 80);
@@ -324,6 +346,7 @@
     claimKeyedChildrenOwner,
     codeBlockCopyRequest,
     composerFollowUpMode,
+    conversationSurfaceMessages,
     deferredQueueCounts,
     extractTechnicalTails,
     messageTechnicalContent,
@@ -331,6 +354,7 @@
     messageDisclosurePresentation,
     messageContentSignature,
     messageKey,
+    messageOwnsDeferredQueue,
     messageTailPagination,
     messageTimestampLabel,
     messageTailWindow,
