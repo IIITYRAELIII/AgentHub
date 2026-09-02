@@ -2083,6 +2083,7 @@ function historyMessages(history, focusedTurn = null) {
         ? { terminalRevisionMigrationGuard: "legacy-terminal-revision" }
         : {}),
       ...(message.kind ? { kind: message.kind } : {}),
+      ...(message.origin ? { origin: message.origin } : {}),
       ...(message.agentThreadId ? { agentThreadId: message.agentThreadId } : {}),
       ...(message.model ? { model: message.model } : {}),
       author: conversationMessageAuthor(message, itemProvider),
@@ -2136,6 +2137,7 @@ function historyMessages(history, focusedTurn = null) {
         itemId,
         role: message.role,
         ...(message.kind ? { kind: message.kind } : {}),
+        ...(message.origin ? { origin: message.origin } : {}),
         ...(message.agentThreadId ? { agentThreadId: message.agentThreadId } : {}),
         ...(message.model ? { model: message.model } : {}),
         author: conversationMessageAuthor(message, focusedTurn.provider),
@@ -2168,6 +2170,7 @@ function historyMessages(history, focusedTurn = null) {
       itemId: `${focusedTurn.turnId}:focused:user`,
       role: "user",
       turnUserSlot: "root",
+      ...(focusedTurn.promptOrigin ? { kind: "interstream", origin: focusedTurn.promptOrigin } : {}),
       author: focusedTurn.promptAuthor || "Вы",
       text: focusedTurn.prompt,
       responseAnnotations: focusedTurn.promptAnnotations,

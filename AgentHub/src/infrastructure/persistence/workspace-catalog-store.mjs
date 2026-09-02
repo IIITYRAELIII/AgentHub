@@ -4,6 +4,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import { editableWorkspaceDeveloperRules } from "../../domain/editable-workspace-developer-rules.mjs";
+import { normalizeInterstreamOrigin } from "../../domain/interstream-message.mjs";
 
 import {
   EXPERIMENTS_SYSTEM_KEY,
@@ -29,6 +30,11 @@ const SCHEMA_VERSION = 11;
 export const DEVELOPER_RULES_MAX_BYTES = 32 * 1024;
 const SOURCES = new Set(["created", "discovered", "migration", "rebirth"]);
 const DEVELOPER_RULE_SCOPES = new Set(["workspace", "stream"]);
+const INTERSTREAM_MESSAGE_TOOLS = new Set([
+  "hub_stream_message_send",
+  "hub_task_start",
+  "hub_task_reassign",
+]);
 
 function configure(database) {
   database.exec(`
@@ -633,6 +639,34 @@ export class WorkspaceCatalogStore {
       SELECT * FROM hub_mcp_operations
       WHERE workspace_id = ? ORDER BY created_at_ms DESC LIMIT ?
     `).all(id, boundedLimit).map(mcpOperationFromRow);
+  }
+
+  interstreamOriginForClientMessage(clientUserMessageId) {
+    const clientId = String(clientUserMessageId ?? "").trim();
+    if (!clientId.startsWith("mcp:")) return null;
+    const requestId = clientId.slice(4).trim();
+    if (!requestId || requestId.length > 200 || requestId.includes("\0")) return null;
+    const operation = mcpOperationFromRow(this.#database.prepare(
+      "SELECT * FROM hub_mcp_operations WHERE request_id = ?",
+    ).get(requestId));
+    if (
+      !operation
+      || operation.requestId !== requestId
+      || operation.status !== "succeeded"
+      || !INTERSTREAM_MESSAGE_TOOLS.has(operation.toolName)
+    ) return null;
+    const workspace = this.workspace(operation.workspaceId);
+    const stream = this.stream(operation.streamId);
+    if (!workspace || !stream || stream.workspaceId !== workspace.id) return null;
+    return normalizeInterstreamOrigin({
+      workspaceId: workspace.id,
+      workspaceName: workspace.name,
+      streamId: stream.id,
+      streamName: stream.displayName ?? stream.name,
+      provider: operation.provider,
+      sourceThreadId: operation.threadId,
+      requestId,
+    });
   }
 
   mergeWorkspaces(sourceWorkspaceId, targetWorkspaceId) {

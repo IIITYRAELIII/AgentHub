@@ -55,6 +55,13 @@ the `mcp:<requestId>` command alias when a provider rollout omits
 `clientUserMessageId`. That alias reconciles receipt and rollout projections;
 display text and card position never substitute for it.
 
+`hub_stream_message_send`, `hub_task_start` and `hub_task_reassign` carry the
+audited source Workspace, Stream, provider Thread and request identity as
+durable `messageOrigin`. The provider input keeps the same origin in the outer
+inter-Stream envelope, including when a Task reference is attached. Task
+assignment therefore remains a service command and cannot be reclassified as a
+human message while crossing intake, queue, run, receipt or history boundaries.
+
 ## Durable ACK
 
 - Local ACK follows one compact durable command write.

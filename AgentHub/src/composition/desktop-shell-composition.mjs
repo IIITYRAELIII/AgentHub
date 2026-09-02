@@ -241,6 +241,9 @@ export function createDesktopShellComposition({
       receiptForMessage: (identity) => desktopMessageReceipts.get(identity),
       recentReceipts: () => desktopMessageReceipts.snapshot(),
       receiptsForTurn: (identity) => desktopMessageReceipts.findAllByTurn(identity),
+      interstreamOriginForClientMessage: (clientUserMessageId) => (
+        workspaceCatalogStore.interstreamOriginForClientMessage(clientUserMessageId)
+      ),
       approvalSnapshot: () => approvalController.snapshot(),
       restartBlockingRuns: runtime.restartBlockingRuns,
       compactionCount: () => contextCompactions.runningCount(),

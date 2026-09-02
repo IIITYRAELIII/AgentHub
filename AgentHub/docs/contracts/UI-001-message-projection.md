@@ -101,3 +101,11 @@ hydration starts strictly as background work and is never awaited by mark-read.
   submission alias. It cannot bind steer or inter-Stream messages and is removed
   after retained history has `clientUserMessageId` or `submissionId` on every
   user command.
+- A retained pre-origin MCP message may recover inter-Stream provenance only by
+  exact `mcp:<requestId>` lookup of a successful audited
+  `hub_stream_message_send`, `hub_task_start` or `hub_task_reassign` operation.
+  Its source Workspace and Stream are rendered with the explicit service marker
+  `Служебное`; text, time and display order are never attribution evidence.
+  Remove this read-only guard after every retained MCP message carries durable
+  `messageOrigin`. Rows without both durable origin and exact successful audit
+  evidence remain unattributed rather than receiving a guessed backfill.

@@ -346,6 +346,7 @@ export function createDesktopTaskHistoryFactory({
   historyMerger,
   latestMessage = () => null,
   receipts = {},
+  interstreamOriginForClientMessage = () => null,
   attachmentImporter = async () => [],
   responseBudget,
   warn = () => {},
@@ -694,7 +695,12 @@ export function createDesktopTaskHistoryFactory({
         const itemProvider = source?.provider ?? provider;
         const itemThreadId = source?.threadId ?? selectedThreadId;
         const promptInterstream = interstreamMessageDetails(item.prompt);
-        const promptOrigin = normalizeInterstreamOrigin(item.promptOrigin) ?? promptInterstream?.origin;
+        const promptClientUserMessageId = String((Array.isArray(item.messages) ? item.messages : [])
+          .find((message) => String(message?.role ?? "") === "user")
+          ?.clientUserMessageId ?? "").trim();
+        const promptOrigin = normalizeInterstreamOrigin(item.promptOrigin)
+          ?? promptInterstream?.origin
+          ?? normalizeInterstreamOrigin(interstreamOriginForClientMessage(promptClientUserMessageId));
         const promptAuthor = interstreamOriginAuthor(promptOrigin)
           || String(item.promptAuthor ?? "").trim();
         return {
@@ -784,7 +790,9 @@ export function createDesktopTaskHistoryFactory({
                 .map((attachment) => ({ ...attachment }));
               const interstream = role === "user" ? interstreamMessageDetails(sourceText) : null;
               const origin = role === "user"
-                ? normalizeInterstreamOrigin(message?.origin) ?? interstream?.origin
+                ? normalizeInterstreamOrigin(message?.origin)
+                  ?? interstream?.origin
+                  ?? normalizeInterstreamOrigin(interstreamOriginForClientMessage(clientUserMessageId))
                 : null;
               const author = interstreamOriginAuthor(origin) || String(message?.author ?? "").trim();
               const messageKind = origin

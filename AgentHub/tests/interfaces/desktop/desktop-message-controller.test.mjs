@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { createDesktopMessageController } from "../../../src/interfaces/desktop/desktop-message-controller.mjs";
 import { MessageReceiptRegistry } from "../../../src/infrastructure/persistence/message-receipts.mjs";
 import { RunCoordinator } from "../../../src/application/run-coordinator.mjs";
+import { interstreamMessageDetails } from "../../../src/domain/interstream-message.mjs";
 
 const EXISTING_IMAGE = fileURLToPath(
   new URL("../../../assets/web-app/themes/blackhole/blackhole-blue.jpg", import.meta.url),
@@ -483,6 +484,49 @@ test("desktop message controller resolves Dashboard Task references into links",
   assert.doesNotMatch(launchedInput, /не начинай работу без явной просьбы пользователя/u);
   assert.match(launchedInput, /Сравни с текущим решением/u);
   assert.deepEqual(result.attachments, [reference]);
+});
+
+test("task assignment keeps its audited interstream origin around the provider input", async () => {
+  let launchedInput = null;
+  const messageOrigin = {
+    kind: "interstream",
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-architect",
+    streamName: "Architect",
+    provider: "codex",
+    sourceThreadId: "thread-architect",
+    requestId: "task-assignment-1",
+  };
+  const messages = controller({
+    resolveTarget: async () => ({
+      provider: "codex",
+      projectRoot: "C:\\Project",
+      threadId: "thread-1",
+      taskTitle: "Task",
+      messageOrigin,
+    }),
+    resolveTaskReferences: async () => [{
+      kind: "task",
+      taskId: "board-1",
+      title: "Исправить автора",
+      workflowStatus: "in_progress",
+      workspaceId: "workspace-1",
+      intent: "start",
+    }],
+    launchTurn: async (_run, input) => { launchedInput = input; },
+  });
+
+  await messages.sendMessage({
+    text: "Исправь дефект полностью",
+    taskReferences: [{ taskId: "board-1", intent: "start" }],
+    clientUserMessageId: "mcp:task-assignment-1",
+  });
+
+  const details = interstreamMessageDetails(launchedInput);
+  assert.deepEqual(details.origin, messageOrigin);
+  assert.match(details.text, /# Attached Agent Hub Tasks/u);
+  assert.match(details.text, /Исправь дефект полностью/u);
 });
 
 test("desktop message receipt preserves the visible message before provider launch", async () => {

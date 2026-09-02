@@ -92,8 +92,8 @@ function fixture({ interruptAfterCreate = false, gitWorktree = false, started = 
       }
       return { createdTask: target };
     },
-    sendMessage: async (params) => {
-      calls.push(["send", params]);
+    sendMessage: async (params, context) => {
+      calls.push(["send", params, context]);
       return { accepted: true };
     },
     activeRuns: () => activeRuns,
@@ -119,6 +119,30 @@ test("TaskBoardLaunchService starts a Task in its dedicated Git worktree", async
   assert.equal(create[2].workingDirectory, "D:/task-worktree");
   assert.equal(create[2].taskId, "board-1");
   assert.equal(create[2].taskNumber, "AH-42");
+});
+
+test("TaskBoardLaunchService forwards the audited assignment origin to message intake", async () => {
+  const { launch, calls } = fixture();
+  const messageOrigin = {
+    kind: "interstream",
+    workspaceId: "workspace-1",
+    workspaceName: "Agent HUB",
+    streamId: "stream-architect",
+    streamName: "Architect",
+    provider: "codex",
+    sourceThreadId: "thread-architect",
+    requestId: "mcp-assignment-origin",
+  };
+
+  await launch.start({
+    id: "board-1",
+    workspaceId: "workspace-1",
+    streamName: "Assigned",
+    provider: "codex",
+    launchRequestId: "mcp-assignment-origin",
+  }, { messageOrigin });
+
+  assert.deepEqual(calls.find(([kind]) => kind === "send")[2].messageOrigin, messageOrigin);
 });
 
 test("TaskBoardLaunchService ignores a historical Thread root for an existing Stream", async () => {

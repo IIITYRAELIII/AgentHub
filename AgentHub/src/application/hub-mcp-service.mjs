@@ -10,8 +10,8 @@ import {
   createAttachmentStorageName,
 } from "../domain/attachment-files.mjs";
 import {
+  createInterstreamOrigin,
   createInterstreamMessage,
-  interstreamMessageDetails,
 } from "../domain/interstream-message.mjs";
 import { taskProjectRoot } from "../domain/task-project-root.mjs";
 
@@ -26,6 +26,19 @@ const MUTATING_TOOLS = new Set([
 const TEXT_ATTACHMENT_TYPES = new Set([
   "text/plain", "text/markdown", "text/csv", "application/json", "application/xml",
 ]);
+
+function interstreamOriginFromContext(context, sourceRun, requestId) {
+  return createInterstreamOrigin({
+    workspaceId: context.workspaceId,
+    workspaceName: context.workspaceName,
+    streamId: context.streamId,
+    streamName: context.streamName,
+    provider: context.provider,
+    model: String(sourceRun?.model ?? sourceRun?.modelId ?? "").trim(),
+    sourceThreadId: context.threadId ?? context.auditThreadId,
+    requestId,
+  });
+}
 
 function requiredMethod(value, name) {
   if (typeof value?.[name] !== "function") throw new TypeError(`${name} is required`);
@@ -908,6 +921,8 @@ export class HubMcpService {
       String(run?.provider ?? "").trim().toLowerCase() === context.provider
       && String(run?.threadId ?? "").trim() === String(context.threadId ?? "").trim()
     ));
+    const normalizedRequestId = requiredText(requestId, "request id", 200);
+    const messageOrigin = interstreamOriginFromContext(context, sourceRun, normalizedRequestId);
     const inheritedSettings = requestedStreamName && targetProvider === context.provider ? {
       provider: targetProvider,
       ...(String(sourceRun?.modelId ?? "").trim() ? { model: sourceRun.modelId } : {}),
@@ -923,9 +938,9 @@ export class HubMcpService {
       reassign,
       message: optionalText(message, 100_000) ?? "",
       followUpMode: "queue",
-      launchRequestId: requiredText(requestId, "request id", 200),
-      clientUserMessageId: `mcp:${requiredText(requestId, "request id", 200)}`,
-    }, context);
+      launchRequestId: normalizedRequestId,
+      clientUserMessageId: `mcp:${normalizedRequestId}`,
+    }, { ...context, messageOrigin });
     const gitWorkspace = result.gitWorkspace ?? null;
     return {
       task: compactTask(result.task),
@@ -963,18 +978,11 @@ export class HubMcpService {
       String(run?.provider ?? "").trim().toLowerCase() === context.provider
       && String(run?.threadId ?? "").trim() === String(context.threadId ?? "").trim()
     ));
+    const messageOrigin = interstreamOriginFromContext(context, sourceRun, normalizedRequestId);
     const message = createInterstreamMessage({
-      workspaceId: context.workspaceId,
-      workspaceName: context.workspaceName,
-      streamId: context.streamId,
-      streamName: context.streamName,
-      provider: context.provider,
-      model: String(sourceRun?.model ?? "").trim(),
-      sourceThreadId: context.threadId ?? context.auditThreadId,
-      requestId: normalizedRequestId,
+      ...messageOrigin,
       text: requiredText(text, "message text", 100_000),
     });
-    const messageOrigin = interstreamMessageDetails(message)?.origin;
     const delivery = await this.#streamMessenger({
       streamId: targetStreamId,
       text: message,

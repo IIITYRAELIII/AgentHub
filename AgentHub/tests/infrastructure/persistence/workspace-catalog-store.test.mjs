@@ -400,6 +400,37 @@ test("MCP mutation audit is idempotent and scoped to its Workspace", async (t) =
   );
 });
 
+test("MCP audit resolves only exact successful interstream message provenance", async (t) => {
+  const store = await fixture(t);
+  const workspace = store.createWorkspace({ name: "Agent HUB" });
+  const stream = store.createStream({ workspaceId: workspace.id, name: "Architect" });
+  const operation = {
+    requestId: "assignment-1",
+    workspaceId: workspace.id,
+    streamId: stream.id,
+    provider: "codex",
+    threadId: "thread-architect",
+    toolName: "hub_task_start",
+    argumentsHash: "hash-assignment-1",
+  };
+  store.beginMcpOperation(operation);
+  assert.equal(store.interstreamOriginForClientMessage("mcp:assignment-1"), null);
+  store.completeMcpOperation(operation.requestId, { task: { id: "task-1" } });
+
+  assert.deepEqual(store.interstreamOriginForClientMessage("mcp:assignment-1"), {
+    kind: "interstream",
+    workspaceId: workspace.id,
+    workspaceName: "Agent HUB",
+    streamId: stream.id,
+    streamName: "Architect",
+    provider: "codex",
+    sourceThreadId: "thread-architect",
+    requestId: "assignment-1",
+  });
+  assert.equal(store.interstreamOriginForClientMessage("assignment-1"), null);
+  assert.equal(store.interstreamOriginForClientMessage("mcp:missing"), null);
+});
+
 test.skip("retired release registry same-Stream overlap model", async (t) => {
   const store = await fixture(t);
   const workspace = store.createWorkspace({ name: "Agent HUB", settings: { releaseWorkflowEnabled: true } });

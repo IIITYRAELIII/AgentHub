@@ -38,6 +38,28 @@ export function normalizeInterstreamOrigin(value) {
   };
 }
 
+export function createInterstreamOrigin({
+  workspaceId,
+  workspaceName,
+  streamId,
+  streamName,
+  provider,
+  model,
+  sourceThreadId,
+  requestId,
+} = {}) {
+  return normalizeInterstreamOrigin({
+    workspaceId: cleanText(workspaceId, "workspace id", 300),
+    workspaceName: cleanText(workspaceName, "workspace name", 500),
+    streamId: cleanText(streamId, "stream id", 300),
+    streamName: cleanText(streamName, "stream name", 500),
+    provider: cleanText(provider, "provider", 100).toLowerCase(),
+    model,
+    sourceThreadId,
+    requestId,
+  });
+}
+
 export function interstreamOriginAuthor(value) {
   const origin = normalizeInterstreamOrigin(value);
   if (!origin) return "";
@@ -63,12 +85,12 @@ export function createInterstreamMessage({
   requestId,
   text,
 } = {}) {
-  const source = normalizeInterstreamOrigin({
-    workspaceId: cleanText(workspaceId, "workspace id", 300),
-    workspaceName: cleanText(workspaceName, "workspace name", 500),
-    streamId: cleanText(streamId, "stream id", 300),
-    streamName: cleanText(streamName, "stream name", 500),
-    provider: cleanText(provider, "provider", 100).toLowerCase(),
+  const source = createInterstreamOrigin({
+    workspaceId,
+    workspaceName,
+    streamId,
+    streamName,
+    provider,
     model,
     sourceThreadId,
     requestId,
