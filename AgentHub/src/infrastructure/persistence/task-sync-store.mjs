@@ -296,7 +296,29 @@ function preserveTerminalHistory(terminals, history) {
   });
 }
 
-function preserveDurableAttachments(existingHistory, incomingHistory) {
+function canonicalTerminalAgentSource(existingMessages, turnId, incomingMessage) {
+  if (incomingMessage?.role !== "agent") return null;
+  const incomingItemId = String(incomingMessage?.itemId ?? "").trim();
+  if (![`${turnId}:agent:final`, `${turnId}:rollout-agent:final`].includes(incomingItemId)) {
+    return null;
+  }
+  const exactSyntheticIds = [
+    `${turnId}:agent:live`,
+    `${turnId}:agent:final`,
+    `${turnId}:rollout-agent:live`,
+    `${turnId}:rollout-agent:final`,
+  ];
+  const candidates = existingMessages.filter((message) => {
+    if (message?.role !== "agent" || message?.kind === "subagent") return false;
+    if (String(message?.agentThreadId ?? "").trim()) return false;
+    if (!cleanResponseAnnotationReferences(message?.responseAnnotationReferences).length) return false;
+    const itemId = String(message?.itemId ?? "").trim();
+    return exactSyntheticIds.includes(itemId) || itemId.startsWith("msg_");
+  });
+  return candidates.length === 1 ? candidates[0] : null;
+}
+
+function preserveDurableMessageMetadata(existingHistory, incomingHistory) {
   const existingTurns = new Map((Array.isArray(existingHistory) ? existingHistory : []).flatMap((turn) => {
     const id = String(turn?.id ?? "").trim();
     return id ? [[id, turn]] : [];
@@ -323,10 +345,26 @@ function preserveDurableAttachments(existingHistory, incomingHistory) {
         const clientId = String(message?.clientUserMessageId ?? "").trim();
         const existingMessage = (clientId ? byClientId.get(clientId) : null)
           ?? (itemId ? byItemId.get(itemId) : null);
-        if (!existingMessage || (Array.isArray(message?.attachments) && message.attachments.length)) {
-          return message;
-        }
-        return { ...message, attachments: existingMessage.attachments };
+        const terminalSource = existingMessage ?? canonicalTerminalAgentSource(
+          Array.isArray(existingTurn.messages) ? existingTurn.messages : [],
+          String(turn?.id ?? "").trim(),
+          message,
+        );
+        const attachments = Array.isArray(message?.attachments) && message.attachments.length
+          ? message.attachments
+          : existingMessage?.attachments;
+        const responseAnnotationReferences = cleanResponseAnnotationReferences(
+          message?.responseAnnotationReferences,
+        ).length
+          ? message.responseAnnotationReferences
+          : terminalSource?.responseAnnotationReferences;
+        return {
+          ...message,
+          ...(Array.isArray(attachments) && attachments.length ? { attachments } : {}),
+          ...(cleanResponseAnnotationReferences(responseAnnotationReferences).length
+            ? { responseAnnotationReferences }
+            : {}),
+        };
       });
     }
     return next;
@@ -1747,7 +1785,7 @@ export class LocalTaskSyncStore {
     const terminals = terminalHistoryTurns(existing.history);
     const journalHistory = this.#reconcileHistoryWithJournal(task, history);
     const reconciledHistory = preserveTerminalHistory(terminals, journalHistory);
-    const durableHistory = preserveDurableAttachments(existing.history, reconciledHistory);
+    const durableHistory = preserveDurableMessageMetadata(existing.history, reconciledHistory);
     const enrichedHistory = this.#withJournalSubagentModels(task, durableHistory);
     const cleanedHistory = cleanHistory(enrichedHistory, this.#historyLimit, { provider: task.provider });
     const effectiveSnapshot = terminalSafeSnapshot(existing, snapshot, terminals);

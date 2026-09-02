@@ -376,6 +376,103 @@ test("terminal citation coalescing survives SQLite reopen", async () => {
   restored.close();
 });
 
+test("canonical terminal overlay preserves provider citation refs through SQLite reopen", async () => {
+  const filePath = await storeFile();
+  const turnId = "turn-terminal-overlay";
+  const store = new LocalTaskSyncStore({ filePath });
+  await store.load();
+  store.recordHistory(task, [{
+    id: turnId,
+    status: "completed",
+    completed: true,
+    messages: [{
+      itemId: "msg_provider_final",
+      role: "agent",
+      text: "Цитата 1\nГотово",
+      responseAnnotationReferences: [{ index: 1 }],
+    }],
+  }]);
+  store.recordHistory(task, [{
+    id: turnId,
+    status: "completed",
+    completed: true,
+    messages: [{
+      itemId: `${turnId}:rollout-agent:final`,
+      role: "agent",
+      phase: "final_answer",
+      text: "Цитата 1\nГотово",
+    }],
+  }]);
+  await store.save();
+  store.close();
+
+  const restored = new LocalTaskSyncStore({ filePath });
+  await restored.load();
+  const [persisted] = restored.history(task);
+  const agentMessages = persisted.messages.filter((message) => message.role === "agent");
+  assert.equal(agentMessages.length, 1);
+  assert.equal(agentMessages[0].itemId, `${turnId}:rollout-agent:final`);
+  assert.deepEqual(agentMessages[0].responseAnnotationReferences, [{ index: 1 }]);
+  restored.close();
+});
+
+test("terminal citation metadata is not transferred to a wrong or ambiguous identity", async () => {
+  const filePath = await storeFile();
+  const store = new LocalTaskSyncStore({ filePath });
+  await store.load();
+  store.recordHistory(task, [{
+    id: "turn-wrong-terminal-identity",
+    status: "completed",
+    completed: true,
+    messages: [{
+      itemId: "msg_wrong_identity_source",
+      role: "agent",
+      text: "Цитата 1",
+      responseAnnotationReferences: [{ index: 1 }],
+    }],
+  }, {
+    id: "turn-ambiguous-terminal-identity",
+    status: "completed",
+    completed: true,
+    messages: [{
+      itemId: "msg_ambiguous_source_1",
+      role: "agent",
+      text: "Цитата 1",
+      responseAnnotationReferences: [{ index: 1 }],
+    }, {
+      itemId: "msg_ambiguous_source_2",
+      role: "agent",
+      text: "Цитата 2",
+      responseAnnotationReferences: [{ index: 2 }],
+    }],
+  }]);
+  store.recordHistory(task, [{
+    id: "turn-wrong-terminal-identity",
+    status: "completed",
+    completed: true,
+    messages: [{
+      itemId: "untrusted-final-item",
+      role: "agent",
+      text: "Цитата 1",
+    }],
+  }, {
+    id: "turn-ambiguous-terminal-identity",
+    status: "completed",
+    completed: true,
+    messages: [{
+      itemId: "turn-ambiguous-terminal-identity:rollout-agent:final",
+      role: "agent",
+      text: "Цитата 1",
+    }],
+  }]);
+
+  const wrongIdentity = store.history(task).find((turn) => turn.id === "turn-wrong-terminal-identity");
+  const ambiguousIdentity = store.history(task).find((turn) => turn.id === "turn-ambiguous-terminal-identity");
+  assert.deepEqual(wrongIdentity.messages[0].responseAnnotationReferences ?? [], []);
+  assert.deepEqual(ambiguousIdentity.messages[0].responseAnnotationReferences ?? [], []);
+  store.close();
+});
+
 test("local task sync preserves interstream origin through SQLite", async () => {
   const filePath = await storeFile();
   const origin = {
