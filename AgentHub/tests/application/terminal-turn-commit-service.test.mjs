@@ -82,3 +82,43 @@ test("terminal commit keeps structured response annotations beside the canonical
   assert.deepEqual(stored.payload.history.responseAnnotationReferences, [{ index: 1 }]);
   assert.deepEqual(stored.payload.history.userMessages[0].responseAnnotations, responseAnnotations);
 });
+
+test("terminal commit keeps live citation refs when completion tracking is empty", async () => {
+  let stored = null;
+  const service = new TerminalTurnCommitService({
+    store: {
+      commit: async (value) => {
+        stored = value;
+        return {
+          terminal: {
+            provider: "codex",
+            threadId: "thread-annotation",
+            turnId: "turn-annotation",
+            terminalRevision: 1,
+            status: "completed",
+            payload: value.payload,
+          },
+          outbox: {},
+        };
+      },
+      get: async () => null,
+    },
+  });
+
+  await service.commit({
+    provider: "codex",
+    threadId: "thread-annotation",
+    turnId: "turn-annotation",
+    status: "completed",
+    finalAnswer: "Цитата 1\nСвязь сохранена",
+    responseAnnotationReferences: [],
+  }, {
+    run: {
+      id: "run-annotation",
+      responseItemId: "provider-final-item",
+      responseAnnotationReferences: [{ index: 1 }],
+    },
+  });
+
+  assert.deepEqual(stored.payload.history.responseAnnotationReferences, [{ index: 1 }]);
+});

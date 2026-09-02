@@ -238,3 +238,23 @@ test("CodexRunFinalizer delivers the canonical readable citation terminal revisi
   assert.equal(value.responseText, "Цитата 1\nСвязь сохранена");
   assert.deepEqual(value.responseAnnotationReferences, [{ index: 1 }]);
 });
+
+test("CodexRunFinalizer keeps exact live citation refs when terminal tracking is empty", async () => {
+  const state = fixture();
+  const value = run();
+  value.responseItemId = "provider-final-item";
+  value.responseAnnotationReferences = [{ index: 1 }];
+
+  await state.finalizer.finalize(value, {
+    answer: "Цитата 1\nСвязь сохранена",
+    tracker: {
+      usage: {},
+      reported: true,
+      responseAnnotationReferences: [],
+    },
+  });
+
+  const [, committed] = state.events.find(([name]) => name === "commit");
+  assert.deepEqual(committed.responseAnnotationReferences, [{ index: 1 }]);
+  assert.deepEqual(value.responseAnnotationReferences, [{ index: 1 }]);
+});

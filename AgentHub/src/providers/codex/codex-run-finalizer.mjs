@@ -8,11 +8,20 @@ function exactRunChangedFiles(run) {
     .sort((left, right) => left.localeCompare(right));
 }
 
+function preferredResponseAnnotationReferences(primary, fallback) {
+  if (Array.isArray(primary) && primary.length) return primary;
+  return Array.isArray(fallback) ? fallback : [];
+}
+
 function exactTerminalCompletion(existing, incoming) {
   if (!existing) return incoming;
   return {
     ...existing,
     ...incoming,
+    responseAnnotationReferences: preferredResponseAnnotationReferences(
+      incoming.responseAnnotationReferences,
+      existing.responseAnnotationReferences,
+    ),
     responseAttachments: incoming.responseAttachments.length
       ? incoming.responseAttachments
       : existing.responseAttachments ?? [],
@@ -102,6 +111,10 @@ export class CodexRunFinalizer {
     const existingCompletion = this.notifications.get(identity);
     const responseAttachments = await this.resolveTerminalAttachments(run, completedTurnId);
     run.responseAttachments = responseAttachments;
+    const responseAnnotationReferences = preferredResponseAnnotationReferences(
+      tracker.responseAnnotationReferences,
+      run.responseAnnotationReferences,
+    );
     const completionInput = {
       ...identity,
       streamId: run.streamId ?? null,
@@ -121,9 +134,7 @@ export class CodexRunFinalizer {
       clientUserMessageId: run.clientUserMessageId ?? null,
       userMessages: run.userMessages,
       finalAnswer: String(answer ?? "").trim(),
-      responseAnnotationReferences: tracker.responseAnnotationReferences
-        ?? run.responseAnnotationReferences
-        ?? [],
+      responseAnnotationReferences,
       responseAttachments,
       changedFiles: exactRunChangedFiles(run),
       diff: run.latestDiff ?? "",
@@ -176,7 +187,10 @@ export class CodexRunFinalizer {
       committed.terminal?.finalAnswer ?? completion.finalAnswer ?? answer ?? "",
     ).trim();
     run.responseAnnotationReferences = structuredClone(
-      completion.responseAnnotationReferences ?? run.responseAnnotationReferences ?? [],
+      preferredResponseAnnotationReferences(
+        completion.responseAnnotationReferences,
+        run.responseAnnotationReferences,
+      ),
     );
     run.terminalRevision = Number(committed.terminal?.terminalRevision) || null;
     await this.markRunCompleted(run);
