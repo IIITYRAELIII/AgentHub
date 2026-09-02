@@ -13,6 +13,24 @@ function fixture({ planRevision = "plan-1", contourHead = "dev-head", rejectDev 
     blocked: [],
     conflicts: [],
   };
+  const contourTarget = {
+    root: path.resolve("D:/test-contour"),
+    contourId: "contour-1",
+    port: 8877,
+    model: "fake-codex",
+  };
+  const contourOperation = {
+    operationId: "operation-1",
+    status: "ready",
+    phase: "ready",
+    source: {
+      branch: "dev",
+      headCommit: "dev-head",
+      sourceRoot: path.resolve("D:/dev-worktree/AgentHub"),
+    },
+    target: contourTarget,
+    releaseId: "release-1",
+  };
   const service = new WorkspaceReleasePreflightService({
     releasePlanner: {
       plan: async (workspaceId) => {
@@ -48,13 +66,30 @@ function fixture({ planRevision = "plan-1", contourHead = "dev-head", rejectDev 
     },
     refreshTestContour: async (request) => {
       calls.push(["refresh-contour", request]);
+      return {
+        operationId: contourOperation.operationId,
+        operation: contourOperation,
+        source: contourOperation.source,
+        refreshOutcome: "refreshed",
+      };
     },
-    readTestContourStatus: async () => {
-      calls.push(["read-contour"]);
+    readTestContourStatus: async (request) => {
+      calls.push(["read-contour", request]);
       return {
         running: true,
-        root: "D:/test-contour",
+        root: contourTarget.root,
         source: { branch: "dev", headCommit: contourHead },
+        status: "ready",
+        planned: false,
+        operation: contourOperation,
+        state: {
+          contourId: contourTarget.contourId,
+          operationId: contourOperation.operationId,
+          releaseId: contourOperation.releaseId,
+          port: contourTarget.port,
+          model: contourTarget.model,
+        },
+        readback: { outcome: "exact", operation: contourOperation, current: contourOperation },
       };
     },
   });
@@ -72,7 +107,10 @@ test("release preflight verifies selected results in dev and always refreshes Te
     resultCommits: ["task-result"],
     taskIds: ["task-1"],
   });
-  assert.deepEqual(calls[3][1], { sourceRoot: path.resolve("D:/dev-worktree/AgentHub") });
+  assert.deepEqual(calls[3][1], {
+    sourceRoot: path.resolve("D:/dev-worktree/AgentHub"),
+    forceFreshCandidate: true,
+  });
   assert.equal(result.planRevision, "plan-1");
   assert.equal(result.testContour.headCommit, "dev-head");
 });
@@ -81,7 +119,7 @@ test("release preflight rejects a refreshed contour that does not display dev HE
   const { service } = fixture({ contourHead: "stale-head" });
   await assert.rejects(
     () => service.preflight({ workspaceId: "workspace-1", expectedPlanRevision: "plan-1" }),
-    /does not match dev HEAD/u,
+    /not exact-ready/u,
   );
 });
 

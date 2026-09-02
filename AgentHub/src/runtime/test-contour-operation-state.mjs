@@ -34,16 +34,19 @@ function normalizedSource(source = {}) {
 
 function normalizedTarget(target = {}) {
   const port = Number(target.port);
+  const model = String(target.model ?? "").trim();
   if (!String(target.root ?? "").trim()
       || !String(target.contourId ?? "").trim()
+      || !model
       || !Number.isInteger(port)
       || port <= 0) {
-    throw new Error("Test Contour operation requires exact root, contourId and port");
+    throw new Error("Test Contour operation requires exact root, contourId, port and model");
   }
   return {
     root: path.resolve(String(target.root).trim()),
     contourId: String(target.contourId).trim(),
     port,
+    model,
   };
 }
 

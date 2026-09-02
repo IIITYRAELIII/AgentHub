@@ -114,19 +114,22 @@ runtime is stopped, so a Git or build preparation failure leaves the previous
 working contour available.
 
 Every refresh is one persisted maintenance operation, not a provider turn. Its
-identity binds the exact contour root, contour marker, port, source `dev` head,
-candidate release and owner process. Refresh, verify and release preflight use
+identity binds the exact contour root, contour marker, port, model, source `dev`
+head, candidate release and owner process. Refresh, verify and release preflight use
 one interprocess lease per contour root. A second process waits for that lease;
-after acquisition it either coalesces with an already-ready identical source or
+after acquisition it either coalesces with an already-ready identical target
+(`root`, marker, port, model and source) or
 creates a newer operation that deterministically supersedes the prior result.
 Callers may read an exact operation revision without polling and must treat a
 superseded readback as a stale result, not as validation of the newer contour.
 
 The candidate release does not become `current` until its exact manager and
-runtime report ready: health must answer on the operation port and the
-root-local instance lock must name the spawned runtime PID, candidate release
-and `ready=true`. A healthy unrelated server on the same port is not readiness
-evidence. If the operation owner dies, the next lease
+runtime report ready. The serving runtime writes a per-launch nonce and its
+contour, operation, release, model, PID, expected port and actual listening port
+into `/health`; all values must match the refresh operation. The root-local
+instance lock must independently name the same spawned runtime PID, candidate
+release and `ready=true`. A forged lock or a healthy unrelated server on the
+requested port is not readiness evidence. If the operation owner dies, the next lease
 owner finalizes an already-ready exact candidate or records the interrupted
 operation as failed before starting new work. A planned replacement is reported
 as refresh state and is not classified as a runtime crash.
@@ -137,8 +140,16 @@ must never reuse or start a cached candidate. After refresh,
 HEAD observed by the preflight. Only this release preflight additionally
 requires every selected immutable Task result commit to be an ancestor of the
 corresponding repository `dev` HEAD. Ordinary plan reads do not impose that
-integration requirement. The preflight does not reconstruct or compare blob
-manifests.
+integration requirement. Preflight accepts only an exact `ready` readback for
+the returned operation ID, source head and full target identity; `not_found`,
+`failed`, `refreshing`, `superseded` and identity mismatch all fail closed. The
+preflight does not reconstruct or compare blob manifests.
+
+Persisted operations created before the target included `model`, or runtime
+states created before the per-launch health nonce, are never eligible for
+same-target coalescing. The next refresh replaces them; this compatibility guard
+may be removed once all supported contour roots have completed one refresh with
+the full identity.
 
 The rolling contour is preview evidence, not release proof. Release validation
 still requires the prescribed isolated candidate checks and publication

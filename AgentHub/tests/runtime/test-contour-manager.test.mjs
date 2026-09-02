@@ -301,6 +301,10 @@ test("Test Contour defaults to Fake Codex while exposing optional real models", 
     paths,
     telegramApiBaseUrl: "http://127.0.0.1:43210",
     releaseId: "candidate-1",
+    contourId: "contour-1",
+    operationId: "operation-1",
+    port: 8877,
+    runtimeNonce: "runtime-nonce-1",
     environment: {
       TELEGRAM_BOT_TOKEN: "production-token",
       TELEGRAM_API_BASE_URL: "https://api.telegram.org",
@@ -317,6 +321,10 @@ test("Test Contour defaults to Fake Codex while exposing optional real models", 
   assert.equal(environment.CODEX_MODEL, TEST_CONTOUR_MODEL);
   assert.equal(environment.CODEX_HOME, paths.codexHome);
   assert.equal(environment.AGENT_HUB_RELEASE_ID, "candidate-1");
+  assert.equal(environment.AGENT_HUB_TEST_CONTOUR_ID, "contour-1");
+  assert.equal(environment.AGENT_HUB_TEST_CONTOUR_OPERATION_ID, "operation-1");
+  assert.equal(environment.AGENT_HUB_TEST_CONTOUR_PORT, "8877");
+  assert.equal(environment.AGENT_HUB_TEST_CONTOUR_RUNTIME_NONCE, "runtime-nonce-1");
   assert.equal(environment.PATH, "safe-path");
 });
 

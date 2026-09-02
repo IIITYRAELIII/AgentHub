@@ -25,7 +25,7 @@ process.send({ type: "waiting", label, pid: process.pid });
 await withTestContourOperationLock(root, async () => {
   const operation = await beginTestContourOperation(root, {
     source: { branch: "dev", headCommit, sourceRoot: process.cwd() },
-    target: { root, contourId: "fixture-contour", port: 8877 },
+    target: { root, contourId: "fixture-contour", port: 8877, model: "fake-codex" },
   });
   await appendFile(eventFile, `${label}:enter:${operation.operationId}\n`, "utf8");
   const release = waitForRelease();

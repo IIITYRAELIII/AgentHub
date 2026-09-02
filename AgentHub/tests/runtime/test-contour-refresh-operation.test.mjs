@@ -23,6 +23,7 @@ import {
 } from "../../src/runtime/test-contour-manager.mjs";
 
 const fixture = path.resolve(import.meta.dirname, "..", "fixtures", "test-contour-operation-process.mjs");
+const healthFixture = path.resolve(import.meta.dirname, "..", "fixtures", "test-contour-health-process.mjs");
 
 function child(root, label, headCommit, eventFile) {
   const handle = spawn(process.execPath, [fixture, root, label, headCommit, eventFile], {
@@ -81,8 +82,22 @@ async function closeServer(server) {
 async function healthServer() {
   const server = createServer((request, response) => {
     if (request.url === "/health") {
+      const identity = server.testContourIdentity;
       response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify({ ok: true, live: true, ready: true, status: "ready" }));
+      response.end(JSON.stringify({
+        ok: true,
+        live: true,
+        ready: true,
+        status: "ready",
+        ...(identity ? {
+          testContourRuntime: {
+            ...identity,
+            expectedPort: identity.port,
+            actualPort: server.address().port,
+            pid: process.pid,
+          },
+        } : {}),
+      }));
       return;
     }
     const identity = server.testContourIdentity;
@@ -100,6 +115,9 @@ async function writeRunningContour(root, server, {
   releaseId = "release-old",
   headCommit = "head-old",
   operationId = null,
+  model = TEST_CONTOUR_SPARK_MODEL,
+  runtimeNonce = `nonce-${releaseId}`,
+  operationSourceRoot = root,
 } = {}) {
   const paths = testContourPaths(root);
   await mkdir(root, { recursive: true });
@@ -112,10 +130,34 @@ async function writeRunningContour(root, server, {
     previous: null,
     updatedAt: new Date().toISOString(),
   }), "utf8");
+  let effectiveOperationId = operationId;
+  if (!effectiveOperationId) {
+    const started = await beginTestContourOperation(root, {
+      source: { branch: "dev", headCommit, sourceRoot: operationSourceRoot },
+      target: {
+        root,
+        contourId: "test-contour-refresh",
+        port: server.address().port,
+        model,
+      },
+    });
+    const ready = await transitionTestContourOperation(root, {
+      operationId: started.operationId,
+      ownerToken: started.ownerToken,
+      phase: "ready",
+      status: "ready",
+      patch: { releaseId },
+    });
+    effectiveOperationId = ready.operationId;
+  }
   await writeFile(paths.sourceFile, JSON.stringify({
     branch: "dev",
     headCommit,
-    sourceRoot: root,
+    sourceRoot: operationSourceRoot,
+    contourId: "test-contour-refresh",
+    operationId: effectiveOperationId,
+    port: server.address().port,
+    model,
     releaseId,
   }), "utf8");
   await writeFile(paths.stateFile, JSON.stringify({
@@ -123,17 +165,20 @@ async function writeRunningContour(root, server, {
     managerPid: process.pid,
     runtimePid: process.pid,
     releaseId,
-    operationId,
+    operationId: effectiveOperationId,
+    runtimeNonce,
     source: { branch: "dev", headCommit },
-    model: TEST_CONTOUR_SPARK_MODEL,
+    model,
     port: server.address().port,
     url: `http://127.0.0.1:${server.address().port}/`,
   }), "utf8");
   server.testContourIdentity = {
     contourId: "test-contour-refresh",
     releaseId,
-    operationId,
+    operationId: effectiveOperationId,
     port: server.address().port,
+    model,
+    runtimeNonce,
   };
   await mkdir(paths.dataDir, { recursive: true });
   await writeFile(path.join(paths.dataDir, "bot.lock"), JSON.stringify({
@@ -237,6 +282,7 @@ test("refresh keeps the old browser runtime readable throughout candidate prepar
       sourceRoot,
       entryFile: "unused-test-entry.mjs",
       refresh: true,
+      port: server.address().port,
       model: TEST_CONTOUR_SPARK_MODEL,
       prepareSource: async () => ({ sourceRoot, branch: "dev", headCommit: "head-new" }),
       prepareCandidate: async () => {
@@ -252,7 +298,7 @@ test("refresh keeps the old browser runtime readable throughout candidate prepar
         await rm(paths.stateFile, { force: true });
         return { stopped: true };
       },
-      launchCandidate: async ({ candidate, operation, onManagerSpawn }) => {
+      launchCandidate: async ({ candidate, operation, onManagerSpawn, port }) => {
         await onManagerSpawn({ pid: process.pid });
         return {
           contourId: "test-contour-refresh",
@@ -262,8 +308,8 @@ test("refresh keeps the old browser runtime readable throughout candidate prepar
           operationId: operation.operationId,
           source: { branch: candidate.branch, headCommit: candidate.headCommit },
           model: TEST_CONTOUR_SPARK_MODEL,
-          port: 8877,
-          url: "http://localhost:8877/",
+          port,
+          url: `http://localhost:${port}/`,
           health: { ok: true, live: true, ready: true },
         };
       },
@@ -293,11 +339,11 @@ test("refresh keeps the old browser runtime readable throughout candidate prepar
   }
 });
 
-test("same-source refresh coalesces without stopping the ready runtime", async () => {
+test("same-source refresh coalesces only for the exact ready target identity", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-contour-coalesce-"));
   const sourceRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-contour-coalesce-source-"));
   const server = await healthServer();
-  await writeRunningContour(root, server, { headCommit: "head-same" });
+  await writeRunningContour(root, server, { headCommit: "head-same", operationSourceRoot: sourceRoot });
   let prepared = false;
   let stopped = false;
   try {
@@ -306,6 +352,7 @@ test("same-source refresh coalesces without stopping the ready runtime", async (
       sourceRoot,
       entryFile: "unused-test-entry.mjs",
       refresh: true,
+      port: server.address().port,
       model: TEST_CONTOUR_SPARK_MODEL,
       prepareSource: async () => ({ sourceRoot, branch: "dev", headCommit: "head-same" }),
       prepareCandidate: async () => { prepared = true; },
@@ -324,13 +371,114 @@ test("same-source refresh coalesces without stopping the ready runtime", async (
   }
 });
 
+test("same source on a different custom port prepares and cuts over the requested target", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-contour-custom-port-"));
+  const sourceRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-contour-custom-source-"));
+  const server = await healthServer();
+  await writeRunningContour(root, server, { headCommit: "head-same", operationSourceRoot: sourceRoot });
+  const requestedPort = server.address().port + 1;
+  let prepared = false;
+  let stopped = false;
+  try {
+    const result = await startTestContour({
+      root,
+      sourceRoot,
+      entryFile: "unused-test-entry.mjs",
+      refresh: true,
+      port: requestedPort,
+      model: TEST_CONTOUR_SPARK_MODEL,
+      prepareSource: async () => ({ sourceRoot, branch: "dev", headCommit: "head-same" }),
+      prepareCandidate: async () => {
+        prepared = true;
+        const releaseRoot = path.join(root, "releases", "release-new-port");
+        await mkdir(releaseRoot, { recursive: true });
+        return {
+          releaseId: "release-new-port",
+          releaseRoot,
+          sourceRoot,
+          branch: "dev",
+          headCommit: "head-same",
+        };
+      },
+      stopRuntime: async () => {
+        stopped = true;
+        await closeServer(server);
+        await rm(testContourPaths(root).stateFile, { force: true });
+        return { stopped: true };
+      },
+      launchCandidate: async ({ candidate, operation, onManagerSpawn }) => {
+        await onManagerSpawn({ pid: process.pid });
+        return {
+          contourId: "test-contour-refresh",
+          managerPid: process.pid,
+          runtimePid: process.pid,
+          releaseId: candidate.releaseId,
+          operationId: operation.operationId,
+          source: { branch: "dev", headCommit: "head-same" },
+          model: TEST_CONTOUR_SPARK_MODEL,
+          port: requestedPort,
+          url: `http://127.0.0.1:${requestedPort}/`,
+        };
+      },
+    });
+    assert.equal(result.refreshOutcome, "refreshed");
+    assert.equal(result.port, requestedPort);
+    assert.equal(prepared, true);
+    assert.equal(stopped, true);
+  } finally {
+    await closeServer(server);
+    await Promise.all([
+      rm(root, { recursive: true, force: true }),
+      rm(`${root}-operation.lock`, { recursive: true, force: true }),
+      rm(sourceRoot, { recursive: true, force: true }),
+    ]);
+  }
+});
+
+test("release preflight fresh-candidate semantics bypass exact-target coalescing", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-contour-fresh-"));
+  const sourceRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-contour-fresh-source-"));
+  const server = await healthServer();
+  await writeRunningContour(root, server, { headCommit: "head-same", operationSourceRoot: sourceRoot });
+  let prepared = false;
+  try {
+    await assert.rejects(() => startTestContour({
+      root,
+      sourceRoot,
+      entryFile: "unused-test-entry.mjs",
+      refresh: true,
+      forceFreshCandidate: true,
+      port: server.address().port,
+      model: TEST_CONTOUR_SPARK_MODEL,
+      prepareSource: async () => ({ sourceRoot, branch: "dev", headCommit: "head-same" }),
+      prepareCandidate: async () => {
+        prepared = true;
+        throw new Error("fresh candidate prepared");
+      },
+    }), /fresh candidate prepared/u);
+    assert.equal(prepared, true);
+  } finally {
+    await closeServer(server);
+    await Promise.all([
+      rm(root, { recursive: true, force: true }),
+      rm(`${root}-operation.lock`, { recursive: true, force: true }),
+      rm(sourceRoot, { recursive: true, force: true }),
+    ]);
+  }
+});
+
 test("ready runtime is finalized after refresh owner crash without a duplicate restart", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-contour-recover-ready-"));
   const sourceRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-contour-recover-source-"));
   const server = await healthServer();
   const operation = await beginTestContourOperation(root, {
     source: { branch: "dev", headCommit: "head-recovered", sourceRoot },
-    target: { root, contourId: "test-contour-refresh", port: server.address().port },
+    target: {
+      root,
+      contourId: "test-contour-refresh",
+      port: server.address().port,
+      model: TEST_CONTOUR_SPARK_MODEL,
+    },
     ownerPid: 2_147_483_000,
     isProcessAlive: () => false,
   });
@@ -344,6 +492,7 @@ test("ready runtime is finalized after refresh owner crash without a duplicate r
     releaseId: "release-recovered",
     headCommit: "head-recovered",
     operationId: operation.operationId,
+    operationSourceRoot: sourceRoot,
   });
   await writeFile(path.join(root, "current.json"), JSON.stringify({
     current: "release-old",
@@ -358,6 +507,7 @@ test("ready runtime is finalized after refresh owner crash without a duplicate r
       sourceRoot,
       entryFile: "unused-test-entry.mjs",
       refresh: true,
+      port: server.address().port,
       model: TEST_CONTOUR_SPARK_MODEL,
       prepareSource: async () => ({ sourceRoot, branch: "dev", headCommit: "head-recovered" }),
       prepareCandidate: async () => { prepared = true; },
@@ -390,6 +540,8 @@ test("readiness rejects a healthy server from another contour identity", async (
     releaseId: "shared-release",
     operationId: "shared-operation",
     port,
+    model: TEST_CONTOUR_SPARK_MODEL,
+    runtimeNonce: "shared-runtime-nonce",
   };
   try {
     await mkdir(path.join(root, "data"), { recursive: true });
@@ -405,6 +557,8 @@ test("readiness rejects a healthy server from another contour identity", async (
         releaseId: "isolated-release",
         operationId: "isolated-operation",
         port,
+        model: TEST_CONTOUR_SPARK_MODEL,
+        runtimeNonce: "isolated-runtime-nonce",
         runtimePid: process.pid,
       },
     }), null);
@@ -418,6 +572,69 @@ test("readiness rejects a healthy server from another contour identity", async (
     }))?.ready, true);
   } finally {
     await closeServer(server);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("foreign healthy process cannot satisfy readiness with a forged root-local lock", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-contour-foreign-health-"));
+  const spawnHealth = (identity) => {
+    const handle = spawn(
+      process.execPath,
+      [healthFixture, JSON.stringify(identity)],
+      { stdio: ["ignore", "ignore", "inherit", "ipc"], windowsHide: true },
+    );
+    handle.receivedMessages = [];
+    handle.on("message", (value) => handle.receivedMessages.push(value));
+    return handle;
+  };
+  const ownedIdentity = {
+    contourId: "candidate-contour",
+    releaseId: "candidate-release",
+    operationId: "candidate-operation",
+    model: TEST_CONTOUR_SPARK_MODEL,
+    runtimeNonce: "candidate-runtime-nonce",
+  };
+  const owned = spawnHealth(ownedIdentity);
+  const foreign = spawnHealth({
+    contourId: "foreign-contour",
+    releaseId: "foreign-release",
+    operationId: "foreign-operation",
+    model: TEST_CONTOUR_SPARK_MODEL,
+    runtimeNonce: "foreign-runtime-nonce",
+  });
+  try {
+    const [ownedReady, foreignReady] = await Promise.all([
+      message(owned, "ready"),
+      message(foreign, "ready"),
+    ]);
+    await mkdir(path.join(root, "data"), { recursive: true });
+    await writeFile(path.join(root, "data", "bot.lock"), JSON.stringify({
+      pid: ownedReady.pid,
+      releaseId: ownedIdentity.releaseId,
+      ready: true,
+    }), "utf8");
+    assert.notEqual(ownedReady.port, foreignReady.port);
+    assert.equal(await readyTestContourHealth(foreignReady.port, {
+      root,
+      expectedIdentity: {
+        ...ownedIdentity,
+        port: foreignReady.port,
+        runtimePid: ownedReady.pid,
+      },
+    }), null);
+    assert.equal((await readyTestContourHealth(ownedReady.port, {
+      root,
+      expectedIdentity: {
+        ...ownedIdentity,
+        port: ownedReady.port,
+        runtimePid: ownedReady.pid,
+      },
+    }))?.ready, true);
+  } finally {
+    owned.kill("SIGTERM");
+    foreign.kill("SIGTERM");
+    await Promise.allSettled([exited(owned), exited(foreign)]);
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -487,6 +704,7 @@ test("restart reuses only the persisted release identity on its original port", 
         contourId: "contour-restart",
         operationId,
         port,
+        model: TEST_CONTOUR_SPARK_MODEL,
         releaseId,
       }), "utf8"),
       writeFile(path.join(releaseRoot, "agent-hub-main.mjs"), "export {};\n", "utf8"),

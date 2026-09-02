@@ -624,11 +624,23 @@ export function testContourEnvironment({
   telegramApiBaseUrl,
   model = TEST_CONTOUR_MODEL,
   releaseId,
+  contourId,
+  operationId = null,
+  port,
+  runtimeNonce,
   environment = process.env,
 } = {}) {
   const normalizedReleaseId = String(releaseId ?? "").trim();
+  const normalizedContourId = String(contourId ?? "").trim();
+  const normalizedOperationId = String(operationId ?? "").trim();
+  const normalizedRuntimeNonce = String(runtimeNonce ?? "").trim();
+  const normalizedPort = Number(port);
   if (!/^[A-Za-z0-9._-]+$/u.test(normalizedReleaseId)) {
     throw new Error("Test Contour releaseId is required");
+  }
+  if (!normalizedContourId || !normalizedRuntimeNonce
+      || !Number.isInteger(normalizedPort) || normalizedPort <= 0) {
+    throw new Error("Test Contour runtime identity requires contourId, port and nonce");
   }
   const result = { ...environment };
   for (const key of [
@@ -646,6 +658,10 @@ export function testContourEnvironment({
     AGENT_HUB_CONFIG: paths.configFile,
     AGENT_HUB_RUNTIME_ROOT: paths.root,
     AGENT_HUB_RELEASE_ID: normalizedReleaseId,
+    AGENT_HUB_TEST_CONTOUR_ID: normalizedContourId,
+    AGENT_HUB_TEST_CONTOUR_OPERATION_ID: normalizedOperationId,
+    AGENT_HUB_TEST_CONTOUR_PORT: String(normalizedPort),
+    AGENT_HUB_TEST_CONTOUR_RUNTIME_NONCE: normalizedRuntimeNonce,
     AGENT_HUB_LAUNCHER: "",
     AGENT_HUB_DISABLE_SECRET_ACL: "1",
     AGENT_HUB_TEST_CONTOUR: "1",
@@ -841,6 +857,7 @@ async function publishPreparedTestContourCandidate({
     sourceRoot: candidate.sourceRoot,
     contourId: operation.target.contourId,
     port: operation.target.port,
+    model: operation.target.model,
     preparedAt: operation.createdAt,
     activatedAt: now.toISOString(),
     operationId: operation.operationId,
@@ -876,11 +893,20 @@ export async function readyTestContourHealth(port, {
   const body = await response.json();
   if (body?.ok !== true || body?.live !== true || body?.ready !== true) return null;
   if (expectedIdentity) {
+    const served = body?.testContourRuntime;
     const lock = await readJson(path.join(testContourPaths(root).dataDir, "bot.lock"));
-    if (Number(lock?.pid) !== Number(expectedIdentity.runtimePid)
+    if (!served
+        || served.contourId !== expectedIdentity.contourId
+        || served.releaseId !== expectedIdentity.releaseId
+        || (served.operationId ?? null) !== (expectedIdentity.operationId ?? null)
+        || served.model !== expectedIdentity.model
+        || served.runtimeNonce !== expectedIdentity.runtimeNonce
+        || Number(served.pid) !== Number(expectedIdentity.runtimePid)
+        || Number(served.expectedPort) !== Number(expectedIdentity.port)
+        || Number(served.actualPort) !== Number(port)
+        || Number(lock?.pid) !== Number(expectedIdentity.runtimePid)
         || lock?.releaseId !== expectedIdentity.releaseId
-        || lock?.ready !== true
-        || Number(expectedIdentity.port) !== Number(port)) return null;
+        || lock?.ready !== true) return null;
   }
   if (!requireFakeQueue) return body;
   const paths = testContourPaths(root);
@@ -928,6 +954,7 @@ export async function serveTestContour({
     realCodexExecutable,
   }));
   await rm(paths.stateFile, { force: true });
+  const runtimeNonce = randomUUID();
   const runtime = spawnImpl(process.execPath, [path.join(releaseRoot, "agent-hub-main.mjs")], {
     cwd: releaseRoot,
     env: testContourEnvironment({
@@ -935,6 +962,10 @@ export async function serveTestContour({
       telegramApiBaseUrl: telegram.baseUrl,
       model,
       releaseId,
+      contourId: marker.id,
+      operationId,
+      port,
+      runtimeNonce,
     }),
     stdio: "inherit",
     windowsHide: true,
@@ -952,6 +983,8 @@ export async function serveTestContour({
           releaseId,
           operationId: String(operationId ?? "").trim() || null,
           port,
+          model,
+          runtimeNonce,
           runtimePid: runtime.pid,
         },
       });
@@ -964,6 +997,7 @@ export async function serveTestContour({
       runtimePid: runtime.pid,
       releaseId,
       operationId: String(operationId ?? "").trim() || null,
+      runtimeNonce,
       source: String(sourceHeadCommit ?? "").trim() ? {
         branch: String(sourceBranch ?? "dev").trim() || "dev",
         headCommit: String(sourceHeadCommit).trim(),
@@ -1046,6 +1080,8 @@ export async function readTestContourStatus({
       releaseId: state.releaseId,
       operationId: state.operationId ?? null,
       port: state.port,
+      model: state.model,
+      runtimeNonce: state.runtimeNonce,
       runtimePid: state.runtimePid,
     } : null,
   }).catch(() => null);
@@ -1319,7 +1355,11 @@ async function recoverInterruptedTestContourRefresh(root) {
   const stateMatches = status.running
     && status.state?.operationId === operation.operationId
     && status.state?.releaseId === operation.releaseId
-    && status.state?.source?.headCommit === operation.source?.headCommit;
+    && status.state?.source?.headCommit === operation.source?.headCommit
+    && canonicalPath(operation.target?.root) === canonicalPath(root)
+    && status.state?.contourId === operation.target?.contourId
+    && Number(status.state?.port) === Number(operation.target?.port)
+    && status.state?.model === operation.target?.model;
   if (!stateMatches) {
     await failStaleTestContourOperation(root, {
       operationId: operation.operationId,
@@ -1357,6 +1397,7 @@ async function refreshTestContourUnlocked({
   sourceRoot,
   port,
   model,
+  forceFreshCandidate = false,
   prepareSource = prepareTaskContourSource,
   prepareCandidate = prepareTestContourCandidate,
   stopRuntime = stopTestContourUnlocked,
@@ -1367,7 +1408,26 @@ async function refreshTestContourUnlocked({
   const marker = await ensureMarker(root);
   const source = await resolveTestContourSource({ root, sourceRoot, prepareSource });
   const currentStatus = await readTestContourStatus({ root });
-  if (currentStatus.running && currentStatus.source?.headCommit === source.headCommit) {
+  const currentOperation = currentStatus.operation;
+  const exactReadyTarget = currentStatus.running
+    && currentStatus.status === "ready"
+    && currentStatus.planned === false
+    && currentOperation?.status === "ready"
+    && currentOperation?.phase === "ready"
+    && canonicalPath(currentOperation.target?.root) === canonicalPath(root)
+    && currentOperation.target?.contourId === marker.id
+    && Number(currentOperation.target?.port) === Number(port)
+    && currentOperation.target?.model === model
+    && currentOperation.source?.branch === source.branch
+    && currentOperation.source?.headCommit === source.headCommit
+    && canonicalPath(currentOperation.source?.sourceRoot) === canonicalPath(source.sourceRoot)
+    && currentStatus.state?.contourId === marker.id
+    && Number(currentStatus.state?.port) === Number(port)
+    && currentStatus.state?.model === model
+    && currentStatus.state?.operationId === currentOperation.operationId
+    && currentStatus.state?.releaseId === currentOperation.releaseId
+    && currentStatus.source?.headCommit === source.headCommit;
+  if (!forceFreshCandidate && exactReadyTarget) {
     return {
       ...currentStatus.state,
       source: currentStatus.source,
@@ -1380,10 +1440,10 @@ async function refreshTestContourUnlocked({
   const operation = await beginTestContourOperation(root, {
     kind: "refresh",
     source,
-    target: { root, contourId: marker.id, port },
+    target: { root, contourId: marker.id, port, model },
   });
   try {
-    const candidate = await prepareCandidate({ root, sourceRoot, source, operation, port });
+    const candidate = await prepareCandidate({ root, sourceRoot, source, operation, port, model });
     const previousReleaseId = currentStatus.state?.releaseId
       ?? String((await readJson(runtimeLayout(root).currentFile, {}))?.current ?? "").trim()
       ?? null;
@@ -1428,7 +1488,10 @@ async function refreshTestContourUnlocked({
     });
     if (state.releaseId !== candidate.releaseId
         || state.operationId !== operation.operationId
-        || state.source?.headCommit !== source.headCommit) {
+        || state.source?.headCommit !== source.headCommit
+        || state.contourId !== marker.id
+        || Number(state.port) !== Number(port)
+        || state.model !== model) {
       throw new Error("Test Contour ready runtime does not match its refresh operation");
     }
     currentOperation = await transitionTestContourOperation(root, {
@@ -1503,11 +1566,13 @@ async function startTestContourUnlocked({
     contourId: source?.contourId ?? null,
     operationId: source?.operationId ?? null,
     port: Number(source?.port) || null,
+    model: source?.model ?? null,
   })).catch(() => null);
   if (!candidate
       || !candidate.contourId
       || !candidate.operationId
-      || candidate.port !== port) {
+      || candidate.port !== port
+      || candidate.model !== model) {
     return refreshTestContourUnlocked({
       root: isolatedRoot,
       entryFile,

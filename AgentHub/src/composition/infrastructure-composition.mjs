@@ -80,6 +80,24 @@ function runtimeAssetBundleProvider(runtimeRoot) {
   };
 }
 
+function testContourRuntimeIdentity(environment = process.env) {
+  if (environment.AGENT_HUB_TEST_CONTOUR !== "1") return null;
+  const expectedPort = Number(environment.AGENT_HUB_TEST_CONTOUR_PORT);
+  const identity = {
+    contourId: String(environment.AGENT_HUB_TEST_CONTOUR_ID ?? "").trim(),
+    operationId: String(environment.AGENT_HUB_TEST_CONTOUR_OPERATION_ID ?? "").trim() || null,
+    releaseId: String(environment.AGENT_HUB_RELEASE_ID ?? "").trim(),
+    model: String(environment.CODEX_MODEL ?? "").trim(),
+    expectedPort,
+    runtimeNonce: String(environment.AGENT_HUB_TEST_CONTOUR_RUNTIME_NONCE ?? "").trim(),
+  };
+  if (!identity.contourId || !identity.releaseId || !identity.model || !identity.runtimeNonce
+      || !Number.isInteger(expectedPort) || expectedPort <= 0) {
+    throw new Error("Test Contour runtime identity environment is incomplete");
+  }
+  return identity;
+}
+
 function gitConfigValue(text, sectionName, keyName) {
   let section = "";
   for (const rawLine of String(text ?? "").split(/\r?\n/u)) {
@@ -317,10 +335,11 @@ export async function createHubInfrastructure({
     releasePlanner: taskReleasePlanner,
     taskGitWorkspaces,
     resolveTestContourSource: resolveReleaseTestContourSource,
-    refreshTestContour: ({ sourceRoot }) => startTestContour({
+    refreshTestContour: ({ sourceRoot, ...options }) => startTestContour({
       refresh: true,
       sourceRoot,
       entryFile: path.join(sourceRoot, "test-contour.mjs"),
+      ...options,
     }),
     readTestContourStatus,
   });
@@ -371,6 +390,7 @@ export async function createHubInfrastructure({
       localAccessSecretFile: path.join(runtimeCommandRoot, "local-web.secret"),
       copyWorkspaceFile: copyWindowsFileObject,
       revealWorkspaceFile: revealWindowsFile,
+      testContourRuntimeIdentity: testContourRuntimeIdentity(),
     })
     : null;
   const publicMiniAppServer = config.miniApp.enabled && config.miniApp.quickTunnel.enabled
