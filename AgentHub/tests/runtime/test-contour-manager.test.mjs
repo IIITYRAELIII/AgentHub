@@ -733,7 +733,7 @@ test("candidate preparation deploys only into the isolated runtime root", async 
           '<html lang="ru"><head><link rel="stylesheet" href="/test-contour-watermark.css"></head><body></body></html>',
           "utf8",
         );
-        await options.beforePointerCommit({ releaseRoot });
+        await options.beforePointerCommit({ releaseId: "candidate-1", releaseRoot });
         assert.match(
           await readFile(path.join(webAppRoot, "index.html"), "utf8"),
           /<div class="test-contour-watermark" aria-hidden="true">ТЕСТ<\/div>/u,
@@ -748,7 +748,7 @@ test("candidate preparation deploys only into the isolated runtime root", async 
     assert.equal(calls[0].sourceRoot, canonicalPath(sourceRoot));
     assert.match(
       await readFile(path.join(result.releaseRoot, "assets", "web-app", "index.html"), "utf8"),
-      /<html data-test-contour="" lang="ru">/u,
+      /<html data-test-contour="" data-test-contour-id="[^"]+" data-test-contour-release="candidate-1" data-test-contour-operation="" data-test-contour-port="8877" lang="ru">/u,
     );
     assert.match(
       await readFile(path.join(result.releaseRoot, "assets", "web-app", "index.html"), "utf8"),

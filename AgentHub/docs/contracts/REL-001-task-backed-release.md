@@ -113,6 +113,23 @@ not deploy a contour per Task branch. The contour status records the exact
 runtime is stopped, so a Git or build preparation failure leaves the previous
 working contour available.
 
+Every refresh is one persisted maintenance operation, not a provider turn. Its
+identity binds the exact contour root, contour marker, port, source `dev` head,
+candidate release and owner process. Refresh, verify and release preflight use
+one interprocess lease per contour root. A second process waits for that lease;
+after acquisition it either coalesces with an already-ready identical source or
+creates a newer operation that deterministically supersedes the prior result.
+Callers may read an exact operation revision without polling and must treat a
+superseded readback as a stale result, not as validation of the newer contour.
+
+The candidate release does not become `current` until its exact manager and
+runtime report ready and the served document proves the same contour marker,
+port, release and operation identity. A healthy unrelated server on the same
+port is not readiness evidence. If the operation owner dies, the next lease
+owner finalizes an already-ready exact candidate or records the interrupted
+operation as failed before starting new work. A planned replacement is reported
+as refresh state and is not classified as a runtime crash.
+
 An explicit release preflight always prepares a fresh candidate from `dev`; it
 must never reuse or start a cached candidate. After refresh,
 `TestContour.source.headCommit` must equal the exact Agent Hub repository `dev`

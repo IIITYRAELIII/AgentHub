@@ -80,8 +80,14 @@ export class WorkspaceReleasePreflightService {
     }
 
     const contourSource = await this.resolveTestContourSource(preparedRepositories);
-    await this.refreshTestContour({ sourceRoot: contourSource.sourceRoot });
-    const contour = await this.readTestContourStatus();
+    const refreshed = await this.refreshTestContour({ sourceRoot: contourSource.sourceRoot });
+    const contour = await this.readTestContourStatus({
+      expectedOperationId: refreshed?.operationId ?? null,
+      expectedHeadCommit: refreshed?.source?.headCommit ?? contourSource.headCommit ?? null,
+    });
+    if (contour?.readback?.outcome === "superseded") {
+      throw new Error("refreshed Test Contour was superseded; retry preflight against the current release plan");
+    }
     if (!contour?.running) throw new Error("refreshed Test Contour is not running");
 
     const repositories = [];
