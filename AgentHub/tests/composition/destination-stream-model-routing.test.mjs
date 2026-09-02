@@ -1,10 +1,17 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
+import { DeferredInputService } from "../../src/application/deferred-input-service.mjs";
+import { DeferredInputStore } from "../../src/application/deferred-input-store.mjs";
 import { ManagedRunLifecycleService } from "../../src/application/managed-run-lifecycle-service.mjs";
 import { RunCoordinator } from "../../src/application/run-coordinator.mjs";
 import { TaskRunRegistry } from "../../src/domain/task-runs.mjs";
+import { RuntimeStateStore } from "../../src/infrastructure/persistence/runtime-state-store.mjs";
 import { DesktopTaskService } from "../../src/interfaces/desktop/desktop-task-service.mjs";
+import { destinationStreamSettings } from "../../src/composition/desktop-command-wiring-composition.mjs";
 
 const entries = [{
   streamId: "stream-a",
@@ -13,7 +20,7 @@ const entries = [{
   provider: "codex",
   projectRoot: "D:/Work",
   threadId: "thread-a",
-  model: "GPT-5.3-Codex-Spark",
+  model: null,
 }, {
   streamId: "stream-b",
   workspaceName: "Agent HUB",
@@ -21,10 +28,22 @@ const entries = [{
   provider: "codex",
   projectRoot: "D:/Work",
   threadId: "thread-b",
-  model: "Fake Codex",
+  model: null,
 }];
 
-function productionRoute({ externalActivity = async () => ({ state: "inactive" }) } = {}) {
+const streamSettings = new Map([
+  ["stream-a", { provider: "codex", model: "gpt-5.3-codex-spark" }],
+  ["stream-b", { provider: "codex", model: "fake-codex" }],
+]);
+const workspaceCatalog = {
+  stream: (streamId) => ({ settings: streamSettings.get(streamId) ?? {} }),
+};
+
+function productionRoute({
+  externalActivity = async () => ({ state: "inactive" }),
+  deferInput = async () => assert.fail("destination run must not be deferred"),
+  scheduleDeferred = () => {},
+} = {}) {
   let selectedTarget = {
     provider: "codex",
     projectRoot: "D:/Work",
@@ -50,6 +69,7 @@ function productionRoute({ externalActivity = async () => ({ state: "inactive" }
       const entry = entries.find((candidate) => candidate.streamId === streamId);
       return entry ? { provider: entry.provider, threadId: entry.threadId } : null;
     },
+    streamSettings: (streamId) => destinationStreamSettings(workspaceCatalog, streamId),
     samePath: (left, right) => left === right,
     chatId: () => 7,
   });
@@ -67,7 +87,6 @@ function productionRoute({ externalActivity = async () => ({ state: "inactive" }
     }),
     normalizeCodexModel: (value) => ({
       "GPT-5.3-Codex-Spark": "gpt-5.3-codex-spark",
-      "Fake Codex": "fake-codex",
     })[value] ?? String(value).toLowerCase(),
     modelLabel: (value) => value,
     claudeModelLabels: {},
@@ -91,10 +110,11 @@ function productionRoute({ externalActivity = async () => ({ state: "inactive" }
     providers: { call: async () => ({}) },
     externalActivity,
     repositoryConflict: async () => null,
-    deferInput: async () => assert.fail("destination run must not be deferred"),
+    deferInput,
     beginRun: (input, target) => lifecycle.begin(input, target),
     rollbackAdmission: async () => {},
     launchTurn: async (run) => { run.turnId = `turn-${run.streamId}`; },
+    scheduleDeferred,
   });
   return {
     coordinator,
@@ -103,18 +123,59 @@ function productionRoute({ externalActivity = async () => ({ state: "inactive" }
   };
 }
 
-test("non-selected destination Stream keeps its catalog model through production admission", async () => {
-  const route = productionRoute();
+test("catalog-missing destination model survives the durable ledger and production admission", async (context) => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "agent-hub-destination-model-"));
+  const runtimeState = new RuntimeStateStore({ dataDir });
+  context.after(async () => {
+    await runtimeState.close();
+    await rm(dataDir, { recursive: true, force: true });
+  });
+  const deferredStore = new DeferredInputStore();
+  const deferredInputs = new DeferredInputService({
+    store: deferredStore,
+    createId: () => "destination-a-input",
+    persist: async () => assert.fail("durable intake must use the command ledger"),
+    persistIntake: (item, destination, receipt) => runtimeState.saveDeferredIntake({
+      item,
+      destination,
+      receipt,
+    }),
+    removeFiles: async () => {},
+    notify: async () => null,
+  });
+  let scheduledItem = null;
+  const route = productionRoute({
+    deferInput: (...args) => deferredInputs.defer(...args),
+    scheduleDeferred: (item) => { scheduledItem = item; },
+  });
   const target = await route.desktop.resolveTarget({ streamId: "stream-a" });
 
-  const result = await route.coordinator.start("run A", [], { target });
+  const accepted = await route.coordinator.acceptClientInput({
+    input: "run A",
+    target,
+    clientUserMessageId: "destination-a-command",
+    messageFingerprint: "destination-a-fingerprint",
+  });
+  const [ledgerRecord] = runtimeState.messageCommands();
+  route.select({
+    provider: "codex",
+    projectRoot: "D:/Other",
+    streamId: "stream-c",
+    threadId: "thread-c",
+    taskTitle: "Concurrent selection C",
+    chatId: 9,
+  });
+  const run = await route.coordinator.startDeferred(scheduledItem);
 
   assert.equal(target.threadId, "thread-a");
-  assert.equal(target.modelId, "GPT-5.3-Codex-Spark");
-  assert.equal(result.run.streamId, "stream-a");
-  assert.equal(result.run.threadId, "thread-a");
-  assert.equal(result.run.modelId, "gpt-5.3-codex-spark");
-  assert.notEqual(result.run.modelId, "fake-codex");
+  assert.equal(target.modelId, "gpt-5.3-codex-spark");
+  assert.equal(accepted.accepted, true);
+  assert.equal(ledgerRecord.item.modelId, "gpt-5.3-codex-spark");
+  assert.equal(scheduledItem.modelId, "gpt-5.3-codex-spark");
+  assert.equal(run.streamId, "stream-a");
+  assert.equal(run.threadId, "thread-a");
+  assert.equal(run.modelId, "gpt-5.3-codex-spark");
+  assert.notEqual(run.modelId, "fake-codex");
 });
 
 test("destination model is stable when selection changes during concurrent admission", async () => {
