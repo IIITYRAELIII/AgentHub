@@ -75,6 +75,7 @@ const MARKER_FILE = ".agent-hub-test-contour.json";
 const STATE_FILE = "test-contour-state.json";
 const CONFIG_FILE = "config.json";
 const SOURCE_FILE = "test-contour-source.json";
+const IDENTITY_FILE = "test-contour-identity.js";
 const USER_ID = 42;
 const CHAT_ID = 84;
 const TEST_CONTOUR_DRAIN_STATES = new Set(["accepted", "queued", "dispatching", "started", "unknown"]);
@@ -705,6 +706,7 @@ async function markTestContourWebApp(releaseRoot, identity = null) {
   const indexFile = path.join(releaseRoot, "assets", "web-app", "index.html");
   const source = await readFile(indexFile, "utf8");
   const watermarkMarkup = '<div class="test-contour-watermark" aria-hidden="true">ТЕСТ</div>';
+  const identityMarkup = `<script type="application/json" src="/${IDENTITY_FILE}"></script>`;
   const identityAttributes = identity
     ? [
         ` data-test-contour-id="${identity.contourId}"`,
@@ -716,16 +718,28 @@ async function markTestContourWebApp(releaseRoot, identity = null) {
   const withMarker = source.includes("data-test-contour")
     ? source
     : source.replace(/<html\b/u, `<html data-test-contour=""${identityAttributes}`);
-  const marked = withMarker.includes(watermarkMarkup)
-    ? withMarker
-    : withMarker.replace(
+  const withIdentity = identity && !withMarker.includes(identityMarkup)
+    ? withMarker.replace(/<\/head>/u, `${identityMarkup}\n</head>`)
+    : withMarker;
+  const marked = withIdentity.includes(watermarkMarkup)
+    ? withIdentity
+    : withIdentity.replace(
       /<\/body>/u,
       `${watermarkMarkup}\n</body>`,
     );
-  if (!marked.includes("data-test-contour") || !marked.includes(watermarkMarkup)) {
+  if (!marked.includes("data-test-contour")
+      || !marked.includes(watermarkMarkup)
+      || (identity && !marked.includes(identityMarkup))) {
     throw new Error(`Test Contour web app has no expected document roots: ${indexFile}`);
   }
   await writeFile(indexFile, marked, "utf8");
+  if (identity) {
+    await writeFile(
+      path.join(releaseRoot, "assets", "web-app", IDENTITY_FILE),
+      `${JSON.stringify({ kind: "agent-hub-test-contour-runtime", ...identity })}\n`,
+      "utf8",
+    );
+  }
   return indexFile;
 }
 
@@ -789,6 +803,7 @@ export async function prepareTestContourCandidate({
     root: isolatedRoot,
     releaseId: deployed.releaseId,
     releaseRoot: deployed.releaseRoot,
+    contourId: marker.id,
     sourceRoot: candidateSourceRoot,
     branch: resolvedSource.branch,
     headCommit: resolvedSource.headCommit,
@@ -878,18 +893,6 @@ async function waitFor(operation, description, timeoutMs = 120_000) {
   throw new Error(`Timeout waiting for ${description}: ${lastError?.message ?? "not ready"}`);
 }
 
-function testContourIdentityFromHtml(html) {
-  const attribute = (name) => String(html).match(new RegExp(`\\s${name}="([^"]*)"`, "u"))?.[1] ?? null;
-  if (!String(html).includes("data-test-contour")) return null;
-  const port = Number(attribute("data-test-contour-port"));
-  return {
-    contourId: attribute("data-test-contour-id"),
-    releaseId: attribute("data-test-contour-release"),
-    operationId: attribute("data-test-contour-operation") || null,
-    port: Number.isInteger(port) ? port : null,
-  };
-}
-
 export async function readyTestContourHealth(port, {
   root = defaultTestContourRoot(),
   requireFakeQueue = false,
@@ -899,17 +902,18 @@ export async function readyTestContourHealth(port, {
   const [response, identityResponse] = await Promise.all([
     fetch(`${baseUrl}/health`, { signal: AbortSignal.timeout(2_000) }),
     expectedIdentity
-      ? fetch(`${baseUrl}/`, { signal: AbortSignal.timeout(2_000) })
+      ? fetch(`${baseUrl}/${IDENTITY_FILE}`, { signal: AbortSignal.timeout(2_000) })
       : Promise.resolve(null),
   ]);
   if (!response.ok || (identityResponse && !identityResponse.ok)) return null;
   const [body, identity] = await Promise.all([
     response.json(),
-    identityResponse ? identityResponse.text().then(testContourIdentityFromHtml) : null,
+    identityResponse?.json() ?? null,
   ]);
   if (body?.ok !== true || body?.live !== true || body?.ready !== true) return null;
   if (expectedIdentity && (
-    identity?.contourId !== expectedIdentity.contourId
+    identity?.kind !== "agent-hub-test-contour-runtime"
+    || identity.contourId !== expectedIdentity.contourId
     || identity.releaseId !== expectedIdentity.releaseId
     || identity.operationId !== (expectedIdentity.operationId ?? null)
     || Number(identity.port) !== Number(expectedIdentity.port)

@@ -754,6 +754,19 @@ test("candidate preparation deploys only into the isolated runtime root", async 
       await readFile(path.join(result.releaseRoot, "assets", "web-app", "index.html"), "utf8"),
       /<div class="test-contour-watermark" aria-hidden="true">ТЕСТ<\/div>/u,
     );
+    assert.deepEqual(
+      JSON.parse(await readFile(
+        path.join(result.releaseRoot, "assets", "web-app", "test-contour-identity.js"),
+        "utf8",
+      )),
+      {
+        kind: "agent-hub-test-contour-runtime",
+        contourId: result.contourId,
+        releaseId: "candidate-1",
+        operationId: null,
+        port: 8877,
+      },
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

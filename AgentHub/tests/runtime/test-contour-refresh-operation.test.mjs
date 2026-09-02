@@ -86,6 +86,11 @@ async function healthServer() {
       return;
     }
     const identity = server.testContourIdentity;
+    if (request.url === "/test-contour-identity.js" && identity) {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ kind: "agent-hub-test-contour-runtime", ...identity }));
+      return;
+    }
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(identity
       ? `<html data-test-contour="" data-test-contour-id="${identity.contourId}" data-test-contour-release="${identity.releaseId}" data-test-contour-operation="${identity.operationId ?? ""}" data-test-contour-port="${identity.port}"><body>old-runtime-visible</body></html>`
