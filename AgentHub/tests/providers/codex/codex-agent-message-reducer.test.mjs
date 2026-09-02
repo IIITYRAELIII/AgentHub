@@ -126,6 +126,44 @@ test("Codex live response turns a split response annotation marker into a citati
   assert.deepEqual(run.responseAnnotationReferences, [{ index: 1 }]);
 });
 
+test("Codex response deduplicates repeated annotation markers at the provider boundary", () => {
+  const run = { responseText: "", responseItems: [] };
+  completeCodexAgentMessage(run, {
+    turnId: "turn-annotation-duplicate",
+    item: {
+      id: "answer-annotation-duplicate",
+      type: "agentMessage",
+      phase: "final_answer",
+      text: [
+        ':codex-annotation{index="1"} Первая часть',
+        ':codex-annotation{index="1"} Вторая часть',
+      ].join("\n"),
+    },
+  });
+  assert.equal(run.responseText, "Цитата 1\nПервая часть\nВторая часть");
+  assert.deepEqual(run.responseAnnotationReferences, [{ index: 1 }]);
+});
+
+test("Codex response rejects unsafe and out-of-contract annotation indices", () => {
+  const run = { responseText: "", responseItems: [] };
+  completeCodexAgentMessage(run, {
+    turnId: "turn-annotation-invalid",
+    item: {
+      id: "answer-annotation-invalid",
+      type: "agentMessage",
+      phase: "final_answer",
+      text: [
+        ':codex-annotation{index="21"} Нет mapping',
+        ':codex-annotation{index="1000000000000000000000"} Unsafe',
+      ].join("\n"),
+    },
+  });
+  assert.equal(run.responseText, "Цитата\nНет mapping\nЦитата\nUnsafe");
+  assert.deepEqual(run.responseAnnotationReferences, []);
+  assert.equal(run.responseText.includes("1e+21"), false);
+  assert.equal(run.responseText.includes(":codex-annotation"), false);
+});
+
 test("Codex response keeps annotation-looking literals inside code", () => {
   const literal = [
     "Покажи literal:",

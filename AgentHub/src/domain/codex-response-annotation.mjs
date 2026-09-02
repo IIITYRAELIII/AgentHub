@@ -1,7 +1,22 @@
-const COMPLETE_MARKER = /^([ \t]*):codex-annotation\{index="([1-9]\d*)"\}(?:[ \t]+(.*)|[ \t]*$)/u;
+const COMPLETE_MARKER = /^([ \t]*):codex-annotation\{index="(\d+)"\}(?:[ \t]+(.*)|[ \t]*$)/u;
 const MARKER_PREFIX = ':codex-annotation{index="';
 const PARTIAL_MARKER = /^:codex-annotation\{index="\d*"?\}?$/u;
 const FENCE_START = /^[ \t]{0,3}(`{3,}|~{3,})/u;
+
+export const MAX_CODEX_RESPONSE_ANNOTATION_INDEX = 20;
+
+export function normalizedCodexResponseAnnotationReferences(references) {
+  const normalized = [];
+  const seen = new Set();
+  for (const reference of Array.isArray(references) ? references : []) {
+    const index = Number(reference?.index);
+    if (!Number.isSafeInteger(index) || index < 1
+      || index > MAX_CODEX_RESPONSE_ANNOTATION_INDEX || seen.has(index)) continue;
+    seen.add(index);
+    normalized.push({ index });
+  }
+  return normalized;
+}
 
 export function codexAssistantResponseProjection(value) {
   const text = String(value ?? "");
@@ -9,6 +24,7 @@ export function codexAssistantResponseProjection(value) {
   const newline = text.includes("\r\n") ? "\r\n" : "\n";
   let fence = "";
   const responseAnnotationReferences = [];
+  const referencedIndices = new Set();
   const visible = text.split(/\r?\n/u).map((line) => {
     const fenceMatch = FENCE_START.exec(line);
     if (fence) {
@@ -22,8 +38,14 @@ export function codexAssistantResponseProjection(value) {
     const complete = COMPLETE_MARKER.exec(line);
     if (complete) {
       const index = Number(complete[2]);
-      responseAnnotationReferences.push({ index });
-      const label = `${complete[1]}Цитата ${index}`;
+      const valid = Number.isSafeInteger(index) && index >= 1
+        && index <= MAX_CODEX_RESPONSE_ANNOTATION_INDEX;
+      if (valid && referencedIndices.has(index)) {
+        return complete[3] ? `${complete[1]}${complete[3]}` : complete[1];
+      }
+      if (valid) referencedIndices.add(index);
+      if (valid) responseAnnotationReferences.push({ index });
+      const label = valid ? `${complete[1]}Цитата ${index}` : `${complete[1]}Цитата`;
       return complete[3] ? `${label}${newline}${complete[1]}${complete[3]}` : label;
     }
     const candidate = line.trimStart();

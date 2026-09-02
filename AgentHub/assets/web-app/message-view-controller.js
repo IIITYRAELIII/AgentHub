@@ -1,6 +1,21 @@
 (() => {
   "use strict";
 
+  const MAX_RESPONSE_ANNOTATION_INDEX = 20;
+
+  function normalizedResponseAnnotationReferences(references) {
+    const normalized = [];
+    const seen = new Set();
+    for (const reference of Array.isArray(references) ? references : []) {
+      const index = Number(reference?.index);
+      if (!Number.isSafeInteger(index) || index < 1
+        || index > MAX_RESPONSE_ANNOTATION_INDEX || seen.has(index)) continue;
+      seen.add(index);
+      normalized.push({ index });
+    }
+    return normalized;
+  }
+
   function messageKey(message, index = 0) {
     const clientUserMessageId = String(message?.clientUserMessageId ?? "").trim();
     if (clientUserMessageId) return `client\u001f${clientUserMessageId}`;
@@ -56,7 +71,7 @@
     const values = Array.isArray(messages) ? messages : [];
     const message = values[messageIndex];
     const references = message?.role === "agent" && Array.isArray(message.responseAnnotationReferences)
-      ? message.responseAnnotationReferences
+      ? normalizedResponseAnnotationReferences(message.responseAnnotationReferences)
       : [];
     if (!references.length) return [];
     let targetIndex = -1;
@@ -70,24 +85,40 @@
     const target = values[targetIndex];
     return references.flatMap((reference) => {
       const index = Number(reference?.index);
-      if (!Number.isSafeInteger(index) || index < 1) return [];
       const annotation = target?.responseAnnotations?.[index - 1];
+      const interactive = Boolean(target && annotation);
       const quote = String(annotation?.text ?? "").trim();
       return [{
         index,
         label: `Цитата ${index}`,
-        quote,
-        annotation: String(annotation?.annotation ?? "").trim(),
-        targetMessageKey: target ? messageKey(target, targetIndex) : "",
+        quote: interactive ? quote : "",
+        annotation: interactive ? String(annotation?.annotation ?? "").trim() : "",
+        targetMessageKey: interactive ? messageKey(target, targetIndex) : "",
+        interactive,
       }];
     });
   }
 
+  function responseCitationControl(citation) {
+    const index = Number(citation?.index);
+    const targetMessageKey = String(citation?.targetMessageKey ?? "").trim();
+    const interactive = citation?.interactive === true
+      && Number.isSafeInteger(index) && index >= 1
+      && index <= MAX_RESPONSE_ANNOTATION_INDEX && Boolean(targetMessageKey);
+    return {
+      tagName: interactive ? "button" : "span",
+      className: `msg-response-citation${interactive ? "" : " is-fallback"}`,
+      interactive,
+      label: String(citation?.label ?? (Number.isSafeInteger(index) ? `Цитата ${index}` : "Цитата")),
+      quote: interactive ? String(citation?.quote ?? "").trim() : "",
+      ...(interactive ? { index, targetMessageKey } : {}),
+    };
+  }
+
   function withoutResponseCitationFallbacks(value, references) {
     let lines = String(value ?? "").replace(/\r\n?/gu, "\n").split("\n");
-    for (const reference of Array.isArray(references) ? references : []) {
+    for (const reference of normalizedResponseAnnotationReferences(references)) {
       const index = Number(reference?.index);
-      if (!Number.isSafeInteger(index) || index < 1) continue;
       const label = `Цитата ${index}`;
       const position = lines.findIndex((line) => line.trim() === label);
       if (position >= 0) lines.splice(position, 1);
@@ -385,6 +416,7 @@
     messageKey,
     messageTailPagination,
     messageTimestampLabel,
+    responseCitationControl,
     responseCitationPresentations,
     messageTailWindow,
     inlineMarkdownTokens,
