@@ -10,12 +10,14 @@ and selected content. The client creates the locator from the actual DOM range
 and authoritative provider item. Intake is the trust boundary that removes an
 invalid locator while preserving readable quote text.
 
-Both the user-created annotation card and response-citation navigation resolve
-only that identity and validate all
-three hashes before highlighting the range. Hidden trace details are opened
-only after validation. Missing or stale sources fail closed to the existing
-annotation-card jump. Legacy annotations remain unlinked to source text; no
-text, timestamp or display-order backfill is permitted.
+The user-created annotation card resolves only that source identity and
+validates all three hashes before highlighting the range. Hidden trace details
+are opened only after validation. A response citation remains a separate
+identity-based link to the corresponding user annotation card and displays the
+user's annotation/comment rather than the selected source text. Missing or
+stale sources fail closed without changing that annotation-card target. Legacy
+annotations remain unlinked to source text; no text, timestamp or display-order
+backfill is permitted.
 
 ## Consequences
 

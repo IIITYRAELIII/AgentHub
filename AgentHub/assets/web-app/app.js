@@ -5464,9 +5464,6 @@ function renderResponseCitations(message) {
         ? el("span", { class: "msg-response-citation-quote", text: control.quote })
         : null,
     ]);
-    if (control.interactive && control.source) {
-      responseCitationSources.set(node, { source: control.source, quote: control.quote });
-    }
     return node;
   }));
 }
@@ -5580,8 +5577,7 @@ async function focusResponseCitationSource(button) {
   return true;
 }
 
-async function focusResponseCitation(button) {
-  if (await focusResponseCitationSource(button)) return true;
+function focusResponseCitation(button) {
   return focusResponseAnnotationCard(button);
 }
 
