@@ -44,6 +44,7 @@ function eventService(run) {
     formatPermissionsApproval: () => "",
     requestMcpElicitation: async () => {},
     observeMcpProgress: noop,
+    observeHubMcpBridge: noop,
     requestUserInput: async () => {},
     reduceLiveItemEvent: () => null,
     startLiveItem: noop,
