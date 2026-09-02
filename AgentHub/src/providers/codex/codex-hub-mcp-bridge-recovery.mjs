@@ -178,28 +178,43 @@ export function dynamicHubMcpCallFailed(item) {
   return item?.error !== undefined && item?.error !== null;
 }
 
-function operationOutcome(call, operation) {
+function operationOutcome(call, operation, { readbackAvailable = true } = {}) {
   if (!call.mutating) return "read-retry-safe";
   if (!call.requestId) return "mutation-identity-missing";
+  if (!readbackAvailable) return "reconciliation-unavailable";
   if (!operation) return "pre-dispatch";
   if (operation.status === "succeeded") return "authoritative-succeeded";
   if (operation.status === "failed") return "authoritative-failed";
   return "unknown-pending";
 }
 
-function recoveryStage(results) {
+function aggregateOutcome(results) {
   const outcomes = new Set(results.map((result) => result.outcome));
-  if (outcomes.has("unknown-pending")) {
+  if (outcomes.has("mutation-identity-missing")) return "replay-blocked-identity";
+  if (outcomes.has("reconciliation-unavailable")) return "replay-blocked-reconciliation";
+  if (outcomes.has("unknown-pending")) return "replay-blocked-pending";
+  if (outcomes.has("authoritative-succeeded") || outcomes.has("authoritative-failed")) {
+    return "replay-blocked-authoritative";
+  }
+  if (outcomes.has("pre-dispatch")) return "same-identity-retry-safe";
+  return "read-retry-safe";
+}
+
+function recoveryStage(outcome) {
+  if (outcome === "replay-blocked-identity") {
+    return "Agent Hub MCP transport recovered; replay of the entire composed call is blocked because at least one mutation identity is missing or ambiguous.";
+  }
+  if (outcome === "replay-blocked-reconciliation") {
+    return "Agent Hub MCP transport recovered; mutation audit reconciliation is unavailable, so replay is blocked until authoritative readback succeeds.";
+  }
+  if (outcome === "replay-blocked-pending") {
     return "Agent Hub MCP transport recovered; mutation outcome is pending. Reconcile with the same request_id.";
   }
-  if (outcomes.has("authoritative-succeeded") || outcomes.has("authoritative-failed")) {
+  if (outcome === "replay-blocked-authoritative") {
     return "Agent Hub MCP transport recovered; the mutation has an authoritative audited outcome and must not be repeated.";
   }
-  if (outcomes.has("pre-dispatch")) {
+  if (outcome === "same-identity-retry-safe") {
     return "Agent Hub MCP transport recovered; the mutation did not reach admission and may be retried with the same request_id.";
-  }
-  if (outcomes.has("mutation-identity-missing")) {
-    return "Agent Hub MCP transport recovered; mutation retry is blocked because exact request_id is missing.";
   }
   return "Agent Hub MCP transport recovered; the read-only call may be retried safely.";
 }
@@ -228,19 +243,23 @@ export class CodexHubMcpBridgeRecovery {
     const calls = hubMcpCallsFromDynamicItem(item);
     const results = calls.map((call) => {
       let operation = null;
+      let readbackAvailable = true;
       if (call.mutating && call.requestId) {
         try {
           operation = this.readOperation(call.requestId);
         } catch (error) {
+          readbackAvailable = false;
           this.#trace("operation-read-failed", call, { error: error.message }, true);
         }
       }
       return {
         ...call,
         operationStatus: operation?.status ?? null,
-        outcome: operationOutcome(call, operation),
+        readbackAvailable,
+        outcome: operationOutcome(call, operation, { readbackAvailable }),
       };
     });
+    const recoveryOutcome = aggregateOutcome(results);
     let reloadError = null;
     try {
       await this.#reload();
@@ -250,13 +269,14 @@ export class CodexHubMcpBridgeRecovery {
         error: String(error?.message ?? error).slice(0, 500),
       }, true);
     }
+    const outcomeStage = recoveryStage(recoveryOutcome);
     const stage = reloadError
-      ? "Agent Hub MCP call reached its client deadline, but transport rebind failed. The queued lane was woken and recovery may be retried."
-      : recoveryStage(results);
+      ? `Agent Hub MCP call reached its client deadline, but transport rebind failed. The queued lane was woken and transport recovery may be retried. ${outcomeStage}`
+      : outcomeStage;
     if (run) this.setStage(run, stage);
     this.wakeDeferredInputs();
     for (const result of results) this.#trace(reloadError ? "bridge-recovery-deferred" : "bridge-recovered", result);
-    return { recovered: !reloadError, stage, calls: results };
+    return { recovered: !reloadError, aggregateOutcome: recoveryOutcome, stage, calls: results };
   }
 
   async #reload() {

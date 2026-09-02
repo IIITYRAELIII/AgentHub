@@ -238,6 +238,83 @@ test("ambiguous composed mutation identities never perform authoritative readbac
     "mutation-identity-missing",
     "mutation-identity-missing",
   ]);
+  assert.equal(result.aggregateOutcome, "replay-blocked-identity");
+  assert.match(result.stage, /entire composed call is blocked/u);
+});
+
+test("one missing identity blocks replay of an exact pre-dispatch composed mutation", async () => {
+  const readbacks = [];
+  const service = new CodexHubMcpBridgeRecovery({
+    reloadMcp: async () => {},
+    readOperation: (requestId) => {
+      readbacks.push(requestId);
+      return null;
+    },
+    logger: { log: () => {}, error: () => {} },
+  });
+  const item = dynamicItem(`
+    await tools.mcp__agent_hub__hub_task_claim({ request_id: "claim-exact" });
+    await tools.mcp__agent_hub__hub_stream_message_send({ text: "missing identity" });
+  `);
+
+  const result = await service.observe({ method: "item/completed", item });
+
+  assert.deepEqual(readbacks, ["claim-exact"]);
+  assert.deepEqual(result.calls.map((call) => call.outcome), [
+    "pre-dispatch",
+    "mutation-identity-missing",
+  ]);
+  assert.equal(result.aggregateOutcome, "replay-blocked-identity");
+  assert.match(result.stage, /entire composed call is blocked/u);
+  assert.doesNotMatch(result.stage, /may be retried with the same request_id/u);
+});
+
+test("one duplicate identity blocks replay of an exact pre-dispatch composed mutation", async () => {
+  const service = new CodexHubMcpBridgeRecovery({
+    reloadMcp: async () => {},
+    readOperation: () => null,
+    logger: { log: () => {}, error: () => {} },
+  });
+  const item = dynamicItem(`
+    await tools.mcp__agent_hub__hub_task_claim({ request_id: "claim-exact" });
+    await tools.mcp__agent_hub__hub_stream_message_send({ request_id: "send-a", request_id: "send-b" });
+  `);
+
+  const result = await service.observe({ method: "item/completed", item });
+
+  assert.deepEqual(result.calls.map((call) => call.outcome), [
+    "pre-dispatch",
+    "mutation-identity-missing",
+  ]);
+  assert.equal(result.calls[1].requestIdIssue, "duplicate-property");
+  assert.equal(result.aggregateOutcome, "replay-blocked-identity");
+  assert.match(result.stage, /entire composed call is blocked/u);
+});
+
+test("unavailable operation reconciliation never becomes pre-dispatch", async (t) => {
+  for (const failure of [
+    new Error("audit store unavailable"),
+    Object.assign(new Error("audit read timed out"), { code: "ETIMEDOUT" }),
+  ]) {
+    await t.test(failure.code === "ETIMEDOUT" ? "timeout" : "throw", async () => {
+      const service = new CodexHubMcpBridgeRecovery({
+        reloadMcp: async () => {},
+        readOperation: () => { throw failure; },
+        logger: { log: () => {}, error: () => {} },
+      });
+
+      const result = await service.observe({
+        method: "item/completed",
+        item: failedItem("hub_task_claim", "claim-exact"),
+      });
+
+      assert.equal(result.calls[0].readbackAvailable, false);
+      assert.equal(result.calls[0].outcome, "reconciliation-unavailable");
+      assert.equal(result.aggregateOutcome, "replay-blocked-reconciliation");
+      assert.match(result.stage, /replay is blocked until authoritative readback succeeds/u);
+      assert.doesNotMatch(result.stage, /did not reach admission/u);
+    });
+  }
 });
 
 test("pending mutation remains unknown and read-only retry is safe after rebind", async () => {

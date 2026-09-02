@@ -32,6 +32,13 @@ Composed `functions.exec` calls bind each mutation to the `request_id` in that
 specific nested call's argument object. Missing, duplicate-property and
 cross-call duplicate identities fail closed: recovery may rebind the transport,
 but it performs no authoritative operation lookup and authorizes no replay.
+One ambiguous mutation blocks replay of the entire failed composed call, even
+when another nested mutation has a valid id and a successful null readback.
+
+Only a successful authoritative readback that returns no operation proves
+pre-dispatch. A thrown, timed-out or otherwise unavailable audit read is a
+separate reconciliation-unavailable outcome and blocks replay until readback
+succeeds; it is never converted to a null operation.
 
 Logs contain tool and operation identity, status and recovery outcome, but not
 the context capability or tool arguments.
