@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
+import { codexAssistantResponseProjection } from "../../src/domain/codex-response-annotation.mjs";
 import { TASK_EXECUTION_OWNERS } from "../../src/domain/task-execution-owner.mjs";
 import { LocalTaskSyncStore } from "../../src/infrastructure/persistence/task-sync-store.mjs";
 
@@ -499,6 +500,38 @@ test("local task sync preserves interstream origin through SQLite", async () => 
   assert.equal(restored.messages[0].author, "Agent HUB - Themes (Sol)");
   assert.equal(restored.messages[0].kind, "interstream");
   assert.deepEqual(restored.messages[0].origin, origin);
+  store.close();
+});
+
+test("SQLite history preserves the provider projection of malformed citation markers", async () => {
+  const filePath = await storeFile();
+  const projection = codexAssistantResponseProjection(
+    ':codex-annotation{index="abc"} Nonnumeric\n:codex-annotation{index=""} Empty',
+  );
+  const store = new LocalTaskSyncStore({ filePath });
+  await store.load();
+  store.recordHistory(task, [{
+    id: "turn-malformed-citation",
+    prompt: "Проверь",
+    answer: projection.text,
+    status: "completed",
+    completed: true,
+    messages: [{ itemId: "user-1", role: "user", text: "Проверь" }, {
+      itemId: "agent-1",
+      role: "agent",
+      text: projection.text,
+      responseAnnotationReferences: projection.responseAnnotationReferences,
+    }],
+  }]);
+  await store.save();
+
+  const restored = new LocalTaskSyncStore({ filePath });
+  await restored.load();
+  const [entry] = restored.history(task);
+  assert.equal(entry.messages[1].text, "Цитата\nNonnumeric\nЦитата\nEmpty");
+  assert.deepEqual(entry.messages[1].responseAnnotationReferences ?? [], []);
+  assert.equal(entry.messages[1].text.includes(":codex-annotation"), false);
+  restored.close();
   store.close();
 });
 

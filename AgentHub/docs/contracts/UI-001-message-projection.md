@@ -17,9 +17,12 @@
   healthy short window cannot hide an exhausted longer window for the same model.
 - Codex response-annotation locators cross the provider boundary as unique
   positive safe-integer indices in the provider annotation range `1..20`,
-  never as service markup. Invalid locators retain only a readable generic
-  fallback and do not enter structured state. The UI resolves each valid index
-  to the nearest preceding annotated user entity by its canonical message key,
+  never as service markup. The trusted Codex parser consumes every complete
+  line-start marker with a quoted index payload before validating the payload;
+  invalid payloads retain only a readable generic fallback and do not enter
+  structured state. Partial markers remain hidden while streaming. The UI
+  resolves each valid index to the nearest preceding annotated user entity by
+  its canonical message key,
   renders the quoted text and exposes a keyboard-operable jump only when that
   exact target annotation exists. Missing mappings render non-interactive
   `Цитата N`. User-authored marker-like literals and code remain ordinary user
