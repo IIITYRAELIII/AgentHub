@@ -130,7 +130,8 @@ export class WorkspaceReleasePreflightService {
     });
     if (!exactReadyContourReadback({ refreshed, contour, expectedHeadCommit: expectedContourHead })) {
       throw new Error(
-        `refreshed Test Contour readback is not exact-ready: ${contour?.readback?.outcome ?? "missing"}`,
+        `refreshed Test Contour readback is not exact-ready: ${contour?.readback?.outcome ?? "missing"}; `
+          + "it does not match dev HEAD or the exact operation target",
       );
     }
 
