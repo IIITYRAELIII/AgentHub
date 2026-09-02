@@ -3,6 +3,73 @@ import { readdir, readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
 
+const WEB_APP_ROOT = new URL("../../assets/web-app/", import.meta.url);
+
+const TEST_THEME_CATALOG = JSON.stringify([{
+  id: "orbit",
+  name: "Orbit",
+  color: "#080b11",
+  aliases: [],
+  assets: {},
+  backgrounds: [{ id: "none", name: "Нет", assetUrl: "", preload: false }],
+}]);
+
+function webAssetContentType(pathname) {
+  if (/\.css$/u.test(pathname)) return "text/css; charset=utf-8";
+  if (/\.(?:js|mjs)$/u.test(pathname)) return "text/javascript; charset=utf-8";
+  if (/\.png$/u.test(pathname)) return "image/png";
+  return "application/octet-stream";
+}
+
+async function launchDomBrowser(chromium) {
+  if (process.platform === "win32") return chromium.launch({ channel: "msedge", headless: true });
+  return chromium.launch({ headless: true });
+}
+
+async function openStreamTabsDomFixture(page) {
+  await page.route("**/*", async (route) => {
+    const requestUrl = new URL(route.request().url());
+    if (requestUrl.hostname !== "agent-hub.test") {
+      await route.abort();
+      return;
+    }
+    if (requestUrl.pathname === "/") {
+      const source = await readFile(new URL("index.html", WEB_APP_ROOT), "utf8");
+      const body = source
+        .replace(/\s*<script src="https:\/\/telegram\.org\/[^>]+><\/script>/u, "")
+        .replace(/\s*<script src="\/browser-device-auth\.js" defer><\/script>/u, "")
+        .replace(/\s*<script src="\/hub-client\.js" defer><\/script>/u, "")
+        .replace("</head>", `<script type="application/json" data-theme-catalog>${TEST_THEME_CATALOG}</script></head>`);
+      await route.fulfill({ status: 200, contentType: "text/html; charset=utf-8", body });
+      return;
+    }
+    if (requestUrl.pathname === "/work-log.css") {
+      await route.fulfill({
+        status: 200,
+        contentType: "text/css; charset=utf-8",
+        body: await readFile(new URL("../../work-log.css", import.meta.url)),
+      });
+      return;
+    }
+    const relative = decodeURIComponent(requestUrl.pathname).replace(/^\/+/, "");
+    if (!relative || relative.split("/").some((segment) => !segment || segment === "." || segment === "..")) {
+      await route.fulfill({ status: 404, body: "Not found" });
+      return;
+    }
+    try {
+      await route.fulfill({
+        status: 200,
+        contentType: webAssetContentType(relative),
+        body: await readFile(new URL(relative, WEB_APP_ROOT)),
+      });
+    } catch {
+      await route.fulfill({ status: 404, body: "Not found" });
+    }
+  });
+  await page.goto("http://agent-hub.test/", { waitUntil: "load" });
+  await page.waitForFunction(() => typeof window.AgentHub === "object");
+}
+
 class FakeTarget {
   constructor() {
     this.listeners = new Map();
@@ -626,16 +693,136 @@ test("an active Stream preserves its answer-ready state", async () => {
 });
 
 test("background status changes rerender visible top Stream tabs", async () => {
-  const app = await readFile(new URL("../../assets/web-app/app.js", import.meta.url), "utf8");
-  assert.match(
-    app,
-    /if \(chatNeedsRender\) renderChat\(\);\s*else \{\s*if \(navigationChanged\) renderStreamTabs\(\);/u,
-  );
-  assert.match(
-    app,
-    /if \(id === state\.selectedId\) renderChat\(\);\s*else \{\s*renderStreamTabs\(\);/u,
-  );
-  assert.doesNotMatch(app, /stream-tab-status-marker|stream-tabs-more-statuses/u);
+  const { chromium } = await import("playwright");
+  const browser = await launchDomBrowser(chromium);
+  try {
+    const page = await browser.newPage();
+    await openStreamTabsDomFixture(page);
+    const result = await page.evaluate(() => {
+      const lastActivity = "2026-09-02T08:00:00.000Z";
+      const architect = {
+        id: "task-architect",
+        threadId: "thread-architect",
+        workspaceId: "workspace-agent-hub",
+        workspaceName: "Agent HUB",
+        streamId: "stream-architect",
+        streamName: "Architect",
+        streamOrdinal: 1,
+        title: "Architect",
+        provider: "codex",
+        agentLabel: "Codex",
+        modelLabel: "Sol",
+        status: "ready",
+        statusLabel: "Готов",
+        lastActivity,
+        unread: false,
+        running: false,
+        selected: true,
+      };
+      const idleS2 = {
+        ...architect,
+        id: "task-s2",
+        threadId: "thread-s2",
+        streamId: "stream-s2",
+        streamName: "S2",
+        streamOrdinal: 2,
+        title: "S2",
+        selected: false,
+      };
+      window.AgentHub.setWorkspaces([{
+        id: "workspace-agent-hub",
+        name: "Agent HUB",
+        title: "Agent HUB",
+      }]);
+      window.AgentHub.setTasks([architect, idleS2]);
+      const initialTopS2 = document.querySelector(
+        '.stream-tabs-track .stream-tab[data-stream-name="S2"]',
+      );
+      const before = {
+        topExists: Boolean(initialTopS2),
+        topRunning: initialTopS2?.hasAttribute("data-running") ?? null,
+        topCurrent: initialTopS2?.hasAttribute("data-current") ?? null,
+      };
+
+      window.AgentHub.setTasks([architect, {
+        ...idleS2,
+        running: true,
+        status: "in_progress",
+        statusLabel: "В работе",
+        startedAt: "2026-09-02T08:01:00.000Z",
+      }]);
+
+      const topS2 = document.querySelector(
+        '.stream-tabs-track .stream-tab[data-stream-name="S2"]',
+      );
+      const rightS2 = document.querySelector(
+        '.activity-stream-item[data-activity-task-id="task-s2"]',
+      );
+      const architectTab = document.querySelector(
+        '.stream-tabs-track .stream-tab[data-stream-name="Architect"]',
+      );
+      const effect = topS2?.querySelector(".stream-tab-card")
+        ? getComputedStyle(topS2.querySelector(".stream-tab-card"), "::after")
+        : null;
+      const setTasksAfter = {
+        topRunning: topS2?.hasAttribute("data-running") ?? null,
+        topCurrent: topS2?.hasAttribute("data-current") ?? null,
+        topState: topS2?.dataset.state ?? null,
+        rightRunning: rightS2?.hasAttribute("data-running") ?? null,
+        rightCurrent: rightS2?.hasAttribute("data-current") ?? null,
+        architectCurrent: architectTab?.hasAttribute("data-current") ?? null,
+        effectAnimation: effect?.animationName ?? null,
+        effectDisplay: effect?.display ?? null,
+      };
+
+      window.AgentHub.setTasks([architect, idleS2]);
+      window.AgentHub.setRunning("task-s2", true);
+      const patchedTopS2 = document.querySelector(
+        '.stream-tabs-track .stream-tab[data-stream-name="S2"]',
+      );
+      const patchedRightS2 = document.querySelector(
+        '.activity-stream-item[data-activity-task-id="task-s2"]',
+      );
+      return {
+        before,
+        setTasksAfter,
+        patchTaskAfter: {
+          topRunning: patchedTopS2?.hasAttribute("data-running") ?? null,
+          topCurrent: patchedTopS2?.hasAttribute("data-current") ?? null,
+          topState: patchedTopS2?.dataset.state ?? null,
+          rightRunning: patchedRightS2?.hasAttribute("data-running") ?? null,
+          rightCurrent: patchedRightS2?.hasAttribute("data-current") ?? null,
+          architectCurrent: document.querySelector(
+            '.stream-tabs-track .stream-tab[data-stream-name="Architect"]',
+          )?.hasAttribute("data-current") ?? null,
+        },
+      };
+    });
+
+    assert.deepEqual(result, {
+      before: { topExists: true, topRunning: false, topCurrent: false },
+      setTasksAfter: {
+        topRunning: true,
+        topCurrent: false,
+        topState: "running",
+        rightRunning: true,
+        rightCurrent: false,
+        architectCurrent: true,
+        effectAnimation: "stream-running-wave",
+        effectDisplay: "block",
+      },
+      patchTaskAfter: {
+        topRunning: true,
+        topCurrent: false,
+        topState: "running",
+        rightRunning: true,
+        rightCurrent: false,
+        architectCurrent: true,
+      },
+    });
+  } finally {
+    await browser.close();
+  }
 });
 
 test("answer arrival animation does not replay during Thread selection", async () => {
